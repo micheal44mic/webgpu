@@ -1,3 +1,4 @@
+import { readEditorHtml } from "./ui-shell-source.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { readEngineSource } from "./engine-source.mjs";
@@ -12,7 +13,7 @@ const bevelRenderer = read("../src/bevel-renderer.ts");
 const shadowRenderer = read("../src/shadow-renderer.ts");
 const blendCore = read("../src/blend-core.ts");
 const blendRenderer = read("../src/blend-renderer.ts");
-const html = read("../index.html");
+const html = readEditorHtml();
 const sitesBuild = read("./prepare-sites-build.mjs");
 
 assert.match(

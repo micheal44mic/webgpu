@@ -1,12 +1,19 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { defineConfig, type Plugin } from "vite";
+import {
+  assembleEditorHtml,
+  readEditorHtml,
+} from "./scripts/ui-shell-source.mjs";
 
 // In produzione /api/human-stroke è servito dal worker Sites (D1). In dev il
-// fixture canonico vive in .tmp-canonical-human-stroke.json: senza questo
+// La fixture canonica vive con gli asset autorevoli dei Labs: senza questo
 // middleware la suite rendering one-tap resta disabilitata in locale.
 function devHumanStrokeApi(): Plugin {
-  const fixturePath = resolve(__dirname, ".tmp-canonical-human-stroke.json");
+  const fixturePath = resolve(
+    __dirname,
+    "src/labs/fixtures/human-stroke/canonical-v1.json",
+  );
   return {
     name: "dev-human-stroke-api",
     apply: "serve",
@@ -48,24 +55,25 @@ function devHumanStrokeApi(): Plugin {
   };
 }
 
-function labsHtmlShell(): Plugin {
+function editorHtmlShell(): Plugin {
   return {
-    name: "labs-html-shell",
+    name: "editor-html-shell",
     enforce: "pre",
     async transformIndexHtml(html, context) {
-      if (!context.path.endsWith("/labs.html")) {
-        return html;
+      if (context.path.endsWith("/labs.html")) {
+        return readEditorHtml()
+          .replace(
+            '<script type="module" src="/src/startup.ts"></script>',
+            '<script type="module" src="/src/labs/startup.ts"></script>',
+          )
+          .replace(
+            "<title>WebGPU Brush Engine</title>",
+            "<title>WebGPU Brush Engine Labs</title>",
+          );
       }
-      const editorHtml = await readFile(resolve(__dirname, "index.html"), "utf8");
-      return editorHtml
-        .replace(
-          '<script type="module" src="/src/startup.ts"></script>',
-          '<script type="module" src="/src/labs/startup.ts"></script>',
-        )
-        .replace(
-          "<title>WebGPU Brush Engine</title>",
-          "<title>WebGPU Brush Engine Labs</title>",
-        );
+      return context.path.endsWith("/index.html") || context.path === "/"
+        ? assembleEditorHtml(html)
+        : html;
     },
   };
 }
@@ -73,7 +81,7 @@ function labsHtmlShell(): Plugin {
 export default defineConfig(({ mode }) => ({
   base: "./",
   plugins: [
-    labsHtmlShell(),
+    editorHtmlShell(),
     ...(mode === "labs" ? [devHumanStrokeApi()] : []),
   ],
   build: mode === "labs"

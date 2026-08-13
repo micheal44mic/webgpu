@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  buildSourceImportGraph,
+  repositoryPath,
+  stronglyConnectedComponents,
+} from "./verification/source-import-graph.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const sourceRoot = resolve(root, "src");
@@ -66,4 +71,109 @@ assert.match(
   "la produzione deve conservare il restore pennello, mentre Labs puo disattivarlo",
 );
 
-console.log("Confini sorgente verificati: produzione -> labs vietato, entry Labs esplicito.");
+const productionGraph = buildSourceImportGraph(sourceRoot, {
+  include: (file) => !repositoryPath(sourceRoot, file).startsWith("labs/"),
+});
+const staticGraph = new Map(
+  [...productionGraph.runtime].map(([file, runtimeEdges]) => [
+    file,
+    new Set([...runtimeEdges, ...(productionGraph.type.get(file) ?? [])]),
+  ]),
+);
+const cycleBaseline = JSON.parse(readFileSync(
+  resolve(root, "scripts/verification/source-cycle-baseline.json"),
+  "utf8",
+));
+
+function unexpectedCycleDomains(components, permittedDomains) {
+  return components.filter((component) => !permittedDomains.some(
+    (domain) => component.every((member) => domain.includes(member)),
+  ));
+}
+
+const runtimeCycles = stronglyConnectedComponents(productionGraph.runtime, sourceRoot);
+const staticCycles = stronglyConnectedComponents(staticGraph, sourceRoot);
+assert.deepEqual(
+  unexpectedCycleDomains(runtimeCycles, cycleBaseline.runtimeDomains),
+  [],
+  "nessun nuovo modulo puo entrare in un ciclo runtime",
+);
+assert.deepEqual(
+  unexpectedCycleDomains(staticCycles, cycleBaseline.staticDomains),
+  [],
+  "nessun nuovo modulo puo allargare i cicli statici, inclusi gli import type-only",
+);
+for (const [file, edges] of productionGraph.runtime) {
+  assert.equal(edges.has(file), false, `self-import runtime: ${repositoryPath(root, file)}`);
+}
+
+const allSourceGraph = buildSourceImportGraph(sourceRoot);
+const brushEnginePath = resolve(sourceRoot, "brush-engine.ts");
+const brushEngineImports = allSourceGraph.imports.filter(
+  (record) => record.target === brushEnginePath,
+);
+const runtimeBrushEngineImporters = [...new Set(
+  brushEngineImports
+    .filter((record) => record.kind === "runtime")
+    .map((record) => repositoryPath(root, record.importer)),
+)].sort();
+assert.deepEqual(
+  runtimeBrushEngineImporters,
+  ["src/main.ts"],
+  "BrushEngine puo essere importato a runtime soltanto dalla composition root",
+);
+const permittedTypeImporters = new Set(JSON.parse(readFileSync(
+  resolve(root, "scripts/verification/brush-engine-type-importers.json"),
+  "utf8",
+)));
+const unexpectedTypeImporters = [...new Set(
+  brushEngineImports
+    .filter((record) => record.kind === "type")
+    .map((record) => repositoryPath(root, record.importer))
+    .filter((file) => !permittedTypeImporters.has(file)),
+)].sort();
+assert.deepEqual(
+  unexpectedTypeImporters,
+  [],
+  "le nuove dipendenze dall'intera facade devono usare una porta ristretta",
+);
+
+const implicitDomBusViolations = [];
+for (const file of sourceFiles(sourceRoot)) {
+  const path = repositoryPath(root, file);
+  if (path.startsWith("src/labs/")) continue;
+  const source = readFileSync(file, "utf8");
+  if (/\b(?:dispatchEvent\s*\(|new\s+CustomEvent\b)/.test(source)) {
+    implicitDomBusViolations.push(`${path}: evento DOM usato come bus`);
+  }
+  if (path !== "src/main.ts"
+    && /\bdocument\.(?:getElementById|querySelector|querySelectorAll)\s*\(/.test(source)) {
+    implicitDomBusViolations.push(`${path}: lookup DOM globale fuori dalla composition root`);
+  }
+  if (path !== "src/main.ts" && /\bwindow\.addEventListener\s*\(/.test(source)) {
+    implicitDomBusViolations.push(`${path}: listener window globale senza proprietario`);
+  }
+}
+assert.deepEqual(implicitDomBusViolations, []);
+
+assert.ok(mainSource.split(/\r?\n/).length <= 1_800, "main.ts non deve tornare monolitico");
+assert.doesNotMatch(mainSource, /^\s*(?:export\s+)?class\s+/m);
+assert.doesNotMatch(
+  mainSource,
+  /\.(?:createTexture|createBuffer|createRenderPipeline|createComputePipeline)\s*\(/,
+  "la composition root non deve possedere allocazioni o pipeline WebGPU",
+);
+for (const owner of [
+  "BrushEngine",
+  "ProjectSessionController",
+  "HistoryControlsController",
+  "CanvasInputController",
+  "SceneEditorController",
+  "EditorToolsController",
+]) {
+  assert.match(mainSource, new RegExp(`new ${owner}\\(`), `owner non composto da main.ts: ${owner}`);
+}
+
+console.log(
+  `Confini sorgente verificati: produzione -> Labs vietato; ${runtimeCycles.length} domini ciclici runtime confinati; BrushEngine value-only da main.`,
+);

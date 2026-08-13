@@ -1,8 +1,9 @@
+import { readEditorStyleSource } from "./ui-shell-source.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const [styles, interaction] = await Promise.all([
-  readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
+  Promise.resolve(readEditorStyleSource()),
   readFile(new URL("../src/document-interaction-controller.ts", import.meta.url), "utf8"),
 ]);
 

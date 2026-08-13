@@ -1,3 +1,4 @@
+import { readEditorHtml, readEditorStyleSource } from "./ui-shell-source.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { readEngineSource } from "./engine-source.mjs";
@@ -20,8 +21,8 @@ const mergedSurfaceSource = read("src/merged-surface-shader.ts");
 const mixedSceneCompositorSource = read("src/mixed-scene-compositor-shader.ts");
 const vectorTextShaderSource = read("src/vector-text-shader.ts");
 const pixelViewSource = read("src/raster-pixel-view.ts");
-const htmlSource = read("index.html");
-const styleSource = read("src/styles.css");
+const htmlSource = readEditorHtml();
+const styleSource = readEditorStyleSource();
 const packageJson = JSON.parse(read("package.json"));
 
 const EPSILON = 1e-9;

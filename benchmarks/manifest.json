@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "kind": "research-performance-baseline",
+  "applicationAsset": false,
+  "trackedBaseline": "results.json",
+  "retainThroughPhase": 9
+}

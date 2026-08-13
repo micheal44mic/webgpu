@@ -6,11 +6,11 @@ import {
 } from "./engine-cold-storage";
 import { assertShaderCompiled } from "./engine-gpu-utils";
 import { commitHistoryActionAtomically } from "./engine-history-runtime";
-import { invalidateActiveLayerBake } from "./engine-layer-runtime";
+import { invalidateActiveLayerBake } from "./engine-layer-residency-runtime";
 import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits";
 import type { RasterFilterHistoryAction } from "./engine-history-types";
 import type { DirtyRect } from "./engine-stroke-types";
-import { publishMixedScene } from "./engine-vector-text-runtime";
+import { publishMixedScene } from "./engine-vector-text-resources-runtime";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import {
   DEFAULT_RASTER_NOISE_SETTINGS,

@@ -9,7 +9,7 @@ import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits";
 import type { LayerFormat, RasterTransformSnapshot } from "./engine-types";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import { commitHistoryActionAtomically } from "./engine-history-runtime";
-import { publishMixedScene } from "./engine-vector-text-runtime";
+import { publishMixedScene } from "./engine-vector-text-resources-runtime";
 import type { DirtyRect } from "./engine-stroke-types";
 import type {
   RasterTransformHistoryAction,

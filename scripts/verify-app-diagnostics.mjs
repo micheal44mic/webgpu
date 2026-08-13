@@ -1,3 +1,4 @@
+import { readEditorHtml } from "./ui-shell-source.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
@@ -119,7 +120,7 @@ assert.deepEqual(
   "un cursore corrotto non deve rompere il rapporto diagnostico",
 );
 
-const indexSource = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const indexSource = readEditorHtml();
 const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
 const controllerSource = readFileSync(
   new URL("../src/app-diagnostics-controller.ts", import.meta.url),

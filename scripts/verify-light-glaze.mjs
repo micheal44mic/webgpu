@@ -1,3 +1,4 @@
+import { readEditorHtml } from "./ui-shell-source.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { readEngineSource } from "./engine-source.mjs";
@@ -5,7 +6,7 @@ import { readEngineSource } from "./engine-source.mjs";
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const engine = readEngineSource();
 const shaders = read("../src/shaders.ts");
-const html = read("../index.html");
+const html = readEditorHtml();
 
 const section = (source, start, end) => {
   const startIndex = source.indexOf(start);

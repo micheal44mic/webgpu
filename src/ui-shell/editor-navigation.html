@@ -1,0 +1,285 @@
+      <header class="topbar">
+        <nav class="mobile-header" aria-label="Editor navigation">
+          <button
+            id="projectHomeButton"
+            class="mobile-header-action"
+            type="button"
+            aria-label="Back to projects"
+            title="Home"
+          >
+            <span class="mobile-icon-stack" aria-hidden="true">
+              <i data-lucide="house" class="mobile-icon-layer mobile-icon-outline"></i>
+              <i data-lucide="house" class="mobile-icon-layer mobile-icon-face"></i>
+            </span>
+          </button>
+
+          <div class="mobile-header-actions">
+            <button
+              id="mobileToolsMenu"
+              class="mobile-header-action"
+              type="button"
+              aria-label="Open tools menu"
+              aria-controls="mobileToolsSheet"
+              aria-expanded="false"
+              title="Tools"
+            >
+              <span class="mobile-icon-stack" aria-hidden="true">
+                <i data-lucide="sliders-horizontal" class="mobile-icon-layer mobile-icon-outline"></i>
+                <i data-lucide="sliders-horizontal" class="mobile-icon-layer mobile-icon-face"></i>
+              </span>
+            </button>
+            <button
+              id="mobileLayersMenu"
+              class="mobile-header-action"
+              type="button"
+              aria-label="Open layers menu"
+              aria-controls="mobileLayersPanel"
+              aria-expanded="false"
+              title="Layers"
+            >
+              <span class="mobile-icon-stack" aria-hidden="true">
+                <i data-lucide="layers-3" class="mobile-icon-layer mobile-icon-outline"></i>
+                <i data-lucide="layers-3" class="mobile-icon-layer mobile-icon-face"></i>
+              </span>
+            </button>
+            <button
+              id="saveProjectButton"
+              class="mobile-header-action"
+              type="button"
+              aria-label="Save project"
+              aria-keyshortcuts="Control+S Meta+S"
+              title="Save project (Ctrl/⌘+S)"
+            >
+              <span class="mobile-icon-stack" aria-hidden="true">
+                <i data-lucide="save" class="mobile-icon-layer mobile-icon-outline"></i>
+                <i data-lucide="save" class="mobile-icon-layer mobile-icon-face"></i>
+              </span>
+            </button>
+          </div>
+        </nav>
+      </header>
+
+      <aside class="mobile-tool-rail" aria-label="Strumenti rapidi">
+        <label
+          id="mobileBrushColor"
+          class="mobile-tool-action mobile-color-action"
+          title="Colore pennello"
+        >
+          <input
+            id="mobileBrushColorInput"
+            class="mobile-color-input"
+            type="color"
+            value="#ff5b35"
+            aria-label="Scegli il colore del pennello"
+          />
+          <span id="mobileBrushColorSwatch" class="mobile-color-swatch" aria-hidden="true"></span>
+        </label>
+        <button
+          id="mobilePaint"
+          class="mobile-tool-action"
+          type="button"
+          aria-label="Open brush library"
+          aria-controls="mobileBrushLibrarySheet"
+          aria-expanded="false"
+          aria-pressed="true"
+          title="Pennello"
+        >
+          <span class="mobile-icon-stack" aria-hidden="true">
+            <i data-lucide="brush" class="mobile-icon-layer mobile-icon-outline"></i>
+            <i data-lucide="brush" class="mobile-icon-layer mobile-icon-face"></i>
+          </span>
+        </button>
+        <button
+          id="mobileEraser"
+          class="mobile-tool-action"
+          type="button"
+          aria-label="Gomma, non ancora disponibile"
+          aria-pressed="false"
+          title="Gomma"
+          disabled
+        >
+          <span class="mobile-icon-stack" aria-hidden="true">
+            <i data-lucide="eraser" class="mobile-icon-layer mobile-icon-outline"></i>
+            <i data-lucide="eraser" class="mobile-icon-layer mobile-icon-face"></i>
+          </span>
+        </button>
+        <button
+          id="mobileBlend"
+          class="mobile-tool-action"
+          type="button"
+          aria-label="Seleziona Blend"
+          aria-pressed="false"
+          title="Blend"
+        >
+          <span class="mobile-icon-stack" aria-hidden="true">
+            <i data-lucide="blend" class="mobile-icon-layer mobile-icon-outline"></i>
+            <i data-lucide="blend" class="mobile-icon-layer mobile-icon-face"></i>
+          </span>
+        </button>
+        <button
+          id="mobileUndo"
+          class="mobile-tool-action"
+          type="button"
+          aria-label="Annulla ultima azione"
+          aria-keyshortcuts="Control+Z Meta+Z"
+          title="Annulla"
+          disabled
+        >
+          <span class="mobile-icon-stack" aria-hidden="true">
+            <i data-lucide="undo-2" class="mobile-icon-layer mobile-icon-outline"></i>
+            <i data-lucide="undo-2" class="mobile-icon-layer mobile-icon-face"></i>
+          </span>
+        </button>
+        <button
+          id="mobileRedo"
+          class="mobile-tool-action"
+          type="button"
+          aria-label="Ripristina ultima azione"
+          aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z"
+          title="Ripristina"
+          disabled
+        >
+          <span class="mobile-icon-stack" aria-hidden="true">
+            <i data-lucide="redo-2" class="mobile-icon-layer mobile-icon-outline"></i>
+            <i data-lucide="redo-2" class="mobile-icon-layer mobile-icon-face"></i>
+          </span>
+        </button>
+      </aside>
+
+      <aside
+        id="mobileBrushControls"
+        class="mobile-brush-controls"
+        aria-label="Brush controls"
+        aria-hidden="false"
+      >
+        <div id="mobileBrushSizeTrack" class="mobile-brush-control-track">
+          <div class="mobile-brush-control-range">
+            <div
+              id="mobileBrushSizeControl"
+              class="mobile-brush-control"
+              role="slider"
+              tabindex="0"
+              aria-label="Brush size"
+              aria-orientation="vertical"
+              aria-valuemin="1"
+              aria-valuemax="1000"
+              aria-valuenow="96"
+              aria-valuetext="Size 96 px"
+              data-mobile-brush-control="size"
+            >
+              <span class="mobile-brush-control-disc" aria-hidden="true">
+                <span class="mobile-brush-control-value"></span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div id="mobileBrushOpacityTrack" class="mobile-brush-control-track">
+          <div class="mobile-brush-control-range">
+            <div
+              id="mobileBrushOpacityControl"
+              class="mobile-brush-control"
+              role="slider"
+              tabindex="0"
+              aria-label="Brush opacity"
+              aria-orientation="vertical"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="100"
+              aria-valuetext="Opacity 100%"
+              data-mobile-brush-control="opacity"
+            >
+              <span class="mobile-brush-control-disc" aria-hidden="true">
+                <span class="mobile-brush-control-value"></span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div id="mobileBrushStretchTrack" class="mobile-brush-control-track" hidden>
+          <div class="mobile-brush-control-range">
+            <div
+              id="mobileBrushStretchControl"
+              class="mobile-brush-control"
+              role="slider"
+              tabindex="-1"
+              aria-label="Blend stretch"
+              aria-orientation="vertical"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="18"
+              aria-valuetext="Stretch 18%"
+              aria-disabled="true"
+              data-mobile-brush-control="stretch"
+            >
+              <span class="mobile-brush-control-disc" aria-hidden="true">
+                <span class="mobile-brush-control-value"></span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div id="mobileBrushPaintTrack" class="mobile-brush-control-track" hidden>
+          <div class="mobile-brush-control-range">
+            <div
+              id="mobileBrushPaintControl"
+              class="mobile-brush-control"
+              role="slider"
+              tabindex="-1"
+              aria-label="Blend paint"
+              aria-orientation="vertical"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="14"
+              aria-valuetext="Paint 14%"
+              aria-disabled="true"
+              data-mobile-brush-control="paint"
+            >
+              <span class="mobile-brush-control-disc" aria-hidden="true">
+                <span class="mobile-brush-control-value"></span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div id="mobileBrushBlurTrack" class="mobile-brush-control-track" hidden>
+          <div class="mobile-brush-control-range">
+            <div
+              id="mobileBrushBlurControl"
+              class="mobile-brush-control"
+              role="slider"
+              tabindex="-1"
+              aria-label="Blend blur"
+              aria-orientation="vertical"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="0"
+              aria-valuetext="Blur 0%"
+              aria-disabled="true"
+              data-mobile-brush-control="blur"
+            >
+              <span class="mobile-brush-control-disc" aria-hidden="true">
+                <span class="mobile-brush-control-value"></span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <section
+          id="mobileBrushPreview"
+          class="mobile-brush-preview"
+          aria-hidden="true"
+        >
+          <header class="mobile-brush-preview-header">
+            <output id="mobileBrushPreviewLabel">Size 96 px</output>
+          </header>
+          <div class="mobile-brush-preview-body">
+            <canvas
+              id="mobileBrushPreviewCanvas"
+              width="248"
+              height="248"
+              aria-hidden="true"
+            ></canvas>
+          </div>
+        </section>
+      </aside>

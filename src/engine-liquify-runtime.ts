@@ -7,7 +7,7 @@ import {
 import { assertShaderCompiled } from "./engine-gpu-utils";
 import { commitHistoryActionAtomically } from "./engine-history-runtime";
 import type { RasterFilterHistoryAction } from "./engine-history-types";
-import { invalidateActiveLayerBake } from "./engine-layer-runtime";
+import { invalidateActiveLayerBake } from "./engine-layer-residency-runtime";
 import {
   DOCUMENT_HEIGHT,
   DOCUMENT_MAX_EDGE,
@@ -15,7 +15,7 @@ import {
 } from "./engine-limits";
 import type { DirtyRect } from "./engine-stroke-types";
 import type { LayerPoint } from "./engine-types";
-import { publishMixedScene } from "./engine-vector-text-runtime";
+import { publishMixedScene } from "./engine-vector-text-resources-runtime";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import {
   planMemoryAdmission,

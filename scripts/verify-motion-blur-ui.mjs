@@ -1,8 +1,9 @@
+import { readEditorHtml, readEditorStyleSource } from "./ui-shell-source.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
-const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+const html = readEditorHtml();
+const styles = readEditorStyleSource();
 const sheet = readFileSync(
   new URL("../src/mobile-motion-blur-sheet.ts", import.meta.url),
   "utf8",

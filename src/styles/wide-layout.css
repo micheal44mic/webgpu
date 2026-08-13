@@ -1,0 +1,110 @@
+/* La UI e la logica restano identiche sui display grandi; cambia soltanto la
+   disposizione. I bottom sheet diventano dock laterali sovrapposti al canvas,
+   mentre barra, strumenti rapidi e controlli pennello mantengono gli stessi
+   elementi, stati e target da 44 px del telefono. */
+@media (min-width: 700px) {
+  .topbar {
+    height: 52px;
+    padding: 0 12px;
+    border-bottom: 1px solid #252932;
+    background: rgb(13 15 19 / 96%);
+    backdrop-filter: blur(14px);
+  }
+
+  .mobile-header-action:not(:disabled):hover,
+  .mobile-tool-action:not(:disabled):hover {
+    background: #20242c;
+  }
+
+  .mobile-tool-rail {
+    top: 64px;
+    bottom: 12px;
+    left: 12px;
+    border: 1px solid #252932;
+    border-radius: 12px;
+    box-shadow: 0 12px 32px rgb(0 0 0 / 28%);
+  }
+
+  .mobile-brush-controls {
+    top: 64px;
+    right: 12px;
+    bottom: 12px;
+  }
+
+  .mobile-tools-sheet {
+    top: 64px;
+    right: 12px;
+    bottom: 12px;
+    left: auto;
+    width: min(420px, calc(100vw - 128px));
+    border: 1px solid #2b303a;
+    border-radius: 14px;
+    box-shadow: 0 18px 46px rgb(0 0 0 / 42%);
+    transform: translate3d(calc(100% + 16px), 0, 0);
+    transition:
+      transform 180ms cubic-bezier(0.22, 0.72, 0.24, 1),
+      visibility 0s linear 180ms;
+  }
+
+  .mobile-tools-sheet.is-open {
+    transform: translate3d(0, 0, 0);
+    transition: transform 180ms cubic-bezier(0.22, 0.72, 0.24, 1);
+  }
+
+  .mobile-tools-sheet-handle,
+  .mobile-tools-sheet-handle:hover,
+  .mobile-tools-sheet-handle:active {
+    border-radius: 14px 14px 0 0;
+  }
+
+  .mobile-tools-sheet-content,
+  .mobile-brush-library-content {
+    padding-bottom: 16px;
+  }
+
+  .mobile-tool-settings-shell,
+  .mobile-raster-effect-shell,
+  .mobile-liquify-shell,
+  .mobile-noise-shell {
+    height: auto;
+    min-height: 0;
+    flex: 1 1 auto;
+  }
+
+  .mobile-stroke-sheet-content {
+    overflow: hidden;
+  }
+
+  .mobile-stroke-controls-region {
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .mobile-liquify-scroll,
+  .mobile-noise-scroll {
+    padding-bottom: 14px;
+  }
+
+  .mobile-layers-panel {
+    top: 64px;
+    right: 12px;
+    bottom: 12px;
+    width: min(280px, calc(100vw - 128px));
+    max-height: calc(100% - 76px);
+    padding-right: 0;
+    margin-block: 0;
+    border: 1px solid #2b303a;
+    border-radius: 14px;
+    box-shadow: 0 18px 46px rgb(0 0 0 / 42%);
+    transform: translate3d(calc(100% + 16px), 0, 0);
+  }
+
+  .mobile-layers-toolbar {
+    justify-content: center;
+  }
+
+  .mobile-layer-list {
+    flex: 1 1 auto;
+  }
+}

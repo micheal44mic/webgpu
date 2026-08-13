@@ -1,3 +1,4 @@
+import { readEditorHtml } from "./ui-shell-source.mjs";
 // Mutazioni strutturali di livello: creazione e cancellazione annullabili.
 //
 // Le due direzioni sono ricalcate su `raster-import`, che era gia' l'unica
@@ -12,7 +13,7 @@ import { readEngineSource } from "./engine-source.mjs";
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const engine = readEngineSource();
 const structure = read("../src/engine-layer-structure-runtime.ts");
-const html = read("../index.html");
+const html = readEditorHtml();
 const main = read("../src/main.ts");
 const layerPanel = read("../src/layer-panel-controller.ts");
 const types = read("../src/engine-history-types.ts");

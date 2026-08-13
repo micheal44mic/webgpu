@@ -15,19 +15,16 @@ import {
   VECTOR_TEXT_OUTLINE_STRATEGY,
   VECTOR_TEXT_SINGLE_SHADOW_STRATEGY,
   vectorTextBlockShadowLocalVector,
-  vectorTextInnerShadowLocalVector,
   vectorTextSingleShadowLocalVector,
   type VectorTextOutlineJoin,
 } from "./scene-vector-effects";
 import {
   cloneVectorTextNode,
   type VectorTextNode,
-  type VectorTextNodeSeed,
 } from "./scene-text-model";
 import {
   cloneVectorSvgNode,
   type VectorSvgNode,
-  type VectorSvgNodeSeed,
 } from "./scene-svg-model";
 import type { RasterImageNode } from "./scene-image-model";
 
@@ -36,17 +33,14 @@ import {
 } from "./vector-text-shader";
 import type {
   VectorTextGpuDraw,
-  VectorTextGpuGradient,
   VectorTextPlacement,
   VectorTextViewState,
 } from "./vector-text-types";
 import {
   VectorTextFontGeometryRegistry,
-  type VectorTextOutlineGeometry,
 } from "./vector-text-font-geometry";
 import {
   VECTOR_TEXT_GPU_GEOMETRY_STRATEGY,
-  type VectorTextGpuMeshData,
 } from "./vector-text-effect-geometry";
 import {
   VectorTextEffectCompilerClient,
@@ -55,7 +49,6 @@ import {
 import {
   buildVectorTextSlugData,
   vectorTextPathRevision,
-  type VectorTextSlugData,
 } from "./vector-text-slug";
 import {
   vectorTextLodForSigma,
@@ -65,7 +58,6 @@ import {
 } from "./vector-text-slug-gpu-shader";
 import {
   VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY,
-  planVectorTextSingleShadowBlur,
 } from "./vector-text-single-shadow";
 import {
   VECTOR_TEXT_ADAPTIVE_ZOOM_SETTLE_MS,
@@ -80,7 +72,6 @@ import {
 import {
   VECTOR_TEXT_TRANSFORM_STRATEGY,
   defaultVectorTextDistortPoints,
-  moveVectorTextDistortPoint,
   type VectorTextDistortPoints,
   type VectorTextTransformType,
 } from "./vector-text-transform.ts";
@@ -93,16 +84,11 @@ import type {
   VectorTransformActionSnapshot,
 } from "./vector-editor-contract";
 import {
-  closestSceneControlPoint,
-  hitSceneTransformHandle,
-  hitsSceneTransformBody,
-  sceneLayerToLocal,
   scenePointDistance,
   type ScenePoint,
   type SceneTransformHandle,
 } from "./scene-transform-geometry";
 import {
-  gpuLinearColor,
   sameGpuLinearColor,
   svgGradientGpuData,
 } from "./scene-gpu-paint";
@@ -122,16 +108,41 @@ import {
 import {
   clearSceneInteractionOverlay,
   renderSceneInteractionOverlay,
-  sceneDistortCanvasPoints,
   sceneOverlayCorners,
-  sceneOverlayRotationHandle,
-  SCENE_TRANSFORM_HIT_RADIUS_CSS_PX,
 } from "./scene-interaction-overlay";
+import { resolveMixedSceneDom } from "./mixed-scene-dom";
+import {
+  currentMixedSceneTouchGesture,
+  hitsMixedSceneTransformBody,
+  mixedSceneDistortPoint,
+  mixedSceneEventCanvasPoint,
+  mixedSceneTransformHandle,
+  mixedSceneTransformUpdate,
+  movedMixedSceneDistortPoints,
+  type MixedSceneActiveInteraction as ActiveInteraction,
+  type MixedSceneInteractionMode as InteractionMode,
+  type MixedSceneTouchNavigationGesture as TouchNavigationGesture,
+} from "./mixed-scene-interaction-runtime";
+import {
+  planMixedSceneMeshDraw,
+  planMixedSceneSlugBlurDraw,
+  planMixedSceneSlugDraw,
+  planMixedSceneSlugInnerShadowDraw,
+  planMixedSceneSvgBlurDraw,
+  retargetMixedSceneDraws,
+  type MixedSceneTextGeometry as CachedTextGeometry,
+} from "./mixed-scene-render-planner";
+import { runMixedSceneVectorRasterHistoryProbe } from "./mixed-scene-history-probe";
+import {
+  beginMixedSceneVectorTransformHistory,
+  createMixedSceneDefaultSvgSeed,
+  createMixedSceneDefaultTextSeed,
+  runMixedSceneTransformHistoryAction,
+} from "./mixed-scene-command-history-runtime";
 import type {
   MixedSceneControllerOptions,
   MixedSceneDiagnostics,
   MixedSceneHost,
-  VectorRasterHistoryGpuProbe,
   VectorRasterHistoryGpuTestReport,
   VectorRasterizationResult,
   VectorTextClippedRefreshPolicy,
@@ -155,37 +166,7 @@ interface TextMetricsBox {
   baseline: number;
 }
 
-interface CachedTextGeometry {
-  outlineKey: string;
-  outline: VectorTextOutlineGeometry;
-  sourceRevision: string;
-  slug: VectorTextSlugData;
-}
-
-type InteractionMode = "move" | "scale" | "rotate" | "pan" | "distort";
-
-interface ActiveInteraction {
-  pointerId: number;
-  mode: InteractionMode;
-  startClient: ScenePoint;
-  startLayer: ScenePoint;
-  startModel: TransformSceneNode;
-  startDistance: number;
-  startAngle: number;
-  distortPointIndex: number | null;
-  openedTransformSession: boolean;
-}
-
-interface TouchNavigationGesture {
-  centerX: number;
-  centerY: number;
-  distance: number;
-  angle: number;
-}
-
 const MEBIBYTE_BYTES = 1024 * 1024;
-const MINIMUM_SCALE = 0.05;
-const MAXIMUM_SCALE = 20;
 const FRAME_SAMPLE_LIMIT = 180;
 const OUTLINE_JOIN_LABELS: Readonly<Record<VectorTextOutlineJoin, string>> = {
   bevel: "squadrata",
@@ -193,40 +174,8 @@ const OUTLINE_JOIN_LABELS: Readonly<Record<VectorTextOutlineJoin, string>> = {
   round: "tonda",
 };
 
-function requiredElement<ElementType extends HTMLElement>(
-  root: ParentNode,
-  id: string,
-): ElementType {
-  const rootElement = root as ParentNode & Partial<HTMLElement>;
-  const found = rootElement.id === id
-    ? rootElement as HTMLElement
-    : root.querySelector<HTMLElement>(`#${id}`);
-  if (!found) {
-    throw new Error(`Elemento #${id} mancante per la scena testo/raster.`);
-  }
-  return found as ElementType;
-}
-
 function vectorRasterFormatLabel(format: LayerFormat): string {
   return format === "rgba16float" ? "RGBA16F lineare" : "RGBA8 lineare";
-}
-
-function uint8ArraysEqual(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.byteLength !== right.byteLength) return false;
-  for (let index = 0; index < left.byteLength; index += 1) {
-    if (left[index] !== right[index]) return false;
-  }
-  return true;
-}
-
-function countNonZeroRgba16fAlpha(pixels: Uint8Array): number {
-  if (pixels.byteLength % 8 !== 0) return 0;
-  let count = 0;
-  for (let offset = 6; offset < pixels.byteLength; offset += 8) {
-    const alphaBits = pixels[offset] | (pixels[offset + 1] << 8);
-    count += Number((alphaBits & 0x7fff) !== 0);
-  }
-  return count;
 }
 
 function percentile(values: readonly number[], ratio: number): number {
@@ -335,37 +284,22 @@ export class MixedSceneController {
   ) {
     this.host = host;
     this.browser = options.browser;
-    this.presentationCanvas = requiredElement<HTMLCanvasElement>(
-      options.root,
-      "vectorTextPresentationCanvas",
-    );
-    this.interactionCanvas = requiredElement<HTMLCanvasElement>(
-      options.root,
-      "vectorTextInteractionCanvas",
-    );
-    this.textRasterStatus = requiredElement<HTMLElement>(
-      options.root,
-      "vectorTextRasterStatus",
-    );
-    this.svgFileInput = requiredElement<HTMLInputElement>(options.root, "vectorSvgFileInput");
-    this.svgImportStatus = requiredElement<HTMLElement>(options.root, "vectorSvgImportStatus");
-    this.imageFileInput = requiredElement<HTMLInputElement>(options.root, "rasterImageFileInput");
-    this.imageImportStatus = requiredElement<HTMLElement>(options.root, "rasterImageImportStatus");
-    this.transformCommitBar = requiredElement<HTMLElement>(options.root, "transformCommitBar");
-    this.transformCommitLabel = requiredElement<HTMLElement>(options.root, "transformCommitLabel");
-    this.transformApplyButton = requiredElement<HTMLButtonElement>(options.root, "transformApply");
-    this.transformCancelButton = requiredElement<HTMLButtonElement>(options.root, "transformCancel");
-    this.status = requiredElement<HTMLElement>(options.root, "vectorTextStatus");
+    const dom = resolveMixedSceneDom(options.root);
+    this.presentationCanvas = dom.presentationCanvas;
+    this.interactionCanvas = dom.interactionCanvas;
+    this.interactionContext = dom.interactionContext;
+    this.textRasterStatus = dom.textRasterStatus;
+    this.svgFileInput = dom.svgFileInput;
+    this.svgImportStatus = dom.svgImportStatus;
+    this.imageFileInput = dom.imageFileInput;
+    this.imageImportStatus = dom.imageImportStatus;
+    this.transformCommitBar = dom.transformCommitBar;
+    this.transformCommitLabel = dom.transformCommitLabel;
+    this.transformApplyButton = dom.transformApplyButton;
+    this.transformCancelButton = dom.transformCancelButton;
+    this.status = dom.status;
     this.clippedRefreshPolicy = options.clippedRefreshPolicy ?? "during-gesture";
     this.onEditorStateChange = options.onEditorStateChange;
-    const interactionContext = this.interactionCanvas.getContext("2d", {
-      alpha: true,
-      desynchronized: true,
-    });
-    if (!interactionContext) {
-      throw new Error("Canvas2D non disponibile per l'overlay di interazione testo.");
-    }
-    this.interactionContext = interactionContext;
     this.effectCompiler = new VectorTextEffectCompilerClient(() => {
       this.handleEffectResourceReady();
     });
@@ -460,11 +394,11 @@ export class MixedSceneController {
     this.transformCommitBusy = true;
     this.updateTransformCommitUi();
     try {
-      if (rasterSession) {
-        await this.host.commitRasterLayerTransform();
-      } else {
-        this.host.commitVectorHistoryEdit();
-      }
+      await runMixedSceneTransformHistoryAction(
+        this.host,
+        rasterSession ? "raster" : "vector",
+        "apply",
+      );
       this.transformSessionOpen = false;
       this.transformSessionKind = null;
       this.rasterTransformRecoveryOnly = false;
@@ -499,12 +433,11 @@ export class MixedSceneController {
     this.transformCommitBusy = true;
     this.updateTransformCommitUi();
     try {
-      const cancelled = rasterSession
-        ? await this.host.cancelRasterLayerTransform()
-        : await this.host.cancelVectorHistoryEdit();
-      if (!cancelled) {
-        throw new Error("Nessuna trasformazione aperta da annullare.");
-      }
+      await runMixedSceneTransformHistoryAction(
+        this.host,
+        rasterSession ? "raster" : "vector",
+        "cancel",
+      );
       this.transformSessionOpen = false;
       this.transformSessionKind = null;
       this.rasterTransformRecoveryOnly = false;
@@ -922,7 +855,12 @@ export class MixedSceneController {
       const textCount =
         this.snapshot?.items.filter((item) => item.kind === "text").length ?? 0;
       await this.host.addVectorTextNode(
-        this.defaultSeed(textCount, color),
+        createMixedSceneDefaultTextSeed(
+          this.host.documentWidth,
+          this.host.documentHeight,
+          textCount,
+          color,
+        ),
         `Testo ${textCount + 1}`,
       );
     });
@@ -939,7 +877,12 @@ export class MixedSceneController {
   resetSelectedText(): void {
     const node = this.selectedTextNode();
     if (!node || this.sceneOperationBusy || this.transformSessionOpen) return;
-    this.updateSelectedNode(this.defaultSeed(Math.max(0, node.id - 1), node.color));
+    this.updateSelectedNode(createMixedSceneDefaultTextSeed(
+      this.host.documentWidth,
+      this.host.documentHeight,
+      Math.max(0, node.id - 1),
+      node.color,
+    ));
   }
 
   setSelectedSvgPaintColor(index: number, color: string): void {
@@ -980,169 +923,23 @@ export class MixedSceneController {
     if (this.sceneOperationBusy || this.transformSessionOpen) {
       throw new Error("Concludi prima l’operazione vettoriale corrente.");
     }
-    const initialScene = this.host.getMixedSceneSnapshot();
-    const initialHistory = this.host.getHistoryState();
-    const initialRasters = initialScene?.items.filter((item) => item.kind === "raster") ?? [];
-    if (
-      !initialScene
-      || initialRasters.length !== 1
-      || initialRasters[0].rasterHasContent
-      || initialHistory.actionCount !== 0
-      || initialHistory.cursor !== 0
-    ) {
-      throw new Error(
-        "Il test raster vettoriale richiede una pagina dev nuova con un solo raster vuoto.",
-      );
-    }
-
-    const auditWidth = Math.min(1536, this.host.documentWidth);
-    const auditHeight = Math.min(1024, this.host.documentHeight);
-    const auditRect = {
-      x: Math.floor((this.host.documentWidth - auditWidth) * 0.5),
-      y: Math.floor((this.host.documentHeight - auditHeight) * 0.5),
-      width: auditWidth,
-      height: auditHeight,
-    };
-    const refreshScene = (): MixedSceneSnapshot => {
-      const snapshot = this.host.getMixedSceneSnapshot();
-      if (!snapshot) throw new Error("Scena mista non disponibile durante il test.");
-      this.syncScene(snapshot);
-      return snapshot;
-    };
-    const readBackground = async (
-      snapshot: MixedSceneSnapshot,
-    ): Promise<Map<number, Uint8Array>> => {
-      const result = new Map<number, Uint8Array>();
-      for (const item of snapshot.items) {
-        if (item.kind !== "raster") continue;
-        result.set(
-          item.rasterLayerId,
-          await this.host.readLayerPixels(auditRect, item.rasterLayerIndex),
-        );
-      }
-      return result;
-    };
-
-    const runProbe = async (
-      sourceKind: "text" | "svg",
-    ): Promise<VectorRasterHistoryGpuProbe> => {
-      let vectorKey: `text:${number}` | `svg:${number}`;
-      if (sourceKind === "text") {
-        const seed = {
-          ...this.defaultSeed(0, "#334455"),
-          text: "RGBA16F",
-          fontSize: 280,
-          x: this.host.documentWidth * 0.5,
-          y: this.host.documentHeight * 0.5,
-        };
-        const node = await this.host.addVectorTextNode(seed, "Test RGBA16F testo");
-        vectorKey = `text:${node.id}`;
-      } else {
-        const documentValue = parseVectorSvg(
-          '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
-          + '<path fill="#4466aa" d="M32 64H480V448H32Z"/>'
-          + '<circle fill="#dd8844" cx="256" cy="256" r="112"/>'
-          + "</svg>",
-          "regression-rgba16f.svg",
-        );
-        const node = await this.host.addVectorSvgNode(
-          this.defaultSvgSeed(documentValue),
-          "Test RGBA16F SVG",
-        );
-        vectorKey = `svg:${node.id}`;
-      }
-
-      const beforeRasterization = refreshScene();
-      const backgroundBefore = await readBackground(beforeRasterization);
-      const result = sourceKind === "text"
-        ? await this.rasterizeSelectedText()
-        : await this.rasterizeSelectedSvg();
-      if (!result) {
-        throw new Error(`Rasterizzazione ${sourceKind} non completata dal test WebGPU.`);
-      }
-      await this.host.waitForIdle();
-      const rasterizedScene = refreshScene();
-      const generated = rasterizedScene.items.find(
-        (item) => item.kind === "raster" && item.rasterLayerId === result.layerId,
-      );
-      if (!generated || generated.kind !== "raster" || !generated.rasterContentBounds) {
-        throw new Error(`Raster ${sourceKind} generato privo di bounds autorevoli.`);
-      }
-      const rawRect = generated.rasterContentBounds;
-      const rawBeforeUndo = await this.host.readLayerPixels(
-        rawRect,
-        generated.rasterLayerIndex,
-      );
-      const rawPixels = rawRect.width * rawRect.height;
-      const rawBytesPerPixel = rawPixels > 0 ? rawBeforeUndo.byteLength / rawPixels : 0;
-
-      const undoReturned = await this.host.undo();
-      await this.host.waitForIdle();
-      const undoScene = refreshScene();
-      const undoRestoredVector = undoScene.items.some((item) => item.key === vectorKey)
-        && !undoScene.items.some(
-          (item) => item.kind === "raster" && item.rasterLayerId === result.layerId,
-        );
-      let undoPreservedBackgroundBytes = true;
-      for (const [layerId, before] of backgroundBefore) {
-        const item = undoScene.items.find(
-          (candidate) => candidate.kind === "raster" && candidate.rasterLayerId === layerId,
-        );
-        if (!item || item.kind !== "raster") {
-          undoPreservedBackgroundBytes = false;
-          break;
-        }
-        const after = await this.host.readLayerPixels(auditRect, item.rasterLayerIndex);
-        if (!uint8ArraysEqual(before, after)) {
-          undoPreservedBackgroundBytes = false;
-          break;
-        }
-      }
-
-      const redoReturned = await this.host.redo();
-      await this.host.waitForIdle();
-      const redoScene = refreshScene();
-      const redone = redoScene.items.find(
-        (item) => item.kind === "raster" && item.rasterLayerId === result.layerId,
-      );
-      const redoRestoredRaster = Boolean(redone && redone.kind === "raster");
-      const rawAfterRedo = redone && redone.kind === "raster"
-        ? await this.host.readLayerPixels(rawRect, redone.rasterLayerIndex)
-        : new Uint8Array();
-
-      return {
-        sourceKind,
-        format: result.format,
-        seedFormat: result.seedFormat,
-        rawByteLength: rawBeforeUndo.byteLength,
-        rawBytesPerPixel,
-        nonZeroAlphaPixels: countNonZeroRgba16fAlpha(rawBeforeUndo),
-        undoReturned,
-        undoRestoredVector,
-        undoPreservedBackgroundBytes,
-        redoReturned,
-        redoRestoredRaster,
-        redoRestoredRawBytesExactly: uint8ArraysEqual(rawBeforeUndo, rawAfterRedo),
-      };
-    };
-
-    const probes = [await runProbe("text"), await runProbe("svg")];
-    return {
-      probes,
-      passed: probes.every((probe) =>
-        probe.format === "rgba16float"
-        && probe.seedFormat === "rgba16float"
-        && probe.rawByteLength > 0
-        && probe.rawBytesPerPixel === 8
-        && probe.nonZeroAlphaPixels > 0
-        && probe.undoReturned
-        && probe.undoRestoredVector
-        && probe.undoPreservedBackgroundBytes
-        && probe.redoReturned
-        && probe.redoRestoredRaster
-        && probe.redoRestoredRawBytesExactly
+    return await runMixedSceneVectorRasterHistoryProbe({
+      host: this.host,
+      syncScene: (snapshot) => this.syncScene(snapshot),
+      defaultTextSeed: (index, color) => createMixedSceneDefaultTextSeed(
+        this.host.documentWidth,
+        this.host.documentHeight,
+        index,
+        color,
       ),
-    };
+      defaultSvgSeed: (documentValue) => createMixedSceneDefaultSvgSeed(
+        this.host.documentWidth,
+        this.host.documentHeight,
+        documentValue,
+      ),
+      rasterizeSelectedText: () => this.rasterizeSelectedText(),
+      rasterizeSelectedSvg: () => this.rasterizeSelectedSvg(),
+    });
   }
 
   setSelectedTextTransform(transformType: VectorTextTransformType): void {
@@ -1199,7 +996,11 @@ export class MixedSceneController {
 
   getTextEditorSnapshot(): VectorTextEditorSnapshot {
     const node = this.selectedTextNode();
-    const defaults = node ?? this.defaultSeed(0);
+    const defaults = node ?? createMixedSceneDefaultTextSeed(
+      this.host.documentWidth,
+      this.host.documentHeight,
+      0,
+    );
     const locked = this.sceneOperationBusy || this.transformSessionOpen;
     return {
       selected: node !== null,
@@ -1407,83 +1208,6 @@ export class MixedSceneController {
     };
   }
 
-  private defaultSeed(index: number, colorOverride?: string): VectorTextNodeSeed {
-    const color = colorOverride && /^#[0-9a-f]{6}$/i.test(colorOverride)
-      ? colorOverride.toLowerCase()
-      : index === 0
-        ? "#111111"
-        : "#f47c5d";
-    return {
-      text: index === 0 ? "STREETWEAR" : `TESTO ${index + 1}`,
-      fontFamily: "Anton",
-      fontSize: 360,
-      color,
-      transformType: "none",
-      transformCurve: 80,
-      circleRadiusPercent: 50,
-      circleInverted: false,
-      distortPoints: null,
-      outlineWidth: 0,
-      outlineColor: "#111111",
-      outlineJoin: "round",
-      blockShadowEnabled: false,
-      blockShadowColor: "#727272",
-      blockShadowOpacity: 1,
-      blockShadowOffset: 23,
-      blockShadowAngle: -104,
-      blockShadowOutlineWidth: 0,
-      singleShadowEnabled: false,
-      singleShadowColor: "#727272",
-      singleShadowOpacity: 1,
-      singleShadowOffset: 54,
-      singleShadowAngle: -180,
-      singleShadowBlur: 6,
-      innerShadowEnabled: false,
-      innerShadowColor: "#000000",
-      innerShadowOpacity: 0.65,
-      innerShadowOffset: 12,
-      innerShadowAngle: -135,
-      innerShadowBlur: 12,
-      x: this.host.documentWidth * 0.5 + index * 90,
-      y: this.host.documentHeight * 0.5 + index * 110,
-      scale: 1,
-      rotation: 0,
-    };
-  }
-
-  private defaultSvgSeed(documentValue: ReturnType<typeof parseVectorSvg>): VectorSvgNodeSeed {
-    const longestSide = Math.max(1, documentValue.width, documentValue.height);
-    return {
-      document: documentValue,
-      paintColors: documentValue.paints.map((paint) => paint.color),
-      outlineWidth: 0,
-      outlineColor: "#111111",
-      outlineJoin: "round",
-      blockShadowEnabled: false,
-      blockShadowColor: "#727272",
-      blockShadowOpacity: 1,
-      blockShadowOffset: 23,
-      blockShadowAngle: -104,
-      blockShadowOutlineWidth: 0,
-      singleShadowEnabled: false,
-      singleShadowColor: "#000000",
-      singleShadowOpacity: 0.55,
-      singleShadowOffset: 24,
-      singleShadowAngle: -135,
-      singleShadowBlur: 12,
-      innerShadowEnabled: false,
-      innerShadowColor: "#000000",
-      innerShadowOpacity: 0.55,
-      innerShadowOffset: 12,
-      innerShadowAngle: -135,
-      innerShadowBlur: 12,
-      x: this.host.documentWidth * 0.5,
-      y: this.host.documentHeight * 0.5,
-      scale: Math.min(2, 1200 / longestSide),
-      rotation: 0,
-    };
-  }
-
   private setSvgImportStatus(message: string, failed = false): void {
     this.svgImportStatus.textContent = message;
     this.svgImportStatus.classList.toggle("error", failed);
@@ -1507,7 +1231,11 @@ export class MixedSceneController {
     this.syncControlsFromSelection(this.selectedVectorNode());
     try {
       await this.host.addVectorSvgNode(
-        this.defaultSvgSeed(documentValue),
+        createMixedSceneDefaultSvgSeed(
+          this.host.documentWidth,
+          this.host.documentHeight,
+          documentValue,
+        ),
         documentValue.sourceName,
       );
       const sourceMiB = documentValue.sourceBytes / MEBIBYTE_BYTES;
@@ -2312,72 +2040,6 @@ export class MixedSceneController {
     );
   }
 
-  private svgBlurDraw(
-    node: Readonly<VectorSvgNode>,
-    sourceMesh: VectorTextGpuMeshData,
-    view: VectorTextViewState,
-    kind: "outer" | "inner",
-  ): VectorTextGpuDraw {
-    const blur = kind === "outer" ? node.singleShadowBlur : node.innerShadowBlur;
-    const requestedPixelScale = Math.max(1 / 32, Math.abs(view.zoom * node.scale));
-    const bucketScale = 2 ** Math.ceil(Math.log2(requestedPixelScale));
-    const plan = planVectorTextSingleShadowBlur(node.document.bounds, blur, bucketScale);
-    const vector = kind === "outer"
-      ? vectorTextSingleShadowLocalVector(node.singleShadowOffset, node.singleShadowAngle)
-      : vectorTextInnerShadowLocalVector(node.innerShadowOffset, node.innerShadowAngle);
-    const blurKey = [
-      "vector-svg-gpu-blur-v1",
-      node.id,
-      sourceMesh.revision,
-      blur.toFixed(4),
-      plan.width,
-      plan.height,
-      plan.scale.toFixed(8),
-      plan.sigmaPixels.toFixed(8),
-      plan.radius,
-    ].join(":");
-    const common = {
-      meshKey: `svg:${node.id}:silhouette-fill`,
-      mesh: sourceMesh,
-      blurKey,
-      blurBounds: [
-        plan.bounds[0],
-        plan.bounds[1],
-        plan.bounds[2],
-        plan.bounds[3],
-      ] as const,
-      blurWidth: plan.width,
-      blurHeight: plan.height,
-      blurScale: plan.scale,
-      blurSigmaPixels: plan.sigmaPixels,
-      blurRadius: plan.radius,
-      x: node.x,
-      y: node.y,
-      scale: node.scale,
-      rotation: node.rotation,
-    } as const;
-    if (kind === "outer") {
-      return {
-        mode: "mesh-blur",
-        ...common,
-        localOffsetX: vector.x,
-        localOffsetY: vector.y,
-        color: gpuLinearColor(node.singleShadowColor),
-        opacity: Math.min(1, Math.max(0, node.opacity * node.singleShadowOpacity)),
-      };
-    }
-    return {
-      mode: "mesh-inner-shadow-blur",
-      ...common,
-      localOffsetX: sourceMesh.originX,
-      localOffsetY: sourceMesh.originY,
-      sampleOffsetX: vector.x,
-      sampleOffsetY: vector.y,
-      color: gpuLinearColor(node.innerShadowColor),
-      opacity: Math.min(1, Math.max(0, node.opacity * node.innerShadowOpacity)),
-    };
-  }
-
   private appendGpuDrawsForSvgNode(
     draws: VectorTextGpuDraw[],
     node: Readonly<VectorSvgNode>,
@@ -2404,13 +2066,13 @@ export class MixedSceneController {
 
     if (node.singleShadowEnabled && node.singleShadowOpacity > 0 && silhouetteMesh) {
       if (node.singleShadowBlur > 0) {
-        draws.push(this.svgBlurDraw(node, silhouetteMesh, view, "outer"));
+        draws.push(planMixedSceneSvgBlurDraw(node, silhouetteMesh, view, "outer"));
       } else {
         const vector = vectorTextSingleShadowLocalVector(
           node.singleShadowOffset,
           node.singleShadowAngle,
         );
-        draws.push(this.meshDraw(
+        draws.push(planMixedSceneMeshDraw(
           node,
           `svg:${node.id}:silhouette-fill`,
           silhouetteMesh,
@@ -2447,7 +2109,7 @@ export class MixedSceneController {
         );
         allEffectsReady = allEffectsReady && effectIsReady(result);
         if (result.mesh) {
-          draws.push(this.meshDraw(
+          draws.push(planMixedSceneMeshDraw(
             node,
             `svg:${node.id}:block-outline`,
             result.mesh,
@@ -2469,7 +2131,7 @@ export class MixedSceneController {
         );
         allEffectsReady = allEffectsReady && effectIsReady(result);
         if (result.mesh) {
-          draws.push(this.meshDraw(
+          draws.push(planMixedSceneMeshDraw(
             node,
             `svg:${node.id}:block`,
             result.mesh,
@@ -2510,7 +2172,7 @@ export class MixedSceneController {
       );
       allEffectsReady = allEffectsReady && effectIsReady(result);
       if (result.mesh) {
-        draws.push(this.meshDraw(
+        draws.push(planMixedSceneMeshDraw(
           node,
           `svg:${node.id}:${slot}`,
           result.mesh,
@@ -2539,7 +2201,7 @@ export class MixedSceneController {
           const gradient = paint.gradient && color.toLowerCase() === paint.color.toLowerCase()
             ? svgGradientGpuData(paint.gradient)
             : undefined;
-          draws.push(this.meshDraw(
+          draws.push(planMixedSceneMeshDraw(
             node,
             `svg:${node.id}:paint:${index}:fill`,
             result.mesh,
@@ -2554,218 +2216,10 @@ export class MixedSceneController {
     }
 
     if (node.innerShadowEnabled && node.innerShadowOpacity > 0 && silhouetteMesh) {
-      draws.push(this.svgBlurDraw(node, silhouetteMesh, view, "inner"));
+      draws.push(planMixedSceneSvgBlurDraw(node, silhouetteMesh, view, "inner"));
     }
     return allEffectsReady;
   }
-  private slugDraw(
-    node: Readonly<VectorTextNode>,
-    meshKey: string,
-    slug: VectorTextSlugData,
-    color: string,
-    opacity: number,
-    localOffsetX = 0,
-    localOffsetY = 0,
-  ): VectorTextGpuDraw {
-    return {
-      mode: "slug-direct",
-      meshKey,
-      slug,
-      x: node.x,
-      y: node.y,
-      scale: node.scale,
-      rotation: node.rotation,
-      localOffsetX: slug.originX + localOffsetX,
-      localOffsetY: slug.originY + localOffsetY,
-      color: gpuLinearColor(color),
-      opacity: Math.min(1, Math.max(0, opacity)),
-    };
-  }
-
-  private meshDraw(
-    node: Readonly<VectorSceneNode>,
-    meshKey: string,
-    mesh: VectorTextGpuMeshData,
-    color: string,
-    opacity: number,
-    visualOffsetX = 0,
-    visualOffsetY = 0,
-    gradient?: VectorTextGpuGradient,
-  ): VectorTextGpuDraw {
-    return {
-      mode: "mesh-direct",
-      meshKey,
-      mesh,
-      x: node.x,
-      y: node.y,
-      scale: node.scale,
-      rotation: node.rotation,
-      localOffsetX: mesh.originX + visualOffsetX,
-      localOffsetY: mesh.originY + visualOffsetY,
-      color: gpuLinearColor(color),
-      opacity: Math.min(1, Math.max(0, opacity)),
-      gradient,
-    };
-  }
-
-  private slugBlurDraw(
-    node: Readonly<VectorTextNode>,
-    geometry: CachedTextGeometry,
-    view: VectorTextViewState,
-  ): VectorTextGpuDraw {
-    const requestedPixelScale = Math.max(
-      1 / 32,
-      Math.abs(view.zoom * node.scale),
-    );
-    const bucketScale = 2 ** Math.ceil(Math.log2(requestedPixelScale));
-    const plan = planVectorTextSingleShadowBlur(
-      {
-        left: geometry.outline.inkLeft,
-        top: geometry.outline.inkTop,
-        right: geometry.outline.inkRight,
-        bottom: geometry.outline.inkBottom,
-      },
-      node.singleShadowBlur,
-      bucketScale,
-    );
-    const vector = vectorTextSingleShadowLocalVector(
-      node.singleShadowOffset,
-      node.singleShadowAngle,
-    );
-    const blurKey = [
-      "vector-text-gpu-blur-v1",
-      node.id,
-      geometry.sourceRevision,
-      node.singleShadowBlur.toFixed(4),
-      plan.width,
-      plan.height,
-      plan.scale.toFixed(8),
-      plan.sigmaPixels.toFixed(8),
-      plan.radius,
-    ].join(":");
-    return {
-      mode: "slug-blur",
-      meshKey: `text:${node.id}:slug`,
-      slug: geometry.slug,
-      blurKey,
-      blurBounds: [
-        plan.bounds[0],
-        plan.bounds[1],
-        plan.bounds[2],
-        plan.bounds[3],
-      ],
-      blurWidth: plan.width,
-      blurHeight: plan.height,
-      blurScale: plan.scale,
-      blurSigmaPixels: plan.sigmaPixels,
-      blurRadius: plan.radius,
-      x: node.x,
-      y: node.y,
-      scale: node.scale,
-      rotation: node.rotation,
-      localOffsetX: vector.x,
-      localOffsetY: vector.y,
-      color: gpuLinearColor(node.singleShadowColor),
-      opacity: Math.min(
-        1,
-        Math.max(0, node.opacity * node.singleShadowOpacity),
-      ),
-    };
-  }
-  private slugInnerShadowDraw(
-    node: Readonly<VectorTextNode>,
-    geometry: CachedTextGeometry,
-    view: VectorTextViewState,
-  ): VectorTextGpuDraw {
-    const vector = vectorTextInnerShadowLocalVector(
-      node.innerShadowOffset,
-      node.innerShadowAngle,
-    );
-    const common = {
-      meshKey: `text:${node.id}:slug`,
-      slug: geometry.slug,
-      x: node.x,
-      y: node.y,
-      scale: node.scale,
-      rotation: node.rotation,
-      // The inner-shadow shader keeps the quad on the source glyph. This is
-      // the Slug packing origin, not a visual offset and therefore not bbox.
-      localOffsetX: geometry.slug.originX,
-      localOffsetY: geometry.slug.originY,
-      sampleOffsetX: vector.x,
-      sampleOffsetY: vector.y,
-      color: gpuLinearColor(node.innerShadowColor),
-      opacity: Math.min(
-        1,
-        Math.max(0, node.opacity * node.innerShadowOpacity),
-      ),
-    } as const;
-    if (node.innerShadowBlur <= 0) {
-      return {
-        mode: "slug-inner-shadow-direct",
-        ...common,
-      };
-    }
-
-    const requestedPixelScale = Math.max(
-      1 / 32,
-      Math.abs(view.zoom * node.scale),
-    );
-    const bucketScale = 2 ** Math.ceil(Math.log2(requestedPixelScale));
-    const plan = planVectorTextSingleShadowBlur(
-      {
-        left: geometry.outline.inkLeft,
-        top: geometry.outline.inkTop,
-        right: geometry.outline.inkRight,
-        bottom: geometry.outline.inkBottom,
-      },
-      node.innerShadowBlur,
-      bucketScale,
-    );
-    // The cache contains only G(fill). It is deliberately shareable with an
-    // outer shadow using the same source, sigma and LOD; color and direction
-    // are applied later and never duplicate the R16F matte.
-    const blurKey = [
-      "vector-text-gpu-blur-v1",
-      node.id,
-      geometry.sourceRevision,
-      node.innerShadowBlur.toFixed(4),
-      plan.width,
-      plan.height,
-      plan.scale.toFixed(8),
-      plan.sigmaPixels.toFixed(8),
-      plan.radius,
-    ].join(":");
-    return {
-      mode: "slug-inner-shadow-blur",
-      ...common,
-      blurKey,
-      blurBounds: [
-        plan.bounds[0],
-        plan.bounds[1],
-        plan.bounds[2],
-        plan.bounds[3],
-      ],
-      blurWidth: plan.width,
-      blurHeight: plan.height,
-      blurScale: plan.scale,
-      blurSigmaPixels: plan.sigmaPixels,
-      blurRadius: plan.radius,
-    };
-  }
-  private retargetDisplayedDraws(
-    draws: readonly VectorTextGpuDraw[],
-    node: Readonly<VectorSceneNode>,
-  ): VectorTextGpuDraw[] {
-    return draws.map((draw): VectorTextGpuDraw => ({
-      ...draw,
-      x: node.x,
-      y: node.y,
-      scale: node.scale,
-      rotation: node.rotation,
-    }));
-  }
-
   private appendGpuDrawsForNode(
     draws: VectorTextGpuDraw[],
     node: Readonly<VectorTextNode>,
@@ -2780,13 +2234,13 @@ export class MixedSceneController {
       && (!requireRequestedLod || result.matchesRequestedLod);
     if (node.singleShadowEnabled && node.singleShadowOpacity > 0) {
       if (node.singleShadowBlur > 0) {
-        draws.push(this.slugBlurDraw(node, geometry, view));
+        draws.push(planMixedSceneSlugBlurDraw(node, geometry, view));
       } else {
         const vector = vectorTextSingleShadowLocalVector(
           node.singleShadowOffset,
           node.singleShadowAngle,
         );
-        draws.push(this.slugDraw(
+        draws.push(planMixedSceneSlugDraw(
           node,
           `text:${node.id}:slug`,
           geometry.slug,
@@ -2823,7 +2277,7 @@ export class MixedSceneController {
         allEffectsReady =
           allEffectsReady && effectIsReady(meshResult);
         if (meshResult.mesh) {
-          draws.push(this.meshDraw(
+          draws.push(planMixedSceneMeshDraw(
             node,
             `text:${node.id}:block-outline`,
             meshResult.mesh,
@@ -2849,7 +2303,7 @@ export class MixedSceneController {
         allEffectsReady =
           allEffectsReady && effectIsReady(meshResult);
         if (meshResult.mesh) {
-          draws.push(this.meshDraw(
+          draws.push(planMixedSceneMeshDraw(
             node,
             `text:${node.id}:block`,
             meshResult.mesh,
@@ -2886,7 +2340,7 @@ export class MixedSceneController {
       allEffectsReady =
         allEffectsReady && effectIsReady(meshResult);
       if (meshResult.mesh) {
-        draws.push(this.meshDraw(
+        draws.push(planMixedSceneMeshDraw(
           node,
           `text:${node.id}:${outlineSlot}`,
           meshResult.mesh,
@@ -2897,7 +2351,7 @@ export class MixedSceneController {
       }
     }
     if (!sourceFillCoveredByOutline) {
-      draws.push(this.slugDraw(
+      draws.push(planMixedSceneSlugDraw(
         node,
         `text:${node.id}:slug`,
         geometry.slug,
@@ -2906,7 +2360,7 @@ export class MixedSceneController {
       ));
     }
     if (node.innerShadowEnabled && node.innerShadowOpacity > 0) {
-      draws.push(this.slugInnerShadowDraw(node, geometry, view));
+      draws.push(planMixedSceneSlugInnerShadowDraw(node, geometry, view));
     }
     return allEffectsReady;
   }
@@ -3078,7 +2532,7 @@ export class MixedSceneController {
           } else if (displayedDraws) {
             atomicEffectPendingNodes += 1;
             this.atomicEffectHoldCount += 1;
-            const retargeted = this.retargetDisplayedDraws(displayedDraws, node);
+            const retargeted = retargetMixedSceneDraws(displayedDraws, node);
             this.displayedDrawsByNodeKey.set(key, retargeted);
             draws.push(...retargeted);
           } else {
@@ -3307,13 +2761,7 @@ export class MixedSceneController {
   }
 
   private eventCanvasPoint(event: PointerEvent): ScenePoint {
-    const rectangle = this.interactionCanvas.getBoundingClientRect();
-    return {
-      x: (event.clientX - rectangle.left)
-        / Math.max(1, rectangle.width) * this.interactionCanvas.width,
-      y: (event.clientY - rectangle.top)
-        / Math.max(1, rectangle.height) * this.interactionCanvas.height,
-    };
+    return mixedSceneEventCanvasPoint(event, this.interactionCanvas);
   }
 
   private eventLayerPoint(event: PointerEvent): ScenePoint {
@@ -3331,11 +2779,7 @@ export class MixedSceneController {
     view: VectorTextViewState,
     node: Readonly<TransformSceneNode>,
   ): SceneTransformHandle | "rotate" | null {
-    if (isRasterLayerTransformNode(node) && node.scope === "selection") return null;
-    const backingPerCssPixel = view.canvasWidth / Math.max(1, view.cssWidth);
-    const hitRadius = SCENE_TRANSFORM_HIT_RADIUS_CSS_PX * backingPerCssPixel;
-    const rotationHandle = sceneOverlayRotationHandle(corners, node, view);
-    return hitSceneTransformHandle(point, corners, rotationHandle, hitRadius);
+    return mixedSceneTransformHandle(point, corners, view, node);
   }
 
   private hitsTransformBody(
@@ -3344,14 +2788,7 @@ export class MixedSceneController {
     view: VectorTextViewState,
     node: Readonly<TransformSceneNode>,
   ): boolean {
-    const includeSelectionEdgeReach = isRasterLayerTransformNode(node)
-      && node.scope === "selection";
-    const backingPerCssPixel = view.canvasWidth / Math.max(1, view.cssWidth);
-    return hitsSceneTransformBody(
-      point,
-      corners,
-      includeSelectionEdgeReach ? 22 * backingPerCssPixel : 0,
-    );
+    return hitsMixedSceneTransformBody(point, corners, view, node);
   }
 
   private hitDistortPoint(
@@ -3359,26 +2796,11 @@ export class MixedSceneController {
     view: VectorTextViewState,
     node: Readonly<VectorTextNode>,
   ): number | null {
-    const backingPerCssPixel = view.canvasWidth / Math.max(1, view.cssWidth);
-    const hitRadius = SCENE_TRANSFORM_HIT_RADIUS_CSS_PX * backingPerCssPixel;
-    return closestSceneControlPoint(
-      point,
-      sceneDistortCanvasPoints(view, node),
-      hitRadius,
-    );
+    return mixedSceneDistortPoint(point, view, node);
   }
 
   private currentTouchNavigationGesture(): TouchNavigationGesture | null {
-    if (this.touchContacts.size < 2) return null;
-    const [first, second] = [...this.touchContacts.values()];
-    const deltaX = second.x - first.x;
-    const deltaY = second.y - first.y;
-    return {
-      centerX: (first.x + second.x) * 0.5,
-      centerY: (first.y + second.y) * 0.5,
-      distance: Math.max(1e-6, Math.hypot(deltaX, deltaY)),
-      angle: Math.atan2(deltaY, deltaX),
-    };
+    return currentMixedSceneTouchGesture(this.touchContacts);
   }
 
   private restoreInteractionStart(interaction: ActiveInteraction): void {
@@ -3524,7 +2946,7 @@ export class MixedSceneController {
         }
       } else {
         openedTransformSession = !this.transformSessionOpen;
-        if (!this.host.beginVectorHistoryEdit("transform")) {
+        if (!beginMixedSceneVectorTransformHistory(this.host)) {
           return;
         }
         if (!this.transformSessionOpen) {
@@ -3560,35 +2982,8 @@ export class MixedSceneController {
     interaction: ActiveInteraction,
     layerPoint: ScenePoint,
     lockAxis: boolean,
-  ): VectorTextDistortPoints | null {
-    if (!isTextNode(interaction.startModel)) return null;
-    const startPoints = interaction.startModel.distortPoints;
-    const pointIndex = interaction.distortPointIndex;
-    if (!startPoints || pointIndex === null) {
-      return null;
-    }
-    const startLocal = sceneLayerToLocal(
-      interaction.startLayer,
-      interaction.startModel,
-    );
-    const currentLocal = sceneLayerToLocal(layerPoint, interaction.startModel);
-    let deltaX = currentLocal.x - startLocal.x;
-    let deltaY = currentLocal.y - startLocal.y;
-    if (lockAxis) {
-      if (Math.abs(deltaX) >= Math.abs(deltaY)) {
-        deltaY = 0;
-      } else {
-        deltaX = 0;
-      }
-    }
-    return moveVectorTextDistortPoint(
-      startPoints,
-      pointIndex,
-      {
-        x: startPoints[pointIndex].x + deltaX,
-        y: startPoints[pointIndex].y + deltaY,
-      },
-    );
+  ) {
+    return movedMixedSceneDistortPoints(interaction, layerPoint, lockAxis);
   }
 
   private onPointerMove(event: PointerEvent): void {
@@ -3641,34 +3036,8 @@ export class MixedSceneController {
       }
       return;
     }
-    if (interaction.mode === "move") {
-      this.updateTransformNode(interaction.startModel, {
-        x: interaction.startModel.x + layerPoint.x - interaction.startLayer.x,
-        y: interaction.startModel.y + layerPoint.y - interaction.startLayer.y,
-      });
-    } else if (interaction.mode === "scale") {
-      const distance = scenePointDistance(layerPoint, {
-        x: interaction.startModel.x,
-        y: interaction.startModel.y,
-      });
-      this.updateTransformNode(interaction.startModel, {
-        scale: Math.min(
-          MAXIMUM_SCALE,
-          Math.max(
-            MINIMUM_SCALE,
-            interaction.startModel.scale * distance / interaction.startDistance,
-          ),
-        ),
-      });
-    } else if (interaction.mode === "rotate") {
-      const angle = Math.atan2(
-        layerPoint.y - interaction.startModel.y,
-        layerPoint.x - interaction.startModel.x,
-      );
-      this.updateTransformNode(interaction.startModel, {
-        rotation: interaction.startModel.rotation + angle - interaction.startAngle,
-      });
-    }
+    const update = mixedSceneTransformUpdate(interaction, layerPoint);
+    if (update) this.updateTransformNode(interaction.startModel, update);
   }
 
   private finishPointer(event: PointerEvent): void {

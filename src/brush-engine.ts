@@ -1,7 +1,6 @@
 import { clamp, hexToHsl } from "./color";
 import {
   createDryBlendPlanner,
-  DRY_BLEND_SCRATCH_LIFECYCLE_STRATEGY,
   type DryBlendPlanner,
 } from "./blend-core";
 import {
@@ -9,7 +8,6 @@ import {
   type DryBlendHistoryGeometry,
 } from "./blend-renderer";
 import type { FillRenderer } from "./fill-renderer";
-import { FILL_REFERENCE_LAYER_STRATEGY } from "./fill-core";
 import type { SelectionRenderer } from "./selection-renderer";
 import { LAYER_THUMBNAIL_HEIGHT, LAYER_THUMBNAIL_WIDTH, LayerThumbnailRenderer, type LayerThumbnailPixels } from "./layer-thumbnail-renderer";
 import {
@@ -156,88 +154,53 @@ import {
   startThicknessFactor,
   thicknessDynamicsIsNeutral,
   thicknessDynamicsNeedsTailHoldback,
-  type ThicknessDynamicsStrategy,
 } from "./thickness-dynamics";
 import {
-  RASTER_STROKE_COVERAGE_STRATEGY,
-  RASTER_STROKE_GEOMETRY_STORAGE_STRATEGY,
-  RASTER_STROKE_DISTANCE_STORAGE_STRATEGY,
-  RASTER_STROKE_MUTATION_GATE_STRATEGY,
-  RASTER_STROKE_STYLED_STORAGE_STRATEGY,
   RasterStrokeRenderer,
   type RasterStrokeEncodeResult,
   type RasterStrokeSourceMode,
 } from "./stroke-renderer";
 import {
   DEFAULT_RASTER_STROKE_STYLE,
-  RASTER_STROKE_COMPOSITOR_ONLY_SCRATCH_EXTENT,
-  RASTER_STROKE_SCRATCH_STRATEGY,
   copyRasterStrokeStyle,
-  normalizeRasterStrokeStyle,
-  rasterStrokeScratchExtentForWidth,
-  rasterStrokeScratchExtentForRenderer,
-  rasterStrokeStylesEqual,
   type RasterStrokeRect,
   type RasterStrokeStyle,
 } from "./stroke-core";
 import {
   DEFAULT_RASTER_COLOR_OVERLAY_STYLE,
-  RASTER_COLOR_OVERLAY_EFFECT_ID,
-  RASTER_COLOR_OVERLAY_STRATEGY,
   copyRasterColorOverlayStyle,
   normalizeRasterColorOverlayStyle,
-  rasterColorOverlayStylesEqual,
   type RasterColorOverlayStyle,
 } from "./raster-color-overlay-core";
 
 import {
-  RASTER_BEVEL_BOUNDING_FIELD_STRATEGY,
-  RASTER_BEVEL_DISTANCE_STRATEGY,
-  RASTER_BEVEL_FIELD_STRATEGY,
-  RASTER_BEVEL_WORKSPACE_STRATEGY,
   RasterBevelRenderer,
   type RasterBevelEncodeResult,
 } from "./bevel-renderer";
 import {
   DEFAULT_RASTER_BEVEL_STYLE,
   RASTER_BEVEL_FIELD_IDLE_SHRINK_DELAY_MS,
-  classifyRasterBevelStyleChange,
   copyRasterBevelStyle,
   normalizeRasterBevelStyle,
-  rasterBevelRadiusBucket,
-  rasterBevelStylesEqual,
-  rasterBevelVisualBounds,
   type RasterBevelRect,
   type RasterBevelStyle,
 } from "./bevel-core";
 import {
-  RASTER_SHADOW_STORAGE_STRATEGY,
-  RASTER_SHADOW_WORKSPACE_STRATEGY,
   RasterShadowRenderer,
   type RasterShadowEncodeResult,
 } from "./shadow-renderer";
 import {
   DEFAULT_RASTER_INNER_SHADOW_STYLE,
   DEFAULT_RASTER_OUTER_SHADOW_STYLE,
-  classifyRasterInnerShadowStyleChange,
-  classifyRasterOuterShadowStyleChange,
   copyRasterInnerShadowStyle,
   copyRasterOuterShadowStyle,
   normalizeRasterInnerShadowStyle,
   normalizeRasterOuterShadowStyle,
-  rasterInnerShadowStylesEqual,
-  rasterInnerShadowVisualBounds,
-  rasterOuterShadowStylesEqual,
-  rasterOuterShadowUsesSupportedBlend,
-  rasterOuterShadowVisualBounds,
   type RasterInnerShadowStyle,
   type RasterOuterShadowStyle,
   type RasterShadowRect,
 } from "./shadow-core";
-import {
-  EFFECTS_WORKING_SET_STRATEGY,
-  EffectsWorkbench,
-} from "./effects-workbench";
+import { EffectsWorkbench } from "./effects-workbench";
 import {
   LAYER_STACK_MAXIMUM,
   LayerStack,
@@ -258,7 +221,6 @@ import {
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import {
   EFFECTS_SCRATCH_POOL_IDLE_SHRINK_DELAY_MS,
-  EFFECTS_SCRATCH_POOL_STRATEGY,
 } from "./effects-scratch-pool";
 import {
   LAYER_STORAGE_TILE_HEIGHT,
@@ -386,62 +348,33 @@ import {
 import type {
   EngineStats,
   LayerStorageExactStudy,
-  LayerStorageStudyStats,
   MutableStrokePerformanceProfile,
   RenderFrameTiming,
   StrokePerformanceProfile,
   SubmitTiming,
 } from "./engine-stats";
 import {
-  ADAPTIVE_PREVIEW_STALE_FRAME_STRATEGY,
-  ADAPTIVE_PREVIEW_STRATEGY,
-  ADAPTIVE_PREVIEW_TRIGGER_STRATEGY,
-  ADAPTIVE_PREVIEW_VISIBLE_CANVAS_STRATEGY,
-  ADAPTIVE_SPACING_STRATEGY,
-  BRUSH_OPACITY_STRATEGY,
-  COLOR_SEED_STRATEGY,
-  DIRTY_RECT_STRATEGY,
-  type FragmentCoverageStrategy,
   GRAIN_DISABLED_STRATEGY,
   GRAIN_FIXED_COORDINATE_STRATEGY,
   GRAIN_FIXED_STRATEGY,
-  GRAIN_MIP_STRATEGY,
   GRAIN_MOVING_COORDINATE_STRATEGY,
   GRAIN_MOVING_ROLLER_COORDINATE_STRATEGY,
   GRAIN_MOVING_STRATEGY,
-  GRAIN_PIPELINE_STRATEGY,
-  GRAIN_STORAGE_LIFECYCLE_STRATEGY,
-  type GrainAdaptivePreviewStrategy,
   grainCoordinateMode,
   type GrainCoordinateStrategy,
-  type GrainCoverageStrategy,
   type GrainSamplingStrategy,
   type GrainStrategy,
-  HISTORY_REPLAY_STRATEGY,
-  HISTORY_STAMP_RETENTION_STRATEGY,
-  HISTORY_STORAGE_STRATEGY,
   isStrokeGlazeBlendMode,
   isTexturizedGrainActive,
-  LAYER_BAKE_STRATEGY,
-  LAYER_COMPOSITE_STRATEGY,
-  LIGHT_GLAZE_ADAPTIVE_PREVIEW_STRATEGY,
-  LIGHT_GLAZE_STORAGE_LIFECYCLE_STRATEGY,
   type LightGlazeStorageMode,
   lightGlazeStorageModeFor,
-  type LightGlazeStrategy,
-  PAINT_DISPLAY_LOD_SELECTION_STRATEGY,
-  PAINT_DISPLAY_PYRAMID_STRATEGY,
-  PRESENTATION_CACHE_STRATEGY,
-  PRESENTATION_TRANSFER_STRATEGY,
   SHAPE_CANVAS_DECODE_STRATEGY,
   SHAPE_LEGACY_STRATEGY,
   SHAPE_OCCUPANCY_STRATEGY,
-  SHAPE_STORAGE_LIFECYCLE_STRATEGY,
   type ShapeMaskDecodeStrategy,
   type ShapeSamplingStrategy,
   STAMP_GEOMETRY,
   type StampGeometry,
-  type ThicknessDynamicsPreviewStrategy,
   usesBlendRenderer,
   usesStrokeGlazeRenderer,
 } from "./engine-strategies";
@@ -549,6 +482,7 @@ import {
   getStats,
   measureExactLayerStorageStudy,
   startStrokePerformanceProfile,
+  type BenchmarkEnvironment,
 } from "./engine-reports";
 import {
   captureVectorTextPresentationView,
@@ -641,7 +575,6 @@ import {
   applyLightGlazeResourceSet,
   createLightGlazeResourceSet,
   currentLightGlazeResourceSet,
-  destroyStrokeStabilizationSnapshot,
   encodeLightGlazeDisplayPyramid,
   ensureStrokeStabilizationSnapshot,
   flushClosingLightGlazeSessionBeforeNewStroke,
@@ -717,10 +650,6 @@ import {
   destroyTrackedReadbackBuffer,
   ensureEffectRenderersForRecord,
   ensurePresentationCacheTexture,
-  ensureRasterBevelRenderer,
-  ensureRasterInnerShadowRenderer,
-  ensureRasterOuterShadowRenderer,
-  ensureRasterStrokeRenderer,
   ensureThicknessTailOverlayResources,
   maybeReleaseIdleBlendScratch,
   maybeReleaseIdleGrainResources,
@@ -769,6 +698,15 @@ import {
   waitForRenderPump,
 } from "./engine-runtime-misc";
 import { captureProjectDocument, restoreProjectDocument, type CapturedProjectDocumentV1 } from "./engine-project-runtime";
+import {
+  applyRasterBevelStyle,
+  applyRasterColorOverlayStyle,
+  applyRasterInnerShadowStyle,
+  applyRasterOuterShadowStyle,
+  applyRasterStrokeStyle,
+  type RasterStyleHistoryPort,
+} from "./engine-raster-style-runtime";
+import { applyBrushSettings } from "./engine-brush-settings-runtime";
 import type { ProjectLoadResultV1 } from "./project-storage";
 
 export type {
@@ -1992,148 +1930,11 @@ export class BrushEngine {
   }
 
   setBrushSettings(next: Partial<BrushSettings>): void {
-    if (this.initialized && (this.layerSwitchBusy || this.historyBusy)) {
-      throw new Error(
-        "Le impostazioni non possono cambiare durante uno switch o un replay della cronologia.",
-      );
-    }
-    flushPendingWorkBeforeSettingsChange(this);
-    const previousUsesBlendRenderer = usesBlendRenderer(this.settings);
-    const tool = next.tool === "paint" || next.tool === "blend"
-      ? next.tool
-      : this.settings.tool;
-    const blendMode = next.blendMode === "normal"
-      || next.blendMode === "additive"
-      || next.blendMode === "light-glaze"
-      || next.blendMode === "uniformed-glaze"
-      || next.blendMode === "intense-blending"
-      || next.blendMode === "m1-glaze"
-      ? next.blendMode
-      : this.settings.blendMode;
-    this.settings = {
-      ...this.settings,
-      ...next,
-      tool,
-      shape: next.shape === "shape" || next.shape === "circle" ? next.shape : this.settings.shape,
-      shapeAssetId: normalizeShapeAssetId(next.shapeAssetId ?? this.settings.shapeAssetId),
-      shapeInvert: typeof next.shapeInvert === "boolean"
-        ? next.shapeInvert
-        : this.settings.shapeInvert,
-      shapeRotation: next.shapeRotation === "follow-stroke" || next.shapeRotation === "fixed"
-        ? next.shapeRotation
-        : this.settings.shapeRotation,
-      shapeScatter: clamp(next.shapeScatter ?? this.settings.shapeScatter, 0, 1),
-      grainMode: next.grainMode === "off"
-        || next.grainMode === "texturized"
-        || next.grainMode === "moving"
-        ? next.grainMode
-        : this.settings.grainMode,
-      grainAssetId: normalizeGrainAssetId(next.grainAssetId ?? this.settings.grainAssetId),
-      grainScale: clamp(next.grainScale ?? this.settings.grainScale, 0.1, 4),
-      grainMovement: clamp(next.grainMovement ?? this.settings.grainMovement, 0, 1),
-      grainDepth: clamp(next.grainDepth ?? this.settings.grainDepth, 0, 1),
-      grainBrightness: clamp(next.grainBrightness ?? this.settings.grainBrightness, -1, 1),
-      grainContrast: clamp(next.grainContrast ?? this.settings.grainContrast, -1, 1),
-      grainInvert: typeof next.grainInvert === "boolean"
-        ? next.grainInvert
-        : this.settings.grainInvert,
-      grainFiltering: next.grainFiltering === "no"
-        || next.grainFiltering === "classic"
-        || next.grainFiltering === "improved"
-        ? next.grainFiltering
-        : this.settings.grainFiltering,
-      grainBlendMode: next.grainBlendMode === "multiply"
-        ? next.grainBlendMode
-        : this.settings.grainBlendMode,
-      count: clamp(Math.round(next.count ?? this.settings.count), 1, 24),
-      size: clamp(
-        next.size ?? this.settings.size,
-        1,
-        // The public mobile control stops at 1000 px. Keep the historical
-        // internal headroom used by the canonical Blend background fixture.
-        tool === "blend" ? 1024 : 1500,
-      ),
-      spacingPercent: clamp(
-        next.spacingPercent ?? this.settings.spacingPercent,
-        tool === "blend" ? 1 : 0.25,
-        tool === "blend" ? 400 : 99,
-      ),
-      stabilization: clamp(next.stabilization ?? this.settings.stabilization, 0, 1),
-      startThickness: clamp(next.startThickness ?? this.settings.startThickness, 0, 2),
-      endThickness: clamp(next.endThickness ?? this.settings.endThickness, 0, 2),
-      flow: clamp(next.flow ?? this.settings.flow, 0.001, 1),
-      opacity: clamp(next.opacity ?? this.settings.opacity, 0, 1),
-      // Brush Studio intentionally has no Paint hardness control. Preserve the
-      // dry Blend setting, while every Paint setting/history batch is authored at 100%.
-      hardness: tool === "paint" ? 1 : clamp(next.hardness ?? this.settings.hardness, 0, 1),
-      // Kept in the history ABI only. Rendering now has one unambiguous Flow control.
-      blendIntensity: 1,
-      blendMode,
-      blendStretch: clamp(next.blendStretch ?? this.settings.blendStretch, 0, 1),
-      blendPaint: clamp(next.blendPaint ?? this.settings.blendPaint, 0, 1),
-      blendBlur: clamp(next.blendBlur ?? this.settings.blendBlur, 0, 1),
-      // Legacy presets may still carry this field, but the four Color Dynamics
-      // controls are authoritative and must never be scaled a second time.
-      jitterMaster: 1,
-      hueJitterDegrees: clamp(next.hueJitterDegrees ?? this.settings.hueJitterDegrees, 0, 180),
-      saturationJitter: clamp(next.saturationJitter ?? this.settings.saturationJitter, 0, 1),
-      lightnessJitter: clamp(next.lightnessJitter ?? this.settings.lightnessJitter, 0, 1),
-      darknessJitter: clamp(next.darknessJitter ?? this.settings.darknessJitter, 0, 1),
-      positionJitterLateral: clamp(next.positionJitterLateral ?? this.settings.positionJitterLateral, 0, 1),
-      positionJitterLinear: clamp(next.positionJitterLinear ?? this.settings.positionJitterLinear, 0, 1),
-    };
-    prepareAdaptivePreviewShapePalette(this, this.settings);
-
-    if (this.initialized) {
-      const nextUsesBlendRenderer = usesBlendRenderer(this.settings);
-      const glazeSelected = usesStrokeGlazeRenderer(this.settings);
-      this.lightGlazeDesiredStorageMode = glazeSelected
-        ? lightGlazeStorageModeFor(this.settings.blendMode)
-        : "none";
-
-      if (!glazeSelected) {
-        maybeReleaseIdleLightGlazeResources(this);
-      }
-      if (
-        this.settings.stabilization === 0
-        && !this.activeStroke
-        && !this.lightGlazeSession
-      ) {
-        destroyStrokeStabilizationSnapshot(this);
-      }
-      if (!nextUsesBlendRenderer && previousUsesBlendRenderer) {
-        maybeReleaseIdleBlendScratch(this);
-      }
-      if (nextUsesBlendRenderer) {
-        // Prewarm on selection so allocation never lands inside the first stroke.
-        this.blendRenderer?.prewarmScratch();
-      }
-      if (
-        glazeSelected
-        && !this.lightGlazeSession
-        && !this.activeStroke
-      ) {
-        // Prewarm at selection (including R16F coverage↔RGBA16F retarget).
-        requestLightGlazeResources(this, this.settings.blendMode);
-      }
-      if (this.settings.grainMode !== "off") {
-        requestGrainLoad(this);
-      } else {
-        maybeReleaseIdleGrainResources(this);
-      }
-      if (this.settings.shape === "shape") {
-        requestShapeLoad(this);
-      } else {
-        maybeReleaseIdleShapeResources(this);
-      }
-      this.invalidateAdaptivePreview();
-      this.writeBrushUniforms();
-      if (isTexturizedGrainActive(this.settings)) {
-        this.writeGrainUniforms(this.settings);
-      }
-      this.displayDirty = true;
-      this.requestRender();
-    }
+    applyBrushSettings(this, next, {
+      setLightGlazeDesiredStorageMode: (mode) => {
+        this.lightGlazeDesiredStorageMode = mode;
+      },
+    });
   }
 
   getRasterStrokeStyle(): RasterStrokeStyle {
@@ -2275,686 +2076,45 @@ export class BrushEngine {
     releaseRasterInnerShadowRenderer(this);
   }
 
+  private rasterStyleHistoryPort(): RasterStyleHistoryPort {
+    return {
+      allows: (property) => this.rasterLayerMetadataHistoryEditAllows(property),
+      record: (property, before) => {
+        this.recordRasterLayerMetadataMutation(property, before);
+      },
+    };
+  }
+
   async setRasterColorOverlayStyle(style: unknown): Promise<boolean> {
-    const normalized = normalizeRasterColorOverlayStyle(style);
-    const normalizedActive = normalized.enabled && normalized.opacity > 0;
-    if (this.initialized && !this.rasterLayerMetadataHistoryEditAllows("color-overlay")) {
-      return false;
-    }
-    if (this.initialized && this.layerSwitchBusy) {
-      return false;
-    }
-    if (
-      rasterColorOverlayStylesEqual(normalized, this.rasterColorOverlayStyle)
-      && (!normalizedActive || Boolean(this.rasterStrokeRenderer))
-    ) {
-      return true;
-    }
-    if (!this.initialized) {
-      this.rasterColorOverlayStyle = normalized;
-      return true;
-    }
-    if (
-      this.activeStroke
-      || this.historyBusy
-      || this.layerSwitchBusy
-      || this.rasterStrokeBusy
-      || this.rasterBevelBusy
-      || this.rasterOuterShadowBusy
-      || this.rasterInnerShadowBusy
-    ) {
-      return false;
-    }
-
-    flushPendingWorkBeforeSettingsChange(this);
-    const historyBefore = captureRasterLayerMetadataHistoryState(
+    return await applyRasterColorOverlayStyle(
       this,
-      this.layerStack.active.id,
-      "color-overlay",
+      style,
+      this.rasterStyleHistoryPort(),
     );
-    const previous = copyRasterColorOverlayStyle(this.rasterColorOverlayStyle);
-    const previousActive = previous.enabled && previous.opacity > 0;
-    const previousDisplayUsesStyle = Boolean(
-      this.rasterStrokeRenderer && this.styleStackNeedsCompositor(),
-    );
-    const nextStackNeedsCompositor = layerEffectRendererRequirements(
-      this.rasterStrokeStyle,
-      this.rasterBevelStyle,
-      this.rasterOuterShadowStyle,
-      this.rasterInnerShadowStyle,
-      normalized,
-    ).needsStrokeRenderer;
-    const rendererNeedsCreation = normalizedActive && !this.rasterStrokeRenderer;
-    const rendererWillBeReleased = Boolean(
-      this.rasterStrokeRenderer && !nextStackNeedsCompositor,
-    );
-    const styleDirtyRect = previousActive || normalizedActive
-      ? this.layerContentBounds
-        ?? (this.layerHasContent
-          ? { x: 0, y: 0, width: DOCUMENT_WIDTH, height: DOCUMENT_HEIGHT }
-          : null)
-      : null;
-    this.rasterStrokeBusy = true;
-    try {
-      // Destroying a renderer must wait for every older submission. Hot color
-      // and opacity edits only enqueue new uniform data after older queue work,
-      // so they do not pay a queue-idle round trip.
-      if (rendererWillBeReleased) {
-        await this.waitForIdle();
-      }
-      if (normalizedActive) {
-        if (rendererNeedsCreation) {
-          this.callbacks.onStatus?.(
-            "Preparo la Sovrapposizione colore WebGPU…",
-            "working",
-          );
-        }
-        await ensureRasterStrokeRenderer(
-          this,
-          this.rasterStrokeStyle.width,
-          this.rasterStrokeStyle.enabled && this.rasterStrokeStyle.width > 0,
-        );
-        this.requireEffectsWorkbench().scratchPool.declareEffect(
-          RASTER_COLOR_OVERLAY_EFFECT_ID,
-          [],
-        );
-      }
-
-      this.rasterColorOverlayStyle = normalized;
-      invalidateActiveLayerBake(this);
-      this.rasterStrokePendingComposeRect = mergeDirtyRects(
-        this.rasterStrokePendingComposeRect,
-        styleDirtyRect,
-      );
-
-      if (!normalizedActive) {
-        this.requireEffectsWorkbench().scratchPool.releaseRequirement(
-          RASTER_COLOR_OVERLAY_EFFECT_ID,
-        );
-        if (rendererWillBeReleased) {
-          releaseRasterStrokeRenderer(this);
-        }
-      }
-
-      this.paintDisplayMipValidThroughLevel = 0;
-      const nextDisplayUsesStyle = Boolean(
-        this.rasterStrokeRenderer && this.styleStackNeedsCompositor(),
-      );
-      if (previousDisplayUsesStyle !== nextDisplayUsesStyle) {
-        this.presentationCacheNeedsFullRebuild = true;
-      }
-      this.displayDirty = true;
-      this.requestRender();
-      this.callbacks.onStatus?.(
-        normalizedActive
-          ? "Sovrapposizione colore WebGPU attiva."
-          : normalized.enabled
-            ? "Sovrapposizione colore attiva ma invisibile: opacità 0%."
-            : "Sovrapposizione colore disattivata.",
-        "ok",
-      );
-      this.publishStats();
-      this.recordRasterLayerMetadataMutation("color-overlay", historyBefore);
-      return true;
-    } catch (error) {
-      this.rasterColorOverlayStyle = previous;
-      try {
-        if (previousActive) {
-          await ensureRasterStrokeRenderer(
-            this,
-            this.rasterStrokeStyle.width,
-            this.rasterStrokeStyle.enabled && this.rasterStrokeStyle.width > 0,
-          );
-          this.requireEffectsWorkbench().scratchPool.declareEffect(
-            RASTER_COLOR_OVERLAY_EFFECT_ID,
-            [],
-          );
-        } else {
-          this.requireEffectsWorkbench().scratchPool.releaseRequirement(
-            RASTER_COLOR_OVERLAY_EFFECT_ID,
-          );
-          if (!this.styleStackNeedsCompositor()) {
-            releaseRasterStrokeRenderer(this);
-          }
-        }
-      } catch (restoreError) {
-        console.error(
-          "Ripristino Sovrapposizione colore non riuscito",
-          restoreError,
-        );
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      this.callbacks.onStatus?.(
-        `Sovrapposizione colore WebGPU non disponibile: ${message}`,
-        "error",
-      );
-      throw error;
-    } finally {
-      this.rasterStrokeBusy = false;
-    }
   }
 
   async setRasterStrokeStyle(style: unknown): Promise<boolean> {
-    const normalized = normalizeRasterStrokeStyle(style);
-    const normalizedActive = normalized.enabled && normalized.width > 0;
-    if (this.initialized && !this.rasterLayerMetadataHistoryEditAllows("stroke")) {
-      return false;
-    }
-    if (this.initialized && this.layerSwitchBusy) {
-      return false;
-    }
-    if (
-      rasterStrokeStylesEqual(normalized, this.rasterStrokeStyle)
-      && (normalizedActive
-        ? this.rasterStrokeRenderer?.strokeGeometryEnabled === true
-        : this.rasterStrokeRenderer?.strokeGeometryEnabled !== true)
-    ) {
-      return true;
-    }
-    if (!this.initialized) {
-      this.rasterStrokeStyle = normalized;
-      return true;
-    }
-    if (
-      this.activeStroke
-      || this.historyBusy
-      || this.layerSwitchBusy
-      || this.rasterStrokeBusy
-      || this.rasterBevelBusy
-      || this.rasterOuterShadowBusy
-      || this.rasterInnerShadowBusy
-    ) {
-      return false;
-    }
-
-    flushPendingWorkBeforeSettingsChange(this);
-    const historyBefore = captureRasterLayerMetadataHistoryState(
-      this,
-      this.layerStack.active.id,
-      "stroke",
-    );
-    const previous = copyRasterStrokeStyle(this.rasterStrokeStyle);
-    const previousActive = previous.enabled && previous.width > 0;
-    const nextActive = normalized.enabled && normalized.width > 0;
-    this.rasterStrokeBusy = true;
-    try {
-      if (nextActive) {
-        const scratchExtent = rasterStrokeScratchExtentForWidth(normalized.width);
-        const rendererNeedsCreation = !this.rasterStrokeRenderer;
-        const geometryNeedsAllocation =
-          !this.rasterStrokeRenderer?.strokeGeometryEnabled;
-        const scratchNeedsResize = Boolean(
-          this.rasterStrokeRenderer
-          && this.rasterStrokeRenderer.scratchExtent !== scratchExtent,
-        );
-        if (rendererNeedsCreation || geometryNeedsAllocation || scratchNeedsResize) {
-          this.callbacks.onStatus?.(
-            rendererNeedsCreation || geometryNeedsAllocation
-              ? "Preparo la geometria della Traccia WebGPU…"
-              : "Adatto la memoria scratch della Traccia…",
-            "working",
-          );
-          await this.waitForIdle();
-          const renderer = await ensureRasterStrokeRenderer(this, normalized.width, true);
-          if (renderer.scratchExtent !== scratchExtent) {
-            renderer.resizeScratch(scratchExtent);
-          }
-        }
-      }
-
-      this.rasterStrokeStyle = normalized;
-      invalidateActiveLayerBake(this);
-      if (nextActive) {
-        const coverageStyleChanged = normalized.width !== previous.width
-          || normalized.position !== previous.position;
-        if (!previousActive || coverageStyleChanged) {
-          this.rasterStrokeCoverageValid = false;
-        }
-        this.rasterStrokePendingComposeRect = rasterStrokeEffectRect(this, 
-          this.layerContentBounds,
-          Math.max(previous.width, normalized.width),
-        );
-        this.presentationCacheNeedsFullRebuild = true;
-        this.displayDirty = true;
-        this.requestRender();
-        this.callbacks.onStatus?.("Traccia WebGPU attiva.", "ok");
-      } else {
-        await this.waitForIdle();
-        if (this.styleStackNeedsCompositor()) {
-          await setRasterStrokeGeometryEnabled(this, false);
-          this.rasterStrokePendingComposeRect = rasterStrokeEffectRect(this, 
-            this.layerContentBounds,
-            previous.width,
-          );
-          if (
-            this.rasterStrokeRenderer
-            && this.rasterStrokeRenderer.scratchExtent
-              !== RASTER_STROKE_COMPOSITOR_ONLY_SCRATCH_EXTENT
-          ) {
-            this.rasterStrokeRenderer.resizeScratch(
-              RASTER_STROKE_COMPOSITOR_ONLY_SCRATCH_EXTENT,
-            );
-            this.scheduleEffectsScratchShrink();
-          }
-        } else {
-          releaseRasterStrokeRenderer(this);
-        }
-        this.paintDisplayMipValidThroughLevel = 0;
-        this.presentationCacheNeedsFullRebuild = true;
-        this.displayDirty = true;
-        this.requestRender();
-        if (previousActive) {
-          this.callbacks.onStatus?.(
-            this.styleStackNeedsCompositor()
-              ? "Traccia disattivata; il compositore condiviso resta per gli altri effetti."
-              : "Traccia disattivata; memoria GPU liberata.",
-            "ok",
-          );
-        }
-      }
-      this.publishStats();
-      this.recordRasterLayerMetadataMutation("stroke", historyBefore);
-      return true;
-    } catch (error) {
-      this.rasterStrokeStyle = previous;
-      try {
-        if (previousActive && !this.rasterStrokeRenderer) {
-          await ensureRasterStrokeRenderer(this, previous.width, true);
-        }
-        if (this.rasterStrokeRenderer) {
-          await setRasterStrokeGeometryEnabled(this, previousActive);
-          const previousScratchExtent = rasterStrokeScratchExtentForRenderer(
-            previousActive,
-            previous.width,
-          );
-          if (this.rasterStrokeRenderer.scratchExtent !== previousScratchExtent) {
-            this.rasterStrokeRenderer.resizeScratch(previousScratchExtent);
-          }
-        }
-      } catch (restoreError) {
-        console.error("Ripristino risorse Traccia non riuscito", restoreError);
-      }
-      if (!previousActive && !this.styleStackNeedsCompositor()) {
-        releaseRasterStrokeRenderer(this);
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      this.callbacks.onStatus?.(`Traccia WebGPU non disponibile: ${message}`, "error");
-      throw error;
-    } finally {
-      this.rasterStrokeBusy = false;
-    }
+    return await applyRasterStrokeStyle(this, style, this.rasterStyleHistoryPort());
   }
 
   async setRasterBevelStyle(style: unknown): Promise<boolean> {
-    const normalized = normalizeRasterBevelStyle(style);
-    if (this.initialized && !this.rasterLayerMetadataHistoryEditAllows("bevel")) {
-      return false;
-    }
-    if (this.initialized && this.layerSwitchBusy) {
-      return false;
-    }
-    const change = classifyRasterBevelStyleChange(
-      this.rasterBevelStyle,
-      normalized,
-      this.rasterBevelHeightValid ? rasterBevelRadiusBucket(this.rasterBevelStyle) : 0,
-    );
-    if (
-      rasterBevelStylesEqual(normalized, this.rasterBevelStyle)
-      && (!normalized.enabled || (this.rasterBevelRenderer && this.rasterStrokeRenderer))
-    ) {
-      return true;
-    }
-    if (!this.initialized) {
-      this.rasterBevelStyle = normalized;
-      return true;
-    }
-    if (
-      this.activeStroke
-      || this.historyBusy
-      || this.layerSwitchBusy
-      || this.rasterStrokeBusy
-      || this.rasterBevelBusy
-      || this.rasterOuterShadowBusy
-      || this.rasterInnerShadowBusy
-    ) {
-      return false;
-    }
-
-    flushPendingWorkBeforeSettingsChange(this);
-    const historyBefore = captureRasterLayerMetadataHistoryState(
-      this,
-      this.layerStack.active.id,
-      "bevel",
-    );
-    const previous = copyRasterBevelStyle(this.rasterBevelStyle);
-    const previousActive = previous.enabled;
-    const previousRect = rasterBevelVisualBounds(
-      this.layerContentBounds,
-      previous,
-      DOCUMENT_WIDTH,
-      DOCUMENT_HEIGHT,
-    );
-    this.rasterBevelBusy = true;
-    try {
-      await this.waitForIdle();
-      this.rasterBevelStyle = normalized;
-      invalidateActiveLayerBake(this);
-      if (normalized.enabled) {
-        if (!this.rasterBevelRenderer) {
-          this.callbacks.onStatus?.("Preparo lo Smusso/Rilievo Heightfield V2…", "working");
-          await ensureRasterBevelRenderer(this);
-        }
-        if (!this.rasterStrokeRenderer) {
-          await ensureRasterStrokeRenderer(this);
-        }
-        this.rasterBevelRenderer!.updateStyleResources(normalized);
-        this.rasterStrokeRenderer!.setBevelResources(
-          this.rasterBevelRenderer!.heightView,
-          this.rasterBevelRenderer!.glossView,
-        );
-        this.rasterStrokeRenderer!.updateBevelFieldParameters(
-          this.rasterBevelRenderer!.fieldState,
-        );
-        this.rasterStrokeRenderer!.updateBevelParameters(normalized);
-        this.rebuildRasterStrokeDisplayBindGroups();
-        if (!previousActive || change.geometryRebuild) {
-          this.rasterBevelHeightValid = false;
-          this.rasterBevelHeightSourceMode = null;
-        }
-        const nextRect = rasterBevelVisualBounds(
-          this.layerContentBounds,
-          normalized,
-          DOCUMENT_WIDTH,
-          DOCUMENT_HEIGHT,
-        );
-        this.rasterBevelPendingComposeRect = mergeDirtyRects(
-          previousRect,
-          nextRect,
-        );
-        this.callbacks.onStatus?.("Smusso/Rilievo Heightfield V2 attivo.", "ok");
-      } else {
-        this.rasterBevelPendingComposeRect = previousRect;
-        releaseRasterBevelRenderer(this);
-        if (!this.styleStackNeedsCompositor()) {
-          releaseRasterStrokeRenderer(this);
-        }
-        if (previousActive) {
-          this.callbacks.onStatus?.(
-            "Smusso/Rilievo disattivato; memoria Heightfield liberata.",
-            "ok",
-          );
-        }
-      }
-      this.paintDisplayMipValidThroughLevel = 0;
-      this.presentationCacheNeedsFullRebuild = true;
-      this.displayDirty = true;
-      this.requestRender();
-      this.publishStats();
-      this.recordRasterLayerMetadataMutation("bevel", historyBefore);
-      return true;
-    } catch (error) {
-      this.rasterBevelStyle = previous;
-      if (!previousActive) {
-        releaseRasterBevelRenderer(this);
-        if (!this.styleStackNeedsCompositor()) {
-          releaseRasterStrokeRenderer(this);
-        }
-      } else {
-        this.rasterBevelHeightValid = false;
-        this.rasterBevelHeightSourceMode = null;
-        this.rasterBevelRenderer?.updateStyleResources(previous);
-        this.rasterStrokeRenderer?.updateBevelParameters(previous);
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      this.callbacks.onStatus?.(`Smusso/Rilievo WebGPU non disponibile: ${message}`, "error");
-      throw error;
-    } finally {
-      this.rasterBevelBusy = false;
-    }
+    return await applyRasterBevelStyle(this, style, this.rasterStyleHistoryPort());
   }
 
   async setRasterOuterShadowStyle(style: unknown): Promise<boolean> {
-    const normalized = normalizeRasterOuterShadowStyle(style);
-    if (this.initialized && !this.rasterLayerMetadataHistoryEditAllows("outer-shadow")) {
-      return false;
-    }
-    if (!rasterOuterShadowUsesSupportedBlend(normalized)) {
-      throw new Error(
-        "L'Ombra esterna Multiply è esatta solo con colore nero; "
-        + "usa Normale per un'ombra colorata.",
-      );
-    }
-    if (this.initialized && this.layerSwitchBusy) {
-      return false;
-    }
-    const change = classifyRasterOuterShadowStyleChange(
-      this.rasterOuterShadowStyle,
-      normalized,
-    );
-    if (
-      rasterOuterShadowStylesEqual(normalized, this.rasterOuterShadowStyle)
-      && (!normalized.enabled || (this.rasterOuterShadowRenderer && this.rasterStrokeRenderer))
-    ) {
-      return true;
-    }
-    if (!this.initialized) {
-      this.rasterOuterShadowStyle = normalized;
-      return true;
-    }
-    if (
-      this.activeStroke
-      || this.historyBusy
-      || this.layerSwitchBusy
-      || this.rasterStrokeBusy
-      || this.rasterBevelBusy
-      || this.rasterOuterShadowBusy
-      || this.rasterInnerShadowBusy
-    ) {
-      return false;
-    }
-
-    flushPendingWorkBeforeSettingsChange(this);
-    const historyBefore = captureRasterLayerMetadataHistoryState(
+    return await applyRasterOuterShadowStyle(
       this,
-      this.layerStack.active.id,
-      "outer-shadow",
+      style,
+      this.rasterStyleHistoryPort(),
     );
-    const previous = copyRasterOuterShadowStyle(this.rasterOuterShadowStyle);
-    const previousRect = rasterOuterShadowVisualBounds(
-      this.layerContentBounds,
-      previous,
-      DOCUMENT_WIDTH,
-      DOCUMENT_HEIGHT,
-    );
-    this.rasterOuterShadowBusy = true;
-    try {
-      await this.waitForIdle();
-      this.rasterOuterShadowStyle = normalized;
-      invalidateActiveLayerBake(this);
-      if (normalized.enabled) {
-        if (!this.rasterOuterShadowRenderer) {
-          this.callbacks.onStatus?.("Preparo l'Ombra esterna WebGPU…", "working");
-          await ensureRasterOuterShadowRenderer(this);
-        }
-        if (!this.rasterStrokeRenderer) {
-          await ensureRasterStrokeRenderer(this);
-        }
-        this.rasterOuterShadowRenderer!.updateStyle(normalized);
-        this.rasterStrokeRenderer!.setShadowResources(
-          "outer",
-          this.rasterOuterShadowRenderer!.coverageBuffer,
-          this.rasterOuterShadowRenderer!.compositionUniformBuffer,
-        );
-        if (change.matteChanged) {
-          this.rasterOuterShadowMatteValid = false;
-          this.rasterOuterShadowSourceMode = null;
-        }
-        const nextRect = rasterOuterShadowVisualBounds(
-          this.layerContentBounds,
-          normalized,
-          DOCUMENT_WIDTH,
-          DOCUMENT_HEIGHT,
-        );
-        this.rasterOuterShadowPendingComposeRect = mergeDirtyRects(
-          previousRect,
-          nextRect,
-        );
-        this.callbacks.onStatus?.("Ombra esterna WebGPU attiva.", "ok");
-      } else {
-        this.rasterOuterShadowPendingComposeRect = previousRect;
-        releaseRasterOuterShadowRenderer(this);
-        if (!this.styleStackNeedsCompositor()) {
-          releaseRasterStrokeRenderer(this);
-        }
-        this.callbacks.onStatus?.(
-          "Ombra esterna disattivata; matte R16F liberata.",
-          "ok",
-        );
-      }
-      this.paintDisplayMipValidThroughLevel = 0;
-      this.presentationCacheNeedsFullRebuild = true;
-      this.displayDirty = true;
-      this.requestRender();
-      this.publishStats();
-      this.recordRasterLayerMetadataMutation("outer-shadow", historyBefore);
-      return true;
-    } catch (error) {
-      this.rasterOuterShadowStyle = previous;
-      if (!previous.enabled) {
-        releaseRasterOuterShadowRenderer(this);
-        if (!this.styleStackNeedsCompositor()) {
-          releaseRasterStrokeRenderer(this);
-        }
-      } else {
-        this.rasterOuterShadowMatteValid = false;
-        this.rasterOuterShadowSourceMode = null;
-        this.rasterOuterShadowRenderer?.updateStyle(previous);
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      this.callbacks.onStatus?.(`Ombra esterna WebGPU non disponibile: ${message}`, "error");
-      throw error;
-    } finally {
-      this.rasterOuterShadowBusy = false;
-    }
   }
 
   async setRasterInnerShadowStyle(style: unknown): Promise<boolean> {
-    const normalized = normalizeRasterInnerShadowStyle(style);
-    if (this.initialized && !this.rasterLayerMetadataHistoryEditAllows("inner-shadow")) {
-      return false;
-    }
-    if (this.initialized && this.layerSwitchBusy) {
-      return false;
-    }
-    const change = classifyRasterInnerShadowStyleChange(
-      this.rasterInnerShadowStyle,
-      normalized,
-    );
-    if (
-      rasterInnerShadowStylesEqual(normalized, this.rasterInnerShadowStyle)
-      && (!normalized.enabled || (this.rasterInnerShadowRenderer && this.rasterStrokeRenderer))
-    ) {
-      return true;
-    }
-    if (!this.initialized) {
-      this.rasterInnerShadowStyle = normalized;
-      return true;
-    }
-    if (
-      this.activeStroke
-      || this.historyBusy
-      || this.layerSwitchBusy
-      || this.rasterStrokeBusy
-      || this.rasterBevelBusy
-      || this.rasterOuterShadowBusy
-      || this.rasterInnerShadowBusy
-    ) {
-      return false;
-    }
-
-    flushPendingWorkBeforeSettingsChange(this);
-    const historyBefore = captureRasterLayerMetadataHistoryState(
+    return await applyRasterInnerShadowStyle(
       this,
-      this.layerStack.active.id,
-      "inner-shadow",
+      style,
+      this.rasterStyleHistoryPort(),
     );
-    const previous = copyRasterInnerShadowStyle(this.rasterInnerShadowStyle);
-    const previousRect = rasterInnerShadowVisualBounds(
-      this.layerContentBounds,
-      previous,
-      DOCUMENT_WIDTH,
-      DOCUMENT_HEIGHT,
-    );
-    this.rasterInnerShadowBusy = true;
-    try {
-      await this.waitForIdle();
-      this.rasterInnerShadowStyle = normalized;
-      invalidateActiveLayerBake(this);
-      if (normalized.enabled) {
-        if (!this.rasterInnerShadowRenderer) {
-          this.callbacks.onStatus?.("Preparo l'Ombra interna WebGPU…", "working");
-          await ensureRasterInnerShadowRenderer(this);
-        }
-        if (!this.rasterStrokeRenderer) {
-          await ensureRasterStrokeRenderer(this);
-        }
-        this.rasterInnerShadowRenderer!.updateStyle(normalized);
-        this.rasterStrokeRenderer!.setShadowResources(
-          "inner",
-          this.rasterInnerShadowRenderer!.coverageBuffer,
-          this.rasterInnerShadowRenderer!.compositionUniformBuffer,
-        );
-        if (change.matteChanged) {
-          this.rasterInnerShadowMatteValid = false;
-          this.rasterInnerShadowSourceMode = null;
-        }
-        const nextRect = rasterInnerShadowVisualBounds(
-          this.layerContentBounds,
-          normalized,
-          DOCUMENT_WIDTH,
-          DOCUMENT_HEIGHT,
-        );
-        this.rasterInnerShadowPendingComposeRect = mergeDirtyRects(
-          previousRect,
-          nextRect,
-        );
-        this.callbacks.onStatus?.("Ombra interna WebGPU attiva.", "ok");
-      } else {
-        this.rasterInnerShadowPendingComposeRect = previousRect;
-        releaseRasterInnerShadowRenderer(this);
-        if (!this.styleStackNeedsCompositor()) {
-          releaseRasterStrokeRenderer(this);
-        }
-        this.callbacks.onStatus?.(
-          "Ombra interna disattivata; matte R16F liberata.",
-          "ok",
-        );
-      }
-      this.paintDisplayMipValidThroughLevel = 0;
-      this.presentationCacheNeedsFullRebuild = true;
-      this.displayDirty = true;
-      this.requestRender();
-      this.publishStats();
-      this.recordRasterLayerMetadataMutation("inner-shadow", historyBefore);
-      return true;
-    } catch (error) {
-      this.rasterInnerShadowStyle = previous;
-      if (!previous.enabled) {
-        releaseRasterInnerShadowRenderer(this);
-        if (!this.styleStackNeedsCompositor()) {
-          releaseRasterStrokeRenderer(this);
-        }
-      } else {
-        this.rasterInnerShadowMatteValid = false;
-        this.rasterInnerShadowSourceMode = null;
-        this.rasterInnerShadowRenderer?.updateStyle(previous);
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      this.callbacks.onStatus?.(`Ombra interna WebGPU non disponibile: ${message}`, "error");
-      throw error;
-    } finally {
-      this.rasterInnerShadowBusy = false;
-    }
   }
 
   resizeCanvas(): void {
@@ -5648,174 +4808,7 @@ export class BrushEngine {
     return finishStrokePerformanceProfile(this);
   }
 
-  getBenchmarkEnvironment(): {
-    canvasWidth: number;
-    canvasHeight: number;
-    layerSize: number;
-    layerFormat: LayerFormat;
-    layerMemoryMiB: number;
-    layerCount: number;
-    activeLayerId: number;
-    referenceLayerId: number | null;
-    fillReferenceLayerStrategy: typeof FILL_REFERENCE_LAYER_STRATEGY;
-    fillReferenceLayerMiB: number;
-    layerBakeStrategy: typeof LAYER_BAKE_STRATEGY;
-    layerCompositeStrategy: typeof LAYER_COMPOSITE_STRATEGY;
-    layerStorageStudy: LayerStorageStudyStats;
-    gpuLabel: string;
-    effectsWorkingSetStrategy: typeof EFFECTS_WORKING_SET_STRATEGY;
-    effectsWorkingSetGeneration: number;
-    effectsWorkingSetSourceFormat: LayerFormat;
-    effectsScratchPoolStrategy: typeof EFFECTS_SCRATCH_POOL_STRATEGY;
-    effectsScratchPoolCurrentBytes: number;
-    effectsScratchPoolPeakBytes: number;
-    effectsScratchPoolGeneration: number;
-    effectsScratchPoolAllocationCount: number;
-    effectsScratchPoolShrinkCount: number;
-    effectsScratchPoolRequirementsBytes: Readonly<Record<string, number>>;
-    rasterColorOverlayStyle: RasterColorOverlayStyle;
-    rasterColorOverlayStrategy: typeof RASTER_COLOR_OVERLAY_STRATEGY;
-    rasterColorOverlayScratchMemoryMiB: 0;
-    rasterStrokeRendererBuild: string | null;
-    rasterStrokeStyle: RasterStrokeStyle;
-    rasterStrokePersistentMemoryMiB: number;
-    rasterStrokeCoverageMemoryMiB: number;
-    rasterStrokeScratchMemoryMiB: number;
-    rasterStrokeCoverageStrategy: typeof RASTER_STROKE_COVERAGE_STRATEGY;
-    rasterStrokeGeometryStorageStrategy: typeof RASTER_STROKE_GEOMETRY_STORAGE_STRATEGY;
-    rasterStrokeGeometryResident: boolean;
-    rasterStrokeStyledStorageStrategy: typeof RASTER_STROKE_STYLED_STORAGE_STRATEGY;
-    rasterStrokeDistanceStorageStrategy: typeof RASTER_STROKE_DISTANCE_STORAGE_STRATEGY;
-    rasterStrokeMutationGateStrategy: typeof RASTER_STROKE_MUTATION_GATE_STRATEGY;
-    rasterStrokeScratchStrategy: typeof RASTER_STROKE_SCRATCH_STRATEGY;
-    rasterStrokeScratchExtent: number;
-    rasterStrokeScratchCompactMaxWidth: number;
-    rasterBevelRendererBuild: string | null;
-    rasterBevelStyle: RasterBevelStyle;
-    rasterBevelHeightMemoryMiB: number;
-    rasterBevelScratchMemoryMiB: number;
-    rasterBevelScratchExtent: number;
-    rasterBevelFieldStrategy:
-      | typeof RASTER_BEVEL_FIELD_STRATEGY
-      | typeof RASTER_BEVEL_BOUNDING_FIELD_STRATEGY;
-    rasterBevelBoundingFieldEnabled: boolean;
-    rasterBevelFieldAllocationBounds: RasterBevelRect | null;
-    rasterBevelFieldValidBounds: RasterBevelRect | null;
-    rasterBevelFieldTextureWidth: number;
-    rasterBevelFieldTextureHeight: number;
-    rasterBevelFieldGeneration: number;
-    rasterBevelFieldAllocationCount: number;
-    rasterBevelFieldShrinkCount: number;
-    rasterBevelDistanceStrategy: typeof RASTER_BEVEL_DISTANCE_STRATEGY;
-    rasterBevelWorkspaceStrategy: typeof RASTER_BEVEL_WORKSPACE_STRATEGY;
-    rasterBevelHeightSourceMode: RasterStrokeSourceMode | null;
-    rasterOuterShadowRendererBuild: string | null;
-    rasterOuterShadowStyle: RasterOuterShadowStyle;
-    rasterOuterShadowMatteMemoryMiB: number;
-    rasterOuterShadowControlMemoryMiB: number;
-    rasterOuterShadowScratchMemoryMiB: number;
-    rasterOuterShadowScratchExtent: number;
-    rasterOuterShadowStorageStrategy: typeof RASTER_SHADOW_STORAGE_STRATEGY;
-    rasterOuterShadowWorkspaceStrategy: typeof RASTER_SHADOW_WORKSPACE_STRATEGY;
-    rasterOuterShadowSourceMode: RasterStrokeSourceMode | null;
-    rasterInnerShadowRendererBuild: string | null;
-    rasterInnerShadowStyle: RasterInnerShadowStyle;
-    rasterInnerShadowMatteMemoryMiB: number;
-    rasterInnerShadowControlMemoryMiB: number;
-    rasterInnerShadowScratchMemoryMiB: number;
-    rasterInnerShadowScratchExtent: number;
-    rasterInnerShadowStorageStrategy: typeof RASTER_SHADOW_STORAGE_STRATEGY;
-    rasterInnerShadowWorkspaceStrategy: typeof RASTER_SHADOW_WORKSPACE_STRATEGY;
-    rasterInnerShadowSourceMode: RasterStrokeSourceMode | null;
-
-    dryBlendScratchLifecycleStrategy: typeof DRY_BLEND_SCRATCH_LIFECYCLE_STRATEGY;
-    timestampQueriesSupported: boolean;
-    stampGeometry: StampGeometry;
-    stampVerticesPerCopy: number;
-    fragmentCoverageStrategy: FragmentCoverageStrategy;
-    shapeSamplingStrategy: ShapeSamplingStrategy;
-    shapeMaskDecodeStrategy: ShapeMaskDecodeStrategy;
-    shapeOccupancyFallbackReason: ShapeOccupancyFallbackReason;
-    shapeOccupancyGridSize: number;
-    shapeOccupancyMipLevel: number;
-    shapeOccupancyActiveCells: number;
-    shapeOccupancyCoverageRatio: number;
-    shapeOccupancyCandidateMipLevel: number;
-    shapeOccupancyCandidateActiveCells: number;
-    shapeOccupancyCandidateCoverageRatio: number;
-    shapeOccupancyMaximumMip: number;
-    shapeOccupancyMinimumRadius: number;
-    shapeOccupancyMaximumCoverageRatio: number;
-    shapeOccupancyBitmaskBytes: number;
-    shapeMaskResident: boolean;
-    shapeStorageLifecycleStrategy: typeof SHAPE_STORAGE_LIFECYCLE_STRATEGY;
-    colorSeedStrategy: typeof COLOR_SEED_STRATEGY;
-    dirtyRectStrategy: typeof DIRTY_RECT_STRATEGY;
-    strokeCurveStrategy: StrokePerformanceProfile["strokeCurveStrategy"];
-    thicknessDynamicsStrategy: ThicknessDynamicsStrategy;
-    thicknessDynamicsTaperWindowMs: number;
-    thicknessDynamicsPreviewStrategy: ThicknessDynamicsPreviewStrategy;
-    thicknessDynamicsPreviewTextureQuantum: number;
-    thicknessDynamicsPreviewMaximumTextureDimension: number;
-    presentationCacheStrategy: typeof PRESENTATION_CACHE_STRATEGY;
-    presentationTransferStrategy: typeof PRESENTATION_TRANSFER_STRATEGY;
-    paintDisplayPyramidStrategy: typeof PAINT_DISPLAY_PYRAMID_STRATEGY;
-    paintDisplayLodSelectionStrategy: typeof PAINT_DISPLAY_LOD_SELECTION_STRATEGY;
-    paintDisplayMipLevelCount: number;
-    paintDisplaySelectedMipLevel: number;
-    paintDisplayPyramidAdditionalMemoryMiB: number;
-    brushOpacityStrategy: typeof BRUSH_OPACITY_STRATEGY;
-    grainStrategy: GrainStrategy;
-    grainCoordinateStrategy: GrainCoordinateStrategy;
-    grainSamplingStrategy: GrainSamplingStrategy;
-    grainMipStrategy: typeof GRAIN_MIP_STRATEGY;
-    grainTextureFormat: "r16float";
-    grainTextureWidth: number;
-    grainTextureHeight: number;
-    grainTextureMipLevelCount: number;
-    grainTextureMemoryMiB: number;
-    grainTextureIdentity: number;
-    grainPipelineStrategy: typeof GRAIN_PIPELINE_STRATEGY;
-    grainCoverageStrategy: GrainCoverageStrategy;
-    grainAdaptivePreviewStrategy: GrainAdaptivePreviewStrategy;
-    grainStartupDecodeMs: number;
-    grainStartupMipBuildMs: number;
-    grainStartupUploadMs: number;
-    grainTextureResident: boolean;
-    grainStorageLifecycleStrategy: typeof GRAIN_STORAGE_LIFECYCLE_STRATEGY;
-    lightGlazeStrategy: LightGlazeStrategy;
-    lightGlazeAdaptivePreviewStrategy: typeof LIGHT_GLAZE_ADAPTIVE_PREVIEW_STRATEGY;
-    lightGlazeStorageAllocated: boolean;
-    lightGlazeStorageMode: LightGlazeStorageMode;
-    lightGlazeAdditionalMemoryMiB: number;
-    lightGlazeStorageLifecycleStrategy: typeof LIGHT_GLAZE_STORAGE_LIFECYCLE_STRATEGY;
-    adaptivePreviewStrategy: typeof ADAPTIVE_PREVIEW_STRATEGY;
-    adaptivePreviewTriggerStrategy: typeof ADAPTIVE_PREVIEW_TRIGGER_STRATEGY;
-    adaptivePreviewStaleFrameStrategy: typeof ADAPTIVE_PREVIEW_STALE_FRAME_STRATEGY;
-    adaptivePreviewVisibleCanvasStrategy: typeof ADAPTIVE_PREVIEW_VISIBLE_CANVAS_STRATEGY;
-    adaptivePreviewVisibleCanvasRequestedDesynchronized: boolean;
-    adaptivePreviewVisibleCanvasAlpha: boolean | null;
-    adaptivePreviewVisibleCanvasDesynchronized: boolean | null;
-    adaptivePreviewVisibleCanvasColorSpace: string | null;
-    adaptivePreviewScratchCanvasAlpha: boolean | null;
-    adaptivePreviewScratchCanvasDesynchronized: boolean | null;
-    adaptivePreviewScratchCanvasColorSpace: string | null;
-    adaptivePreviewExactLinearScale: number;
-    adaptivePreviewJsBudgetMs: number;
-    adaptivePreviewMaxTipBaseStamps: number;
-    adaptivePreviewMaxPatchCssPixels: number;
-    adaptivePreviewProbeIntervalSubmissions: number;
-    adaptivePreviewTriggerThresholdMs: number;
-    adaptivePreviewSlowCompletionThresholdMs: number;
-    adaptivePreviewTriggerConsecutiveProbes: number;
-    adaptivePreviewProbeNearMissMinimumMs: number;
-    adaptiveSpacingStrategy: typeof ADAPTIVE_SPACING_STRATEGY;
-    adaptiveSpacingStepPercentPoints: number;
-    adaptiveSpacingMaxExtraPercentPoints: number;
-    historyStorageStrategy: typeof HISTORY_STORAGE_STRATEGY;
-    historyReplayStrategy: typeof HISTORY_REPLAY_STRATEGY;
-    historyStampRetentionStrategy: typeof HISTORY_STAMP_RETENTION_STRATEGY;
-  } {
+  getBenchmarkEnvironment(): BenchmarkEnvironment {
     return getBenchmarkEnvironment(this);
   }
 

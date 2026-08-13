@@ -164,7 +164,7 @@ import { type DirtyRect } from "./engine-stroke-types";
 import { type MergedSurfaceResources } from "./engine-layer-resources";
 import { historyCheckpointAllocatedBytes } from "./history-maintenance-runtime";
 
-export function getBenchmarkEnvironment(engine: BrushEngine): {
+export interface BenchmarkEnvironment {
   canvasWidth: number;
   canvasHeight: number;
   layerSize: number;
@@ -331,7 +331,9 @@ export function getBenchmarkEnvironment(engine: BrushEngine): {
   historyStorageStrategy: typeof HISTORY_STORAGE_STRATEGY;
   historyReplayStrategy: typeof HISTORY_REPLAY_STRATEGY;
   historyStampRetentionStrategy: typeof HISTORY_STAMP_RETENTION_STRATEGY;
-} {
+}
+
+export function getBenchmarkEnvironment(engine: BrushEngine): BenchmarkEnvironment {
   const effectsScratch = engine.effectsWorkbench?.scratchPool.snapshot();
   const layerStorageStudy = getLayerStorageStudy(engine);
   const bevelField = engine.rasterBevelRenderer?.fieldState ?? {

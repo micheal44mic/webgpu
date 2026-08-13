@@ -1,3 +1,4 @@
+import { readEditorHtml, readEditorStyleSource } from "./ui-shell-source.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
@@ -168,8 +169,8 @@ const adjustments = readFileSync(
   new URL("../src/raster-adjustments-controller.ts", import.meta.url),
   "utf8",
 );
-const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
-const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+const html = readEditorHtml();
+const styles = readEditorStyleSource();
 const sheet = readFileSync(new URL("../src/mobile-noise-sheet.ts", import.meta.url), "utf8");
 const metadataEffects = readFileSync(
   new URL("../src/mobile-raster-effects-sheet.ts", import.meta.url),

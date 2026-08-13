@@ -4,7 +4,7 @@ import type { DirtyRect } from "./engine-stroke-types";
 import type { MixedSceneActivePresentation } from "./engine-vector-text-resources";
 import {
   layerDirtyRectToPresentationRect,
-} from "./engine-layer-runtime";
+} from "./engine-layer-surface-runtime";
 import {
   ensureRasterStrokeRenderer,
   releaseRasterStrokeRenderer,

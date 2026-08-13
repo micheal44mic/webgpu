@@ -8,7 +8,7 @@
     "labs:dev": "vite --mode labs --host 0.0.0.0",
     "typecheck": "tsc --noEmit",
     "build:bundle": "vite build && node scripts/check-production-bundle.mjs && node scripts/prepare-sites-build.mjs",
-    "labs:build": "vite build --mode labs",
+    "labs:build": "vite build --mode labs && node scripts/check-labs-bundle.mjs",
     "build": "npm run typecheck && npm run build:bundle",
     "preview": "vite preview --host 0.0.0.0",
     "verify": "node scripts/run-verifications.mjs",

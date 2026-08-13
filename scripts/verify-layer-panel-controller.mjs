@@ -1,3 +1,4 @@
+import { readEditorHtml } from "./ui-shell-source.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createServer } from "vite";
@@ -12,7 +13,7 @@ const sceneEditorSource = readFileSync(
   new URL("src/scene-editor-controller.ts", root),
   "utf8",
 );
-const html = readFileSync(new URL("index.html", root), "utf8");
+const html = readEditorHtml();
 
 assert.match(mainSource, /layerPanelController = new LayerPanelController\(\{/);
 assert.match(mainSource, /layerPanelController\?\.dispose\(\);/);

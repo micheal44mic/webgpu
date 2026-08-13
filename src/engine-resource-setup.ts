@@ -59,7 +59,7 @@ import {
 import { THICKNESS_TAPER_WINDOW_MS, endThicknessRadius } from "./thickness-dynamics";
 import { RasterShadowRenderer } from "./shadow-renderer";
 import { RasterBevelRenderer } from "./bevel-renderer";
-import { ensureMixedSceneLinearTexture } from "./engine-vector-text-runtime";
+import { ensureMixedSceneLinearTexture } from "./engine-vector-text-segmented-runtime";
 import {
   cancelBevelFieldShrink,
   commitThicknessStamp,

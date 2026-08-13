@@ -1,0 +1,555 @@
+      <aside
+        id="mobileBrushLibrarySheet"
+        class="mobile-tools-sheet mobile-brush-library-sheet"
+        aria-label="Brush library"
+        aria-hidden="true"
+        data-snap="expanded"
+      >
+        <button
+          id="mobileBrushLibraryHandle"
+          class="mobile-tools-sheet-handle"
+          type="button"
+          aria-label="Close brush library"
+          aria-controls="mobileBrushLibrarySheet"
+          aria-expanded="true"
+        >
+          <span class="mobile-tools-sheet-grabber" aria-hidden="true"></span>
+        </button>
+        <div class="mobile-brush-library-content">
+          <div class="mobile-brush-library-heading">
+            <h2 class="mobile-brush-library-title">M1M4 BRUSHES</h2>
+            <div
+              class="mobile-brush-library-actions"
+              role="group"
+              aria-label="Brush actions"
+            >
+              <button
+                id="mobileBrushLibraryImport"
+                class="mobile-brush-library-action"
+                type="button"
+                aria-label="Import brush"
+                title="Import brush"
+              >
+                <i data-lucide="upload" aria-hidden="true"></i>
+              </button>
+              <button
+                id="mobileBrushLibraryExport"
+                class="mobile-brush-library-action"
+                type="button"
+                aria-label="Export selected brush"
+                title="Export selected brush"
+                disabled
+              >
+                <i data-lucide="download" aria-hidden="true"></i>
+              </button>
+              <button
+                id="mobileBrushLibraryAdd"
+                class="mobile-brush-library-action mobile-brush-library-add"
+                type="button"
+                aria-label="Create a new brush"
+                title="New brush"
+              >
+                <i data-lucide="plus" aria-hidden="true"></i>
+              </button>
+            </div>
+            <input
+              id="mobileBrushLibraryImportFile"
+              type="file"
+              accept=".m1m4brush,application/vnd.m1m4.brush,application/octet-stream"
+              hidden
+            />
+          </div>
+          <p
+            id="mobileBrushLibraryStatus"
+            class="mobile-brush-library-status"
+            role="status"
+            aria-live="polite"
+            hidden
+          ></p>
+          <div class="mobile-brush-library-layout">
+            <nav class="mobile-brush-library-categories" aria-label="Brush categories">
+              <button
+                class="mobile-brush-library-category"
+                type="button"
+                data-mobile-brush-category="pencil"
+                aria-pressed="false"
+              >
+                <span class="mobile-icon-stack" aria-hidden="true">
+                  <i data-lucide="pencil" class="mobile-icon-layer mobile-icon-outline"></i>
+                  <i data-lucide="pencil" class="mobile-icon-layer mobile-icon-face"></i>
+                </span>
+                <span>Pencil</span>
+              </button>
+              <button
+                class="mobile-brush-library-category"
+                type="button"
+                data-mobile-brush-category="painting"
+                aria-pressed="true"
+              >
+                <span class="mobile-icon-stack" aria-hidden="true">
+                  <i data-lucide="brush" class="mobile-icon-layer mobile-icon-outline"></i>
+                  <i data-lucide="brush" class="mobile-icon-layer mobile-icon-face"></i>
+                </span>
+                <span>Painting</span>
+              </button>
+              <button
+                class="mobile-brush-library-category"
+                type="button"
+                data-mobile-brush-category="spray-paint"
+                aria-pressed="false"
+              >
+                <span class="mobile-icon-stack" aria-hidden="true">
+                  <i data-lucide="spray-can" class="mobile-icon-layer mobile-icon-outline"></i>
+                  <i data-lucide="spray-can" class="mobile-icon-layer mobile-icon-face"></i>
+                </span>
+                <span>Spray Paint</span>
+              </button>
+            </nav>
+
+            <section
+              id="mobileBrushLibraryBrushes"
+              class="mobile-brush-library-brushes"
+              aria-label="Brushes"
+            >
+              <div id="mobileBrushLibraryList" class="mobile-brush-library-list">
+                <button
+                  id="mobilePencilBrushCard"
+                  class="mobile-brush-card"
+                  type="button"
+                  data-mobile-brush-id="m1m4-pencil-v1"
+                  data-mobile-brush-category-card="pencil"
+                  aria-label="Pencil"
+                  aria-pressed="false"
+                  hidden
+                >
+                  <span class="mobile-brush-card-selected" aria-hidden="true">
+                    <i data-lucide="check"></i>
+                  </span>
+                  <span class="mobile-brush-card-name">Pencil</span>
+                  <canvas
+                    id="mobilePencilBrushPreviewCanvas"
+                    class="mobile-brush-card-preview"
+                    width="480"
+                    height="112"
+                    aria-hidden="true"
+                  ></canvas>
+                </button>
+                <button
+                  id="mobileCurrentBrushCard"
+                  class="mobile-brush-card is-selected"
+                  type="button"
+                  data-mobile-brush-id="current"
+                  data-mobile-brush-category-card="painting"
+                  aria-label="Default Brush, selected"
+                  aria-pressed="true"
+                >
+                  <span class="mobile-brush-card-selected" aria-hidden="true">
+                    <i data-lucide="check"></i>
+                  </span>
+                  <span class="mobile-brush-card-name">Default Brush</span>
+                  <canvas
+                    id="mobileBrushLibraryPreviewCanvas"
+                    class="mobile-brush-card-preview"
+                    width="480"
+                    height="112"
+                    aria-hidden="true"
+                  ></canvas>
+                </button>
+              </div>
+              <p id="mobileBrushLibraryEmpty" class="mobile-brush-library-empty" hidden>
+                Brushes coming soon
+              </p>
+            </section>
+          </div>
+        </div>
+      </aside>
+
+      <aside
+        id="mobileBrushStudioSheet"
+        class="mobile-tools-sheet mobile-brush-studio-sheet"
+        aria-label="Brush Studio"
+        aria-hidden="true"
+        data-snap="expanded"
+      >
+        <button
+          id="mobileBrushStudioHandle"
+          class="mobile-tools-sheet-handle"
+          type="button"
+          aria-label="Move Brush Studio"
+          aria-controls="mobileBrushStudioSheet"
+          aria-expanded="true"
+        >
+          <span class="mobile-tools-sheet-grabber" aria-hidden="true"></span>
+        </button>
+
+        <div class="mobile-brush-studio-shell">
+          <header class="mobile-brush-studio-header">
+            <button id="mobileBrushStudioCancel" class="mobile-brush-studio-header-action" type="button">
+              Cancel
+            </button>
+            <input
+              id="mobileBrushStudioName"
+              class="mobile-brush-studio-name"
+              type="text"
+              value="Pencil"
+              maxlength="48"
+              aria-label="Brush name"
+              autocomplete="off"
+              spellcheck="false"
+              readonly
+            />
+            <button id="mobileBrushStudioDone" class="mobile-brush-studio-header-action is-primary" type="button">
+              Done
+            </button>
+          </header>
+
+          <p
+            id="mobileBrushStudioStatus"
+            class="mobile-brush-studio-status"
+            role="status"
+            aria-live="polite"
+            hidden
+          ></p>
+
+          <section class="mobile-brush-studio-preview" aria-label="Live brush preview">
+            <canvas
+              id="mobileBrushStudioPreviewCanvas"
+              width="720"
+              height="180"
+              aria-label="Live preview of the current brush stroke"
+            ></canvas>
+          </section>
+
+          <div id="mobileBrushStudioScroll" class="mobile-brush-studio-scroll">
+            <section
+              id="mobileBrushStudioStrokePanel"
+              class="mobile-brush-studio-panel"
+              role="tabpanel"
+              aria-labelledby="mobileBrushStudioStrokeTab"
+              data-mobile-brush-studio-panel="stroke"
+            >
+              <h3>Primary</h3>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioSize">
+                <span>Size</span>
+                <output id="mobileBrushStudioSizeOut" for="mobileBrushStudioSize">30 px</output>
+                <input id="mobileBrushStudioSize" type="range" min="1" max="1000" step="1" value="30" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioOpacity">
+                <span>Opacity</span>
+                <output id="mobileBrushStudioOpacityOut" for="mobileBrushStudioOpacity">100%</output>
+                <input id="mobileBrushStudioOpacity" type="range" min="0" max="100" step="0.1" value="100" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioStabilization">
+                <span>Stabilization</span>
+                <output id="mobileBrushStudioStabilizationOut" for="mobileBrushStudioStabilization">0%</output>
+                <input id="mobileBrushStudioStabilization" type="range" min="0" max="100" step="1" value="0" />
+              </label>
+
+              <fieldset class="mobile-brush-studio-fieldset">
+                <legend>Rendering</legend>
+                <div
+                  id="mobileBrushStudioRendering"
+                  class="mobile-brush-studio-segments mobile-brush-studio-rendering"
+                  role="radiogroup"
+                  aria-label="Rendering mode"
+                >
+                  <button type="button" role="radio" aria-checked="false" data-mobile-brush-rendering="light-glaze">
+                    Light Glaze
+                  </button>
+                  <button type="button" role="radio" aria-checked="false" data-mobile-brush-rendering="uniformed-glaze">
+                    Uniformed Glaze
+                  </button>
+                  <button type="button" role="radio" aria-checked="true" data-mobile-brush-rendering="intense-blending">
+                    Intense Blending
+                  </button>
+                </div>
+              </fieldset>
+
+              <h3>Stroke</h3>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioSpacing">
+                <span>Spacing</span>
+                <output id="mobileBrushStudioSpacingOut" for="mobileBrushStudioSpacing">2%</output>
+                <input id="mobileBrushStudioSpacing" type="range" min="0.25" max="99" step="0.25" value="2" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioFlow">
+                <span>Flow</span>
+                <output id="mobileBrushStudioFlowOut" for="mobileBrushStudioFlow">100%</output>
+                <input id="mobileBrushStudioFlow" type="range" min="0.1" max="100" step="0.1" value="100" />
+              </label>
+            </section>
+
+            <section
+              id="mobileBrushStudioShapePanel"
+              class="mobile-brush-studio-panel"
+              role="tabpanel"
+              aria-labelledby="mobileBrushStudioShapeTab"
+              data-mobile-brush-studio-panel="shape"
+              hidden
+            >
+              <div class="mobile-brush-studio-section-heading">
+                <h3>Source</h3>
+                <label class="mobile-brush-studio-check" for="mobileBrushStudioShapeInvert">
+                  <input id="mobileBrushStudioShapeInvert" type="checkbox" />
+                  <span>Invert</span>
+                </label>
+              </div>
+              <div class="mobile-brush-studio-source">
+                <button
+                  id="mobileBrushStudioShapeSource"
+                  class="mobile-brush-studio-source-preview"
+                  type="button"
+                  aria-label="Choose shape source image"
+                >
+                  <canvas id="mobileBrushStudioShapeSourceCanvas" width="256" height="256" aria-hidden="true"></canvas>
+                  <span class="mobile-brush-studio-source-placeholder" aria-hidden="true">
+                    <span class="mobile-icon-stack">
+                      <i data-lucide="image" class="mobile-icon-layer mobile-icon-outline"></i>
+                      <i data-lucide="image" class="mobile-icon-layer mobile-icon-face"></i>
+                    </span>
+                    <span>Shape Source</span>
+                  </span>
+                </button>
+                <div class="mobile-brush-studio-source-actions">
+                  <input
+                    id="mobileBrushStudioShapeFile"
+                    class="mobile-brush-studio-file"
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    aria-label="Choose shape source file"
+                  />
+                  <label
+                    id="mobileBrushStudioShapeSelect"
+                    class="mobile-brush-studio-source-action is-primary"
+                    for="mobileBrushStudioShapeFile"
+                  >Select Image</label>
+                  <label
+                    id="mobileBrushStudioShapeReplace"
+                    class="mobile-brush-studio-source-action"
+                    for="mobileBrushStudioShapeFile"
+                  >Replace</label>
+                  <button id="mobileBrushStudioShapeRemove" class="mobile-brush-studio-source-action" type="button">
+                    Remove
+                  </button>
+                </div>
+              </div>
+
+              <fieldset class="mobile-brush-studio-fieldset">
+                <legend>Rotation</legend>
+                <div id="mobileBrushStudioShapeRotation" class="mobile-brush-studio-segments" role="radiogroup" aria-label="Shape rotation">
+                  <button type="button" role="radio" aria-checked="false" data-mobile-brush-shape-rotation="fixed">Fixed</button>
+                  <button type="button" role="radio" aria-checked="true" data-mobile-brush-shape-rotation="follow-stroke">Follow Stroke</button>
+                </div>
+              </fieldset>
+
+              <h3>Behavior</h3>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioShapeScatter">
+                <span>Scatter</span>
+                <output id="mobileBrushStudioShapeScatterOut" for="mobileBrushStudioShapeScatter">51%</output>
+                <input id="mobileBrushStudioShapeScatter" type="range" min="0" max="100" step="1" value="51" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioCount">
+                <span>Count</span>
+                <output id="mobileBrushStudioCountOut" for="mobileBrushStudioCount">1</output>
+                <input id="mobileBrushStudioCount" type="range" min="1" max="24" step="1" value="1" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioJitterLateral">
+                <span>Lateral Jitter</span>
+                <output id="mobileBrushStudioJitterLateralOut" for="mobileBrushStudioJitterLateral">10%</output>
+                <input id="mobileBrushStudioJitterLateral" type="range" min="0" max="100" step="1" value="10" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioJitterLinear">
+                <span>Linear Jitter</span>
+                <output id="mobileBrushStudioJitterLinearOut" for="mobileBrushStudioJitterLinear">10%</output>
+                <input id="mobileBrushStudioJitterLinear" type="range" min="0" max="100" step="1" value="10" />
+              </label>
+            </section>
+
+            <section
+              id="mobileBrushStudioGrainPanel"
+              class="mobile-brush-studio-panel"
+              role="tabpanel"
+              aria-labelledby="mobileBrushStudioGrainTab"
+              data-mobile-brush-studio-panel="grain"
+              hidden
+            >
+              <div class="mobile-brush-studio-section-heading">
+                <h3>Source</h3>
+                <label class="mobile-brush-studio-check" for="mobileBrushStudioGrainInvert">
+                  <input id="mobileBrushStudioGrainInvert" type="checkbox" />
+                  <span>Invert</span>
+                </label>
+              </div>
+              <div class="mobile-brush-studio-source">
+                <button
+                  id="mobileBrushStudioGrainSource"
+                  class="mobile-brush-studio-source-preview"
+                  type="button"
+                  aria-label="Choose grain source image"
+                >
+                  <canvas id="mobileBrushStudioGrainSourceCanvas" width="256" height="256" aria-hidden="true"></canvas>
+                  <span class="mobile-brush-studio-source-placeholder" aria-hidden="true">
+                    <span class="mobile-icon-stack">
+                      <i data-lucide="image" class="mobile-icon-layer mobile-icon-outline"></i>
+                      <i data-lucide="image" class="mobile-icon-layer mobile-icon-face"></i>
+                    </span>
+                    <span>Grain Source</span>
+                  </span>
+                </button>
+                <div class="mobile-brush-studio-source-actions">
+                  <input
+                    id="mobileBrushStudioGrainFile"
+                    class="mobile-brush-studio-file"
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    aria-label="Choose grain source file"
+                  />
+                  <label
+                    id="mobileBrushStudioGrainSelect"
+                    class="mobile-brush-studio-source-action is-primary"
+                    for="mobileBrushStudioGrainFile"
+                  >Select Image</label>
+                  <label
+                    id="mobileBrushStudioGrainReplace"
+                    class="mobile-brush-studio-source-action"
+                    for="mobileBrushStudioGrainFile"
+                  >Replace</label>
+                  <button id="mobileBrushStudioGrainRemove" class="mobile-brush-studio-source-action" type="button">
+                    Remove
+                  </button>
+                </div>
+              </div>
+
+              <fieldset class="mobile-brush-studio-fieldset">
+                <legend>Mode</legend>
+                <div id="mobileBrushStudioGrainMode" class="mobile-brush-studio-segments" role="radiogroup" aria-label="Grain mode">
+                  <button type="button" role="radio" aria-checked="false" data-mobile-brush-grain-mode="off">Off</button>
+                  <button type="button" role="radio" aria-checked="false" data-mobile-brush-grain-mode="texturized">Fixed</button>
+                  <button type="button" role="radio" aria-checked="true" data-mobile-brush-grain-mode="moving">Moving</button>
+                </div>
+              </fieldset>
+
+              <h3>Texture</h3>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioGrainScale">
+                <span>Scale</span>
+                <output id="mobileBrushStudioGrainScaleOut" for="mobileBrushStudioGrainScale">43%</output>
+                <input id="mobileBrushStudioGrainScale" type="range" min="10" max="400" step="1" value="43" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioGrainMovement">
+                <span>Movement</span>
+                <output id="mobileBrushStudioGrainMovementOut" for="mobileBrushStudioGrainMovement">99%</output>
+                <input id="mobileBrushStudioGrainMovement" type="range" min="0" max="100" step="1" value="99" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioGrainDepth">
+                <span>Depth</span>
+                <output id="mobileBrushStudioGrainDepthOut" for="mobileBrushStudioGrainDepth">100%</output>
+                <input id="mobileBrushStudioGrainDepth" type="range" min="0" max="100" step="1" value="100" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioGrainBrightness">
+                <span>Brightness</span>
+                <output id="mobileBrushStudioGrainBrightnessOut" for="mobileBrushStudioGrainBrightness">0%</output>
+                <input id="mobileBrushStudioGrainBrightness" type="range" min="-100" max="100" step="1" value="0" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioGrainContrast">
+                <span>Contrast</span>
+                <output id="mobileBrushStudioGrainContrastOut" for="mobileBrushStudioGrainContrast">0%</output>
+                <input id="mobileBrushStudioGrainContrast" type="range" min="-100" max="100" step="1" value="0" />
+              </label>
+              <label class="mobile-brush-studio-select" for="mobileBrushStudioGrainFiltering">
+                <span>Filtering</span>
+                <select id="mobileBrushStudioGrainFiltering">
+                  <option value="no">No</option>
+                  <option value="classic">Classic</option>
+                  <option value="improved" selected>Improved</option>
+                </select>
+              </label>
+            </section>
+
+            <section
+              id="mobileBrushStudioDynamicsPanel"
+              class="mobile-brush-studio-panel"
+              role="tabpanel"
+              aria-labelledby="mobileBrushStudioDynamicsTab"
+              data-mobile-brush-studio-panel="dynamics"
+              hidden
+            >
+              <div class="mobile-brush-studio-section-heading">
+                <h3>Color Jitter</h3>
+                <label class="mobile-brush-studio-check" for="mobileBrushStudioJitterPerCopy">
+                  <input id="mobileBrushStudioJitterPerCopy" type="checkbox" />
+                  <span>Per Copy</span>
+                </label>
+              </div>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioHue">
+                <span>Hue</span>
+                <output id="mobileBrushStudioHueOut" for="mobileBrushStudioHue">0°</output>
+                <input id="mobileBrushStudioHue" type="range" min="0" max="180" step="1" value="0" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioSaturation">
+                <span>Saturation</span>
+                <output id="mobileBrushStudioSaturationOut" for="mobileBrushStudioSaturation">0%</output>
+                <input id="mobileBrushStudioSaturation" type="range" min="0" max="100" step="1" value="0" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioLightness">
+                <span>Lightness</span>
+                <output id="mobileBrushStudioLightnessOut" for="mobileBrushStudioLightness">0%</output>
+                <input id="mobileBrushStudioLightness" type="range" min="0" max="100" step="1" value="0" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioDarkness">
+                <span>Darkness</span>
+                <output id="mobileBrushStudioDarknessOut" for="mobileBrushStudioDarkness">0%</output>
+                <input id="mobileBrushStudioDarkness" type="range" min="0" max="100" step="1" value="0" />
+              </label>
+
+              <h3>Thickness Dynamics</h3>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioStartThickness">
+                <span>Start Thickness</span>
+                <output id="mobileBrushStudioStartThicknessOut" for="mobileBrushStudioStartThickness">100%</output>
+                <input id="mobileBrushStudioStartThickness" type="range" min="0" max="200" step="1" value="100" />
+              </label>
+              <label class="mobile-brush-studio-range" for="mobileBrushStudioEndThickness">
+                <span>End Thickness</span>
+                <output id="mobileBrushStudioEndThicknessOut" for="mobileBrushStudioEndThickness">60%</output>
+                <input id="mobileBrushStudioEndThickness" type="range" min="0" max="200" step="1" value="60" />
+              </label>
+            </section>
+          </div>
+
+          <nav class="mobile-brush-studio-tabs" role="tablist" aria-label="Brush Studio categories">
+            <button
+              id="mobileBrushStudioStrokeTab"
+              type="button"
+              role="tab"
+              aria-selected="true"
+              aria-controls="mobileBrushStudioStrokePanel"
+              data-mobile-brush-studio-tab="stroke"
+            >Stroke</button>
+            <button
+              id="mobileBrushStudioShapeTab"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="mobileBrushStudioShapePanel"
+              data-mobile-brush-studio-tab="shape"
+              tabindex="-1"
+            >Shape</button>
+            <button
+              id="mobileBrushStudioGrainTab"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="mobileBrushStudioGrainPanel"
+              data-mobile-brush-studio-tab="grain"
+              tabindex="-1"
+            >Grain</button>
+            <button
+              id="mobileBrushStudioDynamicsTab"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="mobileBrushStudioDynamicsPanel"
+              data-mobile-brush-studio-tab="dynamics"
+              tabindex="-1"
+            >Dynamics</button>
+          </nav>
+        </div>
+      </aside>

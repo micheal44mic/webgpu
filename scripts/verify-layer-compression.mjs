@@ -1,3 +1,4 @@
+import { readEditorHtml } from "./ui-shell-source.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { readEngineSource } from "./engine-source.mjs";
@@ -114,7 +115,7 @@ const clientSource = readFileSync(
   new URL("../src/layer-cold-compression-client.ts", import.meta.url),
   "utf8",
 );
-const indexSource = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const indexSource = readEditorHtml();
 const sitesSource = readFileSync(
   new URL("../scripts/prepare-sites-build.mjs", import.meta.url),
   "utf8",

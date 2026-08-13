@@ -24,7 +24,8 @@ import {
 import { FillRenderer } from "./fill-renderer";
 import type { FillHistoryRenderBatch } from "./engine-history-types";
 import type { GpuHistorySlice } from "./gpu-history-storage";
-import { clientToLayer, resolveFillSource } from "./engine-layer-runtime";
+import { resolveFillSource } from "./engine-layer-command-runtime";
+import { clientToLayer } from "./engine-layer-residency-runtime";
 import {
   rebuildActiveLayerFromHistory,
 } from "./engine-history-runtime";

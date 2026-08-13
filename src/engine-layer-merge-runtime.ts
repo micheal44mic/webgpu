@@ -19,18 +19,26 @@ import type {
   MergedSurfaceResources,
 } from "./engine-layer-resources";
 import {
-  allocateLayerGpuResources,
   allocateMergedSurface,
-  buildClippingPrefixSurface,
-  destroyLayerGpuResources,
-  foldClippingGroupIntoMergedSurface,
-  foldRasterRecordIntoMergedSurface,
-  foldViewIntoMergedSurface,
   layerCompositeVisualBounds,
   materializeLayerCompositeSource,
+} from "./engine-layer-surface-runtime";
+import {
+  buildClippingPrefixSurface,
+  foldClippingGroupIntoMergedSurface,
+} from "./engine-layer-clipping-runtime";
+import {
+  foldRasterRecordIntoMergedSurface,
+} from "./engine-layer-composite-runtime";
+import {
+  foldViewIntoMergedSurface,
   releaseLayerBlendFoldScratch,
+} from "./engine-layer-fold-runtime";
+import {
+  allocateLayerGpuResources,
+  destroyLayerGpuResources,
   restoreEffectsWorkbenchToActiveLayer,
-} from "./engine-layer-runtime";
+} from "./engine-layer-residency-runtime";
 import {
   detachLayer,
   restoreReferenceLayerId,
@@ -43,7 +51,7 @@ import {
   clearVectorTextPresentationForTransaction,
   publishMixedScene,
   requireMixedSceneStack,
-} from "./engine-vector-text-runtime";
+} from "./engine-vector-text-resources-runtime";
 import { renderVectorDrawsToTexture } from "./engine-vector-raster-runtime";
 import { mergeDirtyRects } from "./engine-geometry";
 import type { DirtyRect } from "./engine-stroke-types";

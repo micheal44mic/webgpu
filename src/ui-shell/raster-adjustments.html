@@ -1,0 +1,471 @@
+      <aside
+        id="mobileStrokeSheet"
+        class="mobile-tools-sheet mobile-stroke-sheet"
+        aria-label="Stroke effect"
+        aria-hidden="true"
+        data-snap="peek"
+      >
+        <button
+          id="mobileStrokeHandle"
+          class="mobile-tools-sheet-handle"
+          type="button"
+          aria-label="Expand Stroke settings"
+          aria-controls="mobileStrokeSheet"
+          aria-expanded="false"
+        >
+          <span class="mobile-tools-sheet-grabber" aria-hidden="true"></span>
+        </button>
+
+        <div class="mobile-stroke-sheet-content">
+          <header id="mobileStrokeHeader" class="mobile-stroke-header">
+            <h2 id="mobileStrokeTitle" class="mobile-stroke-title">Stroke</h2>
+          </header>
+          <div id="mobileStrokeControlsRegion" class="mobile-stroke-controls-region">
+            <div class="mobile-stroke-controls">
+            <label
+              id="mobileStrokeColor"
+              class="mobile-stroke-color-control"
+              for="mobileStrokeColorInput"
+            >
+              <span class="mobile-stroke-control-label">Color</span>
+              <span class="mobile-stroke-color-disc">
+                <input
+                  id="mobileStrokeColorInput"
+                  type="color"
+                  value="#ffa448"
+                  aria-label="Stroke color"
+                />
+              </span>
+            </label>
+
+            <div class="mobile-stroke-alignment">
+              <span id="mobileStrokeAlignmentLabel" class="mobile-stroke-control-label">
+                Alignment
+              </span>
+              <button
+                id="mobileStrokeAlignmentButton"
+                class="mobile-stroke-alignment-button"
+                type="button"
+                aria-haspopup="listbox"
+                aria-expanded="false"
+                aria-controls="mobileStrokeAlignmentMenu"
+                aria-labelledby="mobileStrokeAlignmentLabel mobileStrokeAlignmentValue"
+                data-stroke-alignment="outside"
+              >
+                <span class="mobile-icon-stack" aria-hidden="true">
+                  <i data-lucide="square-dashed" class="mobile-icon-layer mobile-icon-outline"></i>
+                  <i data-lucide="square-dashed" class="mobile-icon-layer mobile-icon-face"></i>
+                </span>
+                <span id="mobileStrokeAlignmentValue">Outside</span>
+                <span class="mobile-icon-stack mobile-stroke-chevron" aria-hidden="true">
+                  <i data-lucide="chevron-down" class="mobile-icon-layer mobile-icon-outline"></i>
+                  <i data-lucide="chevron-down" class="mobile-icon-layer mobile-icon-face"></i>
+                </span>
+              </button>
+
+              <div
+                id="mobileStrokeAlignmentMenu"
+                class="mobile-stroke-alignment-menu"
+                role="listbox"
+                aria-labelledby="mobileStrokeAlignmentLabel"
+                hidden
+              >
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected="true"
+                  data-stroke-alignment="outside"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="square-dashed" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="square-dashed" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span>Outside</span>
+                  <i data-lucide="check" class="mobile-stroke-option-check" aria-hidden="true"></i>
+                </button>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected="false"
+                  data-stroke-alignment="inside"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="square-dashed" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="square-dashed" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span>Inside</span>
+                  <i data-lucide="check" class="mobile-stroke-option-check" aria-hidden="true"></i>
+                </button>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected="false"
+                  data-stroke-alignment="center"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="square-dashed" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="square-dashed" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span>Centered</span>
+                  <i data-lucide="check" class="mobile-stroke-option-check" aria-hidden="true"></i>
+                </button>
+              </div>
+            </div>
+
+            <label
+              class="mobile-stroke-width-control"
+              for="mobileStrokeWidthInput"
+            >
+              <span class="mobile-stroke-control-label">Width</span>
+              <output
+                id="mobileStrokeWidthOut"
+                for="mobileStrokeWidthInput"
+              >14 px</output>
+              <input
+                id="mobileStrokeWidthInput"
+                type="range"
+                min="0"
+                max="512"
+                step="1"
+                value="14"
+                aria-label="Stroke width"
+                aria-describedby="mobileStrokeWidthOut"
+                aria-valuetext="14 pixels"
+              />
+            </label>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <aside
+        id="mobileLiquifySheet"
+        class="mobile-tools-sheet mobile-liquify-sheet"
+        aria-label="Liquify settings"
+        aria-hidden="true"
+        data-state="closed"
+        data-snap="peek"
+      >
+        <button
+          id="mobileLiquifyHandle"
+          class="mobile-tools-sheet-handle"
+          type="button"
+          aria-label="Expand Liquify settings"
+          aria-controls="mobileLiquifySheet"
+          aria-expanded="false"
+        >
+          <span class="mobile-tools-sheet-grabber" aria-hidden="true"></span>
+        </button>
+
+        <div class="mobile-stroke-sheet-content mobile-liquify-shell">
+          <header id="mobileLiquifyHeader" class="mobile-stroke-header mobile-liquify-header">
+            <div>
+              <h2 class="mobile-stroke-title">Liquify</h2>
+              <output id="mobileLiquifyModeLabel">Push</output>
+            </div>
+            <span class="mobile-liquify-live-badge" aria-hidden="true">LIVE</span>
+          </header>
+
+          <div id="mobileLiquifyControlsRegion" class="mobile-stroke-controls-region">
+            <div id="mobileLiquifyScroll" class="mobile-liquify-scroll">
+              <div class="mobile-liquify-controls">
+                <div
+                  class="liquify-mode-grid mobile-liquify-mode-grid"
+                  role="radiogroup"
+                  aria-label="Liquify mode"
+                >
+                  <button type="button" role="radio" aria-checked="true" data-liquify-mode="push" data-liquify-surface="mobile"><span aria-hidden="true">↗</span><span>Push</span></button>
+                  <button type="button" role="radio" aria-checked="false" data-liquify-mode="twirl-right" data-liquify-surface="mobile"><span aria-hidden="true">↻</span><span>Twirl Right</span></button>
+                  <button type="button" role="radio" aria-checked="false" data-liquify-mode="twirl-left" data-liquify-surface="mobile"><span aria-hidden="true">↺</span><span>Twirl Left</span></button>
+                  <button type="button" role="radio" aria-checked="false" data-liquify-mode="pinch" data-liquify-surface="mobile"><span aria-hidden="true">⌁</span><span>Pinch</span></button>
+                  <button type="button" role="radio" aria-checked="false" data-liquify-mode="expand" data-liquify-surface="mobile"><span aria-hidden="true">◉</span><span>Expand</span></button>
+                  <button type="button" role="radio" aria-checked="false" data-liquify-mode="crystals" data-liquify-surface="mobile"><span aria-hidden="true">✦</span><span>Crystals</span></button>
+                  <button type="button" role="radio" aria-checked="false" data-liquify-mode="edge" data-liquify-surface="mobile"><span aria-hidden="true">◇</span><span>Edge</span></button>
+                  <button type="button" role="radio" aria-checked="false" data-liquify-mode="reconstruct" data-liquify-surface="mobile"><span aria-hidden="true">↶</span><span>Reconstruct</span></button>
+                </div>
+
+                <div class="liquify-parameter-grid">
+                  <label class="mobile-stroke-width-control" for="mobileLiquifySize">
+                    <span class="mobile-stroke-control-label">Size</span>
+                    <output id="mobileLiquifySizeOut" for="mobileLiquifySize">180 px</output>
+                    <input id="mobileLiquifySize" type="range" min="1" max="1000" step="1" value="180" />
+                  </label>
+                  <label class="mobile-stroke-width-control" for="mobileLiquifyPressure">
+                    <span class="mobile-stroke-control-label">Pressure</span>
+                    <output id="mobileLiquifyPressureOut" for="mobileLiquifyPressure">50%</output>
+                    <input id="mobileLiquifyPressure" type="range" min="0" max="100" step="1" value="50" />
+                  </label>
+                  <label class="mobile-stroke-width-control" for="mobileLiquifyDistortion">
+                    <span class="mobile-stroke-control-label">Distortion</span>
+                    <output id="mobileLiquifyDistortionOut" for="mobileLiquifyDistortion">0%</output>
+                    <input id="mobileLiquifyDistortion" type="range" min="0" max="100" step="1" value="0" />
+                  </label>
+                  <label class="mobile-stroke-width-control" for="mobileLiquifyMomentum">
+                    <span class="mobile-stroke-control-label">Momentum</span>
+                    <output id="mobileLiquifyMomentumOut" for="mobileLiquifyMomentum">0%</output>
+                    <input id="mobileLiquifyMomentum" type="range" min="0" max="100" step="1" value="0" />
+                  </label>
+                  <label class="mobile-stroke-width-control liquify-adjust-control" for="mobileLiquifyAmount">
+                    <span class="mobile-stroke-control-label">Adjust · Amount</span>
+                    <output id="mobileLiquifyAmountOut" for="mobileLiquifyAmount">100%</output>
+                    <input id="mobileLiquifyAmount" type="range" min="0" max="100" step="1" value="100" />
+                  </label>
+                </div>
+
+                <p class="mobile-liquify-hint">Un dito modifica · due dita spostano, ingrandiscono e ruotano.</p>
+                <p
+                  id="mobileLiquifyStatus"
+                  class="visually-hidden"
+                  role="status"
+                  aria-live="polite"
+                  aria-atomic="true"
+                >Liquify ready.</p>
+
+                <div class="mobile-liquify-actions" role="group" aria-label="Liquify actions">
+                  <button id="mobileLiquifyReset" type="button">Reset</button>
+                  <button id="mobileLiquifyCancel" type="button">Cancel</button>
+                  <button id="mobileLiquifyApply" class="is-primary" type="button">Apply</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <aside
+        id="mobileGaussianBlurSheet"
+        class="mobile-tools-sheet mobile-gaussian-blur-sheet"
+        aria-label="Gaussian Blur settings"
+        aria-hidden="true"
+        data-state="closed"
+        data-snap="peek"
+      >
+        <button
+          id="mobileGaussianBlurHandle"
+          class="mobile-tools-sheet-handle"
+          type="button"
+          aria-label="Expand Gaussian Blur settings"
+          aria-controls="mobileGaussianBlurSheet"
+          aria-expanded="false"
+        >
+          <span class="mobile-tools-sheet-grabber" aria-hidden="true"></span>
+        </button>
+
+        <div class="mobile-stroke-sheet-content mobile-gaussian-blur-shell">
+          <header id="mobileGaussianBlurHeader" class="mobile-stroke-header">
+            <h2 class="mobile-stroke-title">Gaussian Blur</h2>
+          </header>
+
+          <div id="mobileGaussianBlurControlsRegion" class="mobile-stroke-controls-region">
+            <div class="mobile-gaussian-blur-controls">
+              <label class="mobile-stroke-width-control" for="mobileGaussianBlurRadius">
+                <span class="mobile-stroke-control-label">Radius</span>
+                <output id="mobileGaussianBlurRadiusOut" for="mobileGaussianBlurRadius">5 px</output>
+                <input
+                  id="mobileGaussianBlurRadius"
+                  type="range"
+                  min="1"
+                  max="500"
+                  step="1"
+                  value="5"
+                  aria-label="Gaussian Blur radius"
+                  aria-describedby="mobileGaussianBlurRadiusOut"
+                  aria-valuetext="5 pixels"
+                />
+              </label>
+
+              <p
+                id="mobileGaussianBlurStatus"
+                class="visually-hidden"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >Gaussian Blur pronto.</p>
+
+              <div class="mobile-tool-actions mobile-tool-actions-grid mobile-gaussian-blur-actions">
+                <button id="mobileGaussianBlurCancel" type="button">Cancel</button>
+                <button id="mobileGaussianBlurApply" class="is-primary" type="button">Apply</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <aside
+        id="mobileMotionBlurSheet"
+        class="mobile-tools-sheet mobile-motion-blur-sheet"
+        aria-label="Motion Blur settings"
+        aria-hidden="true"
+        data-state="closed"
+        data-snap="peek"
+      >
+        <button
+          id="mobileMotionBlurHandle"
+          class="mobile-tools-sheet-handle"
+          type="button"
+          aria-label="Expand Motion Blur settings"
+          aria-controls="mobileMotionBlurSheet"
+          aria-expanded="false"
+        >
+          <span class="mobile-tools-sheet-grabber" aria-hidden="true"></span>
+        </button>
+
+        <div class="mobile-stroke-sheet-content mobile-motion-blur-shell">
+          <header id="mobileMotionBlurHeader" class="mobile-stroke-header">
+            <h2 class="mobile-stroke-title">Motion Blur</h2>
+          </header>
+
+          <div id="mobileMotionBlurControlsRegion" class="mobile-stroke-controls-region">
+            <div class="mobile-motion-blur-controls">
+              <label class="mobile-stroke-width-control" for="mobileMotionBlurDistance">
+                <span class="mobile-stroke-control-label">Distance</span>
+                <output id="mobileMotionBlurDistanceOut" for="mobileMotionBlurDistance">20 px</output>
+                <input
+                  id="mobileMotionBlurDistance"
+                  type="range"
+                  min="0"
+                  max="500"
+                  step="1"
+                  value="20"
+                  aria-label="Motion Blur distance"
+                  aria-describedby="mobileMotionBlurDistanceOut"
+                  aria-valuetext="20 pixels"
+                />
+              </label>
+
+              <label class="mobile-stroke-width-control" for="mobileMotionBlurAngle">
+                <span class="mobile-stroke-control-label">Angle</span>
+                <output id="mobileMotionBlurAngleOut" for="mobileMotionBlurAngle">0°</output>
+                <input
+                  id="mobileMotionBlurAngle"
+                  type="range"
+                  min="-180"
+                  max="180"
+                  step="1"
+                  value="0"
+                  aria-label="Motion Blur angle"
+                  aria-describedby="mobileMotionBlurAngleOut"
+                  aria-valuetext="0 degrees"
+                />
+              </label>
+
+              <p
+                id="mobileMotionBlurStatus"
+                class="visually-hidden"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >Motion Blur ready.</p>
+
+              <div class="mobile-tool-actions mobile-tool-actions-grid mobile-motion-blur-actions">
+                <button id="mobileMotionBlurCancel" type="button">Cancel</button>
+                <button id="mobileMotionBlurApply" class="is-primary" type="button">Apply</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <aside
+        id="mobileNoiseSheet"
+        class="mobile-tools-sheet mobile-noise-sheet"
+        aria-label="Noise settings"
+        aria-hidden="true"
+        data-state="closed"
+        data-snap="peek"
+      >
+        <button
+          id="mobileNoiseHandle"
+          class="mobile-tools-sheet-handle"
+          type="button"
+          aria-label="Expand Noise settings"
+          aria-controls="mobileNoiseSheet"
+          aria-expanded="false"
+        >
+          <span class="mobile-tools-sheet-grabber" aria-hidden="true"></span>
+        </button>
+
+        <div class="mobile-stroke-sheet-content mobile-noise-shell">
+          <header id="mobileNoiseHeader" class="mobile-stroke-header">
+            <h2 class="mobile-stroke-title">Noise</h2>
+          </header>
+
+          <div id="mobileNoiseControlsRegion" class="mobile-stroke-controls-region">
+            <div id="mobileNoiseScroll" class="mobile-noise-scroll">
+              <div class="mobile-noise-controls">
+                <label class="mobile-stroke-width-control" for="mobileNoiseAmount">
+                  <span class="mobile-stroke-control-label">Amount</span>
+                  <output id="mobileNoiseAmountOut" for="mobileNoiseAmount">0%</output>
+                  <input
+                    id="mobileNoiseAmount"
+                    type="range"
+                    min="0"
+                    max="300"
+                    step="1"
+                    value="0"
+                    aria-label="Noise amount"
+                    aria-describedby="mobileNoiseAmountOut mobileNoiseExtendedHint"
+                    aria-valuetext="0 percent"
+                  />
+                </label>
+                <p id="mobileNoiseExtendedHint" class="mobile-noise-hint">
+                  Extended above 100%
+                </p>
+
+                <label class="mobile-noise-select-control" for="mobileNoiseStyle">
+                  <span>Style</span>
+                  <select id="mobileNoiseStyle">
+                    <option value="clouds" selected>Clouds</option>
+                    <option value="billows">Billows</option>
+                    <option value="ridges">Ridges</option>
+                  </select>
+                </label>
+
+                <label class="mobile-stroke-width-control" for="mobileNoiseScale">
+                  <span class="mobile-stroke-control-label">Scale</span>
+                  <output id="mobileNoiseScaleOut" for="mobileNoiseScale">0% · 1 px</output>
+                  <input id="mobileNoiseScale" type="range" min="0" max="100" step="1" value="0" />
+                </label>
+
+                <label class="mobile-stroke-width-control" for="mobileNoiseOctaves">
+                  <span class="mobile-stroke-control-label">Octaves</span>
+                  <output id="mobileNoiseOctavesOut" for="mobileNoiseOctaves">4.5</output>
+                  <input id="mobileNoiseOctaves" type="range" min="0" max="100" step="1" value="50" />
+                </label>
+
+                <label class="mobile-stroke-width-control" for="mobileNoiseTurbulence">
+                  <span class="mobile-stroke-control-label">Turbulence</span>
+                  <output id="mobileNoiseTurbulenceOut" for="mobileNoiseTurbulence">0%</output>
+                  <input id="mobileNoiseTurbulence" type="range" min="0" max="100" step="1" value="0" />
+                </label>
+
+                <label class="mobile-noise-select-control" for="mobileNoiseChannels">
+                  <span>Channels</span>
+                  <select id="mobileNoiseChannels">
+                    <option value="single" selected>Single</option>
+                    <option value="multi">Multi</option>
+                  </select>
+                </label>
+
+                <label class="mobile-noise-check-control">
+                  <input id="mobileNoiseAdditive" type="checkbox" checked />
+                  <span>Additive</span>
+                </label>
+
+                <p
+                  id="mobileNoiseStatus"
+                  class="visually-hidden"
+                  role="status"
+                  aria-live="polite"
+                  aria-atomic="true"
+                >Noise ready.</p>
+
+                <div class="mobile-tool-actions mobile-tool-actions-grid mobile-noise-actions">
+                  <button id="mobileNoiseCancel" type="button">Cancel</button>
+                  <button id="mobileNoiseApply" class="is-primary" type="button">Apply</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>

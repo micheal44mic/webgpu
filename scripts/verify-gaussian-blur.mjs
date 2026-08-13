@@ -1,3 +1,4 @@
+import { readEditorHtml } from "./ui-shell-source.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
@@ -135,7 +136,7 @@ const canvasInput = readFileSync(
   new URL("../src/canvas-input-controller.ts", import.meta.url),
   "utf8",
 );
-const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const html = readEditorHtml();
 const mobileSheet = readFileSync(
   new URL("../src/mobile-gaussian-blur-sheet.ts", import.meta.url),
   "utf8",

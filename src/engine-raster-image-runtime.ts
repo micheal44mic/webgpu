@@ -37,7 +37,7 @@ import {
 import {
   allocateLayerGpuResources,
   destroyLayerGpuResources,
-} from "./engine-layer-runtime";
+} from "./engine-layer-residency-runtime";
 import type {
   LayerColdStorageResources,
   LayerGpuResources,
@@ -62,7 +62,7 @@ import {
   clearVectorTextPresentationForTransaction,
   publishMixedScene,
   requireMixedSceneStack,
-} from "./engine-vector-text-runtime";
+} from "./engine-vector-text-resources-runtime";
 import { historyColdSeedResidentBytes } from "./history-cold-seed";
 
 export const RASTER_IMAGE_GPU_STORAGE_STRATEGY =

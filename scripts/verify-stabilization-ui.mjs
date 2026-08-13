@@ -1,3 +1,4 @@
+import { readEditorHtml } from "./ui-shell-source.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { readEngineSource } from "./engine-source.mjs";
@@ -11,18 +12,19 @@ const historyTypesSource = read("../src/engine-history-types.ts");
 const historyRuntimeSource = read("../src/engine-history-runtime.ts");
 const mainSource = read("../src/main.ts");
 const humanLabSource = read("../src/labs/human-stroke-lab.ts");
-const htmlSource = read("../index.html");
+const htmlSource = readEditorHtml();
 const sitesBuildSource = read("./prepare-sites-build.mjs");
 const stabilizationCoreSource = read("../src/stroke-stabilization-core.ts");
 const brushSettingsControllerSource = read("../src/brush-settings-controller.ts");
 const brushStudioSource = read("../src/mobile-brush-studio.ts");
+const brushSettingsRuntimeSource = read("../src/engine-brush-settings-runtime.ts");
 
 // Settings ABI: normalized 0..1 and bit-for-bit legacy behavior at the default.
 assert.match(engineTypesSource, /stabilization: number;/);
 assert.match(brushDefinitionSource, /spacingPercent: 1,\s*stabilization: 0,/);
 assert.match(
-  engineSource,
-  /stabilization: clamp\(next\.stabilization \?\? this\.settings\.stabilization, 0, 1\),/,
+  brushSettingsRuntimeSource,
+  /stabilization: clamp\(next\.stabilization \?\? engine\.settings\.stabilization, 0, 1\),/,
 );
 
 // Public control: Brush Studio owns the visible 0..100 editor and converts once.

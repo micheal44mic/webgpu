@@ -77,6 +77,7 @@ export const verificationScripts = Object.freeze([
   "verify-text-selection-lock.mjs",
   "verify-thickness-dynamics.mjs",
   "verify-touch-paint-intent.mjs",
+  "verify-ui-shell.mjs",
   "verify-unified-editor-ui.mjs",
   "verify-vector-text.mjs",
   "verify-vector-shadow-3d.mjs",

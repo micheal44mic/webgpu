@@ -18,7 +18,7 @@ import {
   clearVectorTextPresentationForTransaction,
   publishMixedScene,
   requireMixedSceneStack,
-} from "./engine-vector-text-runtime";
+} from "./engine-vector-text-resources-runtime";
 import {
   applyLayerAddHistory,
   applyLayerDeleteHistory,
@@ -68,10 +68,8 @@ import {
 } from "./engine-raster-image-runtime";
 import { mergeDirtyRects } from "./engine-geometry";
 import { markLayerStorageRect } from "./layer-storage-study";
-import {
-  restoreEffectsWorkbenchToActiveLayer,
-  setLayerBlendMode,
-} from "./engine-layer-runtime";
+import { setLayerBlendMode } from "./engine-layer-command-runtime";
+import { restoreEffectsWorkbenchToActiveLayer } from "./engine-layer-residency-runtime";
 import { copyRasterStrokeStyle, rasterStrokeStylesEqual } from "./stroke-core";
 import { copyRasterBevelStyle, rasterBevelStylesEqual } from "./bevel-core";
 import {

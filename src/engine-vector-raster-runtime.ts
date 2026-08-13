@@ -33,7 +33,7 @@ import {
   writeVectorTextGpuBlurFilterUniform,
   writeVectorTextGpuBlurSourceUniform,
   writeVectorTextGpuDrawUniform,
-} from "./engine-vector-text-runtime";
+} from "./engine-vector-text-resources-runtime";
 import { vectorTextGpuRunBounds } from "./engine-geometry";
 import {
   LAYER_STORAGE_TILE_SIZE,
@@ -48,7 +48,7 @@ import {
 import {
   allocateLayerGpuResources,
   destroyLayerGpuResources,
-} from "./engine-layer-runtime";
+} from "./engine-layer-residency-runtime";
 import { LAYER_STACK_MAXIMUM } from "./layer-stack";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 

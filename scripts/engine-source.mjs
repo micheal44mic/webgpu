@@ -38,6 +38,11 @@ export const ENGINE_SOURCE_FILES = Object.freeze([
   "engine-cold-storage.ts",
   "engine-reports.ts",
   "engine-vector-text-runtime.ts",
+  "engine-vector-text-resources-runtime.ts",
+  "engine-vector-text-fast-runtime.ts",
+  "engine-vector-text-fallback-runtime.ts",
+  "engine-vector-text-segmented-runtime.ts",
+  "engine-mixed-scene-mutation-runtime.ts",
   "engine-raster-image-runtime.ts",
   "engine-raster-transform-runtime.ts",
   "engine-gaussian-blur-runtime.ts",
@@ -51,10 +56,21 @@ export const ENGINE_SOURCE_FILES = Object.freeze([
   "engine-glaze-runtime.ts",
   "engine-adaptive-preview-runtime.ts",
   "engine-layer-runtime.ts",
+  "engine-layer-recreation-runtime.ts",
+  "engine-layer-effects-runtime.ts",
+  "engine-layer-fold-runtime.ts",
+  "engine-layer-surface-runtime.ts",
+  "engine-layer-clipping-runtime.ts",
+  "engine-layer-composite-runtime.ts",
+  "engine-layer-command-runtime.ts",
+  "engine-layer-effect-lifecycle-runtime.ts",
+  "engine-layer-residency-runtime.ts",
   "engine-layer-structure-runtime.ts",
   "engine-layer-merge-runtime.ts",
   "engine-layer-blend-tile-runtime.ts",
   "engine-resource-setup.ts",
+  "engine-brush-settings-runtime.ts",
+  "engine-raster-style-runtime.ts",
   "engine-runtime-misc.ts",
   "engine-project-runtime.ts",
 ]);
@@ -71,26 +87,40 @@ function readModule(file) {
 
 /**
  * Legge il motore come un unico testo. Fallisce se un modulo dichiarato in
- * `ENGINE_SOURCE_FILES` non e' piu' importato da `brush-engine.ts`: senza questo
- * controllo la lista potrebbe invecchiare in silenzio e le verifiche
- * asserirebbero su codice che il motore non usa piu'.
+ * `ENGINE_SOURCE_FILES` non e' piu' raggiungibile da `brush-engine.ts`: senza
+ * questo controllo la lista potrebbe invecchiare in silenzio e le verifiche
+ * asserirebbero su codice che il motore non usa piu'. Le facade possono
+ * delegare ai propri owner senza obbligare la classe a importarli tutti.
  */
 export function readEngineSource() {
   const parts = ENGINE_SOURCE_FILES.map(readModule);
-  const [engine] = parts;
-  for (const file of ENGINE_SOURCE_FILES.slice(1)) {
-    const specifier = `"./${file.replace(/\.ts$/, "")}"`;
-    if (!engine.includes(`from ${specifier}`)) {
-      throw new Error(
-        `src/${file} e' in ENGINE_SOURCE_FILES ma brush-engine.ts non lo importa piu': `
-        + "aggiorna scripts/engine-source.mjs.",
-      );
+  const declared = new Set(ENGINE_SOURCE_FILES);
+  const sourceByFile = new Map(
+    ENGINE_SOURCE_FILES.map((file, index) => [file, parts[index]]),
+  );
+  const reachable = new Set(["brush-engine.ts"]);
+  const pending = ["brush-engine.ts"];
+  while (pending.length > 0) {
+    const owner = pending.pop();
+    const source = sourceByFile.get(owner);
+    const importPattern = /(?:from\s+|import\s*\()(["'])\.\/([^"']+)\1/g;
+    for (const match of source.matchAll(importPattern)) {
+      const imported = match[2].endsWith(".ts") ? match[2] : `${match[2]}.ts`;
+      if (!declared.has(imported) || reachable.has(imported)) continue;
+      reachable.add(imported);
+      pending.push(imported);
     }
+  }
+  const unreachable = ENGINE_SOURCE_FILES.filter((file) => !reachable.has(file));
+  if (unreachable.length > 0) {
+    throw new Error(
+      `moduli dichiarati ma non raggiungibili da src/brush-engine.ts: ${unreachable.join(", ")}. `
+      + "Aggiorna la facade proprietaria o scripts/engine-source.mjs.",
+    );
   }
   // Controllo disco -> lista: estrarre un nuovo modulo `engine-*.ts` senza
   // registrarlo qui renderebbe invisibile quel codice a TUTTE le verifiche
   // statiche, in silenzio. Meglio fallire subito.
-  const declared = new Set(ENGINE_SOURCE_FILES);
   const onDisk = readdirSync(fileURLToPath(SRC))
     .filter((file) => file.startsWith("engine-") && file.endsWith(".ts"));
   const missing = onDisk.filter((file) => !declared.has(file));

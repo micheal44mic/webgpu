@@ -1,0 +1,394 @@
+      <aside
+        id="mobileToolSettingsSheet"
+        class="mobile-tools-sheet mobile-tool-settings-sheet"
+        aria-label="Tool settings"
+        aria-hidden="true"
+        data-state="closed"
+        data-snap="peek"
+        hidden
+      >
+        <button
+          id="mobileToolSettingsHandle"
+          class="mobile-tools-sheet-handle"
+          type="button"
+          aria-label="Expand tool settings"
+          aria-controls="mobileToolSettingsSheet"
+          aria-expanded="false"
+        >
+          <span class="mobile-tools-sheet-grabber" aria-hidden="true"></span>
+        </button>
+
+        <div class="mobile-tool-settings-shell">
+          <header id="mobileToolSettingsHeader" class="mobile-tool-settings-header">
+            <h2 id="mobileToolSettingsTitle">Tool</h2>
+          </header>
+
+          <div id="mobileToolSettingsScroll" class="mobile-tool-settings-scroll">
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="fill" hidden>
+              <label class="mobile-raster-effect-range" for="mobileFillTolerance">
+                <span>Tolerance</span>
+                <output id="mobileFillToleranceOut" for="mobileFillTolerance">10.0%</output>
+                <input id="mobileFillTolerance" type="range" min="0" max="100" step="0.1" value="10" />
+              </label>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="selection" hidden>
+              <label class="mobile-raster-effect-select" for="mobileSelectionMethod">
+                <span>Method</span>
+                <select id="mobileSelectionMethod">
+                  <option value="magic-wand">Magic Wand</option>
+                  <option value="lasso">Lasso</option>
+                  <option value="color-range">Color Range</option>
+                </select>
+              </label>
+
+              <div class="mobile-tool-settings-field">
+                <span>Combine</span>
+                <div class="mobile-tool-segmented" role="group" aria-label="Combine selection">
+                  <button id="mobileSelectionReplace" type="button" aria-pressed="true">Replace</button>
+                  <button id="mobileSelectionAdd" type="button" aria-pressed="false">Add</button>
+                  <button id="mobileSelectionSubtract" type="button" aria-pressed="false">Subtract</button>
+                </div>
+              </div>
+
+              <label
+                id="mobileSelectionToleranceControl"
+                class="mobile-raster-effect-range"
+                for="mobileSelectionTolerance"
+              >
+                <span>Tolerance</span>
+                <output id="mobileSelectionToleranceOut" for="mobileSelectionTolerance">32/255</output>
+                <input id="mobileSelectionTolerance" type="range" min="0" max="255" step="1" value="32" />
+              </label>
+
+              <label
+                id="mobileSelectionColorControl"
+                class="mobile-raster-effect-color"
+                for="mobileSelectionColor"
+                hidden
+              >
+                <span>Color</span>
+                <span class="mobile-raster-effect-color-disc">
+                  <input id="mobileSelectionColor" type="color" value="#ff5b35" />
+                </span>
+              </label>
+
+              <div class="mobile-tool-actions">
+                <button id="mobileSelectionColorApply" class="is-primary" type="button" hidden>Apply Color</button>
+                <button id="mobileSelectionClear" type="button">Clear</button>
+              </div>
+              <p id="mobileSelectionResult" class="mobile-tool-settings-status" aria-live="polite">
+                No pixels selected.
+              </p>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="transform" hidden>
+              <p id="mobileTransformHint" class="mobile-tool-settings-status">
+                Select content on the canvas, then drag it to transform.
+              </p>
+              <div class="mobile-tool-actions">
+                <button id="mobileTransformCancel" type="button" disabled>Cancel</button>
+                <button id="mobileTransformApply" class="is-primary" type="button" disabled>Apply</button>
+              </div>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="layer-options" hidden>
+              <label class="mobile-raster-effect-range" for="mobileLayerOpacity">
+                <span>Opacity</span>
+                <output id="mobileLayerOpacityOut" for="mobileLayerOpacity">100%</output>
+                <input id="mobileLayerOpacity" type="range" min="0" max="100" step="1" value="100" />
+              </label>
+              <label id="mobileLayerBlendModeControl" class="mobile-raster-effect-select" for="mobileLayerBlendMode">
+                <span>Blend Mode</span>
+                <select id="mobileLayerBlendMode"></select>
+              </label>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="svg-style" hidden>
+              <div id="mobileSvgStylePalette" class="mobile-svg-style-palette"></div>
+              <button id="mobileSvgStyleRasterize" class="mobile-tool-wide-action" type="button">
+                Rasterize SVG
+              </button>
+              <p id="mobileSvgStyleStatus" class="mobile-tool-settings-status" aria-live="polite"></p>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="text" hidden>
+              <label class="mobile-tool-text-field" for="mobileTextValue">
+                <span>Text</span>
+                <input id="mobileTextValue" type="text" maxlength="80" autocomplete="off" />
+              </label>
+              <label class="mobile-raster-effect-select" for="mobileTextFontFamily">
+                <span>Font</span>
+                <select id="mobileTextFontFamily">
+                  <option value="Anton">Anton</option>
+                  <option value="Bebas Neue">Bebas Neue</option>
+                  <option value="Poppins">Poppins</option>
+                </select>
+              </label>
+              <label class="mobile-raster-effect-range" for="mobileTextFontSize">
+                <span>Size</span>
+                <output id="mobileTextFontSizeOut" for="mobileTextFontSize">360 px</output>
+                <input id="mobileTextFontSize" type="range" min="80" max="1200" step="1" value="360" />
+              </label>
+              <label
+                id="mobileTextColorControl"
+                class="mobile-raster-effect-color"
+                for="mobileTextColor"
+              >
+                <span>Color</span>
+                <span class="mobile-raster-effect-color-disc">
+                  <input id="mobileTextColor" type="color" value="#f4c95d" />
+                </span>
+              </label>
+              <div class="mobile-tool-actions mobile-tool-actions-grid">
+                <button id="mobileTextAdd" class="is-primary" type="button">Add Text</button>
+                <button id="mobileTextReset" type="button">Reset</button>
+                <button id="mobileTextDelete" type="button">Delete</button>
+                <button id="mobileTextRasterize" type="button">Rasterize</button>
+              </div>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="text-warp" hidden>
+              <div class="mobile-tool-settings-field">
+                <span>Mode</span>
+                <div class="mobile-text-warp-modes" role="group" aria-label="Text warp mode">
+                  <button id="mobileTextWarpNone" type="button" aria-pressed="true">Normal</button>
+                  <button id="mobileTextWarpDistort" type="button" aria-pressed="false">Distort</button>
+                  <button id="mobileTextWarpArch" type="button" aria-pressed="false">Arch</button>
+                  <button id="mobileTextWarpCircle" type="button" aria-pressed="false">Circle</button>
+                  <button id="mobileTextWarpWave" type="button" aria-pressed="false">Wave</button>
+                </div>
+              </div>
+
+              <div id="mobileTextWarpDistortControls" class="mobile-text-effect-parameters" hidden>
+                <p class="mobile-tool-settings-status">
+                  Edit the four corners directly on the canvas.
+                </p>
+                <div class="mobile-tool-actions">
+                  <button id="mobileTextDistortReset" type="button">Reset</button>
+                  <button id="mobileTextDistortEdit" type="button" aria-pressed="false">Edit</button>
+                </div>
+                <div
+                  id="mobileTextDistortCommitActions"
+                  class="mobile-tool-actions mobile-transform-commit-actions"
+                  role="group"
+                  aria-label="Confirm distortion"
+                  hidden
+                >
+                  <button id="mobileTextDistortCancel" type="button" disabled>Cancel</button>
+                  <button id="mobileTextDistortApply" class="is-primary" type="button" disabled>Apply</button>
+                </div>
+              </div>
+
+              <div id="mobileTextWarpCurveControls" class="mobile-text-effect-parameters" hidden>
+                <label class="mobile-raster-effect-range" for="mobileTextWarpCurve">
+                  <span>Curve</span>
+                  <output id="mobileTextWarpCurveOut" for="mobileTextWarpCurve">80%</output>
+                  <input id="mobileTextWarpCurve" type="range" min="-100" max="100" step="1" value="80" />
+                </label>
+              </div>
+
+              <div id="mobileTextWarpCircleControls" class="mobile-text-effect-parameters" hidden>
+                <label class="mobile-raster-effect-range" for="mobileTextCircleRadius">
+                  <span>Radius</span>
+                  <output id="mobileTextCircleRadiusOut" for="mobileTextCircleRadius">50%</output>
+                  <input id="mobileTextCircleRadius" type="range" min="16" max="200" step="1" value="50" />
+                </label>
+                <label class="mobile-raster-effect-check" for="mobileTextCircleInverted">
+                  <input id="mobileTextCircleInverted" type="checkbox" />
+                  <span>Invert circle</span>
+                </label>
+              </div>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="text-outline" hidden>
+              <label class="mobile-raster-effect-range" for="mobileTextOutlineWidth">
+                <span>Width</span>
+                <output id="mobileTextOutlineWidthOut" for="mobileTextOutlineWidth">0 px</output>
+                <input id="mobileTextOutlineWidth" type="range" min="0" max="100" step="1" value="0" />
+              </label>
+              <label
+                id="mobileTextOutlineColorControl"
+                class="mobile-raster-effect-color"
+                for="mobileTextOutlineColor"
+              >
+                <span>Color</span>
+                <span class="mobile-raster-effect-color-disc">
+                  <input id="mobileTextOutlineColor" type="color" value="#111111" />
+                </span>
+              </label>
+              <label class="mobile-raster-effect-select" for="mobileTextOutlineJoin">
+                <span>Join</span>
+                <select id="mobileTextOutlineJoin">
+                  <option value="bevel">Bevel</option>
+                  <option value="miter">Miter</option>
+                  <option value="round">Round</option>
+                </select>
+              </label>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="text-drop-shadow" hidden>
+              <label class="mobile-raster-effect-check" for="mobileTextDropShadowEnabled">
+                <input id="mobileTextDropShadowEnabled" type="checkbox" />
+                <span>Enabled</span>
+              </label>
+              <div id="mobileTextDropShadowParameters" class="mobile-text-effect-parameters" hidden>
+                <label
+                  id="mobileTextDropShadowColorControl"
+                  class="mobile-raster-effect-color"
+                  for="mobileTextDropShadowColor"
+                >
+                  <span>Color</span>
+                  <span class="mobile-raster-effect-color-disc">
+                    <input id="mobileTextDropShadowColor" type="color" value="#727272" />
+                  </span>
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextDropShadowOpacity">
+                  <span>Opacity</span>
+                  <output id="mobileTextDropShadowOpacityOut" for="mobileTextDropShadowOpacity">100%</output>
+                  <input id="mobileTextDropShadowOpacity" type="range" min="0" max="100" step="1" value="100" />
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextDropShadowOffset">
+                  <span>Offset</span>
+                  <output id="mobileTextDropShadowOffsetOut" for="mobileTextDropShadowOffset">54</output>
+                  <input id="mobileTextDropShadowOffset" type="range" min="0" max="100" step="1" value="54" />
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextDropShadowAngle">
+                  <span>Angle</span>
+                  <output id="mobileTextDropShadowAngleOut" for="mobileTextDropShadowAngle">-180°</output>
+                  <input id="mobileTextDropShadowAngle" type="range" min="-180" max="180" step="1" value="-180" />
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextDropShadowBlur">
+                  <span>Blur</span>
+                  <output id="mobileTextDropShadowBlurOut" for="mobileTextDropShadowBlur">6</output>
+                  <input id="mobileTextDropShadowBlur" type="range" min="0" max="300" step="1" value="6" />
+                </label>
+              </div>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="text-inner-shadow" hidden>
+              <label class="mobile-raster-effect-check" for="mobileTextInnerShadowEnabled">
+                <input id="mobileTextInnerShadowEnabled" type="checkbox" />
+                <span>Enabled</span>
+              </label>
+              <div id="mobileTextInnerShadowParameters" class="mobile-text-effect-parameters" hidden>
+                <label
+                  id="mobileTextInnerShadowColorControl"
+                  class="mobile-raster-effect-color"
+                  for="mobileTextInnerShadowColor"
+                >
+                  <span>Color</span>
+                  <span class="mobile-raster-effect-color-disc">
+                    <input id="mobileTextInnerShadowColor" type="color" value="#000000" />
+                  </span>
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextInnerShadowOpacity">
+                  <span>Opacity</span>
+                  <output id="mobileTextInnerShadowOpacityOut" for="mobileTextInnerShadowOpacity">65%</output>
+                  <input id="mobileTextInnerShadowOpacity" type="range" min="0" max="100" step="1" value="65" />
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextInnerShadowOffset">
+                  <span>Offset</span>
+                  <output id="mobileTextInnerShadowOffsetOut" for="mobileTextInnerShadowOffset">12</output>
+                  <input id="mobileTextInnerShadowOffset" type="range" min="0" max="100" step="1" value="12" />
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextInnerShadowAngle">
+                  <span>Angle</span>
+                  <output id="mobileTextInnerShadowAngleOut" for="mobileTextInnerShadowAngle">-135°</output>
+                  <input id="mobileTextInnerShadowAngle" type="range" min="-180" max="180" step="1" value="-135" />
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextInnerShadowBlur">
+                  <span>Blur</span>
+                  <output id="mobileTextInnerShadowBlurOut" for="mobileTextInnerShadowBlur">12</output>
+                  <input id="mobileTextInnerShadowBlur" type="range" min="0" max="300" step="1" value="12" />
+                </label>
+              </div>
+            </section>
+
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="text-block-shadow" hidden>
+              <label class="mobile-raster-effect-check" for="mobileTextBlockShadowEnabled">
+                <input id="mobileTextBlockShadowEnabled" type="checkbox" />
+                <span>Enabled</span>
+              </label>
+              <div id="mobileTextBlockShadowParameters" class="mobile-text-effect-parameters" hidden>
+                <label
+                  id="mobileTextBlockShadowColorControl"
+                  class="mobile-raster-effect-color"
+                  for="mobileTextBlockShadowColor"
+                >
+                  <span>Color</span>
+                  <span class="mobile-raster-effect-color-disc">
+                    <input id="mobileTextBlockShadowColor" type="color" value="#727272" />
+                  </span>
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextBlockShadowOpacity">
+                  <span>Opacity</span>
+                  <output id="mobileTextBlockShadowOpacityOut" for="mobileTextBlockShadowOpacity">100%</output>
+                  <input id="mobileTextBlockShadowOpacity" type="range" min="0" max="100" step="1" value="100" />
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextBlockShadowOffset">
+                  <span>Offset</span>
+                  <output id="mobileTextBlockShadowOffsetOut" for="mobileTextBlockShadowOffset">23</output>
+                  <input id="mobileTextBlockShadowOffset" type="range" min="0" max="100" step="1" value="23" />
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextBlockShadowAngle">
+                  <span>Angle</span>
+                  <output id="mobileTextBlockShadowAngleOut" for="mobileTextBlockShadowAngle">-104°</output>
+                  <input id="mobileTextBlockShadowAngle" type="range" min="-180" max="180" step="1" value="-104" />
+                </label>
+                <label class="mobile-raster-effect-range" for="mobileTextBlockShadowOutlineWidth">
+                  <span>Outline Width</span>
+                  <output id="mobileTextBlockShadowOutlineWidthOut" for="mobileTextBlockShadowOutlineWidth">0 px</output>
+                  <input id="mobileTextBlockShadowOutlineWidth" type="range" min="0" max="100" step="1" value="0" />
+                </label>
+              </div>
+            </section>
+          </div>
+        </div>
+      </aside>
+
+      <aside
+        id="mobileRasterEffectSheet"
+        class="mobile-tools-sheet mobile-raster-effect-sheet"
+        aria-label="Raster effect settings"
+        aria-hidden="true"
+        data-state="closed"
+        data-snap="peek"
+        hidden
+      >
+        <button
+          id="mobileRasterEffectHandle"
+          class="mobile-tools-sheet-handle"
+          type="button"
+          aria-label="Close raster effect settings"
+          aria-controls="mobileRasterEffectSheet"
+          aria-expanded="false"
+        >
+          <span class="mobile-tools-sheet-grabber" aria-hidden="true"></span>
+        </button>
+
+        <div class="mobile-raster-effect-shell">
+          <header id="mobileRasterEffectHeader" class="mobile-raster-effect-header">
+            <h2 id="mobileRasterEffectTitle">Effect</h2>
+            <label
+              id="mobileRasterEffectEnabledControl"
+              class="mobile-raster-effect-enabled"
+              for="mobileRasterEffectEnabled"
+            >
+              <input
+                id="mobileRasterEffectEnabled"
+                type="checkbox"
+                aria-label="Effect enabled"
+              />
+              <span class="mobile-raster-effect-switch" aria-hidden="true">
+                <span></span>
+              </span>
+              <span>Enabled</span>
+            </label>
+          </header>
+
+          <div id="mobileRasterEffectScroll" class="mobile-raster-effect-scroll">
+            <div id="mobileRasterEffectContent" class="mobile-raster-effect-content"></div>
+          </div>
+        </div>
+      </aside>

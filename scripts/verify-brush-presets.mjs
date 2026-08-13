@@ -1,3 +1,4 @@
+import { readEditorHtml } from "./ui-shell-source.mjs";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -160,6 +161,10 @@ assert.throws(
 );
 
 const engine = readEngineSource();
+const brushSettingsRuntime = readFileSync(
+  path.join(projectRoot, "src", "engine-brush-settings-runtime.ts"),
+  "utf8",
+);
 const definitionSource = readFileSync(
   path.join(projectRoot, "src", "brush-definition.ts"),
   "utf8",
@@ -178,7 +183,7 @@ const strokePreviewRenderer = readFileSync(
   path.join(projectRoot, "src", "brush-stroke-preview-renderer.ts"),
   "utf8",
 );
-const html = readFileSync(path.join(projectRoot, "index.html"), "utf8");
+const html = readEditorHtml();
 
 assert(!engine.includes('"m1m4-pencil-v1"'),
   "Il motore non deve contenere logica legata all'id del preset Pencil.");
@@ -194,7 +199,7 @@ assert(definitionSource.includes('shapeAssetId: "legacy-shape"')
   && definitionSource.includes('grainAssetId: "pencil-grain"')
   && definitionSource.includes("grainMovement: 0"),
   "I default built-in non usano gli asset Pencil attesi.");
-assert(engine.includes("grainMovement: clamp(next.grainMovement ?? this.settings.grainMovement, 0, 1)")
+assert(brushSettingsRuntime.includes("grainMovement: clamp(next.grainMovement ?? engine.settings.grainMovement, 0, 1)")
   && engine.includes('settings.shapeRotation === "follow-stroke" ? 1 : 0'),
   "Movement e Follow Stroke non sono parametri runtime generici normalizzati.");
 

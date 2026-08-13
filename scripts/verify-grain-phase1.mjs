@@ -1,3 +1,4 @@
+import { readEditorHtml } from "./ui-shell-source.mjs";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -366,7 +367,7 @@ assert(engine.includes("const polarity = settings.grainInvert ? -1 : 1")
 const main = fs.readFileSync(mainPath, "utf8");
 const humanLab = fs.readFileSync(humanLabPath, "utf8");
 const editorLabs = fs.readFileSync(editorLabsPath, "utf8");
-const html = fs.readFileSync(htmlPath, "utf8");
+const html = readEditorHtml();
 assert(humanLab.includes('grainMode: "off"'),
   "Il preset canonico non forza Grain Off.");
 assert(humanLab.includes('blendIntensity: 1')

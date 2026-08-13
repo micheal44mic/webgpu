@@ -1,3 +1,4 @@
+import { readEditorHtml } from "./ui-shell-source.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
@@ -20,7 +21,7 @@ const storage = read("../src/history-storage-coordinator.ts");
 const maintenance = read("../src/history-maintenance-runtime.ts");
 const mixed = read("../src/mixed-scene-stack.ts");
 const gpuHistoryTest = read("../src/labs/gpu/layer-history-gpu-test.ts");
-const html = read("../index.html");
+const html = readEditorHtml();
 const main = read("../src/main.ts");
 const panel = read("../src/layer-panel-controller.ts");
 const sceneEditor = read("../src/scene-editor-controller.ts");

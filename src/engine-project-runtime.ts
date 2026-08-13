@@ -17,7 +17,7 @@ import type {
 import {
   allocateLayerGpuResources,
   destroyLayerGpuResources,
-} from "./engine-layer-runtime";
+} from "./engine-layer-residency-runtime";
 import {
   DOCUMENT_HEIGHT,
   DOCUMENT_TILE_HEIGHT,

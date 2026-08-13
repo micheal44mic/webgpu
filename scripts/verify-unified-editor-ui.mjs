@@ -1,9 +1,10 @@
+import { readEditorHtml, readEditorStyleSource } from "./ui-shell-source.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
-const html = read("../index.html");
-const css = read("../src/styles.css");
+const html = readEditorHtml();
+const css = readEditorStyleSource();
 const main = read("../src/main.ts");
 const limits = read("../src/engine-limits.ts");
 const sharedControllers = [

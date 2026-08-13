@@ -37,7 +37,7 @@ import {
 } from "./raster-image-shader";
 import { assertShaderCompiled } from "./engine-gpu-utils";
 import { vectorTextDisplayShader } from "./vector-text-shader";
-import { initializeVectorTextGpuRenderer } from "./engine-vector-text-runtime";
+import { initializeVectorTextGpuRenderer } from "./engine-vector-text-resources-runtime";
 import { VECTOR_TEXT_GPU_UNIFORM_STRIDE } from "./vector-text-gpu-shader";
 import { type ActiveStroke, type DirtyRect, type Stamp } from "./engine-stroke-types";
 import { paintMipDimensions } from "./engine-geometry";
@@ -50,9 +50,9 @@ import { normalizeViewRotation } from "./engine-math";
 import {
   canvasOffsetToLayerOffset,
   clientToLayer,
-  effectsScratchCanShrinkNow,
   invalidateActiveLayerBake,
-} from "./engine-layer-runtime";
+} from "./engine-layer-residency-runtime";
+import { effectsScratchCanShrinkNow } from "./engine-layer-effect-lifecycle-runtime";
 import { cloneDryBlendRenderBatch } from "./blend-renderer";
 import { type RasterStrokeRect } from "./stroke-core";
 import { type MixedSceneVectorKey } from "./mixed-scene-stack";

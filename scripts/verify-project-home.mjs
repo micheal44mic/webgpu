@@ -1,13 +1,14 @@
+import { readEditorHtml, readEditorStyleSource } from "./ui-shell-source.mjs";
 import fs from "node:fs";
 
-const html = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const html = readEditorHtml();
 const startup = fs.readFileSync(new URL("../src/startup.ts", import.meta.url), "utf8");
 const main = fs.readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
 const projectSession = fs.readFileSync(
   new URL("../src/project-session-controller.ts", import.meta.url),
   "utf8",
 );
-const styles = fs.readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+const styles = readEditorStyleSource();
 
 function expect(source, value, label) {
   if (!source.includes(value)) throw new Error(`Missing ${label}: ${value}`);
