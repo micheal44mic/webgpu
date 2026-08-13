@@ -1050,6 +1050,14 @@ const layerThumbnailSource = readFileSync(
   new URL("../src/layer-thumbnail-renderer.ts", import.meta.url),
   "utf8",
 );
+const layerThumbnailControllerSource = readFileSync(
+  new URL("../src/layer-thumbnail-controller.ts", import.meta.url),
+  "utf8",
+);
+const layerPanelSource = readFileSync(
+  new URL("../src/layer-panel-controller.ts", import.meta.url),
+  "utf8",
+);
 const layerThumbnailGeometrySource = readFileSync(
   new URL("../src/layer-thumbnail-geometry.ts", import.meta.url),
   "utf8",
@@ -1265,7 +1273,8 @@ assert.match(
   "Undo/Redo deve cambiare solo compositing e avanzare il cursore dopo il successo",
 );
 const retargetStart = engineSource.indexOf("export async function retargetEffectsWorkingSetInternal(");
-const retargetEnd = engineSource.indexOf("export async function benchmarkEffectsWorkingSet(", retargetStart);
+const retargetEnd = engineSource.indexOf("export function releaseLayerBlendFoldScratch(", retargetStart);
+assertSection("retarget effects working set", retargetStart, retargetEnd);
 const retargetBody = engineSource.slice(retargetStart, retargetEnd);
 assert.match(retargetBody, /completionPolicy: LayerGpuCompletionPolicy = "await-immediately"/);
 assert.match(retargetBody, /rebuildDomain: LayerEffectsRebuildDomain = "full-document"/);
@@ -1777,12 +1786,68 @@ const mainSource = readFileSync(
   new URL("../src/main.ts", import.meta.url),
   "utf8",
 );
+const gpuMemoryPanelSource = readFileSync(
+  new URL("../src/gpu-memory-panel-controller.ts", import.meta.url),
+  "utf8",
+);
+const canvasToolSource = readFileSync(
+  new URL("../src/canvas-tool-controller.ts", import.meta.url),
+  "utf8",
+);
+const rasterStyleSource = readFileSync(
+  new URL("../src/raster-style-controller.ts", import.meta.url),
+  "utf8",
+);
+const canvasInputSource = readFileSync(
+  new URL("../src/canvas-input-controller.ts", import.meta.url),
+  "utf8",
+);
+const documentInteractionSource = readFileSync(
+  new URL("../src/document-interaction-controller.ts", import.meta.url),
+  "utf8",
+);
+const brushQuickControlsSource = readFileSync(
+  new URL("../src/brush-quick-controls-controller.ts", import.meta.url),
+  "utf8",
+);
+const sceneEditorSource = readFileSync(
+  new URL("../src/scene-editor-controller.ts", import.meta.url),
+  "utf8",
+);
+const brushLibrarySource = readFileSync(
+  new URL("../src/brush-library-controller.ts", import.meta.url),
+  "utf8",
+);
+const editorToolsSource = readFileSync(
+  new URL("../src/editor-tools-controller.ts", import.meta.url),
+  "utf8",
+);
+const editorLabsSource = readFileSync(
+  new URL("../src/labs/editor-labs.ts", import.meta.url),
+  "utf8",
+);
+const labsStartupSource = readFileSync(
+  new URL("../src/labs/startup.ts", import.meta.url),
+  "utf8",
+);
+const labOperationsSource = readFileSync(
+  new URL("../src/labs/engine-lab-operations.ts", import.meta.url),
+  "utf8",
+);
+const humanLabSource = readFileSync(
+  new URL("../src/labs/human-stroke-lab.ts", import.meta.url),
+  "utf8",
+);
 const indexSource = readFileSync(
   new URL("../index.html", import.meta.url),
   "utf8",
 );
 const stylesSource = readFileSync(
   new URL("../src/styles.css", import.meta.url),
+  "utf8",
+);
+const mobileToolSettingsSource = readFileSync(
+  new URL("../src/mobile-tool-settings-sheet.ts", import.meta.url),
   "utf8",
 );
 assert.match(layerThumbnailGeometrySource, /export const LAYER_THUMBNAIL_SIZE = 64 as const/);
@@ -1820,19 +1885,25 @@ assert.doesNotMatch(
 );
 assert.match(engineSource, /async captureActiveLayerThumbnail\(\)/);
 assert.match(engineSource, /engine\.layerThumbnailRenderer\?\.residentBytes/);
-assert.match(mainSource, /new BoundedMobileRasterThumbnailCache/);
+assert.match(layerThumbnailControllerSource, /new BoundedMobileRasterThumbnailCache/);
 assert.doesNotMatch(
-  mainSource,
-  /liveRasterIds[\s\S]{0,300}mobileRasterThumbnailCache\.delete/,
+  layerThumbnailControllerSource,
+  /liveRasterIds[\s\S]{0,300}this\.cache\.delete/,
   "merge must not purge previews for layer ids that structural undo can restore",
 );
-assert.match(mainSource, /activePointerId !== null[\s\S]*?historyState\.busy/);
+assert.match(
+  mainSource,
+  /captureBusy: \(\) => canvasInputController\?\.isPointerActive === true[\s\S]*?historyState\.busy/,
+);
 assert.match(mainSource, /function requestMobileLayerThumbnailCapture\(delayMs = 120\)/);
-assert.match(mainSource, /new ImageData\(imageBytes, capture\.width, capture\.height\)/);
-assert.match(mainSource, /thumbnailCanvas\.width = LAYER_THUMBNAIL_WIDTH/);
-assert.match(mainSource, /thumbnailCanvas\.height = LAYER_THUMBNAIL_HEIGHT/);
-assert.match(mainSource, /--mobile-layer-thumbnail-width/);
-assert.match(mainSource, /--mobile-layer-thumbnail-height/);
+assert.match(
+  layerThumbnailControllerSource,
+  /new this\.options\.browser\.ImageData\([\s\S]*?capture\.width,[\s\S]*?capture\.height/,
+);
+assert.match(layerPanelSource, /thumbnailCanvas\.width = LAYER_THUMBNAIL_WIDTH/);
+assert.match(layerPanelSource, /thumbnailCanvas\.height = LAYER_THUMBNAIL_HEIGHT/);
+assert.match(layerPanelSource, /--mobile-layer-thumbnail-width/);
+assert.match(layerPanelSource, /--mobile-layer-thumbnail-height/);
 assert.equal(MOBILE_RASTER_THUMBNAIL_EDGE_PX, 64);
 assert.equal(MOBILE_RASTER_THUMBNAIL_RGBA_BYTES, 64 * 64 * 4);
 assert.equal(MOBILE_RASTER_THUMBNAIL_CACHE_GENERATIONS, 4);
@@ -1898,8 +1969,11 @@ assert.doesNotMatch(
   /navigator\.gpu|GPU(?:Device|Texture|Buffer|Queue|CommandEncoder)|copyTextureToBuffer|mapAsync|setInterval/,
   "semantic thumbnails must remain cached Canvas2D work without GPU readback or polling",
 );
-assert.match(mainSource, /semanticThumbnailSignature: mobileSemanticLayerThumbnailSignature/);
-assert.match(mainSource, /renderMobileSemanticLayerThumbnail\([\s\S]*?view\.semanticThumbnail/);
+assert.match(layerPanelSource, /semanticThumbnailSignature: mobileSemanticLayerThumbnailSignature/);
+assert.match(
+  layerThumbnailControllerSource,
+  /renderMobileSemanticLayerThumbnail\([\s\S]*?view\.semanticThumbnail/,
+);
 assert.match(stylesSource, /\.mobile-layers-panel \{[\s\S]*?right: 0;/);
 assert.match(stylesSource, /\.mobile-layer-thumbnail-canvas \{[\s\S]*?background: #ffffff;/);
 assert.match(
@@ -1954,8 +2028,8 @@ assert.equal(shouldCloseMobileToolsSheetDrag({
   releaseVelocityY: 0,
   offsetPx: 636,
 }), true, "superare peek di 36 px deve chiudere anche senza velocità");
-assert.match(mainSource, /const shouldClose = shouldCloseMobileToolsSheetDrag\(\{/);
-assert.match(mainSource, /snapMobileToolsSheet\(mobileToolsSheetDragStartSnap\)/);
+assert.match(editorToolsSource, /const shouldClose = shouldCloseMobileToolsSheetDrag\(\{/);
+assert.match(editorToolsSource, /this\.snap\(this\.dragStartSnap\)/);
 assert.match(
   indexSource,
   /id="mobileBrushLibrarySheet"[\s\S]*?M1M4 BRUSHES[\s\S]*?data-mobile-brush-category="pencil"[\s\S]*?data-mobile-brush-category="painting"[\s\S]*?data-mobile-brush-category="spray-paint"/,
@@ -1967,18 +2041,18 @@ assert.match(
   "lo slot legacy deve avere un nome reale e una preview propria",
 );
 assert.match(
-  mainSource,
-  /function mobileBrushLibraryVisibleBrushIds\(\)[\s\S]*?const visible = \[activeMobileBrushLibraryBrushId\][\s\S]*?brushId !== activeMobileBrushLibraryBrushId[\s\S]*?card\.dataset\.mobileBrushCategoryCard === mobileBrushLibraryCategory[\s\S]*?visible\.push\(brushId\)/,
+  brushLibrarySource,
+  /private visibleBrushIds\(\)[\s\S]*?const visible = \[this\.activeBrushId\][\s\S]*?brushId !== this\.activeBrushId[\s\S]*?card\.dataset\.mobileBrushCategoryCard === this\.category[\s\S]*?visible\.push\(brushId\)/,
   "ogni categoria deve mostrare prima il pennello attivo e poi i propri pennelli non duplicati",
 );
 assert.match(
-  mainSource,
-  /function setMobileBrushLibraryCategory\(category:[\s\S]*?orderedVisibleCards[\s\S]*?activeMobileBrushLibraryBrushId[\s\S]*?dataset\.mobileBrushCategoryCard === category[\s\S]*?mobileBrushLibraryList\.append\(card\)/,
+  brushLibrarySource,
+  /private setCategory\(category:[\s\S]*?const ordered[\s\S]*?this\.activeBrushId[\s\S]*?dataset\.mobileBrushCategoryCard === category[\s\S]*?this\.elements\.list\.append\(card\)/,
   "la card attiva deve essere riordinata fisicamente al primo posto in ogni categoria",
 );
 assert.match(
-  mainSource,
-  /activeMobileBrushLibraryBrushId = brushId;[\s\S]*?setMobileBrushLibraryCategory\(mobileBrushLibraryCategoryForBrush\(brushId\)\)[\s\S]*?syncMobileBrushLibrarySelection\(\)/,
+  brushLibrarySource,
+  /this\.activeBrushId = brushId;[\s\S]*?this\.setCategory\(this\.categoryFor\(brushId\)\)[\s\S]*?this\.syncSelection\(\)/,
   "la selezione deve aggiornare subito ordine e stato della categoria visibile",
 );
 assert.match(
@@ -1990,30 +2064,34 @@ assert.match(
   /\.mobile-brush-card\.is-selected \{[\s\S]*?border-color: #dd5c35;[\s\S]*?background: #1a1d23;/,
 );
 assert.match(
-  mainSource,
-  /mobilePaintButton\.addEventListener\("click", \(\) => \{[\s\S]*?activeCanvasTool === "paint"[\s\S]*?setMobileBrushLibraryOpen\(!mobileBrushLibraryOpen\);[\s\S]*?selectMobileCanvasTool\("paint"\);/,
+  canvasToolSource,
+  /paintButton\.addEventListener\("click", \(\) => \{[\s\S]*?this\.activeCanvasTool === "paint"[\s\S]*?options\.toggleBrushLibrary\(\);[\s\S]*?this\.select\("paint"\);/,
   "il primo tap deve selezionare Paint e soltanto un tap sul Paint già attivo apre la library",
 );
 assert.match(
-  mainSource,
-  /function setMobileBrushLibraryOpen\(open: boolean\)[\s\S]*?setMobileToolsSheetOpen\(false\)[\s\S]*?setMobileLayersPanelOpen\(false\)[\s\S]*?setMobileBrushLibraryOffset\(0\)/,
+  mainSource + brushLibrarySource,
+  /beforeOpen:[\s\S]*?editorToolsController\?\.setOpen\(false\)[\s\S]*?layerPanelController\?\.isOpen[\s\S]*?layerPanelController\.setOpen\(false\)[\s\S]*?setOpen\(open: boolean\)[\s\S]*?this\.setOffset\(0\)/,
   "la Brush Library deve aprirsi expanded ed escludere Tools e Layers",
 );
 assert.match(
   mainSource,
-  /const suppressed = [\s\S]*?mobileLayersPanelOpen[\s\S]*?mobileToolsSheetOpen[\s\S]*?mobileBrushLibraryOpen/,
+  /isSuppressedBySurface: \(\) =>[\s\S]*?layerPanelController\?\.isOpen[\s\S]*?editorToolsController\?\.isOpen[\s\S]*?brushLibraryController\.isOpen/,
   "Size e Opacity non devono restare sopra la Brush Library",
 );
 assert.match(
-  mainSource,
+  brushQuickControlsSource,
+  /const suppressed = !brushContext \|\| this\.options\.isSuppressedBySurface\(\)/,
+);
+assert.match(
+  brushLibrarySource,
   /startSnap: "expanded",[\s\S]*?peekOffsetPx: Math\.min\(closedOffset, Math\.max\(96, closedOffset \* 0\.22\)\)/,
   "il drawer della Brush Library deve usare la gesture facile di chiusura senza snap intermedio",
 );
-const mobileBrushLibraryPreviewStart = mainSource.indexOf(
-  "function renderMobileBrushLibraryPreview()",
+const mobileBrushLibraryPreviewStart = brushLibrarySource.indexOf(
+  "private renderPreview(): void",
 );
-const mobileBrushLibraryPreviewEnd = mainSource.indexOf(
-  "function scheduleMobileBrushLibraryPreview()",
+const mobileBrushLibraryPreviewEnd = brushLibrarySource.indexOf(
+  "private schedulePreview(): void",
   mobileBrushLibraryPreviewStart,
 );
 assertSection(
@@ -2021,25 +2099,25 @@ assertSection(
   mobileBrushLibraryPreviewStart,
   mobileBrushLibraryPreviewEnd,
 );
-const mobileBrushLibraryPreviewSource = mainSource.slice(
+const mobileBrushLibraryPreviewSource = brushLibrarySource.slice(
   mobileBrushLibraryPreviewStart,
   mobileBrushLibraryPreviewEnd,
 );
 assert.match(
   mobileBrushLibraryPreviewSource,
-  /mobileBrushLibraryPreviewRenderer[\s\S]*?\.render\(/,
+  /this\.previewRenderer[\s\S]*?\.render\(/,
 );
 assert.doesNotMatch(
   mobileBrushLibraryPreviewSource,
   /setBrushSettings|queue\.submit|copyTextureToBuffer|mapAsync|onSubmittedWorkDone/,
-  "main deve soltanto orchestrare la cache: submit e readback vivono nel renderer WebGPU condiviso",
+  "il controller deve soltanto orchestrare la cache: submit e readback vivono nel renderer WebGPU condiviso",
 );
-assert.match(mainSource, /MOBILE_DOUBLE_TAP_ZOOM_INTERVAL_MS = 350/);
-assert.match(mainSource, /document\.addEventListener\("touchend",[\s\S]*?passive: false/);
-assert.match(mainSource, /document\.addEventListener\("dblclick",[\s\S]*?preventDefault\(\)/);
+assert.match(documentInteractionSource, /DOUBLE_TAP_ZOOM_INTERVAL_MS = 350/);
+assert.match(documentInteractionSource, /document\.addEventListener\("touchend",[\s\S]*?passive: false/);
+assert.match(documentInteractionSource, /document\.addEventListener\("dblclick",[\s\S]*?preventDefault\(\)/);
 assert.match(
   indexSource,
-  /id="brushSize" type="range" min="1" max="1000" step="1" value="96"/,
+  /id="mobileBrushStudioSize" type="range" min="1" max="1000" step="1" value="30"/,
 );
 assert.match(
   indexSource,
@@ -2057,23 +2135,23 @@ assert.match(
   indexSource,
   /id="mobileBrushBlurControl"[\s\S]*?aria-valuemin="0"[\s\S]*?aria-valuemax="100"[\s\S]*?aria-valuetext="Blur 0%"/,
 );
-assert.equal((mainSource.match(/size\.max = "1000";/g) ?? []).length, 2);
-assert.match(mainSource, /const MOBILE_BRUSH_CONTROL_INDICATOR_MAX_CSS_PIXELS = 41;/);
+assert.match(brushQuickControlsSource, /this\.options\.settings\.quickControl\(kind\)/);
+assert.match(brushQuickControlsSource, /const CONTROL_INDICATOR_MAX_CSS_PIXELS = 41;/);
 assert.match(
-  mainSource,
-  /const indicatorDiameter = MOBILE_BRUSH_CONTROL_INDICATOR_MAX_CSS_PIXELS \* percent \/ 100;[\s\S]*?"--mobile-brush-opacity-indicator",[\s\S]*?`\$\{indicatorDiameter\.toFixed\(2\)\}px`/,
+  brushQuickControlsSource,
+  /const diameter = kind === "size"[\s\S]*?: CONTROL_INDICATOR_MAX_CSS_PIXELS \* percent \/ 100;[\s\S]*?"--mobile-brush-opacity-indicator"[\s\S]*?`\$\{diameter\.toFixed\(2\)\}px`/,
 );
 assert.match(
   stylesSource,
   /\[data-mobile-brush-control="opacity"\] \.mobile-brush-control-value \{[\s\S]*?width: var\(--mobile-brush-opacity-indicator, 41px\);[\s\S]*?height: var\(--mobile-brush-opacity-indicator, 41px\);/,
 );
 assert.match(
-  mainSource,
+  brushQuickControlsSource,
   /if \(kind === "size"\) return `Size \$\{Math\.round\(value\)\} px`;[\s\S]*?if \(kind === "opacity"\) return `Opacity \$\{Math\.round\(value\)\}%`;[\s\S]*?if \(kind === "stretch"\) return `Stretch \$\{Math\.round\(value\)\}%`;[\s\S]*?if \(kind === "paint"\) return `Paint \$\{Math\.round\(value\)\}%`;[\s\S]*?return `Blur \$\{Math\.round\(value\)\}%`/,
 );
 assert.match(
-  mainSource,
-  /mobileBrushOpacityTrack\.hidden = blend;[\s\S]*?mobileBrushStretchTrack\.hidden = !blend;[\s\S]*?mobileBrushPaintTrack\.hidden = !blend;[\s\S]*?mobileBrushBlurTrack\.hidden = !blend;/,
+  brushQuickControlsSource,
+  /tracks\.opacity\.hidden = blend;[\s\S]*?tracks\.stretch\.hidden = !blend;[\s\S]*?tracks\.paint\.hidden = !blend;[\s\S]*?tracks\.blur\.hidden = !blend;/,
   "Paint must retain Size and Opacity while Blend exposes Size, Stretch, Paint and Blur",
 );
 assert.match(
@@ -2082,8 +2160,8 @@ assert.match(
   "the four Blend circles must use evenly spaced tracks",
 );
 assert.match(
-  mainSource,
-  /finishMobileBrushControlDrag\(commit: boolean\)[\s\S]*?if \(mobileBrushControlInput\(drag\.kind\)\.value !== drag\.startInputValue\) \{[\s\S]*?applyBrushControls\(\);/,
+  brushQuickControlsSource,
+  /finishDrag\(commit: boolean\)[\s\S]*?if \(commit && drag\.currentValue !== drag\.startValue\) \{[\s\S]*?this\.options\.settings\.setQuickControl\(drag\.kind, drag\.currentValue\);/,
   "the four Blend controls must apply authoritative settings once on release",
 );
 assert.doesNotMatch(mainSource, /size\.max = blend \? "1024" : "1500"/);
@@ -2103,77 +2181,83 @@ assert.match(
   stylesSource,
   /\.mobile-layer-reference,[\s\S]*?\.mobile-layer-visibility \{[\s\S]*?align-self: center;[\s\S]*?justify-self: center;/,
 );
-const pointerMoveStart = mainSource.indexOf('canvas.addEventListener("pointermove"');
-const pointerMoveEnd = mainSource.indexOf("function finishPointer(", pointerMoveStart);
+const pointerMoveStart = canvasInputSource.indexOf("const handlePointerMove =");
+const pointerMoveEnd = canvasInputSource.indexOf("const finishPointer =", pointerMoveStart);
 assert.ok(pointerMoveStart >= 0 && pointerMoveEnd > pointerMoveStart);
 assert.doesNotMatch(
-  mainSource.slice(pointerMoveStart, pointerMoveEnd),
+  canvasInputSource.slice(pointerMoveStart, pointerMoveEnd),
   /Thumbnail|thumbnail/,
   "il pointermove Paint non deve conoscere né aggiornare le miniature",
 );
-assert.equal(
-  (mainSource.match(/performanceTelemetryRevision: 64/g) ?? []).length,
-  2,
-  "tipo persistito e runtime devono avanzare insieme alla revisione 64",
-);
-assert.match(mainSource, /layerBakeStrategy: string;/);
-assert.match(mainSource, /layerCompositeStrategy: string;/);
-assert.match(mainSource, /async function changeLayerVisibility\(/);
-assert.match(mainSource, /async function changeLayerOpacity\(/);
-assert.match(mainSource, /LAYER_BLEND_MODE_CATEGORIES/);
-assert.match(mainSource, /LAYER_BLEND_MODE_LABELS/);
-assert.match(mainSource, /blendMode\.className = "layer-blend-mode"/);
-assert.match(mainSource, /async function changeLayerBlendMode\(/);
 assert.match(
-  mainSource,
-  /await engine\.setLayerBlendMode\(index, blendMode\)/,
+  humanLabSource,
+  /HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 64/,
+  "il contratto persistito del benchmark deve conservare la revisione 64",
+);
+assert.match(engineSource, /layerBakeStrategy: typeof LAYER_BAKE_STRATEGY;/);
+assert.match(engineSource, /layerCompositeStrategy: typeof LAYER_COMPOSITE_STRATEGY;/);
+assert.match(sceneEditorSource, /private async setLayerVisibilityTransaction\(/);
+assert.match(sceneEditorSource, /private async setLayerOpacityTransaction\(/);
+assert.match(sceneEditorSource, /LAYER_BLEND_MODE_LABELS/);
+assert.match(mobileToolSettingsSource, /LAYER_BLEND_MODE_CATEGORIES/);
+assert.match(
+  mobileToolSettingsSource,
+  /for \(const category of LAYER_BLEND_MODE_CATEGORIES\)[\s\S]*?this\.layerBlendMode\.append\(group\)/,
+  "la UI visibile deve costruire l'elenco completo dei metodi di fusione",
+);
+assert.match(sceneEditorSource, /private async setRasterBlendModeTransaction\(/);
+assert.match(
+  sceneEditorSource,
+  /await this\.options\.engine\.setLayerBlendMode\([\s\S]*?target\.rasterIndex,[\s\S]*?blendMode/,
   "la scelta UI deve pubblicare subito il modo, senza un pulsante Applica",
 );
-assert.match(mainSource, /clipping\.className = "layer-clipping"/,
-  "ogni riga deve creare il proprio controllo maschera stabile");
-assert.match(mainSource, /async function changeLayerClipping\(/);
+assert.match(mainSource, /mobileLayerClippingButton/);
+assert.match(sceneEditorSource, /private async setRasterClippingTransaction\(/);
 assert.match(
-  mainSource,
-  /const changed = await engine\.setLayerClipping\(index, enabled\)/,
+  sceneEditorSource,
+  /const changed = await this\.options\.engine\.setLayerClipping\(target\.rasterIndex, enabled\)/,
   "il controllo per riga deve agire anche su un raster esistente, non crearne uno nuovo",
 );
-assert.match(mainSource, /Altre M consecutive useranno la stessa base/);
+assert.match(sceneEditorSource, /Altre M consecutive useranno la stessa base/);
 assert.doesNotMatch(indexSource, /id="addClippingMask"/,
   "il vecchio comando globale Crea maschera non deve restare duplicato");
-assert.match(
+assert.doesNotMatch(
   indexSource,
-  /Il tasto M di ogni raster attiva o disattiva la maschera/,
+  /id="layerList"|id="addLayer"/,
+  "la lista livelli invisibile non deve restare come seconda UI autorevole",
 );
-assert.match(stylesSource, /\.layer-clipping\[aria-pressed="true"\]/,
-  "lo stato maschera deve essere visibile direttamente nella riga");
+assert.match(indexSource, /id="mobileLayerClipping"/);
 assert.match(mainSource, /function syncActiveLayerControls\(\): void \{/);
 const syncStart = mainSource.indexOf("function syncActiveLayerControls(");
 const syncBody = mainSource.slice(syncStart, syncStart + 600);
-assert.match(syncBody, /syncRasterColorOverlayControls\(engine\.getRasterColorOverlayStyle\(\)\)/);
-assert.match(syncBody, /syncRasterStrokeControls\(engine\.getRasterStrokeStyle\(\)\)/);
-assert.match(syncBody, /syncRasterOuterShadowControls\(engine\.getRasterOuterShadowStyle\(\)\)/);
-assert.match(syncBody, /syncRasterInnerShadowControls\(engine\.getRasterInnerShadowStyle\(\)\)/);
-assert.match(syncBody, /syncRasterBevelControls\(engine\.getRasterBevelStyle\(\)\)/);
-const selectStart = mainSource.indexOf("async function selectLayer(");
+assert.match(syncBody, /mobileStrokeSheet\?\.sync\(rasterStyleController\.getStrokeStyle\(\)\)/);
+assert.match(syncBody, /mobileRasterEffectsSheet\?\.syncOpenStyle\(\)/);
+assert.match(syncBody, /syncMobileToolsMenuState\(\)/);
+assert.doesNotMatch(
+  syncBody,
+  /syncRaster(?:ColorOverlay|Stroke|OuterShadow|InnerShadow|Bevel)Controls/,
+  "il cambio livello non deve più sincronizzare controlli effetto nascosti",
+);
+const selectStart = sceneEditorSource.indexOf("private async selectLayerTransaction(");
 assert.notEqual(selectStart, -1, "selectLayer deve esistere");
 assert.match(
-  mainSource.slice(selectStart, selectStart + 1_400),
-  /await engine\.setActiveLayer\(index\);\s*syncActiveLayerControls\(\);/,
+  sceneEditorSource.slice(selectStart, selectStart + 5_500),
+  /await this\.options\.engine\.setActiveLayer\(target\.rasterIndex\);\s*this\.options\.syncActiveRasterControls\(\);/,
   "il cambio livello deve risincronizzare i controlli degli effetti",
 );
 assert.match(
-  mainSource,
-  /const result = await engine\.addLayer\(\);\s*syncActiveLayerControls\(\);/,
+  sceneEditorSource,
+  /const result = await this\.options\.engine\.addLayer\(\);\s*this\.options\.syncActiveRasterControls\(\);/,
   "anche la creazione di un livello deve risincronizzare i controlli",
 );
 assert.match(
-  mainSource,
-  /function rasterColorOverlayTargetIsSelected\(\): boolean \{[\s\S]*?engine\.canPaintSelectedSceneItem\(\);/,
+  rasterStyleSource,
+  /colorOverlayTargetIsSelected\(\): boolean \{[\s\S]*?getMixedSceneSnapshot\(\) === null[\s\S]*?canPaintSelectedSceneItem\(\);/,
   "Color Overlay deve essere modificabile solo quando è selezionato un raster",
 );
 assert.match(
-  mainSource,
-  /\|\| !rasterColorOverlayTargetIsSelected\(\)/,
+  rasterStyleSource,
+  /requiresSelectedTarget && !this\.colorOverlayTargetIsSelected\(\)/,
   "il commit UI non può ricadere sul raster di lavoro sotto un nodo vettoriale",
 );
 assert.match(
@@ -2200,30 +2284,30 @@ assert.match(
   /\.layer-loading-content \{[\s\S]*?background: rgba\(20, 23, 31, 0\.84\);/,
   "spinner e testo devono restare in una piccola scheda semitrasparente",
 );
-const loadingStart = mainSource.indexOf("async function showLayerLoading(");
-const loadingBody = mainSource.slice(loadingStart, loadingStart + 900);
-assert.match(loadingBody, /layerLoadingOverlay\.hidden = false;/);
+const loadingStart = sceneEditorSource.indexOf("private async showLoading(");
+const loadingBody = sceneEditorSource.slice(loadingStart, loadingStart + 1_300);
+assert.match(loadingBody, /loadingOverlay\.hidden = false;/);
 assert.match(
   loadingBody,
-  /await nextAnimationFrame\(\);\s*await nextAnimationFrame\(\);/,
+  /await this\.nextAnimationFrame\(\);\s*if \(this\.disposed\) return false;\s*await this\.nextAnimationFrame\(\);/,
   "il loader deve ricevere un paint prima del lavoro di cambio livello",
 );
-assert.match(loadingBody, /layerLoadingOverlay\.hidden = true;/);
-const selectUiBody = mainSource.slice(selectStart, selectStart + 2_300);
+assert.match(loadingBody, /loadingOverlay\.hidden = true;/);
+const selectUiBody = sceneEditorSource.slice(selectStart, selectStart + 5_500);
 assert.match(
   selectUiBody,
-  /await showLayerLoading\("Caricamento livello…"\);[\s\S]*?await engine\.setActiveLayer\(index\);[\s\S]*?await engine\.waitForIdle\(\);/,
+  /await this\.showLoading\("Caricamento livello…"\)[\s\S]*?await this\.options\.engine\.setActiveLayer\(target\.rasterIndex\);[\s\S]*?await this\.options\.engine\.waitForIdle\(\);/,
   "il loader dello switch deve coprire anche presentazione e completamento GPU",
 );
-assert.match(selectUiBody, /finally \{[\s\S]*?hideLayerLoading\(\);/);
-const addUiStart = mainSource.indexOf('addLayerButton.addEventListener("click"');
-const addUiBody = mainSource.slice(addUiStart, addUiStart + 1_300);
+assert.match(selectUiBody, /finally \{[\s\S]*?this\.finish\(\{ loading: true \}\);/);
+const addUiStart = sceneEditorSource.indexOf("private async addRasterLayerTransaction(");
+const addUiBody = sceneEditorSource.slice(addUiStart, addUiStart + 1_300);
 assert.match(
   addUiBody,
-  /await showLayerLoading\("Creazione livello…"\);[\s\S]*?await engine\.addLayer\(\);[\s\S]*?await engine\.waitForIdle\(\);/,
+  /await this\.showLoading\("Creazione livello…"\)[\s\S]*?await this\.options\.engine\.addLayer\(\);[\s\S]*?await this\.options\.engine\.waitForIdle\(\);/,
   "anche il nuovo livello deve restare coperto finché il frame è pronto",
 );
-assert.match(addUiBody, /finally \{[\s\S]*?hideLayerLoading\(\);/);
+assert.match(addUiBody, /finally \{[\s\S]*?this\.finish\(\{ loading: true \}\);/);
 
 // The record's hasContent is only written back when a layer stops being active,
 // so reading it for the ACTIVE layer would report "empty" while the user paints.
@@ -2531,28 +2615,28 @@ assert.match(
 // History rollback and the absolute three-surface compositor references run in
 // the same `?layerHistoryTest=1` harness.
 const layerHistoryGpuTestSource = readFileSync(
-  new URL("../src/layer-history-gpu-test.ts", import.meta.url),
+  new URL("../src/labs/gpu/layer-history-gpu-test.ts", import.meta.url),
   "utf8",
 );
 const layerCompositeGpuTestSource = readFileSync(
-  new URL("../src/layer-composite-gpu-test.ts", import.meta.url),
+  new URL("../src/labs/gpu/layer-composite-gpu-test.ts", import.meta.url),
   "utf8",
 );
-assert.match(mainSource, /pageSearchParams\.get\("layerHistoryTest"\) === "1"/);
-assert.match(mainSource, /await import\("\.\/layer-history-gpu-test"\)/);
-assert.match(mainSource, /runLayerHistoryGpuTest\(engine\)/);
+assert.doesNotMatch(mainSource, /layerHistoryTest|runLayerHistoryGpuTest/);
+assert.match(editorLabsSource, /case "layer-history"/);
+assert.match(editorLabsSource, /import\("\.\/gpu\/layer-history-gpu-test"\)/);
+assert.match(editorLabsSource, /runLayerHistoryGpuTest\(engine\)/);
 assert.match(
-  mainSource,
-  /const report = await Promise\.race\(\[\s*runLayerHistoryGpuTest\(engine\),/,
+  editorLabsSource,
+  /return await Promise\.race\(\[\s*runLayerHistoryGpuTest\(engine\),/,
   "l'esecuzione dell'harness deve avere un tetto di tempo",
 );
-assert.match(mainSource, /Test livelli scaduto dopo 180 s/);
-assert.match(mainSource, /180_000/);
-assert.match(mainSource, /window\.clearTimeout\(timeoutId\)/,
+assert.match(editorLabsSource, /Test livelli scaduto dopo 180 s/);
+assert.match(editorLabsSource, /180_000/);
+assert.match(editorLabsSource, /window\.clearTimeout\(timeoutId\)/,
   "il timer dell'harness deve essere disarmato dopo successo o errore");
-assert.match(mainSource, /layerHistoryTestRunning = timedOut/,
-  "dopo timeout la pagina deve restare bloccata perché Promise.race non cancella il test");
-assert.match(mainSource, /const failure = \{ version: 11, passed: false/);
+assert.match(editorLabsSource, /this\.#latchedBusy = true/,
+  "dopo timeout la pagina Labs deve restare bloccata perché Promise.race non cancella il test");
 assert.match(layerHistoryGpuTestSource, /LAYER_HISTORY_GPU_TEST_VERSION = 12 as const/);
 assert.match(layerHistoryGpuTestSource, /await engine\.duplicateSelectedLayer\(\)/);
 assert.match(layerHistoryGpuTestSource, /duplicatePaintUndoUsedSeedByteExactly/);
@@ -2565,7 +2649,7 @@ assert.match(layerHistoryGpuTestSource, /redoRestoredBByteExactly/);
 assert.match(layerCompositeGpuTestSource, /fiveLayerSwitchMemoryPeaks/);
 assert.match(layerCompositeGpuTestSource, /fiveLayerMiddleSwitchMemoryPeaks/);
 assert.match(layerCompositeGpuTestSource, /measureMemoryPeakDuring/);
-assert.match(layerHistoryGpuTestSource, /measureActiveStyleBakeGap\(pRect\)/);
+assert.match(layerHistoryGpuTestSource, /measureActiveStyleBakeGap\(engine, pRect\)/);
 assert.match(layerHistoryGpuTestSource, /engine\.injectLayerBakeFault\("after-candidate-submit"\)/);
 assert.match(layerHistoryGpuTestSource, /injectedBakeFailureReleasedCandidate/);
 assert.match(layerHistoryGpuTestSource, /readLayerPixels\(auditRect, 0\)/);
@@ -2612,7 +2696,7 @@ assert.match(
   /if \(this\.historyBusy \|\| this\.activeStroke \|\| this\.layerSwitchBusy \|\| this\.selectionBusy\) \{/,
   "beginStrokeAtLayer deve rifiutare durante uno switch",
 );
-assert.match(mainSource, /return !engineInitialized\s*\|\| layerSwitching/,
+assert.match(mainSource, /return !engineInitialized\s*\|\| sceneEditorController\?\.isBusy === true/,
   "il lock di switch deve entrare in operationLocked, non solo nella lista");
 
 // The workbench is one retargetable instance, so a layer whose record says
@@ -2733,8 +2817,11 @@ assert.match(
   /setBrushSettings\([\s\S]*?this\.initialized && \(this\.layerSwitchBusy \|\| this\.historyBusy\)/,
   "le impostazioni non devono riattivare render o allocazioni dopo un latch fatale",
 );
-assert.match(engineSource, /async setLayerFormat\([\s\S]*?this\.layerSwitchBusy/);
-assert.match(engineSource, /async benchmarkEffectsWorkingSet\([\s\S]*?this\.layerSwitchBusy/);
+assert.doesNotMatch(engineSource, /\bsetLayerFormat\(/);
+assert.match(
+  labOperationsSource,
+  /async function benchmarkEffectsWorkingSet\([\s\S]*?engine\.layerSwitchBusy/,
+);
 // Each caller's exemption is named rather than passed as an unreadable boolean.
 // A layer switch may cross layerSwitchBusy because that flag is its own;
 // history replay and structural SVG history may cross historyBusy because they
@@ -2762,8 +2849,8 @@ assert.match(
   engineSource,
   /layerMemoryMiB:\s*gpuMemory\.layerBaseMiB\s*\+ gpuMemory\.layerColdMiB\s*\+ gpuMemory\.layerHydrationMiB/,
 );
-assert.match(mainSource, /layerCount: number;/);
-assert.match(mainSource, /activeLayerId: number;/);
+assert.match(engineSource, /layerCount: number;/);
+assert.match(engineSource, /activeLayerId: number;/);
 
 const layerStorageStudySource = readFileSync(
   new URL("../src/layer-storage-study.ts", import.meta.url),
@@ -2911,35 +2998,27 @@ assert.match(layerCompositeGpuTestSource, /fiveLayerSwitchBreakdownIsConsistent/
 assert.match(layerHistoryGpuTestSource, /measureExactLayerStorageStudy\(\)/);
 assert.match(layerHistoryGpuTestSource, /conservativeTilesContainEveryExactTile/);
 assert.match(layerHistoryGpuTestSource, /exactReadbackReleasedItsTemporaryBuffers/);
-assert.match(mainSource, /performanceTelemetryRevision: 64/);
-assert.match(mainSource, /gpuMemoryLayerCold/);
-assert.match(mainSource, /gpuMemoryLayerCompressed/);
-assert.match(mainSource, /gpuMemoryLayerHydration/);
-assert.match(mainSource, /Raw livelli · effettivo/);
-assert.match(mainSource, /Memoria logica WebGPU realmente allocata/);
-assert.match(mainSource, /non è memoria allocata/);
+assert.match(humanLabSource, /HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 64/);
+assert.match(gpuMemoryPanelSource, /gpuMemoryLayerCold/);
+assert.match(gpuMemoryPanelSource, /gpuMemoryLayerCompressed/);
+assert.match(gpuMemoryPanelSource, /gpuMemoryLayerHydration/);
+assert.match(gpuMemoryPanelSource, /Raw livelli · effettivo/);
+assert.match(gpuMemoryPanelSource, /Memoria logica WebGPU realmente allocata/);
+assert.match(gpuMemoryPanelSource, /non è memoria allocata/);
 
 // The production-query stress fixture must be explicit, isolated and leave the
 // ordinary layer controls available after it has built real ~1 GiB residency.
 const layerMemoryStressSource = readFileSync(
-  new URL("../src/layer-memory-stress-test.ts", import.meta.url),
+  new URL("../src/labs/memory/layer-memory-stress-test.ts", import.meta.url),
   "utf8",
 );
-assert.match(mainSource, /pageSearchParams\.get\("layerMemoryStressTest"\) === "1"/);
-const memoryStressGateStart = mainSource.indexOf("const layerMemoryStressTestRequested");
-const memoryStressGateBody = mainSource.slice(memoryStressGateStart, memoryStressGateStart + 180);
-assert.doesNotMatch(
-  memoryStressGateBody,
-  /import\.meta\.env\.DEV/,
-  "la pagina pubblicata deve poter avviare lo stress solo tramite query esplicita",
-);
-assert.match(mainSource, /layerMemoryStressTestEnabled: layerMemoryFixtureRequested/);
-assert.match(mainSource, /await import\("\.\/layer-memory-stress-test"\)/);
-assert.match(mainSource, /layerMemoryStressTestCompleted = true/);
-assert.match(mainSource, /stressSampler = window\.setInterval/);
-assert.match(engineSource, /async seedActiveLayerMemoryStress\([\s\S]*?storageTileCount = LAYER_STORAGE_TILE_COUNT/);
-const memoryStressSeedStart = engineSource.indexOf("export async function seedActiveLayerMemoryStress(");
-const memoryStressSeedBody = engineSource.slice(memoryStressSeedStart, memoryStressSeedStart + 4_000);
+assert.doesNotMatch(mainSource, /layerMemoryStressTestRequested|runLayerMemoryStressTest/);
+assert.match(labsStartupSource, /layerMemoryStressTestEnabled: true/);
+assert.match(editorLabsSource, /\["memory-stress", "Stress memoria livelli"\]/);
+assert.match(editorLabsSource, /import\("\.\/memory\/layer-memory-stress-test"\)/);
+assert.match(labOperationsSource, /async function seedActiveLayerMemoryStress\([\s\S]*?storageTileCount = LAYER_STORAGE_TILE_COUNT/);
+const memoryStressSeedStart = labOperationsSource.indexOf("export async function seedActiveLayerMemoryStress(");
+const memoryStressSeedBody = labOperationsSource.slice(memoryStressSeedStart, memoryStressSeedStart + 4_000);
 assert.match(memoryStressSeedBody, /engine\.layerMemoryStressTestEnabled/);
 assert.match(memoryStressSeedBody, /const markerSize = 64/);
 assert.match(memoryStressSeedBody, /storageTileMask\.fill\(0\)/);
@@ -2954,7 +3033,7 @@ assert.match(layerMemoryStressSource, /manualSwitchReady: true/);
 // checkpoint before each allocation/switch. A restored page converts the last
 // pending attempt into an interrupted result, so the user never has to copy it.
 const iphoneMemoryLimitSource = readFileSync(
-  new URL("../src/iphone-memory-limit-test.ts", import.meta.url),
+  new URL("../src/labs/memory/iphone-memory-limit-test.ts", import.meta.url),
   "utf8",
 );
 const sitesBuildSource = readFileSync(
@@ -2999,10 +3078,10 @@ assert.equal(
 assert.ok(iphoneStorageTilePlan.every(
   (tileCount) => Number.isInteger(tileCount) && tileCount > 0 && tileCount <= 256,
 ));
-assert.match(mainSource, /pageSearchParams\.get\("iphoneMemoryLimitTest"\) === "1"/);
-assert.match(mainSource, /recoverRequestedIphoneMemoryLimitTest/);
-assert.match(mainSource, /serverRequired: iphoneMemoryLimitServerRequired/);
-assert.match(mainSource, /salvato nel progetto/);
+assert.doesNotMatch(mainSource, /iphoneMemoryLimitTest|recoverInterruptedIphoneMemoryLimitRun/);
+assert.match(editorLabsSource, /\["iphone-memory", "Ricerca limite iPhone"\]/);
+assert.match(editorLabsSource, /recoverInterruptedIphoneMemoryLimitRun/);
+assert.match(editorLabsSource, /serverRequired,/);
 assert.match(iphoneMemoryLimitSource, /LOCAL_STORAGE_KEY/);
 assert.match(iphoneMemoryLimitSource, /publishRunIdToHash\(run\.runId\)/);
 assert.match(iphoneMemoryLimitSource, /recoverInterruptedIphoneMemoryLimitRun/);
@@ -3015,7 +3094,7 @@ const firstIphoneCheckpoint = iphoneMemoryLimitSource.indexOf(
   firstIphoneAttempt,
 );
 const firstIphoneAllocation = iphoneMemoryLimitSource.indexOf(
-  "await engine.seedActiveLayerMemoryStress(planIndex, storageTileCount)",
+  "await seedActiveLayerMemoryStress(engine, planIndex, storageTileCount)",
   firstIphoneAttempt,
 );
 assert.ok(firstIphoneAttempt >= 0 && firstIphoneCheckpoint > firstIphoneAttempt);
@@ -3029,7 +3108,10 @@ console.log("Layer stack verification passed.");
 // --- Cancellazione: messaggi che spiegano ------------------------------------
 {
   const engineSource = readFileSync(new URL("../src/brush-engine.ts", import.meta.url), "utf8");
-  const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  const panelSource = readFileSync(
+    new URL("../src/layer-panel-controller.ts", import.meta.url),
+    "utf8",
+  );
 
   // Cancellare la base di un ritaglio si porta via l'intera unita'. Dire
   // "ultimo livello" mentre ne sta eliminando quattro sembra un blocco
@@ -3058,9 +3140,11 @@ console.log("Layer stack verification passed.");
 
   // Il livello bloccato usciva in silenzio: pulsante inerte, nessun messaggio,
   // indistinguibile da un guasto dell'app.
-  const deleteButton = mainSource.slice(
-    mainSource.indexOf("mobileLayerDeleteButton.addEventListener(\"click\", () => {"),
-    mainSource.indexOf("mobileLayerDeleteButton.addEventListener(\"click\", () => {") + 1200,
+  const deleteButton = panelSource.slice(
+    panelSource.indexOf("private async requestDelete(): Promise<void>"),
+    panelSource.indexOf("private async duplicateSelected()", panelSource.indexOf(
+      "private async requestDelete(): Promise<void>",
+    )),
   );
   assert.ok(deleteButton.length > 0, "handler di eliminazione non individuato");
   assert.match(
@@ -3079,14 +3163,17 @@ console.log("Layer delete messaging verified.");
 // segnale e' solo visivo, e va garantito qui — altrimenti le frecce sembrano
 // sempre accese e non dicono piu' se puoi andare avanti o indietro.
 {
-  const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  const historyControlsSource = readFileSync(
+    new URL("../src/history-controls-controller.ts", import.meta.url),
+    "utf8",
+  );
   const cssSource = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 
-  const controlli = mainSource.slice(
-    mainSource.indexOf("function updateHistoryControls(): void {"),
-    mainSource.indexOf("mobileBrushColorInput.disabled = locked;"),
+  const controlli = historyControlsSource.slice(
+    historyControlsSource.indexOf("refreshControls(): void {"),
+    historyControlsSource.indexOf("request(operation: HistoryOperation)"),
   );
-  assert.ok(controlli.length > 0, "updateHistoryControls non individuata");
+  assert.ok(controlli.length > 0, "HistoryControlsController.refreshControls non individuato");
   assert.match(
     controlli,
     /button\.setAttribute\("aria-disabled", String\(blocked\)\)/,

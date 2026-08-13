@@ -14,6 +14,7 @@ const engine = readEngineSource();
 const structure = read("../src/engine-layer-structure-runtime.ts");
 const html = read("../index.html");
 const main = read("../src/main.ts");
+const layerPanel = read("../src/layer-panel-controller.ts");
 const types = read("../src/engine-history-types.ts");
 const journal = read("../src/history-journal.ts");
 
@@ -441,20 +442,20 @@ assert.match(
   "la voce Elimina deve essere marcata come distruttiva",
 );
 assert.match(
-  main,
-  /mobileLayerDeleteButton\.addEventListener\("click"/,
-  "la voce Elimina deve essere collegata",
+  layerPanel,
+  /this\.listen\(elements\.deleteButton, "click", \(\) => void this\.requestDelete\(\)\)/,
+  "la voce Elimina deve essere collegata dal controller del pannello",
 );
 assert.match(
-  main,
-  /void engine\.deleteLayer\(index\)/,
-  "la voce Elimina deve chiamare deleteLayer",
+  layerPanel,
+  /await this\.options\.deleteLayer\(key\)/,
+  "la voce Elimina deve usare la porta tipizzata deleteLayer",
 );
 // Il gesto e' gia' quello del menu contestuale: non deve esistere un secondo
 // percorso che duplichi il long-press, altrimenti collide col riordino.
 assert.doesNotMatch(
-  main,
-  /mobileLayerDeleteButton[\s\S]{0,400}setTimeout\(/,
+  layerPanel,
+  /elements\.deleteButton[\s\S]{0,400}setTimeout\(/,
   "la voce Elimina non deve introdurre un proprio gesto a pressione prolungata",
 );
 

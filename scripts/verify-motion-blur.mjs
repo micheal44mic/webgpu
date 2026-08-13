@@ -183,6 +183,14 @@ const history = readFileSync(
   "utf8",
 );
 const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const adjustments = readFileSync(
+  new URL("../src/raster-adjustments-controller.ts", import.meta.url),
+  "utf8",
+);
+const canvasInput = readFileSync(
+  new URL("../src/canvas-input-controller.ts", import.meta.url),
+  "utf8",
+);
 
 assert.match(runtime, /format:\s*"rgba16float"/);
 assert.match(runtime, /texture_2d<f32>/);
@@ -231,11 +239,16 @@ assert.match(history, /filter:\s*"motion-blur"/);
 assert.match(history, /transparent-content-clamp-document-edge/);
 assert.match(engine, /activeRasterMotionBlurSession/);
 assert.match(engine, /beginRasterMotionBlur/);
-assert.match(main, /engine\.beginRasterMotionBlur/);
-assert.match(main, /engine\.updateRasterMotionBlur/);
-assert.match(main, /engine\.commitRasterMotionBlur/);
-assert.match(main, /engine\.cancelRasterMotionBlur/);
-assert.match(main, /historyState\.openEdit === "motion-blur"/);
-assert.match(main, /blurTouchNavigationRequested/);
+assert.match(adjustments, /engine\.beginRasterMotionBlur/);
+assert.match(adjustments, /engine\.updateRasterMotionBlur/);
+assert.match(adjustments, /engine\.commitRasterMotionBlur/);
+assert.match(adjustments, /engine\.cancelRasterMotionBlur/);
+assert.match(adjustments, /history\.openEdit === "motion-blur"/);
+assert.match(
+  adjustments,
+  /isDestructivePreviewNavigationActive\([\s\S]*?history\.openEdit === "motion-blur"/,
+);
+assert.match(main, /rasterAdjustmentsController\?\.isDestructivePreviewNavigationActive/);
+assert.match(canvasInput, /blurTouchNavigationRequested/);
 
 console.log("Destructive 16-bit Motion Blur document-edge verification passed.");

@@ -4,8 +4,16 @@ import { readFileSync } from "node:fs";
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const editorTools = readFileSync(
+  new URL("../src/editor-tools-controller.ts", import.meta.url),
+  "utf8",
+);
 const controller = readFileSync(
   new URL("../src/mobile-stroke-sheet.ts", import.meta.url),
+  "utf8",
+);
+const rasterStyleController = readFileSync(
+  new URL("../src/raster-style-controller.ts", import.meta.url),
   "utf8",
 );
 const {
@@ -92,11 +100,6 @@ assert.match(
 );
 assert.match(sheet, /id="mobileStrokeWidthOut"[\s\S]*?>14 px<\/output>/);
 assert.match(
-  html,
-  /id="rasterStrokeWidth" type="range" min="0" max="512" step="1" value="14"/,
-  "Il contratto Width desktop atteso dalla UI mobile deve restare 0–512 px a step 1.",
-);
-assert.match(
   sheet,
   /id="mobileStrokeAlignmentButton"[\s\S]*?aria-haspopup="listbox"[\s\S]*?aria-expanded="false"[\s\S]*?aria-controls="mobileStrokeAlignmentMenu"[\s\S]*?data-stroke-alignment="outside"/,
   "Il trigger del dropdown deve esporre stato e relazione ARIA.",
@@ -150,27 +153,37 @@ assert.match(
 
 assert.match(
   main,
-  /mobileStrokeSheet\s*=\s*new MobileStrokeSheetController\(\{[\s\S]*?getStyle:\s*\(\)\s*=>\s*engine\.getRasterStrokeStyle\(\)[\s\S]*?applyStyle:\s*applyRasterStrokeStyle/,
+  /mobileStrokeSheet\s*=\s*new MobileStrokeSheetController\(\{[\s\S]*?getStyle:\s*\(\)\s*=>\s*rasterStyleController\.getStrokeStyle\(\)[\s\S]*?applyStyle:\s*\(style\)\s*=>\s*rasterStyleController\.applyStrokeStyle\(style\)/,
   "Il foglio mobile deve leggere e scrivere lo stile Stroke autorevole del motore.",
 );
 assert.match(
+  editorTools,
+  /for \(const button of elements\.effectButtons\)[\s\S]*?this\.options\.openRasterEffect\(kind, button\)/,
+  "La card Stroke deve passare dal routing tipizzato del controller Tools.",
+);
+assert.match(
   main,
-  /if \(controlId === "rasterStrokeEnabled" && mobileStrokeSheet\) \{\s*mobileStrokeSheet\.open\(button\);\s*return;/,
-  "La card Stroke deve aprire il pannello senza disattivare l'effetto già attivo.",
+  /openRasterEffect: \(kind, trigger\) => \{[\s\S]*?kind === "stroke"\) mobileStrokeSheet\?\.open\(trigger\);/,
+  "La card Stroke deve aprire direttamente il pannello senza checkbox intermedie.",
 );
 assert.match(
   html,
-  /data-mobile-effect-control="rasterStrokeEnabled"[\s\S]*?aria-label="Open Stroke settings"/,
+  /data-mobile-effect-kind="stroke"[\s\S]*?aria-label="Open Stroke settings"/,
   "La card non deve più essere annunciata come toggle: apre e attiva le impostazioni Stroke.",
+);
+assert.doesNotMatch(
+  html,
+  /id="rasterStroke(?:Enabled|Width|Position|Color)"/,
+  "Stroke non deve conservare una seconda UI nascosta come stato autorevole.",
 );
 assert.match(
   main,
-  /beforeOpen:\s*\(\)\s*=>\s*\{[\s\S]*?setMobileToolsSheetOpen\(false\);[\s\S]*?setMobileLayersPanelOpen\(false\);[\s\S]*?setMobileBrushLibraryOpen\(false\);[\s\S]*?mobileBrushStudio\?\.cancel\(false\);/,
+  /beforeOpen:\s*\(\)\s*=>\s*\{[\s\S]*?editorToolsController\?\.setOpen\(false\);[\s\S]*?setMobileLayersPanelOpen\(false\);[\s\S]*?brushLibraryController\.setOpen\(false\);[\s\S]*?mobileBrushStudio\?\.cancel\(false\);/,
   "Stroke deve chiudere tutti i pannelli mobile incompatibili prima di aprirsi.",
 );
 assert.match(
-  main,
-  /async function applyRasterStrokeStyle\(style: RasterStrokeStyle\): Promise<boolean>[\s\S]*?engine\.setRasterStrokeStyle\(style\)/,
+  rasterStyleController,
+  /applyStrokeStyle\(style: RasterStrokeStyle\): Promise<boolean>[\s\S]*?this\.options\.engine\.setRasterStrokeStyle\(style\)/,
   "Il controller deve riusare l'unica API Stroke esistente, non duplicare il renderer.",
 );
 assert.match(
@@ -180,8 +193,16 @@ assert.match(
 );
 assert.match(
   controller,
-  /this\.applyFrame = requestAnimationFrame\([\s\S]*?this\.startApplyLoop\(\)/,
+  /this\.applyFrame = this\.options\.browser\.requestAnimationFrame\([\s\S]*?this\.startApplyLoop\(\)/,
   "Colore e Width live devono essere coalescenti al massimo una volta per frame.",
+);
+assert.match(controller, /readonly root: ParentNode;[\s\S]*?readonly browser: Window;[\s\S]*?readonly document: Document;/);
+assert.match(controller, /root\.querySelector<HTMLElement>\(`/);
+assert.doesNotMatch(controller, /document\.getElementById|\bwindow\./);
+assert.match(
+  main,
+  /new MobileStrokeSheetController\(\{[\s\S]*?root: element<HTMLElement>\("mobileStrokeSheet"\),[\s\S]*?browser: window,[\s\S]*?document,/,
+  "Stroke deve ricevere root e ambiente browser esplicitamente dalla composition root.",
 );
 assert.match(
   controller,

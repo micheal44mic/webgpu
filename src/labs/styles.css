@@ -1,0 +1,67 @@
+.editor-labs-panel {
+  position: fixed;
+  z-index: 10000;
+  inset: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) auto auto;
+  width: min(390px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+  padding: 14px;
+  border: 1px solid #455064;
+  border-radius: 14px;
+  background: color-mix(in srgb, #111722 96%, transparent);
+  box-shadow: 0 16px 54px #000a;
+  color: #f1f5fb;
+  font: 13px/1.4 system-ui, sans-serif;
+}
+
+.editor-labs-panel h1 {
+  margin: 0 0 4px;
+  font-size: 17px;
+}
+
+.editor-labs-panel p {
+  margin: 4px 0 10px;
+  color: #aeb9ca;
+}
+
+.editor-labs-panel label {
+  display: grid;
+  gap: 5px;
+}
+
+.editor-labs-panel select,
+.editor-labs-panel button {
+  min-height: 38px;
+  border: 1px solid #4b5870;
+  border-radius: 9px;
+  background: #202a3a;
+  color: inherit;
+}
+
+.editor-labs-panel button {
+  margin-top: 8px;
+  width: 100%;
+  cursor: pointer;
+}
+
+.editor-labs-panel button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.editor-labs-result {
+  margin-top: 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.editor-labs-report {
+  max-height: 42vh;
+  overflow: auto;
+  padding: 9px;
+  border-radius: 8px;
+  background: #090d14;
+  color: #c9d5e7;
+  font: 11px/1.4 ui-monospace, monospace;
+  white-space: pre-wrap;
+}

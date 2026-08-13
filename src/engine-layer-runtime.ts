@@ -1257,14 +1257,13 @@ export async function recreateLayerResources(
     },
   );
 
-  // A format change invalidates every layer's texture, not just the active one,
-  // and setLayerFormat already tells the user the content is cleared.
+  // Recreating the document invalidates every layer's texture, not just the
+  // active one. Allocate the complete replacement transactionally.
   //
   // Allocate everything BEFORE destroying anything. Destroying first would mean
   // an OOM partway through the remaining layers left the document with neither
-  // the old textures nor the new ones — losing content the caller was told it
-  // could still recover, since setLayerFormat's error path restores the previous
-  // format and expects the old resources to still be there.
+  // the old textures nor the new ones. Callers rely on the old resources still
+  // being valid if this transaction fails.
   const replacement = new Map<number, LayerGpuResources>();
   let blendRenderer: DryBlendRenderer | null = null;
   let nextEffectsWorkbench: EffectsWorkbench | null = null;

@@ -10,6 +10,14 @@ const runtime = readFileSync(resolve(repositoryRoot, "src/engine-liquify-runtime
 const engine = readFileSync(resolve(repositoryRoot, "src/brush-engine.ts"), "utf8");
 const historyTypes = readFileSync(resolve(repositoryRoot, "src/engine-history-types.ts"), "utf8");
 const main = readFileSync(resolve(repositoryRoot, "src/main.ts"), "utf8");
+const adjustments = readFileSync(
+  resolve(repositoryRoot, "src/raster-adjustments-controller.ts"),
+  "utf8",
+);
+const canvasInput = readFileSync(
+  resolve(repositoryRoot, "src/canvas-input-controller.ts"),
+  "utf8",
+);
 const sheet = readFileSync(resolve(repositoryRoot, "src/mobile-liquify-sheet.ts"), "utf8");
 const html = readFileSync(resolve(repositoryRoot, "index.html"), "utf8");
 const styles = readFileSync(resolve(repositoryRoot, "src/styles.css"), "utf8");
@@ -244,13 +252,12 @@ requireText(sourceManifest, '"engine-liquify-runtime.ts"', "engine source manife
 
 assert.equal(
   (html.match(/data-liquify-mode=/g) ?? []).length,
-  expectedModes.length * 2,
-  "desktop and mobile must each expose all eight Liquify modes",
+  expectedModes.length,
+  "the authoritative Liquify sheet must expose all eight modes exactly once",
 );
 for (const id of [
   "mobileLiquifySheet",
   "mobileLiquifyOpen",
-  "desktopLiquifyOpen",
   "mobileLiquifySize",
   "mobileLiquifyPressure",
   "mobileLiquifyDistortion",
@@ -260,22 +267,33 @@ for (const id of [
   "mobileLiquifyCancel",
   "mobileLiquifyApply",
 ]) requireText(html, `id="${id}"`, `UI #${id}`);
+assert.doesNotMatch(
+  html,
+  /id="desktopLiquify|id="rasterLiquifySection"/,
+  "Liquify must not retain an invisible desktop control surface",
+);
+assert.doesNotMatch(main, /desktopLiquify/, "runtime must read only the visible Liquify sheet");
 requireText(sheet, "resolveMobileBottomSheetDrag", "bottom-sheet gesture arbitration");
 requireText(sheet, 'snapTo("peek")', "peek detent");
 requireText(sheet, 'snapTo("minimized")', "minimized detent");
 requireText(styles, ".mobile-liquify-sheet", "mobile Liquify sheet styles");
 requireText(styles, ".mobile-liquify-mode-grid", "mobile mode grid styles");
 requireText(styles, "liquify-active", "canvas Liquify cursor");
-requireText(main, '| "liquify"', "Liquify pointer/tool mode");
-requireText(main, "getCoalescedEvents", "coalesced pointer input");
-requireText(main, "beginRasterLiquifyStroke", "canvas stroke begin routing");
-requireText(main, "extendRasterLiquifyStroke", "canvas stroke extension routing");
-requireText(main, "endRasterLiquifyStroke", "canvas stroke end routing");
-requireText(main, 'event.pointerType === "pen" ? normalizedPressure', "pen-pressure routing");
-requireText(main, "enterTouchNavigation", "two-touch view navigation");
-requireText(main, "applyRasterLiquifyFromUi", "Apply workflow");
-requireText(main, "cancelRasterLiquifyFromUi", "Cancel workflow");
-requireText(main, "resetRasterLiquifyFromUi", "Reset workflow");
+requireText(canvasInput, '| "liquify"', "Liquify pointer/tool mode");
+requireText(canvasInput, "getCoalescedEvents", "coalesced pointer input");
+requireText(canvasInput, "beginRasterLiquifyStroke", "canvas stroke begin routing");
+requireText(canvasInput, "extendRasterLiquifyStroke", "canvas stroke extension routing");
+requireText(canvasInput, "endRasterLiquifyStroke", "canvas stroke end routing");
+requireText(
+  canvasInput,
+  'event.pointerType === "pen" ? normalizedPressure',
+  "pen-pressure routing",
+);
+requireText(canvasInput, "enterTouchNavigation", "two-touch view navigation");
+requireText(adjustments, "applyLiquify", "Apply workflow");
+requireText(adjustments, "cancelLiquify", "Cancel workflow");
+requireText(adjustments, "resetLiquify", "Reset workflow");
+requireText(main, "new RasterAdjustmentsController", "composition-root ownership");
 
 // Dependency-free mirrors of the pure invariants catch accidental contract drift.
 const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));

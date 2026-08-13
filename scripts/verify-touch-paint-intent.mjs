@@ -10,6 +10,14 @@ import {
 
 const root = new URL("../", import.meta.url);
 const mainSource = readFileSync(new URL("src/main.ts", root), "utf8");
+const canvasInputSource = readFileSync(
+  new URL("src/canvas-input-controller.ts", root),
+  "utf8",
+);
+const humanLabSource = readFileSync(
+  new URL("src/labs/human-stroke-lab.ts", root),
+  "utf8",
+);
 
 assert.equal(
   TOUCH_PAINT_INTENT_STRATEGY,
@@ -64,36 +72,46 @@ assert.match(
   "the isolated experiment needs a production A/B escape hatch",
 );
 assert.match(
-  mainSource,
-  /const holdPaintIntent = paintSample !== null && shouldHoldTouchPaintIntent\([\s\S]*?event\.pointerType,[\s\S]*?activeCanvasTool,[\s\S]*?\);[\s\S]*?if \(paintSample && !holdPaintIntent\) \{[\s\S]*?if \(!engine\.beginStroke\(paintSample\)\)[\s\S]*?if \(paintSample && holdPaintIntent\) \{[\s\S]*?startTouchPaintIntentHold\(event\.pointerId, paintSample\);/,
+  canvasInputSource,
+  /const holdPaintIntent = paintSample !== null && shouldHoldTouchPaintIntent\([\s\S]*?event\.pointerType,[\s\S]*?activeTool,[\s\S]*?\);[\s\S]*?if \(paintSample && !holdPaintIntent\) \{[\s\S]*?if \(!engine\.beginStroke\(paintSample\)\)[\s\S]*?pointerMode === "paint" && paintSample && holdPaintIntent[\s\S]*?startTouchPaintIntentHold\(event\.pointerId, paintSample\);/,
   "only eligible touch Paint input may leave the immediate, acknowledged beginStroke path",
 );
 assert.match(
-  mainSource,
-  /if \(!engine\.beginStroke\(hold\.initialSample\)\) \{[\s\S]*?return false;\s*\}[\s\S]*?if \(hold\.bufferedSamples\.length > 0\) \{\s*engine\.extendStroke\(hold\.bufferedSamples\);/,
+  canvasInputSource,
+  /if \(!engine\.beginStroke\(hold\.initialSample\)\) \{[\s\S]*?return false;\s*\}[\s\S]*?if \(hold\.bufferedSamples\.length > 0\)\s*engine\.extendStroke\(hold\.bufferedSamples\);/,
   "release must acknowledge begin before replaying original timestamped samples in order",
 );
 assert.match(
-  mainSource,
+  canvasInputSource,
   /const canceledHeldIntent = cancelTouchPaintIntentHold\("navigation"\);\s*if \(!canceledHeldIntent && !engine\.cancelStrokeBeforeRender\(\)\)/,
   "a second finger must discard the held input before touching BrushEngine",
 );
 assert.match(
-  mainSource,
+  canvasInputSource,
   /heldIntent\.bufferedSamples\.push\(\.\.\.samples\);[\s\S]*?touchPaintIntentMovementReached\(heldIntent\.initialSample, samples\)[\s\S]*?releaseTouchPaintIntentHold\("movement"\);[\s\S]*?return;/,
   "movement release must consume the buffered samples once and skip duplicate extension",
 );
 assert.match(
-  mainSource,
-  /event\.type === "pointerup"\) \{\s*releaseTouchPaintIntentHold\("pointer-up"\);\s*\} else \{\s*cancelTouchPaintIntentHold\("pointer-end"\);/,
+  canvasInputSource,
+  /if \(event\.type === "pointerup"\) releaseTouchPaintIntentHold\("pointer-up"\);\s*else cancelTouchPaintIntentHold\("pointer-end"\);/,
   "a tap must commit at lift while cancellation/lost capture stays side-effect free",
 );
-assert.equal(
-  (mainSource.match(/performanceTelemetryRevision: 64/g) ?? []).length,
-  2,
-  "the pointer arbitration contract must be signed by telemetry revision 64",
+assert.match(
+  humanLabSource,
+  /HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 64/,
+  "the persisted lab telemetry contract must retain revision 64",
 );
-assert.match(mainSource, /touchPaintIntentCanceledForNavigation/);
-assert.match(mainSource, /touchPaintIntentMaximumBufferedSamples/);
+assert.match(canvasInputSource, /touchPaintIntentCanceledForNavigation/);
+assert.match(canvasInputSource, /touchPaintIntentMaximumBufferedSamples/);
+assert.match(
+  mainSource,
+  /collectInputDiagnostics\(\)[\s\S]*?canvasInputController\?\.diagnostics\(\)/,
+  "main must only configure and expose diagnostics from the input owner",
+);
+assert.match(
+  mainSource,
+  /canvasInputController = new CanvasInputController\(\{[\s\S]*?touchPaintIntentHoldEnabled,/,
+);
+assert.doesNotMatch(mainSource, /touchPaintIntentDiagnostics/);
 
 console.log("Touch Paint intent hold: eligibility, thresholds, replay order and pinch cancellation verified.");

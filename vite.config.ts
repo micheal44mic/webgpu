@@ -9,6 +9,7 @@ function devHumanStrokeApi(): Plugin {
   const fixturePath = resolve(__dirname, ".tmp-canonical-human-stroke.json");
   return {
     name: "dev-human-stroke-api",
+    apply: "serve",
     configureServer(server) {
       server.middlewares.use("/api/human-stroke", (request, response, next) => {
         if (request.method === "GET") {
@@ -47,7 +48,41 @@ function devHumanStrokeApi(): Plugin {
   };
 }
 
-export default defineConfig({
+function labsHtmlShell(): Plugin {
+  return {
+    name: "labs-html-shell",
+    enforce: "pre",
+    async transformIndexHtml(html, context) {
+      if (!context.path.endsWith("/labs.html")) {
+        return html;
+      }
+      const editorHtml = await readFile(resolve(__dirname, "index.html"), "utf8");
+      return editorHtml
+        .replace(
+          '<script type="module" src="/src/startup.ts"></script>',
+          '<script type="module" src="/src/labs/startup.ts"></script>',
+        )
+        .replace(
+          "<title>WebGPU Brush Engine</title>",
+          "<title>WebGPU Brush Engine Labs</title>",
+        );
+    },
+  };
+}
+
+export default defineConfig(({ mode }) => ({
   base: "./",
-  plugins: [devHumanStrokeApi()],
-});
+  plugins: [
+    labsHtmlShell(),
+    ...(mode === "labs" ? [devHumanStrokeApi()] : []),
+  ],
+  build: mode === "labs"
+    ? {
+        outDir: "dist-labs",
+        emptyOutDir: true,
+        rollupOptions: {
+          input: resolve(__dirname, "labs.html"),
+        },
+      }
+    : undefined,
+}));

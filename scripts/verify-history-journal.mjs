@@ -617,6 +617,22 @@ const layerMerge = (
     "utf8",
   );
   const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  const gpuMemoryPanel = readFileSync(
+    new URL("../src/gpu-memory-panel-controller.ts", import.meta.url),
+    "utf8",
+  );
+  const rasterAdjustments = readFileSync(
+    new URL("../src/raster-adjustments-controller.ts", import.meta.url),
+    "utf8",
+  );
+  const canvasInput = readFileSync(
+    new URL("../src/canvas-input-controller.ts", import.meta.url),
+    "utf8",
+  );
+  const humanLab = readFileSync(
+    new URL("../src/labs/human-stroke-lab.ts", import.meta.url),
+    "utf8",
+  );
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
   const effectsSheet = readFileSync(
     new URL("../src/mobile-raster-effects-sheet.ts", import.meta.url),
@@ -710,17 +726,22 @@ const layerMerge = (
   }
   assert.match(
     main,
-    /historyState\.openEdit === "transform"[\s\S]{0,180}\(!allowDestructiveBlurEdit && historyState\.openEdit === "gaussian-blur"\)[\s\S]{0,180}\(!allowDestructiveBlurEdit && historyState\.openEdit === "motion-blur"\)[\s\S]{0,180}historyState\.openEdit === "raster-property"/,
+    /historyState\.openEdit === "transform"[\s\S]{0,260}rasterAdjustmentsController\?\.hasActiveHistoryEdit\(historyState\)[\s\S]{0,180}historyState\.openEdit === "raster-property"/,
     "Le modifiche ai pixel devono restare bloccate finché l'effetto non ha committato la cronologia.",
   );
   assert.match(
+    rasterAdjustments,
+    /history\.openEdit === "liquify"[\s\S]{0,180}history\.openEdit === "gaussian-blur"[\s\S]{0,180}history\.openEdit === "motion-blur"[\s\S]{0,180}history\.openEdit === "noise"/,
+    "Il controller deve riconoscere tutti e quattro gli edit distruttivi aperti.",
+  );
+  assert.match(
     main,
-    /function canvasViewOperationLocked\(\)[\s\S]{0,700}operationLocked\(allowDestructiveBlurEdit/,
+    /function canvasViewOperationLocked\(\)[\s\S]{0,260}rasterAdjustmentsController\?\.allowsCanvasViewOperation\(historyState\)/,
     "I Blur distruttivi devono separare la navigazione del canvas dal lock delle modifiche ai pixel.",
   );
-  const canvasPointerDown = main.slice(
-    main.indexOf('canvas.addEventListener("pointerdown"'),
-    main.indexOf('canvas.addEventListener("pointermove"'),
+  const canvasPointerDown = canvasInput.slice(
+    canvasInput.indexOf("const handlePointerDown ="),
+    canvasInput.indexOf("const handlePointerMove ="),
   );
   assert(
     canvasPointerDown.indexOf("if (!engine.beginStroke(paintSample))") >= 0
@@ -751,12 +772,12 @@ const layerMerge = (
   assert(!blendGeometry.includes("steps:"), "La storia Blend non deve trattenere step CPU.");
   assert(blendRenderer.includes("historyTransfer.replay.buffer"));
   assert(blendRenderer.includes("historyTransfer.capture.buffer"));
-  assert(main.includes('["gpuMemoryHistory", "historyGpuMiB"]'));
+  assert(gpuMemoryPanel.includes('["gpuMemoryHistory", "historyGpuMiB"]'));
   assert(!engine.includes("runHistoryCapturePerformanceProbe"));
   assert(!main.includes("runHistoryPerformanceProbeDev"));
-  assert(main.includes("history GPU"));
+  assert(humanLab.includes("performance: profile"));
   assert(!main.includes("history CPU"));
-  assert(main.includes("historyGpuUsedMiB"));
+  assert(gpuMemoryPanel.includes("historyGpuUsedMiB"));
   assert(html.includes('id="gpuMemoryHistoryLabel"'));
   assert(html.includes("La cronologia raster mostra pagine GPU riservate"));
   assert(engine.includes('kind: "layer-metadata"'));
@@ -780,8 +801,12 @@ const layerMerge = (
   assert(strokeSheet.includes("commitHistoryEditIfIdle"));
   assert.match(effectsSheet, /applyLoop = null;[\s\S]{0,180}commitHistoryEditIfIdle/);
   assert.match(strokeSheet, /applyLoop = null;[\s\S]{0,180}commitHistoryEditIfIdle/);
-  assert.match(toolSheet, /visibilitychange[\s\S]{0,180}finishSvgPaintEdit/);
-  assert.match(toolSheet, /pagehide[\s\S]{0,100}finishSvgPaintEdit/);
+  assert.match(toolSheet, /visibilitychange[\s\S]{0,180}commitOpenHistoryEdits/);
+  assert.match(toolSheet, /pagehide[\s\S]{0,100}commitOpenHistoryEdits/);
+  assert.match(
+    toolSheet,
+    /commitOpenHistoryEdits\(\): void \{[\s\S]{0,120}finishSvgPaintEdit\(\)[\s\S]{0,120}finishVectorPropertyEdit\(\)/,
+  );
   assert.match(
     toolSheet,
     /input\.addEventListener\("change"[\s\S]{0,500}finally[\s\S]{0,100}finishSvgPaintEdit/,

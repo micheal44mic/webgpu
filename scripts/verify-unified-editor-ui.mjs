@@ -6,20 +6,35 @@ const html = read("../index.html");
 const css = read("../src/styles.css");
 const main = read("../src/main.ts");
 const limits = read("../src/engine-limits.ts");
+const sharedControllers = [
+  "../src/mobile-brush-studio.ts",
+  "../src/mobile-gaussian-blur-sheet.ts",
+  "../src/mobile-liquify-sheet.ts",
+  "../src/mobile-motion-blur-sheet.ts",
+  "../src/mobile-noise-sheet.ts",
+  "../src/mobile-raster-effects-sheet.ts",
+  "../src/mobile-stroke-sheet.ts",
+  "../src/mobile-tool-settings-sheet.ts",
+].map(read).join("\n");
 
-assert.match(
-  main,
-  /const mobileUiMediaQuery = window\.matchMedia\("\(min-width: 0px\)"\)/,
-  "La stessa superficie editor deve essere attiva su ogni larghezza.",
+assert.doesNotMatch(
+  main + "\n" + sharedControllers,
+  /mobileUiMediaQuery|mobileMediaQuery/,
+  "La UI condivisa non deve conservare un media-query sempre vero o rami irraggiungibili.",
 );
 assert.doesNotMatch(
   css,
   /@media \(max-width: 699px\)/,
   "I controlli condivisi non devono tornare a essere esclusivi del telefono.",
 );
+assert.doesNotMatch(
+  css,
+  /@media \(min-width: 0px\)/,
+  "Le regole condivise non devono essere nascoste in media query sempre vere.",
+);
 assert.match(
   css,
-  /Superficie editor condivisa[\s\S]*?@media \(min-width: 0px\)[\s\S]*?\.mobile-header\s*\{[\s\S]*?display:\s*flex/,
+  /Superficie editor condivisa[\s\S]*?\.mobile-header\s*\{[\s\S]*?display:\s*flex/,
   "Header e controlli condivisi devono essere visibili su tutti i dispositivi.",
 );
 assert.match(
@@ -42,14 +57,14 @@ assert.match(
   /<nav class="mobile-header" aria-label="Editor navigation">/,
   "La navigazione condivisa non deve dichiararsi esclusiva del mobile.",
 );
-assert.match(
-  main,
-  /setControlsPanelOpen\(!mobileUiMediaQuery\.matches\)/,
-  "Il vecchio pannello tecnico deve restare nascosto quando la UI unica e' attiva.",
+assert.doesNotMatch(
+  html + "\n" + css + "\n" + main,
+  /controlsPanel|toggleControls|setControlsPanelOpen/,
+  "Il vecchio pannello tecnico non deve sopravvivere, neppure come bus di stato nascosto.",
 );
 assert.match(
   main,
-  /if \(\s*mobileBrushStudio\s*&& mobileUiMediaQuery\.matches[\s\S]*?\) \{[\s\S]*?restoreActiveMobileBrushLibraryBrush/,
+  /if \(mobileBrushStudio\) \{[\s\S]*?brushLibraryController\.restoreActiveBrush\(\)/,
   "Telefono e desktop devono ripristinare la stessa libreria pennelli.",
 );
 assert.match(

@@ -22,7 +22,6 @@ import {
   RASTER_NOISE_WARP_SALT_X,
   RASTER_NOISE_WARP_SALT_Y,
   normalizeRasterNoiseSettings,
-  pcgHash32,
   rasterNoiseAmountFactor,
   rasterNoiseOctaveCount,
   rasterNoisePeriodPixels,

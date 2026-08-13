@@ -20,7 +20,7 @@ import {
   MIXED_MEMORY_BENCHMARK_TARGET_MIB,
   mixedMemoryBenchmarkStrategy,
   mixedMemoryBenchmarkTextSeed,
-} from "../src/mixed-memory-benchmark-model.ts";
+} from "../src/labs/memory/mixed-memory-benchmark-model.ts";
 
 const seed = (text = "STREETWEAR") => ({
   text,
@@ -795,14 +795,20 @@ assert.equal(
 
   const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
   const engineSource = readEngineSource();
-  assert.match(mainSource, /pageSearchParams\.get\("mixedMemoryBenchmark"\) === "1"/);
-  assert.match(mainSource, /pageSearchParams\.get\("mixedMemoryTargetMiB"\) === "600"/);
-  assert.match(mainSource, /runRequestedMixedMemoryBenchmark/);
-  assert.match(mainSource, /runMixedMemoryZoomProbe/);
-  assert.match(mainSource, /resetActiveLayerForMemoryBenchmark/);
-  assert.match(mainSource, /mixedMemoryBenchmarkKnownLogicalWorkingSetMiB/);
+  const mixedMemorySource = readFileSync(
+    new URL("../src/labs/memory/mixed-memory-benchmark.ts", import.meta.url),
+    "utf8",
+  );
+  const editorLabsSource = readFileSync(
+    new URL("../src/labs/editor-labs.ts", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(mainSource, /mixedMemoryBenchmark|runMixedMemoryBenchmark/);
+  assert.match(editorLabsSource, /\["mixed-memory", "Benchmark memoria mista"\]/);
+  assert.match(editorLabsSource, /runMixedMemoryBenchmarkStudy/);
+  assert.match(mixedMemorySource, /export async function runMixedMemoryBenchmarkStudy/);
+  assert.match(mixedMemorySource, /knownLogicalWorkingSetMiB/);
   assert.match(engineSource, /async addVectorTextNodesBatch\(/);
-  assert.match(engineSource, /resetActiveLayerForMemoryBenchmark\(\)/);
   assert.match(
     engineSource,
     /if \(legacyBindingsChanged && !deferDisplayInvalidation\)/,

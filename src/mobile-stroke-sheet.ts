@@ -11,7 +11,9 @@ export type MobileStrokeSnap = MobileBottomSheetSnap;
 export type MobileStrokeDragDecisionOptions = MobileBottomSheetDragDecisionOptions;
 
 export interface MobileStrokeSheetOptions {
-  readonly mobileMediaQuery: MediaQueryList;
+  readonly root: ParentNode;
+  readonly browser: Window;
+  readonly document: Document;
   readonly getStyle: () => RasterStrokeStyle;
   readonly applyStyle: (style: RasterStrokeStyle) => Promise<boolean>;
   readonly beginHistoryEdit: () => number | null;
@@ -37,8 +39,11 @@ export function resolveMobileStrokeDrag(
   return resolveMobileBottomSheetDrag(options);
 }
 
-function requiredElement<T extends HTMLElement>(id: string): T {
-  const result = document.getElementById(id);
+function requiredElement<T extends HTMLElement>(root: ParentNode, id: string): T {
+  const rootElement = root as ParentNode & Partial<HTMLElement>;
+  const result = rootElement.id === id
+    ? rootElement as HTMLElement
+    : root.querySelector<HTMLElement>(`#${id}`);
   if (!result) throw new Error(`Elemento #${id} non trovato.`);
   return result as T;
 }
@@ -87,22 +92,18 @@ function positionLabel(position: StrokePosition): string {
  * renderer, texture or second effect state.
  */
 export class MobileStrokeSheetController {
-  readonly sheet = requiredElement<HTMLElement>("mobileStrokeSheet");
-  readonly handle = requiredElement<HTMLButtonElement>("mobileStrokeHandle");
-  readonly header = requiredElement<HTMLElement>("mobileStrokeHeader");
-  readonly controlsRegion = requiredElement<HTMLElement>("mobileStrokeControlsRegion");
-  readonly colorControl = requiredElement<HTMLLabelElement>("mobileStrokeColor");
-  readonly colorInput = requiredElement<HTMLInputElement>("mobileStrokeColorInput");
-  readonly alignmentButton = requiredElement<HTMLButtonElement>(
-    "mobileStrokeAlignmentButton",
-  );
-  readonly alignmentMenu = requiredElement<HTMLElement>("mobileStrokeAlignmentMenu");
-  readonly alignmentValue = requiredElement<HTMLElement>("mobileStrokeAlignmentValue");
-  readonly widthInput = requiredElement<HTMLInputElement>("mobileStrokeWidthInput");
-  readonly widthOutput = requiredElement<HTMLOutputElement>("mobileStrokeWidthOut");
-  readonly alignmentOptions = Array.from(
-    this.alignmentMenu.querySelectorAll<HTMLButtonElement>("[data-stroke-alignment]"),
-  );
+  readonly sheet: HTMLElement;
+  readonly handle: HTMLButtonElement;
+  readonly header: HTMLElement;
+  readonly controlsRegion: HTMLElement;
+  readonly colorControl: HTMLLabelElement;
+  readonly colorInput: HTMLInputElement;
+  readonly alignmentButton: HTMLButtonElement;
+  readonly alignmentMenu: HTMLElement;
+  readonly alignmentValue: HTMLElement;
+  readonly widthInput: HTMLInputElement;
+  readonly widthOutput: HTMLOutputElement;
+  readonly alignmentOptions: HTMLButtonElement[];
 
   private openState = false;
   private snap: MobileStrokeSnap = "peek";
@@ -126,15 +127,29 @@ export class MobileStrokeSheetController {
 
   constructor(options: MobileStrokeSheetOptions) {
     this.options = options;
+    this.sheet = requiredElement<HTMLElement>(options.root, "mobileStrokeSheet");
+    this.handle = requiredElement<HTMLButtonElement>(options.root, "mobileStrokeHandle");
+    this.header = requiredElement<HTMLElement>(options.root, "mobileStrokeHeader");
+    this.controlsRegion = requiredElement<HTMLElement>(options.root, "mobileStrokeControlsRegion");
+    this.colorControl = requiredElement<HTMLLabelElement>(options.root, "mobileStrokeColor");
+    this.colorInput = requiredElement<HTMLInputElement>(options.root, "mobileStrokeColorInput");
+    this.alignmentButton = requiredElement<HTMLButtonElement>(options.root, "mobileStrokeAlignmentButton");
+    this.alignmentMenu = requiredElement<HTMLElement>(options.root, "mobileStrokeAlignmentMenu");
+    this.alignmentValue = requiredElement<HTMLElement>(options.root, "mobileStrokeAlignmentValue");
+    this.widthInput = requiredElement<HTMLInputElement>(options.root, "mobileStrokeWidthInput");
+    this.widthOutput = requiredElement<HTMLOutputElement>(options.root, "mobileStrokeWidthOut");
+    this.alignmentOptions = Array.from(
+      this.alignmentMenu.querySelectorAll<HTMLButtonElement>("[data-stroke-alignment]"),
+    );
     this.sheet.setAttribute("aria-hidden", "true");
     this.sheet.dataset.state = "closed";
     this.sheet.setAttribute("inert", "");
     this.bindEvents();
-    document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState !== "visible") this.requestHistoryEditFinish();
+    options.document.addEventListener("visibilitychange", () => {
+      if (options.document.visibilityState !== "visible") this.requestHistoryEditFinish();
     });
-    window.addEventListener("pagehide", () => this.requestHistoryEditFinish());
-    window.addEventListener("blur", () => this.requestHistoryEditFinish());
+    options.browser.addEventListener("pagehide", () => this.requestHistoryEditFinish());
+    options.browser.addEventListener("blur", () => this.requestHistoryEditFinish());
   }
 
   get isOpen(): boolean {
@@ -142,7 +157,7 @@ export class MobileStrokeSheetController {
   }
 
   open(opener: HTMLElement | null = null): void {
-    if (this.openState || !this.options.mobileMediaQuery.matches) return;
+    if (this.openState) return;
     this.options.beforeOpen();
     this.opener = opener;
     this.openState = true;
@@ -174,7 +189,7 @@ export class MobileStrokeSheetController {
     this.openState = false;
     this.closeAlignmentMenu(false);
     this.releaseDragCapture();
-    const activeElement = document.activeElement;
+    const activeElement = this.options.document.activeElement;
     if (activeElement instanceof HTMLElement && this.sheet.contains(activeElement)) {
       if (restoreFocus && this.opener?.isConnected) {
         this.opener.focus({ preventScroll: true });
@@ -300,7 +315,7 @@ export class MobileStrokeSheetController {
       });
     }
 
-    document.addEventListener("pointerdown", (event) => {
+    this.options.document.addEventListener("pointerdown", (event) => {
       if (!this.alignmentOpen || !(event.target instanceof Node)) return;
       if (
         this.alignmentButton.contains(event.target)
@@ -311,7 +326,7 @@ export class MobileStrokeSheetController {
       this.closeAlignmentMenu(false);
     }, true);
 
-    document.addEventListener("keydown", (event) => {
+    this.options.document.addEventListener("keydown", (event) => {
       if (event.key !== "Escape" || !this.openState) return;
       event.preventDefault();
       if (this.alignmentOpen) {
@@ -346,14 +361,14 @@ export class MobileStrokeSheetController {
     this.pendingStyle = copiedStyle(style);
     if (!coalesceToFrame) {
       if (this.applyFrame !== null) {
-        cancelAnimationFrame(this.applyFrame);
+        this.options.browser.cancelAnimationFrame(this.applyFrame);
         this.applyFrame = null;
       }
       this.startApplyLoop();
       return;
     }
     if (this.applyFrame !== null) return;
-    this.applyFrame = requestAnimationFrame(() => {
+    this.applyFrame = this.options.browser.requestAnimationFrame(() => {
       this.applyFrame = null;
       this.startApplyLoop();
     });
@@ -393,7 +408,7 @@ export class MobileStrokeSheetController {
     if (this.historyEditToken === null) return;
     this.historyFinishRequested = true;
     if (this.applyFrame !== null) {
-      cancelAnimationFrame(this.applyFrame);
+      this.options.browser.cancelAnimationFrame(this.applyFrame);
       this.applyFrame = null;
       this.startApplyLoop();
     }
@@ -461,7 +476,7 @@ export class MobileStrokeSheetController {
   }
 
   private peekHeight(): number {
-    return mobileStrokePeekHeight(window.innerHeight);
+    return mobileStrokePeekHeight(this.options.browser.innerHeight);
   }
 
   private peekOffset(): number {
@@ -505,7 +520,7 @@ export class MobileStrokeSheetController {
   }
 
   private setMinimizedAccessibility(minimized: boolean): void {
-    const activeElement = document.activeElement;
+    const activeElement = this.options.document.activeElement;
     if (
       minimized
       && activeElement instanceof HTMLElement
@@ -525,7 +540,7 @@ export class MobileStrokeSheetController {
     this.dragStartOffsetPx = this.offsetPx;
     this.dragStartSnap = this.snap;
     this.dragLastY = event.clientY;
-    this.dragLastTime = performance.now();
+    this.dragLastTime = this.options.browser.performance.now();
     this.dragVelocityY = 0;
     this.dragMoved = false;
     this.sheet.classList.add("is-dragging");
@@ -534,7 +549,7 @@ export class MobileStrokeSheetController {
 
   private moveDrag(event: PointerEvent): void {
     if (event.pointerId !== this.dragPointerId) return;
-    const now = performance.now();
+    const now = this.options.browser.performance.now();
     const elapsed = now - this.dragLastTime;
     if (elapsed > 0 && elapsed <= 120) {
       const immediate = (event.clientY - this.dragLastY) / elapsed;
@@ -561,7 +576,7 @@ export class MobileStrokeSheetController {
     }
     this.sheet.classList.remove("is-dragging");
     const deltaY = event.clientY - this.dragStartY;
-    const velocityAge = performance.now() - this.dragLastTime;
+    const velocityAge = this.options.browser.performance.now() - this.dragLastTime;
     const releaseVelocity = velocityAge <= 100 ? this.dragVelocityY : 0;
     this.dragPointerId = null;
     if (cancelled) {

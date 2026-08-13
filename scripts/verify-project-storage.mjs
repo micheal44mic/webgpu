@@ -15,6 +15,10 @@ import {
   validateLoadedProject,
   validateProjectSaveRequest,
 } from "../src/project-storage.ts";
+import {
+  decodeFloat16,
+  rgba8UnormToRgba16FloatBytes,
+} from "../src/float16.ts";
 
 const VERSION = PROJECT_DOCUMENT_SCHEMA_VERSION;
 
@@ -158,6 +162,38 @@ assert.equal(normalizeProjectTitle("\n\t"), "Untitled Artwork");
 const { request, bytes, tileBytes } = projectRequest();
 validateProjectSaveRequest(request);
 assert.equal(estimateProjectSaveBytes(request), tileBytes + 4);
+
+// V1 readers must continue accepting legacy RGBA8 projects. Restore migrates
+// their normalized linear-premultiplied channels to the permanent RGBA16F
+// document format; the original stored generation remains untouched.
+const legacy = projectRequest("Legacy RGBA8");
+const legacyTileBytes = legacy.tileBytes / 2;
+legacy.request.snapshot.document.layerFormat = "rgba8unorm";
+legacy.request.snapshot.layers[0].pixels.format = "rgba8unorm";
+legacy.request.snapshot.layers[0].pixels.rawBytes = legacyTileBytes;
+legacy.request.snapshot.layers[0].pixels.storedBytes = legacyTileBytes;
+legacy.request.snapshot.layers[0].pixels.chunks[0].rawBytes = legacyTileBytes;
+legacy.request.snapshot.layers[0].pixels.chunks[0].storedBytes = legacyTileBytes;
+legacy.request.chunks[0].rawBytes = legacyTileBytes;
+legacy.request.chunks[0].storedBytes = legacyTileBytes;
+legacy.request.chunks[0].bytes = new ArrayBuffer(legacyTileBytes);
+validateProjectSaveRequest(legacy.request);
+
+const legacyPixel = Uint8Array.of(0, 127, 255, 64);
+const migratedPixel = rgba8UnormToRgba16FloatBytes(legacyPixel);
+assert.equal(migratedPixel.byteLength, 8);
+const migratedView = new DataView(
+  migratedPixel.buffer,
+  migratedPixel.byteOffset,
+  migratedPixel.byteLength,
+);
+for (let channel = 0; channel < legacyPixel.length; channel += 1) {
+  const restored = decodeFloat16(migratedView.getUint16(channel * 2, true));
+  assert.ok(
+    Math.abs(restored - legacyPixel[channel] / 255) <= 1 / 2048,
+    "legacy RGBA8 channel " + channel + " must retain its normalized value",
+  );
+}
 
 // Independent, non-divisible dimensions use ceil(width / 16) × ceil(height / 16)
 // normalized tile slots, while exact legacy 4096² documents remain loadable.
@@ -316,6 +352,11 @@ const semanticRestorePosition = runtimeSource.indexOf(
 assert.ok(
   semanticResourcesPosition >= 0 && semanticResourcesPosition < semanticRestorePosition,
   "semantic GPU layouts must exist before a restored vector scene can schedule its first frame",
+);
+assert.match(
+  runtimeSource,
+  /for \(const chunk of persisted\.chunks\)[\s\S]*?rgba8UnormToRgba16FloatBytes\(restored\)/,
+  "legacy RGBA8 restore must migrate one persisted chunk at a time",
 );
 
 storage.close();

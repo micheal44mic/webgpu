@@ -121,6 +121,18 @@ assert.deepEqual(
 
 const indexSource = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const controllerSource = readFileSync(
+  new URL("../src/app-diagnostics-controller.ts", import.meta.url),
+  "utf8",
+);
+const gpuMemoryPanelSource = readFileSync(
+  new URL("../src/gpu-memory-panel-controller.ts", import.meta.url),
+  "utf8",
+);
+const runtimeStatsSource = readFileSync(
+  new URL("../src/runtime-stats-controller.ts", import.meta.url),
+  "utf8",
+);
 const brushEngineSource = readFileSync(
   new URL("../src/brush-engine.ts", import.meta.url),
   "utf8",
@@ -146,19 +158,21 @@ assert.match(indexSource, /id="appDiagnosticsReport"/);
 assert.doesNotMatch(indexSource, /id="startupDiagnostic"/);
 assert.doesNotMatch(indexSource, /window\.setTimeout\(showPanel, 10000\)/);
 assert.doesNotMatch(indexSource, /window\.__WEBGPU_BRUSH_STARTUP__/);
-assert.match(mainSource, /copyAppDiagnosticsButton\.addEventListener\("click"/);
-assert.match(mainSource, /async function buildAppDiagnosticReport\(\): Promise<string>/);
-assert.match(mainSource, /await buildAppDiagnosticReport\(\)/);
-assert.match(mainSource, /captureDiagnosticUserAgentData/);
-assert.match(mainSource, /"platformVersion"/);
-assert.match(mainSource, /engine\.captureFillDiagnostics\(\)/);
-assert.match(mainSource, /fillDiagnostics: fillDiagnosticsResult/);
+assert.match(mainSource, /new AppDiagnosticsController\(\{/);
+assert.doesNotMatch(mainSource, /function buildAppDiagnosticReport|appDiagnosticLog/);
+assert.match(controllerSource, /options\.elements\.copyButton\.addEventListener\("click"/);
+assert.match(controllerSource, /async buildReport\(\): Promise<string>/);
+assert.match(controllerSource, /await this\.buildReport\(\)/);
+assert.match(controllerSource, /captureUserAgentData/);
+assert.match(controllerSource, /"platformVersion"/);
+assert.match(controllerSource, /engine\.captureFillDiagnostics\(\)/);
+assert.match(controllerSource, /fillDiagnostics: fillDiagnosticsResult/);
 assert.match(
-  mainSource,
+  controllerSource,
   /layerColdTileComposite:[\s\S]*?enabled: stats\.layerColdTileCompositeEnabled,[\s\S]*?\.\.\.stats\.layerColdTileComposite/,
   "il rapporto deve rendere misurabile il fast path cold tile sul dispositivo reale",
 );
-assert.match(mainSource, /entryScripts:/);
+assert.match(controllerSource, /entryScripts:/);
 assert.doesNotMatch(mainSource, /startup-diagnostics/);
 assert.doesNotMatch(brushEngineSource, /startup-diagnostics/);
 assert.match(brushEngineSource, /deferBlendRenderer: true/);
@@ -166,8 +180,10 @@ assert.match(brushEngineSource, /deferSelectionPipelines: true/);
 assert.match(brushEngineSource, /ensureOptionalEditorResources\(\)/);
 assert.match(resourceSetupSource, /finishStaticResourceCreation\(engine, "core"\)/);
 assert.match(mainSource, /"deferred-gpu-pipelines"/);
-assert.match(mainSource, /startRuntimeStatsPolling\(\)/);
-assert.doesNotMatch(mainSource, /setInterval\(\(\) => updateStats\(engine\.getStats\(\)\), 500\)/);
+assert.match(mainSource, /runtimeStatsController\?\.start\(\)/);
+assert.match(runtimeStatsSource, /this\.options\.browser\.setInterval\(\(\) => this\.refresh\(\), 1_000\)/);
+assert.match(runtimeStatsSource, /recordDiagnostic\("runtime-stats-poll", null, error\)/);
+assert.doesNotMatch(mainSource, /startRuntimeStatsPolling|statsPollingTimer|function updateStats/);
 assert.match(gpuUtilsSource, /if \(!explicitShaderValidationRequested\(\)\) return/);
 assert.match(
   historyMaintenanceSource,
@@ -187,9 +203,9 @@ assert.match(
   historyMaintenanceSource,
   /checkpointCacheEvictions: state\.checkpointCacheEvictions/,
 );
-assert.match(mainSource, /telemetry\.capturesRefusedForBudget/);
-assert.match(mainSource, /telemetry\.checkpointCacheEvictions/);
-assert.match(mainSource, /renderFrameError:[\s\S]*?getDocumentInconsistentDiagnostic\(\)/);
+assert.match(gpuMemoryPanelSource, /telemetry\.capturesRefusedForBudget/);
+assert.match(gpuMemoryPanelSource, /telemetry\.checkpointCacheEvictions/);
+assert.match(controllerSource, /renderFrameError:[\s\S]*?getDocumentInconsistentDiagnostic\(\)/);
 assert.match(
   reportsSource,
   /vectorTextRunTextureCount[\s\S]*?fallbackTexture !== null/,

@@ -5,6 +5,7 @@ import {
   createColdLayerGpuResources,
   createHydratedLayerTexture,
   createLayerColdStorageCandidate,
+  decompressLayerColdChunk,
   destroyLayerColdStorage,
   uploadCompressedLayerIntoHot,
 } from "./engine-cold-storage";
@@ -23,6 +24,8 @@ import {
   DOCUMENT_TILE_WIDTH,
   DOCUMENT_WIDTH,
 } from "./engine-limits";
+import { combineCompressionHashes, hashBytes } from "./engine-math";
+import { rgba8UnormToRgba16FloatBytes } from "./float16";
 import type { LayerRecord, LayerStackState } from "./layer-stack";
 import type { LayerColdCompressedChunk } from "./layer-cold-compression-client";
 import {
@@ -292,10 +295,11 @@ function layerRecordFromProject(layer: ProjectLayerV1): LayerRecord {
   };
 }
 
-function compressedFromProject(
+async function compressedFromProject(
+  engine: BrushEngine,
   layer: ProjectLayerV1,
   storedChunks: ProjectLoadResultV1["chunks"],
-): LayerCompressedColdStorageResources | null {
+): Promise<LayerCompressedColdStorageResources | null> {
   const pixels = layer.pixels;
   if (!pixels) return null;
   const byIndex = new Map(
@@ -316,7 +320,7 @@ function compressedFromProject(
       sourceHash: stored.sourceHash,
     };
   });
-  return {
+  const persisted: LayerCompressedColdStorageResources = {
     tileIndices: [...pixels.tileIndices],
     chunks,
     rawBytes: pixels.rawBytes,
@@ -325,6 +329,79 @@ function compressedFromProject(
     generation: pixels.generation,
     encodeMs: 0,
     format: pixels.format,
+  };
+  if (pixels.format === engine.layerFormat) return persisted;
+  if (pixels.format !== "rgba8unorm" || engine.layerFormat !== "rgba16float") {
+    throw new Error(
+      "Saved " + pixels.format + " pixels cannot be opened as " + engine.layerFormat + ".",
+    );
+  }
+
+  // Legacy V1 projects could persist linear-premultiplied RGBA8 tiles. Convert
+  // one compressed chunk at a time, then recompress it immediately: the old
+  // project remains untouched and migration never needs a second full document.
+  const migratedChunks: LayerColdCompressedChunk[] = [];
+  const targetTileBytes = DOCUMENT_TILE_WIDTH * DOCUMENT_TILE_HEIGHT * 8;
+  let sourceBytes = 0;
+  let sourceAggregateHash = 0x811c9dc5;
+  let migratedRawBytes = 0;
+  let migratedStoredBytes = 0;
+  let migratedAggregateHash = 0x811c9dc5;
+  let compressionClient: Awaited<
+    ReturnType<BrushEngine["requireLayerColdCompressionClient"]>
+  > | null = null;
+  for (const chunk of persisted.chunks) {
+    const restored = await decompressLayerColdChunk(engine, chunk);
+    sourceBytes += restored.byteLength;
+    sourceAggregateHash = combineCompressionHashes(
+      sourceAggregateHash,
+      chunk.sourceHash,
+      restored.byteLength,
+    );
+    const converted = rgba8UnormToRgba16FloatBytes(restored);
+    let migrated: LayerColdCompressedChunk;
+    try {
+      compressionClient ??= await engine.requireLayerColdCompressionClient(true);
+      migrated = (await compressionClient.compress(converted, targetTileBytes, 2)).chunk;
+    } catch {
+      // A missing compression worker must not make a readable legacy project
+      // unusable. Keeping this one converted chunk raw is a bounded fallback.
+      const fallback = rgba8UnormToRgba16FloatBytes(restored);
+      migrated = {
+        storage: "raw",
+        bytes: fallback.buffer,
+        rawBytes: fallback.byteLength,
+        storedBytes: fallback.byteLength,
+        sourceHash: hashBytes(fallback),
+      };
+      compressionClient = null;
+    }
+    migratedChunks.push(migrated);
+    migratedRawBytes += migrated.rawBytes;
+    migratedStoredBytes += migrated.storedBytes;
+    migratedAggregateHash = combineCompressionHashes(
+      migratedAggregateHash,
+      migrated.sourceHash,
+      migrated.rawBytes,
+    );
+  }
+  if (
+    sourceBytes !== persisted.rawBytes
+    || sourceAggregateHash !== persisted.sourceHash
+  ) {
+    throw new Error(
+      "Saved layer " + layer.id + " failed legacy RGBA8 integrity checks.",
+    );
+  }
+  return {
+    tileIndices: persisted.tileIndices,
+    chunks: migratedChunks,
+    rawBytes: migratedRawBytes,
+    storedBytes: migratedStoredBytes,
+    sourceHash: migratedAggregateHash,
+    generation: persisted.generation,
+    encodeMs: 0,
+    format: "rgba16float",
   };
 }
 
@@ -388,7 +465,10 @@ export async function restoreProjectDocument(
       + `reopen it with the matching canvas size.`,
     );
   }
-  if (snapshot.document.layerFormat !== engine.layerFormat) {
+  if (
+    snapshot.document.layerFormat !== engine.layerFormat
+    && snapshot.document.layerFormat !== "rgba8unorm"
+  ) {
     throw new Error(
       `Saved ${snapshot.document.layerFormat} pixels cannot be opened as ${engine.layerFormat}.`,
     );
@@ -425,7 +505,7 @@ export async function restoreProjectDocument(
   const nextGpu = new Map<number, LayerGpuResources>();
   for (const layer of snapshot.layers) {
     const gpu = createColdLayerGpuResources();
-    gpu.compressed = compressedFromProject(layer, project.chunks);
+    gpu.compressed = await compressedFromProject(engine, layer, project.chunks);
     nextGpu.set(layer.id, gpu);
   }
 

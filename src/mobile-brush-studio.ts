@@ -1,8 +1,7 @@
-import type { BrushEngine } from "./brush-engine";
-import type { AuthoritativeBrushStrokePreviewRenderer } from "./brush-stroke-preview-renderer";
 import {
   isCustomGrainAssetId,
   isCustomShapeAssetId,
+  type CustomBrushAssetSnapshot,
   type DecodedCustomBrushImage,
 } from "./brush-asset-registry";
 import {
@@ -25,6 +24,7 @@ import {
 import { shouldCloseMobileToolsSheetDrag } from "./mobile-tools-sheet-gesture";
 import type {
   BrushSettings,
+  BrushGrainAssetId,
   BrushShapeAssetId,
   CustomBrushGrainAssetId,
   CustomBrushShapeAssetId,
@@ -42,9 +42,11 @@ interface ImportedBrushStudioAsset {
 }
 
 export interface MobileBrushStudioOptions {
-  readonly engine: BrushEngine;
-  readonly previewRenderer: AuthoritativeBrushStrokePreviewRenderer;
-  readonly mobileMediaQuery: MediaQueryList;
+  readonly engine: MobileBrushStudioEnginePort;
+  readonly previewRenderer: MobileBrushStudioPreviewPort;
+  readonly root: HTMLElement;
+  readonly appRoot: HTMLElement;
+  readonly browser: MobileBrushStudioBrowser;
   readonly applySettings: (settings: BrushSettings) => void;
   readonly setBrushLibraryOpen: (open: boolean) => void;
   readonly onOpenChange: (open: boolean) => void;
@@ -61,6 +63,35 @@ export interface MobileBrushStudioOptions {
   readonly onStatus: (message: string, kind: "ok" | "error" | "working") => void;
 }
 
+export interface MobileBrushStudioBrowser extends Window {
+  readonly AbortController: typeof AbortController;
+  readonly Image: typeof Image;
+  readonly URL: typeof URL;
+}
+
+export interface MobileBrushStudioEnginePort {
+  getSettings(): BrushSettings;
+  registerCustomShapeAsset(
+    source: DecodedCustomBrushImage,
+    requestedId?: CustomBrushShapeAssetId,
+  ): CustomBrushShapeAssetId;
+  registerCustomGrainAsset(
+    source: DecodedCustomBrushImage,
+    requestedId?: CustomBrushGrainAssetId,
+  ): CustomBrushGrainAssetId;
+  getCustomBrushAsset(
+    id: BrushShapeAssetId | BrushGrainAssetId,
+  ): CustomBrushAssetSnapshot | null;
+  hasCustomBrushAsset(id: BrushShapeAssetId | BrushGrainAssetId): boolean;
+  removeCustomBrushAsset(id: BrushShapeAssetId | BrushGrainAssetId): boolean;
+  waitForIdle(): Promise<void>;
+}
+
+export interface MobileBrushStudioPreviewPort {
+  render(canvas: HTMLCanvasElement, settings: Readonly<BrushSettings>): Promise<unknown>;
+  invalidate(canvas: HTMLCanvasElement): void;
+}
+
 const BUILTIN_BRUSH_SOURCE_URLS: Readonly<Record<string, string>> = {
   "legacy-shape": new URL("../Shape.png", import.meta.url).href,
   "pencil-shape": new URL("../Shapepencil.png", import.meta.url).href,
@@ -74,8 +105,8 @@ const BRUSH_SOURCE_FALLBACK_MAX_INPUT_PIXELS = 8_388_608;
 /** Freno all'eco delle statistiche del motore: vedi notifyEngineUpdate(). */
 const ENGINE_NOTIFY_PREVIEW_INTERVAL_MS = 200;
 
-function requiredElement<T extends HTMLElement>(id: string): T {
-  const value = document.getElementById(id);
+function requiredDescendant<T extends HTMLElement>(root: HTMLElement, id: string): T {
+  const value = root.querySelector<HTMLElement>(`#${id}`);
   if (!value) throw new Error(`Elemento Brush Studio #${id} non trovato.`);
   return value as T;
 }
@@ -103,19 +134,34 @@ function settingsForPersistence(settings: BrushSettings): BrushStudioPersistedSe
   return persisted;
 }
 
-function loadImage(url: string): Promise<HTMLImageElement> {
+function loadImage(browser: MobileBrushStudioBrowser, url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
-    const image = new Image();
+    const image = new browser.Image();
     image.decoding = "async";
-    image.addEventListener("load", () => resolve(image), { once: true });
-    image.addEventListener("error", () => reject(new Error("Image decode failed.")), {
-      once: true,
-    });
+    const cleanup = (): void => {
+      image.removeEventListener("load", handleLoad);
+      image.removeEventListener("error", handleError);
+    };
+    const handleLoad = (): void => {
+      cleanup();
+      resolve(image);
+    };
+    const handleError = (): void => {
+      cleanup();
+      reject(new Error("Image decode failed."));
+    };
+    image.addEventListener("load", handleLoad, { once: true });
+    image.addEventListener("error", handleError, { once: true });
     image.src = url;
   });
 }
 
-async function decodeBrushSource(blob: Blob, name: string): Promise<DecodedCustomBrushImage> {
+async function decodeBrushSource(
+  browser: MobileBrushStudioBrowser,
+  document: Document,
+  blob: Blob,
+  name: string,
+): Promise<DecodedCustomBrushImage> {
   const header = new Uint8Array(await blob.slice(0, BRUSH_SOURCE_HEADER_BYTES).arrayBuffer());
   const dimensions = brushSourceDimensionsFromBytes(header);
   if (!dimensions) {
@@ -125,11 +171,11 @@ async function decodeBrushSource(blob: Blob, name: string): Promise<DecodedCusto
   let source: ImageBitmap | HTMLImageElement | null = null;
   let objectUrl: string | null = null;
   try {
-    if (typeof createImageBitmap === "function") {
+    if (typeof browser.createImageBitmap === "function") {
       try {
         // Shape and Grain channels are coverage data, not display colors.
         // Preserve the authored bytes instead of baking ICC/premultiplication.
-        source = await createImageBitmap(blob, {
+        source = await browser.createImageBitmap(blob, {
           colorSpaceConversion: "none",
           imageOrientation: "none",
           premultiplyAlpha: "none",
@@ -142,7 +188,7 @@ async function decodeBrushSource(blob: Blob, name: string): Promise<DecodedCusto
           // Older WebKit builds can expose createImageBitmap while rejecting
           // newer decode options. Keep those devices on the previous bounded
           // decode path rather than making custom sources unavailable.
-          source = await createImageBitmap(blob, {
+          source = await browser.createImageBitmap(blob, {
             imageOrientation: "none",
             premultiplyAlpha: "none",
             resizeWidth: plan.width,
@@ -160,8 +206,9 @@ async function decodeBrushSource(blob: Blob, name: string): Promise<DecodedCusto
           "Resize this image below 8 megapixels before importing it on this device.",
         );
       }
-      objectUrl = URL.createObjectURL(blob);
-      source = await loadImage(objectUrl);
+      const fallbackUrl = browser.URL.createObjectURL(blob);
+      objectUrl = fallbackUrl;
+      source = await loadImage(browser, fallbackUrl);
     }
     const canvas = document.createElement("canvas");
     canvas.width = plan.width;
@@ -183,11 +230,12 @@ async function decodeBrushSource(blob: Blob, name: string): Promise<DecodedCusto
     };
   } finally {
     if (source && "close" in source) source.close();
-    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    if (objectUrl) browser.URL.revokeObjectURL(objectUrl);
   }
 }
 
 function canvasFromRgba(
+  document: Document,
   width: number,
   height: number,
   rgba: Uint8Array | Uint8ClampedArray,
@@ -197,17 +245,18 @@ function canvasFromRgba(
   canvas.height = height;
   const context = canvas.getContext("2d", { alpha: true });
   if (context) {
-    context.putImageData(
-      new ImageData(new Uint8ClampedArray(rgba), width, height),
-      0,
-      0,
-    );
+    const image = context.createImageData(width, height);
+    image.data.set(rgba);
+    context.putImageData(image, 0, 0);
   }
   return canvas;
 }
 
-function normalizedBrushSourceBlob(source: DecodedCustomBrushImage): Promise<Blob> {
-  const canvas = canvasFromRgba(source.width, source.height, source.rgba);
+function normalizedBrushSourceBlob(
+  document: Document,
+  source: DecodedCustomBrushImage,
+): Promise<Blob> {
+  const canvas = canvasFromRgba(document, source.width, source.height, source.rgba);
   return new Promise((resolve, reject) => {
     canvas.toBlob((blob) => {
       if (blob) resolve(blob);
@@ -217,30 +266,24 @@ function normalizedBrushSourceBlob(source: DecodedCustomBrushImage): Promise<Blo
 }
 
 export class MobileBrushStudioController {
-  readonly sheet = requiredElement<HTMLElement>("mobileBrushStudioSheet");
-  readonly handle = requiredElement<HTMLButtonElement>("mobileBrushStudioHandle");
-  readonly cancelButton = requiredElement<HTMLButtonElement>("mobileBrushStudioCancel");
-  readonly doneButton = requiredElement<HTMLButtonElement>("mobileBrushStudioDone");
-  readonly nameElement = requiredElement<HTMLInputElement>("mobileBrushStudioName");
-  readonly statusElement = requiredElement<HTMLParagraphElement>("mobileBrushStudioStatus");
-  readonly previewCanvas = requiredElement<HTMLCanvasElement>("mobileBrushStudioPreviewCanvas");
-  readonly scrollElement = requiredElement<HTMLElement>("mobileBrushStudioScroll");
-  readonly tabs = Array.from(
-    document.querySelectorAll<HTMLButtonElement>("[data-mobile-brush-studio-tab]"),
-  );
-  readonly panels = Array.from(
-    document.querySelectorAll<HTMLElement>("[data-mobile-brush-studio-panel]"),
-  );
-  readonly renderingButtons = Array.from(
-    document.querySelectorAll<HTMLButtonElement>("[data-mobile-brush-rendering]"),
-  );
-  readonly shapeRotationButtons = Array.from(
-    document.querySelectorAll<HTMLButtonElement>("[data-mobile-brush-shape-rotation]"),
-  );
-  readonly grainModeButtons = Array.from(
-    document.querySelectorAll<HTMLButtonElement>("[data-mobile-brush-grain-mode]"),
-  );
+  readonly sheet: HTMLElement;
+  readonly handle: HTMLButtonElement;
+  readonly cancelButton: HTMLButtonElement;
+  readonly doneButton: HTMLButtonElement;
+  readonly nameElement: HTMLInputElement;
+  readonly statusElement: HTMLParagraphElement;
+  readonly previewCanvas: HTMLCanvasElement;
+  readonly scrollElement: HTMLElement;
+  readonly tabs: HTMLButtonElement[];
+  readonly panels: HTMLElement[];
+  readonly renderingButtons: HTMLButtonElement[];
+  readonly shapeRotationButtons: HTMLButtonElement[];
+  readonly grainModeButtons: HTMLButtonElement[];
 
+  private readonly browser: MobileBrushStudioBrowser;
+  private readonly document: Document;
+  private readonly appRoot: HTMLElement;
+  private readonly eventAbortController: AbortController;
   private readonly settingsCache = new Map<string, BrushSettings>();
   private readonly importedAssets = new Map<string, ImportedBrushStudioAsset>();
   private readonly transientAssetIds = new Set<string>();
@@ -254,9 +297,16 @@ export class MobileBrushStudioController {
   private activeBrushName = "Default Brush";
   private originalSettings: BrushSettings | null = null;
   private draftSettings: BrushSettings | null = null;
-  private selectedTab: BrushStudioTab = "stroke";
   private applyFrame: number | null = null;
   private previewFrame: number | null = null;
+  private rootScrollFrame: number | null = null;
+  private previewInFlight = false;
+  private previewDirty = false;
+  private commitPromise: Promise<void> | null = null;
+  private importPromise: Promise<void> | null = null;
+  private disposePromise: Promise<void> | null = null;
+  private assetReleasePromise: Promise<void> | null = null;
+  private assetReleaseRequested = false;
   private sourcePreviewRevision = 0;
   private importRevision = 0;
   private busy = false;
@@ -268,8 +318,36 @@ export class MobileBrushStudioController {
   private dragLastTime = 0;
   private dragVelocityY = 0;
   private dragMoved = false;
+  private disposed = false;
 
   constructor(private readonly options: MobileBrushStudioOptions) {
+    this.sheet = options.root;
+    this.browser = options.browser;
+    this.document = options.root.ownerDocument;
+    this.appRoot = options.appRoot;
+    this.eventAbortController = new options.browser.AbortController();
+    this.handle = requiredDescendant<HTMLButtonElement>(this.sheet, "mobileBrushStudioHandle");
+    this.cancelButton = requiredDescendant<HTMLButtonElement>(this.sheet, "mobileBrushStudioCancel");
+    this.doneButton = requiredDescendant<HTMLButtonElement>(this.sheet, "mobileBrushStudioDone");
+    this.nameElement = requiredDescendant<HTMLInputElement>(this.sheet, "mobileBrushStudioName");
+    this.statusElement = requiredDescendant<HTMLParagraphElement>(this.sheet, "mobileBrushStudioStatus");
+    this.previewCanvas = requiredDescendant<HTMLCanvasElement>(this.sheet, "mobileBrushStudioPreviewCanvas");
+    this.scrollElement = requiredDescendant<HTMLElement>(this.sheet, "mobileBrushStudioScroll");
+    this.tabs = Array.from(
+      this.sheet.querySelectorAll<HTMLButtonElement>("[data-mobile-brush-studio-tab]"),
+    );
+    this.panels = Array.from(
+      this.sheet.querySelectorAll<HTMLElement>("[data-mobile-brush-studio-panel]"),
+    );
+    this.renderingButtons = Array.from(
+      this.sheet.querySelectorAll<HTMLButtonElement>("[data-mobile-brush-rendering]"),
+    );
+    this.shapeRotationButtons = Array.from(
+      this.sheet.querySelectorAll<HTMLButtonElement>("[data-mobile-brush-shape-rotation]"),
+    );
+    this.grainModeButtons = Array.from(
+      this.sheet.querySelectorAll<HTMLButtonElement>("[data-mobile-brush-grain-mode]"),
+    );
     this.bindControls();
     this.setTab("stroke", false);
     this.sheet.setAttribute("aria-hidden", "true");
@@ -277,6 +355,39 @@ export class MobileBrushStudioController {
 
   get isOpen(): boolean {
     return this.openState;
+  }
+
+  get isBusy(): boolean {
+    return this.busy;
+  }
+
+  dispose(): Promise<void> {
+    if (this.disposePromise) return this.disposePromise;
+    if (this.disposed) return Promise.resolve();
+    const original = this.originalSettings ? copySettings(this.originalSettings) : undefined;
+    this.disposed = true;
+    this.importRevision += 1;
+    this.sourcePreviewRevision += 1;
+    if (this.openState) {
+      this.closeSheet();
+      if (original) this.options.applySettings(original);
+    } else {
+      this.cancelScheduledWork();
+    }
+    this.eventAbortController.abort();
+    this.disposePromise = (async () => {
+      await Promise.allSettled([
+        this.commitPromise ?? Promise.resolve(),
+        this.importPromise ?? Promise.resolve(),
+      ]);
+      await this.requestTransientAssetRelease();
+      this.settingsCache.clear();
+      this.importedAssets.clear();
+      this.imagePromises.clear();
+      this.sourceCanvases.clear();
+      this.resolvedSources.clear();
+    })();
+    return this.disposePromise;
   }
 
   rememberSettings(brushId: string, settings: Readonly<BrushSettings>): void {
@@ -310,6 +421,7 @@ export class MobileBrushStudioController {
     brushId: string,
     fallback: Readonly<BrushSettings>,
   ): Promise<BrushSettings> {
+    this.assertUsable();
     const cached = this.settingsCache.get(brushId);
     if (cached) {
       return { ...cached, tool: "paint", color: fallback.color, hardness: 1 };
@@ -336,6 +448,7 @@ export class MobileBrushStudioController {
       await this.releasePreviewAssets(brushId, resolved);
       throw error;
     }
+    this.assertUsable();
     this.rememberSettings(brushId, resolved);
     return copySettings(resolved);
   }
@@ -367,34 +480,16 @@ export class MobileBrushStudioController {
       candidates.delete(activeSettings.grainAssetId);
     }
     if (candidates.size === 0) return;
+    for (const assetId of candidates) this.transientAssetIds.add(assetId);
+    await this.requestTransientAssetRelease();
+    const allReleased = [...candidates].every(
+      (assetId) => !this.options.engine.hasCustomBrushAsset(assetId),
+    );
+    if (allReleased) this.settingsCache.delete(brushId);
+  }
 
-    try {
-      await this.options.engine.waitForIdle();
-    } catch {
-      return;
-    }
-    const activeAfterIdle = this.options.engine.getSettings();
-    if (isCustomShapeAssetId(activeAfterIdle.shapeAssetId)) {
-      candidates.delete(activeAfterIdle.shapeAssetId);
-    }
-    if (isCustomGrainAssetId(activeAfterIdle.grainAssetId)) {
-      candidates.delete(activeAfterIdle.grainAssetId);
-    }
-    let released = false;
-    for (const assetId of candidates) {
-      try {
-        if (this.options.engine.removeCustomBrushAsset(assetId)) {
-          released = true;
-          this.importedAssets.delete(assetId);
-          this.sourceCanvases.delete(assetId);
-          this.resolvedSources.delete(assetId);
-        }
-      } catch {
-        // The card bitmap is already complete. Keep an asset still referenced
-        // by a late GPU publication and retry its release on a later preview.
-      }
-    }
-    if (released) this.settingsCache.delete(brushId);
+  retryPendingAssetRelease(): void {
+    if (this.transientAssetIds.size > 0) void this.requestTransientAssetRelease();
   }
 
   open(
@@ -403,7 +498,7 @@ export class MobileBrushStudioController {
     settings: Readonly<BrushSettings>,
     originalSettings: Readonly<BrushSettings> = settings,
   ): void {
-    if (!this.options.mobileMediaQuery.matches) return;
+    if (this.disposed || this.busy) return;
     this.activeBrushId = brushId;
     this.activeBrushName = brushName;
     this.originalSettings = copySettings(originalSettings);
@@ -428,14 +523,14 @@ export class MobileBrushStudioController {
   }
 
   cancel(reopenLibrary = true): void {
-    if (!this.openState) return;
+    if (!this.openState || this.busy) return;
     this.importRevision += 1;
     this.cancelScheduledWork();
     const original = this.originalSettings;
     this.closeSheet();
     if (original) this.options.applySettings(original);
-    void this.releaseTransientAssets(original ?? undefined);
-    if (reopenLibrary && this.options.mobileMediaQuery.matches) {
+    void this.requestTransientAssetRelease();
+    if (reopenLibrary) {
       this.options.setBrushLibraryOpen(true);
     }
   }
@@ -449,7 +544,7 @@ export class MobileBrushStudioController {
     // cambia lato motore senza passare dal draft — in pratica la punta
     // ripubblicata al termine di un caricamento di shape asincrono, che puo
     // arrivare con un ritardo impercettibile.
-    const now = performance.now();
+    const now = this.browser.performance.now();
     if (now - this.lastEngineNotifyAt < ENGINE_NOTIFY_PREVIEW_INTERVAL_MS) return;
     this.lastEngineNotifyAt = now;
     this.schedulePreview();
@@ -462,17 +557,17 @@ export class MobileBrushStudioController {
   }
 
   private bindControls(): void {
-    this.cancelButton.addEventListener("click", () => this.cancel(true));
-    this.doneButton.addEventListener("click", () => void this.commit());
+    this.listen(this.cancelButton, "click", () => this.cancel(true));
+    this.listen(this.doneButton, "click", () => void this.requestCommit());
 
     for (const tab of this.tabs) {
-      tab.addEventListener("click", () => {
+      this.listen(tab, "click", () => {
         const value = tab.dataset.mobileBrushStudioTab;
         if (value === "stroke" || value === "shape" || value === "grain" || value === "dynamics") {
           this.setTab(value, false);
         }
       });
-      tab.addEventListener("keydown", (event) => this.handleTabKeydown(event, tab));
+      this.listen(tab, "keydown", (event) => this.handleTabKeydown(event, tab));
     }
 
     this.bindRange("mobileBrushStudioSize", "mobileBrushStudioSizeOut", (value) => {
@@ -547,7 +642,7 @@ export class MobileBrushStudioController {
     });
 
     for (const button of this.renderingButtons) {
-      button.addEventListener("click", () => {
+      this.listen(button, "click", () => {
         const mode = button.dataset.mobileBrushRendering;
         if (mode !== "light-glaze" && mode !== "uniformed-glaze" && mode !== "intense-blending") return;
         this.changeDraft((draft) => { draft.blendMode = mode; });
@@ -555,7 +650,7 @@ export class MobileBrushStudioController {
       });
     }
     for (const button of this.shapeRotationButtons) {
-      button.addEventListener("click", () => {
+      this.listen(button, "click", () => {
         const rotation = button.dataset.mobileBrushShapeRotation;
         if (rotation !== "fixed" && rotation !== "follow-stroke") return;
         this.changeDraft((draft) => { draft.shapeRotation = rotation; });
@@ -563,7 +658,7 @@ export class MobileBrushStudioController {
       });
     }
     for (const button of this.grainModeButtons) {
-      button.addEventListener("click", () => {
+      this.listen(button, "click", () => {
         const mode = button.dataset.mobileBrushGrainMode;
         if (mode !== "off" && mode !== "texturized" && mode !== "moving") return;
         this.changeDraft((draft) => { draft.grainMode = mode; });
@@ -572,36 +667,37 @@ export class MobileBrushStudioController {
       });
     }
 
-    const filtering = requiredElement<HTMLSelectElement>("mobileBrushStudioGrainFiltering");
-    filtering.addEventListener("change", () => {
+    const filtering = this.element<HTMLSelectElement>("mobileBrushStudioGrainFiltering");
+    this.listen(filtering, "change", () => {
       const value = filtering.value;
       if (value !== "no" && value !== "classic" && value !== "improved") return;
       this.changeDraft((draft) => { draft.grainFiltering = value; });
     });
 
     for (const kind of ["shape", "grain"] as const) {
-      const fileInput = requiredElement<HTMLInputElement>(
+      const fileInput = this.element<HTMLInputElement>(
         kind === "shape" ? "mobileBrushStudioShapeFile" : "mobileBrushStudioGrainFile",
       );
-      const sourceButton = requiredElement<HTMLButtonElement>(
+      const sourceButton = this.element<HTMLButtonElement>(
         kind === "shape" ? "mobileBrushStudioShapeSource" : "mobileBrushStudioGrainSource",
       );
-      sourceButton.addEventListener("click", () => fileInput.click());
-      fileInput.addEventListener("change", () => {
+      this.listen(sourceButton, "click", () => fileInput.click());
+      this.listen(fileInput, "change", () => {
         const file = fileInput.files?.[0];
         fileInput.value = "";
-        if (file) void this.importSource(kind, file);
+        if (file) void this.requestSourceImport(kind, file);
       });
-      requiredElement<HTMLButtonElement>(
+      const removeButton = this.element<HTMLButtonElement>(
         kind === "shape" ? "mobileBrushStudioShapeRemove" : "mobileBrushStudioGrainRemove",
-      ).addEventListener("click", () => this.removeSource(kind));
+      );
+      this.listen(removeButton, "click", () => this.removeSource(kind));
     }
 
-    this.handle.addEventListener("pointerdown", (event) => this.startDrag(event));
-    this.handle.addEventListener("pointermove", (event) => this.moveDrag(event));
-    this.handle.addEventListener("pointerup", (event) => this.finishDrag(event));
-    this.handle.addEventListener("pointercancel", (event) => this.finishDrag(event, true));
-    this.handle.addEventListener("click", () => {
+    this.listen(this.handle, "pointerdown", (event) => this.startDrag(event));
+    this.listen(this.handle, "pointermove", (event) => this.moveDrag(event));
+    this.listen(this.handle, "pointerup", (event) => this.finishDrag(event));
+    this.listen(this.handle, "pointercancel", (event) => this.finishDrag(event, true));
+    this.listen(this.handle, "click", () => {
       if (!this.openState) return;
       if (this.dragMoved) {
         this.dragMoved = false;
@@ -617,9 +713,9 @@ export class MobileBrushStudioController {
     update: (value: number) => void,
     format: (value: number) => string,
   ): void {
-    const input = requiredElement<HTMLInputElement>(inputId);
-    const output = requiredElement<HTMLOutputElement>(outputId);
-    input.addEventListener("input", () => {
+    const input = this.element<HTMLInputElement>(inputId);
+    const output = this.element<HTMLOutputElement>(outputId);
+    this.listen(input, "input", () => {
       const value = Number(input.value);
       output.value = format(value);
       update(value);
@@ -627,12 +723,42 @@ export class MobileBrushStudioController {
   }
 
   private bindCheckbox(id: string, update: (checked: boolean) => void): void {
-    const input = requiredElement<HTMLInputElement>(id);
-    input.addEventListener("change", () => update(input.checked));
+    const input = this.element<HTMLInputElement>(id);
+    this.listen(input, "change", () => update(input.checked));
+  }
+
+  private element<T extends HTMLElement>(id: string): T {
+    return requiredDescendant<T>(this.sheet, id);
+  }
+
+  private assertUsable(): void {
+    if (this.disposed) throw new Error("Brush Studio has been disposed.");
+  }
+
+  private requestSourceImport(
+    kind: BrushStudioSourceKind,
+    file: File,
+  ): Promise<void> {
+    if (this.disposed || this.importPromise || this.busy) return Promise.resolve();
+    const operation = this.importSource(kind, file).finally(() => {
+      if (this.importPromise === operation) this.importPromise = null;
+    });
+    this.importPromise = operation;
+    return operation;
+  }
+
+  private listen<K extends keyof HTMLElementEventMap>(
+    target: HTMLElement,
+    type: K,
+    listener: (event: HTMLElementEventMap[K]) => void,
+  ): void {
+    target.addEventListener(type, listener as EventListener, {
+      signal: this.eventAbortController.signal,
+    });
   }
 
   private changeDraft(change: (draft: BrushSettings) => void, redrawSources = false): void {
-    if (!this.draftSettings || !this.openState) return;
+    if (!this.draftSettings || !this.openState || this.busy || this.disposed) return;
     change(this.draftSettings);
     this.draftSettings.tool = "paint";
     this.draftSettings.hardness = 1;
@@ -641,8 +767,9 @@ export class MobileBrushStudioController {
   }
 
   private scheduleApply(): void {
+    if (this.disposed) return;
     if (this.applyFrame === null) {
-      this.applyFrame = requestAnimationFrame(() => {
+      this.applyFrame = this.browser.requestAnimationFrame(() => {
         this.applyFrame = null;
         this.applyDraftNow();
       });
@@ -658,7 +785,7 @@ export class MobileBrushStudioController {
 
   private flushDraft(): BrushSettings | null {
     if (this.applyFrame !== null) {
-      cancelAnimationFrame(this.applyFrame);
+      this.browser.cancelAnimationFrame(this.applyFrame);
       this.applyFrame = null;
       this.applyDraftNow();
     }
@@ -687,10 +814,10 @@ export class MobileBrushStudioController {
     this.setRange("mobileBrushStudioStartThickness", "mobileBrushStudioStartThicknessOut", settings.startThickness * 100, percent);
     this.setRange("mobileBrushStudioEndThickness", "mobileBrushStudioEndThicknessOut", settings.endThickness * 100, percent);
 
-    requiredElement<HTMLInputElement>("mobileBrushStudioShapeInvert").checked = settings.shapeInvert;
-    requiredElement<HTMLInputElement>("mobileBrushStudioGrainInvert").checked = settings.grainInvert;
-    requiredElement<HTMLInputElement>("mobileBrushStudioJitterPerCopy").checked = settings.jitterPerCopy;
-    requiredElement<HTMLSelectElement>("mobileBrushStudioGrainFiltering").value = settings.grainFiltering;
+    this.element<HTMLInputElement>("mobileBrushStudioShapeInvert").checked = settings.shapeInvert;
+    this.element<HTMLInputElement>("mobileBrushStudioGrainInvert").checked = settings.grainInvert;
+    this.element<HTMLInputElement>("mobileBrushStudioJitterPerCopy").checked = settings.jitterPerCopy;
+    this.element<HTMLSelectElement>("mobileBrushStudioGrainFiltering").value = settings.grainFiltering;
     const rendering = settings.blendMode === "uniformed-glaze" || settings.blendMode === "intense-blending"
       ? settings.blendMode
       : "light-glaze";
@@ -706,10 +833,10 @@ export class MobileBrushStudioController {
     value: number,
     format: (value: number) => string,
   ): void {
-    const input = requiredElement<HTMLInputElement>(inputId);
+    const input = this.element<HTMLInputElement>(inputId);
     const clamped = clamp(value, Number(input.min), Number(input.max));
     input.value = clamped.toString();
-    requiredElement<HTMLOutputElement>(outputId).value = format(clamped);
+    this.element<HTMLOutputElement>(outputId).value = format(clamped);
   }
 
   private syncRadioButtons(
@@ -730,13 +857,12 @@ export class MobileBrushStudioController {
       "mobileBrushStudioGrainContrast",
       "mobileBrushStudioGrainFiltering",
     ]) {
-      requiredElement<HTMLInputElement | HTMLSelectElement>(id).disabled = mode === "off";
+      this.element<HTMLInputElement | HTMLSelectElement>(id).disabled = mode === "off";
     }
-    requiredElement<HTMLInputElement>("mobileBrushStudioGrainMovement").disabled = mode !== "moving";
+    this.element<HTMLInputElement>("mobileBrushStudioGrainMovement").disabled = mode !== "moving";
   }
 
   private setTab(tab: BrushStudioTab, focus: boolean): void {
-    this.selectedTab = tab;
     for (const button of this.tabs) {
       const selected = button.dataset.mobileBrushStudioTab === tab;
       button.setAttribute("aria-selected", String(selected));
@@ -751,11 +877,13 @@ export class MobileBrushStudioController {
   }
 
   private resetRootScroll(): void {
-    const app = document.getElementById("app");
-    if (!app) return;
-    app.scrollTop = 0;
-    requestAnimationFrame(() => {
-      if (this.openState) app.scrollTop = 0;
+    this.appRoot.scrollTop = 0;
+    if (this.rootScrollFrame !== null) {
+      this.browser.cancelAnimationFrame(this.rootScrollFrame);
+    }
+    this.rootScrollFrame = this.browser.requestAnimationFrame(() => {
+      this.rootScrollFrame = null;
+      if (this.openState) this.appRoot.scrollTop = 0;
     });
   }
 
@@ -794,9 +922,9 @@ export class MobileBrushStudioController {
     this.setBusy(true);
     this.reportStatus(`Loading ${kind} source…`, "working");
     try {
-      const decoded = await decodeBrushSource(file, file.name);
+      const decoded = await decodeBrushSource(this.browser, this.document, file, file.name);
       if (!this.openState || revision !== this.importRevision || !this.draftSettings) return;
-      const normalizedBlob = await normalizedBrushSourceBlob(decoded);
+      const normalizedBlob = await normalizedBrushSourceBlob(this.document, decoded);
       if (!this.openState || revision !== this.importRevision || !this.draftSettings) return;
       const normalizedDecoded: DecodedCustomBrushImage = {
         ...decoded,
@@ -809,7 +937,7 @@ export class MobileBrushStudioController {
         this.draftSettings.shape = "shape";
         this.draftSettings.shapeAssetId = id;
         this.draftSettings.shapeInvert = false;
-        requiredElement<HTMLInputElement>("mobileBrushStudioShapeInvert").checked = false;
+        this.element<HTMLInputElement>("mobileBrushStudioShapeInvert").checked = false;
       } else {
         const id = this.options.engine.registerCustomGrainAsset(normalizedDecoded);
         this.importedAssets.set(id, { kind, blob: normalizedBlob, name: file.name });
@@ -817,7 +945,7 @@ export class MobileBrushStudioController {
         this.draftSettings.grainAssetId = id;
         if (this.draftSettings.grainMode === "off") this.draftSettings.grainMode = "moving";
         this.draftSettings.grainInvert = false;
-        requiredElement<HTMLInputElement>("mobileBrushStudioGrainInvert").checked = false;
+        this.element<HTMLInputElement>("mobileBrushStudioGrainInvert").checked = false;
         this.syncRadioButtons(this.grainModeButtons, "mobileBrushGrainMode", this.draftSettings.grainMode);
         this.syncGrainAvailability(this.draftSettings.grainMode);
       }
@@ -837,12 +965,12 @@ export class MobileBrushStudioController {
       this.draftSettings.shape = "circle";
       this.draftSettings.shapeAssetId = "legacy-shape";
       this.draftSettings.shapeInvert = false;
-      requiredElement<HTMLInputElement>("mobileBrushStudioShapeInvert").checked = false;
+      this.element<HTMLInputElement>("mobileBrushStudioShapeInvert").checked = false;
     } else {
       this.draftSettings.grainMode = "off";
       this.draftSettings.grainAssetId = "pencil-grain";
       this.draftSettings.grainInvert = false;
-      requiredElement<HTMLInputElement>("mobileBrushStudioGrainInvert").checked = false;
+      this.element<HTMLInputElement>("mobileBrushStudioGrainInvert").checked = false;
       this.syncRadioButtons(this.grainModeButtons, "mobileBrushGrainMode", "off");
       this.syncGrainAvailability("off");
     }
@@ -866,22 +994,22 @@ export class MobileBrushStudioController {
     revision: number,
   ): Promise<void> {
     const isShape = kind === "shape";
-    const button = requiredElement<HTMLButtonElement>(
+    const button = this.element<HTMLButtonElement>(
       isShape ? "mobileBrushStudioShapeSource" : "mobileBrushStudioGrainSource",
     );
-    const canvas = requiredElement<HTMLCanvasElement>(
+    const canvas = this.element<HTMLCanvasElement>(
       isShape ? "mobileBrushStudioShapeSourceCanvas" : "mobileBrushStudioGrainSourceCanvas",
     );
-    const select = requiredElement<HTMLElement>(
+    const select = this.element<HTMLElement>(
       isShape ? "mobileBrushStudioShapeSelect" : "mobileBrushStudioGrainSelect",
     );
-    const replace = requiredElement<HTMLElement>(
+    const replace = this.element<HTMLElement>(
       isShape ? "mobileBrushStudioShapeReplace" : "mobileBrushStudioGrainReplace",
     );
-    const remove = requiredElement<HTMLButtonElement>(
+    const remove = this.element<HTMLButtonElement>(
       isShape ? "mobileBrushStudioShapeRemove" : "mobileBrushStudioGrainRemove",
     );
-    const invert = requiredElement<HTMLInputElement>(
+    const invert = this.element<HTMLInputElement>(
       isShape ? "mobileBrushStudioShapeInvert" : "mobileBrushStudioGrainInvert",
     );
     const hasSource = isShape ? settings.shape === "shape" : settings.grainMode !== "off";
@@ -921,7 +1049,7 @@ export class MobileBrushStudioController {
     if (custom) {
       let canvas = this.sourceCanvases.get(assetId);
       if (!canvas) {
-        canvas = canvasFromRgba(custom.width, custom.height, custom.rgba);
+        canvas = canvasFromRgba(this.document, custom.width, custom.height, custom.rgba);
         this.sourceCanvases.set(assetId, canvas);
       }
       this.resolvedSources.set(assetId, canvas);
@@ -939,11 +1067,12 @@ export class MobileBrushStudioController {
     if (!url) return null;
     let promise = this.imagePromises.get(url);
     if (!promise) {
-      promise = loadImage(url);
+      promise = loadImage(this.browser, url);
       this.imagePromises.set(url, promise);
     }
     try {
       const image = await promise;
+      if (this.disposed) return null;
       this.resolvedSources.set(assetId, image);
       return image;
     } catch {
@@ -953,10 +1082,18 @@ export class MobileBrushStudioController {
   }
 
   private schedulePreview(): void {
-    if (!this.openState || this.previewFrame !== null) return;
-    this.previewFrame = requestAnimationFrame(() => {
+    if (this.disposed || !this.openState) return;
+    this.previewDirty = true;
+    if (this.previewInFlight || this.previewFrame !== null) return;
+    this.previewFrame = this.browser.requestAnimationFrame(() => {
       this.previewFrame = null;
-      void this.renderPreview();
+      if (this.disposed || !this.openState) return;
+      this.previewDirty = false;
+      this.previewInFlight = true;
+      void this.renderPreview().finally(() => {
+        this.previewInFlight = false;
+        if (this.previewDirty) this.schedulePreview();
+      });
     });
   }
 
@@ -967,7 +1104,7 @@ export class MobileBrushStudioController {
     if (bounds.width < 1 || bounds.height < 1) return;
     const width = Math.max(1, Math.round(bounds.width));
     const height = Math.max(1, Math.round(bounds.height));
-    const pixelRatio = clamp(window.devicePixelRatio || 1, 1, 2);
+    const pixelRatio = clamp(this.browser.devicePixelRatio || 1, 1, 2);
     const backingWidth = Math.round(width * pixelRatio);
     const backingHeight = Math.round(height * pixelRatio);
     if (this.previewCanvas.width !== backingWidth || this.previewCanvas.height !== backingHeight) {
@@ -984,6 +1121,17 @@ export class MobileBrushStudioController {
         );
       }
     }
+  }
+
+  private requestCommit(): Promise<void> {
+    if (this.disposed || this.commitPromise || this.busy || !this.openState) {
+      return this.commitPromise ?? Promise.resolve();
+    }
+    const operation = this.commit().finally(() => {
+      if (this.commitPromise === operation) this.commitPromise = null;
+    });
+    this.commitPromise = operation;
+    return operation;
   }
 
   private async commit(): Promise<void> {
@@ -1005,7 +1153,9 @@ export class MobileBrushStudioController {
       this.activeBrushName = brushName;
       this.nameElement.value = brushName;
       shapeAssetKey = await this.persistAssetIfNeeded("shape", settings);
+      this.assertUsable();
       grainAssetKey = await this.persistAssetIfNeeded("grain", settings);
+      this.assertUsable();
       saveBrushStudioSavedBrush(brushId, {
         version: 1,
         settings: settingsForPersistence(settings),
@@ -1015,6 +1165,15 @@ export class MobileBrushStudioController {
       settingsRecordWritten = true;
       await this.options.onCommit(brushId, brushName, settings);
       catalogCommitted = true;
+      if (this.disposed) {
+        await this.deleteSupersededStoredAssets(
+          previousSavedBrush?.shapeAssetKey ?? null,
+          previousSavedBrush?.grainAssetKey ?? null,
+          shapeAssetKey,
+          grainAssetKey,
+        );
+        return;
+      }
       try {
         this.options.onCommitted(brushId, brushName, settings);
       } catch (error) {
@@ -1044,7 +1203,8 @@ export class MobileBrushStudioController {
         && assetId !== settings.shapeAssetId
         && assetId !== settings.grainAssetId
       ));
-      void this.releaseTransientAssets(settings, supersededAssetIds);
+      for (const id of supersededAssetIds) this.transientAssetIds.add(id);
+      void this.requestTransientAssetRelease();
     } catch (error) {
       let rollbackFailed = false;
       if (!catalogCommitted) {
@@ -1057,11 +1217,13 @@ export class MobileBrushStudioController {
         ));
       }
       const message = error instanceof Error ? error.message : String(error);
-      this.reportStatus(
-        rollbackFailed ? `${message} The previous saved brush could not be restored.` : message,
-        "error",
-      );
-      this.setBusy(false);
+      if (!this.disposed) {
+        this.reportStatus(
+          rollbackFailed ? `${message} The previous saved brush could not be restored.` : message,
+          "error",
+        );
+        this.setBusy(false);
+      }
     }
   }
 
@@ -1134,14 +1296,22 @@ export class MobileBrushStudioController {
     storedKey: string | null,
     settings: BrushSettings,
   ): Promise<void> {
+    this.assertUsable();
     const assetId = kind === "shape" ? settings.shapeAssetId : settings.grainAssetId;
     const custom = kind === "shape" ? isCustomShapeAssetId(assetId) : isCustomGrainAssetId(assetId);
     if (!custom) return;
     const key = storedKey ?? brushStudioAssetStorageKey(brushId, kind);
     try {
       const stored = await loadBrushStudioAsset(key);
+      this.assertUsable();
       if (!stored) throw new Error("Stored asset missing.");
-      const decoded = await decodeBrushSource(stored.blob, stored.name);
+      const decoded = await decodeBrushSource(
+        this.browser,
+        this.document,
+        stored.blob,
+        stored.name,
+      );
+      this.assertUsable();
       if (kind === "shape") {
         this.options.engine.registerCustomShapeAsset(decoded, assetId as CustomBrushShapeAssetId);
       } else {
@@ -1160,24 +1330,25 @@ export class MobileBrushStudioController {
     }
   }
 
-  private async releaseTransientAssets(
-    keep?: Readonly<BrushSettings>,
-    additionalCandidates: readonly (
-      CustomBrushShapeAssetId | CustomBrushGrainAssetId
-    )[] = [],
-  ): Promise<void> {
-    const keepIds = new Set<string>();
-    if (keep && isCustomShapeAssetId(keep.shapeAssetId)) keepIds.add(keep.shapeAssetId);
-    if (keep && isCustomGrainAssetId(keep.grainAssetId)) keepIds.add(keep.grainAssetId);
-    const candidates = new Set<CustomBrushShapeAssetId | CustomBrushGrainAssetId>(
-      additionalCandidates,
-    );
-    for (const id of additionalCandidates) this.transientAssetIds.add(id);
+  private requestTransientAssetRelease(): Promise<void> {
+    this.assetReleaseRequested = true;
+    if (this.assetReleasePromise) return this.assetReleasePromise;
+    const operation = (async () => {
+      while (this.assetReleaseRequested) {
+        this.assetReleaseRequested = false;
+        await this.releaseTransientAssets();
+      }
+    })().finally(() => {
+      if (this.assetReleasePromise === operation) this.assetReleasePromise = null;
+    });
+    this.assetReleasePromise = operation;
+    return operation;
+  }
+
+  private async releaseTransientAssets(): Promise<void> {
+    const candidates = new Set<CustomBrushShapeAssetId | CustomBrushGrainAssetId>();
     for (const id of this.transientAssetIds) {
       candidates.add(id as CustomBrushShapeAssetId | CustomBrushGrainAssetId);
-    }
-    for (const id of keepIds) {
-      candidates.delete(id as CustomBrushShapeAssetId | CustomBrushGrainAssetId);
     }
     if (candidates.size === 0) return;
     try {
@@ -1209,7 +1380,12 @@ export class MobileBrushStudioController {
 
   private setBusy(busy: boolean): void {
     this.busy = busy;
+    this.cancelButton.disabled = busy;
     this.doneButton.disabled = busy;
+    this.nameElement.disabled = busy;
+    this.handle.disabled = busy;
+    this.scrollElement.inert = busy;
+    for (const tab of this.tabs) tab.disabled = busy;
     this.sheet.setAttribute("aria-busy", String(busy));
   }
 
@@ -1224,11 +1400,14 @@ export class MobileBrushStudioController {
   }
 
   private cancelScheduledWork(): void {
-    if (this.applyFrame !== null) cancelAnimationFrame(this.applyFrame);
-    if (this.previewFrame !== null) cancelAnimationFrame(this.previewFrame);
+    if (this.applyFrame !== null) this.browser.cancelAnimationFrame(this.applyFrame);
+    if (this.previewFrame !== null) this.browser.cancelAnimationFrame(this.previewFrame);
+    if (this.rootScrollFrame !== null) this.browser.cancelAnimationFrame(this.rootScrollFrame);
     this.options.previewRenderer.invalidate(this.previewCanvas);
     this.applyFrame = null;
     this.previewFrame = null;
+    this.rootScrollFrame = null;
+    this.previewDirty = false;
   }
 
   private closeSheet(): void {
@@ -1258,12 +1437,12 @@ export class MobileBrushStudioController {
   }
 
   private startDrag(event: PointerEvent): void {
-    if (!this.openState || event.button !== 0) return;
+    if (!this.openState || this.busy || event.button !== 0) return;
     this.dragPointerId = event.pointerId;
     this.dragStartY = event.clientY;
     this.dragStartOffsetPx = this.offsetPx;
     this.dragLastY = event.clientY;
-    this.dragLastTime = performance.now();
+    this.dragLastTime = this.browser.performance.now();
     this.dragVelocityY = 0;
     this.dragMoved = false;
     this.sheet.classList.add("is-dragging");
@@ -1272,7 +1451,7 @@ export class MobileBrushStudioController {
 
   private moveDrag(event: PointerEvent): void {
     if (event.pointerId !== this.dragPointerId) return;
-    const now = performance.now();
+    const now = this.browser.performance.now();
     const elapsed = now - this.dragLastTime;
     if (elapsed > 0 && elapsed <= 120) {
       const immediate = (event.clientY - this.dragLastY) / elapsed;
@@ -1295,7 +1474,9 @@ export class MobileBrushStudioController {
     this.sheet.classList.remove("is-dragging");
     const deltaY = event.clientY - this.dragStartY;
     const closedOffset = this.closedOffset();
-    const releaseVelocityY = performance.now() - this.dragLastTime <= 100 ? this.dragVelocityY : 0;
+    const releaseVelocityY = this.browser.performance.now() - this.dragLastTime <= 100
+      ? this.dragVelocityY
+      : 0;
     const shouldClose = shouldCloseMobileToolsSheetDrag({
       startSnap: "expanded",
       deltaY,

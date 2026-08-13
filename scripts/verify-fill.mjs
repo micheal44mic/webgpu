@@ -223,6 +223,30 @@ const historyRuntime = readFileSync(
   "utf8",
 );
 const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const runtimeStats = readFileSync(
+  new URL("../src/runtime-stats-controller.ts", import.meta.url),
+  "utf8",
+);
+const gpuMemoryPanel = readFileSync(
+  new URL("../src/gpu-memory-panel-controller.ts", import.meta.url),
+  "utf8",
+);
+const canvasTool = readFileSync(
+  new URL("../src/canvas-tool-controller.ts", import.meta.url),
+  "utf8",
+);
+const canvasInput = readFileSync(
+  new URL("../src/canvas-input-controller.ts", import.meta.url),
+  "utf8",
+);
+const layerPanel = readFileSync(
+  new URL("../src/layer-panel-controller.ts", import.meta.url),
+  "utf8",
+);
+const sceneEditor = readFileSync(
+  new URL("../src/scene-editor-controller.ts", import.meta.url),
+  "utf8",
+);
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 
@@ -334,17 +358,24 @@ assert(hotPath.length < 250_000, "Sezione del percorso caldo Paint troppo ampia.
 assert(!hotPath.includes("fillRenderer"), "Il percorso caldo Paint non deve diramare su Fill.");
 assert(!hotPath.includes("FillHistoryRenderBatch"));
 
-assert(main.includes('activeCanvasTool === "fill"'));
-assert(main.includes('pointerMode === "fill"'));
-assert(main.includes("engine.fillAtClientPoint("));
-assert(main.includes('reference.className = "layer-reference"'));
-assert(main.includes("engine.setLayerReference(index, enabled)"));
-assert(main.includes("riferimento hot"));
-assert(main.includes("layer.reference && layer.hotAllocated"));
-assert(main.includes("coldEligibleLayers = inactiveLayers.filter((layer) => !layer.reference)"));
-assert(styles.includes('.layer-reference[aria-pressed="true"]'));
-assert(html.includes('<option value="fill">Riempimento</option>'));
-assert(html.includes('id="fillTolerance"'));
+assert(canvasTool.includes('this.activeCanvasTool === "fill"'));
+assert(canvasInput.includes('pointerMode === "fill"'));
+assert(canvasInput.includes("engine.fillAtClientPoint("));
+assert(layerPanel.includes('reference.className = "mobile-layer-reference"'));
+assert(layerPanel.includes("this.options.setRasterReference(key, !layer.reference)"));
+assert(sceneEditor.includes("this.options.engine.setLayerReference("));
+assert(runtimeStats.includes("riferimento hot"));
+assert(gpuMemoryPanel.includes("coldEligibleLayers = inactiveLayers.filter((layer) => !layer.reference)"));
+assert(runtimeStats.includes("stats.referenceLayerId !== null"));
+assert(styles.includes('.mobile-layer-reference[aria-pressed="true"]'));
+assert(html.includes('data-mobile-tool-sheet="fill"'));
+assert(html.includes('id="mobileFillTolerance"'));
+assert.match(
+  main,
+  /getFillSettings: \(\) => \(\{[\s\S]*?\.\.\.canvasToolSettingsController\.fillSnapshot\(\)/,
+);
+assert(main.includes("getBrushColor: () => brushSettingsController.snapshot().color"));
+assert(!main.includes('rangeValue("fillTolerance")'));
 assert(html.includes('id="gpuMemoryFill"'));
 
 console.log("GPU Fill contract verification passed.");

@@ -222,7 +222,14 @@ assert.match(
 );
 assert.match(rendererSource, /persistent packed f16 matte/);
 assert.match(rendererSource, /const COVERAGE_WORD_PIXELS = 2/);
-assert.match(rendererSource, /shadowMatte\[linearIndex >> 1u\] = pack2x16float\(matte\)/);
+assert.match(
+  rendererSource,
+  /const coverageWordsPerRow = Math\.ceil\(documentWidth \/ COVERAGE_WORD_PIXELS\);[\s\S]*?let wordIndex = firstDocumentPosition\.y \* \$\{coverageWordsPerRow\}u\s*\+ \(firstDocumentPosition\.x >> 1u\);\s*shadowMatte\[wordIndex\] = pack2x16float\(matte\)/,
+  "packed Shadow matte must use a per-row word stride for rectangular documents",
+);
+const packedMatteWordIndex = (width, x, y) => y * Math.ceil(width / 2) + (x >> 1);
+assert.equal(packedMatteWordIndex(5, 0, 1), 3);
+assert.equal(packedMatteWordIndex(5, 4, 1), 5);
 assert.doesNotMatch(rendererSource, /round\(value \* 255\.0\)/);
 assert.match(rendererSource, /morphology\/Gaussian matte/);
 assert.match(rendererSource, /options\.encoder\.clearBuffer\(this\.coverageBuffer\)/);
@@ -239,11 +246,13 @@ assert.match(compositorSource, /outerShadowField: array<u32>/);
 assert.match(compositorSource, /innerShadowField: array<u32>/);
 assert.match(
   compositorSource,
-  /unpack2x16float\(outerShadowField\[linearIndex >> 1u\]\)/,
+  /unpack2x16float\(outerShadowField\[u32\(position\.y\) \* \$\{coverageWordsPerRow\}u \+ \(x >> 1u\)\]\)/,
+  "outer Shadow sampling must use the rectangular-document row stride",
 );
 assert.match(
   compositorSource,
-  /unpack2x16float\(innerShadowField\[linearIndex >> 1u\]\)/,
+  /unpack2x16float\(innerShadowField\[u32\(position\.y\) \* \$\{coverageWordsPerRow\}u \+ \(x >> 1u\)\]\)/,
+  "inner Shadow sampling must use the rectangular-document row stride",
 );
 // A full-width 4096² matte is exactly two bytes per pixel. This guards both
 // the wide-document allocation and the old one-byte stride from returning.
@@ -279,11 +288,15 @@ assert.match(engineSource, /rasterOuterShadowMatteMiB/);
 assert.match(engineSource, /rasterInnerShadowMatteMiB/);
 
 const goldenSource = readFileSync(
-  new URL("../src/shadow-golden.ts", import.meta.url),
+  new URL("../src/labs/goldens/shadow-golden.ts", import.meta.url),
   "utf8",
 );
 const mainSource = readFileSync(
   new URL("../src/main.ts", import.meta.url),
+  "utf8",
+);
+const editorLabsSource = readFileSync(
+  new URL("../src/labs/editor-labs.ts", import.meta.url),
   "utf8",
 );
 const goldenBaseline = JSON.parse(readFileSync(
@@ -341,8 +354,10 @@ assert.match(goldenSource, /layerFormat: RASTER_STROKE_GOLDEN_FORMAT/);
 assert.match(goldenSource, /scratchExtent: 8/);
 assert.match(goldenSource, /strokeGeometryEnabled: false/);
 assert.match(goldenSource, /baselineMatches: baselineMismatches\.length === 0/);
-assert.match(engineSource, /async runRasterShadowGolden\(\)/);
-assert.match(mainSource, /id="runRasterShadowGolden"|runRasterShadowGolden/);
+assert.match(goldenSource, /export async function runRasterShadowGolden\(/);
+assert.match(editorLabsSource, /case "shadow-golden"/);
+assert.match(editorLabsSource, /import\("\.\/goldens\/shadow-golden"\)/);
+assert.doesNotMatch(mainSource, /runRasterShadowGolden/);
 assert.match(engineSource, /RASTER_STROKE_COMPOSITOR_ONLY_SCRATCH_EXTENT/);
 assert.match(engineSource, /scheduleEffectsScratchShrink\(\)/);
 

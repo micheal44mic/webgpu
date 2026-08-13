@@ -5,6 +5,14 @@ const engineSource = readFileSync(new URL("../src/brush-engine.ts", import.meta.
   .replace(/\r\n?/g, "\n");
 const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8")
   .replace(/\r\n?/g, "\n");
+const controllerSource = readFileSync(
+  new URL("../src/layer-thumbnail-controller.ts", import.meta.url),
+  "utf8",
+).replace(/\r\n?/g, "\n");
+const panelSource = readFileSync(
+  new URL("../src/layer-panel-controller.ts", import.meta.url),
+  "utf8",
+).replace(/\r\n?/g, "\n");
 
 function sourceBetween(source, startMarker, endMarker) {
   const start = source.indexOf(startMarker);
@@ -36,32 +44,43 @@ const activeCapture = sourceBetween(
 assert.match(activeCapture, /this\.captureRasterLayerThumbnail\(layerId\)/);
 assert.match(activeCapture, /layerId !== this\.layerStack\.active\.id/);
 
-const scheduler = sourceBetween(
-  mainSource,
-  "function scheduleMobileLayerThumbnailCapture(",
-  "function announceMobileLayerReorder(",
-);
-assert.match(scheduler, /mobileLayerThumbnailCaptureInFlight/);
+const scheduler = controllerSource;
+assert.match(scheduler, /this\.captureInFlight/);
 assert.match(scheduler, /const activeFirst = \[\s*activeLayer,/);
-assert.match(scheduler, /mobileRasterThumbnailCache\.get\(layer\.id\) === undefined/);
+assert.match(scheduler, /this\.cache\.get\(layer\.id\) === undefined/);
 assert.match(
   scheduler,
-  /mobileLayerThumbnailPendingIds\.has\(activeLayer\.id\)[\s\S]*?\? activeLayer\.id/,
+  /this\.pendingLayerIds\.has\(activeLayer\.id\)[\s\S]*?\? activeLayer\.id/,
   "The active raster layer must drain before other restored layers.",
 );
-assert.match(scheduler, /engine\.captureRasterLayerThumbnail\(layerId\)/);
+assert.match(scheduler, /this\.options\.captureRasterLayerThumbnail\(layerId\)/);
+assert.match(scheduler, /dirtyGenerationByLayerId/);
+assert.match(scheduler, /invalidate\(activeLayer\.id, delayMs\)/);
 assert.match(
   scheduler,
-  /finally\s*{[\s\S]*?mobileLayerThumbnailCaptureInFlight = false;[\s\S]*?scheduleMobileLayerThumbnailCapture\(160\);[\s\S]*?}/,
+  /dirtyGenerationByLayerId\.get\(layerId\)[\s\S]*?!== requestedGeneration[\s\S]*?pendingLayerIds\.add\(layerId\)/,
+  "A capture made stale by a newer invalidation must be discarded and queued again.",
+);
+const closeStart = scheduler.indexOf("setPanelOpen(open: boolean)");
+const closeEnd = scheduler.indexOf("requestActive(", closeStart);
+assert.doesNotMatch(
+  scheduler.slice(closeStart, closeEnd),
+  /pendingLayerIds\.clear|dirtyGenerationByLayerId\.clear/,
+  "Closing the panel may pause GPU work but must retain dirty layer generations.",
+);
+assert.match(
+  scheduler,
+  /finally\s*{[\s\S]*?this\.captureInFlight = false;[\s\S]*?this\.scheduleCapture\(160\);[\s\S]*?}/,
   "The serial drain must release its in-flight latch and continue the queue.",
 );
 
 const panelToggle = sourceBetween(
-  mainSource,
-  "function setMobileLayersPanelOpen(",
-  "function setMobileToolsSheetOpen(",
+  panelSource,
+  "setOpen(open: boolean)",
+  "selectedLayerProperties(",
 );
-assert.match(panelToggle, /queueMissingMobileLayerThumbnails\(0\)/);
-assert.match(panelToggle, /mobileLayerThumbnailPendingIds\.clear\(\)/);
+assert.match(panelToggle, /this\.options\.thumbnails\.setPanelOpen\(true\)/);
+assert.match(panelToggle, /this\.options\.thumbnails\.setPanelOpen\(false\)/);
+assert.match(mainSource, /captureRasterLayerThumbnail: \(layerId\) => engine\.captureRasterLayerThumbnail\(layerId\)/);
 
 console.log("Restored raster layer thumbnail verification passed.");

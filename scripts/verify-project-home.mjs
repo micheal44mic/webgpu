@@ -3,10 +3,18 @@ import fs from "node:fs";
 const html = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const startup = fs.readFileSync(new URL("../src/startup.ts", import.meta.url), "utf8");
 const main = fs.readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const projectSession = fs.readFileSync(
+  new URL("../src/project-session-controller.ts", import.meta.url),
+  "utf8",
+);
 const styles = fs.readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 
 function expect(source, value, label) {
   if (!source.includes(value)) throw new Error(`Missing ${label}: ${value}`);
+}
+
+function reject(source, value, label) {
+  if (source.includes(value)) throw new Error(`Unexpected ${label}: ${value}`);
 }
 
 expect(html, '<html lang="en">', "English document language");
@@ -41,12 +49,26 @@ expect(startup, "Number.isInteger(width)", "integer width validation");
 expect(startup, "Number.isInteger(height)", "integer height validation");
 expect(startup, "MAX_CANVAS_DIMENSION = 4000", "new-canvas size cap");
 expect(startup, 'event.key !== "ArrowLeft"', "keyboard tabs");
+expect(startup, "interface ProjectHomeControllerOptions", "explicit Home dependencies");
+expect(startup, "readonly root: ParentNode", "Home DOM root port");
+expect(startup, "readonly browser: Window", "Home browser port");
+expect(startup, "options.root.querySelectorAll", "root-scoped preset discovery");
+reject(startup, "private readonly home = element", "global Home field lookup");
 
-expect(main, 'engine.captureProjectDocument()', "complete project capture");
-expect(main, 'engine.restoreProjectDocument(saved)', "complete project restore");
-expect(main, 'projectStorage.saveProject', "durable save");
-expect(main, 'event.key.toLowerCase() !== "s"', "save shortcut");
-expect(main, 'returnToProjectHome()', "save-before-home flow");
+expect(main, "new ProjectSessionController({", "project session composition");
+expect(main, "captureDocument: () => engine.captureProjectDocument()", "capture engine port");
+expect(main, "restoreDocument: (project) => engine.restoreProjectDocument(project)", "restore engine port");
+expect(main, "projectSessionController?.noteHistoryState(state)", "history dirty tracking port");
+expect(main, "projectSessionController?.noteSceneSnapshot(snapshot)", "scene dirty tracking port");
+expect(projectSession, "this.storage.saveProject({", "durable save");
+expect(projectSession, "await this.engine.restoreDocument(saved)", "complete project restore");
+expect(projectSession, 'event.key.toLowerCase() !== "s"', "save shortcut");
+expect(projectSession, "private async returnHome()", "save-before-home flow");
+expect(projectSession, "capturedMutationRevision", "concurrent edit save boundary");
+expect(projectSession, 'this.browser.addEventListener("beforeunload"', "unsaved exit guard");
+reject(main, "async function saveCurrentProject", "legacy project save in main");
+reject(main, "async function initializeCurrentProject", "legacy project initialization in main");
+reject(main, "async function returnToProjectHome", "legacy project navigation in main");
 
 expect(styles, ".project-home", "home styling");
 expect(styles, ".project-grid", "recent-project styling");

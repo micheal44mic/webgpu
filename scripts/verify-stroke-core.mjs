@@ -364,11 +364,19 @@ const workbenchSource = readFileSync(
   "utf8",
 );
 const effectsBenchmarkSource = readFileSync(
-  new URL("../src/effects-benchmark.ts", import.meta.url),
+  new URL("../src/labs/benchmarks/effects-benchmark.ts", import.meta.url),
   "utf8",
 );
 const mainSource = readFileSync(
   new URL("../src/main.ts", import.meta.url),
+  "utf8",
+);
+const gpuMemoryPanelSource = readFileSync(
+  new URL("../src/gpu-memory-panel-controller.ts", import.meta.url),
+  "utf8",
+);
+const editorLabsSource = readFileSync(
+  new URL("../src/labs/editor-labs.ts", import.meta.url),
   "utf8",
 );
 const htmlSource = readFileSync(
@@ -380,7 +388,7 @@ const stylesSource = readFileSync(
   "utf8",
 );
 const goldenSource = readFileSync(
-  new URL("../src/stroke-golden.ts", import.meta.url),
+  new URL("../src/labs/goldens/stroke-golden.ts", import.meta.url),
   "utf8",
 );
 const goldenBaseline = JSON.parse(readFileSync(
@@ -434,8 +442,12 @@ assert.match(rendererSource, /const COVERAGE_WORD_PIXELS = 2/);
 assert.match(rendererSource, /return clamp\(coverage, 0\.0, 1\.0\);/);
 assert.match(
   rendererSource,
-  /coverageField\[linearIndex >> 1u\] = pack2x16float\(coveragePair\)/,
+  /const coverageWordsPerRow = Math\.ceil\(documentWidth \/ COVERAGE_WORD_PIXELS\);[\s\S]*?let wordIndex = firstDocumentPosition\.y \* \$\{coverageWordsPerRow\}u\s*\+ \(firstDocumentPosition\.x >> 1u\);\s*coverageField\[wordIndex\] = pack2x16float\(coveragePair\)/,
+  "packed Stroke coverage must use a per-row word stride for rectangular documents",
 );
+const packedCoverageWordIndex = (width, x, y) => y * Math.ceil(width / 2) + (x >> 1);
+assert.equal(packedCoverageWordIndex(5, 0, 1), 3);
+assert.equal(packedCoverageWordIndex(5, 4, 1), 5);
 assert.match(
   rendererSource,
   /unpack2x16float\(coverageField\[linearIndex >> 1u\]\)/,
@@ -651,11 +663,13 @@ assert.equal(
   "f7f534721e4ca863fb9cecf379d2efa05e6e5f9840f92aa667c032a1fcdd441f",
 );
 assert.match(goldenSource, /mipCombinedSha256/);
-assert.match(engineSource, /async runRasterStrokeGolden\(\)/);
-assert.match(mainSource, /rasterStrokeGoldenSection/);
-assert.match(htmlSource, /id="runRasterStrokeGolden"/);
+assert.match(goldenSource, /export async function runRasterStrokeGolden\(/);
+assert.match(editorLabsSource, /case "stroke-golden"/);
+assert.match(editorLabsSource, /import\("\.\/goldens\/stroke-golden"\)/);
+assert.doesNotMatch(mainSource, /runRasterStrokeGolden|rasterStrokeGoldenSection/);
+assert.doesNotMatch(htmlSource, /id="runRasterStrokeGolden"/);
 assert.match(engineSource, /rasterStrokeScratchExtentForWidth\(normalized\.width\)/);
-assert.match(mainSource, /gpuMemoryEffectsScratchLabel/);
+assert.match(gpuMemoryPanelSource, /gpuMemoryEffectsScratchLabel/);
 assert.match(htmlSource, /gpuMemoryEffectsScratchPeak/);
 assert.match(engineSource, /effectsScratchPoolMiB/);
 assert.match(
@@ -663,8 +677,8 @@ assert.match(
   /export function getGpuMemoryStats\(engine: BrushEngine\): EngineGpuMemoryStats/,
 );
 assert.match(engineSource, /countedTotalMiB/);
-assert.match(mainSource, /const gpuMemoryRows:/);
-assert.match(mainSource, /gpuMemoryDelta\.textContent/);
+assert.match(gpuMemoryPanelSource, /const GPU_MEMORY_ROWS:/);
+assert.match(gpuMemoryPanelSource, /this\.delta\.textContent/);
 assert.match(htmlSource, /id="gpuMemoryMonitor"/);
 assert.match(stylesSource, /\.gpu-memory-panel/);
 

@@ -3,7 +3,7 @@ import {
   gunzipBytes,
   hashCompressionBytes,
   unshuffle16,
-} from "./layer-compression-study";
+} from "./layer-compression-codec";
 import type {
   LayerColdCompressionWorkerRequest,
   LayerColdCompressionWorkerResponse,

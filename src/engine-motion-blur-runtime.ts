@@ -22,8 +22,6 @@ import {
   normalizeDestructiveMotionBlurAngle,
   normalizeDestructiveMotionBlurDistance,
   unionMotionBlurRects,
-  type MotionBlurKernel,
-  type MotionBlurRect,
 } from "./motion-blur-core";
 import { tileMaskCoveringRect } from "./raster-transform-math";
 
@@ -90,10 +88,6 @@ export interface ActiveRasterMotionBlurSession {
 }
 
 const sharedByDevice = new WeakMap<GPUDevice, Promise<MotionBlurSharedResources>>();
-
-function copyRect(rect: MotionBlurRect | null): DirtyRect | null {
-  return rect ? { ...rect } : null;
-}
 
 function motionBlurShader(): string {
   return /* wgsl */ `

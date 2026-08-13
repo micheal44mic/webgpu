@@ -1,5 +1,6 @@
 node_modules/
 /dist/
+/dist-labs/
 
 # Log dei dev server in radice: rumore in ogni diff, nessun valore storico.
 # Ancorato: un futuro benchmarks/run.log deve restare versionabile.

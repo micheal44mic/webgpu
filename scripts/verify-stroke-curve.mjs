@@ -307,6 +307,10 @@ assert.deepEqual(
 
 const engineSource = readEngineSource();
 const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const humanLabSource = readFileSync(
+  new URL("../src/labs/human-stroke-lab.ts", import.meta.url),
+  "utf8",
+);
 const strokeTypesSource = readFileSync(
   new URL("../src/engine-stroke-types.ts", import.meta.url),
   "utf8",
@@ -323,7 +327,7 @@ assert.equal((engineSource.match(/resamplePaintCurveSegment\(/g) ?? []).length, 
 assert.match(engineSource, /nextPaintStampSeed\(engine\.seedSequence\+\+\)/);
 assert.match(strokeTypesSource, /curvePlanner: CausalStrokeCurvePlanner \| null;/);
 assert.match(engineSource, /strokeCurveStrategy: STROKE_CURVE_STRATEGY/);
-assert.match(mainSource, /performanceTelemetryRevision: 64/g);
+assert.match(humanLabSource, /HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 64/);
 
 const canonicalPath = new URL("../.tmp-canonical-human-stroke.json", import.meta.url);
 let canonicalSummary = null;

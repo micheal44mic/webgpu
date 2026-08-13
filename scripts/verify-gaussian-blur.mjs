@@ -127,6 +127,14 @@ const runtime = readFileSync(new URL("../src/engine-gaussian-blur-runtime.ts", i
 const engine = readFileSync(new URL("../src/brush-engine.ts", import.meta.url), "utf8");
 const history = readFileSync(new URL("../src/engine-history-types.ts", import.meta.url), "utf8");
 const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const adjustments = readFileSync(
+  new URL("../src/raster-adjustments-controller.ts", import.meta.url),
+  "utf8",
+);
+const canvasInput = readFileSync(
+  new URL("../src/canvas-input-controller.ts", import.meta.url),
+  "utf8",
+);
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const mobileSheet = readFileSync(
   new URL("../src/mobile-gaussian-blur-sheet.ts", import.meta.url),
@@ -186,29 +194,32 @@ assert.match(history, /transparent-content-clamp-document-edge/);
 assert.match(engine, /activeRasterGaussianBlurSession/);
 
 assert.match(html, /id="mobileGaussianBlurOpen"/);
-assert.match(html, /id="desktopGaussianBlurOpen"/);
 assert.match(html, /id="mobileGaussianBlurSheet"/);
-assert.match(html, /id="desktopGaussianBlurParameters"/);
+assert.doesNotMatch(html, /id="desktopGaussianBlur|id="rasterGaussianBlurSection"/);
 assert.doesNotMatch(html, /id="rasterGaussianBlurDialog"/);
 const mobileTile = html.slice(
   html.indexOf('id="mobileGaussianBlurOpen"'),
   html.indexOf("</button>", html.indexOf('id="mobileGaussianBlurOpen"')),
 );
 assert.doesNotMatch(mobileTile, /\bdisabled\b/);
-assert.match(main, /engine\.beginRasterGaussianBlur/);
-assert.match(main, /engine\.commitRasterGaussianBlur/);
-assert.match(main, /engine\.cancelRasterGaussianBlur/);
-assert.match(main, /historyState\.openEdit === "gaussian-blur"/);
+assert.match(adjustments, /engine\.beginRasterGaussianBlur/);
+assert.match(adjustments, /engine\.commitRasterGaussianBlur/);
+assert.match(adjustments, /engine\.cancelRasterGaussianBlur/);
+assert.match(adjustments, /history\.openEdit === "gaussian-blur"/);
 assert.match(main, /function canvasViewOperationLocked\(\)/);
-assert.match(main, /operationLocked\(allowDestructiveBlurEdit/);
-assert.match(main, /blurTouchNavigationRequested/);
-assert.match(main, /enterTouchNavigation\(\)/);
-assert.match(main, /canvasViewOperationLocked\(\) \|\| activePointerId !== null/);
-assert.match(main, /nextGesture\.contactCount >= 2 && previousGesture\.contactCount >= 2/);
-assert.match(main, /resetRasterGaussianBlurControls/);
-assert.match(main, /DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_RADIUS/);
-assert.match(main, /openRasterGaussianBlurWorkbench\("desktop"/);
-assert.match(main, /openRasterGaussianBlurWorkbench\("mobile"/);
+assert.match(main, /rasterAdjustmentsController\?\.allowsCanvasViewOperation/);
+assert.match(
+  adjustments,
+  /isDestructivePreviewNavigationActive\([\s\S]*?history\.openEdit === "gaussian-blur"/,
+);
+assert.match(canvasInput, /blurTouchNavigationRequested/);
+assert.match(canvasInput, /enterTouchNavigation\(\)/);
+assert.match(canvasInput, /options\.viewOperationLocked\(\) \|\| activePointerId !== null/);
+assert.match(canvasInput, /nextGesture\.contactCount >= 2 && previousGesture\.contactCount >= 2/);
+assert.match(adjustments, /resetGaussianBlurControls/);
+assert.match(adjustments, /DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_RADIUS/);
+assert.match(adjustments, /openGaussianBlur\(gaussianBlur\.openButton\)/);
+assert.doesNotMatch(main, /desktopGaussianBlur/);
 assert.match(mobileSheet, /resolveMobileBottomSheetDrag/);
 assert.match(mobileSheet, /onRequestCancel/);
 assert.match(mobileSheet, /MOBILE_GAUSSIAN_BLUR_PEEK_VIEWPORT_RATIO = 0\.26/);
@@ -217,9 +228,7 @@ assert.match(html, /id="mobileGaussianBlurHeader" class="mobile-stroke-header"/)
 assert.match(html, /class="mobile-stroke-title">Gaussian Blur/);
 assert.match(html, /class="mobile-stroke-width-control" for="mobileGaussianBlurRadius"/);
 assert.match(html, /id="mobileGaussianBlurRadius"[\s\S]{0,160}max="500"/);
-assert.match(html, /id="desktopGaussianBlurRadius"[\s\S]{0,160}max="500"/);
 assert.match(html, /id="mobileGaussianBlurStatus"[\s\S]{0,120}class="visually-hidden"/);
-assert.match(html, /id="desktopGaussianBlurStatus"[\s\S]{0,120}class="visually-hidden"/);
 assert.match(html, /id="mobileGaussianBlurCancel" type="button">Cancel/);
 assert.match(html, /id="mobileGaussianBlurApply" class="is-primary" type="button">Apply/);
 assert.doesNotMatch(html, /mobile-gaussian-blur-live/);

@@ -22,7 +22,6 @@ import {
   RASTER_IMAGE_DECODED_BYTES_PER_PIXEL,
   rasterImageMipChainBytes,
   rasterImageMipLevelCount,
-  RASTER_IMAGE_UNIFORM_BYTES,
 } from "./raster-image-budget";
 import {
   RASTER_IMAGE_LAYER_IMPORT_STRATEGY,

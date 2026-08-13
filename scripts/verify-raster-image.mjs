@@ -426,12 +426,16 @@ assert.match(controllerSource, /private async cancelTransformSession/);
 assert.match(controllerSource, /private abortActiveTransformInteraction/);
 assert.match(controllerSource, /event\.key === "Escape"/);
 assert.match(controllerSource, /event\.key === "Enter"/);
-assert.match(controllerSource, /paletteLocked = this\.sceneOperationBusy \|\| this\.transformSessionOpen/);
+assert.match(
+  controllerSource,
+  /setSelectedSvgPaintColor\(index: number, color: string\): void \{[\s\S]{0,160}this\.sceneOperationBusy \|\| this\.transformSessionOpen/,
+  "la porta SVG deve bloccare direttamente le modifiche durante operazioni o trasformazioni",
+);
 assert.match(controllerSource, /private enterTouchNavigation\(\)/);
 assert.match(controllerSource, /this\.host\.rotateViewBy\(/);
 assert.match(controllerSource, /kind: "raster-layer"/);
 assert.match(controllerSource, /importata subito come raster/);
-assert.match(htmlSource, /option value="transform">Trasforma/);
+assert.match(htmlSource, /data-mobile-canvas-tool="transform"/);
 assert.match(htmlSource, /id="transformApply"/);
 assert.match(htmlSource, /id="transformCancel"/);
 assert.match(htmlSource, /accept="\.png,\.jpg,\.jpeg,\.webp,\.avif/);

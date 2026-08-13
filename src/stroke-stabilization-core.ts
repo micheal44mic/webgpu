@@ -130,7 +130,6 @@ export class CausalFadedStrokeStabilizer {
   private lastRawY = 0;
   private lastFilteredX = 0;
   private lastFilteredY = 0;
-  private lastPressure = 1;
   private lastTimeMs = 0;
   private seamX = 0;
   private seamY = 0;
@@ -201,7 +200,6 @@ export class CausalFadedStrokeStabilizer {
     this.lastRawY = sample.y;
     this.lastFilteredX = sample.x;
     this.lastFilteredY = sample.y;
-    this.lastPressure = sample.pressure;
     this.lastTimeMs = sample.timeMs;
     this.seamX = sample.x;
     this.seamY = sample.y;
@@ -247,7 +245,6 @@ export class CausalFadedStrokeStabilizer {
       this.lastRawY = sample.y;
       this.lastFilteredX = sample.x;
       this.lastFilteredY = sample.y;
-      this.lastPressure = sample.pressure;
       this.lastTimeMs = normalizedTimeMs;
       return this.update;
     }
@@ -287,7 +284,6 @@ export class CausalFadedStrokeStabilizer {
     this.lastRawY = sample.y;
     this.lastFilteredX = nextFilteredX;
     this.lastFilteredY = nextFilteredY;
-    this.lastPressure = sample.pressure;
     this.lastTimeMs = normalizedTimeMs;
 
     while (

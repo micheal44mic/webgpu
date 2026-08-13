@@ -1,27 +1,17 @@
 import { clamp, hexToHsl } from "./color";
-import { decodeGrayscalePng8 } from "./png-mask";
 import {
   createDryBlendPlanner,
-  DRY_BLEND_CORE_BUILD,
   DRY_BLEND_SCRATCH_LIFECYCLE_STRATEGY,
   type DryBlendPlanner,
 } from "./blend-core";
 import {
   DryBlendRenderer,
-  cloneDryBlendRenderBatch,
-  compactDryBlendHistoryGeometry,
   type DryBlendHistoryGeometry,
-  type DryBlendRenderBatch,
 } from "./blend-renderer";
 import type { FillRenderer } from "./fill-renderer";
 import { FILL_REFERENCE_LAYER_STRATEGY } from "./fill-core";
 import type { SelectionRenderer } from "./selection-renderer";
-import {
-  LAYER_THUMBNAIL_HEIGHT,
-  LAYER_THUMBNAIL_WIDTH,
-  LayerThumbnailRenderer,
-  type LayerThumbnailPixels,
-} from "./layer-thumbnail-renderer";
+import { LAYER_THUMBNAIL_HEIGHT, LAYER_THUMBNAIL_WIDTH, LayerThumbnailRenderer, type LayerThumbnailPixels } from "./layer-thumbnail-renderer";
 import {
   emptyPixelSelectionState,
   SELECTION_TILE_MASK_WORDS,
@@ -32,26 +22,11 @@ import {
   type SelectionPoint,
 } from "./selection-core";
 import {
-  GPU_HISTORY_STORAGE_STRATEGY,
   GpuHistoryStorage,
   type GpuHistorySlice,
 } from "./gpu-history-storage";
 import { HistoryStorageCoordinator } from "./history-storage-coordinator";
 import {
-  brushShader,
-  displayShader,
-  grainMipShader,
-  layerCompositeShader,
-  lightGlazeCommitTileShader,
-  lightGlazeCompositeMipShader,
-  lightGlazeCompositeShader,
-  lightGlazeDisplayShader,
-  paintMipDownsampleShader,
-  texturizedGrainShader,
-  thicknessTailDisplayShader,
-} from "./shaders";
-import {
-  vectorTextDisplayShader,
   VECTOR_TEXT_PRESENTATION_STRATEGY,
 } from "./vector-text-shader";
 
@@ -66,7 +41,6 @@ import {
   type MixedSceneCompositionSegment,
   type MixedSceneItem,
   type MixedSceneRasterRunKey,
-  type MixedSceneVectorHistoryDelta,
   type MixedSceneVectorHistoryState,
   type MixedSceneVectorKey,
   type RasterImageNode,
@@ -152,29 +126,12 @@ import {
   type PaintDisplayMipPlan,
 } from "./noise-mip-smoothing-core";
 import {
-  MIXED_SCENE_COMPOSITOR_STRATEGY,
-  MIXED_SCENE_LINEAR_FORMAT,
-  mixedSceneClearShader,
-  mixedScenePresentShader,
-  mixedSceneRasterSegmentShader,
-  mixedSceneTextSegmentShader,
-} from "./mixed-scene-compositor-shader";
-import {
-  MIXED_MERGED_SURFACE_MAX_DISPLAY_MIP,
   MIXED_MERGED_SURFACE_STORAGE_STRATEGY,
-  alignedMergedSurfaceBounds,
-  intersectMergedSurfaceRects,
-  mergedSurfaceLocalRect,
   mergedSurfaceMemoryBytes,
-  mergedSurfaceMipLevelCount,
-  mergedSurfacePhysicalRect,
-  unionMergedSurfaceRects,
-  type MergedSurfaceRect,
 } from "./merged-surface-bounds";
 import type {
   VectorTextGpuDraw,
   VectorTextGpuPresentationStats,
-  VectorTextGpuBlurSourceDraw,
   VectorTextPlacement,
   VectorTextViewState,
 } from "./vector-text-types";
@@ -183,36 +140,12 @@ import {
   type VectorTextFastPresentationMode,
 } from "./vector-text-adaptive-zoom";
 import {
-  VECTOR_TEXT_GPU_BLUR_COMPOSITE_UNIFORM_BYTES,
-  VECTOR_TEXT_GPU_BLUR_FILTER_UNIFORM_BYTES,
-  VECTOR_TEXT_GPU_BLUR_FORMAT,
-  VECTOR_TEXT_GPU_RENDER_STRATEGY,
-  VECTOR_TEXT_GPU_SAMPLE_COUNT,
-  VECTOR_TEXT_GPU_TARGET_FORMAT,
-  VECTOR_TEXT_GPU_UNIFORM_BYTES,
-  VECTOR_TEXT_GPU_UNIFORM_FLOATS,
   VECTOR_TEXT_GPU_UNIFORM_STRIDE,
-  vectorTextGpuBlurCompositeShader,
-  vectorTextGpuGaussianBlurShader,
-  vectorTextGpuShader,
 } from "./vector-text-gpu-shader";
 import {
-  VECTOR_TEXT_SLUG_GPU_RENDER_STRATEGY,
-  VECTOR_TEXT_SLUG_UNIFORM_BYTES,
-  vectorTextSlugGpuShader,
-} from "./vector-text-slug-gpu-shader";
-import {
-  createVectorTextGpuMeshResources,
-  createVectorTextGpuSlugResources,
   destroyVectorTextGpuResources,
 } from "./vector-text-gpu-resources";
 import {
-  VECTOR_TEXT_INNER_SHADOW_GPU_STRATEGY,
-  vectorTextInnerShadowGpuShader,
-} from "./vector-text-inner-shadow-gpu-shader";
-import {
-  THICKNESS_DYNAMICS_STRATEGY,
-  THICKNESS_TAPER_WINDOW_MS,
   endThicknessRadius,
   startThicknessFactor,
   thicknessDynamicsIsNeutral,
@@ -226,15 +159,11 @@ import {
   RASTER_STROKE_MUTATION_GATE_STRATEGY,
   RASTER_STROKE_STYLED_STORAGE_STRATEGY,
   RasterStrokeRenderer,
-  rasterStrokeDisplayShader,
   type RasterStrokeEncodeResult,
   type RasterStrokeSourceMode,
 } from "./stroke-renderer";
-import type { RasterStrokeGoldenReport } from "./stroke-golden";
-import type { RasterShadowGoldenReport } from "./shadow-golden";
 import {
   DEFAULT_RASTER_STROKE_STYLE,
-  RASTER_STROKE_COMPACT_SCRATCH_MAX_WIDTH,
   RASTER_STROKE_COMPOSITOR_ONLY_SCRATCH_EXTENT,
   RASTER_STROKE_SCRATCH_STRATEGY,
   copyRasterStrokeStyle,
@@ -268,7 +197,6 @@ import {
   RASTER_BEVEL_FIELD_IDLE_SHRINK_DELAY_MS,
   classifyRasterBevelStyleChange,
   copyRasterBevelStyle,
-  rasterBevelInfluenceBounds,
   normalizeRasterBevelStyle,
   rasterBevelRadiusBucket,
   rasterBevelStylesEqual,
@@ -291,10 +219,8 @@ import {
   copyRasterOuterShadowStyle,
   normalizeRasterInnerShadowStyle,
   normalizeRasterOuterShadowStyle,
-  rasterInnerShadowInfluenceBounds,
   rasterInnerShadowStylesEqual,
   rasterInnerShadowVisualBounds,
-  rasterOuterShadowInfluenceBounds,
   rasterOuterShadowStylesEqual,
   rasterOuterShadowUsesSupportedBlend,
   rasterOuterShadowVisualBounds,
@@ -306,7 +232,6 @@ import {
   EFFECTS_WORKING_SET_STRATEGY,
   EffectsWorkbench,
 } from "./effects-workbench";
-import type { EffectsWorkbenchBenchmarkReport } from "./effects-benchmark";
 import {
   LAYER_STACK_MAXIMUM,
   LayerStack,
@@ -322,45 +247,25 @@ import {
   layerBlendTilePresentationRequired,
 } from "./engine-layer-blend-tile-runtime";
 import {
-  hasVisibleContent,
-  historyStepTargetsMissingLayer,
   layersWithVisibleContent,
-  selectLayerReplay,
 } from "./history-journal";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import {
   EFFECTS_SCRATCH_POOL_IDLE_SHRINK_DELAY_MS,
   EFFECTS_SCRATCH_POOL_STRATEGY,
-  effectsScratchCanShrink,
-  effectsScratchShrinkIsWorthwhile,
 } from "./effects-scratch-pool";
 import {
-  LAYER_STORAGE_GRID_SIZE,
-  LAYER_STORAGE_STRATEGY,
-  LAYER_STORAGE_TILE_COUNT,
   LAYER_STORAGE_TILE_HEIGHT,
   LAYER_STORAGE_TILE_WIDTH,
-  alignedBoundsTileCount,
   clearLayerStorageTileMask,
-  compareLayerStorageMasks,
   countLayerStorageTiles,
-  exactLayerStorageTileMask,
-  layerStorageTileMemoryMiB,
-  layerStorageTileIndices,
   markLayerStorageRect,
 } from "./layer-storage-study";
-import type {
-  LayerCompressionLayerReport,
-  LayerCompressionStudyProgress,
-  LayerCompressionStudyReport,
-} from "./layer-compression-study";
 import {
   LAYER_COLD_COMPRESSION_IDLE_DELAY_MS,
   LAYER_COLD_COMPRESSION_IDLE_THRESHOLD_RATIO,
   LAYER_COLD_COMPRESSION_MINIMUM_DISTANCE,
-  LAYER_COLD_COMPRESSION_RUNTIME_BUILD,
   LayerColdCompressionClient,
-  type LayerColdCompressedChunk,
 } from "./layer-cold-compression-client";
 import {
   ADAPTIVE_PREVIEW_ALPHA_SCALE,
@@ -375,13 +280,11 @@ import {
   ADAPTIVE_PREVIEW_PATCH_QUANTUM_CSS_PIXELS,
   ADAPTIVE_PREVIEW_PROBE_INTERVAL_SUBMISSIONS,
   ADAPTIVE_PREVIEW_PROBE_NEAR_MISS_MINIMUM_MS,
-  ADAPTIVE_PREVIEW_SHAPE_PALETTE_SIZE,
   ADAPTIVE_PREVIEW_SLOW_COMPLETION_THRESHOLD_MS,
   ADAPTIVE_PREVIEW_TRIGGER_CONSECUTIVE_PROBES,
   ADAPTIVE_PREVIEW_TRIGGER_THRESHOLD_MS,
   ADAPTIVE_SPACING_STEP_PERCENT_POINTS,
   type AdaptivePreviewCandidate,
-  type AdaptivePreviewConcreteActivationReason,
   type AdaptivePreviewContextAttributes,
   type AdaptivePreviewCopy,
   type AdaptivePreviewProbe,
@@ -411,7 +314,6 @@ import {
   type VectorRasterizeHistoryAction,
   type PaintHistoryRenderBatch,
   resolvePaintHistoryStampCount,
-  vectorHistoryStatesEqual,
 } from "./engine-history-types";
 import type {
   ActiveClippingGroupResources,
@@ -420,8 +322,6 @@ import type {
   LayerBakeResources,
   LayerColdCompressionProgress,
   LayerColdStorageResources,
-  LayerCompressedColdStorageResources,
-  LayerEffectsRebuildDomain,
   LayerGpuCompletionPolicy,
   LayerGpuResources,
   LayerTextureResources,
@@ -441,53 +341,33 @@ import {
   GRAIN_TEXTURE_PIXEL_COUNT,
   GRAIN_TEXTURE_SIZE,
   GRAIN_UNIFORM_BYTES,
-  LAYER_COMPOSITE_UNIFORM_BYTES,
   LIGHT_GLAZE_COMMIT_TILE_EXTENT,
   LIGHT_GLAZE_COMMIT_TILE_SLOT_COUNT,
   LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BUFFER_BYTES,
-  LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BYTES,
   LIGHT_GLAZE_COMMIT_TILE_UNIFORM_STRIDE_BYTES,
   LIGHT_GLAZE_UNIFORM_BYTES,
   MAX_STAMPS_PER_BATCH,
   MEBIBYTE_BYTES,
   PAINT_DISPLAY_MIP_LEVEL_COUNT,
   SHAPE_MASK_SIZE,
-  SHAPE_OCCUPANCY_GRID_SIZE,
-  SHAPE_OCCUPANCY_MAP_BYTES,
   SHAPE_OCCUPANCY_MAP_COUNT,
   SHAPE_OCCUPANCY_MAX_COVERAGE_RATIO,
   SHAPE_OCCUPANCY_MAX_MIP,
   SHAPE_OCCUPANCY_MIN_RADIUS,
-  SHAPE_OCCUPANCY_WORDS_PER_MAP,
   STAMP_STRIDE_BYTES,
   STAMP_VERTICES_PER_COPY,
-  THICKNESS_TAIL_MAXIMUM_TEXTURE_DIMENSION,
-  THICKNESS_TAIL_TEXTURE_QUANTUM,
   THICKNESS_TAIL_UNIFORM_BYTES,
-  VECTOR_TEXT_CAPTURE_UNIFORM_BYTES,
   VECTOR_TEXT_GPU_MAXIMUM_DRAWS,
   VIEW_ROTATION_SNAP_ENTER_RADIANS,
   VIEW_ROTATION_SNAP_RELEASE_RADIANS,
 } from "./engine-limits";
 import {
-  average,
-  combineCompressionHashes,
-  hashBytes,
-  maximum,
   normalizeViewRotation,
-  percentile,
   previewHash32,
-  previewHslToRgb,
   previewRandom01,
   srgbByteToLinear,
 } from "./engine-math";
-import {
-  layerBaseMemoryMiB,
-  lightGlazeAdditionalMemoryMiB,
-  paintDisplayPyramidAdditionalMemoryMiB,
-  shapeTextureMemoryMiB,
-  staticPaintBufferMemoryMiB,
-} from "./engine-memory-model";
+import { lightGlazeAdditionalMemoryMiB } from "./engine-memory-model";
 import {
   destroyLightGlazeResourceSet,
   type GrainTextureResources,
@@ -496,11 +376,8 @@ import {
   type ShapeMaskResources,
 } from "./engine-paint-resources";
 import type {
-  EngineGpuMemoryStats,
   EngineStats,
-  LayerStorageExactLayerMeasurement,
   LayerStorageExactStudy,
-  LayerStorageLayerEstimate,
   LayerStorageStudyStats,
   MutableStrokePerformanceProfile,
   RenderFrameTiming,
@@ -514,12 +391,9 @@ import {
   ADAPTIVE_PREVIEW_VISIBLE_CANVAS_STRATEGY,
   ADAPTIVE_SPACING_STRATEGY,
   BRUSH_OPACITY_STRATEGY,
-  CIRCLE_FRAGMENT_COVERAGE_STRATEGY,
   COLOR_SEED_STRATEGY,
   DIRTY_RECT_STRATEGY,
   type FragmentCoverageStrategy,
-  GRAIN_ADAPTIVE_PREVIEW_STRATEGY,
-  GRAIN_COVERAGE_STRATEGY,
   GRAIN_DISABLED_STRATEGY,
   GRAIN_FIXED_COORDINATE_STRATEGY,
   GRAIN_FIXED_STRATEGY,
@@ -547,14 +421,11 @@ import {
   type LightGlazeStorageMode,
   lightGlazeStorageModeFor,
   type LightGlazeStrategy,
-  lightGlazeStrategyForBlendMode,
   PAINT_DISPLAY_LOD_SELECTION_STRATEGY,
   PAINT_DISPLAY_PYRAMID_STRATEGY,
   PRESENTATION_CACHE_STRATEGY,
   PRESENTATION_TRANSFER_STRATEGY,
   SHAPE_CANVAS_DECODE_STRATEGY,
-  SHAPE_DIRECT_DECODE_STRATEGY,
-  SHAPE_FRAGMENT_COVERAGE_STRATEGY,
   SHAPE_LEGACY_STRATEGY,
   SHAPE_OCCUPANCY_STRATEGY,
   SHAPE_STORAGE_LIFECYCLE_STRATEGY,
@@ -562,7 +433,6 @@ import {
   type ShapeSamplingStrategy,
   STAMP_GEOMETRY,
   type StampGeometry,
-  THICKNESS_DYNAMICS_PREVIEW_STRATEGY,
   type ThicknessDynamicsPreviewStrategy,
   usesBlendRenderer,
   usesStrokeGlazeRenderer,
@@ -579,7 +449,6 @@ import type {
 import {
   defaultBrushSettings,
   type AdaptiveSpacingTriggerReason,
-  type BenchmarkResult,
   type BlendMode,
   type BrushEngineOptions,
   type BrushGrainAssetId,
@@ -616,7 +485,6 @@ import {
 } from "./engine-brush-assets";
 import {
   vectorTextGpuDrawUsesBlur,
-  vectorTextGpuDrawUsesMesh,
   type MixedSceneActivePresentation,
   type VectorTextGpuBlurCacheResources,
   type VectorTextGpuDrawResources,
@@ -624,11 +492,10 @@ import {
   type VectorTextRunTextureResources,
 } from "./engine-vector-text-resources";
 import {
-  buildShapeOccupancyMaps,
   type ShapeOccupancyFallbackReason,
   type ShapeOccupancySelection,
 } from "./shape-occupancy";
-import { assertShaderCompiled, describeAdapter } from "./engine-gpu-utils";
+import { describeAdapter } from "./engine-gpu-utils";
 import {
   CausalStrokeCurvePlanner,
   evaluateStrokeCurveX,
@@ -641,23 +508,17 @@ import {
 } from "./stroke-stabilization-core";
 import {
   mergeDirtyRects,
-  normalizeLayerRect,
   paintMipDimensions,
-  vectorTextGpuClearBounds,
   vectorTextGpuRunBounds,
 } from "./engine-geometry";
-import { decodeShapeMaskWithCanvas } from "./shape-mask-decode";
 import {
   clearLayerColdCompressionIdleTimer,
   coldStorageMaskForRecord,
   compressOneDistantLayerInBackground,
-  createColdLayerGpuResources,
   createHydratedLayerTexture,
   createLayerColdStorageCandidate,
   destroyLayerColdStorage,
-  destroyLayerHot,
   destroyTransientLayerHydration,
-  encodeLayerColdHydration,
   ensureActiveLayerHot,
   ensureAdjacentLayerColdStorageResident,
   evictReconstructibleLayerResources,
@@ -670,7 +531,6 @@ import {
   populateStrokeGlazeUniformUpload,
 } from "./engine-stamp-upload";
 import {
-  benchmarkEffectsWorkingSet,
   finishStrokePerformanceProfile,
   getAdaptivePreviewDiagnostics,
   getBenchmarkEnvironment,
@@ -678,13 +538,7 @@ import {
   getLayerBakeState,
   getLayerCompositeState,
   getStats,
-  measureActiveStyleBakeGap,
   measureExactLayerStorageStudy,
-  measureLayerColdCompressionStudy,
-  resetActiveLayerForMemoryBenchmark,
-  runBenchmark,
-  seedActiveLayerMemoryStress,
-  setLayerCompositeTestView,
   startStrokePerformanceProfile,
 } from "./engine-reports";
 import {
@@ -695,14 +549,11 @@ import {
   createMixedSceneRasterSegmentResources,
   destroyMixedSceneRasterSegment,
   encodeMixedSceneSegmentedPresentation,
-  ensureMixedSceneLinearTexture,
   ensureVectorTextGpuBlurCache,
   ensureVectorTextGpuResource,
   ensureVectorTextPresentationTexture,
   flushVectorTextGpuPresentations,
   getVectorTextFallbackPresentationStats,
-  initializeVectorTextGpuRenderer,
-  mixedSceneItemIsVisible,
   mutateMixedScenePresentation,
   publishMixedScene,
   probeVectorTextFastCompositeAlpha,
@@ -761,16 +612,7 @@ import {
   planLayerDuplicateMemory,
   planLayerSwitchMemory,
 } from "./layer-memory-admission-core";
-import {
-  captureFillDiagnostics,
-  ensureFillRenderer,
-  fillAtClientPoint,
-  setFillToolSelected,
-  submitFillHistoryBatch,
-  type FillDiagnosticReport,
-  type FillOperationResult,
-  type LastFillDiagnosticOperation,
-} from "./engine-fill-runtime";
+import { captureFillDiagnostics, fillAtClientPoint, setFillToolSelected, submitFillHistoryBatch, type FillDiagnosticReport, type FillOperationResult, type LastFillDiagnosticOperation } from "./engine-fill-runtime";
 import {
   clearPixelSelection,
   bindPaintPipelineWithPixelSelection,
@@ -779,24 +621,16 @@ import {
   renderPixelSelectionOverlay,
   releasePaintSelectionHistoryMask,
   resetPixelSelectionState,
-  scheduleSelectionRendererRelease,
   selectConnectedAtClientPoint,
-  selectionNeedsConnectedColorScratch,
   selectPixelsByClientLasso,
   selectPixelsByColor,
   setSelectionToolSelected,
 } from "./engine-selection-runtime";
-import {
-  applyVectorRasterizeHistory,
-  destroyVectorRasterHistorySeed,
-  rasterizeVectorNodeToLayer,
-  rollbackUnpublishedVectorRasterization,
-} from "./engine-vector-raster-runtime";
+import { destroyVectorRasterHistorySeed, rasterizeVectorNodeToLayer, rollbackUnpublishedVectorRasterization } from "./engine-vector-raster-runtime";
 import {
   applyLightGlazeResourceSet,
   createLightGlazeResourceSet,
   currentLightGlazeResourceSet,
-  destroyLightGlazeResources,
   destroyStrokeStabilizationSnapshot,
   encodeLightGlazeDisplayPyramid,
   ensureStrokeStabilizationSnapshot,
@@ -836,7 +670,6 @@ import {
   destroyLayerGpuResources,
   destroyActiveClippingGroupResources,
   destroyMergedSurfaceTexture,
-  effectsScratchCanShrinkNow,
   effectsScratchNeedsShrink,
   encodeMergedDisplayPyramids,
   encodeMergedSurfacePyramid,
@@ -882,8 +715,6 @@ import {
   maybeReleaseIdleBlendScratch,
   maybeReleaseIdleGrainResources,
   maybeReleaseIdleShapeResources,
-  rebuildGrainBrushBindGroups,
-  rebuildShapeBrushBindGroups,
   releaseHeldThicknessStamps,
   releaseRasterBevelRenderer,
   releaseRasterInnerShadowRenderer,
@@ -927,11 +758,7 @@ import {
   throwIfRenderUnavailable,
   waitForRenderPump,
 } from "./engine-runtime-misc";
-import {
-  captureProjectDocument,
-  restoreProjectDocument,
-  type CapturedProjectDocumentV1,
-} from "./engine-project-runtime";
+import { captureProjectDocument, restoreProjectDocument, type CapturedProjectDocumentV1 } from "./engine-project-runtime";
 import type { ProjectLoadResultV1 } from "./project-storage";
 
 export type {
@@ -1661,7 +1488,6 @@ export class BrushEngine {
   private readonly paintStabilizer = new CausalFadedStrokeStabilizer();
   private readonly stabilizationPreviewCurvePlanner = new CausalStrokeCurvePlanner();
   private readonly stabilizationPreviewStamps: Stamp[] = [];
-  private stabilizationPreviewStampCount = 0;
   activeStroke: ActiveStroke | null = null;
   seedSequence = 1;
 
@@ -3055,142 +2881,6 @@ export class BrushEngine {
     }
   }
 
-  async setLayerFormat(format: LayerFormat): Promise<boolean> {
-    if (format !== "rgba16float") {
-      const error = new Error(
-        `Formato documento ${format} rifiutato: il motore usa permanentemente `
-        + "RGBA16F e non esegue fallback a RGBA8.",
-      );
-      this.callbacks.onStatus?.(error.message, "error");
-      throw error;
-    }
-    if (format === this.layerFormat) {
-      return true;
-    }
-    if (
-      !this.initialized
-      || this.historyBusy
-      || this.activeStroke
-      || this.layerSwitchBusy
-      || this.selectionBusy
-    ) {
-      return false;
-    }
-
-    this.cancelLayerColdCompressionIdle();
-    const previousFormat = this.layerFormat;
-    this.invalidateAdaptivePreview();
-    this.historyBusy = true;
-    this.publishHistoryState();
-    this.callbacks.onStatus?.(`Ricreo il layer in formato ${format}…`, "working");
-    try {
-      await this.waitForIdle();
-      if (this.fillRendererLoadingPromise) {
-        await this.fillRendererLoadingPromise;
-      }
-      await this.fillRenderer?.waitForPrewarm();
-      if (this.selectionRendererLoadingPromise) {
-        await this.selectionRendererLoadingPromise;
-      }
-      await recreateLayerResources(this, format);
-      // The format transaction clears every raster record and allocates only
-      // the active mip 0. A previous Reference designation would otherwise
-      // point at a deliberately non-resident, now-empty source.
-      this.layerStack.setReferenceIndex(null);
-      this.layerFormat = format;
-      this.fillRenderer?.destroy();
-      this.fillRenderer = null;
-      this.selectionRenderer?.setSourceSamplingView(this.layerSamplingView);
-      this.selectionRenderer?.clearSelection();
-      resetPixelSelectionState(this);
-      let renderingPrewarmWarning: string | null = null;
-      let styleStackWarning: string | null = null;
-      try {
-        if (usesBlendRenderer(this.settings)) {
-          this.blendRenderer?.prewarmScratch();
-        }
-        if (usesStrokeGlazeRenderer(this.settings)) {
-          await this.ensureLightGlazeResources(this.settings.blendMode);
-        }
-        if (selectionNeedsConnectedColorScratch(this)) {
-          const renderer = await ensureFillRenderer(this);
-          renderer.setSourceSamplingView(this.layerSamplingView);
-          await renderer.prewarm();
-        }
-      } catch (prewarmError) {
-        renderingPrewarmWarning = prewarmError instanceof Error
-          ? prewarmError.message
-          : String(prewarmError);
-        console.error("Prewarm rendering dopo cambio formato non riuscito", prewarmError);
-      }
-      this.resetHistoryState();
-      this.clearRequested = true;
-      this.displayDirty = true;
-      this.layerStack.active.contentBounds = null;
-      this.layerStack.active.hasContent = false;
-      this.layerStack.active.noiseMipSmoothing = false;
-      clearLayerStorageTileMask(this.layerStack.active.storageTileMask);
-      this.layerHasContent = false;
-      this.layerContentBounds = null;
-      try {
-        await ensureEffectRenderersForRecord(this, this.layerStack.active);
-      } catch (styleError) {
-        styleStackWarning = styleError instanceof Error
-          ? styleError.message
-          : String(styleError);
-        this.rasterStrokeStyle = { ...this.rasterStrokeStyle, enabled: false };
-        this.rasterBevelStyle = { ...this.rasterBevelStyle, enabled: false };
-        this.rasterOuterShadowStyle = { ...this.rasterOuterShadowStyle, enabled: false };
-        this.rasterInnerShadowStyle = { ...this.rasterInnerShadowStyle, enabled: false };
-        this.rasterColorOverlayStyle = {
-          ...this.rasterColorOverlayStyle,
-          enabled: false,
-        };
-        this.effectsWorkbench?.scratchPool.releaseRequirement(
-          RASTER_COLOR_OVERLAY_EFFECT_ID,
-        );
-        releaseRasterOuterShadowRenderer(this);
-        releaseRasterInnerShadowRenderer(this);
-        releaseRasterBevelRenderer(this);
-        releaseRasterStrokeRenderer(this);
-        console.error(
-          "Ricreazione style stack dopo cambio formato non riuscita",
-          styleError,
-        );
-      }
-      this.requestRender();
-      const formatWarnings = [
-        renderingPrewarmWarning
-          ? `rendering selezionato: ${renderingPrewarmWarning}`
-          : null,
-        styleStackWarning
-          ? `effetti raster: ${styleStackWarning}`
-          : null,
-      ].filter((warning): warning is string => Boolean(warning));
-      this.callbacks.onStatus?.(
-        formatWarnings.length > 0
-          ? `Layer ${format} pronto, ma alcune risorse non sono disponibili: ${formatWarnings.join(" · ")}`
-          : `Layer ${format} pronto. Il contenuto è stato azzerato.`,
-        formatWarnings.length > 0 ? "error" : "ok",
-      );
-      this.publishStats();
-      return true;
-    } catch (error) {
-      // recreateLayerResources assegna e distrugge le risorse precedenti solo
-      // dopo che pipeline, texture di tutti i livelli e Blend candidati hanno
-      // chiuso gli scope validation/OOM. In caso di errore, il documento e la
-      // sua cronologia sono quindi ancora validi.
-      this.layerFormat = previousFormat;
-      const message = error instanceof Error ? error.message : String(error);
-      this.callbacks.onStatus?.(`Formato ${format} non disponibile: ${message}`, "error");
-      throw error;
-    } finally {
-      this.historyBusy = false;
-      this.publishHistoryState();
-      this.scheduleLayerColdCompression();
-    }
-  }
-
   resizeCanvas(): void {
     if (!this.device || !this.context) {
       return;
@@ -4486,10 +4176,6 @@ export class BrushEngine {
    * documents must keep using resetDocument(), whose multi-layer guard remains
    * unchanged.
    */
-  resetActiveLayerForMemoryBenchmark(): boolean {
-    return resetActiveLayerForMemoryBenchmark(this);
-  }
-
   async undo(): Promise<boolean> {
     return moveHistoryCursor(this, -1);
   }
@@ -4517,10 +4203,6 @@ export class BrushEngine {
 
   resumeHistoryStorageMaintenance(): void {
     scheduleHistoryMaintenance(this);
-  }
-
-  async runBenchmark(baseStampCount: number): Promise<BenchmarkResult> {
-    return await runBenchmark(this, baseStampCount);
   }
 
   resetLightGlazeTransitionPeak(): void {
@@ -4849,11 +4531,8 @@ export class BrushEngine {
    * journal but only clear the active layer, so with several layers they would
    * silently destroy every other layer's undo while leaving its pixels behind.
    *
-   * Refusing is right on a second ground too: AGENTS.md requires a run to be
-   * compared against the baseline at parity, and a canonical replay with a
-   * different layer count is not that. Note that setLayerFormat is NOT gated —
-   * it recreates every layer's texture, so its journal reset is genuinely
-   * document-wide.
+   * Refusing is right on a second ground too: a canonical replay with a
+   * different layer count is not comparable with its baseline.
    */
   get documentWideResetBlockedByLayers(): boolean {
     return this.layerStack.count > 1;
@@ -5287,31 +4966,6 @@ export class BrushEngine {
     );
   }
 
-  async benchmarkEffectsWorkingSet(samples = 3): Promise<EffectsWorkbenchBenchmarkReport> {
-    return await benchmarkEffectsWorkingSet(this, samples);
-  }
-
-  /**
-   * Reads authoritative mip 0 back from a paint layer, for tests that must
-   * assert on two layers at once.
-   *
-   * Multi-layer correctness cannot be proved from the screen: the display shows
-   * one composite, so "layer A kept its pixels while layer B was rebuilt" is
-   * invisible there. Worse, a comparison against the previously presented image
-   * passes when a submit is silently dropped, because a dropped submit leaves
-   * exactly that image in place — a trap this repo has already fallen into
-   * twice. Asserting absolute values in two distinct textures is the only form
-   * that cannot pass vacuously.
-   */
-  /**
-   * True when the effects working set points at the layer the stack calls active.
-   *
-   * This is the one invariant a cross-layer undo can break while leaving every
-   * pixel correct: the switch happens inside the history transaction, so a failed
-   * rollback can leave the workbench on the layer the cursor no longer selects.
-   * The next stroke would then build its fields from the wrong source. No pixel
-   * comparison can see it, which is why it is exposed as state.
-   */
   effectsWorkingSetMatchesActiveLayer(): boolean {
     if (!import.meta.env.DEV) {
       throw new Error("Diagnostica disponibile solo in modalità dev.");
@@ -5368,10 +5022,6 @@ export class BrushEngine {
    * Measurement-only compression pass over the authoritative inactive tile
    * arrays. It never replaces or destroys a cold texture.
    */
-  async measureLayerColdCompressionStudy(onProgress?: (progress: LayerCompressionStudyProgress) => void): Promise<LayerCompressionStudyReport> {
-    return await measureLayerColdCompressionStudy(this, onProgress);
-  }
-
   getLayerBakeState(layerIndex: number): {
     allocated: boolean;
     valid: boolean;
@@ -5480,10 +5130,6 @@ export class BrushEngine {
       `merged ${side}`,
       mipLevel,
     );
-  }
-
-  setLayerCompositeTestView(centerX: number, centerY: number, zoom = 1): void {
-    setLayerCompositeTestView(this, centerX, centerY, zoom);
   }
 
   async readPresentationLayerRect(rect: DirtyRect): Promise<Uint8Array> {
@@ -5637,24 +5283,6 @@ export class BrushEngine {
    * Measures, without choosing between them, the live fragment-derivative
    * contour and the analytic mip-0 bake used after a layer loses focus.
    */
-  async measureActiveStyleBakeGap(rect: DirtyRect): Promise<{
-    comparedPixels: number;
-    comparedBytes: number;
-    differingPixels: number;
-    differingBytes: number;
-    maxDelta: number;
-    maxDeltaByChannel: readonly [number, number, number, number];
-    firstDifference: {
-      x: number;
-      y: number;
-      channel: "r" | "g" | "b" | "a";
-      live: number;
-      analyticBake: number;
-    } | null;
-  }> {
-    return await measureActiveStyleBakeGap(this, rect);
-  }
-  
   async readLayerColdStorageTiles(
     cold: LayerColdStorageResources,
     firstArrayLayer: number,
@@ -5821,32 +5449,6 @@ export class BrushEngine {
     } finally {
       destroyTrackedReadbackBuffer(this, readbackBuffer, readbackBytes);
     }
-  }
-
-  async runRasterStrokeGolden(): Promise<RasterStrokeGoldenReport> {
-    if (!this.initialized) {
-      throw new Error("WebGPU non ancora inizializzato.");
-    }
-    if (this.activeStroke) {
-      throw new Error("Termina prima la pennellata attiva.");
-    }
-    await this.waitForIdle();
-    const { runRasterStrokeGolden } = await import("./stroke-golden");
-    return runRasterStrokeGolden(this.device, {
-      bevelBoundingFieldEnabled: this.bevelBoundingFieldEnabled,
-    });
-  }
-
-  async runRasterShadowGolden(): Promise<RasterShadowGoldenReport> {
-    if (!this.initialized) {
-      throw new Error("WebGPU non ancora inizializzato.");
-    }
-    if (this.activeStroke) {
-      throw new Error("Termina prima la pennellata attiva.");
-    }
-    await this.waitForIdle();
-    const { runRasterShadowGolden } = await import("./shadow-golden");
-    return runRasterShadowGolden(this.device);
   }
 
   private renderProgressSignature(): string {
@@ -7562,10 +7164,6 @@ export class BrushEngine {
    * original full-layer stress fixture unchanged; the iPhone staircase passes
    * smaller counts so every checkpoint advances by a known amount.
    */
-  async seedActiveLayerMemoryStress(markerIndex: number, storageTileCount = LAYER_STORAGE_TILE_COUNT): Promise<void> {
-    await seedActiveLayerMemoryStress(this, markerIndex, storageTileCount);
-  }
-
   private createDuplicatedRasterRecord(
     source: LayerRecord,
     storageMask: Uint32Array,
@@ -9586,7 +9184,6 @@ export class BrushEngine {
       || update.bypassed
       || update.tailCount < 2
     ) {
-      this.stabilizationPreviewStampCount = 0;
       return null;
     }
 
@@ -9758,7 +9355,6 @@ export class BrushEngine {
       startTimeMs = endTimeMs;
     }
 
-    this.stabilizationPreviewStampCount = stampCount;
     if (stampCount === 0) {
       return null;
     }

@@ -15,7 +15,6 @@ import type {
   DeletedLayerEntry,
 } from "./engine-history-types";
 import type {
-  LayerColdStorageResources,
   LayerGpuResources,
   MergedSurfaceResources,
 } from "./engine-layer-resources";

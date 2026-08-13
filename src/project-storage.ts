@@ -1,7 +1,7 @@
 import type { RasterBevelStyle } from "./bevel-core";
 import type { BrushSettings, LayerFormat } from "./engine-types";
 import type { LayerBlendMode } from "./layer-blend-modes";
-import type { LayerCompressionStorage } from "./layer-compression-study";
+import type { LayerCompressionStorage } from "./layer-compression-codec";
 import type { MixedSceneState } from "./mixed-scene-stack";
 import type { RasterColorOverlayStyle } from "./raster-color-overlay-core";
 import type {

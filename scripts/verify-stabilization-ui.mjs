@@ -9,9 +9,12 @@ const engineTypesSource = read("../src/engine-types.ts");
 const historyTypesSource = read("../src/engine-history-types.ts");
 const historyRuntimeSource = read("../src/engine-history-runtime.ts");
 const mainSource = read("../src/main.ts");
+const humanLabSource = read("../src/labs/human-stroke-lab.ts");
 const htmlSource = read("../index.html");
 const sitesBuildSource = read("./prepare-sites-build.mjs");
 const stabilizationCoreSource = read("../src/stroke-stabilization-core.ts");
+const brushSettingsControllerSource = read("../src/brush-settings-controller.ts");
+const brushStudioSource = read("../src/mobile-brush-studio.ts");
 
 // Settings ABI: normalized 0..1 and bit-for-bit legacy behavior at the default.
 assert.match(engineTypesSource, /stabilization: number;/);
@@ -21,24 +24,29 @@ assert.match(
   /stabilization: clamp\(next\.stabilization \?\? this\.settings\.stabilization, 0, 1\),/,
 );
 
-// Public control: Paint-only, 0..100, and converted exactly once at the UI boundary.
+// Public control: Brush Studio owns the visible 0..100 editor and converts once.
 assert.match(
   htmlSource,
-  /id="stabilizationControl"[\s\S]*?Stabilizzazione[\s\S]*?id="stabilizationOut">0%<[\s\S]*?id="stabilization" type="range" min="0" max="100" step="1" value="0"/,
+  /id="mobileBrushStudioStabilizationOut"[\s\S]*?id="mobileBrushStudioStabilization" type="range" min="0" max="100" step="1" value="0"/,
 );
-assert.match(mainSource, /"stabilizationControl",\s*"countControl"/);
-assert.match(mainSource, /stabilization: rangeValue\("stabilization"\) \/ 100,/);
-assert.match(mainSource, /setControlValue\("stabilization", \(settings\.stabilization \?\? 0\) \* 100\);/);
-assert.match(mainSource, /"spacing",\s*"stabilization",\s*"startThickness"/);
-assert.match(mainSource, /id="stabilizationOut"|"stabilizationOut"/);
+assert.match(
+  brushStudioSource,
+  /bindRange\("mobileBrushStudioStabilization"[\s\S]*?draft\.stabilization = value \/ 100/,
+);
+assert.match(
+  brushStudioSource,
+  /setRange\("mobileBrushStudioStabilization"[\s\S]*?settings\.stabilization \* 100/,
+);
+assert.match(mainSource, /applyBrushSettings\(settings: Readonly<BrushSettings>\)/);
+assert.match(brushSettingsControllerSource, /replace\(settings: Readonly<BrushSettings>\)/);
+assert.doesNotMatch(mainSource, /rangeValue\("stabilization"\)/);
 
 // Old recordings and every canonical benchmark path resolve to zero explicitly.
 assert.match(
-  mainSource,
-  /const stabilization = Number\.isFinite\(benchmark\.settings\.stabilization\)[\s\S]*?: 0;/,
+  humanLabSource,
+  /function canonicalSettings\([\s\S]*?stabilization: 0,/,
 );
-assert.match(mainSource, /function applyHumanStrokePreset\(\)[\s\S]*?setControlValue\("stabilization", 0\);/);
-assert.match(mainSource, /const RENDERING_SUITE_CANONICAL_OVERRIDES[\s\S]*?stabilization: 0,/);
+assert.match(humanLabSource, /size: 750,[\s\S]*?spacingPercent: 1,[\s\S]*?stabilization: 0,/);
 assert.match(sitesBuildSource, /payload\.settings\.stabilization === 0/);
 assert.match(sitesBuildSource, /blendIntensity: 1,\s*stabilization: 0,/);
 

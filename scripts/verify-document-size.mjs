@@ -126,10 +126,10 @@ assert.ok(
   const indexSource = read("../index.html");
   const mainSource = read("../src/main.ts");
   const brushEngineSource = read("../src/brush-engine.ts");
-  assert.match(
+  assert.doesNotMatch(
     indexSource,
-    /<select id="layerFormat"[^>]*\bdisabled\b[^>]*>[\s\S]*?<option value="rgba16float"[^>]*\bselected\b/,
-    at("il selettore precisione deve mostrare RGBA16F ed essere permanente"),
+    /id="layerFormat"|data-layer-format-label/,
+    at("un formato permanente non deve avere un finto controllo UI"),
   );
   assert.doesNotMatch(
     indexSource,
@@ -141,11 +141,6 @@ assert.ok(
     /layerFormat: LayerFormat = "rgba16float";/,
     at("BrushEngine deve possedere il default autorevole RGBA16F"),
   );
-  assert.match(
-    mainSource,
-    /layerFormatSelect\.value = engine\.layerFormat;/,
-    at("il selettore deve riflettere il formato reale di BrushEngine"),
-  );
   assert.doesNotMatch(
     mainSource,
     /engine\.layerFormat\s*=/,
@@ -153,21 +148,27 @@ assert.ok(
   );
   assert.doesNotMatch(
     mainSource,
-    /layerFormatSelect\.addEventListener\("change"/,
-    at("la UI non deve poter cambiare il formato del documento"),
+    /layerFormatSelect|setLayerFormat\(/,
+    at("la UI non deve fingere di poter cambiare il formato del documento"),
   );
   assert.doesNotMatch(
     mainSource,
-    /MOBILE_DEVICE_CLASS|setLayerFormat\(/,
+    /MOBILE_DEVICE_CLASS/,
     at("non deve esistere un override mobile o un downgrade formato dalla UI"),
+  );
+  assert.doesNotMatch(
+    brushEngineSource,
+    /\bsetLayerFormat\(/,
+    at("l'API di cambio formato irraggiungibile deve restare rimossa"),
   );
 }
 
 // --- Fixture memoria coerenti col documento RGBA16F -------------------------
 {
-  const iphoneSource = read("../src/iphone-memory-limit-test.ts");
-  const stressSource = read("../src/layer-memory-stress-test.ts");
-  const mixedSource = read("../src/mixed-memory-benchmark.ts");
+  const iphoneSource = read("../src/labs/memory/iphone-memory-limit-test.ts");
+  const stressSource = read("../src/labs/memory/layer-memory-stress-test.ts");
+  const mixedSource = read("../src/labs/memory/mixed-memory-benchmark.ts");
+  const labOperationsSource = read("../src/labs/engine-lab-operations.ts");
   const reportsSource = read("../src/engine-reports.ts");
   assert.match(
     iphoneSource,
@@ -205,17 +206,17 @@ assert.ok(
     at("lo scenario misto deve derivare quanti tile RGBA16F servono al target"),
   );
   assert.match(
-    reportsSource,
+    labOperationsSource,
     /const pixels = new Uint16Array\(markerSize \* markerSize \* 4\);[\s\S]{0,700}bytesPerRow: markerSize \* 8/,
     at("il marker stress deve caricare pixel half-float con stride RGBA16F"),
   );
   assert.match(
-    reportsSource,
+    labOperationsSource,
     /const markerCellWidth = DOCUMENT_WIDTH \/ 4;\s*const markerCellHeight = DOCUMENT_HEIGHT \/ 4;/,
     at("il marker stress deve distribuire le celle su entrambi gli assi"),
   );
   assert.match(
-    reportsSource,
+    labOperationsSource,
     /analytic\.length !== live\.length \* 2[\s\S]{0,1800}decodeFloat16/,
     at("la diagnostica fwidth deve decodificare il readback RGBA16F"),
   );

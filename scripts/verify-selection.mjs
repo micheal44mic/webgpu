@@ -175,6 +175,22 @@ const layerRuntime = readFileSync(new URL("../src/engine-layer-runtime.ts", impo
 const resourceSetup = readFileSync(new URL("../src/engine-resource-setup.ts", import.meta.url), "utf8");
 const reports = readFileSync(new URL("../src/engine-reports.ts", import.meta.url), "utf8");
 const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const canvasTool = readFileSync(
+  new URL("../src/canvas-tool-controller.ts", import.meta.url),
+  "utf8",
+);
+const canvasInput = readFileSync(
+  new URL("../src/canvas-input-controller.ts", import.meta.url),
+  "utf8",
+);
+const labOperations = readFileSync(
+  new URL("../src/labs/engine-lab-operations.ts", import.meta.url),
+  "utf8",
+);
+const humanLab = readFileSync(
+  new URL("../src/labs/human-stroke-lab.ts", import.meta.url),
+  "utf8",
+);
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 
@@ -328,8 +344,8 @@ assert.match(
 );
 assert(brushEngine.includes("Blend non modifica una Selezione pixel"));
 assert(brushEngine.includes("Pulisci agisce sul livello intero: deseleziona prima"));
-assert(reports.includes("Deseleziona i pixel prima del benchmark Paint canonico."));
-assert(main.includes("Deseleziona i pixel prima di riprodurre il tratto canonico."));
+assert(labOperations.includes("Deseleziona i pixel prima del benchmark Paint canonico."));
+assert(humanLab.includes("Deseleziona i pixel prima di riprodurre il tratto canonico."));
 
 const hotPathStart = brushEngine.indexOf("  submitImmediate(");
 const hotPathEnd = brushEngine.indexOf("  private packThicknessTailStamps(");
@@ -341,27 +357,27 @@ assert(!hotPath.includes("selectionRenderer"));
 assert(!hotPath.includes("pixelSelectionState"));
 assert(!hotPath.includes("selectionMask"));
 
-assert(main.includes('activeCanvasTool === "selection"'));
-assert(main.includes('pointerMode === "selection-lasso"'));
-assert(main.includes("engine.selectConnectedAtClientPoint("));
+assert(canvasTool.includes('this.activeCanvasTool === "selection"'));
+assert(canvasInput.includes('pointerMode === "selection-lasso"'));
+assert(canvasInput.includes("engine.selectConnectedAtClientPoint("));
 assert(main.includes("engine.selectPixelsByColor("));
-assert(main.includes("engine.selectPixelsByClientLasso("));
-assert(main.includes("let toolConfigurationRevision = 0"));
-assert(main.includes("configurationRevision !== toolConfigurationRevision"));
-assert(main.includes('configureBrushToolUi("selection", false)'));
-assert(main.includes('canvas.addEventListener("keydown", (event) =>'));
-assert(main.includes("selectionKeyboardLassoActive"));
-assert(main.includes('event.key === "ArrowLeft"'));
-assert(main.includes('event.code === "Space"'));
-assert(html.includes('<option value="selection">Selezione pixel</option>'));
+assert(canvasInput.includes("engine.selectPixelsByClientLasso("));
+assert(canvasTool.includes("private configurationRevision = 0"));
+assert(canvasTool.includes("configurationRevision !== this.configurationRevision"));
+assert(canvasTool.includes('this.configure("selection", false, true)'));
+assert(canvasInput.includes('canvas.addEventListener("keydown", handleCanvasKeydown'));
+assert(canvasInput.includes("selectionKeyboardLassoActive"));
+assert(canvasInput.includes('event.key === "ArrowLeft"'));
+assert(canvasInput.includes('event.code === "Space"'));
+assert(html.includes('data-mobile-tool-sheet="selection"'));
 for (const id of [
-  "selectionMethod",
-  "selectionTolerance",
-  "selectionColor",
-  "selectionReplace",
-  "selectionAdd",
-  "selectionSubtract",
-  "selectionClear",
+  "mobileSelectionMethod",
+  "mobileSelectionTolerance",
+  "mobileSelectionColor",
+  "mobileSelectionReplace",
+  "mobileSelectionAdd",
+  "mobileSelectionSubtract",
+  "mobileSelectionClear",
   "rasterSelectionOverlayCanvas",
   "rasterSelectionGestureCanvas",
   "gpuMemorySelection",
@@ -369,11 +385,11 @@ for (const id of [
   assert(html.includes(`id="${id}"`), `controllo HTML mancante: ${id}`);
 }
 assert(styles.includes("#rasterSelectionOverlayCanvas"));
-assert(styles.includes('.selection-combine button[aria-pressed="true"]'));
-assert(styles.includes("#selectionColorApply[hidden] + #selectionClear"));
+assert(styles.includes('.mobile-tool-segmented button[aria-pressed="true"]'));
 assert(html.includes('id="gpuCanvas" tabindex="-1"'));
-assert(main.includes("canvasKeyboardEnabled ? 0 : -1"));
-assert(main.includes('canvas.setAttribute("aria-describedby", "selectionKeyboardHelp")'));
-assert(main.includes('canvas.removeAttribute("aria-keyshortcuts")'));
+assert(canvasTool.includes("canvasKeyboardEnabled ? 0 : -1"));
+assert(main.includes("canvasToolSettingsController.selectionSnapshot()"));
+assert(!main.includes('rangeValue("selectionTolerance")'));
+assert(canvasTool.includes('canvas.removeAttribute("aria-keyshortcuts")'));
 
 console.log("Pixel selection contract verification passed.");

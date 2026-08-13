@@ -1,6 +1,5 @@
 import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits.ts";
 import {
-  LAYER_THUMBNAIL_SIZE,
   layerThumbnailDimensions,
 } from "./layer-thumbnail-geometry";
 

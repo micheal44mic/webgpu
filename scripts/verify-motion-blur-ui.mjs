@@ -21,15 +21,6 @@ for (const id of [
   "mobileMotionBlurStatus",
   "mobileMotionBlurCancel",
   "mobileMotionBlurApply",
-  "desktopMotionBlurOpen",
-  "desktopMotionBlurParameters",
-  "desktopMotionBlurDistance",
-  "desktopMotionBlurDistanceOut",
-  "desktopMotionBlurAngle",
-  "desktopMotionBlurAngleOut",
-  "desktopMotionBlurStatus",
-  "desktopMotionBlurCancel",
-  "desktopMotionBlurApply",
 ]) {
   assert.match(html, new RegExp(`id="${id}"`), `Manca #${id}.`);
 }
@@ -47,26 +38,22 @@ assert.ok(noisePosition > motionPosition);
 assert.match(adjustmentsCategory, /data-lucide="wind"/);
 assert.match(adjustmentsCategory, /mobile-tools-item-label">Motion Blur</);
 
-for (const prefix of ["mobile", "desktop"]) {
-  assert.match(
-    html,
-    new RegExp(`id="${prefix}MotionBlurDistance"[\\s\\S]{0,180}min="0"[\\s\\S]{0,80}max="500"`),
-  );
-  assert.match(
-    html,
-    new RegExp(`id="${prefix}MotionBlurAngle"[\\s\\S]{0,180}min="-180"[\\s\\S]{0,80}max="180"`),
-  );
-}
+assert.match(
+  html,
+  /id="mobileMotionBlurDistance"[\s\S]{0,180}min="0"[\s\S]{0,80}max="500"/,
+);
+assert.match(
+  html,
+  /id="mobileMotionBlurAngle"[\s\S]{0,180}min="-180"[\s\S]{0,80}max="180"/,
+);
 
 assert.match(html, /mobile-stroke-sheet-content mobile-motion-blur-shell/);
 assert.match(html, /id="mobileMotionBlurHeader" class="mobile-stroke-header"/);
 assert.match(html, /class="mobile-stroke-title">Motion Blur/);
 assert.match(html, /id="mobileMotionBlurStatus"[\s\S]{0,120}class="visually-hidden"/);
-assert.match(html, /id="desktopMotionBlurStatus"[\s\S]{0,120}class="visually-hidden"/);
 assert.match(html, /id="mobileMotionBlurCancel" type="button">Cancel/);
 assert.match(html, /id="mobileMotionBlurApply" class="is-primary" type="button">Apply/);
-assert.match(html, /id="desktopMotionBlurCancel" type="button">Annulla/);
-assert.match(html, /id="desktopMotionBlurApply" class="primary" type="button">Applica/);
+assert.doesNotMatch(html, /id="desktopMotionBlur/);
 assert.doesNotMatch(html, /Motion Blur[^<]*(?:RGBA16F|16-bit|f32|live preview)/i);
 
 assert.match(sheet, /export class MobileMotionBlurSheetController/);
@@ -80,6 +67,5 @@ assert.doesNotMatch(sheet, /from "\.\/engine/);
 
 assert.match(styles, /\.mobile-motion-blur-sheet\s*\{/);
 assert.match(styles, /\.mobile-gaussian-blur-controls,\s*\.mobile-motion-blur-controls/);
-assert.match(styles, /\.gaussian-blur-inline-actions,\s*\.motion-blur-inline-actions/);
 
 console.log("Motion Blur UI parity verification passed.");

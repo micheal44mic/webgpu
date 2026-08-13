@@ -10,7 +10,6 @@ import type { RasterBevelRect, RasterBevelStyle } from "./bevel-core";
 import { EFFECTS_SCRATCH_POOL_STRATEGY } from "./effects-scratch-pool";
 import { EFFECTS_WORKING_SET_STRATEGY } from "./effects-workbench";
 import { FILL_REFERENCE_LAYER_STRATEGY } from "./fill-core";
-import { lightGlazeAdditionalMemoryMiB, paintDisplayPyramidAdditionalMemoryMiB } from "./engine-memory-model";
 import type { MemoryZone } from "./memory-governor-core";
 
 /**

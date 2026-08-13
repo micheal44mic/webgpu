@@ -5,6 +5,10 @@ const root = new URL("../", import.meta.url);
 const coreSource = readFileSync(new URL("src/brush-library-preview-core.ts", root), "utf8");
 const rendererSource = readFileSync(new URL("src/brush-library-preview.ts", root), "utf8");
 const mainSource = readFileSync(new URL("src/main.ts", root), "utf8");
+const librarySource = readFileSync(
+  new URL("src/brush-library-controller.ts", root),
+  "utf8",
+);
 
 const core = await import(new URL("src/brush-library-preview-core.ts", root));
 
@@ -114,42 +118,43 @@ assert.doesNotMatch(
 assert.match(rendererSource, /canvas\.dataset\.previewRenderer = "authoritative-webgpu"/);
 assert.doesNotMatch(
   mainSource.slice(mainSource.indexOf("onStats(stats)"), mainSource.indexOf("onHistoryChange")),
-  /markMobileBrushLibraryPreviewDirty/,
+  /markMobileBrushLibraryPreviewDirty|brushLibraryController\.markPreviewDirty/,
   "stats/frame updates must not invalidate the library cache",
 );
 assert.match(
-  mainSource,
-  /function mobileCurrentBrushFallback[\s\S]*?\.\.\.defaultBrushSettings/,
+  librarySource,
+  /function currentBrushFallback[\s\S]*?\.\.\.defaultBrushSettings/,
   "the mutable legacy slot must not inherit Pencil as its fallback",
 );
 assert.match(
-  mainSource,
-  /function mobileBrushLibraryVisibleBrushIds\(\)[\s\S]*?const visible = \[activeMobileBrushLibraryBrushId\][\s\S]*?brushId !== activeMobileBrushLibraryBrushId[\s\S]*?visible\.push\(brushId\)/,
+  librarySource,
+  /private visibleBrushIds\(\)[\s\S]*?const visible = \[this\.activeBrushId\][\s\S]*?brushId !== this\.activeBrushId[\s\S]*?visible\.push\(brushId\)/,
   "the active brush must be the first preview in every category without duplication",
 );
 assert.match(
-  mainSource,
-  /mobileBrushLibraryBrushes\.getBoundingClientRect\(\)[\s\S]*?bounds\.bottom >= viewport\.top[\s\S]*?bounds\.top <= viewport\.bottom/,
+  librarySource,
+  /this\.elements\.viewport\.getBoundingClientRect\(\)[\s\S]*?bounds\.bottom >= viewport\.top[\s\S]*?bounds\.top <= viewport\.bottom/,
   "cold-open must hydrate only cards in or near the scroll viewport",
 );
 assert.match(
-  mainSource,
-  /mobileBrushLibraryBrushes\.addEventListener\("scroll"[\s\S]*?markMobileBrushLibraryPreviewDirty\(\)/,
+  librarySource,
+  /this\.elements\.viewport\.addEventListener\("scroll", this\.handleScroll/,
   "newly visible cards must render after scrolling stops",
 );
+assert.match(librarySource, /if \(this\.openState\) this\.markPreviewDirty\(\)/);
 assert.match(
-  mainSource,
-  /for \(const brushId of previewBrushIds\)[\s\S]*?await mobileBrushLibrarySettingsForBrush\([\s\S]*?await mobileBrushLibraryPreviewRenderer\.render\([\s\S]*?releasePreviewAssets\(brushId, settings\)/,
+  librarySource,
+  /for \(const brushId of brushIds\)[\s\S]*?await this\.settingsForPreview\([\s\S]*?try \{[\s\S]*?await this\.previewRenderer\.render\([\s\S]*?finally[\s\S]*?releasePreviewAssets\(brushId, settings\)/,
   "cards must hydrate serially and release nonactive custom assets after rendering",
 );
 assert.match(
-  mainSource,
-  /await mobileBrushLibrarySettingsForBrush\([\s\S]*?!mobileBrushLibraryOpen[\s\S]*?revision !== mobileBrushLibraryPreviewRevision[\s\S]*?return/,
+  librarySource,
+  /await this\.settingsForPreview\([\s\S]*?!this\.openState[\s\S]*?revision !== this\.previewRevision[\s\S]*?return/,
   "closing or changing category must cancel late preview work",
 );
 assert.match(
-  mainSource,
-  /settingsSnapshot\(brushId, fallbackSettings\)[\s\S]*?hasCompletePreview\([\s\S]*?return snapshot/,
+  librarySource,
+  /settingsSnapshot\(brushId, fallback\)[\s\S]*?hasCompletePreview\([\s\S]*?return snapshot/,
   "completed card bitmaps must not rehydrate full-resolution assets",
 );
 

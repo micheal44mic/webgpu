@@ -5,8 +5,16 @@ const root = new URL("../", import.meta.url);
 const html = readFileSync(new URL("index.html", root), "utf8");
 const css = readFileSync(new URL("src/styles.css", root), "utf8");
 const main = readFileSync(new URL("src/main.ts", root), "utf8");
+const editorToolsSource = readFileSync(
+  new URL("src/editor-tools-controller.ts", root),
+  "utf8",
+);
 const controllerSource = readFileSync(
   new URL("src/mobile-raster-effects-sheet.ts", root),
+  "utf8",
+);
+const rasterStyleSource = readFileSync(
+  new URL("src/raster-style-controller.ts", root),
   "utf8",
 );
 
@@ -16,7 +24,6 @@ const shadows = await import(new URL("src/shadow-core.ts", root));
 const bevel = await import(new URL("src/bevel-core.ts", root));
 
 const {
-  MOBILE_RASTER_EFFECT_KIND_BY_CONTROL_ID,
   MOBILE_RASTER_EFFECT_SPECS,
   mobileRasterEffectPeekHeight,
   resolveMobileRasterEffectDrag,
@@ -67,15 +74,17 @@ for (const [kind, expected] of Object.entries(expectedKeys)) {
   );
 }
 
-assert.deepEqual(
-  MOBILE_RASTER_EFFECT_KIND_BY_CONTROL_ID,
-  {
-    rasterColorOverlayEnabled: "color-overlay",
-    rasterOuterShadowEnabled: "outer-shadow",
-    rasterInnerShadowEnabled: "inner-shadow",
-    rasterBevelEnabled: "bevel",
-  },
-  "the four existing Tools cards must route to their matching sheet",
+for (const kind of ["color-overlay", "outer-shadow", "inner-shadow", "bevel"]) {
+  assert.match(
+    html,
+    new RegExp(`data-mobile-effect-kind="${kind}"`),
+    `${kind} must route directly from its visible Tools card`,
+  );
+}
+assert.doesNotMatch(
+  html,
+  /data-mobile-effect-control=/,
+  "effect cards must not route through hidden checkbox IDs",
 );
 
 assert.deepEqual(
@@ -316,13 +325,18 @@ assert.doesNotMatch(
 
 assert.match(
   main,
-  /mobileRasterEffectsSheet\s*=\s*new MobileRasterEffectsSheetController\(\{[\s\S]*?getColorOverlayStyle:\s*\(\)\s*=>\s*engine\.getRasterColorOverlayStyle\(\)[\s\S]*?applyColorOverlayStyle:\s*applyRasterColorOverlayStyle[\s\S]*?getOuterShadowStyle:\s*\(\)\s*=>\s*engine\.getRasterOuterShadowStyle\(\)[\s\S]*?applyOuterShadowStyle:\s*applyRasterOuterShadowStyle[\s\S]*?getInnerShadowStyle:\s*\(\)\s*=>\s*engine\.getRasterInnerShadowStyle\(\)[\s\S]*?applyInnerShadowStyle:\s*applyRasterInnerShadowStyle[\s\S]*?getBevelStyle:\s*\(\)\s*=>\s*engine\.getRasterBevelStyle\(\)[\s\S]*?applyBevelStyle:\s*applyRasterBevelStyle/,
+  /mobileRasterEffectsSheet\s*=\s*new MobileRasterEffectsSheetController\(\{[\s\S]*?getColorOverlayStyle:\s*\(\)\s*=>\s*rasterStyleController\.getColorOverlayStyle\(\)[\s\S]*?applyColorOverlayStyle:\s*\(style\)\s*=>\s*rasterStyleController\.applyColorOverlayStyle\(style\)[\s\S]*?getOuterShadowStyle:\s*\(\)\s*=>\s*rasterStyleController\.getOuterShadowStyle\(\)[\s\S]*?applyOuterShadowStyle:\s*\(style\)\s*=>\s*rasterStyleController\.applyOuterShadowStyle\(style\)[\s\S]*?getInnerShadowStyle:\s*\(\)\s*=>\s*rasterStyleController\.getInnerShadowStyle\(\)[\s\S]*?applyInnerShadowStyle:\s*\(style\)\s*=>\s*rasterStyleController\.applyInnerShadowStyle\(style\)[\s\S]*?getBevelStyle:\s*\(\)\s*=>\s*rasterStyleController\.getBevelStyle\(\)[\s\S]*?applyBevelStyle:\s*\(style\)\s*=>\s*rasterStyleController\.applyBevelStyle\(style\)/,
   "mobile controls must be a view over the four existing authoritative style records",
 );
 assert.match(
+  editorToolsSource + main,
+  /const kind = button\.dataset\.mobileEffectKind;[\s\S]*?isEditorRasterEffectKind\(kind\)[\s\S]*?openRasterEffect\(kind, button\)[\s\S]*?openRasterEffect: \(kind, trigger\)[\s\S]*?mobileRasterEffectsSheet\?\.open\(kind, trigger\)/,
+  "each Effects card must open its editor through a typed effect kind",
+);
+assert.doesNotMatch(
   main,
-  /const effectKind = controlId[\s\S]*?MOBILE_RASTER_EFFECT_KIND_BY_CONTROL_ID[\s\S]*?if \(effectKind && mobileRasterEffectsSheet\) \{\s*mobileRasterEffectsSheet\.open\(effectKind, button\);\s*return;/,
-  "each Effects card must open its editor without clicking the old checkbox",
+  /MOBILE_RASTER_EFFECT_KIND_BY_CONTROL_ID|document\.getElementById\(controlId\)|control\.click\(\)/,
+  "effect routing must not retain the hidden-control bus",
 );
 for (const [name, engineMethod] of [
   ["ColorOverlay", "setRasterColorOverlayStyle"],
@@ -331,8 +345,8 @@ for (const [name, engineMethod] of [
   ["Bevel", "setRasterBevelStyle"],
 ]) {
   assert.match(
-    main,
-    new RegExp(`async function applyRaster${name}Style\\([\\s\\S]*?engine\\.${engineMethod}\\(style\\)`),
+    rasterStyleSource,
+    new RegExp(`apply${name}Style\\([\\s\\S]*?this\\.options\\.engine\\.${engineMethod}\\(style\\)`),
     `${name} must route through the existing BrushEngine setter`,
   );
 }
@@ -347,7 +361,7 @@ assert.match(
 );
 assert.match(
   controllerSource,
-  /this\.content\.addEventListener\("change"[\s\S]*?control\.type === "range" \|\| control\.type === "color"[\s\S]*?this\.draft\?\.kind === this\.activeKind[\s\S]*?this\.draft\.inputKey === key[\s\S]*?cancelAnimationFrame\(this\.applyFrame\)[\s\S]*?this\.flushDraft\(\)[\s\S]*?else \{[\s\S]*?this\.handleControl\(control, false\)/,
+  /this\.content\.addEventListener\("change"[\s\S]*?control\.type === "range" \|\| control\.type === "color"[\s\S]*?this\.draft\?\.kind === this\.activeKind[\s\S]*?this\.draft\.inputKey === key[\s\S]*?this\.options\.browser\.cancelAnimationFrame\(this\.applyFrame\)[\s\S]*?this\.flushDraft\(\)[\s\S]*?else \{[\s\S]*?this\.handleControl\(control, false\)/,
   "range/color change must flush an existing input draft or process browsers that emit change only",
 );
 assert.doesNotMatch(
@@ -405,6 +419,14 @@ assert.doesNotMatch(
   "the controller may depend on style contracts only, never renderer or engine internals",
 );
 assert.doesNotMatch(controllerSource, /setInterval\(/, "the effect sheet must not add polling");
+assert.match(controllerSource, /readonly root: ParentNode;[\s\S]*?readonly browser: Window;[\s\S]*?readonly document: Document;/);
+assert.match(controllerSource, /root\.querySelector<HTMLElement>\(`/);
+assert.doesNotMatch(controllerSource, /document\.getElementById|\bwindow\./);
+assert.match(
+  main,
+  /new MobileRasterEffectsSheetController\(\{[\s\S]*?root: element<HTMLElement>\("mobileRasterEffectSheet"\),[\s\S]*?browser: window,[\s\S]*?document,/,
+  "the composition root must provide the effect sheet DOM and browser dependencies",
+);
 assert.match(
   controllerSource,
   /for \(const region of \[this\.scroll, this\.enabledControl\]\)[\s\S]*?toggleAttribute\("inert", minimized\)[\s\S]*?setAttribute\("aria-hidden", String\(minimized\)\)/,

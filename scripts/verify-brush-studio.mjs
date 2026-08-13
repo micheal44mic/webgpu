@@ -1,15 +1,21 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { createServer } from "vite";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const html = readFileSync(`${root}/index.html`, "utf8");
 const main = readFileSync(`${root}/src/main.ts`, "utf8");
 const studio = readFileSync(`${root}/src/mobile-brush-studio.ts`, "utf8");
+const library = readFileSync(`${root}/src/brush-library-controller.ts`, "utf8");
 const storage = readFileSync(`${root}/src/brush-studio-storage.ts`, "utf8");
 const transfer = readFileSync(`${root}/src/brush-studio-transfer.ts`, "utf8");
 const engine = readFileSync(`${root}/src/brush-engine.ts`, "utf8");
 const previewRenderer = readFileSync(`${root}/src/brush-stroke-preview-renderer.ts`, "utf8");
+const brushSettingsController = readFileSync(
+  `${root}/src/brush-settings-controller.ts`,
+  "utf8",
+);
 
 for (const id of [
   "mobileBrushStudioSheet",
@@ -44,10 +50,10 @@ assert.doesNotMatch(
   /Hardness/i,
   "Paint Hardness must not be exposed in Brush Studio",
 );
-assert.match(main, /brushId === activeMobileBrushLibraryBrushId[\s\S]*?studio\.open\(/);
-assert.match(studio, /this\.cancelButton\.addEventListener\("click"/);
-assert.match(studio, /this\.doneButton\.addEventListener\("click"/);
-assert.match(studio, /requestAnimationFrame\(\(\) => \{[\s\S]*?this\.applyDraftNow\(\)/);
+assert.match(library, /brushId === this\.activeBrushId[\s\S]*?studio\.open\(/);
+assert.match(studio, /this\.listen\(this\.cancelButton, "click"/);
+assert.match(studio, /this\.listen\(this\.doneButton, "click"/);
+assert.match(studio, /this\.browser\.requestAnimationFrame\(\(\) => \{[\s\S]*?this\.applyDraftNow\(\)/);
 assert.match(studio, /this\.cancel\(true\)/, "drag-close must use Cancel semantics");
 assert.match(studio, /saveBrushStudioSavedBrush/);
 assert.match(storage, /window\.indexedDB\.open/);
@@ -66,8 +72,15 @@ assert.match(storage, /transaction\.addEventListener\("complete"/);
 assert.match(storage, /export function deleteBrushStudioSavedBrush/);
 assert.match(html, /id="mobileBrushStudioName"[\s\S]*?maxlength="48"/);
 assert.match(html, /id="mobileBrushStudioSpacing"[^>]*max="99"/);
-assert.match(html, /id="spacing"[^>]*max="99"/);
-assert.match(main, /spacing\.max = blend \? "400" : "99"/);
+assert.doesNotMatch(
+  main,
+  /readBrushSettings|applyBrushControls/,
+  "Brush Library and Studio must not use hidden form controls as state",
+);
+assert.match(main, /applyBrushSettings\(settings: Readonly<BrushSettings>\)/);
+assert.match(main, /brushSettingsController\.replace\(settings\)/);
+assert.match(brushSettingsController, /spacingPercent: 10,[\s\S]*?flow: 0\.45/);
+assert.match(brushSettingsController, /selectTool\(tool: BrushTool, restoreSnapshot: boolean\)/);
 assert.match(engine, /tool === "blend" \? 400 : 99/);
 assert.match(
   transfer,
@@ -79,53 +92,65 @@ assert.match(html, /id="mobileBrushLibraryExport"[\s\S]*?aria-label="Export sele
 assert.match(html, /id="mobileBrushLibraryImportFile"[\s\S]*?\.m1m4brush/);
 assert.match(html, /id="mobileBrushLibraryImportFile"[\s\S]*?application\/octet-stream/);
 assert.match(
-  main,
-  /restoredMobileBrushLibraryBrushId[\s\S]*?activeMobileBrushLibraryBrushId[\s\S]*?restoredMobileBrushLibraryBrushId/,
+  library,
+  /const candidate = restored\?\.activeBrushId;[\s\S]*?this\.activeBrushId = candidate[\s\S]*?candidate as BrushLibraryBrushId/,
   "the last active saved brush must remain selected after refresh",
 );
+const studioCommitStart = library.indexOf("private async commitStudioBrush(");
+const studioCommitEnd = library.indexOf("private finishStudioCommit(", studioCommitStart);
+assert.ok(
+  studioCommitStart >= 0 && studioCommitEnd > studioCommitStart,
+  "Brush Studio async catalog commit callback missing",
+);
+const studioCommit = library.slice(studioCommitStart, studioCommitEnd);
 assert.match(
-  main,
-  /onCommit: \(brushId, brushName,[\s\S]*?saveBrushStudioLibraryState\(committedBrushId, nextCustomBrushes\)/,
+  studioCommit,
+  /saveBrushStudioLibraryState\(committedId, next\)/,
   "Done must atomically persist the custom catalog and its active card",
 );
 assert.match(
-  main,
-  /onCommit: \(brushId, brushName,[\s\S]*?loadBrushStudioLibraryState\(\)\?\.customBrushes[\s\S]*?saveBrushStudioLibraryState\(committedBrushId, nextCustomBrushes\)[\s\S]*?onCommitted:/,
+  library,
+  /private latestCatalog\(\)[\s\S]*?loadBrushStudioLibraryState\(\)\?\.customBrushes[\s\S]*?private async commitStudioBrush\([\s\S]*?const latest = this\.latestCatalog\(\)/,
   "each save must merge the latest cross-tab catalog before writing",
 );
+assert.ok(
+  studioCommit.indexOf("ensureCurrentBrushResources")
+    < studioCommit.indexOf("saveBrushStudioLibraryState"),
+  "Brush Studio must make resources ready before publishing the catalog",
+);
 assert.match(
-  main,
-  /createMobileBrushLibraryBrush[\s\S]*?createBrushStudioCustomBrushId\(\)[\s\S]*?createBrushStudioBaseSettings/,
+  library,
+  /private async createBrush[\s\S]*?createBrushStudioCustomBrushId\(\)[\s\S]*?createBrushStudioBaseSettings/,
   "the + action must create an isolated base-brush draft",
 );
 assert.match(
-  main,
-  /exportActiveMobileBrush[\s\S]*?loadBrushStudioSavedBrush[\s\S]*?createBrushStudioTransferBlob/,
+  library,
+  /exportActiveBrush[\s\S]*?loadBrushStudioSavedBrush[\s\S]*?createBrushStudioTransferBlob/,
   "Export must package the selected saved custom brush",
 );
 assert.match(
-  main,
-  /importMobileBrush[\s\S]*?parseBrushStudioTransferBlob[\s\S]*?createBrushStudioCustomBrushId\(\)[\s\S]*?saveBrushStudioAsset[\s\S]*?resolveBrushSettings[\s\S]*?saveBrushStudioLibraryState/,
+  library,
+  /importBrush[\s\S]*?parseBrushStudioTransferBlob[\s\S]*?createBrushStudioCustomBrushId\(\)[\s\S]*?saveBrushStudioAsset[\s\S]*?resolveBrushSettings[\s\S]*?saveBrushStudioLibraryState/,
   "Import must validate and hydrate fresh assets before catalog publication",
 );
 assert.match(
-  main,
-  /rollbackMobileBrushImport[\s\S]*?releasePreviewAssets[\s\S]*?deleteBrushStudioSavedBrush[\s\S]*?deleteBrushStudioAsset/,
+  library,
+  /rollbackImport[\s\S]*?releasePreviewAssets[\s\S]*?deleteBrushStudioSavedBrush[\s\S]*?deleteBrushStudioAsset/,
   "a failed import must roll back every newly allocated resource",
 );
 assert.match(transfer, /BRUSH_STUDIO_TRANSFER_MAX_FILE_BYTES = 42 \* 1024 \* 1024/);
 assert.match(transfer, /validateAssetPairing/);
 assert.match(transfer, /settings must not contain color or tool/);
-const portableImportStart = main.indexOf("async function importMobileBrush(");
-const portableImportEnd = main.indexOf(
-  "async function selectMobileBrushLibraryBrush(",
+const portableImportStart = library.indexOf("private async importBrush(");
+const portableImportEnd = library.indexOf(
+  "private async selectBrush(",
   portableImportStart,
 );
 assert.ok(
   portableImportStart >= 0 && portableImportEnd > portableImportStart,
   "portable brush import section missing",
 );
-const portableImport = main.slice(portableImportStart, portableImportEnd);
+const portableImport = library.slice(portableImportStart, portableImportEnd);
 assert.match(portableImport, /parseBrushStudioTransferBlob\(file\)/);
 assert.match(
   portableImport,
@@ -142,31 +167,42 @@ assert.doesNotMatch(
   /normalizeBrushStudioSourceBlob|normalized(?:Shape|Grain)Asset/,
   "portable assets must not pass through a second lossy Canvas normalization",
 );
-assert.match(main, /rollbackMobileBrushImport[\s\S]*?forgetSettings\(brushId\)/);
-assert.match(main, /mobileBrushLibraryList\.inert = mobileBrushLibraryTransferBusy/);
+assert.match(library, /rollbackImport[\s\S]*?forgetSettings\(brushId\)/);
+assert.match(library, /this\.elements\.list\.inert = busy/);
 assert.match(
   main,
-  /restoreActiveMobileBrushLibraryBrush[\s\S]*?mobileUiMediaQuery\.addEventListener\("change"[\s\S]*?if \(engineInitialized\) void restoreActiveMobileBrushLibraryBrush\(\)/,
-  "a desktop-to-mobile transition must hydrate the active custom brush",
+  /if \(mobileBrushStudio\) \{[\s\S]*?"deferred-brush-restore"[\s\S]*?brushLibraryController\.restoreActiveBrush\(\)/,
+  "the shared editor startup must hydrate the active custom brush on every layout",
 );
+assert.doesNotMatch(main, /mobileUiMediaQuery|mobileMediaQuery/);
 assert.match(
-  main,
-  /mobileBrushLibraryList\.addEventListener\("click"[\s\S]*?selectMobileBrushLibraryBrush\(brushId\)/,
+  library,
+  /this\.elements\.list\.addEventListener\("click", this\.handleListClick\)[\s\S]*?this\.selectBrush\(brushId\)/,
   "dynamic brush cards must select through event delegation",
 );
 assert.match(
-  main,
-  /mobileBrushStudio\.resolveBrushSettings\([\s\S]*?activeMobileBrushLibraryBrushId/,
+  library,
+  /performActiveBrushRestore[\s\S]*?studio\.resolveBrushSettings\(this\.activeBrushId/,
   "startup must restore the active brush instead of always forcing the legacy brush",
 );
 assert.match(
-  main,
-  /async function mobileBrushLibrarySettingsForBrush[\s\S]*?previewIsActive[\s\S]*?resolveBrushSettings\(brushId, fallbackSettings\)/,
+  library,
+  /performBrushSelection[\s\S]*?previousBrushId[\s\S]*?ensureCurrentBrushResources\(\)[\s\S]*?studio\.releasePreviewAssets\(previousBrushId, current\)/,
+  "a successful brush switch must queue the previous custom assets for safe release",
+);
+assert.match(
+  library,
+  /private async settingsForPreview[\s\S]*?brushId === this\.activeBrushId[\s\S]*?resolveBrushSettings\(brushId, fallback\)/,
   "nonactive cards must hydrate saved Shape and Grain assets before preview",
 );
 assert.match(
+  library,
+  /try \{[\s\S]*?this\.previewRenderer\.render\([\s\S]*?\} finally \{[\s\S]*?releasePreviewAssets/,
+  "nonactive preview assets must be released even when rendering fails",
+);
+assert.match(
   studio,
-  /async releasePreviewAssets\([\s\S]*?waitForIdle\(\)[\s\S]*?removeCustomBrushAsset\(assetId\)[\s\S]*?settingsCache\.delete\(brushId\)/,
+  /async releasePreviewAssets\([\s\S]*?transientAssetIds\.add\(assetId\)[\s\S]*?requestTransientAssetRelease\(\)[\s\S]*?settingsCache\.delete\(brushId\)/,
   "hydrated preview assets must be released after their compact card bitmap is ready",
 );
 assert.match(
@@ -186,12 +222,12 @@ assert.match(
 );
 assert.match(
   studio,
-  /normalizedBrushSourceBlob\(decoded\)[\s\S]*?blob: normalizedBlob/,
+  /normalizedBrushSourceBlob\(this\.document, decoded\)[\s\S]*?blob: normalizedBlob/,
   "Shape and Grain must persist their bounded normalized source, not the original file",
 );
 assert.match(
   studio,
-  /brushSourceDimensionsFromBytes\(header\)[\s\S]*?brushSourceResizePlan[\s\S]*?createImageBitmap\(blob,[\s\S]*?resizeWidth: plan\.width/,
+  /brushSourceDimensionsFromBytes\(header\)[\s\S]*?brushSourceResizePlan[\s\S]*?browser\.createImageBitmap\(blob,[\s\S]*?resizeWidth: plan\.width/,
   "large images must be dimension-gated and resized during decode",
 );
 const customSourceDecodeStart = studio.indexOf("async function decodeBrushSource(");
@@ -202,7 +238,7 @@ assert.ok(
 );
 const customSourceDecode = studio.slice(customSourceDecodeStart, customSourceDecodeEnd);
 const customBitmapDecodeMatch = customSourceDecode.match(
-  /source\s*=\s*await createImageBitmap\(blob,\s*\{([\s\S]*?)\}\s*\);/,
+  /source\s*=\s*await browser\.createImageBitmap\(blob,\s*\{([\s\S]*?)\}\s*\);/,
 );
 assert.ok(customBitmapDecodeMatch, "primary custom Shape/Grain bitmap decode missing");
 const customBitmapDecodeOptions = customBitmapDecodeMatch[1];
@@ -243,7 +279,7 @@ assert.doesNotMatch(
 );
 assert.match(
   studio,
-  /for \(const id of additionalCandidates\) this\.transientAssetIds\.add\(id\)/,
+  /for \(const id of supersededAssetIds\) this\.transientAssetIds\.add\(id\)[\s\S]*?requestTransientAssetRelease\(\)/,
   "superseded registry assets must remain queued until release succeeds",
 );
 assert.doesNotMatch(
@@ -251,7 +287,59 @@ assert.doesNotMatch(
   /rememberSettings\("current", engine\.getSettings\(\)\)/,
   "landscape bootstrap must not shadow the persisted Default Brush before portrait restore",
 );
-assert.match(studio, /readonly previewRenderer: AuthoritativeBrushStrokePreviewRenderer/);
+assert.match(studio, /readonly previewRenderer: MobileBrushStudioPreviewPort/);
+assert.match(studio, /readonly engine: MobileBrushStudioEnginePort/);
+assert.match(studio, /readonly root: HTMLElement/);
+assert.doesNotMatch(studio, /import type \{ BrushEngine \}/);
+assert.doesNotMatch(studio, /AuthoritativeBrushStrokePreviewRenderer/);
+assert.match(studio, /requiredDescendant<T extends HTMLElement>\(root: HTMLElement/);
+assert.doesNotMatch(studio, /document\.getElementById|document\.querySelector/);
+assert.match(studio, /target\.addEventListener\(type, listener as EventListener, \{[\s\S]*?signal:/);
+assert.match(
+  studio,
+  /dispose\(\): Promise<void> \{[\s\S]*?this\.disposed = true[\s\S]*?eventAbortController\.abort\(\)[\s\S]*?commitPromise[\s\S]*?importPromise[\s\S]*?requestTransientAssetRelease/,
+  "Brush Studio must tear down listeners, scheduled work and transient assets",
+);
+assert.doesNotMatch(
+  studio.slice(studio.indexOf("dispose(): Promise<void>"), studio.indexOf("rememberSettings(")),
+  /transientAssetIds\.clear\(\)/,
+  "teardown must preserve asset ids still retained by GPU resources or History",
+);
+assert.match(
+  studio,
+  /private setBusy\(busy: boolean\)[\s\S]*?cancelButton\.disabled = busy[\s\S]*?handle\.disabled = busy[\s\S]*?scrollElement\.inert = busy[\s\S]*?tab\.disabled = busy/,
+  "saving/importing must lock the complete interactive Studio surface",
+);
+assert.match(
+  studio,
+  /private schedulePreview\(\)[\s\S]*?previewDirty = true[\s\S]*?previewInFlight[\s\S]*?renderPreview\(\)\.finally/,
+  "Studio preview must allow at most one render with one dirty rerun",
+);
+assert.match(
+  main,
+  /new MobileBrushStudioController\(\{[\s\S]*?root: element<HTMLElement>\("mobileBrushStudioSheet"\)[\s\S]*?appRoot: appElement[\s\S]*?browser: window/,
+  "the composition root must inject the Studio DOM/browser boundary",
+);
+assert.match(
+  main,
+  /new MobileBrushStudioController\(\{[\s\S]*?engine: \{[\s\S]*?getSettings:[\s\S]*?registerCustomShapeAsset:[\s\S]*?removeCustomBrushAsset:[\s\S]*?waitForIdle:/,
+  "the composition root must adapt BrushEngine to the narrow Studio port",
+);
+assert.match(
+  main,
+  /function nonHistoryOperationLocked[\s\S]*?mobileBrushStudio\?\.isOpen === true/,
+  "Undo/Redo and document operations must remain locked for the whole Studio session",
+);
+assert.match(
+  main,
+  /onStateChange: \(state\) => \{[\s\S]*?mobileBrushStudio\?\.retryPendingAssetRelease\(\)/,
+  "History publication must retry assets that an older journal entry retained",
+);
+assert.match(
+  main,
+  /window\.addEventListener\("pagehide"[\s\S]*?mobileBrushStudio\?\.dispose\(\)/,
+  "the composition root must dispose Brush Studio on page teardown",
+);
 const renderStart = studio.indexOf("private async renderPreview(): Promise<void>");
 const renderEnd = studio.indexOf("private async commit(): Promise<void>", renderStart);
 assert.ok(renderStart >= 0 && renderEnd > renderStart, "authoritative Studio render section missing");
@@ -283,5 +371,184 @@ assert.match(previewRenderer, /packStampsIntoUpload\(/);
 assert.match(engine, /registerCustomShapeAsset\(/);
 assert.match(engine, /registerCustomGrainAsset\(/);
 assert.match(engine, /hardness: tool === "paint" \? 1/);
+
+const moduleServer = await createServer({
+  appType: "custom",
+  configFile: false,
+  logLevel: "silent",
+  root,
+  server: { middlewareMode: true },
+});
+let MobileBrushStudioController;
+try {
+  ({ MobileBrushStudioController } = await moduleServer.ssrLoadModule(
+    "/src/mobile-brush-studio.ts",
+  ));
+} finally {
+  await moduleServer.close();
+}
+
+// Teardown is an idempotent ownership boundary: the draft is restored once,
+// listeners are aborted once, in-flight persistence settles, and failed asset
+// ids remain queued for a later History/resource retry.
+{
+  let closeCount = 0;
+  let abortCount = 0;
+  let releaseCount = 0;
+  const applied = [];
+  let finishCommit;
+  let finishImport;
+  const commitPromise = new Promise((resolve) => { finishCommit = resolve; });
+  const importPromise = new Promise((resolve) => { finishImport = resolve; });
+  const controller = Object.assign(
+    Object.create(MobileBrushStudioController.prototype),
+    {
+      disposed: false,
+      disposePromise: null,
+      openState: true,
+      originalSettings: { tool: "paint", color: "#123456" },
+      importRevision: 4,
+      sourcePreviewRevision: 8,
+      commitPromise,
+      importPromise,
+      options: { applySettings: (settings) => applied.push(settings) },
+      eventAbortController: { abort: () => { abortCount += 1; } },
+      closeSheet() {
+        closeCount += 1;
+        this.openState = false;
+      },
+      cancelScheduledWork() {
+        assert.fail("open teardown must close through the shared sheet lifecycle");
+      },
+      async requestTransientAssetRelease() {
+        releaseCount += 1;
+      },
+      settingsCache: new Map([["brush", {}]]),
+      importedAssets: new Map([["asset", {}]]),
+      transientAssetIds: new Set(["asset"]),
+      imagePromises: new Map([["image", Promise.resolve({})]]),
+      sourceCanvases: new Map([["canvas", {}]]),
+      resolvedSources: new Map([["source", {}]]),
+    },
+  );
+  const firstDispose = controller.dispose();
+  const secondDispose = controller.dispose();
+  assert.equal(firstDispose, secondDispose);
+  assert.equal(controller.disposed, true);
+  assert.equal(controller.settingsCache.size, 1, "cleanup ran before persistence settled");
+  finishCommit();
+  await Promise.resolve();
+  assert.equal(releaseCount, 0, "asset sweep ran before import settled");
+  finishImport();
+  await firstDispose;
+  assert.equal(closeCount, 1);
+  assert.equal(abortCount, 1);
+  assert.equal(releaseCount, 1);
+  assert.equal(applied.length, 1);
+  assert.equal(controller.importRevision, 5);
+  assert.equal(controller.sourcePreviewRevision, 9);
+  assert.equal(controller.settingsCache.size, 0);
+  assert.equal(controller.importedAssets.size, 0);
+  assert.equal(controller.transientAssetIds.size, 1);
+  assert.equal(controller.imagePromises.size, 0);
+  assert.equal(controller.sourceCanvases.size, 0);
+  assert.equal(controller.resolvedSources.size, 0);
+}
+
+// Cancel cannot race an import/catalog commit and restore stale settings while
+// the durable operation is still running.
+{
+  const controller = Object.assign(
+    Object.create(MobileBrushStudioController.prototype),
+    {
+      openState: true,
+      busy: true,
+      importRevision: 3,
+      cancelScheduledWork: () => assert.fail("busy Cancel must be ignored"),
+      closeSheet: () => assert.fail("busy Cancel must not close the Studio"),
+      options: {
+        applySettings: () => assert.fail("busy Cancel must not restore settings"),
+        setBrushLibraryOpen: () => assert.fail("busy Cancel must not reopen Library"),
+      },
+    },
+  );
+  controller.cancel(true);
+  assert.equal(controller.openState, true);
+  assert.equal(controller.importRevision, 3);
+}
+
+// Registry removal failures caused by active GPU/History references stay in a
+// serialized retry queue and disappear only after the engine accepts removal.
+{
+  let attempts = 0;
+  const controller = Object.assign(
+    Object.create(MobileBrushStudioController.prototype),
+    {
+      transientAssetIds: new Set(["custom-shape:retry"]),
+      assetReleaseRequested: false,
+      assetReleasePromise: null,
+      importedAssets: new Map([["custom-shape:retry", {}]]),
+      sourceCanvases: new Map([["custom-shape:retry", {}]]),
+      resolvedSources: new Map([["custom-shape:retry", {}]]),
+      options: {
+        engine: {
+          waitForIdle: async () => {},
+          getSettings: () => ({
+            shapeAssetId: "legacy-shape",
+            grainAssetId: "pencil-grain",
+          }),
+          removeCustomBrushAsset: () => {
+            attempts += 1;
+            if (attempts === 1) throw new Error("retained by History");
+            return true;
+          },
+        },
+      },
+    },
+  );
+  await controller.requestTransientAssetRelease();
+  assert.equal(controller.transientAssetIds.has("custom-shape:retry"), true);
+  await controller.requestTransientAssetRelease();
+  assert.equal(controller.transientAssetIds.size, 0);
+  assert.equal(attempts, 2);
+}
+
+// Preview requests collapse to one active render and at most one dirty rerun.
+{
+  const frames = [];
+  const renders = [];
+  let finishRender;
+  const controller = Object.assign(
+    Object.create(MobileBrushStudioController.prototype),
+    {
+      disposed: false,
+      openState: true,
+      previewFrame: null,
+      previewInFlight: false,
+      previewDirty: false,
+      browser: {
+        requestAnimationFrame: (callback) => {
+          frames.push(callback);
+          return frames.length;
+        },
+      },
+      renderPreview() {
+        renders.push(renders.length + 1);
+        return new Promise((resolve) => { finishRender = resolve; });
+      },
+    },
+  );
+  controller.schedulePreview();
+  controller.schedulePreview();
+  assert.equal(frames.length, 1);
+  frames.shift()(0);
+  assert.equal(renders.length, 1);
+  controller.schedulePreview();
+  assert.equal(frames.length, 0);
+  finishRender();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(frames.length, 1);
+}
 
 console.log("Brush Studio verification passed.");

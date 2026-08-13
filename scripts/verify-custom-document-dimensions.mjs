@@ -406,6 +406,7 @@ assert.throws(
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const startupSource = read("../src/startup.ts");
 const mainSource = read("../src/main.ts");
+const projectSessionSource = read("../src/project-session-controller.ts");
 const projectRuntimeSource = read("../src/engine-project-runtime.ts");
 const coldStorageSource = read("../src/engine-cold-storage.ts");
 const brushEngineSource = read("../src/brush-engine.ts");
@@ -437,15 +438,18 @@ assert.doesNotMatch(
   "A single 4096 edge must not make an otherwise invalid rectangle routable.",
 );
 
-const updateProjectUrlStart = mainSource.indexOf("function updateProjectUrl(");
-const updateProjectUrlEnd = mainSource.indexOf("\nasync function saveCurrentProject", updateProjectUrlStart);
+const updateProjectUrlStart = projectSessionSource.indexOf("private updateUrl(");
+const updateProjectUrlEnd = projectSessionSource.indexOf(
+  "\n  private syncSaveControl",
+  updateProjectUrlStart,
+);
 assert.ok(updateProjectUrlStart >= 0 && updateProjectUrlEnd > updateProjectUrlStart);
-const updateProjectUrlSource = mainSource.slice(updateProjectUrlStart, updateProjectUrlEnd);
+const updateProjectUrlSource = projectSessionSource.slice(updateProjectUrlStart, updateProjectUrlEnd);
 assert.match(updateProjectUrlSource, /searchParams\.set\("documentWidth"/,
   "Saved-project URLs must retain the authoritative width.");
 assert.match(updateProjectUrlSource, /searchParams\.set\("documentHeight"/,
   "Saved-project URLs must retain the authoritative height.");
-assert.match(updateProjectUrlSource, /DOCUMENT_WIDTH === DOCUMENT_HEIGHT/,
+assert.match(updateProjectUrlSource, /this\.documentWidth === this\.documentHeight/,
   "The legacy documentSize alias may only be emitted for square documents.");
 assert.match(updateProjectUrlSource, /searchParams\.delete\("documentSize"\)/,
   "Rectangular saved-project URLs must remove a stale square alias.");

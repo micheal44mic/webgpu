@@ -171,11 +171,12 @@ assert.match(blendRendererSource, /private depositPipelines!:/);
 assert.match(blendRendererSource, /blendCustomShape: shape === "shape" \? 1 : 0/);
 assert.match(blendRendererSource, /blendGrainEnabled: grain === "on" \? 1 : 0/);
 assert.match(blendRendererSource, /encode\(\s*encoder: GPUCommandEncoder,/);
-const blendEncodeStart = blendRendererSource.indexOf("  encode(\n    encoder: GPUCommandEncoder");
-const blendEncodeEnd = blendRendererSource.indexOf("\n  memoryMiB(): number", blendEncodeStart);
-assert(blendEncodeStart >= 0 && blendEncodeEnd > blendEncodeStart);
+const blendEncodeMatch = blendRendererSource.match(
+  /(?:^|\r?\n)  encode\(\s*encoder: GPUCommandEncoder,[\s\S]*?(?=\r?\n  memoryMiB\(\): number)/,
+);
+assert.ok(blendEncodeMatch, "DryBlendRenderer.encode method missing");
 assert.doesNotMatch(
-  blendRendererSource.slice(blendEncodeStart, blendEncodeEnd),
+  blendEncodeMatch[0],
   /queue\.submit/,
   "encode deve lasciare il submit al command buffer proprietario",
 );

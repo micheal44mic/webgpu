@@ -335,11 +335,11 @@ assert.throws(
 );
 
 const workbenchSource = readFileSync(new URL("../src/effects-workbench.ts", import.meta.url), "utf8");
-const benchmarkSource = readFileSync(new URL("../src/effects-benchmark.ts", import.meta.url), "utf8");
+const benchmarkSource = readFileSync(new URL("../src/labs/benchmarks/effects-benchmark.ts", import.meta.url), "utf8");
 const rendererSource = readFileSync(new URL("../src/bevel-renderer.ts", import.meta.url), "utf8");
 const styleStackSource = readFileSync(new URL("../src/stroke-renderer.ts", import.meta.url), "utf8");
 const bboxGoldenSource = readFileSync(
-  new URL("../src/bevel-bbox-golden.ts", import.meta.url),
+  new URL("../src/labs/goldens/bevel-bbox-golden.ts", import.meta.url),
   "utf8",
 );
 assert(rendererSource.includes("raster-bevel-webgpu-v5-bbox-field-shared-effects-scratch-retargetable-layer"));

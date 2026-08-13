@@ -19,9 +19,11 @@ const journal = read("../src/history-journal.ts");
 const storage = read("../src/history-storage-coordinator.ts");
 const maintenance = read("../src/history-maintenance-runtime.ts");
 const mixed = read("../src/mixed-scene-stack.ts");
-const gpuHistoryTest = read("../src/layer-history-gpu-test.ts");
+const gpuHistoryTest = read("../src/labs/gpu/layer-history-gpu-test.ts");
 const html = read("../index.html");
 const main = read("../src/main.ts");
+const panel = read("../src/layer-panel-controller.ts");
+const sceneEditor = read("../src/scene-editor-controller.ts");
 
 assert.equal(uniqueLayerDuplicateName("Ink", ["Ink"]), "Ink copia");
 assert.equal(
@@ -118,18 +120,22 @@ assert.equal(sparse.steadyBytes, 512);
 assert.equal(sparse.peakBytes, 4608);
 
 assert.match(html, /id="mobileCopyLayer"[\s\S]*?aria-label="Duplicate selected layer"/);
-assert.match(main, /mobileCopyLayerButton\.addEventListener\("click"/);
-assert.match(main, /await engine\.duplicateSelectedLayer\(\)/);
-const mobileLayerRenderStart = main.indexOf("function syncMobileLayerToolbarState(");
-const mobileLayerRenderEnd = main.indexOf("function runMobileLayerAction(", mobileLayerRenderStart);
-const mobileLayerRender = main.slice(mobileLayerRenderStart, mobileLayerRenderEnd);
-assert.ok(mobileLayerRenderStart >= 0 && mobileLayerRenderEnd > mobileLayerRenderStart);
-assert.match(mobileLayerRender, /mobileCopyLayerButton\.disabled = mobileLayerMultiSelectEnabled/);
-assert.doesNotMatch(mobileLayerRender, /mobileCopyLayerButton\.disabled = true;/);
-assert.match(main, /layerSwitching = true;[\s\S]*?renderMobileLayerList\(beforeStats\);[\s\S]*?await engine\.duplicateSelectedLayer\(\)/);
-assert.match(main, /setMobileLayerMergeStatus\(message, true\)/);
-assert.match(main, /\.mobile-layer-row\.is-active-layer \.mobile-layer-select/);
-assert.match(main, /mobileLayerMultiSelectButton\.disabled[\s\S]*?\|\| layerSwitching[\s\S]*?\|\| interactionLocked\(\)/);
+assert.match(panel, /this\.listen\(elements\.copyButton, "click"/);
+assert.match(sceneEditor, /await this\.options\.engine\.duplicateSelectedLayer\(\)/);
+const toolbarStart = panel.indexOf("private syncToolbar(");
+const toolbarEnd = panel.indexOf("private createIconStack(", toolbarStart);
+const toolbar = panel.slice(toolbarStart, toolbarEnd);
+assert.ok(toolbarStart >= 0 && toolbarEnd > toolbarStart);
+assert.match(toolbar, /copyButton\.disabled = this\.multiSelectEnabled[\s\S]*?\|\| locked/);
+assert.doesNotMatch(toolbar, /copyButton\.disabled = true;/);
+assert.match(
+  sceneEditor,
+  /async duplicateSelectedLayer\(\)[\s\S]*?this\.beginOrThrow\([\s\S]*?await this\.options\.engine\.duplicateSelectedLayer\(\)/,
+);
+assert.match(panel, /this\.setMergeStatus\(message, true\)/);
+assert.match(panel, /\.mobile-layer-row\.is-active-layer \.mobile-layer-select/);
+assert.match(toolbar, /multiSelectButton\.disabled = locked/);
+assert.match(panel, /this\.options\.thumbnails\.copyRasterEntry/);
 assert.match(gpuHistoryTest, /const duplicateResult = await engine\.duplicateSelectedLayer\(\)/);
 assert.match(gpuHistoryTest, /duplicateWasInitiallyByteExact/);
 assert.match(gpuHistoryTest, /duplicatePaintUndoUsedSeedByteExactly/);

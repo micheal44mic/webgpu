@@ -1,0 +1,53 @@
+import type { BrushEngine } from "./brush-engine";
+import type { BrushEngineOptions, BrushSettings } from "./engine-types";
+import type { EngineStats } from "./engine-stats";
+import type { MixedVectorTextController } from "./mixed-vector-text-controller";
+import type { PointerSample } from "./engine-types";
+
+/**
+ * Neutral, optional seam for development tooling.
+ *
+ * Production does not import any lab implementation. A dedicated entry may
+ * register a factory before loading the editor; the editor then exposes only
+ * the capabilities listed here.
+ */
+export interface EditorExtensionHost {
+  readonly engine: BrushEngine;
+  readonly canvas: HTMLCanvasElement;
+  ensureVectorTextController(): Promise<MixedVectorTextController>;
+  applyBrushSettings(settings: BrushSettings): void;
+  collectInputDiagnostics(): Readonly<Record<string, unknown>>;
+  refreshControls(): void;
+  refreshStats(stats?: EngineStats): void;
+  setStatus(message: string, kind?: "working" | "ok" | "error"): void;
+}
+
+export interface EditorExtension {
+  isBusy(): boolean;
+  syncControls(editorLocked: boolean): void;
+  afterEngineInitialized(): Promise<void>;
+  handleEngineInitializationError(error: unknown): void;
+  wantsPaintRecording?(): boolean;
+  beginPaintRecording?(event: PointerEvent, sample: PointerSample): void;
+  capturePaintRecording?(
+    events: readonly PointerEvent[],
+    samples: readonly PointerSample[],
+  ): void;
+  finishPaintRecording?(commit: boolean): void;
+  cancelPaintRecording?(): void;
+}
+
+export interface EditorExtensionBootstrap {
+  readonly engineOptions?: Partial<BrushEngineOptions>;
+  readonly vectorTextClippedRefreshPolicy?: "during-gesture" | "on-release";
+  readonly create: (host: EditorExtensionHost) => EditorExtension;
+}
+
+declare global {
+  interface Window {
+    __editorExtensionBootstrap?: EditorExtensionBootstrap;
+    __editorLabReport?: unknown;
+  }
+}
+
+export {};

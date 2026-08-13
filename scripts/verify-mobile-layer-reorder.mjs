@@ -15,6 +15,7 @@ import {
 
 const root = new URL("../", import.meta.url);
 const main = readFileSync(new URL("src/main.ts", root), "utf8");
+const controller = readFileSync(new URL("src/layer-panel-controller.ts", root), "utf8");
 const css = readFileSync(new URL("src/styles.css", root), "utf8");
 const html = readFileSync(new URL("index.html", root), "utf8");
 
@@ -88,50 +89,55 @@ assert.match(
   /\.mobile-layer-context-menu\s*\{[\s\S]*?position:\s*absolute;[\s\S]*?background:\s*var\(--app-background\);/,
 );
 assert.match(css, /touch-action: none/);
-assert.match(main, /setPointerCapture\(event\.pointerId\)/);
-assert.match(main, /MOBILE_LAYER_REORDER_HOLD_MS/);
+assert.match(controller, /setPointerCapture\(event\.pointerId\)/);
+assert.match(controller, /MOBILE_LAYER_REORDER_HOLD_MS/);
 assert.match(
-  main,
-  /function armMobileLayerContextGesture\(\)[\s\S]*?openMobileLayerContextMenu\(gesture\.key, gesture\.row\)[\s\S]*?gesture\.phase = "armed"/,
+  controller,
+  /private armContextGesture\(\)[\s\S]*?this\.openContextMenu\(gesture\.key, gesture\.row\)[\s\S]*?gesture\.phase = "armed"/,
   "a stationary hold must open the menu before it becomes a reorder gesture",
 );
 assert.match(
-  main,
-  /gesture\.phase === "armed"[\s\S]*?mobileLayerReorderMovementExceeded[\s\S]*?activateMobileLayerReorderGesture\(\)/,
+  controller,
+  /gesture\.phase === "armed"[\s\S]*?mobileLayerReorderMovementExceeded[\s\S]*?this\.activateReorder\(\)/,
   "continuing the same held gesture beyond the slop must transition to reorder",
 );
 assert.match(
-  main,
-  /gesture\.phase === "pending"[\s\S]*?mobileLayerReorderHoldReached\(gesture\.startTime, performance\.now\(\)\)[\s\S]*?armMobileLayerContextGesture\(\)/,
+  controller,
+  /gesture\.phase === "pending"[\s\S]*?mobileLayerReorderHoldReached\([\s\S]*?gesture\.startTime,[\s\S]*?this\.options\.browser\.performance\.now\(\)[\s\S]*?this\.armContextGesture\(\)/,
   "pointer-up must recover a long press when the browser throttles the hold timer",
 );
 assert.match(
-  main,
-  /mobileLayerOptionsButton\.addEventListener\("click"[\s\S]*?open\("layer-options"/,
+  controller + main,
+  /this\.options\.openLayerOptions\([\s\S]*?openLayerOptions:[\s\S]*?open\("layer-options"/,
   "Options must route to the shared compact bottom sheet",
 );
-assert.match(main, /mobileLayerReorderAutoScrollVelocity/);
-assert.match(main, /event\.altKey[\s\S]*?ArrowUp[\s\S]*?ArrowDown/);
+assert.match(controller, /mobileLayerReorderAutoScrollVelocity/);
+assert.match(controller, /event\.altKey[\s\S]*?ArrowUp[\s\S]*?ArrowDown/);
 assert.match(
-  main,
-  /mobileLayerReorderGesture !== null[\s\S]*?event\.altKey[\s\S]*?ArrowUp[\s\S]*?ArrowDown[\s\S]*?event\.preventDefault\(\);[\s\S]*?return;/,
+  controller,
+  /this\.reorderGesture !== null[\s\S]*?event\.altKey[\s\S]*?ArrowUp[\s\S]*?ArrowDown[\s\S]*?event\.preventDefault\(\);[\s\S]*?return;/,
   "Alt+Arrow must be consumed while a pointer reorder is pending or dragging",
 );
 assert.match(
-  main,
-  /const focusWasInside = mobileLayersPanel\.contains\(document\.activeElement\)[\s\S]*?cancelMobileLayerReorderGesture\(false, true, false\);[\s\S]*?mobileLayersMenuButton\.focus\(\{ preventScroll: true \}\);[\s\S]*?removeAttribute\("inert"\)[\s\S]*?setAttribute\("inert", ""\)[\s\S]*?setAttribute\("aria-hidden", String\(!open\)\)/,
+  controller,
+  /const focusWasInside = panel\.contains\(this\.options\.document\.activeElement\)[\s\S]*?this\.cancelReorder\(false, true, false\);[\s\S]*?trigger\.focus\(\{ preventScroll: true \}\);[\s\S]*?removeAttribute\("inert"\)[\s\S]*?setAttribute\("inert", ""\)[\s\S]*?setAttribute\("aria-hidden", String\(!open\)\)/,
   "focus must leave Layers before inert/aria-hidden are applied",
 );
-assert.match(main, /row\.setAttribute\("aria-posinset", String\(position \+ 1\)\)/);
-assert.match(main, /row\.setAttribute\("aria-setsize", String\(views\.length\)\)/);
-assert.match(main, /document\.visibilityState !== "visible"/);
+assert.match(controller, /row\.setAttribute\("aria-posinset", String\(position \+ 1\)\)/);
+assert.match(controller, /row\.setAttribute\("aria-setsize", String\(views\.length\)\)/);
+assert.match(controller, /document\.visibilityState !== "visible"/);
+assert.match(controller, /sceneOrderSignature/);
+assert.match(controller, /this\.orderSignature\(currentStats\) !== expectedOrderSignature/);
+assert.match(controller, /new options\.browser\.AbortController\(\)/);
+assert.match(controller, /this\.abortController\.abort\(\)/);
+assert.doesNotMatch(controller, /from "\.\/brush-engine"|document\.getElementById/);
 
-const pointerMoveStart = main.indexOf("function handleMobileLayerReorderPointerMove");
-const pointerMoveEnd = main.indexOf("function handleMobileLayerReorderPointerUp", pointerMoveStart);
+const pointerMoveStart = controller.indexOf("private handleReorderPointerMove");
+const pointerMoveEnd = controller.indexOf("private handleReorderPointerUp", pointerMoveStart);
 assert.ok(pointerMoveStart >= 0 && pointerMoveEnd > pointerMoveStart);
 assert.doesNotMatch(
-  main.slice(pointerMoveStart, pointerMoveEnd),
-  /engine\.|captureActiveLayerThumbnail|renderMobileLayerList/,
+  controller.slice(pointerMoveStart, pointerMoveEnd),
+  /moveLayer|captureRasterLayerThumbnail|\.render\(/,
   "pointermove may schedule DOM/scroll RAF work only",
 );
 

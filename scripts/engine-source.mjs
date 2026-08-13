@@ -35,7 +35,6 @@ export const ENGINE_SOURCE_FILES = Object.freeze([
   "engine-gpu-utils.ts",
   "engine-stamp-upload.ts",
   "engine-cold-storage.ts",
-  "shape-mask-decode.ts",
   "engine-reports.ts",
   "engine-vector-text-runtime.ts",
   "engine-raster-image-runtime.ts",

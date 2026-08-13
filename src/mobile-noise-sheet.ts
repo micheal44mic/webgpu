@@ -5,7 +5,14 @@ import {
 } from "./mobile-bottom-sheet-gesture.ts";
 
 export interface MobileNoiseSheetOptions {
-  readonly mobileMediaQuery: MediaQueryList;
+  readonly browser: Window & { readonly AbortController: typeof AbortController };
+  readonly document: Document;
+  readonly elements: {
+    readonly sheet: HTMLElement;
+    readonly handle: HTMLButtonElement;
+    readonly header: HTMLElement;
+    readonly controlsRegion: HTMLElement;
+  };
   readonly beforeOpen: () => void;
   readonly onRequestCancel: () => void;
   readonly onOpenChange: (open: boolean) => void;
@@ -14,12 +21,6 @@ export interface MobileNoiseSheetOptions {
 const MOBILE_NOISE_MIN_PEEK_PX = 176;
 const MOBILE_NOISE_MAX_PEEK_PX = 240;
 const MOBILE_NOISE_PEEK_VIEWPORT_RATIO = 0.26;
-
-function requiredElement<T extends HTMLElement>(id: string): T {
-  const result = document.getElementById(id);
-  if (!result) throw new Error(`Elemento #${id} non trovato.`);
-  return result as T;
-}
 
 function peekHeight(viewportHeight: number): number {
   return Math.min(
@@ -37,13 +38,12 @@ function peekHeight(viewportHeight: number): number {
  * a close gesture requests the same asynchronous Cancel path as the buttons.
  */
 export class MobileNoiseSheetController {
-  readonly sheet = requiredElement<HTMLElement>("mobileNoiseSheet");
-  readonly handle = requiredElement<HTMLButtonElement>("mobileNoiseHandle");
-  readonly header = requiredElement<HTMLElement>("mobileNoiseHeader");
-  readonly controlsRegion = requiredElement<HTMLElement>(
-    "mobileNoiseControlsRegion",
-  );
+  readonly sheet: HTMLElement;
+  readonly handle: HTMLButtonElement;
+  readonly header: HTMLElement;
+  readonly controlsRegion: HTMLElement;
 
+  private readonly abortController: AbortController;
   private openState = false;
   private snap: MobileBottomSheetSnap = "peek";
   private offsetPx = 0;
@@ -58,6 +58,11 @@ export class MobileNoiseSheetController {
   private opener: HTMLElement | null = null;
 
   constructor(private readonly options: MobileNoiseSheetOptions) {
+    this.sheet = options.elements.sheet;
+    this.handle = options.elements.handle;
+    this.header = options.elements.header;
+    this.controlsRegion = options.elements.controlsRegion;
+    this.abortController = new options.browser.AbortController();
     this.sheet.dataset.state = "closed";
     this.sheet.setAttribute("aria-hidden", "true");
     this.sheet.setAttribute("inert", "");
@@ -69,7 +74,7 @@ export class MobileNoiseSheetController {
   }
 
   open(opener: HTMLElement | null = null): boolean {
-    if (this.openState || !this.options.mobileMediaQuery.matches) return false;
+    if (this.openState) return false;
     this.options.beforeOpen();
     this.opener = opener;
     this.openState = true;
@@ -89,7 +94,7 @@ export class MobileNoiseSheetController {
     if (!this.openState) return;
     this.openState = false;
     this.releaseDragCapture();
-    const activeElement = document.activeElement;
+    const activeElement = this.options.document.activeElement;
     if (activeElement instanceof HTMLElement && this.sheet.contains(activeElement)) {
       if (restoreFocus && this.opener?.isConnected) {
         this.opener.focus({ preventScroll: true });
@@ -114,11 +119,21 @@ export class MobileNoiseSheetController {
     this.snapTo(this.snap);
   }
 
+  dispose(): void {
+    this.abortController.abort();
+    this.close(false);
+  }
+
   private bindEvents(): void {
-    this.handle.addEventListener("pointerdown", (event) => this.startDrag(event));
-    this.handle.addEventListener("pointermove", (event) => this.moveDrag(event));
-    this.handle.addEventListener("pointerup", (event) => this.finishDrag(event));
-    this.handle.addEventListener("pointercancel", (event) => this.finishDrag(event, true));
+    const signal = this.abortController.signal;
+    this.handle.addEventListener("pointerdown", (event) => this.startDrag(event), { signal });
+    this.handle.addEventListener("pointermove", (event) => this.moveDrag(event), { signal });
+    this.handle.addEventListener("pointerup", (event) => this.finishDrag(event), { signal });
+    this.handle.addEventListener(
+      "pointercancel",
+      (event) => this.finishDrag(event, true),
+      { signal },
+    );
     this.handle.addEventListener("click", () => {
       if (!this.openState) return;
       if (this.dragMoved) {
@@ -126,16 +141,19 @@ export class MobileNoiseSheetController {
         return;
       }
       this.snapTo(nextMobileBottomSheetTapSnap(this.snap));
-    });
-    document.addEventListener("keydown", (event) => {
+    }, { signal });
+    this.options.document.addEventListener("keydown", (event) => {
       if (event.key !== "Escape" || !this.openState) return;
       event.preventDefault();
       this.options.onRequestCancel();
-    });
+    }, { signal });
   }
 
   private peekOffset(): number {
-    return Math.max(0, Math.round(this.sheet.offsetHeight - peekHeight(window.innerHeight)));
+    return Math.max(
+      0,
+      Math.round(this.sheet.offsetHeight - peekHeight(this.options.browser.innerHeight)),
+    );
   }
 
   private closedOffset(): number {
@@ -180,7 +198,7 @@ export class MobileNoiseSheetController {
   }
 
   private setMinimizedAccessibility(minimized: boolean): void {
-    const activeElement = document.activeElement;
+    const activeElement = this.options.document.activeElement;
     if (
       minimized
       && activeElement instanceof HTMLElement
@@ -199,7 +217,7 @@ export class MobileNoiseSheetController {
     this.dragStartOffsetPx = this.offsetPx;
     this.dragStartSnap = this.snap;
     this.dragLastY = event.clientY;
-    this.dragLastTime = performance.now();
+    this.dragLastTime = this.options.browser.performance.now();
     this.dragVelocityY = 0;
     this.dragMoved = false;
     this.sheet.classList.add("is-dragging");
@@ -208,7 +226,7 @@ export class MobileNoiseSheetController {
 
   private moveDrag(event: PointerEvent): void {
     if (event.pointerId !== this.dragPointerId) return;
-    const now = performance.now();
+    const now = this.options.browser.performance.now();
     const elapsed = now - this.dragLastTime;
     if (elapsed > 0 && elapsed <= 120) {
       const immediate = (event.clientY - this.dragLastY) / elapsed;
@@ -235,7 +253,7 @@ export class MobileNoiseSheetController {
     }
     this.sheet.classList.remove("is-dragging");
     const deltaY = event.clientY - this.dragStartY;
-    const releaseVelocity = performance.now() - this.dragLastTime <= 100
+    const releaseVelocity = this.options.browser.performance.now() - this.dragLastTime <= 100
       ? this.dragVelocityY
       : 0;
     this.dragPointerId = null;

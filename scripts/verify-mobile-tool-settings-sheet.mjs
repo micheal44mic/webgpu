@@ -5,12 +5,24 @@ const root = new URL("../", import.meta.url);
 const html = readFileSync(new URL("index.html", root), "utf8");
 const css = readFileSync(new URL("src/styles.css", root), "utf8");
 const main = readFileSync(new URL("src/main.ts", root), "utf8");
+const editorTools = readFileSync(
+  new URL("src/editor-tools-controller.ts", root),
+  "utf8",
+);
 const controller = readFileSync(
   new URL("src/mobile-tool-settings-sheet.ts", root),
   "utf8",
 );
 const mixedController = readFileSync(
   new URL("src/mixed-vector-text-controller.ts", root),
+  "utf8",
+);
+const canvasToolSettingsController = readFileSync(
+  new URL("src/canvas-tool-settings-controller.ts", root),
+  "utf8",
+);
+const canvasToolController = readFileSync(
+  new URL("src/canvas-tool-controller.ts", root),
   "utf8",
 );
 const {
@@ -192,23 +204,34 @@ assert.doesNotMatch(
 );
 assert.doesNotMatch(
   html,
-  /data-mobile-proxy-button="addVectorText"/,
+  /data-mobile-proxy-button/,
   "opening Text must not create a default text node immediately",
 );
-assert.match(html, /data-mobile-proxy-button="vectorSvgImportButton"/);
-assert.match(html, /data-mobile-proxy-button="rasterImageImportButton"/);
+assert.match(html, /data-mobile-vector-command="import-svg"/);
+assert.match(html, /data-mobile-vector-command="import-image"/);
 
 assert.match(
-  main,
-  /for \(const button of mobileToolSettingsButtons\)[\s\S]*?mobileToolSettingsSheet\?\.open\(kind(?: as MobileToolSettingsKind)?, button\);/,
+  editorTools,
+  /for \(const button of elements\.toolSettingsButtons\)[\s\S]*?openToolSettings\(kind, button\)/,
   "tool cards must open the shared editor and preserve their opener for focus restoration",
 );
 assert.match(
   main,
-  /mobileToolSettingsSheet = new MobileToolSettingsSheetController\(\{[\s\S]*?selectCanvasTool: selectMobileCanvasTool/,
+  /new EditorToolsController\(\{[\s\S]*?openToolSettings: \(kind, trigger\)[\s\S]*?mobileToolSettingsSheet\?\.open\(kind, trigger\)/,
+  "the composition root must route typed tool cards to the shared settings sheet",
+);
+assert.match(
+  main,
+  /mobileToolSettingsSheet = new MobileToolSettingsSheetController\(\{[\s\S]*?selectCanvasTool: \(tool\) => canvasToolController\?\.select\(tool\) \?\? false/,
   "Fill, Selection and Transform must use the existing authoritative canvas-tool routing",
 );
 for (const action of [
+  "getFillSettings",
+  "setFillTolerance",
+  "getSelectionSettings",
+  "setSelectionMethod",
+  "setSelectionTolerance",
+  "setSelectionColor",
   "setSelectionCombineMode",
   "applySelectionColor",
   "clearSelection",
@@ -223,6 +246,14 @@ for (const action of [
   "commitSvgPaintEdit",
   "rasterizeSelectedSvg",
   "getTextCreationColor",
+  "getTextEditorSnapshot",
+  "getVectorEffectEditorSnapshot",
+  "getTransformActionSnapshot",
+  "updateSelectedTextProperties",
+  "updateSelectedVectorEffectProperties",
+  "setSelectedVectorShadowEnabled",
+  "beginSelectedVectorPropertyEdit",
+  "commitSelectedVectorPropertyEdit",
   "createText",
   "resetText",
   "deleteText",
@@ -244,14 +275,31 @@ assert.doesNotMatch(
   /sourceControl<HTMLButtonElement>\([^)]*\)\.click\(\)/,
   "mobile action buttons must not simulate clicks on hidden desktop controls",
 );
+assert.match(canvasToolSettingsController, /class CanvasToolSettingsController/);
+assert.match(main, /const canvasToolSettingsController = new CanvasToolSettingsController\(\)/);
 assert.match(
-  main,
-  /startMobileTextDistortEditing\(\): boolean \{[\s\S]*?startSelectedTextDistortEditing\(\)[\s\S]*?selectMobileCanvasTool\("transform", true\)/,
+  controller,
+  /private syncFill\(\): void \{[\s\S]*?this\.options\.getFillSettings\(\)/,
+  "Fill must read its explicit state port",
+);
+assert.match(
+  controller,
+  /private syncSelection\(\): void \{[\s\S]*?this\.options\.getSelectionSettings\(\)/,
+  "Selection must read its explicit state port",
+);
+assert.doesNotMatch(
+  controller,
+  /sourceControl<[^>]+>\("(?:fillTolerance|selectionMethod|selectionTolerance|selectionColor|selectionReplace|selectionAdd|selectionSubtract|selectionColorApply|selectionClear)"\)/,
+  "Fill and Selection must not read legacy controls",
+);
+assert.match(
+  canvasToolController,
+  /private startTextDistortEditing\(\): boolean \{[\s\S]*?startSelectedTextDistortEditing\(\)[\s\S]*?this\.select\("transform", true\)/,
   "choosing Distort must immediately enter the authoritative Transform canvas",
 );
 assert.match(
-  main,
-  /setMobileTextWarpMode\(mode: MobileTextWarpMode\): boolean \{[\s\S]*?mode === "distort"\) return startMobileTextDistortEditing\(\)/,
+  canvasToolController,
+  /setTextWarpMode\(mode: MobileTextWarpMode\): boolean \{[\s\S]*?mode === "distort"\) return this\.startTextDistortEditing\(\)/,
   "the Distort mode button must start editing without a second Edit click",
 );
 assert.match(
@@ -270,70 +318,40 @@ assert.match(
   "Distort activation and edit mode must be idempotent and preserve the selected node",
 );
 assert.match(
+  editorTools,
+  /if \(!isEditorVectorCommand\(command\) \|\| button\.disabled\) return;[\s\S]*?this\.options\.runVectorCommand\(command\);/,
+  "mobile file buttons must delegate one typed command through the tools controller",
+);
+assert.match(
   main,
-  /targetId === "vectorSvgImportButton"\) controller\.requestSvgImport\(\);[\s\S]*?targetId === "rasterImageImportButton"\) controller\.requestRasterImageImport\(\);/,
+  /runVectorCommand: \(command\) => \{[\s\S]*?command === "import-svg"\) controller\.requestSvgImport\(\);[\s\S]*?else controller\.requestRasterImageImport\(\);/,
   "mobile file buttons must open each picker once through the controller API",
 );
 
-for (const sourceId of [
-  "fillTolerance",
-  "selectionMethod",
-  "selectionTolerance",
-  "selectionColor",
-  "selectionReplace",
-  "selectionAdd",
-  "selectionSubtract",
-  "selectionColorApply",
-  "selectionClear",
-  "transformCommitBar",
-  "transformCancel",
-  "transformApply",
-  "vectorTextValue",
-  "vectorTextFontFamily",
-  "vectorTextFontSize",
-  "vectorTextColor",
-  "addVectorText",
-  "vectorTextReset",
-  "deleteVectorText",
-  "vectorTextRasterize",
-  "vectorTextTransformNone",
-  "vectorTextTransformDistort",
-  "vectorTextTransformArch",
-  "vectorTextTransformCircle",
-  "vectorTextTransformWave",
-  "vectorTextDistortReset",
-  "vectorTextDistortEdit",
-  "vectorTextTransformCurve",
-  "vectorTextCircleRadius",
-  "vectorTextCircleInverted",
-  "vectorTextOutlineWidth",
-  "vectorTextOutlineColor",
-  "vectorTextOutlineJoin",
-  "vectorTextSingleShadowEnabled",
-  "vectorTextSingleShadowColor",
-  "vectorTextSingleShadowOpacity",
-  "vectorTextSingleShadowOffset",
-  "vectorTextSingleShadowAngle",
-  "vectorTextSingleShadowBlur",
-  "vectorTextInnerShadowEnabled",
-  "vectorTextInnerShadowColor",
-  "vectorTextInnerShadowOpacity",
-  "vectorTextInnerShadowOffset",
-  "vectorTextInnerShadowAngle",
-  "vectorTextInnerShadowBlur",
-  "vectorTextBlockShadowEnabled",
-  "vectorTextBlockShadowColor",
-  "vectorTextBlockShadowOpacity",
-  "vectorTextBlockShadowOffset",
-  "vectorTextBlockShadowAngle",
-  "vectorTextBlockShadowOutlineWidth",
-]) {
-  assert.match(controller, new RegExp(`"${sourceId}"`), `missing authoritative source #${sourceId}`);
-}
+assert.doesNotMatch(
+  controller,
+  /sourceControl|dispatchMirrored|dispatchEvent\(new Event|MutationObserver/,
+  "the shared sheet must not use hidden DOM or synthetic events as a state bus",
+);
 assert.match(
   controller,
-  /bindMirroredHistoryControl\(mobile, sourceId\)/,
-  "mobile text inputs must forward the source history lifecycle so one slider gesture remains one undo action",
+  /private bindVectorHistoryControl\(control: HTMLElement\)[\s\S]*?pointerup[\s\S]*?pointercancel[\s\S]*?keyup[\s\S]*?blur/,
+  "visible vector controls must preserve one begin/update/commit lifecycle per gesture",
+);
+assert.match(
+  controller,
+  /commitOpenHistoryEdits\(\): void \{[\s\S]*?finishSvgPaintEdit\(\)[\s\S]*?finishVectorPropertyEdit\(\)/,
+  "closing or suspending the sheet must commit every open property edit",
+);
+assert.match(
+  mixedController,
+  /getTextEditorSnapshot\(\)[\s\S]*?getVectorEffectEditorSnapshot\(\)[\s\S]*?getTransformActionSnapshot\(\)/,
+  "vector UI state must cross a typed controller port",
+);
+assert.match(
+  mixedController,
+  /beginSelectedVectorPropertyEdit\(\)[\s\S]*?beginVectorHistoryEdit\("property"\)[\s\S]*?commitSelectedVectorPropertyEdit\(\)/,
+  "the direct vector port must retain the engine history transaction",
 );
 assert.match(
   controller,
@@ -356,8 +374,8 @@ assert.match(
   "the shared sheet must use distinct text-only and vector-effect selection gates",
 );
 assert.match(
-  main,
-  /finishMobileTransformToolOnSheetClose[\s\S]*?await controller\.applyTransform\(\)[\s\S]*?stopSelectedTextDistortEditing\(\)[\s\S]*?activeCanvasTool === "transform" \? "paint" : activeCanvasTool[\s\S]*?selectMobileCanvasTool\(targetTool, true\)/,
+  canvasToolController,
+  /finishTransformToolOnSheetClose[\s\S]*?await controller\.applyTransform\(\)[\s\S]*?stopSelectedTextDistortEditing\(\)[\s\S]*?this\.activeCanvasTool === "transform" \? "paint" : this\.activeCanvasTool[\s\S]*?this\.select\(targetTool, true\)/,
   "closing Transform or Distort must commit safely, remove edit handles and return to Paint",
 );
 assert.match(
@@ -406,11 +424,21 @@ assert.match(
   "focus must leave the panel before its ancestor becomes aria-hidden",
 );
 assert.match(
-  controller,
-  /new MutationObserver\([\s\S]*?attributeFilter: \["hidden"\]/,
-  "Transform Apply and Cancel must follow the existing transaction bar without polling",
+  mixedController,
+  /onEditorStateChange\?: \(\) => void[\s\S]*?updateTransformCommitUi\(\)[\s\S]*?this\.onEditorStateChange\?\.\(\)/,
+  "Transform Apply and Cancel must publish explicit state changes",
 );
+assert.match(controller, /this\.options\.getTransformActionSnapshot\(\)/);
+assert.doesNotMatch(controller, /MutationObserver/);
 assert.doesNotMatch(controller, /setInterval\(/, "the tool sheet must not poll");
+assert.match(controller, /readonly root: ParentNode;[\s\S]*?readonly browser: Window;[\s\S]*?readonly document: Document;/);
+assert.match(controller, /root\.querySelector<HTMLElement>\(`/);
+assert.doesNotMatch(controller, /document\.getElementById|\bwindow\./);
+assert.match(
+  main,
+  /new MobileToolSettingsSheetController\(\{[\s\S]*?root: element<HTMLElement>\("mobileToolSettingsSheet"\),[\s\S]*?browser: window,[\s\S]*?document,/,
+  "the composition root must provide the shared sheet DOM and browser dependencies",
+);
 assert.doesNotMatch(
   controller,
   /\bGPU(?:Device|Texture|Buffer|Queue|CommandEncoder|CanvasContext)\b|navigator\.gpu|createTexture\(|createBuffer\(|createCommandEncoder\(|queue\.submit\(/,

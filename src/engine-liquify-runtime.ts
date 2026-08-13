@@ -408,7 +408,6 @@ export function abandonRasterLiquifySession(engine: BrushEngine): boolean {
 }
 
 function uniformInput(
-  engine: BrushEngine,
   session: ActiveRasterLiquifySession,
   rect: DirtyRect,
   options: {
@@ -510,7 +509,7 @@ function encodePreviewBatch(
 
   for (let index = 0; index < dabs.length; index += 1) {
     const dab = dabs[index];
-    writeUniformSlot(session, index, uniformInput(engine, session, dab.dirtyRect, {
+    writeUniformSlot(session, index, uniformInput(session, dab.dirtyRect, {
       center: dab.center,
       previousCenter: dab.previousCenter,
       deltaX: dab.deltaX,
@@ -525,7 +524,7 @@ function encodePreviewBatch(
   }
   const resolveSlot = dabs.length;
   const dirty = resolveRect as DirtyRect;
-  writeUniformSlot(session, resolveSlot, uniformInput(engine, session, dirty, {
+  writeUniformSlot(session, resolveSlot, uniformInput(session, dirty, {
     strength: session.amount,
   }));
   const usedBytes = (resolveSlot + 1) * session.uniformStride;
@@ -882,7 +881,7 @@ async function restoreOriginalPixels(
   });
   clearDisplacementPass(encoder, session);
   if (dirty) {
-    writeUniformSlot(session, 0, uniformInput(engine, session, dirty, { strength: 0 }));
+    writeUniformSlot(session, 0, uniformInput(session, dirty, { strength: 0 }));
     engine.device.queue.writeBuffer(
       session.uniformBuffer,
       0,

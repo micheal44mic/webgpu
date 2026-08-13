@@ -78,6 +78,14 @@ assert.equal(
 
 const root = new URL("../", import.meta.url);
 const main = readFileSync(new URL("src/main.ts", root), "utf8");
+const controller = readFileSync(
+  new URL("src/layer-panel-controller.ts", root),
+  "utf8",
+);
+const sceneEditor = readFileSync(
+  new URL("src/scene-editor-controller.ts", root),
+  "utf8",
+);
 const css = readFileSync(new URL("src/styles.css", root), "utf8");
 const html = readFileSync(new URL("index.html", root), "utf8");
 
@@ -106,45 +114,45 @@ assert.match(
   css,
   /\.mobile-layers-toolbar-action\[aria-pressed="true"\]/,
 );
-assert.match(main, /scene\.items\.map\(\(item\) => \(\{/);
+assert.match(controller, /scene\.items\.map\(\(item\) => \(\{/);
 assert.match(
-  main,
-  /mobileLayerMultiSelectEnabled[\s\S]*?toggleMobileLayerMultiSelection\(key\)[\s\S]*?return;[\s\S]*?selectMixedSceneItem\(item\.key\)/,
+  controller,
+  /this\.multiSelectEnabled[\s\S]*?this\.toggleMultiSelection\(key\)[\s\S]*?return;[\s\S]*?this\.options\.selectLayer\(key\)/,
   "multi-select taps must stay local while ordinary taps retain single selection",
 );
 assert.match(
-  main,
-  /mobileLayerMultiSelectEnabled[\s\S]*?\.is-multi-selected[\s\S]*?openMobileLayerContextMenu/,
+  controller,
+  /this\.multiSelectEnabled[\s\S]*?\.is-multi-selected[\s\S]*?this\.openContextMenu/,
   "selected rows in multi mode must retain the existing hold-menu gesture",
 );
 assert.match(
-  main,
-  /gesture\.phase === "armed"[\s\S]*?mobileLayerMultiSelectEnabled[\s\S]*?event\.preventDefault\(\);[\s\S]*?return;/,
+  controller,
+  /gesture\.phase === "armed"[\s\S]*?this\.multiSelectEnabled[\s\S]*?event\.preventDefault\(\);[\s\S]*?return;/,
   "a held multi-selection must never transition into layer reorder",
 );
 assert.match(
-  main,
-  /controller\.mergeSceneItems\(plan\.orderedKeys\)/,
+  sceneEditor,
+  /vector\.mergeSceneItems\(orderedKeys\)/,
   "the UI must forward one typed, ordered request to the controller",
 );
 assert.match(
-  main,
-  /mobileLayerMergeCompletionMatches\([\s\S]*?setMobileLayerMergeStatus\(message, true\)/,
+  sceneEditor + controller,
+  /mobileLayerMergeCompletionMatches\([\s\S]*?this\.setMergeStatus\(message, true\)/,
   "a failed or unpublished merge must remain visible inside the mobile panel",
 );
 assert.match(
-  main,
-  /setMobileLayerMultiSelectEnabled\(false, false\);[\s\S]*?setMobileLayerMergeStatus\(successMessage\)/,
+  controller,
+  /this\.setMultiSelect\(false, false\);[\s\S]*?this\.setMergeStatus\(message\)/,
   "success feedback must be published after multi-select closes",
 );
 assert.match(
   main,
-  /runHistoryOperation[\s\S]*?historyUiBusy = false;[\s\S]*?syncActiveLayerControls\(\);[\s\S]*?mobileLayersRenderSignature = "";[\s\S]*?updateStats\(engine\.getStats\(\)\)/,
+  /onReplayComplete: \(\) => \{[\s\S]*?syncActiveLayerControls\(\);[\s\S]*?requestMobileLayersRefresh\(\);[\s\S]*?runtimeStatsController\?\.update\(engine\.getStats\(\)\)/,
   "undo and redo must republish active controls and both layer lists immediately",
 );
 assert.match(
-  main,
-  /mobileLayerMergeSelectionButton\.addEventListener\("click"[\s\S]*?requestMobileLayerMerge\(\)/,
+  controller,
+  /this\.listen\(elements\.mergeSelectionButton, "click"[\s\S]*?this\.requestMerge\(\)/,
   "the persistent action must use the same controller request as the hold menu",
 );
 console.log(

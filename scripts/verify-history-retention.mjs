@@ -677,6 +677,10 @@ for (const actionCount of [10, 100, 500, 1000]) {
     "utf8",
   );
   const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  const documentInteraction = readFileSync(
+    new URL("../src/document-interaction-controller.ts", import.meta.url),
+    "utf8",
+  );
   const publishHistory = brushEngine.slice(
     brushEngine.indexOf("  publishHistoryState(): void"),
     brushEngine.indexOf("  publishActiveLayerChange(): void"),
@@ -774,8 +778,8 @@ for (const actionCount of [10, 100, 500, 1000]) {
   assert(historyRuntime.includes("historyCursorWithinRetainedRange(engine, nextCursor)"));
   assert(runtime.includes("await engine.compactDiscardedHistoryIncrementally("));
   assert(runtime.includes("yieldHistoryMaintenanceTurn"));
-  assert(main.includes("engine.interruptHistoryMaintenance()"));
-  assert(main.includes("engine.resumeDiscardedHistoryMaintenance()"));
+  assert(documentInteraction.includes("this.options.engine.interruptHistoryMaintenance()"));
+  assert(documentInteraction.includes("this.options.engine.resumeDiscardedHistoryMaintenance()"));
   assert(historyRuntime.includes("const releaseSlicePhase = async"));
   assert(historyRuntime.includes("engine.historyGpuStorage.releaseMany(slices)"));
   assert.match(
@@ -1400,31 +1404,34 @@ console.log("Checkpoint representation selection verified.");
 // restano solo le righe ripetute che ne sono la conseguenza. Senza la causa
 // una diagnosi e' impossibile: il pannello deve conservarla e mostrarla.
 {
-  const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
-  const operazione = main.slice(
-    main.indexOf("async function runHistoryOperation("),
-    main.indexOf("async function clearLayerWithHistory("),
+  const gpuMemoryPanel = readFileSync(
+    new URL("../src/gpu-memory-panel-controller.ts", import.meta.url),
+    "utf8",
+  );
+  const historyControls = readFileSync(
+    new URL("../src/history-controls-controller.ts", import.meta.url),
+    "utf8",
   );
   assert(
-    operazione.includes("ultimoGuastoCronologia = {"),
-    "runHistoryOperation deve registrare il guasto, non solo mostrarlo",
+    historyControls.includes("this.failure = {"),
+    "HistoryControlsController deve registrare il guasto, non solo mostrarlo",
   );
-  for (const campo of ["operazione: operation", "azione:", "cursore,", "messaggio,"]) {
+  for (const campo of ["operation,", "action:", "cursor:", "message,"]) {
     assert(
-      operazione.includes(campo),
+      historyControls.includes(campo),
       `il guasto registrato deve riportare ${campo}`,
     );
   }
-  const diagnostica = main.slice(
-    main.indexOf("function updateHistoryDiagnostics(): void"),
-    main.indexOf("function updateGpuMemoryAudit("),
+  const diagnostica = gpuMemoryPanel.slice(
+    gpuMemoryPanel.indexOf("private updateHistoryDiagnostics(): void"),
+    gpuMemoryPanel.indexOf("private updateGpuMemoryAudit("),
   );
   assert(
     diagnostica.includes("ULTIMO GUASTO"),
     "il pannello deve mostrare l'ultimo guasto di cronologia",
   );
   assert(
-    diagnostica.includes("ultimoGuastoCronologia.messaggio"),
+    diagnostica.includes("lastFailure.message"),
     "il pannello deve riportare il messaggio originale, non solo che c'e' stato un guasto",
   );
 }
@@ -1438,51 +1445,55 @@ console.log("History failure surfacing verified.");
 // input proprio mentre la coda dovrebbe conservarli. Al pavimento, viceversa,
 // il comando deve arrivare a runHistoryOperation per mostrarne il motivo.
 {
-  const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
-  const controls = main.slice(
-    main.indexOf("function updateHistoryControls(): void"),
-    main.indexOf("function updateGrainControlAvailability("),
+  const historyControls = readFileSync(
+    new URL("../src/history-controls-controller.ts", import.meta.url),
+    "utf8",
   );
   assert(
-    controls.includes("const replayBusy = historyUiBusy || historyState.busy;"),
+    historyControls.includes("const replayBusy = this.replayBusy || this.currentState.busy;"),
     "i controlli devono distinguere un replay accodabile da un blocco reale",
   );
   assert(
-    controls.includes("undoStrokeButton.disabled = requestLocked;")
-      && controls.includes("redoStrokeButton.disabled = requestLocked;"),
-    "i pulsanti desktop non devono diventare nativo-disabled durante il replay o al pavimento",
+    historyControls.includes("this.undoButton.disabled = false;")
+      && historyControls.includes("this.redoButton.disabled = false;"),
+    "i pulsanti visibili non devono diventare nativo-disabled durante il replay o al pavimento",
   );
   assert(
-    controls.includes("[undoStrokeButton, undoBlocked, undoReason")
-      && controls.includes("[redoStrokeButton, redoBlocked, redoReason"),
-    "anche i pulsanti desktop devono esporre aria-disabled e il motivo del blocco",
+    historyControls.includes("[this.undoButton, undoBlocked, undoReason")
+      && historyControls.includes("[this.redoButton, redoBlocked, redoReason"),
+    "i pulsanti visibili devono esporre aria-disabled e il motivo del blocco",
   );
   assert(
-    !controls.includes("locked || !historyState.canUndo")
-      && !controls.includes("locked || !historyState.canRedo"),
+    historyControls.includes("const HISTORY_QUEUE_MAXIMUM = 32;")
+      && historyControls.includes("this.operationQueue.push(operation);"),
+    "la coda rapida deve restare limitata e serializzata",
+  );
+  assert(
+    !historyControls.includes("this.undoButton.disabled = undoBlocked")
+      && !historyControls.includes("this.redoButton.disabled = redoBlocked"),
     "canUndo/canRedo temporaneamente falsi non devono disabilitare fisicamente la coda",
   );
 
-  const shortcutStart = main.indexOf("// `event.repeat` non viene piu' scartato");
-  const shortcut = main.slice(
+  const shortcutStart = historyControls.indexOf("private handleKeyboard(");
+  const shortcut = historyControls.slice(
     shortcutStart,
-    main.indexOf("canvas.addEventListener(", shortcutStart),
+    historyControls.lastIndexOf("\n  }") + 4,
   );
   assert(shortcutStart >= 0, "blocco scorciatoia Undo/Redo non trovato");
   assert(
     !shortcut.includes("const available =")
-      && !shortcut.includes("!historyState.canUndo")
-      && !shortcut.includes("!historyState.canRedo"),
+      && !shortcut.includes("!this.currentState.canUndo")
+      && !shortcut.includes("!this.currentState.canRedo"),
     "la scorciatoia non deve scartare input mentre il replay espone canUndo/canRedo=false",
   );
   assert(
-    shortcut.includes("if (historyRequestLocked())")
-      && shortcut.includes("requestHistoryOperation(operation);"),
+    shortcut.includes("if (this.requestLocked())")
+      && shortcut.includes("this.request(operation);"),
     "la scorciatoia deve filtrare solo i lock reali e poi affidarsi alla coda",
   );
   assert(
     shortcut.indexOf("event.preventDefault();")
-      < shortcut.indexOf("if (historyRequestLocked())"),
+      < shortcut.indexOf("if (this.requestLocked())"),
     "anche un Undo bloccato deve restare nell'app e mostrare il proprio motivo",
   );
 }

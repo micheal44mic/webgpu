@@ -1,0 +1,8 @@
+* text=auto eol=lf
+
+*.archive binary
+*.brush binary
+*.brushset binary
+*.png binary
+*.ttf binary
+*.zip binary

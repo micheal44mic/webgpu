@@ -12,6 +12,8 @@ import {
 const read = (relativePath) => fs.readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
 const engineSource = readEngineSource();
 const mainSource = read("src/main.ts");
+const canvasInputSource = read("src/canvas-input-controller.ts");
+const humanLabSource = read("src/labs/human-stroke-lab.ts");
 const shaderSource = read("src/shaders.ts");
 const strokeRendererSource = read("src/stroke-renderer.ts");
 const mergedSurfaceSource = read("src/merged-surface-shader.ts");
@@ -185,25 +187,28 @@ assert.ok((displayShaders.match(/textureDimensions\(activeLayerBase, 0\)/g) ?? [
 assert.match(displayShaders, /textureDimensions\(layerTexture, 0\)/);
 assert.match(displayShaders, /let layerSize = vec2<f32>\(DOCUMENT_SIZE\)/);
 
-assert.match(mainSource, /angle: Math\.atan2\(second\.clientY - first\.clientY/,
+assert.match(canvasInputSource, /angle: Math\.atan2\(second\.clientY - first\.clientY/,
   "il gesto mobile deve misurare l'angolo delle due dita");
-assert.match(mainSource, /engine\.rotateViewBy\(rotationDelta, nextGesture\.centerX, nextGesture\.centerY\)/);
-assert.match(mainSource, /engine\.beginViewRotationGesture\(\)/);
-assert.match(mainSource, /engine\.endViewRotationGesture\(\)/);
-assert.match(mainSource, /rotateShortcutHeld/);
-assert.match(mainSource, /deltaRadians = \(event\.clientX - lastRotateClientX\) \* Math\.PI \/ 720/);
-assert.equal((mainSource.match(/performanceTelemetryRevision: 64/g) ?? []).length, 2);
+assert.match(canvasInputSource, /engine\.rotateViewBy\(rotationDelta, nextGesture\.centerX, nextGesture\.centerY\)/);
+assert.match(canvasInputSource, /engine\.beginViewRotationGesture\(\)/);
+assert.match(canvasInputSource, /engine\.endViewRotationGesture\(\)/);
+assert.match(canvasInputSource, /rotateShortcutHeld/);
+assert.match(canvasInputSource, /deltaRadians = \(event\.clientX - lastRotateClientX\) \* Math\.PI \/ 720/);
+assert.match(humanLabSource, /HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 64/);
 assert.match(mainSource, /viewRotationDegrees: Number\(engine\.getViewRotationDegrees\(\)\.toFixed\(3\)\)/,
   "ogni benchmark deve firmare l'angolo della vista");
-assert.equal((mainSource.match(/two-finger-pan-pinch-rotate-zero-magnet/g) ?? []).length, 2);
+assert.ok((canvasInputSource.match(/two-finger-pan-pinch-rotate-zero-magnet/g) ?? []).length >= 1);
 
 for (const id of ["rotateViewLeft", "viewRotation", "rotateViewRight"]) {
-  assert.match(htmlSource, new RegExp(`id="${id}"`), `controllo desktop #${id} mancante`);
+  assert.doesNotMatch(
+    htmlSource,
+    new RegExp(`id="${id}"`),
+    `il controllo desktop legacy #${id} non deve duplicare i gesti autorevoli`,
+  );
 }
-assert.match(htmlSource, /due dita spostano, fanno zoom e ruotano/);
 assert.match(styleSource, /#gpuCanvas\.rotating/);
-assert.match(styleSource, /\.desktop-rotation-control\s*\{\s*display: none;/s,
-  "i controlli desktop non devono affollare la barra mobile");
+assert.doesNotMatch(styleSource, /desktop-rotation-control|#viewRotation/,
+  "gli stili della rotazione desktop rimossa non devono restare orfani");
 assert.equal(RASTER_PIXEL_VIEW_PERCENT_THRESHOLD, 581);
 assert.equal(RASTER_PIXEL_VIEW_ZOOM_THRESHOLD, 5.81);
 assert.equal(RASTER_PIXEL_VIEW_STRATEGY, "display-only-nearest-raster-at-581-percent-v1");

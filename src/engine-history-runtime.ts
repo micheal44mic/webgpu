@@ -776,7 +776,6 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
   });
   const periodicChain = replayPlan.periodicChain;
   const seedAction = replayPlan.seedAction;
-  const replayCheckpointActionIndex = replayPlan.replayCheckpointActionIndex;
   const visibleIds = replayPlan.visibleActionIds;
   const layerBatches = replayPlan.batches;
   const latestPeriodicCheckpoint = periodicChain.at(-1);

@@ -12,6 +12,7 @@ const runtimeSource = read("src/engine-runtime-misc.ts");
 const stampUploadSource = read("src/engine-stamp-upload.ts");
 const studioSource = read("src/mobile-brush-studio.ts");
 const librarySource = read("src/brush-library-preview.ts");
+const libraryControllerSource = read("src/brush-library-controller.ts");
 const libraryCoreSource = read("src/brush-library-preview-core.ts");
 const mainSource = read("src/main.ts");
 
@@ -172,8 +173,8 @@ assert.doesNotMatch(
 );
 assert.match(studioSource, /this\.options\.previewRenderer\.invalidate\(this\.previewCanvas\)/);
 assert.match(
-  mainSource,
-  /for \(const card of mobileBrushLibraryCards\)[\s\S]*?querySelector<HTMLCanvasElement>\("\.mobile-brush-card-preview"\)[\s\S]*?authoritativeBrushStrokePreviewRenderer\.invalidate\(preview\)/,
+  libraryControllerSource,
+  /for \(const card of this\.elements\.cards\)[\s\S]*?querySelector<HTMLCanvasElement>\("\.mobile-brush-card-preview"\)[\s\S]*?this\.strokePreviewRenderer\.invalidate\(preview\)/,
   "closing the library must invalidate every built-in and dynamic card canvas",
 );
 

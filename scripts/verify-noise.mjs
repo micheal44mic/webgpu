@@ -164,6 +164,10 @@ const runtime = readFileSync(new URL("../src/engine-noise-runtime.ts", import.me
 const engine = readFileSync(new URL("../src/brush-engine.ts", import.meta.url), "utf8");
 const history = readFileSync(new URL("../src/engine-history-types.ts", import.meta.url), "utf8");
 const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const adjustments = readFileSync(
+  new URL("../src/raster-adjustments-controller.ts", import.meta.url),
+  "utf8",
+);
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const sheet = readFileSync(new URL("../src/mobile-noise-sheet.ts", import.meta.url), "utf8");
@@ -221,12 +225,13 @@ assert.match(history, /precision: "rgba16float-storage-f32-procedural"/);
 assert.match(engine, /activeRasterNoiseSession/);
 assert.match(engine, /beginRasterNoise/);
 assert.match(engine, /GPUTextureUsage\.STORAGE_BINDING[\s\S]{0,120}GPUTextureUsage\.RENDER_ATTACHMENT/);
-assert.match(main, /engine\.beginRasterNoise/);
-assert.match(main, /engine\.updateRasterNoise/);
-assert.match(main, /engine\.commitRasterNoise/);
-assert.match(main, /engine\.cancelRasterNoise/);
-assert.match(main, /historyState\.openEdit === "noise"/);
-assert.match(main, /rasterNoiseSessionOpen[\s\S]{0,120}historyState\.openEdit === "noise"/);
+assert.match(adjustments, /engine\.beginRasterNoise/);
+assert.match(adjustments, /engine\.updateRasterNoise/);
+assert.match(adjustments, /engine\.commitRasterNoise/);
+assert.match(adjustments, /engine\.cancelRasterNoise/);
+assert.match(adjustments, /history\.openEdit === "noise"/);
+assert.match(adjustments, /this\.noise\.sessionOpen[\s\S]{0,120}history\.openEdit === "noise"/);
+assert.match(main, /new RasterAdjustmentsController/);
 
 for (const id of [
   "mobileNoiseOpen",
@@ -249,43 +254,18 @@ for (const id of [
   "mobileNoiseStatus",
   "mobileNoiseCancel",
   "mobileNoiseApply",
-  "rasterNoiseSection",
-  "desktopNoiseOpen",
-  "desktopNoiseParameters",
-  "desktopNoiseAmount",
-  "desktopNoiseAmountOut",
-  "desktopNoiseStyle",
-  "desktopNoiseScale",
-  "desktopNoiseScaleOut",
-  "desktopNoiseOctaves",
-  "desktopNoiseOctavesOut",
-  "desktopNoiseTurbulence",
-  "desktopNoiseTurbulenceOut",
-  "desktopNoiseChannels",
-  "desktopNoiseAdditive",
-  "desktopNoiseStatus",
-  "desktopNoiseCancel",
-  "desktopNoiseApply",
 ]) {
   assert.match(html, new RegExp(`id="${id}"`), `Manca #${id}.`);
 }
-for (const prefix of ["mobile", "desktop"]) {
-  assert.match(
-    html,
-    new RegExp(`id="${prefix}NoiseAmount"[\\s\\S]{0,180}min="0"[\\s\\S]{0,80}max="300"`),
-  );
-}
+assert.match(
+  html,
+  /id="mobileNoiseAmount"[\s\S]{0,180}min="0"[\s\S]{0,80}max="300"/,
+);
 assert.match(html, /Extended above 100%/);
-for (const prefix of ["mobile", "desktop"]) {
-  assert.match(
-    html,
-    new RegExp(`id="${prefix}NoiseScaleOut"[^>]*>0% · 1 px<`),
-  );
-  assert.match(
-    html,
-    new RegExp(`id="${prefix}NoiseScale"[^>]*value="0"`),
-  );
-}
+assert.match(html, /id="mobileNoiseScaleOut"[^>]*>0% · 1 px</);
+assert.match(html, /id="mobileNoiseScale"[^>]*value="0"/);
+assert.doesNotMatch(html, /id="desktopNoise|id="rasterNoiseSection"/);
+assert.doesNotMatch(main, /desktopNoise/);
 assert.match(sheet, /export class MobileNoiseSheetController/);
 assert.match(sheet, /MOBILE_NOISE_MIN_PEEK_PX = 176/);
 assert.match(sheet, /MOBILE_NOISE_MAX_PEEK_PX = 240/);

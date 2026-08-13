@@ -518,7 +518,7 @@ export class LayerStack {
     this.assertClippingInvariants(candidate);
     const previous = this.records.map((record) => record.clippingParentId);
     const changed = this.records.some(
-      (record, index) => previous[index] !== candidate[index].clippingParentId,
+      (_, index) => previous[index] !== candidate[index].clippingParentId,
     );
     if (!changed) return false;
     try {

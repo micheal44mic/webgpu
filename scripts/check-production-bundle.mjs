@@ -1,0 +1,78 @@
+import assert from "node:assert/strict";
+import { readFileSync, readdirSync } from "node:fs";
+import { relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = fileURLToPath(new URL("../", import.meta.url));
+const outputRoot = resolve(root, "dist");
+
+function outputFiles(directory) {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const absolute = resolve(directory, entry.name);
+    return entry.isDirectory() ? outputFiles(absolute) : [absolute];
+  });
+}
+
+const files = outputFiles(outputRoot);
+const relativeFiles = files.map((file) => relative(outputRoot, file).replaceAll("\\", "/"));
+assert.ok(relativeFiles.some((file) => file.endsWith("index.html")), "Build senza index.html.");
+assert.ok(relativeFiles.some((file) => file.endsWith(".js")), "Build senza JavaScript.");
+assert.ok(!relativeFiles.some((file) => file.endsWith("labs.html")), "labs.html nel build editor.");
+
+const forbiddenFileFragments = [
+  "bevel-bbox-golden",
+  "clipping-group-gpu-test",
+  "editor-labs",
+  "effects-benchmark",
+  "engine-lab-operations",
+  "human-stroke-lab",
+  "iphone-memory-limit-test",
+  "layer-blend-gpu-test",
+  "layer-cold-tile-composite-gpu-test",
+  "layer-composite-gpu-test",
+  "layer-compression-study-contract",
+  "layer-history-gpu-test",
+  "layer-memory-stress-test",
+  "layer-merge-gpu-test",
+  "mixed-memory-benchmark",
+  "shadow-golden",
+  "stroke-golden",
+  "vector-zoom-labs",
+];
+const forbiddenFiles = relativeFiles.filter((file) => {
+  const lower = file.toLowerCase();
+  return forbiddenFileFragments.some((fragment) => lower.includes(fragment));
+});
+assert.deepEqual(
+  forbiddenFiles,
+  [],
+  `Chunk di laboratorio presenti nel bundle editor:\n${forbiddenFiles.join("\n")}`,
+);
+
+const forbiddenContentMarkers = [
+  "WebGPU Brush Engine Labs",
+  "Laboratorio sconosciuto:",
+  "Test livelli scaduto dopo 180 s",
+  "/api/iphone-memory-limit-runs",
+  "/api/layer-compression-runs",
+  "/api/vector-zoom-runs",
+  "__vectorZoomCoverageReport",
+  "__vectorZoomStressReport",
+];
+const textFiles = files.filter((file) => /\.(?:css|html|js|json|map)$/.test(file));
+const contentViolations = [];
+for (const file of textFiles) {
+  const source = readFileSync(file, "utf8");
+  for (const marker of forbiddenContentMarkers) {
+    if (source.includes(marker)) {
+      contentViolations.push(`${relative(outputRoot, file).replaceAll("\\", "/")}: ${marker}`);
+    }
+  }
+}
+assert.deepEqual(
+  contentViolations,
+  [],
+  `Codice di laboratorio presente nel bundle editor:\n${contentViolations.join("\n")}`,
+);
+
+console.log(`Bundle di produzione verificato: ${relativeFiles.length} file, nessun laboratorio.`);

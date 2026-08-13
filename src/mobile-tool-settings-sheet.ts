@@ -7,22 +7,38 @@ import {
   LAYER_BLEND_MODE_CATEGORIES,
   type LayerBlendMode,
 } from "./layer-blend-modes.ts";
+import type {
+  VectorEffectEditorPatch,
+  VectorEffectEditorSnapshot,
+  VectorShadowKind,
+  VectorTextEditorPatch,
+  VectorTextEditorSnapshot,
+  VectorTransformActionSnapshot,
+} from "./vector-editor-contract";
+import type { EditorToolSettingsKind } from "./editor-tools-contract";
 
 export type MobileToolSettingsKind =
-  | "fill"
-  | "selection"
-  | "transform"
-  | "layer-options"
-  | "svg-style"
-  | "text"
-  | "text-warp"
-  | "text-outline"
-  | "text-drop-shadow"
-  | "text-inner-shadow"
-  | "text-block-shadow";
+  | EditorToolSettingsKind
+  | "layer-options";
 type MobileCanvasSettingsTool = "fill" | "selection" | "transform";
 type MobileSelectionCombineMode = "replace" | "add" | "subtract";
 export type MobileTextWarpMode = "none" | "distort" | "arch" | "circle" | "wave";
+
+export interface MobileFillSettingsSnapshot {
+  readonly tolerance: number;
+  readonly locked: boolean;
+}
+
+export interface MobileSelectionSettingsSnapshot {
+  readonly method: "magic-wand" | "lasso" | "color-range";
+  readonly tolerance: number;
+  readonly color: string;
+  readonly combineMode: MobileSelectionCombineMode;
+  readonly locked: boolean;
+  readonly canApplyColor: boolean;
+  readonly canClear: boolean;
+  readonly status: string;
+}
 
 export interface MobileLayerOptionsSnapshot {
   readonly key: string;
@@ -40,9 +56,16 @@ export interface MobileSvgStyleSnapshot {
 }
 
 export interface MobileToolSettingsSheetOptions {
-  readonly mobileMediaQuery: MediaQueryList;
+  readonly root: ParentNode;
+  readonly browser: Window;
+  readonly document: Document;
   readonly selectCanvasTool: (tool: MobileCanvasSettingsTool) => boolean;
-  readonly getSelectionStatus: () => string;
+  readonly getFillSettings: () => MobileFillSettingsSnapshot;
+  readonly setFillTolerance: (tolerance: number) => void;
+  readonly getSelectionSettings: () => MobileSelectionSettingsSnapshot;
+  readonly setSelectionMethod: (method: MobileSelectionSettingsSnapshot["method"]) => void;
+  readonly setSelectionTolerance: (tolerance: number) => void;
+  readonly setSelectionColor: (color: string) => void;
   readonly hasSelectedText: () => boolean;
   readonly hasSelectedVectorEffectTarget: () => boolean;
   readonly setSelectionCombineMode: (mode: MobileSelectionCombineMode) => void;
@@ -59,6 +82,17 @@ export interface MobileToolSettingsSheetOptions {
   readonly commitSvgPaintEdit: () => boolean;
   readonly rasterizeSelectedSvg: () => void;
   readonly getTextCreationColor: () => string;
+  readonly getTextEditorSnapshot: () => VectorTextEditorSnapshot;
+  readonly getVectorEffectEditorSnapshot: () => VectorEffectEditorSnapshot | null;
+  readonly getTransformActionSnapshot: () => VectorTransformActionSnapshot;
+  readonly updateSelectedTextProperties: (patch: VectorTextEditorPatch) => boolean;
+  readonly updateSelectedVectorEffectProperties: (patch: VectorEffectEditorPatch) => boolean;
+  readonly setSelectedVectorShadowEnabled: (
+    kind: VectorShadowKind,
+    enabled: boolean,
+  ) => boolean;
+  readonly beginSelectedVectorPropertyEdit: () => boolean;
+  readonly commitSelectedVectorPropertyEdit: () => boolean;
   readonly createText: (color: string) => void;
   readonly resetText: () => void;
   readonly deleteText: () => void;
@@ -112,49 +146,13 @@ function isMobileCanvasSettingsTool(
   return kind === "fill" || kind === "selection" || kind === "transform";
 }
 
-function requiredElement<T extends HTMLElement>(id: string): T {
-  const result = document.getElementById(id);
+function requiredElement<T extends HTMLElement>(root: ParentNode, id: string): T {
+  const rootElement = root as ParentNode & Partial<HTMLElement>;
+  const result = rootElement.id === id
+    ? rootElement as HTMLElement
+    : root.querySelector<HTMLElement>(`#${id}`);
   if (!result) throw new Error(`Elemento #${id} non trovato.`);
   return result as T;
-}
-
-function sourceControl<T extends HTMLElement>(id: string): T {
-  return requiredElement<T>(id);
-}
-
-function dispatchMirroredValue(
-  mobile: HTMLInputElement | HTMLSelectElement,
-  sourceId: string,
-  eventType: "input" | "change",
-): void {
-  const source = sourceControl<HTMLInputElement | HTMLSelectElement>(sourceId);
-  source.value = mobile.value;
-  source.dispatchEvent(new Event(eventType, { bubbles: true }));
-}
-
-function dispatchMirroredChecked(
-  mobile: HTMLInputElement,
-  sourceId: string,
-): void {
-  const source = sourceControl<HTMLInputElement>(sourceId);
-  source.checked = mobile.checked;
-  source.dispatchEvent(new Event("change", { bubbles: true }));
-}
-
-function dispatchSourceLifecycle(sourceId: string, eventType: string): void {
-  sourceControl<HTMLElement>(sourceId).dispatchEvent(new Event(eventType, { bubbles: true }));
-}
-
-function bindMirroredHistoryControl(mobile: HTMLElement, sourceId: string): void {
-  mobile.addEventListener("pointerdown", () => dispatchSourceLifecycle(sourceId, "pointerdown"));
-  mobile.addEventListener("focus", () => dispatchSourceLifecycle(sourceId, "focus"));
-  mobile.addEventListener("blur", () => dispatchSourceLifecycle(sourceId, "blur"));
-  if (mobile instanceof HTMLInputElement && mobile.type === "range") {
-    mobile.addEventListener("pointerup", () => dispatchSourceLifecycle(sourceId, "pointerup"));
-    mobile.addEventListener("pointercancel", () => dispatchSourceLifecycle(sourceId, "pointercancel"));
-    mobile.addEventListener("keydown", () => dispatchSourceLifecycle(sourceId, "keydown"));
-    mobile.addEventListener("keyup", () => dispatchSourceLifecycle(sourceId, "keyup"));
-  }
 }
 
 function colorInputValue(value: string): string {
@@ -182,253 +180,116 @@ export function mobileToolSettingsPeekHeight(viewportHeight: number): number {
 }
 
 /**
- * A mobile-only view over settings and actions which already exist elsewhere
- * in the app. It owns no tool state and creates no rendering resources.
+ * Shared responsive view over explicit editor state and commands. It owns no
+ * tool state and creates no rendering resources.
  */
 export class MobileToolSettingsSheetController {
-  readonly sheet = requiredElement<HTMLElement>("mobileToolSettingsSheet");
-  readonly handle = requiredElement<HTMLButtonElement>("mobileToolSettingsHandle");
-  readonly header = requiredElement<HTMLElement>("mobileToolSettingsHeader");
-  readonly title = requiredElement<HTMLElement>("mobileToolSettingsTitle");
-  readonly scroll = requiredElement<HTMLElement>("mobileToolSettingsScroll");
-  readonly panels = Array.from(
-    this.scroll.querySelectorAll<HTMLElement>("[data-mobile-tool-settings-panel]"),
-  );
+  readonly sheet: HTMLElement;
+  readonly handle: HTMLButtonElement;
+  readonly header: HTMLElement;
+  readonly title: HTMLElement;
+  readonly scroll: HTMLElement;
+  readonly panels: HTMLElement[];
 
-  private readonly fillTolerance = requiredElement<HTMLInputElement>("mobileFillTolerance");
-  private readonly fillToleranceOut = requiredElement<HTMLOutputElement>(
-    "mobileFillToleranceOut",
-  );
-  private readonly selectionMethod = requiredElement<HTMLSelectElement>(
-    "mobileSelectionMethod",
-  );
-  private readonly selectionReplace = requiredElement<HTMLButtonElement>(
-    "mobileSelectionReplace",
-  );
-  private readonly selectionAdd = requiredElement<HTMLButtonElement>("mobileSelectionAdd");
-  private readonly selectionSubtract = requiredElement<HTMLButtonElement>(
-    "mobileSelectionSubtract",
-  );
-  private readonly selectionToleranceControl = requiredElement<HTMLElement>(
-    "mobileSelectionToleranceControl",
-  );
-  private readonly selectionTolerance = requiredElement<HTMLInputElement>(
-    "mobileSelectionTolerance",
-  );
-  private readonly selectionToleranceOut = requiredElement<HTMLOutputElement>(
-    "mobileSelectionToleranceOut",
-  );
-  private readonly selectionColorControl = requiredElement<HTMLElement>(
-    "mobileSelectionColorControl",
-  );
-  private readonly selectionColor = requiredElement<HTMLInputElement>("mobileSelectionColor");
-  private readonly selectionColorApply = requiredElement<HTMLButtonElement>(
-    "mobileSelectionColorApply",
-  );
-  private readonly selectionClear = requiredElement<HTMLButtonElement>("mobileSelectionClear");
-  private readonly selectionResult = requiredElement<HTMLElement>("mobileSelectionResult");
-  private readonly transformHint = requiredElement<HTMLElement>("mobileTransformHint");
-  private readonly transformCancel = requiredElement<HTMLButtonElement>("mobileTransformCancel");
-  private readonly transformApply = requiredElement<HTMLButtonElement>("mobileTransformApply");
-  private readonly layerOpacity = requiredElement<HTMLInputElement>("mobileLayerOpacity");
-  private readonly layerOpacityOut = requiredElement<HTMLOutputElement>(
-    "mobileLayerOpacityOut",
-  );
-  private readonly layerBlendModeControl = requiredElement<HTMLElement>(
-    "mobileLayerBlendModeControl",
-  );
-  private readonly layerBlendMode = requiredElement<HTMLSelectElement>("mobileLayerBlendMode");
-  private readonly svgStylePalette = requiredElement<HTMLElement>("mobileSvgStylePalette");
-  private readonly svgStyleRasterize = requiredElement<HTMLButtonElement>(
-    "mobileSvgStyleRasterize",
-  );
-  private readonly svgStyleStatus = requiredElement<HTMLElement>("mobileSvgStyleStatus");
-  private readonly textValue = requiredElement<HTMLInputElement>("mobileTextValue");
-  private readonly textFontFamily = requiredElement<HTMLSelectElement>("mobileTextFontFamily");
-  private readonly textFontSize = requiredElement<HTMLInputElement>("mobileTextFontSize");
-  private readonly textFontSizeOut = requiredElement<HTMLOutputElement>("mobileTextFontSizeOut");
-  private readonly textColorControl = requiredElement<HTMLElement>("mobileTextColorControl");
-  private readonly textColor = requiredElement<HTMLInputElement>("mobileTextColor");
-  private readonly textAdd = requiredElement<HTMLButtonElement>("mobileTextAdd");
-  private readonly textReset = requiredElement<HTMLButtonElement>("mobileTextReset");
-  private readonly textDelete = requiredElement<HTMLButtonElement>("mobileTextDelete");
-  private readonly textRasterize = requiredElement<HTMLButtonElement>("mobileTextRasterize");
+  private readonly fillTolerance: HTMLInputElement;
+  private readonly fillToleranceOut: HTMLOutputElement;
+  private readonly selectionMethod: HTMLSelectElement;
+  private readonly selectionReplace: HTMLButtonElement;
+  private readonly selectionAdd: HTMLButtonElement;
+  private readonly selectionSubtract: HTMLButtonElement;
+  private readonly selectionToleranceControl: HTMLElement;
+  private readonly selectionTolerance: HTMLInputElement;
+  private readonly selectionToleranceOut: HTMLOutputElement;
+  private readonly selectionColorControl: HTMLElement;
+  private readonly selectionColor: HTMLInputElement;
+  private readonly selectionColorApply: HTMLButtonElement;
+  private readonly selectionClear: HTMLButtonElement;
+  private readonly selectionResult: HTMLElement;
+  private readonly transformHint: HTMLElement;
+  private readonly transformCancel: HTMLButtonElement;
+  private readonly transformApply: HTMLButtonElement;
+  private readonly layerOpacity: HTMLInputElement;
+  private readonly layerOpacityOut: HTMLOutputElement;
+  private readonly layerBlendModeControl: HTMLElement;
+  private readonly layerBlendMode: HTMLSelectElement;
+  private readonly svgStylePalette: HTMLElement;
+  private readonly svgStyleRasterize: HTMLButtonElement;
+  private readonly svgStyleStatus: HTMLElement;
+  private readonly textValue: HTMLInputElement;
+  private readonly textFontFamily: HTMLSelectElement;
+  private readonly textFontSize: HTMLInputElement;
+  private readonly textFontSizeOut: HTMLOutputElement;
+  private readonly textColorControl: HTMLElement;
+  private readonly textColor: HTMLInputElement;
+  private readonly textAdd: HTMLButtonElement;
+  private readonly textReset: HTMLButtonElement;
+  private readonly textDelete: HTMLButtonElement;
+  private readonly textRasterize: HTMLButtonElement;
   private readonly textWarpButtons = [
-    ["mobileTextWarpNone", "vectorTextTransformNone", "none"],
-    ["mobileTextWarpDistort", "vectorTextTransformDistort", "distort"],
-    ["mobileTextWarpArch", "vectorTextTransformArch", "arch"],
-    ["mobileTextWarpCircle", "vectorTextTransformCircle", "circle"],
-    ["mobileTextWarpWave", "vectorTextTransformWave", "wave"],
-  ] as const satisfies readonly (readonly [string, string, MobileTextWarpMode])[];
-  private readonly textWarpButtonControls = this.textWarpButtons.map(([
-    mobileId,
-    sourceId,
-    mode,
-  ]) => ({
-    mobile: requiredElement<HTMLButtonElement>(mobileId),
-    sourceId,
-    mode,
-  }));
-  private readonly textWarpDistortControls = requiredElement<HTMLElement>(
-    "mobileTextWarpDistortControls",
-  );
-  private readonly textDistortReset = requiredElement<HTMLButtonElement>(
-    "mobileTextDistortReset",
-  );
-  private readonly textDistortEdit = requiredElement<HTMLButtonElement>(
-    "mobileTextDistortEdit",
-  );
-  private readonly textDistortCommitActions = requiredElement<HTMLElement>(
-    "mobileTextDistortCommitActions",
-  );
-  private readonly textDistortCancel = requiredElement<HTMLButtonElement>(
-    "mobileTextDistortCancel",
-  );
-  private readonly textDistortApply = requiredElement<HTMLButtonElement>(
-    "mobileTextDistortApply",
-  );
-  private readonly textWarpCurveControls = requiredElement<HTMLElement>(
-    "mobileTextWarpCurveControls",
-  );
-  private readonly textWarpCurve = requiredElement<HTMLInputElement>("mobileTextWarpCurve");
-  private readonly textWarpCurveOut = requiredElement<HTMLOutputElement>(
-    "mobileTextWarpCurveOut",
-  );
-  private readonly textWarpCircleControls = requiredElement<HTMLElement>(
-    "mobileTextWarpCircleControls",
-  );
-  private readonly textCircleRadius = requiredElement<HTMLInputElement>(
-    "mobileTextCircleRadius",
-  );
-  private readonly textCircleRadiusOut = requiredElement<HTMLOutputElement>(
-    "mobileTextCircleRadiusOut",
-  );
-  private readonly textCircleInverted = requiredElement<HTMLInputElement>(
-    "mobileTextCircleInverted",
-  );
-  private readonly textOutlineWidth = requiredElement<HTMLInputElement>(
-    "mobileTextOutlineWidth",
-  );
-  private readonly textOutlineWidthOut = requiredElement<HTMLOutputElement>(
-    "mobileTextOutlineWidthOut",
-  );
-  private readonly textOutlineColorControl = requiredElement<HTMLElement>(
-    "mobileTextOutlineColorControl",
-  );
-  private readonly textOutlineColor = requiredElement<HTMLInputElement>(
-    "mobileTextOutlineColor",
-  );
-  private readonly textOutlineJoin = requiredElement<HTMLSelectElement>(
-    "mobileTextOutlineJoin",
-  );
-  private readonly textDropShadowEnabled = requiredElement<HTMLInputElement>(
-    "mobileTextDropShadowEnabled",
-  );
-  private readonly textDropShadowParameters = requiredElement<HTMLElement>(
-    "mobileTextDropShadowParameters",
-  );
-  private readonly textDropShadowColorControl = requiredElement<HTMLElement>(
-    "mobileTextDropShadowColorControl",
-  );
-  private readonly textDropShadowColor = requiredElement<HTMLInputElement>(
-    "mobileTextDropShadowColor",
-  );
-  private readonly textDropShadowOpacity = requiredElement<HTMLInputElement>(
-    "mobileTextDropShadowOpacity",
-  );
-  private readonly textDropShadowOpacityOut = requiredElement<HTMLOutputElement>(
-    "mobileTextDropShadowOpacityOut",
-  );
-  private readonly textDropShadowOffset = requiredElement<HTMLInputElement>(
-    "mobileTextDropShadowOffset",
-  );
-  private readonly textDropShadowOffsetOut = requiredElement<HTMLOutputElement>(
-    "mobileTextDropShadowOffsetOut",
-  );
-  private readonly textDropShadowAngle = requiredElement<HTMLInputElement>(
-    "mobileTextDropShadowAngle",
-  );
-  private readonly textDropShadowAngleOut = requiredElement<HTMLOutputElement>(
-    "mobileTextDropShadowAngleOut",
-  );
-  private readonly textDropShadowBlur = requiredElement<HTMLInputElement>(
-    "mobileTextDropShadowBlur",
-  );
-  private readonly textDropShadowBlurOut = requiredElement<HTMLOutputElement>(
-    "mobileTextDropShadowBlurOut",
-  );
-  private readonly textInnerShadowEnabled = requiredElement<HTMLInputElement>(
-    "mobileTextInnerShadowEnabled",
-  );
-  private readonly textInnerShadowParameters = requiredElement<HTMLElement>(
-    "mobileTextInnerShadowParameters",
-  );
-  private readonly textInnerShadowColorControl = requiredElement<HTMLElement>(
-    "mobileTextInnerShadowColorControl",
-  );
-  private readonly textInnerShadowColor = requiredElement<HTMLInputElement>(
-    "mobileTextInnerShadowColor",
-  );
-  private readonly textInnerShadowOpacity = requiredElement<HTMLInputElement>(
-    "mobileTextInnerShadowOpacity",
-  );
-  private readonly textInnerShadowOpacityOut = requiredElement<HTMLOutputElement>(
-    "mobileTextInnerShadowOpacityOut",
-  );
-  private readonly textInnerShadowOffset = requiredElement<HTMLInputElement>(
-    "mobileTextInnerShadowOffset",
-  );
-  private readonly textInnerShadowOffsetOut = requiredElement<HTMLOutputElement>(
-    "mobileTextInnerShadowOffsetOut",
-  );
-  private readonly textInnerShadowAngle = requiredElement<HTMLInputElement>(
-    "mobileTextInnerShadowAngle",
-  );
-  private readonly textInnerShadowAngleOut = requiredElement<HTMLOutputElement>(
-    "mobileTextInnerShadowAngleOut",
-  );
-  private readonly textInnerShadowBlur = requiredElement<HTMLInputElement>(
-    "mobileTextInnerShadowBlur",
-  );
-  private readonly textInnerShadowBlurOut = requiredElement<HTMLOutputElement>(
-    "mobileTextInnerShadowBlurOut",
-  );
-  private readonly textBlockShadowEnabled = requiredElement<HTMLInputElement>(
-    "mobileTextBlockShadowEnabled",
-  );
-  private readonly textBlockShadowParameters = requiredElement<HTMLElement>(
-    "mobileTextBlockShadowParameters",
-  );
-  private readonly textBlockShadowColorControl = requiredElement<HTMLElement>(
-    "mobileTextBlockShadowColorControl",
-  );
-  private readonly textBlockShadowColor = requiredElement<HTMLInputElement>(
-    "mobileTextBlockShadowColor",
-  );
-  private readonly textBlockShadowOpacity = requiredElement<HTMLInputElement>(
-    "mobileTextBlockShadowOpacity",
-  );
-  private readonly textBlockShadowOpacityOut = requiredElement<HTMLOutputElement>(
-    "mobileTextBlockShadowOpacityOut",
-  );
-  private readonly textBlockShadowOffset = requiredElement<HTMLInputElement>(
-    "mobileTextBlockShadowOffset",
-  );
-  private readonly textBlockShadowOffsetOut = requiredElement<HTMLOutputElement>(
-    "mobileTextBlockShadowOffsetOut",
-  );
-  private readonly textBlockShadowAngle = requiredElement<HTMLInputElement>(
-    "mobileTextBlockShadowAngle",
-  );
-  private readonly textBlockShadowAngleOut = requiredElement<HTMLOutputElement>(
-    "mobileTextBlockShadowAngleOut",
-  );
-  private readonly textBlockShadowOutlineWidth = requiredElement<HTMLInputElement>(
-    "mobileTextBlockShadowOutlineWidth",
-  );
-  private readonly textBlockShadowOutlineWidthOut = requiredElement<HTMLOutputElement>(
-    "mobileTextBlockShadowOutlineWidthOut",
-  );
+    ["mobileTextWarpNone", "none"],
+    ["mobileTextWarpDistort", "distort"],
+    ["mobileTextWarpArch", "arch"],
+    ["mobileTextWarpCircle", "circle"],
+    ["mobileTextWarpWave", "wave"],
+  ] as const satisfies readonly (readonly [string, MobileTextWarpMode])[];
+  private readonly textWarpButtonControls: Array<{
+    readonly mobile: HTMLButtonElement;
+    readonly mode: MobileTextWarpMode;
+  }>;
+  private readonly textWarpDistortControls: HTMLElement;
+  private readonly textDistortReset: HTMLButtonElement;
+  private readonly textDistortEdit: HTMLButtonElement;
+  private readonly textDistortCommitActions: HTMLElement;
+  private readonly textDistortCancel: HTMLButtonElement;
+  private readonly textDistortApply: HTMLButtonElement;
+  private readonly textWarpCurveControls: HTMLElement;
+  private readonly textWarpCurve: HTMLInputElement;
+  private readonly textWarpCurveOut: HTMLOutputElement;
+  private readonly textWarpCircleControls: HTMLElement;
+  private readonly textCircleRadius: HTMLInputElement;
+  private readonly textCircleRadiusOut: HTMLOutputElement;
+  private readonly textCircleInverted: HTMLInputElement;
+  private readonly textOutlineWidth: HTMLInputElement;
+  private readonly textOutlineWidthOut: HTMLOutputElement;
+  private readonly textOutlineColorControl: HTMLElement;
+  private readonly textOutlineColor: HTMLInputElement;
+  private readonly textOutlineJoin: HTMLSelectElement;
+  private readonly textDropShadowEnabled: HTMLInputElement;
+  private readonly textDropShadowParameters: HTMLElement;
+  private readonly textDropShadowColorControl: HTMLElement;
+  private readonly textDropShadowColor: HTMLInputElement;
+  private readonly textDropShadowOpacity: HTMLInputElement;
+  private readonly textDropShadowOpacityOut: HTMLOutputElement;
+  private readonly textDropShadowOffset: HTMLInputElement;
+  private readonly textDropShadowOffsetOut: HTMLOutputElement;
+  private readonly textDropShadowAngle: HTMLInputElement;
+  private readonly textDropShadowAngleOut: HTMLOutputElement;
+  private readonly textDropShadowBlur: HTMLInputElement;
+  private readonly textDropShadowBlurOut: HTMLOutputElement;
+  private readonly textInnerShadowEnabled: HTMLInputElement;
+  private readonly textInnerShadowParameters: HTMLElement;
+  private readonly textInnerShadowColorControl: HTMLElement;
+  private readonly textInnerShadowColor: HTMLInputElement;
+  private readonly textInnerShadowOpacity: HTMLInputElement;
+  private readonly textInnerShadowOpacityOut: HTMLOutputElement;
+  private readonly textInnerShadowOffset: HTMLInputElement;
+  private readonly textInnerShadowOffsetOut: HTMLOutputElement;
+  private readonly textInnerShadowAngle: HTMLInputElement;
+  private readonly textInnerShadowAngleOut: HTMLOutputElement;
+  private readonly textInnerShadowBlur: HTMLInputElement;
+  private readonly textInnerShadowBlurOut: HTMLOutputElement;
+  private readonly textBlockShadowEnabled: HTMLInputElement;
+  private readonly textBlockShadowParameters: HTMLElement;
+  private readonly textBlockShadowColorControl: HTMLElement;
+  private readonly textBlockShadowColor: HTMLInputElement;
+  private readonly textBlockShadowOpacity: HTMLInputElement;
+  private readonly textBlockShadowOpacityOut: HTMLOutputElement;
+  private readonly textBlockShadowOffset: HTMLInputElement;
+  private readonly textBlockShadowOffsetOut: HTMLOutputElement;
+  private readonly textBlockShadowAngle: HTMLInputElement;
+  private readonly textBlockShadowAngleOut: HTMLOutputElement;
+  private readonly textBlockShadowOutlineWidth: HTMLInputElement;
+  private readonly textBlockShadowOutlineWidthOut: HTMLOutputElement;
 
   private openState = false;
   private activeKind: MobileToolSettingsKind | null = null;
@@ -444,18 +305,118 @@ export class MobileToolSettingsSheetController {
   private dragMoved = false;
   private opener: HTMLElement | null = null;
   private readonly options: MobileToolSettingsSheetOptions;
-  private readonly transformStateObserver: MutationObserver;
   private pendingTextColor: string | null = null;
   private svgPaletteSignature = "";
   private svgPaintEditIndex: number | null = null;
+  private vectorPropertyEditOpen = false;
 
   constructor(options: MobileToolSettingsSheetOptions) {
     this.options = options;
+    this.sheet = requiredElement<HTMLElement>(options.root, "mobileToolSettingsSheet");
+    this.handle = requiredElement<HTMLButtonElement>(options.root, "mobileToolSettingsHandle");
+    this.header = requiredElement<HTMLElement>(options.root, "mobileToolSettingsHeader");
+    this.title = requiredElement<HTMLElement>(options.root, "mobileToolSettingsTitle");
+    this.scroll = requiredElement<HTMLElement>(options.root, "mobileToolSettingsScroll");
+    this.fillTolerance = requiredElement<HTMLInputElement>(options.root, "mobileFillTolerance");
+    this.fillToleranceOut = requiredElement<HTMLOutputElement>(options.root, "mobileFillToleranceOut");
+    this.selectionMethod = requiredElement<HTMLSelectElement>(options.root, "mobileSelectionMethod");
+    this.selectionReplace = requiredElement<HTMLButtonElement>(options.root, "mobileSelectionReplace");
+    this.selectionAdd = requiredElement<HTMLButtonElement>(options.root, "mobileSelectionAdd");
+    this.selectionSubtract = requiredElement<HTMLButtonElement>(options.root, "mobileSelectionSubtract");
+    this.selectionToleranceControl = requiredElement<HTMLElement>(options.root, "mobileSelectionToleranceControl");
+    this.selectionTolerance = requiredElement<HTMLInputElement>(options.root, "mobileSelectionTolerance");
+    this.selectionToleranceOut = requiredElement<HTMLOutputElement>(options.root, "mobileSelectionToleranceOut");
+    this.selectionColorControl = requiredElement<HTMLElement>(options.root, "mobileSelectionColorControl");
+    this.selectionColor = requiredElement<HTMLInputElement>(options.root, "mobileSelectionColor");
+    this.selectionColorApply = requiredElement<HTMLButtonElement>(options.root, "mobileSelectionColorApply");
+    this.selectionClear = requiredElement<HTMLButtonElement>(options.root, "mobileSelectionClear");
+    this.selectionResult = requiredElement<HTMLElement>(options.root, "mobileSelectionResult");
+    this.transformHint = requiredElement<HTMLElement>(options.root, "mobileTransformHint");
+    this.transformCancel = requiredElement<HTMLButtonElement>(options.root, "mobileTransformCancel");
+    this.transformApply = requiredElement<HTMLButtonElement>(options.root, "mobileTransformApply");
+    this.layerOpacity = requiredElement<HTMLInputElement>(options.root, "mobileLayerOpacity");
+    this.layerOpacityOut = requiredElement<HTMLOutputElement>(options.root, "mobileLayerOpacityOut");
+    this.layerBlendModeControl = requiredElement<HTMLElement>(options.root, "mobileLayerBlendModeControl");
+    this.layerBlendMode = requiredElement<HTMLSelectElement>(options.root, "mobileLayerBlendMode");
+    this.svgStylePalette = requiredElement<HTMLElement>(options.root, "mobileSvgStylePalette");
+    this.svgStyleRasterize = requiredElement<HTMLButtonElement>(options.root, "mobileSvgStyleRasterize");
+    this.svgStyleStatus = requiredElement<HTMLElement>(options.root, "mobileSvgStyleStatus");
+    this.textValue = requiredElement<HTMLInputElement>(options.root, "mobileTextValue");
+    this.textFontFamily = requiredElement<HTMLSelectElement>(options.root, "mobileTextFontFamily");
+    this.textFontSize = requiredElement<HTMLInputElement>(options.root, "mobileTextFontSize");
+    this.textFontSizeOut = requiredElement<HTMLOutputElement>(options.root, "mobileTextFontSizeOut");
+    this.textColorControl = requiredElement<HTMLElement>(options.root, "mobileTextColorControl");
+    this.textColor = requiredElement<HTMLInputElement>(options.root, "mobileTextColor");
+    this.textAdd = requiredElement<HTMLButtonElement>(options.root, "mobileTextAdd");
+    this.textReset = requiredElement<HTMLButtonElement>(options.root, "mobileTextReset");
+    this.textDelete = requiredElement<HTMLButtonElement>(options.root, "mobileTextDelete");
+    this.textRasterize = requiredElement<HTMLButtonElement>(options.root, "mobileTextRasterize");
+    this.textWarpDistortControls = requiredElement<HTMLElement>(options.root, "mobileTextWarpDistortControls");
+    this.textDistortReset = requiredElement<HTMLButtonElement>(options.root, "mobileTextDistortReset");
+    this.textDistortEdit = requiredElement<HTMLButtonElement>(options.root, "mobileTextDistortEdit");
+    this.textDistortCommitActions = requiredElement<HTMLElement>(options.root, "mobileTextDistortCommitActions");
+    this.textDistortCancel = requiredElement<HTMLButtonElement>(options.root, "mobileTextDistortCancel");
+    this.textDistortApply = requiredElement<HTMLButtonElement>(options.root, "mobileTextDistortApply");
+    this.textWarpCurveControls = requiredElement<HTMLElement>(options.root, "mobileTextWarpCurveControls");
+    this.textWarpCurve = requiredElement<HTMLInputElement>(options.root, "mobileTextWarpCurve");
+    this.textWarpCurveOut = requiredElement<HTMLOutputElement>(options.root, "mobileTextWarpCurveOut");
+    this.textWarpCircleControls = requiredElement<HTMLElement>(options.root, "mobileTextWarpCircleControls");
+    this.textCircleRadius = requiredElement<HTMLInputElement>(options.root, "mobileTextCircleRadius");
+    this.textCircleRadiusOut = requiredElement<HTMLOutputElement>(options.root, "mobileTextCircleRadiusOut");
+    this.textCircleInverted = requiredElement<HTMLInputElement>(options.root, "mobileTextCircleInverted");
+    this.textOutlineWidth = requiredElement<HTMLInputElement>(options.root, "mobileTextOutlineWidth");
+    this.textOutlineWidthOut = requiredElement<HTMLOutputElement>(options.root, "mobileTextOutlineWidthOut");
+    this.textOutlineColorControl = requiredElement<HTMLElement>(options.root, "mobileTextOutlineColorControl");
+    this.textOutlineColor = requiredElement<HTMLInputElement>(options.root, "mobileTextOutlineColor");
+    this.textOutlineJoin = requiredElement<HTMLSelectElement>(options.root, "mobileTextOutlineJoin");
+    this.textDropShadowEnabled = requiredElement<HTMLInputElement>(options.root, "mobileTextDropShadowEnabled");
+    this.textDropShadowParameters = requiredElement<HTMLElement>(options.root, "mobileTextDropShadowParameters");
+    this.textDropShadowColorControl = requiredElement<HTMLElement>(options.root, "mobileTextDropShadowColorControl");
+    this.textDropShadowColor = requiredElement<HTMLInputElement>(options.root, "mobileTextDropShadowColor");
+    this.textDropShadowOpacity = requiredElement<HTMLInputElement>(options.root, "mobileTextDropShadowOpacity");
+    this.textDropShadowOpacityOut = requiredElement<HTMLOutputElement>(options.root, "mobileTextDropShadowOpacityOut");
+    this.textDropShadowOffset = requiredElement<HTMLInputElement>(options.root, "mobileTextDropShadowOffset");
+    this.textDropShadowOffsetOut = requiredElement<HTMLOutputElement>(options.root, "mobileTextDropShadowOffsetOut");
+    this.textDropShadowAngle = requiredElement<HTMLInputElement>(options.root, "mobileTextDropShadowAngle");
+    this.textDropShadowAngleOut = requiredElement<HTMLOutputElement>(options.root, "mobileTextDropShadowAngleOut");
+    this.textDropShadowBlur = requiredElement<HTMLInputElement>(options.root, "mobileTextDropShadowBlur");
+    this.textDropShadowBlurOut = requiredElement<HTMLOutputElement>(options.root, "mobileTextDropShadowBlurOut");
+    this.textInnerShadowEnabled = requiredElement<HTMLInputElement>(options.root, "mobileTextInnerShadowEnabled");
+    this.textInnerShadowParameters = requiredElement<HTMLElement>(options.root, "mobileTextInnerShadowParameters");
+    this.textInnerShadowColorControl = requiredElement<HTMLElement>(options.root, "mobileTextInnerShadowColorControl");
+    this.textInnerShadowColor = requiredElement<HTMLInputElement>(options.root, "mobileTextInnerShadowColor");
+    this.textInnerShadowOpacity = requiredElement<HTMLInputElement>(options.root, "mobileTextInnerShadowOpacity");
+    this.textInnerShadowOpacityOut = requiredElement<HTMLOutputElement>(options.root, "mobileTextInnerShadowOpacityOut");
+    this.textInnerShadowOffset = requiredElement<HTMLInputElement>(options.root, "mobileTextInnerShadowOffset");
+    this.textInnerShadowOffsetOut = requiredElement<HTMLOutputElement>(options.root, "mobileTextInnerShadowOffsetOut");
+    this.textInnerShadowAngle = requiredElement<HTMLInputElement>(options.root, "mobileTextInnerShadowAngle");
+    this.textInnerShadowAngleOut = requiredElement<HTMLOutputElement>(options.root, "mobileTextInnerShadowAngleOut");
+    this.textInnerShadowBlur = requiredElement<HTMLInputElement>(options.root, "mobileTextInnerShadowBlur");
+    this.textInnerShadowBlurOut = requiredElement<HTMLOutputElement>(options.root, "mobileTextInnerShadowBlurOut");
+    this.textBlockShadowEnabled = requiredElement<HTMLInputElement>(options.root, "mobileTextBlockShadowEnabled");
+    this.textBlockShadowParameters = requiredElement<HTMLElement>(options.root, "mobileTextBlockShadowParameters");
+    this.textBlockShadowColorControl = requiredElement<HTMLElement>(options.root, "mobileTextBlockShadowColorControl");
+    this.textBlockShadowColor = requiredElement<HTMLInputElement>(options.root, "mobileTextBlockShadowColor");
+    this.textBlockShadowOpacity = requiredElement<HTMLInputElement>(options.root, "mobileTextBlockShadowOpacity");
+    this.textBlockShadowOpacityOut = requiredElement<HTMLOutputElement>(options.root, "mobileTextBlockShadowOpacityOut");
+    this.textBlockShadowOffset = requiredElement<HTMLInputElement>(options.root, "mobileTextBlockShadowOffset");
+    this.textBlockShadowOffsetOut = requiredElement<HTMLOutputElement>(options.root, "mobileTextBlockShadowOffsetOut");
+    this.textBlockShadowAngle = requiredElement<HTMLInputElement>(options.root, "mobileTextBlockShadowAngle");
+    this.textBlockShadowAngleOut = requiredElement<HTMLOutputElement>(options.root, "mobileTextBlockShadowAngleOut");
+    this.textBlockShadowOutlineWidth = requiredElement<HTMLInputElement>(options.root, "mobileTextBlockShadowOutlineWidth");
+    this.textBlockShadowOutlineWidthOut = requiredElement<HTMLOutputElement>(options.root, "mobileTextBlockShadowOutlineWidthOut");
+    this.panels = Array.from(
+      this.scroll.querySelectorAll<HTMLElement>("[data-mobile-tool-settings-panel]"),
+    );
+    this.textWarpButtonControls = this.textWarpButtons.map(([mobileId, mode]) => ({
+      mobile: requiredElement<HTMLButtonElement>(options.root, mobileId),
+      mode,
+    }));
     for (const category of LAYER_BLEND_MODE_CATEGORIES) {
-      const group = document.createElement("optgroup");
+      const group = options.document.createElement("optgroup");
       group.label = mobileBlendCategoryLabel(category.id);
       for (const mode of category.modes) {
-        const option = document.createElement("option");
+        const option = options.document.createElement("option");
         option.value = mode;
         option.textContent = mobileBlendModeLabel(mode);
         group.append(option);
@@ -466,26 +427,11 @@ export class MobileToolSettingsSheetController {
     this.sheet.dataset.state = "closed";
     this.sheet.setAttribute("inert", "");
     this.bindEvents();
-    document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState !== "visible") this.finishSvgPaintEdit();
+    options.document.addEventListener("visibilitychange", () => {
+      if (options.document.visibilityState !== "visible") this.commitOpenHistoryEdits();
     });
-    window.addEventListener("pagehide", () => this.finishSvgPaintEdit());
-    window.addEventListener("blur", () => this.finishSvgPaintEdit());
-    this.transformStateObserver = new MutationObserver(() => {
-      if (!this.openState) return;
-      if (this.activeKind === "transform") this.syncTransform();
-      else if (this.activeKind === "text-warp") this.syncTextWarp();
-    });
-    this.transformStateObserver.observe(sourceControl<HTMLElement>("transformCommitBar"), {
-      attributes: true,
-      attributeFilter: ["hidden"],
-    });
-    for (const sourceId of ["transformCancel", "transformApply"] as const) {
-      this.transformStateObserver.observe(sourceControl<HTMLButtonElement>(sourceId), {
-        attributes: true,
-        attributeFilter: ["disabled"],
-      });
-    }
+    options.browser.addEventListener("pagehide", () => this.commitOpenHistoryEdits());
+    options.browser.addEventListener("blur", () => this.commitOpenHistoryEdits());
   }
 
   get isOpen(): boolean {
@@ -494,6 +440,7 @@ export class MobileToolSettingsSheetController {
 
   commitOpenHistoryEdits(): void {
     this.finishSvgPaintEdit();
+    this.finishVectorPropertyEdit();
   }
 
   get toolKind(): MobileToolSettingsKind | null {
@@ -501,7 +448,6 @@ export class MobileToolSettingsSheetController {
   }
 
   open(kind: MobileToolSettingsKind, opener: HTMLElement | null = null): void {
-    if (!this.options.mobileMediaQuery.matches) return;
     if (isMobileCanvasSettingsTool(kind) && !this.options.selectCanvasTool(kind)) return;
     if (TEXT_SELECTION_REQUIRED_KINDS.has(kind) && !this.options.hasSelectedText()) return;
     if (
@@ -548,10 +494,10 @@ export class MobileToolSettingsSheetController {
   close(restoreFocus = false): void {
     if (!this.openState) return;
     const closedKind = this.activeKind;
-    this.finishSvgPaintEdit();
+    this.commitOpenHistoryEdits();
     this.openState = false;
     this.releaseDragCapture();
-    const activeElement = document.activeElement;
+    const activeElement = this.options.document.activeElement;
     if (activeElement instanceof HTMLElement && this.sheet.contains(activeElement)) {
       if (restoreFocus && this.opener?.isConnected) {
         this.opener.focus({ preventScroll: true });
@@ -627,89 +573,101 @@ export class MobileToolSettingsSheetController {
 
     for (const eventType of ["input", "change"] as const) {
       this.fillTolerance.addEventListener(eventType, () => {
-        dispatchMirroredValue(this.fillTolerance, "fillTolerance", eventType);
+        this.options.setFillTolerance(Number(this.fillTolerance.value));
         this.syncFill();
       });
       this.selectionTolerance.addEventListener(eventType, () => {
-        dispatchMirroredValue(this.selectionTolerance, "selectionTolerance", eventType);
+        this.options.setSelectionTolerance(Number(this.selectionTolerance.value));
         this.syncSelection();
       });
       this.selectionColor.addEventListener(eventType, () => {
-        dispatchMirroredValue(this.selectionColor, "selectionColor", eventType);
+        this.options.setSelectionColor(this.selectionColor.value);
         this.selectionColorControl.style.setProperty(
           "--mobile-raster-effect-color",
           this.selectionColor.value,
         );
       });
-      this.textValue.addEventListener(eventType, () => {
-        dispatchMirroredValue(this.textValue, "vectorTextValue", eventType);
-      });
-      this.textFontSize.addEventListener(eventType, () => {
-        dispatchMirroredValue(this.textFontSize, "vectorTextFontSize", eventType);
-        this.syncText();
-      });
-      this.textColor.addEventListener(eventType, () => {
-        if (this.options.hasSelectedText()) {
-          dispatchMirroredValue(this.textColor, "vectorTextColor", eventType);
-        } else {
-          this.pendingTextColor = this.textColor.value;
-        }
-        this.textColorControl.style.setProperty(
-          "--mobile-raster-effect-color",
-          this.textColor.value,
-        );
-      });
-      for (const [mobile, sourceId] of [
-        [this.textWarpCurve, "vectorTextTransformCurve"],
-        [this.textCircleRadius, "vectorTextCircleRadius"],
-        [this.textOutlineWidth, "vectorTextOutlineWidth"],
-        [this.textOutlineColor, "vectorTextOutlineColor"],
-        [this.textDropShadowColor, "vectorTextSingleShadowColor"],
-        [this.textDropShadowOpacity, "vectorTextSingleShadowOpacity"],
-        [this.textDropShadowOffset, "vectorTextSingleShadowOffset"],
-        [this.textDropShadowAngle, "vectorTextSingleShadowAngle"],
-        [this.textDropShadowBlur, "vectorTextSingleShadowBlur"],
-        [this.textInnerShadowColor, "vectorTextInnerShadowColor"],
-        [this.textInnerShadowOpacity, "vectorTextInnerShadowOpacity"],
-        [this.textInnerShadowOffset, "vectorTextInnerShadowOffset"],
-        [this.textInnerShadowAngle, "vectorTextInnerShadowAngle"],
-        [this.textInnerShadowBlur, "vectorTextInnerShadowBlur"],
-        [this.textBlockShadowColor, "vectorTextBlockShadowColor"],
-        [this.textBlockShadowOpacity, "vectorTextBlockShadowOpacity"],
-        [this.textBlockShadowOffset, "vectorTextBlockShadowOffset"],
-        [this.textBlockShadowAngle, "vectorTextBlockShadowAngle"],
-        [this.textBlockShadowOutlineWidth, "vectorTextBlockShadowOutlineWidth"],
-      ] as const) {
-        mobile.addEventListener(eventType, () => {
-          dispatchMirroredValue(mobile, sourceId, eventType);
-          this.syncOpenState();
-        });
+    }
+    this.textValue.addEventListener("input", () => {
+      this.updateTextProperties({ text: this.textValue.value });
+    });
+    this.textFontSize.addEventListener("input", () => {
+      this.updateTextProperties({ fontSize: Number(this.textFontSize.value) });
+      this.textFontSizeOut.value = `${Math.round(Number(this.textFontSize.value))} px`;
+    });
+    this.textColor.addEventListener("input", () => {
+      if (this.options.hasSelectedText()) {
+        this.updateTextProperties({ color: this.textColor.value });
+      } else {
+        this.pendingTextColor = this.textColor.value;
       }
+      this.textColorControl.style.setProperty(
+        "--mobile-raster-effect-color",
+        this.textColor.value,
+      );
+    });
+    this.textWarpCurve.addEventListener("input", () => {
+      this.updateTextProperties({ transformCurve: Number(this.textWarpCurve.value) });
+      this.textWarpCurveOut.value = `${Math.round(Number(this.textWarpCurve.value))}%`;
+    });
+    this.textCircleRadius.addEventListener("input", () => {
+      this.updateTextProperties({ circleRadiusPercent: Number(this.textCircleRadius.value) });
+      this.textCircleRadiusOut.value = `${Math.round(Number(this.textCircleRadius.value))}%`;
+    });
+    for (const [control, patch] of [
+      [this.textOutlineWidth, () => ({ outlineWidth: Number(this.textOutlineWidth.value) })],
+      [this.textOutlineColor, () => ({ outlineColor: this.textOutlineColor.value })],
+      [this.textDropShadowColor, () => ({ singleShadowColor: this.textDropShadowColor.value })],
+      [this.textDropShadowOpacity, () => ({ singleShadowOpacity: Number(this.textDropShadowOpacity.value) / 100 })],
+      [this.textDropShadowOffset, () => ({ singleShadowOffset: Number(this.textDropShadowOffset.value) })],
+      [this.textDropShadowAngle, () => ({ singleShadowAngle: Number(this.textDropShadowAngle.value) })],
+      [this.textDropShadowBlur, () => ({ singleShadowBlur: Number(this.textDropShadowBlur.value) })],
+      [this.textInnerShadowColor, () => ({ innerShadowColor: this.textInnerShadowColor.value })],
+      [this.textInnerShadowOpacity, () => ({ innerShadowOpacity: Number(this.textInnerShadowOpacity.value) / 100 })],
+      [this.textInnerShadowOffset, () => ({ innerShadowOffset: Number(this.textInnerShadowOffset.value) })],
+      [this.textInnerShadowAngle, () => ({ innerShadowAngle: Number(this.textInnerShadowAngle.value) })],
+      [this.textInnerShadowBlur, () => ({ innerShadowBlur: Number(this.textInnerShadowBlur.value) })],
+      [this.textBlockShadowColor, () => ({ blockShadowColor: this.textBlockShadowColor.value })],
+      [this.textBlockShadowOpacity, () => ({ blockShadowOpacity: Number(this.textBlockShadowOpacity.value) / 100 })],
+      [this.textBlockShadowOffset, () => ({ blockShadowOffset: Number(this.textBlockShadowOffset.value) })],
+      [this.textBlockShadowAngle, () => ({ blockShadowAngle: Number(this.textBlockShadowAngle.value) })],
+      [this.textBlockShadowOutlineWidth, () => ({ blockShadowOutlineWidth: Number(this.textBlockShadowOutlineWidth.value) })],
+    ] as const) {
+      control.addEventListener("input", () => {
+        this.updateVectorEffectProperties(patch());
+        this.syncOpenState();
+      });
     }
     this.selectionMethod.addEventListener("change", () => {
-      dispatchMirroredValue(this.selectionMethod, "selectionMethod", "change");
+      this.options.setSelectionMethod(
+        this.selectionMethod.value as MobileSelectionSettingsSnapshot["method"],
+      );
       this.syncSelection();
     });
     this.textFontFamily.addEventListener("change", () => {
-      dispatchMirroredValue(this.textFontFamily, "vectorTextFontFamily", "change");
+      this.updateTextProperties({ fontFamily: this.textFontFamily.value });
       this.syncText();
     });
     this.textOutlineJoin.addEventListener("change", () => {
-      dispatchMirroredValue(this.textOutlineJoin, "vectorTextOutlineJoin", "change");
+      this.updateVectorEffectProperties({
+        outlineJoin: this.textOutlineJoin.value as VectorEffectEditorSnapshot["outlineJoin"],
+      });
       this.syncTextOutline();
     });
     this.textCircleInverted.addEventListener("change", () => {
-      dispatchMirroredChecked(this.textCircleInverted, "vectorTextCircleInverted");
+      this.updateTextProperties({ circleInverted: this.textCircleInverted.checked });
       this.syncTextWarp();
     });
-    for (const [mobile, sourceId] of [
-      [this.textDropShadowEnabled, "vectorTextSingleShadowEnabled"],
-      [this.textInnerShadowEnabled, "vectorTextInnerShadowEnabled"],
-      [this.textBlockShadowEnabled, "vectorTextBlockShadowEnabled"],
+    for (const [mobile, kind] of [
+      [this.textDropShadowEnabled, "single"],
+      [this.textInnerShadowEnabled, "inner"],
+      [this.textBlockShadowEnabled, "block"],
     ] as const) {
       mobile.addEventListener("change", () => {
-        dispatchMirroredChecked(mobile, sourceId);
-        requestAnimationFrame(() => this.syncOpenState());
+        if (this.startVectorPropertyEdit()) {
+          this.options.setSelectedVectorShadowEnabled(kind, mobile.checked);
+        }
+        this.options.browser.requestAnimationFrame(() => this.syncOpenState());
       });
     }
 
@@ -787,40 +745,24 @@ export class MobileToolSettingsSheetController {
       });
     }
 
-    for (const [mobile, sourceId] of [
-      [this.textValue, "vectorTextValue"],
-      [this.textFontFamily, "vectorTextFontFamily"],
-      [this.textFontSize, "vectorTextFontSize"],
-      [this.textColor, "vectorTextColor"],
-      [this.textWarpCurve, "vectorTextTransformCurve"],
-      [this.textCircleRadius, "vectorTextCircleRadius"],
-      [this.textCircleInverted, "vectorTextCircleInverted"],
-      [this.textOutlineWidth, "vectorTextOutlineWidth"],
-      [this.textOutlineColor, "vectorTextOutlineColor"],
-      [this.textOutlineJoin, "vectorTextOutlineJoin"],
-      [this.textDropShadowEnabled, "vectorTextSingleShadowEnabled"],
-      [this.textDropShadowColor, "vectorTextSingleShadowColor"],
-      [this.textDropShadowOpacity, "vectorTextSingleShadowOpacity"],
-      [this.textDropShadowOffset, "vectorTextSingleShadowOffset"],
-      [this.textDropShadowAngle, "vectorTextSingleShadowAngle"],
-      [this.textDropShadowBlur, "vectorTextSingleShadowBlur"],
-      [this.textInnerShadowEnabled, "vectorTextInnerShadowEnabled"],
-      [this.textInnerShadowColor, "vectorTextInnerShadowColor"],
-      [this.textInnerShadowOpacity, "vectorTextInnerShadowOpacity"],
-      [this.textInnerShadowOffset, "vectorTextInnerShadowOffset"],
-      [this.textInnerShadowAngle, "vectorTextInnerShadowAngle"],
-      [this.textInnerShadowBlur, "vectorTextInnerShadowBlur"],
-      [this.textBlockShadowEnabled, "vectorTextBlockShadowEnabled"],
-      [this.textBlockShadowColor, "vectorTextBlockShadowColor"],
-      [this.textBlockShadowOpacity, "vectorTextBlockShadowOpacity"],
-      [this.textBlockShadowOffset, "vectorTextBlockShadowOffset"],
-      [this.textBlockShadowAngle, "vectorTextBlockShadowAngle"],
-      [this.textBlockShadowOutlineWidth, "vectorTextBlockShadowOutlineWidth"],
-    ] as const) {
-      bindMirroredHistoryControl(mobile, sourceId);
+    for (const mobile of [
+      this.textValue, this.textFontFamily, this.textFontSize, this.textColor,
+      this.textWarpCurve, this.textCircleRadius, this.textCircleInverted,
+      this.textOutlineWidth, this.textOutlineColor, this.textOutlineJoin,
+      this.textDropShadowEnabled, this.textDropShadowColor,
+      this.textDropShadowOpacity, this.textDropShadowOffset,
+      this.textDropShadowAngle, this.textDropShadowBlur,
+      this.textInnerShadowEnabled, this.textInnerShadowColor,
+      this.textInnerShadowOpacity, this.textInnerShadowOffset,
+      this.textInnerShadowAngle, this.textInnerShadowBlur,
+      this.textBlockShadowEnabled, this.textBlockShadowColor,
+      this.textBlockShadowOpacity, this.textBlockShadowOffset,
+      this.textBlockShadowAngle, this.textBlockShadowOutlineWidth,
+    ]) {
+      this.bindVectorHistoryControl(mobile);
     }
 
-    document.addEventListener("keydown", (event) => {
+    this.options.document.addEventListener("keydown", (event) => {
       if (event.key !== "Escape" || !this.openState) return;
       event.preventDefault();
       this.close(true);
@@ -829,7 +771,7 @@ export class MobileToolSettingsSheetController {
 
   private syncAfterAction(): void {
     this.syncOpenState();
-    requestAnimationFrame(() => this.syncOpenState());
+    this.options.browser.requestAnimationFrame(() => this.syncOpenState());
   }
 
   private runAction(action: () => void): void {
@@ -837,44 +779,81 @@ export class MobileToolSettingsSheetController {
     this.syncAfterAction();
   }
 
+  private startVectorPropertyEdit(): boolean {
+    if (this.vectorPropertyEditOpen) return true;
+    this.vectorPropertyEditOpen = this.options.beginSelectedVectorPropertyEdit();
+    return this.vectorPropertyEditOpen;
+  }
+
+  private finishVectorPropertyEdit(): void {
+    if (!this.vectorPropertyEditOpen) return;
+    this.vectorPropertyEditOpen = false;
+    this.options.commitSelectedVectorPropertyEdit();
+  }
+
+  private updateTextProperties(patch: VectorTextEditorPatch): void {
+    if (!this.startVectorPropertyEdit()) return;
+    this.options.updateSelectedTextProperties(patch);
+  }
+
+  private updateVectorEffectProperties(patch: VectorEffectEditorPatch): void {
+    if (!this.startVectorPropertyEdit()) return;
+    this.options.updateSelectedVectorEffectProperties(patch);
+  }
+
+  private bindVectorHistoryControl(control: HTMLElement): void {
+    const begin = () => { this.startVectorPropertyEdit(); };
+    const commit = () => { this.finishVectorPropertyEdit(); };
+    control.addEventListener("focus", begin);
+    control.addEventListener("pointerdown", begin);
+    if (control instanceof HTMLInputElement && control.type === "range") {
+      control.addEventListener("pointerup", commit);
+      control.addEventListener("pointercancel", commit);
+      control.addEventListener("keydown", begin);
+      control.addEventListener("keyup", commit);
+      control.addEventListener("blur", commit);
+      return;
+    }
+    control.addEventListener("change", commit);
+    control.addEventListener("blur", commit);
+  }
+
   private syncFill(): void {
-    const source = sourceControl<HTMLInputElement>("fillTolerance");
-    this.fillTolerance.value = source.value;
-    this.fillTolerance.disabled = source.disabled;
-    this.fillToleranceOut.value = `${Number(source.value).toFixed(1)}%`;
+    const snapshot = this.options.getFillSettings();
+    this.fillTolerance.value = String(snapshot.tolerance);
+    this.fillTolerance.disabled = snapshot.locked;
+    this.fillToleranceOut.value = `${snapshot.tolerance.toFixed(1)}%`;
   }
 
   private syncSelection(): void {
-    const sourceMethod = sourceControl<HTMLSelectElement>("selectionMethod");
-    const sourceTolerance = sourceControl<HTMLInputElement>("selectionTolerance");
-    const sourceColor = sourceControl<HTMLInputElement>("selectionColor");
-    this.selectionMethod.value = sourceMethod.value;
-    this.selectionMethod.disabled = sourceMethod.disabled;
-    this.selectionTolerance.value = sourceTolerance.value;
-    this.selectionTolerance.disabled = sourceTolerance.disabled;
-    this.selectionToleranceOut.value = `${Math.round(Number(sourceTolerance.value))}/255`;
-    this.selectionColor.value = sourceColor.value;
-    this.selectionColorControl.style.setProperty("--mobile-raster-effect-color", sourceColor.value);
-    this.selectionColor.disabled = sourceColor.disabled;
-    const colorRange = sourceMethod.value === "color-range";
-    const lasso = sourceMethod.value === "lasso";
+    const snapshot = this.options.getSelectionSettings();
+    this.selectionMethod.value = snapshot.method;
+    this.selectionMethod.disabled = snapshot.locked;
+    this.selectionTolerance.value = String(snapshot.tolerance);
+    this.selectionTolerance.disabled = snapshot.locked;
+    this.selectionToleranceOut.value = `${snapshot.tolerance}/255`;
+    this.selectionColor.value = colorInputValue(snapshot.color);
+    this.selectionColorControl.style.setProperty(
+      "--mobile-raster-effect-color",
+      this.selectionColor.value,
+    );
+    this.selectionColor.disabled = snapshot.locked;
+    const colorRange = snapshot.method === "color-range";
+    const lasso = snapshot.method === "lasso";
     this.selectionToleranceControl.hidden = lasso;
     this.selectionColorControl.hidden = !colorRange;
     this.selectionColorApply.hidden = !colorRange;
-    for (const [mobile, sourceId] of [
-      [this.selectionReplace, "selectionReplace"],
-      [this.selectionAdd, "selectionAdd"],
-      [this.selectionSubtract, "selectionSubtract"],
+    for (const [mobile, mode] of [
+      [this.selectionReplace, "replace"],
+      [this.selectionAdd, "add"],
+      [this.selectionSubtract, "subtract"],
     ] as const) {
-      const source = sourceControl<HTMLButtonElement>(sourceId);
-      mobile.setAttribute("aria-pressed", source.getAttribute("aria-pressed") ?? "false");
-      mobile.disabled = source.disabled;
+      mobile.setAttribute("aria-pressed", String(snapshot.combineMode === mode));
+      mobile.disabled = snapshot.locked;
     }
-    this.selectionColorApply.disabled = sourceControl<HTMLButtonElement>(
-      "selectionColorApply",
-    ).disabled;
-    this.selectionClear.disabled = sourceControl<HTMLButtonElement>("selectionClear").disabled;
-    this.selectionResult.textContent = this.options.getSelectionStatus();
+    this.selectionColorApply.disabled = !snapshot.canApplyColor;
+    this.selectionClear.disabled = !snapshot.canClear;
+    this.selectionResult.textContent = snapshot.status;
   }
 
   private syncTransform(): void {
@@ -891,13 +870,10 @@ export class MobileToolSettingsSheetController {
     cancelTarget: HTMLButtonElement,
     applyTarget: HTMLButtonElement,
   ): boolean {
-    const commitBar = sourceControl<HTMLElement>("transformCommitBar");
-    const cancel = sourceControl<HTMLButtonElement>("transformCancel");
-    const apply = sourceControl<HTMLButtonElement>("transformApply");
-    const transactionActive = !commitBar.hidden;
-    cancelTarget.disabled = !transactionActive || cancel.disabled;
-    applyTarget.disabled = !transactionActive || apply.disabled;
-    return transactionActive;
+    const snapshot = this.options.getTransformActionSnapshot();
+    cancelTarget.disabled = !snapshot.canCancel;
+    applyTarget.disabled = !snapshot.canApply;
+    return snapshot.active;
   }
 
   private syncLayerOptions(): void {
@@ -931,15 +907,15 @@ export class MobileToolSettingsSheetController {
   private rebuildSvgPalette(snapshot: MobileSvgStyleSnapshot): void {
     this.finishSvgPaintEdit();
     this.svgStylePalette.replaceChildren(...snapshot.paintColors.map((color, index) => {
-      const label = document.createElement("label");
+      const label = this.options.document.createElement("label");
       label.className = "mobile-raster-effect-color";
-      const title = document.createElement("span");
+      const title = this.options.document.createElement("span");
       title.textContent = snapshot.paintColors.length === 1
         ? "Color"
         : `Color ${index + 1}`;
-      const disc = document.createElement("span");
+      const disc = this.options.document.createElement("span");
       disc.className = "mobile-raster-effect-color-disc";
-      const input = document.createElement("input");
+      const input = this.options.document.createElement("input");
       input.type = "color";
       input.value = colorInputValue(color);
       input.disabled = snapshot.locked;
@@ -982,7 +958,7 @@ export class MobileToolSettingsSheetController {
     );
     inputs.forEach((input, index) => {
       const value = colorInputValue(snapshot.paintColors[index] ?? "#000000");
-      if (document.activeElement !== input) input.value = value;
+      if (this.options.document.activeElement !== input) input.value = value;
       input.disabled = snapshot.locked;
       input.closest<HTMLElement>(".mobile-raster-effect-color")
         ?.style.setProperty("--mobile-raster-effect-color", input.value);
@@ -995,113 +971,105 @@ export class MobileToolSettingsSheetController {
   }
 
   private syncText(): void {
-    const sourceValue = sourceControl<HTMLInputElement>("vectorTextValue");
-    const sourceFont = sourceControl<HTMLSelectElement>("vectorTextFontFamily");
-    const sourceSize = sourceControl<HTMLInputElement>("vectorTextFontSize");
-    const sourceColor = sourceControl<HTMLInputElement>("vectorTextColor");
-    const sourceAdd = sourceControl<HTMLButtonElement>("addVectorText");
-    this.textValue.value = sourceValue.value;
-    this.textValue.disabled = sourceValue.disabled;
-    this.textFontFamily.value = sourceFont.value;
-    this.textFontFamily.disabled = sourceFont.disabled;
-    this.textFontSize.value = sourceSize.value;
-    this.textFontSize.disabled = sourceSize.disabled;
-    this.textFontSizeOut.value = `${Math.round(Number(sourceSize.value))} px`;
-    const hasSelectedText = this.options.hasSelectedText();
-    const textColor = hasSelectedText
-      ? sourceColor.value
+    const snapshot = this.options.getTextEditorSnapshot();
+    this.textValue.value = snapshot.text;
+    this.textValue.disabled = !snapshot.selected || snapshot.locked;
+    this.textFontFamily.value = snapshot.fontFamily;
+    this.textFontFamily.disabled = !snapshot.selected || snapshot.locked;
+    this.textFontSize.value = String(snapshot.fontSize);
+    this.textFontSize.disabled = !snapshot.selected || snapshot.locked;
+    this.textFontSizeOut.value = `${Math.round(snapshot.fontSize)} px`;
+    const textColor = snapshot.selected
+      ? snapshot.color
       : this.pendingTextColor ?? this.options.getTextCreationColor();
     this.textColor.value = colorInputValue(textColor);
     this.textColorControl.style.setProperty("--mobile-raster-effect-color", this.textColor.value);
-    this.textColor.disabled = hasSelectedText ? sourceColor.disabled : sourceAdd.disabled;
-    this.textAdd.disabled = sourceAdd.disabled;
-    this.textReset.disabled = !hasSelectedText
-      || sourceControl<HTMLButtonElement>("vectorTextReset").disabled;
-    this.textDelete.disabled = !hasSelectedText
-      || sourceControl<HTMLButtonElement>("deleteVectorText").disabled;
-    this.textRasterize.disabled = !hasSelectedText
-      || sourceControl<HTMLButtonElement>("vectorTextRasterize").disabled;
+    this.textColor.disabled = snapshot.selected ? snapshot.locked : !snapshot.canCreate;
+    this.textAdd.disabled = !snapshot.canCreate;
+    this.textReset.disabled = !snapshot.canReset;
+    this.textDelete.disabled = !snapshot.canDelete;
+    this.textRasterize.disabled = !snapshot.canRasterize;
   }
 
-  private syncMirroredRange(
+  private syncRange(
     mobile: HTMLInputElement,
     output: HTMLOutputElement,
-    sourceId: string,
+    value: number,
+    locked: boolean,
     format: (value: number) => string,
   ): void {
-    const source = sourceControl<HTMLInputElement>(sourceId);
-    mobile.value = source.value;
-    mobile.disabled = source.disabled;
-    output.value = format(Number(source.value));
+    mobile.value = String(value);
+    mobile.disabled = locked;
+    output.value = format(value);
   }
 
-  private syncMirroredColor(
+  private syncColor(
     mobile: HTMLInputElement,
     control: HTMLElement,
-    sourceId: string,
+    value: string,
+    locked: boolean,
   ): void {
-    const source = sourceControl<HTMLInputElement>(sourceId);
-    mobile.value = source.value;
-    mobile.disabled = source.disabled;
-    control.style.setProperty("--mobile-raster-effect-color", source.value);
+    mobile.value = colorInputValue(value);
+    mobile.disabled = locked;
+    control.style.setProperty("--mobile-raster-effect-color", mobile.value);
   }
 
   private syncTextWarp(): void {
-    let activeSourceId = "vectorTextTransformNone";
-    for (const { mobile, sourceId } of this.textWarpButtonControls) {
-      const source = sourceControl<HTMLButtonElement>(sourceId);
-      const pressed = source.getAttribute("aria-pressed") === "true";
+    const snapshot = this.options.getTextEditorSnapshot();
+    const locked = !snapshot.selected || snapshot.locked;
+    for (const { mobile, mode } of this.textWarpButtonControls) {
+      const pressed = snapshot.transformType === mode;
       mobile.setAttribute("aria-pressed", String(pressed));
-      mobile.disabled = source.disabled;
-      if (pressed) activeSourceId = sourceId;
+      mobile.disabled = locked;
     }
-    this.textWarpDistortControls.hidden = activeSourceId !== "vectorTextTransformDistort";
-    this.textWarpCurveControls.hidden = activeSourceId !== "vectorTextTransformArch"
-      && activeSourceId !== "vectorTextTransformWave";
-    this.textWarpCircleControls.hidden = activeSourceId !== "vectorTextTransformCircle";
-    const sourceDistortReset = sourceControl<HTMLButtonElement>("vectorTextDistortReset");
-    const sourceDistortEdit = sourceControl<HTMLButtonElement>("vectorTextDistortEdit");
-    this.textDistortReset.disabled = sourceDistortReset.disabled;
-    this.textDistortEdit.disabled = sourceDistortEdit.disabled;
-    const editing = sourceDistortEdit.getAttribute("aria-pressed") === "true";
-    this.textDistortEdit.setAttribute("aria-pressed", String(editing));
-    this.textDistortEdit.textContent = editing ? "Done" : "Edit";
+    this.textWarpDistortControls.hidden = snapshot.transformType !== "distort";
+    this.textWarpCurveControls.hidden = snapshot.transformType !== "arch"
+      && snapshot.transformType !== "wave";
+    this.textWarpCircleControls.hidden = snapshot.transformType !== "circle";
+    this.textDistortReset.disabled = locked;
+    this.textDistortEdit.disabled = locked;
+    this.textDistortEdit.setAttribute("aria-pressed", String(snapshot.distortEditing));
+    this.textDistortEdit.textContent = snapshot.distortEditing ? "Done" : "Edit";
     this.textDistortCommitActions.hidden = !this.syncTransformActions(
       this.textDistortCancel,
       this.textDistortApply,
     );
-    this.syncMirroredRange(
+    this.syncRange(
       this.textWarpCurve,
       this.textWarpCurveOut,
-      "vectorTextTransformCurve",
+      snapshot.transformCurve,
+      locked,
       (value) => `${Math.round(value)}%`,
     );
-    this.syncMirroredRange(
+    this.syncRange(
       this.textCircleRadius,
       this.textCircleRadiusOut,
-      "vectorTextCircleRadius",
+      snapshot.circleRadiusPercent,
+      locked,
       (value) => `${Math.round(value)}%`,
     );
-    const sourceInverted = sourceControl<HTMLInputElement>("vectorTextCircleInverted");
-    this.textCircleInverted.checked = sourceInverted.checked;
-    this.textCircleInverted.disabled = sourceInverted.disabled;
+    this.textCircleInverted.checked = snapshot.circleInverted;
+    this.textCircleInverted.disabled = locked;
   }
 
   private syncTextOutline(): void {
-    this.syncMirroredRange(
+    const snapshot = this.options.getVectorEffectEditorSnapshot();
+    if (!snapshot) return;
+    this.syncRange(
       this.textOutlineWidth,
       this.textOutlineWidthOut,
-      "vectorTextOutlineWidth",
+      snapshot.outlineWidth,
+      snapshot.locked,
       (value) => `${Math.round(value)} px`,
     );
-    this.syncMirroredColor(
+    this.syncColor(
       this.textOutlineColor,
       this.textOutlineColorControl,
-      "vectorTextOutlineColor",
+      snapshot.outlineColor,
+      snapshot.locked,
     );
-    const sourceJoin = sourceControl<HTMLSelectElement>("vectorTextOutlineJoin");
-    this.textOutlineJoin.value = sourceJoin.value;
-    this.textOutlineJoin.disabled = sourceJoin.disabled;
+    this.textOutlineJoin.value = snapshot.outlineJoin;
+    this.textOutlineJoin.disabled = snapshot.locked;
   }
 
   private syncTextShadow(
@@ -1109,61 +1077,65 @@ export class MobileToolSettingsSheetController {
     parameters: HTMLElement,
     colorControl: HTMLElement,
     color: HTMLInputElement,
-    sourceEnabledId: string,
-    sourceColorId: string,
+    enabledValue: boolean,
+    colorValue: string,
+    locked: boolean,
     ranges: readonly {
       mobile: HTMLInputElement;
       output: HTMLOutputElement;
-      sourceId: string;
+      value: number;
       format: (value: number) => string;
     }[],
   ): void {
-    const sourceEnabled = sourceControl<HTMLInputElement>(sourceEnabledId);
-    enabled.checked = sourceEnabled.checked;
-    enabled.disabled = sourceEnabled.disabled;
-    parameters.hidden = !sourceEnabled.checked;
-    this.syncMirroredColor(color, colorControl, sourceColorId);
+    enabled.checked = enabledValue;
+    enabled.disabled = locked;
+    parameters.hidden = !enabledValue;
+    this.syncColor(color, colorControl, colorValue, locked);
     for (const range of ranges) {
-      this.syncMirroredRange(
+      this.syncRange(
         range.mobile,
         range.output,
-        range.sourceId,
+        range.value,
+        locked,
         range.format,
       );
     }
   }
 
   private syncTextDropShadow(): void {
+    const snapshot = this.options.getVectorEffectEditorSnapshot();
+    if (!snapshot) return;
     this.syncTextShadow(
       this.textDropShadowEnabled,
       this.textDropShadowParameters,
       this.textDropShadowColorControl,
       this.textDropShadowColor,
-      "vectorTextSingleShadowEnabled",
-      "vectorTextSingleShadowColor",
+      snapshot.singleShadowEnabled,
+      snapshot.singleShadowColor,
+      snapshot.locked,
       [
         {
           mobile: this.textDropShadowOpacity,
           output: this.textDropShadowOpacityOut,
-          sourceId: "vectorTextSingleShadowOpacity",
+          value: snapshot.singleShadowOpacity * 100,
           format: (value) => `${Math.round(value)}%`,
         },
         {
           mobile: this.textDropShadowOffset,
           output: this.textDropShadowOffsetOut,
-          sourceId: "vectorTextSingleShadowOffset",
+          value: snapshot.singleShadowOffset,
           format: (value) => String(Math.round(value)),
         },
         {
           mobile: this.textDropShadowAngle,
           output: this.textDropShadowAngleOut,
-          sourceId: "vectorTextSingleShadowAngle",
+          value: snapshot.singleShadowAngle,
           format: (value) => `${Math.round(value)}°`,
         },
         {
           mobile: this.textDropShadowBlur,
           output: this.textDropShadowBlurOut,
-          sourceId: "vectorTextSingleShadowBlur",
+          value: snapshot.singleShadowBlur,
           format: (value) => String(Math.round(value)),
         },
       ],
@@ -1171,36 +1143,39 @@ export class MobileToolSettingsSheetController {
   }
 
   private syncTextInnerShadow(): void {
+    const snapshot = this.options.getVectorEffectEditorSnapshot();
+    if (!snapshot) return;
     this.syncTextShadow(
       this.textInnerShadowEnabled,
       this.textInnerShadowParameters,
       this.textInnerShadowColorControl,
       this.textInnerShadowColor,
-      "vectorTextInnerShadowEnabled",
-      "vectorTextInnerShadowColor",
+      snapshot.innerShadowEnabled,
+      snapshot.innerShadowColor,
+      snapshot.locked,
       [
         {
           mobile: this.textInnerShadowOpacity,
           output: this.textInnerShadowOpacityOut,
-          sourceId: "vectorTextInnerShadowOpacity",
+          value: snapshot.innerShadowOpacity * 100,
           format: (value) => `${Math.round(value)}%`,
         },
         {
           mobile: this.textInnerShadowOffset,
           output: this.textInnerShadowOffsetOut,
-          sourceId: "vectorTextInnerShadowOffset",
+          value: snapshot.innerShadowOffset,
           format: (value) => String(Math.round(value)),
         },
         {
           mobile: this.textInnerShadowAngle,
           output: this.textInnerShadowAngleOut,
-          sourceId: "vectorTextInnerShadowAngle",
+          value: snapshot.innerShadowAngle,
           format: (value) => `${Math.round(value)}°`,
         },
         {
           mobile: this.textInnerShadowBlur,
           output: this.textInnerShadowBlurOut,
-          sourceId: "vectorTextInnerShadowBlur",
+          value: snapshot.innerShadowBlur,
           format: (value) => String(Math.round(value)),
         },
       ],
@@ -1208,36 +1183,39 @@ export class MobileToolSettingsSheetController {
   }
 
   private syncTextBlockShadow(): void {
+    const snapshot = this.options.getVectorEffectEditorSnapshot();
+    if (!snapshot) return;
     this.syncTextShadow(
       this.textBlockShadowEnabled,
       this.textBlockShadowParameters,
       this.textBlockShadowColorControl,
       this.textBlockShadowColor,
-      "vectorTextBlockShadowEnabled",
-      "vectorTextBlockShadowColor",
+      snapshot.blockShadowEnabled,
+      snapshot.blockShadowColor,
+      snapshot.locked,
       [
         {
           mobile: this.textBlockShadowOpacity,
           output: this.textBlockShadowOpacityOut,
-          sourceId: "vectorTextBlockShadowOpacity",
+          value: snapshot.blockShadowOpacity * 100,
           format: (value) => `${Math.round(value)}%`,
         },
         {
           mobile: this.textBlockShadowOffset,
           output: this.textBlockShadowOffsetOut,
-          sourceId: "vectorTextBlockShadowOffset",
+          value: snapshot.blockShadowOffset,
           format: (value) => String(Math.round(value)),
         },
         {
           mobile: this.textBlockShadowAngle,
           output: this.textBlockShadowAngleOut,
-          sourceId: "vectorTextBlockShadowAngle",
+          value: snapshot.blockShadowAngle,
           format: (value) => `${Math.round(value)}°`,
         },
         {
           mobile: this.textBlockShadowOutlineWidth,
           output: this.textBlockShadowOutlineWidthOut,
-          sourceId: "vectorTextBlockShadowOutlineWidth",
+          value: snapshot.blockShadowOutlineWidth,
           format: (value) => `${Math.round(value)} px`,
         },
       ],
@@ -1260,7 +1238,9 @@ export class MobileToolSettingsSheetController {
     }
     return Math.max(
       0,
-      Math.round(this.closedOffset() - mobileToolSettingsPeekHeight(window.innerHeight)),
+      Math.round(
+        this.closedOffset() - mobileToolSettingsPeekHeight(this.options.browser.innerHeight),
+      ),
     );
   }
 
@@ -1302,7 +1282,7 @@ export class MobileToolSettingsSheetController {
   }
 
   private setMinimizedAccessibility(minimized: boolean): void {
-    const activeElement = document.activeElement;
+    const activeElement = this.options.document.activeElement;
     if (
       minimized
       && activeElement instanceof HTMLElement
@@ -1321,7 +1301,7 @@ export class MobileToolSettingsSheetController {
     this.dragStartOffsetPx = this.offsetPx;
     this.dragStartSnap = this.snap;
     this.dragLastY = event.clientY;
-    this.dragLastTime = performance.now();
+    this.dragLastTime = this.options.browser.performance.now();
     this.dragVelocityY = 0;
     this.dragMoved = false;
     this.sheet.classList.add("is-dragging");
@@ -1330,7 +1310,7 @@ export class MobileToolSettingsSheetController {
 
   private moveDrag(event: PointerEvent): void {
     if (event.pointerId !== this.dragPointerId) return;
-    const now = performance.now();
+    const now = this.options.browser.performance.now();
     const elapsed = now - this.dragLastTime;
     if (elapsed > 0 && elapsed <= 120) {
       const immediate = (event.clientY - this.dragLastY) / elapsed;
@@ -1357,7 +1337,7 @@ export class MobileToolSettingsSheetController {
     }
     this.sheet.classList.remove("is-dragging");
     const deltaY = event.clientY - this.dragStartY;
-    const velocityAge = performance.now() - this.dragLastTime;
+    const velocityAge = this.options.browser.performance.now() - this.dragLastTime;
     const releaseVelocityY = velocityAge <= 100 ? this.dragVelocityY : 0;
     this.dragPointerId = null;
     if (cancelled) {

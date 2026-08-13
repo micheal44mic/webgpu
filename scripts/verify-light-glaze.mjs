@@ -345,7 +345,7 @@ assert.match(
   "Opacity non viene applicata una sola volta al risultato MAX della gesture.",
 );
 
-assert.match(html, /value="light-glaze">Light Glaze/);
-assert.doesNotMatch(html, /value="m1-glaze"/);
+assert.match(html, /data-mobile-brush-rendering="light-glaze"[\s\S]{0,80}Light Glaze/);
+assert.doesNotMatch(html, /data-mobile-brush-rendering="m1-glaze"/);
 
 console.log("Light Glaze contract verification passed.");

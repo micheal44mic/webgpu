@@ -20,7 +20,6 @@ import {
   normalizeDestructiveGaussianBlurRadius,
   unionGaussianBlurRects,
   type GaussianBlurKernel,
-  type GaussianBlurRect,
 } from "./gaussian-blur-core";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import { tileMaskCoveringRect } from "./raster-transform-math";
@@ -103,10 +102,6 @@ export interface ActiveRasterGaussianBlurSession {
 }
 
 const sharedByDevice = new WeakMap<GPUDevice, Promise<GaussianBlurSharedResources>>();
-
-function copyRect(rect: GaussianBlurRect | null): DirtyRect | null {
-  return rect ? { ...rect } : null;
-}
 
 function commonShaderSource(): string {
   return /* wgsl */ `

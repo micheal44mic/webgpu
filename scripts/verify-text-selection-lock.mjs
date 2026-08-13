@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const [styles, main] = await Promise.all([
+const [styles, interaction] = await Promise.all([
   readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
-  readFile(new URL("../src/main.ts", import.meta.url), "utf8"),
+  readFile(new URL("../src/document-interaction-controller.ts", import.meta.url), "utf8"),
 ]);
 
 assert.match(
@@ -17,8 +17,8 @@ assert.match(
   "Editable controls and explicit opt-outs must keep native text editing.",
 );
 assert.match(
-  main,
-  /document\.addEventListener\("selectstart",[\s\S]*elementTarget\?\.closest\(textSelectionEditableSelector\)[\s\S]*event\.preventDefault\(\);[\s\S]*\}, \{ capture: true \}\);/,
+  interaction,
+  /document\.addEventListener\("selectstart",[\s\S]*target\?\.closest\(EDITABLE_TEXT_SELECTOR\)[\s\S]*event\.preventDefault\(\);/,
   "A capture-phase guard must cover engines that ignore inherited user-select.",
 );
 

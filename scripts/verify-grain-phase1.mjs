@@ -17,6 +17,8 @@ const brushStrokePreviewPath = path.join(
 );
 const stampUploadPath = path.join(projectRoot, "src", "engine-stamp-upload.ts");
 const mainPath = path.join(projectRoot, "src", "main.ts");
+const humanLabPath = path.join(projectRoot, "src", "labs", "human-stroke-lab.ts");
+const editorLabsPath = path.join(projectRoot, "src", "labs", "editor-labs.ts");
 const htmlPath = path.join(projectRoot, "index.html");
 const expectedSize = 800;
 const expectedSha256 = "2AF322275A8A1EBC9E410C123115EEF2CBB3AB8F4EE5823BBB6CF3F495D07528";
@@ -358,33 +360,36 @@ assert(engine.includes("const polarity = settings.grainInvert ? -1 : 1")
   "Invert Grain non è incorporato nei coefficienti esistenti.");
 
 const main = fs.readFileSync(mainPath, "utf8");
+const humanLab = fs.readFileSync(humanLabPath, "utf8");
+const editorLabs = fs.readFileSync(editorLabsPath, "utf8");
 const html = fs.readFileSync(htmlPath, "utf8");
-assert(main.includes('setControlValue("grainMode", "off")'),
+assert(humanLab.includes('grainMode: "off"'),
   "Il preset canonico non forza Grain Off.");
-assert(main.includes('benchmark.settings.grainMode === "moving"'),
-  "La normalizzazione delle impostazioni manuali Moving è assente.");
-assert(main.includes('type HumanStrokeTestGrainMode = Extract<GrainMode, "off" | "texturized">')
-  && main.includes('type HumanStrokeTestBlendMode = "light-glaze" | "uniformed-glaze" | "intense-blending"')
-  && main.includes('blendIntensity: 1')
-  && main.includes('humanStrokeTestGrainModeSelect.value === "texturized" ? "texturized" : "off"')
-  && main.includes('canonical-human-stroke-base-spacing-1-three-renderings-one-tap-v4'),
+assert(humanLab.includes('blendIntensity: 1')
+  && humanLab.includes('"light-glaze"')
+  && humanLab.includes('"uniformed-glaze"')
+  && humanLab.includes('"intense-blending"')
+  && humanLab.includes('canonical-human-stroke-base-spacing-1-three-renderings-one-tap-v4'),
   "Il replay iPhone non espone i tre rendering e la suite Base/Grain Off one-tap rev4.");
-assert(html.includes('value="texturized">Texturized — Fixed')
-  && html.includes('value="moving">Texturized — Moving'),
+assert(html.includes('data-mobile-brush-grain-mode="texturized">Fixed')
+  && html.includes('data-mobile-brush-grain-mode="moving">Moving'),
   "Le due impostazioni Grain non sono esposte nella UI.");
-assert(html.includes('id="grainInvert" type="checkbox"')
-  && main.includes('grainInvert: element<HTMLInputElement>("grainInvert").checked')
-  && main.includes('element<HTMLInputElement>("grainInvert").checked = false'),
-  "Il controllo Invert Grain o il default canonico Off non sono collegati.");
-assert(html.includes('value="light-glaze">Light Glaze')
-  && html.includes('value="uniformed-glaze">Uniformed Glaze')
-  && html.includes('value="intense-blending">Intense Blending'),
+assert(html.includes('id="mobileBrushStudioGrainInvert" type="checkbox"')
+  && mobileBrushStudio.includes("draft.grainInvert = checked")
+  && main.includes("applySettings: applyBrushSettings")
+  && main.includes("brushSettingsController.replace(settings)")
+  && humanLab.includes('grainInvert: false'),
+  "Invert Grain deve fluire dal Brush Studio al controller autorevole, con default canonico Off.");
+assert(!html.includes('id="grainInvert"') && !main.includes('element<HTMLInputElement>("grainInvert")'),
+  "Invert Grain non deve dipendere da un controllo nascosto legacy.");
+assert(html.includes('data-mobile-brush-rendering="light-glaze"')
+  && html.includes('data-mobile-brush-rendering="uniformed-glaze"')
+  && html.includes('data-mobile-brush-rendering="intense-blending"'),
   "I tre rendering finali non sono esposti nella UI.");
-assert(html.includes('id="runRenderingModeSuite"')
-  && html.includes('value="off">Off — senza texture')
-  && html.includes('value="texturized">Texturized — Fixed (fisso)'),
-  "La suite iPhone one-tap con Grain Off/Fixed non è esposta correttamente.");
-assert(main.includes("performanceTelemetryRevision: 64"),
+assert(editorLabs.includes('["human-suite", "Suite tratto umano · 3 rendering"]')
+  && editorLabs.includes('grainMode: "texturized" as const'),
+  "La suite one-tap e il replay Fixed non sono esposti nei laboratori.");
+assert(humanLab.includes("HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 64"),
   "Revisione telemetria compositing livelli attesa assente.");
 
 console.log(JSON.stringify({

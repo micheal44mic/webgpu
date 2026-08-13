@@ -4,14 +4,16 @@ import { readEngineSource } from "./engine-source.mjs";
 import {
   LAYER_COMPRESSION_CHUNK_TILE_COUNT,
   LAYER_COMPRESSION_CODEC,
-  LAYER_COMPRESSION_STUDY_BUILD,
-  LAYER_COMPRESSION_STUDY_VERSION,
   combineCompressionHashes,
   compressLosslessGzipChunk,
   formatCompressionHash,
   hashCompressionBytes,
   measureLosslessGzipChunk,
-} from "../src/layer-compression-study.ts";
+} from "../src/layer-compression-codec.ts";
+import {
+  LAYER_COMPRESSION_STUDY_BUILD,
+  LAYER_COMPRESSION_STUDY_VERSION,
+} from "../src/labs/memory/layer-compression-study-contract.ts";
 
 assert.equal(LAYER_COMPRESSION_STUDY_VERSION, 1);
 assert.equal(
@@ -84,6 +86,26 @@ assert.match(formatCompressionHash(combinedSource), /^[0-9a-f]{8}$/);
 
 const engineSource = readEngineSource();
 const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const gpuMemoryPanelSource = readFileSync(
+  new URL("../src/gpu-memory-panel-controller.ts", import.meta.url),
+  "utf8",
+);
+const interactionSource = readFileSync(
+  new URL("../src/document-interaction-controller.ts", import.meta.url),
+  "utf8",
+);
+const labOperationsSource = readFileSync(
+  new URL("../src/labs/engine-lab-operations.ts", import.meta.url),
+  "utf8",
+);
+const editorLabsSource = readFileSync(
+  new URL("../src/labs/editor-labs.ts", import.meta.url),
+  "utf8",
+);
+const labsStartupSource = readFileSync(
+  new URL("../src/labs/startup.ts", import.meta.url),
+  "utf8",
+);
 const workerSource = readFileSync(
   new URL("../src/layer-cold-compression-worker.ts", import.meta.url),
   "utf8",
@@ -108,14 +130,14 @@ const migrationSource = readFileSync(
 );
 
 assert.match(engineSource, /layerCompressionTestEnabled\?: boolean/);
-assert.match(engineSource, /async measureLayerColdCompressionStudy\(/);
 assert.match(engineSource, /readLayerColdStorageTiles\(/);
 assert.match(engineSource, /depthOrArrayLayers: arrayLayerCount/);
-assert.match(engineSource, /temporaryReadbackPeakMiB/);
-const studyStart = engineSource.indexOf("export async function measureLayerColdCompressionStudy(");
-const studyEnd = engineSource.indexOf("export async function measureActiveStyleBakeGap(", studyStart);
+assert.match(labOperationsSource, /async function measureLayerColdCompressionStudy\(/);
+assert.match(labOperationsSource, /temporaryReadbackPeakMiB/);
+const studyStart = labOperationsSource.indexOf("export async function measureLayerColdCompressionStudy(");
+const studyEnd = labOperationsSource.indexOf("export async function measureActiveStyleBakeGap(", studyStart);
 assert.ok(studyStart >= 0 && studyEnd > studyStart);
-const studyBody = engineSource.slice(studyStart, studyEnd);
+const studyBody = labOperationsSource.slice(studyStart, studyEnd);
 assert.doesNotMatch(studyBody, /destroyLayerColdStorage/);
 assert.match(studyBody, /countedGpuMiBAfter - countedGpuMiBBefore/);
 assert.match(studyBody, /measureLosslessGzipChunk/);
@@ -175,11 +197,11 @@ const beginStrokeStart = engineSource.indexOf("beginStrokeAtLayer(point: LayerPo
 const beginStrokeEnd = engineSource.indexOf("extendStroke(", beginStrokeStart);
 const beginStrokeBody = engineSource.slice(beginStrokeStart, beginStrokeEnd);
 assert.match(beginStrokeBody, /pauseLayerColdCompressionIdle\(this\)/);
-assert.match(mainSource, /window\.addEventListener\("pointerdown", \(event\) => \{[\s\S]*?engine\.pauseLayerColdCompressionForInteraction\(\)/);
+assert.match(interactionSource, /browser\.addEventListener\("pointerdown", \(event\) => \{[\s\S]*?pauseLayerColdCompressionForInteraction\(\)/);
 assert.match(engineSource, /layerColdCompressionInteractionActive = true;[\s\S]*?pauseLayerColdCompressionIdle\(this\)/);
 assert.match(engineSource, /layerColdCompressionEngineIdle\([\s\S]*?!engine\.layerColdCompressionInteractionActive/);
-assert.match(mainSource, /layerCompressionInteractionPointers\.size === 0[\s\S]*?engine\.resumeLayerColdCompressionAfterInteraction\(\)/);
-assert.match(mainSource, /layerCompressionInteractionPointers\.size === 0[\s\S]*?document\.visibilityState === "visible"[\s\S]*?document\.hasFocus\(\)[\s\S]*?resumeLayerColdCompressionAfterInteraction/);
+assert.match(interactionSource, /compressionPointers\.size === 0[\s\S]*?resumeLayerColdCompressionAfterInteraction\(\)/);
+assert.match(interactionSource, /compressionPointers\.size === 0[\s\S]*?document\.visibilityState === "visible"[\s\S]*?document\.hasFocus\(\)[\s\S]*?resumeLayerColdCompressionAfterInteraction/);
 // `cancelLayerColdCompressionIdle` è rimasto un metodo della classe: il
 // negativo deve cercare la forma che il codice può davvero assumere, con
 // entrambi i ricevitori possibili, altrimenti non fallirebbe mai.
@@ -303,17 +325,18 @@ assert.doesNotMatch(
 assert.match(mainSource, /pageSearchParams\.get\("layerDirectHotHydration"\) !== "0"/);
 assert.match(mainSource, /layerColdDirectHotHydrationEnabled,/);
 assert.match(mainSource, /layerColdAdjacentPrefetchEnabled,/);
-assert.match(mainSource, /gpuMemoryLayerCompressed/);assert.match(engineSource, /layerColdCompressionProgress: \{/);
+assert.match(gpuMemoryPanelSource, /gpuMemoryLayerCompressed/);assert.match(engineSource, /layerColdCompressionProgress: \{/);
 assert.match(engineSource, /completedTileCount: engine\.layerColdCompressionProgress\.nextArrayLayer/);
 assert.match(engineSource, /pausedByStroke: engine\.activeStroke !== null/);
-assert.match(mainSource, /compressione · \$\{compressionProgress\.completedTileCount\}/);
-assert.match(mainSource, /compressionProgress\.pausedByStroke \? " · pausa tratto"/);
+assert.match(gpuMemoryPanelSource, /const LAYER_STATE_LABEL:[\s\S]*?compressed: "compresso"/);
+assert.match(gpuMemoryPanelSource, /livello\.compressedCpuMiB > 0[\s\S]*?RAM compressa/);
 assert.match(indexSource, /Layer · compressi · RAM CPU/);
 assert.match(indexSource, /Totale contato · GPU \+ cold RAM CPU/);
-assert.match(mainSource, /pageSearchParams\.get\("layerCompressionTest"\) === "1"/);
-assert.match(mainSource, /await engine\.measureLayerColdCompressionStudy/);
-assert.match(mainSource, /saveLayerCompressionRun\(report\)/);
-assert.match(indexSource, /id="runLayerCompressionStudy"/);
+assert.doesNotMatch(mainSource, /layerCompressionStudy|measureLayerColdCompressionStudy|saveLayerCompressionRun/);
+assert.match(labsStartupSource, /layerCompressionTestEnabled: true/);
+assert.match(editorLabsSource, /\["layer-compression", "Studio compressione lossless"\]/);
+assert.match(editorLabsSource, /measureLayerColdCompressionStudy\(engine/);
+assert.match(editorLabsSource, /saveLabReport\("\/api\/layer-compression-runs", report\)/);
 assert.match(sitesSource, /\/api\/layer-compression-runs/);
 assert.match(sitesSource, /layer_compression_runs/);
 assert.match(sitesSource, new RegExp(LAYER_COMPRESSION_STUDY_BUILD));

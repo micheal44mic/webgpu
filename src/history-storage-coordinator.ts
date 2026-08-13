@@ -9,7 +9,6 @@ import type {
 } from "./engine-layer-resources";
 import type {
   HistoryAction,
-  HistoryRenderBatch,
   LayerMergeHistoryAction,
   SelectionHistoryMaskSnapshot,
 } from "./engine-history-types";
@@ -36,7 +35,6 @@ import {
   type HistorySegmentPlan,
   type HistorySegmentDescriptorV1,
   type HistoryStorageBackendKind,
-  type StoredHistoryChunkCodec,
   type StoredHistoryChunkV1,
   type StoredHistoryPayloadKind,
   type StoredHistoryPayloadV1,

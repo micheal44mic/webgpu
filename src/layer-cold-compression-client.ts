@@ -1,7 +1,7 @@
 import type {
   LayerCompressionChunkMeasurement,
   LayerCompressionStorage,
-} from "./layer-compression-study";
+} from "./layer-compression-codec";
 
 export const LAYER_COLD_COMPRESSION_RUNTIME_BUILD =
   "direct-hot-prefetch-policy-pointer-gated-v5" as const;

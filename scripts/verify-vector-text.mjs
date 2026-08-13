@@ -145,6 +145,7 @@ const read = (relativePath) =>
 
 const engineSource = readEngineSource();
 const controllerSource = read("src/mixed-vector-text-controller.ts");
+const mobileToolSettingsSource = read("src/mobile-tool-settings-sheet.ts");
 const clientSource = read("src/vector-text-effect-client.ts");
 const workerSource = read("src/vector-text-effect-worker.ts");
 const workerProtocolSource = read("src/vector-text-effect-worker-protocol.ts");
@@ -164,6 +165,10 @@ const svgSource = read("src/vector-svg-import.ts");
 const svgGradientStrokeFixture = read("scripts/fixtures/svg-gradient-stroke.svg");
 const vectorRasterSource = read("src/engine-vector-raster-runtime.ts");
 const mainSource = read("src/main.ts");
+const canvasInputSource = read("src/canvas-input-controller.ts");
+const editorLabsSource = read("src/labs/editor-labs.ts");
+const labsStartupSource = read("src/labs/startup.ts");
+const vectorZoomLabSource = read("src/labs/vector/vector-zoom-labs.ts");
 const sitesBuildSource = read("scripts/prepare-sites-build.mjs");
 const vectorZoomMigrationSource = read(".openai/drizzle/0005_vector_zoom_runs.sql");
 const htmlSource = read("index.html");
@@ -1604,6 +1609,14 @@ assert.equal((controllerSource.match(/getContext\("2d"/g) ?? []).length, 1);
 assert.match(controllerSource, /this\.interactionCanvas\.getContext\("2d"/);
 assert.match(controllerSource, /this\.presentationCanvas\.width = 1/);
 assert.match(controllerSource, /this\.presentationCanvas\.hidden = true/);
+assert.match(controllerSource, /root: ParentNode;[\s\S]*?browser: Window;/);
+assert.match(controllerSource, /root\.querySelector<HTMLElement>\(`/);
+assert.doesNotMatch(controllerSource, /document\.getElementById|\bwindow\./);
+assert.match(
+  mainSource,
+  /new MixedVectorTextController\(engine, \{[\s\S]*?root: appElement,[\s\S]*?browser: window,/,
+  "il controller vettoriale deve ricevere root e runtime browser dal bootstrap",
+);
 const controllerInitializeStart = controllerSource.indexOf("  async initialize(): Promise<void> {");
 const controllerInitializeEnd = controllerSource.indexOf(
   "\n  syncScene(",
@@ -1621,11 +1634,17 @@ assert.doesNotMatch(
   /addVectorTextNode|defaultSeed/,
   "l'avvio non deve creare automaticamente un livello testo",
 );
-assert.match(controllerSource, /private bindVectorHistoryControl\(control: HTMLElement\)/);
 assert.match(
-  controllerSource,
+  mobileToolSettingsSource,
+  /private bindVectorHistoryControl\(control: HTMLElement\)/,
+);
+assert.match(
+  mobileToolSettingsSource,
   /control\.type === "range"[\s\S]*pointerup[\s\S]*pointercancel[\s\S]*keyup[\s\S]*blur/,
 );
+assert.match(controllerSource, /beginSelectedVectorPropertyEdit\(\): boolean/);
+assert.match(controllerSource, /commitSelectedVectorPropertyEdit\(\): boolean/);
+assert.doesNotMatch(mobileToolSettingsSource, /sourceControl|dispatchMirrored|dispatchEvent/);
 assert.match(
   controllerSource,
   /this\.host\.beginVectorHistoryEdit\("transform"\)/,
@@ -1706,30 +1725,30 @@ assert.match(
   /if \(!enabled && this\.zoomRenderMode === "fast"\)[\s\S]{0,700}this\.viewGestureActive = false[\s\S]{0,700}this\.exitFastAfterScheduledRender = true/,
   "disabilitare il fast path durante un gesto deve forzare un redraw preciso senza attendere pointer-up",
 );
-assert.match(mainSource, /effectRefinementRenderDelta = Math\.max\([\s\S]{0,150}exactRenderDeltaDuringRecovery - 1/);
+assert.match(vectorZoomLabSource, /effectRefinementRenderDelta = Math\.max\([\s\S]{0,150}exactRenderDeltaDuringRecovery - 1/);
 assert.doesNotMatch(
-  mainSource,
+  vectorZoomLabSource,
   /exactRecoveryLatestOnly:[\s\S]{0,300}exactRenderDeltaDuringRecovery === 1/,
   "gli swap atomici LOD degli effetti possono raffinare la singola recovery senza creare altre recovery zoom",
 );
-assert.match(mainSource, /layerMemoryStressReport\.textContent = JSON\.stringify\(report, null, 2\)/);
-assert.match(mainSource, /pageSearchParams\.get\("vectorZoomRefresh"\)/);
-assert.match(mainSource, /refreshMode === "during" \? "A" : "B"/);
-assert.match(mainSource, /engine\.panByClientDelta\(1, 0\)/);
-assert.match(mainSource, /VECTOR_TEXT_ZOOM_AB_IDLE_FRAME_COUNT/);
-assert.match(mainSource, /VECTOR_TEXT_ZOOM_AB_SAMPLE_COUNT/);
-assert.match(mainSource, /__vectorZoomAbReport/);
-assert.match(mainSource, /unsafeExactRefreshCompletedDelta > 0/);
+assert.match(editorLabsSource, /this\.#report\.textContent = serialize\(report\)/);
+assert.match(labsStartupSource, /search\.get\("lab"\) === "vector-zoom-release" \? "on-release" : "during-gesture"/);
+assert.match(vectorZoomLabSource, /refreshMode === "during" \? "A" : "B"/);
+assert.match(vectorZoomLabSource, /engine\.panByClientDelta\(1, 0\)/);
+assert.match(vectorZoomLabSource, /VECTOR_TEXT_ZOOM_AB_IDLE_FRAME_COUNT/);
+assert.match(vectorZoomLabSource, /VECTOR_TEXT_ZOOM_AB_SAMPLE_COUNT/);
+assert.match(vectorZoomLabSource, /__vectorZoomAbReport/);
+assert.match(vectorZoomLabSource, /unsafeExactRefreshCompletedDelta > 0/);
 assert.match(
-  mainSource,
+  vectorZoomLabSource,
   /unsafeExactRefreshStartedDelta === 0[\s\S]{0,220}exactRenderDeltaDuringGesture === 0/,
 );
 assert.ok(
-  (mainSource.match(/vectorTextPrototype\?\.beginViewGesture\(\)/g) ?? []).length >= 2,
+  (canvasInputSource.match(/getVectorController\(\)\?\.beginViewGesture\(\)/g) ?? []).length >= 2,
   "pinch e pan/rotate devono armare il fast mode prima del primo movimento",
 );
 assert.ok(
-  (mainSource.match(/vectorTextPrototype\?\.endViewGesture\(\)/g) ?? []).length >= 2,
+  (canvasInputSource.match(/getVectorController\(\)\?\.endViewGesture\(\)/g) ?? []).length >= 2,
   "pointer-up deve richiedere il recovery preciso senza attendere il debounce",
 );
 assert.doesNotMatch(controllerSource, /zoomModeIndicator|updateAdaptiveZoomIndicator|Zoom vettori · GPU/);
@@ -1794,17 +1813,17 @@ assert.match(
   /canvasWidth: engine\.documentWidth,[\s\S]{0,180}canvasHeight: engine\.documentHeight/,
 );
 assert.match(controllerSource, /fallbackPresentationDirty/);
-assert.match(mainSource, /VECTOR_TEXT_ZOOM_C_START_ZOOM/);
-assert.match(mainSource, /VECTOR_TEXT_ZOOM_C_TARGET_ZOOM/);
-assert.match(mainSource, /__vectorZoomCoverageReport/);
-assert.match(mainSource, /fallbackProbeAlphaPixelCounts/);
-assert.match(mainSource, /fastCompositeProbeAlphaPixelCounts/);
-assert.match(mainSource, /finalFastFrameAcknowledged/);
-assert.match(mainSource, /initialRasterWasEmpty/);
-const coverageFunctionStart = mainSource.indexOf("async function runRequestedVectorZoomCoverage");
-const coverageFunctionEnd = mainSource.indexOf("async function runRequestedVectorZoomAb", coverageFunctionStart);
+assert.match(vectorZoomLabSource, /VECTOR_TEXT_ZOOM_C_START_ZOOM/);
+assert.match(vectorZoomLabSource, /VECTOR_TEXT_ZOOM_C_TARGET_ZOOM/);
+assert.match(vectorZoomLabSource, /__vectorZoomCoverageReport/);
+assert.match(vectorZoomLabSource, /fallbackProbeAlphaPixelCounts/);
+assert.match(vectorZoomLabSource, /fastCompositeProbeAlphaPixelCounts/);
+assert.match(vectorZoomLabSource, /finalFastFrameAcknowledged/);
+assert.match(vectorZoomLabSource, /initialRasterWasEmpty/);
+const coverageFunctionStart = vectorZoomLabSource.indexOf("async function runVectorZoomCoverage");
+const coverageFunctionEnd = vectorZoomLabSource.indexOf("async function runVectorZoomAb", coverageFunctionStart);
 assert.ok(coverageFunctionStart >= 0 && coverageFunctionEnd > coverageFunctionStart);
-const coverageFunctionSource = mainSource.slice(coverageFunctionStart, coverageFunctionEnd);
+const coverageFunctionSource = vectorZoomLabSource.slice(coverageFunctionStart, coverageFunctionEnd);
 const rasterLifecycleIndex = coverageFunctionSource.indexOf('engine.addLayer("C raster lifecycle")');
 const beginCoverageGestureIndex = coverageFunctionSource.indexOf("controller.beginViewGesture()");
 assert.ok(rasterLifecycleIndex >= 0 && beginCoverageGestureIndex > rasterLifecycleIndex);
@@ -1815,19 +1834,22 @@ assert.doesNotMatch(
 );
 assert.match(coverageFunctionSource, /automaticFallbackRebuildDelta/);
 assert.match(coverageFunctionSource, /rasterLifecycleRebuiltFallback/);
-assert.match(mainSource, /const duringTrace = controller\.getDiagnostics\(\)/);
+assert.match(vectorZoomLabSource, /const duringTrace = controller\.getDiagnostics\(\)/);
 assert.match(
-  mainSource,
+  vectorZoomLabSource,
   /fastPresentationSubmitDelta =\s*duringTrace\.zoomFastPresentationSubmissionCount/,
   "il drain di verifica non deve migliorare retroattivamente la metrica dei 650 ms",
 );
-assert.match(mainSource, /fastSubmittedRevisionLagMaximum <= 2/);
-assert.match(mainSource, /fastPresentationMaximumInFlight >= 1/);
-assert.match(mainSource, /fastPresentationMaximumInFlight <= 2/);
-assert.match(mainSource, /fastPresentationCoalescedDelta <= Math\.ceil\(sampleCount \* 0\.1\)/);
-assert.match(mainSource, /finalFastAckDurationMs <= 250/);
-assert.match(mainSource, /VECTOR_TEXT_ZOOM_C_GESTURE_DURATION_MS/);
-assert.match(mainSource, /\/api\/vector-zoom-runs/);
+assert.match(vectorZoomLabSource, /fastSubmittedRevisionLagMaximum <= 2/);
+assert.match(vectorZoomLabSource, /fastPresentationMaximumInFlight >= 1/);
+assert.match(vectorZoomLabSource, /fastPresentationMaximumInFlight <= 2/);
+assert.match(vectorZoomLabSource, /fastPresentationCoalescedDelta <= Math\.ceil\(sampleCount \* 0\.1\)/);
+assert.match(vectorZoomLabSource, /finalFastAckDurationMs <= 250/);
+assert.match(vectorZoomLabSource, /VECTOR_TEXT_ZOOM_C_GESTURE_DURATION_MS/);
+assert.match(vectorZoomLabSource, /\/api\/vector-zoom-runs/);
+assert.match(vectorZoomLabSource, /runCode: report\.runCode/);
+assert.match(editorLabsSource, /import\("\.\/vector\/vector-zoom-labs"\)/);
+assert.doesNotMatch(mainSource, /__vectorZoom(?:Ab|Coverage|Stress)Report|\/api\/vector-zoom-runs/);
 assert.match(sitesBuildSource, /handleVectorZoomRuns/);
 assert.match(sitesBuildSource, /\/api\/vector-zoom-runs/);
 assert.match(sitesBuildSource, /report\.passed !== VECTOR_ZOOM_CHECK_NAMES\.every/);
@@ -2048,8 +2070,8 @@ assert.match(controllerSource, /probe\.seedFormat === "rgba16float"/);
 assert.match(controllerSource, /probe\.rawBytesPerPixel === 8/);
 assert.match(controllerSource, /probe\.nonZeroAlphaPixels > 0/);
 
-assert.match(htmlSource, /id="vectorSvgRasterize"/);
-assert.match(htmlSource, /id="vectorTextRasterize"/);
+assert.match(htmlSource, /id="mobileSvgStyleRasterize"/);
+assert.match(htmlSource, /id="mobileTextRasterize"/);
 assert.match(htmlSource, /id="vectorTextRasterStatus"/);
 
 // UI e font locali.
@@ -2060,71 +2082,42 @@ const fontLogicalBytes = VECTOR_TEXT_FONT_MANIFEST.reduce(
 );
 assert.equal(fontLogicalBytes, 392_528);
 for (const id of [
-  "vectorTextPrototypeSection",
-  "vectorSvgLoadExample",
-  "vectorSvgImportButton",
   "vectorSvgFileInput",
   "vectorSvgImportStatus",
-  "vectorSvgSelectedControls",
-  "vectorSvgSourceSummary",
-  "vectorSvgPalette",
-  "vectorSvgRasterize",
-  "vectorTextRasterize",
+  "rasterImageFileInput",
+  "rasterImageImportStatus",
+  "mobileSvgStyleRasterize",
+  "mobileTextRasterize",
   "vectorTextRasterStatus",
-  "vectorTextValue",
-  "vectorTextFontFamily",
-  "vectorTextFontSize",
-  "vectorTextColor",
-  "vectorTextTransformNone",
-  "vectorTextTransformArch",
-  "vectorTextTransformCircle",
-  "vectorTextTransformWave",
-  "vectorTextTransformCurveParameters",
-  "vectorTextTransformCurve",
-  "vectorTextTransformCurveOut",
-  "vectorTextTransformCircleParameters",
-  "vectorTextCircleRadius",
-  "vectorTextCircleRadiusOut",
-  "vectorTextCircleInverted",
-  "vectorTextOutlineWidth",
-  "vectorTextOutlineColor",
-  "vectorTextOutlineJoin",
-  "vectorTextBlockShadowEnabled",
-  "vectorTextBlockShadowColor",
-  "vectorTextBlockShadowOpacity",
-  "vectorTextBlockShadowOffset",
-  "vectorTextBlockShadowAngle",
-  "vectorTextBlockShadowOutlineWidth",
-  "vectorTextSingleShadowEnabled",
-  "vectorTextSingleShadowColor",
-  "vectorTextSingleShadowOpacity",
-  "vectorTextSingleShadowOffset",
-  "vectorTextSingleShadowAngle",
-  "vectorTextSingleShadowBlur",
-  "vectorTextInnerShadowEnabled",
-  "vectorTextInnerShadowParameters",
-  "vectorTextInnerShadowColor",
-  "vectorTextInnerShadowOpacity",
-  "vectorTextInnerShadowOffset",
-  "vectorTextInnerShadowAngle",
-  "vectorTextInnerShadowBlur",
-  "vectorTextSingleShadowOutlineWidth",
-  "addVectorText",
-  "deleteVectorText",
-  "vectorTextReset",
+  "mobileTextValue",
+  "mobileTextFontFamily",
+  "mobileTextFontSize",
+  "mobileTextColor",
+  "mobileTextWarpNone",
+  "mobileTextWarpDistort",
+  "mobileTextWarpArch",
+  "mobileTextWarpCircle",
+  "mobileTextWarpWave",
+  "mobileTextOutlineWidth",
+  "mobileTextOutlineColor",
+  "mobileTextOutlineJoin",
+  "mobileTextBlockShadowEnabled",
+  "mobileTextDropShadowEnabled",
+  "mobileTextInnerShadowEnabled",
   "vectorTextStatus",
   "vectorTextPresentationCanvas",
   "vectorTextInteractionCanvas",
 ]) {
   assert.match(htmlSource, new RegExp(`id="${id}"`), `elemento #${id} mancante`);
 }
+assert.doesNotMatch(htmlSource, /id="vectorTextSingleShadowOutlineWidth"/);
+assert.doesNotMatch(htmlSource, /id="vectorTextPrototypeSection"/);
+assert.doesNotMatch(mainSource, /vectorTextEditorEnabled/);
 assert.match(
-  htmlSource,
-  /id="vectorTextSingleShadowOutlineWidth"[\s\S]*?value="0"[\s\S]*?disabled/,
+  mainSource,
+  /vectorTextPrototypeEnabled:\s*editorExtensionEngineOptions\.vectorTextPrototypeEnabled \?\? true/,
 );
-assert.match(mainSource, /const vectorTextEditorEnabled = true/);
-assert.match(mainSource, /vectorTextPrototypeEnabled: vectorTextEditorEnabled/);
-assert.match(mainSource, /if \(vectorTextEditorEnabled\)/);
+assert.match(mainSource, /if \(engine\.vectorTextPrototypeEnabled\)[\s\S]*?"deferred-vector-text"/);
 assert.doesNotMatch(mainSource, /pageSearchParams\.get\("vectorTextTest"\)/);
 assert.doesNotMatch(mainSource, /innerShadowTest/);
 assert.doesNotMatch(htmlSource, /id="vectorTextZoomMode"/);

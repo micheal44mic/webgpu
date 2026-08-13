@@ -5,6 +5,7 @@ import { readEngineSource } from "./engine-source.mjs";
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const engine = readEngineSource();
 const main = read("../src/main.ts");
+const humanLab = read("../src/labs/human-stroke-lab.ts");
 const shaders = read("../src/shaders.ts");
 const strokeRenderer = read("../src/stroke-renderer.ts");
 const bevelRenderer = read("../src/bevel-renderer.ts");
@@ -19,11 +20,8 @@ assert.match(
   /layerFormat: LayerFormat = "rgba16float";/,
   "Il default autorevole di BrushEngine deve essere RGBA16F.",
 );
-assert.match(
-  main,
-  /layerFormatSelect\.value = engine\.layerFormat;/,
-  "Il selettore deve riflettere il formato autorevole di BrushEngine.",
-);
+assert.doesNotMatch(html, /id="layerFormat"|data-layer-format-label/,
+  "Un formato permanente non deve essere rappresentato come controllo UI.");
 assert.doesNotMatch(
   main,
   /engine\.layerFormat\s*=/,
@@ -34,10 +32,10 @@ assert.doesNotMatch(
   /if \(MOBILE_DEVICE_CLASS\) \{[\s\S]{0,200}(?:engine\.layerFormat|layerFormatSelect)/,
   "Il formato documento non deve dipendere dalla classe mobile.",
 );
-assert.match(
+assert.doesNotMatch(
   engine,
-  /async setLayerFormat\(format: LayerFormat\)[\s\S]{0,180}format !== "rgba16float"/,
-  "setLayerFormat deve rifiutare esplicitamente ogni formato non RGBA16F.",
+  /\bsetLayerFormat\(/,
+  "L'API di cambio formato irraggiungibile non deve rientrare nel motore.",
 );
 
 // Il motore è diviso in più moduli concatenati da `readEngineSource()`: un
@@ -280,17 +278,16 @@ assert(
 );
 
 assert(
-  main.includes("countedTotalTransitionPeakMiB")
-    && main.includes("lightGlazeTransitionPeakMiB")
-    && main.includes("countedTotalSteadyMiB")
-    && main.includes("picco transizione"),
+  humanLab.includes("countedTotalTransitionPeakMiB")
+    && humanLab.includes("lightGlazeTransitionPeakMiB")
+    && humanLab.includes("countedTotalSteadyMiB"),
   "La suite confonde ancora memoria stabile e picco transitorio old+new.",
 );
 assert(
-  main.includes("const RENDERING_MODE_SUITE_REVISION = 4 as const")
-    && main.includes('strategy: "canonical-human-stroke-base-spacing-1-three-renderings-one-tap-v4"')
-    && main.includes('const CANONICAL_HUMAN_STROKE_FINGERPRINT = "18982412";')
-    && main.includes("const CANONICAL_HUMAN_STROKE_POINT_COUNT = 1_583;"),
+  humanLab.includes("HUMAN_RENDERING_SUITE_REVISION = 4 as const")
+    && humanLab.includes('strategy: "canonical-human-stroke-base-spacing-1-three-renderings-one-tap-v4"')
+    && humanLab.includes('CANONICAL_HUMAN_STROKE_FINGERPRINT = "18982412"')
+    && humanLab.includes("CANONICAL_HUMAN_STROKE_POINT_COUNT = 1_583"),
   "Suite iPhone canonica one-tap rev3 assente.",
 );
 for (const id of [
@@ -298,7 +295,7 @@ for (const id of [
   "uniformed-base-grain-off",
   "intense-base-grain-off",
 ]) {
-  assert(main.includes(`id: "${id}"`), `Caso suite mancante: ${id}`);
+  assert(humanLab.includes(`"${id}"`), `Caso suite mancante: ${id}`);
 }
 for (const setting of [
   "size: 750",
@@ -308,16 +305,15 @@ for (const setting of [
   "opacity: 1",
   "hardness: 1",
 ]) {
-  assert(main.includes(setting), `Preset canonico incompleto: ${setting}`);
+  assert(humanLab.includes(setting), `Preset canonico incompleto: ${setting}`);
 }
 assert(
-  main.includes('storageClass: result.run.benchmark.testBlendMode === "light-glaze"')
-    && main.includes(': "rgba16float-stroke"'),
+  humanLab.includes('renderingStorageMiB = blendMode === "light-glaze"')
+    && humanLab.includes('|| blendMode === "intense-blending"'),
   "Il report suite non distingue R16F da RGBA16F.",
 );
 assert(
-  html.includes("Confronta 3 rendering · Base 1% · 1 tap")
-    && html.includes("Rendering · Light R16F / Uniformed e Intense RGBA16F")
+  html.includes("Rendering · Light R16F / Uniformed e Intense RGBA16F")
     && html.includes("Blend dry · scratch")
     && !html.includes("Intense Blending · scratch"),
   "UI suite o memoria rendering non coerente.",

@@ -150,6 +150,10 @@ assert.throws(
 const engine = readEngineSource();
 const shaders = readFileSync(path.join(projectRoot, "src", "shaders.ts"), "utf8");
 const main = readFileSync(path.join(projectRoot, "src", "main.ts"), "utf8");
+const brushLibraryController = readFileSync(
+  path.join(projectRoot, "src", "brush-library-controller.ts"),
+  "utf8",
+);
 const libraryPreview = readFileSync(
   path.join(projectRoot, "src", "brush-library-preview.ts"),
   "utf8",
@@ -207,7 +211,8 @@ assert(shaders.includes("let followAngle = select(0.0, atan2(direction.y, direct
   && shaders.includes("return mix(movingUv, fixedUv, movement)")
   && !shaders.includes("if (movement <= 0.00001)"),
   "Shader generici Follow Stroke/Moving scalato mancanti.");
-assert(main.includes("resolveBrushPresetSettings(PENCIL_BRUSH_PRESET")
+assert(brushLibraryController.includes("resolveBrushPresetSettings(PENCIL_BRUSH_PRESET")
+  && main.includes("new BrushLibraryController({")
   && libraryPreview.includes("AuthoritativeBrushStrokePreviewRenderer")
   && libraryPreview.includes("await this.renderer.render(canvas, settings")
   && strokePreviewRenderer.includes("createShapeMaskResources(")

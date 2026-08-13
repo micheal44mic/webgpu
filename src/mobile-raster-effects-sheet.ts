@@ -13,12 +13,9 @@ import {
   resolveMobileBottomSheetDrag,
   type MobileBottomSheetSnap,
 } from "./mobile-bottom-sheet-gesture.ts";
+import type { EditorRasterEffectKind } from "./editor-tools-contract";
 
-export type MobileRasterEffectKind =
-  | "color-overlay"
-  | "outer-shadow"
-  | "inner-shadow"
-  | "bevel";
+export type MobileRasterEffectKind = Exclude<EditorRasterEffectKind, "stroke">;
 
 export type MobileRasterEffectSnap = MobileBottomSheetSnap;
 
@@ -261,15 +258,10 @@ export const MOBILE_RASTER_EFFECT_SPECS = {
   },
 } as const satisfies Record<MobileRasterEffectKind, MobileRasterEffectSpec>;
 
-export const MOBILE_RASTER_EFFECT_KIND_BY_CONTROL_ID = {
-  rasterColorOverlayEnabled: "color-overlay",
-  rasterOuterShadowEnabled: "outer-shadow",
-  rasterInnerShadowEnabled: "inner-shadow",
-  rasterBevelEnabled: "bevel",
-} as const satisfies Record<string, MobileRasterEffectKind>;
-
 export interface MobileRasterEffectsSheetOptions {
-  readonly mobileMediaQuery: MediaQueryList;
+  readonly root: ParentNode;
+  readonly browser: Window;
+  readonly document: Document;
   readonly getColorOverlayStyle: () => RasterColorOverlayStyle;
   readonly applyColorOverlayStyle: (style: RasterColorOverlayStyle) => Promise<boolean>;
   readonly getOuterShadowStyle: () => RasterOuterShadowStyle;
@@ -315,8 +307,11 @@ export function resolveMobileRasterEffectDrag(
   return resolveMobileBottomSheetDrag(options);
 }
 
-function requiredElement<T extends HTMLElement>(id: string): T {
-  const result = document.getElementById(id);
+function requiredElement<T extends HTMLElement>(root: ParentNode, id: string): T {
+  const rootElement = root as ParentNode & Partial<HTMLElement>;
+  const result = rootElement.id === id
+    ? rootElement as HTMLElement
+    : root.querySelector<HTMLElement>(`#${id}`);
   if (!result) throw new Error(`Elemento #${id} non trovato.`);
   return result as T;
 }
@@ -390,14 +385,14 @@ function formatRangeValue(
  * pending copies only serialize latest-only UI writes to BrushEngine.
  */
 export class MobileRasterEffectsSheetController {
-  readonly sheet = requiredElement<HTMLElement>("mobileRasterEffectSheet");
-  readonly handle = requiredElement<HTMLButtonElement>("mobileRasterEffectHandle");
-  readonly header = requiredElement<HTMLElement>("mobileRasterEffectHeader");
-  readonly title = requiredElement<HTMLElement>("mobileRasterEffectTitle");
-  readonly enabledControl = requiredElement<HTMLElement>("mobileRasterEffectEnabledControl");
-  readonly enabledInput = requiredElement<HTMLInputElement>("mobileRasterEffectEnabled");
-  readonly scroll = requiredElement<HTMLElement>("mobileRasterEffectScroll");
-  readonly content = requiredElement<HTMLElement>("mobileRasterEffectContent");
+  readonly sheet: HTMLElement;
+  readonly handle: HTMLButtonElement;
+  readonly header: HTMLElement;
+  readonly title: HTMLElement;
+  readonly enabledControl: HTMLElement;
+  readonly enabledInput: HTMLInputElement;
+  readonly scroll: HTMLElement;
+  readonly content: HTMLElement;
 
   private openState = false;
   private activeKind: MobileRasterEffectKind | null = null;
@@ -444,15 +439,23 @@ export class MobileRasterEffectsSheetController {
 
   constructor(options: MobileRasterEffectsSheetOptions) {
     this.options = options;
+    this.sheet = requiredElement<HTMLElement>(options.root, "mobileRasterEffectSheet");
+    this.handle = requiredElement<HTMLButtonElement>(options.root, "mobileRasterEffectHandle");
+    this.header = requiredElement<HTMLElement>(options.root, "mobileRasterEffectHeader");
+    this.title = requiredElement<HTMLElement>(options.root, "mobileRasterEffectTitle");
+    this.enabledControl = requiredElement<HTMLElement>(options.root, "mobileRasterEffectEnabledControl");
+    this.enabledInput = requiredElement<HTMLInputElement>(options.root, "mobileRasterEffectEnabled");
+    this.scroll = requiredElement<HTMLElement>(options.root, "mobileRasterEffectScroll");
+    this.content = requiredElement<HTMLElement>(options.root, "mobileRasterEffectContent");
     this.sheet.setAttribute("aria-hidden", "true");
     this.sheet.dataset.state = "closed";
     this.sheet.setAttribute("inert", "");
     this.bindEvents();
-    document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState !== "visible") this.requestHistoryEditFinish();
+    this.options.document.addEventListener("visibilitychange", () => {
+      if (this.options.document.visibilityState !== "visible") this.requestHistoryEditFinish();
     });
-    window.addEventListener("pagehide", () => this.requestHistoryEditFinish());
-    window.addEventListener("blur", () => this.requestHistoryEditFinish());
+    this.options.browser.addEventListener("pagehide", () => this.requestHistoryEditFinish());
+    this.options.browser.addEventListener("blur", () => this.requestHistoryEditFinish());
   }
 
   get isOpen(): boolean {
@@ -464,7 +467,6 @@ export class MobileRasterEffectsSheetController {
   }
 
   open(kind: MobileRasterEffectKind, opener: HTMLElement | null = null): void {
-    if (!this.options.mobileMediaQuery.matches) return;
     if (this.openState && this.activeKind === kind) return;
     if (this.openState) this.close(false);
     this.flushDraft();
@@ -510,7 +512,7 @@ export class MobileRasterEffectsSheetController {
     this.requestHistoryEditFinish();
     this.openState = false;
     this.releaseDragCapture();
-    const activeElement = document.activeElement;
+    const activeElement = this.options.document.activeElement;
     if (activeElement instanceof HTMLElement && this.sheet.contains(activeElement)) {
       if (restoreFocus && this.opener?.isConnected) {
         this.opener.focus({ preventScroll: true });
@@ -606,7 +608,7 @@ export class MobileRasterEffectsSheetController {
         );
         if (matchingInputDraft) {
           if (this.applyFrame !== null) {
-            cancelAnimationFrame(this.applyFrame);
+            this.options.browser.cancelAnimationFrame(this.applyFrame);
             this.applyFrame = null;
           }
           this.flushDraft();
@@ -623,7 +625,7 @@ export class MobileRasterEffectsSheetController {
       this.requestHistoryEditFinish();
     });
 
-    document.addEventListener("keydown", (event) => {
+    this.options.document.addEventListener("keydown", (event) => {
       if (event.key !== "Escape" || !this.openState) return;
       event.preventDefault();
       this.close(true);
@@ -633,10 +635,10 @@ export class MobileRasterEffectsSheetController {
   private renderControls(kind: MobileRasterEffectKind): void {
     this.controls.clear();
     this.descriptors.clear();
-    const fragment = document.createDocumentFragment();
+    const fragment = this.options.document.createDocumentFragment();
     for (const descriptor of MOBILE_RASTER_EFFECT_SPECS[kind].controls) {
       if (descriptor.type === "group") {
-        const heading = document.createElement("h3");
+        const heading = this.options.document.createElement("h3");
         heading.className = "mobile-raster-effect-group";
         heading.textContent = descriptor.label;
         fragment.append(heading);
@@ -645,15 +647,15 @@ export class MobileRasterEffectsSheetController {
       const id = controlId(kind, descriptor.key);
       this.descriptors.set(descriptor.key, descriptor);
       if (descriptor.type === "range") {
-        const label = document.createElement("label");
+        const label = this.options.document.createElement("label");
         label.className = "mobile-raster-effect-range";
         label.htmlFor = id;
-        const name = document.createElement("span");
+        const name = this.options.document.createElement("span");
         name.textContent = descriptor.label;
-        const output = document.createElement("output");
+        const output = this.options.document.createElement("output");
         output.htmlFor = id;
         output.dataset.mobileEffectOutput = descriptor.key;
-        const input = document.createElement("input");
+        const input = this.options.document.createElement("input");
         input.id = id;
         input.type = "range";
         input.min = String(descriptor.minimum);
@@ -667,17 +669,17 @@ export class MobileRasterEffectsSheetController {
         continue;
       }
       if (descriptor.type === "select") {
-        const label = document.createElement("label");
+        const label = this.options.document.createElement("label");
         label.className = "mobile-raster-effect-select";
         label.htmlFor = id;
-        const name = document.createElement("span");
+        const name = this.options.document.createElement("span");
         name.textContent = descriptor.label;
-        const select = document.createElement("select");
+        const select = this.options.document.createElement("select");
         select.id = id;
         select.dataset.mobileEffectKey = descriptor.key;
         select.setAttribute("aria-label", descriptor.label);
         for (const [value, optionLabel] of descriptor.options) {
-          const option = document.createElement("option");
+          const option = this.options.document.createElement("option");
           option.value = value;
           option.textContent = optionLabel;
           select.append(option);
@@ -688,14 +690,14 @@ export class MobileRasterEffectsSheetController {
         continue;
       }
       if (descriptor.type === "color") {
-        const label = document.createElement("label");
+        const label = this.options.document.createElement("label");
         label.className = "mobile-raster-effect-color";
         label.htmlFor = id;
-        const name = document.createElement("span");
+        const name = this.options.document.createElement("span");
         name.textContent = descriptor.label;
-        const disc = document.createElement("span");
+        const disc = this.options.document.createElement("span");
         disc.className = "mobile-raster-effect-color-disc";
-        const input = document.createElement("input");
+        const input = this.options.document.createElement("input");
         input.id = id;
         input.type = "color";
         input.dataset.mobileEffectKey = descriptor.key;
@@ -706,14 +708,14 @@ export class MobileRasterEffectsSheetController {
         this.controls.set(descriptor.key, input);
         continue;
       }
-      const label = document.createElement("label");
+      const label = this.options.document.createElement("label");
       label.className = "mobile-raster-effect-check";
       label.htmlFor = id;
-      const input = document.createElement("input");
+      const input = this.options.document.createElement("input");
       input.id = id;
       input.type = "checkbox";
       input.dataset.mobileEffectKey = descriptor.key;
-      const name = document.createElement("span");
+      const name = this.options.document.createElement("span");
       name.textContent = descriptor.label;
       label.append(input, name);
       fragment.append(label);
@@ -857,14 +859,14 @@ export class MobileRasterEffectsSheetController {
     this.optimisticByKind.set(kind, versioned);
     if (!coalesceToFrame) {
       if (this.applyFrame !== null) {
-        cancelAnimationFrame(this.applyFrame);
+        this.options.browser.cancelAnimationFrame(this.applyFrame);
         this.applyFrame = null;
       }
       this.flushDraft();
       return;
     }
     if (this.applyFrame !== null) return;
-    this.applyFrame = requestAnimationFrame(() => {
+    this.applyFrame = this.options.browser.requestAnimationFrame(() => {
       this.applyFrame = null;
       this.flushDraft();
     });
@@ -939,7 +941,7 @@ export class MobileRasterEffectsSheetController {
     if (this.historyEditToken === null) return;
     this.historyFinishRequested = true;
     if (this.applyFrame !== null) {
-      cancelAnimationFrame(this.applyFrame);
+      this.options.browser.cancelAnimationFrame(this.applyFrame);
       this.applyFrame = null;
       this.flushDraft();
     }
@@ -984,7 +986,7 @@ export class MobileRasterEffectsSheetController {
   }
 
   private peekHeight(): number {
-    return mobileRasterEffectPeekHeight(window.innerHeight);
+    return mobileRasterEffectPeekHeight(this.options.browser.innerHeight);
   }
 
   private peekOffset(): number {
@@ -1034,7 +1036,7 @@ export class MobileRasterEffectsSheetController {
   }
 
   private setMinimizedAccessibility(minimized: boolean): void {
-    const activeElement = document.activeElement;
+    const activeElement = this.options.document.activeElement;
     if (
       minimized
       && activeElement instanceof HTMLElement
@@ -1055,7 +1057,7 @@ export class MobileRasterEffectsSheetController {
     this.dragStartOffsetPx = this.offsetPx;
     this.dragStartSnap = this.snap;
     this.dragLastY = event.clientY;
-    this.dragLastTime = performance.now();
+    this.dragLastTime = this.options.browser.performance.now();
     this.dragVelocityY = 0;
     this.dragMoved = false;
     this.sheet.classList.add("is-dragging");
@@ -1064,7 +1066,7 @@ export class MobileRasterEffectsSheetController {
 
   private moveDrag(event: PointerEvent): void {
     if (event.pointerId !== this.dragPointerId || !this.activeKind) return;
-    const now = performance.now();
+    const now = this.options.browser.performance.now();
     const elapsed = now - this.dragLastTime;
     if (elapsed > 0 && elapsed <= 120) {
       const immediate = (event.clientY - this.dragLastY) / elapsed;
@@ -1091,7 +1093,7 @@ export class MobileRasterEffectsSheetController {
     }
     this.sheet.classList.remove("is-dragging");
     const deltaY = event.clientY - this.dragStartY;
-    const velocityAge = performance.now() - this.dragLastTime;
+    const velocityAge = this.options.browser.performance.now() - this.dragLastTime;
     const releaseVelocityY = velocityAge <= 100 ? this.dragVelocityY : 0;
     this.dragPointerId = null;
     if (cancelled) {
