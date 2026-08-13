@@ -194,7 +194,7 @@ assert.match(
   /request\.storage === "gzip-shuffle16"[\s\S]*?unshuffle16\(await gunzipBytes\(stored\)\)/,
   "il worker deve invertire lo shuffle in base al tag del payload",
 );
-const beginStrokeStart = engineSource.indexOf("beginStrokeAtLayer(point: LayerPoint)");
+const beginStrokeStart = engineSource.indexOf("beginStrokeAtLayer(");
 const beginStrokeEnd = engineSource.indexOf("extendStroke(", beginStrokeStart);
 const beginStrokeBody = engineSource.slice(beginStrokeStart, beginStrokeEnd);
 assert.match(beginStrokeBody, /pauseLayerColdCompressionIdle\(this\)/);

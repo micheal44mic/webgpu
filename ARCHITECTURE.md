@@ -30,7 +30,8 @@ confine.
 
 | Dominio | Proprietario | Note |
 |---|---|---|
-| Stato e hot path Paint/Blend | `BrushEngine` | Facciata pubblica, risorse centrali e percorso per-frame/per-stamp |
+| Stato e hot path Paint/Eraser/Blend | `BrushEngine` | Facciata pubblica, risorse centrali e percorso per-frame/per-stamp |
+| Operazione e pipeline raster | `raster-stroke-operation.ts`, `engine-raster-stroke-pipelines.ts` | Eraser riusa la geometria Paint ma resta un'operazione destination-out separata da preset e schema progetto |
 | Impostazioni pennello attive | `BrushSettingsController` | Colore e tool attivi non fanno parte della definizione persistita |
 | Definizione e catalogo pennelli | `brush-definition.ts`, `brush-catalog.ts` | Versionamento, normalizzazione e preset |
 | Asset pennelli | `brush-builtin-assets.ts`, `engine-brush-assets.ts` | URL builtin e risorse GPU/custom |
@@ -55,7 +56,7 @@ Un tratto segue questo percorso:
 
 ```text
 evento pointer → CanvasInputController → BrushEngine begin/update/end
-               → planner Paint o Blend → renderer WebGPU
+               → operazione Paint/Eraser o planner Blend → renderer WebGPU
                → commit azione + payload in HistoryService → callback UI
 ```
 

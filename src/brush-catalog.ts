@@ -14,7 +14,7 @@ export const BRUSH_CATALOG_VERSION = 1 as const;
 export const BRUSH_STUDIO_MAX_CUSTOM_BRUSHES = 8;
 export const BRUSH_STUDIO_CUSTOM_BRUSH_NAME_MAX_LENGTH = 48;
 
-export type BrushCatalogCategory = "pencil" | "painting" | "spray-paint";
+export type BrushCatalogCategory = "pencil" | "painting";
 
 export interface BuiltinBrushCatalogEntry {
   readonly catalogVersion: typeof BRUSH_CATALOG_VERSION;

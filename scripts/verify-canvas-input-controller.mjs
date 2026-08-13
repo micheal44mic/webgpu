@@ -218,6 +218,7 @@ function createHarness({ holdEnabled = true } = {}) {
   const status = new FakeElement();
   const calls = {
     beginStroke: [],
+    strokeOperations: [],
     extendStroke: [],
     endStroke: [],
     cancelStroke: 0,
@@ -255,8 +256,9 @@ function createHarness({ holdEnabled = true } = {}) {
   let extension = null;
   const selectionPromises = [];
   const engine = {
-    beginStroke(sample) {
+    beginStroke(sample, operation) {
       calls.beginStroke.push(sample);
+      calls.strokeOperations.push(operation);
       return beginStrokeAllowed;
     },
     extendStroke(samples) { calls.extendStroke.push(samples); },
@@ -368,6 +370,7 @@ function createHarness({ holdEnabled = true } = {}) {
     pressure: 1,
     timeMs: 11,
   }]);
+  assert.deepEqual(harness.calls.strokeOperations, ["paint"]);
   assert.equal(harness.calls.recordingBegin, 1);
 
   const samples = [
@@ -396,6 +399,31 @@ function createHarness({ holdEnabled = true } = {}) {
   assert.equal(harness.calls.layersRefresh, 1);
   assert.equal(harness.calls.thumbnails, 1);
   assert.equal(harness.controller.isPointerActive, false);
+  harness.controller.dispose();
+}
+
+// Eraser shares the acknowledged raster gesture path, but records an explicit
+// erase operation and never masquerades as a Labs Paint recording.
+{
+  const harness = createHarness();
+  harness.enableRecording();
+  harness.setActiveTool("eraser");
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 21,
+    clientX: 20,
+    clientY: 22,
+  }));
+  assert.equal(harness.controller.pointerMode, "paint");
+  assert.deepEqual(harness.calls.strokeOperations, ["erase"]);
+  assert.equal(harness.calls.recordingBegin, 0);
+  harness.canvas.dispatchEvent(makeEvent("pointermove", {
+    pointerId: 21,
+    clientX: 24,
+    clientY: 24,
+  }));
+  assert.equal(harness.calls.recordingCapture, 0);
+  harness.canvas.dispatchEvent(makeEvent("pointerup", { pointerId: 21 }));
+  assert.deepEqual(harness.calls.recordingFinish, []);
   harness.controller.dispose();
 }
 

@@ -42,6 +42,7 @@ class FakeElement extends EventTarget {
 
 const canvas = new FakeElement();
 const paintButton = new FakeElement();
+const eraserButton = new FakeElement();
 const blendButton = new FakeElement();
 let selectedBrush = "paint";
 const brushSelections = [];
@@ -111,7 +112,7 @@ const vector = {
 const controller = new CanvasToolController({
   engine,
   browser: { AbortController: globalThis.AbortController },
-  elements: { canvas, paintButton, blendButton },
+  elements: { canvas, paintButton, eraserButton, blendButton },
   brushSettings,
   selectionSettings,
   isEngineReady: () => engineReady,
@@ -138,16 +139,23 @@ await settle();
 assert.equal(controller.activeTool, "paint");
 assert.equal(controller.activeBrush, "paint");
 assert.equal(paintButton.getAttribute("aria-pressed"), "true");
+assert.equal(eraserButton.getAttribute("aria-pressed"), "false");
 assert.equal(blendButton.getAttribute("aria-pressed"), "false");
 assert.equal(canvas.tabIndex, -1);
 
 paintButton.dispatchEvent(new Event("click"));
 assert.equal(libraryToggles, 1);
+eraserButton.dispatchEvent(new Event("click"));
+await settle();
+assert.equal(controller.activeTool, "eraser");
+assert.equal(controller.activeBrush, "paint");
+assert.equal(eraserButton.getAttribute("aria-pressed"), "true");
+assert.deepEqual(brushSelections.at(-1), ["paint", false]);
 blendButton.dispatchEvent(new Event("click"));
 await settle();
 assert.equal(controller.activeTool, "blend");
 assert.equal(controller.activeBrush, "blend");
-assert.equal(historyRefreshes, 1);
+assert.equal(historyRefreshes, 2);
 assert.deepEqual(brushSelections.at(-1), ["blend", true]);
 
 locked = true;
@@ -212,6 +220,8 @@ controller.dispose();
 controller.dispose();
 const toolAfterDispose = controller.activeTool;
 blendButton.dispatchEvent(new Event("click"));
+assert.equal(controller.activeTool, toolAfterDispose);
+eraserButton.dispatchEvent(new Event("click"));
 assert.equal(controller.activeTool, toolAfterDispose);
 
 console.log(

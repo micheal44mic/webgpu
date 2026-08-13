@@ -27,6 +27,7 @@ assert.equal(TOUCH_PAINT_INTENT_HOLD_MS, 28);
 assert.equal(TOUCH_PAINT_INTENT_MOVE_THRESHOLD_PX, 3);
 
 assert.equal(shouldHoldTouchPaintIntent(true, "touch", "paint"), true);
+assert.equal(shouldHoldTouchPaintIntent(true, "touch", "eraser"), true);
 for (const [enabled, pointerType, tool] of [
   [false, "touch", "paint"],
   [true, "pen", "paint"],
@@ -73,12 +74,12 @@ assert.match(
 );
 assert.match(
   canvasInputSource,
-  /const holdPaintIntent = paintSample !== null && shouldHoldTouchPaintIntent\([\s\S]*?event\.pointerType,[\s\S]*?activeTool,[\s\S]*?\);[\s\S]*?if \(paintSample && !holdPaintIntent\) \{[\s\S]*?if \(!engine\.beginStroke\(paintSample\)\)[\s\S]*?pointerMode === "paint" && paintSample && holdPaintIntent[\s\S]*?startTouchPaintIntentHold\(event\.pointerId, paintSample\);/,
-  "only eligible touch Paint input may leave the immediate, acknowledged beginStroke path",
+  /const holdPaintIntent = paintSample !== null && shouldHoldTouchPaintIntent\([\s\S]*?event\.pointerType,[\s\S]*?activeTool,[\s\S]*?\);[\s\S]*?if \(paintSample && rasterStrokeOperation && !holdPaintIntent\)[\s\S]*?engine\.beginStroke\(paintSample, rasterStrokeOperation\)[\s\S]*?pointerMode === "paint"[\s\S]*?startTouchPaintIntentHold\(event\.pointerId, paintSample, rasterStrokeOperation\);/,
+  "only eligible touch Paint/Eraser input may leave the acknowledged beginStroke path",
 );
 assert.match(
   canvasInputSource,
-  /if \(!engine\.beginStroke\(hold\.initialSample\)\) \{[\s\S]*?return false;\s*\}[\s\S]*?if \(hold\.bufferedSamples\.length > 0\)\s*engine\.extendStroke\(hold\.bufferedSamples\);/,
+  /if \(!engine\.beginStroke\(hold\.initialSample, hold\.operation\)\) \{[\s\S]*?return false;\s*\}[\s\S]*?if \(hold\.bufferedSamples\.length > 0\)\s*engine\.extendStroke\(hold\.bufferedSamples\);/,
   "release must acknowledge begin before replaying original timestamped samples in order",
 );
 assert.match(
@@ -114,4 +115,4 @@ assert.match(
 );
 assert.doesNotMatch(mainSource, /touchPaintIntentDiagnostics/);
 
-console.log("Touch Paint intent hold: eligibility, thresholds, replay order and pinch cancellation verified.");
+console.log("Touch raster intent hold: Paint/Eraser eligibility, replay order and pinch cancellation verified.");

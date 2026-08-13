@@ -1,5 +1,6 @@
 export const EDITOR_CANVAS_TOOLS = [
   "paint",
+  "eraser",
   "blend",
   "fill",
   "selection",

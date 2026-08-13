@@ -895,6 +895,7 @@ export function emitStamp(engine: BrushEngine, point: LayerPoint, directionX: nu
     : baseRadius * liveThicknessFactor;
   const seed = nextPaintStampSeed(engine.seedSequence++);
   const stamp: Stamp = {
+    operation: stroke.operation,
     x: point.x,
     y: point.y,
     radius,

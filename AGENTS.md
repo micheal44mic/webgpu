@@ -13,8 +13,10 @@ corrente, non vecchi commit o descrizioni storiche.
 ## Confini da rispettare
 
 - `src/main.ts` compone; non deve possedere funzionalità complete.
-- `BrushEngine` è la facciata e conserva il percorso caldo Paint/Blend. I moduli
+- `BrushEngine` è la facciata e conserva il percorso caldo Paint/Eraser/Blend. I moduli
   di dominio possono importarlo soltanto come tipo/capability prevista.
+- Eraser è un'operazione raster destination-out, non un `BrushTool`: non va
+  inserito nei preset o nello schema progetto.
 - `engine-layer-runtime.ts`, `engine-vector-text-runtime.ts`,
   `project-storage.ts` e `styles.css` sono facciate, non contenitori di logica.
 - Modificare la UI nei frammenti `src/ui-shell/` e `src/styles/`, non nell'HTML

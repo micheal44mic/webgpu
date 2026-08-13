@@ -144,7 +144,7 @@ assert.match(engineSource, /VIEW_ROTATION_SNAP_RELEASE_RADIANS = 7 \* Math\.PI \
 // `engine-runtime-misc`: la sezione deve coprirle entrambe.
 const rotationApi = engineSource.slice(
   engineSource.indexOf("  beginViewRotationGesture(): void"),
-  engineSource.indexOf("  beginStroke(sample: PointerSample): boolean"),
+  engineSource.indexOf("  beginStroke("),
 );
 const applyRotationStart = engineSource.indexOf("export function applyViewRotation(");
 const rotationMethods = rotationApi

@@ -388,6 +388,11 @@ import type {
   ThicknessTailFrame,
 } from "./engine-stroke-types";
 import {
+  normalizeRasterStrokeOperation,
+  type RasterStrokeOperation,
+} from "./raster-stroke-operation";
+import { selectRasterStrokePipeline } from "./engine-raster-stroke-pipelines";
+import {
   defaultBrushSettings,
   type AdaptiveSpacingTriggerReason,
   type BlendMode,
@@ -1332,6 +1337,7 @@ export class BrushEngine {
   grainShapeAdditivePipeline!: GPURenderPipeline;
   grainShapeOccupancyNormalPipeline!: GPURenderPipeline;
   grainShapeOccupancyAdditivePipeline!: GPURenderPipeline;
+  eraserPipelineByPaintBase = new Map<GPURenderPipeline, GPURenderPipeline>();
   uniformedGlazePipeline!: GPURenderPipeline;
   uniformedGlazeShapePipeline!: GPURenderPipeline;
   uniformedGlazeShapeOccupancyPipeline!: GPURenderPipeline;
@@ -2857,11 +2863,17 @@ export class BrushEngine {
     applyViewRotation(this, 0);
   }
 
-  beginStroke(sample: PointerSample): boolean {
-    return this.beginStrokeAtLayer(this.toLayerPoint(sample));
+  beginStroke(
+    sample: PointerSample,
+    operation: RasterStrokeOperation = "paint",
+  ): boolean {
+    return this.beginStrokeAtLayer(this.toLayerPoint(sample), operation);
   }
 
-  beginStrokeAtLayer(point: LayerPoint): boolean {
+  beginStrokeAtLayer(
+    point: LayerPoint,
+    operation: RasterStrokeOperation = "paint",
+  ): boolean {
     // layerSwitchBusy is held across the switch's awaits, so a pointerdown
     // landing mid-switch cannot start a stroke on a half-swapped layer.
     const destructiveEdit = this.activeDestructiveRasterEditKind();
@@ -2888,6 +2900,13 @@ export class BrushEngine {
     if (!this.canPaintSelectedSceneItem()) {
       this.callbacks.onStatus?.(
         "Un vettore è selezionato: scegli un livello raster per usare il pennello.",
+        "working",
+      );
+      return false;
+    }
+    if (operation === "erase" && this.settings.tool !== "paint") {
+      this.callbacks.onStatus?.(
+        "La Gomma richiede la geometria Paint: riseleziona lo strumento Gomma.",
         "working",
       );
       return false;
@@ -2956,7 +2975,8 @@ export class BrushEngine {
       return false;
     }
     if (
-      usesStrokeGlazeRenderer(this.settings)
+      operation === "paint"
+      && usesStrokeGlazeRenderer(this.settings)
       && (
         this.lightGlazeLoadingPromise !== null
         || !lightGlazeResourcesMatch(this, 
@@ -2993,7 +3013,8 @@ export class BrushEngine {
     }
     this.invalidateAdaptivePreview();
     const tool: BrushTool = this.settings.tool;
-    const lightGlazeSettings = usesStrokeGlazeRenderer(this.settings)
+    const lightGlazeSettings = operation === "paint"
+      && usesStrokeGlazeRenderer(this.settings)
       ? { ...this.settings }
       : null;
     if (lightGlazeSettings && this.thicknessTailPresentedRect) {
@@ -3001,7 +3022,8 @@ export class BrushEngine {
       this.presentationCacheNeedsFullRebuild = true;
       this.displayDirty = true;
     }
-    this.adaptivePreviewForceStroke = tool === "paint"
+    this.adaptivePreviewForceStroke = operation === "paint"
+      && tool === "paint"
       && ADAPTIVE_PREVIEW_FORCE
       && !lightGlazeSettings
       && this.pixelSelectionState.selectedPixels === 0;
@@ -3013,7 +3035,7 @@ export class BrushEngine {
         this.scheduleLayerColdCompression();
         const message = error instanceof Error ? error.message : String(error);
         this.callbacks.onStatus?.(
-          `Pennellata annullata prima del rendering: ${message}`,
+          `Tratto annullato prima del rendering: ${message}`,
           "error",
         );
         return false;
@@ -3066,6 +3088,7 @@ export class BrushEngine {
     ) ?? null;
     this.activeStroke = {
       tool,
+      operation,
       lastInput: normalizedPoint,
       startedAtMs: normalizedPoint.timeMs,
       thicknessSettings,
@@ -3073,9 +3096,11 @@ export class BrushEngine {
         thicknessSettings.startThickness,
         thicknessSettings.endThickness,
       ),
-      thicknessTailHoldback: tool === "paint" && thicknessDynamicsNeedsTailHoldback(
-        thicknessSettings.endThickness,
-      ),
+      thicknessTailHoldback: operation === "paint"
+        && tool === "paint"
+        && thicknessDynamicsNeedsTailHoldback(
+          thicknessSettings.endThickness,
+        ),
       heldThicknessStamps: [],
       heldThicknessHead: 0,
       distanceSinceStamp: 0,
@@ -8337,6 +8362,7 @@ export class BrushEngine {
     let stamp = this.stabilizationPreviewStamps[index];
     if (!stamp) {
       stamp = {
+        operation: "paint",
         x: 0,
         y: 0,
         radius: 0,
@@ -8399,6 +8425,7 @@ export class BrushEngine {
       target.directionX = candidate.stamp.directionX;
       target.directionY = candidate.stamp.directionY;
       target.historyActionId = candidate.stamp.historyActionId;
+      target.operation = candidate.stamp.operation;
       stampCount += 1;
     }
 
@@ -8469,6 +8496,7 @@ export class BrushEngine {
       stamp.directionX = directionX;
       stamp.directionY = directionY;
       stamp.historyActionId = stroke.historyActionId;
+      stamp.operation = stroke.operation;
       stampCount += 1;
     };
 
@@ -8661,27 +8689,11 @@ export class BrushEngine {
     const isShape = settings.shape === "shape";
     const shapeOccupancyMip = frame.shapeOccupancySelection?.selectedMipLevel ?? null;
     const useShapeOccupancy = isShape && shapeOccupancyMip !== null;
-    const pipeline = frame.grainActive
-      ? isShape
-        ? useShapeOccupancy
-          ? settings.blendMode === "additive"
-            ? this.grainShapeOccupancyAdditivePipeline
-            : this.grainShapeOccupancyNormalPipeline
-          : settings.blendMode === "additive"
-            ? this.grainShapeAdditivePipeline
-            : this.grainShapeNormalPipeline
-        : settings.blendMode === "additive"
-          ? this.grainAdditivePipeline
-          : this.grainNormalPipeline
-      : isShape
-        ? useShapeOccupancy
-          ? settings.blendMode === "additive"
-            ? this.shapeOccupancyAdditivePipeline
-            : this.shapeOccupancyNormalPipeline
-          : settings.blendMode === "additive"
-            ? this.shapeAdditivePipeline
-            : this.shapeNormalPipeline
-        : settings.blendMode === "additive" ? this.additivePipeline : this.normalPipeline;
+    const pipeline = selectRasterStrokePipeline(this, settings, {
+      operation: "paint",
+      grainActive: frame.grainActive,
+      shapeOccupancyActive: useShapeOccupancy,
+    });
     const bindGroup = frame.grainActive
       ? useShapeOccupancy
         ? this.thicknessTailGrainBrushOccupancyBindGroups[
@@ -8913,14 +8925,18 @@ export class BrushEngine {
     }
 
     const batchExtractionStart = performance.now();
-    let availableBatchSize = this.pendingStamps.length;
+    let availableBatchSize = 0;
     const lightGlazeSession = this.lightGlazeSession;
-    if (lightGlazeSession) {
-      availableBatchSize = 0;
+    const firstPendingStamp = this.pendingStamps[0];
+    if (firstPendingStamp) {
       while (
         availableBatchSize < this.pendingStamps.length
         && this.pendingStamps[availableBatchSize].historyActionId
-          === lightGlazeSession.historyActionId
+          === firstPendingStamp.historyActionId
+        && this.pendingStamps[availableBatchSize].operation
+          === firstPendingStamp.operation
+        && (!lightGlazeSession
+          || firstPendingStamp.historyActionId === lightGlazeSession.historyActionId)
       ) {
         availableBatchSize += 1;
       }
@@ -8978,6 +8994,7 @@ export class BrushEngine {
     const renderSettings = blendBatch[0]?.settings
       ?? lightGlazeSession?.settings
       ?? this.settings;
+    const rasterStrokeOperation = batch[0]?.operation ?? "paint";
     const start = performance.now();
     const timing = blendBatch.length > 0
       ? this.submitBlendImmediate(
@@ -8999,10 +9016,16 @@ export class BrushEngine {
       recordBlendHistoryBatch(this, blendBatch, timing, clearLayer);
       this.layerHasContent = true;
     } else if (batch.length > 0) {
-      this.trackAdaptivePreviewExactSubmission(batch, renderSettings);
+      if (rasterStrokeOperation === "paint") {
+        this.trackAdaptivePreviewExactSubmission(batch, renderSettings);
+      }
       this.recordHistoryBatch(batch, renderSettings, timing, clearLayer);
-      if (clearLayer) this.layerHasContent = timing.dirtyRect !== null;
-      else if (timing.dirtyRect) this.layerHasContent = true;
+      if (rasterStrokeOperation === "paint") {
+        if (clearLayer) this.layerHasContent = timing.dirtyRect !== null;
+        else if (timing.dirtyRect) this.layerHasContent = true;
+      } else if (clearLayer) {
+        this.layerHasContent = false;
+      }
     } else if (clearLayer) {
       this.layerHasContent = false;
     }
@@ -9068,9 +9091,13 @@ export class BrushEngine {
       return;
     }
     const actionId = batch[0].historyActionId;
-    if (batch.at(-1)?.historyActionId !== actionId) {
+    const operation = batch[0].operation;
+    if (
+      batch.at(-1)?.historyActionId !== actionId
+      || batch.some((stamp) => stamp.operation !== operation)
+    ) {
       if (capturedSlice) this.historyGpuStorage.release(capturedSlice);
-      throw new Error("Un batch Paint storico contiene più pennellate.");
+      throw new Error("Un batch raster storico contiene più tratti o operazioni.");
     }
     if (!capturedSlice) {
       throw new Error("Payload GPU della cronologia Paint mancante.");
@@ -9091,6 +9118,7 @@ export class BrushEngine {
 
     const historyBatch = {
       kind: "paint",
+      operation,
       actionId,
       // Safe to read the active layer here because switching is refused while a
       // stroke is open (assertLayerSwitchAllowed), so the layer that recorded
@@ -11350,7 +11378,13 @@ export class BrushEngine {
     externalEncoder: GPUCommandEncoder | null = null,
   ): SubmitTiming {
     const stampCount = resolvePaintHistoryStampCount(stamps, replayBatch);
-    if (usesStrokeGlazeRenderer(settings)) {
+    const operation = normalizeRasterStrokeOperation(
+      replayBatch?.operation ?? stamps[0]?.operation,
+    );
+    if (stamps.some((stamp) => stamp.operation !== operation)) {
+      throw new Error("Un submit raster non può mescolare Paint ed Eraser.");
+    }
+    if (operation === "paint" && usesStrokeGlazeRenderer(settings)) {
       if (this.lightGlazeSession) {
         return this.submitLightGlazeImmediate(stamps, clearLayer, settings, present, replayBatch);
       }
@@ -11458,7 +11492,8 @@ export class BrushEngine {
 
       const brushEncodingStart = performance.now();
       const brushPass = encoder.beginRenderPass({
-        label: `Paint into ${DOCUMENT_WIDTH}×${DOCUMENT_HEIGHT} layer`,
+        label: `${operation === "erase" ? "Erase" : "Paint"} into `
+          + `${DOCUMENT_WIDTH}×${DOCUMENT_HEIGHT} layer`,
         colorAttachments: [
           {
             view: this.layerView,
@@ -11474,27 +11509,11 @@ export class BrushEngine {
         const isShape = settings.shape === "shape";
         const shapeOccupancyMip = shapeOccupancySelection?.selectedMipLevel ?? null;
         const useShapeOccupancy = isShape && shapeOccupancyMip !== null;
-        const pipeline = grainActive
-          ? isShape
-            ? useShapeOccupancy
-              ? settings.blendMode === "additive"
-                ? this.grainShapeOccupancyAdditivePipeline
-                : this.grainShapeOccupancyNormalPipeline
-              : settings.blendMode === "additive"
-                ? this.grainShapeAdditivePipeline
-                : this.grainShapeNormalPipeline
-            : settings.blendMode === "additive"
-              ? this.grainAdditivePipeline
-              : this.grainNormalPipeline
-          : isShape
-            ? useShapeOccupancy
-              ? settings.blendMode === "additive"
-                ? this.shapeOccupancyAdditivePipeline
-                : this.shapeOccupancyNormalPipeline
-              : settings.blendMode === "additive"
-                ? this.shapeAdditivePipeline
-                : this.shapeNormalPipeline
-            : settings.blendMode === "additive" ? this.additivePipeline : this.normalPipeline;
+        const pipeline = selectRasterStrokePipeline(this, settings, {
+          operation,
+          grainActive,
+          shapeOccupancyActive: useShapeOccupancy,
+        });
         bindPaintPipelineWithPixelSelection(this, brushPass, pipeline, replayBatch);
         brushPass.setBindGroup(
           0,

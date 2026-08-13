@@ -99,10 +99,10 @@ export class BrushQuickControlsController {
 
   syncAvailability(locked = this.options.isInteractionLocked()): void {
     const tool = this.options.getActiveTool();
-    const brushContext = tool === "paint" || tool === "blend";
+    const brushContext = tool === "paint" || tool === "eraser" || tool === "blend";
     const disabledByKind: Readonly<Record<BrushQuickControlKind, boolean>> = {
       size: locked || !brushContext,
-      opacity: locked || tool !== "paint",
+      opacity: locked || (tool !== "paint" && tool !== "eraser"),
       stretch: locked || tool !== "blend",
       paint: locked || tool !== "blend",
       blur: locked || tool !== "blend",
@@ -117,8 +117,9 @@ export class BrushQuickControlsController {
 
   syncVisibility(): void {
     const tool = this.options.getActiveTool();
-    const brushContext = tool === "paint" || tool === "blend";
+    const brushContext = tool === "paint" || tool === "eraser" || tool === "blend";
     const blend = tool === "blend";
+    const eraser = tool === "eraser";
     const suppressed = !brushContext || this.options.isSuppressedBySurface();
     if (suppressed && this.drag) this.finishDrag(true);
     const { controls, tracks } = this.options.elements;
@@ -126,7 +127,11 @@ export class BrushQuickControlsController {
     controls.classList.toggle("is-blend", blend);
     controls.setAttribute(
       "aria-label",
-      blend ? "Blend size, stretch, paint and blur" : "Brush size and opacity",
+      blend
+        ? "Blend size, stretch, paint and blur"
+        : eraser
+          ? "Eraser size and opacity"
+          : "Brush size and opacity",
     );
     tracks.opacity.hidden = blend;
     tracks.stretch.hidden = !blend;

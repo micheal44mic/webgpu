@@ -27,6 +27,7 @@ export const ENGINE_SOURCE_FILES = Object.freeze([
   "shape-occupancy.ts",
   "adaptive-preview-runtime.ts",
   "engine-stroke-types.ts",
+  "engine-raster-stroke-pipelines.ts",
   "engine-history-types.ts",
   "engine-history-storage-host.ts",
   "engine-layer-resources.ts",

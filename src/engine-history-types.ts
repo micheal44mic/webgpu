@@ -5,6 +5,7 @@
 import type { DryBlendHistoryGeometry } from "./blend-renderer";
 import type { DirtyRect, Stamp } from "./engine-stroke-types";
 import type { BrushSettings } from "./engine-types";
+import type { RasterStrokeOperation } from "./raster-stroke-operation";
 import type { GpuHistorySlice } from "./gpu-history-storage";
 import type {
   MixedSceneVectorHistoryDelta,
@@ -450,8 +451,13 @@ export function vectorHistoryStatesEqual(
   return JSON.stringify(leftNode) === JSON.stringify(rightNode);
 }
 
+/**
+ * Packed raster-stamp payload. `kind: "paint"` is the stable History
+ * discriminator; `operation` distinguishes source-over Paint from Erase.
+ */
 export interface PaintHistoryRenderBatch {
   kind: "paint";
+  operation: RasterStrokeOperation;
   actionId: number;
   layerId: number;
   settings: BrushSettings;

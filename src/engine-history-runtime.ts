@@ -83,6 +83,7 @@ import {
   rasterColorOverlayStylesEqual,
 } from "./raster-color-overlay-core";
 import { restorePixelSelectionHistoryMask } from "./engine-selection-runtime";
+import { normalizeRasterStrokeOperation } from "./raster-stroke-operation";
 import {
   grainAssetIdForSettings,
   shapeAssetIdForSettings,
@@ -945,7 +946,10 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
 
         await ensureReplayBrushAssets(batch.settings);
 
-        if (usesStrokeGlazeRenderer(batch.settings)) {
+        if (
+          normalizeRasterStrokeOperation(batch.operation) === "paint"
+          && usesStrokeGlazeRenderer(batch.settings)
+        ) {
           await engine.ensureLightGlazeResources(batch.settings.blendMode);
           const actionId = batch.actionId;
           if (!engine.lightGlazeSession) {

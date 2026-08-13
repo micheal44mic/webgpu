@@ -835,11 +835,6 @@ button.primary:hover {
   background: #5365f4;
 }
 
-button.danger {
-  border-color: #713b42;
-  color: #ffc7ce;
-}
-
 #app {
   position: relative;
   display: grid;

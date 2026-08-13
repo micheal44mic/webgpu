@@ -1,5 +1,5 @@
 import type { BrushEngine } from "./brush-engine";
-import type { BrushSettings } from "./engine-types";
+import type { BrushSettings, BrushTool } from "./engine-types";
 import type { MobileTextWarpMode, MobileToolSettingsKind } from "./mobile-tool-settings-sheet";
 import type { SelectionCombineMode, SelectionMethod } from "./selection-core";
 import type { CanvasInputTool } from "./canvas-input-controller";
@@ -38,6 +38,7 @@ export interface CanvasToolControllerOptions {
   readonly elements: {
     readonly canvas: HTMLCanvasElement;
     readonly paintButton: HTMLButtonElement;
+    readonly eraserButton: HTMLButtonElement;
     readonly blendButton: HTMLButtonElement;
   };
   readonly brushSettings: CanvasToolBrushSettingsPort;
@@ -83,6 +84,9 @@ export class CanvasToolController {
     }, { signal });
     options.elements.blendButton.addEventListener("click", () => {
       this.select("blend");
+    }, { signal });
+    options.elements.eraserButton.addEventListener("click", () => {
+      this.select("eraser");
     }, { signal });
   }
 
@@ -132,6 +136,7 @@ export class CanvasToolController {
     this.activeCanvasTool = tool;
     this.options.closeBrushLibraryForTool(tool);
     this.options.elements.paintButton.setAttribute("aria-pressed", String(tool === "paint"));
+    this.options.elements.eraserButton.setAttribute("aria-pressed", String(tool === "eraser"));
     this.options.elements.blendButton.setAttribute("aria-pressed", String(tool === "blend"));
     this.options.syncBrushLibraryButton();
     this.options.syncMenuState();
@@ -140,11 +145,12 @@ export class CanvasToolController {
     const transform = tool === "transform";
     const liquify = tool === "liquify";
     if (!selection) this.options.cancelKeyboardSelectionGesture(true);
-    if (!fill && !selection && !transform && !liquify) {
-      this.activeBrushTool = tool;
+    const brushTool = this.brushToolForCanvasTool(tool);
+    if (!fill && !selection && !transform && !liquify && brushTool) {
+      this.activeBrushTool = brushTool;
       this.options.brushSettings.selectTool(
-        tool,
-        restoreSnapshot && previousBrushTool !== tool,
+        brushTool,
+        restoreSnapshot && previousBrushTool !== brushTool,
       );
     }
     this.syncSelectionKeyboardUi();
@@ -229,6 +235,12 @@ export class CanvasToolController {
     } else {
       canvas.removeAttribute("aria-keyshortcuts");
     }
+  }
+
+  private brushToolForCanvasTool(tool: CanvasInputTool): BrushTool | null {
+    if (tool === "paint" || tool === "eraser") return "paint";
+    if (tool === "blend") return "blend";
+    return null;
   }
 
   private async configureEngineToolSelection(

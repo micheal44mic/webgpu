@@ -37,7 +37,7 @@ import {
 import { defaultBrushSettings, type BrushSettings } from "./engine-types";
 import { shouldCloseMobileToolsSheetDrag } from "./mobile-tools-sheet-gesture";
 
-export type BrushLibraryCategory = "pencil" | "painting" | "spray-paint";
+export type BrushLibraryCategory = "pencil" | "painting";
 export type BrushLibraryBrushId =
   | typeof PENCIL_BRUSH_PRESET.id
   | "current"
@@ -457,7 +457,7 @@ export class BrushLibraryController {
   private readonly handleCategoryClick = (event: Event): void => {
     const button = event.currentTarget as HTMLButtonElement;
     const category = button.dataset.mobileBrushCategory;
-    if (category === "pencil" || category === "painting" || category === "spray-paint") {
+    if (category === "pencil" || category === "painting") {
       this.setCategory(category);
     }
   };

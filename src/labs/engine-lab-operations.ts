@@ -174,6 +174,7 @@ export function generateBenchmarkStamps(engine: BrushEngine, count: number, sett
     const radius = Math.max(0.5, settings.size * 0.5);
 
     stamps[index] = {
+      operation: "paint",
       x: centerX + Math.cos(angle) * pathRadius,
       y: centerY + Math.sin(angle * 1.037) * pathRadius,
       radius,

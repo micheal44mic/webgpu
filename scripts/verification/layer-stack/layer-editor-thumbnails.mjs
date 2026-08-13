@@ -296,9 +296,10 @@ assert.match(editorToolsSource, /const shouldClose = shouldCloseMobileToolsSheet
 assert.match(editorToolsSource, /this\.snap\(this\.dragStartSnap\)/);
 assert.match(
   indexSource,
-  /id="mobileBrushLibrarySheet"[\s\S]*?M1M4 BRUSHES[\s\S]*?data-mobile-brush-category="pencil"[\s\S]*?data-mobile-brush-category="painting"[\s\S]*?data-mobile-brush-category="spray-paint"/,
-  "la Brush Library mobile deve conservare titolo e tre categorie reali",
+  /id="mobileBrushLibrarySheet"[\s\S]*?M1M4 BRUSHES[\s\S]*?data-mobile-brush-category="pencil"[\s\S]*?data-mobile-brush-category="painting"/,
+  "la Brush Library deve conservare titolo e le due categorie con pennelli reali",
 );
+assert.doesNotMatch(indexSource, /data-mobile-brush-category="spray-paint"/);
 assert.match(
   indexSource,
   /id="mobileCurrentBrushCard"[\s\S]*?Default Brush[\s\S]*?id="mobileBrushLibraryPreviewCanvas"/,
