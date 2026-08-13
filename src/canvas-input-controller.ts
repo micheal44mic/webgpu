@@ -1,11 +1,10 @@
 import type { BrushEngine } from "./brush-engine";
+import { canvasToolCapabilities } from "./canvas-tool-capabilities";
 import type { EditorExtension } from "./editor-extension-contract";
-import type { BrushSettings, HistoryState, PointerSample } from "./engine-types";
+import type { EditorCanvasInteractionTool } from "./editor-tools-contract";
+import type { HistoryState, PointerSample } from "./engine-types";
 import type { MixedSceneController } from "./mixed-scene-controller";
-import {
-  rasterStrokeOperationForCanvasTool,
-  type RasterStrokeOperation,
-} from "./raster-stroke-operation";
+import type { RasterStrokeOperation } from "./raster-stroke-operation";
 import type { SelectionCombineMode, SelectionMethod, SelectionPoint } from "./selection-core";
 import {
   TOUCH_PAINT_INTENT_HOLD_MS,
@@ -15,13 +14,7 @@ import {
   touchPaintIntentMovementReached,
 } from "./touch-paint-intent-core";
 
-export type CanvasInputTool =
-  | BrushSettings["tool"]
-  | "eraser"
-  | "fill"
-  | "selection"
-  | "transform"
-  | "liquify";
+export type CanvasInputTool = EditorCanvasInteractionTool;
 
 export type CanvasInputEnginePort = Pick<
   BrushEngine,
@@ -122,7 +115,7 @@ export interface CanvasInputControllerOptions {
 }
 
 export type CanvasPointerMode =
-  | "paint"
+  | "raster-stroke"
   | "liquify"
   | "fill"
   | "selection-tap"
@@ -150,6 +143,7 @@ type TouchPaintIntentReleaseReason = "movement" | "timeout" | "pointer-up";
 interface TouchPaintIntentHold {
   pointerId: number;
   operation: RasterStrokeOperation;
+  recordsPaintExtension: boolean;
   initialSample: PointerSample;
   bufferedSamples: PointerSample[];
   startedAtPerformanceMs: number;
@@ -267,7 +261,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
   const activeTouchContacts = new Map<number, TouchContact>();
   let touchNavigationGesture: TouchNavigationGesture | null = null;
   let touchPaintIntentHold: TouchPaintIntentHold | null = null;
-  let activeRasterStrokeOperation: RasterStrokeOperation | null = null;
+  let activePaintExtensionRecording = false;
   const touchPaintIntentCounters = {
     starts: 0,
     releasedByMovement: 0,
@@ -438,7 +432,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     if (!hold) return false;
     clearTouchPaintIntentTimer(hold);
     touchPaintIntentHold = null;
-    if (activePointerId !== hold.pointerId || pointerMode !== "paint") {
+    if (activePointerId !== hold.pointerId || pointerMode !== "raster-stroke") {
       touchPaintIntentCounters.canceledForPointerEnd += 1;
       return false;
     }
@@ -454,9 +448,9 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       activeTouchContacts.delete(hold.pointerId);
       activePointerId = null;
       pointerMode = null;
-      activeRasterStrokeOperation = null;
+      activePaintExtensionRecording = false;
       releasePointerCapture(hold.pointerId);
-      if (hold.operation === "paint") {
+      if (hold.recordsPaintExtension) {
         options.getEditorExtension()?.cancelPaintRecording?.();
       }
       publishHistoryState();
@@ -470,11 +464,13 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     pointerId: number,
     initialSample: PointerSample,
     operation: RasterStrokeOperation,
+    recordsPaintExtension: boolean,
   ): void => {
     if (touchPaintIntentHold) clearTouchPaintIntentTimer(touchPaintIntentHold);
     const hold: TouchPaintIntentHold = {
       pointerId,
       operation,
+      recordsPaintExtension,
       initialSample,
       bufferedSamples: [],
       startedAtPerformanceMs: browser.performance.now(),
@@ -532,13 +528,13 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
 
   const enterTouchNavigation = (): void => {
     if (pointerMode !== "touch-navigation") {
-      if (pointerMode === "paint") {
+      if (pointerMode === "raster-stroke") {
         const canceledHeldIntent = cancelTouchPaintIntentHold("navigation");
         if (!canceledHeldIntent && !engine.cancelStrokeBeforeRender()) engine.endStroke();
-        if (activeRasterStrokeOperation === "paint") {
+        if (activePaintExtensionRecording) {
           options.getEditorExtension()?.cancelPaintRecording?.();
         }
-        activeRasterStrokeOperation = null;
+        activePaintExtensionRecording = false;
       } else if (pointerMode === "liquify") {
         engine.endRasterLiquifyStroke(false);
         canvas.classList.remove("liquify-deforming");
@@ -580,21 +576,22 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       && rotateShortcutHeld;
     const shouldPan = event.shiftKey || event.button === 1 || event.button === 2;
     const activeTool = options.getActiveTool();
+    const toolCapabilities = canvasToolCapabilities(activeTool);
     const requestedPointerMode: CanvasPointerMode = shouldRotate
       ? "rotate"
       : shouldPan
         ? "pan"
-        : activeTool === "fill"
+        : toolCapabilities.pointerInteraction === "fill"
           ? "fill"
-          : activeTool === "liquify"
+          : toolCapabilities.pointerInteraction === "liquify"
             ? "liquify"
-            : activeTool === "selection"
+            : toolCapabilities.pointerInteraction === "selection"
               ? options.getSelectionMethod() === "lasso"
                 ? "selection-lasso"
                 : "selection-tap"
-              : activeTool === "transform"
+              : toolCapabilities.pointerInteraction === "transform"
                 ? "transform"
-                : "paint";
+                : "raster-stroke";
     const viewNavigationRequested = requestedPointerMode === "pan"
       || requestedPointerMode === "rotate";
     const liquifyEditRequested = requestedPointerMode === "liquify"
@@ -625,9 +622,11 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       return;
     }
 
-    const paintSample = requestedPointerMode === "paint" ? toPointerSample(event) : null;
+    const paintSample = requestedPointerMode === "raster-stroke"
+      ? toPointerSample(event)
+      : null;
     const rasterStrokeOperation = paintSample
-      ? rasterStrokeOperationForCanvasTool(activeTool)
+      ? toolCapabilities.rasterStrokeOperation
       : null;
     const liquifyPoint = requestedPointerMode === "liquify"
       ? engine.toLayerPoint({
@@ -642,10 +641,10 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     const holdPaintIntent = paintSample !== null && shouldHoldTouchPaintIntent(
       options.touchPaintIntentHoldEnabled,
       event.pointerType,
-      activeTool,
+      toolCapabilities.holdsTouchPaintIntent,
     );
     if (paintSample && rasterStrokeOperation && !holdPaintIntent) {
-      const extension = rasterStrokeOperation === "paint"
+      const extension = toolCapabilities.recordsPaintExtension
         ? options.getEditorExtension()
         : null;
       const extensionRecordingStarted = extension?.wantsPaintRecording?.() === true;
@@ -660,7 +659,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     event.preventDefault();
     if (activeTool === "selection") cancelKeyboardSelectionGesture(true);
     activePointerId = event.pointerId;
-    activeRasterStrokeOperation = rasterStrokeOperation;
+    activePaintExtensionRecording = toolCapabilities.recordsPaintExtension;
     if (event.pointerType === "touch") {
       activeTouchContacts.set(event.pointerId, {
         clientX: event.clientX,
@@ -697,18 +696,23 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     } else if (pointerMode === "liquify") {
       canvas.classList.add("liquify-deforming");
     } else if (
-      pointerMode === "paint"
+      pointerMode === "raster-stroke"
       && paintSample
       && rasterStrokeOperation
       && holdPaintIntent
     ) {
-      const extension = rasterStrokeOperation === "paint"
+      const extension = toolCapabilities.recordsPaintExtension
         ? options.getEditorExtension()
         : null;
       if (extension?.wantsPaintRecording?.() === true) {
         extension.beginPaintRecording?.(event, paintSample);
       }
-      startTouchPaintIntentHold(event.pointerId, paintSample, rasterStrokeOperation);
+      startTouchPaintIntentHold(
+        event.pointerId,
+        paintSample,
+        rasterStrokeOperation,
+        toolCapabilities.recordsPaintExtension,
+      );
     }
 
     browser.requestAnimationFrame(() => {
@@ -811,7 +815,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       return;
     }
     const samples = sourceEvents.map(toPointerSample);
-    if (activeRasterStrokeOperation === "paint") {
+    if (activePaintExtensionRecording) {
       options.getEditorExtension()?.capturePaintRecording?.(sourceEvents, samples);
     }
     const heldIntent = touchPaintIntentHold;
@@ -847,7 +851,10 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     }
     if (event.pointerId !== activePointerId) return;
 
-    if (pointerMode === "paint" && touchPaintIntentHold?.pointerId === event.pointerId) {
+    if (
+      pointerMode === "raster-stroke"
+      && touchPaintIntentHold?.pointerId === event.pointerId
+    ) {
       if (event.type === "pointerup") releaseTouchPaintIntentHold("pointer-up");
       else cancelTouchPaintIntentHold("pointer-end");
     }
@@ -885,9 +892,9 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       : null;
 
     const completedPointerMode = pointerMode;
-    if (pointerMode === "paint") {
+    if (pointerMode === "raster-stroke") {
       engine.endStroke(event.timeStamp);
-      if (activeRasterStrokeOperation === "paint") {
+      if (activePaintExtensionRecording) {
         options.getEditorExtension()?.finishPaintRecording?.(event.type === "pointerup");
       }
     } else if (pointerMode === "liquify") {
@@ -901,9 +908,9 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     canvas.classList.remove("panning", "rotating", "liquify-deforming");
     pointerMode = null;
     activePointerId = null;
-    activeRasterStrokeOperation = null;
+    activePaintExtensionRecording = false;
     options.scheduleLayersRefresh();
-    if (completedPointerMode === "paint") options.invalidateActiveThumbnail();
+    if (completedPointerMode === "raster-stroke") options.invalidateActiveThumbnail();
     touchNavigationGesture = null;
     fillPointerMoved = false;
     selectionPointerMoved = false;
@@ -1100,13 +1107,15 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     resizeObserver.disconnect();
 
     const mode = pointerMode;
-    if (mode === "paint") {
+    if (mode === "raster-stroke") {
       const canceledHeldIntent = cancelTouchPaintIntentHold("pointer-end");
-      if (canceledHeldIntent) {
+      if (canceledHeldIntent && activePaintExtensionRecording) {
         options.getEditorExtension()?.cancelPaintRecording?.();
       } else {
         if (!engine.cancelStrokeBeforeRender()) engine.endStroke();
-        options.getEditorExtension()?.finishPaintRecording?.(false);
+        if (activePaintExtensionRecording) {
+          options.getEditorExtension()?.finishPaintRecording?.(false);
+        }
       }
     } else if (mode === "liquify") {
       engine.endRasterLiquifyStroke(false);

@@ -10,7 +10,9 @@ const read = (path) => readFileSync(new URL(path, root), "utf8");
 
 const engineTypes = read("src/engine-types.ts");
 const operationSource = read("src/raster-stroke-operation.ts");
+const capabilitiesSource = read("src/canvas-tool-capabilities.ts");
 const pipelineSource = read("src/engine-raster-stroke-pipelines.ts");
+const pipelineFactory = read("src/engine-raster-stroke-pipeline-factory.ts");
 const engine = read("src/brush-engine.ts");
 const historyTypes = read("src/engine-history-types.ts");
 const historyRuntime = read("src/engine-history-runtime.ts");
@@ -30,7 +32,7 @@ const projectCss = read("src/styles/project-home.css");
 assert.match(engineTypes, /export type BrushTool = "paint" \| "blend";/);
 assert.doesNotMatch(engineTypes, /BrushTool[^;]*eraser/);
 assert.match(operationSource, /export type RasterStrokeOperation = "paint" \| "erase";/);
-assert.match(operationSource, /tool === "eraser" \? "erase" : "paint"/);
+assert.match(capabilitiesSource, /eraser:[\s\S]*?brushTool: "paint",[\s\S]*?rasterStrokeOperation: "erase"/);
 
 assert.deepEqual(DESTINATION_OUT_BLEND_STATE, {
   color: { operation: "add", srcFactor: "zero", dstFactor: "one-minus-src-alpha" },
@@ -96,25 +98,20 @@ assert.equal(selectRasterStrokePipeline(
   { operation: "erase", grainActive: true, shapeOccupancyActive: true },
 ), eraseGrainShapeOccupancy);
 
-const eraserMap = layerPipelines.slice(
-  layerPipelines.indexOf("const eraserPipelineByPaintBase"),
-  layerPipelines.indexOf("const createRgba16FloatGlazePipeline"),
+assert.match(pipelineFactory, /export const RASTER_STROKE_GEOMETRY_KEYS = \[/);
+assert.equal(
+  (pipelineFactory.match(/^\s+"(?:circle|shape|shape-occupancy|grain-circle|grain-shape|grain-shape-occupancy)",$/gm) ?? []).length,
+  6,
+  "the factory must require all six raster geometries",
 );
-assert.equal((eraserMap.match(/^\s+\[[^\]]+Pipeline, [^\]]+Pipeline\],$/gm) ?? []).length, 6);
-for (const eraserVariant of [
-  "eraserPipeline",
-  "shapeEraserPipeline",
-  "shapeOccupancyEraserPipeline",
-  "grainEraserPipeline",
-  "grainShapeEraserPipeline",
-  "grainShapeOccupancyEraserPipeline",
-]) {
-  assert.match(
-    layerPipelines,
-    new RegExp(`(?:brushVariant|grainVariant)\\(${eraserVariant},[\\s\\S]{0,220}?DESTINATION_OUT_BLEND_STATE`),
-    `${eraserVariant} must have a pixel-selection-clipped destination-out variant`,
-  );
-}
+assert.match(layerPipelines, /const rasterStrokeGeometries:[\s\S]*?key: "circle"[\s\S]*?key: "grain-shape-occupancy"/);
+assert.match(layerPipelines, /createRasterStrokePipelineFamilies\([\s\S]*?rasterStrokeGeometries/);
+assert.match(layerPipelines, /const eraserPipelineByPaintBase = eraserPipelineMap\(rasterStrokePipelineFamilies\)/);
+assert.match(
+  layerPipelines,
+  /const eraserSelectionVariants:[\s\S]*?rasterStrokePipelineFamilies\.values\(\)[\s\S]*?base: family\.eraser,[\s\S]*?selectionFragmentModule[\s\S]*?DESTINATION_OUT_BLEND_STATE/,
+  "the same complete geometry catalog must create all selection-clipped Eraser variants",
+);
 
 assert.match(engine, /beginStroke\([\s\S]{0,180}?operation: RasterStrokeOperation = "paint"/);
 assert.match(engine, /this\.activeStroke = \{[\s\S]{0,100}?tool,[\s\S]{0,60}?operation,/);
@@ -133,9 +130,9 @@ assert.match(
 
 assert.match(canvasInput, /engine\.beginStroke\(paintSample, rasterStrokeOperation\)/);
 assert.match(canvasInput, /engine\.beginStroke\(hold\.initialSample, hold\.operation\)/);
-assert.match(canvasTools, /tool === "paint" \|\| tool === "eraser"\) return "paint"/);
+assert.match(canvasTools, /const capabilities = canvasToolCapabilities\(tool\)/);
 assert.match(canvasTools, /eraserButton\.setAttribute\("aria-pressed", String\(tool === "eraser"\)\)/);
-assert.match(quickControls, /tool === "paint" \|\| tool === "eraser" \|\| tool === "blend"/);
+assert.match(quickControls, /canvasToolCapabilities\([\s\S]*?\)\.quickControls/);
 assert.match(main, /const mobileEraserButton = element<HTMLButtonElement>\("mobileEraser"\)/);
 assert.match(main, /mobileEraserButton\.disabled = locked/);
 assert.match(navigation, /id="mobileEraser"[\s\S]{0,180}?aria-label="Seleziona Gomma"/);

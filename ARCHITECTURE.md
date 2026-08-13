@@ -31,6 +31,7 @@ confine.
 | Dominio | Proprietario | Note |
 |---|---|---|
 | Stato e hot path Paint/Eraser/Blend | `BrushEngine` | Facciata pubblica, risorse centrali e percorso per-frame/per-stamp |
+| Capacità strumenti canvas | `canvas-tool-capabilities.ts` | Fonte autorevole di puntatore, tool pennello, operazione raster, controlli rapidi e intent touch |
 | Operazione e pipeline raster | `raster-stroke-operation.ts`, `engine-raster-stroke-pipelines.ts` | Eraser riusa la geometria Paint ma resta un'operazione destination-out separata da preset e schema progetto |
 | Impostazioni pennello attive | `BrushSettingsController` | Colore e tool attivi non fanno parte della definizione persistita |
 | Definizione e catalogo pennelli | `brush-definition.ts`, `brush-catalog.ts` | Versionamento, normalizzazione e preset |
@@ -40,7 +41,7 @@ confine.
 | Modelli semantici | `scene-text-model.ts`, `scene-svg-model.ts`, `scene-image-model.ts` | Dati clonabili/persistibili, senza DOM |
 | Editing della scena | `MixedSceneController` e runtime `mixed-scene-*` | DOM, interazione, comandi/History e piano di rendering sono moduli distinti |
 | Effetti non distruttivi | `RasterStyleController`, `engine-raster-style-runtime.ts` | Stroke, bevel, ombre e color overlay per livello |
-| Regolazioni distruttive | `RasterAdjustmentsController`, runtime Gaussian/Motion/Noise/Liquify | Preview e commit transazionale |
+| Regolazioni e sessioni distruttive | `destructive-raster-edit-contract.ts`, `RasterAdjustmentsController`, runtime Gaussian/Motion/Noise/Liquify/Transform | Elenco esaustivo delle sessioni, preview e commit transazionale |
 | Progetto aperto | `ProjectSessionController` | Dirty state, save/open, thumbnail e ritorno Home |
 | Persistenza progetto | moduli `project-storage-*` | Schema, codec, quota, backend e repository separati |
 | Cronologia | `HistoryService` | Azioni, cursore, batch, ownership e branch Redo |
@@ -49,6 +50,14 @@ confine.
 Le facciate `engine-layer-runtime.ts`, `engine-vector-text-runtime.ts` e
 `project-storage.ts` esportano i moduli del dominio. Aggiungere la logica al
 modulo specifico, non alla facciata.
+
+`canvas-tool-capabilities.ts` è la fonte autorevole per le capacità degli strumenti canvas. `destructive-raster-edit-contract.ts` definisce l'elenco esaustivo delle sessioni raster distruttive.
+
+Il Text Warp è semantico/vettoriale (proprietà del modello testo), distinto dal futuro Raster Warp/Puppet (sessione transazionale distruttiva su pixel).
+
+Ogni nuovo filtro colore futuro deve prima essere classificato:
+- **Non distruttivo**: metadati di livello (`RasterStyleController`, `engine-raster-style-runtime.ts`), schema progetto, History raster-property e shader/compositor re-renderabile;
+- **Distruttivo**: core, shader, runtime a sessione con preview transazionale e commit con checkpoint pixel esatto in History.
 
 ## Flussi operativi
 

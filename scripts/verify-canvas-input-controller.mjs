@@ -363,7 +363,7 @@ function createHarness({ holdEnabled = true } = {}) {
   harness.canvas.dispatchEvent(down);
   assert.equal(down.defaultPrevented, true);
   assert.equal(harness.controller.isPointerActive, true);
-  assert.equal(harness.controller.pointerMode, "paint");
+  assert.equal(harness.controller.pointerMode, "raster-stroke");
   assert.deepEqual(harness.calls.beginStroke, [{
     clientX: 5,
     clientY: 7,
@@ -413,7 +413,7 @@ function createHarness({ holdEnabled = true } = {}) {
     clientX: 20,
     clientY: 22,
   }));
-  assert.equal(harness.controller.pointerMode, "paint");
+  assert.equal(harness.controller.pointerMode, "raster-stroke");
   assert.deepEqual(harness.calls.strokeOperations, ["erase"]);
   assert.equal(harness.calls.recordingBegin, 0);
   harness.canvas.dispatchEvent(makeEvent("pointermove", {

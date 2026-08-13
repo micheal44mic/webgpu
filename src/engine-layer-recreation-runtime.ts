@@ -10,7 +10,16 @@ import {
 import {
   createRenderPipelineAsync,
 } from "./engine-gpu-utils";
-import { DESTINATION_OUT_BLEND_STATE } from "./engine-raster-stroke-pipelines";
+import {
+  ADDITIVE_BLEND_STATE,
+  DESTINATION_OUT_BLEND_STATE,
+  SOURCE_OVER_BLEND_STATE,
+} from "./engine-raster-stroke-pipelines";
+import {
+  createRasterStrokePipelineFamilies,
+  eraserPipelineMap,
+  type RasterStrokeGeometryPipelineSpec,
+} from "./engine-raster-stroke-pipeline-factory";
 import {
   type DisplayPyramidResources,
   type LayerGpuResources,
@@ -511,77 +520,6 @@ async function createLayerPipelineBundle(
     primitive: { topology: "triangle-strip" },
   });
 
-  const createEraserPipeline = (
-    label: string,
-    layout: GPUPipelineLayout,
-    fragmentModule: GPUShaderModule,
-    vertexEntryPoint: "vertexMain" | "shapeVertexMain",
-    fragmentEntryPoint: "fragmentMain" | "shapeFragmentMain" | "shapeOccupancyFragmentMain",
-  ): GPURenderPipeline => engine.device.createRenderPipeline({
-    label: `${label} ${format}`,
-    layout,
-    vertex: {
-      module: engine.brushShaderModule,
-      entryPoint: vertexEntryPoint,
-    },
-    fragment: {
-      module: fragmentModule,
-      entryPoint: fragmentEntryPoint,
-      targets: [{ format, blend: DESTINATION_OUT_BLEND_STATE }],
-    },
-    primitive: { topology: "triangle-strip" },
-  });
-  const eraserPipeline = createEraserPipeline(
-    "Eraser circle destination-out",
-    brushPipelineLayout,
-    engine.brushShaderModule,
-    "vertexMain",
-    "fragmentMain",
-  );
-  const shapeEraserPipeline = createEraserPipeline(
-    "Eraser Shape destination-out",
-    brushPipelineLayout,
-    engine.brushShaderModule,
-    "shapeVertexMain",
-    "shapeFragmentMain",
-  );
-  const shapeOccupancyEraserPipeline = createEraserPipeline(
-    "Eraser Shape occupancy destination-out",
-    brushOccupancyPipelineLayout,
-    engine.brushShaderModule,
-    "shapeVertexMain",
-    "shapeOccupancyFragmentMain",
-  );
-  const grainEraserPipeline = createEraserPipeline(
-    "Eraser Texturized grain circle destination-out",
-    grainBrushPipelineLayout,
-    engine.texturizedGrainShaderModule,
-    "vertexMain",
-    "fragmentMain",
-  );
-  const grainShapeEraserPipeline = createEraserPipeline(
-    "Eraser Texturized grain Shape destination-out",
-    grainBrushPipelineLayout,
-    engine.texturizedGrainShaderModule,
-    "shapeVertexMain",
-    "shapeFragmentMain",
-  );
-  const grainShapeOccupancyEraserPipeline = createEraserPipeline(
-    "Eraser Texturized grain Shape occupancy destination-out",
-    grainBrushOccupancyPipelineLayout,
-    engine.texturizedGrainShaderModule,
-    "shapeVertexMain",
-    "shapeOccupancyFragmentMain",
-  );
-  const eraserPipelineByPaintBase = new Map<GPURenderPipeline, GPURenderPipeline>([
-    [normalPipeline, eraserPipeline],
-    [shapeNormalPipeline, shapeEraserPipeline],
-    [shapeOccupancyNormalPipeline, shapeOccupancyEraserPipeline],
-    [grainNormalPipeline, grainEraserPipeline],
-    [grainShapeNormalPipeline, grainShapeEraserPipeline],
-    [grainShapeOccupancyNormalPipeline, grainShapeOccupancyEraserPipeline],
-  ]);
-
   const createRgba16FloatGlazePipeline = (
     label: string,
     layout: GPUPipelineLayout,
@@ -790,15 +728,91 @@ async function createLayerPipelineBundle(
     "shapeOccupancyCoverageFragmentMain",
   );
 
+  const rasterStrokeGeometries: readonly RasterStrokeGeometryPipelineSpec[] = [
+    {
+      key: "circle",
+      label: "Eraser circle",
+      layout: brushPipelineLayout,
+      fragmentModule: engine.brushShaderModule,
+      selectionLayout: selectionBrushPipelineLayout,
+      selectionFragmentModule: engine.selectionBrushShaderModule,
+      vertexEntryPoint: "vertexMain",
+      fragmentEntryPoint: "fragmentMain",
+      normal: normalPipeline,
+      additive: additivePipeline,
+    },
+    {
+      key: "shape",
+      label: "Eraser Shape",
+      layout: brushPipelineLayout,
+      fragmentModule: engine.brushShaderModule,
+      selectionLayout: selectionBrushPipelineLayout,
+      selectionFragmentModule: engine.selectionBrushShaderModule,
+      vertexEntryPoint: "shapeVertexMain",
+      fragmentEntryPoint: "shapeFragmentMain",
+      normal: shapeNormalPipeline,
+      additive: shapeAdditivePipeline,
+    },
+    {
+      key: "shape-occupancy",
+      label: "Eraser Shape occupancy",
+      layout: brushOccupancyPipelineLayout,
+      fragmentModule: engine.brushShaderModule,
+      selectionLayout: selectionBrushOccupancyPipelineLayout,
+      selectionFragmentModule: engine.selectionBrushShaderModule,
+      vertexEntryPoint: "shapeVertexMain",
+      fragmentEntryPoint: "shapeOccupancyFragmentMain",
+      normal: shapeOccupancyNormalPipeline,
+      additive: shapeOccupancyAdditivePipeline,
+    },
+    {
+      key: "grain-circle",
+      label: "Eraser Texturized grain circle",
+      layout: grainBrushPipelineLayout,
+      fragmentModule: engine.texturizedGrainShaderModule,
+      selectionLayout: selectionGrainBrushPipelineLayout,
+      selectionFragmentModule: engine.selectionTexturizedGrainShaderModule,
+      vertexEntryPoint: "vertexMain",
+      fragmentEntryPoint: "fragmentMain",
+      normal: grainNormalPipeline,
+      additive: grainAdditivePipeline,
+    },
+    {
+      key: "grain-shape",
+      label: "Eraser Texturized grain Shape",
+      layout: grainBrushPipelineLayout,
+      fragmentModule: engine.texturizedGrainShaderModule,
+      selectionLayout: selectionGrainBrushPipelineLayout,
+      selectionFragmentModule: engine.selectionTexturizedGrainShaderModule,
+      vertexEntryPoint: "shapeVertexMain",
+      fragmentEntryPoint: "shapeFragmentMain",
+      normal: grainShapeNormalPipeline,
+      additive: grainShapeAdditivePipeline,
+    },
+    {
+      key: "grain-shape-occupancy",
+      label: "Eraser Texturized grain Shape occupancy",
+      layout: grainBrushOccupancyPipelineLayout,
+      fragmentModule: engine.texturizedGrainShaderModule,
+      selectionLayout: selectionGrainBrushOccupancyPipelineLayout,
+      selectionFragmentModule: engine.selectionTexturizedGrainShaderModule,
+      vertexEntryPoint: "shapeVertexMain",
+      fragmentEntryPoint: "shapeOccupancyFragmentMain",
+      normal: grainShapeOccupancyNormalPipeline,
+      additive: grainShapeOccupancyAdditivePipeline,
+    },
+  ];
+  const rasterStrokePipelineFamilies = createRasterStrokePipelineFamilies(
+    engine.device,
+    format,
+    engine.brushShaderModule,
+    rasterStrokeGeometries,
+  );
+  const eraserPipelineByPaintBase = eraserPipelineMap(rasterStrokePipelineFamilies);
+
   const selectionPipelineByBase = new Map<GPURenderPipeline, GPURenderPipeline>();
-  const sourceOverBlend: GPUBlendState = {
-    color: { operation: "add", srcFactor: "one", dstFactor: "one-minus-src-alpha" },
-    alpha: { operation: "add", srcFactor: "one", dstFactor: "one-minus-src-alpha" },
-  };
-  const additiveBlend: GPUBlendState = {
-    color: { operation: "add", srcFactor: "one", dstFactor: "one" },
-    alpha: { operation: "add", srcFactor: "one", dstFactor: "one-minus-src-alpha" },
-  };
+  const sourceOverBlend = SOURCE_OVER_BLEND_STATE;
+  const additiveBlend = ADDITIVE_BLEND_STATE;
   const maximumBlend: GPUBlendState = {
     color: { operation: "max", srcFactor: "one", dstFactor: "one" },
     alpha: { operation: "max", srcFactor: "one", dstFactor: "one" },
@@ -866,6 +880,18 @@ async function createLayerPipelineBundle(
     targetFormat: format,
     blend,
   });
+  const eraserSelectionVariants: SelectionPipelineVariant[] = [
+    ...rasterStrokePipelineFamilies.values(),
+  ].map((family) => ({
+    base: family.eraser,
+    label: family.geometry.label,
+    layout: family.geometry.selectionLayout,
+    fragmentModule: family.geometry.selectionFragmentModule,
+    vertexEntryPoint: family.geometry.vertexEntryPoint,
+    fragmentEntryPoint: family.geometry.fragmentEntryPoint,
+    targetFormat: format,
+    blend: DESTINATION_OUT_BLEND_STATE,
+  }));
   const selectionVariants: SelectionPipelineVariant[] = [
     brushVariant(normalPipeline, "Brush normal", selectionBrushPipelineLayout, "vertexMain", "fragmentMain", sourceOverBlend),
     brushVariant(additivePipeline, "Brush additive", selectionBrushPipelineLayout, "vertexMain", "fragmentMain", additiveBlend),
@@ -879,12 +905,7 @@ async function createLayerPipelineBundle(
     grainVariant(grainShapeAdditivePipeline, "Brush Grain Shape additive", selectionGrainBrushPipelineLayout, "shapeVertexMain", "shapeFragmentMain", additiveBlend),
     grainVariant(grainShapeOccupancyNormalPipeline, "Brush Grain Shape occupancy normal", selectionGrainBrushOccupancyPipelineLayout, "shapeVertexMain", "shapeOccupancyFragmentMain", sourceOverBlend),
     grainVariant(grainShapeOccupancyAdditivePipeline, "Brush Grain Shape occupancy additive", selectionGrainBrushOccupancyPipelineLayout, "shapeVertexMain", "shapeOccupancyFragmentMain", additiveBlend),
-    brushVariant(eraserPipeline, "Eraser circle", selectionBrushPipelineLayout, "vertexMain", "fragmentMain", DESTINATION_OUT_BLEND_STATE),
-    brushVariant(shapeEraserPipeline, "Eraser Shape", selectionBrushPipelineLayout, "shapeVertexMain", "shapeFragmentMain", DESTINATION_OUT_BLEND_STATE),
-    brushVariant(shapeOccupancyEraserPipeline, "Eraser Shape occupancy", selectionBrushOccupancyPipelineLayout, "shapeVertexMain", "shapeOccupancyFragmentMain", DESTINATION_OUT_BLEND_STATE),
-    grainVariant(grainEraserPipeline, "Eraser Grain circle", selectionGrainBrushPipelineLayout, "vertexMain", "fragmentMain", DESTINATION_OUT_BLEND_STATE),
-    grainVariant(grainShapeEraserPipeline, "Eraser Grain Shape", selectionGrainBrushPipelineLayout, "shapeVertexMain", "shapeFragmentMain", DESTINATION_OUT_BLEND_STATE),
-    grainVariant(grainShapeOccupancyEraserPipeline, "Eraser Grain Shape occupancy", selectionGrainBrushOccupancyPipelineLayout, "shapeVertexMain", "shapeOccupancyFragmentMain", DESTINATION_OUT_BLEND_STATE),
+    ...eraserSelectionVariants,
   ];
   const addGlazeVariant = (
     base: GPURenderPipeline,

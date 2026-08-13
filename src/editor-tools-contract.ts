@@ -9,6 +9,9 @@ export const EDITOR_CANVAS_TOOLS = [
 
 export type EditorCanvasTool = (typeof EDITOR_CANVAS_TOOLS)[number];
 
+/** Liquify is selected from Raster Adjustments but owns canvas input too. */
+export type EditorCanvasInteractionTool = EditorCanvasTool | "liquify";
+
 export const EDITOR_TOOL_SETTINGS_KINDS = [
   "fill",
   "selection",

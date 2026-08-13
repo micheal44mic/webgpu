@@ -349,41 +349,13 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
   if (engine.layerSwitchBusy) {
     return false;
   }
-  // Queste due erano coperte solo di rimbalzo, perche' chi le apriva lasciava
-  // acceso `historyBusy`. Farle valere qui in modo esplicito e' cio' che
-  // permette a quel flag di tornare a significare "un'operazione di cronologia
-  // e' in corso" invece di "qualcosa, da qualche parte, e' aperto".
-  if (engine.activeRasterTransformSession) {
+  // Una sessione distruttiva aperta non e' `historyBusy`: e' un draft del
+  // documento che deve essere applicato o annullato prima di spostare il cursor.
+  const destructiveEdit = engine.activeDestructiveRasterEditKind();
+  if (destructiveEdit) {
     engine.publishStatus(
-      "Applica o annulla la trasformazione prima di usare la cronologia.",
-      "error",
-    );
-    return false;
-  }
-  if (engine.activeRasterGaussianBlurSession) {
-    engine.publishStatus(
-      "Applica o annulla Gaussian Blur prima di usare la cronologia.",
-      "error",
-    );
-    return false;
-  }
-  if (engine.activeRasterMotionBlurSession) {
-    engine.publishStatus(
-      "Applica o annulla Motion Blur prima di usare la cronologia.",
-      "error",
-    );
-    return false;
-  }
-  if (engine.activeRasterNoiseSession) {
-    engine.publishStatus(
-      "Applica o annulla Noise prima di usare la cronologia.",
-      "error",
-    );
-    return false;
-  }
-  if (engine.activeRasterLiquifySession) {
-    engine.publishStatus(
-      "Applica o annulla Liquify prima di usare la cronologia.",
+      `Applica o annulla ${engine.destructiveRasterEditLabel(destructiveEdit)} `
+      + "prima di usare la cronologia.",
       "error",
     );
     return false;

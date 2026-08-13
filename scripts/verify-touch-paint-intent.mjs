@@ -26,18 +26,17 @@ assert.equal(
 assert.equal(TOUCH_PAINT_INTENT_HOLD_MS, 28);
 assert.equal(TOUCH_PAINT_INTENT_MOVE_THRESHOLD_PX, 3);
 
-assert.equal(shouldHoldTouchPaintIntent(true, "touch", "paint"), true);
-assert.equal(shouldHoldTouchPaintIntent(true, "touch", "eraser"), true);
-for (const [enabled, pointerType, tool] of [
-  [false, "touch", "paint"],
-  [true, "pen", "paint"],
-  [true, "mouse", "paint"],
-  [true, "touch", "blend"],
+assert.equal(shouldHoldTouchPaintIntent(true, "touch", true), true);
+for (const [enabled, pointerType, eligible] of [
+  [false, "touch", true],
+  [true, "pen", true],
+  [true, "mouse", true],
+  [true, "touch", false],
 ]) {
   assert.equal(
-    shouldHoldTouchPaintIntent(enabled, pointerType, tool),
+    shouldHoldTouchPaintIntent(enabled, pointerType, eligible),
     false,
-    `${pointerType}/${tool}/${enabled} must retain the immediate path`,
+    `${pointerType}/${eligible}/${enabled} must retain the immediate path`,
   );
 }
 
@@ -74,7 +73,7 @@ assert.match(
 );
 assert.match(
   canvasInputSource,
-  /const holdPaintIntent = paintSample !== null && shouldHoldTouchPaintIntent\([\s\S]*?event\.pointerType,[\s\S]*?activeTool,[\s\S]*?\);[\s\S]*?if \(paintSample && rasterStrokeOperation && !holdPaintIntent\)[\s\S]*?engine\.beginStroke\(paintSample, rasterStrokeOperation\)[\s\S]*?pointerMode === "paint"[\s\S]*?startTouchPaintIntentHold\(event\.pointerId, paintSample, rasterStrokeOperation\);/,
+  /const holdPaintIntent = paintSample !== null && shouldHoldTouchPaintIntent\([\s\S]*?event\.pointerType,[\s\S]*?toolCapabilities\.holdsTouchPaintIntent,[\s\S]*?\);[\s\S]*?if \(paintSample && rasterStrokeOperation && !holdPaintIntent\)[\s\S]*?engine\.beginStroke\(paintSample, rasterStrokeOperation\)[\s\S]*?pointerMode === "raster-stroke"[\s\S]*?startTouchPaintIntentHold\([\s\S]*?rasterStrokeOperation,[\s\S]*?toolCapabilities\.recordsPaintExtension,/,
   "only eligible touch Paint/Eraser input may leave the acknowledged beginStroke path",
 );
 assert.match(

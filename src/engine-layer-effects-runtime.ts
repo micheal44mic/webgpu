@@ -140,7 +140,7 @@ export async function retargetEffectsWorkingSetInternal(engine: BrushEngine,
     // Public/active retargets preserve the full-document rebuild contract.
     // Fold-only materialization may use the conservative visual-domain input:
     // every buffer is still document-addressed, only dispatched work is bounded.
-    const update = engine.encodeRasterStrokeUpdate(
+    const update = engine.encodeRasterStyleStackUpdate(
       encoder,
       "permanent",
       styleStackRetargetBounds,

@@ -7,12 +7,6 @@
  */
 export type RasterStrokeOperation = "paint" | "erase";
 
-export function rasterStrokeOperationForCanvasTool(
-  tool: string,
-): RasterStrokeOperation {
-  return tool === "eraser" ? "erase" : "paint";
-}
-
 export function normalizeRasterStrokeOperation(
   operation: RasterStrokeOperation | undefined,
 ): RasterStrokeOperation {

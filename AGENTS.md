@@ -28,6 +28,12 @@ corrente, non vecchi commit o descrizioni storiche.
   branch Redo, rollback e una sola azione per gesto.
 - Non cambiare schema progetto, formati History, ID persistiti o `src/compat/`
   senza migrazione esplicita e test di compatibilità.
+- `canvas-tool-capabilities.ts` è la fonte autorevole per le capacità degli strumenti canvas.
+- `destructive-raster-edit-contract.ts` definisce l'elenco esaustivo delle sessioni raster distruttive.
+- Text Warp è semantico/vettoriale, distinto da un eventuale futuro Raster Warp/Puppet.
+- Un filtro colore futuro deve prima essere classificato:
+  a) non distruttivo: metadata/schema/history/compositor;
+  b) distruttivo: core/shader/runtime/session e checkpoint pixel esatto.
 - Non modificare budget, checkpoint, compressione o spill senza baseline e
   confronto nei Labs.
 - Non eliminare file basandosi soltanto sull'assenza di import statici.

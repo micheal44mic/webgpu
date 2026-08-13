@@ -18,6 +18,7 @@ const SRC = new URL("../src/", import.meta.url);
 export const ENGINE_SOURCE_FILES = Object.freeze([
   "brush-engine.ts",
   "engine-types.ts",
+  "destructive-raster-edit-contract.ts",
   "engine-brush-assets.ts",
   "engine-strategies.ts",
   "engine-stats.ts",
@@ -28,6 +29,7 @@ export const ENGINE_SOURCE_FILES = Object.freeze([
   "adaptive-preview-runtime.ts",
   "engine-stroke-types.ts",
   "engine-raster-stroke-pipelines.ts",
+  "engine-raster-stroke-pipeline-factory.ts",
   "engine-history-types.ts",
   "engine-history-storage-host.ts",
   "engine-layer-resources.ts",

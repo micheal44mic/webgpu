@@ -17,11 +17,9 @@ export interface TouchPaintIntentPoint {
 export function shouldHoldTouchPaintIntent(
   enabled: boolean,
   pointerType: string,
-  activeTool: string,
+  toolEligible: boolean,
 ): boolean {
-  return enabled
-    && pointerType === "touch"
-    && (activeTool === "paint" || activeTool === "eraser");
+  return enabled && pointerType === "touch" && toolEligible;
 }
 
 export function touchPaintIntentMovementReached(

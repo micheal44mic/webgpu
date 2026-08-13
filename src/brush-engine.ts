@@ -713,6 +713,11 @@ import {
 } from "./engine-raster-style-runtime";
 import { applyBrushSettings } from "./engine-brush-settings-runtime";
 import type { ProjectLoadResultV1 } from "./project-storage";
+import {
+  DESTRUCTIVE_RASTER_EDIT_KINDS,
+  destructiveRasterEditLabel,
+  type DestructiveRasterEditKind,
+} from "./destructive-raster-edit-contract";
 
 export type {
   RasterStrokePosition,
@@ -735,12 +740,7 @@ export type {
   RasterShadowContour,
 } from "./shadow-core";
 
-export type DestructiveRasterEditKind =
-  | "transform"
-  | "gaussian-blur"
-  | "motion-blur"
-  | "noise"
-  | "liquify";
+export type { DestructiveRasterEditKind } from "./destructive-raster-edit-contract";
 
 export interface LayerDuplicateResult {
   readonly kind: MixedSceneItem["kind"];
@@ -778,7 +778,7 @@ export interface DocumentInconsistentDiagnostic {
  *   cosi' la firma pubblica non cambia mai.
  *
  * Il percorso caldo per tratto (`submitImmediate`, `submitLightGlazeImmediate`,
- * `encodeRasterStrokeUpdate`, `renderFrame` e i loro aiutanti per stamp) resta
+ * `encodeRasterStyleStackUpdate`, `renderFrame` e i loro aiutanti per stamp) resta
  * deliberatamente qui: non va spostato per ridurre le righe.
  */
 export class BrushEngine {
@@ -3285,11 +3285,7 @@ export class BrushEngine {
       || this.selectionBusy
       || this.activeVectorHistoryEdit
       || this.activeRasterLayerMetadataHistoryEdit
-      || this.activeRasterTransformSession
-      || this.activeRasterGaussianBlurSession
-      || this.activeRasterMotionBlurSession
-      || this.activeRasterNoiseSession
-      || this.activeRasterLiquifySession
+      || this.activeDestructiveRasterEditKind() !== null
     ) {
       return false;
     }
@@ -3389,11 +3385,7 @@ export class BrushEngine {
       || this.selectionBusy
       || this.activeVectorHistoryEdit
       || this.activeRasterLayerMetadataHistoryEdit
-      || this.activeRasterTransformSession
-      || this.activeRasterGaussianBlurSession
-      || this.activeRasterMotionBlurSession
-      || this.activeRasterNoiseSession
-      || this.activeRasterLiquifySession
+      || this.activeDestructiveRasterEditKind() !== null
     ) {
       return false;
     }
@@ -3802,20 +3794,21 @@ export class BrushEngine {
   }
 
   activeDestructiveRasterEditKind(): DestructiveRasterEditKind | null {
-    if (this.activeRasterTransformSession) return "transform";
-    if (this.activeRasterGaussianBlurSession) return "gaussian-blur";
-    if (this.activeRasterMotionBlurSession) return "motion-blur";
-    if (this.activeRasterNoiseSession) return "noise";
-    if (this.activeRasterLiquifySession) return "liquify";
+    const active = {
+      transform: this.activeRasterTransformSession !== null,
+      "gaussian-blur": this.activeRasterGaussianBlurSession !== null,
+      "motion-blur": this.activeRasterMotionBlurSession !== null,
+      noise: this.activeRasterNoiseSession !== null,
+      liquify: this.activeRasterLiquifySession !== null,
+    } satisfies Readonly<Record<DestructiveRasterEditKind, boolean>>;
+    for (const kind of DESTRUCTIVE_RASTER_EDIT_KINDS) {
+      if (active[kind]) return kind;
+    }
     return null;
   }
 
   destructiveRasterEditLabel(kind: DestructiveRasterEditKind): string {
-    if (kind === "transform") return "Trasforma";
-    if (kind === "gaussian-blur") return "Gaussian Blur";
-    if (kind === "motion-blur") return "Motion Blur";
-    if (kind === "liquify") return "Liquify";
-    return "Noise";
+    return destructiveRasterEditLabel(kind);
   }
 
   assertDestructiveRasterEditCanOpen(kind: DestructiveRasterEditKind): void {
@@ -5600,11 +5593,7 @@ export class BrushEngine {
       || this.selectionBusy
       || this.historyStateInconsistent
       || this.activeVectorHistoryEdit
-      || this.activeRasterTransformSession
-      || this.activeRasterGaussianBlurSession
-      || this.activeRasterMotionBlurSession
-      || this.activeRasterNoiseSession
-      || this.activeRasterLiquifySession
+      || this.activeDestructiveRasterEditKind() !== null
       || this.rasterStrokeBusy
       || this.rasterBevelBusy
       || this.rasterOuterShadowBusy
@@ -5730,11 +5719,7 @@ export class BrushEngine {
       || this.layerSwitchBusy
       || this.historyStateInconsistent
       || this.activeRasterLayerMetadataHistoryEdit
-      || this.activeRasterTransformSession
-      || this.activeRasterGaussianBlurSession
-      || this.activeRasterMotionBlurSession
-      || this.activeRasterNoiseSession
-      || this.activeRasterLiquifySession
+      || this.activeDestructiveRasterEditKind() !== null
     ) {
       return false;
     }
@@ -7156,29 +7141,11 @@ export class BrushEngine {
     // la trasformazione dell'utente sparisce in silenzio, senza che nulla si
     // rompa. L'Undo era gia' protetto altrove, `addLayer` no. Messaggio
     // dedicato perche' "a motore fermo" non direbbe cosa fare.
-    if (this.activeRasterTransformSession) {
+    const destructiveEdit = this.activeDestructiveRasterEditKind();
+    if (destructiveEdit) {
       throw new Error(
-        "Applica o annulla la trasformazione prima di cambiare i livelli.",
-      );
-    }
-    if (this.activeRasterGaussianBlurSession) {
-      throw new Error(
-        "Applica o annulla Gaussian Blur prima di cambiare i livelli.",
-      );
-    }
-    if (this.activeRasterMotionBlurSession) {
-      throw new Error(
-        "Applica o annulla Motion Blur prima di cambiare i livelli.",
-      );
-    }
-    if (this.activeRasterNoiseSession) {
-      throw new Error(
-        "Applica o annulla Noise prima di cambiare i livelli.",
-      );
-    }
-    if (this.activeRasterLiquifySession) {
-      throw new Error(
-        "Applica o annulla Liquify prima di cambiare i livelli.",
+        `Applica o annulla ${this.destructiveRasterEditLabel(destructiveEdit)} `
+        + "prima di cambiare i livelli.",
       );
     }
     if (
@@ -7548,7 +7515,7 @@ export class BrushEngine {
     }
   }
 
-  encodeRasterStrokeUpdate(
+  encodeRasterStyleStackUpdate(
     encoder: GPUCommandEncoder,
     sourceMode: RasterStrokeSourceMode,
     mutationRect: DirtyRect | null,
@@ -10625,7 +10592,7 @@ export class BrushEngine {
       if (!session.commitRequested) {
         const rasterStrokeActive = this.styleStackActive();
         const rasterStrokeUpdate = rasterStrokeActive
-          ? this.encodeRasterStrokeUpdate(
+          ? this.encodeRasterStyleStackUpdate(
             encoder,
             "light-glaze",
             liveDirtyRect,
@@ -10932,7 +10899,7 @@ export class BrushEngine {
         const canonicalDisplayStart = performance.now();
         const rasterStrokeActive = this.styleStackActive();
         const rasterStrokeUpdate = rasterStrokeActive
-          ? this.encodeRasterStrokeUpdate(
+          ? this.encodeRasterStyleStackUpdate(
             encoder,
             "permanent",
             session.dirtyRect,
@@ -11602,7 +11569,7 @@ export class BrushEngine {
         ? mergeDirtyRects(this.layerContentBounds, thicknessTailFrame.dirtyRect)
         : this.layerContentBounds;
       const rasterStrokeUpdate = rasterStrokeActive
-        ? this.encodeRasterStrokeUpdate(
+        ? this.encodeRasterStyleStackUpdate(
           encoder,
           thicknessTailFrame ? "thickness-tail" : "permanent",
           rasterStrokeMutationRect,

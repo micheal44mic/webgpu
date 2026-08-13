@@ -26,7 +26,7 @@ const server = await createServer({
   configFile: false,
   logLevel: "silent",
   root: process.cwd(),
-  server: { middlewareMode: true },
+  server: { middlewareMode: true, watch: null },
 });
 let BrushQuickControlsController;
 try {
@@ -220,6 +220,14 @@ const key = event("keydown", { key: "ArrowUp", shiftKey: true, altKey: false, ct
 elements.controlsByKind.size.dispatchEvent(key);
 assert.equal(key.defaultPrevented, true);
 assert.equal(state.size, 110);
+elements.controlsByKind.size.dispatchEvent(event("keydown", {
+  key: "Home", shiftKey: false, altKey: false, ctrlKey: false, metaKey: false,
+}));
+assert.equal(state.size, 1, "Home follows the ARIA slider convention and selects minimum");
+elements.controlsByKind.size.dispatchEvent(event("keydown", {
+  key: "End", shiftKey: false, altKey: false, ctrlKey: false, metaKey: false,
+}));
+assert.equal(state.size, 1000, "End follows the ARIA slider convention and selects maximum");
 
 // A drag previews continuously but commits exactly once at pointer-up.
 const down = event("pointerdown", { button: 0, pointerId: 7, clientY: 100 });

@@ -141,13 +141,13 @@ import {
   // livello la evacua e l'Applica successivo la trova mancante, perdendo la
   // trasformazione in silenzio. L'Undo era gia' protetto, `addLayer` no.
   assert.ok(
-    guardia.includes("this.activeRasterTransformSession"),
-    "il cambio livello va rifiutato mentre una sessione Trasforma e' aperta",
+    guardia.includes("this.activeDestructiveRasterEditKind()"),
+    "il cambio livello va rifiutato da una guardia esaustiva per le sessioni distruttive",
   );
   assert.ok(
-    guardia.indexOf("this.activeRasterTransformSession")
+    guardia.indexOf("this.activeDestructiveRasterEditKind()")
       < guardia.indexOf("this.activeStroke"),
-    "il caso Trasforma va controllato per primo, per dare il messaggio che dice cosa fare",
+    "la sessione distruttiva va controllata per prima, per dare il messaggio che dice cosa fare",
   );
 
   const runtime = readFileSync(
