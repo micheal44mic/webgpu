@@ -795,33 +795,6 @@ fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
   );
 }
 
-fn preserveMinifiedDarkCoverage(value: vec4<f32>, lod: f32) -> vec4<f32> {
-  let alpha = clamp(value.a, 0.0, 1.0);
-  if (alpha <= 0.000001 || alpha >= 0.999999 || lod <= 0.0) {
-    return value;
-  }
-  let straightLinear = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
-  let straightSrgb = linearToSrgb(straightLinear);
-  let darkness = 1.0 - dot(straightSrgb, vec3<f32>(0.2126, 0.7152, 0.0722));
-  let encodedCoverage = 1.0 - srgbToLinearChannel(1.0 - alpha);
-  let displayAlpha = mix(
-    alpha,
-    encodedCoverage,
-    clamp(darkness, 0.0, 1.0) * clamp(lod, 0.0, 1.0)
-  );
-  return vec4<f32>(straightLinear * displayAlpha, displayAlpha);
-}
-
-fn displayMinificationLod() -> f32 {
-  // selectedMipLevel is intentionally discrete so the chosen source remains
-  // in the 1-2 texels-per-physical-pixel range.  The coverage ramp must still
-  // see fractional minification (for example Fit at zoom 0.57 selects mip 0).
-  return max(
-    max(display.selectedMipLevel, 0.0),
-    log2(max(1.0 / max(display.zoom, 0.000001), 1.0))
-  );
-}
-
 fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
   return source + destination * (1.0 - source.a);
 }
@@ -890,7 +863,7 @@ fn sampleActiveLayer(uv: vec2<f32>) -> vec4<f32> {
       interpolation
     );
   }
-  return preserveMinifiedDarkCoverage(sampled, displayMinificationLod());
+  return sampled;
 }
 
 ${mergedSurfaceSamplingShader}
@@ -1126,7 +1099,6 @@ fn finalStackFragmentMain(
       );
     }
   }
-  paint = preserveMinifiedDarkCoverage(paint, displayMinificationLod());
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;
   let backgroundSrgb = select(vec3<f32>(0.82), vec3<f32>(0.91), checkerParity == 0);
@@ -2608,10 +2580,15 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   return mix(top, bottom, fraction.y) * clamp(layer.opacity, 0.0, 1.0);
 }
 `;
+export const PAINT_DISPLAY_MINIFICATION_STRATEGY =
+  "gamma-premultiplied-box-preserve-alpha-no-post-sample-coverage-rewrite-v2" as const;
+
 // Downsample exact 2x2 footprints in encoded-sRGB premultiplied space while
 // keeping every stored mip in the engine's normal linear-premultiplied format.
 // Re-encoding each input and decoding the average makes recursive levels equal
-// to a gamma-space box pyramid without changing authoritative mip 0.
+// to a gamma-space box pyramid without changing authoritative mip 0. Alpha is
+// averaged exactly and is never expanded after sampling: brush-shape noise at
+// the edge of a stamp must not turn into a visible rectangular footprint.
 export const paintMipDownsampleShader = /* wgsl */ `
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
