@@ -1,9 +1,11 @@
 import type { BrushEngine } from "./brush-engine";
 import type { EffectsRetargetCaller } from "./engine-layer-resources";
 import {
+  createColdLayerGpuResources,
   destroyLayerColdStorage,
   encodeLayerColdHydration,
   evictReconstructibleLayerResources,
+  uploadCompressedLayerIntoHot,
 } from "./engine-cold-storage";
 import {
   hasVisibleContent,
@@ -101,7 +103,10 @@ import {
   periodicCheckpointChainForReplay,
 } from "./history-maintenance-runtime";
 import { processHistoryMaintenanceChunks } from "./history-retention-core";
-import { planRasterHistoryReplay } from "./history-replay-plan";
+import {
+  planRasterHistoryReplay,
+  restoredProjectBaselineApplies,
+} from "./history-replay-plan";
 import { noiseMipSmoothingAfterHistory } from "./noise-mip-smoothing-core";
 import type { HistoryCommitOptions } from "./history-service.ts";
 import {
@@ -904,6 +909,10 @@ export async function rebuildActiveLayerFromHistory(
   checkpointOverride?: RasterHistoryCheckpoint,
 ): Promise<void> {
   const layerId = engine.layerStack.active.id;
+  const record = engine.layerStack.active;
+  const restoredProjectBaseline = checkpointOverride
+    ? undefined
+    : engine.restoredProjectHistoryBaselines.get(layerId);
   // Set presentation policy before the first replay submission. Otherwise an
   // Undo across Noise could publish its final frame with the stale post-Noise
   // LOD policy and leave that cache visible until the next view interaction.
@@ -911,6 +920,7 @@ export async function rebuildActiveLayerFromHistory(
     engine.historyActions,
     engine.historyCursor,
     layerId,
+    restoredProjectBaseline?.noiseMipSmoothing ?? false,
   );
   engine.layerStack.active.noiseMipSmoothing = replayNoiseMipSmoothing;
   if (checkpointOverride && checkpointOverride.layerId !== layerId) {
@@ -925,6 +935,7 @@ export async function rebuildActiveLayerFromHistory(
     ? {
       periodicChain: [],
       seedAction: checkpointOverride,
+      sessionBaseline: undefined,
       replayCheckpointActionIndex: engine.historyCursor - 1,
       visibleActionIds: new Set<number>(),
       batches: [],
@@ -935,19 +946,29 @@ export async function rebuildActiveLayerFromHistory(
       batches: engine.historyBatches,
       layerId,
       periodicSelection,
+      sessionBaseline: restoredProjectBaseline,
     });
   const periodicChain = replayPlan.periodicChain;
   const seedAction = replayPlan.seedAction;
+  const sessionBaseline = replayPlan.sessionBaseline;
   const visibleIds = replayPlan.visibleActionIds;
   const layerBatches = replayPlan.batches;
   const latestPeriodicCheckpoint = periodicChain.at(-1);
-  const hasReplaySeed = Boolean(seedAction || periodicChain.length > 0);
+  const hasReplaySeed = Boolean(
+    seedAction
+    || periodicChain.length > 0
+    || sessionBaseline,
+  );
   const replaySeedBounds = latestPeriodicCheckpoint
     ? latestPeriodicCheckpoint.baseBounds
-    : seedAction?.baseBounds ?? null;
+    : seedAction
+      ? seedAction.baseBounds
+      : sessionBaseline?.baseBounds ?? null;
   const replaySeedTileMask = latestPeriodicCheckpoint
     ? latestPeriodicCheckpoint.baseTileMask
-    : seedAction?.baseTileMask ?? null;
+    : seedAction
+      ? seedAction.baseTileMask
+      : sessionBaseline?.baseTileMask ?? null;
   const ensureReplayBrushAssets = async (
     settings: Exclude<HistoryRenderBatch, { kind: "fill" }>["settings"],
   ): Promise<void> => {
@@ -1025,6 +1046,25 @@ export async function rebuildActiveLayerFromHistory(
         }
         engine.device.queue.submit([encoder.finish()]);
         await yieldReplaySubmit();
+      } else if (sessionBaseline?.compressed) {
+        const hot = engine.requireLayerGpu(layerId).hot;
+        if (!hot) throw new Error("Texture hot mancante per la baseline progetto.");
+        // uploadCompressedLayerIntoHot validates ownership during every async
+        // chunk. A short-lived owner lets the immutable saved payload hydrate
+        // replay without making it authoritative layer storage again.
+        const baselineOwner = createColdLayerGpuResources();
+        baselineOwner.compressed = sessionBaseline.compressed;
+        try {
+          await uploadCompressedLayerIntoHot(
+            engine,
+            record,
+            baselineOwner,
+            sessionBaseline.compressed,
+            hot,
+          );
+        } finally {
+          baselineOwner.compressed = null;
+        }
       }
 
       if (lastVisibleBatchIndex < 0) {
@@ -1160,7 +1200,6 @@ export async function rebuildActiveLayerFromHistory(
   }
 
   engine.clearRequested = false;
-  const record = engine.layerStack.active;
   if (hasReplaySeed && replaySeedTileMask) {
     let replayBounds = replaySeedBounds ? { ...replaySeedBounds } : null;
     record.storageTileMask.set(replaySeedTileMask);
@@ -1977,5 +2016,18 @@ export function maybeInjectHistoryReplayFault(engine: BrushEngine, point: Histor
 }
 
 export function hasVisibleHistoryContent(engine: BrushEngine, layerId?: number): boolean {
-  return hasVisibleContent(engine.historyActions, engine.historyCursor, layerId);
+  if (hasVisibleContent(engine.historyActions, engine.historyCursor, layerId)) return true;
+  const baselineVisible = (targetLayerId: number): boolean => {
+    const baseline = engine.restoredProjectHistoryBaselines.get(targetLayerId);
+    return baseline !== undefined
+      && baseline.baseBounds !== null
+      && restoredProjectBaselineApplies(
+        engine.historyActions,
+        engine.historyCursor,
+        targetLayerId,
+      );
+  };
+  return layerId === undefined
+    ? [...engine.restoredProjectHistoryBaselines.keys()].some(baselineVisible)
+    : baselineVisible(layerId);
 }

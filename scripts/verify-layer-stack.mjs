@@ -2358,10 +2358,10 @@ assert.doesNotMatch(engineSource, /rebuiltPyramidThroughLevel/);
 // engine from drifting back to a second, untested implementation.
 const rebuildStart = engineSource.indexOf("export async function rebuildActiveLayerFromHistory(");
 assert.notEqual(rebuildStart, -1, "il replay deve dichiarare di ricostruire il livello ATTIVO");
-const rebuildBody = engineSource.slice(rebuildStart, rebuildStart + 1_500);
+const rebuildBody = engineSource.slice(rebuildStart, rebuildStart + 2_200);
 assert.match(
   rebuildBody,
-  /const replayPlan = checkpointOverride[\s\S]*?: planRasterHistoryReplay\(\{\s*actions: engine\.historyActions,\s*cursor: engine\.historyCursor,\s*batches: engine\.historyBatches,\s*layerId,\s*periodicSelection,\s*\}\)/,
+  /const replayPlan = checkpointOverride[\s\S]*?: planRasterHistoryReplay\(\{\s*actions: engine\.historyActions,\s*cursor: engine\.historyCursor,\s*batches: engine\.historyBatches,\s*layerId,\s*periodicSelection,\s*sessionBaseline: restoredProjectBaseline,\s*\}\)/,
   "il replay reale deve usare l'unico planner condiviso, salvo il rollback checkpoint esplicito",
 );
 assert.match(

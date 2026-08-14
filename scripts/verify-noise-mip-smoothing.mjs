@@ -65,6 +65,16 @@ assert.equal(noiseMipSmoothingAfterHistory(history, 4, 7), true);
 assert.equal(noiseMipSmoothingAfterHistory(history, 5, 7), false);
 assert.equal(noiseMipSmoothingAfterHistory(history, 6, 8), true);
 assert.equal(noiseMipSmoothingAfterHistory(history, 6, 7), false);
+assert.equal(
+  noiseMipSmoothingAfterHistory([], 0, 7, true),
+  true,
+  "a loaded project keeps its saved Noise presentation policy at cursor zero",
+);
+assert.equal(
+  noiseMipSmoothingAfterHistory([{ id: 7, kind: "clear", layerId: 7 }], 1, 7, true),
+  false,
+  "a visible Clear starts a blank lineage instead of inheriting the loaded policy",
+);
 
 const root = new URL("../", import.meta.url);
 const layerStack = readFileSync(new URL("src/layer-stack.ts", root), "utf8");

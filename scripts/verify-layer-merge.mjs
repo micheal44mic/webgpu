@@ -34,6 +34,11 @@ assert.match(runtime, /prepareAndApplyLayerMerge/);
 assert.match(runtime, /applyLayerMergeHistory/);
 assert.match(runtime, /reserveLayerMergeCreateMemory/);
 assert.match(runtime, /memoryReservation = reserveLayerMergeCreateMemory/);
+assert.match(
+  runtime,
+  /function layerMergeCompressedCpuBytes[\s\S]*?engine\.retainedCompressedLayerStores\(\)/,
+  "Merge memory admission must count saved-project baselines and deduplicate shared stores",
+);
 assert.match(runtime, /baseTileMask: rendered\.record\.storageTileMask\.slice\(\)/);
 assert.match(runtime, /entry\.layerRecord\.storageTileMask\.set\(entry\.baseTileMask\)/);
 assert.match(history, /payloadsRetiredBelowFloor: boolean/);

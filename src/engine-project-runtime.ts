@@ -13,6 +13,7 @@ import type {
   LayerCompressedColdStorageResources,
   LayerGpuResources,
   LayerTextureResources,
+  RestoredProjectHistoryBaseline,
 } from "./engine-layer-resources";
 import {
   allocateLayerGpuResources,
@@ -550,10 +551,22 @@ export async function restoreProjectDocument(
   const records = snapshot.layers.map(layerRecordFromProject);
   const recordById = new Map(records.map((record) => [record.id, record]));
   const nextGpu = new Map<number, LayerGpuResources>();
+  const restoredHistoryBaselines = new Map<number, RestoredProjectHistoryBaseline>();
   for (const layer of snapshot.layers) {
+    const record = recordById.get(layer.id);
+    if (!record) throw new Error(`The saved layer ${layer.id} is missing its record.`);
     const gpu = createColdLayerGpuResources();
     gpu.compressed = await compressedFromProject(engine, layer, project.chunks);
     nextGpu.set(layer.id, gpu);
+    // The immutable compressed payload is shared with inactive layer storage.
+    // Keeping the same reference gives every restored layer a cursor-zero
+    // replay base without another full-size GPU cold texture or byte clone.
+    restoredHistoryBaselines.set(layer.id, {
+      compressed: gpu.compressed,
+      baseBounds: record.contentBounds ? { ...record.contentBounds } : null,
+      baseTileMask: record.storageTileMask.slice(),
+      noiseMipSmoothing: record.noiseMipSmoothing,
+    });
   }
 
   let reusedHotCommitted = false;
@@ -617,6 +630,7 @@ export async function restoreProjectDocument(
 
     await engine.activateLayer(engine.layerStack.activeIndex, "layer-switch");
     for (const gpu of oldGpu) destroyLayerGpuResources(engine, gpu);
+    engine.installRestoredProjectHistoryBaselines(restoredHistoryBaselines);
     engine.publishHistoryState();
     engine.callbacks.onActiveLayerChange?.(engine.layerStack.activeIndex);
     engine.callbacks.onViewRotationChange?.(
@@ -625,6 +639,7 @@ export async function restoreProjectDocument(
     );
     engine.callbacks.onViewChange?.(engine.getVectorTextViewState());
   } catch (error) {
+    engine.restoredProjectHistoryBaselines.clear();
     for (const resource of installedRasterSources) {
       if (engine.rasterImageGpuResources.get(resource.assetId) !== resource) continue;
       engine.rasterImageGpuResources.delete(resource.assetId);

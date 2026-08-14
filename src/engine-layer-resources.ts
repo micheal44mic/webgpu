@@ -125,6 +125,18 @@ export interface LayerCompressedColdStorageResources {
   format: LayerFormat;
 }
 
+/**
+ * Non-undoable raster state installed when a saved project is opened. History
+ * starts at cursor zero, but replay still needs this exact state underneath the
+ * first session action instead of treating the layer as newly blank.
+ */
+export interface RestoredProjectHistoryBaseline {
+  readonly compressed: LayerCompressedColdStorageResources | null;
+  readonly baseBounds: DirtyRect | null;
+  readonly baseTileMask: Uint32Array;
+  readonly noiseMipSmoothing: boolean;
+}
+
 export interface LayerColdCompressionProgress {
   record: LayerRecord;
   gpu: LayerGpuResources;

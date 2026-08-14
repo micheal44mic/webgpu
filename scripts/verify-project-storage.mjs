@@ -385,6 +385,14 @@ const runtimeSource = readFileSync(
   new URL("../src/engine-project-runtime.ts", import.meta.url),
   "utf8",
 );
+const brushEngineSource = readFileSync(
+  new URL("../src/brush-engine.ts", import.meta.url),
+  "utf8",
+);
+const historyRuntimeSource = readFileSync(
+  new URL("../src/engine-history-runtime.ts", import.meta.url),
+  "utf8",
+);
 const stagePosition = source.indexOf("await this.writeStagedGeneration(generation)");
 const headPosition = source.indexOf("await this.commitProjectHead(generation.summary");
 assert.ok(stagePosition >= 0 && headPosition > stagePosition,
@@ -426,6 +434,54 @@ assert.match(
   runtimeSource,
   /colorOverlayStyle: normalizeRasterColorOverlayStyle\(layer\.colorOverlayStyle\)/,
   "restore must default uniformAlpha for projects written before the field existed",
+);
+const restoreStart = runtimeSource.indexOf("export async function restoreProjectDocument(");
+assert.notEqual(restoreStart, -1);
+const restoreBody = runtimeSource.slice(restoreStart);
+assert.match(
+  restoreBody,
+  /const restoredHistoryBaselines = new Map<number, RestoredProjectHistoryBaseline>\(\)/,
+  "restore must build a baseline for every saved raster layer",
+);
+assert.match(
+  restoreBody,
+  /restoredHistoryBaselines\.set\(layer\.id, \{[\s\S]*?compressed: gpu\.compressed,[\s\S]*?baseBounds:[\s\S]*?baseTileMask: record\.storageTileMask\.slice\(\)/,
+  "the cursor-zero baseline must share the immutable saved payload and clone its metadata",
+);
+const activatePosition = restoreBody.indexOf(
+  'await engine.activateLayer(engine.layerStack.activeIndex, "layer-switch")',
+);
+const baselineInstallPosition = restoreBody.indexOf(
+  "engine.installRestoredProjectHistoryBaselines(restoredHistoryBaselines)",
+);
+assert.ok(
+  activatePosition >= 0 && baselineInstallPosition > activatePosition,
+  "the non-undoable baseline is installed only after saved pixels are activated successfully",
+);
+assert.doesNotMatch(
+  restoreBody.slice(0, baselineInstallPosition),
+  /createLayerColdStorageCandidate\(/,
+  "project restore must not allocate a full-size GPU checkpoint just to seed Undo",
+);
+assert.match(
+  brushEngineSource,
+  /installRestoredProjectHistoryBaselines\([\s\S]*?historyActions\.length !== 0 \|\| this\.historyCursor !== 0/,
+  "saved baselines may only be installed into a reset journal",
+);
+assert.match(
+  brushEngineSource,
+  /resetHistoryState\(\): void \{[\s\S]*?this\.history\.reset\(\);\s*this\.restoredProjectHistoryBaselines\.clear\(\)/,
+  "starting another history session must release every saved baseline",
+);
+assert.match(
+  historyRuntimeSource,
+  /sessionBaseline\?\.compressed[\s\S]*?uploadCompressedLayerIntoHot\(/,
+  "cursor-zero replay must hydrate the saved compressed pixels into the active hot texture",
+);
+assert.match(
+  historyRuntimeSource,
+  /hasVisibleHistoryContent[\s\S]*?restoredProjectBaselineApplies\(/,
+  "Clear must recognize loaded raster content even before the first journal action",
 );
 
 storage.close();
