@@ -224,6 +224,10 @@ for (const entryPoint of [
 }
 assert(shader.includes("textureLoad(sourceLayer"));
 assert(colorMatchShaderHelpers.includes("fn globalStraightSrgbColorsMatch("));
+assert(
+  !/\btarget\s*:/.test(colorMatchShaderHelpers),
+  "WGSL reserves `target`; using it as a parameter makes both Fill and Selection fail prewarm.",
+);
 assert(shader.includes("${colorMatchShaderHelpers}"));
 assert(resolvedSelectionComputeShader.includes("fn globalStraightSrgbColorsMatch("));
 assert(!resolvedSelectionComputeShader.includes("${colorMatchShaderHelpers}"));
