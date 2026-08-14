@@ -103,6 +103,80 @@ assert.deepEqual(target, first);
 assert.notEqual(target.colorOverlayStyle, first.colorOverlayStyle);
 assert.notEqual(target.colorOverlayStyle.color, first.colorOverlayStyle.color);
 
+// Opening a saved project creates an invisible cursor-zero baseline. The first
+// session edit must replay on top of it, and Undo must return to it byte-for-byte
+// instead of interpreting an empty journal as an empty layer.
+const savedBaselineMask = new Uint32Array(8);
+savedBaselineMask[0] = 1;
+const savedBaseline = {
+  compressed: { tag: "saved-compressed" },
+  baseBounds: { x: 4, y: 5, width: 6, height: 7 },
+  baseTileMask: savedBaselineMask,
+  noiseMipSmoothing: true,
+};
+const firstSessionStroke = { id: 7, kind: "stroke", layerId: 3 };
+const firstSessionBatch = { actionId: 7, layerId: 3, kind: "paint" };
+const loadedAtCursorZero = replayPlan.planRasterHistoryReplay({
+  actions: [firstSessionStroke],
+  cursor: 0,
+  batches: [firstSessionBatch],
+  layerId: 3,
+  periodicSelection: null,
+  sessionBaseline: savedBaseline,
+});
+assert.equal(loadedAtCursorZero.sessionBaseline, savedBaseline);
+assert.equal(loadedAtCursorZero.seedAction, undefined);
+assert.equal(loadedAtCursorZero.visibleActionIds.size, 0);
+assert.equal(loadedAtCursorZero.batches.length, 0);
+
+const loadedAfterFirstStroke = replayPlan.planRasterHistoryReplay({
+  actions: [firstSessionStroke],
+  cursor: 1,
+  batches: [firstSessionBatch],
+  layerId: 3,
+  periodicSelection: null,
+  sessionBaseline: savedBaseline,
+});
+assert.equal(loadedAfterFirstStroke.sessionBaseline, savedBaseline);
+assert.deepEqual([...loadedAfterFirstStroke.visibleActionIds], [7]);
+assert.deepEqual(loadedAfterFirstStroke.batches, [firstSessionBatch]);
+
+// Clear is a visible history barrier. Redoing it must stay blank instead of
+// resurrecting the saved project baseline.
+const clearLoadedLayer = replayPlan.planRasterHistoryReplay({
+  actions: [{ id: 8, kind: "clear", layerId: 3 }],
+  cursor: 1,
+  batches: [],
+  layerId: 3,
+  periodicSelection: null,
+  sessionBaseline: savedBaseline,
+});
+assert.equal(clearLoadedLayer.sessionBaseline, undefined);
+assert.equal(clearLoadedLayer.seedAction, undefined);
+assert.equal(clearLoadedLayer.batches.length, 0);
+
+// Any newer checkpoint owns the current lineage and supersedes the saved base.
+const checkpointSeed = { tag: "checkpoint" };
+const checkpointAction = {
+  id: 8,
+  kind: "raster-filter",
+  layerId: 3,
+  filter: "gaussian-blur",
+  seed: checkpointSeed,
+  baseBounds: { x: 2, y: 3, width: 4, height: 5 },
+  baseTileMask: new Uint32Array(8),
+};
+const checkpointPlan = replayPlan.planRasterHistoryReplay({
+  actions: [checkpointAction],
+  cursor: 1,
+  batches: [],
+  layerId: 3,
+  periodicSelection: null,
+  sessionBaseline: savedBaseline,
+});
+assert.equal(checkpointPlan.seedAction, checkpointAction);
+assert.equal(checkpointPlan.sessionBaseline, undefined);
+
 // A pre-Rasterize checkpoint is the authoritative baseline even when a loaded
 // project intentionally has no earlier journal entry.
 const beforeSeed = { tag: "before" };
@@ -128,9 +202,11 @@ const beforePlan = replayPlan.planRasterHistoryReplay({
   batches: [],
   layerId: 3,
   periodicSelection: null,
+  sessionBaseline: savedBaseline,
 });
 assert.equal(beforePlan.seedAction.seed, beforeSeed);
 assert.deepEqual(beforePlan.seedAction.baseBounds, rasterizeAction.beforeBounds);
+assert.equal(beforePlan.sessionBaseline, undefined);
 assert.equal(beforePlan.batches.length, 0);
 const afterPlan = replayPlan.planRasterHistoryReplay({
   actions: [rasterizeAction],
@@ -138,9 +214,11 @@ const afterPlan = replayPlan.planRasterHistoryReplay({
   batches: [],
   layerId: 3,
   periodicSelection: null,
+  sessionBaseline: savedBaseline,
 });
 assert.equal(afterPlan.seedAction.seed, afterSeed);
 assert.equal(afterPlan.seedAction.baseBounds, null);
+assert.equal(afterPlan.sessionBaseline, undefined);
 
 // Two sparse occupied tiles must stay two tiles instead of becoming the whole
 // bounding rectangle. Any non-zero raw component remains authoritative.

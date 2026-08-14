@@ -572,7 +572,9 @@ function layerMergeFullTextureBytes(engine: BrushEngine): number {
 
 function layerMergeCompressedCpuBytes(engine: BrushEngine): number {
   let bytes = 0;
-  for (const gpu of engine.layerGpu.values()) bytes += gpu.compressed?.storedBytes ?? 0;
+  for (const compressed of engine.retainedCompressedLayerStores()) {
+    bytes += compressed.storedBytes;
+  }
   return bytes;
 }
 

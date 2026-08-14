@@ -336,12 +336,14 @@ import type {
   LayerBakeResources,
   LayerColdCompressionProgress,
   LayerColdStorageResources,
+  LayerCompressedColdStorageResources,
   LayerGpuCompletionPolicy,
   LayerGpuResources,
   LayerTextureResources,
   MergedSurfaceResources,
   MixedSceneRasterSegmentResources,
   RebuildMergedLayerSurfacesOptions,
+  RestoredProjectHistoryBaseline,
 } from "./engine-layer-resources";
 import {
   BRUSH_UNIFORM_BYTES,
@@ -1510,6 +1512,10 @@ export class BrushEngine {
   seedSequence = 1;
 
   readonly history = new HistoryService();
+  readonly restoredProjectHistoryBaselines = new Map<
+    number,
+    RestoredProjectHistoryBaseline
+  >();
 
   get historyActions(): HistoryAction[] {
     return this.history.actions;
@@ -7825,10 +7831,21 @@ export class BrushEngine {
       * bytesPerPixel;
   }
 
+  retainedCompressedLayerStores(): ReadonlySet<LayerCompressedColdStorageResources> {
+    const retained = new Set<LayerCompressedColdStorageResources>();
+    for (const gpu of this.layerGpu.values()) {
+      if (gpu.compressed) retained.add(gpu.compressed);
+    }
+    for (const baseline of this.restoredProjectHistoryBaselines.values()) {
+      if (baseline.compressed) retained.add(baseline.compressed);
+    }
+    return retained;
+  }
+
   private layerSwitchCompressedCpuBytes(): number {
     let bytes = this.layerColdRestoreActiveBytes;
-    for (const gpu of this.layerGpu.values()) {
-      bytes += gpu.compressed?.storedBytes ?? 0;
+    for (const compressed of this.retainedCompressedLayerStores()) {
+      bytes += compressed.storedBytes;
     }
     return bytes;
   }
@@ -10170,6 +10187,37 @@ export class BrushEngine {
     }
   }
 
+  installRestoredProjectHistoryBaselines(
+    baselines: ReadonlyMap<number, RestoredProjectHistoryBaseline>,
+  ): void {
+    if (this.historyActions.length !== 0 || this.historyCursor !== 0) {
+      throw new Error("La baseline progetto richiede una cronologia appena azzerata.");
+    }
+    this.restoredProjectHistoryBaselines.clear();
+    for (const [layerId, baseline] of baselines) {
+      const record = this.layerStack.byId(layerId);
+      if (!record) throw new Error(`Baseline progetto per livello ${layerId} inesistente.`);
+      if (baseline.baseTileMask.length !== record.storageTileMask.length) {
+        throw new Error(`Maschera baseline progetto non valida per il livello ${layerId}.`);
+      }
+      if (
+        record.hasContent !== Boolean(baseline.baseBounds)
+        || record.hasContent !== Boolean(baseline.compressed)
+      ) {
+        throw new Error(`Contenuto baseline progetto incoerente per il livello ${layerId}.`);
+      }
+      if (baseline.compressed && baseline.compressed.format !== this.layerFormat) {
+        throw new Error(`Formato baseline progetto incompatibile per il livello ${layerId}.`);
+      }
+      this.restoredProjectHistoryBaselines.set(layerId, {
+        compressed: baseline.compressed,
+        baseBounds: baseline.baseBounds ? { ...baseline.baseBounds } : null,
+        baseTileMask: baseline.baseTileMask.slice(),
+        noiseMipSmoothing: baseline.noiseMipSmoothing,
+      });
+    }
+  }
+
   resetHistoryState(): void {
     destroyHistoryMaintenance(this);
     this.historyLocalStorage?.resetSession();
@@ -10214,6 +10262,7 @@ export class BrushEngine {
       scheduleHistoryGpuTrim(this);
     }
     this.history.reset();
+    this.restoredProjectHistoryBaselines.clear();
     this.activeVectorHistoryEdit = null;
     this.activeRasterLayerMetadataHistoryEdit = null;
     this.sweepRasterImageGpuResources();

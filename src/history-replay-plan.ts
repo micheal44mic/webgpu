@@ -5,6 +5,7 @@ import type {
 } from "./engine-history-types";
 import { selectLayerReplayAfterCheckpoint } from "./history-journal";
 import type { PeriodicRasterHistoryCheckpoint } from "./history-checkpoint-types.ts";
+import type { RestoredProjectHistoryBaseline } from "./engine-layer-resources.ts";
 
 export interface PeriodicHistoryReplaySelection {
   readonly checkpoints: readonly PeriodicRasterHistoryCheckpoint[];
@@ -14,6 +15,7 @@ export interface PeriodicHistoryReplaySelection {
 export interface RasterHistoryReplayPlan {
   readonly periodicChain: readonly PeriodicRasterHistoryCheckpoint[];
   readonly seedAction: RasterHistoryCheckpoint | undefined;
+  readonly sessionBaseline: RestoredProjectHistoryBaseline | undefined;
   readonly replayCheckpointActionIndex: number;
   readonly visibleActionIds: ReadonlySet<number>;
   readonly batches: readonly HistoryRenderBatch[];
@@ -30,6 +32,7 @@ export function planRasterHistoryReplay(options: {
   readonly batches: readonly HistoryRenderBatch[];
   readonly layerId: number;
   readonly periodicSelection: PeriodicHistoryReplaySelection | null;
+  readonly sessionBaseline?: RestoredProjectHistoryBaseline;
 }): RasterHistoryReplayPlan {
   // A restored project deliberately starts with an empty journal. Rasterize is
   // the one checkpoint action that owns both sides of its transition, so the
@@ -49,6 +52,7 @@ export function planRasterHistoryReplay(options: {
         baseBounds: nextAction.beforeBounds,
         baseTileMask: nextAction.beforeTileMask,
       },
+      sessionBaseline: undefined,
       // The seed already represents every action before Rasterize. No earlier
       // paint batch may be replayed on top of it.
       replayCheckpointActionIndex: options.cursor - 1,
@@ -81,6 +85,14 @@ export function planRasterHistoryReplay(options: {
       baseTileMask: checkpointAction.output.baseTileMask,
     }
     : checkpointAction;
+  // The saved project is the invisible cursor-zero base only while replay is
+  // still in that original raster lineage. A visible Clear moves the first
+  // replay index forward and must reveal a blank layer, not resurrect the file.
+  const sessionBaseline = !usePeriodicCheckpoint
+    && !seedAction
+    && journalSelection.firstReplayActionIndex === 0
+    ? options.sessionBaseline
+    : undefined;
   const replayCheckpointActionIndex = usePeriodicCheckpoint
     ? options.periodicSelection?.actionIndex ?? -1
     : journalSelection.checkpoint?.actionIndex ?? -1;
@@ -98,8 +110,18 @@ export function planRasterHistoryReplay(options: {
   return {
     periodicChain,
     seedAction,
+    sessionBaseline,
     replayCheckpointActionIndex,
     visibleActionIds,
     batches,
   };
+}
+
+export function restoredProjectBaselineApplies(
+  actions: readonly HistoryAction[],
+  cursor: number,
+  layerId: number,
+): boolean {
+  const selection = selectLayerReplayAfterCheckpoint(actions, cursor, [], layerId);
+  return selection.checkpoint === null && selection.firstReplayActionIndex === 0;
 }

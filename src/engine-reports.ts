@@ -749,14 +749,15 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
       0,
     ) / MEBIBYTE_BYTES
     : 0;
+  const retainedCompressedLayerStores = engine.retainedCompressedLayerStores();
   const layerCompressedCpuMiB = (
-    [...engine.layerGpu.values()].reduce(
-      (total, gpu) => total + (gpu.compressed?.storedBytes ?? 0),
+    [...retainedCompressedLayerStores].reduce(
+      (total, compressed) => total + compressed.storedBytes,
       0,
     ) + (engine.layerColdCompressionProgress?.storedBytes ?? 0)
   ) / MEBIBYTE_BYTES;
-  const layerCompressedRawMiB = [...engine.layerGpu.values()].reduce(
-    (total, gpu) => total + (gpu.compressed?.rawBytes ?? 0),
+  const layerCompressedRawMiB = [...retainedCompressedLayerStores].reduce(
+    (total, compressed) => total + compressed.rawBytes,
     0,
   ) / MEBIBYTE_BYTES;
   // Peso per singolo livello. Le righe aggregate sopra rispondono "quanto
@@ -774,8 +775,18 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
       // caricarla su tutti farebbe mentire la riga.
       const mipMiB = gpu?.hot && active ? displayPyramidMiB : 0;
       const coldMiB = (gpu?.cold?.memoryBytes ?? 0) / MEBIBYTE_BYTES;
-      const compressedCpuMiB = (gpu?.compressed?.storedBytes ?? 0) / MEBIBYTE_BYTES;
-      const compressedRawMiB = (gpu?.compressed?.rawBytes ?? 0) / MEBIBYTE_BYTES;
+      const compressedStores = new Set([
+        gpu?.compressed,
+        engine.restoredProjectHistoryBaselines.get(record.id)?.compressed,
+      ].filter((compressed) => compressed !== null && compressed !== undefined));
+      const compressedCpuMiB = [...compressedStores].reduce(
+        (total, compressed) => total + compressed.storedBytes,
+        0,
+      ) / MEBIBYTE_BYTES;
+      const compressedRawMiB = [...compressedStores].reduce(
+        (total, compressed) => total + compressed.rawBytes,
+        0,
+      ) / MEBIBYTE_BYTES;
       const gpuMiB = hotMiB + mipMiB + coldMiB;
       const state: LayerMemoryState = gpu?.hot
         ? "hot"

@@ -85,9 +85,10 @@ export function noiseMipSmoothingAfterHistory(
   actions: readonly NoiseMipHistoryActionLike[],
   cursor: number,
   layerId: number,
+  baseline = false,
 ): boolean {
   const end = Math.max(0, Math.min(Math.floor(cursor), actions.length));
-  let enabled = false;
+  let enabled = baseline;
   for (let index = 0; index < end; index += 1) {
     const action = actions[index];
     if (action.layerId !== layerId) continue;
