@@ -38,7 +38,6 @@ import { vectorTextGpuRunBounds } from "./engine-geometry";
 import {
   LAYER_STORAGE_TILE_SIZE,
   countLayerStorageTiles,
-  markLayerStorageRect,
 } from "./layer-storage-study";
 import {
   createLayerColdStorageCandidate,
@@ -51,6 +50,7 @@ import {
 } from "./engine-layer-runtime";
 import { LAYER_STACK_MAXIMUM } from "./layer-stack";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
+import { analyzeRasterTextureOccupancy } from "./raster-occupancy-analysis";
 
 export const VECTOR_RASTERIZATION_STRATEGY =
   "semantic-vector-slug-mesh-webgpu-linear-layer-format-msaa4-512-tile-chunks-history-seed-v3" as const;
@@ -865,10 +865,22 @@ export async function rasterizeVectorNodeToLayer(
       rotationSin: 0,
     };
     const rendered = await renderVectorDrawsToLayer(engine, draws, view, hot);
-    record.contentBounds = { ...rendered.bounds };
+    const occupancy = await analyzeRasterTextureOccupancy(
+      engine,
+      hot.texture,
+      rendered.bounds,
+      `Rasterize ${sourceKind} ${sourceId}`,
+    );
+    if (!occupancy.bounds || occupancy.occupiedTileCount === 0) {
+      throw new Error(
+        sourceKind === "svg"
+          ? "L’SVG non contiene pixel visibili da rasterizzare."
+          : "Il testo non contiene pixel visibili da rasterizzare.",
+      );
+    }
+    record.contentBounds = { ...occupancy.bounds };
     record.hasContent = true;
-    record.storageTileMask.fill(0);
-    markLayerStorageRect(record.storageTileMask, rendered.bounds);
+    record.storageTileMask.set(occupancy.tileMask);
     scene.replaceVectorWithRaster(vectorKey, record.id);
     engine.vectorTextPreviewExcludedNodeId = null;
     clearVectorTextPresentationForTransaction(engine);
@@ -899,7 +911,7 @@ export async function rasterizeVectorNodeToLayer(
         vectorState,
         activeRasterLayerIdBefore: originalActiveId,
         seed,
-        baseBounds: { ...rendered.bounds },
+        baseBounds: { ...occupancy.bounds },
         baseTileMask: record.storageTileMask.slice(),
       },
       chunkCount: rendered.chunkCount,

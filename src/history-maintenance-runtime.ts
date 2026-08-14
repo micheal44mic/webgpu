@@ -460,6 +460,9 @@ function accountCheckpointSeed(
     return;
   }
   account(action.seed);
+  if (action.kind === "raster-filter" && action.filter === "rasterize-layer") {
+    account(action.beforeSeed);
+  }
 }
 
 function accountHistoryAction(

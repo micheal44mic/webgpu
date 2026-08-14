@@ -36,6 +36,11 @@ assert.match(
   mainSource,
   /deleteLayer: \(key\) => sceneEditorController!\.deleteLayer\(key\)/,
 );
+assert.match(
+  mainSource,
+  /rasterizeLayer: \(key\) => sceneEditorController!\.rasterizeLayer\(key\)/,
+);
+assert.match(html, /id="mobileLayerRasterize"[\s\S]*?>\s*Rasterize\s*<\/button>/);
 const layersPanelStart = html.indexOf('id="mobileLayersPanel"');
 const layersPanelEnd = html.indexOf("</aside>", layersPanelStart);
 const resultLiveRegion = html.indexOf('id="layerSwitchResult"');
@@ -212,6 +217,7 @@ function createElements() {
     contextMenu: new FakeElement(),
     clippingButton: new FakeElement(),
     optionsButton: new FakeElement(),
+    rasterizeButton: new FakeElement(),
     mergeButton: new FakeElement(),
     mergeReason: new FakeElement(),
     mergeStatus: new FakeElement(),
@@ -228,6 +234,8 @@ let stats = null;
 let interactionLocked = false;
 const referenceCalls = [];
 const clippingCalls = [];
+const rasterizeCalls = [];
+const layerResults = [];
 const controller = new LayerPanelController({
   browser,
   document,
@@ -257,6 +265,10 @@ const controller = new LayerPanelController({
   moveLayer: async () => false,
   mergeCapabilityError: () => null,
   mergeLayers: async () => ({ itemCount: 2 }),
+  rasterizeLayer: async (key) => {
+    rasterizeCalls.push(key);
+    return { kind: "raster", name: "Layer 2", changed: true, outputKey: key };
+  },
   addRasterLayer() {},
   duplicateSelectedLayer: async () => {
     throw new Error("not used");
@@ -268,7 +280,7 @@ const controller = new LayerPanelController({
   setRasterClipping: (key, enabled) => clippingCalls.push({ key, enabled }),
   deleteLayer: async () => {},
   openLayerOptions() {},
-  onLayerResult() {},
+  onLayerResult: (message) => layerResults.push(message),
   onStatus() {},
   recordDiagnostic() {},
 });
@@ -361,6 +373,13 @@ const contextRow = new FakeElement();
 assert.equal(controller.openContextMenu("raster:8", contextRow), true);
 assert.equal(elements.contextMenu.hidden, false);
 assert.equal(elements.contextMenu.getAttribute("inert"), null);
+assert.equal(elements.rasterizeButton.hidden, false);
+assert.equal(elements.rasterizeButton.disabled, false);
+await controller.requestRasterize();
+assert.deepEqual(rasterizeCalls, ["raster:8"]);
+assert.equal(layerResults.at(-1), "Layer 2 rasterized.");
+assert.equal(elements.contextMenu.hidden, true);
+assert.equal(controller.openContextMenu("raster:8", contextRow), true);
 controller.cancelTransientInteractions();
 assert.equal(elements.contextMenu.hidden, true);
 assert.equal(elements.contextMenu.getAttribute("inert"), "");

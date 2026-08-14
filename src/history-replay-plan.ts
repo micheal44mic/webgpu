@@ -31,6 +31,31 @@ export function planRasterHistoryReplay(options: {
   readonly layerId: number;
   readonly periodicSelection: PeriodicHistoryReplaySelection | null;
 }): RasterHistoryReplayPlan {
+  // A restored project deliberately starts with an empty journal. Rasterize is
+  // the one checkpoint action that owns both sides of its transition, so the
+  // cursor immediately before it must use its immutable pre-action seed rather
+  // than interpret "no earlier journal action" as a blank layer.
+  const nextAction = options.actions[options.cursor];
+  if (
+    nextAction?.kind === "raster-filter"
+    && nextAction.filter === "rasterize-layer"
+    && nextAction.layerId === options.layerId
+  ) {
+    return {
+      periodicChain: [],
+      seedAction: {
+        layerId: nextAction.layerId,
+        seed: nextAction.beforeSeed,
+        baseBounds: nextAction.beforeBounds,
+        baseTileMask: nextAction.beforeTileMask,
+      },
+      // The seed already represents every action before Rasterize. No earlier
+      // paint batch may be replayed on top of it.
+      replayCheckpointActionIndex: options.cursor - 1,
+      visibleActionIds: new Set<number>(),
+      batches: [],
+    };
+  }
   const journalSelection = selectLayerReplayAfterCheckpoint(
     options.actions,
     options.cursor,

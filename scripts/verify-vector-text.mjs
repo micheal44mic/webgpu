@@ -2005,7 +2005,9 @@ assert.match(vectorRasterSource, /slugInnerShadowBlur/);
 assert.match(vectorRasterSource, /meshInnerShadowBlur/);
 assert.match(vectorRasterSource, /createLayerColdStorageCandidate\(/);
 assert.match(vectorRasterSource, /encodeLayerColdHydration\(/);
-assert.match(vectorRasterSource, /markLayerStorageRect\(/);
+assert.match(vectorRasterSource, /analyzeRasterTextureOccupancy\(/);
+assert.match(vectorRasterSource, /record\.storageTileMask\.set\(occupancy\.tileMask\)/);
+assert.doesNotMatch(vectorRasterSource, /markLayerStorageRect\(record\.storageTileMask/);
 assert.match(vectorRasterSource, /replaceVectorWithRaster\(/);
 assert.match(vectorRasterSource, /replaceRasterWithVector\(/);
 assert.match(vectorRasterSource, /action\.seed\.format !== engine\.layerFormat/);
@@ -2018,7 +2020,10 @@ assert.doesNotMatch(
   /CanvasRenderingContext2D|copyExternalImageToTexture|drawImage\(/,
   "la rasterizzazione non deve introdurre un fallback bitmap/Canvas2D",
 );
-assert.match(controllerSource, /async rasterizeSelectedSvg\(\)/);
+assert.match(
+  controllerSource,
+  /async rasterizeSelectedSvg\(\s*propagateError = false,\s*\)/,
+);
 assert.match(controllerSource, /await this\.host\.rasterizeVectorSvgNode\(svgId, draws\)/);
 assert.match(controllerSource, /async rasterizeSelectedText\(\)/);
 assert.match(controllerSource, /await this\.host\.rasterizeVectorTextNode\(textId, draws\)/);

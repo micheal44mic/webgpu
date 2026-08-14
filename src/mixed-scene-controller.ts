@@ -959,6 +959,19 @@ export class MixedSceneController {
     void this.rasterizeSelectedSvg();
   }
 
+  async rasterizeSelectedSvgLayer(): Promise<VectorRasterizationResult | null> {
+    if (this.transformSessionOpen) {
+      throw new Error("Applica o annulla la trasformazione SVG prima di rasterizzare.");
+    }
+    if (!this.selectedSvgNode()) {
+      throw new Error("Seleziona un livello SVG prima di rasterizzare.");
+    }
+    if (this.sceneOperationBusy) {
+      throw new Error("Un'altra operazione vettoriale è ancora in corso.");
+    }
+    return this.rasterizeSelectedSvg(true);
+  }
+
   rasterizeSelectedTextNode(): void {
     const node = this.selectedTextNode();
     if (
@@ -1875,7 +1888,9 @@ export class MixedSceneController {
     return rasterized ?? null;
   }
 
-  private async rasterizeSelectedSvg(): Promise<VectorRasterizationResult | null> {
+  private async rasterizeSelectedSvg(
+    propagateError = false,
+  ): Promise<VectorRasterizationResult | null> {
     const selected = this.selectedSvgNode();
     if (!selected) return null;
     const svgId = selected.id;
@@ -1930,7 +1945,7 @@ export class MixedSceneController {
           this.effectCompiler.releasePinnedSlot(slot);
         }
       }
-    });
+    }, propagateError);
     return rasterized ?? null;
   }
 
@@ -2092,6 +2107,7 @@ export class MixedSceneController {
   }
   private async runSceneOperation<Result>(
     operation: () => Promise<Result>,
+    propagateError = false,
   ): Promise<Result | undefined> {
     if (this.sceneOperationBusy) {
       return undefined;
@@ -2104,6 +2120,7 @@ export class MixedSceneController {
       this.status.textContent = error instanceof Error
         ? error.message
         : "Modifica della scena testo/raster non riuscita.";
+      if (propagateError) throw error;
       return undefined;
     } finally {
       this.sceneOperationBusy = false;

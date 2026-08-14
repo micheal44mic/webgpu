@@ -2361,8 +2361,8 @@ assert.notEqual(rebuildStart, -1, "il replay deve dichiarare di ricostruire il l
 const rebuildBody = engineSource.slice(rebuildStart, rebuildStart + 1_500);
 assert.match(
   rebuildBody,
-  /const replayPlan = planRasterHistoryReplay\(\{\s*actions: engine\.historyActions,\s*cursor: engine\.historyCursor,\s*batches: engine\.historyBatches,\s*layerId,\s*periodicSelection,\s*\}\)/,
-  "il replay reale deve usare l'unico planner condiviso con il preflight storage",
+  /const replayPlan = checkpointOverride[\s\S]*?: planRasterHistoryReplay\(\{\s*actions: engine\.historyActions,\s*cursor: engine\.historyCursor,\s*batches: engine\.historyBatches,\s*layerId,\s*periodicSelection,\s*\}\)/,
+  "il replay reale deve usare l'unico planner condiviso, salvo il rollback checkpoint esplicito",
 );
 assert.match(
   historyReplayPlanSource,

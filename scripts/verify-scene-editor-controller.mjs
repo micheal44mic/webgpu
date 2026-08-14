@@ -163,6 +163,18 @@ const engine = {
     duplicateRasterLayerId: 10,
     totalMs: 1,
   }),
+  rasterizeActiveRasterLayer: async () => {
+    calls.push(["rasterize", 7]);
+    return {
+      layerId: 7,
+      name: "Livello 1",
+      bakedEffects: true,
+      detachedSource: false,
+      preservedBlendMode: true,
+      preservedOpacity: true,
+      bounds: { x: 0, y: 0, width: 32, height: 32 },
+    };
+  },
   setActiveLayer: async () => null,
   setActiveMixedSceneItem: async () => null,
   addClippingMaskLayer: async () => ({ toIndex: 2, totalMs: 1 }),
@@ -218,6 +230,16 @@ assert.deepEqual(calls.at(-1), ["image-visible", 9, false]);
 await controller.deleteLayer("text:5");
 assert.deepEqual(calls.at(-1), ["delete-text", 5]);
 
+const rasterizeResult = await controller.rasterizeLayer("raster:7");
+assert.deepEqual(calls.at(-1), ["rasterize", 7]);
+assert.deepEqual(rasterizeResult, {
+  kind: "raster",
+  name: "Layer 1",
+  changed: true,
+  outputKey: "raster:7",
+});
+assert.match(elements.result.textContent, /blend mode e opacità preservati/);
+
 const moving = controller.moveLayer("raster:7", 0);
 assert.equal(controller.isBusy, true);
 await assert.rejects(
@@ -234,7 +256,10 @@ await assert.rejects(
   /Eliminazione non disponibile/,
 );
 interactionLocked = false;
-assert.deepEqual(busyChanges, [true, false, true, false, true, false, true, false, true, false]);
+assert.deepEqual(
+  busyChanges,
+  [true, false, true, false, true, false, true, false, true, false, true, false],
+);
 
 controller.dispose();
 assert.equal(controller.isBusy, false);
