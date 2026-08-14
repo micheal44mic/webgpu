@@ -411,12 +411,11 @@ assert.match(runtimeSource, /record\.rasterSource = initialRasterLayerSource\(do
 assert.match(runtimeSource, /createRasterImageGpuResource\(/);
 assert.match(runtimeSource, /rebuildRasterLayerFromImmutableSource/);
 assert.match(runtimeSource, /rasterImageMipLevelCount\(width, height\)/);
-assert.match(
+assert.doesNotMatch(
   displayShaderSource,
-  /log2\(max\(1\.0 \/ max\(display\.zoom, 0\.000001\), 1\.0\)\)/,
-  "fractional Fit minification must protect dark coverage even while mip 0 is selected",
+  /preserveMinifiedDarkCoverage|preserveMergedDarkCoverage|preserveStyledDarkCoverage/,
+  "generic layer presentation must not expand alpha after sampling",
 );
-assert.match(displayShaderSource, /preserveMinifiedDarkCoverage/);
 assert.match(engineSource, /commitRasterImportHistory\(history/);
 assert.match(runtimeSource, /commitHistory\(historySeed\);[\s\S]{0,100}seed = null/);
 assert.match(engineSource, /publishActiveLayerChange\(\): void \{[\s\S]{0,240}catch \(error\)/);
