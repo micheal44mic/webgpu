@@ -35,6 +35,10 @@ const engineSource = readFileSync(
   new URL("../src/brush-engine.ts", import.meta.url),
   "utf8",
 );
+const displayShaderSource = readFileSync(
+  new URL("../src/shaders.ts", import.meta.url),
+  "utf8",
+);
 const htmlSource = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 
 function u32be(value) {
@@ -133,7 +137,7 @@ assert.equal(
 );
 assert.equal(
   RASTER_IMAGE_LAYER_IMPORT_STRATEGY,
-  "decoded-rgba8-srgb-to-linear-premultiplied-rgba16float-exact-npot-mips-native-layer-v3",
+  "decoded-rgba8-srgb-to-gamma-premultiplied-rgba16float-exact-npot-mips-immutable-master-v4",
 );
 assert.equal(RASTER_IMAGE_DECODED_BYTES_PER_PIXEL, 4);
 assert.equal(RASTER_IMAGE_LINEAR_BYTES_PER_PIXEL, 8);
@@ -377,7 +381,10 @@ assert.doesNotMatch(
   /engine\.layerSize|\bLAYER_SIZE\b|LAYER_STORAGE_TILE_SIZE \*\* 2/,
   "L'import raster non deve ridurre il documento a un lato quadrato.",
 );
-assert.match(runtimeSource, /assertNativeRasterImportResidentBudget\(engine, bounds\)/);
+assert.match(
+  runtimeSource,
+  /assertNativeRasterImportResidentBudget\(engine, bounds, (?:sourceMipBytes|decodedMipBytes) \+ 32\)/,
+);
 assert.match(
   runtimeSource,
   /transient = await encodeBitmapIntoLayer[\s\S]{0,600}releaseDecodedRasterImage\(decoded\);\s*decoded = null;[\s\S]{0,400}seed = await createLayerColdStorageCandidate/,
@@ -389,12 +396,27 @@ assert.match(runtimeSource, /if \(decoded\) releaseDecodedRasterImage\(decoded\)
 assert.match(engineSource, /sweepRasterImageGpuResources\(\): number/);
 assert.doesNotMatch(runtimeSource, /CanvasRenderingContext2D|getContext\("2d"\)|drawImage\(/);
 assert.doesNotMatch(runtimeSource, /addImageAboveSelection\(/);
-assert.match(shaderSource, /textureSampleGrad\(/);
+assert.match(shaderSource, /textureSampleLevel\(/);
+assert.match(shaderSource, /let continuousLod = sourceLod/);
+assert.match(shaderSource, /let lod = floor\(continuousLod\)/);
+assert.match(shaderSource, /let minified = clamp\(continuousLod, 0\.0, 1\.0\)/);
 assert.match(shaderSource, /fragmentPremultiplyMain/);
-assert.match(shaderSource, /straightLinear\.rgb \* straightLinear\.a/);
+assert.match(shaderSource, /linearToSrgb\(straightLinear\.rgb\) \* straightLinear\.a/);
+assert.match(shaderSource, /encodedCoverage = 1\.0 - srgbToLinearChannel\(1\.0 - alpha\)/);
+assert.match(shaderSource, /alpha <= 0\.000001/);
 assert.match(shaderSource, /texelOverlap/);
 assert.match(shaderSource, /for \(var y = 0; y < 3/);
 assert.match(engineSource, /kind: "raster-import"/);
+assert.match(runtimeSource, /record\.rasterSource = initialRasterLayerSource\(document, bounds\)/);
+assert.match(runtimeSource, /createRasterImageGpuResource\(/);
+assert.match(runtimeSource, /rebuildRasterLayerFromImmutableSource/);
+assert.match(runtimeSource, /rasterImageMipLevelCount\(width, height\)/);
+assert.match(
+  displayShaderSource,
+  /log2\(max\(1\.0 \/ max\(display\.zoom, 0\.000001\), 1\.0\)\)/,
+  "fractional Fit minification must protect dark coverage even while mip 0 is selected",
+);
+assert.match(displayShaderSource, /preserveMinifiedDarkCoverage/);
 assert.match(engineSource, /commitRasterImportHistory\(history/);
 assert.match(runtimeSource, /commitHistory\(historySeed\);[\s\S]{0,100}seed = null/);
 assert.match(engineSource, /publishActiveLayerChange\(\): void \{[\s\S]{0,240}catch \(error\)/);
@@ -439,5 +461,27 @@ assert.match(htmlSource, /data-mobile-canvas-tool="transform"/);
 assert.match(htmlSource, /id="transformApply"/);
 assert.match(htmlSource, /id="transformCancel"/);
 assert.match(htmlSource, /accept="\.png,\.jpg,\.jpeg,\.webp,\.avif/);
+
+const srgbToLinearChannel = (value) => value <= 0.04045
+  ? value / 12.92
+  : ((value + 0.055) / 1.055) ** 2.4;
+const linearToSrgbChannel = (value) => value <= 0.0031308
+  ? value * 12.92
+  : 1.055 * value ** (1 / 2.4) - 0.055;
+const blackCoverageInLinearCache = (alpha) =>
+  1 - srgbToLinearChannel(1 - alpha);
+
+assert.equal(blackCoverageInLinearCache(0), 0, "fully transparent stays transparent");
+assert.equal(blackCoverageInLinearCache(1), 1, "fully opaque stays fully opaque");
+const halfBlackCoverage = blackCoverageInLinearCache(0.5);
+assert.ok(Math.abs(halfBlackCoverage - 0.7859588595) < 1e-9);
+assert.ok(
+  Math.abs(linearToSrgbChannel(1 - halfBlackCoverage) - 0.5) < 1e-9,
+  "50/50 black-transparent reduced in sRGB must display as 127, not linear-light 188",
+);
+assert.ok(
+  Math.abs(linearToSrgbChannel(0.5) - 0.7353569831) < 1e-9,
+  "the numerical oracle must distinguish an accidental linear-light box filter",
+);
 
 console.log("Native raster image import and shared Transform transaction verified.");

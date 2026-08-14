@@ -103,6 +103,10 @@ import { processHistoryMaintenanceChunks } from "./history-retention-core";
 import { planRasterHistoryReplay } from "./history-replay-plan";
 import { noiseMipSmoothingAfterHistory } from "./noise-mip-smoothing-core";
 import type { HistoryCommitOptions } from "./history-service.ts";
+import {
+  cloneRasterLayerSource,
+  type RasterLayerSource,
+} from "./raster-layer-source";
 
 export function captureRasterLayerMetadataHistoryState(
   engine: BrushEngine,
@@ -336,6 +340,41 @@ export async function applyRasterLayerMetadataHistoryState(
   }
 }
 
+interface RasterSourceHistoryTransition {
+  readonly layerId: number;
+  readonly before: RasterLayerSource | null;
+  readonly after: RasterLayerSource | null;
+}
+
+function rasterSourceHistoryTransition(
+  action: HistoryAction,
+): RasterSourceHistoryTransition | null {
+  if (action.kind === "raster-transform") {
+    return {
+      layerId: action.layerId,
+      before: cloneRasterLayerSource(action.rasterSourceBefore),
+      after: cloneRasterLayerSource(action.rasterSourceAfter),
+    };
+  }
+  if (
+    action.kind === "stroke"
+    || action.kind === "fill"
+    || action.kind === "clear"
+    || action.kind === "raster-filter"
+  ) {
+    if (
+      action.rasterSourceBefore === undefined
+      && action.rasterSourceAfter === undefined
+    ) return null;
+    return {
+      layerId: action.layerId,
+      before: cloneRasterLayerSource(action.rasterSourceBefore ?? null),
+      after: cloneRasterLayerSource(action.rasterSourceAfter ?? null),
+    };
+  }
+  return null;
+}
+
 export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Promise<boolean> {
   if (
     !engine.initialized
@@ -405,6 +444,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
     ? engine.historyActions[engine.historyCursor - 1]
     : engine.historyActions[engine.historyCursor];
   if (!crossedAction) return false;
+  const rasterSourceTransition = rasterSourceHistoryTransition(crossedAction);
   // The refusal lives here as well as in getHistoryState: reporting
   // canUndo=false only greys out a button, and the API is reachable directly.
   // A vanished layer is refused; scene reorder also refuses an old permutation
@@ -635,6 +675,17 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
       }
       engine.history.setCursor(nextCursor);
       replayAttempted = true;
+      if (rasterSourceTransition) {
+        const targetRecord = engine.layerStack.byId(rasterSourceTransition.layerId);
+        if (!targetRecord) {
+          throw new Error(
+            `Livello ${rasterSourceTransition.layerId} della sorgente raster non trovato.`,
+          );
+        }
+        targetRecord.rasterSource = cloneRasterLayerSource(
+          delta < 0 ? rasterSourceTransition.before : rasterSourceTransition.after,
+        );
+      }
       await rebuildActiveLayerFromHistory(engine);
       if (selectionCompareAndSwap && targetSelection) {
         await restorePixelSelectionHistoryMask(engine, targetSelection);
@@ -661,6 +712,17 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
       let targetPreparedForRelease = !replayAttempted;
       if (replayAttempted) {
         try {
+          if (rasterSourceTransition) {
+            const targetRecord = engine.layerStack.byId(rasterSourceTransition.layerId);
+            if (!targetRecord) {
+              throw new Error(
+                `Livello ${rasterSourceTransition.layerId} assente nel rollback sorgente raster.`,
+              );
+            }
+            targetRecord.rasterSource = cloneRasterLayerSource(
+              delta < 0 ? rasterSourceTransition.after : rasterSourceTransition.before,
+            );
+          }
           await rebuildActiveLayerFromHistory(engine);
           if (switched) {
             engine.persistActiveLayerState();
@@ -1264,6 +1326,11 @@ export async function compactDiscardedHistoryIncrementally(
   ): void => {
     if (node?.kind === "image") retainedRasterImageAssetIds.add(node.document.assetId);
   };
+  const retainRasterLayerSource = (
+    source: { readonly document: { readonly assetId: string } } | null | undefined,
+  ): void => {
+    if (source) retainedRasterImageAssetIds.add(source.document.assetId);
+  };
   const yieldBetweenPhases = async (worked: boolean): Promise<boolean> => {
     if (!worked) return hooks.shouldContinue();
     await hooks.yieldTurn();
@@ -1340,27 +1407,48 @@ export async function compactDiscardedHistoryIncrementally(
   if (!await processArrayPhase(engine.historyActions, (action) => {
     if (action.kind === "stroke" || action.kind === "fill") {
       retainedActionIds.add(action.id);
+      retainRasterLayerSource(action.rasterSourceBefore);
+      retainRasterLayerSource(action.rasterSourceAfter);
     } else if (action.kind === "vector-rasterize") {
       retainedVectorRasterIds.add(action.id);
       retainRasterImageNode(action.vectorState.node);
     } else if (action.kind === "raster-import") {
       retainedImportIds.add(action.id);
+      retainRasterLayerSource(action.rasterSource);
     } else if (action.kind === "raster-transform" || action.kind === "raster-filter") {
       retainedTransformIds.add(action.id);
+      retainRasterLayerSource(action.rasterSourceBefore);
+      retainRasterLayerSource(action.rasterSourceAfter);
     } else if (action.kind === "layer-add") {
       retainedLayerAddIds.add(action.id);
+      retainRasterLayerSource(action.layerRecord.rasterSource);
     } else if (action.kind === "layer-delete") {
       retainedLayerDeleteIds.add(action.id);
+      for (const entry of action.entries) {
+        retainRasterLayerSource(entry.layerRecord.rasterSource);
+      }
     } else if (action.kind === "layer-merge") {
       retainedLayerMergeIds.add(action.id);
       for (const input of action.inputs) {
         if (input.kind === "vector" && input.state) retainRasterImageNode(input.state.node);
+        if (input.kind === "raster") {
+          retainRasterLayerSource(input.entry.layerRecord.rasterSource);
+        }
       }
+      retainRasterLayerSource(action.output.layerRecord.rasterSource);
     } else if (action.kind === "vector") {
       retainRasterImageNode(action.delta.before.node);
       retainRasterImageNode(action.delta.after.node);
+    } else if (action.kind === "clear") {
+      retainRasterLayerSource(action.rasterSourceBefore);
+      retainRasterLayerSource(action.rasterSourceAfter);
     }
   })) return abortResult();
+
+  if (!await processArrayPhase(engine.layerStack.layers, (record) => {
+    retainRasterLayerSource(record.rasterSource);
+  })) return abortResult();
+  retainRasterLayerSource(engine.activeRasterTransformSession?.rasterSourceBefore);
 
   const scene = engine.mixedSceneStack;
   if (scene && !await processArrayPhase(scene.items, (item) => {
@@ -1726,7 +1814,33 @@ export function commitHistoryActionAtomically(
   action: HistoryAction,
   options: HistoryCommitOptions = {},
 ): void {
+  if (
+    action.kind === "stroke"
+    || action.kind === "fill"
+    || action.kind === "clear"
+    || action.kind === "raster-filter"
+  ) {
+    const record = engine.layerStack.byId(action.layerId);
+    if (record) {
+      action.rasterSourceBefore = cloneRasterLayerSource(record.rasterSource);
+      action.rasterSourceAfter = null;
+    }
+  }
   engine.history.commitAction(action, options);
+  if (
+    action.kind === "stroke"
+    || action.kind === "fill"
+    || action.kind === "clear"
+    || action.kind === "raster-filter"
+  ) {
+    const record = engine.layerStack.byId(action.layerId);
+    if (record) record.rasterSource = null;
+  } else if (action.kind === "raster-transform") {
+    const record = engine.layerStack.byId(action.layerId);
+    if (record) {
+      record.rasterSource = cloneRasterLayerSource(action.rasterSourceAfter);
+    }
+  }
 }
 
 export function historyStepBlockedByLayer(engine: BrushEngine, delta: -1 | 1): boolean {

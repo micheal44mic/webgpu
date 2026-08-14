@@ -7,6 +7,38 @@ import { rasterPixelViewShaderHelpers } from "./raster-pixel-view.ts";
  */
 export const mergedSurfaceSamplingShader = /* wgsl */ `
 ${rasterPixelViewShaderHelpers}
+fn mergedSrgbToLinearChannel(value: f32) -> f32 {
+  if (value <= 0.04045) { return value / 12.92; }
+  return pow((value + 0.055) / 1.055, 2.4);
+}
+
+fn mergedLinearToSrgbChannel(value: f32) -> f32 {
+  let clamped = clamp(value, 0.0, 1.0);
+  if (clamped <= 0.0031308) { return clamped * 12.92; }
+  return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
+}
+
+fn preserveMergedDarkCoverage(value: vec4<f32>, lod: f32) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001 || alpha >= 0.999999 || lod <= 0.0) {
+    return value;
+  }
+  let straightLinear = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  let straightSrgb = vec3<f32>(
+    mergedLinearToSrgbChannel(straightLinear.r),
+    mergedLinearToSrgbChannel(straightLinear.g),
+    mergedLinearToSrgbChannel(straightLinear.b)
+  );
+  let darkness = 1.0 - dot(straightSrgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+  let encodedCoverage = 1.0 - mergedSrgbToLinearChannel(1.0 - alpha);
+  let displayAlpha = mix(
+    alpha,
+    encodedCoverage,
+    clamp(darkness, 0.0, 1.0) * clamp(lod, 0.0, 1.0)
+  );
+  return vec4<f32>(straightLinear * displayAlpha, displayAlpha);
+}
+
 fn mergedSamplingLod(resolutionScale: f32, maximumLod: f32) -> f32 {
   return clamp(
     max(0.0, log2(max(resolutionScale, 1.0) / max(display.zoom, 0.000001))),
@@ -43,7 +75,10 @@ fn sampleMergedBelow(layerPosition: vec2<f32>) -> vec4<f32> {
       0
     );
   }
-  return textureSampleLevel(mergedBelowTexture, layerSampler, uv, lod);
+  return preserveMergedDarkCoverage(
+    textureSampleLevel(mergedBelowTexture, layerSampler, uv, lod),
+    lod
+  );
 }
 
 fn sampleMergedAbove(layerPosition: vec2<f32>) -> vec4<f32> {
@@ -74,6 +109,9 @@ fn sampleMergedAbove(layerPosition: vec2<f32>) -> vec4<f32> {
       0
     );
   }
-  return textureSampleLevel(mergedAboveTexture, layerSampler, uv, lod);
+  return preserveMergedDarkCoverage(
+    textureSampleLevel(mergedAboveTexture, layerSampler, uv, lod),
+    lod
+  );
 }
 `;

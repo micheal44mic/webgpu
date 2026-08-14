@@ -61,6 +61,8 @@ type MobileRasterEffectControl =
 interface MobileRasterEffectSpec {
   readonly title: string;
   readonly expandable: boolean;
+  readonly enabledLabel?: string;
+  readonly enabledDescription?: string;
   readonly controls: readonly MobileRasterEffectControl[];
 }
 
@@ -85,6 +87,11 @@ export const MOBILE_RASTER_EFFECT_SPECS = {
   "color-overlay": {
     title: "Color Overlay",
     expandable: true,
+    enabledLabel: "Recolor all non-transparent pixels",
+    enabledDescription:
+      "Applies the selected color to every pixel with alpha above 0. "
+      + "Fully transparent pixels stay transparent; existing alpha is preserved. "
+      + "Opacity controls the recolor strength.",
     controls: [
       { type: "color", key: "color", label: "Color" },
       {
@@ -365,6 +372,10 @@ function controlId(kind: MobileRasterEffectKind, key: string): string {
   return `mobileRasterEffect-${kind}-${key}`;
 }
 
+function enabledDescriptionId(kind: MobileRasterEffectKind): string {
+  return `mobileRasterEffect-${kind}-enabled-help`;
+}
+
 function formatRangeValue(
   value: number,
   control: Extract<MobileRasterEffectControl, { type: "range" }>,
@@ -386,6 +397,7 @@ export class MobileRasterEffectsSheetController {
   readonly title: HTMLElement;
   readonly enabledControl: HTMLElement;
   readonly enabledInput: HTMLInputElement;
+  readonly enabledLabel: HTMLElement;
   readonly scroll: HTMLElement;
   readonly content: HTMLElement;
 
@@ -429,6 +441,7 @@ export class MobileRasterEffectsSheetController {
     this.title = requiredElement<HTMLElement>(options.root, "mobileRasterEffectTitle");
     this.enabledControl = requiredElement<HTMLElement>(options.root, "mobileRasterEffectEnabledControl");
     this.enabledInput = requiredElement<HTMLInputElement>(options.root, "mobileRasterEffectEnabled");
+    this.enabledLabel = requiredElement<HTMLElement>(options.root, "mobileRasterEffectEnabledLabel");
     this.scroll = requiredElement<HTMLElement>(options.root, "mobileRasterEffectScroll");
     this.content = requiredElement<HTMLElement>(options.root, "mobileRasterEffectContent");
     this.sheetState = new MobileBottomSheetController({
@@ -469,8 +482,15 @@ export class MobileRasterEffectsSheetController {
 
     this.activeKind = kind;
     this.sheet.dataset.effect = kind;
-    this.sheet.setAttribute("aria-label", `${MOBILE_RASTER_EFFECT_SPECS[kind].title} effect`);
-    this.title.textContent = MOBILE_RASTER_EFFECT_SPECS[kind].title;
+    const spec: MobileRasterEffectSpec = MOBILE_RASTER_EFFECT_SPECS[kind];
+    this.sheet.setAttribute("aria-label", `${spec.title} effect`);
+    this.title.textContent = spec.title;
+    this.enabledLabel.textContent = spec.enabledLabel ?? "Enabled";
+    if (spec.enabledDescription) {
+      this.enabledInput.setAttribute("aria-describedby", enabledDescriptionId(kind));
+    } else {
+      this.enabledInput.removeAttribute("aria-describedby");
+    }
     this.renderControls(kind);
 
     const current = this.currentDraftOrStyle(kind);
@@ -592,7 +612,15 @@ export class MobileRasterEffectsSheetController {
     this.controls.clear();
     this.descriptors.clear();
     const fragment = this.options.document.createDocumentFragment();
-    for (const descriptor of MOBILE_RASTER_EFFECT_SPECS[kind].controls) {
+    const spec: MobileRasterEffectSpec = MOBILE_RASTER_EFFECT_SPECS[kind];
+    if (spec.enabledDescription) {
+      const helper = this.options.document.createElement("p");
+      helper.id = enabledDescriptionId(kind);
+      helper.className = "mobile-raster-effect-enabled-help";
+      helper.textContent = spec.enabledDescription;
+      fragment.append(helper);
+    }
+    for (const descriptor of spec.controls) {
       if (descriptor.type === "group") {
         const heading = this.options.document.createElement("h3");
         heading.className = "mobile-raster-effect-group";
@@ -721,7 +749,11 @@ export class MobileRasterEffectsSheetController {
     const kind = this.activeKind;
     const record = styleRecord(style);
     this.enabledInput.checked = style.enabled;
-    this.enabledInput.setAttribute("aria-label", `${MOBILE_RASTER_EFFECT_SPECS[kind].title} enabled`);
+    const spec: MobileRasterEffectSpec = MOBILE_RASTER_EFFECT_SPECS[kind];
+    this.enabledInput.setAttribute(
+      "aria-label",
+      spec.enabledLabel ?? `${spec.title} enabled`,
+    );
 
     for (const descriptor of MOBILE_RASTER_EFFECT_SPECS[kind].controls) {
       if (descriptor.type === "group") continue;

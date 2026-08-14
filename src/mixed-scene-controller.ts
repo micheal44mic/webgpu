@@ -2026,15 +2026,14 @@ export class MixedSceneController {
               ? { x: 0, y: 1 }
               : null;
       const node = this.selectedTransformNode();
-      const pixelSelectionMove = Boolean(
+      const rasterKeyboardMove = Boolean(
         node
         && isRasterLayerTransformNode(node)
-        && node.scope === "selection"
         && this.transformSessionKind === "raster"
       );
       if (
         arrow
-        && pixelSelectionMove
+        && rasterKeyboardMove
         && !editable
         && !this.activeInteraction
         && !this.transformCommitBusy
@@ -2048,7 +2047,7 @@ export class MixedSceneController {
         } catch (error) {
           this.status.textContent = error instanceof Error
             ? error.message
-            : "Spostamento della Selezione pixel non riuscito.";
+            : "Spostamento del raster non riuscito.";
         }
       } else if (event.key === "Escape") {
         event.preventDefault();

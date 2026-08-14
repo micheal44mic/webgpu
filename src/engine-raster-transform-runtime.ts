@@ -41,9 +41,18 @@ import {
   restorePixelSelectionHistoryMask,
   translatePixelSelection,
 } from "./engine-selection-runtime";
+import { rebuildRasterLayerFromImmutableSource } from "./engine-raster-image-runtime";
+import {
+  cloneRasterLayerSource,
+  composeRasterLayerSourceTransform,
+  rasterLayerSourceBounds,
+  type RasterLayerSource,
+} from "./raster-layer-source";
 
 export const RASTER_LAYER_TRANSFORM_STRATEGY =
-  "native-raster-tile-bbox-transparent-border-scale-aware-latest-frame-single-checkpoint-v3" as const;
+  "immutable-master-cumulative-matrix-native-cache-selection-pixel-checkpoint-v4" as const;
+export const RASTER_SOURCE_MATRIX_TRANSFORM_STRATEGY =
+  "immutable-master-gamma-mips-cumulative-matrix-derived-cache-v1" as const;
 const RASTER_TRANSFORM_TRANSPARENT_GUARD_PX = 2;
 
 interface RasterTransformSharedResources {
@@ -68,6 +77,8 @@ export interface ActiveRasterTransformSession {
   readonly sourceScratchRect: DirtyRect;
   readonly sourceTextureRect: DirtyRect;
   readonly sourcePivot: { x: number; y: number };
+  /** Present only for a whole imported layer; never mutated by preview. */
+  readonly rasterSourceBefore: RasterLayerSource | null;
   readonly scratchTexture: GPUTexture;
   readonly scratchView: GPUTextureView;
   readonly uniformBuffer: GPUBuffer;
@@ -456,7 +467,7 @@ export async function beginRasterLayerTransform(
     if (!hot) throw new Error("Texture hot del raster da trasformare mancante.");
     const sourceRasterBounds = { ...record.contentBounds };
     let sourceBounds = selectionScope ? { ...selectionBounds! } : sourceRasterBounds;
-    if (!selectionScope) {
+    if (!selectionScope && !record.rasterSource) {
       for (let index = engine.historyCursor - 1; index >= 0; index -= 1) {
         const action = engine.historyActions[index];
         if (
@@ -507,8 +518,8 @@ export async function beginRasterLayerTransform(
       throw new Error("Il livello raster non contiene tile trasformabili.");
     }
     const sourcePivot = {
-      x: sourceBounds.x + sourceBounds.width * 0.5,
-      y: sourceBounds.y + sourceBounds.height * 0.5,
+      x: record.rasterSource?.x ?? sourceBounds.x + sourceBounds.width * 0.5,
+      y: record.rasterSource?.y ?? sourceBounds.y + sourceBounds.height * 0.5,
     };
     const sourceTextureRect = {
       x: sourceScratchRect.x - RASTER_TRANSFORM_TRANSPARENT_GUARD_PX,
@@ -586,6 +597,7 @@ export async function beginRasterLayerTransform(
           sourceScratchRect,
           sourceTextureRect,
           sourcePivot,
+          rasterSourceBefore: cloneRasterLayerSource(record.rasterSource),
           scratchTexture,
           scratchView,
           uniformBuffer,
@@ -811,15 +823,17 @@ export function nudgeRasterLayerTransform(
   deltaY: number,
 ): RasterTransformSnapshot {
   const session = engine.activeRasterTransformSession;
-  if (!session || session.scope !== "selection") {
-    throw new Error("Nessuna Selezione pixel pronta per lo spostamento da tastiera.");
+  if (!session) {
+    throw new Error("Nessun raster pronto per lo spostamento da tastiera.");
   }
   if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) {
-    throw new RangeError("Lo spostamento della Selezione pixel deve essere finito.");
+    throw new RangeError("Lo spostamento raster deve essere finito.");
   }
   return updateRasterLayerTransform(engine, {
-    x: session.sourcePivot.x + session.transform.translationX + Math.round(deltaX),
-    y: session.sourcePivot.y + session.transform.translationY + Math.round(deltaY),
+    x: session.sourcePivot.x + session.transform.translationX
+      + (session.scope === "selection" ? Math.round(deltaX) : deltaX),
+    y: session.sourcePivot.y + session.transform.translationY
+      + (session.scope === "selection" ? Math.round(deltaY) : deltaY),
   });
 }
 
@@ -975,10 +989,40 @@ export async function commitRasterLayerTransform(engine: BrushEngine): Promise<b
   let selectionTranslated = false;
   let journalPublished = false;
   let retainSessionForRecovery = false;
+  const rasterSourceBefore = cloneRasterLayerSource(session.rasterSourceBefore);
+  let rasterSourceAfter: RasterLayerSource | null = null;
   try {
     flushPreview(engine, session);
-    await engine.waitForGpuCapped("Commit Trasforma raster", 60_000);
     const record = engine.layerStack.active;
+    if (session.scope === "layer" && session.rasterSourceBefore) {
+      rasterSourceAfter = composeRasterLayerSourceTransform(
+        session.rasterSourceBefore,
+        session.transform,
+      );
+      record.rasterSource = cloneRasterLayerSource(rasterSourceAfter);
+      const dirtyRect = await rebuildRasterLayerFromImmutableSource(engine, record);
+      const exactBounds = rasterLayerSourceBounds(
+        rasterSourceAfter,
+        DOCUMENT_WIDTH,
+        DOCUMENT_HEIGHT,
+      ) as DirtyRect | null;
+      session.resultBounds = copyRect(exactBounds);
+      session.samplingBounds = copyRect(exactBounds);
+      session.mutationBounds = copyRect(exactBounds);
+      session.resultTileMask = record.storageTileMask.slice();
+      if (dirtyRect) {
+        // FIFO submission makes effects/presentation observe the cache rebuilt
+        // from the master without any CPU readback or intermediate bake.
+        engine.submitImmediate([], false, engine.settings, true, null, dirtyRect, false);
+        setAuthoritativeMetadata(engine, exactBounds, session.resultTileMask);
+        record.rasterSource = cloneRasterLayerSource(rasterSourceAfter);
+      }
+    } else if (session.scope === "selection" && session.rasterSourceBefore) {
+      // A pixel selection is intentionally destructive: it is the explicit
+      // rasterization boundary, unlike a whole-layer matrix transform.
+      record.rasterSource = null;
+    }
+    await engine.waitForGpuCapped("Commit Trasforma raster", 60_000);
     if (session.samplingBounds) {
       const hot = engine.requireLayerGpu(session.layerId).hot;
       if (!hot) throw new Error("Texture hot del raster trasformato mancante.");
@@ -1020,10 +1064,14 @@ export async function commitRasterLayerTransform(engine: BrushEngine): Promise<b
       matrix: rasterTransformMatrix(session),
       filterStrategy: session.scope === "selection"
         ? RASTER_SELECTION_TRANSLATE_SHADER_STRATEGY
-        : RASTER_TRANSFORM_SHADER_STRATEGY,
+        : rasterSourceAfter
+          ? RASTER_SOURCE_MATRIX_TRANSFORM_STRATEGY
+          : RASTER_TRANSFORM_SHADER_STRATEGY,
       scope: session.scope,
       selectionBefore,
       selectionAfter,
+      rasterSourceBefore,
+      rasterSourceAfter: cloneRasterLayerSource(rasterSourceAfter),
     } as const;
     const action: RasterTransformHistoryAction = session.samplingBounds && seed
       ? {
@@ -1050,7 +1098,9 @@ export async function commitRasterLayerTransform(engine: BrushEngine): Promise<b
         await restorePixelSelectionHistoryMask(engine, selectionBefore);
         selectionTranslated = false;
       }
+      engine.layerStack.active.rasterSource = cloneRasterLayerSource(rasterSourceBefore);
       await restoreOriginalPixels(engine, session);
+      engine.layerStack.active.rasterSource = cloneRasterLayerSource(rasterSourceBefore);
     } catch (restoreError) {
       rollbackError = restoreError;
       retainSessionForRecovery = true;

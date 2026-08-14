@@ -32,6 +32,7 @@ export const PROJECT_STORAGE_MAX_LAYERS = 16 as const;
 export const PROJECT_STORAGE_MAX_TITLE_LENGTH = 80 as const;
 export const PROJECT_STORAGE_MAX_THUMBNAIL_BYTES = 4 * 1024 * 1024;
 export const PROJECT_STORAGE_MAX_CHUNK_BYTES = 64 * 1024 * 1024;
+export const PROJECT_STORAGE_MAX_RASTER_SOURCE_BYTES = 64 * 1024 * 1024;
 export const PROJECT_STORAGE_QUOTA_RESERVE_BYTES = 16 * 1024 * 1024;
 
 const PROJECT_STORE = "projects";
@@ -132,6 +133,22 @@ export interface ProjectLayerPixelsV1 {
   readonly generation: number;
 }
 
+/** Encoded immutable master and cumulative matrix for one imported raster. */
+export interface ProjectRasterLayerSourceV1 {
+  readonly schemaVersion: typeof PROJECT_DOCUMENT_SCHEMA_VERSION;
+  readonly assetId: string;
+  readonly sourceName: string;
+  readonly mimeType: string;
+  readonly sourceBytes: number;
+  readonly width: number;
+  readonly height: number;
+  readonly x: number;
+  readonly y: number;
+  readonly scale: number;
+  readonly rotation: number;
+  readonly blob: Blob;
+}
+
 /** Structured-clone-safe equivalent of the engine's CPU-side LayerRecord. */
 export interface ProjectLayerV1 {
   readonly schemaVersion: typeof PROJECT_DOCUMENT_SCHEMA_VERSION;
@@ -145,6 +162,8 @@ export interface ProjectLayerV1 {
   readonly storageTileMask: Uint32Array;
   readonly hasContent: boolean;
   readonly noiseMipSmoothing: boolean;
+  /** Optional for backward-compatible V1 manifests saved before source retention. */
+  readonly rasterSource?: ProjectRasterLayerSourceV1 | null;
   readonly strokeStyle: RasterStrokeStyle;
   readonly bevelStyle: RasterBevelStyle;
   readonly outerShadowStyle: RasterOuterShadowStyle;
@@ -793,6 +812,31 @@ function assertLayer(
   }
   assertBoolean(value.hasContent, `${path}.hasContent`);
   assertBoolean(value.noiseMipSmoothing, `${path}.noiseMipSmoothing`);
+  if (value.rasterSource !== undefined && value.rasterSource !== null) {
+    const source = value.rasterSource;
+    if (!isRecord(source)) fail(`${path}.rasterSource`, "must be an object or null");
+    assertSchemaVersion(source.schemaVersion, `${path}.rasterSource.schemaVersion`);
+    assertString(source.assetId, `${path}.rasterSource.assetId`, 256);
+    assertString(source.sourceName, `${path}.rasterSource.sourceName`, 512);
+    assertString(source.mimeType, `${path}.rasterSource.mimeType`, 256);
+    assertNonNegativeInteger(source.sourceBytes, `${path}.rasterSource.sourceBytes`);
+    if ((source.sourceBytes as number) > PROJECT_STORAGE_MAX_RASTER_SOURCE_BYTES) {
+      fail(`${path}.rasterSource.sourceBytes`, "exceeds the raster source size limit");
+    }
+    assertPositiveInteger(source.width, `${path}.rasterSource.width`);
+    assertPositiveInteger(source.height, `${path}.rasterSource.height`);
+    assertFinite(source.x, `${path}.rasterSource.x`);
+    assertFinite(source.y, `${path}.rasterSource.y`);
+    assertFinite(source.scale, `${path}.rasterSource.scale`);
+    if ((source.scale as number) <= 0) fail(`${path}.rasterSource.scale`, "must be positive");
+    assertFinite(source.rotation, `${path}.rasterSource.rotation`);
+    if (!(source.blob instanceof Blob)) {
+      fail(`${path}.rasterSource.blob`, "must be a Blob");
+    }
+    if (source.blob.size !== source.sourceBytes) {
+      fail(`${path}.rasterSource.blob`, "size must match sourceBytes");
+    }
+  }
   if (!(value.storageTileMask instanceof Uint32Array)) {
     fail(`${path}.storageTileMask`, "must be a Uint32Array");
   }
@@ -1256,7 +1300,12 @@ export function validateLoadedProject(
     plainChunks.push(value as unknown as ProjectChunkWriteV1);
   });
   assertChunkSetMatchesSnapshot(plainChunks, manifest.snapshot, "project.chunks");
+  const rasterSourceBytes = manifest.snapshot.layers.reduce(
+    (sum, layer) => sum + (layer.rasterSource?.blob.size ?? 0),
+    0,
+  );
   const storedBytes = plainChunks.reduce((sum, chunk) => sum + chunk.storedBytes, 0)
+    + rasterSourceBytes
     + (summary.thumbnail?.size ?? 0);
   if (storedBytes !== summary.storedBytes) {
     fail("project.summary.storedBytes", "does not match chunks and thumbnail");
@@ -1266,6 +1315,10 @@ export function validateLoadedProject(
 export function estimateProjectSaveBytes(request: ProjectSaveRequestV1): number {
   validateProjectSaveRequest(request);
   return request.chunks.reduce((total, chunk) => total + chunk.storedBytes, 0)
+    + request.snapshot.layers.reduce(
+      (total, layer) => total + (layer.rasterSource?.blob.size ?? 0),
+      0,
+    )
     + (request.thumbnail?.size ?? 0);
 }
 
@@ -1514,6 +1567,10 @@ function materializeGeneration(
     documentHeight: snapshot.document.height,
     layerCount: snapshot.layers.length,
     storedBytes: chunks.reduce((total, chunk) => total + chunk.storedBytes, 0)
+      + snapshot.layers.reduce(
+        (total, layer) => total + (layer.rasterSource?.blob.size ?? 0),
+        0,
+      )
       + (thumbnail?.size ?? 0),
     thumbnail,
   };

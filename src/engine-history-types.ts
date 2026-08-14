@@ -26,6 +26,7 @@ import type { RasterInnerShadowStyle, RasterOuterShadowStyle } from "./shadow-co
 import type { RasterColorOverlayStyle } from "./raster-color-overlay-core";
 import type { RasterNoiseChannels, RasterNoiseStyle } from "./noise-core";
 import type { LiquifyMode } from "./liquify-core";
+import type { RasterLayerSource } from "./raster-layer-source";
 
 export interface SelectionHistoryMaskSnapshot {
   readonly revision: number;
@@ -42,6 +43,9 @@ export interface RasterHistoryAction {
   id: number;
   kind: "stroke" | "fill" | "clear";
   layerId: number;
+  /** Filled atomically when this edit rasterizes an imported source layer. */
+  rasterSourceBefore?: RasterLayerSource | null;
+  rasterSourceAfter?: RasterLayerSource | null;
 }
 
 export interface VectorHistoryAction {
@@ -154,6 +158,8 @@ export interface RasterImportHistoryAction extends RasterHistoryCheckpoint {
   seed: LayerColdStorageResources;
   baseBounds: DirtyRect;
   source: RasterImportSourceMetadata;
+  /** Immutable master provenance retained even while the layer is detached. */
+  rasterSource: RasterLayerSource;
 }
 
 /**
@@ -276,9 +282,10 @@ export type RasterTransformMatrix = readonly [
 ];
 
 /**
- * A raster transform stores its exact post-Apply tiled pixels. The affine
- * matrix is diagnostic/UI metadata; Undo/Redo hydrates `seed` and never
- * resamples the layer a second time.
+ * A raster transform stores its exact post-Apply cache for deterministic
+ * Undo/Redo. For an imported source-backed layer the before/after source
+ * matrices remain authoritative; the checkpoint is only a native Paint/Fill
+ * cache and subsequent transforms rebuild from the immutable master.
  */
 interface RasterTransformHistoryActionMetadata {
   id: number;
@@ -292,6 +299,8 @@ interface RasterTransformHistoryActionMetadata {
   scope: "layer" | "selection";
   selectionBefore: SelectionHistoryMaskSnapshot | null;
   selectionAfter: SelectionHistoryMaskSnapshot | null;
+  rasterSourceBefore: RasterLayerSource | null;
+  rasterSourceAfter: RasterLayerSource | null;
 }
 
 export type RasterTransformHistoryAction = RasterTransformHistoryActionMetadata & (
@@ -316,6 +325,8 @@ interface RasterFilterHistoryActionCommon extends RasterHistoryCheckpoint {
   kind: "raster-filter";
   seed: LayerColdStorageResources;
   baseBounds: DirtyRect;
+  rasterSourceBefore?: RasterLayerSource | null;
+  rasterSourceAfter?: RasterLayerSource | null;
 }
 
 export type RasterFilterHistoryAction = RasterFilterHistoryActionCommon & (

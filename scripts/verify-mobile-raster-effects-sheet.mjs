@@ -103,6 +103,24 @@ assert.deepEqual(
   },
   "all mobile effect titles must remain in English",
 );
+const colorOverlaySpec = MOBILE_RASTER_EFFECT_SPECS["color-overlay"];
+assert.equal(
+  colorOverlaySpec.enabledLabel,
+  "Recolor all non-transparent pixels",
+  "Color Overlay must explain that the existing enabled toggle recolors the full alpha mask",
+);
+assert.equal(
+  colorOverlaySpec.enabledDescription,
+  "Applies the selected color to every pixel with alpha above 0. "
+    + "Fully transparent pixels stay transparent; existing alpha is preserved. "
+    + "Opacity controls the recolor strength.",
+  "Color Overlay must explain alpha preservation and opacity semantics",
+);
+assert.equal(
+  controlKeys("color-overlay").includes("enabled"),
+  false,
+  "the explicit recolor checkbox must reuse style.enabled instead of adding a second field",
+);
 for (const [kind, spec] of Object.entries(MOBILE_RASTER_EFFECT_SPECS)) {
   assert.equal(
     spec.expandable,
@@ -282,6 +300,7 @@ for (const id of [
   "mobileRasterEffectTitle",
   "mobileRasterEffectEnabledControl",
   "mobileRasterEffectEnabled",
+  "mobileRasterEffectEnabledLabel",
   "mobileRasterEffectScroll",
   "mobileRasterEffectContent",
 ]) {
@@ -291,6 +310,26 @@ assert.match(
   sheetMarkup,
   /class="mobile-tools-sheet mobile-raster-effect-sheet"[\s\S]*?aria-hidden="true"[\s\S]*?data-state="closed"[\s\S]*?data-snap="peek"/,
   "the shared sheet must start closed at the compact snap",
+);
+assert.match(
+  controllerSource,
+  /this\.enabledLabel\.textContent = spec\.enabledLabel \?\? "Enabled";/,
+  "the shared enabled checkbox must show the Color Overlay-specific label",
+);
+assert.match(
+  controllerSource,
+  /this\.enabledInput\.setAttribute\("aria-describedby", enabledDescriptionId\(kind\)\);/,
+  "the Color Overlay checkbox must expose its helper to assistive technology",
+);
+assert.match(
+  controllerSource,
+  /this\.enabledInput\.checked = style\.enabled;/,
+  "the explicit recolor checkbox must remain bound to the existing enabled field",
+);
+assert.match(
+  css,
+  /\.mobile-raster-effect-enabled-help\s*\{[\s\S]*?line-height:\s*1\.45;/,
+  "the recolor helper must have a readable mobile treatment",
 );
 
 for (const title of ["Color Overlay", "Outer Shadow", "Inner Shadow", "Bevel"]) {

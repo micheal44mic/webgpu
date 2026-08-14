@@ -163,6 +163,36 @@ const { request, bytes, tileBytes } = projectRequest();
 validateProjectSaveRequest(request);
 assert.equal(estimateProjectSaveBytes(request), tileBytes + 4);
 
+const immutableMasterBytes = Uint8Array.of(137, 80, 78, 71, 13, 10, 26, 10);
+const sourceBacked = projectRequest("Source-backed raster");
+sourceBacked.request.snapshot.layers[0].rasterSource = {
+  schemaVersion: VERSION,
+  assetId: "raster-layer-source-1",
+  sourceName: "mockup.png",
+  mimeType: "image/png",
+  sourceBytes: immutableMasterBytes.byteLength,
+  width: 800,
+  height: 600,
+  x: 540.5,
+  y: 959.5,
+  scale: 0.75,
+  rotation: 0.125,
+  blob: new Blob([immutableMasterBytes], { type: "image/png" }),
+};
+validateProjectSaveRequest(sourceBacked.request);
+assert.equal(
+  estimateProjectSaveBytes(sourceBacked.request),
+  sourceBacked.tileBytes + 4 + immutableMasterBytes.byteLength,
+  "the encoded immutable master must be included in storage accounting",
+);
+const invalidRasterSource = structuredClone(sourceBacked.request);
+invalidRasterSource.snapshot.layers[0].rasterSource.sourceBytes += 1;
+assert.throws(
+  () => validateProjectSaveRequest(invalidRasterSource),
+  ProjectStorageValidationError,
+  "source metadata cannot claim a byte size different from its Blob",
+);
+
 // V1 readers must continue accepting legacy RGBA8 projects. Restore migrates
 // their normalized linear-premultiplied channels to the permanent RGBA16F
 // document format; the original stored generation remains untouched.
@@ -318,6 +348,28 @@ assert.equal(await storage.deleteProject(first.id), false);
 assert.equal(await storage.loadProject(first.id), null);
 assert.equal((await secondInstance.listProjects()).length, 0);
 
+const sourceSummary = await storage.saveProject(sourceBacked.request);
+assert.equal(
+  sourceSummary.storedBytes,
+  sourceBacked.tileBytes + 4 + immutableMasterBytes.byteLength,
+);
+const loadedSource = await storage.loadProject(sourceSummary.id);
+assert.ok(loadedSource);
+validateLoadedProject(loadedSource);
+const loadedRasterSource = loadedSource.manifest.snapshot.layers[0].rasterSource;
+assert.ok(loadedRasterSource?.blob instanceof Blob);
+assert.deepEqual(
+  [...new Uint8Array(await loadedRasterSource.blob.arrayBuffer())],
+  [...immutableMasterBytes],
+  "save/load must retain the exact encoded master bytes",
+);
+assert.deepEqual(
+  [loadedRasterSource.x, loadedRasterSource.y, loadedRasterSource.scale, loadedRasterSource.rotation],
+  [540.5, 959.5, 0.75, 0.125],
+  "save/load must retain the cumulative transform matrix parameters",
+);
+assert.equal(await storage.deleteProject(sourceSummary.id), true);
+
 const source = readFileSync(new URL("../src/project-storage.ts", import.meta.url), "utf8");
 const runtimeSource = readFileSync(
   new URL("../src/engine-project-runtime.ts", import.meta.url),
@@ -358,6 +410,8 @@ assert.match(
   /for \(const chunk of persisted\.chunks\)[\s\S]*?rgba8UnormToRgba16FloatBytes\(restored\)/,
   "legacy RGBA8 restore must migrate one persisted chunk at a time",
 );
+assert.match(runtimeSource, /sourceResource\.sourceBlob/);
+assert.match(runtimeSource, /installRasterLayerSourceResource\(/);
 
 storage.close();
 secondInstance.close();

@@ -38,6 +38,11 @@ import {
   type ProjectLoadResultV1,
   type ProjectSnapshotV1,
 } from "./project-storage";
+import {
+  installRasterLayerSourceResource,
+  type RasterImageGpuResource,
+} from "./engine-raster-image-runtime";
+import { cloneRasterLayerSource } from "./raster-layer-source";
 
 export interface CapturedProjectDocumentV1 {
   readonly snapshot: ProjectSnapshotV1;
@@ -171,9 +176,17 @@ async function captureLayerCompressed(
 }
 
 function projectLayerMetadata(
+  engine: BrushEngine,
   record: LayerRecord,
   pixels: ProjectLayerPixelsV1 | null,
 ): ProjectLayerV1 {
+  const source = record.rasterSource;
+  const sourceResource = source
+    ? engine.rasterImageGpuResources.get(source.document.assetId)
+    : null;
+  if (source && !sourceResource) {
+    throw new Error(`Immutable raster source ${source.document.assetId} is unavailable.`);
+  }
   return {
     schemaVersion: PROJECT_DOCUMENT_SCHEMA_VERSION,
     id: record.id,
@@ -192,6 +205,22 @@ function projectLayerMetadata(
       : record.storageTileMask.slice(),
     hasContent: record.hasContent,
     noiseMipSmoothing: record.noiseMipSmoothing,
+    rasterSource: source && sourceResource
+      ? {
+        schemaVersion: PROJECT_DOCUMENT_SCHEMA_VERSION,
+        assetId: source.document.assetId,
+        sourceName: source.document.sourceName,
+        mimeType: source.document.mimeType,
+        sourceBytes: source.document.sourceBytes,
+        width: source.document.width,
+        height: source.document.height,
+        x: source.x,
+        y: source.y,
+        scale: source.scale,
+        rotation: source.rotation,
+        blob: sourceResource.sourceBlob,
+      }
+      : null,
     strokeStyle: structuredClone(record.strokeStyle),
     bevelStyle: structuredClone(record.bevelStyle),
     outerShadowStyle: structuredClone(record.outerShadowStyle),
@@ -222,7 +251,7 @@ export async function captureProjectDocument(
     const chunks: ProjectChunkWriteV1[] = [];
     for (const record of engine.layerStack.layers) {
       if (!record.hasContent) {
-        layers.push(projectLayerMetadata(record, null));
+        layers.push(projectLayerMetadata(engine, record, null));
         continue;
       }
       const compressed = await captureLayerCompressed(
@@ -231,7 +260,7 @@ export async function captureProjectDocument(
         engine.requireLayerGpu(record.id),
       );
       const captured = projectPixelsFromCompressed(record.id, compressed);
-      layers.push(projectLayerMetadata(record, captured.pixels));
+      layers.push(projectLayerMetadata(engine, record, captured.pixels));
       chunks.push(...captured.writes);
     }
 
@@ -287,6 +316,22 @@ function layerRecordFromProject(layer: ProjectLayerV1): LayerRecord {
     storageTileMask: layer.storageTileMask.slice(),
     hasContent: layer.hasContent,
     noiseMipSmoothing: layer.noiseMipSmoothing,
+    rasterSource: layer.rasterSource
+      ? {
+        document: {
+          assetId: layer.rasterSource.assetId,
+          sourceName: layer.rasterSource.sourceName,
+          mimeType: layer.rasterSource.mimeType,
+          sourceBytes: layer.rasterSource.sourceBytes,
+          width: layer.rasterSource.width,
+          height: layer.rasterSource.height,
+        },
+        x: layer.rasterSource.x,
+        y: layer.rasterSource.y,
+        scale: layer.rasterSource.scale,
+        rotation: layer.rasterSource.rotation,
+      }
+      : null,
     strokeStyle: structuredClone(layer.strokeStyle),
     bevelStyle: structuredClone(layer.bevelStyle),
     outerShadowStyle: structuredClone(layer.outerShadowStyle),
@@ -510,7 +555,24 @@ export async function restoreProjectDocument(
   }
 
   let reusedHotCommitted = false;
+  const installedRasterSources: RasterImageGpuResource[] = [];
   try {
+    const installedAssetIds = new Set<string>();
+    for (let index = 0; index < records.length; index += 1) {
+      const source = records[index].rasterSource;
+      const persisted = snapshot.layers[index].rasterSource;
+      if (!source || !persisted || installedAssetIds.has(source.document.assetId)) continue;
+      const wasAlreadyResident = engine.rasterImageGpuResources.has(
+        source.document.assetId,
+      );
+      const resource = await installRasterLayerSourceResource(
+        engine,
+        cloneRasterLayerSource(source)!,
+        persisted.blob,
+      );
+      if (!wasAlreadyResident) installedRasterSources.push(resource);
+      installedAssetIds.add(resource.assetId);
+    }
     const activeRecord = recordById.get(snapshot.activeRasterLayerId);
     if (!activeRecord) throw new Error("The saved active layer is missing.");
     const activeGpu = nextGpu.get(activeRecord.id)!;
@@ -561,6 +623,12 @@ export async function restoreProjectDocument(
     );
     engine.callbacks.onViewChange?.(engine.getVectorTextViewState());
   } catch (error) {
+    for (const resource of installedRasterSources) {
+      if (engine.rasterImageGpuResources.get(resource.assetId) !== resource) continue;
+      engine.rasterImageGpuResources.delete(resource.assetId);
+      resource.uniformBuffer.destroy();
+      resource.texture.destroy();
+    }
     if (!reusedHotCommitted) {
       for (const gpu of nextGpu.values()) destroyLayerGpuResources(engine, gpu);
     }

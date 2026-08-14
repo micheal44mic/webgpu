@@ -12,7 +12,7 @@ import type { BrushEngine } from "./brush-engine";
 import type {
   MixedSceneItem,
 } from "./mixed-scene-stack";
-import type { RasterImageNode } from "./scene-image-model";
+import type { RasterImageDocument, RasterImageNode } from "./scene-image-model";
 import {
   decodeRasterImage,
   releaseDecodedRasterImage,
@@ -26,6 +26,7 @@ import {
 import {
   RASTER_IMAGE_LAYER_IMPORT_STRATEGY,
   rasterImageLayerBlitShader,
+  rasterImageLayerRebuildShader,
   rasterImageLayerUploadShader,
 } from "./raster-image-layer-import-shader";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
@@ -64,6 +65,11 @@ import {
   requireMixedSceneStack,
 } from "./engine-vector-text-runtime";
 import { historyColdSeedResidentBytes } from "./history-cold-seed";
+import {
+  cloneRasterLayerSource,
+  rasterLayerSourceBounds,
+  type RasterLayerSource,
+} from "./raster-layer-source";
 
 export const RASTER_IMAGE_GPU_STORAGE_STRATEGY =
   RASTER_IMAGE_LAYER_IMPORT_STRATEGY;
@@ -90,6 +96,7 @@ export interface NativeRasterImageHistorySeed {
   readonly baseBounds: DirtyRect;
   readonly baseTileMask: Uint32Array;
   readonly source: RasterImportSourceMetadata;
+  readonly rasterSource: RasterLayerSource;
 }
 
 export interface NativeRasterImageImportResult {
@@ -108,13 +115,15 @@ export interface NativeRasterImageImportResult {
 
 export type RasterImageImportResult = NativeRasterImageImportResult;
 
-/** Compatibility shape while the old semantic-image fields are removed. */
+/** Immutable master pixels retained separately from the native raster cache. */
 export interface RasterImageGpuResource {
   readonly assetId: string;
+  readonly sourceBlob: Blob;
   readonly texture: GPUTexture;
   readonly view: GPUTextureView;
   readonly uniformBuffer: GPUBuffer;
   readonly bindGroup: GPUBindGroup;
+  readonly rebuildBindGroup: GPUBindGroup;
   readonly width: number;
   readonly height: number;
   readonly mipLevelCount: number;
@@ -126,9 +135,11 @@ export interface RasterImageGpuResource {
 interface NativeImportPipelines {
   readonly sourceLayout: GPUBindGroupLayout;
   readonly blitLayout: GPUBindGroupLayout;
+  readonly rebuildLayout: GPUBindGroupLayout;
   readonly premultiplyPipeline: GPURenderPipeline;
   readonly mipmapPipeline: GPURenderPipeline;
   readonly blitPipeline: GPURenderPipeline;
+  readonly rebuildPipeline: GPURenderPipeline;
   readonly sampler: GPUSampler;
 }
 
@@ -140,6 +151,14 @@ interface TransientImageTextures {
 }
 
 const pipelineCache = new WeakMap<GPUDevice, Map<LayerFormat, NativeImportPipelines>>();
+
+function allocateRasterLayerAssetId(engine: BrushEngine): string {
+  let assetId: string;
+  do {
+    assetId = `raster-layer-source-${engine.nextRasterImageAssetId++}`;
+  } while (engine.rasterImageGpuResources.has(assetId));
+  return assetId;
+}
 
 function outputBoundsForImage(width: number, height: number): DirtyRect {
   const scale = Math.min(1, DOCUMENT_WIDTH / width, DOCUMENT_HEIGHT / height);
@@ -162,14 +181,12 @@ function tileCountForBounds(bounds: DirtyRect): number {
 function requiredImportMipLevelCount(
   width: number,
   height: number,
-  bounds: DirtyRect,
+  _bounds: DirtyRect,
 ): number {
-  const reduction = Math.max(width / bounds.width, height / bounds.height, 1);
-  const highestSampledLevel = Math.ceil(Math.log2(reduction));
-  return Math.min(
-    rasterImageMipLevelCount(width, height),
-    highestSampledLevel + 1,
-  );
+  // Keep the complete master pyramid. Future matrix-only transforms may make
+  // the element much smaller than its initial placement and must never derive
+  // a missing tier from the already-resampled document cache.
+  return rasterImageMipLevelCount(width, height);
 }
 
 function nativeRasterImportResidentBytes(engine: BrushEngine): number {
@@ -199,13 +216,15 @@ function nativeRasterImportResidentBytes(engine: BrushEngine): number {
 function assertNativeRasterImportResidentBudget(
   engine: BrushEngine,
   bounds: DirtyRect,
+  immutableSourceBytes = 0,
 ): void {
   const bytesPerPixel = engine.layerFormat === "rgba16float" ? 8 : 4;
   const newPersistentBytes = DOCUMENT_WIDTH * DOCUMENT_HEIGHT * bytesPerPixel
     + tileCountForBounds(bounds)
       * LAYER_STORAGE_TILE_WIDTH
       * LAYER_STORAGE_TILE_HEIGHT
-      * bytesPerPixel;
+      * bytesPerPixel
+    + immutableSourceBytes;
   const resultingImportResidentBytes = nativeRasterImportResidentBytes(engine)
     + newPersistentBytes;
   if (resultingImportResidentBytes > RASTER_IMAGE_MAXIMUM_TOTAL_GPU_BYTES) {
@@ -236,6 +255,10 @@ async function ensureNativeImportPipelines(
         label: "Native raster import layer blit WGSL",
         code: rasterImageLayerBlitShader,
       });
+      const rebuildModule = engine.device.createShaderModule({
+        label: "Immutable raster master document rebuild WGSL",
+        code: rasterImageLayerRebuildShader,
+      });
       const sourceLayout = engine.device.createBindGroupLayout({
         label: "Native raster import source layout",
         entries: [{
@@ -259,6 +282,26 @@ async function ensureNativeImportPipelines(
           },
         ],
       });
+      const rebuildLayout = engine.device.createBindGroupLayout({
+        label: "Immutable raster master rebuild layout",
+        entries: [
+          {
+            binding: 0,
+            visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+            buffer: { type: "uniform" },
+          },
+          {
+            binding: 1,
+            visibility: GPUShaderStage.FRAGMENT,
+            texture: { sampleType: "float", viewDimension: "2d" },
+          },
+          {
+            binding: 2,
+            visibility: GPUShaderStage.FRAGMENT,
+            sampler: { type: "filtering" },
+          },
+        ],
+      });
       const uploadPipelineLayout = engine.device.createPipelineLayout({
         label: "Native raster import upload pipeline layout",
         bindGroupLayouts: [sourceLayout],
@@ -266,6 +309,10 @@ async function ensureNativeImportPipelines(
       const blitPipelineLayout = engine.device.createPipelineLayout({
         label: "Native raster import blit pipeline layout",
         bindGroupLayouts: [blitLayout],
+      });
+      const rebuildPipelineLayout = engine.device.createPipelineLayout({
+        label: "Immutable raster master rebuild pipeline layout",
+        bindGroupLayouts: [rebuildLayout],
       });
       const premultiplyPipeline = engine.device.createRenderPipeline({
         label: "Native raster import linear premultiply",
@@ -300,6 +347,17 @@ async function ensureNativeImportPipelines(
         },
         primitive: { topology: "triangle-strip", cullMode: "none" },
       });
+      const rebuildPipeline = engine.device.createRenderPipeline({
+        label: `Immutable raster master rebuild into ${engine.layerFormat}`,
+        layout: rebuildPipelineLayout,
+        vertex: { module: rebuildModule, entryPoint: "vertexMain" },
+        fragment: {
+          module: rebuildModule,
+          entryPoint: "fragmentMain",
+          targets: [{ format: engine.layerFormat }],
+        },
+        primitive: { topology: "triangle-strip", cullMode: "none" },
+      });
       const sampler = engine.device.createSampler({
         label: "Native raster import trilinear sampler",
         addressModeU: "clamp-to-edge",
@@ -312,9 +370,11 @@ async function ensureNativeImportPipelines(
       return {
         sourceLayout,
         blitLayout,
+        rebuildLayout,
         premultiplyPipeline,
         mipmapPipeline,
         blitPipeline,
+        rebuildPipeline,
         sampler,
       };
     },
@@ -347,7 +407,7 @@ async function createTransientImageTextures(
       });
       transaction.deferRollback(() => straightTexture.destroy());
       const premultipliedTexture = engine.device.createTexture({
-        label: `Native import linear-premultiplied RGBA16F mips ${width}×${height}`,
+        label: `Immutable gamma-premultiplied RGBA16F master mips ${width}×${height}`,
         size: { width, height, depthOrArrayLayers: 1 },
         mipLevelCount,
         format: "rgba16float",
@@ -400,7 +460,7 @@ async function encodeBitmapIntoLayer(
       entries: [{ binding: 0, resource: transient.straightTexture.createView() }],
     });
     const premultiplyPass = encoder.beginRenderPass({
-      label: "Native import sRGB straight to linear-premultiplied base",
+      label: "Native import straight sRGB to gamma-premultiplied master base",
       colorAttachments: [{
         view: transient.premultipliedTexture.createView({
           baseMipLevel: 0,
@@ -476,6 +536,299 @@ async function encodeBitmapIntoLayer(
   }
 }
 
+async function encodeBitmapToImmutableMaster(
+  engine: BrushEngine,
+  bitmap: ImageBitmap,
+): Promise<TransientImageTextures> {
+  const pipelines = await ensureNativeImportPipelines(engine);
+  const transient = await createTransientImageTextures(
+    engine,
+    bitmap.width,
+    bitmap.height,
+    outputBoundsForImage(bitmap.width, bitmap.height),
+  );
+  try {
+    engine.device.queue.copyExternalImageToTexture(
+      { source: bitmap },
+      {
+        texture: transient.straightTexture,
+        colorSpace: "srgb",
+        premultipliedAlpha: false,
+      },
+      { width: bitmap.width, height: bitmap.height, depthOrArrayLayers: 1 },
+    );
+    const encoder = engine.device.createCommandEncoder({
+      label: `Restore immutable raster master ${bitmap.width}×${bitmap.height}`,
+    });
+    const baseBindGroup = engine.device.createBindGroup({
+      label: "Restored immutable raster master base bind group",
+      layout: pipelines.sourceLayout,
+      entries: [{ binding: 0, resource: transient.straightTexture.createView() }],
+    });
+    const basePass = encoder.beginRenderPass({
+      label: "Restored straight sRGB to gamma-premultiplied master base",
+      colorAttachments: [{
+        view: transient.premultipliedTexture.createView({
+          baseMipLevel: 0,
+          mipLevelCount: 1,
+        }),
+        loadOp: "clear",
+        storeOp: "store",
+        clearValue: { r: 0, g: 0, b: 0, a: 0 },
+      }],
+    });
+    basePass.setPipeline(pipelines.premultiplyPipeline);
+    basePass.setBindGroup(0, baseBindGroup);
+    basePass.draw(3, 1, 0, 0);
+    basePass.end();
+    for (let level = 1; level < transient.mipLevelCount; level += 1) {
+      const bindGroup = engine.device.createBindGroup({
+        label: `Restored immutable raster master mip ${level} bind group`,
+        layout: pipelines.sourceLayout,
+        entries: [{
+          binding: 0,
+          resource: transient.premultipliedTexture.createView({
+            baseMipLevel: level - 1,
+            mipLevelCount: 1,
+          }),
+        }],
+      });
+      const pass = encoder.beginRenderPass({
+        label: `Restored immutable raster master exact mip ${level}`,
+        colorAttachments: [{
+          view: transient.premultipliedTexture.createView({
+            baseMipLevel: level,
+            mipLevelCount: 1,
+          }),
+          loadOp: "clear",
+          storeOp: "store",
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+        }],
+      });
+      pass.setPipeline(pipelines.mipmapPipeline);
+      pass.setBindGroup(0, bindGroup);
+      pass.draw(3, 1, 0, 0);
+      pass.end();
+    }
+    engine.device.queue.submit([encoder.finish()]);
+    return transient;
+  } catch (error) {
+    transient.destroy();
+    throw error;
+  }
+}
+
+function createRasterImageGpuResource(
+  engine: BrushEngine,
+  assetId: string,
+  sourceBlob: Blob,
+  source: TransientImageTextures,
+  width: number,
+  height: number,
+  pipelines: NativeImportPipelines,
+): RasterImageGpuResource {
+  const uniformBuffer = engine.device.createBuffer({
+    label: `Immutable raster master matrix ${assetId}`,
+    size: 32,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  const view = source.premultipliedTexture.createView({
+    label: `Immutable raster master complete mip view ${assetId}`,
+  });
+  const rebuildBindGroup = engine.device.createBindGroup({
+    label: `Immutable raster master rebuild bind group ${assetId}`,
+    layout: pipelines.rebuildLayout,
+    entries: [
+      { binding: 0, resource: { buffer: uniformBuffer } },
+      { binding: 1, resource: view },
+      { binding: 2, resource: pipelines.sampler },
+    ],
+  });
+  return {
+    assetId,
+    sourceBlob,
+    texture: source.premultipliedTexture,
+    view,
+    uniformBuffer,
+    // Semantic image nodes have been removed. Keep this compatibility field
+    // pointing at the same immutable-source binding until that ABI disappears.
+    bindGroup: rebuildBindGroup,
+    rebuildBindGroup,
+    width,
+    height,
+    mipLevelCount: source.mipLevelCount,
+    memoryBytes: rasterImageMipChainBytes(width, height, source.mipLevelCount) + 32,
+    uniformUpload: new Float32Array(8),
+    uniformInitialized: false,
+  };
+}
+
+function initialRasterLayerSource(
+  document: RasterImageDocument,
+  bounds: DirtyRect,
+): RasterLayerSource {
+  return {
+    document: { ...document },
+    x: bounds.x + bounds.width * 0.5,
+    y: bounds.y + bounds.height * 0.5,
+    scale: Math.min(
+      bounds.width / document.width,
+      bounds.height / document.height,
+    ),
+    rotation: 0,
+  };
+}
+
+function writeRasterSourceUniform(
+  engine: BrushEngine,
+  resource: RasterImageGpuResource,
+  source: Readonly<RasterLayerSource>,
+): void {
+  const upload = resource.uniformUpload;
+  upload[0] = Math.fround(source.x);
+  upload[1] = Math.fround(source.y);
+  upload[2] = Math.fround(source.document.width * source.scale * 0.5);
+  upload[3] = Math.fround(source.document.height * source.scale * 0.5);
+  upload[4] = Math.fround(Math.cos(source.rotation));
+  upload[5] = Math.fround(Math.sin(source.rotation));
+  upload[6] = 0;
+  upload[7] = 0;
+  engine.device.queue.writeBuffer(resource.uniformBuffer, 0, upload);
+  resource.uniformInitialized = true;
+}
+
+/**
+ * Rebuilds the active layer's native Paint/Fill cache from its immutable
+ * imported master. The source texture is never a render target.
+ */
+export async function rebuildRasterLayerFromImmutableSource(
+  engine: BrushEngine,
+  record: LayerRecord,
+): Promise<DirtyRect | null> {
+  const source = record.rasterSource;
+  if (!source) throw new Error(`Il livello ${record.name} non ha un master raster immutabile.`);
+  if (engine.layerStack.active.id !== record.id) {
+    throw new Error("La cache raster può essere rigenerata soltanto sul livello attivo.");
+  }
+  const resource = engine.rasterImageGpuResources.get(source.document.assetId);
+  if (!resource) {
+    throw new Error(`Master raster ${source.document.assetId} non disponibile.`);
+  }
+  const hot = engine.requireLayerGpu(record.id).hot;
+  if (!hot) throw new Error("Texture hot del livello raster da rigenerare mancante.");
+  const pipelines = await ensureNativeImportPipelines(engine);
+  const previousBounds = record.contentBounds ? { ...record.contentBounds } : null;
+  const bounds = rasterLayerSourceBounds(source, DOCUMENT_WIDTH, DOCUMENT_HEIGHT);
+  writeRasterSourceUniform(engine, resource, source);
+  const encoder = engine.device.createCommandEncoder({
+    label: `Rebuild raster layer ${record.id} from immutable master`,
+  });
+  const pass = encoder.beginRenderPass({
+    label: `Immutable master to native raster cache ${record.id}`,
+    colorAttachments: [{
+      view: hot.view,
+      loadOp: "clear",
+      storeOp: "store",
+      clearValue: { r: 0, g: 0, b: 0, a: 0 },
+    }],
+  });
+  if (bounds) {
+    pass.setPipeline(pipelines.rebuildPipeline);
+    pass.setBindGroup(0, resource.rebuildBindGroup);
+    pass.draw(4, 1, 0, 0);
+  }
+  pass.end();
+  engine.device.queue.submit([encoder.finish()]);
+
+  record.contentBounds = bounds ? { ...bounds } : null;
+  record.hasContent = Boolean(bounds);
+  record.storageTileMask.fill(0);
+  if (bounds) markLayerStorageRect(record.storageTileMask, bounds);
+  engine.layerContentBounds = bounds ? { ...bounds } : null;
+  engine.layerHasContent = Boolean(bounds);
+  engine.paintDisplayMipValidThroughLevel = 0;
+  engine.presentationCacheNeedsFullRebuild = true;
+  engine.displayDirty = true;
+  engine.requestRender();
+
+  if (!previousBounds) return bounds ? { ...bounds } : null;
+  if (!bounds) return previousBounds;
+  const left = Math.min(previousBounds.x, bounds.x);
+  const top = Math.min(previousBounds.y, bounds.y);
+  const right = Math.max(previousBounds.x + previousBounds.width, bounds.x + bounds.width);
+  const bottom = Math.max(previousBounds.y + previousBounds.height, bounds.y + bounds.height);
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+/** Restores one project/history master without touching any document layer. */
+export async function installRasterLayerSourceResource(
+  engine: BrushEngine,
+  source: Readonly<RasterLayerSource>,
+  sourceBlob: Blob,
+): Promise<RasterImageGpuResource> {
+  const existing = engine.rasterImageGpuResources.get(source.document.assetId);
+  if (existing) {
+    if (
+      existing.width !== source.document.width
+      || existing.height !== source.document.height
+    ) {
+      throw new Error(`Asset raster duplicato incoerente: ${source.document.assetId}.`);
+    }
+    return existing;
+  }
+  if (sourceBlob.size !== source.document.sourceBytes) {
+    throw new Error(`Byte del master raster ${source.document.assetId} incoerenti.`);
+  }
+  let decoded: Awaited<ReturnType<typeof decodeRasterImage>> | null = null;
+  let transient: TransientImageTextures | null = null;
+  let resource: RasterImageGpuResource | null = null;
+  try {
+    decoded = await decodeRasterImage(sourceBlob, {
+      sourceName: source.document.sourceName,
+      limits: {
+        maximumSourceBytes: RASTER_IMAGE_MAXIMUM_ENCODED_BYTES,
+        maximumWidth: engine.device.limits.maxTextureDimension2D,
+        maximumHeight: engine.device.limits.maxTextureDimension2D,
+        maximumPixels: Math.floor(
+          RASTER_IMAGE_MAXIMUM_GPU_BYTES / RASTER_IMAGE_DECODED_BYTES_PER_PIXEL,
+        ),
+      },
+    });
+    if (
+      decoded.metadata.width !== source.document.width
+      || decoded.metadata.height !== source.document.height
+      || decoded.metadata.mimeType !== source.document.mimeType
+    ) {
+      throw new Error(`Metadati del master raster ${source.document.assetId} incoerenti.`);
+    }
+    transient = await encodeBitmapToImmutableMaster(engine, decoded.bitmap);
+    releaseDecodedRasterImage(decoded);
+    decoded = null;
+    await engine.waitForGpuCapped("Ripristino master raster", 60_000);
+    resource = createRasterImageGpuResource(
+      engine,
+      source.document.assetId,
+      sourceBlob.slice(0, sourceBlob.size, source.document.mimeType),
+      transient,
+      source.document.width,
+      source.document.height,
+      await ensureNativeImportPipelines(engine),
+    );
+    transient.straightTexture.destroy();
+    transient = null;
+    engine.rasterImageGpuResources.set(resource.assetId, resource);
+    return resource;
+  } catch (error) {
+    if (decoded) releaseDecodedRasterImage(decoded);
+    transient?.destroy();
+    if (resource) {
+      resource.uniformBuffer.destroy();
+      resource.texture.destroy();
+    }
+    throw error;
+  }
+}
+
 async function restoreOriginalActiveAfterFailure(
   engine: BrushEngine,
   originalActiveId: number,
@@ -545,7 +898,7 @@ async function importRasterImageFileUnlocked(
             + `${(transientGpuBytes / 1024 / 1024).toFixed(1)} MiB.`,
           );
         }
-        assertNativeRasterImportResidentBudget(engine, bounds);
+        assertNativeRasterImportResidentBudget(engine, bounds, sourceMipBytes + 32);
       },
     });
 
@@ -564,7 +917,7 @@ async function importRasterImageFileUnlocked(
         + `richiederebbe ${(decodedTransientGpuBytes / 1024 / 1024).toFixed(1)} MiB.`,
       );
     }
-    assertNativeRasterImportResidentBudget(engine, bounds);
+    assertNativeRasterImportResidentBudget(engine, bounds, decodedMipBytes + 32);
     const scene = requireMixedSceneStack(engine);
     const originalActiveId = engine.layerStack.active.id;
     const selectedKeyBefore = scene.selected.key;
@@ -580,10 +933,12 @@ async function importRasterImageFileUnlocked(
     const excludedNodeBefore = engine.vectorTextPreviewExcludedNodeId;
     const sceneIndex = scene.indexOfKey(selectedKeyBefore) + 1;
     const rasterLayerIndex = scene.rasterIndexForSceneIndex(sceneIndex);
+    const assetId = allocateRasterLayerAssetId(engine);
     let recordId: number | null = null;
     let gpu: LayerGpuResources | null = null;
     let seed: LayerColdStorageResources | null = null;
     let transient: TransientImageTextures | null = null;
+    let resource: RasterImageGpuResource | null = null;
     let sceneInserted = false;
     try {
       engine.persistActiveLayerState();
@@ -621,8 +976,29 @@ async function importRasterImageFileUnlocked(
         1,
         "history",
       );
-      transient.destroy();
+      const document: RasterImageDocument = {
+        assetId,
+        sourceName: metadata.sourceName,
+        mimeType: metadata.mimeType,
+        sourceBytes: metadata.sourceBytes,
+        width: metadata.width,
+        height: metadata.height,
+      };
+      resource = createRasterImageGpuResource(
+        engine,
+        assetId,
+        file.slice(0, file.size, metadata.mimeType),
+        transient,
+        metadata.width,
+        metadata.height,
+        await ensureNativeImportPipelines(engine),
+      );
+      // Mip 0+ now belong to the immutable asset registry. Only the one-shot
+      // browser upload surface can be released.
+      transient.straightTexture.destroy();
       transient = null;
+      engine.rasterImageGpuResources.set(assetId, resource);
+      record.rasterSource = initialRasterLayerSource(document, bounds);
 
       scene.addRasterAboveSelection(record.id);
       sceneInserted = true;
@@ -654,6 +1030,7 @@ async function importRasterImageFileUnlocked(
           width: metadata.width,
           height: metadata.height,
         },
+        rasterSource: cloneRasterLayerSource(record.rasterSource)!,
       };
       const publicResult = Object.freeze({
         layerId: record.id,
@@ -676,6 +1053,12 @@ async function importRasterImageFileUnlocked(
     } catch (error) {
       const rollbackErrors: unknown[] = [];
       transient?.destroy();
+      if (resource) {
+        engine.rasterImageGpuResources.delete(resource.assetId);
+        resource.uniformBuffer.destroy();
+        resource.texture.destroy();
+        resource = null;
+      }
       if (sceneInserted && recordId !== null) {
         try {
           scene.removeRaster(recordId, originalActiveId);

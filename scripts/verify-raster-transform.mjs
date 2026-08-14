@@ -31,6 +31,13 @@ import {
   rasterTransformMipmapShader,
   rasterTransformShader,
 } from "../src/raster-transform-shader.ts";
+import {
+  RASTER_LAYER_SOURCE_STRATEGY,
+  cloneRasterLayerSource,
+  composeRasterLayerSourceTransform,
+  rasterLayerSourceBounds,
+  rasterLayerSourcesEqual,
+} from "../src/raster-layer-source.ts";
 
 assert.equal(
   RASTER_TRANSFORM_MATH_STRATEGY,
@@ -38,11 +45,15 @@ assert.equal(
 );
 assert.equal(
   RASTER_TRANSFORM_SHADER_STRATEGY,
-  "premultiplied-linear-transparent-border-inverse-affine-manual-trilinear-v3",
+  "gamma-box-mips-transparent-border-inverse-affine-discrete-oversampling-v4",
 );
 assert.equal(
   RASTER_SELECTION_TRANSLATE_SHADER_STRATEGY,
   "integer-cut-selection-mask-immutable-source-over-destination-v1",
+);
+assert.equal(
+  RASTER_LAYER_SOURCE_STRATEGY,
+  "immutable-encoded-master-cumulative-document-matrix-derived-raster-cache-v1",
 );
 assert.equal(
   RASTER_TRANSFORM_DOCUMENT_SIZE,
@@ -63,6 +74,49 @@ assert.equal(
 
 const identity = { translationX: 0, translationY: 0, scale: 1, rotation: 0 };
 const pivot = { x: 100, y: 80 };
+const immutableSource = {
+  document: {
+    assetId: "raster-layer-source-7",
+    sourceName: "mockup.png",
+    mimeType: "image/png",
+    sourceBytes: 4096,
+    width: 100,
+    height: 40,
+  },
+  x: 159.382,
+  y: 375.209,
+  scale: 1,
+  rotation: 0,
+};
+const clonedSource = cloneRasterLayerSource(immutableSource);
+assert.ok(clonedSource);
+assert.notEqual(clonedSource, immutableSource);
+assert.notEqual(clonedSource.document, immutableSource.document);
+assert.ok(rasterLayerSourcesEqual(clonedSource, immutableSource));
+const nudgedSource = composeRasterLayerSourceTransform(immutableSource, {
+  translationX: 1,
+  translationY: 0,
+  scale: 1,
+  rotation: 0,
+});
+assert.equal(nudgedSource.x, 160.382, "ArrowRight must add exactly one document unit");
+assert.equal(nudgedSource.y, immutableSource.y);
+assert.equal(immutableSource.x, 159.382, "the immutable source state must not be rewritten");
+assert.ok(!rasterLayerSourcesEqual(nudgedSource, immutableSource));
+assert.deepEqual(
+  rasterLayerSourceBounds({ ...immutableSource, x: 50, y: 20 }),
+  { x: 0, y: 0, width: 100, height: 40 },
+);
+const cumulativeSource = composeRasterLayerSourceTransform(nudgedSource, {
+  translationX: -0.5,
+  translationY: 2,
+  scale: 2,
+  rotation: Math.PI / 2,
+});
+assert.equal(cumulativeSource.x, 159.882);
+assert.equal(cumulativeSource.y, 377.209);
+assert.equal(cumulativeSource.scale, 2);
+assert.ok(Math.abs(cumulativeSource.rotation - Math.PI / 2) < 1e-12);
 assert.deepEqual(rasterTransformPoint({ x: 120, y: 70 }, pivot, identity), {
   x: 120,
   y: 70,
@@ -309,14 +363,17 @@ assert.match(rasterTransformShader, /transparentBorderWeight/);
 assert.match(rasterTransformShader, /textureNumLevels/);
 assert.doesNotMatch(rasterTransformShader, /if \(!insideContent/);
 assert.doesNotMatch(rasterTransformShader, /insideScratch/);
-assert.match(rasterTransformShader, /if \(upperLevel == lowerLevel \|\| lodBlend <= 0\.000001\)/);
-assert.match(rasterTransformShader, /return mix\(lower, upper, lodBlend\)/);
-assert.doesNotMatch(rasterTransformShader, /\.rgb\s*\/|\/\s*[^;]*\.a/);
+assert.match(rasterTransformShader, /floor\(clamp\(/);
+assert.match(rasterTransformShader, /sampleTransparentLevel\(sourceUv, u32\(lod\)\)/);
+assert.doesNotMatch(rasterTransformShader, /lodBlend|upperLevel/);
+assert.match(rasterTransformShader, /encodedCoverage/);
 assert.doesNotMatch(rasterTransformShader, /rgba8unorm|rgba16float/);
 
 assert.match(rasterTransformMipmapShader, /textureLoad\s*\(/);
 assert.match(rasterTransformMipmapShader, /accumulatedWeight/);
 assert.match(rasterTransformMipmapShader, /for \(var [xy] = 0; [xy] < 3/);
+assert.match(rasterTransformMipmapShader, /linearPremultipliedToGamma/);
+assert.match(rasterTransformMipmapShader, /gammaPremultipliedToLinear/);
 assert.doesNotMatch(rasterTransformMipmapShader, /textureSample/);
 assert.doesNotMatch(rasterTransformMipmapShader, /rgba8unorm|rgba16float/);
 
@@ -397,6 +454,10 @@ assert.match(runtimeSource, /selectionOverlaySuppressed = false/);
 assert.match(runtimeSource, /selectionOverlayOffsetX = session\.transform\.translationX/);
 assert.match(runtimeSource, /selectionOverlayOffsetY = session\.transform\.translationY/);
 assert.match(runtimeSource, /export function nudgeRasterLayerTransform/);
+assert.match(runtimeSource, /rebuildRasterLayerFromImmutableSource\(engine, record\)/);
+assert.match(runtimeSource, /composeRasterLayerSourceTransform/);
+assert.match(runtimeSource, /rasterSourceBefore/);
+assert.match(runtimeSource, /rasterSourceAfter/);
 assert.match(controllerSource, /if \(this\.transformCommitBusy \|\| this\.rasterTransformRecoveryOnly\) return/);
 assert.match(controllerSource, /rasterTransformRecoveryOnly/);
 assert.match(
@@ -404,6 +465,7 @@ assert.match(
   /if \(isRasterLayerTransformNode\(node\) && node\.scope === "selection"\) return null/,
 );
 assert.match(controllerSource, /nudgeRasterLayerTransform\(arrow\.x \* step, arrow\.y \* step\)/);
+assert.match(controllerSource, /const rasterKeyboardMove = Boolean/);
 assert.match(controllerSource, /event\.shiftKey \? 10 : 1/);
 assert.match(
   controllerSource,

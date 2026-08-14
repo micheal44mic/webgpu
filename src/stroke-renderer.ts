@@ -1202,7 +1202,17 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   let p10 = quantizedStyledTexel(sourceOrigin + vec2<i32>(1, 0));
   let p01 = quantizedStyledTexel(sourceOrigin + vec2<i32>(0, 1));
   let p11 = quantizedStyledTexel(sourceOrigin + vec2<i32>(1, 1));
-  textureStore(coarseStyledTexture, coarsePosition, (p00 + p10 + p01 + p11) * 0.25);
+  let gammaAverage = (
+    linearPremultipliedToEncodedSrgb(p00)
+    + linearPremultipliedToEncodedSrgb(p10)
+    + linearPremultipliedToEncodedSrgb(p01)
+    + linearPremultipliedToEncodedSrgb(p11)
+  ) * 0.25;
+  textureStore(
+    coarseStyledTexture,
+    coarsePosition,
+    encodedSrgbPremultipliedToLinear(gammaAverage)
+  );
 }
 `;
 }
@@ -1254,6 +1264,23 @@ ${strokeCompositionShaderSource(
 
 fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
   return source + destination * (1.0 - source.a);
+}
+
+fn preserveStyledDarkCoverage(value: vec4<f32>, lod: f32) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001 || alpha >= 0.999999 || lod <= 0.0) {
+    return value;
+  }
+  let straightLinear = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  let straightSrgb = linearToSrgb(straightLinear);
+  let darkness = 1.0 - dot(straightSrgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+  let encodedCoverage = 1.0 - srgbToLinearChannel(1.0 - alpha);
+  let displayAlpha = mix(
+    alpha,
+    encodedCoverage,
+    clamp(darkness, 0.0, 1.0) * clamp(lod, 0.0, 1.0)
+  );
+  return vec4<f32>(straightLinear * displayAlpha, displayAlpha);
 }
 
 ${activeClippingGroupTexelShader}
@@ -1455,6 +1482,13 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
       paint = composeStyledGroupSample(paint, layerPosition);
     }
   }
+  paint = preserveStyledDarkCoverage(
+    paint,
+    max(
+      max(display.selectedMipLevel, 0.0),
+      log2(max(1.0 / max(display.zoom, 0.000001), 1.0))
+    )
+  );
 
   if (!insideLayer) {
     return vec4<f32>(vec3<f32>(0.055), 1.0);
@@ -1518,6 +1552,13 @@ fn activeFragmentMain(
       paint = composeStyledGroupSample(paint, layerPosition);
     }
   }
+  paint = preserveStyledDarkCoverage(
+    paint,
+    max(
+      max(display.selectedMipLevel, 0.0),
+      log2(max(1.0 / max(display.zoom, 0.000001), 1.0))
+    )
+  );
   if (!insideLayer) {
     return vec4<f32>(0.0);
   }

@@ -795,6 +795,33 @@ fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
   );
 }
 
+fn preserveMinifiedDarkCoverage(value: vec4<f32>, lod: f32) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001 || alpha >= 0.999999 || lod <= 0.0) {
+    return value;
+  }
+  let straightLinear = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  let straightSrgb = linearToSrgb(straightLinear);
+  let darkness = 1.0 - dot(straightSrgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+  let encodedCoverage = 1.0 - srgbToLinearChannel(1.0 - alpha);
+  let displayAlpha = mix(
+    alpha,
+    encodedCoverage,
+    clamp(darkness, 0.0, 1.0) * clamp(lod, 0.0, 1.0)
+  );
+  return vec4<f32>(straightLinear * displayAlpha, displayAlpha);
+}
+
+fn displayMinificationLod() -> f32 {
+  // selectedMipLevel is intentionally discrete so the chosen source remains
+  // in the 1-2 texels-per-physical-pixel range.  The coverage ramp must still
+  // see fractional minification (for example Fit at zoom 0.57 selects mip 0).
+  return max(
+    max(display.selectedMipLevel, 0.0),
+    log2(max(1.0 / max(display.zoom, 0.000001), 1.0))
+  );
+}
+
 fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
   return source + destination * (1.0 - source.a);
 }
@@ -852,15 +879,18 @@ fn sampleActiveLayer(uv: vec2<f32>) -> vec4<f32> {
   let lod = max(display.selectedMipLevel, 0.0);
   let lowerMip = floor(lod);
   let upperMip = ceil(lod);
+  var sampled: vec4<f32>;
   if (upperMip <= lowerMip) {
-    return sampleActiveLayerLogicalMip(uv, lowerMip);
+    sampled = sampleActiveLayerLogicalMip(uv, lowerMip);
+  } else {
+    let interpolation = lod - lowerMip;
+    sampled = mix(
+      sampleActiveLayerLogicalMip(uv, lowerMip),
+      sampleActiveLayerLogicalMip(uv, upperMip),
+      interpolation
+    );
   }
-  let interpolation = lod - lowerMip;
-  return mix(
-    sampleActiveLayerLogicalMip(uv, lowerMip),
-    sampleActiveLayerLogicalMip(uv, upperMip),
-    interpolation
-  );
+  return preserveMinifiedDarkCoverage(sampled, displayMinificationLod());
 }
 
 ${mergedSurfaceSamplingShader}
@@ -1096,6 +1126,7 @@ fn finalStackFragmentMain(
       );
     }
   }
+  paint = preserveMinifiedDarkCoverage(paint, displayMinificationLod());
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;
   let backgroundSrgb = select(vec3<f32>(0.82), vec3<f32>(0.91), checkerParity == 0);
@@ -2577,16 +2608,51 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   return mix(top, bottom, fraction.y) * clamp(layer.opacity, 0.0, 1.0);
 }
 `;
-// Downsample 2x2 in the paint layer's native linear, premultiplied RGBA
-// representation. Each destination pixel owns an exact, non-overlapping 2x2
-// source footprint, so dirty rectangles can be propagated with floor/ceil
-// division and no platform-dependent filtering kernel.
+// Downsample exact 2x2 footprints in encoded-sRGB premultiplied space while
+// keeping every stored mip in the engine's normal linear-premultiplied format.
+// Re-encoding each input and decoding the average makes recursive levels equal
+// to a gamma-space box pyramid without changing authoritative mip 0.
 export const paintMipDownsampleShader = /* wgsl */ `
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
 };
 
 @group(0) @binding(0) var sourceTexture: texture_2d<f32>;
+
+fn srgbToLinearChannel(value: f32) -> f32 {
+  if (value <= 0.04045) { return value / 12.92; }
+  return pow((value + 0.055) / 1.055, 2.4);
+}
+
+fn linearToSrgbChannel(value: f32) -> f32 {
+  let clamped = clamp(value, 0.0, 1.0);
+  if (clamped <= 0.0031308) { return clamped * 12.92; }
+  return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
+}
+
+fn linearPremultipliedToGamma(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let straight = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  let encoded = vec3<f32>(
+    linearToSrgbChannel(straight.r),
+    linearToSrgbChannel(straight.g),
+    linearToSrgbChannel(straight.b)
+  );
+  return vec4<f32>(encoded * alpha, alpha);
+}
+
+fn gammaPremultipliedToLinear(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let straight = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  let linear = vec3<f32>(
+    srgbToLinearChannel(straight.r),
+    srgbToLinearChannel(straight.g),
+    srgbToLinearChannel(straight.b)
+  );
+  return vec4<f32>(linear * alpha, alpha);
+}
 
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
@@ -2622,7 +2688,13 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     min(sourceOrigin + vec2<i32>(1, 1), maximumCoordinate),
     0
   );
-  return (p00 + p10 + p01 + p11) * 0.25;
+  let gammaAverage = (
+    linearPremultipliedToGamma(p00)
+    + linearPremultipliedToGamma(p10)
+    + linearPremultipliedToGamma(p01)
+    + linearPremultipliedToGamma(p11)
+  ) * 0.25;
+  return gammaPremultipliedToLinear(gammaAverage);
 }
 `;
 
@@ -2662,6 +2734,41 @@ struct VertexOutput {
 @group(0) @binding(3) var mergedAboveTexture: texture_2d<f32>;
 @group(0) @binding(4) var activeClippingPrefix: texture_2d<f32>;
 @group(0) @binding(5) var activeClippingSuffix: texture_2d<f32>;
+
+fn srgbToLinearChannel(value: f32) -> f32 {
+  if (value <= 0.04045) { return value / 12.92; }
+  return pow((value + 0.055) / 1.055, 2.4);
+}
+
+fn linearToSrgbChannel(value: f32) -> f32 {
+  let clamped = clamp(value, 0.0, 1.0);
+  if (clamped <= 0.0031308) { return clamped * 12.92; }
+  return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
+}
+
+fn linearPremultipliedToGamma(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let straight = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  let encoded = vec3<f32>(
+    linearToSrgbChannel(straight.r),
+    linearToSrgbChannel(straight.g),
+    linearToSrgbChannel(straight.b)
+  );
+  return vec4<f32>(encoded * alpha, alpha);
+}
+
+fn gammaPremultipliedToLinear(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let straight = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  let linear = vec3<f32>(
+    srgbToLinearChannel(straight.r),
+    srgbToLinearChannel(straight.g),
+    srgbToLinearChannel(straight.b)
+  );
+  return vec4<f32>(linear * alpha, alpha);
+}
 
 fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
   return source + destination * (1.0 - source.a);
@@ -2730,7 +2837,13 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   let p10 = compositedDocumentTexel(sourceOrigin + vec2<i32>(1, 0));
   let p01 = compositedDocumentTexel(sourceOrigin + vec2<i32>(0, 1));
   let p11 = compositedDocumentTexel(sourceOrigin + vec2<i32>(1, 1));
-  return (p00 + p10 + p01 + p11) * 0.25;
+  let gammaAverage = (
+    linearPremultipliedToGamma(p00)
+    + linearPremultipliedToGamma(p10)
+    + linearPremultipliedToGamma(p01)
+    + linearPremultipliedToGamma(p11)
+  ) * 0.25;
+  return gammaPremultipliedToLinear(gammaAverage);
 }
 
 @fragment

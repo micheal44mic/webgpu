@@ -9,7 +9,7 @@ import {
 } from "./selection-core.ts";
 
 export const RASTER_TRANSFORM_SHADER_STRATEGY =
-  "premultiplied-linear-transparent-border-inverse-affine-manual-trilinear-v3" as const;
+  "gamma-box-mips-transparent-border-inverse-affine-discrete-oversampling-v4" as const;
 
 /**
  * Bindings:
@@ -40,6 +40,32 @@ struct VertexOutput {
 @group(0) @binding(0) var<uniform> transform: RasterTransformUniforms;
 @group(0) @binding(1) var sourceTexture: texture_2d<f32>;
 @group(0) @binding(2) var sourceSampler: sampler;
+
+fn srgbToLinearChannel(value: f32) -> f32 {
+  if (value <= 0.04045) { return value / 12.92; }
+  return pow((value + 0.055) / 1.055, 2.4);
+}
+
+fn linearToSrgbChannel(value: f32) -> f32 {
+  let clamped = clamp(value, 0.0, 1.0);
+  if (clamped <= 0.0031308) { return clamped * 12.92; }
+  return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
+}
+
+fn preserveDarkCoverage(value: vec4<f32>, lod: f32) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001 || alpha >= 0.999999 || lod < 1.0) { return value; }
+  let straightLinear = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  let straightSrgb = vec3<f32>(
+    linearToSrgbChannel(straightLinear.r),
+    linearToSrgbChannel(straightLinear.g),
+    linearToSrgbChannel(straightLinear.b)
+  );
+  let darkness = 1.0 - dot(straightSrgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+  let encodedCoverage = 1.0 - srgbToLinearChannel(1.0 - alpha);
+  let displayAlpha = mix(alpha, encodedCoverage, clamp(darkness, 0.0, 1.0));
+  return vec4<f32>(straightLinear * displayAlpha, displayAlpha);
+}
 
 fn transparentBorderWeight(uv: vec2<f32>, mipLevel: u32) -> f32 {
   let dimensions = vec2<f32>(textureDimensions(sourceTexture, mipLevel));
@@ -108,25 +134,12 @@ fn fragmentMain(
     length(sourceUvDy * baseDimensions)
   );
   let maximumLevel = textureNumLevels(sourceTexture) - 1u;
-  let lod = clamp(
-    log2(max(footprint, 0.000001)),
+  let lod = floor(clamp(
+    log2(max(footprint, 1.0)),
     0.0,
     f32(maximumLevel)
-  );
-  let lowerLevel = u32(floor(lod));
-  let upperLevel = min(lowerLevel + 1u, maximumLevel);
-  let lower = sampleTransparentLevel(sourceUv, lowerLevel);
-  let lodBlend = fract(lod);
-  // Magnification and exact mip ratios are the common path. The condition is
-  // draw-uniform, so they pay one filtered fetch rather than two.
-  if (upperLevel == lowerLevel || lodBlend <= 0.000001) {
-    return lower;
-  }
-  let upper = sampleTransparentLevel(sourceUv, upperLevel);
-  // Source texels are already linear-premultiplied. Filtering RGBA together
-  // preserves transparent-edge colors; never unpremultiply or multiply alpha
-  // a second time here.
-  return mix(lower, upper, lodBlend);
+  ));
+  return preserveDarkCoverage(sampleTransparentLevel(sourceUv, u32(lod)), lod);
 }
 `;
 
@@ -217,6 +230,41 @@ struct VertexOutput {
 
 @group(0) @binding(0) var sourceTexture: texture_2d<f32>;
 
+fn srgbToLinearChannel(value: f32) -> f32 {
+  if (value <= 0.04045) { return value / 12.92; }
+  return pow((value + 0.055) / 1.055, 2.4);
+}
+
+fn linearToSrgbChannel(value: f32) -> f32 {
+  let clamped = clamp(value, 0.0, 1.0);
+  if (clamped <= 0.0031308) { return clamped * 12.92; }
+  return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
+}
+
+fn linearPremultipliedToGamma(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let straight = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  let encoded = vec3<f32>(
+    linearToSrgbChannel(straight.r),
+    linearToSrgbChannel(straight.g),
+    linearToSrgbChannel(straight.b)
+  );
+  return vec4<f32>(encoded * alpha, alpha);
+}
+
+fn gammaPremultipliedToLinear(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let straight = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  let linear = vec3<f32>(
+    srgbToLinearChannel(straight.r),
+    srgbToLinearChannel(straight.g),
+    srgbToLinearChannel(straight.b)
+  );
+  return vec4<f32>(linear * alpha, alpha);
+}
+
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   let positions = array<vec2<f32>, 3>(
@@ -262,16 +310,18 @@ fn fragmentMain(
             sourceEnd.x,
             sourceX
           );
-          accumulated += textureLoad(
+          accumulated += linearPremultipliedToGamma(textureLoad(
             sourceTexture,
             vec2<i32>(sourceX, sourceY),
             0
-          ) * weight;
+          )) * weight;
           accumulatedWeight += weight;
         }
       }
     }
   }
-  return accumulated / max(accumulatedWeight, 0.000001);
+  return gammaPremultipliedToLinear(
+    accumulated / max(accumulatedWeight, 0.000001)
+  );
 }
 `;

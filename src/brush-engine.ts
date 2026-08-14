@@ -55,6 +55,7 @@ import {
   cloneRasterImageNode,
   type RasterImageNode,
 } from "./scene-image-model";
+import { cloneRasterLayerSource } from "./raster-layer-source";
 import { planMixedSceneRasterInsertion } from "./mixed-scene-reorder-core";
 import type {
   NativeRasterImageImportResult,
@@ -7031,6 +7032,7 @@ export class BrushEngine {
       baseBounds: { ...history.baseBounds },
       baseTileMask: history.baseTileMask.slice(),
       source: { ...history.source },
+      rasterSource: cloneRasterLayerSource(history.rasterSource)!,
     };
     commitHistoryActionAtomically(this, action);
     if (this.activeStrokeProfile) {
@@ -7340,6 +7342,7 @@ export class BrushEngine {
     record.storageTileMask.set(storageMask);
     record.hasContent = source.hasContent;
     record.noiseMipSmoothing = source.noiseMipSmoothing;
+    record.rasterSource = cloneRasterLayerSource(source.rasterSource);
     record.strokeStyle = copyRasterStrokeStyle(source.strokeStyle);
     record.bevelStyle = copyRasterBevelStyle(source.bevelStyle);
     record.outerShadowStyle = copyRasterOuterShadowStyle(source.outerShadowStyle);
@@ -10207,9 +10210,15 @@ export class BrushEngine {
 
   sweepRasterImageGpuResources(): number {
     const retainedAssetIds = new Set<string>();
+    const retainRasterSource = (
+      source: { readonly document: { readonly assetId: string } } | null | undefined,
+    ) => {
+      if (source) retainedAssetIds.add(source.document.assetId);
+    };
     const retainNode = (node: VectorTextNode | VectorSvgNode | RasterImageNode | null) => {
       if (node?.kind === "image") retainedAssetIds.add(node.document.assetId);
     };
+    for (const record of this.layerStack.layers) retainRasterSource(record.rasterSource);
     const scene = this.mixedSceneStack;
     if (scene) {
       for (const item of scene.items) {
@@ -10224,10 +10233,29 @@ export class BrushEngine {
         retainNode(action.delta.after.node);
       } else if (action.kind === "vector-rasterize") {
         retainNode(action.vectorState.node);
+      } else if (action.kind === "raster-import") {
+        retainRasterSource(action.rasterSource);
+      } else if (action.kind === "raster-transform") {
+        retainRasterSource(action.rasterSourceBefore);
+        retainRasterSource(action.rasterSourceAfter);
+      } else if (
+        action.kind === "stroke"
+        || action.kind === "fill"
+        || action.kind === "clear"
+        || action.kind === "raster-filter"
+      ) {
+        retainRasterSource(action.rasterSourceBefore);
+        retainRasterSource(action.rasterSourceAfter);
+      } else if (action.kind === "layer-add") {
+        retainRasterSource(action.layerRecord.rasterSource);
+      } else if (action.kind === "layer-delete") {
+        for (const entry of action.entries) retainRasterSource(entry.layerRecord.rasterSource);
       } else if (action.kind === "layer-merge") {
         for (const input of action.inputs) {
           if (input.kind === "vector" && input.state) retainNode(input.state.node);
+          if (input.kind === "raster") retainRasterSource(input.entry.layerRecord.rasterSource);
         }
+        retainRasterSource(action.output.layerRecord.rasterSource);
       }
     }
     for (const action of this.discardedVectorRasterHistoryActions) {
@@ -10236,8 +10264,24 @@ export class BrushEngine {
     for (const action of this.discardedLayerMergeHistoryActions) {
       for (const input of action.inputs) {
         if (input.kind === "vector" && input.state) retainNode(input.state.node);
+        if (input.kind === "raster") retainRasterSource(input.entry.layerRecord.rasterSource);
       }
+      retainRasterSource(action.output.layerRecord.rasterSource);
     }
+    for (const action of this.discardedRasterImportHistoryActions) {
+      retainRasterSource(action.rasterSource);
+    }
+    for (const action of this.discardedRasterTransformHistoryActions) {
+      retainRasterSource(action.rasterSourceBefore);
+      retainRasterSource(action.rasterSourceAfter);
+    }
+    for (const action of this.discardedLayerAddHistoryActions) {
+      retainRasterSource(action.layerRecord.rasterSource);
+    }
+    for (const action of this.discardedLayerDeleteHistoryActions) {
+      for (const entry of action.entries) retainRasterSource(entry.layerRecord.rasterSource);
+    }
+    retainRasterSource(this.activeRasterTransformSession?.rasterSourceBefore);
     retainNode(this.activeVectorHistoryEdit?.before.node ?? null);
 
     let released = 0;

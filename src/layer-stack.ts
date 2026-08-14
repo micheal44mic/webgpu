@@ -10,6 +10,10 @@ import type {
 import type { RasterColorOverlayStyle } from "./raster-color-overlay-core";
 import type { LayerStorageTileMask } from "./layer-storage-study";
 import type { LayerBlendMode } from "./layer-blend-modes";
+import {
+  cloneRasterLayerSource,
+  type RasterLayerSource,
+} from "./raster-layer-source.ts";
 
 export const LAYER_STACK_STRATEGY =
   "ordered-records-single-active-single-reference-per-layer-blend-mode-contiguous-raster-clipping-groups-monotonic-ids" as const;
@@ -59,6 +63,8 @@ export interface LayerRecord {
   hasContent: boolean;
   /** Display-only continuous mip sampling after this raster has committed Noise. */
   noiseMipSmoothing: boolean;
+  /** Immutable imported master plus its cumulative document-space matrix. */
+  rasterSource: RasterLayerSource | null;
   strokeStyle: RasterStrokeStyle;
   bevelStyle: RasterBevelStyle;
   outerShadowStyle: RasterOuterShadowStyle;
@@ -178,6 +184,7 @@ export class LayerStack {
       storageTileMask: new Uint32Array(8),
       hasContent: false,
       noiseMipSmoothing: false,
+      rasterSource: null,
       strokeStyle,
       bevelStyle,
       outerShadowStyle,
@@ -316,6 +323,7 @@ export class LayerStack {
         ...record,
         contentBounds: record.contentBounds ? { ...record.contentBounds } : null,
         storageTileMask: record.storageTileMask.slice(),
+        rasterSource: cloneRasterLayerSource(record.rasterSource),
         strokeStyle: structuredClone(record.strokeStyle),
         bevelStyle: structuredClone(record.bevelStyle),
         outerShadowStyle: structuredClone(record.outerShadowStyle),
@@ -349,6 +357,7 @@ export class LayerStack {
         ...record,
         contentBounds: record.contentBounds ? { ...record.contentBounds } : null,
         storageTileMask: record.storageTileMask.slice(),
+        rasterSource: cloneRasterLayerSource(record.rasterSource),
         strokeStyle: structuredClone(record.strokeStyle),
         bevelStyle: structuredClone(record.bevelStyle),
         outerShadowStyle: structuredClone(record.outerShadowStyle),
