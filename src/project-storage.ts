@@ -599,6 +599,12 @@ function assertLayerStyles(layer: Record<string, unknown>, path: string): void {
   if (!isRecord(overlay)) fail(`${path}.colorOverlayStyle`, "must be an object");
   assertBoolean(overlay.enabled, `${path}.colorOverlayStyle.enabled`);
   assertColorTuple(overlay.color, 3, `${path}.colorOverlayStyle.color`);
+  if (overlay.uniformAlpha !== undefined) {
+    assertBoolean(
+      overlay.uniformAlpha,
+      `${path}.colorOverlayStyle.uniformAlpha`,
+    );
+  }
   assertFinite(overlay.opacity, `${path}.colorOverlayStyle.opacity`);
   if (overlay.opacity < 0 || overlay.opacity > 100) {
     fail(`${path}.colorOverlayStyle.opacity`, "must be between 0 and 100");

@@ -85,11 +85,12 @@ assert.notEqual(copiedStyle.color, DEFAULT_RASTER_STROKE_STYLE.color);
 assert.equal(rasterStrokeStylesEqual(copiedStyle, DEFAULT_RASTER_STROKE_STYLE), true);
 assert.equal(rasterStrokeStylesEqual(copiedStyle, { ...copiedStyle, width: 15 }), false);
 
-// Normal Color Overlay changes premultiplied RGB only: source alpha is the
-// clipping mask and must remain byte-identical for every opacity.
+// Color Overlay preserves source alpha by default and can explicitly replace
+// every positive source alpha with one uniform output alpha.
 assert.deepEqual(DEFAULT_RASTER_COLOR_OVERLAY_STYLE, {
   enabled: false,
   color: [0, 0, 0],
+  uniformAlpha: false,
   opacity: 100,
 });
 const normalizedColorOverlay = normalizeRasterColorOverlayStyle({
@@ -105,6 +106,31 @@ approx(overlaidPixel[0], 0.19);
 approx(overlaidPixel[1], 0.205);
 approx(overlaidPixel[2], 0.0575);
 assert.equal(overlaidPixel[3], 0.5);
+const uniformAlphaPixel = compositeRasterColorOverlayPixel(
+  [0.12, 0.24, 0.06, 0.5],
+  {
+    ...normalizedColorOverlay,
+    color: [0.8, 0.2, 0.1],
+    uniformAlpha: true,
+    opacity: 75,
+  },
+);
+approx(uniformAlphaPixel[0], 0.6);
+approx(uniformAlphaPixel[1], 0.15);
+approx(uniformAlphaPixel[2], 0.075);
+assert.equal(
+  uniformAlphaPixel[3],
+  0.75,
+  "uniform mode must replace every positive source alpha with Opacity",
+);
+assert.deepEqual(
+  compositeRasterColorOverlayPixel(
+    [0.12, 0.24, 0.06, 0.5],
+    { ...normalizedColorOverlay, uniformAlpha: true, opacity: 0 },
+  ),
+  [0, 0, 0, 0],
+  "uniform alpha 0% must remain distinct from a disabled effect",
+);
 assert.deepEqual(
   compositeRasterColorOverlayPixel(
     [0.12, 0.24, 0.06, 0.5],
@@ -401,7 +427,7 @@ const goldenMipBaseline = JSON.parse(readFileSync(
 ));
 assert.match(
   rendererSource,
-  /style-stack-webgpu-v16-alpha-clipped-normal-color-overlay-before-inner-shadow-bevel-stroke-lazy-stroke-geometry-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-nearest-raster-at-581pct/,
+  /style-stack-webgpu-v17-selectable-preserved-or-uniform-alpha-color-overlay-before-inner-shadow-bevel-stroke-lazy-stroke-geometry-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-nearest-raster-at-581pct/,
 );
 assert.match(rendererSource, /const PARAMETER_BYTES = 96/);
 assert.ok(
@@ -411,6 +437,11 @@ assert.ok(
 assert.match(
   rendererSource,
   /mix\(base\.rgb, parameters\.colorOverlay\.rgb \* base\.a, opacity\)/,
+);
+assert.match(
+  rendererSource,
+  /if \(uniformAlpha\) \{[\s\S]*?if \(base\.a <= 0\.0\)[\s\S]*?return vec4<f32>\(parameters\.colorOverlay\.rgb \* opacity, opacity\);/,
+  "uniform mode must recolor only occupied pixels and replace their alpha",
 );
 assert.match(
   rendererSource,
@@ -427,8 +458,9 @@ assert.ok(
   "Color Overlay deve precedere Ombra interna, Smusso e Traccia.",
 );
 assert.match(rendererSource, /colorOverlayStyle\?: RasterColorOverlayStyle/);
-assert.match(rendererSource, /this\.displayParameterUploadF32\[23\] = colorOverlayStyle\.enabled/);
-assert.match(rendererSource, /this\.parameterUploadF32\[word \+ 23\] = colorOverlayStyle\.enabled/);
+assert.match(rendererSource, /return style\.uniformAlpha \? -\(1 \+ opacity\) : opacity;/);
+assert.match(rendererSource, /this\.displayParameterUploadF32\[23\] = encodedColorOverlayMode\(colorOverlayStyle\)/);
+assert.match(rendererSource, /this\.parameterUploadF32\[word \+ 23\] = encodedColorOverlayMode\(colorOverlayStyle\)/);
 assert.ok(
   rendererSource.indexOf("bevelNode(base, position)")
     < rendererSource.indexOf("combinedStrokeNode(base.a, node, coverage)"),

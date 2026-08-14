@@ -89,19 +89,20 @@ assert.equal(
   "ordered-records-single-active-single-reference-per-layer-blend-mode-contiguous-raster-clipping-groups-monotonic-ids",
 );
 
-// Color Overlay is a pure alpha-preserving style, not another full-canvas
-// resource owner. Its CPU oracle and color conversions pin the contract before
-// the same equation is embedded into the shared raster-effects compositor.
+// Color Overlay is an analytic style, not another full-canvas resource owner.
+// Its CPU oracle pins both alpha modes before the same equations are embedded
+// into the shared raster-effects compositor.
 {
   assert.equal(
     RASTER_COLOR_OVERLAY_STRATEGY,
-    "analytic-linear-alpha-preserving-color-overlay-zero-scratch-v1",
+    "analytic-linear-selectable-source-or-uniform-alpha-color-overlay-zero-scratch-v2",
   );
   assert.equal(RASTER_COLOR_OVERLAY_EFFECT_ID, "color-overlay");
   assert.equal(RASTER_COLOR_OVERLAY_SCRATCH_BYTES, 0);
   assert.deepEqual(DEFAULT_RASTER_COLOR_OVERLAY_STYLE, {
     enabled: false,
     color: [0, 0, 0],
+    uniformAlpha: false,
     opacity: 100,
   });
 
@@ -139,6 +140,7 @@ assert.equal(
   }), {
     enabled: true,
     color: [0, 0.25, 1],
+    uniformAlpha: false,
     opacity: 100,
   });
   assert.deepEqual(normalizeRasterColorOverlayStyle({
@@ -148,6 +150,7 @@ assert.equal(
   }), {
     enabled: false,
     color: [0, 0, 0],
+    uniformAlpha: false,
     opacity: 100,
   });
   assert.ok(rasterColorOverlayStylesEqual(
@@ -159,7 +162,12 @@ assert.equal(
     color: "#ff0000",
     opacity: 35,
   });
-  assert.deepEqual(copy, { enabled: true, color: [1, 0, 0], opacity: 35 });
+  assert.deepEqual(copy, {
+    enabled: true,
+    color: [1, 0, 0],
+    uniformAlpha: false,
+    opacity: 35,
+  });
   assert.notEqual(copy.color, DEFAULT_RASTER_COLOR_OVERLAY_STYLE.color);
 
   const base = [0.1, 0.2, 0.3, 0.4];
@@ -176,6 +184,20 @@ assert.equal(
   assert.ok(Math.abs(composed[1] - 0.15) < 1e-15);
   assert.ok(Math.abs(composed[2] - 0.225) < 1e-15);
   assert.equal(composed[3], base[3], "Color Overlay non può cambiare alpha");
+  assert.deepEqual(compositeRasterColorOverlayPixel(base, {
+    enabled: true,
+    color: [0.25, 0.5, 1],
+    uniformAlpha: true,
+    opacity: 75,
+  }), [0.1875, 0.375, 0.75, 0.75],
+  "uniform alpha deve sostituire ogni alpha positivo con Opacity");
+  assert.deepEqual(compositeRasterColorOverlayPixel(base, {
+    enabled: true,
+    color: [1, 1, 1],
+    uniformAlpha: true,
+    opacity: 0,
+  }), [0, 0, 0, 0],
+  "uniform alpha 0% deve nascondere i pixel occupati, non disattivare l'effetto");
   assert.deepEqual(compositeRasterColorOverlayPixel([0, 0, 0, 0], {
     enabled: true,
     color: [1, 1, 1],
@@ -993,6 +1015,17 @@ assert.throws(
     ).needsStrokeRenderer,
     false,
     "opacity zero non deve trattenere il compositore condiviso",
+  );
+  assert.equal(
+    layerEffectRendererRequirements(
+      { enabled: false, width: 14 },
+      { enabled: false },
+      { enabled: false },
+      { enabled: false },
+      { enabled: true, opacity: 0, uniformAlpha: true },
+    ).needsStrokeRenderer,
+    true,
+    "uniform alpha 0% deve trattenere il compositore perché rende trasparenti i pixel occupati",
   );
 }
 

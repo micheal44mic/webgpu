@@ -24,7 +24,7 @@ import {
 } from "./raster-color-overlay-core";
 
 export const RASTER_STROKE_RENDERER_BUILD =
-  "style-stack-webgpu-v16-alpha-clipped-normal-color-overlay-before-inner-shadow-bevel-stroke-lazy-stroke-geometry-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-nearest-raster-at-581pct-native-unorm-round-even";
+  "style-stack-webgpu-v17-selectable-preserved-or-uniform-alpha-color-overlay-before-inner-shadow-bevel-stroke-lazy-stroke-geometry-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-nearest-raster-at-581pct-native-unorm-round-even";
 export const RASTER_STROKE_COVERAGE_STRATEGY =
   "lazy-packed-f16-style-coverage-while-stroke-enabled" as const;
 export const RASTER_STROKE_GEOMETRY_STORAGE_STRATEGY =
@@ -155,6 +155,17 @@ const INDIRECT_GATE_WORKGROUP_SIZE = 64;
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
+}
+
+/**
+ * Preserve-alpha mode uses 0..1 directly. Uniform-alpha mode uses -1..-2 so
+ * opacity 0 remains distinct from a disabled effect without growing the 96 B
+ * style-stack uniform ABI.
+ */
+function encodedColorOverlayMode(style: RasterColorOverlayStyle): number {
+  if (!style.enabled) return 0;
+  const opacity = clamp(style.opacity, 0, 100) / 100;
+  return style.uniformAlpha ? -(1 + opacity) : opacity;
 }
 
 function sourceModeCode(mode: RasterStrokeSourceMode): SourceModeCode {
@@ -1079,10 +1090,22 @@ fn innerShadowNode(base: vec4<f32>, position: vec2<i32>) -> vec4<f32> {
 }
 
 fn colorOverlayNode(base: vec4<f32>) -> vec4<f32> {
-  let opacity = clamp(parameters.colorOverlay.a, 0.0, 1.0);
+  let encodedMode = parameters.colorOverlay.a;
+  let uniformAlpha = encodedMode < 0.0;
+  let opacity = select(
+    clamp(encodedMode, 0.0, 1.0),
+    clamp(-encodedMode - 1.0, 0.0, 1.0),
+    uniformAlpha
+  );
+  if (uniformAlpha) {
+    if (base.a <= 0.0) {
+      return vec4<f32>(0.0);
+    }
+    return vec4<f32>(parameters.colorOverlay.rgb * opacity, opacity);
+  }
   // The condition depends only on a uniform, so every invocation takes the
-  // same branch. Disabled Color Overlay therefore adds no RGB multiply/mix to
-  // the hot style-stack pixel path.
+  // same branch. Disabled and zero-strength preserve-alpha Color Overlay add
+  // no RGB multiply/mix to the hot style-stack pixel path.
   if (opacity <= 0.0) {
     return base;
   }
@@ -1093,10 +1116,10 @@ fn colorOverlayNode(base: vec4<f32>) -> vec4<f32> {
 }
 
 fn styledTexel(position: vec2<i32>) -> vec4<f32> {
-  // Photoshop-style Normal Color Overlay is alpha-clipped and therefore
-  // changes only premultiplied RGB. Applying it to the virtual base here makes
-  // Inner Shadow, Bevel and Stroke consume the recolored node while preserving
-  // the source alpha byte-for-byte and without allocating another surface.
+  // Applying Color Overlay to the virtual base makes Inner Shadow, Bevel and
+  // Stroke consume the recolored node without allocating another surface.
+  // The default mode preserves alpha; the optional uniform mode replaces only
+  // positive source alpha while alpha zero remains unoccupied.
   let base = colorOverlayNode(sourceTexel(position));
   var coverage = 0.0;
   if (parameters.strokeEnabled == 1u) {
@@ -3258,9 +3281,7 @@ export class RasterStrokeRenderer {
     this.displayParameterUploadF32[20] = colorOverlayStyle.color[0];
     this.displayParameterUploadF32[21] = colorOverlayStyle.color[1];
     this.displayParameterUploadF32[22] = colorOverlayStyle.color[2];
-    this.displayParameterUploadF32[23] = colorOverlayStyle.enabled
-      ? clamp(colorOverlayStyle.opacity, 0, 100) / 100
-      : 0;
+    this.displayParameterUploadF32[23] = encodedColorOverlayMode(colorOverlayStyle);
     this.updateBevelParameters(bevelStyle);
     this.device.queue.writeBuffer(
       this.displayParameterBuffers[mode],
@@ -3304,9 +3325,7 @@ export class RasterStrokeRenderer {
     this.parameterUploadF32[word + 20] = colorOverlayStyle.color[0];
     this.parameterUploadF32[word + 21] = colorOverlayStyle.color[1];
     this.parameterUploadF32[word + 22] = colorOverlayStyle.color[2];
-    this.parameterUploadF32[word + 23] = colorOverlayStyle.enabled
-      ? clamp(colorOverlayStyle.opacity, 0, 100) / 100
-      : 0;
+    this.parameterUploadF32[word + 23] = encodedColorOverlayMode(colorOverlayStyle);
     return slot + 1;
   }
 

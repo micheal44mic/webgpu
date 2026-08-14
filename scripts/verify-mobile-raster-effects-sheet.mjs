@@ -106,20 +106,30 @@ assert.deepEqual(
 const colorOverlaySpec = MOBILE_RASTER_EFFECT_SPECS["color-overlay"];
 assert.equal(
   colorOverlaySpec.enabledLabel,
-  "Recolor all non-transparent pixels",
-  "Color Overlay must explain that the existing enabled toggle recolors the full alpha mask",
+  undefined,
+  "Color Overlay must keep the shared Enabled switch separate from alpha mode",
 );
-assert.equal(
-  colorOverlaySpec.enabledDescription,
-  "Applies the selected color to every pixel with alpha above 0. "
-    + "Fully transparent pixels stay transparent; existing alpha is preserved. "
-    + "Opacity controls the recolor strength.",
-  "Color Overlay must explain alpha preservation and opacity semantics",
+assert.deepEqual(
+  colorOverlaySpec.controls.find((control) => control.key === "uniformAlpha"),
+  {
+    type: "check",
+    key: "uniformAlpha",
+    label: "Use uniform alpha for all non-transparent pixels",
+    description:
+      "Every pixel with alpha above 0 uses the alpha set by Opacity. "
+      + "Fully transparent pixels stay transparent.",
+  },
+  "Color Overlay must expose uniform alpha as a separate, explained option",
 );
 assert.equal(
   controlKeys("color-overlay").includes("enabled"),
   false,
-  "the explicit recolor checkbox must reuse style.enabled instead of adding a second field",
+  "the effect Enabled switch must not be duplicated inside the controls",
+);
+assert.equal(
+  controlKeys("color-overlay").includes("uniformAlpha"),
+  true,
+  "the alpha-mode checkbox must bind to its own authoritative style field",
 );
 for (const [kind, spec] of Object.entries(MOBILE_RASTER_EFFECT_SPECS)) {
   assert.equal(
@@ -314,22 +324,22 @@ assert.match(
 assert.match(
   controllerSource,
   /this\.enabledLabel\.textContent = spec\.enabledLabel \?\? "Enabled";/,
-  "the shared enabled checkbox must show the Color Overlay-specific label",
+  "the shared effect switch must retain its Enabled label",
 );
 assert.match(
   controllerSource,
-  /this\.enabledInput\.setAttribute\("aria-describedby", enabledDescriptionId\(kind\)\);/,
-  "the Color Overlay checkbox must expose its helper to assistive technology",
+  /input\.setAttribute\("aria-describedby", helper\.id\);/,
+  "the uniform-alpha checkbox must expose its helper to assistive technology",
 );
 assert.match(
   controllerSource,
   /this\.enabledInput\.checked = style\.enabled;/,
-  "the explicit recolor checkbox must remain bound to the existing enabled field",
+  "the shared effect switch must remain bound to the existing enabled field",
 );
 assert.match(
   css,
-  /\.mobile-raster-effect-enabled-help\s*\{[\s\S]*?line-height:\s*1\.45;/,
-  "the recolor helper must have a readable mobile treatment",
+  /\.mobile-raster-effect-check-help\s*\{[\s\S]*?line-height:\s*1\.4;/,
+  "the uniform-alpha helper must have a readable mobile treatment",
 );
 
 for (const title of ["Color Overlay", "Outer Shadow", "Inner Shadow", "Bevel"]) {

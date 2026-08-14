@@ -21,6 +21,7 @@ export interface RasterEffectStyleOwner {
   readonly colorOverlayStyle: {
     readonly enabled: boolean;
     readonly opacity: number;
+    readonly uniformAlpha?: boolean;
   };
 }
 
@@ -74,9 +75,15 @@ function includeInnerShadow(
 
 function includeColorOverlay(
   target: MutableRasterEffectRendererReachability,
-  style: { readonly enabled: boolean; readonly opacity: number },
+  style: {
+    readonly enabled: boolean;
+    readonly opacity: number;
+    readonly uniformAlpha?: boolean;
+  },
 ): void {
-  if (style.enabled && style.opacity > 0) target.stroke = true;
+  if (style.enabled && (style.uniformAlpha === true || style.opacity > 0)) {
+    target.stroke = true;
+  }
 }
 
 function includeStyleOwner(

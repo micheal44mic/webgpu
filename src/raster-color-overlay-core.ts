@@ -1,13 +1,14 @@
 /**
  * Pure CPU contract for the raster Color Overlay effect.
  *
- * Colors are stored in linear RGB. The effect replaces only the straight
- * color of existing layer pixels: source alpha is both the matte and the
- * output alpha, so enabling the effect can never create new occupied pixels.
+ * Colors are stored in linear RGB. The effect never occupies a source pixel
+ * whose alpha is zero. Its default mode preserves source alpha; the optional
+ * uniform-alpha mode replaces every positive source alpha with the selected
+ * opacity.
  */
 
 export const RASTER_COLOR_OVERLAY_STRATEGY =
-  "analytic-linear-alpha-preserving-color-overlay-zero-scratch-v1" as const;
+  "analytic-linear-selectable-source-or-uniform-alpha-color-overlay-zero-scratch-v2" as const;
 
 export const RASTER_COLOR_OVERLAY_EFFECT_ID = "color-overlay" as const;
 export const RASTER_COLOR_OVERLAY_SCRATCH_BYTES = 0 as const;
@@ -22,7 +23,15 @@ export interface RasterColorOverlayStyle {
   enabled: boolean;
   /** Linear RGB, one finite channel in the inclusive range 0..1. */
   color: RasterColorOverlayColor;
-  /** UI percentage in the inclusive range 0..100. */
+  /**
+   * When true, every source pixel with alpha > 0 receives one uniform output
+   * alpha. A source pixel whose alpha is exactly zero remains transparent.
+   */
+  uniformAlpha: boolean;
+  /**
+   * UI percentage in the inclusive range 0..100. This is recolor strength in
+   * preserve-alpha mode and the output alpha in uniform-alpha mode.
+   */
   opacity: number;
 }
 
@@ -33,6 +42,7 @@ export const DEFAULT_RASTER_COLOR_OVERLAY_STYLE:
 Readonly<RasterColorOverlayStyle> = Object.freeze({
   enabled: false,
   color: DEFAULT_COLOR,
+  uniformAlpha: false,
   opacity: 100,
 });
 
@@ -140,6 +150,7 @@ export function normalizeRasterColorOverlayStyle(
   return {
     enabled: value.enabled === true,
     color: normalizeColor(value.color),
+    uniformAlpha: value.uniformAlpha === true,
     opacity: clamp(
       finite(value.opacity, DEFAULT_RASTER_COLOR_OVERLAY_STYLE.opacity),
       0,
@@ -165,20 +176,46 @@ export function rasterColorOverlayStylesEqual(
   const a = normalizeRasterColorOverlayStyle(left);
   const b = normalizeRasterColorOverlayStyle(right);
   return a.enabled === b.enabled
+    && a.uniformAlpha === b.uniformAlpha
     && a.opacity === b.opacity
     && a.color.every((channel, index) => channel === b.color[index]);
 }
 
+export function rasterColorOverlayIsActive(
+  style: {
+    readonly enabled: boolean;
+    readonly opacity: number;
+    readonly uniformAlpha?: boolean;
+  },
+): boolean {
+  return style.enabled && (style.uniformAlpha === true || style.opacity > 0);
+}
+
 /**
- * CPU oracle for the shader equation. `base` is premultiplied linear RGBA;
- * the returned alpha is byte-for-byte the supplied alpha.
+ * CPU oracle for the shader equation. `base` is premultiplied linear RGBA.
+ * Preserve mode returns the supplied alpha byte-for-byte. Uniform mode maps
+ * every positive source alpha to `opacity` and keeps alpha zero unoccupied.
  */
 export function compositeRasterColorOverlayPixel(
   base: RasterColorOverlayPremultipliedRgba,
   source: unknown,
 ): readonly [number, number, number, number] {
   const style = normalizeRasterColorOverlayStyle(source);
-  const amount = style.enabled ? style.opacity / 100 : 0;
+  if (!style.enabled) {
+    return [base[0], base[1], base[2], base[3]];
+  }
+  const amount = style.opacity / 100;
+  if (style.uniformAlpha) {
+    if (base[3] <= 0) {
+      return [0, 0, 0, 0];
+    }
+    return [
+      style.color[0] * amount,
+      style.color[1] * amount,
+      style.color[2] * amount,
+      amount,
+    ];
+  }
   if (amount === 0) {
     return [base[0], base[1], base[2], base[3]];
   }

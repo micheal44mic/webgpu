@@ -3532,11 +3532,6 @@ select {
     -webkit-tap-highlight-color: transparent;
   }
 
-  .mobile-raster-effect-sheet[data-effect="color-overlay"] .mobile-raster-effect-enabled {
-    min-width: 0;
-    max-width: min(222px, 64vw);
-  }
-
   .mobile-raster-effect-enabled-label {
     min-width: 0;
     line-height: 1.15;
@@ -3612,17 +3607,6 @@ select {
     display: grid;
     min-width: 0;
     gap: 8px;
-  }
-
-  .mobile-raster-effect-enabled-help {
-    margin: 0 0 4px;
-    padding: 10px 12px;
-    border: 1px solid #2d313a;
-    border-radius: 10px;
-    background: #24272e;
-    color: var(--mobile-icon-inactive);
-    font-size: 11px;
-    line-height: 1.45;
   }
 
   .mobile-raster-effect-group {
@@ -3764,6 +3748,18 @@ select {
     cursor: pointer;
     touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;
+  }
+
+  .mobile-raster-effect-check-field {
+    display: grid;
+    min-width: 0;
+  }
+
+  .mobile-raster-effect-check-help {
+    margin: -4px 0 6px 31px;
+    color: var(--mobile-icon-inactive);
+    font-size: 11px;
+    line-height: 1.4;
   }
 
   .mobile-raster-effect-check input {

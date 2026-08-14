@@ -88,7 +88,10 @@ import { type VectorTextViewState } from "./vector-text-types";
 import { normalizeRasterBevelStyle } from "./bevel-core";
 import { normalizeRasterInnerShadowStyle, normalizeRasterOuterShadowStyle } from "./shadow-core";
 import { normalizeRasterStrokeStyle } from "./stroke-core";
-import { normalizeRasterColorOverlayStyle } from "./raster-color-overlay-core";
+import {
+  normalizeRasterColorOverlayStyle,
+  rasterColorOverlayIsActive,
+} from "./raster-color-overlay-core";
 import { effectsScratchCanShrink, effectsScratchShrinkIsWorthwhile } from "./effects-scratch-pool";
 import {
   rasterEffectRendererReachability,
@@ -3950,9 +3953,7 @@ function layerEffectReachabilityMask(record: LayerRecord): number {
     | (Number(record.bevelStyle.enabled) << 1)
     | (Number(record.outerShadowStyle.enabled) << 2)
     | (Number(record.innerShadowStyle.enabled) << 3)
-    | (Number(
-      record.colorOverlayStyle.enabled && record.colorOverlayStyle.opacity > 0,
-    ) << 4);
+    | (Number(rasterColorOverlayIsActive(record.colorOverlayStyle)) << 4);
 }
 
 function effectsReachabilityCacheMatchesLiveLayers(

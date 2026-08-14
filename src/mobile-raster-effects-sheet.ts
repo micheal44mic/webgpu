@@ -56,13 +56,13 @@ type MobileRasterEffectControl =
     readonly type: "check";
     readonly key: string;
     readonly label: string;
+    readonly description?: string;
   };
 
 interface MobileRasterEffectSpec {
   readonly title: string;
   readonly expandable: boolean;
   readonly enabledLabel?: string;
-  readonly enabledDescription?: string;
   readonly controls: readonly MobileRasterEffectControl[];
 }
 
@@ -87,11 +87,6 @@ export const MOBILE_RASTER_EFFECT_SPECS = {
   "color-overlay": {
     title: "Color Overlay",
     expandable: true,
-    enabledLabel: "Recolor all non-transparent pixels",
-    enabledDescription:
-      "Applies the selected color to every pixel with alpha above 0. "
-      + "Fully transparent pixels stay transparent; existing alpha is preserved. "
-      + "Opacity controls the recolor strength.",
     controls: [
       { type: "color", key: "color", label: "Color" },
       {
@@ -102,6 +97,14 @@ export const MOBILE_RASTER_EFFECT_SPECS = {
         maximum: 100,
         step: 1,
         unit: "%",
+      },
+      {
+        type: "check",
+        key: "uniformAlpha",
+        label: "Use uniform alpha for all non-transparent pixels",
+        description:
+          "Every pixel with alpha above 0 uses the alpha set by Opacity. "
+          + "Fully transparent pixels stay transparent.",
       },
     ],
   },
@@ -372,8 +375,11 @@ function controlId(kind: MobileRasterEffectKind, key: string): string {
   return `mobileRasterEffect-${kind}-${key}`;
 }
 
-function enabledDescriptionId(kind: MobileRasterEffectKind): string {
-  return `mobileRasterEffect-${kind}-enabled-help`;
+function controlDescriptionId(
+  kind: MobileRasterEffectKind,
+  key: string,
+): string {
+  return `${controlId(kind, key)}-help`;
 }
 
 function formatRangeValue(
@@ -486,11 +492,7 @@ export class MobileRasterEffectsSheetController {
     this.sheet.setAttribute("aria-label", `${spec.title} effect`);
     this.title.textContent = spec.title;
     this.enabledLabel.textContent = spec.enabledLabel ?? "Enabled";
-    if (spec.enabledDescription) {
-      this.enabledInput.setAttribute("aria-describedby", enabledDescriptionId(kind));
-    } else {
-      this.enabledInput.removeAttribute("aria-describedby");
-    }
+    this.enabledInput.removeAttribute("aria-describedby");
     this.renderControls(kind);
 
     const current = this.currentDraftOrStyle(kind);
@@ -613,13 +615,6 @@ export class MobileRasterEffectsSheetController {
     this.descriptors.clear();
     const fragment = this.options.document.createDocumentFragment();
     const spec: MobileRasterEffectSpec = MOBILE_RASTER_EFFECT_SPECS[kind];
-    if (spec.enabledDescription) {
-      const helper = this.options.document.createElement("p");
-      helper.id = enabledDescriptionId(kind);
-      helper.className = "mobile-raster-effect-enabled-help";
-      helper.textContent = spec.enabledDescription;
-      fragment.append(helper);
-    }
     for (const descriptor of spec.controls) {
       if (descriptor.type === "group") {
         const heading = this.options.document.createElement("h3");
@@ -699,10 +694,23 @@ export class MobileRasterEffectsSheetController {
       input.id = id;
       input.type = "checkbox";
       input.dataset.mobileEffectKey = descriptor.key;
+      input.setAttribute("aria-label", descriptor.label);
       const name = this.options.document.createElement("span");
       name.textContent = descriptor.label;
       label.append(input, name);
-      fragment.append(label);
+      if (descriptor.description) {
+        const field = this.options.document.createElement("div");
+        field.className = "mobile-raster-effect-check-field";
+        const helper = this.options.document.createElement("p");
+        helper.id = controlDescriptionId(kind, descriptor.key);
+        helper.className = "mobile-raster-effect-check-help";
+        helper.textContent = descriptor.description;
+        input.setAttribute("aria-describedby", helper.id);
+        field.append(label, helper);
+        fragment.append(field);
+      } else {
+        fragment.append(label);
+      }
       this.controls.set(descriptor.key, input);
     }
     this.content.replaceChildren(fragment);

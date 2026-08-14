@@ -43,6 +43,7 @@ import {
   type RasterImageGpuResource,
 } from "./engine-raster-image-runtime";
 import { cloneRasterLayerSource } from "./raster-layer-source";
+import { normalizeRasterColorOverlayStyle } from "./raster-color-overlay-core";
 
 export interface CapturedProjectDocumentV1 {
   readonly snapshot: ProjectSnapshotV1;
@@ -336,7 +337,8 @@ function layerRecordFromProject(layer: ProjectLayerV1): LayerRecord {
     bevelStyle: structuredClone(layer.bevelStyle),
     outerShadowStyle: structuredClone(layer.outerShadowStyle),
     innerShadowStyle: structuredClone(layer.innerShadowStyle),
-    colorOverlayStyle: structuredClone(layer.colorOverlayStyle),
+    // Projects written before uniform-alpha mode do not carry that field.
+    colorOverlayStyle: normalizeRasterColorOverlayStyle(layer.colorOverlayStyle),
   };
 }
 

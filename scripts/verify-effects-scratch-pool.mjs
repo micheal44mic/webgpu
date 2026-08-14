@@ -251,6 +251,19 @@ assert.equal(
   true,
   "Color Overlay must retain the shared style compositor",
 );
+assert.equal(
+  rasterEffectRendererReachability([
+    effectLayer({
+      colorOverlayStyle: {
+        enabled: true,
+        opacity: 0,
+        uniformAlpha: true,
+      },
+    }),
+  ], []).stroke,
+  true,
+  "uniform alpha 0% still changes occupied pixels and must retain the compositor",
+);
 
 {
   const { device } = createMockDevice();

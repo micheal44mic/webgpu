@@ -187,6 +187,7 @@ import {
   RASTER_COLOR_OVERLAY_STRATEGY,
   copyRasterColorOverlayStyle,
   normalizeRasterColorOverlayStyle,
+  rasterColorOverlayIsActive,
   rasterColorOverlayStylesEqual,
   type RasterColorOverlayStyle,
 } from "./raster-color-overlay-core";
@@ -2278,7 +2279,7 @@ export class BrushEngine {
 
   async setRasterColorOverlayStyle(style: unknown): Promise<boolean> {
     const normalized = normalizeRasterColorOverlayStyle(style);
-    const normalizedActive = normalized.enabled && normalized.opacity > 0;
+    const normalizedActive = rasterColorOverlayIsActive(normalized);
     if (this.initialized && !this.rasterLayerMetadataHistoryEditAllows("color-overlay")) {
       return false;
     }
@@ -2314,7 +2315,7 @@ export class BrushEngine {
       "color-overlay",
     );
     const previous = copyRasterColorOverlayStyle(this.rasterColorOverlayStyle);
-    const previousActive = previous.enabled && previous.opacity > 0;
+    const previousActive = rasterColorOverlayIsActive(previous);
     const previousDisplayUsesStyle = Boolean(
       this.rasterStrokeRenderer && this.styleStackNeedsCompositor(),
     );
@@ -8555,7 +8556,7 @@ export class BrushEngine {
         || bevelStyle.enabled
         || outerShadowStyle.enabled
         || innerShadowStyle.enabled
-        || (colorOverlayStyle.enabled && colorOverlayStyle.opacity > 0))
+        || rasterColorOverlayIsActive(colorOverlayStyle))
     );
     if (!renderer || !styleStackActive) {
       if (mutationRect || layerCleared) {

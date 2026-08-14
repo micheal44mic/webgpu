@@ -162,6 +162,16 @@ assert.equal(normalizeProjectTitle("\n\t"), "Untitled Artwork");
 const { request, bytes, tileBytes } = projectRequest();
 validateProjectSaveRequest(request);
 assert.equal(estimateProjectSaveBytes(request), tileBytes + 4);
+const uniformAlphaProject = projectRequest("Uniform alpha overlay");
+uniformAlphaProject.request.snapshot.layers[0].colorOverlayStyle.uniformAlpha = true;
+validateProjectSaveRequest(uniformAlphaProject.request);
+const invalidUniformAlphaProject = structuredClone(uniformAlphaProject.request);
+invalidUniformAlphaProject.snapshot.layers[0].colorOverlayStyle.uniformAlpha = "true";
+assert.throws(
+  () => validateProjectSaveRequest(invalidUniformAlphaProject),
+  ProjectStorageValidationError,
+  "uniformAlpha must be boolean when present",
+);
 
 const immutableMasterBytes = Uint8Array.of(137, 80, 78, 71, 13, 10, 26, 10);
 const sourceBacked = projectRequest("Source-backed raster");
@@ -412,6 +422,11 @@ assert.match(
 );
 assert.match(runtimeSource, /sourceResource\.sourceBlob/);
 assert.match(runtimeSource, /installRasterLayerSourceResource\(/);
+assert.match(
+  runtimeSource,
+  /colorOverlayStyle: normalizeRasterColorOverlayStyle\(layer\.colorOverlayStyle\)/,
+  "restore must default uniformAlpha for projects written before the field existed",
+);
 
 storage.close();
 secondInstance.close();

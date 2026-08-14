@@ -109,16 +109,18 @@ export function layerEffectRendererRequirements(
   bevelStyle: Pick<RasterBevelStyle, "enabled">,
   outerShadowStyle: Pick<RasterOuterShadowStyle, "enabled"> = { enabled: false },
   innerShadowStyle: Pick<RasterInnerShadowStyle, "enabled"> = { enabled: false },
-  colorOverlayStyle: Pick<RasterColorOverlayStyle, "enabled" | "opacity"> = {
-    enabled: false,
-    opacity: 100,
-  },
+  colorOverlayStyle: Pick<RasterColorOverlayStyle, "enabled" | "opacity">
+    & Partial<Pick<RasterColorOverlayStyle, "uniformAlpha">> = {
+      enabled: false,
+      opacity: 100,
+    },
 ): LayerEffectRendererRequirements {
   const needsBevelRenderer = bevelStyle.enabled;
   const needsOuterShadowRenderer = outerShadowStyle.enabled;
   const needsInnerShadowRenderer = innerShadowStyle.enabled;
   const needsColorOverlayRenderer =
-    colorOverlayStyle.enabled && colorOverlayStyle.opacity > 0;
+    colorOverlayStyle.enabled
+    && (colorOverlayStyle.uniformAlpha === true || colorOverlayStyle.opacity > 0);
   return {
     needsStrokeRenderer:
       (strokeStyle.enabled && strokeStyle.width > 0)
