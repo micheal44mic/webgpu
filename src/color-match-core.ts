@@ -196,15 +196,15 @@ fn connectedStraightSrgbColorsMatch(
 
 fn globalStraightSrgbColorsMatch(
   source: vec4<f32>,
-  target: vec4<f32>,
+  targetColor: vec4<f32>,
   requestedTolerance: f32,
 ) -> bool {
   let strength = clamp(requestedTolerance, 0.0, 1.0);
-  if (source.a <= COLOR_MATCH_EPSILON || target.a <= COLOR_MATCH_EPSILON) {
+  if (source.a <= COLOR_MATCH_EPSILON || targetColor.a <= COLOR_MATCH_EPSILON) {
     return false;
   }
   let sourceProfile = colorFamilyProfile(source.rgb);
-  let targetProfile = colorFamilyProfile(target.rgb);
+  let targetProfile = colorFamilyProfile(targetColor.rgb);
   let sourceChromatic = colorFamilyIsChromatic(sourceProfile);
   let targetChromatic = colorFamilyIsChromatic(targetProfile);
   if (sourceChromatic != targetChromatic) { return false; }
