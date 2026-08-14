@@ -7,13 +7,17 @@ import {
   DOCUMENT_WIDTH,
 } from "./engine-limits.ts";
 import type { DirtyRect } from "./engine-stroke-types.ts";
+import {
+  CONNECTED_COLOR_MAX_DISTANCE,
+  globalStraightSrgbColorsMatch,
+} from "./color-match-core.ts";
 
 export const PIXEL_SELECTION_MASK_STRATEGY =
   "document-wide-gpu-r32-bitmask-replace-add-subtract-v1" as const;
 export const MAGIC_WAND_SELECTION_STRATEGY =
-  "fill-ccl-reused-4-connected-straight-srgb-alpha-v1" as const;
+  "fill-ccl-reused-4-connected-color-family-contrast-capped-v2" as const;
 export const COLOR_RANGE_SELECTION_STRATEGY =
-  "global-straight-srgb-alpha-max-channel-range-v1" as const;
+  "global-straight-srgb-alpha-hue-family-range-v2" as const;
 export const LASSO_SELECTION_STRATEGY =
   "cpu-even-odd-pixel-center-spans-gpu-bitmask-v1" as const;
 export const SELECTION_OVERLAY_STRATEGY =
@@ -107,6 +111,30 @@ export function normalizeSelectionTolerance(value: number): number {
     throw new RangeError("La tolleranza della selezione deve essere finita.");
   }
   return Math.min(255, Math.max(0, value)) / 255;
+}
+
+export const MAGIC_WAND_LINEAR_TOLERANCE = 32 / 255;
+export const MAGIC_WAND_MAX_COLOR_DISTANCE = CONNECTED_COLOR_MAX_DISTANCE;
+
+export function normalizeMagicWandTolerance(value: number): number {
+  const normalized = normalizeSelectionTolerance(value);
+  if (normalized <= MAGIC_WAND_LINEAR_TOLERANCE) return normalized;
+  return MAGIC_WAND_LINEAR_TOLERANCE
+    + (normalized - MAGIC_WAND_LINEAR_TOLERANCE)
+      * (MAGIC_WAND_MAX_COLOR_DISTANCE - MAGIC_WAND_LINEAR_TOLERANCE)
+      / (1 - MAGIC_WAND_LINEAR_TOLERANCE);
+}
+
+export function selectionColorsMatch(
+  source: readonly [number, number, number, number],
+  target: readonly [number, number, number, number],
+  tolerance: number,
+): boolean {
+  return globalStraightSrgbColorsMatch(
+    source,
+    target,
+    normalizeSelectionTolerance(tolerance),
+  );
 }
 
 export function normalizeSelectionCombineMode(value: string): SelectionCombineMode {

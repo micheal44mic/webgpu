@@ -13,6 +13,7 @@ import {
   SELECTION_TILE_WIDTH,
   SELECTION_WORDS_PER_ROW,
 } from "./selection-core.ts";
+import { colorMatchShaderHelpers } from "./color-match-core.ts";
 
 export const selectionComputeShader = /* wgsl */ `
 const LAYER_EXTENT: vec2<u32> = vec2<u32>(${SELECTION_LAYER_WIDTH}u, ${SELECTION_LAYER_HEIGHT}u);
@@ -61,6 +62,8 @@ fn straightSrgb(value: vec4<f32>) -> vec4<f32> {
   );
 }
 
+${colorMatchShaderHelpers}
+
 fn applyBit(wordIndex: u32, bit: u32) {
   if (uniforms.combineMode == 2u) {
     atomicAnd(&selectionMask[wordIndex], ~bit);
@@ -80,9 +83,11 @@ fn selectGlobalColor(@builtin(global_invocation_id) global: vec3<u32>) {
     let pixel = vec2<u32>(baseX + bit, y);
     if (pixel.x >= LAYER_EXTENT.x || pixel.y >= LAYER_EXTENT.y) { continue; }
     let source = straightSrgb(textureLoad(sourceLayer, vec2<i32>(pixel), 0));
-    let delta = abs(source - uniforms.targetColor);
-    let matches = max(max(delta.r, delta.g), max(delta.b, delta.a))
-      <= uniforms.tolerance + 0.0000001;
+    let matches = globalStraightSrgbColorsMatch(
+      source,
+      uniforms.targetColor,
+      uniforms.tolerance,
+    );
     if (matches) { candidate |= 1u << bit; }
   }
   if (uniforms.combineMode == 2u) {

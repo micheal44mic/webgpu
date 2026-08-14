@@ -1561,11 +1561,32 @@
 
           <div id="mobileToolSettingsScroll" class="mobile-tool-settings-scroll">
             <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="fill" hidden>
+              <label
+                id="mobileFillColorControl"
+                class="mobile-raster-effect-color"
+                for="mobileFillColor"
+              >
+                <span>Color</span>
+                <span class="mobile-raster-effect-color-disc">
+                  <input id="mobileFillColor" type="color" value="#000000" />
+                </span>
+              </label>
               <label class="mobile-raster-effect-range" for="mobileFillTolerance">
                 <span>Tolerance</span>
                 <output id="mobileFillToleranceOut" for="mobileFillTolerance">10.0%</output>
-                <input id="mobileFillTolerance" type="range" min="0" max="100" step="0.1" value="10" />
+                <input
+                  id="mobileFillTolerance"
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="0.1"
+                  value="10"
+                  aria-describedby="mobileFillToleranceHint"
+                />
               </label>
+              <p id="mobileFillToleranceHint" class="mobile-tool-settings-status">
+                Uses the active raster or Fill Reference. Maximum tolerance stays color-aware and preserves contrasting 1 px boundaries.
+              </p>
             </section>
 
             <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="selection" hidden>
@@ -1594,8 +1615,19 @@
               >
                 <span>Tolerance</span>
                 <output id="mobileSelectionToleranceOut" for="mobileSelectionTolerance">32/255</output>
-                <input id="mobileSelectionTolerance" type="range" min="0" max="255" step="1" value="32" />
+                <input
+                  id="mobileSelectionTolerance"
+                  type="range"
+                  min="0"
+                  max="255"
+                  step="1"
+                  value="32"
+                  aria-describedby="mobileSelectionToleranceHint"
+                />
               </label>
+              <p id="mobileSelectionToleranceHint" class="mobile-tool-settings-status">
+                Maximum tolerance expands shades without including black with a chromatic color.
+              </p>
 
               <label
                 id="mobileSelectionColorControl"

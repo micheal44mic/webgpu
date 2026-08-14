@@ -22,6 +22,7 @@ import {
   FILL_LAYER_WIDTH,
   FILL_RENDER_MASK_WORDS_PER_ROW,
 } from "./fill-core.ts";
+import { colorMatchShaderHelpers } from "./color-match-core.ts";
 
 // Alcuni backend Vulkan/GLSL usati da Chrome Android compilano in modo errato
 // lo shift dinamico `1u << 31u`: il bit alto sparisce e il risultato visibile è
@@ -121,9 +122,14 @@ fn straightSrgb(value: vec4<f32>) -> vec4<f32> {
   );
 }
 
+${colorMatchShaderHelpers}
+
 fn matchesSeed(value: vec4<f32>) -> bool {
-  let delta = abs(straightSrgb(value) - straightSrgb(seedColor));
-  return max(max(delta.r, delta.g), max(delta.b, delta.a)) <= uniforms.tolerance + 0.0000001;
+  return connectedStraightSrgbColorsMatch(
+    straightSrgb(value),
+    straightSrgb(seedColor),
+    uniforms.tolerance,
+  );
 }
 
 fn findLocalRoot(start: u32) -> u32 {

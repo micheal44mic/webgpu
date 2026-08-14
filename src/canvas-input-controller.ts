@@ -69,6 +69,7 @@ export interface CanvasInputElements {
 
 export interface CanvasInputFillSettings {
   readonly tolerance: number;
+  readonly color: string;
 }
 
 export interface CanvasInputSelectionSettings {
@@ -101,7 +102,6 @@ export interface CanvasInputControllerOptions {
   readonly getSelectionMethod: () => SelectionMethod;
   readonly getFillSettings: () => CanvasInputFillSettings;
   readonly getSelectionSettings: () => CanvasInputSelectionSettings;
-  readonly getBrushColor: () => string;
   readonly getHistoryState: () => HistoryState;
   readonly onHistoryState: (state: HistoryState) => void;
   readonly operationLocked: (allowDestructiveEdit?: boolean) => boolean;
@@ -825,12 +825,15 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     const fillRequest = pointerMode === "fill"
       && event.type === "pointerup"
       && !fillPointerMoved
-      ? {
-        clientX: event.clientX,
-        clientY: event.clientY,
-        tolerance: options.getFillSettings().tolerance,
-        color: options.getBrushColor(),
-      }
+      ? (() => {
+        const fill = options.getFillSettings();
+        return {
+          clientX: event.clientX,
+          clientY: event.clientY,
+          tolerance: fill.tolerance,
+          color: fill.color,
+        };
+      })()
       : null;
     const selectionTapRequest = pointerMode === "selection-tap"
       && selectionTapMethod === "magic-wand"
