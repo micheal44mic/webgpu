@@ -29,7 +29,8 @@ export type PresentationCacheStrategy = "persistent-full-resolution-screen-cache
 
 export type PresentationTransferStrategy = "copy-texture-to-current-texture";
 
-export type PaintDisplayPyramidStrategy = "live-dirty-box-filter-mip-chain";
+export type PaintDisplayPyramidStrategy =
+  "live-dirty-perceptual-srgb-filter-and-manual-minification-linear-alpha-extended-residual-mip-chain";
 
 export type PaintDisplayLodSelectionStrategy = "largest-power-of-two-without-upscaling";
 
@@ -117,7 +118,8 @@ export const PRESENTATION_CACHE_STRATEGY = "persistent-full-resolution-screen-ca
 
 export const PRESENTATION_TRANSFER_STRATEGY = "copy-texture-to-current-texture" as const;
 
-export const PAINT_DISPLAY_PYRAMID_STRATEGY = "live-dirty-box-filter-mip-chain" as const;
+export const PAINT_DISPLAY_PYRAMID_STRATEGY =
+  "live-dirty-perceptual-srgb-filter-and-manual-minification-linear-alpha-extended-residual-mip-chain" as const;
 
 export const LAYER_BAKE_STRATEGY =
   "transient-analytic-bounded-visual-rect-no-handoff-residency-mip0-fused-into-two-merged-surfaces" as const;

@@ -8,11 +8,17 @@
  * pass performs that conversion into a temporary linear RGBA16F mip chain; the
  * last pass samples the chain into the document's authoritative RGBA16F layer.
  */
+import {
+  perceptualRasterResamplingShader,
+  perceptualRasterSamplingShader,
+} from "./perceptual-raster-resampling.ts";
 
 export const RASTER_IMAGE_LAYER_IMPORT_STRATEGY =
-  "decoded-rgba8-srgb-to-linear-premultiplied-rgba16float-exact-npot-mips-native-layer-v3" as const;
+  "decoded-rgba8-srgb-to-linear-premultiplied-perceptual-npot-mips-native-layer-v4" as const;
 
 export const rasterImageLayerUploadShader = /* wgsl */ `
+${perceptualRasterResamplingShader}
+
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
 };
@@ -62,7 +68,8 @@ fn fragmentMipmapMain(
   let sourceEnd = vec2<f32>(destinationCoordinate + vec2<i32>(1)) * sourceScale;
   let firstSourceCoordinate = vec2<i32>(floor(sourceStart));
 
-  var accumulated = vec4<f32>(0.0);
+  var accumulatedEncoded = vec4<f32>(0.0);
+  var accumulatedExtendedResidual = vec4<f32>(0.0);
   var accumulatedWeight = 0.0;
   for (var y = 0; y < 3; y = y + 1) {
     let sourceY = firstSourceCoordinate.y + y;
@@ -72,28 +79,35 @@ fn fragmentMipmapMain(
         let sourceX = firstSourceCoordinate.x + x;
         if (sourceX >= 0 && sourceX < sourceDimensions.x) {
           let weight = weightY * texelOverlap(sourceStart.x, sourceEnd.x, sourceX);
-          accumulated += textureLoad(
+          let prepared = perceptualPrepareSample(textureLoad(
             sourceTexture,
             vec2<i32>(sourceX, sourceY),
             0
-          ) * weight;
+          ));
+          accumulatedEncoded += prepared.encoded * weight;
+          accumulatedExtendedResidual += prepared.extendedResidual * weight;
           accumulatedWeight += weight;
         }
       }
     }
   }
-  return accumulated / max(accumulatedWeight, 0.000001);
+  let safeWeight = max(accumulatedWeight, 0.000001);
+  var reduced: PerceptualResamplingSample;
+  reduced.encoded = accumulatedEncoded / safeWeight;
+  reduced.extendedResidual = accumulatedExtendedResidual / safeWeight;
+  return perceptualResolveSample(reduced);
 }
 `;
 
 export const rasterImageLayerBlitShader = /* wgsl */ `
+${perceptualRasterSamplingShader}
+
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) uv: vec2<f32>,
 };
 
 @group(0) @binding(0) var sourceTexture: texture_2d<f32>;
-@group(0) @binding(1) var sourceSampler: sampler;
 
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
@@ -120,16 +134,14 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-  // Explicit gradients select the transient exact-area mip chain when the
-  // source is reduced. At 1:1, destination pixel centres coincide with source
-  // texel centres and the linear sample remains byte-faithful modulo the
-  // required sRGB-to-linear and premultiplication conversion.
-  return textureSampleGrad(
+  // The mip tier and the interpolation between texels/tiers both follow the
+  // shared display-resampling contract. At 1:1, destination pixel centres
+  // coincide with source texel centres and this reduces to one textureLoad.
+  let mipLevel = perceptualMipLevelFromGradients(
     sourceTexture,
-    sourceSampler,
-    input.uv,
     dpdx(input.uv),
     dpdy(input.uv)
   );
+  return perceptualSampleTrilinear(sourceTexture, input.uv, mipLevel, true);
 }
 `;

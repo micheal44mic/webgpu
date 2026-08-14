@@ -130,7 +130,7 @@ for (const point of [
 // Strategie: nessun fallback bitmap, source Slug, effetti Clipper/Worker.
 assert.equal(
   VECTOR_TEXT_PRESENTATION_STRATEGY,
-  "semantic-vector-gpu-runs-slug-clipper-msaa4-rgba16f-v6",
+  "semantic-vector-gpu-runs-slug-clipper-msaa4-rgba16f-perceptual-minification-v7",
 );
 assert.equal(
   VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY,
@@ -484,7 +484,7 @@ assert.equal(VECTOR_TEXT_GPU_BLUR_BYTES_PER_PIXEL, 2);
 assert.equal(MIXED_SCENE_LINEAR_FORMAT, "rgba16float");
 assert.equal(
   MIXED_SCENE_COMPOSITOR_STRATEGY,
-  "ordered-raster-vector-gpu-runs-rgba16f-viewport-source-over-raster-nearest-at-581pct-v4",
+  "ordered-raster-vector-gpu-runs-rgba16f-perceptual-raster-minification-source-over-v5",
 );
 assert.equal(
   VECTOR_TEXT_FONT_GEOMETRY_STRATEGY,

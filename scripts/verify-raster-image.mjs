@@ -138,7 +138,7 @@ assert.equal(
 );
 assert.equal(
   RASTER_IMAGE_LAYER_IMPORT_STRATEGY,
-  "decoded-rgba8-srgb-to-linear-premultiplied-rgba16float-exact-npot-mips-native-layer-v3",
+  "decoded-rgba8-srgb-to-linear-premultiplied-perceptual-npot-mips-native-layer-v4",
 );
 assert.equal(RASTER_IMAGE_DECODED_BYTES_PER_PIXEL, 4);
 assert.equal(RASTER_IMAGE_LINEAR_BYTES_PER_PIXEL, 8);
@@ -394,11 +394,15 @@ assert.match(runtimeSource, /if \(decoded\) releaseDecodedRasterImage\(decoded\)
 assert.match(engineSource, /sweepRasterImageGpuResources\(\): number/);
 assert.doesNotMatch(runtimeSource, /CanvasRenderingContext2D|getContext\("2d"\)|drawImage\(/);
 assert.doesNotMatch(runtimeSource, /addImageAboveSelection\(/);
-assert.match(shaderSource, /textureSampleGrad\(/);
+assert.match(shaderSource, /perceptualMipLevelFromGradients\(/);
+assert.match(shaderSource, /perceptualSampleTrilinear\(sourceTexture, input\.uv, mipLevel, true\)/);
+assert.doesNotMatch(shaderSource, /textureSample(?:Grad|Level)?\(/);
 assert.match(shaderSource, /fragmentPremultiplyMain/);
 assert.match(shaderSource, /straightLinear\.rgb \* straightLinear\.a/);
 assert.match(shaderSource, /texelOverlap/);
 assert.match(shaderSource, /for \(var y = 0; y < 3/);
+assert.match(shaderSource, /perceptualPrepareSample\(textureLoad\(/);
+assert.match(shaderSource, /perceptualResolveSample\(reduced\)/);
 assert.match(engineSource, /kind: "raster-import"/);
 assert.match(engineSource, /commitRasterImportHistory\(history/);
 assert.match(runtimeSource, /commitHistory\(historySeed\);[\s\S]{0,100}seed = null/);

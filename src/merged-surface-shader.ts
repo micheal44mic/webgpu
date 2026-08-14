@@ -43,6 +43,14 @@ fn sampleMergedBelow(layerPosition: vec2<f32>) -> vec4<f32> {
       0
     );
   }
+  if (display.zoom < 0.999999) {
+    return perceptualSampleTrilinear(
+      mergedBelowTexture,
+      uv,
+      lod,
+      true
+    );
+  }
   return textureSampleLevel(mergedBelowTexture, layerSampler, uv, lod);
 }
 
@@ -72,6 +80,14 @@ fn sampleMergedAbove(layerPosition: vec2<f32>) -> vec4<f32> {
         vec2<i32>(textureDimensions(mergedAboveTexture, 0))
       ),
       0
+    );
+  }
+  if (display.zoom < 0.999999) {
+    return perceptualSampleTrilinear(
+      mergedAboveTexture,
+      uv,
+      lod,
+      true
     );
   }
   return textureSampleLevel(mergedAboveTexture, layerSampler, uv, lod);

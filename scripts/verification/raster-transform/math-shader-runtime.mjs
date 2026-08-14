@@ -38,7 +38,7 @@ assert.equal(
 );
 assert.equal(
   RASTER_TRANSFORM_SHADER_STRATEGY,
-  "premultiplied-linear-transparent-border-inverse-affine-manual-trilinear-v3",
+  "texel-exact-integer-translation-perceptual-transparent-inverse-affine-trilinear-v4",
 );
 assert.equal(
   RASTER_SELECTION_TRANSLATE_SHADER_STRATEGY,
@@ -301,22 +301,21 @@ assert.throws(
   /contenuto nello scratch/,
 );
 
-assert.match(rasterTransformShader, /textureSampleLevel\s*\(/);
-assert.doesNotMatch(rasterTransformShader, /\btextureSample\s*\(/);
-assert.doesNotMatch(rasterTransformShader, /textureSampleGrad\s*\(/);
+assert.doesNotMatch(rasterTransformShader, /textureSample(?:Level|Grad)?\s*\(/);
 assert.doesNotMatch(rasterTransformShader, /\b(?:dpdx|dpdy|fwidth)\s*\(/);
-assert.match(rasterTransformShader, /transparentBorderWeight/);
 assert.match(rasterTransformShader, /textureNumLevels/);
 assert.doesNotMatch(rasterTransformShader, /if \(!insideContent/);
 assert.doesNotMatch(rasterTransformShader, /insideScratch/);
-assert.match(rasterTransformShader, /if \(upperLevel == lowerLevel \|\| lodBlend <= 0\.000001\)/);
-assert.match(rasterTransformShader, /return mix\(lower, upper, lodBlend\)/);
-assert.doesNotMatch(rasterTransformShader, /\.rgb\s*\/|\/\s*[^;]*\.a/);
+assert.match(rasterTransformShader, /isTexelExactIntegerTranslation/);
+assert.match(rasterTransformShader, /return textureLoad\(sourceTexture, coordinate, 0\)/);
+assert.match(rasterTransformShader, /perceptualSampleTrilinear\(sourceTexture, sourceUv, lod, false\)/);
 assert.doesNotMatch(rasterTransformShader, /rgba8unorm|rgba16float/);
 
 assert.match(rasterTransformMipmapShader, /textureLoad\s*\(/);
 assert.match(rasterTransformMipmapShader, /accumulatedWeight/);
 assert.match(rasterTransformMipmapShader, /for \(var [xy] = 0; [xy] < 3/);
+assert.match(rasterTransformMipmapShader, /perceptualPrepareSample\(textureLoad\(/);
+assert.match(rasterTransformMipmapShader, /perceptualResolveSample\(reduced\)/);
 assert.doesNotMatch(rasterTransformMipmapShader, /textureSample/);
 assert.doesNotMatch(rasterTransformMipmapShader, /rgba8unorm|rgba16float/);
 

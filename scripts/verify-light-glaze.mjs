@@ -262,7 +262,7 @@ assert.match(
 assert.match(
   livePyramid,
   /requestedContent === "final-raster-stack"\s*\? engine\.lightGlazeFinalRasterStackCompositeMipPipeline/,
-  "Mip 1 live deve poter comporre lo stack raster finale prima del box filter.",
+  "Mip 1 live deve poter comporre lo stack raster finale prima del filtro percettivo.",
 );
 
 assert.match(
@@ -299,13 +299,13 @@ const liveDisplayShader = section(
 assert.match(liveDisplayShader, /fn compositedFinalRasterStackTexel\(/);
 assert.match(
   liveDisplayShader,
-  /fn sampleCompositedFinalRasterStackLinear[\s\S]*compositedFinalRasterStackTexel\(lower\)[\s\S]*compositedFinalRasterStackTexel\(lower \+ vec2<i32>\(1, 1\)\)[\s\S]*return mix\(/,
+  /fn sampleCompositedFinalRasterStackFiltered[\s\S]*compositedFinalRasterStackTexel\(lower\)[\s\S]*compositedFinalRasterStackTexel\(lower \+ vec2<i32>\(1, 1\)\)[\s\S]*return mix\(/,
   "LOD 0 live deve comporre i quattro texel finali prima della bilineare.",
 );
 assert.match(
   liveDisplayShader,
-  /fn finalStackFragmentMain[\s\S]*let lod = max\(display\.selectedMipLevel, 0\.0\)[\s\S]*let mipOne = textureSampleLevel\(compositedMipTexture[\s\S]*let lowerMip = floor\(lod\)[\s\S]*let upperMip = ceil\(lod\)/,
-  "Il display live deve fondere mip 0 e la piramide composta, poi i livelli adiacenti.",
+  /fn finalStackFragmentMain[\s\S]*let lod = max\(display\.selectedMipLevel, 0\.0\)[\s\S]*let mipOne = perceptualSampleBilinear\(compositedMipTexture[\s\S]*perceptualInterpolate\(mipZero, mipOne, lod\)[\s\S]*perceptualSampleTrilinear\(compositedMipTexture, uv, lod - 1\.0, true\)/,
+  "Il display live deve fondere percettivamente mip 0 e la piramide composta.",
 );
 assert.match(
   liveDisplayShader,
@@ -327,8 +327,8 @@ assert.match(
 );
 assert.match(
   liveMipShader,
-  /fn finalStackFragmentMain[\s\S]*let p00 = compositedFinalStackSource\(sourceOrigin\)[\s\S]*let p11 = compositedFinalStackSource\(sourceOrigin \+ vec2<i32>\(1, 1\)\)[\s\S]*return \(p00 \+ p10 \+ p01 \+ p11\) \* 0\.25/,
-  "Mip 1 live deve mediare quattro risultati finali premoltiplicati.",
+  /fn finalStackFragmentMain[\s\S]*let p00 = compositedFinalStackSource\(sourceOrigin\)[\s\S]*let p11 = compositedFinalStackSource\(sourceOrigin \+ vec2<i32>\(1, 1\)\)[\s\S]*return perceptualReduceFour\(p00, p10, p01, p11\)/,
+  "Mip 1 live deve ridurre percettivamente quattro risultati finali premoltiplicati.",
 );
 
 assert.match(

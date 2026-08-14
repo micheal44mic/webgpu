@@ -43,14 +43,13 @@ import {
 } from "./engine-selection-runtime";
 
 export const RASTER_LAYER_TRANSFORM_STRATEGY =
-  "native-raster-tile-bbox-transparent-border-scale-aware-latest-frame-single-checkpoint-v3" as const;
+  "native-raster-tile-bbox-perceptual-filter-texel-exact-translate-latest-frame-single-checkpoint-v4" as const;
 const RASTER_TRANSFORM_TRANSPARENT_GUARD_PX = 2;
 
 interface RasterTransformSharedResources {
   bindGroupLayout: GPUBindGroupLayout;
   selectionMaskBindGroupLayout: GPUBindGroupLayout;
   mipBindGroupLayout: GPUBindGroupLayout;
-  sampler: GPUSampler;
   pipeline: GPURenderPipeline;
   selectionPipeline: GPURenderPipeline;
   mipPipeline: GPURenderPipeline;
@@ -177,11 +176,6 @@ async function createSharedResources(
             visibility: GPUShaderStage.FRAGMENT,
             texture: { sampleType: "float", viewDimension: "2d" },
           },
-          {
-            binding: 2,
-            visibility: GPUShaderStage.FRAGMENT,
-            sampler: { type: "filtering" },
-          },
         ],
       });
       const mipBindGroupLayout = engine.device.createBindGroupLayout({
@@ -199,15 +193,6 @@ async function createSharedResources(
           visibility: GPUShaderStage.FRAGMENT,
           buffer: { type: "read-only-storage" },
         }],
-      });
-      const sampler = engine.device.createSampler({
-        label: "Native raster Transform linear sampler",
-        addressModeU: "clamp-to-edge",
-        addressModeV: "clamp-to-edge",
-        minFilter: "linear",
-        magFilter: "linear",
-        mipmapFilter: "nearest",
-        maxAnisotropy: 1,
       });
       const pipelineLayout = engine.device.createPipelineLayout({
         label: "Native raster Transform pipeline layout",
@@ -258,7 +243,6 @@ async function createSharedResources(
         bindGroupLayout,
         selectionMaskBindGroupLayout,
         mipBindGroupLayout,
-        sampler,
         pipeline,
         selectionPipeline,
         mipPipeline,
@@ -560,7 +544,6 @@ export async function beginRasterLayerTransform(
           entries: [
             { binding: 0, resource: { buffer: uniformBuffer } },
             { binding: 1, resource: scratchView },
-            { binding: 2, resource: shared.sampler },
           ],
         });
         const selectionMaskBindGroup = selectionScope

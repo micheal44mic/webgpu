@@ -341,7 +341,7 @@ assert.ok(
 // regression that exposed checkerboard rectangles while painting.
 assert.match(
   tileShaderSource,
-  /LAYER_BLEND_TILE_STRATEGY\s*=\s*\n\s*"document-space-1024-tile-native-format-blend-before-filter-replace-cache-v2"/,
+  /LAYER_BLEND_TILE_STRATEGY\s*=\s*\n\s*"document-space-1024-tile-native-format-blend-before-perceptual-filter-and-sample-v4"/,
 );
 assert.match(
   tileShaderSource,

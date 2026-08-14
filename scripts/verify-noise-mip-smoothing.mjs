@@ -91,7 +91,7 @@ assert.match(shaders, /fn sampleActiveLayerLogicalMip\(/);
 assert.match(shaders, /fn sampleCompositedActiveLogicalMip\(/);
 assert.match(shaders, /let lowerMip = floor\(lod\)/);
 assert.match(shaders, /let upperMip = ceil\(lod\)/);
-assert.match(shaders, /paint = mix\(mipZero, mipOne, lod\)/);
+assert.match(shaders, /paint = perceptualInterpolate\(mipZero, mipOne, lod\)/);
 assert.doesNotMatch(
   shaders,
   /display\.selectedMipLevel\s*(?:<|>=)\s*0\.5/,

@@ -8,6 +8,7 @@ import {
 
 const engineSource = readEngineSource();
 const vectorRasterSource = readRepositorySource("src/engine-vector-raster-runtime.ts");
+const vectorRasterResolveSource = readRepositorySource("src/vector-raster-resolve-shader.ts");
 const controllerSource = readRepositorySource("src/mixed-scene-controller.ts");
 const historyProbeSource = readRepositorySource("src/mixed-scene-history-probe.ts");
 const clientSource = readRepositorySource("src/vector-text-effect-client.ts");
@@ -17,7 +18,7 @@ const htmlSource = readRepositorySource("index.html");
 // RGBA16F lineare, MSAA 4x, blocchi allineati ai tile e seed tiled Undo/Redo.
 assert.match(
   vectorRasterSource,
-  /semantic-vector-slug-mesh-webgpu-linear-layer-format-msaa4-512-tile-chunks-history-seed-v3/,
+  /semantic-vector-slug-mesh-webgpu-explicit-perceptual-msaa4-resolve-512-tile-chunks-history-seed-v4/,
 );
 assert.match(vectorRasterSource, /VECTOR_RASTER_FORMAT = "rgba16float"/);
 assert.match(vectorRasterSource, /VECTOR_RASTER_CHUNK_SIZE = LAYER_STORAGE_TILE_SIZE \* 2/);
@@ -32,6 +33,27 @@ assert.match(vectorRasterSource, /destination\.format !== engine\.layerFormat/);
 assert.match(vectorRasterSource, /createVectorRasterScratch\(engine, format\)/);
 assert.match(vectorRasterSource, /format,\s*usage: GPUTextureUsage\.RENDER_ATTACHMENT/);
 assert.match(vectorRasterSource, /sampleCount: VECTOR_TEXT_GPU_SAMPLE_COUNT/);
+assert.match(
+  vectorRasterSource,
+  /GPUTextureUsage\.RENDER_ATTACHMENT \| GPUTextureUsage\.TEXTURE_BINDING/,
+);
+assert.doesNotMatch(vectorRasterSource, /resolveTarget:/);
+assert.match(vectorRasterSource, /storeOp: "store"/);
+assert.match(vectorRasterSource, /resolvePass\.setPipeline\(pipelines\.resolve\)/);
+assert.match(
+  vectorRasterResolveSource,
+  /explicit-msaa4-perceptual-srgb-color-linear-coverage-v1/,
+);
+assert.match(vectorRasterResolveSource, /texture_multisampled_2d<f32>/);
+assert.equal(
+  (vectorRasterResolveSource.match(/textureLoad\(sourceTexture, coordinate, [0-3]\)/g) ?? []).length,
+  VECTOR_TEXT_GPU_SAMPLE_COUNT,
+);
+assert.match(vectorRasterResolveSource, /perceptualReduceFour\(/);
+assert.match(
+  vectorRasterSource,
+  /sampleType: "unfilterable-float",[\s\S]{0,100}multisampled: true/,
+);
 assert.match(vectorRasterSource, /entryPoint: "fragmentMain"/);
 assert.match(vectorRasterSource, /slugInnerShadowDirect/);
 assert.match(vectorRasterSource, /slugInnerShadowBlur/);

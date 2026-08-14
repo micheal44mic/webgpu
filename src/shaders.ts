@@ -1,5 +1,9 @@
 import { mergedSurfaceSamplingShader } from "./merged-surface-shader";
 import { activeClippingGroupTexelShader } from "./clipping-group-shader";
+import {
+  perceptualRasterResamplingShader,
+  perceptualRasterSamplingShader,
+} from "./perceptual-raster-resampling.ts";
 
 export const brushShader = /* wgsl */ `
 const MAX_COUNT: u32 = 24u;
@@ -764,39 +768,10 @@ struct VertexOutput {
 @group(0) @binding(6) var activeClippingPrefix: texture_2d<f32>;
 @group(0) @binding(7) var activeClippingSuffix: texture_2d<f32>;
 
-fn srgbToLinearChannel(value: f32) -> f32 {
-  if (value <= 0.04045) {
-    return value / 12.92;
-  }
-  return pow((value + 0.055) / 1.055, 2.4);
-}
-
-fn srgbToLinear(value: vec3<f32>) -> vec3<f32> {
-  return vec3<f32>(
-    srgbToLinearChannel(value.r),
-    srgbToLinearChannel(value.g),
-    srgbToLinearChannel(value.b)
-  );
-}
-
-fn linearToSrgbChannel(value: f32) -> f32 {
-  let clamped = clamp(value, 0.0, 1.0);
-  if (clamped <= 0.0031308) {
-    return clamped * 12.92;
-  }
-  return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
-}
-
-fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
-  return vec3<f32>(
-    linearToSrgbChannel(value.r),
-    linearToSrgbChannel(value.g),
-    linearToSrgbChannel(value.b)
-  );
-}
+${perceptualRasterSamplingShader}
 
 fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
-  return source + destination * (1.0 - source.a);
+  return linearPremultipliedSourceOver(source, destination);
 }
 
 ${activeClippingGroupTexelShader}
@@ -812,6 +787,9 @@ fn sampleActiveLayerMipZero(uv: vec2<f32>) -> vec4<f32> {
     return composeActiveClippingGroupTexel(activeTexel, pixel);
   }
   if (display.clippingMode < 0.5) {
+    if (display.zoom < 0.999999) {
+      return perceptualSampleBilinear(activeLayerBase, uv, 0u, true);
+    }
     return textureSampleLevel(activeLayerBase, layerSampler, uv, 0.0);
   }
 
@@ -829,22 +807,21 @@ fn sampleActiveLayerMipZero(uv: vec2<f32>) -> vec4<f32> {
   let p10 = composeActiveClippingGroupTexel(textureLoad(activeLayerBase, p10i, 0), p10i);
   let p01 = composeActiveClippingGroupTexel(textureLoad(activeLayerBase, p01i, 0), p01i);
   let p11 = composeActiveClippingGroupTexel(textureLoad(activeLayerBase, p11i, 0), p11i);
-  return mix(
-    mix(p00, p10, interpolation.x),
-    mix(p01, p11, interpolation.x),
-    interpolation.y
-  );
+  if (display.zoom < 0.999999) {
+    return perceptualInterpolateFour(p00, p10, p01, p11, interpolation);
+  }
+  return mix(mix(p00, p10, interpolation.x), mix(p01, p11, interpolation.x), interpolation.y);
 }
 
 fn sampleActiveLayerLogicalMip(uv: vec2<f32>, logicalMip: f32) -> vec4<f32> {
   if (logicalMip < 0.5) {
     return sampleActiveLayerMipZero(uv);
   }
-  return textureSampleLevel(
+  return perceptualSampleBilinear(
     activeLayerPyramid,
-    layerSampler,
     uv,
-    logicalMip - 1.0
+    u32(logicalMip - 1.0),
+    true
   );
 }
 
@@ -856,7 +833,7 @@ fn sampleActiveLayer(uv: vec2<f32>) -> vec4<f32> {
     return sampleActiveLayerLogicalMip(uv, lowerMip);
   }
   let interpolation = lod - lowerMip;
-  return mix(
+  return perceptualInterpolate(
     sampleActiveLayerLogicalMip(uv, lowerMip),
     sampleActiveLayerLogicalMip(uv, upperMip),
     interpolation
@@ -929,7 +906,7 @@ fn compositedLayerStackTexel(documentPixel: vec2<i32>) -> vec4<f32> {
 // the transition. Compose the four document texels first, then interpolate the
 // final premultiplied results. This is used only where any participating
 // stack surface has an alpha gradient.
-fn sampleCompositedLayerStackLinear(layerPosition: vec2<f32>) -> vec4<f32> {
+fn sampleCompositedLayerStackFiltered(layerPosition: vec2<f32>) -> vec4<f32> {
   let texelPosition = layerPosition - vec2<f32>(0.5);
   let lower = vec2<i32>(floor(texelPosition));
   let interpolation = fract(texelPosition);
@@ -937,11 +914,10 @@ fn sampleCompositedLayerStackLinear(layerPosition: vec2<f32>) -> vec4<f32> {
   let p10 = compositedLayerStackTexel(lower + vec2<i32>(1, 0));
   let p01 = compositedLayerStackTexel(lower + vec2<i32>(0, 1));
   let p11 = compositedLayerStackTexel(lower + vec2<i32>(1, 1));
-  return mix(
-    mix(p00, p10, interpolation.x),
-    mix(p01, p11, interpolation.x),
-    interpolation.y
-  );
+  if (display.zoom < 0.999999) {
+    return perceptualInterpolateFour(p00, p10, p01, p11, interpolation);
+  }
+  return mix(mix(p00, p10, interpolation.x), mix(p01, p11, interpolation.x), interpolation.y);
 }
 
 fn mergedSurfacesUseDocumentResolution() -> bool {
@@ -1029,16 +1005,16 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
 
   var paint = composeLayerStackSamples(activePaint, belowPaint, abovePaint);
   if (needsJointLayerFiltering(stackAlphaGradient)) {
-    paint = sampleCompositedLayerStackLinear(layerPosition);
+    paint = sampleCompositedLayerStackFiltered(layerPosition);
   }
 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;
   let backgroundSrgb = select(vec3<f32>(0.82), vec3<f32>(0.91), checkerParity == 0);
-  let backgroundLinear = srgbToLinear(backgroundSrgb);
-  let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
-
-  return vec4<f32>(linearToSrgb(compositedLinear), 1.0);
+  return vec4<f32>(rasterPresentationCompositeOverSrgbBackground(
+    paint,
+    backgroundSrgb
+  ), 1.0);
 }
 
 // Mip 1+ can store the already-composited raster stack. This entry point is
@@ -1075,33 +1051,24 @@ fn finalStackFragmentMain(
         rasterPixelViewTexel(uv, vec2<i32>(textureDimensions(activeLayerBase, 0)))
       );
     } else {
-      mipZero = sampleCompositedLayerStackLinear(layerPosition);
+      mipZero = sampleCompositedLayerStackFiltered(layerPosition);
     }
     if (lod <= 0.0) {
       paint = mipZero;
     } else {
-      let mipOne = textureSampleLevel(activeLayerPyramid, layerSampler, uv, 0.0);
-      paint = mix(mipZero, mipOne, lod);
+      let mipOne = perceptualSampleBilinear(activeLayerPyramid, uv, 0u, true);
+      paint = perceptualInterpolate(mipZero, mipOne, lod);
     }
   } else {
-    let lowerMip = floor(lod);
-    let upperMip = ceil(lod);
-    if (upperMip <= lowerMip) {
-      paint = textureSampleLevel(activeLayerPyramid, layerSampler, uv, lowerMip - 1.0);
-    } else {
-      paint = mix(
-        textureSampleLevel(activeLayerPyramid, layerSampler, uv, lowerMip - 1.0),
-        textureSampleLevel(activeLayerPyramid, layerSampler, uv, upperMip - 1.0),
-        lod - lowerMip
-      );
-    }
+    paint = perceptualSampleTrilinear(activeLayerPyramid, uv, lod - 1.0, true);
   }
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;
   let backgroundSrgb = select(vec3<f32>(0.82), vec3<f32>(0.91), checkerParity == 0);
-  let backgroundLinear = srgbToLinear(backgroundSrgb);
-  let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
-  return vec4<f32>(linearToSrgb(compositedLinear), 1.0);
+  return vec4<f32>(rasterPresentationCompositeOverSrgbBackground(
+    paint,
+    backgroundSrgb
+  ), 1.0);
 }
 
 @fragment
@@ -1183,39 +1150,10 @@ struct VertexOutput {
 @group(0) @binding(10) var activeClippingPrefix: texture_2d<f32>;
 @group(0) @binding(11) var activeClippingSuffix: texture_2d<f32>;
 
-fn srgbToLinearChannel(value: f32) -> f32 {
-  if (value <= 0.04045) {
-    return value / 12.92;
-  }
-  return pow((value + 0.055) / 1.055, 2.4);
-}
-
-fn srgbToLinear(value: vec3<f32>) -> vec3<f32> {
-  return vec3<f32>(
-    srgbToLinearChannel(value.r),
-    srgbToLinearChannel(value.g),
-    srgbToLinearChannel(value.b)
-  );
-}
-
-fn linearToSrgbChannel(value: f32) -> f32 {
-  let clamped = clamp(value, 0.0, 1.0);
-  if (clamped <= 0.0031308) {
-    return clamped * 12.92;
-  }
-  return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
-}
-
-fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
-  return vec3<f32>(
-    linearToSrgbChannel(value.r),
-    linearToSrgbChannel(value.g),
-    linearToSrgbChannel(value.b)
-  );
-}
+${perceptualRasterSamplingShader}
 
 fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
-  return source + destination * (1.0 - source.a);
+  return linearPremultipliedSourceOver(source, destination);
 }
 
 ${activeClippingGroupTexelShader}
@@ -1241,13 +1179,16 @@ fn samplePermanentLogicalMip(uv: vec2<f32>, logicalMip: f32) -> vec4<f32> {
         0
       );
     }
+    if (display.zoom < 0.999999) {
+      return perceptualSampleBilinear(activeLayerBase, uv, 0u, true);
+    }
     return textureSampleLevel(activeLayerBase, layerSampler, uv, 0.0);
   }
-  return textureSampleLevel(
+  return perceptualSampleBilinear(
     activeLayerPyramid,
-    layerSampler,
     uv,
-    logicalMip - 1.0
+    u32(logicalMip - 1.0),
+    true
   );
 }
 
@@ -1258,7 +1199,7 @@ fn samplePermanentLayer(uv: vec2<f32>) -> vec4<f32> {
   if (upperMip <= lowerMip) {
     return samplePermanentLogicalMip(uv, lowerMip);
   }
-  return mix(
+  return perceptualInterpolate(
     samplePermanentLogicalMip(uv, lowerMip),
     samplePermanentLogicalMip(uv, upperMip),
     lod - lowerMip
@@ -1275,6 +1216,9 @@ fn sampleTailLayer(uv: vec2<f32>) -> vec4<f32> {
       ),
       0
     );
+  }
+  if (display.zoom < 0.999999) {
+    return perceptualSampleBilinear(tailTexture, uv, 0u, true);
   }
   return textureSampleLevel(tailTexture, layerSampler, uv, 0.0);
 }
@@ -1298,7 +1242,7 @@ fn tailActiveTexel(documentPixel: vec2<i32>) -> vec4<f32> {
   return transientPaint + permanentPaint * (1.0 - transientPaint.a);
 }
 
-fn sampleTailClippingGroupLinear(layerPosition: vec2<f32>) -> vec4<f32> {
+fn sampleTailClippingGroupFiltered(layerPosition: vec2<f32>) -> vec4<f32> {
   let texelPosition = layerPosition - vec2<f32>(0.5);
   let lower = vec2<i32>(floor(texelPosition));
   let interpolation = fract(texelPosition);
@@ -1309,6 +1253,9 @@ fn sampleTailClippingGroupLinear(layerPosition: vec2<f32>) -> vec4<f32> {
   let p10 = composeActiveClippingGroupTexel(tailActiveTexel(p10i), p10i);
   let p01 = composeActiveClippingGroupTexel(tailActiveTexel(p01i), p01i);
   let p11 = composeActiveClippingGroupTexel(tailActiveTexel(p11i), p11i);
+  if (display.zoom < 0.999999) {
+    return perceptualInterpolateFour(p00, p10, p01, p11, interpolation);
+  }
   return mix(mix(p00, p10, interpolation.x), mix(p01, p11, interpolation.x), interpolation.y);
 }
 
@@ -1404,7 +1351,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
       let pixel = vec2<i32>(floor(layerPosition));
       paint = composeActiveClippingGroupTexel(tailActiveTexel(pixel), pixel);
     } else {
-      paint = sampleTailClippingGroupLinear(layerPosition);
+      paint = sampleTailClippingGroupFiltered(layerPosition);
     }
   }
   paint = composeLayerStack(paint, layerPosition, fragmentPosition.xy);
@@ -1412,10 +1359,10 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;
   let backgroundSrgb = select(vec3<f32>(0.82), vec3<f32>(0.91), checkerParity == 0);
-  let backgroundLinear = srgbToLinear(backgroundSrgb);
-  let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
-
-  return vec4<f32>(linearToSrgb(compositedLinear), 1.0);
+  return vec4<f32>(rasterPresentationCompositeOverSrgbBackground(
+    paint,
+    backgroundSrgb
+  ), 1.0);
 }
 
 @fragment
@@ -1466,7 +1413,7 @@ fn activeFragmentMain(
       let pixel = vec2<i32>(floor(layerPosition));
       return composeActiveClippingGroupTexel(tailActiveTexel(pixel), pixel);
     }
-    return sampleTailClippingGroupLinear(layerPosition);
+    return sampleTailClippingGroupFiltered(layerPosition);
   }
   return paint * display.activeLayerAlpha;
 }
@@ -1522,6 +1469,8 @@ struct VertexOutput {
 @group(0) @binding(10) var activeClippingPrefix: texture_2d<f32>;
 @group(0) @binding(11) var activeClippingSuffix: texture_2d<f32>;
 
+${perceptualRasterSamplingShader}
+
 fn srgbToLinearChannel(value: f32) -> f32 {
   if (value <= 0.04045) {
     return value / 12.92;
@@ -1554,7 +1503,7 @@ fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
 }
 
 fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
-  return source + destination * (1.0 - source.a);
+  return linearPremultipliedSourceOver(source, destination);
 }
 
 ${activeClippingGroupTexelShader}
@@ -1688,7 +1637,7 @@ fn compositedClippingGroupTexel(position: vec2<i32>) -> vec4<f32> {
   return composeActiveClippingGroupTexel(activeTexel, position);
 }
 
-fn sampleCompositedLayerLinear(uv: vec2<f32>) -> vec4<f32> {
+fn sampleCompositedLayerFiltered(uv: vec2<f32>) -> vec4<f32> {
   let dimensions = vec2<i32>(textureDimensions(layerTexture, 0));
   let maximumCoordinate = dimensions - vec2<i32>(1);
   let texelPosition = uv * vec2<f32>(dimensions) - vec2<f32>(0.5);
@@ -1710,11 +1659,10 @@ fn sampleCompositedLayerLinear(uv: vec2<f32>) -> vec4<f32> {
     vec2<i32>(0),
     maximumCoordinate
   ));
-  return mix(
-    mix(p00, p10, interpolation.x),
-    mix(p01, p11, interpolation.x),
-    interpolation.y
-  );
+  if (display.zoom < 0.999999) {
+    return perceptualInterpolateFour(p00, p10, p01, p11, interpolation);
+  }
+  return mix(mix(p00, p10, interpolation.x), mix(p01, p11, interpolation.x), interpolation.y);
 }
 
 fn sampleCompositedLayerNearest(uv: vec2<f32>) -> vec4<f32> {
@@ -1722,7 +1670,7 @@ fn sampleCompositedLayerNearest(uv: vec2<f32>) -> vec4<f32> {
   return compositedLayerTexel(rasterPixelViewTexel(uv, dimensions));
 }
 
-fn sampleCompositedClippingGroupLinear(layerPosition: vec2<f32>) -> vec4<f32> {
+fn sampleCompositedClippingGroupFiltered(layerPosition: vec2<f32>) -> vec4<f32> {
   let texelPosition = layerPosition - vec2<f32>(0.5);
   let lower = vec2<i32>(floor(texelPosition));
   let interpolation = fract(texelPosition);
@@ -1735,6 +1683,9 @@ fn sampleCompositedClippingGroupLinear(layerPosition: vec2<f32>) -> vec4<f32> {
   let p10 = compositedClippingGroupTexel(p10i);
   let p01 = compositedClippingGroupTexel(p01i);
   let p11 = compositedClippingGroupTexel(p11i);
+  if (display.zoom < 0.999999) {
+    return perceptualInterpolateFour(p00, p10, p01, p11, interpolation);
+  }
   return mix(mix(p00, p10, interpolation.x), mix(p01, p11, interpolation.x), interpolation.y);
 }
 
@@ -1750,12 +1701,12 @@ fn sampleCompositedActiveMipZero(
       );
       return compositedClippingGroupTexel(pixel);
     }
-    return sampleCompositedClippingGroupLinear(layerPosition);
+    return sampleCompositedClippingGroupFiltered(layerPosition);
   }
   if (rasterPixelViewEnabled(1.0)) {
     return sampleCompositedLayerNearest(uv);
   }
-  return sampleCompositedLayerLinear(uv);
+  return sampleCompositedLayerFiltered(uv);
 }
 
 fn sampleCompositedActiveLogicalMip(
@@ -1766,11 +1717,11 @@ fn sampleCompositedActiveLogicalMip(
   if (logicalMip < 0.5) {
     return sampleCompositedActiveMipZero(uv, layerPosition);
   }
-  return textureSampleLevel(
+  return perceptualSampleBilinear(
     compositedMipTexture,
-    layerSampler,
     uv,
-    logicalMip - 1.0
+    u32(logicalMip - 1.0),
+    true
   );
 }
 
@@ -1784,7 +1735,7 @@ fn sampleCompositedActiveLayer(
   if (upperMip <= lowerMip) {
     return sampleCompositedActiveLogicalMip(uv, layerPosition, lowerMip);
   }
-  return mix(
+  return perceptualInterpolate(
     sampleCompositedActiveLogicalMip(uv, layerPosition, lowerMip),
     sampleCompositedActiveLogicalMip(uv, layerPosition, upperMip),
     lod - lowerMip
@@ -1852,7 +1803,7 @@ fn compositedFinalRasterStackTexel(documentPixel: vec2<i32>) -> vec4<f32> {
 // Source-over is nonlinear at coincident alpha edges. Compose the four
 // document texels first and only then interpolate the final premultiplied
 // colors, matching the canonical raster-stack presenter at mip 0.
-fn sampleCompositedFinalRasterStackLinear(layerPosition: vec2<f32>) -> vec4<f32> {
+fn sampleCompositedFinalRasterStackFiltered(layerPosition: vec2<f32>) -> vec4<f32> {
   let texelPosition = layerPosition - vec2<f32>(0.5);
   let lower = vec2<i32>(floor(texelPosition));
   let interpolation = fract(texelPosition);
@@ -1860,11 +1811,10 @@ fn sampleCompositedFinalRasterStackLinear(layerPosition: vec2<f32>) -> vec4<f32>
   let p10 = compositedFinalRasterStackTexel(lower + vec2<i32>(1, 0));
   let p01 = compositedFinalRasterStackTexel(lower + vec2<i32>(0, 1));
   let p11 = compositedFinalRasterStackTexel(lower + vec2<i32>(1, 1));
-  return mix(
-    mix(p00, p10, interpolation.x),
-    mix(p01, p11, interpolation.x),
-    interpolation.y
-  );
+  if (display.zoom < 0.999999) {
+    return perceptualInterpolateFour(p00, p10, p01, p11, interpolation);
+  }
+  return mix(mix(p00, p10, interpolation.x), mix(p01, p11, interpolation.x), interpolation.y);
 }
 
 fn finalStackSurfacesUseDocumentResolution() -> bool {
@@ -1932,10 +1882,10 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;
   let backgroundSrgb = select(vec3<f32>(0.82), vec3<f32>(0.91), checkerParity == 0);
-  let backgroundLinear = srgbToLinear(backgroundSrgb);
-  let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
-
-  return vec4<f32>(linearToSrgb(compositedLinear), 1.0);
+  return vec4<f32>(rasterPresentationCompositeOverSrgbBackground(
+    paint,
+    backgroundSrgb
+  ), 1.0);
 }
 
 // This entry point is selected only when the live pyramid represents the
@@ -1964,7 +1914,7 @@ fn finalStackFragmentMain(
   var abovePaint = vec4<f32>(0.0);
   var stackAlphaGradient = 0.0;
   if (jointFilteringCandidate) {
-    activePaint = sampleCompositedLayerLinear(uv);
+    activePaint = sampleCompositedLayerFiltered(uv);
     if (display.hasMergedBelow > 0.5) {
       belowPaint = sampleMergedBelow(layerPosition);
     }
@@ -1994,7 +1944,7 @@ fn finalStackFragmentMain(
       );
     } else {
       if (!jointFilteringCandidate) {
-        activePaint = sampleCompositedLayerLinear(uv);
+        activePaint = sampleCompositedLayerFiltered(uv);
         if (display.hasMergedBelow > 0.5) {
           belowPaint = sampleMergedBelow(layerPosition);
         }
@@ -2004,35 +1954,26 @@ fn finalStackFragmentMain(
       }
       mipZero = composeFinalRasterStackSamples(activePaint, belowPaint, abovePaint);
       if (needsJointFinalStackFiltering(stackAlphaGradient)) {
-        mipZero = sampleCompositedFinalRasterStackLinear(layerPosition);
+        mipZero = sampleCompositedFinalRasterStackFiltered(layerPosition);
       }
     }
     if (lod <= 0.0) {
       paint = mipZero;
     } else {
-      let mipOne = textureSampleLevel(compositedMipTexture, layerSampler, uv, 0.0);
-      paint = mix(mipZero, mipOne, lod);
+      let mipOne = perceptualSampleBilinear(compositedMipTexture, uv, 0u, true);
+      paint = perceptualInterpolate(mipZero, mipOne, lod);
     }
   } else {
-    let lowerMip = floor(lod);
-    let upperMip = ceil(lod);
-    if (upperMip <= lowerMip) {
-      paint = textureSampleLevel(compositedMipTexture, layerSampler, uv, lowerMip - 1.0);
-    } else {
-      paint = mix(
-        textureSampleLevel(compositedMipTexture, layerSampler, uv, lowerMip - 1.0),
-        textureSampleLevel(compositedMipTexture, layerSampler, uv, upperMip - 1.0),
-        lod - lowerMip
-      );
-    }
+    paint = perceptualSampleTrilinear(compositedMipTexture, uv, lod - 1.0, true);
   }
 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;
   let backgroundSrgb = select(vec3<f32>(0.82), vec3<f32>(0.91), checkerParity == 0);
-  let backgroundLinear = srgbToLinear(backgroundSrgb);
-  let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
-  return vec4<f32>(linearToSrgb(compositedLinear), 1.0);
+  return vec4<f32>(rasterPresentationCompositeOverSrgbBackground(
+    paint,
+    backgroundSrgb
+  ), 1.0);
 }
 
 @fragment
@@ -2113,9 +2054,10 @@ struct VertexOutput {
 @group(0) @binding(7) var mergedAboveTexture: texture_2d<f32>;
 
 ${activeClippingGroupTexelShader}
+${perceptualRasterResamplingShader}
 
 fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
-  return source + destination * (1.0 - source.a);
+  return linearPremultipliedSourceOver(source, destination);
 }
 
 fn loadMergedBelow(documentPixel: vec2<i32>) -> vec4<f32> {
@@ -2288,12 +2230,12 @@ fn compositedFinalStackSource(sourcePosition: vec2<i32>) -> vec4<f32> {
 @fragment
 fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
   let sourceOrigin = vec2<i32>(fragmentPosition.xy) * 2;
-  return (
-    compositedSource(sourceOrigin)
-    + compositedSource(sourceOrigin + vec2<i32>(1, 0))
-    + compositedSource(sourceOrigin + vec2<i32>(0, 1))
-    + compositedSource(sourceOrigin + vec2<i32>(1, 1))
-  ) * 0.25;
+  return perceptualReduceFour(
+    compositedSource(sourceOrigin),
+    compositedSource(sourceOrigin + vec2<i32>(1, 0)),
+    compositedSource(sourceOrigin + vec2<i32>(0, 1)),
+    compositedSource(sourceOrigin + vec2<i32>(1, 1))
+  );
 }
 
 @fragment
@@ -2305,7 +2247,7 @@ fn finalStackFragmentMain(
   let p10 = compositedFinalStackSource(sourceOrigin + vec2<i32>(1, 0));
   let p01 = compositedFinalStackSource(sourceOrigin + vec2<i32>(0, 1));
   let p11 = compositedFinalStackSource(sourceOrigin + vec2<i32>(1, 1));
-  return (p00 + p10 + p01 + p11) * 0.25;
+  return perceptualReduceFour(p00, p10, p01, p11);
 }
 `;
 
@@ -2577,16 +2519,17 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   return mix(top, bottom, fraction.y) * clamp(layer.opacity, 0.0, 1.0);
 }
 `;
-// Downsample 2x2 in the paint layer's native linear, premultiplied RGBA
-// representation. Each destination pixel owns an exact, non-overlapping 2x2
-// source footprint, so dirty rectangles can be propagated with floor/ceil
-// division and no platform-dependent filtering kernel.
+// Downsample each exact 2x2 footprint with the display-only perceptual policy.
+// Bounded SDR color is averaged in encoded sRGB while alpha and signed/HDR
+// residuals remain linear. Authoritative layer pixels are never written here.
 export const paintMipDownsampleShader = /* wgsl */ `
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
 };
 
 @group(0) @binding(0) var sourceTexture: texture_2d<f32>;
+
+${perceptualRasterResamplingShader}
 
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
@@ -2622,7 +2565,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     min(sourceOrigin + vec2<i32>(1, 1), maximumCoordinate),
     0
   );
-  return (p00 + p10 + p01 + p11) * 0.25;
+  return perceptualReduceFour(p00, p10, p01, p11);
 }
 `;
 
@@ -2663,8 +2606,10 @@ struct VertexOutput {
 @group(0) @binding(4) var activeClippingPrefix: texture_2d<f32>;
 @group(0) @binding(5) var activeClippingSuffix: texture_2d<f32>;
 
+${perceptualRasterResamplingShader}
+
 fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
-  return source + destination * (1.0 - source.a);
+  return linearPremultipliedSourceOver(source, destination);
 }
 
 ${activeClippingGroupTexelShader}
@@ -2730,7 +2675,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   let p10 = compositedDocumentTexel(sourceOrigin + vec2<i32>(1, 0));
   let p01 = compositedDocumentTexel(sourceOrigin + vec2<i32>(0, 1));
   let p11 = compositedDocumentTexel(sourceOrigin + vec2<i32>(1, 1));
-  return (p00 + p10 + p01 + p11) * 0.25;
+  return perceptualReduceFour(p00, p10, p01, p11);
 }
 
 @fragment
@@ -2742,6 +2687,6 @@ fn activeGroupFragmentMain(
   let p10 = activeClippingGroupDocumentTexel(sourceOrigin + vec2<i32>(1, 0));
   let p01 = activeClippingGroupDocumentTexel(sourceOrigin + vec2<i32>(0, 1));
   let p11 = activeClippingGroupDocumentTexel(sourceOrigin + vec2<i32>(1, 1));
-  return (p00 + p10 + p01 + p11) * 0.25;
+  return perceptualReduceFour(p00, p10, p01, p11);
 }
 `;

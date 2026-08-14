@@ -42,6 +42,7 @@ confine.
 | Editing della scena | `MixedSceneController` e runtime `mixed-scene-*` | DOM, interazione, comandi/History e piano di rendering sono moduli distinti |
 | Effetti non distruttivi | `RasterStyleController`, `engine-raster-style-runtime.ts` | Stroke, bevel, ombre e color overlay per livello |
 | Regolazioni e sessioni distruttive | `destructive-raster-edit-contract.ts`, `RasterAdjustmentsController`, runtime Gaussian/Motion/Noise/Liquify/Transform | Elenco esaustivo delle sessioni, preview e commit transazionale |
+| Ricampionamento raster derivato | `perceptual-raster-resampling.ts` | Unico contratto CPU/WGSL per mip, minificazione, import, resolve vettoriale e Transform; non possiede pixel autorevoli |
 | Progetto aperto | `ProjectSessionController` | Dirty state, save/open, thumbnail e ritorno Home |
 | Persistenza progetto | moduli `project-storage-*` | Schema, codec, quota, backend e repository separati |
 | Cronologia | `HistoryService` | Azioni, cursore, batch, ownership e branch Redo |
@@ -73,6 +74,40 @@ Undo/Redo parte da `HistoryControlsController`, entra nel comando configurato su
 `HistoryService` e viene applicato da `engine-history-runtime.ts`. Prima della
 mutazione vengono idratati gli eventuali payload freddi; in errore il runtime
 tenta il rollback e, se non può garantire coerenza, blocca ulteriori modifiche.
+
+### Ricampionamento raster percettivo
+
+Il documento, Paint, Blend, export e i checkpoint History rimangono RGBA16F
+lineari premoltiplicati. Il contratto in `perceptual-raster-resampling.ts` opera
+soltanto quando più campioni devono diventare un pixel di presentazione o un
+nuovo raster richiesto esplicitamente dall'utente:
+
+- l'RGB SDR limitato viene mediato/interpolato in sRGB codificato, così i tratti
+  scuri non perdono peso durante la minificazione;
+- alpha e coverage restano lineari; anche il source-over fra livelli e la
+  composizione finale sul checker conservano la legge lineare preesistente,
+  così una velatura trasparente non cambia densità attraversando un LOD;
+- valori signed/HDR fuori dal dominio SDR viaggiano in un residuo lineare
+  separato;
+- a zoom 100% o superiore la presentazione conserva il percorso lineare
+  precedente; il filtro percettivo si attiva soltanto sotto il 100%;
+- le mip derivate usano footprint esatti 2×2 e sampling manuale, senza una
+  seconda piramide RGBA completa;
+- compositing, clipping e blend di livello avvengono prima della riduzione
+  quando condividono lo stesso bordo, evitando fessure fra contorno e riempimento.
+
+Import raster, `Rasterizza` vettoriale e Trasforma riusano lo stesso contratto,
+ma restano proprietari delle rispettive transazioni. L'import genera mip NPOT
+transitorie dal bitmap decodificato; il resolve MSAA4 di Rasterizza è esplicito;
+Trasforma usa `textureLoad` per traslazioni intere e il filtro percettivo per
+spostamenti frazionari, scala o rotazione. Ogni preview Trasforma riparte dallo
+scratch immutabile e Applica pubblica una sola azione senza un secondo bake.
+Un eventuale Trasforma raster non distruttivo basato su `sorgente + matrice`
+resta una migrazione futura di modello/schema/History: non è introdotto
+implicitamente da questo percorso distruttivo.
+
+I test GPU distruttivi corrispondenti vivono soltanto nei Labs (`GPU test Import
++ Trasforma`, `GPU test Rasterizza vettori` e `GPU test fusioni livello`).
 
 ## Cronologia e memoria
 
@@ -142,6 +177,7 @@ rinominare discriminanti, ID o campi persistiti senza migrazione e verifier.
 | Cambiare un comando livello | `engine-layer-command-runtime.ts` o `engine-layer-structure-runtime.ts` |
 | Cambiare clipping/compositing | `engine-layer-clipping-runtime.ts`, `engine-layer-composite-runtime.ts` o `engine-layer-fold-runtime.ts` |
 | Cambiare testo/SVG/immagini | modello `scene-*`, controller/runtime scena, poi runtime GPU vettoriale |
+| Cambiare mip, minificazione o filtro Transform/import | `perceptual-raster-resampling.ts`, poi il runtime proprietario e i golden Labs |
 | Cambiare Undo/Redo | matrice azioni, `HistoryService`, replay engine e verifier History |
 | Cambiare memoria | registry/modello/governor oppure retention/storage History; prima aggiungere una baseline Labs |
 | Cambiare salvataggio | schema/codec/repository e `engine-project-runtime.ts` |
@@ -152,6 +188,9 @@ rinominare discriminanti, ID o campi persistiti senza migrazione e verifier.
 
 - Documento autorevole in RGBA16F lineare; compatibilità di lettura dei progetti
   storici preservata.
+- Il ricampionamento percettivo non introduce una seconda piramide RGBA
+  permanente e non modifica i pixel autorevoli senza un comando distruttivo
+  esplicito (Import, Rasterizza o Applica Trasforma).
 - Una gesture editabile produce una sola azione Undo mediante begin/update/commit
   o cancel.
 - Azione History e relativi batch diventano visibili atomicamente.

@@ -1,8 +1,12 @@
 import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits.ts";
+import {
+  perceptualRasterResamplingShader,
+  perceptualRasterSamplingShader,
+} from "./perceptual-raster-resampling.ts";
 import { rasterPixelViewShaderHelpers } from "./raster-pixel-view.ts";
 
 export const MIXED_SCENE_COMPOSITOR_STRATEGY =
-  "ordered-raster-vector-gpu-runs-rgba16f-viewport-source-over-raster-nearest-at-581pct-v4" as const;
+  "ordered-raster-vector-gpu-runs-rgba16f-perceptual-raster-minification-source-over-v5" as const;
 
 export const MIXED_SCENE_LINEAR_FORMAT = "rgba16float" as const;
 
@@ -64,6 +68,7 @@ struct SegmentUniforms {
 
 ${rasterPixelViewShaderHelpers}
 ${fullscreenVertexShader}
+${perceptualRasterSamplingShader}
 
 @fragment
 fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
@@ -97,6 +102,9 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
       0
     ) * segment.opacity;
   }
+  if (display.zoom < 0.999999) {
+    return perceptualSampleTrilinear(sourceTexture, uv, lod, true) * segment.opacity;
+  }
   return textureSampleLevel(sourceTexture, sourceSampler, uv, lod) * segment.opacity;
 }
 `;
@@ -120,6 +128,7 @@ struct TextCaptureUniforms {
 
 
 ${fullscreenVertexShader}
+${perceptualRasterSamplingShader}
 
 @fragment
 fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
@@ -148,11 +157,11 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     && all(sourcePixel < sourceDimensions);
   let sourceColor = select(
     vec4<f32>(0.0),
-    textureSampleLevel(
+    perceptualSampleBilinear(
       sourceTexture,
-      sourceSampler,
       sourcePixel / sourceDimensions,
-      0.0
+      0u,
+      true
     ),
     insideSource
   );
@@ -173,11 +182,11 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   if (!insideFallback) {
     return sourceColor;
   }
-  let fallbackColor = textureSampleLevel(
+  let fallbackColor = perceptualSampleBilinear(
     fallbackTexture,
-    sourceSampler,
     fallbackPixel / fallbackDimensions,
-    0.0
+    0u,
+    true
   );
   if (!insideSource) {
     return fallbackColor;
@@ -208,36 +217,7 @@ ${displayUniformsShader}
 @group(0) @binding(0) var<uniform> display: DisplayUniforms;
 @group(0) @binding(1) var sceneTexture: texture_2d<f32>;
 
-fn srgbToLinearChannel(value: f32) -> f32 {
-  if (value <= 0.04045) {
-    return value / 12.92;
-  }
-  return pow((value + 0.055) / 1.055, 2.4);
-}
-
-fn srgbToLinear(value: vec3<f32>) -> vec3<f32> {
-  return vec3<f32>(
-    srgbToLinearChannel(value.r),
-    srgbToLinearChannel(value.g),
-    srgbToLinearChannel(value.b)
-  );
-}
-
-fn linearToSrgbChannel(value: f32) -> f32 {
-  let clamped = clamp(value, 0.0, 1.0);
-  if (clamped <= 0.0031308) {
-    return clamped * 12.92;
-  }
-  return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
-}
-
-fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
-  return vec3<f32>(
-    linearToSrgbChannel(value.r),
-    linearToSrgbChannel(value.g),
-    linearToSrgbChannel(value.b)
-  );
-}
+${perceptualRasterResamplingShader}
 
 ${fullscreenVertexShader}
 
@@ -260,8 +240,9 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;
   let backgroundSrgb = select(vec3<f32>(0.82), vec3<f32>(0.91), checkerParity == 0);
-  let backgroundLinear = srgbToLinear(backgroundSrgb);
-  let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
-  return vec4<f32>(linearToSrgb(compositedLinear), 1.0);
+  return vec4<f32>(rasterPresentationCompositeOverSrgbBackground(
+    paint,
+    backgroundSrgb
+  ), 1.0);
 }
 `;

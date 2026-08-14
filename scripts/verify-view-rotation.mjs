@@ -237,7 +237,7 @@ assert.doesNotMatch(mainSource, /updateViewZoomControl|viewZoomPercentOutput/);
 
 assert.equal((mergedSurfaceSource.match(/rasterPixelViewEnabled\(resolutionScale\)/g) ?? []).length, 2,
   "entrambe le superfici raster unite devono usare nearest sopra soglia");
-assert.match(mixedSceneCompositorSource, /ordered-raster-vector-gpu-runs-rgba16f-viewport-source-over-raster-nearest-at-581pct-v4/);
+assert.match(mixedSceneCompositorSource, /ordered-raster-vector-gpu-runs-rgba16f-perceptual-raster-minification-source-over-v5/);
 const mixedRasterSegment = mixedSceneCompositorSource.slice(
   mixedSceneCompositorSource.indexOf("export const mixedSceneRasterSegmentShader"),
   mixedSceneCompositorSource.indexOf("export const mixedSceneTextSegmentShader"),
@@ -275,7 +275,7 @@ assert.match(
   /if \(jointFilteringCandidate\) \{[\s\S]*belowPaint = sampleMergedBelow\(layerPosition\)[\s\S]*abovePaint = sampleMergedAbove\(layerPosition\)[\s\S]*stackAlphaGradient = fwidth/,
   "active, below e above devono essere campionati nel candidato uniforme prima delle derivate",
 );
-assert.match(baseDisplayShader, /fn sampleCompositedLayerStackLinear\(/);
+assert.match(baseDisplayShader, /fn sampleCompositedLayerStackFiltered\(/);
 assert.match(
   baseDisplayShader,
   /compositedLayerStackTexel\(lower\)[\s\S]*compositedLayerStackTexel\(lower \+ vec2<i32>\(1, 1\)\)[\s\S]*return mix\(/,
@@ -288,8 +288,8 @@ assert.match(
 );
 assert.match(
   baseDisplayShader,
-  /fn finalStackFragmentMain[\s\S]*if \(lod < 1\.0\)[\s\S]*paint = mix\(mipZero, mipOne, lod\)/,
-  "la transizione Noise sotto il primo mip deve fondere lo stack finale già composto",
+  /fn finalStackFragmentMain[\s\S]*if \(lod < 1\.0\)[\s\S]*paint = perceptualInterpolate\(mipZero, mipOne, lod\)/,
+  "la transizione Noise sotto il primo mip deve fondere percettivamente lo stack finale",
 );
 assert.match(
   baseDisplayShader,
@@ -321,12 +321,12 @@ assert.ok(
 );
 assert.match(
   baseDisplayShader,
-  /var paint = composeLayerStackSamples[\s\S]*if \(needsJointLayerFiltering\(stackAlphaGradient\)\)[\s\S]*paint = sampleCompositedLayerStackLinear\(layerPosition\)/,
+  /var paint = composeLayerStackSamples[\s\S]*if \(needsJointLayerFiltering\(stackAlphaGradient\)\)[\s\S]*paint = sampleCompositedLayerStackFiltered\(layerPosition\)/,
   "interni e trasparenti devono conservare il percorso veloce esistente",
 );
 assert.doesNotMatch(
   baseDisplayShader,
-  /select\([\s\S]{0,200}sampleCompositedLayerStackLinear/,
+  /select\([\s\S]{0,200}sampleCompositedLayerStackFiltered/,
   "WGSL select valuterebbe anche il ramo costoso su ogni pixel",
 );
 
@@ -340,13 +340,13 @@ assert.match(
 );
 assert.match(
   stackMipShader,
-  /let p00 = compositedDocumentTexel\(sourceOrigin\)[\s\S]*let p11 = compositedDocumentTexel\(sourceOrigin \+ vec2<i32>\(1, 1\)\)[\s\S]*return \(p00 \+ p10 \+ p01 \+ p11\) \* 0\.25/,
-  "mip 1 deve mediare quattro risultati finali premoltiplicati",
+  /let p00 = compositedDocumentTexel\(sourceOrigin\)[\s\S]*let p11 = compositedDocumentTexel\(sourceOrigin \+ vec2<i32>\(1, 1\)\)[\s\S]*return perceptualReduceFour\(p00, p10, p01, p11\)/,
+  "mip 1 deve ridurre percettivamente quattro risultati finali premoltiplicati",
 );
 assert.match(baseDisplayShader, /fn finalStackFragmentMain\(/);
 assert.match(
   baseDisplayShader,
-  /fn finalStackFragmentMain[\s\S]*sampleCompositedLayerStackLinear\(layerPosition\)[\s\S]*let mipOne = textureSampleLevel\(activeLayerPyramid[\s\S]*paint = mix\(mipZero, mipOne, lod\)[\s\S]*lowerMip - 1\.0/,
+  /fn finalStackFragmentMain[\s\S]*sampleCompositedLayerStackFiltered\(layerPosition\)[\s\S]*let mipOne = perceptualSampleBilinear\(activeLayerPyramid[\s\S]*paint = perceptualInterpolate\(mipZero, mipOne, lod\)[\s\S]*perceptualSampleTrilinear\(activeLayerPyramid, uv, lod - 1\.0, true\)/,
   "il display final-stack deve campionare la piramide già composta senza un secondo source-over",
 );
 assert.match(

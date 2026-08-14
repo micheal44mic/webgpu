@@ -1,4 +1,8 @@
 import { rasterPixelViewShaderHelpers } from "./raster-pixel-view";
+import {
+  perceptualRasterResamplingShader,
+  perceptualRasterSamplingShader,
+} from "./perceptual-raster-resampling.ts";
 
 /**
  * Fixed working-set extent for the document-space layer-blend compositor.
@@ -9,7 +13,7 @@ export const LAYER_BLEND_TILE_EXTENT = 1024 as const;
 export const LAYER_BLEND_TILE_PRESENT_UNIFORM_BYTES = 32 as const;
 export const LAYER_BLEND_TILE_MIP_UNIFORM_BYTES = 16 as const;
 export const LAYER_BLEND_TILE_STRATEGY =
-  "document-space-1024-tile-native-format-blend-before-filter-replace-cache-v2" as const;
+  "document-space-1024-tile-native-format-blend-before-perceptual-filter-and-sample-v4" as const;
 
 const fullscreenVertex = /* wgsl */ `
 struct VertexOutput {
@@ -83,6 +87,7 @@ struct TilePresentUniforms {
 
 ${rasterPixelViewShaderHelpers}
 ${fullscreenVertex}
+${perceptualRasterResamplingShader}
 
 fn loadTile(pixel: vec2<i32>) -> vec4<f32> {
   let maximum = vec2<i32>(textureDimensions(tileTexture, 0)) - vec2<i32>(1);
@@ -112,11 +117,10 @@ fn fragmentMain(
   let p10 = loadTile(lower + vec2<i32>(1, 0));
   let p01 = loadTile(lower + vec2<i32>(0, 1));
   let p11 = loadTile(lower + vec2<i32>(1, 1));
-  return mix(
-    mix(p00, p10, interpolation.x),
-    mix(p01, p11, interpolation.x),
-    interpolation.y
-  );
+  if (display.zoom < 0.999999) {
+    return perceptualInterpolateFour(p00, p10, p01, p11, interpolation);
+  }
+  return mix(mix(p00, p10, interpolation.x), mix(p01, p11, interpolation.x), interpolation.y);
 }
 `;
 
@@ -131,6 +135,7 @@ struct TileMipUniforms {
 @group(0) @binding(1) var<uniform> tile: TileMipUniforms;
 
 ${fullscreenVertex}
+${perceptualRasterResamplingShader}
 
 fn loadTileDocumentPixel(documentPixel: vec2<u32>) -> vec4<f32> {
   let clampedDocument = min(documentPixel, tile.documentSize - vec2<u32>(1u));
@@ -144,12 +149,12 @@ fn fragmentMain(
   @builtin(position) fragmentPosition: vec4<f32>
 ) -> @location(0) vec4<f32> {
   let sourceOrigin = vec2<u32>(fragmentPosition.xy) * 2u;
-  return (
-    loadTileDocumentPixel(sourceOrigin)
-    + loadTileDocumentPixel(sourceOrigin + vec2<u32>(1u, 0u))
-    + loadTileDocumentPixel(sourceOrigin + vec2<u32>(0u, 1u))
-    + loadTileDocumentPixel(sourceOrigin + vec2<u32>(1u, 1u))
-  ) * 0.25;
+  return perceptualReduceFour(
+    loadTileDocumentPixel(sourceOrigin),
+    loadTileDocumentPixel(sourceOrigin + vec2<u32>(1u, 0u)),
+    loadTileDocumentPixel(sourceOrigin + vec2<u32>(0u, 1u)),
+    loadTileDocumentPixel(sourceOrigin + vec2<u32>(1u, 1u))
+  );
 }
 `;
 
@@ -158,9 +163,9 @@ export const LAYER_BLEND_PYRAMID_PRESENT_WGSL = /* wgsl */ `
 ${displayUniforms}
 @group(0) @binding(0) var<uniform> display: DisplayUniforms;
 @group(0) @binding(1) var finalPyramid: texture_2d<f32>;
-@group(0) @binding(2) var pyramidSampler: sampler;
 
 ${fullscreenVertex}
+${perceptualRasterSamplingShader}
 
 @fragment
 fn fragmentMain(
@@ -180,6 +185,6 @@ fn fragmentMain(
   );
   let maximumLod = f32(max(1u, textureNumLevels(finalPyramid)) - 1u);
   let lod = clamp(display.selectedMipLevel - 1.0, 0.0, maximumLod);
-  return textureSampleLevel(finalPyramid, pyramidSampler, uv, lod);
+  return perceptualSampleTrilinear(finalPyramid, uv, lod, true);
 }
 `;

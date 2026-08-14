@@ -57,6 +57,7 @@ export const verificationScripts = Object.freeze([
   "verify-noise-mip-smoothing.mjs",
   "verify-noise.mjs",
   "verify-pixel-selection-controller.mjs",
+  "verify-perceptual-raster-resampling.mjs",
   "verify-project-home.mjs",
   "verify-project-storage.mjs",
   "verify-raster-image.mjs",

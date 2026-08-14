@@ -80,6 +80,7 @@
     "motion-blur:verify": "node scripts/verify-motion-blur.mjs && node scripts/verify-motion-blur-ui.mjs",
     "noise:verify": "node scripts/verify-noise.mjs",
     "noise-mip:verify": "node scripts/verify-noise-mip-smoothing.mjs",
+    "perceptual-raster:verify": "node scripts/verify-perceptual-raster-resampling.mjs",
     "layer-thumbnails:verify": "node scripts/verify-layer-thumbnail-controller.mjs && node scripts/verify-restored-layer-thumbnails.mjs",
     "liquify:verify": "node scripts/verify-liquify.mjs",
     "raster-filters:verify": "npm run gaussian-blur:verify && npm run motion-blur:verify && npm run noise:verify && npm run liquify:verify && npm run precision:verify"
