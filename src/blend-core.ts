@@ -251,6 +251,25 @@ export function blendPaintCoefficient(
 }
 
 /**
+ * Controls how much picked-up or loaded pigment is deposited after the
+ * Gaussian pass. With both transport controls at zero, any positive Blur is
+ * a pure, colorless blur and must not redeposit the carrier over its result.
+ */
+export function blendPigmentDepositScale(
+  blur: number = DEFAULT_DRY_BLEND_CONTROLS.blur,
+  stretch: number = DEFAULT_DRY_BLEND_CONTROLS.stretch,
+  paint: number = DEFAULT_DRY_BLEND_CONTROLS.paint,
+): number {
+  const normalizedBlur = unit(blur, "blur");
+  const normalizedStretch = unit(stretch, "stretch");
+  const normalizedPaint = unit(paint, "paint");
+  if (normalizedBlur > 0 && normalizedStretch === 0 && normalizedPaint === 0) {
+    return 0;
+  }
+  return 1 - normalizedBlur;
+}
+
+/**
  * Maps the public 0..1 control to the three-sigma support used by the same
  * normalized Gaussian kernel as the layer Gaussian Blur. The brush-relative
  * radius keeps the effect visually stable across sizes, while the cap bounds

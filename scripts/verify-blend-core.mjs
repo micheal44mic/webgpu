@@ -9,6 +9,7 @@ import {
   DRY_BLEND_BLUR_MAX_SUPPORT_PX,
   DRY_BLEND_SCRATCH_LIFECYCLE_STRATEGY,
   blendPaintCoefficient,
+  blendPigmentDepositScale,
   blendBlurSupportRadius,
   blendStretchCoefficient,
   createDryBlendPlanner,
@@ -75,6 +76,11 @@ assert.equal(blendStretchCoefficient(0), 0);
 assert.equal(blendStretchCoefficient(1), 1);
 assert.equal(blendPaintCoefficient(0), 0);
 assert.equal(blendPaintCoefficient(1), 1);
+assert.equal(blendPigmentDepositScale(0, 0, 0), 1);
+assert.equal(blendPigmentDepositScale(0.5, 0, 0), 0);
+assert.equal(blendPigmentDepositScale(0.5, 0.01, 0), 0.5);
+assert.equal(blendPigmentDepositScale(0.5, 0, 0.01), 0.5);
+assert.equal(blendPigmentDepositScale(1, 1, 1), 0);
 assert.equal(blendBlurSupportRadius(0, 96), 0);
 assert.equal(blendBlurSupportRadius(0.5, 96), 12);
 assert.equal(blendBlurSupportRadius(1, 96), 24);
@@ -156,8 +162,18 @@ assert.match(blendBlurHorizontalShader, /documentClampedState/);
 assert.match(blendBlurVerticalShader, /mix\(original, result, clamp\(blend\.grainAffineAndPhase\.w/);
 assert.match(
   blendDepositShader,
-  /finalCoverage \* blend\.transportControls\.z \* \(1\.0 - blurAmount\)/,
-  "Blur 100% deve lasciare visibile il Gaussian anche sotto una Shape custom opaca",
+  /blurAmount > 0\.0[\s\S]*?stretchAmount <= 0\.0[\s\S]*?paintAmount <= 0\.0[\s\S]*?pigmentDepositScale = 0\.0/,
+  "Paint 0 + Stretch 0 deve disattivare il deposito e lasciare soltanto il Gaussian",
+);
+assert.match(
+  blendDepositShader,
+  /coverageBuffer\[index\] = max\(coverageBuffer\[index\], finalCoverage\);[\s\S]*?if \(depositCoverage <= 0\.0\)/,
+  "il Blur puro deve conservare la coverage necessaria allo scatter",
+);
+assert.match(
+  blendDepositShader,
+  /finalCoverage \* blend\.transportControls\.z \* pigmentDepositScale/,
+  "il deposito normale deve restare attenuato dalla quantita di Blur",
 );
 assert.match(blendRendererSource, /blurAmount > 0 && groups\.length > 0/);
 assert.match(blendRendererSource, /floats\[31\] = clamp\(settings\.blendBlur, 0, 1\)/);
