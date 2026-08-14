@@ -120,8 +120,7 @@ const loadingStyles = stylesSource.slice(
   stylesSource.indexOf(".layer-loading-overlay[hidden]"),
 );
 assert.match(loadingStyles, /background: rgba\(9, 11, 15, 0\.38\);/);
-assert.match(loadingStyles, /-webkit-backdrop-filter: blur\(3px\);/);
-assert.match(loadingStyles, /backdrop-filter: blur\(3px\);/);
+assert.doesNotMatch(loadingStyles, /backdrop-filter|filter:\s*blur\(/);
 assert.doesNotMatch(
   loadingStyles,
   /background: #0d0f13;/,

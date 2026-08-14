@@ -13,6 +13,7 @@ export const EDITOR_SHELL_PARTIALS = Object.freeze([
   "layers-panel",
   "stage",
   "layer-loading",
+  "startup-loading",
 ]);
 
 export const EDITOR_STYLE_PARTIALS = Object.freeze([
@@ -20,6 +21,7 @@ export const EDITOR_STYLE_PARTIALS = Object.freeze([
   "project-home",
   "editor-shell",
   "mobile-editor",
+  "startup-loading",
   "effects-and-overlays",
   "wide-layout",
 ]);

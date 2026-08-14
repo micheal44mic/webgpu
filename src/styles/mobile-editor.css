@@ -16,7 +16,6 @@
     padding: env(safe-area-inset-top) max(8px, env(safe-area-inset-right)) 0 env(safe-area-inset-left);
     border: 0;
     background: transparent;
-    backdrop-filter: none;
     pointer-events: none;
   }
 
@@ -87,7 +86,7 @@
     height: 5px;
     border-radius: 50%;
     background: #ff8059;
-    box-shadow: 0 0 0 2px var(--app-background);
+    border: 2px solid var(--app-background);
     content: "";
   }
 
@@ -2495,7 +2494,7 @@
   .mobile-layers-panel.is-multi-select .mobile-layer-row.is-multi-selected {
     border-color: #dd5c35;
     background: rgba(221, 92, 53, 0.1);
-    box-shadow: inset 3px 0 0 #dd5c35;
+    border-left-color: #dd5c35;
   }
 
   .mobile-layers-panel.is-multi-select

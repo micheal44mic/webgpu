@@ -231,6 +231,20 @@ export interface EngineCallbacks {
     readonly state: "start" | "complete" | "error";
     readonly error?: unknown;
   }) => void;
+  onStartupProgress?: (event: {
+    readonly phase:
+      | "core-renderer-pipelines"
+      | "document-pipelines"
+      | "vector-editor-pipelines"
+      | "selection-pipelines"
+      | "blend-pipelines";
+    readonly completed: number;
+    readonly total: number;
+    readonly label: string;
+    readonly state: "start" | "complete" | "error";
+    readonly durationMs: number | null;
+    readonly error?: unknown;
+  }) => void;
   onStats?: (stats: EngineStats) => void;
   onHistoryChange?: (state: HistoryState) => void;
   onViewRotationChange?: (degrees: number, snappedToZero: boolean) => void;

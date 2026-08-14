@@ -264,8 +264,13 @@ const candidatePublishBody = layerRecreationSource.slice(
   recreateStart,
 );
 const recreateBody = layerRecreationSource.slice(recreateStart);
-assert.match(pipelineFactoryBody, /runGpuAllocationTransaction\(\s*engine\.device,\s*`Pipeline formato layer/,
-  "anche pipeline e layout devono chiudere validation/OOM scope");
+assert.match(pipelineFactoryBody, /createPipelineCompilationQueue\(engine\.device/,
+  "le pipeline devono passare dalla coda asincrona limitata");
+assert.match(pipelineFactoryBody, /const pipelineTotal = 48/);
+assert.match(pipelineFactoryBody, /await Promise\.all\(\[/,
+  "le pipeline indipendenti devono poter avanzare con concorrenza limitata");
+assert.doesNotMatch(pipelineFactoryBody, /`Pipeline formato layer \$\{format\}`/,
+  "non deve tornare lo scope unico che resta aperto per l'intero catalogo");
 assert.match(candidateAllocationBody, /record\.id === engine\.layerStack\.active\.id[\s\S]*?await allocateLayerGpuResources\(engine,[\s\S]*?: createColdLayerGpuResources\(\)/,
   "il cambio formato deve allocare full solo per il livello attivo");
 assert.match(candidateAllocationBody, /for \(const gpu of replacement\.values\(\)\) \{\s*destroyLayerGpuResources\(engine, gpu\);/,

@@ -26,6 +26,7 @@ import {
 } from "./vector-text-inner-shadow-gpu-shader";
 import {
   assertShaderCompiled,
+  createRenderPipelineAsync,
 } from "./engine-gpu-utils";
 import {
   VECTOR_TEXT_GPU_MAXIMUM_DRAWS,
@@ -64,7 +65,13 @@ import {
   vectorTextFastPresentationMode,
 } from "./vector-text-adaptive-zoom";
 
-export async function initializeVectorTextGpuRenderer(engine: BrushEngine): Promise<void> {
+export async function initializeVectorTextGpuRenderer(
+  engine: BrushEngine,
+  compilePipeline: (
+    descriptor: GPURenderPipelineDescriptor,
+  ) => Promise<GPURenderPipeline> = (descriptor) =>
+    createRenderPipelineAsync(engine.device, descriptor),
+): Promise<void> {
   engine.vectorTextGpuShaderModule = engine.device.createShaderModule({
     label: `Vector text geometry WGSL · ${VECTOR_TEXT_GPU_RENDER_STRATEGY}`,
     code: vectorTextGpuShader,
@@ -279,7 +286,7 @@ export async function initializeVectorTextGpuRenderer(engine: BrushEngine): Prom
     bindGroupLayouts: [engine.vectorTextGpuUniformBindGroupLayout],
   });
 
-  engine.vectorTextGpuFillPipeline = engine.device.createRenderPipeline({
+  engine.vectorTextGpuFillPipeline = await compilePipeline({
     label: "Vector text indexed fill MSAA4 source-over pipeline",
     layout: textLayout,
     vertex,
@@ -298,7 +305,7 @@ export async function initializeVectorTextGpuRenderer(engine: BrushEngine): Prom
     label: "Vector text Slug pipeline layout",
     bindGroupLayouts: [engine.vectorTextGpuSlugBindGroupLayout],
   });
-  engine.vectorTextGpuSlugPipeline = engine.device.createRenderPipeline({
+  engine.vectorTextGpuSlugPipeline = await compilePipeline({
     label: "Vector text whole-node Slug source fill MSAA4 source-over pipeline",
     layout: slugLayout,
     vertex: {
@@ -316,7 +323,7 @@ export async function initializeVectorTextGpuRenderer(engine: BrushEngine): Prom
     multisample: { count: VECTOR_TEXT_GPU_SAMPLE_COUNT },
   });
 
-  engine.vectorTextGpuBlurMaskPipeline = engine.device.createRenderPipeline({
+  engine.vectorTextGpuBlurMaskPipeline = await compilePipeline({
     label: "Vector text analytic Slug mask for GPU blur",
     layout: slugLayout,
     vertex: {
@@ -330,7 +337,7 @@ export async function initializeVectorTextGpuRenderer(engine: BrushEngine): Prom
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
   });
-  engine.vectorTextGpuMeshBlurMaskPipeline = engine.device.createRenderPipeline({
+  engine.vectorTextGpuMeshBlurMaskPipeline = await compilePipeline({
     label: "Vector mesh union mask for GPU blur",
     layout: textLayout,
     vertex: {
@@ -350,7 +357,7 @@ export async function initializeVectorTextGpuRenderer(engine: BrushEngine): Prom
     label: "Vector text GPU Gaussian filter pipeline layout",
     bindGroupLayouts: [engine.vectorTextGpuBlurFilterBindGroupLayout],
   });
-  engine.vectorTextGpuBlurHorizontalPipeline = engine.device.createRenderPipeline({
+  engine.vectorTextGpuBlurHorizontalPipeline = await compilePipeline({
     label: "Vector text GPU Gaussian horizontal pipeline",
     layout: blurFilterLayout,
     vertex: {
@@ -364,7 +371,7 @@ export async function initializeVectorTextGpuRenderer(engine: BrushEngine): Prom
     },
     primitive: { topology: "triangle-list" },
   });
-  engine.vectorTextGpuBlurVerticalPipeline = engine.device.createRenderPipeline({
+  engine.vectorTextGpuBlurVerticalPipeline = await compilePipeline({
     label: "Vector text GPU Gaussian vertical pipeline",
     layout: blurFilterLayout,
     vertex: {
@@ -378,7 +385,7 @@ export async function initializeVectorTextGpuRenderer(engine: BrushEngine): Prom
     },
     primitive: { topology: "triangle-list" },
   });
-  engine.vectorTextGpuBlurCompositePipeline = engine.device.createRenderPipeline({
+  engine.vectorTextGpuBlurCompositePipeline = await compilePipeline({
     label: "Vector text GPU blurred mask MSAA4 source-over composite",
     layout: engine.device.createPipelineLayout({
       label: "Vector text GPU blur composite pipeline layout",
@@ -398,7 +405,7 @@ export async function initializeVectorTextGpuRenderer(engine: BrushEngine): Prom
     primitive: { topology: "triangle-list" },
     multisample: { count: VECTOR_TEXT_GPU_SAMPLE_COUNT },
   });
-  engine.vectorTextGpuInnerShadowDirectPipeline = engine.device.createRenderPipeline({
+  engine.vectorTextGpuInnerShadowDirectPipeline = await compilePipeline({
     label: "Vector text inner shadow direct Slug MSAA4 source-over",
     layout: slugLayout,
     vertex: {
@@ -422,7 +429,7 @@ export async function initializeVectorTextGpuRenderer(engine: BrushEngine): Prom
       engine.vectorTextGpuInnerShadowBindGroupLayout,
     ],
   });
-  engine.vectorTextGpuInnerShadowBlurPipeline = engine.device.createRenderPipeline({
+  engine.vectorTextGpuInnerShadowBlurPipeline = await compilePipeline({
     label: "Vector text inner shadow blurred Slug clip MSAA4 source-over",
     layout: innerShadowBlurLayout,
     vertex: {
@@ -439,7 +446,7 @@ export async function initializeVectorTextGpuRenderer(engine: BrushEngine): Prom
     primitive: { topology: "triangle-list", cullMode: "none" },
     multisample: { count: VECTOR_TEXT_GPU_SAMPLE_COUNT },
   });
-  engine.vectorTextGpuMeshInnerShadowBlurPipeline = engine.device.createRenderPipeline({
+  engine.vectorTextGpuMeshInnerShadowBlurPipeline = await compilePipeline({
     label: "Vector SVG inner shadow mesh clip MSAA4 source-over",
     layout: engine.device.createPipelineLayout({
       label: "Vector SVG inner shadow mesh pipeline layout",
@@ -466,7 +473,7 @@ export async function initializeVectorTextGpuRenderer(engine: BrushEngine): Prom
   if (!engine.mixedSceneClearShaderModule) {
     throw new Error("Shader clear trasparente non inizializzato.");
   }
-  engine.vectorTextGpuClearPipeline = engine.device.createRenderPipeline({
+  engine.vectorTextGpuClearPipeline = await compilePipeline({
     label: "Vector text cropped run transparent clear pipeline",
     layout: engine.device.createPipelineLayout({
       label: "Vector text cropped run transparent clear pipeline layout",

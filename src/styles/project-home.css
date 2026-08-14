@@ -225,7 +225,6 @@
   border: 1px solid #292d35;
   border-radius: 16px;
   background: #f1f0eb;
-  box-shadow: 0 16px 42px rgb(0 0 0 / 22%);
   transition: border-color 160ms ease, transform 160ms ease;
 }
 
@@ -247,12 +246,11 @@
   padding: 5px 8px;
   border: 1px solid rgb(255 255 255 / 9%);
   border-radius: 999px;
-  background: rgb(13 15 19 / 82%);
+  background: #0d0f13;
   color: #d7d8da;
   font-size: 0.62rem;
   font-weight: 680;
   letter-spacing: 0.02em;
-  backdrop-filter: blur(10px);
 }
 
 .project-card-copy {
@@ -303,9 +301,8 @@
   padding: 0;
   border: 1px solid rgb(255 255 255 / 10%);
   border-radius: 999px;
-  background: rgb(13 15 19 / 84%);
+  background: #0d0f13;
   color: #e8e7e2;
-  backdrop-filter: blur(10px);
 }
 
 .project-card-action:hover {
@@ -421,7 +418,8 @@
 .new-canvas-name input:focus,
 .canvas-dimension-row input:focus {
   border-color: var(--project-accent);
-  box-shadow: 0 0 0 3px rgb(221 92 53 / 13%);
+  outline: 2px solid rgb(221 92 53 / 42%);
+  outline-offset: 1px;
 }
 
 .new-canvas-name input::placeholder {
@@ -473,7 +471,8 @@
 .canvas-preset-card.is-selected {
   border-color: var(--project-accent);
   background: #211c1b;
-  box-shadow: inset 0 0 0 1px rgb(221 92 53 / 18%);
+  outline: 1px solid rgb(221 92 53 / 22%);
+  outline-offset: -2px;
 }
 
 .canvas-preset-preview {
@@ -483,7 +482,6 @@
   border: 1px solid #c9c8c3;
   border-radius: 7px;
   background: #f3f2ed;
-  box-shadow: 0 7px 18px rgb(0 0 0 / 22%);
 }
 
 .canvas-preset-preview-square {
@@ -650,7 +648,6 @@
   border-radius: 11px;
   background: #20232a;
   color: #e8e7e2;
-  box-shadow: 0 15px 40px rgb(0 0 0 / 36%);
   font-size: 0.72rem;
 }
 

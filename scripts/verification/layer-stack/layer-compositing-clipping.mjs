@@ -437,7 +437,7 @@ assert.match(engineSource, /releaseFusedLayerBakes\(this\)/);
 assert.match(engineSource, /readonly liveMergedSurfaceTextures = new Map<GPUTexture, MergedSurfaceResources>\(\)/);
 assert.match(engineSource, /layerCompositeMiB/,
   "le superfici fuse e i bake transitori devono avere righe di memoria distinte");
-const compositePipelineStart = engineSource.indexOf("const layerCompositePipeline = engine.device.createRenderPipeline(");
+const compositePipelineStart = engineSource.indexOf("const layerCompositePipelinePromise = compilePipeline(");
 const compositePipelineBody = engineSource.slice(compositePipelineStart, compositePipelineStart + 1_100);
 assert.match(
   compositePipelineBody,
@@ -445,7 +445,7 @@ assert.match(
   "la fusione deve usare source-over premoltiplicato",
 );
 const sourceAtopPipelineStart = engineSource.indexOf(
-  "const layerSourceAtopPipeline = engine.device.createRenderPipeline(",
+  "const layerSourceAtopPipelinePromise = compilePipeline(",
 );
 const sourceAtopPipelineBody = engineSource.slice(sourceAtopPipelineStart, sourceAtopPipelineStart + 1_100);
 assert.match(sourceAtopPipelineBody, /srcFactor: "dst-alpha"/,

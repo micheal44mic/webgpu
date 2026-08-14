@@ -143,8 +143,8 @@ assert.match(
 
 const finalComposite = section(
   engine,
-  "const lightGlazeCompositePipeline =",
-  "const lightGlazeCommitTilePipeline =",
+  "const lightGlazeCompositePipelinePromise =",
+  "const lightGlazeCommitTilePipelinePromise =",
 );
 assert.equal(
   (finalComposite.match(/one-minus-src-alpha/g) ?? []).length,

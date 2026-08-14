@@ -146,7 +146,7 @@ for (const file of sourceFiles(sourceRoot)) {
   if (/\b(?:dispatchEvent\s*\(|new\s+CustomEvent\b)/.test(source)) {
     implicitDomBusViolations.push(`${path}: evento DOM usato come bus`);
   }
-  if (path !== "src/main.ts"
+  if (!new Set(["src/main.ts", "src/startup.ts"]).has(path)
     && /\bdocument\.(?:getElementById|querySelector|querySelectorAll)\s*\(/.test(source)) {
     implicitDomBusViolations.push(`${path}: lookup DOM globale fuori dalla composition root`);
   }

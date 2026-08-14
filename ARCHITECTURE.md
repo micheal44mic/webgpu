@@ -10,6 +10,10 @@ aggirati.
 in ordine stabile, i frammenti di `src/ui-shell/`; `src/styles.css` importa nello
 stesso modo i fogli di `src/styles/`.
 
+La shell usa superfici piatte, bordi, colori e icone SVG senza ombre o filtri di
+sfondo permanenti. L'unica sfocatura è quella leggera dell'overlay di startup,
+attiva esclusivamente mentre l'interazione è bloccata.
+
 Il flusso di produzione è:
 
 ```text
@@ -21,16 +25,21 @@ index.html → src/startup.ts → Home progetti oppure import dinamico di src/ma
 ma non deve possedere una funzionalità completa. I controller ricevono elementi
 DOM e porte ristrette; il DOM non è uno store applicativo.
 
-L'avvio WebGPU ha barriere separate. Il renderer raster necessario al primo
-canvas è il core; le risorse di testo/SVG/import immagini, il renderer Blend e
-le pipeline Selection appartengono a tre readiness promise indipendenti. Dopo
-il primo frame presentabile `main.ts` fa avanzare in parallelo il chunk del
-`MixedSceneController` e le risorse GPU vettoriali, poi scalda Selection e Blend
-in finestre distinte. Il primo intento dell'utente si aggancia alla stessa
-promise del proprio dominio: non avvia una seconda compilazione e non attende
-risorse di strumenti estranei. Anche i moduli WGSL che aggiungono il clip della
-Selection a Circle, Shape e Grain vengono creati dalla readiness Selection, non
-dalla barriera raster del primo canvas.
+L'avvio WebGPU ha barriere separate ma un solo cancello UI. Il renderer raster
+necessario al primo canvas è il core; le risorse di testo/SVG/import immagini,
+il renderer Blend e le pipeline Selection appartengono a tre readiness promise
+indipendenti. `main.ts` le completa in ordine stabile e mantiene l'editor
+bloccato da un overlay di avanzamento fino alla riuscita di tutte le barriere,
+compreso il ripristino del pennello. Un errore lascia il cancello chiuso e rende
+disponibile la copia della diagnostica. Il primo intento successivo riusa le
+stesse promise già risolte e non avvia una seconda compilazione.
+
+Le pipeline indipendenti vengono create con le API asincrone dentro una coda a
+concorrenza limitata: due compilazioni sui dispositivi touch e quattro sui
+desktop, con yield fra finestre. Formato, WGSL, precisione e algoritmi restano
+identici su ogni piattaforma; cambia soltanto la pressione esercitata sul
+compilatore del driver. Le pipeline Selection con clip di Circle, Shape e Grain
+seguono lo stesso protocollo e non appartengono alla barriera raster iniziale.
 
 La sorgente WGSL condivisa del ricampionamento è composta per feature da
 `perceptualRasterShaderSource()`: ogni shader riceve soltanto transfer,
@@ -44,9 +53,10 @@ dell'adapter non cambia formato, precisione o algoritmo.
 `startup-telemetry.ts` è il recorder monotono e privo di contenuti del percorso
 di avvio. `startup.ts` misura il caricamento del modulo editor, `BrushEngine`
 pubblica tramite callback soltanto i confini adapter/device/core/documento e
-`main.ts` compone le milestone UI e i task differiti. Il recorder conserva pochi
-timestamp da `performance.now()`; navigation timing e JSON vengono letti solo su
-richiesta dal rapporto di `AppDiagnosticsController`. I valori del riepilogo
+`main.ts` compone le milestone UI e le readiness complete. Il recorder conserva
+timestamp da `performance.now()` e fino a 160 durate individuali di pipeline,
+con nome, famiglia ed eventuale errore; navigation timing e JSON vengono letti
+solo su richiesta dal rapporto di `AppDiagnosticsController`. I valori del riepilogo
 sono millisecondi dalla navigation start, con coda ed esecuzione separate; la
 seconda animation frame dopo la readiness è esplicitamente una paint
 opportunity del browser, non una misura hardware della presentazione del pixel.

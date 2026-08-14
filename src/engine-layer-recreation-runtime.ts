@@ -9,7 +9,7 @@ import {
 } from "./gpu-allocation-transaction";
 import {
   assertShaderCompiled,
-  createRenderPipelineAsync,
+  createPipelineCompilationQueue,
 } from "./engine-gpu-utils";
 import {
   selectionBrushShader,
@@ -85,10 +85,16 @@ async function createLayerPipelineBundle(
   format: LayerFormat,
   options: RecreateLayerResourcesOptions,
 ) {
-  return await runGpuAllocationTransaction(
-    engine.device,
-    `Pipeline formato layer ${format}`,
-    async () => {
+  const pipelineTotal = 48;
+  const pipelineQueue = createPipelineCompilationQueue(engine.device, {
+    total: pipelineTotal,
+    onProgress: (event) => engine.callbacks.onStartupProgress?.({
+      phase: "document-pipelines",
+      ...event,
+    }),
+  });
+  const compilePipeline = pipelineQueue.render;
+
   const brushPipelineLayout = engine.device.createPipelineLayout({
     label: `Brush legacy pipeline layout ${format}`,
     bindGroupLayouts: [engine.brushBindGroupLayout],
@@ -153,7 +159,7 @@ async function createLayerPipelineBundle(
     bindGroupLayouts: [engine.lightGlazeCommitTileBindGroupLayout],
   });
 
-  const normalPipeline = engine.device.createRenderPipeline({
+  const normalPipelinePromise = compilePipeline({
     label: `Brush normal ${format}`,
     layout: brushPipelineLayout,
     vertex: {
@@ -184,7 +190,7 @@ async function createLayerPipelineBundle(
     primitive: { topology: "triangle-strip" },
   });
 
-  const additivePipeline = engine.device.createRenderPipeline({
+  const additivePipelinePromise = compilePipeline({
     label: `Brush additive ${format}`,
     layout: brushPipelineLayout,
     vertex: {
@@ -215,7 +221,7 @@ async function createLayerPipelineBundle(
     primitive: { topology: "triangle-strip" },
   });
 
-  const shapeNormalPipeline = engine.device.createRenderPipeline({
+  const shapeNormalPipelinePromise = compilePipeline({
     label: `Brush shape 2K legacy normal ${format}`,
     layout: brushPipelineLayout,
     vertex: {
@@ -246,7 +252,7 @@ async function createLayerPipelineBundle(
     primitive: { topology: "triangle-strip" },
   });
 
-  const shapeAdditivePipeline = engine.device.createRenderPipeline({
+  const shapeAdditivePipelinePromise = compilePipeline({
     label: `Brush shape 2K legacy additive ${format}`,
     layout: brushPipelineLayout,
     vertex: {
@@ -277,7 +283,7 @@ async function createLayerPipelineBundle(
     primitive: { topology: "triangle-strip" },
   });
 
-  const shapeOccupancyNormalPipeline = engine.device.createRenderPipeline({
+  const shapeOccupancyNormalPipelinePromise = compilePipeline({
     label: `Brush shape 2K occupancy normal ${format}`,
     layout: brushOccupancyPipelineLayout,
     vertex: {
@@ -308,7 +314,7 @@ async function createLayerPipelineBundle(
     primitive: { topology: "triangle-strip" },
   });
 
-  const shapeOccupancyAdditivePipeline = engine.device.createRenderPipeline({
+  const shapeOccupancyAdditivePipelinePromise = compilePipeline({
     label: `Brush shape 2K occupancy additive ${format}`,
     layout: brushOccupancyPipelineLayout,
     vertex: {
@@ -339,7 +345,7 @@ async function createLayerPipelineBundle(
     primitive: { topology: "triangle-strip" },
   });
 
-  const grainNormalPipeline = engine.device.createRenderPipeline({
+  const grainNormalPipelinePromise = compilePipeline({
     label: `Brush Texturized grain normal ${format}`,
     layout: grainBrushPipelineLayout,
     vertex: {
@@ -370,7 +376,7 @@ async function createLayerPipelineBundle(
     primitive: { topology: "triangle-strip" },
   });
 
-  const grainAdditivePipeline = engine.device.createRenderPipeline({
+  const grainAdditivePipelinePromise = compilePipeline({
     label: `Brush Texturized grain additive ${format}`,
     layout: grainBrushPipelineLayout,
     vertex: {
@@ -401,7 +407,7 @@ async function createLayerPipelineBundle(
     primitive: { topology: "triangle-strip" },
   });
 
-  const grainShapeNormalPipeline = engine.device.createRenderPipeline({
+  const grainShapeNormalPipelinePromise = compilePipeline({
     label: `Brush Shape 2K Texturized grain normal ${format}`,
     layout: grainBrushPipelineLayout,
     vertex: {
@@ -432,7 +438,7 @@ async function createLayerPipelineBundle(
     primitive: { topology: "triangle-strip" },
   });
 
-  const grainShapeAdditivePipeline = engine.device.createRenderPipeline({
+  const grainShapeAdditivePipelinePromise = compilePipeline({
     label: `Brush Shape 2K Texturized grain additive ${format}`,
     layout: grainBrushPipelineLayout,
     vertex: {
@@ -463,7 +469,7 @@ async function createLayerPipelineBundle(
     primitive: { topology: "triangle-strip" },
   });
 
-  const grainShapeOccupancyNormalPipeline = engine.device.createRenderPipeline({
+  const grainShapeOccupancyNormalPipelinePromise = compilePipeline({
     label: `Brush Shape 2K occupancy Texturized grain normal ${format}`,
     layout: grainBrushOccupancyPipelineLayout,
     vertex: {
@@ -494,7 +500,7 @@ async function createLayerPipelineBundle(
     primitive: { topology: "triangle-strip" },
   });
 
-  const grainShapeOccupancyAdditivePipeline = engine.device.createRenderPipeline({
+  const grainShapeOccupancyAdditivePipelinePromise = compilePipeline({
     label: `Brush Shape 2K occupancy Texturized grain additive ${format}`,
     layout: grainBrushOccupancyPipelineLayout,
     vertex: {
@@ -525,6 +531,34 @@ async function createLayerPipelineBundle(
     primitive: { topology: "triangle-strip" },
   });
 
+  const [
+    normalPipeline,
+    additivePipeline,
+    shapeNormalPipeline,
+    shapeAdditivePipeline,
+    shapeOccupancyNormalPipeline,
+    shapeOccupancyAdditivePipeline,
+    grainNormalPipeline,
+    grainAdditivePipeline,
+    grainShapeNormalPipeline,
+    grainShapeAdditivePipeline,
+    grainShapeOccupancyNormalPipeline,
+    grainShapeOccupancyAdditivePipeline,
+  ] = await Promise.all([
+    normalPipelinePromise,
+    additivePipelinePromise,
+    shapeNormalPipelinePromise,
+    shapeAdditivePipelinePromise,
+    shapeOccupancyNormalPipelinePromise,
+    shapeOccupancyAdditivePipelinePromise,
+    grainNormalPipelinePromise,
+    grainAdditivePipelinePromise,
+    grainShapeNormalPipelinePromise,
+    grainShapeAdditivePipelinePromise,
+    grainShapeOccupancyNormalPipelinePromise,
+    grainShapeOccupancyAdditivePipelinePromise,
+  ]);
+
   const createRgba16FloatGlazePipeline = (
     label: string,
     layout: GPUPipelineLayout,
@@ -537,7 +571,7 @@ async function createLayerPipelineBundle(
       | "encodedSrgbFragmentMain"
       | "encodedSrgbShapeFragmentMain"
       | "encodedSrgbShapeOccupancyFragmentMain",
-  ): GPURenderPipeline => engine.device.createRenderPipeline({
+  ): Promise<GPURenderPipeline> => compilePipeline({
     label,
     layout,
     vertex: {
@@ -566,42 +600,42 @@ async function createLayerPipelineBundle(
     primitive: { topology: "triangle-strip" },
   });
 
-  const uniformedGlazePipeline = createRgba16FloatGlazePipeline(
+  const uniformedGlazePipelinePromise = createRgba16FloatGlazePipeline(
     "Uniformed Glaze circle linear source-over rgba16float",
     brushPipelineLayout,
     engine.brushShaderModule,
     "vertexMain",
     "fragmentMain",
   );
-  const uniformedGlazeShapePipeline = createRgba16FloatGlazePipeline(
+  const uniformedGlazeShapePipelinePromise = createRgba16FloatGlazePipeline(
     "Uniformed Glaze Shape linear source-over rgba16float",
     brushPipelineLayout,
     engine.brushShaderModule,
     "shapeVertexMain",
     "shapeFragmentMain",
   );
-  const uniformedGlazeShapeOccupancyPipeline = createRgba16FloatGlazePipeline(
+  const uniformedGlazeShapeOccupancyPipelinePromise = createRgba16FloatGlazePipeline(
     "Uniformed Glaze Shape occupancy linear source-over rgba16float",
     brushOccupancyPipelineLayout,
     engine.brushShaderModule,
     "shapeVertexMain",
     "shapeOccupancyFragmentMain",
   );
-  const grainUniformedGlazePipeline = createRgba16FloatGlazePipeline(
+  const grainUniformedGlazePipelinePromise = createRgba16FloatGlazePipeline(
     "Uniformed Glaze Texturized circle linear source-over rgba16float",
     grainBrushPipelineLayout,
     engine.texturizedGrainShaderModule,
     "vertexMain",
     "fragmentMain",
   );
-  const grainUniformedGlazeShapePipeline = createRgba16FloatGlazePipeline(
+  const grainUniformedGlazeShapePipelinePromise = createRgba16FloatGlazePipeline(
     "Uniformed Glaze Texturized Shape linear source-over rgba16float",
     grainBrushPipelineLayout,
     engine.texturizedGrainShaderModule,
     "shapeVertexMain",
     "shapeFragmentMain",
   );
-  const grainUniformedGlazeShapeOccupancyPipeline = createRgba16FloatGlazePipeline(
+  const grainUniformedGlazeShapeOccupancyPipelinePromise = createRgba16FloatGlazePipeline(
     "Uniformed Glaze Texturized Shape occupancy linear source-over rgba16float",
     grainBrushOccupancyPipelineLayout,
     engine.texturizedGrainShaderModule,
@@ -609,48 +643,75 @@ async function createLayerPipelineBundle(
     "shapeOccupancyFragmentMain",
   );
 
-  const intenseBlendingPipeline = createRgba16FloatGlazePipeline(
+  const intenseBlendingPipelinePromise = createRgba16FloatGlazePipeline(
     "Intense Blending circle encoded-sRGB source-over rgba16float",
     brushPipelineLayout,
     engine.brushShaderModule,
     "vertexMain",
     "encodedSrgbFragmentMain",
   );
-  const intenseBlendingShapePipeline = createRgba16FloatGlazePipeline(
+  const intenseBlendingShapePipelinePromise = createRgba16FloatGlazePipeline(
     "Intense Blending Shape encoded-sRGB source-over rgba16float",
     brushPipelineLayout,
     engine.brushShaderModule,
     "shapeVertexMain",
     "encodedSrgbShapeFragmentMain",
   );
-  const intenseBlendingShapeOccupancyPipeline = createRgba16FloatGlazePipeline(
+  const intenseBlendingShapeOccupancyPipelinePromise = createRgba16FloatGlazePipeline(
     "Intense Blending Shape occupancy encoded-sRGB source-over rgba16float",
     brushOccupancyPipelineLayout,
     engine.brushShaderModule,
     "shapeVertexMain",
     "encodedSrgbShapeOccupancyFragmentMain",
   );
-  const grainIntenseBlendingPipeline = createRgba16FloatGlazePipeline(
+  const grainIntenseBlendingPipelinePromise = createRgba16FloatGlazePipeline(
     "Intense Blending Texturized circle encoded-sRGB source-over rgba16float",
     grainBrushPipelineLayout,
     engine.texturizedGrainShaderModule,
     "vertexMain",
     "encodedSrgbFragmentMain",
   );
-  const grainIntenseBlendingShapePipeline = createRgba16FloatGlazePipeline(
+  const grainIntenseBlendingShapePipelinePromise = createRgba16FloatGlazePipeline(
     "Intense Blending Texturized Shape encoded-sRGB source-over rgba16float",
     grainBrushPipelineLayout,
     engine.texturizedGrainShaderModule,
     "shapeVertexMain",
     "encodedSrgbShapeFragmentMain",
   );
-  const grainIntenseBlendingShapeOccupancyPipeline = createRgba16FloatGlazePipeline(
+  const grainIntenseBlendingShapeOccupancyPipelinePromise = createRgba16FloatGlazePipeline(
     "Intense Blending Texturized Shape occupancy encoded-sRGB source-over rgba16float",
     grainBrushOccupancyPipelineLayout,
     engine.texturizedGrainShaderModule,
     "shapeVertexMain",
     "encodedSrgbShapeOccupancyFragmentMain",
   );
+  const [
+    uniformedGlazePipeline,
+    uniformedGlazeShapePipeline,
+    uniformedGlazeShapeOccupancyPipeline,
+    grainUniformedGlazePipeline,
+    grainUniformedGlazeShapePipeline,
+    grainUniformedGlazeShapeOccupancyPipeline,
+    intenseBlendingPipeline,
+    intenseBlendingShapePipeline,
+    intenseBlendingShapeOccupancyPipeline,
+    grainIntenseBlendingPipeline,
+    grainIntenseBlendingShapePipeline,
+    grainIntenseBlendingShapeOccupancyPipeline,
+  ] = await Promise.all([
+    uniformedGlazePipelinePromise,
+    uniformedGlazeShapePipelinePromise,
+    uniformedGlazeShapeOccupancyPipelinePromise,
+    grainUniformedGlazePipelinePromise,
+    grainUniformedGlazeShapePipelinePromise,
+    grainUniformedGlazeShapeOccupancyPipelinePromise,
+    intenseBlendingPipelinePromise,
+    intenseBlendingShapePipelinePromise,
+    intenseBlendingShapeOccupancyPipelinePromise,
+    grainIntenseBlendingPipelinePromise,
+    grainIntenseBlendingShapePipelinePromise,
+    grainIntenseBlendingShapeOccupancyPipelinePromise,
+  ]);
   const createLightNoBuildUpPipeline = (
     label: string,
     layout: GPUPipelineLayout,
@@ -660,7 +721,7 @@ async function createLayerPipelineBundle(
       | "coverageFragmentMain"
       | "shapeCoverageFragmentMain"
       | "shapeOccupancyCoverageFragmentMain",
-  ): GPURenderPipeline => engine.device.createRenderPipeline({
+  ): Promise<GPURenderPipeline> => compilePipeline({
     label,
     layout,
     vertex: {
@@ -690,48 +751,63 @@ async function createLayerPipelineBundle(
     },
     primitive: { topology: "triangle-strip" },
   });
-  const lightNoBuildUpPipeline = createLightNoBuildUpPipeline(
+  const lightNoBuildUpPipelinePromise = createLightNoBuildUpPipeline(
     `Light Glaze circle MAX per gesture r16float`,
     brushPipelineLayout,
     engine.brushShaderModule,
     "vertexMain",
     "coverageFragmentMain",
   );
-  const lightNoBuildUpShapePipeline = createLightNoBuildUpPipeline(
+  const lightNoBuildUpShapePipelinePromise = createLightNoBuildUpPipeline(
     `Light Glaze Shape MAX per gesture r16float`,
     brushPipelineLayout,
     engine.brushShaderModule,
     "shapeVertexMain",
     "shapeCoverageFragmentMain",
   );
-  const lightNoBuildUpShapeOccupancyPipeline = createLightNoBuildUpPipeline(
+  const lightNoBuildUpShapeOccupancyPipelinePromise = createLightNoBuildUpPipeline(
     `Light Glaze Shape occupancy MAX per gesture r16float`,
     brushOccupancyPipelineLayout,
     engine.brushShaderModule,
     "shapeVertexMain",
     "shapeOccupancyCoverageFragmentMain",
   );
-  const grainLightNoBuildUpPipeline = createLightNoBuildUpPipeline(
+  const grainLightNoBuildUpPipelinePromise = createLightNoBuildUpPipeline(
     `Light Glaze Texturized circle MAX per gesture r16float`,
     grainBrushPipelineLayout,
     engine.texturizedGrainShaderModule,
     "vertexMain",
     "coverageFragmentMain",
   );
-  const grainLightNoBuildUpShapePipeline = createLightNoBuildUpPipeline(
+  const grainLightNoBuildUpShapePipelinePromise = createLightNoBuildUpPipeline(
     `Light Glaze Texturized Shape MAX per gesture r16float`,
     grainBrushPipelineLayout,
     engine.texturizedGrainShaderModule,
     "shapeVertexMain",
     "shapeCoverageFragmentMain",
   );
-  const grainLightNoBuildUpShapeOccupancyPipeline = createLightNoBuildUpPipeline(
+  const grainLightNoBuildUpShapeOccupancyPipelinePromise = createLightNoBuildUpPipeline(
     `Light Glaze Texturized Shape occupancy MAX per gesture r16float`,
     grainBrushOccupancyPipelineLayout,
     engine.texturizedGrainShaderModule,
     "shapeVertexMain",
     "shapeOccupancyCoverageFragmentMain",
   );
+  const [
+    lightNoBuildUpPipeline,
+    lightNoBuildUpShapePipeline,
+    lightNoBuildUpShapeOccupancyPipeline,
+    grainLightNoBuildUpPipeline,
+    grainLightNoBuildUpShapePipeline,
+    grainLightNoBuildUpShapeOccupancyPipeline,
+  ] = await Promise.all([
+    lightNoBuildUpPipelinePromise,
+    lightNoBuildUpShapePipelinePromise,
+    lightNoBuildUpShapeOccupancyPipelinePromise,
+    grainLightNoBuildUpPipelinePromise,
+    grainLightNoBuildUpShapePipelinePromise,
+    grainLightNoBuildUpShapeOccupancyPipelinePromise,
+  ]);
 
   const rasterStrokeGeometries: readonly RasterStrokeGeometryPipelineSpec[] = [
     {
@@ -801,11 +877,12 @@ async function createLayerPipelineBundle(
       additive: grainShapeOccupancyAdditivePipeline,
     },
   ];
-  const rasterStrokePipelineFamilies = createRasterStrokePipelineFamilies(
+  const rasterStrokePipelineFamilies = await createRasterStrokePipelineFamilies(
     engine.device,
     format,
     engine.brushShaderModule,
     rasterStrokeGeometries,
+    compilePipeline,
   );
   const eraserPipelineByPaintBase = eraserPipelineMap(rasterStrokePipelineFamilies);
 
@@ -828,8 +905,9 @@ async function createLayerPipelineBundle(
   }
   const registerSelectionPipeline = async (
     variant: SelectionPipelineVariant,
+    compile: (descriptor: GPURenderPipelineDescriptor) => Promise<GPURenderPipeline>,
   ): Promise<void> => {
-    const selectedPipeline = await createRenderPipelineAsync(engine.device, {
+    const selectedPipeline = await compile({
       label: `${variant.label} · clip Selezione pixel`,
       layout: variant.layout,
       vertex: {
@@ -969,23 +1047,26 @@ async function createLayerPipelineBundle(
   };
   const warmSelectionPipelines = async (): Promise<void> => {
     const selectionVariants = await buildSelectionVariants();
-    if (selectionPipelineByBase.size === selectionVariants.length) return;
-    const chunkSize = 4;
-    for (let index = 0; index < selectionVariants.length; index += chunkSize) {
-      const pending = selectionVariants
-        .slice(index, index + chunkSize)
-        .filter((variant) => !selectionPipelineByBase.has(variant.base));
-      await Promise.all(
-        pending.map(registerSelectionPipeline),
-      );
-      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-    }
+    const pending = selectionVariants.filter(
+      (variant) => !selectionPipelineByBase.has(variant.base),
+    );
+    if (pending.length === 0) return;
+    const queue = createPipelineCompilationQueue(engine.device, {
+      total: pending.length,
+      onProgress: (event) => engine.callbacks.onStartupProgress?.({
+        phase: "selection-pipelines",
+        ...event,
+      }),
+    });
+    await Promise.all(
+      pending.map((variant) => registerSelectionPipeline(variant, queue.render)),
+    );
   };
   if (!options.deferSelectionPipelines) {
     await warmSelectionPipelines();
   }
 
-  const lightGlazeCompositeMipPipeline = engine.device.createRenderPipeline({
+  const lightGlazeCompositeMipPipelinePromise = compilePipeline({
     label: `Light Glaze composited mip 1 ${format}`,
     layout: lightGlazeCompositeMipPipelineLayout,
     vertex: {
@@ -999,7 +1080,7 @@ async function createLayerPipelineBundle(
     },
     primitive: { topology: "triangle-list" },
   });
-  const lightGlazeFinalRasterStackCompositeMipPipeline = engine.device.createRenderPipeline({
+  const lightGlazeFinalRasterStackCompositeMipPipelinePromise = compilePipeline({
     label: `Light Glaze final raster stack composited mip 1 ${format}`,
     layout: lightGlazeCompositeMipPipelineLayout,
     vertex: {
@@ -1014,7 +1095,7 @@ async function createLayerPipelineBundle(
     primitive: { topology: "triangle-list" },
   });
 
-  const lightGlazeCompositePipeline = engine.device.createRenderPipeline({
+  const lightGlazeCompositePipelinePromise = compilePipeline({
     label: `Light Glaze final source-over composite ${format}`,
     layout: lightGlazeCompositePipelineLayout,
     vertex: {
@@ -1045,7 +1126,7 @@ async function createLayerPipelineBundle(
     primitive: { topology: "triangle-list" },
   });
 
-  const lightGlazeCommitTilePipeline = engine.device.createRenderPipeline({
+  const lightGlazeCommitTilePipelinePromise = compilePipeline({
     label: `High precision glaze exact tile commit ${format}`,
     layout: lightGlazeCommitTilePipelineLayout,
     vertex: {
@@ -1059,7 +1140,7 @@ async function createLayerPipelineBundle(
     },
     primitive: { topology: "triangle-list" },
   });
-  const paintMipDownsamplePipeline = engine.device.createRenderPipeline({
+  const paintMipDownsamplePipelinePromise = compilePipeline({
     label: `Paint display mip downsample ${format}`,
     layout: paintMipDownsamplePipelineLayout,
     vertex: {
@@ -1077,7 +1158,7 @@ async function createLayerPipelineBundle(
     label: `Advanced layer blend fold pipeline layout ${format}`,
     bindGroupLayouts: [engine.layerBlendFoldBindGroupLayout],
   });
-  const paintStackCompositeMipPipeline = engine.device.createRenderPipeline({
+  const paintStackCompositeMipPipelinePromise = compilePipeline({
     label: `Final raster stack composited mip 1 ${format}`,
     layout: paintStackCompositeMipPipelineLayout,
     vertex: {
@@ -1091,7 +1172,7 @@ async function createLayerPipelineBundle(
     },
     primitive: { topology: "triangle-list" },
   });
-  const activeClippingGroupMipPipeline = engine.device.createRenderPipeline({
+  const activeClippingGroupMipPipelinePromise = compilePipeline({
     label: `Active clipping group composited mip 1 ${format}`,
     layout: paintStackCompositeMipPipelineLayout,
     vertex: {
@@ -1105,7 +1186,7 @@ async function createLayerPipelineBundle(
     },
     primitive: { topology: "triangle-list" },
   });
-  const layerCompositePipeline = engine.device.createRenderPipeline({
+  const layerCompositePipelinePromise = compilePipeline({
     label: `Layer source-over fold ${format}`,
     layout: layerCompositePipelineLayout,
     vertex: { module: engine.layerCompositeShaderModule, entryPoint: "vertexMain" },
@@ -1122,7 +1203,7 @@ async function createLayerPipelineBundle(
     },
     primitive: { topology: "triangle-list" },
   });
-  const layerSourceAtopPipeline = engine.device.createRenderPipeline({
+  const layerSourceAtopPipelinePromise = compilePipeline({
     label: `Clipping child source-atop fold ${format}`,
     layout: layerCompositePipelineLayout,
     vertex: { module: engine.layerCompositeShaderModule, entryPoint: "vertexMain" },
@@ -1143,7 +1224,7 @@ async function createLayerPipelineBundle(
     },
     primitive: { topology: "triangle-list" },
   });
-  const layerColdTileCompositePipeline = engine.device.createRenderPipeline({
+  const layerColdTileCompositePipelinePromise = compilePipeline({
     label: `Direct cold tile source-over fold ${format}`,
     layout: layerColdTileCompositePipelineLayout,
     vertex: {
@@ -1163,7 +1244,7 @@ async function createLayerPipelineBundle(
     },
     primitive: { topology: "triangle-list" },
   });
-  const layerColdTileSourceAtopPipeline = engine.device.createRenderPipeline({
+  const layerColdTileSourceAtopPipelinePromise = compilePipeline({
     label: `Direct cold tile source-atop fold ${format}`,
     layout: layerColdTileCompositePipelineLayout,
     vertex: {
@@ -1187,7 +1268,7 @@ async function createLayerPipelineBundle(
     },
     primitive: { topology: "triangle-list" },
   });
-  const layerBlendFoldPipeline = engine.device.createRenderPipeline({
+  const layerBlendFoldPipelinePromise = compilePipeline({
     label: `Advanced document-space layer blend fold ${format}`,
     layout: layerBlendFoldPipelineLayout,
     vertex: { module: engine.layerBlendFoldShaderModule, entryPoint: "vertexMain" },
@@ -1201,7 +1282,34 @@ async function createLayerPipelineBundle(
     },
     primitive: { topology: "triangle-list" },
   });
-      return {
+  const [
+    lightGlazeCompositeMipPipeline,
+    lightGlazeFinalRasterStackCompositeMipPipeline,
+    lightGlazeCompositePipeline,
+    lightGlazeCommitTilePipeline,
+    paintMipDownsamplePipeline,
+    paintStackCompositeMipPipeline,
+    activeClippingGroupMipPipeline,
+    layerCompositePipeline,
+    layerSourceAtopPipeline,
+    layerColdTileCompositePipeline,
+    layerColdTileSourceAtopPipeline,
+    layerBlendFoldPipeline,
+  ] = await Promise.all([
+    lightGlazeCompositeMipPipelinePromise,
+    lightGlazeFinalRasterStackCompositeMipPipelinePromise,
+    lightGlazeCompositePipelinePromise,
+    lightGlazeCommitTilePipelinePromise,
+    paintMipDownsamplePipelinePromise,
+    paintStackCompositeMipPipelinePromise,
+    activeClippingGroupMipPipelinePromise,
+    layerCompositePipelinePromise,
+    layerSourceAtopPipelinePromise,
+    layerColdTileCompositePipelinePromise,
+    layerColdTileSourceAtopPipelinePromise,
+    layerBlendFoldPipelinePromise,
+  ]);
+  return {
         selectionPipelineByBase,
         eraserPipelineByPaintBase,
         normalPipeline,
@@ -1247,9 +1355,7 @@ async function createLayerPipelineBundle(
         layerColdTileSourceAtopPipeline,
         layerBlendFoldPipeline,
         warmSelectionPipelines,
-      };
-    },
-  );
+  };
 }
 
 async function allocateLayerResourceCandidate(
@@ -1328,6 +1434,10 @@ async function allocateLayerResourceCandidate(
             grainTextureWidth: engine.grainTextureWidth,
             grainTextureMipLevelCount: engine.grainTextureMipLevelCount,
             grainSamplers: engine.grainSamplers,
+            onPipelineProgress: (event) => engine.callbacks.onStartupProgress?.({
+              phase: "blend-pipelines",
+              ...event,
+            }),
           });
           transaction.deferRollback(() => candidate.destroy());
           return candidate;
@@ -1499,6 +1609,10 @@ async function publishLayerResourceCandidate(
             grainTextureWidth: engine.grainTextureWidth,
             grainTextureMipLevelCount: engine.grainTextureMipLevelCount,
             grainSamplers: engine.grainSamplers,
+            onPipelineProgress: (event) => engine.callbacks.onStartupProgress?.({
+              phase: "blend-pipelines",
+              ...event,
+            }),
           });
           transaction.deferRollback(() => renderer.destroy());
           return renderer;

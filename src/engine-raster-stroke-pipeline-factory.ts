@@ -1,6 +1,7 @@
 import {
   DESTINATION_OUT_BLEND_STATE,
 } from "./engine-raster-stroke-pipelines";
+import { createRenderPipelineAsync } from "./engine-gpu-utils";
 
 export const RASTER_STROKE_GEOMETRY_KEYS = [
   "circle",
@@ -36,13 +37,17 @@ export interface RasterStrokePipelineFamily {
   readonly eraser: GPURenderPipeline;
 }
 
-function createEraserPipeline(
-  device: GPUDevice,
+export type RasterStrokePipelineCompiler = (
+  descriptor: GPURenderPipelineDescriptor,
+) => Promise<GPURenderPipeline>;
+
+async function createEraserPipeline(
   format: GPUTextureFormat,
   vertexModule: GPUShaderModule,
   geometry: RasterStrokeGeometryPipelineSpec,
-): GPURenderPipeline {
-  return device.createRenderPipeline({
+  compilePipeline: RasterStrokePipelineCompiler,
+): Promise<GPURenderPipeline> {
+  return compilePipeline({
     label: `${geometry.label} destination-out ${format}`,
     layout: geometry.layout,
     vertex: {
@@ -63,23 +68,38 @@ function createEraserPipeline(
  * The same catalog is consumed for pixel-selection variants, so a new brush
  * geometry cannot silently omit either Eraser or selection clipping.
  */
-export function createRasterStrokePipelineFamilies(
+export async function createRasterStrokePipelineFamilies(
   device: GPUDevice,
   format: GPUTextureFormat,
   vertexModule: GPUShaderModule,
   geometries: readonly RasterStrokeGeometryPipelineSpec[],
-): ReadonlyMap<RasterStrokeGeometryKey, RasterStrokePipelineFamily> {
-  const families = new Map<RasterStrokeGeometryKey, RasterStrokePipelineFamily>();
+  compilePipeline: RasterStrokePipelineCompiler = (descriptor) =>
+    createRenderPipelineAsync(device, descriptor),
+): Promise<ReadonlyMap<RasterStrokeGeometryKey, RasterStrokePipelineFamily>> {
+  const geometryKeys = new Set<RasterStrokeGeometryKey>();
   for (const geometry of geometries) {
-    if (families.has(geometry.key)) {
+    if (geometryKeys.has(geometry.key)) {
       throw new Error(`Geometria raster duplicata: ${geometry.key}.`);
     }
-    families.set(geometry.key, {
+    geometryKeys.add(geometry.key);
+  }
+  const compiled = await Promise.all(geometries.map(async (geometry) => ({
+    key: geometry.key,
+    family: {
       geometry,
       normal: geometry.normal,
       additive: geometry.additive,
-      eraser: createEraserPipeline(device, format, vertexModule, geometry),
-    });
+      eraser: await createEraserPipeline(
+        format,
+        vertexModule,
+        geometry,
+        compilePipeline,
+      ),
+    },
+  })));
+  const families = new Map<RasterStrokeGeometryKey, RasterStrokePipelineFamily>();
+  for (const { key, family } of compiled) {
+    families.set(key, family);
   }
   for (const key of RASTER_STROKE_GEOMETRY_KEYS) {
     if (!families.has(key)) {

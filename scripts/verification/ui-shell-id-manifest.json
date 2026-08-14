@@ -431,5 +431,13 @@
   "gpuMemoryDelta",
   "gpuMemoryChevron",
   "layerLoadingOverlay",
-  "layerLoadingLabel"
+  "layerLoadingLabel",
+  "startupLoadingOverlay",
+  "startupLoadingTitle",
+  "startupLoadingDetail",
+  "startupLoadingPercent",
+  "startupLoadingProgress",
+  "startupLoadingStep",
+  "startupLoadingError",
+  "startupLoadingCopyDiagnostics"
 ]

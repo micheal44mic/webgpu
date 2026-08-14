@@ -111,10 +111,8 @@
   transform: translateX(-50%);
   border: 1px solid rgba(117, 130, 157, 0.7);
   border-radius: 12px;
-  background: rgba(15, 19, 27, 0.94);
+  background: #0f131b;
   color: #eef2f8;
-  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.38);
-  backdrop-filter: blur(12px);
 }
 
 .transform-commit-bar[hidden] {
@@ -169,7 +167,8 @@
   border-color: #dd5c35;
   background: rgb(221 92 53 / 14%);
   color: #fff4ee;
-  box-shadow: inset 0 0 0 1px rgb(221 92 53 / 24%);
+  outline: 1px solid rgb(221 92 53 / 24%);
+  outline-offset: -2px;
 }
 
 .liquify-mode-grid button[aria-checked="true"] > span:first-child {

@@ -60,6 +60,14 @@ export interface StartupTelemetrySnapshot {
   readonly milestones: Readonly<Record<string, number>>;
   readonly expectedBackgroundTasks: readonly string[];
   readonly phases: readonly StartupPhaseSnapshot[];
+  readonly pipelineCompilations: readonly {
+    readonly phase: string;
+    readonly label: string;
+    readonly status: "ok" | "error";
+    readonly completedAtMs: number;
+    readonly durationMs: number;
+    readonly error: StartupTimingError | null;
+  }[];
   readonly errors: readonly {
     readonly phase: string;
     readonly atMs: number | null;
@@ -113,6 +121,14 @@ export class StartupTelemetry {
   private readonly clock: StartupPerformanceLike;
   private readonly phases = new Map<string, MutableStartupPhase>();
   private readonly milestones = new Map<string, number>();
+  private readonly pipelineCompilations: Array<{
+    phase: string;
+    label: string;
+    status: "ok" | "error";
+    completedAtMs: number;
+    durationMs: number;
+    error: StartupTimingError | null;
+  }> = [];
   private expectedBackgroundTasks: readonly string[] = [];
 
   constructor(clock: StartupPerformanceLike) {
@@ -174,6 +190,25 @@ export class StartupTelemetry {
     this.expectedBackgroundTasks = [...new Set(names)];
   }
 
+  recordPipelineCompilation(event: {
+    readonly phase: string;
+    readonly label: string;
+    readonly state: "start" | "complete" | "error";
+    readonly durationMs: number | null;
+    readonly error?: unknown;
+  }): void {
+    if (event.state === "start" || event.durationMs === null) return;
+    if (this.pipelineCompilations.length === 160) this.pipelineCompilations.shift();
+    this.pipelineCompilations.push({
+      phase: event.phase,
+      label: event.label,
+      status: event.state === "complete" ? "ok" : "error",
+      completedAtMs: this.clock.now(),
+      durationMs: event.durationMs,
+      error: event.state === "error" ? startupError(event.error) : null,
+    });
+  }
+
   snapshot(): StartupTelemetrySnapshot {
     const phases = [...this.phases.values()]
       .map((phase): StartupPhaseSnapshot => ({
@@ -217,8 +252,10 @@ export class StartupTelemetry {
         roundedMilliseconds(value) ?? 0,
       ]),
     );
-    const completedAt = (name: string): number | null =>
-      phaseByName.get(name)?.completedAtMs ?? null;
+    const completedAt = (name: string): number | null => {
+      const phase = phaseByName.get(name);
+      return phase?.status === "ok" ? phase.completedAtMs : null;
+    };
     const milestoneAt = (name: string): number | null => milestones[name] ?? null;
 
     return {
@@ -254,6 +291,11 @@ export class StartupTelemetry {
       milestones,
       expectedBackgroundTasks: this.expectedBackgroundTasks,
       phases,
+      pipelineCompilations: this.pipelineCompilations.map((pipeline) => ({
+        ...pipeline,
+        completedAtMs: roundedMilliseconds(pipeline.completedAtMs) ?? 0,
+        durationMs: roundedMilliseconds(pipeline.durationMs) ?? 0,
+      })),
       errors: phases.flatMap((phase) => phase.error
         ? [{ phase: phase.name, atMs: phase.completedAtMs, error: phase.error }]
         : []),
