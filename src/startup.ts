@@ -19,6 +19,9 @@ import {
   type ProjectStorage,
   type ProjectSummaryV1,
 } from "./project-storage";
+import { startupTelemetry } from "./startup-telemetry";
+
+startupTelemetry.mark("startup-entry");
 
 const HOME_ICONS: Readonly<Record<string, IconNode>> = {
   "arrow-up-right": ArrowUpRight,
@@ -144,13 +147,14 @@ function formatProjectDate(timestamp: number): string {
 }
 
 async function launchEditor(): Promise<void> {
+  startupTelemetry.mark("editor-route-selected");
   const home = element<HTMLElement>(document, "projectHome");
   const app = element<HTMLElement>(document, "app");
   home.hidden = true;
   home.inert = true;
   app.hidden = false;
   app.inert = false;
-  await import("./main");
+  await startupTelemetry.track("main-module-load", () => import("./main"));
 }
 
 interface ProjectHomeControllerOptions {
@@ -516,6 +520,6 @@ async function boot(): Promise<void> {
   await controller.initialize();
 }
 
-void boot().catch((error) => {
+void startupTelemetry.track("startup-shell-boot", boot).catch((error) => {
   console.error("M1M4 startup failed:", error);
 });

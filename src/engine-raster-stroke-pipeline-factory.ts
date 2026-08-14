@@ -20,7 +20,6 @@ export interface RasterStrokeGeometryPipelineSpec {
   readonly layout: GPUPipelineLayout;
   readonly fragmentModule: GPUShaderModule;
   readonly selectionLayout: GPUPipelineLayout;
-  readonly selectionFragmentModule: GPUShaderModule;
   readonly normal: GPURenderPipeline;
   readonly additive: GPURenderPipeline;
   readonly vertexEntryPoint: "vertexMain" | "shapeVertexMain";

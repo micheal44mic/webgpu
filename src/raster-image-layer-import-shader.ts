@@ -8,16 +8,13 @@
  * pass performs that conversion into a temporary linear RGBA16F mip chain; the
  * last pass samples the chain into the document's authoritative RGBA16F layer.
  */
-import {
-  perceptualRasterResamplingShader,
-  perceptualRasterSamplingShader,
-} from "./perceptual-raster-resampling.ts";
+import { perceptualRasterShaderSource } from "./perceptual-raster-resampling.ts";
 
 export const RASTER_IMAGE_LAYER_IMPORT_STRATEGY =
   "decoded-rgba8-srgb-to-linear-premultiplied-perceptual-npot-mips-native-layer-v4" as const;
 
 export const rasterImageLayerUploadShader = /* wgsl */ `
-${perceptualRasterResamplingShader}
+${perceptualRasterShaderSource({ preparedSamples: true })}
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
@@ -100,7 +97,7 @@ fn fragmentMipmapMain(
 `;
 
 export const rasterImageLayerBlitShader = /* wgsl */ `
-${perceptualRasterSamplingShader}
+${perceptualRasterShaderSource({ sampling: true })}
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,

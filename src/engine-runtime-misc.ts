@@ -15,10 +15,6 @@ import {
 import { rasterStrokeDisplayShader } from "./stroke-renderer";
 import { LAYER_COLD_TILE_COMPOSITE_WGSL } from "./layer-cold-tile-composite-shader";
 import {
-  selectionBrushShader,
-  selectionTexturizedGrainShader,
-} from "./selection-clip-shaders";
-import {
   DOCUMENT_HEIGHT,
   DOCUMENT_WIDTH,
   MAX_STAMPS_PER_BATCH,
@@ -100,14 +96,6 @@ export async function finishStaticResourceCreation(
     label: "Texturized grain fragment WGSL",
     code: texturizedGrainShader,
   });
-  engine.selectionBrushShaderModule = engine.device.createShaderModule({
-    label: "Brush con clip Selezione pixel WGSL",
-    code: selectionBrushShader,
-  });
-  engine.selectionTexturizedGrainShaderModule = engine.device.createShaderModule({
-    label: "Grain con clip Selezione pixel WGSL",
-    code: selectionTexturizedGrainShader,
-  });
   engine.displayShaderModule = engine.device.createShaderModule({ label: "Display WGSL", code: displayShader });
   engine.rasterStrokeDisplayShaderModule = engine.device.createShaderModule({
     label: "Traccia direct LOD 0 and coarse mip display WGSL",
@@ -164,11 +152,6 @@ export async function finishStaticResourceCreation(
   await Promise.all([
     assertShaderCompiled(engine.brushShaderModule, "brush"),
     assertShaderCompiled(engine.texturizedGrainShaderModule, "Texturized grain fragment"),
-    assertShaderCompiled(engine.selectionBrushShaderModule, "brush con Selezione pixel"),
-    assertShaderCompiled(
-      engine.selectionTexturizedGrainShaderModule,
-      "Texturized grain con Selezione pixel",
-    ),
     assertShaderCompiled(engine.displayShaderModule, "display"),
     assertShaderCompiled(engine.rasterStrokeDisplayShaderModule, "Traccia display"),
     assertShaderCompiled(

@@ -351,7 +351,7 @@ assert.match(
   "project capture must rebuild every persisted tile bit, including tile 255",
 );
 const semanticResourcesPosition = runtimeSource.indexOf(
-  "await engine.ensureOptionalEditorResources()",
+  "await engine.ensureVectorEditorResources()",
 );
 const semanticRestorePosition = runtimeSource.indexOf(
   "engine.mixedSceneStack?.restoreState(snapshot.mixedScene)",

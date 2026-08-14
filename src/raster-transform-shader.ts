@@ -7,10 +7,7 @@ import {
   SELECTION_LAYER_WIDTH,
   SELECTION_WORDS_PER_ROW,
 } from "./selection-core.ts";
-import {
-  perceptualRasterResamplingShader,
-  perceptualRasterSamplingShader,
-} from "./perceptual-raster-resampling.ts";
+import { perceptualRasterShaderSource } from "./perceptual-raster-resampling.ts";
 
 export const RASTER_TRANSFORM_SHADER_STRATEGY =
   "texel-exact-integer-translation-perceptual-transparent-inverse-affine-trilinear-v4" as const;
@@ -24,7 +21,7 @@ export const RASTER_TRANSFORM_SHADER_STRATEGY =
  * replaced by either the transformed immutable source or transparent black.
  */
 export const rasterTransformShader = /* wgsl */ `
-${perceptualRasterSamplingShader}
+${perceptualRasterShaderSource({ sampling: true })}
 
 struct RasterTransformUniforms {
   sourceOrigin: vec2<f32>,
@@ -200,7 +197,7 @@ fn fragmentMain(
  * same WGSL is valid for rgba8unorm and rgba16float render targets.
  */
 export const rasterTransformMipmapShader = /* wgsl */ `
-${perceptualRasterResamplingShader}
+${perceptualRasterShaderSource({ preparedSamples: true })}
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,

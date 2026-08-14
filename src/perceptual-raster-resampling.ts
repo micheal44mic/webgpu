@@ -204,13 +204,7 @@ export function rasterPresentationCompositeOverSrgbBackground(
   return linearCompositeOverSrgbBackground(paint, backgroundSrgb);
 }
 
-/** Shared WGSL; consumers interpolate this once into their own shader module. */
-export const perceptualRasterResamplingShader = /* wgsl */ `
-struct PerceptualResamplingSample {
-  encoded: vec4<f32>,
-  extendedResidual: vec4<f32>,
-};
-
+const perceptualRasterTransferShader = /* wgsl */ `
 fn perceptualSrgbToLinearChannel(value: f32) -> f32 {
   let bounded = clamp(value, 0.0, 1.0);
   if (bounded <= 0.04045) {
@@ -242,6 +236,13 @@ fn perceptualLinearToSrgb(value: vec3<f32>) -> vec3<f32> {
     perceptualLinearToSrgbChannel(value.b)
   );
 }
+`;
+
+const perceptualRasterPreparedSampleShader = /* wgsl */ `
+struct PerceptualResamplingSample {
+  encoded: vec4<f32>,
+  extendedResidual: vec4<f32>,
+};
 
 fn perceptualPrepareSample(value: vec4<f32>) -> PerceptualResamplingSample {
   let alpha = clamp(value.a, 0.0, 1.0);
@@ -269,7 +270,9 @@ fn perceptualResolveSample(value: PerceptualResamplingSample) -> vec4<f32> {
   }
   return vec4<f32>(boundedPremultiplied, alpha) + value.extendedResidual;
 }
+`;
 
+const perceptualRasterReductionShader = /* wgsl */ `
 fn perceptualReduceFour(
   p00: vec4<f32>,
   p10: vec4<f32>,
@@ -290,7 +293,9 @@ fn perceptualReduceFour(
   ) * 0.25;
   return perceptualResolveSample(reduced);
 }
+`;
 
+const perceptualRasterPreparedMixShader = /* wgsl */ `
 fn perceptualMixPreparedSamples(
   first: PerceptualResamplingSample,
   second: PerceptualResamplingSample,
@@ -306,7 +311,9 @@ fn perceptualMixPreparedSamples(
   );
   return mixed;
 }
+`;
 
+const perceptualRasterInterpolationShader = /* wgsl */ `
 fn perceptualInterpolate(
   first: vec4<f32>,
   second: vec4<f32>,
@@ -340,14 +347,18 @@ fn perceptualInterpolateFour(
     perceptualMixPreparedSamples(top, bottom, amount.y)
   );
 }
+`;
 
+const perceptualRasterSourceOverShader = /* wgsl */ `
 fn linearPremultipliedSourceOver(
   source: vec4<f32>,
   destination: vec4<f32>
 ) -> vec4<f32> {
   return source + destination * (1.0 - source.a);
 }
+`;
 
+const perceptualRasterPresentationShader = /* wgsl */ `
 fn linearCompositeOverSrgbBackground(
   paint: vec4<f32>,
   backgroundSrgb: vec3<f32>
@@ -367,14 +378,7 @@ fn rasterPresentationCompositeOverSrgbBackground(
 }
 `;
 
-/**
- * Optional manual texture sampling built on the pure resampling contract.
- * Keeping texture access in this extension lets arithmetic-only reducers use
- * the same policy without silently acquiring extra texture taps.
- */
-export const perceptualRasterSamplingShader = /* wgsl */ `
-${perceptualRasterResamplingShader}
-
+const perceptualRasterTextureSamplingShader = /* wgsl */ `
 fn perceptualLoadPrepared(
   sourceTexture: texture_2d<f32>,
   coordinate: vec2<i32>,
@@ -526,3 +530,58 @@ fn perceptualMipLevelFromGradients(
   return clamp(log2(max(footprint, 1.0)), 0.0, maximumLevel);
 }
 `;
+
+export interface PerceptualRasterShaderFeatures {
+  readonly preparedSamples?: boolean;
+  readonly reduceFour?: boolean;
+  readonly interpolate?: boolean;
+  readonly sourceOver?: boolean;
+  readonly presentation?: boolean;
+  readonly sampling?: boolean;
+}
+
+/**
+ * Builds the smallest exact WGSL contract required by one shader module.
+ * WebGPU has no source-level imports: interpolating the historical all-in-one
+ * string made every backend parse and optimize reducers, presentation and
+ * manual texture sampling even when an entry point used only one operation.
+ * This composition changes no math; it only removes unused source before the
+ * browser hands WGSL to Metal, D3D12 or Vulkan.
+ */
+export function perceptualRasterShaderSource(
+  features: Readonly<PerceptualRasterShaderFeatures>,
+): string {
+  const preparedSamples = features.preparedSamples === true
+    || features.reduceFour === true
+    || features.interpolate === true
+    || features.sampling === true;
+  const preparedMix = features.interpolate === true || features.sampling === true;
+  const transfer = preparedSamples || features.presentation === true;
+  return [
+    transfer ? perceptualRasterTransferShader : "",
+    preparedSamples ? perceptualRasterPreparedSampleShader : "",
+    features.reduceFour ? perceptualRasterReductionShader : "",
+    preparedMix ? perceptualRasterPreparedMixShader : "",
+    features.interpolate ? perceptualRasterInterpolationShader : "",
+    features.sourceOver ? perceptualRasterSourceOverShader : "",
+    features.presentation ? perceptualRasterPresentationShader : "",
+    features.sampling ? perceptualRasterTextureSamplingShader : "",
+  ].filter((source) => source.length > 0).join("\n");
+}
+
+/** Shared arithmetic-only WGSL retained as the complete public contract. */
+export const perceptualRasterResamplingShader = perceptualRasterShaderSource({
+  reduceFour: true,
+  interpolate: true,
+  sourceOver: true,
+  presentation: true,
+});
+
+/** Complete sampling contract retained for compatibility and verifier probes. */
+export const perceptualRasterSamplingShader = perceptualRasterShaderSource({
+  reduceFour: true,
+  interpolate: true,
+  sourceOver: true,
+  presentation: true,
+  sampling: true,
+});

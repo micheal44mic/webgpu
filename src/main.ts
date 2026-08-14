@@ -86,6 +86,10 @@ import type { MixedSceneController } from "./mixed-scene-controller";
 import { createProjectStorage } from "./project-storage";
 import { ProjectSessionController } from "./project-session-controller";
 import { resolveMixedSceneEnabled } from "./compat/mixed-scene-options";
+import { startupTelemetry } from "./startup-telemetry";
+import * as editorStartup from "./editor-startup-orchestration";
+
+startupTelemetry.mark("main-composition-start");
 
 createIcons({
   icons: {
@@ -407,6 +411,7 @@ const editorExtensionEngineOptions = editorExtensionBootstrap?.engineOptions ?? 
 let editorExtension: EditorExtension | null = null;
 let projectSessionController: ProjectSessionController | null = null;
 const engine = new BrushEngine(canvas, {
+  onStartupPhase: (event) => editorStartup.recordEngineStartupPhase(startupTelemetry, event),
   onStatus(message, kind) {
     statusElement.textContent = message;
     statusElement.className = `status ${kind === "working" ? "" : kind}`;
@@ -551,6 +556,7 @@ appDiagnosticsController = new AppDiagnosticsController({
     },
   }),
   getVectorDiagnostics: () => mixedSceneController?.getDiagnostics() ?? null,
+  getStartupDiagnostics: () => startupTelemetry.snapshot(),
 });
 const historyControlsController = new HistoryControlsController({
   engine: {
@@ -663,6 +669,7 @@ if (import.meta.env.DEV) {
 }
 
 let engineInitialized = false;
+let projectSessionReady = false;
 let mobileSheetLayoutFrame: number | null = null;
 const authoritativeBrushStrokePreviewRenderer =
   new AuthoritativeBrushStrokePreviewRenderer(engine);
@@ -940,9 +947,9 @@ function syncMobileToolsMenuState(
       };
   editorToolsController?.renderMenuState({
     activeCanvasTool: canvasToolController?.activeTool ?? "paint",
-    engineReady: engineInitialized,
-    interactionLocked: interactionLocked(),
-    vectorEditorReady: mixedSceneController !== null,
+    engineReady: engineInitialized && projectSessionReady,
+    interactionLocked: !projectSessionReady || interactionLocked(),
+    vectorEditorReady: projectSessionReady && mixedSceneController !== null,
     vectorEditorLocked: mixedSceneController?.getTextEditorSnapshot().locked ?? true,
     textSelected: selectedText !== null,
     svgSelected: selectedSvg !== null,
@@ -1381,10 +1388,23 @@ editorToolsController = new EditorToolsController({
     if (mobileToolSettingsSheet?.isOpen) mobileToolSettingsSheet.close(false);
     if (layerPanelController?.isOpen) layerPanelController.setOpen(false);
     if (brushLibraryController.isOpen) brushLibraryController.setOpen(false);
+    if (engineInitialized && engine.mixedSceneEnabled && !mixedSceneController) {
+      void initializeMixedSceneController().catch(() => {
+        // initializeMixedSceneController publishes the actionable error.
+      });
+    }
   },
   onOpenChange: () => brushQuickControlsController?.syncVisibility(),
   syncMenuState: syncMobileToolsMenuState,
-  selectCanvasTool: (tool) => canvasToolController?.select(tool) ?? false,
+  selectCanvasTool: (tool) => {
+    const selected = canvasToolController?.select(tool) ?? false;
+    if (selected && tool === "transform" && engine.mixedSceneEnabled) {
+      void initializeMixedSceneController().catch(() => {
+        // initializeMixedSceneController publishes the actionable error.
+      });
+    }
+    return selected;
+  },
   openToolSettings: (kind, trigger) => {
     mobileToolSettingsSheet?.open(kind, trigger);
   },
@@ -1645,31 +1665,28 @@ canvasToolController?.setSelectionCombineMode("replace");
 canvasToolController?.configure("paint", false);
 updateHistoryControls();
 
-function scheduleDeferredStartupTask(
-  name: string,
-  task: () => Promise<void>,
-  timeout: number,
-): void {
-  const run = (): void => {
-    void task().catch((error) => {
-      appDiagnosticsController?.recordOperation(name, null, error);
-      console.error(`Deferred startup task ${name} failed.`, error);
-    });
-  };
-  if (typeof window.requestIdleCallback === "function") {
-    window.requestIdleCallback(run, { timeout });
-    return;
-  }
-  window.setTimeout(run, 0);
-}
+const deferredStartup = new editorStartup.DeferredStartupScheduler({
+  browser: window,
+  telemetry: startupTelemetry,
+  onFailure(name, error) {
+    appDiagnosticsController?.recordOperation(name, null, error);
+    console.error(`Deferred startup task ${name} failed.`, error);
+  },
+});
+const loadMixedSceneControllerModule = editorStartup.cachedStartupModuleLoader(
+  startupTelemetry, "mixed-scene-module-load", () => import("./mixed-scene-controller"),
+);
 
 async function initializeMixedSceneController(): Promise<MixedSceneController> {
   if (mixedSceneController) return mixedSceneController;
   if (mixedSceneInitializationPromise) return mixedSceneInitializationPromise;
 
   const initialization = (async (): Promise<MixedSceneController> => {
-    await engine.ensureOptionalEditorResources();
-    const { MixedSceneController } = await import("./mixed-scene-controller");
+    const [{ MixedSceneController }] = await Promise.all([
+      loadMixedSceneControllerModule(),
+      startupTelemetry.track("vector-editor-gpu-resources", () =>
+        engine.ensureVectorEditorResources()),
+    ]);
     const controller = new MixedSceneController(engine, {
       root: appElement,
       browser: window,
@@ -1677,11 +1694,13 @@ async function initializeMixedSceneController(): Promise<MixedSceneController> {
         editorExtensionBootstrap?.vectorTextClippedRefreshPolicy ?? "during-gesture",
       onEditorStateChange: () => mobileToolSettingsSheet?.syncOpenState(),
     });
-    await controller.initialize();
+    await startupTelemetry.track("mixed-scene-controller-initialize", () =>
+      controller.initialize());
     mixedSceneController = controller;
+    controller.setTransformToolActive(canvasToolController?.activeTool === "transform");
     const snapshot = engine.getMixedSceneSnapshot();
     if (snapshot) controller.syncScene(snapshot);
-    syncMobileToolsMenuState(snapshot);
+    if (projectSessionReady) syncMobileToolsMenuState(snapshot);
     requestMobileLayersRefresh();
     mobileToolSettingsSheet?.syncOpenState();
     if (import.meta.env.DEV) {
@@ -1689,6 +1708,7 @@ async function initializeMixedSceneController(): Promise<MixedSceneController> {
         __mixedSceneController?: MixedSceneController;
       }).__mixedSceneController = mixedSceneController;
     }
+    startupTelemetry.mark("vector-tools-ready");
     return controller;
   })();
   mixedSceneInitializationPromise = initialization;
@@ -1698,17 +1718,55 @@ async function initializeMixedSceneController(): Promise<MixedSceneController> {
     if (mixedSceneInitializationPromise === initialization) {
       mixedSceneInitializationPromise = null;
     }
+    const message = error instanceof Error ? error.message : String(error);
+    statusElement.textContent = `Strumenti SVG, immagini e testo non disponibili: ${message}`;
+    statusElement.className = "status error";
+    appDiagnosticsController?.recordOperation("mixed-scene-initialize", null, error);
+    syncMobileToolsMenuState();
     throw error;
   }
 }
 
+editorStartup.beginEditorStartup(startupTelemetry, {
+  mixedSceneEnabled: engine.mixedSceneEnabled,
+  restoreBrush: Boolean(
+    mobileBrushStudio && (editorExtensionBootstrap?.restorePersistedBrushOnStartup ?? true),
+  ),
+});
 void engine.initialize()
   .then(async () => {
+    editorStartup.recordEngineReady(startupTelemetry, window);
     engineInitialized = true;
     if (!projectSessionController) {
       throw new Error("Project session controller is unavailable.");
     }
-    await projectSessionController.initialize();
+
+    if (engine.mixedSceneEnabled) {
+      deferredStartup.afterFirstFrame(
+        "deferred-mixed-scene",
+        async () => {
+          await initializeMixedSceneController();
+        },
+        500,
+      );
+    }
+    deferredStartup.afterFirstFrame(
+      "deferred-selection-pipelines",
+      () => engine.ensureSelectionResources(),
+      1_000,
+      250,
+    );
+    deferredStartup.afterFirstFrame(
+      "deferred-blend-renderer",
+      () => engine.ensureBlendResources(),
+      1_500,
+      500,
+    );
+
+    await startupTelemetry.track("project-session-initialize", () =>
+      projectSessionController.initialize());
+    projectSessionReady = true;
+    startupTelemetry.mark("project-interactive");
     syncMobileToolsMenuState();
     historyState = engine.getHistoryState();
     layerPanelController?.ensureActiveThumbnail(0);
@@ -1716,33 +1774,20 @@ void engine.initialize()
     runtimeStatsController?.start();
     await editorExtension?.afterEngineInitialized();
 
-    scheduleDeferredStartupTask(
-      "deferred-gpu-pipelines",
-      () => engine.ensureOptionalEditorResources(),
-      500,
-    );
     if (
       mobileBrushStudio
       && (editorExtensionBootstrap?.restorePersistedBrushOnStartup ?? true)
     ) {
-      scheduleDeferredStartupTask(
+      deferredStartup.schedule(
         "deferred-brush-restore",
         () => brushLibraryController.restoreActiveBrush(),
         250,
       );
     }
-
-    if (engine.mixedSceneEnabled) {
-      scheduleDeferredStartupTask(
-        "deferred-mixed-scene",
-        async () => {
-          await initializeMixedSceneController();
-        },
-        1_500,
-      );
-    }
+    startupTelemetry.complete("editor-startup");
   })
   .catch((error) => {
+    editorStartup.failEditorStartup(startupTelemetry, error);
     editorExtension?.handleEngineInitializationError(error);
     const message = error instanceof Error ? error.message : String(error);
     const secureContextHint = !window.isSecureContext

@@ -9,6 +9,7 @@ import {
   perceptualInterpolate,
   perceptualRasterResamplingShader,
   perceptualRasterSamplingShader,
+  perceptualRasterShaderSource,
   perceptualReduceFour,
   perceptualResolveWeightedSamples,
   rasterPresentationCompositeOverSrgbBackground,
@@ -137,6 +138,41 @@ assert.doesNotMatch(perceptualRasterResamplingShader, /texture(?:Load|Sample)/);
 assert.match(perceptualRasterSamplingShader, /fn perceptualSampleBilinear\s*\(/);
 assert.match(perceptualRasterSamplingShader, /fn perceptualSampleTrilinear\s*\(/);
 assert.match(perceptualRasterSamplingShader, /textureLoad\(/);
+
+const reductionShader = perceptualRasterShaderSource({ reduceFour: true });
+const samplingShader = perceptualRasterShaderSource({ sampling: true });
+const displayContractShader = perceptualRasterShaderSource({
+  sampling: true,
+  interpolate: true,
+  sourceOver: true,
+  presentation: true,
+});
+assert.match(reductionShader, /fn perceptualReduceFour\s*\(/);
+assert.doesNotMatch(reductionShader, /fn perceptualSampleBilinear\s*\(/);
+assert.doesNotMatch(reductionShader, /fn perceptualInterpolate\s*\(/);
+assert.doesNotMatch(reductionShader, /fn linearPremultipliedSourceOver\s*\(/);
+assert.doesNotMatch(reductionShader, /fn rasterPresentationCompositeOverSrgbBackground\s*\(/);
+assert.match(samplingShader, /fn perceptualSampleTrilinear\s*\(/);
+assert.doesNotMatch(samplingShader, /fn perceptualReduceFour\s*\(/);
+assert.doesNotMatch(samplingShader, /fn perceptualInterpolate\s*\(/);
+assert.doesNotMatch(samplingShader, /fn linearPremultipliedSourceOver\s*\(/);
+assert.doesNotMatch(samplingShader, /fn rasterPresentationCompositeOverSrgbBackground\s*\(/);
+assert.match(displayContractShader, /fn perceptualSampleBilinear\s*\(/);
+assert.match(displayContractShader, /fn perceptualInterpolateFour\s*\(/);
+assert.match(displayContractShader, /fn linearPremultipliedSourceOver\s*\(/);
+assert.match(
+  displayContractShader,
+  /fn rasterPresentationCompositeOverSrgbBackground\s*\(/,
+);
+assert.doesNotMatch(displayContractShader, /fn perceptualReduceFour\s*\(/);
+assert.ok(
+  reductionShader.length < perceptualRasterResamplingShader.length,
+  "il reducer specializzato deve consegnare meno WGSL al driver",
+);
+assert.ok(
+  samplingShader.length < perceptualRasterSamplingShader.length,
+  "il sampler specializzato deve consegnare meno WGSL al driver",
+);
 
 const consumerFiles = [
   "src/shaders.ts",

@@ -168,6 +168,9 @@ assert.match(controllerSource, /captureUserAgentData/);
 assert.match(controllerSource, /"platformVersion"/);
 assert.match(controllerSource, /engine\.captureFillDiagnostics\(\)/);
 assert.match(controllerSource, /fillDiagnostics: fillDiagnosticsResult/);
+assert.match(controllerSource, /startup: this\.options\.getStartupDiagnostics\(\)/);
+assert.match(controllerSource, /deviceMemoryGiB:/);
+assert.match(controllerSource, /hardwareConcurrency:/);
 assert.match(
   controllerSource,
   /layerColdTileComposite:[\s\S]*?enabled: stats\.layerColdTileCompositeEnabled,[\s\S]*?\.\.\.stats\.layerColdTileComposite/,
@@ -178,9 +181,25 @@ assert.doesNotMatch(mainSource, /startup-diagnostics/);
 assert.doesNotMatch(brushEngineSource, /startup-diagnostics/);
 assert.match(brushEngineSource, /deferBlendRenderer: true/);
 assert.match(brushEngineSource, /deferSelectionPipelines: true/);
+assert.match(
+  brushEngineSource,
+  /android \? undefined : \{ powerPreference: "high-performance" \}/,
+  "desktop e Windows devono provare prima la GPU ad alte prestazioni",
+);
 assert.match(brushEngineSource, /ensureOptionalEditorResources\(\)/);
+assert.match(brushEngineSource, /ensureVectorEditorResources\(\)/);
+assert.match(brushEngineSource, /ensureBlendResources\(\)/);
+assert.match(brushEngineSource, /ensureSelectionResources\(\)/);
 assert.match(resourceSetupSource, /finishStaticResourceCreation\(engine, "core"\)/);
-assert.match(mainSource, /"deferred-gpu-pipelines"/);
+assert.match(mainSource, /"deferred-mixed-scene"/);
+assert.match(mainSource, /"deferred-selection-pipelines"/);
+assert.match(mainSource, /"deferred-blend-renderer"/);
+assert.doesNotMatch(mainSource, /"deferred-gpu-pipelines"/);
+assert.match(
+  mainSource,
+  /Promise\.all\(\[[\s\S]*?loadMixedSceneControllerModule\(\)[\s\S]*?engine\.ensureVectorEditorResources\(\)/,
+  "modulo editor e risorse vettoriali devono avanzare in parallelo",
+);
 assert.match(mainSource, /runtimeStatsController\?\.start\(\)/);
 assert.match(runtimeStatsSource, /this\.options\.browser\.setInterval\(\(\) => this\.refresh\(\), 1_000\)/);
 assert.match(runtimeStatsSource, /recordDiagnostic\("runtime-stats-poll", null, error\)/);

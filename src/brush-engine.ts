@@ -802,8 +802,10 @@ export class BrushEngine {
 
   private adapter!: GPUAdapter;
   device!: GPUDevice;
-  private optionalEditorResourcesPromise: Promise<void> | null = null;
-  optionalEditorResourcesReady = false;
+  private vectorEditorResourcesPromise: Promise<void> | null = null;
+  private blendResourcesPromise: Promise<void> | null = null;
+  private selectionResourcesPromise: Promise<void> | null = null;
+  vectorEditorResourcesReady = false;
 
   /** Contabilita' misurata di ogni texture e buffer creati dal device. */
   gpuResourceRegistry = new GpuResourceRegistry();
@@ -1297,8 +1299,8 @@ export class BrushEngine {
 
   brushShaderModule!: GPUShaderModule;
   texturizedGrainShaderModule!: GPUShaderModule;
-  selectionBrushShaderModule!: GPUShaderModule;
-  selectionTexturizedGrainShaderModule!: GPUShaderModule;
+  selectionBrushShaderModule: GPUShaderModule | null = null;
+  selectionTexturizedGrainShaderModule: GPUShaderModule | null = null;
   displayShaderModule!: GPUShaderModule;
   vectorTextGpuSlugShaderModule: GPUShaderModule | null = null;
   vectorTextDisplayShaderModule: GPUShaderModule | null = null;
@@ -1636,19 +1638,29 @@ export class BrushEngine {
 
   async initialize(): Promise<void> {
     this.callbacks.onStatus?.("Richiesta adapter WebGPU…", "working");
+    this.callbacks.onStartupPhase?.({ name: "webgpu-adapter", state: "start" });
 
     if (!navigator.gpu) {
-      throw new Error("WebGPU non è disponibile in questo browser o in questo contesto.");
+      const error = new Error(
+        "WebGPU non è disponibile in questo browser o in questo contesto.",
+      );
+      this.callbacks.onStartupPhase?.({
+        name: "webgpu-adapter",
+        state: "error",
+        error,
+      });
+      throw error;
     }
 
     const android = /\bAndroid\b/i.test(navigator.userAgent);
     // On Android there is commonly a single usable adapter. Requesting the
-    // high-performance profile can make Chrome discard it, so mobile starts
-    // from the neutral choice and only desktop keeps the preference.
+    // high-performance profile can make Chrome discard it, so Android starts
+    // from the neutral choice. Windows must try the high-performance adapter
+    // first: on hybrid laptops a neutral request can select the integrated GPU.
+    // The generic retry below preserves compatibility when no such adapter is
+    // exposed by the browser.
     const adapterOptions: GPURequestAdapterOptions | undefined =
-      /\bWindows\b/i.test(navigator.userAgent) || android
-        ? undefined
-        : { powerPreference: "high-performance" };
+      android ? undefined : { powerPreference: "high-performance" };
     const adapterWaitTimer = window.setTimeout(() => {
       this.callbacks.onStatus?.(
         "Ricerca della GPU ancora in corso… Chrome può impiegare qualche secondo.",
@@ -1668,7 +1680,11 @@ export class BrushEngine {
           "Riprovo la selezione WebGPU senza preferenze energetiche…",
           "working",
         );
-        adapter = await navigator.gpu.requestAdapter();
+        try {
+          adapter = await navigator.gpu.requestAdapter();
+        } catch (error) {
+          primaryAdapterError ??= error;
+        }
       }
       if (!adapter && android) {
         this.callbacks.onStatus?.(
@@ -1687,12 +1703,18 @@ export class BrushEngine {
       window.clearTimeout(adapterWaitTimer);
     }
     if (!adapter) {
-      if (primaryAdapterError && adapterOptions === undefined) {
-        throw primaryAdapterError;
-      }
-      throw new Error("Nessun adapter WebGPU compatibile trovato.");
+      const error = primaryAdapterError && adapterOptions === undefined
+        ? primaryAdapterError
+        : new Error("Nessun adapter WebGPU compatibile trovato.");
+      this.callbacks.onStartupPhase?.({
+        name: "webgpu-adapter",
+        state: "error",
+        error,
+      });
+      throw error;
     }
     this.adapter = adapter;
+    this.callbacks.onStartupPhase?.({ name: "webgpu-adapter", state: "complete" });
 
     if (adapter.limits.maxTextureDimension2D < DOCUMENT_MAX_EDGE) {
       throw new Error(
@@ -1705,15 +1727,24 @@ export class BrushEngine {
     // contabilizzata ogni allocazione, presente e futura, senza toccare i 125
     // siti che creano texture e buffer.
     this.callbacks.onStatus?.("Adapter trovato. Creo il device WebGPU…", "working");
+    this.callbacks.onStartupPhase?.({ name: "webgpu-device", state: "start" });
     const deviceWaitTimer = window.setTimeout(() => {
       this.callbacks.onStatus?.("Creazione del device WebGPU ancora in corso…", "working");
     }, 6_000);
     let rawDevice: GPUDevice;
     try {
       rawDevice = await adapter.requestDevice();
+    } catch (error) {
+      this.callbacks.onStartupPhase?.({
+        name: "webgpu-device",
+        state: "error",
+        error,
+      });
+      throw error;
     } finally {
       window.clearTimeout(deviceWaitTimer);
     }
+    this.callbacks.onStartupPhase?.({ name: "webgpu-device", state: "complete" });
     const instrumented = instrumentGpuDevice(rawDevice);
     this.device = instrumented.device;
     this.gpuResourceRegistry = instrumented.registry;
@@ -1766,12 +1797,46 @@ export class BrushEngine {
     // updates can be presented even on slow drivers.
     await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
     try {
-      await createStaticResources(this);
+      this.callbacks.onStartupPhase?.({
+        name: "core-renderer-resources",
+        state: "start",
+      });
+      try {
+        await createStaticResources(this);
+      } catch (error) {
+        this.callbacks.onStartupPhase?.({
+          name: "core-renderer-resources",
+          state: "error",
+          error,
+        });
+        throw error;
+      }
+      this.callbacks.onStartupPhase?.({
+        name: "core-renderer-resources",
+        state: "complete",
+      });
       prepareAdaptivePreviewShapePalette(this, this.settings);
       this.callbacks.onStatus?.("Creo il documento iniziale…", "working");
-      await recreateLayerResources(this, this.layerFormat, {
-        deferBlendRenderer: true,
-        deferSelectionPipelines: true,
+      this.callbacks.onStartupPhase?.({
+        name: "initial-document-resources",
+        state: "start",
+      });
+      try {
+        await recreateLayerResources(this, this.layerFormat, {
+          deferBlendRenderer: true,
+          deferSelectionPipelines: true,
+        });
+      } catch (error) {
+        this.callbacks.onStartupPhase?.({
+          name: "initial-document-resources",
+          state: "error",
+          error,
+        });
+        throw error;
+      }
+      this.callbacks.onStartupPhase?.({
+        name: "initial-document-resources",
+        state: "complete",
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -2912,7 +2977,7 @@ export class BrushEngine {
       return false;
     }
     if (this.settings.tool === "blend" && !this.blendRenderer) {
-      void this.ensureOptionalEditorResources().catch((error) => {
+      void this.ensureBlendResources().catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         this.callbacks.onStatus?.(`Renderer Blend non disponibile: ${message}`, "error");
       });
@@ -2930,7 +2995,7 @@ export class BrushEngine {
       return false;
     }
     if (this.pixelSelectionState.selectedPixels > 0 && !this.selectionPipelinesReady) {
-      void this.ensureOptionalEditorResources().catch((error) => {
+      void this.ensureSelectionResources().catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         this.callbacks.onStatus?.(
           `Preparazione Selezione pixel non riuscita: ${message}`,
@@ -4874,11 +4939,11 @@ export class BrushEngine {
 
     for (;;) {
       const settings = this.settings;
-      if (
-        (settings.tool === "blend" && !this.blendRenderer)
-        || (this.pixelSelectionState.selectedPixels > 0 && !this.selectionPipelinesReady)
-      ) {
-        await this.ensureOptionalEditorResources();
+      if (settings.tool === "blend" && !this.blendRenderer) {
+        await this.ensureBlendResources();
+      }
+      if (this.pixelSelectionState.selectedPixels > 0 && !this.selectionPipelinesReady) {
+        await this.ensureSelectionResources();
       }
       if (settings !== this.settings) continue;
       if (settings.tool === "blend" && !this.blendRenderer) {
@@ -4911,54 +4976,90 @@ export class BrushEngine {
   }
 
   /**
-   * Completes GPU resources used only by text, SVG and raster-image layers.
-   * The promise is shared so idle startup, tests and an early user action can
-   * safely request the same initialization without compiling pipelines twice.
+   * Completes only the GPU resources shared by text, SVG and raster-image
+   * layers. Vector/import readiness must never wait for Blend or Selection:
+   * each domain owns an independent promise and can be prioritized by the
+   * composition root or by the first user intent.
    */
-  async ensureOptionalEditorResources(): Promise<void> {
-    const vectorResourcesPending = this.mixedSceneEnabled
-      && !this.optionalEditorResourcesReady;
-    const selectionResourcesPending = !this.selectionPipelinesReady
-      && this.selectionPipelineWarmup !== null;
-    const blendResourcesPending = this.blendRenderer === null
-      && this.blendRendererWarmup !== null;
-    if (!vectorResourcesPending && !selectionResourcesPending && !blendResourcesPending) return;
-    if (this.optionalEditorResourcesPromise) {
-      await this.optionalEditorResourcesPromise;
+  async ensureVectorEditorResources(): Promise<void> {
+    if (!this.mixedSceneEnabled || this.vectorEditorResourcesReady) return;
+    if (this.vectorEditorResourcesPromise) {
+      await this.vectorEditorResourcesPromise;
       return;
     }
 
     const initialization = (async (): Promise<void> => {
-      this.callbacks.onStatus?.(
-        "Editor pronto. Completo gli strumenti avanzati in background…",
-        "working",
-      );
-      // Keep the old mobile driver responsive: optional compilers run in
-      // bounded phases instead of all contending for the GPU at once.
-      if (blendResourcesPending) {
-        await this.blendRendererWarmup!();
-      }
-      if (selectionResourcesPending) {
-        await this.selectionPipelineWarmup!();
-        this.selectionPipelinesReady = true;
-        this.selectionPipelineWarmup = null;
-      }
-      if (vectorResourcesPending) {
-        await finishStaticResourceCreation(this, "optional");
-        this.optionalEditorResourcesReady = true;
-      }
+      await finishStaticResourceCreation(this, "optional");
       if (this.deviceLostError) throw this.deviceLostError;
-      this.callbacks.onStatus?.("WebGPU pronto. Disegna sul canvas.", "ok");
+      this.vectorEditorResourcesReady = true;
     })();
-    this.optionalEditorResourcesPromise = initialization;
+    this.vectorEditorResourcesPromise = initialization;
     try {
       await initialization;
     } catch (error) {
-      if (this.optionalEditorResourcesPromise === initialization) {
-        this.optionalEditorResourcesPromise = null;
+      if (this.vectorEditorResourcesPromise === initialization) {
+        this.vectorEditorResourcesPromise = null;
       }
       throw error;
     }
+  }
+
+  /** Completes only the renderer selected by the Blend tool. */
+  async ensureBlendResources(): Promise<void> {
+    if (this.blendRenderer !== null || this.blendRendererWarmup === null) return;
+    if (this.blendResourcesPromise) {
+      await this.blendResourcesPromise;
+      return;
+    }
+
+    const initialization = (async (): Promise<void> => {
+      await this.blendRendererWarmup!();
+      if (this.deviceLostError) throw this.deviceLostError;
+    })();
+    this.blendResourcesPromise = initialization;
+    try {
+      await initialization;
+    } finally {
+      if (this.blendResourcesPromise === initialization) {
+        this.blendResourcesPromise = null;
+      }
+    }
+  }
+
+  /** Completes only the clipped variants required by Pixel Selection. */
+  async ensureSelectionResources(): Promise<void> {
+    if (this.selectionPipelinesReady || this.selectionPipelineWarmup === null) return;
+    if (this.selectionResourcesPromise) {
+      await this.selectionResourcesPromise;
+      return;
+    }
+
+    const initialization = (async (): Promise<void> => {
+      await this.selectionPipelineWarmup!();
+      if (this.deviceLostError) throw this.deviceLostError;
+      this.selectionPipelinesReady = true;
+      this.selectionPipelineWarmup = null;
+    })();
+    this.selectionResourcesPromise = initialization;
+    try {
+      await initialization;
+    } finally {
+      if (this.selectionResourcesPromise === initialization) {
+        this.selectionResourcesPromise = null;
+      }
+    }
+  }
+
+  /**
+   * Compatibility aggregate for diagnostics and explicit full-engine warm-up.
+   * Production interaction paths call the three domain methods above.
+   */
+  async ensureOptionalEditorResources(): Promise<void> {
+    await Promise.all([
+      this.ensureVectorEditorResources(),
+      this.ensureBlendResources(),
+      this.ensureSelectionResources(),
+    ]);
   }
 
   /**

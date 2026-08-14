@@ -9,6 +9,7 @@ import {
 } from "./app-diagnostics";
 import type { HistoryState } from "./engine-types";
 import { GPU_MEMORY_AUDIT_TOLERANCE_BYTES } from "./gpu-memory-audit";
+import type { StartupTelemetrySnapshot } from "./startup-telemetry";
 
 type MixedSceneSnapshot = NonNullable<ReturnType<BrushEngine["getMixedSceneSnapshot"]>>;
 
@@ -56,6 +57,7 @@ export interface AppDiagnosticsControllerOptions {
   readonly documentHeight: number;
   readonly getUiSnapshot: () => AppDiagnosticsUiSnapshot;
   readonly getVectorDiagnostics: () => unknown;
+  readonly getStartupDiagnostics: () => StartupTelemetrySnapshot;
 }
 
 type DiagnosticSection<Value> =
@@ -214,10 +216,16 @@ export class AppDiagnosticsController {
         screenCss: { width: browser.screen.width, height: browser.screen.height },
         canvasPixels: { width: canvas.width, height: canvas.height },
         devicePixelRatio: browser.devicePixelRatio,
+        hardwareConcurrency: navigator.hardwareConcurrency,
+        deviceMemoryGiB: (
+          navigator as Navigator & { readonly deviceMemory?: number }
+        ).deviceMemory ?? null,
+        crossOriginIsolated: browser.crossOriginIsolated,
         gpuLabel: stats?.gpuLabel ?? null,
         userAgentData: userAgentDataResult,
         webGpu: webGpuDiagnosticsResult,
       },
+      startup: this.options.getStartupDiagnostics(),
       uiLocks: {
         engineInitialized: ui.engineInitialized,
         layerSwitching: ui.layerSwitching,

@@ -480,7 +480,7 @@ export async function restoreProjectDocument(
   // them until the controller starts would let the first frame latch the
   // document inconsistent with an uninitialized mixed-scene layout.
   if (snapshot.mixedScene.items.some((item) => item.kind !== "raster")) {
-    await engine.ensureOptionalEditorResources();
+    await engine.ensureVectorEditorResources();
   }
   engine.persistActiveLayerState();
   if (

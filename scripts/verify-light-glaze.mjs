@@ -177,7 +177,7 @@ assert.match(
 const brushReadiness = section(
   engine,
   "  currentBrushResourcesReady(): boolean",
-  "  /**\n   * Completes GPU resources used only by text",
+  "  /**\n   * Completes only the GPU resources shared by text",
 );
 for (const requirement of [
   "this.grainLoadingPromise === null",

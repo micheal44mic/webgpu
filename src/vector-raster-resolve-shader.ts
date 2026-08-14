@@ -4,13 +4,13 @@
  * decoded linear values; this pass keeps coverage linear while resolving the
  * bounded SDR color through the shared perceptual contract.
  */
-import { perceptualRasterResamplingShader } from "./perceptual-raster-resampling.ts";
+import { perceptualRasterShaderSource } from "./perceptual-raster-resampling.ts";
 
 export const VECTOR_RASTER_RESOLVE_STRATEGY =
   "explicit-msaa4-perceptual-srgb-color-linear-coverage-v1" as const;
 
 export const vectorRasterPerceptualResolveShader = /* wgsl */ `
-${perceptualRasterResamplingShader}
+${perceptualRasterShaderSource({ reduceFour: true })}
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,

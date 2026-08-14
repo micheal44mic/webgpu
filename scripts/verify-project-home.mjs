@@ -38,7 +38,11 @@ expect(html, 'id="saveProjectButton"', "editor save control");
 expect(html, 'id="projectHomeButton"', "editor home control");
 expect(html, 'src="/src/startup.ts"', "deferred editor entrypoint");
 
-expect(startup, 'await import("./main")', "dynamic editor boot");
+expect(
+  startup,
+  'startupTelemetry.track("main-module-load", () => import("./main"))',
+  "measured dynamic editor boot",
+);
 expect(startup, 'this.storage.listProjects()', "recent project loading");
 expect(startup, 'this.storage.renameProject', "project rename");
 expect(startup, 'this.storage.deleteProject', "project delete");

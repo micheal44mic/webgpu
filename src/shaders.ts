@@ -1,9 +1,6 @@
 import { mergedSurfaceSamplingShader } from "./merged-surface-shader";
 import { activeClippingGroupTexelShader } from "./clipping-group-shader";
-import {
-  perceptualRasterResamplingShader,
-  perceptualRasterSamplingShader,
-} from "./perceptual-raster-resampling.ts";
+import { perceptualRasterShaderSource } from "./perceptual-raster-resampling.ts";
 
 export const brushShader = /* wgsl */ `
 const MAX_COUNT: u32 = 24u;
@@ -768,7 +765,12 @@ struct VertexOutput {
 @group(0) @binding(6) var activeClippingPrefix: texture_2d<f32>;
 @group(0) @binding(7) var activeClippingSuffix: texture_2d<f32>;
 
-${perceptualRasterSamplingShader}
+${perceptualRasterShaderSource({
+  sampling: true,
+  interpolate: true,
+  sourceOver: true,
+  presentation: true,
+})}
 
 fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
   return linearPremultipliedSourceOver(source, destination);
@@ -1150,7 +1152,12 @@ struct VertexOutput {
 @group(0) @binding(10) var activeClippingPrefix: texture_2d<f32>;
 @group(0) @binding(11) var activeClippingSuffix: texture_2d<f32>;
 
-${perceptualRasterSamplingShader}
+${perceptualRasterShaderSource({
+  sampling: true,
+  interpolate: true,
+  sourceOver: true,
+  presentation: true,
+})}
 
 fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
   return linearPremultipliedSourceOver(source, destination);
@@ -1469,7 +1476,12 @@ struct VertexOutput {
 @group(0) @binding(10) var activeClippingPrefix: texture_2d<f32>;
 @group(0) @binding(11) var activeClippingSuffix: texture_2d<f32>;
 
-${perceptualRasterSamplingShader}
+${perceptualRasterShaderSource({
+  sampling: true,
+  interpolate: true,
+  sourceOver: true,
+  presentation: true,
+})}
 
 fn srgbToLinearChannel(value: f32) -> f32 {
   if (value <= 0.04045) {
@@ -2054,7 +2066,7 @@ struct VertexOutput {
 @group(0) @binding(7) var mergedAboveTexture: texture_2d<f32>;
 
 ${activeClippingGroupTexelShader}
-${perceptualRasterResamplingShader}
+${perceptualRasterShaderSource({ reduceFour: true, sourceOver: true })}
 
 fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
   return linearPremultipliedSourceOver(source, destination);
@@ -2529,7 +2541,7 @@ struct VertexOutput {
 
 @group(0) @binding(0) var sourceTexture: texture_2d<f32>;
 
-${perceptualRasterResamplingShader}
+${perceptualRasterShaderSource({ reduceFour: true })}
 
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
@@ -2606,7 +2618,7 @@ struct VertexOutput {
 @group(0) @binding(4) var activeClippingPrefix: texture_2d<f32>;
 @group(0) @binding(5) var activeClippingSuffix: texture_2d<f32>;
 
-${perceptualRasterResamplingShader}
+${perceptualRasterShaderSource({ reduceFour: true, sourceOver: true })}
 
 fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
   return linearPremultipliedSourceOver(source, destination);

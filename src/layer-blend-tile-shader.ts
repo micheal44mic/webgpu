@@ -1,8 +1,5 @@
 import { rasterPixelViewShaderHelpers } from "./raster-pixel-view";
-import {
-  perceptualRasterResamplingShader,
-  perceptualRasterSamplingShader,
-} from "./perceptual-raster-resampling.ts";
+import { perceptualRasterShaderSource } from "./perceptual-raster-resampling.ts";
 
 /**
  * Fixed working-set extent for the document-space layer-blend compositor.
@@ -87,7 +84,7 @@ struct TilePresentUniforms {
 
 ${rasterPixelViewShaderHelpers}
 ${fullscreenVertex}
-${perceptualRasterResamplingShader}
+${perceptualRasterShaderSource({ interpolate: true })}
 
 fn loadTile(pixel: vec2<i32>) -> vec4<f32> {
   let maximum = vec2<i32>(textureDimensions(tileTexture, 0)) - vec2<i32>(1);
@@ -135,7 +132,7 @@ struct TileMipUniforms {
 @group(0) @binding(1) var<uniform> tile: TileMipUniforms;
 
 ${fullscreenVertex}
-${perceptualRasterResamplingShader}
+${perceptualRasterShaderSource({ reduceFour: true })}
 
 fn loadTileDocumentPixel(documentPixel: vec2<u32>) -> vec4<f32> {
   let clampedDocument = min(documentPixel, tile.documentSize - vec2<u32>(1u));
@@ -165,7 +162,7 @@ ${displayUniforms}
 @group(0) @binding(1) var finalPyramid: texture_2d<f32>;
 
 ${fullscreenVertex}
-${perceptualRasterSamplingShader}
+${perceptualRasterShaderSource({ sampling: true })}
 
 @fragment
 fn fragmentMain(

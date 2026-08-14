@@ -268,8 +268,13 @@ assert(clipShader.includes("result.lastIndexOf(returnMarker, functionEnd)"));
 assert(resourceSetup.includes("selectionMaskBindGroupLayout"));
 assert(layerRecreationRuntime.includes("const selectionPipelineByBase = new Map"));
 assert(layerRecreationRuntime.includes("selectionPipelineByBase.set(variant.base, selectedPipeline)"));
-assert(layerRecreationRuntime.includes("fragmentModule: engine.selectionBrushShaderModule"));
-assert(layerRecreationRuntime.includes("fragmentModule: engine.selectionTexturizedGrainShaderModule"));
+assert(layerRecreationRuntime.includes("const buildSelectionVariants = async"));
+assert(layerRecreationRuntime.includes('code: selectionBrushShader'));
+assert(layerRecreationRuntime.includes('code: selectionTexturizedGrainShader'));
+assert(layerRecreationRuntime.includes("fragmentModule: brushModule"));
+assert(layerRecreationRuntime.includes("fragmentModule: grainModule"));
+assert(!resourceSetup.includes('code: selectionBrushShader'));
+assert(!resourceSetup.includes('code: selectionTexturizedGrainShader'));
 
 assert(runtime.includes("export function clipPaintDirtyRectToPixelSelection("));
 assert(runtime.includes("const snapshot = replayBatch?.selectionMask ?? null"));

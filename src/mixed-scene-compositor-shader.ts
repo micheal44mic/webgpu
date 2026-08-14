@@ -1,8 +1,5 @@
 import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits.ts";
-import {
-  perceptualRasterResamplingShader,
-  perceptualRasterSamplingShader,
-} from "./perceptual-raster-resampling.ts";
+import { perceptualRasterShaderSource } from "./perceptual-raster-resampling.ts";
 import { rasterPixelViewShaderHelpers } from "./raster-pixel-view.ts";
 
 export const MIXED_SCENE_COMPOSITOR_STRATEGY =
@@ -68,7 +65,7 @@ struct SegmentUniforms {
 
 ${rasterPixelViewShaderHelpers}
 ${fullscreenVertexShader}
-${perceptualRasterSamplingShader}
+${perceptualRasterShaderSource({ sampling: true })}
 
 @fragment
 fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
@@ -128,7 +125,7 @@ struct TextCaptureUniforms {
 
 
 ${fullscreenVertexShader}
-${perceptualRasterSamplingShader}
+${perceptualRasterShaderSource({ sampling: true })}
 
 @fragment
 fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
@@ -217,7 +214,7 @@ ${displayUniformsShader}
 @group(0) @binding(0) var<uniform> display: DisplayUniforms;
 @group(0) @binding(1) var sceneTexture: texture_2d<f32>;
 
-${perceptualRasterResamplingShader}
+${perceptualRasterShaderSource({ presentation: true })}
 
 ${fullscreenVertexShader}
 

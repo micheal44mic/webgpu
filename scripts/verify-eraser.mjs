@@ -109,7 +109,7 @@ assert.match(layerPipelines, /createRasterStrokePipelineFamilies\([\s\S]*?raster
 assert.match(layerPipelines, /const eraserPipelineByPaintBase = eraserPipelineMap\(rasterStrokePipelineFamilies\)/);
 assert.match(
   layerPipelines,
-  /const eraserSelectionVariants:[\s\S]*?rasterStrokePipelineFamilies\.values\(\)[\s\S]*?base: family\.eraser,[\s\S]*?selectionFragmentModule[\s\S]*?DESTINATION_OUT_BLEND_STATE/,
+  /const eraserSelectionVariants:[\s\S]*?rasterStrokePipelineFamilies\.values\(\)[\s\S]*?base: family\.eraser,[\s\S]*?fragmentModule: family\.geometry\.key\.startsWith\("grain-"\)[\s\S]*?grainModule[\s\S]*?brushModule[\s\S]*?DESTINATION_OUT_BLEND_STATE/,
   "the same complete geometry catalog must create all selection-clipped Eraser variants",
 );
 

@@ -1,6 +1,6 @@
 import { mergedSurfaceSamplingShader } from "./merged-surface-shader.ts";
 import { activeClippingGroupTexelShader } from "./clipping-group-shader.ts";
-import { perceptualRasterSamplingShader } from "./perceptual-raster-resampling.ts";
+import { perceptualRasterShaderSource } from "./perceptual-raster-resampling.ts";
 
 /**
  * Presentazione ordinata raster/testo interamente GPU.
@@ -48,7 +48,12 @@ struct VertexOutput {
 @group(0) @binding(8) var activeClippingPrefix: texture_2d<f32>;
 @group(0) @binding(9) var activeClippingSuffix: texture_2d<f32>;
 
-${perceptualRasterSamplingShader}
+${perceptualRasterShaderSource({
+  sampling: true,
+  interpolate: true,
+  sourceOver: true,
+  presentation: true,
+})}
 
 fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
   return linearPremultipliedSourceOver(source, destination);

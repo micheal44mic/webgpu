@@ -1,9 +1,6 @@
 import { mergedSurfaceSamplingShader } from "./merged-surface-shader";
 import { activeClippingGroupTexelShader } from "./clipping-group-shader";
-import {
-  perceptualRasterResamplingShader,
-  perceptualRasterSamplingShader,
-} from "./perceptual-raster-resampling.ts";
+import { perceptualRasterShaderSource } from "./perceptual-raster-resampling.ts";
 import {
   jfaScheduleForExtent,
   type RasterStrokeRect,
@@ -1189,7 +1186,7 @@ ${strokeCompositionShaderSource(
   documentWidth, 0, 5, 7, 8, 9, 10, 11, 12, 13, "analytic", bevelBoundingFieldEnabled,
   bevelBoundingFieldTestMutation,
 )}
-${perceptualRasterResamplingShader}
+${perceptualRasterShaderSource({ reduceFour: true })}
 @group(0) @binding(6) var coarseStyledTexture: texture_storage_2d<${layerFormat}, write>;
 
 fn quantizedStyledTexel(position: vec2<i32>) -> vec4<f32> {
@@ -1256,7 +1253,12 @@ ${strokeCompositionShaderSource(
 @group(1) @binding(17) var activeClippingPrefix: texture_2d<f32>;
 @group(1) @binding(18) var activeClippingSuffix: texture_2d<f32>;
 
-${perceptualRasterSamplingShader}
+${perceptualRasterShaderSource({
+  sampling: true,
+  interpolate: true,
+  sourceOver: true,
+  presentation: true,
+})}
 
 fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
   return linearPremultipliedSourceOver(source, destination);
