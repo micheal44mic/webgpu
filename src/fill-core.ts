@@ -12,9 +12,13 @@ import {
   DOCUMENT_WIDTH,
 } from "./engine-limits.ts";
 import type { DirtyRect } from "./engine-stroke-types";
+import {
+  CONNECTED_COLOR_MAX_DISTANCE,
+  connectedStraightSrgbColorsMatch,
+} from "./color-match-core.ts";
 
 export const GPU_FILL_STRATEGY =
-  "webgpu-hierarchical-ccl-4-connected-straight-srgb-alpha-history1-render8-v3" as const;
+  "webgpu-hierarchical-ccl-4-connected-color-family-contrast-capped-history1-render8-v4" as const;
 
 export const FILL_RENDER_MASK_STRATEGY =
   "history-1bit-compute-expanded-row-stride-low8-reused-label-buffer-v2" as const;
@@ -110,8 +114,9 @@ export const FILL_TILE_SIZE = Math.max(DOCUMENT_TILE_WIDTH, DOCUMENT_TILE_HEIGHT
 export const FILL_TILE_WIDTH = DOCUMENT_TILE_WIDTH;
 export const FILL_TILE_HEIGHT = DOCUMENT_TILE_HEIGHT;
 
-/** Procreate salva 100% come soglia effettiva 97,6%; manteniamo lo stesso cap. */
-export const FILL_MAX_TOLERANCE_PERCENT = 97.6;
+export const FILL_MAX_TOLERANCE_PERCENT = 100;
+export const FILL_LINEAR_TOLERANCE_PERCENT = 10;
+export const FILL_MAX_COLOR_DISTANCE = CONNECTED_COLOR_MAX_DISTANCE;
 
 export const FILL_RESIDENT_SCRATCH_BYTES =
   FILL_LABEL_BUFFER_BYTES
@@ -151,7 +156,14 @@ export function normalizeFillTolerance(percent: number): number {
   if (!Number.isFinite(percent)) {
     throw new RangeError("La tolleranza del riempimento deve essere finita.");
   }
-  return Math.min(FILL_MAX_TOLERANCE_PERCENT, Math.max(0, percent)) / 100;
+  const normalized = Math.min(
+    FILL_MAX_TOLERANCE_PERCENT,
+    Math.max(0, percent),
+  ) / 100;
+  const pivot = FILL_LINEAR_TOLERANCE_PERCENT / 100;
+  if (normalized <= pivot) return normalized;
+  return pivot + (normalized - pivot)
+    * (FILL_MAX_COLOR_DISTANCE - pivot) / (1 - pivot);
 }
 
 export function srgbChannelToLinear(value: number): number {
@@ -201,7 +213,9 @@ export function fillColorsMatch(
 ): boolean {
   const a = premultipliedLinearToStraightSrgb(left);
   const b = premultipliedLinearToStraightSrgb(right);
-  const tolerance = normalizeFillTolerance(tolerancePercent);
-  return Math.max(...a.map((channel, index) => Math.abs(channel - b[index])))
-    <= tolerance + 1e-7;
+  return connectedStraightSrgbColorsMatch(
+    a,
+    b,
+    normalizeFillTolerance(tolerancePercent),
+  );
 }

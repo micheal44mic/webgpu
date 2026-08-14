@@ -1177,10 +1177,16 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
   selectCanvasTool: (tool) => canvasToolController?.select(tool) ?? false,
   getFillSettings: () => ({
     ...canvasToolSettingsController.fillSnapshot(),
+    color: brushSettingsController.snapshot().color,
     locked: interactionLocked(),
   }),
   setFillTolerance: (tolerance) => {
     canvasToolSettingsController.setFillTolerance(tolerance);
+  },
+  setFillColor: (color) => {
+    const settings = brushSettingsController.update({ color });
+    brushQuickControlsController?.syncSettings(settings);
+    updateHistoryControls();
   },
   getSelectionSettings: () => {
     const selection = canvasToolSettingsController.selectionSnapshot();
@@ -1488,9 +1494,11 @@ canvasInputController = new CanvasInputController({
   touchPaintIntentHoldEnabled,
   getActiveTool: () => canvasToolController?.activeTool ?? "paint",
   getSelectionMethod: () => canvasToolController?.selectionMethod ?? "automatic",
-  getFillSettings: () => canvasToolSettingsController.fillSnapshot(),
+  getFillSettings: () => ({
+    ...canvasToolSettingsController.fillSnapshot(),
+    color: brushSettingsController.snapshot().color,
+  }),
   getSelectionSettings: () => canvasToolSettingsController.selectionSnapshot(),
-  getBrushColor: () => brushSettingsController.snapshot().color,
   getHistoryState: () => historyState,
   onHistoryState: (state) => {
     historyState = state;

@@ -93,6 +93,7 @@ for (const id of [
   "mobileToolSettingsHeader",
   "mobileToolSettingsTitle",
   "mobileToolSettingsScroll",
+  "mobileFillColor",
   "mobileFillTolerance",
   "mobileSelectionMethod",
   "mobileSelectionReplace",
@@ -231,6 +232,7 @@ assert.match(
 );
 for (const action of [
   "getFillSettings",
+  "setFillColor",
   "setFillTolerance",
   "getSelectionSettings",
   "setSelectionMethod",
@@ -288,12 +290,22 @@ assert.match(
 );
 assert.match(
   controller,
+  /private syncFill\(\): void \{[\s\S]*?this\.fillColor\.value = colorInputValue\(snapshot\.color\)/,
+  "Fill must expose the authoritative current color in its own sheet",
+);
+assert.match(
+  main,
+  /setFillColor: \(color\) => \{[\s\S]*?brushSettingsController\.update\(\{ color \}\)[\s\S]*?brushQuickControlsController\?\.syncSettings/,
+  "the Fill color picker must update the shared authoritative paint color",
+);
+assert.match(
+  controller,
   /private syncSelection\(\): void \{[\s\S]*?this\.options\.getSelectionSettings\(\)/,
   "Selection must read its explicit state port",
 );
 assert.doesNotMatch(
   controller,
-  /sourceControl<[^>]+>\("(?:fillTolerance|selectionMethod|selectionTolerance|selectionColor|selectionReplace|selectionAdd|selectionSubtract|selectionColorApply|selectionClear)"\)/,
+  /sourceControl<[^>]+>\("(?:fillColor|fillTolerance|selectionMethod|selectionTolerance|selectionColor|selectionReplace|selectionAdd|selectionSubtract|selectionColorApply|selectionClear)"\)/,
   "Fill and Selection must not read legacy controls",
 );
 assert.match(

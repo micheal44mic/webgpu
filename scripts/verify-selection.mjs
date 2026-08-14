@@ -23,10 +23,12 @@ import {
   buildLassoSpans,
   countSelectionTiles,
   emptyPixelSelectionState,
+  normalizeMagicWandTolerance,
   normalizeSelectionCombineMode,
   normalizeSelectionMethod,
   normalizeSelectionTolerance,
   selectionCombineModeCode,
+  selectionColorsMatch,
   selectionHexToStraightSrgb,
 } from "../src/selection-core.ts";
 import {
@@ -36,6 +38,8 @@ import {
   DOCUMENT_WIDTH,
   LAYER_SIZE,
 } from "../src/engine-limits.ts";
+import { colorMatchShaderHelpers } from "../src/color-match-core.ts";
+import { selectionComputeShader as resolvedSelectionComputeShader } from "../src/selection-shaders.ts";
 import { readEngineSource } from "./engine-source.mjs";
 
 assert.equal(
@@ -44,11 +48,11 @@ assert.equal(
 );
 assert.equal(
   MAGIC_WAND_SELECTION_STRATEGY,
-  "fill-ccl-reused-4-connected-straight-srgb-alpha-v1",
+  "fill-ccl-reused-4-connected-color-family-contrast-capped-v2",
 );
 assert.equal(
   COLOR_RANGE_SELECTION_STRATEGY,
-  "global-straight-srgb-alpha-max-channel-range-v1",
+  "global-straight-srgb-alpha-hue-family-range-v2",
 );
 assert.equal(LASSO_SELECTION_STRATEGY, "cpu-even-odd-pixel-center-spans-gpu-bitmask-v1");
 assert.equal(SELECTION_OVERLAY_STRATEGY, "separate-transparent-webgpu-mask-overlay-v1");
@@ -76,11 +80,26 @@ assert.equal(normalizeSelectionTolerance(0), 0);
 assert.equal(normalizeSelectionTolerance(32), 32 / 255);
 assert.equal(normalizeSelectionTolerance(255), 1);
 assert.equal(normalizeSelectionTolerance(300), 1);
+assert.equal(normalizeMagicWandTolerance(32), 32 / 255);
+assert.equal(normalizeMagicWandTolerance(255), 0.25);
 assert.throws(() => normalizeSelectionTolerance(Number.NaN));
 assert.throws(() => normalizeSelectionTolerance(Number.POSITIVE_INFINITY));
 assert.deepEqual(selectionHexToStraightSrgb("#000000"), [0, 0, 0, 1]);
 assert.deepEqual(selectionHexToStraightSrgb("ff8040"), [1, 128 / 255, 64 / 255, 1]);
 assert.throws(() => selectionHexToStraightSrgb("#fff"));
+assert.equal(
+  selectionColorsMatch([0, 0, 0, 1], [0, 1, 0, 1], 255),
+  false,
+  "maximum Color Range must not include neutral black with green",
+);
+assert.equal(selectionColorsMatch([0, 0, 0, 1], [0, 0.2, 0, 1], 255), false);
+assert.equal(selectionColorsMatch([0, 0.2, 0, 1], [0, 1, 0, 1], 255), true);
+assert.equal(selectionColorsMatch([1, 0, 0, 1], [0, 1, 0, 1], 255), false);
+assert.equal(selectionColorsMatch([0, 0, 0, 1], [1, 1, 1, 1], 255), false);
+assert.equal(selectionColorsMatch([0, 1, 0, 0], [0, 1, 0, 1], 255), false);
+assert.equal(selectionColorsMatch([0, 1, 0, 0.01], [0, 1, 0, 1], 0), true);
+assert.equal(selectionColorsMatch([8 / 255, 1, 0, 1], [0, 1, 0, 1], 0), false);
+assert.equal(selectionColorsMatch([0, 1, 0, 1], [0, 1, 0, 1], 0), true);
 assert.equal(normalizeSelectionMethod("magic-wand"), "magic-wand");
 assert.equal(normalizeSelectionMethod("lasso"), "lasso");
 assert.equal(normalizeSelectionMethod("color-range"), "color-range");
@@ -204,7 +223,12 @@ for (const entryPoint of [
   assert(shader.includes(`fn ${entryPoint}`), `entry point WGSL mancante: ${entryPoint}`);
 }
 assert(shader.includes("textureLoad(sourceLayer"));
-assert(shader.includes("let delta = abs(source - uniforms.targetColor)"));
+assert(colorMatchShaderHelpers.includes("fn globalStraightSrgbColorsMatch("));
+assert(shader.includes("${colorMatchShaderHelpers}"));
+assert(resolvedSelectionComputeShader.includes("fn globalStraightSrgbColorsMatch("));
+assert(!resolvedSelectionComputeShader.includes("${colorMatchShaderHelpers}"));
+assert(shader.includes("let matches = globalStraightSrgbColorsMatch("));
+assert(!shader.includes("let delta = abs(source - uniforms.targetColor)"));
 assert(shader.includes("atomicOr(&selectionMask[wordIndex], candidate)"));
 assert(shader.includes("atomicAnd(&selectionMask[wordIndex], ~candidate)"));
 assert(shader.includes("fn selectedInScreenPixel(screen: vec2<f32>) -> bool"));
@@ -291,6 +315,8 @@ assert(renderer.includes("unsigned[1] = SELECTION_LAYER_HEIGHT"));
 assert.doesNotMatch(renderer, /\bSELECTION_LAYER_SIZE\b|\bSELECTION_TILE_SIZE\b/);
 
 assert(fillRenderer.includes("getAnalyzedSelectionMaskBuffer(): GPUBuffer"));
+assert(runtime.includes("normalizeMagicWandTolerance(tolerance)"));
+assert(fillShader.includes("${colorMatchShaderHelpers}"));
 assert(fillShader.includes("export const fillSelectionIntersectionShader"));
 assert(fillShader.includes("fillMask[global.x] = fillMask[global.x] & selectionMask[global.x]"));
 assert(fillRenderer.includes("if (!selectionMask) {"));

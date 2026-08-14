@@ -13,6 +13,7 @@ import {
   FILL_LAYER_HEIGHT,
   FILL_LAYER_SIZE,
   FILL_LAYER_WIDTH,
+  FILL_MAX_COLOR_DISTANCE,
   FILL_MAX_COMPONENTS_PER_BLOCK,
   FILL_REFERENCE_LAYER_STRATEGY,
   FILL_RENDER_MASK_STRATEGY,
@@ -31,6 +32,7 @@ import {
   fillColorsMatch,
   hexToLinearFillColor,
   normalizeFillTolerance,
+  srgbChannelToLinear,
 } from "../src/fill-core.ts";
 import {
   classifyFillDiagnostic,
@@ -44,11 +46,13 @@ import {
   DOCUMENT_WIDTH,
   LAYER_SIZE,
 } from "../src/engine-limits.ts";
+import { colorMatchShaderHelpers } from "../src/color-match-core.ts";
+import { fillComputeShader as resolvedFillComputeShader } from "../src/fill-shaders.ts";
 import { readEngineSource } from "./engine-source.mjs";
 
 assert.equal(
   GPU_FILL_STRATEGY,
-  "webgpu-hierarchical-ccl-4-connected-straight-srgb-alpha-history1-render8-v3",
+  "webgpu-hierarchical-ccl-4-connected-color-family-contrast-capped-history1-render8-v4",
 );
 assert.equal(
   FILL_REFERENCE_LAYER_STRATEGY,
@@ -107,7 +111,8 @@ assert(FILL_RESIDENT_SCRATCH_BYTES < 51 * 1024 * 1024);
 
 assert.equal(normalizeFillTolerance(-1), 0);
 assert.equal(normalizeFillTolerance(10), 0.1);
-assert.equal(normalizeFillTolerance(100), 0.976);
+assert.equal(normalizeFillTolerance(100), FILL_MAX_COLOR_DISTANCE);
+assert(Math.abs(normalizeFillTolerance(50) - 0.16666666666666669) < 1e-12);
 assert.equal(countFillTiles(Uint32Array.from([0, 1, 0x80000001])), 3);
 assert.throws(() => normalizeFillTolerance(Number.NaN));
 assert.deepEqual(hexToLinearFillColor("#000000"), [0, 0, 0, 1]);
@@ -172,13 +177,68 @@ for (const source of [0x80000000, 0xffffffff, 0xa55a3cc3]) {
 // Il confronto avviene dopo l'unpremultiply: lo stesso rosso straight con due
 // alpha diverse differisce soltanto nel canale alpha, non nei canali colore.
 assert.equal(
-  fillColorsMatch([0.25, 0, 0, 0.25], [0.5, 0, 0, 0.5], 24.9),
+  fillColorsMatch([0.25, 0, 0, 0.25], [0.5, 0, 0, 0.5], 99.9),
   false,
 );
 assert.equal(
-  fillColorsMatch([0.25, 0, 0, 0.25], [0.5, 0, 0, 0.5], 25),
+  fillColorsMatch([0.25, 0, 0, 0.25], [0.5, 0, 0, 0.5], 100),
   true,
 );
+
+const opaqueStraightSrgb = (red, green, blue) => [
+  srgbChannelToLinear(red),
+  srgbChannelToLinear(green),
+  srgbChannelToLinear(blue),
+  1,
+];
+const white = opaqueStraightSrgb(1, 1, 1);
+const black = opaqueStraightSrgb(0, 0, 0);
+const middleGray = opaqueStraightSrgb(0.5, 0.5, 0.5);
+const darkGray = opaqueStraightSrgb(0.2, 0.2, 0.2);
+const nearBlack = opaqueStraightSrgb(0.05, 0.05, 0.05);
+const lightGray = opaqueStraightSrgb(0.8, 0.8, 0.8);
+const green = opaqueStraightSrgb(0, 1, 0);
+const darkGreen = opaqueStraightSrgb(0, 0.2, 0);
+assert.equal(fillColorsMatch(green, black, 100), false);
+assert.equal(fillColorsMatch(darkGreen, black, 100), false);
+assert.equal(fillColorsMatch(white, black, 100), false);
+assert.equal(fillColorsMatch(white, middleGray, 100), false);
+assert.equal(fillColorsMatch(white, lightGray, 100), true);
+assert.equal(fillColorsMatch(darkGray, black, 100), false);
+assert.equal(fillColorsMatch(nearBlack, black, 100), true);
+
+// A contrasting one-pixel vertical divider stays ineligible at maximum, and
+// the existing 4-connected traversal therefore cannot reach the far half.
+for (const dividerX of [15, 16, 31, 32]) {
+  const width = 48;
+  const height = 3;
+  const pixels = Array.from({ length: width * height }, (_, index) =>
+    index % width === dividerX ? black : white);
+  const reached = new Uint8Array(width * height);
+  const queue = [0];
+  reached[0] = 1;
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const index = queue[cursor];
+    const x = index % width;
+    const y = Math.floor(index / width);
+    for (const [nextX, nextY] of [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]]) {
+      if (nextX < 0 || nextY < 0 || nextX >= width || nextY >= height) continue;
+      const next = nextY * width + nextX;
+      if (reached[next] || !fillColorsMatch(pixels[next], white, 100)) continue;
+      reached[next] = 1;
+      queue.push(next);
+    }
+  }
+  assert.equal(
+    reached.reduce((sum, value) => sum + value, 0),
+    dividerX * height,
+    `divider x=${dividerX} must stop the maximum-tolerance component`,
+  );
+  assert.equal(
+    reached.some((value, index) => value !== 0 && index % width >= dividerX),
+    false,
+  );
+}
 
 // Golden logica minimale: 4-connected non attraversa una diagonale.
 {
@@ -265,6 +325,11 @@ assert(shader.includes("@compute @workgroup_size(16, 1, 1)\nfn unionBoundaries")
 assert(shader.includes("0x40000000u, 0x80000000u"));
 assert(shader.includes("fn fillBitMask(bitIndex: u32) -> u32"));
 assert(shader.includes("fn fillMaskContains(word: u32, bitIndex: u32) -> bool"));
+assert(colorMatchShaderHelpers.includes("fn connectedStraightSrgbColorsMatch("));
+assert(shader.includes("${colorMatchShaderHelpers}"));
+assert(resolvedFillComputeShader.includes("fn connectedStraightSrgbColorsMatch("));
+assert(!resolvedFillComputeShader.includes("${colorMatchShaderHelpers}"));
+assert(shader.includes("return connectedStraightSrgbColorsMatch("));
 assert(shader.includes("fn probeBit31()"));
 assert(shader.includes("atomicOr(&results[1], 0x80000000u)"));
 assert(shader.includes("atomicOr(&selectedMask[word], fillBitMask(pixel.x))"));
@@ -370,11 +435,17 @@ assert(runtimeStats.includes("stats.referenceLayerId !== null"));
 assert(styles.includes('.mobile-layer-reference[aria-pressed="true"]'));
 assert(html.includes('data-mobile-tool-sheet="fill"'));
 assert(html.includes('id="mobileFillTolerance"'));
+assert(html.includes('id="mobileFillColor"'));
 assert.match(
   main,
   /getFillSettings: \(\) => \(\{[\s\S]*?\.\.\.canvasToolSettingsController\.fillSnapshot\(\)/,
 );
-assert(main.includes("getBrushColor: () => brushSettingsController.snapshot().color"));
+assert.match(
+  main,
+  /getFillSettings: \(\) => \(\{[\s\S]*?color: brushSettingsController\.snapshot\(\)\.color/,
+);
+assert.match(main, /setFillColor: \(color\) => \{[\s\S]*?brushSettingsController\.update\(\{ color \}\)/);
+assert(!main.includes("getBrushColor:"));
 assert(!main.includes('rangeValue("fillTolerance")'));
 assert(html.includes('id="gpuMemoryFill"'));
 

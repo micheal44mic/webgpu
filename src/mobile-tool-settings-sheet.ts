@@ -26,6 +26,7 @@ export type MobileTextWarpMode = "none" | "distort" | "arch" | "circle" | "wave"
 
 export interface MobileFillSettingsSnapshot {
   readonly tolerance: number;
+  readonly color: string;
   readonly locked: boolean;
 }
 
@@ -62,6 +63,7 @@ export interface MobileToolSettingsSheetOptions {
   readonly selectCanvasTool: (tool: MobileCanvasSettingsTool) => boolean;
   readonly getFillSettings: () => MobileFillSettingsSnapshot;
   readonly setFillTolerance: (tolerance: number) => void;
+  readonly setFillColor: (color: string) => void;
   readonly getSelectionSettings: () => MobileSelectionSettingsSnapshot;
   readonly setSelectionMethod: (method: MobileSelectionSettingsSnapshot["method"]) => void;
   readonly setSelectionTolerance: (tolerance: number) => void;
@@ -193,11 +195,14 @@ export class MobileToolSettingsSheetController {
 
   private readonly fillTolerance: HTMLInputElement;
   private readonly fillToleranceOut: HTMLOutputElement;
+  private readonly fillColorControl: HTMLElement;
+  private readonly fillColor: HTMLInputElement;
   private readonly selectionMethod: HTMLSelectElement;
   private readonly selectionReplace: HTMLButtonElement;
   private readonly selectionAdd: HTMLButtonElement;
   private readonly selectionSubtract: HTMLButtonElement;
   private readonly selectionToleranceControl: HTMLElement;
+  private readonly selectionToleranceHint: HTMLElement;
   private readonly selectionTolerance: HTMLInputElement;
   private readonly selectionToleranceOut: HTMLOutputElement;
   private readonly selectionColorControl: HTMLElement;
@@ -319,11 +324,14 @@ export class MobileToolSettingsSheetController {
     this.scroll = requiredElement<HTMLElement>(options.root, "mobileToolSettingsScroll");
     this.fillTolerance = requiredElement<HTMLInputElement>(options.root, "mobileFillTolerance");
     this.fillToleranceOut = requiredElement<HTMLOutputElement>(options.root, "mobileFillToleranceOut");
+    this.fillColorControl = requiredElement<HTMLElement>(options.root, "mobileFillColorControl");
+    this.fillColor = requiredElement<HTMLInputElement>(options.root, "mobileFillColor");
     this.selectionMethod = requiredElement<HTMLSelectElement>(options.root, "mobileSelectionMethod");
     this.selectionReplace = requiredElement<HTMLButtonElement>(options.root, "mobileSelectionReplace");
     this.selectionAdd = requiredElement<HTMLButtonElement>(options.root, "mobileSelectionAdd");
     this.selectionSubtract = requiredElement<HTMLButtonElement>(options.root, "mobileSelectionSubtract");
     this.selectionToleranceControl = requiredElement<HTMLElement>(options.root, "mobileSelectionToleranceControl");
+    this.selectionToleranceHint = requiredElement<HTMLElement>(options.root, "mobileSelectionToleranceHint");
     this.selectionTolerance = requiredElement<HTMLInputElement>(options.root, "mobileSelectionTolerance");
     this.selectionToleranceOut = requiredElement<HTMLOutputElement>(options.root, "mobileSelectionToleranceOut");
     this.selectionColorControl = requiredElement<HTMLElement>(options.root, "mobileSelectionColorControl");
@@ -576,6 +584,13 @@ export class MobileToolSettingsSheetController {
         this.options.setFillTolerance(Number(this.fillTolerance.value));
         this.syncFill();
       });
+      this.fillColor.addEventListener(eventType, () => {
+        this.options.setFillColor(this.fillColor.value);
+        this.fillColorControl.style.setProperty(
+          "--mobile-raster-effect-color",
+          this.fillColor.value,
+        );
+      });
       this.selectionTolerance.addEventListener(eventType, () => {
         this.options.setSelectionTolerance(Number(this.selectionTolerance.value));
         this.syncSelection();
@@ -823,6 +838,12 @@ export class MobileToolSettingsSheetController {
     this.fillTolerance.value = String(snapshot.tolerance);
     this.fillTolerance.disabled = snapshot.locked;
     this.fillToleranceOut.value = `${snapshot.tolerance.toFixed(1)}%`;
+    this.fillColor.value = colorInputValue(snapshot.color);
+    this.fillColorControl.style.setProperty(
+      "--mobile-raster-effect-color",
+      this.fillColor.value,
+    );
+    this.fillColor.disabled = snapshot.locked;
   }
 
   private syncSelection(): void {
@@ -841,6 +862,7 @@ export class MobileToolSettingsSheetController {
     const colorRange = snapshot.method === "color-range";
     const lasso = snapshot.method === "lasso";
     this.selectionToleranceControl.hidden = lasso;
+    this.selectionToleranceHint.hidden = lasso;
     this.selectionColorControl.hidden = !colorRange;
     this.selectionColorApply.hidden = !colorRange;
     for (const [mobile, mode] of [

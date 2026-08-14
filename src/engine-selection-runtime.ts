@@ -13,6 +13,7 @@ import {
   SELECTION_TILE_WIDTH,
   buildLassoSpans,
   emptyPixelSelectionState,
+  normalizeMagicWandTolerance,
   normalizeSelectionCombineMode,
   normalizeSelectionMethod,
   normalizeSelectionTolerance,
@@ -531,7 +532,7 @@ export async function selectConnectedAtClientPoint(
     const analysis = await fillRenderer.analyze(
       seedX,
       seedY,
-      normalizeSelectionTolerance(tolerance),
+      normalizeMagicWandTolerance(tolerance),
       [0, 0, 0, 1],
     );
     const summary = await selectionRenderer.combineExternalMask(
