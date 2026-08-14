@@ -652,12 +652,22 @@ fn depositMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (finalCoverage > 0.0) {
     coverageBuffer[index] = max(coverageBuffer[index], finalCoverage);
   }
-  // Blur is a crossfade from the dry carrier to a pure Gaussian brush.
-  // Without this gate, an opaque custom Shape deposits the picked-up carrier
-  // after the Gaussian pass and completely covers the blur at 100%.
+  // Paint 0 + Stretch 0 makes Blur a colorless Gaussian brush. Coverage must
+  // still reach scatter, but redepositing the freshly picked-up carrier would
+  // cover the Gaussian result and make the brush appear to do nothing.
   let blurAmount = clamp(blend.grainAffineAndPhase.w, 0.0, 1.0);
+  let stretchAmount = clamp(blend.transportControls.w, 0.0, 1.0);
+  let paintAmount = clamp(blend.grainControls.y, 0.0, 1.0);
+  var pigmentDepositScale = 1.0 - blurAmount;
+  if (
+    blurAmount > 0.0
+    && stretchAmount <= 0.0
+    && paintAmount <= 0.0
+  ) {
+    pigmentDepositScale = 0.0;
+  }
   let depositCoverage = clamp(
-    finalCoverage * blend.transportControls.z * (1.0 - blurAmount),
+    finalCoverage * blend.transportControls.z * pigmentDepositScale,
     0.0,
     1.0
   );
@@ -671,7 +681,7 @@ fn depositMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   let pigment = mix(
     carrier,
     loaded,
-    clamp(blend.grainControls.y, 0.0, 1.0)
+    paintAmount
   );
   let mixed = mix(canvas, pigment, depositCoverage);
   let resultAlpha = clamp(mixed.a, 0.0, 1.0);

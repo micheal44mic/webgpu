@@ -32,7 +32,7 @@ const BLEND_BLUR_WEIGHT_VEC4_COUNT = Math.ceil(
 const BLEND_BLUR_UNIFORM_BYTES = 16 + BLEND_BLUR_WEIGHT_VEC4_COUNT * 16;
 
 export const DRY_BLEND_RENDERER_BUILD =
-  "dry-blend-webgpu-v5-local-gaussian-blur";
+  "dry-blend-webgpu-v6-pure-gaussian-blur";
 
 export interface DryBlendRenderSettings {
   size: number;
