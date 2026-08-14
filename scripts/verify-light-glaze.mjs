@@ -1,4 +1,3 @@
-import { readEditorHtml } from "./ui-shell-source.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { readEngineSource } from "./engine-source.mjs";
@@ -6,7 +5,7 @@ import { readEngineSource } from "./engine-source.mjs";
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const engine = readEngineSource();
 const shaders = read("../src/shaders.ts");
-const html = readEditorHtml();
+const html = read("../index.html");
 
 const section = (source, start, end) => {
   const startIndex = source.indexOf(start);
@@ -143,8 +142,8 @@ assert.match(
 
 const finalComposite = section(
   engine,
-  "const lightGlazeCompositePipelinePromise =",
-  "const lightGlazeCommitTilePipelinePromise =",
+  "const lightGlazeCompositePipeline =",
+  "const lightGlazeCommitTilePipeline =",
 );
 assert.equal(
   (finalComposite.match(/one-minus-src-alpha/g) ?? []).length,
@@ -177,7 +176,7 @@ assert.match(
 const brushReadiness = section(
   engine,
   "  currentBrushResourcesReady(): boolean",
-  "  /**\n   * Completes only the GPU resources shared by text",
+  "  /**\n   * Completes GPU resources used only by text",
 );
 for (const requirement of [
   "this.grainLoadingPromise === null",
@@ -262,7 +261,7 @@ assert.match(
 assert.match(
   livePyramid,
   /requestedContent === "final-raster-stack"\s*\? engine\.lightGlazeFinalRasterStackCompositeMipPipeline/,
-  "Mip 1 live deve poter comporre lo stack raster finale prima del filtro percettivo.",
+  "Mip 1 live deve poter comporre lo stack raster finale prima del box filter.",
 );
 
 assert.match(
@@ -299,13 +298,13 @@ const liveDisplayShader = section(
 assert.match(liveDisplayShader, /fn compositedFinalRasterStackTexel\(/);
 assert.match(
   liveDisplayShader,
-  /fn sampleCompositedFinalRasterStackFiltered[\s\S]*compositedFinalRasterStackTexel\(lower\)[\s\S]*compositedFinalRasterStackTexel\(lower \+ vec2<i32>\(1, 1\)\)[\s\S]*return mix\(/,
+  /fn sampleCompositedFinalRasterStackLinear[\s\S]*compositedFinalRasterStackTexel\(lower\)[\s\S]*compositedFinalRasterStackTexel\(lower \+ vec2<i32>\(1, 1\)\)[\s\S]*return mix\(/,
   "LOD 0 live deve comporre i quattro texel finali prima della bilineare.",
 );
 assert.match(
   liveDisplayShader,
-  /fn finalStackFragmentMain[\s\S]*let lod = max\(display\.selectedMipLevel, 0\.0\)[\s\S]*let mipOne = perceptualSampleBilinear\(compositedMipTexture[\s\S]*perceptualInterpolate\(mipZero, mipOne, lod\)[\s\S]*perceptualSampleTrilinear\(compositedMipTexture, uv, lod - 1\.0, true\)/,
-  "Il display live deve fondere percettivamente mip 0 e la piramide composta.",
+  /fn finalStackFragmentMain[\s\S]*let lod = max\(display\.selectedMipLevel, 0\.0\)[\s\S]*let mipOne = textureSampleLevel\(compositedMipTexture[\s\S]*let lowerMip = floor\(lod\)[\s\S]*let upperMip = ceil\(lod\)/,
+  "Il display live deve fondere mip 0 e la piramide composta, poi i livelli adiacenti.",
 );
 assert.match(
   liveDisplayShader,
@@ -327,8 +326,8 @@ assert.match(
 );
 assert.match(
   liveMipShader,
-  /fn finalStackFragmentMain[\s\S]*let p00 = compositedFinalStackSource\(sourceOrigin\)[\s\S]*let p11 = compositedFinalStackSource\(sourceOrigin \+ vec2<i32>\(1, 1\)\)[\s\S]*return perceptualReduceFour\(p00, p10, p01, p11\)/,
-  "Mip 1 live deve ridurre percettivamente quattro risultati finali premoltiplicati.",
+  /fn finalStackFragmentMain[\s\S]*let p00 = compositedFinalStackSource\(sourceOrigin\)[\s\S]*let p11 = compositedFinalStackSource\(sourceOrigin \+ vec2<i32>\(1, 1\)\)[\s\S]*return \(p00 \+ p10 \+ p01 \+ p11\) \* 0\.25/,
+  "Mip 1 live deve mediare quattro risultati finali premoltiplicati.",
 );
 
 assert.match(

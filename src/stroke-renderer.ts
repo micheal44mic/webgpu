@@ -1,6 +1,5 @@
 import { mergedSurfaceSamplingShader } from "./merged-surface-shader";
 import { activeClippingGroupTexelShader } from "./clipping-group-shader";
-import { perceptualRasterShaderSource } from "./perceptual-raster-resampling.ts";
 import {
   jfaScheduleForExtent,
   type RasterStrokeRect,
@@ -1186,7 +1185,6 @@ ${strokeCompositionShaderSource(
   documentWidth, 0, 5, 7, 8, 9, 10, 11, 12, 13, "analytic", bevelBoundingFieldEnabled,
   bevelBoundingFieldTestMutation,
 )}
-${perceptualRasterShaderSource({ reduceFour: true })}
 @group(0) @binding(6) var coarseStyledTexture: texture_storage_2d<${layerFormat}, write>;
 
 fn quantizedStyledTexel(position: vec2<i32>) -> vec4<f32> {
@@ -1204,7 +1202,7 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   let p10 = quantizedStyledTexel(sourceOrigin + vec2<i32>(1, 0));
   let p01 = quantizedStyledTexel(sourceOrigin + vec2<i32>(0, 1));
   let p11 = quantizedStyledTexel(sourceOrigin + vec2<i32>(1, 1));
-  textureStore(coarseStyledTexture, coarsePosition, perceptualReduceFour(p00, p10, p01, p11));
+  textureStore(coarseStyledTexture, coarsePosition, (p00 + p10 + p01 + p11) * 0.25);
 }
 `;
 }
@@ -1253,15 +1251,9 @@ ${strokeCompositionShaderSource(
 @group(1) @binding(17) var activeClippingPrefix: texture_2d<f32>;
 @group(1) @binding(18) var activeClippingSuffix: texture_2d<f32>;
 
-${perceptualRasterShaderSource({
-  sampling: true,
-  interpolate: true,
-  sourceOver: true,
-  presentation: true,
-})}
 
 fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
-  return linearPremultipliedSourceOver(source, destination);
+  return source + destination * (1.0 - source.a);
 }
 
 ${activeClippingGroupTexelShader}
@@ -1326,9 +1318,6 @@ fn directStyledSample(layerPosition: vec2<f32>) -> vec4<f32> {
     vec2<i32>(0),
     maximumCoordinate
   )));
-  if (display.zoom < 0.999999) {
-    return perceptualInterpolateFour(p00, p10, p01, p11, fraction);
-  }
   return mix(mix(p00, p10, fraction.x), mix(p01, p11, fraction.x), fraction.y);
 }
 
@@ -1356,9 +1345,6 @@ fn directStyledGroupSample(layerPosition: vec2<f32>) -> vec4<f32> {
   let p10 = styledGroupTexel(origin + vec2<i32>(1, 0));
   let p01 = styledGroupTexel(origin + vec2<i32>(0, 1));
   let p11 = styledGroupTexel(origin + vec2<i32>(1, 1));
-  if (display.zoom < 0.999999) {
-    return perceptualInterpolateFour(p00, p10, p01, p11, fraction);
-  }
   return mix(mix(p00, p10, fraction.x), mix(p01, p11, fraction.x), fraction.y);
 }
 
@@ -1382,9 +1368,6 @@ fn sampleClippingAuxiliary(
     0.0,
     f32(max(1u, textureNumLevels(source)) - 1u)
   );
-  if (display.zoom < 0.999999) {
-    return perceptualSampleTrilinear(source, uv, lod, true);
-  }
   return textureSampleLevel(source, layerSampler, uv, lod);
 }
 
@@ -1462,11 +1445,11 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
       vec2<f32>(0.0),
       vec2<f32>(1.0)
     );
-    paint = perceptualSampleBilinear(
+    paint = textureSampleLevel(
       coarseStyledTexture,
+      layerSampler,
       uv,
-      u32(display.selectedMipLevel - 1.0),
-      true
+      display.selectedMipLevel - 1.0
     );
     if (display.clippingMode > 0.5) {
       paint = composeStyledGroupSample(paint, layerPosition);
@@ -1482,10 +1465,9 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;
   let backgroundSrgb = select(vec3<f32>(0.82), vec3<f32>(0.91), checkerParity == 0);
-  return vec4<f32>(rasterPresentationCompositeOverSrgbBackground(
-    paint,
-    backgroundSrgb
-  ), 1.0);
+  let backgroundLinear = srgbToLinear(backgroundSrgb);
+  let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
+  return vec4<f32>(linearToSrgb(compositedLinear), 1.0);
 }
 
 @fragment
@@ -1526,11 +1508,11 @@ fn activeFragmentMain(
       vec2<f32>(0.0),
       vec2<f32>(1.0)
     );
-    paint = perceptualSampleBilinear(
+    paint = textureSampleLevel(
       coarseStyledTexture,
+      layerSampler,
       uv,
-      u32(display.selectedMipLevel - 1.0),
-      true
+      display.selectedMipLevel - 1.0
     );
     if (display.clippingMode > 0.5) {
       paint = composeStyledGroupSample(paint, layerPosition);

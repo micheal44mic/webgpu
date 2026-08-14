@@ -1,5 +1,4 @@
 import type { BrushQuickControlKind, BrushQuickControlSnapshot } from "./brush-settings-controller";
-import { canvasToolCapabilities } from "./canvas-tool-capabilities";
 import type { BrushSettings } from "./engine-types";
 import type { CanvasInputTool } from "./canvas-input-controller";
 
@@ -99,16 +98,14 @@ export class BrushQuickControlsController {
   }
 
   syncAvailability(locked = this.options.isInteractionLocked()): void {
-    const quickControls = canvasToolCapabilities(
-      this.options.getActiveTool(),
-    ).quickControls;
-    const brushContext = quickControls !== null;
+    const tool = this.options.getActiveTool();
+    const brushContext = tool === "paint" || tool === "blend";
     const disabledByKind: Readonly<Record<BrushQuickControlKind, boolean>> = {
       size: locked || !brushContext,
-      opacity: locked || (quickControls !== "paint" && quickControls !== "eraser"),
-      stretch: locked || quickControls !== "blend",
-      paint: locked || quickControls !== "blend",
-      blur: locked || quickControls !== "blend",
+      opacity: locked || tool !== "paint",
+      stretch: locked || tool !== "blend",
+      paint: locked || tool !== "blend",
+      blur: locked || tool !== "blend",
     };
     for (const kind of this.kinds()) {
       const control = this.control(kind);
@@ -119,12 +116,9 @@ export class BrushQuickControlsController {
   }
 
   syncVisibility(): void {
-    const quickControls = canvasToolCapabilities(
-      this.options.getActiveTool(),
-    ).quickControls;
-    const brushContext = quickControls !== null;
-    const blend = quickControls === "blend";
-    const eraser = quickControls === "eraser";
+    const tool = this.options.getActiveTool();
+    const brushContext = tool === "paint" || tool === "blend";
+    const blend = tool === "blend";
     const suppressed = !brushContext || this.options.isSuppressedBySurface();
     if (suppressed && this.drag) this.finishDrag(true);
     const { controls, tracks } = this.options.elements;
@@ -132,11 +126,7 @@ export class BrushQuickControlsController {
     controls.classList.toggle("is-blend", blend);
     controls.setAttribute(
       "aria-label",
-      blend
-        ? "Blend size, stretch, paint and blur"
-        : eraser
-          ? "Eraser size and opacity"
-          : "Brush size and opacity",
+      blend ? "Blend size, stretch, paint and blur" : "Brush size and opacity",
     );
     tracks.opacity.hidden = blend;
     tracks.stretch.hidden = !blend;
@@ -278,8 +268,8 @@ export class BrushQuickControlsController {
     if (event.key === "ArrowUp" || event.key === "ArrowRight") next = snapshot.value + step;
     else if (event.key === "ArrowDown" || event.key === "ArrowLeft") {
       next = snapshot.value - step;
-    } else if (event.key === "Home") next = snapshot.minimum;
-    else if (event.key === "End") next = snapshot.maximum;
+    } else if (event.key === "Home") next = snapshot.maximum;
+    else if (event.key === "End") next = snapshot.minimum;
     if (next === null) return;
     event.preventDefault();
     this.options.settings.setQuickControl(

@@ -18,11 +18,7 @@ import {
   type DryBlendStep,
 } from "./blend-core";
 import { destructiveGaussianBlurKernel } from "./gaussian-blur-core";
-import {
-  assertShaderCompiled,
-  createPipelineCompilationQueue,
-  type PipelineCompilationEvent,
-} from "./engine-gpu-utils";
+import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 
 const BLEND_UNIFORM_BYTES = 192;
 const BLEND_MAX_BATCHES_PER_SUBMIT = 256;
@@ -109,7 +105,6 @@ interface DryBlendRendererOptions {
     Record<"no" | "classic" | "improved", GPUSampler>
   >;
   scratchSize?: number;
-  onPipelineProgress?: (event: PipelineCompilationEvent) => void;
 }
 
 interface ScratchResources {
@@ -220,9 +215,20 @@ function isDryBlendRenderBatch(
 async function assertShaderModules(
   modules: readonly { label: string; module: GPUShaderModule }[],
 ): Promise<void> {
-  await Promise.all(
-    modules.map(({ label, module }) => assertShaderCompiled(module, label)),
+  const compilationInfo = await Promise.all(
+    modules.map(async ({ label, module }) => ({
+      label,
+      messages: (await module.getCompilationInfo()).messages,
+    })),
   );
+  const errors = compilationInfo.flatMap(({ label, messages }) =>
+    [...messages]
+      .filter((message) => message.type === "error")
+      .map((message) => `${label}:${message.lineNum}:${message.linePos} ${message.message}`),
+  );
+  if (errors.length > 0) {
+    throw new Error(`Shader Blend WGSL non valido:\n${errors.join("\n")}`);
+  }
 }
 
 export class DryBlendRenderer {
@@ -253,7 +259,6 @@ export class DryBlendRenderer {
   private grainTextureMipLevelCount: number;
   private readonly grainSamplers: DryBlendRendererOptions["grainSamplers"];
   private readonly scratchSize: number;
-  private readonly onPipelineProgress: DryBlendRendererOptions["onPipelineProgress"];
   private readonly uniformStride: number;
   private readonly uniformUpload: ArrayBuffer;
   private readonly uniformFloatViews: readonly Float32Array[];
@@ -303,7 +308,6 @@ export class DryBlendRenderer {
     );
     this.grainSamplers = options.grainSamplers;
     this.scratchSize = options.scratchSize ?? DRY_BLEND_DEFAULT_SCRATCH_SIZE;
-    this.onPipelineProgress = options.onPipelineProgress;
     this.uniformStride = Math.ceil(
       BLEND_UNIFORM_BYTES / this.device.limits.minUniformBufferOffsetAlignment,
     ) * this.device.limits.minUniformBufferOffsetAlignment;
@@ -484,102 +488,88 @@ export class DryBlendRenderer {
 
     const pipelineLayout = (label: string, layout: GPUBindGroupLayout) =>
       this.device.createPipelineLayout({ label, bindGroupLayouts: [layout] });
-    const pipelineQueue = createPipelineCompilationQueue(this.device, {
-      total: 9,
-      onProgress: this.onPipelineProgress,
-    });
     const computePipeline = (
       label: string,
       layout: GPUBindGroupLayout,
       module: GPUShaderModule,
       entryPoint: string,
       constants?: Record<string, GPUPipelineConstantValue>,
-    ): Promise<GPUComputePipeline> => pipelineQueue.compute({
-        label,
-        layout: pipelineLayout(`${label} pipeline layout`, layout),
-        compute: { module, entryPoint, constants },
-      });
-    const gatherPipeline = computePipeline(
-      "Blend dry gather ROI",
-      this.gatherBindGroupLayout,
-      modules[0].module,
-      "gatherMain",
-    );
-    const pickupPipeline = computePipeline(
-      "Blend dry 8x8 weighted pigment pickup",
-      this.pickupBindGroupLayout,
-      modules[1].module,
-      "pickupMain",
-    );
-    const blurHorizontalPipeline = computePipeline(
-      "Blend local Gaussian horizontal",
-      this.blurHorizontalBindGroupLayout,
-      modules[2].module,
-      "blurHorizontalMain",
-    );
-    const blurVerticalPipeline = computePipeline(
-      "Blend local Gaussian vertical",
-      this.blurVerticalBindGroupLayout,
-      modules[3].module,
-      "blurVerticalMain",
-    );
-    const depositPipeline = (
-      shape: DryBlendRenderSettings["shape"],
-      grain: "off" | "on",
-    ): Promise<GPUComputePipeline> => computePipeline(
-      `Blend dry ${shape} ${grain} fused sweep and pigment deposit`,
-      this.depositBindGroupLayout,
-      modules[4].module,
-      "depositMain",
-      {
-        blendCustomShape: shape === "shape" ? 1 : 0,
-        blendGrainEnabled: grain === "on" ? 1 : 0,
-      },
-    );
-    const circleDepositOff = depositPipeline("circle", "off");
-    const circleDepositOn = depositPipeline("circle", "on");
-    const shapeDepositOff = depositPipeline("shape", "off");
-    const shapeDepositOn = depositPipeline("shape", "on");
-    const scatterPipeline = pipelineQueue.render({
-      label: "Blend dry scatter to canonical layer",
-      layout: pipelineLayout(
-        "Blend dry scatter pipeline layout",
-        this.scatterBindGroupLayout,
-      ),
-      vertex: {
-        module: modules[5].module,
-        entryPoint: "fullscreenVertex",
-      },
-      fragment: {
-        module: modules[5].module,
-        entryPoint: "scatterFragment",
-        targets: [{ format: this.layerFormat }],
-      },
-      primitive: { topology: "triangle-list" },
+    ): GPUComputePipeline => this.device.createComputePipeline({
+      label,
+      layout: pipelineLayout(`${label} pipeline layout`, layout),
+      compute: { module, entryPoint, constants },
     });
-    [
-      this.gatherPipeline,
-      this.pickupPipeline,
-      this.blurHorizontalPipeline,
-      this.blurVerticalPipeline,
-      this.depositPipelines,
-      this.scatterPipeline,
-    ] = await Promise.all([
-      gatherPipeline,
-      pickupPipeline,
-      blurHorizontalPipeline,
-      blurVerticalPipeline,
-      Promise.all([
-        circleDepositOff,
-        circleDepositOn,
-        shapeDepositOff,
-        shapeDepositOn,
-      ]).then(([circleOff, circleOn, shapeOff, shapeOn]) => ({
-        circle: { off: circleOff, on: circleOn },
-        shape: { off: shapeOff, on: shapeOn },
-      })),
-      scatterPipeline,
-    ]);
+
+    await runGpuAllocationTransaction(
+      this.device,
+      "Pipeline Blend WebGPU non valida",
+      () => {
+        this.gatherPipeline = computePipeline(
+          "Blend dry gather ROI",
+          this.gatherBindGroupLayout,
+          modules[0].module,
+          "gatherMain",
+        );
+        this.pickupPipeline = computePipeline(
+          "Blend dry 8x8 weighted pigment pickup",
+          this.pickupBindGroupLayout,
+          modules[1].module,
+          "pickupMain",
+        );
+        this.blurHorizontalPipeline = computePipeline(
+          "Blend local Gaussian horizontal",
+          this.blurHorizontalBindGroupLayout,
+          modules[2].module,
+          "blurHorizontalMain",
+        );
+        this.blurVerticalPipeline = computePipeline(
+          "Blend local Gaussian vertical",
+          this.blurVerticalBindGroupLayout,
+          modules[3].module,
+          "blurVerticalMain",
+        );
+        const depositPipeline = (
+          shape: DryBlendRenderSettings["shape"],
+          grain: "off" | "on",
+        ) => computePipeline(
+          `Blend dry ${shape} ${grain} fused sweep and pigment deposit`,
+          this.depositBindGroupLayout,
+          modules[4].module,
+          "depositMain",
+          {
+            blendCustomShape: shape === "shape" ? 1 : 0,
+            blendGrainEnabled: grain === "on" ? 1 : 0,
+          },
+        );
+        this.depositPipelines = {
+          circle: {
+            off: depositPipeline("circle", "off"),
+            on: depositPipeline("circle", "on"),
+          },
+          shape: {
+            off: depositPipeline("shape", "off"),
+            on: depositPipeline("shape", "on"),
+          },
+        };
+        this.scatterPipeline = this.device.createRenderPipeline({
+          label: "Blend dry scatter to canonical layer",
+          layout: pipelineLayout(
+            "Blend dry scatter pipeline layout",
+            this.scatterBindGroupLayout,
+          ),
+          vertex: {
+            module: modules[5].module,
+            entryPoint: "fullscreenVertex",
+          },
+          fragment: {
+            module: modules[5].module,
+            entryPoint: "scatterFragment",
+            targets: [{ format: this.layerFormat }],
+          },
+          primitive: { topology: "triangle-list" },
+        });
+      },
+    );
   }
 
   beginStroke(historyActionId: number): void {

@@ -1,4 +1,3 @@
-import { readEditorHtml, readEditorStyleSource } from "./ui-shell-source.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
@@ -87,8 +86,8 @@ const sceneEditor = readFileSync(
   new URL("src/scene-editor-controller.ts", root),
   "utf8",
 );
-const css = readEditorStyleSource();
-const html = readEditorHtml();
+const css = readFileSync(new URL("src/styles.css", root), "utf8");
+const html = readFileSync(new URL("index.html", root), "utf8");
 
 assert.match(
   html,

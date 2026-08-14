@@ -1,4 +1,3 @@
-import { readEditorHtml } from "./ui-shell-source.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { readEngineSource } from "./engine-source.mjs";
@@ -45,7 +44,7 @@ assert.equal(fastTailLengthPx / slowTailLengthPx, 8);
 const brushEngineSource = readEngineSource();
 const shaderSource = readFileSync(new URL("../src/shaders.ts", import.meta.url), "utf8");
 const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
-const indexHtmlSource = readEditorHtml();
+const indexHtmlSource = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 assert(brushEngineSource.includes('"predictive-webgpu-tail-overlay"'));
 assert(brushEngineSource.includes("prepareThicknessTailFrame"));
 assert(brushEngineSource.includes("encodeThicknessTailFrame"));

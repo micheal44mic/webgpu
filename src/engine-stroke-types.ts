@@ -6,7 +6,6 @@ import type { DryBlendPlanner } from "./blend-core";
 import type { DryBlendRenderBatch } from "./blend-renderer";
 import type { BrushSettings, BrushTool, LayerPoint } from "./engine-types";
 import type { ShapeOccupancySelection } from "./shape-occupancy";
-import type { RasterStrokeOperation } from "./raster-stroke-operation";
 import type { CausalStrokeCurvePlanner } from "./stroke-curve-core";
 import type {
   CausalFadedStrokeStabilizer,
@@ -14,7 +13,6 @@ import type {
 } from "./stroke-stabilization-core";
 
 export interface Stamp {
-  operation: RasterStrokeOperation;
   x: number;
   y: number;
   radius: number;
@@ -34,7 +32,6 @@ export interface HeldThicknessStamp {
 
 export interface ActiveStroke {
   tool: BrushTool;
-  operation: RasterStrokeOperation;
   lastInput: LayerPoint;
   startedAtMs: number;
   thicknessSettings: Pick<BrushSettings, "startThickness" | "endThickness">;

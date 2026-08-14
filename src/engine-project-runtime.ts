@@ -17,7 +17,7 @@ import type {
 import {
   allocateLayerGpuResources,
   destroyLayerGpuResources,
-} from "./engine-layer-residency-runtime";
+} from "./engine-layer-runtime";
 import {
   DOCUMENT_HEIGHT,
   DOCUMENT_TILE_HEIGHT,
@@ -480,7 +480,7 @@ export async function restoreProjectDocument(
   // them until the controller starts would let the first frame latch the
   // document inconsistent with an uninitialized mixed-scene layout.
   if (snapshot.mixedScene.items.some((item) => item.kind !== "raster")) {
-    await engine.ensureVectorEditorResources();
+    await engine.ensureOptionalEditorResources();
   }
   engine.persistActiveLayerState();
   if (

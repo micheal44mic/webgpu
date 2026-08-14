@@ -273,7 +273,6 @@ function generateProjectedPreviewStroke(
         Math.max(0, point.timeMs - startedAtMs),
       );
     const stamp: Stamp = {
-      operation: "paint",
       x: point.x,
       y: point.y,
       radius: baseRadius * liveThicknessFactor,

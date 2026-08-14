@@ -7,22 +7,21 @@ import {
   SELECTION_LAYER_WIDTH,
   SELECTION_WORDS_PER_ROW,
 } from "./selection-core.ts";
-import { perceptualRasterShaderSource } from "./perceptual-raster-resampling.ts";
 
 export const RASTER_TRANSFORM_SHADER_STRATEGY =
-  "texel-exact-integer-translation-perceptual-transparent-inverse-affine-trilinear-v4" as const;
+  "premultiplied-linear-transparent-border-inverse-affine-manual-trilinear-v3" as const;
 
 /**
  * Bindings:
  *   0 - 64-byte `RasterTransformUniforms`
  *   1 - immutable tile-bbox scratch with a complete mip chain
+ *   2 - clamp-to-edge linear sampler; transparent border and trilinear LOD are
+ *       reconstructed explicitly because WebGPU has no clamp-to-border mode
  *
  * The destination pass must use no blending: every pixel in the dirty union is
  * replaced by either the transformed immutable source or transparent black.
  */
 export const rasterTransformShader = /* wgsl */ `
-${perceptualRasterShaderSource({ sampling: true })}
-
 struct RasterTransformUniforms {
   sourceOrigin: vec2<f32>,
   sourceExtent: vec2<f32>,
@@ -40,26 +39,30 @@ struct VertexOutput {
 
 @group(0) @binding(0) var<uniform> transform: RasterTransformUniforms;
 @group(0) @binding(1) var sourceTexture: texture_2d<f32>;
+@group(0) @binding(2) var sourceSampler: sampler;
 
-fn isTexelExactIntegerTranslation() -> bool {
-  let identityInverse = all(
-    abs(transform.inverseRow0 - vec2<f32>(1.0, 0.0)) <= vec2<f32>(0.000001)
-  ) && all(
-    abs(transform.inverseRow1 - vec2<f32>(0.0, 1.0)) <= vec2<f32>(0.000001)
+fn transparentBorderWeight(uv: vec2<f32>, mipLevel: u32) -> f32 {
+  let dimensions = vec2<f32>(textureDimensions(sourceTexture, mipLevel));
+  let texelPosition = uv * dimensions - vec2<f32>(0.5);
+  let axisWeight = clamp(
+    min(texelPosition + vec2<f32>(1.0), dimensions - texelPosition),
+    vec2<f32>(0.0),
+    vec2<f32>(1.0)
   );
-  let translation = transform.destinationPivot - transform.sourcePivot;
-  return identityInverse && all(
-    abs(translation - round(translation)) <= vec2<f32>(0.000001)
-  );
+  return axisWeight.x * axisWeight.y;
 }
 
-fn loadTexelExact(sourceDocument: vec2<f32>) -> vec4<f32> {
-  let coordinate = vec2<i32>(floor(sourceDocument - transform.sourceOrigin));
-  let dimensions = vec2<i32>(textureDimensions(sourceTexture, 0));
-  if (any(coordinate < vec2<i32>(0)) || any(coordinate >= dimensions)) {
-    return vec4<f32>(0.0);
-  }
-  return textureLoad(sourceTexture, coordinate, 0);
+fn sampleTransparentLevel(uv: vec2<f32>, mipLevel: u32) -> vec4<f32> {
+  // The sampler can stay on the fastest native clamp-to-edge path. Multiplying
+  // by the exact in-bounds bilinear weight turns the replicated edge texel into
+  // a transparent-border sample, including after the base guard collapses in
+  // deep mip levels.
+  return textureSampleLevel(
+    sourceTexture,
+    sourceSampler,
+    uv,
+    f32(mipLevel)
+  ) * transparentBorderWeight(uv, mipLevel);
 }
 
 @vertex
@@ -84,13 +87,6 @@ fn fragmentMain(
     dot(transform.inverseRow1, destinationDelta)
   );
 
-  // Moving by whole document pixels must be a bit-stable relocation, not a
-  // filtered transform. This is the common nudge/mockup path and costs one
-  // textureLoad per destination pixel.
-  if (isTexelExactIntegerTranslation()) {
-    return loadTexelExact(sourceDocument);
-  }
-
   let sourceUv = (sourceDocument - transform.sourceOrigin)
     / transform.sourceExtent;
   // Explicit gradients are uniform affine derivatives. They select the right
@@ -111,9 +107,26 @@ fn fragmentMain(
     length(sourceUvDx * baseDimensions),
     length(sourceUvDy * baseDimensions)
   );
-  let maximumLevel = f32(textureNumLevels(sourceTexture) - 1u);
-  let lod = clamp(log2(max(footprint, 0.000001)), 0.0, maximumLevel);
-  return perceptualSampleTrilinear(sourceTexture, sourceUv, lod, false);
+  let maximumLevel = textureNumLevels(sourceTexture) - 1u;
+  let lod = clamp(
+    log2(max(footprint, 0.000001)),
+    0.0,
+    f32(maximumLevel)
+  );
+  let lowerLevel = u32(floor(lod));
+  let upperLevel = min(lowerLevel + 1u, maximumLevel);
+  let lower = sampleTransparentLevel(sourceUv, lowerLevel);
+  let lodBlend = fract(lod);
+  // Magnification and exact mip ratios are the common path. The condition is
+  // draw-uniform, so they pay one filtered fetch rather than two.
+  if (upperLevel == lowerLevel || lodBlend <= 0.000001) {
+    return lower;
+  }
+  let upper = sampleTransparentLevel(sourceUv, upperLevel);
+  // Source texels are already linear-premultiplied. Filtering RGBA together
+  // preserves transparent-edge colors; never unpremultiply or multiply alpha
+  // a second time here.
+  return mix(lower, upper, lodBlend);
 }
 `;
 
@@ -144,6 +157,7 @@ struct VertexOutput {
 
 @group(0) @binding(0) var<uniform> transform: RasterTransformUniforms;
 @group(0) @binding(1) var sourceTexture: texture_2d<f32>;
+@group(0) @binding(2) var sourceSampler: sampler;
 @group(1) @binding(0) var<storage, read> selectionMask: array<u32>;
 
 @vertex
@@ -197,8 +211,6 @@ fn fragmentMain(
  * same WGSL is valid for rgba8unorm and rgba16float render targets.
  */
 export const rasterTransformMipmapShader = /* wgsl */ `
-${perceptualRasterShaderSource({ preparedSamples: true })}
-
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
 };
@@ -236,8 +248,7 @@ fn fragmentMain(
     * sourceScale;
   let firstSourceCoordinate = vec2<i32>(floor(sourceStart));
 
-  var accumulatedEncoded = vec4<f32>(0.0);
-  var accumulatedExtendedResidual = vec4<f32>(0.0);
+  var accumulated = vec4<f32>(0.0);
   var accumulatedWeight = 0.0;
   for (var y = 0; y < 3; y = y + 1) {
     let sourceY = firstSourceCoordinate.y + y;
@@ -251,22 +262,16 @@ fn fragmentMain(
             sourceEnd.x,
             sourceX
           );
-          let prepared = perceptualPrepareSample(textureLoad(
+          accumulated += textureLoad(
             sourceTexture,
             vec2<i32>(sourceX, sourceY),
             0
-          ));
-          accumulatedEncoded += prepared.encoded * weight;
-          accumulatedExtendedResidual += prepared.extendedResidual * weight;
+          ) * weight;
           accumulatedWeight += weight;
         }
       }
     }
   }
-  let safeWeight = max(accumulatedWeight, 0.000001);
-  var reduced: PerceptualResamplingSample;
-  reduced.encoded = accumulatedEncoded / safeWeight;
-  reduced.extendedResidual = accumulatedExtendedResidual / safeWeight;
-  return perceptualResolveSample(reduced);
+  return accumulated / max(accumulatedWeight, 0.000001);
 }
 `;

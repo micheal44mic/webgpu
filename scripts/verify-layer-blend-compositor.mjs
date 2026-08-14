@@ -41,8 +41,8 @@ const tileRuntimeSource = readFileSync(
   new URL("../src/engine-layer-blend-tile-runtime.ts", import.meta.url),
   "utf8",
 );
-const layerFoldRuntimeSource = readFileSync(
-  new URL("../src/engine-layer-fold-runtime.ts", import.meta.url),
+const layerRuntimeSource = readFileSync(
+  new URL("../src/engine-layer-runtime.ts", import.meta.url),
   "utf8",
 );
 
@@ -52,12 +52,12 @@ assert.match(LAYER_COLD_TILE_COMPOSITE_WGSL, /texture_2d_array<f32>/);
 assert.match(LAYER_COLD_TILE_COMPOSITE_WGSL, /textureLoad\(/);
 assert.match(LAYER_COLD_TILE_COMPOSITE_WGSL, /@builtin\(instance_index\)/);
 assert.doesNotMatch(LAYER_COLD_TILE_COMPOSITE_WGSL, /textureSample/);
-assert.match(layerFoldRuntimeSource, /pass\.draw\(6, tileIndices\.length, 0, 0\)/);
-assert.match(layerFoldRuntimeSource, /await engine\.waitForGpuCapped\(label\)/);
-assert.match(layerFoldRuntimeSource, /destination\.resolutionScale !== 1/);
-assert.match(layerFoldRuntimeSource, /requirements\.needsStrokeRenderer/);
+assert.match(layerRuntimeSource, /pass\.draw\(6, tileIndices\.length, 0, 0\)/);
+assert.match(layerRuntimeSource, /await engine\.waitForGpuCapped\(label\)/);
+assert.match(layerRuntimeSource, /destination\.resolutionScale !== 1/);
+assert.match(layerRuntimeSource, /requirements\.needsStrokeRenderer/);
 assert.match(
-  layerFoldRuntimeSource,
+  layerRuntimeSource,
   /chunk\.rawBytes <= LAYER_COLD_TILE_COMPOSITE_BATCH_TILES \* tileBytes/,
   "un chunk futuro troppo grande deve ricadere sul fallback senza superare lo scratch dichiarato",
 );
@@ -341,7 +341,7 @@ assert.ok(
 // regression that exposed checkerboard rectangles while painting.
 assert.match(
   tileShaderSource,
-  /LAYER_BLEND_TILE_STRATEGY\s*=\s*\n\s*"document-space-1024-tile-native-format-blend-before-perceptual-filter-and-sample-v4"/,
+  /LAYER_BLEND_TILE_STRATEGY\s*=\s*\n\s*"document-space-1024-tile-native-format-blend-before-filter-replace-cache-v2"/,
 );
 assert.match(
   tileShaderSource,

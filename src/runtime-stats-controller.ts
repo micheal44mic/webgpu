@@ -77,8 +77,7 @@ export class RuntimeStatsController {
 
   private updateRenderingModeMemoryHint(stats: EngineStats): void {
     const hint = this.options.elements.renderingModeMemoryHint;
-    const canvasTool = this.options.getActiveCanvasTool();
-    if (canvasTool === "fill") {
+    if (this.options.getActiveCanvasTool() === "fill") {
       const referenceMemory = stats.fillReferenceLayerMiB > 0
         ? ` · riferimento hot ${formatMemoryMiB(stats.fillReferenceLayerMiB)}`
         : stats.referenceLayerId !== null
@@ -87,12 +86,6 @@ export class RuntimeStatsController {
       hint.textContent =
         `Riempimento · scratch residente ${formatMemoryMiB(stats.gpuMemory.fillRendererMiB)}`
         + referenceMemory;
-      return;
-    }
-    if (canvasTool === "eraser") {
-      hint.textContent =
-        `Gomma destination-out · totale motore `
-        + formatMemoryMiB(stats.gpuMemory.countedTotalMiB);
       return;
     }
     if (this.options.getActiveBrushTool() !== "paint") {

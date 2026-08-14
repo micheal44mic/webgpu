@@ -19,10 +19,6 @@ import {
   type ProjectStorage,
   type ProjectSummaryV1,
 } from "./project-storage";
-import { startupTelemetry } from "./startup-telemetry";
-import { createEditorStartupLoadingController } from "./editor-startup-loading";
-
-startupTelemetry.mark("startup-entry");
 
 const HOME_ICONS: Readonly<Record<string, IconNode>> = {
   "arrow-up-right": ArrowUpRight,
@@ -148,31 +144,13 @@ function formatProjectDate(timestamp: number): string {
 }
 
 async function launchEditor(): Promise<void> {
-  startupTelemetry.mark("editor-route-selected");
   const home = element<HTMLElement>(document, "projectHome");
   const app = element<HTMLElement>(document, "app");
   home.hidden = true;
   home.inert = true;
   app.hidden = false;
   app.inert = false;
-  const startupLoading = createEditorStartupLoadingController({
-    app,
-    overlay: element(document, "startupLoadingOverlay"),
-    title: element(document, "startupLoadingTitle"),
-    detail: element(document, "startupLoadingDetail"),
-    step: element(document, "startupLoadingStep"),
-    percent: element(document, "startupLoadingPercent"),
-    progress: element<HTMLProgressElement>(document, "startupLoadingProgress"),
-    error: element(document, "startupLoadingError"),
-    copyDiagnostics: element<HTMLButtonElement>(document, "startupLoadingCopyDiagnostics"),
-  }, window);
-  startupLoading.begin();
-  try {
-    await startupTelemetry.track("main-module-load", () => import("./main"));
-  } catch (error) {
-    startupLoading.fail(error);
-    throw error;
-  }
+  await import("./main");
 }
 
 interface ProjectHomeControllerOptions {
@@ -538,6 +516,6 @@ async function boot(): Promise<void> {
   await controller.initialize();
 }
 
-void startupTelemetry.track("startup-shell-boot", boot).catch((error) => {
+void boot().catch((error) => {
   console.error("M1M4 startup failed:", error);
 });

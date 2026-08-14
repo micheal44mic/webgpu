@@ -33,7 +33,7 @@ import {
   writeVectorTextGpuBlurFilterUniform,
   writeVectorTextGpuBlurSourceUniform,
   writeVectorTextGpuDrawUniform,
-} from "./engine-vector-text-resources-runtime";
+} from "./engine-vector-text-runtime";
 import { vectorTextGpuRunBounds } from "./engine-geometry";
 import {
   LAYER_STORAGE_TILE_SIZE,
@@ -48,17 +48,12 @@ import {
 import {
   allocateLayerGpuResources,
   destroyLayerGpuResources,
-} from "./engine-layer-residency-runtime";
+} from "./engine-layer-runtime";
 import { LAYER_STACK_MAXIMUM } from "./layer-stack";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
-import {
-  VECTOR_RASTER_RESOLVE_STRATEGY,
-  vectorRasterPerceptualResolveShader,
-} from "./vector-raster-resolve-shader.ts";
 
 export const VECTOR_RASTERIZATION_STRATEGY =
-  "semantic-vector-slug-mesh-webgpu-explicit-perceptual-msaa4-resolve-512-tile-chunks-history-seed-v4" as const;
-export { VECTOR_RASTER_RESOLVE_STRATEGY };
+  "semantic-vector-slug-mesh-webgpu-linear-layer-format-msaa4-512-tile-chunks-history-seed-v3" as const;
 export const VECTOR_RASTER_CHUNK_SIZE = LAYER_STORAGE_TILE_SIZE * 2;
 /** Permanent authoritative default; runtime resources still follow engine.layerFormat. */
 export const VECTOR_RASTER_FORMAT = "rgba16float" as const;
@@ -70,8 +65,6 @@ interface VectorRasterPipelines {
   slugInnerShadowDirect: GPURenderPipeline;
   slugInnerShadowBlur: GPURenderPipeline;
   meshInnerShadowBlur: GPURenderPipeline;
-  resolveLayout: GPUBindGroupLayout;
-  resolve: GPURenderPipeline;
 }
 
 export interface VectorRasterConversionResult {
@@ -144,25 +137,6 @@ async function ensureVectorRasterPipelines(
     throw new Error("Renderer vettoriale GPU non pronto per rasterizzare il nodo.");
   }
   const blend = sourceOverBlend();
-  const resolveModule = engine.device.createShaderModule({
-    label: `Vector raster ${format} perceptual MSAA4 resolve WGSL`,
-    code: vectorRasterPerceptualResolveShader,
-  });
-  const resolveLayout = engine.device.createBindGroupLayout({
-    label: `Vector raster ${format} perceptual resolve layout`,
-    entries: [{
-      binding: 0,
-      visibility: GPUShaderStage.FRAGMENT,
-      texture: {
-        // Multisampled textures are loaded by integer sample index and are
-        // never filterable, including RGBA16F on adapters that otherwise
-        // expose float32-filterable.
-        sampleType: "unfilterable-float",
-        viewDimension: "2d",
-        multisampled: true,
-      },
-    }],
-  });
   const vertexBuffers: GPUVertexBufferLayout[] = [{
     arrayStride: 8,
     attributes: [{
@@ -265,20 +239,6 @@ async function ensureVectorRasterPipelines(
     primitive: { topology: "triangle-list", cullMode: "none" },
     multisample: { count: VECTOR_TEXT_GPU_SAMPLE_COUNT },
   });
-  const resolve = engine.device.createRenderPipeline({
-    label: `Vector raster ${format} explicit perceptual MSAA4 resolve`,
-    layout: engine.device.createPipelineLayout({
-      label: `Vector raster ${format} perceptual resolve pipeline layout`,
-      bindGroupLayouts: [resolveLayout],
-    }),
-    vertex: { module: resolveModule, entryPoint: "vertexMain" },
-    fragment: {
-      module: resolveModule,
-      entryPoint: "fragmentMain",
-      targets: [{ format }],
-    },
-    primitive: { topology: "triangle-list" },
-  });
   const created = {
     meshFill,
     slugFill,
@@ -286,8 +246,6 @@ async function ensureVectorRasterPipelines(
     slugInnerShadowDirect,
     slugInnerShadowBlur,
     meshInnerShadowBlur,
-    resolveLayout,
-    resolve,
   };
       return created;
     },
@@ -325,7 +283,7 @@ async function createVectorRasterScratch(
           },
           sampleCount: VECTOR_TEXT_GPU_SAMPLE_COUNT,
           format,
-          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT,
         });
         transaction.deferRollback(() => msaaTexture.destroy());
         const resolvedTexture = engine.device.createTexture({
@@ -570,11 +528,6 @@ export async function renderVectorDrawsToTexture(
     * VECTOR_RASTER_CHUNK_SIZE;
   const { msaaTexture, resolvedTexture, msaaView, resolvedView } =
     await createVectorRasterScratch(engine, format);
-  const resolveBindGroup = engine.device.createBindGroup({
-    label: `Vector raster ${format} perceptual MSAA4 resolve bind group`,
-    layout: pipelines.resolveLayout,
-    entries: [{ binding: 0, resource: msaaView }],
-  });
   let chunkCount = 0;
   try {
     for (let y = firstChunkY; y < lastChunkY; y += VECTOR_RASTER_CHUNK_SIZE) {
@@ -608,8 +561,9 @@ export async function renderVectorDrawsToTexture(
           label: `Vector raster ${format} MSAA4 chunk ${x},${y}`,
           colorAttachments: [{
             view: msaaView,
+            resolveTarget: resolvedView,
             loadOp: "clear",
-            storeOp: "store",
+            storeOp: "discard",
             clearValue: { r: 0, g: 0, b: 0, a: 0 },
           }],
         });
@@ -677,21 +631,6 @@ export async function renderVectorDrawsToTexture(
           }
         }
         pass.end();
-        const resolvePass = encoder.beginRenderPass({
-          label: `Vector raster ${format} perceptual resolve ${x},${y}`,
-          colorAttachments: [{
-            view: resolvedView,
-            loadOp: "clear",
-            storeOp: "store",
-            clearValue: { r: 0, g: 0, b: 0, a: 0 },
-          }],
-        });
-        resolvePass.setViewport(0, 0, width, height, 0, 1);
-        resolvePass.setScissorRect(0, 0, width, height);
-        resolvePass.setPipeline(pipelines.resolve);
-        resolvePass.setBindGroup(0, resolveBindGroup);
-        resolvePass.draw(3, 1, 0, 0);
-        resolvePass.end();
         const copyLeft = Math.max(x, destinationDocumentBounds.x);
         const copyTop = Math.max(y, destinationDocumentBounds.y);
         const copyRight = Math.min(

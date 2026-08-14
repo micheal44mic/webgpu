@@ -329,10 +329,7 @@ assert.match(strokeTypesSource, /curvePlanner: CausalStrokeCurvePlanner \| null;
 assert.match(engineSource, /strokeCurveStrategy: STROKE_CURVE_STRATEGY/);
 assert.match(humanLabSource, /HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 64/);
 
-const canonicalPath = new URL(
-  "../src/labs/fixtures/human-stroke/canonical-v1.json",
-  import.meta.url,
-);
+const canonicalPath = new URL("../.tmp-canonical-human-stroke.json", import.meta.url);
 let canonicalSummary = null;
 if (existsSync(canonicalPath)) {
   const canonical = JSON.parse(readFileSync(canonicalPath, "utf8"));

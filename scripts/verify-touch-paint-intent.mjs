@@ -26,17 +26,17 @@ assert.equal(
 assert.equal(TOUCH_PAINT_INTENT_HOLD_MS, 28);
 assert.equal(TOUCH_PAINT_INTENT_MOVE_THRESHOLD_PX, 3);
 
-assert.equal(shouldHoldTouchPaintIntent(true, "touch", true), true);
-for (const [enabled, pointerType, eligible] of [
-  [false, "touch", true],
-  [true, "pen", true],
-  [true, "mouse", true],
-  [true, "touch", false],
+assert.equal(shouldHoldTouchPaintIntent(true, "touch", "paint"), true);
+for (const [enabled, pointerType, tool] of [
+  [false, "touch", "paint"],
+  [true, "pen", "paint"],
+  [true, "mouse", "paint"],
+  [true, "touch", "blend"],
 ]) {
   assert.equal(
-    shouldHoldTouchPaintIntent(enabled, pointerType, eligible),
+    shouldHoldTouchPaintIntent(enabled, pointerType, tool),
     false,
-    `${pointerType}/${eligible}/${enabled} must retain the immediate path`,
+    `${pointerType}/${tool}/${enabled} must retain the immediate path`,
   );
 }
 
@@ -73,12 +73,12 @@ assert.match(
 );
 assert.match(
   canvasInputSource,
-  /const holdPaintIntent = paintSample !== null && shouldHoldTouchPaintIntent\([\s\S]*?event\.pointerType,[\s\S]*?toolCapabilities\.holdsTouchPaintIntent,[\s\S]*?\);[\s\S]*?if \(paintSample && rasterStrokeOperation && !holdPaintIntent\)[\s\S]*?engine\.beginStroke\(paintSample, rasterStrokeOperation\)[\s\S]*?pointerMode === "raster-stroke"[\s\S]*?startTouchPaintIntentHold\([\s\S]*?rasterStrokeOperation,[\s\S]*?toolCapabilities\.recordsPaintExtension,/,
-  "only eligible touch Paint/Eraser input may leave the acknowledged beginStroke path",
+  /const holdPaintIntent = paintSample !== null && shouldHoldTouchPaintIntent\([\s\S]*?event\.pointerType,[\s\S]*?activeTool,[\s\S]*?\);[\s\S]*?if \(paintSample && !holdPaintIntent\) \{[\s\S]*?if \(!engine\.beginStroke\(paintSample\)\)[\s\S]*?pointerMode === "paint" && paintSample && holdPaintIntent[\s\S]*?startTouchPaintIntentHold\(event\.pointerId, paintSample\);/,
+  "only eligible touch Paint input may leave the immediate, acknowledged beginStroke path",
 );
 assert.match(
   canvasInputSource,
-  /if \(!engine\.beginStroke\(hold\.initialSample, hold\.operation\)\) \{[\s\S]*?return false;\s*\}[\s\S]*?if \(hold\.bufferedSamples\.length > 0\)\s*engine\.extendStroke\(hold\.bufferedSamples\);/,
+  /if \(!engine\.beginStroke\(hold\.initialSample\)\) \{[\s\S]*?return false;\s*\}[\s\S]*?if \(hold\.bufferedSamples\.length > 0\)\s*engine\.extendStroke\(hold\.bufferedSamples\);/,
   "release must acknowledge begin before replaying original timestamped samples in order",
 );
 assert.match(
@@ -114,4 +114,4 @@ assert.match(
 );
 assert.doesNotMatch(mainSource, /touchPaintIntentDiagnostics/);
 
-console.log("Touch raster intent hold: Paint/Eraser eligibility, replay order and pinch cancellation verified.");
+console.log("Touch Paint intent hold: eligibility, thresholds, replay order and pinch cancellation verified.");

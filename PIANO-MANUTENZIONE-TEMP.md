@@ -27,7 +27,7 @@ Legenda:
 - [x] Fase 5 - `main.ts` come composition root
 - [x] Fase 6 - Confini di pennelli, effetti e scena
 - [x] Fase 7 - Isolamento di cronologia, undo/redo e memoria
-- [x] Fase 8 - Snellimento strutturale e rimozione del rumore certo
+- [ ] Fase 8 - Snellimento strutturale e rimozione del rumore certo
 - [ ] Fase 9 - Ottimizzazione misurata della memoria
 - [ ] Fase 10 - Documentazione corrente e chiusura
 
@@ -358,74 +358,74 @@ verificabile e separata dalle future ottimizzazioni della memoria.
 
 ### Rete di sicurezza e criteri di rimozione
 
-- [x] Verificare la baseline corrente con `npm run check` e smoke test reale prima
+- [ ] Verificare la baseline corrente con `npm run check` e smoke test reale prima
   di iniziare gli spostamenti.
-- [x] Ricontrollare il worktree e preservare tutte le modifiche gia presenti,
+- [ ] Ricontrollare il worktree e preservare tutte le modifiche gia presenti,
   senza reset, checkout distruttivi, commit, push o pubblicazioni non richieste.
-- [x] Dimostrare ogni eliminazione controllando import statici e dinamici, Worker,
+- [ ] Dimostrare ogni eliminazione controllando import statici e dinamici, Worker,
   HTML, CSS, test, script, build, deployment e utilizzi persistiti o manuali
   documentati.
-- [x] Lavorare per slice indipendenti, eseguendo verifiche mirate dopo ogni slice
+- [ ] Lavorare per slice indipendenti, eseguendo verifiche mirate dopo ogni slice
   e `npm run check` prima di marcarla completata.
 
 ### Codice grande che puo confondere modifiche future
 
-- [x] Dividere `verify-layer-stack.mjs`, `verify-vector-text.mjs` e gli altri
+- [ ] Dividere `verify-layer-stack.mjs`, `verify-vector-text.mjs` e gli altri
   verifier monolitici per contratto comportamentale, riducendo i controlli sulla
   posizione o sulla forma testuale del sorgente senza perdere copertura.
-- [x] Snellire `brush-engine.ts` mantenendo `BrushEngine` come facade pubblica e
+- [ ] Snellire `brush-engine.ts` mantenendo `BrushEngine` come facade pubblica e
   conservando nel file soltanto lo stato centrale e il percorso caldo del tratto;
   estrarre le responsabilita non calde tramite porte ristrette.
-- [x] Dividere `engine-layer-runtime.ts` in proprietari distinti per ricreazione
+- [ ] Dividere `engine-layer-runtime.ts` in proprietari distinti per ricreazione
   risorse, compositing, clipping e residency hot/cold, trasformando
   `recreateLayerResources()` in un orchestratore breve e leggibile.
-- [x] Dividere `mixed-scene-controller.ts` in interazione/trasformazioni, comandi e
+- [ ] Dividere `mixed-scene-controller.ts` in interazione/trasformazioni, comandi e
   lifecycle History, pianificazione del rendering/effetti e coordinamento DOM.
-- [x] Dividere `engine-vector-text-runtime.ts` in setup e cache GPU, presentazione
+- [ ] Dividere `engine-vector-text-runtime.ts` in setup e cache GPU, presentazione
   fast/fallback e compositing segmentato della scena.
-- [x] Dividere `project-storage.ts` in schema e tipi persistiti, codec/validazione,
+- [ ] Dividere `project-storage.ts` in schema e tipi persistiti, codec/validazione,
   quota, backend IndexedDB/memoria e repository transazionale.
-- [x] Dividere `index.html` e `styles.css` per componenti dell'interfaccia,
+- [ ] Dividere `index.html` e `styles.css` per componenti dell'interfaccia,
   preservando ID, accessibilita, ordine della cascata e rendering, senza introdurre
   un framework o duplicare lo stato UI.
-- [x] Confermare che `main.ts` resti una composition root e non dividere renderer,
+- [ ] Confermare che `main.ts` resti una composition root e non dividere renderer,
   shader o moduli GPU gia coesi soltanto per ridurre il numero di righe.
-- [x] Aggiungere o aggiornare i verifier dei confini affinche impediscano il ritorno
+- [ ] Aggiungere o aggiornare i verifier dei confini affinche impediscano il ritorno
   di dipendenze larghe dall'intero `BrushEngine`, cicli e bus DOM impliciti.
 
 ### File, immagini e directory
 
-- [x] Eliminare gli output locali certamente rigenerabili e ignorati: `dist/`,
+- [ ] Eliminare gli output locali certamente rigenerabili e ignorati: `dist/`,
   `dist-labs/` e i log temporanei in radice, senza interrompere server in uso.
-- [x] Eliminare le directory vuote `audit/` e `docs/` se risultano ancora prive di
+- [ ] Eliminare le directory vuote `audit/` e `docs/` se risultano ancora prive di
   file, lasciando che la documentazione finale ricrei soltanto cio che serve.
-- [x] Ricontrollare e rimuovere `assets/vector-svg-example.svg` soltanto se resta
+- [ ] Ricontrollare e rimuovere `assets/vector-svg-example.svg` soltanto se resta
   privo di qualunque uso automatico o manuale documentato.
-- [x] Rinominare e spostare `.tmp-canonical-human-stroke.json` tra le fixture Labs,
+- [ ] Rinominare e spostare `.tmp-canonical-human-stroke.json` tra le fixture Labs,
   aggiornando Vite e i verifier: e una fixture autorevole, non un file temporaneo.
-- [x] Classificare `artifacts/` e `design-qa-assets/`: eliminare soltanto catture
+- [ ] Classificare `artifacts/` e `design-qa-assets/`: eliminare soltanto catture
   dimostrate obsolete e senza valore di baseline; organizzare quelle conservate
   sotto una directory QA esplicita. Non eliminare
   `artifacts/first-stroke-runtime.png` prima della chiusura del piano.
-- [x] Spostare `procreate-audit/` sotto una directory di ricerca chiaramente
+- [ ] Spostare `procreate-audit/` sotto una directory di ricerca chiaramente
   separata oppure prepararlo per un archivio esterno; eliminare soltanto output
   rigenerabili, senza perdere input, script o conoscenza ancora utile.
-- [x] Conservare `benchmarks/results.json` come baseline candidata fino alla fine
+- [ ] Conservare `benchmarks/results.json` come baseline candidata fino alla fine
   della Fase 9 e rendere esplicito che non e un asset dell'applicazione.
-- [x] Verificare e conservare gli asset produttivi e le fixture reali, inclusi
+- [ ] Verificare e conservare gli asset produttivi e le fixture reali, inclusi
   `Shape.png`, `Shapepencil.png`, `Grainpencil.png`, font, golden, fixture SVG,
   `.openai/` e `db/`.
 
 Gate Fase 8:
 
-- [x] Ogni grande file trattato ha un proprietario leggibile e dipendenze
+- [ ] Ogni grande file trattato ha un proprietario leggibile e dipendenze
   ristrette; nessuna semplice redistribuzione crea nuovi moduli monolitici.
-- [x] Nessun file eliminato e richiesto da prodotto, Labs, test, build, deployment
+- [ ] Nessun file eliminato e richiesto da prodotto, Labs, test, build, deployment
   o formati persistiti.
-- [x] Nessuna regressione funzionale, visiva, di accessibilita o Undo/Redo nei
+- [ ] Nessuna regressione funzionale, visiva, di accessibilita o Undo/Redo nei
   layout stretti e larghi.
-- [x] Bundle di produzione e Labs conservano gli stessi confini della baseline.
-- [x] `npm run check` e `git diff --check` passano.
+- [ ] Bundle di produzione e Labs conservano gli stessi confini della baseline.
+- [ ] `npm run check` e `git diff --check` passano.
 
 ---
 
@@ -461,18 +461,18 @@ Gate Fase 9:
 
 ## Fase 10 - Documentazione corrente e chiusura
 
-- [x] Scrivere `README.md` basato esclusivamente sul progetto corrente.
-- [x] Scrivere `ARCHITECTURE.md` con i confini effettivamente implementati.
-- [x] Scrivere un `AGENTS.md` breve contenente soltanto regole stabili e comandi
+- [ ] Scrivere `README.md` basato esclusivamente sul progetto corrente.
+- [ ] Scrivere `ARCHITECTURE.md` con i confini effettivamente implementati.
+- [ ] Scrivere un `AGENTS.md` breve contenente soltanto regole stabili e comandi
   verificati.
-- [x] Eseguire la verifica finale completa.
+- [ ] Eseguire la verifica finale completa.
 - [ ] Ottenere l'approvazione finale dell'utente.
 - [ ] Cancellare `PIANO-MANUTENZIONE-TEMP.md`.
 
 Gate Fase 10:
 
-- [x] App, build e test completi verdi.
-- [x] Architettura documentata e coerente con il codice reale.
+- [ ] App, build e test completi verdi.
+- [ ] Architettura documentata e coerente con il codice reale.
 - [ ] Nessun file temporaneo del piano rimasto nel repository.
 
 ---

@@ -29,8 +29,6 @@ const LABS = [
   ["mixed-memory", "Benchmark memoria mista"],
   ["iphone-memory", "Ricerca limite iPhone"],
   ["layer-compression", "Studio compressione lossless"],
-  ["raster-import-transform", "GPU test Import + Trasforma"],
-  ["vector-raster-history", "GPU test Rasterizza vettori"],
   ["vector-zoom-stress", "Stress zoom vettoriale"],
   ["vector-zoom-during", "A/B zoom · refresh durante il gesto"],
   ["vector-zoom-release", "A/B zoom · refresh al rilascio"],
@@ -333,16 +331,6 @@ class EditorLabController implements EditorExtension {
         });
         const savedRunId = await saveLabReport("/api/layer-compression-runs", report);
         return { report, savedRunId };
-      }
-      case "raster-import-transform": {
-        const { runRasterImportTransformGpuTest } = await import(
-          "./gpu/raster-import-transform-gpu-test"
-        );
-        return runRasterImportTransformGpuTest(engine);
-      }
-      case "vector-raster-history": {
-        const controller = await this.#host.ensureMixedSceneController();
-        return controller.runVectorRasterHistoryGpuTest();
       }
       case "vector-zoom-stress":
       case "vector-zoom-during":

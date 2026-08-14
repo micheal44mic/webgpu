@@ -1,6 +1,5 @@
 import { mergedSurfaceSamplingShader } from "./merged-surface-shader.ts";
 import { activeClippingGroupTexelShader } from "./clipping-group-shader.ts";
-import { perceptualRasterShaderSource } from "./perceptual-raster-resampling.ts";
 
 /**
  * Presentazione ordinata raster/testo interamente GPU.
@@ -10,7 +9,7 @@ import { perceptualRasterShaderSource } from "./perceptual-raster-resampling.ts"
  * conserva l'ordine dei livelli. Non esiste un fallback bitmap durante lo zoom.
  */
 export const VECTOR_TEXT_PRESENTATION_STRATEGY =
-  "semantic-vector-gpu-runs-slug-clipper-msaa4-rgba16f-perceptual-minification-v7" as const;
+  "semantic-vector-gpu-runs-slug-clipper-msaa4-rgba16f-v6" as const;
 
 export const vectorTextDisplayShader = /* wgsl */ `
 struct DisplayUniforms {
@@ -48,15 +47,39 @@ struct VertexOutput {
 @group(0) @binding(8) var activeClippingPrefix: texture_2d<f32>;
 @group(0) @binding(9) var activeClippingSuffix: texture_2d<f32>;
 
-${perceptualRasterShaderSource({
-  sampling: true,
-  interpolate: true,
-  sourceOver: true,
-  presentation: true,
-})}
+fn srgbToLinearChannel(value: f32) -> f32 {
+  if (value <= 0.04045) {
+    return value / 12.92;
+  }
+  return pow((value + 0.055) / 1.055, 2.4);
+}
+
+fn srgbToLinear(value: vec3<f32>) -> vec3<f32> {
+  return vec3<f32>(
+    srgbToLinearChannel(value.r),
+    srgbToLinearChannel(value.g),
+    srgbToLinearChannel(value.b)
+  );
+}
+
+fn linearToSrgbChannel(value: f32) -> f32 {
+  let clamped = clamp(value, 0.0, 1.0);
+  if (clamped <= 0.0031308) {
+    return clamped * 12.92;
+  }
+  return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
+}
+
+fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
+  return vec3<f32>(
+    linearToSrgbChannel(value.r),
+    linearToSrgbChannel(value.g),
+    linearToSrgbChannel(value.b)
+  );
+}
 
 fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
-  return linearPremultipliedSourceOver(source, destination);
+  return source + destination * (1.0 - source.a);
 }
 
 ${activeClippingGroupTexelShader}
@@ -74,20 +97,17 @@ fn sampleActiveLayer(uv: vec2<f32>) -> vec4<f32> {
       }
       return composeActiveClippingGroupTexel(activeTexel, pixel);
     }
-    if (display.zoom < 0.999999) {
-      return perceptualSampleBilinear(activeLayerBase, uv, 0u, true);
-    }
     return textureSampleLevel(activeLayerBase, layerSampler, uv, 0.0);
   }
-  return perceptualSampleBilinear(
+  return textureSampleLevel(
     activeLayerPyramid,
+    layerSampler,
     uv,
-    u32(display.selectedMipLevel - 1.0),
-    true
+    display.selectedMipLevel - 1.0
   );
 }
 
-fn sampleActiveClippingGroupFiltered(layerPosition: vec2<f32>) -> vec4<f32> {
+fn sampleActiveClippingGroupLinear(layerPosition: vec2<f32>) -> vec4<f32> {
   let texelPosition = layerPosition - vec2<f32>(0.5);
   let lower = vec2<i32>(floor(texelPosition));
   let interpolation = fract(texelPosition);
@@ -100,9 +120,6 @@ fn sampleActiveClippingGroupFiltered(layerPosition: vec2<f32>) -> vec4<f32> {
   let p10 = composeActiveClippingGroupTexel(textureLoad(activeLayerBase, p10i, 0), p10i);
   let p01 = composeActiveClippingGroupTexel(textureLoad(activeLayerBase, p01i, 0), p01i);
   let p11 = composeActiveClippingGroupTexel(textureLoad(activeLayerBase, p11i, 0), p11i);
-  if (display.zoom < 0.999999) {
-    return perceptualInterpolateFour(p00, p10, p01, p11, interpolation);
-  }
   return mix(mix(p00, p10, interpolation.x), mix(p01, p11, interpolation.x), interpolation.y);
 }
 
@@ -159,7 +176,7 @@ fn fragmentMain(
     && display.selectedMipLevel < 0.5
     && !rasterPixelViewEnabled(1.0)
   ) {
-    activePaint = sampleActiveClippingGroupFiltered(layerPosition);
+    activePaint = sampleActiveClippingGroupLinear(layerPosition);
   }
   let vectorBelow = sampleViewportTexture(vectorTextBelowTexture, fragmentPosition.xy);
   let vectorAbove = sampleViewportTexture(vectorTextAboveTexture, fragmentPosition.xy);
@@ -183,9 +200,8 @@ fn fragmentMain(
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;
   let backgroundSrgb = select(vec3<f32>(0.82), vec3<f32>(0.91), checkerParity == 0);
-  return vec4<f32>(rasterPresentationCompositeOverSrgbBackground(
-    paint,
-    backgroundSrgb
-  ), 1.0);
+  let backgroundLinear = srgbToLinear(backgroundSrgb);
+  let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
+  return vec4<f32>(linearToSrgb(compositedLinear), 1.0);
 }
 `;

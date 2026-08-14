@@ -1,10 +1,9 @@
-import { readEditorHtml } from "./ui-shell-source.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createServer } from "vite";
 
 const root = new URL("../", import.meta.url);
-const html = readEditorHtml();
+const html = readFileSync(new URL("index.html", root), "utf8");
 const mainSource = readFileSync(new URL("src/main.ts", root), "utf8");
 const controllerSource = readFileSync(
   new URL("src/editor-tools-controller.ts", root),

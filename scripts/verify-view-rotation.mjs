@@ -1,4 +1,3 @@
-import { readEditorHtml, readEditorStyleSource } from "./ui-shell-source.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { readEngineSource } from "./engine-source.mjs";
@@ -21,8 +20,8 @@ const mergedSurfaceSource = read("src/merged-surface-shader.ts");
 const mixedSceneCompositorSource = read("src/mixed-scene-compositor-shader.ts");
 const vectorTextShaderSource = read("src/vector-text-shader.ts");
 const pixelViewSource = read("src/raster-pixel-view.ts");
-const htmlSource = readEditorHtml();
-const styleSource = readEditorStyleSource();
+const htmlSource = read("index.html");
+const styleSource = read("src/styles.css");
 const packageJson = JSON.parse(read("package.json"));
 
 const EPSILON = 1e-9;
@@ -144,7 +143,7 @@ assert.match(engineSource, /VIEW_ROTATION_SNAP_RELEASE_RADIANS = 7 \* Math\.PI \
 // `engine-runtime-misc`: la sezione deve coprirle entrambe.
 const rotationApi = engineSource.slice(
   engineSource.indexOf("  beginViewRotationGesture(): void"),
-  engineSource.indexOf("  beginStroke("),
+  engineSource.indexOf("  beginStroke(sample: PointerSample): boolean"),
 );
 const applyRotationStart = engineSource.indexOf("export function applyViewRotation(");
 const rotationMethods = rotationApi
@@ -237,7 +236,7 @@ assert.doesNotMatch(mainSource, /updateViewZoomControl|viewZoomPercentOutput/);
 
 assert.equal((mergedSurfaceSource.match(/rasterPixelViewEnabled\(resolutionScale\)/g) ?? []).length, 2,
   "entrambe le superfici raster unite devono usare nearest sopra soglia");
-assert.match(mixedSceneCompositorSource, /ordered-raster-vector-gpu-runs-rgba16f-perceptual-raster-minification-source-over-v5/);
+assert.match(mixedSceneCompositorSource, /ordered-raster-vector-gpu-runs-rgba16f-viewport-source-over-raster-nearest-at-581pct-v4/);
 const mixedRasterSegment = mixedSceneCompositorSource.slice(
   mixedSceneCompositorSource.indexOf("export const mixedSceneRasterSegmentShader"),
   mixedSceneCompositorSource.indexOf("export const mixedSceneTextSegmentShader"),
@@ -275,7 +274,7 @@ assert.match(
   /if \(jointFilteringCandidate\) \{[\s\S]*belowPaint = sampleMergedBelow\(layerPosition\)[\s\S]*abovePaint = sampleMergedAbove\(layerPosition\)[\s\S]*stackAlphaGradient = fwidth/,
   "active, below e above devono essere campionati nel candidato uniforme prima delle derivate",
 );
-assert.match(baseDisplayShader, /fn sampleCompositedLayerStackFiltered\(/);
+assert.match(baseDisplayShader, /fn sampleCompositedLayerStackLinear\(/);
 assert.match(
   baseDisplayShader,
   /compositedLayerStackTexel\(lower\)[\s\S]*compositedLayerStackTexel\(lower \+ vec2<i32>\(1, 1\)\)[\s\S]*return mix\(/,
@@ -288,8 +287,8 @@ assert.match(
 );
 assert.match(
   baseDisplayShader,
-  /fn finalStackFragmentMain[\s\S]*if \(lod < 1\.0\)[\s\S]*paint = perceptualInterpolate\(mipZero, mipOne, lod\)/,
-  "la transizione Noise sotto il primo mip deve fondere percettivamente lo stack finale",
+  /fn finalStackFragmentMain[\s\S]*if \(lod < 1\.0\)[\s\S]*paint = mix\(mipZero, mipOne, lod\)/,
+  "la transizione Noise sotto il primo mip deve fondere lo stack finale già composto",
 );
 assert.match(
   baseDisplayShader,
@@ -321,12 +320,12 @@ assert.ok(
 );
 assert.match(
   baseDisplayShader,
-  /var paint = composeLayerStackSamples[\s\S]*if \(needsJointLayerFiltering\(stackAlphaGradient\)\)[\s\S]*paint = sampleCompositedLayerStackFiltered\(layerPosition\)/,
+  /var paint = composeLayerStackSamples[\s\S]*if \(needsJointLayerFiltering\(stackAlphaGradient\)\)[\s\S]*paint = sampleCompositedLayerStackLinear\(layerPosition\)/,
   "interni e trasparenti devono conservare il percorso veloce esistente",
 );
 assert.doesNotMatch(
   baseDisplayShader,
-  /select\([\s\S]{0,200}sampleCompositedLayerStackFiltered/,
+  /select\([\s\S]{0,200}sampleCompositedLayerStackLinear/,
   "WGSL select valuterebbe anche il ramo costoso su ogni pixel",
 );
 
@@ -340,13 +339,13 @@ assert.match(
 );
 assert.match(
   stackMipShader,
-  /let p00 = compositedDocumentTexel\(sourceOrigin\)[\s\S]*let p11 = compositedDocumentTexel\(sourceOrigin \+ vec2<i32>\(1, 1\)\)[\s\S]*return perceptualReduceFour\(p00, p10, p01, p11\)/,
-  "mip 1 deve ridurre percettivamente quattro risultati finali premoltiplicati",
+  /let p00 = compositedDocumentTexel\(sourceOrigin\)[\s\S]*let p11 = compositedDocumentTexel\(sourceOrigin \+ vec2<i32>\(1, 1\)\)[\s\S]*return \(p00 \+ p10 \+ p01 \+ p11\) \* 0\.25/,
+  "mip 1 deve mediare quattro risultati finali premoltiplicati",
 );
 assert.match(baseDisplayShader, /fn finalStackFragmentMain\(/);
 assert.match(
   baseDisplayShader,
-  /fn finalStackFragmentMain[\s\S]*sampleCompositedLayerStackFiltered\(layerPosition\)[\s\S]*let mipOne = perceptualSampleBilinear\(activeLayerPyramid[\s\S]*paint = perceptualInterpolate\(mipZero, mipOne, lod\)[\s\S]*perceptualSampleTrilinear\(activeLayerPyramid, uv, lod - 1\.0, true\)/,
+  /fn finalStackFragmentMain[\s\S]*sampleCompositedLayerStackLinear\(layerPosition\)[\s\S]*let mipOne = textureSampleLevel\(activeLayerPyramid[\s\S]*paint = mix\(mipZero, mipOne, lod\)[\s\S]*lowerMip - 1\.0/,
   "il display final-stack deve campionare la piramide già composta senza un secondo source-over",
 );
 assert.match(

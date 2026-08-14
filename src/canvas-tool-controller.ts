@@ -1,5 +1,4 @@
 import type { BrushEngine } from "./brush-engine";
-import { canvasToolCapabilities } from "./canvas-tool-capabilities";
 import type { BrushSettings } from "./engine-types";
 import type { MobileTextWarpMode, MobileToolSettingsKind } from "./mobile-tool-settings-sheet";
 import type { SelectionCombineMode, SelectionMethod } from "./selection-core";
@@ -39,7 +38,6 @@ export interface CanvasToolControllerOptions {
   readonly elements: {
     readonly canvas: HTMLCanvasElement;
     readonly paintButton: HTMLButtonElement;
-    readonly eraserButton: HTMLButtonElement;
     readonly blendButton: HTMLButtonElement;
   };
   readonly brushSettings: CanvasToolBrushSettingsPort;
@@ -85,9 +83,6 @@ export class CanvasToolController {
     }, { signal });
     options.elements.blendButton.addEventListener("click", () => {
       this.select("blend");
-    }, { signal });
-    options.elements.eraserButton.addEventListener("click", () => {
-      this.select("eraser");
     }, { signal });
   }
 
@@ -137,21 +132,19 @@ export class CanvasToolController {
     this.activeCanvasTool = tool;
     this.options.closeBrushLibraryForTool(tool);
     this.options.elements.paintButton.setAttribute("aria-pressed", String(tool === "paint"));
-    this.options.elements.eraserButton.setAttribute("aria-pressed", String(tool === "eraser"));
     this.options.elements.blendButton.setAttribute("aria-pressed", String(tool === "blend"));
     this.options.syncBrushLibraryButton();
     this.options.syncMenuState();
-    const capabilities = canvasToolCapabilities(tool);
-    const fill = capabilities.pointerInteraction === "fill";
-    const selection = capabilities.pointerInteraction === "selection";
-    const transform = capabilities.pointerInteraction === "transform";
+    const fill = tool === "fill";
+    const selection = tool === "selection";
+    const transform = tool === "transform";
+    const liquify = tool === "liquify";
     if (!selection) this.options.cancelKeyboardSelectionGesture(true);
-    const brushTool = capabilities.brushTool;
-    if (brushTool) {
-      this.activeBrushTool = brushTool;
+    if (!fill && !selection && !transform && !liquify) {
+      this.activeBrushTool = tool;
       this.options.brushSettings.selectTool(
-        brushTool,
-        restoreSnapshot && previousBrushTool !== brushTool,
+        tool,
+        restoreSnapshot && previousBrushTool !== tool,
       );
     }
     this.syncSelectionKeyboardUi();

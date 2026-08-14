@@ -5,7 +5,7 @@
  */
 import type { BrushEngine } from "./brush-engine";
 import { ensureFillRenderer, scheduleFillScratchRelease } from "./engine-fill-runtime";
-import { clientToLayer } from "./engine-layer-residency-runtime";
+import { clientToLayer } from "./engine-layer-runtime";
 import {
   SELECTION_MASK_BYTES,
   SELECTION_TILE_GRID_SIZE,

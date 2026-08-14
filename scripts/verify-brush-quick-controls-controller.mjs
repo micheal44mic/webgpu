@@ -26,7 +26,7 @@ const server = await createServer({
   configFile: false,
   logLevel: "silent",
   root: process.cwd(),
-  server: { middlewareMode: true, watch: null },
+  server: { middlewareMode: true },
 });
 let BrushQuickControlsController;
 try {
@@ -198,14 +198,6 @@ controller.syncAvailability(false);
 assert.equal(elements.controlsByKind.size.getAttribute("aria-disabled"), "false");
 assert.equal(elements.controlsByKind.opacity.getAttribute("aria-disabled"), "true");
 assert.equal(elements.controlsByKind.stretch.getAttribute("aria-disabled"), "false");
-activeTool = "eraser";
-controller.syncAvailability(false);
-controller.syncVisibility();
-assert.equal(elements.controlsByKind.size.getAttribute("aria-disabled"), "false");
-assert.equal(elements.controlsByKind.opacity.getAttribute("aria-disabled"), "false");
-assert.equal(elements.controlsByKind.stretch.getAttribute("aria-disabled"), "true");
-assert.equal(elements.tracks.opacity.hidden, false);
-assert.equal(elements.controls.getAttribute("aria-label"), "Eraser size and opacity");
 controller.setLocked(true);
 assert.equal(elements.colorInput.disabled, true);
 assert.equal(elements.colorLabel.classList.contains("is-disabled"), true);
@@ -220,14 +212,6 @@ const key = event("keydown", { key: "ArrowUp", shiftKey: true, altKey: false, ct
 elements.controlsByKind.size.dispatchEvent(key);
 assert.equal(key.defaultPrevented, true);
 assert.equal(state.size, 110);
-elements.controlsByKind.size.dispatchEvent(event("keydown", {
-  key: "Home", shiftKey: false, altKey: false, ctrlKey: false, metaKey: false,
-}));
-assert.equal(state.size, 1, "Home follows the ARIA slider convention and selects minimum");
-elements.controlsByKind.size.dispatchEvent(event("keydown", {
-  key: "End", shiftKey: false, altKey: false, ctrlKey: false, metaKey: false,
-}));
-assert.equal(state.size, 1000, "End follows the ARIA slider convention and selects maximum");
 
 // A drag previews continuously but commits exactly once at pointer-up.
 const down = event("pointerdown", { button: 0, pointerId: 7, clientY: 100 });

@@ -37,7 +37,7 @@ import {
 import {
   allocateLayerGpuResources,
   destroyLayerGpuResources,
-} from "./engine-layer-residency-runtime";
+} from "./engine-layer-runtime";
 import type {
   LayerColdStorageResources,
   LayerGpuResources,
@@ -62,7 +62,7 @@ import {
   clearVectorTextPresentationForTransaction,
   publishMixedScene,
   requireMixedSceneStack,
-} from "./engine-vector-text-resources-runtime";
+} from "./engine-vector-text-runtime";
 import { historyColdSeedResidentBytes } from "./history-cold-seed";
 
 export const RASTER_IMAGE_GPU_STORAGE_STRATEGY =
@@ -129,6 +129,7 @@ interface NativeImportPipelines {
   readonly premultiplyPipeline: GPURenderPipeline;
   readonly mipmapPipeline: GPURenderPipeline;
   readonly blitPipeline: GPURenderPipeline;
+  readonly sampler: GPUSampler;
 }
 
 interface TransientImageTextures {
@@ -245,11 +246,18 @@ async function ensureNativeImportPipelines(
       });
       const blitLayout = engine.device.createBindGroupLayout({
         label: "Native raster import blit layout",
-        entries: [{
-          binding: 0,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float", viewDimension: "2d" },
-        }],
+        entries: [
+          {
+            binding: 0,
+            visibility: GPUShaderStage.FRAGMENT,
+            texture: { sampleType: "float", viewDimension: "2d" },
+          },
+          {
+            binding: 1,
+            visibility: GPUShaderStage.FRAGMENT,
+            sampler: { type: "filtering" },
+          },
+        ],
       });
       const uploadPipelineLayout = engine.device.createPipelineLayout({
         label: "Native raster import upload pipeline layout",
@@ -292,12 +300,22 @@ async function ensureNativeImportPipelines(
         },
         primitive: { topology: "triangle-strip", cullMode: "none" },
       });
+      const sampler = engine.device.createSampler({
+        label: "Native raster import trilinear sampler",
+        addressModeU: "clamp-to-edge",
+        addressModeV: "clamp-to-edge",
+        minFilter: "linear",
+        magFilter: "linear",
+        mipmapFilter: "linear",
+        maxAnisotropy: 8,
+      });
       return {
         sourceLayout,
         blitLayout,
         premultiplyPipeline,
         mipmapPipeline,
         blitPipeline,
+        sampler,
       };
     },
   );
@@ -432,6 +450,7 @@ async function encodeBitmapIntoLayer(
       layout: pipelines.blitLayout,
       entries: [
         { binding: 0, resource: transient.premultipliedTexture.createView() },
+        { binding: 1, resource: pipelines.sampler },
       ],
     });
     const blitPass = encoder.beginRenderPass({

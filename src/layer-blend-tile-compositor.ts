@@ -438,7 +438,12 @@ export class LayerBlendTileCompositor {
             {
               binding: 1,
               visibility: GPUShaderStage.FRAGMENT,
-              texture: { sampleType: "unfilterable-float", viewDimension: "2d" },
+              texture: { sampleType: "float", viewDimension: "2d" },
+            },
+            {
+              binding: 2,
+              visibility: GPUShaderStage.FRAGMENT,
+              sampler: { type: "filtering" },
             },
           ],
         });
@@ -455,6 +460,7 @@ export class LayerBlendTileCompositor {
           entries: [
             { binding: 0, resource: { buffer: engine.displayUniformBuffer } },
             { binding: 1, resource: engine.activeLayerDisplayPyramid.samplingView },
+            { binding: 2, resource: engine.sampler },
           ],
         });
 

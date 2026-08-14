@@ -1,4 +1,3 @@
-import { readEditorHtml, readEditorStyleSource } from "./ui-shell-source.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
@@ -215,12 +214,8 @@ const brushEngine = readFileSync(new URL("../src/brush-engine.ts", import.meta.u
 const renderer = readFileSync(new URL("../src/fill-renderer.ts", import.meta.url), "utf8");
 const shader = readFileSync(new URL("../src/fill-shaders.ts", import.meta.url), "utf8");
 const runtime = readFileSync(new URL("../src/engine-fill-runtime.ts", import.meta.url), "utf8");
-const layerCommandRuntime = readFileSync(
-  new URL("../src/engine-layer-command-runtime.ts", import.meta.url),
-  "utf8",
-);
-const layerResidencyRuntime = readFileSync(
-  new URL("../src/engine-layer-residency-runtime.ts", import.meta.url),
+const layerRuntime = readFileSync(
+  new URL("../src/engine-layer-runtime.ts", import.meta.url),
   "utf8",
 );
 const historyRuntime = readFileSync(
@@ -252,8 +247,8 @@ const sceneEditor = readFileSync(
   new URL("../src/scene-editor-controller.ts", import.meta.url),
   "utf8",
 );
-const html = readEditorHtml();
-const styles = readEditorStyleSource();
+const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 
 for (const entryPoint of [
   "classifyLocal",
@@ -338,15 +333,15 @@ assert.match(
   "Un blocco CCL deve accendere tutte le tile rettangolari toccate dai pixel selezionati.",
 );
 assert.doesNotMatch(shader, /\bFILL_LAYER_SIZE\b|\bFILL_BLOCK_GRID_SIZE\b|\bFILL_TILE_SIZE\b/);
-assert(layerCommandRuntime.includes(
+assert(layerRuntime.includes(
   "const record = reference === null ? engine.layerStack.active : reference",
 ));
-assert(layerCommandRuntime.includes("requireLayerHot(engine, record.id).samplingView"));
-assert(layerCommandRuntime.includes("Neither invariant violation may degrade"));
-assert(layerCommandRuntime.includes("there is deliberately no slower fallback"));
-assert(layerCommandRuntime.includes("createReferenceLayerDemotion"));
-assert(layerCommandRuntime.includes("destroyLayerHot(demotion.hot)"));
-assert(layerResidencyRuntime.includes("previousRecord.id === engine.layerStack.referenceLayerId"));
+assert(layerRuntime.includes("requireLayerHot(engine, record.id).samplingView"));
+assert(layerRuntime.includes("Neither invariant violation may degrade"));
+assert(layerRuntime.includes("there is deliberately no slower fallback"));
+assert(layerRuntime.includes("createReferenceLayerDemotion"));
+assert(layerRuntime.includes("destroyLayerHot(demotion.hot)"));
+assert(layerRuntime.includes("previousRecord.id === engine.layerStack.referenceLayerId"));
 assert(brushEngine.includes("this.layerStack.active.id === this.layerStack.referenceLayerId"));
 assert(brushEngine.includes("retargetFillRendererSource(this)"));
 assert(historyRuntime.includes("await engine.submitFillHistoryBatch"));

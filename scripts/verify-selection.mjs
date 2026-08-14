@@ -1,4 +1,3 @@
-import { readEditorHtml, readEditorStyleSource } from "./ui-shell-source.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
@@ -172,10 +171,7 @@ const originalBrushShaders = readFileSync(new URL("../src/shaders.ts", import.me
 const fillRenderer = readFileSync(new URL("../src/fill-renderer.ts", import.meta.url), "utf8");
 const fillShader = readFileSync(new URL("../src/fill-shaders.ts", import.meta.url), "utf8");
 const fillRuntime = readFileSync(new URL("../src/engine-fill-runtime.ts", import.meta.url), "utf8");
-const layerRecreationRuntime = readFileSync(
-  new URL("../src/engine-layer-recreation-runtime.ts", import.meta.url),
-  "utf8",
-);
+const layerRuntime = readFileSync(new URL("../src/engine-layer-runtime.ts", import.meta.url), "utf8");
 const resourceSetup = readFileSync(new URL("../src/engine-resource-setup.ts", import.meta.url), "utf8");
 const reports = readFileSync(new URL("../src/engine-reports.ts", import.meta.url), "utf8");
 const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
@@ -195,8 +191,8 @@ const humanLab = readFileSync(
   new URL("../src/labs/human-stroke-lab.ts", import.meta.url),
   "utf8",
 );
-const html = readEditorHtml();
-const styles = readEditorStyleSource();
+const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 
 for (const entryPoint of [
   "selectGlobalColor",
@@ -266,15 +262,10 @@ for (const functionName of [
 assert(clipShader.includes("floor(fragmentPosition.xy + brush.renderTargetOrigin)"));
 assert(clipShader.includes("result.lastIndexOf(returnMarker, functionEnd)"));
 assert(resourceSetup.includes("selectionMaskBindGroupLayout"));
-assert(layerRecreationRuntime.includes("const selectionPipelineByBase = new Map"));
-assert(layerRecreationRuntime.includes("selectionPipelineByBase.set(variant.base, selectedPipeline)"));
-assert(layerRecreationRuntime.includes("const buildSelectionVariants = async"));
-assert(layerRecreationRuntime.includes('code: selectionBrushShader'));
-assert(layerRecreationRuntime.includes('code: selectionTexturizedGrainShader'));
-assert(layerRecreationRuntime.includes("fragmentModule: brushModule"));
-assert(layerRecreationRuntime.includes("fragmentModule: grainModule"));
-assert(!resourceSetup.includes('code: selectionBrushShader'));
-assert(!resourceSetup.includes('code: selectionTexturizedGrainShader'));
+assert(layerRuntime.includes("const selectionPipelineByBase = new Map"));
+assert(layerRuntime.includes("selectionPipelineByBase.set(variant.base, selectedPipeline)"));
+assert(layerRuntime.includes("fragmentModule: engine.selectionBrushShaderModule"));
+assert(layerRuntime.includes("fragmentModule: engine.selectionTexturizedGrainShaderModule"));
 
 assert(runtime.includes("export function clipPaintDirtyRectToPixelSelection("));
 assert(runtime.includes("const snapshot = replayBatch?.selectionMask ?? null"));

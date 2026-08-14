@@ -1,14 +1,13 @@
-import { readEditorHtml, readEditorStyleSource } from "./ui-shell-source.mjs";
 import fs from "node:fs";
 
-const html = readEditorHtml();
+const html = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const startup = fs.readFileSync(new URL("../src/startup.ts", import.meta.url), "utf8");
 const main = fs.readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
 const projectSession = fs.readFileSync(
   new URL("../src/project-session-controller.ts", import.meta.url),
   "utf8",
 );
-const styles = readEditorStyleSource();
+const styles = fs.readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 
 function expect(source, value, label) {
   if (!source.includes(value)) throw new Error(`Missing ${label}: ${value}`);
@@ -38,11 +37,7 @@ expect(html, 'id="saveProjectButton"', "editor save control");
 expect(html, 'id="projectHomeButton"', "editor home control");
 expect(html, 'src="/src/startup.ts"', "deferred editor entrypoint");
 
-expect(
-  startup,
-  'startupTelemetry.track("main-module-load", () => import("./main"))',
-  "measured dynamic editor boot",
-);
+expect(startup, 'await import("./main")', "dynamic editor boot");
 expect(startup, 'this.storage.listProjects()', "recent project loading");
 expect(startup, 'this.storage.renameProject', "project rename");
 expect(startup, 'this.storage.deleteProject', "project delete");

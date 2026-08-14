@@ -1,4 +1,3 @@
-import { readEditorHtml } from "./ui-shell-source.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
@@ -32,15 +31,11 @@ const controllerSource = readFileSync(
   new URL("../src/mixed-scene-controller.ts", import.meta.url),
   "utf8",
 );
-const commandHistorySource = readFileSync(
-  new URL("../src/mixed-scene-command-history-runtime.ts", import.meta.url),
-  "utf8",
-);
 const engineSource = readFileSync(
   new URL("../src/brush-engine.ts", import.meta.url),
   "utf8",
 );
-const htmlSource = readEditorHtml();
+const htmlSource = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 
 function u32be(value) {
   return [(value >>> 24) & 255, (value >>> 16) & 255, (value >>> 8) & 255, value & 255];
@@ -138,7 +133,7 @@ assert.equal(
 );
 assert.equal(
   RASTER_IMAGE_LAYER_IMPORT_STRATEGY,
-  "decoded-rgba8-srgb-to-linear-premultiplied-perceptual-npot-mips-native-layer-v4",
+  "decoded-rgba8-srgb-to-linear-premultiplied-rgba16float-exact-npot-mips-native-layer-v3",
 );
 assert.equal(RASTER_IMAGE_DECODED_BYTES_PER_PIXEL, 4);
 assert.equal(RASTER_IMAGE_LINEAR_BYTES_PER_PIXEL, 8);
@@ -394,15 +389,11 @@ assert.match(runtimeSource, /if \(decoded\) releaseDecodedRasterImage\(decoded\)
 assert.match(engineSource, /sweepRasterImageGpuResources\(\): number/);
 assert.doesNotMatch(runtimeSource, /CanvasRenderingContext2D|getContext\("2d"\)|drawImage\(/);
 assert.doesNotMatch(runtimeSource, /addImageAboveSelection\(/);
-assert.match(shaderSource, /perceptualMipLevelFromGradients\(/);
-assert.match(shaderSource, /perceptualSampleTrilinear\(sourceTexture, input\.uv, mipLevel, true\)/);
-assert.doesNotMatch(shaderSource, /textureSample(?:Grad|Level)?\(/);
+assert.match(shaderSource, /textureSampleGrad\(/);
 assert.match(shaderSource, /fragmentPremultiplyMain/);
 assert.match(shaderSource, /straightLinear\.rgb \* straightLinear\.a/);
 assert.match(shaderSource, /texelOverlap/);
 assert.match(shaderSource, /for \(var y = 0; y < 3/);
-assert.match(shaderSource, /perceptualPrepareSample\(textureLoad\(/);
-assert.match(shaderSource, /perceptualResolveSample\(reduced\)/);
 assert.match(engineSource, /kind: "raster-import"/);
 assert.match(engineSource, /commitRasterImportHistory\(history/);
 assert.match(runtimeSource, /commitHistory\(historySeed\);[\s\S]{0,100}seed = null/);
@@ -426,11 +417,10 @@ assert.match(
   /await applyVectorHistoryState\(this, edit\.before\);[\s\S]{0,300}this\.activeVectorHistoryEdit = null/,
   "Cancel must keep the global edit gate until async rollback succeeds",
 );
-assert.match(controllerSource, /beginMixedSceneVectorTransformHistory\(this\.host\)/);
-assert.match(commandHistorySource, /host\.beginVectorHistoryEdit\("transform"\)/);
+assert.match(controllerSource, /beginVectorHistoryEdit\("transform"\)/);
 assert.match(controllerSource, /beginRasterLayerTransform\(\)/);
-assert.match(commandHistorySource, /commitRasterLayerTransform\(\)/);
-assert.match(commandHistorySource, /cancelRasterLayerTransform\(\)/);
+assert.match(controllerSource, /commitRasterLayerTransform\(\)/);
+assert.match(controllerSource, /cancelRasterLayerTransform\(\)/);
 assert.match(controllerSource, /private async applyTransformSession/);
 assert.match(controllerSource, /private async cancelTransformSession/);
 assert.match(controllerSource, /private abortActiveTransformInteraction/);

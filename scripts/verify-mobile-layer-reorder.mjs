@@ -1,4 +1,3 @@
-import { readEditorHtml, readEditorStyleSource } from "./ui-shell-source.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
@@ -17,8 +16,8 @@ import {
 const root = new URL("../", import.meta.url);
 const main = readFileSync(new URL("src/main.ts", root), "utf8");
 const controller = readFileSync(new URL("src/layer-panel-controller.ts", root), "utf8");
-const css = readEditorStyleSource();
-const html = readEditorHtml();
+const css = readFileSync(new URL("src/styles.css", root), "utf8");
+const html = readFileSync(new URL("index.html", root), "utf8");
 
 assert.equal(MOBILE_LAYER_REORDER_HOLD_MS, 320);
 assert.equal(MOBILE_LAYER_REORDER_SLOP_PX, 8);

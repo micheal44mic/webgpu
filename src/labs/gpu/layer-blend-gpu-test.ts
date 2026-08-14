@@ -6,11 +6,6 @@ import {
   type LayerBlendMode,
   type LinearPremultipliedRgba,
 } from "../../layer-blend-modes";
-import {
-  perceptualInterpolateFour,
-  perceptualReduceFour,
-  rasterPresentationCompositeOverSrgbBackground,
-} from "../../perceptual-raster-resampling";
 
 type RgbaBytes = readonly [number, number, number, number];
 
@@ -257,15 +252,12 @@ function presentationBytesAtPosition(
   x: number,
   y: number,
 ): RgbaBytes {
-  const backgroundSrgb = checkerSrgbAtPosition(x, y);
-  const composited = rasterPresentationCompositeOverSrgbBackground(
-    paint,
-    [backgroundSrgb, backgroundSrgb, backgroundSrgb],
-  );
+  const background = srgbToLinear(checkerSrgbAtPosition(x, y));
+  const inverseAlpha = 1 - paint[3];
   return [
-    quantizeUnorm(composited[0]),
-    quantizeUnorm(composited[1]),
-    quantizeUnorm(composited[2]),
+    quantizeUnorm(linearToSrgb(paint[0] + background * inverseAlpha)),
+    quantizeUnorm(linearToSrgb(paint[1] + background * inverseAlpha)),
+    quantizeUnorm(linearToSrgb(paint[2] + background * inverseAlpha)),
     255,
   ];
 }
@@ -309,25 +301,29 @@ function mixLinear(
   ];
 }
 
+function averageFour(
+  p00: LinearPremultipliedRgba,
+  p10: LinearPremultipliedRgba,
+  p01: LinearPremultipliedRgba,
+  p11: LinearPremultipliedRgba,
+): LinearPremultipliedRgba {
+  return [
+    (p00[0] + p10[0] + p01[0] + p11[0]) * 0.25,
+    (p00[1] + p10[1] + p01[1] + p11[1]) * 0.25,
+    (p00[2] + p10[2] + p01[2] + p11[2]) * 0.25,
+    (p00[3] + p10[3] + p01[3] + p11[3]) * 0.25,
+  ];
+}
+
 function bilinearSample(
   sample: (x: number, y: number) => LinearPremultipliedRgba,
   x: number,
   y: number,
-  perceptualMinification = false,
 ): LinearPremultipliedRgba {
   const originX = Math.floor(x);
   const originY = Math.floor(y);
   const horizontal = x - originX;
   const vertical = y - originY;
-  if (perceptualMinification) {
-    return perceptualInterpolateFour(
-      sample(originX, originY),
-      sample(originX + 1, originY),
-      sample(originX, originY + 1),
-      sample(originX + 1, originY + 1),
-      [horizontal, vertical],
-    );
-  }
   return mixLinear(
     mixLinear(sample(originX, originY), sample(originX + 1, originY), horizontal),
     mixLinear(
@@ -359,7 +355,7 @@ function mipOneTexel(
 ): LinearPremultipliedRgba {
   const documentX = x * 2;
   const documentY = y * 2;
-  return quantizedLinear(perceptualReduceFour(
+  return quantizedLinear(averageFour(
     sample(documentX, documentY),
     sample(documentX + 1, documentY),
     sample(documentX, documentY + 1),
@@ -421,7 +417,6 @@ function filterOrderOracle(
       ),
       mipX,
       mipY,
-      true,
     );
     filteredBase = bilinearSample(
       (x, y) => mipOneTexel(
@@ -431,7 +426,6 @@ function filterOrderOracle(
       ),
       mipX,
       mipY,
-      true,
     );
     filteredSource = bilinearSample(
       (x, y) => mipOneTexel(
@@ -441,7 +435,6 @@ function filterOrderOracle(
       ),
       mipX,
       mipY,
-      true,
     );
   }
   const filterThenBlend = blendLayerPremultipliedLinear(

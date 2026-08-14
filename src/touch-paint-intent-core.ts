@@ -1,7 +1,7 @@
 /**
- * Arbitration between a one-finger Paint/Eraser gesture and the first contact
- * of a two-finger navigation gesture. Only touch input is eligible: pen, mouse
- * and Blend retain their previous immediate path.
+ * Arbitration between a one-finger Paint gesture and the first contact of a
+ * two-finger navigation gesture. Only touch input is eligible: pen, mouse and
+ * Blend retain their previous immediate path.
  */
 export const TOUCH_PAINT_INTENT_STRATEGY =
   "touch-paint-input-buffer-move-3-css-px-timeout-28ms-v1" as const;
@@ -17,9 +17,9 @@ export interface TouchPaintIntentPoint {
 export function shouldHoldTouchPaintIntent(
   enabled: boolean,
   pointerType: string,
-  toolEligible: boolean,
+  activeTool: string,
 ): boolean {
-  return enabled && pointerType === "touch" && toolEligible;
+  return enabled && pointerType === "touch" && activeTool === "paint";
 }
 
 export function touchPaintIntentMovementReached(

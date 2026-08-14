@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const contract = await import("../src/raster-effects-contract.ts");
-const editContract = await import("../src/destructive-raster-edit-contract.ts");
 
 assert.deepEqual(contract.NON_DESTRUCTIVE_RASTER_EFFECT_KINDS, [
   "color-overlay",
@@ -29,15 +28,6 @@ assert.equal(contract.isNonDestructiveRasterEffectKind("stroke"), true);
 assert.equal(contract.isNonDestructiveRasterEffectKind("noise"), false);
 assert.equal(contract.isDestructiveRasterAdjustmentKind("noise"), true);
 assert.equal(contract.isDestructiveRasterAdjustmentKind("bevel"), false);
-assert.deepEqual(editContract.DESTRUCTIVE_RASTER_EDIT_KINDS, [
-  "transform",
-  "liquify",
-  "gaussian-blur",
-  "motion-blur",
-  "noise",
-]);
-assert.equal(editContract.destructiveRasterEditLabel("transform"), "Trasforma");
-assert.equal(editContract.destructiveRasterEditLabel("noise"), "Noise");
 
 const root = new URL("../", import.meta.url);
 const styleController = readFileSync(new URL("src/raster-style-controller.ts", root), "utf8");
@@ -51,7 +41,6 @@ const sharedSheet = readFileSync(
   new URL("src/mobile-bottom-sheet-controller.ts", root),
   "utf8",
 );
-const brushEngine = readFileSync(new URL("src/brush-engine.ts", root), "utf8");
 
 assert.match(styleController, /NonDestructiveRasterEffectKind/);
 assert.match(styleController, /non-destructive raster metadata/);
@@ -62,11 +51,5 @@ assert.match(effectSheet, /new MobileBottomSheetController/);
 assert.match(sharedSheet, /class MobileBottomSheetController/);
 assert.doesNotMatch(strokeSheet, /private (?:start|move|finish)Drag/);
 assert.doesNotMatch(effectSheet, /private (?:start|move|finish)Drag/);
-assert.match(
-  brushEngine,
-  /satisfies Readonly<Record<DestructiveRasterEditKind, boolean>>/,
-  "adding a destructive edit kind must force its active-session guard to be updated",
-);
-assert.match(brushEngine, /for \(const kind of DESTRUCTIVE_RASTER_EDIT_KINDS\)/);
 
 console.log("Raster effects: destructive domains and shared sheet lifecycle verified.");

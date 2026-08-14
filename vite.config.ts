@@ -1,19 +1,12 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { defineConfig, type Plugin } from "vite";
-import {
-  assembleEditorHtml,
-  readEditorHtml,
-} from "./scripts/ui-shell-source.mjs";
 
 // In produzione /api/human-stroke è servito dal worker Sites (D1). In dev il
-// La fixture canonica vive con gli asset autorevoli dei Labs: senza questo
+// fixture canonico vive in .tmp-canonical-human-stroke.json: senza questo
 // middleware la suite rendering one-tap resta disabilitata in locale.
 function devHumanStrokeApi(): Plugin {
-  const fixturePath = resolve(
-    __dirname,
-    "src/labs/fixtures/human-stroke/canonical-v1.json",
-  );
+  const fixturePath = resolve(__dirname, ".tmp-canonical-human-stroke.json");
   return {
     name: "dev-human-stroke-api",
     apply: "serve",
@@ -55,25 +48,24 @@ function devHumanStrokeApi(): Plugin {
   };
 }
 
-function editorHtmlShell(): Plugin {
+function labsHtmlShell(): Plugin {
   return {
-    name: "editor-html-shell",
+    name: "labs-html-shell",
     enforce: "pre",
     async transformIndexHtml(html, context) {
-      if (context.path.endsWith("/labs.html")) {
-        return readEditorHtml()
-          .replace(
-            '<script type="module" src="/src/startup.ts"></script>',
-            '<script type="module" src="/src/labs/startup.ts"></script>',
-          )
-          .replace(
-            "<title>WebGPU Brush Engine</title>",
-            "<title>WebGPU Brush Engine Labs</title>",
-          );
+      if (!context.path.endsWith("/labs.html")) {
+        return html;
       }
-      return context.path.endsWith("/index.html") || context.path === "/"
-        ? assembleEditorHtml(html)
-        : html;
+      const editorHtml = await readFile(resolve(__dirname, "index.html"), "utf8");
+      return editorHtml
+        .replace(
+          '<script type="module" src="/src/startup.ts"></script>',
+          '<script type="module" src="/src/labs/startup.ts"></script>',
+        )
+        .replace(
+          "<title>WebGPU Brush Engine</title>",
+          "<title>WebGPU Brush Engine Labs</title>",
+        );
     },
   };
 }
@@ -81,7 +73,7 @@ function editorHtmlShell(): Plugin {
 export default defineConfig(({ mode }) => ({
   base: "./",
   plugins: [
-    editorHtmlShell(),
+    labsHtmlShell(),
     ...(mode === "labs" ? [devHumanStrokeApi()] : []),
   ],
   build: mode === "labs"

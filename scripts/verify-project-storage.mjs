@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readRepositorySource } from "./verification/source-contract.mjs";
+import { readFileSync } from "node:fs";
 import {
   PROJECT_DOCUMENT_SCHEMA_VERSION,
   PROJECT_MANIFEST_MAGIC,
@@ -318,27 +318,20 @@ assert.equal(await storage.deleteProject(first.id), false);
 assert.equal(await storage.loadProject(first.id), null);
 assert.equal((await secondInstance.listProjects()).length, 0);
 
-const repositorySource = readRepositorySource("src/project-storage-repository.ts");
-const backendSource = readRepositorySource("src/project-storage-backend.ts");
-const storageSources = [
-  "src/project-storage.ts",
-  "src/project-storage-schema.ts",
-  "src/project-storage-keys.ts",
-  "src/project-storage-codec.ts",
-  "src/project-storage-quota.ts",
-  "src/project-storage-backend.ts",
-  "src/project-storage-repository.ts",
-].map(readRepositorySource).join("\n");
-const runtimeSource = readRepositorySource("src/engine-project-runtime.ts");
-const stagePosition = repositorySource.indexOf("await this.writeStagedGeneration(generation)");
-const headPosition = repositorySource.indexOf("await this.commitProjectHead(generation.summary");
+const source = readFileSync(new URL("../src/project-storage.ts", import.meta.url), "utf8");
+const runtimeSource = readFileSync(
+  new URL("../src/engine-project-runtime.ts", import.meta.url),
+  "utf8",
+);
+const stagePosition = source.indexOf("await this.writeStagedGeneration(generation)");
+const headPosition = source.indexOf("await this.commitProjectHead(generation.summary");
 assert.ok(stagePosition >= 0 && headPosition > stagePosition,
   "the durable generation must commit before switching the project head");
-assert.match(backendSource, /bytes:\s*chunk\.bytes\.slice\(0\)/,
+assert.match(source, /bytes:\s*chunk\.bytes\.slice\(0\)/,
   "engine-owned ArrayBuffers must be copied, never transferred");
-assert.doesNotMatch(storageSources, /JSON\.(?:parse|stringify)/,
+assert.doesNotMatch(source, /JSON\.(?:parse|stringify)/,
   "project DTOs need structured clone so typed arrays and ArrayBuffers survive");
-assert.doesNotMatch(storageSources, /GPU(?:Texture|Buffer|Device|Queue|CommandEncoder)/,
+assert.doesNotMatch(source, /GPU(?:Texture|Buffer|Device|Queue|CommandEncoder)/,
   "the storage layer must stay independent of WebGPU objects");
 assert.match(
   runtimeSource,
@@ -351,7 +344,7 @@ assert.match(
   "project capture must rebuild every persisted tile bit, including tile 255",
 );
 const semanticResourcesPosition = runtimeSource.indexOf(
-  "await engine.ensureVectorEditorResources()",
+  "await engine.ensureOptionalEditorResources()",
 );
 const semanticRestorePosition = runtimeSource.indexOf(
   "engine.mixedSceneStack?.restoreState(snapshot.mixedScene)",

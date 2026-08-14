@@ -26,7 +26,7 @@ import {
 } from "./engine-cold-storage";
 import {
   destroyLayerGpuResources,
-} from "./engine-layer-residency-runtime";
+} from "./engine-layer-runtime";
 import {
   hydrateLayerFromSeed,
   switchActiveForStructuralHistory,
@@ -34,7 +34,7 @@ import {
 import {
   clearVectorTextPresentationForTransaction,
   requireMixedSceneStack,
-} from "./engine-vector-text-resources-runtime";
+} from "./engine-vector-text-runtime";
 
 export const LAYER_STRUCTURE_HISTORY_STRATEGY =
   "journaled-add-and-delete-clipping-unit-atomic-seeded-restore-v1" as const;

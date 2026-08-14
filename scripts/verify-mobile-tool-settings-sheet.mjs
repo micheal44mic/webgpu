@@ -1,10 +1,9 @@
-import { readEditorHtml, readEditorStyleSource } from "./ui-shell-source.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const root = new URL("../", import.meta.url);
-const html = readEditorHtml();
-const css = readEditorStyleSource();
+const html = readFileSync(new URL("index.html", root), "utf8");
+const css = readFileSync(new URL("src/styles.css", root), "utf8");
 const main = readFileSync(new URL("src/main.ts", root), "utf8");
 const editorTools = readFileSync(
   new URL("src/editor-tools-controller.ts", root),
@@ -16,10 +15,6 @@ const controller = readFileSync(
 );
 const mixedController = readFileSync(
   new URL("src/mixed-scene-controller.ts", root),
-  "utf8",
-);
-const mixedCommandHistory = readFileSync(
-  new URL("src/mixed-scene-command-history-runtime.ts", root),
   "utf8",
 );
 const mixedControllerContract = readFileSync(
@@ -404,11 +399,11 @@ assert.match(
 );
 assert.match(
   mixedController,
-  /createText\(color\?: string\)[\s\S]*?createMixedSceneDefaultTextSeed\([\s\S]{0,180}textCount,[\s\S]{0,40}color,/,
+  /createText\(color\?: string\)[\s\S]*?defaultSeed\(textCount, color\)/,
   "new mobile text must pass its chosen color into the authoritative seed",
 );
 assert.match(
-  mixedCommandHistory,
+  mixedController,
   /blockShadowEnabled:\s*false/,
   "new text must start without Block Shadow",
 );

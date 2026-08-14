@@ -8,7 +8,7 @@ import type { HistoryAction } from "./engine-history-types";
 import type { HistoryState } from "./engine-types";
 import { assertValidMixedSceneOrder } from "./mixed-scene-reorder-core.ts";
 
-export const APP_DIAGNOSTIC_SCHEMA = "webgpu-brush-session-diagnostic-v3" as const;
+export const APP_DIAGNOSTIC_SCHEMA = "webgpu-brush-session-diagnostic-v2" as const;
 export const APP_DIAGNOSTIC_EVENT_LIMIT = 30;
 
 export interface AppDiagnosticError {

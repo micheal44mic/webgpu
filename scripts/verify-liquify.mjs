@@ -1,4 +1,3 @@
-import { readEditorHtml, readEditorStyleSource } from "./ui-shell-source.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -20,8 +19,8 @@ const canvasInput = readFileSync(
   "utf8",
 );
 const sheet = readFileSync(resolve(repositoryRoot, "src/mobile-liquify-sheet.ts"), "utf8");
-const html = readEditorHtml();
-const styles = readEditorStyleSource();
+const html = readFileSync(resolve(repositoryRoot, "index.html"), "utf8");
+const styles = readFileSync(resolve(repositoryRoot, "src/styles.css"), "utf8");
 const sourceManifest = readFileSync(resolve(repositoryRoot, "scripts/engine-source.mjs"), "utf8");
 
 const requireText = (source, fragment, label = fragment) => {

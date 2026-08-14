@@ -1,9 +1,8 @@
-import { readEditorHtml, readEditorStyleSource } from "./ui-shell-source.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const html = readEditorHtml();
-const css = readEditorStyleSource();
+const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
 const editorTools = readFileSync(
   new URL("../src/editor-tools-controller.ts", import.meta.url),

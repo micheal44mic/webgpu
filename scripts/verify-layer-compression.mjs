@@ -1,4 +1,3 @@
-import { readEditorHtml } from "./ui-shell-source.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { readEngineSource } from "./engine-source.mjs";
@@ -115,7 +114,7 @@ const clientSource = readFileSync(
   new URL("../src/layer-cold-compression-client.ts", import.meta.url),
   "utf8",
 );
-const indexSource = readEditorHtml();
+const indexSource = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const sitesSource = readFileSync(
   new URL("../scripts/prepare-sites-build.mjs", import.meta.url),
   "utf8",
@@ -194,7 +193,7 @@ assert.match(
   /request\.storage === "gzip-shuffle16"[\s\S]*?unshuffle16\(await gunzipBytes\(stored\)\)/,
   "il worker deve invertire lo shuffle in base al tag del payload",
 );
-const beginStrokeStart = engineSource.indexOf("beginStrokeAtLayer(");
+const beginStrokeStart = engineSource.indexOf("beginStrokeAtLayer(point: LayerPoint)");
 const beginStrokeEnd = engineSource.indexOf("extendStroke(", beginStrokeStart);
 const beginStrokeBody = engineSource.slice(beginStrokeStart, beginStrokeEnd);
 assert.match(beginStrokeBody, /pauseLayerColdCompressionIdle\(this\)/);
