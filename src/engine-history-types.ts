@@ -27,6 +27,7 @@ import type { RasterColorOverlayStyle } from "./raster-color-overlay-core";
 import type { RasterNoiseChannels, RasterNoiseStyle } from "./noise-core";
 import type { LiquifyMode } from "./liquify-core";
 import type { RasterLayerSource } from "./raster-layer-source";
+import type { RasterLayerEffectsSnapshot } from "./raster-layer-effects";
 
 export interface SelectionHistoryMaskSnapshot {
   readonly revision: number;
@@ -323,8 +324,6 @@ export type RasterTransformHistoryAction = RasterTransformHistoryActionMetadata 
 interface RasterFilterHistoryActionCommon extends RasterHistoryCheckpoint {
   id: number;
   kind: "raster-filter";
-  seed: LayerColdStorageResources;
-  baseBounds: DirtyRect;
   rasterSourceBefore?: RasterLayerSource | null;
   rasterSourceAfter?: RasterLayerSource | null;
 }
@@ -380,6 +379,20 @@ export type RasterFilterHistoryAction = RasterFilterHistoryActionCommon & (
     strategy: string;
     precision: "rgba16float-source-and-displacement-f32-math";
     displacementFormat: "rgba16float";
+  }
+  | {
+    filter: "rasterize-layer";
+    /** Exact pixels immediately before Rasterize, including a loaded-project baseline. */
+    beforeSeed: LayerColdStorageResources;
+    beforeBounds: DirtyRect;
+    beforeTileMask: Uint32Array;
+    effectsBefore: RasterLayerEffectsSnapshot;
+    effectsAfter: RasterLayerEffectsSnapshot;
+    strategy:
+      "bake-style-stack-into-authoritative-pixels-preserve-opacity-blend-and-clipping-v1";
+    preservesLayerOpacity: true;
+    preservesBlendMode: true;
+    preservesClipping: true;
   }
 );
 

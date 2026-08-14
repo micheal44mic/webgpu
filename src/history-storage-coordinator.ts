@@ -1480,6 +1480,9 @@ export class HistoryStorageCoordinator {
       || crossed.kind === "raster-filter"
     ) {
       addSeed(crossed.seed);
+      if (crossed.kind === "raster-filter" && crossed.filter === "rasterize-layer") {
+        addSeed(crossed.beforeSeed);
+      }
     } else if (crossed.kind === "layer-delete") {
       for (const entry of crossed.entries) addSeed(entry.seed);
     } else if (crossed.kind === "layer-merge") {
@@ -1519,6 +1522,16 @@ export class HistoryStorageCoordinator {
         || action.kind === "raster-filter"
       ) {
         if (action.seed) action.seed = this.wrapSeed(action.seed, action.id, action.layerId);
+        if (
+          action.kind === "raster-filter"
+          && action.filter === "rasterize-layer"
+        ) {
+          action.beforeSeed = this.wrapSeed(
+            action.beforeSeed,
+            action.id,
+            action.layerId,
+          );
+        }
       } else if (action.kind === "layer-delete") {
         for (const entry of action.entries) {
           if (entry.seed) entry.seed = this.wrapSeed(

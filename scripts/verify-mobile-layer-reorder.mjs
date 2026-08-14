@@ -74,8 +74,8 @@ assert.equal(mobileLayerReorderAutoScrollVelocity(500, 100, 500), 520);
 assert.match(html, /id="mobileLayerReorderStatus"[\s\S]*?aria-live="polite"/);
 assert.match(
   html,
-  /id="mobileLayerContextMenu"[\s\S]*?role="menu"[\s\S]*?id="mobileLayerClipping"[\s\S]*?id="mobileLayerOptions"/,
-  "the selected layer must expose Clipping Mask and Options in one anchored menu",
+  /id="mobileLayerContextMenu"[\s\S]*?role="menu"[\s\S]*?id="mobileLayerClipping"[\s\S]*?id="mobileLayerOptions"[\s\S]*?id="mobileLayerRasterize"/,
+  "the selected layer must expose Clipping Mask, Options and Rasterize in one anchored menu",
 );
 assert.match(
   html,
@@ -110,6 +110,16 @@ assert.match(
   controller + main,
   /this\.options\.openLayerOptions\([\s\S]*?openLayerOptions:[\s\S]*?open\("layer-options"/,
   "Options must route to the shared compact bottom sheet",
+);
+assert.match(
+  controller + main,
+  /this\.options\.rasterizeLayer\(key\)[\s\S]*?rasterizeLayer: \(key\) => sceneEditorController!\.rasterizeLayer\(key\)/,
+  "Rasterize must route the stable selected key through SceneEditorController",
+);
+assert.match(
+  controller,
+  /const rasterizeAvailable = properties\.kind === "raster" \|\| properties\.kind === "svg";[\s\S]*?rasterizeButton\.hidden = this\.multiSelectEnabled \|\| !rasterizeAvailable/,
+  "Rasterize must be exposed only for one selected raster or SVG layer",
 );
 assert.match(controller, /mobileLayerReorderAutoScrollVelocity/);
 assert.match(controller, /event\.altKey[\s\S]*?ArrowUp[\s\S]*?ArrowDown/);

@@ -27,6 +27,7 @@ export type SceneEditorEnginePort = Pick<
   | "getMixedSceneSnapshot"
   | "getStats"
   | "moveMixedSceneItem"
+  | "rasterizeActiveRasterLayer"
   | "setActiveLayer"
   | "setActiveMixedSceneItem"
   | "setLayerBlendMode"
@@ -45,8 +46,15 @@ export type SceneEditorEnginePort = Pick<
 
 export type SceneEditorVectorPort = Pick<
   MixedSceneController,
-  "mergeSceneItems" | "syncScene"
+  "mergeSceneItems" | "rasterizeSelectedSvgLayer" | "syncScene"
 >;
+
+export interface SceneEditorRasterizeResult {
+  readonly kind: "raster" | "svg";
+  readonly name: string;
+  readonly changed: boolean;
+  readonly outputKey: SceneLayerKey;
+}
 
 export interface SceneEditorBrowser {
   requestAnimationFrame(callback: FrameRequestCallback): number;
@@ -164,6 +172,63 @@ export class SceneEditorController {
       }
       await this.options.engine.waitForIdle();
       return { itemCount: result.itemCount };
+    } finally {
+      this.finish({ loading: true, syncActiveRasterControls: true });
+    }
+  }
+
+  async rasterizeLayer(key: SceneLayerKey): Promise<SceneEditorRasterizeResult> {
+    const stats = this.options.engine.getStats();
+    const target = selectedSceneLayerProperties(stats, false, key);
+    if (!target || (target.kind !== "raster" && target.kind !== "svg")) {
+      throw new Error("Rasterize è disponibile soltanto per livelli raster e SVG.");
+    }
+    const selectedKey = stats.mixedScene?.selectedKey
+      ?? `raster:${stats.activeLayerId}`;
+    if (selectedKey !== key) {
+      throw new Error("Il livello da rasterizzare non è più selezionato.");
+    }
+    this.beginOrThrow("Rasterize non disponibile durante un'altra operazione.");
+    try {
+      if (!(await this.showLoading("Rasterizzazione livello…"))) {
+        throw new Error("Scene editor disposed.");
+      }
+      const liveStats = this.options.engine.getStats();
+      const liveTarget = selectedSceneLayerProperties(liveStats, false, key);
+      const liveSelectedKey = liveStats.mixedScene?.selectedKey
+        ?? `raster:${liveStats.activeLayerId}`;
+      if (!liveTarget || liveTarget.kind !== target.kind || liveSelectedKey !== key) {
+        throw new Error("Il livello da rasterizzare è cambiato durante l'operazione.");
+      }
+      if (liveTarget.kind === "raster") {
+        const result = await this.options.engine.rasterizeActiveRasterLayer();
+        await this.options.engine.waitForIdle();
+        this.options.elements.result.textContent = result
+          ? `${liveTarget.name} rasterizzato; blend mode e opacità preservati.`
+          : `${liveTarget.name} è già rasterizzato e non ha effetti da incorporare.`;
+        return {
+          kind: "raster",
+          name: liveTarget.name,
+          changed: result !== null,
+          outputKey: key,
+        };
+      }
+
+      const vector = this.options.getVectorController();
+      if (!vector) {
+        throw new Error("Rasterizzazione SVG non disponibile: controller non pronto.");
+      }
+      const result = await vector.rasterizeSelectedSvgLayer();
+      if (!result) throw new Error("Rasterizzazione SVG non riuscita.");
+      await this.options.engine.waitForIdle();
+      const outputKey = `raster:${result.layerId}` as SceneLayerKey;
+      this.options.elements.result.textContent = `${liveTarget.name} rasterizzato.`;
+      return {
+        kind: "svg",
+        name: liveTarget.name,
+        changed: true,
+        outputKey,
+      };
     } finally {
       this.finish({ loading: true, syncActiveRasterControls: true });
     }

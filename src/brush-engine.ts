@@ -129,6 +129,10 @@ import {
 } from "./engine-liquify-runtime";
 import type { LiquifySettings } from "./liquify-core";
 import {
+  rasterizeActiveRasterLayer as rasterizeActiveRasterLayerRuntime,
+  type RasterizeActiveRasterLayerResult,
+} from "./engine-rasterize-layer-runtime";
+import {
   planPaintDisplayMips,
   type PaintDisplayMipPlan,
 } from "./noise-mip-smoothing-core";
@@ -800,6 +804,8 @@ export type DestructiveRasterEditKind =
   | "motion-blur"
   | "noise"
   | "liquify";
+
+type DestructiveRasterOperationKind = DestructiveRasterEditKind | "rasterize";
 
 export interface LayerDuplicateResult {
   readonly kind: MixedSceneItem["kind"];
@@ -4627,15 +4633,16 @@ export class BrushEngine {
     return null;
   }
 
-  destructiveRasterEditLabel(kind: DestructiveRasterEditKind): string {
+  destructiveRasterEditLabel(kind: DestructiveRasterOperationKind): string {
     if (kind === "transform") return "Trasforma";
     if (kind === "gaussian-blur") return "Gaussian Blur";
     if (kind === "motion-blur") return "Motion Blur";
     if (kind === "liquify") return "Liquify";
+    if (kind === "rasterize") return "Rasterize";
     return "Noise";
   }
 
-  assertDestructiveRasterEditCanOpen(kind: DestructiveRasterEditKind): void {
+  assertDestructiveRasterEditCanOpen(kind: DestructiveRasterOperationKind): void {
     const active = this.activeDestructiveRasterEditKind();
     if (!active || active === kind) return;
     throw new Error(
@@ -7051,6 +7058,10 @@ export class BrushEngine {
 
   commitRasterGaussianBlur(): Promise<boolean> {
     return commitRasterGaussianBlurRuntime(this);
+  }
+
+  rasterizeActiveRasterLayer(): Promise<RasterizeActiveRasterLayerResult | null> {
+    return rasterizeActiveRasterLayerRuntime(this);
   }
 
   cancelRasterGaussianBlur(): Promise<boolean> {
@@ -10178,6 +10189,13 @@ export class BrushEngine {
         destroyRasterImportHistorySeed(action);
       } else if (action.kind === "raster-transform" || action.kind === "raster-filter") {
         destroyLayerColdStorage(action.seed);
+        if (
+          action.kind === "raster-filter"
+          && action.filter === "rasterize-layer"
+          && action.beforeSeed !== action.seed
+        ) {
+          destroyLayerColdStorage(action.beforeSeed);
+        }
       } else if (action.kind === "layer-add") {
         destroyLayerColdStorage(action.seed);
       } else if (action.kind === "layer-delete") {

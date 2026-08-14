@@ -196,6 +196,7 @@ const mobileLayerMergeSelectionButton = element<HTMLButtonElement>(
 const mobileLayerContextMenu = element<HTMLElement>("mobileLayerContextMenu");
 const mobileLayerClippingButton = element<HTMLButtonElement>("mobileLayerClipping");
 const mobileLayerOptionsButton = element<HTMLButtonElement>("mobileLayerOptions");
+const mobileLayerRasterizeButton = element<HTMLButtonElement>("mobileLayerRasterize");
 const mobileLayerMergeButton = element<HTMLButtonElement>("mobileLayerMerge");
 const mobileLayerMergeReason = element<HTMLParagraphElement>("mobileLayerMergeReason");
 const mobileLayerMergeStatus = element<HTMLParagraphElement>("mobileLayerMergeStatus");
@@ -1417,6 +1418,7 @@ layerPanelController = new LayerPanelController({
     contextMenu: mobileLayerContextMenu,
     clippingButton: mobileLayerClippingButton,
     optionsButton: mobileLayerOptionsButton,
+    rasterizeButton: mobileLayerRasterizeButton,
     mergeButton: mobileLayerMergeButton,
     mergeReason: mobileLayerMergeReason,
     mergeStatus: mobileLayerMergeStatus,
@@ -1447,6 +1449,7 @@ layerPanelController = new LayerPanelController({
   mergeCapabilityError: (keys, stats) =>
     sceneEditorController!.mergeCapabilityError(keys, stats),
   mergeLayers: (keys) => sceneEditorController!.mergeLayers(keys),
+  rasterizeLayer: (key) => sceneEditorController!.rasterizeLayer(key),
   addRasterLayer: () => sceneEditorController?.addRasterLayer(),
   duplicateSelectedLayer: () => sceneEditorController!.duplicateSelectedLayer(),
   addClippingMaskLayer: () => sceneEditorController?.addClippingMaskLayer(),

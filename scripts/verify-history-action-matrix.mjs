@@ -49,6 +49,7 @@ const requiredRows = [
   "fill",
   "clear",
   "destructive-raster-filters",
+  "layer-rasterize",
   "raster-transform",
   "layer-blend-mode",
   "layer-metadata-effects",

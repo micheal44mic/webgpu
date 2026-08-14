@@ -58,6 +58,13 @@ export interface LayerPanelDuplicateResult {
   readonly duplicateRasterLayerId: number | null;
 }
 
+export interface LayerPanelRasterizeResult {
+  readonly kind: "raster" | "svg";
+  readonly name: string;
+  readonly changed: boolean;
+  readonly outputKey: LayerPanelKey;
+}
+
 export interface LayerPanelElements {
   readonly trigger: HTMLButtonElement;
   readonly panel: HTMLElement;
@@ -71,6 +78,7 @@ export interface LayerPanelElements {
   readonly contextMenu: HTMLElement;
   readonly clippingButton: HTMLButtonElement;
   readonly optionsButton: HTMLButtonElement;
+  readonly rasterizeButton: HTMLButtonElement;
   readonly mergeButton: HTMLButtonElement;
   readonly mergeReason: HTMLParagraphElement;
   readonly mergeStatus: HTMLParagraphElement;
@@ -116,6 +124,9 @@ export interface LayerPanelControllerOptions {
   readonly mergeLayers: (
     orderedKeys: readonly LayerPanelKey[],
   ) => Promise<LayerPanelMergeResult>;
+  readonly rasterizeLayer: (
+    key: LayerPanelKey,
+  ) => Promise<LayerPanelRasterizeResult>;
   readonly addRasterLayer: () => void;
   readonly duplicateSelectedLayer: () => Promise<LayerPanelDuplicateResult>;
   readonly addClippingMaskLayer: () => void;
@@ -522,6 +533,9 @@ export class LayerPanelController {
     this.listen(elements.list, "click", (raw) => this.handleListClick(raw as MouseEvent));
     this.listen(elements.clippingButton, "click", () => this.requestClippingToggle());
     this.listen(elements.optionsButton, "click", () => this.requestLayerOptions());
+    this.listen(elements.rasterizeButton, "click", () => {
+      if (!elements.rasterizeButton.disabled) void this.requestRasterize();
+    });
     this.listen(elements.mergeButton, "click", () => {
       if (!elements.mergeButton.disabled) void this.requestMerge();
     });
@@ -750,6 +764,7 @@ export class LayerPanelController {
       contextMenu,
       clippingButton,
       optionsButton,
+      rasterizeButton,
       deleteButton,
       mergeButton,
       mergeReason,
@@ -765,6 +780,9 @@ export class LayerPanelController {
       : "Clipping Mask";
     optionsButton.hidden = this.multiSelectEnabled;
     optionsButton.disabled = this.multiSelectEnabled;
+    const rasterizeAvailable = properties.kind === "raster" || properties.kind === "svg";
+    rasterizeButton.hidden = this.multiSelectEnabled || !rasterizeAvailable;
+    rasterizeButton.disabled = this.multiSelectEnabled || !rasterizeAvailable;
     deleteButton.hidden = this.multiSelectEnabled;
     mergeButton.hidden = !this.multiSelectEnabled;
     mergeReason.hidden = true;
@@ -838,6 +856,49 @@ export class LayerPanelController {
     if (!properties || properties.locked) return;
     this.closeContextMenu(false);
     this.options.openLayerOptions(this.options.elements.trigger);
+  }
+
+  private async requestRasterize(): Promise<void> {
+    const properties = this.selectedLayerProperties(this.contextKey);
+    if (
+      !properties
+      || (properties.kind !== "raster" && properties.kind !== "svg")
+      || properties.locked
+      || this.options.isInteractionLocked()
+    ) return;
+    const key = properties.key;
+    this.closeContextMenu(false);
+    const operation = this.options.rasterizeLayer(key);
+    this.renderSignature = "";
+    this.requestRefresh();
+    try {
+      const result = await operation;
+      if (this.disposed) return;
+      const message = result.changed
+        ? `${result.name} rasterized.`
+        : `${result.name} is already rasterized with no effects to bake.`;
+      this.options.onLayerResult(message);
+      this.announce(message);
+    } catch (error) {
+      if (this.disposed) return;
+      const message = error instanceof Error
+        ? error.message
+        : "Layer rasterization failed.";
+      this.options.recordDiagnostic(
+        "mixed-scene-layer-rasterize-failed",
+        JSON.stringify({ key }),
+        error,
+      );
+      this.options.onStatus(message, true);
+      this.announce(message);
+    } finally {
+      if (this.disposed) return;
+      this.renderSignature = "";
+      this.requestRefresh();
+      const latest = this.options.getStats();
+      if (latest) this.render(latest);
+      this.options.thumbnails.ensureActive(0);
+    }
   }
 
   private async requestMerge(): Promise<void> {

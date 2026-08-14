@@ -1,5 +1,5 @@
 export const HISTORY_JOURNAL_STRATEGY =
-  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-metadata-scene-reorder-merge-seeded-add-v11" as const;
+  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-metadata-scene-reorder-merge-seeded-add-rasterize-before-v12" as const;
 
 /**
  * One entry of the global journal. `layerId` is what makes a single stack usable
@@ -28,7 +28,8 @@ export type JournalAction =
     id: number;
     kind: "raster-filter";
     layerId: number;
-    baseBounds: unknown;
+    /** Rasterize may intentionally bake every occupied pixel to transparency. */
+    baseBounds: unknown | null;
   }
   | {
     id: number;

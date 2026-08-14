@@ -39,6 +39,7 @@ export const verificationScripts = Object.freeze([
   "verify-layer-merge-vector-runs.mjs",
   "verify-layer-merge.mjs",
   "verify-layer-panel-controller.mjs",
+  "verify-layer-rasterize.mjs",
   "verify-layer-stack.mjs",
   "verify-layer-structure.mjs",
   "verify-layer-thumbnail-controller.mjs",

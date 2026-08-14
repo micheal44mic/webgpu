@@ -45,6 +45,7 @@ import {
   type RasterLayerMetadataHistoryValueMap,
   type RasterImportHistoryAction,
   type RasterFilterHistoryAction,
+  type RasterHistoryCheckpoint,
   type RasterTransformHistoryAction,
   type VectorRasterizeHistoryAction,
 } from "./engine-history-types";
@@ -107,6 +108,11 @@ import {
   cloneRasterLayerSource,
   type RasterLayerSource,
 } from "./raster-layer-source";
+import {
+  applyRasterLayerEffects,
+  copyRasterLayerEffects,
+  type RasterLayerEffectsSnapshot,
+} from "./raster-layer-effects";
 
 export function captureRasterLayerMetadataHistoryState(
   engine: BrushEngine,
@@ -346,6 +352,25 @@ interface RasterSourceHistoryTransition {
   readonly after: RasterLayerSource | null;
 }
 
+interface RasterEffectsHistoryTransition {
+  readonly layerId: number;
+  readonly before: RasterLayerEffectsSnapshot;
+  readonly after: RasterLayerEffectsSnapshot;
+}
+
+function rasterEffectsHistoryTransition(
+  action: HistoryAction,
+): RasterEffectsHistoryTransition | null {
+  if (action.kind !== "raster-filter" || action.filter !== "rasterize-layer") {
+    return null;
+  }
+  return {
+    layerId: action.layerId,
+    before: copyRasterLayerEffects(action.effectsBefore),
+    after: copyRasterLayerEffects(action.effectsAfter),
+  };
+}
+
 function rasterSourceHistoryTransition(
   action: HistoryAction,
 ): RasterSourceHistoryTransition | null {
@@ -445,6 +470,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
     : engine.historyActions[engine.historyCursor];
   if (!crossedAction) return false;
   const rasterSourceTransition = rasterSourceHistoryTransition(crossedAction);
+  const rasterEffectsTransition = rasterEffectsHistoryTransition(crossedAction);
   // The refusal lives here as well as in getHistoryState: reporting
   // canUndo=false only greys out a button, and the API is reachable directly.
   // A vanished layer is refused; scene reorder also refuses an old permutation
@@ -487,7 +513,9 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
   engine.historyBusy = true;
   engine.publishHistoryState();
   engine.publishStatus(
-    crossedAction.kind === "raster-import"
+    crossedAction.kind === "raster-filter" && crossedAction.filter === "rasterize-layer"
+      ? delta < 0 ? "Undo: ripristino effetti livello…" : "Redo: rasterizzazione livello…"
+      : crossedAction.kind === "raster-import"
       ? delta < 0 ? "Undo: rimozione immagine raster…" : "Redo: ripristino immagine raster…"
       : crossedAction.kind === "layer-delete"
       ? delta < 0 ? "Undo: ripristino livello…" : "Redo: eliminazione livello…"
@@ -686,7 +714,27 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
           delta < 0 ? rasterSourceTransition.before : rasterSourceTransition.after,
         );
       }
+      if (rasterEffectsTransition) {
+        const targetRecord = engine.layerStack.byId(rasterEffectsTransition.layerId);
+        if (!targetRecord) {
+          throw new Error(
+            `Livello ${rasterEffectsTransition.layerId} degli effetti raster non trovato.`,
+          );
+        }
+        applyRasterLayerEffects(
+          targetRecord,
+          delta < 0 ? rasterEffectsTransition.before : rasterEffectsTransition.after,
+        );
+      }
       await rebuildActiveLayerFromHistory(engine);
+      if (rasterEffectsTransition) {
+        await restoreEffectsWorkbenchToActiveLayer(
+          engine,
+          "history-replay",
+          true,
+          "content-bounds",
+        );
+      }
       if (selectionCompareAndSwap && targetSelection) {
         await restorePixelSelectionHistoryMask(engine, targetSelection);
         selectionRestored = true;
@@ -723,7 +771,27 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
               delta < 0 ? rasterSourceTransition.after : rasterSourceTransition.before,
             );
           }
+          if (rasterEffectsTransition) {
+            const targetRecord = engine.layerStack.byId(rasterEffectsTransition.layerId);
+            if (!targetRecord) {
+              throw new Error(
+                `Livello ${rasterEffectsTransition.layerId} assente nel rollback effetti raster.`,
+              );
+            }
+            applyRasterLayerEffects(
+              targetRecord,
+              delta < 0 ? rasterEffectsTransition.after : rasterEffectsTransition.before,
+            );
+          }
           await rebuildActiveLayerFromHistory(engine);
+          if (rasterEffectsTransition) {
+            await restoreEffectsWorkbenchToActiveLayer(
+              engine,
+              "history-replay",
+              true,
+              "content-bounds",
+            );
+          }
           if (switched) {
             engine.persistActiveLayerState();
             await engine.prepareActiveLayerForSwitch();
@@ -785,7 +853,11 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
       engine.activeStrokeProfile.historyReplayOperations += 1;
     }
     engine.publishStatus(
-      delta < 0 ? "Undo completato." : "Redo completato.",
+      rasterEffectsTransition
+        ? delta < 0
+          ? "Effetti e sorgente del livello ripristinati."
+          : "Rasterizzazione livello ripristinata."
+        : delta < 0 ? "Undo completato." : "Redo completato.",
       "ok",
     );
     return true;
@@ -827,7 +899,10 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
   }
 }
 
-export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promise<void> {
+export async function rebuildActiveLayerFromHistory(
+  engine: BrushEngine,
+  checkpointOverride?: RasterHistoryCheckpoint,
+): Promise<void> {
   const layerId = engine.layerStack.active.id;
   // Set presentation policy before the first replay submission. Otherwise an
   // Undo across Noise could publish its final frame with the stale post-Noise
@@ -838,14 +913,29 @@ export async function rebuildActiveLayerFromHistory(engine: BrushEngine): Promis
     layerId,
   );
   engine.layerStack.active.noiseMipSmoothing = replayNoiseMipSmoothing;
-  const periodicSelection = periodicCheckpointChainForReplay(engine, layerId);
-  const replayPlan = planRasterHistoryReplay({
-    actions: engine.historyActions,
-    cursor: engine.historyCursor,
-    batches: engine.historyBatches,
-    layerId,
-    periodicSelection,
-  });
+  if (checkpointOverride && checkpointOverride.layerId !== layerId) {
+    throw new Error(
+      `Checkpoint livello ${checkpointOverride.layerId} applicato al livello attivo ${layerId}.`,
+    );
+  }
+  const periodicSelection = checkpointOverride
+    ? null
+    : periodicCheckpointChainForReplay(engine, layerId);
+  const replayPlan = checkpointOverride
+    ? {
+      periodicChain: [],
+      seedAction: checkpointOverride,
+      replayCheckpointActionIndex: engine.historyCursor - 1,
+      visibleActionIds: new Set<number>(),
+      batches: [],
+    }
+    : planRasterHistoryReplay({
+      actions: engine.historyActions,
+      cursor: engine.historyCursor,
+      batches: engine.historyBatches,
+      layerId,
+      periodicSelection,
+    });
   const periodicChain = replayPlan.periodicChain;
   const seedAction = replayPlan.seedAction;
   const visibleIds = replayPlan.visibleActionIds;
@@ -1555,6 +1645,13 @@ export async function compactDiscardedHistoryIncrementally(
   })) return abortResult();
   if (!await processArrayPhase(transformActionsToDestroy, (action) => {
     destroyLayerColdStorage(action.seed);
+    if (
+      action.kind === "raster-filter"
+      && action.filter === "rasterize-layer"
+      && action.beforeSeed !== action.seed
+    ) {
+      destroyLayerColdStorage(action.beforeSeed);
+    }
   })) return abortResult();
   if (!await processArrayPhase(layerAddActionsToDestroy, (action) => {
     destroyLayerColdStorage(action.seed);
