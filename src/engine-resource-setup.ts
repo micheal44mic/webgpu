@@ -59,6 +59,7 @@ import {
 import { THICKNESS_TAPER_WINDOW_MS, endThicknessRadius } from "./thickness-dynamics";
 import { RasterShadowRenderer } from "./shadow-renderer";
 import { RasterBevelRenderer } from "./bevel-renderer";
+import { buildBrushMaskOutline } from "./brush-outline-core";
 import { ensureMixedSceneLinearTexture } from "./engine-vector-text-runtime";
 import {
   cancelBevelFieldShrink,
@@ -1011,6 +1012,7 @@ export async function createShapeMaskResources(
       baseMask[index] = 255 - baseMask[index];
     }
   }
+  const outline = buildBrushMaskOutline(baseMask, SHAPE_MASK_SIZE, SHAPE_MASK_SIZE);
 
   const mipLevelCount = Math.log2(SHAPE_MASK_SIZE) + 1;
   const texture = engine.device.createTexture({
@@ -1098,6 +1100,7 @@ export async function createShapeMaskResources(
     occupancyWords: occupancy.words,
     occupancyActiveCells: occupancy.activeCells,
     occupancyCoverageRatios: occupancy.coverageRatios,
+    outline,
     previewSprite,
   };
 }

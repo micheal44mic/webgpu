@@ -1,5 +1,9 @@
 import { clamp, hexToHsl } from "./color";
 import {
+  brushOutlineDiameterCssPixels,
+  type BrushOutlineSnapshot,
+} from "./brush-outline-core";
+import {
   createDryBlendPlanner,
   DRY_BLEND_SCRATCH_LIFECYCLE_STRATEGY,
   type DryBlendPlanner,
@@ -1939,6 +1943,39 @@ export class BrushEngine {
       throw new Error("L'asset custom è ancora attivo o necessario alla cronologia.");
     }
     return this.customBrushAssets.remove(id);
+  }
+
+  getBrushOutlineSnapshot(): BrushOutlineSnapshot {
+    const diameterCssPixels = brushOutlineDiameterCssPixels(
+      this.settings.size,
+      this.zoom,
+      this.canvasCssWidth,
+      this.canvasCssHeight,
+      this.canvas.width,
+      this.canvas.height,
+    );
+    if (this.settings.shape !== "shape") {
+      return {
+        kind: "circle",
+        outline: null,
+        diameterCssPixels,
+        viewRotationRadians: this.viewRotation,
+        followsStroke: false,
+      };
+    }
+
+    const resources = this.shapeResourceSet;
+    const ready = resources !== null
+      && this.shapeResident
+      && this.shapeLoadedAssetId === shapeAssetIdForSettings(this.settings)
+      && this.shapeLoadedInvert === shapeInvertForSettings(this.settings);
+    return {
+      kind: ready ? "shape" : "unavailable",
+      outline: ready ? resources.outline : null,
+      diameterCssPixels,
+      viewRotationRadians: this.viewRotation,
+      followsStroke: this.settings.shapeRotation === "follow-stroke",
+    };
   }
 
   renderBrushTipPreview(

@@ -37,6 +37,7 @@
     "brush-source:verify": "node scripts/verify-brush-source-image.mjs",
     "brush-studio:verify": "node scripts/verify-brush-studio.mjs && node scripts/verify-brush-library-controller.mjs",
     "brush-library-preview:verify": "node scripts/verify-brush-library-preview.mjs",
+    "brush-outline:verify": "node scripts/verify-brush-outline.mjs",
     "brush-preview-parity:verify": "node scripts/verify-brush-preview-parity.mjs",
     "brush-quick-controls:verify": "node scripts/verify-brush-quick-controls-controller.mjs",
     "canvas-input:verify": "node scripts/verify-canvas-input-controller.mjs",

@@ -9,6 +9,7 @@ import type {
   BrushSettings,
   BrushShapeAssetId,
 } from "./engine-types";
+import type { BrushMaskOutline } from "./brush-outline-core";
 
 export interface LightGlazeSession {
   historyActionId: number;
@@ -53,6 +54,7 @@ export interface ShapeMaskResources {
   occupancyWords: Uint32Array;
   occupancyActiveCells: number[];
   occupancyCoverageRatios: number[];
+  outline: BrushMaskOutline;
   previewSprite: HTMLCanvasElement;
 }
 

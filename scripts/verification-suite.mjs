@@ -7,6 +7,7 @@ export const verificationScripts = Object.freeze([
   "verify-brush-display-regression.mjs",
   "verify-brush-library-preview.mjs",
   "verify-brush-library-controller.mjs",
+  "verify-brush-outline.mjs",
   "verify-brush-presets.mjs",
   "verify-brush-preview-parity.mjs",
   "verify-brush-quick-controls-controller.mjs",

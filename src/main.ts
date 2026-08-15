@@ -12,6 +12,7 @@ import { BrushQuickControlsController } from "./brush-quick-controls-controller"
 import { CanvasToolSettingsController } from "./canvas-tool-settings-controller";
 import { CanvasInputController } from "./canvas-input-controller";
 import { CanvasToolController } from "./canvas-tool-controller";
+import { BrushOutlineController } from "./brush-outline-controller";
 import { PixelSelectionController } from "./pixel-selection-controller";
 import { AppDiagnosticsController } from "./app-diagnostics-controller";
 import { GpuMemoryPanelController } from "./gpu-memory-panel-controller";
@@ -141,6 +142,7 @@ function element<T extends HTMLElement>(id: string): T {
 
 document.title = `WebGPU Brush Engine ${DOCUMENT_WIDTH}×${DOCUMENT_HEIGHT}`;
 const canvas = element<HTMLCanvasElement>("gpuCanvas");
+const brushOutlineCanvas = element<HTMLCanvasElement>("brushOutlineCanvas");
 const tipPreviewCanvas = element<HTMLCanvasElement>("tipPreviewCanvas");
 const rasterSelectionOverlayCanvas = element<HTMLCanvasElement>(
   "rasterSelectionOverlayCanvas",
@@ -393,6 +395,7 @@ let canvasInputController: CanvasInputController | null = null;
 let documentInteractionController: DocumentInteractionController | null = null;
 let brushQuickControlsController: BrushQuickControlsController | null = null;
 let canvasToolController: CanvasToolController | null = null;
+let brushOutlineController: BrushOutlineController | null = null;
 let mixedSceneInitializationPromise: Promise<MixedSceneController> | null = null;
 let editorToolsController: EditorToolsController;
 let mobileBrushStudio: MobileBrushStudioController | null = null;
@@ -421,6 +424,7 @@ const engine = new BrushEngine(canvas, {
     runtimeStatsController?.update(stats);
     brushQuickControlsController?.notifyEngineUpdate();
     mobileBrushStudio?.notifyEngineUpdate();
+    brushOutlineController?.notifyEngineUpdate();
   },
   onHistoryChange(state) {
     projectSessionController?.noteHistoryState(state);
@@ -440,6 +444,7 @@ const engine = new BrushEngine(canvas, {
   onViewChange() {
     mixedSceneController?.scheduleViewSync();
     projectSessionController?.markDirty();
+    brushOutlineController?.notifyEngineUpdate();
   },
   onPixelSelectionChange() {
     mobileToolSettingsSheet?.syncOpenState();
@@ -1519,6 +1524,14 @@ canvasInputController = new CanvasInputController({
   invalidateActiveThumbnail: requestMobileLayerThumbnailCapture,
 });
 
+brushOutlineController = new BrushOutlineController({
+  engine,
+  browser: window,
+  canvas,
+  overlay: brushOutlineCanvas,
+  getActiveTool: () => canvasToolController?.activeTool ?? "paint",
+});
+
 documentInteractionController = new DocumentInteractionController({
   browser: window,
   document,
@@ -1531,6 +1544,7 @@ window.addEventListener("pagehide", () => {
   gpuMemoryPanelController?.dispose();
   layerPanelController?.dispose();
   canvasInputController?.dispose();
+  brushOutlineController?.dispose();
   documentInteractionController?.dispose();
   rasterAdjustmentsController?.dispose();
   canvasToolController?.dispose();
@@ -1598,6 +1612,7 @@ function historyRequestLocked(): boolean {
 function updateHistoryControls(): void {
   historyControlsController.acceptState(historyState);
   if (editorToolsController?.isOpen) syncMobileToolsMenuState();
+  brushOutlineController?.notifyEngineUpdate();
 }
 
 
