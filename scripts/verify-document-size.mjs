@@ -748,6 +748,7 @@ assert.equal(lightGlazeAdditionalMemoryMiB("rgba8unorm", "none", { width: 4096, 
     ["Cold ripristinato livello 2 #7", "Cold storage livelli"],
     ["Merged below surface (1 layers) rgba16float 2048×2048", "Composite livelli"],
     ["Layer composite opacity", "Composite livelli"],
+    ["Brush outline · cached alpha boundary", "Preview pennello"],
     ["", "Non categorizzato"],
     ["qualcosa che non esiste ancora", "Non categorizzato"],
   ]) {

@@ -1,6 +1,7 @@
 import { clamp, hexToHsl } from "./color";
 import {
   brushOutlineDiameterCssPixels,
+  type BrushOutlineGpuTarget,
   type BrushOutlineSnapshot,
 } from "./brush-outline-core";
 import {
@@ -1976,6 +1977,11 @@ export class BrushEngine {
       viewRotationRadians: this.viewRotation,
       followsStroke: this.settings.shapeRotation === "follow-stroke",
     };
+  }
+
+  getBrushOutlineGpuTarget(): BrushOutlineGpuTarget | null {
+    if (!this.device || !this.canvasFormat || this.deviceLostError) return null;
+    return { device: this.device, format: this.canvasFormat };
   }
 
   renderBrushTipPreview(

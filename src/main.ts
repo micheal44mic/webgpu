@@ -1730,6 +1730,7 @@ async function initializeMixedSceneController(): Promise<MixedSceneController> {
 void engine.initialize()
   .then(async () => {
     engineInitialized = true;
+    brushOutlineController?.prepareGpuResources();
     if (!projectSessionController) {
       throw new Error("Project session controller is unavailable.");
     }

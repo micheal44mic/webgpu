@@ -7,10 +7,21 @@ export interface BrushMaskOutline {
    * outline stays registered to the exact center used by the stamp shader.
    */
   readonly paths: readonly Float32Array[];
+  /**
+   * Convex hull of every retained path vertex, in the same local coordinates.
+   * It is built once with the alpha boundary so pointer movement never scans
+   * thousands of contour vertices merely to evaluate Krita's cursor guards.
+   */
+  readonly boundingHull: Float32Array;
   readonly precise: boolean;
   readonly sourceWidth: number;
   readonly sourceHeight: number;
   readonly edgeCount: number;
+}
+
+interface OutlinePoint {
+  readonly x: number;
+  readonly y: number;
 }
 
 export interface BrushOutlineSnapshot {
@@ -19,6 +30,11 @@ export interface BrushOutlineSnapshot {
   readonly diameterCssPixels: number;
   readonly viewRotationRadians: number;
   readonly followsStroke: boolean;
+}
+
+export interface BrushOutlineGpuTarget {
+  readonly device: GPUDevice;
+  readonly format: GPUTextureFormat;
 }
 
 interface EdgeField {
@@ -179,6 +195,59 @@ function traceEdgeField(
   return paths;
 }
 
+function cross(origin: OutlinePoint, a: OutlinePoint, b: OutlinePoint): number {
+  return (a.x - origin.x) * (b.y - origin.y)
+    - (a.y - origin.y) * (b.x - origin.x);
+}
+
+/** Monotone-chain hull used only while compiling a newly loaded brush tip. */
+function buildBoundingHull(paths: readonly Float32Array[]): Float32Array {
+  const points: OutlinePoint[] = [];
+  for (const path of paths) {
+    for (let index = 0; index < path.length; index += 2) {
+      points.push({ x: path[index], y: path[index + 1] });
+    }
+  }
+  if (points.length === 0) return new Float32Array();
+  points.sort((a, b) => a.x - b.x || a.y - b.y);
+
+  const unique: OutlinePoint[] = [];
+  for (const point of points) {
+    const previous = unique[unique.length - 1];
+    if (!previous || previous.x !== point.x || previous.y !== point.y) unique.push(point);
+  }
+  if (unique.length <= 2) {
+    return Float32Array.from(unique.flatMap((point) => [point.x, point.y]));
+  }
+
+  const lower: OutlinePoint[] = [];
+  for (const point of unique) {
+    while (
+      lower.length >= 2
+      && cross(lower[lower.length - 2], lower[lower.length - 1], point) <= 0
+    ) {
+      lower.pop();
+    }
+    lower.push(point);
+  }
+  const upper: OutlinePoint[] = [];
+  for (let index = unique.length - 1; index >= 0; index -= 1) {
+    const point = unique[index];
+    while (
+      upper.length >= 2
+      && cross(upper[upper.length - 2], upper[upper.length - 1], point) <= 0
+    ) {
+      upper.pop();
+    }
+    upper.push(point);
+  }
+  lower.pop();
+  upper.pop();
+  return Float32Array.from(
+    lower.concat(upper).flatMap((point) => [point.x, point.y]),
+  );
+}
+
 /**
  * Builds the cached boundary from the same post-polarity alpha mask uploaded
  * to WebGPU. Non-zero alpha is deliberately the boundary criterion, matching
@@ -192,8 +261,10 @@ export function buildBrushMaskOutline(
 ): BrushMaskOutline {
   assertMaskDimensions(mask, width, height);
   const field = buildEdgeField(mask, width, height);
+  const paths = traceEdgeField(field, width, height);
   return {
-    paths: traceEdgeField(field, width, height),
+    paths,
+    boundingHull: buildBoundingHull(paths),
     precise: true,
     sourceWidth: width,
     sourceHeight: height,
@@ -233,24 +304,22 @@ export function brushOutlineBoundingExtentCssPixels(
   diameterCssPixels: number,
   rotationRadians: number,
 ): number {
-  if (outline.paths.length === 0 || diameterCssPixels <= 0) return 0;
+  if (outline.boundingHull.length === 0 || diameterCssPixels <= 0) return 0;
   const cosine = Math.cos(rotationRadians);
   const sine = Math.sin(rotationRadians);
   let minimumX = Number.POSITIVE_INFINITY;
   let minimumY = Number.POSITIVE_INFINITY;
   let maximumX = Number.NEGATIVE_INFINITY;
   let maximumY = Number.NEGATIVE_INFINITY;
-  for (const path of outline.paths) {
-    for (let index = 0; index < path.length; index += 2) {
-      const x = path[index] * diameterCssPixels;
-      const y = path[index + 1] * diameterCssPixels;
-      const transformedX = x * cosine - y * sine;
-      const transformedY = x * sine + y * cosine;
-      minimumX = Math.min(minimumX, transformedX);
-      minimumY = Math.min(minimumY, transformedY);
-      maximumX = Math.max(maximumX, transformedX);
-      maximumY = Math.max(maximumY, transformedY);
-    }
+  for (let index = 0; index < outline.boundingHull.length; index += 2) {
+    const x = outline.boundingHull[index] * diameterCssPixels;
+    const y = outline.boundingHull[index + 1] * diameterCssPixels;
+    const transformedX = x * cosine - y * sine;
+    const transformedY = x * sine + y * cosine;
+    minimumX = Math.min(minimumX, transformedX);
+    minimumY = Math.min(minimumY, transformedY);
+    maximumX = Math.max(maximumX, transformedX);
+    maximumY = Math.max(maximumY, transformedY);
   }
   return Number.isFinite(minimumX)
     ? maximumX - minimumX + maximumY - minimumY
