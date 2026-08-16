@@ -3014,9 +3014,23 @@ export class MixedSceneController {
           nodes,
         });
       };
+      const appendVectorToRun = (node: Readonly<VectorDrawableNode>) => {
+        // MixedSceneStack.compositionSegments() omits hidden/transparent
+        // vectors before it builds the run key. Mirror that rule here: if the
+        // live texture kept the hidden node in its key, the compositor would
+        // look up a different texture and the other visible vectors in the
+        // same run would disappear too.
+        if (!node.visible || node.opacity <= 0) {
+          const key = vectorNodeKey(node);
+          this.displayedDrawsByNodeKey.delete(key);
+          this.displayedMetricsByNodeKey.delete(key);
+          return;
+        }
+        pendingNodes.push(node);
+      };
       for (const item of snapshot.items) {
-        if (item.kind === "text") pendingNodes.push(item.textNode);
-        else if (item.kind === "svg") pendingNodes.push(item.svgNode);
+        if (item.kind === "text") appendVectorToRun(item.textNode);
+        else if (item.kind === "svg") appendVectorToRun(item.svgNode);
         else if (item.kind === "image") {
           if (item.imageNode.visible && item.imageNode.opacity > 0) flushVectorRun();
         } else flushVectorRun();

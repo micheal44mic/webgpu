@@ -146,6 +146,34 @@ const read = (relativePath) =>
 const engineSource = readEngineSource();
 const controllerSource = read("src/mixed-scene-controller.ts");
 const controllerContractSource = read("src/mixed-scene-controller-contract.ts");
+
+// Hidden semantic nodes are omitted by MixedSceneStack when it names a
+// compositor run. The live controller must omit them from the texture key too;
+// otherwise hiding one text/SVG makes every still-visible vector in that run
+// disappear because the compositor cannot find the differently named texture.
+const liveRunGroupingStart = controllerSource.indexOf("      const appendVectorToRun = (");
+const liveRunGroupingEnd = controllerSource.indexOf(
+  "      const nextRunKeys = ",
+  liveRunGroupingStart,
+);
+assert.notEqual(liveRunGroupingStart, -1);
+assert.notEqual(liveRunGroupingEnd, -1);
+const liveRunGroupingSource = controllerSource.slice(
+  liveRunGroupingStart,
+  liveRunGroupingEnd,
+);
+assert.match(
+  liveRunGroupingSource,
+  /if \(!node\.visible \|\| node\.opacity <= 0\)[\s\S]*?return;[\s\S]*?pendingNodes\.push\(node\)/,
+);
+assert.match(
+  liveRunGroupingSource,
+  /item\.kind === "text"\) appendVectorToRun\(item\.textNode\)[\s\S]*?item\.kind === "svg"\) appendVectorToRun\(item\.svgNode\)/,
+);
+assert.doesNotMatch(
+  liveRunGroupingSource,
+  /pendingNodes\.push\(item\.(?:textNode|svgNode)\)/,
+);
 const interactionOverlaySource = read("src/scene-interaction-overlay.ts");
 const mobileToolSettingsSource = read("src/mobile-tool-settings-sheet.ts");
 const clientSource = read("src/vector-text-effect-client.ts");
