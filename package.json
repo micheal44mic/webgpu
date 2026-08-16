@@ -23,6 +23,7 @@
     "layer-duplicate:verify": "node scripts/verify-layer-duplicate.mjs",
     "layer-merge:verify": "node scripts/verify-layer-merge.mjs && node scripts/verify-layer-merge-vector-runs.mjs",
     "blend:verify": "node scripts/verify-blend-core.mjs",
+    "eraser:verify": "node scripts/verify-eraser.mjs",
     "light:verify": "node scripts/verify-light-glaze.mjs",
     "intense:verify": "node scripts/verify-intense-blending.mjs",
     "fill:verify": "node scripts/verify-fill.mjs",

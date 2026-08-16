@@ -38,6 +38,7 @@ export interface CanvasToolControllerOptions {
   readonly elements: {
     readonly canvas: HTMLCanvasElement;
     readonly paintButton: HTMLButtonElement;
+    readonly eraserButton: HTMLButtonElement;
     readonly blendButton: HTMLButtonElement;
   };
   readonly brushSettings: CanvasToolBrushSettingsPort;
@@ -80,6 +81,9 @@ export class CanvasToolController {
         return;
       }
       this.select("paint");
+    }, { signal });
+    options.elements.eraserButton.addEventListener("click", () => {
+      this.select("erase");
     }, { signal });
     options.elements.blendButton.addEventListener("click", () => {
       this.select("blend");
@@ -132,6 +136,7 @@ export class CanvasToolController {
     this.activeCanvasTool = tool;
     this.options.closeBrushLibraryForTool(tool);
     this.options.elements.paintButton.setAttribute("aria-pressed", String(tool === "paint"));
+    this.options.elements.eraserButton.setAttribute("aria-pressed", String(tool === "erase"));
     this.options.elements.blendButton.setAttribute("aria-pressed", String(tool === "blend"));
     this.options.syncBrushLibraryButton();
     this.options.syncMenuState();

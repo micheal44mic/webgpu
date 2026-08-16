@@ -92,17 +92,18 @@ export class BrushQuickControlsController {
   }
 
   setLocked(locked: boolean): void {
-    this.options.elements.colorInput.disabled = locked;
-    this.options.elements.colorLabel.classList.toggle("is-disabled", locked);
     this.syncAvailability(locked);
   }
 
   syncAvailability(locked = this.options.isInteractionLocked()): void {
     const tool = this.options.getActiveTool();
-    const brushContext = tool === "paint" || tool === "blend";
+    const brushContext = tool === "paint" || tool === "erase" || tool === "blend";
+    const colorDisabled = locked || !brushContext || tool === "erase";
+    this.options.elements.colorInput.disabled = colorDisabled;
+    this.options.elements.colorLabel.classList.toggle("is-disabled", colorDisabled);
     const disabledByKind: Readonly<Record<BrushQuickControlKind, boolean>> = {
       size: locked || !brushContext,
-      opacity: locked || tool !== "paint",
+      opacity: locked || !brushContext,
       stretch: locked || tool !== "blend",
       paint: locked || tool !== "blend",
       blur: locked || tool !== "blend",
@@ -117,7 +118,7 @@ export class BrushQuickControlsController {
 
   syncVisibility(): void {
     const tool = this.options.getActiveTool();
-    const brushContext = tool === "paint" || tool === "blend";
+    const brushContext = tool === "paint" || tool === "erase" || tool === "blend";
     const blend = tool === "blend";
     const suppressed = !brushContext || this.options.isSuppressedBySurface();
     if (suppressed && this.drag) this.finishDrag(true);
@@ -126,9 +127,13 @@ export class BrushQuickControlsController {
     controls.classList.toggle("is-blend", blend);
     controls.setAttribute(
       "aria-label",
-      blend ? "Blend size, stretch, paint and blur" : "Brush size and opacity",
+      blend
+        ? "Blend size, opacity, stretch, paint and blur"
+        : tool === "erase"
+          ? "Eraser size and opacity"
+          : "Brush size and opacity",
     );
-    tracks.opacity.hidden = blend;
+    tracks.opacity.hidden = false;
     tracks.stretch.hidden = !blend;
     tracks.paint.hidden = !blend;
     tracks.blur.hidden = !blend;
@@ -174,7 +179,10 @@ export class BrushQuickControlsController {
   private applyColor(): void {
     const { colorInput } = this.options.elements;
     if (colorInput.disabled) return;
-    if (this.options.getActiveTool() !== "paint") this.options.selectPaintTool();
+    const activeTool = this.options.getActiveTool();
+    if (activeTool !== "paint" && activeTool !== "blend") {
+      this.options.selectPaintTool();
+    }
     const settings = this.options.settings.update({ color: colorInput.value });
     this.syncSettings(settings);
     this.options.updateHistoryControls();

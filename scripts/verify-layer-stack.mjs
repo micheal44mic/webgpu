@@ -2184,18 +2184,18 @@ assert.match(
 );
 assert.match(
   brushQuickControlsSource,
-  /tracks\.opacity\.hidden = blend;[\s\S]*?tracks\.stretch\.hidden = !blend;[\s\S]*?tracks\.paint\.hidden = !blend;[\s\S]*?tracks\.blur\.hidden = !blend;/,
-  "Paint must retain Size and Opacity while Blend exposes Size, Stretch, Paint and Blur",
+  /tracks\.opacity\.hidden = false;[\s\S]*?tracks\.stretch\.hidden = !blend;[\s\S]*?tracks\.paint\.hidden = !blend;[\s\S]*?tracks\.blur\.hidden = !blend;/,
+  "Paint/Eraser retain Size and Opacity while Blend also exposes Stretch, Paint and Blur",
 );
 assert.match(
   stylesSource,
-  /\.mobile-brush-controls\.is-blend \.mobile-brush-control-track \{[\s\S]*?height: clamp\(64px, 16%, 124px\);[\s\S]*?#mobileBrushSizeTrack \{[\s\S]*?top: 5%;[\s\S]*?#mobileBrushStretchTrack \{[\s\S]*?top: 29%;[\s\S]*?#mobileBrushPaintTrack \{[\s\S]*?top: 53%;[\s\S]*?#mobileBrushBlurTrack \{[\s\S]*?top: 77%;/,
-  "the four Blend circles must use evenly spaced tracks",
+  /\.mobile-brush-controls\.is-blend \.mobile-brush-control-track \{[\s\S]*?height: clamp\(56px, 13%, 100px\);[\s\S]*?#mobileBrushSizeTrack \{[\s\S]*?top: 1%;[\s\S]*?#mobileBrushOpacityTrack \{[\s\S]*?top: 21%;[\s\S]*?#mobileBrushStretchTrack \{[\s\S]*?top: 41%;[\s\S]*?#mobileBrushPaintTrack \{[\s\S]*?top: 61%;[\s\S]*?#mobileBrushBlurTrack \{[\s\S]*?top: 81%;/,
+  "the five Blend circles must use evenly spaced tracks",
 );
 assert.match(
   brushQuickControlsSource,
   /finishDrag\(commit: boolean\)[\s\S]*?if \(commit && drag\.currentValue !== drag\.startValue\) \{[\s\S]*?this\.options\.settings\.setQuickControl\(drag\.kind, drag\.currentValue\);/,
-  "the four Blend controls must apply authoritative settings once on release",
+  "the five Blend controls must apply authoritative settings once on release",
 );
 assert.doesNotMatch(mainSource, /size\.max = blend \? "1024" : "1500"/);
 const mobileToolRailCssStart = stylesSource.indexOf("  .mobile-tool-rail {");

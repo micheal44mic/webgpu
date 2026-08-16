@@ -189,14 +189,14 @@ assert.equal(elements.controlsByKind.opacity.getAttribute("aria-valuetext"), "Op
 activeTool = "blend";
 elements.colorInput.value = "#00ff00";
 elements.colorInput.dispatchEvent(event("input"));
-assert.equal(paintSelections, 1);
+assert.equal(paintSelections, 0);
 assert.equal(state.color, "#00ff00");
 assert.equal(historyRefreshes, 1);
 
 activeTool = "blend";
 controller.syncAvailability(false);
 assert.equal(elements.controlsByKind.size.getAttribute("aria-disabled"), "false");
-assert.equal(elements.controlsByKind.opacity.getAttribute("aria-disabled"), "true");
+assert.equal(elements.controlsByKind.opacity.getAttribute("aria-disabled"), "false");
 assert.equal(elements.controlsByKind.stretch.getAttribute("aria-disabled"), "false");
 controller.setLocked(true);
 assert.equal(elements.colorInput.disabled, true);
@@ -204,6 +204,13 @@ assert.equal(elements.colorLabel.classList.contains("is-disabled"), true);
 assert.equal(elements.controlsByKind.size.tabIndex, -1);
 locked = false;
 controller.setLocked(false);
+
+activeTool = "erase";
+controller.syncAvailability(false);
+assert.equal(elements.colorInput.disabled, true);
+assert.equal(elements.controlsByKind.size.getAttribute("aria-disabled"), "false");
+assert.equal(elements.controlsByKind.opacity.getAttribute("aria-disabled"), "false");
+assert.equal(elements.controlsByKind.stretch.getAttribute("aria-disabled"), "true");
 
 // Keyboard commits immediately through the settings port.
 activeTool = "paint";
@@ -236,7 +243,7 @@ assert.equal(state.opacity, 0.75);
 
 activeTool = "blend";
 controller.syncVisibility();
-assert.equal(elements.tracks.opacity.hidden, true);
+assert.equal(elements.tracks.opacity.hidden, false);
 assert.equal(elements.tracks.stretch.hidden, false);
 surfaceSuppressed = true;
 controller.syncVisibility();

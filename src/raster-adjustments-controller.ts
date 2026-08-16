@@ -1,4 +1,5 @@
 import type { BrushEngine } from "./brush-engine";
+import type { BrushTool } from "./engine-types";
 import type { HistoryState } from "./engine-types";
 import {
   DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_RADIUS,
@@ -161,7 +162,7 @@ export interface RasterAdjustmentsControllerOptions {
   readonly isInteractionLocked: () => boolean;
   readonly isSceneBusy: () => boolean;
   readonly getActiveCanvasTool: () => CanvasInputTool;
-  readonly getActiveBrushTool: () => "paint" | "blend";
+  readonly getActiveBrushTool: () => BrushTool;
   readonly configureCanvasTool: (
     tool: CanvasInputTool,
     restoreSnapshot: boolean,

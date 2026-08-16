@@ -51,11 +51,15 @@ assert.match(humanLabSource, /size: 750,[\s\S]*?spacingPercent: 1,[\s\S]*?stabil
 assert.match(sitesBuildSource, /payload\.settings\.stabilization === 0/);
 assert.match(sitesBuildSource, /blendIntensity: 1,\s*stabilization: 0,/);
 
-// Runtime contract: only public Paint glaze modes opt in, while 0% remains a
-// hard branch around the pre-existing point generator.
+// Runtime contract: Paint glaze, Eraser and Blend opt in, while 0% remains a
+// hard branch around the pre-existing point generators.
 assert.match(
   engineSource,
-  /const stabilizer = tool === "paint"[\s\S]*?&& lightGlazeSettings[\s\S]*?&& lightGlazeSettings\.stabilization > 0/,
+  /const stabilizationSettings = lightGlazeSettings \?\? this\.settings;[\s\S]*?tool === "blend"[\s\S]*?tool === "erase"[\s\S]*?stabilizationSettings\.stabilization > 0/,
+);
+assert.match(
+  engineSource,
+  /if \(stroke\.tool === "blend"\)[\s\S]*?stroke\.stabilizer\.push\(normalizedPoint\)[\s\S]*?tailFilteredX\[latest\]/,
 );
 assert.match(
   engineSource,

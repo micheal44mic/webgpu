@@ -21,6 +21,7 @@ export const verificationScripts = Object.freeze([
   "verify-document-size.mjs",
   "verify-document-interaction-controller.mjs",
   "verify-editor-tools-controller.mjs",
+  "verify-eraser.mjs",
   "verify-effects-scratch-pool.mjs",
   "verify-fill.mjs",
   "verify-gaussian-blur.mjs",

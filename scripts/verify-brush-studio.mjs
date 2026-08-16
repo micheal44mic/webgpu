@@ -81,8 +81,12 @@ assert.doesNotMatch(
 );
 assert.match(main, /applyBrushSettings\(settings: Readonly<BrushSettings>\)/);
 assert.match(main, /brushSettingsController\.replace\(settings\)/);
-assert.match(brushSettingsController, /spacingPercent: 10,[\s\S]*?flow: 0\.45/);
-assert.match(brushSettingsController, /selectTool\(tool: BrushTool, restoreSnapshot: boolean\)/);
+assert.doesNotMatch(
+  brushSettingsController,
+  /toolSnapshots|spacingPercent: 10,[\s\S]*?flow: 0\.45/,
+  "tool switches must not replace the active Brush Studio definition",
+);
+assert.match(brushSettingsController, /selectTool\(tool: BrushTool, _restoreSnapshot: boolean\)/);
 assert.match(engine, /tool === "blend" \? 400 : 99/);
 assert.match(
   transfer,
@@ -375,7 +379,7 @@ assert.match(previewRenderer, /resamplePaintCurveSegment\(/);
 assert.match(previewRenderer, /packStampsIntoUpload\(/);
 assert.match(engine, /registerCustomShapeAsset\(/);
 assert.match(engine, /registerCustomGrainAsset\(/);
-assert.match(engine, /hardness: tool === "paint" \? 1/);
+assert.match(engine, /hardness: tool === "blend"[\s\S]*?: 1,/);
 
 const moduleServer = await createServer({
   appType: "custom",
@@ -385,12 +389,61 @@ const moduleServer = await createServer({
   server: { middlewareMode: true },
 });
 let MobileBrushStudioController;
+let BrushSettingsController;
+let defaultBrushSettings;
 try {
   ({ MobileBrushStudioController } = await moduleServer.ssrLoadModule(
     "/src/mobile-brush-studio.ts",
   ));
+  ({ BrushSettingsController } = await moduleServer.ssrLoadModule(
+    "/src/brush-settings-controller.ts",
+  ));
+  ({ defaultBrushSettings } = await moduleServer.ssrLoadModule(
+    "/src/engine-types.ts",
+  ));
 } finally {
   await moduleServer.close();
+}
+
+// Paint, Eraser and Blend are operations over one active Brush Studio tip.
+// Switching tools may change `tool`, but never the shared authored fields.
+{
+  let runtime = {
+    ...defaultBrushSettings,
+    size: 347,
+    spacingPercent: 37,
+    flow: 0.63,
+    opacity: 0.41,
+    shapeRotation: "fixed",
+    shapeScatter: 0.28,
+    grainMode: "moving",
+    grainScale: 2.2,
+    count: 7,
+    positionJitterLateral: 0.31,
+  };
+  const port = {
+    getSettings: () => ({ ...runtime }),
+    setBrushSettings: (patch) => { runtime = { ...runtime, ...patch }; },
+  };
+  const settingsController = new BrushSettingsController(port);
+  const shared = [
+    "size",
+    "spacingPercent",
+    "flow",
+    "opacity",
+    "shapeRotation",
+    "shapeScatter",
+    "grainMode",
+    "grainScale",
+    "count",
+    "positionJitterLateral",
+  ];
+  for (const tool of ["blend", "erase", "paint"]) {
+    const before = settingsController.snapshot();
+    const after = settingsController.selectTool(tool, true);
+    assert.equal(after.tool, tool);
+    for (const field of shared) assert.equal(after[field], before[field], `${tool}/${field}`);
+  }
 }
 
 // Teardown is an idempotent ownership boundary: the draft is restored once,

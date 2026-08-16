@@ -1,5 +1,4 @@
 import {
-  defaultBrushSettings,
   type BrushSettings,
   type BrushTool,
 } from "./engine-types";
@@ -18,22 +17,6 @@ export interface BrushQuickControlSnapshot {
   readonly percent: number;
 }
 
-interface BrushToolSnapshot {
-  readonly size: number;
-  readonly spacingPercent: number;
-  readonly flow: number;
-  readonly hardness: number;
-}
-
-function toolSnapshot(settings: Readonly<BrushSettings>): BrushToolSnapshot {
-  return {
-    size: settings.size,
-    spacingPercent: settings.spacingPercent,
-    flow: settings.flow,
-    hardness: settings.hardness,
-  };
-}
-
 function clamp(value: number, minimum: number, maximum: number): number {
   const finite = Number.isFinite(value) ? value : minimum;
   return Math.min(maximum, Math.max(minimum, finite));
@@ -46,20 +29,9 @@ function clamp(value: number, minimum: number, maximum: number): number {
  */
 export class BrushSettingsController {
   private settings: BrushSettings;
-  private readonly toolSnapshots: Record<BrushTool, BrushToolSnapshot>;
 
   constructor(private readonly port: BrushSettingsPort) {
     this.settings = port.getSettings();
-    this.toolSnapshots = {
-      paint: toolSnapshot({ ...defaultBrushSettings, tool: "paint", hardness: 1 }),
-      blend: {
-        size: 100,
-        spacingPercent: 10,
-        flow: 0.45,
-        hardness: 0.08,
-      },
-    };
-    this.captureToolSnapshot(this.settings);
   }
 
   snapshot(): BrushSettings {
@@ -68,7 +40,6 @@ export class BrushSettingsController {
 
   adoptPortState(): BrushSettings {
     this.settings = this.port.getSettings();
-    this.captureToolSnapshot(this.settings);
     return this.snapshot();
   }
 
@@ -82,16 +53,12 @@ export class BrushSettingsController {
     return this.adoptPortState();
   }
 
-  selectTool(tool: BrushTool, restoreSnapshot: boolean): BrushSettings {
-    const previous = this.settings;
-    this.captureToolSnapshot(previous);
-    const restored = restoreSnapshot && previous.tool !== tool
-      ? this.toolSnapshots[tool]
-      : null;
+  selectTool(tool: BrushTool, _restoreSnapshot: boolean): BrushSettings {
+    // Tool switches must preserve the active Brush Studio definition. Paint,
+    // Eraser and Blend share one tip; only the operation changes.
     return this.update({
       tool,
-      ...(restored ?? {}),
-      ...(tool === "paint" ? { hardness: 1 } : {}),
+      ...(tool === "blend" ? {} : { hardness: 1 }),
     });
   }
 
@@ -125,9 +92,5 @@ export class BrushSettingsController {
     if (kind === "stretch") return this.update({ blendStretch: normalized });
     if (kind === "paint") return this.update({ blendPaint: normalized });
     return this.update({ blendBlur: normalized });
-  }
-
-  private captureToolSnapshot(settings: Readonly<BrushSettings>): void {
-    this.toolSnapshots[settings.tool] = toolSnapshot(settings);
   }
 }

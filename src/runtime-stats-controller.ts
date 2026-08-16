@@ -88,9 +88,14 @@ export class RuntimeStatsController {
         + referenceMemory;
       return;
     }
-    if (this.options.getActiveBrushTool() !== "paint") {
+    if (this.options.getActiveBrushTool() === "blend") {
       hint.textContent =
         `Blend dry · scratch residente ${formatMemoryMiB(stats.gpuMemory.blendRendererMiB)}`;
+      return;
+    }
+    if (this.options.getActiveBrushTool() === "erase") {
+      hint.textContent =
+        `Gomma · tip Brush Studio · totale motore ${formatMemoryMiB(stats.gpuMemory.countedTotalMiB)}`;
       return;
     }
     const mode = this.options.getBrushBlendMode();

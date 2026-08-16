@@ -1399,16 +1399,22 @@ export class BrushEngine {
   layerBlendFoldShaderModule!: GPUShaderModule;
   normalPipeline!: GPURenderPipeline;
   additivePipeline!: GPURenderPipeline;
+  erasePipeline!: GPURenderPipeline;
   shapeNormalPipeline!: GPURenderPipeline;
   shapeAdditivePipeline!: GPURenderPipeline;
+  shapeErasePipeline!: GPURenderPipeline;
   shapeOccupancyNormalPipeline!: GPURenderPipeline;
   shapeOccupancyAdditivePipeline!: GPURenderPipeline;
+  shapeOccupancyErasePipeline!: GPURenderPipeline;
   grainNormalPipeline!: GPURenderPipeline;
   grainAdditivePipeline!: GPURenderPipeline;
+  grainErasePipeline!: GPURenderPipeline;
   grainShapeNormalPipeline!: GPURenderPipeline;
   grainShapeAdditivePipeline!: GPURenderPipeline;
+  grainShapeErasePipeline!: GPURenderPipeline;
   grainShapeOccupancyNormalPipeline!: GPURenderPipeline;
   grainShapeOccupancyAdditivePipeline!: GPURenderPipeline;
+  grainShapeOccupancyErasePipeline!: GPURenderPipeline;
   uniformedGlazePipeline!: GPURenderPipeline;
   uniformedGlazeShapePipeline!: GPURenderPipeline;
   uniformedGlazeShapeOccupancyPipeline!: GPURenderPipeline;
@@ -2056,7 +2062,7 @@ export class BrushEngine {
     }
     flushPendingWorkBeforeSettingsChange(this);
     const previousUsesBlendRenderer = usesBlendRenderer(this.settings);
-    const tool = next.tool === "paint" || next.tool === "blend"
+    const tool = next.tool === "paint" || next.tool === "erase" || next.tool === "blend"
       ? next.tool
       : this.settings.tool;
     const blendMode = next.blendMode === "normal"
@@ -2120,9 +2126,11 @@ export class BrushEngine {
       endThickness: clamp(next.endThickness ?? this.settings.endThickness, 0, 2),
       flow: clamp(next.flow ?? this.settings.flow, 0.001, 1),
       opacity: clamp(next.opacity ?? this.settings.opacity, 0, 1),
-      // Brush Studio intentionally has no Paint hardness control. Preserve the
-      // dry Blend setting, while every Paint setting/history batch is authored at 100%.
-      hardness: tool === "paint" ? 1 : clamp(next.hardness ?? this.settings.hardness, 0, 1),
+      // Brush Studio has no hardness control. Direct Paint/Eraser use the
+      // authored tip at 100%; Blend may still receive a legacy/lab softness.
+      hardness: tool === "blend"
+        ? clamp(next.hardness ?? this.settings.hardness, 0, 1)
+        : 1,
       // Kept in the history ABI only. Rendering now has one unambiguous Flow control.
       blendIntensity: 1,
       blendMode,
@@ -3802,7 +3810,7 @@ export class BrushEngine {
     }
     if (this.settings.tool === "blend" && this.pixelSelectionState.selectedPixels > 0) {
       this.callbacks.onStatus?.(
-        "Blend non modifica una Selezione pixel: deseleziona oppure usa Paint/Riempimento.",
+        "Blend non modifica una Selezione pixel: deseleziona oppure usa Paint/Gomma/Riempimento.",
         "working",
       );
       return false;
@@ -3903,7 +3911,7 @@ export class BrushEngine {
       && !lightGlazeSettings
       && this.pixelSelectionState.selectedPixels === 0;
     const historyActionId = this.nextHistoryActionId;
-    if (tool === "paint") {
+    if (tool !== "blend") {
       try {
         capturePaintSelectionHistoryMask(this, historyActionId);
       } catch (error) {
@@ -3925,7 +3933,7 @@ export class BrushEngine {
     const blendControls = tool === "blend"
       ? {
         size: this.settings.size,
-        strength: 1,
+        strength: this.settings.opacity,
         spacing: this.settings.spacingPercent / 100,
         flow: this.settings.flow,
         stretch: this.settings.blendStretch,
@@ -3933,7 +3941,7 @@ export class BrushEngine {
         blur: this.settings.blendBlur,
         aspect: 1,
         angle: 0,
-        orientToStroke: true,
+        orientToStroke: this.settings.shapeRotation === "follow-stroke",
         seed: historyActionId,
       }
       : null;
@@ -3947,19 +3955,23 @@ export class BrushEngine {
       blendPlanner.configure(blendControls);
     }
     blendPlanner?.reset(normalizedPoint);
-    const curvePlanner = tool === "paint" ? this.paintCurvePlanner : null;
+    const curvePlanner = tool === "blend" ? null : this.paintCurvePlanner;
     curvePlanner?.reset();
     // Public Paint modes already own a per-gesture accumulator. Stabilization
     // keeps only its recent tail revisionable in that accumulator; the exact
     // zero setting deliberately stays on the pre-existing hot path below.
-    const stabilizer = tool === "paint"
-      && lightGlazeSettings
-      && lightGlazeSettings.stabilization > 0
+    const stabilizationSettings = lightGlazeSettings ?? this.settings;
+    const stabilizer = (
+      tool === "blend"
+      || tool === "erase"
+      || (tool === "paint" && lightGlazeSettings !== null)
+    )
+      && stabilizationSettings.stabilization > 0
       ? this.paintStabilizer
       : null;
     const stabilizationUpdate = stabilizer?.begin(
       normalizedPoint,
-      lightGlazeSettings?.stabilization ?? 0,
+      stabilizationSettings.stabilization,
     ) ?? null;
     this.activeStroke = {
       tool,
@@ -4029,6 +4041,7 @@ export class BrushEngine {
   endStroke(timeMs?: number): void {
     const endingStroke = this.activeStroke;
     if (endingStroke?.tool === "blend") {
+      endingStroke.stabilizer?.finish();
       endingStroke.blendPlanner?.finish();
       drainBlendPlanner(this, endingStroke);
       const historyChanged = endingStroke.historyCommitted;
@@ -9218,7 +9231,31 @@ export class BrushEngine {
           Number.isFinite(point.timeMs) ? point.timeMs : stroke.lastInput.timeMs,
         ),
       };
-      const result = stroke.blendPlanner?.pushSample(normalizedPoint);
+      let blendPoint = normalizedPoint;
+      if (stroke.stabilizer) {
+        const update = stroke.stabilizer.push(normalizedPoint);
+        stroke.stabilizationUpdate = update;
+        const latest = update.tailCount - 1;
+        if (!update.bypassed && latest >= 0) {
+          blendPoint = {
+            x: update.tailFilteredX[latest],
+            y: update.tailFilteredY[latest],
+            pressure: normalizedPoint.pressure,
+            timeMs: normalizedPoint.timeMs,
+          };
+        }
+        if (this.activeStrokeProfile) {
+          this.activeStrokeProfile.strokeStabilizationInputSamples += 1;
+          this.activeStrokeProfile.strokeStabilizationMaturePoints += update.matureCount;
+          this.activeStrokeProfile.strokeStabilizationForcedMaturePoints +=
+            update.forcedMatureCount;
+          this.activeStrokeProfile.strokeStabilizationMaximumTailPoints = Math.max(
+            this.activeStrokeProfile.strokeStabilizationMaximumTailPoints,
+            update.tailCount,
+          );
+        }
+      }
+      const result = stroke.blendPlanner?.pushSample(blendPoint);
       if (result && !result.accepted) {
         throw new Error(
           `Coda Blend dry piena: servono ${result.requiredSteps} segmenti.`,
@@ -12636,7 +12673,19 @@ export class BrushEngine {
         const isShape = settings.shape === "shape";
         const shapeOccupancyMip = shapeOccupancySelection?.selectedMipLevel ?? null;
         const useShapeOccupancy = isShape && shapeOccupancyMip !== null;
-        const pipeline = grainActive
+        const pipeline = settings.tool === "erase"
+          ? grainActive
+            ? isShape
+              ? useShapeOccupancy
+                ? this.grainShapeOccupancyErasePipeline
+                : this.grainShapeErasePipeline
+              : this.grainErasePipeline
+            : isShape
+              ? useShapeOccupancy
+                ? this.shapeOccupancyErasePipeline
+                : this.shapeErasePipeline
+              : this.erasePipeline
+          : grainActive
           ? isShape
             ? useShapeOccupancy
               ? settings.blendMode === "additive"

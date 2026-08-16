@@ -118,6 +118,16 @@ assert.match(
 );
 assert.match(
   brushEngineSource,
+  /strength: this\.settings\.opacity,[\s\S]*?orientToStroke: this\.settings\.shapeRotation === "follow-stroke"/,
+  "Blend must inherit Brush Studio opacity and Fixed/Follow Stroke orientation",
+);
+assert.doesNotMatch(
+  brushEngineSource,
+  /orientToStroke: true,[\s\S]*?seed: historyActionId/,
+  "Blend must not force Follow Stroke",
+);
+assert.match(
+  brushEngineSource,
   /const batchCost = readRect\.width \* readRect\.height \* 2;/,
 );
 assert.match(

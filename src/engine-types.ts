@@ -33,7 +33,7 @@ export type BlendMode =
   | "additive"
   | "m1-glaze";
 
-export type BrushTool = "paint" | "blend";
+export type BrushTool = "paint" | "erase" | "blend";
 
 export type LayerFormat = "rgba8unorm" | "rgba16float";
 

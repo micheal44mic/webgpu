@@ -142,16 +142,22 @@ export async function recreateLayerResources(
     selectionPipelineByBase,
     normalPipeline,
     additivePipeline,
+    erasePipeline,
     shapeNormalPipeline,
     shapeAdditivePipeline,
+    shapeErasePipeline,
     shapeOccupancyNormalPipeline,
     shapeOccupancyAdditivePipeline,
+    shapeOccupancyErasePipeline,
     grainNormalPipeline,
     grainAdditivePipeline,
+    grainErasePipeline,
     grainShapeNormalPipeline,
     grainShapeAdditivePipeline,
+    grainShapeErasePipeline,
     grainShapeOccupancyNormalPipeline,
     grainShapeOccupancyAdditivePipeline,
+    grainShapeOccupancyErasePipeline,
     uniformedGlazePipeline,
     uniformedGlazeShapePipeline,
     uniformedGlazeShapeOccupancyPipeline,
@@ -250,6 +256,85 @@ export async function recreateLayerResources(
     label: `High precision glaze exact tile commit pipeline layout ${format}`,
     bindGroupLayouts: [engine.lightGlazeCommitTileBindGroupLayout],
   });
+
+  // Premultiplied destination-out. The regular brush shaders keep producing
+  // the exact tip/grain coverage; fixed-function blending turns that coverage
+  // into alpha removal without sampling or recoloring the layer.
+  const eraseBlend: GPUBlendState = {
+    color: {
+      operation: "add",
+      srcFactor: "zero",
+      dstFactor: "one-minus-src-alpha",
+    },
+    alpha: {
+      operation: "add",
+      srcFactor: "zero",
+      dstFactor: "one-minus-src-alpha",
+    },
+  };
+  const createErasePipeline = (
+    label: string,
+    layout: GPUPipelineLayout,
+    fragmentModule: GPUShaderModule,
+    vertexEntryPoint: string,
+    fragmentEntryPoint: string,
+  ): GPURenderPipeline => engine.device.createRenderPipeline({
+    label: `${label} ${format}`,
+    layout,
+    vertex: {
+      module: engine.brushShaderModule,
+      entryPoint: vertexEntryPoint,
+    },
+    fragment: {
+      module: fragmentModule,
+      entryPoint: fragmentEntryPoint,
+      targets: [{ format, blend: eraseBlend }],
+    },
+    primitive: { topology: "triangle-strip" },
+  });
+
+  const erasePipeline = createErasePipeline(
+    "Eraser circle",
+    brushPipelineLayout,
+    engine.brushShaderModule,
+    "vertexMain",
+    "fragmentMain",
+  );
+  const shapeErasePipeline = createErasePipeline(
+    "Eraser Shape",
+    brushPipelineLayout,
+    engine.brushShaderModule,
+    "shapeVertexMain",
+    "shapeFragmentMain",
+  );
+  const shapeOccupancyErasePipeline = createErasePipeline(
+    "Eraser Shape occupancy",
+    brushOccupancyPipelineLayout,
+    engine.brushShaderModule,
+    "shapeVertexMain",
+    "shapeOccupancyFragmentMain",
+  );
+  const grainErasePipeline = createErasePipeline(
+    "Eraser Texturized grain circle",
+    grainBrushPipelineLayout,
+    engine.texturizedGrainShaderModule,
+    "vertexMain",
+    "fragmentMain",
+  );
+  const grainShapeErasePipeline = createErasePipeline(
+    "Eraser Texturized grain Shape",
+    grainBrushPipelineLayout,
+    engine.texturizedGrainShaderModule,
+    "shapeVertexMain",
+    "shapeFragmentMain",
+  );
+  const grainShapeOccupancyErasePipeline = createErasePipeline(
+    "Eraser Texturized grain Shape occupancy",
+    grainBrushOccupancyPipelineLayout,
+    engine.texturizedGrainShaderModule,
+    "shapeVertexMain",
+    "shapeOccupancyFragmentMain",
+  );
 
   const normalPipeline = engine.device.createRenderPipeline({
     label: `Brush normal ${format}`,
@@ -910,16 +995,22 @@ export async function recreateLayerResources(
   const selectionVariants: SelectionPipelineVariant[] = [
     brushVariant(normalPipeline, "Brush normal", selectionBrushPipelineLayout, "vertexMain", "fragmentMain", sourceOverBlend),
     brushVariant(additivePipeline, "Brush additive", selectionBrushPipelineLayout, "vertexMain", "fragmentMain", additiveBlend),
+    brushVariant(erasePipeline, "Eraser circle", selectionBrushPipelineLayout, "vertexMain", "fragmentMain", eraseBlend),
     brushVariant(shapeNormalPipeline, "Brush Shape normal", selectionBrushPipelineLayout, "shapeVertexMain", "shapeFragmentMain", sourceOverBlend),
     brushVariant(shapeAdditivePipeline, "Brush Shape additive", selectionBrushPipelineLayout, "shapeVertexMain", "shapeFragmentMain", additiveBlend),
+    brushVariant(shapeErasePipeline, "Eraser Shape", selectionBrushPipelineLayout, "shapeVertexMain", "shapeFragmentMain", eraseBlend),
     brushVariant(shapeOccupancyNormalPipeline, "Brush Shape occupancy normal", selectionBrushOccupancyPipelineLayout, "shapeVertexMain", "shapeOccupancyFragmentMain", sourceOverBlend),
     brushVariant(shapeOccupancyAdditivePipeline, "Brush Shape occupancy additive", selectionBrushOccupancyPipelineLayout, "shapeVertexMain", "shapeOccupancyFragmentMain", additiveBlend),
+    brushVariant(shapeOccupancyErasePipeline, "Eraser Shape occupancy", selectionBrushOccupancyPipelineLayout, "shapeVertexMain", "shapeOccupancyFragmentMain", eraseBlend),
     grainVariant(grainNormalPipeline, "Brush Grain normal", selectionGrainBrushPipelineLayout, "vertexMain", "fragmentMain", sourceOverBlend),
     grainVariant(grainAdditivePipeline, "Brush Grain additive", selectionGrainBrushPipelineLayout, "vertexMain", "fragmentMain", additiveBlend),
+    grainVariant(grainErasePipeline, "Eraser Grain circle", selectionGrainBrushPipelineLayout, "vertexMain", "fragmentMain", eraseBlend),
     grainVariant(grainShapeNormalPipeline, "Brush Grain Shape normal", selectionGrainBrushPipelineLayout, "shapeVertexMain", "shapeFragmentMain", sourceOverBlend),
     grainVariant(grainShapeAdditivePipeline, "Brush Grain Shape additive", selectionGrainBrushPipelineLayout, "shapeVertexMain", "shapeFragmentMain", additiveBlend),
+    grainVariant(grainShapeErasePipeline, "Eraser Grain Shape", selectionGrainBrushPipelineLayout, "shapeVertexMain", "shapeFragmentMain", eraseBlend),
     grainVariant(grainShapeOccupancyNormalPipeline, "Brush Grain Shape occupancy normal", selectionGrainBrushOccupancyPipelineLayout, "shapeVertexMain", "shapeOccupancyFragmentMain", sourceOverBlend),
     grainVariant(grainShapeOccupancyAdditivePipeline, "Brush Grain Shape occupancy additive", selectionGrainBrushOccupancyPipelineLayout, "shapeVertexMain", "shapeOccupancyFragmentMain", additiveBlend),
+    grainVariant(grainShapeOccupancyErasePipeline, "Eraser Grain Shape occupancy", selectionGrainBrushOccupancyPipelineLayout, "shapeVertexMain", "shapeOccupancyFragmentMain", eraseBlend),
   ];
   const addGlazeVariant = (
     base: GPURenderPipeline,
@@ -1215,16 +1306,22 @@ export async function recreateLayerResources(
         selectionPipelineByBase,
         normalPipeline,
         additivePipeline,
+        erasePipeline,
         shapeNormalPipeline,
         shapeAdditivePipeline,
+        shapeErasePipeline,
         shapeOccupancyNormalPipeline,
         shapeOccupancyAdditivePipeline,
+        shapeOccupancyErasePipeline,
         grainNormalPipeline,
         grainAdditivePipeline,
+        grainErasePipeline,
         grainShapeNormalPipeline,
         grainShapeAdditivePipeline,
+        grainShapeErasePipeline,
         grainShapeOccupancyNormalPipeline,
         grainShapeOccupancyAdditivePipeline,
+        grainShapeOccupancyErasePipeline,
         uniformedGlazePipeline,
         uniformedGlazeShapePipeline,
         uniformedGlazeShapeOccupancyPipeline,
@@ -1468,16 +1565,22 @@ export async function recreateLayerResources(
     ? warmSelectionPipelines
     : null;
   engine.additivePipeline = additivePipeline;
+  engine.erasePipeline = erasePipeline;
   engine.shapeNormalPipeline = shapeNormalPipeline;
   engine.shapeAdditivePipeline = shapeAdditivePipeline;
+  engine.shapeErasePipeline = shapeErasePipeline;
   engine.shapeOccupancyNormalPipeline = shapeOccupancyNormalPipeline;
   engine.shapeOccupancyAdditivePipeline = shapeOccupancyAdditivePipeline;
+  engine.shapeOccupancyErasePipeline = shapeOccupancyErasePipeline;
   engine.grainNormalPipeline = grainNormalPipeline;
   engine.grainAdditivePipeline = grainAdditivePipeline;
+  engine.grainErasePipeline = grainErasePipeline;
   engine.grainShapeNormalPipeline = grainShapeNormalPipeline;
   engine.grainShapeAdditivePipeline = grainShapeAdditivePipeline;
+  engine.grainShapeErasePipeline = grainShapeErasePipeline;
   engine.grainShapeOccupancyNormalPipeline = grainShapeOccupancyNormalPipeline;
   engine.grainShapeOccupancyAdditivePipeline = grainShapeOccupancyAdditivePipeline;
+  engine.grainShapeOccupancyErasePipeline = grainShapeOccupancyErasePipeline;
   engine.uniformedGlazePipeline = uniformedGlazePipeline;
   engine.uniformedGlazeShapePipeline = uniformedGlazeShapePipeline;
   engine.uniformedGlazeShapeOccupancyPipeline = uniformedGlazeShapeOccupancyPipeline;

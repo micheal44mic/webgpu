@@ -1763,29 +1763,30 @@ select {
   }
 
   .mobile-brush-controls.is-blend .mobile-brush-control-track {
-    height: clamp(64px, 16%, 124px);
+    height: clamp(56px, 13%, 100px);
   }
 
   .mobile-brush-controls.is-blend #mobileBrushSizeTrack {
-    top: 5%;
+    top: 1%;
   }
 
   .mobile-brush-controls.is-blend #mobileBrushOpacityTrack {
-    display: none;
+    top: 21%;
+    display: block;
   }
 
   .mobile-brush-controls.is-blend #mobileBrushStretchTrack {
-    top: 29%;
+    top: 41%;
     display: block;
   }
 
   .mobile-brush-controls.is-blend #mobileBrushPaintTrack {
-    top: 53%;
+    top: 61%;
     display: block;
   }
 
   .mobile-brush-controls.is-blend #mobileBrushBlurTrack {
-    top: 77%;
+    top: 81%;
     display: block;
   }
 

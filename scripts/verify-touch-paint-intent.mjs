@@ -27,6 +27,7 @@ assert.equal(TOUCH_PAINT_INTENT_HOLD_MS, 28);
 assert.equal(TOUCH_PAINT_INTENT_MOVE_THRESHOLD_PX, 3);
 
 assert.equal(shouldHoldTouchPaintIntent(true, "touch", "paint"), true);
+assert.equal(shouldHoldTouchPaintIntent(true, "touch", "erase"), true);
 for (const [enabled, pointerType, tool] of [
   [false, "touch", "paint"],
   [true, "pen", "paint"],

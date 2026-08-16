@@ -172,6 +172,7 @@ const mobileBrushColorLabel = element<HTMLLabelElement>("mobileBrushColor");
 const mobileBrushColorInput = element<HTMLInputElement>("mobileBrushColorInput");
 const mobileBrushColorSwatch = element<HTMLElement>("mobileBrushColorSwatch");
 const mobilePaintButton = element<HTMLButtonElement>("mobilePaint");
+const mobileEraserButton = element<HTMLButtonElement>("mobileEraser");
 const mobileBlendButton = element<HTMLButtonElement>("mobileBlend");
 const mobileUndoButton = element<HTMLButtonElement>("mobileUndo");
 const mobileRedoButton = element<HTMLButtonElement>("mobileRedo");
@@ -585,6 +586,7 @@ const historyControlsController = new HistoryControlsController({
   onControlsLockChange: (locked) => {
     brushQuickControlsController?.setLocked(locked);
     mobilePaintButton.disabled = locked;
+    mobileEraserButton.disabled = locked;
     mobileBlendButton.disabled = locked;
     mobileToolSettingsSheet?.syncOpenState();
     syncMobileToolsMenuState();
@@ -832,6 +834,7 @@ canvasToolController = new CanvasToolController({
   elements: {
     canvas,
     paintButton: mobilePaintButton,
+    eraserButton: mobileEraserButton,
     blendButton: mobileBlendButton,
   },
   brushSettings: brushSettingsController,

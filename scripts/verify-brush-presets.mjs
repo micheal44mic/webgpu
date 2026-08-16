@@ -217,9 +217,10 @@ assert(engine.includes("shapeDesiredInvert")
   && engine.includes("runGpuAllocationTransaction")
   && engine.includes("createShapeMaskResources(this, assetId, invert)"),
   "Il retarget Shape asset+invert non conserva latest-only e transazione GPU.");
-assert(engine.includes('hardness: tool === "paint" ? 1')
+assert(engine.includes('hardness: tool === "blend"')
+  && engine.includes(': 1,')
   && definitionSource.includes("hardness: 1"),
-  "Hardness deve essere normalizzata al 100% per ogni Paint setting.");
+  "Hardness deve essere normalizzata al 100% per Paint e Gomma.");
 
 assert(shaders.includes("let followAngle = select(0.0, atan2(direction.y, direction.x)")
   && shaders.includes("@location(2) localBrushPixels: vec2<f32>")

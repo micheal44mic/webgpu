@@ -316,7 +316,7 @@ const strokeTypesSource = readFileSync(
   "utf8",
 );
 assert.match(engineSource, /private readonly paintCurvePlanner = new CausalStrokeCurvePlanner\(\);/);
-assert.match(engineSource, /const curvePlanner = tool === "paint" \? this\.paintCurvePlanner : null;/);
+assert.match(engineSource, /const curvePlanner = tool === "blend" \? null : this\.paintCurvePlanner;/);
 assert.match(engineSource, /curvePlanner\?\.reset\(\);/);
 assert.match(engineSource, /const curveSegment = stroke\.curvePlanner\?\.plan\(/);
 assert.match(engineSource, /pressure:[\s\S]*?curveParameter/);
