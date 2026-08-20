@@ -1,5 +1,5 @@
 export const HISTORY_JOURNAL_STRATEGY =
-  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-metadata-scene-reorder-merge-seeded-add-rasterize-before-v12" as const;
+  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-metadata-document-background-scene-reorder-merge-seeded-add-rasterize-before-v13" as const;
 
 /**
  * One entry of the global journal. `layerId` is what makes a single stack usable
@@ -34,6 +34,10 @@ export type JournalAction =
   | {
     id: number;
     kind: "vector";
+  }
+  | {
+    id: number;
+    kind: "document-background";
   }
   | {
     id: number;
@@ -113,6 +117,7 @@ function journalActionLayerId(action: JournalAction): number | null {
   if (action.kind === "layer-merge") return action.output.layerRecord.id;
   if (
     action.kind === "vector"
+    || action.kind === "document-background"
     || action.kind === "scene-reorder"
     || action.kind === "layer-delete"
   ) return null;
@@ -201,6 +206,7 @@ export function hasVisibleContent(
     const action = actions[index];
     if (
       action.kind === "vector"
+      || action.kind === "document-background"
       || action.kind === "layer-blend-mode"
       || action.kind === "layer-metadata"
       || action.kind === "scene-reorder"
@@ -252,6 +258,7 @@ export function latestLayerReplayCheckpoint<TAction extends JournalAction>(
     const action = actions[index];
     if (
       action.kind !== "vector"
+      && action.kind !== "document-background"
       && action.kind !== "scene-reorder"
       && action.kind !== "layer-delete"
       && journalActionLayerId(action) === layerId
@@ -293,6 +300,7 @@ export function visibleRasterBatchActionIdsAfterCheckpoint<TAction extends Journ
     const action = actions[index];
     if (
       action.kind !== "vector"
+      && action.kind !== "document-background"
       && action.kind !== "scene-reorder"
       && action.kind !== "layer-delete"
       && action.kind !== "layer-merge"
@@ -385,6 +393,7 @@ export function historyStepTargetsMissingLayer(
   if (
     !action
     || action.kind === "vector"
+    || action.kind === "document-background"
     || action.kind === "scene-reorder"
     || action.kind === "layer-delete"
   ) return false;

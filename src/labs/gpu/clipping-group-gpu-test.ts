@@ -1,5 +1,8 @@
 import type { BrushEngine } from "../../brush-engine";
-import { setLayerCompositeTestView } from "../engine-lab-operations";
+import {
+  ensureLabCheckerboardBackdrop,
+  setLayerCompositeTestView,
+} from "../engine-lab-operations";
 
 export interface ClippingGroupGpuTestReport {
   version: 1;
@@ -57,6 +60,8 @@ export async function runClippingGroupGpuTest(
   if (initial.layerCount !== 1 || initial.layers[0]?.hasContent) {
     throw new Error("La sonda clipping richiede una pagina nuova con un solo livello vuoto.");
   }
+
+  await ensureLabCheckerboardBackdrop(engine);
 
   setLayerCompositeTestView(engine, 2048, 2048, 1);
   engine.setBrushSettings({

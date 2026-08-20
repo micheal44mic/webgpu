@@ -45,6 +45,7 @@ import {
 } from "./engine-raster-image-runtime";
 import { cloneRasterLayerSource } from "./raster-layer-source";
 import { normalizeRasterColorOverlayStyle } from "./raster-color-overlay-core";
+import { normalizeDocumentBackground } from "./document-background";
 
 export interface CapturedProjectDocumentV1 {
   readonly snapshot: ProjectSnapshotV1;
@@ -294,6 +295,10 @@ export async function captureProjectDocument(
           centerY: engine.viewCenterY,
           zoom: engine.zoom,
           rotationRadians: engine.viewRotation,
+        },
+        background: {
+          schemaVersion: PROJECT_DOCUMENT_SCHEMA_VERSION,
+          ...engine.documentBackground,
         },
         brushSettings: structuredClone(engine.getSettings()),
       },
@@ -616,6 +621,9 @@ export async function restoreProjectDocument(
     engine.layerGpu.clear();
     for (const [layerId, gpu] of nextGpu) engine.layerGpu.set(layerId, gpu);
     engine.mixedSceneStack?.restoreState(snapshot.mixedScene);
+    engine.documentBackground = normalizeDocumentBackground(
+      snapshot.background ?? { visible: false, color: "#ffffff" },
+    );
 
     engine.viewCenterX = snapshot.view.centerX;
     engine.viewCenterY = snapshot.view.centerY;

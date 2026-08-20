@@ -5,6 +5,7 @@ export const HISTORY_ACTION_KINDS = [
   "fill",
   "clear",
   "vector",
+  "document-background",
   "layer-blend-mode",
   "layer-metadata",
   "scene-reorder",
@@ -53,6 +54,7 @@ export interface HistoryActionCharacterization {
   readonly commitPolicy:
     | "first-accepted-geometry"
     | "post-gpu-operation"
+    | "post-cpu-operation"
     | "gesture-end"
     | "session-apply"
     | "post-structural-apply"
@@ -369,6 +371,34 @@ export const HISTORY_ACTION_CHARACTERIZATION = [
     currentRisk: null,
     recovery: "restore the before value and latch if its derived presentation cannot be rebuilt synchronously",
     verifiers: ["verify-mobile-raster-effects-sheet.mjs", "verify-layer-stack.mjs"],
+  },
+  {
+    id: "document-background",
+    family: "layer-properties-effects",
+    status: "current",
+    owner: "BrushEngine document backdrop",
+    currentMethods: [
+      "setDocumentBackgroundVisibility",
+      "setDocumentBackgroundColor",
+    ],
+    actionKinds: ["document-background"],
+    batchKinds: [],
+    lifecycle: "atomic",
+    commitPolicy: "post-cpu-operation",
+    cancelPolicy: "not-applicable",
+    branchCut: "on-commit",
+    payload: "cpu-delta",
+    payloadOwner: "history-journal",
+    release: "journal-only",
+    replay: "metadata-swap",
+    undoRedoPath: "moveHistoryCursor -> applyDocumentBackgroundHistoryState",
+    spillable: false,
+    selection: "none",
+    faultBoundary: "cpu",
+    currentAtomicity: "verified",
+    currentRisk: null,
+    recovery: "apply the immutable before/after document background state",
+    verifiers: ["verify-history-journal.mjs", "verify-layer-panel-controller.mjs"],
   },
   {
     id: "layer-add",

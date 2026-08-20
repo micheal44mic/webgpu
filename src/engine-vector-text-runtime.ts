@@ -903,6 +903,8 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
   const textPipeline = engine.mixedSceneTextSegmentPipeline;
   const imagePipeline = engine.rasterImageMixedScenePipeline;
   const presentPipeline = engine.mixedScenePresentPipeline;
+  const backgroundPipeline = engine.mixedSceneBackgroundPipeline;
+  const backgroundBindGroup = engine.mixedSceneBackgroundBindGroup;
   if (
     !engine.usesOrderedScenePresentation()
     || !linearView
@@ -912,6 +914,8 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
     || !textPipeline
     || !imagePipeline
     || !presentPipeline
+    || !backgroundPipeline
+    || !backgroundBindGroup
     || !engine.presentationCacheView
   ) {
     throw new Error("Compositore segmentato raster/testo non pronto.");
@@ -1006,6 +1010,7 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
   let currentIsCanonical = true;
   let firstCanonicalPass = true;
   const beginScenePass = (): GPURenderPassEncoder => {
+    const initializesCanonicalBackdrop = firstCanonicalPass;
     const pass = encoder.beginRenderPass({
       label: `${label} · ${MIXED_SCENE_COMPOSITOR_STRATEGY}`,
       colorAttachments: [{
@@ -1018,8 +1023,13 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
       }],
     });
     setDirtyScissor(pass);
-    if (firstCanonicalPass && !requiresFullRebuild) {
+    if (initializesCanonicalBackdrop && !requiresFullRebuild) {
       pass.setPipeline(clearPipeline);
+      pass.draw(3, 1, 0, 0);
+    }
+    if (initializesCanonicalBackdrop) {
+      pass.setPipeline(backgroundPipeline);
+      pass.setBindGroup(0, backgroundBindGroup);
       pass.draw(3, 1, 0, 0);
     }
     firstCanonicalPass = false;

@@ -1,5 +1,11 @@
 import { clamp, hexToHsl } from "./color";
 import {
+  documentBackgroundSrgb,
+  normalizeDocumentBackground,
+  normalizeDocumentBackgroundColor,
+  type DocumentBackgroundState,
+} from "./document-background";
+import {
   brushOutlineDiameterCssPixels,
   type BrushOutlineGpuTarget,
   type BrushOutlineSnapshot,
@@ -966,6 +972,7 @@ export class BrushEngine {
       DEFAULT_RASTER_COLOR_OVERLAY_STYLE,
     ),
   }));
+  documentBackground: DocumentBackgroundState = normalizeDocumentBackground(undefined);
 
   readonly mixedSceneStack: MixedSceneStack | null;
   vectorTextPreviewExcludedNodeId: number | null = null;
@@ -1140,6 +1147,7 @@ export class BrushEngine {
   mixedSceneLinearWidth = 0;
   mixedSceneLinearHeight = 0;
   mixedScenePresentBindGroup: GPUBindGroup | null = null;
+  mixedSceneBackgroundBindGroup: GPUBindGroup | null = null;
   mixedSceneBlendScratchTexture: GPUTexture | null = null;
   mixedSceneBlendScratchView: GPUTextureView | null = null;
   mixedSceneBlendOperandTexture: GPUTexture | null = null;
@@ -1329,6 +1337,7 @@ export class BrushEngine {
   rasterImageMixedSceneBindGroupLayout: GPUBindGroupLayout | null = null;
   vectorTextGpuSlugBindGroupLayout: GPUBindGroupLayout | null = null;
   mixedScenePresentBindGroupLayout: GPUBindGroupLayout | null = null;
+  mixedSceneBackgroundBindGroupLayout: GPUBindGroupLayout | null = null;
   layerBlendCompositorBindGroupLayout: GPUBindGroupLayout | null = null;
   vectorTextGpuUniformBindGroupLayout: GPUBindGroupLayout | null = null;
   vectorTextGpuBlurFilterBindGroupLayout: GPUBindGroupLayout | null = null;
@@ -1459,6 +1468,7 @@ export class BrushEngine {
   rasterImagePremultiplyPipeline: GPURenderPipeline | null = null;
   rasterImageMixedScenePipeline: GPURenderPipeline | null = null;
   mixedScenePresentPipeline: GPURenderPipeline | null = null;
+  mixedSceneBackgroundPipeline: GPURenderPipeline | null = null;
   layerBlendCompositorPipeline: GPURenderPipeline | null = null;
   layerBlendCompositorUniformBuffer: GPUBuffer | null = null;
   layerBlendCompositorUniformStride = 0;
@@ -4397,6 +4407,78 @@ export class BrushEngine {
 
   getStats(): EngineStats {
     return getStats(this);
+  }
+
+  getDocumentBackground(): DocumentBackgroundState {
+    return { ...this.documentBackground };
+  }
+
+  private canMutateDocumentBackground(): boolean {
+    return this.initialized
+      && this.activeStroke === null
+      && !this.historyBusy
+      && !this.layerSwitchBusy
+      && !this.selectionBusy
+      && !this.historyStateInconsistent
+      && this.activeVectorHistoryEdit === null
+      && this.activeRasterLayerMetadataHistoryEdit === null
+      && this.activeRasterTransformSession === null
+      && this.activeRasterGaussianBlurSession === null
+      && this.activeRasterMotionBlurSession === null
+      && this.activeRasterNoiseSession === null
+      && this.activeRasterLiquifySession === null;
+  }
+
+  private invalidateDocumentBackgroundPresentation(): void {
+    this.displayDirty = true;
+    this.presentationCacheNeedsFullRebuild = true;
+    this.paintDisplayMipValidThroughLevel = 0;
+    this.requestRender();
+    this.publishStats();
+  }
+
+  applyDocumentBackgroundHistoryState(state: DocumentBackgroundState): void {
+    this.documentBackground = normalizeDocumentBackground(state);
+    this.invalidateDocumentBackgroundPresentation();
+  }
+
+  private commitDocumentBackgroundChange(after: DocumentBackgroundState): boolean {
+    const before = this.getDocumentBackground();
+    commitHistoryActionAtomically(this, {
+      id: this.nextHistoryActionId,
+      kind: "document-background",
+      before,
+      after: { ...after },
+    });
+    this.applyDocumentBackgroundHistoryState(after);
+    if (this.activeStrokeProfile) {
+      this.activeStrokeProfile.historyCommittedActions += 1;
+    }
+    this.publishHistoryState();
+    return true;
+  }
+
+  setDocumentBackgroundVisibility(visible: boolean): boolean {
+    if (!this.canMutateDocumentBackground()) return false;
+    const normalized = Boolean(visible);
+    if (normalized === this.documentBackground.visible) return false;
+    return this.commitDocumentBackgroundChange({
+      ...this.documentBackground,
+      visible: normalized,
+    });
+  }
+
+  setDocumentBackgroundColor(color: string): boolean {
+    if (!this.canMutateDocumentBackground()) return false;
+    const normalized = normalizeDocumentBackgroundColor(
+      color,
+      this.documentBackground.color,
+    );
+    if (normalized === this.documentBackground.color) return false;
+    return this.commitDocumentBackgroundChange({
+      ...this.documentBackground,
+      color: normalized,
+    });
   }
 
   getBlendRuntimeState(): { scratchAllocated: boolean; scratchMemoryMiB: number } {
@@ -9217,6 +9299,13 @@ export class BrushEngine {
     this.displayUniformUpload[21] = clippingGroup?.prefix?.bounds.y ?? 0;
     this.displayUniformUpload[22] = clippingGroup?.suffix?.bounds.x ?? 0;
     this.displayUniformUpload[23] = clippingGroup?.suffix?.bounds.y ?? 0;
+    const [backgroundRed, backgroundGreen, backgroundBlue] = documentBackgroundSrgb(
+      this.documentBackground.color,
+    );
+    this.displayUniformUpload[24] = backgroundRed;
+    this.displayUniformUpload[25] = backgroundGreen;
+    this.displayUniformUpload[26] = backgroundBlue;
+    this.displayUniformUpload[27] = this.documentBackground.visible ? 1 : 0;
 
     this.device.queue.writeBuffer(this.displayUniformBuffer, 0, this.displayUniformUpload);
   }

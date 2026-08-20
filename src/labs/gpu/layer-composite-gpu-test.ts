@@ -1,5 +1,8 @@
 import type { BrushEngine } from "../../brush-engine";
-import { setLayerCompositeTestView } from "../engine-lab-operations";
+import {
+  ensureLabCheckerboardBackdrop,
+  setLayerCompositeTestView,
+} from "../engine-lab-operations";
 import type { EngineGpuMemoryStats } from "../../engine-stats";
 import { LAYER_BAKE_STRATEGY, LAYER_COMPOSITE_STRATEGY } from "../../engine-strategies";
 import type { LayerSwitchResult } from "../../engine-types";
@@ -420,6 +423,7 @@ export async function runLayerCompositeGpuTest(
   if (initial.layerFormat !== "rgba16float") {
     throw new Error("Il test compositing richiede livelli RGBA16F.");
   }
+  await ensureLabCheckerboardBackdrop(engine);
   const fullLayerMiB = engine.layerSize * engine.layerSize * 8 / (1024 * 1024);
   const fullMipTailMiB = fullLayerMiB / 3;
 

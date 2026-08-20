@@ -180,6 +180,12 @@ export interface ProjectViewStateV1 {
   readonly rotationRadians: number;
 }
 
+export interface ProjectDocumentBackgroundV1 {
+  readonly schemaVersion: typeof PROJECT_DOCUMENT_SCHEMA_VERSION;
+  readonly visible: boolean;
+  readonly color: string;
+}
+
 /**
  * Versioned wrapper over the pure MixedSceneState. SVG path typed arrays stay
  * typed arrays under structured clone; image/GPU resources must not be added.
@@ -196,6 +202,8 @@ export interface ProjectSnapshotV1 {
   readonly referenceRasterLayerId: number | null;
   readonly mixedScene: ProjectMixedSceneStateV1;
   readonly view: ProjectViewStateV1;
+  /** Optional for V1 projects saved before the structural background existed. */
+  readonly background?: ProjectDocumentBackgroundV1;
   /** Current editor brush; Undo/Redo history remains deliberately session-only. */
   readonly brushSettings: BrushSettings;
 }
@@ -1080,6 +1088,16 @@ function assertSnapshot(
   assertFinite(value.view.zoom, `${path}.view.zoom`);
   if (value.view.zoom <= 0) fail(`${path}.view.zoom`, "must be positive");
   assertFinite(value.view.rotationRadians, `${path}.view.rotationRadians`);
+
+  if (value.background !== undefined) {
+    if (!isRecord(value.background)) fail(`${path}.background`, "must be an object");
+    assertSchemaVersion(value.background.schemaVersion, `${path}.background.schemaVersion`);
+    assertBoolean(value.background.visible, `${path}.background.visible`);
+    assertString(value.background.color, `${path}.background.color`, 7);
+    if (!/^#[0-9a-f]{6}$/i.test(String(value.background.color))) {
+      fail(`${path}.background.color`, "must be a six-digit hexadecimal color");
+    }
+  }
 
   if (!isRecord(value.brushSettings)) {
     fail(`${path}.brushSettings`, "must be an object");

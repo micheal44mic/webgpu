@@ -217,8 +217,13 @@ assert.ok(
   );
   assert.match(
     labOperationsSource,
-    /analytic\.length !== live\.length \* 2[\s\S]{0,1800}decodeFloat16/,
+    /analytic\.length !== live\.length \* 2[\s\S]{0,2600}decodeFloat16/,
     at("la diagnostica fwidth deve decodificare il readback RGBA16F"),
+  );
+  assert.match(
+    labOperationsSource,
+    /backgroundState = engine\.getDocumentBackground\(\)[\s\S]{0,500}documentBackgroundSrgb/,
+    at("la diagnostica fwidth deve rispettare lo sfondo documento corrente"),
   );
 }
 

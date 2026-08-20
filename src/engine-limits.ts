@@ -187,10 +187,10 @@ export const BRUSH_UNIFORM_BYTES = 96;
 
 export const GRAIN_UNIFORM_BYTES = 32;
 
-// The first 64 bytes retain the historical display ABI. The final 32 bytes
-// describe the one live clipping group (mode, parent opacity and two cropped
-// auxiliary surfaces) shared by every presentation shader.
-export const DISPLAY_UNIFORM_BYTES = 96;
+// The first 64 bytes retain the historical display ABI. The next 32 bytes
+// describe the one live clipping group; the final 16 bytes carry the structural
+// document backdrop shared by every presentation shader.
+export const DISPLAY_UNIFORM_BYTES = 112;
 
 export const VECTOR_TEXT_CAPTURE_UNIFORM_BYTES = 32;
 

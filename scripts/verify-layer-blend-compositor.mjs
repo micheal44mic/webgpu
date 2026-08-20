@@ -25,6 +25,11 @@ import {
   LAYER_BLEND_FOLD_WGSL,
 } from "../src/layer-blend-fold-shader.ts";
 import {
+  DEFAULT_DOCUMENT_BACKGROUND,
+  documentBackgroundLinearPremultiplied,
+  normalizeDocumentBackground,
+} from "../src/document-background.ts";
+import {
   LAYER_COLD_TILE_COMPOSITE_BATCH_TILES,
   LAYER_COLD_TILE_COMPOSITE_UNIFORM_BYTES,
   LAYER_COLD_TILE_COMPOSITE_WGSL,
@@ -33,6 +38,20 @@ const tileShaderSource = readFileSync(
   new URL("../src/layer-blend-tile-shader.ts", import.meta.url),
   "utf8",
 );
+
+assert.deepEqual(normalizeDocumentBackground(undefined), DEFAULT_DOCUMENT_BACKGROUND);
+assert.deepEqual(
+  documentBackgroundLinearPremultiplied({ visible: false, color: "#ff0000" }),
+  [0, 0, 0, 0],
+);
+const middleGray = documentBackgroundLinearPremultiplied({
+  visible: true,
+  color: "#808080",
+});
+assert.ok(Math.abs(middleGray[0] - 0.21586) < 0.0001);
+assert.equal(middleGray[0], middleGray[1]);
+assert.equal(middleGray[1], middleGray[2]);
+assert.equal(middleGray[3], 1);
 const tileCompositorSource = readFileSync(
   new URL("../src/layer-blend-tile-compositor.ts", import.meta.url),
   "utf8",
@@ -43,6 +62,10 @@ const tileRuntimeSource = readFileSync(
 );
 const layerRuntimeSource = readFileSync(
   new URL("../src/engine-layer-runtime.ts", import.meta.url),
+  "utf8",
+);
+const brushEngineSource = readFileSync(
+  new URL("../src/brush-engine.ts", import.meta.url),
   "utf8",
 );
 
@@ -376,7 +399,17 @@ assert.match(
 );
 assert.match(
   tileRuntimeSource,
-  /clear document backdrop tile`,\s*textureRect\.width,\s*textureRect\.height,/s,
+  /seed document background tile`,\s*textureRect\.width,\s*textureRect\.height,/s,
+);
+assert.match(
+  brushEngineSource,
+  /invalidateDocumentBackgroundPresentation\(\)[\s\S]*?paintDisplayMipValidThroughLevel = 0;/,
+  "changing the backdrop must invalidate the final raster mip pyramid",
+);
+assert.match(
+  tileCompositorSource,
+  /seedTileWithDocumentBackground\([\s\S]*?loadOp: clearsWholeTile \? "clear" : "load"[\s\S]*?setPipeline\(this\.tileBackgroundPipeline\)[\s\S]*?setScissorRect\(0, 0, boundedWidth, boundedHeight\)/,
+  "the selected backdrop must retain the bounded partial-tile fast path",
 );
 
 console.log("Layer blend compositor verification passed for source-over/source-atop and 27 modes.");

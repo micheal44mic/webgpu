@@ -1508,6 +1508,22 @@ layerPanelController = new LayerPanelController({
     sceneEditorController?.setLayerVisibility(key, visible),
   setRasterReference: (key, enabled) =>
     sceneEditorController?.setRasterReference(key, enabled),
+  setDocumentBackgroundVisibility: (visible) => {
+    const changed = engine.setDocumentBackgroundVisibility(visible);
+    if (changed) {
+      projectSessionController?.markDirty();
+      scheduleMobileLayersRefresh();
+    }
+    return changed;
+  },
+  setDocumentBackgroundColor: (color) => {
+    const changed = engine.setDocumentBackgroundColor(color);
+    if (changed) {
+      projectSessionController?.markDirty();
+      scheduleMobileLayersRefresh();
+    }
+    return changed;
+  },
   setRasterClipping: (key, enabled) =>
     sceneEditorController?.setRasterClipping(key, enabled),
   deleteLayer: (key) => sceneEditorController!.deleteLayer(key),

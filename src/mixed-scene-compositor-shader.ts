@@ -37,6 +37,13 @@ struct DisplayUniforms {
   activeLayerAlpha: f32,
   mergedBelowOrigin: vec2<f32>,
   mergedAboveOrigin: vec2<f32>,
+  clippingMode: f32,
+  clippingParentOpacity: f32,
+  clippingPrefixScale: f32,
+  clippingSuffixScale: f32,
+  clippingPrefixOrigin: vec2<f32>,
+  clippingSuffixOrigin: vec2<f32>,
+  backgroundColor: vec4<f32>,
 };
 
 fn layerPositionAt(fragmentPosition: vec2<f32>) -> vec2<f32> {
@@ -242,6 +249,12 @@ fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
 ${fullscreenVertexShader}
 
 @fragment
+fn backgroundFragmentMain() -> @location(0) vec4<f32> {
+  let alpha = select(0.0, 1.0, display.backgroundColor.a > 0.5);
+  return vec4<f32>(srgbToLinear(display.backgroundColor.rgb) * alpha, alpha);
+}
+
+@fragment
 fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
   let layerPosition = layerPositionAt(fragmentPosition.xy);
   let insideLayer = all(layerPosition >= vec2<f32>(0.0))
@@ -259,7 +272,12 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   let paint = textureLoad(sceneTexture, pixel, 0);
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;
-  let backgroundSrgb = select(vec3<f32>(0.82), vec3<f32>(0.91), checkerParity == 0);
+  let checkerSrgb = select(vec3<f32>(0.82), vec3<f32>(0.91), checkerParity == 0);
+  let backgroundSrgb = select(
+    checkerSrgb,
+    display.backgroundColor.rgb,
+    display.backgroundColor.a > 0.5
+  );
   let backgroundLinear = srgbToLinear(backgroundSrgb);
   let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
   return vec4<f32>(linearToSrgb(compositedLinear), 1.0);

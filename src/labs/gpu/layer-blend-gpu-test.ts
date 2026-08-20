@@ -1,5 +1,8 @@
 import type { BrushEngine } from "../../brush-engine";
-import { setLayerCompositeTestView } from "../engine-lab-operations";
+import {
+  ensureLabCheckerboardBackdrop,
+  setLayerCompositeTestView,
+} from "../engine-lab-operations";
 import {
   blendLayerPremultipliedLinear,
   LAYER_BLEND_MODE_ORDER,
@@ -626,6 +629,8 @@ export async function runLayerBlendGpuTest(
       "La sonda fusioni richiede una pagina dev nuova, RGBA16F, con un solo raster vuoto.",
     );
   }
+
+  await ensureLabCheckerboardBackdrop(engine);
 
   // main.ts invokes this harness only after initialize() resolves. Initialization
   // awaits getCompilationInfo() for the real layerBlendFoldShaderModule and

@@ -32,6 +32,7 @@ import {
   type LayerCompressionStudyReport,
 } from "./memory/layer-compression-study-contract";
 import { decodeFloat16, encodeFloat16 } from "../float16";
+import { documentBackgroundSrgb } from "../document-background";
 
 export async function runBenchmark(engine: BrushEngine, baseStampCount: number): Promise<BenchmarkResult> {
   if (!engine.initialized) {
@@ -636,6 +637,10 @@ export async function measureActiveStyleBakeGap(engine: BrushEngine, rect: Dirty
       return lower % 2 === 0 ? lower : lower + 1;
     };
     const activeAlpha = record.visible ? clamp(record.opacity, 0, 1) : 0;
+    const backgroundState = engine.getDocumentBackground();
+    const solidBackgroundSrgb = backgroundState.visible
+      ? documentBackgroundSrgb(backgroundState.color)
+      : null;
     const channelNames = ["r", "g", "b", "a"] as const;
     const maxDeltaByChannel = [0, 0, 0, 0] as [number, number, number, number];
     let differingPixels = 0;
@@ -661,17 +666,21 @@ export async function measureActiveStyleBakeGap(engine: BrushEngine, rect: Dirty
         const alpha = analyticAlpha * activeAlpha;
         const checkerX = Math.floor((rect.x + column + 0.5) / 96);
         const checkerY = Math.floor((rect.y + row + 0.5) / 96);
-        const backgroundSrgb = ((checkerX + checkerY) & 1) === 0 ? 0.91 : 0.82;
-        const backgroundLinear = srgbToLinear(backgroundSrgb);
+        const checkerSrgb = ((checkerX + checkerY) & 1) === 0 ? 0.91 : 0.82;
+        const backgroundLinear = [
+          srgbToLinear(solidBackgroundSrgb?.[0] ?? checkerSrgb),
+          srgbToLinear(solidBackgroundSrgb?.[1] ?? checkerSrgb),
+          srgbToLinear(solidBackgroundSrgb?.[2] ?? checkerSrgb),
+        ] as const;
         const expected = [
           quantizeUnorm(linearToSrgb(
-            analyticRed * activeAlpha + backgroundLinear * (1 - alpha),
+            analyticRed * activeAlpha + backgroundLinear[0] * (1 - alpha),
           )),
           quantizeUnorm(linearToSrgb(
-            analyticGreen * activeAlpha + backgroundLinear * (1 - alpha),
+            analyticGreen * activeAlpha + backgroundLinear[1] * (1 - alpha),
           )),
           quantizeUnorm(linearToSrgb(
-            analyticBlue * activeAlpha + backgroundLinear * (1 - alpha),
+            analyticBlue * activeAlpha + backgroundLinear[2] * (1 - alpha),
           )),
           255,
         ];
@@ -837,4 +846,16 @@ export function setLayerCompositeTestView(engine: BrushEngine, centerX: number, 
   engine.displayDirty = true;
   engine.notifyViewChange();
   engine.requestRender();
+}
+
+/** GPU compositing probes below intentionally exercise transparent/checker presentation. */
+export async function ensureLabCheckerboardBackdrop(engine: BrushEngine): Promise<void> {
+  if (!import.meta.env.DEV) {
+    throw new Error("Sfondo checker dei test disponibile solo in modalità dev.");
+  }
+  if (!engine.getDocumentBackground().visible) return;
+  if (!engine.setDocumentBackgroundVisibility(false)) {
+    throw new Error("Impossibile preparare lo sfondo trasparente per la sonda GPU.");
+  }
+  await engine.waitForIdle();
 }

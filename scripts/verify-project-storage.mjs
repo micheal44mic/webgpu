@@ -138,6 +138,11 @@ function projectRequest(
           zoom: 1,
           rotationRadians: 0,
         },
+        background: {
+          schemaVersion: VERSION,
+          visible: true,
+          color: "#2a4c6e",
+        },
         brushSettings: { color: "#ff5b35", size: 32 },
       },
       chunks: [{
@@ -161,6 +166,23 @@ assert.equal(normalizeProjectTitle("\n\t"), "Untitled Artwork");
 
 const { request, bytes, tileBytes } = projectRequest();
 validateProjectSaveRequest(request);
+const legacyBackgroundProject = structuredClone(request);
+delete legacyBackgroundProject.snapshot.background;
+validateProjectSaveRequest(legacyBackgroundProject);
+const invalidBackgroundColor = structuredClone(request);
+invalidBackgroundColor.snapshot.background.color = "#fff";
+assert.throws(
+  () => validateProjectSaveRequest(invalidBackgroundColor),
+  ProjectStorageValidationError,
+  "the optional document background must use a six-digit hex color",
+);
+const invalidBackgroundVisibility = structuredClone(request);
+invalidBackgroundVisibility.snapshot.background.visible = "true";
+assert.throws(
+  () => validateProjectSaveRequest(invalidBackgroundVisibility),
+  ProjectStorageValidationError,
+  "the optional document background visibility must remain boolean",
+);
 assert.equal(estimateProjectSaveBytes(request), tileBytes + 4);
 const uniformAlphaProject = projectRequest("Uniform alpha overlay");
 uniformAlphaProject.request.snapshot.layers[0].colorOverlayStyle.uniformAlpha = true;
@@ -300,6 +322,11 @@ assert.ok(loadedFirst);
 validateLoadedProject(loadedFirst);
 assert.equal(new Uint8Array(loadedFirst.chunks[0].bytes)[0], 7);
 assert.equal(loadedFirst.manifest.magic, PROJECT_MANIFEST_MAGIC);
+assert.deepEqual(loadedFirst.manifest.snapshot.background, {
+  schemaVersion: VERSION,
+  visible: true,
+  color: "#2a4c6e",
+});
 assert.ok(loadedFirst.manifest.snapshot.layers[0].storageTileMask instanceof Uint32Array);
 const svgPath = loadedFirst.manifest.snapshot.mixedScene.svgNodes[0].document.paths[0];
 assert.ok(svgPath.commands instanceof Uint8Array);
@@ -430,6 +457,16 @@ assert.match(
 );
 assert.match(runtimeSource, /sourceResource\.sourceBlob/);
 assert.match(runtimeSource, /installRasterLayerSourceResource\(/);
+assert.match(
+  runtimeSource,
+  /background: \{\s*schemaVersion: PROJECT_DOCUMENT_SCHEMA_VERSION,\s*\.\.\.engine\.documentBackground,\s*\}/,
+  "project capture must persist the structural background",
+);
+assert.match(
+  runtimeSource,
+  /snapshot\.background \?\? \{ visible: false, color: "#ffffff" \}/,
+  "legacy V1 projects without a background must retain transparent checker presentation",
+);
 assert.match(
   runtimeSource,
   /colorOverlayStyle: normalizeRasterColorOverlayStyle\(layer\.colorOverlayStyle\)/,

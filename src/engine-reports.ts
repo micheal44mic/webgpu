@@ -576,6 +576,7 @@ export function getStats(engine: BrushEngine): EngineStats {
       + gpuMemory.layerHydrationMiB,
     mixedScene: engine.createMixedSceneSnapshot(),
     layerCount: engine.layerStack.count,
+    documentBackground: { ...engine.documentBackground },
     activeLayerId: engine.layerStack.active.id,
     referenceLayerId: engine.layerStack.referenceLayerId,
     fillReferenceLayerStrategy: FILL_REFERENCE_LAYER_STRATEGY,

@@ -47,6 +47,8 @@ import {
 export type LayerPanelKey = SceneLayerKey;
 export type LayerPanelKind = SceneLayerKind;
 export type LayerPanelProperties = SceneLayerProperties;
+const DOCUMENT_BACKGROUND_ROW_KEY = "background" as const;
+type LayerPanelRowKey = LayerPanelKey | typeof DOCUMENT_BACKGROUND_ROW_KEY;
 
 export interface LayerPanelDuplicateResult {
   readonly kind: LayerPanelKind;
@@ -133,6 +135,8 @@ export interface LayerPanelControllerOptions {
   readonly selectLayer: (key: LayerPanelKey) => void;
   readonly setLayerVisibility: (key: LayerPanelKey, visible: boolean) => void;
   readonly setRasterReference: (key: LayerPanelKey, enabled: boolean) => void;
+  readonly setDocumentBackgroundVisibility: (visible: boolean) => boolean;
+  readonly setDocumentBackgroundColor: (color: string) => boolean;
   readonly setRasterClipping: (key: LayerPanelKey, enabled: boolean) => void;
   readonly deleteLayer: (key: LayerPanelKey) => Promise<void>;
   readonly openLayerOptions: (trigger: HTMLElement) => void;
@@ -145,9 +149,7 @@ export interface LayerPanelControllerOptions {
   ) => void;
 }
 
-interface LayerPanelView {
-  readonly key: LayerPanelKey;
-  readonly kind: LayerPanelKind;
+interface LayerPanelViewBase {
   readonly name: string;
   readonly visible: boolean;
   readonly selected: boolean;
@@ -167,6 +169,18 @@ interface LayerPanelView {
   readonly semanticThumbnail: MobileSemanticLayerThumbnailSource | null;
   readonly semanticThumbnailSignature: string;
 }
+
+interface SceneLayerPanelView extends LayerPanelViewBase {
+  readonly key: LayerPanelKey;
+  readonly kind: LayerPanelKind;
+}
+
+interface BackgroundLayerPanelView extends LayerPanelViewBase {
+  readonly key: typeof DOCUMENT_BACKGROUND_ROW_KEY;
+  readonly kind: "background";
+}
+
+type LayerPanelView = SceneLayerPanelView | BackgroundLayerPanelView;
 
 interface LayerPanelReorderGesture {
   readonly pointerId: number;
@@ -403,10 +417,25 @@ export class LayerPanelController {
       const thumbnail = row.querySelector<HTMLSpanElement>(".mobile-layer-thumbnail");
       const name = row.querySelector<HTMLSpanElement>(".mobile-layer-name");
       const reference = row.querySelector<HTMLButtonElement>(".mobile-layer-reference");
+      const backgroundColorControl = row.querySelector<HTMLLabelElement>(
+        ".mobile-layer-background-color",
+      );
+      const backgroundColorInput = backgroundColorControl?.querySelector<HTMLInputElement>(
+        'input[type="color"]',
+      );
       const visibility = row.querySelector<HTMLButtonElement>(".mobile-layer-visibility");
-      if (!select || !thumbnail || !name || !reference || !visibility) return;
+      if (
+        !select
+        || !thumbnail
+        || !name
+        || !reference
+        || !backgroundColorControl
+        || !backgroundColorInput
+        || !visibility
+      ) return;
 
-      const selected = this.multiSelectEnabled
+      const background = view.kind === "background";
+      const selected = this.multiSelectEnabled && !background
         ? this.selectedKeys.has(view.key)
         : view.selected;
       row.className = `mobile-layer-row is-${view.kind}`
@@ -415,13 +444,15 @@ export class LayerPanelController {
         + `${view.selected ? " is-active-layer" : ""}`;
       row.setAttribute("aria-posinset", String(position + 1));
       row.setAttribute("aria-setsize", String(views.length));
-      select.disabled = locked;
+      select.disabled = locked || background;
       select.setAttribute("aria-current", String(view.selected));
       if (this.multiSelectEnabled) select.setAttribute("aria-pressed", String(selected));
       else select.removeAttribute("aria-pressed");
       select.setAttribute(
         "aria-label",
-        this.multiSelectEnabled
+        background
+          ? `${view.name}, livello bloccato sempre in fondo`
+          : this.multiSelectEnabled
           ? selected
             ? `${view.name}, selected. Tap to remove it from the merge selection; `
               + "hold for selection actions."
@@ -431,14 +462,27 @@ export class LayerPanelController {
               + "Alt plus Arrow Up or Down also moves it."
             : `Select ${view.name}`,
       );
-      if (view.selected && !this.multiSelectEnabled) {
+      if (!background && view.selected && !this.multiSelectEnabled) {
         select.setAttribute("aria-keyshortcuts", "Alt+ArrowUp Alt+ArrowDown");
       } else {
         select.removeAttribute("aria-keyshortcuts");
       }
       select.title = view.name;
       name.textContent = view.name;
-      this.options.thumbnails.render(thumbnail, view);
+      if (background) {
+        thumbnail.dataset.kind = "background";
+        thumbnail.dataset.thumbnailSignature = `background:${view.thumbnailColor ?? ""}`;
+        thumbnail.style.setProperty(
+          "--mobile-layer-background-color",
+          view.thumbnailColor ?? "#ffffff",
+        );
+        thumbnail.querySelector<HTMLCanvasElement>(".mobile-layer-thumbnail-canvas")!.hidden = true;
+        thumbnail.querySelector<HTMLSpanElement>(".mobile-layer-thumbnail-content")!.hidden = true;
+        thumbnail.querySelector<HTMLSpanElement>(".mobile-layer-thumbnail-glyph")!.hidden = true;
+      } else {
+        thumbnail.style.removeProperty("--mobile-layer-background-color");
+        this.options.thumbnails.render(thumbnail, view);
+      }
 
       reference.hidden = view.kind !== "raster";
       reference.disabled = locked || this.multiSelectEnabled || !view.referenceAvailable;
@@ -448,6 +492,16 @@ export class LayerPanelController {
         `${view.reference ? "Disable" : "Set"} Reference for ${view.name}`,
       );
       reference.title = view.reference ? "Reference on" : "Set as Reference";
+
+      backgroundColorControl.hidden = !background;
+      backgroundColorControl.style.setProperty(
+        "--mobile-layer-background-color",
+        view.thumbnailColor ?? "#ffffff",
+      );
+      backgroundColorInput.disabled = locked || this.multiSelectEnabled || !background;
+      if (background && backgroundColorInput.value !== view.thumbnailColor) {
+        backgroundColorInput.value = view.thumbnailColor ?? "#ffffff";
+      }
 
       visibility.disabled = locked || this.multiSelectEnabled;
       visibility.setAttribute("aria-pressed", String(view.visible));
@@ -531,6 +585,7 @@ export class LayerPanelController {
       this.handleContextMenu(raw as MouseEvent);
     });
     this.listen(elements.list, "click", (raw) => this.handleListClick(raw as MouseEvent));
+    this.listen(elements.list, "change", (raw) => this.handleBackgroundColorInput(raw));
     this.listen(elements.clippingButton, "click", () => this.requestClippingToggle());
     this.listen(elements.optionsButton, "click", () => this.requestLayerOptions());
     this.listen(elements.rasterizeButton, "click", () => {
@@ -1071,9 +1126,21 @@ export class LayerPanelController {
     const row = actionButton?.closest<HTMLElement>("[data-layer-key]");
     const action = actionButton?.dataset.mobileLayerAction;
     const key = row?.dataset.layerKey;
-    if (!actionButton || actionButton.disabled || !action || !key || !isLayerPanelKey(key)) {
+    if (!actionButton || actionButton.disabled || !action || !key) {
       return;
     }
+    if (key === DOCUMENT_BACKGROUND_ROW_KEY) {
+      if (
+        action !== "visibility"
+        || this.multiSelectEnabled
+        || this.options.isInteractionLocked()
+      ) return;
+      const stats = this.options.getStats();
+      if (!stats) return;
+      this.options.setDocumentBackgroundVisibility(!stats.documentBackground.visible);
+      return;
+    }
+    if (!isLayerPanelKey(key)) return;
     if (
       action === "select"
       && key === this.suppressClickKey
@@ -1127,6 +1194,40 @@ export class LayerPanelController {
     this.options.setLayerVisibility(key, !visible);
   }
 
+  private handleBackgroundColorInput(event: Event): void {
+    const input = event.target instanceof this.options.browser.HTMLElement
+      && event.target.matches('.mobile-layer-background-color input[type="color"]')
+      ? event.target as HTMLInputElement
+      : null;
+    if (
+      !input
+      || input.disabled
+      || this.multiSelectEnabled
+      || this.options.isInteractionLocked()
+    ) return;
+    this.options.setDocumentBackgroundColor(input.value);
+  }
+
+  private backgroundView(stats: EngineStats): BackgroundLayerPanelView {
+    return {
+      key: DOCUMENT_BACKGROUND_ROW_KEY,
+      kind: "background",
+      name: "Sfondo",
+      visible: stats.documentBackground.visible,
+      selected: false,
+      rasterIndex: null,
+      rasterLayerId: null,
+      reference: false,
+      referenceAvailable: false,
+      hasContent: true,
+      contentBounds: null,
+      thumbnailGlyph: "",
+      thumbnailColor: stats.documentBackground.color,
+      semanticThumbnail: null,
+      semanticThumbnailSignature: "",
+    };
+  }
+
   private views(stats: EngineStats): LayerPanelView[] {
     const scene = stats.mixedScene;
     const views: LayerPanelView[] = [];
@@ -1151,6 +1252,7 @@ export class LayerPanelController {
           semanticThumbnailSignature: "",
         });
       }
+      views.push(this.backgroundView(stats));
       return views;
     }
 
@@ -1249,6 +1351,7 @@ export class LayerPanelController {
         semanticThumbnailSignature: "",
       });
     }
+    views.push(this.backgroundView(stats));
     return views;
   }
 
@@ -1276,7 +1379,9 @@ export class LayerPanelController {
           view.thumbnailGlyph,
           view.thumbnailColor ?? "",
           view.semanticThumbnailSignature,
-          this.options.thumbnails.semanticFontRevision(view.kind),
+          view.kind === "background"
+            ? 0
+            : this.options.thumbnails.semanticFontRevision(view.kind),
         ].join(":");
       }).join("|");
   }
@@ -1342,7 +1447,7 @@ export class LayerPanelController {
     return stack;
   }
 
-  private createRow(key: string): HTMLDivElement {
+  private createRow(key: LayerPanelRowKey): HTMLDivElement {
     const row = this.options.document.createElement("div");
     row.className = "mobile-layer-row";
     row.setAttribute("role", "listitem");
@@ -1381,11 +1486,22 @@ export class LayerPanelController {
     reference.className = "mobile-layer-reference";
     reference.dataset.mobileLayerAction = "reference";
     reference.textContent = "R";
+    const backgroundColorControl = this.options.document.createElement("label");
+    backgroundColorControl.className = "mobile-layer-background-color";
+    backgroundColorControl.hidden = true;
+    backgroundColorControl.title = "Scegli il colore dello sfondo";
+    const backgroundColorSwatch = this.options.document.createElement("span");
+    backgroundColorSwatch.setAttribute("aria-hidden", "true");
+    const backgroundColorInput = this.options.document.createElement("input");
+    backgroundColorInput.type = "color";
+    backgroundColorInput.value = "#ffffff";
+    backgroundColorInput.setAttribute("aria-label", "Scegli il colore dello sfondo");
+    backgroundColorControl.append(backgroundColorSwatch, backgroundColorInput);
     const visibility = this.options.document.createElement("button");
     visibility.type = "button";
     visibility.className = "mobile-layer-visibility";
     visibility.dataset.mobileLayerAction = "visibility";
-    row.append(select, reference, visibility);
+    row.append(select, reference, backgroundColorControl, visibility);
     return row;
   }
 

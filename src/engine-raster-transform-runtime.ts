@@ -597,6 +597,7 @@ export async function beginRasterLayerTransform(
         const action = engine.historyActions[index];
         if (
           action.kind === "vector"
+          || action.kind === "document-background"
           || action.kind === "scene-reorder"
           || action.kind === "layer-add"
           || action.kind === "layer-delete"

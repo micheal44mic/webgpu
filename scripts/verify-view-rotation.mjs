@@ -130,12 +130,16 @@ assert.notEqual(magnet.display, 0, "il magnete non deve riagganciare fuori dalla
 applyMagnet(magnet, -2);
 assert.equal(magnet.display, 0, "entro 3° il magnete deve tornare a zero esatto");
 
-assert.match(engineSource, /const DISPLAY_UNIFORM_BYTES = 96;/,
-  "rotazione, origin merged e gruppo di ritaglio condividono la ABI display da 96 byte");
+assert.match(engineSource, /const DISPLAY_UNIFORM_BYTES = 112;/,
+  "rotazione, origin merged, gruppo di ritaglio e sfondo condividono la ABI display da 112 byte");
 assert.match(engineSource, /displayUniformUpload\[2\] = this\.viewRotationCos/);
 assert.match(engineSource, /displayUniformUpload\[3\] = this\.viewRotationSin/);
 assert.match(engineSource, /displayUniformUpload\[4\] = this\.viewCenterX/);
 assert.match(engineSource, /displayUniformUpload\[5\] = this\.viewCenterY/);
+assert.match(engineSource, /displayUniformUpload\[24\] = backgroundRed/);
+assert.match(engineSource, /displayUniformUpload\[27\] = this\.documentBackground\.visible \? 1 : 0/);
+assert.match(shaderSource, /display\.backgroundColor\.rgb/);
+assert.match(mixedSceneCompositorSource, /backgroundFragmentMain/);
 assert.match(engineSource, /VIEW_ROTATION_SNAP_ENTER_RADIANS = 3 \* Math\.PI \/ 180/);
 assert.match(engineSource, /VIEW_ROTATION_SNAP_RELEASE_RADIANS = 7 \* Math\.PI \/ 180/);
 

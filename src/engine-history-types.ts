@@ -28,6 +28,7 @@ import type { RasterNoiseChannels, RasterNoiseStyle } from "./noise-core";
 import type { LiquifyMode } from "./liquify-core";
 import type { RasterLayerSource } from "./raster-layer-source";
 import type { RasterLayerEffectsSnapshot } from "./raster-layer-effects";
+import type { DocumentBackgroundState } from "./document-background";
 
 export interface SelectionHistoryMaskSnapshot {
   readonly revision: number;
@@ -70,6 +71,14 @@ export interface MixedSceneReorderHistoryAction {
   kind: "scene-reorder";
   before: MixedSceneOrderState;
   after: MixedSceneOrderState;
+}
+
+/** One compact, layer-independent change to the document backdrop. */
+export interface DocumentBackgroundHistoryAction {
+  id: number;
+  kind: "document-background";
+  before: DocumentBackgroundState;
+  after: DocumentBackgroundState;
 }
 
 /** One journal field per independent raster property/effect gesture. */
@@ -406,6 +415,7 @@ export type RasterHistoryCheckpointAction =
 export type HistoryAction =
   | RasterHistoryAction
   | VectorHistoryAction
+  | DocumentBackgroundHistoryAction
   | LayerBlendModeHistoryAction
   | RasterLayerMetadataHistoryAction
   | MixedSceneReorderHistoryAction

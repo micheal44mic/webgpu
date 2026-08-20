@@ -4019,6 +4019,10 @@ select {
     border-radius: 8px;
   }
 
+  .mobile-layer-row.is-background {
+    margin-top: 8px;
+  }
+
   .mobile-layer-row.is-selected {
     border-color: #dd5c35;
   }
@@ -4266,6 +4270,10 @@ select {
     line-height: 1;
   }
 
+  .mobile-layer-thumbnail[data-kind="background"] {
+    background: var(--mobile-layer-background-color, #ffffff);
+  }
+
   .mobile-layer-thumbnail-content {
     position: absolute;
     min-width: 2px;
@@ -4319,6 +4327,53 @@ select {
     place-items: center;
   }
 
+  .mobile-layer-background-color {
+    position: relative;
+    display: grid;
+    width: 44px;
+    height: 44px;
+    grid-row: 1;
+    grid-column: 2;
+    align-self: center;
+    justify-self: center;
+    place-items: center;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+
+  .mobile-layer-background-color[hidden] {
+    display: none;
+  }
+
+  .mobile-layer-background-color > span {
+    width: 27px;
+    height: 27px;
+    border: 2px solid #f2f0e9;
+    border-radius: 50%;
+    background: var(--mobile-layer-background-color, #ffffff);
+    box-shadow: 0 0 0 1px #343842;
+  }
+
+  .mobile-layer-background-color > input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    opacity: 0;
+    cursor: pointer;
+  }
+
+  .mobile-layer-background-color:has(input:disabled) {
+    cursor: default;
+    opacity: 0.55;
+  }
+
+  .mobile-layer-background-color > input:disabled {
+    cursor: default;
+  }
+
   .mobile-layer-reference[hidden] {
     display: none;
   }
@@ -4351,7 +4406,8 @@ select {
   .mobile-layers-toolbar-action:focus-visible,
   .mobile-layer-select:focus-visible,
   .mobile-layer-reference:focus-visible,
-  .mobile-layer-visibility:focus-visible {
+  .mobile-layer-visibility:focus-visible,
+  .mobile-layer-background-color:focus-within {
     border-radius: 6px;
     outline: 1px solid #dd5c35;
     outline-offset: -3px;

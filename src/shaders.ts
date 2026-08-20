@@ -749,6 +749,7 @@ struct DisplayUniforms {
   clippingSuffixScale: f32,
   clippingPrefixOrigin: vec2<f32>,
   clippingSuffixOrigin: vec2<f32>,
+  backgroundColor: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -1037,7 +1038,12 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;
-  let backgroundSrgb = select(vec3<f32>(0.82), vec3<f32>(0.91), checkerParity == 0);
+  let checkerSrgb = select(vec3<f32>(0.82), vec3<f32>(0.91), checkerParity == 0);
+  let backgroundSrgb = select(
+    checkerSrgb,
+    display.backgroundColor.rgb,
+    display.backgroundColor.a > 0.5
+  );
   let backgroundLinear = srgbToLinear(backgroundSrgb);
   let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
 
@@ -1101,7 +1107,12 @@ fn finalStackFragmentMain(
   }
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;
-  let backgroundSrgb = select(vec3<f32>(0.82), vec3<f32>(0.91), checkerParity == 0);
+  let checkerSrgb = select(vec3<f32>(0.82), vec3<f32>(0.91), checkerParity == 0);
+  let backgroundSrgb = select(
+    checkerSrgb,
+    display.backgroundColor.rgb,
+    display.backgroundColor.a > 0.5
+  );
   let backgroundLinear = srgbToLinear(backgroundSrgb);
   let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
   return vec4<f32>(linearToSrgb(compositedLinear), 1.0);
@@ -1159,6 +1170,7 @@ struct DisplayUniforms {
   clippingSuffixScale: f32,
   clippingPrefixOrigin: vec2<f32>,
   clippingSuffixOrigin: vec2<f32>,
+  backgroundColor: vec4<f32>,
 };
 
 struct ThicknessTailUniforms {
@@ -1414,7 +1426,12 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;
-  let backgroundSrgb = select(vec3<f32>(0.82), vec3<f32>(0.91), checkerParity == 0);
+  let checkerSrgb = select(vec3<f32>(0.82), vec3<f32>(0.91), checkerParity == 0);
+  let backgroundSrgb = select(
+    checkerSrgb,
+    display.backgroundColor.rgb,
+    display.backgroundColor.a > 0.5
+  );
   let backgroundLinear = srgbToLinear(backgroundSrgb);
   let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
 
@@ -1498,6 +1515,7 @@ struct DisplayUniforms {
   clippingSuffixScale: f32,
   clippingPrefixOrigin: vec2<f32>,
   clippingSuffixOrigin: vec2<f32>,
+  backgroundColor: vec4<f32>,
 };
 
 struct LightGlazeUniforms {
@@ -1934,7 +1952,12 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;
-  let backgroundSrgb = select(vec3<f32>(0.82), vec3<f32>(0.91), checkerParity == 0);
+  let checkerSrgb = select(vec3<f32>(0.82), vec3<f32>(0.91), checkerParity == 0);
+  let backgroundSrgb = select(
+    checkerSrgb,
+    display.backgroundColor.rgb,
+    display.backgroundColor.a > 0.5
+  );
   let backgroundLinear = srgbToLinear(backgroundSrgb);
   let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
 
@@ -2032,7 +2055,12 @@ fn finalStackFragmentMain(
 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;
-  let backgroundSrgb = select(vec3<f32>(0.82), vec3<f32>(0.91), checkerParity == 0);
+  let checkerSrgb = select(vec3<f32>(0.82), vec3<f32>(0.91), checkerParity == 0);
+  let backgroundSrgb = select(
+    checkerSrgb,
+    display.backgroundColor.rgb,
+    display.backgroundColor.a > 0.5
+  );
   let backgroundLinear = srgbToLinear(backgroundSrgb);
   let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
   return vec4<f32>(linearToSrgb(compositedLinear), 1.0);
@@ -2092,6 +2120,7 @@ struct DisplayUniforms {
   clippingSuffixScale: f32,
   clippingPrefixOrigin: vec2<f32>,
   clippingSuffixOrigin: vec2<f32>,
+  backgroundColor: vec4<f32>,
 };
 
 struct LightGlazeUniforms {
@@ -2699,6 +2728,7 @@ struct DisplayUniforms {
   clippingSuffixScale: f32,
   clippingPrefixOrigin: vec2<f32>,
   clippingSuffixOrigin: vec2<f32>,
+  backgroundColor: vec4<f32>,
 };
 
 struct VertexOutput {

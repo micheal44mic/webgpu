@@ -17,13 +17,14 @@ import {
 
 assert.equal(
   HISTORY_JOURNAL_STRATEGY,
-  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-metadata-scene-reorder-merge-seeded-add-rasterize-before-v12",
+  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-metadata-document-background-scene-reorder-merge-seeded-add-rasterize-before-v13",
 );
 
 const stroke = (id, layerId) => ({ id, kind: "stroke", layerId });
 const fill = (id, layerId) => ({ id, kind: "fill", layerId });
 const clear = (id, layerId) => ({ id, kind: "clear", layerId });
 const vector = (id) => ({ id, kind: "vector" });
+const documentBackground = (id) => ({ id, kind: "document-background" });
 const sceneReorder = (id) => ({ id, kind: "scene-reorder" });
 const layerBlendMode = (id, layerId) => ({
   id,
@@ -139,6 +140,22 @@ const layerMerge = (
   );
 
   const withPixels = [stroke(1, 7), sceneReorder(2)];
+  assert.equal(hasVisibleContent(withPixels, 2, 7), true);
+  assert.deepEqual([...visibleStrokeIds(withPixels, 2, 7)], [1]);
+}
+
+// The structural background is document metadata without a raster owner. It
+// must neither invent content nor block Undo when every normal layer changed.
+{
+  const onlyBackground = [documentBackground(1)];
+  assert.equal(hasVisibleContent(onlyBackground, 1), false);
+  assert.deepEqual([...layersWithVisibleContent(onlyBackground, 1)], []);
+  assert.deepEqual([...visibleStrokeIds(onlyBackground, 1)], []);
+  assert.equal(
+    historyStepTargetsMissingLayer(onlyBackground, 1, -1, new Set()),
+    false,
+  );
+  const withPixels = [stroke(1, 7), documentBackground(2)];
   assert.equal(hasVisibleContent(withPixels, 2, 7), true);
   assert.deepEqual([...visibleStrokeIds(withPixels, 2, 7)], [1]);
 }

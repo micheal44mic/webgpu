@@ -288,6 +288,12 @@ export function summarizeAppDiagnosticHistoryAction(
       return { ...common, layerId: action.layerId };
     case "vector":
       return { ...common, ...historyVectorTransition(action) };
+    case "document-background":
+      return {
+        ...common,
+        before: action.before,
+        after: action.after,
+      };
     case "layer-blend-mode":
       return {
         ...common,

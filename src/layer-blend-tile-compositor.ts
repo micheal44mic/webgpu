@@ -7,6 +7,7 @@ import {
 } from "./engine-limits";
 import { assertShaderCompiled } from "./engine-gpu-utils";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
+import { documentBackgroundLinearPremultiplied } from "./document-background";
 import {
   LAYER_BLEND_MODE_CODES,
   type LayerBlendMode,
@@ -99,6 +100,7 @@ export class LayerBlendTileCompositor {
   private readonly normalAtopPipeline: GPURenderPipeline;
   private readonly advancedPipeline: GPURenderPipeline;
   private readonly tileClearPipeline: GPURenderPipeline;
+  private readonly tileBackgroundPipeline: GPURenderPipeline;
   private readonly tilePresentPipeline: GPURenderPipeline;
   private readonly mipOnePipeline: GPURenderPipeline;
   private readonly pyramidPresentPipeline: GPURenderPipeline;
@@ -133,6 +135,7 @@ export class LayerBlendTileCompositor {
     normalAtopPipeline: GPURenderPipeline;
     advancedPipeline: GPURenderPipeline;
     tileClearPipeline: GPURenderPipeline;
+    tileBackgroundPipeline: GPURenderPipeline;
     tilePresentPipeline: GPURenderPipeline;
     mipOnePipeline: GPURenderPipeline;
     pyramidPresentPipeline: GPURenderPipeline;
@@ -156,6 +159,7 @@ export class LayerBlendTileCompositor {
     this.normalAtopPipeline = options.normalAtopPipeline;
     this.advancedPipeline = options.advancedPipeline;
     this.tileClearPipeline = options.tileClearPipeline;
+    this.tileBackgroundPipeline = options.tileBackgroundPipeline;
     this.tilePresentPipeline = options.tilePresentPipeline;
     this.mipOnePipeline = options.mipOnePipeline;
     this.pyramidPresentPipeline = options.pyramidPresentPipeline;
@@ -412,6 +416,30 @@ export class LayerBlendTileCompositor {
           },
           primitive: { topology: "triangle-list" },
         });
+        if (
+          !engine.mixedScenePresentShaderModule
+          || !engine.mixedSceneBackgroundBindGroupLayout
+          || !engine.mixedSceneBackgroundBindGroup
+        ) {
+          throw new Error("Pipeline sfondo documento non inizializzata.");
+        }
+        const tileBackgroundPipeline = engine.device.createRenderPipeline({
+          label: "Layer blend tile bounded document background",
+          layout: engine.device.createPipelineLayout({
+            label: "Layer blend tile bounded document background pipeline layout",
+            bindGroupLayouts: [engine.mixedSceneBackgroundBindGroupLayout],
+          }),
+          vertex: {
+            module: engine.mixedScenePresentShaderModule,
+            entryPoint: "vertexMain",
+          },
+          fragment: {
+            module: engine.mixedScenePresentShaderModule,
+            entryPoint: "backgroundFragmentMain",
+            targets: [{ format: engine.layerFormat }],
+          },
+          primitive: { topology: "triangle-list" },
+        });
         const tilePresentPipeline = pipeline(
           "Layer blend tile to linear presentation",
           presentLayout,
@@ -482,6 +510,7 @@ export class LayerBlendTileCompositor {
           normalAtopPipeline,
           advancedPipeline,
           tileClearPipeline,
+          tileBackgroundPipeline,
           tilePresentPipeline,
           mipOnePipeline,
           pyramidPresentPipeline,
@@ -559,6 +588,43 @@ export class LayerBlendTileCompositor {
     });
     if (!clearsWholeTile) {
       pass.setPipeline(this.tileClearPipeline);
+      pass.setScissorRect(0, 0, boundedWidth, boundedHeight);
+      pass.draw(3, 1, 0, 0);
+    }
+    pass.end();
+  }
+
+  seedTileWithDocumentBackground(
+    encoder: GPUCommandEncoder,
+    tileIndex: 0 | 1 | 2,
+    label: string,
+    width: number = this.extent,
+    height: number = this.extent,
+  ): void {
+    this.assertAlive();
+    const boundedWidth = Math.min(this.extent, Math.max(0, Math.ceil(width)));
+    const boundedHeight = Math.min(this.extent, Math.max(0, Math.ceil(height)));
+    if (boundedWidth <= 0 || boundedHeight <= 0) return;
+    const clearsWholeTile = boundedWidth === this.extent
+      && boundedHeight === this.extent;
+    const color = documentBackgroundLinearPremultiplied(this.engine.documentBackground);
+    const pass = encoder.beginRenderPass({
+      label,
+      colorAttachments: [{
+        view: this.views[tileIndex],
+        loadOp: clearsWholeTile ? "clear" : "load",
+        storeOp: "store",
+        clearValue: {
+          r: color[0],
+          g: color[1],
+          b: color[2],
+          a: color[3],
+        },
+      }],
+    });
+    if (!clearsWholeTile) {
+      pass.setPipeline(this.tileBackgroundPipeline);
+      pass.setBindGroup(0, this.engine.mixedSceneBackgroundBindGroup!);
       pass.setScissorRect(0, 0, boundedWidth, boundedHeight);
       pass.draw(3, 1, 0, 0);
     }

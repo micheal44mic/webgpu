@@ -94,6 +94,7 @@ import type { ThicknessDynamicsStrategy } from "./thickness-dynamics";
 import { STROKE_CURVE_STRATEGY } from "./stroke-curve-core";
 import { STROKE_STABILIZATION_STRATEGY } from "./stroke-stabilization-core";
 import type { LayerBlendMode } from "./layer-blend-modes";
+import type { DocumentBackgroundState } from "./document-background";
 
 export interface EngineGpuMemoryStats {
   /** Totale corrente esatto delle risorse registrate dal device strumentato. */
@@ -260,6 +261,7 @@ export interface EngineStats {
   avoidedLogicalDraws: number;
   layerMemoryMiB: number;
   layerCount: number;
+  documentBackground: DocumentBackgroundState;
   activeLayerId: number;
   referenceLayerId: number | null;
   fillReferenceLayerStrategy: typeof FILL_REFERENCE_LAYER_STRATEGY;

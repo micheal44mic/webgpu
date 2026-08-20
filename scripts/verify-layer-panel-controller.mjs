@@ -50,11 +50,26 @@ assert.ok(
 );
 assert.match(controllerSource, /setRasterReference: \(key: LayerPanelKey/);
 assert.match(controllerSource, /setRasterClipping: \(key: LayerPanelKey/);
+assert.match(controllerSource, /DOCUMENT_BACKGROUND_ROW_KEY = "background"/);
+assert.match(controllerSource, /name: "Sfondo"/);
+assert.match(controllerSource, /mobile-layer-background-color/);
+assert.match(controllerSource, /views\.push\(this\.backgroundView\(stats\)\)/);
+assert.match(controllerSource, /candidate !== undefined && isLayerPanelKey\(candidate\)/);
+assert.match(controllerSource, /this\.listen\(elements\.list, "change", \(raw\) => this\.handleBackgroundColorInput\(raw\)\)/);
+assert.match(controllerSource, /select\.disabled = locked \|\| background/);
 assert.match(controllerSource, /this\.options\.setRasterReference\(key,/);
 assert.match(controllerSource, /this\.options\.setRasterClipping\(properties\.key,/);
 const panelCompositionStart = mainSource.indexOf("layerPanelController = new LayerPanelController({");
 const panelCompositionEnd = mainSource.indexOf("window.addEventListener(\"pagehide\"", panelCompositionStart);
 const panelComposition = mainSource.slice(panelCompositionStart, panelCompositionEnd);
+assert.match(
+  panelComposition,
+  /setDocumentBackgroundVisibility:[\s\S]*?projectSessionController\?\.markDirty\(\)/,
+);
+assert.match(
+  panelComposition,
+  /setDocumentBackgroundColor:[\s\S]*?projectSessionController\?\.markDirty\(\)/,
+);
 assert.match(
   panelComposition,
   /setRasterReference: \(key, enabled\) =>\s*sceneEditorController\?\.setRasterReference\(key, enabled\)/,
@@ -277,6 +292,8 @@ const controller = new LayerPanelController({
   selectLayer() {},
   setLayerVisibility() {},
   setRasterReference: (key, enabled) => referenceCalls.push({ key, enabled }),
+  setDocumentBackgroundVisibility: () => true,
+  setDocumentBackgroundColor: () => true,
   setRasterClipping: (key, enabled) => clippingCalls.push({ key, enabled }),
   deleteLayer: async () => {},
   openLayerOptions() {},
@@ -297,6 +314,7 @@ assert.equal(elements.panel.getAttribute("inert"), "");
 assert.deepEqual(thumbnailOpenStates, [true, false]);
 
 stats = {
+  documentBackground: { visible: true, color: "#ffffff" },
   activeLayerIndex: 0,
   activeLayerId: 7,
   mixedScene: null,
@@ -327,6 +345,7 @@ assert.deepEqual(controller.selectedLayerProperties(), {
 // The two index-sensitive raster actions must route stable identities through
 // the panel boundary; main resolves the current index at mutation time.
 stats = {
+  documentBackground: { visible: true, color: "#ffffff" },
   activeLayerIndex: 1,
   activeLayerId: 8,
   mixedScene: null,

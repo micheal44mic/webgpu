@@ -668,10 +668,10 @@ export function encodeLayerBlendTilePresentation(
       activeOperandOpacity = activeGroup.parentOpacity;
     }
 
-    compositor.clearTile(
+    compositor.seedTileWithDocumentBackground(
       encoder,
       TILE_INDEX_A,
-      `${label} · clear document backdrop tile`,
+      `${label} · seed document background tile`,
       textureRect.width,
       textureRect.height,
     );

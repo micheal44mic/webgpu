@@ -534,6 +534,8 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
       ? delta < 0 ? "Undo: ripristino del vettore…" : "Redo: rasterizzazione vettoriale…"
       : crossedAction.kind === "scene-reorder"
       ? delta < 0 ? "Undo: riordino livelli…" : "Redo: riordino livelli…"
+      : crossedAction.kind === "document-background"
+      ? delta < 0 ? "Undo: sfondo documento…" : "Redo: sfondo documento…"
       : crossedAction.kind === "layer-blend-mode"
       ? delta < 0 ? "Undo: fusione livello…" : "Redo: fusione livello…"
       : crossedAction.kind === "layer-metadata"
@@ -548,6 +550,20 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
 
   try {
     await engine.waitForIdle();
+    if (crossedAction.kind === "document-background") {
+      engine.applyDocumentBackgroundHistoryState(
+        delta < 0 ? crossedAction.before : crossedAction.after,
+      );
+      engine.history.setCursor(nextCursor);
+      if (engine.activeStrokeProfile) {
+        engine.activeStrokeProfile.historyReplayOperations += 1;
+      }
+      engine.publishStatus(
+        delta < 0 ? "Sfondo documento annullato." : "Sfondo documento ripristinato.",
+        "ok",
+      );
+      return true;
+    }
     if (crossedAction.kind === "vector-rasterize") {
       await applyVectorRasterizeHistory(engine, crossedAction, delta);
       engine.history.setCursor(nextCursor);
@@ -1925,6 +1941,7 @@ export function historyStepTargetLayerIndex(engine: BrushEngine, delta: -1 | 1):
   if (
     !action
     || action.kind === "vector"
+    || action.kind === "document-background"
     || action.kind === "scene-reorder"
     || action.kind === "layer-metadata"
     || action.kind === "vector-rasterize"
@@ -1983,6 +2000,7 @@ export function historyStepBlockedByLayer(engine: BrushEngine, delta: -1 | 1): b
   const action = delta < 0
     ? engine.historyActions[engine.historyCursor - 1]
     : engine.historyActions[engine.historyCursor];
+  if (action?.kind === "document-background") return false;
   if (action?.kind === "layer-metadata") {
     if (!engine.layerStack.byId(action.layerId)) return true;
     if (action.property !== "clipping") return false;

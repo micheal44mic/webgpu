@@ -53,6 +53,7 @@ const requiredRows = [
   "raster-transform",
   "layer-blend-mode",
   "layer-metadata-effects",
+  "document-background",
   "layer-add",
   "layer-duplicate",
   "layer-delete",

@@ -379,6 +379,19 @@ export async function finishStaticResourceCreation(
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
       ],
     });
+    engine.mixedSceneBackgroundBindGroupLayout = engine.device.createBindGroupLayout({
+      label: "Mixed scene document background bind group layout",
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+      ],
+    });
+    engine.mixedSceneBackgroundBindGroup = engine.device.createBindGroup({
+      label: "Mixed scene document background bind group",
+      layout: engine.mixedSceneBackgroundBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: engine.displayUniformBuffer } },
+      ],
+    });
     engine.layerBlendCompositorBindGroupLayout = engine.device.createBindGroupLayout({
       label: "Ordered layer blend ping-pong bind group layout",
       entries: [
@@ -614,6 +627,20 @@ export async function finishStaticResourceCreation(
         module: engine.mixedScenePresentShaderModule,
         entryPoint: "fragmentMain",
         targets: [{ format: engine.canvasFormat }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+    engine.mixedSceneBackgroundPipeline = engine.device.createRenderPipeline({
+      label: "Mixed scene document background pipeline",
+      layout: engine.device.createPipelineLayout({
+        label: "Mixed scene document background pipeline layout",
+        bindGroupLayouts: [engine.mixedSceneBackgroundBindGroupLayout],
+      }),
+      vertex: { module: engine.mixedScenePresentShaderModule, entryPoint: "vertexMain" },
+      fragment: {
+        module: engine.mixedScenePresentShaderModule,
+        entryPoint: "backgroundFragmentMain",
+        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT }],
       },
       primitive: { topology: "triangle-list" },
     });
