@@ -6,6 +6,7 @@ import {
   FILL_HISTORY_WORDS_PER_ROW,
   FILL_LABEL_WORDS_PER_BLOCK,
   FILL_MAX_COMPONENTS_PER_BLOCK,
+  FILL_DIAGNOSTIC_SEED_TRANSPARENT_BIT,
   FILL_META_ACTIVE_BLOCKS,
   FILL_META_ACTIVE_COMPONENTS,
   FILL_META_DIAGNOSTIC,
@@ -79,7 +80,7 @@ struct FillUniforms {
   size: vec2<u32>,
   tolerance: f32,
   transparentSeedAlphaThreshold: f32,
-  _padding1: f32,
+  replaceSelectedColor: u32,
   _padding2: f32,
   fillColor: vec4<f32>,
 };
@@ -233,7 +234,8 @@ fn classifyLocal(
       &metadata[${FILL_META_DIAGNOSTIC}u],
       (uniforms.size.x & 65535u)
         | select(0u, 1u << 16u, inside)
-        | select(0u, 1u << 17u, matches),
+        | select(0u, 1u << 17u, matches)
+        | select(0u, ${FILL_DIAGNOSTIC_SEED_TRANSPARENT_BIT}u, seedColor.a == 0.0),
     );
   }
   atomicStore(&localParents[localIndex], select(INVALID_U32, localIndex, eligible));
@@ -537,7 +539,7 @@ struct FillUniforms {
   size: vec2<u32>,
   tolerance: f32,
   transparentSeedAlphaThreshold: f32,
-  _padding1: f32,
+  replaceSelectedColor: u32,
   _padding2: f32,
   fillColor: vec4<f32>,
 };
@@ -583,6 +585,10 @@ fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
   if (pixel.x >= ${FILL_LAYER_WIDTH}u || pixel.y >= ${FILL_LAYER_HEIGHT}u) { discard; }
   let word = pixel.y * ${FILL_RENDER_MASK_WORDS_PER_ROW}u + pixel.x / 8u;
   if (!fillRenderMaskContains(renderMask[word], pixel.x)) { discard; }
+
+  if (uniforms.replaceSelectedColor != 0u) {
+    return vec4<f32>(uniforms.fillColor.rgb, 1.0);
+  }
 
   let destination = textureLoad(destinationSnapshot, vec2<i32>(pixel), 0);
   if (destination.a <= 0.0) {

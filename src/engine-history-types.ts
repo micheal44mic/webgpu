@@ -512,6 +512,8 @@ export interface FillHistoryRenderBatch {
   color: string;
   linearColor: readonly [number, number, number, number];
   tolerancePercent: number;
+  /** True when selected destination pixels are recolored instead of underlaid. */
+  replaceSelectedColor: boolean;
   gpuSlice: GpuHistorySlice;
   clearLayer: false;
   dirtyRect: DirtyRect;

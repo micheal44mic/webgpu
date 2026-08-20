@@ -31,6 +31,7 @@ import {
   GPU_FILL_STRATEGY,
   compositeFillAsSolidUnderlay,
   countFillTiles,
+  fillCommitReplacesSelectedColor,
   fillRenderMaskTargetWord,
   fillColorsMatch,
   hexToLinearFillColor,
@@ -56,7 +57,7 @@ import { readEngineSource } from "./engine-source.mjs";
 
 assert.equal(
   GPU_FILL_STRATEGY,
-  "webgpu-hierarchical-ccl-4-connected-transparent-threshold-snapshot-solid-underlay-history1-render8-v8",
+  "webgpu-hierarchical-ccl-4-connected-transparent-underlay-opaque-replace-history1-render8-v9",
 );
 assert.equal(
   FILL_REFERENCE_LAYER_STRATEGY,
@@ -124,6 +125,9 @@ assert.throws(() => normalizeFillTolerance(Number.NaN));
 assert.deepEqual(hexToLinearFillColor("#000000"), [0, 0, 0, 1]);
 assert.deepEqual(hexToLinearFillColor("ffffff"), [1, 1, 1, 1]);
 assert.throws(() => hexToLinearFillColor("#fff"));
+assert.equal(fillCommitReplacesSelectedColor(true, true), false);
+assert.equal(fillCommitReplacesSelectedColor(true, false), true);
+assert.equal(fillCommitReplacesSelectedColor(false, true), true);
 const underlayFill = [0.2, 0.4, 0.6, 0.25];
 for (const destinationAlpha of [0, 1 / 255, 0.05, 0.4, 0.99, 1]) {
   const destination = [
@@ -453,6 +457,8 @@ assert(shader.includes("uniforms.transparentSeedAlphaThreshold >= 0.0"));
 assert(shader.includes("seedColor.a == 0.0"));
 assert(shader.includes("threshold == 0.0"));
 assert(shader.includes("return alpha == 0.0"));
+assert(shader.includes("uniforms.replaceSelectedColor != 0u"));
+assert(shader.includes("seedColor.a == 0.0"));
 assert(!shader.includes("let threshold = max("));
 assert(shader.includes("fn probeBit31()"));
 assert(shader.includes("atomicOr(&results[1], 0x80000000u)"));
@@ -518,6 +524,7 @@ assert(renderer.includes("setSourceSamplingView(view: GPUTextureView)"));
 assert(renderer.includes("if (view === this.sourceSamplingView)"));
 assert(renderer.includes("{ binding: 1, resource: this.sourceSamplingView }"));
 assert(renderer.includes("copyTextureToTexture"));
+assert(renderer.includes("replaceSelectedColor ? 1 : 0"));
 assert(runtime.includes("engine.canPaintSelectedSceneItem()"));
 assert(runtime.includes("export async function captureFillDiagnostics"));
 assert(runtime.includes("summarizeFillMaskWords"));
@@ -536,6 +543,8 @@ assert.doesNotMatch(runtime, /compositeMode/);
 assert(runtime.includes("kind: \"fill\""));
 assert(runtime.includes("const source = resolveFillSource(engine)"));
 assert(runtime.includes("sourceLayerId: source.record.id"));
+assert(runtime.includes("fillCommitReplacesSelectedColor("));
+assert(runtime.includes("replaceSelectedColor,"));
 assert(runtime.includes("record.storageTileMask[index] |= analysis.tileMask[index]"));
 assert(runtime.includes("seedX >= engine.documentWidth"));
 assert(runtime.includes("seedY >= engine.documentHeight"));

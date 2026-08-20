@@ -8,6 +8,7 @@ import {
   FILL_LAYER_HEIGHT,
   FILL_LAYER_WIDTH,
   FILL_RENDER_MASK_STRATEGY,
+  fillCommitReplacesSelectedColor,
   hexToLinearFillColor,
   normalizeFillTolerance,
   type FillAnalysis,
@@ -56,6 +57,7 @@ export interface LastFillDiagnosticOperation {
   readonly color: string;
   readonly linearColor: readonly [number, number, number, number];
   readonly tolerancePercent: number;
+  readonly replaceSelectedColor: boolean;
   readonly selectedPixels: number;
   readonly activeBlocks: number;
   readonly activeTiles: number;
@@ -332,6 +334,10 @@ export async function fillAtClientPoint(
       selectionMask,
       tolerancePercent,
     );
+    const replaceSelectedColor = fillCommitReplacesSelectedColor(
+      source.record.id === target.id,
+      analysis.sourceSeedTransparent,
+    );
     const actionId = engine.nextHistoryActionId;
     historySlice = engine.historyGpuStorage.allocate(
       FILL_HISTORY_MASK_BYTES,
@@ -347,6 +353,7 @@ export async function fillAtClientPoint(
       engine.layerTexture,
       engine.layerView,
       historySlice,
+      replaceSelectedColor,
     );
     engine.device.queue.submit([encoder.finish()]);
     pixelsMutated = true;
@@ -381,6 +388,7 @@ export async function fillAtClientPoint(
       color,
       linearColor: [...linearColor],
       tolerancePercent,
+      replaceSelectedColor,
       gpuSlice: capturedHistorySlice,
       clearLayer: false,
       dirtyRect: { ...analysis.bounds },
@@ -413,6 +421,7 @@ export async function fillAtClientPoint(
       color,
       linearColor: [...linearColor],
       tolerancePercent,
+      replaceSelectedColor,
       selectedPixels: analysis.selectedPixels,
       activeBlocks: analysis.activeBlocks,
       activeTiles: analysis.activeTiles,
@@ -481,6 +490,7 @@ export async function submitFillHistoryBatch(
     engine.layerView,
     batch.gpuSlice,
     batch.linearColor,
+    batch.replaceSelectedColor,
   );
   engine.device.queue.submit([encoder.finish()]);
   engine.submitImmediate(

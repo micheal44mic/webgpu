@@ -7,6 +7,7 @@ import {
   FILL_HISTORY_MASK_BYTES,
   FILL_HISTORY_MASK_WORDS,
   FILL_INDIRECT_BUFFER_BYTES,
+  FILL_DIAGNOSTIC_SEED_TRANSPARENT_BIT,
   FILL_LABEL_BUFFER_BYTES,
   FILL_LAYER_HEIGHT,
   FILL_LAYER_WIDTH,
@@ -494,7 +495,18 @@ export class FillRenderer {
       const clippedMetadata = new Uint32Array(FILL_METADATA_WORDS);
       clippedMetadata[FILL_META_MIN_X] = 0xffffffff;
       clippedMetadata[FILL_META_MIN_Y] = 0xffffffff;
-      this.device.queue.writeBuffer(scratch.metadata, 0, clippedMetadata);
+      // Preserve the source-seed diagnostic written by classifyLocal. The
+      // intersection pass rebuilds every summary field except this word.
+      this.device.queue.writeBuffer(
+        scratch.metadata,
+        0,
+        clippedMetadata.subarray(0, FILL_META_DIAGNOSTIC),
+      );
+      this.device.queue.writeBuffer(
+        scratch.metadata,
+        (FILL_META_DIAGNOSTIC + 1) * 4,
+        clippedMetadata.subarray(FILL_META_DIAGNOSTIC + 1),
+      );
       this.device.queue.writeBuffer(scratch.drawIndirect, 0, new Uint32Array([4, 0, 0, 0]));
       const clipBindGroup = this.device.createBindGroup({
         label: "Riempimento · bind candidato ∩ selezione",
@@ -554,6 +566,8 @@ export class FillRenderer {
       activeComponents: metadata[FILL_META_ACTIVE_COMPONENTS],
       activeBlocks: metadata[FILL_META_ACTIVE_BLOCKS],
       activeTiles: countFillTiles(tileMask),
+      sourceSeedTransparent:
+        (metadata[FILL_META_DIAGNOSTIC] & FILL_DIAGNOSTIC_SEED_TRANSPARENT_BIT) !== 0,
       bounds: {
         x: metadata[FILL_META_MIN_X],
         y: metadata[FILL_META_MIN_Y],
@@ -783,9 +797,15 @@ export class FillRenderer {
     targetTexture: GPUTexture,
     targetView: GPUTextureView,
     historySlice: GpuHistorySlice,
+    replaceSelectedColor: boolean,
   ): void {
     const scratch = this.requireScratch();
     this.assertHistorySlice(historySlice);
+    this.device.queue.writeBuffer(
+      this.uniformBuffer,
+      6 * 4,
+      new Uint32Array([replaceSelectedColor ? 1 : 0]),
+    );
     this.encodeDestinationSnapshotCopy(encoder, targetTexture, scratch);
     const pass = encoder.beginComputePass({
       label: "Riempimento · espansione mask low-8-bit per commit live",
@@ -810,6 +830,7 @@ export class FillRenderer {
     targetView: GPUTextureView,
     historySlice: GpuHistorySlice,
     fillColor: readonly [number, number, number, number],
+    replaceSelectedColor: boolean,
   ): void {
     const scratch = this.requireScratch();
     // Replay replaces selectedMask with a historical payload. Do not associate
@@ -821,6 +842,7 @@ export class FillRenderer {
     const unsigned = new Uint32Array(upload.buffer);
     unsigned[2] = FILL_LAYER_WIDTH;
     unsigned[3] = FILL_LAYER_HEIGHT;
+    unsigned[6] = replaceSelectedColor ? 1 : 0;
     upload.set(fillColor, 8);
     this.device.queue.writeBuffer(this.uniformBuffer, 0, upload);
     this.device.queue.writeBuffer(scratch.drawIndirect, 0, new Uint32Array([4, 0, 0, 0]));

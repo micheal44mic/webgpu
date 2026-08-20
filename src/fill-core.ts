@@ -18,7 +18,7 @@ import {
 } from "./color-match-core.ts";
 
 export const GPU_FILL_STRATEGY =
-  "webgpu-hierarchical-ccl-4-connected-transparent-threshold-snapshot-solid-underlay-history1-render8-v8" as const;
+  "webgpu-hierarchical-ccl-4-connected-transparent-underlay-opaque-replace-history1-render8-v9" as const;
 
 export const FILL_RENDER_MASK_STRATEGY =
   "history-1bit-compute-expanded-row-stride-selected8-reused-label-buffer-v4" as const;
@@ -104,6 +104,7 @@ export const FILL_META_MAX_Y = 4;
 export const FILL_META_ACTIVE_COMPONENTS = 5;
 export const FILL_META_ACTIVE_BLOCKS = 6;
 export const FILL_META_DIAGNOSTIC = 7;
+export const FILL_DIAGNOSTIC_SEED_TRANSPARENT_BIT = 1 << 18;
 export const FILL_META_TILE_MASK_START = 8;
 export const FILL_TILE_MASK_WORDS = DOCUMENT_TILE_MASK_WORDS;
 
@@ -135,10 +136,26 @@ export interface FillAnalysis {
   readonly activeComponents: number;
   readonly activeBlocks: number;
   readonly activeTiles: number;
+  /** Exact alpha classification of the source seed used by the GPU CCL. */
+  readonly sourceSeedTransparent: boolean;
   readonly bounds: DirtyRect;
   readonly tileMask: Uint32Array;
   /** Include il completamento FIFO della queue e il risveglio della callback JS. */
   readonly queueCompletionMs: number;
+}
+
+/**
+ * A transparent seed on the destination keeps the solid-underlay behavior so
+ * anti-aliased line art survives the first Fill. An already-colored seed must
+ * instead be replaced, otherwise every later Fill becomes a visible no-op.
+ * A separate reference layer also uses replacement because its line art is not
+ * part of the destination texture.
+ */
+export function fillCommitReplacesSelectedColor(
+  sourceIsTarget: boolean,
+  sourceSeedTransparent: boolean,
+): boolean {
+  return !sourceIsTarget || !sourceSeedTransparent;
 }
 
 /**
