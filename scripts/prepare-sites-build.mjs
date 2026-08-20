@@ -74,6 +74,8 @@ const VECTOR_ZOOM_PROFILE_ORDER = [
   "arch", "drop-shadow", "block-shadow", "inner-shadow", "arch",
   "drop-shadow", "block-shadow", "inner-shadow", "arch", "drop-shadow",
 ];
+const IMMUTABLE_ASSET_PATH = /^\\/assets\\/[A-Za-z0-9._-]+-[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9]+$/;
+const IMMUTABLE_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable";
 
 function jsonResponse(payload, status = 200) {
   return new Response(JSON.stringify(payload), {
@@ -785,6 +787,19 @@ export default {
     }
 
     const response = await env.ASSETS.fetch(request);
+    if (
+      (request.method === "GET" || request.method === "HEAD")
+      && response.ok
+      && IMMUTABLE_ASSET_PATH.test(url.pathname)
+    ) {
+      const headers = new Headers(response.headers);
+      headers.set("Cache-Control", IMMUTABLE_ASSET_CACHE_CONTROL);
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers,
+      });
+    }
     return response;
   },
 };

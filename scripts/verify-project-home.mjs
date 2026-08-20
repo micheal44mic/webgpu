@@ -38,6 +38,11 @@ expect(html, 'id="projectHomeButton"', "editor home control");
 expect(html, 'src="/src/startup.ts"', "deferred editor entrypoint");
 
 expect(startup, 'await import("./main")', "dynamic editor boot");
+expect(startup, "storageReady", "parallel project storage startup");
+expect(startup, "preloadedProject", "project read overlapped with WebGPU startup");
+expect(startup, 'window.history.pushState(null, "", url)', "warm Home/editor navigation");
+expect(startup, 'showApplicationSurface("editor")', "warm editor surface reuse");
+reject(startup, "this.browser.location.assign", "Home-triggered full-page navigation");
 expect(startup, 'this.storage.listProjects()', "recent project loading");
 expect(startup, 'this.storage.renameProject', "project rename");
 expect(startup, 'this.storage.deleteProject', "project delete");
@@ -62,6 +67,8 @@ expect(main, "projectSessionController?.noteHistoryState(state)", "history dirty
 expect(main, "projectSessionController?.noteSceneSnapshot(snapshot)", "scene dirty tracking port");
 expect(projectSession, "this.storage.saveProject({", "durable save");
 expect(projectSession, "await this.engine.restoreDocument(saved)", "complete project restore");
+expect(projectSession, "this.storageReady ?? this.storage.initialize()", "shared storage readiness");
+expect(projectSession, "if (this.onReturnHome)", "warm return to project Home");
 expect(projectSession, 'event.key.toLowerCase() !== "s"', "save shortcut");
 expect(projectSession, "private async returnHome()", "save-before-home flow");
 expect(projectSession, "capturedMutationRevision", "concurrent edit save boundary");

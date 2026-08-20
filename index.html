@@ -338,6 +338,19 @@
           </span>
         </button>
         <button
+          id="mobilePan"
+          class="mobile-tool-action"
+          type="button"
+          aria-label="Seleziona Sposta"
+          aria-pressed="false"
+          title="Sposta"
+        >
+          <span class="mobile-icon-stack" aria-hidden="true">
+            <i data-lucide="hand" class="mobile-icon-layer mobile-icon-outline"></i>
+            <i data-lucide="hand" class="mobile-icon-layer mobile-icon-face"></i>
+          </span>
+        </button>
+        <button
           id="mobileUndo"
           class="mobile-tool-action"
           type="button"
@@ -2068,6 +2081,21 @@
             <section class="mobile-tools-category" data-mobile-tools-category>
               <h2 class="mobile-tools-category-title">Select &amp; Edit</h2>
               <div class="mobile-tools-grid">
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-canvas-tool="pan"
+                  data-mobile-tool-search="sposta move pan mano hand naviga canvas vista"
+                  aria-label="Select Move"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="hand" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="hand" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Move</span>
+                </button>
                 <button
                   class="mobile-tools-item"
                   type="button"

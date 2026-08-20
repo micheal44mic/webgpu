@@ -15,6 +15,8 @@ import {
   FILL_LAYER_WIDTH,
   FILL_MAX_COLOR_DISTANCE,
   FILL_MAX_COMPONENTS_PER_BLOCK,
+  FILL_METADATA_BYTES,
+  FILL_METADATA_WORDS,
   FILL_REFERENCE_LAYER_STRATEGY,
   FILL_RENDER_MASK_STRATEGY,
   FILL_RENDER_MASK_BYTES,
@@ -27,12 +29,14 @@ import {
   FILL_TILE_WIDTH,
   FILL_WORKGROUP_STORAGE_BYTES,
   GPU_FILL_STRATEGY,
+  compositeFillAsSolidUnderlay,
   countFillTiles,
   fillRenderMaskTargetWord,
   fillColorsMatch,
   hexToLinearFillColor,
   normalizeFillTolerance,
   srgbChannelToLinear,
+  transparentFillAlphaMatches,
 } from "../src/fill-core.ts";
 import {
   classifyFillDiagnostic,
@@ -52,7 +56,7 @@ import { readEngineSource } from "./engine-source.mjs";
 
 assert.equal(
   GPU_FILL_STRATEGY,
-  "webgpu-hierarchical-ccl-4-connected-color-family-contrast-capped-history1-render8-v4",
+  "webgpu-hierarchical-ccl-4-connected-transparent-threshold-snapshot-solid-underlay-history1-render8-v8",
 );
 assert.equal(
   FILL_REFERENCE_LAYER_STRATEGY,
@@ -60,7 +64,7 @@ assert.equal(
 );
 assert.equal(
   FILL_RENDER_MASK_STRATEGY,
-  "history-1bit-compute-expanded-row-stride-low8-reused-label-buffer-v2",
+  "history-1bit-compute-expanded-row-stride-selected8-reused-label-buffer-v4",
 );
 assert.equal(FILL_BLOCK_SIZE, 16);
 assert.equal(FILL_LAYER_SIZE, LAYER_SIZE);
@@ -103,6 +107,8 @@ assert.equal(
   FILL_RENDER_MASK_WORDS_PER_ROW,
 );
 assert.equal(FILL_TILE_MASK_WORDS, 8);
+assert.equal(FILL_METADATA_WORDS, 16);
+assert.equal(FILL_METADATA_BYTES, 64);
 assert.equal(FILL_TILE_WIDTH, DOCUMENT_TILE_WIDTH);
 assert.equal(FILL_TILE_HEIGHT, DOCUMENT_TILE_HEIGHT);
 assert.equal(FILL_WORKGROUP_STORAGE_BYTES, 9_232);
@@ -118,6 +124,93 @@ assert.throws(() => normalizeFillTolerance(Number.NaN));
 assert.deepEqual(hexToLinearFillColor("#000000"), [0, 0, 0, 1]);
 assert.deepEqual(hexToLinearFillColor("ffffff"), [1, 1, 1, 1]);
 assert.throws(() => hexToLinearFillColor("#fff"));
+const underlayFill = [0.2, 0.4, 0.6, 0.25];
+for (const destinationAlpha of [0, 1 / 255, 0.05, 0.4, 0.99, 1]) {
+  const destination = [
+    0.91 * destinationAlpha,
+    0.17 * destinationAlpha,
+    0.73 * destinationAlpha,
+    destinationAlpha,
+  ];
+  const fillContribution = 1 - destinationAlpha;
+  assert.deepEqual(
+    compositeFillAsSolidUnderlay(destination, underlayFill),
+    [
+      destination[0] + underlayFill[0] * fillContribution,
+      destination[1] + underlayFill[1] * fillContribution,
+      destination[2] + underlayFill[2] * fillContribution,
+      1,
+    ],
+  );
+}
+assert.deepEqual(
+  compositeFillAsSolidUnderlay(
+    [0.01, 0.02, 0.03, 0],
+    underlayFill,
+  ),
+  [0.2, 0.4, 0.6, 1],
+);
+assert.deepEqual(
+  compositeFillAsSolidUnderlay([0.4, 0.1, 0.2, 0.4], underlayFill),
+  [0.52, 0.1 + 0.4 * 0.6, 0.56, 1],
+);
+const opaqueDestination = [0.7, 0.1, 0.3, 1];
+assert.deepEqual(
+  compositeFillAsSolidUnderlay(opaqueDestination, underlayFill),
+  opaqueDestination,
+);
+assert.equal(transparentFillAlphaMatches(0, 0), true);
+assert.equal(transparentFillAlphaMatches(2 ** -24, 0), false);
+assert.equal(transparentFillAlphaMatches(1 / 255, 0), false);
+assert.equal(transparentFillAlphaMatches(0.899, 90), true);
+assert.equal(transparentFillAlphaMatches(0.9, 90), false);
+assert.equal(transparentFillAlphaMatches(0.901, 90), false);
+assert.equal(transparentFillAlphaMatches(0.999, 100), true);
+assert.equal(transparentFillAlphaMatches(Math.fround(1 - 2 ** -24), 100), true);
+assert.equal(transparentFillAlphaMatches(1, 100), false);
+assert.throws(() => transparentFillAlphaMatches(Number.NaN, 100));
+
+const floodTransparentAlpha = (
+  alphaValues,
+  width,
+  height,
+  seedIndex,
+  tolerancePercent,
+) => {
+  const selected = new Uint8Array(alphaValues.length);
+  const queue = [seedIndex];
+  selected[seedIndex] = 1;
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const index = queue[cursor];
+    const x = index % width;
+    const y = Math.floor(index / width);
+    for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+      const nextX = x + dx;
+      const nextY = y + dy;
+      if (nextX < 0 || nextY < 0 || nextX >= width || nextY >= height) continue;
+      const next = nextY * width + nextX;
+      if (
+        selected[next]
+        || !transparentFillAlphaMatches(alphaValues[next], tolerancePercent)
+      ) continue;
+      selected[next] = 1;
+      queue.push(next);
+    }
+  }
+  return selected;
+};
+assert.deepEqual(
+  [...floodTransparentAlpha([0, 0, 1 / 255], 3, 1, 0, 0)],
+  [1, 1, 0],
+);
+assert.deepEqual(
+  [...floodTransparentAlpha([0, 0.05, 0.4, 0.899, 0.9, 0], 6, 1, 0, 90)],
+  [1, 1, 1, 1, 0, 0],
+);
+assert.deepEqual(
+  [...floodTransparentAlpha([0, 1 / 255, 0.05, 0.4, 0.99, 1, 0], 7, 1, 0, 100)],
+  [1, 1, 1, 1, 1, 0, 0],
+);
 
 // Regressione Android: il bit 31 deve restare u32 e una word piena non deve
 // lasciare la sottile striscia verticale osservata ogni 32 pixel.
@@ -136,6 +229,7 @@ for (const source of [0x80000000, 0xffffffff, 0xa55a3cc3]) {
     (source >>> 16) & 0xff,
     (source >>> 24) & 0xff,
   ];
+  assert(renderWords.every((word) => (word & 0xffffff00) === 0));
   for (let bit = 0; bit < 32; bit += 1) {
     const historySelected = (source & (2 ** bit)) !== 0;
     const renderSelected = (renderWords[Math.floor(bit / 8)] & (2 ** (bit % 8))) !== 0;
@@ -165,13 +259,38 @@ for (const source of [0x80000000, 0xffffffff, 0xa55a3cc3]) {
     row,
     "rgba8unorm",
     words,
-    [1, 0, 0, 1],
     0,
     32,
   );
   assert.equal(rendered.selectedButDifferentPixels, 1);
   assert.equal(rendered.selectedButDifferentByXModulo32[31], 1);
   assert.equal(classifyFillDiagnostic(mask, rendered), "render-commit-loss");
+}
+{
+  const opaqueEmptyCommit = summarizeFillRenderedRow(
+    Uint8Array.of(0, 0, 255, 255),
+    "rgba8unorm",
+    Uint32Array.of(1),
+    0,
+    1,
+  );
+  assert.equal(opaqueEmptyCommit.matchingFillPixels, 1);
+  const invalidPartialAlpha = summarizeFillRenderedRow(
+    Uint8Array.of(0, 0, 128, 128),
+    "rgba8unorm",
+    Uint32Array.of(1),
+    0,
+    1,
+  );
+  assert.equal(invalidPartialAlpha.selectedButDifferentPixels, 1);
+  const opaqueCompositeRgb = summarizeFillRenderedRow(
+    Uint8Array.of(32, 96, 224, 255),
+    "rgba8unorm",
+    Uint32Array.of(1),
+    0,
+    1,
+  );
+  assert.equal(opaqueCompositeRgb.matchingFillPixels, 1);
 }
 
 // Il confronto avviene dopo l'unpremultiply: lo stesso rosso straight con due
@@ -330,24 +449,51 @@ assert(shader.includes("${colorMatchShaderHelpers}"));
 assert(resolvedFillComputeShader.includes("fn connectedStraightSrgbColorsMatch("));
 assert(!resolvedFillComputeShader.includes("${colorMatchShaderHelpers}"));
 assert(shader.includes("return connectedStraightSrgbColorsMatch("));
+assert(shader.includes("uniforms.transparentSeedAlphaThreshold >= 0.0"));
+assert(shader.includes("seedColor.a == 0.0"));
+assert(shader.includes("threshold == 0.0"));
+assert(shader.includes("return alpha == 0.0"));
+assert(!shader.includes("let threshold = max("));
 assert(shader.includes("fn probeBit31()"));
 assert(shader.includes("atomicOr(&results[1], 0x80000000u)"));
 assert(shader.includes("atomicOr(&selectedMask[word], fillBitMask(pixel.x))"));
 assert(shader.includes("fillMaskContains(atomicLoad(&selectedMask[word]), safePixel.x)"));
 assert(shader.includes("if (targetWordX + 3u < TARGET_WORDS_PER_ROW)"));
-assert(shader.includes("packedLabels[targetWord + 3u] = (source >> 24u) & 0xffu"));
+assert(shader.includes("expandedRenderMaskByte(source, 3u)"));
+assert(!shader.includes("occupiedByte"));
 assert(shader.includes("fillRenderMaskContains(renderMask[word], pixel.x)"));
+assert(!shader.includes("fillRenderMaskOccupied"));
 assert(shader.includes("pixel.x / 8u"));
 assert(!shader.includes("fillMaskContains(selectedMask[word], pixel.x)"));
 assert(!shader.includes("1u << (pixel.x & 31u)"));
 assert(!shader.includes("1u << (coldTile & 31u)"));
 assert(shader.includes("fn fragmentMain(@builtin(position) position: vec4<f32>)"));
+assert(shader.includes(
+  "@group(0) @binding(3) var destinationSnapshot: texture_2d<f32>",
+));
+assert(shader.includes("textureLoad(destinationSnapshot, vec2<i32>(pixel), 0)"));
+assert(shader.includes("return vec4<f32>(uniforms.fillColor.rgb, 1.0)"));
+assert(shader.includes("destination.rgb + uniforms.fillColor.rgb * (1.0 - destinationAlpha)"));
+assert(shader.includes("destinationAlpha = clamp(destination.a, 0.0, 1.0)"));
+assert(!shader.includes("fn fragmentEmpty"));
+assert(!shader.includes("fn fragmentOccupied"));
 assert(!shader.includes("@location(0) pixel: vec2<f32>"));
 assert(shader.includes("let sourceRow = global.x / SOURCE_WORDS_PER_ROW;"));
 assert(shader.includes("let targetWord = sourceRow * TARGET_WORDS_PER_ROW + targetWordX;"));
 assert(!shader.includes("let targetWord = global.x * 4u;"));
 assert(!shader.includes("let target = global.x * 4u;"), "target e' riservata in WGSL");
 assert(!renderer.includes("dispatchWorkgroupsIndirect"));
+assert(renderer.includes("this.renderPipeline"));
+assert(!renderer.includes("emptyRenderPipeline"));
+assert(!renderer.includes("preserveAlphaRenderPipeline"));
+assert(!renderer.includes('srcFactor: "dst-alpha"'));
+assert(!renderer.includes('dstFactor: "zero"'));
+assert(!renderer.includes("this.setSourceSamplingView(targetSamplingView)"));
+assert(renderer.includes("destinationSnapshotTexture"));
+assert(renderer.includes("GPUTextureUsage.COPY_DST"));
+assert(renderer.includes("GPUTextureUsage.TEXTURE_BINDING"));
+assert(renderer.includes("encoder.copyTextureToTexture("));
+assert(renderer.includes("FILL_LAYER_WIDTH * FILL_LAYER_HEIGHT * bytesPerPixel"));
 assert.equal(
   renderer.match(/dispatchWorkgroups\(FILL_BLOCK_GRID_WIDTH, FILL_BLOCK_GRID_HEIGHT\)/g)?.length,
   5,
@@ -371,14 +517,22 @@ assert(renderer.includes("private sourceSamplingView: GPUTextureView"));
 assert(renderer.includes("setSourceSamplingView(view: GPUTextureView)"));
 assert(renderer.includes("if (view === this.sourceSamplingView)"));
 assert(renderer.includes("{ binding: 1, resource: this.sourceSamplingView }"));
-assert(!renderer.includes("copyTextureToTexture"));
+assert(renderer.includes("copyTextureToTexture"));
 assert(runtime.includes("engine.canPaintSelectedSceneItem()"));
 assert(runtime.includes("export async function captureFillDiagnostics"));
 assert(runtime.includes("summarizeFillMaskWords"));
 assert(runtime.includes("summarizeFillRenderedRow"));
 assert(runtime.includes("renderMaskStrategy: FILL_RENDER_MASK_STRATEGY"));
 assert(runtime.includes("renderer.encodeLiveCommit"));
-assert(runtime.includes("renderer.encodeLiveCommit(encoder, engine.layerView, historySlice)"));
+assert.match(
+  runtime,
+  /renderer\.encodeLiveCommit\([\s\S]{0,180}engine\.layerTexture[\s\S]{0,80}engine\.layerView/,
+);
+assert.match(
+  runtime,
+  /renderer\.encodeReplayCommit\([\s\S]{0,180}engine\.layerTexture[\s\S]{0,80}engine\.layerView/,
+);
+assert.doesNotMatch(runtime, /compositeMode/);
 assert(runtime.includes("kind: \"fill\""));
 assert(runtime.includes("const source = resolveFillSource(engine)"));
 assert(runtime.includes("sourceLayerId: source.record.id"));

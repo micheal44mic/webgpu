@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { createServer } from "vite";
 
 const root = new URL("../", import.meta.url);
+const html = readFileSync(new URL("index.html", root), "utf8");
 const main = readFileSync(new URL("src/main.ts", root), "utf8");
 const source = readFileSync(new URL("src/canvas-tool-controller.ts", root), "utf8");
 
@@ -17,6 +18,16 @@ assert.match(source, /export type CanvasToolEnginePort = Pick</);
 assert.match(source, /configurationRevision/);
 assert.match(source, /startTextDistortEditing/);
 assert.doesNotMatch(source, /document\.getElementById|querySelector/);
+assert.match(
+  html,
+  /id="mobilePan"[\s\S]*?title="Sposta"[\s\S]*?data-lucide="hand"/,
+);
+assert.match(
+  html,
+  /data-mobile-canvas-tool="pan"[\s\S]*?data-lucide="hand"[\s\S]*?>Move</,
+);
+assert.match(main, /const mobilePanButton = element<HTMLButtonElement>\("mobilePan"\)/);
+assert.match(main, /panButton: mobilePanButton/);
 
 const server = await createServer({
   appType: "custom",
@@ -44,6 +55,7 @@ const canvas = new FakeElement();
 const paintButton = new FakeElement();
 const eraserButton = new FakeElement();
 const blendButton = new FakeElement();
+const panButton = new FakeElement();
 let selectedBrush = "paint";
 const brushSelections = [];
 const brushSettings = {
@@ -112,7 +124,7 @@ const vector = {
 const controller = new CanvasToolController({
   engine,
   browser: { AbortController: globalThis.AbortController },
-  elements: { canvas, paintButton, eraserButton, blendButton },
+  elements: { canvas, paintButton, eraserButton, blendButton, panButton },
   brushSettings,
   selectionSettings,
   isEngineReady: () => engineReady,
@@ -141,6 +153,8 @@ assert.equal(controller.activeBrush, "paint");
 assert.equal(paintButton.getAttribute("aria-pressed"), "true");
 assert.equal(eraserButton.getAttribute("aria-pressed"), "false");
 assert.equal(blendButton.getAttribute("aria-pressed"), "false");
+assert.equal(panButton.getAttribute("aria-pressed"), "false");
+assert.equal(canvas.getAttribute("data-active-canvas-tool"), "paint");
 assert.equal(canvas.tabIndex, -1);
 
 paintButton.dispatchEvent(new Event("click"));
@@ -162,6 +176,15 @@ locked = true;
 assert.equal(controller.select("paint"), false);
 assert.equal(controller.activeTool, "blend");
 locked = false;
+
+panButton.dispatchEvent(new Event("click"));
+await settle();
+assert.equal(controller.activeTool, "pan");
+assert.equal(controller.activeBrush, "blend");
+assert.equal(panButton.getAttribute("aria-pressed"), "true");
+assert.equal(blendButton.getAttribute("aria-pressed"), "false");
+assert.equal(canvas.getAttribute("data-active-canvas-tool"), "pan");
+assert.deepEqual(brushSelections.at(-1), ["blend", true]);
 
 controller.configure("selection", false);
 await settle();

@@ -19,6 +19,18 @@ assert.ok(relativeFiles.some((file) => file.endsWith("index.html")), "Build senz
 assert.ok(relativeFiles.some((file) => file.endsWith(".js")), "Build senza JavaScript.");
 assert.ok(!relativeFiles.some((file) => file.endsWith("labs.html")), "labs.html nel build editor.");
 
+const serverSource = readFileSync(resolve(root, "scripts/prepare-sites-build.mjs"), "utf8");
+assert.match(
+  serverSource,
+  /IMMUTABLE_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"/,
+  "Il Worker non rende persistente la cache degli asset versionati.",
+);
+assert.match(
+  serverSource,
+  /IMMUTABLE_ASSET_PATH\.test\(url\.pathname\)/,
+  "La cache lunga non è limitata agli asset con hash.",
+);
+
 const forbiddenFileFragments = [
   "bevel-bbox-golden",
   "clipping-group-gpu-test",

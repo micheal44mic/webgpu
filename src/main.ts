@@ -40,6 +40,7 @@ import {
   Eye,
   EyeOff,
   Focus,
+  Hand,
   House,
   Image as ImageIcon,
   Layers3,
@@ -86,6 +87,7 @@ import { DocumentInteractionController } from "./document-interaction-controller
 
 import type { MixedSceneController } from "./mixed-scene-controller";
 import { createProjectStorage } from "./project-storage";
+import type { ProjectEditorBootstrap } from "./project-shell-contract";
 import { ProjectSessionController } from "./project-session-controller";
 import { resolveMixedSceneEnabled } from "./compat/mixed-scene-options";
 
@@ -104,6 +106,7 @@ createIcons({
     Eye,
     EyeOff,
     Focus,
+    Hand,
     House,
     Image: ImageIcon,
     Layers3,
@@ -174,6 +177,7 @@ const mobileBrushColorSwatch = element<HTMLElement>("mobileBrushColorSwatch");
 const mobilePaintButton = element<HTMLButtonElement>("mobilePaint");
 const mobileEraserButton = element<HTMLButtonElement>("mobileEraser");
 const mobileBlendButton = element<HTMLButtonElement>("mobileBlend");
+const mobilePanButton = element<HTMLButtonElement>("mobilePan");
 const mobileUndoButton = element<HTMLButtonElement>("mobileUndo");
 const mobileRedoButton = element<HTMLButtonElement>("mobileRedo");
 const mobileToolsMenuButton = element<HTMLButtonElement>("mobileToolsMenu");
@@ -409,6 +413,8 @@ let gpuMemoryPanelController: GpuMemoryPanelController | null = null;
 let pixelSelectionController: PixelSelectionController | null = null;
 let runtimeStatsController: RuntimeStatsController | null = null;
 const editorExtensionBootstrap = window.__editorExtensionBootstrap;
+const projectEditorBootstrap: ProjectEditorBootstrap | undefined =
+  window.__projectEditorBootstrap;
 const editorExtensionEngineOptions = editorExtensionBootstrap?.engineOptions ?? {};
 let editorExtension: EditorExtension | null = null;
 let projectSessionController: ProjectSessionController | null = null;
@@ -514,7 +520,11 @@ projectSessionController = new ProjectSessionController({
       engine.layerStack.active.name = name;
     },
   },
-  storage: createProjectStorage(),
+  storage: projectEditorBootstrap?.storage ?? createProjectStorage(),
+  storageReady: projectEditorBootstrap?.storageReady,
+  preloadedProjectId: projectEditorBootstrap?.preloadedProjectId,
+  preloadedProject: projectEditorBootstrap?.preloadedProject,
+  onReturnHome: projectEditorBootstrap?.returnHome,
   browser: window,
   document,
   searchParams: pageSearchParams,
@@ -588,6 +598,7 @@ const historyControlsController = new HistoryControlsController({
     mobilePaintButton.disabled = locked;
     mobileEraserButton.disabled = locked;
     mobileBlendButton.disabled = locked;
+    mobilePanButton.disabled = locked;
     mobileToolSettingsSheet?.syncOpenState();
     syncMobileToolsMenuState();
     brushQuickControlsController?.syncVisibility();
@@ -836,6 +847,7 @@ canvasToolController = new CanvasToolController({
     paintButton: mobilePaintButton,
     eraserButton: mobileEraserButton,
     blendButton: mobileBlendButton,
+    panButton: mobilePanButton,
   },
   brushSettings: brushSettingsController,
   selectionSettings: canvasToolSettingsController,

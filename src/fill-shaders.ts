@@ -78,7 +78,7 @@ struct FillUniforms {
   seed: vec2<u32>,
   size: vec2<u32>,
   tolerance: f32,
-  _padding0: f32,
+  transparentSeedAlphaThreshold: f32,
   _padding1: f32,
   _padding2: f32,
   fillColor: vec4<f32>,
@@ -125,6 +125,17 @@ fn straightSrgb(value: vec4<f32>) -> vec4<f32> {
 ${colorMatchShaderHelpers}
 
 fn matchesSeed(value: vec4<f32>) -> bool {
+  if (
+    uniforms.transparentSeedAlphaThreshold >= 0.0
+    && seedColor.a == 0.0
+  ) {
+    let alpha = clamp(value.a, 0.0, 1.0);
+    let threshold = clamp(uniforms.transparentSeedAlphaThreshold, 0.0, 1.0);
+    if (threshold == 0.0) {
+      return alpha == 0.0;
+    }
+    return alpha < threshold;
+  }
   return connectedStraightSrgbColorsMatch(
     straightSrgb(value),
     straightSrgb(seedColor),
@@ -433,6 +444,15 @@ fn rebuildSelection(
   reduceAndRecord(pixel, selected, workgroup.xy, localIndex);
 }
 
+fn expandedRenderMaskByte(
+  source: u32,
+  byteIndex: u32,
+) -> u32 {
+  // Only the low byte is consumed by fragment shaders. Destination alpha comes
+  // from the immutable pre-commit snapshot bound to the render pass.
+  return (source >> (byteIndex * 8u)) & 0xffu;
+}
+
 @compute @workgroup_size(256, 1, 1)
 fn expandRenderMask(@builtin(global_invocation_id) global: vec3<u32>) {
   const SOURCE_WORDS: u32 = ${FILL_HISTORY_MASK_WORDS}u;
@@ -447,16 +467,16 @@ fn expandRenderMask(@builtin(global_invocation_id) global: vec3<u32>) {
   // packedLabels is no longer needed once selectedMask has been produced. Its
   // capacity is twice this expanded mask even at the maximum document size.
   if (targetWordX < TARGET_WORDS_PER_ROW) {
-    packedLabels[targetWord] = source & 0xffu;
+    packedLabels[targetWord] = expandedRenderMaskByte(source, 0u);
   }
   if (targetWordX + 1u < TARGET_WORDS_PER_ROW) {
-    packedLabels[targetWord + 1u] = (source >> 8u) & 0xffu;
+    packedLabels[targetWord + 1u] = expandedRenderMaskByte(source, 1u);
   }
   if (targetWordX + 2u < TARGET_WORDS_PER_ROW) {
-    packedLabels[targetWord + 2u] = (source >> 16u) & 0xffu;
+    packedLabels[targetWord + 2u] = expandedRenderMaskByte(source, 2u);
   }
   if (targetWordX + 3u < TARGET_WORDS_PER_ROW) {
-    packedLabels[targetWord + 3u] = (source >> 24u) & 0xffu;
+    packedLabels[targetWord + 3u] = expandedRenderMaskByte(source, 3u);
   }
 }
 `;
@@ -516,7 +536,7 @@ struct FillUniforms {
   seed: vec2<u32>,
   size: vec2<u32>,
   tolerance: f32,
-  _padding0: f32,
+  transparentSeedAlphaThreshold: f32,
   _padding1: f32,
   _padding2: f32,
   fillColor: vec4<f32>,
@@ -525,6 +545,7 @@ struct FillUniforms {
 @group(0) @binding(0) var<uniform> uniforms: FillUniforms;
 @group(0) @binding(1) var<storage, read> renderMask: array<u32>;
 @group(0) @binding(2) var<storage, read> activeBlocks: array<u32>;
+@group(0) @binding(3) var destinationSnapshot: texture_2d<f32>;
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
@@ -556,15 +577,21 @@ fn vertexMain(
 
 @fragment
 fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-  // La posizione framebuffer è già il texel autorevole del target. Evitare un
-  // varying interpolato elimina anche le differenze di precisione ai bordi dei
-  // quad istanziati sui driver mobile.
+  // Framebuffer position is the authoritative target texel. Destination is
+  // sampled from another texture, never from this render attachment.
   let pixel = vec2<u32>(position.xy);
   if (pixel.x >= ${FILL_LAYER_WIDTH}u || pixel.y >= ${FILL_LAYER_HEIGHT}u) { discard; }
   let word = pixel.y * ${FILL_RENDER_MASK_WORDS_PER_ROW}u + pixel.x / 8u;
-  if (!fillRenderMaskContains(renderMask[word], pixel.x)) {
-    discard;
+  if (!fillRenderMaskContains(renderMask[word], pixel.x)) { discard; }
+
+  let destination = textureLoad(destinationSnapshot, vec2<i32>(pixel), 0);
+  if (destination.a <= 0.0) {
+    return vec4<f32>(uniforms.fillColor.rgb, 1.0);
   }
-  return uniforms.fillColor;
+  let destinationAlpha = clamp(destination.a, 0.0, 1.0);
+  return vec4<f32>(
+    destination.rgb + uniforms.fillColor.rgb * (1.0 - destinationAlpha),
+    1.0,
+  );
 }
 `;

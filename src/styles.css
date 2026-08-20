@@ -1057,6 +1057,14 @@ select {
   cursor: grabbing;
 }
 
+#gpuCanvas[data-active-canvas-tool="pan"] {
+  cursor: grab;
+}
+
+#gpuCanvas[data-active-canvas-tool="pan"].panning {
+  cursor: grabbing;
+}
+
 #gpuCanvas.rotation-ready {
   cursor: grab;
 }

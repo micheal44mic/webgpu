@@ -18,10 +18,10 @@ import {
 } from "./color-match-core.ts";
 
 export const GPU_FILL_STRATEGY =
-  "webgpu-hierarchical-ccl-4-connected-color-family-contrast-capped-history1-render8-v4" as const;
+  "webgpu-hierarchical-ccl-4-connected-transparent-threshold-snapshot-solid-underlay-history1-render8-v8" as const;
 
 export const FILL_RENDER_MASK_STRATEGY =
-  "history-1bit-compute-expanded-row-stride-low8-reused-label-buffer-v2" as const;
+  "history-1bit-compute-expanded-row-stride-selected8-reused-label-buffer-v4" as const;
 
 export const FILL_REFERENCE_LAYER_STRATEGY =
   "single-raster-reference-full-resident-gpu-source-separate-active-target-no-fallback-v1" as const;
@@ -49,9 +49,10 @@ export const FILL_HISTORY_MASK_WORDS = FILL_HISTORY_WORDS_PER_ROW * FILL_LAYER_H
 export const FILL_HISTORY_MASK_BYTES = FILL_HISTORY_MASK_WORDS * 4;
 /**
  * The authoritative/History mask remains 1 bit per pixel. For the render pass
- * it is expanded after CCL to four low-byte u32 words per source word. This
- * avoids bit 31 in fragment shaders on affected ARM Valhall drivers while
- * reusing packedLabels, whose classification data is dead after selection.
+ * it is expanded after CCL to four u32 words per source word. Bits 0–7 carry
+ * selection; the upper 24 bits are zero. This avoids bit 31 in fragment shaders
+ * on affected ARM Valhall drivers while reusing packedLabels, whose
+ * classification data is dead after selection.
  */
 export const FILL_RENDER_MASK_PIXELS_PER_WORD = 8;
 export const FILL_RENDER_MASK_WORDS_PER_ROW = Math.ceil(
@@ -138,6 +139,47 @@ export interface FillAnalysis {
   readonly tileMask: Uint32Array;
   /** Include il completamento FIFO della queue e il risveglio della callback JS. */
   readonly queueCompletionMs: number;
+}
+
+/**
+ * CPU reference for the Fill commit. The chosen color is an opaque layer
+ * underneath the existing premultiplied destination pixel. Consequently an
+ * opaque destination is unchanged, an empty destination becomes the fill
+ * color, and anti-aliased/semitransparent content is composited over the fill.
+ */
+export function compositeFillAsSolidUnderlay(
+  destination: readonly [number, number, number, number],
+  fill: readonly [number, number, number, number],
+): readonly [number, number, number, number] {
+  const destinationAlpha = Math.min(1, Math.max(0, destination[3]));
+  if (destinationAlpha === 0) {
+    return [
+      Math.min(1, Math.max(0, fill[0])),
+      Math.min(1, Math.max(0, fill[1])),
+      Math.min(1, Math.max(0, fill[2])),
+      1,
+    ];
+  }
+  const fillContribution = 1 - destinationAlpha;
+  return [
+    destination[0] + Math.min(1, Math.max(0, fill[0])) * fillContribution,
+    destination[1] + Math.min(1, Math.max(0, fill[1])) * fillContribution,
+    destination[2] + Math.min(1, Math.max(0, fill[2])) * fillContribution,
+    1,
+  ];
+}
+
+/**
+ * Transparent-seed Fill treats tolerance as an alpha barrier: 100% accepts
+ * every non-opaque texel, 90% stops at alpha 90%, and 0% accepts alpha zero.
+ */
+export function transparentFillAlphaMatches(alpha: number, tolerancePercent: number): boolean {
+  if (!Number.isFinite(alpha) || !Number.isFinite(tolerancePercent)) {
+    throw new RangeError("Alpha e tolleranza del riempimento devono essere finiti.");
+  }
+  const storedAlpha = Math.fround(Math.min(1, Math.max(0, alpha)));
+  const threshold = Math.fround(Math.min(1, Math.max(0, tolerancePercent / 100)));
+  return threshold === 0 ? storedAlpha === 0 : storedAlpha < threshold;
 }
 
 export function countFillTiles(mask: Uint32Array): number {

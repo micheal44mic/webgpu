@@ -31,6 +31,10 @@ export interface ProjectSessionControllerOptions {
   readonly saveButton: HTMLButtonElement;
   readonly homeButton: HTMLButtonElement;
   readonly status: HTMLParagraphElement;
+  readonly storageReady?: Promise<void>;
+  readonly preloadedProjectId?: string | null;
+  readonly preloadedProject?: Promise<ProjectLoadResultV1 | null> | null;
+  readonly onReturnHome?: (() => Promise<void>) | null;
 }
 
 function canvasBlob(
@@ -55,6 +59,10 @@ export class ProjectSessionController {
   private readonly saveButton: HTMLButtonElement;
   private readonly homeButton: HTMLButtonElement;
   private readonly status: HTMLParagraphElement;
+  private readonly storageReady: Promise<void> | null;
+  private readonly preloadedProjectId: string | null;
+  private readonly preloadedProject: Promise<ProjectLoadResultV1 | null> | null;
+  private readonly onReturnHome: (() => Promise<void>) | null;
   private readonly newProjectRequested: boolean;
   private readonly requestedProjectName: string;
 
@@ -79,6 +87,10 @@ export class ProjectSessionController {
     this.saveButton = options.saveButton;
     this.homeButton = options.homeButton;
     this.status = options.status;
+    this.storageReady = options.storageReady ?? null;
+    this.preloadedProjectId = options.preloadedProjectId ?? null;
+    this.preloadedProject = options.preloadedProject ?? null;
+    this.onReturnHome = options.onReturnHome ?? null;
 
     this.currentProjectId = options.searchParams.get("project")?.trim() || null;
     this.newProjectRequested = this.currentProjectId !== null
@@ -137,11 +149,13 @@ export class ProjectSessionController {
   }
 
   async initialize(): Promise<void> {
-    await this.storage.initialize();
+    await (this.storageReady ?? this.storage.initialize());
     this.editorReady = true;
     if (this.currentProjectId && !this.newProjectRequested) {
       this.setStatus("Opening project…");
-      const saved = await this.storage.loadProject(this.currentProjectId);
+      const saved = this.preloadedProject && this.preloadedProjectId === this.currentProjectId
+        ? await this.preloadedProject
+        : await this.storage.loadProject(this.currentProjectId);
       if (!saved) throw new Error("This project is no longer available on this device.");
       this.updateIdentity(saved.summary.name);
       await this.engine.restoreDocument(saved);
@@ -252,6 +266,10 @@ export class ProjectSessionController {
           return;
         }
       }
+    }
+    if (this.onReturnHome) {
+      await this.onReturnHome();
+      return;
     }
     const url = new URL(this.browser.location.href);
     url.search = "";

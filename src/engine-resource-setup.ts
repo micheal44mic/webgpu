@@ -1,4 +1,5 @@
 import type { BrushEngine } from "./brush-engine";
+import { loadCachedAssetSource } from "./asset-source-cache.ts";
 import {
   BRUSH_UNIFORM_BYTES,
   DISPLAY_UNIFORM_BYTES,
@@ -669,11 +670,7 @@ export async function createGrainTextureResources(
     externalSource = canvas;
   } else {
     const asset = grainAssetDescriptor(assetId);
-    const response = await fetch(asset.url);
-    if (!response.ok) {
-      throw new Error(`Impossibile caricare ${asset.sourceFile} (${response.status}).`);
-    }
-    const source = await response.arrayBuffer();
+    const source = await loadCachedAssetSource(asset.url);
     const decodeStart = performance.now();
     // Let the browser decode the original RGBA PNG,
     // including its embedded color profile, without premultiplying alpha.
@@ -980,11 +977,7 @@ export async function createShapeMaskResources(
     const asset = shapeAssetDescriptor(assetId);
     sourceLabel = asset.sourceFile;
     authoredInvert = asset.decode.invertLuminance;
-    const response = await fetch(asset.url);
-    if (!response.ok) {
-      throw new Error(`Impossibile caricare ${asset.sourceFile} (${response.status}).`);
-    }
-    const source = await response.arrayBuffer();
+    const source = await loadCachedAssetSource(asset.url);
     try {
       const decoded = await decodeGrayscalePng8(source);
       if (decoded.width !== asset.width || decoded.height !== asset.height) {

@@ -415,6 +415,64 @@ function createHarness({ holdEnabled = true } = {}) {
   harness.controller.dispose();
 }
 
+// The explicit Hand/Move tool pans with the primary mouse button or one touch,
+// without opening a Paint transaction.
+{
+  const harness = createHarness();
+  harness.setActiveTool("pan");
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 21,
+    pointerType: "touch",
+    clientX: 30,
+    clientY: 40,
+  }));
+  assert.equal(harness.controller.pointerMode, "pan");
+  assert.equal(harness.canvas.classList.contains("panning"), true);
+  assert.equal(harness.calls.beginStroke.length, 0);
+  assert.equal(harness.calls.vectorBegin, 1);
+  harness.canvas.dispatchEvent(makeEvent("pointermove", {
+    pointerId: 21,
+    pointerType: "touch",
+    clientX: 42,
+    clientY: 65,
+  }));
+  assert.deepEqual(harness.calls.pan, [[12, 25]]);
+  harness.canvas.dispatchEvent(makeEvent("pointerup", {
+    pointerId: 21,
+    pointerType: "touch",
+    clientX: 42,
+    clientY: 65,
+  }));
+  assert.equal(harness.calls.vectorEnd, 1);
+  assert.equal(harness.canvas.classList.contains("panning"), false);
+  assert.equal(harness.controller.isPointerActive, false);
+
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 22,
+    pointerType: "touch",
+    clientX: 20,
+    clientY: 20,
+  }));
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 23,
+    pointerType: "touch",
+    clientX: 60,
+    clientY: 20,
+  }));
+  assert.equal(harness.controller.pointerMode, "touch-navigation");
+  assert.equal(harness.calls.vectorBegin, 2, "il secondo dito non riapre la gesture Pan");
+  harness.canvas.dispatchEvent(makeEvent("pointerup", {
+    pointerId: 23,
+    pointerType: "touch",
+  }));
+  harness.canvas.dispatchEvent(makeEvent("pointerup", {
+    pointerId: 22,
+    pointerType: "touch",
+  }));
+  assert.equal(harness.calls.vectorEnd, 2);
+  harness.controller.dispose();
+}
+
 // Fill is a short release gesture; dragging cancels it.
 {
   const harness = createHarness();

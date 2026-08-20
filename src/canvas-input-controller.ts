@@ -14,6 +14,7 @@ import {
 export type CanvasInputTool =
   | BrushSettings["tool"]
   | "fill"
+  | "pan"
   | "selection"
   | "transform"
   | "liquify";
@@ -520,6 +521,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
 
   const enterTouchNavigation = (): void => {
     if (pointerMode !== "touch-navigation") {
+      const continuesExplicitPan = pointerMode === "pan";
       if (pointerMode === "paint") {
         const canceledHeldIntent = cancelTouchPaintIntentHold("navigation");
         if (!canceledHeldIntent && !engine.cancelStrokeBeforeRender()) engine.endStroke();
@@ -534,7 +536,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       } else if (pointerMode === "selection-lasso") {
         clearLassoGesture();
       }
-      options.getVectorController()?.beginViewGesture();
+      if (!continuesExplicitPan) options.getVectorController()?.beginViewGesture();
       engine.beginViewRotationGesture();
       pointerMode = "touch-navigation";
       canvas.classList.add("panning");
@@ -571,15 +573,17 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
         ? "pan"
         : activeTool === "fill"
           ? "fill"
-          : activeTool === "liquify"
-            ? "liquify"
-            : activeTool === "selection"
-              ? options.getSelectionMethod() === "lasso"
-                ? "selection-lasso"
-                : "selection-tap"
-              : activeTool === "transform"
-                ? "transform"
-                : "paint";
+          : activeTool === "pan"
+            ? "pan"
+            : activeTool === "liquify"
+              ? "liquify"
+              : activeTool === "selection"
+                ? options.getSelectionMethod() === "lasso"
+                  ? "selection-lasso"
+                  : "selection-tap"
+                : activeTool === "transform"
+                  ? "transform"
+                  : "paint";
     const viewNavigationRequested = requestedPointerMode === "pan"
       || requestedPointerMode === "rotate";
     const liquifyEditRequested = requestedPointerMode === "liquify"

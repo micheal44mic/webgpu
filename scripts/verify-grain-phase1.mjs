@@ -242,7 +242,7 @@ const builtinBrushAssets = fs.readFileSync(
 );
 assert(!builtinBrushAssets.includes("graincottonfleece.PNG")
   && builtinBrushAssets.includes('url: new URL("../Grainpencil.png", import.meta.url)')
-  && engine.includes("fetch(asset.url)"),
+  && engine.includes("loadCachedAssetSource(asset.url)"),
   "Il runtime non instrada il Grain Pencil senza il Cotton Fleece rimosso.");
 assert(engine.includes('const GRAIN_TEXTURE_SIZE = 800;')
   && engine.includes('format: "r16float"')

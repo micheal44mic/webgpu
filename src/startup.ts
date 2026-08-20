@@ -16,9 +16,11 @@ import {
 import {
   createProjectStorage,
   normalizeProjectTitle,
+  type ProjectLoadResultV1,
   type ProjectStorage,
   type ProjectSummaryV1,
 } from "./project-storage";
+import type { ProjectEditorBootstrap } from "./project-shell-contract";
 
 const HOME_ICONS: Readonly<Record<string, IconNode>> = {
   "arrow-up-right": ArrowUpRight,
@@ -143,15 +145,21 @@ function formatProjectDate(timestamp: number): string {
   }).format(new Date(timestamp));
 }
 
-async function launchEditor(): Promise<void> {
+function showApplicationSurface(surface: "home" | "editor"): void {
   const home = element<HTMLElement>(document, "projectHome");
   const app = element<HTMLElement>(document, "app");
-  home.hidden = true;
-  home.inert = true;
-  app.hidden = false;
-  app.inert = false;
-  await import("./main");
+  const editor = surface === "editor";
+  home.hidden = editor;
+  home.inert = editor;
+  app.hidden = !editor;
+  app.inert = !editor;
 }
+
+type OpenEditor = (
+  url: URL,
+  preloadedProjectId: string | null,
+  preloadedProject: Promise<ProjectLoadResultV1 | null> | null,
+) => Promise<void>;
 
 interface ProjectHomeControllerOptions {
   readonly storage: ProjectStorage;
@@ -159,6 +167,7 @@ interface ProjectHomeControllerOptions {
   readonly browser: Window;
   readonly document: Document;
   readonly objectUrl: Pick<typeof URL, "createObjectURL" | "revokeObjectURL">;
+  readonly openEditor: OpenEditor;
 }
 
 class ProjectHomeController {
@@ -167,6 +176,7 @@ class ProjectHomeController {
   private readonly browser: Window;
   private readonly document: Document;
   private readonly objectUrl: ProjectHomeControllerOptions["objectUrl"];
+  private readonly openEditor: OpenEditor;
   private readonly home: HTMLElement;
   private readonly tabs: readonly [HTMLButtonElement, HTMLButtonElement];
   private readonly panels: readonly [HTMLElement, HTMLElement];
@@ -188,6 +198,7 @@ class ProjectHomeController {
     this.browser = options.browser;
     this.document = options.document;
     this.objectUrl = options.objectUrl;
+    this.openEditor = options.openEditor;
     this.home = element<HTMLElement>(options.root, "projectHome");
     this.tabs = [
       element<HTMLButtonElement>(options.root, "projectsTab"),
@@ -331,14 +342,19 @@ class ProjectHomeController {
       const url = new URL(this.browser.location.href);
       url.search = "";
       url.hash = "";
-      url.searchParams.set("project", freshProjectId());
+      const projectId = freshProjectId();
+      url.searchParams.set("project", projectId);
       url.searchParams.set("newProject", "1");
       url.searchParams.set("projectName", normalizeProjectTitle(this.nameInput.value));
       url.searchParams.set("documentWidth", String(width));
       url.searchParams.set("documentHeight", String(height));
       if (width === height) url.searchParams.set("documentSize", String(width));
       this.setBusy(true);
-      this.browser.location.assign(url);
+      void this.openEditor(url, projectId, null).catch((error) => {
+        console.error("New project startup failed:", error);
+        this.showStatus("The editor could not be opened.", true);
+        this.setBusy(false);
+      });
     });
   }
 
@@ -367,7 +383,19 @@ class ProjectHomeController {
     open.setAttribute("aria-label", `Open ${project.name}`);
     open.addEventListener("click", () => {
       this.setBusy(true);
-      this.browser.location.assign(projectEditorUrl(project, this.browser.location.href));
+      const preloaded = this.storage.loadProject(project.id);
+      // Mark the eager read as handled while WebGPU starts; the editor still
+      // awaits the original promise and surfaces the actual failure.
+      void preloaded.catch(() => null);
+      void this.openEditor(
+        projectEditorUrl(project, this.browser.location.href),
+        project.id,
+        preloaded,
+      ).catch((error) => {
+        console.error("Project startup failed:", error);
+        this.showStatus("The project could not be opened.", true);
+        this.setBusy(false);
+      });
     });
 
     const thumbnail = this.document.createElement("span");
@@ -456,6 +484,16 @@ class ProjectHomeController {
       : "Session storage";
   }
 
+  async refresh(): Promise<void> {
+    this.setBusy(true);
+    try {
+      await this.refreshProjects();
+      await this.refreshStorageSummary();
+    } finally {
+      this.setBusy(false);
+    }
+  }
+
   private setBusy(busy: boolean): void {
     this.home.classList.toggle("is-busy", busy);
     this.home.setAttribute("aria-busy", String(busy));
@@ -476,6 +514,101 @@ class ProjectHomeController {
 async function boot(): Promise<void> {
   const home = element<HTMLElement>(document, "projectHome");
   hydrateHomeIcons(home);
+  const storage = createProjectStorage();
+  const storageReady = storage.initialize();
+  void storageReady.catch(() => undefined);
+  let homeController: ProjectHomeController | null = null;
+  let editorLoaded = false;
+  let suspendedEditorUrl: URL | null = null;
+  let suspendedEditorTitle = "M1M4.COM — Editor";
+
+  const ensureHomeController = async (): Promise<ProjectHomeController> => {
+    if (homeController) return homeController;
+    const controller = new ProjectHomeController({
+      storage,
+      root: home,
+      browser: window,
+      document,
+      objectUrl: URL,
+      openEditor,
+    });
+    homeController = controller;
+    await controller.initialize();
+    return controller;
+  };
+
+  const showHome = async (pushHistory = true): Promise<void> => {
+    if (editorLoaded && shouldOpenEditor(new URLSearchParams(window.location.search))) {
+      suspendedEditorUrl = new URL(window.location.href);
+      suspendedEditorTitle = document.title;
+    }
+    const url = new URL(window.location.href);
+    url.search = "";
+    url.hash = "";
+    if (pushHistory) window.history.pushState(null, "", url);
+    showApplicationSurface("home");
+    document.title = "M1M4.COM — Projects";
+    const alreadyInitialized = homeController !== null;
+    const controller = await ensureHomeController();
+    if (alreadyInitialized) await controller.refresh();
+  };
+
+  const sameSuspendedProject = (url: URL): boolean => (
+    suspendedEditorUrl !== null
+    && suspendedEditorUrl.searchParams.get("project") === url.searchParams.get("project")
+    && suspendedEditorUrl.searchParams.get("documentWidth")
+      === url.searchParams.get("documentWidth")
+    && suspendedEditorUrl.searchParams.get("documentHeight")
+      === url.searchParams.get("documentHeight")
+  );
+
+  const openEditor: OpenEditor = async (url, preloadedProjectId, preloadedProject) => {
+    if (editorLoaded) {
+      if (sameSuspendedProject(url)) {
+        if (window.location.href !== url.href) {
+          window.history.pushState(null, "", url);
+        }
+        showApplicationSurface("editor");
+        document.title = suspendedEditorTitle;
+        return;
+      }
+      // Document dimensions are compile-time WebGPU constants. A different
+      // project gets a fresh engine, while immutable HTTP assets stay cached.
+      window.location.assign(url);
+      return;
+    }
+
+    if (window.location.href !== url.href) {
+      window.history.pushState(null, "", url);
+    }
+    const bootstrap: ProjectEditorBootstrap = {
+      storage,
+      storageReady,
+      preloadedProjectId,
+      preloadedProject,
+      returnHome: () => showHome(true),
+    };
+    window.__projectEditorBootstrap = bootstrap;
+    showApplicationSurface("editor");
+    await import("./main");
+    editorLoaded = true;
+    suspendedEditorUrl = new URL(window.location.href);
+  };
+
+  window.addEventListener("popstate", () => {
+    const target = new URL(window.location.href);
+    if (!shouldOpenEditor(target.searchParams)) {
+      void showHome(false);
+      return;
+    }
+    if (editorLoaded && sameSuspendedProject(target)) {
+      showApplicationSurface("editor");
+      document.title = suspendedEditorTitle;
+      return;
+    }
+    window.location.reload();
+  });
+
   const search = new URLSearchParams(window.location.search);
   if (shouldOpenEditor(search)) {
     if (!editorDimensionsAreValid(search)) {
@@ -485,35 +618,25 @@ async function boot(): Promise<void> {
       home.hidden = false;
       home.inert = false;
       document.title = "M1M4.COM — Invalid canvas size";
-      const controller = new ProjectHomeController({
-        storage: createProjectStorage(),
-        root: home,
-        browser: window,
-        document,
-        objectUrl: URL,
-      });
-      await controller.initialize();
+      const controller = await ensureHomeController();
       controller.showStatus("Canvas dimensions must be whole pixels from 64 to 4000.", true);
       return;
     }
-    await launchEditor();
+    const projectId = search.get("project")?.trim() || null;
+    const preloadedProject = projectId && search.get("newProject") !== "1"
+      ? storageReady.then(() => storage.loadProject(projectId))
+      : null;
+    if (preloadedProject) void preloadedProject.catch(() => null);
+    const initialUrl = new URL(window.location.href);
+    // Avoid adding a duplicate history entry for a direct editor deep link.
+    window.history.replaceState(null, "", initialUrl);
+    await openEditor(initialUrl, projectId, preloadedProject);
     return;
   }
 
+  showApplicationSurface("home");
   document.title = "M1M4.COM — Projects";
-  const app = element<HTMLElement>(document, "app");
-  app.hidden = true;
-  app.inert = true;
-  home.hidden = false;
-  home.inert = false;
-  const controller = new ProjectHomeController({
-    storage: createProjectStorage(),
-    root: home,
-    browser: window,
-    document,
-    objectUrl: URL,
-  });
-  await controller.initialize();
+  await ensureHomeController();
 }
 
 void boot().catch((error) => {

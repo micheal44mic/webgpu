@@ -40,6 +40,7 @@ export interface CanvasToolControllerOptions {
     readonly paintButton: HTMLButtonElement;
     readonly eraserButton: HTMLButtonElement;
     readonly blendButton: HTMLButtonElement;
+    readonly panButton: HTMLButtonElement;
   };
   readonly brushSettings: CanvasToolBrushSettingsPort;
   readonly selectionSettings: CanvasToolSelectionSettingsPort;
@@ -87,6 +88,9 @@ export class CanvasToolController {
     }, { signal });
     options.elements.blendButton.addEventListener("click", () => {
       this.select("blend");
+    }, { signal });
+    options.elements.panButton.addEventListener("click", () => {
+      this.select("pan");
     }, { signal });
   }
 
@@ -138,14 +142,17 @@ export class CanvasToolController {
     this.options.elements.paintButton.setAttribute("aria-pressed", String(tool === "paint"));
     this.options.elements.eraserButton.setAttribute("aria-pressed", String(tool === "erase"));
     this.options.elements.blendButton.setAttribute("aria-pressed", String(tool === "blend"));
+    this.options.elements.panButton.setAttribute("aria-pressed", String(tool === "pan"));
+    this.options.elements.canvas.setAttribute("data-active-canvas-tool", tool);
     this.options.syncBrushLibraryButton();
     this.options.syncMenuState();
     const fill = tool === "fill";
+    const pan = tool === "pan";
     const selection = tool === "selection";
     const transform = tool === "transform";
     const liquify = tool === "liquify";
     if (!selection) this.options.cancelKeyboardSelectionGesture(true);
-    if (!fill && !selection && !transform && !liquify) {
+    if (!fill && !pan && !selection && !transform && !liquify) {
       this.activeBrushTool = tool;
       this.options.brushSettings.selectTool(
         tool,

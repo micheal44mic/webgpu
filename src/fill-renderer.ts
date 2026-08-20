@@ -57,6 +57,8 @@ interface FillScratchResources {
   readonly metadata: GPUBuffer;
   readonly drawIndirect: GPUBuffer;
   readonly readback: GPUBuffer;
+  readonly destinationSnapshotTexture: GPUTexture;
+  readonly destinationSnapshotView: GPUTextureView;
   computeBindGroup: GPUBindGroup;
   readonly renderBindGroup: GPUBindGroup;
 }
@@ -188,6 +190,7 @@ export class FillRenderer {
         { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform", minBindingSize: FILL_UNIFORM_BYTES } },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
         { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "unfilterable-float" } },
       ],
     });
     this.selectionIntersectionBindGroupLayout = this.device.createBindGroupLayout({
@@ -204,7 +207,10 @@ export class FillRenderer {
   }
 
   get residentBytes(): number {
-    return this.resident ? FILL_RESIDENT_SCRATCH_BYTES : FILL_UNIFORM_BUFFER_BYTES;
+    if (!this.resident) return FILL_UNIFORM_BUFFER_BYTES;
+    const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
+    return FILL_RESIDENT_SCRATCH_BYTES
+      + FILL_LAYER_WIDTH * FILL_LAYER_HEIGHT * bytesPerPixel;
   }
 
   private async initialize(): Promise<void> {
@@ -263,7 +269,7 @@ export class FillRenderer {
       compute: { module: intersectionModule, entryPoint: "intersectFillWithSelection" },
     });
     this.renderPipeline = await this.device.createRenderPipelineAsync({
-      label: `Riempimento · commit ${this.layerFormat}`,
+      label: `Riempimento · colore pieno sotto snapshot ${this.layerFormat}`,
       layout: renderLayout,
       vertex: { module: renderModule, entryPoint: "vertexMain" },
       fragment: {
@@ -334,6 +340,20 @@ export class FillRenderer {
           FILL_METADATA_BUFFER_BYTES,
           GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
         );
+        const destinationSnapshotTexture = this.device.createTexture({
+          label: `Riempimento · snapshot destinazione ${this.layerFormat}`,
+          size: {
+            width: FILL_LAYER_WIDTH,
+            height: FILL_LAYER_HEIGHT,
+            depthOrArrayLayers: 1,
+          },
+          format: this.layerFormat,
+          usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING,
+        });
+        transaction.deferRollback(() => destinationSnapshotTexture.destroy());
+        const destinationSnapshotView = destinationSnapshotTexture.createView({
+          label: `Riempimento · view snapshot destinazione ${this.layerFormat}`,
+        });
         const computeBindGroup = this.createComputeBindGroup({
           packedLabels,
           globalParents,
@@ -352,6 +372,7 @@ export class FillRenderer {
             // word low-8-bit. selectedMask resta autorevole per History.
             { binding: 1, resource: { buffer: packedLabels, size: FILL_RENDER_MASK_BYTES } },
             { binding: 2, resource: { buffer: activeBlocks } },
+            { binding: 3, resource: destinationSnapshotView },
           ],
         });
         return {
@@ -363,6 +384,8 @@ export class FillRenderer {
           metadata,
           drawIndirect,
           readback,
+          destinationSnapshotTexture,
+          destinationSnapshotView,
           computeBindGroup,
           renderBindGroup,
         };
@@ -405,6 +428,7 @@ export class FillRenderer {
     tolerance: number,
     fillColor: readonly [number, number, number, number],
     selectionMask: GPUBuffer | null = null,
+    transparentSeedTolerancePercent: number | null = null,
   ): Promise<FillAnalysis> {
     await this.prewarm();
     const scratch = this.requireScratch();
@@ -421,6 +445,9 @@ export class FillRenderer {
     unsigned[2] = FILL_LAYER_WIDTH;
     unsigned[3] = FILL_LAYER_HEIGHT;
     floats[4] = tolerance;
+    floats[5] = transparentSeedTolerancePercent === null
+      ? -1
+      : Math.min(1, Math.max(0, transparentSeedTolerancePercent / 100));
     floats.set(fillColor, 8);
     this.device.queue.writeBuffer(this.uniformBuffer, 0, upload);
 
@@ -753,11 +780,13 @@ export class FillRenderer {
 
   encodeLiveCommit(
     encoder: GPUCommandEncoder,
+    targetTexture: GPUTexture,
     targetView: GPUTextureView,
     historySlice: GpuHistorySlice,
   ): void {
     const scratch = this.requireScratch();
     this.assertHistorySlice(historySlice);
+    this.encodeDestinationSnapshotCopy(encoder, targetTexture, scratch);
     const pass = encoder.beginComputePass({
       label: "Riempimento · espansione mask low-8-bit per commit live",
     });
@@ -777,6 +806,7 @@ export class FillRenderer {
 
   encodeReplayCommit(
     encoder: GPUCommandEncoder,
+    targetTexture: GPUTexture,
     targetView: GPUTextureView,
     historySlice: GpuHistorySlice,
     fillColor: readonly [number, number, number, number],
@@ -786,6 +816,7 @@ export class FillRenderer {
     // a later Copy report with the seed/metadata of the previous live analyze.
     this.lastDiagnosticInput = null;
     this.assertHistorySlice(historySlice);
+    this.encodeDestinationSnapshotCopy(encoder, targetTexture, scratch);
     const upload = new Float32Array(FILL_UNIFORM_BYTES / 4);
     const unsigned = new Uint32Array(upload.buffer);
     unsigned[2] = FILL_LAYER_WIDTH;
@@ -828,6 +859,7 @@ export class FillRenderer {
     scratch.metadata.destroy();
     scratch.drawIndirect.destroy();
     scratch.readback.destroy();
+    scratch.destinationSnapshotTexture.destroy();
   }
 
   destroy(): void {
@@ -839,7 +871,11 @@ export class FillRenderer {
 
   private createComputeBindGroup(resources: Omit<
     FillScratchResources,
-    "computeBindGroup" | "renderBindGroup" | "readback"
+    | "computeBindGroup"
+    | "renderBindGroup"
+    | "readback"
+    | "destinationSnapshotTexture"
+    | "destinationSnapshotView"
   >): GPUBindGroup {
     return this.device.createBindGroup({
       label: "Riempimento · compute bind group",
@@ -871,10 +907,26 @@ export class FillRenderer {
         storeOp: "store",
       }],
     });
-    pass.setPipeline(this.renderPipeline);
     pass.setBindGroup(0, scratch.renderBindGroup);
+    pass.setPipeline(this.renderPipeline);
     pass.drawIndirect(scratch.drawIndirect, 0);
     pass.end();
+  }
+
+  private encodeDestinationSnapshotCopy(
+    encoder: GPUCommandEncoder,
+    targetTexture: GPUTexture,
+    scratch: FillScratchResources,
+  ): void {
+    encoder.copyTextureToTexture(
+      { texture: targetTexture },
+      { texture: scratch.destinationSnapshotTexture },
+      {
+        width: FILL_LAYER_WIDTH,
+        height: FILL_LAYER_HEIGHT,
+        depthOrArrayLayers: 1,
+      },
+    );
   }
 
   private assertHistorySlice(slice: GpuHistorySlice): void {

@@ -1,4 +1,5 @@
 import opentype from "opentype.js";
+import { loadCachedAssetSource } from "./asset-source-cache.ts";
 import type { Shadow3dPathData } from "./vector-shadow-3d.ts";
 import {
   buildVectorTextCurveGuide,
@@ -528,13 +529,7 @@ export class VectorTextFontGeometryRegistry {
   }
 
   private async load(entry: VectorTextFontEntry): Promise<void> {
-    const response = await fetch(entry.fileUrl);
-    if (!response.ok) {
-      throw new Error(
-        "Font vettoriale mancante (" + entry.label + "): HTTP " + response.status,
-      );
-    }
-    const buffer = await response.arrayBuffer();
+    const buffer = await loadCachedAssetSource(entry.fileUrl);
     const font = opentype.parse(buffer) as OpenTypeFont;
     if (
       !font

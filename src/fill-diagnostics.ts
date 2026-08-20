@@ -166,7 +166,6 @@ export function summarizeFillRenderedRow(
   pixels: Uint8Array,
   format: LayerFormat,
   maskWords: Uint32Array,
-  expectedColor: readonly [number, number, number, number],
   y: number,
   layerWidth: number,
 ): FillRenderedRowDiagnosticSummary {
@@ -189,13 +188,10 @@ export function summarizeFillRenderedRow(
     const selected = (word & (2 ** (x % 32))) !== 0;
     if (!selected) continue;
     maskSelectedPixels += 1;
-    let matches = true;
-    for (let channel = 0; channel < 4; channel += 1) {
-      if (Math.abs(targetChannel(pixels, format, x, channel) - expectedColor[channel]) > tolerance) {
-        matches = false;
-        break;
-      }
-    }
+    // A solid underlay makes every selected destination texel opaque. RGB can
+    // legitimately differ from the chosen color because existing translucent
+    // content remains composited above it.
+    const matches = Math.abs(targetChannel(pixels, format, x, 3) - 1) <= tolerance;
     if (matches) {
       matchingFillPixels += 1;
     } else {

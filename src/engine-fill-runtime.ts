@@ -141,7 +141,6 @@ export async function captureFillDiagnostics(
         rowPixels,
         engine.layerFormat,
         readback.maskWords,
-        readback.fillColor,
         readback.seedY,
         FILL_LAYER_WIDTH,
       );
@@ -331,6 +330,7 @@ export async function fillAtClientPoint(
       normalizeFillTolerance(tolerancePercent),
       linearColor,
       selectionMask,
+      tolerancePercent,
     );
     const actionId = engine.nextHistoryActionId;
     historySlice = engine.historyGpuStorage.allocate(
@@ -342,7 +342,12 @@ export async function fillAtClientPoint(
     const encoder = engine.device.createCommandEncoder({
       label: `Riempimento ${actionId} · commit selezionato`,
     });
-    renderer.encodeLiveCommit(encoder, engine.layerView, historySlice);
+    renderer.encodeLiveCommit(
+      encoder,
+      engine.layerTexture,
+      engine.layerView,
+      historySlice,
+    );
     engine.device.queue.submit([encoder.finish()]);
     pixelsMutated = true;
 
@@ -472,6 +477,7 @@ export async function submitFillHistoryBatch(
   });
   renderer.encodeReplayCommit(
     encoder,
+    engine.layerTexture,
     engine.layerView,
     batch.gpuSlice,
     batch.linearColor,
