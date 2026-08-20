@@ -18,6 +18,11 @@ import type { RasterStrokeEncodeResult } from "./stroke-renderer";
 import type { PixelSelectionState } from "./selection-core";
 import type { VectorTextViewState } from "./vector-text-types";
 import { DEFAULT_BRUSH_DEFINITION_SETTINGS } from "./brush-definition.ts";
+import type {
+  RasterTransformControlPoint,
+  RasterTransformMode,
+  RasterWarpGridSize,
+} from "./raster-deform-math";
 
 /**
  * The UI exposes only the three measured rendering modes. The legacy values
@@ -126,6 +131,14 @@ export interface PointerSample {
 export interface RasterTransformSnapshot {
   layerId: number;
   scope: "layer" | "selection";
+  /** Affine keeps the classic box; Warp and Perspective expose movable points. */
+  mode: RasterTransformMode;
+  /** Remembered Warp density. Perspective always renders a 2×2 corner grid. */
+  gridSize: RasterWarpGridSize;
+  /** Row-major destination points; empty while mode is affine. */
+  controlPoints: readonly RasterTransformControlPoint[];
+  /** Eight independent corner tangents while mode is Warp; empty otherwise. */
+  bezierHandles: readonly RasterTransformControlPoint[];
   x: number;
   y: number;
   scale: number;

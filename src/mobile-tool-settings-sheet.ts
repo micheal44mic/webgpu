@@ -20,7 +20,12 @@ import type { EditorToolSettingsKind } from "./editor-tools-contract";
 export type MobileToolSettingsKind =
   | EditorToolSettingsKind
   | "layer-options";
-type MobileCanvasSettingsTool = "fill" | "selection" | "transform";
+type MobileCanvasSettingsTool =
+  | "fill"
+  | "selection"
+  | "transform"
+  | "warp"
+  | "perspective";
 type MobileSelectionCombineMode = "replace" | "add" | "subtract";
 export type MobileTextWarpMode = "none" | "distort" | "arch" | "circle" | "wave";
 
@@ -119,6 +124,8 @@ const MOBILE_TOOL_TITLES: Readonly<Record<MobileToolSettingsKind, string>> = {
   fill: "Fill",
   selection: "Selection",
   transform: "Transform",
+  warp: "Warp",
+  perspective: "Perspective",
   "layer-options": "Layer Options",
   "svg-style": "SVG Style",
   text: "Text",
@@ -148,7 +155,11 @@ const SELECTED_ITEM_REQUIRED_KINDS: ReadonlySet<MobileToolSettingsKind> = new Se
 function isMobileCanvasSettingsTool(
   kind: MobileToolSettingsKind,
 ): kind is MobileCanvasSettingsTool {
-  return kind === "fill" || kind === "selection" || kind === "transform";
+  return kind === "fill"
+    || kind === "selection"
+    || kind === "transform"
+    || kind === "warp"
+    || kind === "perspective";
 }
 
 function requiredElement<T extends HTMLElement>(root: ParentNode, id: string): T {
@@ -492,7 +503,8 @@ export class MobileToolSettingsSheetController {
     this.sheet.setAttribute("aria-label", `${MOBILE_TOOL_TITLES[kind]} settings`);
     this.title.textContent = MOBILE_TOOL_TITLES[kind];
     for (const panel of this.panels) {
-      panel.hidden = panel.dataset.mobileToolSettingsPanel !== kind;
+      const panelKinds = panel.dataset.mobileToolSettingsPanel?.split(/\s+/) ?? [];
+      panel.hidden = !panelKinds.includes(kind);
     }
     this.syncOpenState();
     this.scroll.scrollTop = 0;
@@ -552,7 +564,11 @@ export class MobileToolSettingsSheetController {
     }
     if (this.activeKind === "fill") this.syncFill();
     else if (this.activeKind === "selection") this.syncSelection();
-    else if (this.activeKind === "transform") this.syncTransform();
+    else if (
+      this.activeKind === "transform"
+      || this.activeKind === "warp"
+      || this.activeKind === "perspective"
+    ) this.syncTransform();
     else if (this.activeKind === "layer-options") this.syncLayerOptions();
     else if (this.activeKind === "svg-style") this.syncSvgStyle();
     else if (this.activeKind === "text") this.syncText();
@@ -907,9 +923,18 @@ export class MobileToolSettingsSheetController {
       this.transformCancel,
       this.transformApply,
     );
+    const kind = this.activeKind;
     this.transformHint.textContent = transactionActive
-      ? "Preview active. Apply or cancel the transform."
-      : "Select content on the canvas, then drag it to transform.";
+      ? kind === "warp"
+        ? "Drag any cell, even beyond the frame: that cell bends most while nearby cells follow smoothly. Each corner has two independent Bézier handles for curving its edges."
+        : kind === "perspective"
+          ? "Drag any corner independently to set the perspective."
+          : "Preview active. Apply or cancel the transform."
+      : kind === "warp"
+        ? "Select a raster layer, then drag anywhere inside its Warp grid."
+        : kind === "perspective"
+          ? "Select a raster layer, then drag its four perspective corners."
+          : "Select content on the canvas, then drag it to transform.";
   }
 
   private syncTransformActions(

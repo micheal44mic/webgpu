@@ -3303,6 +3303,12 @@ select {
     line-height: 1.15;
   }
 
+  .mobile-tool-settings-field[hidden],
+  [data-raster-transform-controls][hidden],
+  [data-raster-transform-grid-controls][hidden] {
+    display: none;
+  }
+
   .mobile-tool-text-field input {
     width: 100%;
     min-width: 0;
@@ -3486,6 +3492,8 @@ select {
   }
 
   #app:has(#mobileToolSettingsSheet.is-open[data-tool="transform"]) #transformCommitBar,
+  #app:has(#mobileToolSettingsSheet.is-open[data-tool="warp"]) #transformCommitBar,
+  #app:has(#mobileToolSettingsSheet.is-open[data-tool="perspective"]) #transformCommitBar,
   #app:has(#mobileToolSettingsSheet.is-open[data-tool="text-warp"]) #transformCommitBar {
     display: none;
   }
@@ -4445,6 +4453,10 @@ select {
   cursor: crosshair;
 }
 
+#vectorTextInteractionCanvas.is-raster-control {
+  cursor: grabbing;
+}
+
 #vectorTextInteractionCanvas.is-rotate {
   cursor: grabbing;
 }
@@ -4457,6 +4469,7 @@ select {
   display: flex;
   align-items: center;
   gap: 8px;
+  max-width: calc(100% - 28px);
   min-height: 44px;
   padding: 6px 8px 6px 13px;
   transform: translateX(-50%);
@@ -4483,6 +4496,36 @@ select {
 .transform-commit-bar button {
   min-height: 32px;
   padding: 6px 11px;
+}
+
+.raster-transform-modes,
+.raster-transform-grids {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid rgba(117, 130, 157, 0.48);
+  border-radius: 9px;
+  background: rgba(29, 35, 47, 0.88);
+}
+
+.raster-transform-modes[hidden],
+.raster-transform-grids[hidden] {
+  display: none;
+}
+
+.raster-transform-modes button,
+.raster-transform-grids button {
+  min-height: 28px;
+  padding: 4px 8px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.raster-transform-modes button[aria-pressed="true"],
+.raster-transform-grids button[aria-pressed="true"] {
+  border-color: rgba(255, 138, 94, 0.84);
+  background: rgba(221, 92, 53, 0.9);
+  color: #fff;
 }
 
 .vector-zoom-ab-summary {

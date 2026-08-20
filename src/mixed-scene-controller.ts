@@ -98,6 +98,8 @@ import {
   hitsSceneTransformBody,
   sceneLayerToLocal,
   scenePointDistance,
+  scenePointInPolygon,
+  scenePointToSegmentDistance,
   type ScenePoint,
   type SceneTransformHandle,
 } from "./scene-transform-geometry";
@@ -125,8 +127,24 @@ import {
   sceneDistortCanvasPoints,
   sceneOverlayCorners,
   sceneOverlayRotationHandle,
+  sceneRasterDeformBoundaryCanvasPoints,
+  sceneRasterDeformCanvasPoints,
+  sceneRasterWarpBezierCanvasHandles,
+  SCENE_TRANSFORM_CORNER_HIT_RADIUS_CSS_PX,
   SCENE_TRANSFORM_HIT_RADIUS_CSS_PX,
 } from "./scene-interaction-overlay";
+import {
+  isRasterWarpGridSize,
+  moveRasterWarpBezierHandle,
+  moveRasterWarpControlPoints,
+  rasterDeformGridSize,
+  rasterWarpClosestSurfaceParameter,
+  rasterWarpCornerIndices,
+  remapRasterWarpBezierHandles,
+  type RasterTransformControlPoint,
+  type RasterTransformMode,
+  type RasterWarpSurfaceParameter,
+} from "./raster-deform-math";
 import type {
   MixedSceneControllerOptions,
   MixedSceneDiagnostics,
@@ -162,7 +180,13 @@ interface CachedTextGeometry {
   slug: VectorTextSlugData;
 }
 
-type InteractionMode = "move" | "scale" | "rotate" | "pan" | "distort";
+type InteractionMode =
+  | "move"
+  | "scale"
+  | "rotate"
+  | "pan"
+  | "distort"
+  | "raster-control";
 
 interface ActiveInteraction {
   pointerId: number;
@@ -173,6 +197,9 @@ interface ActiveInteraction {
   startDistance: number;
   startAngle: number;
   distortPointIndex: number | null;
+  rasterControlPointIndex: number | null;
+  rasterBezierHandleIndex: number | null;
+  rasterWarpAnchorParameter: RasterWarpSurfaceParameter | null;
   openedTransformSession: boolean;
 }
 
@@ -251,6 +278,8 @@ export class MixedSceneController {
   private readonly transformCommitLabel: HTMLElement;
   private readonly transformApplyButton: HTMLButtonElement;
   private readonly transformCancelButton: HTMLButtonElement;
+  private readonly rasterTransformGridControls: HTMLElement[];
+  private readonly rasterTransformGridButtons: HTMLButtonElement[];
   private readonly status: HTMLElement;
 
   private readonly interactionContext: CanvasRenderingContext2D;
@@ -320,6 +349,7 @@ export class MixedSceneController {
   private atomicEffectPendingNodes = 0;
   private distortEditingNodeId: number | null = null;
   private transformToolActive = false;
+  private rasterTransformToolMode: RasterTransformMode = "affine";
   private transformSessionOpen = false;
   private transformSessionKind: "vector" | "raster" | null = null;
   private rasterTransformPreparing = false;
@@ -355,6 +385,12 @@ export class MixedSceneController {
     this.transformCommitLabel = requiredElement<HTMLElement>(options.root, "transformCommitLabel");
     this.transformApplyButton = requiredElement<HTMLButtonElement>(options.root, "transformApply");
     this.transformCancelButton = requiredElement<HTMLButtonElement>(options.root, "transformCancel");
+    this.rasterTransformGridControls = [
+      ...options.root.querySelectorAll<HTMLElement>("[data-raster-transform-grid-controls]"),
+    ];
+    this.rasterTransformGridButtons = [
+      ...options.root.querySelectorAll<HTMLButtonElement>("[data-raster-transform-grid]"),
+    ];
     this.status = requiredElement<HTMLElement>(options.root, "vectorTextStatus");
     this.clippedRefreshPolicy = options.clippedRefreshPolicy ?? "during-gesture";
     this.onEditorStateChange = options.onEditorStateChange;
@@ -384,10 +420,14 @@ export class MixedSceneController {
     this.syncScene(initialSnapshot);
   }
 
-  setTransformToolActive(active: boolean): void {
+  setTransformToolActive(
+    active: boolean,
+    mode: RasterTransformMode = "affine",
+  ): void {
     if (!active && this.transformSessionOpen) {
       return;
     }
+    this.rasterTransformToolMode = mode;
     if (active) {
       const latestSnapshot = this.host.getMixedSceneSnapshot();
       if (latestSnapshot) this.syncScene(latestSnapshot);
@@ -402,11 +442,32 @@ export class MixedSceneController {
     );
     this.updateTransformCommitUi();
     this.scheduleRender();
-    if (active) void this.prepareSelectedRasterTransform();
+    if (!active) return;
+    const node = this.selectedTransformNode();
+    if (
+      this.transformSessionOpen
+      && this.transformSessionKind === "raster"
+      && node
+      && isRasterLayerTransformNode(node)
+      && node.scope === "layer"
+      && node.mode !== mode
+    ) {
+      try {
+        this.host.updateRasterLayerTransform({ mode });
+        this.scheduleRender();
+      } catch (error) {
+        this.status.textContent = error instanceof Error ? error.message : String(error);
+      }
+      return;
+    }
+    void this.prepareSelectedRasterTransform();
   }
 
   private updateTransformCommitUi(): void {
     const node = this.selectedTransformNode();
+    const rasterNode = node && isRasterLayerTransformNode(node) && node.scope === "layer"
+      ? node
+      : null;
     const movesPixelSelection = Boolean(
       this.transformToolActive
       && node
@@ -414,12 +475,19 @@ export class MixedSceneController {
       && node.scope === "selection",
     );
     this.transformCommitBar.hidden = !this.transformSessionOpen;
+    const toolLabel = this.rasterTransformToolMode === "warp"
+      ? "Warp"
+      : this.rasterTransformToolMode === "perspective"
+        ? "Prospettiva"
+        : "Trasforma";
     this.transformCommitLabel.textContent = movesPixelSelection
       ? "Sposta selezione"
-      : "Trasforma";
+      : toolLabel;
     this.transformCommitBar.setAttribute(
       "aria-label",
-      movesPixelSelection ? "Conferma spostamento selezione" : "Conferma trasformazione",
+      movesPixelSelection
+        ? "Conferma spostamento selezione"
+        : `Conferma ${toolLabel}`,
     );
     this.interactionCanvas.tabIndex = movesPixelSelection ? 0 : -1;
     this.interactionCanvas.classList.toggle("is-pixel-selection", movesPixelSelection);
@@ -438,6 +506,26 @@ export class MixedSceneController {
     this.transformApplyButton.disabled =
       this.transformCommitBusy || this.rasterTransformRecoveryOnly;
     this.transformCancelButton.disabled = this.transformCommitBusy;
+    const rasterControlsVisible = Boolean(
+      this.transformToolActive
+      && rasterNode
+      && this.rasterTransformToolMode === "warp",
+    );
+    const rasterControlsDisabled = !rasterControlsVisible
+      || !this.transformSessionOpen
+      || this.transformSessionKind !== "raster"
+      || this.transformCommitBusy
+      || this.rasterTransformRecoveryOnly;
+    for (const controls of this.rasterTransformGridControls) {
+      controls.hidden = !rasterControlsVisible;
+    }
+    for (const button of this.rasterTransformGridButtons) {
+      button.disabled = rasterControlsDisabled || rasterNode?.mode !== "warp";
+      button.setAttribute(
+        "aria-pressed",
+        String(Number(button.dataset.rasterTransformGrid) === (rasterNode?.gridSize ?? 3)),
+      );
+    }
     this.onEditorStateChange?.();
   }
 
@@ -605,6 +693,7 @@ export class MixedSceneController {
         "is-rotate",
         "is-pan",
         "is-distort",
+        "is-raster-control",
       );
     }
     const node = this.selectedVectorNode();
@@ -1612,6 +1701,10 @@ export class MixedSceneController {
         layerId: selected.rasterLayerId,
         name: selected.rasterLayerName,
         scope: "selection",
+        mode: "affine",
+        gridSize: 3,
+        controlPoints: [],
+        bezierHandles: [],
         x: transform?.scope === "selection" ? transform.x : centerX,
         y: transform?.scope === "selection" ? transform.y : centerY,
         scale: 1,
@@ -1636,6 +1729,10 @@ export class MixedSceneController {
       layerId: selected.rasterLayerId,
       name: selected.rasterLayerName,
       scope: transform?.scope ?? "layer",
+      mode: transform?.mode ?? "affine",
+      gridSize: transform?.gridSize ?? 3,
+      controlPoints: transform?.controlPoints.map((point) => ({ ...point })) ?? [],
+      bezierHandles: transform?.bezierHandles.map((point) => ({ ...point })) ?? [],
       x: transform?.x ?? centerX,
       y: transform?.y ?? centerY,
       scale: transform?.scale ?? 1,
@@ -1659,7 +1756,12 @@ export class MixedSceneController {
       return;
     }
     this.rasterTransformPreparing = true;
-    this.status.textContent = `Preparo Trasforma GPU per ${node.name}…`;
+    const operation = this.rasterTransformToolMode === "warp"
+      ? "Warp"
+      : this.rasterTransformToolMode === "perspective"
+        ? "Prospettiva"
+        : "Trasforma";
+    this.status.textContent = `Preparo ${operation} GPU per ${node.name}…`;
     try {
       const state = await this.host.beginRasterLayerTransform();
       if (!state) return;
@@ -1673,10 +1775,14 @@ export class MixedSceneController {
         await this.host.cancelRasterLayerTransform();
         return;
       }
+      if (state.scope === "layer" && state.mode !== this.rasterTransformToolMode) {
+        this.host.updateRasterLayerTransform({ mode: this.rasterTransformToolMode });
+      }
       this.transformSessionOpen = true;
       this.transformSessionKind = "raster";
       this.rasterTransformRecoveryOnly = false;
       this.updateTransformCommitUi();
+      this.status.textContent = `${operation} GPU pronto per ${current.name}: Applica o Annulla.`;
       this.scheduleRender();
     } catch (error) {
       const retained = this.rasterTransformSessionStillOpen();
@@ -2027,6 +2133,31 @@ export class MixedSceneController {
     });
     this.transformApplyButton.addEventListener("click", () => this.applyTransform());
     this.transformCancelButton.addEventListener("click", () => this.cancelTransform());
+    for (const button of this.rasterTransformGridButtons) {
+      button.addEventListener("click", () => {
+        const gridSize = Number(button.dataset.rasterTransformGrid);
+        if (!isRasterWarpGridSize(gridSize)) return;
+        if (
+          this.activeInteraction
+          || this.transformCommitBusy
+          || this.rasterTransformRecoveryOnly
+          || this.transformSessionKind !== "raster"
+        ) return;
+        const node = this.selectedTransformNode();
+        if (
+          !node
+          || !isRasterLayerTransformNode(node)
+          || node.scope !== "layer"
+          || node.mode !== "warp"
+        ) return;
+        try {
+          this.host.updateRasterLayerTransform({ gridSize });
+          this.scheduleRender();
+        } catch (error) {
+          this.status.textContent = error instanceof Error ? error.message : String(error);
+        }
+      });
+    }
     this.browser.addEventListener("keydown", (event) => {
       if (!this.transformSessionOpen || event.defaultPrevented || event.isComposing) return;
       const target = event.target instanceof Element ? event.target : null;
@@ -2157,7 +2288,10 @@ export class MixedSceneController {
 
   private updateTransformNode(
     node: Readonly<TransformSceneNode>,
-    update: Partial<Pick<RasterTransformSnapshot, "x" | "y" | "scale" | "rotation">>,
+    update: Partial<Pick<
+      RasterTransformSnapshot,
+      "x" | "y" | "scale" | "rotation" | "mode" | "gridSize" | "controlPoints" | "bezierHandles"
+    >>,
   ): void {
     if (isRasterLayerTransformNode(node)) {
       this.host.updateRasterLayerTransform(update);
@@ -3374,6 +3508,22 @@ export class MixedSceneController {
     view: VectorTextViewState,
     node: Readonly<TransformSceneNode>,
   ): boolean {
+    if (
+      isRasterLayerTransformNode(node)
+      && node.scope === "layer"
+      && node.mode !== "affine"
+    ) {
+      const boundary = sceneRasterDeformBoundaryCanvasPoints(view, node);
+      if (scenePointInPolygon(point, boundary)) return true;
+      const backingPerCssPixel = view.canvasWidth / Math.max(1, view.cssWidth);
+      const edgeReach = 8 * backingPerCssPixel;
+      return boundary.some((start, index) =>
+        scenePointToSegmentDistance(
+          point,
+          start,
+          boundary[(index + 1) % boundary.length],
+        ) <= edgeReach);
+    }
     const includeSelectionEdgeReach = isRasterLayerTransformNode(node)
       && node.scope === "selection";
     const backingPerCssPixel = view.canvasWidth / Math.max(1, view.cssWidth);
@@ -3398,6 +3548,53 @@ export class MixedSceneController {
     );
   }
 
+  private hitRasterDeformPoint(
+    point: ScenePoint,
+    view: VectorTextViewState,
+    node: Readonly<TransformSceneNode>,
+  ): number | null {
+    if (
+      !isRasterLayerTransformNode(node)
+      || node.scope !== "layer"
+      || node.mode === "affine"
+    ) return null;
+    const backingPerCssPixel = view.canvasWidth / Math.max(1, view.cssWidth);
+    const points = sceneRasterDeformCanvasPoints(view, node);
+    if (node.mode === "perspective") {
+      return closestSceneControlPoint(
+        point,
+        points,
+        SCENE_TRANSFORM_CORNER_HIT_RADIUS_CSS_PX * backingPerCssPixel,
+      );
+    }
+    const size = rasterDeformGridSize(node.mode, node.gridSize);
+    const cornerIndices = rasterWarpCornerIndices(size);
+    const cornerOffset = closestSceneControlPoint(
+      point,
+      cornerIndices.map((index) => points[index]),
+      SCENE_TRANSFORM_CORNER_HIT_RADIUS_CSS_PX * backingPerCssPixel,
+    );
+    return cornerOffset === null ? null : cornerIndices[cornerOffset];
+  }
+
+  private hitRasterBezierHandle(
+    point: ScenePoint,
+    view: VectorTextViewState,
+    node: Readonly<TransformSceneNode>,
+  ): number | null {
+    if (
+      !isRasterLayerTransformNode(node)
+      || node.scope !== "layer"
+      || node.mode !== "warp"
+    ) return null;
+    const backingPerCssPixel = view.canvasWidth / Math.max(1, view.cssWidth);
+    return closestSceneControlPoint(
+      point,
+      sceneRasterWarpBezierCanvasHandles(view, node),
+      SCENE_TRANSFORM_HIT_RADIUS_CSS_PX * backingPerCssPixel,
+    );
+  }
+
   private currentTouchNavigationGesture(): TouchNavigationGesture | null {
     if (this.touchContacts.size < 2) return null;
     const [first, second] = [...this.touchContacts.values()];
@@ -3414,6 +3611,16 @@ export class MixedSceneController {
   private restoreInteractionStart(interaction: ActiveInteraction): void {
     if (interaction.mode === "distort" && isTextNode(interaction.startModel)) {
       this.updateSelectedNode({ distortPoints: interaction.startModel.distortPoints });
+      return;
+    }
+    if (
+      interaction.mode === "raster-control"
+      && isRasterLayerTransformNode(interaction.startModel)
+    ) {
+      this.updateTransformNode(interaction.startModel, {
+        controlPoints: interaction.startModel.controlPoints,
+        bezierHandles: interaction.startModel.bezierHandles,
+      });
       return;
     }
     if (interaction.mode !== "pan") {
@@ -3433,6 +3640,7 @@ export class MixedSceneController {
       "is-rotate",
       "is-pan",
       "is-distort",
+      "is-raster-control",
     );
     if (this.activeInteraction === interaction) this.activeInteraction = null;
   }
@@ -3521,22 +3729,73 @@ export class MixedSceneController {
       && textNode.distortPoints !== null
       && this.distortEditingNodeId === textNode.id,
     );
-    const corners = isDistortEditing
+    const isRasterDeformEditing = isRasterLayerTransformNode(node)
+      && node.scope === "layer"
+      && node.mode !== "affine";
+    const corners = isDistortEditing || isRasterDeformEditing
       ? []
       : sceneOverlayCorners(this.metrics, node, view);
-    const handle = isDistortEditing
+    const handle = isDistortEditing || isRasterDeformEditing
       ? null
       : this.hitHandle(canvasPoint, corners, view, node);
     const distortPointIndex = isDistortEditing && textNode
       ? this.hitDistortPoint(canvasPoint, view, textNode)
       : null;
+    let rasterControlPointIndex = isRasterDeformEditing
+      ? this.hitRasterDeformPoint(canvasPoint, view, node)
+      : null;
+    let rasterBezierHandleIndex = isRasterDeformEditing
+      ? this.hitRasterBezierHandle(canvasPoint, view, node)
+      : null;
+    if (
+      isRasterDeformEditing
+      && node.mode === "warp"
+      && rasterControlPointIndex !== null
+      && rasterBezierHandleIndex !== null
+    ) {
+      const controlPoint = sceneRasterDeformCanvasPoints(
+        view,
+        node,
+      )[rasterControlPointIndex];
+      const bezierPoint = sceneRasterWarpBezierCanvasHandles(
+        view,
+        node,
+      )[rasterBezierHandleIndex];
+      if (
+        controlPoint
+        && bezierPoint
+        && scenePointDistance(canvasPoint, controlPoint)
+          <= scenePointDistance(canvasPoint, bezierPoint)
+      ) {
+        rasterBezierHandleIndex = null;
+      } else {
+        rasterControlPointIndex = null;
+      }
+    }
     const shouldPan = event.button === 1
       || event.button === 2
-      || (!isDistortEditing && event.shiftKey);
+      || (
+        !isDistortEditing
+        && !isRasterDeformEditing
+        && rasterControlPointIndex === null
+        && event.shiftKey
+      );
     const mode: InteractionMode | null = shouldPan
       ? "pan"
       : isDistortEditing
         ? distortPointIndex === null ? null : "distort"
+        : isRasterDeformEditing
+          ? node.mode === "warp"
+            ? rasterBezierHandleIndex !== null
+              || rasterControlPointIndex !== null
+              || this.hitsTransformBody(canvasPoint, corners, view, node)
+              ? "raster-control"
+              : null
+            : rasterControlPointIndex !== null
+              ? "raster-control"
+              : this.hitsTransformBody(canvasPoint, corners, view, node)
+                ? "move"
+                : null
         : handle === "rotate"
           ? "rotate"
           : handle
@@ -3572,6 +3831,17 @@ export class MixedSceneController {
     }
     this.interactionCanvas.setPointerCapture(event.pointerId);
     const center = { x: node.x, y: node.y };
+    const rasterWarpAnchorParameter = isRasterDeformEditing
+      && node.mode === "warp"
+      && rasterControlPointIndex === null
+      && rasterBezierHandleIndex === null
+      ? rasterWarpClosestSurfaceParameter(
+        node.controlPoints,
+        node.gridSize,
+        layerPoint,
+        node.bezierHandles,
+      )
+      : null;
     this.activeInteraction = {
       pointerId: event.pointerId,
       mode,
@@ -3581,6 +3851,9 @@ export class MixedSceneController {
       startDistance: Math.max(1e-6, scenePointDistance(layerPoint, center)),
       startAngle: Math.atan2(layerPoint.y - center.y, layerPoint.x - center.x),
       distortPointIndex,
+      rasterControlPointIndex,
+      rasterBezierHandleIndex,
+      rasterWarpAnchorParameter,
       openedTransformSession,
     };
     if (mode === "pan") this.beginViewGesture();
@@ -3621,6 +3894,66 @@ export class MixedSceneController {
     );
   }
 
+  private movedRasterControlPoints(
+    interaction: ActiveInteraction,
+    layerPoint: ScenePoint,
+    lockAxis: boolean,
+  ): RasterTransformControlPoint[] | null {
+    if (!isRasterLayerTransformNode(interaction.startModel)) return null;
+    const pointIndex = interaction.rasterControlPointIndex;
+    if (interaction.startModel.mode === "affine") return null;
+    let deltaX = layerPoint.x - interaction.startLayer.x;
+    let deltaY = layerPoint.y - interaction.startLayer.y;
+    if (lockAxis) {
+      if (Math.abs(deltaX) >= Math.abs(deltaY)) deltaY = 0;
+      else deltaX = 0;
+    }
+    if (interaction.startModel.mode === "warp") {
+      return moveRasterWarpControlPoints(
+        interaction.startModel.controlPoints,
+        interaction.startModel.gridSize,
+        interaction.startLayer,
+        deltaX,
+        deltaY,
+        pointIndex,
+        interaction.rasterWarpAnchorParameter,
+      );
+    }
+    if (pointIndex === null) return null;
+    return interaction.startModel.controlPoints.map((point, index) =>
+      index === pointIndex
+        ? { x: point.x + deltaX, y: point.y + deltaY }
+        : { ...point });
+  }
+
+  private movedRasterBezierHandles(
+    interaction: ActiveInteraction,
+    layerPoint: ScenePoint,
+    lockAxis: boolean,
+  ): RasterTransformControlPoint[] | null {
+    if (
+      !isRasterLayerTransformNode(interaction.startModel)
+      || interaction.startModel.mode !== "warp"
+      || interaction.rasterBezierHandleIndex === null
+    ) return null;
+    let deltaX = layerPoint.x - interaction.startLayer.x;
+    let deltaY = layerPoint.y - interaction.startLayer.y;
+    if (lockAxis) {
+      if (Math.abs(deltaX) >= Math.abs(deltaY)) deltaY = 0;
+      else deltaX = 0;
+    }
+    const index = interaction.rasterBezierHandleIndex;
+    const start = interaction.startModel.bezierHandles[index];
+    if (!start) return null;
+    return [...moveRasterWarpBezierHandle(
+      interaction.startModel.bezierHandles,
+      interaction.startModel.controlPoints,
+      interaction.startModel.gridSize,
+      index,
+      { x: start.x + deltaX, y: start.y + deltaY },
+    )];
+  }
+
   private onPointerMove(event: PointerEvent): void {
     if (event.pointerType === "touch" && this.touchContacts.has(event.pointerId)) {
       this.touchContacts.set(event.pointerId, { x: event.clientX, y: event.clientY });
@@ -3636,17 +3969,25 @@ export class MixedSceneController {
       if (
         node
         && isRasterLayerTransformNode(node)
-        && node.scope === "selection"
         && this.transformToolActive
       ) {
         const view = this.host.getVectorTextViewState();
         const point = this.eventCanvasPoint(event);
-        this.interactionCanvas.style.cursor = this.hitsTransformBody(
-          point,
-          sceneOverlayCorners(this.metrics, node, view),
-          view,
-          node,
-        ) ? "move" : "default";
+        if (node.scope === "layer" && node.mode !== "affine") {
+          const overControl = this.hitRasterDeformPoint(point, view, node) !== null;
+          const overBezier = this.hitRasterBezierHandle(point, view, node) !== null;
+          const overBody = this.hitsTransformBody(point, [], view, node);
+          this.interactionCanvas.style.cursor = node.mode === "warp"
+            ? overBezier || overControl || overBody ? "grab" : "default"
+            : overControl ? "grab" : overBody ? "move" : "default";
+        } else if (node.scope === "selection") {
+          this.interactionCanvas.style.cursor = this.hitsTransformBody(
+            point,
+            sceneOverlayCorners(this.metrics, node, view),
+            view,
+            node,
+          ) ? "move" : "default";
+        }
       }
       return;
     }
@@ -3668,6 +4009,39 @@ export class MixedSceneController {
       );
       if (distortPoints && isTextNode(interaction.startModel)) {
         this.host.updateVectorTextNode(interaction.startModel.id, { distortPoints });
+      }
+      return;
+    }
+    if (interaction.mode === "raster-control") {
+      const bezierHandles = this.movedRasterBezierHandles(
+        interaction,
+        layerPoint,
+        event.shiftKey,
+      );
+      if (bezierHandles && isRasterLayerTransformNode(interaction.startModel)) {
+        this.host.updateRasterLayerTransform({ bezierHandles });
+        return;
+      }
+      const controlPoints = this.movedRasterControlPoints(
+        interaction,
+        layerPoint,
+        event.shiftKey,
+      );
+      if (controlPoints && isRasterLayerTransformNode(interaction.startModel)) {
+        const nextBezierHandles = interaction.startModel.mode === "warp"
+          ? remapRasterWarpBezierHandles(
+            interaction.startModel.controlPoints,
+            interaction.startModel.gridSize,
+            controlPoints,
+            interaction.startModel.gridSize,
+            interaction.startModel.bezierHandles,
+            interaction.rasterControlPointIndex,
+          )
+          : [];
+        this.host.updateRasterLayerTransform({
+          controlPoints,
+          bezierHandles: nextBezierHandles,
+        });
       }
       return;
     }

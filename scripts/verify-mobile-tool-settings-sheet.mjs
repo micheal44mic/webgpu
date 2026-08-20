@@ -163,6 +163,8 @@ assert.deepEqual(
     "fill",
     "selection",
     "transform",
+    "warp",
+    "perspective",
     "text",
     "svg-style",
     "text-warp",
@@ -177,6 +179,7 @@ for (const title of [
   "Fill",
   "Selection",
   "Transform",
+  "Perspective",
   "Text",
   "SVG Style",
   "Warp",
@@ -393,7 +396,7 @@ assert.match(
 );
 assert.match(
   canvasToolController,
-  /finishTransformToolOnSheetClose[\s\S]*?await controller\.applyTransform\(\)[\s\S]*?stopSelectedTextDistortEditing\(\)[\s\S]*?this\.activeCanvasTool === "transform" \? "paint" : this\.activeCanvasTool[\s\S]*?this\.select\(targetTool, true\)/,
+  /finishTransformToolOnSheetClose[\s\S]*?await controller\.applyTransform\(\)[\s\S]*?stopSelectedTextDistortEditing\(\)[\s\S]*?activeIsTransform[\s\S]*?const targetTool = activeIsTransform \? "paint"[\s\S]*?this\.select\(targetTool, true\)/,
   "closing Transform or Distort must commit safely, remove edit handles and return to Paint",
 );
 assert.match(
@@ -489,7 +492,7 @@ assert.match(
 );
 assert.match(
   css,
-  /#app:has\(#mobileToolSettingsSheet\.is-open\[data-tool="transform"\]\) #transformCommitBar,[\s\S]*?data-tool="text-warp"[\s\S]*?display:\s*none;/,
+  /#app:has\(#mobileToolSettingsSheet\.is-open\[data-tool="transform"\]\) #transformCommitBar,[\s\S]*?data-tool="warp"[\s\S]*?data-tool="perspective"[\s\S]*?data-tool="text-warp"[\s\S]*?display:\s*none;/,
   "the upper Transform bar must disappear while the equivalent mobile actions are visible",
 );
 

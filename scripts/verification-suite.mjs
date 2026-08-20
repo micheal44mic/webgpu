@@ -64,6 +64,7 @@ export const verificationScripts = Object.freeze([
   "verify-project-home.mjs",
   "verify-project-storage.mjs",
   "verify-raster-image.mjs",
+  "verify-raster-deform.mjs",
   "verify-raster-transform.mjs",
   "verify-raster-adjustments-controller.mjs",
   "verify-raster-effects-boundaries.mjs",

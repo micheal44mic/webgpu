@@ -17,6 +17,8 @@ export type CanvasInputTool =
   | "pan"
   | "selection"
   | "transform"
+  | "warp"
+  | "perspective"
   | "liquify";
 
 export type CanvasInputEnginePort = Pick<
@@ -582,6 +584,8 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
                   ? "selection-lasso"
                   : "selection-tap"
                 : activeTool === "transform"
+                    || activeTool === "warp"
+                    || activeTool === "perspective"
                   ? "transform"
                   : "paint";
     const viewNavigationRequested = requestedPointerMode === "pan"

@@ -78,6 +78,7 @@
     "mixed-scene:verify": "node scripts/verify-mixed-scene-stack.mjs",
     "image:verify": "node scripts/verify-raster-image.mjs",
     "transform:verify": "node scripts/verify-raster-transform.mjs",
+    "deform:verify": "node scripts/verify-raster-deform.mjs",
     "gaussian-blur:verify": "node scripts/verify-gaussian-blur.mjs",
     "motion-blur:verify": "node scripts/verify-motion-blur.mjs && node scripts/verify-motion-blur-ui.mjs",
     "noise:verify": "node scripts/verify-noise.mjs",

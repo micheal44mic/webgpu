@@ -68,6 +68,7 @@ export interface EditorToolsMenuState {
   readonly vectorInnerShadowEnabled: boolean;
   readonly vectorBlockShadowEnabled: boolean;
   readonly rasterColorOverlayTargetSelected: boolean;
+  readonly rasterDeformTargetSelected: boolean;
   readonly rasterEffectsEnabled: Readonly<Record<EditorRasterEffectKind, boolean>>;
 }
 
@@ -184,6 +185,7 @@ export class EditorToolsController {
         continue;
       }
       const svgEditor = kind === "svg-style";
+      const rasterDeformEditor = kind === "warp" || kind === "perspective";
       const textEditor = kind === "text" || kind === "text-warp";
       const vectorEffectEditor = kind === "text-outline"
         || kind === "text-drop-shadow"
@@ -191,6 +193,7 @@ export class EditorToolsController {
         || kind === "text-block-shadow";
       button.disabled = !state.engineReady
         || state.interactionLocked
+        || (rasterDeformEditor && !state.rasterDeformTargetSelected)
         || ((textEditor || vectorEffectEditor) && !state.vectorEditorReady)
         || (kind === "text-warp" && !state.textSelected)
         || (vectorEffectEditor && !state.textSelected && !state.svgSelected)

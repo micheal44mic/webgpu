@@ -14,9 +14,18 @@ import {
   type SceneLocalBounds,
   type ScenePoint,
 } from "./scene-transform-geometry";
+import {
+  RASTER_WARP_RENDER_SUBDIVISIONS,
+  normalizeRasterWarpBezierHandles,
+  rasterDeformBoundaryIndices,
+  rasterDeformGridSize,
+  rasterWarpBezierHandleAnchorIndex,
+  rasterWarpSurfaceSampler,
+} from "./raster-deform-math";
 
 export const SCENE_TRANSFORM_HANDLE_RADIUS_CSS_PX = 7;
 export const SCENE_TRANSFORM_HIT_RADIUS_CSS_PX = 13;
+export const SCENE_TRANSFORM_CORNER_HIT_RADIUS_CSS_PX = 18;
 const ROTATION_HANDLE_OFFSET_CSS_PX = 38;
 
 export function sceneOverlayCorners(
@@ -42,6 +51,64 @@ export function sceneDistortCanvasPoints(
   if (!isTextNode(node) || !node.distortPoints) return [];
   return node.distortPoints.map((point) =>
     sceneLayerToCanvas(sceneLocalToLayer(point, node), view));
+}
+
+export function sceneRasterDeformCanvasPoints(
+  view: Readonly<VectorTextViewState>,
+  node: Readonly<TransformSceneNode>,
+): readonly ScenePoint[] {
+  if (
+    !isRasterLayerTransformNode(node)
+    || node.scope !== "layer"
+    || node.mode === "affine"
+  ) return [];
+  return node.controlPoints.map((point) => sceneLayerToCanvas(point, view));
+}
+
+export function sceneRasterWarpBezierCanvasHandles(
+  view: Readonly<VectorTextViewState>,
+  node: Readonly<TransformSceneNode>,
+): readonly ScenePoint[] {
+  if (
+    !isRasterLayerTransformNode(node)
+    || node.scope !== "layer"
+    || node.mode !== "warp"
+  ) return [];
+  const handles = normalizeRasterWarpBezierHandles(
+    node.bezierHandles,
+    node.controlPoints,
+    node.gridSize,
+  );
+  return handles.map((point) => sceneLayerToCanvas(point, view));
+}
+
+export function sceneRasterDeformBoundaryCanvasPoints(
+  view: Readonly<VectorTextViewState>,
+  node: Readonly<TransformSceneNode>,
+): readonly ScenePoint[] {
+  const points = sceneRasterDeformCanvasPoints(view, node);
+  if (!isRasterLayerTransformNode(node) || node.mode === "affine") return [];
+  const size = rasterDeformGridSize(node.mode, node.gridSize);
+  if (node.mode === "warp") {
+    const steps = (size - 1) * RASTER_WARP_RENDER_SUBDIVISIONS;
+    const handles = sceneRasterWarpBezierCanvasHandles(view, node);
+    const sample = rasterWarpSurfaceSampler(points, size, handles);
+    const boundary: ScenePoint[] = [];
+    for (let step = 0; step < steps; step += 1) {
+      boundary.push(sample(step / steps, 0));
+    }
+    for (let step = 0; step < steps; step += 1) {
+      boundary.push(sample(1, step / steps));
+    }
+    for (let step = steps; step > 0; step -= 1) {
+      boundary.push(sample(step / steps, 1));
+    }
+    for (let step = steps; step > 0; step -= 1) {
+      boundary.push(sample(0, step / steps));
+    }
+    return boundary;
+  }
+  return rasterDeformBoundaryIndices(size).map((index) => points[index]);
 }
 
 export function clearSceneInteractionOverlay(
@@ -188,6 +255,114 @@ function renderDistortOverlay(
   context.restore();
 }
 
+function renderRasterDeformOverlay(
+  context: CanvasRenderingContext2D,
+  view: Readonly<VectorTextViewState>,
+  node: Readonly<TransformSceneNode>,
+): void {
+  if (!isRasterLayerTransformNode(node) || node.mode === "affine") return;
+  const points = sceneRasterDeformCanvasPoints(view, node);
+  const size = rasterDeformGridSize(node.mode, node.gridSize);
+  if (points.length !== size * size) return;
+  const backingPerCssPixel = view.canvasWidth / Math.max(1, view.cssWidth);
+  const lineWidth = Math.max(1, 1.25 * backingPerCssPixel);
+  const handleRadius = SCENE_TRANSFORM_HANDLE_RADIUS_CSS_PX * backingPerCssPixel;
+  const bezierHandleRadius = Math.max(3, 5 * backingPerCssPixel);
+  const bezierHandles = node.mode === "warp"
+    ? sceneRasterWarpBezierCanvasHandles(view, node)
+    : [];
+  context.save();
+  context.strokeStyle = node.mode === "perspective" ? "#ffb06f" : "#8d9aff";
+  context.fillStyle = "#f7f8ff";
+  context.lineWidth = lineWidth;
+  context.setLineDash([]);
+  context.beginPath();
+  if (node.mode === "warp") {
+    const steps = (size - 1) * RASTER_WARP_RENDER_SUBDIVISIONS;
+    const sample = rasterWarpSurfaceSampler(points, size, bezierHandles);
+    for (let row = 0; row < size; row += 1) {
+      for (let step = 0; step <= steps; step += 1) {
+        const point = sample(step / steps, row / (size - 1));
+        if (step === 0) context.moveTo(point.x, point.y);
+        else context.lineTo(point.x, point.y);
+      }
+    }
+    for (let column = 0; column < size; column += 1) {
+      for (let step = 0; step <= steps; step += 1) {
+        const point = sample(column / (size - 1), step / steps);
+        if (step === 0) context.moveTo(point.x, point.y);
+        else context.lineTo(point.x, point.y);
+      }
+    }
+  } else {
+    for (let row = 0; row < size; row += 1) {
+      context.moveTo(points[row * size].x, points[row * size].y);
+      for (let column = 1; column < size; column += 1) {
+        const point = points[row * size + column];
+        context.lineTo(point.x, point.y);
+      }
+    }
+    for (let column = 0; column < size; column += 1) {
+      context.moveTo(points[column].x, points[column].y);
+      for (let row = 1; row < size; row += 1) {
+        const point = points[row * size + column];
+        context.lineTo(point.x, point.y);
+      }
+    }
+  }
+  context.stroke();
+  if (node.mode === "warp" && bezierHandles.length === 8) {
+    context.strokeStyle = "rgba(77, 131, 255, 0.78)";
+    context.lineWidth = Math.max(lineWidth, 1.5 * backingPerCssPixel);
+    context.beginPath();
+    for (let index = 0; index < bezierHandles.length; index += 1) {
+      const anchor = points[rasterWarpBezierHandleAnchorIndex(size, index)];
+      const handle = bezierHandles[index];
+      context.moveTo(anchor.x, anchor.y);
+      context.lineTo(handle.x, handle.y);
+    }
+    context.stroke();
+    for (const handle of bezierHandles) {
+      context.fillStyle = "#4d83ff";
+      context.strokeStyle = "#f7f8ff";
+      context.lineWidth = Math.max(lineWidth, 1.25 * backingPerCssPixel);
+      context.beginPath();
+      context.arc(handle.x, handle.y, bezierHandleRadius, 0, Math.PI * 2);
+      context.fill();
+      context.stroke();
+    }
+  }
+  for (let index = 0; index < points.length; index += 1) {
+    const point = points[index];
+    const row = Math.floor(index / size);
+    const column = index % size;
+    const corner = (row === 0 || row === size - 1)
+      && (column === 0 || column === size - 1);
+    if (corner || node.mode === "perspective") {
+      context.save();
+      context.fillStyle = "#ffffff";
+      context.strokeStyle = node.mode === "perspective" ? "#ff8b43" : "#4d83ff";
+      context.lineWidth = Math.max(lineWidth, 2 * backingPerCssPixel);
+      context.beginPath();
+      context.rect(
+        point.x - handleRadius,
+        point.y - handleRadius,
+        handleRadius * 2,
+        handleRadius * 2,
+      );
+      context.fill();
+      context.stroke();
+      context.restore();
+    } else {
+      context.beginPath();
+      context.arc(point.x, point.y, handleRadius * 0.42, 0, Math.PI * 2);
+      context.fill();
+      context.stroke();
+    }
+  }
+  context.restore();
+}
+
 export interface RenderSceneInteractionOverlayOptions {
   readonly context: CanvasRenderingContext2D;
   readonly view: Readonly<VectorTextViewState>;
@@ -209,6 +384,14 @@ export function renderSceneInteractionOverlay(
     && options.distortEditingNodeId === node.id
   ) {
     renderDistortOverlay(context, view, node);
+    return;
+  }
+  if (
+    isRasterLayerTransformNode(node)
+    && node.scope === "layer"
+    && node.mode !== "affine"
+  ) {
+    renderRasterDeformOverlay(context, view, node);
     return;
   }
   const corners = sceneOverlayCorners(options.bounds, node, view);

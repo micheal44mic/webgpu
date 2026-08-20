@@ -73,6 +73,8 @@ export function copyTransformNode(node: Readonly<TransformSceneNode>): Transform
   return isRasterLayerTransformNode(node)
     ? {
       ...node,
+      controlPoints: node.controlPoints.map((point) => ({ ...point })),
+      bezierHandles: node.bezierHandles.map((point) => ({ ...point })),
       sourceBounds: { ...node.sourceBounds },
       resultBounds: node.resultBounds ? { ...node.resultBounds } : null,
     }

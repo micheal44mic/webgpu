@@ -1662,7 +1662,15 @@
               </p>
             </section>
 
-            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="transform" hidden>
+            <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="transform warp perspective" hidden>
+              <div class="mobile-tool-settings-field" data-raster-transform-grid-controls hidden>
+                <span>Warp grid</span>
+                <div class="mobile-tool-segmented" role="group" aria-label="Warp grid size">
+                  <button type="button" data-raster-transform-grid="3" aria-pressed="true">3×3</button>
+                  <button type="button" data-raster-transform-grid="4" aria-pressed="false">4×4</button>
+                  <button type="button" data-raster-transform-grid="5" aria-pressed="false">5×5</button>
+                </div>
+              </div>
               <p id="mobileTransformHint" class="mobile-tool-settings-status">
                 Select content on the canvas, then drag it to transform.
               </p>
@@ -2127,6 +2135,38 @@
                     <i data-lucide="scaling" class="mobile-icon-layer mobile-icon-face"></i>
                   </span>
                   <span class="mobile-tools-item-label">Transform</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-canvas-tool="warp"
+                  data-mobile-tool-sheet="warp"
+                  data-mobile-tool-search="warp deforma deformazione griglia fluida smooth procreate"
+                  aria-label="Open Warp settings"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="grid-3-x-3" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="grid-3-x-3" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Warp</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-canvas-tool="perspective"
+                  data-mobile-tool-sheet="perspective"
+                  data-mobile-tool-search="prospettiva perspective angoli quadrilatero distorsione"
+                  aria-label="Open Perspective settings"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="move-diagonal-2" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="move-diagonal-2" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Perspective</span>
                 </button>
               </div>
             </section>
@@ -2602,6 +2642,11 @@
         </p>
         <div id="transformCommitBar" class="transform-commit-bar" role="toolbar" aria-label="Conferma trasformazione" hidden>
           <span id="transformCommitLabel">Trasforma</span>
+          <div class="raster-transform-grids" data-raster-transform-grid-controls hidden role="group" aria-label="Dimensione griglia Warp">
+            <button type="button" data-raster-transform-grid="3" aria-pressed="true">3×3</button>
+            <button type="button" data-raster-transform-grid="4" aria-pressed="false">4×4</button>
+            <button type="button" data-raster-transform-grid="5" aria-pressed="false">5×5</button>
+          </div>
           <button id="transformCancel" type="button">Annulla</button>
           <button id="transformApply" class="primary" type="button">Applica</button>
         </div>

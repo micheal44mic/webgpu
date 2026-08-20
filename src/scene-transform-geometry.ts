@@ -54,6 +54,26 @@ export function scenePointInConvexPolygon(
   return true;
 }
 
+/** Even/odd hit test for concave Warp boundaries. */
+export function scenePointInPolygon(
+  point: ScenePoint,
+  polygon: readonly ScenePoint[],
+): boolean {
+  if (polygon.length < 3) return false;
+  let inside = false;
+  for (let current = 0, previous = polygon.length - 1;
+    current < polygon.length;
+    previous = current, current += 1) {
+    const first = polygon[current];
+    const second = polygon[previous];
+    const crosses = (first.y > point.y) !== (second.y > point.y)
+      && point.x < (second.x - first.x) * (point.y - first.y)
+        / (second.y - first.y) + first.x;
+    if (crosses) inside = !inside;
+  }
+  return inside;
+}
+
 export function scenePointToSegmentDistance(
   point: ScenePoint,
   start: ScenePoint,

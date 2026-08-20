@@ -3,6 +3,7 @@ import type { BrushSettings } from "./engine-types";
 import type { MobileTextWarpMode, MobileToolSettingsKind } from "./mobile-tool-settings-sheet";
 import type { SelectionCombineMode, SelectionMethod } from "./selection-core";
 import type { CanvasInputTool } from "./canvas-input-controller";
+import type { RasterTransformMode } from "./raster-deform-math";
 
 export type CanvasToolEnginePort = Pick<
   BrushEngine,
@@ -21,7 +22,7 @@ export interface CanvasToolSelectionSettingsPort {
 }
 
 export interface CanvasToolVectorPort {
-  setTransformToolActive(active: boolean): void;
+  setTransformToolActive(active: boolean, mode?: RasterTransformMode): void;
   isSelectedTextDistortEditing(): boolean;
   startSelectedTextDistortEditing(): boolean;
   stopSelectedTextDistortEditing(): void;
@@ -149,7 +150,12 @@ export class CanvasToolController {
     const fill = tool === "fill";
     const pan = tool === "pan";
     const selection = tool === "selection";
-    const transform = tool === "transform";
+    const transformMode: RasterTransformMode = tool === "warp"
+      ? "warp"
+      : tool === "perspective"
+        ? "perspective"
+        : "affine";
+    const transform = tool === "transform" || tool === "warp" || tool === "perspective";
     const liquify = tool === "liquify";
     if (!selection) this.options.cancelKeyboardSelectionGesture(true);
     if (!fill && !pan && !selection && !transform && !liquify) {
@@ -160,7 +166,7 @@ export class CanvasToolController {
       );
     }
     this.syncSelectionKeyboardUi();
-    this.options.getVectorController()?.setTransformToolActive(transform);
+    this.options.getVectorController()?.setTransformToolActive(transform, transformMode);
     this.options.syncBrushSettings(this.options.brushSettings.snapshot());
     this.options.syncQuickControls();
     if (!this.options.isEngineReady()) return;
@@ -194,15 +200,34 @@ export class CanvasToolController {
   }
 
   async finishTransformToolOnSheetClose(kind: MobileToolSettingsKind): Promise<void> {
-    if (kind !== "transform" && kind !== "text-warp") return;
+    if (
+      kind !== "transform"
+      && kind !== "warp"
+      && kind !== "perspective"
+      && kind !== "text-warp"
+    ) return;
     const controller = this.options.getVectorController();
     if (controller && !await controller.applyTransform()) return;
     if (kind === "text-warp") controller?.stopSelectedTextDistortEditing();
     this.textDistortReturnTool = null;
     const nextKind = this.options.getOpenToolSettingsKind();
-    const nextKeepsTransform = nextKind === "transform" || nextKind === "text-warp";
-    if (nextKeepsTransform) return;
-    const targetTool = this.activeCanvasTool === "transform" ? "paint" : this.activeCanvasTool;
+    const nextKeepsTransform = nextKind === "transform"
+      || nextKind === "warp"
+      || nextKind === "perspective"
+      || nextKind === "text-warp";
+    if (nextKeepsTransform) {
+      const mode: RasterTransformMode = this.activeCanvasTool === "warp"
+        ? "warp"
+        : this.activeCanvasTool === "perspective"
+          ? "perspective"
+          : "affine";
+      controller?.setTransformToolActive(true, mode);
+      return;
+    }
+    const activeIsTransform = this.activeCanvasTool === "transform"
+      || this.activeCanvasTool === "warp"
+      || this.activeCanvasTool === "perspective";
+    const targetTool = activeIsTransform ? "paint" : this.activeCanvasTool;
     this.select(targetTool, true);
   }
 

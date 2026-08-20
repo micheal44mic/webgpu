@@ -469,7 +469,7 @@ assert.match(controllerSource, /const rasterKeyboardMove = Boolean/);
 assert.match(controllerSource, /event\.shiftKey \? 10 : 1/);
 assert.match(
   controllerSource,
-  /setTransformToolActive\(active: boolean\): void \{[\s\S]{0,260}const latestSnapshot = this\.host\.getMixedSceneSnapshot\(\);[\s\S]{0,120}this\.syncScene\(latestSnapshot\);[\s\S]{0,120}this\.transformToolActive = active;/,
+  /setTransformToolActive\([\s\S]{0,100}active: boolean,[\s\S]{0,100}\): void \{[\s\S]{0,300}const latestSnapshot = this\.host\.getMixedSceneSnapshot\(\);[\s\S]{0,120}this\.syncScene\(latestSnapshot\);[\s\S]{0,120}this\.transformToolActive = active;/,
   "l'ingresso in Trasforma deve aggiornare la scena dopo l'ultimo gesto raster",
 );
 assert.match(

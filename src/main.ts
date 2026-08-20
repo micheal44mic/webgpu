@@ -40,10 +40,12 @@ import {
   Eye,
   EyeOff,
   Focus,
+  Grid3X3,
   Hand,
   House,
   Image as ImageIcon,
   Layers3,
+  MoveDiagonal2,
   PaintBucket,
   Palette,
   Pencil,
@@ -106,10 +108,12 @@ createIcons({
     Eye,
     EyeOff,
     Focus,
+    Grid3X3,
     Hand,
     House,
     Image: ImageIcon,
     Layers3,
+    MoveDiagonal2,
     PaintBucket,
     Palette,
     Pencil,
@@ -455,6 +459,7 @@ const engine = new BrushEngine(canvas, {
   },
   onPixelSelectionChange() {
     mobileToolSettingsSheet?.syncOpenState();
+    syncMobileToolsMenuState();
   },
   onMixedSceneChange(snapshot) {
     projectSessionController?.noteSceneSnapshot(snapshot);
@@ -943,6 +948,9 @@ function rasterEffectMenuEnabled(kind: EditorRasterEffectKind): boolean {
 function syncMobileToolsMenuState(
   sceneSnapshot = engineInitialized ? engine.getMixedSceneSnapshot() : null,
 ): void {
+  const selectedSceneItem = sceneSnapshot?.items.find(
+    (item) => item.key === sceneSnapshot.selectedKey,
+  );
   const selectedItem = selectedMobileVectorItem(sceneSnapshot);
   const selectedText = selectedItem?.kind === "text" ? selectedItem.textNode : null;
   const selectedSvg = selectedItem?.kind === "svg" ? selectedItem.svgNode : null;
@@ -978,6 +986,9 @@ function syncMobileToolsMenuState(
     vectorBlockShadowEnabled: selectedEffectNode?.blockShadowEnabled === true,
     rasterColorOverlayTargetSelected: engineInitialized
       && rasterStyleController.colorOverlayTargetIsSelected(),
+    rasterDeformTargetSelected: selectedSceneItem?.kind === "raster"
+      && selectedSceneItem.rasterHasContent
+      && engine.getPixelSelectionState().selectedPixels === 0,
     rasterEffectsEnabled: effectsEnabled,
   });
   rasterAdjustmentsController?.syncUi();

@@ -3102,10 +3102,30 @@ export class BrushEngine {
             ? {
               layerId: record.id,
               scope: this.activeRasterTransformSession.scope,
-              x: this.activeRasterTransformSession.sourcePivot.x
-                + this.activeRasterTransformSession.transform.translationX,
-              y: this.activeRasterTransformSession.sourcePivot.y
-                + this.activeRasterTransformSession.transform.translationY,
+              mode: this.activeRasterTransformSession.mode,
+              gridSize: this.activeRasterTransformSession.gridSize,
+              controlPoints: this.activeRasterTransformSession.controlPoints.map(
+                (point) => ({ ...point }),
+              ),
+              bezierHandles: this.activeRasterTransformSession.bezierHandles.map(
+                (point) => ({ ...point }),
+              ),
+              x: this.activeRasterTransformSession.mode === "affine"
+                ? this.activeRasterTransformSession.sourcePivot.x
+                  + this.activeRasterTransformSession.transform.translationX
+                : (() => {
+                  const points = this.activeRasterTransformSession!.controlPoints;
+                  const xs = points.map((point) => point.x);
+                  return (Math.min(...xs) + Math.max(...xs)) * 0.5;
+                })(),
+              y: this.activeRasterTransformSession.mode === "affine"
+                ? this.activeRasterTransformSession.sourcePivot.y
+                  + this.activeRasterTransformSession.transform.translationY
+                : (() => {
+                  const points = this.activeRasterTransformSession!.controlPoints;
+                  const ys = points.map((point) => point.y);
+                  return (Math.min(...ys) + Math.max(...ys)) * 0.5;
+                })(),
               scale: this.activeRasterTransformSession.transform.scale,
               rotation: this.activeRasterTransformSession.transform.rotation,
               sourceBounds: { ...this.activeRasterTransformSession.sourceBounds },

@@ -160,7 +160,10 @@ export interface MixedSceneHost {
   deleteRasterImageNode(id: number): Promise<Readonly<RasterImageNode>>;
   beginRasterLayerTransform(): Promise<RasterTransformSnapshot | null>;
   updateRasterLayerTransform(
-    update: Partial<Pick<RasterTransformSnapshot, "x" | "y" | "scale" | "rotation">>,
+    update: Partial<Pick<
+      RasterTransformSnapshot,
+      "x" | "y" | "scale" | "rotation" | "mode" | "gridSize" | "controlPoints" | "bezierHandles"
+    >>,
   ): RasterTransformSnapshot;
   nudgeRasterLayerTransform(deltaX: number, deltaY: number): RasterTransformSnapshot;
   commitRasterLayerTransform(): Promise<boolean>;

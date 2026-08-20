@@ -6,6 +6,8 @@ export const EDITOR_CANVAS_TOOLS = [
   "pan",
   "selection",
   "transform",
+  "warp",
+  "perspective",
 ] as const;
 
 export type EditorCanvasTool = (typeof EDITOR_CANVAS_TOOLS)[number];
@@ -14,6 +16,8 @@ export const EDITOR_TOOL_SETTINGS_KINDS = [
   "fill",
   "selection",
   "transform",
+  "warp",
+  "perspective",
   "svg-style",
   "text",
   "text-warp",
