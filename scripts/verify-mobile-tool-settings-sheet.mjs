@@ -101,7 +101,7 @@ for (const id of [
   "mobileSelectionSubtract",
   "mobileSelectionTolerance",
   "mobileSelectionColor",
-  "mobileSelectionColorApply",
+  "mobileSelectionInvert",
   "mobileSelectionClear",
   "mobileTransformCancel",
   "mobileTransformApply",
@@ -238,8 +238,10 @@ for (const action of [
   "setSelectionMethod",
   "setSelectionTolerance",
   "setSelectionColor",
+  "previewSelectionColor",
+  "finishSelectionColorPreview",
   "setSelectionCombineMode",
-  "applySelectionColor",
+  "invertSelection",
   "clearSelection",
   "applyTransform",
   "cancelTransform",
@@ -305,7 +307,7 @@ assert.match(
 );
 assert.doesNotMatch(
   controller,
-  /sourceControl<[^>]+>\("(?:fillColor|fillTolerance|selectionMethod|selectionTolerance|selectionColor|selectionReplace|selectionAdd|selectionSubtract|selectionColorApply|selectionClear)"\)/,
+  /sourceControl<[^>]+>\("(?:fillColor|fillTolerance|selectionMethod|selectionTolerance|selectionColor|selectionReplace|selectionAdd|selectionSubtract|selectionInvert|selectionClear)"\)/,
   "Fill and Selection must not read legacy controls",
 );
 assert.match(

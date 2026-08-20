@@ -897,6 +897,10 @@ pixelSelectionController = new PixelSelectionController({
   engine: {
     selectPixelsByColor: (color, tolerance, combineMode) =>
       engine.selectPixelsByColor(color, tolerance, combineMode),
+    previewPixelsByColor: (color, tolerance, combineMode) =>
+      engine.previewPixelsByColor(color, tolerance, combineMode),
+    finishColorRangeSelectionPreview: () => engine.finishColorRangeSelectionPreview(),
+    invertPixelSelection: () => engine.invertPixelSelection(),
     clearPixelSelection: () => engine.clearPixelSelection(),
   },
   isEngineReady: () => engineInitialized,
@@ -1211,7 +1215,8 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
   getSelectionSettings: () => {
     const selection = canvasToolSettingsController.selectionSnapshot();
     const state = engine.getPixelSelectionState();
-    const locked = interactionLocked();
+    const previewing = pixelSelectionController?.isColorRangePreviewBusy === true;
+    const locked = interactionLocked() && !previewing;
     const bounds = state.bounds
       ? ` · ${state.bounds.width.toLocaleString("en-US")}×`
         + state.bounds.height.toLocaleString("en-US")
@@ -1219,8 +1224,9 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
     return {
       ...selection,
       locked,
-      canApplyColor: !locked,
-      canClear: !locked,
+      previewing,
+      canInvert: !locked && !previewing && state.selectedPixels > 0,
+      canClear: !locked && !previewing && state.selectedPixels > 0,
       status: state.selectedPixels === 0
         ? "No pixels selected."
         : `${state.selectedPixels.toLocaleString("en-US")} pixels selected`
@@ -1236,10 +1242,16 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
   setSelectionColor: (color) => {
     canvasToolSettingsController.setSelectionColor(color);
   },
+  previewSelectionColor: () => {
+    pixelSelectionController?.requestColorRangePreview();
+  },
+  finishSelectionColorPreview: () => {
+    void pixelSelectionController?.finishColorRangePreview();
+  },
   hasSelectedText: () => selectedMobileTextNode() !== null,
   hasSelectedVectorEffectTarget: () => selectedMobileVectorItem() !== null,
   setSelectionCombineMode: (mode) => canvasToolController?.setSelectionCombineMode(mode),
-  applySelectionColor: () => { void pixelSelectionController?.applyColorRange(); },
+  invertSelection: () => { void pixelSelectionController?.invert(); },
   clearSelection: () => { void pixelSelectionController?.clear(); },
   applyTransform: () => mixedSceneController?.applyTransform(),
   cancelTransform: () => mixedSceneController?.cancelTransform(),
@@ -1378,6 +1390,7 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
     brushQuickControlsController?.syncVisibility();
   },
   onClose: (kind) => {
+    if (kind === "selection") void pixelSelectionController?.finishColorRangePreview();
     void canvasToolController?.finishTransformToolOnSheetClose(kind);
   },
 });
@@ -1571,6 +1584,7 @@ window.addEventListener("pagehide", () => {
   brushLibraryController.dispose();
   historyControlsController.dispose();
   runtimeStatsController?.dispose();
+  pixelSelectionController?.dispose();
 }, { once: true });
 
 function nonHistoryOperationLocked(allowDestructiveBlurEdit = false): boolean {

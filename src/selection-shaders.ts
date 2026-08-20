@@ -142,6 +142,17 @@ fn combineExternalMask(@builtin(global_invocation_id) global: vec3<u32>) {
 }
 
 @compute @workgroup_size(256, 1, 1)
+fn invertSelection(@builtin(global_invocation_id) global: vec3<u32>) {
+  let wordIndex = global.x;
+  if (wordIndex >= MASK_WORDS) { return; }
+  let wordX = wordIndex % WORDS_PER_ROW;
+  let validPixels = min(32u, LAYER_EXTENT.x - wordX * 32u);
+  var validMask = 0xffffffffu;
+  if (validPixels < 32u) { validMask = (1u << validPixels) - 1u; }
+  atomicStore(&selectionMask[wordIndex], ~externalMask[wordIndex] & validMask);
+}
+
+@compute @workgroup_size(256, 1, 1)
 fn translateExternalMask(@builtin(global_invocation_id) global: vec3<u32>) {
   let wordIndex = global.x;
   if (wordIndex >= MASK_WORDS) { return; }

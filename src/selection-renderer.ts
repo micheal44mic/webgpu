@@ -86,14 +86,17 @@ export class SelectionRenderer {
   private sourceSamplingView: GPUTextureView;
   private frontMask: GPUBuffer;
   private backMask: GPUBuffer;
+  private readonly colorPreviewBaseMask: GPUBuffer;
   private selectColorPipeline!: GPUComputePipeline;
   private lassoPipeline!: GPUComputePipeline;
   private combinePipeline!: GPUComputePipeline;
+  private invertPipeline!: GPUComputePipeline;
   private translatePipeline!: GPUComputePipeline;
   private summarizePipeline!: GPUComputePipeline;
   private overlayPipeline!: GPURenderPipeline;
   private overlayBindGroup!: GPUBindGroup;
   private publishedTileMask = new Uint32Array(SELECTION_TILE_MASK_WORDS);
+  private colorPreviewActive = false;
   private destroyed = false;
 
   private constructor(
@@ -115,6 +118,11 @@ export class SelectionRenderer {
     const maskUsage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
     this.frontMask = createBuffer("Selezione pixel · maschera front 1-bit", SELECTION_MASK_BYTES, maskUsage);
     this.backMask = createBuffer("Selezione pixel · maschera back 1-bit", SELECTION_MASK_BYTES, maskUsage);
+    this.colorPreviewBaseMask = createBuffer(
+      "Selezione pixel · base anteprima colore 1-bit",
+      SELECTION_MASK_BYTES,
+      maskUsage,
+    );
     this.operationUniformBuffer = createBuffer(
       "Selezione pixel · uniformi operazione",
       SELECTION_OPERATION_UNIFORM_BUFFER_BYTES,
@@ -213,6 +221,7 @@ export class SelectionRenderer {
       "selectGlobalColor",
       "rasterizeLassoSpans",
       "combineExternalMask",
+      "invertSelection",
       "translateExternalMask",
       "summarizeSelection",
     ].map((entryPoint) => this.device.createComputePipelineAsync({
@@ -224,6 +233,7 @@ export class SelectionRenderer {
       this.selectColorPipeline,
       this.lassoPipeline,
       this.combinePipeline,
+      this.invertPipeline,
       this.translatePipeline,
       this.summarizePipeline,
     ] = computePipelines;
@@ -261,6 +271,27 @@ export class SelectionRenderer {
     if (this.overlayCanvas.height !== nextHeight) this.overlayCanvas.height = nextHeight;
   }
 
+  beginColorRangePreview(): void {
+    this.assertAlive();
+    if (this.colorPreviewActive) return;
+    const encoder = this.device.createCommandEncoder({
+      label: "Selezione pixel · cattura base anteprima colore",
+    });
+    encoder.copyBufferToBuffer(
+      this.frontMask,
+      0,
+      this.colorPreviewBaseMask,
+      0,
+      SELECTION_MASK_BYTES,
+    );
+    this.device.queue.submit([encoder.finish()]);
+    this.colorPreviewActive = true;
+  }
+
+  finishColorRangePreview(): void {
+    this.colorPreviewActive = false;
+  }
+
   async selectGlobalColor(
     targetColor: readonly [number, number, number, number],
     tolerance: number,
@@ -272,7 +303,11 @@ export class SelectionRenderer {
     const bindGroup = this.createComputeBindGroup(this.backMask, this.placeholderBuffer);
     const startedAt = performance.now();
     const encoder = this.device.createCommandEncoder({ label: "Selezione pixel · colore globale" });
-    this.prepareBackMask(encoder, combineMode);
+    this.prepareBackMask(
+      encoder,
+      combineMode,
+      this.colorPreviewActive ? this.colorPreviewBaseMask : this.frontMask,
+    );
     const pass = encoder.beginComputePass({ label: "Selezione pixel · confronto colore" });
     pass.setBindGroup(0, bindGroup);
     pass.setPipeline(this.selectColorPipeline);
@@ -289,6 +324,7 @@ export class SelectionRenderer {
     combineMode: SelectionCombineMode,
   ): Promise<SelectionSummary> {
     this.assertAlive();
+    this.finishColorRangePreview();
     if (raster.packedSpans.byteLength > SELECTION_LASSO_SPAN_BUFFER_BYTES) {
       throw new RangeError("Gli span del lazo superano il buffer GPU preallocato.");
     }
@@ -319,6 +355,7 @@ export class SelectionRenderer {
     combineMode: SelectionCombineMode,
   ): Promise<SelectionSummary> {
     this.assertAlive();
+    this.finishColorRangePreview();
     this.writeOperationUniforms(combineMode, 0, 0, [0, 0, 0, 0]);
     this.initializeMetadata();
     const bindGroup = this.createComputeBindGroup(this.backMask, candidateMask);
@@ -336,8 +373,28 @@ export class SelectionRenderer {
     return this.submitReadPublish(encoder, startedAt);
   }
 
+  async invertSelection(): Promise<SelectionSummary> {
+    this.assertAlive();
+    this.finishColorRangePreview();
+    this.writeOperationUniforms("replace", 0, 0, [0, 0, 0, 0]);
+    this.initializeMetadata();
+    const bindGroup = this.createComputeBindGroup(this.backMask, this.frontMask);
+    const startedAt = performance.now();
+    const encoder = this.device.createCommandEncoder({ label: "Selezione pixel · inverti" });
+    const pass = encoder.beginComputePass({ label: "Selezione pixel · inversione e sommario" });
+    pass.setBindGroup(0, bindGroup);
+    pass.setPipeline(this.invertPipeline);
+    pass.dispatchWorkgroups(Math.ceil(SELECTION_MASK_WORDS / 256));
+    pass.setPipeline(this.summarizePipeline);
+    pass.dispatchWorkgroups(Math.ceil(SELECTION_MASK_WORDS / 256));
+    pass.end();
+    this.copyMetadataForReadback(encoder);
+    return this.submitReadPublish(encoder, startedAt);
+  }
+
   async translateSelection(deltaX: number, deltaY: number): Promise<SelectionSummary> {
     this.assertAlive();
+    this.finishColorRangePreview();
     const x = Math.round(deltaX);
     const y = Math.round(deltaY);
     this.writeOperationUniforms("replace", 0, 0, [x, y, 0, 0]);
@@ -366,6 +423,7 @@ export class SelectionRenderer {
     tileMask: Uint32Array,
   ): Promise<SelectionSummary> {
     this.assertAlive();
+    this.finishColorRangePreview();
     if (tileMask.length !== SELECTION_TILE_MASK_WORDS) {
       throw new Error("Tile mask della Selezione pixel storica non valida.");
     }
@@ -406,6 +464,7 @@ export class SelectionRenderer {
 
   clearSelection(): void {
     this.assertAlive();
+    this.finishColorRangePreview();
     const encoder = this.device.createCommandEncoder({ label: "Selezione pixel · deseleziona" });
     encoder.clearBuffer(this.backMask);
     this.device.queue.submit([encoder.finish()]);
@@ -460,6 +519,7 @@ export class SelectionRenderer {
     this.overlayCanvas.hidden = true;
     this.frontMask.destroy();
     this.backMask.destroy();
+    this.colorPreviewBaseMask.destroy();
     this.operationUniformBuffer.destroy();
     this.overlayUniformBuffer.destroy();
     this.lassoSpanBuffer.destroy();
@@ -512,11 +572,12 @@ export class SelectionRenderer {
   private prepareBackMask(
     encoder: GPUCommandEncoder,
     combineMode: SelectionCombineMode,
+    sourceMask: GPUBuffer = this.frontMask,
   ): void {
     if (combineMode === "replace") {
       encoder.clearBuffer(this.backMask);
     } else {
-      encoder.copyBufferToBuffer(this.frontMask, 0, this.backMask, 0, SELECTION_MASK_BYTES);
+      encoder.copyBufferToBuffer(sourceMask, 0, this.backMask, 0, SELECTION_MASK_BYTES);
     }
   }
 

@@ -36,7 +36,8 @@ export interface MobileSelectionSettingsSnapshot {
   readonly color: string;
   readonly combineMode: MobileSelectionCombineMode;
   readonly locked: boolean;
-  readonly canApplyColor: boolean;
+  readonly previewing: boolean;
+  readonly canInvert: boolean;
   readonly canClear: boolean;
   readonly status: string;
 }
@@ -68,10 +69,12 @@ export interface MobileToolSettingsSheetOptions {
   readonly setSelectionMethod: (method: MobileSelectionSettingsSnapshot["method"]) => void;
   readonly setSelectionTolerance: (tolerance: number) => void;
   readonly setSelectionColor: (color: string) => void;
+  readonly previewSelectionColor: () => void;
+  readonly finishSelectionColorPreview: () => void;
   readonly hasSelectedText: () => boolean;
   readonly hasSelectedVectorEffectTarget: () => boolean;
   readonly setSelectionCombineMode: (mode: MobileSelectionCombineMode) => void;
-  readonly applySelectionColor: () => void;
+  readonly invertSelection: () => void;
   readonly clearSelection: () => void;
   readonly applyTransform: () => void;
   readonly cancelTransform: () => void;
@@ -207,7 +210,7 @@ export class MobileToolSettingsSheetController {
   private readonly selectionToleranceOut: HTMLOutputElement;
   private readonly selectionColorControl: HTMLElement;
   private readonly selectionColor: HTMLInputElement;
-  private readonly selectionColorApply: HTMLButtonElement;
+  private readonly selectionInvert: HTMLButtonElement;
   private readonly selectionClear: HTMLButtonElement;
   private readonly selectionResult: HTMLElement;
   private readonly transformHint: HTMLElement;
@@ -336,7 +339,7 @@ export class MobileToolSettingsSheetController {
     this.selectionToleranceOut = requiredElement<HTMLOutputElement>(options.root, "mobileSelectionToleranceOut");
     this.selectionColorControl = requiredElement<HTMLElement>(options.root, "mobileSelectionColorControl");
     this.selectionColor = requiredElement<HTMLInputElement>(options.root, "mobileSelectionColor");
-    this.selectionColorApply = requiredElement<HTMLButtonElement>(options.root, "mobileSelectionColorApply");
+    this.selectionInvert = requiredElement<HTMLButtonElement>(options.root, "mobileSelectionInvert");
     this.selectionClear = requiredElement<HTMLButtonElement>(options.root, "mobileSelectionClear");
     this.selectionResult = requiredElement<HTMLElement>(options.root, "mobileSelectionResult");
     this.transformHint = requiredElement<HTMLElement>(options.root, "mobileTransformHint");
@@ -591,18 +594,36 @@ export class MobileToolSettingsSheetController {
           this.fillColor.value,
         );
       });
-      this.selectionTolerance.addEventListener(eventType, () => {
-        this.options.setSelectionTolerance(Number(this.selectionTolerance.value));
-        this.syncSelection();
-      });
-      this.selectionColor.addEventListener(eventType, () => {
-        this.options.setSelectionColor(this.selectionColor.value);
-        this.selectionColorControl.style.setProperty(
-          "--mobile-raster-effect-color",
-          this.selectionColor.value,
-        );
-      });
     }
+    const previewSelectionColor = (): void => {
+      if (this.selectionMethod.value === "color-range") {
+        this.options.previewSelectionColor();
+      }
+    };
+    this.selectionTolerance.addEventListener("input", () => {
+      this.options.setSelectionTolerance(Number(this.selectionTolerance.value));
+      previewSelectionColor();
+      this.syncSelection();
+    });
+    this.selectionTolerance.addEventListener("change", () => {
+      this.options.setSelectionTolerance(Number(this.selectionTolerance.value));
+      previewSelectionColor();
+      this.options.finishSelectionColorPreview();
+      this.syncSelection();
+    });
+    this.selectionColor.addEventListener("input", () => {
+      this.options.setSelectionColor(this.selectionColor.value);
+      this.selectionColorControl.style.setProperty(
+        "--mobile-raster-effect-color",
+        this.selectionColor.value,
+      );
+      previewSelectionColor();
+    });
+    this.selectionColor.addEventListener("change", () => {
+      this.options.setSelectionColor(this.selectionColor.value);
+      previewSelectionColor();
+      this.options.finishSelectionColorPreview();
+    });
     this.textValue.addEventListener("input", () => {
       this.updateTextProperties({ text: this.textValue.value });
     });
@@ -654,6 +675,7 @@ export class MobileToolSettingsSheetController {
       });
     }
     this.selectionMethod.addEventListener("change", () => {
+      this.options.finishSelectionColorPreview();
       this.options.setSelectionMethod(
         this.selectionMethod.value as MobileSelectionSettingsSnapshot["method"],
       );
@@ -714,13 +736,16 @@ export class MobileToolSettingsSheetController {
       [this.selectionSubtract, "subtract"],
     ] as const) {
       mobile.addEventListener("click", () => {
+        this.options.finishSelectionColorPreview();
         this.runAction(() => this.options.setSelectionCombineMode(mode));
       });
     }
-    this.selectionColorApply.addEventListener("click", () => {
-      this.runAction(() => this.options.applySelectionColor());
+    this.selectionInvert.addEventListener("click", () => {
+      this.options.finishSelectionColorPreview();
+      this.runAction(() => this.options.invertSelection());
     });
     this.selectionClear.addEventListener("click", () => {
+      this.options.finishSelectionColorPreview();
       this.runAction(() => this.options.clearSelection());
     });
     this.transformCancel.addEventListener("click", () => {
@@ -849,7 +874,7 @@ export class MobileToolSettingsSheetController {
   private syncSelection(): void {
     const snapshot = this.options.getSelectionSettings();
     this.selectionMethod.value = snapshot.method;
-    this.selectionMethod.disabled = snapshot.locked;
+    this.selectionMethod.disabled = snapshot.locked || snapshot.previewing;
     this.selectionTolerance.value = String(snapshot.tolerance);
     this.selectionTolerance.disabled = snapshot.locked;
     this.selectionToleranceOut.value = `${snapshot.tolerance}/255`;
@@ -864,16 +889,15 @@ export class MobileToolSettingsSheetController {
     this.selectionToleranceControl.hidden = lasso;
     this.selectionToleranceHint.hidden = lasso;
     this.selectionColorControl.hidden = !colorRange;
-    this.selectionColorApply.hidden = !colorRange;
     for (const [mobile, mode] of [
       [this.selectionReplace, "replace"],
       [this.selectionAdd, "add"],
       [this.selectionSubtract, "subtract"],
     ] as const) {
       mobile.setAttribute("aria-pressed", String(snapshot.combineMode === mode));
-      mobile.disabled = snapshot.locked;
+      mobile.disabled = snapshot.locked || snapshot.previewing;
     }
-    this.selectionColorApply.disabled = !snapshot.canApplyColor;
+    this.selectionInvert.disabled = !snapshot.canInvert || snapshot.previewing;
     this.selectionClear.disabled = !snapshot.canClear;
     this.selectionResult.textContent = snapshot.status;
   }

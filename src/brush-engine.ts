@@ -641,6 +641,8 @@ import {
   bindPaintPipelineWithPixelSelection,
   capturePaintSelectionHistoryMask,
   clipPaintDirtyRectToPixelSelection,
+  finishColorRangeSelectionPreview,
+  invertPixelSelection,
   renderPixelSelectionOverlay,
   releasePaintSelectionHistoryMask,
   resetPixelSelectionState,
@@ -3233,6 +3235,18 @@ export class BrushEngine {
     return selectPixelsByColor(this, color, tolerance, combineMode);
   }
 
+  previewPixelsByColor(
+    color: string,
+    tolerance: number,
+    combineMode: SelectionCombineMode,
+  ): Promise<SelectionOperationResult | null> {
+    return selectPixelsByColor(this, color, tolerance, combineMode, true);
+  }
+
+  finishColorRangeSelectionPreview(): void {
+    finishColorRangeSelectionPreview(this);
+  }
+
   selectPixelsByClientLasso(
     clientPoints: readonly SelectionPoint[],
     combineMode: SelectionCombineMode,
@@ -3242,6 +3256,10 @@ export class BrushEngine {
 
   clearPixelSelection(): Promise<boolean> {
     return clearPixelSelection(this);
+  }
+
+  invertPixelSelection(): Promise<boolean> {
+    return invertPixelSelection(this);
   }
 
   getPixelSelectionState(): PixelSelectionState {

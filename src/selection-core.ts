@@ -13,7 +13,7 @@ import {
 } from "./color-match-core.ts";
 
 export const PIXEL_SELECTION_MASK_STRATEGY =
-  "document-wide-gpu-r32-bitmask-replace-add-subtract-v1" as const;
+  "document-wide-gpu-r32-bitmask-replace-add-subtract-invert-live-color-v2" as const;
 export const MAGIC_WAND_SELECTION_STRATEGY =
   "fill-ccl-reused-4-connected-color-family-contrast-capped-v2" as const;
 export const COLOR_RANGE_SELECTION_STRATEGY =
@@ -89,7 +89,7 @@ export const SELECTION_META_MAX_Y = 4;
 export const SELECTION_META_TILE_MASK_START = 5;
 
 export const SELECTION_RESIDENT_BUFFER_BYTES =
-  SELECTION_MASK_BYTES * 2
+  SELECTION_MASK_BYTES * 3
   + SELECTION_LASSO_SPAN_BUFFER_BYTES
   + SELECTION_METADATA_BUFFER_BYTES
   + SELECTION_METADATA_BUFFER_BYTES

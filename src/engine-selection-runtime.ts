@@ -379,6 +379,9 @@ export async function setSelectionToolSelected(
 ): Promise<boolean> {
   const method = normalizeSelectionMethod(requestedMethod);
   if (engine.selectionBusy) return false;
+  if (!selected || engine.selectionMethod !== method) {
+    engine.selectionRenderer?.finishColorRangePreview();
+  }
   if (selected) cancelSelectionRendererRelease(engine);
   engine.selectionToolSelected = selected;
   engine.selectionMethod = method;
@@ -563,6 +566,7 @@ export async function selectPixelsByColor(
   color: string,
   tolerance: number,
   requestedCombineMode: SelectionCombineMode,
+  livePreview = false,
 ): Promise<SelectionOperationResult | null> {
   if (!selectionOperationAllowed(engine) || !requireRasterSelectionSource(engine)) return null;
   const combineMode = normalizeSelectionCombineMode(requestedCombineMode);
@@ -573,6 +577,8 @@ export async function selectPixelsByColor(
   try {
     await engine.waitForIdle();
     const renderer = await ensureSelectionRenderer(engine);
+    if (livePreview) renderer.beginColorRangePreview();
+    else renderer.finishColorRangePreview();
     renderer.setSourceSamplingView(engine.layerSamplingView);
     const summary = await renderer.selectGlobalColor(
       target,
@@ -590,12 +596,17 @@ export async function selectPixelsByColor(
       totalMs,
     };
   } catch (error) {
+    if (livePreview) engine.selectionRenderer?.finishColorRangePreview();
     const message = error instanceof Error ? error.message : String(error);
     engine.callbacks.onStatus?.(`Selezione per colore fallita: ${message}`, "error");
     throw error;
   } finally {
     engine.selectionBusy = false;
   }
+}
+
+export function finishColorRangeSelectionPreview(engine: BrushEngine): void {
+  engine.selectionRenderer?.finishColorRangePreview();
 }
 
 export async function selectPixelsByClientLasso(
@@ -636,6 +647,35 @@ export async function selectPixelsByClientLasso(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     engine.callbacks.onStatus?.(`Lazo fallito: ${message}`, "error");
+    throw error;
+  } finally {
+    engine.selectionBusy = false;
+  }
+}
+
+export async function invertPixelSelection(engine: BrushEngine): Promise<boolean> {
+  if (
+    !selectionOperationAllowed(engine)
+    || engine.pixelSelectionState.selectedPixels === 0
+  ) return false;
+  const startedAt = performance.now();
+  engine.selectionBusy = true;
+  engine.callbacks.onStatus?.("Inversione Selezione pixel in corso…", "working");
+  try {
+    await engine.waitForIdle();
+    const renderer = await ensureSelectionRenderer(engine);
+    const summary = await renderer.invertSelection();
+    const state = publishSelectionState(engine, summary);
+    const totalMs = performance.now() - startedAt;
+    notifySelectionStatusBestEffort(
+      engine,
+      `Selezione invertita · ${selectionStatus(state, totalMs)}`,
+      "ok",
+    );
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    engine.callbacks.onStatus?.(`Inversione selezione fallita: ${message}`, "error");
     throw error;
   } finally {
     engine.selectionBusy = false;

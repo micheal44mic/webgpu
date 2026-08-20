@@ -44,7 +44,7 @@ import { readEngineSource } from "./engine-source.mjs";
 
 assert.equal(
   PIXEL_SELECTION_MASK_STRATEGY,
-  "document-wide-gpu-r32-bitmask-replace-add-subtract-v1",
+  "document-wide-gpu-r32-bitmask-replace-add-subtract-invert-live-color-v2",
 );
 assert.equal(
   MAGIC_WAND_SELECTION_STRATEGY,
@@ -72,8 +72,8 @@ assert.equal(SELECTION_MASK_BYTES, 2 * 1024 * 1024);
 assert.equal(SELECTION_LASSO_SPAN_BUFFER_BYTES, 1024 * 1024);
 assert.equal(SELECTION_MAX_LASSO_POINTS, 8_192);
 assert.equal(SELECTION_MAX_LASSO_SPANS, 65_536);
-assert(SELECTION_RESIDENT_BUFFER_BYTES >= 5 * 1024 * 1024);
-assert(SELECTION_RESIDENT_BUFFER_BYTES < 5.01 * 1024 * 1024);
+assert(SELECTION_RESIDENT_BUFFER_BYTES >= 7 * 1024 * 1024);
+assert(SELECTION_RESIDENT_BUFFER_BYTES < 7.01 * 1024 * 1024);
 
 assert.equal(normalizeSelectionTolerance(-1), 0);
 assert.equal(normalizeSelectionTolerance(0), 0);
@@ -217,6 +217,7 @@ for (const entryPoint of [
   "selectGlobalColor",
   "rasterizeLassoSpans",
   "combineExternalMask",
+  "invertSelection",
   "translateExternalMask",
   "summarizeSelection",
 ]) {
@@ -235,6 +236,7 @@ assert(shader.includes("let matches = globalStraightSrgbColorsMatch("));
 assert(!shader.includes("let delta = abs(source - uniforms.targetColor)"));
 assert(shader.includes("atomicOr(&selectionMask[wordIndex], candidate)"));
 assert(shader.includes("atomicAnd(&selectionMask[wordIndex], ~candidate)"));
+assert(shader.includes("~externalMask[wordIndex] & validMask"));
 assert(shader.includes("fn selectedInScreenPixel(screen: vec2<f32>) -> bool"));
 assert(shader.includes("screenToLayerFloat(screen + vec2<f32>(-0.5, -0.5))"));
 assert(shader.includes("selectionMetadata"));
@@ -248,9 +250,11 @@ assert.match(shader, /y \/ \$\{SELECTION_TILE_HEIGHT\}u/);
 assert.match(shader, /minX \/ \$\{SELECTION_TILE_WIDTH\}u/);
 assert.doesNotMatch(shader, /\bSELECTION_LAYER_SIZE\b|\bSELECTION_TILE_SIZE\b/);
 
-assert(renderer.includes("encoder.copyBufferToBuffer(this.frontMask, 0, this.backMask"));
+assert(renderer.includes("this.colorPreviewBaseMask"));
+assert(renderer.includes("this.colorPreviewActive ? this.colorPreviewBaseMask : this.frontMask"));
 assert(renderer.includes("encoder.clearBuffer(this.backMask)"));
 assert(renderer.includes("this.publishBackMask()"));
+assert(renderer.includes("async invertSelection()"));
 assert(renderer.includes("async translateSelection("));
 assert(renderer.includes('alphaMode: "premultiplied"'));
 assert(renderer.includes("this.overlayContext.getCurrentTexture().createView()"));
@@ -407,6 +411,7 @@ for (const id of [
   "mobileSelectionReplace",
   "mobileSelectionAdd",
   "mobileSelectionSubtract",
+  "mobileSelectionInvert",
   "mobileSelectionClear",
   "rasterSelectionOverlayCanvas",
   "rasterSelectionGestureCanvas",
@@ -419,6 +424,8 @@ assert(styles.includes('.mobile-tool-segmented button[aria-pressed="true"]'));
 assert(html.includes('id="gpuCanvas" tabindex="-1"'));
 assert(canvasTool.includes("canvasKeyboardEnabled ? 0 : -1"));
 assert(main.includes("canvasToolSettingsController.selectionSnapshot()"));
+assert(main.includes("requestColorRangePreview()"));
+assert(main.includes("engine.invertPixelSelection()"));
 assert(!main.includes('rangeValue("selectionTolerance")'));
 assert(canvasTool.includes('canvas.removeAttribute("aria-keyshortcuts")'));
 
