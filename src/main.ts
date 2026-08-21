@@ -165,15 +165,6 @@ if (!rasterSelectionGestureContextCandidate) {
 }
 const rasterSelectionGestureContext: CanvasRenderingContext2D =
   rasterSelectionGestureContextCandidate;
-const straightLinePreviewCanvas = element<HTMLCanvasElement>("straightLinePreviewCanvas");
-const straightLinePreviewContextCandidate = straightLinePreviewCanvas.getContext("2d", {
-  alpha: true,
-});
-if (!straightLinePreviewContextCandidate) {
-  throw new Error("Straight-line preview canvas is unavailable.");
-}
-const straightLinePreviewContext: CanvasRenderingContext2D =
-  straightLinePreviewContextCandidate;
 const appElement = element<HTMLElement>("app");
 const projectHomeButton = element<HTMLButtonElement>("projectHomeButton");
 const saveProjectButton = element<HTMLButtonElement>("saveProjectButton");
@@ -1558,8 +1549,6 @@ canvasInputController = new CanvasInputController({
     canvas,
     selectionGestureCanvas: rasterSelectionGestureCanvas,
     selectionGestureContext: rasterSelectionGestureContext,
-    straightLinePreviewCanvas,
-    straightLinePreviewContext,
     status: statusElement,
   },
   touchPaintIntentHoldEnabled,
@@ -1569,7 +1558,6 @@ canvasInputController = new CanvasInputController({
     ...canvasToolSettingsController.fillSnapshot(),
     color: brushSettingsController.snapshot().color,
   }),
-  getBrushSettings: () => brushSettingsController.snapshot(),
   getSelectionSettings: () => canvasToolSettingsController.selectionSnapshot(),
   getHistoryState: () => historyState,
   onHistoryState: (state) => {

@@ -1314,7 +1314,10 @@ export function ensureThicknessTailOverlayResources(engine: BrushEngine,
     label: `Predictive thickness tail ${width}×${height} ${engine.layerFormat}`,
     size: { width, height, depthOrArrayLayers: 1 },
     format: engine.layerFormat,
-    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    usage:
+      GPUTextureUsage.RENDER_ATTACHMENT
+      | GPUTextureUsage.TEXTURE_BINDING
+      | GPUTextureUsage.COPY_DST,
   });
   const view = texture.createView({ label: "Predictive thickness tail view" });
   const displayBindGroup = engine.device.createBindGroup({

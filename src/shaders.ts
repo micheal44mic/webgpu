@@ -1304,6 +1304,9 @@ fn tailActiveTexel(documentPixel: vec2<i32>) -> vec4<f32> {
     return permanentPaint;
   }
   let transientPaint = textureLoad(tailTexture, local, 0);
+  if (tail.compositionMode == 2u) {
+    return transientPaint;
+  }
   if (tail.compositionMode == 1u) {
     return vec4<f32>(
       permanentPaint.rgb + transientPaint.rgb,
@@ -1405,7 +1408,9 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
       vec2<f32>(1.0)
     );
     let transientPaint = sampleTailLayer(tailUv);
-    if (tail.compositionMode == 1u) {
+    if (tail.compositionMode == 2u) {
+      paint = transientPaint;
+    } else if (tail.compositionMode == 1u) {
       paint = vec4<f32>(
         permanentPaint.rgb + transientPaint.rgb,
         transientPaint.a + permanentPaint.a * (1.0 - transientPaint.a)

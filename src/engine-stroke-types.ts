@@ -53,6 +53,12 @@ export interface ActiveStroke {
   stabilizer: CausalFadedStrokeStabilizer | null;
   stabilizationUpdate: Readonly<StrokeStabilizationUpdate> | null;
   stabilizationCommittedInput: LayerPoint;
+  /**
+   * Mouse/Pencil Quick Line candidates render into a replacement preview
+   * surface. Their stamps are published to the authoritative layer and
+   * history only when the pointer is released.
+   */
+  deferredPreview: boolean;
 }
 
 export interface DirtyRect {
@@ -73,6 +79,9 @@ export interface ThicknessTailFrame {
   dirtyRect: DirtyRect;
   shapeOccupancySelection: ShapeOccupancySelection | null;
   grainActive: boolean;
+  originX: number;
+  originY: number;
+  replacement: boolean;
 }
 
 export interface StabilizationTailFrame {

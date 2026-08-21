@@ -9,6 +9,7 @@ const controllerSource = readFileSync(
   "utf8",
 );
 const engineSource = readFileSync(new URL("src/brush-engine.ts", root), "utf8");
+const shaderSource = readFileSync(new URL("src/shaders.ts", root), "utf8");
 
 assert.match(mainSource, /canvasInputController = new CanvasInputController\(\{/);
 assert.match(mainSource, /canvasInputController\?\.dispose\(\);/);
@@ -21,14 +22,28 @@ assert.match(controllerSource, /export type CanvasInputEnginePort = Pick</);
 assert.match(controllerSource, /\| "prepareStraightLineAdjustment"/);
 assert.match(controllerSource, /\| "commitStraightLineAdjustment"/);
 assert.match(controllerSource, /\| "cancelStraightLineAdjustment"/);
+assert.match(controllerSource, /\| "beginDeferredStroke"/);
+assert.match(controllerSource, /\| "updateStraightLineAdjustment"/);
 assert.match(engineSource, /async prepareStraightLineAdjustment\(/);
 assert.match(engineSource, /async commitStraightLineAdjustment\(/);
 assert.match(engineSource, /async cancelStraightLineAdjustment\(/);
 assert.match(engineSource, /await this\.waitForIdle\(\)/);
-assert.match(engineSource, /completedSource\?\.id !== sourceActionId/);
-assert.match(engineSource, /await this\.undo\(\)/);
-assert.match(engineSource, /await restoreSourceStroke\(\)/);
-assert.match(mainSource, /straightLinePreviewCanvas/);
+assert.match(engineSource, /beginDeferredStroke\(/);
+assert.match(engineSource, /prepareDeferredStrokePreviewFrame\(/);
+assert.match(engineSource, /compositionMode: 0 \| 1 \| 2/);
+assert.match(shaderSource, /tail\.compositionMode == 2u/);
+const quickLineEngine = engineSource.slice(
+  engineSource.indexOf("  async prepareStraightLineAdjustment("),
+  engineSource.indexOf("  cancelStrokeBeforeRender(): boolean"),
+);
+assert.doesNotMatch(quickLineEngine, /this\.undo\(|this\.redo\(/,
+  "Quick Line must not mutate the history cursor while the pointer is held");
+assert.match(quickLineEngine, /endingStroke\.deferredPreview = false;[\s\S]*this\.pendingStamps\.push/,
+  "the deferred geometry must become authoritative only from endStroke");
+assert.match(engineSource, /this\.activeStroke\?\.deferredPreview[\s\S]*this\.historyGpuStorage\.release\(capturedSlice\);[\s\S]*return;/,
+  "live Glaze preview batches must release, rather than record, their history payload");
+assert.doesNotMatch(mainSource, /straightLinePreviewCanvas/);
+assert.doesNotMatch(controllerSource, /straightLinePreviewCanvas|#58dcff/);
 assert.match(controllerSource, /private readonly runtime: CanvasInputRuntime/);
 assert.match(controllerSource, /new browser\.AbortController\(\)/);
 assert.match(mainSource, /mixedSceneController\?\.isBusy === true/);
@@ -244,16 +259,12 @@ function createHarness({ holdEnabled = true } = {}) {
   selectionGestureCanvas.height = 0;
   selectionGestureCanvas.hidden = true;
   const selectionGestureContext = new FakeSelectionContext();
-  const straightLinePreviewCanvas = new FakeCanvas();
-  straightLinePreviewCanvas.width = 0;
-  straightLinePreviewCanvas.height = 0;
-  straightLinePreviewCanvas.hidden = true;
-  const straightLinePreviewContext = new FakeSelectionContext();
   const status = new FakeElement();
   const calls = {
     beginStroke: [],
     extendStroke: [],
     prepareStraightLine: [],
+    updateStraightLine: [],
     commitStraightLine: [],
     cancelStraightLine: 0,
     endStroke: [],
@@ -299,10 +310,18 @@ function createHarness({ holdEnabled = true } = {}) {
       calls.beginStroke.push(sample);
       return beginStrokeAllowed;
     },
+    beginDeferredStroke(sample) {
+      calls.beginStroke.push(sample);
+      return beginStrokeAllowed;
+    },
     extendStroke(samples) { calls.extendStroke.push(samples); },
-    prepareStraightLineAdjustment(signal) {
-      calls.prepareStraightLine.push({ signal });
+    prepareStraightLineAdjustment(samples, signal) {
+      calls.prepareStraightLine.push({ samples, signal });
       return Promise.resolve(prepareStraightLineAllowed && !signal?.aborted);
+    },
+    updateStraightLineAdjustment(samples) {
+      calls.updateStraightLine.push(samples);
+      return true;
     },
     commitStraightLineAdjustment(samples) {
       calls.commitStraightLine.push(samples);
@@ -362,21 +381,12 @@ function createHarness({ holdEnabled = true } = {}) {
       canvas,
       selectionGestureCanvas,
       selectionGestureContext,
-      straightLinePreviewCanvas,
-      straightLinePreviewContext,
       status,
     },
     touchPaintIntentHoldEnabled: holdEnabled,
     getActiveTool: () => activeTool,
     getSelectionMethod: () => selectionMethod,
     getFillSettings: () => ({ tolerance: 17, color: "#123456" }),
-    getBrushSettings: () => ({
-      tool: activeTool,
-      color: "#111111",
-      size: 12,
-      opacity: 1,
-      flow: 1,
-    }),
     getSelectionSettings: () => ({ tolerance: 23, combineMode: "add" }),
     getHistoryState: historyState,
     onHistoryState: () => { calls.historyPublished += 1; },
@@ -400,8 +410,6 @@ function createHarness({ holdEnabled = true } = {}) {
     canvas,
     controller,
     selectionGestureCanvas,
-    straightLinePreviewCanvas,
-    straightLinePreviewContext,
     selectionPromises,
     setActiveTool(value) { activeTool = value; },
     setSelectionMethod(value) { selectionMethod = value; },
@@ -489,7 +497,12 @@ async function flushMicrotasks() {
   harness.browser.runTimers();
   await flushMicrotasks();
   assert.equal(harness.calls.prepareStraightLine.length, 1);
-  assert.equal(harness.straightLinePreviewCanvas.hidden, false);
+  assert.ok(harness.calls.updateStraightLine.length >= 1,
+    "la preview reale deve essere aggiornata dal renderer WebGPU");
+  assert.equal(harness.calls.endStroke.length, 0,
+    "Quick Line non deve chiudere il tratto né creare Undo durante la pressione");
+  assert.equal(harness.calls.commitStraightLine.length, 0,
+    "Quick Line deve restare una preview finché il puntatore è premuto");
   harness.canvas.dispatchEvent(makeEvent("pointermove", {
     pointerId: 90,
     clientX: 160,
@@ -498,6 +511,17 @@ async function flushMicrotasks() {
   }));
   assert.equal(harness.calls.extendStroke.length, 1,
     "durante la regolazione nessuna coda curva deve raggiungere il motore");
+  assert.deepEqual(
+    {
+      clientX: harness.calls.updateStraightLine.at(-1).at(-1).clientX,
+      clientY: harness.calls.updateStraightLine.at(-1).at(-1).clientY,
+    },
+    { clientX: 160, clientY: 90 },
+    "la punta deve aggiornare direttamente la geometria GPU reale",
+  );
+  assert.equal(harness.calls.endStroke.length, 0,
+    "anche dopo aver spostato la punta il tratto deve restare non committato");
+  assert.equal(harness.calls.commitStraightLine.length, 0);
   harness.canvas.dispatchEvent(makeEvent("pointerup", {
     pointerId: 90,
     clientX: 160,
@@ -526,11 +550,11 @@ async function flushMicrotasks() {
       * (committedLast.clientX - committedFirst.clientX);
     assert.ok(Math.abs(cross) < 1e-8);
   }
-  assert.equal(harness.straightLinePreviewCanvas.hidden, true);
   harness.controller.dispose();
 }
 
-// Erase uses the same adjustable geometry and an unmistakable cyan guide.
+// Erase uses the same adjustable geometry through the real GPU preview; no
+// artificial Canvas2D guide is involved.
 {
   const harness = createHarness();
   harness.setActiveTool("erase");
@@ -549,12 +573,7 @@ async function flushMicrotasks() {
   harness.browser.runTimers();
   await flushMicrotasks();
   assert.equal(harness.calls.prepareStraightLine.length, 1);
-  assert.ok(
-    harness.straightLinePreviewContext.strokes.some(({ strokeStyle }) => (
-      strokeStyle === "#58dcff"
-    )),
-    "la regolazione della gomma deve avere una guida visibile",
-  );
+  assert.ok(harness.calls.updateStraightLine.length >= 1);
   harness.canvas.dispatchEvent(makeEvent("pointermove", {
     pointerId: 94,
     clientX: 90,
@@ -614,6 +633,32 @@ async function flushMicrotasks() {
   );
   releasedDuringPrepare.controller.dispose();
 
+  const rejectedAfterRelease = createHarness();
+  rejectedAfterRelease.setPrepareStraightLineAllowed(false);
+  rejectedAfterRelease.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 97,
+    clientX: 20,
+    clientY: 30,
+    timeStamp: 330,
+  }));
+  rejectedAfterRelease.canvas.dispatchEvent(makeEvent("pointermove", {
+    pointerId: 97,
+    clientX: 150,
+    clientY: 31,
+    timeStamp: 340,
+  }));
+  rejectedAfterRelease.browser.runTimers();
+  rejectedAfterRelease.canvas.dispatchEvent(makeEvent("pointerup", {
+    pointerId: 97,
+    clientX: 150,
+    clientY: 31,
+    timeStamp: 350,
+  }));
+  await flushMicrotasks();
+  assert.deepEqual(rejectedAfterRelease.calls.endStroke, [350],
+    "a failed preparation after lift must still commit the original deferred stroke");
+  rejectedAfterRelease.controller.dispose();
+
   const canceled = createHarness();
   canceled.canvas.dispatchEvent(makeEvent("pointerdown", {
     pointerId: 96,
@@ -635,7 +680,6 @@ async function flushMicrotasks() {
   await flushMicrotasks();
   assert.equal(canceled.calls.cancelStraightLine, 1);
   assert.equal(canceled.calls.commitStraightLine.length, 0);
-  assert.equal(canceled.straightLinePreviewCanvas.hidden, true);
   canceled.controller.dispose();
 }
 

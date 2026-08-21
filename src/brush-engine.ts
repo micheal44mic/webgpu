@@ -467,6 +467,7 @@ import {
 import type {
   ActiveStroke,
   DirtyRect,
+  HeldThicknessStamp,
   PackedStampUpload,
   PendingBlendBatch,
   Stamp,
@@ -1532,9 +1533,19 @@ export class BrushEngine {
   private readonly stabilizationPreviewCurvePlanner = new CausalStrokeCurvePlanner();
   private readonly stabilizationPreviewStamps: Stamp[] = [];
   activeStroke: ActiveStroke | null = null;
+  deferredStrokePreview: {
+    readonly historyActionId: number;
+    readonly settings: BrushSettings;
+    stamps: Stamp[];
+  } | null = null;
   straightLineAdjustment: {
     readonly sourceActionId: number;
     readonly sourceTool: "paint" | "erase";
+    readonly sourceStamps: Stamp[];
+    readonly sourceHeldThicknessStamps: HeldThicknessStamp[];
+    readonly sourceSeedSequenceAfterStroke: number;
+    readonly sourceLastInput: LayerPoint;
+    readonly sourceStartedAtMs: number;
   } | null = null;
   seedSequence = 1;
 
@@ -3818,13 +3829,25 @@ export class BrushEngine {
     return this.beginStrokeAtLayer(this.toLayerPoint(sample));
   }
 
+  /**
+   * Starts a mouse/Pencil stroke in a presentation-only surface. This keeps
+   * both the authoritative layer and the Undo journal unchanged until lift,
+   * which lets Quick Line replace its geometry without an intermediate Undo.
+   */
+  beginDeferredStroke(sample: PointerSample): boolean {
+    if (this.settings.tool === "blend") {
+      return this.beginStroke(sample);
+    }
+    return this.beginStrokeAtLayer(this.toLayerPoint(sample), true);
+  }
+
   /** True only for short-lived setup that can safely retain one Pencil contact. */
   isPaintReadinessPending(): boolean {
     return this.initialized
       && (this.layerSwitchBusy || !this.currentBrushResourcesReady());
   }
 
-  beginStrokeAtLayer(point: LayerPoint): boolean {
+  beginStrokeAtLayer(point: LayerPoint, deferredPreview = false): boolean {
     // layerSwitchBusy is held across the switch's awaits, so a pointerdown
     // landing mid-switch cannot start a stroke on a half-swapped layer.
     const destructiveEdit = this.activeDestructiveRasterEditKind();
@@ -3973,6 +3996,7 @@ export class BrushEngine {
     this.adaptivePreviewForceStroke = tool === "paint"
       && ADAPTIVE_PREVIEW_FORCE
       && !lightGlazeSettings
+      && !deferredPreview
       && this.pixelSelectionState.selectedPixels === 0;
     const historyActionId = this.nextHistoryActionId;
     if (tool !== "blend") {
@@ -4068,6 +4092,7 @@ export class BrushEngine {
       // must never alias `lastInput`, which always remains the latest raw
       // pointer sample.
       stabilizationCommittedInput: { ...normalizedPoint },
+      deferredPreview,
     };
     if (stabilizer && this.activeStrokeProfile) {
       this.activeStrokeProfile.strokeStabilizationInputSamples += 1;
@@ -4075,6 +4100,13 @@ export class BrushEngine {
         this.activeStrokeProfile.strokeStabilizationMaximumTailPoints,
         stabilizationUpdate?.tailCount ?? 0,
       );
+    }
+    if (deferredPreview) {
+      this.deferredStrokePreview = {
+        historyActionId,
+        settings: { ...this.settings },
+        stamps: [],
+      };
     }
     if (lightGlazeSettings) {
       this.startLightGlazeSession(historyActionId, lightGlazeSettings);
@@ -4102,97 +4134,14 @@ export class BrushEngine {
     }
   }
 
-  /**
-   * Opens a revisionable Quick Line session. The freehand source is completed
-   * and replayed away, but remains the Redo candidate until the controller
-   * either commits the final line or cancels the adjustment.
-   */
-  async prepareStraightLineAdjustment(signal?: AbortSignal): Promise<boolean> {
-    const sourceStroke = this.activeStroke;
+  private resetDeferredStrokeGeometry(samples: readonly PointerSample[]): boolean {
+    const stroke = this.activeStroke;
+    const preview = this.deferredStrokePreview;
     if (
-      !sourceStroke
-      || sourceStroke.tool === "blend"
-      || this.straightLineAdjustment
-    ) {
-      return false;
-    }
-
-    const sourceActionId = sourceStroke.historyActionId;
-    const sourceTool = sourceStroke.tool;
-    let sourceUndone = false;
-
-    const restoreSourceStroke = async (): Promise<boolean> => {
-      if (!sourceUndone || this.activeStroke || this.straightLineAdjustment) return false;
-      const redoAction = this.historyActions[this.historyCursor];
-      if (redoAction?.id !== sourceActionId) return false;
-      const restored = await this.redo();
-      if (restored) sourceUndone = false;
-      return restored;
-    };
-
-    this.endStroke(sourceStroke.lastInput.timeMs);
-    try {
-      // Finishing stabilization or Glaze can enqueue one last batch. Undo must
-      // never race that batch back into the already rebuilt layer.
-      await this.waitForIdle();
-      if (signal?.aborted) return false;
-
-      const completedSource = this.historyActions[this.historyCursor - 1];
-      if (completedSource?.id !== sourceActionId) return false;
-      if (!await this.undo()) return false;
-      sourceUndone = true;
-
-      if (signal?.aborted || this.settings.tool !== sourceTool) {
-        await restoreSourceStroke();
-        return false;
-      }
-      this.straightLineAdjustment = { sourceActionId, sourceTool };
-      this.publishHistoryState();
-      this.callbacks.onStatus?.("Straight line ready: move the endpoint, then release.", "ok");
-      return true;
-    } catch (error) {
-      let restored = !sourceUndone;
-      if (sourceUndone && !this.activeStroke) {
-        try {
-          restored = await restoreSourceStroke();
-        } catch {
-          restored = false;
-        }
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      this.callbacks.onStatus?.(
-        restored
-          ? `Could not lock the straight line; the original stroke was kept. ${message}`
-          : `Could not safely finish the straight-line replacement. ${message}`,
-        "error",
-      );
-      return false;
-    }
-  }
-
-  async cancelStraightLineAdjustment(): Promise<boolean> {
-    const session = this.straightLineAdjustment;
-    if (!session || this.activeStroke) return false;
-    this.straightLineAdjustment = null;
-    const redoAction = this.historyActions[this.historyCursor];
-    if (redoAction?.id !== session.sourceActionId) {
-      this.publishHistoryState();
-      return false;
-    }
-    const restored = await this.redo();
-    this.publishHistoryState();
-    return restored;
-  }
-
-  /** Commits the last adjusted endpoint through the ordinary brush renderer. */
-  async commitStraightLineAdjustment(
-    samples: readonly PointerSample[],
-  ): Promise<boolean> {
-    const session = this.straightLineAdjustment;
-    if (!session || this.activeStroke) return false;
-    if (
-      samples.length < 2
-      || this.settings.tool !== session.sourceTool
+      !stroke
+      || !stroke.deferredPreview
+      || preview?.historyActionId !== stroke.historyActionId
+      || samples.length < 2
       || !samples.every((sample) => (
         Number.isFinite(sample.clientX)
         && Number.isFinite(sample.clientY)
@@ -4200,47 +4149,185 @@ export class BrushEngine {
         && Number.isFinite(sample.timeMs)
       ))
     ) {
-      await this.cancelStraightLineAdjustment();
       return false;
     }
 
-    const restoreSourceStroke = async (): Promise<boolean> => {
-      if (this.activeStroke) {
-        if (!this.cancelStrokeBeforeRender()) this.endStroke(samples.at(-1)?.timeMs);
+    const points = samples.map((sample) => this.toLayerPoint(sample));
+    const first = points[0];
+    if (usesStrokeGlazeRenderer(preview.settings)) {
+      this.pendingStamps = this.pendingStamps.filter(
+        (stamp) => stamp.historyActionId !== stroke.historyActionId,
+      );
+      if (this.lightGlazeSession?.historyActionId === stroke.historyActionId) {
+        this.abandonLightGlazeSession();
       }
-      const redoAction = this.historyActions[this.historyCursor];
-      if (redoAction?.id !== session.sourceActionId) return false;
-      return this.redo();
+      this.startLightGlazeSession(stroke.historyActionId, preview.settings);
+    }
+    this.seedSequence = stroke.seedSequenceBeforeStroke;
+    preview.stamps = [];
+    stroke.lastInput = { ...first };
+    stroke.startedAtMs = first.timeMs;
+    stroke.heldThicknessStamps = [];
+    stroke.heldThicknessHead = 0;
+    stroke.distanceSinceStamp = 0;
+    stroke.adaptiveSpacingPercent = stroke.adaptiveSpacingInitialPercent;
+    stroke.curvePlanner?.reset();
+    // A locked geometric line must keep its endpoint under the pointer. The
+    // freehand stabilizer is deliberately bypassed after shape recognition;
+    // pressure, taper, spacing, Shape and Grain continue through the exact
+    // ordinary stamp generator below.
+    stroke.stabilizer = null;
+    stroke.stabilizationUpdate = null;
+    stroke.stabilizationCommittedInput = { ...first };
+    emitStamp(this, first, 1, 0);
+    for (let index = 1; index < points.length; index += 1) {
+      this.appendPoint(points[index]);
+    }
+    this.displayDirty = true;
+    this.requestRender();
+    return true;
+  }
+
+  /**
+   * Locks the current deferred freehand into an adjustable line. No layer,
+   * history cursor or Undo entry is touched while the pointer remains down.
+   */
+  async prepareStraightLineAdjustment(
+    samples: readonly PointerSample[],
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const sourceStroke = this.activeStroke;
+    const preview = this.deferredStrokePreview;
+    if (
+      signal?.aborted
+      || !sourceStroke
+      || !sourceStroke.deferredPreview
+      || sourceStroke.tool === "blend"
+      || preview?.historyActionId !== sourceStroke.historyActionId
+      || this.straightLineAdjustment
+      || this.settings.tool !== sourceStroke.tool
+    ) {
+      return false;
+    }
+
+    const sourceActionId = sourceStroke.historyActionId;
+    if (sourceStroke.stabilizer) {
+      const finalGeometry = sourceStroke.stabilizer.finish();
+      for (let index = 1; index < finalGeometry.tailCount; index += 1) {
+        this.appendStabilizedMaturePoint(
+          finalGeometry.tailX[index],
+          finalGeometry.tailY[index],
+          finalGeometry.tailPressure[index],
+          finalGeometry.tailTimeMs[index],
+          sourceStroke,
+        );
+      }
+      sourceStroke.stabilizer = null;
+      sourceStroke.stabilizationUpdate = null;
+    }
+    // Freeze the exact freehand source before replacing its live accumulator.
+    // This snapshot is used only if Quick Line is cancelled.
+    releaseHeldThicknessStamps(
+      this,
+      Math.max(sourceStroke.lastInput.timeMs, performance.now()),
+      true,
+    );
+    this.straightLineAdjustment = {
+      sourceActionId,
+      sourceTool: sourceStroke.tool,
+      sourceStamps: preview.stamps.map((stamp) => ({ ...stamp })),
+      sourceHeldThicknessStamps: sourceStroke.heldThicknessStamps
+        .slice(sourceStroke.heldThicknessHead)
+        .map((candidate) => ({
+          ...candidate,
+          stamp: { ...candidate.stamp },
+        })),
+      sourceSeedSequenceAfterStroke: this.seedSequence,
+      sourceLastInput: { ...sourceStroke.lastInput },
+      sourceStartedAtMs: sourceStroke.startedAtMs,
     };
 
+    if (signal?.aborted || !this.resetDeferredStrokeGeometry(samples)) {
+      this.straightLineAdjustment = null;
+      return false;
+    }
+    this.publishHistoryState();
+    this.callbacks.onStatus?.("Straight line ready: move the endpoint, then release.", "ok");
+    return true;
+  }
+
+  updateStraightLineAdjustment(samples: readonly PointerSample[]): boolean {
+    const session = this.straightLineAdjustment;
+    if (
+      !session
+      || this.settings.tool !== session.sourceTool
+      || this.activeStroke?.historyActionId !== session.sourceActionId
+    ) {
+      return false;
+    }
+    return this.resetDeferredStrokeGeometry(samples);
+  }
+
+  async cancelStraightLineAdjustment(): Promise<boolean> {
+    const session = this.straightLineAdjustment;
+    const stroke = this.activeStroke;
+    const preview = this.deferredStrokePreview;
+    if (
+      !session
+      || !stroke
+      || !stroke.deferredPreview
+      || stroke.historyActionId !== session.sourceActionId
+      || preview?.historyActionId !== session.sourceActionId
+    ) {
+      return false;
+    }
+
     this.straightLineAdjustment = null;
+    preview.stamps = session.sourceStamps.map((stamp) => ({ ...stamp }));
+    stroke.heldThicknessStamps = session.sourceHeldThicknessStamps.map((candidate) => ({
+      ...candidate,
+      stamp: { ...candidate.stamp },
+    }));
+    stroke.heldThicknessHead = 0;
+    stroke.stabilizer = null;
+    stroke.stabilizationUpdate = null;
+    stroke.lastInput = { ...session.sourceLastInput };
+    stroke.startedAtMs = session.sourceStartedAtMs;
+    this.seedSequence = session.sourceSeedSequenceAfterStroke;
+    this.endStroke(session.sourceLastInput.timeMs);
+    await this.waitForIdle();
+    this.publishHistoryState();
+    return true;
+  }
+
+  /** Commits the last adjusted endpoint as the gesture's only Undo action. */
+  async commitStraightLineAdjustment(
+    samples: readonly PointerSample[],
+  ): Promise<boolean> {
+    const session = this.straightLineAdjustment;
+    if (
+      !session
+      || this.settings.tool !== session.sourceTool
+      || this.activeStroke?.historyActionId !== session.sourceActionId
+      || !this.updateStraightLineAdjustment(samples)
+    ) {
+      if (session) await this.cancelStraightLineAdjustment();
+      return false;
+    }
+
     const lastSample = samples[samples.length - 1];
+    this.straightLineAdjustment = null;
     try {
-      if (!this.beginStroke(samples[0])) {
-        await restoreSourceStroke();
-        this.publishHistoryState();
-        return false;
-      }
-      this.extendStroke(samples.slice(1));
       this.endStroke(lastSample.timeMs);
       await this.waitForIdle();
+      const committed = this.historyActions[this.historyCursor - 1];
+      if (committed?.id !== session.sourceActionId) return false;
       this.publishHistoryState();
       this.callbacks.onStatus?.("Straight line committed.", "ok");
       return true;
     } catch (error) {
-      let restored = false;
-      try {
-        restored = await restoreSourceStroke();
-      } catch {
-        restored = false;
-      }
       const message = error instanceof Error ? error.message : String(error);
-      this.callbacks.onStatus?.(
-        restored
-          ? `Could not commit the straight line; the original stroke was kept. ${message}`
-          : `Could not safely finish the straight-line commit. ${message}`,
-        "error",
-      );
+      this.callbacks.onStatus?.(`Could not commit the straight line: ${message}`, "error");
       this.publishHistoryState();
       return false;
     }
@@ -4301,6 +4388,44 @@ export class BrushEngine {
       const liftTime = Math.max(endingStroke.lastInput.timeMs, requestedLiftTime);
       releaseHeldThicknessStamps(this, liftTime, true);
     }
+    if (endingStroke?.deferredPreview) {
+      const preview = this.deferredStrokePreview;
+      if (preview?.historyActionId !== endingStroke.historyActionId) {
+        throw new Error("The deferred stroke preview no longer matches the active stroke.");
+      }
+      const deferredGlaze = usesStrokeGlazeRenderer(preview.settings);
+      endingStroke.deferredPreview = false;
+      this.deferredStrokePreview = null;
+      if (preview.stamps.length > 0) {
+        if (deferredGlaze) {
+          // The native Glaze accumulator contained only the live, disposable
+          // preview. Rebuild it from the final geometry now so the permanent
+          // layer and its single Undo payload are both created at pointer-up.
+          this.pendingStamps = this.pendingStamps.filter(
+            (stamp) => stamp.historyActionId !== endingStroke.historyActionId,
+          );
+          if (this.lightGlazeSession?.historyActionId === endingStroke.historyActionId) {
+            this.abandonLightGlazeSession();
+          }
+          this.startLightGlazeSession(endingStroke.historyActionId, preview.settings);
+        }
+        this.pendingStamps.push(...preview.stamps);
+      } else {
+        if (deferredGlaze) {
+          this.pendingStamps = this.pendingStamps.filter(
+            (stamp) => stamp.historyActionId !== endingStroke.historyActionId,
+          );
+          if (this.lightGlazeSession?.historyActionId === endingStroke.historyActionId) {
+            this.abandonLightGlazeSession();
+          }
+        }
+        releasePaintSelectionHistoryMask(this, endingStroke.historyActionId);
+      }
+      // Replace the temporary patch with the canonical layer in the same
+      // render cycle that publishes the final stamps and Undo action.
+      this.displayDirty = true;
+      this.requestRender();
+    }
     const historyChanged = endingStroke?.historyCommitted ?? false;
     if (
       endingStroke?.lightGlazeSettings
@@ -4333,6 +4458,14 @@ export class BrushEngine {
     }
 
     let removedStampCount = 0;
+    if (
+      stroke.deferredPreview
+      && this.deferredStrokePreview?.historyActionId === stroke.historyActionId
+    ) {
+      removedStampCount += this.deferredStrokePreview.stamps.length;
+      this.deferredStrokePreview = null;
+      this.straightLineAdjustment = null;
+    }
     this.pendingStamps = this.pendingStamps.filter((stamp) => {
       const belongsToStroke = stamp.historyActionId === stroke.historyActionId;
       if (belongsToStroke) {
@@ -4362,6 +4495,7 @@ export class BrushEngine {
     }
     this.invalidateAdaptivePreview();
     if (this.thicknessTailPresentedRect) {
+      this.presentationCacheNeedsFullRebuild = true;
       this.displayDirty = true;
       this.requestRender();
     }
@@ -4506,6 +4640,8 @@ export class BrushEngine {
     this.pendingStamps.length = 0;
     this.pendingBlendBatches.length = 0;
     this.activeStroke = null;
+    this.deferredStrokePreview = null;
+    this.straightLineAdjustment = null;
     this.abandonLightGlazeSession();
     this.invalidateAdaptivePreview();
     this.resetHistoryState();
@@ -9486,6 +9622,7 @@ export class BrushEngine {
     originX: number,
     originY: number,
     settings: BrushSettings,
+    compositionMode: 0 | 1 | 2 = settings.blendMode === "additive" ? 1 : 0,
   ): void {
     const floats = new Float32Array(this.thicknessTailDisplayUniformUpload);
     const unsigned = new Uint32Array(this.thicknessTailDisplayUniformUpload);
@@ -9494,7 +9631,7 @@ export class BrushEngine {
     floats[1] = originY;
     floats[2] = this.thicknessTailTextureWidth;
     floats[3] = this.thicknessTailTextureHeight;
-    unsigned[4] = settings.blendMode === "additive" ? 1 : 0;
+    unsigned[4] = compositionMode;
     this.device.queue.writeBuffer(
       this.thicknessTailDisplayUniformBuffer,
       0,
@@ -10001,6 +10138,91 @@ export class BrushEngine {
     return this.settings.blendMode === "normal" || this.settings.blendMode === "additive";
   }
 
+  private prepareDeferredStrokePreviewFrame(): ThicknessTailFrame | null {
+    const stroke = this.activeStroke;
+    const preview = this.deferredStrokePreview;
+    if (
+      !stroke
+      || !stroke.deferredPreview
+      || preview?.historyActionId !== stroke.historyActionId
+      || usesStrokeGlazeRenderer(preview.settings)
+    ) {
+      return null;
+    }
+
+    const settings = preview.settings;
+    const stamps = preview.stamps.slice();
+    if (stroke.thicknessTailHoldback) {
+      const referenceTimeMs = thicknessTailReferenceTimeMs(this);
+      for (
+        let index = stroke.heldThicknessHead;
+        index < stroke.heldThicknessStamps.length;
+        index += 1
+      ) {
+        const candidate = stroke.heldThicknessStamps[index];
+        const radius = endThicknessRadius(
+          candidate.baseRadius,
+          candidate.liveThicknessFactor,
+          stroke.thicknessSettings.endThickness,
+          Math.max(0, referenceTimeMs - candidate.timeMs),
+        );
+        if (Number.isFinite(radius) && radius > 0) {
+          stamps.push({ ...candidate.stamp, radius });
+        }
+      }
+    }
+    if (stamps.length === 0) return null;
+    if (stamps.length > MAX_STAMPS_PER_BATCH) {
+      throw new Error(
+        `Quick Line preview exceeds ${MAX_STAMPS_PER_BATCH.toLocaleString()} stamps.`,
+      );
+    }
+
+    const packed = this.packThicknessTailStamps(stamps, settings);
+    const dirtyRect = clipPaintDirtyRectToPixelSelection(this, packed.dirtyRect, null);
+    if (!dirtyRect) return null;
+    ensureThicknessTailOverlayResources(this, dirtyRect.width, dirtyRect.height);
+    const originX = clamp(
+      dirtyRect.x,
+      0,
+      Math.max(0, DOCUMENT_WIDTH - this.thicknessTailTextureWidth),
+    );
+    const originY = clamp(
+      dirtyRect.y,
+      0,
+      Math.max(0, DOCUMENT_HEIGHT - this.thicknessTailTextureHeight),
+    );
+    this.writeThicknessTailBrushUniforms(
+      settings,
+      this.thicknessTailTextureWidth,
+      this.thicknessTailTextureHeight,
+      originX,
+      originY,
+    );
+    // Mode 2 means that the patch already contains the permanent pixels and
+    // replaces them verbatim. This is what makes Erase a real live preview.
+    this.writeThicknessTailDisplayUniforms(originX, originY, settings, 2);
+    this.device.queue.writeBuffer(
+      this.thicknessTailInstanceBuffer,
+      0,
+      this.thicknessTailInstanceUpload,
+      0,
+      stamps.length * STAMP_STRIDE_BYTES,
+    );
+    return {
+      settings,
+      stamps,
+      dirtyRect,
+      shapeOccupancySelection: settings.shape === "shape"
+        ? this.selectShapeOccupancy(packed.minimumRadius)
+        : null,
+      grainActive: isTexturizedGrainActive(settings),
+      originX,
+      originY,
+      replacement: true,
+    };
+  }
+
   private prepareThicknessTailFrame(): ThicknessTailFrame | null {
     const stroke = this.activeStroke;
     if (!stroke || !this.thicknessTailPreviewEligible()) {
@@ -10068,6 +10290,9 @@ export class BrushEngine {
         ? this.selectShapeOccupancy(packed.minimumRadius)
         : null,
       grainActive: isTexturizedGrainActive(settings),
+      originX: packed.dirtyRect.x,
+      originY: packed.dirtyRect.y,
+      replacement: false,
     };
   }
 
@@ -10079,27 +10304,39 @@ export class BrushEngine {
     const isShape = settings.shape === "shape";
     const shapeOccupancyMip = frame.shapeOccupancySelection?.selectedMipLevel ?? null;
     const useShapeOccupancy = isShape && shapeOccupancyMip !== null;
-    const pipeline = frame.grainActive
-      ? isShape
-        ? useShapeOccupancy
-          ? settings.blendMode === "additive"
-            ? this.grainShapeOccupancyAdditivePipeline
-            : this.grainShapeOccupancyNormalPipeline
+    const pipeline = settings.tool === "erase"
+      ? frame.grainActive
+        ? isShape
+          ? useShapeOccupancy
+            ? this.grainShapeOccupancyErasePipeline
+            : this.grainShapeErasePipeline
+          : this.grainErasePipeline
+        : isShape
+          ? useShapeOccupancy
+            ? this.shapeOccupancyErasePipeline
+            : this.shapeErasePipeline
+          : this.erasePipeline
+      : frame.grainActive
+        ? isShape
+          ? useShapeOccupancy
+            ? settings.blendMode === "additive"
+              ? this.grainShapeOccupancyAdditivePipeline
+              : this.grainShapeOccupancyNormalPipeline
+            : settings.blendMode === "additive"
+              ? this.grainShapeAdditivePipeline
+              : this.grainShapeNormalPipeline
           : settings.blendMode === "additive"
-            ? this.grainShapeAdditivePipeline
-            : this.grainShapeNormalPipeline
-        : settings.blendMode === "additive"
-          ? this.grainAdditivePipeline
-          : this.grainNormalPipeline
-      : isShape
-        ? useShapeOccupancy
-          ? settings.blendMode === "additive"
-            ? this.shapeOccupancyAdditivePipeline
-            : this.shapeOccupancyNormalPipeline
-          : settings.blendMode === "additive"
-            ? this.shapeAdditivePipeline
-            : this.shapeNormalPipeline
-        : settings.blendMode === "additive" ? this.additivePipeline : this.normalPipeline;
+            ? this.grainAdditivePipeline
+            : this.grainNormalPipeline
+        : isShape
+          ? useShapeOccupancy
+            ? settings.blendMode === "additive"
+              ? this.shapeOccupancyAdditivePipeline
+              : this.shapeOccupancyNormalPipeline
+            : settings.blendMode === "additive"
+              ? this.shapeAdditivePipeline
+              : this.shapeNormalPipeline
+          : settings.blendMode === "additive" ? this.additivePipeline : this.normalPipeline;
     const bindGroup = frame.grainActive
       ? useShapeOccupancy
         ? this.thicknessTailGrainBrushOccupancyBindGroups[
@@ -10112,12 +10349,28 @@ export class BrushEngine {
         ? this.thicknessTailBrushOccupancyBindGroups[shapeOccupancyMip!]
         : this.thicknessTailBrushBindGroup;
 
+    if (frame.replacement) {
+      encoder.copyTextureToTexture(
+        {
+          texture: this.layerTexture,
+          origin: { x: frame.originX, y: frame.originY, z: 0 },
+        },
+        { texture: this.thicknessTailTexture! },
+        {
+          width: this.thicknessTailTextureWidth,
+          height: this.thicknessTailTextureHeight,
+          depthOrArrayLayers: 1,
+        },
+      );
+    }
     const pass = encoder.beginRenderPass({
-      label: "Rebuild predictive thickness tail",
+      label: frame.replacement
+        ? "Rebuild non-destructive Quick Line preview"
+        : "Rebuild predictive thickness tail",
       colorAttachments: [
         {
           view: this.thicknessTailView!,
-          loadOp: "clear",
+          loadOp: frame.replacement ? "load" : "clear",
           storeOp: "store",
           clearValue: { r: 0, g: 0, b: 0, a: 0 },
         },
@@ -10125,7 +10378,12 @@ export class BrushEngine {
     });
     bindPaintPipelineWithPixelSelection(this, pass, pipeline);
     pass.setBindGroup(0, bindGroup);
-    pass.setScissorRect(0, 0, frame.dirtyRect.width, frame.dirtyRect.height);
+    pass.setScissorRect(
+      frame.dirtyRect.x - frame.originX,
+      frame.dirtyRect.y - frame.originY,
+      frame.dirtyRect.width,
+      frame.dirtyRect.height,
+    );
     pass.draw(STAMP_VERTICES_PER_COPY, frame.stamps.length * settings.count, 0, 0);
     pass.end();
 
@@ -10492,6 +10750,16 @@ export class BrushEngine {
     }
     if (!capturedSlice) {
       throw new Error("The Paint history GPU payload is missing.");
+    }
+    if (
+      this.activeStroke?.deferredPreview
+      && this.activeStroke.historyActionId === actionId
+    ) {
+      // Glaze can use its native live accumulator during a deferred Quick Line
+      // candidate. Those preview batches are intentionally non-historical;
+      // the final geometry is rendered and captured once again at lift.
+      this.historyGpuStorage.release(capturedSlice);
+      return;
     }
     const expectedBytes = batch.length * STAMP_STRIDE_BYTES;
     if (capturedSlice.logicalBytes !== expectedBytes) {
@@ -12870,7 +13138,9 @@ export class BrushEngine {
     if (present) {
       ensurePresentationCacheTexture(this);
     }
-    const thicknessTailFrame = present ? this.prepareThicknessTailFrame() : null;
+    const thicknessTailFrame = present
+      ? this.prepareDeferredStrokePreviewFrame() ?? this.prepareThicknessTailFrame()
+      : null;
     if (thicknessTailFrame?.grainActive && !grainActive) {
       this.writeGrainUniforms(thicknessTailFrame.settings);
     }

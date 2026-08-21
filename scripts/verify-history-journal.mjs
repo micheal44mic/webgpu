@@ -697,7 +697,7 @@ const layerMerge = (
   assert(selectionRuntime.includes("engine.selectionHistoryMasksByRevision.get(revision)"));
   assert(selectionRuntime.includes("engine.selectionHistoryMasksByRevision.set(revision, snapshot)"));
   const beginStroke = brushEngine.slice(
-    brushEngine.indexOf("  beginStrokeAtLayer(point: LayerPoint): boolean"),
+    brushEngine.indexOf("  beginStrokeAtLayer(point: LayerPoint, deferredPreview = false): boolean"),
     brushEngine.indexOf("  extendStroke(samples: readonly PointerSample[]): void"),
   );
   assert(beginStroke.includes("return false;"));
@@ -764,9 +764,10 @@ const layerMerge = (
     canvasInput.indexOf("const handlePointerDown ="),
     canvasInput.indexOf("const handlePointerMove ="),
   );
+  const rejectedPaintBegin = canvasPointerDown.indexOf("if (!beganStroke)");
   assert(
-    canvasPointerDown.indexOf("if (!engine.beginStroke(paintSample))") >= 0
-      && canvasPointerDown.indexOf("if (!engine.beginStroke(paintSample))")
+    rejectedPaintBegin >= 0
+      && rejectedPaintBegin
         < canvasPointerDown.lastIndexOf("canvas.setPointerCapture(event.pointerId)"),
     "Un begin Paint rifiutato non deve acquisire il puntatore né simulare uno stroke attivo.",
   );

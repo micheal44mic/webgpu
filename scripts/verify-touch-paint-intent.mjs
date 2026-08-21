@@ -74,8 +74,8 @@ assert.match(
 );
 assert.match(
   canvasInputSource,
-  /const holdPaintIntent = paintSample !== null && shouldHoldTouchPaintIntent\([\s\S]*?event\.pointerType,[\s\S]*?activeTool,[\s\S]*?\);[\s\S]*?if \(paintSample && !holdPaintIntent\) \{[\s\S]*?if \(!engine\.beginStroke\(paintSample\)\)[\s\S]*?pointerMode === "paint" && paintSample && holdPaintIntent[\s\S]*?startTouchPaintIntentHold\(event\.pointerId, paintSample\);/,
-  "only eligible touch Paint input may leave the immediate, acknowledged beginStroke path",
+  /const holdPaintIntent = paintSample !== null && shouldHoldTouchPaintIntent\([\s\S]*?event\.pointerType,[\s\S]*?activeTool,[\s\S]*?\);[\s\S]*?if \(paintSample && !holdPaintIntent\) \{[\s\S]*?const beganStroke = event\.pointerType === "touch"[\s\S]*?engine\.beginStroke\(paintSample\)[\s\S]*?engine\.beginDeferredStroke\(paintSample\);[\s\S]*?if \(!beganStroke\)[\s\S]*?pointerMode === "paint" && paintSample && holdPaintIntent[\s\S]*?startTouchPaintIntentHold\(event\.pointerId, paintSample\);/,
+  "touch Paint must retain its acknowledged path while mouse/Pencil use deferred Quick Line preview",
 );
 assert.match(
   canvasInputSource,

@@ -43,6 +43,7 @@ import { type ActiveStroke, type DirtyRect, type Stamp } from "./engine-stroke-t
 import { paintMipDimensions } from "./engine-geometry";
 import { type BrushSettings, type LayerPoint } from "./engine-types";
 import { nextPaintStampSeed } from "./paint-stamp-generation-core";
+import { usesStrokeGlazeRenderer } from "./engine-strategies";
 import { clamp } from "./color";
 import { startThicknessFactor } from "./thickness-dynamics";
 import { flushClosingLightGlazeSessionBeforeNewStroke } from "./engine-glaze-runtime";
@@ -1061,7 +1062,23 @@ export function commitThicknessStamp(engine: BrushEngine, stamp: Stamp, stroke: 
     return;
   }
 
-  engine.pendingStamps.push(stamp);
+  const deferredPreview = engine.deferredStrokePreview;
+  if (
+    stroke.deferredPreview
+    && deferredPreview?.historyActionId === stroke.historyActionId
+  ) {
+    if (deferredPreview.stamps.length >= MAX_STAMPS_PER_BATCH) {
+      throw new Error(
+        `Quick Line preview exceeds ${MAX_STAMPS_PER_BATCH.toLocaleString()} stamps.`,
+      );
+    }
+    deferredPreview.stamps.push(stamp);
+    if (usesStrokeGlazeRenderer(deferredPreview.settings)) {
+      engine.pendingStamps.push(stamp);
+    }
+  } else {
+    engine.pendingStamps.push(stamp);
+  }
   if (engine.activeStrokeProfile) {
     engine.activeStrokeProfile.baseStamps += 1;
   }

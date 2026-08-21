@@ -434,6 +434,9 @@ fn sourceTexel(position: vec2<i32>) -> vec4<f32> {
     let tailSize = vec2<i32>(thicknessTail.textureSize);
     if (all(tailPosition >= vec2<i32>(0)) && all(tailPosition < tailSize)) {
       let transientPaint = textureLoad(transientTexture, tailPosition, 0);
+      if (thicknessTail.compositionMode == 2u) {
+        return transientPaint;
+      }
       if (thicknessTail.compositionMode == 1u) {
         return vec4<f32>(
           permanentPaint.rgb + transientPaint.rgb,

@@ -992,8 +992,7 @@ select {
 }
 
 #rasterSelectionOverlayCanvas,
-#rasterSelectionGestureCanvas,
-#straightLinePreviewCanvas {
+#rasterSelectionGestureCanvas {
   position: absolute;
   inset: 0;
   display: block;
@@ -1013,13 +1012,8 @@ select {
   z-index: 2;
 }
 
-#straightLinePreviewCanvas {
-  z-index: 3;
-}
-
 #rasterSelectionOverlayCanvas[hidden],
-#rasterSelectionGestureCanvas[hidden],
-#straightLinePreviewCanvas[hidden] {
+#rasterSelectionGestureCanvas[hidden] {
   display: none;
 }
 
