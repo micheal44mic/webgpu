@@ -1532,6 +1532,10 @@ export class BrushEngine {
   private readonly stabilizationPreviewCurvePlanner = new CausalStrokeCurvePlanner();
   private readonly stabilizationPreviewStamps: Stamp[] = [];
   activeStroke: ActiveStroke | null = null;
+  straightLineAdjustment: {
+    readonly sourceActionId: number;
+    readonly sourceTool: "paint" | "erase";
+  } | null = null;
   seedSequence = 1;
 
   readonly history = new HistoryService();
@@ -3081,7 +3085,7 @@ export class BrushEngine {
   }
 
   isPaintStrokeActive(): boolean {
-    return this.activeStroke !== null;
+    return this.activeStroke !== null || this.straightLineAdjustment !== null;
   }
 
   createMixedSceneSnapshot(): MixedSceneSnapshot | null {
@@ -3841,7 +3845,13 @@ export class BrushEngine {
       );
       return false;
     }
-    if (this.historyBusy || this.activeStroke || this.layerSwitchBusy || this.selectionBusy) {
+    if (
+      this.historyBusy
+      || this.activeStroke
+      || this.straightLineAdjustment
+      || this.layerSwitchBusy
+      || this.selectionBusy
+    ) {
       return false;
     }
     if (!this.canPaintSelectedSceneItem()) {
@@ -4093,38 +4103,26 @@ export class BrushEngine {
   }
 
   /**
-   * Replaces the active Paint/Erase gesture with one authoritative straight
-   * stroke. The freehand action is first completed and replayed away, then the
-   * supplied collinear samples are rendered through the normal brush path.
-   * Consequently grain, pressure, masks and Undo retain their normal semantics
-   * and the replacement occupies exactly one journal action.
+   * Opens a revisionable Quick Line session. The freehand source is completed
+   * and replayed away, but remains the Redo candidate until the controller
+   * either commits the final line or cancels the adjustment.
    */
-  async straightenActiveStroke(
-    samples: readonly PointerSample[],
-    signal?: AbortSignal,
-  ): Promise<boolean> {
+  async prepareStraightLineAdjustment(signal?: AbortSignal): Promise<boolean> {
     const sourceStroke = this.activeStroke;
     if (
       !sourceStroke
       || sourceStroke.tool === "blend"
-      || samples.length < 2
-      || !samples.every((sample) => (
-        Number.isFinite(sample.clientX)
-        && Number.isFinite(sample.clientY)
-        && Number.isFinite(sample.pressure)
-        && Number.isFinite(sample.timeMs)
-      ))
+      || this.straightLineAdjustment
     ) {
       return false;
     }
 
     const sourceActionId = sourceStroke.historyActionId;
     const sourceTool = sourceStroke.tool;
-    const lastSample = samples[samples.length - 1];
     let sourceUndone = false;
 
     const restoreSourceStroke = async (): Promise<boolean> => {
-      if (!sourceUndone || this.activeStroke) return false;
+      if (!sourceUndone || this.activeStroke || this.straightLineAdjustment) return false;
       const redoAction = this.historyActions[this.historyCursor];
       if (redoAction?.id !== sourceActionId) return false;
       const restored = await this.redo();
@@ -4132,10 +4130,10 @@ export class BrushEngine {
       return restored;
     };
 
-    this.endStroke(lastSample.timeMs);
+    this.endStroke(sourceStroke.lastInput.timeMs);
     try {
-      // Pointer-up normally leaves a final stabilization/glaze batch queued.
-      // Undo must never race that batch back into the already rebuilt layer.
+      // Finishing stabilization or Glaze can enqueue one last batch. Undo must
+      // never race that batch back into the already rebuilt layer.
       await this.waitForIdle();
       if (signal?.aborted) return false;
 
@@ -4148,25 +4146,9 @@ export class BrushEngine {
         await restoreSourceStroke();
         return false;
       }
-      if (!this.beginStroke(samples[0])) {
-        await restoreSourceStroke();
-        return false;
-      }
-
-      try {
-        this.extendStroke(samples.slice(1));
-        this.endStroke(lastSample.timeMs);
-      } catch (error) {
-        // No task can run between begin/extend/end, so the replacement has not
-        // reached requestAnimationFrame yet and remains cheaply cancellable.
-        if (!this.cancelStrokeBeforeRender()) this.endStroke(lastSample.timeMs);
-        await restoreSourceStroke();
-        throw error;
-      }
-
-      await this.waitForIdle();
-      sourceUndone = false;
-      this.callbacks.onStatus?.("Straight line locked.", "ok");
+      this.straightLineAdjustment = { sourceActionId, sourceTool };
+      this.publishHistoryState();
+      this.callbacks.onStatus?.("Straight line ready: move the endpoint, then release.", "ok");
       return true;
     } catch (error) {
       let restored = !sourceUndone;
@@ -4184,6 +4166,82 @@ export class BrushEngine {
           : `Could not safely finish the straight-line replacement. ${message}`,
         "error",
       );
+      return false;
+    }
+  }
+
+  async cancelStraightLineAdjustment(): Promise<boolean> {
+    const session = this.straightLineAdjustment;
+    if (!session || this.activeStroke) return false;
+    this.straightLineAdjustment = null;
+    const redoAction = this.historyActions[this.historyCursor];
+    if (redoAction?.id !== session.sourceActionId) {
+      this.publishHistoryState();
+      return false;
+    }
+    const restored = await this.redo();
+    this.publishHistoryState();
+    return restored;
+  }
+
+  /** Commits the last adjusted endpoint through the ordinary brush renderer. */
+  async commitStraightLineAdjustment(
+    samples: readonly PointerSample[],
+  ): Promise<boolean> {
+    const session = this.straightLineAdjustment;
+    if (!session || this.activeStroke) return false;
+    if (
+      samples.length < 2
+      || this.settings.tool !== session.sourceTool
+      || !samples.every((sample) => (
+        Number.isFinite(sample.clientX)
+        && Number.isFinite(sample.clientY)
+        && Number.isFinite(sample.pressure)
+        && Number.isFinite(sample.timeMs)
+      ))
+    ) {
+      await this.cancelStraightLineAdjustment();
+      return false;
+    }
+
+    const restoreSourceStroke = async (): Promise<boolean> => {
+      if (this.activeStroke) {
+        if (!this.cancelStrokeBeforeRender()) this.endStroke(samples.at(-1)?.timeMs);
+      }
+      const redoAction = this.historyActions[this.historyCursor];
+      if (redoAction?.id !== session.sourceActionId) return false;
+      return this.redo();
+    };
+
+    this.straightLineAdjustment = null;
+    const lastSample = samples[samples.length - 1];
+    try {
+      if (!this.beginStroke(samples[0])) {
+        await restoreSourceStroke();
+        this.publishHistoryState();
+        return false;
+      }
+      this.extendStroke(samples.slice(1));
+      this.endStroke(lastSample.timeMs);
+      await this.waitForIdle();
+      this.publishHistoryState();
+      this.callbacks.onStatus?.("Straight line committed.", "ok");
+      return true;
+    } catch (error) {
+      let restored = false;
+      try {
+        restored = await restoreSourceStroke();
+      } catch {
+        restored = false;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      this.callbacks.onStatus?.(
+        restored
+          ? `Could not commit the straight line; the original stroke was kept. ${message}`
+          : `Could not safely finish the straight-line commit. ${message}`,
+        "error",
+      );
+      this.publishHistoryState();
       return false;
     }
   }
@@ -4420,6 +4478,7 @@ export class BrushEngine {
   resetDocument(): boolean {
     if (
       this.historyBusy
+      || this.straightLineAdjustment
       || this.layerSwitchBusy
       || this.selectionBusy
       || this.activeVectorHistoryEdit
@@ -4939,6 +4998,9 @@ export class BrushEngine {
     if (this.historyStateInconsistent) return "History is inconsistent. Reload the page.";
     if (this.historyBusy) return "History is completing another operation.";
     if (this.activeStroke) return "Finish the stroke before using Undo or Redo.";
+    if (this.straightLineAdjustment) {
+      return "Finish adjusting the straight line before using Undo or Redo.";
+    }
     if (this.layerSwitchBusy) return "Wait for the layer switch to finish.";
     if (this.selectionBusy) return "Wait for the selection operation to finish.";
     const destructiveEdit = this.activeDestructiveRasterEditKind();
@@ -4974,7 +5036,7 @@ export class BrushEngine {
     return {
       canUndo: undoBlockedReason === null,
       canRedo: redoBlockedReason === null,
-      busy: this.historyBusy,
+      busy: this.historyBusy || this.straightLineAdjustment !== null,
       inconsistent: this.historyStateInconsistent,
       actionCount: this.historyActions.length,
       cursor: this.historyCursor,
@@ -8482,6 +8544,7 @@ export class BrushEngine {
     }
     if (
       this.activeStroke
+      || this.straightLineAdjustment
       || this.lightGlazeSession
       || this.historyBusy
       || this.selectionBusy

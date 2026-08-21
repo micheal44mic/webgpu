@@ -33,7 +33,9 @@ export type CanvasInputEnginePort = Pick<
   | "beginRasterLiquifyStroke"
   | "beginStroke"
   | "beginViewRotationGesture"
+  | "cancelStraightLineAdjustment"
   | "cancelStrokeBeforeRender"
+  | "commitStraightLineAdjustment"
   | "endRasterLiquifyStroke"
   | "endStroke"
   | "endViewRotationGesture"
@@ -42,11 +44,11 @@ export type CanvasInputEnginePort = Pick<
   | "fillAtClientPoint"
   | "getHistoryState"
   | "panByClientDelta"
+  | "prepareStraightLineAdjustment"
   | "resizeCanvas"
   | "rotateViewBy"
   | "selectConnectedAtClientPoint"
   | "selectPixelsByClientLasso"
-  | "straightenActiveStroke"
   | "toLayerPoint"
   | "zoomBy"
 >;
@@ -75,6 +77,8 @@ export interface CanvasInputElements {
   readonly canvas: HTMLCanvasElement;
   readonly selectionGestureCanvas: HTMLCanvasElement;
   readonly selectionGestureContext: CanvasRenderingContext2D;
+  readonly straightLinePreviewCanvas: HTMLCanvasElement;
+  readonly straightLinePreviewContext: CanvasRenderingContext2D;
   readonly status: HTMLParagraphElement;
 }
 
@@ -112,6 +116,7 @@ export interface CanvasInputControllerOptions {
   readonly getActiveTool: () => CanvasInputTool;
   readonly getSelectionMethod: () => SelectionMethod;
   readonly getFillSettings: () => CanvasInputFillSettings;
+  readonly getBrushSettings: () => BrushSettings;
   readonly getSelectionSettings: () => CanvasInputSelectionSettings;
   readonly getHistoryState: () => HistoryState;
   readonly onHistoryState: (state: HistoryState) => void;
@@ -175,7 +180,12 @@ interface DeferredPenPaint {
   retryTimerId: number | null;
 }
 
-type StraightLineGesturePhase = "tracking" | "replacing" | "locked" | "failed";
+type StraightLineGesturePhase =
+  | "tracking"
+  | "preparing"
+  | "adjusting"
+  | "committing"
+  | "failed";
 
 interface StraightLineGesture {
   readonly pointerId: number;
@@ -185,6 +195,9 @@ interface StraightLineGesture {
   settledClientX: number;
   settledClientY: number;
   holdTimerId: number | null;
+  commitRequested: boolean;
+  cancelRequested: boolean;
+  pointerReleased: boolean;
 }
 
 interface CanvasInputRuntime {
@@ -272,6 +285,8 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     canvas,
     selectionGestureCanvas,
     selectionGestureContext,
+    straightLinePreviewCanvas,
+    straightLinePreviewContext,
     status,
   } = options.elements;
   const abortController = new browser.AbortController();
@@ -470,13 +485,185 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     gesture.holdTimerId = null;
   };
 
-  const finishStraightLineGesture = (abortReplacement: boolean): void => {
-    const gesture = straightLineGesture;
-    if (!gesture) return;
+  const syncStraightLinePreviewCanvasSize = (): void => {
+    if (straightLinePreviewCanvas.width !== canvas.width) {
+      straightLinePreviewCanvas.width = canvas.width;
+    }
+    if (straightLinePreviewCanvas.height !== canvas.height) {
+      straightLinePreviewCanvas.height = canvas.height;
+    }
+  };
+
+  const clearStraightLinePreview = (): void => {
+    straightLinePreviewContext.clearRect(
+      0,
+      0,
+      straightLinePreviewCanvas.width,
+      straightLinePreviewCanvas.height,
+    );
+    straightLinePreviewCanvas.hidden = true;
+  };
+
+  const drawStraightLinePreview = (gesture: StraightLineGesture): void => {
+    const firstSample = gesture.samples[0];
+    const lastSample = gesture.samples[gesture.samples.length - 1];
+    if (!firstSample || !lastSample) {
+      clearStraightLinePreview();
+      return;
+    }
+
+    syncStraightLinePreviewCanvasSize();
+    const rectangle = canvas.getBoundingClientRect();
+    const backingScaleX = canvas.width / Math.max(1, rectangle.width);
+    const backingScaleY = canvas.height / Math.max(1, rectangle.height);
+    const backingScale = Math.sqrt(backingScaleX * backingScaleY);
+    const toPreviewPoint = (sample: PointerSample): SelectionPoint => ({
+      x: (sample.clientX - rectangle.left) * backingScaleX,
+      y: (sample.clientY - rectangle.top) * backingScaleY,
+    });
+    const first = toPreviewPoint(firstSample);
+    const last = toPreviewPoint(lastSample);
+    const settings = options.getBrushSettings();
+    const layerStart = engine.toLayerPoint(firstSample);
+    const layerOffset = engine.toLayerPoint({
+      ...firstSample,
+      clientX: firstSample.clientX + 1,
+    });
+    const layerPixelsPerClientPixel = Math.max(
+      0.0001,
+      Math.hypot(layerOffset.x - layerStart.x, layerOffset.y - layerStart.y),
+    );
+    const pressureScale = Math.max(0.08, Math.min(1, lastSample.pressure));
+    const brushWidth = Math.max(
+      1.5 * backingScale,
+      settings.size / layerPixelsPerClientPixel * backingScale * pressureScale,
+    );
+
+    straightLinePreviewContext.clearRect(
+      0,
+      0,
+      straightLinePreviewCanvas.width,
+      straightLinePreviewCanvas.height,
+    );
+    straightLinePreviewCanvas.hidden = false;
+    straightLinePreviewContext.save();
+    straightLinePreviewContext.lineCap = "round";
+    straightLinePreviewContext.lineJoin = "round";
+
+    const strokeSegment = (width: number, color: string, alpha = 1): void => {
+      straightLinePreviewContext.beginPath();
+      straightLinePreviewContext.moveTo(first.x, first.y);
+      straightLinePreviewContext.lineTo(last.x, last.y);
+      straightLinePreviewContext.lineWidth = width;
+      straightLinePreviewContext.strokeStyle = color;
+      straightLinePreviewContext.globalAlpha = alpha;
+      straightLinePreviewContext.stroke();
+    };
+
+    // Two thin contrast rims keep the preview legible over both white and
+    // black artwork. Erase uses cyan as a guide because the destructive result
+    // is committed only when the pointer is released.
+    strokeSegment(brushWidth + 5 * backingScale, "#000000", 0.8);
+    strokeSegment(brushWidth + 2.5 * backingScale, "#ffffff", 0.9);
+    if (settings.tool === "erase") {
+      strokeSegment(brushWidth, "#58dcff", 0.34);
+      straightLinePreviewContext.setLineDash([7 * backingScale, 5 * backingScale]);
+      strokeSegment(Math.max(1.5 * backingScale, brushWidth * 0.12), "#0b1820", 0.9);
+      straightLinePreviewContext.setLineDash([]);
+    } else {
+      strokeSegment(
+        brushWidth,
+        settings.color,
+        Math.max(0.35, Math.min(1, settings.opacity * settings.flow)),
+      );
+    }
+
+    const drawHandle = (
+      point: SelectionPoint,
+      radius: number,
+      color: string,
+    ): void => {
+      straightLinePreviewContext.globalAlpha = 1;
+      straightLinePreviewContext.beginPath();
+      straightLinePreviewContext.arc(point.x, point.y, radius + 2 * backingScale, 0, Math.PI * 2);
+      straightLinePreviewContext.lineWidth = 3 * backingScale;
+      straightLinePreviewContext.strokeStyle = "rgba(0, 0, 0, 0.9)";
+      straightLinePreviewContext.stroke();
+      straightLinePreviewContext.beginPath();
+      straightLinePreviewContext.arc(point.x, point.y, radius, 0, Math.PI * 2);
+      straightLinePreviewContext.lineWidth = 2 * backingScale;
+      straightLinePreviewContext.strokeStyle = color;
+      straightLinePreviewContext.stroke();
+    };
+    drawHandle(first, 3.5 * backingScale, "rgba(255, 255, 255, 0.96)");
+    drawHandle(
+      last,
+      7 * backingScale,
+      settings.tool === "erase" ? "#58dcff" : "rgba(255, 255, 255, 0.98)",
+    );
+    straightLinePreviewContext.restore();
+  };
+
+  const discardStraightLineGesture = (gesture: StraightLineGesture): void => {
     clearStraightLineHoldTimer(gesture);
-    if (abortReplacement) gesture.abortController.abort();
-    if (!abortReplacement && gesture.phase === "replacing") return;
-    straightLineGesture = null;
+    gesture.abortController.abort();
+    if (straightLineGesture === gesture) straightLineGesture = null;
+    clearStraightLinePreview();
+  };
+
+  const updateStraightLineEndpoint = (
+    gesture: StraightLineGesture,
+    samples: readonly PointerSample[],
+  ): void => {
+    const endpoint = samples[samples.length - 1];
+    if (!endpoint || gesture.samples.length < 2) return;
+    gesture.samples[gesture.samples.length - 1] = endpoint;
+    drawStraightLinePreview(gesture);
+  };
+
+  const cancelPreparedStraightLine = (gesture: StraightLineGesture): void => {
+    if (gesture.phase !== "adjusting") return;
+    gesture.phase = "failed";
+    clearStraightLinePreview();
+    void engine.cancelStraightLineAdjustment().catch((error) => {
+      if (disposed) return;
+      const message = error instanceof Error ? error.message : String(error);
+      status.textContent = `Could not restore the original stroke: ${message}`;
+      status.className = "status error";
+    }).finally(() => {
+      straightLineReplacementInFlight = false;
+      if (straightLineGesture === gesture) straightLineGesture = null;
+      if (disposed) return;
+      options.scheduleLayersRefresh();
+      options.invalidateActiveThumbnail();
+      publishHistoryState();
+    });
+  };
+
+  const commitStraightLine = (gesture: StraightLineGesture): void => {
+    if (gesture.phase !== "adjusting" || !gesture.commitRequested) return;
+    gesture.phase = "committing";
+    const straightSamples = straightenPointerSamples(gesture.samples);
+    void engine.commitStraightLineAdjustment(straightSamples).then((committed) => {
+      if (disposed) return;
+      status.textContent = committed
+        ? "Straight line committed."
+        : "The straight line could not be committed; the original stroke was kept.";
+      status.className = committed ? "status" : "status error";
+    }).catch((error) => {
+      if (disposed) return;
+      const message = error instanceof Error ? error.message : String(error);
+      status.textContent = `Could not commit the straight line: ${message}`;
+      status.className = "status error";
+    }).finally(() => {
+      clearStraightLinePreview();
+      straightLineReplacementInFlight = false;
+      if (straightLineGesture === gesture) straightLineGesture = null;
+      if (disposed) return;
+      options.scheduleLayersRefresh();
+      options.invalidateActiveThumbnail();
+      publishHistoryState();
+    });
   };
 
   const activateStraightLine = (gesture: StraightLineGesture): void => {
@@ -491,31 +678,54 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       return;
     }
     clearStraightLineHoldTimer(gesture);
-    gesture.phase = "replacing";
+    gesture.phase = "preparing";
     straightLineReplacementInFlight = true;
-    const straightSamples = straightenPointerSamples(gesture.samples);
-    void engine.straightenActiveStroke(
-      straightSamples,
-      gesture.abortController.signal,
-    ).then((locked) => {
-      gesture.phase = locked ? "locked" : "failed";
-      if (!locked || disposed) return;
-      status.textContent = "Straight line locked.";
-      status.className = "status";
-      options.scheduleLayersRefresh();
-      options.invalidateActiveThumbnail();
-      publishHistoryState();
-    }).catch((error) => {
+    drawStraightLinePreview(gesture);
+    void engine.prepareStraightLineAdjustment(gesture.abortController.signal).then(
+      async (prepared) => {
+        if (!prepared) {
+          gesture.phase = "failed";
+          clearStraightLinePreview();
+          straightLineReplacementInFlight = false;
+          if (straightLineGesture === gesture && gesture.pointerReleased) {
+            straightLineGesture = null;
+          }
+          if (!disposed && !gesture.cancelRequested) {
+            status.textContent = "The straight line could not be activated; the original stroke was kept.";
+            status.className = "status error";
+            publishHistoryState();
+          }
+          return;
+        }
+        if (disposed || gesture.cancelRequested || gesture.abortController.signal.aborted) {
+          gesture.phase = "failed";
+          clearStraightLinePreview();
+          try {
+            await engine.cancelStraightLineAdjustment();
+          } finally {
+            straightLineReplacementInFlight = false;
+            if (straightLineGesture === gesture) straightLineGesture = null;
+          }
+          return;
+        }
+        gesture.phase = "adjusting";
+        status.textContent = "Move the endpoint, then release to commit the straight line.";
+        status.className = "status";
+        drawStraightLinePreview(gesture);
+        publishHistoryState();
+        if (gesture.commitRequested) commitStraightLine(gesture);
+      },
+    ).catch((error) => {
       gesture.phase = "failed";
-      if (disposed) return;
-      const message = error instanceof Error ? error.message : String(error);
-      status.textContent = `Could not lock the straight line: ${message}`;
-      status.className = "status error";
-    }).finally(() => {
+      clearStraightLinePreview();
       straightLineReplacementInFlight = false;
-      if (straightLineGesture === gesture && activePointerId !== gesture.pointerId) {
+      if (straightLineGesture === gesture && gesture.pointerReleased) {
         straightLineGesture = null;
       }
+      if (disposed || gesture.cancelRequested) return;
+      const message = error instanceof Error ? error.message : String(error);
+      status.textContent = `Could not activate the straight line: ${message}`;
+      status.className = "status error";
     });
   };
 
@@ -543,7 +753,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     ) {
       return;
     }
-    finishStraightLineGesture(true);
+    if (straightLineGesture) discardStraightLineGesture(straightLineGesture);
     const samples = [initialSample, ...bufferedSamples];
     compactStraightLineSamples(samples);
     const last = samples[samples.length - 1];
@@ -555,18 +765,25 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       settledClientX: last.clientX,
       settledClientY: last.clientY,
       holdTimerId: null,
+      commitRequested: false,
+      cancelRequested: false,
+      pointerReleased: false,
     };
     straightLineGesture = gesture;
     if (bufferedSamples.length > 0) scheduleStraightLineHold(gesture);
   };
 
-  /** Returns true once a locked/replacing gesture owns further pointer moves. */
+  /** Returns true once Quick Line owns further pointer moves. */
   const captureStraightLineSamples = (
     pointerId: number,
     samples: readonly PointerSample[],
   ): boolean => {
     const gesture = straightLineGesture;
     if (!gesture || gesture.pointerId !== pointerId) return false;
+    if (gesture.phase === "preparing" || gesture.phase === "adjusting") {
+      updateStraightLineEndpoint(gesture, samples);
+      return true;
+    }
     if (gesture.phase !== "tracking") return true;
     gesture.samples.push(...samples);
     compactStraightLineSamples(gesture.samples);
@@ -1144,7 +1361,44 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       if (event.type === "pointerup") releaseTouchPaintIntentHold("pointer-up");
       else cancelTouchPaintIntentHold("pointer-end");
     }
-    if (pointerMode === "paint") finishStraightLineGesture(false);
+    let straightLineOwnsPaintCompletion = false;
+    if (pointerMode === "paint") {
+      const gesture = straightLineGesture?.pointerId === event.pointerId
+        ? straightLineGesture
+        : null;
+      if (gesture?.phase === "tracking") {
+        discardStraightLineGesture(gesture);
+      } else if (gesture) {
+        straightLineOwnsPaintCompletion = true;
+        clearStraightLineHoldTimer(gesture);
+        gesture.pointerReleased = true;
+        if (event.type === "pointerup") {
+          if (gesture.phase === "preparing" || gesture.phase === "adjusting") {
+            updateStraightLineEndpoint(gesture, [toPointerSample(event)]);
+          }
+          gesture.commitRequested = true;
+          if (gesture.phase === "adjusting") commitStraightLine(gesture);
+          else if (gesture.phase === "failed") {
+            straightLineReplacementInFlight = false;
+            if (straightLineGesture === gesture) straightLineGesture = null;
+            clearStraightLinePreview();
+          }
+        } else {
+          gesture.cancelRequested = true;
+          gesture.abortController.abort();
+          if (gesture.phase === "adjusting") cancelPreparedStraightLine(gesture);
+          else if (gesture.phase === "failed") {
+            straightLineReplacementInFlight = false;
+            if (straightLineGesture === gesture) straightLineGesture = null;
+            clearStraightLinePreview();
+          } else if (gesture.phase === "preparing") {
+            // prepareStraightLineAdjustment observes the abort and restores the
+            // source stroke before its promise resolves.
+            clearStraightLinePreview();
+          }
+        }
+      }
+    }
 
     const fillRequest = pointerMode === "fill"
       && event.type === "pointerup"
@@ -1183,7 +1437,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
 
     const completedPointerMode = pointerMode;
     if (pointerMode === "paint") {
-      engine.endStroke(event.timeStamp);
+      if (!straightLineOwnsPaintCompletion) engine.endStroke(event.timeStamp);
       options.getEditorExtension()?.finishPaintRecording?.(event.type === "pointerup");
     } else if (pointerMode === "liquify") {
       engine.endRasterLiquifyStroke(event.type === "pointerup");
@@ -1196,8 +1450,10 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     canvas.classList.remove("panning", "rotating", "liquify-deforming");
     pointerMode = null;
     activePointerId = null;
-    options.scheduleLayersRefresh();
-    if (completedPointerMode === "paint") options.invalidateActiveThumbnail();
+    if (!straightLineOwnsPaintCompletion) {
+      options.scheduleLayersRefresh();
+      if (completedPointerMode === "paint") options.invalidateActiveThumbnail();
+    }
     touchNavigationGesture = null;
     fillPointerMoved = false;
     selectionPointerMoved = false;
@@ -1384,6 +1640,14 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     if (pointerMode === "selection-lasso" || selectionKeyboardCursorVisible) {
       drawLassoGesture();
     }
+    syncStraightLinePreviewCanvasSize();
+    if (
+      straightLineGesture?.phase === "preparing"
+      || straightLineGesture?.phase === "adjusting"
+      || straightLineGesture?.phase === "committing"
+    ) {
+      drawStraightLinePreview(straightLineGesture);
+    }
   });
   resizeObserver.observe(canvas);
 
@@ -1392,12 +1656,29 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     disposed = true;
     abortController.abort();
     resizeObserver.disconnect();
-    finishStraightLineGesture(true);
+    const pendingStraightLine = straightLineGesture;
+    const straightLineOwnsPaintCompletion = pendingStraightLine !== null
+      && pendingStraightLine.phase !== "tracking";
+    if (pendingStraightLine) {
+      clearStraightLineHoldTimer(pendingStraightLine);
+      pendingStraightLine.cancelRequested = true;
+      pendingStraightLine.abortController.abort();
+      if (pendingStraightLine.phase === "adjusting") {
+        cancelPreparedStraightLine(pendingStraightLine);
+      } else if (pendingStraightLine.phase === "tracking") {
+        discardStraightLineGesture(pendingStraightLine);
+      } else {
+        straightLineGesture = null;
+        clearStraightLinePreview();
+      }
+    }
 
     const mode = pointerMode;
     if (mode === "paint") {
       if (deferredPenPaint) {
         abandonDeferredPenPaint(false);
+      } else if (straightLineOwnsPaintCompletion) {
+        options.getEditorExtension()?.finishPaintRecording?.(false);
       } else {
         const canceledHeldIntent = cancelTouchPaintIntentHold("pointer-end");
         if (canceledHeldIntent) {

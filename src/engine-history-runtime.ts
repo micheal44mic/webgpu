@@ -409,6 +409,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
   if (
     !engine.initialized
     || engine.activeStroke
+    || engine.straightLineAdjustment
     || engine.historyBusy
     || engine.selectionBusy
     || engine.activeVectorHistoryEdit
