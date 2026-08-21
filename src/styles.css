@@ -4247,6 +4247,36 @@ select {
     text-align: left;
   }
 
+  .mobile-layer-row.is-clipping-child .mobile-layer-select,
+  .mobile-layer-row.is-clipping-child .mobile-layer-select:hover,
+  .mobile-layer-row.is-clipping-child .mobile-layer-select:active {
+    grid-template-columns: 16px 52px minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .mobile-layer-clipping-indicator {
+    --mobile-icon-face: #dd5c35;
+    display: grid;
+    width: 16px;
+    height: 24px;
+    place-items: center;
+    pointer-events: none;
+  }
+
+  .mobile-layer-clipping-indicator[hidden] {
+    display: none;
+  }
+
+  .mobile-layer-clipping-indicator .mobile-icon-stack {
+    width: 16px;
+    height: 16px;
+  }
+
+  .mobile-layer-clipping-indicator .mobile-icon-layer {
+    width: 16px;
+    height: 16px;
+  }
+
   .mobile-layer-select:disabled,
   .mobile-layer-reference:disabled,
   .mobile-layer-visibility:disabled {

@@ -12,6 +12,7 @@ const sceneEditorSource = readFileSync(
   new URL("src/scene-editor-controller.ts", root),
   "utf8",
 );
+const stylesSource = readFileSync(new URL("src/styles.css", root), "utf8");
 const html = readFileSync(new URL("index.html", root), "utf8");
 
 assert.match(mainSource, /layerPanelController = new LayerPanelController\(\{/);
@@ -53,6 +54,22 @@ assert.match(controllerSource, /setRasterClipping: \(key: LayerPanelKey/);
 assert.match(controllerSource, /DOCUMENT_BACKGROUND_ROW_KEY = "background"/);
 assert.match(controllerSource, /name: "Sfondo"/);
 assert.match(controllerSource, /mobile-layer-background-color/);
+assert.match(controllerSource, /CornerRightDown/);
+assert.match(controllerSource, /mobile-layer-clipping-indicator/);
+assert.match(controllerSource, /clippingParent: this\.clippingParentView\(stats, layer\.clippingParentId\)/);
+assert.match(controllerSource, /clippingParent: this\.clippingParentView\(stats, item\.rasterClippingParentId\)/);
+assert.match(controllerSource, /is-clipping-child/);
+assert.match(controllerSource, /view\.clippingParent\?\.key \?\? ""/);
+assert.match(controllerSource, /Ritagliato su \$\{view\.clippingParent\.name\}/);
+assert.match(controllerSource, /\$\{view\.name\}\$\{clippingLabel\}, selected/);
+assert.match(
+  stylesSource,
+  /\.mobile-layer-row\.is-clipping-child \.mobile-layer-select[\s\S]*?grid-template-columns: 16px 52px minmax\(0, 1fr\)/,
+);
+assert.match(
+  stylesSource,
+  /\.mobile-layer-clipping-indicator \{[\s\S]*?--mobile-icon-face: #dd5c35/,
+);
 assert.match(controllerSource, /views\.push\(this\.backgroundView\(stats\)\)/);
 assert.match(controllerSource, /candidate !== undefined && isLayerPanelKey\(candidate\)/);
 assert.match(controllerSource, /this\.listen\(elements\.list, "change", \(raw\) => this\.handleBackgroundColorInput\(raw\)\)/);
@@ -372,6 +389,17 @@ stats = {
     },
   ],
 };
+const clippedViews = controller.views({
+  ...stats,
+  layers: stats.layers.map((layer) => (
+    layer.id === 8 ? { ...layer, clippingParentId: 7 } : layer
+  )),
+});
+assert.deepEqual(
+  clippedViews.find((view) => view.key === "raster:8")?.clippingParent,
+  { key: "raster:7", name: "Layer 1" },
+  "a clipping row must point to its real base layer, even when rendered top-first",
+);
 controller.setOpen(true);
 const clippingRequest = controller.requestClippingToggle.bind(controller);
 controller.contextKey = "raster:8";

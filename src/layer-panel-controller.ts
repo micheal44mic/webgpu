@@ -1,4 +1,5 @@
 import {
+  CornerRightDown,
   Eye,
   EyeOff,
   createElement as createLucideElement,
@@ -153,6 +154,10 @@ interface LayerPanelViewBase {
   readonly name: string;
   readonly visible: boolean;
   readonly selected: boolean;
+  readonly clippingParent: {
+    readonly key: LayerPanelKey;
+    readonly name: string;
+  } | null;
   readonly rasterIndex: number | null;
   readonly rasterLayerId: number | null;
   readonly reference: boolean;
@@ -414,6 +419,9 @@ export class LayerPanelController {
     views.forEach((view, position) => {
       const row = list.children[position] as HTMLDivElement;
       const select = row.querySelector<HTMLButtonElement>(".mobile-layer-select");
+      const clippingIndicator = row.querySelector<HTMLSpanElement>(
+        ".mobile-layer-clipping-indicator",
+      );
       const thumbnail = row.querySelector<HTMLSpanElement>(".mobile-layer-thumbnail");
       const name = row.querySelector<HTMLSpanElement>(".mobile-layer-name");
       const reference = row.querySelector<HTMLButtonElement>(".mobile-layer-reference");
@@ -426,6 +434,7 @@ export class LayerPanelController {
       const visibility = row.querySelector<HTMLButtonElement>(".mobile-layer-visibility");
       if (
         !select
+        || !clippingIndicator
         || !thumbnail
         || !name
         || !reference
@@ -435,13 +444,18 @@ export class LayerPanelController {
       ) return;
 
       const background = view.kind === "background";
+      const clippingChild = view.clippingParent !== null;
+      const clippingLabel = view.clippingParent
+        ? `, maschera di clipping su ${view.clippingParent.name}`
+        : "";
       const selected = this.multiSelectEnabled && !background
         ? this.selectedKeys.has(view.key)
         : view.selected;
       row.className = `mobile-layer-row is-${view.kind}`
         + `${selected ? " is-selected" : ""}`
         + `${this.multiSelectEnabled && selected ? " is-multi-selected" : ""}`
-        + `${view.selected ? " is-active-layer" : ""}`;
+        + `${view.selected ? " is-active-layer" : ""}`
+        + `${clippingChild ? " is-clipping-child" : ""}`;
       row.setAttribute("aria-posinset", String(position + 1));
       row.setAttribute("aria-setsize", String(views.length));
       select.disabled = locked || background;
@@ -454,21 +468,29 @@ export class LayerPanelController {
           ? `${view.name}, livello bloccato sempre in fondo`
           : this.multiSelectEnabled
           ? selected
-            ? `${view.name}, selected. Tap to remove it from the merge selection; `
+            ? `${view.name}${clippingLabel}, selected. `
+              + "Tap to remove it from the merge selection; "
               + "hold for selection actions."
-            : `Add ${view.name} to the merge selection`
+            : `Add ${view.name}${clippingLabel} to the merge selection`
           : view.selected
-            ? `${view.name}. Hold for layer options, then drag to reorder; `
+            ? `${view.name}${clippingLabel}. `
+              + "Hold for layer options, then drag to reorder; "
               + "Alt plus Arrow Up or Down also moves it."
-            : `Select ${view.name}`,
+            : `Select ${view.name}${clippingLabel}`,
       );
       if (!background && view.selected && !this.multiSelectEnabled) {
         select.setAttribute("aria-keyshortcuts", "Alt+ArrowUp Alt+ArrowDown");
       } else {
         select.removeAttribute("aria-keyshortcuts");
       }
-      select.title = view.name;
+      select.title = view.clippingParent
+        ? `${view.name} · Ritagliato su ${view.clippingParent.name}`
+        : view.name;
       name.textContent = view.name;
+      clippingIndicator.hidden = !clippingChild;
+      if (clippingChild && clippingIndicator.childElementCount === 0) {
+        clippingIndicator.append(this.createIconStack(CornerRightDown, 16));
+      }
       if (background) {
         thumbnail.dataset.kind = "background";
         thumbnail.dataset.thumbnailSignature = `background:${view.thumbnailColor ?? ""}`;
@@ -1215,6 +1237,7 @@ export class LayerPanelController {
       name: "Sfondo",
       visible: stats.documentBackground.visible,
       selected: false,
+      clippingParent: null,
       rasterIndex: null,
       rasterLayerId: null,
       reference: false,
@@ -1240,6 +1263,7 @@ export class LayerPanelController {
           name: layerPanelDisplayName(layer.name),
           visible: layer.visible,
           selected: index === stats.activeLayerIndex,
+          clippingParent: this.clippingParentView(stats, layer.clippingParentId),
           rasterIndex: index,
           rasterLayerId: layer.id,
           reference: layer.reference,
@@ -1268,6 +1292,7 @@ export class LayerPanelController {
           name: layerPanelDisplayName(layer.name),
           visible: layer.visible,
           selected,
+          clippingParent: this.clippingParentView(stats, item.rasterClippingParentId),
           rasterIndex: item.rasterLayerIndex,
           rasterLayerId: item.rasterLayerId,
           reference: layer.reference,
@@ -1294,6 +1319,7 @@ export class LayerPanelController {
           name: layerPanelDisplayName(node.name),
           visible: node.visible,
           selected,
+          clippingParent: null,
           rasterIndex: null,
           rasterLayerId: null,
           reference: false,
@@ -1319,6 +1345,7 @@ export class LayerPanelController {
           name: layerPanelDisplayName(node.name),
           visible: node.visible,
           selected,
+          clippingParent: null,
           rasterIndex: null,
           rasterLayerId: null,
           reference: false,
@@ -1339,6 +1366,7 @@ export class LayerPanelController {
         name: layerPanelDisplayName(node.name),
         visible: node.visible,
         selected,
+        clippingParent: null,
         rasterIndex: null,
         rasterLayerId: null,
         reference: false,
@@ -1355,6 +1383,18 @@ export class LayerPanelController {
     return views;
   }
 
+  private clippingParentView(
+    stats: EngineStats,
+    rasterLayerId: number | null,
+  ): LayerPanelViewBase["clippingParent"] {
+    if (rasterLayerId === null) return null;
+    const parent = stats.layers.find((layer) => layer.id === rasterLayerId);
+    return {
+      key: `raster:${rasterLayerId}`,
+      name: parent ? layerPanelDisplayName(parent.name) : "livello base",
+    };
+  }
+
   private listSignature(views: readonly LayerPanelView[], locked: boolean): string {
     const selectionSignature = this.multiSelectEnabled
       ? [...this.selectedKeys].sort().join(",")
@@ -1368,6 +1408,7 @@ export class LayerPanelController {
           view.name,
           view.visible ? 1 : 0,
           view.selected ? 1 : 0,
+          view.clippingParent?.key ?? "",
           view.reference ? 1 : 0,
           view.referenceAvailable ? 1 : 0,
           view.hasContent ? 1 : 0,
@@ -1428,20 +1469,20 @@ export class LayerPanelController {
       || (!this.multiSelectEnabled && layerCount < 2);
   }
 
-  private createIconStack(icon: IconNode): HTMLSpanElement {
+  private createIconStack(icon: IconNode, size = 20): HTMLSpanElement {
     const stack = this.options.document.createElement("span");
     stack.className = "mobile-icon-stack";
     stack.setAttribute("aria-hidden", "true");
     stack.append(
       createLucideElement(icon, {
         class: "mobile-icon-layer mobile-icon-outline",
-        width: 20,
-        height: 20,
+        width: size,
+        height: size,
       }),
       createLucideElement(icon, {
         class: "mobile-icon-layer mobile-icon-face",
-        width: 20,
-        height: 20,
+        width: size,
+        height: size,
       }),
     );
     return stack;
@@ -1456,6 +1497,10 @@ export class LayerPanelController {
     select.type = "button";
     select.className = "mobile-layer-select";
     select.dataset.mobileLayerAction = "select";
+    const clippingIndicator = this.options.document.createElement("span");
+    clippingIndicator.className = "mobile-layer-clipping-indicator";
+    clippingIndicator.setAttribute("aria-hidden", "true");
+    clippingIndicator.hidden = true;
     const thumbnail = this.options.document.createElement("span");
     thumbnail.className = "mobile-layer-thumbnail";
     thumbnail.setAttribute("aria-hidden", "true");
@@ -1480,7 +1525,7 @@ export class LayerPanelController {
     thumbnail.append(thumbnailCanvas, thumbnailContent, thumbnailGlyph);
     const name = this.options.document.createElement("span");
     name.className = "mobile-layer-name";
-    select.append(thumbnail, name);
+    select.append(clippingIndicator, thumbnail, name);
     const reference = this.options.document.createElement("button");
     reference.type = "button";
     reference.className = "mobile-layer-reference";
