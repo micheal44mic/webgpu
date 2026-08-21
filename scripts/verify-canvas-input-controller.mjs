@@ -8,6 +8,7 @@ const controllerSource = readFileSync(
   new URL("src/canvas-input-controller.ts", root),
   "utf8",
 );
+const engineSource = readFileSync(new URL("src/brush-engine.ts", root), "utf8");
 
 assert.match(mainSource, /canvasInputController = new CanvasInputController\(\{/);
 assert.match(mainSource, /canvasInputController\?\.dispose\(\);/);
@@ -17,6 +18,12 @@ assert.doesNotMatch(
   "main.ts must remain a composition root, not a second canvas-input owner",
 );
 assert.match(controllerSource, /export type CanvasInputEnginePort = Pick</);
+assert.match(controllerSource, /\| "straightenActiveStroke"/);
+assert.match(engineSource, /async straightenActiveStroke\(/);
+assert.match(engineSource, /await this\.waitForIdle\(\)/);
+assert.match(engineSource, /completedSource\?\.id !== sourceActionId/);
+assert.match(engineSource, /await this\.undo\(\)/);
+assert.match(engineSource, /await restoreSourceStroke\(\)/);
 assert.match(controllerSource, /private readonly runtime: CanvasInputRuntime/);
 assert.match(controllerSource, /new browser\.AbortController\(\)/);
 assert.match(mainSource, /mixedSceneController\?\.isBusy === true/);
@@ -31,9 +38,14 @@ const moduleServer = await createServer({
   server: { middlewareMode: true },
 });
 let CanvasInputController;
+let analyzeStrokeStraightness;
+let straightenPointerSamples;
 try {
   ({ CanvasInputController } = await moduleServer.ssrLoadModule(
     "/src/canvas-input-controller.ts",
+  ));
+  ({ analyzeStrokeStraightness, straightenPointerSamples } = await moduleServer.ssrLoadModule(
+    "/src/stroke-straightening-core.ts",
   ));
 } finally {
   await moduleServer.close();
@@ -221,6 +233,7 @@ function createHarness({ holdEnabled = true } = {}) {
   const calls = {
     beginStroke: [],
     extendStroke: [],
+    straightenStroke: [],
     endStroke: [],
     cancelStroke: 0,
     beginLiquify: [],
@@ -254,6 +267,7 @@ function createHarness({ holdEnabled = true } = {}) {
   let liquifyEditActive = false;
   let destructivePreviewNavigationActive = false;
   let beginStrokeAllowed = true;
+  let straightenStrokeAllowed = true;
   let cancelStrokeBeforeRender = false;
   let extension = null;
   const selectionPromises = [];
@@ -263,6 +277,10 @@ function createHarness({ holdEnabled = true } = {}) {
       return beginStrokeAllowed;
     },
     extendStroke(samples) { calls.extendStroke.push(samples); },
+    straightenActiveStroke(samples, signal) {
+      calls.straightenStroke.push({ samples, signal });
+      return Promise.resolve(straightenStrokeAllowed && !signal?.aborted);
+    },
     endStroke(timeMs) { calls.endStroke.push(timeMs); },
     cancelStrokeBeforeRender() {
       calls.cancelStroke += 1;
@@ -343,6 +361,7 @@ function createHarness({ holdEnabled = true } = {}) {
       destructivePreviewNavigationActive = value;
     },
     setBeginStrokeAllowed(value) { beginStrokeAllowed = value; },
+    setStraightenStrokeAllowed(value) { straightenStrokeAllowed = value; },
     setCancelStrokeBeforeRender(value) { cancelStrokeBeforeRender = value; },
     enableRecording() {
       extension = {
@@ -354,6 +373,146 @@ function createHarness({ holdEnabled = true } = {}) {
       };
     },
   };
+}
+
+async function flushMicrotasks() {
+  for (let index = 0; index < 4; index += 1) await Promise.resolve();
+}
+
+// Quick Line accepts restrained hand wobble, rejects a bow and preserves the
+// authored pressure/timing while projecting every center onto one chord.
+{
+  const almostStraight = [
+    { clientX: 0, clientY: 0, pressure: 0.2, timeMs: 1 },
+    { clientX: 40, clientY: 2, pressure: 0.4, timeMs: 2 },
+    { clientX: 80, clientY: -1, pressure: 0.7, timeMs: 3 },
+    { clientX: 120, clientY: 1, pressure: 0.9, timeMs: 4 },
+  ];
+  assert.equal(analyzeStrokeStraightness(almostStraight).eligible, true);
+  assert.equal(analyzeStrokeStraightness([
+    almostStraight[0],
+    { clientX: 60, clientY: 30, pressure: 0.5, timeMs: 2 },
+    almostStraight.at(-1),
+  ]).eligible, false);
+  assert.equal(analyzeStrokeStraightness([
+    almostStraight[0],
+    { clientX: 10, clientY: 0, pressure: 0.5, timeMs: 2 },
+  ]).eligible, false);
+
+  const straightened = straightenPointerSamples(almostStraight);
+  const first = straightened[0];
+  const last = straightened.at(-1);
+  for (const sample of straightened) {
+    const cross = (sample.clientX - first.clientX) * (last.clientY - first.clientY)
+      - (sample.clientY - first.clientY) * (last.clientX - first.clientX);
+    assert.ok(Math.abs(cross) < 1e-8, "ogni centro Quick Line deve essere collineare");
+  }
+  assert.deepEqual(
+    straightened.map(({ pressure, timeMs }) => ({ pressure, timeMs })),
+    almostStraight.map(({ pressure, timeMs }) => ({ pressure, timeMs })),
+  );
+}
+
+// A nearly straight mouse gesture locks only after the hold. Once locked,
+// further movement cannot append a curved tail to the replacement.
+{
+  const harness = createHarness();
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 90,
+    clientX: 20,
+    clientY: 40,
+    timeStamp: 100,
+  }));
+  harness.canvas.dispatchEvent(makeEvent("pointermove", {
+    pointerId: 90,
+    getCoalescedEvents: () => [
+      makeEvent("pointermove", { pointerId: 90, clientX: 60, clientY: 42, timeStamp: 110 }),
+      makeEvent("pointermove", { pointerId: 90, clientX: 100, clientY: 39, timeStamp: 120 }),
+      makeEvent("pointermove", { pointerId: 90, clientX: 140, clientY: 41, timeStamp: 130 }),
+    ],
+  }));
+  assert.equal(harness.calls.extendStroke.length, 1);
+  assert.equal(harness.browser.timers.size, 1);
+  harness.browser.runTimers();
+  await flushMicrotasks();
+  assert.equal(harness.calls.straightenStroke.length, 1);
+  const lockedSamples = harness.calls.straightenStroke[0].samples;
+  const lockedFirst = lockedSamples[0];
+  const lockedLast = lockedSamples.at(-1);
+  for (const sample of lockedSamples) {
+    const cross = (sample.clientX - lockedFirst.clientX)
+      * (lockedLast.clientY - lockedFirst.clientY)
+      - (sample.clientY - lockedFirst.clientY)
+      * (lockedLast.clientX - lockedFirst.clientX);
+    assert.ok(Math.abs(cross) < 1e-8);
+  }
+  harness.canvas.dispatchEvent(makeEvent("pointermove", {
+    pointerId: 90,
+    clientX: 160,
+    clientY: 90,
+    timeStamp: 140,
+  }));
+  assert.equal(harness.calls.extendStroke.length, 1,
+    "dopo il lock nessuna coda curva deve raggiungere il motore");
+  harness.canvas.dispatchEvent(makeEvent("pointerup", {
+    pointerId: 90,
+    clientX: 160,
+    clientY: 90,
+    timeStamp: 150,
+  }));
+  assert.equal(harness.controller.isPointerActive, false);
+  harness.controller.dispose();
+}
+
+// Curved, short, Blend and early-lift gestures remain ordinary strokes.
+{
+  const curved = createHarness();
+  curved.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 91,
+    clientX: 10,
+    clientY: 10,
+  }));
+  curved.canvas.dispatchEvent(makeEvent("pointermove", {
+    pointerId: 91,
+    getCoalescedEvents: () => [
+      makeEvent("pointermove", { pointerId: 91, clientX: 70, clientY: 45 }),
+      makeEvent("pointermove", { pointerId: 91, clientX: 130, clientY: 10 }),
+    ],
+  }));
+  assert.equal(curved.browser.timers.size, 0);
+  curved.canvas.dispatchEvent(makeEvent("pointerup", { pointerId: 91 }));
+  assert.equal(curved.calls.straightenStroke.length, 0);
+  curved.controller.dispose();
+
+  const earlyLift = createHarness();
+  earlyLift.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 92,
+    clientX: 10,
+    clientY: 10,
+  }));
+  earlyLift.canvas.dispatchEvent(makeEvent("pointermove", {
+    pointerId: 92,
+    clientX: 130,
+    clientY: 10,
+  }));
+  assert.equal(earlyLift.browser.timers.size, 1);
+  earlyLift.canvas.dispatchEvent(makeEvent("pointerup", { pointerId: 92 }));
+  earlyLift.browser.runTimers();
+  await flushMicrotasks();
+  assert.equal(earlyLift.calls.straightenStroke.length, 0);
+  earlyLift.controller.dispose();
+
+  const blend = createHarness();
+  blend.setActiveTool("blend");
+  blend.canvas.dispatchEvent(makeEvent("pointerdown", { pointerId: 93 }));
+  blend.canvas.dispatchEvent(makeEvent("pointermove", {
+    pointerId: 93,
+    clientX: 150,
+    clientY: 20,
+  }));
+  assert.equal(blend.browser.timers.size, 0);
+  blend.canvas.dispatchEvent(makeEvent("pointerup", { pointerId: 93 }));
+  blend.controller.dispose();
 }
 
 // Mouse paint acknowledges begin before pointer capture, preserves coalesced

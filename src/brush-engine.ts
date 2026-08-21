@@ -4092,6 +4092,102 @@ export class BrushEngine {
     }
   }
 
+  /**
+   * Replaces the active Paint/Erase gesture with one authoritative straight
+   * stroke. The freehand action is first completed and replayed away, then the
+   * supplied collinear samples are rendered through the normal brush path.
+   * Consequently grain, pressure, masks and Undo retain their normal semantics
+   * and the replacement occupies exactly one journal action.
+   */
+  async straightenActiveStroke(
+    samples: readonly PointerSample[],
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const sourceStroke = this.activeStroke;
+    if (
+      !sourceStroke
+      || sourceStroke.tool === "blend"
+      || samples.length < 2
+      || !samples.every((sample) => (
+        Number.isFinite(sample.clientX)
+        && Number.isFinite(sample.clientY)
+        && Number.isFinite(sample.pressure)
+        && Number.isFinite(sample.timeMs)
+      ))
+    ) {
+      return false;
+    }
+
+    const sourceActionId = sourceStroke.historyActionId;
+    const sourceTool = sourceStroke.tool;
+    const lastSample = samples[samples.length - 1];
+    let sourceUndone = false;
+
+    const restoreSourceStroke = async (): Promise<boolean> => {
+      if (!sourceUndone || this.activeStroke) return false;
+      const redoAction = this.historyActions[this.historyCursor];
+      if (redoAction?.id !== sourceActionId) return false;
+      const restored = await this.redo();
+      if (restored) sourceUndone = false;
+      return restored;
+    };
+
+    this.endStroke(lastSample.timeMs);
+    try {
+      // Pointer-up normally leaves a final stabilization/glaze batch queued.
+      // Undo must never race that batch back into the already rebuilt layer.
+      await this.waitForIdle();
+      if (signal?.aborted) return false;
+
+      const completedSource = this.historyActions[this.historyCursor - 1];
+      if (completedSource?.id !== sourceActionId) return false;
+      if (!await this.undo()) return false;
+      sourceUndone = true;
+
+      if (signal?.aborted || this.settings.tool !== sourceTool) {
+        await restoreSourceStroke();
+        return false;
+      }
+      if (!this.beginStroke(samples[0])) {
+        await restoreSourceStroke();
+        return false;
+      }
+
+      try {
+        this.extendStroke(samples.slice(1));
+        this.endStroke(lastSample.timeMs);
+      } catch (error) {
+        // No task can run between begin/extend/end, so the replacement has not
+        // reached requestAnimationFrame yet and remains cheaply cancellable.
+        if (!this.cancelStrokeBeforeRender()) this.endStroke(lastSample.timeMs);
+        await restoreSourceStroke();
+        throw error;
+      }
+
+      await this.waitForIdle();
+      sourceUndone = false;
+      this.callbacks.onStatus?.("Straight line locked.", "ok");
+      return true;
+    } catch (error) {
+      let restored = !sourceUndone;
+      if (sourceUndone && !this.activeStroke) {
+        try {
+          restored = await restoreSourceStroke();
+        } catch {
+          restored = false;
+        }
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      this.callbacks.onStatus?.(
+        restored
+          ? `Could not lock the straight line; the original stroke was kept. ${message}`
+          : `Could not safely finish the straight-line replacement. ${message}`,
+        "error",
+      );
+      return false;
+    }
+  }
+
   endStroke(timeMs?: number): void {
     const endingStroke = this.activeStroke;
     if (endingStroke?.tool === "blend") {
