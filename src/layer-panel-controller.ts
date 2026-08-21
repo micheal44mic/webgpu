@@ -395,7 +395,7 @@ export class LayerPanelController {
       const plan = this.currentMergePlan(stats);
       const mergeReason = this.mergeUnavailableReason(plan, stats);
       mergeSelectionButton.disabled = locked || mergeReason !== null;
-      mergeSelectionButton.title = mergeReason ?? "Unisci i livelli selezionati";
+      mergeSelectionButton.title = mergeReason ?? "Merge selected layers";
       if (!mergeStatus.classList.contains("is-error")) this.setMergeStatus(mergeReason);
     } else {
       mergeSelectionButton.disabled = true;
@@ -446,7 +446,7 @@ export class LayerPanelController {
       const background = view.kind === "background";
       const clippingChild = view.clippingParent !== null;
       const clippingLabel = view.clippingParent
-        ? `, maschera di clipping su ${view.clippingParent.name}`
+        ? `, clipped to ${view.clippingParent.name}`
         : "";
       const selected = this.multiSelectEnabled && !background
         ? this.selectedKeys.has(view.key)
@@ -465,7 +465,7 @@ export class LayerPanelController {
       select.setAttribute(
         "aria-label",
         background
-          ? `${view.name}, livello bloccato sempre in fondo`
+          ? `${view.name}, locked layer that always stays at the bottom`
           : this.multiSelectEnabled
           ? selected
             ? `${view.name}${clippingLabel}, selected. `
@@ -484,7 +484,7 @@ export class LayerPanelController {
         select.removeAttribute("aria-keyshortcuts");
       }
       select.title = view.clippingParent
-        ? `${view.name} · Ritagliato su ${view.clippingParent.name}`
+        ? `${view.name} · Clipped to ${view.clippingParent.name}`
         : view.name;
       name.textContent = view.name;
       clippingIndicator.hidden = !clippingChild;
@@ -869,9 +869,9 @@ export class LayerPanelController {
       const plan = stats ? this.currentMergePlan(stats) : null;
       const unavailableReason = stats && plan
         ? this.mergeUnavailableReason(plan, stats)
-        : "Unione non disponibile: il controller dei livelli non è ancora pronto.";
+        : "Merge unavailable: the layer controller is not ready yet.";
       mergeButton.disabled = unavailableReason !== null;
-      mergeButton.title = unavailableReason ?? "Unisci i livelli selezionati";
+      mergeButton.title = unavailableReason ?? "Merge selected layers";
       if (unavailableReason) {
         mergeReason.textContent = unavailableReason;
         mergeReason.hidden = false;
@@ -987,7 +987,7 @@ export class LayerPanelController {
     const plan = this.currentMergePlan(stats);
     const unavailableReason = this.mergeUnavailableReason(plan, stats);
     if (unavailableReason || !plan.valid) {
-      const message = unavailableReason ?? "Unione non disponibile.";
+      const message = unavailableReason ?? "Merge unavailable.";
       const { mergeButton, mergeReason } = this.options.elements;
       mergeButton.disabled = true;
       mergeButton.title = message;
@@ -1005,13 +1005,13 @@ export class LayerPanelController {
       const result = await operation;
       if (this.disposed) return;
       this.setMultiSelect(false, false);
-      const message = `${result.itemCount} livelli uniti.`;
+      const message = `${result.itemCount} layers merged.`;
       this.options.onLayerResult(message);
       this.setMergeStatus(message);
       this.announce(`${result.itemCount} layers merged.`);
     } catch (error) {
       if (this.disposed) return;
-      const message = error instanceof Error ? error.message : "Unione dei livelli non riuscita.";
+      const message = error instanceof Error ? error.message : "Layer merge failed.";
       this.options.recordDiagnostic(
         "mixed-scene-merge-failed",
         JSON.stringify({ selectedKeys: plan.orderedKeys }),
@@ -1035,7 +1035,7 @@ export class LayerPanelController {
     if (!properties) return;
     if (properties.locked) {
       this.closeContextMenu(false);
-      this.options.onStatus("Livello bloccato: sbloccalo prima di eliminarlo.", false);
+      this.options.onStatus("Layer locked: unlock it before deleting it.", false);
       return;
     }
     const key = properties.key;
@@ -1060,7 +1060,7 @@ export class LayerPanelController {
     if (!beforeStats) return;
     const sourceView = this.views(beforeStats).find((view) => view.selected);
     if (!sourceView) {
-      const message = "Nessun livello selezionato da duplicare.";
+      const message = "No layer selected to duplicate.";
       this.options.onLayerResult(message);
       this.announce(message);
       return;
@@ -1105,7 +1105,7 @@ export class LayerPanelController {
           );
         }
       }
-      const message = `${layerPanelDisplayName(result.name)} duplicato in `
+      const message = `${layerPanelDisplayName(result.name)} duplicated in `
         + `${result.totalMs.toFixed(0)} ms.`;
       this.options.onLayerResult(message);
       this.setMergeStatus(message);
@@ -1114,7 +1114,7 @@ export class LayerPanelController {
       if (this.disposed) return;
       const message = error instanceof Error
         ? error.message
-        : "Duplicazione del livello non riuscita.";
+        : "Layer duplication failed.";
       this.options.recordDiagnostic(
         "mixed-scene-duplicate-failed",
         JSON.stringify({ sourceKey: sourceView.key, kind: sourceView.kind }),
@@ -1237,7 +1237,7 @@ export class LayerPanelController {
     return {
       key: DOCUMENT_BACKGROUND_ROW_KEY,
       kind: "background",
-      name: "Sfondo",
+      name: "Background",
       visible: stats.documentBackground.visible,
       selected: false,
       clippingParent: null,
@@ -1394,7 +1394,7 @@ export class LayerPanelController {
     const parent = stats.layers.find((layer) => layer.id === rasterLayerId);
     return {
       key: `raster:${rasterLayerId}`,
-      name: parent ? layerPanelDisplayName(parent.name) : "livello base",
+      name: parent ? layerPanelDisplayName(parent.name) : "base layer",
     };
   }
 
@@ -1537,13 +1537,13 @@ export class LayerPanelController {
     const backgroundColorControl = this.options.document.createElement("label");
     backgroundColorControl.className = "mobile-layer-background-color";
     backgroundColorControl.hidden = true;
-    backgroundColorControl.title = "Scegli il colore dello sfondo";
+    backgroundColorControl.title = "Choose the background color";
     const backgroundColorSwatch = this.options.document.createElement("span");
     backgroundColorSwatch.setAttribute("aria-hidden", "true");
     const backgroundColorInput = this.options.document.createElement("input");
     backgroundColorInput.type = "color";
     backgroundColorInput.value = "#ffffff";
-    backgroundColorInput.setAttribute("aria-label", "Scegli il colore dello sfondo");
+    backgroundColorInput.setAttribute("aria-label", "Choose the background color");
     backgroundColorControl.append(backgroundColorSwatch, backgroundColorInput);
     const visibility = this.options.document.createElement("button");
     visibility.type = "button";
@@ -1591,8 +1591,8 @@ export class LayerPanelController {
         originalSlot,
       };
     } catch (error) {
-      this.options.onStatus("Riordino livello non disponibile.", true);
-      console.warn("Riordino livello mobile non disponibile.", error);
+      this.options.onStatus("Layer reorder unavailable.", true);
+      console.warn("Mobile layer reorder unavailable.", error);
       return null;
     }
   }

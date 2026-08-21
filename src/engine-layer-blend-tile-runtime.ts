@@ -97,7 +97,7 @@ export async function ensureLayerBlendTilePresentationResources(
     if (!engine.rasterStrokeRenderer) {
       await runGpuAllocationTransaction(
         engine.device,
-        "Renderer Traccia per fusione livello",
+        "Stroke renderer for layer blending",
         async (transaction) => {
           transaction.deferRollback(() => releaseRasterStrokeRenderer(engine, true));
           await ensureRasterStrokeRenderer(
@@ -115,7 +115,7 @@ export async function ensureLayerBlendTilePresentationResources(
   try {
     await runGpuAllocationTransaction(
       engine.device,
-      "Renderer Traccia per compositore fusione livello",
+      "Stroke renderer for the layer-blend compositor",
       async (transaction) => {
         const hadRenderer = engine.rasterStrokeRenderer !== null;
         if (!hadRenderer) {
@@ -231,7 +231,7 @@ function dirtyTileCores(
       || coreExtent % 2 !== 0
     )
   ) {
-    throw new Error("Core dirty mip non allineato alla griglia 2×2.");
+    throw new Error("The dirty mip core is not aligned to the 2×2 grid.");
   }
   const result: DirtyRect[] = [];
   const right = rect.x + rect.width;
@@ -374,7 +374,7 @@ export function encodeLayerBlendTilePresentation(
   label: string,
 ): void {
   if (!layerBlendTilePresentationRequired(engine)) {
-    throw new Error("Presentazione fusione a tile richiesta fuori dal percorso raster-only.");
+    throw new Error("Tile-blend presentation was requested outside the raster-only path.");
   }
   const compositor = engine.layerBlendTileCompositor;
   const renderer = engine.rasterStrokeRenderer;
@@ -386,13 +386,13 @@ export function encodeLayerBlendTilePresentation(
     || !engine.mixedScenePresentPipeline
     || !engine.presentationCacheView
   ) {
-    throw new Error("Compositore live fusioni a tile non pronto.");
+    throw new Error("The live tile-blend compositor is not ready.");
   }
   const activeSegmentIndex = engine.mixedSceneCompositionSegments.findIndex(
     (segment) => segment.kind === "active-raster",
   );
   if (activeSegmentIndex < 0) {
-    throw new Error("Programma fusione a tile privo del raster attivo.");
+    throw new Error("The tile-blend program has no active raster.");
   }
   // Hidden semantic records may remain in the ordered program even when its
   // visible semantic count is zero. `staticSegmentSource` intentionally skips
@@ -786,7 +786,7 @@ export function encodeLayerBlendTilePresentation(
   compositor.finishEncoding();
 
   const presentPass = encoder.beginRenderPass({
-    label: `${label} · checker finale`,
+    label: `${label} · final checker`,
     colorAttachments: [{
       view: engine.presentationCacheView,
       loadOp: requiresFullRebuild ? "clear" : "load",

@@ -515,7 +515,7 @@ assert.equal(
   "intersezione Selezione e commit live/replay devono coprire tutte le word della mask",
 );
 assert(renderer.includes("async captureDiagnostics()"));
-assert(renderer.includes("Diagnosi Fill: timeout readback mask dopo 10 s."));
+assert(renderer.includes("Fill diagnostics: mask readback timed out after 10 s."));
 assert(renderer.includes("allHighBitPathsCorrect"));
 assert(renderer.includes("encoder.copyBufferToBuffer(\n      scratch.selectedMask"));
 assert(renderer.includes("historySlice.buffer"));
@@ -592,7 +592,7 @@ assert(canvasInput.includes("engine.fillAtClientPoint("));
 assert(layerPanel.includes('reference.className = "mobile-layer-reference"'));
 assert(layerPanel.includes("this.options.setRasterReference(key, !layer.reference)"));
 assert(sceneEditor.includes("this.options.engine.setLayerReference("));
-assert(runtimeStats.includes("riferimento hot"));
+assert(runtimeStats.includes("hot reference"));
 assert(gpuMemoryPanel.includes("coldEligibleLayers = inactiveLayers.filter((layer) => !layer.reference)"));
 assert(runtimeStats.includes("stats.referenceLayerId !== null"));
 assert(styles.includes('.mobile-layer-reference[aria-pressed="true"]'));

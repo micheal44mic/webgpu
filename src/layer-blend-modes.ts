@@ -2,14 +2,14 @@
  * Shared layer blend-mode contract, independent from the current renderers.
  *
  * Storage is linear-light RGBA with premultiplied RGB. Blend functions B(Cb,Cs)
- * run on unassociated sRGB, matching the conventional Photoshop/Procreate
+ * run on unassociated sRGB, matching the conventional encoded-sRGB blend
  * interpretation, then return to linear before W3C source-over compositing.
  * Source alpha must already include layer opacity.
  *
  * Dissolve is intentionally absent: it requires coordinate-dependent random
  * coverage and cannot be represented by a deterministic two-color function.
- * Procreate does not publish Shade's transfer function; its current fallback
- * is explicitly provisional and must not be described as pixel-identical.
+ * Shade has no calibrated transfer function yet; its current fallback is
+ * explicitly provisional and must not be described as pixel-identical.
  */
 
 export const LAYER_BLEND_MODE_STRATEGY =
@@ -17,7 +17,7 @@ export const LAYER_BLEND_MODE_STRATEGY =
 
 export const DEFAULT_LAYER_BLEND_MODE = "normal" as const;
 
-/** Exact current Procreate 5.4 menu order. */
+/** Canonical blend-mode menu order used by the editor. */
 export const LAYER_BLEND_MODE_ORDER = [
   "multiply",
   "darken",
@@ -69,33 +69,33 @@ export interface LayerBlendModeCategory {
 }
 
 export const LAYER_BLEND_MODE_LABELS: Readonly<Record<LayerBlendMode, string>> = {
-  multiply: "Moltiplica",
-  darken: "Scurisci",
-  shade: "Shade (provvisorio)",
-  "color-burn": "Brucia colore",
-  "linear-burn": "Brucia lineare",
-  "darker-color": "Colore più scuro",
-  normal: "Normale",
-  lighten: "Schiarisci",
-  screen: "Scolora",
-  "color-dodge": "Scherma colore",
-  add: "Aggiungi (Scherma lineare)",
-  "lighter-color": "Colore più chiaro",
-  overlay: "Sovrapponi",
-  "soft-light": "Luce soffusa",
-  "hard-light": "Luce intensa",
-  "vivid-light": "Luce vivida",
-  "linear-light": "Luce lineare",
-  "pin-light": "Luce puntiforme",
-  "hard-mix": "Miscela dura",
-  difference: "Differenza",
-  exclusion: "Esclusione",
-  subtract: "Sottrai",
-  divide: "Dividi",
-  hue: "Tonalità",
-  saturation: "Saturazione",
-  color: "Colore",
-  luminosity: "Luminosità",
+  multiply: "Multiply",
+  darken: "Darken",
+  shade: "Shade (provisional)",
+  "color-burn": "Color Burn",
+  "linear-burn": "Linear Burn",
+  "darker-color": "Darker Color",
+  normal: "Normal",
+  lighten: "Lighten",
+  screen: "Screen",
+  "color-dodge": "Color Dodge",
+  add: "Add (Linear Dodge)",
+  "lighter-color": "Lighter Color",
+  overlay: "Overlay",
+  "soft-light": "Soft Light",
+  "hard-light": "Hard Light",
+  "vivid-light": "Vivid Light",
+  "linear-light": "Linear Light",
+  "pin-light": "Pin Light",
+  "hard-mix": "Hard Mix",
+  difference: "Difference",
+  exclusion: "Exclusion",
+  subtract: "Subtract",
+  divide: "Divide",
+  hue: "Hue",
+  saturation: "Saturation",
+  color: "Color",
+  luminosity: "Luminosity",
 };
 
 /** Stable numeric ABI shared by TypeScript metadata and WGSL. */
@@ -133,7 +133,7 @@ export const PROVISIONAL_LAYER_BLEND_MODES = ["shade"] as const satisfies
   readonly LayerBlendMode[];
 
 export const LAYER_BLEND_SHADE_COMPATIBILITY_NOTE =
-  "Fallback provvisorio: Shade usa Darken finché una misura Procreate non ne calibra la formula." as const;
+  "Temporary fallback: Shade uses Darken until its transfer function is calibrated." as const;
 
 const LAYER_BLEND_MODE_SET: ReadonlySet<string> = new Set(LAYER_BLEND_MODE_ORDER);
 
@@ -148,18 +148,18 @@ export function normalizeLayerBlendMode(value: unknown): LayerBlendMode {
 export const LAYER_BLEND_MODE_CATEGORIES: readonly LayerBlendModeCategory[] = [
   {
     id: "darken",
-    label: "Scurisci",
+    label: "Darken",
     modes: ["multiply", "darken", "shade", "color-burn", "linear-burn", "darker-color"],
   },
-  { id: "normal", label: "Normale", modes: ["normal"] },
+  { id: "normal", label: "Normal", modes: ["normal"] },
   {
     id: "lighten",
-    label: "Schiarisci",
+    label: "Lighten",
     modes: ["lighten", "screen", "color-dodge", "add", "lighter-color"],
   },
   {
     id: "contrast",
-    label: "Contrasto",
+    label: "Contrast",
     modes: [
       "overlay",
       "soft-light",
@@ -172,12 +172,12 @@ export const LAYER_BLEND_MODE_CATEGORIES: readonly LayerBlendModeCategory[] = [
   },
   {
     id: "difference",
-    label: "Confronto",
+    label: "Difference",
     modes: ["difference", "exclusion", "subtract", "divide"],
   },
   {
     id: "component",
-    label: "Componente",
+    label: "Component",
     modes: ["hue", "saturation", "color", "luminosity"],
   },
 ];
@@ -610,7 +610,7 @@ fn layerBlendSrgb(backdrop: vec3<f32>, source: vec3<f32>, mode: u32) -> vec3<f32
   switch mode {
     case LAYER_BLEND_MULTIPLY: { result = backdrop * source; }
     case LAYER_BLEND_DARKEN: { result = min(backdrop, source); }
-    // Procreate does not publish Shade: temporary Darken fallback.
+    // Shade is not calibrated yet: use the temporary Darken fallback.
     case LAYER_BLEND_SHADE_PROVISIONAL: { result = min(backdrop, source); }
     case LAYER_BLEND_COLOR_BURN: {
       result = vec3<f32>(

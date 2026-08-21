@@ -54,7 +54,7 @@ function requestResult<T>(request: IDBRequest<T>, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     request.addEventListener("success", () => resolve(request.result), { once: true });
     request.addEventListener("error", () => {
-      reject(request.error ?? new Error(`${label}: richiesta IndexedDB fallita.`));
+      reject(request.error ?? new Error(`${label}: IndexedDB request failed.`));
     }, { once: true });
   });
 }
@@ -63,10 +63,10 @@ function transactionCompletion(transaction: IDBTransaction, label: string): Prom
   return new Promise<void>((resolve, reject) => {
     transaction.addEventListener("complete", () => resolve(), { once: true });
     transaction.addEventListener("abort", () => {
-      reject(transaction.error ?? new Error(`${label}: transazione IndexedDB annullata.`));
+      reject(transaction.error ?? new Error(`${label}: IndexedDB transaction was aborted.`));
     }, { once: true });
     transaction.addEventListener("error", () => {
-      reject(transaction.error ?? new Error(`${label}: transazione IndexedDB fallita.`));
+      reject(transaction.error ?? new Error(`${label}: IndexedDB transaction failed.`));
     }, { once: true });
   });
 }
@@ -90,7 +90,7 @@ function openTransaction(
 
 async function openHistoryDatabase(): Promise<IDBDatabase> {
   if (typeof indexedDB === "undefined") {
-    throw new Error("IndexedDB non disponibile.");
+    throw new Error("IndexedDB is unavailable.");
   }
   return await new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(
@@ -117,10 +117,10 @@ async function openHistoryDatabase(): Promise<IDBDatabase> {
     });
     request.addEventListener("success", () => resolve(request.result), { once: true });
     request.addEventListener("error", () => {
-      reject(request.error ?? new Error("Apertura database History fallita."));
+      reject(request.error ?? new Error("Could not open the History database."));
     }, { once: true });
     request.addEventListener("blocked", () => {
-      reject(new Error("Aggiornamento database History bloccato da un'altra scheda."));
+      reject(new Error("History database upgrade was blocked by another tab."));
     }, { once: true });
   });
 }
@@ -175,7 +175,7 @@ export class HistoryStorageCatalog {
       "readwrite",
       true,
     );
-    const completion = transactionCompletion(transaction, "Registrazione sessione History");
+    const completion = transactionCompletion(transaction, "Register History session");
     transaction.objectStore(SESSION_STORE).put({
       sessionId,
       instanceId,
@@ -192,7 +192,7 @@ export class HistoryStorageCatalog {
     await this.initialize();
     const database = this.requireDatabase();
     const transaction = database.transaction(SESSION_STORE, "readwrite");
-    const completion = transactionCompletion(transaction, "Rinnovo lease History");
+    const completion = transactionCompletion(transaction, "Renew History lease");
     const store = transaction.objectStore(SESSION_STORE);
     const request = store.get(sessionId) as IDBRequest<HistorySessionRecord | undefined>;
     request.addEventListener("success", () => {
@@ -214,13 +214,13 @@ export class HistoryStorageCatalog {
       "readwrite",
       true,
     );
-    const completion = transactionCompletion(transaction, "Registrazione OPFS History");
+    const completion = transactionCompletion(transaction, "Register History OPFS state");
     const store = transaction.objectStore(SESSION_STORE);
     const request = store.get(sessionId) as IDBRequest<HistorySessionRecord | undefined>;
     let missingSession: Error | null = null;
     request.addEventListener("success", () => {
       if (!request.result) {
-        missingSession = new Error("Sessione History assente durante la registrazione OPFS.");
+        missingSession = new Error("History session is missing while registering OPFS state.");
         transaction.abort();
         return;
       }
@@ -242,13 +242,13 @@ export class HistoryStorageCatalog {
       "readwrite",
       true,
     );
-    const completion = transactionCompletion(transaction, "Registrazione lock History");
+    const completion = transactionCompletion(transaction, "Register History lock");
     const store = transaction.objectStore(SESSION_STORE);
     const request = store.get(sessionId) as IDBRequest<HistorySessionRecord | undefined>;
     let missingSession: Error | null = null;
     request.addEventListener("success", () => {
       if (!request.result) {
-        missingSession = new Error("Sessione History assente durante la registrazione lock.");
+        missingSession = new Error("History session is missing while registering the lock.");
         transaction.abort();
         return;
       }
@@ -265,12 +265,12 @@ export class HistoryStorageCatalog {
   async sessionMayUseOpfs(sessionId: string): Promise<boolean> {
     await this.initialize();
     const transaction = this.requireDatabase().transaction(SESSION_STORE, "readonly");
-    const completion = transactionCompletion(transaction, "Lettura backend sessione History");
+    const completion = transactionCompletion(transaction, "Read History session backend");
     const record = await requestResult(
       transaction.objectStore(SESSION_STORE).get(sessionId) as IDBRequest<
         HistorySessionRecord | undefined
       >,
-      "Lettura backend sessione History",
+      "Read History session backend",
     );
     await completion;
     // Records written before this field existed are conservatively treated as
@@ -283,10 +283,10 @@ export class HistoryStorageCatalog {
   ): Promise<HistorySessionCleanupCandidate[]> {
     await this.initialize();
     const transaction = this.requireDatabase().transaction(SESSION_STORE, "readonly");
-    const completion = transactionCompletion(transaction, "Elenco sessioni History");
+    const completion = transactionCompletion(transaction, "List History sessions");
     const records = await requestResult(
       transaction.objectStore(SESSION_STORE).getAll() as IDBRequest<HistorySessionRecord[]>,
-      "Elenco sessioni History",
+      "List History sessions",
     );
     await completion;
     return records
@@ -301,12 +301,12 @@ export class HistoryStorageCatalog {
   async loadManifest(sessionId: string): Promise<HistoryManifestV1 | null> {
     await this.initialize();
     const transaction = this.requireDatabase().transaction(MANIFEST_STORE, "readonly");
-    const completion = transactionCompletion(transaction, "Lettura manifest History");
+    const completion = transactionCompletion(transaction, "Read History manifest");
     const manifest = await requestResult(
       transaction.objectStore(MANIFEST_STORE).get(sessionId) as IDBRequest<
         HistoryManifestV1 | undefined
       >,
-      "Lettura manifest History",
+      "Read History manifest",
     );
     await completion;
     return manifest ?? null;
@@ -335,8 +335,8 @@ export class HistoryStorageCatalog {
       const generation = request.result?.generation ?? 0;
       if (generation !== options.expectedManifestGeneration) {
         conflict = new Error(
-          `Conflitto manifest History: generazione ${generation}, `
-          + `attesa ${options.expectedManifestGeneration}.`,
+          `History manifest conflict: generation ${generation}; `
+          + `expected ${options.expectedManifestGeneration}.`,
         );
         transaction.abort();
         return;
@@ -357,7 +357,7 @@ export class HistoryStorageCatalog {
       sessionRequest.addEventListener("success", () => {
         const session = sessionRequest.result;
         if (!session) {
-          conflict = new Error("Sessione History assente durante il commit.");
+          conflict = new Error("The History session is missing during commit.");
           transaction.abort();
           return;
         }
@@ -388,7 +388,7 @@ export class HistoryStorageCatalog {
       "readwrite",
       true,
     );
-    const completion = transactionCompletion(transaction, "GC segmento History");
+    const completion = transactionCompletion(transaction, "History segment GC");
     const manifestStore = transaction.objectStore(MANIFEST_STORE);
     const request = manifestStore.get(options.sessionId) as IDBRequest<
       HistoryManifestV1 | undefined
@@ -398,8 +398,8 @@ export class HistoryStorageCatalog {
       const generation = request.result?.generation ?? 0;
       if (generation !== options.expectedManifestGeneration) {
         conflict = new Error(
-          `Conflitto GC manifest History: generazione ${generation}, `
-          + `attesa ${options.expectedManifestGeneration}.`,
+          `History manifest GC conflict: generation ${generation}; `
+          + `expected ${options.expectedManifestGeneration}.`,
         );
         transaction.abort();
         return;
@@ -431,7 +431,7 @@ export class HistoryStorageCatalog {
   }): Promise<void> {
     await this.initialize();
     const transaction = this.requireDatabase().transaction(CHUNK_STORE, "readwrite");
-    const completion = transactionCompletion(transaction, "Scrittura chunk History");
+    const completion = transactionCompletion(transaction, "Write History chunk");
     transaction.objectStore(CHUNK_STORE).put({
       key: chunkKey(options.sessionId, options.segmentId, options.chunkIndex),
       sessionId: options.sessionId,
@@ -450,15 +450,15 @@ export class HistoryStorageCatalog {
   ): Promise<ArrayBuffer> {
     await this.initialize();
     const transaction = this.requireDatabase().transaction(CHUNK_STORE, "readonly");
-    const completion = transactionCompletion(transaction, "Lettura chunk History");
+    const completion = transactionCompletion(transaction, "Read History chunk");
     const record = await requestResult(
       transaction.objectStore(CHUNK_STORE).get(
         chunkKey(sessionId, segmentId, chunkIndex),
       ) as IDBRequest<HistoryChunkRecord | undefined>,
-      "Lettura chunk History",
+      "Read History chunk",
     );
     await completion;
-    if (!record) throw new Error(`Chunk History ${segmentId}/${chunkIndex} mancante.`);
+    if (!record) throw new Error(`History chunk ${segmentId}/${chunkIndex} is missing.`);
     return record.bytes;
   }
 
@@ -466,7 +466,7 @@ export class HistoryStorageCatalog {
     await this.initialize();
     const database = this.requireDatabase();
     const transaction = database.transaction([CHUNK_STORE, SEGMENT_STORE], "readwrite");
-    const completion = transactionCompletion(transaction, "Rimozione segmento History");
+    const completion = transactionCompletion(transaction, "History segment removal");
     const chunkStore = transaction.objectStore(CHUNK_STORE);
     deleteIndexRange(
       chunkStore,
@@ -484,7 +484,7 @@ export class HistoryStorageCatalog {
       [SESSION_STORE, MANIFEST_STORE, SEGMENT_STORE, CHUNK_STORE],
       "readwrite",
     );
-    const completion = transactionCompletion(transaction, "Rimozione sessione History");
+    const completion = transactionCompletion(transaction, "Remove History session");
     const segmentStore = transaction.objectStore(SEGMENT_STORE);
     const chunkStore = transaction.objectStore(CHUNK_STORE);
     deleteIndexRange(
@@ -508,7 +508,7 @@ export class HistoryStorageCatalog {
   }
 
   private requireDatabase(): IDBDatabase {
-    if (!this.database) throw new Error("Catalogo History non inizializzato.");
+    if (!this.database) throw new Error("The History catalog is not initialized.");
     return this.database;
   }
 }

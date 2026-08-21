@@ -87,24 +87,24 @@ export function planMixedSceneLayerMerge(
   keys: readonly MixedSceneItem["key"][],
 ): LayerMergePlan {
   if (keys.length < 2) {
-    throw new Error("Seleziona almeno due elementi consecutivi da unire.");
+    throw new Error("Select at least two consecutive items to merge.");
   }
   if (new Set(keys).size !== keys.length) {
-    throw new Error("La selezione da unire contiene elementi duplicati.");
+    throw new Error("The merge selection contains duplicate items.");
   }
   const sceneIndex = scene.indexOfKey(keys[0]);
   if (sceneIndex < 0) {
-    throw new Error(`Elemento iniziale ${keys[0]} assente dalla scena.`);
+    throw new Error(`The first item, ${keys[0]}, is missing from the scene.`);
   }
   const interval = scene.items.slice(sceneIndex, sceneIndex + keys.length);
   if (!sameKeys(interval.map((item) => item.key), keys)) {
     throw new Error(
-      "Gli elementi da unire devono essere contigui e forniti nell'ordine dal basso verso l'alto.",
+      "Items to merge must be contiguous and provided in bottom-to-top order.",
     );
   }
   if (interval.some((item) => item.kind === "image")) {
     throw new Error(
-      "La v1 del merge non rasterizza ancora i nodi immagine: seleziona solo raster, testo e SVG.",
+      "Merge v1 does not yet rasterize image nodes: select only raster, text, and SVG items.",
     );
   }
 
@@ -125,7 +125,7 @@ export function planMixedSceneLayerMerge(
     const unitKeys = unit.map((record) => `raster:${record.id}` as const);
     if (!unit.every((record) => selectedRasterIds.has(record.id))) {
       throw new Error(
-        `Il gruppo di clipping ${parent.name} deve essere unito per intero.`,
+        `Clipping group ${parent.name} must be merged in full.`,
       );
     }
     const firstUnitSceneIndex = scene.indexOfKey(unitKeys[0]);
@@ -134,7 +134,7 @@ export function planMixedSceneLayerMerge(
       .map((item) => item.key);
     if (firstUnitSceneIndex < 0 || !sameKeys(liveUnitKeys, unitKeys)) {
       throw new Error(
-        `Il gruppo di clipping ${parent.name} non è consecutivo nella scena mista.`,
+        `Clipping group ${parent.name} is not consecutive in the mixed scene.`,
       );
     }
     mutableUnits.push(unit);
@@ -150,9 +150,9 @@ export function planMixedSceneLayerMerge(
       .find((record) => record.blendMode !== "normal");
     if (advancedParent) {
       throw new Error(
-        `Il blend ${advancedParent.blendMode} di ${advancedParent.name} dipende dal backdrop `
-        + "esterno. Unisci quella singola unità completa oppure estendi la selezione fino "
-        + "al fondo del documento.",
+        `The ${advancedParent.blendMode} blend of ${advancedParent.name} depends on the external `
+        + "backdrop. Merge that single complete unit or extend the selection to the bottom "
+        + "of the document.",
       );
     }
   }
@@ -178,15 +178,15 @@ export function planMixedSceneLayerMerge(
     const parentIndex = layerStack.indexOfId(rasterAboveInsertion.clippingParentId);
     if (parentIndex >= 0 && parentIndex < rasterLayerIndex) {
       throw new Error(
-        "Il merge inserirebbe il nuovo raster dentro un gruppo di clipping esistente.",
+        "The merge would insert the new raster inside an existing clipping group.",
       );
     }
   }
   const finalRasterCount = layerStack.count - rasterLayerIds.length + 1;
   if (finalRasterCount > LAYER_STACK_MAXIMUM) {
     throw new Error(
-      `Il merge produrrebbe ${finalRasterCount} raster, oltre il limite di `
-      + `${LAYER_STACK_MAXIMUM}. Includi almeno un raster nella selezione.`,
+      `The merge would produce ${finalRasterCount} rasters, exceeding the limit of `
+      + `${LAYER_STACK_MAXIMUM}. Include at least one raster in the selection.`,
     );
   }
 

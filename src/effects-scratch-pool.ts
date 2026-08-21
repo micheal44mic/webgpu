@@ -96,7 +96,7 @@ function align(value: number, alignment: number): number {
 
 function normalizedBytes(value: number, label: string): number {
   if (!Number.isFinite(value) || value <= 0) {
-    throw new Error(`Dimensione scratch ${label} non valida: ${value}.`);
+    throw new Error(`Invalid ${label} scratch size: ${value}.`);
   }
   return align(Math.ceil(value), 4);
 }
@@ -187,20 +187,20 @@ export class EffectsScratchPool {
   ): EffectsScratchLease | null {
     this.assertLive();
     if (!effectId) {
-      throw new Error("Identità effetto scratch mancante.");
+      throw new Error("Scratch effect identity is missing.");
     }
 
     let cursor = 0;
     const ranges: Record<string, EffectsScratchRange> = {};
     for (const request of rangeRequests) {
       if (!request.id || ranges[request.id]) {
-        throw new Error(`Range scratch duplicato o senza identità per ${effectId}.`);
+        throw new Error(`Duplicate or unidentified scratch range for ${effectId}.`);
       }
       const size = normalizedBytes(request.size, `${effectId}/${request.label}`);
       if (size > this.maximumBindingBytes) {
         throw new Error(
-          `Scratch ${effectId} ${request.label} (${size} byte) `
-          + "oltre maxStorageBufferBindingSize.",
+          `Scratch ${effectId} ${request.label} (${size} bytes) `
+          + "exceeds maxStorageBufferBindingSize.",
         );
       }
       cursor = align(cursor, this.storageAlignment);
@@ -210,7 +210,7 @@ export class EffectsScratchPool {
     const footprintBytes = align(cursor, this.storageAlignment);
     if (footprintBytes > this.maximumBufferBytes) {
       throw new Error(
-        `Scratch ${effectId} (${footprintBytes} byte) oltre maxBufferSize.`,
+        `Scratch ${effectId} (${footprintBytes} bytes) exceeds maxBufferSize.`,
       );
     }
 
@@ -292,7 +292,7 @@ export class EffectsScratchPool {
 
   private assertLive(): void {
     if (this.destroyed) {
-      throw new Error("Pool scratch effetti già distrutto.");
+      throw new Error("The effects scratch pool has already been destroyed.");
     }
   }
 
@@ -316,16 +316,16 @@ export class EffectsScratchPool {
       ? align(requiredBytes, this.storageAlignment)
       : 0;
     if (size > this.maximumBufferBytes) {
-      throw new Error(`Pool scratch effetti ${size} byte oltre maxBufferSize.`);
+      throw new Error(`Effects scratch pool size ${size} bytes exceeds maxBufferSize.`);
     }
     if (size !== this._currentBytes && !this.canReallocate()) {
       throw new Error(
-        "Riallocazione del pool scratch effetti vietata durante una pennellata attiva.",
+        "The effects scratch pool cannot be reallocated during an active stroke.",
       );
     }
     const nextBuffer = size > 0
       ? this.device.createBuffer({
-        label: `Banco effetti scratch condiviso ${size} byte`,
+        label: `Shared effects scratch pool ${size} bytes`,
         size,
         usage: GPUBufferUsage.STORAGE,
       })
@@ -343,7 +343,7 @@ export class EffectsScratchPool {
   private requireLease(effectId: string): EffectsScratchLease {
     const requirement = this.requirements.get(effectId);
     if (!requirement || !this.buffer) {
-      throw new Error(`Lease scratch ${effectId} non disponibile.`);
+      throw new Error(`Scratch lease ${effectId} is unavailable.`);
     }
     return {
       buffer: this.buffer,

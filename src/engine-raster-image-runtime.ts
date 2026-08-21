@@ -229,9 +229,9 @@ function assertNativeRasterImportResidentBudget(
     + newPersistentBytes;
   if (resultingImportResidentBytes > RASTER_IMAGE_MAXIMUM_TOTAL_GPU_BYTES) {
     throw new Error(
-      `Importazioni raster oltre il limite residente di `
+      `Raster imports exceed the resident limit of `
       + `${RASTER_IMAGE_MAXIMUM_TOTAL_GPU_BYTES / MEBIBYTE_BYTES} MiB `
-      + `(previsti ${(resultingImportResidentBytes / MEBIBYTE_BYTES).toFixed(1)} MiB).`,
+      + `(projected ${(resultingImportResidentBytes / MEBIBYTE_BYTES).toFixed(1)} MiB).`,
     );
   }
 }
@@ -245,7 +245,7 @@ async function ensureNativeImportPipelines(
 
   const created = await runGpuAllocationTransaction(
     engine.device,
-    `Pipeline import raster nativo ${engine.layerFormat}`,
+    `Native raster import pipeline ${engine.layerFormat}`,
     () => {
       const uploadModule = engine.device.createShaderModule({
         label: "Native raster import straight-sRGB upload WGSL",
@@ -394,7 +394,7 @@ async function createTransientImageTextures(
   const mipLevelCount = requiredImportMipLevelCount(width, height, bounds);
   return runGpuAllocationTransaction(
     engine.device,
-    `Texture transitorie import ${width}×${height}`,
+    `Transient import textures ${width}×${height}`,
     (transaction) => {
       const straightTexture = engine.device.createTexture({
         label: `Native import straight-sRGB ${width}×${height}`,
@@ -452,7 +452,7 @@ async function encodeBitmapIntoLayer(
     );
 
     const encoder = engine.device.createCommandEncoder({
-      label: `Import bitmap ${bitmap.width}×${bitmap.height} nel livello raster`,
+      label: `Import ${bitmap.width}×${bitmap.height} bitmap into raster layer`,
     });
     const straightBindGroup = engine.device.createBindGroup({
       label: "Native import straight source bind group",
@@ -706,16 +706,16 @@ export async function rebuildRasterLayerFromImmutableSource(
   record: LayerRecord,
 ): Promise<DirtyRect | null> {
   const source = record.rasterSource;
-  if (!source) throw new Error(`Il livello ${record.name} non ha un master raster immutabile.`);
+  if (!source) throw new Error(`Layer ${record.name} has no immutable raster master.`);
   if (engine.layerStack.active.id !== record.id) {
-    throw new Error("La cache raster può essere rigenerata soltanto sul livello attivo.");
+    throw new Error("The raster cache can only be rebuilt on the active layer.");
   }
   const resource = engine.rasterImageGpuResources.get(source.document.assetId);
   if (!resource) {
-    throw new Error(`Master raster ${source.document.assetId} non disponibile.`);
+    throw new Error(`Raster master ${source.document.assetId} is unavailable.`);
   }
   const hot = engine.requireLayerGpu(record.id).hot;
-  if (!hot) throw new Error("Texture hot del livello raster da rigenerare mancante.");
+  if (!hot) throw new Error("The raster layer hot texture required for rebuilding is missing.");
   const pipelines = await ensureNativeImportPipelines(engine);
   const previousBounds = record.contentBounds ? { ...record.contentBounds } : null;
   const bounds = rasterLayerSourceBounds(source, DOCUMENT_WIDTH, DOCUMENT_HEIGHT);
@@ -772,12 +772,12 @@ export async function installRasterLayerSourceResource(
       existing.width !== source.document.width
       || existing.height !== source.document.height
     ) {
-      throw new Error(`Asset raster duplicato incoerente: ${source.document.assetId}.`);
+      throw new Error(`Inconsistent duplicate raster asset: ${source.document.assetId}.`);
     }
     return existing;
   }
   if (sourceBlob.size !== source.document.sourceBytes) {
-    throw new Error(`Byte del master raster ${source.document.assetId} incoerenti.`);
+    throw new Error(`Raster master ${source.document.assetId} has inconsistent byte length.`);
   }
   let decoded: Awaited<ReturnType<typeof decodeRasterImage>> | null = null;
   let transient: TransientImageTextures | null = null;
@@ -799,12 +799,12 @@ export async function installRasterLayerSourceResource(
       || decoded.metadata.height !== source.document.height
       || decoded.metadata.mimeType !== source.document.mimeType
     ) {
-      throw new Error(`Metadati del master raster ${source.document.assetId} incoerenti.`);
+      throw new Error(`Raster master ${source.document.assetId} has inconsistent metadata.`);
     }
     transient = await encodeBitmapToImmutableMaster(engine, decoded.bitmap);
     releaseDecodedRasterImage(decoded);
     decoded = null;
-    await engine.waitForGpuCapped("Ripristino master raster", 60_000);
+    await engine.waitForGpuCapped("Restore raster master", 60_000);
     resource = createRasterImageGpuResource(
       engine,
       source.document.assetId,
@@ -837,7 +837,7 @@ async function restoreOriginalActiveAfterFailure(
   const candidateIndex = engine.layerStack.indexOfId(candidateLayerId);
   const originalIndex = engine.layerStack.indexOfId(originalActiveId);
   if (originalIndex < 0) {
-    throw new Error("Livello attivo originale perso durante il rollback import.");
+    throw new Error("The original active layer was lost during import rollback.");
   }
   engine.layerStack.setActiveIndex(originalIndex);
   await engine.activateLayer(
@@ -851,12 +851,12 @@ async function importRasterImageFileUnlocked(
   file: File,
   commitHistory: (history: NativeRasterImageHistorySeed) => void,
 ): Promise<Readonly<NativeRasterImageImportResult>> {
-  if (!engine.initialized) throw new Error("Il motore non è ancora inizializzato.");
+  if (!engine.initialized) throw new Error("The engine is not initialized yet.");
   if (file.size > RASTER_IMAGE_MAXIMUM_ENCODED_BYTES) {
-    throw new Error("File immagine oltre il limite di 64 MiB.");
+    throw new Error("The image file exceeds the 64 MiB limit.");
   }
   if (engine.layerStack.count >= LAYER_STACK_MAXIMUM) {
-    throw new Error(`Massimo ${LAYER_STACK_MAXIMUM} livelli raggiunto.`);
+    throw new Error(`The maximum of ${LAYER_STACK_MAXIMUM} layers has been reached.`);
   }
   engine.assertLayerSwitchAllowed();
   engine.cancelLayerColdCompressionIdle();
@@ -894,7 +894,7 @@ async function importRasterImageFileUnlocked(
             * RASTER_IMAGE_DECODED_BYTES_PER_PIXEL;
         if (transientGpuBytes > RASTER_IMAGE_MAXIMUM_GPU_BYTES) {
           throw new Error(
-            `Immagine troppo grande: la sorgente GPU transitoria richiederebbe `
+            `Image is too large: the transient GPU source would require `
             + `${(transientGpuBytes / 1024 / 1024).toFixed(1)} MiB.`,
           );
         }
@@ -913,8 +913,8 @@ async function importRasterImageFileUnlocked(
       + metadata.width * metadata.height * RASTER_IMAGE_DECODED_BYTES_PER_PIXEL;
     if (decodedTransientGpuBytes > RASTER_IMAGE_MAXIMUM_GPU_BYTES) {
       throw new Error(
-        `Immagine decodificata troppo grande: la sorgente GPU transitoria `
-        + `richiederebbe ${(decodedTransientGpuBytes / 1024 / 1024).toFixed(1)} MiB.`,
+        `Decoded image is too large: the transient GPU source would require `
+        + `${(decodedTransientGpuBytes / 1024 / 1024).toFixed(1)} MiB.`,
       );
     }
     assertNativeRasterImportResidentBudget(engine, bounds, decodedMipBytes + 32);
@@ -926,8 +926,8 @@ async function importRasterImageFileUnlocked(
       && scene.selected.rasterLayerId !== originalActiveId
     ) {
       throw new Error(
-        `Invariante import: raster selezionato ${scene.selected.rasterLayerId}, `
-        + `ma raster attivo ${originalActiveId}.`,
+        `Import invariant: selected raster ${scene.selected.rasterLayerId}, `
+        + `but active raster is ${originalActiveId}.`,
       );
     }
     const excludedNodeBefore = engine.vectorTextPreviewExcludedNodeId;
@@ -945,18 +945,18 @@ async function importRasterImageFileUnlocked(
       await engine.prepareActiveLayerForSwitch();
       const insertedIndex = engine.layerStack.insertAt(
         rasterLayerIndex,
-        metadata.sourceName || "Immagine raster",
+        metadata.sourceName || "Raster Image",
       );
       const record = engine.layerStack.at(insertedIndex);
       recordId = record.id;
       gpu = await allocateLayerGpuResources(
         engine,
         engine.layerFormat,
-        `Allocazione import raster livello ${record.id}`,
+        `Allocate raster import layer ${record.id}`,
       );
       engine.layerGpu.set(record.id, gpu);
       const hot = gpu.hot;
-      if (!hot) throw new Error("Texture hot del livello importato mancante.");
+      if (!hot) throw new Error("The imported layer hot texture is missing.");
 
       transient = await encodeBitmapIntoLayer(engine, decoded.bitmap, hot, bounds);
       // copyExternalImageToTexture captures the source at call time. Releasing
@@ -1006,7 +1006,7 @@ async function importRasterImageFileUnlocked(
       clearVectorTextPresentationForTransaction(engine);
       const previousIndexAfterInsertion = engine.layerStack.indexOfId(originalActiveId);
       if (previousIndexAfterInsertion < 0) {
-        throw new Error("Livello attivo precedente perso durante l’importazione.");
+        throw new Error("The previous active layer was lost during import.");
       }
       const activation = await engine.activateLayer(
         previousIndexAfterInsertion,
@@ -1083,7 +1083,7 @@ async function importRasterImageFileUnlocked(
               engine.layerStack.remove(candidateIndex);
               const restoredOriginalIndex = engine.layerStack.indexOfId(originalActiveId);
               if (restoredOriginalIndex < 0) {
-                throw new Error("Livello originale assente dopo il rollback import.");
+                throw new Error("The original layer is missing after import rollback.");
               }
               engine.layerStack.setActiveIndex(restoredOriginalIndex);
               await engine.activateLayer(restoredOriginalIndex, "layer-switch");
@@ -1105,12 +1105,12 @@ async function importRasterImageFileUnlocked(
       destroyLayerColdStorage(seed);
       if (rollbackErrors.length > 0) {
         engine.latchDocumentStateInconsistent(
-          "Importazione raster fallita e rollback incompleto: ricarica la pagina.",
+          "Raster import failed and rollback was incomplete. Reload the page.",
         );
         const details = rollbackErrors.map((failure) =>
           failure instanceof Error ? failure.message : String(failure)
         ).join("; ");
-        throw new Error(`Importazione raster fallita; rollback fallito: ${details}`);
+        throw new Error(`Raster import failed; rollback failed: ${details}`);
       }
       throw error;
     }
@@ -1126,7 +1126,7 @@ async function importRasterImageFileUnlocked(
       engine.publishStats();
       publishMixedScene(engine);
     } catch (publicationError) {
-      console.error("Pubblicazione UI dopo import raster non riuscita", publicationError);
+      console.error("Failed to publish UI state after raster import", publicationError);
     }
   }
 }
@@ -1137,7 +1137,7 @@ export async function importRasterImageFile(
   commitHistory: (history: NativeRasterImageHistorySeed) => void,
 ): Promise<Readonly<NativeRasterImageImportResult>> {
   if (rasterImageImportsInFlight.has(engine)) {
-    throw new Error("È già in corso un’importazione immagine.");
+    throw new Error("An image import is already in progress.");
   }
   rasterImageImportsInFlight.add(engine);
   try {
@@ -1170,13 +1170,13 @@ export async function switchActiveForStructuralHistory(
       await engine.activateLayer(targetIndex, "structural-history");
     } catch (restoreError) {
       engine.latchDocumentStateInconsistent(
-        "Cambio livello fallito durante una mutazione strutturale di livello.",
+        "Layer switch failed during a structural layer mutation.",
       );
       const first = error instanceof Error ? error.message : String(error);
       const second = restoreError instanceof Error
         ? restoreError.message
         : String(restoreError);
-      throw new Error(`${first}; rollback cambio livello fallito: ${second}`);
+      throw new Error(`${first}; layer-switch rollback failed: ${second}`);
     }
     throw error;
   }
@@ -1194,20 +1194,20 @@ export async function hydrateLayerFromSeed(
   const gpu = await allocateLayerGpuResources(
     engine,
     engine.layerFormat,
-    `Reidratazione livello storico ${layerId}`,
+    `Hydrate historical layer ${layerId}`,
   );
   const hot = gpu.hot;
   if (!hot) {
     destroyLayerGpuResources(engine, gpu);
-    throw new Error("Texture hot della cronologia import raster mancante.");
+    throw new Error("The raster-import history hot texture is missing.");
   }
   try {
     const encoder = engine.device.createCommandEncoder({
-      label: `Reidratazione seed livello ${layerId}`,
+      label: `Hydrate seed for layer ${layerId}`,
     });
     encodeLayerColdHydration(encoder, seed, hot);
     engine.device.queue.submit([encoder.finish()]);
-    await engine.waitForGpuCapped("Reidratazione livello da seed", 60_000);
+    await engine.waitForGpuCapped("Hydrate layer from seed", 60_000);
     return gpu;
   } catch (error) {
     destroyLayerGpuResources(engine, gpu);
@@ -1224,21 +1224,21 @@ async function undoRasterImport(
   const previousExcludedNodeId = engine.vectorTextPreviewExcludedNodeId;
   const originalActiveId = engine.layerStack.active.id;
   const targetIndex = engine.layerStack.indexOfId(action.layerId);
-  if (targetIndex < 0) throw new Error("Livello importato da annullare non presente.");
+  if (targetIndex < 0) throw new Error("The imported layer to undo is missing.");
   if (engine.layerStack.at(targetIndex) !== action.layerRecord) {
-    throw new Error("Record dell’import raster storico sostituito inaspettatamente.");
+    throw new Error("The historical raster-import record was unexpectedly replaced.");
   }
   const fallbackIndexBeforeSwitch = engine.layerStack.indexOfId(
     action.activeRasterLayerIdBefore,
   );
   if (fallbackIndexBeforeSwitch < 0 || action.activeRasterLayerIdBefore === action.layerId) {
-    throw new Error("Raster attivo precedente all’importazione non più disponibile.");
+    throw new Error("The raster layer active before import is no longer available.");
   }
   const gpu = engine.layerGpu.get(action.layerId);
-  if (!gpu) throw new Error("Risorse del livello importato da staccare mancanti.");
+  if (!gpu) throw new Error("Resources for the imported layer to detach are missing.");
   const currentSceneIndex = scene.indexOfKey(`raster:${action.layerId}`);
   if (currentSceneIndex < 0) {
-    throw new Error("Livello importato assente dalla scena mista durante Undo.");
+    throw new Error("The imported layer is missing from the mixed scene during Undo.");
   }
   await switchActiveForStructuralHistory(engine, targetIndex);
   const activeTargetIndex = engine.layerStack.indexOfId(action.layerId);
@@ -1268,7 +1268,7 @@ async function undoRasterImport(
       }
       if (originalActiveId !== action.layerId) {
         const originalIndex = engine.layerStack.indexOfId(originalActiveId);
-        if (originalIndex < 0) throw new Error("Raster attivo originale perso nel rollback Undo.");
+        if (originalIndex < 0) throw new Error("The original active raster was lost during Undo rollback.");
         await switchActiveForStructuralHistory(engine, originalIndex);
       }
     } catch (restoreError) {
@@ -1276,20 +1276,20 @@ async function undoRasterImport(
     }
     if (rollbackErrors.length > 0) {
       engine.latchDocumentStateInconsistent(
-        "Undo import raster fallito e rollback incompleto: ricarica la pagina.",
+        "Raster-import Undo failed and rollback was incomplete. Reload the page.",
       );
       const operationMessage = error instanceof Error ? error.message : String(error);
       const rollbackMessage = rollbackErrors.map((failure) =>
         failure instanceof Error ? failure.message : String(failure)
       ).join("; ");
-      throw new Error(`${operationMessage}; rollback Undo import fallito: ${rollbackMessage}`);
+      throw new Error(`${operationMessage}; raster-import Undo rollback failed: ${rollbackMessage}`);
     }
     throw error;
   }
 
   const detachedIndex = engine.layerStack.indexOfId(action.layerId);
   const detached = engine.layerStack.remove(detachedIndex);
-  if (detached !== action.layerRecord) throw new Error("Detach import raster incoerente.");
+  if (detached !== action.layerRecord) throw new Error("Inconsistent raster-import detach.");
   engine.layerGpu.delete(action.layerId);
   destroyLayerGpuResources(engine, gpu);
   // Layer additions/reorders are not journal actions. Capture the position at
@@ -1309,7 +1309,7 @@ async function redoRasterImport(
   const previousExcludedNodeId = engine.vectorTextPreviewExcludedNodeId;
   const originalActiveId = engine.layerStack.active.id;
   if (engine.layerStack.indexOfId(action.layerId) >= 0) {
-    throw new Error("Livello importato già presente durante Redo.");
+    throw new Error("The imported layer is already present during Redo.");
   }
   engine.persistActiveLayerState();
   await engine.prepareActiveLayerForSwitch();
@@ -1348,7 +1348,7 @@ async function redoRasterImport(
         }
       } else {
         const originalIndex = engine.layerStack.indexOfId(originalActiveId);
-        if (originalIndex < 0) throw new Error("Raster attivo originale perso nel rollback Redo.");
+        if (originalIndex < 0) throw new Error("The original active raster was lost during Redo rollback.");
         // prepareActiveLayerForSwitch() has already frozen presentation and may
         // have evicted mip 0 even though the selected id never changed. Always
         // run the complete activation path to rehydrate and rebind the original.
@@ -1366,13 +1366,13 @@ async function redoRasterImport(
     }
     if (rollbackErrors.length > 0) {
       engine.latchDocumentStateInconsistent(
-        "Redo import raster fallito e rollback incompleto: ricarica la pagina.",
+        "Raster-import Redo failed and rollback was incomplete. Reload the page.",
       );
       const operationMessage = error instanceof Error ? error.message : String(error);
       const rollbackMessage = rollbackErrors.map((failure) =>
         failure instanceof Error ? failure.message : String(failure)
       ).join("; ");
-      throw new Error(`${operationMessage}; rollback Redo import fallito: ${rollbackMessage}`);
+      throw new Error(`${operationMessage}; raster-import Redo rollback failed: ${rollbackMessage}`);
     }
     throw error;
   }
@@ -1408,7 +1408,7 @@ export function destroyRasterImportHistorySeed(action: RasterImportHistoryAction
  * di percorrere il vecchio modello semantico.
  */
 function semanticImageModelRemoved(): never {
-  throw new Error("Le immagini importate sono livelli raster nativi, non nodi semantici.");
+  throw new Error("Imported images are native raster layers, not semantic nodes.");
 }
 
 export function updateRasterImageNode(

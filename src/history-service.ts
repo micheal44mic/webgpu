@@ -126,7 +126,7 @@ function throwAfterPayloadRelease(
   } catch (releaseError) {
     throw new AggregateError(
       [error, releaseError],
-      "Pubblicazione History fallita e rilascio del payload incompleto.",
+      "History publication failed and the payload could not be fully released.",
     );
   }
   throw error;
@@ -177,14 +177,14 @@ export class HistoryService {
 
   configureHooks(hooks: HistoryServiceHooks): void {
     if (this.openTransaction) {
-      throw new Error("Impossibile cambiare gli hook History durante una transazione.");
+      throw new Error("History hooks cannot be changed during a transaction.");
     }
     this.hooks = hooks;
   }
 
   configureCommands(commands: HistoryServiceCommands): void {
     if (this.openTransaction) {
-      throw new Error("Impossibile cambiare i comandi History durante una transazione.");
+      throw new Error("History commands cannot be changed during a transaction.");
     }
     this.commands = commands;
   }
@@ -212,7 +212,7 @@ export class HistoryService {
 
   begin(): HistoryTransaction {
     if (this.openTransaction) {
-      throw new Error("Esiste già una transazione History aperta.");
+      throw new Error("A History transaction is already open.");
     }
     const snapshot: HistoryTransactionSnapshot = {
       cursor: this.cursor,
@@ -265,7 +265,7 @@ export class HistoryService {
   ): void {
     if (!this.actions.some((action) => action.id === batch.actionId)) {
       throwAfterPayloadRelease(
-        new Error(`Batch History senza azione ${batch.actionId}.`),
+        new Error(`History batch has no action ${batch.actionId}.`),
         options.releasePayloadOnCancel,
       );
     }
@@ -298,10 +298,10 @@ export class HistoryService {
     readonly memory: HistoryMemoryLedger;
   }): void {
     if (!Number.isSafeInteger(update.checkpointCount) || update.checkpointCount < 0) {
-      throw new RangeError(`Conteggio checkpoint History non valido: ${update.checkpointCount}.`);
+      throw new RangeError(`Invalid History checkpoint count: ${update.checkpointCount}.`);
     }
     if (!Number.isSafeInteger(update.floorCursor) || update.floorCursor < 0) {
-      throw new RangeError(`Floor History non valido: ${update.floorCursor}.`);
+      throw new RangeError(`Invalid History floor: ${update.floorCursor}.`);
     }
     this.checkpointCount = update.checkpointCount;
     this.floorCursor = update.floorCursor;
@@ -331,18 +331,18 @@ export class HistoryService {
   }
 
   undo(): Promise<boolean> {
-    if (!this.commands) throw new Error("Comando Undo History non configurato.");
+    if (!this.commands) throw new Error("The History Undo command is not configured.");
     return this.commands.undo();
   }
 
   redo(): Promise<boolean> {
-    if (!this.commands) throw new Error("Comando Redo History non configurato.");
+    if (!this.commands) throw new Error("The History Redo command is not configured.");
     return this.commands.redo();
   }
 
   setCursor(cursor: number): void {
     if (!Number.isSafeInteger(cursor) || cursor < 0 || cursor > this.actions.length) {
-      throw new RangeError(`Cursore History non valido: ${cursor}.`);
+      throw new RangeError(`Invalid History cursor: ${cursor}.`);
     }
     this.cursor = cursor;
   }
@@ -352,7 +352,7 @@ export class HistoryService {
     storedBaseStamps: number,
   ): void {
     if (!Number.isSafeInteger(storedBaseStamps) || storedBaseStamps < 0) {
-      throw new RangeError(`Accounting stamp History non valido: ${storedBaseStamps}.`);
+      throw new RangeError(`Invalid History stamp accounting: ${storedBaseStamps}.`);
     }
     this.batches = batches;
     this.storedBaseStamps = storedBaseStamps;
@@ -431,7 +431,7 @@ export class HistoryService {
 
   closeTransaction(transaction: HistoryTransaction): void {
     if (this.openTransaction !== transaction) {
-      throw new Error("Transazione History non proprietaria dello store.");
+      throw new Error("The History transaction does not own the store.");
     }
     this.openTransaction = null;
   }
@@ -482,13 +482,13 @@ export class HistoryTransaction {
 
   publishAction(action: HistoryAction, reservedActionId = false): void {
     this.assertOpen();
-    if (this.actionPublished) throw new Error("La transazione possiede già un'azione.");
+    if (this.actionPublished) throw new Error("The transaction already owns an action.");
     const expectedActionId = reservedActionId
       ? this.service.nextActionId - 1
       : this.service.nextActionId;
     if (action.id !== expectedActionId) {
       throw new Error(
-        `ID azione History ${action.id} inatteso; atteso ${expectedActionId}.`,
+        `Unexpected History action ID ${action.id}; expected ${expectedActionId}.`,
       );
     }
     this.service.truncateRedoInTransaction();
@@ -504,7 +504,7 @@ export class HistoryTransaction {
     this.assertOpen();
     const actionExists = this.service.actions.some((action) => action.id === batch.actionId);
     if (!actionExists) {
-      throw new Error(`Batch History senza azione ${batch.actionId}.`);
+      throw new Error(`History batch has no action ${batch.actionId}.`);
     }
     appendWithoutPush(this.service.batches, batch);
     this.service.consumePublicationFault("after-batch-publish");
@@ -513,7 +513,7 @@ export class HistoryTransaction {
   addStoredBaseStamps(count: number): void {
     this.assertOpen();
     if (!Number.isSafeInteger(count) || count < 0) {
-      throw new RangeError(`Conteggio stamp History non valido: ${count}.`);
+      throw new RangeError(`Invalid History stamp count: ${count}.`);
     }
     this.service.storedBaseStamps += count;
   }
@@ -537,7 +537,7 @@ export class HistoryTransaction {
   }
 
   private assertOpen(): void {
-    if (this.closed) throw new Error("Transazione History già chiusa.");
+    if (this.closed) throw new Error("The History transaction is already closed.");
   }
 }
 
@@ -545,35 +545,35 @@ export function assertHistoryServiceInvariants(
   service: HistoryService,
 ): HistoryInvariantSnapshot {
   if (!Number.isSafeInteger(service.cursor) || service.cursor < 0) {
-    throw new Error(`Cursore History non valido: ${service.cursor}.`);
+    throw new Error(`Invalid History cursor: ${service.cursor}.`);
   }
   if (service.cursor > service.actions.length) {
     throw new Error(
-      `Cursore History ${service.cursor} oltre ${service.actions.length} azioni.`,
+      `History cursor ${service.cursor} exceeds ${service.actions.length} actions.`,
     );
   }
   if (!Number.isSafeInteger(service.nextActionId) || service.nextActionId <= 0) {
-    throw new Error(`Prossimo ID History non valido: ${service.nextActionId}.`);
+    throw new Error(`Invalid next History ID: ${service.nextActionId}.`);
   }
   if (!Number.isSafeInteger(service.storedBaseStamps) || service.storedBaseStamps < 0) {
-    throw new Error(`Accounting stamp History non valido: ${service.storedBaseStamps}.`);
+    throw new Error(`Invalid History stamp accounting: ${service.storedBaseStamps}.`);
   }
 
   const liveActionById = new Map<number, HistoryAction>();
   let previousActionId = 0;
   for (const action of service.actions) {
     if (!Number.isSafeInteger(action.id) || action.id <= previousActionId) {
-      throw new Error(`Ordine ID History non crescente a ${action.id}.`);
+      throw new Error(`History IDs are not increasing at ${action.id}.`);
     }
     if (liveActionById.has(action.id)) {
-      throw new Error(`ID azione History duplicato: ${action.id}.`);
+      throw new Error(`Duplicate History action ID: ${action.id}.`);
     }
     liveActionById.set(action.id, action);
     previousActionId = action.id;
   }
   if (previousActionId >= service.nextActionId) {
     throw new Error(
-      `Prossimo ID History ${service.nextActionId} non supera la coda ${previousActionId}.`,
+      `Next History ID ${service.nextActionId} does not exceed the tail ${previousActionId}.`,
     );
   }
 
@@ -585,15 +585,15 @@ export function assertHistoryServiceInvariants(
       continue;
     }
     if (batch.kind === "fill" && owner.kind !== "fill") {
-      throw new Error(`Batch Fill ${batch.actionId} posseduto da ${owner.kind}.`);
+      throw new Error(`Fill batch ${batch.actionId} is owned by ${owner.kind}.`);
     }
     if ((batch.kind === "paint" || batch.kind === "blend") && owner.kind !== "stroke") {
-      throw new Error(`Batch ${batch.kind} ${batch.actionId} posseduto da ${owner.kind}.`);
+      throw new Error(`${batch.kind} batch ${batch.actionId} is owned by ${owner.kind}.`);
     }
   }
   if (orphanedBatchCount > 0 && !service.compactionPending) {
     throw new Error(
-      `${orphanedBatchCount} batch senza azione e nessuna compattazione pendente.`,
+      `${orphanedBatchCount} batches have no action and no compaction is pending.`,
     );
   }
 
@@ -609,7 +609,7 @@ export function assertHistoryServiceInvariants(
   for (const group of discardedGroups) {
     for (const action of group) {
       if (liveActions.has(action)) {
-        throw new Error(`Azione History ${action.id} viva e scartata contemporaneamente.`);
+        throw new Error(`History action ${action.id} is both live and discarded.`);
       }
     }
   }

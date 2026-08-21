@@ -636,14 +636,14 @@ assert.equal(lightGlazeAdditionalMemoryMiB("rgba8unorm", "none", { width: 4096, 
     GPU_MEMORY_CATEGORY_ORDER.slice(0, 9),
     [
       "Layer RGBA16F",
-      "Piramidi mip RGBA16F",
-      "Maschere continue R16F",
+      "RGBA16F mip pyramids",
+      "Continuous R16F masks",
       "Heightfield R32F",
-      "Cache vettoriali",
-      "Scratch temporanei",
-      "Composite livelli",
-      "Cronologia · Undo",
-      "Cold storage livelli",
+      "Vector caches",
+      "Temporary scratch",
+      "Layer composites",
+      "History · Undo",
+      "Layer cold storage",
     ],
     at("Il pannello deve esporre le categorie di precisione richieste"),
   );
@@ -732,30 +732,30 @@ assert.equal(lightGlazeAdditionalMemoryMiB("rgba8unorm", "none", { width: 4096, 
   // Etichette reali osservate nel motore in esecuzione, non inventate.
   for (const [label, categoria] of [
     ["2048² authoritative paint layer rgba16float", "Layer RGBA16F"],
-    ["Lazy Light Glaze stroke accumulator r16float", "Maschere continue R16F"],
-    ["Lazy Light Glaze composited logical mip 1+ rgba16float", "Piramidi mip RGBA16F"],
+    ["Lazy Light Glaze stroke accumulator r16float", "Continuous R16F masks"],
+    ["Lazy Light Glaze composited logical mip 1+ rgba16float", "RGBA16F mip pyramids"],
     ["Smusso Heightfield V2 persistent R32F", "Heightfield R32F"],
-    ["Smusso alpha threshold/fractional class mask", "Effetti raster"],
-    ["Traccia persistent packed f16 coverage", "Maschere continue R16F"],
-    ["Ombra esterna persistent packed f16 matte", "Maschere continue R16F"],
-    ["Traccia styled derived mip 1+ rgba16float", "Piramidi mip RGBA16F"],
-    ["Banco effetti scratch condiviso 16777216 byte", "Scratch temporanei"],
-    ["Vector text GPU blur scratch A 512×512", "Scratch temporanei"],
-    ["Vector text viewport cache 1024×1024", "Cache vettoriali"],
-    ["Cronologia raster GPU · pagina 1 · 2097152 B", "Cronologia · Undo"],
-    ["Persistent presentation cache 786×1704", "Presentazione"],
-    ["Single active-layer display pyramid rgba16float", "Piramidi mip RGBA16F"],
-    ["Cold tile History livello 1 #3", "Cronologia · Undo"],
+    ["Bevel alpha threshold/fractional class mask", "Raster effects"],
+    ["Stroke persistent packed f16 coverage", "Continuous R16F masks"],
+    ["Outer Shadow persistent packed f16 matte", "Continuous R16F masks"],
+    ["Stroke styled derived mip 1+ rgba16float", "RGBA16F mip pyramids"],
+    ["Shared effects scratch pool 16777216 bytes", "Temporary scratch"],
+    ["Vector text GPU blur scratch A 512×512", "Temporary scratch"],
+    ["Vector text viewport cache 1024×1024", "Vector caches"],
+    ["GPU raster history · page 1 · 2097152 B", "History · Undo"],
+    ["Persistent presentation cache 786×1704", "Presentation"],
+    ["Single active-layer display pyramid rgba16float", "RGBA16F mip pyramids"],
+    ["Cold tile History layer 1 #3", "History · Undo"],
     // Il seed riportato sulla GPU dall'Undo: senza "Cronologia" nell'etichetta
     // finiva in "Non categorizzato", cioe' memoria reale senza una provenienza.
-    ["Cronologia checkpoint 7 ripristinato livello 2", "Cronologia · Undo"],
-    ["Cold tile livello 2 #7", "Cold storage livelli"],
-    ["Cold ripristinato livello 2 #7", "Cold storage livelli"],
-    ["Merged below surface (1 layers) rgba16float 2048×2048", "Composite livelli"],
-    ["Layer composite opacity", "Composite livelli"],
-    ["Brush outline · cached alpha boundary", "Preview pennello"],
-    ["", "Non categorizzato"],
-    ["qualcosa che non esiste ancora", "Non categorizzato"],
+    ["History checkpoint 7 restored layer 2", "History · Undo"],
+    ["Cold tile layer 2 #7", "Layer cold storage"],
+    ["Restored cold storage for layer 2 #7", "Layer cold storage"],
+    ["Merged below surface (1 layers) rgba16float 2048×2048", "Layer composites"],
+    ["Layer composite opacity", "Layer composites"],
+    ["Brush outline · cached alpha boundary", "Brush preview"],
+    ["", "Uncategorized"],
+    ["something that does not exist yet", "Uncategorized"],
   ]) {
     assert.equal(categoriseGpuResource(label), categoria, at(`Categoria errata per «${label}»`));
   }
@@ -786,7 +786,7 @@ assert.equal(lightGlazeAdditionalMemoryMiB("rgba8unorm", "none", { width: 4096, 
       at("Le categorie devono sommare esattamente al totale del registro"),
     );
     assert.ok(
-      istantaneaPartizione.categories.some((voce) => voce.category === "Non categorizzato"),
+      istantaneaPartizione.categories.some((voce) => voce.category === "Uncategorized"),
       at("Una risorsa senza regola deve restare visibile, non sparire dal conto"),
     );
   }
@@ -833,7 +833,7 @@ assert.equal(lightGlazeAdditionalMemoryMiB("rgba8unorm", "none", { width: 4096, 
   // il numero non deve poter mentire per omissione silenziosa.
   const registroIgnoto = new GpuResourceRegistry();
   registroIgnoto.register({
-    kind: "texture", label: "compressa", category: "Non categorizzato", bytes: 0,
+    kind: "texture", label: "compressed", category: "Uncategorized", bytes: 0,
     format: "astc-4x4-unorm", width: 256, height: 256, layers: 1, mipLevelCount: 1,
     sampleCount: 1,
     unmeasurable: true,
@@ -865,13 +865,13 @@ assert.equal(lightGlazeAdditionalMemoryMiB("rgba8unorm", "none", { width: 4096, 
     const record = strumentato.registry.records()[0];
     assert.equal(record.sampleCount, 4);
     assert.equal(record.bytes, 1024 * 512 * 8 * 4);
-    assert.equal(record.category, "Cache vettoriali");
+    assert.equal(record.category, "Vector caches");
     textureMsaa.destroy();
     const dopoDestroy = strumentato.registry.snapshot();
     assert.equal(dopoDestroy.currentBytes, 0);
     assert.equal(dopoDestroy.peakBytes, 1024 * 512 * 8 * 4);
     assert.equal(
-      dopoDestroy.categories.find((entry) => entry.category === "Cache vettoriali")?.peakBytes,
+      dopoDestroy.categories.find((entry) => entry.category === "Vector caches")?.peakBytes,
       1024 * 512 * 8 * 4,
     );
   }

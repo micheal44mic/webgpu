@@ -25,7 +25,7 @@ export class BoundedMobileRasterThumbnailCache<Value> {
 
   constructor(maximum = MOBILE_RASTER_THUMBNAIL_CACHE_MAXIMUM) {
     if (!Number.isSafeInteger(maximum) || maximum < 1) {
-      throw new Error("Il limite della cache miniature deve essere un intero positivo.");
+      throw new Error("The thumbnail cache limit must be a positive integer.");
     }
     this.maximum = maximum;
   }

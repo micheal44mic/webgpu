@@ -88,7 +88,7 @@ export function alignedMergedSurfaceBounds(
 ): MergedSurfaceRect {
   const normalized = normalizedRect(contentBounds, documentWidth, documentHeight);
   if (!normalized) {
-    throw new Error("Bounds merged privi di pixel validi.");
+    throw new Error("Merged bounds contain no valid pixels.");
   }
   if (
     !Number.isInteger(alignment)
@@ -96,7 +96,7 @@ export function alignedMergedSurfaceBounds(
     || !Number.isInteger(transparentGuard)
     || transparentGuard < 0
   ) {
-    throw new Error("Allineamento o guardia merged non validi.");
+    throw new Error("Invalid merged alignment or guard size.");
   }
   const left = Math.max(
     0,
@@ -158,7 +158,7 @@ export function mergedSurfaceLocalRect(
     || x + documentRect.width > surfaceBounds.width
     || y + documentRect.height > surfaceBounds.height
   ) {
-    throw new Error("Il contenuto eccede i bounds della superficie merged.");
+    throw new Error("The content exceeds the merged-surface bounds.");
   }
   return { x, y, width: documentRect.width, height: documentRect.height };
 }
@@ -169,7 +169,7 @@ export function mergedSurfacePhysicalRect(
   resolutionScale: number,
 ): MergedSurfaceRect {
   if (!Number.isInteger(resolutionScale) || resolutionScale < 1) {
-    throw new Error("Densità merged non valida.");
+    throw new Error("Invalid merged-surface density.");
   }
   const local = mergedSurfaceLocalRect(documentRect, surfaceBounds);
   return {
@@ -197,7 +197,7 @@ export function mergedSurfaceMemoryBytes(
   mipLevelCount: number;
 } {
   if (!Number.isFinite(bytesPerPixel) || bytesPerPixel <= 0) {
-    throw new Error("Byte per pixel merged non validi.");
+    throw new Error("Invalid merged bytes-per-pixel value.");
   }
   let width = Math.max(1, Math.floor(bounds.width));
   let height = Math.max(1, Math.floor(bounds.height));

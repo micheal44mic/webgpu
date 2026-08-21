@@ -215,9 +215,9 @@ const MINIMUM_SCALE = 0.05;
 const MAXIMUM_SCALE = 20;
 const FRAME_SAMPLE_LIMIT = 180;
 const OUTLINE_JOIN_LABELS: Readonly<Record<VectorTextOutlineJoin, string>> = {
-  bevel: "squadrata",
-  miter: "a punta",
-  round: "tonda",
+  bevel: "bevel",
+  miter: "miter",
+  round: "round",
 };
 
 function requiredElement<ElementType extends HTMLElement>(
@@ -229,13 +229,13 @@ function requiredElement<ElementType extends HTMLElement>(
     ? rootElement as HTMLElement
     : root.querySelector<HTMLElement>(`#${id}`);
   if (!found) {
-    throw new Error(`Elemento #${id} mancante per la scena testo/raster.`);
+    throw new Error(`Element #${id} is missing from the text/raster scene.`);
   }
   return found as ElementType;
 }
 
 function vectorRasterFormatLabel(format: LayerFormat): string {
-  return format === "rgba16float" ? "RGBA16F lineare" : "RGBA8 lineare";
+  return format === "rgba16float" ? "linear RGBA16F" : "linear RGBA8";
 }
 
 function uint8ArraysEqual(left: Uint8Array, right: Uint8Array): boolean {
@@ -399,7 +399,7 @@ export class MixedSceneController {
       desynchronized: true,
     });
     if (!interactionContext) {
-      throw new Error("Canvas2D non disponibile per l'overlay di interazione testo.");
+      throw new Error("Canvas2D is unavailable for the text interaction overlay.");
     }
     this.interactionContext = interactionContext;
     this.effectCompiler = new VectorTextEffectCompilerClient(() => {
@@ -419,7 +419,7 @@ export class MixedSceneController {
     this.bindControls();
     const initialSnapshot = this.host.getMixedSceneSnapshot();
     if (!initialSnapshot) {
-      throw new Error("Il motore non ha creato la scena mista.");
+      throw new Error("The engine did not create the mixed scene.");
     }
     this.syncScene(initialSnapshot);
   }
@@ -482,24 +482,24 @@ export class MixedSceneController {
     const toolLabel = this.rasterTransformToolMode === "warp"
       ? "Warp"
       : this.rasterTransformToolMode === "perspective"
-        ? "Prospettiva"
-        : "Trasforma";
+        ? "Perspective"
+        : "Transform";
     this.transformCommitLabel.textContent = movesPixelSelection
-      ? "Sposta selezione"
+      ? "Move selection"
       : toolLabel;
     this.transformCommitBar.setAttribute(
       "aria-label",
       movesPixelSelection
-        ? "Conferma spostamento selezione"
-        : `Conferma ${toolLabel}`,
+        ? "Confirm selection move"
+        : `Confirm ${toolLabel}`,
     );
     this.interactionCanvas.tabIndex = movesPixelSelection ? 0 : -1;
     this.interactionCanvas.classList.toggle("is-pixel-selection", movesPixelSelection);
     this.interactionCanvas.setAttribute(
       "aria-label",
       movesPixelSelection
-        ? "Sposta selezione pixel"
-        : "Selezione e trasformazione degli elementi",
+        ? "Move pixel selection"
+        : "Select and transform elements",
     );
     if (movesPixelSelection) {
       this.interactionCanvas.setAttribute("aria-describedby", "pixelSelectionMoveHelp");
@@ -571,8 +571,8 @@ export class MixedSceneController {
         this.rasterTransformRecoveryOnly = retained;
       }
       this.status.textContent = error instanceof Error
-        ? `Applicazione Trasforma non riuscita: ${error.message}`
-        : "Applicazione Trasforma non riuscita.";
+        ? `Could not apply Transform: ${error.message}`
+        : "Could not apply Transform.";
     } finally {
       this.transformCommitBusy = false;
       this.updateTransformCommitUi();
@@ -595,7 +595,7 @@ export class MixedSceneController {
         ? await this.host.cancelRasterLayerTransform()
         : await this.host.cancelVectorHistoryEdit();
       if (!cancelled) {
-        throw new Error("Nessuna trasformazione aperta da annullare.");
+        throw new Error("There is no open transform to cancel.");
       }
       this.transformSessionOpen = false;
       this.transformSessionKind = null;
@@ -609,8 +609,8 @@ export class MixedSceneController {
         this.rasterTransformRecoveryOnly = retained;
       }
       this.status.textContent = error instanceof Error
-        ? `Annullamento Trasforma non riuscito: ${error.message}`
-        : "Annullamento Trasforma non riuscito.";
+        ? `Could not cancel Transform: ${error.message}`
+        : "Could not cancel Transform.";
     } finally {
       this.transformCommitBusy = false;
       this.updateTransformCommitUi();
@@ -1016,7 +1016,7 @@ export class MixedSceneController {
         this.snapshot?.items.filter((item) => item.kind === "text").length ?? 0;
       await this.host.addVectorTextNode(
         this.defaultSeed(textCount, color),
-        `Testo ${textCount + 1}`,
+        `Text ${textCount + 1}`,
       );
     });
   }
@@ -1054,13 +1054,13 @@ export class MixedSceneController {
 
   async rasterizeSelectedSvgLayer(): Promise<VectorRasterizationResult | null> {
     if (this.transformSessionOpen) {
-      throw new Error("Applica o annulla la trasformazione SVG prima di rasterizzare.");
+      throw new Error("Apply or cancel the SVG transform before rasterizing.");
     }
     if (!this.selectedSvgNode()) {
-      throw new Error("Seleziona un livello SVG prima di rasterizzare.");
+      throw new Error("Select an SVG layer before rasterizing.");
     }
     if (this.sceneOperationBusy) {
-      throw new Error("Un'altra operazione vettoriale è ancora in corso.");
+      throw new Error("Another vector operation is still in progress.");
     }
     return this.rasterizeSelectedSvg(true);
   }
@@ -1084,7 +1084,7 @@ export class MixedSceneController {
    */
   async runVectorRasterHistoryGpuTest(): Promise<VectorRasterHistoryGpuTestReport> {
     if (this.sceneOperationBusy || this.transformSessionOpen) {
-      throw new Error("Concludi prima l’operazione vettoriale corrente.");
+      throw new Error("Finish the current vector operation first.");
     }
     const initialScene = this.host.getMixedSceneSnapshot();
     const initialHistory = this.host.getHistoryState();
@@ -1097,7 +1097,7 @@ export class MixedSceneController {
       || initialHistory.cursor !== 0
     ) {
       throw new Error(
-        "Il test raster vettoriale richiede una pagina dev nuova con un solo raster vuoto.",
+        "The vector-raster test requires a fresh dev page with one empty raster.",
       );
     }
 
@@ -1111,7 +1111,7 @@ export class MixedSceneController {
     };
     const refreshScene = (): MixedSceneSnapshot => {
       const snapshot = this.host.getMixedSceneSnapshot();
-      if (!snapshot) throw new Error("Scena mista non disponibile durante il test.");
+      if (!snapshot) throw new Error("The mixed scene is unavailable during the test.");
       this.syncScene(snapshot);
       return snapshot;
     };
@@ -1141,7 +1141,7 @@ export class MixedSceneController {
           x: this.host.documentWidth * 0.5,
           y: this.host.documentHeight * 0.5,
         };
-        const node = await this.host.addVectorTextNode(seed, "Test RGBA16F testo");
+        const node = await this.host.addVectorTextNode(seed, "RGBA16F text test");
         vectorKey = `text:${node.id}`;
       } else {
         const documentValue = parseVectorSvg(
@@ -1164,7 +1164,7 @@ export class MixedSceneController {
         ? await this.rasterizeSelectedText()
         : await this.rasterizeSelectedSvg();
       if (!result) {
-        throw new Error(`Rasterizzazione ${sourceKind} non completata dal test WebGPU.`);
+        throw new Error(`The WebGPU test did not complete ${sourceKind} rasterization.`);
       }
       await this.host.waitForIdle();
       const rasterizedScene = refreshScene();
@@ -1172,7 +1172,7 @@ export class MixedSceneController {
         (item) => item.kind === "raster" && item.rasterLayerId === result.layerId,
       );
       if (!generated || generated.kind !== "raster" || !generated.rasterContentBounds) {
-        throw new Error(`Raster ${sourceKind} generato privo di bounds autorevoli.`);
+        throw new Error(`Generated ${sourceKind} raster has no authoritative bounds.`);
       }
       const rawRect = generated.rasterContentBounds;
       const rawBeforeUndo = await this.host.readLayerPixels(
@@ -1520,7 +1520,7 @@ export class MixedSceneController {
         ? "#111111"
         : "#f47c5d";
     return {
-      text: index === 0 ? "STREETWEAR" : `TESTO ${index + 1}`,
+      text: index === 0 ? "STREETWEAR" : `TEXT ${index + 1}`,
       fontFamily: "Anton",
       fontSize: 360,
       color,
@@ -1598,13 +1598,13 @@ export class MixedSceneController {
 
   private async importSvgSource(source: string, sourceName: string): Promise<void> {
     if (this.sceneOperationBusy) return;
-    this.setSvgImportStatus(`Analisi sicura di ${sourceName}…`);
+    this.setSvgImportStatus(`Safely analyzing ${sourceName}…`);
     let documentValue: ReturnType<typeof parseVectorSvg>;
     try {
       documentValue = parseVectorSvg(source, sourceName);
     } catch (error) {
       this.setSvgImportStatus(
-        error instanceof Error ? error.message : "SVG non valido.",
+        error instanceof Error ? error.message : "Invalid SVG.",
         true,
       );
       return;
@@ -1619,13 +1619,13 @@ export class MixedSceneController {
       const sourceMiB = documentValue.sourceBytes / MEBIBYTE_BYTES;
       const vectorMiB = documentValue.logicalVectorBytes / MEBIBYTE_BYTES;
       this.setSvgImportStatus(
-        `${documentValue.sourceName} importato · ${documentValue.paints.length} colori · `
-        + `${documentValue.contourCount} contorni · ${sourceMiB.toFixed(3)} MiB file · `
-        + `${vectorMiB.toFixed(3)} MiB dati vettoriali CPU.`,
+        `${documentValue.sourceName} imported · ${documentValue.paints.length} colors · `
+        + `${documentValue.contourCount} contours · ${sourceMiB.toFixed(3)} MiB file · `
+        + `${vectorMiB.toFixed(3)} MiB CPU vector data.`,
       );
     } catch (error) {
       this.setSvgImportStatus(
-        error instanceof Error ? error.message : "Importazione SVG non riuscita.",
+        error instanceof Error ? error.message : "SVG import failed.",
         true,
       );
     } finally {
@@ -1647,7 +1647,7 @@ export class MixedSceneController {
   private async importImageFile(file: File): Promise<void> {
     if (this.sceneOperationBusy || this.transformSessionOpen) return;
     this.sceneOperationBusy = true;
-    this.setImageImportStatus(`Decodifica di ${file.name}…`);
+    this.setImageImportStatus(`Decoding ${file.name}…`);
     this.syncControlsFromSelection(this.selectedVectorNode());
     try {
       const imported = await this.host.importRasterImageFile(file);
@@ -1657,13 +1657,13 @@ export class MixedSceneController {
       await this.host.waitForIdle();
       const sourceMiB = imported.sourceBytes / MEBIBYTE_BYTES;
       this.setImageImportStatus(
-        `${imported.name} importata subito come raster · `
-        + `${imported.sourceWidth}×${imported.sourceHeight} px · ${imported.tileCount} tile · `
-        + `${sourceMiB.toFixed(2)} MiB file. Pennello, Riempimento ed effetti già attivi.`,
+        `${imported.name} imported directly as a raster · `
+        + `${imported.sourceWidth}×${imported.sourceHeight} px · ${imported.tileCount} tiles · `
+        + `${sourceMiB.toFixed(2)} MiB file. Brush, Fill, and effects are already active.`,
       );
     } catch (error) {
       this.setImageImportStatus(
-        error instanceof Error ? error.message : "Importazione immagine non riuscita.",
+        error instanceof Error ? error.message : "Image import failed.",
         true,
       );
     } finally {
@@ -1767,9 +1767,9 @@ export class MixedSceneController {
     const operation = this.rasterTransformToolMode === "warp"
       ? "Warp"
       : this.rasterTransformToolMode === "perspective"
-        ? "Prospettiva"
-        : "Trasforma";
-    this.status.textContent = `Preparo ${operation} GPU per ${node.name}…`;
+        ? "Perspective"
+        : "Transform";
+    this.status.textContent = `Preparing ${operation} on the GPU for ${node.name}…`;
     try {
       const state = await this.host.beginRasterLayerTransform();
       if (!state) return;
@@ -1790,7 +1790,7 @@ export class MixedSceneController {
       this.transformSessionKind = "raster";
       this.rasterTransformRecoveryOnly = false;
       this.updateTransformCommitUi();
-      this.status.textContent = `${operation} GPU pronto per ${current.name}: Applica o Annulla.`;
+      this.status.textContent = `${operation} GPU ready for ${current.name}: Apply or Cancel.`;
       this.scheduleRender();
     } catch (error) {
       const retained = this.rasterTransformSessionStillOpen();
@@ -1802,7 +1802,7 @@ export class MixedSceneController {
       }
       this.status.textContent = error instanceof Error
         ? error.message
-        : "Trasforma raster WebGPU non disponibile.";
+        : "WebGPU Raster Transform is unavailable.";
     } finally {
       this.rasterTransformPreparing = false;
     }
@@ -1848,7 +1848,7 @@ export class MixedSceneController {
     keys: readonly MixedSceneItem["key"][],
   ): Promise<LayerMergeResult> {
     if (this.sceneOperationBusy) {
-      throw new Error("Un'altra operazione sulla scena è ancora in corso.");
+      throw new Error("Another scene operation is still in progress.");
     }
     this.sceneOperationBusy = true;
     this.syncControlsFromSelection(this.selectedVectorNode());
@@ -1858,7 +1858,7 @@ export class MixedSceneController {
       for (;;) {
         const revision = this.effectCompiler.resourceRevisionValue();
         const snapshot = this.host.getMixedSceneSnapshot();
-        if (!snapshot) throw new Error("Scena mista non disponibile.");
+        if (!snapshot) throw new Error("The mixed scene is unavailable.");
         const firstIndex = snapshot.items.findIndex((item) => item.key === keys[0]);
         const liveKeys = firstIndex >= 0
           ? snapshot.items.slice(firstIndex, firstIndex + keys.length).map((item) => item.key)
@@ -1869,7 +1869,7 @@ export class MixedSceneController {
           || liveKeys.some((key, index) => key !== keys[index])
         ) {
           throw new Error(
-            "Gli elementi da unire sono cambiati o non sono più consecutivi.",
+            "The items to merge changed or are no longer consecutive.",
           );
         }
 
@@ -1877,10 +1877,10 @@ export class MixedSceneController {
         const vectorDraws: MergeMixedSceneItemsRequest["vectorDraws"][number][] = [];
         for (const key of keys) {
           const item = snapshot.items.find((candidate) => candidate.key === key);
-          if (!item) throw new Error(`Elemento ${key} assente durante il merge.`);
+          if (!item) throw new Error(`Item ${key} is missing during merge.`);
           if (item.kind === "raster") continue;
           if (item.kind === "image") {
-            throw new Error("La v1 del merge non supporta ancora i nodi immagine.");
+            throw new Error("Merge v1 does not support image nodes yet.");
           }
           const draws: VectorTextGpuDraw[] = [];
           if (item.kind === "text") {
@@ -1914,7 +1914,7 @@ export class MixedSceneController {
         }
         const diagnostics = this.effectCompiler.diagnostics();
         if (diagnostics.pendingJobs === 0 && diagnostics.lastError) {
-          throw new Error(`Preparazione vettori per merge fallita: ${diagnostics.lastError}`);
+          throw new Error(`Could not prepare vectors for merge: ${diagnostics.lastError}`);
         }
         await this.effectCompiler.waitForResourceReady(revision);
       }
@@ -1935,7 +1935,7 @@ export class MixedSceneController {
     const textId = selected.id;
     const rasterized = await this.runSceneOperation(async () => {
       this.setTextRasterStatus(
-        "Preparazione del testo alla risoluzione documento…",
+        "Preparing text at document resolution…",
       );
       const view = this.vectorRasterView();
       const rasterSlots = new Set<string>();
@@ -1945,11 +1945,11 @@ export class MixedSceneController {
           const current = this.selectedTextNode();
           if (!current || current.id !== textId) {
             throw new Error(
-              "Il testo selezionato è cambiato durante la rasterizzazione.",
+              "The selected text changed during rasterization.",
             );
           }
           if (current.text.length === 0) {
-            throw new Error("Il testo vuoto non contiene pixel da rasterizzare.");
+            throw new Error("Empty text contains no pixels to rasterize.");
           }
           const rasterNode = cloneVectorTextNode(current);
           rasterNode.opacity = 1;
@@ -1965,14 +1965,14 @@ export class MixedSceneController {
           );
           if (allEffectsReady) {
             this.setTextRasterStatus(
-              "Rasterizzazione WebGPU di " + current.name + "…",
+              "WebGPU rasterization of " + current.name + "…",
             );
             const result = await this.host.rasterizeVectorTextNode(textId, draws);
             const message =
-              current.name + " rasterizzato in "
+              current.name + " rasterized to "
               + vectorRasterFormatLabel(result.format) + " · MSAA 4× · "
-              + result.chunkCount + " blocchi 512 px · "
-              + result.tileCount + " tile 256 px.";
+              + result.chunkCount + " 512 px blocks · "
+              + result.tileCount + " 256 px tiles.";
             this.setTextRasterStatus(message);
             this.status.textContent = message;
             return result;
@@ -1980,7 +1980,7 @@ export class MixedSceneController {
           const diagnostics = this.effectCompiler.diagnostics();
           if (diagnostics.pendingJobs === 0 && diagnostics.lastError) {
             throw new Error(
-              "Preparazione mesh testo fallita: " + diagnostics.lastError,
+              "Text mesh preparation failed: " + diagnostics.lastError,
             );
           }
           await this.effectCompiler.waitForResourceReady(revision);
@@ -1989,7 +1989,7 @@ export class MixedSceneController {
         this.setTextRasterStatus(
           error instanceof Error
             ? error.message
-            : "Rasterizzazione testo non riuscita.",
+            : "Text rasterization failed.",
           true,
         );
         throw error;
@@ -2009,7 +2009,7 @@ export class MixedSceneController {
     if (!selected) return null;
     const svgId = selected.id;
     const rasterized = await this.runSceneOperation(async () => {
-      this.setSvgImportStatus("Preparazione delle mesh SVG alla risoluzione documento…");
+      this.setSvgImportStatus("Preparing SVG meshes at document resolution…");
       const view = this.vectorRasterView();
       const rasterSlots = new Set<string>();
       try {
@@ -2017,7 +2017,7 @@ export class MixedSceneController {
           const revision = this.effectCompiler.resourceRevisionValue();
           const current = this.selectedSvgNode();
           if (!current || current.id !== svgId) {
-            throw new Error("L’SVG selezionato è cambiato durante la rasterizzazione.");
+            throw new Error("The selected SVG changed during rasterization.");
           }
           const rasterNode = cloneVectorSvgNode(current);
           rasterNode.opacity = 1;
@@ -2031,26 +2031,26 @@ export class MixedSceneController {
           );
           if (allEffectsReady) {
             this.setSvgImportStatus(
-              `Rasterizzazione WebGPU di ${current.name}…`,
+              `WebGPU rasterization of ${current.name}…`,
             );
             const result = await this.host.rasterizeVectorSvgNode(svgId, draws);
             this.setSvgImportStatus(
-              `${current.name} rasterizzato in ${vectorRasterFormatLabel(result.format)} · MSAA 4× · `
-              + `${result.chunkCount} blocchi 512 px · ${result.tileCount} tile 256 px.`,
+              `${current.name} rasterized to ${vectorRasterFormatLabel(result.format)} · MSAA 4× · `
+              + `${result.chunkCount} 512 px blocks · ${result.tileCount} 256 px tiles.`,
             );
             return result;
           }
           const diagnostics = this.effectCompiler.diagnostics();
           if (diagnostics.pendingJobs === 0 && diagnostics.lastError) {
             throw new Error(
-              `Preparazione mesh SVG fallita: ${diagnostics.lastError}`,
+              `SVG mesh preparation failed: ${diagnostics.lastError}`,
             );
           }
           await this.effectCompiler.waitForResourceReady(revision);
         }
       } catch (error) {
         this.setSvgImportStatus(
-          error instanceof Error ? error.message : "Rasterizzazione SVG non riuscita.",
+          error instanceof Error ? error.message : "SVG rasterization failed.",
           true,
         );
         throw error;
@@ -2201,7 +2201,7 @@ export class MixedSceneController {
         } catch (error) {
           this.status.textContent = error instanceof Error
             ? error.message
-            : "Spostamento del raster non riuscito.";
+            : "Could not move the raster.";
         }
       } else if (event.key === "Escape") {
         event.preventDefault();
@@ -2258,7 +2258,7 @@ export class MixedSceneController {
     } catch (error) {
       this.status.textContent = error instanceof Error
         ? error.message
-        : "Modifica della scena testo/raster non riuscita.";
+        : "Could not edit the text/raster scene.";
       if (propagateError) throw error;
       return undefined;
     } finally {
@@ -3387,16 +3387,16 @@ export class MixedSceneController {
     const effectDiagnostics = this.effectCompiler.diagnostics();
     this.status.dataset.effectRegisteredPaths = String(effectDiagnostics.registeredPaths);
     this.status.dataset.effectReadyJobs = String(effectDiagnostics.readyJobs);
-    const cacheLabel = `${this.viewportTextureCount} cache GPU viewport`;
+    const cacheLabel = `${this.viewportTextureCount} viewport GPU cache entries`;
     const timing = `render ${this.lastRenderMs.toFixed(2)} ms `
       + `(p95 ${percentile(this.renderSamples, 0.95).toFixed(2)} ms)`;
-    const effectLabel = `Worker effetti ${effectDiagnostics.pendingJobs} in attesa · `
-      + `${effectDiagnostics.readyJobs} pronti · ${effectDiagnostics.failedJobs} errori`
+    const effectLabel = `Effects worker ${effectDiagnostics.pendingJobs} pending · `
+      + `${effectDiagnostics.readyJobs} ready · ${effectDiagnostics.failedJobs} errors`
       + (effectDiagnostics.lastError ? ` · ${effectDiagnostics.lastError}` : "");
     if (!node) {
       this.status.textContent =
-        `Raster selezionato · vettori semantici nel canvas di viewport · ${cacheLabel} `
-        + `${this.liveGpuMemoryMiB.toFixed(2)} MiB · canvas browser `
+        `Raster selected · semantic vectors in the viewport canvas · ${cacheLabel} `
+        + `${this.liveGpuMemoryMiB.toFixed(2)} MiB · browser canvas `
         + `${viewportCanvasLogicalMiB.toFixed(2)} MiB · ${effectLabel} · ${timing}.`;
       return;
     }
@@ -3406,40 +3406,40 @@ export class MixedSceneController {
     const rasterIndex = snapshot.items.findIndex(
       (item) => item.kind === "raster" && item.rasterLayerId === snapshot.activeRasterLayerId,
     );
-    const placement = vectorIndex < rasterIndex ? "sotto il raster attivo" : "sopra il raster attivo";
+    const placement = vectorIndex < rasterIndex ? "below the active raster" : "above the active raster";
     if (isImageNode(node)) {
       const sourceMiB = node.document.sourceBytes / MEBIBYTE_BYTES;
       this.status.textContent =
-        `${node.name} · immagine ${placement} · ${node.document.width}×`
+        `${node.name} · image ${placement} · ${node.document.width}×`
         + `${node.document.height} px · file ${sourceMiB.toFixed(2)} MiB · `
-        + `texture/mipmap WebGPU · scala ${(node.scale * 100).toFixed(1)}% · `
-        + `rotazione ${(node.rotation * 180 / Math.PI).toFixed(1)}° · ${timing}.`;
+        + `WebGPU texture/mipmap · scale ${(node.scale * 100).toFixed(1)}% · `
+        + `rotation ${(node.rotation * 180 / Math.PI).toFixed(1)}° · ${timing}.`;
       return;
     }
     const outline = node.outlineWidth > 0
-      ? `traccia ${Math.round(node.outlineWidth)} px ${OUTLINE_JOIN_LABELS[node.outlineJoin]}`
-      : "traccia off";
+      ? `outline ${Math.round(node.outlineWidth)} px ${OUTLINE_JOIN_LABELS[node.outlineJoin]}`
+      : "outline off";
     const blockShadow = node.blockShadowEnabled
       ? `Block Shadow GPU ${Math.round(node.blockShadowOffset)} @ ${Math.round(node.blockShadowAngle)}°`
       : "Block Shadow off";
     const singleShadow = node.singleShadowEnabled
-      ? `ombra esterna ${Math.round(node.singleShadowOffset)} @ `
+      ? `drop shadow ${Math.round(node.singleShadowOffset)} @ `
         + `${Math.round(node.singleShadowAngle)}° · blur ${Math.round(node.singleShadowBlur)}`
-      : "ombra esterna off";
+      : "drop shadow off";
     const innerShadow = node.innerShadowEnabled
-      ? `ombra interna ${Math.round(node.innerShadowOffset)} @ `
+      ? `inner shadow ${Math.round(node.innerShadowOffset)} @ `
         + `${Math.round(node.innerShadowAngle)}° · blur ${Math.round(node.innerShadowBlur)}`
-      : "ombra interna off";
+      : "inner shadow off";
 
     if (isSvgNode(node)) {
       const sourceMiB = node.document.sourceBytes / MEBIBYTE_BYTES;
       const cpuVectorMiB = node.document.logicalVectorBytes / MEBIBYTE_BYTES;
       this.status.textContent =
-        `${node.name} · SVG semantico ${placement} · ${node.document.paints.length} colori · `
-        + `${node.document.contourCount} contorni / ${node.document.commandCount} comandi · `
-        + `file ${sourceMiB.toFixed(3)} MiB · vettori CPU ${cpuVectorMiB.toFixed(3)} MiB · `
-        + `GPU attuale ${this.liveGpuMemoryMiB.toFixed(2)} MiB (${cacheLabel}; geometria, `
-        + `matte blur e viewport conteggiati) · canvas browser `
+        `${node.name} · semantic SVG ${placement} · ${node.document.paints.length} colors · `
+        + `${node.document.contourCount} contours / ${node.document.commandCount} commands · `
+        + `file ${sourceMiB.toFixed(3)} MiB · CPU vectors ${cpuVectorMiB.toFixed(3)} MiB · `
+        + `current GPU ${this.liveGpuMemoryMiB.toFixed(2)} MiB (${cacheLabel}; geometry, `
+        + `blur mattes, and viewport included) · browser canvas `
         + `${viewportCanvasLogicalMiB.toFixed(2)} MiB · ${outline} · ${blockShadow} · `
         + `${singleShadow} · ${innerShadow} · ${VECTOR_SVG_IMPORT_STRATEGY} · `
         + `${effectLabel} · ${timing}.`;
@@ -3447,18 +3447,18 @@ export class MixedSceneController {
     }
 
     const transformLabel = node.transformType === "none"
-      ? "trasformazione off"
+      ? "transform off"
       : node.transformType === "distort"
-        ? "Distort Kittl · 6 vertici + 4 maniglie"
+        ? "Distort · 6 vertices + 4 handles"
         : node.transformType === "circle"
-          ? `Circle Kittl ${Math.round(node.circleRadiusPercent)}%`
-            + (node.circleInverted ? " invertito" : "")
-          : `${node.transformType === "arch" ? "Arch" : "Wave"} Kittl `
+          ? `Circle ${Math.round(node.circleRadiusPercent)}%`
+            + (node.circleInverted ? " inverted" : "")
+          : `${node.transformType === "arch" ? "Arch" : "Wave"} `
             + `${Math.round(node.transformCurve)}%`;
     this.status.textContent =
-      `${node.name} · testo semantico ${placement} · ${cacheLabel} `
-      + `${this.liveGpuMemoryMiB.toFixed(2)} MiB · canvas browser `
-      + `${viewportCanvasLogicalMiB.toFixed(2)} MiB · font vettoriali `
+      `${node.name} · semantic text ${placement} · ${cacheLabel} `
+      + `${this.liveGpuMemoryMiB.toFixed(2)} MiB · browser canvas `
+      + `${viewportCanvasLogicalMiB.toFixed(2)} MiB · vector fonts `
       + `${vectorFontLogicalMiB.toFixed(2)} MiB · ${transformLabel} · ${outline} · `
       + `${blockShadow} · ${singleShadow} · ${innerShadow} · ${effectLabel} · ${timing}.`;
   }

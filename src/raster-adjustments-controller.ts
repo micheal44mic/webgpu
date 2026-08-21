@@ -640,7 +640,7 @@ export class RasterAdjustmentsController {
           ? "Noise"
           : "Liquify";
     if (!this.options.isEngineReady()) {
-      return `${label} sarà disponibile dopo l’inizializzazione.`;
+      return `${label} will be available after initialization.`;
     }
     for (const otherKind of [
       "liquify",
@@ -656,20 +656,20 @@ export class RasterAdjustmentsController {
           : otherKind === "noise"
             ? "Noise"
             : "Liquify";
-      return `Applica o annulla ${otherLabel} prima.`;
+      return `Apply or cancel ${otherLabel} first.`;
     }
     if (this.options.engine.getPixelSelectionState().selectedPixels > 0) {
       if (kind === "noise") {
-        return "Deseleziona i pixel per applicare Noise all'intero livello.";
+        return "Deselect the pixels to apply Noise to the entire layer.";
       }
       if (kind === "liquify") {
-        return "Deseleziona i pixel per deformare l’intero livello.";
+        return "Deselect the pixels to distort the entire layer.";
       }
-      return "Deseleziona i pixel per sfocare l’intero livello.";
+      return "Deselect the pixels to blur the entire layer.";
     }
     const stats = this.options.engine.getStats();
     const active = stats.layers.find((layer) => layer.id === stats.activeLayerId);
-    if (!active?.hasContent) return "Il livello raster selezionato è vuoto.";
+    if (!active?.hasContent) return "The selected raster layer is empty.";
     const selected = stats.mixedScene?.items.find(
       (item) => item.key === stats.mixedScene?.selectedKey,
     );
@@ -678,10 +678,10 @@ export class RasterAdjustmentsController {
       : selected !== undefined
         && (selected.kind !== "raster" || selected.rasterLayerId !== stats.activeLayerId);
     if (wrongRasterTarget) {
-      return `Seleziona un livello raster per usare ${label}.`;
+      return `Select a raster layer to use ${label}.`;
     }
     if (this.options.isSceneBusy() || this.options.isInteractionLocked()) {
-      return `Termina l’operazione corrente prima di aprire ${label}.`;
+      return `Finish the current operation before opening ${label}.`;
     }
     return null;
   }
@@ -750,13 +750,13 @@ export class RasterAdjustmentsController {
     const state = this.liquify;
     const elements = this.options.elements.liquify;
     const eligibilityError = state.surfaceOpen || state.sessionOpen || state.uiBusy
-      ? "Liquify è già aperto."
+      ? "Liquify is already open."
       : this.adjustmentEligibilityError("liquify");
     const recoveryOnly = state.previewFault || this.history().inconsistent;
     const controlsDisabled = state.uiBusy || !state.sessionOpen || recoveryOnly;
     const modeControls = liquifyModeControls(this.liquifySettings.mode);
     elements.openButton.disabled = eligibilityError !== null;
-    elements.openButton.title = eligibilityError ?? "Apri Liquify";
+    elements.openButton.title = eligibilityError ?? "Open Liquify";
     elements.openButton.setAttribute("aria-pressed", String(state.surfaceOpen));
     for (const button of elements.modeButtons) button.disabled = controlsDisabled;
     elements.sizeInput.disabled = controlsDisabled;
@@ -797,7 +797,7 @@ export class RasterAdjustmentsController {
     this.options.elements.canvas.classList.remove("liquify-active", "liquify-deforming");
     this.restoreLiquifyTool();
     this.restoreFocus(state);
-    if (result !== "error") this.setLiquifyStatus("Liquify pronto.");
+    if (result !== "error") this.setLiquifyStatus("Liquify ready.");
     this.syncUi();
   }
 
@@ -818,23 +818,23 @@ export class RasterAdjustmentsController {
     state.sessionOpen = false;
     state.previewFault = false;
     state.uiBusy = true;
-    this.setLiquifyStatus("Preparazione Liquify…");
+    this.setLiquifyStatus("Preparing Liquify…");
     this.syncUi();
     try {
       const preview = await this.options.engine.beginRasterLiquify(this.liquifySettingsFromUi());
-      if (!preview) throw new Error("Seleziona un livello raster per usare Liquify.");
+      if (!preview) throw new Error("Select a raster layer to use Liquify.");
       state.sessionOpen = true;
       this.syncLiquifySettings(preview.settings, preview.amount);
       this.options.configureCanvasTool("liquify", false);
       this.setLiquifyStatus(
-        `${LIQUIFY_MODE_LABELS[preview.settings.mode]} · trascina sul canvas.`,
+        `${LIQUIFY_MODE_LABELS[preview.settings.mode]} · drag on the canvas.`,
       );
     } catch (error) {
       const history = this.options.engine.getHistoryState();
       this.options.onHistoryState(history);
       state.sessionOpen = history.openEdit === "liquify";
       state.previewFault = state.sessionOpen;
-      this.reportLiquifyError("Impossibile aprire Liquify", error);
+      this.reportLiquifyError("Unable to open Liquify", error);
       if (!state.sessionOpen) this.closeLiquify("error");
     } finally {
       state.uiBusy = false;
@@ -854,10 +854,10 @@ export class RasterAdjustmentsController {
     try {
       const preview = this.options.engine.updateRasterLiquifySettings(requested);
       this.syncLiquifySettings(preview.settings, preview.amount);
-      this.setLiquifyStatus(`${LIQUIFY_MODE_LABELS[preview.settings.mode]} attivo.`);
+      this.setLiquifyStatus(`${LIQUIFY_MODE_LABELS[preview.settings.mode]} active.`);
     } catch (error) {
       state.previewFault = true;
-      this.reportLiquifyError("Anteprima Liquify interrotta", error);
+      this.reportLiquifyError("Liquify preview interrupted", error);
     }
     this.syncLiquifyUi();
   }
@@ -872,7 +872,7 @@ export class RasterAdjustmentsController {
       this.syncLiquifySettings(preview.settings, preview.amount);
     } catch (error) {
       state.previewFault = true;
-      this.reportLiquifyError("Adjust Amount interrotto", error);
+      this.reportLiquifyError("Amount adjustment interrupted", error);
     }
     this.syncLiquifyUi();
   }
@@ -881,16 +881,16 @@ export class RasterAdjustmentsController {
     const state = this.liquify;
     if (state.uiBusy || !state.sessionOpen || this.history().inconsistent) return;
     state.uiBusy = true;
-    this.setLiquifyStatus("Ripristino della deformazione…");
+    this.setLiquifyStatus("Resetting the distortion…");
     this.syncLiquifyUi();
     try {
       await this.options.engine.resetRasterLiquify();
       state.previewFault = false;
-      this.setLiquifyStatus("Deformazione azzerata; Liquify resta attivo.");
+      this.setLiquifyStatus("Distortion reset; Liquify remains active.");
     } catch (error) {
       this.options.onHistoryState(this.options.engine.getHistoryState());
       state.previewFault = true;
-      this.reportLiquifyError("Reset Liquify non riuscito", error);
+      this.reportLiquifyError("Liquify reset failed", error);
     } finally {
       state.uiBusy = false;
       this.refreshHistory();
@@ -907,7 +907,7 @@ export class RasterAdjustmentsController {
     state.cancelPending = false;
     state.uiBusy = true;
     this.options.engine.endRasterLiquifyStroke(false);
-    this.setLiquifyStatus("Ripristino dei pixel originali…");
+    this.setLiquifyStatus("Restoring the original pixels…");
     this.syncLiquifyUi();
     try {
       await this.options.engine.cancelRasterLiquify();
@@ -919,7 +919,7 @@ export class RasterAdjustmentsController {
       this.options.onHistoryState(history);
       state.sessionOpen = history.openEdit === "liquify";
       state.previewFault = true;
-      this.reportLiquifyError("Annullamento Liquify non riuscito", error);
+      this.reportLiquifyError("Liquify cancellation failed", error);
     } finally {
       state.uiBusy = false;
       this.refreshHistory();
@@ -933,7 +933,7 @@ export class RasterAdjustmentsController {
     }
     state.uiBusy = true;
     this.options.engine.endRasterLiquifyStroke(false);
-    this.setLiquifyStatus("Applicazione Liquify…");
+    this.setLiquifyStatus("Applying Liquify…");
     this.syncLiquifyUi();
     try {
       await this.options.engine.commitRasterLiquify();
@@ -946,7 +946,7 @@ export class RasterAdjustmentsController {
       this.options.onHistoryState(history);
       state.sessionOpen = history.openEdit === "liquify";
       state.previewFault = state.sessionOpen;
-      this.reportLiquifyError("Applicazione Liquify non riuscita", error);
+      this.reportLiquifyError("Liquify application failed", error);
       if (!state.sessionOpen) this.closeLiquify("error");
     } finally {
       state.uiBusy = false;
@@ -975,19 +975,19 @@ export class RasterAdjustmentsController {
 
   private resetGaussianBlurControls(): void {
     this.setGaussianBlurRadius(DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_RADIUS);
-    this.setGaussianBlurStatus("Gaussian Blur pronto.");
+    this.setGaussianBlurStatus("Gaussian Blur ready.");
   }
 
   private syncGaussianBlurUi(): void {
     const state = this.gaussianBlur;
     const elements = this.options.elements.gaussianBlur;
     const eligibilityError = state.surfaceOpen || state.sessionOpen || state.uiBusy
-      ? "Gaussian Blur è già aperto."
+      ? "Gaussian Blur is already open."
       : this.adjustmentEligibilityError("gaussian-blur");
     const recoveryOnly = state.previewFault || this.history().inconsistent;
     const controlsDisabled = state.uiBusy || !state.sessionOpen || recoveryOnly;
     elements.openButton.disabled = eligibilityError !== null;
-    elements.openButton.title = eligibilityError ?? "Apri Gaussian Blur";
+    elements.openButton.title = eligibilityError ?? "Open Gaussian Blur";
     elements.openButton.setAttribute("aria-pressed", String(state.surfaceOpen));
     elements.radiusInput.disabled = controlsDisabled;
     elements.applyButton.disabled = controlsDisabled;
@@ -1026,22 +1026,22 @@ export class RasterAdjustmentsController {
     state.sessionOpen = false;
     state.previewFault = false;
     state.uiBusy = true;
-    this.setGaussianBlurStatus("Preparazione Gaussian Blur…");
+    this.setGaussianBlurStatus("Preparing Gaussian Blur…");
     this.syncUi();
     try {
       const preview = await this.options.engine.beginRasterGaussianBlur(
         Number(this.options.elements.gaussianBlur.radiusInput.value),
       );
-      if (!preview) throw new Error("Seleziona un livello raster per usare Gaussian Blur.");
+      if (!preview) throw new Error("Select a raster layer to use Gaussian Blur.");
       state.sessionOpen = true;
       this.setGaussianBlurRadius(preview.radius);
-      this.setGaussianBlurStatus(`Raggio ${preview.radius.toFixed(0)} pixel.`);
+      this.setGaussianBlurStatus(`Radius ${preview.radius.toFixed(0)} pixels.`);
     } catch (error) {
       const history = this.options.engine.getHistoryState();
       this.options.onHistoryState(history);
       state.sessionOpen = history.openEdit === "gaussian-blur";
       state.previewFault = state.sessionOpen;
-      this.reportGaussianBlurError("Impossibile aprire Gaussian Blur", error);
+      this.reportGaussianBlurError("Unable to open Gaussian Blur", error);
       if (!state.sessionOpen) this.closeGaussianBlur("error");
     } finally {
       state.uiBusy = false;
@@ -1060,10 +1060,10 @@ export class RasterAdjustmentsController {
     try {
       const preview = this.options.engine.updateRasterGaussianBlur(requestedRadius);
       this.setGaussianBlurRadius(preview.radius);
-      this.setGaussianBlurStatus(`Raggio ${preview.radius.toFixed(0)} pixel.`);
+      this.setGaussianBlurStatus(`Radius ${preview.radius.toFixed(0)} pixels.`);
     } catch (error) {
       state.previewFault = true;
-      this.reportGaussianBlurError("Anteprima Gaussian Blur interrotta", error);
+      this.reportGaussianBlurError("Gaussian Blur preview interrupted", error);
       this.syncGaussianBlurUi();
     }
   }
@@ -1077,7 +1077,7 @@ export class RasterAdjustmentsController {
     if (!state.sessionOpen) return;
     state.cancelPending = false;
     state.uiBusy = true;
-    this.setGaussianBlurStatus("Ripristino dei pixel originali…");
+    this.setGaussianBlurStatus("Restoring the original pixels…");
     this.syncGaussianBlurUi();
     try {
       await this.options.engine.cancelRasterGaussianBlur();
@@ -1089,7 +1089,7 @@ export class RasterAdjustmentsController {
       this.options.onHistoryState(history);
       state.sessionOpen = history.openEdit === "gaussian-blur";
       state.previewFault = true;
-      this.reportGaussianBlurError("Annullamento Gaussian Blur non riuscito", error);
+      this.reportGaussianBlurError("Gaussian Blur cancellation failed", error);
     } finally {
       state.uiBusy = false;
       this.refreshHistory();
@@ -1102,7 +1102,7 @@ export class RasterAdjustmentsController {
       return;
     }
     state.uiBusy = true;
-    this.setGaussianBlurStatus("Applicazione Gaussian Blur…");
+    this.setGaussianBlurStatus("Applying Gaussian Blur…");
     this.syncGaussianBlurUi();
     try {
       await this.options.engine.commitRasterGaussianBlur();
@@ -1115,7 +1115,7 @@ export class RasterAdjustmentsController {
       this.options.onHistoryState(history);
       state.sessionOpen = history.openEdit === "gaussian-blur";
       state.previewFault = state.sessionOpen;
-      this.reportGaussianBlurError("Applicazione Gaussian Blur non riuscita", error);
+      this.reportGaussianBlurError("Gaussian Blur application failed", error);
       if (!state.sessionOpen) this.closeGaussianBlur("error");
     } finally {
       state.uiBusy = false;
@@ -1153,19 +1153,19 @@ export class RasterAdjustmentsController {
   private resetMotionBlurControls(): void {
     this.setMotionBlurDistance(DESTRUCTIVE_MOTION_BLUR_DEFAULT_DISTANCE);
     this.setMotionBlurAngle(DESTRUCTIVE_MOTION_BLUR_DEFAULT_ANGLE);
-    this.setMotionBlurStatus("Motion Blur pronto.");
+    this.setMotionBlurStatus("Motion Blur ready.");
   }
 
   private syncMotionBlurUi(): void {
     const state = this.motionBlur;
     const elements = this.options.elements.motionBlur;
     const eligibilityError = state.surfaceOpen || state.sessionOpen || state.uiBusy
-      ? "Motion Blur è già aperto."
+      ? "Motion Blur is already open."
       : this.adjustmentEligibilityError("motion-blur");
     const recoveryOnly = state.previewFault || this.history().inconsistent;
     const controlsDisabled = state.uiBusy || !state.sessionOpen || recoveryOnly;
     elements.openButton.disabled = eligibilityError !== null;
-    elements.openButton.title = eligibilityError ?? "Apri Motion Blur";
+    elements.openButton.title = eligibilityError ?? "Open Motion Blur";
     elements.openButton.setAttribute("aria-pressed", String(state.surfaceOpen));
     elements.distanceInput.disabled = controlsDisabled;
     elements.angleInput.disabled = controlsDisabled;
@@ -1205,7 +1205,7 @@ export class RasterAdjustmentsController {
     state.sessionOpen = false;
     state.previewFault = false;
     state.uiBusy = true;
-    this.setMotionBlurStatus("Preparazione Motion Blur…");
+    this.setMotionBlurStatus("Preparing Motion Blur…");
     this.syncUi();
     const elements = this.options.elements.motionBlur;
     try {
@@ -1213,19 +1213,19 @@ export class RasterAdjustmentsController {
         Number(elements.distanceInput.value),
         Number(elements.angleInput.value),
       );
-      if (!preview) throw new Error("Seleziona un livello raster per usare Motion Blur.");
+      if (!preview) throw new Error("Select a raster layer to use Motion Blur.");
       state.sessionOpen = true;
       this.setMotionBlurDistance(preview.distance);
       this.setMotionBlurAngle(preview.angle);
       this.setMotionBlurStatus(
-        `Distanza ${preview.distance.toFixed(0)} pixel · Angolo ${preview.angle.toFixed(0)}°.`,
+        `Distance ${preview.distance.toFixed(0)} pixels · Angle ${preview.angle.toFixed(0)}°.`,
       );
     } catch (error) {
       const history = this.options.engine.getHistoryState();
       this.options.onHistoryState(history);
       state.sessionOpen = history.openEdit === "motion-blur";
       state.previewFault = state.sessionOpen;
-      this.reportMotionBlurError("Impossibile aprire Motion Blur", error);
+      this.reportMotionBlurError("Unable to open Motion Blur", error);
       if (!state.sessionOpen) this.closeMotionBlur("error");
     } finally {
       state.uiBusy = false;
@@ -1247,11 +1247,11 @@ export class RasterAdjustmentsController {
       this.setMotionBlurDistance(preview.distance);
       this.setMotionBlurAngle(preview.angle);
       this.setMotionBlurStatus(
-        `Distanza ${preview.distance.toFixed(0)} pixel · Angolo ${preview.angle.toFixed(0)}°.`,
+        `Distance ${preview.distance.toFixed(0)} pixels · Angle ${preview.angle.toFixed(0)}°.`,
       );
     } catch (error) {
       state.previewFault = true;
-      this.reportMotionBlurError("Anteprima Motion Blur interrotta", error);
+      this.reportMotionBlurError("Motion Blur preview interrupted", error);
       this.syncMotionBlurUi();
     }
   }
@@ -1265,7 +1265,7 @@ export class RasterAdjustmentsController {
     if (!state.sessionOpen) return;
     state.cancelPending = false;
     state.uiBusy = true;
-    this.setMotionBlurStatus("Ripristino dei pixel originali…");
+    this.setMotionBlurStatus("Restoring the original pixels…");
     this.syncMotionBlurUi();
     try {
       await this.options.engine.cancelRasterMotionBlur();
@@ -1277,7 +1277,7 @@ export class RasterAdjustmentsController {
       this.options.onHistoryState(history);
       state.sessionOpen = history.openEdit === "motion-blur";
       state.previewFault = true;
-      this.reportMotionBlurError("Annullamento Motion Blur non riuscito", error);
+      this.reportMotionBlurError("Motion Blur cancellation failed", error);
     } finally {
       state.uiBusy = false;
       this.refreshHistory();
@@ -1290,7 +1290,7 @@ export class RasterAdjustmentsController {
       return;
     }
     state.uiBusy = true;
-    this.setMotionBlurStatus("Applicazione Motion Blur…");
+    this.setMotionBlurStatus("Applying Motion Blur…");
     this.syncMotionBlurUi();
     try {
       await this.options.engine.commitRasterMotionBlur();
@@ -1303,7 +1303,7 @@ export class RasterAdjustmentsController {
       this.options.onHistoryState(history);
       state.sessionOpen = history.openEdit === "motion-blur";
       state.previewFault = state.sessionOpen;
-      this.reportMotionBlurError("Applicazione Motion Blur non riuscita", error);
+      this.reportMotionBlurError("Motion Blur application failed", error);
       if (!state.sessionOpen) this.closeMotionBlur("error");
     } finally {
       state.uiBusy = false;
@@ -1356,19 +1356,19 @@ export class RasterAdjustmentsController {
 
   private resetNoiseControls(): void {
     this.syncNoiseSettings(DEFAULT_RASTER_NOISE_SETTINGS);
-    this.setNoiseStatus("Noise pronto.");
+    this.setNoiseStatus("Noise ready.");
   }
 
   private syncNoiseUi(): void {
     const state = this.noise;
     const elements = this.options.elements.noise;
     const eligibilityError = state.surfaceOpen || state.sessionOpen || state.uiBusy
-      ? "Noise è già aperto."
+      ? "Noise is already open."
       : this.adjustmentEligibilityError("noise");
     const recoveryOnly = state.previewFault || this.history().inconsistent;
     const controlsDisabled = state.uiBusy || !state.sessionOpen || recoveryOnly;
     elements.openButton.disabled = eligibilityError !== null;
-    elements.openButton.title = eligibilityError ?? "Apri Noise";
+    elements.openButton.title = eligibilityError ?? "Open Noise";
     elements.openButton.setAttribute("aria-pressed", String(state.surfaceOpen));
     for (const control of [
       elements.amountInput,
@@ -1419,15 +1419,15 @@ export class RasterAdjustmentsController {
     state.uiBusy = true;
     const initial = this.noiseSettingsFromUi();
     this.syncNoiseSettings(initial);
-    this.setNoiseStatus("Preparazione Noise…");
+    this.setNoiseStatus("Preparing Noise…");
     this.syncUi();
     try {
       const preview = await this.options.engine.beginRasterNoise(initial);
-      if (!preview) throw new Error("Seleziona un livello raster per usare Noise.");
+      if (!preview) throw new Error("Select a raster layer to use Noise.");
       state.sessionOpen = true;
       this.syncNoiseSettings(preview.settings);
       this.setNoiseStatus(
-        `Quantità ${preview.settings.amountPercent.toFixed(0)}% · `
+        `Amount ${preview.settings.amountPercent.toFixed(0)}% · `
         + `${preview.settings.style} · ${preview.settings.channels}.`,
       );
     } catch (error) {
@@ -1435,7 +1435,7 @@ export class RasterAdjustmentsController {
       this.options.onHistoryState(history);
       state.sessionOpen = history.openEdit === "noise";
       state.previewFault = state.sessionOpen;
-      this.reportNoiseError("Impossibile aprire Noise", error);
+      this.reportNoiseError("Unable to open Noise", error);
       if (!state.sessionOpen) this.closeNoise("error");
     } finally {
       state.uiBusy = false;
@@ -1461,10 +1461,10 @@ export class RasterAdjustmentsController {
     try {
       const preview = this.options.engine.updateRasterNoise(settings);
       this.syncNoiseSettings(preview.settings);
-      this.setNoiseStatus(`Anteprima Noise ${preview.settings.amountPercent.toFixed(0)}%…`);
+      this.setNoiseStatus(`Noise preview ${preview.settings.amountPercent.toFixed(0)}%…`);
     } catch (error) {
       state.previewFault = true;
-      this.reportNoiseError("Anteprima Noise non riuscita", error);
+      this.reportNoiseError("Noise preview failed", error);
       this.syncNoiseUi();
     }
   }
@@ -1478,7 +1478,7 @@ export class RasterAdjustmentsController {
     if (!state.sessionOpen) return;
     state.cancelPending = false;
     state.uiBusy = true;
-    this.setNoiseStatus("Ripristino dei pixel originali…");
+    this.setNoiseStatus("Restoring the original pixels…");
     this.syncNoiseUi();
     try {
       await this.options.engine.cancelRasterNoise();
@@ -1490,7 +1490,7 @@ export class RasterAdjustmentsController {
       this.options.onHistoryState(history);
       state.sessionOpen = history.openEdit === "noise";
       state.previewFault = true;
-      this.reportNoiseError("Annullamento Noise non riuscito", error);
+      this.reportNoiseError("Noise cancellation failed", error);
     } finally {
       state.uiBusy = false;
       this.refreshHistory();
@@ -1503,7 +1503,7 @@ export class RasterAdjustmentsController {
       return;
     }
     state.uiBusy = true;
-    this.setNoiseStatus("Applicazione Noise…");
+    this.setNoiseStatus("Applying Noise…");
     this.syncNoiseUi();
     try {
       await this.options.engine.commitRasterNoise();
@@ -1516,7 +1516,7 @@ export class RasterAdjustmentsController {
       this.options.onHistoryState(history);
       state.sessionOpen = history.openEdit === "noise";
       state.previewFault = state.sessionOpen;
-      this.reportNoiseError("Applicazione Noise non riuscita", error);
+      this.reportNoiseError("Noise application failed", error);
       if (!state.sessionOpen) this.closeNoise("error");
     } finally {
       state.uiBusy = false;

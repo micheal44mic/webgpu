@@ -78,7 +78,7 @@ requireText(core, "Number.isFinite", "non-finite setting defense");
 requireText(core, "minimumSpacing: 0.75", "minimum dab spacing");
 requireText(core, "maximumSpacing: 32", "maximum dab spacing");
 requireText(core, "new Uint8Array(buffer, 0, LIQUIFY_UNIFORM_BYTES).fill(0)", "deterministic uniform padding");
-requireText(core, "procreate-style-displacement-field-v2-composed-warp-mode-aware-resampling", "v2 core strategy");
+requireText(core, "displacement-field-v2-composed-warp-mode-aware-resampling", "v2 core strategy");
 requireText(core, "MODE_SPACING_FRACTIONS", "mode-aware dab spacing");
 requireText(core, "distortedFraction - smoothFraction", "distortion-tightened sampling");
 requireText(core, "momentum: true", "Momentum availability for every mode");

@@ -3,7 +3,7 @@ export type Hsl = readonly [hue: number, saturation: number, lightness: number];
 export function hexToHsl(hex: string): Hsl {
   const normalized = hex.trim().replace(/^#/, "");
   if (!/^[0-9a-fA-F]{6}$/.test(normalized)) {
-    throw new Error(`Colore HEX non valido: ${hex}`);
+    throw new Error(`Invalid HEX color: ${hex}`);
   }
 
   const red = Number.parseInt(normalized.slice(0, 2), 16) / 255;

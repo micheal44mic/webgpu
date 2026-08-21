@@ -36,7 +36,7 @@ function injectSelectionClip(
   coverageFunctions: readonly string[],
 ): string {
   if (!source.includes(bindingMarker)) {
-    throw new Error("Marker bind group del pennello non trovato per la Selezione pixel.");
+    throw new Error("The brush bind-group marker was not found for Pixel Selection.");
   }
   let result = source.replace(bindingMarker, `${bindingMarker}\n${selectionBindingAndGuard}`);
   for (const functionName of coverageFunctions) {
@@ -44,7 +44,7 @@ function injectSelectionClip(
     const matches = result.split(marker).length - 1;
     if (matches !== 1) {
       throw new Error(
-        `La guardia Selezione pixel richiede una sola funzione ${functionName}; trovate ${matches}.`,
+        `The Pixel Selection guard requires exactly one ${functionName} function; found ${matches}.`,
       );
     }
     const functionStart = result.indexOf(marker);
@@ -52,7 +52,7 @@ function injectSelectionClip(
     const returnMarker = "  return coverage;";
     const returnOffset = result.lastIndexOf(returnMarker, functionEnd);
     if (functionEnd < 0 || returnOffset < functionStart) {
-      throw new Error(`Punto di uscita coverage ${functionName} non trovato.`);
+      throw new Error(`Coverage exit point ${functionName} was not found.`);
     }
     result = result.slice(0, returnOffset)
       + "  if (!pixelSelectionContains(input.position)) { discard; }\n"

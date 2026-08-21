@@ -15,7 +15,7 @@ assert.match(types, /export type BrushTool = "paint" \| "erase" \| "blend";/);
 assert.match(editorContract, /"paint",\s*"erase",\s*"blend",/);
 assert.match(
   html,
-  /id="mobileEraser"[\s\S]*?aria-label="Seleziona Gomma"[\s\S]*?aria-pressed="false"/,
+  /id="mobileEraser"[\s\S]*?aria-label="Select Eraser"[\s\S]*?aria-pressed="false"/,
 );
 assert.doesNotMatch(
   html.match(/<button\s+id="mobileEraser"[\s\S]*?<\/button>/)?.[0] ?? "",

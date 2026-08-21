@@ -45,7 +45,7 @@ assert.equal(normalizeLayerBlendMode("multiply"), "multiply");
 assert.equal(normalizeLayerBlendMode("unknown"), "normal");
 assert.equal(normalizeLayerBlendMode(null), "normal");
 assert.deepEqual(PROVISIONAL_LAYER_BLEND_MODES, ["shade"]);
-assert.match(LAYER_BLEND_SHADE_COMPATIBILITY_NOTE, /provvisorio/i);
+assert.match(LAYER_BLEND_SHADE_COMPATIBILITY_NOTE, /temporary/i);
 
 const clamp = (value) => Math.min(1, Math.max(0, value));
 const close = (actual, expected, epsilon = 2e-12, label = "") => {

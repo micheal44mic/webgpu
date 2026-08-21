@@ -237,7 +237,7 @@ assert.match(
   /if \(!layerColdCompressionEngineIdle\(engine\)\) \{[\s\S]*?return;[\s\S]*?readLayerColdStorageTiles/,
   "nessuna nuova lettura GPU deve partire mentre il motore non è idle",
 );
-assert.match(runtimeCompressionBody, /Compressione \$\{source\.record\.name\} in pausa/);
+assert.match(runtimeCompressionBody, /\$\{source\.record\.name\} compression paused/);
 assert.match(
   engineSource,
   /const delayMs = this\.layerColdCompressionProgress[\s\S]*?\? 0[\s\S]*?: LAYER_COLD_COMPRESSION_IDLE_DELAY_MS/,
@@ -300,7 +300,7 @@ assert.doesNotMatch(
 assert.match(engineSource, /await ensureLayerColdStorageResident\(engine, record, gpu\)/);
 assert.match(engineSource, /await decompressLayerColdChunk\(engine, chunk\)/);
 assert.match(engineSource, /restoredHash !== compressed\.sourceHash/);
-assert.match(engineSource, /await engine\.waitForGpuCapped\(`Upload cold compresso livello/);
+assert.match(engineSource, /await engine\.waitForGpuCapped\(`Upload compressed cold storage for layer/);
 assert.match(engineSource, /gpu\.cold = \{[\s\S]*?gpu\.compressed = null/);
 assert.match(engineSource, /const layerCompressedCpuMiB =/);
 const countedStart = engineSource.indexOf("const countedTotalMiB = [");
@@ -328,10 +328,10 @@ assert.match(mainSource, /layerColdAdjacentPrefetchEnabled,/);
 assert.match(gpuMemoryPanelSource, /gpuMemoryLayerCompressed/);assert.match(engineSource, /layerColdCompressionProgress: \{/);
 assert.match(engineSource, /completedTileCount: engine\.layerColdCompressionProgress\.nextArrayLayer/);
 assert.match(engineSource, /pausedByStroke: engine\.activeStroke !== null/);
-assert.match(gpuMemoryPanelSource, /const LAYER_STATE_LABEL:[\s\S]*?compressed: "compresso"/);
-assert.match(gpuMemoryPanelSource, /livello\.compressedCpuMiB > 0[\s\S]*?RAM compressa/);
-assert.match(indexSource, /Layer · compressi · RAM CPU/);
-assert.match(indexSource, /Totale contato · GPU \+ cold RAM CPU/);
+assert.match(gpuMemoryPanelSource, /const LAYER_STATE_LABEL:[\s\S]*?compressed: "compressed"/);
+assert.match(gpuMemoryPanelSource, /livello\.compressedCpuMiB > 0[\s\S]*?compressed RAM/);
+assert.match(indexSource, /Layer · compressed · CPU RAM/);
+assert.match(indexSource, /Counted total · GPU \+ cold CPU RAM/);
 assert.doesNotMatch(mainSource, /layerCompressionStudy|measureLayerColdCompressionStudy|saveLayerCompressionRun/);
 assert.match(labsStartupSource, /layerCompressionTestEnabled: true/);
 assert.match(editorLabsSource, /\["layer-compression", "Studio compressione lossless"\]/);

@@ -106,7 +106,7 @@ function arraysEqual<T>(left: readonly T[], right: readonly T[]): boolean {
 
 function assertUniqueKeys(keys: readonly MixedSceneItem["key"][]): void {
   if (new Set(keys).size !== keys.length) {
-    throw new Error("La scena mista contiene chiavi duplicate.");
+    throw new Error("The mixed scene contains duplicate keys.");
   }
 }
 
@@ -115,20 +115,20 @@ function assertRasterModel(
   rasterLayers: readonly MixedSceneRasterOrderEntry[],
 ): void {
   if (rasterLayers.length === 0) {
-    throw new Error("Il riordino richiede almeno un livello raster.");
+    throw new Error("Reordering requires at least one raster layer.");
   }
   const ids = rasterLayers.map((entry) => entry.id);
   if (
     new Set(ids).size !== ids.length
     || ids.some((id) => !Number.isInteger(id) || id <= 0)
   ) {
-    throw new Error("Gli id raster del riordino devono essere positivi e univoci.");
+    throw new Error("Raster IDs in the reorder model must be positive and unique.");
   }
   const sceneRasterIds = bottomUpKeys
     .map(rasterIdForKey)
     .filter((id): id is number => id !== null);
   if (!arraysEqual(sceneRasterIds, ids)) {
-    throw new Error("LayerStack e scena mista hanno un ordine raster incoerente.");
+    throw new Error("LayerStack and the mixed scene have inconsistent raster order.");
   }
 }
 
@@ -155,7 +155,7 @@ function assertClippingOrder(
     if (entry.clippingParentId === null) continue;
     const parent = rasterLayersById.get(entry.clippingParentId);
     if (!parent || parent.clippingParentId !== null) {
-      throw new Error(`Parent raster ${entry.clippingParentId} non valido.`);
+      throw new Error(`Invalid raster parent ${entry.clippingParentId}.`);
     }
   }
 
@@ -168,7 +168,7 @@ function assertClippingOrder(
     const rasterStart = rasterIndexById.get(parent.id);
     const sceneStart = sceneIndexByRasterId.get(parent.id);
     if (rasterStart === undefined || sceneStart === undefined) {
-      throw new Error(`Base raster ${parent.id} assente dal riordino.`);
+      throw new Error(`Base raster ${parent.id} is missing from the reorder model.`);
     }
     const expected = [parent.id, ...children];
     expected.forEach((id, offset) => {
@@ -177,7 +177,7 @@ function assertClippingOrder(
         || bottomUpKeys[sceneStart + offset] !== `raster:${id}`
       ) {
         throw new Error(
-          `Il gruppo di clipping ${parent.id} deve restare consecutivo.`,
+          `Clipping group ${parent.id} must remain consecutive.`,
         );
       }
     });
@@ -211,7 +211,7 @@ export function planMixedSceneRasterInsertion(
   assertValidMixedSceneOrder(bottomUpKeys, rasterLayers);
   const selectedSceneIndex = bottomUpKeys.indexOf(selectedKey);
   if (selectedSceneIndex < 0) {
-    throw new Error(`Elemento scena ${selectedKey} inesistente.`);
+    throw new Error(`Scene item ${selectedKey} does not exist.`);
   }
   const rasterById = new Map(rasterLayers.map((entry) => [entry.id, entry]));
   const selectedRasterId = rasterIdForKey(selectedKey);
@@ -220,14 +220,14 @@ export function planMixedSceneRasterInsertion(
   if (clippingParentId !== null || selectedRasterId !== null) {
     const anchorId = clippingParentId ?? selectedRasterId;
     if (anchorId === null) {
-      throw new Error("Ancora raster dell'inserimento mancante.");
+      throw new Error("The raster insertion anchor is missing.");
     }
     const anchor = rasterById.get(anchorId);
-    if (!anchor) throw new Error(`Raster ${anchorId} assente dal LayerStack.`);
+    if (!anchor) throw new Error(`Raster ${anchorId} is missing from LayerStack.`);
     const parentId = clippingParentId ?? anchor.clippingParentId ?? anchor.id;
     const parent = rasterById.get(parentId);
     if (!parent || parent.clippingParentId !== null) {
-      throw new Error(`Parent raster ${parentId} non valido.`);
+      throw new Error(`Invalid raster parent ${parentId}.`);
     }
     const unitIds = [
       parent.id,
@@ -238,7 +238,7 @@ export function planMixedSceneRasterInsertion(
     const lastKey = `raster:${unitIds[unitIds.length - 1]}` as const;
     const lastSceneIndex = bottomUpKeys.indexOf(lastKey);
     if (lastSceneIndex < 0) {
-      throw new Error(`Gruppo raster ${parent.id} assente dalla scena.`);
+      throw new Error(`Raster group ${parent.id} is missing from the scene.`);
     }
     sceneIndex = lastSceneIndex + 1;
   }
@@ -248,7 +248,7 @@ export function planMixedSceneRasterInsertion(
     .reduce((count, key) => count + Number(rasterIdForKey(key) !== null), 0);
   const maximumRasterId = Math.max(0, ...rasterLayers.map((entry) => entry.id));
   if (maximumRasterId >= Number.MAX_SAFE_INTEGER) {
-    throw new Error("Nessun id raster diagnostico disponibile per validare l'inserimento.");
+    throw new Error("No diagnostic raster ID is available to validate the insertion.");
   }
   const candidateId = maximumRasterId + 1;
   const candidateKeys = [...bottomUpKeys];
@@ -268,12 +268,12 @@ function movingBottomUpKeys(
   key: MixedSceneItem["key"],
 ): readonly MixedSceneItem["key"][] {
   if (!bottomUpKeys.includes(key)) {
-    throw new Error(`Elemento scena ${key} inesistente.`);
+    throw new Error(`Scene item ${key} does not exist.`);
   }
   const rasterId = rasterIdForKey(key);
   if (rasterId === null) return [key];
   const record = rasterLayers.find((entry) => entry.id === rasterId);
-  if (!record) throw new Error(`Raster ${rasterId} assente dal LayerStack.`);
+  if (!record) throw new Error(`Raster ${rasterId} is missing from LayerStack.`);
   if (record.clippingParentId !== null) return [key];
   return [
     key,
@@ -320,7 +320,7 @@ export function mixedSceneReorderTargets(
     }
   }
   if (validTargetTopFirstSlots.length === 0) {
-    throw new Error(`Nessuna destinazione valida per ${key}.`);
+    throw new Error(`No valid destination is available for ${key}.`);
   }
   return {
     movingKeys,
@@ -340,7 +340,7 @@ export function planMixedSceneReorder(
     !Number.isInteger(targetTopFirstSlot)
     || !targets.validTargetTopFirstSlots.includes(targetTopFirstSlot)
   ) {
-    throw new Error(`Slot di riordino ${targetTopFirstSlot} non valido per ${key}.`);
+    throw new Error(`Invalid reorder slot ${targetTopFirstSlot} for ${key}.`);
   }
   const reorderedBottomUpKeys = candidateForSlot(
     targets.topFirstKeysWithoutMoving,

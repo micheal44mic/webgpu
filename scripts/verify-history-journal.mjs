@@ -566,7 +566,7 @@ const layerMerge = (
       atomicFirst,
       { ...atomicLast, label: "foreign-copy" },
     ]),
-    /non appartenente/,
+    /does not belong/,
     "una slice finale non valida deve impedire la release dell'intero set",
   );
   assert.deepEqual(
@@ -583,13 +583,13 @@ const layerMerge = (
   assert.equal(storage.isResident(demoted), false);
   assert.throws(
     () => demoted.buffer,
-    /non reidratata/,
+    /was not rehydrated/,
     "un replay senza preflight hydrate deve fallire prima di leggere un buffer morto",
   );
   assert.equal(storage.release(demoted), true, "un handle stored-only resta ritirabile");
   assert.throws(
     () => storage.allocate(4, "bad-alignment", 24),
-    /potenza di due/,
+    /power of two/,
   );
   storage.destroy();
   assert.equal(buffers.every((buffer) => buffer.destroyed), true);
@@ -800,7 +800,7 @@ const layerMerge = (
   assert(!main.includes("history CPU"));
   assert(gpuMemoryPanel.includes("historyGpuUsedMiB"));
   assert(html.includes('id="gpuMemoryHistoryLabel"'));
-  assert(html.includes("La cronologia raster mostra pagine GPU riservate"));
+  assert(html.includes("Raster history shows reserved GPU pages"));
   assert(engine.includes('kind: "layer-metadata"'));
   assert(engine.includes("captureRasterLayerMetadataHistoryState"));
   assert(engine.includes("applyRasterLayerMetadataHistoryState"));

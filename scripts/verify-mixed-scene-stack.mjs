@@ -168,10 +168,10 @@ assert.equal(
 );
 assert.equal(RASTER_IMAGE_NODE_MAXIMUM, 64);
 
-assert.equal(uniqueLayerDuplicateName("Logo", ["Logo"]), "Logo copia");
+assert.equal(uniqueLayerDuplicateName("Logo", ["Logo"]), "Logo copy");
 assert.equal(
-  uniqueLayerDuplicateName("Logo copia", ["Logo", "Logo copia", "Logo copia 2"]),
-  "Logo copia 3",
+  uniqueLayerDuplicateName("Logo copy", ["Logo", "Logo copy", "Logo copy 2"]),
+  "Logo copy 3",
 );
 
 // Semantic Duplicate keeps mutable presentation independent while sharing only
@@ -187,7 +187,7 @@ assert.equal(
   });
   const duplicateText = stack.duplicateSelectedSemanticAboveSelection();
   assert.equal(duplicateText.kind, "text");
-  assert.equal(duplicateText.name, "Titolo copia");
+  assert.equal(duplicateText.name, "Titolo copy");
   assert.equal(duplicateText.visible, false);
   assert.equal(duplicateText.opacity, 0.42);
   assert.notEqual(duplicateText.id, sourceText.id);
@@ -270,7 +270,7 @@ assert.equal(
     ["raster:1", "raster:99", "raster:2"],
   );
   assert.equal(stack.selected.key, "raster:99");
-  assert.throws(() => stack.svgById(svg.id), /inesistente/);
+  assert.throws(() => stack.svgById(svg.id), /does not exist/);
 
   assert.equal(stack.replaceRasterWithVector(99, historyState), sceneIndex);
   assert.deepEqual(
@@ -280,7 +280,7 @@ assert.equal(
   assert.equal(stack.selected.key, svgKey);
   assert.equal(stack.svgById(svg.id).document.sourceName, "raster-source.svg");
   assert.equal(stack.rasterIndexForSceneIndex(stack.items.length), 2);
-  assert.throws(() => stack.rasterIndexForSceneIndex(-1), /fuori intervallo/);
+  assert.throws(() => stack.rasterIndexForSceneIndex(-1), /out of range/);
 }
 
 // Text -> raster uses the same structural slot and restores the exact semantic
@@ -298,7 +298,7 @@ assert.equal(
     stack.items.map((item) => item.key),
     ["raster:1", "raster:77", "raster:2"],
   );
-  assert.throws(() => stack.textById(text.id), /inesistente/);
+  assert.throws(() => stack.textById(text.id), /does not exist/);
 
   assert.equal(stack.replaceRasterWithVector(77, historyState), sceneIndex);
   assert.deepEqual(
@@ -709,14 +709,14 @@ assert.equal(
 }
 
 {
-  assert.throws(() => new MixedSceneStack([]), /almeno un livello raster/);
-  assert.throws(() => new MixedSceneStack([1, 1]), /univoci/);
+  assert.throws(() => new MixedSceneStack([]), /at least one raster layer/);
+  assert.throws(() => new MixedSceneStack([1, 1]), /positive and unique/);
   const stack = new MixedSceneStack([1]);
-  assert.throws(() => stack.select("text:99"), /inesistente/);
-  assert.throws(() => stack.partitionAroundRaster(99), /assente/);
-  assert.throws(() => stack.compositionSegments(99), /inesistente|assente/);
+  assert.throws(() => stack.select("text:99"), /does not exist/);
+  assert.throws(() => stack.partitionAroundRaster(99), /missing/);
+  assert.throws(() => stack.compositionSegments(99), /does not exist|missing/);
   stack.addRasterAboveSelection(2);
-  assert.throws(() => stack.addRasterAboveSelection(2), /già presente/);
+  assert.throws(() => stack.addRasterAboveSelection(2), /already present/);
 }
 
 {
@@ -748,7 +748,7 @@ assert.equal(
     stack.addTextAboveSelection(seed(`T${index}`));
   }
   assert.equal(stack.textCount, VECTOR_TEXT_NODE_MAXIMUM);
-  assert.throws(() => stack.addTextAboveSelection(seed("overflow")), /Massimo/);
+  assert.throws(() => stack.addTextAboveSelection(seed("overflow")), /Maximum/);
 }
 
 {
@@ -757,7 +757,7 @@ assert.equal(
     stack.addSvgAboveSelection(svgSeed(`S${index}.svg`));
   }
   assert.equal(stack.svgCount, VECTOR_SVG_NODE_MAXIMUM);
-  assert.throws(() => stack.addSvgAboveSelection(svgSeed("overflow.svg")), /Massimo/);
+  assert.throws(() => stack.addSvgAboveSelection(svgSeed("overflow.svg")), /Maximum/);
 }
 
 {
@@ -835,12 +835,12 @@ assert.equal(
   );
   assert.match(
     engineSource,
-    /if \(this\.layerPresentationFrozen\) \{[\s\S]*?Presentazione congelata con lavoro render pendente/,
+    /if \(this\.layerPresentationFrozen\) \{[\s\S]*?Presentation is frozen with pending render work/,
     "waitForIdle deve fallire subito invece di attendere il watchdog per 10 secondi",
   );
   assert.match(
     engineSource,
-    /async rebuildMergedLayerSurfaces\([\s\S]*?if \(hasPendingRenderWork\(this\)\) \{[\s\S]*?il render deve essere fermo prima del freeze/,
+    /async rebuildMergedLayerSurfaces\([\s\S]*?if \(hasPendingRenderWork\(this\)\) \{[\s\S]*?rendering must be idle before freezing/,
     "la transazione deve rifiutare lavoro render pendente prima di evacuare risorse",
   );
   const rasterSelection = engineSource.slice(

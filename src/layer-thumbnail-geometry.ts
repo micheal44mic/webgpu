@@ -18,7 +18,7 @@ export function layerThumbnailDimensions(
     || documentHeight <= 0
     || maximumEdge < 1
   ) {
-    throw new RangeError("Dimensioni miniatura livello non valide.");
+    throw new RangeError("Invalid layer-thumbnail dimensions.");
   }
   const scale = Math.min(maximumEdge / documentWidth, maximumEdge / documentHeight);
   return {

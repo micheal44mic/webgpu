@@ -75,7 +75,7 @@ const LIMITS = {
 {
   assert.throws(
     () => assertMemoryLedger(ledger({ committedBytes: 10, reclaimableBytes: 11 })),
-    /sottoinsieme/,
+    /subset/,
     "reclaimable maggiore di committed deve essere rifiutato",
   );
 
@@ -131,7 +131,7 @@ const LIMITS = {
   );
   assert.throws(
     () => assertMemoryGovernorLimits({ ...LIMITS, emergencyReserveBytes: 1000 * MiB }),
-    /riserva/,
+    /emergency reserve/,
   );
 }
 
@@ -244,8 +244,8 @@ const LIMITS = {
     "un byte oltre il tetto e' fuori: il confine e' inclusivo, non elastico",
   );
 
-  assert.throws(() => reservations.settle(token), /gia' chiusa/);
-  assert.throws(() => reservations.release(token), /gia' chiusa/);
+  assert.throws(() => reservations.settle(token), /already closed/);
+  assert.throws(() => reservations.release(token), /already closed/);
 }
 
 // ---------------------------------------------------------------------------
@@ -356,7 +356,7 @@ const LIMITS = {
     stroke,
   );
   assert.equal(cornered.outcome, "end-stroke");
-  assert.match(cornered.reason, /tratto/);
+  assert.match(cornered.reason, /stroke/);
   // La zona guarda il tetto duro, l'ammissione guarda il tetto utilizzabile: si
   // puo' essere ancora in arancione e gia' fuori, perche' in mezzo c'e' la
   // riserva. Sono due domande diverse e non vanno confuse.

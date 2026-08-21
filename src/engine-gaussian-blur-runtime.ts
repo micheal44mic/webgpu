@@ -121,9 +121,9 @@ fn kernelWeight(index: u32) -> f32 {
   return parameters.weights[index / 4u][index % 4u];
 }
 
-// Le texture di ingresso sono gia' RGBA16F. Conservare la cache workgroup
-// nello stesso formato non perde precisione rispetto alla sorgente, dimezza
-// lo storage condiviso e lascia pesi e accumulo in f32.
+// Input textures are already RGBA16F. Keeping the workgroup cache in the same
+// format preserves source precision, halves shared storage, and keeps weights
+// and accumulation in f32.
 fn packFilterTexel(value: vec4<f32>) -> vec2<u32> {
   return vec2<u32>(pack2x16float(value.xy), pack2x16float(value.zw));
 }
@@ -145,9 +145,9 @@ const DOCUMENT_EXTENT = vec2<i32>(${DOCUMENT_WIDTH}, ${DOCUMENT_HEIGHT});
 var<workgroup> filterCache: array<vec2<u32>, ${FILTER_CACHE_LENGTH}>;
 
 fn sourceTexel(documentPosition: vec2<i32>) -> vec4<f32> {
-  // Il contenuto resta trasparente dentro il documento, ma i campioni che
-  // oltrepassano il vero bordo del canvas replicano il texel di bordo. Cosi'
-  // un livello pieno e uniforme non perde alpha verso l'interno.
+  // Content remains transparent inside the document, while samples beyond the
+  // actual canvas edge repeat the edge texel. This prevents a full, uniform
+  // layer from losing alpha toward the inside.
   let documentMaximum = max(DOCUMENT_EXTENT - vec2<i32>(1), vec2<i32>(0));
   let clampedDocumentPosition = clamp(
     documentPosition,
@@ -271,8 +271,8 @@ async function createSharedResources(device: GPUDevice): Promise<GaussianBlurSha
     && availableWorkgroupStorage < FILTER_CACHE_BYTES
   ) {
     throw new Error(
-      `Gaussian Blur richiede ${FILTER_CACHE_BYTES} byte di cache workgroup; `
-      + `la GPU ne espone ${availableWorkgroupStorage}.`,
+      `Gaussian Blur requires ${FILTER_CACHE_BYTES} bytes of workgroup cache; `
+      + `the GPU exposes ${availableWorkgroupStorage}.`,
     );
   }
   return runGpuAllocationTransaction(
@@ -288,8 +288,8 @@ async function createSharedResources(device: GPUDevice): Promise<GaussianBlurSha
         code: verticalShader(),
       });
       await Promise.all([
-        assertShaderCompiled(horizontalModule, "Gaussian Blur orizzontale"),
-        assertShaderCompiled(verticalModule, "Gaussian Blur verticale"),
+        assertShaderCompiled(horizontalModule, "Horizontal Gaussian Blur"),
+        assertShaderCompiled(verticalModule, "Vertical Gaussian Blur"),
       ]);
       const horizontalBindGroupLayout = device.createBindGroupLayout({
         label: "Native raster Gaussian Blur horizontal layout",
@@ -431,7 +431,7 @@ function writeJobParameters(
   kernel: GaussianBlurKernel,
 ): number {
   if (index >= PARAMETER_CAPACITY) {
-    throw new Error("Gaussian Blur: capacità strip superata.");
+    throw new Error("Gaussian Blur: strip capacity exceeded.");
   }
   const byteOffset = index * session.parameterStride;
   const word = byteOffset / 4;
@@ -491,7 +491,7 @@ function encodeRequestedPreview(
     DOCUMENT_HEIGHT,
   ) as DirtyRect | null;
   if (!resultBounds) {
-    throw new Error("Gaussian Blur: bounds risultato mancanti.");
+    throw new Error("Gaussian Blur: result bounds are missing.");
   }
   const dirtyRect = unionGaussianBlurRects(
     session.presentedBounds,
@@ -499,7 +499,7 @@ function encodeRequestedPreview(
   ) as DirtyRect;
   const jobs = planJobs(resultBounds, kernel.radius);
   if (jobs.length > PARAMETER_CAPACITY) {
-    throw new Error("Gaussian Blur: troppe strip per il buffer parametri.");
+    throw new Error("Gaussian Blur: too many strips for the parameter buffer.");
   }
   const offsets = jobs.map((job, index) => writeJobParameters(
     session,
@@ -606,12 +606,12 @@ function startPreviewSubmission(
   const completion = Promise.resolve().then(async (): Promise<void> => {
     try {
       encodeRequestedPreview(engine, session, serial, radius);
-      await engine.waitForGpuCapped(`Anteprima Gaussian Blur ${radius}px`, 60_000);
+      await engine.waitForGpuCapped(`Gaussian Blur preview ${radius}px`, 60_000);
     } catch (error) {
       session.previewFault = previewError(error);
       if (engine.activeRasterGaussianBlurSession === session) {
         engine.publishStatus(
-          `Anteprima Gaussian Blur interrotta: ${session.previewFault.message}. Usa Annulla.`,
+          `Gaussian Blur preview interrupted: ${session.previewFault.message}. Use Cancel.`,
           "error",
         );
         engine.publishHistoryState();
@@ -706,7 +706,7 @@ async function restoreOriginalPixels(
     presentationError = error;
   }
   setAuthoritativeMetadata(engine, session.sourceBounds, session.sourceTileMask);
-  await engine.waitForGpuCapped("Annullamento Gaussian Blur", 60_000);
+  await engine.waitForGpuCapped("Cancel Gaussian Blur", 60_000);
   if (session.previewInFlight) await session.previewInFlight;
   if (presentationError) throw presentationError;
 }
@@ -715,7 +715,7 @@ export async function beginRasterGaussianBlur(
   engine: BrushEngine,
   initialRadius = DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_RADIUS,
 ): Promise<RasterGaussianBlurSnapshot | null> {
-  if (!engine.initialized) throw new Error("Il motore non è ancora inizializzato.");
+  if (!engine.initialized) throw new Error("The engine has not been initialized yet.");
   if (engine.activeRasterGaussianBlurSession) {
     return snapshot(engine.activeRasterGaussianBlurSession);
   }
@@ -724,20 +724,20 @@ export async function beginRasterGaussianBlur(
   if (selected?.kind !== "raster") return null;
   const record = engine.layerStack.active;
   if (selected.rasterLayerId !== record.id) {
-    throw new Error("Il raster selezionato non coincide con il livello attivo.");
+    throw new Error("The selected raster does not match the active layer.");
   }
   if (engine.pixelSelectionState.selectedPixels > 0) {
     throw new Error(
-      "Gaussian Blur v1 lavora sull’intero livello: deseleziona i pixel prima di aprirlo.",
+      "Gaussian Blur v1 works on the entire layer: deselect the pixels before opening it.",
     );
   }
   engine.assertLayerSwitchAllowed();
   engine.persistActiveLayerState();
   if (!record.hasContent || !record.contentBounds) {
-    throw new Error("Il livello raster selezionato è vuoto.");
+    throw new Error("The selected raster layer is empty.");
   }
   if (engine.layerFormat !== "rgba16float") {
-    throw new Error("Gaussian Blur distruttivo richiede un documento RGBA16F.");
+    throw new Error("Destructive Gaussian Blur requires an RGBA16F document.");
   }
 
   engine.cancelLayerColdCompressionIdle();
@@ -747,7 +747,7 @@ export async function beginRasterGaussianBlur(
   try {
     await engine.waitForIdle();
     const hot = engine.requireLayerGpu(record.id).hot;
-    if (!hot) throw new Error("Texture hot del raster da sfocare mancante.");
+    if (!hot) throw new Error("The hot texture for the raster to blur is missing.");
     const sourceBounds = { ...record.contentBounds };
     const scratchBounds = destructiveGaussianBlurBounds(
       sourceBounds,
@@ -755,7 +755,7 @@ export async function beginRasterGaussianBlur(
       DOCUMENT_WIDTH,
       DOCUMENT_HEIGHT,
     ) as DirtyRect | null;
-    if (!scratchBounds) throw new Error("Il raster non contiene pixel sfocabili.");
+    if (!scratchBounds) throw new Error("The raster contains no pixels that can be blurred.");
     const radius = normalizeDestructiveGaussianBlurRadius(initialRadius);
     const initialResultBounds = destructiveGaussianBlurBounds(
       sourceBounds,
@@ -774,7 +774,7 @@ export async function beginRasterGaussianBlur(
     const outputHeight = Math.min(DESTRUCTIVE_GAUSSIAN_BLUR_STRIP_HEIGHT, DOCUMENT_HEIGHT);
     const maximumJobs = Math.ceil(scratchBounds.height / DESTRUCTIVE_GAUSSIAN_BLUR_STRIP_HEIGHT);
     if (maximumJobs > PARAMETER_CAPACITY) {
-      throw new Error("Gaussian Blur: documento troppo alto per il piano strip.");
+      throw new Error("Gaussian Blur: the document is too tall for the strip plan.");
     }
     const maximumDispatch = Number(engine.device.limits.maxComputeWorkgroupsPerDimension);
     if (Number.isFinite(maximumDispatch) && [
@@ -783,12 +783,12 @@ export async function beginRasterGaussianBlur(
       Math.ceil(outputHeight / FILTER_WORKGROUP_SIZE),
       scratchBounds.width,
     ].some((value) => value > maximumDispatch)) {
-      throw new Error("Gaussian Blur: dimensione dispatch non supportata dalla GPU.");
+      throw new Error("Gaussian Blur: the GPU does not support the required dispatch size.");
     }
 
     session = await runGpuAllocationTransaction(
       engine.device,
-      `Allocazione Native raster Gaussian Blur layer ${record.id}`,
+      `Allocate Native raster Gaussian Blur layer ${record.id}`,
       async (transaction) => {
         const sourceTexture = engine.device.createTexture({
           label: `Native raster Gaussian Blur immutable source layer ${record.id}`,
@@ -921,7 +921,7 @@ export async function beginRasterGaussianBlur(
           },
         );
         engine.device.queue.submit([encoder.finish()]);
-        await engine.waitForGpuCapped("Preparazione Gaussian Blur", 60_000);
+        await engine.waitForGpuCapped("Prepare Gaussian Blur", 60_000);
         return created;
       },
     );
@@ -930,7 +930,7 @@ export async function beginRasterGaussianBlur(
     engine.publishHistoryState();
     await flushPreview(engine, session);
     engine.publishStatus(
-      `Anteprima Gaussian Blur ${radius.toFixed(0)} px: Applica o Annulla.`,
+      `Gaussian Blur preview ${radius.toFixed(0)} px: Apply or Cancel.`,
       "ok",
     );
     engine.publishHistoryState();
@@ -947,7 +947,7 @@ export async function beginRasterGaussianBlur(
         restoreError = caught;
         session.terminal = false;
         engine.latchDocumentStateInconsistent(
-          "Avvio Gaussian Blur fallito e ripristino incompleto: ricarica la pagina.",
+          "Gaussian Blur startup failed and recovery was incomplete: reload the page.",
         );
       }
       if (!restoreError) {
@@ -964,7 +964,7 @@ export async function beginRasterGaussianBlur(
       const operationMessage = previewError(error).message;
       const restoreMessage = previewError(restoreError).message;
       throw new Error(
-        `Avvio Gaussian Blur fallito: ${operationMessage}; ripristino fallito: ${restoreMessage}`,
+        `Gaussian Blur startup failed: ${operationMessage}; recovery failed: ${restoreMessage}`,
       );
     }
     throw error;
@@ -976,14 +976,14 @@ export function updateRasterGaussianBlur(
   radius: unknown,
 ): RasterGaussianBlurSnapshot {
   const session = engine.activeRasterGaussianBlurSession;
-  if (!session) throw new Error("Nessuna sessione Gaussian Blur aperta.");
+  if (!session) throw new Error("No Gaussian Blur session is open.");
   if (engine.historyStateInconsistent) {
-    throw new Error("Documento bloccato: è consentito soltanto ritentare Annulla.");
+    throw new Error("The document is locked: only retrying Cancel is allowed.");
   }
   if (session.previewFault) {
-    throw new Error(`Anteprima Gaussian Blur interrotta: ${session.previewFault.message}. Usa Annulla.`);
+    throw new Error(`Gaussian Blur preview interrupted: ${session.previewFault.message}. Use Cancel.`);
   }
-  if (session.terminal) throw new Error("Gaussian Blur sta già terminando.");
+  if (session.terminal) throw new Error("Gaussian Blur is already finishing.");
   const normalized = normalizeDestructiveGaussianBlurRadius(radius);
   if (normalized === session.radius) return snapshot(session);
   session.radius = normalized;
@@ -1000,21 +1000,21 @@ export function updateRasterGaussianBlur(
   );
   session.requestedSerial += 1;
   schedulePreview(engine, session);
-  engine.publishStatus(`Anteprima Gaussian Blur ${normalized.toFixed(0)} px…`, "working");
+  engine.publishStatus(`Gaussian Blur preview ${normalized.toFixed(0)} px…`, "working");
   return snapshot(session);
 }
 
 export async function cancelRasterGaussianBlur(engine: BrushEngine): Promise<boolean> {
   const session = engine.activeRasterGaussianBlurSession;
   if (!session) return false;
-  if (session.terminal) throw new Error("Gaussian Blur sta già terminando.");
+  if (session.terminal) throw new Error("Gaussian Blur is already finishing.");
   session.terminal = true;
   try {
     await restoreOriginalPixels(engine, session);
   } catch (error) {
     session.terminal = false;
     engine.latchDocumentStateInconsistent(
-      "Annullamento Gaussian Blur fallito: ricarica la pagina.",
+      "Gaussian Blur cancellation failed: reload the page.",
     );
     engine.publishHistoryState();
     engine.publishStats();
@@ -1028,7 +1028,7 @@ export async function cancelRasterGaussianBlur(engine: BrushEngine): Promise<boo
   engine.publishStats();
   publishMixedScene(engine);
   engine.scheduleLayerColdCompression();
-  engine.publishStatus("Gaussian Blur annullato: i pixel originali sono stati ripristinati.", "ok");
+  engine.publishStatus("Gaussian Blur canceled: the original pixels were restored.", "ok");
   return true;
 }
 
@@ -1036,12 +1036,12 @@ export async function commitRasterGaussianBlur(engine: BrushEngine): Promise<boo
   const session = engine.activeRasterGaussianBlurSession;
   if (!session) return false;
   if (engine.historyStateInconsistent) {
-    throw new Error("Documento bloccato: è consentito soltanto ritentare Annulla.");
+    throw new Error("The document is locked: only retrying Cancel is allowed.");
   }
   if (session.previewFault) {
-    throw new Error(`Anteprima Gaussian Blur interrotta: ${session.previewFault.message}. Usa Annulla.`);
+    throw new Error(`Gaussian Blur preview interrupted: ${session.previewFault.message}. Use Cancel.`);
   }
-  if (session.terminal) throw new Error("Gaussian Blur sta già terminando.");
+  if (session.terminal) throw new Error("Gaussian Blur is already finishing.");
   if (session.radius === 0) {
     await cancelRasterGaussianBlur(engine);
     return false;
@@ -1054,7 +1054,7 @@ export async function commitRasterGaussianBlur(engine: BrushEngine): Promise<boo
     await flushPreview(engine, session);
     const record = engine.layerStack.active;
     const hot = engine.requireLayerGpu(session.layerId).hot;
-    if (!hot) throw new Error("Texture hot del raster sfocato mancante.");
+    if (!hot) throw new Error("The blurred raster's hot texture is missing.");
     seed = await createLayerColdStorageCandidate(
       engine,
       record,
@@ -1092,7 +1092,7 @@ export async function commitRasterGaussianBlur(engine: BrushEngine): Promise<boo
       retainSessionForRecovery = true;
       session.terminal = false;
       engine.latchDocumentStateInconsistent(
-        "Commit Gaussian Blur fallito e rollback incompleto: ricarica la pagina.",
+        "Gaussian Blur commit failed and rollback was incomplete: reload the page.",
       );
     } finally {
       if (!journalPublished) destroyLayerColdStorage(seed);
@@ -1103,7 +1103,7 @@ export async function commitRasterGaussianBlur(engine: BrushEngine): Promise<boo
         ? rollbackError.message
         : String(rollbackError);
       throw new Error(
-        `Commit Gaussian Blur fallito: ${operationMessage}; rollback fallito: ${rollbackMessage}`,
+        `Gaussian Blur commit failed: ${operationMessage}; rollback failed: ${rollbackMessage}`,
       );
     }
     throw error;
@@ -1119,7 +1119,7 @@ export async function commitRasterGaussianBlur(engine: BrushEngine): Promise<boo
     publishMixedScene(engine);
   }
   engine.publishStatus(
-    `Gaussian Blur ${session.radius.toFixed(0)} px applicato ai pixel: un solo Undo.`,
+    `Gaussian Blur ${session.radius.toFixed(0)} px applied to the pixels: one Undo step.`,
     "ok",
   );
   return true;

@@ -82,7 +82,7 @@ export class AppDiagnosticsController {
         detail: event.filename
           ? `${event.filename}:${event.lineno}:${event.colno}`
           : null,
-        error: event.error ?? new Error(event.message || "Errore globale senza messaggio."),
+        error: event.error ?? new Error(event.message || "Global error with no message."),
       });
     }, { signal });
     options.browser.addEventListener("unhandledrejection", (event) => {
@@ -173,7 +173,7 @@ export class AppDiagnosticsController {
     const currentState = stats ? captureAppDiagnosticState(stats, currentHistory) : null;
     const invariants = stats
       ? inspectAppDiagnosticInvariants(stats, currentHistory)
-      : { ok: false, issues: ["Stats motore non leggibili durante la cattura."] };
+      : { ok: false, issues: ["Engine stats could not be read during capture."] };
     const measured = measuredResult.ok ? measuredResult.value : null;
     const declaredBytes = (stats?.gpuMemory.countedTotalMiB ?? 0) * 1024 * 1024;
     const measuredBytes = measured?.currentBytes ?? 0;
@@ -185,8 +185,8 @@ export class AppDiagnosticsController {
       schema: APP_DIAGNOSTIC_SCHEMA,
       capturedAt: new Date().toISOString(),
       privacy:
-        "Nessun pixel, contenuto testuale, sorgente SVG o maschera completa incluso; "
-        + "solo contatori Fill e cinque word attorno al seed.",
+        "No pixels, text content, SVG source, or full masks are included; "
+        + "only Fill counters and five words around the seed.",
       app: {
         mode: this.options.appMode,
         documentSize: this.options.documentSize,
@@ -319,7 +319,7 @@ export class AppDiagnosticsController {
     copyButton.disabled = true;
     copyButton.setAttribute("aria-busy", "true");
     copyStatus.hidden = false;
-    copyStatus.textContent = "Preparazione rapporto…";
+    copyStatus.textContent = "Preparing report…";
     try {
       const serialized = await this.buildReport();
       report.textContent = serialized;
@@ -335,11 +335,11 @@ export class AppDiagnosticsController {
       }
       details.open = !copied;
       copyStatus.textContent = copied
-        ? "Diagnosi copiata: incollala nella chat senza ricaricare la pagina."
-        : "Copia automatica non consentita: il rapporto è aperto qui sotto per la selezione manuale.";
+        ? "Diagnostics copied. Paste them into the chat without reloading the page."
+        : "Automatic copying was not allowed. The report is open below for manual selection.";
     } catch (error) {
       const diagnosticError = describeAppDiagnosticError(error);
-      copyStatus.textContent = `Rapporto non creato: ${diagnosticError.message}`;
+      copyStatus.textContent = `Could not create the report: ${diagnosticError.message}`;
       details.hidden = true;
       this.log.record({
         category: "error",

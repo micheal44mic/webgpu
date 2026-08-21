@@ -1,7 +1,7 @@
 /** Pure, allocation-light contract shared by the Liquify UI and WebGPU runtime. */
 
 export const LIQUIFY_CORE_STRATEGY =
-  "procreate-style-displacement-field-v2-composed-warp-mode-aware-resampling" as const;
+  "displacement-field-v2-composed-warp-mode-aware-resampling" as const;
 
 export const LIQUIFY_MODES = Object.freeze([
   "push",
@@ -331,7 +331,7 @@ export interface LiquifyUniformInput {
 function requireBuffer(target: ArrayBuffer | undefined): ArrayBuffer {
   if (target && target.byteLength < LIQUIFY_UNIFORM_BYTES) {
     throw new RangeError(
-      `Buffer uniformi Liquify di ${target.byteLength} byte, richiesti ${LIQUIFY_UNIFORM_BYTES}.`,
+      `Liquify uniform buffer is ${target.byteLength} bytes; ${LIQUIFY_UNIFORM_BYTES} bytes are required.`,
     );
   }
   return target ?? new ArrayBuffer(LIQUIFY_UNIFORM_BYTES);

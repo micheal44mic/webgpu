@@ -76,10 +76,10 @@ assert.doesNotMatch(runtime, /kind: "vector-rasterize"/);
 for (const fragment of [
   "keys.length < 2",
   "new Set(keys).size !== keys.length",
-  "devono essere contigui",
-  "deve essere unito per intero",
-  "dipende dal backdrop",
-  "estendi la selezione fino",
+  "must be contiguous",
+  "must be merged in full",
+  "depends on the external",
+  "extend the selection to the bottom",
   "item.kind === \"image\"",
 ]) {
   assert.ok(core.includes(fragment), `validazione merge mancante: ${fragment}`);

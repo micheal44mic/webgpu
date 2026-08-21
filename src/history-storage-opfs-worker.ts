@@ -68,9 +68,9 @@ async function handleRequest(request: HistoryOpfsWorkerRequest): Promise<void> {
     return;
   }
   if (request.type === "begin") {
-    validateName(request.sessionId, "sessione");
-    validateName(request.segmentId, "segmento");
-    if (writers.has(request.writerId)) throw new Error("Writer OPFS History duplicato.");
+    validateName(request.sessionId, "session");
+    validateName(request.segmentId, "segment");
+    if (writers.has(request.writerId)) throw new Error("Duplicate History OPFS writer.");
     const directory = await sessionDirectory(request.sessionId, true);
     const fileName = segmentFileName(request.segmentId);
     let access: SyncAccessHandle | null = null;
@@ -145,14 +145,14 @@ async function handleRequest(request: HistoryOpfsWorkerRequest): Promise<void> {
         || footer.commitNonce !== request.commitNonce
         || footer.descriptorSha256 !== request.descriptorSha256
       ) {
-        throw new Error("Footer OPFS History non corrisponde al descriptor.");
+        throw new Error("The History OPFS footer does not match the descriptor.");
       }
       for (const chunk of request.chunks) {
         assertBoundedRange(access.getSize(), chunk.fileOffset, chunk.storedBytes);
         const bytes = readExactly(access, chunk.fileOffset, chunk.storedBytes);
         const digest = await sha256Hex(bytes);
         if (digest !== chunk.storedSha256) {
-          throw new Error("Hash chunk OPFS History non valido.");
+          throw new Error("Invalid History OPFS chunk hash.");
         }
       }
     } finally {
@@ -196,7 +196,7 @@ async function handleRequest(request: HistoryOpfsWorkerRequest): Promise<void> {
 }
 
 async function runSelfTest(): Promise<void> {
-  if (!scope.navigator.storage?.getDirectory) throw new Error("OPFS getDirectory assente.");
+  if (!scope.navigator.storage?.getDirectory) throw new Error("OPFS getDirectory is unavailable.");
   const root = await historyRoot(true);
   const name = `probe-${crypto.randomUUID()}`;
   let access: SyncAccessHandle | null = null;
@@ -208,7 +208,7 @@ async function runSelfTest(): Promise<void> {
     access.flush();
     const actual = readExactly(access, 0, expected.byteLength);
     if (actual.some((value, index) => value !== expected[index])) {
-      throw new Error("Roundtrip OPFS non byte-identico.");
+      throw new Error("The OPFS round trip is not byte-identical.");
     }
   } finally {
     try {
@@ -228,12 +228,12 @@ async function sessionDirectory(
   sessionId: string,
   create: boolean,
 ): Promise<FileSystemDirectoryHandle> {
-  validateName(sessionId, "sessione");
+  validateName(sessionId, "session");
   return await (await historyRoot(create)).getDirectoryHandle(sessionId, { create });
 }
 
 async function openReadHandle(sessionId: string, segmentId: string): Promise<SyncAccessHandle> {
-  validateName(segmentId, "segmento");
+  validateName(segmentId, "segment");
   const directory = await sessionDirectory(sessionId, false);
   const file = await directory.getFileHandle(segmentFileName(segmentId));
   return await (file as SyncFileHandle).createSyncAccessHandle();
@@ -241,17 +241,17 @@ async function openReadHandle(sessionId: string, segmentId: string): Promise<Syn
 
 function requireWriter(writerId: string): OpenWriter {
   const writer = writers.get(writerId);
-  if (!writer) throw new Error("Writer OPFS History non trovato.");
+  if (!writer) throw new Error("The History OPFS writer was not found.");
   return writer;
 }
 
 function segmentFileName(segmentId: string): string {
-  validateName(segmentId, "segmento");
+  validateName(segmentId, "segment");
   return `${segmentId}.segment`;
 }
 
 function validateName(value: string, label: string): void {
-  if (!safeName.test(value)) throw new Error(`Nome ${label} OPFS non valido.`);
+  if (!safeName.test(value)) throw new Error(`Invalid OPFS ${label} name.`);
 }
 
 function isNotFound(error: unknown): boolean {
@@ -263,7 +263,7 @@ function writeAll(access: SyncAccessHandle, bytes: Uint8Array, offset: number): 
   while (written < bytes.byteLength) {
     const count = access.write(bytes.subarray(written), { at: offset + written });
     if (!Number.isInteger(count) || count <= 0) {
-      throw new Error("Scrittura OPFS parziale senza avanzamento.");
+      throw new Error("Partial OPFS write made no progress.");
     }
     written += count;
   }
@@ -275,7 +275,7 @@ function readExactly(access: SyncAccessHandle, offset: number, length: number): 
   while (read < length) {
     const count = access.read(bytes.subarray(read), { at: offset + read });
     if (!Number.isInteger(count) || count <= 0) {
-      throw new Error("Lettura OPFS terminata prima dei byte attesi.");
+      throw new Error("OPFS read ended before the expected bytes were read.");
     }
     read += count;
   }
@@ -289,16 +289,16 @@ function readAndValidateFooter(access: SyncAccessHandle): {
 } {
   const fileSize = access.getSize();
   const magic = encoder.encode(HISTORY_LOCAL_STORAGE_COMMIT_MAGIC);
-  if (fileSize < magic.byteLength + 4) throw new Error("Footer OPFS History assente.");
+  if (fileSize < magic.byteLength + 4) throw new Error("History OPFS footer is missing.");
   const actualMagic = readExactly(access, fileSize - magic.byteLength, magic.byteLength);
   if (actualMagic.some((value, index) => value !== magic[index])) {
-    throw new Error("Magic commit OPFS History assente.");
+    throw new Error("The History OPFS commit magic value is missing.");
   }
   const lengthBytes = readExactly(access, fileSize - magic.byteLength - 4, 4);
   const footerLength = new DataView(lengthBytes.buffer).getUint32(0, true);
   const footerOffset = fileSize - magic.byteLength - 4 - footerLength;
   if (footerLength <= 0 || footerLength > 1024 * 1024 || footerOffset < 0) {
-    throw new Error("Lunghezza footer OPFS History non valida.");
+    throw new Error("Invalid History OPFS footer length.");
   }
   const parsed = JSON.parse(decoder.decode(readExactly(access, footerOffset, footerLength))) as {
     magic?: unknown;
@@ -312,7 +312,7 @@ function readAndValidateFooter(access: SyncAccessHandle): {
     || typeof parsed.commitNonce !== "string"
     || typeof parsed.descriptorSha256 !== "string"
   ) {
-    throw new Error("Footer OPFS History malformato.");
+    throw new Error("Malformed History OPFS footer.");
   }
   return {
     segmentId: parsed.segmentId,
@@ -329,7 +329,7 @@ function assertBoundedRange(fileSize: number, offset: number, length: number): v
     || length < 0
     || offset + length > fileSize
   ) {
-    throw new Error("Range OPFS History fuori dal file.");
+    throw new Error("History OPFS range lies outside the file.");
   }
 }
 

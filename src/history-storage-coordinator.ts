@@ -421,7 +421,7 @@ export class HistoryStorageCoordinator {
     collector.addSeed(seed);
     const required = [...collector.required.values()];
     if (required.length !== 1) {
-      throw new Error("Seed merge locale non più raggiungibile nello storage History.");
+      throw new Error("The local merge seed is no longer reachable in History storage.");
     }
     await this.hydrateRequiredPayloads(required);
   }
@@ -465,7 +465,7 @@ export class HistoryStorageCoordinator {
    */
   async prepareRasterReplayAtCursor(layerId: number, cursor: number): Promise<void> {
     if (cursor < 0 || cursor > this.host.store.actions.length) {
-      throw new Error("Cursore History non valido per il preflight raster.");
+      throw new Error("Invalid History cursor for raster preflight.");
     }
     await this.waitForForegroundStorageAccess();
     this.wrapAllHistorySeeds();
@@ -480,7 +480,7 @@ export class HistoryStorageCoordinator {
       await new Promise<void>((resolve) => window.setTimeout(resolve, 10));
     }
     if (this.storageBusy !== "idle") {
-      throw new Error("La cronologia locale è ancora occupata; il disegno non è stato modificato.");
+      throw new Error("Local history is still busy; the artwork was not modified.");
     }
   }
 
@@ -494,13 +494,13 @@ export class HistoryStorageCoordinator {
     if (missing.length === 0) return;
     await this.initializePromise;
     if (!this.ready || this.storageBusy !== "idle") {
-      throw new Error("La cronologia locale non è disponibile in questo momento.");
+      throw new Error("Local history is currently unavailable.");
     }
     for (const candidate of missing) {
       if (!this.storedPayloads.has(candidate.payloadId)) {
         throw new Error(
-          "La parte locale della cronologia non è più disponibile. "
-          + "Il disegno corrente non è stato modificato.",
+          "The local portion of history is no longer available. "
+          + "The current artwork was not modified.",
         );
       }
     }
@@ -511,7 +511,7 @@ export class HistoryStorageCoordinator {
     let residenceChanged = false;
     this.storageBusy = "hydrating";
     this.host.publishStatus(
-      `Caricamento cronologia locale… 0,0 / ${formatMiB(totalBytes)} MiB`,
+      `Loading local history… 0.0 / ${formatMiB(totalBytes)} MiB`,
       "working",
     );
     try {
@@ -529,7 +529,7 @@ export class HistoryStorageCoordinator {
           this.assertToken(token);
           const restored = await this.host.restoreColdStorage(
             compressed,
-            `Hydrate History locale · azione ${candidate.ownerActionId}`,
+            `Hydrate local History · action ${candidate.ownerActionId}`,
           );
           try {
             this.assertToken(token);
@@ -543,13 +543,13 @@ export class HistoryStorageCoordinator {
         loadedBytes += candidate.rawBytes;
         this.hydratedBytes += candidate.rawBytes;
         this.host.publishStatus(
-          `Caricamento cronologia locale… ${formatMiB(loadedBytes)} / `
+          `Loading local history… ${formatMiB(loadedBytes)} / `
           + `${formatMiB(totalBytes)} MiB`,
           "working",
         );
         await yieldBrowserTurn();
       }
-      await this.host.waitForGpu("Hydrate cronologia locale", 60_000);
+      await this.host.waitForGpu("Hydrate local history", 60_000);
       this.assertToken(token);
       this.hydrationsCompleted += 1;
       this.ownershipEpoch += 1;
@@ -577,13 +577,13 @@ export class HistoryStorageCoordinator {
     if (missing.length === 0) return;
     await this.initializePromise;
     if (!this.ready || this.storageBusy !== "idle") {
-      throw new Error("La cronologia locale non è disponibile in questo momento.");
+      throw new Error("Local history is currently unavailable.");
     }
     for (const candidate of missing) {
       if (!this.storedPayloads.has(candidate.payloadId)) {
         throw new Error(
-          "La parte locale della cronologia non è più disponibile. "
-          + "Il disegno corrente non è stato modificato.",
+          "The local portion of history is no longer available. "
+          + "The current artwork was not modified.",
         );
       }
     }
@@ -665,7 +665,7 @@ export class HistoryStorageCoordinator {
       this.opfs?.dispose();
       this.opfs = null;
       try {
-        if (HISTORY_DEV_FORCE_IDB) throw new Error("Backend IDB forzato dalla QA locale.");
+        if (HISTORY_DEV_FORCE_IDB) throw new Error("The IDB backend was forced by local QA.");
         candidate = new HistoryOpfsClient();
         const result = await candidate.selfTest();
         if (!this.sessionIsCurrent(initializingSessionId)) return;
@@ -791,7 +791,7 @@ export class HistoryStorageCoordinator {
         this.diskBudgetBlockedActionIds.add(actionId);
       }
       this.lastError =
-        "Azione History troppo grande per il budget locale; gli altri payload restano spillabili.";
+        "The History action is too large for the local budget; other payloads can still spill.";
       return "budget-skip";
     }
 
@@ -804,13 +804,13 @@ export class HistoryStorageCoordinator {
       await this.host.waitForIdle();
       await this.host.device.queue.onSubmittedWorkDone();
       this.assertToken(token);
-      if (!options.shouldContinue()) throw new Error("Spill History interrotto dall'utente.");
+      if (!options.shouldContinue()) throw new Error("History spill was interrupted by the user.");
       writer = await this.beginCandidate(segmentId);
       let storageChunkIndex = 0;
       const storedPayloads: StoredHistoryPayloadV1[] = [];
       for (const candidate of selected) {
         this.assertToken(token);
-        if (!options.shouldContinue()) throw new Error("Spill History diventato stale.");
+        if (!options.shouldContinue()) throw new Error("History spill became stale.");
         const serialized = candidate.storage === "gpu"
           ? await this.serializeGpuPayload(candidate, writer, storageChunkIndex, options)
           : await this.serializeColdPayload(candidate, writer, storageChunkIndex, options);
@@ -819,7 +819,7 @@ export class HistoryStorageCoordinator {
         await yieldBrowserTurn();
       }
       this.assertToken(token);
-      if (!options.shouldContinue()) throw new Error("Spill History diventato stale.");
+      if (!options.shouldContinue()) throw new Error("History spill became stale.");
       const rawBytes = storedPayloads.reduce((total, payload) => total + payload.rawBytes, 0);
       const storedBytes = storedPayloads.reduce((total, payload) => total + payload.storedBytes, 0);
       const actionIds = plan.actionIds;
@@ -858,7 +858,7 @@ export class HistoryStorageCoordinator {
       }));
       await this.verifyCandidate(descriptor);
       this.assertToken(token);
-      if (!options.shouldContinue()) throw new Error("Spill History stale prima del manifest.");
+      if (!options.shouldContinue()) throw new Error("History spill became stale before the manifest.");
 
       // Prevalidate every physical release before the durable publication.
       const gpuSlices = selected.flatMap((candidate) =>
@@ -869,7 +869,7 @@ export class HistoryStorageCoordinator {
         candidate.storage === "cold" ? [candidate.handle] : []
       );
       if (coldHandles.some((handle) => !handle.resident || handle.retired)) {
-        throw new Error("Seed History non più residente prima del commit.");
+        throw new Error("The History seed is no longer resident before commit.");
       }
 
       const nextManifest = this.nextManifest(descriptor, options.logicalFloorCursor);
@@ -991,7 +991,7 @@ export class HistoryStorageCoordinator {
       candidate.slice,
       historyStorageChunkBytes(MOBILE_DEVICE_CLASS),
     )) {
-      if (!options.shouldContinue()) throw new Error("Readback History interrotto.");
+      if (!options.shouldContinue()) throw new Error("History readback was interrupted.");
       const storedSha256 = await sha256Bytes(raw);
       // OPFS transfers (and therefore detaches) the exact buffer passed to
       // append. Capture all metadata before crossing that ownership boundary.
@@ -1014,7 +1014,7 @@ export class HistoryStorageCoordinator {
       payloadChunkIndex += 1;
     }
     if (storedBytes !== candidate.rawBytes) {
-      throw new Error(`Readback slice ${candidate.slice.id} incompleto.`);
+      throw new Error(`Incomplete readback for slice ${candidate.slice.id}.`);
     }
     return {
       payload: {
@@ -1044,7 +1044,7 @@ export class HistoryStorageCoordinator {
     options: HistoryStorageSpillOptions,
   ): Promise<{ payload: StoredHistoryPayloadV1; nextStorageChunkIndex: number }> {
     const resident = candidate.handle.residentValue();
-    if (!resident) throw new Error("Seed History non residente durante lo spill.");
+    if (!resident) throw new Error("The History seed is not resident during spill.");
     const chunks: StoredHistoryChunkV1[] = [];
     let storageChunkIndex = firstStorageChunkIndex;
     let rawBytes = 0;
@@ -1052,7 +1052,7 @@ export class HistoryStorageCoordinator {
     let sourceHash = 0x811c9dc5;
     const tileByteLength = resident.memoryBytes / resident.tileIndices.length;
     if (!Number.isInteger(tileByteLength) || tileByteLength <= 0) {
-      throw new Error("Layout tile del seed History non valido.");
+      throw new Error("Invalid History seed tile layout.");
     }
     let compressionClient: Awaited<ReturnType<HistoryStorageHost["compressionClient"]>> | null = null;
     try {
@@ -1062,13 +1062,13 @@ export class HistoryStorageCoordinator {
     }
     let payloadChunkIndex = 0;
     for (let firstTile = 0; firstTile < resident.tileIndices.length; firstTile += 4) {
-      if (!options.shouldContinue()) throw new Error("Compressione seed History interrotta.");
+      if (!options.shouldContinue()) throw new Error("History seed compression was interrupted.");
       const tileCount = Math.min(4, resident.tileIndices.length - firstTile);
       const raw = await this.host.readColdStorageTiles(
         resident,
         firstTile,
         tileCount,
-        `History locale · seed azione ${candidate.ownerActionId}`,
+        `Local History · action seed ${candidate.ownerActionId}`,
       );
       let chunk: LayerColdCompressedChunk;
       if (compressionClient) {
@@ -1123,7 +1123,7 @@ export class HistoryStorageCoordinator {
       sourceHash = combineCompressionHashes(sourceHash, chunk.sourceHash, chunk.rawBytes);
       await yieldBrowserTurn();
     }
-    if (rawBytes !== resident.memoryBytes) throw new Error("Seed History letto solo in parte.");
+    if (rawBytes !== resident.memoryBytes) throw new Error("The History seed was only partially read.");
     return {
       payload: {
         payloadId: candidate.payloadId,
@@ -1163,7 +1163,7 @@ export class HistoryStorageCoordinator {
       };
     }
     if (this.backend !== "indexeddb-chunks") {
-      throw new Error("Backend History locale non scrivibile.");
+      throw new Error("The local History backend is not writable.");
     }
     let chunkIndex = 0;
     return {
@@ -1205,10 +1205,10 @@ export class HistoryStorageCoordinator {
         chunk.storageChunkIndex,
       );
       if (bytes.byteLength !== chunk.storedBytes) {
-        throw new Error("Chunk IndexedDB History con lunghezza errata.");
+        throw new Error("IndexedDB History chunk has an invalid length.");
       }
       if (await sha256Bytes(new Uint8Array(bytes)) !== chunk.storedSha256) {
-        throw new Error("Hash chunk IndexedDB History non valido.");
+        throw new Error("Invalid IndexedDB History chunk hash.");
       }
     }
   }
@@ -1595,27 +1595,27 @@ export class HistoryStorageCoordinator {
 
   private async readPayloadBytes(location: StoredPayloadLocation): Promise<Uint8Array> {
     const payload = location.payload;
-    if (payload.rawBytes > MAX_DESCRIPTOR_BYTES) throw new Error("Payload History troppo grande.");
+    if (payload.rawBytes > MAX_DESCRIPTOR_BYTES) throw new Error("History payload is too large.");
     const output = new Uint8Array(payload.rawBytes);
     let offset = 0;
     for (const chunk of [...payload.chunks].sort(
       (left, right) => left.payloadChunkIndex - right.payloadChunkIndex,
     )) {
       if (chunk.codec !== "raw") {
-        throw new Error("Codec compresso inatteso per una slice GPU History.");
+        throw new Error("Unexpected compressed codec for a GPU History slice.");
       }
       const bytes = new Uint8Array(await this.readStoredChunk(location.segment, chunk));
       await verifyStoredChunk(bytes, chunk);
       if (historyHash32(bytes) !== chunk.rawHash32) {
-        throw new Error("Hash raw della slice History non valido.");
+        throw new Error("Invalid raw History slice hash.");
       }
       if (offset + bytes.byteLength > output.byteLength) {
-        throw new Error("Chunk slice History oltre la lunghezza dichiarata.");
+        throw new Error("History slice chunk exceeds the declared length.");
       }
       output.set(bytes, offset);
       offset += bytes.byteLength;
     }
-    if (offset !== output.byteLength) throw new Error("Payload slice History incompleto.");
+    if (offset !== output.byteLength) throw new Error("History slice payload is incomplete.");
     return output;
   }
 
@@ -1623,7 +1623,7 @@ export class HistoryStorageCoordinator {
     location: StoredPayloadLocation,
   ): Promise<LayerCompressedColdStorageResources> {
     const metadata = location.payload.coldSeed;
-    if (!metadata) throw new Error("Metadata cold seed History assenti.");
+    if (!metadata) throw new Error("Cold History seed metadata is missing.");
     const chunks: LayerColdCompressedChunk[] = [];
     let storedBytes = 0;
     for (const descriptor of [...location.payload.chunks].sort(
@@ -1641,7 +1641,7 @@ export class HistoryStorageCoordinator {
       storedBytes += descriptor.storedBytes;
     }
     if (storedBytes !== location.payload.storedBytes) {
-      throw new Error("Cold seed History incompleto.");
+      throw new Error("The cold History seed is incomplete.");
     }
     return {
       tileIndices: [...metadata.tileIndices],
@@ -1682,7 +1682,7 @@ export class HistoryStorageCoordinator {
         this.opfs = null;
       }
     }
-    throw new Error(`Lettura OPFS History fallita: ${errorMessage(lastError)}.`);
+    throw new Error(`History OPFS read failed: ${errorMessage(lastError)}.`);
   }
 
   private async requireOpfs(recreate = false): Promise<HistoryOpfsClient> {
@@ -1712,7 +1712,7 @@ export class HistoryStorageCoordinator {
 
   private assertToken(token: SpillToken): void {
     if (!this.tokenIsCurrent(token)) {
-      throw new Error("Operazione History locale diventata stale.");
+      throw new Error("The local History operation became stale.");
     }
   }
 
@@ -1952,7 +1952,7 @@ async function* readGpuHistorySliceChunks(
   maximumLogicalChunkBytes: number,
 ): AsyncGenerator<Uint8Array> {
   if (!host.gpuStorage.isResident(slice)) {
-    throw new Error(`Slice History ${slice.id} non residente per il readback.`);
+    throw new Error(`History slice ${slice.id} is not resident for readback.`);
   }
   let logicalOffset = 0;
   while (logicalOffset < slice.logicalBytes) {
@@ -1962,7 +1962,7 @@ async function* readGpuHistorySliceChunks(
     );
     const copyBytes = align4(logicalChunkBytes);
     if (logicalOffset + copyBytes > slice.reservedBytes) {
-      throw new Error("Readback History oltre i byte riservati della slice.");
+      throw new Error("History readback exceeds the slice's reserved bytes.");
     }
     const staging = host.device.createBuffer({
       label: `Readback History slice ${slice.id} @${logicalOffset}`,
@@ -1983,7 +1983,7 @@ async function* readGpuHistorySliceChunks(
       host.device.queue.submit([encoder.finish()]);
       await Promise.race([
         staging.mapAsync(GPUMapMode.READ),
-        timeoutReject(60_000, "Timeout readback slice History."),
+        timeoutReject(60_000, "History slice readback timed out."),
       ]);
       yield new Uint8Array(staging.getMappedRange(), 0, logicalChunkBytes).slice();
     } finally {
@@ -2004,7 +2004,7 @@ function assertSegmentDescriptor(
     || descriptor.commitMarker !== HISTORY_LOCAL_STORAGE_COMMIT_MAGIC
     || canonicalHistoryJson(descriptor.documentFingerprint) !== canonicalHistoryJson(fingerprint)
   ) {
-    throw new Error("Descriptor History locale incompatibile.");
+    throw new Error("The local History descriptor is incompatible.");
   }
   if (
     descriptor.payloads.length > MAX_DESCRIPTOR_PAYLOADS
@@ -2014,12 +2014,12 @@ function assertSegmentDescriptor(
     || descriptor.storedBytes < 0
     || descriptor.storedBytes > MAX_DESCRIPTOR_BYTES
   ) {
-    throw new Error("Descriptor History locale oltre i limiti ammessi.");
+    throw new Error("The local History descriptor exceeds the allowed limits.");
   }
   const payloadIds = new Set<string>();
   const chunkIndexes = new Set<number>();
   for (const payload of descriptor.payloads) {
-    if (payloadIds.has(payload.payloadId)) throw new Error("Payload History duplicato.");
+    if (payloadIds.has(payload.payloadId)) throw new Error("Duplicate History payload.");
     payloadIds.add(payload.payloadId);
     let expectedPayloadChunk = 0;
     for (const chunk of payload.chunks) {
@@ -2029,14 +2029,14 @@ function assertSegmentDescriptor(
         || chunk.rawBytes <= 0
         || chunk.storedBytes <= 0
       ) {
-        throw new Error("Indice chunk History non valido.");
+        throw new Error("Invalid History chunk index.");
       }
       expectedPayloadChunk += 1;
       chunkIndexes.add(chunk.storageChunkIndex);
     }
   }
   if (chunkIndexes.size !== descriptor.chunkCount) {
-    throw new Error("Conteggio chunk History incoerente.");
+    throw new Error("Inconsistent History chunk count.");
   }
 }
 
@@ -2051,7 +2051,7 @@ function assertStoredPayloadCompatible(
     || payload.rawBytes !== candidate.rawBytes
     || payload.layerId !== candidate.layerId
   ) {
-    throw new Error("Payload History locale non corrisponde alla risorsa richiesta.");
+    throw new Error("The local History payload does not match the requested resource.");
   }
   if (candidate.storage === "gpu") {
     if (
@@ -2059,23 +2059,23 @@ function assertStoredPayloadCompatible(
       || payload.gpu?.logicalBytes !== candidate.slice.logicalBytes
       || payload.coldSeed !== null
     ) {
-      throw new Error("ABI della slice History locale incompatibile.");
+      throw new Error("The local History slice ABI is incompatible.");
     }
   } else if (
     payload.serializerId !== "cold-seed-v1"
     || payload.coldSeed?.format !== candidate.handle.format
     || payload.coldSeed.generation !== candidate.handle.generation
   ) {
-    throw new Error("ABI del seed History locale incompatibile.");
+    throw new Error("The local History seed ABI is incompatible.");
   }
 }
 
 async function verifyStoredChunk(bytes: Uint8Array, chunk: StoredHistoryChunkV1): Promise<void> {
   if (bytes.byteLength !== chunk.storedBytes) {
-    throw new Error("Lunghezza chunk History locale non valida.");
+    throw new Error("Invalid local History chunk length.");
   }
   if (await sha256Bytes(bytes) !== chunk.storedSha256) {
-    throw new Error("Hash stored del chunk History locale non valido.");
+    throw new Error("Invalid stored hash for the local History chunk.");
   }
 }
 

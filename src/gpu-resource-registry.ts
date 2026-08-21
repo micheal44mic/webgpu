@@ -80,36 +80,36 @@ export interface GpuRegistrySnapshot {
  */
 export const GPU_MEMORY_CATEGORY_ORDER = Object.freeze([
   "Layer RGBA16F",
-  "Piramidi mip RGBA16F",
-  "Maschere continue R16F",
+  "RGBA16F mip pyramids",
+  "Continuous R16F masks",
   "Heightfield R32F",
-  "Cache vettoriali",
-  "Scratch temporanei",
-  "Composite livelli",
-  "Cronologia · Undo",
-  "Cold storage livelli",
-  "Import e trasformazioni raster",
-  "Presentazione",
-  "Effetti raster",
+  "Vector caches",
+  "Temporary scratch",
+  "Layer composites",
+  "History · Undo",
+  "Layer cold storage",
+  "Raster import and transforms",
+  "Presentation",
+  "Raster effects",
   "Light / Uniformed / Intense",
-  "Fusione e Blend",
-  "Riempimento e selezione",
-  "Preview pennello",
-  "Pennello, grana e shape",
-  "Code predittive",
-  "Uniformi e parametri",
-  "Non categorizzato",
+  "Compositing and Blend",
+  "Fill and selection",
+  "Brush preview",
+  "Brush, grain, and shape",
+  "Predictive tails",
+  "Uniforms and parameters",
+  "Uncategorized",
 ] as const);
 
 const CATEGORY_RULES: ReadonlyArray<readonly [RegExp, string]> = Object.freeze([
   [/authoritative paint layer|Transparent layer placeholder/i, "Layer RGBA16F"],
   // Scratch/readback precede ogni proprietario semantico: una cache vettoriale
   // persistente e il suo scratch temporaneo devono restare righe disgiunte.
-  [/scratch|arena comune|arena segmenti|readback|rect probe|pixel probe|witness/i,
-    "Scratch temporanei"],
+  [/scratch|shared arena|segment arena|readback|rect probe|pixel probe|witness/i,
+    "Temporary scratch"],
   [/Heightfield|heightfield/i, "Heightfield R32F"],
   [/(?:R16F|r16float|f16).*(?:coverage|matte|mask|accumulator|snapshot)|(?:coverage|matte|blur cache|blurred mask|accumulator|snapshot).*(?:R16F|r16float|f16)|GPU blur cache/i,
-    "Maschere continue R16F"],
+    "Continuous R16F masks"],
   // Cronologia e cold storage erano una riga sola, e la riga sola non si poteva
   // leggere: la cronologia ha un budget in byte che la tiene a bada, il cold
   // storage dei livelli inattivi no. Sommarle nascondeva proprio la distinzione
@@ -120,31 +120,31 @@ const CATEGORY_RULES: ReadonlyArray<readonly [RegExp, string]> = Object.freeze([
   // attivo: ricostruibili dai pixel autorevoli, e la voce piu' pesante dopo il
   // livello stesso. Restavano in `Non categorizzato`, che e' la riga che chiede
   // un nome — questo e' il nome.
-  [/Merged (?:below|above|[a-z]+) |Layer composite/i, "Composite livelli"],
-  [/Cronologia|history/i, "Cronologia · Undo"],
-  [/cold tile|cold storage|Cold ripristinato|compress/i, "Cold storage livelli"],
-  [/vector text|vector svg|semantic vector|mixed scene|scene lineare|ordered layer blend|ordered clipping-group/i,
-    "Cache vettoriali"],
+  [/Merged (?:below|above|[a-z]+) |Layer composite/i, "Layer composites"],
+  [/history/i, "History · Undo"],
+  [/cold tile|cold storage|restored cold|compress/i, "Layer cold storage"],
+  [/vector text|vector svg|semantic vector|mixed scene|linear scene|ordered layer blend|ordered clipping-group/i,
+    "Vector caches"],
   [/display pyramid|derived mip|logical mip|sampling chain|\bmip(?:map)?\b/i,
-    "Piramidi mip RGBA16F"],
-  [/raster import|raster Transform|Trasforma raster|Native raster/i,
-    "Import e trasformazioni raster"],
-  [/presentation|presentazione|swap|thumbnail/i, "Presentazione"],
+    "RGBA16F mip pyramids"],
+  [/raster import|raster Transform|Native raster/i,
+    "Raster import and transforms"],
+  [/presentation|swap|thumbnail/i, "Presentation"],
   [/Light Glaze|Uniformed|Intense|glaze/i, "Light / Uniformed / Intense"],
-  [/Smusso|bevel|Traccia|stroke|Ombra|shadow/i, "Effetti raster"],
-  [/Riempimento|fill|Selezione|selection|lasso/i, "Riempimento e selezione"],
-  [/Blend dry|blend|compositor|compositore/i, "Fusione e Blend"],
-  [/Brush outline/i, "Preview pennello"],
-  [/grain|shape|stamp|brush|pennello/i, "Pennello, grana e shape"],
-  [/thickness|stabilizzazione|stabilization|tail/i, "Code predittive"],
-  [/uniform|parameter|indirect|metadata|argument/i, "Uniformi e parametri"],
+  [/bevel|stroke|shadow/i, "Raster effects"],
+  [/fill|selection|lasso/i, "Fill and selection"],
+  [/Blend dry|blend|compositor/i, "Compositing and Blend"],
+  [/Brush outline/i, "Brush preview"],
+  [/grain|shape|stamp|brush/i, "Brush, grain, and shape"],
+  [/thickness|stabilization|tail/i, "Predictive tails"],
+  [/uniform|parameter|indirect|metadata|argument/i, "Uniforms and parameters"],
 ]);
 
 export function categoriseGpuResource(label: string): string {
   for (const [pattern, category] of CATEGORY_RULES) {
     if (pattern.test(label)) return category;
   }
-  return "Non categorizzato";
+  return "Uncategorized";
 }
 
 export function textureDescriptorBytes(descriptor: {

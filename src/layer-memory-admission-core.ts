@@ -13,7 +13,7 @@ export const LAYER_MEMORY_ADMISSION_STRATEGY =
 
 function assertNonNegativeFinite(value: number, label: string): void {
   if (!Number.isFinite(value) || value < 0) {
-    throw new RangeError(`${label} deve essere un numero finito non negativo.`);
+    throw new RangeError(`${label} must be a finite non-negative number.`);
   }
 }
 

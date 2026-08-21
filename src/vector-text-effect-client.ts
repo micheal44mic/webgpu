@@ -146,7 +146,7 @@ export class VectorTextEffectCompilerClient {
     };
     this.worker.onerror = (event): void => {
       this.failedJobs += 1;
-      this.lastError = event.message || "Worker geometria testo interrotto.";
+      this.lastError = event.message || "Text geometry worker stopped.";
       this.notifyResourceReady();
     };
   }
@@ -275,7 +275,7 @@ export class VectorTextEffectCompilerClient {
       };
       const timer = window.setTimeout(() => {
         this.resourceWaiters.delete(finish);
-        reject(new Error("Timeout durante la preparazione esatta delle mesh vettoriali."));
+        reject(new Error("Timed out while preparing exact vector meshes."));
       }, timeoutMs);
       this.resourceWaiters.add(finish);
     });

@@ -190,18 +190,18 @@ export function uniqueLayerDuplicateName(
   sourceName: string,
   existingNames: Iterable<string>,
 ): string {
-  const normalizedSource = sourceName.trim() || "Livello";
-  const root = normalizedSource.replace(/ copia(?: \d+)?$/iu, "").trim() || "Livello";
+  const normalizedSource = sourceName.trim() || "Layer";
+  const root = normalizedSource.replace(/ (?:copy|copia)(?: \d+)?$/iu, "").trim() || "Layer";
   const occupied = new Set(
     [...existingNames].map((name) => name.trim().toLocaleLowerCase()),
   );
-  const first = `${root} copia`;
+  const first = `${root} copy`;
   if (!occupied.has(first.toLocaleLowerCase())) return first;
   for (let ordinal = 2; ordinal < Number.MAX_SAFE_INTEGER; ordinal += 1) {
     const candidate = `${first} ${ordinal}`;
     if (!occupied.has(candidate.toLocaleLowerCase())) return candidate;
   }
-  throw new Error("Impossibile generare un nome univoco per la copia.");
+  throw new Error("Could not generate a unique name for the copy.");
 }
 
 /**
@@ -279,14 +279,14 @@ export class MixedSceneStack {
   private nextImageNodeId = 1;
   constructor(rasterLayerIds: readonly number[]) {
     if (rasterLayerIds.length === 0) {
-      throw new Error("La scena mista richiede almeno un livello raster.");
+      throw new Error("The mixed scene requires at least one raster layer.");
     }
     const uniqueIds = new Set(rasterLayerIds);
     if (
       uniqueIds.size !== rasterLayerIds.length
       || rasterLayerIds.some((id) => !Number.isInteger(id) || id <= 0)
     ) {
-      throw new Error("Gli id raster iniziali devono essere positivi e univoci.");
+      throw new Error("Initial raster IDs must be positive and unique.");
     }
     this.orderedItems = rasterLayerIds.map(rasterItem);
     this.selectedKey = this.orderedItems[0].key;
@@ -339,7 +339,7 @@ export class MixedSceneStack {
   itemByKey(key: MixedSceneItem["key"]): MixedSceneItem {
     const item = this.orderedItems.find((candidate) => candidate.key === key);
     if (!item) {
-      throw new Error(`Elemento scena ${key} inesistente.`);
+      throw new Error(`Scene item ${key} does not exist.`);
     }
     return item;
   }
@@ -347,7 +347,7 @@ export class MixedSceneStack {
   textById(id: number): VectorTextNode {
     const node = this.textNodes.get(id);
     if (!node) {
-      throw new Error(`Testo ${id} inesistente.`);
+      throw new Error(`Text ${id} does not exist.`);
     }
     return node;
   }
@@ -355,7 +355,7 @@ export class MixedSceneStack {
   svgById(id: number): VectorSvgNode {
     const node = this.svgNodes.get(id);
     if (!node) {
-      throw new Error(`SVG ${id} inesistente.`);
+      throw new Error(`SVG ${id} does not exist.`);
     }
     return node;
   }
@@ -363,7 +363,7 @@ export class MixedSceneStack {
   imageById(id: number): RasterImageNode {
     const node = this.imageNodes.get(id);
     if (!node) {
-      throw new Error(`Immagine ${id} inesistente.`);
+      throw new Error(`Image ${id} does not exist.`);
     }
     return node;
   }
@@ -454,7 +454,7 @@ export class MixedSceneStack {
           ? cloneRasterImageNodeForHistory(this.imageById(item.imageNodeId))
           : null;
     if (!node) {
-      throw new Error(`Elemento ${key} non è un nodo vettoriale.`);
+      throw new Error(`Item ${key} is not a vector node.`);
     }
     return {
       key,
@@ -475,14 +475,14 @@ export class MixedSceneStack {
       } else if (existing.kind === "image") {
         this.imageNodes.delete(existing.imageNodeId);
       } else {
-        throw new Error(`Elemento ${state.key} non è un nodo semantico.`);
+        throw new Error(`Item ${state.key} is not a semantic node.`);
       }
     }
 
     if (state.node) {
       const keyKind = semanticKindForKey(state.key);
       if (state.node.kind !== keyKind) {
-        throw new Error(`Nodo storico incompatibile con ${state.key}.`);
+        throw new Error(`History node is incompatible with ${state.key}.`);
       }
       const insertionIndex = Math.max(
         0,
@@ -535,7 +535,7 @@ export class MixedSceneStack {
     | RasterImageNode {
     const selected = this.selected;
     if (selected.kind === "raster") {
-      throw new Error("Il livello raster richiede il percorso di duplicazione GPU.");
+      throw new Error("Raster layers require the GPU duplication path.");
     }
     const existingNames = [
       ...this.textNodes.values(),
@@ -546,7 +546,7 @@ export class MixedSceneStack {
 
     if (selected.kind === "text") {
       if (this.textNodes.size >= VECTOR_TEXT_NODE_MAXIMUM) {
-        throw new Error(`Massimo ${VECTOR_TEXT_NODE_MAXIMUM} testi raggiunto.`);
+        throw new Error(`Maximum of ${VECTOR_TEXT_NODE_MAXIMUM} text layers reached.`);
       }
       const source = this.textById(selected.textNodeId);
       const id = this.nextTextNodeId++;
@@ -563,7 +563,7 @@ export class MixedSceneStack {
 
     if (selected.kind === "svg") {
       if (this.svgNodes.size >= VECTOR_SVG_NODE_MAXIMUM) {
-        throw new Error(`Massimo ${VECTOR_SVG_NODE_MAXIMUM} SVG raggiunto.`);
+        throw new Error(`Maximum of ${VECTOR_SVG_NODE_MAXIMUM} SVG layers reached.`);
       }
       const source = this.svgById(selected.svgNodeId);
       const id = this.nextSvgNodeId++;
@@ -579,7 +579,7 @@ export class MixedSceneStack {
     }
 
     if (this.imageNodes.size >= RASTER_IMAGE_NODE_MAXIMUM) {
-      throw new Error(`Massimo ${RASTER_IMAGE_NODE_MAXIMUM} immagini raggiunto.`);
+      throw new Error(`Maximum of ${RASTER_IMAGE_NODE_MAXIMUM} image layers reached.`);
     }
     const source = this.imageById(selected.imageNodeId);
     const id = this.nextImageNodeId++;
@@ -596,14 +596,14 @@ export class MixedSceneStack {
 
   addTextAboveSelection(seed: VectorTextNodeSeed, name?: string): VectorTextNode {
     if (this.textNodes.size >= VECTOR_TEXT_NODE_MAXIMUM) {
-      throw new Error(`Massimo ${VECTOR_TEXT_NODE_MAXIMUM} testi raggiunto.`);
+      throw new Error(`Maximum of ${VECTOR_TEXT_NODE_MAXIMUM} text layers reached.`);
     }
     const id = this.nextTextNodeId;
     this.nextTextNodeId += 1;
     const node: VectorTextNode = {
       id,
       kind: "text",
-      name: name?.trim() || `Testo ${id}`,
+      name: name?.trim() || `Text ${id}`,
       visible: true,
       opacity: 1,
       text: seed.text,
@@ -670,7 +670,7 @@ export class MixedSceneStack {
 
   addSvgAboveSelection(seed: VectorSvgNodeSeed, name?: string): VectorSvgNode {
     if (this.svgNodes.size >= VECTOR_SVG_NODE_MAXIMUM) {
-      throw new Error(`Massimo ${VECTOR_SVG_NODE_MAXIMUM} SVG raggiunto.`);
+      throw new Error(`Maximum of ${VECTOR_SVG_NODE_MAXIMUM} SVG layers reached.`);
     }
     const id = this.nextSvgNodeId;
     this.nextSvgNodeId += 1;
@@ -724,7 +724,7 @@ export class MixedSceneStack {
     name?: string,
   ): RasterImageNode {
     if (this.imageNodes.size >= RASTER_IMAGE_NODE_MAXIMUM) {
-      throw new Error(`Massimo ${RASTER_IMAGE_NODE_MAXIMUM} immagini raggiunto.`);
+      throw new Error(`Maximum of ${RASTER_IMAGE_NODE_MAXIMUM} image layers reached.`);
     }
     if (
       !seed.document.assetId.trim()
@@ -735,7 +735,7 @@ export class MixedSceneStack {
       || !Number.isInteger(seed.document.sourceBytes)
       || seed.document.sourceBytes < 0
     ) {
-      throw new Error("Metadati dell’immagine raster non validi.");
+      throw new Error("Invalid raster image metadata.");
     }
     const id = this.nextImageNodeId;
     this.nextImageNodeId += 1;
@@ -743,7 +743,7 @@ export class MixedSceneStack {
     const node: RasterImageNode = {
       id,
       kind: "image",
-      name: name?.trim() || documentValue.sourceName || `Immagine ${id}`,
+      name: name?.trim() || documentValue.sourceName || `Image ${id}`,
       visible: true,
       opacity: 1,
       document: documentValue,
@@ -763,7 +763,7 @@ export class MixedSceneStack {
     const node = this.svgById(id);
     const key = `svg:${id}` as const;
     const index = this.indexOfKey(key);
-    if (index < 0) throw new Error(`Elemento SVG ${id} assente dalla pila.`);
+    if (index < 0) throw new Error(`SVG item ${id} is missing from the stack.`);
     this.orderedItems.splice(index, 1);
     this.svgNodes.delete(id);
     if (this.selectedKey === key) {
@@ -778,7 +778,7 @@ export class MixedSceneStack {
     const node = this.imageById(id);
     const key = `image:${id}` as const;
     const index = this.indexOfKey(key);
-    if (index < 0) throw new Error(`Elemento immagine ${id} assente dalla pila.`);
+    if (index < 0) throw new Error(`Image item ${id} is missing from the stack.`);
     this.orderedItems.splice(index, 1);
     this.imageNodes.delete(id);
     if (this.selectedKey === key) {
@@ -794,7 +794,7 @@ export class MixedSceneStack {
     const key = `text:${id}` as const;
     const index = this.indexOfKey(key);
     if (index < 0) {
-      throw new Error(`Elemento testo ${id} assente dalla pila.`);
+      throw new Error(`Text item ${id} is missing from the stack.`);
     }
     this.orderedItems.splice(index, 1);
     this.textNodes.delete(id);
@@ -813,7 +813,7 @@ export class MixedSceneStack {
    */
   addRasterAboveSelection(newRasterLayerId: number): MixedSceneItem {
     if (this.indexOfKey(`raster:${newRasterLayerId}`) >= 0) {
-      throw new Error(`Raster ${newRasterLayerId} già presente nella scena.`);
+      throw new Error(`Raster ${newRasterLayerId} is already present in the scene.`);
     }
     const selectedIndex = this.indexOfKey(this.selectedKey);
     const item = rasterItem(newRasterLayerId);
@@ -829,14 +829,14 @@ export class MixedSceneStack {
     select = true,
   ): MixedSceneItem {
     if (this.indexOfKey(`raster:${newRasterLayerId}`) >= 0) {
-      throw new Error(`Raster ${newRasterLayerId} già presente nella scena.`);
+      throw new Error(`Raster ${newRasterLayerId} is already present in the scene.`);
     }
     if (
       !Number.isInteger(sceneIndex)
       || sceneIndex < 0
       || sceneIndex > this.orderedItems.length
     ) {
-      throw new Error(`Indice scena ${sceneIndex} fuori intervallo.`);
+      throw new Error(`Scene index ${sceneIndex} is out of range.`);
     }
     const item = rasterItem(newRasterLayerId);
     this.orderedItems.splice(sceneIndex, 0, item);
@@ -856,11 +856,11 @@ export class MixedSceneStack {
     const raster = rasterItem(rasterLayerId);
     const rasterKey = raster.key;
     if (this.indexOfKey(rasterKey) >= 0) {
-      throw new Error("Raster " + rasterLayerId + " già presente nella scena.");
+      throw new Error("Raster " + rasterLayerId + " is already present in the scene.");
     }
     const index = this.indexOfKey(key);
     if (index < 0) {
-      throw new Error("Elemento semantico " + key + " assente dalla scena.");
+      throw new Error("Semantic item " + key + " is missing from the scene.");
     }
     const item = this.orderedItems[index];
     if (item.kind === "text") {
@@ -873,7 +873,7 @@ export class MixedSceneStack {
       this.imageById(item.imageNodeId);
       this.imageNodes.delete(item.imageNodeId);
     } else {
-      throw new Error("Elemento " + key + " non è semantico.");
+      throw new Error("Item " + key + " is not semantic.");
     }
     this.orderedItems.splice(index, 1, raster);
     this.selectedKey = rasterKey;
@@ -886,19 +886,19 @@ export class MixedSceneStack {
     state: MixedSceneVectorHistoryState,
   ): number {
     if (!state.node) {
-      throw new Error("Stato vettoriale storico vuoto nel ripristino raster.");
+      throw new Error("The vector history state is empty during raster restoration.");
     }
     const restoredKind = semanticKindForKey(state.key);
     if (state.node.kind !== restoredKind) {
-      throw new Error("Nodo storico incompatibile con " + state.key + ".");
+      throw new Error("History node is incompatible with " + state.key + ".");
     }
     const rasterKey = rasterItem(rasterLayerId).key;
     const index = this.indexOfKey(rasterKey);
     if (index < 0) {
-      throw new Error("Raster " + rasterLayerId + " assente dalla scena.");
+      throw new Error("Raster " + rasterLayerId + " is missing from the scene.");
     }
     if (this.indexOfKey(state.key) >= 0) {
-      throw new Error("Vettore storico " + state.key + " già presente nella scena.");
+      throw new Error("History vector " + state.key + " is already present in the scene.");
     }
     if (restoredKind === "text") {
       const node = cloneVectorTextNode(state.node as VectorTextNode);
@@ -927,7 +927,7 @@ export class MixedSceneStack {
       || sceneIndex < 0
       || sceneIndex > this.orderedItems.length
     ) {
-      throw new Error("Indice scena " + sceneIndex + " fuori intervallo.");
+      throw new Error("Scene index " + sceneIndex + " is out of range.");
     }
     return this.orderedItems
       .slice(0, sceneIndex)
@@ -938,7 +938,7 @@ export class MixedSceneStack {
     const key = `raster:${rasterLayerId}` as const;
     const index = this.indexOfKey(key);
     if (index < 0) {
-      throw new Error(`Raster ${rasterLayerId} assente dalla scena.`);
+      throw new Error(`Raster ${rasterLayerId} is missing from the scene.`);
     }
     const [removed] = this.orderedItems.splice(index, 1);
     if (this.selectedKey === key) {
@@ -1208,15 +1208,15 @@ export class MixedSceneStack {
    */
   reorderByKeys(bottomUpKeys: readonly MixedSceneItem["key"][]): boolean {
     if (bottomUpKeys.length !== this.orderedItems.length) {
-      throw new Error("Il riordino scena deve contenere tutti gli elementi.");
+      throw new Error("The scene reorder must contain every item.");
     }
     if (new Set(bottomUpKeys).size !== bottomUpKeys.length) {
-      throw new Error("Il riordino scena contiene chiavi duplicate.");
+      throw new Error("The scene reorder contains duplicate keys.");
     }
     const itemsByKey = new Map(this.orderedItems.map((item) => [item.key, item]));
     const candidate = bottomUpKeys.map((key) => {
       const item = itemsByKey.get(key);
-      if (!item) throw new Error(`Elemento scena ${key} assente dal riordino.`);
+      if (!item) throw new Error(`Scene item ${key} is missing from the reorder.`);
       return item;
     });
     const changed = candidate.some((item, index) => item !== this.orderedItems[index]);
@@ -1263,11 +1263,11 @@ export class MixedSceneStack {
     const key = `raster:${activeRasterLayerId}` as const;
     const index = this.indexOfKey(key);
     if (index < 0) {
-      throw new Error(`Raster attivo ${activeRasterLayerId} assente dalla scena.`);
+      throw new Error(`Active raster ${activeRasterLayerId} is missing from the scene.`);
     }
     const activeRaster = this.orderedItems[index];
     if (activeRaster.kind !== "raster") {
-      throw new Error(`Elemento ${key} non è raster.`);
+      throw new Error(`Item ${key} is not a raster layer.`);
     }
     if (activeClippingUnitIds.length > 1) {
       const groupIndices = activeClippingUnitIds.map((id) =>
@@ -1276,7 +1276,7 @@ export class MixedSceneStack {
         groupIndices.some((candidate) => candidate < 0)
         || groupIndices.some((candidate, offset) => candidate !== groupIndices[0] + offset)
       ) {
-        throw new Error("Il gruppo di ritaglio deve restare consecutivo anche nella scena mista.");
+        throw new Error("The clipping group must remain contiguous in the mixed scene.");
       }
       return {
         below: this.orderedItems.slice(0, groupIndices[0]),
@@ -1305,7 +1305,7 @@ export class MixedSceneStack {
     const activeKey = `raster:${activeRasterLayerId}` as const;
     const activeItem = this.itemByKey(activeKey);
     if (activeItem.kind !== "raster") {
-      throw new Error(`Elemento ${activeKey} non è raster.`);
+      throw new Error(`Item ${activeKey} is not a raster layer.`);
     }
     const clippingGroup = activeClippingUnitIds.length > 1
       ? [...activeClippingUnitIds]
@@ -1317,7 +1317,7 @@ export class MixedSceneStack {
         indices.some((candidate) => candidate < 0)
         || indices.some((candidate, offset) => candidate !== indices[0] + offset)
       ) {
-        throw new Error("Il gruppo di ritaglio deve restare consecutivo anche nella scena mista.");
+        throw new Error("The clipping group must remain contiguous in the mixed scene.");
       }
     }
 
@@ -1402,7 +1402,7 @@ export class MixedSceneStack {
     flushTextRun();
 
     if (!segments.some((segment) => segment.kind === "active-raster")) {
-      throw new Error(`Raster attivo ${activeRasterLayerId} assente dalla composizione.`);
+      throw new Error(`Active raster ${activeRasterLayerId} is missing from the composition.`);
     }
     return segments;
   }

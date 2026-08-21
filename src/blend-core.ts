@@ -173,7 +173,7 @@ const clamp = (value: number, minimum: number, maximum: number): number =>
 const finite = (value: unknown, name: string): number => {
   const result = Number(value);
   if (!Number.isFinite(result)) {
-    throw new TypeError(`${name} deve essere finito`);
+    throw new TypeError(`${name} must be finite`);
   }
   return result;
 };
@@ -181,7 +181,7 @@ const finite = (value: unknown, name: string): number => {
 const positive = (value: unknown, name: string): number => {
   const result = finite(value, name);
   if (!(result > 0)) {
-    throw new RangeError(`${name} deve essere > 0`);
+    throw new RangeError(`${name} must be > 0`);
   }
   return result;
 };
@@ -189,7 +189,7 @@ const positive = (value: unknown, name: string): number => {
 const unit = (value: unknown, name: string): number => {
   const result = finite(value, name);
   if (result < 0 || result > 1) {
-    throw new RangeError(`${name} deve stare fra 0 e 1`);
+    throw new RangeError(`${name} must be between 0 and 1`);
   }
   return result;
 };
@@ -197,7 +197,7 @@ const unit = (value: unknown, name: string): number => {
 const positiveInteger = (value: unknown, name: string): number => {
   const result = Math.trunc(finite(value, name));
   if (result < 1) {
-    throw new RangeError(`${name} deve essere >= 1`);
+    throw new RangeError(`${name} must be >= 1`);
   }
   return result;
 };
@@ -209,7 +209,7 @@ export function normalizeDryBlendControls(
   source: Partial<DryBlendControls> = {},
 ): Readonly<DryBlendControls> {
   if (!source || typeof source !== "object") {
-    throw new TypeError("controlli Blend dry non validi");
+    throw new TypeError("invalid Blend dry controls");
   }
   return Object.freeze({
     size: clamp(positive(source.size ?? DEFAULT_DRY_BLEND_CONTROLS.size, "size"), 1, 1024),
@@ -290,7 +290,7 @@ export function blendBlurSupportRadius(
 
 export function quantizeDryBlendSample(sample: DryBlendSample): QuantizedDryBlendSample {
   if (!sample || typeof sample !== "object") {
-    throw new TypeError("campione Blend dry non valido");
+    throw new TypeError("invalid Blend dry sample");
   }
   // Pressure is intentionally normalized to the neutral value. This guarantees
   // that changing pointer pressure cannot alter size, strength, ROI, or steps.
@@ -552,8 +552,8 @@ function finalizeBatch(
   );
   if (batch.readRect.width > scratchSize || batch.readRect.height > scratchSize) {
     throw new RangeError(
-      `segmento Blend dry ${batch.readRect.width}x${batch.readRect.height}`
-      + ` oltre scratch ${scratchSize}`,
+      `Dry Blend segment ${batch.readRect.width}x${batch.readRect.height}`
+      + ` exceeds scratch size ${scratchSize}`,
     );
   }
   setRect(
@@ -669,7 +669,7 @@ export function createDryBlendPlanner(
     nextControls: Partial<DryBlendControls> = {},
   ): Readonly<DryBlendControls> => {
     if (queued > 0) {
-      throw new Error("configure Blend dry richiede una coda vuota");
+      throw new Error("Dry Blend configuration requires an empty queue");
     }
     controls = normalizeDryBlendControls(nextControls);
     discardPending();
@@ -738,10 +738,10 @@ export function createDryBlendPlanner(
 
   const pushSample = (sample: DryBlendSample): DryBlendPushResult => {
     if (!begun) {
-      throw new Error("planner Blend dry non inizializzato: chiamare reset(down)");
+      throw new Error("Blend dry planner is not initialized: call reset(down)");
     }
     if (finished) {
-      throw new Error("planner Blend dry gia finalizzato");
+      throw new Error("The Dry Blend planner has already been finalized");
     }
     const next = quantizeDryBlendSample(sample);
     const deltaX = next.x - lastPoint.x;
@@ -779,7 +779,7 @@ export function createDryBlendPlanner(
 
   const finish = (): DryBlendPushResult => {
     if (!begun) {
-      throw new Error("planner Blend dry non inizializzato: chiamare reset(down)");
+      throw new Error("Blend dry planner is not initialized: call reset(down)");
     }
     if (finished) {
       return accepted(0, !moved);
@@ -868,7 +868,7 @@ export function resampleDryBlendStroke(
   steps: DryBlendStep[];
 } {
   if (!Array.isArray(rawSamples) || rawSamples.length === 0) {
-    throw new TypeError("resample Blend dry richiede campioni");
+    throw new TypeError("Dry Blend resampling requires samples");
   }
   const ordered = rawSamples
     .map((sample, index) => ({ sample: quantizeDryBlendSample(sample), index }))
@@ -881,7 +881,7 @@ export function resampleDryBlendStroke(
   for (let index = 1; index < ordered.length; index += 1) {
     const result = planner.pushSample(ordered[index].sample);
     if (!result.accepted) {
-      throw new RangeError("capacita Blend dry insufficiente");
+      throw new RangeError("Insufficient Dry Blend capacity");
     }
   }
   planner.finish();

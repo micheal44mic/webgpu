@@ -117,11 +117,11 @@ assert.equal(
   assert.ok(Math.abs(linearChannelToSrgbColorOverlay(1) - 1) < 1e-15);
   assert.throws(
     () => rasterColorOverlayColorFromHex("#abcd"),
-    /HEX della sovrapposizione non valido/,
+    /Invalid Color Overlay HEX color/,
   );
   assert.throws(
     () => srgbChannelToLinearColorOverlay(Number.NaN),
-    /deve essere finito/,
+    /must be finite/,
   );
 
   // Every 8-bit channel survives the sRGB HEX -> linear -> sRGB HEX roundtrip.
@@ -284,7 +284,7 @@ const newStack = () => new LayerStack(createStyles);
   );
   assert.throws(
     () => stack.move(0, 2),
-    /deve restare sotto/,
+    /must remain below/,
     "il parent non può essere spostato sopra i propri ritagli",
   );
   assert.deepEqual(
@@ -294,16 +294,16 @@ const newStack = () => new LayerStack(createStyles);
   );
   assert.throws(
     () => stack.move(1, 0),
-    /deve restare sotto/,
+    /must remain below/,
     "un ritaglio non può essere spostato sotto il parent",
   );
   assert.throws(
     () => stack.setClippingParent(0, stack.at(first).id),
-    /parent deve essere un livello raster base/i,
+    /parent must be a base raster layer/i,
   );
   assert.throws(
     () => stack.setClippingParent(0, 999),
-    /assente/,
+    /missing/,
   );
 }
 
@@ -322,7 +322,7 @@ const newStack = () => new LayerStack(createStyles);
 
   assert.throws(
     () => stack.insertAt(1, "Intruso"),
-    /gruppo di ritaglio.*consecutivo/i,
+    /clipping group.*contiguous/i,
   );
   assert.deepEqual(stack.layers.map((record) => record.id), groupIds);
   assert.equal(stack.active.id, activeId);
@@ -330,7 +330,7 @@ const newStack = () => new LayerStack(createStyles);
   const detachedOrdinary = { ...newStack().active, id: 999 };
   assert.throws(
     () => stack.attach(detachedOrdinary, 2),
-    /gruppo di ritaglio.*consecutivo/i,
+    /clipping group.*contiguous/i,
   );
   assert.deepEqual(stack.layers.map((record) => record.id), groupIds);
   assert.equal(stack.active.id, activeId);
@@ -370,7 +370,7 @@ const newStack = () => new LayerStack(createStyles);
   const childId = stack.at(child).id;
   assert.throws(
     () => stack.setClippingParent(child, parentId),
-    /gruppo di ritaglio.*consecutivo/i,
+    /clipping group.*contiguous/i,
   );
   assert.equal(stack.at(child).clippingParentId, null);
   assert.deepEqual(stack.layers.map((record) => record.id), [parentId, 2, childId]);
@@ -381,7 +381,7 @@ const newStack = () => new LayerStack(createStyles);
   const validActiveId = stack.active.id;
   assert.throws(
     () => stack.move(2, 1),
-    /gruppo di ritaglio.*consecutivo/i,
+    /clipping group.*contiguous/i,
   );
   assert.deepEqual(stack.layers.map((record) => record.id), validOrder);
   assert.equal(stack.active.id, validActiveId);
@@ -398,7 +398,7 @@ const newStack = () => new LayerStack(createStyles);
   stack.setClippingParent(clip, upperBaseId);
   assert.throws(
     () => stack.setClippingParent(upperBase, lowerBaseId),
-    /ritagli collegati/,
+    /linked clipping masks/,
   );
   assert.equal(stack.at(upperBase).clippingParentId, null);
 }
@@ -464,7 +464,7 @@ const newStack = () => new LayerStack(createStyles);
   );
   assert.throws(
     () => stack.setClippingEnabled(0, true),
-    /livello raster immediatamente sotto/i,
+    /raster layer immediately below/i,
   );
   assert.deepEqual(
     stack.layers.map((record) => record.clippingParentId),
@@ -514,7 +514,7 @@ const newStack = () => new LayerStack(createStyles);
       ...beforeInvalid.slice(0, 2),
       { layerId: stack.at(second).id, parentId: 999 },
     ]),
-    /assente/,
+    /missing/,
   );
   assert.deepEqual(stack.captureClippingHistoryState(), beforeInvalid);
 }
@@ -573,13 +573,13 @@ const newStack = () => new LayerStack(createStyles);
   const child = stack.remove(childIndex);
   assert.throws(
     () => stack.attach(child, 0),
-    /deve restare sotto/,
+    /must remain below/,
   );
   assert.equal(stack.count, 1, "attach fallito non deve mutare lo stack");
   const missingParent = { ...child, id: 999, clippingParentId: 998 };
   assert.throws(
     () => stack.attach(missingParent, 1),
-    /assente/,
+    /missing/,
   );
   assert.equal(stack.count, 1);
 }
@@ -603,7 +603,7 @@ const newStack = () => new LayerStack(createStyles);
   stack.remove(referenceIndex);
   assert.equal(stack.referenceLayerId, null);
   assert.equal(stack.reference, null);
-  assert.throws(() => stack.setReferenceIndex(99), /fuori intervallo/);
+  assert.throws(() => stack.setReferenceIndex(99), /out of range/);
 }
 
 // add() inserts ABOVE the active layer and selects the new one.
@@ -640,11 +640,11 @@ const newStack = () => new LayerStack(createStyles);
   assert.deepEqual(stack.layers.map((layer) => layer.id), [1, 2]);
   assert.throws(
     () => stack.attach(detached, 0),
-    /già presente/,
+    /already present/,
     "lo stesso record non può essere collegato due volte",
   );
-  assert.throws(() => stack.insertAt(-1), /fuori intervallo/);
-  assert.throws(() => stack.insertAt(stack.count + 1), /fuori intervallo/);
+  assert.throws(() => stack.insertAt(-1), /out of range/);
+  assert.throws(() => stack.insertAt(stack.count + 1), /out of range/);
 }
 
 // THE aliasing invariant: two records must never share one style object, or
@@ -725,7 +725,7 @@ const newStack = () => new LayerStack(createStyles);
   stack.remove(0);
   assert.equal(stack.activeIndex, 0);
   assert.equal(stack.active.id, 2);
-  assert.throws(() => stack.remove(0), /ultimo livello/);
+  assert.throws(() => stack.remove(0), /last layer/);
 }
 
 // ids are monotonic and never reused, so GPU resources keyed by id cannot be
@@ -748,8 +748,8 @@ const newStack = () => new LayerStack(createStyles);
   stack.add();
   assert.equal(stack.setActiveIndex(1), false);
   assert.equal(stack.setActiveIndex(0), true);
-  assert.throws(() => stack.setActiveIndex(7), /fuori intervallo/);
-  assert.throws(() => stack.at(-1), /fuori intervallo/);
+  assert.throws(() => stack.setActiveIndex(7), /out of range/);
+  assert.throws(() => stack.at(-1), /out of range/);
 }
 
 // Reorder keeps the same RECORD selected, not the same slot.
@@ -764,7 +764,7 @@ const newStack = () => new LayerStack(createStyles);
   assert.equal(stack.active.id, activeId);
   assert.equal(stack.activeIndex, 2);
   assert.equal(stack.move(2, 2), false);
-  assert.throws(() => stack.move(0, 9), /fuori intervallo/);
+  assert.throws(() => stack.move(0, 9), /out of range/);
 }
 
 // below()/above() partition the stack around the active index, bottom-up.
@@ -787,7 +787,7 @@ const newStack = () => new LayerStack(createStyles);
     stack.add();
   }
   assert.equal(stack.count, LAYER_STACK_MAXIMUM);
-  assert.throws(() => stack.add(), /Massimo/);
+  assert.throws(() => stack.add(), /Maximum/);
 }
 
 // Fill Reference adds at most one second full canvas; every other inactive
@@ -916,7 +916,7 @@ assert.equal(LAYER_STORAGE_MASK_WORD_COUNT * Uint32Array.BYTES_PER_ELEMENT, 32);
 
 assert.throws(
   () => exactLayerStorageTileMask(new Uint8Array(3), 1, 1, 4),
-  /Readback non valido/,
+  /Invalid readback/,
 );
 
 {
@@ -1282,12 +1282,12 @@ assert.match(
 );
 assert.match(
   layerBlendTileRuntimeSource,
-  /runGpuAllocationTransaction\([\s\S]*?Renderer Traccia per compositore fusione livello[\s\S]*?deferRollback\(\(\) => releaseRasterStrokeRenderer\(engine, true\)\)/,
+  /runGpuAllocationTransaction\([\s\S]*?Stroke renderer for the layer-blend compositor[\s\S]*?deferRollback\(\(\) => releaseRasterStrokeRenderer\(engine, true\)\)/,
   "anche l'attach finale del renderer Traccia deve restare transazionale",
 );
 assert.match(
   strokeRendererBlendSource,
-  /const BAKE_PARAMETER_CAPACITY = 32;[\s\S]*?bakeParameterBuffer[\s\S]*?Traccia isolated tile-bake parameters/,
+  /const BAKE_PARAMETER_CAPACITY = 32;[\s\S]*?bakeParameterBuffer[\s\S]*?Stroke isolated tile-bake parameters/,
   "i bake tile devono usare un ring GPU separato dai dispatch live Traccia",
 );
 assert.match(
@@ -1318,7 +1318,7 @@ assert.match(
   /if \(completionPolicy === "await-immediately"\) \{\s*await engine\.waitForIdle\(\{\s*allowFrozenDerivedPresentation: caller !== "public",\s*\}\);/,
   "il retarget pubblico deve conservare il fence iniziale e solo i caller strutturali possono coalescere un frame congelato",
 );
-assert.match(retargetBody, /if \(completionPolicy === "await-immediately"\) \{\s*await engine\.waitForGpuCapped\(`Retarget banco effetti #\$\{generation\}`\);/,
+assert.match(retargetBody, /if \(completionPolicy === "await-immediately"\) \{\s*await engine\.waitForGpuCapped\(`Retarget effects workbench #\$\{generation\}`\);/,
   "solo la catena fold può rinviare il timeout GPU al fence del record");
 const bakeCandidateStart = engineSource.indexOf("async createLayerBakeCandidate(");
 const bakeCandidateEnd = engineSource.indexOf("async bakeActiveLayerForSwitch(", bakeCandidateStart);
@@ -1494,7 +1494,7 @@ assert.match(engineSource, /maybeInjectLayerCompositeFault\(this, "after-candida
 assert.match(engineSource, /let activeWorkbenchRestored = false;/);
 assert.match(engineSource, /if \(!activeWorkbenchRestored\) \{[\s\S]*?restoreEffectsWorkbenchToActiveLayer\(this, caller, true\)/,
   "un errore durante la fusione deve forzare il retarget inverso del banco");
-assert.match(engineSource, /Stato incoerente dopo il compositing: ricarica prima di continuare/);
+assert.match(engineSource, /Inconsistent state after compositing: reload before continuing/);
 assert.match(
   engineSource,
   /latchDocumentStateInconsistent\(message: string, trigger\?: unknown\): void/,
@@ -2251,7 +2251,7 @@ assert.match(
   /const changed = await this\.options\.engine\.setLayerClipping\(target\.rasterIndex, enabled\)/,
   "il controllo per riga deve agire anche su un raster esistente, non crearne uno nuovo",
 );
-assert.match(sceneEditorSource, /Altre M consecutive useranno la stessa base/);
+assert.match(sceneEditorSource, /Additional consecutive masks will use the same base/);
 assert.doesNotMatch(indexSource, /id="addClippingMask"/,
   "il vecchio comando globale Crea maschera non deve restare duplicato");
 assert.doesNotMatch(
@@ -2329,7 +2329,7 @@ assert.match(loadingBody, /loadingOverlay\.hidden = true;/);
 const selectUiBody = sceneEditorSource.slice(selectStart, selectStart + 5_500);
 assert.match(
   selectUiBody,
-  /await this\.showLoading\("Caricamento livello…"\)[\s\S]*?await this\.options\.engine\.setActiveLayer\(target\.rasterIndex\);[\s\S]*?await this\.options\.engine\.waitForIdle\(\);/,
+  /await this\.showLoading\("Loading layer…"\)[\s\S]*?await this\.options\.engine\.setActiveLayer\(target\.rasterIndex\);[\s\S]*?await this\.options\.engine\.waitForIdle\(\);/,
   "il loader dello switch deve coprire anche presentazione e completamento GPU",
 );
 assert.match(selectUiBody, /finally \{[\s\S]*?this\.finish\(\{ loading: true \}\);/);
@@ -2337,7 +2337,7 @@ const addUiStart = sceneEditorSource.indexOf("private async addRasterLayerTransa
 const addUiBody = sceneEditorSource.slice(addUiStart, addUiStart + 1_300);
 assert.match(
   addUiBody,
-  /await this\.showLoading\("Creazione livello…"\)[\s\S]*?await this\.options\.engine\.addLayer\(\);[\s\S]*?await this\.options\.engine\.waitForIdle\(\);/,
+  /await this\.showLoading\("Creating layer…"\)[\s\S]*?await this\.options\.engine\.addLayer\(\);[\s\S]*?await this\.options\.engine\.waitForIdle\(\);/,
   "anche il nuovo livello deve restare coperto finché il frame è pronto",
 );
 assert.match(addUiBody, /finally \{[\s\S]*?this\.finish\(\{ loading: true \}\);/);
@@ -2419,7 +2419,7 @@ assert.match(
 );
 assert.match(
   cursorBody,
-  /delta < 0[\s\S]*impossibile annullarlo[\s\S]*impossibile ripristinarlo/,
+  /delta < 0[\s\S]*cannot be undone[\s\S]*cannot be redone/,
   "il messaggio del gate deve distinguere Undo da Redo",
 );
 
@@ -2580,7 +2580,7 @@ assert.match(cursorBody, /engine\.historyStateInconsistent = true;/,
   "un rollback fallito deve alzare il latch fatale");
 assert.match(cursorBody, /if \(switched && targetPreparedForRelease\)/,
   "un pack fallito deve conservare il full-canvas e impedire lo switch inverso distruttivo");
-assert.match(cursorBody, /Ricarica la pagina prima di continuare/,
+assert.match(cursorBody, /Reload the page before continuing/,
   "anche l'errore propagato alla UI deve dire che serve il reload");
 assert.match(cursorBody, /engine\.historyBusy = engine\.historyStateInconsistent;/,
   "il latch fatale deve mantenere bloccate le mutazioni");
@@ -2792,7 +2792,7 @@ assert.match(selectMethodBody, /evictReconstructibleLayerResources\(this, this\.
   "il rollback dello switch deve evacuare il target fallito prima di reidratare l'origine");
 assert.match(selectMethodBody, /this\.layerStack\.setActiveIndex\(fromIndex\);[\s\S]*?await this\.activateLayer\(index\);/,
   "il rollback dello switch deve ritargettare tutti i sottosistemi");
-assert.match(selectMethodBody, /Stato incoerente dopo il cambio livello:[\s\S]*?Ricarica la pagina/,
+assert.match(selectMethodBody, /State is inconsistent after switching layers[\s\S]*?Reload the page/,
   "un doppio fallimento dello switch deve alzare il latch fatale");
 const addMethodStart = engineSource.indexOf("async addLayer(");
 // La transazione include ora anche il rollback dello stack misto raster/testo.
@@ -2825,11 +2825,11 @@ assert.ok(
   "addLayer deve liberare la preview testo soltanto dopo che activateLayer ha "
     + "sbloccato la presentazione, altrimenti waitForIdle resta su displayDirty",
 );
-assert.match(addMethodBody, /Stato incoerente dopo la creazione del livello: ricarica prima di continuare/,
+assert.match(addMethodBody, /State is inconsistent after layer creation\. Reload before continuing/,
   "un doppio fallimento di addLayer deve alzare il latch fatale");
 assert.match(
   addMethodBody,
-  /const combined = new Error\([\s\S]*?Ricarica la pagina prima di continuare[\s\S]*?latchDocumentStateInconsistent\([\s\S]*?combined/,
+  /const combined = new Error\([\s\S]*?Reload the page before continuing[\s\S]*?latchDocumentStateInconsistent\([\s\S]*?combined/,
   "la diagnosi fatale di Add deve conservare insieme errore iniziale e rollback",
 );
 assert.match(addMethodBody, /const insertedIndex = this\.layerStack\.indexOfId\(record\.id\);[\s\S]*?this\.layerStack\.remove\(insertedIndex\);[\s\S]*?const restoredIndex = this\.layerStack\.indexOfId\(activeRasterLayerIdBefore\);[\s\S]*?await this\.activateLayer\(restoredIndex\);/,
@@ -2851,7 +2851,7 @@ assert.ok(
 );
 const recreateStart = engineSource.indexOf("export async function recreateLayerResources(");
 const recreateBody = engineSource.slice(recreateStart, recreateStart + 50_000);
-assert.match(recreateBody, /runGpuAllocationTransaction\(\s*engine\.device,\s*`Pipeline formato layer/,
+assert.match(recreateBody, /runGpuAllocationTransaction\(\s*engine\.device,\s*`Layer format pipeline/,
   "anche pipeline e layout devono chiudere validation/OOM scope");
 assert.match(recreateBody, /record\.id === engine\.layerStack\.active\.id[\s\S]*?await allocateLayerGpuResources\(engine,[\s\S]*?: createColdLayerGpuResources\(\)/,
   "il cambio formato deve allocare full solo per il livello attivo");
@@ -3051,9 +3051,9 @@ assert.match(humanLabSource, /HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 64/)
 assert.match(gpuMemoryPanelSource, /gpuMemoryLayerCold/);
 assert.match(gpuMemoryPanelSource, /gpuMemoryLayerCompressed/);
 assert.match(gpuMemoryPanelSource, /gpuMemoryLayerHydration/);
-assert.match(gpuMemoryPanelSource, /Raw livelli · effettivo/);
-assert.match(gpuMemoryPanelSource, /Memoria logica WebGPU realmente allocata/);
-assert.match(gpuMemoryPanelSource, /non è memoria allocata/);
+assert.match(gpuMemoryPanelSource, /Raw layers · actual/);
+assert.match(gpuMemoryPanelSource, /Logical WebGPU memory actually allocated/);
+assert.match(gpuMemoryPanelSource, /this is not allocated memory/);
 
 // The production-query stress fixture must be explicit, isolated and leave the
 // ordinary layer controls available after it has built real ~1 GiB residency.
@@ -3178,12 +3178,12 @@ console.log("Layer stack verification passed.");
   );
   assert.match(
     deleteLayer,
-    /La base di ritaglio si elimina con tutta la sua unità/,
+    /Deleting the clipping base also deletes its entire unit/,
     "il messaggio deve spiegare che la base si porta via il gruppo",
   );
   assert.match(
     deleteLayer,
-    /Elimina prima le maschere, /,
+    /Delete the masks first, /,
     "il messaggio deve dire cosa fare, non solo cosa non si puo' fare",
   );
 
@@ -3198,7 +3198,7 @@ console.log("Layer stack verification passed.");
   assert.ok(deleteButton.length > 0, "handler di eliminazione non individuato");
   assert.match(
     deleteButton,
-    /if \(properties\.locked\) \{[\s\S]{0,320}Livello bloccato/,
+    /if \(properties\.locked\) \{[\s\S]{0,320}Layer locked/,
     "il livello bloccato deve dire perche' non si elimina",
   );
 }

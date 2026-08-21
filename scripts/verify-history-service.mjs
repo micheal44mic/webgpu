@@ -165,7 +165,7 @@ assert.throws(
       orphanReleaseCount += 1;
     },
   }),
-  /senza azione 99/,
+  /has no action 99/,
 );
 assert.equal(orphanReleaseCount, 1);
 

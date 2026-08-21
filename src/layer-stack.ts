@@ -162,7 +162,7 @@ export class LayerStack {
 
   constructor(createStyles: LayerStyleFactory) {
     this.createStyles = createStyles;
-    this.records.push(this.createRecord("Livello 1"));
+    this.records.push(this.createRecord("Layer 1"));
   }
 
   private createRecord(name: string): LayerRecord {
@@ -202,7 +202,7 @@ export class LayerStack {
    * observed them.
    */
   createDetachedRecord(name?: string): LayerRecord {
-    return this.createRecord(name?.trim() || `Livello ${this.nextId}`);
+    return this.createRecord(name?.trim() || `Layer ${this.nextId}`);
   }
 
   /**
@@ -217,7 +217,7 @@ export class LayerStack {
     const indexById = new Map<number, number>();
     records.forEach((record, index) => {
       if (indexById.has(record.id)) {
-        throw new Error(`Livello ${record.id} duplicato nello stack.`);
+        throw new Error(`Layer ${record.id} is duplicated in the stack.`);
       }
       indexById.set(record.id, index);
     });
@@ -228,18 +228,18 @@ export class LayerStack {
       const parentIndex = indexById.get(record.clippingParentId);
       if (parentIndex === undefined) {
         throw new Error(
-          `Parent raster ${record.clippingParentId} del livello ${record.id} assente.`,
+          `Raster parent ${record.clippingParentId} for layer ${record.id} is missing.`,
         );
       }
       if (parentIndex >= index) {
         throw new Error(
-          `Il parent raster ${record.clippingParentId} deve restare sotto il livello ${record.id}.`,
+          `Raster parent ${record.clippingParentId} must remain below layer ${record.id}.`,
         );
       }
       const parent = records[parentIndex];
       if (parent.clippingParentId !== null) {
         throw new Error(
-          `Il parent raster ${parent.id} deve essere un livello base, non un ritaglio.`,
+          `Raster parent ${parent.id} must be a base layer, not a clipping mask.`,
         );
       }
     });
@@ -256,8 +256,8 @@ export class LayerStack {
       dependentIndices.forEach((dependentIndex, offset) => {
         if (dependentIndex !== parentIndex + offset + 1) {
           throw new Error(
-            `Il gruppo di ritaglio del parent raster ${parent.id} deve restare consecutivo: `
-              + "nessun raster estraneo può separare il parent dai suoi livelli ritagliati.",
+            `The clipping group for raster parent ${parent.id} must remain contiguous: `
+              + "no unrelated raster layer may separate the parent from its clipped layers.",
           );
         }
       });
@@ -292,7 +292,7 @@ export class LayerStack {
     const record = this.byId(this._referenceLayerId);
     if (!record) {
       throw new Error(
-        `Invariante Riferimento violata: livello ${this._referenceLayerId} assente.`,
+        `Reference invariant violated: layer ${this._referenceLayerId} is missing.`,
       );
     }
     return record;
@@ -310,7 +310,7 @@ export class LayerStack {
   at(index: number): LayerRecord {
     const record = this.records[index];
     if (!record) {
-      throw new Error(`Indice livello ${index} fuori intervallo.`);
+      throw new Error(`Layer index ${index} is out of range.`);
     }
     return record;
   }
@@ -348,12 +348,12 @@ export class LayerStack {
       || state.layers.length > LAYER_STACK_MAXIMUM
     ) {
       throw new Error(
-        `Lo snapshot progetto deve contenere da 1 a ${LAYER_STACK_MAXIMUM} livelli.`,
+        `The project snapshot must contain between 1 and ${LAYER_STACK_MAXIMUM} layers.`,
       );
     }
     const candidate = state.layers.map((record) => {
       if (!Number.isInteger(record.id) || record.id <= 0) {
-        throw new Error(`Id livello progetto non valido: ${record.id}.`);
+        throw new Error(`Invalid project layer ID: ${record.id}.`);
       }
       return {
         ...record,
@@ -370,14 +370,14 @@ export class LayerStack {
     this.assertClippingInvariants(candidate);
     const activeIndex = candidate.findIndex((record) => record.id === state.activeLayerId);
     if (activeIndex < 0) {
-      throw new Error(`Livello attivo ${state.activeLayerId} assente dallo snapshot progetto.`);
+      throw new Error(`Active layer ${state.activeLayerId} is missing from the project snapshot.`);
     }
     if (
       state.referenceLayerId !== null
       && !candidate.some((record) => record.id === state.referenceLayerId)
     ) {
       throw new Error(
-        `Livello riferimento ${state.referenceLayerId} assente dallo snapshot progetto.`,
+        `Reference layer ${state.referenceLayerId} is missing from the project snapshot.`,
       );
     }
 
@@ -392,20 +392,20 @@ export class LayerStack {
     if (parentId !== null) {
       const parent = this.byId(parentId);
       if (!parent) {
-        throw new Error(`Parent raster ${parentId} assente.`);
+        throw new Error(`Raster parent ${parentId} is missing.`);
       }
       if (parent.id === record.id) {
-        throw new Error("Un livello non può ritagliare sé stesso.");
+        throw new Error("A layer cannot clip itself.");
       }
       if (parent.clippingParentId !== null) {
-        throw new Error("Il parent deve essere un livello raster base.");
+        throw new Error("The parent must be a base raster layer.");
       }
       if (this.indexOfId(parent.id) >= index) {
-        throw new Error("Il parent raster deve trovarsi sotto il livello ritagliato.");
+        throw new Error("The raster parent must be below the clipped layer.");
       }
       if (this.clippingDependents(record.id).length > 0) {
         throw new Error(
-          "Un livello base con ritagli collegati non può diventare a sua volta un ritaglio.",
+          "A base layer with linked clipping masks cannot itself become a clipping mask.",
         );
       }
     }
@@ -445,7 +445,7 @@ export class LayerStack {
       if (enabled) {
         if (index === 0) {
           throw new Error(
-            "Per creare una maschera serve un livello raster immediatamente sotto.",
+            "A raster layer immediately below is required to create a mask.",
           );
         }
         const below = this.at(index - 1);
@@ -489,11 +489,11 @@ export class LayerStack {
   ): LayerRecord[] {
     const parentById = new Map(state.map((entry) => [entry.layerId, entry.parentId]));
     if (parentById.size !== state.length) {
-      throw new Error("La cronologia clipping contiene livelli duplicati.");
+      throw new Error("The clipping history contains duplicate layers.");
     }
     for (const layerId of parentById.keys()) {
       if (!this.byId(layerId)) {
-        throw new Error(`Il livello ${layerId} della cronologia clipping è assente.`);
+        throw new Error(`Layer ${layerId} from the clipping history is missing.`);
       }
     }
     return this.records.map((record) => ({
@@ -552,18 +552,18 @@ export class LayerStack {
     const parent = this.byId(record.clippingParentId);
     if (!parent) {
       throw new Error(
-        `Parent raster ${record.clippingParentId} del livello ${record.id} assente.`,
+        `Raster parent ${record.clippingParentId} for layer ${record.id} is missing.`,
       );
     }
     if (parent.clippingParentId !== null) {
       throw new Error(
-        `Il parent raster ${parent.id} del livello ${record.id} non è un livello base.`,
+        `Raster parent ${parent.id} for layer ${record.id} is not a base layer.`,
       );
     }
     const recordIndex = this.indexOfId(record.id);
     if (recordIndex >= 0 && this.indexOfId(parent.id) >= recordIndex) {
       throw new Error(
-        `Il parent raster ${parent.id} deve restare sotto il livello ${record.id}.`,
+        `Raster parent ${parent.id} must remain below layer ${record.id}.`,
       );
     }
     return parent;
@@ -585,13 +585,13 @@ export class LayerStack {
     const id = typeof recordOrId === "number" ? recordOrId : recordOrId.id;
     const record = this.byId(id);
     if (!record) {
-      throw new Error(`Livello ${id} assente dallo stack.`);
+      throw new Error(`Layer ${id} is missing from the stack.`);
     }
     const parent = record.clippingParentId === null
       ? record
       : this.clippingParent(record);
     if (!parent) {
-      throw new Error(`Parent raster del livello ${record.id} assente.`);
+      throw new Error(`Raster parent for layer ${record.id} is missing.`);
     }
     return [parent, ...this.clippingDependents(parent.id)];
   }
@@ -616,14 +616,14 @@ export class LayerStack {
   insertAt(index: number, name?: string): number {
     if (this.records.length >= LAYER_STACK_MAXIMUM) {
       throw new Error(
-        `Massimo ${LAYER_STACK_MAXIMUM} livelli raggiunto.`,
+        `Maximum of ${LAYER_STACK_MAXIMUM} layers reached.`,
       );
     }
     if (!Number.isInteger(index) || index < 0 || index > this.records.length) {
-      throw new Error(`Indice inserimento livello ${index} fuori intervallo.`);
+      throw new Error(`Layer insertion index ${index} is out of range.`);
     }
     const previousNextId = this.nextId;
-    const record = this.createRecord(name ?? `Livello ${this.nextId}`);
+    const record = this.createRecord(name ?? `Layer ${this.nextId}`);
     const candidate = [...this.records];
     candidate.splice(index, 0, record);
     try {
@@ -643,15 +643,15 @@ export class LayerStack {
     if (this.records.length >= maximum) {
       throw new Error(
         allowTemporaryReplacementOverflow
-          ? `Il rimpiazzo temporaneo non può superare ${maximum} livelli.`
-          : `Massimo ${LAYER_STACK_MAXIMUM} livelli raggiunto.`,
+          ? `The temporary replacement cannot exceed ${maximum} layers.`
+          : `Maximum of ${LAYER_STACK_MAXIMUM} layers reached.`,
       );
     }
     if (!Number.isInteger(index) || index < 0 || index > this.records.length) {
-      throw new Error(`Indice reinserimento livello ${index} fuori intervallo.`);
+      throw new Error(`Layer reinsertion index ${index} is out of range.`);
     }
     if (this.indexOfId(record.id) >= 0) {
-      throw new Error(`Livello ${record.id} già presente nello stack.`);
+      throw new Error(`Layer ${record.id} is already present in the stack.`);
     }
     const candidate = [...this.records];
     candidate.splice(index, 0, record);
@@ -669,7 +669,7 @@ export class LayerStack {
    */
   remove(index: number): LayerRecord {
     if (this.records.length <= 1) {
-      throw new Error("Non è possibile eliminare l'ultimo livello.");
+      throw new Error("The last layer cannot be deleted.");
     }
     const removed = this.at(index);
     this.records.splice(index, 1);
@@ -706,7 +706,7 @@ export class LayerStack {
   move(from: number, to: number): boolean {
     this.at(from);
     if (to < 0 || to >= this.records.length) {
-      throw new Error(`Destinazione livello ${to} fuori intervallo.`);
+      throw new Error(`Layer destination ${to} is out of range.`);
     }
     if (from === to) {
       return false;
@@ -729,15 +729,15 @@ export class LayerStack {
    */
   reorderByIds(bottomUpIds: readonly number[]): boolean {
     if (bottomUpIds.length !== this.records.length) {
-      throw new Error("Il riordino raster deve contenere tutti i livelli.");
+      throw new Error("The raster reorder must contain every layer.");
     }
     if (new Set(bottomUpIds).size !== bottomUpIds.length) {
-      throw new Error("Il riordino raster contiene id duplicati.");
+      throw new Error("The raster reorder contains duplicate IDs.");
     }
     const recordsById = new Map(this.records.map((record) => [record.id, record]));
     const candidate = bottomUpIds.map((id) => {
       const record = recordsById.get(id);
-      if (!record) throw new Error(`Livello ${id} assente dal riordino raster.`);
+      if (!record) throw new Error(`Layer ${id} is missing from the raster reorder.`);
       return record;
     });
     const activeId = this.active.id;

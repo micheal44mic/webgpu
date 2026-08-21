@@ -71,6 +71,33 @@ const forbiddenContentMarkers = [
   "__vectorZoomCoverageReport",
   "__vectorZoomStressReport",
 ];
+const forbiddenCompetitorPatterns = [
+  { label: "Kittl", pattern: /\bkittl\b/i },
+  { label: "Procreate", pattern: /\bpro[\s-]*create\b/i },
+  { label: "ibis Paint", pattern: /\bibis(?:[\s-]*paint)?\b/i },
+  { label: "Infinite Painter", pattern: /\binfinite[\s-]*painter\b/i },
+  { label: "Krita", pattern: /\bkrita\b/i },
+  { label: "Photoshop", pattern: /\bphotoshop\b/i },
+  { label: "Adobe Illustrator", pattern: /\badobe[\s-]*illustrator\b/i },
+];
+const forbiddenItalianPatterns = [
+  {
+    label: "accented Italian UI vocabulary",
+    pattern: /\b(?:perché|più|già|così|può|verrà|continuità|qualità|opacità|attività|unità|metà|modalità|proprietà|funzionalità|disponibilità|visibilità)\b/i,
+  },
+  {
+    label: "Italian UI vocabulary",
+    pattern: /\b(?:annulla|applica|seleziona|selezionato|selezionata|selezione|livello|livelli|pennello|pennelli|gomma|sposta|disegna|disegno|riempimento|colore|colori|strumenti|cronologia|memoria|ombra|sovrapposizione|smusso|immagine|testo|scena|errore|fallito|fallita|riuscito|riuscita|pronto|pronta|mancante|disponibile|creazione|eliminazione|duplicazione|caricamento|trasformazione|rasterizzazione|ripristino|riprova|attendi|nessun|nessuna|vuoto|vuota|documento|progetto|maschera|tratto|riordino|fusione|ritaglio|riferimento|anteprima|dimensione|dimensioni|larghezza|altezza|trasparenza|opacita|pulisci|chiudi|apri|incolla|rapporto|diagnosi|corrente|picco|risorsa|risorse|effetto|effetti|coda|spessore|piramide|piramidi|pagina|pagine|attivo|attiva|nascosto|nascosta|interrotto|interrotta|completato|completata)\b/i,
+  },
+  {
+    label: "Italian UI phrase",
+    pattern: /\b(?:prima di|in corso|non disponibile|non consentit[oa]|non trovat[oa]|non inizializzat[oa]|ricarica la pagina|tocca una regione|premi subito|sola memoria)\b/i,
+  },
+  {
+    label: "Italian runtime vocabulary",
+    pattern: /\b(?:attesi?|oltre|gi[aà]|finalizzat[oa]|richiede|campioni|capacit[aà]|insufficiente|assegnat[oa]|errat[oa]|deve|devono|restare|trovat[ai]|impossibile|cambio|impostazioni|duplicat[oa]|reidratat[oa]|incompatibile|periodici|azioni|possedut[oa]|viva|scartat[oa]|contemporaneamente|incomplet[oa]|lunghezza|tropp[oa]|compress[oa]|inattes[oa]|dichiarat[oa]|riservati|aggiornamento|bloccat[oa]|altra|scheda|sessione|assente|durante|registrazione|conflitto|generazione|attesa|terminat[oa]|risposta|lettura|chius[oa]|richiesta|scrittura|parziale|avanzamento|malformat[oa]|fuori|decompressione|divers[oa]|nonostante|confronto|numero|finit[oa]|negativ[oa]|lavoro|sfondo|sospes[oa]|zona|entra|margine|privi|prive|validi|valide|allineamento|guardia|contenuto|eccede|limite|miniature|intero|positiv[oa]|corta|canale|lineare|posizione|sconosciut[oa]|obbligatori[oa]|iniziale|incoerent[ei]|indice|lato|null[oa]|espansione|raggio|maggiore|punti|consecutivi|registrat[oa]|dati|portabile|sorgente|accetta|canonizzato|griglia|angolo|alto|basso|sinistro|destro|gesto|usare|quattro|spostati|isolatamente|rettangolo|vertici)\b/i,
+  },
+];
 const textFiles = files.filter((file) => /\.(?:css|html|js|json|map)$/.test(file));
 const contentViolations = [];
 for (const file of textFiles) {
@@ -78,6 +105,20 @@ for (const file of textFiles) {
   for (const marker of forbiddenContentMarkers) {
     if (source.includes(marker)) {
       contentViolations.push(`${relative(outputRoot, file).replaceAll("\\", "/")}: ${marker}`);
+    }
+  }
+  for (const { label, pattern } of forbiddenCompetitorPatterns) {
+    if (pattern.test(source)) {
+      contentViolations.push(
+        `${relative(outputRoot, file).replaceAll("\\", "/")}: competitor marker ${label}`,
+      );
+    }
+  }
+  for (const { label, pattern } of forbiddenItalianPatterns) {
+    if (pattern.test(source)) {
+      contentViolations.push(
+        `${relative(outputRoot, file).replaceAll("\\", "/")}: ${label}`,
+      );
     }
   }
 }

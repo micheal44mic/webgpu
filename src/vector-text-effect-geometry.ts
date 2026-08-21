@@ -165,7 +165,7 @@ function flattenQuadratic(
   }
   if (depth >= MAXIMUM_SUBDIVISION_DEPTH) {
     throw new Error(
-      `Flattening quadratico oltre profondità ${MAXIMUM_SUBDIVISION_DEPTH}.`,
+      `Quadratic flattening exceeds depth ${MAXIMUM_SUBDIVISION_DEPTH}.`,
     );
   }
 
@@ -195,7 +195,7 @@ function quantizePoint(
   const x = Math.round(value.x * scale);
   const y = Math.round(value.y * scale);
   if (!Number.isSafeInteger(x) || !Number.isSafeInteger(y)) {
-    throw new Error("Coordinata fixed-point del testo oltre Number.MAX_SAFE_INTEGER.");
+    throw new Error("Text fixed-point coordinate exceeds Number.MAX_SAFE_INTEGER.");
   }
   return { x, y };
 }
@@ -331,7 +331,7 @@ function executeClipper(
   }
   const tree = new PolyTree64();
   if (!engine.execute(operation, fillRule, tree)) {
-    throw new Error(`Clipper64 non ha completato l'operazione ${operation}.`);
+    throw new Error(`Clipper64 did not complete the ${operation} operation.`);
   }
   return tree;
 }
@@ -469,7 +469,7 @@ function rightOffset(
 ): Point64 {
   const length = Math.hypot(edgeX, edgeY);
   if (!(length > 0)) {
-    throw new Error("Contorno Clipper con lato nullo.");
+    throw new Error("The Clipper contour has a zero-length edge.");
   }
   return {
     x: Math.round(value.x + edgeY / length * radius),
@@ -503,7 +503,7 @@ export function buildExpandedVectorTextSet(
   arcTolerance: number,
 ): CanonicalPolygonSet {
   if (!(radius > 0)) {
-    throw new Error("L'espansione vettoriale richiede raggio maggiore di zero.");
+    throw new Error("Vector expansion requires a radius greater than zero.");
   }
   const nativeJoin = join === "round"
     ? JoinType.Round
@@ -537,7 +537,7 @@ export function buildExpandedVectorTextSet(
       const x = end.x - start.x;
       const y = end.y - start.y;
       if (x === 0 && y === 0) {
-        throw new Error("Contorno canonico con punti consecutivi duplicati.");
+        throw new Error("The canonical contour has duplicate consecutive points.");
       }
       edgeX[index] = x;
       edgeY[index] = y;
@@ -827,7 +827,7 @@ export function triangulateCanonicalVectorTextSet(
       || triangulationDeviation > 1e-8
     ) {
       throw new Error(
-        `Deviazione Earcut ${triangulationDeviation} oltre 1e-8.`,
+        `Earcut deviation ${triangulationDeviation} exceeds 1e-8.`,
       );
     }
     const base = absoluteVertices.length / 2;

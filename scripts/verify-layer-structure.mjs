@@ -415,7 +415,7 @@ assert.match(
 // --- Guardie della cancellazione ---------------------------------------------
 assert.match(
   engine,
-  /Non è possibile eliminare l'ultimo livello del documento\./,
+  /The last layer in the document cannot be deleted\./,
   "cancellare l'ultimo livello deve essere rifiutato",
 );
 assert.match(

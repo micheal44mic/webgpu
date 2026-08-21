@@ -949,7 +949,7 @@ async function assertShaderModules(
     }
   }
   if (failures.length > 0) {
-    throw new Error(`WGSL Smusso non valido:\n${failures.join("\n")}`);
+    throw new Error(`Invalid Bevel WGSL:\n${failures.join("\n")}`);
   }
 }
 
@@ -1054,8 +1054,8 @@ export class RasterBevelRenderer {
       + alphaClassMaskBytes + gateStateBytes + indirectArgumentsBytes;
     this.heightTexture = this.device.createTexture({
       label: this.boundingFieldEnabled
-        ? "Smusso Heightfield V2 bbox R32F placeholder"
-        : "Smusso Heightfield V2 persistent R32F",
+        ? "Bevel Heightfield V2 bbox R32F placeholder"
+        : "Bevel Heightfield V2 persistent R32F",
       size: {
         width: this._heightTextureWidth,
         height: this._heightTextureHeight,
@@ -1068,41 +1068,41 @@ export class RasterBevelRenderer {
         | GPUTextureUsage.RENDER_ATTACHMENT,
     });
     this._heightView = this.heightTexture.createView({
-      label: "Smusso Heightfield V2 sampling/storage view",
+      label: "Bevel Heightfield V2 sampling/storage view",
     });
     this.profileTexture = this.device.createTexture({
-      label: "Smusso height contour LUT R32F",
+      label: "Bevel height contour LUT R32F",
       size: { width: RASTER_BEVEL_PROFILE_SIZE, height: 1, depthOrArrayLayers: 1 },
       format: "r32float",
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
     this.profileView = this.profileTexture.createView();
     this.glossTexture = this.device.createTexture({
-      label: "Smusso light contour LUT R32F",
+      label: "Bevel light contour LUT R32F",
       size: { width: RASTER_BEVEL_PROFILE_SIZE, height: 1, depthOrArrayLayers: 1 },
       format: "r32float",
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
     this.glossView = this.glossTexture.createView({
-      label: "Smusso light contour LUT view",
+      label: "Bevel light contour LUT view",
     });
     this.parameterBuffer = this.device.createBuffer({
-      label: "Smusso dynamic dispatch parameters",
+      label: "Bevel dynamic dispatch parameters",
       size: PARAMETER_CAPACITY * PARAMETER_STRIDE,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     this.alphaClassMaskBuffer = this.device.createBuffer({
-      label: "Smusso alpha threshold/fractional class mask",
+      label: "Bevel alpha threshold/fractional class mask",
       size: alphaClassMaskBytes,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     this.gateStateBuffer = this.device.createBuffer({
-      label: "Smusso GPU rebuild gate state",
+      label: "Bevel GPU rebuild gate state",
       size: gateStateBytes,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     this.indirectArgumentsBuffer = this.device.createBuffer({
-      label: "Smusso GPU indirect dispatch arguments",
+      label: "Bevel GPU indirect dispatch arguments",
       size: indirectArgumentsBytes,
       usage:
         GPUBufferUsage.STORAGE
@@ -1167,8 +1167,8 @@ export class RasterBevelRenderer {
     const dimensions = heightTextureDimensions(bounds);
     const nextTexture = this.device.createTexture({
       label: bounds
-        ? `Smusso Heightfield V2 bbox ${bounds.width}×${bounds.height} R32F`
-        : "Smusso Heightfield V2 bbox R32F placeholder",
+        ? `Bevel Heightfield V2 bbox ${bounds.width}×${bounds.height} R32F`
+        : "Bevel Heightfield V2 bbox R32F placeholder",
       size: {
         width: dimensions.width,
         height: dimensions.height,
@@ -1181,7 +1181,7 @@ export class RasterBevelRenderer {
         | GPUTextureUsage.RENDER_ATTACHMENT,
     });
     const nextView = nextTexture.createView({
-      label: "Smusso Heightfield V2 bbox sampling/storage view",
+      label: "Bevel Heightfield V2 bbox sampling/storage view",
     });
     const previousTexture = this.heightTexture;
     this.heightTexture = nextTexture;
@@ -1265,7 +1265,7 @@ export class RasterBevelRenderer {
 
   retarget(layerView: GPUTextureView): void {
     if (this.destroyed) {
-      throw new Error("Il renderer Smusso è già stato distrutto.");
+      throw new Error("The Bevel renderer has already been destroyed.");
     }
     this.layerView = layerView;
     this.sourceViews[0] = layerView;
@@ -1307,7 +1307,7 @@ export class RasterBevelRenderer {
 
   private async initialize(): Promise<void> {
     this.bindGroupLayout = this.device.createBindGroupLayout({
-      label: "Smusso Heightfield V2 universal compute layout",
+      label: "Bevel Heightfield V2 universal compute layout",
       entries: [
         {
           binding: 0,
@@ -1339,7 +1339,7 @@ export class RasterBevelRenderer {
       ],
     });
     this.indirectGateBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Smusso indirect dispatch gate layout",
+      label: "Bevel indirect dispatch gate layout",
       entries: [
         {
           binding: 0,
@@ -1355,31 +1355,31 @@ export class RasterBevelRenderer {
     });
     const modules = {
       coverage: this.device.createShaderModule({
-        label: "Smusso continuous F32 coverage WGSL",
+        label: "Bevel continuous F32 coverage WGSL",
         code: coverageShader(this.documentWidth, this.documentHeight),
       }),
       segment: this.device.createShaderModule({
-        label: "Smusso marching squares segments WGSL",
+        label: "Bevel marching squares segments WGSL",
         code: segmentShader(this.documentWidth, this.documentHeight),
       }),
       jfa: this.device.createShaderModule({
-        label: "Smusso subpixel segment JFA WGSL",
+        label: "Bevel subpixel segment JFA WGSL",
         code: jfaShader(this.documentWidth, this.documentHeight),
       }),
       distance: this.device.createShaderModule({
-        label: "Smusso signed R32F distance WGSL",
+        label: "Bevel signed R32F distance WGSL",
         code: distanceShader(this.documentWidth, this.documentHeight),
       }),
       gaussian: this.device.createShaderModule({
-        label: "Smusso separable Gaussian WGSL",
+        label: "Bevel separable Gaussian WGSL",
         code: gaussianShader(this.documentWidth, this.documentHeight),
       }),
       height: this.device.createShaderModule({
-        label: "Smusso Heightfield V2 profile WGSL",
+        label: "Bevel Heightfield V2 profile WGSL",
         code: heightShader(this.documentWidth, this.documentHeight),
       }),
       resolve: this.device.createShaderModule({
-        label: "Smusso final R32F height resolve WGSL",
+        label: "Bevel final R32F height resolve WGSL",
         code: resolveHeightShader(
           this.documentWidth,
           this.documentHeight,
@@ -1387,11 +1387,11 @@ export class RasterBevelRenderer {
         ),
       }),
       alphaClass: this.device.createShaderModule({
-        label: "Smusso alpha class change gate WGSL",
+        label: "Bevel alpha class change gate WGSL",
         code: alphaClassMaskShader(this.documentWidth, this.documentHeight),
       }),
       indirectGate: this.device.createShaderModule({
-        label: "Smusso indirect dispatch gate WGSL",
+        label: "Bevel indirect dispatch gate WGSL",
         code: indirectGateShader(),
       }),
     };
@@ -1400,52 +1400,52 @@ export class RasterBevelRenderer {
       module,
     })));
     const layout = this.device.createPipelineLayout({
-      label: "Smusso Heightfield V2 compute pipeline layout",
+      label: "Bevel Heightfield V2 compute pipeline layout",
       bindGroupLayouts: [this.bindGroupLayout],
     });
     this.device.pushErrorScope("validation");
     this.coveragePipeline = this.device.createComputePipeline({
-      label: "Smusso alpha to F32 coverage",
+      label: "Bevel alpha to F32 coverage",
       layout,
       compute: { module: modules.coverage, entryPoint: "main" },
     });
     this.segmentPipeline = this.device.createComputePipeline({
-      label: "Smusso marching squares subpixel",
+      label: "Bevel marching squares subpixel",
       layout,
       compute: { module: modules.segment, entryPoint: "main" },
     });
     this.jfaPipeline = this.device.createComputePipeline({
-      label: "Smusso JFA on subpixel segments",
+      label: "Bevel JFA on subpixel segments",
       layout,
       compute: { module: modules.jfa, entryPoint: "main" },
     });
     this.distancePipeline = this.device.createComputePipeline({
-      label: "Smusso signed R32F distance",
+      label: "Bevel signed R32F distance",
       layout,
       compute: { module: modules.distance, entryPoint: "main" },
     });
     this.gaussianPipeline = this.device.createComputePipeline({
-      label: "Smusso separable Gaussian",
+      label: "Bevel separable Gaussian",
       layout,
       compute: { module: modules.gaussian, entryPoint: "main" },
     });
     this.heightPipeline = this.device.createComputePipeline({
-      label: "Smusso Heightfield V2 profile",
+      label: "Bevel Heightfield V2 profile",
       layout,
       compute: { module: modules.height, entryPoint: "main" },
     });
     this.resolveHeightPipeline = this.device.createComputePipeline({
-      label: "Smusso final R32F height resolve",
+      label: "Bevel final R32F height resolve",
       layout,
       compute: { module: modules.resolve, entryPoint: "main" },
     });
     this.alphaClassMaskPipeline = this.device.createComputePipeline({
-      label: "Smusso alpha threshold/fractional class gate",
+      label: "Bevel alpha threshold/fractional class gate",
       layout,
       compute: { module: modules.alphaClass, entryPoint: "main" },
     });
     this.indirectGatePipeline = this.device.createComputePipeline({
-      label: "Smusso indirect dispatch gate",
+      label: "Bevel indirect dispatch gate",
       layout: this.device.createPipelineLayout({
         bindGroupLayouts: [this.indirectGateBindGroupLayout],
       }),
@@ -1456,7 +1456,7 @@ export class RasterBevelRenderer {
       throw new Error(validationError.message);
     }
     this.indirectGateBindGroup = this.device.createBindGroup({
-      label: "Smusso indirect dispatch gate bind group",
+      label: "Bevel indirect dispatch gate bind group",
       layout: this.indirectGateBindGroupLayout,
       entries: [
         { binding: 0, resource: { buffer: this.gateStateBuffer } },
@@ -1469,7 +1469,7 @@ export class RasterBevelRenderer {
   private requireWorkspaceLease(): EffectsScratchLease {
     const lease = this.scratchPool.lease("bevel");
     if (!lease) {
-      throw new Error("Lease scratch Smusso non disponibile.");
+      throw new Error("The Bevel scratch lease is unavailable.");
     }
     return lease;
   }
@@ -1480,7 +1480,7 @@ export class RasterBevelRenderer {
   ): GPUBufferBinding {
     const range = lease.ranges[rangeId];
     if (!range) {
-      throw new Error(`Range scratch Smusso ${rangeId} non disponibile.`);
+      throw new Error(`Bevel scratch range ${rangeId} is unavailable.`);
     }
     return { buffer: lease.buffer, offset: range.offset, size: range.size };
   }
@@ -1495,7 +1495,7 @@ export class RasterBevelRenderer {
     this.bindGroups.clear();
     for (const mode of [0, 1, 2] as const) {
       this.bindGroups.set(mode, this.device.createBindGroup({
-        label: `Smusso Heightfield source mode ${mode}`,
+        label: `Bevel Heightfield source mode ${mode}`,
         layout: this.bindGroupLayout,
         entries: [
           {
@@ -1551,12 +1551,12 @@ export class RasterBevelRenderer {
     this.scratchPool.declareEffect("bevel", [
       {
         id: "common",
-        label: `Smusso arena comune ${extent}²`,
+        label: `Bevel common arena ${extent}²`,
         size: next.commonBytes,
       },
       {
         id: "segments",
-        label: `Smusso arena segmenti RGBA32F ${extent}²`,
+        label: `Bevel RGBA32F segment arena ${extent}²`,
         size: next.segmentBytes,
       },
     ]);
@@ -1569,7 +1569,7 @@ export class RasterBevelRenderer {
 
   prewarmWorkspace(style: RasterBevelStyle): void {
     if (this.destroyed) {
-      throw new Error("Renderer Smusso già distrutto.");
+      throw new Error("The Bevel renderer has already been destroyed.");
     }
     const normalized = normalizeRasterBevelStyle(style);
     if (!normalized.enabled) {
@@ -1620,7 +1620,7 @@ export class RasterBevelRenderer {
         const buildSide = Math.max(targetWidth, targetHeight) + apron * 2;
         if (buildSide > RASTER_BEVEL_MAX_WORK_SIDE) {
           throw new Error(
-            `ROI Smusso ${buildSide} oltre il limite ${RASTER_BEVEL_MAX_WORK_SIDE}.`,
+            `Bevel ROI ${buildSide} exceeds the ${RASTER_BEVEL_MAX_WORK_SIDE} limit.`,
           );
         }
         jobs.push({
@@ -1667,7 +1667,7 @@ export class RasterBevelRenderer {
     } = {},
   ): number {
     if (slot >= PARAMETER_CAPACITY) {
-      throw new Error(`Troppi dispatch Smusso in un aggiornamento: ${slot + 1}.`);
+      throw new Error(`Too many Bevel dispatches in one update: ${slot + 1}.`);
     }
     const word = slot * (PARAMETER_STRIDE / 4);
     const modeCode = style.mode === "inner"
@@ -1729,7 +1729,7 @@ export class RasterBevelRenderer {
   ): number {
     if (argumentIndex >= PARAMETER_CAPACITY) {
       throw new Error(
-        `Troppi argomenti indirect Smusso in un aggiornamento: ${argumentIndex + 1}.`,
+        `Too many indirect Bevel arguments in one update: ${argumentIndex + 1}.`,
       );
     }
     const word = argumentIndex * INDIRECT_ARGUMENT_WORDS;
@@ -1741,7 +1741,7 @@ export class RasterBevelRenderer {
 
   encode(options: RasterBevelEncodeOptions): RasterBevelEncodeResult {
     if (this.destroyed) {
-      throw new Error("Renderer Smusso già distrutto.");
+      throw new Error("The Bevel renderer has already been destroyed.");
     }
     const style = normalizeRasterBevelStyle(options.style);
     this.updateStyleResources(style);
@@ -1844,7 +1844,7 @@ export class RasterBevelRenderer {
     }
     let parameterSlot = 0;
     if (jobs.length > 0 && !workspace) {
-      throw new Error("Arena Smusso non disponibile.");
+      throw new Error("The Bevel arena is unavailable.");
     }
     let alphaClassSlot = -1;
     if (alphaClassRect) {
@@ -2046,7 +2046,7 @@ export class RasterBevelRenderer {
     if (alphaClassRect) {
       const bindGroup = this.bindGroups.get(mode);
       if (!bindGroup) {
-        throw new Error("Bind group gate alpha Smusso non disponibile.");
+        throw new Error("The Bevel alpha-gate bind group is unavailable.");
       }
       options.encoder.clearBuffer(this.gateStateBuffer);
       const firstBit = alphaClassRect.x % ALPHA_CLASS_WORD_BITS;
@@ -2055,8 +2055,8 @@ export class RasterBevelRenderer {
       );
       const alphaClassPass = options.encoder.beginComputePass({
         label: useGate
-          ? "Detect Smusso alpha geometry changes"
-          : "Synchronize Smusso alpha geometry classes",
+          ? "Detect Bevel alpha geometry changes"
+          : "Synchronize Bevel alpha geometry classes",
       });
       alphaClassPass.setPipeline(this.alphaClassMaskPipeline);
       alphaClassPass.setBindGroup(
@@ -2073,7 +2073,7 @@ export class RasterBevelRenderer {
     }
     if (useGate) {
       const gatePass = options.encoder.beginComputePass({
-        label: "Gate Smusso Heightfield dispatches on GPU",
+        label: "Gate Bevel Heightfield dispatches on GPU",
       });
       gatePass.setPipeline(this.indirectGatePipeline);
       gatePass.setBindGroup(0, this.indirectGateBindGroup);
@@ -2082,7 +2082,7 @@ export class RasterBevelRenderer {
     }
     if (options.clearHeight) {
       const clearPass = options.encoder.beginRenderPass({
-        label: "Clear Smusso persistent R32F heightfield",
+        label: "Clear Bevel persistent R32F heightfield",
         colorAttachments: [{
           view: this.heightView,
           loadOp: "clear",
@@ -2097,12 +2097,12 @@ export class RasterBevelRenderer {
     if (jobs.length > 0) {
       const bindGroup = this.bindGroups.get(mode);
       if (!bindGroup) {
-        throw new Error("Bind group sorgente Smusso non disponibile.");
+        throw new Error("The Bevel source bind group is unavailable.");
       }
       const pass = options.encoder.beginComputePass({
         label: segments
-          ? "Smusso Scalpello Heightfield V2 update"
-          : "Smusso Morbida Heightfield V2 update",
+          ? "Bevel Chisel Heightfield V2 update"
+          : "Bevel Soft Heightfield V2 update",
       });
       for (let index = 0; index < jobs.length; index += 1) {
         const job = jobs[index];
@@ -2115,7 +2115,7 @@ export class RasterBevelRenderer {
         ): void => {
           if (useGate) {
             if (argumentIndex === undefined) {
-              throw new Error("Argomento indirect Smusso mancante.");
+              throw new Error("An indirect Bevel argument is missing.");
             }
             pass.dispatchWorkgroupsIndirect(
               this.indirectArgumentsBuffer,
@@ -2229,4 +2229,3 @@ export class RasterBevelRenderer {
     this.bindGroups.clear();
   }
 }
-

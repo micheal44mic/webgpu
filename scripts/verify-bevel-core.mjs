@@ -346,7 +346,7 @@ assert(rendererSource.includes("raster-bevel-webgpu-v5-bbox-field-shared-effects
 assert(rendererSource.includes("shared-effects-pool-roi-split-common-segment-arenas-grow-until-idle-shrink"));
 const engineSource = readEngineSource();
 assert(rendererSource.includes("texture_storage_2d<r32float, write>"));
-assert(rendererSource.includes("Smusso continuous F32 coverage WGSL"));
+assert(rendererSource.includes("Bevel continuous F32 coverage WGSL"));
 assert.match(rendererSource, /commonCursor \+= alignedWords\(pixels\)/);
 assert.match(
   rendererSource,

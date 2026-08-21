@@ -17,7 +17,7 @@ const items = [
 const minimum = buildMobileLayerMergeSelectionPlan(items, ["text:1"]);
 assert.equal(minimum.valid, false);
 assert.equal(minimum.reasonCode, "minimum-two");
-assert.match(minimum.reason ?? "", /almeno due/);
+assert.match(minimum.reason ?? "", /at least two/);
 
 const contiguous = buildMobileLayerMergeSelectionPlan(
   items,
@@ -33,7 +33,7 @@ assert.deepEqual(
 const gap = buildMobileLayerMergeSelectionPlan(items, ["raster:1", "svg:1"]);
 assert.equal(gap.valid, false);
 assert.equal(gap.reasonCode, "non-contiguous");
-assert.match(gap.reason ?? "", /adiacenti/);
+assert.match(gap.reason ?? "", /adjacent/);
 
 const partialClipping = buildMobileLayerMergeSelectionPlan(
   items,
@@ -41,7 +41,7 @@ const partialClipping = buildMobileLayerMergeSelectionPlan(
 );
 assert.equal(partialClipping.valid, false);
 assert.equal(partialClipping.reasonCode, "partial-clipping-group");
-assert.match(partialClipping.reason ?? "", /gruppo di clipping/);
+assert.match(partialClipping.reason ?? "", /entire clipping group/);
 
 const completeClipping = buildMobileLayerMergeSelectionPlan(
   items,
@@ -96,12 +96,12 @@ assert.match(
 );
 assert.match(
   html,
-  /id="mobileLayerMultiActions"[\s\S]*?id="mobileLayerMergeSelection"[\s\S]*?>\s*Unisci livelli\s*<\/button>[\s\S]*?<\/div>\s*<p[\s\S]*?id="mobileLayerMergeStatus"[\s\S]*?role="status"/,
+  /id="mobileLayerMultiActions"[\s\S]*?id="mobileLayerMergeSelection"[\s\S]*?>\s*Merge Layers\s*<\/button>[\s\S]*?<\/div>\s*<p[\s\S]*?id="mobileLayerMergeStatus"[\s\S]*?role="status"/,
   "merge feedback must remain outside the actions container that closes after success",
 );
 assert.match(
   html,
-  /id="mobileLayerMerge"[\s\S]*?>\s*Unisci livelli\s*<\/button>[\s\S]*?id="mobileLayerMergeReason"[\s\S]*?role="status"/,
+  /id="mobileLayerMerge"[\s\S]*?>\s*Merge Layers\s*<\/button>[\s\S]*?id="mobileLayerMergeReason"[\s\S]*?role="status"/,
   "the hold menu must expose the merge request and its invalid-selection reason",
 );
 assert.match(css, /\.mobile-layer-row\.is-multi-selected/);

@@ -419,7 +419,7 @@ assert.equal(stressSeedsA.filter(({ seed }) => seed.transformType === "arch").le
 assert.equal(stressSeedsA.filter(({ seed }) => seed.singleShadowEnabled).length, 3);
 assert.equal(stressSeedsA.filter(({ seed }) => seed.blockShadowEnabled).length, 2);
 assert.equal(stressSeedsA.filter(({ seed }) => seed.innerShadowEnabled).length, 2);
-assert.throws(() => vectorTextZoomStressSeed(10, 4096), /fuori range/);
+assert.throws(() => vectorTextZoomStressSeed(10, 4096), /out of range/);
 const portraitStressSeed = vectorTextZoomStressSeed(0, 1080, 1920).seed;
 assert.ok(Math.abs(portraitStressSeed.x - 540) < 0.04);
 assert.ok(Math.abs(portraitStressSeed.y - 960) < 0.04);
@@ -723,11 +723,11 @@ assert.equal(
 );
 assert.equal(
   VECTOR_TEXT_FONT_GEOMETRY_STRATEGY,
-  "local-opentype-outline-kittl-transform-v4-distort",
+  "local-opentype-outline-transform-v4-distort",
 );
 assert.equal(
   VECTOR_TEXT_TRANSFORM_STRATEGY,
-  "kittl-compatible-centered-arch-wave-distort-six-vertex-four-handle-cubic-distance-warp-circle-rigid-glyph-v3",
+  "centered-arch-wave-distort-six-vertex-four-handle-cubic-distance-warp-circle-rigid-glyph-v3",
 );
 assert.equal(packageJson.dependencies["clipper2-ts"], "2.0.1-18");
 assert.equal(packageJson.dependencies.earcut, "^3.0.2");
@@ -775,7 +775,7 @@ assert.ok(Math.abs(innerShadowVector.x + 8.485281) < 1e-6);
 assert.ok(Math.abs(innerShadowVector.y - 8.485281) < 1e-6);
 assert.ok(Math.abs(sharpShadow.y) < 1e-9);
 
-// Trasformazioni: stessi preset/contratti osservati nel bundle Kittl.
+// Transformations: preserve the calibrated preset contracts.
 assert.equal(normalizeVectorTextTransformCurve(-999), -100);
 assert.equal(normalizeVectorTextTransformCurve(999), 100);
 assert.equal(normalizeVectorTextCircleRadiusPercent(1), 16);
@@ -1979,9 +1979,9 @@ assert.equal(VECTOR_SVG_MAXIMUM_COMMANDS, 500_000);
 assert.equal(VECTOR_SVG_MAXIMUM_GRADIENT_STOPS, 4);
 assert.match(svgSource, /const SAFE_ELEMENTS = new Set/);
 assert.match(svgSource, /"path", "rect", "circle", "ellipse", "line", "polyline", "polygon"/);
-assert.match(svgSource, /Elemento SVG non supportato o non sicuro/);
-assert.match(svgSource, /Handler evento SVG non consentito/);
-assert.match(svgSource, /riferimenti href locali fra gradienti SVG/);
+assert.match(svgSource, /Unsupported or unsafe SVG element/);
+assert.match(svgSource, /SVG event handler is not allowed/);
+assert.match(svgSource, /local href references between SVG gradients/);
 assert.match(svgSource, /hasOnlyLocalPaintUrls/);
 assert.match(svgSource, /parseGradientDefinitions/);
 assert.match(svgSource, /expandedStrokePath/);
@@ -2041,7 +2041,7 @@ assert.match(vectorRasterSource, /replaceRasterWithVector\(/);
 assert.match(vectorRasterSource, /action\.seed\.format !== engine\.layerFormat/);
 assert.match(vectorRasterSource, /allocateLayerGpuResources\([\s\S]{0,100}action\.seed\.format/);
 assert.match(vectorRasterSource, /runGpuAllocationTransaction\(/);
-assert.match(vectorRasterSource, /Nessun fallback RGBA8 è consentito/);
+assert.match(vectorRasterSource, /No RGBA8 fallback is allowed/);
 assert.doesNotMatch(vectorRasterSource, /format:\s*"rgba8unorm"/);
 assert.doesNotMatch(
   vectorRasterSource,
@@ -2164,8 +2164,8 @@ assert.doesNotMatch(mainSource, /vectorTextPrototype|MixedVectorText/);
 assert.equal(packageJson.scripts["vector-text:verify"], "node scripts/verify-vector-text.mjs");
 
 console.log(
-  "Testo vettoriale verificato: Distort/Arch/Circle/Wave Kittl, Slug analitico, Clipper64/Worker, outline fused senza seam, 0 no-op, "
-  + "Block Shadow canonica, SVG semantici sanitizzati con palette/effetti GPU, blur Gaussian R16F GPU, raster testo/SVG RGBA16F byte-exact, swap di nodo atomici, coda latest-only e nessun fallback bitmap.",
+  "Vector text verified: Distort/Arch/Circle/Wave, analytic slug, Clipper64/Worker, fused seamless outline, 0 no-op, "
+  + "canonical Block Shadow, sanitized semantic SVG with GPU palette/effects, GPU R16F Gaussian blur, byte-exact RGBA16F text/SVG rasterization, atomic node swaps, latest-only queue, and no bitmap fallback.",
 );
 
 // --- Rollback: ownership candidata ritirata prima della reidratazione ----------
@@ -2301,7 +2301,7 @@ console.log("Vector rasterize candidate-first rollback verified.");
   );
   assert.match(
     idle,
-    /options\.allowFrozenDerivedPresentation === true[\s\S]*discardFrozenDerivedPresentationWork\(\)[\s\S]*continue;[\s\S]*Presentazione congelata con lavoro render pendente/,
+    /options\.allowFrozenDerivedPresentation === true[\s\S]*discardFrozenDerivedPresentationWork\(\)[\s\S]*continue;[\s\S]*Presentation is frozen with pending render work/,
     "l'opt-in deve precedere senza sostituire il fail-closed standard",
   );
   const retargetStart = engineSource.indexOf(

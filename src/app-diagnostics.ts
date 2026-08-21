@@ -70,7 +70,7 @@ export interface AppDiagnosticEventInput {
 }
 
 function truncateDiagnosticText(value: string, maximum = 8_000): string {
-  return value.length <= maximum ? value : `${value.slice(0, maximum)}… [troncato]`;
+  return value.length <= maximum ? value : `${value.slice(0, maximum)}… [truncated]`;
 }
 
 export function describeAppDiagnosticError(error: unknown): AppDiagnosticError {
@@ -110,7 +110,7 @@ export class BoundedAppDiagnosticLog {
 
   constructor(limit = APP_DIAGNOSTIC_EVENT_LIMIT) {
     if (!Number.isInteger(limit) || limit <= 0) {
-      throw new Error("Il limite della diagnostica deve essere un intero positivo.");
+      throw new Error("The diagnostics limit must be a positive integer.");
     }
     this.limit = limit;
   }
@@ -193,18 +193,18 @@ export function inspectAppDiagnosticInvariants(
   const issues: string[] = [];
   if (history.cursor < 0 || history.cursor > history.actionCount) {
     issues.push(
-      `Cursore History ${history.cursor} fuori da 0..${history.actionCount}.`,
+      `History cursor ${history.cursor} is outside 0..${history.actionCount}.`,
     );
   }
   const layerIds = stats.layers.map((layer) => layer.id);
   if (new Set(layerIds).size !== layerIds.length) {
-    issues.push("LayerStack contiene id raster duplicati.");
+    issues.push("LayerStack contains duplicate raster IDs.");
   }
   if (!layerIds.includes(stats.activeLayerId)) {
-    issues.push(`Raster attivo ${stats.activeLayerId} assente dal LayerStack.`);
+    issues.push(`Active raster ${stats.activeLayerId} is missing from LayerStack.`);
   }
   if (stats.referenceLayerId !== null && !layerIds.includes(stats.referenceLayerId)) {
-    issues.push(`Raster Reference ${stats.referenceLayerId} assente dal LayerStack.`);
+    issues.push(`Reference raster ${stats.referenceLayerId} is missing from LayerStack.`);
   }
 
   const scene = stats.mixedScene;
@@ -220,23 +220,23 @@ export function inspectAppDiagnosticInvariants(
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      issues.push(`Invariante scena: ${message}`);
+      issues.push(`Scene invariant: ${message}`);
     }
     if (scene.activeRasterLayerId !== stats.activeLayerId) {
       issues.push(
-        `Raster attivo scena ${scene.activeRasterLayerId} diverso dal motore `
+        `Scene active raster ${scene.activeRasterLayerId} differs from engine raster `
         + `${stats.activeLayerId}.`,
       );
     }
     const selected = scene.items.find((item) => item.key === scene.selectedKey);
     if (!selected) {
-      issues.push(`Selezione ${scene.selectedKey} assente dalla scena.`);
+      issues.push(`Selection ${scene.selectedKey} is missing from the scene.`);
     } else if (
       selected.kind === "raster"
       && selected.rasterLayerId !== stats.activeLayerId
     ) {
       issues.push(
-        `Raster selezionato ${selected.rasterLayerId} diverso dal raster attivo `
+        `Selected raster ${selected.rasterLayerId} differs from active raster `
         + `${stats.activeLayerId}.`,
       );
     }
@@ -245,11 +245,11 @@ export function inspectAppDiagnosticInvariants(
       const layer = stats.layers[item.rasterLayerIndex];
       if (!layer || layer.id !== item.rasterLayerId) {
         issues.push(
-          `Indice scena di raster ${item.rasterLayerId} punta a `
-          + `${layer?.id ?? "nessun layer"}.`,
+          `Scene index for raster ${item.rasterLayerId} points to `
+          + `${layer?.id ?? "no layer"}.`,
         );
       } else if (item.rasterClippingParentId !== layer.clippingParentId) {
-        issues.push(`Parent clipping diverso per raster ${item.rasterLayerId}.`);
+        issues.push(`Clipping parent differs for raster ${item.rasterLayerId}.`);
       }
     }
   }

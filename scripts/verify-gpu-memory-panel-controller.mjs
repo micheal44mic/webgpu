@@ -146,13 +146,13 @@ assert.equal(statsReads, 0, "a closed panel must defer its expensive rendering")
 toggle.dispatchEvent(new Event("click"));
 assert.equal(panel.hidden, false);
 assert.equal(statsReads, 1, "opening a dirty panel must render the latest engine snapshot");
-assert.match(memoryStat.textContent, /64,0 MiB/);
+assert.match(memoryStat.textContent, /64\.0 MiB/);
 assert.match(root.querySelector("#gpuMemoryHistoryDiagnostics").textContent, /History/);
 
 gpuMemory.registeredCurrentMiB = 66;
 controller.update(stats);
 assert.equal(root.querySelector("#gpuMemoryDelta").hidden, false);
-assert.match(root.querySelector("#gpuMemoryDelta").textContent, /\+2,0 MiB/);
+assert.match(root.querySelector("#gpuMemoryDelta").textContent, /\+2\.0 MiB/);
 close.dispatchEvent(new Event("click"));
 assert.equal(panel.hidden, true);
 assert.equal(toggle.focused, true);

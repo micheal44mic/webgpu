@@ -49,7 +49,7 @@ export function rgba8UnormToRgba16FloatBytes(
   source: Uint8Array,
 ): Uint8Array<ArrayBuffer> {
   if (source.byteLength % 4 !== 0) {
-    throw new Error("Il payload RGBA8 deve contenere pixel completi.");
+    throw new Error("The RGBA8 payload must contain complete pixels.");
   }
   const target = new Uint16Array(source.byteLength);
   for (let index = 0; index < source.byteLength; index += 1) {

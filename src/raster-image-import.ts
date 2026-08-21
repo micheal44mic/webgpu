@@ -170,7 +170,7 @@ function positiveSafeInteger(
   if (!Number.isSafeInteger(resolved) || resolved <= 0) {
     importError(
       "invalid-limits",
-      `${label} deve essere un intero positivo sicuro.`,
+      `${label} must be a positive safe integer.`,
     );
   }
   return resolved;
@@ -183,22 +183,22 @@ export function resolveRasterImageImportLimits(
     maximumSourceBytes: positiveSafeInteger(
       limits.maximumSourceBytes,
       DEFAULT_RASTER_IMAGE_IMPORT_LIMITS.maximumSourceBytes,
-      "Il limite dei byte sorgente",
+      "The source-byte limit",
     ),
     maximumWidth: positiveSafeInteger(
       limits.maximumWidth,
       DEFAULT_RASTER_IMAGE_IMPORT_LIMITS.maximumWidth,
-      "Il limite di larghezza",
+      "The width limit",
     ),
     maximumHeight: positiveSafeInteger(
       limits.maximumHeight,
       DEFAULT_RASTER_IMAGE_IMPORT_LIMITS.maximumHeight,
-      "Il limite di altezza",
+      "The height limit",
     ),
     maximumPixels: positiveSafeInteger(
       limits.maximumPixels,
       DEFAULT_RASTER_IMAGE_IMPORT_LIMITS.maximumPixels,
-      "Il limite dei pixel",
+      "The pixel limit",
     ),
   });
 }
@@ -255,12 +255,12 @@ function validateDimensions(
   width: number,
   height: number,
   limits: RasterImageImportLimits,
-  stage: "codificata" | "decodificata",
+  stage: "encoded" | "decoded",
 ): number {
   if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) {
     importError(
       "invalid-image",
-      `Dimensioni dell’immagine ${stage} non valide (${width}×${height}).`,
+      `Invalid ${stage} image dimensions (${width}×${height}).`,
     );
   }
   const pixelCountBig = BigInt(width) * BigInt(height);
@@ -271,9 +271,9 @@ function validateDimensions(
   ) {
     importError(
       "dimensions-too-large",
-      `Immagine ${stage} ${width}×${height} oltre i limiti `
+      `${stage[0].toUpperCase()}${stage.slice(1)} image ${width}×${height} exceeds the limits `
       + `${limits.maximumWidth}×${limits.maximumHeight} / `
-      + `${limits.maximumPixels.toLocaleString("it-IT")} pixel.`,
+      + `${limits.maximumPixels.toLocaleString("en-US")} pixels.`,
     );
   }
   return width * height;
@@ -281,7 +281,7 @@ function validateDimensions(
 
 function parsePng(bytes: Uint8Array): ParsedRasterImage {
   if (!bytesEqualAt(bytes, PNG_SIGNATURE)) {
-    importError("invalid-image", "Firma PNG non valida.");
+    importError("invalid-image", "Invalid PNG signature.");
   }
   let offset = PNG_SIGNATURE.length;
   let width = 0;
@@ -294,7 +294,7 @@ function parsePng(bytes: Uint8Array): ParsedRasterImage {
 
   while (offset < bytes.length) {
     if (offset + 12 > bytes.length) {
-      importError("invalid-image", "Chunk PNG troncato.");
+      importError("invalid-image", "Truncated PNG chunk.");
     }
     const length = readU32BigEndian(bytes, offset);
     const type = ascii(bytes, offset + 4, 4);
@@ -302,26 +302,26 @@ function parsePng(bytes: Uint8Array): ParsedRasterImage {
       const character = bytes[offset + 4 + index];
       const isLetter = (character >= 0x41 && character <= 0x5a)
         || (character >= 0x61 && character <= 0x7a);
-      if (!isLetter) importError("invalid-image", "Tipo di chunk PNG non valido.");
+      if (!isLetter) importError("invalid-image", "Invalid PNG chunk type.");
     }
     const dataStart = offset + 8;
     const dataEnd = dataStart + length;
     const chunkEnd = dataEnd + 4;
     if (dataEnd < dataStart || chunkEnd > bytes.length) {
-      importError("invalid-image", `Chunk PNG ${type} oltre la fine del file.`);
+      importError("invalid-image", `PNG chunk ${type} extends beyond the end of the file.`);
     }
     if (chunkIndex === 0 && type !== "IHDR") {
-      importError("invalid-image", "IHDR deve essere il primo chunk PNG.");
+      importError("invalid-image", "IHDR must be the first PNG chunk.");
     }
     if (type === "acTL" || type === "fcTL" || type === "fdAT") {
       importError(
         "animated-image",
-        "APNG animato non supportato: importa un PNG statico.",
+        "Animated APNG is not supported. Import a static PNG.",
       );
     }
     if (type === "IHDR") {
       if (sawHeader || length !== 13) {
-        importError("invalid-image", "Chunk IHDR PNG duplicato o non valido.");
+        importError("invalid-image", "Duplicate or invalid PNG IHDR chunk.");
       }
       width = readU32BigEndian(bytes, dataStart);
       height = readU32BigEndian(bytes, dataStart + 4);
@@ -346,12 +346,12 @@ function parsePng(bytes: Uint8Array): ParsedRasterImage {
         || bytes[dataStart + 11] !== 0
         || bytes[dataStart + 12] > 1
       ) {
-        importError("invalid-image", "Parametri IHDR PNG non validi.");
+        importError("invalid-image", "Invalid PNG IHDR parameters.");
       }
       sawHeader = true;
     } else if (type === "IDAT") {
       if (!sawHeader || imageDataClosed) {
-        importError("invalid-image", "Sequenza IDAT PNG non valida.");
+        importError("invalid-image", "Invalid PNG IDAT sequence.");
       }
       sawImageData = true;
     } else if (sawImageData && type !== "IEND") {
@@ -359,12 +359,12 @@ function parsePng(bytes: Uint8Array): ParsedRasterImage {
     }
     if (type === "IEND") {
       if (length !== 0 || !sawImageData) {
-        importError("invalid-image", "Chunk IEND PNG non valido.");
+        importError("invalid-image", "Invalid PNG IEND chunk.");
       }
       sawEnd = true;
       offset = chunkEnd;
       if (offset !== bytes.length) {
-        importError("invalid-image", "Dati inattesi dopo IEND nel PNG.");
+        importError("invalid-image", "Unexpected data after PNG IEND.");
       }
       break;
     }
@@ -372,7 +372,7 @@ function parsePng(bytes: Uint8Array): ParsedRasterImage {
     chunkIndex += 1;
   }
   if (!sawHeader || !sawImageData || !sawEnd) {
-    importError("invalid-image", "Struttura PNG incompleta.");
+    importError("invalid-image", "Incomplete PNG structure.");
   }
   return { format: "png", mimeType: "image/png", width, height };
 }
@@ -386,7 +386,7 @@ function isJpegStandaloneMarker(marker: number): boolean {
 
 function parseJpeg(bytes: Uint8Array): ParsedRasterImage {
   if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) {
-    importError("invalid-image", "Firma JPEG non valida.");
+    importError("invalid-image", "Invalid JPEG signature.");
   }
   let offset = 2;
   let inEntropyData = false;
@@ -400,7 +400,7 @@ function parseJpeg(bytes: Uint8Array): ParsedRasterImage {
       while (offset < bytes.length && bytes[offset] !== 0xff) offset += 1;
       if (offset >= bytes.length) break;
     } else if (bytes[offset] !== 0xff) {
-      importError("invalid-image", "Marcatore JPEG atteso.");
+      importError("invalid-image", "Expected a JPEG marker.");
     }
 
     while (offset < bytes.length && bytes[offset] === 0xff) offset += 1;
@@ -422,7 +422,7 @@ function parseJpeg(bytes: Uint8Array): ParsedRasterImage {
         if (bytes[trailing] === 0xff && bytes[trailing + 1] === 0xd8) {
           importError(
             "invalid-image",
-            "Immagini JPEG concatenate dopo EOI non supportate.",
+            "Concatenated JPEG images after EOI are not supported.",
           );
         }
       }
@@ -430,34 +430,34 @@ function parseJpeg(bytes: Uint8Array): ParsedRasterImage {
     }
     if (isJpegStandaloneMarker(marker)) {
       if (marker === 0xd8) {
-        importError("invalid-image", "SOI JPEG duplicato.");
+        importError("invalid-image", "Duplicate JPEG SOI marker.");
       }
       continue;
     }
     if (offset + 2 > bytes.length) {
-      importError("invalid-image", "Segmento JPEG troncato.");
+      importError("invalid-image", "Truncated JPEG segment.");
     }
     const segmentLength = readU16BigEndian(bytes, offset);
     if (segmentLength < 2 || offset + segmentLength > bytes.length) {
-      importError("invalid-image", "Lunghezza di segmento JPEG non valida.");
+      importError("invalid-image", "Invalid JPEG segment length.");
     }
     const dataStart = offset + 2;
     const dataEnd = offset + segmentLength;
 
     if (JPEG_START_OF_FRAME_MARKERS.has(marker)) {
       if (segmentLength < 8) {
-        importError("invalid-image", "Segmento SOF JPEG troppo corto.");
+        importError("invalid-image", "JPEG SOF segment is too short.");
       }
       const nextHeight = readU16BigEndian(bytes, dataStart + 1);
       const nextWidth = readU16BigEndian(bytes, dataStart + 3);
       if (nextWidth === 0 || nextHeight === 0) {
         importError(
           "invalid-image",
-          "JPEG con dimensione differita DNL non supportato.",
+          "JPEG with DNL-deferred dimensions is not supported.",
         );
       }
       if (sawFrame && (width !== nextWidth || height !== nextHeight)) {
-        importError("invalid-image", "JPEG gerarchico con più dimensioni non supportato.");
+        importError("invalid-image", "Hierarchical JPEG with multiple dimensions is not supported.");
       }
       width = nextWidth;
       height = nextHeight;
@@ -470,7 +470,7 @@ function parseJpeg(bytes: Uint8Array): ParsedRasterImage {
     ) {
       importError(
         "animated-image",
-        "JPEG MPO/multi-immagine non supportato: importa un JPEG statico.",
+        "JPEG MPO/multi-image is not supported. Import a static JPEG.",
       );
     }
 
@@ -478,7 +478,7 @@ function parseJpeg(bytes: Uint8Array): ParsedRasterImage {
     if (marker === 0xda) inEntropyData = true;
   }
   if (!sawFrame || !sawEnd) {
-    importError("invalid-image", "Struttura JPEG incompleta o senza SOF/EOI.");
+    importError("invalid-image", "Incomplete JPEG structure or missing SOF/EOI.");
   }
   return { format: "jpeg", mimeType: "image/jpeg", width, height };
 }
@@ -494,7 +494,7 @@ function parseVp8Dimensions(
     || bytes[dataStart + 4] !== 0x01
     || bytes[dataStart + 5] !== 0x2a
   ) {
-    importError("invalid-image", "Bitstream VP8 WebP non valido.");
+    importError("invalid-image", "Invalid WebP VP8 bitstream.");
   }
   return {
     width: readU16LittleEndian(bytes, dataStart + 6) & 0x3fff,
@@ -512,11 +512,11 @@ function parseVp8lDimensions(
   dataEnd: number,
 ): { width: number; height: number } {
   if (dataEnd - dataStart < 5 || bytes[dataStart] !== 0x2f) {
-    importError("invalid-image", "Bitstream VP8L WebP non valido.");
+    importError("invalid-image", "Invalid WebP VP8L bitstream.");
   }
   const packed = readU32LittleEndian(bytes, dataStart + 1);
   if ((packed >>> 29) !== 0) {
-    importError("invalid-image", "Versione VP8L WebP non supportata.");
+    importError("invalid-image", "Unsupported WebP VP8L version.");
   }
   return {
     width: (packed & 0x3fff) + 1,
@@ -530,11 +530,11 @@ function parseWebp(bytes: Uint8Array): ParsedRasterImage {
     || ascii(bytes, 0, 4) !== "RIFF"
     || ascii(bytes, 8, 4) !== "WEBP"
   ) {
-    importError("invalid-image", "Firma RIFF/WebP non valida.");
+    importError("invalid-image", "Invalid RIFF/WebP signature.");
   }
   const declaredLength = readU32LittleEndian(bytes, 4) + 8;
   if (declaredLength !== bytes.length) {
-    importError("invalid-image", "Lunghezza RIFF/WebP incoerente.");
+    importError("invalid-image", "Inconsistent RIFF/WebP length.");
   }
 
   let offset = 12;
@@ -547,7 +547,7 @@ function parseWebp(bytes: Uint8Array): ParsedRasterImage {
 
   while (offset < bytes.length) {
     if (offset + 8 > bytes.length) {
-      importError("invalid-image", "Chunk WebP troncato.");
+      importError("invalid-image", "Truncated WebP chunk.");
     }
     const type = ascii(bytes, offset, 4);
     const length = readU32LittleEndian(bytes, offset + 4);
@@ -555,28 +555,28 @@ function parseWebp(bytes: Uint8Array): ParsedRasterImage {
     const dataEnd = dataStart + length;
     const chunkEnd = dataEnd + (length & 1);
     if (dataEnd < dataStart || chunkEnd > bytes.length) {
-      importError("invalid-image", `Chunk WebP ${type} oltre la fine del file.`);
+      importError("invalid-image", `WebP chunk ${type} extends beyond the end of the file.`);
     }
 
     if (type === "ANIM" || type === "ANMF") {
       importError(
         "animated-image",
-        "WebP animato non supportato: importa un WebP statico.",
+        "Animated WebP is not supported. Import a static WebP.",
       );
     }
     if (type === "VP8X") {
       if (sawExtendedHeader || length !== 10) {
-        importError("invalid-image", "Header VP8X WebP duplicato o non valido.");
+        importError("invalid-image", "Duplicate or invalid WebP VP8X header.");
       }
       const flags = bytes[dataStart];
       if ((flags & 0x02) !== 0) {
         importError(
           "animated-image",
-          "WebP animato non supportato: importa un WebP statico.",
+          "Animated WebP is not supported. Import a static WebP.",
         );
       }
       if ((flags & 0xc1) !== 0) {
-        importError("invalid-image", "Bit riservati VP8X WebP non validi.");
+        importError("invalid-image", "Invalid WebP VP8X reserved bits.");
       }
       extendedWidth = readU24LittleEndian(bytes, dataStart + 4) + 1;
       extendedHeight = readU24LittleEndian(bytes, dataStart + 7) + 1;
@@ -595,14 +595,14 @@ function parseWebp(bytes: Uint8Array): ParsedRasterImage {
     offset = chunkEnd;
   }
   if (offset !== bytes.length || imagePayloadCount !== 1) {
-    importError("invalid-image", "WebP senza un unico payload immagine statico.");
+    importError("invalid-image", "WebP must contain exactly one static image payload.");
   }
   if (sawExtendedHeader) {
     width = extendedWidth;
     height = extendedHeight;
   }
   if (width <= 0 || height <= 0) {
-    importError("invalid-image", "Dimensioni WebP non valide.");
+    importError("invalid-image", "Invalid WebP dimensions.");
   }
   return { format: "webp", mimeType: "image/webp", width, height };
 }
@@ -616,7 +616,7 @@ function readIsoBoxes(
   let offset = start;
   while (offset < end) {
     if (offset + 8 > end) {
-      importError("invalid-image", "Box ISO-BMFF troncato.");
+      importError("invalid-image", "Truncated ISO-BMFF box.");
     }
     const compactSize = readU32BigEndian(bytes, offset);
     const type = ascii(bytes, offset + 4, 4);
@@ -624,13 +624,13 @@ function readIsoBoxes(
     let boxSize: number;
     if (compactSize === 1) {
       if (offset + 16 > end) {
-        importError("invalid-image", `Box ISO-BMFF ${type} esteso troncato.`);
+        importError("invalid-image", `Truncated extended ISO-BMFF ${type} box.`);
       }
       const high = readU32BigEndian(bytes, offset + 8);
       const low = readU32BigEndian(bytes, offset + 12);
       const extendedSize = BigInt(high) * 0x1_0000_0000n + BigInt(low);
       if (extendedSize > BigInt(Number.MAX_SAFE_INTEGER)) {
-        importError("invalid-image", `Box ISO-BMFF ${type} troppo grande.`);
+        importError("invalid-image", `ISO-BMFF ${type} box is too large.`);
       }
       boxSize = Number(extendedSize);
       headerBytes = 16;
@@ -638,7 +638,7 @@ function readIsoBoxes(
       boxSize = compactSize === 0 ? end - offset : compactSize;
     }
     if (boxSize < headerBytes || offset + boxSize > end) {
-      importError("invalid-image", `Dimensione box ISO-BMFF ${type} non valida.`);
+      importError("invalid-image", `Invalid ISO-BMFF ${type} box size.`);
     }
     const box: IsoBox = {
       type,
@@ -649,17 +649,17 @@ function readIsoBoxes(
     visit(box);
     offset = box.end;
     if (compactSize === 0 && offset !== end) {
-      importError("invalid-image", `Box ISO-BMFF ${type} a dimensione zero non finale.`);
+      importError("invalid-image", `Zero-sized ISO-BMFF ${type} box is not final.`);
     }
   }
   if (offset !== end) {
-    importError("invalid-image", "Struttura box ISO-BMFF non allineata.");
+    importError("invalid-image", "Misaligned ISO-BMFF box structure.");
   }
 }
 
 function parseAvif(bytes: Uint8Array): ParsedRasterImage {
   if (bytes.length < 16 || ascii(bytes, 4, 4) !== "ftyp") {
-    importError("invalid-image", "Firma AVIF/ISO-BMFF non valida.");
+    importError("invalid-image", "Invalid AVIF/ISO-BMFF signature.");
   }
   let sawFileType = false;
   let sawMeta = false;
@@ -674,7 +674,7 @@ function parseAvif(bytes: Uint8Array): ParsedRasterImage {
 
   const requireFullBox = (box: IsoBox): { version: number; flags: number } => {
     if (box.end - box.dataStart < 4) {
-      importError("invalid-image", `Full box AVIF ${box.type} troncato.`);
+      importError("invalid-image", `Truncated AVIF full box ${box.type}.`);
     }
     return {
       version: bytes[box.dataStart],
@@ -689,7 +689,7 @@ function parseAvif(bytes: Uint8Array): ParsedRasterImage {
     const { version, flags } = requireFullBox(box);
     let offset = box.dataStart + 4;
     if (offset + 4 > box.end) {
-      importError("invalid-image", "Conteggio ipma AVIF troncato.");
+      importError("invalid-image", "Truncated AVIF ipma entry count.");
     }
     const entryCount = readU32BigEndian(bytes, offset);
     offset += 4;
@@ -698,7 +698,7 @@ function parseAvif(bytes: Uint8Array): ParsedRasterImage {
     for (let entry = 0; entry < entryCount; entry += 1) {
       const itemIdBytes = wideItemId ? 4 : 2;
       if (offset + itemIdBytes + 1 > box.end) {
-        importError("invalid-image", "Voce ipma AVIF troncata.");
+        importError("invalid-image", "Truncated AVIF ipma entry.");
       }
       const itemId = wideItemId
         ? readU32BigEndian(bytes, offset)
@@ -710,7 +710,7 @@ function parseAvif(bytes: Uint8Array): ParsedRasterImage {
       for (let association = 0; association < associationCount; association += 1) {
         const associationBytes = widePropertyIndex ? 2 : 1;
         if (offset + associationBytes > box.end) {
-          importError("invalid-image", "Associazione ipma AVIF troncata.");
+          importError("invalid-image", "Truncated AVIF ipma association.");
         }
         const encoded = widePropertyIndex
           ? readU16BigEndian(bytes, offset)
@@ -722,13 +722,13 @@ function parseAvif(bytes: Uint8Array): ParsedRasterImage {
       itemPropertyAssociations.set(itemId, associations);
     }
     if (offset !== box.end) {
-      importError("invalid-image", "Dati inattesi nel box ipma AVIF.");
+      importError("invalid-image", "Unexpected data in the AVIF ipma box.");
     }
   };
 
   const scanItemProperties = (box: IsoBox): void => {
     if (sawPropertyContainer) {
-      importError("invalid-image", "Box iprp AVIF duplicato.");
+      importError("invalid-image", "Duplicate AVIF iprp box.");
     }
     sawPropertyContainer = true;
     readIsoBoxes(bytes, box.dataStart, box.end, (child) => {
@@ -738,12 +738,12 @@ function parseAvif(bytes: Uint8Array): ParsedRasterImage {
           propertyIndex += 1;
           if (property.type !== "ispe") return;
           if (property.end - property.dataStart < 12) {
-            importError("invalid-image", "Proprietà ispe AVIF troncata.");
+            importError("invalid-image", "Truncated AVIF ispe property.");
           }
           const width = readU32BigEndian(bytes, property.dataStart + 4);
           const height = readU32BigEndian(bytes, property.dataStart + 8);
           if (width === 0 || height === 0) {
-            importError("invalid-image", "Dimensioni ispe AVIF non valide.");
+            importError("invalid-image", "Invalid AVIF ispe dimensions.");
           }
           const dimensions = { width, height };
           propertyDimensions.set(propertyIndex, dimensions);
@@ -763,7 +763,7 @@ function parseAvif(bytes: Uint8Array): ParsedRasterImage {
         const offset = child.dataStart + 4;
         const itemIdBytes = version === 0 ? 2 : 4;
         if (offset + itemIdBytes !== child.end) {
-          importError("invalid-image", "Box pitm AVIF non valido.");
+          importError("invalid-image", "Invalid AVIF pitm box.");
         }
         primaryItemId = itemIdBytes === 2
           ? readU16BigEndian(bytes, offset)
@@ -776,15 +776,15 @@ function parseAvif(bytes: Uint8Array): ParsedRasterImage {
 
   readIsoBoxes(bytes, 0, bytes.length, (box) => {
     if (box.start === 0 && box.type !== "ftyp") {
-      importError("invalid-image", "ftyp deve essere il primo box AVIF.");
+      importError("invalid-image", "ftyp must be the first AVIF box.");
     }
     if (box.type === "ftyp") {
       if (sawFileType || box.end - box.dataStart < 8) {
-        importError("invalid-image", "Box ftyp AVIF duplicato o troncato.");
+        importError("invalid-image", "Duplicate or truncated AVIF ftyp box.");
       }
       const brandBytes = box.end - box.dataStart;
       if ((brandBytes - 8) % 4 !== 0) {
-        importError("invalid-image", "Lista dei brand AVIF non valida.");
+        importError("invalid-image", "Invalid AVIF brand list.");
       }
       const brands = [ascii(bytes, box.dataStart, 4)];
       for (let offset = box.dataStart + 8; offset < box.end; offset += 4) {
@@ -795,7 +795,7 @@ function parseAvif(bytes: Uint8Array): ParsedRasterImage {
       sawFileType = true;
     } else if (box.type === "meta") {
       if (sawMeta) {
-        importError("invalid-image", "Box meta AVIF duplicato.");
+        importError("invalid-image", "Duplicate AVIF meta box.");
       }
       sawMeta = true;
       scanMeta(box);
@@ -807,16 +807,16 @@ function parseAvif(bytes: Uint8Array): ParsedRasterImage {
   });
 
   if (!sawFileType || !hasAvifBrand) {
-    importError("unsupported-format", "Il file ISO-BMFF non dichiara il brand AVIF.");
+    importError("unsupported-format", "The ISO-BMFF file does not declare an AVIF brand.");
   }
   if (sequenceBrand || sequenceTrack) {
     importError(
       "animated-image",
-      "Sequenza AVIF animata non supportata: importa un AVIF statico.",
+      "Animated AVIF sequences are not supported. Import a static AVIF.",
     );
   }
   if (!sawMeta || allDimensions.length === 0) {
-    importError("invalid-image", "AVIF statico senza metadata/ispe leggibili.");
+    importError("invalid-image", "Static AVIF has no readable metadata/ispe properties.");
   }
   const associatedDimensions = primaryItemId === null
     ? []
@@ -831,13 +831,13 @@ function parseAvif(bytes: Uint8Array): ParsedRasterImage {
   if (primaryDimensions.length === 0) {
     importError(
       "invalid-image",
-      "AVIF con più immagini senza associazione ispe leggibile per l’item primario.",
+      "Multi-image AVIF has no readable ispe association for the primary item.",
     );
   }
   const selected = primaryDimensions[0];
   for (const candidate of primaryDimensions.slice(1)) {
     if (candidate.width !== selected.width || candidate.height !== selected.height) {
-      importError("invalid-image", "Item primario AVIF con dimensioni ispe incoerenti.");
+      importError("invalid-image", "AVIF primary item has inconsistent ispe dimensions.");
     }
   }
   return {
@@ -865,7 +865,7 @@ function detectAndParse(bytes: Uint8Array): ParsedRasterImage {
   }
   importError(
     "unsupported-format",
-    "Formato non supportato: usa PNG, JPEG, WebP statico oppure AVIF statico.",
+    "Unsupported format. Use PNG, JPEG, static WebP, or static AVIF.",
   );
 }
 
@@ -883,13 +883,13 @@ function validateDeclaredMimeType(
   if (!declaredFormat) {
     importError(
       "unsupported-format",
-      `Tipo MIME ${declared || "sconosciuto"} non supportato.`,
+      `Unsupported MIME type: ${declared || "unknown"}.`,
     );
   }
   if (declaredFormat !== parsed.format) {
     importError(
       "mime-mismatch",
-      `Il contenuto ${parsed.format.toUpperCase()} non coincide con il tipo MIME ${declared}.`,
+      `${parsed.format.toUpperCase()} content does not match the declared MIME type ${declared}.`,
     );
   }
   return declared;
@@ -900,17 +900,17 @@ export async function inspectRasterImage(
   limits: Partial<RasterImageImportLimits> = {},
 ): Promise<RasterImageInspection> {
   if (!(source instanceof Blob) || !Number.isSafeInteger(source.size)) {
-    importError("invalid-source", "La sorgente raster deve essere un Blob valido.");
+    importError("invalid-source", "The raster source must be a valid Blob.");
   }
   const resolvedLimits = resolveRasterImageImportLimits(limits);
   if (source.size === 0) {
-    importError("source-empty", "Il file immagine è vuoto.");
+    importError("source-empty", "The image file is empty.");
   }
   if (source.size > resolvedLimits.maximumSourceBytes) {
     importError(
       "source-too-large",
-      `File da ${source.size.toLocaleString("it-IT")} byte oltre il limite di `
-      + `${resolvedLimits.maximumSourceBytes.toLocaleString("it-IT")} byte.`,
+      `${source.size.toLocaleString("en-US")}-byte file exceeds the limit of `
+      + `${resolvedLimits.maximumSourceBytes.toLocaleString("en-US")} bytes.`,
     );
   }
 
@@ -918,7 +918,7 @@ export async function inspectRasterImage(
   try {
     buffer = await source.arrayBuffer();
   } catch (cause) {
-    importError("invalid-source", "Impossibile leggere il file immagine.", cause);
+    importError("invalid-source", "Unable to read the image file.", cause);
   }
   const parsed = detectAndParse(new Uint8Array(buffer));
   const declaredMimeType = validateDeclaredMimeType(source, parsed);
@@ -926,7 +926,7 @@ export async function inspectRasterImage(
     parsed.width,
     parsed.height,
     resolvedLimits,
-    "codificata",
+    "encoded",
   );
   return Object.freeze({
     strategy: RASTER_IMAGE_IMPORT_STRATEGY,
@@ -947,7 +947,7 @@ function defaultSourceName(source: Blob, format: RasterImageFormat): string {
     : "";
   const sanitized = fileName.trim().replace(/^.*[\\/]/, "");
   if (sanitized) return sanitized;
-  return `immagine.${format === "jpeg" ? "jpg" : format}`;
+  return `image.${format === "jpeg" ? "jpg" : format}`;
 }
 
 function normalizedSourceName(
@@ -971,7 +971,7 @@ export async function decodeRasterImage(
   if (typeof createImageBitmap !== "function") {
     importError(
       "decoder-unavailable",
-      "createImageBitmap non è disponibile: nessun fallback Canvas2D è consentito.",
+      "createImageBitmap is unavailable; no Canvas2D fallback is permitted.",
     );
   }
 
@@ -985,7 +985,7 @@ export async function decodeRasterImage(
   } catch (cause) {
     importError(
       "decode-failed",
-      `Decodifica ${inspection.format.toUpperCase()} non riuscita nel browser.`,
+      `${inspection.format.toUpperCase()} decoding failed in the browser.`,
       cause,
     );
   }
@@ -995,7 +995,7 @@ export async function decodeRasterImage(
       bitmap.width,
       bitmap.height,
       limits,
-      "decodificata",
+      "decoded",
     );
     if (
       (inspection.format === "png" || inspection.format === "webp")
@@ -1006,8 +1006,8 @@ export async function decodeRasterImage(
     ) {
       importError(
         "invalid-image",
-        `Dimensioni ${inspection.format.toUpperCase()} incoerenti fra header `
-        + `(${inspection.encodedWidth}×${inspection.encodedHeight}) e decoder `
+        `${inspection.format.toUpperCase()} dimensions differ between the header `
+        + `(${inspection.encodedWidth}×${inspection.encodedHeight}) and decoder `
         + `(${bitmap.width}×${bitmap.height}).`,
       );
     }
@@ -1026,8 +1026,8 @@ export async function decodeRasterImage(
     ) {
       importError(
         "invalid-image",
-        `Dimensioni JPEG incoerenti fra SOF (${inspection.encodedWidth}×`
-        + `${inspection.encodedHeight}) e decoder (${bitmap.width}×${bitmap.height}).`,
+        `JPEG dimensions differ between SOF (${inspection.encodedWidth}×`
+        + `${inspection.encodedHeight}) and decoder (${bitmap.width}×${bitmap.height}).`,
       );
     }
     const metadata: RasterImageImportMetadata = Object.freeze({

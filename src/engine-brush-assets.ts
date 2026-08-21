@@ -69,7 +69,7 @@ export function grainAssetIdForSettings(
 export function shapeAssetDescriptor(id: BrushShapeAssetId): ShapeAssetDescriptor {
   const descriptor = builtinShapeAsset(id);
   if (!descriptor) {
-    throw new Error(`L'asset ${id} deve essere risolto dal registro custom del motore.`);
+    throw new Error(`Asset ${id} must be resolved through the engine's custom registry.`);
   }
   return descriptor;
 }
@@ -77,7 +77,7 @@ export function shapeAssetDescriptor(id: BrushShapeAssetId): ShapeAssetDescripto
 export function grainAssetDescriptor(id: BrushGrainAssetId): GrainAssetDescriptor {
   const descriptor = builtinGrainAsset(id);
   if (!descriptor) {
-    throw new Error(`L'asset ${id} deve essere risolto dal registro custom del motore.`);
+    throw new Error(`Asset ${id} must be resolved through the engine's custom registry.`);
   }
   return descriptor;
 }

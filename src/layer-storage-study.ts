@@ -51,7 +51,7 @@ function clamp(value: number, minimum: number, maximum: number): number {
 function assertMask(mask: LayerStorageTileMask): void {
   if (mask.length !== LAYER_STORAGE_MASK_WORD_COUNT) {
     throw new Error(
-      `Maschera tile non valida: ${mask.length} word, attese ${LAYER_STORAGE_MASK_WORD_COUNT}.`,
+      `Invalid tile mask: ${mask.length} words, expected ${LAYER_STORAGE_MASK_WORD_COUNT}.`,
     );
   }
 }
@@ -212,11 +212,11 @@ export function exactLayerStorageTileMask(
     || width > LAYER_STORAGE_DOCUMENT_WIDTH
     || height > LAYER_STORAGE_DOCUMENT_HEIGHT
   ) {
-    throw new Error(`Dimensioni readback non valide: ${width}×${height}.`);
+    throw new Error(`Invalid readback dimensions: ${width}×${height}.`);
   }
   if (pixels.byteLength !== width * height * bytesPerPixel) {
     throw new Error(
-      `Readback non valido: ${pixels.byteLength} byte, attesi `
+      `Invalid readback: ${pixels.byteLength} bytes, expected `
       + `${width * height * bytesPerPixel}.`,
     );
   }

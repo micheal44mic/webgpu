@@ -135,7 +135,7 @@ export function createLightGlazeResourceSet(engine: BrushEngine,
             % engine.device.limits.minUniformBufferOffsetAlignment !== 0
         ) {
           throw new Error(
-            "Allineamento uniform dinamico non supportato dal commit tile glaze ad alta precisione.",
+            "Dynamic uniform alignment is not supported by the high-precision glaze tile commit.",
           );
         }
         commitTileTexture = engine.device.createTexture({
@@ -563,7 +563,7 @@ export function flushClosingLightGlazeSessionBeforeNewStroke(engine: BrushEngine
     engine.renderFrame(performance.now());
     iterations += 1;
     if (iterations > maximumIterations) {
-      throw new Error("Impossibile finalizzare il tratto Light Glaze precedente.");
+      throw new Error("The previous Light Glaze stroke could not be finalized.");
     }
   }
 }
@@ -588,6 +588,6 @@ export function maybeReleaseIdleLightGlazeResources(engine: BrushEngine): void {
 export function requestLightGlazeResources(engine: BrushEngine, blendMode: BlendMode): void {
   void engine.ensureLightGlazeResources(blendMode).catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
-    engine.callbacks.onStatus?.(`Rendering glaze non disponibile: ${message}`, "error");
+    engine.callbacks.onStatus?.(`Glaze rendering is unavailable: ${message}`, "error");
   });
 }

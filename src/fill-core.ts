@@ -80,7 +80,7 @@ export function fillRenderMaskTargetWord(
     || byteIndex < 0
     || byteIndex > 3
   ) {
-    throw new RangeError("Indice di espansione maschera Fill non valido.");
+    throw new RangeError("Invalid Fill mask expansion index.");
   }
   const row = Math.floor(sourceWordIndex / FILL_HISTORY_WORDS_PER_ROW);
   const sourceWordX = sourceWordIndex % FILL_HISTORY_WORDS_PER_ROW;
@@ -192,7 +192,7 @@ export function compositeFillAsSolidUnderlay(
  */
 export function transparentFillAlphaMatches(alpha: number, tolerancePercent: number): boolean {
   if (!Number.isFinite(alpha) || !Number.isFinite(tolerancePercent)) {
-    throw new RangeError("Alpha e tolleranza del riempimento devono essere finiti.");
+    throw new RangeError("Fill alpha and tolerance must be finite.");
   }
   const storedAlpha = Math.fround(Math.min(1, Math.max(0, alpha)));
   const threshold = Math.fround(Math.min(1, Math.max(0, tolerancePercent / 100)));
@@ -213,7 +213,7 @@ export function countFillTiles(mask: Uint32Array): number {
 
 export function normalizeFillTolerance(percent: number): number {
   if (!Number.isFinite(percent)) {
-    throw new RangeError("La tolleranza del riempimento deve essere finita.");
+    throw new RangeError("Fill tolerance must be finite.");
   }
   const normalized = Math.min(
     FILL_MAX_TOLERANCE_PERCENT,
@@ -235,7 +235,7 @@ export function srgbChannelToLinear(value: number): number {
 export function hexToLinearFillColor(hex: string): readonly [number, number, number, 1] {
   const normalized = hex.trim().replace(/^#/, "");
   if (!/^[0-9a-fA-F]{6}$/.test(normalized)) {
-    throw new Error(`Colore HEX del riempimento non valido: ${hex}`);
+    throw new Error(`Invalid Fill HEX color: ${hex}`);
   }
   return [
     srgbChannelToLinear(Number.parseInt(normalized.slice(0, 2), 16) / 255),

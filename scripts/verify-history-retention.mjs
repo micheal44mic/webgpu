@@ -549,7 +549,7 @@ for (const actionCount of [10, 100, 500, 1000]) {
     if (chunk.done) break;
   }
   assert.deepEqual(visited, Array.from({ length: 1000 }, (_, index) => index));
-  assert.throws(() => nextHistoryCompactionChunk(5, 0, 0), /positivo/);
+  assert.throws(() => nextHistoryCompactionChunk(5, 0, 0), /positive/);
 }
 
 // Incremental maintenance must return control between bounded chunks and stop
@@ -1427,7 +1427,7 @@ console.log("Checkpoint representation selection verified.");
     gpuMemoryPanel.indexOf("private updateGpuMemoryAudit("),
   );
   assert(
-    diagnostica.includes("ULTIMO GUASTO"),
+    diagnostica.includes("LAST FAILURE"),
     "il pannello deve mostrare l'ultimo guasto di cronologia",
   );
   assert(
@@ -1617,7 +1617,7 @@ console.log("History rapid-input queue and retention-floor feedback verified.");
     "il Fill deve preidratare il piano di rollback prima di mutare i pixel",
   );
   assert(coordinator.includes("this.host.store.selectionClipBindGroups.clear();"));
-  assert(coordinator.includes("Azione History troppo grande per il budget locale"));
+  assert(coordinator.includes("The History action is too large for the local budget"));
   assert(coordinator.includes("diskBudgetBlockedActionIds"));
   assert(coordinator.includes('if (result === "budget-skip") continue;'));
   const diskBudgetGateStart = spill.indexOf(

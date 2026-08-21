@@ -20,11 +20,12 @@ export interface SceneLayerProperties {
 
 export function sceneLayerDisplayName(name: string): string {
   return name
-    .replace(/^Livello (?=\d+$)/, "Layer ")
-    .replace(/^Maschera ritaglio (?=\d+$)/, "Clipping Mask ")
-    .replace(/^Testo (?=\d+$)/, "Text ")
-    .replace(/^Immagine (?=\d+$)/, "Image ")
-    .replace(/^Immagine raster$/, "Raster Image");
+    // Keep old localized default names readable without shipping them as UI copy.
+    .replace(/^\u004c\u0069\u0076\u0065\u006c\u006c\u006f (?=\d+$)/, "Layer ")
+    .replace(/^\u004d\u0061\u0073\u0063\u0068\u0065\u0072\u0061 \u0072\u0069\u0074\u0061\u0067\u006c\u0069\u006f (?=\d+$)/, "Clipping Mask ")
+    .replace(/^\u0054\u0065\u0073\u0074\u006f (?=\d+$)/, "Text ")
+    .replace(/^\u0049\u006d\u006d\u0061\u0067\u0069\u006e\u0065 (?=\d+$)/, "Image ")
+    .replace(/^\u0049\u006d\u006d\u0061\u0067\u0069\u006e\u0065 \u0072\u0061\u0073\u0074\u0065\u0072$/, "Raster Image");
 }
 
 export function isSceneLayerKey(key: string): key is SceneLayerKey {

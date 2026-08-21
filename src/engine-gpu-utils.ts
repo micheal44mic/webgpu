@@ -26,7 +26,7 @@ export async function assertShaderCompiled(module: GPUShaderModule, label: strin
   const description = errors
     .map((error) => `${error.lineNum}:${error.linePos} ${error.message}`)
     .join("\n");
-  throw new Error(`Errore WGSL nel modulo ${label}:\n${description}`);
+  throw new Error(`WGSL error in module ${label}:\n${description}`);
 }
 
 /** Uses asynchronous compilation when exposed by the browser, with a fallback

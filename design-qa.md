@@ -7,7 +7,7 @@ Date: 2026-08-12
 - Reference: `C:\Users\michi\AppData\Local\Temp\codex-clipboard-03d9ed05-df83-431d-b5ef-916d2755244e.png`
 - Implementation capture: `design-qa-assets/project-home-393x852.png`
 - Target hierarchy retained: brand header, icon navigation, one primary content surface, canvas creation flow, recent-project grid.
-- Product-specific direction applied: `M1M4.COM` is top-right, navigation has exactly `Projects` and `New Canvas`, and the existing orange/dark editor tokens replace Infinite Painter's coral palette.
+- Product-specific direction applied: `M1M4.COM` is top-right, navigation has exactly `Projects` and `New Canvas`, and the existing orange/dark editor tokens replace the reference coral palette.
 
 ## Responsive checks
 

@@ -228,7 +228,7 @@ assert(
   glazeAllocation.includes("this.lightGlazeDesiredStorageMode = storageMode;")
     && glazeAllocation.includes("this.lightGlazeLoadingStorageMode")
     && glazeAllocation.includes("`Retarget rendering glaze ${storageMode}`")
-    && glazeAllocation.includes("`Ripristino rendering glaze ${previous.storageMode}`")
+    && glazeAllocation.includes("`Restore glaze rendering ${previous.storageMode}`")
     && glazeAllocation.includes("currentLightGlazeResourceSet(this)")
     && glazeAllocation.includes("applyLightGlazeResourceSet(this, previous)")
     && glazeAllocation.includes("destroyLightGlazeResourceSet(resources)"),
@@ -236,13 +236,13 @@ assert(
 );
 assert(
   engine.includes("this.lightGlazeLoadingPromise !== null")
-    && engine.includes("Rendering glaze in preparazione: riprova tra un istante"),
+    && engine.includes("Glaze rendering is being prepared. Try again in a moment"),
   "Un tratto può ancora partire durante un retarget glaze in volo.",
 );
 assert(
   engine.includes("while (this.lightGlazeLoadingPromise)")
     && engine.includes("await engine.ensureLightGlazeResources(batch.settings.blendMode);")
-    && engine.includes("Rendering glaze in preparazione: riprova tra un istante"),
+    && engine.includes("Glaze rendering is being prepared. Try again in a moment"),
   "Prewarm/attesa delle risorse glaze asincrone incompleta.",
 );
 assert(
@@ -313,7 +313,7 @@ assert(
   "Il report suite non distingue R16F da RGBA16F.",
 );
 assert(
-  html.includes("Rendering · Light R16F / Uniformed e Intense RGBA16F")
+  html.includes("Rendering · Light R16F / Uniformed and Intense RGBA16F")
     && html.includes("Blend dry · scratch")
     && !html.includes("Intense Blending · scratch"),
   "UI suite o memoria rendering non coerente.",
@@ -330,7 +330,7 @@ const measuredPlateaus = [46, 84, 115, 140, 161, 178, 192];
 assert.deepEqual(
   measuredPlateaus.map((_, index) => sourceOverByte(46, index + 1)),
   measuredPlateaus,
-  "La ricorrenza source-over non riproduce i plateau Procreate misurati.",
+  "The source-over recurrence does not reproduce the measured plateaus.",
 );
 
 const flow = 0.5;

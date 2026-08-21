@@ -127,7 +127,7 @@ assert.ok(
 );
 assert.throws(
   () => normalizeRasterWarpBezierHandles(defaultBezierHandles.slice(1), bezierSource, 4),
-  /otto maniglie/,
+  /eight corner Bézier handles/,
 );
 const authoredThreeSource = rasterDeformInitialPoints(bounds, "warp", 3);
 const authoredThreeHandles = moveRasterWarpBezierHandle(
@@ -198,7 +198,7 @@ for (const handleIndex of [0, 1]) {
 }
 assert.throws(
   () => moveRasterWarpControlPoints(smoothGesture, 3, smoothGesture[4], 1, 1, 4),
-  /Solo i quattro angoli/,
+  /four Warp corners/,
 );
 const localSource = rasterDeformInitialPoints(bounds, "warp", 5);
 const localGesture = moveRasterWarpControlPoints(
@@ -282,7 +282,7 @@ assert.deepEqual(rasterDeformCenter(translated), {
 });
 assert.throws(
   () => normalizeRasterDeformPoints(translated.slice(1), "warp", 5),
-  /attesi 25/,
+  /expected 25/,
 );
 
 const perspective = [

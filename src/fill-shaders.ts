@@ -297,8 +297,8 @@ fn classifyLocal(
   }
 }
 
-// Un solo workgroup da 16 thread per blocco visita i bordi destro e inferiore.
-// Sono 16x meno invocazioni rispetto a rilanciare tutti i 256 pixel del blocco.
+// One 16-thread workgroup per block visits the right and bottom edges.
+// This uses 16x fewer invocations than relaunching all 256 pixels in the block.
 @compute @workgroup_size(16, 1, 1)
 fn unionBoundaries(
   @builtin(workgroup_id) workgroup: vec3<u32>,

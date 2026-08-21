@@ -20,7 +20,7 @@ assert.match(source, /startTextDistortEditing/);
 assert.doesNotMatch(source, /document\.getElementById|querySelector/);
 assert.match(
   html,
-  /id="mobilePan"[\s\S]*?title="Sposta"[\s\S]*?data-lucide="hand"/,
+  /id="mobilePan"[\s\S]*?title="Move"[\s\S]*?data-lucide="hand"/,
 );
 assert.match(
   html,

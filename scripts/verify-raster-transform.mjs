@@ -301,7 +301,7 @@ const clippedTile = rasterTransformTileMask(
 assert.deepEqual(rasterTransformTileIndices(clippedTile), [tileIndex(0, 0)]);
 assert.throws(
   () => rasterTransformTileIndices(new Uint32Array(1)),
-  /Maschera tile non valida/,
+  /Invalid tile mask/,
 );
 
 // Fixture rettangolare: il tile 255 deve rappresentare il vero angolo in basso
@@ -352,7 +352,7 @@ assert.throws(
     sourcePivot: { x: 50, y: 50 },
     transform: identity,
   }),
-  /contenuto nello scratch/,
+  /contained within the scratch area/,
 );
 
 assert.match(rasterTransformShader, /textureSampleLevel\s*\(/);
@@ -440,7 +440,7 @@ assert.match(runtimeSource, /session\.terminal = true/);
 assert.match(runtimeSource, /if \(session\.terminal\)/);
 assert.match(runtimeSource, /retainSessionForRecovery = true/);
 assert.doesNotMatch(runtimeSource, /callbacks\.onStatus/);
-assert.match(runtimeSource, /runGpuAllocationTransaction\([\s\S]{0,180}Pipeline Trasforma raster/);
+assert.match(runtimeSource, /runGpuAllocationTransaction\([\s\S]{0,180}Raster Transform pipeline/);
 assert.match(
   runtimeSource,
   /const action: RasterTransformHistoryAction[\s\S]{0,1200}commitHistoryActionAtomically\(engine, action\)/,
@@ -448,7 +448,7 @@ assert.match(
 );
 assert.match(runtimeSource, /released|destroyLayerColdStorage\(seed\)/);
 assert.match(runtimeSource, /session\.scope === "selection"[\s\S]{0,240}Math\.round\(transform\.translationX\)/);
-assert.match(runtimeSource, /La Selezione pixel può essere soltanto spostata/);
+assert.match(runtimeSource, /Pixel Selection can only be moved/);
 assert.match(runtimeSource, /captureSelectionHistoryMask\([\s\S]{0,300}translatePixelSelection\([\s\S]{0,300}captureSelectionHistoryMask\(/);
 assert.match(runtimeSource, /selectionOverlaySuppressed = false/);
 assert.match(runtimeSource, /selectionOverlayOffsetX = session\.transform\.translationX/);
@@ -528,7 +528,7 @@ console.log("Raster transform math/shader verification passed.");
       sourcePivot: { x: 0, y: 0 },
       transform: identita,
     }),
-    /sourceContentBounds deve essere contenuto nello scratch/,
+    /sourceContentBounds must be contained within the scratch area/,
     "senza copertura il caso misurato deve ancora fallire: e' la regressione",
   );
 

@@ -57,10 +57,10 @@ const GPU_MEMORY_ROWS: ReadonlyArray<
 ];
 
 const LAYER_STATE_LABEL: Record<string, string> = {
-  hot: "caldo",
-  cold: "freddo",
-  compressed: "compresso",
-  empty: "vuoto",
+  hot: "hot",
+  cold: "cold",
+  compressed: "compressed",
+  empty: "empty",
 };
 
 export interface GpuMemoryPanelControllerOptions {
@@ -114,8 +114,8 @@ export class GpuMemoryPanelController {
     this.panel.hidden = !open;
     this.toggle.setAttribute("aria-expanded", String(open));
     this.toggle.title = open
-      ? "Chiudi dettaglio memoria GPU"
-      : "Apri dettaglio memoria GPU";
+      ? "Close GPU memory details"
+      : "Open GPU memory details";
     this.chevron.textContent = open ? "▾" : "▴";
     if (open && this.statsDirty) {
       this.statsDirty = false;
@@ -132,38 +132,38 @@ export class GpuMemoryPanelController {
     const lastFailure = this.options.getLastHistoryFailure();
     const depth = state.cursor - telemetry.floorCursor;
     const causa = telemetry.budgetCheckpointBlocked
-      ? "BLOCCATO: nessun checkpoint full su cui consolidare"
+      ? "BLOCKED: no full checkpoint is available for consolidation"
       : telemetry.totalBytes > telemetry.budgetBytes
-        ? "sopra budget, eviction in attesa di manutenzione idle"
-        : "entro budget";
+        ? "over budget; eviction is waiting for idle maintenance"
+        : "within budget";
     output.textContent =
-      `History ${formatMemoryMiB(telemetry.totalBytes / (1024 * 1024))} su budget `
+      `History ${formatMemoryMiB(telemetry.totalBytes / (1024 * 1024))} of `
       + `${formatMemoryMiB(telemetry.budgetBytes / (1024 * 1024))} `
-      + `(base ${formatMemoryMiB(telemetry.baseBudgetBytes / (1024 * 1024))} − effetti `
+      + `(base ${formatMemoryMiB(telemetry.baseBudgetBytes / (1024 * 1024))} − effects `
       + `${formatMemoryMiB(telemetry.effectsWorkingSetBytes / (1024 * 1024))}) · ${causa}. `
       + `Checkpoint ${telemetry.checkpointCount} (${telemetry.fullCheckpointCount} full, `
-      + `${telemetry.deltaCheckpointCount} delta) per `
-      + `${formatMemoryMiB(telemetry.checkpointBytes / (1024 * 1024))}; catture `
+      + `${telemetry.deltaCheckpointCount} delta) using `
+      + `${formatMemoryMiB(telemetry.checkpointBytes / (1024 * 1024))}; captures `
       + `${telemetry.capturesCommitted}/${telemetry.capturesStarted} committed, `
-      + `${telemetry.capturesFailed} fallite, ${telemetry.capturesDiscardedStale} stale, `
-      + `${telemetry.capturesRefusedForBudget} rifiutate per budget; `
-      + `${telemetry.checkpointCacheEvictions} checkpoint cache liberati. `
-      + `Eviction ${telemetry.budgetEvictions} esclusivamente da budget; pavimento `
-      + `${telemetry.floorCursor}, azioni ${state.actionCount}, profondità Undo ${depth}. `
-      + `Locale ${formatMemoryMiB(locale.committedBytes / (1024 * 1024))} · `
-      + `${locale.backend} · ${locale.ready ? "pronto" : "avvio"}/`
-      + `${locale.writable ? "scrivibile" : "sola memoria"} · ${locale.busy} · `
-      + `soglia spill ${formatMemoryMiB(telemetry.spillHighWaterBytes / (1024 * 1024))} · `
+      + `${telemetry.capturesFailed} failed, ${telemetry.capturesDiscardedStale} stale, `
+      + `${telemetry.capturesRefusedForBudget} refused for budget; `
+      + `${telemetry.checkpointCacheEvictions} checkpoint cache entries released. `
+      + `Evictions ${telemetry.budgetEvictions}, all budget-driven; floor `
+      + `${telemetry.floorCursor}, ${state.actionCount} actions, Undo depth ${depth}. `
+      + `Local ${formatMemoryMiB(locale.committedBytes / (1024 * 1024))} · `
+      + `${locale.backend} · ${locale.ready ? "ready" : "starting"}/`
+      + `${locale.writable ? "writable" : "memory only"} · ${locale.busy} · `
+      + `spill threshold ${formatMemoryMiB(telemetry.spillHighWaterBytes / (1024 * 1024))} · `
       + `${locale.storedOnlyPayloads}/${locale.storedPayloads} payload `
-      + `solo locali in ${locale.segments} segmenti (${locale.storedActions} azioni); `
-      + `spill ${locale.spillsCommitted} committed/${locale.spillFailures} falliti, `
+      + `stored only locally in ${locale.segments} segments (${locale.storedActions} actions); `
+      + `spill ${locale.spillsCommitted} committed/${locale.spillFailures} failed, `
       + `hydrate ${locale.hydrationsCompleted}/${locale.hydrationFailures}. `
-      + `Compattazioni Redo ${telemetry.redoCompactionsCompleted} complete, `
-      + `${telemetry.redoCompactionsAborted} interrotte.`
+      + `Redo compactions ${telemetry.redoCompactionsCompleted} completed, `
+      + `${telemetry.redoCompactionsAborted} aborted.`
       + (locale.lastError ? ` Storage: ${locale.lastError}.` : "")
       + (lastFailure
-        ? ` ⚠ ULTIMO GUASTO: ${lastFailure.operation} su `
-          + `«${lastFailure.action}» al cursore `
+        ? ` ⚠ LAST FAILURE: ${lastFailure.operation} on `
+          + `“${lastFailure.action}” at cursor `
           + `${lastFailure.cursor} → ${lastFailure.message}`
         : "");
   }
@@ -186,20 +186,20 @@ export class GpuMemoryPanelController {
       Math.abs(scartoMiB) * 1024 * 1024 > GPU_MEMORY_AUDIT_TOLERANCE_BYTES;
     this.renderMeasuredBreakdown(misura);
     output.textContent =
-      `Registrata ${formatMemoryMiB(misuratoMiB)} corrente, picco `
-      + `${formatMemoryMiB(piccoMiB)}, in ${misura.textureCount} texture e `
-      + `${misura.bufferCount} buffer (${misura.createdCount} create, `
-      + `${misura.destroyedCount} distrutte, ${misura.collectedCount} raccolte dal GC). `
-      + `Somma esatta dei descrittori, non una stima. `
+      `Registered ${formatMemoryMiB(misuratoMiB)} current, `
+      + `${formatMemoryMiB(piccoMiB)} peak, across ${misura.textureCount} textures and `
+      + `${misura.bufferCount} buffers (${misura.createdCount} created, `
+      + `${misura.destroyedCount} destroyed, ${misura.collectedCount} collected by GC). `
+      + `Exact descriptor sum, not an estimate. `
       + (misura.unmeasurableCount > 0
-        ? `${misura.unmeasurableCount} risorse con formato non misurabile `
-          + `(${misura.unmeasurableFormats.join(", ")}) sono ESCLUSE dal totale. `
+        ? `${misura.unmeasurableCount} resources with an unmeasurable format `
+          + `(${misura.unmeasurableFormats.join(", ")}) are EXCLUDED from the total. `
         : "")
-      + `Il modello diagnostico non sommato dichiara `
-      + `${formatMemoryMiB(declaredMiB)}: scarto `
+      + `The separate diagnostic model reports `
+      + `${formatMemoryMiB(declaredMiB)}: delta `
       + `${scartoMiB >= 0 ? "+" : "−"}${formatMemoryMiB(Math.abs(scartoMiB))}`
       + (oltreTolleranza
-        ? " · ATTENZIONE: è disallineata solo la stima memoria, non l’ordine dei layer."
+        ? " · WARNING: only the memory estimate is out of sync, not the layer order."
         : ".");
     output.classList.toggle(
       "memory-audit-warning",
@@ -241,12 +241,12 @@ export class GpuMemoryPanelController {
       const nome = this.document.createElement("dt");
       const stato = LAYER_STATE_LABEL[livello.state] ?? livello.state;
       nome.textContent = `${livello.index + 1}. ${livello.name} · ${stato}`
-        + `${livello.active ? " · attivo" : ""}${livello.visible ? "" : " · nascosto"}`;
+        + `${livello.active ? " · active" : ""}${livello.visible ? "" : " · hidden"}`;
       const valore = this.document.createElement("dd");
       valore.textContent = formatMemoryMiB(livello.totalMiB);
       valore.title = livello.compressedCpuMiB > 0
-        ? "La RAM compressa pesa sul limite di processo ma non sul totale GPU."
-        : "Somma delle risorse GPU vive di questo livello.";
+        ? "Compressed RAM counts toward the process limit, but not the GPU total."
+        : "Sum of this layer's live GPU resources.";
       riga.append(nome, valore);
   
       // Le componenti si mostrano solo quando esistono: una riga che elenca tre
@@ -259,7 +259,7 @@ export class GpuMemoryPanelController {
       if (livello.compressedCpuMiB > 0) {
         const rapporto = livello.compressedRawMiB / livello.compressedCpuMiB;
         parti.push(
-          `${formatMemoryMiB(livello.compressedCpuMiB)} RAM compressa`
+          `${formatMemoryMiB(livello.compressedCpuMiB)} compressed RAM`
           + (rapporto > 1 ? ` (${rapporto.toFixed(1)}:1)` : ""),
         );
       }
@@ -289,7 +289,7 @@ export class GpuMemoryPanelController {
     const misuratoMiB = misura.currentBytes / (1024 * 1024);
     this.element<HTMLElement>("gpuMeasuredTotal").textContent = partizioneIntegra
       ? formatMemoryMiB(misuratoMiB)
-      : `${formatMemoryMiB(misuratoMiB)} · partizione incoerente`;
+      : `${formatMemoryMiB(misuratoMiB)} · inconsistent partition`;
     this.element<HTMLElement>("gpuMeasuredPeak").textContent =
       formatMemoryMiB(misura.peakBytes / (1024 * 1024));
   
@@ -318,11 +318,11 @@ export class GpuMemoryPanelController {
       riga.dataset.memoryRow = "";
       riga.dataset.measuredCategory = voce.category;
       const nome = this.document.createElement("dt");
-      nome.textContent = `${voce.category} · ${voce.count} risors${voce.count === 1 ? "a" : "e"}`;
+      nome.textContent = `${voce.category} · ${voce.count} resource${voce.count === 1 ? "" : "s"}`;
       const valore = this.document.createElement("dd");
-      valore.textContent = `${formatMemoryMiB(voce.bytes / (1024 * 1024))} correnti · `
-        + `${formatMemoryMiB(voce.peakBytes / (1024 * 1024))} picco`;
-      valore.title = "Il picco è storico per questa categoria e non va sommato ai picchi delle altre righe.";
+      valore.textContent = `${formatMemoryMiB(voce.bytes / (1024 * 1024))} current · `
+        + `${formatMemoryMiB(voce.peakBytes / (1024 * 1024))} peak`;
+      valore.title = "The peak is historical for this category and must not be added to peaks in other rows.";
       riga.append(nome, valore);
       riga.classList.toggle("memory-zero", voce.bytes < 0.05 * 1024 * 1024);
       return riga;
@@ -344,12 +344,12 @@ export class GpuMemoryPanelController {
     }
     const historyPageCount = stats.gpuMemory.historyGpuPageCount;
     const historyLabel = this.element<HTMLElement>("gpuMemoryHistoryLabel");
-    historyLabel.textContent = `Cronologia raster · GPU · ${historyPageCount} `
-      + `${historyPageCount === 1 ? "pagina" : "pagine"} · `
-      + `usati ${formatMemoryMiB(stats.gpuMemory.historyGpuUsedMiB)}`;
+    historyLabel.textContent = `Raster history · GPU · ${historyPageCount} `
+      + `${historyPageCount === 1 ? "page" : "pages"} · `
+      + `${formatMemoryMiB(stats.gpuMemory.historyGpuUsedMiB)} used`;
     historyLabel.title =
-      "La cifra a destra è la memoria GPU realmente riservata in pagine; "
-      + "«usati» è il payload logico attualmente residente nelle pagine.";
+      "The value on the right is the GPU memory actually reserved in pages; "
+      + "“used” is the logical payload currently resident in those pages.";
     this.updateHistoryDiagnostics();
   
     const storageStudy = stats.layerStorageStudy;
@@ -381,53 +381,53 @@ export class GpuMemoryPanelController {
     const tileOutput = this.element<HTMLElement>("gpuMemoryLayerStudyTiles");
     const bboxOutput = this.element<HTMLElement>("gpuMemoryLayerStudyBbox");
     this.element<HTMLElement>("gpuMemoryLayerStudyTilesLabel").textContent =
-      `Raw livelli · effettivo · ${hotLayerCount} hot + `
+      `Raw layers · actual · ${hotLayerCount} hot + `
       + `${coldTileCount}/${inactiveTileCapacity} tile cold`
       + (compressedLayerCount > 0
-        ? ` + ${compressedLayerCount} compresso (${formatMemoryMiB(compressedRawMiB)} raw)`
+        ? ` + ${compressedLayerCount} compressed (${formatMemoryMiB(compressedRawMiB)} raw)`
         : "");
     this.element<HTMLElement>("gpuMemoryLayerStudyBboxLabel").textContent =
-      `Confronto · bbox ${storageStudy.tileSizePx} · `
-      + `${inactiveBboxTileCount}/${inactiveTileCapacity} livelli cold`;
+      `Comparison · bbox ${storageStudy.tileSizePx} · `
+      + `${inactiveBboxTileCount}/${inactiveTileCapacity} cold layers`;
     tileOutput.textContent = formatStudy(storageStudy.actualRawMiB, actualSavingsMiB);
     bboxOutput.textContent = formatStudy(
       storageStudy.projectedAlignedBboxRawMiB,
       storageStudy.alignedBboxSavingsMiB,
     );
     tileOutput.title =
-      "Memoria logica WebGPU realmente allocata per texture raw hot e cold; "
-      + "i livelli compressi sono RAM CPU separata ed esclusa dal totale GPU. "
-      + "Il risparmio è rispetto a un full-canvas per ogni livello.";
+      "Logical WebGPU memory actually allocated for hot and cold raw textures; "
+      + "compressed layers use separate CPU RAM and are excluded from the GPU total. "
+      + "Savings are measured against one full canvas per layer.";
     bboxOutput.title =
-      "Confronto teorico: attivo e Riferimento full-canvas, più bbox allineato "
-      + "degli altri livelli inattivi; non è memoria allocata.";
+      "Theoretical comparison: full-canvas active and Reference layers, plus an aligned "
+      + "bounding box for the other inactive layers; this is not allocated memory.";
   
     const scratchExtents: string[] = [];
     if (stats.gpuMemory.effectsScratchStrokeExtent > 0) {
       const strokeScratchOwner =
         stats.rasterStrokeStyle.enabled && stats.rasterStrokeStyle.width > 0
-          ? "Traccia"
-          : "Compositore";
+          ? "Stroke"
+          : "Compositor";
       scratchExtents.push(
         `${strokeScratchOwner} ${stats.gpuMemory.effectsScratchStrokeExtent}²`,
       );
     }
     if (stats.gpuMemory.effectsScratchBevelExtent > 0) {
-      scratchExtents.push(`Smusso ${stats.gpuMemory.effectsScratchBevelExtent}²`);
+      scratchExtents.push(`Bevel ${stats.gpuMemory.effectsScratchBevelExtent}²`);
     }
     if (stats.gpuMemory.effectsScratchOuterShadowExtent > 0) {
       scratchExtents.push(
-        `Ombra esterna ${stats.gpuMemory.effectsScratchOuterShadowExtent}²`,
+        `Outer Shadow ${stats.gpuMemory.effectsScratchOuterShadowExtent}²`,
       );
     }
     if (stats.gpuMemory.effectsScratchInnerShadowExtent > 0) {
       scratchExtents.push(
-        `Ombra interna ${stats.gpuMemory.effectsScratchInnerShadowExtent}²`,
+        `Inner Shadow ${stats.gpuMemory.effectsScratchInnerShadowExtent}²`,
       );
     }
     this.element<HTMLElement>("gpuMemoryEffectsScratchLabel").textContent = scratchExtents.length > 0
-      ? `Effetti · pool scratch · ${scratchExtents.join(" / ")}`
-      : "Effetti · pool scratch";
+      ? `Effects · scratch pool · ${scratchExtents.join(" / ")}`
+      : "Effects · scratch pool";
   
     const fieldBoundsLabel = (
       bounds: Readonly<{ x: number; y: number; width: number; height: number }>,
@@ -435,12 +435,12 @@ export class GpuMemoryPanelController {
     const allocation = stats.gpuMemory.rasterBevelFieldAllocationBounds;
     const valid = stats.gpuMemory.rasterBevelFieldValidBounds;
     let bevelHeightLabel =
-      `Smusso · heightfield R32F · documento ${this.options.documentWidth}×${this.options.documentHeight}`;
+      `Bevel · R32F heightfield · document ${this.options.documentWidth}×${this.options.documentHeight}`;
     if (stats.gpuMemory.rasterBevelFieldBounded) {
       if (!valid) {
         bevelHeightLabel = allocation
-          ? `Smusso · heightfield R32F · vuoto · alloc ${fieldBoundsLabel(allocation)}`
-          : "Smusso · heightfield R32F · vuoto";
+          ? `Bevel · R32F heightfield · empty · alloc ${fieldBoundsLabel(allocation)}`
+          : "Bevel · R32F heightfield · empty";
       } else if (
         allocation
         && allocation.x === valid.x
@@ -448,9 +448,9 @@ export class GpuMemoryPanelController {
         && allocation.width === valid.width
         && allocation.height === valid.height
       ) {
-        bevelHeightLabel = `Smusso · heightfield R32F · bbox ${fieldBoundsLabel(valid)}`;
+        bevelHeightLabel = `Bevel · R32F heightfield · bbox ${fieldBoundsLabel(valid)}`;
       } else {
-        bevelHeightLabel = `Smusso · heightfield R32F · valido ${fieldBoundsLabel(valid)}`
+        bevelHeightLabel = `Bevel · R32F heightfield · valid ${fieldBoundsLabel(valid)}`
           + (allocation ? ` · alloc ${fieldBoundsLabel(allocation)}` : "");
       }
     }
@@ -469,7 +469,7 @@ export class GpuMemoryPanelController {
       : declaredMiB;
     const formattedTotal = formatMemoryMiB(totalMiB);
     this.element<HTMLElement>("gpuMemoryTotal").textContent = formattedTotal;
-    this.element<HTMLElement>("gpuMemoryPeak").textContent = `picco ${formatMemoryMiB(peakMiB)}`;
+    this.element<HTMLElement>("gpuMemoryPeak").textContent = `peak ${formatMemoryMiB(peakMiB)}`;
     this.element<HTMLElement>("gpuMemoryCompact").textContent = formattedTotal;
     this.options.memoryStat.textContent = formattedTotal;
   
@@ -480,14 +480,14 @@ export class GpuMemoryPanelController {
     // stata impedita.
     const governor = stats.gpuMemory;
     this.element<HTMLElement>("gpuMemoryGovernor").textContent = this.options.isEngineReady()
-      ? `Governor · osserva · zona ${governor.governorZone} · `
-        + `${formatMemoryMiB(governor.governorUsedMiB)} su `
-        + `${formatMemoryMiB(governor.governorCeilingMiB)} utilizzabili `
-        + `(tetto ${formatMemoryMiB(governor.governorHardCapMiB)}) · `
-        + `margine ${formatMemoryMiB(governor.governorHeadroomMiB)} · `
-        + `liberabile ${formatMemoryMiB(governor.governorReclaimableMiB)} · `
-        + `promesso ${formatMemoryMiB(governor.governorReservedMiB)}`
-      : "Governor · in attesa del device";
+      ? `Governor · observe · zone ${governor.governorZone} · `
+        + `${formatMemoryMiB(governor.governorUsedMiB)} of `
+        + `${formatMemoryMiB(governor.governorCeilingMiB)} usable `
+        + `(cap ${formatMemoryMiB(governor.governorHardCapMiB)}) · `
+        + `headroom ${formatMemoryMiB(governor.governorHeadroomMiB)} · `
+        + `reclaimable ${formatMemoryMiB(governor.governorReclaimableMiB)} · `
+        + `reserved ${formatMemoryMiB(governor.governorReservedMiB)}`
+      : "Governor · waiting for device";
   
     if (!this.options.isEngineReady()) {
       this.previousTotalMiB = null;
@@ -530,7 +530,7 @@ export class GpuMemoryPanelController {
 
   private element<T extends HTMLElement>(id: string): T {
     const result = this.options.root.querySelector<HTMLElement>(`#${id}`);
-    if (!result) throw new Error(`Elemento memoria #${id} non trovato.`);
+    if (!result) throw new Error(`Memory element #${id} was not found.`);
     return result as T;
   }
 }

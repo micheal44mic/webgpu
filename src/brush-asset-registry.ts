@@ -56,12 +56,12 @@ function validateDecodedImage(source: DecodedCustomBrushImage): Uint8Array {
     || source.height > CUSTOM_ASSET_MAX_DIMENSION
   ) {
     throw new RangeError(
-      `Un asset pennello deve misurare fra 1 e ${CUSTOM_ASSET_MAX_DIMENSION} px per lato.`,
+      `A brush asset must measure between 1 and ${CUSTOM_ASSET_MAX_DIMENSION} px per side.`,
     );
   }
   const expectedBytes = source.width * source.height * 4;
   if (source.rgba.byteLength !== expectedBytes) {
-    throw new RangeError(`Asset RGBA8: ${source.rgba.byteLength} B, attesi ${expectedBytes} B.`);
+    throw new RangeError(`RGBA8 asset: ${source.rgba.byteLength} B, expected ${expectedBytes} B.`);
   }
   return new Uint8Array(source.rgba);
 }
@@ -98,7 +98,7 @@ export class CustomBrushAssetRegistry {
     const rgba = validateDecodedImage(source);
     const id = requestedId ?? this.createId("shape", source.width, source.height, rgba);
     if (!isCustomShapeAssetId(id)) {
-      throw new TypeError("ID Shape custom non valido.");
+      throw new TypeError("Invalid custom Shape ID.");
     }
     this.store({
       id,
@@ -119,7 +119,7 @@ export class CustomBrushAssetRegistry {
     const rgba = validateDecodedImage(source);
     const id = requestedId ?? this.createId("grain", source.width, source.height, rgba);
     if (!isCustomGrainAssetId(id)) {
-      throw new TypeError("ID Grain custom non valido.");
+      throw new TypeError("Invalid custom Grain ID.");
     }
     this.store({
       id,
@@ -137,7 +137,7 @@ export class CustomBrushAssetRegistry {
     if (!isCustomShapeAssetId(id)) return null;
     const asset = this.assets.get(id);
     if (!asset || asset.kind !== "shape") {
-      throw new Error(`Asset Shape custom non registrato: ${id}.`);
+      throw new Error(`Custom Shape asset is not registered: ${id}.`);
     }
     return asset;
   }
@@ -146,7 +146,7 @@ export class CustomBrushAssetRegistry {
     if (!isCustomGrainAssetId(id)) return null;
     const asset = this.assets.get(id);
     if (!asset || asset.kind !== "grain") {
-      throw new Error(`Asset Grain custom non registrato: ${id}.`);
+      throw new Error(`Custom Grain asset is not registered: ${id}.`);
     }
     return asset;
   }
@@ -196,7 +196,7 @@ export class CustomBrushAssetRegistry {
       || previous.mimeType !== asset.mimeType
       || !byteArraysEqual(previous.rgba, asset.rgba)
     ) {
-      throw new Error(`L'ID asset ${asset.id} è immutabile ed è già registrato.`);
+      throw new Error(`Asset ID ${asset.id} is immutable and is already registered.`);
     }
   }
 }

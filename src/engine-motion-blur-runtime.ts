@@ -178,7 +178,7 @@ async function createSharedResources(device: GPUDevice): Promise<MotionBlurShare
         label: "Native raster Motion Blur logarithmic WGSL",
         code: motionBlurShader(),
       });
-      await assertShaderCompiled(module, "Motion Blur direzionale");
+      await assertShaderCompiled(module, "Directional Motion Blur");
       const bindGroupLayout = device.createBindGroupLayout({
         label: "Native raster Motion Blur layout",
         entries: [
@@ -275,7 +275,7 @@ function writePassParameters(
   documentHeight: number,
 ): number {
   if (index >= PARAMETER_CAPACITY) {
-    throw new Error("Motion Blur: capacità passaggi superata.");
+    throw new Error("Motion Blur: pass capacity exceeded.");
   }
   const byteOffset = index * session.parameterStride;
   const word = byteOffset / 4;
@@ -332,13 +332,13 @@ function encodeRequestedPreview(
     DOCUMENT_WIDTH,
     DOCUMENT_HEIGHT,
   ) as DirtyRect | null;
-  if (!resultBounds) throw new Error("Motion Blur: bounds risultato mancanti.");
+  if (!resultBounds) throw new Error("Motion Blur: result bounds are missing.");
   const dirtyRect = unionMotionBlurRects(
     session.presentedBounds,
     resultBounds,
   ) as DirtyRect;
   if (kernel.passCount > PARAMETER_CAPACITY) {
-    throw new Error("Motion Blur: troppi passaggi per il buffer parametri.");
+    throw new Error("Motion Blur: too many passes for the parameter buffer.");
   }
 
   const fullLayerBounds: DirtyRect = {
@@ -492,14 +492,14 @@ function startPreviewSubmission(
     try {
       encodeRequestedPreview(engine, session, serial, distance, angle);
       await engine.waitForGpuCapped(
-        `Anteprima Motion Blur ${distance}px ${angle}deg`,
+        `Motion Blur preview ${distance}px ${angle}deg`,
         60_000,
       );
     } catch (error) {
       session.previewFault = previewError(error);
       if (engine.activeRasterMotionBlurSession === session) {
         engine.publishStatus(
-          `Anteprima Motion Blur interrotta: ${session.previewFault.message}. Usa Annulla.`,
+          `Motion Blur preview interrupted: ${session.previewFault.message}. Use Cancel.`,
           "error",
         );
         engine.publishHistoryState();
@@ -594,7 +594,7 @@ async function restoreOriginalPixels(
     presentationError = error;
   }
   setAuthoritativeMetadata(engine, session.sourceBounds, session.sourceTileMask);
-  await engine.waitForGpuCapped("Annullamento Motion Blur", 60_000);
+  await engine.waitForGpuCapped("Cancel Motion Blur", 60_000);
   if (session.previewInFlight) await session.previewInFlight;
   if (presentationError) throw presentationError;
 }
@@ -604,7 +604,7 @@ export async function beginRasterMotionBlur(
   initialDistance = DESTRUCTIVE_MOTION_BLUR_DEFAULT_DISTANCE,
   initialAngle = DESTRUCTIVE_MOTION_BLUR_DEFAULT_ANGLE,
 ): Promise<RasterMotionBlurSnapshot | null> {
-  if (!engine.initialized) throw new Error("Il motore non è ancora inizializzato.");
+  if (!engine.initialized) throw new Error("The engine has not been initialized yet.");
   if (engine.activeRasterMotionBlurSession) {
     return snapshot(engine.activeRasterMotionBlurSession);
   }
@@ -613,20 +613,20 @@ export async function beginRasterMotionBlur(
   if (selected?.kind !== "raster") return null;
   const record = engine.layerStack.active;
   if (selected.rasterLayerId !== record.id) {
-    throw new Error("Il raster selezionato non coincide con il livello attivo.");
+    throw new Error("The selected raster does not match the active layer.");
   }
   if (engine.pixelSelectionState.selectedPixels > 0) {
     throw new Error(
-      "Motion Blur v1 lavora sull’intero livello: deseleziona i pixel prima di aprirlo.",
+      "Motion Blur v1 works on the entire layer: deselect the pixels before opening it.",
     );
   }
   engine.assertLayerSwitchAllowed();
   engine.persistActiveLayerState();
   if (!record.hasContent || !record.contentBounds) {
-    throw new Error("Il livello raster selezionato è vuoto.");
+    throw new Error("The selected raster layer is empty.");
   }
   if (engine.layerFormat !== "rgba16float") {
-    throw new Error("Motion Blur distruttivo richiede un documento RGBA16F.");
+    throw new Error("Destructive Motion Blur requires an RGBA16F document.");
   }
 
   engine.cancelLayerColdCompressionIdle();
@@ -636,14 +636,14 @@ export async function beginRasterMotionBlur(
   try {
     await engine.waitForIdle();
     const hot = engine.requireLayerGpu(record.id).hot;
-    if (!hot) throw new Error("Texture hot del raster da sfocare mancante.");
+    if (!hot) throw new Error("The hot texture for the raster to blur is missing.");
     const sourceBounds = { ...record.contentBounds };
     const scratchBounds = destructiveMotionBlurMaximumBounds(
       sourceBounds,
       DOCUMENT_WIDTH,
       DOCUMENT_HEIGHT,
     ) as DirtyRect | null;
-    if (!scratchBounds) throw new Error("Il raster non contiene pixel sfocabili.");
+    if (!scratchBounds) throw new Error("The raster contains no pixels that can be blurred.");
     const distance = normalizeDestructiveMotionBlurDistance(initialDistance);
     const angle = normalizeDestructiveMotionBlurAngle(initialAngle);
     const initialResultBounds = destructiveMotionBlurBounds(
@@ -658,7 +658,7 @@ export async function beginRasterMotionBlur(
       0,
     );
     if (maximumKernel.passCount > PARAMETER_CAPACITY) {
-      throw new Error("Motion Blur: il massimo richiesto supera la capacità passaggi.");
+      throw new Error("Motion Blur: the requested maximum exceeds the pass capacity.");
     }
     const sourceTileMask = record.storageTileMask.slice();
     const shared = await requireSharedResources(engine.device);
@@ -667,7 +667,7 @@ export async function beginRasterMotionBlur(
 
     session = await runGpuAllocationTransaction(
       engine.device,
-      `Allocazione Native raster Motion Blur layer ${record.id}`,
+      `Allocate Native raster Motion Blur layer ${record.id}`,
       async (transaction) => {
         const sourceTexture = engine.device.createTexture({
           label: `Native raster Motion Blur immutable source layer ${record.id}`,
@@ -784,7 +784,7 @@ export async function beginRasterMotionBlur(
           },
         );
         engine.device.queue.submit([encoder.finish()]);
-        await engine.waitForGpuCapped("Preparazione Motion Blur", 60_000);
+        await engine.waitForGpuCapped("Prepare Motion Blur", 60_000);
         return created;
       },
     );
@@ -793,7 +793,7 @@ export async function beginRasterMotionBlur(
     engine.publishHistoryState();
     await flushPreview(engine, session);
     engine.publishStatus(
-      `Anteprima Motion Blur ${distance.toFixed(0)} px a ${angle.toFixed(0)} gradi: Applica o Annulla.`,
+      `Motion Blur preview ${distance.toFixed(0)} px at ${angle.toFixed(0)} degrees: Apply or Cancel.`,
       "ok",
     );
     engine.publishHistoryState();
@@ -810,7 +810,7 @@ export async function beginRasterMotionBlur(
         restoreError = caught;
         session.terminal = false;
         engine.latchDocumentStateInconsistent(
-          "Avvio Motion Blur fallito e ripristino incompleto: ricarica la pagina.",
+          "Motion Blur startup failed and recovery was incomplete: reload the page.",
         );
       }
       if (!restoreError) {
@@ -825,8 +825,8 @@ export async function beginRasterMotionBlur(
     engine.scheduleLayerColdCompression();
     if (restoreError) {
       throw new Error(
-        `Avvio Motion Blur fallito: ${previewError(error).message}; `
-        + `ripristino fallito: ${previewError(restoreError).message}`,
+        `Motion Blur startup failed: ${previewError(error).message}; `
+        + `recovery failed: ${previewError(restoreError).message}`,
       );
     }
     throw error;
@@ -839,14 +839,14 @@ export function updateRasterMotionBlur(
   angleValue: unknown,
 ): RasterMotionBlurSnapshot {
   const session = engine.activeRasterMotionBlurSession;
-  if (!session) throw new Error("Nessuna sessione Motion Blur aperta.");
+  if (!session) throw new Error("No Motion Blur session is open.");
   if (engine.historyStateInconsistent) {
-    throw new Error("Documento bloccato: è consentito soltanto ritentare Annulla.");
+    throw new Error("The document is locked: only retrying Cancel is allowed.");
   }
   if (session.previewFault) {
-    throw new Error(`Anteprima Motion Blur interrotta: ${session.previewFault.message}. Usa Annulla.`);
+    throw new Error(`Motion Blur preview interrupted: ${session.previewFault.message}. Use Cancel.`);
   }
-  if (session.terminal) throw new Error("Motion Blur sta già terminando.");
+  if (session.terminal) throw new Error("Motion Blur is already finishing.");
   const distance = normalizeDestructiveMotionBlurDistance(distanceValue);
   const angle = normalizeDestructiveMotionBlurAngle(angleValue);
   if (distance === session.distance && angle === session.angle) return snapshot(session);
@@ -867,7 +867,7 @@ export function updateRasterMotionBlur(
   session.requestedSerial += 1;
   schedulePreview(engine, session);
   engine.publishStatus(
-    `Anteprima Motion Blur ${distance.toFixed(0)} px a ${angle.toFixed(0)} gradi…`,
+    `Motion Blur preview ${distance.toFixed(0)} px at ${angle.toFixed(0)} degrees…`,
     "working",
   );
   return snapshot(session);
@@ -876,14 +876,14 @@ export function updateRasterMotionBlur(
 export async function cancelRasterMotionBlur(engine: BrushEngine): Promise<boolean> {
   const session = engine.activeRasterMotionBlurSession;
   if (!session) return false;
-  if (session.terminal) throw new Error("Motion Blur sta già terminando.");
+  if (session.terminal) throw new Error("Motion Blur is already finishing.");
   session.terminal = true;
   try {
     await restoreOriginalPixels(engine, session);
   } catch (error) {
     session.terminal = false;
     engine.latchDocumentStateInconsistent(
-      "Annullamento Motion Blur fallito: ricarica la pagina.",
+      "Motion Blur cancellation failed: reload the page.",
     );
     engine.publishHistoryState();
     engine.publishStats();
@@ -898,7 +898,7 @@ export async function cancelRasterMotionBlur(engine: BrushEngine): Promise<boole
   publishMixedScene(engine);
   engine.scheduleLayerColdCompression();
   engine.publishStatus(
-    "Motion Blur annullato: i pixel originali sono stati ripristinati.",
+    "Motion Blur canceled: the original pixels were restored.",
     "ok",
   );
   return true;
@@ -908,12 +908,12 @@ export async function commitRasterMotionBlur(engine: BrushEngine): Promise<boole
   const session = engine.activeRasterMotionBlurSession;
   if (!session) return false;
   if (engine.historyStateInconsistent) {
-    throw new Error("Documento bloccato: è consentito soltanto ritentare Annulla.");
+    throw new Error("The document is locked: only retrying Cancel is allowed.");
   }
   if (session.previewFault) {
-    throw new Error(`Anteprima Motion Blur interrotta: ${session.previewFault.message}. Usa Annulla.`);
+    throw new Error(`Motion Blur preview interrupted: ${session.previewFault.message}. Use Cancel.`);
   }
-  if (session.terminal) throw new Error("Motion Blur sta già terminando.");
+  if (session.terminal) throw new Error("Motion Blur is already finishing.");
   if (session.distance === 0) {
     await cancelRasterMotionBlur(engine);
     return false;
@@ -926,7 +926,7 @@ export async function commitRasterMotionBlur(engine: BrushEngine): Promise<boole
     await flushPreview(engine, session);
     const record = engine.layerStack.active;
     const hot = engine.requireLayerGpu(session.layerId).hot;
-    if (!hot) throw new Error("Texture hot del raster sfocato mancante.");
+    if (!hot) throw new Error("The blurred raster's hot texture is missing.");
     seed = await createLayerColdStorageCandidate(
       engine,
       record,
@@ -967,7 +967,7 @@ export async function commitRasterMotionBlur(engine: BrushEngine): Promise<boole
       retainSessionForRecovery = true;
       session.terminal = false;
       engine.latchDocumentStateInconsistent(
-        "Commit Motion Blur fallito e rollback incompleto: ricarica la pagina.",
+        "Motion Blur commit failed and rollback was incomplete: reload the page.",
       );
     } finally {
       if (!journalPublished) destroyLayerColdStorage(seed);
@@ -978,7 +978,7 @@ export async function commitRasterMotionBlur(engine: BrushEngine): Promise<boole
         ? rollbackError.message
         : String(rollbackError);
       throw new Error(
-        `Commit Motion Blur fallito: ${operationMessage}; rollback fallito: ${rollbackMessage}`,
+        `Motion Blur commit failed: ${operationMessage}; rollback failed: ${rollbackMessage}`,
       );
     }
     throw error;
@@ -994,7 +994,7 @@ export async function commitRasterMotionBlur(engine: BrushEngine): Promise<boole
     publishMixedScene(engine);
   }
   engine.publishStatus(
-    `Motion Blur ${session.distance.toFixed(0)} px a ${session.angle.toFixed(0)} gradi applicato ai pixel: un solo Undo.`,
+    `Motion Blur ${session.distance.toFixed(0)} px at ${session.angle.toFixed(0)} degrees applied to the pixels: one Undo step.`,
     "ok",
   );
   return true;

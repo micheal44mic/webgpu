@@ -101,16 +101,16 @@ export async function finishStaticResourceCreation(
     code: texturizedGrainShader,
   });
   engine.selectionBrushShaderModule = engine.device.createShaderModule({
-    label: "Brush con clip Selezione pixel WGSL",
+    label: "Pixel Selection clipped brush WGSL",
     code: selectionBrushShader,
   });
   engine.selectionTexturizedGrainShaderModule = engine.device.createShaderModule({
-    label: "Grain con clip Selezione pixel WGSL",
+    label: "Pixel Selection clipped grain WGSL",
     code: selectionTexturizedGrainShader,
   });
   engine.displayShaderModule = engine.device.createShaderModule({ label: "Display WGSL", code: displayShader });
   engine.rasterStrokeDisplayShaderModule = engine.device.createShaderModule({
-    label: "Traccia direct LOD 0 and coarse mip display WGSL",
+    label: "Stroke direct LOD 0 and coarse mip display WGSL",
     code: rasterStrokeDisplayShader(
       DOCUMENT_WIDTH,
       DOCUMENT_HEIGHT,
@@ -164,13 +164,13 @@ export async function finishStaticResourceCreation(
   await Promise.all([
     assertShaderCompiled(engine.brushShaderModule, "brush"),
     assertShaderCompiled(engine.texturizedGrainShaderModule, "Texturized grain fragment"),
-    assertShaderCompiled(engine.selectionBrushShaderModule, "brush con Selezione pixel"),
+    assertShaderCompiled(engine.selectionBrushShaderModule, "Pixel Selection clipped brush"),
     assertShaderCompiled(
       engine.selectionTexturizedGrainShaderModule,
-      "Texturized grain con Selezione pixel",
+      "Pixel Selection clipped texturized grain",
     ),
     assertShaderCompiled(engine.displayShaderModule, "display"),
-    assertShaderCompiled(engine.rasterStrokeDisplayShaderModule, "Traccia display"),
+    assertShaderCompiled(engine.rasterStrokeDisplayShaderModule, "Stroke display"),
     assertShaderCompiled(
       engine.thicknessTailDisplayShaderModule,
       "predictive thickness tail display",
@@ -674,7 +674,7 @@ export async function finishStaticResourceCreation(
     });
   }
   const rasterStrokeDisplayPipelineLayout = engine.device.createPipelineLayout({
-    label: "Traccia display pipeline layout",
+    label: "Stroke display pipeline layout",
     bindGroupLayouts: [
       engine.rasterStrokeDisplayScreenBindGroupLayout,
       engine.rasterStrokeDisplaySourceBindGroupLayout,
@@ -682,7 +682,7 @@ export async function finishStaticResourceCreation(
   });
   if (createCore) {
   engine.rasterStrokeDisplayPipeline = engine.device.createRenderPipeline({
-    label: "Traccia direct LOD 0 and coarse mip display pipeline",
+    label: "Stroke direct LOD 0 and coarse mip display pipeline",
     layout: rasterStrokeDisplayPipelineLayout,
     vertex: {
       module: engine.rasterStrokeDisplayShaderModule,
@@ -698,7 +698,7 @@ export async function finishStaticResourceCreation(
   }
   if (createOptional) {
     engine.mixedSceneActiveRasterStrokeDisplayPipeline = engine.device.createRenderPipeline({
-      label: "Mixed scene active Traccia/effects source-over pipeline",
+      label: "Mixed scene active Stroke/effects source-over pipeline",
       layout: rasterStrokeDisplayPipelineLayout,
       vertex: { module: engine.rasterStrokeDisplayShaderModule, entryPoint: "vertexMain" },
       fragment: {
@@ -869,8 +869,8 @@ export function encodeRasterStrokeDisplayPyramid(engine: BrushEngine,
 
     const pass = encoder.beginRenderPass({
       label: needsFullBuild
-        ? `Build full Traccia styled logical mip ${mipLevel}`
-        : `Update Traccia styled logical mip ${mipLevel} dirty rect`,
+        ? `Build full Stroke styled logical mip ${mipLevel}`
+        : `Update Stroke styled logical mip ${mipLevel} dirty rect`,
       colorAttachments: [{
         view: renderer.mipViews[mipLevel - 1],
         loadOp: needsFullBuild ? "clear" : "load",
@@ -1038,7 +1038,7 @@ export function flushPendingWorkBeforeSettingsChange(engine: BrushEngine): void 
       engine.pendingStamps.length + engine.pendingBlendBatches.length >= pendingBeforeRender
       || iterations > maximumIterations
     ) {
-      throw new Error("Impossibile finalizzare gli stamp prima del cambio impostazioni.");
+      throw new Error("Unable to finalize stamps before changing settings.");
     }
   }
 }
@@ -1174,7 +1174,7 @@ export function handleRenderFrameError(engine: BrushEngine, error: unknown): voi
     engine.renderFrameError = normalized;
     engine.invalidateAdaptivePreview();
     engine.latchDocumentStateInconsistent(
-      `Rendering WebGPU interrotto: ${normalized.message}. Ricarica la pagina.`,
+      `WebGPU rendering stopped: ${normalized.message}. Reload the page.`,
       normalized,
     );
   }
@@ -1210,10 +1210,10 @@ export function assertVectorUpdateAllowed(
     || engine.layerSwitchBusy
     || engine.historyStateInconsistent
   ) {
-    throw new Error("La modifica vettoriale richiede il motore fermo.");
+    throw new Error("Vector editing requires the engine to be idle.");
   }
   if (engine.activeVectorHistoryEdit && engine.activeVectorHistoryEdit.key !== key) {
-    throw new Error("Concludi prima la modifica vettoriale corrente.");
+    throw new Error("Finish the current vector edit first.");
   }
   if (
     engine.activeVectorHistoryEdit?.scope === "transform"
@@ -1225,7 +1225,7 @@ export function assertVectorUpdateAllowed(
       "distortPoints",
     ].includes(updatedKey))
   ) {
-    throw new Error("Trasforma accetta soltanto geometria fino ad Applica o Annulla.");
+    throw new Error("Transform only accepts geometry changes until Apply or Cancel.");
   }
 }
 
@@ -1292,7 +1292,7 @@ export function requestGrainLoad(engine: BrushEngine): void {
   }
   void engine.ensureGrainResources(assetId).catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
-    engine.callbacks.onStatus?.(`Grain non disponibile: ${message}`, "error");
+    engine.callbacks.onStatus?.(`Grain is unavailable: ${message}`, "error");
   });
 }
 
@@ -1317,7 +1317,7 @@ export function requestShapeLoad(engine: BrushEngine): void {
   }
   void engine.ensureShapeResources(assetId, invert).catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
-    engine.callbacks.onStatus?.(`Shape 2K non disponibile: ${message}`, "error");
+    engine.callbacks.onStatus?.(`Shape 2K is unavailable: ${message}`, "error");
   });
 }
 

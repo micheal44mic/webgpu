@@ -1654,20 +1654,20 @@ export function getLayerStorageStudy(engine: BrushEngine): LayerStorageStudyStat
 
 export async function measureExactLayerStorageStudy(engine: BrushEngine): Promise<LayerStorageExactStudy> {
   if (!import.meta.env.DEV) {
-    throw new Error("Misura esatta cold storage disponibile solo in modalità dev.");
+    throw new Error("Exact cold-storage measurement is available only in dev mode.");
   }
   if (!engine.initialized) {
-    throw new Error("Il motore non è ancora inizializzato.");
+    throw new Error("The engine is not initialized yet.");
   }
   if (engine.activeStroke || engine.historyBusy || engine.layerSwitchBusy) {
-    throw new Error("La misura esatta richiede il motore fermo.");
+    throw new Error("Exact measurement requires the engine to be idle.");
   }
 
   await engine.waitForIdle();
   const temporaryReadbackBytesBefore = engine.devReadbackActiveBytes;
   if (temporaryReadbackBytesBefore !== 0) {
     throw new Error(
-      `Sonda cold storage avviata con ${temporaryReadbackBytesBefore} byte readback ancora vivi.`,
+      `Cold-storage probe started with ${temporaryReadbackBytesBefore} readback bytes still live.`,
     );
   }
   engine.devReadbackPeakBytes = temporaryReadbackBytesBefore;
@@ -1828,10 +1828,10 @@ export function getLayerBakeState(engine: BrushEngine, layerIndex: number): {
   memoryMiB: number;
 } {
   if (!import.meta.env.DEV) {
-    throw new Error("Diagnostica bake disponibile solo in modalità dev.");
+    throw new Error("Bake diagnostics are available only in dev mode.");
   }
   if (!engine.initialized) {
-    throw new Error("Il motore non è ancora inizializzato.");
+    throw new Error("The engine is not initialized yet.");
   }
   const gpu = engine.requireLayerGpu(engine.layerStack.at(layerIndex).id);
   return {

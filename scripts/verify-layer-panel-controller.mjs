@@ -52,7 +52,7 @@ assert.ok(
 assert.match(controllerSource, /setRasterReference: \(key: LayerPanelKey/);
 assert.match(controllerSource, /setRasterClipping: \(key: LayerPanelKey/);
 assert.match(controllerSource, /DOCUMENT_BACKGROUND_ROW_KEY = "background"/);
-assert.match(controllerSource, /name: "Sfondo"/);
+assert.match(controllerSource, /name: "Background"/);
 assert.match(controllerSource, /mobile-layer-background-color/);
 assert.match(controllerSource, /CornerRightDown/);
 assert.match(controllerSource, /mobile-layer-clipping-indicator/);
@@ -60,7 +60,7 @@ assert.match(controllerSource, /clippingParent: this\.clippingParentView\(stats,
 assert.match(controllerSource, /clippingParent: this\.clippingParentView\(stats, item\.rasterClippingParentId\)/);
 assert.match(controllerSource, /is-clipping-child/);
 assert.match(controllerSource, /view\.clippingParent\?\.key \?\? ""/);
-assert.match(controllerSource, /Ritagliato su \$\{view\.clippingParent\.name\}/);
+assert.match(controllerSource, /Clipped to \$\{view\.clippingParent\.name\}/);
 assert.match(controllerSource, /\$\{view\.name\}\$\{clippingLabel\}, selected/);
 assert.match(
   stylesSource,

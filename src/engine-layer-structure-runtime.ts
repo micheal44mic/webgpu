@@ -55,13 +55,13 @@ export async function detachLayer(
 ): Promise<{ rasterLayerIndex: number; sceneIndex: number }> {
   const scene = requireMixedSceneStack(engine);
   const targetIndex = engine.layerStack.indexOfId(layerId);
-  if (targetIndex < 0) throw new Error(`Livello ${layerId} da staccare non presente.`);
+  if (targetIndex < 0) throw new Error(`Layer ${layerId} to detach is not present.`);
   const sceneIndex = scene.indexOfKey(`raster:${layerId}`);
   if (sceneIndex < 0) {
-    throw new Error(`Livello ${layerId} assente dalla scena mista durante lo stacco.`);
+    throw new Error(`Layer ${layerId} is missing from the mixed scene during detachment.`);
   }
   const gpu = engine.layerGpu.get(layerId);
-  if (!gpu) throw new Error(`Risorse GPU del livello ${layerId} mancanti.`);
+  if (!gpu) throw new Error(`GPU resources for layer ${layerId} are missing.`);
   const record = engine.layerStack.at(targetIndex);
 
   // Prima la scena, poi lo stack: il contrario lascia una chiave raster che
@@ -69,7 +69,7 @@ export async function detachLayer(
   scene.removeRaster(layerId, fallbackLayerId);
   const detachedIndex = engine.layerStack.indexOfId(layerId);
   const detached = engine.layerStack.remove(detachedIndex);
-  if (detached !== record) throw new Error(`Stacco del livello ${layerId} incoerente.`);
+  if (detached !== record) throw new Error(`Inconsistent detachment for layer ${layerId}.`);
   engine.layerGpu.delete(layerId);
   destroyLayerGpuResources(engine, gpu);
   return { rasterLayerIndex: targetIndex, sceneIndex };
@@ -88,10 +88,10 @@ export async function attachLayer(
   const scene = requireMixedSceneStack(engine);
   const layerId = entry.layerRecord.id;
   if (engine.layerStack.indexOfId(layerId) >= 0) {
-    throw new Error(`Livello ${layerId} gia' presente durante il ripristino.`);
+    throw new Error(`Layer ${layerId} is already present during restoration.`);
   }
   if (engine.layerGpu.has(layerId)) {
-    throw new Error(`Risorse GPU del livello ${layerId} gia' presenti durante il ripristino.`);
+    throw new Error(`GPU resources for layer ${layerId} are already present during restoration.`);
   }
   // L'ultimo livello non e' cancellabile, quindi esiste sempre un raster vivo
   // che puo' ricevere la selezione se la compensazione deve rimuovere la voce
@@ -111,7 +111,7 @@ export async function attachLayer(
       // every entry in a structural Undo was the 16-layer empty-merge spike.
       gpu = createColdLayerGpuResources();
     }
-    if (!gpu) throw new Error(`Risorse del livello ${layerId} non allocate.`);
+    if (!gpu) throw new Error(`Resources for layer ${layerId} were not allocated.`);
     const rasterInsertionIndex = Math.min(entry.rasterLayerIndex, engine.layerStack.count);
     const sceneInsertionIndex = Math.min(entry.sceneIndex, scene.items.length);
     engine.layerStack.attach(
@@ -157,19 +157,19 @@ export async function attachLayer(
       }
     } else {
       rollbackErrors.push(
-        new Error(`Livello ${layerId} rimasto nello stack dopo attach fallito.`),
+        new Error(`Layer ${layerId} remained in the stack after attachment failed.`),
       );
     }
 
     if (rollbackErrors.length > 0) {
       engine.latchDocumentStateInconsistent(
-        "Ripristino livello fallito e compensazione incompleta: ricarica la pagina.",
+        "Layer restoration failed and compensation is incomplete: reload the page.",
       );
       const originalMessage = error instanceof Error ? error.message : String(error);
       const details = rollbackErrors.map((failure) =>
         failure instanceof Error ? failure.message : String(failure)
       ).join("; ");
-      throw new Error(`${originalMessage}; rollback attach fallito: ${details}`);
+      throw new Error(`${originalMessage}; attachment rollback failed: ${details}`);
     }
     throw error;
   }
@@ -197,7 +197,7 @@ export async function rollbackStructuralMutation(
   // appena attaccati stanno per sparire, e `attach()` ha selezionato l'ultimo.
   const attachedIds = new Set(attached.map((entry) => entry.layerRecord.id));
   const survivor = engine.layerStack.layers.find((layer) => !attachedIds.has(layer.id));
-  if (!survivor) throw new Error("Nessun livello superstite per annullare il ripristino.");
+  if (!survivor) throw new Error("No surviving layer is available to undo the restoration.");
   for (const entry of [...attached].reverse()) {
     await detachLayer(engine, entry.layerRecord.id, survivor.id);
   }
@@ -241,7 +241,7 @@ export function restoreReferenceLayerId(
   }
   const index = engine.layerStack.indexOfId(layerId);
   if (index < 0) {
-    throw new Error(`Raster di riferimento ${layerId} non ripristinabile.`);
+    throw new Error(`Reference raster ${layerId} cannot be restored.`);
   }
   engine.layerStack.setReferenceIndex(index);
 }
@@ -289,13 +289,13 @@ export async function applyLayerDeleteHistory(
       }
       const restoredIndex = engine.layerStack.indexOfId(action.activeRasterLayerIdBefore);
       if (restoredIndex < 0) {
-        throw new Error("Raster attivo precedente alla cancellazione non ripristinabile.");
+        throw new Error("The raster active before deletion cannot be restored.");
       }
       const outgoingIndexAfterAttachment = engine.layerStack.indexOfId(
         outgoingActiveLayerId,
       );
       if (outgoingIndexAfterAttachment < 0) {
-        throw new Error("Raster attivo superstite perso durante il ripristino.");
+        throw new Error("The surviving active raster was lost during restoration.");
       }
       // `LayerStack.attach()` seleziona ogni record inserito. L'ultimo puo'
       // quindi essere proprio `restoredIndex`: l'helper di switch vedrebbe un
@@ -312,7 +312,7 @@ export async function applyLayerDeleteHistory(
     } else {
       const survivorIndex = engine.layerStack.indexOfId(action.activeRasterLayerIdAfter);
       if (survivorIndex < 0) {
-        throw new Error("Raster superstite della cancellazione non presente.");
+        throw new Error("The raster surviving the deletion is not present.");
       }
       presentationMayNeedRetarget = true;
       await switchActiveForStructuralHistory(engine, survivorIndex);
@@ -355,7 +355,7 @@ export async function applyLayerDeleteHistory(
         action.activeRasterLayerIdAfter,
       );
       if (survivorAfterDetach < 0) {
-        throw new Error("Raster superstite perso durante lo stacco.");
+        throw new Error("The surviving raster was lost during detachment.");
       }
       restoreReferenceLayerId(engine, action.referenceRasterLayerIdAfter);
       if (scene.indexOfKey(action.selectedKeyAfter) >= 0) {
@@ -390,7 +390,7 @@ export async function applyLayerDeleteHistory(
       clearVectorTextPresentationForTransaction(engine);
       const previousActiveIndex = engine.layerStack.indexOfId(previousActiveLayerId);
       if (previousActiveIndex < 0) {
-        throw new Error(`Raster attivo ${previousActiveLayerId} perso durante il rollback.`);
+        throw new Error(`Active raster ${previousActiveLayerId} was lost during rollback.`);
       }
       // Il freeze della presentazione lo spegne solo una riattivazione vera:
       // il `finally` ricostruisce la cache ma lascia acceso il flag, e la
@@ -406,21 +406,21 @@ export async function applyLayerDeleteHistory(
       }
       const orphan = firstSceneRasterMissingFromStack(engine, scene);
       if (orphan !== null) {
-        throw new Error(`Raster ${orphan} restato nella scena senza livello.`);
+        throw new Error(`Raster ${orphan} remained in the scene without a layer.`);
       }
       const missing = firstStackRasterMissingFromScene(engine, scene);
       if (missing !== null) {
-        throw new Error(`Livello raster ${missing} restato nello stack senza scena.`);
+        throw new Error(`Raster layer ${missing} remained in the stack without a scene entry.`);
       }
     } catch (restoreError) {
       engine.latchDocumentStateInconsistent(
-        "Mutazione strutturale fallita e rollback incompleto: ricarica la pagina.",
+        "Structural mutation failed and rollback is incomplete: reload the page.",
       );
       const first = error instanceof Error ? error.message : String(error);
       const second = restoreError instanceof Error
         ? restoreError.message
         : String(restoreError);
-      throw new Error(`${first}; rollback strutturale fallito: ${second}`);
+      throw new Error(`${first}; structural rollback failed: ${second}`);
     }
     throw error;
   } finally {

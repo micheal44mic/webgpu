@@ -69,7 +69,7 @@ export function summarizeFillMaskWords(
   layerWidth: number,
 ): FillMaskDiagnosticSummary {
   if (!Number.isInteger(layerWidth) || layerWidth <= 0) {
-    throw new Error("La larghezza della maschera Fill deve essere un intero positivo.");
+    throw new Error("Fill mask width must be a positive integer.");
   }
   const selectedByXModulo32 = Array.from({ length: 32 }, () => 0);
   let readbackSelectedPixels = 0;
@@ -172,7 +172,7 @@ export function summarizeFillRenderedRow(
   const bytesPerPixel = format === "rgba16float" ? 8 : 4;
   if (pixels.byteLength !== layerWidth * bytesPerPixel) {
     throw new Error(
-      `Readback riga Fill ${pixels.byteLength} B, attesi ${layerWidth * bytesPerPixel} B.`,
+      `Fill row readback ${pixels.byteLength} B, expected ${layerWidth * bytesPerPixel} B.`,
     );
   }
   const wordsPerRow = Math.ceil(layerWidth / 32);

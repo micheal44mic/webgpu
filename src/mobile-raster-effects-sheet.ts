@@ -317,7 +317,7 @@ function requiredElement<T extends HTMLElement>(root: ParentNode, id: string): T
   const result = rootElement.id === id
     ? rootElement as HTMLElement
     : root.querySelector<HTMLElement>(`#${id}`);
-  if (!result) throw new Error(`Elemento #${id} non trovato.`);
+  if (!result) throw new Error(`Element #${id} was not found.`);
   return result as T;
 }
 

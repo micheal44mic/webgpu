@@ -102,7 +102,7 @@ const clamp = (value: number, minimum: number, maximum: number): number =>
 function finite(value: unknown, name: string): number {
   const result = Number(value);
   if (!Number.isFinite(result)) {
-    throw new TypeError(`${name} deve essere finito`);
+    throw new TypeError(`${name} must be finite`);
   }
   return result;
 }
@@ -110,7 +110,7 @@ function finite(value: unknown, name: string): number {
 function unit(value: unknown, name: string): number {
   const result = finite(value, name);
   if (result < 0 || result > 1) {
-    throw new RangeError(`${name} deve stare fra 0 e 1`);
+    throw new RangeError(`${name} must be between 0 and 1`);
   }
   return result;
 }
@@ -348,7 +348,7 @@ export function partitionRasterStrokeBuildKeys(
     return result;
   }
   if (normalizedMaxTexture <= 0) {
-    throw new RangeError("MAX_TEXTURE_SIZE Traccia non valido");
+    throw new RangeError("Invalid Stroke MAX_TEXTURE_SIZE");
   }
 
   const split = (keys: number[]): void => {
@@ -360,7 +360,7 @@ export function partitionRasterStrokeBuildKeys(
       strokeWidth,
     );
     if (!region) {
-      throw new Error("regione JFA Traccia mancante");
+      throw new Error("Stroke JFA region is missing");
     }
     if (
       region.w <= normalizedMaxTexture
@@ -385,7 +385,7 @@ export function partitionRasterStrokeBuildKeys(
     }
     if (lower === upper) {
       throw new RangeError(
-        `regione JFA Traccia non partizionabile:`
+        `Stroke JFA region cannot be partitioned:`
         + ` ${region.w}x${region.h} > ${normalizedMaxTexture}`,
       );
     }
@@ -398,7 +398,7 @@ export function partitionRasterStrokeBuildKeys(
     }
     if (!before.length || !after.length) {
       throw new RangeError(
-        `partizione JFA Traccia vuota: ${region.w}x${region.h}`,
+        `empty Stroke JFA partition: ${region.w}x${region.h}`,
       );
     }
     split(before);
@@ -477,9 +477,9 @@ export function rasterStrokeJfaCandidateWins(
 }
 
 export function quantizeRasterStrokeDistance(distance: number): number {
-  const value = finite(distance, "distance Traccia");
+  const value = finite(distance, "Stroke distance");
   if (value < 0) {
-    throw new RangeError("distance Traccia deve essere >= 0");
+    throw new RangeError("Stroke distance must be >= 0");
   }
   // Exact DISTANCE_FRAGMENT equation:
   // floor(min(distance, 1023.0) * 64.0 + 0.5).
@@ -523,10 +523,10 @@ export function rasterStrokeSignedDistance(
   alpha: number,
   distance: number,
 ): number {
-  const normalizedAlpha = unit(alpha, "alpha Traccia");
-  const normalizedDistance = finite(distance, "distance Traccia");
+  const normalizedAlpha = unit(alpha, "Stroke alpha");
+  const normalizedDistance = finite(distance, "Stroke distance");
   if (normalizedDistance < 0) {
-    throw new RangeError("distance Traccia deve essere >= 0");
+    throw new RangeError("Stroke distance must be >= 0");
   }
   return normalizedAlpha >= RASTER_STROKE_ALPHA_THRESHOLD
     ? 1.5 - normalizedAlpha - normalizedDistance
@@ -538,9 +538,9 @@ export function rasterStrokeRampAt(
   signedDistance: number,
 ): number {
   return clamp(
-    finite(offset, "offset Traccia")
+    finite(offset, "Stroke offset")
       + 0.5
-      - finite(signedDistance, "signedDistance Traccia"),
+      - finite(signedDistance, "Stroke signedDistance"),
     0,
     1,
   );
@@ -548,7 +548,7 @@ export function rasterStrokeRampAt(
 
 export function quantizeRasterStrokeCoverage(coverage: number): number {
   return Math.floor(
-    clamp(finite(coverage, "coverage Traccia"), 0, 1) * 255 + 0.5,
+    clamp(finite(coverage, "Stroke coverage"), 0, 1) * 255 + 0.5,
   ) / 255;
 }
 
@@ -558,7 +558,7 @@ export function rasterStrokeCoverageFromSignedDistance(
   position: RasterStrokePosition,
 ): number {
   const normalizedWidth = clamp(
-    finite(width, "width Traccia"),
+    finite(width, "Stroke width"),
     0,
     RASTER_STROKE_MAX_WIDTH,
   );
@@ -574,7 +574,7 @@ export function rasterStrokeCoverageFromSignedDistance(
     coverage = rasterStrokeRampAt(radius, signedDistance)
       - rasterStrokeRampAt(-radius, signedDistance);
   } else {
-    throw new RangeError(`posizione Traccia sconosciuta: ${String(position)}`);
+    throw new RangeError(`Unknown Stroke position: ${String(position)}`);
   }
   return quantizeRasterStrokeCoverage(coverage);
 }
@@ -587,7 +587,7 @@ export function rasterStrokeCoverageFromFixedDistance(
 ): number {
   const normalizedFixedDistance = finite(
     fixedDistance,
-    "fixedDistance Traccia",
+    "Stroke fixedDistance",
   );
   // Zero is the clear/unavailable sentinel in the legacy RG8 field.
   if (normalizedFixedDistance < 1) {
@@ -610,13 +610,13 @@ export function compositeRasterStrokePixel(
   opacity = 1,
 ): RasterStrokeRgba {
   if (!base || base.length !== 4) {
-    throw new TypeError("pixel base Traccia non valido");
+    throw new TypeError("Invalid Stroke base pixel");
   }
   const normalizedBase = base.map((value, index) =>
-    unit(value, `base Traccia[${index}]`)
+    unit(value, `Stroke base[${index}]`)
   ) as RasterStrokeRgba;
   const normalizedCoverage = clamp(
-    finite(coverage, "coverage Traccia"),
+    finite(coverage, "Stroke coverage"),
     0,
     1,
   );

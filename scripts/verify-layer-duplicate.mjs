@@ -25,10 +25,10 @@ const main = read("../src/main.ts");
 const panel = read("../src/layer-panel-controller.ts");
 const sceneEditor = read("../src/scene-editor-controller.ts");
 
-assert.equal(uniqueLayerDuplicateName("Ink", ["Ink"]), "Ink copia");
+assert.equal(uniqueLayerDuplicateName("Ink", ["Ink"]), "Ink copy");
 assert.equal(
-  uniqueLayerDuplicateName("Ink copia 2", ["Ink", "Ink copia", "Ink copia 2"]),
-  "Ink copia 3",
+  uniqueLayerDuplicateName("Ink copy 2", ["Ink", "Ink copy", "Ink copy 2"]),
+  "Ink copy 3",
 );
 
 assert.match(types, /interface LayerAddHistoryAction extends RasterHistoryCheckpoint/);

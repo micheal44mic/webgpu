@@ -20,7 +20,7 @@ const MAXIMUM_SUBDIVISION_DEPTH = 24;
 
 function point(x: number, y: number): VectorTextPointD {
   if (!Number.isFinite(x) || !Number.isFinite(y)) {
-    throw new Error("La geometria del testo contiene una coordinata non finita.");
+    throw new Error("Text geometry contains a non-finite coordinate.");
   }
   return { x, y };
 }
@@ -98,7 +98,7 @@ export function cubicToQuadraticsBounded(
     }
     if (depth >= maximumDepth) {
       throw new Error(
-        `Approssimazione cubica oltre profondità ${maximumDepth}; errore ${errorBound}.`,
+        `Cubic approximation exceeds depth ${maximumDepth}; error ${errorBound}.`,
       );
     }
 
@@ -146,10 +146,10 @@ export function vectorPathToQuadraticContours(
       || verb < 0
       || verb >= COORDINATES_PER_VERB.length
     ) {
-      throw new Error(`Verbo OpenType non valido: ${rawVerb}.`);
+      throw new Error(`Invalid OpenType verb: ${rawVerb}.`);
     }
     if (coordinateOffset + COORDINATES_PER_VERB[verb] > path.coords.length) {
-      throw new Error("Coordinate OpenType insufficienti per il verbo corrente.");
+      throw new Error("Not enough OpenType coordinates for the current verb.");
     }
 
     if (verb === 0) {
@@ -169,7 +169,7 @@ export function vectorPathToQuadraticContours(
       continue;
     }
     if (!curves || !current || !start) {
-      throw new Error("Il path del testo non inizia con MOVE.");
+      throw new Error("The text path does not begin with MOVE.");
     }
 
     if (verb === 1) {
@@ -237,7 +237,7 @@ export function vectorPathToQuadraticContours(
 
   finishContour();
   if (coordinateOffset !== path.coords.length) {
-    throw new Error("Numero di coordinate OpenType incoerente.");
+    throw new Error("Inconsistent OpenType coordinate count.");
   }
   return contours;
 }

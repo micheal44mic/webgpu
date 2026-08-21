@@ -91,16 +91,16 @@ export class HistoryOpfsClient {
       } else pending.resolve(response);
     };
     this.worker.onerror = (event) => {
-      this.fail(new Error(event.message || "Worker OPFS History terminato."));
+      this.fail(new Error(event.message || "The History OPFS worker terminated."));
     };
     this.worker.onmessageerror = () => {
-      this.fail(new Error("Risposta non valida dal worker OPFS History."));
+      this.fail(new Error("Invalid response from the History OPFS worker."));
     };
   }
 
   async selfTest(): Promise<{ supported: boolean; reason: string | null }> {
     const response = await this.request({ type: "self-test", id: this.nextRequestId++ });
-    if (response.type !== "self-test") throw new Error("Risposta self-test OPFS inattesa.");
+    if (response.type !== "self-test") throw new Error("Unexpected OPFS self-test response.");
     return { supported: response.supported, reason: response.reason };
   }
 
@@ -124,7 +124,7 @@ export class HistoryOpfsClient {
       bytes,
     }, [bytes]);
     if (!Number.isInteger(response.offset) || response.offset! < 0) {
-      throw new Error("Offset append OPFS History non valido.");
+      throw new Error("Invalid History OPFS append offset.");
     }
     return response.offset!;
   }
@@ -169,7 +169,7 @@ export class HistoryOpfsClient {
       offset,
       length,
     });
-    if (response.type !== "read") throw new Error("Risposta lettura OPFS inattesa.");
+    if (response.type !== "read") throw new Error("Unexpected OPFS read response.");
     return response.bytes;
   }
 
@@ -192,7 +192,7 @@ export class HistoryOpfsClient {
 
   dispose(): void {
     if (this.disposed) return;
-    this.fail(new Error("Worker OPFS History chiuso."));
+    this.fail(new Error("The History OPFS worker was closed."));
   }
 
   private async expectOk(
@@ -200,7 +200,7 @@ export class HistoryOpfsClient {
     transfer: Transferable[] = [],
   ): Promise<Extract<HistoryOpfsWorkerResponse, { type: "ok" }>> {
     const response = await this.request(request, transfer);
-    if (response.type !== "ok") throw new Error("Risposta OPFS History inattesa.");
+    if (response.type !== "ok") throw new Error("Unexpected History OPFS response.");
     return response;
   }
 
@@ -208,11 +208,11 @@ export class HistoryOpfsClient {
     request: HistoryOpfsWorkerRequest,
     transfer: Transferable[] = [],
   ): Promise<HistoryOpfsWorkerResponse> {
-    if (this.disposed) return Promise.reject(new Error("Worker OPFS History non disponibile."));
+    if (this.disposed) return Promise.reject(new Error("The History OPFS worker is unavailable."));
     return new Promise((resolve, reject) => {
       const timer = window.setTimeout(() => {
         this.pending.delete(request.id);
-        reject(new Error(`Timeout OPFS History richiesta ${request.id}.`));
+        reject(new Error(`History OPFS request ${request.id} timed out.`));
       }, 60_000);
       this.pending.set(request.id, { resolve, reject, timer });
       try {

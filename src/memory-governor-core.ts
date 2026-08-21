@@ -162,7 +162,7 @@ export interface MemoryAdmissionDecision {
 
 function finiteNonNegative(value: number, label: string): number {
   if (!Number.isFinite(value) || value < 0) {
-    throw new RangeError(`${label} deve essere un numero finito non negativo.`);
+    throw new RangeError(`${label} must be a finite non-negative number.`);
   }
   return value;
 }
@@ -174,7 +174,7 @@ export function assertMemoryLedger(ledger: MemoryLedger): void {
   finiteNonNegative(ledger.inFlightBytes, "inFlightBytes");
   if (ledger.reclaimableBytes > ledger.committedBytes) {
     throw new RangeError(
-      "reclaimableBytes e' un sottoinsieme di committedBytes e non puo' superarlo.",
+      "reclaimableBytes is a subset of committedBytes and cannot exceed it.",
     );
   }
 }
@@ -234,11 +234,11 @@ export function memoryGovernorLimitsFromObservedCeiling(
     ["strokeReserveRatio", strokeReserveRatio],
   ] as const) {
     if (!Number.isFinite(ratio) || ratio <= 0 || ratio > 1) {
-      throw new RangeError(`${label} deve stare in (0, 1].`);
+      throw new RangeError(`${label} must be in (0, 1].`);
     }
   }
   if (softCapRatio >= orangeCapRatio) {
-    throw new RangeError("softCapRatio deve stare sotto orangeCapRatio.");
+    throw new RangeError("softCapRatio must be below orangeCapRatio.");
   }
 
   const hardCapBytes = Math.floor(observedSafeBytes * margin);
@@ -264,20 +264,20 @@ export function assertMemoryGovernorLimits(limits: MemoryGovernorLimits): void {
   finiteNonNegative(limits.orangeCapBytes, "orangeCapBytes");
   finiteNonNegative(limits.emergencyReserveBytes, "emergencyReserveBytes");
   if (!(limits.softCapBytes < limits.orangeCapBytes)) {
-    throw new RangeError("softCapBytes deve stare sotto orangeCapBytes.");
+    throw new RangeError("softCapBytes must be below orangeCapBytes.");
   }
   if (!(limits.orangeCapBytes < limits.hardCapBytes)) {
-    throw new RangeError("orangeCapBytes deve stare sotto hardCapBytes.");
+    throw new RangeError("orangeCapBytes must be below hardCapBytes.");
   }
   if (limits.emergencyReserveBytes >= limits.hardCapBytes) {
-    throw new RangeError("La riserva d'emergenza non puo' occupare tutto il tetto.");
+    throw new RangeError("The emergency reserve cannot occupy the entire cap.");
   }
   if (
     !Number.isFinite(limits.strokeReserveRatio)
     || limits.strokeReserveRatio < 0
     || limits.strokeReserveRatio > 1
   ) {
-    throw new RangeError("strokeReserveRatio deve stare in [0, 1].");
+    throw new RangeError("strokeReserveRatio must be in [0, 1].");
   }
 }
 
@@ -316,12 +316,12 @@ function assertMemoryRequest(request: MemoryRequest): void {
   finiteNonNegative(request.peakBytes, "peakBytes");
   if (request.peakBytes < request.steadyBytes) {
     throw new RangeError(
-      "peakBytes include steadyBytes e non puo' essere inferiore: "
-      + "un picco piu' basso del residuo descrive un'operazione impossibile.",
+      "peakBytes includes steadyBytes and cannot be lower: "
+      + "a peak below the retained allocation describes an impossible operation.",
     );
   }
   if (typeof request.category !== "string" || request.category.length === 0) {
-    throw new RangeError("Ogni richiesta di memoria deve dichiarare una categoria.");
+    throw new RangeError("Every memory request must declare a category.");
   }
 }
 
@@ -365,7 +365,7 @@ export function planMemoryAdmission(
       ...base,
       outcome: "refuse",
       reclaimBytes: 0,
-      reason: `Lavoro di sfondo "${request.category}" sospeso in zona ${zone}.`,
+      reason: `Background work "${request.category}" is suspended in the ${zone} zone.`,
     };
   }
 
@@ -374,7 +374,7 @@ export function planMemoryAdmission(
       ...base,
       outcome: "admit",
       reclaimBytes: 0,
-      reason: `"${request.category}" entra con ${headroomBytes} byte di margine.`,
+      reason: `"${request.category}" fits with ${headroomBytes} bytes of headroom.`,
     };
   }
 
@@ -385,8 +385,8 @@ export function planMemoryAdmission(
       outcome: "reclaim",
       reclaimBytes: shortfallBytes,
       reason:
-        `"${request.category}" entra dopo aver liberato ${shortfallBytes} byte `
-        + "di cache ricostruibile.",
+        `"${request.category}" fits after releasing ${shortfallBytes} bytes `
+        + "of rebuildable cache.",
     };
   }
 
@@ -396,8 +396,8 @@ export function planMemoryAdmission(
       outcome: "end-stroke",
       reclaimBytes: ledger.reclaimableBytes,
       reason:
-        `"${request.category}" non entra nemmeno liberando tutto il liberabile `
-        + "mentre un tratto e' vivo: chiudere il tratto prima di rifiutare.",
+        `"${request.category}" does not fit even after releasing all reclaimable memory `
+        + "while a stroke is active: end the stroke before refusing the request.",
     };
   }
 
@@ -406,8 +406,8 @@ export function planMemoryAdmission(
     outcome: "refuse",
     reclaimBytes: ledger.reclaimableBytes,
     reason:
-      `"${request.category}" richiede ${shortfallBytes} byte oltre il liberabile `
-      + `(${ledger.reclaimableBytes} byte).`,
+      `"${request.category}" needs ${shortfallBytes} bytes beyond reclaimable memory `
+      + `(${ledger.reclaimableBytes} bytes).`,
   };
 }
 
@@ -497,7 +497,7 @@ export class MemoryReservationLedger {
   settle(reservation: MemoryReservation): number {
     if (!this.live.delete(reservation.id)) {
       throw new Error(
-        `Prenotazione ${reservation.id} ("${reservation.category}") gia' chiusa.`,
+        `Reservation ${reservation.id} ("${reservation.category}") is already closed.`,
       );
     }
     return reservation.steadyBytes;
@@ -507,7 +507,7 @@ export class MemoryReservationLedger {
   release(reservation: MemoryReservation): void {
     if (!this.live.delete(reservation.id)) {
       throw new Error(
-        `Prenotazione ${reservation.id} ("${reservation.category}") gia' chiusa.`,
+        `Reservation ${reservation.id} ("${reservation.category}") is already closed.`,
       );
     }
   }

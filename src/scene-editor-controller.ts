@@ -124,10 +124,10 @@ export class SceneEditorController {
         (item) => orderedKeys.includes(item.key) && item.kind === "image",
       )
     ) {
-      return "Questa versione non può ancora unire livelli immagine.";
+      return "This version cannot merge image layers yet.";
     }
     return this.options.getVectorController() === null
-      ? "Unione non disponibile: il controller dei livelli non è ancora pronto."
+      ? "Merge unavailable: the layer controller is not ready yet."
       : null;
   }
 
@@ -145,13 +145,13 @@ export class SceneEditorController {
   ): Promise<{ readonly itemCount: number }> {
     const vector = this.options.getVectorController();
     if (!vector) {
-      throw new Error("Unione non disponibile: il controller dei livelli non è pronto.");
+      throw new Error("Merge unavailable: the layer controller is not ready.");
     }
     const beforeSnapshot = this.options.engine.getMixedSceneSnapshot();
     const beforeKeys = beforeSnapshot?.items.map((item) => item.key) ?? [];
-    this.beginOrThrow("Unione non disponibile durante un'altra operazione.");
+    this.beginOrThrow("Merge unavailable while another operation is in progress.");
     try {
-      if (!(await this.showLoading("Unione livelli…"))) {
+      if (!(await this.showLoading("Merging layers…"))) {
         throw new Error("Scene editor disposed.");
       }
       const result = await vector.mergeSceneItems(orderedKeys);
@@ -167,7 +167,7 @@ export class SceneEditorController {
         )
       ) {
         throw new Error(
-          "Il merge è terminato, ma la scena pubblicata non contiene il rimpiazzo atteso.",
+          "The merge finished, but the published scene does not contain the expected replacement.",
         );
       }
       await this.options.engine.waitForIdle();
@@ -181,16 +181,16 @@ export class SceneEditorController {
     const stats = this.options.engine.getStats();
     const target = selectedSceneLayerProperties(stats, false, key);
     if (!target || (target.kind !== "raster" && target.kind !== "svg")) {
-      throw new Error("Rasterize è disponibile soltanto per livelli raster e SVG.");
+      throw new Error("Rasterize is available only for raster and SVG layers.");
     }
     const selectedKey = stats.mixedScene?.selectedKey
       ?? `raster:${stats.activeLayerId}`;
     if (selectedKey !== key) {
-      throw new Error("Il livello da rasterizzare non è più selezionato.");
+      throw new Error("The layer to rasterize is no longer selected.");
     }
-    this.beginOrThrow("Rasterize non disponibile durante un'altra operazione.");
+    this.beginOrThrow("Rasterize is unavailable while another operation is in progress.");
     try {
-      if (!(await this.showLoading("Rasterizzazione livello…"))) {
+      if (!(await this.showLoading("Rasterizing layer…"))) {
         throw new Error("Scene editor disposed.");
       }
       const liveStats = this.options.engine.getStats();
@@ -198,14 +198,14 @@ export class SceneEditorController {
       const liveSelectedKey = liveStats.mixedScene?.selectedKey
         ?? `raster:${liveStats.activeLayerId}`;
       if (!liveTarget || liveTarget.kind !== target.kind || liveSelectedKey !== key) {
-        throw new Error("Il livello da rasterizzare è cambiato durante l'operazione.");
+        throw new Error("The layer to rasterize changed during the operation.");
       }
       if (liveTarget.kind === "raster") {
         const result = await this.options.engine.rasterizeActiveRasterLayer();
         await this.options.engine.waitForIdle();
         this.options.elements.result.textContent = result
-          ? `${liveTarget.name} rasterizzato; blend mode e opacità preservati.`
-          : `${liveTarget.name} è già rasterizzato e non ha effetti da incorporare.`;
+          ? `${liveTarget.name} rasterized; blend mode and opacity preserved.`
+          : `${liveTarget.name} is already rasterized and has no effects to bake in.`;
         return {
           kind: "raster",
           name: liveTarget.name,
@@ -216,13 +216,13 @@ export class SceneEditorController {
 
       const vector = this.options.getVectorController();
       if (!vector) {
-        throw new Error("Rasterizzazione SVG non disponibile: controller non pronto.");
+        throw new Error("SVG rasterization unavailable: the controller is not ready.");
       }
       const result = await vector.rasterizeSelectedSvgLayer();
-      if (!result) throw new Error("Rasterizzazione SVG non riuscita.");
+      if (!result) throw new Error("SVG rasterization failed.");
       await this.options.engine.waitForIdle();
       const outputKey = `raster:${result.layerId}` as SceneLayerKey;
-      this.options.elements.result.textContent = `${liveTarget.name} rasterizzato.`;
+      this.options.elements.result.textContent = `${liveTarget.name} rasterized.`;
       return {
         kind: "svg",
         name: liveTarget.name,
@@ -235,10 +235,10 @@ export class SceneEditorController {
   }
 
   async duplicateSelectedLayer(): Promise<LayerDuplicateResult> {
-    this.beginOrThrow("Duplicazione non disponibile durante un'altra operazione.");
+    this.beginOrThrow("Duplication unavailable while another operation is in progress.");
     let syncActiveRasterControls = false;
     try {
-      if (!(await this.showLoading("Duplicazione livello…"))) {
+      if (!(await this.showLoading("Duplicating layer…"))) {
         throw new Error("Scene editor disposed.");
       }
       const result = await this.options.engine.duplicateSelectedLayer();
@@ -277,10 +277,10 @@ export class SceneEditorController {
   async deleteLayer(key: SceneLayerKey): Promise<void> {
     const stats = this.options.engine.getStats();
     const target = selectedSceneLayerProperties(stats, false, key);
-    if (!target) throw new Error("Livello non trovato.");
-    this.beginOrThrow("Eliminazione non disponibile durante un'altra operazione.");
+    if (!target) throw new Error("Layer not found.");
+    this.beginOrThrow("Deletion unavailable while another operation is in progress.");
     try {
-      if (!(await this.showLoading("Eliminazione livello…"))) return;
+      if (!(await this.showLoading("Deleting layer…"))) return;
       if (target.kind === "raster" && target.rasterIndex !== null) {
         await this.options.engine.deleteLayer(target.rasterIndex);
       } else if (target.kind === "text" && target.semanticId !== null) {
@@ -290,10 +290,10 @@ export class SceneEditorController {
       } else if (target.kind === "image" && target.semanticId !== null) {
         await this.options.engine.deleteRasterImageNode(target.semanticId);
       } else {
-        throw new Error("Livello non trovato.");
+        throw new Error("Layer not found.");
       }
       await this.options.engine.waitForIdle();
-      this.options.elements.result.textContent = `${target.name} eliminato.`;
+      this.options.elements.result.textContent = `${target.name} deleted.`;
     } finally {
       this.finish({ loading: true, syncActiveRasterControls: true });
     }
@@ -365,25 +365,25 @@ export class SceneEditorController {
     const stats = this.options.engine.getStats();
     const target = selectedSceneLayerProperties(stats, false, key);
     if (!target) {
-      this.options.elements.result.textContent = "Livello non trovato.";
+      this.options.elements.result.textContent = "Layer not found.";
       return;
     }
     const scene = stats.mixedScene;
     if (!scene) {
       if (target.rasterIndex === stats.activeLayerIndex) {
-        this.options.elements.result.textContent = "Livello già attivo.";
+        this.options.elements.result.textContent = "Layer already active.";
         return;
       }
       if (target.rasterIndex === null || !this.begin()) return;
       try {
-        if (!(await this.showLoading("Caricamento livello…"))) return;
+        if (!(await this.showLoading("Loading layer…"))) return;
         const result = await this.options.engine.setActiveLayer(target.rasterIndex);
         this.options.syncActiveRasterControls();
         await this.options.engine.waitForIdle();
         this.options.elements.result.textContent = result
-          ? `Livello ${result.toIndex + 1} attivo in ${result.totalMs.toFixed(0)} ms`
-            + ` (campi effetti ${result.effectsMs.toFixed(0)} ms).`
-          : "Livello già attivo.";
+          ? `Layer ${result.toIndex + 1} active in ${result.totalMs.toFixed(0)} ms`
+            + ` (effects ${result.effectsMs.toFixed(0)} ms).`
+          : "Layer already active.";
       } catch (error) {
         this.options.recordDiagnostic(
           "raster-layer-selection-failed",
@@ -392,7 +392,7 @@ export class SceneEditorController {
         );
         this.options.elements.result.textContent = error instanceof Error
           ? error.message
-          : "Cambio livello non riuscito.";
+          : "Layer switch failed.";
       } finally {
         this.finish({ loading: true });
       }
@@ -400,7 +400,7 @@ export class SceneEditorController {
     }
 
     if (scene.selectedKey === key) {
-      this.options.elements.result.textContent = "Livello già selezionato.";
+      this.options.elements.result.textContent = "Layer already selected.";
       return;
     }
     const item = scene.items.find((candidate) => candidate.key === key);
@@ -409,10 +409,10 @@ export class SceneEditorController {
       if (
         !(await this.showLoading(
           item.kind === "raster"
-            ? "Caricamento raster…"
+            ? "Loading raster layer…"
             : item.kind === "image"
-              ? "Preparazione immagine WebGPU…"
-              : "Preparazione vettore…",
+              ? "Preparing WebGPU image…"
+              : "Preparing vector layer…",
         ))
       ) return;
       const result = await this.options.engine.setActiveMixedSceneItem(key);
@@ -421,14 +421,14 @@ export class SceneEditorController {
       const snapshot = this.options.engine.getMixedSceneSnapshot();
       if (snapshot) this.options.getVectorController()?.syncScene(snapshot);
       this.options.elements.result.textContent = item.kind === "text"
-        ? "Testo selezionato: pennello sospeso; il raster di lavoro resta caldo."
+        ? "Text selected: brush suspended; the working raster stays resident."
         : item.kind === "svg"
-          ? "SVG selezionato: usa Trasforma oppure modifica colori ed effetti."
+          ? "SVG selected: use Transform or edit colors and effects."
           : item.kind === "image"
-            ? "Immagine selezionata: scegli Trasforma, poi Applica o Annulla."
+            ? "Image selected: choose Transform, then Apply or Cancel."
             : result
-              ? `Raster ${result.toIndex + 1} attivo in ${result.totalMs.toFixed(0)} ms.`
-              : "Raster selezionato: pennello attivo.";
+              ? `Raster ${result.toIndex + 1} active in ${result.totalMs.toFixed(0)} ms.`
+              : "Raster selected: brush active.";
     } catch (error) {
       this.options.recordDiagnostic(
         "mixed-scene-selection-failed",
@@ -437,7 +437,7 @@ export class SceneEditorController {
       );
       this.options.elements.result.textContent = error instanceof Error
         ? error.message
-        : "Selezione del livello non riuscita.";
+        : "Layer selection failed.";
     } finally {
       this.finish({ loading: true });
     }
@@ -457,24 +457,24 @@ export class SceneEditorController {
       if (target.kind === "raster" && target.rasterIndex !== null) {
         await this.options.engine.setLayerVisibility(target.rasterIndex, visible);
         this.options.elements.result.textContent = visible
-          ? "Livello mostrato."
-          : "Livello nascosto.";
+          ? "Layer shown."
+          : "Layer hidden.";
       } else if (target.kind === "text" && target.semanticId !== null) {
         await this.options.engine.setVectorTextNodeVisibility(target.semanticId, visible);
-        this.options.elements.result.textContent = visible ? "Testo mostrato." : "Testo nascosto.";
+        this.options.elements.result.textContent = visible ? "Text shown." : "Text hidden.";
       } else if (target.kind === "svg" && target.semanticId !== null) {
         await this.options.engine.setVectorSvgNodeVisibility(target.semanticId, visible);
-        this.options.elements.result.textContent = visible ? "SVG mostrato." : "SVG nascosto.";
+        this.options.elements.result.textContent = visible ? "SVG shown." : "SVG hidden.";
       } else if (target.kind === "image" && target.semanticId !== null) {
         await this.options.engine.setRasterImageNodeVisibility(target.semanticId, visible);
         this.options.elements.result.textContent = visible
-          ? "Immagine mostrata."
-          : "Immagine nascosta.";
+          ? "Image shown."
+          : "Image hidden.";
       }
     } catch (error) {
       this.options.elements.result.textContent = error instanceof Error
         ? error.message
-        : `Visibilità ${target.name} non aggiornata.`;
+        : `Could not update ${target.name} visibility.`;
     } finally {
       this.finish();
     }
@@ -501,18 +501,18 @@ export class SceneEditorController {
         await this.options.engine.setRasterImageNodeOpacity(target.semanticId, opacity);
       }
       const label = target.kind === "raster"
-        ? "livello"
+        ? "Layer"
         : target.kind === "text"
-          ? "testo"
+          ? "Text"
           : target.kind === "svg"
             ? "SVG"
-            : "immagine";
+            : "Image";
       this.options.elements.result.textContent =
-        `Opacità ${label} ${Math.round(opacity * 100)}%.`;
+        `${label} opacity ${Math.round(opacity * 100)}%.`;
     } catch (error) {
       this.options.elements.result.textContent = error instanceof Error
         ? error.message
-        : `Opacità ${target.name} non aggiornata.`;
+        : `Could not update ${target.name} opacity.`;
     } finally {
       this.finish();
     }
@@ -534,12 +534,12 @@ export class SceneEditorController {
         blendMode,
       );
       this.options.elements.result.textContent = changed
-        ? `Fusione livello: ${LAYER_BLEND_MODE_LABELS[blendMode]}.`
-        : "Fusione livello già attiva.";
+        ? `Layer blend mode: ${LAYER_BLEND_MODE_LABELS[blendMode]}.`
+        : "Layer blend mode already active.";
     } catch (error) {
       this.options.elements.result.textContent = error instanceof Error
         ? error.message
-        : "Fusione del livello non aggiornata.";
+        : "Could not update the layer blend mode.";
     } finally {
       this.finish();
     }
@@ -556,7 +556,7 @@ export class SceneEditorController {
     try {
       if (
         !(await this.showLoading(
-          enabled ? "Collego la maschera di ritaglio…" : "Scollego la maschera di ritaglio…",
+          enabled ? "Linking clipping mask…" : "Unlinking clipping mask…",
         ))
       ) return;
       const changed = await this.options.engine.setLayerClipping(target.rasterIndex, enabled);
@@ -568,15 +568,15 @@ export class SceneEditorController {
         : stats.layers.find((candidate) => candidate.id === layer.clippingParentId) ?? null;
       this.options.elements.result.textContent = changed
         ? enabled
-          ? `${layer?.name ?? before?.name ?? "Livello"} ora è una maschera su `
-            + `${parent?.name ?? "il raster sotto"}. Altre M consecutive useranno la stessa base.`
-          : `${layer?.name ?? before?.name ?? "Livello"} ora è una base indipendente. `
-            + "Le eventuali maschere sopra restano collegate a questa nuova base."
-        : "Impostazione maschera già attiva.";
+          ? `${layer?.name ?? before?.name ?? "Layer"} is now clipped to `
+            + `${parent?.name ?? "the raster layer below"}. Additional consecutive masks will use the same base.`
+          : `${layer?.name ?? before?.name ?? "Layer"} is now an independent base. `
+            + "Any masks above remain linked to this new base."
+        : "Clipping mask setting already active.";
     } catch (error) {
       this.options.elements.result.textContent = error instanceof Error
         ? error.message
-        : "Maschera di ritaglio non aggiornata.";
+        : "Could not update the clipping mask.";
     } finally {
       this.finish({ loading: true });
     }
@@ -591,14 +591,14 @@ export class SceneEditorController {
     if (target?.kind !== "raster" || target.rasterIndex === null) return;
     if (target.rasterIndex !== stats.activeLayerIndex) {
       this.options.elements.result.textContent =
-        "Seleziona prima il livello raster da impostare come Riferimento.";
+        "First select the raster layer to use as the Fill Reference.";
       return;
     }
     if (!this.begin()) return;
     try {
       if (
         !(await this.showLoading(
-          enabled ? "Preparo il Riferimento GPU…" : "Rilascio il Riferimento GPU…",
+          enabled ? "Preparing the GPU Reference…" : "Releasing the GPU Reference…",
         ))
       ) return;
       const changed = await this.options.engine.setLayerReference(
@@ -608,13 +608,13 @@ export class SceneEditorController {
       const layer = this.options.engine.getStats().layers[target.rasterIndex];
       this.options.elements.result.textContent = changed
         ? enabled
-          ? `${layer?.name ?? "Livello"} è ora il Riferimento del Riempimento.`
-          : "Riferimento disattivato: il Riempimento usa il livello selezionato."
-        : "Impostazione Riferimento già attiva.";
+          ? `${layer?.name ?? "Layer"} is now the Fill Reference.`
+          : "Reference disabled: Fill uses the selected layer."
+        : "Reference setting already active.";
     } catch (error) {
       this.options.elements.result.textContent = error instanceof Error
         ? error.message
-        : "Riferimento GPU non aggiornato.";
+        : "Could not update the GPU Reference.";
     } finally {
       this.finish({ loading: true });
     }
@@ -624,18 +624,18 @@ export class SceneEditorController {
     if (!this.begin()) return;
     this.options.renderLayers(this.options.engine.getStats());
     try {
-      if (!(await this.showLoading("Creazione maschera…"))) return;
+      if (!(await this.showLoading("Creating mask…"))) return;
       const result = await this.options.engine.addClippingMaskLayer();
       this.options.syncActiveRasterControls();
       await this.options.engine.waitForIdle();
       this.options.elements.result.textContent =
-        `Clipping Mask ${result.toIndex + 1} creata e selezionata in `
+        `Clipping Mask ${result.toIndex + 1} created and selected in `
         + `${result.totalMs.toFixed(0)} ms.`;
     } catch (error) {
       this.options.recordDiagnostic("raster-clipping-mask-add-failed", null, error);
       this.options.elements.result.textContent = error instanceof Error
         ? error.message
-        : "Creazione della maschera non riuscita.";
+        : "Could not create the mask.";
     } finally {
       this.finish({ loading: true });
     }
@@ -644,17 +644,17 @@ export class SceneEditorController {
   private async addRasterLayerTransaction(): Promise<void> {
     if (!this.begin()) return;
     try {
-      if (!(await this.showLoading("Creazione livello…"))) return;
+      if (!(await this.showLoading("Creating layer…"))) return;
       const result = await this.options.engine.addLayer();
       this.options.syncActiveRasterControls();
       await this.options.engine.waitForIdle();
       this.options.elements.result.textContent =
-        `Livello ${result.toIndex + 1} creato e attivo in ${result.totalMs.toFixed(0)} ms.`;
+        `Layer ${result.toIndex + 1} created and active in ${result.totalMs.toFixed(0)} ms.`;
     } catch (error) {
       this.options.recordDiagnostic("raster-layer-add-failed", null, error);
       this.options.elements.result.textContent = error instanceof Error
         ? error.message
-        : "Creazione livello non riuscita.";
+        : "Could not create the layer.";
     } finally {
       this.finish({ loading: true });
     }

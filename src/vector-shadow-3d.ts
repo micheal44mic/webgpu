@@ -121,7 +121,7 @@ export function normalizeShadow3d(
   const source: Readonly<Shadow3dValue> = value ?? {};
   const version = source.version === undefined ? SHADOW_3D_VERSION : Number(source.version);
   if (version !== 1 && version !== SHADOW_3D_VERSION) {
-    throw new RangeError(`versione 3D Shadow non supportata: ${source.version}`);
+    throw new RangeError(`unsupported 3D Shadow version: ${source.version}`);
   }
   return Object.freeze({
     version: SHADOW_3D_VERSION,
@@ -220,7 +220,7 @@ function line(p0: ShadowPoint, p1: ShadowPoint): LineSegment {
 }
 
 function readContours(path: Readonly<Shadow3dPathData>): ShadowContour[] {
-  if (!path.verbs || !path.coords) throw new TypeError('PathData obbligatorio per 3D Shadow');
+  if (!path.verbs || !path.coords) throw new TypeError('PathData is required for 3D Shadow');
   const verbs = path.verbs;
   const coords = path.coords;
   const contours: ShadowContour[] = [];
@@ -244,7 +244,7 @@ function readContours(path: Readonly<Shadow3dPathData>): ShadowContour[] {
   for (const rawVerb of verbs) {
     const verb = Number(rawVerb);
     if (!Number.isInteger(verb) || verb < 0 || verb >= COORDS_PER_VERB.length) {
-      throw new TypeError(`verbo PathData 3D Shadow non valido: ${rawVerb}`);
+      throw new TypeError(`invalid 3D Shadow PathData verb: ${rawVerb}`);
     }
     if (verb === 0) {
       finish();
@@ -253,7 +253,7 @@ function readContours(path: Readonly<Shadow3dPathData>): ShadowContour[] {
       current = start;
       continue;
     }
-    if (!contour || !current) throw new TypeError('PathData 3D Shadow senza MOVE iniziale');
+    if (!contour || !current) throw new TypeError('3D Shadow PathData must begin with MOVE');
     if (verb === 1) {
       const end = point(coords[coordOffset++], coords[coordOffset++]);
       contour.segments.push(line(current, end));
@@ -274,7 +274,7 @@ function readContours(path: Readonly<Shadow3dPathData>): ShadowContour[] {
     }
   }
   finish();
-  if (coordOffset !== coords.length) throw new TypeError('coordinate PathData 3D Shadow incoerenti');
+  if (coordOffset !== coords.length) throw new TypeError('Inconsistent 3D Shadow PathData coordinates');
   return contours;
 }
 

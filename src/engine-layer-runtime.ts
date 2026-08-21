@@ -191,7 +191,7 @@ export async function recreateLayerResources(
     warmSelectionPipelines,
   } = await runGpuAllocationTransaction(
     engine.device,
-    `Pipeline formato layer ${format}`,
+    `Layer format pipeline ${format}`,
     async () => {
   const brushPipelineLayout = engine.device.createPipelineLayout({
     label: `Brush legacy pipeline layout ${format}`,
@@ -210,19 +210,19 @@ export async function recreateLayerResources(
     bindGroupLayouts: [engine.grainBrushOccupancyBindGroupLayout],
   });
   const selectionBrushPipelineLayout = engine.device.createPipelineLayout({
-    label: `Brush con clip Selezione pixel ${format}`,
+    label: `Brush with Pixel Selection clip ${format}`,
     bindGroupLayouts: [engine.brushBindGroupLayout, engine.selectionMaskBindGroupLayout],
   });
   const selectionBrushOccupancyPipelineLayout = engine.device.createPipelineLayout({
-    label: `Brush occupancy con clip Selezione pixel ${format}`,
+    label: `Brush occupancy with Pixel Selection clip ${format}`,
     bindGroupLayouts: [engine.brushOccupancyBindGroupLayout, engine.selectionMaskBindGroupLayout],
   });
   const selectionGrainBrushPipelineLayout = engine.device.createPipelineLayout({
-    label: `Grain con clip Selezione pixel ${format}`,
+    label: `Grain with Pixel Selection clip ${format}`,
     bindGroupLayouts: [engine.grainBrushBindGroupLayout, engine.selectionMaskBindGroupLayout],
   });
   const selectionGrainBrushOccupancyPipelineLayout = engine.device.createPipelineLayout({
-    label: `Grain occupancy con clip Selezione pixel ${format}`,
+    label: `Grain occupancy with Pixel Selection clip ${format}`,
     bindGroupLayouts: [
       engine.grainBrushOccupancyBindGroupLayout,
       engine.selectionMaskBindGroupLayout,
@@ -943,7 +943,7 @@ export async function recreateLayerResources(
     variant: SelectionPipelineVariant,
   ): Promise<void> => {
     const selectedPipeline = await createRenderPipelineAsync(engine.device, {
-      label: `${variant.label} · clip Selezione pixel`,
+      label: `${variant.label} · Pixel Selection clip`,
       layout: variant.layout,
       vertex: {
         module: engine.brushShaderModule,
@@ -1398,7 +1398,7 @@ export async function recreateLayerResources(
       const gpu = record.id === engine.layerStack.active.id
         ? await allocateLayerGpuResources(engine, 
           format,
-          `Cambio formato: livello ${record.id}`,
+          `Format change: layer ${record.id}`,
         )
         : createColdLayerGpuResources();
       replacement.set(record.id, gpu);
@@ -1407,12 +1407,12 @@ export async function recreateLayerResources(
     const activeGpu = replacement.get(engine.layerStack.active.id);
     const activeHot = activeGpu?.hot;
     if (!activeGpu || !activeHot) {
-      throw new Error("Risorse candidate mancanti per il livello attivo.");
+      throw new Error("Candidate resources are missing for the active layer.");
     }
     if (!options.deferBlendRenderer) {
       blendRenderer = await runGpuAllocationTransaction(
         engine.device,
-        `Renderer Blend formato ${format}`,
+        `Blend renderer for format ${format}`,
         async (transaction) => {
           const candidate = await DryBlendRenderer.create({
             device: engine.device,
@@ -1471,7 +1471,7 @@ export async function recreateLayerResources(
     for (const gpu of replacement.values()) {
       destroyLayerGpuResources(engine, gpu);
     }
-    throw new Error("Transazione cambio formato incompleta.");
+    throw new Error("The format change transaction is incomplete.");
   }
   const { texture, view, samplingView } = activeHot;
 
@@ -1504,7 +1504,7 @@ export async function recreateLayerResources(
       if (engine.blendRenderer) return;
       const candidate = await runGpuAllocationTransaction(
         engine.device,
-        `Renderer Blend differito formato ${engine.layerFormat}`,
+        `Deferred Blend renderer for format ${engine.layerFormat}`,
         async (transaction) => {
           const renderer = await DryBlendRenderer.create({
             device: engine.device,
@@ -1664,7 +1664,7 @@ export async function retargetEffectsWorkingSetInternal(engine: BrushEngine,
   rebuildDomain: LayerEffectsRebuildDomain = "full-document",
 ): Promise<EffectsWorkbenchRetargetResult> {
   if (!engine.initialized) {
-    throw new Error("Il motore non è ancora inizializzato.");
+    throw new Error("The engine has not been initialized yet.");
   }
   // Each caller's exemption is spelled out rather than hidden behind booleans.
   // A layer switch legitimately runs while layerSwitchBusy is its own flag;
@@ -1683,13 +1683,13 @@ export async function retargetEffectsWorkingSetInternal(engine: BrushEngine,
     || engine.rasterOuterShadowBusy
     || engine.rasterInnerShadowBusy
   ) {
-    throw new Error("Il banco effetti può cambiare sorgente solo a motore fermo.");
+    throw new Error("The effects workbench can change source only while the engine is idle.");
   }
   const workbench = engine.requireEffectsWorkbench();
   if (layerFormat !== engine.layerFormat || layerFormat !== workbench.sourceFormat) {
     throw new Error(
-      `Formato banco effetti ${workbench.sourceFormat} incompatibile con ${layerFormat}; `
-      + "operazione rifiutata: il documento RGBA16F non ammette fallback di formato.",
+      `Effects workbench format ${workbench.sourceFormat} is incompatible with ${layerFormat}; `
+      + "operation refused: the RGBA16F document does not allow a format fallback.",
     );
   }
 
@@ -1749,8 +1749,8 @@ export async function retargetEffectsWorkingSetInternal(engine: BrushEngine,
 
     const encoder = engine.device.createCommandEncoder({
       label: engine.bevelBoundingFieldEnabled
-        ? `Banco effetti retarget #${generation}: rebuild campo bbox`
-        : `Banco effetti retarget #${generation}: rebuild documento completo`,
+        ? `Effects workbench retarget #${generation}: rebuild bounding-box field`
+        : `Effects workbench retarget #${generation}: rebuild full document`,
     });
     // Public/active retargets preserve the full-document rebuild contract.
     // Fold-only materialization may use the conservative visual-domain input:
@@ -1780,7 +1780,7 @@ export async function retargetEffectsWorkingSetInternal(engine: BrushEngine,
     engine.device.queue.submit([encoder.finish()]);
     const submittedAt = performance.now();
     if (completionPolicy === "await-immediately") {
-      await engine.waitForGpuCapped(`Retarget banco effetti #${generation}`);
+      await engine.waitForGpuCapped(`Retarget effects workbench #${generation}`);
     }
     const completedAt = performance.now();
     const result: EffectsWorkbenchRetargetResult = {
@@ -1809,8 +1809,8 @@ export async function retargetEffectsWorkingSetInternal(engine: BrushEngine,
     if (import.meta.env.DEV && completionPolicy === "await-immediately") {
       console.info(
         engine.bevelBoundingFieldEnabled
-          ? "[EffectsWorkbench] retarget con campo Smusso bbox completato"
-          : `[EffectsWorkbench] retarget ${DOCUMENT_WIDTH}×${DOCUMENT_HEIGHT} completato`,
+          ? "[EffectsWorkbench] retarget with Bevel bounding-box field completed"
+          : `[EffectsWorkbench] retarget ${DOCUMENT_WIDTH}×${DOCUMENT_HEIGHT} completed`,
         result,
       );
     }
@@ -1907,7 +1907,7 @@ async function ensureLayerBlendFoldScratch(
     * Math.ceil(destination.textureHeight / tileHeight);
   const scratch = await runGpuAllocationTransaction(
     engine.device,
-    `${label} · scratch fusione tile ${tileWidth}×${tileHeight}`,
+    `${label} · tile blend scratch ${tileWidth}×${tileHeight}`,
     (transaction) => {
       const backdropTexture = engine.device.createTexture({
         label:
@@ -2012,7 +2012,7 @@ function authoritativeColdTileCompositeSource(
   const format = cold?.format ?? compressed?.format;
   if (format !== engine.layerFormat) {
     throw new Error(
-      `Fold tile livello ${record.id}: formato ${format ?? "assente"} incompatibile con `
+      `Layer ${record.id} tile fold: format ${format ?? "missing"} is incompatible with `
       + `${engine.layerFormat}.`,
     );
   }
@@ -2064,7 +2064,7 @@ function writeColdTileCompositeUniforms(
     || !Number.isInteger(destination.bounds.x)
     || !Number.isInteger(destination.bounds.y)
   ) {
-    throw new Error("Il fold cold tile richiede una superficie mip0 1:1 intera.");
+    throw new Error("The cold tile fold requires a full 1:1 mip0 surface.");
   }
   const upload = new ArrayBuffer(32);
   const i32 = new Int32Array(upload);
@@ -2090,7 +2090,7 @@ async function foldAuthoritativeColdTilesIntoMergedSurface(
 ): Promise<void> {
   writeColdTileCompositeUniforms(engine, destination, opacity);
   if (!coldTileCompositeSourceIsCurrent(source)) {
-    throw new Error(`Fold tile livello ${source.recordId}: sorgente diventata stale.`);
+    throw new Error(`Layer ${source.recordId} tile fold: source became stale.`);
   }
 
   let submitted = false;
@@ -2103,7 +2103,7 @@ async function foldAuthoritativeColdTilesIntoMergedSurface(
     batchLabel: string,
   ): void => {
     if (tileIndices.length < 1 || tileIndices.length > LAYER_STORAGE_TILE_COUNT) {
-      throw new RangeError(`${batchLabel}: conteggio tile ${tileIndices.length} non valido.`);
+      throw new RangeError(`${batchLabel}: invalid tile count ${tileIndices.length}.`);
     }
     engine.device.queue.writeBuffer(
       engine.layerColdTileCompositeIndicesBuffer,
@@ -2170,7 +2170,7 @@ async function foldAuthoritativeColdTilesIntoMergedSurface(
           || chunk.rawBytes % tileBytes !== 0
           || chunk.rawBytes / tileBytes > LAYER_STORAGE_TILE_COUNT
         ) {
-          throw new Error(`Fold tile livello ${source.recordId}: chunk ${index} non valido.`);
+          throw new Error(`Layer ${source.recordId} tile fold: invalid chunk ${index}.`);
         }
         return chunk.rawBytes / tileBytes;
       });
@@ -2180,7 +2180,7 @@ async function foldAuthoritativeColdTilesIntoMergedSurface(
       );
       scratchBytes = scratchLayerCount * tileBytes;
       scratchTexture = engine.device.createTexture({
-        label: `Scratch direct cold tile composite livello ${source.recordId}`,
+        label: `Direct cold tile composite scratch for layer ${source.recordId}`,
         size: {
           width: LAYER_STORAGE_TILE_WIDTH,
           height: LAYER_STORAGE_TILE_HEIGHT,
@@ -2220,7 +2220,7 @@ async function foldAuthoritativeColdTilesIntoMergedSurface(
             || restored.byteLength !== chunk.rawBytes
             || firstTile + chunkTileCount > compressed.tileIndices.length
           ) {
-            throw new Error(`Fold tile livello ${source.recordId}: chunk diventato stale.`);
+            throw new Error(`Layer ${source.recordId} tile fold: chunk became stale.`);
           }
           uploads.push({
             bytes: restored,
@@ -2268,14 +2268,14 @@ async function foldAuthoritativeColdTilesIntoMergedSurface(
         || restoredBytes !== compressed.rawBytes
         || restoredHash !== compressed.sourceHash
       ) {
-        throw new Error(`Fold tile livello ${source.recordId}: integrità aggregata non valida.`);
+        throw new Error(`Layer ${source.recordId} tile fold: invalid aggregate integrity.`);
       }
       foldedTileCount = firstTile;
     }
     await engine.waitForGpuCapped(label);
     completed = true;
     if (!coldTileCompositeSourceIsCurrent(source)) {
-      throw new Error(`Fold tile livello ${source.recordId}: autorità cambiata dopo il submit.`);
+      throw new Error(`Layer ${source.recordId} tile fold: authority changed after submission.`);
     }
     destination.foldedPixels += documentRect.width * documentRect.height;
     engine.layerColdTileCompositeFoldCount += 1;
@@ -2719,7 +2719,7 @@ async function buildClippingSuffixStepSurface(
     }
     surface = await runGpuAllocationTransaction(
       engine.device,
-      `${label} · allocazione mip0`,
+      `${label} · mip0 allocation`,
       (transaction) => {
         const candidate = allocateMergedSurface(
           engine,
@@ -2991,7 +2991,7 @@ export async function buildActiveClippingGroupResources(
   const parent = unit[0];
   const activeIndex = unit.findIndex((record) => record.id === engine.layerStack.active.id);
   if (activeIndex < 0) {
-    throw new Error("Raster attivo assente dalla propria unità di ritaglio.");
+    throw new Error("The active raster is missing from its clipping unit.");
   }
   const parentOpacity = parent.visible ? Math.min(1, Math.max(0, parent.opacity)) : 0;
   const parentBounds = recordRawBounds(engine, parent);
@@ -3002,7 +3002,7 @@ export async function buildActiveClippingGroupResources(
       caller,
       null,
       parentBounds,
-      `Gruppo ritaglio live parent ${parent.id}`,
+      `Live clipping group parent ${parent.id}`,
     );
     return {
       parentId: parent.id,
@@ -3021,7 +3021,7 @@ export async function buildActiveClippingGroupResources(
     unit.slice(1, activeIndex),
     caller,
     true,
-    `Gruppo ritaglio live prefix ${parent.id}→${engine.layerStack.active.id}`,
+    `Live clipping group prefix ${parent.id}→${engine.layerStack.active.id}`,
   );
   try {
     const { suffix, suffixSteps } = await buildActiveClippingSuffixResources(
@@ -3030,7 +3030,7 @@ export async function buildActiveClippingGroupResources(
       caller,
       parentBounds,
       parentBounds,
-      `Gruppo ritaglio live suffix ${engine.layerStack.active.id}`,
+      `Live clipping group suffix ${engine.layerStack.active.id}`,
     );
     return {
       parentId: parent.id,
@@ -3081,7 +3081,7 @@ export async function foldClippingGroupIntoMergedSurface(
     unit.slice(1),
     caller,
     false,
-    `Fold gruppo ritaglio ${parent.id}`,
+    `Fold clipping group ${parent.id}`,
   );
   if (!group) {
     return false;
@@ -3109,7 +3109,7 @@ export async function foldClippingGroupIntoMergedSurface(
       externalBlendMode,
       "source-over",
       first,
-      `Fold gruppo ritaglio ${parent.id} into merged ${side}`,
+      `Fold clipping group ${parent.id} into merged ${side}`,
     );
     surface.analyticBakePixels += group.analyticBakePixels;
     return true;
@@ -3127,7 +3127,7 @@ export async function foldRasterRecordIntoMergedSurface(engine: BrushEngine,
   externalBlendMode: LayerBlendMode = record.blendMode,
 ): Promise<boolean> {
   if (record.clippingParentId !== null) {
-    throw new Error(`Il child ${record.id} deve essere foldato con il proprio gruppo.`);
+    throw new Error(`Child ${record.id} must be folded with its own group.`);
   }
   const directTileFold = await tryFoldAuthoritativeColdTilesIntoMergedSurface(
     engine,
@@ -3137,7 +3137,7 @@ export async function foldRasterRecordIntoMergedSurface(engine: BrushEngine,
     externalBlendMode,
     "source-over",
     first,
-    `Fold tile cold livello ${record.id} into merged ${side}`,
+    `Fold cold tiles for layer ${record.id} into merged ${side}`,
   );
   if (directTileFold !== null) {
     return directTileFold;
@@ -3169,7 +3169,7 @@ export async function foldRasterRecordIntoMergedSurface(engine: BrushEngine,
       externalBlendMode,
       "source-over",
       first,
-      `Fold livello ${record.id} into merged ${side}`,
+      `Fold layer ${record.id} into merged ${side}`,
     );
     return true;
   } finally {
@@ -3192,7 +3192,7 @@ export async function buildMixedMergedSurfaceCandidate(engine: BrushEngine,
     .map((item) => {
       const record = engine.layerStack.byId(item.rasterLayerId);
       if (!record) {
-        throw new Error(`Raster ${item.rasterLayerId} assente durante il calcolo bounds.`);
+        throw new Error(`Raster ${item.rasterLayerId} is missing while calculating bounds.`);
       }
       return { item, bounds: layerCompositeVisualBounds(engine, record) };
     })
@@ -3239,7 +3239,7 @@ export async function buildMixedMergedSurfaceCandidate(engine: BrushEngine,
     Math.ceil(Math.max(0, Math.log2(1 / Math.max(view.zoom, 1e-6)))),
   );
   if (mergedSurfaceMipLevelCount(allocation.bounds) <= requiredInitialMip) {
-    throw new Error("Superficie merged raster priva dei mip display richiesti.");
+    throw new Error("The merged raster surface is missing the required display mips.");
   }
   const surface = await runGpuAllocationTransaction(
     engine.device,
@@ -3262,7 +3262,7 @@ export async function buildMixedMergedSurfaceCandidate(engine: BrushEngine,
     for (const { item } of visibleItems) {
       const record = engine.layerStack.byId(item.rasterLayerId);
       if (!record) {
-        throw new Error(`Raster ${item.rasterLayerId} assente durante il fold.`);
+        throw new Error(`Raster ${item.rasterLayerId} is missing during the fold.`);
       }
       if (foldedGroupMembers.has(record.id)) {
         continue;
@@ -3304,7 +3304,7 @@ export async function buildMixedMergedSurfaceCandidate(engine: BrushEngine,
       });
       encodeMergedSurfacePyramid(engine, encoder, surface, initialMipLevel);
       engine.device.queue.submit([encoder.finish()]);
-      await engine.waitForGpuCapped(`Piramide merged raster ${side}`);
+      await engine.waitForGpuCapped(`Merged raster ${side} pyramid`);
     }
     return surface;
   } catch (error) {
@@ -3349,13 +3349,13 @@ export async function materializeLayerCompositeSource(engine: BrushEngine,
     : await createHydratedLayerTexture(engine, 
       record,
       gpu,
-      `Fold reidratazione livello ${record.id}`,
+      `Fold hydration for layer ${record.id}`,
       false,
       "defer-to-fold-fence",
     );
   const hot = gpu.hot ?? transientHydration;
   if (!hot) {
-    throw new Error(`Fold livello ${record.id}: sorgente full-canvas mancante.`);
+    throw new Error(`Layer ${record.id} fold: full-canvas source is missing.`);
   }
   if (!requirements.needsStrokeRenderer) {
     return {
@@ -3457,7 +3457,7 @@ export function splitMixedSceneRasterRunsForLayerBlend(
         ));
       if (unitItems.length !== unit.length) {
         throw new Error(
-          `Unità di ritaglio ${parent.id} spezzata durante il programma fusione livelli.`,
+          `Clipping unit ${parent.id} was split while building the layer blend program.`,
         );
       }
       unit.forEach((record) => consumed.add(record.id));
@@ -3511,22 +3511,22 @@ export function allocateMergedSurface(engine: BrushEngine,
 ): MergedSurfaceResources {
   const normalizedBounds = normalizeLayerRect(bounds);
   if (!normalizedBounds) {
-    throw new Error(`Merged ${side}: bounds di allocazione non validi.`);
+    throw new Error(`Merged ${side}: invalid allocation bounds.`);
   }
   if (
     !Number.isInteger(resolutionScale)
     || resolutionScale < 1
     || resolutionScale > 64
   ) {
-    throw new Error(`Merged ${side}: densità ${resolutionScale} non valida.`);
+    throw new Error(`Merged ${side}: invalid density ${resolutionScale}.`);
   }
   const textureWidth = normalizedBounds.width * resolutionScale;
   const textureHeight = normalizedBounds.height * resolutionScale;
   const maximumTextureExtent = engine.device.limits.maxTextureDimension2D;
   if (textureWidth > maximumTextureExtent || textureHeight > maximumTextureExtent) {
     throw new Error(
-      `Merged ${side}: ${textureWidth}×${textureHeight} supera il limite `
-      + `${maximumTextureExtent} della GPU.`,
+      `Merged ${side}: ${textureWidth}×${textureHeight} exceeds the GPU limit of `
+      + `${maximumTextureExtent}.`,
     );
   }
   const physicalBounds = { width: textureWidth, height: textureHeight };
@@ -3617,7 +3617,7 @@ function assertMixedSceneClippingMergeIsAdjacent(
   }
   if (index === 0) {
     throw new Error(
-      "Per creare una maschera serve un livello raster immediatamente sotto.",
+      "A raster layer is required immediately below to create a mask.",
     );
   }
   const lowerUnit = engine.layerStack.clippingUnit(engine.layerStack.at(index - 1));
@@ -3636,8 +3636,8 @@ function assertMixedSceneClippingMergeIsAdjacent(
     || upperIndices[0] !== lowerIndices[lowerIndices.length - 1] + 1
   ) {
     throw new Error(
-      "La maschera richiede un raster immediatamente sotto: sposta prima eventuali "
-      + "livelli vettoriali che separano i due gruppi.",
+      "The mask requires a raster immediately below it: first move any vector "
+      + "layers separating the two groups.",
     );
   }
 }
@@ -3653,7 +3653,7 @@ export async function setLayerClipping(
   enabled: boolean,
 ): Promise<boolean> {
   if (!engine.initialized) {
-    throw new Error("Il motore non è ancora inizializzato.");
+    throw new Error("The engine has not been initialized yet.");
   }
   const record = engine.layerStack.at(index);
   const previousEnabled = record.clippingParentId !== null;
@@ -3688,15 +3688,15 @@ export async function setLayerClipping(
         engine.requestRender();
       } catch (restoreError) {
         engine.latchDocumentStateInconsistent(
-          "Stato incoerente dopo il cambio maschera: ricarica prima di continuare.",
+          "Inconsistent state after changing the mask: reload before continuing.",
         );
         const originalMessage = error instanceof Error ? error.message : String(error);
         const restoreMessage = restoreError instanceof Error
           ? restoreError.message
           : String(restoreError);
         throw new Error(
-          `Maschera non aggiornata (${originalMessage}) e ripristino fallito `
-          + `(${restoreMessage}). Ricarica la pagina prima di continuare.`,
+          `Mask update failed (${originalMessage}) and restoration failed `
+          + `(${restoreMessage}). Reload the page before continuing.`,
         );
       }
     }
@@ -3715,7 +3715,7 @@ export async function setLayerPresentation(engine: BrushEngine,
   opacity: number | undefined,
 ): Promise<boolean> {
   if (!engine.initialized) {
-    throw new Error("Il motore non è ancora inizializzato.");
+    throw new Error("The engine has not been initialized yet.");
   }
   const record = engine.layerStack.at(index);
   const nextVisible = visible ?? record.visible;
@@ -3757,15 +3757,15 @@ export async function setLayerPresentation(engine: BrushEngine,
       await engine.rebuildMergedLayerSurfaces("layer-switch");
     } catch (restoreError) {
       engine.latchDocumentStateInconsistent(
-        "Stato incoerente dopo il compositing: ricarica prima di continuare.",
+        "Inconsistent state after compositing: reload before continuing.",
       );
       const originalMessage = error instanceof Error ? error.message : String(error);
       const restoreMessage = restoreError instanceof Error
         ? restoreError.message
         : String(restoreError);
       throw new Error(
-        `Compositing non riuscito (${originalMessage}) e ripristino fallito `
-        + `(${restoreMessage}). Ricarica la pagina prima di continuare.`,
+        `Compositing failed (${originalMessage}) and restoration failed `
+        + `(${restoreMessage}). Reload the page before continuing.`,
       );
     }
     throw error;
@@ -3790,10 +3790,10 @@ export async function setLayerBlendMode(
   historyReplay = false,
 ): Promise<boolean> {
   if (!engine.initialized) {
-    throw new Error("Il motore non è ancora inizializzato.");
+    throw new Error("The engine has not been initialized yet.");
   }
   if (!isLayerBlendMode(blendMode)) {
-    throw new RangeError(`Modalità fusione livello non valida: ${String(blendMode)}.`);
+    throw new RangeError(`Invalid layer blend mode: ${String(blendMode)}.`);
   }
   const record = engine.layerStack.at(index);
   if (record.blendMode === blendMode) {
@@ -3801,7 +3801,7 @@ export async function setLayerBlendMode(
   }
   if (historyReplay) {
     if (!engine.historyBusy || engine.layerSwitchBusy || engine.activeStroke) {
-      throw new Error("Transazione storica della fusione livello non valida.");
+      throw new Error("Invalid layer blend history transaction.");
     }
   } else {
     engine.assertLayerSwitchAllowed();
@@ -3876,11 +3876,11 @@ export async function setLayerBlendMode(
         ? restoreError.message
         : String(restoreError);
       const combined = new Error(
-        `Fusione livello non aggiornata (${originalMessage}) e ripristino fallito `
-        + `(${restoreMessage}). Ricarica la pagina prima di continuare.`,
+        `Layer blend update failed (${originalMessage}) and restoration failed `
+        + `(${restoreMessage}). Reload the page before continuing.`,
       );
       engine.latchDocumentStateInconsistent(
-        "Stato incoerente dopo la fusione livello: ricarica prima di continuare.",
+        "Inconsistent state after layer blending: reload before continuing.",
         combined,
       );
       throw combined;
@@ -3960,7 +3960,7 @@ export async function setLayerReference(
   enabled: boolean,
 ): Promise<boolean> {
   if (!engine.initialized) {
-    throw new Error("Il motore non è ancora inizializzato.");
+    throw new Error("The engine has not been initialized yet.");
   }
   const requested = engine.layerStack.at(index);
   const previousReference = engine.layerStack.reference;
@@ -3971,7 +3971,7 @@ export async function setLayerReference(
     return false;
   }
   if (requested.id !== engine.layerStack.active.id) {
-    throw new Error("Seleziona il livello raster prima di impostarlo come Riferimento.");
+    throw new Error("Select the raster layer before setting it as Reference.");
   }
 
   engine.assertLayerSwitchAllowed();
@@ -4362,7 +4362,7 @@ export async function buildMergedSurfaceCandidate(engine: BrushEngine,
           engine.paintDisplaySelectedMipLevel,
         );
         engine.device.queue.submit([encoder.finish()]);
-        await engine.waitForGpuCapped(`Piramide merged ${side}`);
+        await engine.waitForGpuCapped(`Merged ${side} pyramid`);
       }
       return surface;
     },
@@ -4396,14 +4396,14 @@ export async function bakeActiveLayerForSwitchAttempt(engine: BrushEngine): Prom
 
   const workbench = engine.effectsWorkbench;
   if (!engine.rasterStrokeRenderer || !workbench) {
-    throw new Error("Bake impossibile: compositore effetti non disponibile.");
+    throw new Error("Cannot bake: the effects compositor is unavailable.");
   }
   if (
     engine.layerView !== hot.view
     || workbench.sourceView !== hot.view
     || engine.layerStack.active.id !== record.id
   ) {
-    throw new Error("Bake rifiutato: il banco effetti non punta al livello uscente.");
+    throw new Error("Bake refused: the effects workbench does not target the outgoing layer.");
   }
 
   const previous = gpu.bake;
@@ -4828,7 +4828,7 @@ export function cancelEffectsScratchShrink(engine: BrushEngine): void {
 export function requireLayerHot(engine: BrushEngine, layerId: number): LayerTextureResources {
   const hot = engine.requireLayerGpu(layerId).hot;
   if (!hot) {
-    throw new Error(`Texture full-canvas del livello ${layerId} non residente.`);
+    throw new Error(`The full-canvas texture for layer ${layerId} is not resident.`);
   }
   return hot;
 }
@@ -4838,7 +4838,7 @@ export function maybeInjectLayerBakeFault(engine: BrushEngine, point: LayerBakeF
     return;
   }
   engine.layerBakeFaultQueue.shift();
-  throw new Error(`Guasto iniettato nel bake: ${point}.`);
+  throw new Error(`Injected bake fault: ${point}.`);
 }
 
 export function maybeInjectLayerCompositeFault(engine: BrushEngine, point: LayerCompositeFaultPoint): void {
@@ -4846,7 +4846,7 @@ export function maybeInjectLayerCompositeFault(engine: BrushEngine, point: Layer
     return;
   }
   engine.layerCompositeFaultQueue.shift();
-  throw new Error(`Guasto iniettato nel compositing: ${point}.`);
+  throw new Error(`Injected compositing fault: ${point}.`);
 }
 
 export function releaseFusedLayerBakes(engine: BrushEngine): void {

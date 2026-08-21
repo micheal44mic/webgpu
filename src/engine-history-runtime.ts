@@ -125,7 +125,7 @@ export function captureRasterLayerMetadataHistoryState(
   property: RasterLayerMetadataHistoryProperty,
 ): RasterLayerMetadataHistoryState {
   const record = engine.layerStack.byId(layerId);
-  if (!record) throw new Error(`Livello ${layerId} assente dalla cronologia metadata.`);
+  if (!record) throw new Error(`Layer ${layerId} is missing from metadata history.`);
   const value = property === "visibility"
     ? record.visible
     : property === "opacity"
@@ -206,7 +206,7 @@ export function recordRasterLayerMetadataHistoryAction(
     || before.property !== property
     || after.property !== property
   ) {
-    throw new Error("Una modifica metadata non può cambiare livello o proprietà durante il gesto.");
+    throw new Error("A metadata edit cannot change its layer or property during a gesture.");
   }
   if (rasterLayerMetadataHistoryStatesEqual(before, after)) return false;
   commitHistoryActionAtomically(engine, {
@@ -229,7 +229,7 @@ function assignRasterLayerMetadataHistoryValue(
   target: RasterLayerMetadataHistoryAction["before"],
 ): void {
   const record = engine.layerStack.byId(action.layerId);
-  if (!record) throw new Error(`Livello ${action.layerId} della proprietà non trovato.`);
+  if (!record) throw new Error(`Layer ${action.layerId} for the property was not found.`);
   switch (action.property) {
     case "visibility":
       record.visible = target as boolean;
@@ -331,14 +331,14 @@ export async function applyRasterLayerMetadataHistoryState(
       await refreshRasterLayerMetadataPresentation(engine, action);
     } catch (restoreError) {
       engine.latchDocumentStateInconsistent(
-        "Stato incoerente dopo Undo/Redo delle proprietà raster: ricarica la pagina.",
+        "State is inconsistent after raster property Undo/Redo. Reload the page.",
       );
       const originalMessage = error instanceof Error ? error.message : String(error);
       const restoreMessage = restoreError instanceof Error
         ? restoreError.message
         : String(restoreError);
       throw new Error(
-        `Undo/Redo proprietà raster fallito (${originalMessage}) e ripristino fallito `
+        `Raster property Undo/Redo failed (${originalMessage}) and restore failed `
         + `(${restoreMessage}).`,
       );
     }
@@ -425,41 +425,41 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
   // e' in corso" invece di "qualcosa, da qualche parte, e' aperto".
   if (engine.activeRasterTransformSession) {
     engine.publishStatus(
-      "Applica o annulla la trasformazione prima di usare la cronologia.",
+      "Apply or cancel the transform before using history.",
       "error",
     );
     return false;
   }
   if (engine.activeRasterGaussianBlurSession) {
     engine.publishStatus(
-      "Applica o annulla Gaussian Blur prima di usare la cronologia.",
+      "Apply or cancel Gaussian Blur before using history.",
       "error",
     );
     return false;
   }
   if (engine.activeRasterMotionBlurSession) {
     engine.publishStatus(
-      "Applica o annulla Motion Blur prima di usare la cronologia.",
+      "Apply or cancel Motion Blur before using history.",
       "error",
     );
     return false;
   }
   if (engine.activeRasterNoiseSession) {
     engine.publishStatus(
-      "Applica o annulla Noise prima di usare la cronologia.",
+      "Apply or cancel Noise before using history.",
       "error",
     );
     return false;
   }
   if (engine.activeRasterLiquifySession) {
     engine.publishStatus(
-      "Applica o annulla Liquify prima di usare la cronologia.",
+      "Apply or cancel Liquify before using history.",
       "error",
     );
     return false;
   }
   if (engine.historyStateInconsistent) {
-    engine.publishStatus("La cronologia è incoerente: ricarica la pagina.", "error");
+    engine.publishStatus("History is inconsistent. Reload the page.", "error");
     return false;
   }
   const nextCursor = engine.historyCursor + delta;
@@ -485,10 +485,10 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
     const sceneReorderBlocked = crossedAction.kind === "scene-reorder";
     engine.publishStatus(
       sceneReorderBlocked
-        ? "Quel riordino non è più compatibile con i gruppi di clipping attuali."
+        ? "That reorder is no longer compatible with the current clipping groups."
         : delta < 0
-        ? "Il livello di quel passo non esiste più: impossibile annullarlo."
-        : "Il livello di quel passo non esiste più: impossibile ripristinarlo.",
+        ? "The layer for that step no longer exists, so it cannot be undone."
+        : "The layer for that step no longer exists, so it cannot be redone.",
       "error",
     );
     return false;
@@ -505,7 +505,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
   } catch (error) {
     engine.historyBusy = false;
     const message = error instanceof Error ? error.message : String(error);
-    engine.publishStatus(`Undo/Redo locale non riuscito: ${message}`, "error");
+    engine.publishStatus(`Local Undo/Redo failed: ${message}`, "error");
     engine.publishHistoryState();
     throw error;
   }
@@ -519,32 +519,32 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
   engine.publishHistoryState();
   engine.publishStatus(
     crossedAction.kind === "raster-filter" && crossedAction.filter === "rasterize-layer"
-      ? delta < 0 ? "Undo: ripristino effetti livello…" : "Redo: rasterizzazione livello…"
+      ? delta < 0 ? "Undo: restoring layer effects…" : "Redo: rasterizing layer…"
       : crossedAction.kind === "raster-import"
-      ? delta < 0 ? "Undo: rimozione immagine raster…" : "Redo: ripristino immagine raster…"
+      ? delta < 0 ? "Undo: removing raster image…" : "Redo: restoring raster image…"
       : crossedAction.kind === "layer-delete"
-      ? delta < 0 ? "Undo: ripristino livello…" : "Redo: eliminazione livello…"
+      ? delta < 0 ? "Undo: restoring layer…" : "Redo: deleting layer…"
       : crossedAction.kind === "layer-add"
       ? crossedAction.creation === "duplicate"
-        ? delta < 0 ? "Undo: rimozione duplicato…" : "Redo: duplicazione livello…"
-        : delta < 0 ? "Undo: rimozione livello…" : "Redo: creazione livello…"
+        ? delta < 0 ? "Undo: removing duplicate…" : "Redo: duplicating layer…"
+        : delta < 0 ? "Undo: removing layer…" : "Redo: creating layer…"
       : crossedAction.kind === "layer-merge"
-      ? delta < 0 ? "Undo: ripristino elementi uniti…" : "Redo: unione elementi…"
+      ? delta < 0 ? "Undo: restoring merged items…" : "Redo: merging items…"
       : crossedAction.kind === "vector-rasterize"
-      ? delta < 0 ? "Undo: ripristino del vettore…" : "Redo: rasterizzazione vettoriale…"
+      ? delta < 0 ? "Undo: restoring vector…" : "Redo: rasterizing vector…"
       : crossedAction.kind === "scene-reorder"
-      ? delta < 0 ? "Undo: riordino livelli…" : "Redo: riordino livelli…"
+      ? delta < 0 ? "Undo: reordering layers…" : "Redo: reordering layers…"
       : crossedAction.kind === "document-background"
-      ? delta < 0 ? "Undo: sfondo documento…" : "Redo: sfondo documento…"
+      ? delta < 0 ? "Undo: restoring document background…" : "Redo: restoring document background…"
       : crossedAction.kind === "layer-blend-mode"
-      ? delta < 0 ? "Undo: fusione livello…" : "Redo: fusione livello…"
+      ? delta < 0 ? "Undo: restoring layer blend mode…" : "Redo: restoring layer blend mode…"
       : crossedAction.kind === "layer-metadata"
-      ? delta < 0 ? "Undo: proprietà livello…" : "Redo: proprietà livello…"
+      ? delta < 0 ? "Undo: restoring layer property…" : "Redo: restoring layer property…"
       : crossedAction.kind === "vector"
-      ? delta < 0 ? "Undo: ripristino del vettore…" : "Redo: ripristino del vettore…"
+      ? delta < 0 ? "Undo: restoring vector…" : "Redo: restoring vector…"
       : delta < 0
-        ? "Undo: ricostruzione del layer…"
-        : "Redo: ricostruzione del layer…",
+        ? "Undo: rebuilding layer…"
+        : "Redo: rebuilding layer…",
     "working",
   );
 
@@ -559,7 +559,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
         engine.activeStrokeProfile.historyReplayOperations += 1;
       }
       engine.publishStatus(
-        delta < 0 ? "Sfondo documento annullato." : "Sfondo documento ripristinato.",
+        delta < 0 ? "Document background undone." : "Document background redone.",
         "ok",
       );
       return true;
@@ -571,7 +571,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
         engine.activeStrokeProfile.historyReplayOperations += 1;
       }
       engine.publishStatus(
-        delta < 0 ? "Undo rasterizzazione vettoriale completato." : "Redo rasterizzazione vettoriale completato.",
+        delta < 0 ? "Vector rasterization undo completed." : "Vector rasterization redo completed.",
         "ok",
       );
       return true;
@@ -583,7 +583,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
         engine.activeStrokeProfile.historyReplayOperations += 1;
       }
       engine.publishStatus(
-        delta < 0 ? "Undo unione livelli completato." : "Redo unione livelli completato.",
+        delta < 0 ? "Layer merge undo completed." : "Layer merge redo completed.",
         "ok",
       );
       return true;
@@ -595,7 +595,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
         engine.activeStrokeProfile.historyReplayOperations += 1;
       }
       engine.publishStatus(
-        delta < 0 ? "Undo importazione raster completato." : "Redo importazione raster completato.",
+        delta < 0 ? "Raster import undo completed." : "Raster import redo completed.",
         "ok",
       );
       return true;
@@ -612,7 +612,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
       }
       publishMixedScene(engine);
       engine.publishStatus(
-        delta < 0 ? "Undo struttura livelli completato." : "Redo struttura livelli completato.",
+        delta < 0 ? "Layer structure undo completed." : "Layer structure redo completed.",
         "ok",
       );
       return true;
@@ -620,7 +620,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
     if (crossedAction.kind === "layer-blend-mode") {
       const index = engine.layerStack.indexOfId(crossedAction.layerId);
       if (index < 0) {
-        throw new Error(`Livello ${crossedAction.layerId} della fusione non trovato.`);
+        throw new Error(`Layer ${crossedAction.layerId} for the blend-mode change was not found.`);
       }
       await setLayerBlendMode(
         engine,
@@ -633,7 +633,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
         engine.activeStrokeProfile.historyReplayOperations += 1;
       }
       engine.publishStatus(
-        delta < 0 ? "Undo fusione livello completato." : "Redo fusione livello completato.",
+        delta < 0 ? "Layer blend-mode undo completed." : "Layer blend-mode redo completed.",
         "ok",
       );
       return true;
@@ -649,7 +649,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
         engine.activeStrokeProfile.historyReplayOperations += 1;
       }
       engine.publishStatus(
-        delta < 0 ? "Proprietà livello annullata." : "Proprietà livello ripristinata.",
+        delta < 0 ? "Layer property undone." : "Layer property redone.",
         "ok",
       );
       return true;
@@ -665,7 +665,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
         engine.activeStrokeProfile.historyReplayOperations += 1;
       }
       engine.publishStatus(
-        delta < 0 ? "Riordino livelli annullato." : "Riordino livelli ripristinato.",
+        delta < 0 ? "Layer reorder undone." : "Layer reorder redone.",
         "ok",
       );
       return true;
@@ -679,7 +679,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
       if (engine.activeStrokeProfile) {
         engine.activeStrokeProfile.historyReplayOperations += 1;
       }
-      engine.publishStatus(delta < 0 ? "Undo completato." : "Redo completato.", "ok");
+      engine.publishStatus(delta < 0 ? "Undo completed." : "Redo completed.", "ok");
       return true;
     }
     // Cross-layer Undo/Redo is one transaction: switch, move the cursor, replay.
@@ -728,7 +728,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
         const targetRecord = engine.layerStack.byId(rasterSourceTransition.layerId);
         if (!targetRecord) {
           throw new Error(
-            `Livello ${rasterSourceTransition.layerId} della sorgente raster non trovato.`,
+            `Layer ${rasterSourceTransition.layerId} for the raster source was not found.`,
           );
         }
         targetRecord.rasterSource = cloneRasterLayerSource(
@@ -739,7 +739,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
         const targetRecord = engine.layerStack.byId(rasterEffectsTransition.layerId);
         if (!targetRecord) {
           throw new Error(
-            `Livello ${rasterEffectsTransition.layerId} degli effetti raster non trovato.`,
+            `Layer ${rasterEffectsTransition.layerId} for the raster effects was not found.`,
           );
         }
         applyRasterLayerEffects(
@@ -785,7 +785,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
             const targetRecord = engine.layerStack.byId(rasterSourceTransition.layerId);
             if (!targetRecord) {
               throw new Error(
-                `Livello ${rasterSourceTransition.layerId} assente nel rollback sorgente raster.`,
+                `Layer ${rasterSourceTransition.layerId} is missing during raster-source rollback.`,
               );
             }
             targetRecord.rasterSource = cloneRasterLayerSource(
@@ -796,7 +796,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
             const targetRecord = engine.layerStack.byId(rasterEffectsTransition.layerId);
             if (!targetRecord) {
               throw new Error(
-                `Livello ${rasterEffectsTransition.layerId} assente nel rollback effetti raster.`,
+                `Layer ${rasterEffectsTransition.layerId} is missing during raster-effects rollback.`,
               );
             }
             applyRasterLayerEffects(
@@ -853,12 +853,12 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
         // already treats it as a hard lock, and only a reload clears the latch.
         engine.historyStateInconsistent = true;
       engine.publishStatus(
-          "Stato incoerente dopo Undo/Redo: ricarica prima di continuare.",
+          "State is inconsistent after Undo/Redo. Reload before continuing.",
           "error",
         );
         throw new Error(
-          `Undo/Redo non riuscito (${originalMessage}) e ripristino fallito (${restoreMessage}). `
-          + "Ricarica la pagina prima di continuare.",
+          `Undo/Redo failed (${originalMessage}) and restore failed (${restoreMessage}). `
+          + "Reload the page before continuing.",
         );
       }
       throw operationError;
@@ -876,9 +876,9 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
     engine.publishStatus(
       rasterEffectsTransition
         ? delta < 0
-          ? "Effetti e sorgente del livello ripristinati."
-          : "Rasterizzazione livello ripristinata."
-        : delta < 0 ? "Undo completato." : "Redo completato.",
+          ? "Layer effects and source restored."
+          : "Layer rasterization restored."
+        : delta < 0 ? "Undo completed." : "Redo completed.",
       "ok",
     );
     return true;
@@ -941,7 +941,7 @@ export async function rebuildActiveLayerFromHistory(
   engine.layerStack.active.noiseMipSmoothing = replayNoiseMipSmoothing;
   if (checkpointOverride && checkpointOverride.layerId !== layerId) {
     throw new Error(
-      `Checkpoint livello ${checkpointOverride.layerId} applicato al livello attivo ${layerId}.`,
+      `Checkpoint for layer ${checkpointOverride.layerId} was applied to active layer ${layerId}.`,
     );
   }
   const periodicSelection = checkpointOverride
@@ -1053,9 +1053,9 @@ export async function rebuildActiveLayerFromHistory(
         : seedAction?.seed ? [seedAction.seed] : [];
       if (replaySeeds.length > 0) {
         const hot = engine.requireLayerGpu(layerId).hot;
-        if (!hot) throw new Error("Texture hot mancante per il checkpoint raster.");
+        if (!hot) throw new Error("The hot texture is missing for the raster checkpoint.");
         const encoder = engine.device.createCommandEncoder({
-          label: `Replay checkpoint tiled raster livello ${layerId}`,
+          label: `Replay tiled raster checkpoint for layer ${layerId}`,
         });
         for (const replaySeed of replaySeeds) {
           encodeLayerColdHydration(encoder, replaySeed, hot);
@@ -1064,7 +1064,7 @@ export async function rebuildActiveLayerFromHistory(
         await yieldReplaySubmit();
       } else if (sessionBaseline?.compressed) {
         const hot = engine.requireLayerGpu(layerId).hot;
-        if (!hot) throw new Error("Texture hot mancante per la baseline progetto.");
+        if (!hot) throw new Error("The hot texture is missing for the project baseline.");
         // uploadCompressedLayerIntoHot validates ownership during every async
         // chunk. A short-lived owner lets the immutable saved payload hydrate
         // replay without making it authoritative layer storage again.
@@ -1161,13 +1161,13 @@ export async function rebuildActiveLayerFromHistory(
           if (!engine.lightGlazeSession) {
             engine.startLightGlazeSession(actionId, batch.settings);
           } else if (engine.lightGlazeSession.historyActionId !== actionId) {
-            throw new Error("Ordine storico Light Glaze non valido.");
+            throw new Error("The historical Light Glaze order is invalid.");
           }
           const hasLaterBatchForAction =
             (lastVisiblePaintBatchIndexByAction.get(actionId) ?? index) > index;
           const replaySession = engine.lightGlazeSession;
           if (!replaySession) {
-            throw new Error("Sessione Light Glaze storica non inizializzata.");
+            throw new Error("The historical Light Glaze session is not initialized.");
           }
           replaySession.endRequested = !hasLaterBatchForAction;
           replaySession.commitRequested = !hasLaterBatchForAction;
@@ -1185,7 +1185,7 @@ export async function rebuildActiveLayerFromHistory(
         await yieldReplaySubmit();
       }
       if (engine.lightGlazeSession) {
-        throw new Error("La ricostruzione storica ha lasciato un tratto Light Glaze aperto.");
+        throw new Error("History reconstruction left a Light Glaze stroke open.");
       }
     }
   } finally {
@@ -1242,7 +1242,7 @@ export async function rebuildActiveLayerFromHistory(
   // live metadata but must not erase the policy reconstructed for the final
   // historical raster lineage.
   record.noiseMipSmoothing = replayNoiseMipSmoothing;
-  await engine.waitForGpuCapped("Completamento replay Undo/Redo", 60_000);
+  await engine.waitForGpuCapped("Complete Undo/Redo replay", 60_000);
   if (hasReplaySeed) {
     await restoreEffectsWorkbenchToActiveLayer(engine, "history-replay", true);
     engine.displayDirty = true;
@@ -1301,11 +1301,11 @@ export async function applyVectorHistoryState(engine: BrushEngine,
         ? restoreError.message
         : String(restoreError);
       const combined = new Error(
-        `Undo/Redo vettoriale fallito (${originalMessage}) e ripristino fallito `
-        + `(${restoreMessage}). Ricarica la pagina.`,
+        `Vector Undo/Redo failed (${originalMessage}) and restore failed `
+        + `(${restoreMessage}). Reload the page.`,
       );
       engine.latchDocumentStateInconsistent(
-        "Stato incoerente dopo Undo/Redo vettoriale: ricarica la pagina.",
+        "State is inconsistent after vector Undo/Redo. Reload the page.",
         combined,
       );
       throw combined;
@@ -1330,20 +1330,20 @@ export function recordBlendHistoryBatch(engine: BrushEngine,
   const actionId = pending[0].actionId;
   if (pending.some((entry) => entry.actionId !== actionId)) {
     if (timing.historyGpuSlice) engine.historyGpuStorage.release(timing.historyGpuSlice);
-    throw new Error("Un batch storico Blend contiene più pennellate.");
+    throw new Error("A historical Blend batch contains multiple strokes.");
   }
   const renderer = engine.blendRenderer;
   const capturedSlice = timing.historyGpuSlice;
   if (!renderer || !capturedSlice) {
     if (capturedSlice) engine.historyGpuStorage.release(capturedSlice);
-    throw new Error("Payload GPU della cronologia Blend mancante.");
+    throw new Error("The Blend history GPU payload is missing.");
   }
   const batches = pending.map((entry) => compactDryBlendHistoryGeometry(entry.batch));
   const expectedBytes = renderer.historyUniformBytes(batches);
   if (capturedSlice.logicalBytes !== expectedBytes) {
     engine.historyGpuStorage.release(capturedSlice);
     throw new Error(
-      `Payload GPU Blend ${capturedSlice.logicalBytes} B, attesi ${expectedBytes} B.`,
+      `Blend GPU payload is ${capturedSlice.logicalBytes} B; expected ${expectedBytes} B.`,
     );
   }
   const settings = pending[0].settings;
@@ -1801,7 +1801,7 @@ export async function applyMixedSceneOrderState(
   );
   const targetRasterOrder = target.rasterLayerIds.map((id) => {
     const record = recordsById.get(id);
-    if (!record) throw new Error(`Raster ${id} assente dal riordino.`);
+    if (!record) throw new Error(`Raster ${id} is missing from the reorder operation.`);
     return { id, clippingParentId: record.clippingParentId };
   });
   assertValidMixedSceneOrder(target.bottomUpKeys, targetRasterOrder);
@@ -1815,7 +1815,7 @@ export async function applyMixedSceneOrderState(
       || engine.layerStack.referenceLayerId !== referenceRasterId
       || scene.selected.key !== selectedKey
     ) {
-      throw new Error("Il riordino ha cambiato selezione, raster attivo o riferimento.");
+      throw new Error("Reordering changed the selection, active raster, or reference.");
     }
     clearVectorTextPresentationForTransaction(engine);
     await engine.rebuildMergedLayerSurfaces(
@@ -1849,10 +1849,10 @@ export async function applyMixedSceneOrderState(
         rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
       ).join("; ");
       const combined = new Error(
-        `Riordino fallito (${originalMessage}) e ripristino fallito (${rollbackMessage}).`,
+        `Reorder failed (${originalMessage}) and restore failed (${rollbackMessage}).`,
       );
       engine.latchDocumentStateInconsistent(
-        "Stato incoerente dopo il riordino livelli: ricarica la pagina.",
+        "State is inconsistent after reordering layers. Reload the page.",
         combined,
       );
       throw combined;
@@ -2030,7 +2030,7 @@ export function maybeInjectHistoryReplayFault(engine: BrushEngine, point: Histor
     return;
   }
   engine.historyReplayFaultQueue.shift();
-  throw new Error(`Guasto iniettato nella cronologia: ${point}.`);
+  throw new Error(`Injected history fault: ${point}.`);
 }
 
 export function hasVisibleHistoryContent(engine: BrushEngine, layerId?: number): boolean {

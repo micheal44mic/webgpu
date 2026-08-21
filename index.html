@@ -8,8 +8,8 @@
     />
     <meta name="theme-color" content="#111318" />
     <link rel="icon" href="data:," />
-    <!-- Titolo e taglia documento sono riscritti al boot da main.ts: la
-         dimensione la decide `LAYER_SIZE`, non questo file. -->
+    <!-- The document title and size are rewritten at boot by main.ts:
+         `LAYER_SIZE`, not this file, determines the dimensions. -->
     <title>WebGPU Brush Engine</title>
   </head>
   <body>
@@ -281,18 +281,18 @@
         </nav>
       </header>
 
-      <aside class="mobile-tool-rail" aria-label="Strumenti rapidi">
+      <aside class="mobile-tool-rail" aria-label="Quick tools">
         <label
           id="mobileBrushColor"
           class="mobile-tool-action mobile-color-action"
-          title="Colore pennello"
+          title="Brush color"
         >
           <input
             id="mobileBrushColorInput"
             class="mobile-color-input"
             type="color"
             value="#ff5b35"
-            aria-label="Scegli il colore del pennello"
+            aria-label="Choose brush color"
           />
           <span id="mobileBrushColorSwatch" class="mobile-color-swatch" aria-hidden="true"></span>
         </label>
@@ -304,7 +304,7 @@
           aria-controls="mobileBrushLibrarySheet"
           aria-expanded="false"
           aria-pressed="true"
-          title="Pennello"
+          title="Brush"
         >
           <span class="mobile-icon-stack" aria-hidden="true">
             <i data-lucide="brush" class="mobile-icon-layer mobile-icon-outline"></i>
@@ -315,9 +315,9 @@
           id="mobileEraser"
           class="mobile-tool-action"
           type="button"
-          aria-label="Seleziona Gomma"
+          aria-label="Select Eraser"
           aria-pressed="false"
-          title="Gomma"
+          title="Eraser"
         >
           <span class="mobile-icon-stack" aria-hidden="true">
             <i data-lucide="eraser" class="mobile-icon-layer mobile-icon-outline"></i>
@@ -328,7 +328,7 @@
           id="mobileBlend"
           class="mobile-tool-action"
           type="button"
-          aria-label="Seleziona Blend"
+          aria-label="Select Blend"
           aria-pressed="false"
           title="Blend"
         >
@@ -341,9 +341,9 @@
           id="mobilePan"
           class="mobile-tool-action"
           type="button"
-          aria-label="Seleziona Sposta"
+          aria-label="Select Move"
           aria-pressed="false"
-          title="Sposta"
+          title="Move"
         >
           <span class="mobile-icon-stack" aria-hidden="true">
             <i data-lucide="hand" class="mobile-icon-layer mobile-icon-outline"></i>
@@ -354,9 +354,9 @@
           id="mobileUndo"
           class="mobile-tool-action"
           type="button"
-          aria-label="Annulla ultima azione"
+          aria-label="Undo last action"
           aria-keyshortcuts="Control+Z Meta+Z"
-          title="Annulla"
+          title="Undo"
           disabled
         >
           <span class="mobile-icon-stack" aria-hidden="true">
@@ -368,9 +368,9 @@
           id="mobileRedo"
           class="mobile-tool-action"
           type="button"
-          aria-label="Ripristina ultima azione"
+          aria-label="Redo last action"
           aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z"
-          title="Ripristina"
+          title="Redo"
           disabled
         >
           <span class="mobile-icon-stack" aria-hidden="true">
@@ -1288,7 +1288,7 @@
                   </label>
                 </div>
 
-                <p class="mobile-liquify-hint">Un dito modifica · due dita spostano, ingrandiscono e ruotano.</p>
+                <p class="mobile-liquify-hint">One finger edits · two fingers pan, zoom, and rotate.</p>
                 <p
                   id="mobileLiquifyStatus"
                   class="visually-hidden"
@@ -1356,7 +1356,7 @@
                 role="status"
                 aria-live="polite"
                 aria-atomic="true"
-              >Gaussian Blur pronto.</p>
+              >Gaussian Blur ready.</p>
 
               <div class="mobile-tool-actions mobile-tool-actions-grid mobile-gaussian-blur-actions">
                 <button id="mobileGaussianBlurCancel" type="button">Cancel</button>
@@ -2027,7 +2027,7 @@
                   type="button"
                   data-mobile-tool
                   data-mobile-canvas-tool="paint"
-                  data-mobile-tool-search="pennello brush paint disegno"
+                  data-mobile-tool-search="brush paint draw drawing"
                   aria-label="Select Brush"
                   aria-pressed="true"
                 >
@@ -2042,7 +2042,7 @@
                   type="button"
                   data-mobile-tool
                   data-mobile-canvas-tool="erase"
-                  data-mobile-tool-search="gomma eraser cancella cancellare"
+                  data-mobile-tool-search="eraser erase delete"
                   aria-label="Select Eraser"
                   aria-pressed="false"
                 >
@@ -2057,7 +2057,7 @@
                   type="button"
                   data-mobile-tool
                   data-mobile-canvas-tool="blend"
-                  data-mobile-tool-search="blend sfuma sfumino mescola pigmento"
+                  data-mobile-tool-search="blend smudge mix pigment"
                   aria-label="Select Blend"
                   aria-pressed="false"
                 >
@@ -2073,7 +2073,7 @@
                   data-mobile-tool
                   data-mobile-canvas-tool="fill"
                   data-mobile-tool-sheet="fill"
-                  data-mobile-tool-search="riempimento secchiello fill bucket colore"
+                  data-mobile-tool-search="fill bucket color paint"
                   aria-label="Open Fill settings"
                   aria-pressed="false"
                 >
@@ -2094,7 +2094,7 @@
                   type="button"
                   data-mobile-tool
                   data-mobile-canvas-tool="pan"
-                  data-mobile-tool-search="sposta move pan mano hand naviga canvas vista"
+                  data-mobile-tool-search="move pan hand navigate canvas view"
                   aria-label="Select Move"
                   aria-pressed="false"
                 >
@@ -2110,7 +2110,7 @@
                   data-mobile-tool
                   data-mobile-canvas-tool="selection"
                   data-mobile-tool-sheet="selection"
-                  data-mobile-tool-search="selezione selection bacchetta magica lazo lasso colore"
+                  data-mobile-tool-search="selection magic wand lasso color"
                   aria-label="Open Selection settings"
                   aria-pressed="false"
                 >
@@ -2126,7 +2126,7 @@
                   data-mobile-tool
                   data-mobile-canvas-tool="transform"
                   data-mobile-tool-sheet="transform"
-                  data-mobile-tool-search="trasforma transform sposta scala ridimensiona ruota"
+                  data-mobile-tool-search="transform move scale resize rotate"
                   aria-label="Open Transform settings"
                   aria-pressed="false"
                 >
@@ -2142,7 +2142,7 @@
                   data-mobile-tool
                   data-mobile-canvas-tool="warp"
                   data-mobile-tool-sheet="warp"
-                  data-mobile-tool-search="warp deforma deformazione griglia fluida smooth procreate"
+                  data-mobile-tool-search="warp deform distortion grid fluid smooth"
                   aria-label="Open Warp settings"
                   aria-pressed="false"
                 >
@@ -2158,7 +2158,7 @@
                   data-mobile-tool
                   data-mobile-canvas-tool="perspective"
                   data-mobile-tool-sheet="perspective"
-                  data-mobile-tool-search="prospettiva perspective angoli quadrilatero distorsione"
+                  data-mobile-tool-search="perspective corners quadrilateral distortion"
                   aria-label="Open Perspective settings"
                   aria-pressed="false"
                 >
@@ -2179,7 +2179,7 @@
                   type="button"
                   data-mobile-tool
                   data-mobile-vector-command="import-svg"
-                  data-mobile-tool-search="svg vettore vector forme shapes importa"
+                  data-mobile-tool-search="svg vector shape shapes import"
                   aria-label="Import SVG"
                 >
                   <span class="mobile-icon-stack" aria-hidden="true">
@@ -2193,7 +2193,7 @@
                   type="button"
                   data-mobile-tool
                   data-mobile-vector-command="import-image"
-                  data-mobile-tool-search="immagine image foto raster png jpeg webp avif importa"
+                  data-mobile-tool-search="image photo raster png jpeg webp avif import"
                   aria-label="Import Image"
                 >
                   <span class="mobile-icon-stack" aria-hidden="true">
@@ -2213,7 +2213,7 @@
                   type="button"
                   data-mobile-tool
                   data-mobile-tool-sheet="text"
-                  data-mobile-tool-search="testo text type scritta font contenuto"
+                  data-mobile-tool-search="text type lettering font content"
                   aria-label="Open Text settings"
                   aria-pressed="false"
                 >
@@ -2228,7 +2228,7 @@
                   type="button"
                   data-mobile-tool
                   data-mobile-tool-sheet="svg-style"
-                  data-mobile-tool-search="svg style effects colori palette rasterize vettore"
+                  data-mobile-tool-search="svg style effects color palette rasterize vector"
                   aria-label="Open SVG Style settings"
                   aria-pressed="false"
                   disabled
@@ -2244,7 +2244,7 @@
                   type="button"
                   data-mobile-tool
                   data-mobile-tool-sheet="text-warp"
-                  data-mobile-tool-search="testo warp distort arch circle wave curva deformazione"
+                  data-mobile-tool-search="text warp distort arch circle wave curve deformation"
                   aria-label="Open Warp settings"
                   aria-pressed="false"
                   disabled
@@ -2260,7 +2260,7 @@
                   type="button"
                   data-mobile-tool
                   data-mobile-tool-sheet="text-outline"
-                  data-mobile-tool-search="testo svg vettore vector outline contorno bordo stroke"
+                  data-mobile-tool-search="text svg vector outline border stroke"
                   aria-label="Open Outline settings"
                   aria-pressed="false"
                   disabled
@@ -2276,7 +2276,7 @@
                   type="button"
                   data-mobile-tool
                   data-mobile-tool-sheet="text-drop-shadow"
-                  data-mobile-tool-search="testo svg vettore vector ombra esterna drop shadow single shadow"
+                  data-mobile-tool-search="text svg vector outer drop shadow single shadow"
                   aria-label="Open Drop Shadow settings"
                   aria-pressed="false"
                   disabled
@@ -2292,7 +2292,7 @@
                   type="button"
                   data-mobile-tool
                   data-mobile-tool-sheet="text-inner-shadow"
-                  data-mobile-tool-search="testo svg vettore vector ombra interna inner shadow"
+                  data-mobile-tool-search="text svg vector inner shadow"
                   aria-label="Open Inner Shadow settings"
                   aria-pressed="false"
                   disabled
@@ -2308,7 +2308,7 @@
                   type="button"
                   data-mobile-tool
                   data-mobile-tool-sheet="text-block-shadow"
-                  data-mobile-tool-search="testo svg vettore vector ombra blocco block shadow profondita"
+                  data-mobile-tool-search="text svg vector block shadow depth"
                   aria-label="Open Block Shadow settings"
                   aria-pressed="false"
                   disabled
@@ -2330,7 +2330,7 @@
                   type="button"
                   data-mobile-tool
                   data-mobile-effect-kind="color-overlay"
-                  data-mobile-tool-search="overlay sovrapposizione colore color effect"
+                  data-mobile-tool-search="overlay color effect"
                   aria-label="Open Color Overlay settings"
                   aria-pressed="false"
                 >
@@ -2345,7 +2345,7 @@
                   type="button"
                   data-mobile-tool
                   data-mobile-effect-kind="stroke"
-                  data-mobile-tool-search="traccia contorno stroke outline bordo"
+                  data-mobile-tool-search="stroke outline border"
                   aria-label="Open Stroke settings"
                   aria-pressed="false"
                 >
@@ -2360,7 +2360,7 @@
                   type="button"
                   data-mobile-tool
                   data-mobile-effect-kind="outer-shadow"
-                  data-mobile-tool-search="ombra esterna outer shadow proiettata"
+                  data-mobile-tool-search="outer drop shadow"
                   aria-label="Open Outer Shadow settings"
                   aria-pressed="false"
                 >
@@ -2375,7 +2375,7 @@
                   type="button"
                   data-mobile-tool
                   data-mobile-effect-kind="inner-shadow"
-                  data-mobile-tool-search="ombra interna inner shadow bordo"
+                  data-mobile-tool-search="inner shadow border"
                   aria-label="Open Inner Shadow settings"
                   aria-pressed="false"
                 >
@@ -2390,7 +2390,7 @@
                   type="button"
                   data-mobile-tool
                   data-mobile-effect-kind="bevel"
-                  data-mobile-tool-search="smusso rilievo bevel emboss heightfield"
+                  data-mobile-tool-search="bevel emboss heightfield relief"
                   aria-label="Open Bevel settings"
                   aria-pressed="false"
                 >
@@ -2411,7 +2411,7 @@
                   class="mobile-tools-item mobile-liquify-open"
                   type="button"
                   data-mobile-tool
-                  data-mobile-tool-search="liquify fluidifica push twirl pinch expand crystals edge reconstruct"
+                  data-mobile-tool-search="liquify fluid push twirl pinch expand crystals edge reconstruct"
                   aria-label="Open Liquify"
                   aria-controls="mobileLiquifySheet"
                   aria-pressed="false"
@@ -2433,7 +2433,7 @@
                   class="mobile-tools-item"
                   type="button"
                   data-mobile-tool
-                  data-mobile-tool-search="sfocatura blur gaussiano gaussian morbidezza"
+                  data-mobile-tool-search="blur gaussian softness"
                   aria-label="Open Gaussian Blur"
                   aria-controls="mobileGaussianBlurSheet"
                   aria-pressed="false"
@@ -2449,7 +2449,7 @@
                   class="mobile-tools-item"
                   type="button"
                   data-mobile-tool
-                  data-mobile-tool-search="sfocatura movimento motion blur direzione velocita"
+                  data-mobile-tool-search="motion blur direction speed"
                   aria-label="Open Motion Blur"
                   aria-controls="mobileMotionBlurSheet"
                   aria-pressed="false"
@@ -2560,7 +2560,7 @@
             type="button"
             aria-describedby="mobileLayerMergeStatus"
           >
-            Unisci livelli
+            Merge Layers
           </button>
         </div>
         <p
@@ -2599,7 +2599,7 @@
             aria-describedby="mobileLayerMergeReason"
             hidden
           >
-            Unisci livelli
+            Merge Layers
           </button>
           <p id="mobileLayerMergeReason" role="status" hidden></p>
           <button
@@ -2631,28 +2631,28 @@
       </p>
 
       <main class="stage">
-        <canvas id="gpuCanvas" tabindex="-1" aria-label="Canvas di disegno WebGPU"></canvas>
+        <canvas id="gpuCanvas" tabindex="-1" aria-label="WebGPU drawing canvas"></canvas>
         <canvas id="rasterSelectionOverlayCanvas" aria-hidden="true" hidden></canvas>
         <canvas id="rasterSelectionGestureCanvas" aria-hidden="true" hidden></canvas>
         <canvas id="vectorTextPresentationCanvas" aria-hidden="true" hidden></canvas>
-        <canvas id="vectorTextInteractionCanvas" aria-label="Selezione e trasformazione degli elementi" hidden></canvas>
+        <canvas id="vectorTextInteractionCanvas" aria-label="Select and transform elements" hidden></canvas>
         <canvas id="brushOutlineCanvas" aria-hidden="true" hidden></canvas>
         <p id="pixelSelectionMoveHelp" class="visually-hidden">
-          Trascina per spostare i pixel. Frecce: un pixel; Maiusc più frecce: dieci pixel. Invio applica, Escape annulla.
+          Drag to move pixels. Arrow keys: one pixel; Shift plus arrow keys: ten pixels. Enter applies; Escape cancels.
         </p>
-        <div id="transformCommitBar" class="transform-commit-bar" role="toolbar" aria-label="Conferma trasformazione" hidden>
-          <span id="transformCommitLabel">Trasforma</span>
-          <div class="raster-transform-grids" data-raster-transform-grid-controls hidden role="group" aria-label="Dimensione griglia Warp">
+        <div id="transformCommitBar" class="transform-commit-bar" role="toolbar" aria-label="Confirm transform" hidden>
+          <span id="transformCommitLabel">Transform</span>
+          <div class="raster-transform-grids" data-raster-transform-grid-controls hidden role="group" aria-label="Warp grid size">
             <button type="button" data-raster-transform-grid="3" aria-pressed="true">3×3</button>
             <button type="button" data-raster-transform-grid="4" aria-pressed="false">4×4</button>
             <button type="button" data-raster-transform-grid="5" aria-pressed="false">5×5</button>
           </div>
-          <button id="transformCancel" type="button">Annulla</button>
-          <button id="transformApply" class="primary" type="button">Applica</button>
+          <button id="transformCancel" type="button">Cancel</button>
+          <button id="transformApply" class="primary" type="button">Apply</button>
         </div>
         <canvas id="tipPreviewCanvas" aria-hidden="true"></canvas>
         <p id="status" class="status app-status" role="status" aria-live="polite">
-          Inizializzazione WebGPU…
+          Initializing WebGPU…
         </p>
         <input
           id="vectorSvgFileInput"
@@ -2667,46 +2667,46 @@
           hidden
         />
         <p id="vectorSvgImportStatus" class="visually-hidden" role="status" aria-live="polite">
-          Importazione SVG pronta.
+          SVG import ready.
         </p>
         <p id="rasterImageImportStatus" class="visually-hidden" role="status" aria-live="polite">
-          Importazione immagine pronta.
+          Image import ready.
         </p>
         <p id="vectorTextRasterStatus" class="visually-hidden" role="status" aria-live="polite">
-          Rasterizzazione vettoriale pronta.
+          Vector rasterization ready.
         </p>
         <p id="vectorTextStatus" class="visually-hidden" role="status" aria-live="polite">
-          Editor vettoriale pronto.
+          Vector editor ready.
         </p>
 
-        <aside id="gpuMemoryMonitor" class="gpu-memory-monitor" aria-label="Memoria GPU registrata">
+        <aside id="gpuMemoryMonitor" class="gpu-memory-monitor" aria-label="Tracked GPU memory">
           <section id="gpuMemoryPanel" class="gpu-memory-panel" hidden>
             <header class="gpu-memory-header">
               <div>
-                <span>Memoria GPU registrata</span>
+                <span>Tracked GPU memory</span>
                 <strong id="gpuMemoryTotal">—</strong>
-                <small id="gpuMemoryPeak">picco —</small>
+                <small id="gpuMemoryPeak">peak —</small>
               </div>
               <div class="gpu-memory-header-actions">
                 <button
                   id="copyAppDiagnostics"
                   class="gpu-memory-copy-diagnostics"
                   type="button"
-                  title="Copia errori, ultimi 30 eventi e stato layer"
-                >Copia diagnosi</button>
-                <button id="gpuMemoryClose" type="button" aria-label="Chiudi dettaglio memoria" title="Chiudi">×</button>
+                  title="Copy errors, the last 30 events, and layer state"
+                >Copy diagnostics</button>
+                <button id="gpuMemoryClose" type="button" aria-label="Close GPU memory details" title="Close">×</button>
               </div>
             </header>
-            <p class="gpu-memory-subtitle">Allocazioni WebGPU logiche registrate dal motore</p>
+            <p class="gpu-memory-subtitle">Logical WebGPU allocations tracked by the engine</p>
             <p id="renderingModeMemoryHint" class="gpu-memory-note">
-              Memoria rendering: inizializzazione…
+              Rendering memory: initializing…
             </p>
             <dl class="stats gpu-memory-runtime-stats">
-              <div><dt>FPS render</dt><dd id="fpsStat">—</dd></div>
+              <div><dt>Render FPS</dt><dd id="fpsStat">—</dd></div>
               <div><dt>CPU frame</dt><dd id="cpuStat">—</dd></div>
-              <div><dt>Stamps base</dt><dd id="stampStat">0</dd></div>
-              <div><dt>Draw logiche evitate</dt><dd id="avoidedStat">0</dd></div>
-              <div><dt>Memoria GPU conteggiata</dt><dd id="memoryStat">—</dd></div>
+              <div><dt>Base stamps</dt><dd id="stampStat">0</dd></div>
+              <div><dt>Avoided logical draws</dt><dd id="avoidedStat">0</dd></div>
+              <div><dt>Counted GPU memory</dt><dd id="memoryStat">—</dd></div>
               <div><dt>GPU</dt><dd id="gpuStat">—</dd></div>
             </dl>
             <output
@@ -2717,65 +2717,65 @@
               hidden
             ></output>
             <details id="appDiagnosticsDetails" class="gpu-memory-diagnostic-details" hidden>
-              <summary>Rapporto diagnostico copiabile</summary>
+              <summary>Copyable diagnostic report</summary>
               <pre id="appDiagnosticsReport" class="app-diagnostics-report" tabindex="0"></pre>
             </details>
             <p id="gpuMemoryGovernor" class="gpu-memory-note">—</p>
             <p class="gpu-memory-measured-heading">
-              Ripartizione esatta
-              <span><output id="gpuMeasuredTotal">—</output> corrente · <output id="gpuMeasuredPeak">—</output> picco</span>
+              Exact breakdown
+              <span><output id="gpuMeasuredTotal">—</output> current · <output id="gpuMeasuredPeak">—</output> peak</span>
             </p>
             <dl class="gpu-memory-list gpu-memory-measured" id="gpuMeasuredBreakdown"></dl>
             <p class="gpu-memory-measured-heading">
-              Per livello
-              <span><output id="gpuLayerMemoryTotal">—</output> totale</span>
+              Per layer
+              <span><output id="gpuLayerMemoryTotal">—</output> total</span>
             </p>
             <dl class="gpu-memory-list gpu-memory-measured" id="gpuLayerBreakdown"></dl>
-            <p class="gpu-memory-note">Caldo è la texture full-document, Freddo sono i soli tile dipinti, Compresso è RAM CPU: pesa sul limite del processo ma non sul totale GPU. La piramide mip segue il livello attivo.</p>
-            <p class="gpu-memory-measured-heading">Modello diagnostico · non sommato al totale</p>
+            <p class="gpu-memory-note">Hot is the full-document texture, Cold includes only painted tiles, and Compressed is CPU RAM: it counts toward the process limit but not the GPU total. The mip pyramid follows the active layer.</p>
+            <p class="gpu-memory-measured-heading">Diagnostic model · excluded from the total</p>
             <dl class="gpu-memory-list">
-              <div data-memory-row><dt>Layer · RGBA16F autorevole full-canvas</dt><dd id="gpuMemoryLayerBase">—</dd></div>
-              <div data-memory-row><dt>Layer · inattivi cold tile</dt><dd id="gpuMemoryLayerCold">—</dd></div>
-              <div data-memory-row><dt>Gruppo ritaglio attivo · RGBA16F ritagliata</dt><dd id="gpuMemoryActiveClippingMask">—</dd></div>
-              <div data-memory-row><dt>Layer · compressi · RAM CPU</dt><dd id="gpuMemoryLayerCompressed">—</dd></div>
-              <div data-memory-row><dt>Totale contato · GPU + cold RAM CPU</dt><dd id="gpuMemoryCountedWithCompressedCpu">—</dd></div>
-              <div data-memory-row><dt>Layer · reidratazione transitoria</dt><dd id="gpuMemoryLayerHydration">—</dd></div>
-              <div class="gpu-memory-study" data-memory-study-row><dt id="gpuMemoryLayerStudyTilesLabel">Raw livelli · hot + cold effettivo</dt><dd id="gpuMemoryLayerStudyTiles">—</dd></div>
-              <div class="gpu-memory-study" data-memory-study-row><dt id="gpuMemoryLayerStudyBboxLabel">Confronto · bbox 256</dt><dd id="gpuMemoryLayerStudyBbox">—</dd></div>
-              <div data-memory-row><dt>Piramidi mip · RGBA16F</dt><dd id="gpuMemoryLayerMips">—</dd></div>
-              <div data-memory-row><dt>Bake livelli · RGBA16F transitori</dt><dd id="gpuMemoryLayerBakes">—</dd></div>
-              <div data-memory-row><dt>Livelli fusi · RGBA16F mip 0</dt><dd id="gpuMemoryLayerComposite">—</dd></div>
+              <div data-memory-row><dt>Layer · authoritative full-canvas RGBA16F</dt><dd id="gpuMemoryLayerBase">—</dd></div>
+              <div data-memory-row><dt>Layer · inactive cold tiles</dt><dd id="gpuMemoryLayerCold">—</dd></div>
+              <div data-memory-row><dt>Active clipping group · cropped RGBA16F</dt><dd id="gpuMemoryActiveClippingMask">—</dd></div>
+              <div data-memory-row><dt>Layer · compressed · CPU RAM</dt><dd id="gpuMemoryLayerCompressed">—</dd></div>
+              <div data-memory-row><dt>Counted total · GPU + cold CPU RAM</dt><dd id="gpuMemoryCountedWithCompressedCpu">—</dd></div>
+              <div data-memory-row><dt>Layer · temporary hydration</dt><dd id="gpuMemoryLayerHydration">—</dd></div>
+              <div class="gpu-memory-study" data-memory-study-row><dt id="gpuMemoryLayerStudyTilesLabel">Raw layers · actual hot + cold</dt><dd id="gpuMemoryLayerStudyTiles">—</dd></div>
+              <div class="gpu-memory-study" data-memory-study-row><dt id="gpuMemoryLayerStudyBboxLabel">Comparison · bbox 256</dt><dd id="gpuMemoryLayerStudyBbox">—</dd></div>
+              <div data-memory-row><dt>Mip pyramids · RGBA16F</dt><dd id="gpuMemoryLayerMips">—</dd></div>
+              <div data-memory-row><dt>Layer bakes · temporary RGBA16F</dt><dd id="gpuMemoryLayerBakes">—</dd></div>
+              <div data-memory-row><dt>Merged layers · RGBA16F mip 0</dt><dd id="gpuMemoryLayerComposite">—</dd></div>
               <div data-memory-row><dt>Grain</dt><dd id="gpuMemoryGrain">—</dd></div>
-              <div id="gpuMemoryVectorTextRow" data-memory-row hidden><dt>Cache vettoriali · RGBA16F / matte R16F</dt><dd id="gpuMemoryVectorText">—</dd></div>
-              <div id="gpuMemoryRasterImageRow" data-memory-row hidden><dt>Operazioni raster · immagini, Trasforma e Blur</dt><dd id="gpuMemoryRasterImage">—</dd></div>
+              <div id="gpuMemoryVectorTextRow" data-memory-row hidden><dt>Vector cache · RGBA16F / R16F matte</dt><dd id="gpuMemoryVectorText">—</dd></div>
+              <div id="gpuMemoryRasterImageRow" data-memory-row hidden><dt>Raster operations · images, Transform, and Blur</dt><dd id="gpuMemoryRasterImage">—</dd></div>
 
               <div data-memory-row><dt>Shape 2K</dt><dd id="gpuMemoryShape">—</dd></div>
               <div data-memory-row><dt>Buffer Paint</dt><dd id="gpuMemoryPaintBuffers">—</dd></div>
-              <div data-memory-row><dt>Cache schermo</dt><dd id="gpuMemoryPresentation">—</dd></div>
-              <div data-memory-row><dt>Miniatura layer · GPU</dt><dd id="gpuMemoryLayerThumbnail">—</dd></div>
-              <div class="gpu-memory-group-start" data-memory-row><dt>Style stack · risultato RGBA16F mip 1+</dt><dd id="gpuMemoryStrokeStyled">—</dd></div>
-              <div data-memory-row><dt>Traccia · copertura continua R16F</dt><dd id="gpuMemoryStrokeCoverage">—</dd></div>
-              <div data-memory-row><dt>Traccia · mask e controllo</dt><dd id="gpuMemoryStrokeControl">—</dd></div>
-              <div data-memory-row><dt id="gpuMemoryEffectsScratchLabel">Effetti · pool scratch</dt><dd id="gpuMemoryEffectsScratch">—</dd></div>
-              <div data-memory-row><dt>Pool scratch · picco</dt><dd id="gpuMemoryEffectsScratchPeak">—</dd></div>
-              <div class="gpu-memory-group-start" data-memory-row><dt>Ombra esterna · matte R16F</dt><dd id="gpuMemoryOuterShadowMatte">—</dd></div>
-              <div data-memory-row><dt>Ombra esterna · controllo</dt><dd id="gpuMemoryOuterShadowControl">—</dd></div>
-              <div class="gpu-memory-group-start" data-memory-row><dt>Ombra interna · matte R16F</dt><dd id="gpuMemoryInnerShadowMatte">—</dd></div>
-              <div data-memory-row><dt>Ombra interna · controllo</dt><dd id="gpuMemoryInnerShadowControl">—</dd></div>
-              <div class="gpu-memory-group-start" data-memory-row><dt id="gpuMemoryBevelHeightLabel">Smusso · heightfield R32F</dt><dd id="gpuMemoryBevelHeight">—</dd></div>
-              <div data-memory-row><dt>Smusso · LUT e controllo</dt><dd id="gpuMemoryBevelControl">—</dd></div>
+              <div data-memory-row><dt>Screen cache</dt><dd id="gpuMemoryPresentation">—</dd></div>
+              <div data-memory-row><dt>Layer thumbnail · GPU</dt><dd id="gpuMemoryLayerThumbnail">—</dd></div>
+              <div class="gpu-memory-group-start" data-memory-row><dt>Style stack · RGBA16F result mip 1+</dt><dd id="gpuMemoryStrokeStyled">—</dd></div>
+              <div data-memory-row><dt>Stroke · continuous R16F coverage</dt><dd id="gpuMemoryStrokeCoverage">—</dd></div>
+              <div data-memory-row><dt>Stroke · mask and control</dt><dd id="gpuMemoryStrokeControl">—</dd></div>
+              <div data-memory-row><dt id="gpuMemoryEffectsScratchLabel">Effects · scratch pool</dt><dd id="gpuMemoryEffectsScratch">—</dd></div>
+              <div data-memory-row><dt>Scratch pool · peak</dt><dd id="gpuMemoryEffectsScratchPeak">—</dd></div>
+              <div class="gpu-memory-group-start" data-memory-row><dt>Outer Shadow · R16F matte</dt><dd id="gpuMemoryOuterShadowMatte">—</dd></div>
+              <div data-memory-row><dt>Outer Shadow · control</dt><dd id="gpuMemoryOuterShadowControl">—</dd></div>
+              <div class="gpu-memory-group-start" data-memory-row><dt>Inner Shadow · R16F matte</dt><dd id="gpuMemoryInnerShadowMatte">—</dd></div>
+              <div data-memory-row><dt>Inner Shadow · control</dt><dd id="gpuMemoryInnerShadowControl">—</dd></div>
+              <div class="gpu-memory-group-start" data-memory-row><dt id="gpuMemoryBevelHeightLabel">Bevel · R32F heightfield</dt><dd id="gpuMemoryBevelHeight">—</dd></div>
+              <div data-memory-row><dt>Bevel · LUT and control</dt><dd id="gpuMemoryBevelControl">—</dd></div>
 
               <div class="gpu-memory-group-start" data-memory-row><dt>Blend dry · scratch</dt><dd id="gpuMemoryBlend">—</dd></div>
-              <div data-memory-row><dt>Riempimento / bacchetta · scratch CCL</dt><dd id="gpuMemoryFill">—</dd></div>
-              <div data-memory-row><dt>Selezione pixel · mask e span</dt><dd id="gpuMemorySelection">—</dd></div>
-              <div data-memory-row><dt>Rendering · Light R16F / Uniformed e Intense RGBA16F</dt><dd id="gpuMemoryLightGlaze">—</dd></div>
-              <div data-memory-row><dt>Coda stabilizzazione</dt><dd id="gpuMemoryStabilizationTail">—</dd></div>
-              <div data-memory-row><dt>Coda spessore</dt><dd id="gpuMemoryThicknessTail">—</dd></div>
-              <div class="gpu-memory-group-start" data-memory-row><dt id="gpuMemoryHistoryLabel">Cronologia raster · GPU</dt><dd id="gpuMemoryHistory">—</dd></div>
+              <div data-memory-row><dt>Fill / wand · CCL scratch</dt><dd id="gpuMemoryFill">—</dd></div>
+              <div data-memory-row><dt>Pixel selection · mask and spans</dt><dd id="gpuMemorySelection">—</dd></div>
+              <div data-memory-row><dt>Rendering · Light R16F / Uniformed and Intense RGBA16F</dt><dd id="gpuMemoryLightGlaze">—</dd></div>
+              <div data-memory-row><dt>Stabilization tail</dt><dd id="gpuMemoryStabilizationTail">—</dd></div>
+              <div data-memory-row><dt>Thickness tail</dt><dd id="gpuMemoryThicknessTail">—</dd></div>
+              <div class="gpu-memory-group-start" data-memory-row><dt id="gpuMemoryHistoryLabel">Raster history · GPU</dt><dd id="gpuMemoryHistory">—</dd></div>
             </dl>
             <p id="gpuMemoryHistoryDiagnostics" class="gpu-memory-note">—</p>
             <p id="gpuMemoryAudit" class="gpu-memory-note">—</p>
-            <p class="gpu-memory-note">Il totale e la prima ripartizione provengono dal registro delle risorse vive: ogni texture o buffer appartiene a una sola categoria. La cronologia raster mostra pagine GPU riservate e cold storage registrato nel totale. I picchi di categoria sono storici indipendenti e non vanno sommati. Il modello diagnostico resta visibile soltanto per individuare derive; le due righe di studio cold sono controfattuali. Layer compressi è RAM CPU separata. Non include swapchain, pipeline, overhead del driver o memoria del browser.</p>
+            <p class="gpu-memory-note">The total and first breakdown come from the live-resource registry: every texture or buffer belongs to exactly one category. Raster history shows reserved GPU pages and cold storage included in the total. Category peaks are independent historical values and must not be added together. The diagnostic model remains visible only to reveal drift; the two cold-study rows are counterfactual. Compressed layers use separate CPU RAM. This excludes the swapchain, pipelines, driver overhead, and browser memory.</p>
           </section>
 
           <button
@@ -2784,7 +2784,7 @@
             type="button"
             aria-controls="gpuMemoryPanel"
             aria-expanded="false"
-            title="Apri dettaglio memoria GPU"
+            title="Open GPU memory details"
           >
             <span>GPU</span>
             <strong id="gpuMemoryCompact">—</strong>
@@ -2805,7 +2805,7 @@
     >
       <div class="layer-loading-content">
         <span class="layer-loading-spinner" aria-hidden="true"></span>
-        <p id="layerLoadingLabel">Caricamento livello…</p>
+        <p id="layerLoadingLabel">Loading layer…</p>
       </div>
     </div>
 

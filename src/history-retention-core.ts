@@ -145,22 +145,22 @@ export function defaultHistorySpillMarks(): HistorySpillMarks {
 
 export function assertHistorySpillMarks(marks: HistorySpillMarks): void {
   if (!Number.isFinite(marks.highWaterBytes) || marks.highWaterBytes <= 0) {
-    throw new RangeError("highWaterBytes deve essere positivo.");
+    throw new RangeError("highWaterBytes must be positive.");
   }
   if (!Number.isFinite(marks.lowWaterBytes) || marks.lowWaterBytes < 0) {
-    throw new RangeError("lowWaterBytes deve essere non negativo.");
+    throw new RangeError("lowWaterBytes must be non-negative.");
   }
   if (marks.lowWaterBytes >= marks.highWaterBytes) {
     throw new RangeError(
-      "lowWaterBytes deve stare sotto highWaterBytes: senza distanza fra le due "
-      + "soglie il travaso si riaccende subito dopo essersi spento.",
+      "lowWaterBytes must be below highWaterBytes: without space between the two "
+      + "thresholds, spillover restarts immediately after it stops.",
     );
   }
   if (
     !Number.isInteger(marks.keepHotCheckpoints)
     || marks.keepHotCheckpoints < 0
   ) {
-    throw new RangeError("keepHotCheckpoints deve essere un intero non negativo.");
+    throw new RangeError("keepHotCheckpoints must be a non-negative integer.");
   }
 }
 
@@ -606,7 +606,7 @@ export function historyBaseBudgetBytes(options: {
  */
 export function createHistoryBudget(availableBytes: number): HistoryBudget {
   if (!Number.isFinite(availableBytes) || availableBytes < HISTORY_MINIMUM_BUDGET_BYTES) {
-    throw new RangeError("Il budget History deve essere almeno 16 MiB.");
+    throw new RangeError("The History budget must be at least 16 MiB.");
   }
   const hardBytes = Math.floor(availableBytes);
   return {
@@ -754,7 +754,7 @@ export function nextHistoryCompactionChunk(
   const count = Math.max(0, Math.floor(itemCount));
   const safeStart = Math.max(0, Math.min(count, Math.floor(start)));
   if (!Number.isInteger(maximumItems) || maximumItems <= 0) {
-    throw new RangeError("Il chunk di manutenzione History deve essere positivo.");
+    throw new RangeError("The History maintenance chunk must be positive.");
   }
   const end = Math.min(count, safeStart + maximumItems);
   return { start: safeStart, end, done: end >= count };

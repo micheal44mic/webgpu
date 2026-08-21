@@ -90,7 +90,7 @@ function compactTextureShape(texels: number): {
   const height = Math.max(1, Math.ceil(Math.max(1, texels) / width));
   if (height > MINIMUM_WEBGPU_MAXIMUM_TEXTURE_DIMENSION_2D) {
     throw new Error(
-      `Dati Slug ${width}×${height} oltre il limite WebGPU portabile.`,
+      `Slug data ${width}×${height} exceeds the portable WebGPU limit.`,
     );
   }
   return {
@@ -236,7 +236,7 @@ export function buildVectorTextSlugData(
 ): VectorTextSlugData {
   if (Number(path.fillRule) === 1) {
     throw new Error(
-      "Slug sorgente accetta il path OpenType NonZero; EvenOdd va canonizzato prima.",
+      "The Slug source accepts an OpenType NonZero path; EvenOdd must be canonicalized first.",
     );
   }
   const maximumLod = vectorTextMaximumLod();

@@ -23,14 +23,14 @@ export interface RasterImageMemoryBudget {
 
 function requirePositiveDimension(value: number, label: string): number {
   if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`${label} deve essere un intero positivo sicuro.`);
+    throw new Error(`${label} must be a positive safe integer.`);
   }
   return value;
 }
 
 export function rasterImageMipLevelCount(width: number, height: number): number {
-  const safeWidth = requirePositiveDimension(width, "La larghezza");
-  const safeHeight = requirePositiveDimension(height, "L’altezza");
+  const safeWidth = requirePositiveDimension(width, "Width");
+  const safeHeight = requirePositiveDimension(height, "Height");
   return 1 + Math.floor(Math.log2(Math.max(safeWidth, safeHeight)));
 }
 
@@ -39,14 +39,14 @@ export function rasterImageMipChainBytes(
   height: number,
   levels = rasterImageMipLevelCount(width, height),
 ): number {
-  const safeWidth = requirePositiveDimension(width, "La larghezza");
-  const safeHeight = requirePositiveDimension(height, "L’altezza");
+  const safeWidth = requirePositiveDimension(width, "Width");
+  const safeHeight = requirePositiveDimension(height, "Height");
   if (!Number.isSafeInteger(levels) || levels <= 0) {
-    throw new Error("Il numero di mip deve essere un intero positivo sicuro.");
+    throw new Error("The mip count must be a positive safe integer.");
   }
   const maximumLevels = rasterImageMipLevelCount(safeWidth, safeHeight);
   if (levels > maximumLevels) {
-    throw new Error(`La texture ammette al massimo ${maximumLevels} livelli mip.`);
+    throw new Error(`The texture supports at most ${maximumLevels} mip levels.`);
   }
   let total = 0;
   for (let level = 0; level < levels; level += 1) {
@@ -56,7 +56,7 @@ export function rasterImageMipChainBytes(
       * RASTER_IMAGE_LINEAR_BYTES_PER_PIXEL;
   }
   if (!Number.isSafeInteger(total)) {
-    throw new Error("La memoria della catena mip supera l’intervallo sicuro.");
+    throw new Error("Mip-chain memory exceeds the safe integer range.");
   }
   return total;
 }
@@ -66,10 +66,10 @@ export function planRasterImageMemory(
   height: number,
   sourceBytes: number,
 ): RasterImageMemoryBudget {
-  const safeWidth = requirePositiveDimension(width, "La larghezza");
-  const safeHeight = requirePositiveDimension(height, "L’altezza");
+  const safeWidth = requirePositiveDimension(width, "Width");
+  const safeHeight = requirePositiveDimension(height, "Height");
   if (!Number.isSafeInteger(sourceBytes) || sourceBytes < 0) {
-    throw new Error("I byte sorgente devono essere un intero sicuro non negativo.");
+    throw new Error("Source bytes must be a non-negative safe integer.");
   }
   const mipLevelCount = rasterImageMipLevelCount(safeWidth, safeHeight);
   const decodedBaseBytes = safeWidth * safeHeight
@@ -87,7 +87,7 @@ export function planRasterImageMemory(
     + decodedBitmapBytes
     + inspectionBytes;
   if (!Number.isSafeInteger(logicalImportPeakBytes)) {
-    throw new Error("Il picco logico d’importazione supera l’intervallo sicuro.");
+    throw new Error("The logical import peak exceeds the safe integer range.");
   }
   return Object.freeze({
     width: safeWidth,

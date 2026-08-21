@@ -73,14 +73,14 @@ function arrayLike(value: unknown): ArrayLike<unknown> | null {
 
 function finiteUnitChannel(value: number, name: string): number {
   if (!Number.isFinite(value)) {
-    throw new TypeError(`${name} deve essere finito`);
+    throw new TypeError(`${name} must be finite`);
   }
   return clamp(value, 0, 1);
 }
 
 /** Converts one normalized sRGB channel to linear light. */
 export function srgbChannelToLinearColorOverlay(value: number): number {
-  const channel = finiteUnitChannel(value, "Il canale sRGB");
+  const channel = finiteUnitChannel(value, "The sRGB channel");
   return channel <= 0.04045
     ? channel / 12.92
     : ((channel + 0.055) / 1.055) ** 2.4;
@@ -88,7 +88,7 @@ export function srgbChannelToLinearColorOverlay(value: number): number {
 
 /** Converts one normalized linear-light channel to sRGB. */
 export function linearChannelToSrgbColorOverlay(value: number): number {
-  const channel = finiteUnitChannel(value, "Il canale lineare");
+  const channel = finiteUnitChannel(value, "The linear channel");
   return channel <= 0.0031308
     ? 12.92 * channel
     : 1.055 * channel ** (1 / 2.4) - 0.055;
@@ -100,7 +100,7 @@ export function rasterColorOverlayColorFromHex(
 ): RasterColorOverlayColor {
   const normalized = String(hex).trim().replace(/^#/, "");
   if (!/^[0-9a-f]{6}$/i.test(normalized)) {
-    throw new Error(`Colore HEX della sovrapposizione non valido: ${hex}`);
+    throw new Error(`Invalid Color Overlay HEX color: ${hex}`);
   }
   return [0, 2, 4].map((offset) => (
     srgbChannelToLinearColorOverlay(
@@ -115,7 +115,7 @@ export function rasterColorOverlayColorToHex(
 ): string {
   const encoded = color.map((channel, index) => {
     const srgb = linearChannelToSrgbColorOverlay(
-      finiteUnitChannel(Number(channel), `Il canale lineare ${index}`),
+      finiteUnitChannel(Number(channel), `The linear channel ${index}`),
     );
     return Math.round(srgb * 255).toString(16).padStart(2, "0");
   });

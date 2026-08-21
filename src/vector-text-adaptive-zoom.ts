@@ -82,7 +82,7 @@ export function vectorTextZoomStressSeed(
   documentHeight: number = documentWidth,
 ): { profile: VectorTextZoomStressProfile; seed: VectorTextNodeSeed } {
   if (!Number.isInteger(index) || index < 0 || index >= VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT) {
-    throw new RangeError(`Indice testo stress zoom fuori range: ${index}.`);
+    throw new RangeError(`Zoom stress text index is out of range: ${index}.`);
   }
   const profile = VECTOR_TEXT_ZOOM_STRESS_PROFILE_ORDER[index];
   const palette = ["#f2f0e9", "#dd5c35", "#62a8e5", "#e7bd52", "#9c7cff"];
@@ -391,7 +391,7 @@ export function vectorTextWideFallbackView(
     || documentWidth <= 0
     || documentHeight <= 0
   ) {
-    throw new RangeError("Vista o dimensione documento non valida per la cache vettoriale larga.");
+    throw new RangeError("Invalid view or document size for the wide vector cache.");
   }
   const fitZoom = Math.min(
     current.canvasWidth / documentWidth,

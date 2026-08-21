@@ -388,7 +388,7 @@ export class LayerThumbnailController {
       const capture = await this.options.captureRasterLayerThumbnail(layerId);
       if (this.disposed) return;
       if (capture.layerId !== layerId) {
-        throw new Error("La cattura miniatura ha restituito un livello inatteso.");
+        throw new Error("Thumbnail capture returned an unexpected layer.");
       }
       const liveStats = this.options.getStats();
       const liveLayer = liveStats?.layers.find((layer) => layer.id === capture.layerId);
@@ -420,7 +420,7 @@ export class LayerThumbnailController {
       if (this.disposed) return;
       const message = error instanceof Error ? error.message : String(error);
       const liveStats = this.options.getStats();
-      if (message.includes("rimandata")) {
+      if (message.includes("deferred")) {
         this.pendingLayerIds.add(layerId);
       } else if (!liveStats?.layers.some((layer) => layer.id === layerId)) {
         this.pendingLayerIds.delete(layerId);
@@ -428,7 +428,7 @@ export class LayerThumbnailController {
         this.captureUnavailable = true;
         this.pendingLayerIds.clear();
         this.options.onWarning?.(
-          "Miniature raster GPU non disponibili; resta il fallback strutturale.",
+          "GPU raster thumbnails are unavailable; the structural fallback remains active.",
           error,
         );
       }

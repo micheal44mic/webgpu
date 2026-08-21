@@ -15,7 +15,7 @@ export interface BrushMaskOutline {
   /**
    * Convex hull of every retained path vertex, in the same local coordinates.
    * It is built once with the alpha boundary so pointer movement never scans
-   * thousands of contour vertices merely to evaluate Krita's cursor guards.
+   * thousands of contour vertices merely to evaluate cursor guards.
    */
   readonly boundingHull: Float32Array;
   readonly precise: boolean;
@@ -59,7 +59,7 @@ function assertMaskDimensions(mask: Uint8Array, width: number, height: number): 
     || height < 1
     || mask.length !== width * height
   ) {
-    throw new Error("La maschera alpha del pennello ha dimensioni non valide.");
+    throw new Error("The brush alpha mask has invalid dimensions.");
   }
 }
 
@@ -120,8 +120,8 @@ function firstDirection(bits: number): number {
 }
 
 /**
- * Krita's KisOutlineGenerator crosses a diagonal contact instead of splitting
- * it into two contours. In our clockwise, occupied-on-the-right edge field,
+ * Cross a diagonal contact instead of splitting it into two contours. In our
+ * clockwise, occupied-on-the-right edge field,
  * that is the left turn at the shared grid vertex.
  */
 function continuationDirection(bits: number, incoming: number): number {
@@ -301,8 +301,8 @@ export function brushOutlineRotationRadians(
 }
 
 /**
- * Returns the width+height of the transformed outline bounding box, matching
- * the quantity Krita uses for its minimum/oversized cursor safeguards.
+ * Returns the width+height of the transformed outline bounding box used by the
+ * minimum and oversized cursor safeguards.
  */
 export function brushOutlineBoundingExtentCssPixels(
   outline: BrushMaskOutline,

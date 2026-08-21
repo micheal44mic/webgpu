@@ -118,7 +118,7 @@ const ENGINE_NOTIFY_PREVIEW_INTERVAL_MS = 200;
 
 function requiredDescendant<T extends HTMLElement>(root: HTMLElement, id: string): T {
   const value = root.querySelector<HTMLElement>(`#${id}`);
-  if (!value) throw new Error(`Elemento Brush Studio #${id} non trovato.`);
+  if (!value) throw new Error(`Brush Studio element #${id} was not found.`);
   return value as T;
 }
 

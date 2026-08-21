@@ -333,8 +333,8 @@ export function rasterInnerShadowKernel(
 }
 
 /**
- * Document coordinates use +Y downward. Photoshop's familiar 120° default
- * therefore casts toward the lower-right with this light-to-shadow mapping.
+ * Document coordinates use +Y downward. The 120° default therefore casts
+ * toward the lower-right with this light-to-shadow mapping.
  * The sign remains a golden-locked calibration point rather than shader-local
  * magic.
  */

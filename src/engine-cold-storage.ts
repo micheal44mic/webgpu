@@ -80,11 +80,11 @@ function assertColdMatchesHot(
     (cold.format !== "rgba8unorm" && cold.format !== "rgba16float")
     || (hot.format !== "rgba8unorm" && hot.format !== "rgba16float")
   ) {
-    throw new Error("Cold storage o texture hot privi di un formato documento valido.");
+    throw new Error("Cold storage or hot texture is missing a valid document format.");
   }
   if (cold.format !== hot.format) {
     throw new Error(
-      `Cold storage ${cold.format} incompatibile con texture hot ${hot.format}; copia rifiutata.`,
+      `Cold storage ${cold.format} is incompatible with hot texture ${hot.format}; copy rejected.`,
     );
   }
 }
@@ -101,8 +101,8 @@ function assertCompressedStorageMatchesDocument(
 ): void {
   if (compressed.format !== engine.layerFormat) {
     throw new Error(
-      `Cold storage compresso ${compressed.format} incompatibile con documento `
-      + `${engine.layerFormat}; ripristino rifiutato.`,
+      `Compressed cold storage ${compressed.format} is incompatible with document `
+      + `${engine.layerFormat}; restore rejected.`,
     );
   }
 }
@@ -188,7 +188,7 @@ export async function compressOneDistantLayerInBackground(engine: BrushEngine, t
   }
   if (source.cold.format !== engine.layerFormat) {
     throw new Error(
-      `Compressione cold: seed ${source.cold.format} non combacia col documento `
+      `Cold compression: seed ${source.cold.format} does not match document `
       + `${engine.layerFormat}.`,
     );
   }
@@ -249,7 +249,7 @@ export async function compressOneDistantLayerInBackground(engine: BrushEngine, t
         source.cold,
         firstArrayLayer,
         chunkTileCount,
-        `worker compressione livello ${source.record.id}`,
+        `layer ${source.record.id} compression worker`,
       );
       if (
         token !== engine.layerColdCompressionEpoch
@@ -285,8 +285,8 @@ export async function compressOneDistantLayerInBackground(engine: BrushEngine, t
         if (!progress.pauseReported) {
           progress.pauseReported = true;
           engine.publishLayerColdCompressionStatus(
-            `Compressione ${source.record.name} in pausa: `
-            + `${progress.nextArrayLayer}/${source.cold.tileIndices.length} tile verificati.`,
+            `${source.record.name} compression paused: `
+            + `${progress.nextArrayLayer}/${source.cold.tileIndices.length} tiles verified.`,
             "working",
           );
         }
@@ -299,11 +299,11 @@ export async function compressOneDistantLayerInBackground(engine: BrushEngine, t
     }
     if (progress.rawBytes !== source.cold.memoryBytes) {
       throw new Error(
-        `Compressione livello ${source.record.id}: ${progress.rawBytes} byte letti, `
-        + `${source.cold.memoryBytes} attesi.`,
+        `Layer ${source.record.id} compression: read ${progress.rawBytes} bytes; `
+        + `expected ${source.cold.memoryBytes}.`,
       );
     }
-    await engine.waitForGpuCapped(`Evizione cold livello ${source.record.id}`);
+    await engine.waitForGpuCapped(`Evict layer ${source.record.id} cold storage`);
     if (
       token !== engine.layerColdCompressionEpoch
       || engine.layerColdCompressionProgress !== progress
@@ -329,7 +329,7 @@ export async function compressOneDistantLayerInBackground(engine: BrushEngine, t
     engine.layerColdCompressionProgress = null;
     destroyLayerColdStorage(source.cold);
     engine.publishLayerColdCompressionStatus(
-      `${source.record.name} compresso in background: `
+      `${source.record.name} compressed in the background: `
       + `${(progress.rawBytes / MEBIBYTE_BYTES).toFixed(1)} MiB GPU → `
       + `${(progress.storedBytes / MEBIBYTE_BYTES).toFixed(1)} MiB RAM.`,
       "ok",
@@ -343,7 +343,7 @@ export async function compressOneDistantLayerInBackground(engine: BrushEngine, t
       engine.layerColdCompressionClient = null;
       const message = error instanceof Error ? error.message : String(error);
       engine.publishLayerColdCompressionStatus(
-        `Compressione background non disponibile; cold GPU mantenuto: ${message}`,
+        `Background compression unavailable; GPU cold storage retained: ${message}`,
         "error",
       );
       engine.publishStats();
@@ -405,7 +405,7 @@ export async function compressColdStorageResources(
   }
   if (rawBytes !== cold.memoryBytes) {
     throw new Error(
-      `${label}: compressi ${rawBytes} byte, attesi ${cold.memoryBytes}.`,
+      `${label}: compressed ${rawBytes} bytes; expected ${cold.memoryBytes}.`,
     );
   }
   return {
@@ -454,7 +454,7 @@ export async function restoreColdStorageResources(
     for (const chunk of compressed.chunks) {
       const restored = await decompressLayerColdChunk(engine, chunk);
       if (restored.byteLength % tileByteLength !== 0) {
-        throw new Error(`${label}: chunk non allineato ai tile.`);
+        throw new Error(`${label}: chunk is not aligned to tiles.`);
       }
       const chunkTileCount = restored.byteLength / tileByteLength;
       engine.device.queue.writeTexture(
@@ -483,7 +483,7 @@ export async function restoreColdStorageResources(
       || restoredBytes !== compressed.rawBytes
       || restoredHash !== compressed.sourceHash
     ) {
-      throw new Error(`${label}: integrità aggregata non valida.`);
+      throw new Error(`${label}: invalid aggregate integrity.`);
     }
     await engine.waitForGpuCapped(label);
     return {
@@ -508,12 +508,12 @@ export async function ensureLayerColdStorageResident(engine: BrushEngine,
   }
   const compressed = gpu.compressed;
   if (!compressed) {
-    throw new Error(`Livello ${record.id}: storage autorevole mancante.`);
+    throw new Error(`Layer ${record.id}: authoritative storage is missing.`);
   }
   assertCompressedStorageMatchesDocument(engine, compressed);
   const tileByteLength = coldCodecTileBytes(compressed.format);
   const texture = engine.device.createTexture({
-    label: `Cold ripristinato livello ${record.id} #${compressed.generation}`,
+    label: `Restored cold storage for layer ${record.id} #${compressed.generation}`,
     size: {
       width: LAYER_STORAGE_TILE_WIDTH,
       height: LAYER_STORAGE_TILE_HEIGHT,
@@ -534,7 +534,7 @@ export async function ensureLayerColdStorageResident(engine: BrushEngine,
     for (const chunk of compressed.chunks) {
       const restored = await decompressLayerColdChunk(engine, chunk);
       if (restored.byteLength % tileByteLength !== 0) {
-        throw new Error(`Chunk livello ${record.id} non allineato ai tile.`);
+        throw new Error(`Layer ${record.id} chunk is not aligned to tiles.`);
       }
       const chunkTileCount = restored.byteLength / tileByteLength;
       engine.device.queue.writeTexture(
@@ -563,11 +563,11 @@ export async function ensureLayerColdStorageResident(engine: BrushEngine,
       || restoredBytes !== compressed.rawBytes
       || restoredHash !== compressed.sourceHash
     ) {
-      throw new Error(`Integrità aggregata livello ${record.id} non valida.`);
+      throw new Error(`Layer ${record.id} has invalid aggregate integrity.`);
     }
-    await engine.waitForGpuCapped(`Upload cold compresso livello ${record.id}`);
+    await engine.waitForGpuCapped(`Upload compressed cold storage for layer ${record.id}`);
     if (gpu.compressed !== compressed || gpu.cold) {
-      throw new Error(`Ripristino livello ${record.id} diventato stale.`);
+      throw new Error(`Layer ${record.id} restore became stale.`);
     }
     gpu.cold = {
       texture,
@@ -579,7 +579,7 @@ export async function ensureLayerColdStorageResident(engine: BrushEngine,
     gpu.compressed = null;
     committed = true;
     engine.publishLayerColdCompressionStatus(
-      `${record.name} ripristinato dal worker senza perdita.`,
+      `${record.name} restored losslessly by the worker.`,
       "ok",
     );
     engine.publishStats();
@@ -600,17 +600,17 @@ export async function createLayerColdStorageCandidate(engine: BrushEngine,
 ): Promise<LayerColdStorageResources> {
   if (hot.format !== engine.layerFormat) {
     throw new Error(
-      `Pack cold rifiutato: texture hot ${hot.format}, documento ${engine.layerFormat}.`,
+      `Cold pack rejected: hot texture ${hot.format}, document ${engine.layerFormat}.`,
     );
   }
   const format = hot.format;
   const tileIndices = layerStorageTileIndices(mask);
   if (tileIndices.length === 0) {
-    throw new Error(`Cold storage livello ${record.id}: contenuto senza tile.`);
+    throw new Error(`Layer ${record.id} cold storage has content but no tiles.`);
   }
   if (tileIndices.length > engine.device.limits.maxTextureArrayLayers) {
     throw new Error(
-      `Cold storage livello ${record.id}: ${tileIndices.length} tile superano `
+      `Layer ${record.id} cold storage: ${tileIndices.length} tiles exceed `
       + `maxTextureArrayLayers=${engine.device.limits.maxTextureArrayLayers}.`,
     );
   }
@@ -622,10 +622,12 @@ export async function createLayerColdStorageCandidate(engine: BrushEngine,
   const historyQualifier = purpose === "history" ? " History" : "";
   return runGpuAllocationTransaction(
     engine.device,
-    `Pack cold${historyQualifier} livello ${record.id}`,
+    `Pack${historyQualifier} cold storage for layer ${record.id}`,
     async (transaction) => {
       const texture = engine.device.createTexture({
-        label: `Cold tile${historyQualifier} livello ${record.id} #${generation}`,
+        label: purpose === "history"
+          ? `History cold tiles for layer ${record.id} #${generation}`
+          : `Cold tiles for layer ${record.id} #${generation}`,
         size: {
           width: LAYER_STORAGE_TILE_WIDTH,
           height: LAYER_STORAGE_TILE_HEIGHT,
@@ -639,7 +641,7 @@ export async function createLayerColdStorageCandidate(engine: BrushEngine,
       });
       transaction.deferRollback(() => texture.destroy());
       const encoder = engine.device.createCommandEncoder({
-        label: `Pack cold${historyQualifier} livello ${record.id} #${generation}`,
+        label: `Pack${historyQualifier} cold storage for layer ${record.id} #${generation}`,
       });
       tileIndices.forEach((tileIndex, arrayLayer) => {
         const extent = tileDocumentCopyExtent(tileIndex);
@@ -662,7 +664,7 @@ export async function createLayerColdStorageCandidate(engine: BrushEngine,
         );
       });
       engine.device.queue.submit([encoder.finish()]);
-      await engine.waitForGpuCapped(`Pack cold${historyQualifier} livello ${record.id}`);
+      await engine.waitForGpuCapped(`Pack${historyQualifier} cold storage for layer ${record.id}`);
       engine.maybeInjectLayerColdStorageFault("after-pack-submit");
       return { texture, tileIndices, memoryBytes, generation, format };
     },
@@ -683,11 +685,11 @@ export async function cloneLayerColdStorageResources(
 ): Promise<LayerColdStorageResources> {
   if (source.format !== engine.layerFormat) {
     throw new Error(
-      `${label}: seed ${source.format} incompatibile con documento ${engine.layerFormat}.`,
+      `${label}: seed ${source.format} is incompatible with document ${engine.layerFormat}.`,
     );
   }
   if (source.tileIndices.length === 0) {
-    throw new Error(`${label}: seed cold privo di tile.`);
+    throw new Error(`${label}: cold seed has no tiles.`);
   }
   const expectedBytes = source.tileIndices.length
     * LAYER_STORAGE_TILE_WIDTH
@@ -695,7 +697,7 @@ export async function cloneLayerColdStorageResources(
     * layerFormatBytesPerPixel(source.format);
   if (source.memoryBytes !== expectedBytes) {
     throw new Error(
-      `${label}: seed cold dichiara ${source.memoryBytes} byte, attesi ${expectedBytes}.`,
+      `${label}: cold seed declares ${source.memoryBytes} bytes; expected ${expectedBytes}.`,
     );
   }
   return runGpuAllocationTransaction(engine.device, label, async (transaction) => {
@@ -773,22 +775,22 @@ export async function createLayerColdStorageCandidateIncrementally(
   maximumTilesPerSubmission = 16,
 ): Promise<LayerColdStorageResources | null> {
   if (!Number.isInteger(maximumTilesPerSubmission) || maximumTilesPerSubmission <= 0) {
-    throw new RangeError("Il chunk tile del checkpoint History deve essere positivo.");
+    throw new RangeError("The History checkpoint tile chunk must be positive.");
   }
   if (!hooks.shouldContinue()) return null;
   if (hot.format !== engine.layerFormat) {
     throw new Error(
-      `Pack cold History rifiutato: texture hot ${hot.format}, documento ${engine.layerFormat}.`,
+      `History cold pack rejected: hot texture ${hot.format}, document ${engine.layerFormat}.`,
     );
   }
   const format = hot.format;
   const tileIndices = layerStorageTileIndices(mask);
   if (tileIndices.length === 0) {
-    throw new Error(`Cold storage livello ${record.id}: contenuto senza tile.`);
+    throw new Error(`Layer ${record.id} cold storage has content but no tiles.`);
   }
   if (tileIndices.length > engine.device.limits.maxTextureArrayLayers) {
     throw new Error(
-      `Cold storage livello ${record.id}: ${tileIndices.length} tile superano `
+      `Layer ${record.id} cold storage: ${tileIndices.length} tiles exceed `
       + `maxTextureArrayLayers=${engine.device.limits.maxTextureArrayLayers}.`,
     );
   }
@@ -799,11 +801,11 @@ export async function createLayerColdStorageCandidateIncrementally(
     * bytesPerPixel;
   return runGpuAllocationTransaction(
     engine.device,
-    `Pack cold incrementale livello ${record.id}`,
+    `Incremental cold pack for layer ${record.id}`,
     async (transaction) => {
       if (!hooks.shouldContinue()) return null;
       const texture = engine.device.createTexture({
-        label: `Cold tile History livello ${record.id} #${generation}`,
+        label: `History cold tiles for layer ${record.id} #${generation}`,
         size: {
           width: LAYER_STORAGE_TILE_WIDTH,
           height: LAYER_STORAGE_TILE_HEIGHT,
@@ -833,7 +835,7 @@ export async function createLayerColdStorageCandidateIncrementally(
           firstTile + maximumTilesPerSubmission,
         );
         const encoder = engine.device.createCommandEncoder({
-          label: `Pack cold History livello ${record.id} ${firstTile}-${endTile}`,
+          label: `History cold pack for layer ${record.id} ${firstTile}-${endTile}`,
         });
         for (let arrayLayer = firstTile; arrayLayer < endTile; arrayLayer += 1) {
           const tileIndex = tileIndices[arrayLayer];
@@ -862,7 +864,7 @@ export async function createLayerColdStorageCandidateIncrementally(
         }
         engine.device.queue.submit([encoder.finish()]);
         await engine.waitForGpuCapped(
-          `Pack cold History livello ${record.id} ${firstTile}-${endTile}`,
+          `History cold pack for layer ${record.id} ${firstTile}-${endTile}`,
         );
         engine.maybeInjectLayerColdStorageFault("after-pack-submit");
         if (endTile < tileIndices.length) {
@@ -887,7 +889,7 @@ export async function uploadCompressedLayerIntoHot(engine: BrushEngine,
   assertCompressedStorageMatchesDocument(engine, compressed);
   if (hot.format !== compressed.format) {
     throw new Error(
-      `Upload cold compresso ${compressed.format} incompatibile con texture hot ${hot.format}.`,
+      `Compressed cold upload ${compressed.format} is incompatible with hot texture ${hot.format}.`,
     );
   }
   const tileByteLength = coldCodecTileBytes(compressed.format);
@@ -902,17 +904,17 @@ export async function uploadCompressedLayerIntoHot(engine: BrushEngine,
       || restored.byteLength !== chunk.rawBytes
       || restored.byteLength % tileByteLength !== 0
     ) {
-      throw new Error(`Reidratazione transitoria livello ${record.id} non valida.`);
+      throw new Error(`Invalid transient hydration for layer ${record.id}.`);
     }
     const chunkTileCount = restored.byteLength / tileByteLength;
     if (firstTile + chunkTileCount > compressed.tileIndices.length) {
-      throw new Error(`Chunk transitorio livello ${record.id} oltre i tile attesi.`);
+      throw new Error(`Transient chunk for layer ${record.id} exceeds the expected tiles.`);
     }
     for (let chunkTile = 0; chunkTile < chunkTileCount; chunkTile += 1) {
       const tileIndex = compressed.tileIndices[firstTile + chunkTile];
       const extent = tileDocumentCopyExtent(tileIndex);
       if (extent.width <= 0 || extent.height <= 0) {
-        throw new Error(`Tile ${tileIndex} fuori dal documento.`);
+        throw new Error(`Tile ${tileIndex} lies outside the document.`);
       }
       const byteOffset = chunkTile * tileByteLength;
       engine.device.queue.writeTexture(
@@ -951,7 +953,7 @@ export async function uploadCompressedLayerIntoHot(engine: BrushEngine,
     || restoredBytes !== compressed.rawBytes
     || restoredHash !== compressed.sourceHash
   ) {
-    throw new Error(`Integrità transitoria livello ${record.id} non valida.`);
+    throw new Error(`Invalid transient integrity for layer ${record.id}.`);
   }
 }
 
@@ -963,10 +965,10 @@ export async function createHydratedLayerTexture(engine: BrushEngine,
   completionPolicy: LayerGpuCompletionPolicy = "await-immediately",
 ): Promise<LayerTextureResources> {
   if (injectFault && completionPolicy !== "await-immediately") {
-    throw new Error("Il fault hydrate richiede il completamento GPU immediato.");
+    throw new Error("The hydration fault requires immediate GPU completion.");
   }
   if (gpu.cold && gpu.compressed) {
-    throw new Error(`Livello ${record.id}: cold GPU e compresso autorevoli insieme.`);
+    throw new Error(`Layer ${record.id}: GPU cold storage and compressed storage are both authoritative.`);
   }
   // Compressed bytes remain authoritative until the caller commits ownership,
   // so both activation and transient folding can hydrate the final hot target
@@ -981,7 +983,7 @@ export async function createHydratedLayerTexture(engine: BrushEngine,
   }
   const cold = gpu.cold;
   if (record.hasContent && !cold && !compressedSource) {
-    throw new Error(`Reidratazione livello ${record.id}: cold store mancante.`);
+    throw new Error(`Layer ${record.id} hydration: cold storage is missing.`);
   }
   const memoryBytes = DOCUMENT_WIDTH * DOCUMENT_HEIGHT
     * (engine.layerFormat === "rgba16float" ? 8 : 4);
@@ -1025,7 +1027,7 @@ export async function decompressLayerColdChunk(engine: BrushEngine,
       restored.byteLength !== chunk.rawBytes
       || hashBytes(restored) !== chunk.sourceHash
     ) {
-      throw new Error("Chunk cold raw non supera la verifica di integrità.");
+      throw new Error("Raw cold chunk failed integrity verification.");
     }
     return restored;
   }
@@ -1041,7 +1043,7 @@ export async function decompressLayerColdChunk(engine: BrushEngine,
     }
   }
   const message = firstError instanceof Error ? firstError.message : String(firstError);
-  throw new Error(`Worker decompressione non recuperabile: ${message}`);
+  throw new Error(`Unrecoverable decompression worker failure: ${message}`);
 }
 
 export async function ensureAdjacentLayerColdStorageResident(engine: BrushEngine): Promise<void> {
@@ -1065,7 +1067,7 @@ export function evictReconstructibleLayerResources(engine: BrushEngine, record: 
   const gpu = engine.requireLayerGpu(record.id);
   if (record.hasContent && !gpu.cold && !gpu.compressed) {
     throw new Error(
-      `Evizione livello ${record.id} rifiutata: storage autorevole mancante.`,
+      `Layer ${record.id} eviction rejected: authoritative storage is missing.`,
     );
   }
   engine.layerPresentationFrozen = true;
@@ -1084,7 +1086,7 @@ export async function ensureActiveLayerHot(engine: BrushEngine, record: LayerRec
   const hot = await createHydratedLayerTexture(engine, 
     record,
     gpu,
-    `Reidrata livello ${record.id}`,
+    `Hydrate layer ${record.id}`,
     true,
   );
   gpu.hot = hot;

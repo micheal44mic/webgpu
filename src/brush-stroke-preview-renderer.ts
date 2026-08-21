@@ -515,7 +515,7 @@ export class AuthoritativeBrushStrokePreviewRenderer {
   private async ensureInitialized(): Promise<void> {
     if (this.initialized) return;
     if (!this.engine.initialized) {
-      throw new Error("Il renderer autorevole della preview richiede il motore WebGPU inizializzato.");
+      throw new Error("The authoritative preview renderer requires an initialized WebGPU engine.");
     }
     if (this.initializationPromise) return this.initializationPromise;
     this.initializationPromise = this.initializeGpuResources();
@@ -669,7 +669,7 @@ export class AuthoritativeBrushStrokePreviewRenderer {
     if (cached) return cached.context;
     const context = canvas.getContext("webgpu") as GPUCanvasContext | null;
     if (!context) {
-      throw new Error("GPUCanvasContext non disponibile per la preview del pennello.");
+      throw new Error("GPUCanvasContext is unavailable for the brush preview.");
     }
     context.configure({
       device: this.engine.device,

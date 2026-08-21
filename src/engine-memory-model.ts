@@ -32,7 +32,7 @@ function resolvedExtent(extent: DocumentExtent | undefined): {
   const width = Math.max(1, Math.trunc(extent?.width ?? DOCUMENT_WIDTH));
   const height = Math.max(1, Math.trunc(extent?.height ?? DOCUMENT_HEIGHT));
   if (!Number.isFinite(width) || !Number.isFinite(height)) {
-    throw new RangeError("Le dimensioni del documento devono essere finite.");
+    throw new RangeError("Document dimensions must be finite.");
   }
   return { width, height };
 }

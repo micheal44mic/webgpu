@@ -54,7 +54,7 @@ async function assertShaderModules(
     .filter((message) => message.type === "error")
     .map((message) => `${label}:${message.lineNum}:${message.linePos} ${message.message}`));
   if (errors.length > 0) {
-    throw new Error(`Shader Selezione pixel WGSL non valido:\n${errors.join("\n")}`);
+    throw new Error(`Invalid Pixel Selection WGSL shader:\n${errors.join("\n")}`);
   }
 }
 
@@ -62,7 +62,7 @@ export class SelectionRenderer {
   static async create(options: SelectionRendererOptions): Promise<SelectionRenderer> {
     return runGpuAllocationTransaction(
       options.device,
-      "Selezione pixel WebGPU",
+      "WebGPU Pixel Selection",
       async (transaction) => {
         const renderer = new SelectionRenderer(options, transaction);
         await renderer.initialize();
@@ -116,45 +116,45 @@ export class SelectionRenderer {
       return buffer;
     };
     const maskUsage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
-    this.frontMask = createBuffer("Selezione pixel · maschera front 1-bit", SELECTION_MASK_BYTES, maskUsage);
-    this.backMask = createBuffer("Selezione pixel · maschera back 1-bit", SELECTION_MASK_BYTES, maskUsage);
+    this.frontMask = createBuffer("Pixel Selection · front 1-bit mask", SELECTION_MASK_BYTES, maskUsage);
+    this.backMask = createBuffer("Pixel Selection · back 1-bit mask", SELECTION_MASK_BYTES, maskUsage);
     this.colorPreviewBaseMask = createBuffer(
-      "Selezione pixel · base anteprima colore 1-bit",
+      "Pixel Selection · 1-bit color preview base",
       SELECTION_MASK_BYTES,
       maskUsage,
     );
     this.operationUniformBuffer = createBuffer(
-      "Selezione pixel · uniformi operazione",
+      "Pixel Selection · operation uniforms",
       SELECTION_OPERATION_UNIFORM_BUFFER_BYTES,
       GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     );
     this.overlayUniformBuffer = createBuffer(
-      "Selezione pixel · uniformi overlay",
+      "Pixel Selection · overlay uniforms",
       SELECTION_OVERLAY_UNIFORM_BUFFER_BYTES,
       GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     );
     this.lassoSpanBuffer = createBuffer(
-      "Selezione pixel · span lazo",
+      "Pixel Selection · lasso spans",
       SELECTION_LASSO_SPAN_BUFFER_BYTES,
       GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     );
     this.metadataBuffer = createBuffer(
-      "Selezione pixel · metadati",
+      "Pixel Selection · metadata",
       SELECTION_METADATA_BUFFER_BYTES,
       GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
     );
     this.metadataReadback = createBuffer(
-      "Selezione pixel · readback metadati",
+      "Pixel Selection · metadata readback",
       SELECTION_METADATA_BUFFER_BYTES,
       GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
     );
     this.placeholderBuffer = createBuffer(
-      "Selezione pixel · placeholder storage",
+      "Pixel Selection · storage placeholder",
       SELECTION_LASSO_SPAN_BYTES,
       GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     );
     this.computeBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Selezione pixel · compute bind group layout",
+      label: "Pixel Selection · compute bind group layout",
       entries: [
         { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform", minBindingSize: SELECTION_OPERATION_UNIFORM_BYTES } },
         { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "unfilterable-float" } },
@@ -165,7 +165,7 @@ export class SelectionRenderer {
       ],
     });
     this.overlayBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Selezione pixel · overlay bind group layout",
+      label: "Pixel Selection · overlay bind group layout",
       entries: [
         { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform", minBindingSize: SELECTION_OVERLAY_UNIFORM_BYTES } },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
@@ -174,7 +174,7 @@ export class SelectionRenderer {
     });
     const context = this.overlayCanvas.getContext("webgpu") as GPUCanvasContext | null;
     if (!context) {
-      throw new Error("Impossibile ottenere il canvas WebGPU dell'overlay selezione.");
+      throw new Error("Unable to obtain the WebGPU canvas for the selection overlay.");
     }
     this.overlayContext = context;
     this.overlayFormat = navigator.gpu.getPreferredCanvasFormat();
@@ -202,11 +202,11 @@ export class SelectionRenderer {
 
   private async initialize(): Promise<void> {
     const computeModule = this.device.createShaderModule({
-      label: "Selezione pixel · compute",
+      label: "Pixel Selection · compute",
       code: selectionComputeShader,
     });
     const overlayModule = this.device.createShaderModule({
-      label: "Selezione pixel · overlay",
+      label: "Pixel Selection · overlay",
       code: selectionOverlayShader,
     });
     await assertShaderModules([
@@ -214,7 +214,7 @@ export class SelectionRenderer {
       { label: "overlay", module: overlayModule },
     ]);
     const computeLayout = this.device.createPipelineLayout({
-      label: "Selezione pixel · compute pipeline layout",
+      label: "Pixel Selection · compute pipeline layout",
       bindGroupLayouts: [this.computeBindGroupLayout],
     });
     const computePipelines = await Promise.all([
@@ -225,7 +225,7 @@ export class SelectionRenderer {
       "translateExternalMask",
       "summarizeSelection",
     ].map((entryPoint) => this.device.createComputePipelineAsync({
-      label: `Selezione pixel · ${entryPoint}`,
+      label: `Pixel Selection · ${entryPoint}`,
       layout: computeLayout,
       compute: { module: computeModule, entryPoint },
     })));
@@ -238,11 +238,11 @@ export class SelectionRenderer {
       this.summarizePipeline,
     ] = computePipelines;
     const overlayLayout = this.device.createPipelineLayout({
-      label: "Selezione pixel · overlay pipeline layout",
+      label: "Pixel Selection · overlay pipeline layout",
       bindGroupLayouts: [this.overlayBindGroupLayout],
     });
     this.overlayPipeline = await this.device.createRenderPipelineAsync({
-      label: "Selezione pixel · overlay trasparente",
+      label: "Pixel Selection · transparent overlay",
       layout: overlayLayout,
       vertex: { module: overlayModule, entryPoint: "vertexMain" },
       fragment: {
@@ -253,7 +253,7 @@ export class SelectionRenderer {
       primitive: { topology: "triangle-list" },
     });
     this.overlayBindGroup = this.createOverlayBindGroup(this.frontMask);
-    const encoder = this.device.createCommandEncoder({ label: "Selezione pixel · inizializzazione" });
+    const encoder = this.device.createCommandEncoder({ label: "Pixel Selection · initialization" });
     encoder.clearBuffer(this.frontMask);
     encoder.clearBuffer(this.backMask);
     this.device.queue.submit([encoder.finish()]);
@@ -275,7 +275,7 @@ export class SelectionRenderer {
     this.assertAlive();
     if (this.colorPreviewActive) return;
     const encoder = this.device.createCommandEncoder({
-      label: "Selezione pixel · cattura base anteprima colore",
+      label: "Pixel Selection · capture color preview base",
     });
     encoder.copyBufferToBuffer(
       this.frontMask,
@@ -302,13 +302,13 @@ export class SelectionRenderer {
     this.initializeMetadata();
     const bindGroup = this.createComputeBindGroup(this.backMask, this.placeholderBuffer);
     const startedAt = performance.now();
-    const encoder = this.device.createCommandEncoder({ label: "Selezione pixel · colore globale" });
+    const encoder = this.device.createCommandEncoder({ label: "Pixel Selection · global color" });
     this.prepareBackMask(
       encoder,
       combineMode,
       this.colorPreviewActive ? this.colorPreviewBaseMask : this.frontMask,
     );
-    const pass = encoder.beginComputePass({ label: "Selezione pixel · confronto colore" });
+    const pass = encoder.beginComputePass({ label: "Pixel Selection · color comparison" });
     pass.setBindGroup(0, bindGroup);
     pass.setPipeline(this.selectColorPipeline);
     pass.dispatchWorkgroups(Math.ceil(SELECTION_MASK_WORDS / 256));
@@ -326,7 +326,7 @@ export class SelectionRenderer {
     this.assertAlive();
     this.finishColorRangePreview();
     if (raster.packedSpans.byteLength > SELECTION_LASSO_SPAN_BUFFER_BYTES) {
-      throw new RangeError("Gli span del lazo superano il buffer GPU preallocato.");
+      throw new RangeError("The lasso spans exceed the preallocated GPU buffer.");
     }
     if (raster.packedSpans.byteLength > 0) {
       this.device.queue.writeBuffer(this.lassoSpanBuffer, 0, raster.packedSpans);
@@ -335,9 +335,9 @@ export class SelectionRenderer {
     this.initializeMetadata();
     const bindGroup = this.createComputeBindGroup(this.backMask, this.placeholderBuffer);
     const startedAt = performance.now();
-    const encoder = this.device.createCommandEncoder({ label: "Selezione pixel · lazo" });
+    const encoder = this.device.createCommandEncoder({ label: "Pixel Selection · lasso" });
     this.prepareBackMask(encoder, combineMode);
-    const pass = encoder.beginComputePass({ label: "Selezione pixel · span lazo" });
+    const pass = encoder.beginComputePass({ label: "Pixel Selection · lasso spans" });
     pass.setBindGroup(0, bindGroup);
     if (raster.spanCount > 0) {
       pass.setPipeline(this.lassoPipeline);
@@ -360,9 +360,9 @@ export class SelectionRenderer {
     this.initializeMetadata();
     const bindGroup = this.createComputeBindGroup(this.backMask, candidateMask);
     const startedAt = performance.now();
-    const encoder = this.device.createCommandEncoder({ label: "Selezione pixel · combina maschera" });
+    const encoder = this.device.createCommandEncoder({ label: "Pixel Selection · combine mask" });
     this.prepareBackMask(encoder, combineMode);
-    const pass = encoder.beginComputePass({ label: "Selezione pixel · replace/add/subtract" });
+    const pass = encoder.beginComputePass({ label: "Pixel Selection · replace/add/subtract" });
     pass.setBindGroup(0, bindGroup);
     pass.setPipeline(this.combinePipeline);
     pass.dispatchWorkgroups(Math.ceil(SELECTION_MASK_WORDS / 256));
@@ -380,8 +380,8 @@ export class SelectionRenderer {
     this.initializeMetadata();
     const bindGroup = this.createComputeBindGroup(this.backMask, this.frontMask);
     const startedAt = performance.now();
-    const encoder = this.device.createCommandEncoder({ label: "Selezione pixel · inverti" });
-    const pass = encoder.beginComputePass({ label: "Selezione pixel · inversione e sommario" });
+    const encoder = this.device.createCommandEncoder({ label: "Pixel Selection · invert" });
+    const pass = encoder.beginComputePass({ label: "Pixel Selection · inversion and summary" });
     pass.setBindGroup(0, bindGroup);
     pass.setPipeline(this.invertPipeline);
     pass.dispatchWorkgroups(Math.ceil(SELECTION_MASK_WORDS / 256));
@@ -402,10 +402,10 @@ export class SelectionRenderer {
     const bindGroup = this.createComputeBindGroup(this.backMask, this.frontMask);
     const startedAt = performance.now();
     const encoder = this.device.createCommandEncoder({
-      label: `Selezione pixel · trasla ${x},${y}`,
+      label: `Pixel Selection · translate ${x},${y}`,
     });
     encoder.clearBuffer(this.backMask);
-    const pass = encoder.beginComputePass({ label: "Selezione pixel · traslazione e sommario" });
+    const pass = encoder.beginComputePass({ label: "Pixel Selection · translation and summary" });
     pass.setBindGroup(0, bindGroup);
     pass.setPipeline(this.translatePipeline);
     pass.dispatchWorkgroups(Math.ceil(SELECTION_MASK_WORDS / 256));
@@ -425,7 +425,7 @@ export class SelectionRenderer {
     this.assertAlive();
     this.finishColorRangePreview();
     if (tileMask.length !== SELECTION_TILE_MASK_WORDS) {
-      throw new Error("Tile mask della Selezione pixel storica non valida.");
+      throw new Error("The historical Pixel Selection tile mask is invalid.");
     }
     const metadata = new Uint32Array(SELECTION_METADATA_WORDS);
     metadata[SELECTION_META_MIN_X] = state.bounds?.x ?? 0xffffffff;
@@ -441,7 +441,7 @@ export class SelectionRenderer {
     this.device.queue.writeBuffer(this.metadataBuffer, 0, metadata);
     const startedAt = performance.now();
     const encoder = this.device.createCommandEncoder({
-      label: "Selezione pixel · ripristino maschera storica",
+      label: "Pixel Selection · restore historical mask",
     });
     encoder.copyBufferToBuffer(
       sourceBuffer,
@@ -465,7 +465,7 @@ export class SelectionRenderer {
   clearSelection(): void {
     this.assertAlive();
     this.finishColorRangePreview();
-    const encoder = this.device.createCommandEncoder({ label: "Selezione pixel · deseleziona" });
+    const encoder = this.device.createCommandEncoder({ label: "Pixel Selection · deselect" });
     encoder.clearBuffer(this.backMask);
     this.device.queue.submit([encoder.finish()]);
     this.publishBackMask();
@@ -496,9 +496,9 @@ export class SelectionRenderer {
     floats[10] = offset.x;
     floats[11] = offset.y;
     this.device.queue.writeBuffer(this.overlayUniformBuffer, 0, upload);
-    const encoder = this.device.createCommandEncoder({ label: "Selezione pixel · presenta overlay" });
+    const encoder = this.device.createCommandEncoder({ label: "Pixel Selection · present overlay" });
     const pass = encoder.beginRenderPass({
-      label: "Selezione pixel · overlay separato",
+      label: "Pixel Selection · separate overlay",
       colorAttachments: [{
         view: this.overlayContext.getCurrentTexture().createView(),
         clearValue: { r: 0, g: 0, b: 0, a: 0 },
@@ -531,7 +531,7 @@ export class SelectionRenderer {
 
   private createComputeBindGroup(targetMask: GPUBuffer, externalMask: GPUBuffer): GPUBindGroup {
     return this.device.createBindGroup({
-      label: "Selezione pixel · compute bind group",
+      label: "Pixel Selection · compute bind group",
       layout: this.computeBindGroupLayout,
       entries: [
         { binding: 0, resource: { buffer: this.operationUniformBuffer, size: SELECTION_OPERATION_UNIFORM_BYTES } },
@@ -637,7 +637,7 @@ export class SelectionRenderer {
 
   private createOverlayBindGroup(mask: GPUBuffer): GPUBindGroup {
     return this.device.createBindGroup({
-      label: "Selezione pixel · overlay bind group",
+      label: "Pixel Selection · overlay bind group",
       layout: this.overlayBindGroupLayout,
       entries: [
         { binding: 0, resource: { buffer: this.overlayUniformBuffer, size: SELECTION_OVERLAY_UNIFORM_BYTES } },
@@ -648,6 +648,6 @@ export class SelectionRenderer {
   }
 
   private assertAlive(): void {
-    if (this.destroyed) throw new Error("Renderer Selezione pixel già distrutto.");
+    if (this.destroyed) throw new Error("The Pixel Selection renderer has already been destroyed.");
   }
 }

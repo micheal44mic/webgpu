@@ -142,7 +142,7 @@ createIcons({
 function element<T extends HTMLElement>(id: string): T {
   const result = document.getElementById(id);
   if (!result) {
-    throw new Error(`Elemento #${id} non trovato.`);
+    throw new Error(`Element #${id} not found.`);
   }
   return result as T;
 }
@@ -161,7 +161,7 @@ const rasterSelectionGestureContextCandidate = rasterSelectionGestureCanvas.getC
   alpha: true,
 });
 if (!rasterSelectionGestureContextCandidate) {
-  throw new Error("Canvas 2D provvisorio del lazo non disponibile.");
+  throw new Error("Temporary 2D lasso canvas is unavailable.");
 }
 const rasterSelectionGestureContext: CanvasRenderingContext2D =
   rasterSelectionGestureContextCandidate;
@@ -368,8 +368,8 @@ let historyState: HistoryState = {
   cursor: 0,
   storedBaseStamps: 0,
   logicalStampBytes: 0,
-  undoBlockedReason: "Non ci sono azioni da annullare.",
-  redoBlockedReason: "Non ci sono azioni da ripristinare.",
+  undoBlockedReason: "There are no actions to undo.",
+  redoBlockedReason: "There are no actions to redo.",
   openEdit: null,
 };
 
@@ -472,12 +472,12 @@ const engine = new BrushEngine(canvas, {
       (item) => item.key === snapshot.selectedKey,
     );
     layerSwitchResult.textContent = selectedItem?.kind === "text"
-      ? "Testo selezionato: pennello sospeso; il raster di lavoro resta caldo."
+      ? "Text selected: brush suspended; the working raster stays resident."
       : selectedItem?.kind === "svg"
-        ? "SVG selezionato: pennello sospeso; il raster di lavoro resta caldo."
+        ? "SVG selected: brush suspended; the working raster stays resident."
         : selectedItem?.kind === "image"
-          ? "Immagine selezionata: pennello sospeso; usa Trasforma e poi Applica o Annulla."
-          : "Raster selezionato: pennello attivo.";
+          ? "Image selected: brush suspended; use Transform, then Apply or Cancel."
+          : "Raster selected: brush active.";
   },
   onActiveLayerChange(activeIndex) {
     // A global undo can move the active layer on its own. Without resyncing, the
@@ -492,7 +492,7 @@ const engine = new BrushEngine(canvas, {
       mixedSceneController?.syncScene(mixedSnapshot);
     }
     layerSwitchResult.textContent =
-      `Undo/Redo ha selezionato il livello ${activeIndex + 1}.`;
+      `Undo/Redo selected layer ${activeIndex + 1}.`;
     projectSessionController?.markDirty();
   },
 }, tipPreviewCanvas, {
@@ -913,7 +913,7 @@ pixelSelectionController = new PixelSelectionController({
   getSelectionSettings: () => canvasToolSettingsController.selectionSnapshot(),
   onBusyChange: updateHistoryControls,
   onSettled: () => mobileToolSettingsSheet?.syncOpenState(),
-  onError: (error) => console.error("Selezione pixel WebGPU non riuscita", error),
+  onError: (error) => console.error("WebGPU pixel selection failed", error),
 });
 
 function selectedMobileVectorItem(
@@ -1830,7 +1830,7 @@ void engine.initialize()
     editorExtension?.handleEngineInitializationError(error);
     const message = error instanceof Error ? error.message : String(error);
     const secureContextHint = !window.isSecureContext
-      ? " WebGPU richiede HTTPS oppure localhost; un indirizzo LAN in HTTP non è sufficiente."
+      ? " WebGPU requires HTTPS or localhost; an HTTP address on your local network is not sufficient."
       : "";
     statusElement.textContent = `${message}${secureContextHint}`;
     statusElement.className = "status error";

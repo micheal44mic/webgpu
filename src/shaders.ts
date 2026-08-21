@@ -453,11 +453,11 @@ fn adjustedGrainCoverage(
       grainUvDy
     );
   }
-  // La luma RGB dell'asset Grain e' gia' stata calcolata al carico, con
-  // gli stessi pesi 0.299/0.587/0.114, e conservata su un canale scalare. Il
-  // valore campionato qui e' quello che prima veniva ricavato a ogni fragment
-  // dal dot(rgb): identico, ma senza portarsi dietro tre canali inutilizzati.
-  // L'alpha dell'immagine sorgente non modula la pittura, come prima.
+  // The Grain asset's RGB luma was already calculated during loading with
+  // the same 0.299/0.587/0.114 weights and stored in a scalar channel. The
+  // sampled value is identical to the previous per-fragment dot(rgb) result,
+  // without carrying three unused channels.
+  // The source image alpha does not modulate the paint, as before.
   let source = sourceSample.r;
   let adjusted = clamp(
     (source - 0.5) * grain.contrastFactor + 0.5 + grain.brightness,
@@ -2342,7 +2342,7 @@ fn finalStackFragmentMain(
 `;
 
 // Intense Blending cannot use fixed-function blending against the permanent
-// linear layer: Procreate's measured law performs source-over in encoded sRGB.
+// linear layer: the measured calibration performs source-over in encoded sRGB.
 // This tile resolver reads both inputs, evaluates the exact live formula, and
 // writes layer-format pixels to a small preallocated copy scratch.
 export const lightGlazeCommitTileShader = /* wgsl */ `

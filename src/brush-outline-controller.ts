@@ -518,7 +518,7 @@ export class BrushOutlineController {
       for (const buffer of createdBuffers) buffer.destroy();
       this.context.unconfigure();
       this.failedDevice = target.device;
-      console.warn("Brush outline WebGPU non disponibile.", error);
+      console.warn("WebGPU brush outline is unavailable.", error);
       return null;
     }
   }
@@ -631,7 +631,7 @@ export class BrushOutlineController {
     } catch (error) {
       this.failedDevice = resources.device;
       this.destroyGpuResources();
-      console.warn("Brush outline WebGPU interrotto.", error);
+      console.warn("WebGPU brush outline stopped.", error);
       return null;
     }
   }
@@ -720,7 +720,7 @@ export class BrushOutlineController {
     this.options.overlay.dataset.brushOutlinePrecision = outline
       ? (outline.precise ? "precise" : "bounded")
       : "analytic";
-    this.options.overlay.dataset.brushOutlineRenderer = "webgpu-krita-alpha-boundary";
+    this.options.overlay.dataset.brushOutlineRenderer = "webgpu-shape-alpha-boundary";
     this.options.overlay.dataset.brushOutlineSegments = String(renderedSegments);
     canvas.classList.add("brush-outline-active");
   }

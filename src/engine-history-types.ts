@@ -543,20 +543,20 @@ export function resolvePaintHistoryStampCount(
     return stamps.length;
   }
   if (stamps.length !== 0) {
-    throw new Error("Il replay Paint GPU non deve conservare stamp sul CPU.");
+    throw new Error("GPU Paint replay must not retain stamps on the CPU.");
   }
   if (
     !Number.isInteger(replayBatch.stampCount)
     || replayBatch.stampCount <= 0
     || replayBatch.stampCount > MAX_STAMPS_PER_BATCH
   ) {
-    throw new RangeError("Conteggio stamp della cronologia GPU non valido.");
+    throw new RangeError("Invalid GPU history stamp count.");
   }
   const expectedBytes = replayBatch.stampCount * STAMP_STRIDE_BYTES;
   if (replayBatch.gpuSlice.logicalBytes !== expectedBytes) {
     throw new Error(
-      `Payload GPU Paint ${replayBatch.gpuSlice.logicalBytes} B, `
-      + `attesi ${expectedBytes} B.`,
+      `GPU Paint payload ${replayBatch.gpuSlice.logicalBytes} B; `
+      + `expected ${expectedBytes} B.`,
     );
   }
   return replayBatch.stampCount;

@@ -114,7 +114,7 @@ async function ensureVectorRasterPipelines(
   if (existing) return existing;
   const pending = runGpuAllocationTransaction(
     engine.device,
-    `Pipeline raster vettoriale ${format}`,
+    `Vector rasterization pipeline ${format}`,
     () => {
   const meshShader = engine.vectorTextGpuShaderModule;
   const slugShader = engine.vectorTextGpuSlugShaderModule;
@@ -134,7 +134,7 @@ async function ensureVectorRasterPipelines(
     || !blurLayout
     || !innerLayout
   ) {
-    throw new Error("Renderer vettoriale GPU non pronto per rasterizzare il nodo.");
+    throw new Error("The GPU vector renderer is not ready to rasterize the node.");
   }
   const blend = sourceOverBlend();
   const vertexBuffers: GPUVertexBufferLayout[] = [{
@@ -259,8 +259,8 @@ async function ensureVectorRasterPipelines(
     }
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
-      `Rasterizzazione vettoriale ${format} non supportata dalla GPU. `
-      + `Nessun fallback RGBA8 è consentito. Dettaglio: ${message}`,
+      `The GPU does not support ${format} vector rasterization. `
+      + `No RGBA8 fallback is allowed. Details: ${message}`,
     );
   }
 }
@@ -272,7 +272,7 @@ async function createVectorRasterScratch(
   try {
     return await runGpuAllocationTransaction(
       engine.device,
-      `Scratch raster vettoriale ${format} MSAA${VECTOR_TEXT_GPU_SAMPLE_COUNT}`,
+      `Vector raster scratch ${format} MSAA${VECTOR_TEXT_GPU_SAMPLE_COUNT}`,
       (transaction) => {
         const msaaTexture = engine.device.createTexture({
           label: `Vector raster ${format} MSAA4 512 tile-aligned scratch`,
@@ -308,19 +308,19 @@ async function createVectorRasterScratch(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
-      `Scratch raster vettoriale ${format} non supportato dalla GPU. `
-      + `Nessun fallback RGBA8 è consentito. Dettaglio: ${message}`,
+      `The GPU does not support ${format} vector raster scratch. `
+      + `No RGBA8 fallback is allowed. Details: ${message}`,
     );
   }
 }
 
 function requireVectorDraws(draws: readonly VectorTextGpuDraw[]): void {
   if (draws.length === 0) {
-    throw new Error("Il nodo vettoriale non contiene draw rasterizzabili.");
+    throw new Error("The vector node contains no rasterizable draws.");
   }
   if (draws.length > VECTOR_TEXT_GPU_MAXIMUM_DRAWS) {
     throw new Error(
-      `Vettore oltre il limite di ${VECTOR_TEXT_GPU_MAXIMUM_DRAWS} draw call.`,
+      `The vector exceeds the limit of ${VECTOR_TEXT_GPU_MAXIMUM_DRAWS} draw calls.`,
     );
   }
 }
@@ -351,7 +351,7 @@ function encodeMissingBlurCaches(
   }
   if (builds.length === 0) return;
   if (builds.length > VECTOR_TEXT_GPU_MAXIMUM_DRAWS) {
-    throw new Error("Troppe cache blur vettoriali da preparare.");
+    throw new Error("Too many vector blur caches to prepare.");
   }
   ensureVectorTextGpuBlurScratch(engine, scratchWidth, scratchHeight);
   const uniformBuffer = engine.vectorTextGpuUniformBuffer;
@@ -380,7 +380,7 @@ function encodeMissingBlurCaches(
     || !horizontalPipeline
     || !verticalPipeline
   ) {
-    throw new Error("Risorse GPU blur vettoriali non pronte.");
+    throw new Error("The vector blur GPU resources are not ready.");
   }
   builds.forEach((build, index) => {
     writeVectorTextGpuBlurSourceUniform(engine, build.draw, index);
@@ -401,7 +401,7 @@ function encodeMissingBlurCaches(
     builds.length * VECTOR_TEXT_GPU_UNIFORM_STRIDE / 4,
   );
   const encoder = engine.device.createCommandEncoder({
-    label: "Preparazione cache blur vettoriale ad alta precisione per raster",
+    label: "Prepare high-precision vector blur cache for rasterization",
   });
   builds.forEach((build, index) => {
     const width = build.draw.blurWidth;
@@ -420,7 +420,7 @@ function encodeMissingBlurCaches(
     sourcePass.setScissorRect(0, 0, width, height);
     if (vectorTextGpuDrawUsesMesh(build.draw)) {
       if (build.resources.kind !== "mesh") {
-        throw new Error("Risorsa mesh incoerente con la mask blur vettoriale.");
+        throw new Error("The mesh resource does not match the vector blur mask.");
       }
       sourcePass.setPipeline(meshMaskPipeline);
       sourcePass.setBindGroup(0, uniformBindGroup, [dynamicOffset]);
@@ -429,7 +429,7 @@ function encodeMissingBlurCaches(
       sourcePass.drawIndexed(build.resources.indexCount, 1, 0, 0, 0);
     } else {
       if (build.resources.kind !== "slug") {
-        throw new Error("Risorsa Slug incoerente con la mask blur vettoriale.");
+        throw new Error("The Slug resource does not match the vector blur mask.");
       }
       sourcePass.setPipeline(slugMaskPipeline);
       sourcePass.setBindGroup(0, build.resources.bindGroup, [dynamicOffset]);
@@ -498,7 +498,7 @@ export async function renderVectorDrawsToTexture(
   requireVectorDraws(draws);
   if (destination.format !== engine.layerFormat) {
     throw new Error(
-      `Destinazione raster vettoriale ${destination.format} incompatibile con documento `
+      `Vector raster destination ${destination.format} is incompatible with document `
       + `${engine.layerFormat}.`,
     );
   }
@@ -507,7 +507,7 @@ export async function renderVectorDrawsToTexture(
   const uniformBuffer = engine.vectorTextGpuUniformBuffer;
   const uniformBindGroup = engine.vectorTextGpuUniformBindGroup;
   if (!uniformBuffer || !uniformBindGroup) {
-    throw new Error("Uniform GPU vettoriali non inizializzate.");
+    throw new Error("The vector GPU uniforms are not initialized.");
   }
   const drawResources = draws.map((draw) => ensureVectorTextGpuResource(engine, draw));
   const blurResources = draws.map((draw) =>
@@ -576,22 +576,22 @@ export async function renderVectorDrawsToTexture(
           const blur = blurResources[index];
           const dynamicOffset = index * VECTOR_TEXT_GPU_UNIFORM_STRIDE;
           if (draw.mode === "slug-blur" || draw.mode === "mesh-blur") {
-            if (!blur) throw new Error("Cache ombra vettoriale mancante.");
+            if (!blur) throw new Error("The vector shadow cache is missing.");
             pass.setPipeline(pipelines.blurComposite);
             pass.setBindGroup(0, blur.compositeBindGroup, [dynamicOffset]);
             pass.draw(6, 1, 0, 0);
           } else if (draw.mode === "slug-inner-shadow-direct") {
             if (resources.kind !== "slug") {
-              throw new Error("Risorsa Slug incoerente con l'ombra interna.");
+              throw new Error("The Slug resource does not match the inner shadow.");
             }
             if (resources.curveCount === 0) continue;
             pass.setPipeline(pipelines.slugInnerShadowDirect);
             pass.setBindGroup(0, resources.bindGroup, [dynamicOffset]);
             pass.draw(6, 1, 0, 0);
           } else if (draw.mode === "slug-inner-shadow-blur") {
-            if (!blur) throw new Error("Cache ombra interna Slug mancante.");
+            if (!blur) throw new Error("The Slug inner-shadow cache is missing.");
             if (resources.kind !== "slug") {
-              throw new Error("Risorsa Slug incoerente con l'ombra interna sfocata.");
+              throw new Error("The Slug resource does not match the blurred inner shadow.");
             }
             if (resources.curveCount === 0) continue;
             pass.setPipeline(pipelines.slugInnerShadowBlur);
@@ -599,9 +599,9 @@ export async function renderVectorDrawsToTexture(
             pass.setBindGroup(1, blur.innerShadowBindGroup);
             pass.draw(6, 1, 0, 0);
           } else if (draw.mode === "mesh-inner-shadow-blur") {
-            if (!blur) throw new Error("Cache ombra interna mesh mancante.");
+            if (!blur) throw new Error("The mesh inner-shadow cache is missing.");
             if (resources.kind !== "mesh") {
-              throw new Error("Risorsa mesh incoerente con l'ombra interna sfocata.");
+              throw new Error("The mesh resource does not match the blurred inner shadow.");
             }
             if (resources.indexCount === 0) continue;
             pass.setPipeline(pipelines.meshInnerShadowBlur);
@@ -612,7 +612,7 @@ export async function renderVectorDrawsToTexture(
             pass.drawIndexed(resources.indexCount, 1, 0, 0, 0);
           } else if (draw.mode === "mesh-direct") {
             if (resources.kind !== "mesh") {
-              throw new Error("Risorsa mesh incoerente con la draw vettoriale.");
+              throw new Error("The mesh resource does not match the vector draw.");
             }
             if (resources.indexCount === 0) continue;
             pass.setPipeline(pipelines.meshFill);
@@ -622,7 +622,7 @@ export async function renderVectorDrawsToTexture(
             pass.drawIndexed(resources.indexCount, 1, 0, 0, 0);
           } else {
             if (resources.kind !== "slug") {
-              throw new Error("Risorsa Slug incoerente con la draw vettoriale.");
+              throw new Error("The Slug resource does not match the vector draw.");
             }
             if (resources.curveCount === 0) continue;
             pass.setPipeline(pipelines.slugFill);
@@ -667,7 +667,7 @@ export async function renderVectorDrawsToTexture(
       }
     }
     await engine.waitForGpuCapped(
-      `Rasterizzazione vettoriale ${format} MSAA4`,
+      `Vector rasterization ${format} MSAA4`,
       60_000,
     );
   } finally {
@@ -692,28 +692,28 @@ async function hydrateHistorySeed(
 ): Promise<LayerGpuResources> {
   if (action.seed.format !== engine.layerFormat) {
     throw new Error(
-      `Seed raster vettoriale ${action.seed.format} incompatibile con documento `
-      + `${engine.layerFormat}; Redo rifiutato.`,
+      `Vector raster seed ${action.seed.format} is incompatible with document `
+      + `${engine.layerFormat}; Redo refused.`,
     );
   }
   const gpu = await allocateLayerGpuResources(
     engine,
     action.seed.format,
-    `Reidratazione raster vettoriale storico livello ${action.layerId}`,
+    `Hydrate historical vector raster layer ${action.layerId}`,
   );
   const hot = gpu.hot;
   if (!hot) {
     destroyLayerGpuResources(engine, gpu);
-    throw new Error("Texture hot del raster vettoriale storico mancante.");
+    throw new Error("The historical vector raster hot texture is missing.");
   }
   try {
     const encoder = engine.device.createCommandEncoder({
-      label: `Copia seed tiled raster vettoriale livello ${action.layerId}`,
+      label: `Copy tiled vector raster seed for layer ${action.layerId}`,
     });
     encodeLayerColdHydration(encoder, action.seed, hot);
     engine.device.queue.submit([encoder.finish()]);
     await engine.waitForGpuCapped(
-      `Reidratazione raster vettoriale livello ${action.layerId}`,
+      `Hydrate vector raster layer ${action.layerId}`,
       60_000,
     );
     return gpu;
@@ -737,7 +737,7 @@ async function discardVectorRasterCandidateAndRestoreOriginalActive(
   engine.layerPresentationFrozen = true;
   const originalIndexBeforeDetach = engine.layerStack.indexOfId(originalActiveId);
   if (originalIndexBeforeDetach < 0) {
-    throw new Error("Livello attivo originale perso durante il rollback vettoriale.");
+    throw new Error("The original active layer was lost during vector rollback.");
   }
   engine.layerStack.setActiveIndex(originalIndexBeforeDetach);
 
@@ -746,11 +746,11 @@ async function discardVectorRasterCandidateAndRestoreOriginalActive(
     if (candidateIndex >= 0) {
       const detached = engine.layerStack.remove(candidateIndex);
       if (detached.id !== candidateLayerId) {
-        throw new Error("Record candidato sostituito durante il rollback vettoriale.");
+        throw new Error("The candidate record was replaced during vector rollback.");
       }
     }
     if (engine.layerStack.indexOfId(candidateLayerId) >= 0) {
-      throw new Error(`Livello candidato ${candidateLayerId} non staccabile durante il rollback.`);
+      throw new Error(`Candidate layer ${candidateLayerId} cannot be detached during rollback.`);
     }
 
     const registeredGpu = engine.layerGpu.get(candidateLayerId) ?? null;
@@ -768,7 +768,7 @@ async function discardVectorRasterCandidateAndRestoreOriginalActive(
 
   const originalIndex = engine.layerStack.indexOfId(originalActiveId);
   if (originalIndex < 0) {
-    throw new Error("Livello attivo originale perso dopo lo stacco del candidato vettoriale.");
+    throw new Error("The original active layer was lost after detaching the vector candidate.");
   }
   engine.layerStack.setActiveIndex(originalIndex);
   // The candidate no longer belongs to the stack. Passing its stale index would
@@ -795,10 +795,10 @@ export async function rasterizeVectorNodeToLayer(
   sourceId: number,
   draws: readonly VectorTextGpuDraw[],
 ): Promise<VectorRasterConversionResult> {
-  if (!engine.initialized) throw new Error("Il motore non è inizializzato.");
+  if (!engine.initialized) throw new Error("The engine is not initialized.");
   const format = engine.layerFormat;
   if (engine.layerStack.count >= LAYER_STACK_MAXIMUM) {
-    throw new Error(`Massimo ${LAYER_STACK_MAXIMUM} livelli raggiunto.`);
+    throw new Error(`The maximum of ${LAYER_STACK_MAXIMUM} layers has been reached.`);
   }
   engine.assertLayerSwitchAllowed();
   requireVectorDraws(draws);
@@ -810,8 +810,8 @@ export async function rasterizeVectorNodeToLayer(
   if (!selectedMatches) {
     throw new Error(
       sourceKind === "text"
-        ? "Seleziona il testo da rasterizzare."
-        : "Seleziona l’SVG da rasterizzare.",
+        ? "Select the text to rasterize."
+        : "Select the SVG to rasterize.",
     );
   }
 
@@ -846,11 +846,11 @@ export async function rasterizeVectorNodeToLayer(
     gpu = await allocateLayerGpuResources(
       engine,
       format,
-      `Allocazione raster vettoriale livello ${record.id}`,
+      `Vector raster allocation for layer ${record.id}`,
     );
     engine.layerGpu.set(record.id, gpu);
     const hot = gpu.hot;
-    if (!hot) throw new Error(`Texture ${format} del raster vettoriale mancante.`);
+    if (!hot) throw new Error(`The ${format} vector raster texture is missing.`);
 
     const view: VectorTextViewState = {
       canvasWidth: engine.documentWidth,
@@ -874,8 +874,8 @@ export async function rasterizeVectorNodeToLayer(
     if (!occupancy.bounds || occupancy.occupiedTileCount === 0) {
       throw new Error(
         sourceKind === "svg"
-          ? "L’SVG non contiene pixel visibili da rasterizzare."
-          : "Il testo non contiene pixel visibili da rasterizzare.",
+          ? "The SVG contains no visible pixels to rasterize."
+          : "The text contains no visible pixels to rasterize.",
       );
     }
     record.contentBounds = { ...occupancy.bounds };
@@ -886,7 +886,7 @@ export async function rasterizeVectorNodeToLayer(
     clearVectorTextPresentationForTransaction(engine);
     const previousIndexAfterInsertion = engine.layerStack.indexOfId(originalActiveId);
     if (previousIndexAfterInsertion < 0) {
-      throw new Error("Livello attivo precedente perso durante la conversione vettoriale.");
+      throw new Error("The previously active layer was lost during vector conversion.");
     }
     await engine.activateLayer(previousIndexAfterInsertion, "layer-switch");
     engine.clearVectorTextPresentation();
@@ -958,10 +958,10 @@ export async function rasterizeVectorNodeToLayer(
         failure instanceof Error ? failure.message : String(failure)
       ).join("; ");
       const combined = new Error(
-        `Rasterizzazione vettoriale fallita (${operationMessage}); rollback fallito: ${details}`,
+        `Vector rasterization failed (${operationMessage}); rollback failed: ${details}`,
       );
       engine.latchDocumentStateInconsistent(
-        "Rasterizzazione vettoriale fallita e rollback incompleto: ricarica la pagina.",
+        "Vector rasterization failed and rollback is incomplete: reload the page.",
         combined,
       );
       throw combined;
@@ -1039,9 +1039,9 @@ async function switchActiveForStructuralHistory(
       const second = restoreError instanceof Error
         ? restoreError.message
         : String(restoreError);
-      const combined = new Error(`${first}; rollback cambio livello fallito: ${second}`);
+      const combined = new Error(`${first}; layer change rollback failed: ${second}`);
       engine.latchDocumentStateInconsistent(
-        "Cambio livello fallito durante Undo/Redo della rasterizzazione vettoriale.",
+        "Layer change failed during vector rasterization Undo/Redo.",
         combined,
       );
       throw combined;
@@ -1058,13 +1058,13 @@ async function undoVectorRasterization(
   const sceneState = scene.captureState();
   const originalActiveId = engine.layerStack.active.id;
   const targetIndex = engine.layerStack.indexOfId(action.layerId);
-  if (targetIndex < 0) throw new Error("Raster vettoriale da annullare non presente.");
+  if (targetIndex < 0) throw new Error("The vector raster to undo is not present.");
   await switchActiveForStructuralHistory(engine, targetIndex);
   const activeTargetIndex = engine.layerStack.indexOfId(action.layerId);
   const fallbackIndex = engine.layerStack.indexOfId(action.activeRasterLayerIdBefore);
   if (fallbackIndex < 0 || action.activeRasterLayerIdBefore === action.layerId) {
     throw new Error(
-      "Raster attivo precedente alla rasterizzazione non disponibile.",
+      "The raster active before rasterization is unavailable.",
     );
   }
 
@@ -1102,10 +1102,10 @@ async function undoVectorRasterization(
         failure instanceof Error ? failure.message : String(failure)
       ).join("; ");
       const combined = new Error(
-        `Undo rasterizzazione fallito (${originalMessage}); rollback fallito: ${rollbackMessage}`,
+        `Rasterization Undo failed (${originalMessage}); rollback failed: ${rollbackMessage}`,
       );
       engine.latchDocumentStateInconsistent(
-        "Undo della rasterizzazione vettoriale fallito e rollback incompleto.",
+        "Vector rasterization Undo failed and rollback is incomplete.",
         combined,
       );
       throw combined;
@@ -1116,10 +1116,10 @@ async function undoVectorRasterization(
   const detachedIndex = engine.layerStack.indexOfId(action.layerId);
   const detached = engine.layerStack.remove(detachedIndex);
   if (detached !== action.layerRecord) {
-    throw new Error("Record raster vettoriale storico sostituito inaspettatamente.");
+    throw new Error("The historical vector raster record was replaced unexpectedly.");
   }
   const gpu = engine.layerGpu.get(action.layerId);
-  if (!gpu) throw new Error("Risorse del raster vettoriale da staccare mancanti.");
+  if (!gpu) throw new Error("Resources for the vector raster to detach are missing.");
   engine.layerGpu.delete(action.layerId);
   destroyLayerGpuResources(engine, gpu);
   engine.clearVectorTextPresentation();
@@ -1135,7 +1135,7 @@ async function redoVectorRasterization(
   const originalActiveId = engine.layerStack.active.id;
   const originalExcludedNodeId = engine.vectorTextPreviewExcludedNodeId;
   if (engine.layerStack.indexOfId(action.layerId) >= 0) {
-    throw new Error("Raster vettoriale già presente durante Redo.");
+    throw new Error("The vector raster is already present during Redo.");
   }
   engine.persistActiveLayerState();
   await engine.prepareActiveLayerForSwitch();
@@ -1189,10 +1189,10 @@ async function redoVectorRasterization(
         failure instanceof Error ? failure.message : String(failure)
       ).join("; ");
       const combined = new Error(
-        `Redo rasterizzazione fallito (${originalMessage}); rollback fallito: ${rollbackMessage}`,
+        `Rasterization Redo failed (${originalMessage}); rollback failed: ${rollbackMessage}`,
       );
       engine.latchDocumentStateInconsistent(
-        "Redo della rasterizzazione vettoriale fallito e rollback incompleto.",
+        "Vector rasterization Redo failed and rollback is incomplete.",
         combined,
       );
       throw combined;
@@ -1207,12 +1207,12 @@ export async function applyVectorRasterizeHistory(
   delta: -1 | 1,
 ): Promise<void> {
   if (!action.vectorState.key.startsWith(action.sourceKind + ":")) {
-    throw new Error("Tipo sorgente incoerente nella cronologia raster vettoriale.");
+    throw new Error("Inconsistent source type in vector raster history.");
   }
   if (action.seed.format !== engine.layerFormat) {
     throw new Error(
-      `La cronologia raster vettoriale ${action.seed.format} non è compatibile con il `
-      + `documento ${engine.layerFormat}.`,
+      `Vector raster history ${action.seed.format} is incompatible with document `
+      + `${engine.layerFormat}.`,
     );
   }
   engine.layerSwitchBusy = true;

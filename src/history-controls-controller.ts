@@ -129,10 +129,10 @@ export class HistoryControlsController {
     const undoBlocked = requestLocked || (!replayBusy && !this.currentState.canUndo);
     const redoBlocked = requestLocked || (!replayBusy && !this.currentState.canRedo);
     const undoReason = requestLocked && this.currentState.undoBlockedReason === null
-      ? "Termina l'operazione corrente prima di annullare."
+      ? "Finish the current operation before undoing."
       : replayBusy ? null : this.currentState.undoBlockedReason;
     const redoReason = requestLocked && this.currentState.redoBlockedReason === null
-      ? "Termina l'operazione corrente prima di ripristinare."
+      ? "Finish the current operation before redoing."
       : replayBusy ? null : this.currentState.redoBlockedReason;
 
     // During replay the controls remain clickable: additional intent is queued
@@ -179,14 +179,14 @@ export class HistoryControlsController {
       const reason = operation === "undo"
         ? this.currentState.undoBlockedReason
         : this.currentState.redoBlockedReason;
-      this.setStatus(reason ?? "Termina l'operazione corrente e riprova.");
+      this.setStatus(reason ?? "Finish the current operation and try again.");
       return false;
     }
     if (operation === "undo" ? !this.currentState.canUndo : !this.currentState.canRedo) {
       const reason = operation === "undo"
         ? this.currentState.undoBlockedReason
         : this.currentState.redoBlockedReason;
-      this.setStatus(reason ?? "Operazione di cronologia non disponibile.");
+      this.setStatus(reason ?? "History operation unavailable.");
       return false;
     }
 
@@ -199,7 +199,7 @@ export class HistoryControlsController {
         const fresh = this.engine.state();
         this.setStatus(
           (operation === "undo" ? fresh.undoBlockedReason : fresh.redoBlockedReason)
-            ?? "Passo di cronologia non eseguibile in questo momento.",
+            ?? "This history step cannot be performed right now.",
         );
         this.recordDiagnostic(
           "history-step-refused",
@@ -217,7 +217,7 @@ export class HistoryControlsController {
       const crossed = this.engine.crossedAction(operation);
       this.failure = {
         operation,
-        action: crossed.action ?? "sconosciuta",
+        action: crossed.action ?? "unknown",
         cursor: crossed.cursor,
         message,
       };
@@ -258,7 +258,7 @@ export class HistoryControlsController {
       const reason = operation === "undo"
         ? this.currentState.undoBlockedReason
         : this.currentState.redoBlockedReason;
-      this.setStatus(reason ?? "Termina l'operazione corrente e riprova.");
+      this.setStatus(reason ?? "Finish the current operation and try again.");
       return;
     }
     this.request(operation);

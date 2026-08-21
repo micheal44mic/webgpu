@@ -1,7 +1,7 @@
 import type { Shadow3dPathData } from "./vector-shadow-3d.ts";
 
 export const VECTOR_TEXT_TRANSFORM_STRATEGY =
-  "kittl-compatible-centered-arch-wave-distort-six-vertex-four-handle-cubic-distance-warp-circle-rigid-glyph-v3" as const;
+  "centered-arch-wave-distort-six-vertex-four-handle-cubic-distance-warp-circle-rigid-glyph-v3" as const;
 
 export type VectorTextTransformType =
   | "none"
@@ -65,7 +65,7 @@ export const VECTOR_TEXT_CIRCLE_RADIUS_PERCENT_MAXIMUM = 200;
 export const VECTOR_TEXT_CIRCLE_RADIUS_PERCENT_DEFAULT = 50;
 export const VECTOR_TEXT_TRANSFORM_CURVE_DEFAULT = 80;
 
-// Kittl's two cubic presets, read in normalized object coordinates. Points
+// Two cubic presets, read in normalized object coordinates. Points
 // 0/3/6 are anchors; 1/2 and 4/5 are the outgoing/incoming handles.
 const CURVE_PRESETS = {
   arch: [
@@ -391,8 +391,8 @@ export function warpVectorTextPathAlongCurve(
   sourceOriginY = 0,
   sourceDistanceOffset = 0,
 ): Shadow3dPathData {
-  // Kittl maps every OpenType anchor/control point through Paper.Path#getPointAt
-  // and deliberately preserves the original path verbs. This keeps the curve
+  // Map every OpenType anchor/control point through an arc-length lookup while
+  // deliberately preserving the original path verbs. This keeps the curve
   // count constant: changing the transform is a geometry edit, while zooming
   // remains the same analytic Slug/WebGPU draw as an unwarped text.
   const coords = new Float64Array(path.coords.length);
@@ -549,7 +549,7 @@ export function vectorTextDistortBounds(
   return vectorTextPathBounds(vectorTextDistortBoundaryPath(points));
 }
 
-// Kittl H1: split the source bbox with the line joining two length-weighted
+// H1 profile: split the source bbox with the line joining two length-weighted
 // breakpoints, normalize X inside the selected half, sample its top/bottom
 // cubics at the same arc-length ratio, then interpolate them by source Y.
 function createVectorTextFreeFormMapper(
@@ -654,7 +654,7 @@ export function vectorTextCirclePlacement(
 ): VectorTextCirclePlacement {
   const safeRadius = Math.max(1e-6, Math.abs(radius));
   const offset = (glyphCenterX - textCenterX) / safeRadius;
-  // Kittl lays a centered line over getLineLength() = 2 * PI * radius.
+  // Lay a centered line over getLineLength() = 2 * PI * radius.
   // Consequently the midpoint is PI radians after HH's start handle: the
   // upper arc for the normal direction and the lower arc when inverted.
   if (inverted) {

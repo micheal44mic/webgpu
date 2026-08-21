@@ -53,7 +53,7 @@ export function clipPaintDirtyRectToPixelSelection(
   const bounds = snapshot?.bounds ?? engine.pixelSelectionState.bounds;
   const tileMask = snapshot?.tileMask ?? engine.pixelSelectionTileMask;
   if (!bounds || !tileMask) {
-    throw new Error("Metadati della Selezione pixel mancanti durante Paint.");
+    throw new Error("Pixel Selection metadata is missing during Paint.");
   }
 
   const left = Math.max(dirtyRect.x, bounds.x);
@@ -123,18 +123,18 @@ export function bindPaintPipelineWithPixelSelection(
 
   const selectedPipeline = engine.selectionPipelineByBase.get(basePipeline);
   if (!selectedPipeline) {
-    throw new Error("Pipeline Paint con clip Selezione pixel non registrata.");
+    throw new Error("The Paint pipeline with Pixel Selection clipping is not registered.");
   }
   const buffer = historySnapshot?.gpuSlice.buffer ?? engine.selectionRenderer?.maskBuffer;
   if (!buffer) {
-    throw new Error("Maschera Selezione pixel attiva ma renderer non residente.");
+    throw new Error("A Pixel Selection mask is active, but its renderer is not resident.");
   }
   const offset = historySnapshot?.gpuSlice.offsetBytes ?? 0;
   let bindGroup: GPUBindGroup;
   if (historySnapshot) {
     const cached = engine.selectionHistoryClipBindGroups.get(historySnapshot.gpuSlice.id);
     bindGroup = cached ?? engine.device.createBindGroup({
-      label: `Clip Paint · maschera storica rev ${historySnapshot.revision}`,
+      label: `Paint clip · history mask rev ${historySnapshot.revision}`,
       layout: engine.selectionMaskBindGroupLayout,
       entries: [{
         binding: 0,
@@ -154,7 +154,7 @@ export function bindPaintPipelineWithPixelSelection(
       bindGroup = cached.bindGroup;
     } else {
       bindGroup = engine.device.createBindGroup({
-        label: `Clip Paint · maschera live rev ${engine.pixelSelectionState.revision}`,
+        label: `Paint clip · live mask rev ${engine.pixelSelectionState.revision}`,
         layout: engine.selectionMaskBindGroupLayout,
         entries: [{
           binding: 0,
@@ -187,7 +187,7 @@ export function capturePaintSelectionHistoryMask(
   }
   const snapshot = captureSelectionHistoryMask(
     engine,
-    `Selezione Paint · azione ${actionId}`,
+    `Paint selection · action ${actionId}`,
   );
   try {
     engine.selectionHistoryMasksByRevision.set(revision, snapshot);
@@ -206,7 +206,7 @@ export function captureSelectionHistoryMask(
 ): SelectionHistoryMaskSnapshot {
   const renderer = engine.selectionRenderer;
   if (!renderer || (!allowEmpty && engine.pixelSelectionState.selectedPixels === 0)) {
-    throw new Error("Impossibile archiviare una Selezione pixel vuota o non residente.");
+    throw new Error("An empty or non-resident Pixel Selection cannot be archived.");
   }
   const slice = engine.historyGpuStorage.allocate(
     SELECTION_MASK_BYTES,
@@ -305,7 +305,7 @@ export function scheduleSelectionRendererRelease(engine: BrushEngine): void {
 
 function reportSelectionPresentationError(stage: string, error: unknown): void {
   console.error(
-    `Selezione pixel: ${stage} non riuscita; la mask autorevole resta valida.`,
+    `Pixel Selection: ${stage} failed; the authoritative mask remains valid.`,
     error,
   );
 }
@@ -322,7 +322,7 @@ function presentPixelSelectionOverlay(engine: BrushEngine): void {
     );
   } catch (error) {
     if (engine.selectionOverlayCanvas) engine.selectionOverlayCanvas.hidden = true;
-    reportSelectionPresentationError("presentazione overlay", error);
+    reportSelectionPresentationError("overlay presentation", error);
   }
 }
 
@@ -346,7 +346,7 @@ export async function ensureSelectionRenderer(
   cancelSelectionRendererRelease(engine);
   if (engine.selectionRenderer) return engine.selectionRenderer;
   if (!engine.selectionOverlayCanvas) {
-    throw new Error("Canvas overlay della selezione non configurato.");
+    throw new Error("The selection overlay canvas is not configured.");
   }
   if (!engine.selectionRendererLoadingPromise) {
     engine.selectionRendererLoadingPromise = SelectionRenderer.create({
@@ -391,7 +391,7 @@ export async function setSelectionToolSelected(
     return true;
   }
   if (!engine.initialized) return false;
-  engine.callbacks.onStatus?.("Preparo la Selezione pixel WebGPU…", "working");
+  engine.callbacks.onStatus?.("Preparing WebGPU Pixel Selection…", "working");
   try {
     await ensureSelectionRenderer(engine);
     if (method === "magic-wand") {
@@ -407,17 +407,17 @@ export async function setSelectionToolSelected(
       return false;
     }
     const instruction = method === "magic-wand"
-      ? "tocca una regione connessa"
+      ? "tap a connected region"
       : method === "lasso"
-        ? "traccia e chiudi il contorno"
-        : "scegli un colore e premi Seleziona";
-    engine.callbacks.onStatus?.(`Selezione pixel pronta: ${instruction}.`, "ok");
+        ? "draw and close the outline"
+        : "choose a color and press Select";
+    engine.callbacks.onStatus?.(`Pixel Selection is ready: ${instruction}.`, "ok");
     engine.publishStats();
     return true;
   } catch (error) {
     engine.selectionToolSelected = false;
     const message = error instanceof Error ? error.message : String(error);
-    engine.callbacks.onStatus?.(`Selezione pixel non disponibile: ${message}`, "error");
+    engine.callbacks.onStatus?.(`Pixel Selection is unavailable: ${message}`, "error");
     engine.publishStats();
     scheduleSelectionRendererRelease(engine);
     return false;
@@ -437,7 +437,7 @@ function selectionOperationAllowed(engine: BrushEngine): boolean {
 function requireRasterSelectionSource(engine: BrushEngine): boolean {
   if (engine.canPaintSelectedSceneItem()) return true;
   engine.callbacks.onStatus?.(
-    "La Selezione pixel legge soltanto il livello raster selezionato.",
+    "Pixel Selection reads only from the selected raster layer.",
     "working",
   );
   return false;
@@ -463,19 +463,19 @@ function publishSelectionState(
   try {
     engine.invalidateAdaptivePreview();
   } catch (error) {
-    reportSelectionPresentationError("ritiro anteprima adattiva", error);
+    reportSelectionPresentationError("adaptive preview withdrawal", error);
   }
   engine.selectionLiveClipBindGroup = null;
   try {
     renderPixelSelectionOverlay(engine);
   } catch (error) {
-    reportSelectionPresentationError("schedulazione overlay", error);
+    reportSelectionPresentationError("overlay scheduling", error);
   }
   notifyPixelSelectionChange(engine, state);
   try {
     engine.publishStats();
   } catch (error) {
-    reportSelectionPresentationError("pubblicazione statistiche", error);
+    reportSelectionPresentationError("stats publication", error);
   }
   return state;
 }
@@ -485,10 +485,10 @@ function selectionStatus(
   elapsedMs: number,
 ): string {
   if (state.selectedPixels === 0) {
-    return `Selezione vuota · ${elapsedMs.toFixed(1)} ms.`;
+    return `Empty selection · ${elapsedMs.toFixed(1)} ms.`;
   }
-  return `${state.selectedPixels.toLocaleString("it-IT")} pixel selezionati su `
-    + `${state.activeTiles} tile · ${elapsedMs.toFixed(1)} ms.`;
+  return `${state.selectedPixels.toLocaleString("en-US")} pixels selected across `
+    + `${state.activeTiles} tiles · ${elapsedMs.toFixed(1)} ms.`;
 }
 
 function notifySelectionStatusBestEffort(
@@ -525,7 +525,7 @@ export async function selectConnectedAtClientPoint(
   const combineMode = normalizeSelectionCombineMode(requestedCombineMode);
   const startedAt = performance.now();
   engine.selectionBusy = true;
-  engine.callbacks.onStatus?.("Bacchetta magica WebGPU in corso…", "working");
+  engine.callbacks.onStatus?.("WebGPU Magic Wand in progress…", "working");
   try {
     await engine.waitForIdle();
     const selectionRenderer = await ensureSelectionRenderer(engine);
@@ -554,7 +554,7 @@ export async function selectConnectedAtClientPoint(
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    engine.callbacks.onStatus?.(`Bacchetta magica fallita: ${message}`, "error");
+    engine.callbacks.onStatus?.(`Magic Wand failed: ${message}`, "error");
     throw error;
   } finally {
     engine.selectionBusy = false;
@@ -573,7 +573,7 @@ export async function selectPixelsByColor(
   const target = selectionHexToStraightSrgb(color);
   const startedAt = performance.now();
   engine.selectionBusy = true;
-  engine.callbacks.onStatus?.("Selezione globale per colore in corso…", "working");
+  engine.callbacks.onStatus?.("Global color selection in progress…", "working");
   try {
     await engine.waitForIdle();
     const renderer = await ensureSelectionRenderer(engine);
@@ -598,7 +598,7 @@ export async function selectPixelsByColor(
   } catch (error) {
     if (livePreview) engine.selectionRenderer?.finishColorRangePreview();
     const message = error instanceof Error ? error.message : String(error);
-    engine.callbacks.onStatus?.(`Selezione per colore fallita: ${message}`, "error");
+    engine.callbacks.onStatus?.(`Color selection failed: ${message}`, "error");
     throw error;
   } finally {
     engine.selectionBusy = false;
@@ -618,7 +618,7 @@ export async function selectPixelsByClientLasso(
   const combineMode = normalizeSelectionCombineMode(requestedCombineMode);
   const startedAt = performance.now();
   engine.selectionBusy = true;
-  engine.callbacks.onStatus?.("Rasterizzo il lazo…", "working");
+  engine.callbacks.onStatus?.("Rasterizing the lasso…", "working");
   try {
     await engine.waitForIdle();
     const layerPoints = clientPoints.map((point) => clientToLayer(engine, point.x, point.y));
@@ -628,7 +628,7 @@ export async function selectPixelsByClientLasso(
       engine.documentHeight,
     );
     if (raster.pointCount < 3) {
-      engine.callbacks.onStatus?.("Lazo annullato: servono almeno tre punti.", "working");
+      engine.callbacks.onStatus?.("Lasso canceled: at least three points are required.", "working");
       return null;
     }
     const renderer = await ensureSelectionRenderer(engine);
@@ -646,7 +646,7 @@ export async function selectPixelsByClientLasso(
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    engine.callbacks.onStatus?.(`Lazo fallito: ${message}`, "error");
+    engine.callbacks.onStatus?.(`Lasso failed: ${message}`, "error");
     throw error;
   } finally {
     engine.selectionBusy = false;
@@ -660,7 +660,7 @@ export async function invertPixelSelection(engine: BrushEngine): Promise<boolean
   ) return false;
   const startedAt = performance.now();
   engine.selectionBusy = true;
-  engine.callbacks.onStatus?.("Inversione Selezione pixel in corso…", "working");
+  engine.callbacks.onStatus?.("Inverting Pixel Selection…", "working");
   try {
     await engine.waitForIdle();
     const renderer = await ensureSelectionRenderer(engine);
@@ -669,13 +669,13 @@ export async function invertPixelSelection(engine: BrushEngine): Promise<boolean
     const totalMs = performance.now() - startedAt;
     notifySelectionStatusBestEffort(
       engine,
-      `Selezione invertita · ${selectionStatus(state, totalMs)}`,
+      `Selection inverted · ${selectionStatus(state, totalMs)}`,
       "ok",
     );
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    engine.callbacks.onStatus?.(`Inversione selezione fallita: ${message}`, "error");
+    engine.callbacks.onStatus?.(`Selection inversion failed: ${message}`, "error");
     throw error;
   } finally {
     engine.selectionBusy = false;
@@ -698,7 +698,7 @@ export async function clearPixelSelection(engine: BrushEngine): Promise<boolean>
     const renderer = await ensureSelectionRenderer(engine);
     renderer.clearSelection();
     resetPixelSelectionState(engine);
-    notifySelectionStatusBestEffort(engine, "Selezione pixel rimossa.", "ok");
+    notifySelectionStatusBestEffort(engine, "Pixel Selection cleared.", "ok");
     engine.publishStats();
     return true;
   } finally {
@@ -719,13 +719,13 @@ export function resetPixelSelectionState(engine: BrushEngine): void {
     engine.invalidateAdaptivePreview();
     renderPixelSelectionOverlay(engine);
   } catch (error) {
-    reportSelectionPresentationError("ritiro presentazione dopo deselezione", error);
+    reportSelectionPresentationError("presentation withdrawal after deselection", error);
   }
   notifyPixelSelectionChange(engine, state);
   try {
     scheduleSelectionRendererRelease(engine);
   } catch (error) {
-    reportSelectionPresentationError("rilascio renderer", error);
+    reportSelectionPresentationError("renderer release", error);
   }
 }
 

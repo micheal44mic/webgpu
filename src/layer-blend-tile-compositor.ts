@@ -199,7 +199,7 @@ export class LayerBlendTileCompositor {
 
     return runGpuAllocationTransaction(
       engine.device,
-      "Allocazione compositore fusioni a tile",
+      "Tile-blend compositor allocation",
       async (transaction) => {
         const textures = Array.from({ length: TILE_TEXTURE_COUNT }, (_, index) =>
           engine.device.createTexture({
@@ -387,7 +387,7 @@ export class LayerBlendTileCompositor {
           sourceAtopBlend,
         );
         if (!engine.layerBlendFoldShaderModule) {
-          throw new Error("Shader fold avanzato non inizializzato.");
+          throw new Error("The advanced-fold shader is not initialized.");
         }
         const advancedPipeline = pipeline(
           "Layer blend tile advanced fold",
@@ -397,7 +397,7 @@ export class LayerBlendTileCompositor {
           engine.layerFormat,
         );
         if (!engine.mixedSceneClearShaderModule) {
-          throw new Error("Shader clear parziale scena mista non inizializzato.");
+          throw new Error("The mixed-scene partial-clear shader is not initialized.");
         }
         const tileClearPipeline = engine.device.createRenderPipeline({
           label: "Layer blend tile bounded transparent clear",
@@ -421,7 +421,7 @@ export class LayerBlendTileCompositor {
           || !engine.mixedSceneBackgroundBindGroupLayout
           || !engine.mixedSceneBackgroundBindGroup
         ) {
-          throw new Error("Pipeline sfondo documento non inizializzata.");
+          throw new Error("The document-background pipeline is not initialized.");
         }
         const tileBackgroundPipeline = engine.device.createRenderPipeline({
           label: "Layer blend tile bounded document background",
@@ -653,10 +653,10 @@ export class LayerBlendTileCompositor {
     );
     const advanced = options.mode !== "normal";
     if (advanced && options.backdropTile === undefined) {
-      throw new Error("Il fold avanzato richiede il tile backdrop.");
+      throw new Error("Advanced fold requires the backdrop tile.");
     }
     if (advanced && options.backdropTile === options.targetTile) {
-      throw new Error("Il fold avanzato non può leggere e scrivere lo stesso tile.");
+      throw new Error("Advanced fold cannot read from and write to the same tile.");
     }
     const bindGroup = advanced
       ? this.advancedBindGroup(options.source.view, options.backdropTile!, options.label)
@@ -712,7 +712,7 @@ export class LayerBlendTileCompositor {
   }): void {
     this.assertAlive();
     if (this.presentRecordCount >= PRESENT_RECORD_CAPACITY) {
-      throw new Error("Troppi tile di presentazione fusione in un frame.");
+      throw new Error("Too many blend-presentation tiles in one frame.");
     }
     const record = this.presentRecordCount++;
     const word = record * (this.presentUniformStride / 4);
@@ -744,7 +744,7 @@ export class LayerBlendTileCompositor {
   }): void {
     this.assertAlive();
     if (this.mipRecordCount >= MIP_RECORD_CAPACITY) {
-      throw new Error("Troppi tile mip fusione in un frame.");
+      throw new Error("Too many blend mip tiles in one frame.");
     }
     const record = this.mipRecordCount++;
     const word = record * (this.mipUniformStride / 4);
@@ -797,7 +797,7 @@ export class LayerBlendTileCompositor {
     operator: LayerBlendTileOperator,
   ): number {
     if (this.foldRecordCount >= FOLD_RECORD_CAPACITY) {
-      throw new Error("Troppi fold fusione a tile in un frame.");
+      throw new Error("Too many tile-blend folds in one frame.");
     }
     const record = this.foldRecordCount++;
     const word = record * (this.foldUniformStride / 4);
@@ -917,7 +917,7 @@ export class LayerBlendTileCompositor {
 
   private assertAlive(): void {
     if (this.destroyed) {
-      throw new Error("Compositore fusioni a tile già distrutto.");
+      throw new Error("The tile-blend compositor has already been destroyed.");
     }
   }
 }

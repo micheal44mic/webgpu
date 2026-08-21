@@ -264,7 +264,7 @@ function controllerHarness({ engine, interactionLocked, requestLocked } = {}) {
     preventDefault() {},
   });
   assert.equal(calls.length, 1);
-  assert.match(harness.statuses.at(-1).message, /Termina l'operazione corrente/);
+  assert.match(harness.statuses.at(-1).message, /Finish the current operation/);
 }
 
 // Failures retain the crossed action and cursor for the diagnostics panel.

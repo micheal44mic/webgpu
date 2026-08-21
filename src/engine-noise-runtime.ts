@@ -301,7 +301,7 @@ async function createSharedResources(device: GPUDevice): Promise<RasterNoiseShar
         label: "Native raster Noise procedural WGSL",
         code: noiseShader(),
       });
-      await assertShaderCompiled(module, "Noise procedurale");
+      await assertShaderCompiled(module, "Procedural Noise");
       const bindGroupLayout = device.createBindGroupLayout({
         label: "Native raster Noise layout",
         entries: [
@@ -486,7 +486,7 @@ export function injectRasterNoiseSeedsForTesting(
   ...seeds: readonly RasterNoiseSeed[]
 ): void {
   if (!import.meta.env.DEV) {
-    throw new Error("L'iniezione del seed Noise è disponibile solo in modalità dev.");
+    throw new Error("Noise seed injection is available only in development mode.");
   }
   injectedSeedsByEngine.set(
     engine,
@@ -552,14 +552,14 @@ function startPreviewSubmission(
     try {
       encodeRequestedPreview(engine, session, serial, settings);
       await engine.waitForGpuCapped(
-        `Anteprima Noise ${settings.amountPercent.toFixed(0)}%`,
+        `Noise preview ${settings.amountPercent.toFixed(0)}%`,
         60_000,
       );
     } catch (error) {
       session.previewFault = previewError(error);
       if (engine.activeRasterNoiseSession === session) {
         engine.publishStatus(
-          `Anteprima Noise interrotta: ${session.previewFault.message}. Usa Annulla.`,
+          `Noise preview interrupted: ${session.previewFault.message}. Use Cancel.`,
           "error",
         );
         engine.publishHistoryState();
@@ -643,7 +643,7 @@ async function restoreOriginalPixels(
     presentationError = error;
   }
   setAuthoritativeMetadata(engine, bounds, session.sourceTileMask);
-  await engine.waitForGpuCapped("Annullamento Noise", 60_000);
+  await engine.waitForGpuCapped("Cancel Noise", 60_000);
   if (session.previewInFlight) await session.previewInFlight;
   if (presentationError) throw presentationError;
 }
@@ -652,27 +652,27 @@ export async function beginRasterNoise(
   engine: BrushEngine,
   initial: Partial<RasterNoiseSettings> = DEFAULT_RASTER_NOISE_SETTINGS,
 ): Promise<RasterNoiseSnapshot | null> {
-  if (!engine.initialized) throw new Error("Il motore non è ancora inizializzato.");
+  if (!engine.initialized) throw new Error("The engine has not been initialized yet.");
   if (engine.activeRasterNoiseSession) return snapshot(engine.activeRasterNoiseSession);
   engine.assertDestructiveRasterEditCanOpen("noise");
   const selected = engine.mixedSceneStack?.selected;
   if (selected?.kind !== "raster") return null;
   const record = engine.layerStack.active;
   if (selected.rasterLayerId !== record.id) {
-    throw new Error("Il raster selezionato non coincide con il livello attivo.");
+    throw new Error("The selected raster does not match the active layer.");
   }
   if (engine.pixelSelectionState.selectedPixels > 0) {
     throw new Error(
-      "Noise v1 lavora sull'intero livello: deseleziona i pixel prima di aprirlo.",
+      "Noise v1 works on the entire layer: deselect the pixels before opening it.",
     );
   }
   engine.assertLayerSwitchAllowed();
   engine.persistActiveLayerState();
   if (!record.hasContent || !record.contentBounds) {
-    throw new Error("Il livello raster selezionato è vuoto.");
+    throw new Error("The selected raster layer is empty.");
   }
   if (engine.layerFormat !== "rgba16float") {
-    throw new Error("Noise distruttivo richiede un documento RGBA16F.");
+    throw new Error("Destructive Noise requires an RGBA16F document.");
   }
 
   engine.cancelLayerColdCompressionIdle();
@@ -682,13 +682,13 @@ export async function beginRasterNoise(
   try {
     await engine.waitForIdle();
     const hot = engine.requireLayerGpu(record.id).hot;
-    if (!hot) throw new Error("Texture hot del raster per Noise mancante.");
+    if (!hot) throw new Error("The raster's hot texture for Noise is missing.");
     const sourceBounds = { ...record.contentBounds };
     const groupsX = Math.ceil(sourceBounds.width / WORKGROUP_WIDTH);
     const groupsY = Math.ceil(sourceBounds.height / WORKGROUP_HEIGHT);
     const maximumGroups = Number(engine.device.limits.maxComputeWorkgroupsPerDimension);
     if (groupsX > maximumGroups || groupsY > maximumGroups) {
-      throw new Error("Noise: dimensione dispatch non supportata dalla GPU.");
+      throw new Error("Noise: the GPU does not support the required dispatch size.");
     }
     const sourceTileMask = record.storageTileMask.slice();
     const settings = normalizeRasterNoiseSettings(initial);
@@ -696,7 +696,7 @@ export async function beginRasterNoise(
     const shared = await requireSharedResources(engine.device);
     session = await runGpuAllocationTransaction(
       engine.device,
-      `Allocazione Native raster Noise layer ${record.id}`,
+      `Allocate Native raster Noise layer ${record.id}`,
       async (transaction) => {
         const sourceTexture = engine.device.createTexture({
           label: `Native raster Noise immutable source layer ${record.id}`,
@@ -779,7 +779,7 @@ export async function beginRasterNoise(
           },
         );
         engine.device.queue.submit([encoder.finish()]);
-        await engine.waitForGpuCapped("Preparazione Noise", 60_000);
+        await engine.waitForGpuCapped("Prepare Noise", 60_000);
         return created;
       },
     );
@@ -788,7 +788,7 @@ export async function beginRasterNoise(
     engine.publishHistoryState();
     await flushPreview(engine, session);
     engine.publishStatus(
-      `Anteprima Noise ${settings.amountPercent.toFixed(0)}%: Applica o Annulla.`,
+      `Noise preview ${settings.amountPercent.toFixed(0)}%: Apply or Cancel.`,
       "ok",
     );
     engine.publishHistoryState();
@@ -805,7 +805,7 @@ export async function beginRasterNoise(
         restoreError = caught;
         session.terminal = false;
         engine.latchDocumentStateInconsistent(
-          "Avvio Noise fallito e ripristino incompleto: ricarica la pagina.",
+          "Noise startup failed and recovery was incomplete: reload the page.",
         );
       }
       if (!restoreError) {
@@ -820,8 +820,8 @@ export async function beginRasterNoise(
     engine.scheduleLayerColdCompression();
     if (restoreError) {
       throw new Error(
-        `Avvio Noise fallito: ${previewError(error).message}; `
-        + `ripristino fallito: ${previewError(restoreError).message}`,
+        `Noise startup failed: ${previewError(error).message}; `
+        + `recovery failed: ${previewError(restoreError).message}`,
       );
     }
     throw error;
@@ -833,21 +833,21 @@ export function updateRasterNoise(
   update: Partial<RasterNoiseSettings>,
 ): RasterNoiseSnapshot {
   const session = engine.activeRasterNoiseSession;
-  if (!session) throw new Error("Nessuna sessione Noise aperta.");
+  if (!session) throw new Error("No Noise session is open.");
   if (engine.historyStateInconsistent) {
-    throw new Error("Documento bloccato: è consentito soltanto ritentare Annulla.");
+    throw new Error("The document is locked: only retrying Cancel is allowed.");
   }
   if (session.previewFault) {
-    throw new Error(`Anteprima Noise interrotta: ${session.previewFault.message}. Usa Annulla.`);
+    throw new Error(`Noise preview interrupted: ${session.previewFault.message}. Use Cancel.`);
   }
-  if (session.terminal) throw new Error("Noise sta già terminando.");
+  if (session.terminal) throw new Error("Noise is already finishing.");
   const settings = normalizeRasterNoiseSettings({ ...session.settings, ...update });
   if (settingsEqual(settings, session.settings)) return snapshot(session);
   session.settings = settings;
   session.requestedSerial += 1;
   schedulePreview(engine, session);
   engine.publishStatus(
-    `Anteprima Noise ${settings.amountPercent.toFixed(0)}%…`,
+    `Noise preview ${settings.amountPercent.toFixed(0)}%…`,
     "working",
   );
   return snapshot(session);
@@ -856,14 +856,14 @@ export function updateRasterNoise(
 export async function cancelRasterNoise(engine: BrushEngine): Promise<boolean> {
   const session = engine.activeRasterNoiseSession;
   if (!session) return false;
-  if (session.terminal) throw new Error("Noise sta già terminando.");
+  if (session.terminal) throw new Error("Noise is already finishing.");
   session.terminal = true;
   try {
     await restoreOriginalPixels(engine, session);
   } catch (error) {
     session.terminal = false;
     engine.latchDocumentStateInconsistent(
-      "Annullamento Noise fallito: ricarica la pagina.",
+      "Noise cancellation failed: reload the page.",
     );
     engine.publishHistoryState();
     engine.publishStats();
@@ -878,7 +878,7 @@ export async function cancelRasterNoise(engine: BrushEngine): Promise<boolean> {
   publishMixedScene(engine);
   engine.scheduleLayerColdCompression();
   engine.publishStatus(
-    "Noise annullato: i pixel originali sono stati ripristinati.",
+    "Noise canceled: the original pixels were restored.",
     "ok",
   );
   return true;
@@ -888,12 +888,12 @@ export async function commitRasterNoise(engine: BrushEngine): Promise<boolean> {
   const session = engine.activeRasterNoiseSession;
   if (!session) return false;
   if (engine.historyStateInconsistent) {
-    throw new Error("Documento bloccato: è consentito soltanto ritentare Annulla.");
+    throw new Error("The document is locked: only retrying Cancel is allowed.");
   }
   if (session.previewFault) {
-    throw new Error(`Anteprima Noise interrotta: ${session.previewFault.message}. Usa Annulla.`);
+    throw new Error(`Noise preview interrupted: ${session.previewFault.message}. Use Cancel.`);
   }
-  if (session.terminal) throw new Error("Noise sta già terminando.");
+  if (session.terminal) throw new Error("Noise is already finishing.");
   if (session.settings.amountPercent === 0) {
     await cancelRasterNoise(engine);
     return false;
@@ -906,7 +906,7 @@ export async function commitRasterNoise(engine: BrushEngine): Promise<boolean> {
     await flushPreview(engine, session);
     const record = engine.layerStack.active;
     const hot = engine.requireLayerGpu(session.layerId).hot;
-    if (!hot) throw new Error("Texture hot del raster con Noise mancante.");
+    if (!hot) throw new Error("The raster's hot texture with Noise is missing.");
     seed = await createLayerColdStorageCandidate(
       engine,
       record,
@@ -961,7 +961,7 @@ export async function commitRasterNoise(engine: BrushEngine): Promise<boolean> {
       retainSessionForRecovery = true;
       session.terminal = false;
       engine.latchDocumentStateInconsistent(
-        "Commit Noise fallito e rollback incompleto: ricarica la pagina.",
+        "Noise commit failed and rollback was incomplete: reload the page.",
       );
     } finally {
       if (!journalPublished) destroyLayerColdStorage(seed);
@@ -972,7 +972,7 @@ export async function commitRasterNoise(engine: BrushEngine): Promise<boolean> {
         ? rollbackError.message
         : String(rollbackError);
       throw new Error(
-        `Commit Noise fallito: ${operationMessage}; rollback fallito: ${rollbackMessage}`,
+        `Noise commit failed: ${operationMessage}; rollback failed: ${rollbackMessage}`,
       );
     }
     throw error;
@@ -988,7 +988,7 @@ export async function commitRasterNoise(engine: BrushEngine): Promise<boolean> {
     publishMixedScene(engine);
   }
   engine.publishStatus(
-    `Noise ${session.settings.amountPercent.toFixed(0)}% applicato ai pixel: un solo Undo.`,
+    `Noise ${session.settings.amountPercent.toFixed(0)}% applied to the pixels: one Undo step.`,
     "ok",
   );
   return true;

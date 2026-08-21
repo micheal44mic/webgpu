@@ -37,7 +37,7 @@ function unfilterGrayscaleScanlines(
   const expectedBytes = rowStride * height;
   if (inflated.byteLength !== expectedBytes) {
     throw new Error(
-      `Dati PNG decompressi non validi: attesi ${expectedBytes} byte, trovati ${inflated.byteLength}.`,
+      `Invalid decompressed PNG data: expected ${expectedBytes} bytes, found ${inflated.byteLength}.`,
     );
   }
 
@@ -47,7 +47,7 @@ function unfilterGrayscaleScanlines(
     const destinationRow = y * width;
     const filter = inflated[sourceRow];
     if (filter > 4) {
-      throw new Error(`Filtro PNG non supportato: ${filter}.`);
+      throw new Error(`Unsupported PNG filter: ${filter}.`);
     }
 
     for (let x = 0; x < width; x += 1) {
@@ -77,11 +77,11 @@ function unfilterGrayscaleScanlines(
 export async function decodeGrayscalePng8(source: ArrayBuffer): Promise<DecodedGrayscalePng> {
   const bytes = new Uint8Array(source);
   if (bytes.byteLength < PNG_SIGNATURE.byteLength + 12) {
-    throw new Error("PNG troppo corta.");
+    throw new Error("The PNG file is too short.");
   }
   for (let index = 0; index < PNG_SIGNATURE.byteLength; index += 1) {
     if (bytes[index] !== PNG_SIGNATURE[index]) {
-      throw new Error("Firma PNG non valida.");
+      throw new Error("Invalid PNG signature.");
     }
   }
 
@@ -101,13 +101,13 @@ export async function decodeGrayscalePng8(source: ArrayBuffer): Promise<DecodedG
     const chunkDataEnd = chunkDataOffset + chunkLength;
     const nextOffset = chunkDataEnd + 4;
     if (chunkDataEnd < chunkDataOffset || nextOffset > bytes.byteLength) {
-      throw new Error("Chunk PNG oltre la fine del file.");
+      throw new Error("PNG chunk extends beyond the end of the file.");
     }
 
     const chunkType = readChunkType(bytes, chunkTypeOffset);
     if (chunkType === "IHDR") {
       if (sawHeader || chunkLength !== PNG_IHDR_BYTES) {
-        throw new Error("Header PNG non valido.");
+        throw new Error("Invalid PNG header.");
       }
       width = view.getUint32(chunkDataOffset, false);
       height = view.getUint32(chunkDataOffset + 4, false);
@@ -117,7 +117,7 @@ export async function decodeGrayscalePng8(source: ArrayBuffer): Promise<DecodedG
       const filterMethod = bytes[chunkDataOffset + 11];
       const interlaceMethod = bytes[chunkDataOffset + 12];
       if (width <= 0 || height <= 0) {
-        throw new Error("Dimensioni PNG non valide.");
+        throw new Error("Invalid PNG dimensions.");
       }
       if (
         bitDepth !== 8
@@ -127,13 +127,13 @@ export async function decodeGrayscalePng8(source: ArrayBuffer): Promise<DecodedG
         || interlaceMethod !== 0
       ) {
         throw new Error(
-          "La Shape richiede una PNG grayscale 8-bit, non interlacciata e con compressione standard.",
+          "Shape requires a non-interlaced 8-bit grayscale PNG with standard compression.",
         );
       }
       sawHeader = true;
     } else if (chunkType === "IDAT") {
       if (!sawHeader || sawEnd) {
-        throw new Error("Ordine dei chunk PNG non valido.");
+        throw new Error("Invalid PNG chunk order.");
       }
       const chunk = bytes.slice(chunkDataOffset, chunkDataEnd);
       idatChunks.push(chunk);
@@ -147,7 +147,7 @@ export async function decodeGrayscalePng8(source: ArrayBuffer): Promise<DecodedG
   }
 
   if (!sawHeader || !sawEnd || idatChunks.length === 0) {
-    throw new Error("PNG incompleta.");
+    throw new Error("The PNG file is incomplete.");
   }
 
   const compressed = new Uint8Array(idatByteLength);
@@ -158,7 +158,7 @@ export async function decodeGrayscalePng8(source: ArrayBuffer): Promise<DecodedG
   }
 
   if (typeof DecompressionStream === "undefined") {
-    throw new Error("DecompressionStream non disponibile.");
+    throw new Error("DecompressionStream is unavailable.");
   }
   const decompressedStream = new Blob([compressed]).stream().pipeThrough(
     new DecompressionStream("deflate"),

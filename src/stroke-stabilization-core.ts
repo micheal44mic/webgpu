@@ -140,7 +140,7 @@ export class CausalFadedStrokeStabilizer {
   constructor(capacity = STROKE_STABILIZATION_DEFAULT_CAPACITY) {
     if (!Number.isInteger(capacity) || capacity < MINIMUM_CAPACITY) {
       throw new RangeError(
-        `La capacità della stabilizzazione deve essere un intero >= ${MINIMUM_CAPACITY}.`,
+        `Stabilization capacity must be an integer >= ${MINIMUM_CAPACITY}.`,
       );
     }
     this.capacity = capacity;
@@ -224,7 +224,7 @@ export class CausalFadedStrokeStabilizer {
     sample: Readonly<StrokeStabilizationSample>,
   ): Readonly<StrokeStabilizationUpdate> {
     if (!this.active) {
-      throw new Error("Stabilizzazione non inizializzata: chiamare begin() prima di push().");
+      throw new Error("Stabilization is not initialized: call begin() before push().");
     }
 
     const normalizedTimeMs = Math.max(
@@ -302,7 +302,7 @@ export class CausalFadedStrokeStabilizer {
    */
   finish(): Readonly<StrokeStabilizationUpdate> {
     if (!this.active) {
-      throw new Error("Stabilizzazione non inizializzata: chiamare begin() prima di finish().");
+      throw new Error("Stabilization is not initialized: call begin() before finish().");
     }
     this.update.matureCount = 0;
     this.update.forcedMatureCount = 0;

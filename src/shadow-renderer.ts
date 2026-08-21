@@ -511,7 +511,7 @@ async function assertShadersCompiled(
     }
   }
   if (failures.length > 0) {
-    throw new Error(`WGSL Ombra non valido:\n${failures.join("\n")}`);
+    throw new Error(`Invalid Shadow WGSL:\n${failures.join("\n")}`);
   }
 }
 
@@ -610,7 +610,7 @@ export class RasterShadowRenderer {
   }
 
   private get label(): string {
-    return this.kind === "outer" ? "Ombra esterna" : "Ombra interna";
+    return this.kind === "outer" ? "Outer Shadow" : "Inner Shadow";
   }
 
   get workspaceExtent(): number {
@@ -757,7 +757,7 @@ export class RasterShadowRenderer {
     const extent = Math.min(requestedExtent, maximumExtent);
     if (extent < requestedExtent) {
       throw new Error(
-        `${this.label}: size richiesta oltre lo storage buffer disponibile.`,
+        `${this.label}: requested size exceeds the available storage buffer.`,
       );
     }
     const rangeBytes = extent * extent * 4;
@@ -774,7 +774,7 @@ export class RasterShadowRenderer {
       },
     ]);
     if (!lease) {
-      throw new Error(`${this.label}: lease scratch non disponibile.`);
+      throw new Error(`${this.label}: scratch lease is unavailable.`);
     }
     this._workspaceExtent = extent;
     this._workspaceMemoryBytes = lease.footprintBytes;
@@ -863,7 +863,7 @@ export class RasterShadowRenderer {
 
   retarget(layerView: GPUTextureView): void {
     if (this.destroyed) {
-      throw new Error(`${this.label}: renderer già distrutto.`);
+      throw new Error(`${this.label}: renderer has already been destroyed.`);
     }
     this.layerView = layerView;
     this.sourceViews[0] = layerView;
@@ -960,7 +960,7 @@ export class RasterShadowRenderer {
     directionY: number,
   ): number {
     if (index >= PARAMETER_CAPACITY) {
-      throw new Error(`${this.label}: capacità parametri dispatch superata.`);
+      throw new Error(`${this.label}: dispatch parameter capacity exceeded.`);
     }
     const byteOffset = index * PARAMETER_STRIDE;
     const wordOffset = byteOffset / 4;
@@ -987,7 +987,7 @@ export class RasterShadowRenderer {
 
   encode(options: RasterShadowEncodeOptions): RasterShadowEncodeResult {
     if (this.destroyed) {
-      throw new Error(`${this.label}: renderer già distrutto.`);
+      throw new Error(`${this.label}: renderer has already been destroyed.`);
     }
     const style = this.normalizedStyle(options.style);
     const kernel = this.styleKernel(style);
@@ -1022,7 +1022,7 @@ export class RasterShadowRenderer {
     const rangeA = lease.ranges["scalar-a"];
     const rangeB = lease.ranges["scalar-b"];
     if (!rangeA || !rangeB) {
-      throw new Error(`${this.label}: range scratch mancanti.`);
+      throw new Error(`${this.label}: scratch ranges are missing.`);
     }
     const offsetA = rangeA.offset / 4;
     const offsetB = rangeB.offset / 4;
@@ -1155,7 +1155,7 @@ export class RasterShadowRenderer {
     const bindGroup = this.bindGroups.get(sourceModeCode(options.sourceMode));
     if (!bindGroup) {
       pass.end();
-      throw new Error(`${this.label}: bind group sorgente mancante.`);
+      throw new Error(`${this.label}: source bind group is missing.`);
     }
     for (const command of commands) {
       pass.setPipeline(command.pipeline);

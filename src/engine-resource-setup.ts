@@ -292,7 +292,7 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
     ],
   });
   engine.selectionMaskBindGroupLayout = engine.device.createBindGroupLayout({
-    label: "Clip Paint · maschera Selezione pixel",
+    label: "Clip Paint · Pixel Selection mask",
     entries: [{
       binding: 0,
       visibility: GPUShaderStage.FRAGMENT,
@@ -314,7 +314,7 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
     ],
   });
   engine.rasterStrokeDisplayScreenBindGroupLayout = engine.device.createBindGroupLayout({
-    label: "Traccia display screen bind group layout",
+    label: "Stroke display screen bind group layout",
     entries: [
       {
         binding: 0,
@@ -326,7 +326,7 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
     ],
   });
   engine.rasterStrokeDisplaySourceBindGroupLayout = engine.device.createBindGroupLayout({
-    label: "Traccia direct LOD 0 and coarse mip display source layout",
+    label: "Stroke direct LOD 0 and coarse mip display source layout",
     entries: [
       { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
       { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
@@ -661,7 +661,7 @@ export async function createGrainTextureResources(
     canvas.width = width;
     canvas.height = height;
     const context = canvas.getContext("2d");
-    if (!context) throw new Error("Impossibile preparare il Grain custom.");
+    if (!context) throw new Error("Unable to prepare custom Grain.");
     context.putImageData(
       new ImageData(new Uint8ClampedArray(customAsset.rgba), width, height),
       0,
@@ -682,8 +682,8 @@ export async function createGrainTextureResources(
     if (bitmap.width !== asset.width || bitmap.height !== asset.height) {
       bitmap.close();
       throw new Error(
-        `${asset.sourceFile} deve restare ${asset.width}×${asset.height}px; `
-        + `trovata ${bitmap.width}×${bitmap.height}px.`,
+        `${asset.sourceFile} must remain ${asset.width}×${asset.height}px; `
+        + `found ${bitmap.width}×${bitmap.height}px.`,
       );
     }
     width = asset.width;
@@ -940,7 +940,7 @@ export async function createShapeMaskResources(
     maskCanvas.height = SHAPE_MASK_SIZE;
     const maskContext = maskCanvas.getContext("2d", { willReadFrequently: true });
     if (!sourceContext || !maskContext) {
-      throw new Error("Impossibile preparare la Shape custom.");
+      throw new Error("Unable to prepare custom Shape.");
     }
     sourceContext.putImageData(
       new ImageData(
@@ -982,8 +982,8 @@ export async function createShapeMaskResources(
       const decoded = await decodeGrayscalePng8(source);
       if (decoded.width !== asset.width || decoded.height !== asset.height) {
         throw new Error(
-          `${asset.sourceFile} deve restare ${asset.width}×${asset.height}px; `
-          + `trovata ${decoded.width}×${decoded.height}px.`,
+          `${asset.sourceFile} must remain ${asset.width}×${asset.height}px; `
+          + `found ${decoded.width}×${decoded.height}px.`,
         );
       }
       baseMask = decoded.pixels;
@@ -997,7 +997,7 @@ export async function createShapeMaskResources(
 
   if (baseMask.length !== SHAPE_MASK_SIZE * SHAPE_MASK_SIZE) {
     throw new Error(
-      `${sourceLabel} deve produrre una maschera ${SHAPE_MASK_SIZE}×${SHAPE_MASK_SIZE}.`,
+      `${sourceLabel} must produce a ${SHAPE_MASK_SIZE}×${SHAPE_MASK_SIZE} mask.`,
     );
   }
   if (!polarityAlreadyApplied && authoredInvert !== shapeInvert) {
@@ -1401,7 +1401,7 @@ export async function ensureRasterStrokeRenderer(engine: BrushEngine,
   engine.rasterStrokeMipDownsampleBindGroups = renderer.mipViews
     .slice(0, -1)
     .map((sourceView, sourceMipIndex) => engine.device.createBindGroup({
-      label: `Traccia styled logical mip ${sourceMipIndex + 1} to ${sourceMipIndex + 2}`,
+      label: `Stroke styled logical mip ${sourceMipIndex + 1} to ${sourceMipIndex + 2}`,
       layout: engine.paintMipDownsampleBindGroupLayout,
       entries: [{ binding: 0, resource: sourceView }],
     }));
@@ -1829,6 +1829,6 @@ export function destroyTrackedReadbackBuffer(engine: BrushEngine, buffer: GPUBuf
   engine.devReadbackActiveBytes -= size;
   if (engine.devReadbackActiveBytes < 0) {
     engine.devReadbackActiveBytes = 0;
-    throw new Error("Contabilità readback GPU negativa.");
+    throw new Error("GPU readback accounting is negative.");
   }
 }

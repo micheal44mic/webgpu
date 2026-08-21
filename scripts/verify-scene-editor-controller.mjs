@@ -238,7 +238,7 @@ assert.deepEqual(rasterizeResult, {
   changed: true,
   outputKey: "raster:7",
 });
-assert.match(elements.result.textContent, /blend mode e opacità preservati/);
+assert.match(elements.result.textContent, /blend mode and opacity preserved/);
 
 const moving = controller.moveLayer("raster:7", 0);
 assert.equal(controller.isBusy, true);
@@ -253,7 +253,7 @@ assert.equal(controller.isBusy, false);
 interactionLocked = true;
 await assert.rejects(
   controller.deleteLayer("image:9"),
-  /Eliminazione non disponibile/,
+  /Deletion unavailable/,
 );
 interactionLocked = false;
 assert.deepEqual(

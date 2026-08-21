@@ -112,7 +112,7 @@ async function assertShaderModules(
     .filter((message) => message.type === "error")
     .map((message) => `${label}:${message.lineNum}:${message.linePos} ${message.message}`));
   if (errors.length > 0) {
-    throw new Error(`Shader Riempimento WGSL non valido:\n${errors.join("\n")}`);
+    throw new Error(`Invalid Fill WGSL shader:\n${errors.join("\n")}`);
   }
 }
 
@@ -162,19 +162,19 @@ export class FillRenderer {
       || limits.maxStorageBufferBindingSize < FILL_PARENT_BUFFER_BYTES
     ) {
       throw new Error(
-        `I limiti compute della GPU non supportano il Riempimento `
+        `The GPU compute limits do not support Fill at `
         + `${FILL_LAYER_WIDTH}×${FILL_LAYER_HEIGHT}.`,
       );
     }
     this.layerFormat = options.layerFormat;
     this.sourceSamplingView = options.sourceSamplingView;
     this.uniformBuffer = this.device.createBuffer({
-      label: "Riempimento · uniformi",
+      label: "Fill · uniforms",
       size: FILL_UNIFORM_BUFFER_BYTES,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     this.computeBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Riempimento · compute bind group layout",
+      label: "Fill · compute bind group layout",
       entries: [
         { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform", minBindingSize: FILL_UNIFORM_BYTES } },
         { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "unfilterable-float" } },
@@ -186,7 +186,7 @@ export class FillRenderer {
       ],
     });
     this.renderBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Riempimento · render bind group layout",
+      label: "Fill · render bind group layout",
       entries: [
         { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform", minBindingSize: FILL_UNIFORM_BYTES } },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
@@ -195,7 +195,7 @@ export class FillRenderer {
       ],
     });
     this.selectionIntersectionBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Riempimento · intersezione Selezione pixel",
+      label: "Fill · Pixel Selection intersection",
       entries: [
         { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
@@ -216,32 +216,32 @@ export class FillRenderer {
 
   private async initialize(): Promise<void> {
     const computeModule = this.device.createShaderModule({
-      label: "Riempimento · componenti connesse",
+      label: "Fill · connected components",
       code: fillComputeShader,
     });
     const renderModule = this.device.createShaderModule({
-      label: "Riempimento · commit maschera",
+      label: "Fill · mask commit",
       code: fillRenderShader,
     });
     const intersectionModule = this.device.createShaderModule({
-      label: "Riempimento · intersezione con Selezione pixel",
+      label: "Fill · intersection with Pixel Selection",
       code: fillSelectionIntersectionShader,
     });
     await assertShaderModules([
       { label: "compute", module: computeModule },
       { label: "render", module: renderModule },
-      { label: "intersezione selezione", module: intersectionModule },
+      { label: "selection intersection", module: intersectionModule },
     ]);
     const computeLayout = this.device.createPipelineLayout({
-      label: "Riempimento · compute pipeline layout",
+      label: "Fill · compute pipeline layout",
       bindGroupLayouts: [this.computeBindGroupLayout],
     });
     const renderLayout = this.device.createPipelineLayout({
-      label: "Riempimento · render pipeline layout",
+      label: "Fill · render pipeline layout",
       bindGroupLayouts: [this.renderBindGroupLayout],
     });
     const intersectionLayout = this.device.createPipelineLayout({
-      label: "Riempimento · pipeline layout intersezione Selezione pixel",
+      label: "Fill · Pixel Selection intersection pipeline layout",
       bindGroupLayouts: [this.selectionIntersectionBindGroupLayout],
     });
     const computePipelines = await Promise.all([
@@ -252,7 +252,7 @@ export class FillRenderer {
       "rebuildSelection",
       "expandRenderMask",
     ].map((entryPoint) => this.device.createComputePipelineAsync({
-      label: `Riempimento · ${entryPoint}`,
+      label: `Fill · ${entryPoint}`,
       layout: computeLayout,
       compute: { module: computeModule, entryPoint },
     })));
@@ -265,12 +265,12 @@ export class FillRenderer {
       this.expandRenderMaskPipeline,
     ] = computePipelines;
     this.selectionIntersectionPipeline = await this.device.createComputePipelineAsync({
-      label: "Riempimento · candidato ∩ Selezione pixel",
+      label: "Fill · candidate ∩ Pixel Selection",
       layout: intersectionLayout,
       compute: { module: intersectionModule, entryPoint: "intersectFillWithSelection" },
     });
     this.renderPipeline = await this.device.createRenderPipelineAsync({
-      label: `Riempimento · colore pieno sotto snapshot ${this.layerFormat}`,
+      label: `Fill · solid color beneath ${this.layerFormat} snapshot`,
       layout: renderLayout,
       vertex: { module: renderModule, entryPoint: "vertexMain" },
       fragment: {
@@ -288,7 +288,7 @@ export class FillRenderer {
     if (this.prewarmPromise) return this.prewarmPromise;
     const allocation = runGpuAllocationTransaction(
       this.device,
-      "Scratch Riempimento WebGPU",
+      "WebGPU Fill scratch",
       (transaction) => {
         const create = (label: string, size: number, usage: GPUBufferUsageFlags): GPUBuffer => {
           const buffer = this.device.createBuffer({ label, size, usage });
@@ -296,40 +296,40 @@ export class FillRenderer {
           return buffer;
         };
         const packedLabels = create(
-          "Riempimento · label locali u8 packed",
+          "Fill · packed local u8 labels",
           FILL_LABEL_BUFFER_BYTES,
           GPUBufferUsage.STORAGE,
         );
         if (FILL_RENDER_MASK_BYTES > FILL_LABEL_BUFFER_BYTES) {
-          throw new Error("La mask render Fill non entra nello scratch label riutilizzato.");
+          throw new Error("The Fill render mask does not fit in the reused label scratch buffer.");
         }
         const globalParents = create(
-          "Riempimento · parent componenti globali",
+          "Fill · global component parents",
           FILL_PARENT_BUFFER_BYTES,
           GPUBufferUsage.STORAGE,
         );
         const activeParentNodes = create(
-          "Riempimento · componenti attive",
+          "Fill · active components",
           FILL_ACTIVE_NODE_BUFFER_BYTES,
           GPUBufferUsage.STORAGE,
         );
         const selectedMask = create(
-          "Riempimento · maschera selezionata 1 bit",
+          "Fill · selected 1-bit mask",
           FILL_HISTORY_MASK_BYTES,
           GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
         );
         const activeBlocks = create(
-          "Riempimento · blocchi selezionati",
+          "Fill · selected blocks",
           FILL_ACTIVE_BLOCK_BUFFER_BYTES,
           GPUBufferUsage.STORAGE,
         );
         const metadata = create(
-          "Riempimento · metadati",
+          "Fill · metadata",
           FILL_METADATA_BUFFER_BYTES,
           GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
         );
         const drawIndirect = create(
-          "Riempimento · draw indiretto blocchi",
+          "Fill · indirect block draw",
           FILL_INDIRECT_BUFFER_BYTES,
           GPUBufferUsage.STORAGE
             | GPUBufferUsage.INDIRECT
@@ -337,12 +337,12 @@ export class FillRenderer {
             | GPUBufferUsage.COPY_DST,
         );
         const readback = create(
-          "Riempimento · readback metadati",
+          "Fill · metadata readback",
           FILL_METADATA_BUFFER_BYTES,
           GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
         );
         const destinationSnapshotTexture = this.device.createTexture({
-          label: `Riempimento · snapshot destinazione ${this.layerFormat}`,
+          label: `Fill · ${this.layerFormat} destination snapshot`,
           size: {
             width: FILL_LAYER_WIDTH,
             height: FILL_LAYER_HEIGHT,
@@ -353,7 +353,7 @@ export class FillRenderer {
         });
         transaction.deferRollback(() => destinationSnapshotTexture.destroy());
         const destinationSnapshotView = destinationSnapshotTexture.createView({
-          label: `Riempimento · view snapshot destinazione ${this.layerFormat}`,
+          label: `Fill · ${this.layerFormat} destination snapshot view`,
         });
         const computeBindGroup = this.createComputeBindGroup({
           packedLabels,
@@ -365,7 +365,7 @@ export class FillRenderer {
           drawIndirect,
         });
         const renderBindGroup = this.device.createBindGroup({
-          label: "Riempimento · render bind group",
+          label: "Fill · render bind group",
           layout: this.renderBindGroupLayout,
           entries: [
             { binding: 0, resource: { buffer: this.uniformBuffer, size: FILL_UNIFORM_BYTES } },
@@ -395,7 +395,7 @@ export class FillRenderer {
     const pending = allocation.then((resources) => {
       if (this.destroyed) {
         this.destroyScratchResources(resources);
-        throw new Error("Renderer Riempimento distrutto durante il prewarm.");
+        throw new Error("The Fill renderer was destroyed during prewarming.");
       }
       // Il livello può essere cambiato mentre l'allocazione chiude gli error
       // scope: ricrea il bind group con la view più recente prima di pubblicare.
@@ -436,7 +436,7 @@ export class FillRenderer {
     const x = Math.floor(seedX);
     const y = Math.floor(seedY);
     if (x < 0 || y < 0 || x >= FILL_LAYER_WIDTH || y >= FILL_LAYER_HEIGHT) {
-      throw new RangeError("Il punto di riempimento è fuori dal livello.");
+      throw new RangeError("The fill point is outside the layer.");
     }
     const upload = new ArrayBuffer(FILL_UNIFORM_BYTES);
     const unsigned = new Uint32Array(upload);
@@ -459,10 +459,10 @@ export class FillRenderer {
     this.device.queue.writeBuffer(scratch.drawIndirect, 0, new Uint32Array([4, 0, 0, 0]));
 
     const startedAt = performance.now();
-    const encoder = this.device.createCommandEncoder({ label: "Riempimento · analisi" });
+    const encoder = this.device.createCommandEncoder({ label: "Fill · analysis" });
     encoder.clearBuffer(scratch.selectedMask);
     const labelPass = encoder.beginComputePass({
-      label: "Riempimento · CCL locale e unione bordi",
+      label: "Fill · local CCL and boundary union",
     });
     labelPass.setBindGroup(0, scratch.computeBindGroup);
     labelPass.setPipeline(this.classifyPipeline);
@@ -472,7 +472,7 @@ export class FillRenderer {
     labelPass.end();
 
     const selectionPass = encoder.beginComputePass({
-      label: "Riempimento · compressione e selezione seed",
+      label: "Fill · compression and seed selection",
     });
     selectionPass.setBindGroup(0, scratch.computeBindGroup);
     selectionPass.setPipeline(this.compressPipeline);
@@ -509,7 +509,7 @@ export class FillRenderer {
       );
       this.device.queue.writeBuffer(scratch.drawIndirect, 0, new Uint32Array([4, 0, 0, 0]));
       const clipBindGroup = this.device.createBindGroup({
-        label: "Riempimento · bind candidato ∩ selezione",
+        label: "Fill · candidate ∩ selection bind group",
         layout: this.selectionIntersectionBindGroupLayout,
         entries: [
           { binding: 0, resource: { buffer: scratch.selectedMask } },
@@ -517,10 +517,10 @@ export class FillRenderer {
         ],
       });
       const clipEncoder = this.device.createCommandEncoder({
-        label: "Riempimento · applica Selezione pixel",
+        label: "Fill · apply Pixel Selection",
       });
       const clipPass = clipEncoder.beginComputePass({
-        label: "Riempimento · intersezione e sommario",
+        label: "Fill · intersection and summary",
       });
       clipPass.setPipeline(this.selectionIntersectionPipeline);
       clipPass.setBindGroup(0, clipBindGroup);
@@ -546,12 +546,12 @@ export class FillRenderer {
     const selectedPixels = metadata[FILL_META_SELECTED_PIXELS];
     if (selectedPixels === 0) {
       if (selectionMask) {
-        throw new Error("Il Riempimento non interseca la Selezione pixel attiva.");
+        throw new Error("The fill area does not intersect the active Pixel Selection.");
       }
       throw new Error(
-        "Il seed del riempimento non appartiene ad alcuna componente "
-        + `(componenti=${metadata[FILL_META_ACTIVE_COMPONENTS]}, `
-        + `blocchi=${metadata[FILL_META_ACTIVE_BLOCKS]}, `
+        "The fill seed does not belong to any component "
+        + `(components=${metadata[FILL_META_ACTIVE_COMPONENTS]}, `
+        + `blocks=${metadata[FILL_META_ACTIVE_BLOCKS]}, `
         + `diag=${metadata[FILL_META_DIAGNOSTIC]}, `
         + `bounds=${metadata[FILL_META_MIN_X]},${metadata[FILL_META_MIN_Y]}–`
         + `${metadata[FILL_META_MAX_X]},${metadata[FILL_META_MAX_Y]}).`,
@@ -603,11 +603,11 @@ export class FillRenderer {
     const scratch = this.requireScratch();
     const input = this.lastDiagnosticInput;
     if (!input) {
-      throw new Error("Nessuna analisi Fill corrente disponibile per la diagnosi.");
+      throw new Error("No current Fill analysis is available for diagnostics.");
     }
     const readbackBytes = FILL_HISTORY_MASK_BYTES + FILL_INDIRECT_BUFFER_BYTES;
     const readback = this.device.createBuffer({
-      label: "Riempimento · diagnosi mask e draw indiretto",
+      label: "Fill · mask and indirect draw diagnostics",
       size: readbackBytes,
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     });
@@ -615,7 +615,7 @@ export class FillRenderer {
     let mapped = false;
     try {
       const encoder = this.device.createCommandEncoder({
-        label: "Riempimento · cattura diagnostica",
+        label: "Fill · diagnostic capture",
       });
       encoder.copyBufferToBuffer(
         scratch.selectedMask,
@@ -638,7 +638,7 @@ export class FillRenderer {
           readback.mapAsync(GPUMapMode.READ),
           new Promise<never>((_, reject) => {
             timer = window.setTimeout(
-              () => reject(new Error("Diagnosi Fill: timeout readback mask dopo 10 s.")),
+              () => reject(new Error("Fill diagnostics: mask readback timed out after 10 s.")),
               10_000,
             );
           }),
@@ -684,11 +684,11 @@ export class FillRenderer {
   private async captureBitProbe(): Promise<FillBitProbeDiagnostic> {
     if (!this.bitProbePipelinePromise) {
       const module = this.device.createShaderModule({
-        label: "Riempimento · shader diagnosi bit 31",
+        label: "Fill · bit 31 diagnostic shader",
         code: fillBitProbeShader,
       });
       this.bitProbePipelinePromise = this.device.createComputePipelineAsync({
-        label: "Riempimento · pipeline diagnosi bit 31",
+        label: "Fill · bit 31 diagnostic pipeline",
         layout: "auto",
         compute: { module, entryPoint: "probeBit31" },
       }).catch((error) => {
@@ -701,7 +701,7 @@ export class FillRenderer {
       this.bitProbePipelinePromise,
       new Promise<never>((_, reject) => {
         pipelineTimer = window.setTimeout(
-          () => reject(new Error("Diagnosi Fill: timeout compilazione microtest dopo 10 s.")),
+          () => reject(new Error("Fill diagnostics: microtest compilation timed out after 10 s.")),
           10_000,
         );
       }),
@@ -709,17 +709,17 @@ export class FillRenderer {
       if (pipelineTimer !== 0) window.clearTimeout(pipelineTimer);
     });
     const uniform = this.device.createBuffer({
-      label: "Riempimento · uniforme diagnosi bit 31",
+      label: "Fill · bit 31 diagnostic uniform",
       size: 256,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     const results = this.device.createBuffer({
-      label: "Riempimento · risultati diagnosi bit 31",
+      label: "Fill · bit 31 diagnostic results",
       size: 256,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
     });
     const readback = this.device.createBuffer({
-      label: "Riempimento · readback diagnosi bit 31",
+      label: "Fill · bit 31 diagnostic readback",
       size: 256,
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     });
@@ -727,7 +727,7 @@ export class FillRenderer {
     try {
       this.device.queue.writeBuffer(uniform, 0, new Uint32Array([31, 0, 0, 0]));
       const bindGroup = this.device.createBindGroup({
-        label: "Riempimento · bind diagnosi bit 31",
+        label: "Fill · bit 31 diagnostic bind group",
         layout: pipeline.getBindGroupLayout(0),
         entries: [
           { binding: 0, resource: { buffer: uniform } },
@@ -735,10 +735,10 @@ export class FillRenderer {
         ],
       });
       const encoder = this.device.createCommandEncoder({
-        label: "Riempimento · esegui diagnosi bit 31",
+        label: "Fill · run bit 31 diagnostics",
       });
       encoder.clearBuffer(results);
-      const pass = encoder.beginComputePass({ label: "Riempimento · probe bit 31" });
+      const pass = encoder.beginComputePass({ label: "Fill · bit 31 probe" });
       pass.setPipeline(pipeline);
       pass.setBindGroup(0, bindGroup);
       pass.dispatchWorkgroups(1);
@@ -751,7 +751,7 @@ export class FillRenderer {
           readback.mapAsync(GPUMapMode.READ, 0, 20),
           new Promise<never>((_, reject) => {
             timer = window.setTimeout(
-              () => reject(new Error("Diagnosi Fill: timeout microtest bit 31 dopo 10 s.")),
+              () => reject(new Error("Fill diagnostics: bit 31 microtest timed out after 10 s.")),
               10_000,
             );
           }),
@@ -808,7 +808,7 @@ export class FillRenderer {
     );
     this.encodeDestinationSnapshotCopy(encoder, targetTexture, scratch);
     const pass = encoder.beginComputePass({
-      label: "Riempimento · espansione mask low-8-bit per commit live",
+      label: "Fill · expand low-8-bit mask for live commit",
     });
     pass.setPipeline(this.expandRenderMaskPipeline);
     pass.setBindGroup(0, scratch.computeBindGroup);
@@ -854,7 +854,7 @@ export class FillRenderer {
       FILL_HISTORY_MASK_BYTES,
     );
     encoder.clearBuffer(scratch.metadata);
-    const pass = encoder.beginComputePass({ label: "Riempimento · ricostruzione lista blocchi" });
+    const pass = encoder.beginComputePass({ label: "Fill · rebuild block list" });
     pass.setPipeline(this.rebuildPipeline);
     pass.setBindGroup(0, scratch.computeBindGroup);
     pass.dispatchWorkgroups(FILL_BLOCK_GRID_WIDTH, FILL_BLOCK_GRID_HEIGHT);
@@ -900,7 +900,7 @@ export class FillRenderer {
     | "destinationSnapshotView"
   >): GPUBindGroup {
     return this.device.createBindGroup({
-      label: "Riempimento · compute bind group",
+      label: "Fill · compute bind group",
       layout: this.computeBindGroupLayout,
       entries: [
         { binding: 0, resource: { buffer: this.uniformBuffer, size: FILL_UNIFORM_BYTES } },
@@ -922,7 +922,7 @@ export class FillRenderer {
     scratch: FillScratchResources,
   ): void {
     const pass = encoder.beginRenderPass({
-      label: "Riempimento · commit sul livello selezionato",
+      label: "Fill · commit to selected layer",
       colorAttachments: [{
         view: targetView,
         loadOp: "load",
@@ -954,21 +954,21 @@ export class FillRenderer {
   private assertHistorySlice(slice: GpuHistorySlice): void {
     if (slice.logicalBytes !== FILL_HISTORY_MASK_BYTES) {
       throw new Error(
-        `Maschera cronologia Fill ${slice.logicalBytes} B, attesi ${FILL_HISTORY_MASK_BYTES} B.`,
+        `Fill history mask is ${slice.logicalBytes} B; expected ${FILL_HISTORY_MASK_BYTES} B.`,
       );
     }
   }
 
   private requireScratch(): FillScratchResources {
     if (!this.scratch) {
-      throw new Error("Scratch Riempimento non residente.");
+      throw new Error("Fill scratch is not resident.");
     }
     return this.scratch;
   }
 
   private assertAlive(): void {
     if (this.destroyed) {
-      throw new Error("Renderer Riempimento già distrutto.");
+      throw new Error("The Fill renderer has already been destroyed.");
     }
   }
 }

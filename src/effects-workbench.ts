@@ -71,34 +71,34 @@ export class EffectsWorkbench {
 
   attachStrokeRenderer(renderer: RasterStrokeRenderer): void {
     if (this._strokeRenderer && this._strokeRenderer !== renderer) {
-      throw new Error("Il working set possiede già un renderer Traccia.");
+      throw new Error("The working set already owns a Stroke renderer.");
     }
     this._strokeRenderer = renderer;
   }
 
   attachBevelRenderer(renderer: RasterBevelRenderer): void {
     if (this._bevelRenderer && this._bevelRenderer !== renderer) {
-      throw new Error("Il working set possiede già un renderer Smusso.");
+      throw new Error("The working set already owns a Bevel renderer.");
     }
     this._bevelRenderer = renderer;
   }
 
   attachOuterShadowRenderer(renderer: RasterShadowRenderer): void {
     if (renderer.kind !== "outer") {
-      throw new Error("Il renderer assegnato all'Ombra esterna ha tipo errato.");
+      throw new Error("The assigned Outer Shadow renderer has the wrong type.");
     }
     if (this._outerShadowRenderer && this._outerShadowRenderer !== renderer) {
-      throw new Error("Il working set possiede già un renderer Ombra esterna.");
+      throw new Error("The working set already owns an Outer Shadow renderer.");
     }
     this._outerShadowRenderer = renderer;
   }
 
   attachInnerShadowRenderer(renderer: RasterShadowRenderer): void {
     if (renderer.kind !== "inner") {
-      throw new Error("Il renderer assegnato all'Ombra interna ha tipo errato.");
+      throw new Error("The assigned Inner Shadow renderer has the wrong type.");
     }
     if (this._innerShadowRenderer && this._innerShadowRenderer !== renderer) {
-      throw new Error("Il working set possiede già un renderer Ombra interna.");
+      throw new Error("The working set already owns an Inner Shadow renderer.");
     }
     this._innerShadowRenderer = renderer;
   }
@@ -126,8 +126,8 @@ export class EffectsWorkbench {
   retarget(source: EffectsLayerSource): number {
     if (source.format !== this.source.format) {
       throw new Error(
-        `Formato working set ${this.source.format} incompatibile con ${source.format}; `
-        + "serve la ricreazione completa delle risorse layer.",
+        `Working set format ${this.source.format} is incompatible with ${source.format}; `
+        + "the layer resources must be fully recreated.",
       );
     }
     this._outerShadowRenderer?.retarget(source.view);

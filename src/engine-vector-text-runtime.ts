@@ -468,7 +468,7 @@ export async function initializeVectorTextGpuRenderer(engine: BrushEngine): Prom
     multisample: { count: VECTOR_TEXT_GPU_SAMPLE_COUNT },
   });
   if (!engine.mixedSceneClearShaderModule) {
-    throw new Error("Shader clear trasparente non inizializzato.");
+    throw new Error("The transparent-clear shader is not initialized.");
   }
   engine.vectorTextGpuClearPipeline = engine.device.createRenderPipeline({
     label: "Vector text cropped run transparent clear pipeline",
@@ -550,7 +550,7 @@ export function flushVectorTextGpuPresentations(engine: BrushEngine): void {
     || !meshInnerShadowBlurPipeline
     || !clearPipeline
   ) {
-    throw new Error("Pipeline batch del testo vettoriale GPU non pronta.");
+    throw new Error("The GPU vector-text batch pipeline is not ready.");
   }
 
   const totalMainDraws = engine.vectorTextGpuPendingRuns.reduce(
@@ -559,7 +559,7 @@ export function flushVectorTextGpuPresentations(engine: BrushEngine): void {
   );
   if (totalMainDraws > VECTOR_TEXT_GPU_MAXIMUM_DRAWS) {
     throw new Error(
-      `Batch testo GPU oltre ${VECTOR_TEXT_GPU_MAXIMUM_DRAWS} draw call.`,
+      `GPU text batch exceeds ${VECTOR_TEXT_GPU_MAXIMUM_DRAWS} draw calls.`,
     );
   }
   let mainDrawIndex = 0;
@@ -597,11 +597,11 @@ export function flushVectorTextGpuPresentations(engine: BrushEngine): void {
         continue;
       }
       if (drawResources.kind !== (vectorTextGpuDrawUsesMesh(draw) ? "mesh" : "slug")) {
-        throw new Error("Risorsa vettoriale incoerente con la mask blur GPU.");
+        throw new Error("The vector resource does not match the GPU blur mask.");
       }
       if (nextSourceUniformIndex >= VECTOR_TEXT_GPU_MAXIMUM_DRAWS) {
         throw new Error(
-          `Uniform testo GPU oltre ${VECTOR_TEXT_GPU_MAXIMUM_DRAWS} slot.`,
+          `GPU text uniforms exceed ${VECTOR_TEXT_GPU_MAXIMUM_DRAWS} slots.`,
         );
       }
       const filterIndex = blurBuilds.length;
@@ -658,7 +658,7 @@ export function flushVectorTextGpuPresentations(engine: BrushEngine): void {
       || !filterAToB
       || !filterBToA
     ) {
-      throw new Error("Scratch GPU del blur testo non pronto.");
+      throw new Error("GPU text-blur scratch memory is not ready.");
     }
     for (const build of blurBuilds) {
       const width = build.draw.blurWidth;
@@ -678,7 +678,7 @@ export function flushVectorTextGpuPresentations(engine: BrushEngine): void {
         build.sourceUniformIndex * VECTOR_TEXT_GPU_UNIFORM_STRIDE;
       if (vectorTextGpuDrawUsesMesh(build.draw)) {
         if (build.resources.kind !== "mesh") {
-          throw new Error("Mesh SVG incoerente con la mask blur GPU.");
+          throw new Error("The SVG mesh does not match the GPU blur mask.");
         }
         sourcePass.setPipeline(meshBlurMaskPipeline);
         sourcePass.setBindGroup(0, uniformBindGroup, [sourceDynamicOffset]);
@@ -687,7 +687,7 @@ export function flushVectorTextGpuPresentations(engine: BrushEngine): void {
         sourcePass.drawIndexed(build.resources.indexCount, 1, 0, 0, 0);
       } else {
         if (build.resources.kind !== "slug") {
-          throw new Error("Slug incoerente con la mask blur GPU.");
+          throw new Error("The Slug resource does not match the GPU blur mask.");
         }
         sourcePass.setPipeline(blurMaskPipeline);
         sourcePass.setBindGroup(0, build.resources.bindGroup, [sourceDynamicOffset]);
@@ -763,14 +763,14 @@ export function flushVectorTextGpuPresentations(engine: BrushEngine): void {
       const dynamicOffset = uniformIndex * VECTOR_TEXT_GPU_UNIFORM_STRIDE;
       if (draw.mode === "slug-blur" || draw.mode === "mesh-blur") {
         if (!blurResources) {
-          throw new Error("Cache GPU del blur vettoriale mancante.");
+          throw new Error("The GPU vector-blur cache is missing.");
         }
         pass.setPipeline(blurCompositePipeline);
         pass.setBindGroup(0, blurResources.compositeBindGroup, [dynamicOffset]);
         pass.draw(6, 1, 0, 0);
       } else if (draw.mode === "slug-inner-shadow-direct") {
         if (resourcesForDraw.kind !== "slug") {
-          throw new Error("Risorsa Slug incoerente con l’ombra interna GPU.");
+          throw new Error("The Slug resource does not match the GPU Inner Shadow.");
         }
         if (resourcesForDraw.curveCount === 0) {
           continue;
@@ -780,10 +780,10 @@ export function flushVectorTextGpuPresentations(engine: BrushEngine): void {
         pass.draw(6, 1, 0, 0);
       } else if (draw.mode === "slug-inner-shadow-blur") {
         if (!blurResources) {
-          throw new Error("Cache GPU dell’ombra interna sfocata mancante.");
+          throw new Error("The blurred Inner Shadow GPU cache is missing.");
         }
         if (resourcesForDraw.kind !== "slug") {
-          throw new Error("Risorsa Slug incoerente con l’ombra interna sfocata.");
+          throw new Error("The Slug resource does not match the blurred Inner Shadow.");
         }
         if (resourcesForDraw.curveCount === 0) {
           continue;
@@ -794,10 +794,10 @@ export function flushVectorTextGpuPresentations(engine: BrushEngine): void {
         pass.draw(6, 1, 0, 0);
       } else if (draw.mode === "mesh-inner-shadow-blur") {
         if (!blurResources) {
-          throw new Error("Cache GPU dell’ombra interna SVG mancante.");
+          throw new Error("The SVG Inner Shadow GPU cache is missing.");
         }
         if (resourcesForDraw.kind !== "mesh") {
-          throw new Error("Risorsa mesh incoerente con l’ombra interna SVG.");
+          throw new Error("The mesh resource does not match the SVG Inner Shadow.");
         }
         if (resourcesForDraw.indexCount === 0) {
           continue;
@@ -810,7 +810,7 @@ export function flushVectorTextGpuPresentations(engine: BrushEngine): void {
         pass.drawIndexed(resourcesForDraw.indexCount, 1, 0, 0, 0);
       } else if (draw.mode === "mesh-direct") {
         if (resourcesForDraw.kind !== "mesh") {
-          throw new Error("Risorsa mesh vettoriale incoerente con la draw call.");
+          throw new Error("The vector-mesh resource does not match the draw call.");
         }
         if (resourcesForDraw.indexCount === 0) {
           continue;
@@ -822,7 +822,7 @@ export function flushVectorTextGpuPresentations(engine: BrushEngine): void {
         pass.drawIndexed(resourcesForDraw.indexCount, 1, 0, 0, 0);
       } else {
         if (resourcesForDraw.kind !== "slug") {
-          throw new Error("Risorsa Slug testo incoerente con la draw call.");
+          throw new Error("The text Slug resource does not match the draw call.");
         }
         if (resourcesForDraw.curveCount === 0) {
           continue;
@@ -918,7 +918,7 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
     || !backgroundBindGroup
     || !engine.presentationCacheView
   ) {
-    throw new Error("Compositore segmentato raster/testo non pronto.");
+    throw new Error("The segmented raster/text compositor is not ready.");
   }
 
   const drawSegmentSource = (
@@ -948,7 +948,7 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
     if (segment.kind === "image") {
       const scene = engine.mixedSceneStack;
       if (!scene) {
-        throw new Error("Nodo immagine senza scena mista.");
+        throw new Error("Image node has no mixed scene.");
       }
       const node = scene.imageById(segment.item.imageNodeId);
       const bindGroup = rasterImageBindGroupForNode(engine, node);
@@ -969,7 +969,7 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
         activePresentation.sourceMode,
       );
       if (!pipeline || !sourceBindGroup) {
-        throw new Error("Pipeline del raster attivo con effetti non pronta.");
+        throw new Error("The active-raster effects pipeline is not ready.");
       }
       pass.setPipeline(pipeline);
       pass.setBindGroup(0, engine.rasterStrokeDisplayScreenBindGroup);
@@ -977,21 +977,21 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
     } else if (activePresentation.kind === "thickness-tail") {
       const pipeline = engine.mixedSceneActiveThicknessTailDisplayPipeline;
       if (!pipeline || !engine.thicknessTailDisplayBindGroup) {
-        throw new Error("Pipeline del tail attivo non pronta.");
+        throw new Error("The active-tail pipeline is not ready.");
       }
       pass.setPipeline(pipeline);
       pass.setBindGroup(0, engine.thicknessTailDisplayBindGroup);
     } else if (activePresentation.kind === "light-glaze") {
       const pipeline = engine.mixedSceneActiveLightGlazeDisplayPipeline;
       if (!pipeline || !engine.lightGlazeDisplayBindGroup) {
-        throw new Error("Pipeline Light Glaze del raster attivo non pronta.");
+        throw new Error("The active-raster Light Glaze pipeline is not ready.");
       }
       pass.setPipeline(pipeline);
       pass.setBindGroup(0, engine.lightGlazeDisplayBindGroup);
     } else {
       const pipeline = engine.mixedSceneActiveDisplayPipeline;
       if (!pipeline) {
-        throw new Error("Pipeline base del raster attivo non pronta.");
+        throw new Error("The active-raster base pipeline is not ready.");
       }
       pass.setPipeline(pipeline);
       pass.setBindGroup(0, engine.displayBindGroup);
@@ -1064,7 +1064,7 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
         || blendUniformStride <= 0
         || !engine.mixedSceneBlendFromGroupBindGroup
       ) {
-        throw new Error("Ping-pong del gruppo di ritaglio avanzato non pronto.");
+        throw new Error("Advanced clipping-group ping-pong is not ready.");
       }
 
       // Preserve the outer scene in its current target while constructing the
@@ -1076,7 +1076,7 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
         ? scratchTexture
         : engine.mixedSceneLinearTexture!;
       const groupStartPass = encoder.beginRenderPass({
-        label: `${label} · base gruppo ritaglio live`,
+        label: `${label} · live clipping-group base`,
         colorAttachments: [{
           view: groupStartView,
           loadOp: "load",
@@ -1092,7 +1092,7 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
       let groupOnDedicatedTexture = false;
       for (const step of clippingSuffixSteps) {
         const operandPass = encoder.beginRenderPass({
-          label: `${label} · sorgente clipping ${step.layerId} (${step.blendMode})`,
+          label: `${label} · clipping source ${step.layerId} (${step.blendMode})`,
           colorAttachments: [{
             view: operandView,
             loadOp: "load",
@@ -1156,7 +1156,7 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
       );
 
       const outerBlendPass = encoder.beginRenderPass({
-        label: `${label} · gruppo ritaglio esterno ${blendMode}`,
+        label: `${label} · outer clipping group ${blendMode}`,
         colorAttachments: [{
           view: groupStartView,
           loadOp: "load",
@@ -1201,11 +1201,11 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
       || !engine.layerBlendCompositorUniformBuffer
       || engine.layerBlendCompositorUniformStride <= 0
     ) {
-      throw new Error("Ping-pong WebGPU della fusione livello non pronto.");
+      throw new Error("WebGPU layer-blend ping-pong is not ready.");
     }
 
     const operandPass = encoder.beginRenderPass({
-      label: `${label} · sorgente ${blendMode}`,
+      label: `${label} · source ${blendMode}`,
       colorAttachments: [{
         view: operandView,
         loadOp: "load",
@@ -1219,7 +1219,7 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
     operandPass.end();
 
     const blendPass = encoder.beginRenderPass({
-      label: `${label} · fusione ${blendMode}`,
+      label: `${label} · blend ${blendMode}`,
       colorAttachments: [{
         view: targetView,
         loadOp: "load",
@@ -1243,7 +1243,7 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
     const scratchTexture = engine.mixedSceneBlendScratchTexture;
     const canonicalTexture = engine.mixedSceneLinearTexture;
     if (!scratchTexture || !canonicalTexture) {
-      throw new Error("Copia finale del compositore fusione non pronta.");
+      throw new Error("The layer-blend compositor's final copy is not ready.");
     }
     encoder.copyTextureToTexture(
       {
@@ -1263,7 +1263,7 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
   }
 
   const presentPass = encoder.beginRenderPass({
-    label: `${label} · checker finale`,
+    label: `${label} · final checker`,
     colorAttachments: [
       {
         view: engine.presentationCacheView,
@@ -1293,7 +1293,7 @@ function createVectorTextRunBindGroup(
 ): GPUBindGroup {
   const layout = engine.mixedSceneTextSegmentBindGroupLayout;
   if (!layout) {
-    throw new Error("Layout delle cache testo segmentate non inizializzato.");
+    throw new Error("The segmented-text cache layout is not initialized.");
   }
   return engine.device.createBindGroup({
     label: `Vector text ${key} dual-capture segment bind group`,
@@ -1401,7 +1401,7 @@ export function rebuildVectorTextGpuFallbackPresentation(
     || captureView.canvasWidth !== width
     || captureView.canvasHeight !== height
   ) {
-    throw new Error("Vista larga diversa dalle cache vettoriali del viewport.");
+    throw new Error("The wide view does not match the viewport vector caches.");
   }
   if (engine.vectorTextRunTextures.size === 0) {
     clearVectorTextFallbackPresentation(engine);
@@ -1414,11 +1414,11 @@ export function rebuildVectorTextGpuFallbackPresentation(
   >();
   for (const run of runs) {
     if (!run.placement.startsWith("text-run:")) {
-      throw new Error("La cache larga accetta soltanto run testo segmentate.");
+      throw new Error("The wide cache accepts only segmented text runs.");
     }
     const key = run.placement as Extract<VectorTextPlacement, `text-run:${string}`>;
     if (runByKey.has(key)) {
-      throw new Error(`Run testo duplicata nella cache larga: ${key}.`);
+      throw new Error(`Duplicate text run in the wide cache: ${key}.`);
     }
     runByKey.set(key, run.draws);
   }
@@ -1426,7 +1426,7 @@ export function rebuildVectorTextGpuFallbackPresentation(
     runByKey.size !== engine.vectorTextRunTextures.size
     || [...engine.vectorTextRunTextures.keys()].some((key) => !runByKey.has(key))
   ) {
-    throw new Error("La cache larga deve coprire atomicamente tutte le run testo vive.");
+    throw new Error("The wide cache must atomically cover every live text run.");
   }
 
   const candidates = new Map<
@@ -1443,7 +1443,7 @@ export function rebuildVectorTextGpuFallbackPresentation(
     for (const [key, draws] of runByKey) {
       const resources = engine.vectorTextRunTextures.get(key);
       if (!resources) {
-        throw new Error(`Run testo GPU ${key} rimossa durante la cache larga.`);
+        throw new Error(`GPU text run ${key} was removed while building the wide cache.`);
       }
       const texture = engine.device.createTexture({
         label: `Vector text ${key} automatic wide fallback ${width}×${height}`,
@@ -1506,7 +1506,7 @@ export function rebuildVectorTextGpuFallbackPresentation(
     candidate.resources.fallbackView = candidate.view;
     candidate.resources.bindGroup = candidate.bindGroup;
     if (!engine.vectorTextRunTextures.has(key)) {
-      throw new Error(`Run testo GPU ${key} rimossa prima della pubblicazione larga.`);
+      throw new Error(`GPU text run ${key} was removed before wide-cache publication.`);
     }
   }
   engine.vectorTextFallbackCaptureView = { ...captureView };
@@ -1529,7 +1529,7 @@ export function captureVectorTextFallbackPresentation(engine: BrushEngine): {
   const height = engine.vectorTextTextureHeight;
   const sourceView = engine.vectorTextCaptureView;
   if (!sourceView || width < 1 || height < 1) {
-    throw new Error("Nessuna presentazione vettoriale esatta da usare come copertura.");
+    throw new Error("No exact vector presentation is available for use as coverage.");
   }
   const candidates = new Map<
     Extract<VectorTextPlacement, `text-run:${string}`>,
@@ -1561,7 +1561,7 @@ export function captureVectorTextFallbackPresentation(engine: BrushEngine): {
       );
     }
     if (candidates.size === 0) {
-      throw new Error("Le cache vettoriali esatte non sono ancora inizializzate.");
+      throw new Error("The exact vector caches are not initialized yet.");
     }
     engine.device.queue.submit([encoder.finish()]);
   } catch (error) {
@@ -1601,7 +1601,7 @@ export async function probeVectorTextFallbackAlpha(
   );
   const capture = engine.vectorTextFallbackCaptureView;
   if (fallbackRuns.length !== 1 || !capture || layerPoints.length === 0) {
-    throw new Error("Il probe C richiede una sola run con copertura GPU pronta.");
+    throw new Error("Probe C requires exactly one run with ready GPU coverage.");
   }
   const texture = fallbackRuns[0].fallbackTexture!;
   const probeSize = Math.max(
@@ -1693,13 +1693,13 @@ export async function probeVectorTextFastCompositeAlpha(
     || !texture
     || layerPoints.length === 0
   ) {
-    throw new Error("Il probe C richiede la composizione fast fallback attiva.");
+    throw new Error("Probe C requires active fast-fallback compositing.");
   }
   if (
     engine.mixedSceneLinearWidth !== view.canvasWidth
     || engine.mixedSceneLinearHeight !== view.canvasHeight
   ) {
-    throw new Error("La cache lineare C non corrisponde al viewport corrente.");
+    throw new Error("Linear cache C does not match the current viewport.");
   }
 
   const probeSize = Math.max(
@@ -1884,7 +1884,7 @@ export async function mutateMixedScenePresentation<Result>(engine: BrushEngine,
   },
 ): Promise<Result> {
   if (!engine.initialized) {
-    throw new Error("Il motore non è ancora inizializzato.");
+    throw new Error("The engine is not initialized yet.");
   }
   const scene = requireMixedSceneStack(engine);
   engine.assertLayerSwitchAllowed();
@@ -1897,7 +1897,7 @@ export async function mutateMixedScenePresentation<Result>(engine: BrushEngine,
     : null;
   const previousExcludedNodeId = engine.vectorTextPreviewExcludedNodeId;
   try {
-    engine.callbacks.onStatus?.("Preparazione della scena raster/testo…", "working");
+    engine.callbacks.onStatus?.("Preparing the raster/text scene…", "working");
     await engine.waitForIdle();
     const result = mutate(scene);
     const selected = scene.selected;
@@ -1905,17 +1905,17 @@ export async function mutateMixedScenePresentation<Result>(engine: BrushEngine,
       ? selected.textNodeId
       : null;
     clearVectorTextPresentationForTransaction(engine);
-    engine.callbacks.onStatus?.("Composizione dei livelli raster/testo…", "working");
+    engine.callbacks.onStatus?.("Compositing raster/text layers…", "working");
     await engine.rebuildMergedLayerSurfaces(
       "layer-switch",
       engine.getVectorTextViewState(),
       { reuseUnchangedRasterRuns: true },
     );
-    engine.callbacks.onStatus?.("Scena raster/testo pronta.", "ok");
+    engine.callbacks.onStatus?.("Raster/text scene ready.", "ok");
     if (history) {
       const targetKey = history.targetKey ?? history.addedKey?.(result);
       if (!targetKey) {
-        throw new Error("Target vettoriale mancante per la cronologia.");
+        throw new Error("The vector target required by history is missing.");
       }
       const before = historyBefore ?? {
         key: targetKey,
@@ -1947,15 +1947,15 @@ export async function mutateMixedScenePresentation<Result>(engine: BrushEngine,
       engine.requestRender();
     } catch (restoreError) {
       engine.latchDocumentStateInconsistent(
-        "Stato incoerente dopo la modifica della scena mista: ricarica la pagina.",
+        "The document became inconsistent after editing the mixed scene. Reload the page.",
       );
       const originalMessage = error instanceof Error ? error.message : String(error);
       const restoreMessage = restoreError instanceof Error
         ? restoreError.message
         : String(restoreError);
       throw new Error(
-        `Modifica scena fallita (${originalMessage}) e ripristino fallito `
-        + `(${restoreMessage}). Ricarica la pagina.`,
+        `Scene edit failed (${originalMessage}) and recovery also failed `
+        + `(${restoreMessage}). Reload the page.`,
       );
     }
     throw error;
@@ -1988,7 +1988,7 @@ export function ensureVectorTextGpuBlurCache(engine: BrushEngine,
   const uniformBuffer = engine.vectorTextGpuUniformBuffer;
   const sampler = engine.vectorTextGpuBlurSampler;
   if (!layout || !innerLayout || !uniformBuffer || !sampler) {
-    throw new Error("Compositore GPU del blur testo non inizializzato.");
+    throw new Error("The GPU text-blur compositor is not initialized.");
   }
   const texture = engine.device.createTexture({
     label: `Vector text GPU blur cache ${draw.blurKey} ${draw.blurWidth}×${draw.blurHeight}`,
@@ -2066,7 +2066,7 @@ export function ensureVectorTextGpuBlurScratch(engine: BrushEngine, width: numbe
   const layout = engine.vectorTextGpuBlurFilterBindGroupLayout;
   const uniformBuffer = engine.vectorTextGpuBlurFilterUniformBuffer;
   if (!layout || !uniformBuffer) {
-    throw new Error("Filtro GPU del blur testo non inizializzato.");
+    throw new Error("The GPU text-blur filter is not initialized.");
   }
   const textureDescriptor: GPUTextureDescriptor = {
     size: {
@@ -2256,7 +2256,7 @@ function createMixedSceneBlendScratchCandidate(
   const blendLayout = engine.layerBlendCompositorBindGroupLayout;
   const blendUniformBuffer = engine.layerBlendCompositorUniformBuffer;
   if (!blendLayout || !blendUniformBuffer) {
-    throw new Error("Compositore GPU delle fusioni livello non inizializzato.");
+    throw new Error("The GPU layer-blend compositor is not initialized.");
   }
   let texture: GPUTexture | null = null;
   let operandTexture: GPUTexture | null = null;
@@ -2368,7 +2368,7 @@ export async function prewarmMixedSceneLinearTextureForLayerBlend(
 ): Promise<void> {
   const layout = engine.mixedScenePresentBindGroupLayout;
   if (!layout) {
-    throw new Error("Layout di presentazione della scena mista non inizializzato.");
+    throw new Error("The mixed-scene presentation layout is not initialized.");
   }
   const sameLinearTexture = Boolean(
     engine.mixedSceneLinearTexture
@@ -2393,7 +2393,7 @@ export async function prewarmMixedSceneLinearTextureForLayerBlend(
 
   const candidate = await runGpuAllocationTransaction(
     engine.device,
-    `Prewarm fusione livello ${width}×${height}`,
+    `Layer-blend prewarm ${width}×${height}`,
     (transaction) => {
       if (sameLinearTexture) {
         const scratch = createMixedSceneBlendScratchCandidate(
@@ -2529,7 +2529,7 @@ export function ensureMixedSceneLinearTexture(engine: BrushEngine, width: number
   }
   const layout = engine.mixedScenePresentBindGroupLayout;
   if (!layout) {
-    throw new Error("Layout di presentazione della scena mista non inizializzato.");
+    throw new Error("The mixed-scene presentation layout is not initialized.");
   }
   const oldTexture = engine.mixedSceneLinearTexture;
   const oldBlendScratch = engine.mixedSceneBlendScratchTexture;
@@ -2608,7 +2608,7 @@ export function rebuildVectorTextDependentDisplayBindGroups(engine: BrushEngine)
   const belowView = engine.vectorTextBelowView ?? engine.transparentLayerView;
   const aboveView = engine.vectorTextAboveView ?? engine.transparentLayerView;
   engine.rasterStrokeDisplayScreenBindGroup = engine.device.createBindGroup({
-    label: "Traccia display screen + semantic text bind group",
+    label: "Stroke display screen + semantic text bind group",
     layout: engine.rasterStrokeDisplayScreenBindGroupLayout,
     entries: [
       { binding: 0, resource: { buffer: engine.displayUniformBuffer } },
@@ -2721,7 +2721,7 @@ export function createMixedSceneRasterSegmentResources(engine: BrushEngine,
 ): MixedSceneRasterSegmentResources {
   const layout = engine.mixedSceneRasterSegmentBindGroupLayout;
   if (!layout) {
-    throw new Error("Layout del compositore raster/testo non inizializzato.");
+    throw new Error("The raster/text compositor layout is not initialized.");
   }
   const uniformBuffer = engine.device.createBuffer({
     label: `Mixed scene raster segment ${key} uniforms`,
@@ -2814,7 +2814,7 @@ export function ensureVectorTextGpuResource(engine: BrushEngine,
     const uniformBuffer = engine.vectorTextGpuUniformBuffer;
     const layout = engine.vectorTextGpuSlugBindGroupLayout;
     if (!uniformBuffer || !layout) {
-      throw new Error("Layout Slug del testo vettoriale non inizializzato.");
+      throw new Error("The vector-text Slug layout is not initialized.");
     }
     created = createVectorTextGpuSlugResources(
       engine.device,
@@ -3008,7 +3008,7 @@ export function mixedSceneItemIsVisible(engine: BrushEngine, item: MixedSceneIte
   }
   const record = engine.layerStack.byId(item.rasterLayerId);
   if (!record) {
-    throw new Error(`Raster ${item.rasterLayerId} assente durante il compositing.`);
+    throw new Error(`Raster ${item.rasterLayerId} is missing during compositing.`);
   }
   return record.visible && record.opacity > 0 && record.hasContent;
 }
@@ -3019,7 +3019,7 @@ export function publishMixedScene(engine: BrushEngine): void {
     try {
       engine.callbacks.onMixedSceneChange?.(snapshot);
     } catch (error) {
-      console.error("Observer scena mista ignorato per preservare la transazione:", error);
+      console.error("Mixed-scene observer ignored to preserve the transaction:", error);
     }
   }
 }
@@ -3033,7 +3033,7 @@ export function destroyMixedSceneRasterSegment(engine: BrushEngine,
 
 export function requireMixedSceneStack(engine: BrushEngine): MixedSceneStack {
   if (!engine.mixedSceneStack) {
-    throw new Error("Scena raster/testo non abilitata per questa pagina.");
+    throw new Error("The raster/text scene is not enabled for this page.");
   }
   return engine.mixedSceneStack;
 }

@@ -23,7 +23,7 @@ export function loadCachedAssetSource(source: string | URL): Promise<ArrayBuffer
     credentials: "same-origin",
   }).then(async (response) => {
     if (!response.ok) {
-      throw new Error(`Impossibile caricare l'asset ${url} (${response.status}).`);
+      throw new Error(`Could not load asset ${url} (${response.status}).`);
     }
     return await response.arrayBuffer();
   }).catch((error) => {

@@ -200,7 +200,7 @@ async function createSharedResources(
   const format = engine.layerFormat;
   return runGpuAllocationTransaction(
     engine.device,
-    `Pipeline Trasforma raster ${format}`,
+    `Raster Transform pipeline ${format}`,
     async () => {
       const transformModule = engine.device.createShaderModule({
         label: "Native raster Transform WGSL",
@@ -486,7 +486,7 @@ function encodeTransformPass(
   pass.setBindGroup(0, session.bindGroup);
   if (session.scope === "selection") {
     if (!session.selectionMaskBindGroup) {
-      throw new Error("Bind group della Selezione pixel mancante durante Trasforma.");
+      throw new Error("The Pixel Selection bind group is missing during Transform.");
     }
     pass.setBindGroup(1, session.selectionMaskBindGroup);
   }
@@ -553,7 +553,7 @@ function flushPreview(engine: BrushEngine, session: ActiveRasterTransformSession
 export async function beginRasterLayerTransform(
   engine: BrushEngine,
 ): Promise<RasterTransformSnapshot | null> {
-  if (!engine.initialized) throw new Error("Il motore non è ancora inizializzato.");
+  if (!engine.initialized) throw new Error("The engine has not been initialized yet.");
   if (engine.activeRasterTransformSession) {
     return transformSnapshot(engine.activeRasterTransformSession);
   }
@@ -563,20 +563,20 @@ export async function beginRasterLayerTransform(
   const record = engine.layerStack.active;
   if (selected.rasterLayerId !== record.id) {
     throw new Error(
-      `Invariante Trasforma: raster selezionato ${selected.rasterLayerId}, `
-      + `ma raster attivo ${record.id}.`,
+      `Transform invariant: selected raster ${selected.rasterLayerId}, `
+      + `but active raster ${record.id}.`,
     );
   }
   engine.assertLayerSwitchAllowed();
   engine.persistActiveLayerState();
   if (!record.hasContent || !record.contentBounds) {
-    throw new Error("Il livello raster selezionato è vuoto.");
+    throw new Error("The selected raster layer is empty.");
   }
   const selectionScope = engine.pixelSelectionState.selectedPixels > 0;
   const selectionBounds = engine.pixelSelectionState.bounds;
   const selectionRenderer = selectionScope ? engine.selectionRenderer : null;
   if (selectionScope && (!selectionBounds || !selectionRenderer)) {
-    throw new Error("Selezione pixel attiva ma maschera GPU non residente.");
+    throw new Error("Pixel Selection is active, but its GPU mask is not resident.");
   }
   engine.selectionOverlaySuppressed = false;
   engine.selectionOverlayOffsetX = 0;
@@ -589,7 +589,7 @@ export async function beginRasterLayerTransform(
   try {
     await engine.waitForIdle();
     const hot = engine.requireLayerGpu(record.id).hot;
-    if (!hot) throw new Error("Texture hot del raster da trasformare mancante.");
+    if (!hot) throw new Error("The hot texture for the raster to transform is missing.");
     const sourceRasterBounds = { ...record.contentBounds };
     let sourceBounds = selectionScope ? { ...selectionBounds! } : sourceRasterBounds;
     if (!selectionScope && !record.rasterSource) {
@@ -641,7 +641,7 @@ export async function beginRasterLayerTransform(
       sourceTileMask,
     ) as DirtyRect | null;
     if (!sourceScratchRect) {
-      throw new Error("Il livello raster non contiene tile trasformabili.");
+      throw new Error("The raster layer contains no transformable tiles.");
     }
     const sourcePivot = {
       x: record.rasterSource?.x ?? sourceBounds.x + sourceBounds.width * 0.5,
@@ -656,7 +656,7 @@ export async function beginRasterLayerTransform(
     const shared = await requireSharedResources(engine);
     session = await runGpuAllocationTransaction(
       engine.device,
-      `Allocazione Trasforma raster ${sourceScratchRect.width}×${sourceScratchRect.height}`,
+      `Allocate Raster Transform ${sourceScratchRect.width}×${sourceScratchRect.height}`,
       async (transaction) => {
         const mipLevelCount = selectionScope
           ? 1
@@ -826,7 +826,7 @@ export async function beginRasterLayerTransform(
           pass.end();
         }
         engine.device.queue.submit([encoder.finish()]);
-        await engine.waitForGpuCapped("Preparazione Trasforma raster", 60_000);
+        await engine.waitForGpuCapped("Prepare Raster Transform", 60_000);
         return created;
       },
     );
@@ -840,8 +840,8 @@ export async function beginRasterLayerTransform(
     engine.historyBusy = false;
     engine.publishStatus(
       selectionScope
-        ? `Sposta i pixel selezionati di ${record.name}: Applica o Annulla.`
-        : `Trasforma GPU pronto per ${record.name}: Applica o Annulla.`,
+        ? `Move the selected pixels in ${record.name}: Apply or Cancel.`
+        : `GPU Transform ready for ${record.name}: Apply or Cancel.`,
       "ok",
     );
     publishMixedScene(engine);
@@ -959,17 +959,17 @@ export function updateRasterLayerTransform(
   update: RasterTransformUpdate,
 ): RasterTransformSnapshot {
   const session = engine.activeRasterTransformSession;
-  if (!session) throw new Error("Nessuna sessione Trasforma raster aperta.");
+  if (!session) throw new Error("No Raster Transform session is open.");
   if (engine.historyStateInconsistent) {
-    throw new Error("Documento bloccato: è consentito soltanto ritentare Annulla.");
+    throw new Error("The document is locked: only retrying Cancel is allowed.");
   }
   if (session.terminal) {
-    throw new Error("La trasformazione raster è già in fase di Applica/Annulla.");
+    throw new Error("The raster transform is already being applied or canceled.");
   }
   const requestedMode = update.mode ?? session.mode;
   const requestedGridSize = update.gridSize ?? session.gridSize;
   if (!isRasterWarpGridSize(requestedGridSize)) {
-    throw new Error("La griglia Warp deve essere 3×3, 4×4 oppure 5×5.");
+    throw new Error("The Warp grid must be 3×3, 4×4, or 5×5.");
   }
   if (
     session.scope === "selection"
@@ -980,14 +980,14 @@ export function updateRasterLayerTransform(
       || (update.rotation !== undefined && Math.abs(update.rotation) > 1e-7))
   ) {
     throw new Error(
-      "La Selezione pixel può essere soltanto spostata, non scalata, ruotata o deformata.",
+      "Pixel Selection can only be moved, not scaled, rotated, or distorted.",
     );
   }
   transitionRasterTransformMode(session, requestedMode, requestedGridSize);
 
   if (session.mode === "affine") {
     if (update.bezierHandles !== undefined) {
-      throw new Error("Le maniglie Bézier sono disponibili soltanto in Warp.");
+      throw new Error("Bézier handles are available only in Warp.");
     }
     let transform = normalizeRasterTransform({
       translationX: update.x === undefined
@@ -1019,7 +1019,7 @@ export function updateRasterLayerTransform(
     ) as DirtyRect | null;
   } else {
     if (update.scale !== undefined || update.rotation !== undefined) {
-      throw new Error("Warp e Prospettiva si modificano trascinando i punti di controllo.");
+      throw new Error("Warp and Perspective are edited by dragging the control points.");
     }
     const previousPoints = session.controlPoints;
     let nextPoints = previousPoints;
@@ -1054,7 +1054,7 @@ export function updateRasterLayerTransform(
         );
       session.bezierHandles = [...nextHandles];
     } else if (update.bezierHandles !== undefined) {
-      throw new Error("Le maniglie Bézier sono disponibili soltanto in Warp.");
+      throw new Error("Bézier handles are available only in Warp.");
     }
     session.controlPoints = nextPoints;
     session.resultBounds = rasterDeformRenderedBounds(
@@ -1140,10 +1140,10 @@ export function nudgeRasterLayerTransform(
 ): RasterTransformSnapshot {
   const session = engine.activeRasterTransformSession;
   if (!session) {
-    throw new Error("Nessun raster pronto per lo spostamento da tastiera.");
+    throw new Error("No raster is ready for keyboard movement.");
   }
   if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) {
-    throw new RangeError("Lo spostamento raster deve essere finito.");
+    throw new RangeError("Raster movement must be finite.");
   }
   const center = session.mode === "affine"
     ? {
@@ -1258,7 +1258,7 @@ async function restoreOriginalPixels(
     engine.submitImmediate([], false, engine.settings, true, null, dirtyRect, false);
     setAuthoritativeMetadata(engine, session.sourceRasterBounds, session.sourceTileMask);
   }
-  await engine.waitForGpuCapped("Annullamento Trasforma raster", 60_000);
+  await engine.waitForGpuCapped("Cancel Raster Transform", 60_000);
   if (session.scope === "selection") {
     engine.selectionOverlayOffsetX = 0;
     engine.selectionOverlayOffsetY = 0;
@@ -1270,7 +1270,7 @@ export async function cancelRasterLayerTransform(engine: BrushEngine): Promise<b
   const session = engine.activeRasterTransformSession;
   if (!session) return false;
   if (session.terminal) {
-    throw new Error("La trasformazione raster sta già terminando.");
+    throw new Error("The raster transform is already finishing.");
   }
   session.terminal = true;
   try {
@@ -1280,7 +1280,7 @@ export async function cancelRasterLayerTransform(engine: BrushEngine): Promise<b
     // can retry the exact restore instead of throwing away the only source.
     session.terminal = false;
     engine.latchDocumentStateInconsistent(
-      "Annullamento Trasforma raster fallito: ricarica la pagina.",
+      "Raster Transform cancellation failed: reload the page.",
     );
     engine.publishHistoryState();
     engine.publishStats();
@@ -1298,7 +1298,7 @@ export async function cancelRasterLayerTransform(engine: BrushEngine): Promise<b
   engine.publishStats();
   publishMixedScene(engine);
   engine.scheduleLayerColdCompression();
-  engine.publishStatus("Trasformazione raster annullata.", "ok");
+  engine.publishStatus("Raster transform canceled.", "ok");
   return true;
 }
 
@@ -1306,7 +1306,7 @@ export async function commitRasterLayerTransform(engine: BrushEngine): Promise<b
   const session = engine.activeRasterTransformSession;
   if (!session) return false;
   if (session.terminal) {
-    throw new Error("La trasformazione raster sta già terminando.");
+    throw new Error("The raster transform is already finishing.");
   }
   if (rasterTransformIsIdentity(session)) {
     await cancelRasterLayerTransform(engine);
@@ -1361,10 +1361,10 @@ export async function commitRasterLayerTransform(engine: BrushEngine): Promise<b
       // rasterization boundary, unlike a whole-layer matrix transform.
       record.rasterSource = null;
     }
-    await engine.waitForGpuCapped("Commit Trasforma raster", 60_000);
+    await engine.waitForGpuCapped("Commit Raster Transform", 60_000);
     if (session.samplingBounds) {
       const hot = engine.requireLayerGpu(session.layerId).hot;
-      if (!hot) throw new Error("Texture hot del raster trasformato mancante.");
+      if (!hot) throw new Error("The transformed raster's hot texture is missing.");
       seed = await createLayerColdStorageCandidate(
         engine,
         record,
@@ -1377,7 +1377,7 @@ export async function commitRasterLayerTransform(engine: BrushEngine): Promise<b
     if (session.scope === "selection") {
       selectionBefore = captureSelectionHistoryMask(
         engine,
-        `Trasforma selezione ${engine.nextHistoryActionId} · prima`,
+        `Transform selection ${engine.nextHistoryActionId} · before`,
       );
       await translatePixelSelection(
         engine,
@@ -1387,7 +1387,7 @@ export async function commitRasterLayerTransform(engine: BrushEngine): Promise<b
       selectionTranslated = true;
       selectionAfter = captureSelectionHistoryMask(
         engine,
-        `Trasforma selezione ${engine.nextHistoryActionId} · dopo`,
+        `Transform selection ${engine.nextHistoryActionId} · after`,
         true,
       );
     }
@@ -1447,7 +1447,7 @@ export async function commitRasterLayerTransform(engine: BrushEngine): Promise<b
       retainSessionForRecovery = true;
       session.terminal = false;
       engine.latchDocumentStateInconsistent(
-        "Commit Trasforma raster fallito e rollback incompleto: ricarica la pagina.",
+        "Raster Transform commit failed and rollback was incomplete: reload the page.",
       );
     } finally {
       destroyLayerColdStorage(seed);
@@ -1462,7 +1462,7 @@ export async function commitRasterLayerTransform(engine: BrushEngine): Promise<b
         ? rollbackError.message
         : String(rollbackError);
       throw new Error(
-        `Commit Trasforma fallito: ${operationMessage}; rollback fallito: ${rollbackMessage}`,
+        `Transform commit failed: ${operationMessage}; rollback failed: ${rollbackMessage}`,
       );
     }
     throw error;
@@ -1481,6 +1481,6 @@ export async function commitRasterLayerTransform(engine: BrushEngine): Promise<b
     engine.publishStats();
     publishMixedScene(engine);
   }
-  engine.publishStatus("Trasformazione raster applicata: un solo Undo.", "ok");
+  engine.publishStatus("Raster transform applied: one Undo step.", "ok");
   return true;
 }

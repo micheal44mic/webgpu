@@ -24,7 +24,7 @@ workerScope.postMessage({
   supported: compressionSupported,
   reason: compressionSupported
     ? undefined
-    : "CompressionStream gzip non disponibile nel Web Worker.",
+    : "gzip CompressionStream is unavailable in the Web Worker.",
 });
 
 workerScope.onmessage = (event): void => {
@@ -42,7 +42,7 @@ async function handleRequest(
   request: LayerColdCompressionWorkerRequest,
 ): Promise<void> {
   if (!compressionSupported) {
-    throw new Error("CompressionStream gzip non disponibile nel Web Worker.");
+    throw new Error("gzip CompressionStream is unavailable in the Web Worker.");
   }
   if (request.type === "compress") {
     const result = await compressLosslessGzipChunk(
@@ -75,13 +75,13 @@ async function handleRequest(
     : stored;
   if (restored.byteLength !== request.expectedRawBytes) {
     throw new Error(
-      `Decompressione di ${restored.byteLength} byte; attesi ${request.expectedRawBytes}.`,
+      `Decompressed ${restored.byteLength} bytes; expected ${request.expectedRawBytes}.`,
     );
   }
   const hash = hashCompressionBytes(restored);
   if (hash !== request.expectedHash) {
     throw new Error(
-      `Hash decompressione ${hash.toString(16)} diverso da `
+      `Decompression hash ${hash.toString(16)} differs from `
       + `${request.expectedHash.toString(16)}.`,
     );
   }

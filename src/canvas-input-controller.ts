@@ -505,7 +505,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       browser.performance.now() - deferred.startedAtPerformanceMs
       >= DEFERRED_PEN_MAX_WAIT_MS
     ) {
-      status.textContent = "Il livello sta ancora caricando: solleva la Pencil e riprova.";
+      status.textContent = "The layer is still loading: lift the Pencil and try again.";
       status.className = "status";
       abandonDeferredPenPaint(true);
       return false;
@@ -545,7 +545,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       startedAtPerformanceMs: browser.performance.now(),
       retryTimerId: null,
     };
-    status.textContent = "Completo il livello prima di iniziare il tratto…";
+    status.textContent = "Finishing the layer before starting the stroke…";
     status.className = "status";
     scheduleDeferredPenRetry();
   };
@@ -731,7 +731,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     ) {
       if (!deferPenForPaintReadiness) {
         if (options.getHistoryState().openEdit === "raster-property") {
-          status.textContent = "Completo la modifica dell'effetto prima del tratto…";
+          status.textContent = "Finishing the effect edit before starting the stroke…";
           status.className = "status";
         }
         return;
@@ -1051,7 +1051,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
         fillRequest.tolerance,
         fillRequest.color,
       ).catch((error) => {
-        console.error("Riempimento WebGPU non riuscito", error);
+        console.error("WebGPU Fill failed", error);
       }).finally(() => {
         if (disposed) return;
         publishHistoryState();
@@ -1110,7 +1110,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     if (event.key === "Escape" && method === "lasso" && selectionKeyboardLassoActive) {
       event.preventDefault();
       cancelKeyboardSelectionGesture(false);
-      status.textContent = "Lazo da tastiera annullato.";
+      status.textContent = "Keyboard lasso canceled.";
       status.className = "status";
       return;
     }
@@ -1133,7 +1133,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
         lassoCombineMode = options.getSelectionSettings().combineMode;
         selectionKeyboardLassoActive = true;
         status.textContent =
-          "Lazo da tastiera attivo: usa le frecce, Invio per chiudere, Esc per annullare.";
+          "Keyboard lasso active: use the arrow keys, Enter to close, and Escape to cancel.";
         status.className = "status";
       }
       appendLassoClientPoint(

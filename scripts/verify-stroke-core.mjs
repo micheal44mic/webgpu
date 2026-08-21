@@ -236,7 +236,7 @@ assert.deepEqual(
 );
 assert.throws(
   () => partitionRasterStrokeBuildKeys([5], 1024, 1024, 256, 200, 14),
-  /non partizionabile/,
+  /cannot be partitioned/,
 );
 
 // Stroke uses the REGION EXTENT, plus the historical extra step 1.
@@ -493,7 +493,7 @@ assert.match(
   rendererSource,
   /fn storedLightCoverage\(value: f32\) -> f32 \{\s*return clamp\(value, 0\.0, 1\.0\);\s*\}/,
 );
-assert.match(rendererSource, /Traccia styled derived mip 1\+/);
+assert.match(rendererSource, /Stroke styled derived mip 1\+/);
 assert.match(engineSource, /rasterStrokeDisplayPipeline/);
 assert.match(engineSource, /presentationCacheLod0FullRebuildTraceEnabledCpuEncodingMs/);
 assert.match(engineSource, /presentationCacheLod0FullRebuildTraceDisabledCpuEncodingMs/);
@@ -528,7 +528,7 @@ assert.match(
   /this\.strokeGeometryResourcesAllocated \? this\.fullThresholdMaskMemoryBytes : 0/,
 );
 assert.match(rendererSource, /this\.rebuildIndirectGateBindGroup\(\)/);
-assert.match(rendererSource, /Encode Traccia rifiutato: le risorse geometriche non sono allocate/);
+assert.match(rendererSource, /Stroke encode rejected: geometry resources are not allocated/);
 assert.match(engineSource, /strokeGeometryEnabled: strokeGeometryActive/);
 const geometrySwapHelperStart = engineSource.indexOf(
   "export async function setRasterStrokeGeometryEnabled(",

@@ -32,9 +32,9 @@ export function createHistoryColdSeedHandle(options: {
   let retired = false;
 
   const requireResident = (): LayerColdStorageResources => {
-    if (retired) throw new Error("Seed History già ritirato.");
+    if (retired) throw new Error("The History seed has already been retired.");
     if (!residentValue) {
-      throw new Error("Seed History locale non reidratato prima del replay.");
+      throw new Error("The local History seed was not rehydrated before replay.");
     }
     return residentValue;
   };
@@ -61,8 +61,8 @@ export function createHistoryColdSeedHandle(options: {
       return residentValue;
     },
     attachResident(value) {
-      if (retired) throw new Error("Impossibile reidratare un seed History ritirato.");
-      if (residentValue) throw new Error("Seed History già residente.");
+      if (retired) throw new Error("A retired History seed cannot be rehydrated.");
+      if (residentValue) throw new Error("The History seed is already resident.");
       if (
         value.memoryBytes !== metadata.memoryBytes
         || value.generation !== metadata.generation
@@ -70,7 +70,7 @@ export function createHistoryColdSeedHandle(options: {
         || value.tileIndices.length !== metadata.tileIndices.length
         || value.tileIndices.some((tile, index) => tile !== metadata.tileIndices[index])
       ) {
-        throw new Error("Seed History reidratato incompatibile con il descriptor.");
+        throw new Error("The rehydrated History seed is incompatible with the descriptor.");
       }
       residentValue = value;
     },

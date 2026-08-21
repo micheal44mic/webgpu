@@ -79,23 +79,23 @@ export class RuntimeStatsController {
     const hint = this.options.elements.renderingModeMemoryHint;
     if (this.options.getActiveCanvasTool() === "fill") {
       const referenceMemory = stats.fillReferenceLayerMiB > 0
-        ? ` · riferimento hot ${formatMemoryMiB(stats.fillReferenceLayerMiB)}`
+        ? ` · hot reference ${formatMemoryMiB(stats.fillReferenceLayerMiB)}`
         : stats.referenceLayerId !== null
-          ? " · riferimento sul raster attivo"
-          : " · sorgente raster attivo";
+          ? " · reference on active raster"
+          : " · active raster source";
       hint.textContent =
-        `Riempimento · scratch residente ${formatMemoryMiB(stats.gpuMemory.fillRendererMiB)}`
+        `Fill · resident scratch ${formatMemoryMiB(stats.gpuMemory.fillRendererMiB)}`
         + referenceMemory;
       return;
     }
     if (this.options.getActiveBrushTool() === "blend") {
       hint.textContent =
-        `Blend dry · scratch residente ${formatMemoryMiB(stats.gpuMemory.blendRendererMiB)}`;
+        `Blend dry · resident scratch ${formatMemoryMiB(stats.gpuMemory.blendRendererMiB)}`;
       return;
     }
     if (this.options.getActiveBrushTool() === "erase") {
       hint.textContent =
-        `Gomma · tip Brush Studio · totale motore ${formatMemoryMiB(stats.gpuMemory.countedTotalMiB)}`;
+        `Eraser · Brush Studio tip · engine total ${formatMemoryMiB(stats.gpuMemory.countedTotalMiB)}`;
       return;
     }
     const mode = this.options.getBrushBlendMode();
@@ -105,11 +105,11 @@ export class RuntimeStatsController {
         ? "Intense Blending"
         : "Light Glaze";
     const modelHint = mode === "intense-blending"
-      ? " · stamp fisici source-over"
+      ? " · physical source-over stamps"
       : "";
     hint.textContent =
-      `${label} · memoria GPU dedicata residente ${formatMemoryMiB(stats.gpuMemory.lightGlazeMiB)}`
-      + ` · totale motore ${formatMemoryMiB(stats.gpuMemory.countedTotalMiB)}`
+      `${label} · resident dedicated GPU memory ${formatMemoryMiB(stats.gpuMemory.lightGlazeMiB)}`
+      + ` · engine total ${formatMemoryMiB(stats.gpuMemory.countedTotalMiB)}`
       + modelHint;
   }
 }

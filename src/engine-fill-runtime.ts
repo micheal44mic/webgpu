@@ -104,10 +104,10 @@ export async function captureFillDiagnostics(
       schema: FILL_DIAGNOSTIC_SCHEMA,
       available: false,
       reason: !operation
-        ? "Nessun Fill completato in questa sessione."
+        ? "No Fill has completed in this session."
         : !renderer
-          ? "Renderer Fill non creato."
-          : "Scratch Fill già rilasciato: seleziona Fill, ripeti e premi subito Copy.",
+          ? "The Fill renderer has not been created."
+          : "Fill scratch memory has already been released. Select Fill, repeat the action, and press Copy immediately.",
       rendererResident: Boolean(renderer?.resident),
       lastOperation: operation ? { ...operation, bounds: { ...operation.bounds } } : null,
     };
@@ -129,15 +129,15 @@ export async function captureFillDiagnostics(
   let renderedSeedRow: FillRenderedRowDiagnosticSummary | null = null;
   let renderedSeedRowError: string | null = null;
   if (!targetRecord) {
-    renderedSeedRowError = "Il livello target non esiste più.";
+    renderedSeedRowError = "The target layer no longer exists.";
   } else if (!targetGpu?.hot) {
-    renderedSeedRowError = "Il livello target non è più residente hot sulla GPU.";
+    renderedSeedRowError = "The target layer is no longer hot-resident on the GPU.";
   } else {
     try {
       const rowPixels = await engine.readTexturePixels(
         targetGpu.hot.texture,
         { x: 0, y: readback.seedY, width: FILL_LAYER_WIDTH, height: 1 },
-        "diagnosi Fill riga seed",
+        "Fill seed-row diagnostics",
       );
       renderedSeedRow = summarizeFillRenderedRow(
         rowPixels,
@@ -213,13 +213,13 @@ export async function setFillToolSelected(
   }
   if (!selected) {
     if (engine.initialized && !engine.historyBusy && !engine.layerSwitchBusy) {
-      engine.callbacks.onStatus?.("WebGPU pronto. Disegna sul canvas.", "ok");
+      engine.callbacks.onStatus?.("WebGPU ready. Draw on the canvas.", "ok");
     }
     scheduleFillScratchRelease(engine);
     return true;
   }
   if (!engine.initialized) return false;
-  engine.callbacks.onStatus?.("Preparo il Riempimento WebGPU…", "working");
+  engine.callbacks.onStatus?.("Preparing WebGPU Fill…", "working");
   try {
     const renderer = await ensureFillRenderer(engine);
     await renderer.prewarm();
@@ -227,13 +227,13 @@ export async function setFillToolSelected(
       scheduleFillScratchRelease(engine);
       return false;
     }
-    engine.callbacks.onStatus?.("Riempimento WebGPU pronto: tocca una regione.", "ok");
+    engine.callbacks.onStatus?.("WebGPU Fill is ready. Tap a region.", "ok");
     engine.publishStats();
     return true;
   } catch (error) {
     engine.fillToolSelected = false;
     const message = error instanceof Error ? error.message : String(error);
-    engine.callbacks.onStatus?.(`Riempimento non disponibile: ${message}`, "error");
+    engine.callbacks.onStatus?.(`Fill is unavailable: ${message}`, "error");
     engine.publishStats();
     return false;
   }
@@ -282,7 +282,7 @@ export async function fillAtClientPoint(
   }
   if (!engine.canPaintSelectedSceneItem()) {
     engine.callbacks.onStatus?.(
-      "Il Riempimento agisce solo sul livello raster selezionato.",
+      "Fill works only on the selected raster layer.",
       "working",
     );
     return null;
@@ -303,7 +303,7 @@ export async function fillAtClientPoint(
   engine.invalidateAdaptivePreview();
   engine.historyBusy = true;
   engine.publishHistoryState();
-  engine.callbacks.onStatus?.("Riempimento WebGPU in corso…", "working");
+  engine.callbacks.onStatus?.("WebGPU Fill in progress…", "working");
   const startedAt = performance.now();
   let historySlice: GpuHistorySlice | null = null;
   let pixelsMutated = false;
@@ -324,7 +324,7 @@ export async function fillAtClientPoint(
       ? engine.selectionRenderer?.maskBuffer ?? null
       : null;
     if (engine.pixelSelectionState.selectedPixels > 0 && !selectionMask) {
-      throw new Error("Selezione pixel attiva ma maschera GPU non residente.");
+      throw new Error("A pixel selection is active, but its GPU mask is not resident.");
     }
     const analysis = await renderer.analyze(
       seedX,
@@ -346,7 +346,7 @@ export async function fillAtClientPoint(
 
     const storageMaskBefore = engine.layerStack.active.storageTileMask.slice();
     const encoder = engine.device.createCommandEncoder({
-      label: `Riempimento ${actionId} · commit selezionato`,
+      label: `Fill ${actionId} · selected commit`,
     });
     renderer.encodeLiveCommit(
       encoder,
@@ -377,7 +377,7 @@ export async function fillAtClientPoint(
     engine.layerHasContent = true;
     record.hasContent = true;
     record.contentBounds = engine.layerContentBounds;
-    await engine.waitForGpuCapped("Completamento Riempimento", 60_000);
+    await engine.waitForGpuCapped("Fill completion", 60_000);
 
     const capturedHistorySlice = historySlice;
     const batch: FillHistoryRenderBatch = {
@@ -428,8 +428,8 @@ export async function fillAtClientPoint(
       bounds: { ...analysis.bounds },
     };
     engine.publishStatus(
-      `Riempiti ${analysis.selectedPixels.toLocaleString("it-IT")} pixel su `
-      + `${analysis.activeTiles} tile in `
+      `Filled ${analysis.selectedPixels.toLocaleString("en-US")} pixels across `
+      + `${analysis.activeTiles} tiles in `
       + `${(performance.now() - startedAt).toFixed(1)} ms.`,
       "ok",
     );
@@ -453,15 +453,15 @@ export async function fillAtClientPoint(
           ? rollbackError.message
           : String(rollbackError);
         engine.latchDocumentStateInconsistent(
-          "Stato incoerente dopo il Riempimento: ricarica prima di continuare.",
+          "The document became inconsistent after Fill. Reload before continuing.",
         );
         throw new Error(
-          `Riempimento fallito (${original}) e ripristino fallito (${rollback}).`,
+          `Fill failed (${original}) and recovery also failed (${rollback}).`,
         );
       }
     }
     const message = error instanceof Error ? error.message : String(error);
-    engine.publishStatus(`Riempimento fallito: ${message}`, "error");
+    engine.publishStatus(`Fill failed: ${message}`, "error");
     throw error;
   } finally {
     engine.historyBusy = engine.historyStateInconsistent;

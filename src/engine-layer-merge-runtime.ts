@@ -116,7 +116,7 @@ function outputFoldSurface(
   gpu: LayerGpuResources,
 ): MergedSurfaceResources {
   const hot = gpu.hot;
-  if (!hot) throw new Error("Texture hot del merge non disponibile.");
+  if (!hot) throw new Error("The merge hot texture is unavailable.");
   const bytesPerPixel = engine.layerFormat === "rgba16float" ? 8 : 4;
   return {
     texture: hot.texture,
@@ -212,7 +212,7 @@ async function renderVectorRunInput(
     if (!visible) continue;
     const itemDraws = drawEntries.get(item.key) ?? [];
     if (itemDraws.length === 0) {
-      throw new Error(`Il vettore visibile ${item.key} non contiene draw rasterizzabili.`);
+      throw new Error(`Visible vector ${item.key} contains no rasterizable draws.`);
     }
     visibleKeys.push(item.key);
     draws.push(...itemDraws);
@@ -343,22 +343,22 @@ async function renderMergeOutput(
   const plan = planMixedSceneLayerMerge(engine.layerStack, scene, request.keys);
   const drawEntries = new Map(request.vectorDraws.map((entry) => [entry.key, entry.draws]));
   if (drawEntries.size !== request.vectorDraws.length) {
-    throw new Error("Draw vettoriali duplicati nella richiesta merge.");
+    throw new Error("Duplicate vector draws in the merge request.");
   }
   for (const key of plan.vectorKeys) {
     if (!drawEntries.has(key as Extract<typeof key, `text:${number}` | `svg:${number}`>)) {
-      throw new Error(`Draw vettoriali mancanti per ${key}.`);
+      throw new Error(`Missing vector draws for ${key}.`);
     }
   }
   for (const key of drawEntries.keys()) {
     if (!plan.vectorKeys.includes(key)) {
-      throw new Error(`Draw vettoriali estranei alla selezione: ${key}.`);
+      throw new Error(`Vector draws outside the selection: ${key}.`);
     }
   }
 
   const topName = itemName(engine, plan.items[plan.items.length - 1]);
   const record = engine.layerStack.createDetachedRecord(
-    request.name?.trim() || `${topName} · uniti`,
+    request.name?.trim() || `${topName} · merged`,
   );
   const gpu = await allocateLayerGpuResources(
     engine,
@@ -419,7 +419,7 @@ async function renderMergeOutput(
           continue;
         }
         if (run.kind === "image") {
-          throw new Error("Nodo immagine non supportato dal merge v1.");
+          throw new Error("Image nodes are not supported by merge v1.");
         }
         const vectorBounds = await renderVectorRunInput(
           engine,
@@ -438,7 +438,7 @@ async function renderMergeOutput(
     record.storageTileMask.fill(0);
     if (bounds) markLayerStorageRect(record.storageTileMask, bounds);
     const hot = gpu.hot;
-    if (!hot) throw new Error("Output merge privo della texture hot.");
+    if (!hot) throw new Error("The merge output is missing its hot texture.");
     const seed = bounds
       ? await createLayerColdStorageCandidate(
         engine,
@@ -464,7 +464,7 @@ async function captureRasterInput(
   sceneIndex: number,
 ): Promise<LayerMergeHistoryInput> {
   const rasterLayerIndex = engine.layerStack.indexOfId(layerId);
-  if (rasterLayerIndex < 0) throw new Error(`Raster ${layerId} assente dal merge.`);
+  if (rasterLayerIndex < 0) throw new Error(`Raster ${layerId} is missing from the merge.`);
   const record = engine.layerStack.at(rasterLayerIndex);
   const gpu = engine.requireLayerGpu(layerId);
   let seed: DeletedLayerEntry["seed"] = null;
@@ -487,10 +487,10 @@ async function captureRasterInput(
       seed = await restoreColdStorageResources(
         engine,
         gpu.compressed,
-        `Snapshot merge da cold compresso livello ${layerId}`,
+        `Merge snapshot from compressed cold storage for layer ${layerId}`,
       );
     } else {
-      throw new Error(`Raster ${layerId} con contenuto privo di autorità hot/cold/compressed.`);
+      throw new Error(`Raster ${layerId} has content but no hot/cold/compressed authority.`);
     }
   }
   const entry: DeletedLayerEntry = {
@@ -513,7 +513,7 @@ async function attachOutput(
   const entry = action.output;
   const fallbackLayerId = engine.layerStack.active.id;
   if (entry.baseTileMask.length !== entry.layerRecord.storageTileMask.length) {
-    throw new Error("Maschera tile del checkpoint merge incompatibile con il documento.");
+    throw new Error("The merge checkpoint tile mask is incompatible with the document.");
   }
   entry.layerRecord.contentBounds = entry.baseBounds ? { ...entry.baseBounds } : null;
   entry.layerRecord.hasContent = entry.baseBounds !== null;
@@ -523,7 +523,7 @@ async function attachOutput(
     : await allocateLayerGpuResources(
       engine,
       engine.layerFormat,
-      `Redo output merge vuoto ${entry.layerRecord.id}`,
+      `Redo empty merge output ${entry.layerRecord.id}`,
     ));
   let stackAttached = false;
   let sceneAttached = false;
@@ -547,13 +547,13 @@ async function attachOutput(
       destroyLayerGpuResources(engine, gpu);
     } catch (rollbackError) {
       engine.latchDocumentStateInconsistent(
-        "Attach output merge fallito e compensazione incompleta: ricarica la pagina.",
+        "Attaching the merge output failed and compensation is incomplete: reload the page.",
       );
       const first = error instanceof Error ? error.message : String(error);
       const second = rollbackError instanceof Error
         ? rollbackError.message
         : String(rollbackError);
-      throw new Error(`${first}; rollback attach output fallito: ${second}`);
+      throw new Error(`${first}; merge output attachment rollback failed: ${second}`);
     }
     throw error;
   }
@@ -640,9 +640,9 @@ function reserveLayerMergeCreateMemory(
     const requiredMiB = request.peakBytes / (1024 * 1024);
     const headroomMiB = Math.max(0, decision.ceilingBytes - decision.usedBytes) / (1024 * 1024);
     throw new Error(
-      "Memoria insufficiente per unire i livelli: "
-      + `${requiredMiB.toFixed(1)} MiB richiesti, ${headroomMiB.toFixed(1)} MiB disponibili. `
-      + "Riduci la selezione o attendi che la cronologia scarichi le copie locali.",
+      "Not enough memory to merge the layers: "
+      + `${requiredMiB.toFixed(1)} MiB required, ${headroomMiB.toFixed(1)} MiB available. `
+      + "Reduce the selection or wait for History to offload its local copies.",
     );
   }
   return engine.memoryReservations.reserve(request);
@@ -719,8 +719,8 @@ function reserveLayerMergeHistoryMemory(
     const requiredMiB = request.peakBytes / (1024 * 1024);
     const headroomMiB = Math.max(0, decision.ceilingBytes - decision.usedBytes) / (1024 * 1024);
     throw new Error(
-      `Memoria insufficiente per ${delta < 0 ? "Undo" : "Redo"} merge: `
-      + `${requiredMiB.toFixed(1)} MiB richiesti, ${headroomMiB.toFixed(1)} MiB disponibili.`,
+      `Not enough memory for merge ${delta < 0 ? "Undo" : "Redo"}: `
+      + `${requiredMiB.toFixed(1)} MiB required, ${headroomMiB.toFixed(1)} MiB available.`,
     );
   }
   return engine.memoryReservations.reserve(request);
@@ -738,7 +738,7 @@ async function prepareMergeInputGpu(
   const cold = await cloneLayerColdStorageResources(
     engine,
     seed,
-    `Clone cold Undo merge livello ${entry.layerRecord.id}`,
+    `Clone cold merge Undo for layer ${entry.layerRecord.id}`,
   );
   return {
     gpu: { hot: null, cold, compressed: null, bake: null, bakeValid: false },
@@ -755,7 +755,7 @@ function attachPreparedMergeRaster(
   const layerId = entry.layerRecord.id;
   const fallbackLayerId = engine.layerStack.active.id;
   if (engine.layerStack.indexOfId(layerId) >= 0 || engine.layerGpu.has(layerId)) {
-    throw new Error(`Raster ${layerId} già presente durante Undo merge.`);
+    throw new Error(`Raster ${layerId} is already present during merge Undo.`);
   }
   entry.layerRecord.contentBounds = entry.baseBounds ? { ...entry.baseBounds } : null;
   entry.layerRecord.hasContent = entry.baseBounds !== null;
@@ -794,7 +794,7 @@ function stageDetachMergeRaster(
   const rasterLayerIndex = engine.layerStack.indexOfId(layerId);
   const sceneIndex = scene.indexOfKey(`raster:${layerId}`);
   if (rasterLayerIndex < 0 || sceneIndex < 0) {
-    throw new Error(`Raster ${layerId} non disponibile per lo stacco staged.`);
+    throw new Error(`Raster ${layerId} is unavailable for staged detachment.`);
   }
   const gpu = engine.requireLayerGpu(layerId);
   const borrowedColdTransferred = transferBorrowedCold
@@ -807,7 +807,7 @@ function stageDetachMergeRaster(
     sceneRemoved = true;
     const detached = engine.layerStack.remove(rasterLayerIndex);
     stackRemoved = true;
-    if (detached !== entry.layerRecord) throw new Error(`Stacco staged ${layerId} incoerente.`);
+    if (detached !== entry.layerRecord) throw new Error(`Inconsistent staged detachment for ${layerId}.`);
     engine.layerGpu.delete(layerId);
     return {
       entry: { ...entry, rasterLayerIndex, sceneIndex },
@@ -826,11 +826,11 @@ function stageDetachMergeRaster(
       }
     } catch (rollbackError) {
       engine.latchDocumentStateInconsistent(
-        "Stacco staged merge fallito e compensazione incompleta: ricarica la pagina.",
+        "Staged merge detachment failed and compensation is incomplete: reload the page.",
       );
       const first = error instanceof Error ? error.message : String(error);
       const second = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
-      throw new Error(`${first}; rollback stacco staged fallito: ${second}`);
+      throw new Error(`${first}; staged detachment rollback failed: ${second}`);
     }
     throw error;
   }
@@ -861,7 +861,7 @@ function removeVectorInput(
   selectedKey: MixedSceneItem["key"],
 ): void {
   const state = input.state;
-  if (!state) throw new Error(`Snapshot vettoriale ${input.key} già ritirato.`);
+  if (!state) throw new Error(`Vector snapshot ${input.key} has already been retired.`);
   requireMixedSceneStack(engine).restoreVectorHistoryState({
     key: state.key,
     index: -1,
@@ -905,7 +905,7 @@ async function applyMergedState(
       );
     }
     const outgoingIndex = engine.layerStack.indexOfId(originalActiveId);
-    if (outgoingIndex < 0) throw new Error("Raster attivo perso prima del merge.");
+    if (outgoingIndex < 0) throw new Error("The active raster was lost before the merge.");
     await engine.activateLayer(outgoingIndex, "structural-history");
     await engine.waitForIdle();
     engine.layerPresentationFrozen = true;
@@ -927,7 +927,7 @@ async function applyMergedState(
     restoreReferenceLayerId(engine, action.referenceRasterLayerIdAfter);
     if (scene.indexOfKey(action.selectedKeyAfter) >= 0) scene.select(action.selectedKeyAfter);
     const outputIndex = engine.layerStack.indexOfId(action.activeRasterLayerIdAfter);
-    if (outputIndex < 0) throw new Error("Output merge perso durante lo stacco input.");
+    if (outputIndex < 0) throw new Error("The merge output was lost while detaching an input.");
     engine.layerStack.setActiveIndex(outputIndex);
     await engine.activateLayer(outputIndex, "structural-history");
     engine.vectorTextPreviewExcludedNodeId = scene.selected.kind === "text"
@@ -953,7 +953,7 @@ async function applyMergedState(
       scene.restoreState(sceneState, true);
       engine.vectorTextPreviewExcludedNodeId = previousExcludedNodeId;
       const originalIndex = engine.layerStack.indexOfId(originalActiveId);
-      if (originalIndex < 0) throw new Error("Raster attivo originale non ripristinabile.");
+      if (originalIndex < 0) throw new Error("The original active raster cannot be restored.");
       engine.layerStack.setActiveIndex(originalIndex);
       if (outputAttached) {
         const outputIndex = engine.layerStack.indexOfId(action.output.layerRecord.id);
@@ -974,11 +974,11 @@ async function applyMergedState(
       await engine.activateLayer(originalIndex, "structural-history");
     } catch (rollbackError) {
       engine.latchDocumentStateInconsistent(
-        "Merge livelli fallito e rollback incompleto: ricarica la pagina.",
+        "Layer merge failed and rollback is incomplete: reload the page.",
       );
       const first = error instanceof Error ? error.message : String(error);
       const second = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
-      throw new Error(`${first}; rollback merge fallito: ${second}`);
+      throw new Error(`${first}; merge rollback failed: ${second}`);
     }
     throw error;
   } finally {
@@ -1001,16 +1001,16 @@ async function applyInputState(
   const scene = requireMixedSceneStack(engine);
   const outputId = action.output.layerRecord.id;
   const outputIndex = engine.layerStack.indexOfId(outputId);
-  if (outputIndex < 0) throw new Error("Output merge assente durante Undo.");
+  if (outputIndex < 0) throw new Error("The merge output is missing during Undo.");
   if (action.payloadsRetiredBelowFloor) {
-    throw new Error("Payload merge già ritirati sotto il floor History.");
+    throw new Error("Merge payloads have already been retired below the History floor.");
   }
   for (const input of action.inputs) {
     if (input.kind === "vector" && !input.state) {
-      throw new Error(`Snapshot vettoriale ${input.key} già ritirato.`);
+      throw new Error(`Vector snapshot ${input.key} has already been retired.`);
     }
     if (input.kind === "raster" && input.entry.baseBounds && !input.entry.seed) {
-      throw new Error(`Seed raster ${input.entry.layerRecord.id} già ritirato.`);
+      throw new Error(`Raster seed ${input.entry.layerRecord.id} has already been retired.`);
     }
   }
   const originalActiveId = engine.layerStack.active.id;
@@ -1043,7 +1043,7 @@ async function applyInputState(
         attachedRaster.push(temporaryEntry);
       } else {
         const vectorState = input.state;
-        if (!vectorState) throw new Error(`Snapshot vettoriale ${input.key} non disponibile.`);
+        if (!vectorState) throw new Error(`Vector snapshot ${input.key} is unavailable.`);
         scene.restoreVectorHistoryState(
           cloneHistoryStateAtOffset(vectorState, 1, action.selectedKeyBefore),
         );
@@ -1053,12 +1053,12 @@ async function applyInputState(
     const restoredActiveIndex = engine.layerStack.indexOfId(action.activeRasterLayerIdBefore);
     const outgoingIndex = engine.layerStack.indexOfId(outputId);
     if (restoredActiveIndex < 0 || outgoingIndex < 0) {
-      throw new Error("Raster attivo o output non disponibile durante Undo merge.");
+      throw new Error("The active raster or output is unavailable during merge Undo.");
     }
     const referenceBefore = action.referenceRasterLayerIdBefore;
     if (referenceBefore !== null && referenceBefore !== action.activeRasterLayerIdBefore) {
       const referenceIndex = engine.layerStack.indexOfId(referenceBefore);
-      if (referenceIndex < 0) throw new Error("Raster Reference da ripristinare non disponibile.");
+      if (referenceIndex < 0) throw new Error("The Reference raster to restore is unavailable.");
       const referenceRecord = engine.layerStack.at(referenceIndex);
       const referenceGpu = engine.requireLayerGpu(referenceBefore);
       await ensureActiveLayerHot(engine, referenceRecord);
@@ -1081,7 +1081,7 @@ async function applyInputState(
     );
 
     const activeAfterDetach = engine.layerStack.indexOfId(action.activeRasterLayerIdBefore);
-    if (activeAfterDetach < 0) throw new Error("Raster attivo ripristinato perso durante Undo.");
+    if (activeAfterDetach < 0) throw new Error("The restored active raster was lost during Undo.");
     restoreReferenceLayerId(engine, action.referenceRasterLayerIdBefore);
     if (scene.indexOfKey(action.selectedKeyBefore) >= 0) scene.select(action.selectedKeyBefore);
     engine.layerStack.setActiveIndex(activeAfterDetach);
@@ -1105,7 +1105,7 @@ async function applyInputState(
         reattachStagedMergeRaster(engine, stagedOutput);
         stagedOutput = null;
       } else if (engine.layerStack.indexOfId(outputId) < 0) {
-        throw new Error("Output merge rimosso senza risorse staged per il rollback.");
+        throw new Error("The merge output was removed without staged rollback resources.");
       }
       for (const entry of [...attachedRaster].reverse()) {
         if (engine.layerStack.indexOfId(entry.layerRecord.id) >= 0) {
@@ -1116,21 +1116,21 @@ async function applyInputState(
       engine.vectorTextPreviewExcludedNodeId = previousExcludedNodeId;
       restoreReferenceLayerId(engine, previousReferenceId);
       const restoredOutputIndex = engine.layerStack.indexOfId(outputId);
-      if (restoredOutputIndex < 0) throw new Error("Output merge non ripristinabile.");
+      if (restoredOutputIndex < 0) throw new Error("The merge output cannot be restored.");
       engine.layerStack.setActiveIndex(restoredOutputIndex);
       await engine.activateLayer(restoredOutputIndex, "structural-history");
       if (originalActiveId !== outputId) {
         const originalIndex = engine.layerStack.indexOfId(originalActiveId);
-        if (originalIndex < 0) throw new Error("Raster attivo originale perso nel rollback merge.");
+        if (originalIndex < 0) throw new Error("The original active raster was lost during merge rollback.");
         await switchActiveForStructuralHistory(engine, originalIndex);
       }
     } catch (rollbackError) {
       engine.latchDocumentStateInconsistent(
-        "Undo merge fallito e rollback incompleto: ricarica la pagina.",
+        "Merge Undo failed and rollback is incomplete: reload the page.",
       );
       const first = error instanceof Error ? error.message : String(error);
       const second = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
-      throw new Error(`${first}; rollback Undo merge fallito: ${second}`);
+      throw new Error(`${first}; merge Undo rollback failed: ${second}`);
     }
     throw error;
   } finally {
@@ -1150,7 +1150,7 @@ export async function prepareAndApplyLayerMerge(
   engine: BrushEngine,
   request: MergeMixedSceneItemsRequest,
 ): Promise<PreparedLayerMerge> {
-  if (!engine.initialized) throw new Error("Il motore non è inizializzato.");
+  if (!engine.initialized) throw new Error("The engine is not initialized.");
   engine.assertLayerSwitchAllowed();
   engine.cancelLayerColdCompressionIdle();
   engine.layerSwitchBusy = true;
@@ -1184,7 +1184,7 @@ export async function prepareAndApplyLayerMerge(
           state: scene.captureVectorHistoryState(item.key),
         });
       } else {
-        throw new Error("Nodo immagine non supportato dal merge v1.");
+        throw new Error("Image nodes are not supported by merge v1.");
       }
     }
     const outputKey = `raster:${rendered.record.id}` as const;
@@ -1276,7 +1276,7 @@ export async function prepareAndApplyLayerMerge(
           );
         } catch {
           engine.latchDocumentStateInconsistent(
-            "Preparazione merge fallita e banco effetti non ripristinabile: ricarica la pagina.",
+            "Merge preparation failed and the effects workbench cannot be restored: reload the page.",
           );
         }
       }
@@ -1292,7 +1292,7 @@ export async function applyLayerMergeHistory(
   delta: -1 | 1,
 ): Promise<void> {
   if (action.payloadsRetiredBelowFloor) {
-    throw new Error("Payload merge gia' ritirati sotto il floor History.");
+    throw new Error("Merge payloads have already been retired below the History floor.");
   }
   // A durable seed may still have a disposable resident cache. Drop every such
   // cache before admission so the ledger describes the smallest authoritative

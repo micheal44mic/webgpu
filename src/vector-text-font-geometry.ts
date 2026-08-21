@@ -101,12 +101,12 @@ export interface VectorTextOutlineGeometry {
 }
 
 export const VECTOR_TEXT_FONT_GEOMETRY_STRATEGY =
-  "local-opentype-outline-kittl-transform-v4-distort" as const;
+  "local-opentype-outline-transform-v4-distort" as const;
 
 export const VECTOR_TEXT_FONT_MANIFEST: readonly VectorTextFontEntry[] = [
   {
     family: "Anton",
-    label: "Anton / condensato",
+    label: "Anton / Condensed",
     fileUrl: new URL("../assets/vector-text-fonts/Anton-Regular.ttf", import.meta.url),
     weight: "400",
   },
@@ -183,7 +183,7 @@ function openTypePathData(sourcePath: OpenTypePath): Shadow3dPathData {
     } else if (type === "Z") {
       verbs.push(4);
     } else {
-      throw new Error("Comando OpenType non supportato: " + (type || "(vuoto)"));
+      throw new Error("Unsupported OpenType command: " + (type || "(empty)"));
     }
   }
   return {
@@ -413,8 +413,8 @@ function buildOutlineGeometry(
       lineHeight,
       transform.curve,
     );
-    // Kittl gives the text layout the curve's real arc length, then applies
-    // centered line alignment before H5.transformCustom maps x to getPointAt.
+    // The text layout uses the curve's real arc length, then applies centered
+    // line alignment before H5.transformCustom maps x to getPointAt.
     // A curved guide is longer than its horizontal projection: without this
     // offset, even a perfectly symmetric Arch places the text left of its apex.
     const sourceDistanceOffset = Math.max(
@@ -516,7 +516,7 @@ export class VectorTextFontGeometryRegistry {
   ): VectorTextOutlineGeometry {
     const record = this.records.get(family);
     if (!record) {
-      throw new Error("Font vettoriale non precaricato: " + family);
+      throw new Error("Vector font was not preloaded: " + family);
     }
     return buildOutlineGeometry(record.font, text, fontSize, transform);
   }
@@ -538,7 +538,7 @@ export class VectorTextFontGeometryRegistry {
       || typeof font.getPaths !== "function"
       || typeof font.getAdvanceWidth !== "function"
     ) {
-      throw new Error("Font vettoriale non valido: " + entry.label);
+      throw new Error("Invalid vector font: " + entry.label);
     }
     let face: FontFace | null = null;
     if (typeof FontFace === "function" && document.fonts) {

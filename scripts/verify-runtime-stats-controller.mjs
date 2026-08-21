@@ -73,7 +73,7 @@ const controller = new RuntimeStatsController({
 controller.update(stats);
 assert.equal(elements.fps.textContent, "60");
 assert.equal(elements.cpu.textContent, "2.50 ms");
-assert.equal(elements.stamps.textContent, "1234");
+assert.equal(elements.stamps.textContent, "1,234");
 assert.equal(elements.gpu.textContent, "GPU ready");
 assert.match(elements.renderingModeMemoryHint.textContent, /Light Glaze/);
 assert.equal(layerUpdates, 1);
@@ -81,7 +81,7 @@ assert.equal(gpuUpdates, 1);
 
 activeCanvasTool = "fill";
 controller.update(stats);
-assert.match(elements.renderingModeMemoryHint.textContent, /Riempimento.*riferimento hot/);
+assert.match(elements.renderingModeMemoryHint.textContent, /Fill.*hot reference/);
 activeCanvasTool = "paint";
 activeBrushTool = "blend";
 controller.update(stats);
@@ -89,7 +89,7 @@ assert.match(elements.renderingModeMemoryHint.textContent, /Blend dry/);
 activeBrushTool = "paint";
 blendMode = "intense-blending";
 controller.update(stats);
-assert.match(elements.renderingModeMemoryHint.textContent, /Intense Blending.*stamp fisici source-over/);
+assert.match(elements.renderingModeMemoryHint.textContent, /Intense Blending.*physical source-over stamps/);
 
 controller.start();
 controller.start();

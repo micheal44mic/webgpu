@@ -141,7 +141,7 @@ assert.deepEqual(
 );
 assert.throws(
   () => customRegistry.registerShape({ ...decodedShape, rgba: new Uint8Array(8) }, persistedShapeId),
-  /immutabile/,
+  /immutable/,
 );
 const generatedGrainId = customRegistry.registerGrain({
   width: 1,
@@ -156,7 +156,7 @@ assert.equal(customRegistry.has(generatedGrainId), false);
 assert.equal(customRegistry.snapshot(generatedGrainId), null);
 assert.throws(
   () => customRegistry.registerShape({ width: 1, height: 1, rgba: new Uint8Array(3) }),
-  /attesi 4 B/,
+  /expected 4 B/,
 );
 
 const engine = readEngineSource();

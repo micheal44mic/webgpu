@@ -33,7 +33,7 @@ self.onmessage = (
       type: "effect-failed",
       requestId: message.requestId,
       cacheKey: message.cacheKey,
-      message: `Path ${message.revision} non registrato nel Worker.`,
+      message: `Path ${message.revision} is not registered in the worker.`,
     });
     return;
   }

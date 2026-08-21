@@ -73,7 +73,7 @@ function assertAlignment(alignmentBytes: number): void {
     || (alignmentBytes & (alignmentBytes - 1)) !== 0
   ) {
     throw new RangeError(
-      "L'allineamento della cronologia GPU deve essere una potenza di due >= 4.",
+      "GPU history alignment must be a power of two >= 4.",
     );
   }
 }
@@ -98,7 +98,7 @@ export class GpuHistoryStorage {
     this.device = device;
     this.pageBytes = pageBytes;
     if (!Number.isInteger(pageBytes) || pageBytes <= 0) {
-      throw new RangeError("La pagina della cronologia GPU deve avere dimensione positiva.");
+      throw new RangeError("A GPU history page must have a positive size.");
     }
   }
 
@@ -118,16 +118,16 @@ export class GpuHistoryStorage {
   ): GpuHistorySlice {
     this.assertAlive();
     if (!Number.isInteger(logicalBytes) || logicalBytes <= 0) {
-      throw new RangeError("La slice della cronologia GPU deve contenere almeno un byte.");
+      throw new RangeError("A GPU history slice must contain at least one byte.");
     }
     assertAlignment(alignmentBytes);
     const binding = this.reserveBinding(logicalBytes, alignmentBytes);
     const id = this.nextSliceId++;
     let handle!: ManagedGpuHistorySlice;
     const requireBinding = (): SliceBinding => {
-      if (handle.released) throw new Error(`Slice History ${id} già rilasciata.`);
+      if (handle.released) throw new Error(`History slice ${id} has already been released.`);
       if (!handle.binding) {
-        throw new Error(`Slice History ${id} locale non reidratata prima del replay.`);
+        throw new Error(`Local History slice ${id} was not rehydrated before replay.`);
       }
       return handle.binding;
     };
@@ -180,7 +180,7 @@ export class GpuHistoryStorage {
     const owned = this.handles.get(slice.id);
     if (!owned) return false;
     if (owned !== slice) {
-      throw new Error("Slice della cronologia GPU non appartenente a questo allocatore.");
+      throw new Error("The GPU history slice does not belong to this allocator.");
     }
     return this.prepareReleaseMany([slice]).commitNoThrow() === 1;
   }
@@ -230,7 +230,7 @@ export class GpuHistoryStorage {
       const owned = this.handles.get(slice.id);
       if (!owned) continue;
       if (owned !== slice) {
-        throw new Error("Slice della cronologia GPU non appartenente a questo allocatore.");
+        throw new Error("The GPU history slice does not belong to this allocator.");
       }
       unique.push(slice);
     }
@@ -264,7 +264,7 @@ export class GpuHistoryStorage {
     if (handle.binding) return;
     if (bytes.byteLength !== handle.logicalBytes) {
       throw new Error(
-        `Hydrate slice ${slice.id}: ${bytes.byteLength} B, attesi ${handle.logicalBytes} B.`,
+        `Hydrate slice ${slice.id}: ${bytes.byteLength} B; expected ${handle.logicalBytes} B.`,
       );
     }
     const binding = this.reserveBinding(handle.logicalBytes, handle.alignmentBytes);
@@ -359,11 +359,11 @@ export class GpuHistoryStorage {
     const seen = new Set<number>();
     const result: ManagedGpuHistorySlice[] = [];
     for (const slice of slices) {
-      if (seen.has(slice.id)) throw new Error(`Slice History duplicata ${slice.id}.`);
+      if (seen.has(slice.id)) throw new Error(`Duplicate History slice ${slice.id}.`);
       seen.add(slice.id);
       const handle = this.requireOwnedHandle(slice);
       if (requireResident && !handle.binding) {
-        throw new Error(`Slice History ${slice.id} non residente.`);
+        throw new Error(`History slice ${slice.id} is not resident.`);
       }
       result.push(handle);
     }
@@ -373,7 +373,7 @@ export class GpuHistoryStorage {
   private requireOwnedHandle(slice: GpuHistorySlice): ManagedGpuHistorySlice {
     const handle = this.handles.get(slice.id);
     if (!handle || handle !== slice || handle.released) {
-      throw new Error(`Slice History ${slice.id} non appartenente all'allocatore.`);
+      throw new Error(`History slice ${slice.id} does not belong to the allocator.`);
     }
     return handle;
   }
@@ -469,7 +469,7 @@ export class GpuHistoryStorage {
   private createPage(sizeBytes: number): HistoryPage {
     const id = this.nextPageId++;
     const buffer = this.device.createBuffer({
-      label: `Cronologia raster GPU · pagina ${id} · ${sizeBytes} B`,
+      label: `GPU raster history · page ${id} · ${sizeBytes} B`,
       size: sizeBytes,
       usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE,
     });
@@ -498,6 +498,6 @@ export class GpuHistoryStorage {
   }
 
   private assertAlive(): void {
-    if (this.destroyed) throw new Error("Allocatore della cronologia GPU già distrutto.");
+    if (this.destroyed) throw new Error("The GPU history allocator has already been destroyed.");
   }
 }

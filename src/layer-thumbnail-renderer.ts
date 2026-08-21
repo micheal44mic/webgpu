@@ -132,7 +132,7 @@ export class LayerThumbnailRenderer {
     const errors = compilation.messages.filter((message) => message.type === "error");
     if (errors.length > 0) {
       throw new Error(
-        "Shader miniatura livello non valido:\n"
+        "Invalid layer-thumbnail shader:\n"
         + errors.map((message) => (
           `${message.lineNum}:${message.linePos} ${message.message}`
         )).join("\n"),
@@ -186,7 +186,7 @@ export class LayerThumbnailRenderer {
 
   async capture(sourceView: GPUTextureView): Promise<LayerThumbnailPixels> {
     if (this.captureInFlight) {
-      throw new Error("Una miniatura di livello è già in acquisizione.");
+      throw new Error("A layer thumbnail is already being captured.");
     }
     this.captureInFlight = true;
     let mapped = false;

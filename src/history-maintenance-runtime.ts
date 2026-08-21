@@ -1058,7 +1058,7 @@ export function periodicCheckpointChainForReplay(
   let checkpointCursor: PeriodicRasterHistoryCheckpoint | undefined = selected.checkpoint;
   const seen = new Set<number>();
   while (checkpointCursor) {
-    if (seen.has(checkpointCursor.id)) throw new Error("Ciclo nei checkpoint raster periodici.");
+    if (seen.has(checkpointCursor.id)) throw new Error("Cycle detected in periodic raster checkpoints.");
     seen.add(checkpointCursor.id);
     reverse.push(checkpointCursor);
     if (checkpointCursor.kind === "full" || checkpointCursor.kind === "blank") break;

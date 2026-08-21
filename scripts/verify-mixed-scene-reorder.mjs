@@ -85,7 +85,7 @@ const clippedBottomUp = [
   assert.deepEqual(childPlan.rasterLayerIds, [1, 3, 2, 4]);
   assert.throws(
     () => planMixedSceneReorder(clippedBottomUp, clippedRaster, "raster:2", 0),
-    /non valido/,
+    /Invalid/,
   );
 
   const textTargets = mixedSceneReorderTargets(
@@ -104,11 +104,11 @@ assert.throws(
     [{ id: 1, clippingParentId: null }, { id: 2, clippingParentId: 1 }],
     "text:1",
   ),
-  /consecutivo/,
+  /remain consecutive/,
 );
 assert.throws(
   () => planMixedSceneReorder(["raster:1"], ordinaryRaster, "raster:1", 0),
-  /incoerente/,
+  /inconsistent raster order/,
 );
 
 // Clipping mutations are intentionally not journalled. If a reorder made two
@@ -277,8 +277,8 @@ const textSeed = (text = "INSERT") => ({
   assert.equal(stack.active.id, activeId);
   assert.equal(stack.referenceLayerId, referenceId);
   assert.equal(stack.reorderByIds([3, 1, 2]), false);
-  assert.throws(() => stack.reorderByIds([1, 1, 2]), /duplicati/);
-  assert.throws(() => stack.reorderByIds([1, 2]), /tutti/);
+  assert.throws(() => stack.reorderByIds([1, 1, 2]), /duplicate IDs/);
+  assert.throws(() => stack.reorderByIds([1, 2]), /every layer/);
 
   const scene = new MixedSceneStack([1, 2, 3]);
   scene.select("raster:2");

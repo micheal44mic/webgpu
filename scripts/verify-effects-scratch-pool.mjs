@@ -119,7 +119,7 @@ function createMockDevice() {
   activeStroke = true;
   assert.throws(
     () => pool.shrinkToFit(),
-    /vietata durante una pennellata attiva/,
+    /cannot be reallocated during an active stroke/,
     "the physical pool must reject active-stroke shrink",
   );
   assert.equal(pool.currentBytes, 512);
@@ -422,7 +422,7 @@ assert.match(
       { id: "a", label: "a", size: 65_536 },
       { id: "b", label: "b", size: 65_536 },
     ]),
-    /pennellata attiva/,
+    /active stroke/,
     "A refused growth must throw",
   );
   assert.equal(pool.currentBytes, bytesBefore, "Refused growth must not change capacity");

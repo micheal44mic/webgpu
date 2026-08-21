@@ -165,7 +165,7 @@ function srgbChannelToLinear(value: number): number {
 function hexToLinearRgb(hex: string): readonly [number, number, number] {
   const normalized = hex.trim().replace(/^#/, "");
   if (!/^[0-9a-fA-F]{6}$/.test(normalized)) {
-    throw new Error(`Colore HEX Blend non valido: ${hex}`);
+    throw new Error(`Invalid Blend HEX color: ${hex}`);
   }
   return [
     srgbChannelToLinear(Number.parseInt(normalized.slice(0, 2), 16) / 255),
@@ -227,7 +227,7 @@ async function assertShaderModules(
       .map((message) => `${label}:${message.lineNum}:${message.linePos} ${message.message}`),
   );
   if (errors.length > 0) {
-    throw new Error(`Shader Blend WGSL non valido:\n${errors.join("\n")}`);
+    throw new Error(`Invalid Blend WGSL shader:\n${errors.join("\n")}`);
   }
 }
 
@@ -502,7 +502,7 @@ export class DryBlendRenderer {
 
     await runGpuAllocationTransaction(
       this.device,
-      "Pipeline Blend WebGPU non valida",
+      "Invalid WebGPU Blend pipeline",
       () => {
         this.gatherPipeline = computePipeline(
           "Blend dry gather ROI",
@@ -623,7 +623,7 @@ export class DryBlendRenderer {
     this.assertAlive();
     if (batches.length > BLEND_MAX_BATCHES_PER_SUBMIT) {
       throw new RangeError(
-        `Blend dry accetta al massimo ${BLEND_MAX_BATCHES_PER_SUBMIT} batch per submit.`,
+        `Dry Blend accepts at most ${BLEND_MAX_BATCHES_PER_SUBMIT} batches per submission.`,
       );
     }
     if (this.activeHistoryActionId !== historyActionId) {
@@ -645,17 +645,17 @@ export class DryBlendRenderer {
     }
     const historyBytes = renderable.length * this.uniformStride;
     if (historyTransfer?.capture && historyTransfer.replay) {
-      throw new Error("Il transfer Blend non può catturare e riprodurre insieme.");
+      throw new Error("Blend transfer cannot capture and replay at the same time.");
     }
     if (historyTransfer?.replay) {
       if (historyTransfer.replay.sizeBytes !== historyBytes) {
         throw new Error(
-          `Payload Blend storico ${historyTransfer.replay.sizeBytes} B, attesi ${historyBytes} B.`,
+          `Historical Blend payload is ${historyTransfer.replay.sizeBytes} B; expected ${historyBytes} B.`,
         );
       }
     } else {
       if (!renderable.every(isDryBlendRenderBatch)) {
-        throw new Error("Replay Blend privo del payload uniform GPU.");
+        throw new Error("Blend replay is missing the GPU uniform payload.");
       }
       this.populateUniforms(renderable, groups, settings);
     }
@@ -682,8 +682,8 @@ export class DryBlendRenderer {
     } else if (historyTransfer?.capture && historyBytes > 0) {
       if (historyTransfer.capture.sizeBytes !== historyBytes) {
         throw new Error(
-          `Destinazione Blend storica ${historyTransfer.capture.sizeBytes} B, `
-          + `attesi ${historyBytes} B.`,
+          `Historical Blend destination is ${historyTransfer.capture.sizeBytes} B; `
+          + `expected ${historyBytes} B.`,
         );
       }
       encoder.copyBufferToBuffer(
@@ -870,13 +870,13 @@ export class DryBlendRenderer {
 
   private assertAlive(): void {
     if (this.destroyed) {
-      throw new Error("Renderer Blend dry già distrutto.");
+      throw new Error("The dry Blend renderer has already been destroyed.");
     }
   }
 
   private validateBatch(batch: DryBlendHistoryGeometry): void {
     if (batch.build !== DRY_BLEND_CORE_BUILD || batch.stepCount !== 1) {
-      throw new Error("Batch Blend dry incompatibile.");
+      throw new Error("The dry Blend batch is incompatible.");
     }
     const rectValues = [
       batch.readRect.x,
@@ -889,7 +889,7 @@ export class DryBlendRenderer {
       batch.writeRect.height,
     ];
     if (!rectValues.every(Number.isFinite)) {
-      throw new TypeError("Rettangolo Blend dry non valido.");
+      throw new TypeError("Invalid dry Blend rectangle.");
     }
     if (
       batch.readRect.width <= 0
@@ -897,7 +897,7 @@ export class DryBlendRenderer {
       || batch.readRect.width > this.scratchSize
       || batch.readRect.height > this.scratchSize
     ) {
-      throw new RangeError("ROI Blend dry oltre lo scratch WebGPU.");
+      throw new RangeError("The dry Blend ROI exceeds the WebGPU scratch area.");
     }
     if (
       batch.writeRect.x < 0
@@ -907,7 +907,7 @@ export class DryBlendRenderer {
       || batch.writeRect.x + batch.writeRect.width > this.documentWidth
       || batch.writeRect.y + batch.writeRect.height > this.documentHeight
     ) {
-      throw new RangeError("Dirty rect Blend dry fuori dal layer.");
+      throw new RangeError("The Dry Blend dirty rectangle is outside the layer.");
     }
   }
 
@@ -1099,7 +1099,7 @@ export class DryBlendRenderer {
    */
   retarget(view: GPUTextureView, samplingView: GPUTextureView): void {
     if (this.destroyed) {
-      throw new Error("Renderer Blend già distrutto.");
+      throw new Error("The Blend renderer has already been destroyed.");
     }
     if (this.layerView === view && this.layerSamplingView === samplingView) {
       return;

@@ -39,7 +39,7 @@ const assertNormalized = (outline) => {
 assert.equal(BRUSH_OUTLINE_ALPHA_THRESHOLD, 8,
   "la preview deve ignorare copertura quasi trasparente senza cambiare la maschera paint");
 assert.equal(BRUSH_OUTLINE_MIN_VISIBLE_CSS_PIXELS, 1,
-  "outlineSizeMinimum di Krita usa 1 px come default");
+  "the minimum outline size uses a 1 px default");
 
 const empty = buildBrushMaskOutline(new Uint8Array(4), 2, 2);
 assert.equal(empty.edgeCount, 0);
@@ -114,7 +114,7 @@ const ring = buildBrushMaskOutline(Uint8Array.of(
 ), 3, 3);
 assert.equal(ring.edgeCount, 16);
 assert.equal(ring.paths.length, 1,
-  "setSimpleOutline(true) di Krita omette il foro interno");
+  "simple outline mode omits the inner hole");
 assertNormalized(ring);
 
 const diagonal = buildBrushMaskOutline(Uint8Array.of(
@@ -123,7 +123,7 @@ const diagonal = buildBrushMaskOutline(Uint8Array.of(
 ), 2, 2);
 assert.equal(diagonal.edgeCount, 8);
 assert.equal(diagonal.paths.length, 1,
-  "Krita collega il contatto diagonale in un subpath auto-toccante");
+  "diagonal contact joins into a self-touching subpath");
 assert.equal(coordinates(diagonal.paths[0]).filter((value, index, values) =>
   index % 2 === 0 && value === 0 && values[index + 1] === 0).length, 2,
 "il vertice diagonale condiviso deve essere attraversato due volte");
@@ -140,7 +140,7 @@ assert.equal(highFrequency.precise, true,
   "anche una tip patologica deve restare esatta, senza max-pooling lossy");
 assert.equal(highFrequency.edgeCount, 8192);
 assertNormalized(highFrequency);
-assert.throws(() => buildBrushMaskOutline(new Uint8Array(3), 2, 2), /dimensioni non valide/);
+assert.throws(() => buildBrushMaskOutline(new Uint8Array(3), 2, 2), /invalid dimensions/);
 
 assert.equal(
   brushOutlineDiameterCssPixels(100, 2, 1000, 500, 2000, 1000),
@@ -415,7 +415,7 @@ assert.deepEqual(device.renderPasses[0].draws, [[4, 256]]);
 assert.deepEqual(Array.from(lastUniform("Brush outline · brush uniforms")), [
   21, 41, 20, 1, 200, 160, 1, 0,
 ], "centro, diametro e linea fisica devono essere uniformi GPU DPR-aware");
-assert.equal(overlay.dataset.brushOutlineRenderer, "webgpu-krita-alpha-boundary");
+assert.equal(overlay.dataset.brushOutlineRenderer, "webgpu-shape-alpha-boundary");
 assert.equal(device.pipelineDescriptors[0].vertex.buffers[0].stepMode, "instance",
   "un quad GPU istanziato per segmento, senza tessellazione per movimento");
 assert.equal(device.pipelineDescriptors[0].fragment.targets[0].blend.alpha.operation, "max",
@@ -430,7 +430,7 @@ snapshot = { ...snapshot, diameterCssPixels: 0.5 };
 controller.notifyEngineUpdate();
 browser.flushFrames();
 assert.equal(lastUniform("Brush outline · brush uniforms")[2], 1,
-  "la soglia minima di Krita e stretta, non inclusiva");
+  "the minimum threshold is strict, not inclusive");
 
 snapshot = {
   kind: "shape",
@@ -451,7 +451,7 @@ browser.flushFrames();
 assert.equal(overlay.dataset.brushOutlineKind, "oversized-with-center");
 assert.equal(device.renderPasses.length, passesBeforeOversize + 1);
 assert.equal(device.renderPasses.at(-1).draws.length, 2,
-  "Krita mantiene il contorno oversize e aggiunge la croce centrale");
+  "the oversized outline remains visible and adds the center cross");
 assert.deepEqual(device.renderPasses.at(-1).draws[1], [4, 2],
   "la seconda draw GPU e la croce centrale");
 assert.equal(alphaBoundaryUploads().length, 1,
@@ -573,7 +573,7 @@ assert.match(engineSource, /getBrushOutlineGpuTarget\(\): BrushOutlineGpuTarget 
 assert.match(engineSource, /this\.shapeLoadedAssetId === shapeAssetIdForSettings\(this\.settings\)/);
 assert.match(engineSource, /this\.shapeLoadedInvert === shapeInvertForSettings\(this\.settings\)/);
 assert.doesNotMatch(coreSource, /maxPool|FALLBACK_MAX|MAX_PRECISE/,
-  "la frontiera non deve avere un percorso lossy diverso da Krita");
+  "the boundary must not have a separate lossy path");
 assert.doesNotMatch(
   controllerSource,
   /getImageData|buildBrushMaskOutline|requestPointerLock|CanvasRenderingContext2D|Path2D|getContext\("2d"/,
@@ -590,7 +590,7 @@ assert.doesNotMatch(coreSource, /document|window|HTMLCanvasElement|CanvasRenderi
 
 assert.match(mainSource, /new BrushOutlineController\(\{[\s\S]*?overlay: brushOutlineCanvas/);
 assert.match(mainSource, /brushOutlineController\?\.prepareGpuResources\(\)/);
-assert.match(registrySource, /"Preview pennello"/,
+assert.match(registrySource, /"Brush preview"/,
   "il costo GPU della preview deve comparire come riga autonoma nel pannello memoria");
 assert.match(mainSource, /brushOutlineController\?\.dispose\(\)/);
 assert.match(htmlSource, /<canvas id="brushOutlineCanvas" aria-hidden="true" hidden><\/canvas>/);
@@ -600,5 +600,5 @@ assert.match(styleSource, /#gpuCanvas\.brush-outline-active \{\s*cursor: none/);
 assert.equal(packageJson.scripts["brush-outline:verify"], "node scripts/verify-brush-outline.mjs");
 
 console.log(
-  "Brush outline verificato: topologia Krita, GPU-only al movimento, Pencil, hide tratto e cache.",
+  "Brush outline verified: diagonal-contact topology, GPU-only pointer movement, Pencil, stroke hiding, and cache.",
 );

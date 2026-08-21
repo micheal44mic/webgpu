@@ -163,7 +163,7 @@ assert.equal(
   ((2 ** 32 + 1) + 2 ** 31) * 8,
   "pure accounting must not truncate dimensions through signed bit shifts",
 );
-assert.throws(() => rasterImageMipChainBytes(3, 1, 3), /massimo 2 livelli mip/);
+assert.throws(() => rasterImageMipChainBytes(3, 1, 3), /at most 2 mip levels/);
 assert.deepEqual(planRasterImageMemory(3, 1, 5), {
   width: 3,
   height: 1,
@@ -334,8 +334,8 @@ assert.match(runtimeSource, /insertRasterAt\(action\.layerId, sceneInsertionInde
 assert.match(runtimeSource, /action\.rasterLayerIndex = targetIndex/);
 assert.match(runtimeSource, /action\.sceneIndex = currentSceneIndex/);
 assert.match(runtimeSource, /activeRasterLayerIdBefore/);
-assert.match(runtimeSource, /rollback Undo import fallito/);
-assert.match(runtimeSource, /rollback Redo import fallito/);
+assert.match(runtimeSource, /raster-import Undo rollback failed/);
+assert.match(runtimeSource, /raster-import Redo rollback failed/);
 const redoImportStart = runtimeSource.indexOf("async function redoRasterImport(");
 const redoImportEnd = runtimeSource.indexOf("export async function applyRasterImportHistory", redoImportStart);
 assert.notEqual(redoImportStart, -1);
@@ -455,10 +455,10 @@ assert.match(
 assert.match(controllerSource, /private enterTouchNavigation\(\)/);
 assert.match(controllerSource, /this\.host\.rotateViewBy\(/);
 assert.match(controllerSource, /kind: "raster-layer"/);
-assert.match(controllerSource, /importata subito come raster/);
+assert.match(controllerSource, /imported directly as a raster/);
 assert.match(
   controllerSource,
-  /const imported = await this\.host\.importRasterImageFile\(file\);[\s\S]{0,500}await this\.host\.waitForIdle\(\);[\s\S]{0,500}importata subito come raster/,
+  /const imported = await this\.host\.importRasterImageFile\(file\);[\s\S]{0,500}await this\.host\.waitForIdle\(\);[\s\S]{0,500}imported directly as a raster/,
   "l'import deve restare bloccato finche upload, mip e prima presentazione sono conclusi",
 );
 assert.match(htmlSource, /data-mobile-canvas-tool="transform"/);

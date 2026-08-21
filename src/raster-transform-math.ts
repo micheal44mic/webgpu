@@ -72,14 +72,14 @@ export interface RasterTransformUniformInput {
 
 function requireFinite(value: number, label: string): number {
   if (!Number.isFinite(value)) {
-    throw new Error(`${label} deve essere finito.`);
+    throw new Error(`${label} must be finite.`);
   }
   return value;
 }
 
 function requirePositiveInteger(value: number, label: string): number {
   if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`${label} deve essere un intero positivo sicuro.`);
+    throw new Error(`${label} must be a safe positive integer.`);
   }
   return value;
 }
@@ -94,7 +94,7 @@ function validatedRect(rect: RasterTransformRect, label: string): RasterTransfor
   const width = requireFinite(rect.width, `${label}.width`);
   const height = requireFinite(rect.height, `${label}.height`);
   if (width <= 0 || height <= 0) {
-    throw new Error(`${label} deve avere larghezza e altezza positive.`);
+    throw new Error(`${label} must have a positive width and height.`);
   }
   return { x, y, width, height };
 }
@@ -264,7 +264,7 @@ export function rasterTransformBounds(
     options.padding ?? RASTER_TRANSFORM_FILTER_PADDING_PX,
     "padding",
   );
-  if (padding < 0) throw new Error("padding non può essere negativo.");
+  if (padding < 0) throw new Error("padding cannot be negative.");
   const corners = [
     { x: source.x, y: source.y },
     { x: rectRight(source), y: source.y },
@@ -295,7 +295,7 @@ export function rasterTransformDirtyRect(
   requirePositiveInteger(documentWidth, "documentWidth");
   requirePositiveInteger(documentHeight, "documentHeight");
   const safePadding = requireFinite(padding, "padding");
-  if (safePadding < 0) throw new Error("padding non può essere negativo.");
+  if (safePadding < 0) throw new Error("padding cannot be negative.");
   const padded = (rect: RasterTransformRect | null): RasterTransformRect | null => rect
     ? {
       x: rect.x - safePadding,
@@ -401,7 +401,7 @@ function requireTileMask(
   );
   const expectedWords = expectedTileMaskWords(grid);
   if (mask.length !== expectedWords) {
-    throw new Error(`Maschera tile non valida: ${mask.length} word, attese ${expectedWords}.`);
+    throw new Error(`Invalid tile mask: ${mask.length} words, expected ${expectedWords}.`);
   }
   return grid;
 }
@@ -654,8 +654,8 @@ export function packRasterTransformUniforms(
 ): Float32Array {
   if (target.byteLength !== RASTER_TRANSFORM_UNIFORM_BYTES) {
     throw new Error(
-      `Uniform Trasforma non valida: ${target.byteLength} B, `
-      + `attesi ${RASTER_TRANSFORM_UNIFORM_BYTES} B.`,
+      `Invalid Transform uniform: ${target.byteLength} B, `
+      + `expected ${RASTER_TRANSFORM_UNIFORM_BYTES} B.`,
     );
   }
   const scratch = validatedRect(input.sourceScratchRect, "sourceScratchRect");
@@ -668,7 +668,7 @@ export function packRasterTransformUniforms(
     || rectRight(content) > scratchRight
     || rectBottom(content) > scratchBottom
   ) {
-    throw new Error("sourceContentBounds deve essere contenuto nello scratch.");
+    throw new Error("sourceContentBounds must be contained within the scratch area.");
   }
   const pivotX = requireFinite(input.sourcePivot.x, "sourcePivot.x");
   const pivotY = requireFinite(input.sourcePivot.y, "sourcePivot.y");

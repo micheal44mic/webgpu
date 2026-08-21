@@ -102,7 +102,7 @@ export async function runGpuAllocationTransaction<T>(
       transaction.rollback();
     } catch (rollbackError) {
       throw new Error(
-        `${errorMessage(failure)}; cleanup fallito: ${errorMessage(rollbackError)}`,
+        `${errorMessage(failure)}; cleanup failed: ${errorMessage(rollbackError)}`,
       );
     }
     throw failure;

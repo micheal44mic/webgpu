@@ -73,14 +73,14 @@ async function transformBytes(
 
 export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
   if (typeof CompressionStream !== "function") {
-    throw new Error("CompressionStream non disponibile in questo browser.");
+    throw new Error("CompressionStream is unavailable in this browser.");
   }
   return transformBytes(bytes, new CompressionStream("gzip"));
 }
 
 export async function gunzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
   if (typeof DecompressionStream !== "function") {
-    throw new Error("DecompressionStream non disponibile in questo browser.");
+    throw new Error("DecompressionStream is unavailable in this browser.");
   }
   return transformBytes(bytes, new DecompressionStream("gzip"));
 }
@@ -94,7 +94,7 @@ function classifyTiles(
     || tileByteLength <= 0
     || bytes.byteLength % tileByteLength !== 0
   ) {
-    throw new Error("Payload tile non allineato.");
+    throw new Error("Tile payload is not aligned.");
   }
   let zeroTileCount = 0;
   let solidTileCount = 0;
@@ -206,19 +206,19 @@ export async function compressLosslessGzipChunk(
   const decodeMs = performance.now() - decodeStart;
   if (restored.byteLength !== bytes.byteLength) {
     throw new Error(
-      `Round-trip gzip di ${restored.byteLength} byte; attesi ${bytes.byteLength}.`,
+      `gzip round trip produced ${restored.byteLength} bytes; expected ${bytes.byteLength}.`,
     );
   }
   for (let index = 0; index < bytes.byteLength; index += 1) {
     if (restored[index] !== bytes[index]) {
       throw new Error(
-        `Round-trip gzip diverso al byte ${index}: ${restored[index]} ≠ ${bytes[index]}.`,
+        `gzip round trip differs at byte ${index}: ${restored[index]} ≠ ${bytes[index]}.`,
       );
     }
   }
   const restoredHash = hashCompressionBytes(restored);
   if (restoredHash !== sourceHash) {
-    throw new Error("Hash gzip diverso nonostante il confronto byte-per-byte.");
+    throw new Error("gzip hash differs despite byte-for-byte equality.");
   }
   const usedRawFallback = compressed.byteLength >= bytes.byteLength;
   const measurement: LayerCompressionChunkMeasurement = {

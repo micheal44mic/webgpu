@@ -16,7 +16,7 @@ export async function decodeShapeMaskWithCanvas(
   try {
     if (bitmap.width !== SHAPE_MASK_SIZE || bitmap.height !== SHAPE_MASK_SIZE) {
       throw new Error(
-        `Shape.png deve restare ${SHAPE_MASK_SIZE}×${SHAPE_MASK_SIZE}px; trovata ${bitmap.width}×${bitmap.height}px.`,
+        `Shape.png must remain ${SHAPE_MASK_SIZE}×${SHAPE_MASK_SIZE}px; found ${bitmap.width}×${bitmap.height}px.`,
       );
     }
 
@@ -25,7 +25,7 @@ export async function decodeShapeMaskWithCanvas(
     sourceCanvas.height = SHAPE_MASK_SIZE;
     const sourceContext = sourceCanvas.getContext("2d", { willReadFrequently: true });
     if (!sourceContext) {
-      throw new Error("Impossibile leggere la maschera Shape.png.");
+      throw new Error("Could not read the Shape.png mask.");
     }
     sourceContext.drawImage(bitmap, 0, 0);
     const rgba = sourceContext.getImageData(0, 0, SHAPE_MASK_SIZE, SHAPE_MASK_SIZE).data;

@@ -150,7 +150,7 @@ const STYLE_PROPERTIES = new Set([
 function finite(value: string | null | undefined, fallback = 0): number {
   if (value === null || value === undefined || value.trim() === "") return fallback;
   const parsed = Number(value);
-  if (!Number.isFinite(parsed)) throw new Error(`Valore numerico SVG non valido: ${value}.`);
+  if (!Number.isFinite(parsed)) throw new Error(`Invalid SVG numeric value: ${value}.`);
   return parsed;
 }
 function clampUnit(value: number): number {
@@ -185,7 +185,7 @@ function transformPoint(matrix: Matrix, x: number, y: number): Point {
 function finiteLength(value: string | null | undefined, fallback = 0): number {
   if (value === null || value === undefined || value.trim() === "") return fallback;
   const match = value.trim().match(/^([-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?)(px|pt|pc|mm|cm|in)?$/i);
-  if (!match) throw new Error(`Lunghezza SVG non supportata: ${value}.`);
+  if (!match) throw new Error(`Unsupported SVG length: ${value}.`);
   const numeric = finite(match[1]);
   const unit = (match[2] ?? "").toLowerCase();
   if (unit === "pt") return numeric * 96 / 72;
@@ -210,7 +210,7 @@ function parseNumberList(source: string): number[] {
   const numberPattern = /[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g;
   const matches = source.match(numberPattern) ?? [];
   const residue = source.replace(numberPattern, "").replace(/[\s,]+/g, "");
-  if (residue.length > 0) throw new Error(`Lista numerica SVG non valida: ${source}.`);
+  if (residue.length > 0) throw new Error(`Invalid SVG numeric list: ${source}.`);
   return matches.map((value) => finite(value));
 }
 function parseTransform(source: string | null): Matrix {
@@ -234,11 +234,11 @@ function parseTransform(source: string | null): Matrix {
         : rotation;
     } else if (name === "skewx" && values.length === 1) operation = [1, 0, Math.tan(values[0] * Math.PI / 180), 1, 0, 0];
     else if (name === "skewy" && values.length === 1) operation = [1, Math.tan(values[0] * Math.PI / 180), 0, 1, 0, 0];
-    else throw new Error(`Trasformazione SVG non supportata: ${match[0]}.`);
+    else throw new Error(`Unsupported SVG transform: ${match[0]}.`);
     result = multiply(result, operation);
   }
   if (consumed.replace(/[\s,]+/g, "") !== source.replace(/[\s,]+/g, "")) {
-    throw new Error(`Sintassi transform SVG non valida: ${source}.`);
+    throw new Error(`Invalid SVG transform syntax: ${source}.`);
   }
   return result;
 }
@@ -269,7 +269,7 @@ class PathBuilder {
   }
   close(): void { this.verbs.push(4); }
   finish(fillRule: 0 | 1): Shadow3dPathData {
-    if (this.verbs.length > VECTOR_SVG_MAXIMUM_COMMANDS) throw new Error(`SVG oltre ${VECTOR_SVG_MAXIMUM_COMMANDS} comandi vettoriali.`);
+    if (this.verbs.length > VECTOR_SVG_MAXIMUM_COMMANDS) throw new Error(`SVG exceeds ${VECTOR_SVG_MAXIMUM_COMMANDS} vector commands.`);
     return { verbs: new Uint8Array(this.verbs), coords: new Float64Array(this.coords), contourOffsets: new Uint32Array(this.contourOffsets), fillRule };
   }
 }
@@ -313,18 +313,18 @@ function parsePathData(data: string, matrix: Matrix, fillRule: 0 | 1): Shadow3dP
   const tokenPattern = /[AaCcHhLlMmQqSsTtVvZz]|[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g;
   const tokens = data.match(tokenPattern) ?? [];
   const residue = data.replace(tokenPattern, "").replace(/[\s,]+/g, "");
-  if (residue.length > 0 || tokens.length === 0) throw new Error("Path SVG vuoto o con sintassi non valida.");
+  if (residue.length > 0 || tokens.length === 0) throw new Error("SVG path is empty or has invalid syntax.");
   const builder = new PathBuilder(matrix);
   let index = 0; let command = ""; let current: Point = { x: 0, y: 0 }; let start: Point = current;
   let previousCubicControl: Point | null = null; let previousQuadControl: Point | null = null;
   const isCommand = (value: string): boolean => /^[A-Za-z]$/.test(value);
   const take = (): number => {
-    if (index >= tokens.length || isCommand(tokens[index])) throw new Error(`Coordinate insufficienti per il comando SVG ${command}.`);
+    if (index >= tokens.length || isCommand(tokens[index])) throw new Error(`Insufficient coordinates for SVG command ${command}.`);
     return finite(tokens[index++]);
   };
   while (index < tokens.length) {
     if (isCommand(tokens[index])) command = tokens[index++];
-    else if (!command) throw new Error("Il path SVG deve iniziare con un comando.");
+    else if (!command) throw new Error("The SVG path must begin with a command.");
     const relative = command === command.toLowerCase(); const upper = command.toUpperCase();
     const absolutePoint = (x: number, y: number): Point => relative ? { x: current.x + x, y: current.y + y } : { x, y };
     if (upper === "Z") {
@@ -356,10 +356,10 @@ function parsePathData(data: string, matrix: Matrix, fillRule: 0 | 1): Shadow3dP
       current = point; previousQuadControl = control; previousCubicControl = null; continue;
     } else if (upper === "A") {
       const radiusX = take(); const radiusY = take(); const rotation = take(); const largeArc = take(); const sweep = take();
-      if ((largeArc !== 0 && largeArc !== 1) || (sweep !== 0 && sweep !== 1)) throw new Error("I flag dell’arco SVG devono essere 0 oppure 1.");
+      if ((largeArc !== 0 && largeArc !== 1) || (sweep !== 0 && sweep !== 1)) throw new Error("SVG arc flags must be 0 or 1.");
       const point = absolutePoint(take(), take());
       appendArcAsCubics(builder, current, radiusX, radiusY, rotation, largeArc === 1, sweep === 1, point); current = point;
-    } else throw new Error(`Comando path SVG non supportato: ${command}.`);
+    } else throw new Error(`Unsupported SVG path command: ${command}.`);
     previousCubicControl = null; previousQuadControl = null;
   }
   return builder.finish(fillRule);
@@ -367,7 +367,7 @@ function parsePathData(data: string, matrix: Matrix, fillRule: 0 | 1): Shadow3dP
 
 function parsePoints(source: string): Point[] {
   const values = parseNumberList(source);
-  if (values.length < 4 || values.length % 2 !== 0) throw new Error("La forma SVG richiede coppie di coordinate valide.");
+  if (values.length < 4 || values.length % 2 !== 0) throw new Error("The SVG shape requires valid coordinate pairs.");
   const points: Point[] = [];
   for (let index = 0; index < values.length; index += 2) points.push({ x: values[index], y: values[index + 1] });
   return points;
@@ -527,7 +527,7 @@ function flattenStrokeSubpaths(path: Shadow3dPathData, tolerance: number): FlatS
     } else if (verb === 4 && points && current && start) {
       finish(true);
     } else {
-      throw new Error("Geometria SVG non valida durante l'espansione della traccia.");
+      throw new Error("Invalid SVG geometry during stroke expansion.");
     }
   }
   finish(false);
@@ -540,7 +540,7 @@ function parseDashArray(source: string, percentageReference: number): number[] {
   const values = normalized.split(/[\s,]+/).filter(Boolean).map((value) => (
     finiteStrokeLength(value, percentageReference)
   ));
-  if (values.some((value) => value < 0)) throw new Error("stroke-dasharray SVG non può contenere valori negativi.");
+  if (values.some((value) => value < 0)) throw new Error("SVG stroke-dasharray cannot contain negative values.");
   if (values.every((value) => value <= Number.EPSILON)) return [];
   return values.length % 2 === 0 ? values : [...values, ...values];
 }
@@ -697,7 +697,7 @@ function parseCssRules(root: Element): CssRule[] {
   for (const style of root.querySelectorAll("style")) {
     const source = (style.textContent ?? "").replace(/\/\*[\s\S]*?\*\//g, "");
     if (/@import/i.test(source) || !hasOnlyLocalPaintUrls(source)) {
-      throw new Error("Lo stile SVG non può caricare risorse esterne.");
+      throw new Error("SVG styles cannot load external resources.");
     }
     for (const match of source.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
       const declarations = parseDeclarations(match[2]);
@@ -762,15 +762,15 @@ function parseSolidColor(source: string, currentColor: string): { color: string;
   if (normalized === "none") return null;
   if (normalized === "currentcolor") return parseSolidColor(currentColor, "#000000");
   if (normalized === "transparent") return { color: "#000000", alpha: 0 };
-  if (/url\s*\(/i.test(normalized)) throw new Error("Riferimento a una risorsa SVG usato dove era atteso un colore.");
+  if (/url\s*\(/i.test(normalized)) throw new Error("An SVG resource reference was used where a color was expected.");
   colorContext ??= document.createElement("canvas").getContext("2d");
-  if (!colorContext) throw new Error("Parser colore Canvas2D non disponibile.");
+  if (!colorContext) throw new Error("The Canvas2D color parser is unavailable.");
   colorContext.fillStyle = "#010203"; colorContext.fillStyle = source;
   const parsed = String(colorContext.fillStyle);
-  if (parsed === "#010203" && normalized !== "#010203" && normalized !== "rgb(1, 2, 3)") throw new Error(`Colore SVG non supportato: ${source}.`);
+  if (parsed === "#010203" && normalized !== "#010203" && normalized !== "rgb(1, 2, 3)") throw new Error(`Unsupported SVG color: ${source}.`);
   if (/^#[0-9a-f]{6}$/i.test(parsed)) return { color: parsed.toLowerCase(), alpha: 1 };
   const rgba = parsed.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)$/i);
-  if (!rgba) throw new Error(`Colore SVG non supportato: ${source}.`);
+  if (!rgba) throw new Error(`Unsupported SVG color: ${source}.`);
   const hex = [rgba[1], rgba[2], rgba[3]].map((value) => Math.min(255, Number(value)).toString(16).padStart(2, "0")).join("");
   return { color: `#${hex}`, alpha: clampUnit(rgba[4] === undefined ? 1 : Number(rgba[4])) };
 }
@@ -846,7 +846,7 @@ function sampleGradientStops(
 }
 
 function normalizeGradientStops(stops: readonly VectorSvgGradientStop[]): VectorSvgGradientStop[] {
-  if (stops.length === 0) throw new Error("Il gradiente SVG non contiene stop colore.");
+  if (stops.length === 0) throw new Error("The SVG gradient contains no color stops.");
   const complete = stops.length === 1 ? [stops[0], { ...stops[0], offset: 1 }] : [...stops];
   if (complete.length <= VECTOR_SVG_MAXIMUM_GRADIENT_STOPS) return complete;
   return Array.from({ length: VECTOR_SVG_MAXIMUM_GRADIENT_STOPS }, (_, index) => (
@@ -869,8 +869,8 @@ function parseGradientDefinitions(
     const cached = resolved.get(id);
     if (cached) return cached;
     const element = elements.get(id);
-    if (!element) throw new Error(`Gradiente SVG #${id} inesistente.`);
-    if (resolving.has(id)) throw new Error(`Riferimento ciclico nel gradiente SVG #${id}.`);
+    if (!element) throw new Error(`SVG gradient #${id} does not exist.`);
+    if (resolving.has(id)) throw new Error(`Cyclic reference in SVG gradient #${id}.`);
     resolving.add(id);
     const href = element.getAttribute("href") ?? element.getAttribute("xlink:href");
     const base = href?.startsWith("#") ? resolve(href.slice(1)) : null;
@@ -945,7 +945,7 @@ function resolveGradient(
     definition.units === "objectBoundingBox"
     && (!(localBounds.right > localBounds.left) || !(localBounds.bottom > localBounds.top))
   ) {
-    throw new Error("Gradiente objectBoundingBox applicato a una forma SVG senza area.");
+    throw new Error("An objectBoundingBox gradient was applied to an SVG shape with no area.");
   }
   const unitsMatrix = definition.units === "objectBoundingBox"
     ? boxMatrix(localBounds)
@@ -990,7 +990,7 @@ function parsePaint(
     return solid ? { ...solid, gradientKey: "" } : null;
   }
   const definition = gradients.get(reference[1]);
-  if (!definition) throw new Error(`Gradiente SVG #${reference[1]} inesistente.`);
+  if (!definition) throw new Error(`SVG gradient #${reference[1]} does not exist.`);
   const gradient = resolveGradient(definition, localMatrix, localBounds, viewBox);
   const gradientKey = JSON.stringify(gradient);
   return {
@@ -1040,24 +1040,24 @@ export function cloneVectorSvgDocument(documentValue: VectorSvgDocument): Vector
   };
 }
 function validateSecurity(root: Element, source: string): void {
-  if (/<!DOCTYPE|<!ENTITY/i.test(source)) throw new Error("DOCTYPE ed entità XML non sono consentiti negli SVG importati.");
+  if (/<!DOCTYPE|<!ENTITY/i.test(source)) throw new Error("DOCTYPE and XML entities are not allowed in imported SVG files.");
   for (const element of [root, ...root.querySelectorAll("*")]) {
     const name = element.localName.toLowerCase();
-    if (!SAFE_ELEMENTS.has(name)) throw new Error(`Elemento SVG non supportato o non sicuro: <${name}>.`);
+    if (!SAFE_ELEMENTS.has(name)) throw new Error(`Unsupported or unsafe SVG element: <${name}>.`);
     for (const attribute of [...element.attributes]) {
       const attributeName = attribute.name.toLowerCase(); const value = attribute.value.trim();
-      if (attributeName.startsWith("on")) throw new Error(`Handler evento SVG non consentito: ${attribute.name}.`);
+      if (attributeName.startsWith("on")) throw new Error(`SVG event handler is not allowed: ${attribute.name}.`);
       if (attributeName === "href" || attributeName.endsWith(":href")) {
         const gradientHref = name === "lineargradient" || name === "radialgradient";
         if (!gradientHref || !/^#[\w:.-]+$/.test(value)) {
-          throw new Error("Sono consentiti solo riferimenti href locali fra gradienti SVG.");
+          throw new Error("Only local href references between SVG gradients are allowed.");
         }
       }
-      if (["filter", "mask", "clip-path"].includes(attributeName) && value.toLowerCase() !== "none") throw new Error(`${attribute.name} SVG non è ancora supportato.`);
+      if (["filter", "mask", "clip-path"].includes(attributeName) && value.toLowerCase() !== "none") throw new Error(`SVG ${attribute.name} is not supported yet.`);
       if (/url\s*\(/i.test(value)) {
         const paintAttribute = attributeName === "fill" || attributeName === "stroke" || attributeName === "style";
         if (!paintAttribute || !hasOnlyLocalPaintUrls(value)) {
-          throw new Error("Sono consentiti solo riferimenti url(#id) locali per fill e stroke SVG.");
+          throw new Error("Only local url(#id) references are allowed for SVG fill and stroke.");
         }
       }
     }
@@ -1066,7 +1066,7 @@ function validateSecurity(root: Element, source: string): void {
 function parseViewBox(root: Element): readonly [number, number, number, number] | null {
   const source = root.getAttribute("viewBox"); if (!source) return null;
   const values = parseNumberList(source);
-  if (values.length !== 4 || !(values[2] > 0 && values[3] > 0)) throw new Error("viewBox SVG non valida.");
+  if (values.length !== 4 || !(values[2] > 0 && values[3] > 0)) throw new Error("Invalid SVG viewBox.");
   return values as unknown as readonly [number, number, number, number];
 }
 
@@ -1087,12 +1087,12 @@ function svgCoordinateViewport(
 
 export function parseVectorSvg(source: string, sourceName = "import.svg"): VectorSvgDocument {
   const bytes = new TextEncoder().encode(source);
-  if (bytes.byteLength > VECTOR_SVG_MAXIMUM_SOURCE_BYTES) throw new Error(`SVG oltre ${(VECTOR_SVG_MAXIMUM_SOURCE_BYTES / 1024 / 1024).toFixed(0)} MiB.`);
+  if (bytes.byteLength > VECTOR_SVG_MAXIMUM_SOURCE_BYTES) throw new Error(`SVG exceeds ${(VECTOR_SVG_MAXIMUM_SOURCE_BYTES / 1024 / 1024).toFixed(0)} MiB.`);
   const xml = new DOMParser().parseFromString(source, "image/svg+xml");
   const parserError = xml.querySelector("parsererror");
-  if (parserError) throw new Error("XML SVG non valido: " + (parserError.textContent ?? "errore parser"));
+  if (parserError) throw new Error("Invalid SVG XML: " + (parserError.textContent ?? "parser error"));
   const root = xml.documentElement;
-  if (root.localName.toLowerCase() !== "svg") throw new Error("Il file non contiene una radice <svg>.");
+  if (root.localName.toLowerCase() !== "svg") throw new Error("The file does not contain an <svg> root element.");
   validateSecurity(root, source);
   const viewBox = parseViewBox(root);
   const coordinateViewport = svgCoordinateViewport(root, viewBox);
@@ -1124,7 +1124,7 @@ export function parseVectorSvg(source: string, sourceName = "import.svg"): Vecto
     if (paint.path.verbs.length === 0 || paint.opacity <= 0) return;
     commandCount += paint.path.verbs.length;
     if (commandCount > VECTOR_SVG_MAXIMUM_COMMANDS) {
-      throw new Error(`SVG oltre ${VECTOR_SVG_MAXIMUM_COMMANDS} comandi vettoriali.`);
+      throw new Error(`SVG exceeds ${VECTOR_SVG_MAXIMUM_COMMANDS} vector commands.`);
     }
     rawPaints.push(paint);
   };
@@ -1225,9 +1225,9 @@ export function parseVectorSvg(source: string, sourceName = "import.svg"): Vecto
   };
   const rootResolved = resolvedStyle(root, defaults, rules); const rootMatrix = parseTransform(root.getAttribute("transform"));
   for (const child of [...root.children]) walk(child, rootMatrix, rootResolved.style, rootResolved.opacity);
-  if (rawPaints.length === 0) throw new Error("L’SVG non contiene riempimenti vettoriali visibili.");
+  if (rawPaints.length === 0) throw new Error("The SVG contains no visible vector fills.");
   const fillRules = new Set(rawPaints.map((paint) => paint.fillRule));
-  if (fillRules.size > 1) throw new Error("SVG con fill-rule misti non ancora supportato nello stesso oggetto.");
+  if (fillRules.size > 1) throw new Error("Mixed SVG fill rules are not yet supported within one object.");
   const rawSilhouette = mergeVectorTextPaths(rawPaints.map((paint) => paint.path)); rawSilhouette.fillRule = rawPaints[0].fillRule;
   const rawBounds = vectorTextPathBounds(rawSilhouette); const centerX = (rawBounds.left + rawBounds.right) * 0.5; const centerY = (rawBounds.top + rawBounds.bottom) * 0.5;
   const centeredRawPaints = rawPaints.map((paint) => ({

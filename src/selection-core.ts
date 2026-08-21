@@ -108,7 +108,7 @@ export function emptyPixelSelectionState(revision = 0): PixelSelectionState {
 
 export function normalizeSelectionTolerance(value: number): number {
   if (!Number.isFinite(value)) {
-    throw new RangeError("La tolleranza della selezione deve essere finita.");
+    throw new RangeError("Selection tolerance must be finite.");
   }
   return Math.min(255, Math.max(0, value)) / 255;
 }
@@ -141,14 +141,14 @@ export function normalizeSelectionCombineMode(value: string): SelectionCombineMo
   if (value === "replace" || value === "add" || value === "subtract") {
     return value;
   }
-  throw new Error(`Modalità di combinazione selezione non valida: ${value}.`);
+  throw new Error(`Invalid selection combine mode: ${value}.`);
 }
 
 export function normalizeSelectionMethod(value: string): SelectionMethod {
   if (value === "magic-wand" || value === "lasso" || value === "color-range") {
     return value;
   }
-  throw new Error(`Metodo di selezione non valido: ${value}.`);
+  throw new Error(`Invalid selection method: ${value}.`);
 }
 
 export function selectionCombineModeCode(mode: SelectionCombineMode): number {
@@ -160,7 +160,7 @@ export function selectionHexToStraightSrgb(
 ): readonly [number, number, number, 1] {
   const normalized = hex.trim().replace(/^#/, "");
   if (!/^[0-9a-fA-F]{6}$/.test(normalized)) {
-    throw new Error(`Colore HEX della selezione non valido: ${hex}.`);
+    throw new Error(`Invalid selection HEX color: ${hex}.`);
   }
   return [
     Number.parseInt(normalized.slice(0, 2), 16) / 255,
@@ -185,13 +185,13 @@ export function countSelectionTiles(mask: Uint32Array): number {
 function finiteLassoPoints(points: readonly SelectionPoint[]): SelectionPoint[] {
   if (points.length > SELECTION_MAX_LASSO_POINTS) {
     throw new RangeError(
-      `Il lazo contiene ${points.length} punti; massimo ${SELECTION_MAX_LASSO_POINTS}.`,
+      `The lasso contains ${points.length} points; maximum ${SELECTION_MAX_LASSO_POINTS}.`,
     );
   }
   const result: SelectionPoint[] = [];
   for (const point of points) {
     if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
-      throw new RangeError("Il lazo contiene coordinate non finite.");
+      throw new RangeError("The lasso contains non-finite coordinates.");
     }
     const previous = result[result.length - 1];
     if (previous && Math.hypot(point.x - previous.x, point.y - previous.y) < 0.01) {
@@ -222,7 +222,7 @@ export function buildLassoSpans(
 ): LassoSpanRaster {
   if (!Number.isInteger(layerWidth) || layerWidth <= 0
     || !Number.isInteger(layerHeight) || layerHeight <= 0) {
-    throw new RangeError("Le dimensioni raster del lazo devono essere interi positivi.");
+    throw new RangeError("Lasso raster dimensions must be positive integers.");
   }
   const points = finiteLassoPoints(sourcePoints);
   if (points.length < 3) {
@@ -249,7 +249,7 @@ export function buildLassoSpans(
       intersectionCount += 1;
       if (intersectionCount > SELECTION_MAX_LASSO_SPANS * 2) {
         throw new RangeError(
-          `Il lazo supera ${SELECTION_MAX_LASSO_SPANS.toLocaleString("it-IT")} span raster.`,
+          `The lasso exceeds ${SELECTION_MAX_LASSO_SPANS.toLocaleString("en-US")} raster spans.`,
         );
       }
     }
@@ -272,7 +272,7 @@ export function buildLassoSpans(
       if (endX <= startX) continue;
       if (packed.length / SELECTION_LASSO_SPAN_WORDS >= SELECTION_MAX_LASSO_SPANS) {
         throw new RangeError(
-          `Il lazo supera ${SELECTION_MAX_LASSO_SPANS.toLocaleString("it-IT")} span raster.`,
+          `The lasso exceeds ${SELECTION_MAX_LASSO_SPANS.toLocaleString("en-US")} raster spans.`,
         );
       }
       packed.push(y, startX, endX, 0);

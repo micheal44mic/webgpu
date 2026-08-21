@@ -26,11 +26,11 @@ export type MobileLayerMergeSelectionPlan<Key extends string = string> =
   };
 
 const MOBILE_LAYER_MERGE_REASON = {
-  "minimum-two": "Seleziona almeno due livelli.",
-  "missing-item": "La selezione contiene un livello non più disponibile.",
-  "non-contiguous": "I livelli da unire devono essere adiacenti.",
+  "minimum-two": "Select at least two layers.",
+  "missing-item": "The selection contains a layer that is no longer available.",
+  "non-contiguous": "Layers must be adjacent to merge them.",
   "partial-clipping-group":
-    "Seleziona l’intero gruppo di clipping, base e maschere incluse.",
+    "Select the entire clipping group, including its base and masks.",
 } as const satisfies Record<MobileLayerMergeSelectionInvalidReason, string>;
 
 function invalidPlan<Key extends string>(

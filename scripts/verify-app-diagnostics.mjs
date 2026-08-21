@@ -98,8 +98,8 @@ const brokenStats = {
 };
 const broken = inspectAppDiagnosticInvariants(brokenStats, history);
 assert.equal(broken.ok, false);
-assert.ok(broken.issues.some((issue) => issue.includes("ordine raster incoerente")));
-assert.ok(broken.issues.some((issue) => issue.includes("Raster attivo scena")));
+assert.ok(broken.issues.some((issue) => issue.includes("inconsistent raster order")));
+assert.ok(broken.issues.some((issue) => issue.includes("Scene active raster")));
 
 const actions = Array.from({ length: 40 }, (_, index) => ({
   id: index + 1,

@@ -1728,10 +1728,10 @@ export class BrushEngine {
   }
 
   async initialize(): Promise<void> {
-    this.callbacks.onStatus?.("Richiesta adapter WebGPU…", "working");
+    this.callbacks.onStatus?.("Requesting WebGPU adapter…", "working");
 
     if (!navigator.gpu) {
-      throw new Error("WebGPU non è disponibile in questo browser o in questo contesto.");
+      throw new Error("WebGPU is not available in this browser or context.");
     }
 
     const android = /\bAndroid\b/i.test(navigator.userAgent);
@@ -1744,7 +1744,7 @@ export class BrushEngine {
         : { powerPreference: "high-performance" };
     const adapterWaitTimer = window.setTimeout(() => {
       this.callbacks.onStatus?.(
-        "Ricerca della GPU ancora in corso… Chrome può impiegare qualche secondo.",
+        "GPU discovery is still in progress… Chrome may take a few seconds.",
         "working",
       );
     }, 6_000);
@@ -1758,14 +1758,14 @@ export class BrushEngine {
       }
       if (!adapter && adapterOptions !== undefined) {
         this.callbacks.onStatus?.(
-          "Riprovo la selezione WebGPU senza preferenze energetiche…",
+          "Retrying WebGPU selection without a power preference…",
           "working",
         );
         adapter = await navigator.gpu.requestAdapter();
       }
       if (!adapter && android) {
         this.callbacks.onStatus?.(
-          "Provo la modalità WebGPU compatibile per Android…",
+          "Trying WebGPU compatibility mode for Android…",
           "working",
         );
         try {
@@ -1783,23 +1783,23 @@ export class BrushEngine {
       if (primaryAdapterError && adapterOptions === undefined) {
         throw primaryAdapterError;
       }
-      throw new Error("Nessun adapter WebGPU compatibile trovato.");
+      throw new Error("No compatible WebGPU adapter was found.");
     }
     this.adapter = adapter;
 
     if (adapter.limits.maxTextureDimension2D < DOCUMENT_MAX_EDGE) {
       throw new Error(
-        `La GPU supporta texture fino a ${adapter.limits.maxTextureDimension2D}px, meno dei `
-        + `${DOCUMENT_MAX_EDGE}px richiesti.`,
+        `The GPU supports textures up to ${adapter.limits.maxTextureDimension2D}px, below the `
+        + `required ${DOCUMENT_MAX_EDGE}px.`,
       );
     }
 
     // Unico punto da cui il motore ottiene il device: strumentarlo qui rende
     // contabilizzata ogni allocazione, presente e futura, senza toccare i 125
     // siti che creano texture e buffer.
-    this.callbacks.onStatus?.("Adapter trovato. Creo il device WebGPU…", "working");
+    this.callbacks.onStatus?.("Adapter found. Creating WebGPU device…", "working");
     const deviceWaitTimer = window.setTimeout(() => {
-      this.callbacks.onStatus?.("Creazione del device WebGPU ancora in corso…", "working");
+      this.callbacks.onStatus?.("WebGPU device creation is still in progress…", "working");
     }, 6_000);
     let rawDevice: GPUDevice;
     try {
@@ -1824,20 +1824,20 @@ export class BrushEngine {
       abandonRasterNoiseSession(this);
       abandonRasterLiquifySession(this);
       const reason = info.message || info.reason;
-      const error = new Error(`Device WebGPU perso: ${reason}`);
+      const error = new Error(`WebGPU device lost: ${reason}`);
       this.deviceLostError = error;
       this.renderFrameError ??= error;
       if (this.frameRequest !== null) {
         cancelAnimationFrame(this.frameRequest);
         this.frameRequest = null;
       }
-      this.callbacks.onStatus?.(`Device WebGPU perso: ${reason}`, "error");
+      this.callbacks.onStatus?.(`WebGPU device lost: ${reason}`, "error");
       return error;
     });
 
     const context = this.canvas.getContext("webgpu") as GPUCanvasContext | null;
     if (!context) {
-      throw new Error("Impossibile ottenere GPUCanvasContext.");
+      throw new Error("Could not obtain GPUCanvasContext.");
     }
     this.context = context;
 
@@ -1852,7 +1852,7 @@ export class BrushEngine {
 
     this.gpuLabel = describeAdapter(adapter);
     this.callbacks.onStatus?.(
-      `Device pronto. Preparo il renderer ${DOCUMENT_WIDTH}×${DOCUMENT_HEIGHT}…`,
+      `Device ready. Preparing the ${DOCUMENT_WIDTH}×${DOCUMENT_HEIGHT} renderer…`,
       "working",
     );
     // Give Chrome one rendering turn before the expensive GPU setup so status
@@ -1861,7 +1861,7 @@ export class BrushEngine {
     try {
       await createStaticResources(this);
       prepareAdaptivePreviewShapePalette(this, this.settings);
-      this.callbacks.onStatus?.("Creo il documento iniziale…", "working");
+      this.callbacks.onStatus?.("Creating the initial document…", "working");
       await recreateLayerResources(this, this.layerFormat, {
         deferBlendRenderer: true,
         deferSelectionPipelines: true,
@@ -1869,8 +1869,8 @@ export class BrushEngine {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(
-        `La GPU non supporta tutte le risorse richieste dal documento ${this.layerFormat}. `
-        + `Il motore non esegue fallback a RGBA8. Dettaglio: ${message}`,
+        `The GPU does not support all resources required by the ${this.layerFormat} document. `
+        + `The engine does not fall back to RGBA8. Details: ${message}`,
       );
     }
 
@@ -1909,7 +1909,7 @@ export class BrushEngine {
     }
     clearAdaptivePreviewCanvas(this);
     this.requestRender();
-    this.callbacks.onStatus?.("WebGPU pronto. Disegna sul canvas.", "ok");
+    this.callbacks.onStatus?.("WebGPU is ready. Draw on the canvas.", "ok");
     this.publishStats();
     this.publishHistoryState();
   }
@@ -1944,7 +1944,7 @@ export class BrushEngine {
 
   removeCustomBrushAsset(id: BrushShapeAssetId | BrushGrainAssetId): boolean {
     if (!isCustomShapeAssetId(id) && !isCustomGrainAssetId(id)) {
-      throw new TypeError("Soltanto gli asset custom possono essere rimossi.");
+      throw new TypeError("Only custom assets can be removed.");
     }
     const referencedBySettings = this.settings.shapeAssetId === id
       || this.settings.grainAssetId === id;
@@ -1959,7 +1959,7 @@ export class BrushEngine {
       && (batch.settings.shapeAssetId === id || batch.settings.grainAssetId === id)
     ));
     if (referencedBySettings || referencedByResources || referencedByHistory) {
-      throw new Error("L'asset custom è ancora attivo o necessario alla cronologia.");
+      throw new Error("The custom asset is still active or required by history.");
     }
     return this.customBrushAssets.remove(id);
   }
@@ -2069,7 +2069,7 @@ export class BrushEngine {
   setBrushSettings(next: Partial<BrushSettings>): void {
     if (this.initialized && (this.layerSwitchBusy || this.historyBusy)) {
       throw new Error(
-        "Le impostazioni non possono cambiare durante uno switch o un replay della cronologia.",
+        "Settings cannot change during a layer switch or history replay.",
       );
     }
     flushPendingWorkBeforeSettingsChange(this);
@@ -2331,7 +2331,7 @@ export class BrushEngine {
 
   requireEffectsWorkbench(): EffectsWorkbench {
     if (!this.effectsWorkbench) {
-      throw new Error("Banco effetti non inizializzato per il layer attivo.");
+      throw new Error("The effects workbench is not initialized for the active layer.");
     }
     return this.effectsWorkbench;
   }
@@ -2422,7 +2422,7 @@ export class BrushEngine {
       if (normalizedActive) {
         if (rendererNeedsCreation) {
           this.callbacks.onStatus?.(
-            "Preparo la Sovrapposizione colore WebGPU…",
+            "Preparing WebGPU Color Overlay…",
             "working",
           );
         }
@@ -2464,10 +2464,10 @@ export class BrushEngine {
       this.requestRender();
       this.callbacks.onStatus?.(
         normalizedActive
-          ? "Sovrapposizione colore WebGPU attiva."
+          ? "WebGPU Color Overlay enabled."
           : normalized.enabled
-            ? "Sovrapposizione colore attiva ma invisibile: opacità 0%."
-            : "Sovrapposizione colore disattivata.",
+            ? "Color Overlay is enabled but invisible: opacity is 0%."
+            : "Color Overlay disabled.",
         "ok",
       );
       this.publishStats();
@@ -2496,13 +2496,13 @@ export class BrushEngine {
         }
       } catch (restoreError) {
         console.error(
-          "Ripristino Sovrapposizione colore non riuscito",
+          "Failed to restore Color Overlay",
           restoreError,
         );
       }
       const message = error instanceof Error ? error.message : String(error);
       this.callbacks.onStatus?.(
-        `Sovrapposizione colore WebGPU non disponibile: ${message}`,
+        `WebGPU Color Overlay is unavailable: ${message}`,
         "error",
       );
       throw error;
@@ -2567,8 +2567,8 @@ export class BrushEngine {
         if (rendererNeedsCreation || geometryNeedsAllocation || scratchNeedsResize) {
           this.callbacks.onStatus?.(
             rendererNeedsCreation || geometryNeedsAllocation
-              ? "Preparo la geometria della Traccia WebGPU…"
-              : "Adatto la memoria scratch della Traccia…",
+              ? "Preparing WebGPU Stroke geometry…"
+              : "Resizing Stroke scratch memory…",
             "working",
           );
           await this.waitForIdle();
@@ -2594,7 +2594,7 @@ export class BrushEngine {
         this.presentationCacheNeedsFullRebuild = true;
         this.displayDirty = true;
         this.requestRender();
-        this.callbacks.onStatus?.("Traccia WebGPU attiva.", "ok");
+        this.callbacks.onStatus?.("WebGPU Stroke enabled.", "ok");
       } else {
         await this.waitForIdle();
         if (this.styleStackNeedsCompositor()) {
@@ -2623,8 +2623,8 @@ export class BrushEngine {
         if (previousActive) {
           this.callbacks.onStatus?.(
             this.styleStackNeedsCompositor()
-              ? "Traccia disattivata; il compositore condiviso resta per gli altri effetti."
-              : "Traccia disattivata; memoria GPU liberata.",
+              ? "Stroke disabled; the shared compositor remains available to other effects."
+              : "Stroke disabled; GPU memory released.",
             "ok",
           );
         }
@@ -2649,13 +2649,13 @@ export class BrushEngine {
           }
         }
       } catch (restoreError) {
-        console.error("Ripristino risorse Traccia non riuscito", restoreError);
+        console.error("Failed to restore Stroke resources", restoreError);
       }
       if (!previousActive && !this.styleStackNeedsCompositor()) {
         releaseRasterStrokeRenderer(this);
       }
       const message = error instanceof Error ? error.message : String(error);
-      this.callbacks.onStatus?.(`Traccia WebGPU non disponibile: ${message}`, "error");
+      this.callbacks.onStatus?.(`WebGPU Stroke is unavailable: ${message}`, "error");
       throw error;
     } finally {
       this.rasterStrokeBusy = false;
@@ -2718,7 +2718,7 @@ export class BrushEngine {
       invalidateActiveLayerBake(this);
       if (normalized.enabled) {
         if (!this.rasterBevelRenderer) {
-          this.callbacks.onStatus?.("Preparo lo Smusso/Rilievo Heightfield V2…", "working");
+          this.callbacks.onStatus?.("Preparing Bevel/Emboss Heightfield V2…", "working");
           await ensureRasterBevelRenderer(this);
         }
         if (!this.rasterStrokeRenderer) {
@@ -2748,7 +2748,7 @@ export class BrushEngine {
           previousRect,
           nextRect,
         );
-        this.callbacks.onStatus?.("Smusso/Rilievo Heightfield V2 attivo.", "ok");
+        this.callbacks.onStatus?.("Bevel/Emboss Heightfield V2 enabled.", "ok");
       } else {
         this.rasterBevelPendingComposeRect = previousRect;
         releaseRasterBevelRenderer(this);
@@ -2757,7 +2757,7 @@ export class BrushEngine {
         }
         if (previousActive) {
           this.callbacks.onStatus?.(
-            "Smusso/Rilievo disattivato; memoria Heightfield liberata.",
+            "Bevel/Emboss disabled; heightfield memory released.",
             "ok",
           );
         }
@@ -2783,7 +2783,7 @@ export class BrushEngine {
         this.rasterStrokeRenderer?.updateBevelParameters(previous);
       }
       const message = error instanceof Error ? error.message : String(error);
-      this.callbacks.onStatus?.(`Smusso/Rilievo WebGPU non disponibile: ${message}`, "error");
+      this.callbacks.onStatus?.(`WebGPU Bevel/Emboss is unavailable: ${message}`, "error");
       throw error;
     } finally {
       this.rasterBevelBusy = false;
@@ -2797,8 +2797,8 @@ export class BrushEngine {
     }
     if (!rasterOuterShadowUsesSupportedBlend(normalized)) {
       throw new Error(
-        "L'Ombra esterna Multiply è esatta solo con colore nero; "
-        + "usa Normale per un'ombra colorata.",
+        "Multiply is exact for Outer Shadow only when the color is black; "
+        + "use Normal for a colored shadow.",
       );
     }
     if (this.initialized && this.layerSwitchBusy) {
@@ -2850,7 +2850,7 @@ export class BrushEngine {
       invalidateActiveLayerBake(this);
       if (normalized.enabled) {
         if (!this.rasterOuterShadowRenderer) {
-          this.callbacks.onStatus?.("Preparo l'Ombra esterna WebGPU…", "working");
+          this.callbacks.onStatus?.("Preparing WebGPU Outer Shadow…", "working");
           await ensureRasterOuterShadowRenderer(this);
         }
         if (!this.rasterStrokeRenderer) {
@@ -2876,7 +2876,7 @@ export class BrushEngine {
           previousRect,
           nextRect,
         );
-        this.callbacks.onStatus?.("Ombra esterna WebGPU attiva.", "ok");
+        this.callbacks.onStatus?.("WebGPU Outer Shadow enabled.", "ok");
       } else {
         this.rasterOuterShadowPendingComposeRect = previousRect;
         releaseRasterOuterShadowRenderer(this);
@@ -2884,7 +2884,7 @@ export class BrushEngine {
           releaseRasterStrokeRenderer(this);
         }
         this.callbacks.onStatus?.(
-          "Ombra esterna disattivata; matte R16F liberata.",
+          "Outer Shadow disabled; R16F matte released.",
           "ok",
         );
       }
@@ -2908,7 +2908,7 @@ export class BrushEngine {
         this.rasterOuterShadowRenderer?.updateStyle(previous);
       }
       const message = error instanceof Error ? error.message : String(error);
-      this.callbacks.onStatus?.(`Ombra esterna WebGPU non disponibile: ${message}`, "error");
+      this.callbacks.onStatus?.(`WebGPU Outer Shadow is unavailable: ${message}`, "error");
       throw error;
     } finally {
       this.rasterOuterShadowBusy = false;
@@ -2969,7 +2969,7 @@ export class BrushEngine {
       invalidateActiveLayerBake(this);
       if (normalized.enabled) {
         if (!this.rasterInnerShadowRenderer) {
-          this.callbacks.onStatus?.("Preparo l'Ombra interna WebGPU…", "working");
+          this.callbacks.onStatus?.("Preparing WebGPU Inner Shadow…", "working");
           await ensureRasterInnerShadowRenderer(this);
         }
         if (!this.rasterStrokeRenderer) {
@@ -2995,7 +2995,7 @@ export class BrushEngine {
           previousRect,
           nextRect,
         );
-        this.callbacks.onStatus?.("Ombra interna WebGPU attiva.", "ok");
+        this.callbacks.onStatus?.("WebGPU Inner Shadow enabled.", "ok");
       } else {
         this.rasterInnerShadowPendingComposeRect = previousRect;
         releaseRasterInnerShadowRenderer(this);
@@ -3003,7 +3003,7 @@ export class BrushEngine {
           releaseRasterStrokeRenderer(this);
         }
         this.callbacks.onStatus?.(
-          "Ombra interna disattivata; matte R16F liberata.",
+          "Inner Shadow disabled; R16F matte released.",
           "ok",
         );
       }
@@ -3027,7 +3027,7 @@ export class BrushEngine {
         this.rasterInnerShadowRenderer?.updateStyle(previous);
       }
       const message = error instanceof Error ? error.message : String(error);
-      this.callbacks.onStatus?.(`Ombra interna WebGPU non disponibile: ${message}`, "error");
+      this.callbacks.onStatus?.(`WebGPU Inner Shadow is unavailable: ${message}`, "error");
       throw error;
     } finally {
       this.rasterInnerShadowBusy = false;
@@ -3099,7 +3099,7 @@ export class BrushEngine {
           const rasterLayerIndex = this.layerStack.indexOfId(item.rasterLayerId);
           if (rasterLayerIndex < 0) {
             throw new Error(
-              `Raster ${item.rasterLayerId} presente nella scena ma assente dallo stack GPU.`,
+              `Raster ${item.rasterLayerId} is present in the scene but missing from the GPU stack.`,
             );
           }
           const record = this.layerStack.at(rasterLayerIndex);
@@ -3362,16 +3362,16 @@ export class BrushEngine {
     timeoutMs = 3000,
   ): Promise<void> {
     if (!Number.isInteger(revision) || revision < 0) {
-      throw new RangeError(`Revisione fast non valida: ${revision}.`);
+      throw new RangeError(`Invalid fast revision: ${revision}.`);
     }
     const deadline = performance.now() + timeoutMs;
     while (this.vectorTextFastCompletedRevision < revision) {
       if (!this.vectorTextFastPresentationEnabled) {
-        throw new Error("Presentazione fast disattivata prima dell'ack richiesto.");
+        throw new Error("Fast presentation was disabled before the required acknowledgement.");
       }
       if (performance.now() >= deadline) {
         throw new Error(
-          `Presentazione fast ferma a ${this.vectorTextFastCompletedRevision}/${revision}.`,
+          `Fast presentation stalled at ${this.vectorTextFastCompletedRevision}/${revision}.`,
         );
       }
       await new Promise<void>((resolve) => {
@@ -3400,7 +3400,7 @@ export class BrushEngine {
     gpuMemoryMiB: number;
   } {
     if (!this.mixedSceneEnabled || !this.initialized) {
-      throw new Error("Renderer testo vettoriale GPU non abilitato.");
+      throw new Error("The GPU vector text renderer is not enabled.");
     }
     return captureVectorTextFallbackPresentation(this);
   }
@@ -3414,7 +3414,7 @@ export class BrushEngine {
     layerPoints: readonly { x: number; y: number }[],
   ): Promise<{ runCount: number; alphaPixelCounts: number[] }> {
     if (!this.mixedSceneEnabled || !this.initialized) {
-      throw new Error("Renderer testo vettoriale GPU non abilitato.");
+      throw new Error("The GPU vector text renderer is not enabled.");
     }
     return probeVectorTextFallbackAlpha(this, layerPoints);
   }
@@ -3423,7 +3423,7 @@ export class BrushEngine {
     layerPoints: readonly { x: number; y: number }[],
   ): Promise<{ alphaPixelCounts: number[] }> {
     if (!this.mixedSceneEnabled || !this.initialized) {
-      throw new Error("Renderer testo vettoriale GPU non abilitato.");
+      throw new Error("The GPU vector text renderer is not enabled.");
     }
     return probeVectorTextFastCompositeAlpha(this, layerPoints);
   }
@@ -3432,13 +3432,13 @@ export class BrushEngine {
     placement: VectorTextPlacement,
   ): VectorTextGpuPresentationStats {
     if (!this.mixedSceneEnabled || !this.initialized) {
-      throw new Error("Prototipo testo vettoriale non abilitato per questa pagina.");
+      throw new Error("The vector text prototype is not enabled on this page.");
     }
     const width = Math.max(1, this.canvas.width);
     const height = Math.max(1, this.canvas.height);
     if (source.width !== width || source.height !== height) {
       throw new Error(
-        `Cache testo ${source.width}×${source.height} diversa dal viewport ${width}×${height}.`,
+        `Text cache ${source.width}×${source.height} does not match viewport ${width}×${height}.`,
       );
     }
     captureVectorTextPresentationView(this);
@@ -3483,14 +3483,14 @@ export class BrushEngine {
     draws: readonly VectorTextGpuDraw[],
   ): VectorTextGpuPresentationStats {
     if (!this.mixedSceneEnabled || !this.initialized) {
-      throw new Error("Renderer testo vettoriale GPU non abilitato.");
+      throw new Error("The GPU vector text renderer is not enabled.");
     }
     if (!placement.startsWith("text-run:")) {
-      throw new Error("Il renderer GPU richiede un run testo segmentato.");
+      throw new Error("The GPU renderer requires a segmented text run.");
     }
     if (draws.length > VECTOR_TEXT_GPU_MAXIMUM_DRAWS) {
       throw new Error(
-        `Troppe draw call testo (${draws.length}/${VECTOR_TEXT_GPU_MAXIMUM_DRAWS}).`,
+        `Too many text draw calls (${draws.length}/${VECTOR_TEXT_GPU_MAXIMUM_DRAWS}).`,
       );
     }
     const width = Math.max(1, this.canvas.width);
@@ -3502,7 +3502,7 @@ export class BrushEngine {
       placement as Extract<VectorTextPlacement, `text-run:${string}`>;
     const resources = this.vectorTextRunTextures.get(key);
     if (!resources) {
-      throw new Error(`Run testo GPU ${placement} non allocato.`);
+      throw new Error(`GPU text run ${placement} is not allocated.`);
     }
     const view = this.getVectorTextViewState();
     const drawResources = draws.map(
@@ -3557,7 +3557,7 @@ export class BrushEngine {
     }[],
   ): { textureCount: number; gpuMemoryMiB: number } {
     if (!this.mixedSceneEnabled || !this.initialized) {
-      throw new Error("Renderer testo vettoriale GPU non abilitato.");
+      throw new Error("The GPU vector text renderer is not enabled.");
     }
     return rebuildVectorTextGpuFallbackPresentation(this, view, runs);
   }
@@ -3826,8 +3826,8 @@ export class BrushEngine {
     const destructiveEdit = this.activeDestructiveRasterEditKind();
     if (destructiveEdit) {
       this.callbacks.onStatus?.(
-        `Applica o annulla ${this.destructiveRasterEditLabel(destructiveEdit)} `
-        + "prima di iniziare il tratto.",
+        `Apply or cancel ${this.destructiveRasterEditLabel(destructiveEdit)} `
+        + "before starting a stroke.",
         "working",
       );
       return false;
@@ -3835,8 +3835,8 @@ export class BrushEngine {
     if (this.activeVectorHistoryEdit || this.activeRasterLayerMetadataHistoryEdit) {
       this.callbacks.onStatus?.(
         this.activeRasterLayerMetadataHistoryEdit
-          ? "Completo la modifica dell'effetto prima di iniziare il tratto…"
-          : "Completa la modifica vettoriale prima di iniziare il tratto.",
+          ? "Finishing the effect edit before starting the stroke…"
+          : "Finish the vector edit before starting a stroke.",
         "working",
       );
       return false;
@@ -3846,7 +3846,7 @@ export class BrushEngine {
     }
     if (!this.canPaintSelectedSceneItem()) {
       this.callbacks.onStatus?.(
-        "Un vettore è selezionato: scegli un livello raster per usare il pennello.",
+        "A vector is selected. Select a raster layer to use the brush.",
         "working",
       );
       return false;
@@ -3854,17 +3854,17 @@ export class BrushEngine {
     if (this.settings.tool === "blend" && !this.blendRenderer) {
       void this.ensureOptionalEditorResources().catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
-        this.callbacks.onStatus?.(`Renderer Blend non disponibile: ${message}`, "error");
+        this.callbacks.onStatus?.(`Blend renderer is unavailable: ${message}`, "error");
       });
       this.callbacks.onStatus?.(
-        "Renderer Blend in preparazione: riprova tra un istante…",
+        "The Blend renderer is being prepared. Try again in a moment…",
         "working",
       );
       return false;
     }
     if (this.settings.tool === "blend" && this.pixelSelectionState.selectedPixels > 0) {
       this.callbacks.onStatus?.(
-        "Blend non modifica una Selezione pixel: deseleziona oppure usa Paint/Gomma/Riempimento.",
+        "Blend does not modify a pixel selection. Deselect it or use Paint, Erase, or Fill.",
         "working",
       );
       return false;
@@ -3873,12 +3873,12 @@ export class BrushEngine {
       void this.ensureOptionalEditorResources().catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         this.callbacks.onStatus?.(
-          `Preparazione Selezione pixel non riuscita: ${message}`,
+          `Could not prepare the pixel selection: ${message}`,
           "error",
         );
       });
       this.callbacks.onStatus?.(
-        "Pipeline Selezione pixel in preparazione: riprova tra un istante…",
+        "The pixel selection pipeline is being prepared. Try again in a moment…",
         "working",
       );
       return false;
@@ -3894,7 +3894,7 @@ export class BrushEngine {
       // attende il load partito alla selezione del grain (o parte ora).
       requestGrainLoad(this);
       this.callbacks.onStatus?.(
-        "Grain in caricamento: riprova tra un istante…",
+        "Grain is loading. Try again in a moment…",
         "working",
       );
       return false;
@@ -3909,7 +3909,7 @@ export class BrushEngine {
     ) {
       requestShapeLoad(this);
       this.callbacks.onStatus?.(
-        "Shape in caricamento: riprova tra un istante…",
+        "Shape is loading. Try again in a moment…",
         "working",
       );
       return false;
@@ -3925,7 +3925,7 @@ export class BrushEngine {
     ) {
       requestLightGlazeResources(this, this.settings.blendMode);
       this.callbacks.onStatus?.(
-        "Rendering glaze in preparazione: riprova tra un istante…",
+        "Glaze rendering is being prepared. Try again in a moment…",
         "working",
       );
       return false;
@@ -3972,7 +3972,7 @@ export class BrushEngine {
         this.scheduleLayerColdCompression();
         const message = error instanceof Error ? error.message : String(error);
         this.callbacks.onStatus?.(
-          `Pennellata annullata prima del rendering: ${message}`,
+          `Stroke cancelled before rendering: ${message}`,
           "error",
         );
         return false;
@@ -4234,7 +4234,7 @@ export class BrushEngine {
     }
     if (this.pixelSelectionState.selectedPixels > 0) {
       this.callbacks.onStatus?.(
-        "Pulisci agisce sul livello intero: deseleziona prima, oppure colora la selezione con Paint/Riempimento.",
+        "Clear affects the entire layer. Deselect first, or color the selection with Paint or Fill.",
         "working",
       );
       return false;
@@ -4244,14 +4244,14 @@ export class BrushEngine {
     this.historyBusy = true;
     this.invalidateAdaptivePreview();
     this.publishHistoryState();
-    this.callbacks.onStatus?.("Pulizia del layer…", "working");
+    this.callbacks.onStatus?.("Clearing the layer…", "working");
 
     let pixelsCleared = false;
     let historyPublicationSettled = false;
     try {
       await this.waitForIdle();
       if (!this.layerHasContent) {
-        this.callbacks.onStatus?.("Il layer è già vuoto.", "ok");
+        this.callbacks.onStatus?.("The layer is already empty.", "ok");
         return false;
       }
 
@@ -4290,7 +4290,7 @@ export class BrushEngine {
       }
       historyPublicationSettled = true;
 
-      this.publishStatus("Layer pulito.", "ok");
+      this.publishStatus("Layer cleared.", "ok");
       return true;
     } catch (error) {
       if (pixelsCleared && !historyPublicationSettled) {
@@ -4302,10 +4302,10 @@ export class BrushEngine {
             ? rollbackError.message
             : String(rollbackError);
           const combined = new Error(
-            `Clear fallito (${original}) e ripristino fallito (${rollback}).`,
+            `Clear failed (${original}) and restore failed (${rollback}).`,
           );
           this.latchDocumentStateInconsistent(
-            "Stato incoerente dopo Clear: ricarica prima di continuare.",
+            "State is inconsistent after Clear. Reload before continuing.",
             combined,
           );
           throw combined;
@@ -4338,7 +4338,7 @@ export class BrushEngine {
     }
     if (this.documentWideResetBlockedByLayers) {
       this.callbacks.onStatus?.(
-        "Il ripristino del documento non è ancora disponibile con più livelli.",
+        "Document restore is not yet available with multiple layers.",
         "error",
       );
       return false;
@@ -4571,14 +4571,14 @@ export class BrushEngine {
       return Promise.resolve();
     }
 
-    const label = assetId === "pencil-grain" ? "Grain Pencil" : "Grain personalizzato";
-    this.callbacks.onStatus?.(`Carico ${label}…`, "working");
+    const label = assetId === "pencil-grain" ? "Grain Pencil" : "Custom Grain";
+    this.callbacks.onStatus?.(`Loading ${label}…`, "working");
     const loading = (async () => {
       let resources: GrainTextureResources;
       try {
         resources = await runGpuAllocationTransaction(
           this.device,
-          `Allocazione ${label}`,
+          `${label} allocation`,
           async (transaction) => {
             const candidate = await createGrainTextureResources(this, assetId);
             transaction.deferRollback(() => destroyGrainTextureResources(candidate));
@@ -4597,7 +4597,7 @@ export class BrushEngine {
 
       const previous = this.grainResourceSet;
       if (previous) {
-        await this.waitForGpuCapped("Cambio asset Grain", 60_000);
+        await this.waitForGpuCapped("Grain asset change", 60_000);
       }
       if (this.grainDesiredAssetId !== assetId) {
         destroyGrainTextureResources(resources);
@@ -4617,7 +4617,7 @@ export class BrushEngine {
         try {
           await runGpuAllocationTransaction(
             this.device,
-            "Ripristino asset Grain precedente",
+            "Restore previous Grain asset",
             (transaction) => {
               transaction.deferRollback(() => applyGrainTextureResources(this, resources));
               applyGrainTextureResources(this, previous);
@@ -4634,7 +4634,7 @@ export class BrushEngine {
 
       destroyGrainTextureResources(previous);
       if (this.grainDesiredAssetId === assetId) {
-        this.callbacks.onStatus?.(`${label} pronto.`, "ok");
+        this.callbacks.onStatus?.(`${label} ready.`, "ok");
       }
       this.publishStats();
     })();
@@ -4703,13 +4703,13 @@ export class BrushEngine {
     }
 
     const label = assetId === "pencil-shape" ? "Shape Pencil" : "Shape 2K";
-    this.callbacks.onStatus?.(`Carico ${label}…`, "working");
+    this.callbacks.onStatus?.(`Loading ${label}…`, "working");
     const loading = (async () => {
       let resources: ShapeMaskResources;
       try {
         resources = await runGpuAllocationTransaction(
           this.device,
-          `Allocazione ${label}`,
+          `${label} allocation`,
           async (transaction) => {
             const candidate = await createShapeMaskResources(this, assetId, invert);
             transaction.deferRollback(() => destroyShapeMaskResources(candidate));
@@ -4728,7 +4728,7 @@ export class BrushEngine {
 
       const previous = this.shapeResourceSet;
       if (previous) {
-        await this.waitForGpuCapped("Cambio asset Shape", 60_000);
+        await this.waitForGpuCapped("Shape asset change", 60_000);
       }
       if (this.shapeDesiredAssetId !== assetId || this.shapeDesiredInvert !== invert) {
         destroyShapeMaskResources(resources);
@@ -4748,7 +4748,7 @@ export class BrushEngine {
         try {
           await runGpuAllocationTransaction(
             this.device,
-            "Ripristino asset Shape precedente",
+            "Restore previous Shape asset",
             (transaction) => {
               transaction.deferRollback(() => applyShapeMaskResources(this, resources));
               applyShapeMaskResources(this, previous);
@@ -4765,7 +4765,7 @@ export class BrushEngine {
 
       destroyShapeMaskResources(previous);
       if (this.shapeDesiredAssetId === assetId && this.shapeDesiredInvert === invert) {
-        this.callbacks.onStatus?.(`${label} pronta.`, "ok");
+        this.callbacks.onStatus?.(`${label} ready.`, "ok");
       }
       this.publishStats();
     })();
@@ -4822,7 +4822,7 @@ export class BrushEngine {
   }
 
   destructiveRasterEditLabel(kind: DestructiveRasterOperationKind): string {
-    if (kind === "transform") return "Trasforma";
+    if (kind === "transform") return "Transform";
     if (kind === "gaussian-blur") return "Gaussian Blur";
     if (kind === "motion-blur") return "Motion Blur";
     if (kind === "liquify") return "Liquify";
@@ -4834,40 +4834,40 @@ export class BrushEngine {
     const active = this.activeDestructiveRasterEditKind();
     if (!active || active === kind) return;
     throw new Error(
-      `Applica o annulla ${this.destructiveRasterEditLabel(active)} prima di aprire `
+      `Apply or cancel ${this.destructiveRasterEditLabel(active)} before opening `
       + `${this.destructiveRasterEditLabel(kind)}.`,
     );
   }
 
   private historyBlockedReason(delta: -1 | 1): string | null {
-    if (this.historyStateInconsistent) return "La cronologia è incoerente: ricarica la pagina.";
-    if (this.historyBusy) return "La cronologia sta completando un'altra operazione.";
-    if (this.activeStroke) return "Termina il tratto prima di usare Undo o Redo.";
-    if (this.layerSwitchBusy) return "Attendi il completamento del cambio livello.";
-    if (this.selectionBusy) return "Attendi il completamento della selezione.";
+    if (this.historyStateInconsistent) return "History is inconsistent. Reload the page.";
+    if (this.historyBusy) return "History is completing another operation.";
+    if (this.activeStroke) return "Finish the stroke before using Undo or Redo.";
+    if (this.layerSwitchBusy) return "Wait for the layer switch to finish.";
+    if (this.selectionBusy) return "Wait for the selection operation to finish.";
     const destructiveEdit = this.activeDestructiveRasterEditKind();
     if (destructiveEdit) {
-      return `Applica o annulla ${this.destructiveRasterEditLabel(destructiveEdit)} `
-        + "prima di usare Undo o Redo.";
+      return `Apply or cancel ${this.destructiveRasterEditLabel(destructiveEdit)} `
+        + "before using Undo or Redo.";
     }
     if (this.activeVectorHistoryEdit || this.activeRasterLayerMetadataHistoryEdit) {
-      return "Termina la modifica corrente prima di usare Undo o Redo.";
+      return "Finish the current edit before using Undo or Redo.";
     }
     const nextCursor = this.historyCursor + delta;
-    if (nextCursor < 0) return "Non ci sono azioni da annullare.";
-    if (nextCursor > this.historyActions.length) return "Non ci sono azioni da ripristinare.";
+    if (nextCursor < 0) return "There are no actions to undo.";
+    if (nextCursor > this.historyActions.length) return "There are no actions to redo.";
     if (!historyCursorWithinRetainedRange(this, nextCursor)) {
-      return "Le azioni più vecchie sono state consolidate per liberare memoria.";
+      return "Older actions were consolidated to free memory.";
     }
     if (historyStepBlockedByLayer(this, delta)) {
       const action = delta < 0
         ? this.historyActions[this.historyCursor - 1]
         : this.historyActions[this.historyCursor];
       return action?.kind === "scene-reorder"
-        ? "Il riordino non è compatibile con la struttura livelli corrente."
+        ? "Reordering is incompatible with the current layer structure."
         : action?.kind === "layer-metadata"
-          ? "La proprietà non è compatibile con la struttura clipping corrente."
-        : "Il livello richiesto dalla cronologia non esiste più.";
+          ? "The property is incompatible with the current clipping structure."
+        : "The layer required by history no longer exists.";
     }
     return null;
   }
@@ -4906,7 +4906,7 @@ export class BrushEngine {
    * byte per pixel` per livello, dentro il budget History.
    */
   async deleteLayer(index: number): Promise<void> {
-    if (!this.initialized) throw new Error("Il motore non è ancora inizializzato.");
+    if (!this.initialized) throw new Error("The engine is not initialized yet.");
     const target = this.layerStack.at(index);
     const unit = target.clippingParentId === null
       ? this.layerStack.clippingUnit(target.id)
@@ -4919,10 +4919,10 @@ export class BrushEngine {
       // sembra un blocco arbitrario.
       throw new Error(
         unit.length > 1
-          ? `La base di ritaglio si elimina con tutta la sua unità (${unit.length} livelli): `
-            + "il documento resterebbe vuoto. Elimina prima le maschere, "
-            + "oppure aggiungi un livello fuori dal gruppo."
-          : "Non è possibile eliminare l'ultimo livello del documento.",
+          ? `Deleting the clipping base also deletes its entire unit (${unit.length} layers), `
+            + "which would leave the document empty. Delete the masks first, "
+            + "or add a layer outside the group."
+          : "The last layer in the document cannot be deleted.",
       );
     }
     this.assertLayerSwitchAllowed();
@@ -4930,7 +4930,7 @@ export class BrushEngine {
     await this.waitForIdle();
 
     const scene = this.mixedSceneStack;
-    if (!scene) throw new Error("Scena mista non disponibile per l'eliminazione.");
+    if (!scene) throw new Error("The mixed scene is unavailable for deletion.");
     // L'elenco e' dal basso verso l'alto: il ripristino reinserisce in avanti e
     // gli indici restano validi mentre la pila ricresce.
     const ordered = [...unit].sort(
@@ -5004,7 +5004,7 @@ export class BrushEngine {
         } catch (restoreError) {
           rollbackError = restoreError;
           this.latchDocumentStateInconsistent(
-            "Pubblicazione della cancellazione fallita e rollback incompleto: ricarica la pagina.",
+            "Deletion publishing failed and rollback was incomplete. Reload the page.",
           );
         }
       }
@@ -5017,7 +5017,7 @@ export class BrushEngine {
           ? rollbackError.message
           : String(rollbackError);
         throw new Error(
-          `Cancellazione non pubblicata: ${operationMessage}; rollback fallito: ${rollbackMessage}`,
+          `Deletion was not published: ${operationMessage}; rollback failed: ${rollbackMessage}`,
         );
       }
       throw error;
@@ -5067,7 +5067,7 @@ export class BrushEngine {
 
   async waitForGpu(): Promise<void> {
     if (!this.initialized) {
-      throw new Error("Il motore non è ancora inizializzato.");
+      throw new Error("The engine is not initialized yet.");
     }
     await this.device.queue.onSubmittedWorkDone();
   }
@@ -5161,22 +5161,22 @@ export class BrushEngine {
     readonly layerId: number;
   }> {
     if (!this.initialized) {
-      throw new Error("Il motore non è ancora inizializzato.");
+      throw new Error("The engine is not initialized yet.");
     }
     if (!Number.isSafeInteger(layerId)) {
-      throw new Error(`Identificatore livello raster non valido: ${layerId}.`);
+      throw new Error(`Invalid raster layer identifier: ${layerId}.`);
     }
     if (this.activeStroke || this.layerSwitchBusy || this.historyBusy) {
-      throw new Error("Miniatura rimandata finché il motore non torna inattivo.");
+      throw new Error("Thumbnail deferred until the engine becomes idle.");
     }
     await this.waitForIdle();
     if (this.activeStroke || this.layerSwitchBusy || this.historyBusy) {
-      throw new Error("Miniatura rimandata: è iniziata una nuova operazione.");
+      throw new Error("Thumbnail deferred because a new operation started.");
     }
 
     const record = this.layerStack.byId(layerId);
     if (!record) {
-      throw new Error(`Livello raster ${layerId} non trovato.`);
+      throw new Error(`Raster layer ${layerId} was not found.`);
     }
     // The active record is persisted only when the engine switches away from
     // that layer. While the user keeps painting on it, layerHasContent is the
@@ -5203,7 +5203,7 @@ export class BrushEngine {
           this,
           record,
           gpu,
-          `Miniatura reidratazione livello ${layerId}`,
+          `Thumbnail hydration for layer ${layerId}`,
           false,
           "defer-to-fold-fence",
         )).samplingView;
@@ -5217,7 +5217,7 @@ export class BrushEngine {
         || this.layerSwitchBusy
         || this.historyBusy
       ) {
-        throw new Error("Miniatura rimandata: il livello raster è cambiato.");
+        throw new Error("Thumbnail deferred because the raster layer changed.");
       }
       const pixels = await this.layerThumbnailRenderer.capture(sourceView);
       return { layerId, ...pixels };
@@ -5230,12 +5230,12 @@ export class BrushEngine {
     readonly layerId: number;
   }> {
     if (!this.initialized) {
-      throw new Error("Il motore non è ancora inizializzato.");
+      throw new Error("The engine is not initialized yet.");
     }
     const layerId = this.layerStack.active.id;
     const capture = await this.captureRasterLayerThumbnail(layerId);
     if (layerId !== this.layerStack.active.id) {
-      throw new Error("Miniatura rimandata: il livello attivo è cambiato.");
+      throw new Error("Thumbnail deferred because the active layer changed.");
     }
     return capture;
   }
@@ -5255,7 +5255,7 @@ export class BrushEngine {
 
   effectsWorkingSetMatchesActiveLayer(): boolean {
     if (!import.meta.env.DEV) {
-      throw new Error("Diagnostica disponibile solo in modalità dev.");
+      throw new Error("Diagnostics are available only in dev mode.");
     }
     const workbench = this.effectsWorkbench;
     if (!workbench) {
@@ -5267,10 +5267,10 @@ export class BrushEngine {
 
   async readLayerPixels(rect?: DirtyRect, layerIndex?: number): Promise<Uint8Array> {
     if (!import.meta.env.DEV) {
-      throw new Error("La sonda dei pixel di livello è disponibile solo in modalità dev.");
+      throw new Error("The layer pixel probe is available only in dev mode.");
     }
     if (!this.initialized) {
-      throw new Error("Il motore non è ancora inizializzato.");
+      throw new Error("The engine is not initialized yet.");
     }
     // Reading a NAMED layer rather than only the active one is what makes the
     // test bilateral: "layer A kept its pixels while B was rebuilt" needs both
@@ -5280,16 +5280,16 @@ export class BrushEngine {
       : this.layerStack.at(layerIndex);
     const gpu = this.requireLayerGpu(record.id);
     if (gpu.hot) {
-      return this.readTexturePixels(gpu.hot.texture, rect, "livello");
+      return this.readTexturePixels(gpu.hot.texture, rect, "layer");
     }
     const hydration = await createHydratedLayerTexture(this, 
       record,
       gpu,
-      `Sonda reidratazione livello ${record.id}`,
+      `Layer ${record.id} hydration probe`,
       false,
     );
     try {
-      return await this.readTexturePixels(hydration.texture, rect, "livello");
+      return await this.readTexturePixels(hydration.texture, rect, "layer");
     } finally {
       destroyTransientLayerHydration(this, hydration);
     }
@@ -5320,16 +5320,16 @@ export class BrushEngine {
 
   async readLayerBakePixels(rect?: DirtyRect, layerIndex = 0): Promise<Uint8Array> {
     if (!import.meta.env.DEV) {
-      throw new Error("La sonda del bake è disponibile solo in modalità dev.");
+      throw new Error("The bake probe is available only in dev mode.");
     }
     if (!this.initialized) {
-      throw new Error("Il motore non è ancora inizializzato.");
+      throw new Error("The engine is not initialized yet.");
     }
     const gpu = this.requireLayerGpu(this.layerStack.at(layerIndex).id);
     if (!gpu.bake || !gpu.bakeValid) {
-      throw new Error(`Bake valido non disponibile per il livello ${layerIndex}.`);
+      throw new Error(`No valid bake is available for layer ${layerIndex}.`);
     }
-    return this.readTexturePixels(gpu.bake.texture, rect, "bake livello");
+    return this.readTexturePixels(gpu.bake.texture, rect, "layer bake");
   }
 
   getLayerCompositeState(): {
@@ -5373,15 +5373,15 @@ export class BrushEngine {
     completePyramid = true,
   ): Promise<Uint8Array> {
     if (!import.meta.env.DEV) {
-      throw new Error("Sonda merged disponibile solo in modalità dev.");
+      throw new Error("The merged-surface probe is available only in dev mode.");
     }
     const surface = side === "below" ? this.mergedBelow : this.mergedAbove;
     if (!surface) {
-      throw new Error(`Superficie merged ${side} non allocata.`);
+      throw new Error(`Merged surface ${side} is not allocated.`);
     }
     if (!Number.isInteger(mipLevel) || mipLevel < 0 || mipLevel >= surface.mipViews.length) {
       throw new Error(
-        `Mip merged ${side} ${mipLevel} fuori da 0–${surface.mipViews.length - 1}.`,
+        `Merged ${side} mip ${mipLevel} is outside 0–${surface.mipViews.length - 1}.`,
       );
     }
     if (mipLevel > surface.validThroughLevel && completePyramid) {
@@ -5421,11 +5421,11 @@ export class BrushEngine {
 
   async readPresentationLayerRect(rect: DirtyRect): Promise<Uint8Array> {
     if (Math.abs(this.zoom - 1) > 1e-6 || Math.abs(this.viewRotation) > 1e-7) {
-      throw new Error("La sonda rettangolare richiede zoom 1:1 e rotazione zero.");
+      throw new Error("The rectangle probe requires 1:1 zoom and zero rotation.");
     }
     await this.waitForIdle();
     if (!this.presentationCacheTexture) {
-      throw new Error("Cache di presentazione non allocata.");
+      throw new Error("The presentation cache is not allocated.");
     }
     const x = Math.floor(rect.x);
     const y = Math.floor(rect.y);
@@ -5435,7 +5435,7 @@ export class BrushEngine {
       x < 0 || y < 0 || width <= 0 || height <= 0
       || x + width > DOCUMENT_WIDTH || y + height > DOCUMENT_HEIGHT
     ) {
-      throw new Error("Rettangolo della sonda presentazione non valido.");
+      throw new Error("The presentation probe rectangle is invalid.");
     }
     const canvasPosition = layerToCanvasPixels(this, x + 0.5, y + 0.5);
     const canvasX = Math.round(canvasPosition.x - 0.5);
@@ -5445,7 +5445,7 @@ export class BrushEngine {
       || canvasX + width > this.canvas.width
       || canvasY + height > this.canvas.height
     ) {
-      throw new Error("Rettangolo della sonda presentazione fuori dal canvas.");
+      throw new Error("The presentation probe rectangle is outside the canvas.");
     }
 
     const unpaddedBytesPerRow = width * 4;
@@ -5474,7 +5474,7 @@ export class BrushEngine {
           buffer.mapAsync(GPUMapMode.READ),
           new Promise<never>((_, reject) => {
             timer = window.setTimeout(
-              () => reject(new Error("Sonda presentazione: timeout readback dopo 10 s.")),
+              () => reject(new Error("Presentation probe: readback timed out after 10 s.")),
               10_000,
             );
           }),
@@ -5506,11 +5506,11 @@ export class BrushEngine {
 
   async readPresentationPixelAtLayer(x: number, y: number): Promise<Uint8Array> {
     if (!import.meta.env.DEV) {
-      throw new Error("Sonda presentazione disponibile solo in modalità dev.");
+      throw new Error("The presentation probe is available only in dev mode.");
     }
     await this.waitForIdle();
     if (!this.presentationCacheTexture) {
-      throw new Error("Cache di presentazione non allocata.");
+      throw new Error("The presentation cache is not allocated.");
     }
     const canvasPosition = layerToCanvasPixels(this, x + 0.5, y + 0.5);
     const canvasX = Math.round(canvasPosition.x - 0.5);
@@ -5519,7 +5519,7 @@ export class BrushEngine {
       canvasX < 0 || canvasY < 0
       || canvasX >= this.canvas.width || canvasY >= this.canvas.height
     ) {
-      throw new Error("Texel di presentazione fuori dal canvas di test.");
+      throw new Error("The presentation texel is outside the test canvas.");
     }
     const buffer = this.device.createBuffer({
       label: "Layer presentation pixel probe",
@@ -5545,7 +5545,7 @@ export class BrushEngine {
           buffer.mapAsync(GPUMapMode.READ),
           new Promise<never>((_, reject) => {
             timer = window.setTimeout(
-              () => reject(new Error("Sonda presentazione: timeout readback dopo 10 s.")),
+              () => reject(new Error("Presentation probe: readback timed out after 10 s.")),
               10_000,
             );
           }),
@@ -5583,11 +5583,11 @@ export class BrushEngine {
       || arrayLayerCount < 1
       || firstArrayLayer + arrayLayerCount > cold.tileIndices.length
     ) {
-      throw new Error("Intervallo readback cold storage non valido.");
+      throw new Error("The cold-storage readback range is invalid.");
     }
     if (cold.format !== this.layerFormat) {
       throw new Error(
-        `Sonda cold storage ${cold.format} incompatibile con il documento ${this.layerFormat}.`,
+        `Cold-storage probe format ${cold.format} is incompatible with the ${this.layerFormat} document.`,
       );
     }
     const bytesPerPixel = cold.format === "rgba16float" ? 8 : 4;
@@ -5596,7 +5596,7 @@ export class BrushEngine {
     const rowsPerImage = LAYER_STORAGE_TILE_HEIGHT;
     const readbackBytes = bytesPerRow * rowsPerImage * arrayLayerCount;
     const readbackBuffer = this.device.createBuffer({
-      label: `Sonda ${label} tile ${firstArrayLayer}+${arrayLayerCount}`,
+      label: `${label} probe tile ${firstArrayLayer}+${arrayLayerCount}`,
       size: readbackBytes,
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     });
@@ -5608,7 +5608,7 @@ export class BrushEngine {
     let mapped = false;
     try {
       const encoder = this.device.createCommandEncoder({
-        label: `Sonda ${label}`,
+        label: `${label} probe`,
       });
       encoder.copyTextureToBuffer(
         {
@@ -5629,7 +5629,7 @@ export class BrushEngine {
           readbackBuffer.mapAsync(GPUMapMode.READ),
           new Promise<never>((_, reject) => {
             timer = window.setTimeout(
-              () => reject(new Error(`Sonda ${label}: timeout readback dopo 30 s.`)),
+              () => reject(new Error(`${label} probe: readback timed out after 30 s.`)),
               30_000,
             );
           }),
@@ -5690,7 +5690,7 @@ export class BrushEngine {
     const bytesPerRow = Math.ceil(unpaddedBytesPerRow / 256) * 256;
     const readbackBytes = bytesPerRow * height;
     const readbackBuffer = this.device.createBuffer({
-      label: `Sonda pixel ${label} ${width}×${height}`,
+      label: `${label} pixel probe ${width}×${height}`,
       size: readbackBytes,
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     });
@@ -5699,7 +5699,7 @@ export class BrushEngine {
 
     try {
       const encoder = this.device.createCommandEncoder({
-        label: `Sonda pixel ${label}`,
+        label: `${label} pixel probe`,
       });
       encoder.copyTextureToBuffer(
         { texture: target, mipLevel, origin: { x, y, z: 0 } },
@@ -5713,7 +5713,7 @@ export class BrushEngine {
           readbackBuffer.mapAsync(GPUMapMode.READ),
           new Promise<never>((_, reject) => {
             timer = window.setTimeout(
-              () => reject(new Error(`Sonda ${label}: timeout readback dopo 10 s.`)),
+              () => reject(new Error(`${label} probe: readback timed out after 10 s.`)),
               10_000,
             );
           }),
@@ -5789,7 +5789,7 @@ export class BrushEngine {
     options: Readonly<{ allowFrozenDerivedPresentation?: boolean }> = {},
   ): Promise<void> {
     if (!this.initialized) {
-      throw new Error("Il motore non è ancora inizializzato.");
+      throw new Error("The engine is not initialized yet.");
     }
 
     while (this.lightGlazeLoadingPromise) {
@@ -5816,7 +5816,7 @@ export class BrushEngine {
             continue;
           }
           throw new Error(
-            "Presentazione congelata con lavoro render pendente: transazione interrotta in sicurezza.",
+            "Presentation is frozen with pending render work. The transaction was stopped safely.",
           );
         }
         await waitForRenderPump(this);
@@ -5826,11 +5826,11 @@ export class BrushEngine {
           lastProgressAt = performance.now();
         } else if (performance.now() - lastProgressAt > 10_000) {
           throw new Error(
-            "Il motore non avanza da 10 secondi; Undo/Redo è stato interrotto in sicurezza.",
+            "The engine has not progressed for 10 seconds. Undo/Redo was stopped safely.",
           );
         }
       }
-      await this.waitForGpuCapped("Attesa completamento motore", 60_000);
+      await this.waitForGpuCapped("Wait for engine completion", 60_000);
       retireAdaptivePreviewAfterGpuIdle(this);
       // A callback can enqueue a frame while the GPU fence is pending. Recheck
       // instead of returning a false-idle state to a resource transaction.
@@ -6062,7 +6062,7 @@ export class BrushEngine {
    */
   async ensureCurrentBrushResources(): Promise<void> {
     if (!this.initialized) {
-      throw new Error("Il motore non è ancora inizializzato.");
+      throw new Error("The engine is not initialized yet.");
     }
 
     for (;;) {
@@ -6075,10 +6075,10 @@ export class BrushEngine {
       }
       if (settings !== this.settings) continue;
       if (settings.tool === "blend" && !this.blendRenderer) {
-        throw new Error("Renderer Blend non disponibile per la prima pennellata.");
+        throw new Error("The Blend renderer is unavailable for the first stroke.");
       }
       if (this.pixelSelectionState.selectedPixels > 0 && !this.selectionPipelinesReady) {
-        throw new Error("Pipeline Selezione pixel non disponibile per la prima pennellata.");
+        throw new Error("The pixel selection pipeline is unavailable for the first stroke.");
       }
 
       if (settings.grainMode !== "off") {
@@ -6097,7 +6097,7 @@ export class BrushEngine {
       }
       if (settings !== this.settings) continue;
       if (!this.currentBrushResourcesReady()) {
-        throw new Error("Risorse del pennello incomplete dopo la preparazione.");
+        throw new Error("Brush resources are incomplete after preparation.");
       }
       return;
     }
@@ -6123,7 +6123,7 @@ export class BrushEngine {
 
     const initialization = (async (): Promise<void> => {
       this.callbacks.onStatus?.(
-        "Editor pronto. Completo gli strumenti avanzati in background…",
+        "The editor is ready. Finishing advanced tools in the background…",
         "working",
       );
       // Keep the old mobile driver responsive: optional compilers run in
@@ -6141,7 +6141,7 @@ export class BrushEngine {
         this.optionalEditorResourcesReady = true;
       }
       if (this.deviceLostError) throw this.deviceLostError;
-      this.callbacks.onStatus?.("WebGPU pronto. Disegna sul canvas.", "ok");
+      this.callbacks.onStatus?.("WebGPU is ready. Draw on the canvas.", "ok");
     })();
     this.optionalEditorResourcesPromise = initialization;
     try {
@@ -6189,17 +6189,17 @@ export class BrushEngine {
   requireLayerGpu(layerId: number): LayerGpuResources {
     const gpu = this.layerGpu.get(layerId);
     if (!gpu) {
-      throw new Error(`Risorse GPU del livello ${layerId} non allocate.`);
+      throw new Error(`GPU resources for layer ${layerId} are not allocated.`);
     }
     return gpu;
   }
 
   injectLayerColdStorageFault(...faultPoints: LayerColdStorageFaultPoint[]): void {
     if (!import.meta.env.DEV) {
-      throw new Error("Iniezione guasti cold storage disponibile solo in modalità dev.");
+      throw new Error("Cold-storage fault injection is available only in dev mode.");
     }
     if (faultPoints.length === 0) {
-      throw new Error("Specifica almeno un punto di guasto del cold storage.");
+      throw new Error("Specify at least one cold-storage fault point.");
     }
     this.layerColdStorageFaultQueue = [...faultPoints];
   }
@@ -6209,7 +6209,7 @@ export class BrushEngine {
       return;
     }
     this.layerColdStorageFaultQueue.shift();
-    throw new Error(`Guasto iniettato nel cold storage: ${point}.`);
+    throw new Error(`Injected cold-storage fault: ${point}.`);
   }
 
   /**
@@ -6386,7 +6386,7 @@ export class BrushEngine {
     allowUnavailableRetry = false,
   ): Promise<LayerColdCompressionClient> {
     if (this.layerColdCompressionWorkerUnavailable && !allowUnavailableRetry) {
-      throw new Error("Worker compressione livelli non disponibile.");
+      throw new Error("The layer compression worker is unavailable.");
     }
     if (!this.layerColdCompressionClient) {
       this.layerColdCompressionClient = new LayerColdCompressionClient();
@@ -6406,10 +6406,10 @@ export class BrushEngine {
 
   injectLayerBakeFault(...faultPoints: LayerBakeFaultPoint[]): void {
     if (!import.meta.env.DEV) {
-      throw new Error("Iniezione di guasti bake disponibile solo in modalità dev.");
+      throw new Error("Bake fault injection is available only in dev mode.");
     }
     if (faultPoints.length === 0) {
-      throw new Error("Specifica almeno un punto di guasto del bake.");
+      throw new Error("Specify at least one bake fault point.");
     }
     this.layerBakeFaultQueue = [...faultPoints];
   }
@@ -6426,21 +6426,21 @@ export class BrushEngine {
     completionPolicy: LayerGpuCompletionPolicy = "await-immediately",
   ): Promise<LayerBakeResources> {
     if (injectBakeFault && completionPolicy !== "await-immediately") {
-      throw new Error("Il fault bake richiede il completamento GPU immediato.");
+      throw new Error("The bake fault requires immediate GPU completion.");
     }
     const renderer = this.rasterStrokeRenderer;
     if (!renderer) {
-      throw new Error("Bake impossibile: compositore effetti non disponibile.");
+      throw new Error("Cannot bake because the effects compositor is unavailable.");
     }
     const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
     const memoryBytes = DOCUMENT_WIDTH * DOCUMENT_HEIGHT * bytesPerPixel;
     const nonTransparentBounds = layerCompositeVisualBounds(this, record);
     return runGpuAllocationTransaction(
       this.device,
-      `Bake analitico livello ${record.id}`,
+      `Analytic bake for layer ${record.id}`,
       async (transaction) => {
         const texture = this.device.createTexture({
-          label: `Bake analitico livello ${record.id} #${generation}`,
+          label: `Analytic bake for layer ${record.id} #${generation}`,
           size: {
             width: DOCUMENT_WIDTH,
             height: DOCUMENT_HEIGHT,
@@ -6455,13 +6455,13 @@ export class BrushEngine {
         this.liveLayerBakeTextures.set(texture, memoryBytes);
         transaction.deferRollback(() => destroyLayerBakeTexture(this, texture));
         const storageView = texture.createView({
-          label: `Bake analitico storage livello ${record.id} #${generation}`,
+          label: `Analytic bake storage for layer ${record.id} #${generation}`,
         });
         const samplingView = texture.createView({
-          label: `Bake analitico sampling livello ${record.id} #${generation}`,
+          label: `Analytic bake sampling for layer ${record.id} #${generation}`,
         });
         const encoder = this.device.createCommandEncoder({
-          label: `Bake analitico livello ${record.id} #${generation}`,
+          label: `Analytic bake for layer ${record.id} #${generation}`,
         });
         renderer.encodeBake({
           encoder,
@@ -6474,7 +6474,7 @@ export class BrushEngine {
         });
         this.device.queue.submit([encoder.finish()]);
         if (completionPolicy === "await-immediately") {
-          await this.waitForGpuCapped(`Bake livello ${record.id}`);
+          await this.waitForGpuCapped(`Bake layer ${record.id}`);
           if (injectBakeFault) {
             maybeInjectLayerBakeFault(this, "after-candidate-submit");
           }
@@ -6534,7 +6534,7 @@ export class BrushEngine {
         this.deviceLostSignal.then((error) => Promise.reject(error)),
         new Promise<never>((_, reject) => {
           timer = window.setTimeout(
-            () => reject(new Error(`${label}: timeout GPU dopo ${timeoutMs} ms.`)),
+            () => reject(new Error(`${label}: GPU timed out after ${timeoutMs} ms.`)),
             timeoutMs,
           );
         }),
@@ -6549,10 +6549,10 @@ export class BrushEngine {
 
   injectLayerCompositeFault(...faultPoints: LayerCompositeFaultPoint[]): void {
     if (!import.meta.env.DEV) {
-      throw new Error("Iniezione guasti compositing disponibile solo in modalità dev.");
+      throw new Error("Compositing fault injection is available only in dev mode.");
     }
     if (faultPoints.length === 0) {
-      throw new Error("Specifica almeno un punto di guasto del compositing.");
+      throw new Error("Specify at least one compositing fault point.");
     }
     this.layerCompositeFaultQueue = [...faultPoints];
   }
@@ -6583,7 +6583,7 @@ export class BrushEngine {
     }
     if (hasPendingRenderWork(this)) {
       throw new Error(
-        "Ricostruzione livelli rifiutata: il render deve essere fermo prima del freeze.",
+        "Layer reconstruction was rejected: rendering must be idle before freezing.",
       );
     }
     const previousBelow = this.mergedBelow;
@@ -6841,17 +6841,17 @@ export class BrushEngine {
           ? rollbackError.message
           : String(rollbackError);
         const combined = new Error(
-          `Commit proprietà raster fallito (${original}); rollback fallito (${rollback}).`,
+          `Raster property commit failed (${original}); rollback failed (${rollback}).`,
         );
         this.latchDocumentStateInconsistent(
-          "Stato incoerente dopo il commit della proprietà raster: ricarica la pagina.",
+          "State is inconsistent after the raster property commit. Reload the page.",
           combined,
         );
         throw combined;
       }
       this.activeRasterLayerMetadataHistoryEdit = null;
       this.latchDocumentStateInconsistent(
-        "Commit della proprietà raster non pubblicato: ricarica la pagina.",
+        "The raster property commit was not published. Reload the page.",
         error,
       );
       throw error;
@@ -6894,7 +6894,7 @@ export class BrushEngine {
     if (edit) {
       if (edit.layerId !== before.layerId || edit.property !== property) {
         throw new Error(
-          `La transazione ${edit.property} non può assorbire la modifica ${property}.`,
+          `The ${edit.property} transaction cannot absorb the ${property} change.`,
         );
       }
       return;
@@ -6981,18 +6981,18 @@ export class BrushEngine {
         ? rollbackError.message
         : String(rollbackError);
       const combined = new Error(
-        `Commit vettoriale fallito (${original}); rollback fallito (${rollback}).`,
+        `Vector commit failed (${original}); rollback failed (${rollback}).`,
       );
       this.activeVectorHistoryEdit = null;
       this.latchDocumentStateInconsistent(
-        "Stato incoerente dopo il commit vettoriale: ricarica la pagina.",
+        "State is inconsistent after the vector commit. Reload the page.",
         combined,
       );
       throw combined;
     }
     this.activeVectorHistoryEdit = null;
     this.latchDocumentStateInconsistent(
-      "Commit vettoriale non pubblicato: ricarica la pagina.",
+      "The vector commit was not published. Reload the page.",
       cause,
     );
     throw cause;
@@ -7005,7 +7005,7 @@ export class BrushEngine {
     }
     await applyVectorHistoryState(this, edit.before);
     if (this.activeVectorHistoryEdit !== edit) {
-      throw new Error("La transazione Trasforma è cambiata durante il ripristino.");
+      throw new Error("The Transform transaction changed during restore.");
     }
     this.activeVectorHistoryEdit = null;
     this.publishHistoryState();
@@ -7038,7 +7038,7 @@ export class BrushEngine {
     }[],
   ): Promise<readonly Readonly<VectorTextNode>[]> {
     if (!this.layerMemoryStressTestEnabled) {
-      throw new Error("Batch testi benchmark non abilitata per questa pagina.");
+      throw new Error("The benchmark text batch is not enabled on this page.");
     }
     if (entries.length === 0) {
       return [];
@@ -7057,7 +7057,7 @@ export class BrushEngine {
     if (item.kind === "raster") {
       const index = this.layerStack.indexOfId(item.rasterLayerId);
       if (index < 0) {
-        throw new Error(`Raster ${item.rasterLayerId} assente dallo stack GPU.`);
+        throw new Error(`Raster ${item.rasterLayerId} is missing from the GPU stack.`);
       }
       if (scene.selected.key === key && index === this.layerStack.activeIndex) {
         return null;
@@ -7088,15 +7088,15 @@ export class BrushEngine {
           await mutateMixedScenePresentation(this, () => undefined);
         } catch (restoreError) {
           this.latchDocumentStateInconsistent(
-            "Stato incoerente dopo la selezione raster: ricarica la pagina.",
+            "State is inconsistent after raster selection. Reload the page.",
           );
           const originalMessage = error instanceof Error ? error.message : String(error);
           const restoreMessage = restoreError instanceof Error
             ? restoreError.message
             : String(restoreError);
           throw new Error(
-            `Selezione raster fallita (${originalMessage}) e ripristino fallito `
-            + `(${restoreMessage}). Ricarica la pagina.`,
+            `Raster selection failed (${originalMessage}) and restore failed `
+            + `(${restoreMessage}). Reload the page.`,
           );
         }
         throw error;
@@ -7123,7 +7123,7 @@ export class BrushEngine {
     assertVectorUpdateAllowed(this, key, Object.keys(update));
     const selected = scene.selected;
     if (selected.kind !== "text" || selected.textNodeId !== id) {
-      throw new Error("È modificabile soltanto il nodo testo selezionato.");
+      throw new Error("Only the selected text node can be edited.");
     }
     const before = this.activeVectorHistoryEdit
       ? null
@@ -7164,7 +7164,7 @@ export class BrushEngine {
     assertVectorUpdateAllowed(this, key, Object.keys(update));
     const selected = scene.selected;
     if (selected.kind !== "svg" || selected.svgNodeId !== id) {
-      throw new Error("È modificabile soltanto il nodo SVG selezionato.");
+      throw new Error("Only the selected SVG node can be edited.");
     }
     const before = this.activeVectorHistoryEdit
       ? null
@@ -7411,10 +7411,10 @@ export class BrushEngine {
           ? restoreError.message
           : String(restoreError);
         const combined = new Error(
-          `Rasterizzazione non pubblicata: ${operationMessage}; rollback fallito: ${rollbackMessage}`,
+          `Rasterization was not published: ${operationMessage}; rollback failed: ${rollbackMessage}`,
         );
         this.latchDocumentStateInconsistent(
-          "Pubblicazione della rasterizzazione fallita e rollback incompleto: ricarica la pagina.",
+          "Rasterization publishing failed and rollback was incomplete. Reload the page.",
           combined,
         );
         throw combined;
@@ -7479,13 +7479,13 @@ export class BrushEngine {
         destroyLayerMergeHistorySeeds(prepared.action);
       } catch (rollbackError) {
         this.latchDocumentStateInconsistent(
-          "Pubblicazione merge fallita e rollback incompleto: ricarica la pagina.",
+          "Merge publishing failed and rollback was incomplete. Reload the page.",
         );
         const first = error instanceof Error ? error.message : String(error);
         const second = rollbackError instanceof Error
           ? rollbackError.message
           : String(rollbackError);
-        throw new Error(`${first}; rollback pubblicazione merge fallito: ${second}`);
+        throw new Error(`${first}; merge publishing rollback failed: ${second}`);
       }
       throw error;
     }
@@ -7588,9 +7588,9 @@ export class BrushEngine {
       const headroomMiB = Math.max(0, decision.ceilingBytes - decision.usedBytes)
         / MEBIBYTE_BYTES;
       throw new Error(
-        "Memoria insufficiente per duplicare il livello: "
-        + `${requiredMiB.toFixed(1)} MiB richiesti, ${headroomMiB.toFixed(1)} MiB disponibili. `
-        + "Riduci la cronologia o attendi la compressione dei livelli inattivi.",
+        "Not enough memory to duplicate the layer: "
+        + `${requiredMiB.toFixed(1)} MiB required, ${headroomMiB.toFixed(1)} MiB available. `
+        + "Reduce history or wait for inactive layers to be compressed.",
       );
     }
     return this.memoryReservations.reserve(request);
@@ -7600,13 +7600,13 @@ export class BrushEngine {
     sourceLayerId: number,
   ): Promise<LayerDuplicateResult> {
     if (this.layerStack.count >= LAYER_STACK_MAXIMUM) {
-      throw new Error(`Massimo ${LAYER_STACK_MAXIMUM} livelli raggiunto.`);
+      throw new Error(`The maximum of ${LAYER_STACK_MAXIMUM} layers has been reached.`);
     }
     const scene = requireMixedSceneStack(this);
     const sourceIndex = this.layerStack.indexOfId(sourceLayerId);
-    if (sourceIndex < 0) throw new Error(`Livello sorgente ${sourceLayerId} assente.`);
+    if (sourceIndex < 0) throw new Error(`Source layer ${sourceLayerId} is missing.`);
     if (sourceIndex !== this.layerStack.activeIndex) {
-      throw new Error("Il livello raster da duplicare deve essere quello attivo.");
+      throw new Error("The raster layer to duplicate must be active.");
     }
     const source = this.layerStack.at(sourceIndex);
     this.assertLayerSwitchAllowed();
@@ -7637,7 +7637,7 @@ export class BrushEngine {
         const sourceGpu = this.requireLayerGpu(source.id);
         const sourceHot = sourceGpu.hot;
         if (!sourceHot) {
-          throw new Error(`Texture hot del livello ${source.id} non residente.`);
+          throw new Error(`The hot texture for layer ${source.id} is not resident.`);
         }
         if (source.hasContent) {
           seed = await createLayerColdStorageCandidate(
@@ -7656,7 +7656,7 @@ export class BrushEngine {
         const anchorRasterIndex = this.layerStack.indexOfId(anchor.id);
         const anchorSceneIndex = scene.indexOfKey(`raster:${anchor.id}`);
         if (anchorRasterIndex < 0 || anchorSceneIndex < 0) {
-          throw new Error("Posizione del livello sorgente non coerente nella scena.");
+          throw new Error("The source layer position is inconsistent in the scene.");
         }
         const record = this.createDuplicatedRasterRecord(source, storageMask);
         action = {
@@ -7692,14 +7692,14 @@ export class BrushEngine {
         } catch (restoreError) {
           rollbackFailed = true;
           this.latchDocumentStateInconsistent(
-            "Duplicazione non pubblicata e rollback incompleto: ricarica la pagina.",
+            "Duplication was not published and rollback was incomplete. Reload the page.",
           );
           const originalMessage = error instanceof Error ? error.message : String(error);
           const restoreMessage = restoreError instanceof Error
             ? restoreError.message
             : String(restoreError);
           throw new Error(
-            `Duplicazione non pubblicata: ${originalMessage}; rollback fallito: ${restoreMessage}`,
+            `Duplication was not published: ${originalMessage}; rollback failed: ${restoreMessage}`,
           );
         }
         throw error;
@@ -7726,14 +7726,14 @@ export class BrushEngine {
         } catch (restoreError) {
           rollbackFailed = true;
           this.latchDocumentStateInconsistent(
-            "Duplicazione fallita e rollback incompleto: ricarica la pagina.",
+            "Duplication failed and rollback was incomplete. Reload the page.",
           );
           const originalMessage = error instanceof Error ? error.message : String(error);
           const restoreMessage = restoreError instanceof Error
             ? restoreError.message
             : String(restoreError);
           throw new Error(
-            `Duplicazione fallita: ${originalMessage}; rollback fallito: ${restoreMessage}`,
+            `Duplication failed: ${originalMessage}; rollback failed: ${restoreMessage}`,
           );
         }
       }
@@ -7752,7 +7752,7 @@ export class BrushEngine {
 
   /** Duplicates the selected raster or semantic layer directly above it. */
   async duplicateSelectedLayer(): Promise<LayerDuplicateResult> {
-    if (!this.initialized) throw new Error("Il motore non è ancora inizializzato.");
+    if (!this.initialized) throw new Error("The engine is not initialized yet.");
     const scene = requireMixedSceneStack(this);
     const selected = scene.selected;
     if (selected.kind === "raster") {
@@ -7794,10 +7794,10 @@ export class BrushEngine {
     clippingParentId: number | null = null,
   ): Promise<LayerSwitchResult> {
     if (!this.initialized) {
-      throw new Error("Il motore non è ancora inizializzato.");
+      throw new Error("The engine is not initialized yet.");
     }
     if (this.layerStack.count >= LAYER_STACK_MAXIMUM) {
-      throw new Error(`Massimo ${LAYER_STACK_MAXIMUM} livelli raggiunto.`);
+      throw new Error(`The maximum of ${LAYER_STACK_MAXIMUM} layers has been reached.`);
     }
     this.assertLayerSwitchAllowed();
     this.cancelLayerColdCompressionIdle();
@@ -7824,7 +7824,7 @@ export class BrushEngine {
       } else if (clippingParentId !== null) {
         const parent = this.layerStack.byId(clippingParentId);
         if (!parent || parent.clippingParentId !== null) {
-          throw new Error("Parent raster della maschera non valido.");
+          throw new Error("The mask's raster parent is invalid.");
         }
         const unit = this.layerStack.clippingUnit(parent.id);
         layerInsertIndex = this.layerStack.indexOfId(unit[unit.length - 1].id) + 1;
@@ -7855,12 +7855,12 @@ export class BrushEngine {
         outgoingIndexAfterInsertion = this.layerStack.indexOfId(activeRasterLayerIdBefore);
         if (outgoingIndexAfterInsertion < 0) {
           throw new Error(
-            `Raster uscente ${activeRasterLayerIdBefore} perso durante l'inserimento.`,
+            `Outgoing raster ${activeRasterLayerIdBefore} was lost during insertion.`,
           );
         }
         gpu = await allocateLayerGpuResources(this, 
           this.layerFormat,
-          `Allocazione livello ${record.id}`,
+          `Layer ${record.id} allocation`,
         );
         this.layerGpu.set(record.id, gpu);
       } catch (error) {
@@ -7880,7 +7880,7 @@ export class BrushEngine {
           const restoredIndex = this.layerStack.indexOfId(activeRasterLayerIdBefore);
           if (restoredIndex < 0) {
             throw new Error(
-              `Raster uscente ${activeRasterLayerIdBefore} assente durante il rollback Add.`,
+              `Outgoing raster ${activeRasterLayerIdBefore} is missing during Add rollback.`,
             );
           }
           this.layerStack.setActiveIndex(restoredIndex);
@@ -7894,11 +7894,11 @@ export class BrushEngine {
             ? restoreError.message
             : String(restoreError);
           const combined = new Error(
-            `Creazione livello fallita: ${originalMessage}; ripristino fallito: ${restoreMessage}. `
-            + "Ricarica la pagina prima di continuare.",
+            `Layer creation failed: ${originalMessage}; restore failed: ${restoreMessage}. `
+            + "Reload the page before continuing.",
           );
           this.latchDocumentStateInconsistent(
-            "Stato incoerente dopo l'allocazione del livello: ricarica prima di continuare.",
+            "State is inconsistent after layer allocation. Reload before continuing.",
             combined,
           );
           throw combined;
@@ -7906,7 +7906,7 @@ export class BrushEngine {
         throw error;
       }
       if (!record || !gpu || index < 0 || outgoingIndexAfterInsertion < 0) {
-        throw new Error("Inserimento livello completato senza risorse pubblicabili.");
+        throw new Error("Layer insertion completed without publishable resources.");
       }
       let addHistoryPublished = false;
       try {
@@ -7950,7 +7950,7 @@ export class BrushEngine {
       } catch (error) {
         if (addHistoryPublished) {
           this.latchDocumentStateInconsistent(
-            "Livello creato ma presentazione finale interrotta: ricarica prima di continuare.",
+            "The layer was created, but final presentation was interrupted. Reload before continuing.",
             error,
           );
           throw error;
@@ -7968,14 +7968,14 @@ export class BrushEngine {
           }
           const candidateIndex = this.layerStack.indexOfId(record.id);
           if (candidateIndex < 0) {
-            throw new Error("Indici stabili mancanti durante il rollback Add.");
+            throw new Error("Stable indices are missing during Add rollback.");
           }
           this.layerStack.remove(candidateIndex);
           this.layerGpu.delete(record.id);
           destroyLayerGpuResources(this, gpu);
           const restoredIndex = this.layerStack.indexOfId(activeRasterLayerIdBefore);
           if (restoredIndex < 0) {
-            throw new Error("Raster uscente mancante durante il rollback Add.");
+            throw new Error("The outgoing raster is missing during Add rollback.");
           }
           this.layerStack.setActiveIndex(restoredIndex);
           await this.activateLayer(restoredIndex);
@@ -7985,11 +7985,11 @@ export class BrushEngine {
             ? restoreError.message
             : String(restoreError);
           const combined = new Error(
-            `Creazione livello fallita: ${originalMessage}; ripristino fallito: ${restoreMessage}. `
-            + "Ricarica la pagina prima di continuare.",
+            `Layer creation failed: ${originalMessage}; restore failed: ${restoreMessage}. `
+            + "Reload the page before continuing.",
           );
           this.latchDocumentStateInconsistent(
-            "Stato incoerente dopo la creazione del livello: ricarica prima di continuare.",
+            "State is inconsistent after layer creation. Reload before continuing.",
             combined,
           );
           throw combined;
@@ -8162,9 +8162,9 @@ export class BrushEngine {
       const requiredMiB = request.peakBytes / (1024 * 1024);
       const headroomMiB = Math.max(0, decision.ceilingBytes - decision.usedBytes) / (1024 * 1024);
       throw new Error(
-        "Memoria insufficiente per cambiare livello: "
-        + `${requiredMiB.toFixed(1)} MiB richiesti, ${headroomMiB.toFixed(1)} MiB disponibili. `
-        + "Attendi la compressione dei livelli inattivi o riduci la cronologia prima di riprovare.",
+        "Not enough memory to switch layers: "
+        + `${requiredMiB.toFixed(1)} MiB required, ${headroomMiB.toFixed(1)} MiB available. `
+        + "Wait for inactive layers to be compressed or reduce history before trying again.",
       );
     }
     return this.memoryReservations.reserve(request);
@@ -8173,7 +8173,7 @@ export class BrushEngine {
   /** Selects an existing layer, paying the switch cost. */
   async setActiveLayer(index: number): Promise<LayerSwitchResult | null> {
     if (!this.initialized) {
-      throw new Error("Il motore non è ancora inizializzato.");
+      throw new Error("The engine is not initialized yet.");
     }
     this.layerStack.at(index);
     if (index === this.layerStack.activeIndex) {
@@ -8211,11 +8211,11 @@ export class BrushEngine {
             ? restoreError.message
             : String(restoreError);
           this.latchDocumentStateInconsistent(
-            "Stato incoerente dopo il cambio livello: ricarica prima di continuare.",
+            "State is inconsistent after switching layers. Reload before continuing.",
           );
           throw new Error(
-            `Cambio livello fallito: ${originalMessage}; ripristino fallito: ${restoreMessage}. `
-            + "Ricarica la pagina prima di continuare.",
+            `Layer switch failed: ${originalMessage}; restore failed: ${restoreMessage}. `
+            + "Reload the page before continuing.",
           );
         }
       }
@@ -8276,10 +8276,10 @@ export class BrushEngine {
           ? rollbackError.message
           : String(rollbackError);
         const combined = new Error(
-          `Blend mode non pubblicato (${original}) e rollback fallito (${rollback}).`,
+          `Blend mode was not published (${original}) and rollback failed (${rollback}).`,
         );
         this.latchDocumentStateInconsistent(
-          "Stato incoerente dopo il Blend mode: ricarica prima di continuare.",
+          "State is inconsistent after the blend mode change. Reload before continuing.",
           combined,
         );
         throw combined;
@@ -8303,27 +8303,27 @@ export class BrushEngine {
   }
 
   /**
-   * Procreate-style clipping mask: create a normal raster immediately above
-   * the selected raster. The base directly underneath becomes its parent.
+   * Create a clipping mask as a normal raster immediately above the selected
+   * raster. The base directly underneath becomes its parent.
    */
   async addClippingMaskLayer(): Promise<LayerSwitchResult> {
     const scene = requireMixedSceneStack(this);
     const selected = scene.selected;
     if (selected.kind !== "raster") {
-      throw new Error("Seleziona un livello raster per creare la maschera.");
+      throw new Error("Select a raster layer to create the mask.");
     }
     const selectedIndex = this.layerStack.indexOfId(selected.rasterLayerId);
     if (selectedIndex < 0 || selectedIndex !== this.layerStack.activeIndex) {
-      throw new Error("Il raster selezionato deve essere il livello attivo.");
+      throw new Error("The selected raster must be the active layer.");
     }
     const selectedRecord = this.layerStack.at(selectedIndex);
     const parentId = selectedRecord.clippingParentId ?? selectedRecord.id;
     const parent = this.layerStack.byId(parentId);
     if (!parent || parent.clippingParentId !== null) {
-      throw new Error("Parent raster della maschera non valido.");
+      throw new Error("The mask's raster parent is invalid.");
     }
     const ordinal = this.layerStack.clippingDependents(parent.id).length + 1;
-    return await this.addLayer(`Maschera ritaglio ${ordinal}`, parent.id);
+    return await this.addLayer(`Clipping Mask ${ordinal}`, parent.id);
   }
 
   async setLayerReference(index: number, enabled: boolean): Promise<boolean> {
@@ -8361,27 +8361,27 @@ export class BrushEngine {
     // dedicato perche' "a motore fermo" non direbbe cosa fare.
     if (this.activeRasterTransformSession) {
       throw new Error(
-        "Applica o annulla la trasformazione prima di cambiare i livelli.",
+        "Apply or cancel the transform before switching layers.",
       );
     }
     if (this.activeRasterGaussianBlurSession) {
       throw new Error(
-        "Applica o annulla Gaussian Blur prima di cambiare i livelli.",
+        "Apply or cancel Gaussian Blur before switching layers.",
       );
     }
     if (this.activeRasterMotionBlurSession) {
       throw new Error(
-        "Applica o annulla Motion Blur prima di cambiare i livelli.",
+        "Apply or cancel Motion Blur before switching layers.",
       );
     }
     if (this.activeRasterNoiseSession) {
       throw new Error(
-        "Applica o annulla Noise prima di cambiare i livelli.",
+        "Apply or cancel Noise before switching layers.",
       );
     }
     if (this.activeRasterLiquifySession) {
       throw new Error(
-        "Applica o annulla Liquify prima di cambiare i livelli.",
+        "Apply or cancel Liquify before switching layers.",
       );
     }
     if (
@@ -8397,7 +8397,7 @@ export class BrushEngine {
       || this.rasterOuterShadowBusy
       || this.rasterInnerShadowBusy
     ) {
-      throw new Error("Il livello può cambiare solo a motore fermo.");
+      throw new Error("Layers can be switched only while the engine is idle.");
     }
   }
 
@@ -8541,7 +8541,7 @@ export class BrushEngine {
       try {
         resources = await runGpuAllocationTransaction(
           this.device,
-          `Allocazione rendering glaze ${storageMode}`,
+          `Glaze rendering allocation ${storageMode}`,
           (transaction) => {
             const candidate = createLightGlazeResourceSet(this, storageMode);
             this.lightGlazeTransitionPeakMiB = Math.max(
@@ -8593,7 +8593,7 @@ export class BrushEngine {
         try {
           await runGpuAllocationTransaction(
             this.device,
-            `Ripristino rendering glaze ${previous.storageMode}`,
+            `Restore glaze rendering ${previous.storageMode}`,
             (transaction) => {
               transaction.deferRollback(() => {
                 applyLightGlazeResourceSet(this, resources);
@@ -8646,14 +8646,14 @@ export class BrushEngine {
 
   startLightGlazeSession(historyActionId: number, settings: BrushSettings): void {
     if (this.lightGlazeSession) {
-      throw new Error("Un tratto Light Glaze precedente non è ancora stato finalizzato.");
+      throw new Error("A previous Light Glaze stroke has not been finalized yet.");
     }
     const storageMode = lightGlazeStorageModeFor(settings.blendMode);
     if (storageMode === "none") {
-      throw new Error("Modalita storage glaze non valida durante il rendering.");
+      throw new Error("Invalid glaze storage mode during rendering.");
     }
     if (!lightGlazeResourcesMatch(this, storageMode)) {
-      throw new Error("Risorse rendering glaze non pronte all'inizio della pennellata.");
+      throw new Error("Glaze rendering resources are not ready when the stroke starts.");
     }
     this.stabilizationSnapshotRect = null;
     this.lightGlazeSession = {
@@ -9398,7 +9398,7 @@ export class BrushEngine {
       const result = stroke.blendPlanner?.pushSample(blendPoint);
       if (result && !result.accepted) {
         throw new Error(
-          `Coda Blend dry piena: servono ${result.requiredSteps} segmenti.`,
+          `Dry Blend queue is full: ${result.requiredSteps} segments are required.`,
         );
       }
       stroke.lastInput = normalizedPoint;
@@ -9443,7 +9443,7 @@ export class BrushEngine {
       normalizedPoint.y,
     );
     if (!curveSegment) {
-      throw new Error("Planner curva Paint non disponibile.");
+      throw new Error("The Paint curve planner is unavailable.");
     }
     if (this.activeStrokeProfile) {
       this.activeStrokeProfile.strokeCurveInputSegments += 1;
@@ -9555,7 +9555,7 @@ export class BrushEngine {
       pointY,
     );
     if (!curveSegment) {
-      throw new Error("Planner curva Paint non disponibile per la stabilizzazione.");
+      throw new Error("The Paint curve planner is unavailable for stabilization.");
     }
     if (this.activeStrokeProfile) {
       this.activeStrokeProfile.strokeCurveInputSegments += 1;
@@ -9647,7 +9647,7 @@ export class BrushEngine {
         continue;
       }
       if (stampCount >= MAX_STAMPS_PER_BATCH) {
-        throw new Error("Coda stabilizzazione oltre il buffer massimo di stamp.");
+        throw new Error("The stabilization queue exceeds the maximum stamp buffer.");
       }
       const target = this.stabilizationPreviewStamp(stampCount);
       target.x = candidate.stamp.x;
@@ -9663,7 +9663,7 @@ export class BrushEngine {
 
     const planner = this.stabilizationPreviewCurvePlanner;
     if (!stroke.curvePlanner) {
-      throw new Error("Planner curva autorevole mancante nella stabilizzazione.");
+      throw new Error("The authoritative curve planner is missing during stabilization.");
     }
     planner.copyStateFrom(stroke.curvePlanner);
     let distanceSinceStamp = stroke.distanceSinceStamp;
@@ -9717,7 +9717,7 @@ export class BrushEngine {
         return;
       }
       if (stampCount >= MAX_STAMPS_PER_BATCH) {
-        throw new Error("Coda stabilizzazione oltre il buffer massimo di stamp.");
+        throw new Error("The stabilization queue exceeds the maximum stamp buffer.");
       }
       const stamp = this.stabilizationPreviewStamp(stampCount);
       stamp.x = pointX;
@@ -10329,23 +10329,23 @@ export class BrushEngine {
     const actionId = batch[0].historyActionId;
     if (batch.at(-1)?.historyActionId !== actionId) {
       if (capturedSlice) this.historyGpuStorage.release(capturedSlice);
-      throw new Error("Un batch Paint storico contiene più pennellate.");
+      throw new Error("A historical Paint batch contains multiple strokes.");
     }
     if (!capturedSlice) {
-      throw new Error("Payload GPU della cronologia Paint mancante.");
+      throw new Error("The Paint history GPU payload is missing.");
     }
     const expectedBytes = batch.length * STAMP_STRIDE_BYTES;
     if (capturedSlice.logicalBytes !== expectedBytes) {
       this.historyGpuStorage.release(capturedSlice);
       throw new Error(
-        `Payload GPU Paint ${capturedSlice.logicalBytes} B, attesi ${expectedBytes} B.`,
+        `Paint GPU payload is ${capturedSlice.logicalBytes} B; expected ${expectedBytes} B.`,
       );
     }
 
     const selectionMask = this.selectionHistoryMasksByAction.get(actionId) ?? null;
     if (this.pixelSelectionState.selectedPixels > 0 && !selectionMask) {
       this.historyGpuStorage.release(capturedSlice);
-      throw new Error("Maschera storica Paint non acquisita prima del rendering.");
+      throw new Error("The historical Paint mask was not acquired before rendering.");
     }
 
     const historyBatch = {
@@ -10411,23 +10411,23 @@ export class BrushEngine {
     baselines: ReadonlyMap<number, RestoredProjectHistoryBaseline>,
   ): void {
     if (this.historyActions.length !== 0 || this.historyCursor !== 0) {
-      throw new Error("La baseline progetto richiede una cronologia appena azzerata.");
+      throw new Error("The project baseline requires freshly reset history.");
     }
     this.restoredProjectHistoryBaselines.clear();
     for (const [layerId, baseline] of baselines) {
       const record = this.layerStack.byId(layerId);
-      if (!record) throw new Error(`Baseline progetto per livello ${layerId} inesistente.`);
+      if (!record) throw new Error(`No project baseline exists for layer ${layerId}.`);
       if (baseline.baseTileMask.length !== record.storageTileMask.length) {
-        throw new Error(`Maschera baseline progetto non valida per il livello ${layerId}.`);
+        throw new Error(`The project baseline mask is invalid for layer ${layerId}.`);
       }
       if (
         record.hasContent !== Boolean(baseline.baseBounds)
         || record.hasContent !== Boolean(baseline.compressed)
       ) {
-        throw new Error(`Contenuto baseline progetto incoerente per il livello ${layerId}.`);
+        throw new Error(`Project baseline content is inconsistent for layer ${layerId}.`);
       }
       if (baseline.compressed && baseline.compressed.format !== this.layerFormat) {
-        throw new Error(`Formato baseline progetto incompatibile per il livello ${layerId}.`);
+        throw new Error(`The project baseline format is incompatible with layer ${layerId}.`);
       }
       this.restoredProjectHistoryBaselines.set(layerId, {
         compressed: baseline.compressed,
@@ -10609,10 +10609,10 @@ export class BrushEngine {
 
   injectHistoryReplayFault(...faultPoints: HistoryReplayFaultPoint[]): void {
     if (!import.meta.env.DEV) {
-      throw new Error("Iniezione di guasti disponibile solo in modalità dev.");
+      throw new Error("Fault injection is available only in dev mode.");
     }
     if (faultPoints.length === 0) {
-      throw new Error("Specifica almeno un punto di guasto della cronologia.");
+      throw new Error("Specify at least one history fault point.");
     }
     this.historyReplayFaultQueue = [...faultPoints];
   }
@@ -11468,12 +11468,12 @@ export class BrushEngine {
     }
     const actionId = stamps[0].historyActionId;
     if (stamps.at(-1)?.historyActionId !== actionId) {
-      throw new Error("Un submit Paint live contiene più pennellate.");
+      throw new Error("A live Paint submission contains multiple strokes.");
     }
     const byteLength = stamps.length * STAMP_STRIDE_BYTES;
     const slice = this.historyGpuStorage.allocate(
       byteLength,
-      `${label} · azione ${actionId} · ${stamps.length} stamp`,
+      `${label} · action ${actionId} · ${stamps.length} stamps`,
     );
     try {
       encoder.copyBufferToBuffer(
@@ -11498,7 +11498,7 @@ export class BrushEngine {
     const slice = this.historyGpuStorage.allocate(byteLength, label);
     try {
       const encoder = this.device.createCommandEncoder({
-        label: "Cattura GPU cronologia benchmark",
+        label: "Benchmark history GPU capture",
       });
       encoder.copyBufferToBuffer(
         this.instanceBuffer,
@@ -11528,24 +11528,24 @@ export class BrushEngine {
     const session = this.lightGlazeSession;
     const stampCount = resolvePaintHistoryStampCount(stamps, replayBatch);
     if (!session || !isStrokeGlazeBlendMode(session.settings.blendMode)) {
-      throw new Error("Sessione Light Glaze mancante durante il rendering.");
+      throw new Error("The Light Glaze session is missing during rendering.");
     }
     const expectedShapeIdentity = settings.shape === "shape" ? this.shapeMaskIdentity : null;
     if (replayBatch && replayBatch.shapeMaskIdentity !== expectedShapeIdentity) {
-      throw new Error("La Shape usata dalla cronologia non corrisponde alla risorsa corrente.");
+      throw new Error("The Shape used by history does not match the current resource.");
     }
     const expectedGrainIdentity = isTexturizedGrainActive(settings)
       ? this.grainTextureIdentity
       : null;
     if (replayBatch && replayBatch.grainTextureIdentity !== expectedGrainIdentity) {
-      throw new Error("Il Grain usato dalla cronologia non corrisponde alla risorsa corrente.");
+      throw new Error("The Grain used by history does not match the current resource.");
     }
     const storageMode = lightGlazeStorageModeFor(settings.blendMode);
     if (storageMode === "none") {
-      throw new Error("Modalita storage glaze non valida durante il rendering.");
+      throw new Error("Invalid glaze storage mode during rendering.");
     }
     if (!lightGlazeResourcesMatch(this, storageMode)) {
-      throw new Error("Risorse rendering glaze mancanti durante il rendering.");
+      throw new Error("Glaze rendering resources are missing during rendering.");
     }
     const grainActive = isTexturizedGrainActive(settings);
     const lightNoBuildUp = settings.blendMode === "light-glaze"
@@ -11590,7 +11590,7 @@ export class BrushEngine {
       }
     }
     if (stabilizationRestoreRect && !stabilizationRestoreTexture) {
-      throw new Error("Snapshot della coda stabilizzata mancante.");
+      throw new Error("The stabilized queue snapshot is missing.");
     }
 
     const cpuStart = performance.now();
@@ -11605,7 +11605,7 @@ export class BrushEngine {
     // Uniformed also applies Opacity once to its completed gesture.
     // Intense applies it to every physical deposit: overlapping stamps then
     // converge by ordinary premultiplied source-over, exactly like the
-    // measured Procreate spacing/jitter fixtures.
+    // measured spacing/jitter fixtures.
     this.writeBrushUniforms({
       ...settings,
       opacity: intenseBlending ? settings.opacity : 1,
@@ -11882,7 +11882,7 @@ export class BrushEngine {
     liveDirtyRect = mergeDirtyRects(liveDirtyRect, submittedDirtyRect);
     if (stabilizationFrame) {
       if (!this.stabilizationSnapshotTexture) {
-        throw new Error("Allocazione snapshot della stabilizzazione mancante.");
+        throw new Error("The stabilization snapshot allocation is missing.");
       }
       encoder.copyTextureToTexture(
         {
@@ -12141,7 +12141,7 @@ export class BrushEngine {
             || !this.lightGlazeCommitTileView
             || !this.lightGlazeCommitTileBindGroup
           ) {
-            throw new Error("Scratch tile Intense Blending non disponibile al commit.");
+            throw new Error("The Intense Blending scratch tile is unavailable at commit time.");
           }
           const tileUniformUpload = new Uint32Array(
             LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BUFFER_BYTES / Uint32Array.BYTES_PER_ELEMENT,
@@ -12160,7 +12160,7 @@ export class BrushEngine {
               tileX += LIGHT_GLAZE_COMMIT_TILE_EXTENT
             ) {
               if (tileIndex >= LIGHT_GLAZE_COMMIT_TILE_SLOT_COUNT) {
-                throw new Error("Numero di tile Intense Blending oltre il limite del documento.");
+                throw new Error("The Intense Blending tile count exceeds the document limit.");
               }
               const tileWidth = Math.min(
                 LIGHT_GLAZE_COMMIT_TILE_EXTENT,
@@ -12539,20 +12539,20 @@ export class BrushEngine {
   ): SubmitTiming {
     const renderer = this.blendRenderer;
     if (!renderer) {
-      throw new Error("Renderer WebGPU Blend dry non inizializzato.");
+      throw new Error("The WebGPU Dry Blend renderer is not initialized.");
     }
     if (replayBatch && replayBatch.actionId !== historyActionId) {
-      throw new Error("Azione Blend GPU non coerente con il batch storico.");
+      throw new Error("The GPU Blend action is inconsistent with the historical batch.");
     }
     const expectedShapeIdentity = settings.shape === "shape" ? this.shapeMaskIdentity : null;
     if (replayBatch && replayBatch.shapeMaskIdentity !== expectedShapeIdentity) {
-      throw new Error("La Shape Blend usata dalla cronologia non corrisponde alla risorsa corrente.");
+      throw new Error("The Blend Shape used by history does not match the current resource.");
     }
     const expectedGrainIdentity = isTexturizedGrainActive(settings)
       ? this.grainTextureIdentity
       : null;
     if (replayBatch && replayBatch.grainTextureIdentity !== expectedGrainIdentity) {
-      throw new Error("Il Grain Blend usato dalla cronologia non corrisponde alla risorsa corrente.");
+      throw new Error("The Blend Grain used by history does not match the current resource.");
     }
 
     const historyBytes = renderer.historyUniformBytes(batches);
@@ -12568,13 +12568,13 @@ export class BrushEngine {
     if (replayBatch) {
       if (replayBatch.gpuSlice.logicalBytes !== historyBytes) {
         throw new Error(
-          `Payload GPU Blend ${replayBatch.gpuSlice.logicalBytes} B, attesi ${historyBytes} B.`,
+        `Blend GPU payload is ${replayBatch.gpuSlice.logicalBytes} B; expected ${historyBytes} B.`,
         );
       }
     } else if (historyActionId !== 0 && historyBytes > 0) {
       historyGpuSlice = this.historyGpuStorage.allocate(
         historyBytes,
-        `Blend dry · azione ${historyActionId} · ${batches.length} batch`,
+        `Dry Blend · action ${historyActionId} · ${batches.length} batches`,
       );
     }
 
@@ -12644,7 +12644,7 @@ export class BrushEngine {
         }
       }
       if (historyByteOffset !== historyBytes) {
-        throw new Error("Offset del payload storico Blend non coerente.");
+        throw new Error("The historical Blend payload offset is inconsistent.");
       }
       if (clearLayer) {
         this.presentationCacheNeedsFullRebuild = true;
@@ -12698,7 +12698,7 @@ export class BrushEngine {
           ? [replayBatch.actionId]
           : [...new Set(stamps.map((stamp) => stamp.historyActionId))];
         throw new Error(
-          `Stamp Light Glaze senza sessione per-stroke: mode=${settings.blendMode}; `
+          `Light Glaze stamp without a per-stroke session: mode=${settings.blendMode}; `
           + `batch=${actionIds.join(",")}; active=${this.activeStroke?.historyActionId ?? "none"}.`,
         );
       }
@@ -12754,13 +12754,13 @@ export class BrushEngine {
 
     const expectedShapeIdentity = settings.shape === "shape" ? this.shapeMaskIdentity : null;
     if (replayBatch && replayBatch.shapeMaskIdentity !== expectedShapeIdentity) {
-      throw new Error("La Shape usata dalla cronologia non corrisponde alla risorsa corrente.");
+      throw new Error("The Shape used by history does not match the current resource.");
     }
     const expectedGrainIdentity = isTexturizedGrainActive(settings)
       ? this.grainTextureIdentity
       : null;
     if (replayBatch && replayBatch.grainTextureIdentity !== expectedGrainIdentity) {
-      throw new Error("Il Grain usato dalla cronologia non corrisponde alla risorsa corrente.");
+      throw new Error("The Grain used by history does not match the current resource.");
     }
 
     if (clearLayer || stampCount > 0) {
@@ -13308,7 +13308,7 @@ export class BrushEngine {
     try {
       this.callbacks.onStats?.(getStats(this));
     } catch (error) {
-      console.error("Observer statistiche ignorato per preservare la transazione:", error);
+      console.error("Stats observer ignored to preserve the transaction:", error);
     }
   }
 
@@ -13316,7 +13316,7 @@ export class BrushEngine {
     try {
       this.callbacks.onHistoryChange?.(this.getHistoryState());
     } catch (error) {
-      console.error("Observer cronologia ignorato per preservare la transazione:", error);
+      console.error("History observer ignored to preserve the transaction:", error);
     }
     if (this.initialized && !this.historyStateInconsistent) {
       scheduleHistoryMaintenance(this);
@@ -13327,7 +13327,7 @@ export class BrushEngine {
     try {
       this.callbacks.onActiveLayerChange?.(this.layerStack.activeIndex);
     } catch (error) {
-      console.error("Observer livello attivo ignorato per preservare la transazione:", error);
+      console.error("Active-layer observer ignored to preserve the transaction:", error);
     }
   }
 
@@ -13335,7 +13335,7 @@ export class BrushEngine {
     try {
       this.callbacks.onStatus?.(message, kind);
     } catch (error) {
-      console.error("Observer stato ignorato per preservare la transazione:", error);
+      console.error("Status observer ignored to preserve the transaction:", error);
     }
   }
 

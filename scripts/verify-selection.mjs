@@ -329,7 +329,7 @@ assert(fillShader.includes("export const fillSelectionIntersectionShader"));
 assert(fillShader.includes("fillMask[global.x] = fillMask[global.x] & selectionMask[global.x]"));
 assert(fillRenderer.includes("if (!selectionMask) {"));
 assert(fillRenderer.includes("this.selectionIntersectionPipeline"));
-assert(fillRenderer.includes("Il Riempimento non interseca la Selezione pixel attiva."));
+assert(fillRenderer.includes("The fill area does not intersect the active Pixel Selection."));
 assert(fillRuntime.includes("engine.selectionRenderer?.maskBuffer ?? null"));
 assert.match(fillRuntime, /linearColor,\s+selectionMask,/);
 assert(runtime.includes("fillRenderer.getAnalyzedSelectionMaskBuffer()"));
@@ -376,8 +376,8 @@ assert.match(
   brushEngine,
   /if \(this\.pixelSelectionState\.selectedPixels > 0\) \{\s+this\.adaptivePreviewCandidates\.length = 0/,
 );
-assert(brushEngine.includes("Blend non modifica una Selezione pixel"));
-assert(brushEngine.includes("Pulisci agisce sul livello intero: deseleziona prima"));
+assert(brushEngine.includes("Blend does not modify a pixel selection"));
+assert(brushEngine.includes("Clear affects the entire layer. Deselect first"));
 assert(labOperations.includes("Deseleziona i pixel prima del benchmark Paint canonico."));
 assert(humanLab.includes("Deseleziona i pixel prima di riprodurre il tratto canonico."));
 

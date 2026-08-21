@@ -61,17 +61,17 @@ function setAuthoritativeMetadata(
 export async function rasterizeActiveRasterLayer(
   engine: BrushEngine,
 ): Promise<RasterizeActiveRasterLayerResult | null> {
-  if (!engine.initialized) throw new Error("Il motore non è ancora inizializzato.");
+  if (!engine.initialized) throw new Error("The engine has not been initialized yet.");
   engine.assertDestructiveRasterEditCanOpen("rasterize");
   engine.assertLayerSwitchAllowed();
   const selected = engine.mixedSceneStack?.selected;
   const record = engine.layerStack.active;
   if (!selected || selected.kind !== "raster" || selected.rasterLayerId !== record.id) {
-    throw new Error("Seleziona un livello raster prima di rasterizzarlo.");
+    throw new Error("Select a raster layer before rasterizing it.");
   }
   engine.persistActiveLayerState();
   if (!record.hasContent || !record.contentBounds) {
-    throw new Error("Il livello raster selezionato è vuoto.");
+    throw new Error("The selected raster layer is empty.");
   }
 
   const effectsBefore = copyRasterLayerEffects(record);
@@ -87,7 +87,7 @@ export async function rasterizeActiveRasterLayer(
   const actionId = engine.nextHistoryActionId;
   const gpu = engine.requireLayerGpu(record.id);
   const hot = gpu.hot;
-  if (!hot) throw new Error("Texture hot del livello da rasterizzare mancante.");
+  if (!hot) throw new Error("The hot texture for the layer to rasterize is missing.");
 
   engine.cancelLayerColdCompressionIdle();
   engine.historyBusy = true;
@@ -145,7 +145,7 @@ export async function rasterizeActiveRasterLayer(
         },
       );
       engine.device.queue.submit([encoder.finish()]);
-      await engine.waitForGpuCapped(`Rasterizzazione effetti livello ${record.id}`, 60_000);
+      await engine.waitForGpuCapped(`Rasterize layer ${record.id} effects`, 60_000);
       pixelsWereReplaced = true;
     }
 
@@ -204,7 +204,7 @@ export async function rasterizeActiveRasterLayer(
     engine.displayDirty = true;
     engine.requestRender();
     engine.publishStatus(
-      `${record.name} rasterizzato: effetti incorporati nei pixel; blend mode e opacità preservati.`,
+      `${record.name} rasterized: effects baked into the pixels; blend mode and opacity preserved.`,
       "ok",
     );
     return {
@@ -224,7 +224,7 @@ export async function rasterizeActiveRasterLayer(
         applyRasterLayerEffects(record, effectsBefore);
         if (pixelsWereReplaced) {
           if (!beforeSeed) {
-            throw new Error("Checkpoint pre-Rasterize mancante durante il rollback.");
+            throw new Error("The pre-rasterization checkpoint is missing during rollback.");
           }
           await rebuildActiveLayerFromHistory(engine, {
             layerId: record.id,
@@ -244,7 +244,7 @@ export async function rasterizeActiveRasterLayer(
       } catch (caught) {
         rollbackError = caught;
         engine.latchDocumentStateInconsistent(
-          "Rasterizzazione livello fallita e ripristino incompleto: ricarica la pagina.",
+          "Layer rasterization failed and recovery was incomplete: reload the page.",
         );
       }
       destroyLayerColdStorage(seed);
@@ -256,7 +256,7 @@ export async function rasterizeActiveRasterLayer(
         ? rollbackError.message
         : String(rollbackError);
       throw new Error(
-        `Rasterizzazione livello fallita: ${operationMessage}; ripristino fallito: ${rollbackMessage}`,
+        `Layer rasterization failed: ${operationMessage}; recovery failed: ${rollbackMessage}`,
       );
     }
     throw error;

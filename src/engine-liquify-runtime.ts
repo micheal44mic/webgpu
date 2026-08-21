@@ -599,12 +599,12 @@ function startPreviewSubmission(
   const completion = Promise.resolve().then(async () => {
     try {
       const dirty = encodePreviewBatch(engine, session);
-      if (dirty) await engine.waitForGpuCapped("Anteprima Liquify", 60_000);
+      if (dirty) await engine.waitForGpuCapped("Liquify preview", 60_000);
     } catch (error) {
       session.previewFault = errorFrom(error);
       if (engine.activeRasterLiquifySession === session) {
         engine.publishStatus(
-          `Anteprima Liquify interrotta: ${session.previewFault.message}. Usa Annulla.`,
+          `Liquify preview interrupted: ${session.previewFault.message}. Use Cancel.`,
           "error",
         );
         engine.publishHistoryState();
@@ -909,7 +909,7 @@ async function restoreOriginalPixels(
     }
   }
   setAuthoritativeMetadata(engine, session.sourceBounds, session.sourceTileMask);
-  await engine.waitForGpuCapped("Ripristino Liquify", 60_000);
+  await engine.waitForGpuCapped("Restore Liquify", 60_000);
   if (presentationError) throw presentationError;
   session.mutationBounds = null;
   session.resultBounds = { ...session.sourceBounds };
@@ -949,8 +949,8 @@ function reserveSessionMemory(engine: BrushEngine, memoryBytes: number): MemoryR
     const availableMiB = Math.max(0, decision.ceilingBytes - decision.usedBytes)
       / (1024 * 1024);
     throw new Error(
-      `Memoria insufficiente per Liquify: ${requiredMiB.toFixed(1)} MiB richiesti, `
-      + `${availableMiB.toFixed(1)} MiB disponibili.`,
+      `Insufficient memory for Liquify: ${requiredMiB.toFixed(1)} MiB required, `
+      + `${availableMiB.toFixed(1)} MiB available.`,
     );
   }
   return engine.memoryReservations.reserve(request);
@@ -960,27 +960,27 @@ export async function beginRasterLiquify(
   engine: BrushEngine,
   initial: Partial<LiquifySettings> = DEFAULT_LIQUIFY_SETTINGS,
 ): Promise<RasterLiquifySnapshot | null> {
-  if (!engine.initialized) throw new Error("Il motore non è ancora inizializzato.");
+  if (!engine.initialized) throw new Error("The engine has not been initialized yet.");
   if (engine.activeRasterLiquifySession) return snapshot(engine.activeRasterLiquifySession);
   engine.assertDestructiveRasterEditCanOpen("liquify");
   const selected = engine.mixedSceneStack?.selected;
   if (selected?.kind !== "raster") return null;
   const record = engine.layerStack.active;
   if (selected.rasterLayerId !== record.id) {
-    throw new Error("Il raster selezionato non coincide con il livello attivo.");
+    throw new Error("The selected raster does not match the active layer.");
   }
   if (engine.pixelSelectionState.selectedPixels > 0) {
     throw new Error(
-      "Liquify lavora sull’intero livello: deseleziona i pixel prima di aprirlo.",
+      "Liquify works on the entire layer: deselect the pixels before opening it.",
     );
   }
   engine.assertLayerSwitchAllowed();
   engine.persistActiveLayerState();
   if (!record.hasContent || !record.contentBounds) {
-    throw new Error("Il livello raster selezionato è vuoto.");
+    throw new Error("The selected raster layer is empty.");
   }
   if (engine.layerFormat !== "rgba16float") {
-    throw new Error("Liquify distruttivo richiede un documento RGBA16F.");
+    throw new Error("Destructive Liquify requires an RGBA16F document.");
   }
 
   engine.cancelLayerColdCompressionIdle();
@@ -991,7 +991,7 @@ export async function beginRasterLiquify(
   try {
     await engine.waitForIdle();
     const hot = engine.requireLayerGpu(record.id).hot;
-    if (!hot) throw new Error("Texture hot del raster per Liquify mancante.");
+    if (!hot) throw new Error("The raster's hot texture for Liquify is missing.");
     const sourceBounds = { ...record.contentBounds };
     const sourceScratchBounds = expandedSourceBounds(
       sourceBounds,
@@ -1015,7 +1015,7 @@ export async function beginRasterLiquify(
     const maximumDispatch = Number(engine.device.limits.maxComputeWorkgroupsPerDimension);
     const scratchWorkgroups = Math.ceil(scratchExtent / LIQUIFY_WORKGROUP_SIZE);
     if (Number.isFinite(maximumDispatch) && scratchWorkgroups > maximumDispatch) {
-      throw new Error("Liquify: dimensione dispatch non supportata dalla GPU.");
+      throw new Error("Liquify: the GPU does not support the required dispatch size.");
     }
     const memoryBytes = (
       sourceScratchBounds.width * sourceScratchBounds.height
@@ -1026,7 +1026,7 @@ export async function beginRasterLiquify(
 
     const session = await runGpuAllocationTransaction(
       engine.device,
-      `Allocazione Native raster Liquify layer ${record.id}`,
+      `Allocate Native raster Liquify layer ${record.id}`,
       async (transaction) => {
         const sourceTexture = engine.device.createTexture({
           label: `Native raster Liquify immutable source layer ${record.id}`,
@@ -1167,7 +1167,7 @@ export async function beginRasterLiquify(
         );
         clearDisplacementPass(encoder, created);
         engine.device.queue.submit([encoder.finish()]);
-        await engine.waitForGpuCapped("Preparazione Liquify", 60_000);
+        await engine.waitForGpuCapped("Prepare Liquify", 60_000);
         return created;
       },
     );
@@ -1178,7 +1178,7 @@ export async function beginRasterLiquify(
     engine.publishHistoryState();
     engine.publishStats();
     engine.publishStatus(
-      "Liquify pronto: trascina sul canvas, poi usa Applica o Annulla.",
+      "Liquify ready: drag on the canvas, then use Apply or Cancel.",
       "ok",
     );
     return snapshot(session);
@@ -1199,13 +1199,13 @@ export function updateRasterLiquifySettings(
   update: Partial<LiquifySettings>,
 ): RasterLiquifySnapshot {
   const session = engine.activeRasterLiquifySession;
-  if (!session) throw new Error("Nessuna sessione Liquify aperta.");
-  if (session.terminal) throw new Error("Liquify sta già terminando.");
+  if (!session) throw new Error("No Liquify session is open.");
+  if (session.terminal) throw new Error("Liquify is already finishing.");
   if (engine.historyStateInconsistent) {
-    throw new Error("Documento bloccato: è consentito soltanto ritentare Annulla.");
+    throw new Error("The document is locked: only retrying Cancel is allowed.");
   }
   if (session.previewFault) {
-    throw new Error(`Anteprima Liquify interrotta: ${session.previewFault.message}. Usa Annulla.`);
+    throw new Error(`Liquify preview interrupted: ${session.previewFault.message}. Use Cancel.`);
   }
   if (session.stroke) endRasterLiquifyStroke(engine, false);
   cancelMomentum(session);
@@ -1219,10 +1219,10 @@ export function setRasterLiquifyAmount(
   amount: number,
 ): RasterLiquifySnapshot {
   const session = engine.activeRasterLiquifySession;
-  if (!session) throw new Error("Nessuna sessione Liquify aperta.");
-  if (session.terminal) throw new Error("Liquify sta già terminando.");
+  if (!session) throw new Error("No Liquify session is open.");
+  if (session.terminal) throw new Error("Liquify is already finishing.");
   if (session.previewFault) {
-    throw new Error(`Anteprima Liquify interrotta: ${session.previewFault.message}. Usa Annulla.`);
+    throw new Error(`Liquify preview interrupted: ${session.previewFault.message}. Use Cancel.`);
   }
   const normalized = Math.min(1, Math.max(0, Number.isFinite(amount) ? amount : 1));
   if (normalized === session.amount) return snapshot(session);
@@ -1403,7 +1403,7 @@ export function endRasterLiquifyStroke(
 export async function resetRasterLiquify(engine: BrushEngine): Promise<boolean> {
   const session = engine.activeRasterLiquifySession;
   if (!session) return false;
-  if (session.terminal) throw new Error("Liquify sta già terminando.");
+  if (session.terminal) throw new Error("Liquify is already finishing.");
   session.terminal = true;
   engine.historyBusy = true;
   engine.publishHistoryState();
@@ -1412,21 +1412,21 @@ export async function resetRasterLiquify(engine: BrushEngine): Promise<boolean> 
   } catch (error) {
     session.terminal = false;
     engine.latchDocumentStateInconsistent(
-      "Reset Liquify fallito: usa Annulla; se il ripristino fallisce, ricarica la pagina.",
+      "Liquify reset failed: use Cancel; if recovery fails, reload the page.",
     );
     throw error;
   }
   session.terminal = false;
   engine.historyBusy = false;
   engine.publishHistoryState();
-  engine.publishStatus("Liquify ripristinato senza chiudere lo strumento.", "ok");
+  engine.publishStatus("Liquify reset without closing the tool.", "ok");
   return true;
 }
 
 export async function cancelRasterLiquify(engine: BrushEngine): Promise<boolean> {
   const session = engine.activeRasterLiquifySession;
   if (!session) return false;
-  if (session.terminal) throw new Error("Liquify sta già terminando.");
+  if (session.terminal) throw new Error("Liquify is already finishing.");
   session.terminal = true;
   engine.historyBusy = true;
   engine.publishHistoryState();
@@ -1435,7 +1435,7 @@ export async function cancelRasterLiquify(engine: BrushEngine): Promise<boolean>
   } catch (error) {
     session.terminal = false;
     engine.latchDocumentStateInconsistent(
-      "Annullamento Liquify fallito: ricarica la pagina.",
+      "Liquify cancellation failed: reload the page.",
     );
     engine.publishStats();
     throw error;
@@ -1447,7 +1447,7 @@ export async function cancelRasterLiquify(engine: BrushEngine): Promise<boolean>
   engine.publishStats();
   publishMixedScene(engine);
   engine.scheduleLayerColdCompression();
-  engine.publishStatus("Liquify annullato: i pixel originali sono stati ripristinati.", "ok");
+  engine.publishStatus("Liquify canceled: the original pixels were restored.", "ok");
   return true;
 }
 
@@ -1455,12 +1455,12 @@ export async function commitRasterLiquify(engine: BrushEngine): Promise<boolean>
   const session = engine.activeRasterLiquifySession;
   if (!session) return false;
   if (engine.historyStateInconsistent) {
-    throw new Error("Documento bloccato: è consentito soltanto ritentare Annulla.");
+    throw new Error("The document is locked: only retrying Cancel is allowed.");
   }
   if (session.previewFault) {
-    throw new Error(`Anteprima Liquify interrotta: ${session.previewFault.message}. Usa Annulla.`);
+    throw new Error(`Liquify preview interrupted: ${session.previewFault.message}. Use Cancel.`);
   }
-  if (session.terminal) throw new Error("Liquify sta già terminando.");
+  if (session.terminal) throw new Error("Liquify is already finishing.");
   cancelMomentum(session);
   if (session.stroke) endRasterLiquifyStroke(engine, false);
   if (
@@ -1482,7 +1482,7 @@ export async function commitRasterLiquify(engine: BrushEngine): Promise<boolean>
     session.terminal = true;
     const record = engine.layerStack.active;
     const hot = engine.requireLayerGpu(session.layerId).hot;
-    if (!hot) throw new Error("Texture hot del raster Liquify mancante.");
+    if (!hot) throw new Error("The Liquify raster's hot texture is missing.");
     seed = await createLayerColdStorageCandidate(
       engine,
       record,
@@ -1523,15 +1523,15 @@ export async function commitRasterLiquify(engine: BrushEngine): Promise<boolean>
       retainSessionForRecovery = true;
       session.terminal = false;
       engine.latchDocumentStateInconsistent(
-        "Commit Liquify fallito e rollback incompleto: ricarica la pagina.",
+        "Liquify commit failed and rollback was incomplete: reload the page.",
       );
     } finally {
       if (!journalPublished) destroyLayerColdStorage(seed);
     }
     if (rollbackError) {
       throw new Error(
-        `Commit Liquify fallito: ${errorFrom(error).message}; `
-        + `rollback fallito: ${errorFrom(rollbackError).message}`,
+        `Liquify commit failed: ${errorFrom(error).message}; `
+        + `rollback failed: ${errorFrom(rollbackError).message}`,
       );
     }
     throw error;
@@ -1547,7 +1547,7 @@ export async function commitRasterLiquify(engine: BrushEngine): Promise<boolean>
     publishMixedScene(engine);
   }
   engine.publishStatus(
-    `Liquify applicato · ${session.strokeCount} gesti · un solo Undo.`,
+    `Liquify applied · ${session.strokeCount} gestures · one Undo step.`,
     "ok",
   );
   return true;

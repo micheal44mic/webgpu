@@ -224,7 +224,7 @@ export function planHistoryStorageSegment(options: {
   const target = positiveInteger(options.targetSegmentBytes, "targetSegmentBytes");
   const maximum = positiveInteger(options.maximumSegmentBytes, "maximumSegmentBytes");
   if (target > maximum) {
-    throw new RangeError("Il target del segmento non può superare il massimo.");
+    throw new RangeError("The segment target cannot exceed the maximum.");
   }
   const keepHot = Math.max(0, Math.trunc(options.keepHotActions ?? HISTORY_STORAGE_KEEP_HOT_ACTIONS));
   const coldCeiling = Math.max(0, Math.trunc(options.journalLength) - keepHot);
@@ -376,7 +376,7 @@ function finiteNonNegative(value: number): number {
 
 function positiveInteger(value: number, label: string): number {
   if (!Number.isInteger(value) || value <= 0) {
-    throw new RangeError(`${label} deve essere un intero positivo.`);
+    throw new RangeError(`${label} must be a positive integer.`);
   }
   return value;
 }

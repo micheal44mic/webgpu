@@ -1687,7 +1687,7 @@ async function assertShaderModules(
       .map((message) => `${label}:${message.lineNum}:${message.linePos} ${message.message}`),
   );
   if (errors.length > 0) {
-    throw new Error(`Shader Traccia WGSL non valido:\n${errors.join("\n")}`);
+    throw new Error(`Invalid Stroke WGSL shader:\n${errors.join("\n")}`);
   }
 }
 
@@ -1826,7 +1826,7 @@ export class RasterStrokeRenderer {
       this.bevelBoundingFieldTestMutation !== "none"
       && !this.bevelBoundingFieldEnabled
     ) {
-      throw new Error("Le mutazioni golden del campo Smusso richiedono il percorso bbox.");
+      throw new Error("Golden Bevel field mutations require the bbox path.");
     }
     this.bevelUniformBytes = this.bevelBoundingFieldEnabled
       ? BEVEL_BOUNDING_FIELD_UNIFORM_BYTES
@@ -1851,35 +1851,35 @@ export class RasterStrokeRenderer {
     this.updateScratchRequirement();
     const parameterBufferBytes = PARAMETER_CAPACITY * PARAMETER_STRIDE;
     this.parameterBuffer = this.device.createBuffer({
-      label: "Traccia dynamic dispatch parameters",
+      label: "Stroke dynamic dispatch parameters",
       size: parameterBufferBytes,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     const bakeParameterBufferBytes = BAKE_PARAMETER_CAPACITY * PARAMETER_STRIDE;
     this.bakeParameterBuffer = this.device.createBuffer({
-      label: "Traccia isolated tile-bake parameters",
+      label: "Stroke isolated tile-bake parameters",
       size: bakeParameterBufferBytes,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     this.displayParameterBuffers = {
       0: this.device.createBuffer({
-        label: "Traccia direct LOD 0 permanent display parameters",
+        label: "Stroke direct LOD 0 permanent display parameters",
         size: DISPLAY_PARAMETER_BYTES,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       }),
       1: this.device.createBuffer({
-        label: "Traccia direct LOD 0 Light Glaze display parameters",
+        label: "Stroke direct LOD 0 Light Glaze display parameters",
         size: DISPLAY_PARAMETER_BYTES,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       }),
       2: this.device.createBuffer({
-        label: "Traccia direct LOD 0 thickness tail display parameters",
+        label: "Stroke direct LOD 0 thickness tail display parameters",
         size: DISPLAY_PARAMETER_BYTES,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       }),
     };
     this.bevelUniformBuffer = this.device.createBuffer({
-      label: "Style stack Smusso/Rilievo composition parameters",
+      label: "Style stack Bevel/Emboss composition parameters",
       size: this.bevelUniformBytes,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
@@ -1898,17 +1898,17 @@ export class RasterStrokeRenderer {
     this.fullChangeStateMemoryBytes = changeStateBytes;
     this.fullIndirectArgumentsMemoryBytes = indirectArgumentsBytes;
     this.coveragePlaceholderBuffer = this.device.createBuffer({
-      label: "Traccia disabled coverage placeholder",
+      label: "Stroke disabled coverage placeholder",
       size: 4,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     this.thresholdMaskPlaceholderBuffer = this.device.createBuffer({
-      label: "Traccia disabled threshold-mask placeholder",
+      label: "Stroke disabled threshold-mask placeholder",
       size: 4,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     this.changeStatePlaceholderBuffer = this.device.createBuffer({
-      label: "Traccia disabled change-state placeholder",
+      label: "Stroke disabled change-state placeholder",
       size: 4,
       usage:
         GPUBufferUsage.STORAGE
@@ -1916,7 +1916,7 @@ export class RasterStrokeRenderer {
         | (this.readbackEnabled ? GPUBufferUsage.COPY_SRC : 0),
     });
     this.indirectArgumentsPlaceholderBuffer = this.device.createBuffer({
-      label: "Traccia disabled indirect-arguments placeholder",
+      label: "Stroke disabled indirect-arguments placeholder",
       size: INDIRECT_ARGUMENT_BYTES,
       usage:
         GPUBufferUsage.STORAGE
@@ -1931,7 +1931,7 @@ export class RasterStrokeRenderer {
     const coarseHeight = Math.max(1, this.documentHeight >> 1);
     const coarseMipLevelCount = mipLevelCount - 1;
     this.coarseStyledTexture = this.device.createTexture({
-      label: `Traccia styled derived mip 1+ ${this.layerFormat}`,
+      label: `Stroke styled derived mip 1+ ${this.layerFormat}`,
       size: {
         width: coarseWidth,
         height: coarseHeight,
@@ -1946,24 +1946,24 @@ export class RasterStrokeRenderer {
         | (this.readbackEnabled ? GPUTextureUsage.COPY_SRC : 0),
     });
     this.coarseStyledStorageView = this.coarseStyledTexture.createView({
-      label: "Traccia styled derived logical mip 1 storage view",
+      label: "Stroke styled derived logical mip 1 storage view",
       baseMipLevel: 0,
       mipLevelCount: 1,
     });
     this.samplingView = this.coarseStyledTexture.createView({
-      label: "Traccia styled derived mip 1+ sampling chain",
+      label: "Stroke styled derived mip 1+ sampling chain",
       baseMipLevel: 0,
       mipLevelCount: coarseMipLevelCount,
     });
     this.mipViews = Array.from({ length: coarseMipLevelCount }, (_, mipLevel) =>
       this.coarseStyledTexture.createView({
-        label: `Traccia styled logical mip ${mipLevel + 1}`,
+        label: `Stroke styled logical mip ${mipLevel + 1}`,
         baseMipLevel: mipLevel,
         mipLevelCount: 1,
       }));
     this.readbackStyledTexture = this.readbackEnabled
       ? this.device.createTexture({
-        label: `Traccia golden logical mip 0 ${this.layerFormat}`,
+        label: `Stroke golden logical mip 0 ${this.layerFormat}`,
         size: {
           width: this.documentWidth,
           height: this.documentHeight,
@@ -1978,13 +1978,13 @@ export class RasterStrokeRenderer {
       })
       : null;
     this.readbackStyledStorageView = this.readbackStyledTexture?.createView({
-      label: "Traccia golden logical mip 0 storage view",
+      label: "Stroke golden logical mip 0 storage view",
     }) ?? null;
     this.goldenMip0SamplingView = this.readbackStyledTexture?.createView({
-      label: "Traccia golden logical mip 0 sampling view",
+      label: "Stroke golden logical mip 0 sampling view",
     }) ?? null;
     this.dummyTexture = this.device.createTexture({
-      label: "Traccia transparent transient placeholder",
+      label: "Stroke transparent transient placeholder",
       size: { width: 1, height: 1, depthOrArrayLayers: 1 },
       format: "rgba8unorm",
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
@@ -2004,7 +2004,7 @@ export class RasterStrokeRenderer {
 
     const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
     this.dummyBevelTexture = this.device.createTexture({
-      label: "Style stack disabled Smusso R32F placeholder",
+      label: "Style stack disabled Bevel R32F placeholder",
       size: { width: 1, height: 1, depthOrArrayLayers: 1 },
       format: "r32float",
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
@@ -2019,12 +2019,12 @@ export class RasterStrokeRenderer {
     this.bevelHeightView = this.dummyBevelView;
     this.bevelGlossView = this.dummyBevelView;
     this.dummyShadowStorageBuffer = this.device.createBuffer({
-      label: "Style stack disabled Ombra packed f16 placeholder",
+      label: "Style stack disabled Shadow packed f16 placeholder",
       size: 4,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     this.dummyShadowUniformBuffer = this.device.createBuffer({
-      label: "Style stack disabled Ombra uniform placeholder",
+      label: "Style stack disabled Shadow uniform placeholder",
       size: 64,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
@@ -2117,17 +2117,17 @@ export class RasterStrokeRenderer {
     let indirectArguments: GPUBuffer | null = null;
     try {
       coverage = this.device.createBuffer({
-        label: "Traccia persistent packed f16 coverage",
+        label: "Stroke persistent packed f16 coverage",
         size: this.fullCoverageMemoryBytes,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
       });
       thresholdMask = this.device.createBuffer({
-        label: "Traccia persistent alpha-threshold bit mask",
+        label: "Stroke persistent alpha-threshold bit mask",
         size: this.fullThresholdMaskMemoryBytes,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
       });
       changeState = this.device.createBuffer({
-        label: "Traccia threshold-or-coverage-overlap change flags",
+        label: "Stroke threshold-or-coverage-overlap change flags",
         size: this.fullChangeStateMemoryBytes,
         usage:
           GPUBufferUsage.STORAGE
@@ -2135,7 +2135,7 @@ export class RasterStrokeRenderer {
           | (this.readbackEnabled ? GPUBufferUsage.COPY_SRC : 0),
       });
       indirectArguments = this.device.createBuffer({
-        label: "Traccia threshold-or-coverage-gated indirect dispatch arguments",
+        label: "Stroke threshold-or-coverage-gated indirect dispatch arguments",
         size: this.fullIndirectArgumentsMemoryBytes,
         usage:
           GPUBufferUsage.STORAGE
@@ -2177,7 +2177,7 @@ export class RasterStrokeRenderer {
     }
     return runGpuAllocationTransaction(
       this.device,
-      "Allocazione geometria Traccia",
+      "Allocate Stroke geometry",
       (transaction) => {
         const allocated = this.allocateStrokeGeometryResourcesUnchecked();
         transaction.deferRollback(() => {
@@ -2237,7 +2237,7 @@ export class RasterStrokeRenderer {
       return;
     }
     this.indirectGateBindGroup = this.device.createBindGroup({
-      label: "Traccia indirect dispatch gate bind group",
+      label: "Stroke indirect dispatch gate bind group",
       layout: this.indirectGateBindGroupLayout,
       entries: [
         {
@@ -2257,7 +2257,7 @@ export class RasterStrokeRenderer {
   /** Disabling is valid only after the caller has awaited GPU idle. */
   async setStrokeGeometryEnabled(enabled: boolean): Promise<boolean> {
     if (this.destroyed) {
-      throw new Error("Renderer Traccia già distrutto.");
+      throw new Error("The Stroke renderer has already been destroyed.");
     }
     return enabled
       ? await this.allocateStrokeGeometryResources()
@@ -2269,12 +2269,12 @@ export class RasterStrokeRenderer {
     layerFormat: "rgba8unorm" | "rgba16float",
   ): void {
     if (this.destroyed) {
-      throw new Error("Il renderer Traccia è già stato distrutto.");
+      throw new Error("The Stroke renderer has already been destroyed.");
     }
     if (layerFormat !== this.layerFormat) {
       throw new Error(
-        `Formato Traccia ${this.layerFormat} incompatibile con ${layerFormat}; `
-        + "serve la ricreazione completa del renderer.",
+        `Stroke format ${this.layerFormat} is incompatible with ${layerFormat}; `
+        + "the renderer must be fully recreated.",
       );
     }
     this.layerView = layerView;
@@ -2294,15 +2294,15 @@ export class RasterStrokeRenderer {
    */
   encodeBake(options: RasterStrokeBakeOptions): RasterStrokeBakeResult {
     if (this.destroyed) {
-      throw new Error("Renderer Traccia già distrutto.");
+      throw new Error("The Stroke renderer has already been destroyed.");
     }
     if (options.style.enabled && options.style.width > 0 && !this.strokeGeometryEnabled) {
       throw new Error(
-        "Bake Traccia rifiutato: le risorse geometriche non sono allocate.",
+        "Stroke bake rejected: geometry resources are not allocated.",
       );
     }
     if (!this.readbackComposePipeline) {
-      throw new Error("Pipeline bake mip 0 Traccia non inizializzata.");
+      throw new Error("The Stroke mip 0 bake pipeline is not initialized.");
     }
     const rect = normalizedRect(
       options.rect ?? {
@@ -2326,7 +2326,7 @@ export class RasterStrokeRenderer {
       || parameterSlot < 0
       || parameterSlot >= BAKE_PARAMETER_CAPACITY
     ) {
-      throw new RangeError("Slot uniforme del bake Traccia non valido.");
+      throw new RangeError("Invalid Stroke bake uniform slot.");
     }
     const targetStorageOrigin = options.targetStorageOrigin ?? {
       x: rect.x,
@@ -2338,7 +2338,7 @@ export class RasterStrokeRenderer {
       || targetStorageOrigin.x < 0
       || targetStorageOrigin.y < 0
     ) {
-      throw new RangeError("Origine storage del bake Traccia non valida.");
+      throw new RangeError("Invalid Stroke bake storage origin.");
     }
     const bevelStyle = options.bevelStyle ?? DEFAULT_RASTER_BEVEL_STYLE;
     const colorOverlayStyle = options.colorOverlayStyle
@@ -2401,7 +2401,7 @@ export class RasterStrokeRenderer {
       || parameterCount < 0
       || parameterCount > BAKE_PARAMETER_CAPACITY
     ) {
-      throw new RangeError("Numero di slot bake Traccia non valido.");
+      throw new RangeError("Invalid Stroke bake slot count.");
     }
     if (parameterCount > 0) {
       this.device.queue.writeBuffer(
@@ -2425,7 +2425,7 @@ export class RasterStrokeRenderer {
   ): GPUBindGroup {
     const mode = sourceModeCode(sourceMode);
     return this.device.createBindGroup({
-      label: `Traccia direct/coarse display source mode ${sourceMode}`,
+      label: `Stroke direct/coarse display source mode ${sourceMode}`,
       layout,
       entries: [
         { binding: 0, resource: { buffer: this.displayParameterBuffers[mode] } },
@@ -2460,7 +2460,7 @@ export class RasterStrokeRenderer {
       Math.min(requested, this.maximumScratchExtent) / WORKGROUP_SIZE,
     ) * WORKGROUP_SIZE;
     if (extent < WORKGROUP_SIZE) {
-      throw new Error("Limite storage GPU insufficiente per lo scratch Traccia.");
+      throw new Error("The GPU storage limit is insufficient for Stroke scratch.");
     }
     return extent;
   }
@@ -2471,17 +2471,17 @@ export class RasterStrokeRenderer {
     const lease = this.scratchPool.declareEffect("stroke", [
       {
         id: "ping-a",
-        label: `Traccia packed dual JFA scratch A ${this._scratchExtent}²`,
+        label: `Stroke packed dual JFA scratch A ${this._scratchExtent}²`,
         size: rangeBytes,
       },
       {
         id: "ping-b",
-        label: `Traccia packed dual JFA scratch B ${this._scratchExtent}²`,
+        label: `Stroke packed dual JFA scratch B ${this._scratchExtent}²`,
         size: rangeBytes,
       },
     ]);
     if (!lease) {
-      throw new Error("La Traccia richiede scratch ma il pool non ha restituito un lease.");
+      throw new Error("Stroke requires scratch space, but the pool did not return a lease.");
     }
     return lease;
   }
@@ -2489,7 +2489,7 @@ export class RasterStrokeRenderer {
   private requireScratchLease(): EffectsScratchLease {
     const lease = this.scratchPool.lease("stroke");
     if (!lease) {
-      throw new Error("Lease scratch Traccia non disponibile.");
+      throw new Error("The Stroke scratch lease is unavailable.");
     }
     return lease;
   }
@@ -2500,7 +2500,7 @@ export class RasterStrokeRenderer {
   ): GPUBufferBinding {
     const range = lease.ranges[index === 0 ? "ping-a" : "ping-b"];
     if (!range) {
-      throw new Error(`Range scratch Traccia ${index} non disponibile.`);
+      throw new Error(`Stroke scratch range ${index} is unavailable.`);
     }
     return { buffer: lease.buffer, offset: range.offset, size: range.size };
   }
@@ -2520,7 +2520,7 @@ export class RasterStrokeRenderer {
 
   resizeScratch(requestedExtent: number): boolean {
     if (this.destroyed) {
-      throw new Error("Renderer Traccia già distrutto.");
+      throw new Error("The Stroke renderer has already been destroyed.");
     }
     const nextExtent = this.normalizeScratchExtent(requestedExtent);
     if (nextExtent === this._scratchExtent) {
@@ -2550,17 +2550,17 @@ export class RasterStrokeRenderer {
     mipLevel = 0,
   ): Promise<Uint8Array> {
     if (this.destroyed) {
-      throw new Error("Renderer Traccia già distrutto.");
+      throw new Error("The Stroke renderer has already been destroyed.");
     }
     if (!this.readbackEnabled) {
-      throw new Error("Readback Traccia non abilitato per questo renderer.");
+      throw new Error("Stroke readback is not enabled for this renderer.");
     }
     if (!Number.isInteger(mipLevel) || mipLevel < 0 || mipLevel >= this.styledMipLevelCount) {
-      throw new Error(`Mip Traccia non valido per il readback: ${mipLevel}.`);
+      throw new Error(`Invalid Stroke mip for readback: ${mipLevel}.`);
     }
     const texture = mipLevel === 0 ? this.readbackStyledTexture : this.coarseStyledTexture;
     if (!texture) {
-      throw new Error("Texture golden Traccia mip 0 non disponibile.");
+      throw new Error("The golden Stroke mip 0 texture is unavailable.");
     }
     const textureMipLevel = mipLevel === 0 ? 0 : mipLevel - 1;
     const mipWidth = Math.max(1, this.documentWidth >> mipLevel);
@@ -2582,13 +2582,13 @@ export class RasterStrokeRenderer {
     const unpaddedBytesPerRow = rect.width * bytesPerPixel;
     const bytesPerRow = Math.ceil(unpaddedBytesPerRow / 256) * 256;
     const readbackBuffer = this.device.createBuffer({
-      label: `Traccia golden styled mip ${mipLevel} readback`,
+      label: `Stroke golden styled mip ${mipLevel} readback`,
       size: bytesPerRow * rect.height,
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     });
     try {
       const encoder = this.device.createCommandEncoder({
-        label: `Traccia golden styled mip ${mipLevel} readback encoder`,
+        label: `Stroke golden styled mip ${mipLevel} readback encoder`,
       });
       encoder.copyTextureToBuffer(
         {
@@ -2629,22 +2629,22 @@ export class RasterStrokeRenderer {
 
   async readChangeStateFlags(): Promise<number> {
     if (this.destroyed) {
-      throw new Error("Renderer Traccia già distrutto.");
+      throw new Error("The Stroke renderer has already been destroyed.");
     }
     if (!this.readbackEnabled) {
-      throw new Error("Readback Traccia non abilitato per questo renderer.");
+      throw new Error("Stroke readback is not enabled for this renderer.");
     }
     if (!this.strokeGeometryEnabled) {
-      throw new Error("Readback Traccia rifiutato: le risorse geometriche non sono allocate.");
+      throw new Error("Stroke readback rejected: geometry resources are not allocated.");
     }
     const readbackBuffer = this.device.createBuffer({
-      label: "Traccia golden change-state flag readback",
+      label: "Stroke golden change-state flag readback",
       size: 4,
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     });
     try {
       const encoder = this.device.createCommandEncoder({
-        label: "Traccia golden change-state flag readback encoder",
+        label: "Stroke golden change-state flag readback encoder",
       });
       encoder.copyBufferToBuffer(this.changeStateBuffer, 0, readbackBuffer, 0, 4);
       this.device.queue.submit([encoder.finish()]);
@@ -2659,7 +2659,7 @@ export class RasterStrokeRenderer {
 
   private async initialize(): Promise<void> {
     this.seedBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Traccia seed bind group layout",
+      label: "Stroke seed bind group layout",
       entries: [
         {
           binding: 0,
@@ -2674,7 +2674,7 @@ export class RasterStrokeRenderer {
       ],
     });
     this.jfaBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Traccia JFA bind group layout",
+      label: "Stroke JFA bind group layout",
       entries: [
         {
           binding: 0,
@@ -2686,7 +2686,7 @@ export class RasterStrokeRenderer {
       ],
     });
     this.resolveBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Traccia resolve bind group layout",
+      label: "Stroke resolve bind group layout",
       entries: [
         {
           binding: 0,
@@ -2702,7 +2702,7 @@ export class RasterStrokeRenderer {
       ],
     });
     this.composeBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Traccia compose bind group layout",
+      label: "Stroke compose bind group layout",
       entries: [
         {
           binding: 0,
@@ -2758,7 +2758,7 @@ export class RasterStrokeRenderer {
     });
 
     this.thresholdMaskBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Traccia alpha-threshold mask bind group layout",
+      label: "Stroke alpha-threshold mask bind group layout",
       entries: [
         {
           binding: 0,
@@ -2775,7 +2775,7 @@ export class RasterStrokeRenderer {
       ],
     });
     this.indirectGateBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Traccia indirect dispatch gate bind group layout",
+      label: "Stroke indirect dispatch gate bind group layout",
       entries: [
         {
           binding: 0,
@@ -2788,19 +2788,19 @@ export class RasterStrokeRenderer {
     });
 
     const seedModule = this.device.createShaderModule({
-      label: "Traccia dual seed WGSL",
+      label: "Stroke dual seed WGSL",
       code: seedShader(this.documentWidth, this.documentHeight),
     });
     const jfaModule = this.device.createShaderModule({
-      label: "Traccia packed dual JFA WGSL",
+      label: "Stroke packed dual JFA WGSL",
       code: jfaShader(),
     });
     const resolveModule = this.device.createShaderModule({
-      label: "Traccia Q10.6 to packed f16 coverage WGSL",
+      label: "Stroke Q10.6 to packed f16 coverage WGSL",
       code: resolveShader(this.documentWidth, this.documentHeight),
     });
     const composeModule = this.device.createShaderModule({
-      label: "Traccia styled logical mip 1 compose WGSL",
+      label: "Stroke styled logical mip 1 compose WGSL",
       code: coarseComposeShader(
         this.documentWidth,
         this.documentHeight,
@@ -2822,11 +2822,11 @@ export class RasterStrokeRenderer {
       ),
     });
     const thresholdMaskModule = this.device.createShaderModule({
-      label: "Traccia alpha-threshold mask WGSL",
+      label: "Stroke alpha-threshold mask WGSL",
       code: thresholdMaskShader(this.documentWidth, this.documentHeight),
     });
     const indirectGateModule = this.device.createShaderModule({
-      label: "Traccia indirect dispatch gate WGSL",
+      label: "Stroke indirect dispatch gate WGSL",
       code: indirectGateShader(),
     });
     await assertShaderModules([
@@ -2841,32 +2841,32 @@ export class RasterStrokeRenderer {
 
     this.device.pushErrorScope("validation");
     this.seedPipeline = this.device.createComputePipeline({
-      label: "Traccia dual seed pipeline",
+      label: "Stroke dual seed pipeline",
       layout: this.device.createPipelineLayout({
         bindGroupLayouts: [this.seedBindGroupLayout],
       }),
       compute: { module: seedModule, entryPoint: "main" },
     });
     this.jfaPipeline = this.device.createComputePipeline({
-      label: "Traccia packed dual JFA pipeline",
+      label: "Stroke packed dual JFA pipeline",
       layout: this.device.createPipelineLayout({
         bindGroupLayouts: [this.jfaBindGroupLayout],
       }),
       compute: { module: jfaModule, entryPoint: "main" },
     });
     this.resolvePipeline = this.device.createComputePipeline({
-      label: "Traccia packed f16 coverage resolve pipeline",
+      label: "Stroke packed f16 coverage resolve pipeline",
       layout: this.device.createPipelineLayout({
         bindGroupLayouts: [this.resolveBindGroupLayout],
       }),
       compute: { module: resolveModule, entryPoint: "main" },
     });
     const composePipelineLayout = this.device.createPipelineLayout({
-      label: "Traccia styled compose pipeline layout",
+      label: "Stroke styled compose pipeline layout",
       bindGroupLayouts: [this.composeBindGroupLayout],
     });
     this.composePipeline = this.device.createComputePipeline({
-      label: "Traccia styled logical mip 1 compose pipeline",
+      label: "Stroke styled logical mip 1 compose pipeline",
       layout: composePipelineLayout,
       compute: { module: composeModule, entryPoint: "main" },
     });
@@ -2876,14 +2876,14 @@ export class RasterStrokeRenderer {
       compute: { module: readbackComposeModule, entryPoint: "main" },
     });
     this.thresholdMaskPipeline = this.device.createComputePipeline({
-      label: "Traccia alpha-threshold mask pipeline",
+      label: "Stroke alpha-threshold mask pipeline",
       layout: this.device.createPipelineLayout({
         bindGroupLayouts: [this.thresholdMaskBindGroupLayout],
       }),
       compute: { module: thresholdMaskModule, entryPoint: "main" },
     });
     this.indirectGatePipeline = this.device.createComputePipeline({
-      label: "Traccia indirect dispatch gate pipeline",
+      label: "Stroke indirect dispatch gate pipeline",
       layout: this.device.createPipelineLayout({
         bindGroupLayouts: [this.indirectGateBindGroupLayout],
       }),
@@ -2961,12 +2961,12 @@ export class RasterStrokeRenderer {
   updateBevelFieldParameters(state: RasterBevelFieldState): void {
     if (!this.bevelBoundingFieldEnabled) {
       if (state.bounded) {
-        throw new Error("Il renderer Traccia full-document non accetta un campo Smusso bbox.");
+        throw new Error("The full-document Stroke renderer does not accept a bbox Bevel field.");
       }
       return;
     }
     if (!state.bounded) {
-      throw new Error("Il renderer Traccia bbox richiede un campo Smusso bbox.");
+      throw new Error("The bbox Stroke renderer requires a bbox Bevel field.");
     }
     this.bevelFieldAllocationBounds = state.allocationBounds
       ? { ...state.allocationBounds }
@@ -2978,7 +2978,7 @@ export class RasterStrokeRenderer {
 
   updateBevelParameters(source: RasterBevelStyle): void {
     if (this.destroyed) {
-      throw new Error("Renderer style stack già distrutto.");
+      throw new Error("The style stack renderer has already been destroyed.");
     }
     const style = normalizeRasterBevelStyle(source);
     const derived = deriveRasterBevelHeightfield(style);
@@ -3024,7 +3024,7 @@ export class RasterStrokeRenderer {
     const scratchB = this.scratchBinding(lease, 1);
     this.jfaBindGroups = [
       this.device.createBindGroup({
-        label: "Traccia JFA A to B",
+        label: "Stroke JFA A to B",
         layout: this.jfaBindGroupLayout,
         entries: [
           {
@@ -3040,7 +3040,7 @@ export class RasterStrokeRenderer {
         ],
       }),
       this.device.createBindGroup({
-        label: "Traccia JFA B to A",
+        label: "Stroke JFA B to A",
         layout: this.jfaBindGroupLayout,
         entries: [
           {
@@ -3089,7 +3089,7 @@ export class RasterStrokeRenderer {
     this.bakeBindGroups = new WeakMap();
     const scratchLease = this.requireScratchLease();
     this.seedBindGroups.set(mode, this.device.createBindGroup({
-      label: `Traccia seed source mode ${mode}`,
+      label: `Stroke seed source mode ${mode}`,
       layout: this.seedBindGroupLayout,
       entries: [
         ...this.commonSourceEntries(mode),
@@ -3098,7 +3098,7 @@ export class RasterStrokeRenderer {
     }));
     for (const scratchIndex of [0, 1] as const) {
       this.resolveBindGroups.set(`${mode}:${scratchIndex}`, this.device.createBindGroup({
-        label: `Traccia resolve source ${mode}, scratch ${scratchIndex}`,
+        label: `Stroke resolve source ${mode}, scratch ${scratchIndex}`,
         layout: this.resolveBindGroupLayout,
         entries: [
           ...this.commonSourceEntries(mode),
@@ -3142,7 +3142,7 @@ export class RasterStrokeRenderer {
       }));
     }
     this.thresholdMaskBindGroups.set(mode, this.device.createBindGroup({
-      label: `Traccia alpha-threshold mask source mode ${mode}`,
+      label: `Stroke alpha-threshold mask source mode ${mode}`,
       layout: this.thresholdMaskBindGroupLayout,
       entries: [
         ...this.commonSourceEntries(mode),
@@ -3194,7 +3194,7 @@ export class RasterStrokeRenderer {
     ) * COVERAGE_WORD_PIXELS;
     if (maximumTargetExtent <= 0) {
       throw new Error(
-        `Scratch Traccia ${this.scratchExtent}px insufficiente per width ${width}px.`,
+        `Stroke scratch ${this.scratchExtent}px is insufficient for width ${width}px.`,
       );
     }
     const jobs: BuildJob[] = [];
@@ -3212,8 +3212,8 @@ export class RasterStrokeRenderer {
         const buildHeight = buildBottom - buildOriginY;
         if (buildWidth > this.scratchExtent || buildHeight > this.scratchExtent) {
           throw new Error(
-            `Partizione scratch Traccia non valida: ${buildWidth}×${buildHeight} `
-            + `oltre ${this.scratchExtent}.`,
+            `Invalid Stroke scratch partition: ${buildWidth}×${buildHeight} `
+            + `exceeds ${this.scratchExtent}.`,
           );
         }
         jobs.push({
@@ -3240,7 +3240,7 @@ export class RasterStrokeRenderer {
     colorOverlayStyle: RasterColorOverlayStyle = DEFAULT_RASTER_COLOR_OVERLAY_STYLE,
   ): void {
     if (this.destroyed) {
-      throw new Error("Renderer Traccia già distrutto.");
+      throw new Error("The Stroke renderer has already been destroyed.");
     }
     const mode = sourceModeCode(sourceMode);
     this.displayParameterUploadU32.fill(0);
@@ -3273,7 +3273,7 @@ export class RasterStrokeRenderer {
     colorOverlayStyle: RasterColorOverlayStyle = DEFAULT_RASTER_COLOR_OVERLAY_STYLE,
   ): number {
     if (slot >= PARAMETER_CAPACITY) {
-      throw new Error(`Troppi dispatch Traccia in un frame: ${slot + 1}.`);
+      throw new Error(`Too many Stroke dispatches in one frame: ${slot + 1}.`);
     }
     const word = slot * (PARAMETER_STRIDE / 4);
     this.parameterUploadI32[word] = job.buildOriginX ?? 0;
@@ -3315,7 +3315,7 @@ export class RasterStrokeRenderer {
   ): number {
     if (argumentIndex >= PARAMETER_CAPACITY) {
       throw new Error(
-        `Troppi argomenti indirect Traccia in un frame: ${argumentIndex + 1}.`,
+        `Too many indirect Stroke arguments in one frame: ${argumentIndex + 1}.`,
       );
     }
     const word = argumentIndex * INDIRECT_ARGUMENT_WORDS;
@@ -3327,11 +3327,11 @@ export class RasterStrokeRenderer {
 
   encode(options: RasterStrokeEncodeOptions): RasterStrokeEncodeResult {
     if (this.destroyed) {
-      throw new Error("Renderer Traccia già distrutto.");
+      throw new Error("The Stroke renderer has already been destroyed.");
     }
     if (options.style.enabled && options.style.width > 0 && !this.strokeGeometryEnabled) {
       throw new Error(
-        "Encode Traccia rifiutato: le risorse geometriche non sono allocate.",
+        "Stroke encode rejected: geometry resources are not allocated.",
       );
     }
     this.syncScratchBindGroups();
@@ -3439,8 +3439,8 @@ export class RasterStrokeRenderer {
     parameterCount += useThresholdGate ? 1 : 0;
     if (parameterCount > PARAMETER_CAPACITY) {
       throw new Error(
-        `La Traccia richiede ${parameterCount} dispatch, oltre il limite `
-        + `${PARAMETER_CAPACITY}.`,
+        `Stroke requires ${parameterCount} dispatches, exceeding the `
+        + `${PARAMETER_CAPACITY} limit.`,
       );
     }
 
@@ -3572,8 +3572,8 @@ export class RasterStrokeRenderer {
       );
       const thresholdPass = options.encoder.beginComputePass({
         label: useThresholdGate
-          ? "Detect Traccia threshold changes or existing coverage overlap"
-          : "Synchronize Traccia alpha-threshold mask",
+          ? "Detect Stroke threshold changes or existing coverage overlap"
+          : "Synchronize Stroke alpha-threshold mask",
       });
       thresholdPass.setPipeline(this.thresholdMaskPipeline);
       thresholdPass.setBindGroup(
@@ -3589,7 +3589,7 @@ export class RasterStrokeRenderer {
     }
     if (useThresholdGate) {
       const gatePass = options.encoder.beginComputePass({
-        label: "Gate Traccia field dispatches from threshold or coverage overlap",
+        label: "Gate Stroke field dispatches from threshold or coverage overlap",
       });
       gatePass.setPipeline(this.indirectGatePipeline);
       gatePass.setBindGroup(
@@ -3605,7 +3605,7 @@ export class RasterStrokeRenderer {
 
     if (options.clearStyled) {
       const clearCoarsePass = options.encoder.beginRenderPass({
-        label: "Clear Traccia styled logical mip 1",
+        label: "Clear Stroke styled logical mip 1",
         colorAttachments: [{
           view: this.mipViews[0],
           loadOp: "clear",
@@ -3616,7 +3616,7 @@ export class RasterStrokeRenderer {
       clearCoarsePass.end();
       if (this.readbackStyledStorageView) {
         const clearReadbackPass = options.encoder.beginRenderPass({
-          label: "Clear Traccia golden logical mip 0",
+          label: "Clear Stroke golden logical mip 0",
           colorAttachments: [{
             view: this.readbackStyledStorageView,
             loadOp: "clear",
@@ -3632,8 +3632,8 @@ export class RasterStrokeRenderer {
     if (jobs.length > 0) {
       const fieldPass = options.encoder.beginComputePass({
         label: useThresholdGate
-          ? "Traccia gated seed + packed dual JFA + packed f16 coverage"
-          : "Traccia seed + packed dual JFA + packed f16 coverage",
+          ? "Stroke gated seed + packed dual JFA + packed f16 coverage"
+          : "Stroke seed + packed dual JFA + packed f16 coverage",
       });
       for (let jobIndex = 0; jobIndex < jobs.length; jobIndex += 1) {
         const job = jobs[jobIndex];
@@ -3707,8 +3707,8 @@ export class RasterStrokeRenderer {
     if (storedComposeDispatches > 0) {
       const composePass = options.encoder.beginComputePass({
         label: coarseConditionalComposeRect
-          ? "Traccia logical mip 1 compose with gated coverage halo"
-          : "Traccia logical mip 1 compose",
+          ? "Stroke logical mip 1 compose with gated coverage halo"
+          : "Stroke logical mip 1 compose",
       });
       composePass.setPipeline(this.composePipeline);
       for (let index = 0; index < coarseDirectComposeRects.length; index += 1) {
@@ -3739,7 +3739,7 @@ export class RasterStrokeRenderer {
 
     if (this.readbackComposePipeline && readbackComposeRects.length > 0) {
       const readbackPass = options.encoder.beginComputePass({
-        label: "Traccia golden logical mip 0 compose",
+        label: "Stroke golden logical mip 0 compose",
       });
       readbackPass.setPipeline(this.readbackComposePipeline);
       for (let index = 0; index < readbackComposeRects.length; index += 1) {

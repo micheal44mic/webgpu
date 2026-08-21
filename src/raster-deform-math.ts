@@ -53,7 +53,7 @@ function finitePoint(
   label: string,
 ): RasterTransformControlPoint {
   if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
-    throw new Error(`${label} deve contenere coordinate finite.`);
+    throw new Error(`${label} must contain finite coordinates.`);
   }
   return { x: point.x, y: point.y };
 }
@@ -108,10 +108,10 @@ export function normalizeRasterDeformPoints(
   const expected = rasterDeformPointCount(mode, warpGridSize);
   if (points.length !== expected) {
     throw new Error(
-      `Punti ${mode} non validi: ricevuti ${points.length}, attesi ${expected}.`,
+      `Invalid ${mode} points: received ${points.length}, expected ${expected}.`,
     );
   }
-  return points.map((point, index) => finitePoint(point, `Punto ${index + 1}`));
+  return points.map((point, index) => finitePoint(point, `Point ${index + 1}`));
 }
 
 export function rasterDeformBounds(
@@ -126,7 +126,7 @@ export function rasterDeformBounds(
   let maximumX = Number.NEGATIVE_INFINITY;
   let maximumY = Number.NEGATIVE_INFINITY;
   for (let index = 0; index < points.length; index += 1) {
-    const point = finitePoint(points[index], `Punto ${index + 1}`);
+    const point = finitePoint(points[index], `Point ${index + 1}`);
     minimumX = Math.min(minimumX, point.x);
     minimumY = Math.min(minimumY, point.y);
     maximumX = Math.max(maximumX, point.x);
@@ -154,7 +154,7 @@ export function rasterDeformCenter(
   let maximumX = Number.NEGATIVE_INFINITY;
   let maximumY = Number.NEGATIVE_INFINITY;
   for (let index = 0; index < points.length; index += 1) {
-    const point = finitePoint(points[index], `Punto ${index + 1}`);
+    const point = finitePoint(points[index], `Point ${index + 1}`);
     minimumX = Math.min(minimumX, point.x);
     minimumY = Math.min(minimumY, point.y);
     maximumX = Math.max(maximumX, point.x);
@@ -169,10 +169,10 @@ export function translateRasterDeformPoints(
   deltaY: number,
 ): RasterTransformControlPoint[] {
   if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) {
-    throw new Error("Lo spostamento dei punti Warp deve essere finito.");
+    throw new Error("The Warp point displacement must be finite.");
   }
   return points.map((point, index) => {
-    const finite = finitePoint(point, `Punto ${index + 1}`);
+    const finite = finitePoint(point, `Point ${index + 1}`);
     return { x: finite.x + deltaX, y: finite.y + deltaY };
   });
 }
@@ -238,14 +238,14 @@ export function rasterWarpDefaultBezierHandles(
   size: number,
 ): RasterWarpBezierHandles {
   if (!Number.isSafeInteger(size) || size < 2 || points.length !== size * size) {
-    throw new Error("Griglia Warp non valida.");
+    throw new Error("Invalid Warp grid.");
   }
-  const topLeft = finitePoint(points[0], "Angolo alto sinistro");
-  const topRight = finitePoint(points[size - 1], "Angolo alto destro");
+  const topLeft = finitePoint(points[0], "Top-left corner");
+  const topRight = finitePoint(points[size - 1], "Top-right corner");
   const bottomLeftIndex = (size - 1) * size;
   const bottomRightIndex = size * size - 1;
-  const bottomLeft = finitePoint(points[bottomLeftIndex], "Angolo basso sinistro");
-  const bottomRight = finitePoint(points[bottomRightIndex], "Angolo basso destro");
+  const bottomLeft = finitePoint(points[bottomLeftIndex], "Bottom-left corner");
+  const bottomRight = finitePoint(points[bottomRightIndex], "Bottom-right corner");
   return [
     pointToward(topLeft, points[1], 1 / 3),
     pointToward(topLeft, points[size], 1 / 3),
@@ -267,10 +267,10 @@ export function normalizeRasterWarpBezierHandles(
     return rasterWarpDefaultBezierHandles(points, size);
   }
   if (handles.length !== RASTER_WARP_BEZIER_HANDLE_COUNT) {
-    throw new Error("Warp richiede otto maniglie Bézier d’angolo.");
+    throw new Error("Warp requires eight corner Bézier handles.");
   }
   return handles.map((point, index) =>
-    finitePoint(point, `Maniglia Bézier ${index + 1}`)) as unknown as RasterWarpBezierHandles;
+    finitePoint(point, `Bézier handle ${index + 1}`)) as unknown as RasterWarpBezierHandles;
 }
 
 export function rasterWarpBezierHandleAnchorIndex(
@@ -278,14 +278,14 @@ export function rasterWarpBezierHandleAnchorIndex(
   handleIndex: number,
 ): number {
   if (!Number.isSafeInteger(size) || size < 2) {
-    throw new Error("Griglia Warp non valida.");
+    throw new Error("Invalid Warp grid.");
   }
   if (
     !Number.isSafeInteger(handleIndex)
     || handleIndex < 0
     || handleIndex >= RASTER_WARP_BEZIER_HANDLE_COUNT
   ) {
-    throw new Error("Indice maniglia Bézier Warp non valido.");
+    throw new Error("Invalid Warp Bézier handle index.");
   }
   return [
     0,
@@ -307,7 +307,7 @@ export function moveRasterWarpBezierHandle(
   target: Readonly<RasterTransformControlPoint>,
 ): RasterWarpBezierHandles {
   const normalized = normalizeRasterWarpBezierHandles(handles, points, size);
-  const next = finitePoint(target, "Posizione maniglia Bézier");
+  const next = finitePoint(target, "Bézier handle position");
   rasterWarpBezierHandleAnchorIndex(size, handleIndex);
   return normalized.map((handle, index) => index === handleIndex
     ? next
@@ -451,7 +451,7 @@ function createRasterWarpSurfaceSamplerContext(
   handles: readonly Readonly<RasterTransformControlPoint>[] | null | undefined,
 ): RasterWarpSurfaceSamplerContext {
   if (!Number.isSafeInteger(size) || size < 2 || points.length !== size * size) {
-    throw new Error("Griglia Warp non valida.");
+    throw new Error("Invalid Warp grid.");
   }
   const normalizedHandles = normalizeRasterWarpBezierHandles(handles, points, size);
   const bottomOffset = (size - 1) * size;
@@ -539,7 +539,7 @@ export function rasterWarpClosestSurfaceParameter(
   handles?: readonly Readonly<RasterTransformControlPoint>[] | null,
 ): RasterWarpSurfaceParameter {
   if (!Number.isFinite(target.x) || !Number.isFinite(target.y)) {
-    throw new Error("Il punto di presa Warp deve essere finito.");
+    throw new Error("The Warp grab point must be finite.");
   }
   const cells = (size - 1) * RASTER_WARP_RENDER_SUBDIVISIONS;
   let bestU = 0;
@@ -605,9 +605,9 @@ export function resampleRasterDeformGrid(
   destinationSize: number,
 ): RasterTransformControlPoint[] {
   if (sourceSize < 2 || points.length !== sourceSize * sourceSize) {
-    throw new Error("Griglia Warp sorgente non valida.");
+    throw new Error("Invalid source Warp grid.");
   }
-  if (destinationSize < 2) throw new Error("Griglia Warp destinazione non valida.");
+  if (destinationSize < 2) throw new Error("Invalid destination Warp grid.");
   const result: RasterTransformControlPoint[] = [];
   for (let row = 0; row < destinationSize; row += 1) {
     for (let column = 0; column < destinationSize; column += 1) {
@@ -640,7 +640,7 @@ export function rasterWarpCornerIndices(size: number): readonly number[] {
 }
 
 /**
- * Procreate-style Warp gesture. A direct corner grab moves only that corner;
+ * Corner-anchored Warp gesture. A direct corner grab moves only that corner;
  * every other grab applies one smooth, locally dominant falloff while pinning
  * all corners.
  */
@@ -654,7 +654,7 @@ export function moveRasterWarpControlPoints(
   anchorParameter: Readonly<RasterWarpSurfaceParameter> | null = null,
 ): RasterTransformControlPoint[] {
   if (!Number.isSafeInteger(size) || size < 2 || points.length !== size * size) {
-    throw new Error("Griglia Warp non valida.");
+    throw new Error("Invalid Warp grid.");
   }
   if (
     !Number.isFinite(anchor.x)
@@ -662,12 +662,12 @@ export function moveRasterWarpControlPoints(
     || !Number.isFinite(deltaX)
     || !Number.isFinite(deltaY)
   ) {
-    throw new Error("Il gesto Warp deve usare coordinate finite.");
+    throw new Error("The Warp gesture must use finite coordinates.");
   }
   const corners = new Set(rasterWarpCornerIndices(size));
   if (isolatedCornerIndex !== null) {
     if (!corners.has(isolatedCornerIndex)) {
-      throw new Error("Solo i quattro angoli Warp possono essere spostati isolatamente.");
+      throw new Error("Only the four Warp corners can be moved individually.");
     }
     return points.map((point, index) => index === isolatedCornerIndex
       ? { x: point.x + deltaX, y: point.y + deltaY }
@@ -762,11 +762,11 @@ export function rasterDeformRenderedBounds(
 export function rasterPerspectiveWeights(
   points: readonly Readonly<RasterTransformControlPoint>[],
 ): readonly [number, number, number, number] {
-  if (points.length !== 4) throw new Error("La Prospettiva richiede quattro angoli.");
-  const topLeft = finitePoint(points[0], "Angolo alto sinistro");
-  const topRight = finitePoint(points[1], "Angolo alto destro");
-  const bottomLeft = finitePoint(points[2], "Angolo basso sinistro");
-  const bottomRight = finitePoint(points[3], "Angolo basso destro");
+  if (points.length !== 4) throw new Error("Perspective requires four corners.");
+  const topLeft = finitePoint(points[0], "Top-left corner");
+  const topRight = finitePoint(points[1], "Top-right corner");
+  const bottomLeft = finitePoint(points[2], "Bottom-left corner");
+  const bottomRight = finitePoint(points[3], "Bottom-right corner");
   const dx1 = topRight.x - bottomRight.x;
   const dx2 = bottomLeft.x - bottomRight.x;
   const dx3 = topLeft.x - topRight.x + bottomRight.x - bottomLeft.x;
@@ -835,10 +835,10 @@ export function packRasterDeformVertices(
     : size - 1;
   const vertexCount = cells * cells * 6;
   if (target.length < vertexCount * RASTER_DEFORM_VERTEX_FLOATS) {
-    throw new Error("Buffer vertici Warp troppo piccolo.");
+    throw new Error("The Warp vertex buffer is too small.");
   }
   if (sourceTextureRect.width <= 0 || sourceTextureRect.height <= 0) {
-    throw new Error("Rettangolo texture Warp non valido.");
+    throw new Error("Invalid Warp texture rectangle.");
   }
   const weights = mode === "perspective"
     ? rasterPerspectiveWeights(normalized)

@@ -114,13 +114,13 @@ export class LayerColdCompressionClient {
       this.handleMessage(event.data);
     };
     this.worker.onerror = (event) => {
-      this.fail(new Error(event.message || "Worker compressione livelli non disponibile."));
+      this.fail(new Error(event.message || "The layer-compression worker is unavailable."));
     };
     this.worker.onmessageerror = () => {
-      this.fail(new Error("Risposta non valida dal worker compressione livelli."));
+      this.fail(new Error("Invalid response from the layer-compression worker."));
     };
     this.readyTimer = window.setTimeout(() => {
-      this.fail(new Error("Timeout inizializzazione worker compressione livelli."));
+      this.fail(new Error("Layer-compression worker initialization timed out."));
     }, 5_000);
   }
 
@@ -145,7 +145,7 @@ export class LayerColdCompressionClient {
       bytesPerComponent,
     }, [buffer]);
     if (response.type !== "compressed") {
-      throw new Error("Risposta compressione inattesa.");
+      throw new Error("Unexpected compression response.");
     }
     return {
       chunk: {
@@ -172,7 +172,7 @@ export class LayerColdCompressionClient {
       expectedHash: chunk.sourceHash,
     }, [workerCopy]);
     if (response.type !== "decompressed") {
-      throw new Error("Risposta decompressione inattesa.");
+      throw new Error("Unexpected decompression response.");
     }
     return new Uint8Array(response.bytes);
   }
@@ -181,7 +181,7 @@ export class LayerColdCompressionClient {
     if (this.disposed) {
       return;
     }
-    this.fail(new Error("Worker compressione livelli terminato."));
+    this.fail(new Error("The layer-compression worker was terminated."));
   }
 
   private async request(
@@ -190,12 +190,12 @@ export class LayerColdCompressionClient {
   ): Promise<LayerColdCompressionWorkerResponse> {
     await this.readyPromise;
     if (this.disposed) {
-      throw new Error("Worker compressione livelli non disponibile.");
+      throw new Error("The layer-compression worker is unavailable.");
     }
     return new Promise<LayerColdCompressionWorkerResponse>((resolve, reject) => {
       const timer = window.setTimeout(() => {
         this.pending.delete(message.id);
-        reject(new Error(`Timeout worker compressione richiesta ${message.id}.`));
+        reject(new Error(`Layer-compression worker request ${message.id} timed out.`));
       }, 30_000);
       this.pending.set(message.id, { resolve, reject, timer });
       try {
@@ -219,7 +219,7 @@ export class LayerColdCompressionClient {
         this.resolveReady();
       } else {
         const error = new Error(
-          response.reason || "CompressionStream non disponibile nel worker.",
+          response.reason || "CompressionStream is unavailable in the worker.",
         );
         this.rejectReady(error);
         this.worker.terminate();
