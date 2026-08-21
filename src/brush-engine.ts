@@ -5178,7 +5178,14 @@ export class BrushEngine {
     if (!record) {
       throw new Error(`Livello raster ${layerId} non trovato.`);
     }
-    if (!record.hasContent) {
+    // The active record is persisted only when the engine switches away from
+    // that layer. While the user keeps painting on it, layerHasContent is the
+    // live source of truth; consulting record.hasContent here would capture an
+    // empty thumbnail until another operation (notably Undo) persisted it.
+    const hasContent = record.id === this.layerStack.active.id
+      ? this.layerHasContent
+      : record.hasContent;
+    if (!hasContent) {
       return {
         layerId,
         width: LAYER_THUMBNAIL_WIDTH,

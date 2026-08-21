@@ -737,6 +737,45 @@ function createHarness({ holdEnabled = true } = {}) {
   harness.controller.dispose();
 }
 
+// If Touch Paint has already rendered, switching to two-finger navigation
+// commits that stroke and refreshes its layer preview just like pointer-up.
+{
+  const harness = createHarness();
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 10,
+    pointerType: "touch",
+    clientX: 100,
+    clientY: 100,
+  }));
+  harness.canvas.dispatchEvent(makeEvent("pointermove", {
+    pointerId: 10,
+    pointerType: "touch",
+    clientX: 110,
+    clientY: 100,
+  }));
+  assert.equal(harness.calls.beginStroke.length, 1);
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 11,
+    pointerType: "touch",
+    clientX: 150,
+    clientY: 100,
+  }));
+  assert.equal(harness.controller.pointerMode, "touch-navigation");
+  assert.equal(harness.calls.cancelStroke, 1);
+  assert.deepEqual(harness.calls.endStroke, [undefined]);
+  assert.equal(harness.calls.layersRefresh, 1);
+  assert.equal(harness.calls.thumbnails, 1);
+  harness.canvas.dispatchEvent(makeEvent("pointerup", {
+    pointerId: 11,
+    pointerType: "touch",
+  }));
+  harness.canvas.dispatchEvent(makeEvent("pointerup", {
+    pointerId: 10,
+    pointerType: "touch",
+  }));
+  harness.controller.dispose();
+}
+
 // Wheel and R-drag navigation obey their own view lock and vector lifecycle.
 {
   const harness = createHarness();

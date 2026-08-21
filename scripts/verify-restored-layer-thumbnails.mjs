@@ -28,6 +28,12 @@ const rasterCapture = sourceBetween(
   "async captureActiveLayerThumbnail()",
 );
 assert.match(rasterCapture, /this\.layerStack\.byId\(layerId\)/);
+assert.match(
+  rasterCapture,
+  /const hasContent = record\.id === this\.layerStack\.active\.id\s*\? this\.layerHasContent\s*:\s*record\.hasContent;/,
+  "A freshly painted active layer must use its live content state for thumbnail capture.",
+);
+assert.match(rasterCapture, /if \(!hasContent\)/);
 assert.match(rasterCapture, /gpu\.hot\s*\?\s*gpu\.hot\.samplingView/);
 assert.match(rasterCapture, /createHydratedLayerTexture\([\s\S]*?"defer-to-fold-fence"/);
 assert.match(

@@ -649,7 +649,11 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       const continuesExplicitPan = pointerMode === "pan";
       if (pointerMode === "paint") {
         const canceledHeldIntent = cancelTouchPaintIntentHold("navigation");
-        if (!canceledHeldIntent && !engine.cancelStrokeBeforeRender()) engine.endStroke();
+        if (!canceledHeldIntent && !engine.cancelStrokeBeforeRender()) {
+          engine.endStroke();
+          options.scheduleLayersRefresh();
+          options.invalidateActiveThumbnail();
+        }
         options.getEditorExtension()?.cancelPaintRecording?.();
       } else if (pointerMode === "liquify") {
         engine.endRasterLiquifyStroke(false);

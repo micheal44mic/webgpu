@@ -946,11 +946,13 @@ export class LayerPanelController {
     const key = properties.key;
     this.closeContextMenu(false);
     const operation = this.options.rasterizeLayer(key);
+    let rasterThumbnailChanged = false;
     this.renderSignature = "";
     this.requestRefresh();
     try {
       const result = await operation;
       if (this.disposed) return;
+      rasterThumbnailChanged = result.kind === "raster" && result.changed;
       const message = result.changed
         ? `${result.name} rasterized.`
         : `${result.name} is already rasterized with no effects to bake.`;
@@ -974,7 +976,8 @@ export class LayerPanelController {
       this.requestRefresh();
       const latest = this.options.getStats();
       if (latest) this.render(latest);
-      this.options.thumbnails.ensureActive(0);
+      if (rasterThumbnailChanged) this.options.thumbnails.invalidateActive(0);
+      else this.options.thumbnails.ensureActive(0);
     }
   }
 

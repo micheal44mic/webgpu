@@ -268,6 +268,8 @@ const referenceCalls = [];
 const clippingCalls = [];
 const rasterizeCalls = [];
 const layerResults = [];
+const thumbnailInvalidations = [];
+const thumbnailEnsures = [];
 const controller = new LayerPanelController({
   browser,
   document,
@@ -275,8 +277,8 @@ const controller = new LayerPanelController({
   thumbnails: {
     setPanelOpen: (open) => thumbnailOpenStates.push(open),
     queueMissing() {},
-    invalidateActive() {},
-    ensureActive() {},
+    invalidateActive: (delayMs) => thumbnailInvalidations.push(delayMs),
+    ensureActive: (delayMs) => thumbnailEnsures.push(delayMs),
     resumeCapture() {},
     rasterRevision: () => 0,
     semanticFontRevision: () => "",
@@ -425,6 +427,8 @@ assert.equal(elements.rasterizeButton.disabled, false);
 await controller.requestRasterize();
 assert.deepEqual(rasterizeCalls, ["raster:8"]);
 assert.equal(layerResults.at(-1), "Layer 2 rasterized.");
+assert.deepEqual(thumbnailInvalidations, [0]);
+assert.deepEqual(thumbnailEnsures, []);
 assert.equal(elements.contextMenu.hidden, true);
 assert.equal(controller.openContextMenu("raster:8", contextRow), true);
 controller.cancelTransientInteractions();
