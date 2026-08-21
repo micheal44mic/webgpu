@@ -109,6 +109,7 @@ export interface CanvasInputControllerOptions {
   readonly onHistoryState: (state: HistoryState) => void;
   readonly operationLocked: (allowDestructiveEdit?: boolean) => boolean;
   readonly viewOperationLocked: () => boolean;
+  readonly isPaintReadinessPending: () => boolean;
   readonly isLiquifyEditActive: () => boolean;
   readonly isDestructivePreviewNavigationActive: () => boolean;
   readonly getVectorController: () => CanvasInputVectorPort | null;
@@ -145,12 +146,25 @@ interface TouchNavigationGesture {
 
 type TouchPaintIntentReleaseReason = "movement" | "timeout" | "pointer-up";
 
+const DEFERRED_PEN_RETRY_MS = 16;
+const DEFERRED_PEN_MAX_WAIT_MS = 3_000;
+const DEFERRED_PEN_MAX_BUFFERED_SAMPLES = 256;
+
 interface TouchPaintIntentHold {
   pointerId: number;
   initialSample: PointerSample;
   bufferedSamples: PointerSample[];
   startedAtPerformanceMs: number;
   timeoutId: number;
+}
+
+interface DeferredPenPaint {
+  readonly pointerId: number;
+  readonly initialSample: PointerSample;
+  readonly bufferedSamples: PointerSample[];
+  readonly recordingStarted: boolean;
+  readonly startedAtPerformanceMs: number;
+  retryTimerId: number | null;
 }
 
 interface CanvasInputRuntime {
@@ -264,6 +278,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
   const activeTouchContacts = new Map<number, TouchContact>();
   let touchNavigationGesture: TouchNavigationGesture | null = null;
   let touchPaintIntentHold: TouchPaintIntentHold | null = null;
+  let deferredPenPaint: DeferredPenPaint | null = null;
   const touchPaintIntentCounters = {
     starts: 0,
     releasedByMovement: 0,
@@ -425,6 +440,114 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     } catch {
       // The element can already be detached while pagehide is disposing the app.
     }
+  };
+
+  const clearDeferredPenRetry = (deferred: DeferredPenPaint): void => {
+    if (deferred.retryTimerId === null) return;
+    browser.clearTimeout(deferred.retryTimerId);
+    deferred.retryTimerId = null;
+  };
+
+  const abandonDeferredPenPaint = (resetPointer: boolean): void => {
+    const deferred = deferredPenPaint;
+    if (!deferred) return;
+    clearDeferredPenRetry(deferred);
+    deferredPenPaint = null;
+    if (deferred.recordingStarted) {
+      options.getEditorExtension()?.cancelPaintRecording?.();
+    }
+    if (!resetPointer) return;
+    if (activePointerId === deferred.pointerId) {
+      activePointerId = null;
+      pointerMode = null;
+    }
+    releasePointerCapture(deferred.pointerId);
+    publishHistoryState();
+  };
+
+  const scheduleDeferredPenRetry = (): void => {
+    const deferred = deferredPenPaint;
+    if (!deferred || deferred.retryTimerId !== null || disposed) return;
+    deferred.retryTimerId = browser.setTimeout(() => {
+      deferred.retryTimerId = null;
+      tryResumeDeferredPenPaint();
+    }, DEFERRED_PEN_RETRY_MS);
+  };
+
+  const appendDeferredPenSamples = (
+    deferred: DeferredPenPaint,
+    samples: readonly PointerSample[],
+  ): void => {
+    deferred.bufferedSamples.push(...samples);
+    while (deferred.bufferedSamples.length > DEFERRED_PEN_MAX_BUFFERED_SAMPLES) {
+      const compacted: PointerSample[] = [];
+      for (let index = 0; index < deferred.bufferedSamples.length; index += 2) {
+        compacted.push(deferred.bufferedSamples[index]);
+      }
+      const last = deferred.bufferedSamples[deferred.bufferedSamples.length - 1];
+      if (compacted[compacted.length - 1] !== last) compacted.push(last);
+      deferred.bufferedSamples.splice(0, deferred.bufferedSamples.length, ...compacted);
+    }
+  };
+
+  const tryResumeDeferredPenPaint = (): boolean => {
+    const deferred = deferredPenPaint;
+    if (!deferred) return false;
+    if (
+      activePointerId !== deferred.pointerId
+      || pointerMode !== "paint"
+      || disposed
+    ) {
+      abandonDeferredPenPaint(false);
+      return false;
+    }
+    if (
+      browser.performance.now() - deferred.startedAtPerformanceMs
+      >= DEFERRED_PEN_MAX_WAIT_MS
+    ) {
+      status.textContent = "Il livello sta ancora caricando: solleva la Pencil e riprova.";
+      status.className = "status";
+      abandonDeferredPenPaint(true);
+      return false;
+    }
+    if (options.isPaintReadinessPending() || options.operationLocked()) {
+      scheduleDeferredPenRetry();
+      return false;
+    }
+    clearDeferredPenRetry(deferred);
+    deferredPenPaint = null;
+    if (!engine.beginStroke(deferred.initialSample)) {
+      if (deferred.recordingStarted) {
+        options.getEditorExtension()?.cancelPaintRecording?.();
+      }
+      activePointerId = null;
+      pointerMode = null;
+      releasePointerCapture(deferred.pointerId);
+      publishHistoryState();
+      return false;
+    }
+    if (deferred.bufferedSamples.length > 0) {
+      engine.extendStroke(deferred.bufferedSamples);
+    }
+    return true;
+  };
+
+  const startDeferredPenPaint = (
+    pointerId: number,
+    initialSample: PointerSample,
+    recordingStarted: boolean,
+  ): void => {
+    deferredPenPaint = {
+      pointerId,
+      initialSample,
+      bufferedSamples: [],
+      recordingStarted,
+      startedAtPerformanceMs: browser.performance.now(),
+      retryTimerId: null,
+    };
+    status.textContent = "Completo il livello prima di iniziare il tratto…";
+    status.className = "status";
+    scheduleDeferredPenRetry();
   };
 
   const releaseTouchPaintIntentHold = (
@@ -594,16 +717,21 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       && options.isLiquifyEditActive();
     const blurTouchNavigationRequested = event.pointerType === "touch"
       && options.isDestructivePreviewNavigationActive();
+    const deferPenForPaintReadiness = requestedPointerMode === "paint"
+      && event.pointerType === "pen"
+      && options.isPaintReadinessPending();
     if (
       (viewNavigationRequested || blurTouchNavigationRequested)
         ? options.viewOperationLocked()
         : options.operationLocked(liquifyEditRequested)
     ) {
-      if (options.getHistoryState().openEdit === "raster-property") {
-        status.textContent = "Completo la modifica dell'effetto prima del tratto…";
-        status.className = "status";
+      if (!deferPenForPaintReadiness) {
+        if (options.getHistoryState().openEdit === "raster-property") {
+          status.textContent = "Completo la modifica dell'effetto prima del tratto…";
+          status.className = "status";
+        }
+        return;
       }
-      return;
     }
 
     if (blurTouchNavigationRequested) {
@@ -639,9 +767,13 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       const extensionRecordingStarted = extension?.wantsPaintRecording?.() === true;
       if (extensionRecordingStarted) extension?.beginPaintRecording?.(event, paintSample);
       if (!engine.beginStroke(paintSample)) {
-        if (extensionRecordingStarted) extension?.cancelPaintRecording?.();
-        publishHistoryState();
-        return;
+        if (event.pointerType === "pen" && options.isPaintReadinessPending()) {
+          startDeferredPenPaint(event.pointerId, paintSample, extensionRecordingStarted);
+        } else {
+          if (extensionRecordingStarted) extension?.cancelPaintRecording?.();
+          publishHistoryState();
+          return;
+        }
       }
     }
 
@@ -792,6 +924,11 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     }
     const samples = sourceEvents.map(toPointerSample);
     options.getEditorExtension()?.capturePaintRecording?.(sourceEvents, samples);
+    if (deferredPenPaint?.pointerId === event.pointerId) {
+      appendDeferredPenSamples(deferredPenPaint, samples);
+      tryResumeDeferredPenPaint();
+      return;
+    }
     const heldIntent = touchPaintIntentHold;
     if (heldIntent?.pointerId === event.pointerId) {
       heldIntent.bufferedSamples.push(...samples);
@@ -824,6 +961,21 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       return;
     }
     if (event.pointerId !== activePointerId) return;
+
+    if (deferredPenPaint?.pointerId === event.pointerId) {
+      if (event.type === "pointerup") tryResumeDeferredPenPaint();
+      if (deferredPenPaint?.pointerId === event.pointerId) {
+        event.preventDefault();
+        abandonDeferredPenPaint(false);
+        const completedPointerMode = pointerMode;
+        releasePointerCapture(event.pointerId);
+        pointerMode = null;
+        activePointerId = null;
+        if (completedPointerMode === "paint") options.invalidateActiveThumbnail();
+        publishHistoryState();
+        return;
+      }
+    }
 
     if (pointerMode === "paint" && touchPaintIntentHold?.pointerId === event.pointerId) {
       if (event.type === "pointerup") releaseTouchPaintIntentHold("pointer-up");
@@ -1079,12 +1231,16 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
 
     const mode = pointerMode;
     if (mode === "paint") {
-      const canceledHeldIntent = cancelTouchPaintIntentHold("pointer-end");
-      if (canceledHeldIntent) {
-        options.getEditorExtension()?.cancelPaintRecording?.();
+      if (deferredPenPaint) {
+        abandonDeferredPenPaint(false);
       } else {
-        if (!engine.cancelStrokeBeforeRender()) engine.endStroke();
-        options.getEditorExtension()?.finishPaintRecording?.(false);
+        const canceledHeldIntent = cancelTouchPaintIntentHold("pointer-end");
+        if (canceledHeldIntent) {
+          options.getEditorExtension()?.cancelPaintRecording?.();
+        } else {
+          if (!engine.cancelStrokeBeforeRender()) engine.endStroke();
+          options.getEditorExtension()?.finishPaintRecording?.(false);
+        }
       }
     } else if (mode === "liquify") {
       engine.endRasterLiquifyStroke(false);

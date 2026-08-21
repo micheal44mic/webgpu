@@ -456,6 +456,11 @@ assert.match(controllerSource, /private enterTouchNavigation\(\)/);
 assert.match(controllerSource, /this\.host\.rotateViewBy\(/);
 assert.match(controllerSource, /kind: "raster-layer"/);
 assert.match(controllerSource, /importata subito come raster/);
+assert.match(
+  controllerSource,
+  /const imported = await this\.host\.importRasterImageFile\(file\);[\s\S]{0,500}await this\.host\.waitForIdle\(\);[\s\S]{0,500}importata subito come raster/,
+  "l'import deve restare bloccato finche upload, mip e prima presentazione sono conclusi",
+);
 assert.match(htmlSource, /data-mobile-canvas-tool="transform"/);
 assert.match(htmlSource, /id="transformApply"/);
 assert.match(htmlSource, /id="transformCancel"/);

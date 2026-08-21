@@ -407,6 +407,10 @@ export class MixedSceneController {
     });
   }
 
+  get isBusy(): boolean {
+    return this.sceneOperationBusy;
+  }
+
   async initialize(): Promise<void> {
     await this.fontGeometry.preload();
     this.presentationCanvas.width = 1;
@@ -1647,6 +1651,10 @@ export class MixedSceneController {
     this.syncControlsFromSelection(this.selectedVectorNode());
     try {
       const imported = await this.host.importRasterImageFile(file);
+      // Keep the import operation locked until uploads, mip generation and the
+      // first presentation are drained. Otherwise the first Pencil down can
+      // land behind that queued GPU work and look as if the stroke started late.
+      await this.host.waitForIdle();
       const sourceMiB = imported.sourceBytes / MEBIBYTE_BYTES;
       this.setImageImportStatus(
         `${imported.name} importata subito come raster · `

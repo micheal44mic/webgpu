@@ -1565,6 +1565,7 @@ canvasInputController = new CanvasInputController({
   },
   operationLocked,
   viewOperationLocked: canvasViewOperationLocked,
+  isPaintReadinessPending: () => engine.isPaintReadinessPending(),
   isLiquifyEditActive: () =>
     rasterAdjustmentsController?.isLiquifyEditActive(historyState) === true,
   isDestructivePreviewNavigationActive: () =>
@@ -1617,6 +1618,7 @@ window.addEventListener("pagehide", () => {
 function nonHistoryOperationLocked(allowDestructiveBlurEdit = false): boolean {
   return !engineInitialized
     || sceneEditorController?.isBusy === true
+    || mixedSceneController?.isBusy === true
     || brushQuickControlsController?.isDragging === true
     || mobileBrushStudio?.isOpen === true
     || historyState.openEdit === "transform"

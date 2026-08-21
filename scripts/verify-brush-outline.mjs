@@ -36,8 +36,8 @@ const assertNormalized = (outline) => {
   }
 };
 
-assert.equal(BRUSH_OUTLINE_ALPHA_THRESHOLD, 0,
-  "Krita include ogni alpha non trasparente, anche 1/255");
+assert.equal(BRUSH_OUTLINE_ALPHA_THRESHOLD, 8,
+  "la preview deve ignorare copertura quasi trasparente senza cambiare la maschera paint");
 assert.equal(BRUSH_OUTLINE_MIN_VISIBLE_CSS_PIXELS, 1,
   "outlineSizeMinimum di Krita usa 1 px come default");
 
@@ -46,8 +46,35 @@ assert.equal(empty.edgeCount, 0);
 assert.deepEqual(empty.paths, []);
 assert.deepEqual(Array.from(empty.boundingHull), []);
 assert.equal(empty.precise, true);
+const effectivelyTransparent = buildBrushMaskOutline(
+  new Uint8Array(9).fill(BRUSH_OUTLINE_ALPHA_THRESHOLD),
+  3,
+  3,
+);
+assert.equal(effectivelyTransparent.edgeCount, 0);
+assert.deepEqual(effectivelyTransparent.paths, []);
 
-const single = buildBrushMaskOutline(Uint8Array.of(1), 1, 1);
+const transparentNoise = buildBrushMaskOutline(
+  Uint8Array.of(
+    1, 0, 0, 0, 0,
+    0, 0, 0, 0, 0,
+    0, 0, 255, 0, 0,
+    0, 0, 0, 0, 0,
+    0, 0, 0, 0, BRUSH_OUTLINE_ALPHA_THRESHOLD,
+  ),
+  5,
+  5,
+);
+assert.equal(transparentNoise.paths.length, 1,
+  "pixel quasi trasparenti lontani non devono creare contorni fantasma");
+assert.deepEqual(coordinates(transparentNoise.boundingHull), [
+  -0.1, -0.1,
+  0.1, -0.1,
+  0.1, 0.1,
+  -0.1, 0.1,
+]);
+
+const single = buildBrushMaskOutline(Uint8Array.of(255), 1, 1);
 assert.equal(single.edgeCount, 4);
 assert.equal(single.paths.length, 1);
 assert.deepEqual(coordinates(single.paths[0]), [
@@ -62,6 +89,17 @@ assert.deepEqual(coordinates(single.boundingHull), [
   0.5, 0.5,
   -0.5, 0.5,
 ]);
+const thresholdBoundary = buildBrushMaskOutline(Uint8Array.of(
+  BRUSH_OUTLINE_ALPHA_THRESHOLD,
+  BRUSH_OUTLINE_ALPHA_THRESHOLD + 1,
+), 2, 1);
+assert.equal(thresholdBoundary.paths.length, 1);
+assert.deepEqual(coordinates(thresholdBoundary.boundingHull), [
+  0, -0.5,
+  0.5, -0.5,
+  0.5, 0.5,
+  0, 0.5,
+], "la soglia e esclusiva: 8 e invisibile, 9 entra nel contorno");
 
 const rectangle = buildBrushMaskOutline(new Uint8Array(15).fill(255), 5, 3);
 assert.equal(rectangle.edgeCount, 16);
@@ -124,8 +162,8 @@ assertClose(
 
 // Fixed, real 2048x2048 assets guard both polarity and the exact topology.
 for (const fixture of [
-  { file: "Shape.png", authoredInvert: false, paths: 6, edges: 24596 },
-  { file: "Shapepencil.png", authoredInvert: true, paths: 99, edges: 29312 },
+  { file: "Shape.png", authoredInvert: false, paths: 6, edges: 24584 },
+  { file: "Shapepencil.png", authoredInvert: true, paths: 99, edges: 29376 },
 ]) {
   const bytes = readFileSync(new URL(fixture.file, root));
   const source = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
@@ -478,6 +516,21 @@ assert.equal(device.queue.submissions.length, submissionsWhileSuppressed,
 canvas.dispatchEvent(pointerEvent("pointerup", 11, 21, "pen", 0));
 browser.flushFrames();
 assert.equal(overlay.hidden, false, "la preview ricompare al pointerup");
+
+canvas.dispatchEvent(pointerEvent("pointerdown", 12, 22, "pen", 0));
+const submissionsBeforeDelayedFrame = device.queue.submissions.length;
+browser.advanceTimersBy(400);
+assert.equal(overlay.hidden, true,
+  "il timeout deve nascondere la preview anche con un frame ancora in coda");
+browser.flushFrames();
+assert.equal(overlay.hidden, true,
+  "un frame iPad in ritardo non deve far riapparire la preview congelata");
+assert.equal(device.queue.submissions.length, submissionsBeforeDelayedFrame,
+  "il frame gia accodato deve essere annullato quando scattano i 400 ms");
+canvas.dispatchEvent(pointerEvent("pointerup", 12, 22, "pen", 0));
+browser.flushFrames();
+assert.equal(overlay.hidden, false,
+  "dopo la soppressione il pointerup deve ancora riattivare la preview");
 
 snapshot = {
   kind: "shape",

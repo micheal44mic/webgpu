@@ -264,10 +264,7 @@ export class BrushOutlineController {
     this.disposed = true;
     this.abortController.abort();
     this.resizeObserver.disconnect();
-    if (this.frame !== null) {
-      this.options.browser.cancelAnimationFrame(this.frame);
-      this.frame = null;
-    }
+    this.cancelScheduledRender();
     this.cancelStrokeHide();
     this.hide();
     this.destroyGpuResources();
@@ -320,6 +317,7 @@ export class BrushOutlineController {
       this.strokeHideTimer = null;
       if (!this.strokeActive) return;
       this.strokeOutlineSuppressed = true;
+      this.cancelScheduledRender();
       this.hide();
     }, STROKE_OUTLINE_HIDE_DELAY_MILLISECONDS);
   };
@@ -346,8 +344,15 @@ export class BrushOutlineController {
     ) return;
     this.frame = this.options.browser.requestAnimationFrame(() => {
       this.frame = null;
+      if (this.disposed || !this.pointer || this.strokeOutlineSuppressed) return;
       this.render();
     });
+  }
+
+  private cancelScheduledRender(): void {
+    if (this.frame === null) return;
+    this.options.browser.cancelAnimationFrame(this.frame);
+    this.frame = null;
   }
 
   private cancelStrokeHide(): void {

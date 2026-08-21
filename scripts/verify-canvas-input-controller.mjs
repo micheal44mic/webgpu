@@ -19,6 +19,8 @@ assert.doesNotMatch(
 assert.match(controllerSource, /export type CanvasInputEnginePort = Pick</);
 assert.match(controllerSource, /private readonly runtime: CanvasInputRuntime/);
 assert.match(controllerSource, /new browser\.AbortController\(\)/);
+assert.match(mainSource, /mixedSceneController\?\.isBusy === true/);
+assert.match(mainSource, /isPaintReadinessPending: \(\) => engine\.isPaintReadinessPending\(\)/);
 assert.doesNotMatch(controllerSource, /document\.getElementById|element<|mobileBrush/);
 
 const moduleServer = await createServer({
@@ -247,6 +249,7 @@ function createHarness({ holdEnabled = true } = {}) {
   let activeTool = "paint";
   let selectionMethod = "magic-wand";
   let operationIsLocked = false;
+  let paintReadinessPending = false;
   let viewIsLocked = false;
   let liquifyEditActive = false;
   let destructivePreviewNavigationActive = false;
@@ -311,6 +314,7 @@ function createHarness({ holdEnabled = true } = {}) {
     onHistoryState: () => { calls.historyPublished += 1; },
     operationLocked: () => operationIsLocked,
     viewOperationLocked: () => viewIsLocked,
+    isPaintReadinessPending: () => paintReadinessPending,
     isLiquifyEditActive: () => liquifyEditActive,
     isDestructivePreviewNavigationActive: () => destructivePreviewNavigationActive,
     getVectorController: () => vector,
@@ -332,6 +336,7 @@ function createHarness({ holdEnabled = true } = {}) {
     setActiveTool(value) { activeTool = value; },
     setSelectionMethod(value) { selectionMethod = value; },
     setOperationLocked(value) { operationIsLocked = value; },
+    setPaintReadinessPending(value) { paintReadinessPending = value; },
     setViewLocked(value) { viewIsLocked = value; },
     setLiquifyEditActive(value) { liquifyEditActive = value; },
     setDestructivePreviewNavigationActive(value) {
@@ -412,6 +417,141 @@ function createHarness({ holdEnabled = true } = {}) {
   assert.equal(harness.calls.beginStroke.length, 1);
   harness.canvas.dispatchEvent(makeEvent("pointerup", { pointerId: 2 }));
   assert.equal(harness.calls.endStroke.length, 0);
+  harness.controller.dispose();
+}
+
+// A Pencil contact landing during a short layer/import barrier is retained.
+// Its coalesced samples start exactly once when readiness and the UI lock clear.
+{
+  const harness = createHarness();
+  harness.enableRecording();
+  harness.setPaintReadinessPending(true);
+  harness.setOperationLocked(true);
+  harness.setBeginStrokeAllowed(false);
+  const down = makeEvent("pointerdown", {
+    pointerId: 31,
+    pointerType: "pen",
+    clientX: 40,
+    clientY: 50,
+    pressure: 0.7,
+    timeStamp: 30,
+  });
+  harness.canvas.dispatchEvent(down);
+  assert.equal(down.defaultPrevented, true);
+  assert.equal(harness.controller.isPointerActive, true);
+  assert.equal(harness.calls.beginStroke.length, 1,
+    "il primo tentativo rileva la barriera senza aprire uno stroke engine");
+  harness.canvas.dispatchEvent(makeEvent("pointermove", {
+    pointerId: 31,
+    pointerType: "pen",
+    clientX: 48,
+    clientY: 57,
+    pressure: 0.8,
+    timeStamp: 31,
+  }));
+  assert.equal(harness.calls.extendStroke.length, 0);
+  harness.setPaintReadinessPending(false);
+  harness.setOperationLocked(false);
+  harness.setBeginStrokeAllowed(true);
+  harness.browser.runTimers();
+  assert.equal(harness.calls.beginStroke.length, 2,
+    "dopo la barriera deve esserci un solo retry riuscito");
+  assert.equal(harness.calls.extendStroke.length, 1);
+  assert.deepEqual(harness.calls.extendStroke[0].map(({ clientX, clientY }) => ({
+    clientX,
+    clientY,
+  })), [{ clientX: 48, clientY: 57 }]);
+  harness.canvas.dispatchEvent(makeEvent("pointerup", {
+    pointerId: 31,
+    pointerType: "pen",
+    clientX: 48,
+    clientY: 57,
+    timeStamp: 32,
+  }));
+  assert.deepEqual(harness.calls.endStroke, [32]);
+  assert.deepEqual(harness.calls.recordingFinish, [true]);
+  harness.controller.dispose();
+}
+
+// Lifting before readiness cancels the retained gesture: no latent paint later.
+{
+  const harness = createHarness();
+  harness.enableRecording();
+  harness.setPaintReadinessPending(true);
+  harness.setBeginStrokeAllowed(false);
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 32,
+    pointerType: "pen",
+  }));
+  harness.canvas.dispatchEvent(makeEvent("pointerup", {
+    pointerId: 32,
+    pointerType: "pen",
+  }));
+  harness.setPaintReadinessPending(false);
+  harness.browser.runTimers();
+  assert.equal(harness.calls.beginStroke.length, 1,
+    "il tentativo rifiutato non deve essere ripetuto dopo il pointerup");
+  assert.equal(harness.calls.endStroke.length, 0);
+  assert.equal(harness.calls.recordingCancel, 1);
+  harness.controller.dispose();
+}
+
+// A long import cannot grow an unbounded Pencil queue or replay a giant burst.
+{
+  const harness = createHarness();
+  harness.setPaintReadinessPending(true);
+  harness.setBeginStrokeAllowed(false);
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 33,
+    pointerType: "pen",
+  }));
+  const coalesced = Array.from({ length: 2_000 }, (_, index) => ({
+    clientX: index,
+    clientY: index * 0.5,
+    pointerType: "pen",
+    pressure: 0.6,
+    timeStamp: 100 + index,
+  }));
+  harness.canvas.dispatchEvent(makeEvent("pointermove", {
+    pointerId: 33,
+    pointerType: "pen",
+    getCoalescedEvents: () => coalesced,
+  }));
+  harness.setPaintReadinessPending(false);
+  harness.setBeginStrokeAllowed(true);
+  harness.browser.runTimers();
+  assert.equal(harness.calls.extendStroke.length, 1);
+  assert.ok(harness.calls.extendStroke[0].length <= 256,
+    "il replay Pencil deve restare limitato anche con molti campioni coalescenti");
+  assert.equal(harness.calls.extendStroke[0].at(-1).clientX, 1_999,
+    "il ricampionamento limitato deve preservare l'ultimo punto");
+  harness.canvas.dispatchEvent(makeEvent("pointerup", {
+    pointerId: 33,
+    pointerType: "pen",
+  }));
+  harness.controller.dispose();
+}
+
+// An import that remains blocked too long releases the Pencil safely.
+{
+  const harness = createHarness();
+  harness.enableRecording();
+  harness.setPaintReadinessPending(true);
+  harness.setBeginStrokeAllowed(false);
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 34,
+    pointerType: "pen",
+  }));
+  harness.browser.now += 3_000;
+  harness.browser.runTimers();
+  assert.equal(harness.controller.isPointerActive, false);
+  assert.equal(harness.canvas.captures.size, 0);
+  assert.equal(harness.calls.recordingCancel, 1);
+  harness.setPaintReadinessPending(false);
+  harness.setBeginStrokeAllowed(true);
+  harness.browser.runTimers();
+  assert.equal(harness.calls.beginStroke.length, 1,
+    "dopo la scadenza non deve comparire un retry tardivo");
   harness.controller.dispose();
 }
 

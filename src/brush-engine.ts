@@ -3814,6 +3814,12 @@ export class BrushEngine {
     return this.beginStrokeAtLayer(this.toLayerPoint(sample));
   }
 
+  /** True only for short-lived setup that can safely retain one Pencil contact. */
+  isPaintReadinessPending(): boolean {
+    return this.initialized
+      && (this.layerSwitchBusy || !this.currentBrushResourcesReady());
+  }
+
   beginStrokeAtLayer(point: LayerPoint): boolean {
     // layerSwitchBusy is held across the switch's awaits, so a pointerdown
     // landing mid-switch cannot start a stroke on a half-swapped layer.

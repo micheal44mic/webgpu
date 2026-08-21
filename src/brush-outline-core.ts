@@ -1,4 +1,9 @@
-export const BRUSH_OUTLINE_ALPHA_THRESHOLD = 0;
+/**
+ * Cursor-only cutoff for effectively transparent tip pixels. The paint mask
+ * remains untouched; this merely prevents faint resampling fringes or stray
+ * alpha noise from inflating the visual outline far beyond the useful tip.
+ */
+export const BRUSH_OUTLINE_ALPHA_THRESHOLD = 8;
 export const BRUSH_OUTLINE_MIN_VISIBLE_CSS_PIXELS = 1;
 
 export interface BrushMaskOutline {
@@ -250,8 +255,8 @@ function buildBoundingHull(paths: readonly Float32Array[]): Float32Array {
 
 /**
  * Builds the cached boundary from the same post-polarity alpha mask uploaded
- * to WebGPU. Non-zero alpha is deliberately the boundary criterion, matching
- * Krita's transparent-alpha outline source rather than an arbitrary 50% cut.
+ * to WebGPU. Effectively transparent coverage is omitted from the cursor so
+ * antialiasing noise cannot dominate its bounds; this does not alter painting.
  * The result is always exact: it is never downsampled for complex custom tips.
  */
 export function buildBrushMaskOutline(
