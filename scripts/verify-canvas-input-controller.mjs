@@ -185,12 +185,26 @@ class FakeBrowser extends EventTarget {
   ResizeObserver = FakeResizeObserver;
   now = 100;
   nextTimerId = 1;
+  nextAnimationFrameId = 1;
   timers = new Map();
+  animationFrames = new Map();
   performance = { now: () => this.now };
 
   requestAnimationFrame(callback) {
-    callback(this.now);
-    return 1;
+    const id = this.nextAnimationFrameId;
+    this.nextAnimationFrameId += 1;
+    this.animationFrames.set(id, callback);
+    return id;
+  }
+
+  cancelAnimationFrame(id) {
+    this.animationFrames.delete(id);
+  }
+
+  runAnimationFrames() {
+    const pending = [...this.animationFrames.values()];
+    this.animationFrames.clear();
+    for (const callback of pending) callback(this.now);
   }
 
   setTimeout(callback) {
@@ -509,14 +523,32 @@ async function flushMicrotasks() {
     clientY: 90,
     timeStamp: 140,
   }));
+  harness.canvas.dispatchEvent(makeEvent("pointermove", {
+    pointerId: 90,
+    clientX: 170,
+    clientY: 92,
+    timeStamp: 141,
+  }));
+  harness.canvas.dispatchEvent(makeEvent("pointermove", {
+    pointerId: 90,
+    clientX: 180,
+    clientY: 94,
+    timeStamp: 142,
+  }));
   assert.equal(harness.calls.extendStroke.length, 1,
     "durante la regolazione nessuna coda curva deve raggiungere il motore");
+  const updatesBeforeFrame = harness.calls.updateStraightLine.length;
+  assert.equal(updatesBeforeFrame, 1,
+    "gli eventi endpoint nello stesso frame non devono ricostruire subito la linea");
+  harness.browser.runAnimationFrames();
+  assert.equal(harness.calls.updateStraightLine.length, updatesBeforeFrame + 1,
+    "un burst endpoint deve produrre una sola preview latest-only per frame");
   assert.deepEqual(
     {
       clientX: harness.calls.updateStraightLine.at(-1).at(-1).clientX,
       clientY: harness.calls.updateStraightLine.at(-1).at(-1).clientY,
     },
-    { clientX: 160, clientY: 90 },
+    { clientX: 180, clientY: 94 },
     "la punta deve aggiornare direttamente la geometria GPU reale",
   );
   assert.equal(harness.calls.endStroke.length, 0,
@@ -524,8 +556,8 @@ async function flushMicrotasks() {
   assert.equal(harness.calls.commitStraightLine.length, 0);
   harness.canvas.dispatchEvent(makeEvent("pointerup", {
     pointerId: 90,
-    clientX: 160,
-    clientY: 90,
+    clientX: 185,
+    clientY: 96,
     timeStamp: 150,
   }));
   await flushMicrotasks();
@@ -540,7 +572,7 @@ async function flushMicrotasks() {
   );
   assert.deepEqual(
     { clientX: committedLast.clientX, clientY: committedLast.clientY },
-    { clientX: 160, clientY: 90 },
+    { clientX: 185, clientY: 96 },
     "la punta rilasciata deve controllare lunghezza e angolo finali",
   );
   for (const sample of committedSamples) {

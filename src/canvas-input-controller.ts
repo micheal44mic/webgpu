@@ -194,6 +194,7 @@ interface StraightLineGesture {
   settledClientX: number;
   settledClientY: number;
   holdTimerId: number | null;
+  endpointFrameId: number | null;
   commitRequested: boolean;
   cancelRequested: boolean;
   pointerReleased: boolean;
@@ -482,8 +483,15 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     gesture.holdTimerId = null;
   };
 
+  const clearStraightLineEndpointFrame = (gesture: StraightLineGesture): void => {
+    if (gesture.endpointFrameId === null) return;
+    browser.cancelAnimationFrame(gesture.endpointFrameId);
+    gesture.endpointFrameId = null;
+  };
+
   const discardStraightLineGesture = (gesture: StraightLineGesture): void => {
     clearStraightLineHoldTimer(gesture);
+    clearStraightLineEndpointFrame(gesture);
     gesture.abortController.abort();
     if (straightLineGesture === gesture) straightLineGesture = null;
   };
@@ -495,13 +503,27 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     const endpoint = samples[samples.length - 1];
     if (!endpoint || gesture.samples.length < 2) return;
     gesture.samples[gesture.samples.length - 1] = endpoint;
-    if (gesture.phase === "adjusting") {
+    if (gesture.phase !== "adjusting" || gesture.endpointFrameId !== null) return;
+    // Pointer Events can arrive substantially faster than the display. Quick
+    // Line replaces its complete geometry, so rebuilding more than once per
+    // animation frame only queues obsolete GPU work. Keep the latest endpoint
+    // and publish one exact preview per visible frame.
+    gesture.endpointFrameId = browser.requestAnimationFrame(() => {
+      gesture.endpointFrameId = null;
+      if (
+        disposed
+        || straightLineGesture !== gesture
+        || gesture.phase !== "adjusting"
+      ) {
+        return;
+      }
       engine.updateStraightLineAdjustment(straightenPointerSamples(gesture.samples));
-    }
+    });
   };
 
   const cancelPreparedStraightLine = (gesture: StraightLineGesture): void => {
     if (gesture.phase !== "adjusting") return;
+    clearStraightLineEndpointFrame(gesture);
     gesture.phase = "failed";
     void engine.cancelStraightLineAdjustment().catch((error) => {
       if (disposed) return;
@@ -520,6 +542,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
 
   const commitStraightLine = (gesture: StraightLineGesture): void => {
     if (gesture.phase !== "adjusting" || !gesture.commitRequested) return;
+    clearStraightLineEndpointFrame(gesture);
     gesture.phase = "committing";
     const straightSamples = straightenPointerSamples(gesture.samples);
     void engine.commitStraightLineAdjustment(straightSamples).then((committed) => {
@@ -593,9 +616,14 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
         gesture.phase = "adjusting";
         status.textContent = "Move the endpoint, then release to commit the straight line.";
         status.className = "status";
-        engine.updateStraightLineAdjustment(straightenPointerSamples(gesture.samples));
         publishHistoryState();
-        if (gesture.commitRequested) commitStraightLine(gesture);
+        if (gesture.commitRequested) {
+          // Commit regenerates the latest endpoint itself; avoid a duplicate
+          // replacement preview when release happened while prepare awaited.
+          commitStraightLine(gesture);
+        } else {
+          engine.updateStraightLineAdjustment(straightenPointerSamples(gesture.samples));
+        }
       },
     ).catch((error) => {
       gesture.phase = "failed";
@@ -646,6 +674,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       settledClientX: last.clientX,
       settledClientY: last.clientY,
       holdTimerId: null,
+      endpointFrameId: null,
       commitRequested: false,
       cancelRequested: false,
       pointerReleased: false,

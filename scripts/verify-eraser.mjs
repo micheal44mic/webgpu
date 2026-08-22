@@ -307,8 +307,13 @@ assert.equal(quickLineReplacement.stampStart, 0);
 assert.match(engine, /preview\.stamps\.slice\(requestedStampStart\)/);
 assert.match(
   engine,
-  /const incrementalErase = settings\.tool === "erase"\s+&& this\.pixelSelectionState\.selectedPixels === 0\s+&& this\.straightLineAdjustment === null/,
-  "stabilized Eraser mature stamps must stay on the incremental append path",
+  /const incrementalErase = settings\.tool === "erase"\s+&& this\.straightLineAdjustment === null/,
+  "selected and stabilized Eraser stamps must stay on the incremental append path",
+);
+assert.doesNotMatch(
+  engine,
+  /const incrementalErase[\s\S]{0,160}pixelSelectionState/,
+  "Pixel Selection must not restore cumulative Eraser preview replays",
 );
 assert.match(engine, /frame\.replacement \|\| frame\.incremental \? "load" : "clear"/);
 assert.match(engine, /if \(frame\.replacement\) \{\s+encoder\.copyTextureToTexture/);

@@ -10195,8 +10195,10 @@ export class BrushEngine {
     }
 
     const settings = preview.settings;
+    // Pixel Selection is immutable for the lifetime of an active stroke, so
+    // its mask is safe on the append path too. Falling back to replacement
+    // frames here made every selected Eraser gesture replay its full prefix.
     const incrementalErase = settings.tool === "erase"
-      && this.pixelSelectionState.selectedPixels === 0
       && this.straightLineAdjustment === null;
     const requestedStampStart = incrementalErase && !preview.forcePresentationRebuild
       ? Math.min(preview.presentedStampCount, preview.stamps.length)

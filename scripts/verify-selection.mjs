@@ -371,7 +371,11 @@ assert.equal(
   4,
   "Glaze, Paint ordinario e i percorsi iniziale/rebuild della preview Quick Line devono restringere dirty rect e scissor.",
 );
-assert(brushEngine.includes("&& this.pixelSelectionState.selectedPixels === 0"));
+assert.doesNotMatch(
+  brushEngine,
+  /const incrementalErase[\s\S]{0,160}pixelSelectionState/,
+  "La selezione pixel non deve disattivare l'append incrementale della gomma.",
+);
 assert.match(
   brushEngine,
   /if \(this\.pixelSelectionState\.selectedPixels > 0\) \{\s+this\.adaptivePreviewCandidates\.length = 0/,
