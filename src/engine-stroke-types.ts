@@ -76,12 +76,20 @@ export interface PackedStampUpload {
 export interface ThicknessTailFrame {
   settings: BrushSettings;
   stamps: Stamp[];
+  /** Pixels changed by this frame and therefore requiring a redraw. */
   dirtyRect: DirtyRect;
+  /** Complete transient surface bounds retained across incremental frames. */
+  presentedRect: DirtyRect;
   shapeOccupancySelection: ShapeOccupancySelection | null;
   grainActive: boolean;
   originX: number;
   originY: number;
+  /** Copies the permanent layer into the transient surface before drawing. */
   replacement: boolean;
+  /** Loads the previous transient pixels and applies only this frame's stamps. */
+  incremental: boolean;
+  /** Presents the existing transient surface without mutating it. */
+  retained: boolean;
 }
 
 export interface StabilizationTailFrame {

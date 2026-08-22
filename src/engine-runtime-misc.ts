@@ -1285,7 +1285,7 @@ export function hasPendingRenderWork(engine: BrushEngine): boolean {
     || Boolean(engine.lightGlazeSession?.commitRequested)
     || Boolean(engine.lightGlazeSession?.endRequested)
     || engine.thicknessTailPreviewEligible()
-    || engine.thicknessTailPresentedRect !== null;
+    || engine.thicknessTailPresentationNeedsRefresh();
 }
 
 export function packStamps(engine: BrushEngine, stamps: readonly Stamp[], settings: BrushSettings): DirtyRect | null {

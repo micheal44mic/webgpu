@@ -2450,7 +2450,7 @@ console.log("Vector rasterize candidate-first rollback verified.");
     "lightGlazeSession?.commitRequested",
     "lightGlazeSession?.endRequested",
     "thicknessTailPreviewEligible()",
-    "thicknessTailPresentedRect !== null",
+    "thicknessTailPresentationNeedsRefresh()",
   ]) {
     assert.ok(
       discard.includes(authoritativeWork),

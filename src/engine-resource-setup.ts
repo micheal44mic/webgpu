@@ -17,7 +17,6 @@ import {
   SHAPE_OCCUPANCY_MAX_MIP,
   SHAPE_OCCUPANCY_WORDS_PER_MAP,
   STAMP_STRIDE_BYTES,
-  THICKNESS_TAIL_MAXIMUM_TEXTURE_DIMENSION,
   THICKNESS_TAIL_TEXTURE_QUANTUM,
   THICKNESS_TAIL_UNIFORM_BYTES,
   VECTOR_TEXT_CAPTURE_UNIFORM_BYTES,
@@ -44,7 +43,6 @@ import {
 import { decodeGrayscalePng8 } from "./png-mask";
 import { decodeShapeMaskWithCanvas } from "./shape-mask-decode";
 import { buildShapeOccupancyMaps } from "./shape-occupancy";
-import { clamp } from "./color";
 import { RasterStrokeRenderer } from "./stroke-renderer";
 import {
   RASTER_STROKE_COMPOSITOR_ONLY_SCRATCH_EXTENT,
@@ -71,6 +69,7 @@ import {
 import { prepareAdaptivePreviewShapePalette } from "./engine-adaptive-preview-runtime";
 import { LAYER_COLD_TILE_COMPOSITE_UNIFORM_BYTES } from "./layer-cold-tile-composite-shader";
 import { LAYER_STORAGE_TILE_COUNT } from "./layer-storage-study";
+import { planDeferredPreviewTextureExtent } from "./deferred-erase-preview-core";
 
 export async function createStaticResources(engine: BrushEngine): Promise<void> {
   engine.brushUniformBuffer = engine.device.createBuffer({
@@ -1285,31 +1284,31 @@ export function rebuildGrainBrushBindGroups(engine: BrushEngine): void {
 export function ensureThicknessTailOverlayResources(engine: BrushEngine, 
   minimumWidth: number,
   minimumHeight: number,
+  allowShrink = false,
 ): void {
-  const roundedWidth = clamp(
-    Math.ceil(Math.max(1, minimumWidth) / THICKNESS_TAIL_TEXTURE_QUANTUM)
-      * THICKNESS_TAIL_TEXTURE_QUANTUM,
-    THICKNESS_TAIL_TEXTURE_QUANTUM,
-    THICKNESS_TAIL_MAXIMUM_TEXTURE_DIMENSION,
-  );
-  const roundedHeight = clamp(
-    Math.ceil(Math.max(1, minimumHeight) / THICKNESS_TAIL_TEXTURE_QUANTUM)
-      * THICKNESS_TAIL_TEXTURE_QUANTUM,
-    THICKNESS_TAIL_TEXTURE_QUANTUM,
-    THICKNESS_TAIL_MAXIMUM_TEXTURE_DIMENSION,
-  );
+  const width = planDeferredPreviewTextureExtent({
+    currentExtent: engine.thicknessTailTextureWidth,
+    requiredExtent: minimumWidth,
+    maximumExtent: DOCUMENT_WIDTH,
+    quantum: THICKNESS_TAIL_TEXTURE_QUANTUM,
+    allowShrink,
+  });
+  const height = planDeferredPreviewTextureExtent({
+    currentExtent: engine.thicknessTailTextureHeight,
+    requiredExtent: minimumHeight,
+    maximumExtent: DOCUMENT_HEIGHT,
+    quantum: THICKNESS_TAIL_TEXTURE_QUANTUM,
+    allowShrink,
+  });
   if (
     engine.thicknessTailTexture
     && engine.thicknessTailView
     && engine.thicknessTailDisplayBindGroup
-    && engine.thicknessTailTextureWidth >= roundedWidth
-    && engine.thicknessTailTextureHeight >= roundedHeight
+    && engine.thicknessTailTextureWidth === width
+    && engine.thicknessTailTextureHeight === height
   ) {
     return;
   }
-
-  const width = Math.max(engine.thicknessTailTextureWidth, roundedWidth);
-  const height = Math.max(engine.thicknessTailTextureHeight, roundedHeight);
   const texture = engine.device.createTexture({
     label: `Predictive thickness tail ${width}×${height} ${engine.layerFormat}`,
     size: { width, height, depthOrArrayLayers: 1 },

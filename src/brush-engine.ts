@@ -541,6 +541,10 @@ import {
   vectorTextGpuRunBounds,
 } from "./engine-geometry";
 import {
+  deferredEraseTextureMinimum,
+  planDeferredErasePreview,
+} from "./deferred-erase-preview-core";
+import {
   clearLayerColdCompressionIdleTimer,
   coldStorageMaskForRecord,
   compressOneDistantLayerInBackground,
@@ -1538,6 +1542,13 @@ export class BrushEngine {
     readonly historyActionId: number;
     readonly settings: BrushSettings;
     stamps: Stamp[];
+    presentedStampCount: number;
+    presentedRect: DirtyRect | null;
+    originX: number;
+    originY: number;
+    presentationTexture: GPUTexture | null;
+    forcePresentationRebuild: boolean;
+    allowPresentationShrink: boolean;
   } | null = null;
   straightLineAdjustment: {
     readonly sourceActionId: number;
@@ -4110,6 +4121,13 @@ export class BrushEngine {
         historyActionId,
         settings: { ...this.settings },
         stamps: [],
+        presentedStampCount: 0,
+        presentedRect: null,
+        originX: 0,
+        originY: 0,
+        presentationTexture: null,
+        forcePresentationRebuild: true,
+        allowPresentationShrink: true,
       };
     }
     if (lightGlazeSettings) {
@@ -4169,6 +4187,13 @@ export class BrushEngine {
     }
     this.seedSequence = stroke.seedSequenceBeforeStroke;
     preview.stamps = [];
+    preview.presentedStampCount = 0;
+    preview.presentedRect = null;
+    preview.originX = 0;
+    preview.originY = 0;
+    preview.presentationTexture = null;
+    preview.forcePresentationRebuild = true;
+    preview.allowPresentationShrink = false;
     stroke.lastInput = { ...first };
     stroke.startedAtMs = first.timeMs;
     stroke.heldThicknessStamps = [];
@@ -6067,7 +6092,7 @@ export class BrushEngine {
       || Boolean(this.lightGlazeSession?.commitRequested)
       || Boolean(this.lightGlazeSession?.endRequested)
       || this.thicknessTailPreviewEligible()
-      || this.thicknessTailPresentedRect !== null
+      || this.thicknessTailPresentationNeedsRefresh()
     ) {
       return false;
     }
@@ -10142,6 +10167,21 @@ export class BrushEngine {
     return this.settings.blendMode === "normal" || this.settings.blendMode === "additive";
   }
 
+  /** A retained deferred preview is visible but carries no pending work. */
+  thicknessTailPresentationNeedsRefresh(): boolean {
+    if (!this.thicknessTailPresentedRect) return false;
+    const stroke = this.activeStroke;
+    const preview = this.deferredStrokePreview;
+    const retainedDeferredPreview = stroke?.tool === "erase"
+      && stroke.deferredPreview
+      && preview?.historyActionId === stroke.historyActionId
+      && preview.presentationTexture === this.thicknessTailTexture
+      && preview.presentedRect !== null
+      && preview.presentedStampCount === preview.stamps.length
+      && !preview.forcePresentationRebuild;
+    return !retainedDeferredPreview;
+  }
+
   private prepareDeferredStrokePreviewFrame(): ThicknessTailFrame | null {
     const stroke = this.activeStroke;
     const preview = this.deferredStrokePreview;
@@ -10155,7 +10195,43 @@ export class BrushEngine {
     }
 
     const settings = preview.settings;
-    const stamps = preview.stamps.slice();
+    const incrementalErase = settings.tool === "erase"
+      && this.pixelSelectionState.selectedPixels === 0
+      && this.straightLineAdjustment === null;
+    const requestedStampStart = incrementalErase && !preview.forcePresentationRebuild
+      ? Math.min(preview.presentedStampCount, preview.stamps.length)
+      : 0;
+    let stamps = preview.stamps.slice(requestedStampStart);
+    const retainedDeferredFrame = (): ThicknessTailFrame | null => {
+      if (
+        !preview.presentedRect
+        || preview.presentationTexture !== this.thicknessTailTexture
+        || preview.presentedStampCount !== preview.stamps.length
+        || preview.forcePresentationRebuild
+        || stroke.thicknessTailHoldback
+      ) {
+        return null;
+      }
+      this.writeThicknessTailDisplayUniforms(
+        preview.originX,
+        preview.originY,
+        settings,
+        2,
+      );
+      return {
+        settings,
+        stamps: [],
+        dirtyRect: { ...preview.presentedRect },
+        presentedRect: { ...preview.presentedRect },
+        shapeOccupancySelection: null,
+        grainActive: isTexturizedGrainActive(settings),
+        originX: preview.originX,
+        originY: preview.originY,
+        replacement: false,
+        incremental: false,
+        retained: true,
+      };
+    };
     if (stroke.thicknessTailHoldback) {
       const referenceTimeMs = thicknessTailReferenceTimeMs(this);
       for (
@@ -10175,23 +10251,98 @@ export class BrushEngine {
         }
       }
     }
-    if (stamps.length === 0) return null;
+    if (stamps.length === 0) return retainedDeferredFrame();
     if (stamps.length > MAX_STAMPS_PER_BATCH) {
       throw new Error(
         `Quick Line preview exceeds ${MAX_STAMPS_PER_BATCH.toLocaleString()} stamps.`,
       );
     }
 
-    const packed = this.packThicknessTailStamps(stamps, settings);
-    const dirtyRect = clipPaintDirtyRectToPixelSelection(this, packed.dirtyRect, null);
-    if (!dirtyRect) return null;
-    ensureThicknessTailOverlayResources(this, dirtyRect.width, dirtyRect.height);
-    const originX = clamp(
+    let packed = this.packThicknessTailStamps(stamps, settings);
+    let dirtyRect = clipPaintDirtyRectToPixelSelection(this, packed.dirtyRect, null);
+    if (!dirtyRect) {
+      preview.presentedStampCount = preview.stamps.length;
+      return retainedDeferredFrame();
+    }
+
+    const requestedPresentedRect = incrementalErase
+      ? mergeDirtyRects(preview.presentedRect, dirtyRect)!
+      : dirtyRect;
+    const textureBeforeEnsure = this.thicknessTailTexture;
+    const resourceMinimumWidth = settings.tool === "erase"
+      ? deferredEraseTextureMinimum(requestedPresentedRect.width, DOCUMENT_WIDTH)
+      : requestedPresentedRect.width;
+    const resourceMinimumHeight = settings.tool === "erase"
+      ? deferredEraseTextureMinimum(requestedPresentedRect.height, DOCUMENT_HEIGHT)
+      : requestedPresentedRect.height;
+    ensureThicknessTailOverlayResources(
+      this,
+      resourceMinimumWidth,
+      resourceMinimumHeight,
+      settings.tool === "erase" && preview.allowPresentationShrink,
+    );
+    preview.allowPresentationShrink = false;
+    let erasePlan = incrementalErase
+      ? planDeferredErasePreview({
+        totalStampCount: preview.stamps.length,
+        presentedStampCount: preview.presentedStampCount,
+        previousPresentedRect: preview.presentedRect,
+        nextDirtyRect: dirtyRect,
+        forceRebuild: preview.forcePresentationRebuild,
+        textureChanged: textureBeforeEnsure !== this.thicknessTailTexture
+          || preview.presentationTexture !== this.thicknessTailTexture,
+        textureWidth: this.thicknessTailTextureWidth,
+        textureHeight: this.thicknessTailTextureHeight,
+        previousOriginX: preview.originX,
+        previousOriginY: preview.originY,
+        documentWidth: DOCUMENT_WIDTH,
+        documentHeight: DOCUMENT_HEIGHT,
+      })
+      : null;
+
+    // Ordinary freehand frames append only their new stamps. Resource growth,
+    // ROI rebasing and a real Quick Line geometry replacement replay the full
+    // prefix once because the replacement surface changed underneath it.
+    if (erasePlan?.rebuild && requestedStampStart > 0) {
+      stamps = preview.stamps.slice();
+      packed = this.packThicknessTailStamps(stamps, settings);
+      dirtyRect = clipPaintDirtyRectToPixelSelection(this, packed.dirtyRect, null);
+      if (!dirtyRect) {
+        preview.presentedStampCount = preview.stamps.length;
+        return null;
+      }
+      ensureThicknessTailOverlayResources(
+        this,
+        settings.tool === "erase"
+          ? deferredEraseTextureMinimum(dirtyRect.width, DOCUMENT_WIDTH)
+          : dirtyRect.width,
+        settings.tool === "erase"
+          ? deferredEraseTextureMinimum(dirtyRect.height, DOCUMENT_HEIGHT)
+          : dirtyRect.height,
+      );
+      erasePlan = planDeferredErasePreview({
+        totalStampCount: preview.stamps.length,
+        presentedStampCount: 0,
+        previousPresentedRect: null,
+        nextDirtyRect: dirtyRect,
+        forceRebuild: true,
+        textureChanged: true,
+        textureWidth: this.thicknessTailTextureWidth,
+        textureHeight: this.thicknessTailTextureHeight,
+        previousOriginX: 0,
+        previousOriginY: 0,
+        documentWidth: DOCUMENT_WIDTH,
+        documentHeight: DOCUMENT_HEIGHT,
+      });
+    }
+
+    const presentedRect = erasePlan?.presentedRect ?? dirtyRect;
+    const originX = erasePlan?.originX ?? clamp(
       dirtyRect.x,
       0,
       Math.max(0, DOCUMENT_WIDTH - this.thicknessTailTextureWidth),
     );
-    const originY = clamp(
+    const originY = erasePlan?.originY ?? clamp(
       dirtyRect.y,
       0,
       Math.max(0, DOCUMENT_HEIGHT - this.thicknessTailTextureHeight),
@@ -10213,17 +10364,26 @@ export class BrushEngine {
       0,
       stamps.length * STAMP_STRIDE_BYTES,
     );
+    preview.presentedStampCount = preview.stamps.length;
+    preview.presentedRect = { ...presentedRect };
+    preview.originX = originX;
+    preview.originY = originY;
+    preview.presentationTexture = this.thicknessTailTexture;
+    preview.forcePresentationRebuild = false;
     return {
       settings,
       stamps,
       dirtyRect,
+      presentedRect,
       shapeOccupancySelection: settings.shape === "shape"
         ? this.selectShapeOccupancy(packed.minimumRadius)
         : null,
       grainActive: isTexturizedGrainActive(settings),
       originX,
       originY,
-      replacement: true,
+      replacement: !incrementalErase || erasePlan!.rebuild,
+      incremental: incrementalErase && !erasePlan!.rebuild,
+      retained: false,
     };
   }
 
@@ -10290,6 +10450,7 @@ export class BrushEngine {
       settings,
       stamps,
       dirtyRect: packed.dirtyRect,
+      presentedRect: packed.dirtyRect,
       shapeOccupancySelection: settings.shape === "shape"
         ? this.selectShapeOccupancy(packed.minimumRadius)
         : null,
@@ -10297,6 +10458,8 @@ export class BrushEngine {
       originX: packed.dirtyRect.x,
       originY: packed.dirtyRect.y,
       replacement: false,
+      incremental: false,
+      retained: false,
     };
   }
 
@@ -10304,6 +10467,7 @@ export class BrushEngine {
     encoder: GPUCommandEncoder,
     frame: ThicknessTailFrame,
   ): void {
+    if (frame.retained) return;
     const settings = frame.settings;
     const isShape = settings.shape === "shape";
     const shapeOccupancyMip = frame.shapeOccupancySelection?.selectedMipLevel ?? null;
@@ -10370,11 +10534,13 @@ export class BrushEngine {
     const pass = encoder.beginRenderPass({
       label: frame.replacement
         ? "Rebuild non-destructive Quick Line preview"
-        : "Rebuild predictive thickness tail",
+        : frame.incremental
+          ? "Append live Eraser stamps to Quick Line preview"
+          : "Rebuild predictive thickness tail",
       colorAttachments: [
         {
           view: this.thicknessTailView!,
-          loadOp: frame.replacement ? "load" : "clear",
+          loadOp: frame.replacement || frame.incremental ? "load" : "clear",
           storeOp: "store",
           clearValue: { r: 0, g: 0, b: 0, a: 0 },
         },
@@ -10497,7 +10663,7 @@ export class BrushEngine {
       || this.clearRequested
       || Boolean(this.lightGlazeSession?.commitRequested)
       || this.thicknessTailPreviewEligible()
-      || this.thicknessTailPresentedRect !== null;
+      || this.thicknessTailPresentationNeedsRefresh();
   }
 
   private trackVectorTextFastPresentationSubmission(): void {
@@ -10648,7 +10814,7 @@ export class BrushEngine {
       || this.displayDirty
       || Boolean(lightGlazeSession?.commitRequested)
       || this.thicknessTailPreviewEligible()
-      || this.thicknessTailPresentedRect !== null;
+      || this.thicknessTailPresentationNeedsRefresh();
 
     if (!shouldSubmit || this.canvas.width <= 0 || this.canvas.height <= 0) {
       return;
@@ -10709,7 +10875,7 @@ export class BrushEngine {
       || this.clearRequested
       || Boolean(this.lightGlazeSession?.commitRequested)
       || this.thicknessTailPreviewEligible()
-      || this.thicknessTailPresentedRect !== null
+      || this.thicknessTailPresentationNeedsRefresh()
     ) {
       this.requestRender();
     }
@@ -13355,16 +13521,20 @@ export class BrushEngine {
         && !thicknessTailFrame
         && !useVectorTextDisplay
         && !this.usesOrderedScenePresentation();
-      const transientMutationRect = mergeDirtyRects(
-        this.thicknessTailPresentedRect,
-        thicknessTailFrame?.dirtyRect ?? null,
-      );
+      const transientMutationRect = thicknessTailFrame?.retained
+        ? null
+        : thicknessTailFrame?.incremental
+          ? thicknessTailFrame.dirtyRect
+          : mergeDirtyRects(
+            this.thicknessTailPresentedRect,
+            thicknessTailFrame?.dirtyRect ?? null,
+          );
       const rasterStrokeMutationRect = mergeDirtyRects(
         submittedDirtyRect,
         transientMutationRect,
       );
       const rasterStrokeVirtualBounds = thicknessTailFrame
-        ? mergeDirtyRects(this.layerContentBounds, thicknessTailFrame.dirtyRect)
+        ? mergeDirtyRects(this.layerContentBounds, thicknessTailFrame.presentedRect)
         : this.layerContentBounds;
       const rasterStrokeUpdate = rasterStrokeActive
         ? this.encodeRasterStrokeUpdate(
@@ -13425,13 +13595,7 @@ export class BrushEngine {
         ? rasterStrokeUpdate.dirtyRect
         : mergeDirtyRects(
           submittedDirtyRect,
-          mergeDirtyRects(
-            this.semanticPresentationDirtyRect,
-            mergeDirtyRects(
-              this.thicknessTailPresentedRect,
-              thicknessTailFrame?.dirtyRect ?? null,
-            ),
-          ),
+          mergeDirtyRects(this.semanticPresentationDirtyRect, transientMutationRect),
         );
       const presentationDirtyRect = requiresFullRebuild
         ? { x: 0, y: 0, width: this.canvas.width, height: this.canvas.height }
@@ -13598,7 +13762,7 @@ export class BrushEngine {
     if (present) {
       this.semanticPresentationDirtyRect = null;
       this.thicknessTailPresentedRect = thicknessTailFrame
-        ? { ...thicknessTailFrame.dirtyRect }
+        ? { ...thicknessTailFrame.presentedRect }
         : null;
     }
     return {
