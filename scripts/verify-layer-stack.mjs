@@ -2850,7 +2850,13 @@ assert.ok(
   "il cambio formato deve allocare prima di distruggere",
 );
 const recreateStart = engineSource.indexOf("export async function recreateLayerResources(");
-const recreateBody = engineSource.slice(recreateStart, recreateStart + 50_000);
+const recreateEnd = engineSource.indexOf(
+  "export async function retargetEffectsWorkingSetInternal(",
+  recreateStart,
+);
+assert.ok(recreateStart >= 0 && recreateEnd > recreateStart,
+  "il verifier deve isolare per intero recreateLayerResources");
+const recreateBody = engineSource.slice(recreateStart, recreateEnd);
 assert.match(recreateBody, /runGpuAllocationTransaction\(\s*engine\.device,\s*`Layer format pipeline/,
   "anche pipeline e layout devono chiudere validation/OOM scope");
 assert.match(recreateBody, /record\.id === engine\.layerStack\.active\.id[\s\S]*?await allocateLayerGpuResources\(engine,[\s\S]*?: createColdLayerGpuResources\(\)/,

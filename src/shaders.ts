@@ -1177,7 +1177,7 @@ struct ThicknessTailUniforms {
   origin: vec2<f32>,
   textureSize: vec2<f32>,
   compositionMode: u32,
-  _pad0: u32,
+  documentMipMode: u32,
   _pad1: vec2<u32>,
 };
 
@@ -1227,6 +1227,20 @@ fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
     linearToSrgbChannel(value.g),
     linearToSrgbChannel(value.b)
   );
+}
+
+fn linearPremultipliedToGamma(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let straight = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  return vec4<f32>(linearToSrgb(straight) * alpha, alpha);
+}
+
+fn gammaPremultipliedToLinear(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let straight = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  return vec4<f32>(srgbToLinear(straight) * alpha, alpha);
 }
 
 fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
@@ -1330,6 +1344,190 @@ fn sampleTailClippingGroupLinear(layerPosition: vec2<f32>) -> vec4<f32> {
   return mix(mix(p00, p10, interpolation.x), mix(p01, p11, interpolation.x), interpolation.y);
 }
 
+fn sampleTailActiveMipZero(
+  layerPosition: vec2<f32>,
+  layerUv: vec2<f32>
+) -> vec4<f32> {
+  let permanentPaint = samplePermanentLogicalMip(layerUv, 0.0);
+  let tailPosition = layerPosition - tail.origin;
+  let insideTail = all(tailPosition >= vec2<f32>(0.0))
+    && all(tailPosition < tail.textureSize);
+  if (!insideTail) {
+    return permanentPaint;
+  }
+  let tailUv = clamp(
+    tailPosition / tail.textureSize,
+    vec2<f32>(0.0),
+    vec2<f32>(1.0)
+  );
+  let transientPaint = sampleTailLayer(tailUv);
+  if (tail.compositionMode == 2u) {
+    return transientPaint;
+  }
+  if (tail.compositionMode == 1u) {
+    return vec4<f32>(
+      permanentPaint.rgb + transientPaint.rgb,
+      transientPaint.a + permanentPaint.a * (1.0 - transientPaint.a)
+    );
+  }
+  return transientPaint + permanentPaint * (1.0 - transientPaint.a);
+}
+
+fn sampleTailDisplayActive(
+  layerPosition: vec2<f32>,
+  layerUv: vec2<f32>
+) -> vec4<f32> {
+  let mipZero = sampleTailActiveMipZero(layerPosition, layerUv);
+  let lod = max(display.selectedMipLevel, 0.0);
+  if (tail.documentMipMode == 0u || lod <= 0.000001) {
+    return mipZero;
+  }
+  if (lod < 1.0) {
+    return mix(mipZero, samplePermanentLogicalMip(layerUv, 1.0), lod);
+  }
+  return samplePermanentLayer(layerUv);
+}
+
+fn sampleTailDisplayClippingGroup(
+  layerPosition: vec2<f32>,
+  layerUv: vec2<f32>
+) -> vec4<f32> {
+  var mipZero = sampleTailClippingGroupLinear(layerPosition);
+  if (rasterPixelViewEnabled(1.0)) {
+    let pixel = vec2<i32>(floor(layerPosition));
+    mipZero = composeActiveClippingGroupTexel(tailActiveTexel(pixel), pixel);
+  }
+  let lod = max(display.selectedMipLevel, 0.0);
+  if (tail.documentMipMode == 0u || lod <= 0.000001) {
+    return mipZero;
+  }
+  if (lod < 1.0) {
+    return mix(mipZero, samplePermanentLogicalMip(layerUv, 1.0), lod);
+  }
+  return samplePermanentLayer(layerUv);
+}
+
+fn loadTailMergedBelowDocumentTexel(documentPixel: vec2<i32>) -> vec4<f32> {
+  if (display.hasMergedBelow < 0.5) {
+    return vec4<f32>(0.0);
+  }
+  let localPixel = documentPixel - vec2<i32>(display.mergedBelowOrigin);
+  let dimensions = vec2<i32>(textureDimensions(mergedBelowTexture, 0));
+  if (any(localPixel < vec2<i32>(0)) || any(localPixel >= dimensions)) {
+    return vec4<f32>(0.0);
+  }
+  return textureLoad(mergedBelowTexture, localPixel, 0);
+}
+
+fn loadTailMergedAboveDocumentTexel(documentPixel: vec2<i32>) -> vec4<f32> {
+  if (display.hasMergedAbove < 0.5) {
+    return vec4<f32>(0.0);
+  }
+  let localPixel = documentPixel - vec2<i32>(display.mergedAboveOrigin);
+  let dimensions = vec2<i32>(textureDimensions(mergedAboveTexture, 0));
+  if (any(localPixel < vec2<i32>(0)) || any(localPixel >= dimensions)) {
+    return vec4<f32>(0.0);
+  }
+  return textureLoad(mergedAboveTexture, localPixel, 0);
+}
+
+fn tailFinalStackDocumentTexel(documentPixel: vec2<i32>) -> vec4<f32> {
+  let dimensions = vec2<i32>(textureDimensions(activeLayerBase, 0));
+  let pixel = clamp(documentPixel, vec2<i32>(0), dimensions - vec2<i32>(1));
+  var paint = loadTailMergedBelowDocumentTexel(pixel);
+  paint = sourceOver(
+    composeActiveClippingGroupTexel(tailActiveTexel(pixel), pixel),
+    paint
+  );
+  return sourceOver(loadTailMergedAboveDocumentTexel(pixel), paint);
+}
+
+fn sampleTailFinalStackMipZero(layerPosition: vec2<f32>) -> vec4<f32> {
+  if (rasterPixelViewEnabled(1.0)) {
+    return tailFinalStackDocumentTexel(vec2<i32>(floor(layerPosition)));
+  }
+  let texelPosition = layerPosition - vec2<f32>(0.5);
+  let lower = vec2<i32>(floor(texelPosition));
+  let interpolation = fract(texelPosition);
+  let p00 = tailFinalStackDocumentTexel(lower);
+  let p10 = tailFinalStackDocumentTexel(lower + vec2<i32>(1, 0));
+  let p01 = tailFinalStackDocumentTexel(lower + vec2<i32>(0, 1));
+  let p11 = tailFinalStackDocumentTexel(lower + vec2<i32>(1, 1));
+  return mix(
+    mix(p00, p10, interpolation.x),
+    mix(p01, p11, interpolation.x),
+    interpolation.y
+  );
+}
+
+fn sampleTailDisplayFinalStack(
+  layerPosition: vec2<f32>,
+  layerUv: vec2<f32>
+) -> vec4<f32> {
+  let lod = max(display.selectedMipLevel, 0.0);
+  if (lod < 1.0) {
+    let mipZero = sampleTailFinalStackMipZero(layerPosition);
+    if (lod <= 0.000001) {
+      return mipZero;
+    }
+    return mix(mipZero, samplePermanentLogicalMip(layerUv, 1.0), lod);
+  }
+  return samplePermanentLayer(layerUv);
+}
+
+// Logical mip 1 is built on the document grid from the already composited
+// live Paint texels. Later levels can use the ordinary 2×2 downsampler.
+@fragment
+fn activeMipFragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  let sourceOrigin = vec2<i32>(fragmentPosition.xy) * 2;
+  let p00 = tailActiveTexel(sourceOrigin);
+  let p10 = tailActiveTexel(sourceOrigin + vec2<i32>(1, 0));
+  let p01 = tailActiveTexel(sourceOrigin + vec2<i32>(0, 1));
+  let p11 = tailActiveTexel(sourceOrigin + vec2<i32>(1, 1));
+  let gammaAverage = (
+    linearPremultipliedToGamma(p00)
+    + linearPremultipliedToGamma(p10)
+    + linearPremultipliedToGamma(p01)
+    + linearPremultipliedToGamma(p11)
+  ) * 0.25;
+  return gammaPremultipliedToLinear(gammaAverage);
+}
+
+@fragment
+fn activeClippingGroupMipFragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  let sourceOrigin = vec2<i32>(fragmentPosition.xy) * 2;
+  let p00 = composeActiveClippingGroupTexel(tailActiveTexel(sourceOrigin), sourceOrigin);
+  let p10i = sourceOrigin + vec2<i32>(1, 0);
+  let p01i = sourceOrigin + vec2<i32>(0, 1);
+  let p11i = sourceOrigin + vec2<i32>(1, 1);
+  let p10 = composeActiveClippingGroupTexel(tailActiveTexel(p10i), p10i);
+  let p01 = composeActiveClippingGroupTexel(tailActiveTexel(p01i), p01i);
+  let p11 = composeActiveClippingGroupTexel(tailActiveTexel(p11i), p11i);
+  return (p00 + p10 + p01 + p11) * 0.25;
+}
+
+@fragment
+fn finalStackMipFragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  let sourceOrigin = vec2<i32>(fragmentPosition.xy) * 2;
+  let p00 = tailFinalStackDocumentTexel(sourceOrigin);
+  let p10 = tailFinalStackDocumentTexel(sourceOrigin + vec2<i32>(1, 0));
+  let p01 = tailFinalStackDocumentTexel(sourceOrigin + vec2<i32>(0, 1));
+  let p11 = tailFinalStackDocumentTexel(sourceOrigin + vec2<i32>(1, 1));
+  let gammaAverage = (
+    linearPremultipliedToGamma(p00)
+    + linearPremultipliedToGamma(p10)
+    + linearPremultipliedToGamma(p01)
+    + linearPremultipliedToGamma(p11)
+  ) * 0.25;
+  return gammaPremultipliedToLinear(gammaAverage);
+}
+
 ${mergedSurfaceSamplingShader}
 fn composeLayerStack(
   activePaint: vec4<f32>,
@@ -1395,39 +1593,16 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     vec2<f32>(0.0),
     vec2<f32>(1.0)
   );
-  let permanentPaint = samplePermanentLayer(layerUv);
-
-  var paint = permanentPaint;
-  let tailPosition = layerPosition - tail.origin;
-  let insideTail = all(tailPosition >= vec2<f32>(0.0))
-    && all(tailPosition < tail.textureSize);
-  if (insideTail) {
-    let tailUv = clamp(
-      tailPosition / tail.textureSize,
-      vec2<f32>(0.0),
-      vec2<f32>(1.0)
-    );
-    let transientPaint = sampleTailLayer(tailUv);
-    if (tail.compositionMode == 2u) {
-      paint = transientPaint;
-    } else if (tail.compositionMode == 1u) {
-      paint = vec4<f32>(
-        permanentPaint.rgb + transientPaint.rgb,
-        transientPaint.a + permanentPaint.a * (1.0 - transientPaint.a)
-      );
-    } else {
-      paint = transientPaint + permanentPaint * (1.0 - transientPaint.a);
+  var paint: vec4<f32>;
+  if (tail.documentMipMode == 2u) {
+    paint = sampleTailDisplayFinalStack(layerPosition, layerUv);
+  } else {
+    paint = sampleTailDisplayActive(layerPosition, layerUv);
+    if (display.clippingMode > 0.5) {
+      paint = sampleTailDisplayClippingGroup(layerPosition, layerUv);
     }
+    paint = composeLayerStack(paint, layerPosition, fragmentPosition.xy);
   }
-  if (display.clippingMode > 0.5) {
-    if (rasterPixelViewEnabled(1.0)) {
-      let pixel = vec2<i32>(floor(layerPosition));
-      paint = composeActiveClippingGroupTexel(tailActiveTexel(pixel), pixel);
-    } else {
-      paint = sampleTailClippingGroupLinear(layerPosition);
-    }
-  }
-  paint = composeLayerStack(paint, layerPosition, fragmentPosition.xy);
 
   let checkerCell = vec2<i32>(floor(layerPosition / display.checkerSize));
   let checkerParity = (checkerCell.x + checkerCell.y) & 1;
@@ -1465,33 +1640,9 @@ fn activeFragmentMain(
     vec2<f32>(0.0),
     vec2<f32>(1.0)
   );
-  let permanentPaint = samplePermanentLayer(layerUv);
-  var paint = permanentPaint;
-  let tailPosition = layerPosition - tail.origin;
-  let insideTail = all(tailPosition >= vec2<f32>(0.0))
-    && all(tailPosition < tail.textureSize);
-  if (insideTail) {
-    let tailUv = clamp(
-      tailPosition / tail.textureSize,
-      vec2<f32>(0.0),
-      vec2<f32>(1.0)
-    );
-    let transientPaint = sampleTailLayer(tailUv);
-    if (tail.compositionMode == 1u) {
-      paint = vec4<f32>(
-        permanentPaint.rgb + transientPaint.rgb,
-        transientPaint.a + permanentPaint.a * (1.0 - transientPaint.a)
-      );
-    } else {
-      paint = transientPaint + permanentPaint * (1.0 - transientPaint.a);
-    }
-  }
+  let paint = sampleTailDisplayActive(layerPosition, layerUv);
   if (display.clippingMode > 0.5) {
-    if (rasterPixelViewEnabled(1.0)) {
-      let pixel = vec2<i32>(floor(layerPosition));
-      return composeActiveClippingGroupTexel(tailActiveTexel(pixel), pixel);
-    }
-    return sampleTailClippingGroupLinear(layerPosition);
+    return sampleTailDisplayClippingGroup(layerPosition, layerUv);
   }
   return paint * display.activeLayerAlpha;
 }

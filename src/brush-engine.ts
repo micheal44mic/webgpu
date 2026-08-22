@@ -1240,9 +1240,12 @@ export class BrushEngine {
   thicknessTailTexture: GPUTexture | null = null;
   thicknessTailView: GPUTextureView | null = null;
   thicknessTailDisplayBindGroup: GPUBindGroup | null = null;
+  thicknessTailMipBindGroup: GPUBindGroup | null = null;
   thicknessTailTextureWidth = 0;
   thicknessTailTextureHeight = 0;
   thicknessTailPresentedRect: DirtyRect | null = null;
+  /** The shared document-space display pyramid may contain the live Paint preview. */
+  thicknessTailDocumentMipPresented = false;
   readonly adaptivePreviewCanvas: HTMLCanvasElement | null;
   readonly adaptivePreviewContext: CanvasRenderingContext2D | null;
   private readonly adaptivePreviewScratchCanvas: HTMLCanvasElement | null;
@@ -1352,6 +1355,7 @@ export class BrushEngine {
   rasterStrokeDisplayScreenBindGroupLayout!: GPUBindGroupLayout;
   rasterStrokeDisplaySourceBindGroupLayout!: GPUBindGroupLayout;
   thicknessTailDisplayBindGroupLayout!: GPUBindGroupLayout;
+  thicknessTailMipBindGroupLayout!: GPUBindGroupLayout;
   lightGlazeDisplayBindGroupLayout!: GPUBindGroupLayout;
   lightGlazeCompositeMipBindGroupLayout!: GPUBindGroupLayout;
   lightGlazeCompositeBindGroupLayout!: GPUBindGroupLayout;
@@ -1496,6 +1500,9 @@ export class BrushEngine {
   paintMipDownsamplePipeline!: GPURenderPipeline;
   paintStackCompositeMipPipeline!: GPURenderPipeline;
   activeClippingGroupMipPipeline!: GPURenderPipeline;
+  thicknessTailActiveMipPipeline!: GPURenderPipeline;
+  thicknessTailActiveClippingGroupMipPipeline!: GPURenderPipeline;
+  thicknessTailFinalStackMipPipeline!: GPURenderPipeline;
   layerCompositePipeline!: GPURenderPipeline;
   layerSourceAtopPipeline!: GPURenderPipeline;
   layerColdTileCompositePipeline!: GPURenderPipeline;
@@ -4005,6 +4012,8 @@ export class BrushEngine {
       : null;
     if (lightGlazeSettings && this.thicknessTailPresentedRect) {
       this.thicknessTailPresentedRect = null;
+      this.thicknessTailDocumentMipPresented = false;
+      this.paintDisplayMipValidThroughLevel = 0;
       this.presentationCacheNeedsFullRebuild = true;
       this.displayDirty = true;
     }
@@ -9484,6 +9493,7 @@ export class BrushEngine {
     baseDirtyRect: DirtyRect | null,
     selectedMipLevel: number,
     requestedContent: "active-only" | "final-raster-stack" = "active-only",
+    thicknessTailFrame: ThicknessTailFrame | null = null,
   ): {
     maintenanceFrames: number;
     fullLevelBuilds: number;
@@ -9496,7 +9506,10 @@ export class BrushEngine {
     const startedAt = performance.now();
     const content = requestedContent === "final-raster-stack"
       && selectedMipLevel > 0
-      && this.finalRasterStackMipAvailable()
+      // Reserve the cleared active slot while idle too. A first live Paint
+      // frame then keeps the same final-stack cache meaning and updates only
+      // its dirty ROI instead of rebuilding the whole document at pointer-down.
+      && this.finalRasterStackMipAvailable(true)
       ? "final-raster-stack"
       : selectedMipLevel > 0 && this.activeClippingGroup
         ? "active-clipping-group"
@@ -9553,7 +9566,21 @@ export class BrushEngine {
           },
         ],
       });
-      if (content === "final-raster-stack" && mipLevel === 1) {
+      const livePaintTail = thicknessTailFrame?.settings.tool === "paint";
+      if (livePaintTail && content === "final-raster-stack" && mipLevel === 1) {
+        pass.setPipeline(this.thicknessTailFinalStackMipPipeline);
+        pass.setBindGroup(0, this.thicknessTailMipBindGroup!);
+      } else if (livePaintTail && content === "active-only" && mipLevel === 1) {
+        pass.setPipeline(this.thicknessTailActiveMipPipeline);
+        pass.setBindGroup(0, this.thicknessTailMipBindGroup!);
+      } else if (
+        livePaintTail
+        && content === "active-clipping-group"
+        && mipLevel === 1
+      ) {
+        pass.setPipeline(this.thicknessTailActiveClippingGroupMipPipeline);
+        pass.setBindGroup(0, this.thicknessTailMipBindGroup!);
+      } else if (content === "final-raster-stack" && mipLevel === 1) {
         pass.setPipeline(this.paintStackCompositeMipPipeline);
         pass.setBindGroup(0, this.paintStackCompositeMipBindGroup);
       } else if (content === "active-clipping-group" && mipLevel === 1) {
@@ -9652,6 +9679,7 @@ export class BrushEngine {
     originY: number,
     settings: BrushSettings,
     compositionMode: 0 | 1 | 2 = settings.blendMode === "additive" ? 1 : 0,
+    documentMipMode: 0 | 1 | 2 = 0,
   ): void {
     const floats = new Float32Array(this.thicknessTailDisplayUniformUpload);
     const unsigned = new Uint32Array(this.thicknessTailDisplayUniformUpload);
@@ -9661,6 +9689,7 @@ export class BrushEngine {
     floats[2] = this.thicknessTailTextureWidth;
     floats[3] = this.thicknessTailTextureHeight;
     unsigned[4] = compositionMode;
+    unsigned[5] = documentMipMode;
     this.device.queue.writeBuffer(
       this.thicknessTailDisplayUniformBuffer,
       0,
@@ -10172,9 +10201,8 @@ export class BrushEngine {
     if (!this.thicknessTailPresentedRect) return false;
     const stroke = this.activeStroke;
     const preview = this.deferredStrokePreview;
-    const retainedDeferredPreview = stroke?.tool === "erase"
-      && stroke.deferredPreview
-      && preview?.historyActionId === stroke.historyActionId
+    const retainedDeferredPreview = stroke?.deferredPreview === true
+      && preview?.historyActionId === stroke?.historyActionId
       && preview.presentationTexture === this.thicknessTailTexture
       && preview.presentedRect !== null
       && preview.presentedStampCount === preview.stamps.length
@@ -10196,11 +10224,12 @@ export class BrushEngine {
 
     const settings = preview.settings;
     // Pixel Selection is immutable for the lifetime of an active stroke, so
-    // its mask is safe on the append path too. Falling back to replacement
-    // frames here made every selected Eraser gesture replay its full prefix.
-    const incrementalErase = settings.tool === "erase"
-      && this.straightLineAdjustment === null;
-    const requestedStampStart = incrementalErase && !preview.forcePresentationRebuild
+    // its mask is safe on the append path too. A time-varying end taper and a
+    // Quick Line adjustment remain replacement frames because their previous
+    // pixels must be revised rather than accumulated.
+    const incrementalPreview = this.straightLineAdjustment === null
+      && !stroke.thicknessTailHoldback;
+    const requestedStampStart = incrementalPreview && !preview.forcePresentationRebuild
       ? Math.min(preview.presentedStampCount, preview.stamps.length)
       : 0;
     let stamps = preview.stamps.slice(requestedStampStart);
@@ -10229,6 +10258,7 @@ export class BrushEngine {
         grainActive: isTexturizedGrainActive(settings),
         originX: preview.originX,
         originY: preview.originY,
+        compositionMode: 2,
         replacement: false,
         incremental: false,
         retained: true,
@@ -10267,7 +10297,7 @@ export class BrushEngine {
       return retainedDeferredFrame();
     }
 
-    const requestedPresentedRect = incrementalErase
+    const requestedPresentedRect = incrementalPreview
       ? mergeDirtyRects(preview.presentedRect, dirtyRect)!
       : dirtyRect;
     const textureBeforeEnsure = this.thicknessTailTexture;
@@ -10281,31 +10311,29 @@ export class BrushEngine {
       this,
       resourceMinimumWidth,
       resourceMinimumHeight,
-      settings.tool === "erase" && preview.allowPresentationShrink,
+      preview.allowPresentationShrink,
     );
     preview.allowPresentationShrink = false;
-    let erasePlan = incrementalErase
-      ? planDeferredErasePreview({
-        totalStampCount: preview.stamps.length,
-        presentedStampCount: preview.presentedStampCount,
-        previousPresentedRect: preview.presentedRect,
-        nextDirtyRect: dirtyRect,
-        forceRebuild: preview.forcePresentationRebuild,
-        textureChanged: textureBeforeEnsure !== this.thicknessTailTexture
-          || preview.presentationTexture !== this.thicknessTailTexture,
-        textureWidth: this.thicknessTailTextureWidth,
-        textureHeight: this.thicknessTailTextureHeight,
-        previousOriginX: preview.originX,
-        previousOriginY: preview.originY,
-        documentWidth: DOCUMENT_WIDTH,
-        documentHeight: DOCUMENT_HEIGHT,
-      })
-      : null;
+    let previewPlan = planDeferredErasePreview({
+      totalStampCount: preview.stamps.length,
+      presentedStampCount: incrementalPreview ? preview.presentedStampCount : 0,
+      previousPresentedRect: incrementalPreview ? preview.presentedRect : null,
+      nextDirtyRect: dirtyRect,
+      forceRebuild: !incrementalPreview || preview.forcePresentationRebuild,
+      textureChanged: textureBeforeEnsure !== this.thicknessTailTexture
+        || preview.presentationTexture !== this.thicknessTailTexture,
+      textureWidth: this.thicknessTailTextureWidth,
+      textureHeight: this.thicknessTailTextureHeight,
+      previousOriginX: preview.originX,
+      previousOriginY: preview.originY,
+      documentWidth: DOCUMENT_WIDTH,
+      documentHeight: DOCUMENT_HEIGHT,
+    });
 
     // Ordinary freehand frames append only their new stamps. Resource growth,
     // ROI rebasing and a real Quick Line geometry replacement replay the full
     // prefix once because the replacement surface changed underneath it.
-    if (erasePlan?.rebuild && requestedStampStart > 0) {
+    if (previewPlan.rebuild && requestedStampStart > 0) {
       stamps = preview.stamps.slice();
       packed = this.packThicknessTailStamps(stamps, settings);
       dirtyRect = clipPaintDirtyRectToPixelSelection(this, packed.dirtyRect, null);
@@ -10321,8 +10349,9 @@ export class BrushEngine {
         settings.tool === "erase"
           ? deferredEraseTextureMinimum(dirtyRect.height, DOCUMENT_HEIGHT)
           : dirtyRect.height,
+        false,
       );
-      erasePlan = planDeferredErasePreview({
+      previewPlan = planDeferredErasePreview({
         totalStampCount: preview.stamps.length,
         presentedStampCount: 0,
         previousPresentedRect: null,
@@ -10338,17 +10367,9 @@ export class BrushEngine {
       });
     }
 
-    const presentedRect = erasePlan?.presentedRect ?? dirtyRect;
-    const originX = erasePlan?.originX ?? clamp(
-      dirtyRect.x,
-      0,
-      Math.max(0, DOCUMENT_WIDTH - this.thicknessTailTextureWidth),
-    );
-    const originY = erasePlan?.originY ?? clamp(
-      dirtyRect.y,
-      0,
-      Math.max(0, DOCUMENT_HEIGHT - this.thicknessTailTextureHeight),
-    );
+    const presentedRect = previewPlan.presentedRect;
+    const originX = previewPlan.originX;
+    const originY = previewPlan.originY;
     this.writeThicknessTailBrushUniforms(
       settings,
       this.thicknessTailTextureWidth,
@@ -10383,8 +10404,9 @@ export class BrushEngine {
       grainActive: isTexturizedGrainActive(settings),
       originX,
       originY,
-      replacement: !incrementalErase || erasePlan!.rebuild,
-      incremental: incrementalErase && !erasePlan!.rebuild,
+      compositionMode: 2,
+      replacement: previewPlan.rebuild,
+      incremental: incrementalPreview && !previewPlan.rebuild,
       retained: false,
     };
   }
@@ -10427,6 +10449,7 @@ export class BrushEngine {
     ensureThicknessTailOverlayResources(this, 
       packed.dirtyRect.width,
       packed.dirtyRect.height,
+      false,
     );
     this.writeThicknessTailBrushUniforms(
       settings,
@@ -10459,6 +10482,7 @@ export class BrushEngine {
       grainActive: isTexturizedGrainActive(settings),
       originX: packed.dirtyRect.x,
       originY: packed.dirtyRect.y,
+      compositionMode: settings.blendMode === "additive" ? 1 : 0,
       replacement: false,
       incremental: false,
       retained: false,
@@ -10535,9 +10559,9 @@ export class BrushEngine {
     }
     const pass = encoder.beginRenderPass({
       label: frame.replacement
-        ? "Rebuild non-destructive Quick Line preview"
+        ? "Rebuild non-destructive brush preview"
         : frame.incremental
-          ? "Append live Eraser stamps to Quick Line preview"
+          ? "Append live brush preview stamps"
           : "Rebuild predictive thickness tail",
       colorAttachments: [
         {
@@ -12122,6 +12146,8 @@ export class BrushEngine {
   ): SubmitTiming {
     if (this.thicknessTailPresentedRect) {
       this.thicknessTailPresentedRect = null;
+      this.thicknessTailDocumentMipPresented = false;
+      this.paintDisplayMipValidThroughLevel = 0;
       this.presentationCacheNeedsFullRebuild = true;
     }
     const session = this.lightGlazeSession;
@@ -13518,11 +13544,6 @@ export class BrushEngine {
         && this.vectorTextDisplayBindGroup
         && vectorTextDisplayPipeline,
       );
-      const requestFinalRasterStackMip = displayRequiredMipLevel > 0
-        && !rasterStrokeActive
-        && !thicknessTailFrame
-        && !useVectorTextDisplay
-        && !this.usesOrderedScenePresentation();
       const transientMutationRect = thicknessTailFrame?.retained
         ? null
         : thicknessTailFrame?.incremental
@@ -13531,6 +13552,33 @@ export class BrushEngine {
             this.thicknessTailPresentedRect,
             thicknessTailFrame?.dirtyRect ?? null,
           );
+      const tileBlendOwnsPyramid = displaySelectedMipLevel > 0
+        && this.usesLayerBlendTilePresentation();
+      const paintTailUsesDocumentPyramid = thicknessTailFrame?.settings.tool === "paint"
+        && !rasterStrokeActive
+        && !tileBlendOwnsPyramid;
+      const requestFinalRasterStackMip = displayRequiredMipLevel > 0
+        && !rasterStrokeActive
+        && (!thicknessTailFrame || paintTailUsesDocumentPyramid)
+        && !useVectorTextDisplay
+        && (!thicknessTailFrame
+          || (!this.vectorTextBelowTexture && !this.vectorTextAboveTexture))
+        && !this.usesOrderedScenePresentation();
+      const paintTailDocumentMipMode: 0 | 1 | 2 = paintTailUsesDocumentPyramid
+        && displayRequiredMipLevel > 0
+        ? requestFinalRasterStackMip && this.finalRasterStackMipAvailable(true)
+          ? 2
+          : 1
+        : 0;
+      if (thicknessTailFrame) {
+        this.writeThicknessTailDisplayUniforms(
+          thicknessTailFrame.originX,
+          thicknessTailFrame.originY,
+          thicknessTailFrame.settings,
+          thicknessTailFrame.compositionMode,
+          paintTailDocumentMipMode,
+        );
+      }
       const rasterStrokeMutationRect = mergeDirtyRects(
         submittedDirtyRect,
         transientMutationRect,
@@ -13547,21 +13595,37 @@ export class BrushEngine {
           layerCleared,
         )
         : { dirtyRect: null, timing: null };
-      const tileBlendOwnsPyramid = displaySelectedMipLevel > 0
-        && this.usesLayerBlendTilePresentation();
 
       const baseDirtyRect = layerCleared
         ? { x: 0, y: 0, width: DOCUMENT_WIDTH, height: DOCUMENT_HEIGHT }
         : submittedDirtyRect;
-      if (layerCleared || (rasterStrokeActive && submittedDirtyRect)) {
+      // The transient texture remains mip-0 only. Dirty Paint pixels are folded
+      // into the already allocated document-space pyramid, on the document's
+      // 2×2 grid. When the preview disappears, the same rectangle restores the
+      // authoritative pixels so no transient data can survive a later zoom.
+      const pyramidTransientDirtyRect = paintTailUsesDocumentPyramid
+        || this.thicknessTailDocumentMipPresented
+        ? transientMutationRect
+        : null;
+      const pyramidBaseDirtyRect = mergeDirtyRects(
+        baseDirtyRect,
+        pyramidTransientDirtyRect,
+      );
+      if (
+        layerCleared
+        || (rasterStrokeActive && submittedDirtyRect)
+        || (this.thicknessTailDocumentMipPresented
+          && (rasterStrokeActive || tileBlendOwnsPyramid))
+      ) {
         this.paintDisplayMipValidThroughLevel = 0;
       }
       if (!rasterStrokeActive && !tileBlendOwnsPyramid) {
         const pyramidTiming = this.encodePaintDisplayPyramid(
           encoder,
-          baseDirtyRect,
+          pyramidBaseDirtyRect,
           displayRequiredMipLevel,
           requestFinalRasterStackMip ? "final-raster-stack" : "active-only",
+          paintTailUsesDocumentPyramid ? thicknessTailFrame : null,
         );
         paintDisplayPyramidMaintenanceFrames = pyramidTiming.maintenanceFrames;
         paintDisplayPyramidFullLevelBuilds = pyramidTiming.fullLevelBuilds;
@@ -13766,6 +13830,9 @@ export class BrushEngine {
       this.thicknessTailPresentedRect = thicknessTailFrame
         ? { ...thicknessTailFrame.presentedRect }
         : null;
+      this.thicknessTailDocumentMipPresented = thicknessTailFrame?.settings.tool === "paint"
+        && !this.styleStackActive()
+        && !(this.paintDisplaySelectedMipLevel > 0 && this.usesLayerBlendTilePresentation());
     }
     return {
       totalCpuMs: performance.now() - cpuStart,

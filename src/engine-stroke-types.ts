@@ -84,6 +84,8 @@ export interface ThicknessTailFrame {
   grainActive: boolean;
   originX: number;
   originY: number;
+  /** How the transient patch combines with authoritative mip 0. */
+  compositionMode: 0 | 1 | 2;
   /** Copies the permanent layer into the transient surface before drawing. */
   replacement: boolean;
   /** Loads the previous transient pixels and applies only this frame's stamps. */

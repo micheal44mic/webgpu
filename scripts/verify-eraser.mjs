@@ -307,12 +307,12 @@ assert.equal(quickLineReplacement.stampStart, 0);
 assert.match(engine, /preview\.stamps\.slice\(requestedStampStart\)/);
 assert.match(
   engine,
-  /const incrementalErase = settings\.tool === "erase"\s+&& this\.straightLineAdjustment === null/,
-  "selected and stabilized Eraser stamps must stay on the incremental append path",
+  /const incrementalPreview = this\.straightLineAdjustment === null/,
+  "selected and stabilized Paint/Eraser stamps must stay on the incremental append path",
 );
 assert.doesNotMatch(
   engine,
-  /const incrementalErase[\s\S]{0,160}pixelSelectionState/,
+  /const incrementalPreview[\s\S]{0,160}pixelSelectionState/,
   "Pixel Selection must not restore cumulative Eraser preview replays",
 );
 assert.match(engine, /frame\.replacement \|\| frame\.incremental \? "load" : "clear"/);
@@ -326,7 +326,7 @@ assert.match(engine, /thicknessTailPresentationNeedsRefresh\(\)/);
 assert.match(engine, /if \(stamps\.length === 0\) return retainedDeferredFrame\(\)/);
 assert.match(engine, /stamps: \[\],\s+dirtyRect: \{ \.\.\.preview\.presentedRect \}/);
 assert.match(engine, /if \(frame\.retained\) return;/);
-assert.match(engine, /const retainedDeferredPreview = stroke\?\.tool === "erase"/);
+assert.match(engine, /const retainedDeferredPreview = stroke\?\.deferredPreview === true/);
 assert.match(
   resources,
   /requiredExtent: minimumWidth,[\s\S]*?maximumExtent: DOCUMENT_WIDTH,[\s\S]*?allowShrink,/,

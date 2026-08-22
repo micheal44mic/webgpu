@@ -458,6 +458,19 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
       { binding: 11, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
     ],
   });
+  engine.thicknessTailMipBindGroupLayout = engine.device.createBindGroupLayout({
+    label: "Document-aligned live Paint mip bind group layout",
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+      { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+      { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+      { binding: 4, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+      { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+      { binding: 7, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+      { binding: 10, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+      { binding: 11, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+    ],
+  });
   const grainLayoutEntries: GPUBindGroupLayoutEntry[] = [
     ...brushLayoutEntries,
     {
@@ -1304,6 +1317,7 @@ export function ensureThicknessTailOverlayResources(engine: BrushEngine,
     engine.thicknessTailTexture
     && engine.thicknessTailView
     && engine.thicknessTailDisplayBindGroup
+    && engine.thicknessTailMipBindGroup
     && engine.thicknessTailTextureWidth === width
     && engine.thicknessTailTextureHeight === height
   ) {
@@ -1337,11 +1351,26 @@ export function ensureThicknessTailOverlayResources(engine: BrushEngine,
       { binding: 11, resource: engine.activeClippingSuffixView() },
     ],
   });
+  const mipBindGroup = engine.device.createBindGroup({
+    label: "Document-aligned live Paint mip bind group",
+    layout: engine.thicknessTailMipBindGroupLayout,
+    entries: [
+      { binding: 0, resource: { buffer: engine.displayUniformBuffer } },
+      { binding: 1, resource: engine.layerView },
+      { binding: 3, resource: view },
+      { binding: 4, resource: { buffer: engine.thicknessTailDisplayUniformBuffer } },
+      { binding: 6, resource: engine.mergedBelowView() },
+      { binding: 7, resource: engine.mergedAboveView() },
+      { binding: 10, resource: engine.activeClippingPrefixView() },
+      { binding: 11, resource: engine.activeClippingSuffixView() },
+    ],
+  });
 
   const oldTexture = engine.thicknessTailTexture;
   engine.thicknessTailTexture = texture;
   engine.thicknessTailView = view;
   engine.thicknessTailDisplayBindGroup = displayBindGroup;
+  engine.thicknessTailMipBindGroup = mipBindGroup;
   engine.thicknessTailTextureWidth = width;
   engine.thicknessTailTextureHeight = height;
   engine.rasterStrokeRenderer?.setThicknessTailView(view);
@@ -1756,6 +1785,9 @@ export function maybeReleaseIdleBlendScratch(engine: BrushEngine): void {
 }
 
 export function destroyThicknessTailOverlayResources(engine: BrushEngine): void {
+  if (engine.thicknessTailDocumentMipPresented) {
+    engine.paintDisplayMipValidThroughLevel = 0;
+  }
   engine.rasterStrokeRenderer?.setThicknessTailView(null);
   engine.rasterBevelRenderer?.setThicknessTailView(null);
   engine.rasterOuterShadowRenderer?.setThicknessTailView(null);
@@ -1765,9 +1797,11 @@ export function destroyThicknessTailOverlayResources(engine: BrushEngine): void 
   engine.thicknessTailTexture = null;
   engine.thicknessTailView = null;
   engine.thicknessTailDisplayBindGroup = null;
+  engine.thicknessTailMipBindGroup = null;
   engine.thicknessTailTextureWidth = 0;
   engine.thicknessTailTextureHeight = 0;
   engine.thicknessTailPresentedRect = null;
+  engine.thicknessTailDocumentMipPresented = false;
 }
 
 export function releaseRasterBevelRenderer(engine: BrushEngine): void {

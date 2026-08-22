@@ -183,6 +183,9 @@ export async function recreateLayerResources(
     paintMipDownsamplePipeline,
     paintStackCompositeMipPipeline,
     activeClippingGroupMipPipeline,
+    thicknessTailActiveMipPipeline,
+    thicknessTailActiveClippingGroupMipPipeline,
+    thicknessTailFinalStackMipPipeline,
     layerCompositePipeline,
     layerSourceAtopPipeline,
     layerColdTileCompositePipeline,
@@ -235,6 +238,10 @@ export async function recreateLayerResources(
   const paintStackCompositeMipPipelineLayout = engine.device.createPipelineLayout({
     label: `Final raster stack composited mip 1 pipeline layout ${format}`,
     bindGroupLayouts: [engine.paintStackCompositeMipBindGroupLayout],
+  });
+  const thicknessTailMipPipelineLayout = engine.device.createPipelineLayout({
+    label: `Document-aligned live Paint mip pipeline layout ${format}`,
+    bindGroupLayouts: [engine.thicknessTailMipBindGroupLayout],
   });
   const layerCompositePipelineLayout = engine.device.createPipelineLayout({
     label: `Layer source-over fold pipeline layout ${format}`,
@@ -1206,6 +1213,48 @@ export async function recreateLayerResources(
     },
     primitive: { topology: "triangle-list" },
   });
+  const thicknessTailActiveMipPipeline = engine.device.createRenderPipeline({
+    label: `Document-aligned live Paint mip 1 ${format}`,
+    layout: thicknessTailMipPipelineLayout,
+    vertex: {
+      module: engine.thicknessTailDisplayShaderModule,
+      entryPoint: "vertexMain",
+    },
+    fragment: {
+      module: engine.thicknessTailDisplayShaderModule,
+      entryPoint: "activeMipFragmentMain",
+      targets: [{ format }],
+    },
+    primitive: { topology: "triangle-list" },
+  });
+  const thicknessTailActiveClippingGroupMipPipeline = engine.device.createRenderPipeline({
+    label: `Document-aligned live Paint clipping-group mip 1 ${format}`,
+    layout: thicknessTailMipPipelineLayout,
+    vertex: {
+      module: engine.thicknessTailDisplayShaderModule,
+      entryPoint: "vertexMain",
+    },
+    fragment: {
+      module: engine.thicknessTailDisplayShaderModule,
+      entryPoint: "activeClippingGroupMipFragmentMain",
+      targets: [{ format }],
+    },
+    primitive: { topology: "triangle-list" },
+  });
+  const thicknessTailFinalStackMipPipeline = engine.device.createRenderPipeline({
+    label: `Document-aligned live Paint final-stack mip 1 ${format}`,
+    layout: thicknessTailMipPipelineLayout,
+    vertex: {
+      module: engine.thicknessTailDisplayShaderModule,
+      entryPoint: "vertexMain",
+    },
+    fragment: {
+      module: engine.thicknessTailDisplayShaderModule,
+      entryPoint: "finalStackMipFragmentMain",
+      targets: [{ format }],
+    },
+    primitive: { topology: "triangle-list" },
+  });
   const layerCompositePipeline = engine.device.createRenderPipeline({
     label: `Layer source-over fold ${format}`,
     layout: layerCompositePipelineLayout,
@@ -1347,6 +1396,9 @@ export async function recreateLayerResources(
         paintMipDownsamplePipeline,
         paintStackCompositeMipPipeline,
         activeClippingGroupMipPipeline,
+        thicknessTailActiveMipPipeline,
+        thicknessTailActiveClippingGroupMipPipeline,
+        thicknessTailFinalStackMipPipeline,
         layerCompositePipeline,
         layerSourceAtopPipeline,
         layerColdTileCompositePipeline,
@@ -1607,6 +1659,10 @@ export async function recreateLayerResources(
   engine.paintMipDownsamplePipeline = paintMipDownsamplePipeline;
   engine.paintStackCompositeMipPipeline = paintStackCompositeMipPipeline;
   engine.activeClippingGroupMipPipeline = activeClippingGroupMipPipeline;
+  engine.thicknessTailActiveMipPipeline = thicknessTailActiveMipPipeline;
+  engine.thicknessTailActiveClippingGroupMipPipeline =
+    thicknessTailActiveClippingGroupMipPipeline;
+  engine.thicknessTailFinalStackMipPipeline = thicknessTailFinalStackMipPipeline;
   engine.layerCompositePipeline = layerCompositePipeline;
   engine.layerSourceAtopPipeline = layerSourceAtopPipeline;
   engine.layerColdTileCompositePipeline = layerColdTileCompositePipeline;

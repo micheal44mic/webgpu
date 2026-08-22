@@ -373,7 +373,7 @@ assert.equal(
 );
 assert.doesNotMatch(
   brushEngine,
-  /const incrementalErase[\s\S]{0,160}pixelSelectionState/,
+  /const incrementalPreview[\s\S]{0,160}pixelSelectionState/,
   "La selezione pixel non deve disattivare l'append incrementale della gomma.",
 );
 assert.match(

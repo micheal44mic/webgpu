@@ -2953,6 +2953,20 @@ export function rebuildVectorTextDependentDisplayBindGroups(engine: BrushEngine)
         { binding: 11, resource: engine.activeClippingSuffixView() },
       ],
     });
+    engine.thicknessTailMipBindGroup = engine.device.createBindGroup({
+      label: "Document-aligned live Paint mip bind group",
+      layout: engine.thicknessTailMipBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: engine.displayUniformBuffer } },
+        { binding: 1, resource: engine.layerView },
+        { binding: 3, resource: engine.thicknessTailView },
+        { binding: 4, resource: { buffer: engine.thicknessTailDisplayUniformBuffer } },
+        { binding: 6, resource: engine.mergedBelowView() },
+        { binding: 7, resource: engine.mergedAboveView() },
+        { binding: 10, resource: engine.activeClippingPrefixView() },
+        { binding: 11, resource: engine.activeClippingSuffixView() },
+      ],
+    });
   }
   if (engine.lightGlazeView && engine.lightGlazeSamplingView) {
     engine.lightGlazeDisplayBindGroup = engine.device.createBindGroup({
