@@ -290,6 +290,11 @@ export interface BrushEngineOptions {
   /** Enables the integrated raster/vector/image scene and its viewport pipelines. */
   mixedSceneEnabled?: boolean;
   /**
+   * Stores each segmented vector-text run in a guarded ROI texture instead of
+   * a full-viewport texture. Disable only for same-build performance A/B tests.
+   */
+  vectorTextRoiCacheEnabled?: boolean;
+  /**
    * @deprecated Compatibility-only alias for integrations created before the
    * mixed scene graduated from its prototype name. Use `mixedSceneEnabled`.
    */

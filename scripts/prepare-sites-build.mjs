@@ -48,7 +48,7 @@ const IPHONE_MEMORY_LIMIT_STATUSES = new Set(["running", "completed", "interrupt
 const LAYER_COMPRESSION_BUILD = "lossless-gzip-256-tile-1mib-streamed-measurement-v1";
 const LAYER_COMPRESSION_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS layer_compression_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)";
 const LAYER_COMPRESSION_INDEX_SQL = "CREATE INDEX IF NOT EXISTS layer_compression_runs_created_at_idx ON layer_compression_runs (created_at DESC)";
-const VECTOR_ZOOM_C_STRATEGY = "ten-semantic-text-dual-gpu-fallback-auto-post-raster-window2-zoom8-to-0.3-v6";
+const VECTOR_ZOOM_C_STRATEGY = "ten-semantic-text-dual-gpu-fallback-auto-post-raster-window2-roi-aware-zoom8-to-0.3-v7";
 const VECTOR_ZOOM_RUNS_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS vector_zoom_runs (run_code TEXT PRIMARY KEY NOT NULL, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)";
 const VECTOR_ZOOM_RUN_CODE = /^[2-9A-HJ-NP-Z]{8}$/;
 const VECTOR_ZOOM_CHECK_NAMES = [
@@ -573,8 +573,13 @@ async function handleVectorZoomRuns(request, env) {
       && Math.abs(report.fallbackCaptureZoom - 0.2) <= 1e-4
       && report.fallbackTextureCount === 1
       && report.fallbackRunCount === 1
-      && report.fallbackGpuMemoryMiB > 0
-      && report.fallbackGpuMemoryMiB <= 16
+      && report.fallbackFullViewportGpuMemoryMiB > 0
+      && (report.vectorTextRoiCacheEnabled
+        ? report.fallbackGpuMemoryMiB > 0
+          && report.fallbackGpuMemoryMiB < report.fallbackFullViewportGpuMemoryMiB
+        : Math.abs(
+            report.fallbackGpuMemoryMiB - report.fallbackFullViewportGpuMemoryMiB,
+          ) < 1e-6)
       && Array.isArray(report.fallbackProbeAlphaPixelCounts)
       && report.fallbackProbeAlphaPixelCounts.length === 10
       && report.fallbackProbeAlphaPixelCounts.every((count) => count > 0)
@@ -627,6 +632,7 @@ async function handleVectorZoomRuns(request, env) {
       || report.runCode !== payload.runCode
       || typeof report.passed !== "boolean"
       || typeof report.initialRasterWasEmpty !== "boolean"
+      || typeof report.vectorTextRoiCacheEnabled !== "boolean"
       || typeof report.traceFingerprint !== "string"
       || report.traceFingerprint.length > 512
       || !integerInRange(report.textCount, 0, 100)
@@ -642,6 +648,7 @@ async function handleVectorZoomRuns(request, env) {
       || !integerInRange(report.fallbackTextureCount, 0, 64)
       || !integerInRange(report.fallbackRunCount, 0, 64)
       || !finiteNumberInRange(report.fallbackGpuMemoryMiB, 0, 1024)
+      || !finiteNumberInRange(report.fallbackFullViewportGpuMemoryMiB, 0, 1024)
       || !finiteNumberArray(report.fallbackProbeAlphaPixelCounts, 10)
       || !report.fallbackProbeAlphaPixelCounts.every((count) => (
         integerInRange(count, 0, 16_384)

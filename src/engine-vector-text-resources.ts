@@ -11,11 +11,21 @@ import type {
   VectorTextViewState,
 } from "./vector-text-types";
 
+/** One vec2 origin for the primary cache and one for its fallback. */
+export const VECTOR_TEXT_RUN_CACHE_UNIFORM_BYTES = 16;
+
 export interface VectorTextRunTextureResources {
   texture: GPUTexture;
   view: GPUTextureView;
+  /** Allocation rectangle in capture-viewport coordinates. */
+  textureBounds: DirtyRect;
   fallbackTexture: GPUTexture | null;
   fallbackView: GPUTextureView | null;
+  /** Allocation rectangle in fallback-capture coordinates. */
+  fallbackBounds: DirtyRect | null;
+  /** Per-run primary/fallback origins consumed by the mixed-scene shader. */
+  cacheUniformBuffer: GPUBuffer;
+  cacheUniformUpload: Float32Array;
   bindGroup: GPUBindGroup;
 
   lastBounds: DirtyRect | null;
@@ -84,6 +94,8 @@ export interface VectorTextGpuPendingRun {
   target: "primary" | "fallback";
   targetTexture: GPUTexture;
   targetView: GPUTextureView;
+  /** Allocation rectangle of targetTexture in run.view canvas coordinates. */
+  targetBounds: DirtyRect;
   draws: readonly VectorTextGpuDraw[];
   drawResources: readonly VectorTextGpuDrawResources[];
   blurResources: readonly (VectorTextGpuBlurCacheResources | null)[];

@@ -371,6 +371,7 @@ export async function finishStaticResourceCreation(
         { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
         { binding: 4, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
         { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        { binding: 6, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
       ],
     });
     engine.mixedScenePresentBindGroupLayout = engine.device.createBindGroupLayout({

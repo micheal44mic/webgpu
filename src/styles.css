@@ -1086,6 +1086,13 @@ select {
   pointer-events: none;
 }
 
+/* Keep the compact telemetry badge above editor chrome, while leaving
+   blocking/loading overlays (z-index 100+) above it. The expanded panel keeps
+   its original local stacking level. */
+.gpu-memory-monitor[data-panel-state="collapsed"] {
+  z-index: 50;
+}
+
 .gpu-memory-monitor > * {
   pointer-events: auto;
 }

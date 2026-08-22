@@ -147,6 +147,7 @@ import {
   VECTOR_TEXT_GPU_SAMPLE_COUNT,
   VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL,
 } from "./vector-text-gpu-shader";
+import { VECTOR_TEXT_RUN_CACHE_UNIFORM_BYTES } from "./engine-vector-text-resources";
 import { average, maximum, percentile } from "./engine-math";
 import {
   LAYER_STORAGE_GRID_SIZE,
@@ -866,18 +867,29 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     : 0;
   const layerThumbnailMiB =
     (engine.layerThumbnailRenderer?.residentBytes ?? 0) / MEBIBYTE_BYTES;
-  const vectorTextRunTextureCount = [...engine.vectorTextRunTextures.values()]
-    .reduce(
-      (count, resources) => count + 1 + Number(resources.fallbackTexture !== null),
+  const vectorTextRunResources = [...engine.vectorTextRunTextures.values()];
+  const vectorTextLegacyTextureCount = Number(Boolean(engine.vectorTextBelowTexture))
+    + Number(Boolean(engine.vectorTextAboveTexture));
+  const vectorTextLegacyBytes = vectorTextLegacyTextureCount
+    * engine.vectorTextTextureWidth
+    * engine.vectorTextTextureHeight
+    * VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL;
+  const vectorTextRunBytes = vectorTextRunResources.length
+    * VECTOR_TEXT_RUN_CACHE_UNIFORM_BYTES
+    + vectorTextRunResources.reduce(
+      (total, resources) => total
+        + resources.textureBounds.width
+        * resources.textureBounds.height
+        * VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL
+        + (resources.fallbackBounds
+          ? resources.fallbackBounds.width
+            * resources.fallbackBounds.height
+            * VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL
+          : 0),
       0,
     );
-  const vectorTextTextureCount = Number(Boolean(engine.vectorTextBelowTexture))
-    + Number(Boolean(engine.vectorTextAboveTexture))
-    + vectorTextRunTextureCount;
-  const vectorTextViewportMiB = vectorTextTextureCount > 0
-    ? vectorTextTextureCount * engine.vectorTextTextureWidth
-      * engine.vectorTextTextureHeight * VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL / MEBIBYTE_BYTES
-    : 0;
+  const vectorTextViewportMiB =
+    (vectorTextLegacyBytes + vectorTextRunBytes) / MEBIBYTE_BYTES;
   const vectorTextBlurMiB =
     engine.vectorTextGpuBlurMemoryBytes() / MEBIBYTE_BYTES;
   const vectorTextGpuScratchMiB = engine.vectorTextGpuMsaaTexture

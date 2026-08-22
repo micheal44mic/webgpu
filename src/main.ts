@@ -377,6 +377,9 @@ const pageSearchParams = new URLSearchParams(window.location.search);
 const touchPaintIntentHoldEnabled = pageSearchParams.get("touchPaintIntentHold") !== "0";
 
 const bevelBoundingFieldEnabled = pageSearchParams.get("bevelField") === "bbox";
+// Same-build A/B escape hatch: ROI is production-default, `vectorTextRoi=0`
+// restores the previous full-viewport run textures for local measurements.
+const vectorTextRoiCacheEnabled = pageSearchParams.get("vectorTextRoi") !== "0";
 const appleMobileMemoryLifecycle =
   /iPhone|iPad|iPod/i.test(navigator.userAgent)
   || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -503,6 +506,8 @@ const engine = new BrushEngine(canvas, {
   layerCompressionTestEnabled:
     editorExtensionEngineOptions.layerCompressionTestEnabled ?? false,
   mixedSceneEnabled: resolveMixedSceneEnabled(editorExtensionEngineOptions, true),
+  vectorTextRoiCacheEnabled:
+    editorExtensionEngineOptions.vectorTextRoiCacheEnabled ?? vectorTextRoiCacheEnabled,
   layerColdCompressionEnabled: layerColdCompressionRequested,
   // Le notifiche restano su richiesta esplicita: ora che la compressione gira
   // sempre, annunciare ogni livello compresso sarebbe rumore, non informazione.

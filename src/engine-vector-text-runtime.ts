@@ -26,6 +26,7 @@ import {
 import { assertShaderCompiled } from "./engine-gpu-utils";
 import { VECTOR_TEXT_GPU_MAXIMUM_DRAWS } from "./engine-limits";
 import {
+  VECTOR_TEXT_RUN_CACHE_UNIFORM_BYTES,
   vectorTextGpuDrawUsesBlur,
   vectorTextGpuDrawUsesMesh,
   type MixedSceneActivePresentation,
@@ -39,7 +40,16 @@ import {
   type VectorTextPlacement,
   type VectorTextViewState,
 } from "./vector-text-types";
-import { vectorTextGpuClearBounds, vectorTextGpuRunBounds } from "./engine-geometry";
+import {
+  vectorTextGpuClearBounds,
+  vectorTextGpuRunBounds,
+} from "./engine-geometry";
+import {
+  growVectorTextGpuCacheAxisCapacity,
+  placeVectorTextGpuRunCache,
+  vectorTextGpuRunCacheAllocationBounds,
+  vectorTextGpuRunCacheContains,
+} from "./vector-text-cache-roi";
 import { type DirtyRect } from "./engine-stroke-types";
 import { MIXED_SCENE_COMPOSITOR_STRATEGY, MIXED_SCENE_LINEAR_FORMAT } from "./mixed-scene-compositor-shader";
 import {
@@ -836,9 +846,7 @@ export function flushVectorTextGpuPresentations(engine: BrushEngine): void {
 
     const isPrimary = run.target === "primary";
     const wasInitialized = isPrimary && run.resources.initialized;
-    const clearBounds = isPrimary
-      ? vectorTextGpuClearBounds(run.resources.lastBounds, run.bounds)
-      : run.bounds;
+    const clearBounds = vectorTextGpuClearBounds(run.resources.lastBounds, run.bounds);
     const clearPass = encoder.beginRenderPass({
       label: `Vector text GPU clear ${run.target} crop ${run.placement}`,
       colorAttachments: [
@@ -853,14 +861,17 @@ export function flushVectorTextGpuPresentations(engine: BrushEngine): void {
     if (wasInitialized) {
       clearPass.setPipeline(clearPipeline);
       clearPass.setScissorRect(
-        clearBounds.x,
-        clearBounds.y,
+        clearBounds.x - run.targetBounds.x,
+        clearBounds.y - run.targetBounds.y,
         clearBounds.width,
         clearBounds.height,
       );
       clearPass.draw(3, 1, 0, 0);
     }
     clearPass.end();
+    if (!vectorTextGpuRunCacheContains(run.targetBounds, run.bounds)) {
+      throw new Error(`Vector text ROI does not contain ${run.placement}.`);
+    }
     encoder.copyTextureToTexture(
       {
         texture: resolvedTexture,
@@ -868,7 +879,11 @@ export function flushVectorTextGpuPresentations(engine: BrushEngine): void {
       },
       {
         texture: run.targetTexture,
-        origin: { x: run.bounds.x, y: run.bounds.y, z: 0 },
+        origin: {
+          x: run.bounds.x - run.targetBounds.x,
+          y: run.bounds.y - run.targetBounds.y,
+          z: 0,
+        },
       },
       {
         width: run.bounds.width,
@@ -1285,11 +1300,52 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
   presentPass.end();
 }
 
+function writeVectorTextRunCacheUniforms(
+  engine: BrushEngine,
+  resources: VectorTextRunTextureResources,
+  primaryBounds: Readonly<DirtyRect> = resources.textureBounds,
+  fallbackBounds: Readonly<DirtyRect> | null = resources.fallbackBounds,
+): void {
+  const nextValues = [
+    primaryBounds.x,
+    primaryBounds.y,
+    fallbackBounds?.x ?? 0,
+    fallbackBounds?.y ?? 0,
+  ] as const;
+  const previousValues = [
+    resources.cacheUniformUpload[0],
+    resources.cacheUniformUpload[1],
+    resources.cacheUniformUpload[2],
+    resources.cacheUniformUpload[3],
+  ] as const;
+  let changed = false;
+  for (let index = 0; index < nextValues.length; index += 1) {
+    const next = Math.fround(nextValues[index]);
+    if (!Object.is(resources.cacheUniformUpload[index], next)) {
+      resources.cacheUniformUpload[index] = next;
+      changed = true;
+    }
+  }
+  if (changed) {
+    try {
+      engine.device.queue.writeBuffer(
+        resources.cacheUniformBuffer,
+        0,
+        resources.cacheUniformUpload,
+      );
+    } catch (error) {
+      resources.cacheUniformUpload.set(previousValues);
+      throw error;
+    }
+  }
+}
+
 function createVectorTextRunBindGroup(
   engine: BrushEngine,
   key: Extract<VectorTextPlacement, `text-run:${string}`>,
   sourceView: GPUTextureView,
   fallbackView: GPUTextureView | null,
+  cacheUniformBuffer: GPUBuffer,
 ): GPUBindGroup {
   const layout = engine.mixedSceneTextSegmentBindGroupLayout;
   if (!layout) {
@@ -1305,6 +1361,7 @@ function createVectorTextRunBindGroup(
       { binding: 3, resource: engine.sampler },
       { binding: 4, resource: { buffer: engine.vectorTextFallbackCaptureUniformBuffer } },
       { binding: 5, resource: fallbackView ?? engine.transparentLayerView },
+      { binding: 6, resource: { buffer: cacheUniformBuffer } },
     ],
   });
 }
@@ -1319,6 +1376,7 @@ function rebuildVectorTextRunBindGroup(
     key,
     resources.view,
     resources.fallbackView,
+    resources.cacheUniformBuffer,
   );
 }
 
@@ -1326,11 +1384,21 @@ export function clearVectorTextFallbackPresentation(engine: BrushEngine): void {
   let changed = engine.vectorTextFallbackCaptureView !== null;
   for (const [key, resources] of engine.vectorTextRunTextures) {
     if (resources.fallbackTexture) {
-      resources.fallbackTexture.destroy();
+      const nextBindGroup = createVectorTextRunBindGroup(
+        engine,
+        key,
+        resources.view,
+        null,
+        resources.cacheUniformBuffer,
+      );
+      writeVectorTextRunCacheUniforms(engine, resources, resources.textureBounds, null);
+      const previousTexture = resources.fallbackTexture;
       resources.fallbackTexture = null;
       resources.fallbackView = null;
+      resources.fallbackBounds = null;
+      resources.bindGroup = nextBindGroup;
+      previousTexture.destroy();
       changed = true;
-      rebuildVectorTextRunBindGroup(engine, key, resources);
     }
   }
   engine.vectorTextFallbackCaptureView = null;
@@ -1350,7 +1418,9 @@ export function vectorTextFallbackPresentationComplete(engine: BrushEngine): boo
     && capture.canvasWidth === engine.vectorTextTextureWidth
     && capture.canvasHeight === engine.vectorTextTextureHeight
     && [...engine.vectorTextRunTextures.values()].every(
-      (resources) => resources.fallbackTexture !== null && resources.fallbackView !== null,
+      (resources) => resources.fallbackTexture !== null
+        && resources.fallbackView !== null
+        && resources.fallbackBounds !== null,
     );
 }
 
@@ -1360,22 +1430,116 @@ export function getVectorTextFallbackPresentationStats(engine: BrushEngine): {
   gpuMemoryMiB: number;
   complete: boolean;
 } {
-  const textureCount = [...engine.vectorTextRunTextures.values()].filter(
-    (resources) => resources.fallbackTexture !== null,
-  ).length;
+  const fallbackResources = [...engine.vectorTextRunTextures.values()].filter(
+    (resources) => resources.fallbackTexture !== null && resources.fallbackBounds !== null,
+  );
+  const textureCount = fallbackResources.length;
+  const gpuMemoryBytes = fallbackResources.reduce(
+    (total, resources) => total
+      + resources.fallbackBounds!.width
+      * resources.fallbackBounds!.height
+      * VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL,
+    0,
+  );
   return {
     captureView: engine.vectorTextFallbackCaptureView
       ? { ...engine.vectorTextFallbackCaptureView }
       : null,
     textureCount,
-    gpuMemoryMiB:
-      textureCount
-      * engine.vectorTextTextureWidth
-      * engine.vectorTextTextureHeight
-      * VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL
-      / (1024 * 1024),
+    gpuMemoryMiB: gpuMemoryBytes / (1024 * 1024),
     complete: vectorTextFallbackPresentationComplete(engine),
   };
+}
+
+interface VectorTextFallbackPublicationCandidate {
+  readonly resources: VectorTextRunTextureResources;
+  readonly texture: GPUTexture | null;
+  readonly view: GPUTextureView | null;
+  readonly bounds: DirtyRect | null;
+  readonly bindGroup: GPUBindGroup;
+}
+
+/** Publishes one complete fallback generation or restores the previous one. */
+function publishVectorTextFallbackGeneration(
+  engine: BrushEngine,
+  captureView: Readonly<VectorTextViewState>,
+  candidates: ReadonlyMap<
+    Extract<VectorTextPlacement, `text-run:${string}`>,
+    VectorTextFallbackPublicationCandidate
+  >,
+  refreshPrimaryCaptureUniform: boolean,
+): void {
+  if (
+    candidates.size !== engine.vectorTextRunTextures.size
+    || [...candidates].some(
+      ([key, candidate]) => engine.vectorTextRunTextures.get(key) !== candidate.resources,
+    )
+  ) {
+    for (const candidate of candidates.values()) candidate.texture?.destroy();
+    throw new Error("GPU text runs changed before wide-cache publication.");
+  }
+
+  const previousCaptureView = engine.vectorTextFallbackCaptureView
+    ? { ...engine.vectorTextFallbackCaptureView }
+    : null;
+  const previousStates = new Map<
+    VectorTextRunTextureResources,
+    {
+      texture: GPUTexture | null;
+      view: GPUTextureView | null;
+      bounds: DirtyRect | null;
+      bindGroup: GPUBindGroup;
+    }
+  >();
+  for (const candidate of candidates.values()) {
+    const resources = candidate.resources;
+    previousStates.set(resources, {
+      texture: resources.fallbackTexture,
+      view: resources.fallbackView,
+      bounds: resources.fallbackBounds,
+      bindGroup: resources.bindGroup,
+    });
+  }
+
+  try {
+    for (const candidate of candidates.values()) {
+      const resources = candidate.resources;
+      resources.fallbackTexture = candidate.texture;
+      resources.fallbackView = candidate.view;
+      resources.fallbackBounds = candidate.bounds;
+      resources.bindGroup = candidate.bindGroup;
+      writeVectorTextRunCacheUniforms(engine, resources);
+    }
+    engine.vectorTextFallbackCaptureView = { ...captureView };
+    writeVectorTextFallbackCaptureUniforms(engine);
+    if (refreshPrimaryCaptureUniform) {
+      writeVectorTextCaptureUniforms(engine);
+    }
+  } catch (error) {
+    engine.vectorTextFallbackCaptureView = previousCaptureView;
+    for (const [resources, previous] of previousStates) {
+      resources.fallbackTexture = previous.texture;
+      resources.fallbackView = previous.view;
+      resources.fallbackBounds = previous.bounds;
+      resources.bindGroup = previous.bindGroup;
+      try {
+        writeVectorTextRunCacheUniforms(engine, resources);
+      } catch {
+        // Preserve the original publication failure; a lost device may also
+        // reject the best-effort uniform restoration.
+      }
+    }
+    try {
+      writeVectorTextFallbackCaptureUniforms(engine);
+      if (refreshPrimaryCaptureUniform) writeVectorTextCaptureUniforms(engine);
+    } catch {
+      // Same best-effort rollback rule as the per-run uniforms above.
+    }
+    for (const candidate of candidates.values()) candidate.texture?.destroy();
+    throw error;
+  }
+
+  for (const previous of previousStates.values()) previous.texture?.destroy();
 }
 
 /**
@@ -1431,12 +1595,7 @@ export function rebuildVectorTextGpuFallbackPresentation(
 
   const candidates = new Map<
     Extract<VectorTextPlacement, `text-run:${string}`>,
-    {
-      texture: GPUTexture;
-      view: GPUTextureView;
-      bindGroup: GPUBindGroup;
-      resources: VectorTextRunTextureResources;
-    }
+    VectorTextFallbackPublicationCandidate
   >();
   const pendingStart = engine.vectorTextGpuPendingRuns.length;
   try {
@@ -1445,9 +1604,21 @@ export function rebuildVectorTextGpuFallbackPresentation(
       if (!resources) {
         throw new Error(`GPU text run ${key} was removed while building the wide cache.`);
       }
+      const runBounds = vectorTextGpuRunBounds(draws, captureView);
+      const fallbackBounds = vectorTextGpuRunCacheAllocationBounds(
+        runBounds,
+        width,
+        height,
+        engine.vectorTextRoiCacheEnabled,
+      );
       const texture = engine.device.createTexture({
-        label: `Vector text ${key} automatic wide fallback ${width}×${height}`,
-        size: { width, height, depthOrArrayLayers: 1 },
+        label: `Vector text ${key} automatic wide fallback ROI `
+          + `${fallbackBounds.width}×${fallbackBounds.height}`,
+        size: {
+          width: fallbackBounds.width,
+          height: fallbackBounds.height,
+          depthOrArrayLayers: 1,
+        },
         format: VECTOR_TEXT_GPU_TARGET_FORMAT,
         usage:
           GPUTextureUsage.COPY_DST
@@ -1464,8 +1635,15 @@ export function rebuildVectorTextGpuFallbackPresentation(
           key,
           resources.view,
           view,
+          resources.cacheUniformBuffer,
         );
-        candidates.set(key, { texture, view, bindGroup, resources });
+        candidates.set(key, {
+          texture,
+          view,
+          bindGroup,
+          resources,
+          bounds: fallbackBounds,
+        });
         const drawResources = draws.map((draw) => ensureVectorTextGpuResource(engine, draw));
         const blurResources = draws.map((draw) =>
           vectorTextGpuDrawUsesBlur(draw)
@@ -1478,11 +1656,12 @@ export function rebuildVectorTextGpuFallbackPresentation(
           target: "fallback",
           targetTexture: texture,
           targetView: view,
+          targetBounds: fallbackBounds,
           draws,
           drawResources,
           blurResources,
           view: { ...captureView },
-          bounds: vectorTextGpuRunBounds(draws, captureView),
+          bounds: runBounds,
         });
       } catch (error) {
         candidates.delete(key);
@@ -1493,30 +1672,20 @@ export function rebuildVectorTextGpuFallbackPresentation(
     flushVectorTextGpuPresentations(engine);
   } catch (error) {
     engine.vectorTextGpuPendingRuns.splice(pendingStart);
-    for (const candidate of candidates.values()) candidate.texture.destroy();
+    for (const candidate of candidates.values()) candidate.texture?.destroy();
     throw error;
   }
 
-  const previousTextures: GPUTexture[] = [];
-  for (const [key, candidate] of candidates) {
-    if (candidate.resources.fallbackTexture) {
-      previousTextures.push(candidate.resources.fallbackTexture);
-    }
-    candidate.resources.fallbackTexture = candidate.texture;
-    candidate.resources.fallbackView = candidate.view;
-    candidate.resources.bindGroup = candidate.bindGroup;
-    if (!engine.vectorTextRunTextures.has(key)) {
-      throw new Error(`GPU text run ${key} was removed before wide-cache publication.`);
-    }
-  }
-  engine.vectorTextFallbackCaptureView = { ...captureView };
-  writeVectorTextFallbackCaptureUniforms(engine);
-  writeVectorTextCaptureUniforms(engine);
-  for (const texture of previousTextures) texture.destroy();
+  publishVectorTextFallbackGeneration(engine, captureView, candidates, true);
   return {
     textureCount: candidates.size,
-    gpuMemoryMiB: candidates.size * width * height
-      * VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL / (1024 * 1024),
+    gpuMemoryMiB: [...candidates.values()].reduce(
+      (total, candidate) => total
+        + candidate.bounds!.width
+        * candidate.bounds!.height
+        * VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL,
+      0,
+    ) / (1024 * 1024),
   };
 }
 
@@ -1533,62 +1702,103 @@ export function captureVectorTextFallbackPresentation(engine: BrushEngine): {
   }
   const candidates = new Map<
     Extract<VectorTextPlacement, `text-run:${string}`>,
-    { texture: GPUTexture; view: GPUTextureView }
+    VectorTextFallbackPublicationCandidate
   >();
   const encoder = engine.device.createCommandEncoder({
     label: "Vector text wide fallback capture copies",
   });
   try {
     for (const [key, resources] of engine.vectorTextRunTextures) {
-      if (!resources.initialized) continue;
+      if (!resources.initialized) {
+        candidates.set(key, {
+          resources,
+          texture: null,
+          view: null,
+          bounds: null,
+          bindGroup: createVectorTextRunBindGroup(
+            engine,
+            key,
+            resources.view,
+            null,
+            resources.cacheUniformBuffer,
+          ),
+        });
+        continue;
+      }
+      const fallbackBounds = { ...resources.textureBounds };
       const texture = engine.device.createTexture({
-        label: `Vector text ${key} wide fallback ${width}×${height}`,
-        size: { width, height, depthOrArrayLayers: 1 },
+        label: `Vector text ${key} wide fallback ROI `
+          + `${fallbackBounds.width}×${fallbackBounds.height}`,
+        size: {
+          width: fallbackBounds.width,
+          height: fallbackBounds.height,
+          depthOrArrayLayers: 1,
+        },
         format: VECTOR_TEXT_GPU_TARGET_FORMAT,
         usage:
           GPUTextureUsage.COPY_DST
           | GPUTextureUsage.COPY_SRC
           | GPUTextureUsage.TEXTURE_BINDING,
       });
-      const view = texture.createView({
-        label: `Vector text ${key} wide fallback view`,
-      });
-      candidates.set(key, { texture, view });
-      encoder.copyTextureToTexture(
-        { texture: resources.texture },
-        { texture },
-        { width, height, depthOrArrayLayers: 1 },
-      );
+      try {
+        const view = texture.createView({
+          label: `Vector text ${key} wide fallback view`,
+        });
+        const bindGroup = createVectorTextRunBindGroup(
+          engine,
+          key,
+          resources.view,
+          view,
+          resources.cacheUniformBuffer,
+        );
+        candidates.set(key, {
+          resources,
+          texture,
+          view,
+          bounds: fallbackBounds,
+          bindGroup,
+        });
+        encoder.copyTextureToTexture(
+          { texture: resources.texture },
+          { texture },
+          {
+            width: fallbackBounds.width,
+            height: fallbackBounds.height,
+            depthOrArrayLayers: 1,
+          },
+        );
+      } catch (error) {
+        candidates.delete(key);
+        texture.destroy();
+        throw error;
+      }
     }
-    if (candidates.size === 0) {
+    if (![...candidates.values()].some((candidate) => candidate.texture !== null)) {
       throw new Error("The exact vector caches are not initialized yet.");
     }
     engine.device.queue.submit([encoder.finish()]);
   } catch (error) {
-    for (const candidate of candidates.values()) candidate.texture.destroy();
+    for (const candidate of candidates.values()) candidate.texture?.destroy();
     throw error;
   }
 
-  const previousTextures: GPUTexture[] = [];
-  for (const [key, resources] of engine.vectorTextRunTextures) {
-    const candidate = candidates.get(key);
-    if (resources.fallbackTexture) previousTextures.push(resources.fallbackTexture);
-    resources.fallbackTexture = candidate?.texture ?? null;
-    resources.fallbackView = candidate?.view ?? null;
-  }
-  engine.vectorTextFallbackCaptureView = { ...sourceView };
-  writeVectorTextFallbackCaptureUniforms(engine);
-  for (const [key, resources] of engine.vectorTextRunTextures) {
-    rebuildVectorTextRunBindGroup(engine, key, resources);
-  }
-  for (const texture of previousTextures) texture.destroy();
+  publishVectorTextFallbackGeneration(engine, sourceView, candidates, false);
   engine.displayDirty = true;
   engine.presentationCacheNeedsFullRebuild = true;
   engine.requestRender();
   return {
-    textureCount: candidates.size,
-    gpuMemoryMiB: candidates.size * width * height
-      * VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL / (1024 * 1024),
+    textureCount: [...candidates.values()].filter(
+      (candidate) => candidate.texture !== null,
+    ).length,
+    gpuMemoryMiB: [...candidates.values()].reduce(
+      (total, candidate) => total
+        + (candidate.bounds
+          ? candidate.bounds.width
+            * candidate.bounds.height
+            * VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL
+          : 0),
+      0,
+    ) / (1024 * 1024),
   };
 }
 
@@ -1603,10 +1813,15 @@ export async function probeVectorTextFallbackAlpha(
   if (fallbackRuns.length !== 1 || !capture || layerPoints.length === 0) {
     throw new Error("Probe C requires exactly one run with ready GPU coverage.");
   }
-  const texture = fallbackRuns[0].fallbackTexture!;
+  const fallbackRun = fallbackRuns[0];
+  const texture = fallbackRun.fallbackTexture!;
+  const cacheBounds = fallbackRun.fallbackBounds;
+  if (!cacheBounds) {
+    throw new Error("Probe C fallback ROI is missing.");
+  }
   const probeSize = Math.max(
     1,
-    Math.min(128, Math.floor(capture.canvasWidth), Math.floor(capture.canvasHeight)),
+    Math.min(128, cacheBounds.width, cacheBounds.height),
   );
   const bytesPerPixel = VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL;
   const bytesPerRow = Math.ceil(probeSize * bytesPerPixel / 256) * 256;
@@ -1629,22 +1844,29 @@ export async function probeVectorTextFallbackAlpha(
       const screenY = capture.canvasHeight * 0.5 + capture.zoom * (
         capture.rotationSin * deltaX + capture.rotationCos * deltaY
       );
-      const originX = Math.max(
-        0,
+      const canvasOriginX = Math.max(
+        cacheBounds.x,
         Math.min(
-          Math.floor(capture.canvasWidth) - probeSize,
+          cacheBounds.x + cacheBounds.width - probeSize,
           Math.round(screenX - probeSize * 0.5),
         ),
       );
-      const originY = Math.max(
-        0,
+      const canvasOriginY = Math.max(
+        cacheBounds.y,
         Math.min(
-          Math.floor(capture.canvasHeight) - probeSize,
+          cacheBounds.y + cacheBounds.height - probeSize,
           Math.round(screenY - probeSize * 0.5),
         ),
       );
       encoder.copyTextureToBuffer(
-        { texture, origin: { x: originX, y: originY, z: 0 } },
+        {
+          texture,
+          origin: {
+            x: canvasOriginX - cacheBounds.x,
+            y: canvasOriginY - cacheBounds.y,
+            z: 0,
+          },
+        },
         {
           buffer: readback,
           offset: index * bytesPerProbe,
@@ -1777,6 +1999,7 @@ export function ensureVectorTextPresentationTexture(engine: BrushEngine,
   width: number,
   height: number,
   placement: VectorTextPlacement,
+  requestedBounds?: Readonly<DirtyRect>,
 ): GPUTexture {
   if (
     engine.vectorTextTextureWidth !== width
@@ -1790,6 +2013,7 @@ export function ensureVectorTextPresentationTexture(engine: BrushEngine,
     for (const resources of engine.vectorTextRunTextures.values()) {
       resources.texture.destroy();
       resources.fallbackTexture?.destroy();
+      resources.cacheUniformBuffer.destroy();
     }
     engine.vectorTextRunTextures.clear();
     engine.vectorTextBelowTexture = null;
@@ -1809,12 +2033,72 @@ export function ensureVectorTextPresentationTexture(engine: BrushEngine,
   if (placement.startsWith("text-run:")) {
     const key = placement as Extract<VectorTextPlacement, `text-run:${string}`>;
     const existingRun = engine.vectorTextRunTextures.get(key);
-    if (existingRun) {
+    const bounds = requestedBounds ?? { x: 0, y: 0, width, height };
+    const recommendedBounds = vectorTextGpuRunCacheAllocationBounds(
+      bounds,
+      width,
+      height,
+      engine.vectorTextRoiCacheEnabled,
+    );
+    const shouldShrinkRunCache = Boolean(
+      existingRun
+      && recommendedBounds.width <= existingRun.textureBounds.width
+      && recommendedBounds.height <= existingRun.textureBounds.height
+      && recommendedBounds.width * recommendedBounds.height
+        <= existingRun.textureBounds.width * existingRun.textureBounds.height * 0.25,
+    );
+    if (
+      existingRun
+      && !shouldShrinkRunCache
+      && bounds.width <= existingRun.textureBounds.width
+      && bounds.height <= existingRun.textureBounds.height
+    ) {
+      if (!vectorTextGpuRunCacheContains(existingRun.textureBounds, bounds)) {
+        const repositionedBounds = placeVectorTextGpuRunCache(
+          bounds,
+          existingRun.textureBounds.width,
+          existingRun.textureBounds.height,
+          width,
+          height,
+        );
+        // The texture is repainted below, so moving its screen-space origin is
+        // a 16-byte uniform update rather than a GPU reallocation.
+        writeVectorTextRunCacheUniforms(engine, existingRun, repositionedBounds);
+        existingRun.textureBounds = repositionedBounds;
+        existingRun.initialized = false;
+        existingRun.lastBounds = null;
+      }
       return existingRun.texture;
     }
+
+    const capacityWidth = shouldShrinkRunCache
+      ? recommendedBounds.width
+      : growVectorTextGpuCacheAxisCapacity(
+        existingRun?.textureBounds.width ?? 0,
+        recommendedBounds.width,
+        width,
+      );
+    const capacityHeight = shouldShrinkRunCache
+      ? recommendedBounds.height
+      : growVectorTextGpuCacheAxisCapacity(
+        existingRun?.textureBounds.height ?? 0,
+        recommendedBounds.height,
+        height,
+      );
+    const textureBounds = placeVectorTextGpuRunCache(
+      bounds,
+      capacityWidth,
+      capacityHeight,
+      width,
+      height,
+    );
     const texture = engine.device.createTexture({
-      label: `Vector text ${key} viewport cache ${width}×${height}`,
-      size: { width, height, depthOrArrayLayers: 1 },
+      label: `Vector text ${key} ROI cache ${textureBounds.width}×${textureBounds.height}`,
+      size: {
+        width: textureBounds.width,
+        height: textureBounds.height,
+        depthOrArrayLayers: 1,
+      },
       format: VECTOR_TEXT_GPU_TARGET_FORMAT,
       usage:
         GPUTextureUsage.COPY_DST
@@ -1822,24 +2106,58 @@ export function ensureVectorTextPresentationTexture(engine: BrushEngine,
         | GPUTextureUsage.RENDER_ATTACHMENT
         | GPUTextureUsage.TEXTURE_BINDING,
     });
+    let cacheUniformBuffer: GPUBuffer | null = null;
     try {
       const view = texture.createView({
-        label: `Vector text ${key} viewport cache view`,
+        label: `Vector text ${key} ROI cache view`,
       });
+      if (existingRun) {
+        const bindGroup = createVectorTextRunBindGroup(
+          engine,
+          key,
+          view,
+          existingRun.fallbackView,
+          existingRun.cacheUniformBuffer,
+        );
+        writeVectorTextRunCacheUniforms(engine, existingRun, textureBounds);
+        const previousTexture = existingRun.texture;
+        existingRun.texture = texture;
+        existingRun.view = view;
+        existingRun.textureBounds = textureBounds;
+        existingRun.bindGroup = bindGroup;
+        existingRun.lastBounds = null;
+        existingRun.initialized = false;
+        previousTexture.destroy();
+        return texture;
+      }
+
+      cacheUniformBuffer = engine.device.createBuffer({
+        label: `Vector text ${key} ROI origins`,
+        size: VECTOR_TEXT_RUN_CACHE_UNIFORM_BYTES,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      const cacheUniformUpload = new Float32Array(4);
+      cacheUniformUpload.fill(Number.NaN);
       const resources: VectorTextRunTextureResources = {
         texture,
         view,
+        textureBounds,
         fallbackTexture: null,
         fallbackView: null,
+        fallbackBounds: null,
+        cacheUniformBuffer,
+        cacheUniformUpload,
         bindGroup: null as unknown as GPUBindGroup,
         lastBounds: null,
         initialized: false,
       };
+      writeVectorTextRunCacheUniforms(engine, resources);
       rebuildVectorTextRunBindGroup(engine, key, resources);
       engine.vectorTextRunTextures.set(key, resources);
       return texture;
     } catch (error) {
       texture.destroy();
+      cacheUniformBuffer?.destroy();
       throw error;
     }
   }
@@ -2757,41 +3075,88 @@ export function createMixedSceneRasterSegmentResources(engine: BrushEngine,
 }
 
 export function ensureVectorTextGpuScratch(engine: BrushEngine, width: number, height: number): void {
-  if (
+  const requiredWidth = Math.max(1, Math.ceil(width));
+  const requiredHeight = Math.max(1, Math.ceil(height));
+  const currentWidth = engine.vectorTextGpuScratchWidth;
+  const currentHeight = engine.vectorTextGpuScratchHeight;
+  const resourcesReady = Boolean(
     engine.vectorTextGpuMsaaTexture
     && engine.vectorTextGpuMsaaView
     && engine.vectorTextGpuResolvedTexture
-    && engine.vectorTextGpuResolvedView
-    && engine.vectorTextGpuScratchWidth === width
-    && engine.vectorTextGpuScratchHeight === height
+    && engine.vectorTextGpuResolvedView,
+  );
+  if (
+    resourcesReady
+    && currentWidth >= requiredWidth
+    && currentHeight >= requiredHeight
   ) {
     return;
   }
-  engine.vectorTextGpuMsaaTexture?.destroy();
-  engine.vectorTextGpuResolvedTexture?.destroy();
-  engine.vectorTextGpuMsaaTexture = engine.device.createTexture({
-    label: `Vector text shared MSAA4 color ${width}×${height}`,
-    size: { width, height, depthOrArrayLayers: 1 },
-    sampleCount: VECTOR_TEXT_GPU_SAMPLE_COUNT,
-    format: VECTOR_TEXT_GPU_TARGET_FORMAT,
-    usage: GPUTextureUsage.RENDER_ATTACHMENT,
-  });
-  engine.vectorTextGpuMsaaView = engine.vectorTextGpuMsaaTexture.createView({
-    label: "Vector text shared MSAA4 color view",
-  });
-  engine.vectorTextGpuResolvedTexture = engine.device.createTexture({
-    label: `Vector text shared resolved crop ${width}×${height}`,
-    size: { width, height, depthOrArrayLayers: 1 },
-    format: VECTOR_TEXT_GPU_TARGET_FORMAT,
-    usage:
-      GPUTextureUsage.RENDER_ATTACHMENT
-      | GPUTextureUsage.COPY_SRC,
-  });
-  engine.vectorTextGpuResolvedView = engine.vectorTextGpuResolvedTexture.createView({
-    label: "Vector text shared resolved crop view",
-  });
-  engine.vectorTextGpuScratchWidth = width;
-  engine.vectorTextGpuScratchHeight = height;
+  const maximumDimension = Math.max(
+    1,
+    Math.floor(engine.device.limits.maxTextureDimension2D),
+  );
+  const maximumWidth = Math.max(
+    1,
+    Math.min(Math.floor(engine.canvas.width), maximumDimension),
+  );
+  const maximumHeight = Math.max(
+    1,
+    Math.min(Math.floor(engine.canvas.height), maximumDimension),
+  );
+  const allocationWidth = growVectorTextGpuCacheAxisCapacity(
+    currentWidth,
+    requiredWidth,
+    maximumWidth,
+  );
+  const allocationHeight = growVectorTextGpuCacheAxisCapacity(
+    currentHeight,
+    requiredHeight,
+    maximumHeight,
+  );
+
+  let nextMsaaTexture: GPUTexture | null = null;
+  let nextResolvedTexture: GPUTexture | null = null;
+  let nextMsaaView: GPUTextureView;
+  let nextResolvedView: GPUTextureView;
+  try {
+    nextMsaaTexture = engine.device.createTexture({
+      label: `Vector text shared MSAA4 color ${allocationWidth}×${allocationHeight}`,
+      size: { width: allocationWidth, height: allocationHeight, depthOrArrayLayers: 1 },
+      sampleCount: VECTOR_TEXT_GPU_SAMPLE_COUNT,
+      format: VECTOR_TEXT_GPU_TARGET_FORMAT,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    nextMsaaView = nextMsaaTexture.createView({
+      label: "Vector text shared MSAA4 color view",
+    });
+    nextResolvedTexture = engine.device.createTexture({
+      label: `Vector text shared resolved crop ${allocationWidth}×${allocationHeight}`,
+      size: { width: allocationWidth, height: allocationHeight, depthOrArrayLayers: 1 },
+      format: VECTOR_TEXT_GPU_TARGET_FORMAT,
+      usage:
+        GPUTextureUsage.RENDER_ATTACHMENT
+        | GPUTextureUsage.COPY_SRC,
+    });
+    nextResolvedView = nextResolvedTexture.createView({
+      label: "Vector text shared resolved crop view",
+    });
+  } catch (error) {
+    nextMsaaTexture?.destroy();
+    nextResolvedTexture?.destroy();
+    throw error;
+  }
+
+  const previousMsaaTexture = engine.vectorTextGpuMsaaTexture;
+  const previousResolvedTexture = engine.vectorTextGpuResolvedTexture;
+  engine.vectorTextGpuMsaaTexture = nextMsaaTexture;
+  engine.vectorTextGpuMsaaView = nextMsaaView;
+  engine.vectorTextGpuResolvedTexture = nextResolvedTexture;
+  engine.vectorTextGpuResolvedView = nextResolvedView;
+  engine.vectorTextGpuScratchWidth = allocationWidth;
+  engine.vectorTextGpuScratchHeight = allocationHeight;
+  previousMsaaTexture?.destroy();
+  previousResolvedTexture?.destroy();
 }
 
 export function ensureVectorTextGpuResource(engine: BrushEngine, 

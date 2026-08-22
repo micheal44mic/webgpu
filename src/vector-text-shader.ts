@@ -9,7 +9,7 @@ import { activeClippingGroupTexelShader } from "./clipping-group-shader.ts";
  * conserva l'ordine dei livelli. Non esiste un fallback bitmap durante lo zoom.
  */
 export const VECTOR_TEXT_PRESENTATION_STRATEGY =
-  "semantic-vector-gpu-runs-slug-clipper-msaa4-rgba16f-v6" as const;
+  "semantic-vector-gpu-runs-slug-clipper-msaa4-rgba16f-roi-v7" as const;
 
 export const vectorTextDisplayShader = /* wgsl */ `
 struct DisplayUniforms {

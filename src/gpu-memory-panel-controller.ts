@@ -111,6 +111,7 @@ export class GpuMemoryPanelController {
 
   setOpen(open: boolean): void {
     this.panelOpen = open;
+    this.options.root.dataset.panelState = open ? "expanded" : "collapsed";
     this.panel.hidden = !open;
     this.toggle.setAttribute("aria-expanded", String(open));
     this.toggle.title = open
@@ -330,6 +331,46 @@ export class GpuMemoryPanelController {
   }
   
   update(stats: EngineStats): void {
+    // Keep the collapsed monitor live without paying for the detailed panel.
+    // `update` already receives the engine's regular stats notifications (and
+    // the existing one-second fallback poll), so no extra timer is needed.
+    const declaredMiB = stats.gpuMemory.countedTotalMiB;
+    const engineReady = this.options.isEngineReady();
+    const totalMiB = engineReady
+      ? stats.gpuMemory.registeredCurrentMiB
+      : declaredMiB;
+    const peakMiB = engineReady
+      ? stats.gpuMemory.registeredPeakMiB
+      : declaredMiB;
+    const formattedTotal = formatMemoryMiB(totalMiB);
+    this.element<HTMLElement>("gpuMemoryTotal").textContent = formattedTotal;
+    this.element<HTMLElement>("gpuMemoryPeak").textContent = `peak ${formatMemoryMiB(peakMiB)}`;
+    this.element<HTMLElement>("gpuMemoryCompact").textContent = formattedTotal;
+
+    if (!engineReady) {
+      this.previousTotalMiB = null;
+      this.delta.hidden = true;
+    } else {
+      if (this.previousTotalMiB !== null) {
+        const deltaMiB = totalMiB - this.previousTotalMiB;
+        if (Math.abs(deltaMiB) >= 0.05) {
+          this.delta.textContent = (deltaMiB > 0 ? "+" : "−")
+            + memoryNumberFormatter.format(Math.abs(deltaMiB))
+            + " MiB";
+          this.delta.classList.toggle("decrease", deltaMiB < 0);
+          this.delta.hidden = false;
+          if (this.deltaTimer !== null) {
+            this.options.browser.clearTimeout(this.deltaTimer);
+          }
+          this.deltaTimer = this.options.browser.setTimeout(() => {
+            this.delta.hidden = true;
+            this.deltaTimer = null;
+          }, 3500);
+        }
+      }
+      this.previousTotalMiB = totalMiB;
+    }
+
     // Stesso motivo di renderLayerList: ~46 getElementById piu la riduzione sui
     // tile dello storage study, ad ogni frame, su un pannello chiuso.
     if (!this.panelOpen) {
@@ -460,17 +501,6 @@ export class GpuMemoryPanelController {
     // descrittori di ogni texture e buffer vivi. Il modello dichiarato resta
     // sotto, come ripartizione semantica, ma non e' piu' la fonte del totale:
     // era il punto in cui la stima poteva mentire senza che si vedesse.
-    const declaredMiB = stats.gpuMemory.countedTotalMiB;
-    const totalMiB = this.options.isEngineReady()
-      ? stats.gpuMemory.registeredCurrentMiB
-      : declaredMiB;
-    const peakMiB = this.options.isEngineReady()
-      ? stats.gpuMemory.registeredPeakMiB
-      : declaredMiB;
-    const formattedTotal = formatMemoryMiB(totalMiB);
-    this.element<HTMLElement>("gpuMemoryTotal").textContent = formattedTotal;
-    this.element<HTMLElement>("gpuMemoryPeak").textContent = `peak ${formatMemoryMiB(peakMiB)}`;
-    this.element<HTMLElement>("gpuMemoryCompact").textContent = formattedTotal;
     this.options.memoryStat.textContent = formattedTotal;
   
     this.renderLayerMemoryBreakdown(stats.gpuMemory.layers, this.options.isEngineReady());
@@ -489,31 +519,10 @@ export class GpuMemoryPanelController {
         + `reserved ${formatMemoryMiB(governor.governorReservedMiB)}`
       : "Governor · waiting for device";
   
-    if (!this.options.isEngineReady()) {
-      this.previousTotalMiB = null;
-      this.delta.hidden = true;
+    if (!engineReady) {
       return;
     }
-  
-    if (this.previousTotalMiB !== null) {
-      const deltaMiB = totalMiB - this.previousTotalMiB;
-      if (Math.abs(deltaMiB) >= 0.05) {
-        this.delta.textContent = (deltaMiB > 0 ? "+" : "−")
-          + memoryNumberFormatter.format(Math.abs(deltaMiB))
-          + " MiB";
-        this.delta.classList.toggle("decrease", deltaMiB < 0);
-        this.delta.hidden = false;
-        if (this.deltaTimer !== null) {
-          this.options.browser.clearTimeout(this.deltaTimer);
-        }
-        this.deltaTimer = this.options.browser.setTimeout(() => {
-          this.delta.hidden = true;
-          this.deltaTimer = null;
-        }, 3500);
-      }
-    }
     this.updateGpuMemoryAudit(declaredMiB, this.options.engine.measuredGpuMemory());
-    this.previousTotalMiB = totalMiB;
   }
 
   dispose(): void {

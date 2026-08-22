@@ -879,6 +879,7 @@ export class BrushEngine {
   readonly layerColdTileCompositeEnabled: boolean;
   readonly layerColdAdjacentPrefetchEnabled: boolean;
   readonly mixedSceneEnabled: boolean;
+  readonly vectorTextRoiCacheEnabled: boolean;
   readonly selectionOverlayCanvas: HTMLCanvasElement | null;
 
   private adapter!: GPUAdapter;
@@ -1714,6 +1715,7 @@ export class BrushEngine {
     this.layerColdAdjacentPrefetchEnabled =
       options.layerColdAdjacentPrefetchEnabled !== false;
     this.mixedSceneEnabled = resolveMixedSceneEnabled(options);
+    this.vectorTextRoiCacheEnabled = options.vectorTextRoiCacheEnabled !== false;
     this.selectionOverlayCanvas = selectionOverlayCanvas;
     this.mixedSceneStack = this.mixedSceneEnabled
       ? new MixedSceneStack(this.layerStack.layers.map((record) => record.id))
@@ -3512,14 +3514,15 @@ export class BrushEngine {
     const height = Math.max(1, this.canvas.height);
 
     captureVectorTextPresentationView(this);
-    ensureVectorTextPresentationTexture(this, width, height, placement);
+    const view = this.getVectorTextViewState();
+    const bounds = vectorTextGpuRunBounds(draws, view);
+    ensureVectorTextPresentationTexture(this, width, height, placement, bounds);
     const key =
       placement as Extract<VectorTextPlacement, `text-run:${string}`>;
     const resources = this.vectorTextRunTextures.get(key);
     if (!resources) {
       throw new Error(`GPU text run ${placement} is not allocated.`);
     }
-    const view = this.getVectorTextViewState();
     const drawResources = draws.map(
       (draw) => ensureVectorTextGpuResource(this, draw),
     );
@@ -3528,14 +3531,13 @@ export class BrushEngine {
         ? ensureVectorTextGpuBlurCache(this, draw)
         : null,
     );
-    const bounds = vectorTextGpuRunBounds(draws, view);
-
     this.vectorTextGpuPendingRuns.push({
       placement: key,
       resources,
       target: "primary",
       targetTexture: resources.texture,
       targetView: resources.view,
+      targetBounds: resources.textureBounds,
       draws,
       drawResources,
       blurResources,
@@ -3554,7 +3556,7 @@ export class BrushEngine {
       height,
       gpuMemoryMiB:
         (
-          width * height * 8
+          resources.textureBounds.width * resources.textureBounds.height * 8
           + geometryBytes
         )
         / MEBIBYTE_BYTES,
@@ -3655,6 +3657,7 @@ export class BrushEngine {
       for (const resources of this.vectorTextRunTextures.values()) {
         resources.texture.destroy();
         resources.fallbackTexture?.destroy();
+        resources.cacheUniformBuffer.destroy();
         changed = true;
       }
       this.vectorTextRunTextures.clear();
@@ -3664,6 +3667,7 @@ export class BrushEngine {
       if (resources) {
         resources.texture.destroy();
         resources.fallbackTexture?.destroy();
+        resources.cacheUniformBuffer.destroy();
         this.vectorTextRunTextures.delete(key);
         changed = true;
       }

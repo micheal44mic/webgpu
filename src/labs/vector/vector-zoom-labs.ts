@@ -1,5 +1,6 @@
 import type { BrushEngine } from "../../brush-engine";
 import type { MixedSceneController } from "../../mixed-scene-controller";
+import { VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL } from "../../vector-text-gpu-shader";
 import {
   VECTOR_TEXT_ZOOM_AB_IDLE_FRAME_COUNT,
   VECTOR_TEXT_ZOOM_AB_SAMPLE_COUNT,
@@ -27,6 +28,7 @@ export type VectorZoomLabKind = "stress" | "during" | "release" | "coverage";
 export interface VectorZoomStressReport {
   version: 1;
   strategy: typeof VECTOR_TEXT_ZOOM_STRESS_STRATEGY;
+  vectorTextRoiCacheEnabled: boolean;
   textCount: number;
   profileOrder: readonly string[];
   profileCounts: {
@@ -73,6 +75,7 @@ export interface VectorZoomStressReport {
 export interface VectorZoomAbReport {
   version: 1;
   strategy: typeof VECTOR_TEXT_ZOOM_AB_STRATEGY;
+  vectorTextRoiCacheEnabled: boolean;
   variant: "A" | "B";
   refreshMode: "during" | "release";
   refreshPolicy: "during-gesture" | "on-release";
@@ -147,6 +150,7 @@ export interface VectorZoomAbReport {
 export interface VectorZoomCoverageReport {
   version: 1;
   strategy: typeof VECTOR_TEXT_ZOOM_C_STRATEGY;
+  vectorTextRoiCacheEnabled: boolean;
   variant: "C";
   runCode: string;
   traceFingerprint: string;
@@ -163,6 +167,7 @@ export interface VectorZoomCoverageReport {
   fallbackTextureCount: number;
   fallbackRunCount: number;
   fallbackGpuMemoryMiB: number;
+  fallbackFullViewportGpuMemoryMiB: number;
   fallbackProbeAlphaPixelCounts: number[];
   rasterLayerCountAfterFallbackRebuild: number;
   selectedRasterAfterFallbackRebuild: boolean;
@@ -642,7 +647,12 @@ async function runVectorZoomCoverage(
     && Math.abs(seed.y - finalView.centerY) * VECTOR_TEXT_ZOOM_C_TARGET_ZOOM
       < canvas.height * 0.5
   )).length;
-  const expectedFallbackGpuMemoryMiB = canvas.width * canvas.height * 4 / (1024 * 1024);
+  const fallbackFullViewportGpuMemoryMiB =
+    canvas.width * canvas.height * VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL / (1024 * 1024);
+  const fallbackMemoryMatchesCacheMode = engine.vectorTextRoiCacheEnabled
+    ? fallbackGpuMemoryMiB > 0
+      && fallbackGpuMemoryMiB < fallbackFullViewportGpuMemoryMiB
+    : Math.abs(fallbackGpuMemoryMiB - fallbackFullViewportGpuMemoryMiB) < 1e-6;
   const emptyFallbackWitnessCount = fallbackProbeAlphaPixelCounts.filter(
     (count) => count === 0,
   ).length;
@@ -661,8 +671,7 @@ async function runVectorZoomCoverage(
     fallbackPreparedBeforeGesture:
       fallbackTextureCount === 1
       && fallbackRunCount === fallbackTextureCount
-      && Math.abs(fallbackGpuMemoryMiB - expectedFallbackGpuMemoryMiB) < 1e-6
-      && fallbackGpuMemoryMiB <= 16
+      && fallbackMemoryMatchesCacheMode
       && Math.abs(fallbackCaptureZoom - VECTOR_TEXT_ZOOM_C_FALLBACK_ZOOM) < 1e-6,
     fallbackPixelsPresent:
       fallbackProbeAlphaPixelCounts.length === VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT
@@ -742,13 +751,15 @@ async function runVectorZoomCoverage(
   const report: VectorZoomCoverageReport = {
     version: 1,
     strategy: VECTOR_TEXT_ZOOM_C_STRATEGY,
+    vectorTextRoiCacheEnabled: engine.vectorTextRoiCacheEnabled,
     variant: "C",
     runCode: makeVectorZoomRunCode(),
     initialRasterWasEmpty,
     traceFingerprint:
       `texts:${VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT}|zoom:${VECTOR_TEXT_ZOOM_C_START_ZOOM}`
       + `->${VECTOR_TEXT_ZOOM_C_TARGET_ZOOM}|duration:${VECTOR_TEXT_ZOOM_C_GESTURE_DURATION_MS}`
-      + "|fallback:auto-post-raster|window:2|anchor:drift|coverage:dual-gpu",
+      + "|fallback:auto-post-raster|window:2|anchor:drift|coverage:dual-gpu"
+      + `|run-cache:${engine.vectorTextRoiCacheEnabled ? "roi" : "viewport"}`,
     textCount: after.textNodeCount,
     profileOrder,
     idleFrameCount: VECTOR_TEXT_ZOOM_C_IDLE_FRAME_COUNT,
@@ -761,6 +772,7 @@ async function runVectorZoomCoverage(
     fallbackTextureCount,
     fallbackRunCount,
     fallbackGpuMemoryMiB,
+    fallbackFullViewportGpuMemoryMiB,
     fallbackProbeAlphaPixelCounts,
     rasterLayerCountAfterFallbackRebuild,
     selectedRasterAfterFallbackRebuild,
@@ -1001,12 +1013,14 @@ async function runVectorZoomAb(
   const report: VectorZoomAbReport = {
     version: 1,
     strategy: VECTOR_TEXT_ZOOM_AB_STRATEGY,
+    vectorTextRoiCacheEnabled: engine.vectorTextRoiCacheEnabled,
     variant,
     refreshMode,
     refreshPolicy: during.zoomClippedRefreshPolicy,
     traceFingerprint:
       `texts:${VECTOR_TEXT_ZOOM_STRESS_TEXT_COUNT}|zoom:${VECTOR_TEXT_ZOOM_AB_START_ZOOM}`
-      + `|pan-css-x:+1|frames:${VECTOR_TEXT_ZOOM_AB_SAMPLE_COUNT}`,
+      + `|pan-css-x:+1|frames:${VECTOR_TEXT_ZOOM_AB_SAMPLE_COUNT}`
+      + `|run-cache:${engine.vectorTextRoiCacheEnabled ? "roi" : "viewport"}`,
     textCount: after.textNodeCount,
     idleFrameCount: VECTOR_TEXT_ZOOM_AB_IDLE_FRAME_COUNT,
     sampleCount: VECTOR_TEXT_ZOOM_AB_SAMPLE_COUNT,
@@ -1158,6 +1172,7 @@ async function runVectorZoomStress(
   const report: VectorZoomStressReport = {
     version: 1,
     strategy: VECTOR_TEXT_ZOOM_STRESS_STRATEGY,
+    vectorTextRoiCacheEnabled: engine.vectorTextRoiCacheEnabled,
     textCount: after.textNodeCount,
     profileOrder: [...VECTOR_TEXT_ZOOM_STRESS_PROFILE_ORDER],
     profileCounts,

@@ -34,7 +34,7 @@ export const VECTOR_TEXT_ZOOM_AB_IDLE_FRAME_COUNT = 30;
 export const VECTOR_TEXT_ZOOM_AB_SAMPLE_COUNT = 180;
 export const VECTOR_TEXT_ZOOM_AB_START_ZOOM = 64;
 export const VECTOR_TEXT_ZOOM_C_STRATEGY =
-  "ten-semantic-text-dual-gpu-fallback-auto-post-raster-window2-zoom8-to-0.3-v6" as const;
+  "ten-semantic-text-dual-gpu-fallback-auto-post-raster-window2-roi-aware-zoom8-to-0.3-v7" as const;
 export const VECTOR_TEXT_ZOOM_C_IDLE_FRAME_COUNT = 30;
 export const VECTOR_TEXT_ZOOM_C_SAMPLE_LIMIT = 120;
 export const VECTOR_TEXT_ZOOM_C_GESTURE_DURATION_MS = 650;

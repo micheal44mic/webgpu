@@ -3387,7 +3387,7 @@ export class MixedSceneController {
     const effectDiagnostics = this.effectCompiler.diagnostics();
     this.status.dataset.effectRegisteredPaths = String(effectDiagnostics.registeredPaths);
     this.status.dataset.effectReadyJobs = String(effectDiagnostics.readyJobs);
-    const cacheLabel = `${this.viewportTextureCount} viewport GPU cache entries`;
+    const cacheLabel = `${this.viewportTextureCount} vector GPU cache entries`;
     const timing = `render ${this.lastRenderMs.toFixed(2)} ms `
       + `(p95 ${percentile(this.renderSamples, 0.95).toFixed(2)} ms)`;
     const effectLabel = `Effects worker ${effectDiagnostics.pendingJobs} pending · `

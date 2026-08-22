@@ -240,7 +240,7 @@ assert.doesNotMatch(mainSource, /updateViewZoomControl|viewZoomPercentOutput/);
 
 assert.equal((mergedSurfaceSource.match(/rasterPixelViewEnabled\(resolutionScale\)/g) ?? []).length, 2,
   "entrambe le superfici raster unite devono usare nearest sopra soglia");
-assert.match(mixedSceneCompositorSource, /ordered-raster-vector-gpu-runs-rgba16f-viewport-source-over-raster-nearest-at-581pct-v4/);
+assert.match(mixedSceneCompositorSource, /ordered-raster-vector-gpu-runs-rgba16f-roi-source-over-raster-nearest-at-581pct-v5/);
 const mixedRasterSegment = mixedSceneCompositorSource.slice(
   mixedSceneCompositorSource.indexOf("export const mixedSceneRasterSegmentShader"),
   mixedSceneCompositorSource.indexOf("export const mixedSceneTextSegmentShader"),

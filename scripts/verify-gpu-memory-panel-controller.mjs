@@ -141,20 +141,57 @@ const toggle = root.querySelector("#gpuMemoryToggle");
 const close = root.querySelector("#gpuMemoryClose");
 assert.equal(panel.hidden, true);
 assert.equal(toggle.getAttribute("aria-expanded"), "false");
+assert.equal(root.dataset.panelState, "collapsed");
 controller.update(stats);
 assert.equal(statsReads, 0, "a closed panel must defer its expensive rendering");
-toggle.dispatchEvent(new Event("click"));
-assert.equal(panel.hidden, false);
-assert.equal(statsReads, 1, "opening a dirty panel must render the latest engine snapshot");
-assert.match(memoryStat.textContent, /64\.0 MiB/);
-assert.match(root.querySelector("#gpuMemoryHistoryDiagnostics").textContent, /History/);
+assert.match(
+  root.querySelector("#gpuMemoryCompact").textContent,
+  /64\.0 MiB/,
+  "the collapsed monitor must render its current total",
+);
+assert.match(
+  root.querySelector("#gpuMemoryPeak").textContent,
+  /peak 70\.0 MiB/,
+  "the collapsed monitor must keep the header peak ready for expansion",
+);
+assert.equal(memoryStat.textContent, "", "collapsed detailed telemetry must stay deferred");
+assert.equal(
+  root.querySelector("#gpuMemoryLayerBase").textContent,
+  "",
+  "a collapsed monitor must leave detailed rows deferred",
+);
 
 gpuMemory.registeredCurrentMiB = 66;
+controller.update(stats);
+assert.match(root.querySelector("#gpuMemoryCompact").textContent, /66\.0 MiB/);
+assert.equal(root.querySelector("#gpuMemoryDelta").hidden, false);
+assert.match(root.querySelector("#gpuMemoryDelta").textContent, /\+2\.0 MiB/);
+
+gpuMemory.registeredCurrentMiB = 63;
+controller.update(stats);
+assert.match(root.querySelector("#gpuMemoryCompact").textContent, /63\.0 MiB/);
+assert.match(root.querySelector("#gpuMemoryDelta").textContent, /−3\.0 MiB/);
+assert.equal(root.querySelector("#gpuMemoryDelta").classList.values.has("decrease"), true);
+assert.equal(
+  root.querySelector("#gpuMemoryLayerBase").textContent,
+  "",
+  "closed updates must not render the detailed memory model",
+);
+
+toggle.dispatchEvent(new Event("click"));
+assert.equal(panel.hidden, false);
+assert.equal(root.dataset.panelState, "expanded");
+assert.equal(statsReads, 1, "opening a dirty panel must render the latest engine snapshot");
+assert.match(memoryStat.textContent, /63\.0 MiB/);
+assert.match(root.querySelector("#gpuMemoryHistoryDiagnostics").textContent, /History/);
+
+gpuMemory.registeredCurrentMiB = 65;
 controller.update(stats);
 assert.equal(root.querySelector("#gpuMemoryDelta").hidden, false);
 assert.match(root.querySelector("#gpuMemoryDelta").textContent, /\+2\.0 MiB/);
 close.dispatchEvent(new Event("click"));
 assert.equal(panel.hidden, true);
+assert.equal(root.dataset.panelState, "collapsed");
 assert.equal(toggle.focused, true);
 
 controller.dispose();
@@ -166,9 +203,20 @@ const source = readFileSync(
   "utf8",
 );
 const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 assert.doesNotMatch(source, /document\.getElementById|window\./);
 assert.match(source, /this\.options\.root\.querySelector/);
 assert.match(main, /new GpuMemoryPanelController\(\{/);
 assert.doesNotMatch(main, /function updateGpuMemoryPanel|gpuMemoryPanelOpen/);
+assert.match(
+  styles,
+  /\.gpu-memory-monitor\[data-panel-state="collapsed"\]\s*\{\s*z-index:\s*50;/,
+  "only the collapsed monitor must rise above ordinary editor chrome",
+);
+assert.match(
+  styles,
+  /\.layer-loading-overlay\s*\{[\s\S]*?z-index:\s*100;/,
+  "the critical loading overlay must remain above the collapsed monitor",
+);
 
-console.log("GPU memory panel: deferred rendering, telemetry, delta, focus and disposal verified.");
+console.log("GPU memory panel: live collapsed totals/deltas, deferred details, telemetry, focus and disposal verified.");

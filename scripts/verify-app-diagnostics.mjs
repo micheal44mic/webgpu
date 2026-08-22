@@ -208,8 +208,8 @@ assert.match(gpuMemoryPanelSource, /telemetry\.checkpointCacheEvictions/);
 assert.match(controllerSource, /renderFrameError:[\s\S]*?getDocumentInconsistentDiagnostic\(\)/);
 assert.match(
   reportsSource,
-  /vectorTextRunTextureCount[\s\S]*?fallbackTexture !== null/,
-  "la memoria vettoriale deve contare anche le texture fallback vive",
+  /vectorTextRunBytes[\s\S]*?resources\.textureBounds\.width[\s\S]*?resources\.fallbackBounds/,
+  "la memoria vettoriale deve sommare le capacity ROI primary e fallback vive",
 );
 
 console.log("App diagnostics verification passed.");

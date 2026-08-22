@@ -139,6 +139,14 @@ import {
   MIXED_SCENE_COMPOSITOR_STRATEGY,
   MIXED_SCENE_LINEAR_FORMAT,
 } from "../src/mixed-scene-compositor-shader.ts";
+import {
+  VECTOR_TEXT_RUN_CACHE_GUARD_PX,
+  VECTOR_TEXT_RUN_CACHE_BUCKET_PX,
+  growVectorTextGpuCacheAxisCapacity,
+  placeVectorTextGpuRunCache,
+  vectorTextGpuRunCacheAllocationBounds,
+  vectorTextGpuRunCacheContains,
+} from "../src/vector-text-cache-roi.ts";
 
 const read = (relativePath) =>
   fs.readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
@@ -203,6 +211,122 @@ const sitesBuildSource = read("scripts/prepare-sites-build.mjs");
 const vectorZoomMigrationSource = read(".openai/drizzle/0005_vector_zoom_runs.sql");
 const htmlSource = read("index.html");
 const packageJson = JSON.parse(read("package.json"));
+
+const roiRequest = { x: 321, y: 197, width: 600, height: 200 };
+const roiAllocation = vectorTextGpuRunCacheAllocationBounds(
+  roiRequest,
+  1920,
+  1080,
+);
+assert.equal(roiAllocation.x % VECTOR_TEXT_RUN_CACHE_BUCKET_PX, 0);
+assert.equal(roiAllocation.y % VECTOR_TEXT_RUN_CACHE_BUCKET_PX, 0);
+assert.ok(vectorTextGpuRunCacheContains(roiAllocation, roiRequest));
+assert.ok(
+  roiAllocation.x <= roiRequest.x - VECTOR_TEXT_RUN_CACHE_GUARD_PX
+    && roiAllocation.y <= roiRequest.y - VECTOR_TEXT_RUN_CACHE_GUARD_PX
+    && roiAllocation.x + roiAllocation.width
+      >= roiRequest.x + roiRequest.width + VECTOR_TEXT_RUN_CACHE_GUARD_PX
+    && roiAllocation.y + roiAllocation.height
+      >= roiRequest.y + roiRequest.height + VECTOR_TEXT_RUN_CACHE_GUARD_PX,
+  "una ROI interna deve conservare il guard completo sui quattro lati",
+);
+assert.ok(
+  roiAllocation.width * roiAllocation.height < 1920 * 1080 * 0.15,
+  "una run piccola deve usare molto meno di un viewport intero",
+);
+assert.deepEqual(
+  vectorTextGpuRunCacheAllocationBounds(roiRequest, 1920, 1080, false),
+  { x: 0, y: 0, width: 1920, height: 1080 },
+  "il flag A/B deve ripristinare la capacity viewport senza cambiare renderer",
+);
+const movedRoiRequest = { x: 910, y: 510, width: 600, height: 200 };
+const movedRoiAllocation = placeVectorTextGpuRunCache(
+  movedRoiRequest,
+  roiAllocation.width,
+  roiAllocation.height,
+  1920,
+  1080,
+);
+assert.equal(movedRoiAllocation.width, roiAllocation.width);
+assert.equal(movedRoiAllocation.height, roiAllocation.height);
+assert.ok(vectorTextGpuRunCacheContains(movedRoiAllocation, movedRoiRequest));
+const edgeRoi = vectorTextGpuRunCacheAllocationBounds(
+  { x: 0, y: 0, width: 17, height: 13 },
+  1920,
+  1080,
+);
+assert.equal(edgeRoi.x, 0);
+assert.equal(edgeRoi.y, 0);
+assert.ok(vectorTextGpuRunCacheContains(edgeRoi, { x: 0, y: 0, width: 17, height: 13 }));
+const rightBottomRequest = { x: 1903, y: 1061, width: 17, height: 19 };
+const rightBottomRoi = vectorTextGpuRunCacheAllocationBounds(
+  rightBottomRequest,
+  1920,
+  1080,
+);
+assert.equal(rightBottomRoi.x + rightBottomRoi.width, 1920);
+assert.equal(rightBottomRoi.y + rightBottomRoi.height, 1080);
+assert.ok(vectorTextGpuRunCacheContains(rightBottomRoi, rightBottomRequest));
+
+const tinyCanvasRoi = vectorTextGpuRunCacheAllocationBounds(
+  { x: 7, y: 5, width: 1, height: 1 },
+  17,
+  13,
+);
+assert.deepEqual(
+  tinyCanvasRoi,
+  { x: 0, y: 0, width: 17, height: 13 },
+  "un canvas piu piccolo del bucket deve restare una allocation valida",
+);
+
+for (const request of [
+  { x: 0, y: 0, width: 1, height: 1 },
+  { x: 1919, y: 0, width: 1, height: 1 },
+  { x: 0, y: 1079, width: 1, height: 1 },
+  { x: 1919, y: 1079, width: 1, height: 1 },
+  { x: 640, y: 360, width: 640, height: 360 },
+]) {
+  const allocation = vectorTextGpuRunCacheAllocationBounds(request, 1920, 1080);
+  assert.ok(vectorTextGpuRunCacheContains(allocation, request));
+  assert.ok(allocation.x >= 0 && allocation.y >= 0);
+  assert.ok(allocation.x + allocation.width <= 1920);
+  assert.ok(allocation.y + allocation.height <= 1080);
+}
+
+const clippedOffscreenWitnesses = [
+  { x: 0, y: 540, width: 1, height: 1 },
+  { x: 1919, y: 540, width: 1, height: 1 },
+  { x: 960, y: 0, width: 1, height: 1 },
+  { x: 960, y: 1079, width: 1, height: 1 },
+];
+for (const request of clippedOffscreenWitnesses) {
+  const allocation = vectorTextGpuRunCacheAllocationBounds(request, 1920, 1080);
+  assert.ok(
+    vectorTextGpuRunCacheContains(allocation, request),
+    "un draw offscreen ridotto al pixel sentinella deve restare contenuto",
+  );
+}
+
+assert.equal(
+  growVectorTextGpuCacheAxisCapacity(128, 100, 1920),
+  128,
+  "una capacity sufficiente non deve restringersi durante il movimento",
+);
+assert.equal(
+  growVectorTextGpuCacheAxisCapacity(64, 65, 1920),
+  128,
+  "la crescita deve essere bucketizzata senza moltiplicare l'altro asse",
+);
+assert.equal(
+  growVectorTextGpuCacheAxisCapacity(1536, 1800, 1920),
+  1920,
+  "la crescita geometrica deve essere limitata alla dimensione massima",
+);
+assert.throws(
+  () => growVectorTextGpuCacheAxisCapacity(64, 1921, 1920),
+  RangeError,
+  "una richiesta oltre il limite deve fallire esplicitamente",
+);
 
 function polygonPath(rings, fillRule = 0) {
   const verbs = [];
@@ -365,7 +489,7 @@ for (const point of [
 // Strategie: nessun fallback bitmap, source Slug, effetti Clipper/Worker.
 assert.equal(
   VECTOR_TEXT_PRESENTATION_STRATEGY,
-  "semantic-vector-gpu-runs-slug-clipper-msaa4-rgba16f-v6",
+  "semantic-vector-gpu-runs-slug-clipper-msaa4-rgba16f-roi-v7",
 );
 assert.equal(
   VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY,
@@ -389,7 +513,10 @@ assert.equal(
 assert.equal(VECTOR_TEXT_ZOOM_AB_IDLE_FRAME_COUNT, 30);
 assert.equal(VECTOR_TEXT_ZOOM_AB_SAMPLE_COUNT, 180);
 assert.equal(VECTOR_TEXT_ZOOM_AB_START_ZOOM, 64);
-assert.match(VECTOR_TEXT_ZOOM_C_STRATEGY, /dual-gpu-fallback/);
+assert.equal(
+  VECTOR_TEXT_ZOOM_C_STRATEGY,
+  "ten-semantic-text-dual-gpu-fallback-auto-post-raster-window2-roi-aware-zoom8-to-0.3-v7",
+);
 assert.equal(VECTOR_TEXT_ZOOM_C_IDLE_FRAME_COUNT, 30);
 assert.equal(VECTOR_TEXT_ZOOM_C_SAMPLE_LIMIT, 120);
 assert.equal(VECTOR_TEXT_ZOOM_C_GESTURE_DURATION_MS, 650);
@@ -719,7 +846,7 @@ assert.equal(VECTOR_TEXT_GPU_BLUR_BYTES_PER_PIXEL, 2);
 assert.equal(MIXED_SCENE_LINEAR_FORMAT, "rgba16float");
 assert.equal(
   MIXED_SCENE_COMPOSITOR_STRATEGY,
-  "ordered-raster-vector-gpu-runs-rgba16f-viewport-source-over-raster-nearest-at-581pct-v4",
+  "ordered-raster-vector-gpu-runs-rgba16f-roi-source-over-raster-nearest-at-581pct-v5",
 );
 assert.equal(
   VECTOR_TEXT_FONT_GEOMETRY_STRATEGY,
@@ -1813,6 +1940,14 @@ assert.doesNotMatch(
   "nessun fast mode deve bypassare la camera con un frame screen-space",
 );
 assert.match(mixedCompositorSource, /@group\(0\) @binding\(5\) var fallbackTexture/);
+assert.match(mixedCompositorSource, /@group\(0\) @binding\(6\) var<uniform> cache/);
+assert.match(mixedCompositorSource, /sourceCapturePixel - cache\.primaryOrigin/);
+assert.match(mixedCompositorSource, /fallbackCapturePixel - cache\.fallbackOrigin/);
+assert.match(
+  mixedCompositorSource,
+  /capture\.canvasSize\.x - sourceCapturePixel\.x/,
+  "la dissolvenza fast deve restare ancorata al canvas, non al bordo ROI",
+);
 assert.match(mixedCompositorSource, /return mix\(fallbackColor, sourceColor, smoothstep/);
 assert.match(engineSource, /captureVectorTextFallbackPresentation/);
 assert.match(engineSource, /rebuildVectorTextGpuFallbackPresentation/);
@@ -1850,10 +1985,32 @@ assert.match(vectorZoomLabSource, /fallbackProbeAlphaPixelCounts/);
 assert.match(vectorZoomLabSource, /fastCompositeProbeAlphaPixelCounts/);
 assert.match(vectorZoomLabSource, /finalFastFrameAcknowledged/);
 assert.match(vectorZoomLabSource, /initialRasterWasEmpty/);
+assert.equal(
+  (vectorZoomLabSource.match(
+    /vectorTextRoiCacheEnabled: engine\.vectorTextRoiCacheEnabled/g,
+  ) ?? []).length,
+  3,
+  "ogni report zoom deve identificare esplicitamente il ramo ROI/viewport",
+);
+assert.match(
+  vectorZoomLabSource,
+  /run-cache:\$\{engine\.vectorTextRoiCacheEnabled \? "roi" : "viewport"\}/,
+);
 const coverageFunctionStart = vectorZoomLabSource.indexOf("async function runVectorZoomCoverage");
 const coverageFunctionEnd = vectorZoomLabSource.indexOf("async function runVectorZoomAb", coverageFunctionStart);
 assert.ok(coverageFunctionStart >= 0 && coverageFunctionEnd > coverageFunctionStart);
 const coverageFunctionSource = vectorZoomLabSource.slice(coverageFunctionStart, coverageFunctionEnd);
+assert.match(
+  coverageFunctionSource,
+  /canvas\.width \* canvas\.height \* VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL/,
+  "il baseline deve usare gli 8 byte reali della texture rgba16float",
+);
+assert.match(
+  coverageFunctionSource,
+  /engine\.vectorTextRoiCacheEnabled[\s\S]{0,180}fallbackGpuMemoryMiB < fallbackFullViewportGpuMemoryMiB[\s\S]{0,180}Math\.abs\(fallbackGpuMemoryMiB - fallbackFullViewportGpuMemoryMiB\) < 1e-6/,
+  "C deve accettare una ROI positiva e minore del baseline, oppure il viewport completo con flag OFF",
+);
+assert.doesNotMatch(coverageFunctionSource, /canvas\.width \* canvas\.height \* 4/);
 const rasterLifecycleIndex = coverageFunctionSource.indexOf('engine.addLayer("C raster lifecycle")');
 const beginCoverageGestureIndex = coverageFunctionSource.indexOf("controller.beginViewGesture()");
 assert.ok(rasterLifecycleIndex >= 0 && beginCoverageGestureIndex > rasterLifecycleIndex);
@@ -1883,6 +2040,12 @@ assert.doesNotMatch(mainSource, /__vectorZoom(?:Ab|Coverage|Stress)Report|\/api\
 assert.match(sitesBuildSource, /handleVectorZoomRuns/);
 assert.match(sitesBuildSource, /\/api\/vector-zoom-runs/);
 assert.match(sitesBuildSource, /report\.passed !== VECTOR_ZOOM_CHECK_NAMES\.every/);
+assert.match(sitesBuildSource, /typeof report\.vectorTextRoiCacheEnabled !== "boolean"/);
+assert.match(
+  sitesBuildSource,
+  /report\.vectorTextRoiCacheEnabled[\s\S]{0,220}report\.fallbackGpuMemoryMiB < report\.fallbackFullViewportGpuMemoryMiB[\s\S]{0,220}Math\.abs/,
+  "il validatore remoto deve conservare la stessa semantica A/B del lab",
+);
 assert.doesNotMatch(
   sitesBuildSource,
   /report\.fallbackTextureCount !== 1|report\.exactRecoveryDelta !== 1/,

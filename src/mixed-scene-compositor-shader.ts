@@ -2,7 +2,7 @@ import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits.ts";
 import { rasterPixelViewShaderHelpers } from "./raster-pixel-view.ts";
 
 export const MIXED_SCENE_COMPOSITOR_STRATEGY =
-  "ordered-raster-vector-gpu-runs-rgba16f-viewport-source-over-raster-nearest-at-581pct-v4" as const;
+  "ordered-raster-vector-gpu-runs-rgba16f-roi-source-over-raster-nearest-at-581pct-v5" as const;
 
 export const MIXED_SCENE_LINEAR_FORMAT = "rgba16float" as const;
 
@@ -118,12 +118,18 @@ struct TextCaptureUniforms {
   fastMode: f32,
 };
 
+struct TextCacheUniforms {
+  primaryOrigin: vec2<f32>,
+  fallbackOrigin: vec2<f32>,
+};
+
 @group(0) @binding(0) var<uniform> display: DisplayUniforms;
 @group(0) @binding(1) var<uniform> capture: TextCaptureUniforms;
 @group(0) @binding(2) var sourceTexture: texture_2d<f32>;
 @group(0) @binding(3) var sourceSampler: sampler;
 @group(0) @binding(4) var<uniform> fallbackCapture: TextCaptureUniforms;
 @group(0) @binding(5) var fallbackTexture: texture_2d<f32>;
+@group(0) @binding(6) var<uniform> cache: TextCacheUniforms;
 
 
 ${fullscreenVertexShader}
@@ -131,7 +137,7 @@ ${fullscreenVertexShader}
 @fragment
 fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
   let dimensions = vec2<i32>(textureDimensions(sourceTexture, 0));
-  let pixel = vec2<i32>(fragmentPosition.xy);
+  let pixel = vec2<i32>(fragmentPosition.xy) - vec2<i32>(cache.primaryOrigin);
   if (capture.fastMode < 0.5) {
     let inside = all(pixel >= vec2<i32>(0)) && all(pixel < dimensions);
     if (!inside) {
@@ -146,35 +152,37 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   // wider GPU capture prepared before the gesture.
   let layerPosition = layerPositionAt(fragmentPosition.xy);
   let layerDelta = layerPosition - capture.viewCenter;
-  let sourcePixel = capture.canvasSize * 0.5 + capture.zoom * vec2<f32>(
+  let sourceCapturePixel = capture.canvasSize * 0.5 + capture.zoom * vec2<f32>(
     capture.viewRotation.x * layerDelta.x - capture.viewRotation.y * layerDelta.y,
     capture.viewRotation.y * layerDelta.x + capture.viewRotation.x * layerDelta.y
   );
+  let sourcePixel = sourceCapturePixel - cache.primaryOrigin;
   let sourceDimensions = vec2<f32>(dimensions);
   let insideSource = all(sourcePixel >= vec2<f32>(0.0))
     && all(sourcePixel < sourceDimensions);
-  let sourceColor = select(
-    vec4<f32>(0.0),
-    textureSampleLevel(
+  var sourceColor = vec4<f32>(0.0);
+  if (insideSource) {
+    sourceColor = textureSampleLevel(
       sourceTexture,
       sourceSampler,
       sourcePixel / sourceDimensions,
       0.0
-    ),
-    insideSource
-  );
+    );
+  }
   if (capture.fastMode < 2.5) {
     return sourceColor;
   }
 
   let fallbackDimensions = vec2<f32>(textureDimensions(fallbackTexture, 0));
   let fallbackDelta = layerPosition - fallbackCapture.viewCenter;
-  let fallbackPixel = fallbackCapture.canvasSize * 0.5 + fallbackCapture.zoom * vec2<f32>(
+  let fallbackCapturePixel = fallbackCapture.canvasSize * 0.5
+    + fallbackCapture.zoom * vec2<f32>(
     fallbackCapture.viewRotation.x * fallbackDelta.x
       - fallbackCapture.viewRotation.y * fallbackDelta.y,
     fallbackCapture.viewRotation.y * fallbackDelta.x
       + fallbackCapture.viewRotation.x * fallbackDelta.y
   );
+  let fallbackPixel = fallbackCapturePixel - cache.fallbackOrigin;
   let insideFallback = all(fallbackPixel >= vec2<f32>(0.0))
     && all(fallbackPixel < fallbackDimensions);
   if (!insideFallback) {
@@ -194,8 +202,11 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   // are premultiplied, so this removes a rectangular resolution seam without
   // changing alpha compositing or detaching the vector from the camera.
   let sourceEdgeDistance = min(
-    min(sourcePixel.x, sourcePixel.y),
-    min(sourceDimensions.x - sourcePixel.x, sourceDimensions.y - sourcePixel.y)
+    min(sourceCapturePixel.x, sourceCapturePixel.y),
+    min(
+      capture.canvasSize.x - sourceCapturePixel.x,
+      capture.canvasSize.y - sourceCapturePixel.y
+    )
   );
   return mix(fallbackColor, sourceColor, smoothstep(0.0, 4.0, sourceEdgeDistance));
 }
