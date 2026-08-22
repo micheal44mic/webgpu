@@ -55,6 +55,7 @@ import {
   Scaling,
   Scan,
   Search,
+  Settings,
   Shapes,
   SlidersHorizontal,
   SprayCan,
@@ -68,6 +69,7 @@ import {
   Undo2,
   Upload,
   Wind,
+  X,
   createIcons,
 } from "lucide";
 import { BrushEngine } from "./brush-engine";
@@ -86,6 +88,12 @@ import {
 } from "./scene-layer-read-model";
 import { SceneEditorController } from "./scene-editor-controller";
 import { DocumentInteractionController } from "./document-interaction-controller";
+import { CanvasGuidesController } from "./canvas-guides-controller";
+import { EditorSettingsController } from "./editor-settings-controller";
+import {
+  DEFAULT_EDITOR_GUIDE_PREFERENCES,
+  type EditorSettingsStoragePort,
+} from "./editor-settings-storage";
 
 import type { MixedSceneController } from "./mixed-scene-controller";
 import { createProjectStorage } from "./project-storage";
@@ -123,6 +131,7 @@ createIcons({
     Scaling,
     Scan,
     Search,
+    Settings,
     Shapes,
     SlidersHorizontal,
     SprayCan,
@@ -136,6 +145,7 @@ createIcons({
     Undo2,
     Upload,
     Wind,
+    X,
   },
 });
 
@@ -150,6 +160,7 @@ function element<T extends HTMLElement>(id: string): T {
 document.title = `WebGPU Brush Engine ${DOCUMENT_WIDTH}×${DOCUMENT_HEIGHT}`;
 const canvas = element<HTMLCanvasElement>("gpuCanvas");
 const brushOutlineCanvas = element<HTMLCanvasElement>("brushOutlineCanvas");
+const canvasGuidesOverlayCanvas = element<HTMLCanvasElement>("canvasGuidesOverlayCanvas");
 const tipPreviewCanvas = element<HTMLCanvasElement>("tipPreviewCanvas");
 const rasterSelectionOverlayCanvas = element<HTMLCanvasElement>(
   "rasterSelectionOverlayCanvas",
@@ -166,6 +177,9 @@ if (!rasterSelectionGestureContextCandidate) {
 const rasterSelectionGestureContext: CanvasRenderingContext2D =
   rasterSelectionGestureContextCandidate;
 const appElement = element<HTMLElement>("app");
+const editorStage = element<HTMLElement>("editorStage");
+const editorTopbar = element<HTMLElement>("editorTopbar");
+const mobileToolRail = element<HTMLElement>("mobileToolRail");
 const projectHomeButton = element<HTMLButtonElement>("projectHomeButton");
 const saveProjectButton = element<HTMLButtonElement>("saveProjectButton");
 const statusElement = element<HTMLParagraphElement>("status");
@@ -191,6 +205,12 @@ const mobileToolsSheetContent = element<HTMLElement>("mobileToolsSheetContent");
 const mobileToolsSearchField = element<HTMLLabelElement>("mobileToolsSearchField");
 const mobileToolsSearchInput = element<HTMLInputElement>("mobileToolsSearch");
 const mobileToolsEmpty = element<HTMLParagraphElement>("mobileToolsEmpty");
+const editorSettingsMenuButton = element<HTMLButtonElement>("editorSettingsMenu");
+const editorSettingsPanel = element<HTMLElement>("editorSettingsPanel");
+const editorSettingsCloseButton = element<HTMLButtonElement>("editorSettingsClose");
+const editorRulersEnabledInput = element<HTMLInputElement>("editorRulersEnabled");
+const editorGridEnabledInput = element<HTMLInputElement>("editorGridEnabled");
+const editorSnappingEnabledInput = element<HTMLInputElement>("editorSnappingEnabled");
 const mobileLayersMenuButton = element<HTMLButtonElement>("mobileLayersMenu");
 const mobileLayersPanel = element<HTMLElement>("mobileLayersPanel");
 const mobileAddLayerButton = element<HTMLButtonElement>("mobileAddLayer");
@@ -410,6 +430,8 @@ let canvasToolController: CanvasToolController | null = null;
 let brushOutlineController: BrushOutlineController | null = null;
 let mixedSceneInitializationPromise: Promise<MixedSceneController> | null = null;
 let editorToolsController: EditorToolsController;
+let editorSettingsController: EditorSettingsController | null = null;
+let canvasGuidesController: CanvasGuidesController | null = null;
 let mobileBrushStudio: MobileBrushStudioController | null = null;
 let mobileStrokeSheet: MobileStrokeSheetController | null = null;
 let mobileRasterEffectsSheet: MobileRasterEffectsSheetController | null = null;
@@ -457,6 +479,7 @@ const engine = new BrushEngine(canvas, {
   },
   onViewChange() {
     mixedSceneController?.scheduleViewSync();
+    canvasGuidesController?.scheduleRender();
     projectSessionController?.markDirty();
     brushOutlineController?.notifyEngineUpdate();
   },
@@ -784,6 +807,7 @@ brushLibraryController = new BrushLibraryController({
     if (mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
     if (mobileRasterEffectsSheet?.isOpen) mobileRasterEffectsSheet.close(false);
     if (mobileToolSettingsSheet?.isOpen) mobileToolSettingsSheet.close(false);
+    if (editorSettingsController?.isOpen) editorSettingsController.setOpen(false);
     if (editorToolsController?.isOpen) editorToolsController.setOpen(false);
     if (layerPanelController?.isOpen) layerPanelController.setOpen(false);
   },
@@ -791,6 +815,7 @@ brushLibraryController = new BrushLibraryController({
     if (mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
     if (mobileRasterEffectsSheet?.isOpen) mobileRasterEffectsSheet.close(false);
     if (mobileToolSettingsSheet?.isOpen) mobileToolSettingsSheet.close(false);
+    if (editorSettingsController?.isOpen) editorSettingsController.setOpen(false);
   },
   isPaintSelected: () => (canvasToolController?.activeTool ?? "paint") === "paint",
   onVisibilityChange: () => {
@@ -803,6 +828,60 @@ brushLibraryController = new BrushLibraryController({
     statusElement.className = `status ${kind === "working" ? "" : kind}`;
   },
 });
+
+let editorSettingsStorage: EditorSettingsStoragePort | null = null;
+try {
+  editorSettingsStorage = window.localStorage;
+} catch {
+  editorSettingsStorage = null;
+}
+editorSettingsController = new EditorSettingsController({
+  browser: window,
+  document,
+  storage: editorSettingsStorage,
+  elements: {
+    trigger: editorSettingsMenuButton,
+    panel: editorSettingsPanel,
+    closeButton: editorSettingsCloseButton,
+    rulersInput: editorRulersEnabledInput,
+    gridInput: editorGridEnabledInput,
+    snappingInput: editorSnappingEnabledInput,
+  },
+  canOpen: () => mobileBrushStudio?.isBusy !== true
+    && rasterAdjustmentsController?.isAnySurfaceOpen !== true,
+  beforeOpen: () => {
+    if (mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
+    if (mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
+    if (mobileRasterEffectsSheet?.isOpen) mobileRasterEffectsSheet.close(false);
+    if (mobileToolSettingsSheet?.isOpen) mobileToolSettingsSheet.close(false);
+    if (editorToolsController?.isOpen) editorToolsController.setOpen(false);
+    if (layerPanelController?.isOpen) layerPanelController.setOpen(false);
+    if (brushLibraryController.isOpen) brushLibraryController.setOpen(false);
+  },
+  onOpenChange: () => brushQuickControlsController?.syncVisibility(),
+  onPreferencesChange: () => canvasGuidesController?.preferencesChanged(),
+});
+canvasGuidesController = new CanvasGuidesController({
+  browser: window,
+  canvas: canvasGuidesOverlayCanvas,
+  getDocumentSize: () => ({
+    width: engine.documentWidth,
+    height: engine.documentHeight,
+  }),
+  getViewportInsets: () => {
+    const stageBounds = editorStage.getBoundingClientRect();
+    const topbarBounds = editorTopbar.getBoundingClientRect();
+    const railBounds = mobileToolRail.getBoundingClientRect();
+    return {
+      top: Math.max(0, topbarBounds.bottom - stageBounds.top),
+      left: Math.max(0, railBounds.right - stageBounds.left),
+    };
+  },
+  getView: () => engine.getVectorTextViewState(),
+  getPreferences: () => editorSettingsController?.preferences
+    ?? DEFAULT_EDITOR_GUIDE_PREFERENCES,
+});
+canvasGuidesController.scheduleRender();
 
 brushQuickControlsController = new BrushQuickControlsController({
   browser: window,
@@ -836,6 +915,7 @@ brushQuickControlsController = new BrushQuickControlsController({
   isSuppressedBySurface: () =>
     layerPanelController?.isOpen === true
     || editorToolsController?.isOpen === true
+    || editorSettingsController?.isOpen === true
     || brushLibraryController.isOpen
     || mobileStrokeSheet?.isOpen === true
     || mobileRasterEffectsSheet?.isOpen === true
@@ -1061,6 +1141,7 @@ mobileStrokeSheet = new MobileStrokeSheetController({
   cancelHistoryEdit: (token) => engine.cancelRasterLayerMetadataHistoryEdit(token),
   beforeOpen: () => {
     editorToolsController?.setOpen(false);
+    editorSettingsController?.setOpen(false);
     setMobileLayersPanelOpen(false);
     brushLibraryController.setOpen(false);
     mobileBrushStudio?.cancel(false);
@@ -1092,6 +1173,7 @@ mobileRasterEffectsSheet = new MobileRasterEffectsSheetController({
   cancelHistoryEdit: (token) => engine.cancelRasterLayerMetadataHistoryEdit(token),
   beforeOpen: () => {
     editorToolsController?.setOpen(false);
+    editorSettingsController?.setOpen(false);
     setMobileLayersPanelOpen(false);
     brushLibraryController.setOpen(false);
     mobileBrushStudio?.cancel(false);
@@ -1195,6 +1277,7 @@ rasterAdjustmentsController = new RasterAdjustmentsController({
   },
   beforeSheetOpen: () => {
     editorToolsController?.setOpen(false);
+    editorSettingsController?.setOpen(false);
     setMobileLayersPanelOpen(false);
     brushLibraryController.setOpen(false);
     mobileBrushStudio?.cancel(false);
@@ -1395,6 +1478,7 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
   toggleTextDistortEditing: () => canvasToolController?.toggleTextDistortEditing() ?? false,
   beforeOpen: () => {
     editorToolsController?.setOpen(false);
+    editorSettingsController?.setOpen(false);
     setMobileLayersPanelOpen(false);
     brushLibraryController.setOpen(false);
     mobileBrushStudio?.cancel(false);
@@ -1434,6 +1518,7 @@ editorToolsController = new EditorToolsController({
     if (mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
     if (mobileRasterEffectsSheet?.isOpen) mobileRasterEffectsSheet.close(false);
     if (mobileToolSettingsSheet?.isOpen) mobileToolSettingsSheet.close(false);
+    if (editorSettingsController?.isOpen) editorSettingsController.setOpen(false);
     if (layerPanelController?.isOpen) layerPanelController.setOpen(false);
     if (brushLibraryController.isOpen) brushLibraryController.setOpen(false);
   },
@@ -1494,6 +1579,7 @@ layerPanelController = new LayerPanelController({
     if (mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
     if (mobileRasterEffectsSheet?.isOpen) mobileRasterEffectsSheet.close(false);
     if (mobileToolSettingsSheet?.isOpen) mobileToolSettingsSheet.close(false);
+    if (editorSettingsController?.isOpen) editorSettingsController.setOpen(false);
     if (editorToolsController.isOpen) editorToolsController.setOpen(false);
     if (brushLibraryController.isOpen) brushLibraryController.setOpen(false);
   },
@@ -1603,6 +1689,8 @@ documentInteractionController = new DocumentInteractionController({
 window.addEventListener("pagehide", () => {
   appDiagnosticsController?.dispose();
   gpuMemoryPanelController?.dispose();
+  canvasGuidesController?.dispose();
+  editorSettingsController?.dispose();
   layerPanelController?.dispose();
   canvasInputController?.dispose();
   brushOutlineController?.dispose();
@@ -1764,6 +1852,11 @@ async function initializeMixedSceneController(): Promise<MixedSceneController> {
       clippedRefreshPolicy:
         editorExtensionBootstrap?.vectorTextClippedRefreshPolicy ?? "during-gesture",
       onEditorStateChange: () => mobileToolSettingsSheet?.syncOpenState(),
+      canvasGuides: {
+        getPreferences: () => editorSettingsController?.preferences
+          ?? DEFAULT_EDITOR_GUIDE_PREFERENCES,
+        setSmartGuides: (guides) => canvasGuidesController?.setSmartGuides(guides),
+      },
     });
     await controller.initialize();
     mixedSceneController = controller;

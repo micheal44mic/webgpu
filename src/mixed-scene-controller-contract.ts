@@ -32,6 +32,8 @@ import {
   type VectorTextFastPresentationMode,
 } from "./vector-text-adaptive-zoom";
 import { VECTOR_TEXT_TRANSFORM_STRATEGY } from "./vector-text-transform.ts";
+import type { EditorGuidePreferences } from "./editor-settings-storage";
+import type { SceneSnapMatch } from "./scene-transform-snap";
 
 export interface VectorRasterizationResult {
   readonly layerId: number;
@@ -68,6 +70,10 @@ export interface MixedSceneControllerOptions {
   readonly browser: Window;
   readonly clippedRefreshPolicy?: VectorTextClippedRefreshPolicy;
   readonly onEditorStateChange?: () => void;
+  readonly canvasGuides?: {
+    readonly getPreferences: () => Readonly<EditorGuidePreferences>;
+    readonly setSmartGuides: (guides: readonly SceneSnapMatch[]) => void;
+  };
 }
 
 /** Narrow engine-facing port required by the mixed-scene editor. */

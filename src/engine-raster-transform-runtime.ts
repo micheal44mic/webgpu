@@ -190,6 +190,7 @@ function transformSnapshot(session: ActiveRasterTransformSession): RasterTransfo
     scale: session.transform.scale,
     rotation: session.transform.rotation,
     sourceBounds: { ...session.sourceBounds },
+    sourcePivot: { ...session.sourcePivot },
     resultBounds: copyRect(session.resultBounds),
   };
 }

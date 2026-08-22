@@ -220,7 +220,7 @@
     </section>
 
     <div id="app" hidden>
-      <header class="topbar">
+      <header id="editorTopbar" class="topbar">
         <nav class="mobile-header" aria-label="Editor navigation">
           <button
             id="projectHomeButton"
@@ -248,6 +248,20 @@
               <span class="mobile-icon-stack" aria-hidden="true">
                 <i data-lucide="sliders-horizontal" class="mobile-icon-layer mobile-icon-outline"></i>
                 <i data-lucide="sliders-horizontal" class="mobile-icon-layer mobile-icon-face"></i>
+              </span>
+            </button>
+            <button
+              id="editorSettingsMenu"
+              class="mobile-header-action"
+              type="button"
+              aria-label="Open settings"
+              aria-controls="editorSettingsPanel"
+              aria-expanded="false"
+              title="Settings"
+            >
+              <span class="mobile-icon-stack" aria-hidden="true">
+                <i data-lucide="settings" class="mobile-icon-layer mobile-icon-outline"></i>
+                <i data-lucide="settings" class="mobile-icon-layer mobile-icon-face"></i>
               </span>
             </button>
             <button
@@ -281,7 +295,7 @@
         </nav>
       </header>
 
-      <aside class="mobile-tool-rail" aria-label="Quick tools">
+      <aside id="mobileToolRail" class="mobile-tool-rail" aria-label="Quick tools">
         <label
           id="mobileBrushColor"
           class="mobile-tool-action mobile-color-action"
@@ -2487,6 +2501,92 @@
       </aside>
 
       <aside
+        id="editorSettingsPanel"
+        class="mobile-tools-sheet editor-settings-panel"
+        aria-label="Settings"
+        aria-hidden="true"
+        inert
+      >
+        <header class="editor-settings-header">
+          <div>
+            <h2>Settings</h2>
+            <p>Canvas alignment</p>
+          </div>
+          <button
+            id="editorSettingsClose"
+            class="editor-settings-close"
+            type="button"
+            aria-label="Close settings"
+            title="Close settings"
+          >
+            <span class="mobile-icon-stack" aria-hidden="true">
+              <i data-lucide="x" class="mobile-icon-layer mobile-icon-outline"></i>
+              <i data-lucide="x" class="mobile-icon-layer mobile-icon-face"></i>
+            </span>
+          </button>
+        </header>
+        <div class="editor-settings-content">
+          <section class="editor-settings-section" aria-labelledby="editorGuidesHeading">
+            <div class="editor-settings-section-heading">
+              <h3 id="editorGuidesHeading">Guides &amp; grid</h3>
+              <p>These controls update the canvas immediately.</p>
+            </div>
+
+            <label class="editor-settings-row" for="editorRulersEnabled">
+              <span class="editor-settings-copy">
+                <span class="editor-settings-name">Rulers</span>
+                <span id="editorRulersHint" class="editor-settings-hint">
+                  Show live pixel coordinates along the canvas edges.
+                </span>
+              </span>
+              <span class="editor-settings-toggle">
+                <input
+                  id="editorRulersEnabled"
+                  type="checkbox"
+                  aria-describedby="editorRulersHint"
+                >
+                <span class="editor-settings-switch" aria-hidden="true"><span></span></span>
+              </span>
+            </label>
+
+            <label class="editor-settings-row" for="editorGridEnabled">
+              <span class="editor-settings-copy">
+                <span class="editor-settings-name">Grid</span>
+                <span id="editorGridHint" class="editor-settings-hint">
+                  Show an adaptive grid that stays light at every zoom level.
+                </span>
+              </span>
+              <span class="editor-settings-toggle">
+                <input
+                  id="editorGridEnabled"
+                  type="checkbox"
+                  aria-describedby="editorGridHint"
+                >
+                <span class="editor-settings-switch" aria-hidden="true"><span></span></span>
+              </span>
+            </label>
+
+            <label class="editor-settings-row" for="editorSnappingEnabled">
+              <span class="editor-settings-copy">
+                <span class="editor-settings-name">Smart guides</span>
+                <span id="editorSnappingHint" class="editor-settings-hint">
+                  Snap Transform to the document, grid and visible layers. Hold Alt to bypass.
+                </span>
+              </span>
+              <span class="editor-settings-toggle">
+                <input
+                  id="editorSnappingEnabled"
+                  type="checkbox"
+                  aria-describedby="editorSnappingHint"
+                >
+                <span class="editor-settings-switch" aria-hidden="true"><span></span></span>
+              </span>
+            </label>
+          </section>
+        </div>
+      </aside>
+
+      <aside
         id="mobileLayersPanel"
         class="mobile-layers-panel"
         aria-label="Layers"
@@ -2630,8 +2730,9 @@
         Layer panel ready.
       </p>
 
-      <main class="stage">
+      <main id="editorStage" class="stage">
         <canvas id="gpuCanvas" tabindex="-1" aria-label="WebGPU drawing canvas"></canvas>
+        <canvas id="canvasGuidesOverlayCanvas" aria-hidden="true" hidden></canvas>
         <canvas id="rasterSelectionOverlayCanvas" aria-hidden="true" hidden></canvas>
         <canvas id="rasterSelectionGestureCanvas" aria-hidden="true" hidden></canvas>
         <canvas id="vectorTextPresentationCanvas" aria-hidden="true" hidden></canvas>

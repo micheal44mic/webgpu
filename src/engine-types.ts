@@ -144,6 +144,8 @@ export interface RasterTransformSnapshot {
   scale: number;
   rotation: number;
   sourceBounds: DirtyRect;
+  /** Exact affine pivot used by the raster runtime; older snapshots may omit it. */
+  sourcePivot?: { x: number; y: number };
   resultBounds: DirtyRect | null;
 }
 
@@ -159,6 +161,8 @@ export interface MixedSceneSnapshot {
       rasterLayerId: number;
       rasterLayerIndex: number;
       rasterLayerName: string;
+      rasterVisible: boolean;
+      rasterOpacity: number;
       /** Null for a base raster; otherwise this ordinary raster is clipped by the parent alpha. */
       rasterClippingParentId: number | null;
       rasterHasContent: boolean;

@@ -2056,6 +2056,199 @@ select {
     -webkit-overflow-scrolling: touch;
   }
 
+  .editor-settings-panel {
+    --mobile-tools-sheet-offset: 0px;
+  }
+
+  .editor-settings-panel.is-open {
+    transform: translate3d(0, 0, 0);
+  }
+
+  .editor-settings-header {
+    display: grid;
+    min-height: 64px;
+    flex: 0 0 auto;
+    grid-template-columns: minmax(0, 1fr) 44px;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px 8px 16px;
+    border-bottom: 1px solid #252932;
+    background: var(--app-background);
+  }
+
+  .editor-settings-header h2,
+  .editor-settings-header p,
+  .editor-settings-section-heading h3,
+  .editor-settings-section-heading p {
+    margin: 0;
+  }
+
+  .editor-settings-header h2 {
+    color: var(--mobile-icon-face);
+    font-size: 15px;
+    font-weight: 680;
+    line-height: 1.25;
+  }
+
+  .editor-settings-header p {
+    margin-top: 3px;
+    color: var(--mobile-icon-inactive);
+    font-size: 11px;
+    line-height: 1.25;
+  }
+
+  .editor-settings-close,
+  .editor-settings-close:hover,
+  .editor-settings-close:active {
+    display: grid;
+    width: 44px;
+    height: 44px;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--mobile-icon-face);
+  }
+
+  .editor-settings-close:focus-visible {
+    outline: 1px solid #dd5c35;
+    outline-offset: -3px;
+  }
+
+  .editor-settings-content {
+    min-height: 0;
+    flex: 1 1 auto;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 14px 16px max(24px, env(safe-area-inset-bottom));
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .editor-settings-section {
+    overflow: hidden;
+    border: 1px solid #303640;
+    border-radius: 13px;
+    background: #171a20;
+  }
+
+  .editor-settings-section-heading {
+    padding: 14px 14px 12px;
+    border-bottom: 1px solid #2a2f38;
+  }
+
+  .editor-settings-section-heading h3 {
+    color: var(--mobile-icon-face);
+    font-size: 13px;
+    font-weight: 660;
+    line-height: 1.25;
+  }
+
+  .editor-settings-section-heading p {
+    margin-top: 4px;
+    color: var(--mobile-icon-inactive);
+    font-size: 10px;
+    line-height: 1.35;
+  }
+
+  .editor-settings-row {
+    display: grid;
+    min-height: 68px;
+    grid-template-columns: minmax(0, 1fr) 44px;
+    align-items: center;
+    gap: 14px;
+    padding: 10px 12px 10px 14px;
+    border-bottom: 1px solid #252a32;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .editor-settings-row:last-child {
+    border-bottom: 0;
+  }
+
+  .editor-settings-copy,
+  .editor-settings-name,
+  .editor-settings-hint {
+    display: block;
+    min-width: 0;
+  }
+
+  .editor-settings-name {
+    color: var(--mobile-icon-face);
+    font-size: 12px;
+    font-weight: 630;
+    line-height: 1.25;
+  }
+
+  .editor-settings-hint {
+    margin-top: 4px;
+    color: var(--mobile-icon-inactive);
+    font-size: 10px;
+    line-height: 1.35;
+  }
+
+  .editor-settings-toggle {
+    position: relative;
+    display: grid;
+    width: 44px;
+    height: 44px;
+    place-items: center;
+  }
+
+  .editor-settings-toggle input {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    opacity: 0;
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+  }
+
+  .editor-settings-switch {
+    position: relative;
+    display: block;
+    width: 38px;
+    height: 22px;
+    border: 1px solid #4a4e58;
+    border-radius: 999px;
+    background: #292c33;
+    transition: border-color 140ms ease, background-color 140ms ease;
+  }
+
+  .editor-settings-switch > span {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--mobile-icon-inactive);
+    transition: transform 140ms ease, background-color 140ms ease;
+  }
+
+  .editor-settings-toggle input:checked + .editor-settings-switch {
+    border-color: #dd5c35;
+    background: #dd5c35;
+  }
+
+  .editor-settings-toggle input:checked + .editor-settings-switch > span {
+    background: var(--mobile-icon-face);
+    transform: translateX(16px);
+  }
+
+  .editor-settings-toggle:focus-within .editor-settings-switch {
+    outline: 1px solid #dd5c35;
+    outline-offset: 2px;
+  }
+
   .mobile-tools-search {
     position: sticky;
     z-index: 2;
@@ -4486,9 +4679,27 @@ select {
   contain: strict;
 }
 
-#vectorTextInteractionCanvas {
+#canvasGuidesOverlayCanvas {
   position: absolute;
   z-index: 1;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  contain: strict;
+}
+
+#canvasGuidesOverlayCanvas[hidden] {
+  display: none;
+}
+
+#vectorTextInteractionCanvas {
+  position: absolute;
+  z-index: 3;
   inset: 0;
   display: block;
   width: 100%;

@@ -3174,6 +3174,7 @@ export class BrushEngine {
               scale: this.activeRasterTransformSession.transform.scale,
               rotation: this.activeRasterTransformSession.transform.rotation,
               sourceBounds: { ...this.activeRasterTransformSession.sourceBounds },
+              sourcePivot: { ...this.activeRasterTransformSession.sourcePivot },
               resultBounds: this.activeRasterTransformSession.resultBounds
                 ? { ...this.activeRasterTransformSession.resultBounds }
                 : null,
@@ -3185,6 +3186,8 @@ export class BrushEngine {
             rasterLayerId: item.rasterLayerId,
             rasterLayerIndex,
             rasterLayerName: record.name,
+            rasterVisible: record.visible,
+            rasterOpacity: record.opacity,
             rasterClippingParentId: record.clippingParentId,
             rasterHasContent,
             rasterContentBounds: rasterContentBounds ? { ...rasterContentBounds } : null,

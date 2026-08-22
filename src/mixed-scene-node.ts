@@ -76,6 +76,7 @@ export function copyTransformNode(node: Readonly<TransformSceneNode>): Transform
       controlPoints: node.controlPoints.map((point) => ({ ...point })),
       bezierHandles: node.bezierHandles.map((point) => ({ ...point })),
       sourceBounds: { ...node.sourceBounds },
+      sourcePivot: node.sourcePivot ? { ...node.sourcePivot } : undefined,
       resultBounds: node.resultBounds ? { ...node.resultBounds } : null,
     }
     : copyVectorSceneNode(node);

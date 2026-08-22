@@ -103,6 +103,17 @@ import {
   type ScenePoint,
   type SceneTransformHandle,
 } from "./scene-transform-geometry";
+import { adaptiveCanvasGridStep } from "./canvas-guides-renderer";
+import {
+  resolveSceneTranslationSnap,
+  sceneBoundsSnapTargets,
+  sceneDocumentSnapTargets,
+  scenePointCloudBounds,
+  sceneTransformedAxisAlignedBounds,
+  type SceneAxisAlignedBounds,
+  type SceneSnapLatch,
+  type SceneSnapTarget,
+} from "./scene-transform-snap";
 import {
   gpuLinearColor,
   sameGpuLinearColor,
@@ -188,6 +199,13 @@ type InteractionMode =
   | "distort"
   | "raster-control";
 
+interface ActiveSnapContext {
+  readonly startBounds: SceneAxisAlignedBounds;
+  readonly targets: readonly SceneSnapTarget[];
+  readonly gridStep: number | null;
+  latch: SceneSnapLatch;
+}
+
 interface ActiveInteraction {
   pointerId: number;
   mode: InteractionMode;
@@ -201,6 +219,7 @@ interface ActiveInteraction {
   rasterBezierHandleIndex: number | null;
   rasterWarpAnchorParameter: RasterWarpSurfaceParameter | null;
   openedTransformSession: boolean;
+  snap: ActiveSnapContext | null;
 }
 
 interface TouchNavigationGesture {
@@ -320,6 +339,7 @@ export class MixedSceneController {
   private adaptiveZoomEnabled = true;
   private readonly clippedRefreshPolicy: VectorTextClippedRefreshPolicy;
   private readonly onEditorStateChange: (() => void) | undefined;
+  private readonly canvasGuides: MixedSceneControllerOptions["canvasGuides"];
   private zoomRenderMode: "precise" | "fast" = "precise";
   private viewGestureActive = false;
   private viewRevision = 0;
@@ -394,6 +414,7 @@ export class MixedSceneController {
     this.status = requiredElement<HTMLElement>(options.root, "vectorTextStatus");
     this.clippedRefreshPolicy = options.clippedRefreshPolicy ?? "during-gesture";
     this.onEditorStateChange = options.onEditorStateChange;
+    this.canvasGuides = options.canvasGuides;
     const interactionContext = this.interactionCanvas.getContext("2d", {
       alpha: true,
       desynchronized: true,
@@ -446,7 +467,10 @@ export class MixedSceneController {
     );
     this.updateTransformCommitUi();
     this.scheduleRender();
-    if (!active) return;
+    if (!active) {
+      this.canvasGuides?.setSmartGuides([]);
+      return;
+    }
     const node = this.selectedTransformNode();
     if (
       this.transformSessionOpen
@@ -691,6 +715,7 @@ export class MixedSceneController {
 
     if (!interactionStillTargetsSelection) {
       this.activeInteraction = null;
+      this.canvasGuides?.setSmartGuides([]);
       this.interactionCanvas.classList.remove(
         "is-move",
         "is-scale",
@@ -1718,6 +1743,9 @@ export class MixedSceneController {
         scale: 1,
         rotation: 0,
         sourceBounds: { ...bounds },
+        sourcePivot: transform?.scope === "selection" && transform.sourcePivot
+          ? { ...transform.sourcePivot }
+          : { x: centerX, y: centerY },
         resultBounds: transform?.scope === "selection" && transform.resultBounds
           ? { ...transform.resultBounds }
           : { ...bounds },
@@ -1746,6 +1774,9 @@ export class MixedSceneController {
       scale: transform?.scale ?? 1,
       rotation: transform?.rotation ?? 0,
       sourceBounds: { ...bounds },
+      sourcePivot: transform?.sourcePivot
+        ? { ...transform.sourcePivot }
+        : { x: centerX, y: centerY },
       resultBounds: transform?.resultBounds
         ? { ...transform.resultBounds }
         : { ...bounds },
@@ -3314,13 +3345,15 @@ export class MixedSceneController {
     if (selectedTransformNode) {
       if (isRasterLayerTransformNode(selectedTransformNode)) {
         const source = selectedTransformNode.sourceBounds;
-        const centerX = source.x + source.width * 0.5;
-        const centerY = source.y + source.height * 0.5;
+        const pivot = selectedTransformNode.sourcePivot ?? {
+          x: source.x + source.width * 0.5,
+          y: source.y + source.height * 0.5,
+        };
         this.metrics = {
-          left: source.x - centerX,
-          top: source.y - centerY,
-          right: source.x + source.width - centerX,
-          bottom: source.y + source.height - centerY,
+          left: source.x - pivot.x,
+          top: source.y - pivot.y,
+          right: source.x + source.width - pivot.x,
+          bottom: source.y + source.height - pivot.y,
           baseline: 0,
         };
       } else {
@@ -3476,6 +3509,162 @@ export class MixedSceneController {
         ? this.geometryForNode(node).outline.guide
         : null,
     });
+  }
+
+  private localBoundsForTransformNode(
+    node: Readonly<TransformSceneNode>,
+  ): SceneAxisAlignedBounds {
+    if (isRasterLayerTransformNode(node)) {
+      const source = node.sourceBounds;
+      const pivot = node.sourcePivot ?? {
+        x: source.x + source.width * 0.5,
+        y: source.y + source.height * 0.5,
+      };
+      return {
+        left: source.x - pivot.x,
+        top: source.y - pivot.y,
+        right: source.x + source.width - pivot.x,
+        bottom: source.y + source.height - pivot.y,
+      };
+    }
+    if (isTextNode(node)) {
+      const outline = this.measureText(node);
+      return {
+        left: outline.left,
+        top: outline.top,
+        right: outline.right,
+        bottom: outline.bottom,
+      };
+    }
+    if (isSvgNode(node)) return { ...node.document.bounds };
+    return {
+      left: -node.document.width * 0.5,
+      top: -node.document.height * 0.5,
+      right: node.document.width * 0.5,
+      bottom: node.document.height * 0.5,
+    };
+  }
+
+  private transformNodeBounds(
+    node: Readonly<TransformSceneNode>,
+  ): SceneAxisAlignedBounds {
+    if (
+      isRasterLayerTransformNode(node)
+      && node.mode !== "affine"
+      && node.controlPoints.length > 0
+    ) return scenePointCloudBounds(node.controlPoints);
+    return sceneTransformedAxisAlignedBounds(
+      this.localBoundsForTransformNode(node),
+      node,
+    );
+  }
+
+  private rasterSnapTargetVisible(
+    item: Extract<MixedSceneSnapshot["items"][number], { kind: "raster" }>,
+    rasterItems: ReadonlyMap<
+      number,
+      Extract<MixedSceneSnapshot["items"][number], { kind: "raster" }>
+    >,
+  ): boolean {
+    if (!item.rasterVisible || item.rasterOpacity <= 0) return false;
+    const visited = new Set<number>([item.rasterLayerId]);
+    let parentId = item.rasterClippingParentId;
+    while (parentId !== null) {
+      if (visited.has(parentId)) return false;
+      visited.add(parentId);
+      const parent = rasterItems.get(parentId);
+      if (!parent || !parent.rasterVisible || parent.rasterOpacity <= 0) return false;
+      parentId = parent.rasterClippingParentId;
+    }
+    return true;
+  }
+
+  private rasterSnapTargetBounds(
+    item: Extract<MixedSceneSnapshot["items"][number], { kind: "raster" }>,
+    rasterItems: ReadonlyMap<
+      number,
+      Extract<MixedSceneSnapshot["items"][number], { kind: "raster" }>
+    >,
+  ): SceneAxisAlignedBounds | null {
+    const content = item.rasterContentBounds;
+    if (!content) return null;
+    let bounds: SceneAxisAlignedBounds = {
+      left: content.x,
+      top: content.y,
+      right: content.x + content.width,
+      bottom: content.y + content.height,
+    };
+    let parentId = item.rasterClippingParentId;
+    while (parentId !== null) {
+      const parent = rasterItems.get(parentId);
+      const parentContent = parent?.rasterContentBounds;
+      if (!parent || !parentContent) return null;
+      bounds = {
+        left: Math.max(bounds.left, parentContent.x),
+        top: Math.max(bounds.top, parentContent.y),
+        right: Math.min(bounds.right, parentContent.x + parentContent.width),
+        bottom: Math.min(bounds.bottom, parentContent.y + parentContent.height),
+      };
+      if (bounds.right <= bounds.left || bounds.bottom <= bounds.top) return null;
+      parentId = parent.rasterClippingParentId;
+    }
+    return bounds;
+  }
+
+  private snapTargetsForNode(
+    node: Readonly<TransformSceneNode>,
+  ): readonly SceneSnapTarget[] {
+    const snapshot = this.snapshot;
+    if (!snapshot) {
+      return sceneDocumentSnapTargets(this.host.documentWidth, this.host.documentHeight);
+    }
+    const selectedKey = transformNodeKey(node);
+    const rasterItems = new Map(
+      snapshot.items
+        .filter((item) => item.kind === "raster")
+        .map((item) => [item.rasterLayerId, item] as const),
+    );
+    const targets: SceneSnapTarget[] = [
+      ...sceneDocumentSnapTargets(this.host.documentWidth, this.host.documentHeight),
+    ];
+    for (const item of snapshot.items) {
+      if (item.key === selectedKey) continue;
+      if (item.kind === "raster") {
+        if (
+          !item.rasterHasContent
+          || !this.rasterSnapTargetVisible(item, rasterItems)
+        ) continue;
+        const bounds = this.rasterSnapTargetBounds(item, rasterItems);
+        if (!bounds) continue;
+        targets.push(...sceneBoundsSnapTargets(bounds, item.key));
+        continue;
+      }
+      const targetNode = item.kind === "text"
+        ? item.textNode
+        : item.kind === "svg"
+          ? item.svgNode
+          : item.imageNode;
+      if (!targetNode.visible || targetNode.opacity <= 0) continue;
+      targets.push(...sceneBoundsSnapTargets(
+        this.transformNodeBounds(targetNode),
+        item.key,
+      ));
+    }
+    return targets;
+  }
+
+  private snapContextForInteraction(
+    mode: InteractionMode,
+    node: Readonly<TransformSceneNode>,
+    view: Readonly<VectorTextViewState>,
+  ): ActiveSnapContext | null {
+    if (mode !== "move" || !this.canvasGuides) return null;
+    return {
+      startBounds: this.transformNodeBounds(node),
+      targets: this.snapTargetsForNode(node),
+      gridStep: adaptiveCanvasGridStep(view),
+      latch: { x: null, y: null },
+    };
   }
 
   private eventCanvasPoint(event: PointerEvent): ScenePoint {
@@ -3650,6 +3839,7 @@ export class MixedSceneController {
       "is-distort",
       "is-raster-control",
     );
+    this.canvasGuides?.setSmartGuides([]);
     if (this.activeInteraction === interaction) this.activeInteraction = null;
   }
 
@@ -3850,6 +4040,7 @@ export class MixedSceneController {
         node.bezierHandles,
       )
       : null;
+    this.canvasGuides?.setSmartGuides([]);
     this.activeInteraction = {
       pointerId: event.pointerId,
       mode,
@@ -3863,6 +4054,7 @@ export class MixedSceneController {
       rasterBezierHandleIndex,
       rasterWarpAnchorParameter,
       openedTransformSession,
+      snap: this.snapContextForInteraction(mode, node, view),
     };
     if (mode === "pan") this.beginViewGesture();
     this.interactionCanvas.classList.add(`is-${mode}`);
@@ -4054,9 +4246,35 @@ export class MixedSceneController {
       return;
     }
     if (interaction.mode === "move") {
+      const rawDelta = {
+        x: layerPoint.x - interaction.startLayer.x,
+        y: layerPoint.y - interaction.startLayer.y,
+      };
+      const preferences = this.canvasGuides?.getPreferences();
+      const snapped = interaction.snap
+        ? resolveSceneTranslationSnap({
+          startBounds: interaction.snap.startBounds,
+          rawDelta,
+          targets: interaction.snap.targets,
+          view: this.host.getVectorTextViewState(),
+          gridStep: preferences?.grid ? interaction.snap.gridStep : null,
+          previous: interaction.snap.latch,
+          quantizeStep: isRasterLayerTransformNode(interaction.startModel)
+            && interaction.startModel.scope === "selection"
+            ? 1
+            : null,
+          disabled: preferences?.snapping !== true || event.altKey,
+        })
+        : {
+          delta: rawDelta,
+          matches: [],
+          latch: { x: null, y: null },
+        };
+      if (interaction.snap) interaction.snap.latch = snapped.latch;
+      this.canvasGuides?.setSmartGuides(snapped.matches);
       this.updateTransformNode(interaction.startModel, {
-        x: interaction.startModel.x + layerPoint.x - interaction.startLayer.x,
-        y: interaction.startModel.y + layerPoint.y - interaction.startLayer.y,
+        x: interaction.startModel.x + snapped.delta.x,
+        y: interaction.startModel.y + snapped.delta.y,
       });
     } else if (interaction.mode === "scale") {
       const distance = scenePointDistance(layerPoint, {
