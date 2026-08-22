@@ -23,10 +23,27 @@ import {
   rasterWarpSurfaceSampler,
 } from "./raster-deform-math";
 
-export const SCENE_TRANSFORM_HANDLE_RADIUS_CSS_PX = 7;
+export const SCENE_TRANSFORM_HANDLE_RADIUS_CSS_PX = 5;
 export const SCENE_TRANSFORM_HIT_RADIUS_CSS_PX = 13;
 export const SCENE_TRANSFORM_CORNER_HIT_RADIUS_CSS_PX = 18;
 const ROTATION_HANDLE_OFFSET_CSS_PX = 38;
+const SCENE_BOUNDING_BOX_STROKE_STYLE = "#ff7a33";
+const SCENE_BOUNDING_BOX_AUXILIARY_STROKE_STYLE = "rgba(255, 122, 51, 0.72)";
+const SCENE_BOUNDING_BOX_HANDLE_FILL_STYLE = "#ffffff";
+const SCENE_BOUNDING_BOX_LINE_WIDTH_CSS_PX = 2;
+const SCENE_BOUNDING_BOX_HANDLE_STROKE_WIDTH_CSS_PX = 1.75;
+const SCENE_BOUNDING_BOX_SECONDARY_HANDLE_RADIUS_CSS_PX = 3.5;
+
+function renderSceneBoundingBoxHandle(
+  context: CanvasRenderingContext2D,
+  point: Readonly<ScenePoint>,
+  radius: number,
+): void {
+  context.beginPath();
+  context.arc(point.x, point.y, radius, 0, Math.PI * 2);
+  context.fill();
+  context.stroke();
+}
 
 export function sceneOverlayCorners(
   bounds: Readonly<SceneLocalBounds>,
@@ -185,14 +202,26 @@ function renderDistortOverlay(
   const points = sceneDistortCanvasPoints(view, node);
   if (points.length !== 10) return;
   const backingPerCssPixel = view.canvasWidth / Math.max(1, view.cssWidth);
-  const lineWidth = Math.max(1, 1.25 * backingPerCssPixel);
+  const lineWidth = Math.max(
+    1,
+    SCENE_BOUNDING_BOX_LINE_WIDTH_CSS_PX * backingPerCssPixel,
+  );
+  const handleStrokeWidth = Math.max(
+    1,
+    SCENE_BOUNDING_BOX_HANDLE_STROKE_WIDTH_CSS_PX * backingPerCssPixel,
+  );
   const anchorRadius = SCENE_TRANSFORM_HANDLE_RADIUS_CSS_PX * backingPerCssPixel;
-  const bezierRadius = Math.max(3, 5 * backingPerCssPixel);
+  const bezierRadius = Math.max(
+    2.5,
+    SCENE_BOUNDING_BOX_SECONDARY_HANDLE_RADIUS_CSS_PX * backingPerCssPixel,
+  );
   context.save();
   context.lineWidth = lineWidth;
+  context.lineCap = "round";
+  context.lineJoin = "round";
   context.setLineDash([]);
 
-  context.strokeStyle = "rgba(141, 154, 255, 0.7)";
+  context.strokeStyle = SCENE_BOUNDING_BOX_AUXILIARY_STROKE_STYLE;
   context.beginPath();
   context.moveTo(points[1].x, points[1].y);
   context.lineTo(points[6].x, points[6].y);
@@ -204,7 +233,7 @@ function renderDistortOverlay(
   context.lineTo(points[9].x, points[9].y);
   context.stroke();
 
-  context.strokeStyle = "#8d9aff";
+  context.strokeStyle = SCENE_BOUNDING_BOX_STROKE_STYLE;
   context.beginPath();
   context.moveTo(points[0].x, points[0].y);
   context.bezierCurveTo(
@@ -243,14 +272,13 @@ function renderDistortOverlay(
   context.closePath();
   context.stroke();
 
+  context.fillStyle = SCENE_BOUNDING_BOX_HANDLE_FILL_STYLE;
+  context.strokeStyle = SCENE_BOUNDING_BOX_STROKE_STYLE;
+  context.lineWidth = handleStrokeWidth;
   for (let index = 0; index < points.length; index += 1) {
     const point = points[index];
     const radius = index < 6 ? anchorRadius : bezierRadius;
-    context.fillStyle = index < 6 ? "#f7f8ff" : "#9aa6ff";
-    context.beginPath();
-    context.arc(point.x, point.y, radius, 0, Math.PI * 2);
-    context.fill();
-    context.stroke();
+    renderSceneBoundingBoxHandle(context, point, radius);
   }
   context.restore();
 }
@@ -265,16 +293,28 @@ function renderRasterDeformOverlay(
   const size = rasterDeformGridSize(node.mode, node.gridSize);
   if (points.length !== size * size) return;
   const backingPerCssPixel = view.canvasWidth / Math.max(1, view.cssWidth);
-  const lineWidth = Math.max(1, 1.25 * backingPerCssPixel);
+  const lineWidth = Math.max(
+    1,
+    SCENE_BOUNDING_BOX_LINE_WIDTH_CSS_PX * backingPerCssPixel,
+  );
+  const handleStrokeWidth = Math.max(
+    1,
+    SCENE_BOUNDING_BOX_HANDLE_STROKE_WIDTH_CSS_PX * backingPerCssPixel,
+  );
   const handleRadius = SCENE_TRANSFORM_HANDLE_RADIUS_CSS_PX * backingPerCssPixel;
-  const bezierHandleRadius = Math.max(3, 5 * backingPerCssPixel);
+  const secondaryHandleRadius = Math.max(
+    2.5,
+    SCENE_BOUNDING_BOX_SECONDARY_HANDLE_RADIUS_CSS_PX * backingPerCssPixel,
+  );
   const bezierHandles = node.mode === "warp"
     ? sceneRasterWarpBezierCanvasHandles(view, node)
     : [];
   context.save();
-  context.strokeStyle = node.mode === "perspective" ? "#ffb06f" : "#8d9aff";
-  context.fillStyle = "#f7f8ff";
+  context.strokeStyle = SCENE_BOUNDING_BOX_STROKE_STYLE;
+  context.fillStyle = SCENE_BOUNDING_BOX_HANDLE_FILL_STYLE;
   context.lineWidth = lineWidth;
+  context.lineCap = "round";
+  context.lineJoin = "round";
   context.setLineDash([]);
   context.beginPath();
   if (node.mode === "warp") {
@@ -312,8 +352,8 @@ function renderRasterDeformOverlay(
   }
   context.stroke();
   if (node.mode === "warp" && bezierHandles.length === 8) {
-    context.strokeStyle = "rgba(77, 131, 255, 0.78)";
-    context.lineWidth = Math.max(lineWidth, 1.5 * backingPerCssPixel);
+    context.strokeStyle = SCENE_BOUNDING_BOX_AUXILIARY_STROKE_STYLE;
+    context.lineWidth = lineWidth;
     context.beginPath();
     for (let index = 0; index < bezierHandles.length; index += 1) {
       const anchor = points[rasterWarpBezierHandleAnchorIndex(size, index)];
@@ -322,43 +362,26 @@ function renderRasterDeformOverlay(
       context.lineTo(handle.x, handle.y);
     }
     context.stroke();
+    context.fillStyle = SCENE_BOUNDING_BOX_HANDLE_FILL_STYLE;
+    context.strokeStyle = SCENE_BOUNDING_BOX_STROKE_STYLE;
+    context.lineWidth = handleStrokeWidth;
     for (const handle of bezierHandles) {
-      context.fillStyle = "#4d83ff";
-      context.strokeStyle = "#f7f8ff";
-      context.lineWidth = Math.max(lineWidth, 1.25 * backingPerCssPixel);
-      context.beginPath();
-      context.arc(handle.x, handle.y, bezierHandleRadius, 0, Math.PI * 2);
-      context.fill();
-      context.stroke();
+      renderSceneBoundingBoxHandle(context, handle, secondaryHandleRadius);
     }
   }
+  context.fillStyle = SCENE_BOUNDING_BOX_HANDLE_FILL_STYLE;
+  context.strokeStyle = SCENE_BOUNDING_BOX_STROKE_STYLE;
+  context.lineWidth = handleStrokeWidth;
   for (let index = 0; index < points.length; index += 1) {
     const point = points[index];
     const row = Math.floor(index / size);
     const column = index % size;
     const corner = (row === 0 || row === size - 1)
       && (column === 0 || column === size - 1);
-    if (corner || node.mode === "perspective") {
-      context.save();
-      context.fillStyle = "#ffffff";
-      context.strokeStyle = node.mode === "perspective" ? "#ff8b43" : "#4d83ff";
-      context.lineWidth = Math.max(lineWidth, 2 * backingPerCssPixel);
-      context.beginPath();
-      context.rect(
-        point.x - handleRadius,
-        point.y - handleRadius,
-        handleRadius * 2,
-        handleRadius * 2,
-      );
-      context.fill();
-      context.stroke();
-      context.restore();
-    } else {
-      context.beginPath();
-      context.arc(point.x, point.y, handleRadius * 0.42, 0, Math.PI * 2);
-      context.fill();
-      context.stroke();
-    }
+    const radius = corner || node.mode === "perspective"
+      ? handleRadius
+      : secondaryHandleRadius;
+    renderSceneBoundingBoxHandle(context, point, radius);
   }
   context.restore();
 }
@@ -401,14 +424,23 @@ export function renderSceneInteractionOverlay(
     y: (corners[0].y + corners[1].y) * 0.5,
   };
   const backingPerCssPixel = view.canvasWidth / Math.max(1, view.cssWidth);
-  const lineWidth = Math.max(1, 1.25 * backingPerCssPixel);
+  const lineWidth = Math.max(
+    1,
+    SCENE_BOUNDING_BOX_LINE_WIDTH_CSS_PX * backingPerCssPixel,
+  );
+  const handleStrokeWidth = Math.max(
+    1,
+    SCENE_BOUNDING_BOX_HANDLE_STROKE_WIDTH_CSS_PX * backingPerCssPixel,
+  );
   const handleRadius = SCENE_TRANSFORM_HANDLE_RADIUS_CSS_PX * backingPerCssPixel;
 
   renderTransformGuide(context, view, node, options.transformGuide);
   context.save();
-  context.strokeStyle = "#8d9aff";
-  context.fillStyle = "#f7f8ff";
+  context.strokeStyle = SCENE_BOUNDING_BOX_STROKE_STYLE;
+  context.fillStyle = SCENE_BOUNDING_BOX_HANDLE_FILL_STYLE;
   context.lineWidth = lineWidth;
+  context.lineCap = "round";
+  context.lineJoin = "round";
   context.setLineDash([]);
   context.beginPath();
   context.moveTo(corners[0].x, corners[0].y);
@@ -427,20 +459,10 @@ export function renderSceneInteractionOverlay(
   context.moveTo(topCenter.x, topCenter.y);
   context.lineTo(rotationHandle.x, rotationHandle.y);
   context.stroke();
+  context.lineWidth = handleStrokeWidth;
   for (const corner of corners) {
-    context.beginPath();
-    context.rect(
-      corner.x - handleRadius,
-      corner.y - handleRadius,
-      handleRadius * 2,
-      handleRadius * 2,
-    );
-    context.fill();
-    context.stroke();
+    renderSceneBoundingBoxHandle(context, corner, handleRadius);
   }
-  context.beginPath();
-  context.arc(rotationHandle.x, rotationHandle.y, handleRadius, 0, Math.PI * 2);
-  context.fill();
-  context.stroke();
+  renderSceneBoundingBoxHandle(context, rotationHandle, handleRadius);
   context.restore();
 }

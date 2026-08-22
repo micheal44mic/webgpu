@@ -60,6 +60,41 @@ assert.match(gpuPaint, /export function gpuLinearColor/);
 assert.match(gpuPaint, /export function svgGradientGpuData/);
 assert.match(interactionOverlay, /export function renderSceneInteractionOverlay/);
 assert.match(interactionOverlay, /export function sceneDistortCanvasPoints/);
+assert.match(
+  interactionOverlay,
+  /SCENE_TRANSFORM_HANDLE_RADIUS_CSS_PX = 5/,
+  "Transform handles must stay compact in CSS pixels.",
+);
+assert.match(
+  interactionOverlay,
+  /SCENE_BOUNDING_BOX_STROKE_STYLE = "#ff7a33"/,
+  "Every scene bounding box must share the orange accent.",
+);
+assert.match(
+  interactionOverlay,
+  /SCENE_BOUNDING_BOX_HANDLE_FILL_STYLE = "#ffffff"/,
+  "Every scene handle must keep its white fill.",
+);
+assert.match(
+  interactionOverlay,
+  /SCENE_BOUNDING_BOX_LINE_WIDTH_CSS_PX = 2/,
+  "Bounding-box lines must remain slightly heavier than the old 1.25 px style.",
+);
+assert.match(
+  interactionOverlay,
+  /function renderSceneBoundingBoxHandle[\s\S]*?context\.arc\(/,
+  "All transform, Distort, Warp and Perspective handles must use the shared circle renderer.",
+);
+assert.doesNotMatch(
+  interactionOverlay,
+  /context\.rect\(/,
+  "Scene interaction handles must never fall back to square corners.",
+);
+assert.doesNotMatch(
+  interactionOverlay,
+  /#8d9aff|#ffb06f|#ff8b43|#4d83ff|#9aa6ff|rgba\(141, 154, 255/,
+  "Legacy mode-specific bounding-box colors must not reappear.",
+);
 assert.match(engine, /readonly mixedSceneEnabled: boolean/);
 assert.doesNotMatch(engine, /vectorTextPrototypeEnabled/);
 assert.doesNotMatch(main, /vectorTextPrototype|MixedVectorText/);
