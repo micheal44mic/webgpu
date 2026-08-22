@@ -100,19 +100,27 @@ import {
   scenePointDistance,
   scenePointInPolygon,
   scenePointToSegmentDistance,
+  type SceneLocalBounds,
   type ScenePoint,
   type SceneTransformHandle,
 } from "./scene-transform-geometry";
 import { adaptiveCanvasGridStep } from "./canvas-guides-renderer";
 import {
+  resolveSceneRotationSnap,
+  resolveSceneScaleSnap,
   resolveSceneTranslationSnap,
+  sceneIndexedSnapTargets,
   sceneBoundsSnapTargets,
   sceneDocumentSnapTargets,
   scenePointCloudBounds,
   sceneTransformedAxisAlignedBounds,
+  sceneWrappedAngleDelta,
   type SceneAxisAlignedBounds,
+  type SceneRotationSnapLatch,
+  type SceneScaleSnapLatch,
   type SceneSnapLatch,
   type SceneSnapTarget,
+  type SceneSnapTargetIndex,
 } from "./scene-transform-snap";
 import {
   gpuLinearColor,
@@ -201,9 +209,13 @@ type InteractionMode =
 
 interface ActiveSnapContext {
   readonly startBounds: SceneAxisAlignedBounds;
-  readonly targets: readonly SceneSnapTarget[];
+  readonly localBounds: SceneLocalBounds;
+  readonly targets: SceneSnapTargetIndex;
   readonly gridStep: number | null;
-  latch: SceneSnapLatch;
+  readonly handle: SceneTransformHandle | null;
+  translationLatch: SceneSnapLatch;
+  scaleLatch: SceneScaleSnapLatch | null;
+  rotationLatch: SceneRotationSnapLatch | null;
 }
 
 interface ActiveInteraction {
@@ -214,6 +226,8 @@ interface ActiveInteraction {
   startModel: TransformSceneNode;
   startDistance: number;
   startAngle: number;
+  lastAngle: number;
+  accumulatedRotation: number;
   distortPointIndex: number | null;
   rasterControlPointIndex: number | null;
   rasterBezierHandleIndex: number | null;
@@ -3547,6 +3561,7 @@ export class MixedSceneController {
 
   private transformNodeBounds(
     node: Readonly<TransformSceneNode>,
+    localBounds = this.localBoundsForTransformNode(node),
   ): SceneAxisAlignedBounds {
     if (
       isRasterLayerTransformNode(node)
@@ -3554,7 +3569,7 @@ export class MixedSceneController {
       && node.controlPoints.length > 0
     ) return scenePointCloudBounds(node.controlPoints);
     return sceneTransformedAxisAlignedBounds(
-      this.localBoundsForTransformNode(node),
+      localBounds,
       node,
     );
   }
@@ -3657,13 +3672,23 @@ export class MixedSceneController {
     mode: InteractionMode,
     node: Readonly<TransformSceneNode>,
     view: Readonly<VectorTextViewState>,
+    handle: SceneTransformHandle | "rotate" | null,
   ): ActiveSnapContext | null {
-    if (mode !== "move" || !this.canvasGuides) return null;
+    if (
+      !this.canvasGuides
+      || (mode !== "move" && mode !== "scale" && mode !== "rotate")
+      || (mode === "scale" && (handle === null || handle === "rotate"))
+    ) return null;
+    const localBounds = this.localBoundsForTransformNode(node);
     return {
-      startBounds: this.transformNodeBounds(node),
-      targets: this.snapTargetsForNode(node),
+      startBounds: this.transformNodeBounds(node, localBounds),
+      localBounds,
+      targets: sceneIndexedSnapTargets(this.snapTargetsForNode(node)),
       gridStep: adaptiveCanvasGridStep(view),
-      latch: { x: null, y: null },
+      handle: handle === "rotate" ? null : handle,
+      translationLatch: { x: null, y: null },
+      scaleLatch: null,
+      rotationLatch: null,
     };
   }
 
@@ -4041,6 +4066,7 @@ export class MixedSceneController {
       )
       : null;
     this.canvasGuides?.setSmartGuides([]);
+    const startAngle = Math.atan2(layerPoint.y - center.y, layerPoint.x - center.x);
     this.activeInteraction = {
       pointerId: event.pointerId,
       mode,
@@ -4048,13 +4074,15 @@ export class MixedSceneController {
       startLayer: layerPoint,
       startModel: copyTransformNode(node),
       startDistance: Math.max(1e-6, scenePointDistance(layerPoint, center)),
-      startAngle: Math.atan2(layerPoint.y - center.y, layerPoint.x - center.x),
+      startAngle,
+      lastAngle: startAngle,
+      accumulatedRotation: 0,
       distortPointIndex,
       rasterControlPointIndex,
       rasterBezierHandleIndex,
       rasterWarpAnchorParameter,
       openedTransformSession,
-      snap: this.snapContextForInteraction(mode, node, view),
+      snap: this.snapContextForInteraction(mode, node, view, handle),
     };
     if (mode === "pan") this.beginViewGesture();
     this.interactionCanvas.classList.add(`is-${mode}`);
@@ -4258,7 +4286,7 @@ export class MixedSceneController {
           targets: interaction.snap.targets,
           view: this.host.getVectorTextViewState(),
           gridStep: preferences?.grid ? interaction.snap.gridStep : null,
-          previous: interaction.snap.latch,
+          previous: interaction.snap.translationLatch,
           quantizeStep: isRasterLayerTransformNode(interaction.startModel)
             && interaction.startModel.scope === "selection"
             ? 1
@@ -4270,7 +4298,7 @@ export class MixedSceneController {
           matches: [],
           latch: { x: null, y: null },
         };
-      if (interaction.snap) interaction.snap.latch = snapped.latch;
+      if (interaction.snap) interaction.snap.translationLatch = snapped.latch;
       this.canvasGuides?.setSmartGuides(snapped.matches);
       this.updateTransformNode(interaction.startModel, {
         x: interaction.startModel.x + snapped.delta.x,
@@ -4281,22 +4309,63 @@ export class MixedSceneController {
         x: interaction.startModel.x,
         y: interaction.startModel.y,
       });
-      this.updateTransformNode(interaction.startModel, {
-        scale: Math.min(
-          MAXIMUM_SCALE,
-          Math.max(
-            MINIMUM_SCALE,
-            interaction.startModel.scale * distance / interaction.startDistance,
-          ),
+      const rawScale = Math.min(
+        MAXIMUM_SCALE,
+        Math.max(
+          MINIMUM_SCALE,
+          interaction.startModel.scale * distance / interaction.startDistance,
         ),
+      );
+      const preferences = this.canvasGuides?.getPreferences();
+      const snapped = interaction.snap?.handle
+        ? resolveSceneScaleSnap({
+          transform: interaction.startModel,
+          localBounds: interaction.snap.localBounds,
+          handle: interaction.snap.handle,
+          rawScale,
+          targets: interaction.snap.targets,
+          view: this.host.getVectorTextViewState(),
+          gridStep: preferences?.grid ? interaction.snap.gridStep : null,
+          minScale: MINIMUM_SCALE,
+          maxScale: MAXIMUM_SCALE,
+          previous: interaction.snap.scaleLatch,
+          disabled: preferences?.snapping !== true || event.altKey,
+        })
+        : { scale: rawScale, matches: [], latch: null };
+      if (interaction.snap) interaction.snap.scaleLatch = snapped.latch;
+      this.canvasGuides?.setSmartGuides(snapped.matches);
+      this.updateTransformNode(interaction.startModel, {
+        scale: snapped.scale,
       });
     } else if (interaction.mode === "rotate") {
       const angle = Math.atan2(
         layerPoint.y - interaction.startModel.y,
         layerPoint.x - interaction.startModel.x,
       );
+      const angleIncrement = sceneWrappedAngleDelta(angle, interaction.lastAngle);
+      interaction.accumulatedRotation += angleIncrement;
+      interaction.lastAngle = angle;
+      const rawRotation = interaction.startModel.rotation
+        + interaction.accumulatedRotation;
+      const preferences = this.canvasGuides?.getPreferences();
+      const snapped = interaction.snap
+        ? resolveSceneRotationSnap({
+          transform: interaction.startModel,
+          localBounds: interaction.snap.localBounds,
+          rawRotation,
+          handleRadius: interaction.startDistance,
+          handleAngle: interaction.startAngle + interaction.accumulatedRotation,
+          targets: interaction.snap.targets,
+          view: this.host.getVectorTextViewState(),
+          gridStep: preferences?.grid ? interaction.snap.gridStep : null,
+          previous: interaction.snap.rotationLatch,
+          disabled: preferences?.snapping !== true || event.altKey,
+        })
+        : { rotation: rawRotation, matches: [], latch: null };
+      if (interaction.snap) interaction.snap.rotationLatch = snapped.latch;
+      this.canvasGuides?.setSmartGuides(snapped.matches);
       this.updateTransformNode(interaction.startModel, {
-        rotation: interaction.startModel.rotation + angle - interaction.startAngle,
+        rotation: snapped.rotation,
       });
     }
   }

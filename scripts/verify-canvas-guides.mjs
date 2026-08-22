@@ -23,19 +23,27 @@ const moduleServer = await createServer({
 });
 
 let resolveSceneTranslationSnap;
+let resolveSceneScaleSnap;
+let resolveSceneRotationSnap;
 let sceneBoundsSnapTargets;
+let sceneIndexedSnapTargets;
 let sceneDocumentSnapTargets;
 let scenePointCloudBounds;
 let sceneTransformedAxisAlignedBounds;
+let sceneWrappedAngleDelta;
 let adaptiveCanvasGridStep;
 let renderCanvasGuides;
 try {
   ({
     resolveSceneTranslationSnap,
+    resolveSceneScaleSnap,
+    resolveSceneRotationSnap,
     sceneBoundsSnapTargets,
+    sceneIndexedSnapTargets,
     sceneDocumentSnapTargets,
     scenePointCloudBounds,
     sceneTransformedAxisAlignedBounds,
+    sceneWrappedAngleDelta,
   } = await moduleServer.ssrLoadModule("/src/scene-transform-snap.ts"));
   ({
     adaptiveCanvasGridStep,
@@ -127,6 +135,20 @@ assert.deepEqual(axisMatch(gridSnap, "x"), {
   kind: "grid",
   anchor: "start",
 });
+const translationGridLatchDisabled = resolveSceneTranslationSnap({
+  startBounds: { left: 0.25, top: 0.25, right: 2.25, bottom: 2.25 },
+  rawDelta: { x: 1.999, y: 0.125 },
+  targets: [],
+  gridStep: null,
+  view: identityView,
+  previous: gridSnap.latch,
+});
+assert.deepEqual(
+  translationGridLatchDisabled.delta,
+  { x: 1.999, y: 0.125 },
+  "disabled grid must clear a translation latch",
+);
+assert.deepEqual(translationGridLatchDisabled.matches, []);
 
 const fractionalSnap = resolveSceneTranslationSnap({
   startBounds: { left: 1.125, top: 40, right: 3.125, bottom: 44 },
@@ -238,6 +260,316 @@ const realizableSelectionGuide = resolveSceneTranslationSnap({
 });
 assert.equal(realizableSelectionGuide.delta.x, 10);
 assert.equal(axisMatch(realizableSelectionGuide, "x")?.anchor, "center");
+
+const indexedTargets = sceneIndexedSnapTargets([
+  { axis: "x", position: 20, kind: "layer", key: "later" },
+  { axis: "x", position: 20, kind: "document" },
+  { axis: "x", position: 10, kind: "layer", key: "first" },
+  { axis: "y", position: 5, kind: "layer", key: "vertical" },
+  { axis: "y", position: 5, kind: "layer", key: "duplicate" },
+]);
+assert.deepEqual(indexedTargets, {
+  x: [
+    { axis: "x", position: 10, kind: "layer", key: "first" },
+    { axis: "x", position: 20, kind: "document" },
+  ],
+  y: [{ axis: "y", position: 5, kind: "layer", key: "vertical" }],
+});
+
+let indexedTargetReads = 0;
+const denseAxisTargets = Array.from({ length: 4096 }, (_, index) => ({
+  axis: "x",
+  position: index * 10,
+  kind: "layer",
+  key: `dense:${index}`,
+}));
+const observedDenseTargets = new Proxy(denseAxisTargets, {
+  get(target, property, receiver) {
+    if (typeof property === "string" && /^\d+$/.test(property)) indexedTargetReads += 1;
+    return Reflect.get(target, property, receiver);
+  },
+});
+const indexedTranslation = resolveSceneTranslationSnap({
+  startBounds: { left: 0, top: 0, right: 10, bottom: 10 },
+  rawDelta: { x: 139, y: 0 },
+  targets: { x: observedDenseTargets, y: [] },
+  view: identityView,
+});
+assert.equal(indexedTranslation.delta.x, 140);
+assert.ok(
+  indexedTargetReads < 100,
+  `indexed live lookup must stay logarithmic; observed ${indexedTargetReads} reads`,
+);
+
+// Uniform resize snaps the corner being dragged, without moving the pivot or
+// pretending that the stationary center is a grid contact.
+const rawFortyTwoDegrees = 42 * Math.PI / 180;
+const scaleSnapInput = {
+  transform: { x: 100, y: 100, scale: 1, rotation: 0 },
+  localBounds: { left: -16, top: -10, right: 20, bottom: 10 },
+  handle: "south-east",
+  targets: [],
+  gridStep: 50,
+  view: identityView,
+};
+const scaleGridSnap = resolveSceneScaleSnap({
+  ...scaleSnapInput,
+  rawScale: 2.45,
+});
+closeTo(scaleGridSnap.scale, 2.5, "resize grid scale");
+assert.deepEqual(scaleGridSnap.matches, [{
+  axis: "x",
+  position: 150,
+  kind: "grid",
+  anchor: "end",
+}]);
+assert.equal(
+  100 + scaleGridSnap.scale * scaleSnapInput.localBounds.right,
+  150,
+  "the dragged corner must land exactly on the grid",
+);
+
+const rotatedScaleGridSnap = resolveSceneScaleSnap({
+  ...scaleSnapInput,
+  transform: { ...scaleSnapInput.transform, rotation: Math.PI * 0.5 },
+  rawScale: 2.45,
+});
+closeTo(rotatedScaleGridSnap.scale, 2.5, "rotated resize grid scale");
+assert.deepEqual(rotatedScaleGridSnap.matches, [{
+  axis: "y",
+  position: 150,
+  kind: "grid",
+  anchor: "end",
+}]);
+
+const scaleLayerSnap = resolveSceneScaleSnap({
+  ...scaleSnapInput,
+  rawScale: 2.45,
+  gridStep: null,
+  targets: [{ axis: "x", position: 150, kind: "layer", key: "text:4" }],
+});
+closeTo(scaleLayerSnap.scale, 2.5, "resize layer scale");
+assert.equal(scaleLayerSnap.matches[0]?.key, "text:4");
+
+const scaleBypassed = resolveSceneScaleSnap({
+  ...scaleSnapInput,
+  rawScale: 2.45,
+  previous: scaleGridSnap.latch,
+  disabled: true,
+});
+closeTo(scaleBypassed.scale, 2.45, "Alt resize bypass");
+assert.deepEqual(scaleBypassed.matches, []);
+assert.equal(scaleBypassed.latch, null);
+
+const scaleHeld = resolveSceneScaleSnap({
+  ...scaleSnapInput,
+  rawScale: 2.06,
+  previous: scaleGridSnap.latch,
+});
+closeTo(scaleHeld.scale, 2.5, "resize release hysteresis");
+const scaleReleased = resolveSceneScaleSnap({
+  ...scaleSnapInput,
+  rawScale: 2,
+  previous: scaleGridSnap.latch,
+});
+closeTo(scaleReleased.scale, 2, "resize latch release");
+
+const scaleOutsideVisualThreshold = resolveSceneScaleSnap({
+  ...scaleSnapInput,
+  rawScale: 2.2,
+});
+closeTo(scaleOutsideVisualThreshold.scale, 2.2, "resize visual threshold outside");
+const scaleInsideAtHalfZoom = resolveSceneScaleSnap({
+  ...scaleSnapInput,
+  rawScale: 2.2,
+  view: view({ zoom: 0.5 }),
+});
+closeTo(scaleInsideAtHalfZoom.scale, 2.5, "resize visual threshold at half zoom");
+
+const scaleInteriorCorner = resolveSceneScaleSnap({
+  transform: { x: 100, y: 100, scale: 1, rotation: rawFortyTwoDegrees },
+  localBounds: { left: -10, top: -10, right: 10, bottom: 10 },
+  handle: "south-east",
+  rawScale: 1.8,
+  targets: [{ axis: "x", position: 101.5, kind: "layer", key: "inside" }],
+  view: identityView,
+});
+closeTo(scaleInteriorCorner.scale, 1.8, "resize interior corner rejection");
+assert.deepEqual(scaleInteriorCorner.matches, []);
+
+const scaleGridLatchDisabled = resolveSceneScaleSnap({
+  ...scaleSnapInput,
+  rawScale: 2.45,
+  gridStep: null,
+  previous: scaleGridSnap.latch,
+});
+closeTo(scaleGridLatchDisabled.scale, 2.45, "disabled grid clears resize latch");
+assert.equal(scaleGridLatchDisabled.latch, null);
+
+// Rotation snaps a true outside support corner to a grid line. A corner lying
+// inside the rotated AABB is deliberately rejected because that line would cut
+// through the object instead of touching it.
+const rotationGridSnap = resolveSceneRotationSnap({
+  transform: { x: 100, y: 100, scale: 1, rotation: 0 },
+  localBounds: { left: -10, top: -10, right: 10, bottom: 10 },
+  rawRotation: rawFortyTwoDegrees,
+  handleRadius: 50,
+  handleAngle: rawFortyTwoDegrees,
+  targets: [],
+  gridStep: 2,
+  view: identityView,
+});
+closeTo(
+  rotationGridSnap.rotation,
+  Math.atan2(0.6, 0.8),
+  "rotation support contact",
+);
+assert.equal(rotationGridSnap.matches[0]?.kind, "grid");
+assert.equal(rotationGridSnap.matches[0]?.axis, "x");
+assert.equal(rotationGridSnap.matches[0]?.position, 114);
+assert.equal(rotationGridSnap.matches[0]?.anchor, "end");
+
+const falseInteriorContact = resolveSceneRotationSnap({
+  transform: { x: 100, y: 100, scale: 1, rotation: 0 },
+  localBounds: { left: -10, top: -10, right: 10, bottom: 10 },
+  rawRotation: rawFortyTwoDegrees,
+  handleRadius: 50,
+  handleAngle: rawFortyTwoDegrees,
+  targets: [{ axis: "x", position: 100, kind: "layer", key: "inside" }],
+  view: identityView,
+});
+closeTo(falseInteriorContact.rotation, rawFortyTwoDegrees, "interior guide rejection");
+assert.deepEqual(falseInteriorContact.matches, []);
+
+const rotationFarHandleNoSnap = resolveSceneRotationSnap({
+  transform: { x: 100, y: 100, scale: 1, rotation: 0 },
+  localBounds: { left: -10, top: -10, right: 10, bottom: 10 },
+  rawRotation: rawFortyTwoDegrees,
+  handleRadius: 100,
+  handleAngle: rawFortyTwoDegrees,
+  targets: [],
+  gridStep: 2,
+  view: identityView,
+});
+closeTo(
+  rotationFarHandleNoSnap.rotation,
+  rawFortyTwoDegrees,
+  "rotation threshold follows the dragged handle",
+);
+
+const wideRawRotation = 45 * Math.PI / 180;
+const wideContactRotation = 42 * Math.PI / 180;
+const wideContactTarget = 2000 * Math.cos(wideContactRotation)
+  + 50 * Math.sin(wideContactRotation);
+const wideRotationContact = resolveSceneRotationSnap({
+  transform: { x: 0, y: 0, scale: 1, rotation: 0 },
+  localBounds: { left: -2000, top: -50, right: 2000, bottom: 50 },
+  rawRotation: wideRawRotation,
+  handleRadius: 88,
+  handleAngle: wideRawRotation,
+  targets: [{ axis: "x", position: wideContactTarget, kind: "layer", key: "wide" }],
+  view: identityView,
+});
+closeTo(
+  wideRotationContact.rotation,
+  wideContactRotation,
+  "wide rotation contact must use the handle threshold",
+);
+
+const rotationLayerInput = {
+  transform: { x: 100, y: 100, scale: 1, rotation: 0 },
+  localBounds: { left: -10, top: -10, right: 10, bottom: 10 },
+  targets: [{ axis: "x", position: 114, kind: "layer", key: "text:4" }],
+  handleRadius: 50,
+  view: identityView,
+};
+const rotationLayerSnap = resolveSceneRotationSnap({
+  ...rotationLayerInput,
+  rawRotation: rawFortyTwoDegrees,
+  handleAngle: rawFortyTwoDegrees,
+});
+closeTo(
+  rotationLayerSnap.rotation,
+  Math.atan2(0.6, 0.8),
+  "rotation layer contact",
+);
+const rawFortyFourDegrees = 44 * Math.PI / 180;
+const rotationLayerNotAcquired = resolveSceneRotationSnap({
+  ...rotationLayerInput,
+  rawRotation: rawFortyFourDegrees,
+  handleAngle: rawFortyFourDegrees,
+});
+closeTo(rotationLayerNotAcquired.rotation, rawFortyFourDegrees, "rotation enter threshold");
+const rotationLayerHeld = resolveSceneRotationSnap({
+  ...rotationLayerInput,
+  rawRotation: rawFortyFourDegrees,
+  handleAngle: rawFortyFourDegrees,
+  previous: rotationLayerSnap.latch,
+});
+closeTo(
+  rotationLayerHeld.rotation,
+  rotationLayerSnap.rotation,
+  "rotation release hysteresis",
+);
+const rawFortyNineDegrees = 49 * Math.PI / 180;
+const rotationLayerReleased = resolveSceneRotationSnap({
+  ...rotationLayerInput,
+  rawRotation: rawFortyNineDegrees,
+  handleAngle: rawFortyNineDegrees,
+  previous: rotationLayerSnap.latch,
+});
+assert.notEqual(
+  rotationLayerReleased.rotation,
+  rotationLayerSnap.rotation,
+  "rotation must release the old contact after ten CSS pixels",
+);
+
+const rotationGridLatchDisabled = resolveSceneRotationSnap({
+  transform: { x: 100, y: 100, scale: 1, rotation: 0 },
+  localBounds: { left: -10, top: -10, right: 10, bottom: 10 },
+  rawRotation: rawFortyTwoDegrees,
+  handleRadius: 50,
+  handleAngle: rawFortyTwoDegrees,
+  targets: [],
+  gridStep: null,
+  view: identityView,
+  previous: rotationGridSnap.latch,
+});
+closeTo(
+  rotationGridLatchDisabled.rotation,
+  rawFortyTwoDegrees,
+  "disabled grid clears rotation latch",
+);
+assert.equal(rotationGridLatchDisabled.latch, null);
+
+closeTo(
+  sceneWrappedAngleDelta(-179 * Math.PI / 180, 179 * Math.PI / 180),
+  2 * Math.PI / 180,
+  "rotation pointer wrap",
+);
+let accumulatedTurn = 0;
+let previousPointerAngle = 170 * Math.PI / 180;
+for (const degrees of [-170, -10, 170, -170]) {
+  const nextPointerAngle = degrees * Math.PI / 180;
+  accumulatedTurn += sceneWrappedAngleDelta(nextPointerAngle, previousPointerAngle);
+  previousPointerAngle = nextPointerAngle;
+}
+closeTo(accumulatedTurn, 380 * Math.PI / 180, "rotation multi-turn accumulation");
+
+const rotationBypassed = resolveSceneRotationSnap({
+  transform: { x: 100, y: 100, scale: 1, rotation: 0 },
+  localBounds: { left: -10, top: -10, right: 10, bottom: 10 },
+  rawRotation: rawFortyTwoDegrees,
+  handleRadius: 50,
+  handleAngle: rawFortyTwoDegrees,
+  targets: [],
+  gridStep: 2,
+  view: identityView,
+  previous: rotationGridSnap.latch,
+  disabled: true,
+});
+closeTo(rotationBypassed.rotation, rawFortyTwoDegrees, "Alt rotation bypass");
+assert.equal(rotationBypassed.latch, null);
 
 // Geometry helpers retain subpixels and produce the raw, un-clipped AABB used
 // by both raster and semantic Transform interactions.
@@ -369,16 +701,24 @@ const snapContextStart = controllerSource.indexOf("  private snapContextForInter
 const eventCanvasPointStart = controllerSource.indexOf("  private eventCanvasPoint(", snapContextStart);
 assert.ok(snapContextStart >= 0 && eventCanvasPointStart > snapContextStart);
 const snapContextSource = controllerSource.slice(snapContextStart, eventCanvasPointStart);
-assert.match(snapContextSource, /if \(mode !== "move" \|\| !this\.canvasGuides\) return null/);
-assert.match(snapContextSource, /startBounds: this\.transformNodeBounds\(node\)/);
-assert.match(snapContextSource, /targets: this\.snapTargetsForNode\(node\)/);
+assert.match(
+  snapContextSource,
+  /mode !== "move" && mode !== "scale" && mode !== "rotate"/,
+);
+assert.match(snapContextSource, /const localBounds = this\.localBoundsForTransformNode\(node\)/);
+assert.match(snapContextSource, /startBounds: this\.transformNodeBounds\(node, localBounds\)/);
+assert.match(snapContextSource, /localBounds,/);
+assert.match(
+  snapContextSource,
+  /targets: sceneIndexedSnapTargets\(this\.snapTargetsForNode\(node\)\)/,
+);
 assert.match(snapContextSource, /gridStep: adaptiveCanvasGridStep\(view\)/);
 
 const pointerDownStart = controllerSource.indexOf("  private onPointerDown(");
 const movedDistortStart = controllerSource.indexOf("  private movedDistortPoints(", pointerDownStart);
 assert.ok(pointerDownStart >= 0 && movedDistortStart > pointerDownStart);
 const pointerDownSource = controllerSource.slice(pointerDownStart, movedDistortStart);
-assert.match(pointerDownSource, /snap: this\.snapContextForInteraction\(mode, node, view\)/);
+assert.match(pointerDownSource, /snap: this\.snapContextForInteraction\(mode, node, view, handle\)/);
 
 const pointerMoveStart = controllerSource.indexOf("  private onPointerMove(");
 const finishPointerStart = controllerSource.indexOf("  private finishPointer(", pointerMoveStart);
@@ -387,6 +727,41 @@ const pointerMoveSource = controllerSource.slice(pointerMoveStart, finishPointer
 assert.match(pointerMoveSource, /targets: interaction\.snap\.targets/);
 assert.match(pointerMoveSource, /gridStep: preferences\?\.grid \? interaction\.snap\.gridStep : null/);
 assert.match(pointerMoveSource, /disabled: preferences\?\.snapping !== true \|\| event\.altKey/);
+assert.match(pointerMoveSource, /resolveSceneScaleSnap\(/);
+assert.match(pointerMoveSource, /resolveSceneRotationSnap\(/);
+assert.match(
+  pointerMoveSource,
+  /const angleIncrement = sceneWrappedAngleDelta\(angle, interaction\.lastAngle\)/,
+);
+assert.match(pointerMoveSource, /interaction\.accumulatedRotation \+= angleIncrement/);
+assert.match(pointerMoveSource, /interaction\.lastAngle = angle/);
+assert.match(pointerMoveSource, /handleRadius: interaction\.startDistance/);
+assert.match(
+  pointerMoveSource,
+  /handleAngle: interaction\.startAngle \+ interaction\.accumulatedRotation/,
+);
+const moveSnapSource = pointerMoveSource.slice(
+  pointerMoveSource.indexOf('if (interaction.mode === "move")'),
+  pointerMoveSource.indexOf('} else if (interaction.mode === "scale")'),
+);
+const scaleSnapSource = pointerMoveSource.slice(
+  pointerMoveSource.indexOf('} else if (interaction.mode === "scale")'),
+  pointerMoveSource.indexOf('} else if (interaction.mode === "rotate")'),
+);
+const rotationSnapSource = pointerMoveSource.slice(
+  pointerMoveSource.indexOf('} else if (interaction.mode === "rotate")'),
+);
+for (const [name, source] of [
+  ["move", moveSnapSource],
+  ["scale", scaleSnapSource],
+  ["rotation", rotationSnapSource],
+]) {
+  assert.match(
+    source,
+    /disabled: preferences\?\.snapping !== true \|\| event\.altKey/,
+    `${name} must bypass snapping while Alt is held`,
+  );
+}
 assert.doesNotMatch(pointerMoveSource, /this\.snapTargetsForNode\(|adaptiveCanvasGridStep\(/,
   "pointermove must not rescan scene geometry or recompute adaptive spacing");
 

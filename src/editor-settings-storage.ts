@@ -18,7 +18,7 @@ export const EDITOR_SETTINGS_STORAGE_KEY = "m1m4.editor-settings.v1";
 
 export const DEFAULT_EDITOR_GUIDE_PREFERENCES: Readonly<EditorGuidePreferences> =
   Object.freeze({
-    rulers: true,
+    rulers: false,
     grid: false,
     snapping: true,
   });

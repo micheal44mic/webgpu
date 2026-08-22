@@ -70,7 +70,7 @@ try {
   await moduleServer.close();
 }
 
-const defaults = { rulers: true, grid: false, snapping: true };
+const defaults = { rulers: false, grid: false, snapping: true };
 assert.deepEqual(DEFAULT_EDITOR_GUIDE_PREFERENCES, defaults);
 assert.equal(EDITOR_SETTINGS_STORAGE_KEY, "m1m4.editor-settings.v1");
 
@@ -130,7 +130,7 @@ assert.deepEqual(
       unknown: true,
     },
   }))),
-  { rulers: true, grid: true, snapping: false },
+  { rulers: false, grid: true, snapping: false },
   "only literal booleans from a current-version payload may override defaults",
 );
 
@@ -155,6 +155,14 @@ assert.deepEqual(
   { rulers: false, grid: true, snapping: false },
   "a saved snapshot must survive a cold load",
 );
+assert.deepEqual(
+  loadEditorGuidePreferences(new FakeStorage(JSON.stringify({
+    version: 1,
+    preferences: { rulers: true, grid: false, snapping: true },
+  }))),
+  { rulers: true, grid: false, snapping: true },
+  "the new defaults must not override an existing saved preference",
+);
 assert.equal(saveEditorGuidePreferences(null, defaults), false);
 assert.equal(
   saveEditorGuidePreferences(new FakeStorage(null, { throwOnSet: true }), defaults),
@@ -168,7 +176,7 @@ saveEditorGuidePreferences(normalizedSaveStorage, {
   snapping: null,
 });
 assert.deepEqual(JSON.parse(normalizedSaveStorage.serialized).preferences, {
-  rulers: true,
+  rulers: false,
   grid: true,
   snapping: true,
 }, "save must not serialize non-boolean runtime input");
@@ -430,12 +438,12 @@ function createHarness({
   harness.elements.gridInput.checked = true;
   harness.elements.gridInput.dispatchEvent(new Event("change"));
   assert.deepEqual(harness.controller.preferences, {
-    rulers: true,
+    rulers: false,
     grid: true,
     snapping: true,
   });
   assert.deepEqual(harness.preferenceChanges, [{
-    rulers: true,
+    rulers: false,
     grid: true,
     snapping: true,
   }]);
