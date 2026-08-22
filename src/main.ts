@@ -100,6 +100,14 @@ import { createProjectStorage } from "./project-storage";
 import type { ProjectEditorBootstrap } from "./project-shell-contract";
 import { ProjectSessionController } from "./project-session-controller";
 import { resolveMixedSceneEnabled } from "./compat/mixed-scene-options";
+import {
+  beginStartupTiming,
+  markStartupTiming,
+  markStartupTimingOnce,
+  publishStartupTiming,
+} from "./startup-timing";
+
+markStartupTimingOnce("editor-module-evaluated");
 
 createIcons({
   icons: {
@@ -1883,19 +1891,33 @@ async function initializeMixedSceneController(): Promise<MixedSceneController> {
   }
 }
 
+markStartupTiming("engine-initialize-dispatched", {
+  documentWidth: DOCUMENT_WIDTH,
+  documentHeight: DOCUMENT_HEIGHT,
+});
 void engine.initialize()
   .then(async () => {
+    markStartupTiming("engine-core-promise-resolved");
     engineInitialized = true;
     brushOutlineController?.prepareGpuResources();
     if (!projectSessionController) {
       throw new Error("Project session controller is unavailable.");
     }
-    await projectSessionController.initialize();
+    const projectSessionTiming = beginStartupTiming("project-session-initialize");
+    try {
+      await projectSessionController.initialize();
+      projectSessionTiming.end();
+    } catch (error) {
+      projectSessionTiming.fail(error);
+      throw error;
+    }
     syncMobileToolsMenuState();
     historyState = engine.getHistoryState();
     layerPanelController?.ensureActiveThumbnail(0);
     updateHistoryControls();
     runtimeStatsController?.start();
+    markStartupTiming("editor-interactive");
+    publishStartupTiming("editor-interactive");
     await editorExtension?.afterEngineInitialized();
 
     scheduleDeferredStartupTask(
@@ -1925,6 +1947,10 @@ void engine.initialize()
     }
   })
   .catch((error) => {
+    markStartupTiming("editor-startup-failed", {
+      errorName: error instanceof Error ? error.name : typeof error,
+    });
+    publishStartupTiming("editor-startup-failed");
     editorExtension?.handleEngineInitializationError(error);
     const message = error instanceof Error ? error.message : String(error);
     const secureContextHint = !window.isSecureContext

@@ -6,6 +6,10 @@ import {
   type ProjectLoadResultV1,
   type ProjectStorage,
 } from "./project-storage";
+import {
+  beginStartupTiming,
+  measureStartupTiming,
+} from "./startup-timing";
 
 export interface ProjectSessionEnginePort {
   captureDocument(): Promise<CapturedProjectDocumentV1>;
@@ -149,33 +153,60 @@ export class ProjectSessionController {
   }
 
   async initialize(): Promise<void> {
-    await (this.storageReady ?? this.storage.initialize());
-    this.editorReady = true;
-    if (this.currentProjectId && !this.newProjectRequested) {
-      this.setStatus("Opening project…");
-      const saved = this.preloadedProject && this.preloadedProjectId === this.currentProjectId
-        ? await this.preloadedProject
-        : await this.storage.loadProject(this.currentProjectId);
-      if (!saved) throw new Error("This project is no longer available on this device.");
-      this.updateIdentity(saved.summary.name);
-      await this.engine.restoreDocument(saved);
-      this.dirty = false;
-    } else if (this.newProjectRequested) {
-      this.updateIdentity(this.requestedProjectName);
-      this.engine.setInitialLayerName("Layer 1");
-      // The URL token selects the editor route; durable storage generates the
-      // canonical id when the first head is committed.
-      this.currentProjectId = null;
-      await this.save();
-    } else {
-      this.updateIdentity("Untitled Artwork");
-      this.dirty = true;
+    const timing = beginStartupTiming("project-session-detail", {
+      route: this.currentProjectId
+        ? this.newProjectRequested ? "new-project" : "saved-project"
+        : "unsaved",
+    });
+    try {
+      await measureStartupTiming(
+        "project-storage-ready-wait",
+        () => this.storageReady ?? this.storage.initialize(),
+      );
+      this.editorReady = true;
+      if (this.currentProjectId && !this.newProjectRequested) {
+        this.setStatus("Opening project…");
+        const saved = await measureStartupTiming(
+          "project-load-await",
+          () => this.preloadedProject && this.preloadedProjectId === this.currentProjectId
+            ? this.preloadedProject
+            : this.storage.loadProject(this.currentProjectId!),
+        );
+        if (!saved) throw new Error("This project is no longer available on this device.");
+        this.updateIdentity(saved.summary.name);
+        await measureStartupTiming(
+          "project-restore",
+          () => this.engine.restoreDocument(saved),
+          {
+            layerCount: saved.manifest.snapshot.layers.length,
+            storedBytes: saved.summary.storedBytes,
+            semanticItemCount: saved.manifest.snapshot.mixedScene.items.filter(
+              (item) => item.kind !== "raster",
+            ).length,
+          },
+        );
+        this.dirty = false;
+      } else if (this.newProjectRequested) {
+        this.updateIdentity(this.requestedProjectName);
+        this.engine.setInitialLayerName("Layer 1");
+        // The URL token selects the editor route; durable storage generates the
+        // canonical id when the first head is committed.
+        this.currentProjectId = null;
+        await measureStartupTiming("new-project-initial-save", () => this.save());
+      } else {
+        this.updateIdentity("Untitled Artwork");
+        this.dirty = true;
+      }
+      this.noteHistoryState(this.engine.historyState());
+      this.noteSceneSnapshot(this.engine.sceneSnapshot());
+      this.trackingReady = true;
+      this.homeButton.disabled = false;
+      this.syncSaveControl();
+      timing.end();
+    } catch (error) {
+      timing.fail(error);
+      throw error;
     }
-    this.noteHistoryState(this.engine.historyState());
-    this.noteSceneSnapshot(this.engine.sceneSnapshot());
-    this.trackingReady = true;
-    this.homeButton.disabled = false;
-    this.syncSaveControl();
   }
 
   async save(): Promise<void> {

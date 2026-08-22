@@ -21,6 +21,14 @@ import {
   type ProjectSummaryV1,
 } from "./project-storage";
 import type { ProjectEditorBootstrap } from "./project-shell-contract";
+import {
+  markStartupTiming,
+  markStartupTimingOnce,
+  measureStartupTiming,
+  publishStartupTiming,
+} from "./startup-timing";
+
+markStartupTimingOnce("startup-entry-evaluated");
 
 const HOME_ICONS: Readonly<Record<string, IconNode>> = {
   "arrow-up-right": ArrowUpRight,
@@ -78,6 +86,7 @@ function shouldOpenEditor(search: URLSearchParams): boolean {
 
 function projectEditorUrl(summary: ProjectSummaryV1, currentHref: string): URL {
   const url = new URL(currentHref);
+  const startupDebug = url.searchParams.get("startupDebug");
   url.search = "";
   url.hash = "";
   url.searchParams.set("project", summary.id);
@@ -86,6 +95,7 @@ function projectEditorUrl(summary: ProjectSummaryV1, currentHref: string): URL {
   if (summary.documentWidth === summary.documentHeight) {
     url.searchParams.set("documentSize", String(summary.documentWidth));
   }
+  if (startupDebug === "1") url.searchParams.set("startupDebug", "1");
   return url;
 }
 
@@ -340,6 +350,7 @@ class ProjectHomeController {
         return;
       }
       const url = new URL(this.browser.location.href);
+      const startupDebug = url.searchParams.get("startupDebug");
       url.search = "";
       url.hash = "";
       const projectId = freshProjectId();
@@ -349,6 +360,12 @@ class ProjectHomeController {
       url.searchParams.set("documentWidth", String(width));
       url.searchParams.set("documentHeight", String(height));
       if (width === height) url.searchParams.set("documentSize", String(width));
+      if (startupDebug === "1") url.searchParams.set("startupDebug", "1");
+      markStartupTiming("editor-open-request", {
+        source: "new-project",
+        documentWidth: width,
+        documentHeight: height,
+      });
       this.setBusy(true);
       void this.openEditor(url, projectId, null).catch((error) => {
         console.error("New project startup failed:", error);
@@ -383,7 +400,17 @@ class ProjectHomeController {
     open.setAttribute("aria-label", `Open ${project.name}`);
     open.addEventListener("click", () => {
       this.setBusy(true);
-      const preloaded = this.storage.loadProject(project.id);
+      markStartupTiming("editor-open-request", {
+        source: "saved-project",
+        documentWidth: project.documentWidth,
+        documentHeight: project.documentHeight,
+        storedBytes: project.storedBytes,
+      });
+      const preloaded = measureStartupTiming(
+        "project-storage-load",
+        () => this.storage.loadProject(project.id),
+        { storedBytes: project.storedBytes },
+      );
       // Mark the eager read as handled while WebGPU starts; the editor still
       // awaits the original promise and surfaces the actual failure.
       void preloaded.catch(() => null);
@@ -512,10 +539,14 @@ class ProjectHomeController {
 }
 
 async function boot(): Promise<void> {
+  markStartupTiming("shell-boot-start");
   const home = element<HTMLElement>(document, "projectHome");
   hydrateHomeIcons(home);
   const storage = createProjectStorage();
-  const storageReady = storage.initialize();
+  const storageReady = measureStartupTiming(
+    "project-storage-initialize",
+    () => storage.initialize(),
+  );
   void storageReady.catch(() => undefined);
   let homeController: ProjectHomeController | null = null;
   let editorLoaded = false;
@@ -570,6 +601,8 @@ async function boot(): Promise<void> {
         }
         showApplicationSurface("editor");
         document.title = suspendedEditorTitle;
+        markStartupTiming("editor-surface-resumed", { source: "same-project" });
+        publishStartupTiming("editor-surface-resumed");
         return;
       }
       // Document dimensions are compile-time WebGPU constants. A different
@@ -590,7 +623,8 @@ async function boot(): Promise<void> {
     };
     window.__projectEditorBootstrap = bootstrap;
     showApplicationSurface("editor");
-    await import("./main");
+    markStartupTiming("editor-surface-visible");
+    await measureStartupTiming("editor-module-import", () => import("./main"));
     editorLoaded = true;
     suspendedEditorUrl = new URL(window.location.href);
   };
@@ -624,10 +658,25 @@ async function boot(): Promise<void> {
     }
     const projectId = search.get("project")?.trim() || null;
     const preloadedProject = projectId && search.get("newProject") !== "1"
-      ? storageReady.then(() => storage.loadProject(projectId))
+      ? measureStartupTiming(
+        "project-storage-load",
+        async () => {
+          await storageReady;
+          return storage.loadProject(projectId);
+        },
+      )
       : null;
     if (preloadedProject) void preloadedProject.catch(() => null);
     const initialUrl = new URL(window.location.href);
+    markStartupTiming("editor-open-request", {
+      source: projectId
+        ? (search.get("newProject") === "1"
+          ? "new-project-deep-link"
+          : "saved-project-deep-link")
+        : "unsaved-editor-deep-link",
+      documentWidth: parsedEditorDimension(search.get("documentWidth")) ?? 0,
+      documentHeight: parsedEditorDimension(search.get("documentHeight")) ?? 0,
+    });
     // Avoid adding a duplicate history entry for a direct editor deep link.
     window.history.replaceState(null, "", initialUrl);
     await openEditor(initialUrl, projectId, preloadedProject);
@@ -637,6 +686,8 @@ async function boot(): Promise<void> {
   showApplicationSurface("home");
   document.title = "M1M4.COM — Projects";
   await ensureHomeController();
+  markStartupTiming("home-interactive");
+  publishStartupTiming("home-interactive");
 }
 
 void boot().catch((error) => {

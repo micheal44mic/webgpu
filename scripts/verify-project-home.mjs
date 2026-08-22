@@ -37,7 +37,8 @@ expect(html, 'id="saveProjectButton"', "editor save control");
 expect(html, 'id="projectHomeButton"', "editor home control");
 expect(html, 'src="/src/startup.ts"', "deferred editor entrypoint");
 
-expect(startup, 'await import("./main")', "dynamic editor boot");
+expect(startup, '() => import("./main")', "measured dynamic editor boot");
+expect(startup, '"editor-module-import"', "editor import startup timing");
 expect(startup, "storageReady", "parallel project storage startup");
 expect(startup, "preloadedProject", "project read overlapped with WebGPU startup");
 expect(startup, 'window.history.pushState(null, "", url)', "warm Home/editor navigation");
@@ -66,7 +67,7 @@ expect(main, "restoreDocument: (project) => engine.restoreProjectDocument(projec
 expect(main, "projectSessionController?.noteHistoryState(state)", "history dirty tracking port");
 expect(main, "projectSessionController?.noteSceneSnapshot(snapshot)", "scene dirty tracking port");
 expect(projectSession, "this.storage.saveProject({", "durable save");
-expect(projectSession, "await this.engine.restoreDocument(saved)", "complete project restore");
+expect(projectSession, "() => this.engine.restoreDocument(saved)", "complete measured project restore");
 expect(projectSession, "this.storageReady ?? this.storage.initialize()", "shared storage readiness");
 expect(projectSession, "if (this.onReturnHome)", "warm return to project Home");
 expect(projectSession, 'event.key.toLowerCase() !== "s"', "save shortcut");

@@ -173,6 +173,7 @@ assert.match(
   "il rapporto deve rendere misurabile il fast path cold tile sul dispositivo reale",
 );
 assert.match(controllerSource, /entryScripts:/);
+assert.match(controllerSource, /startupTiming: captureStartupTiming\(\)/);
 assert.doesNotMatch(mainSource, /startup-diagnostics/);
 assert.doesNotMatch(brushEngineSource, /startup-diagnostics/);
 assert.match(brushEngineSource, /deferBlendRenderer: true/);
