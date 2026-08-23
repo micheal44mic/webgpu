@@ -526,12 +526,6 @@ import {
 } from "./shape-occupancy";
 import { describeAdapter } from "./engine-gpu-utils";
 import {
-  beginStartupTiming,
-  markStartupTiming,
-  measureStartupTiming,
-  publishStartupTiming,
-} from "./startup-timing";
-import {
   CausalStrokeCurvePlanner,
   evaluateStrokeCurveX,
   evaluateStrokeCurveY,
@@ -1769,10 +1763,6 @@ export class BrushEngine {
   }
 
   async initialize(): Promise<void> {
-    markStartupTiming("engine-core-start", {
-      documentWidth: DOCUMENT_WIDTH,
-      documentHeight: DOCUMENT_HEIGHT,
-    });
     this.callbacks.onStatus?.("Requesting WebGPU adapter…", "working");
 
     if (!navigator.gpu) {
@@ -1795,12 +1785,6 @@ export class BrushEngine {
     }, 6_000);
     let adapter: GPUAdapter | null = null;
     let primaryAdapterError: unknown = null;
-    let neutralFallbackUsed = false;
-    let compatibilityFallbackUsed = false;
-    const adapterTiming = beginStartupTiming("webgpu-adapter-request", {
-      android,
-      preferredProfile: adapterOptions === undefined ? "neutral" : "high-performance",
-    });
     try {
       try {
         adapter = await navigator.gpu.requestAdapter(adapterOptions);
@@ -1808,7 +1792,6 @@ export class BrushEngine {
         primaryAdapterError = error;
       }
       if (!adapter && adapterOptions !== undefined) {
-        neutralFallbackUsed = true;
         this.callbacks.onStatus?.(
           "Retrying WebGPU selection without a power preference…",
           "working",
@@ -1816,7 +1799,6 @@ export class BrushEngine {
         adapter = await navigator.gpu.requestAdapter();
       }
       if (!adapter && android) {
-        compatibilityFallbackUsed = true;
         this.callbacks.onStatus?.(
           "Trying WebGPU compatibility mode for Android…",
           "working",
@@ -1833,18 +1815,11 @@ export class BrushEngine {
       window.clearTimeout(adapterWaitTimer);
     }
     if (!adapter) {
-      adapterTiming.fail(primaryAdapterError);
       if (primaryAdapterError && adapterOptions === undefined) {
         throw primaryAdapterError;
       }
       throw new Error("No compatible WebGPU adapter was found.");
     }
-    adapterTiming.end({
-      android,
-      preferredProfile: adapterOptions === undefined ? "neutral" : "high-performance",
-      neutralFallbackUsed,
-      compatibilityFallbackUsed,
-    });
     this.adapter = adapter;
 
     if (adapter.limits.maxTextureDimension2D < DOCUMENT_MAX_EDGE) {
@@ -1863,10 +1838,7 @@ export class BrushEngine {
     }, 6_000);
     let rawDevice: GPUDevice;
     try {
-      rawDevice = await measureStartupTiming(
-        "webgpu-device-request",
-        () => adapter.requestDevice(),
-      );
+      rawDevice = await adapter.requestDevice();
     } finally {
       window.clearTimeout(deviceWaitTimer);
     }
@@ -1922,23 +1894,13 @@ export class BrushEngine {
     // updates can be presented even on slow drivers.
     await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
     try {
-      await measureStartupTiming(
-        "gpu-static-resources-core",
-        () => createStaticResources(this),
-      );
+      await createStaticResources(this);
       prepareAdaptivePreviewShapePalette(this, this.settings);
       this.callbacks.onStatus?.("Creating the initial document…", "working");
-      await measureStartupTiming(
-        "gpu-initial-document-resources",
-        () => recreateLayerResources(this, this.layerFormat, {
-          deferBlendRenderer: true,
-          deferSelectionPipelines: true,
-        }),
-        {
-          documentWidth: DOCUMENT_WIDTH,
-          documentHeight: DOCUMENT_HEIGHT,
-        },
-      );
+      await recreateLayerResources(this, this.layerFormat, {
+        deferBlendRenderer: true,
+        deferSelectionPipelines: true,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(
@@ -1966,7 +1928,6 @@ export class BrushEngine {
     this.writeBrushUniforms();
 
     this.initialized = true;
-    markStartupTiming("engine-core-ready");
     if (usesBlendRenderer(this.settings)) {
       this.blendRenderer?.prewarmScratch();
     }
@@ -6496,46 +6457,26 @@ export class BrushEngine {
     }
 
     const initialization = (async (): Promise<void> => {
-      const timing = beginStartupTiming("gpu-optional-resources", {
-        blend: blendResourcesPending,
-        selection: selectionResourcesPending,
-        vector: vectorResourcesPending,
-      });
-      try {
-        this.callbacks.onStatus?.(
-          "The editor is ready. Finishing advanced tools in the background…",
-          "working",
-        );
-        // Keep the old mobile driver responsive: optional compilers run in
-        // bounded phases instead of all contending for the GPU at once.
-        if (blendResourcesPending) {
-          await measureStartupTiming(
-            "gpu-optional-blend",
-            () => this.blendRendererWarmup!(),
-          );
-        }
-        if (selectionResourcesPending) {
-          await measureStartupTiming(
-            "gpu-optional-selection",
-            () => this.selectionPipelineWarmup!(),
-          );
-          this.selectionPipelinesReady = true;
-          this.selectionPipelineWarmup = null;
-        }
-        if (vectorResourcesPending) {
-          await measureStartupTiming(
-            "gpu-optional-vector",
-            () => finishStaticResourceCreation(this, "optional"),
-          );
-          this.optionalEditorResourcesReady = true;
-        }
-        if (this.deviceLostError) throw this.deviceLostError;
-        this.callbacks.onStatus?.("WebGPU is ready. Draw on the canvas.", "ok");
-        timing.end();
-      } catch (error) {
-        timing.fail(error);
-        throw error;
+      this.callbacks.onStatus?.(
+        "The editor is ready. Finishing advanced tools in the background…",
+        "working",
+      );
+      // Keep the old mobile driver responsive: optional compilers run in
+      // bounded phases instead of all contending for the GPU at once.
+      if (blendResourcesPending) {
+        await this.blendRendererWarmup!();
       }
+      if (selectionResourcesPending) {
+        await this.selectionPipelineWarmup!();
+        this.selectionPipelinesReady = true;
+        this.selectionPipelineWarmup = null;
+      }
+      if (vectorResourcesPending) {
+        await finishStaticResourceCreation(this, "optional");
+        this.optionalEditorResourcesReady = true;
+      }
+      if (this.deviceLostError) throw this.deviceLostError;
+      this.callbacks.onStatus?.("WebGPU is ready. Draw on the canvas.", "ok");
     })();
     this.optionalEditorResourcesPromise = initialization;
     try {
@@ -10947,16 +10888,7 @@ export class BrushEngine {
     if (batch.length > 0) {
       this.avoidedLogicalDraws += batch.length * Math.max(0, renderSettings.count - 1);
     }
-    const firstSubmittedFrame = this.renderTimestamps.length === 0;
     this.recordRenderedFrame(timestamp);
-    if (firstSubmittedFrame) {
-      markStartupTiming("first-frame-submitted", {
-        canvasWidth: this.canvas.width,
-        canvasHeight: this.canvas.height,
-        cpuMs: Math.round((performance.now() - frameStart) * 10) / 10,
-      });
-      publishStartupTiming("first-frame-submitted");
-    }
     if (this.vectorTextFastPresentationEnabled) {
       this.trackVectorTextFastPresentationSubmission();
     }

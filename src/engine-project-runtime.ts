@@ -1,5 +1,4 @@
 import type { BrushEngine } from "./brush-engine";
-import { measureStartupTiming } from "./startup-timing";
 import {
   coldStorageMaskForRecord,
   compressColdStorageResources,
@@ -533,15 +532,8 @@ export async function restoreProjectDocument(
   // exist before restoreState/activateLayer make that scene visible; deferring
   // them until the controller starts would let the first frame latch the
   // document inconsistent with an uninitialized mixed-scene layout.
-  const semanticItemCount = snapshot.mixedScene.items.filter(
-    (item) => item.kind !== "raster",
-  ).length;
-  if (semanticItemCount > 0) {
-    await measureStartupTiming(
-      "project-restore-optional-resources",
-      () => engine.ensureOptionalEditorResources(),
-      { semanticItemCount },
-    );
+  if (snapshot.mixedScene.items.some((item) => item.kind !== "raster")) {
+    await engine.ensureOptionalEditorResources();
   }
   engine.persistActiveLayerState();
   if (
@@ -553,10 +545,7 @@ export async function restoreProjectDocument(
   }
   engine.assertLayerSwitchAllowed();
   engine.cancelLayerColdCompressionIdle();
-  await measureStartupTiming(
-    "project-restore-wait-for-idle",
-    () => engine.waitForIdle(),
-  );
+  await engine.waitForIdle();
   engine.layerSwitchBusy = true;
 
   const oldGpu = [...engine.layerGpu.values()];
@@ -568,72 +557,46 @@ export async function restoreProjectDocument(
   const recordById = new Map(records.map((record) => [record.id, record]));
   const nextGpu = new Map<number, LayerGpuResources>();
   const restoredHistoryBaselines = new Map<number, RestoredProjectHistoryBaseline>();
-  await measureStartupTiming(
-    "project-restore-layer-metadata",
-    async () => {
-      for (const layer of snapshot.layers) {
-        const record = recordById.get(layer.id);
-        if (!record) throw new Error(`The saved layer ${layer.id} is missing its record.`);
-        const gpu = createColdLayerGpuResources();
-        gpu.compressed = await compressedFromProject(engine, layer, project.chunks);
-        nextGpu.set(layer.id, gpu);
-        // The immutable compressed payload is shared with inactive layer storage.
-        // Keeping the same reference gives every restored layer a cursor-zero
-        // replay base without another full-size GPU cold texture or byte clone.
-        restoredHistoryBaselines.set(layer.id, {
-          compressed: gpu.compressed,
-          baseBounds: record.contentBounds ? { ...record.contentBounds } : null,
-          baseTileMask: record.storageTileMask.slice(),
-          noiseMipSmoothing: record.noiseMipSmoothing,
-        });
-      }
-    },
-    {
-      layerCount: snapshot.layers.length,
-      chunkCount: project.chunks.length,
-      storedBytes: project.summary.storedBytes,
-    },
-  );
+  for (const layer of snapshot.layers) {
+    const record = recordById.get(layer.id);
+    if (!record) throw new Error(`The saved layer ${layer.id} is missing its record.`);
+    const gpu = createColdLayerGpuResources();
+    gpu.compressed = await compressedFromProject(engine, layer, project.chunks);
+    nextGpu.set(layer.id, gpu);
+    // The immutable compressed payload is shared with inactive layer storage.
+    // Keeping the same reference gives every restored layer a cursor-zero
+    // replay base without another full-size GPU cold texture or byte clone.
+    restoredHistoryBaselines.set(layer.id, {
+      compressed: gpu.compressed,
+      baseBounds: record.contentBounds ? { ...record.contentBounds } : null,
+      baseTileMask: record.storageTileMask.slice(),
+      noiseMipSmoothing: record.noiseMipSmoothing,
+    });
+  }
 
   let reusedHotCommitted = false;
   const installedRasterSources: RasterImageGpuResource[] = [];
   try {
-    await measureStartupTiming(
-      "project-restore-raster-assets",
-      async () => {
-        const installedAssetIds = new Set<string>();
-        for (let index = 0; index < records.length; index += 1) {
-          const source = records[index].rasterSource;
-          const persisted = snapshot.layers[index].rasterSource;
-          if (!source || !persisted || installedAssetIds.has(source.document.assetId)) continue;
-          const wasAlreadyResident = engine.rasterImageGpuResources.has(
-            source.document.assetId,
-          );
-          const resource = await installRasterLayerSourceResource(
-            engine,
-            cloneRasterLayerSource(source)!,
-            persisted.blob,
-          );
-          if (!wasAlreadyResident) installedRasterSources.push(resource);
-          installedAssetIds.add(resource.assetId);
-        }
-      },
-      {
-        rasterAssetCount: new Set(
-          records.flatMap((record) => (
-            record.rasterSource ? [record.rasterSource.document.assetId] : []
-          )),
-        ).size,
-      },
-    );
+    const installedAssetIds = new Set<string>();
+    for (let index = 0; index < records.length; index += 1) {
+      const source = records[index].rasterSource;
+      const persisted = snapshot.layers[index].rasterSource;
+      if (!source || !persisted || installedAssetIds.has(source.document.assetId)) continue;
+      const wasAlreadyResident = engine.rasterImageGpuResources.has(
+        source.document.assetId,
+      );
+      const resource = await installRasterLayerSourceResource(
+        engine,
+        cloneRasterLayerSource(source)!,
+        persisted.blob,
+      );
+      if (!wasAlreadyResident) installedRasterSources.push(resource);
+      installedAssetIds.add(resource.assetId);
+    }
     const activeRecord = recordById.get(snapshot.activeRasterLayerId);
     if (!activeRecord) throw new Error("The saved active layer is missing.");
     const activeGpu = nextGpu.get(activeRecord.id)!;
-    await measureStartupTiming(
-      "project-restore-active-layer-hydration",
-      () => promotePersistedLayer(engine, activeRecord, activeGpu, reusableBlankHot),
-      { hasContent: activeRecord.hasContent },
-    );
+    await promotePersistedLayer(engine, activeRecord, activeGpu, reusableBlankHot);
     reusedHotCommitted = true;
     oldActiveGpu.hot = null;
 
@@ -646,11 +609,7 @@ export async function restoreProjectDocument(
       if (!referenceRecord || !referenceGpu) {
         throw new Error("The saved reference layer is missing.");
       }
-      await measureStartupTiming(
-        "project-restore-reference-layer-hydration",
-        () => promotePersistedLayer(engine, referenceRecord, referenceGpu, null),
-        { hasContent: referenceRecord.hasContent },
-      );
+      await promotePersistedLayer(engine, referenceRecord, referenceGpu, null);
     }
 
     const stackState: LayerStackState = {
@@ -677,10 +636,7 @@ export async function restoreProjectDocument(
     engine.hasFittedView = true;
     engine.resetHistoryState();
 
-    await measureStartupTiming(
-      "project-restore-activate-layer",
-      () => engine.activateLayer(engine.layerStack.activeIndex, "layer-switch"),
-    );
+    await engine.activateLayer(engine.layerStack.activeIndex, "layer-switch");
     for (const gpu of oldGpu) destroyLayerGpuResources(engine, gpu);
     engine.installRestoredProjectHistoryBaselines(restoredHistoryBaselines);
     engine.publishHistoryState();

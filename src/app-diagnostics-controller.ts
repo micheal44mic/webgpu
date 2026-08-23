@@ -9,7 +9,6 @@ import {
 } from "./app-diagnostics";
 import type { HistoryState } from "./engine-types";
 import { GPU_MEMORY_AUDIT_TOLERANCE_BYTES } from "./gpu-memory-audit";
-import { captureStartupTiming } from "./startup-timing";
 
 type MixedSceneSnapshot = NonNullable<ReturnType<BrushEngine["getMixedSceneSnapshot"]>>;
 
@@ -206,7 +205,6 @@ export class AppDiagnosticsController {
             }
           }),
       },
-      startupTiming: captureStartupTiming(),
       environment: {
         userAgent: navigator.userAgent,
         platform: navigator.platform,

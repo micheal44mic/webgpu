@@ -82,7 +82,6 @@ export const verificationScripts = Object.freeze([
   "verify-stroke-core.mjs",
   "verify-stroke-curve.mjs",
   "verify-stroke-stabilization.mjs",
-  "verify-startup-timing.mjs",
   "verify-text-selection-lock.mjs",
   "verify-thickness-dynamics.mjs",
   "verify-touch-paint-intent.mjs",

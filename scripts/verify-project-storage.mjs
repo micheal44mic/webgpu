@@ -441,7 +441,7 @@ assert.match(
   "project capture must rebuild every persisted tile bit, including tile 255",
 );
 const semanticResourcesPosition = runtimeSource.indexOf(
-  "engine.ensureOptionalEditorResources()",
+  "await engine.ensureOptionalEditorResources()",
 );
 const semanticRestorePosition = runtimeSource.indexOf(
   "engine.mixedSceneStack?.restoreState(snapshot.mixedScene)",
@@ -486,7 +486,7 @@ assert.match(
   "the cursor-zero baseline must share the immutable saved payload and clone its metadata",
 );
 const activatePosition = restoreBody.indexOf(
-  'engine.activateLayer(engine.layerStack.activeIndex, "layer-switch")',
+  'await engine.activateLayer(engine.layerStack.activeIndex, "layer-switch")',
 );
 const baselineInstallPosition = restoreBody.indexOf(
   "engine.installRestoredProjectHistoryBaselines(restoredHistoryBaselines)",

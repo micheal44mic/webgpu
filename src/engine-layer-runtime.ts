@@ -122,10 +122,6 @@ import {
 } from "./engine-runtime-misc";
 import { combineCompressionHashes } from "./engine-math";
 import { LAYER_COLD_TILE_COMPOSITE_BATCH_TILES } from "./layer-cold-tile-composite-shader";
-import {
-  beginStartupTiming,
-  measureStartupTiming,
-} from "./startup-timing";
 
 export interface RecreateLayerResourcesOptions {
   /** Compile pixel-selection paint variants after the initial canvas is visible. */
@@ -196,12 +192,10 @@ export async function recreateLayerResources(
     layerColdTileSourceAtopPipeline,
     layerBlendFoldPipeline,
     warmSelectionPipelines,
-  } = await measureStartupTiming(
-    "gpu-layer-core-pipelines",
-    () => runGpuAllocationTransaction(
-      engine.device,
-      `Layer format pipeline ${format}`,
-      async () => {
+  } = await runGpuAllocationTransaction(
+    engine.device,
+    `Layer format pipeline ${format}`,
+    async () => {
   const brushPipelineLayout = engine.device.createPipelineLayout({
     label: `Brush legacy pipeline layout ${format}`,
     bindGroupLayouts: [engine.brushBindGroupLayout],
@@ -1412,11 +1406,6 @@ export async function recreateLayerResources(
         layerBlendFoldPipeline,
         warmSelectionPipelines,
       };
-      },
-    ),
-    {
-      format,
-      selectionDeferred: options.deferSelectionPipelines === true,
     },
   );
 
@@ -1433,54 +1422,39 @@ export async function recreateLayerResources(
   let nextDisplayPyramid: DisplayPyramidResources | null = null;
   let nextTransparentTexture: GPUTexture | null = null;
   let nextTransparentView: GPUTextureView | null = null;
-  const candidateTiming = beginStartupTiming("gpu-layer-resource-candidates", {
-    format,
-    layerCount: engine.layerStack.count,
-    blendDeferred: options.deferBlendRenderer === true,
-  });
   try {
-    const displayInfrastructure = await measureStartupTiming(
-      "gpu-display-infrastructure-allocation",
-      () => runGpuAllocationTransaction(
-        engine.device,
-        `Display layer infrastructure ${format}`,
-        (transaction) => {
-          const pyramid = allocateActiveLayerDisplayPyramid(engine, format);
-          transaction.deferRollback(() => pyramid.texture.destroy());
-          const transparentTexture = engine.device.createTexture({
-            label: `Transparent layer placeholder ${format}`,
-            size: { width: 1, height: 1, depthOrArrayLayers: 1 },
-            format,
-            usage: GPUTextureUsage.TEXTURE_BINDING,
-          });
-          transaction.deferRollback(() => transparentTexture.destroy());
-          return {
-            pyramid,
-            transparentTexture,
-            transparentView: transparentTexture.createView(),
-          };
-        },
-      ),
-      { format },
+    const displayInfrastructure = await runGpuAllocationTransaction(
+      engine.device,
+      `Display layer infrastructure ${format}`,
+      (transaction) => {
+        const pyramid = allocateActiveLayerDisplayPyramid(engine, format);
+        transaction.deferRollback(() => pyramid.texture.destroy());
+        const transparentTexture = engine.device.createTexture({
+          label: `Transparent layer placeholder ${format}`,
+          size: { width: 1, height: 1, depthOrArrayLayers: 1 },
+          format,
+          usage: GPUTextureUsage.TEXTURE_BINDING,
+        });
+        transaction.deferRollback(() => transparentTexture.destroy());
+        return {
+          pyramid,
+          transparentTexture,
+          transparentView: transparentTexture.createView(),
+        };
+      },
     );
     nextDisplayPyramid = displayInfrastructure.pyramid;
     nextTransparentTexture = displayInfrastructure.transparentTexture;
     nextTransparentView = displayInfrastructure.transparentView;
-    await measureStartupTiming(
-      "gpu-document-layer-allocation",
-      async () => {
-        for (const record of engine.layerStack.layers) {
-          const gpu = record.id === engine.layerStack.active.id
-            ? await allocateLayerGpuResources(engine,
-              format,
-              `Format change: layer ${record.id}`,
-            )
-            : createColdLayerGpuResources();
-          replacement.set(record.id, gpu);
-        }
-      },
-      { format, layerCount: engine.layerStack.count },
-    );
+    for (const record of engine.layerStack.layers) {
+      const gpu = record.id === engine.layerStack.active.id
+        ? await allocateLayerGpuResources(engine, 
+          format,
+          `Format change: layer ${record.id}`,
+        )
+        : createColdLayerGpuResources();
+      replacement.set(record.id, gpu);
+    }
 
     const activeGpu = replacement.get(engine.layerStack.active.id);
     const activeHot = activeGpu?.hot;
@@ -1518,9 +1492,7 @@ export async function recreateLayerResources(
       canReallocateScratch: () => engine.activeStroke === null,
       initialScratchPeakBytes: previousScratchPeakBytes,
     });
-    candidateTiming.end();
   } catch (error) {
-    candidateTiming.fail(error);
     // Nothing has been swapped in yet: every candidate is disposable and all
     // old textures/renderers still describe the intact document.
     nextEffectsWorkbench?.destroy();
@@ -1554,9 +1526,6 @@ export async function recreateLayerResources(
     throw new Error("The format change transaction is incomplete.");
   }
   const { texture, view, samplingView } = activeHot;
-  const publicationTiming = beginStartupTiming("gpu-layer-resource-publication", {
-    format,
-  });
 
   destroyLightGlazeResources(engine);
   destroyThicknessTailOverlayResources(engine);
@@ -1730,7 +1699,6 @@ export async function recreateLayerResources(
   if (layerBlendTilePresentationRequired(engine)) {
     await ensureLayerBlendTilePresentationResources(engine);
   }
-  publicationTiming.end();
 }
 
 export async function retargetEffectsWorkingSetInternal(engine: BrushEngine, 
