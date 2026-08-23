@@ -1890,6 +1890,12 @@ void engine.initialize()
     if (!projectSessionController) {
       throw new Error("Project session controller is unavailable.");
     }
+    if (
+      mobileBrushStudio
+      && (editorExtensionBootstrap?.restorePersistedBrushOnStartup ?? true)
+    ) {
+      await brushLibraryController.restoreActiveBrush();
+    }
     await projectSessionController.initialize();
     syncMobileToolsMenuState();
     historyState = engine.getHistoryState();
@@ -1903,17 +1909,6 @@ void engine.initialize()
       () => engine.ensureOptionalEditorResources(),
       500,
     );
-    if (
-      mobileBrushStudio
-      && (editorExtensionBootstrap?.restorePersistedBrushOnStartup ?? true)
-    ) {
-      scheduleDeferredStartupTask(
-        "deferred-brush-restore",
-        () => brushLibraryController.restoreActiveBrush(),
-        250,
-      );
-    }
-
     if (engine.mixedSceneEnabled) {
       scheduleDeferredStartupTask(
         "deferred-mixed-scene",

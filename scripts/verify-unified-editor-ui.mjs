@@ -64,8 +64,8 @@ assert.doesNotMatch(
 );
 assert.match(
   main,
-  /if \(\s*mobileBrushStudio\s*&& \(editorExtensionBootstrap\?\.restorePersistedBrushOnStartup \?\? true\)\s*\) \{[\s\S]*?brushLibraryController\.restoreActiveBrush\(\)/,
-  "Telefono e desktop devono ripristinare la stessa libreria pennelli.",
+  /if \(\s*mobileBrushStudio\s*&& \(editorExtensionBootstrap\?\.restorePersistedBrushOnStartup \?\? true\)\s*\) \{\s*await brushLibraryController\.restoreActiveBrush\(\);\s*\}\s*await projectSessionController\.initialize\(\)/,
+  "Telefono e desktop devono preparare lo stesso pennello attivo prima del progetto.",
 );
 assert.match(
   limits,

@@ -666,9 +666,9 @@ export async function restoreProjectDocument(
     engine.scheduleLayerColdCompression();
   }
 
-  // Brush settings are document convenience state; custom brush assets remain
-  // in the global library and are resolved there.
-  engine.setBrushSettings(snapshot.brushSettings);
-  await engine.ensureCurrentBrushResources();
+  // Brush selection belongs to the global library, which restores and prepares
+  // only its active brush before the project is opened. The serialized settings
+  // remain in V1 documents for compatibility, but must not select or hydrate a
+  // different brush while restoring a project.
   engine.publishStats();
 }

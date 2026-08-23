@@ -475,6 +475,11 @@ assert.match(
 const restoreStart = runtimeSource.indexOf("export async function restoreProjectDocument(");
 assert.notEqual(restoreStart, -1);
 const restoreBody = runtimeSource.slice(restoreStart);
+assert.doesNotMatch(
+  restoreBody,
+  /engine\.setBrushSettings\(snapshot\.brushSettings\)|engine\.ensureCurrentBrushResources\(\)/,
+  "project restore must preserve the globally active brush and must not hydrate another brush",
+);
 assert.match(
   restoreBody,
   /const restoredHistoryBaselines = new Map<number, RestoredProjectHistoryBaseline>\(\)/,
