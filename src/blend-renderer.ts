@@ -286,6 +286,8 @@ export class DryBlendRenderer {
   >;
   private scatterPipeline!: GPURenderPipeline;
   private scratch: ScratchResources | null = null;
+  private scratchMaterialized = false;
+  private blurScratchMaterialized = false;
   private activeHistoryActionId: number | null = null;
   private carrierCursor = 0;
   private carrierValid = false;
@@ -837,6 +839,155 @@ export class DryBlendRenderer {
     return !wasAllocated;
   }
 
+  /**
+   * Executes the selected Blend pipeline bundle without touching the canonical
+   * layer. A zero-flow 1×1 batch still samples the selected Shape/Grain and
+   * runs every compute stage, while scatter targets a private texture.
+   */
+  async prewarmSelectedVariant(settings: DryBlendRenderSettings): Promise<void> {
+    this.assertAlive();
+    const scratch = this.ensureScratchResources();
+    const rect: BlendRect = { x: 0, y: 0, width: 1, height: 1 };
+    const step: DryBlendStep = {
+      fromX: 0.5,
+      fromY: 0.5,
+      toX: 0.5,
+      toY: 0.5,
+      dirX: 1,
+      dirY: 0,
+      distance: 0,
+      fromDiameter: 1,
+      toDiameter: 1,
+      diameter: 1,
+      fromHalfWidth: 0.5,
+      fromHalfHeight: 0.5,
+      toHalfWidth: 0.5,
+      toHalfHeight: 0.5,
+      fromAngle: 0,
+      toAngle: 0,
+      angle: 0,
+      warpStrength: 0,
+      flow: 0,
+      spacing: 0,
+      arcStart: 0,
+      arcEnd: 0,
+      speed: 0,
+      minX: 0,
+      minY: 0,
+      maxX: 1,
+      maxY: 1,
+      maxHalo: 0,
+    };
+    const batch: DryBlendRenderBatch = {
+      build: DRY_BLEND_CORE_BUILD,
+      stepCount: 1,
+      steps: [step],
+      empty: false,
+      readRect: rect,
+      writeRect: rect,
+    };
+    const group: BlendStepGroup = {
+      start: 0,
+      count: 1,
+      readRect: rect,
+      writeRect: rect,
+    };
+    const previousCarrierCursor = this.carrierCursor;
+    const previousCarrierValid = this.carrierValid;
+    this.carrierCursor = 0;
+    this.carrierValid = false;
+    try {
+      this.populateUniforms([batch], [group], settings);
+    } finally {
+      this.carrierCursor = previousCarrierCursor;
+      this.carrierValid = previousCarrierValid;
+    }
+    this.device.queue.writeBuffer(
+      this.uniformBuffer,
+      0,
+      this.uniformUpload,
+      0,
+      this.uniformStride,
+    );
+
+    const blurScratch = settings.blendBlur > 0
+      ? this.ensureBlurScratchResources(scratch)
+      : null;
+    if (blurScratch) {
+      this.updateBlurKernel(settings.blendBlur, settings.size);
+    }
+    const target = this.device.createTexture({
+      label: "Selected Blend warm-up scatter target",
+      size: { width: 1, height: 1, depthOrArrayLayers: 1 },
+      format: this.layerFormat,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    const encoder = this.device.createCommandEncoder({
+      label: "Prewarm selected Blend variant",
+    });
+    const materializeScratch = !this.scratchMaterialized;
+    const materializeBlur = Boolean(blurScratch) && !this.blurScratchMaterialized;
+    if (materializeScratch) {
+      encoder.clearBuffer(scratch.stateBuffer);
+      encoder.clearBuffer(scratch.coverageBuffer);
+      encoder.clearBuffer(scratch.carrierBuffer);
+    }
+    if (materializeBlur) {
+      encoder.clearBuffer(blurScratch!.buffer);
+    }
+
+    const computePass = encoder.beginComputePass({
+      label: "Warm selected Blend gather, blur, pickup and deposit",
+    });
+    computePass.setPipeline(this.gatherPipeline);
+    computePass.setBindGroup(0, scratch.gatherBindGroup, [0]);
+    computePass.dispatchWorkgroups(1, 1, 1);
+    if (blurScratch) {
+      computePass.setPipeline(this.blurHorizontalPipeline);
+      computePass.setBindGroup(0, blurScratch.horizontalBindGroup, [0]);
+      computePass.dispatchWorkgroups(1, 1, 1);
+      computePass.setPipeline(this.blurVerticalPipeline);
+      computePass.setBindGroup(0, blurScratch.verticalBindGroup, [0]);
+      computePass.dispatchWorkgroups(1, 1, 1);
+    }
+    computePass.setPipeline(this.pickupPipeline);
+    computePass.setBindGroup(0, scratch.pickupBindGroup, [0]);
+    computePass.dispatchWorkgroups(1, 1, 1);
+    computePass.setPipeline(
+      this.depositPipelines[settings.shape][settings.grainMode === "off" ? "off" : "on"],
+    );
+    computePass.setBindGroup(
+      0,
+      scratch.depositBindGroups.fixed[settings.grainFiltering],
+      [0],
+    );
+    computePass.dispatchWorkgroups(1, 1, 1);
+    computePass.end();
+
+    const scatterPass = encoder.beginRenderPass({
+      label: "Warm selected Blend scatter on private target",
+      colorAttachments: [{
+        view: target.createView(),
+        loadOp: "clear",
+        storeOp: "store",
+        clearValue: { r: 0, g: 0, b: 0, a: 0 },
+      }],
+    });
+    scatterPass.setPipeline(this.scatterPipeline);
+    scatterPass.setBindGroup(0, scratch.scatterBindGroup, [0]);
+    scatterPass.draw(3, 1, 0, 0);
+    scatterPass.end();
+
+    try {
+      this.device.queue.submit([encoder.finish()]);
+      await this.device.queue.onSubmittedWorkDone();
+      if (materializeScratch) this.scratchMaterialized = true;
+      if (materializeBlur) this.blurScratchMaterialized = true;
+    } finally {
+      target.destroy();
+    }
+  }
+
   // Il chiamante garantisce che nessun tratto Blend sia attivo o in coda:
   // il carrier ring vive nello scratch e non sopravvive al rilascio.
   releaseScratch(): boolean {
@@ -849,6 +1000,8 @@ export class DryBlendRenderer {
     this.scratch.blur?.buffer.destroy();
     this.scratch = null;
     this.carrierValid = false;
+    this.scratchMaterialized = false;
+    this.blurScratchMaterialized = false;
     return true;
   }
 
@@ -866,6 +1019,8 @@ export class DryBlendRenderer {
       this.scratch.blur?.buffer.destroy();
       this.scratch = null;
     }
+    this.scratchMaterialized = false;
+    this.blurScratchMaterialized = false;
   }
 
   private assertAlive(): void {
@@ -1164,7 +1319,7 @@ export class DryBlendRenderer {
     const blurBuffer = this.device.createBuffer({
       label: "Blend local Gaussian packed intermediate",
       size: this.scratchSize * this.scratchSize * 8,
-      usage: GPUBufferUsage.STORAGE,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     const uniformEntry = {
       binding: 0,
@@ -1218,17 +1373,17 @@ export class DryBlendRenderer {
     const stateBuffer = this.device.createBuffer({
       label: "Blend dry scratch state",
       size: pixels * 16,
-      usage: GPUBufferUsage.STORAGE,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     const coverageBuffer = this.device.createBuffer({
       label: "Blend dry union coverage",
       size: pixels * 4,
-      usage: GPUBufferUsage.STORAGE,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     const carrierBuffer = this.device.createBuffer({
       label: "Blend dry carrier ring",
       size: BLEND_CARRIER_SLOT_COUNT * 16,
-      usage: GPUBufferUsage.STORAGE,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     const uniformEntry = {
       binding: 0,

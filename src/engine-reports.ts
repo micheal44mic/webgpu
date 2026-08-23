@@ -304,6 +304,10 @@ export function getBenchmarkEnvironment(engine: BrushEngine): {
   lightGlazeAdaptivePreviewStrategy: typeof LIGHT_GLAZE_ADAPTIVE_PREVIEW_STRATEGY;
   lightGlazeStorageAllocated: boolean;
   lightGlazeStorageMode: LightGlazeStorageMode;
+  lightGlazeCommitStrategy:
+    | "fixed-function-render-target"
+    | "compute-in-place-read-write-storage"
+    | "render-copy-scratch-tile";
   lightGlazeAdditionalMemoryMiB: number;
   lightGlazeStorageLifecycleStrategy: typeof LIGHT_GLAZE_STORAGE_LIFECYCLE_STRATEGY;
   adaptivePreviewStrategy: typeof ADAPTIVE_PREVIEW_STRATEGY;
@@ -522,8 +526,18 @@ export function getBenchmarkEnvironment(engine: BrushEngine): {
     lightGlazeAdaptivePreviewStrategy: LIGHT_GLAZE_ADAPTIVE_PREVIEW_STRATEGY,
     lightGlazeStorageAllocated: engine.lightGlazeStorageAllocated,
     lightGlazeStorageMode: engine.lightGlazeStorageMode,
+    lightGlazeCommitStrategy: engine.lightGlazeStorageMode === "r16float-coverage"
+      ? "fixed-function-render-target"
+      : engine.lightGlazeInPlaceCommitPipeline && engine.lightGlazeInPlaceCommitBindGroup
+        ? "compute-in-place-read-write-storage"
+        : "render-copy-scratch-tile",
     lightGlazeAdditionalMemoryMiB: engine.lightGlazeStorageAllocated
-      ? lightGlazeAdditionalMemoryMiB(engine.layerFormat, engine.lightGlazeStorageMode)
+      ? lightGlazeAdditionalMemoryMiB(
+        engine.layerFormat,
+        engine.lightGlazeStorageMode,
+        undefined,
+        Boolean(engine.lightGlazeCommitTileTexture),
+      )
       : 0,
     lightGlazeStorageLifecycleStrategy: LIGHT_GLAZE_STORAGE_LIFECYCLE_STRATEGY,
     adaptivePreviewStrategy: ADAPTIVE_PREVIEW_STRATEGY,
@@ -983,7 +997,12 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
   const selectionRendererMiB =
     (engine.selectionRenderer?.residentBytes ?? 0) / MEBIBYTE_BYTES;
   const lightGlazeMiB = engine.lightGlazeStorageAllocated
-    ? lightGlazeAdditionalMemoryMiB(engine.layerFormat, engine.lightGlazeStorageMode)
+    ? lightGlazeAdditionalMemoryMiB(
+      engine.layerFormat,
+      engine.lightGlazeStorageMode,
+      undefined,
+      Boolean(engine.lightGlazeCommitTileTexture),
+    )
     : 0;
   // Compatibility field name: it now accounts for the cropped RGBA prefix,
   // aggregated Normal suffix, or ordered mip-0 child operands of the live
@@ -1271,7 +1290,12 @@ export function finishStrokePerformanceProfile(engine: BrushEngine): StrokePerfo
     lightGlazeStorageAllocated: engine.lightGlazeStorageAllocated,
     lightGlazeStorageMode: engine.lightGlazeStorageMode,
     lightGlazeAdditionalMemoryMiB: engine.lightGlazeStorageAllocated
-      ? lightGlazeAdditionalMemoryMiB(engine.layerFormat, engine.lightGlazeStorageMode)
+      ? lightGlazeAdditionalMemoryMiB(
+        engine.layerFormat,
+        engine.lightGlazeStorageMode,
+        undefined,
+        Boolean(engine.lightGlazeCommitTileTexture),
+      )
       : 0,
     lightGlazeBatches: profile.lightGlazeBatches,
     lightGlazeCommits: profile.lightGlazeCommits,

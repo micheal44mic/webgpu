@@ -31,12 +31,14 @@ export function createLightGlazeResourceSet(engine: BrushEngine,
     commitTileTexture,
     commitTileView,
     commitTileBindGroup,
+    inPlaceCommitBindGroup,
   } = (() => {
     let texture: GPUTexture | null = null;
     let compositeMipTexture: GPUTexture | null = null;
     let commitTileTexture: GPUTexture | null = null;
     let commitTileView: GPUTextureView | null = null;
     let commitTileBindGroup: GPUBindGroup | null = null;
+    let inPlaceCommitBindGroup: GPUBindGroup | null = null;
     try {
       const accumulatorFormat: GPUTextureFormat = storageMode === "r16float-coverage"
         ? "r16float"
@@ -131,43 +133,66 @@ export function createLightGlazeResourceSet(engine: BrushEngine,
 
       if (storageMode === "rgba16float-stroke") {
         if (
-          LIGHT_GLAZE_COMMIT_TILE_UNIFORM_STRIDE_BYTES
-            % engine.device.limits.minUniformBufferOffsetAlignment !== 0
+          engine.lightGlazeInPlaceCommitPipeline
+          && engine.lightGlazeInPlaceCommitBindGroupLayout
         ) {
-          throw new Error(
-            "Dynamic uniform alignment is not supported by the high-precision glaze tile commit.",
-          );
-        }
-        commitTileTexture = engine.device.createTexture({
-          label: `High precision glaze exact commit tile ${engine.layerFormat}`,
-          size: {
-            width: LIGHT_GLAZE_COMMIT_TILE_EXTENT,
-            height: LIGHT_GLAZE_COMMIT_TILE_EXTENT,
-            depthOrArrayLayers: 1,
-          },
-          format: engine.layerFormat,
-          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-        });
-        commitTileView = commitTileTexture.createView({
-          label: "High precision glaze exact commit tile view",
-        });
-        commitTileBindGroup = engine.device.createBindGroup({
-          label: "High precision glaze exact commit tile bind group",
-          layout: engine.lightGlazeCommitTileBindGroupLayout,
-          entries: [
-            { binding: 0, resource: engine.layerView },
-            { binding: 1, resource: view },
-            { binding: 2, resource: { buffer: engine.lightGlazeUniformBuffer } },
-            {
-              binding: 3,
-              resource: {
-                buffer: engine.lightGlazeCommitTileUniformBuffer,
-                offset: 0,
-                size: LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BYTES,
+          inPlaceCommitBindGroup = engine.device.createBindGroup({
+            label: "High precision glaze in-place commit bind group",
+            layout: engine.lightGlazeInPlaceCommitBindGroupLayout,
+            entries: [
+              { binding: 0, resource: engine.layerView },
+              { binding: 1, resource: view },
+              { binding: 2, resource: { buffer: engine.lightGlazeUniformBuffer } },
+              {
+                binding: 3,
+                resource: {
+                  buffer: engine.lightGlazeCommitTileUniformBuffer,
+                  offset: 0,
+                  size: LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BYTES,
+                },
               },
+            ],
+          });
+        } else {
+          if (
+            LIGHT_GLAZE_COMMIT_TILE_UNIFORM_STRIDE_BYTES
+              % engine.device.limits.minUniformBufferOffsetAlignment !== 0
+          ) {
+            throw new Error(
+              "Dynamic uniform alignment is not supported by the high-precision glaze tile commit.",
+            );
+          }
+          commitTileTexture = engine.device.createTexture({
+            label: `High precision glaze exact commit tile ${engine.layerFormat}`,
+            size: {
+              width: LIGHT_GLAZE_COMMIT_TILE_EXTENT,
+              height: LIGHT_GLAZE_COMMIT_TILE_EXTENT,
+              depthOrArrayLayers: 1,
             },
-          ],
-        });
+            format: engine.layerFormat,
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+          });
+          commitTileView = commitTileTexture.createView({
+            label: "High precision glaze exact commit tile view",
+          });
+          commitTileBindGroup = engine.device.createBindGroup({
+            label: "High precision glaze exact commit tile bind group",
+            layout: engine.lightGlazeCommitTileBindGroupLayout,
+            entries: [
+              { binding: 0, resource: engine.layerView },
+              { binding: 1, resource: view },
+              { binding: 2, resource: { buffer: engine.lightGlazeUniformBuffer } },
+              {
+                binding: 3,
+                resource: {
+                  buffer: engine.lightGlazeCommitTileUniformBuffer,
+                  offset: 0,
+                  size: LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BYTES,
+                },
+              },
+            ],
+          });
+        }
       }
 
       return {
@@ -183,6 +208,7 @@ export function createLightGlazeResourceSet(engine: BrushEngine,
         commitTileTexture,
         commitTileView,
         commitTileBindGroup,
+        inPlaceCommitBindGroup,
       };
     } catch (error) {
       commitTileTexture?.destroy();
@@ -205,7 +231,49 @@ export function createLightGlazeResourceSet(engine: BrushEngine,
     commitTileTexture,
     commitTileView,
     commitTileBindGroup,
+    inPlaceCommitBindGroup,
   };
+}
+
+/**
+ * Materializes every lazily allocated attachment before a brush can become
+ * paint-ready. WebGPU permits implementations to defer the zero initialization
+ * of a new texture until its first use; paying that full-document clear during
+ * the first pointer frame is visible as a cold-start hitch.
+ */
+export async function initializeLightGlazeResourceSet(
+  engine: BrushEngine,
+  resources: LightGlazeResourceSet,
+): Promise<void> {
+  const encoder = engine.device.createCommandEncoder({
+    label: `Materialize Light Glaze ${resources.storageMode}`,
+  });
+  const clearAttachment = (view: GPUTextureView, label: string): void => {
+    const pass = encoder.beginRenderPass({
+      label,
+      colorAttachments: [{
+        view,
+        loadOp: "clear",
+        storeOp: "store",
+        clearValue: { r: 0, g: 0, b: 0, a: 0 },
+      }],
+    });
+    pass.end();
+  };
+
+  clearAttachment(resources.view, "Materialize Light Glaze authoritative mip 0");
+  resources.compositeMipViews.forEach((view, mipIndex) => {
+    clearAttachment(
+      view,
+      `Materialize Light Glaze composited mip ${mipIndex + 1}`,
+    );
+  });
+  if (resources.commitTileView) {
+    clearAttachment(resources.commitTileView, "Materialize Light Glaze commit tile");
+  }
+
+  engine.device.queue.submit([encoder.finish()]);
+  await engine.device.queue.onSubmittedWorkDone();
 }
 
 export function encodeLightGlazeDisplayPyramid(engine: BrushEngine, 
@@ -309,13 +377,14 @@ export function currentLightGlazeResourceSet(engine: BrushEngine): LightGlazeRes
     commitTileTexture: engine.lightGlazeCommitTileTexture,
     commitTileView: engine.lightGlazeCommitTileView,
     commitTileBindGroup: engine.lightGlazeCommitTileBindGroup,
+    inPlaceCommitBindGroup: engine.lightGlazeInPlaceCommitBindGroup,
   };
 }
 
 /**
  * Rebuilds only the Glaze bindings whose sources follow the active layer.
  *
- * The accumulator, its mip chain and the commit tile are gesture scratch and
+ * The accumulator, its mip chain and the optional commit tile are gesture scratch and
  * do not belong to a raster layer. Keeping those textures resident across a
  * layer switch avoids turning the user's first pointer-down into an allocation
  * request. The three bind groups below are the only Glaze resources that bake
@@ -381,6 +450,28 @@ export function retargetLightGlazeBindGroups(engine: BrushEngine): void {
       ],
     })
     : null;
+  engine.lightGlazeInPlaceCommitBindGroup =
+    engine.lightGlazeStorageMode === "rgba16float-stroke"
+    && engine.lightGlazeInPlaceCommitPipeline
+    && engine.lightGlazeInPlaceCommitBindGroupLayout
+      ? engine.device.createBindGroup({
+        label: "High precision glaze in-place commit bind group",
+        layout: engine.lightGlazeInPlaceCommitBindGroupLayout,
+        entries: [
+          { binding: 0, resource: engine.layerView },
+          { binding: 1, resource: engine.lightGlazeView },
+          { binding: 2, resource: { buffer: engine.lightGlazeUniformBuffer } },
+          {
+            binding: 3,
+            resource: {
+              buffer: engine.lightGlazeCommitTileUniformBuffer,
+              offset: 0,
+              size: LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BYTES,
+            },
+          },
+        ],
+      })
+      : null;
 }
 
 export function destroyLightGlazeResources(engine: BrushEngine): void {
@@ -406,6 +497,7 @@ export function destroyLightGlazeResources(engine: BrushEngine): void {
   engine.lightGlazeCommitTileTexture = null;
   engine.lightGlazeCommitTileView = null;
   engine.lightGlazeCommitTileBindGroup = null;
+  engine.lightGlazeInPlaceCommitBindGroup = null;
   engine.lightGlazeStorageAllocated = false;
   engine.lightGlazeStorageMode = "none";
   destroyStrokeStabilizationSnapshot(engine);
@@ -518,8 +610,10 @@ export function applyLightGlazeResourceSet(engine: BrushEngine, resources: Light
   engine.lightGlazeCommitTileTexture = resources?.commitTileTexture ?? null;
   engine.lightGlazeCommitTileView = resources?.commitTileView ?? null;
   engine.lightGlazeCommitTileBindGroup = resources?.commitTileBindGroup ?? null;
+  engine.lightGlazeInPlaceCommitBindGroup = resources?.inPlaceCommitBindGroup ?? null;
   engine.lightGlazeStorageAllocated = resources !== null;
   engine.lightGlazeStorageMode = resources?.storageMode ?? "none";
+  engine.lightGlazeResourceRevision += 1;
   engine.rasterStrokeRenderer?.setLightGlazeView(view);
   engine.rasterBevelRenderer?.setLightGlazeView(view);
   engine.rasterOuterShadowRenderer?.setLightGlazeView(view);
@@ -538,6 +632,10 @@ export function lightGlazeResourcesMatch(engine: BrushEngine, storageMode: Light
     && engine.lightGlazeCompositeBindGroup
     && (
       storageMode === "r16float-coverage"
+      || (
+        engine.lightGlazeInPlaceCommitPipeline
+        && engine.lightGlazeInPlaceCommitBindGroup
+      )
       || (
         engine.lightGlazeCommitTileTexture
         && engine.lightGlazeCommitTileView
@@ -578,6 +676,7 @@ export function maybeReleaseIdleLightGlazeResources(engine: BrushEngine): void {
     || engine.activeStroke !== null
     || engine.historyBusy
     || engine.pendingStamps.length > 0
+    || engine.brushGpuWarmupPromise !== null
   ) {
     return;
   }

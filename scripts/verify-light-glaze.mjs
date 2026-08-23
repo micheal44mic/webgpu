@@ -136,8 +136,18 @@ for (const requirement of [
 }
 assert.match(
   submit,
-  /if \(session\.commitRequested\)[\s\S]*Commit complete Light Glaze stroke once/,
+  /if \(session\.commitRequested\)[\s\S]*this\.encodeLightGlazePermanentCommit\(/,
   "Light Glaze non viene committato una sola volta al lift.",
+);
+const permanentCommit = section(
+  engine,
+  "private encodeLightGlazePermanentCommit",
+  "private submitLightGlazeImmediate",
+);
+assert.match(
+  permanentCommit,
+  /label: "Commit complete Light Glaze stroke once"/,
+  "Il commit finale Light source-over è assente dall'helper condiviso.",
 );
 
 const finalComposite = section(
@@ -175,7 +185,7 @@ assert.match(
 
 const brushReadiness = section(
   engine,
-  "  currentBrushResourcesReady(): boolean",
+  "  private brushDependenciesReady(settings: BrushSettings): boolean",
   "  /**\n   * Completes GPU resources used only by text",
 );
 for (const requirement of [
@@ -187,12 +197,28 @@ for (const requirement of [
   "await this.ensureGrainResources",
   "await this.ensureShapeResources",
   "await this.ensureLightGlazeResources",
+  "await this.ensureSelectedBrushGpuReady(settings)",
+  "this.completedBrushGpuWarmupKeys.has(this.brushGpuWarmupKey(settings))",
+  "await this.device.queue.onSubmittedWorkDone()",
 ]) {
   assert(
     brushReadiness.includes(requirement),
     `Barriera prima pennellata incompleta: ${requirement}`,
   );
 }
+
+const glazeMaterialization = section(
+  engine,
+  "export async function initializeLightGlazeResourceSet",
+  "export function encodeLightGlazeDisplayPyramid",
+);
+assert.match(glazeMaterialization, /clearAttachment\(resources\.view/);
+assert.match(glazeMaterialization, /resources\.compositeMipViews\.forEach/);
+assert.match(
+  glazeMaterialization,
+  /queue\.submit\(\[encoder\.finish\(\)\]\);[\s\S]*queue\.onSubmittedWorkDone\(\)/,
+  "Il clear delle texture Glaze deve terminare sulla GPU prima della readiness.",
+);
 
 const glazeRetarget = section(
   engine,

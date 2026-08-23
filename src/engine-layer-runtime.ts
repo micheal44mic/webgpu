@@ -6,7 +6,12 @@ import {
   type LayerFormat,
 } from "./engine-types";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
-import { createRenderPipelineAsync } from "./engine-gpu-utils";
+import {
+  assertShaderCompiled,
+  createComputePipelineAsync,
+  createRenderPipelineAsync,
+} from "./engine-gpu-utils";
+import { lightGlazeInPlaceCommitShader } from "./light-glaze-in-place-commit-shader";
 import {
   effectsRetargetCallerForHistoryReplay,
   type ActiveClippingGroupResources,
@@ -180,6 +185,8 @@ export async function recreateLayerResources(
     lightGlazeFinalRasterStackCompositeMipPipeline,
     lightGlazeCompositePipeline,
     lightGlazeCommitTilePipeline,
+    lightGlazeInPlaceCommitBindGroupLayout,
+    lightGlazeInPlaceCommitPipeline,
     paintMipDownsamplePipeline,
     paintStackCompositeMipPipeline,
     activeClippingGroupMipPipeline,
@@ -263,6 +270,46 @@ export async function recreateLayerResources(
     label: `High precision glaze exact tile commit pipeline layout ${format}`,
     bindGroupLayouts: [engine.lightGlazeCommitTileBindGroupLayout],
   });
+  let lightGlazeInPlaceCommitBindGroupLayout: GPUBindGroupLayout | null = null;
+  let lightGlazeInPlaceCommitPipelineLayout: GPUPipelineLayout | null = null;
+  if (engine.lightGlazeInPlaceCommitSupported) {
+    lightGlazeInPlaceCommitBindGroupLayout = engine.device.createBindGroupLayout({
+      label: `High precision glaze in-place commit bind group layout ${format}`,
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.COMPUTE,
+          storageTexture: {
+            access: "read-write",
+            format,
+            viewDimension: "2d",
+          },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.COMPUTE,
+          texture: { sampleType: "float", viewDimension: "2d" },
+        },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: "uniform" },
+        },
+        {
+          binding: 3,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: {
+            type: "uniform",
+            minBindingSize: 16,
+          },
+        },
+      ],
+    });
+    lightGlazeInPlaceCommitPipelineLayout = engine.device.createPipelineLayout({
+      label: `High precision glaze in-place commit pipeline layout ${format}`,
+      bindGroupLayouts: [lightGlazeInPlaceCommitBindGroupLayout],
+    });
+  }
 
   // Premultiplied destination-out. The regular brush shaders keep producing
   // the exact tip/grain coverage; fixed-function blending turns that coverage
@@ -1167,6 +1214,32 @@ export async function recreateLayerResources(
     },
     primitive: { topology: "triangle-list" },
   });
+  let lightGlazeInPlaceCommitPipeline: GPUComputePipeline | null = null;
+  if (
+    lightGlazeInPlaceCommitBindGroupLayout
+    && lightGlazeInPlaceCommitPipelineLayout
+  ) {
+    try {
+      const module = engine.device.createShaderModule({
+        label: `High precision glaze in-place commit WGSL ${format}`,
+        code: lightGlazeInPlaceCommitShader(format),
+      });
+      await assertShaderCompiled(module, `High precision glaze in-place commit ${format}`);
+      lightGlazeInPlaceCommitPipeline = await createComputePipelineAsync(
+        engine.device,
+        {
+          label: `High precision glaze in-place commit ${format}`,
+          layout: lightGlazeInPlaceCommitPipelineLayout,
+          compute: { module, entryPoint: "computeMain" },
+        },
+      );
+    } catch (error) {
+      // Capability probes are conservative but mobile drivers can still reject
+      // a particular format. Keep the existing render/copy resolver available.
+      console.warn("In-place glaze commit is unavailable; using tile fallback.", error);
+      lightGlazeInPlaceCommitBindGroupLayout = null;
+    }
+  }
   const paintMipDownsamplePipeline = engine.device.createRenderPipeline({
     label: `Paint display mip downsample ${format}`,
     layout: paintMipDownsamplePipelineLayout,
@@ -1393,6 +1466,8 @@ export async function recreateLayerResources(
         lightGlazeFinalRasterStackCompositeMipPipeline,
         lightGlazeCompositePipeline,
         lightGlazeCommitTilePipeline,
+        lightGlazeInPlaceCommitBindGroupLayout,
+        lightGlazeInPlaceCommitPipeline,
         paintMipDownsamplePipeline,
         paintStackCompositeMipPipeline,
         activeClippingGroupMipPipeline,
@@ -1656,6 +1731,8 @@ export async function recreateLayerResources(
     lightGlazeFinalRasterStackCompositeMipPipeline;
   engine.lightGlazeCompositePipeline = lightGlazeCompositePipeline;
   engine.lightGlazeCommitTilePipeline = lightGlazeCommitTilePipeline;
+  engine.lightGlazeInPlaceCommitBindGroupLayout = lightGlazeInPlaceCommitBindGroupLayout;
+  engine.lightGlazeInPlaceCommitPipeline = lightGlazeInPlaceCommitPipeline;
   engine.paintMipDownsamplePipeline = paintMipDownsamplePipeline;
   engine.paintStackCompositeMipPipeline = paintStackCompositeMipPipeline;
   engine.activeClippingGroupMipPipeline = activeClippingGroupMipPipeline;
@@ -4859,6 +4936,7 @@ export function bindActiveLayerResources(engine: BrushEngine): void {
   engine.layerTexture = hot.texture;
   engine.layerView = hot.view;
   engine.layerSamplingView = hot.samplingView;
+  engine.layerResourceRevision += 1;
   engine.selectionRenderer?.setSourceSamplingView(hot.samplingView);
   rebuildActiveLayerPyramidBindings(engine);
   rebuildLayerDisplayBindGroups(engine);

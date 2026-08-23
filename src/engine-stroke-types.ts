@@ -54,9 +54,9 @@ export interface ActiveStroke {
   stabilizationUpdate: Readonly<StrokeStabilizationUpdate> | null;
   stabilizationCommittedInput: LayerPoint;
   /**
-   * Mouse/Pencil Quick Line candidates render into a replacement preview
-   * surface. Their stamps are published to the authoritative layer and
-   * history only when the pointer is released.
+   * Once the Quick Line hold gesture has activated, its replacement geometry
+   * renders into a preview surface. Ordinary freehand never uses this path.
+   * Preview stamps become authoritative only when Quick Line is released.
    */
   deferredPreview: boolean;
 }

@@ -1122,6 +1122,7 @@ export function applyShapeMaskResources(
   engine: BrushEngine,
   resources: ShapeMaskResources | null,
 ): void {
+  engine.shapeResourceRevision += 1;
   engine.shapeResourceSet = resources;
   engine.shapeMaskTexture = resources?.texture ?? null;
   engine.shapeMaskView = resources
@@ -1165,6 +1166,7 @@ export function applyGrainTextureResources(
   engine: BrushEngine,
   resources: GrainTextureResources | null,
 ): void {
+  engine.grainResourceRevision += 1;
   engine.grainResourceSet = resources;
   engine.grainTexture = resources?.texture ?? null;
   engine.grainTextureView = resources
@@ -1740,6 +1742,7 @@ export function maybeReleaseIdleShapeResources(engine: BrushEngine): void {
     || engine.historyBusy
     || engine.pendingStamps.length > 0
     || engine.pendingBlendBatches.length > 0
+    || engine.brushGpuWarmupPromise !== null
   ) {
     return;
   }
@@ -1760,6 +1763,7 @@ export function maybeReleaseIdleGrainResources(engine: BrushEngine): void {
     || engine.historyBusy
     || engine.pendingStamps.length > 0
     || engine.pendingBlendBatches.length > 0
+    || engine.brushGpuWarmupPromise !== null
   ) {
     return;
   }
@@ -1776,6 +1780,7 @@ export function maybeReleaseIdleBlendScratch(engine: BrushEngine): void {
     || engine.activeStroke !== null
     || engine.historyBusy
     || engine.pendingBlendBatches.length > 0
+    || engine.brushGpuWarmupPromise !== null
   ) {
     return;
   }

@@ -669,5 +669,6 @@ export async function restoreProjectDocument(
   // Brush settings are document convenience state; custom brush assets remain
   // in the global library and are resolved there.
   engine.setBrushSettings(snapshot.brushSettings);
+  await engine.ensureCurrentBrushResources();
   engine.publishStats();
 }

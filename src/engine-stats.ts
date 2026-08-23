@@ -589,6 +589,23 @@ export interface StrokePerformanceProfile {
   delayedRenderFrames: number;
 }
 
+/**
+ * GPU-only duration of the command groups encoded by the final Light Glaze
+ * submission. Queue wait before this submission is deliberately excluded and
+ * is reported separately by the Human Stroke lab.
+ */
+export interface ReleaseGpuPhaseTiming {
+  supported: true;
+  finalStampAccumulationMs: number;
+  liveMipAndPresentationMs: number;
+  permanentCommitMs: number;
+  canonicalPresentationMs: number;
+  swapchainCopyMs: number;
+  historyCaptureMs: number;
+  timestampMarkerOverheadMs: number;
+  totalReleaseSubmissionMs: number;
+}
+
 export interface SubmitTiming {
   totalCpuMs: number;
   stampPackingMs: number;

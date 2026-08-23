@@ -49,6 +49,16 @@
   opacity: 0.55;
 }
 
+.editor-labs-record-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.editor-labs-record-controls[hidden] {
+  display: none;
+}
+
 .editor-labs-result {
   margin-top: 10px;
   white-space: pre-wrap;

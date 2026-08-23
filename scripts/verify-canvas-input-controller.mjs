@@ -22,8 +22,11 @@ assert.match(controllerSource, /export type CanvasInputEnginePort = Pick</);
 assert.match(controllerSource, /\| "prepareStraightLineAdjustment"/);
 assert.match(controllerSource, /\| "commitStraightLineAdjustment"/);
 assert.match(controllerSource, /\| "cancelStraightLineAdjustment"/);
-assert.match(controllerSource, /\| "beginDeferredStroke"/);
 assert.match(controllerSource, /\| "updateStraightLineAdjustment"/);
+assert.doesNotMatch(controllerSource, /engine\.beginDeferredStroke\(/,
+  "ordinary pointer input must never start on the deferred Quick Line path");
+assert.match(controllerSource, /const beganStroke = engine\.beginStroke\(paintSample\);/,
+  "mouse and Pencil freehand must start authoritatively");
 assert.match(engineSource, /async prepareStraightLineAdjustment\(/);
 assert.match(engineSource, /async commitStraightLineAdjustment\(/);
 assert.match(engineSource, /async cancelStraightLineAdjustment\(/);
@@ -33,11 +36,13 @@ assert.match(engineSource, /prepareDeferredStrokePreviewFrame\(/);
 assert.match(engineSource, /compositionMode: 0 \| 1 \| 2/);
 assert.match(shaderSource, /tail\.compositionMode == 2u/);
 const quickLineEngine = engineSource.slice(
-  engineSource.indexOf("  async prepareStraightLineAdjustment("),
+  engineSource.indexOf("  private async redoStraightLineSourceAction("),
   engineSource.indexOf("  cancelStrokeBeforeRender(): boolean"),
 );
-assert.doesNotMatch(quickLineEngine, /this\.undo\(|this\.redo\(/,
-  "Quick Line must not mutate the history cursor while the pointer is held");
+assert.match(quickLineEngine, /this\.endStroke\([\s\S]*await this\.waitForIdle\(\)[\s\S]*await this\.undo\(\)[\s\S]*this\.beginDeferredStroke\(/,
+  "only an activated Quick Line may pivot completed freehand into a deferred replacement");
+assert.match(quickLineEngine, /cancelStrokeBeforeRender\(\)[\s\S]*redoStraightLineSourceAction/,
+  "canceling Quick Line must discard its temporary stroke and restore freehand");
 assert.match(quickLineEngine, /endingStroke\.deferredPreview = false;[\s\S]*this\.pendingStamps\.push/,
   "the deferred geometry must become authoritative only from endStroke");
 assert.match(engineSource, /this\.activeStroke\?\.deferredPreview[\s\S]*this\.historyGpuStorage\.release\(capturedSlice\);[\s\S]*return;/,
@@ -276,6 +281,7 @@ function createHarness({ holdEnabled = true } = {}) {
   const status = new FakeElement();
   const calls = {
     beginStroke: [],
+    beginDeferredStroke: [],
     extendStroke: [],
     prepareStraightLine: [],
     updateStraightLine: [],
@@ -325,7 +331,7 @@ function createHarness({ holdEnabled = true } = {}) {
       return beginStrokeAllowed;
     },
     beginDeferredStroke(sample) {
-      calls.beginStroke.push(sample);
+      calls.beginDeferredStroke.push(sample);
       return beginStrokeAllowed;
     },
     extendStroke(samples) { calls.extendStroke.push(samples); },
@@ -507,6 +513,9 @@ async function flushMicrotasks() {
     ],
   }));
   assert.equal(harness.calls.extendStroke.length, 1);
+  assert.equal(harness.calls.beginStroke.length, 1);
+  assert.equal(harness.calls.beginDeferredStroke.length, 0,
+    "Quick Line must not allocate its deferred path before the hold fires");
   assert.equal(harness.browser.timers.size, 1);
   harness.browser.runTimers();
   await flushMicrotasks();
@@ -514,7 +523,7 @@ async function flushMicrotasks() {
   assert.ok(harness.calls.updateStraightLine.length >= 1,
     "la preview reale deve essere aggiornata dal renderer WebGPU");
   assert.equal(harness.calls.endStroke.length, 0,
-    "Quick Line non deve chiudere il tratto né creare Undo durante la pressione");
+    "the controller delegates the authoritative-to-deferred pivot to the engine");
   assert.equal(harness.calls.commitStraightLine.length, 0,
     "Quick Line deve restare una preview finché il puntatore è premuto");
   harness.canvas.dispatchEvent(makeEvent("pointermove", {
@@ -751,6 +760,9 @@ async function flushMicrotasks() {
   earlyLift.browser.runTimers();
   await flushMicrotasks();
   assert.equal(earlyLift.calls.prepareStraightLine.length, 0);
+  assert.deepEqual(earlyLift.calls.endStroke, [10],
+    "lifting before the hold must finish the ordinary stroke exactly once");
+  assert.equal(earlyLift.calls.beginDeferredStroke.length, 0);
   earlyLift.controller.dispose();
 
   const blend = createHarness();
@@ -782,6 +794,8 @@ async function flushMicrotasks() {
     pressure: 1,
     timeMs: 11,
   }]);
+  assert.deepEqual(harness.calls.beginDeferredStroke, [],
+    "un rilascio freehand normale non deve mai armare la superficie Quick Line");
   assert.equal(harness.calls.recordingBegin, 1);
 
   const samples = [

@@ -41,6 +41,17 @@ export async function createRenderPipelineAsync(
   return device.createRenderPipeline(descriptor);
 }
 
+/** Uses asynchronous compute compilation when exposed by the browser. */
+export async function createComputePipelineAsync(
+  device: GPUDevice,
+  descriptor: GPUComputePipelineDescriptor,
+): Promise<GPUComputePipeline> {
+  if (typeof device.createComputePipelineAsync === "function") {
+    return device.createComputePipelineAsync(descriptor);
+  }
+  return device.createComputePipeline(descriptor);
+}
+
 export function describeAdapter(adapter: GPUAdapter): string {
   const info = adapter.info;
   const values = [info.vendor, info.architecture, info.device, info.description]

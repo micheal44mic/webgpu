@@ -31,7 +31,6 @@ export type CanvasInputTool =
 export type CanvasInputEnginePort = Pick<
   BrushEngine,
   | "beginRasterLiquifyStroke"
-  | "beginDeferredStroke"
   | "beginStroke"
   | "beginViewRotationGesture"
   | "cancelStraightLineAdjustment"
@@ -63,6 +62,7 @@ export type CanvasInputVectorPort = Pick<
 export type CanvasInputExtensionPort = Pick<
   EditorExtension,
   | "beginPaintRecording"
+  | "beginPaintReleaseRecording"
   | "cancelPaintRecording"
   | "capturePaintRecording"
   | "finishPaintRecording"
@@ -106,6 +106,15 @@ export interface CanvasInputDiagnostics {
   readonly touchPaintIntentCanceledForPointerEnd: number;
   readonly touchPaintIntentMaximumBufferedSamples: number;
   readonly touchPaintIntentLastHoldDurationMs: number;
+  readonly paintPointerUpCount: number;
+  readonly paintPointerUpLastTotalMs: number;
+  readonly paintPointerUpMaxTotalMs: number;
+  readonly paintPointerUpLastPreEngineMs: number;
+  readonly paintPointerUpLastEndStrokeMs: number;
+  readonly paintPointerUpMaxEndStrokeMs: number;
+  readonly paintPointerUpLastExtensionMs: number;
+  readonly paintPointerUpLastUiCleanupMs: number;
+  readonly paintPointerUpLastHistoryControlsMs: number;
 }
 
 export interface CanvasInputControllerOptions {
@@ -225,6 +234,15 @@ export class CanvasInputController {
       canceledForPointerEnd: 0,
       maximumBufferedSamples: 0,
       lastHoldDurationMs: 0,
+      paintPointerUpCount: 0,
+      paintPointerUpLastTotalMs: 0,
+      paintPointerUpMaxTotalMs: 0,
+      paintPointerUpLastPreEngineMs: 0,
+      paintPointerUpLastEndStrokeMs: 0,
+      paintPointerUpMaxEndStrokeMs: 0,
+      paintPointerUpLastExtensionMs: 0,
+      paintPointerUpLastUiCleanupMs: 0,
+      paintPointerUpLastHistoryControlsMs: 0,
     });
   }
 
@@ -260,6 +278,15 @@ function canvasInputDiagnostics(
     readonly canceledForPointerEnd: number;
     readonly maximumBufferedSamples: number;
     readonly lastHoldDurationMs: number;
+    readonly paintPointerUpCount: number;
+    readonly paintPointerUpLastTotalMs: number;
+    readonly paintPointerUpMaxTotalMs: number;
+    readonly paintPointerUpLastPreEngineMs: number;
+    readonly paintPointerUpLastEndStrokeMs: number;
+    readonly paintPointerUpMaxEndStrokeMs: number;
+    readonly paintPointerUpLastExtensionMs: number;
+    readonly paintPointerUpLastUiCleanupMs: number;
+    readonly paintPointerUpLastHistoryControlsMs: number;
   },
 ): CanvasInputDiagnostics {
   return {
@@ -276,6 +303,17 @@ function canvasInputDiagnostics(
     touchPaintIntentCanceledForPointerEnd: counters.canceledForPointerEnd,
     touchPaintIntentMaximumBufferedSamples: counters.maximumBufferedSamples,
     touchPaintIntentLastHoldDurationMs: Number(counters.lastHoldDurationMs.toFixed(3)),
+    paintPointerUpCount: counters.paintPointerUpCount,
+    paintPointerUpLastTotalMs: Number(counters.paintPointerUpLastTotalMs.toFixed(3)),
+    paintPointerUpMaxTotalMs: Number(counters.paintPointerUpMaxTotalMs.toFixed(3)),
+    paintPointerUpLastPreEngineMs: Number(counters.paintPointerUpLastPreEngineMs.toFixed(3)),
+    paintPointerUpLastEndStrokeMs: Number(counters.paintPointerUpLastEndStrokeMs.toFixed(3)),
+    paintPointerUpMaxEndStrokeMs: Number(counters.paintPointerUpMaxEndStrokeMs.toFixed(3)),
+    paintPointerUpLastExtensionMs: Number(counters.paintPointerUpLastExtensionMs.toFixed(3)),
+    paintPointerUpLastUiCleanupMs: Number(counters.paintPointerUpLastUiCleanupMs.toFixed(3)),
+    paintPointerUpLastHistoryControlsMs: Number(
+      counters.paintPointerUpLastHistoryControlsMs.toFixed(3),
+    ),
   };
 }
 
@@ -323,6 +361,15 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     canceledForPointerEnd: 0,
     maximumBufferedSamples: 0,
     lastHoldDurationMs: 0,
+    paintPointerUpCount: 0,
+    paintPointerUpLastTotalMs: 0,
+    paintPointerUpMaxTotalMs: 0,
+    paintPointerUpLastPreEngineMs: 0,
+    paintPointerUpLastEndStrokeMs: 0,
+    paintPointerUpMaxEndStrokeMs: 0,
+    paintPointerUpLastExtensionMs: 0,
+    paintPointerUpLastUiCleanupMs: 0,
+    paintPointerUpLastHistoryControlsMs: 0,
   };
 
   const publishHistoryState = (): void => {
@@ -786,7 +833,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     }
     clearDeferredPenRetry(deferred);
     deferredPenPaint = null;
-    if (!engine.beginDeferredStroke(deferred.initialSample)) {
+    if (!engine.beginStroke(deferred.initialSample)) {
       if (deferred.recordingStarted) {
         options.getEditorExtension()?.cancelPaintRecording?.();
       }
@@ -1048,9 +1095,10 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       const extension = options.getEditorExtension();
       const extensionRecordingStarted = extension?.wantsPaintRecording?.() === true;
       if (extensionRecordingStarted) extension?.beginPaintRecording?.(event, paintSample);
-      const beganStroke = event.pointerType === "touch"
-        ? engine.beginStroke(paintSample)
-        : engine.beginDeferredStroke(paintSample);
+      // Ordinary mouse/Pencil freehand is authoritative immediately, exactly
+      // like touch. Quick Line opens its replaceable deferred surface only if
+      // the endpoint actually survives the hold timer below.
+      const beganStroke = engine.beginStroke(paintSample);
       if (!beganStroke) {
         if (event.pointerType === "pen" && options.isPaintReadinessPending()) {
           startDeferredPenPaint(event.pointerId, paintSample, extensionRecordingStarted);
@@ -1254,6 +1302,10 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       return;
     }
     if (event.pointerId !== activePointerId) return;
+    const measurePaintPointerUp = event.type === "pointerup" && pointerMode === "paint";
+    const paintPointerUpStartedAt = measurePaintPointerUp ? browser.performance.now() : 0;
+    let paintPointerUpEndStrokeMs = 0;
+    let paintPointerUpExtensionMs = 0;
 
     if (deferredPenPaint?.pointerId === event.pointerId) {
       if (event.type === "pointerup") tryResumeDeferredPenPaint();
@@ -1342,15 +1394,28 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       ? { points: lassoClientPoints.slice(), combineMode: lassoCombineMode }
       : null;
 
+    const paintPointerUpEngineStartedAt = measurePaintPointerUp ? browser.performance.now() : 0;
     const completedPointerMode = pointerMode;
     if (pointerMode === "paint") {
-      if (!straightLineOwnsPaintCompletion) engine.endStroke(event.timeStamp);
+      if (!straightLineOwnsPaintCompletion) {
+        options.getEditorExtension()?.beginPaintReleaseRecording?.(event);
+        const endStrokeStartedAt = measurePaintPointerUp ? browser.performance.now() : 0;
+        engine.endStroke(event.timeStamp);
+        if (measurePaintPointerUp) {
+          paintPointerUpEndStrokeMs = browser.performance.now() - endStrokeStartedAt;
+        }
+      }
+      const extensionStartedAt = measurePaintPointerUp ? browser.performance.now() : 0;
       options.getEditorExtension()?.finishPaintRecording?.(event.type === "pointerup");
+      if (measurePaintPointerUp) {
+        paintPointerUpExtensionMs = browser.performance.now() - extensionStartedAt;
+      }
     } else if (pointerMode === "liquify") {
       engine.endRasterLiquifyStroke(event.type === "pointerup");
     } else if (pointerMode === "rotate") {
       engine.endViewRotationGesture();
     }
+    const paintPointerUpCleanupStartedAt = measurePaintPointerUp ? browser.performance.now() : 0;
     if (pointerMode === "rotate" || pointerMode === "pan") {
       options.getVectorController()?.endViewGesture();
     }
@@ -1365,7 +1430,34 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     fillPointerMoved = false;
     selectionPointerMoved = false;
     clearLassoGesture();
+    const paintPointerUpHistoryStartedAt = measurePaintPointerUp ? browser.performance.now() : 0;
     publishHistoryState();
+    if (measurePaintPointerUp) {
+      const completedAt = browser.performance.now();
+      const historyControlsMs = completedAt - paintPointerUpHistoryStartedAt;
+      const totalMs = completedAt - paintPointerUpStartedAt;
+      touchPaintIntentCounters.paintPointerUpCount += 1;
+      touchPaintIntentCounters.paintPointerUpLastTotalMs = totalMs;
+      touchPaintIntentCounters.paintPointerUpMaxTotalMs = Math.max(
+        touchPaintIntentCounters.paintPointerUpMaxTotalMs,
+        totalMs,
+      );
+      touchPaintIntentCounters.paintPointerUpLastPreEngineMs = Math.max(
+        0,
+        paintPointerUpEngineStartedAt - paintPointerUpStartedAt,
+      );
+      touchPaintIntentCounters.paintPointerUpLastEndStrokeMs = paintPointerUpEndStrokeMs;
+      touchPaintIntentCounters.paintPointerUpMaxEndStrokeMs = Math.max(
+        touchPaintIntentCounters.paintPointerUpMaxEndStrokeMs,
+        paintPointerUpEndStrokeMs,
+      );
+      touchPaintIntentCounters.paintPointerUpLastExtensionMs = paintPointerUpExtensionMs;
+      touchPaintIntentCounters.paintPointerUpLastUiCleanupMs = Math.max(
+        0,
+        paintPointerUpHistoryStartedAt - paintPointerUpCleanupStartedAt,
+      );
+      touchPaintIntentCounters.paintPointerUpLastHistoryControlsMs = historyControlsMs;
+    }
 
     if (fillRequest) {
       void engine.fillAtClientPoint(

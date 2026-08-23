@@ -7,8 +7,31 @@ import {
   measureLayerColdCompressionStudy,
   runBenchmark,
 } from "./engine-lab-operations";
-import type { PointerSample } from "../engine-types";
+import type { BrushSettings, PointerSample } from "../engine-types";
 import { HumanStrokeLab } from "./human-stroke-lab";
+
+const HUMAN_RECORDING_PRESET_LABEL =
+  "4K · Custom Shape · Texture · Count 16 · Spacing 1% · Intense Blending";
+
+function humanRecordingPreset(base: BrushSettings): BrushSettings {
+  return {
+    ...base,
+    tool: "paint",
+    shape: "shape",
+    shapeScatter: 1,
+    grainMode: "texturized",
+    grainFiltering: "improved",
+    spacingPercent: 1,
+    stabilization: 0,
+    startThickness: 1,
+    endThickness: 1,
+    count: 16,
+    blendIntensity: 1,
+    blendMode: "intense-blending",
+    positionJitterLateral: 0,
+    positionJitterLinear: 0,
+  };
+}
 
 const LABS = [
   ["stroke-golden", "Golden tratto raster"],
@@ -33,7 +56,7 @@ const LABS = [
   ["vector-zoom-during", "A/B zoom · refresh durante il gesto"],
   ["vector-zoom-release", "A/B zoom · refresh al rilascio"],
   ["vector-zoom-coverage", "Zoom-out vettoriale · copertura C"],
-  ["human-record", "Registra tratto umano canonico"],
+  ["human-record", "Registra · Custom 16 Intense"],
   ["human-replay", "Replay tratto umano canonico"],
   ["human-blend", "Replay Blend su sfondo multicolore"],
   ["human-suite", "Suite tratto umano · 3 rendering"],
@@ -73,6 +96,9 @@ class EditorLabController implements EditorExtension {
   readonly #host: EditorExtensionHost;
   readonly #select: HTMLSelectElement;
   readonly #runButton: HTMLButtonElement;
+  readonly #recordControls: HTMLDivElement;
+  readonly #recordStartButton: HTMLButtonElement;
+  readonly #recordFinishButton: HTMLButtonElement;
   readonly #result: HTMLParagraphElement;
   readonly #report: HTMLPreElement;
   #busy = false;
@@ -92,6 +118,10 @@ class EditorLabController implements EditorExtension {
         <select data-lab-select></select>
       </label>
       <button type="button" data-lab-run disabled>Avvia laboratorio</button>
+      <div class="editor-labs-record-controls" data-human-record-controls hidden>
+        <button type="button" data-human-record-start>Inizia registrazione</button>
+        <button type="button" data-human-record-finish disabled>Termina registrazione</button>
+      </div>
       <p class="editor-labs-result" data-lab-result>Inizializzazione WebGPU…</p>
       <pre class="editor-labs-report" data-lab-report hidden></pre>
     `;
@@ -99,6 +129,15 @@ class EditorLabController implements EditorExtension {
 
     this.#select = panel.querySelector("[data-lab-select]") as HTMLSelectElement;
     this.#runButton = panel.querySelector("[data-lab-run]") as HTMLButtonElement;
+    this.#recordControls = panel.querySelector(
+      "[data-human-record-controls]",
+    ) as HTMLDivElement;
+    this.#recordStartButton = panel.querySelector(
+      "[data-human-record-start]",
+    ) as HTMLButtonElement;
+    this.#recordFinishButton = panel.querySelector(
+      "[data-human-record-finish]",
+    ) as HTMLButtonElement;
     this.#result = panel.querySelector("[data-lab-result]") as HTMLParagraphElement;
     this.#report = panel.querySelector("[data-lab-report]") as HTMLPreElement;
     this.#humanStroke = new HumanStrokeLab(
@@ -117,6 +156,15 @@ class EditorLabController implements EditorExtension {
     this.#runButton.addEventListener("click", () => {
       void this.#runSelected();
     });
+    this.#recordStartButton.addEventListener("click", () => {
+      void this.#startHumanRecording();
+    });
+    this.#recordFinishButton.addEventListener("click", () => {
+      void this.#finishHumanRecording();
+    });
+    this.#select.addEventListener("change", () => {
+      this.#host.refreshControls();
+    });
   }
 
   isBusy(): boolean {
@@ -124,16 +172,33 @@ class EditorLabController implements EditorExtension {
   }
 
   syncControls(editorLocked: boolean): void {
-    this.#select.disabled = this.isBusy();
-    this.#runButton.disabled = this.isBusy() || editorLocked;
+    const busy = this.isBusy();
+    const recordingSelected = this.#select.value === "human-record";
+    const recordingActive = this.#humanStroke.isArmed();
+    this.#recordControls.hidden = !recordingSelected;
+    this.#runButton.hidden = recordingSelected;
+    this.#select.disabled = busy || recordingActive;
+    this.#runButton.disabled = busy || editorLocked || recordingSelected;
+    this.#recordStartButton.disabled = busy || editorLocked || recordingActive;
+    this.#recordFinishButton.disabled = busy
+      || editorLocked
+      || !recordingActive
+      || this.#humanStroke.isCapturingStroke()
+      || !this.#humanStroke.hasCapturedStroke();
   }
 
   async afterEngineInitialized(): Promise<void> {
-    this.#result.textContent = "Pronto. I test distruttivi richiedono una pagina nuova.";
-    this.syncControls(false);
     const requested = new URLSearchParams(window.location.search).get("lab");
+    this.#result.textContent = requested === "human-record"
+      ? `Preset pronto: ${HUMAN_RECORDING_PRESET_LABEL}.`
+      : "Pronto. I test distruttivi richiedono una pagina nuova.";
+    this.syncControls(false);
     if (isLabId(requested) && new URLSearchParams(window.location.search).get("autorun") === "1") {
-      await this.#runSelected();
+      if (requested === "human-record") {
+        await this.#startHumanRecording();
+      } else {
+        await this.#runSelected();
+      }
     }
   }
 
@@ -148,6 +213,7 @@ class EditorLabController implements EditorExtension {
 
   beginPaintRecording(event: PointerEvent, sample: PointerSample): void {
     this.#humanStroke.begin(event, sample);
+    this.#result.textContent = "Registrazione del tratto in corso…";
   }
 
   capturePaintRecording(
@@ -157,20 +223,84 @@ class EditorLabController implements EditorExtension {
     this.#humanStroke.capture(events, samples);
   }
 
+  beginPaintReleaseRecording(event: PointerEvent): void {
+    this.#humanStroke.beginRelease(event);
+  }
+
   finishPaintRecording(commit: boolean): void {
     this.#humanStroke.finish(commit);
+    this.#result.textContent = this.#humanStroke.hasCapturedStroke()
+      ? "Tratto acquisito. Premi Termina registrazione per salvarlo."
+      : "Tratto non acquisito: disegnalo di nuovo.";
   }
 
   cancelPaintRecording(): void {
     this.#humanStroke.cancel();
+    this.#result.textContent = "Tratto annullato: disegnalo di nuovo.";
   }
 
   #showExternalReport(report: unknown): void {
     window.__editorLabReport = report;
     this.#report.textContent = serialize(report);
     this.#report.hidden = false;
-    this.#result.textContent = "Fixture tratto umano aggiornata.";
+    const failed = typeof report === "object"
+      && report !== null
+      && "saved" in report
+      && report.saved === false;
+    const error = failed && "error" in report && typeof report.error === "string"
+      ? report.error
+      : null;
+    this.#result.textContent = error ?? "Fixture tratto umano aggiornata.";
+    this.#result.classList.toggle("error", failed);
     this.#host.refreshControls();
+  }
+
+  async #startHumanRecording(): Promise<void> {
+    if (this.isBusy() || this.#humanStroke.isArmed()) return;
+    this.#busy = true;
+    this.#report.hidden = true;
+    this.#result.classList.remove("error");
+    this.#result.textContent = `Preparazione ${HUMAN_RECORDING_PRESET_LABEL}…`;
+    this.#host.setStatus("Preparazione del pennello di prova…", "working");
+    this.#host.refreshControls();
+    try {
+      const settings = humanRecordingPreset(this.#host.engine.getSettings());
+      this.#host.applyBrushSettings(settings);
+      await this.#host.engine.ensureCurrentBrushResources();
+      const recording = this.#humanStroke.startRecordingSession();
+      window.__editorLabReport = {
+        ...recording,
+        preset: HUMAN_RECORDING_PRESET_LABEL,
+      };
+      this.#result.textContent =
+        `${HUMAN_RECORDING_PRESET_LABEL}. Disegna il tratto, poi premi Termina.`;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.#result.textContent = message;
+      this.#result.classList.add("error");
+      this.#host.setStatus(message, "error");
+    } finally {
+      this.#busy = false;
+      this.#host.refreshStats();
+      this.#host.refreshControls();
+    }
+  }
+
+  async #finishHumanRecording(): Promise<void> {
+    this.#result.classList.remove("error");
+    this.#result.textContent = "Salvataggio registrazione…";
+    try {
+      const report = await this.#humanStroke.finishRecordingSession();
+      if (!report.saved) this.#result.classList.add("error");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.#result.textContent = message;
+      this.#result.classList.add("error");
+      this.#host.setStatus(message, "error");
+    } finally {
+      this.#host.refreshStats();
+      this.#host.refreshControls();
+    }
   }
 
   async #runSelected(): Promise<void> {
@@ -343,7 +473,7 @@ class EditorLabController implements EditorExtension {
         return runVectorZoomLab(engine, controller, this.#host.canvas, kind);
       }
       case "human-record":
-        return this.#humanStroke.arm();
+        return this.#humanStroke.startRecordingSession();
       case "human-replay": {
         const search = new URLSearchParams(window.location.search);
         const requestedBlendMode = search.get("blendMode");

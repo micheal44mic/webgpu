@@ -1,19 +1,33 @@
-import type { BrushEngine } from "../brush-engine";
+import type {
+  BrushEngine,
+  DeferredLiftReplayTelemetry,
+} from "../brush-engine";
 import type {
   BrushSettings,
   LayerPoint,
   PointerSample,
 } from "../engine-types";
-import type { StrokePerformanceProfile } from "../engine-stats";
+import type {
+  ReleaseGpuPhaseTiming,
+  StrokePerformanceProfile,
+} from "../engine-stats";
+import { hasPendingRenderWork, waitForRenderPump } from "../engine-runtime-misc";
 
 const HUMAN_STROKE_API_URL = "/api/human-stroke";
+const HUMAN_STROKE_TIMELINE_API_URL = "/api/stroke-timeline";
 const BENCHMARK_RUNS_API_URL = "/api/benchmark-runs";
 const LOCAL_STORAGE_KEY = "webgpu-brush-engine.human-stroke.v1";
+const TIMELINE_LOCAL_STORAGE_KEY = "webgpu-brush-engine.human-stroke-timeline.v1";
+const TIMELINE_DENSE_RELEASE_WINDOW_MS = 3_000;
+const TIMELINE_IDLE_SAMPLE_INTERVAL_MS = 100;
+const TIMELINE_MAXIMUM_SCAN_COUNT = 10_000;
+const TIMELINE_RELEASE_COMPLETION_TIMEOUT_MS = 3_000;
 
 export const CANONICAL_HUMAN_STROKE_FINGERPRINT = "18982412";
 export const CANONICAL_HUMAN_STROKE_POINT_COUNT = 1_583;
 export const HUMAN_RENDERING_SUITE_REVISION = 4 as const;
-export const HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 64 as const;
+export const HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 67 as const;
+export const HUMAN_STROKE_TIMELINE_TELEMETRY_REVISION = 2 as const;
 
 export interface HumanStrokePoint extends LayerPoint {
   timeMs: number;
@@ -50,6 +64,165 @@ interface PlaybackMetrics {
   pointerPipelineMeasured: false;
   inputToGpuCompletionMs: number;
   endToPresentedMs: number;
+  releasePhases: ReleasePhaseMetrics;
+}
+
+interface ReleaseEngineSnapshot {
+  pendingStamps: number;
+  pendingBlendBatches: number;
+  activeStroke: boolean;
+  activeStrokeHistoryActionId: number | null;
+  activeStrokeDeferredPreview: boolean;
+  deferredPreviewStampCount: number;
+  deferredPreviewPresentedStampCount: number;
+  deferredPreviewBlendMode: BrushSettings["blendMode"] | null;
+  lastDeferredLiftReplay: DeferredLiftReplayTelemetry | null;
+  frameScheduled: boolean;
+  displayDirty: boolean;
+  clearRequested: boolean;
+  lightGlazeEndRequested: boolean;
+  lightGlazeCommitRequested: boolean;
+  lightGlazeHasContent: boolean;
+  lightGlazeNeedsClear: boolean;
+  lightGlazeMipValidThroughLevel: number;
+  historyActionCount: number;
+  historyCursor: number;
+  historyBatchCount: number;
+  historyStoredBaseStamps: number;
+  historyPublicationCount: number;
+  historyPublicationTotalMs: number;
+  historyRecordCpuCount: number;
+  historyRecordCpuTotalMs: number;
+  historyGpuCaptureCpuCount: number;
+  historyGpuCaptureCpuTotalMs: number;
+}
+
+interface ReleaseHistoryDelta {
+  actionCount: number;
+  cursor: number;
+  batchCount: number;
+  storedBaseStamps: number;
+  publicationCount: number;
+  publicationMs: number;
+  recordCpuCount: number;
+  recordCpuMs: number;
+  gpuCaptureCpuCount: number;
+  gpuCaptureCpuMs: number;
+}
+
+interface ReleaseRenderPumpCycle {
+  cycle: number;
+  waitAndRenderMs: number;
+  before: ReleaseEngineSnapshot;
+  after: ReleaseEngineSnapshot;
+}
+
+interface ReleasePhaseMetrics {
+  endStrokeCpuMs: number;
+  renderPumpMs: number;
+  preEndStrokeGpuBacklogMs: number;
+  postBacklogToGpuIdleMs: number;
+  gpuDrainMs: number;
+  gpuCommandPhases: ReleaseGpuPhaseTiming | null;
+  /** Queue-fence wall time minus timestamped final work; approximate and signed. */
+  gpuCommandResidualApproxMs: number | null;
+  presentationWaitMs: number;
+  releaseToGpuIdleMs: number;
+  releaseToPresentedMs: number;
+  beforeEndStroke: ReleaseEngineSnapshot;
+  afterEndStroke: ReleaseEngineSnapshot;
+  afterRenderPump: ReleaseEngineSnapshot;
+  afterGpuIdle: ReleaseEngineSnapshot;
+  renderPumpCycles: ReleaseRenderPumpCycle[];
+  historyDuringEndStroke: ReleaseHistoryDelta;
+  historyDuringRenderPump: ReleaseHistoryDelta;
+  historyTotal: ReleaseHistoryDelta;
+}
+
+type HumanStrokeTimelinePhase = "armed" | "drawing" | "released";
+
+interface HumanStrokeTimelineEvent {
+  sequence: number;
+  atMs: number;
+  name: string;
+  attempt: number;
+  detail?: Record<string, unknown>;
+  engine?: ReleaseEngineSnapshot;
+}
+
+interface HumanStrokeTimelineScan {
+  sequence: number;
+  atMs: number;
+  frameGapMs: number;
+  phase: HumanStrokeTimelinePhase;
+  probeCostMs: number;
+  engine: ReleaseEngineSnapshot;
+}
+
+interface HumanStrokeTimelineLongTask {
+  atMs: number;
+  durationMs: number;
+  name: string;
+}
+
+interface HumanStrokeManualReleaseDiagnostics {
+  attempt: number;
+  releaseStartedAtMs: number;
+  endStrokeReturnedAtMs: number | null;
+  endStrokeCpuMs: number | null;
+  preEndStrokeGpuBacklogCompletedAtMs: number | null;
+  preEndStrokeGpuBacklogMs: number | null;
+  renderPumpDrainedAtMs: number | null;
+  gpuQueueIdleAtMs: number | null;
+  presentedAtMs: number | null;
+  beforeEndStroke: ReleaseEngineSnapshot;
+  afterEndStroke: ReleaseEngineSnapshot | null;
+  deferredPreviewReplayAtLift: DeferredLiftReplayTelemetry | null;
+  afterRenderPump: ReleaseEngineSnapshot | null;
+  afterGpuIdle: ReleaseEngineSnapshot | null;
+  gpuCommandPhases: ReleaseGpuPhaseTiming | null;
+  performance: StrokePerformanceProfile | null;
+}
+
+interface HumanStrokeTimelineSession {
+  startedAt: string;
+  startedAtPerformanceMs: number;
+  closedAt: string | null;
+  closedAtPerformanceMs: number | null;
+  phase: HumanStrokeTimelinePhase;
+  attempt: number;
+  lastAnimationFrameAtMs: number;
+  lastStoredScanAtMs: number;
+  releaseAtPerformanceMs: number | null;
+  settingsAtStart: BrushSettings;
+  events: HumanStrokeTimelineEvent[];
+  scans: HumanStrokeTimelineScan[];
+  longTasks: HumanStrokeTimelineLongTask[];
+}
+
+export interface HumanStrokeTimelineReport {
+  version: 1;
+  telemetryRevision: typeof HUMAN_STROKE_TIMELINE_TELEMETRY_REVISION;
+  startedAt: string;
+  endedAt: string;
+  durationMs: number;
+  clock: "performance.now";
+  sampling: {
+    denseReleaseWindowMs: typeof TIMELINE_DENSE_RELEASE_WINDOW_MS;
+    idleIntervalMs: typeof TIMELINE_IDLE_SAMPLE_INTERVAL_MS;
+    maximumScanCount: typeof TIMELINE_MAXIMUM_SCAN_COUNT;
+  };
+  fixture: HumanStrokeFixture & {
+    fingerprint: string;
+    pointCount: number;
+    traceDurationMs: number;
+  };
+  events: HumanStrokeTimelineEvent[];
+  scans: HumanStrokeTimelineScan[];
+  longTasks: HumanStrokeTimelineLongTask[];
+  release: HumanStrokeManualReleaseDiagnostics | null;
+  inputDiagnostics: Readonly<Record<string, unknown>>;
+  environment: Record<string, unknown>;
 }
 
 export interface HumanStrokeBenchmarkRun {
@@ -152,6 +325,72 @@ function percentile(values: readonly number[], ratio: number): number {
 
 function nextAnimationFrame(): Promise<number> {
   return new Promise((resolve) => requestAnimationFrame(resolve));
+}
+
+function captureReleaseEngineSnapshot(engine: BrushEngine): ReleaseEngineSnapshot {
+  const history = engine.getHistoryState();
+  return {
+    pendingStamps: engine.pendingStamps.length,
+    pendingBlendBatches: engine.pendingBlendBatches.length,
+    activeStroke: engine.activeStroke !== null,
+    activeStrokeHistoryActionId: engine.activeStroke?.historyActionId ?? null,
+    activeStrokeDeferredPreview: engine.activeStroke?.deferredPreview ?? false,
+    deferredPreviewStampCount: engine.deferredStrokePreview?.stamps.length ?? 0,
+    deferredPreviewPresentedStampCount:
+      engine.deferredStrokePreview?.presentedStampCount ?? 0,
+    deferredPreviewBlendMode:
+      engine.deferredStrokePreview?.settings.blendMode ?? null,
+    lastDeferredLiftReplay: engine.lastDeferredLiftReplay
+      ? { ...engine.lastDeferredLiftReplay }
+      : null,
+    frameScheduled: engine.frameRequest !== null,
+    displayDirty: engine.displayDirty,
+    clearRequested: engine.clearRequested,
+    lightGlazeEndRequested: engine.lightGlazeSession?.endRequested ?? false,
+    lightGlazeCommitRequested: engine.lightGlazeSession?.commitRequested ?? false,
+    lightGlazeHasContent: engine.lightGlazeSession?.hasContent ?? false,
+    lightGlazeNeedsClear: engine.lightGlazeSession?.needsClear ?? false,
+    lightGlazeMipValidThroughLevel:
+      engine.lightGlazeSession?.mipValidThroughLevel ?? -1,
+    historyActionCount: history.actionCount,
+    historyCursor: history.cursor,
+    historyBatchCount: engine.historyBatches.length,
+    historyStoredBaseStamps: history.storedBaseStamps,
+    historyPublicationCount: engine.historyPublicationCount,
+    historyPublicationTotalMs: engine.historyPublicationTotalMs,
+    historyRecordCpuCount: engine.historyRecordCpuCount,
+    historyRecordCpuTotalMs: engine.historyRecordCpuTotalMs,
+    historyGpuCaptureCpuCount: engine.historyGpuCaptureCpuCount,
+    historyGpuCaptureCpuTotalMs: engine.historyGpuCaptureCpuTotalMs,
+  };
+}
+
+function releaseHistoryDelta(
+  before: ReleaseEngineSnapshot,
+  after: ReleaseEngineSnapshot,
+): ReleaseHistoryDelta {
+  return {
+    actionCount: after.historyActionCount - before.historyActionCount,
+    cursor: after.historyCursor - before.historyCursor,
+    batchCount: after.historyBatchCount - before.historyBatchCount,
+    storedBaseStamps: after.historyStoredBaseStamps - before.historyStoredBaseStamps,
+    publicationCount: after.historyPublicationCount - before.historyPublicationCount,
+    publicationMs: Math.max(
+      0,
+      after.historyPublicationTotalMs - before.historyPublicationTotalMs,
+    ),
+    recordCpuCount: after.historyRecordCpuCount - before.historyRecordCpuCount,
+    recordCpuMs: Math.max(
+      0,
+      after.historyRecordCpuTotalMs - before.historyRecordCpuTotalMs,
+    ),
+    gpuCaptureCpuCount:
+      after.historyGpuCaptureCpuCount - before.historyGpuCaptureCpuCount,
+    gpuCaptureCpuMs: Math.max(
+      0,
+      after.historyGpuCaptureCpuTotalMs - before.historyGpuCaptureCpuTotalMs,
+    ),
+  };
 }
 
 export function fingerprintHumanStroke(points: readonly HumanStrokePoint[]): string {
@@ -304,6 +543,30 @@ export async function saveCanonicalHumanStroke(
   return fixture;
 }
 
+async function saveHumanStrokeTimeline(
+  report: HumanStrokeTimelineReport,
+): Promise<void> {
+  const serialized = JSON.stringify(report);
+  try {
+    localStorage.setItem(TIMELINE_LOCAL_STORAGE_KEY, serialized);
+  } catch {
+    // The local JSON endpoint remains authoritative when the report exceeds
+    // the browser storage quota.
+  }
+  try {
+    const response = await fetch(HUMAN_STROKE_TIMELINE_API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: serialized,
+    });
+    if (!response.ok && response.status !== 404) {
+      throw new Error(`Salvataggio timeline HTTP ${response.status}.`);
+    }
+  } catch (error) {
+    if (!import.meta.env.DEV) throw error;
+  }
+}
+
 async function saveBenchmarkRun(run: HumanStrokeBenchmarkRun): Promise<number> {
   if (import.meta.env.DEV) return 0;
   const response = await fetch(BENCHMARK_RUNS_API_URL, {
@@ -327,8 +590,16 @@ export class HumanStrokeLab {
   readonly #onStateChange: () => void;
   #armed = false;
   #recording: Recording | null = null;
+  #pendingFixture: HumanStrokeFixture | null = null;
   #busy = false;
   #replayFrame: number | null = null;
+  #timelineSession: HumanStrokeTimelineSession | null = null;
+  #timelineFrame: number | null = null;
+  #timelineLongTaskObserver: PerformanceObserver | null = null;
+  #manualRelease: HumanStrokeManualReleaseDiagnostics | null = null;
+  #manualReleaseGeneration = 0;
+  #manualReleaseCompletion: Promise<void> | null = null;
+  #manualPerformanceProfileActive = false;
 
   constructor(
     engine: BrushEngine,
@@ -354,32 +625,63 @@ export class HumanStrokeLab {
     return this.#armed;
   }
 
-  arm(): { armed: true; settings: BrushSettings } {
-    if (this.#busy || this.#recording) {
+  hasCapturedStroke(): boolean {
+    return this.#pendingFixture !== null;
+  }
+
+  isCapturingStroke(): boolean {
+    return this.#recording !== null;
+  }
+
+  startRecordingSession(): { recording: true; settings: BrushSettings } {
+    if (this.#busy || this.#recording || this.#armed) {
       throw new Error("Il laboratorio tratto umano è già occupato.");
     }
-    const settings = canonicalSettings(this.#engine.getSettings());
-    this.#applySettings(settings);
+    const settings = this.#engine.getSettings();
+    this.#pendingFixture = null;
+    this.#startManualTimeline(settings);
     this.#armed = true;
     this.#onStateChange();
-    this.#onStatus("Preset canonico applicato: disegna una sola pennellata.", "working");
-    return { armed: true, settings };
+    this.#onStatus(
+      "Registrazione attiva: disegna il tratto, poi premi Termina registrazione.",
+      "working",
+    );
+    return { recording: true, settings };
   }
 
   cancel(): void {
-    this.#armed = false;
     this.#recording = null;
+    this.#appendManualTimelineEvent("stroke-canceled", {}, true);
+    if (this.#timelineSession) this.#timelineSession.phase = "armed";
+    this.#manualReleaseGeneration += 1;
+    this.#manualReleaseCompletion = null;
+    this.#manualRelease = null;
+    if (this.#manualPerformanceProfileActive) {
+      this.#engine.finishStrokePerformanceProfile();
+      this.#manualPerformanceProfileActive = false;
+    }
     this.#onStateChange();
+    if (this.#armed) {
+      this.#onStatus("Tratto annullato: puoi disegnarlo di nuovo.", "working");
+    }
   }
 
   begin(event: PointerEvent, sample: PointerSample): void {
     if (!this.#armed || this.#busy) return;
+    if (this.#manualPerformanceProfileActive) {
+      this.#engine.finishStrokePerformanceProfile();
+    }
+    this.#engine.startStrokePerformanceProfile();
+    this.#manualPerformanceProfileActive = true;
+    this.#beginManualTimelineAttempt(event);
     const point = this.#engine.toLayerPoint(sample);
+    this.#pendingFixture = null;
     this.#recording = {
       settings: this.#engine.getSettings(),
       startTimestamp: event.timeStamp,
       points: [{ ...point, timeMs: 0 }],
     };
+    this.#onStateChange();
     this.#onStatus("Registrazione tratto umano in corso…", "working");
   }
 
@@ -394,48 +696,478 @@ export class HumanStrokeLab {
         timeMs: Math.max(0, event.timeStamp - recording.startTimestamp),
       });
     }
+    if (events.length > 0) {
+      this.#appendManualTimelineEvent("input-batch", {
+        sampleCount: samples.length,
+        accumulatedPointCount: recording.points.length,
+        firstPointerTimestamp: events[0]?.timeStamp ?? null,
+        lastPointerTimestamp: events.at(-1)?.timeStamp ?? null,
+      });
+    }
+  }
+
+  beginRelease(event: PointerEvent): void {
+    if (!this.#recording || !this.#armed || this.#busy) return;
+    this.#beginManualRelease(event);
   }
 
   finish(commit: boolean): void {
     const recording = this.#recording;
     this.#recording = null;
-    this.#armed = false;
     if (!commit || !recording || recording.points.length < 2) {
+      this.#finishManualRelease(false, recording?.points.length ?? 0);
       this.#onStateChange();
-      this.#onStatus("Registrazione tratto annullata o troppo breve.", "error");
+      this.#onStatus(
+        "Tratto annullato o troppo breve: disegnalo di nuovo.",
+        "error",
+      );
       return;
     }
-    this.#busy = true;
-    this.#onStateChange();
-    const fixture: HumanStrokeFixture = {
+    this.#finishManualRelease(true, recording.points.length);
+    this.#pendingFixture = {
       version: 1,
       capturedAt: new Date().toISOString(),
       settings: recording.settings,
       points: recording.points,
     };
-    void (async () => {
-      let report: unknown;
-      let status: { message: string; kind: "ok" | "error" };
-      try {
-        const saved = await saveCanonicalHumanStroke(fixture);
-        report = {
-          saved: true,
-          pointCount: saved.points.length,
-          fingerprint: fingerprintHumanStroke(saved.points),
-          capturedAt: saved.capturedAt,
-        };
-        status = { message: "Fixture tratto umano salvata.", kind: "ok" };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        report = { saved: false, error: message };
-        status = { message, kind: "error" };
-      } finally {
-        this.#busy = false;
-        this.#onStateChange();
-      }
+    this.#onStateChange();
+    this.#onStatus(
+      `Tratto acquisito (${recording.points.length} punti). Premi Termina registrazione per salvarlo.`,
+      "working",
+    );
+  }
+
+  async finishRecordingSession(): Promise<{
+    saved: boolean;
+    pointCount?: number;
+    fingerprint?: string;
+    capturedAt?: string;
+    timelineSaved?: boolean;
+    timelinePath?: string;
+    timelineDurationMs?: number;
+    timelineScanCount?: number;
+    timelineEventCount?: number;
+    error?: string;
+  }> {
+    if (this.#busy) {
+      throw new Error("Il laboratorio tratto umano è già occupato.");
+    }
+    if (!this.#armed) {
+      throw new Error("Premi prima Inizia registrazione.");
+    }
+    if (this.#recording) {
+      throw new Error("Rilascia prima il tratto, poi termina la registrazione.");
+    }
+    const fixture = this.#pendingFixture;
+    if (!fixture) {
+      throw new Error("Disegna un tratto prima di terminare la registrazione.");
+    }
+
+    this.#armed = false;
+    this.#pendingFixture = null;
+    this.#busy = true;
+    this.#onStateChange();
+    this.#onStatus("Salvataggio del tratto acquisito…", "working");
+    try {
+      const timeline = await this.#finalizeManualTimeline(fixture);
+      const saved = await saveCanonicalHumanStroke(fixture);
+      await saveHumanStrokeTimeline(timeline);
+      const report = {
+        saved: true,
+        pointCount: saved.points.length,
+        fingerprint: fingerprintHumanStroke(saved.points),
+        capturedAt: saved.capturedAt,
+        timelineSaved: true,
+        timelinePath: ".tmp-human-stroke-timeline.json",
+        timelineDurationMs: timeline.durationMs,
+        timelineScanCount: timeline.scans.length,
+        timelineEventCount: timeline.events.length,
+      };
       this.#onReport(report);
-      this.#onStatus(status.message, status.kind);
-    })();
+      this.#onStatus("Fixture tratto umano salvata.", "ok");
+      return report;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const report = { saved: false, error: message };
+      this.#onReport(report);
+      this.#onStatus(message, "error");
+      return report;
+    } finally {
+      this.#busy = false;
+      this.#onStateChange();
+    }
+  }
+
+  #discardManualTimeline(): void {
+    if (this.#timelineFrame !== null) {
+      cancelAnimationFrame(this.#timelineFrame);
+      this.#timelineFrame = null;
+    }
+    this.#timelineLongTaskObserver?.disconnect();
+    this.#timelineLongTaskObserver = null;
+    this.#manualReleaseGeneration += 1;
+    this.#manualReleaseCompletion = null;
+    this.#manualRelease = null;
+    if (this.#manualPerformanceProfileActive) {
+      this.#engine.finishStrokePerformanceProfile();
+      this.#manualPerformanceProfileActive = false;
+    }
+    this.#timelineSession = null;
+  }
+
+  #startManualTimeline(settings: BrushSettings): void {
+    this.#discardManualTimeline();
+    const startedAtPerformanceMs = performance.now();
+    const session: HumanStrokeTimelineSession = {
+      startedAt: new Date().toISOString(),
+      startedAtPerformanceMs,
+      closedAt: null,
+      closedAtPerformanceMs: null,
+      phase: "armed",
+      attempt: 0,
+      lastAnimationFrameAtMs: startedAtPerformanceMs,
+      lastStoredScanAtMs: Number.NEGATIVE_INFINITY,
+      releaseAtPerformanceMs: null,
+      settingsAtStart: { ...settings },
+      events: [],
+      scans: [],
+      longTasks: [],
+    };
+    this.#timelineSession = session;
+    this.#appendManualTimelineEvent("session-start", {
+      performanceTimeOrigin: performance.timeOrigin,
+    }, true, startedAtPerformanceMs);
+
+    if (
+      typeof PerformanceObserver !== "undefined"
+      && PerformanceObserver.supportedEntryTypes.includes("longtask")
+    ) {
+      try {
+        this.#timelineLongTaskObserver = new PerformanceObserver((list) => {
+          if (this.#timelineSession !== session || session.closedAtPerformanceMs !== null) return;
+          for (const entry of list.getEntries()) {
+            const atMs = entry.startTime - session.startedAtPerformanceMs;
+            if (atMs < 0) continue;
+            session.longTasks.push({
+              atMs,
+              durationMs: entry.duration,
+              name: entry.name,
+            });
+          }
+        });
+        this.#timelineLongTaskObserver.observe({ type: "longtask", buffered: false });
+      } catch {
+        this.#timelineLongTaskObserver = null;
+      }
+    }
+    this.#timelineFrame = requestAnimationFrame((timestamp) => {
+      this.#scanManualTimeline(timestamp);
+    });
+  }
+
+  #scanManualTimeline(frameTimestamp: number): void {
+    const session = this.#timelineSession;
+    if (!session || session.closedAtPerformanceMs !== null) {
+      this.#timelineFrame = null;
+      return;
+    }
+    const frameGapMs = Math.max(0, frameTimestamp - session.lastAnimationFrameAtMs);
+    session.lastAnimationFrameAtMs = frameTimestamp;
+    const releaseAgeMs = session.releaseAtPerformanceMs === null
+      ? Number.POSITIVE_INFINITY
+      : frameTimestamp - session.releaseAtPerformanceMs;
+    // Full engine snapshots stay sparse while drawing so the probe does not
+    // manufacture the very lag it is intended to measure. Only the release
+    // window is sampled every presented frame.
+    const dense = session.phase === "released"
+      && releaseAgeMs <= TIMELINE_DENSE_RELEASE_WINDOW_MS;
+    const intervalMs = dense ? 0 : TIMELINE_IDLE_SAMPLE_INTERVAL_MS;
+    const maximumReached = session.scans.length >= TIMELINE_MAXIMUM_SCAN_COUNT;
+    const shouldStore = !maximumReached
+      && (
+        intervalMs === 0
+        || frameTimestamp - session.lastStoredScanAtMs >= intervalMs
+        || frameGapMs >= 34
+      );
+    if (shouldStore) {
+      const probeStartedAt = performance.now();
+      const engine = captureReleaseEngineSnapshot(this.#engine);
+      const probeCostMs = performance.now() - probeStartedAt;
+      session.scans.push({
+        sequence: session.scans.length + 1,
+        atMs: Math.max(0, frameTimestamp - session.startedAtPerformanceMs),
+        frameGapMs,
+        phase: session.phase,
+        probeCostMs,
+        engine,
+      });
+      session.lastStoredScanAtMs = frameTimestamp;
+    }
+    this.#timelineFrame = requestAnimationFrame((timestamp) => {
+      this.#scanManualTimeline(timestamp);
+    });
+  }
+
+  #appendManualTimelineEvent(
+    name: string,
+    detail: Record<string, unknown> = {},
+    includeEngine = false,
+    atPerformanceMs = performance.now(),
+  ): void {
+    const session = this.#timelineSession;
+    if (!session) return;
+    if (
+      session.closedAtPerformanceMs !== null
+      && atPerformanceMs > session.closedAtPerformanceMs
+    ) {
+      return;
+    }
+    session.events.push({
+      sequence: session.events.length + 1,
+      atMs: Math.max(0, atPerformanceMs - session.startedAtPerformanceMs),
+      name,
+      attempt: session.attempt,
+      ...(Object.keys(detail).length > 0 ? { detail } : {}),
+      ...(includeEngine ? { engine: captureReleaseEngineSnapshot(this.#engine) } : {}),
+    });
+  }
+
+  #beginManualTimelineAttempt(event: PointerEvent): void {
+    const session = this.#timelineSession;
+    if (!session) return;
+    session.attempt += 1;
+    session.phase = "drawing";
+    session.releaseAtPerformanceMs = null;
+    this.#manualReleaseGeneration += 1;
+    this.#manualReleaseCompletion = null;
+    this.#manualRelease = null;
+    this.#appendManualTimelineEvent("pointer-down", {
+      pointerId: event.pointerId,
+      pointerType: event.pointerType,
+      pointerTimestamp: event.timeStamp,
+      pressure: event.pressure,
+    }, true);
+  }
+
+  #beginManualRelease(event: PointerEvent): void {
+    const session = this.#timelineSession;
+    if (!session) return;
+    const releaseStartedAt = performance.now();
+    session.phase = "released";
+    session.releaseAtPerformanceMs = releaseStartedAt;
+    const generation = ++this.#manualReleaseGeneration;
+    const beforeEndStroke = captureReleaseEngineSnapshot(this.#engine);
+    const release: HumanStrokeManualReleaseDiagnostics = {
+      attempt: session.attempt,
+      releaseStartedAtMs: releaseStartedAt - session.startedAtPerformanceMs,
+      endStrokeReturnedAtMs: null,
+      endStrokeCpuMs: null,
+      preEndStrokeGpuBacklogCompletedAtMs: null,
+      preEndStrokeGpuBacklogMs: null,
+      renderPumpDrainedAtMs: null,
+      gpuQueueIdleAtMs: null,
+      presentedAtMs: null,
+      beforeEndStroke,
+      afterEndStroke: null,
+      deferredPreviewReplayAtLift: null,
+      afterRenderPump: null,
+      afterGpuIdle: null,
+      gpuCommandPhases: null,
+      performance: null,
+    };
+    this.#manualRelease = release;
+    this.#appendManualTimelineEvent("release-start-before-endStroke", {
+      pointerTimestamp: event.timeStamp,
+      pendingWork: hasPendingRenderWork(this.#engine),
+    }, true, releaseStartedAt);
+    void this.#engine.device.queue.onSubmittedWorkDone().then(() => {
+      if (generation !== this.#manualReleaseGeneration || this.#manualRelease !== release) return;
+      const completedAt = performance.now();
+      release.preEndStrokeGpuBacklogCompletedAtMs =
+        completedAt - session.startedAtPerformanceMs;
+      release.preEndStrokeGpuBacklogMs = completedAt - releaseStartedAt;
+      this.#appendManualTimelineEvent("pre-release-gpu-backlog-drained", {
+        durationMs: release.preEndStrokeGpuBacklogMs,
+      }, true, completedAt);
+    });
+  }
+
+  #finishManualRelease(commit: boolean, pointCount: number): void {
+    const session = this.#timelineSession;
+    const release = this.#manualRelease;
+    const returnedAt = performance.now();
+    if (!session || !release) {
+      if (!commit && this.#manualPerformanceProfileActive) {
+        this.#engine.finishStrokePerformanceProfile();
+        this.#manualPerformanceProfileActive = false;
+      }
+      return;
+    }
+    release.endStrokeReturnedAtMs = returnedAt - session.startedAtPerformanceMs;
+    release.endStrokeCpuMs = release.endStrokeReturnedAtMs - release.releaseStartedAtMs;
+    release.afterEndStroke = captureReleaseEngineSnapshot(this.#engine);
+    release.deferredPreviewReplayAtLift =
+      release.afterEndStroke.lastDeferredLiftReplay;
+    this.#appendManualTimelineEvent(
+      commit ? "endStroke-returned" : "release-canceled",
+      {
+        commit,
+        pointCount,
+        endStrokeCpuMs: release.endStrokeCpuMs,
+        pendingWork: hasPendingRenderWork(this.#engine),
+        deferredPreviewReplayAtLift: release.deferredPreviewReplayAtLift,
+      },
+      true,
+      returnedAt,
+    );
+    if (!commit) {
+      session.phase = "armed";
+      if (this.#manualPerformanceProfileActive) {
+        release.performance = this.#engine.finishStrokePerformanceProfile();
+        this.#manualPerformanceProfileActive = false;
+      }
+      return;
+    }
+    const generation = this.#manualReleaseGeneration;
+    this.#manualReleaseCompletion = this.#observeManualReleaseCompletion(
+      generation,
+      session,
+      release,
+    );
+  }
+
+  async #observeManualReleaseCompletion(
+    generation: number,
+    session: HumanStrokeTimelineSession,
+    release: HumanStrokeManualReleaseDiagnostics,
+  ): Promise<void> {
+    while (
+      generation === this.#manualReleaseGeneration
+      && hasPendingRenderWork(this.#engine)
+    ) {
+      await nextAnimationFrame();
+    }
+    if (generation !== this.#manualReleaseGeneration || this.#manualRelease !== release) return;
+    const renderPumpDrainedAt = performance.now();
+    release.renderPumpDrainedAtMs = renderPumpDrainedAt - session.startedAtPerformanceMs;
+    release.afterRenderPump = captureReleaseEngineSnapshot(this.#engine);
+    this.#appendManualTimelineEvent("render-pump-drained", {
+      fromReleaseMs: release.renderPumpDrainedAtMs - release.releaseStartedAtMs,
+    }, true, renderPumpDrainedAt);
+
+    await this.#engine.device.queue.onSubmittedWorkDone();
+    if (generation !== this.#manualReleaseGeneration || this.#manualRelease !== release) return;
+    const gpuIdleAt = performance.now();
+    release.gpuQueueIdleAtMs = gpuIdleAt - session.startedAtPerformanceMs;
+    release.afterGpuIdle = captureReleaseEngineSnapshot(this.#engine);
+    this.#appendManualTimelineEvent("gpu-queue-idle", {
+      fromReleaseMs: release.gpuQueueIdleAtMs - release.releaseStartedAtMs,
+    }, true, gpuIdleAt);
+
+    await nextAnimationFrame();
+    if (generation !== this.#manualReleaseGeneration || this.#manualRelease !== release) return;
+    const presentedAt = performance.now();
+    release.presentedAtMs = presentedAt - session.startedAtPerformanceMs;
+    release.gpuCommandPhases = await this.#engine.waitForReleaseGpuTiming();
+    if (generation !== this.#manualReleaseGeneration || this.#manualRelease !== release) return;
+    if (this.#manualPerformanceProfileActive) {
+      release.performance = this.#engine.finishStrokePerformanceProfile();
+      this.#manualPerformanceProfileActive = false;
+    }
+    this.#appendManualTimelineEvent("release-presented-and-profile-ready", {
+      fromReleaseMs: release.presentedAtMs - release.releaseStartedAtMs,
+      gpuTimestampPhasesAvailable: release.gpuCommandPhases !== null,
+      performanceProfileAvailable: release.performance !== null,
+    }, true, presentedAt);
+  }
+
+  async #finalizeManualTimeline(
+    fixture: HumanStrokeFixture,
+  ): Promise<HumanStrokeTimelineReport> {
+    const session = this.#timelineSession;
+    if (!session) {
+      throw new Error("La timeline manuale non è stata inizializzata.");
+    }
+    const finishClickedAt = performance.now();
+    this.#appendManualTimelineEvent("finish-button-click", {
+      releaseCompletionPending: this.#manualReleaseCompletion !== null,
+    }, true, finishClickedAt);
+    session.closedAtPerformanceMs = finishClickedAt;
+    session.closedAt = new Date().toISOString();
+    if (this.#timelineFrame !== null) {
+      cancelAnimationFrame(this.#timelineFrame);
+      this.#timelineFrame = null;
+    }
+    for (const entry of this.#timelineLongTaskObserver?.takeRecords() ?? []) {
+      const atMs = entry.startTime - session.startedAtPerformanceMs;
+      if (atMs < 0 || entry.startTime > finishClickedAt) continue;
+      session.longTasks.push({
+        atMs,
+        durationMs: entry.duration,
+        name: entry.name,
+      });
+    }
+    this.#timelineLongTaskObserver?.disconnect();
+    this.#timelineLongTaskObserver = null;
+
+    const completion = this.#manualReleaseCompletion;
+    if (completion) {
+      await Promise.race([
+        completion,
+        new Promise<void>((resolve) => {
+          window.setTimeout(resolve, TIMELINE_RELEASE_COMPLETION_TIMEOUT_MS);
+        }),
+      ]);
+    }
+    if (this.#manualPerformanceProfileActive) {
+      const performanceProfile = this.#engine.finishStrokePerformanceProfile();
+      if (this.#manualRelease && !this.#manualRelease.performance) {
+        this.#manualRelease.performance = performanceProfile;
+      }
+      this.#manualPerformanceProfileActive = false;
+    }
+
+    const navigatorWithMemory = navigator as Navigator & { deviceMemory?: number };
+    const report: HumanStrokeTimelineReport = {
+      version: 1,
+      telemetryRevision: HUMAN_STROKE_TIMELINE_TELEMETRY_REVISION,
+      startedAt: session.startedAt,
+      endedAt: session.closedAt,
+      durationMs: finishClickedAt - session.startedAtPerformanceMs,
+      clock: "performance.now",
+      sampling: {
+        denseReleaseWindowMs: TIMELINE_DENSE_RELEASE_WINDOW_MS,
+        idleIntervalMs: TIMELINE_IDLE_SAMPLE_INTERVAL_MS,
+        maximumScanCount: TIMELINE_MAXIMUM_SCAN_COUNT,
+      },
+      fixture: {
+        ...fixture,
+        fingerprint: fingerprintHumanStroke(fixture.points),
+        pointCount: fixture.points.length,
+        traceDurationMs: fixture.points.at(-1)?.timeMs ?? 0,
+      },
+      events: session.events,
+      scans: session.scans,
+      longTasks: session.longTasks,
+      release: this.#manualRelease,
+      inputDiagnostics: this.#collectInputDiagnostics(),
+      environment: {
+        ...this.#engine.getBenchmarkEnvironment(),
+        userAgent: navigator.userAgent,
+        platform: navigator.platform,
+        hardwareConcurrency: navigator.hardwareConcurrency || null,
+        deviceMemoryGiB: navigatorWithMemory.deviceMemory ?? null,
+        devicePixelRatio: window.devicePixelRatio || 1,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+        performanceTimeOrigin: performance.timeOrigin,
+      },
+    };
+    this.#manualReleaseGeneration += 1;
+    this.#manualReleaseCompletion = null;
+    this.#manualRelease = null;
+    this.#timelineSession = null;
+    return report;
   }
 
   async replay(
@@ -667,6 +1399,11 @@ export class HumanStrokeLab {
     const inputDelays: number[] = [];
     const dispatchDurations: number[] = [];
     let nextPointIndex = 1;
+    let releaseStartedAt = 0;
+    let endStrokeReturnedAt = 0;
+    let preEndStrokeGpuBacklogCompletedAt: Promise<number> | null = null;
+    let releaseBeforeEndStroke: ReleaseEngineSnapshot | null = null;
+    let releaseAfterEndStroke: ReleaseEngineSnapshot | null = null;
 
     this.#engine.startStrokePerformanceProfile();
     const initialDispatchStart = performance.now();
@@ -693,18 +1430,54 @@ export class HumanStrokeLab {
           this.#replayFrame = requestAnimationFrame(step);
           return;
         }
+        releaseBeforeEndStroke = captureReleaseEngineSnapshot(this.#engine);
+        releaseStartedAt = performance.now();
+        preEndStrokeGpuBacklogCompletedAt = this.#engine.device.queue
+          .onSubmittedWorkDone()
+          .then(() => performance.now());
         this.#engine.endStroke(lastPoint.timeMs);
+        endStrokeReturnedAt = performance.now();
+        releaseAfterEndStroke = captureReleaseEngineSnapshot(this.#engine);
         this.#replayFrame = null;
         resolve();
       };
       this.#replayFrame = requestAnimationFrame(step);
     });
 
-    const inputFinishedAt = performance.now();
+    if (
+      !releaseBeforeEndStroke
+      || !releaseAfterEndStroke
+      || !preEndStrokeGpuBacklogCompletedAt
+      || endStrokeReturnedAt <= 0
+    ) {
+      throw new Error("La telemetria del rilascio non è stata inizializzata.");
+    }
+    const inputFinishedAt = endStrokeReturnedAt;
+    const releaseRenderPumpCycles: ReleaseRenderPumpCycle[] = [];
+    const renderPumpStartedAt = performance.now();
+    while (hasPendingRenderWork(this.#engine)) {
+      if (releaseRenderPumpCycles.length >= 256) {
+        throw new Error("Il rilascio non ha drenato il render pump entro 256 cicli.");
+      }
+      const cycleStartedAt = performance.now();
+      const cycleBefore = captureReleaseEngineSnapshot(this.#engine);
+      await waitForRenderPump(this.#engine);
+      releaseRenderPumpCycles.push({
+        cycle: releaseRenderPumpCycles.length + 1,
+        waitAndRenderMs: performance.now() - cycleStartedAt,
+        before: cycleBefore,
+        after: captureReleaseEngineSnapshot(this.#engine),
+      });
+    }
+    const renderPumpCompletedAt = performance.now();
+    const releaseAfterRenderPump = captureReleaseEngineSnapshot(this.#engine);
     await this.#engine.waitForIdle();
     const gpuCompletedAt = performance.now();
+    const preEndStrokeGpuCompletedAt = await preEndStrokeGpuBacklogCompletedAt;
+    const releaseAfterGpuIdle = captureReleaseEngineSnapshot(this.#engine);
     await nextAnimationFrame();
     const presentedAt = performance.now();
+    const releaseGpuCommandPhases = await this.#engine.waitForReleaseGpuTiming();
     const profile = this.#engine.finishStrokePerformanceProfile();
     if (!profile) throw new Error("Profilo del tratto non disponibile.");
     const after = this.#engine.getStats();
@@ -722,6 +1495,45 @@ export class HumanStrokeLab {
       pointerPipelineMeasured: false,
       inputToGpuCompletionMs: Math.max(0, gpuCompletedAt - inputFinishedAt),
       endToPresentedMs: Math.max(0, presentedAt - replayStart),
+      releasePhases: {
+        endStrokeCpuMs: Math.max(0, endStrokeReturnedAt - releaseStartedAt),
+        renderPumpMs: Math.max(0, renderPumpCompletedAt - renderPumpStartedAt),
+        preEndStrokeGpuBacklogMs: Math.max(
+          0,
+          preEndStrokeGpuCompletedAt - releaseStartedAt,
+        ),
+        postBacklogToGpuIdleMs: Math.max(
+          0,
+          gpuCompletedAt - preEndStrokeGpuCompletedAt,
+        ),
+        gpuDrainMs: Math.max(0, gpuCompletedAt - renderPumpCompletedAt),
+        gpuCommandPhases: releaseGpuCommandPhases,
+        gpuCommandResidualApproxMs: releaseGpuCommandPhases
+          ? gpuCompletedAt
+            - preEndStrokeGpuCompletedAt
+            - releaseGpuCommandPhases.totalReleaseSubmissionMs
+          : null,
+        presentationWaitMs: Math.max(0, presentedAt - gpuCompletedAt),
+        releaseToGpuIdleMs: Math.max(0, gpuCompletedAt - releaseStartedAt),
+        releaseToPresentedMs: Math.max(0, presentedAt - releaseStartedAt),
+        beforeEndStroke: releaseBeforeEndStroke,
+        afterEndStroke: releaseAfterEndStroke,
+        afterRenderPump: releaseAfterRenderPump,
+        afterGpuIdle: releaseAfterGpuIdle,
+        renderPumpCycles: releaseRenderPumpCycles,
+        historyDuringEndStroke: releaseHistoryDelta(
+          releaseBeforeEndStroke,
+          releaseAfterEndStroke,
+        ),
+        historyDuringRenderPump: releaseHistoryDelta(
+          releaseAfterEndStroke,
+          releaseAfterRenderPump,
+        ),
+        historyTotal: releaseHistoryDelta(
+          releaseBeforeEndStroke,
+          releaseAfterGpuIdle,
+        ),
+      },
     };
     const navigatorWithMemory = navigator as Navigator & { deviceMemory?: number };
     const run: HumanStrokeBenchmarkRun = {

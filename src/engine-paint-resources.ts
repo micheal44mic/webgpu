@@ -43,6 +43,7 @@ export interface LightGlazeResourceSet {
   commitTileTexture: GPUTexture | null;
   commitTileView: GPUTextureView | null;
   commitTileBindGroup: GPUBindGroup | null;
+  inPlaceCommitBindGroup: GPUBindGroup | null;
 }
 
 export interface ShapeMaskResources {

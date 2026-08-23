@@ -146,7 +146,7 @@ assert.match(
 );
 assert.match(
   brushEngineSource,
-  /\|\| engine\.pendingBlendBatches\.length > 0\s*\n\s*\) \{\s*\n\s*return;/,
+  /\|\| engine\.pendingBlendBatches\.length > 0\s*\n\s*\|\| engine\.brushGpuWarmupPromise !== null\s*\n\s*\) \{\s*\n\s*return;/,
 );
 assert.match(
   brushEngineSource,
@@ -159,6 +159,17 @@ const blendRendererSource = await readFile(
 const blendCoreSource = await readFile(
   new URL("../src/blend-core.ts", import.meta.url),
   "utf8",
+);
+assert.match(blendRendererSource, /async prewarmSelectedVariant\(/);
+assert.match(
+  blendRendererSource,
+  /dispatchWorkgroups\(1, 1, 1\)[\s\S]*scatterPass\.draw\(3, 1, 0, 0\)[\s\S]*queue\.onSubmittedWorkDone\(\)/,
+  "Il warm-up Blend deve eseguire il bundle reale su scratch e attendere la GPU.",
+);
+assert.match(
+  blendRendererSource,
+  /Selected Blend warm-up scatter target[\s\S]*usage: GPUTextureUsage\.RENDER_ATTACHMENT/,
+  "Lo scatter di warm-up Blend non deve puntare al layer canonico.",
 );
 assert.doesNotMatch(
   blendCoreSource,

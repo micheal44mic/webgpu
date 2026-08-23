@@ -124,21 +124,31 @@ for (const requirement of [
 ]) {
   assert(submit.includes(requirement), `Percorso Intense incompleto: ${requirement}`);
 }
+const permanentCommit = section(
+  engine,
+  "private encodeLightGlazePermanentCommit",
+  "private submitLightGlazeImmediate",
+  16_000,
+);
 assert(
-  submit.includes('session.settings.blendMode === "uniformed-glaze"')
-    && submit.includes('session.settings.blendMode === "intense-blending"')
-    && submit.includes("LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BUFFER_BYTES")
-    && submit.includes("tilePass.setViewport(0, 0, tileWidth, tileHeight, 0, 1)")
-    && submit.includes("[tileIndex * LIGHT_GLAZE_COMMIT_TILE_UNIFORM_STRIDE_BYTES]")
-    && submit.includes("encoder.copyTextureToTexture(")
-    && submit.includes("this.device.queue.writeBuffer(")
-    && submit.includes("tileUniformUpload"),
-  "Commit esatto Uniformed/Intense a tile con dynamic offset mancante.",
+  submit.includes("this.encodeLightGlazePermanentCommit(")
+    && permanentCommit.includes('blendMode !== "uniformed-glaze"')
+    && permanentCommit.includes('blendMode !== "intense-blending"')
+    && permanentCommit.includes("this.lightGlazeInPlaceCommitPipeline")
+    && permanentCommit.includes("computePass.dispatchWorkgroups(")
+    && permanentCommit.includes("LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BUFFER_BYTES")
+    && permanentCommit.includes("tilePass.setViewport(0, 0, tileWidth, tileHeight, 0, 1)")
+    && permanentCommit.includes("[tileIndex * LIGHT_GLAZE_COMMIT_TILE_UNIFORM_STRIDE_BYTES]")
+    && permanentCommit.includes("encoder.copyTextureToTexture(")
+    && permanentCommit.includes("tileUniformUpload"),
+  "Commit esatto Uniformed/Intense compute-in-place con fallback tile mancante.",
 );
 assert.equal(
-  (submit.match(/this\.device\.queue\.writeBuffer\(\s*this\.lightGlazeCommitTileUniformBuffer/g) ?? []).length,
-  1,
-  "Il commit tile riscrive la stessa uniform durante l'encoding invece di fare un upload unico.",
+  (permanentCommit.match(
+    /this\.device\.queue\.writeBuffer\(\s*this\.lightGlazeCommitTileUniformBuffer/g,
+  ) ?? []).length,
+  2,
+  "I due percorsi commit devono fare un solo upload uniform ciascuno.",
 );
 
 const pipelineBlock = section(

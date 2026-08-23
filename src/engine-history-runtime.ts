@@ -1214,6 +1214,9 @@ export async function rebuildActiveLayerFromHistory(
     if (usesStrokeGlazeRenderer(engine.settings)) {
       await engine.ensureLightGlazeResources(engine.settings.blendMode);
     }
+    // Historical batches can temporarily swap Shape/Grain resources. Restore
+    // and fence the selected brush before Undo/Redo releases its UI lock.
+    await engine.ensureCurrentBrushResources();
   }
 
   engine.clearRequested = false;

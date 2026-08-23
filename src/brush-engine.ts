@@ -370,6 +370,7 @@ import {
   GRAIN_UNIFORM_BYTES,
   LIGHT_GLAZE_COMMIT_TILE_EXTENT,
   LIGHT_GLAZE_COMMIT_TILE_SLOT_COUNT,
+  LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BYTES,
   LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BUFFER_BYTES,
   LIGHT_GLAZE_COMMIT_TILE_UNIFORM_STRIDE_BYTES,
   LIGHT_GLAZE_UNIFORM_BYTES,
@@ -377,6 +378,7 @@ import {
   MEBIBYTE_BYTES,
   PAINT_DISPLAY_MIP_LEVEL_COUNT,
   SHAPE_MASK_SIZE,
+  SHAPE_OCCUPANCY_MAP_BYTES,
   SHAPE_OCCUPANCY_MAP_COUNT,
   SHAPE_OCCUPANCY_MAX_COVERAGE_RATIO,
   SHAPE_OCCUPANCY_MAX_MIP,
@@ -407,6 +409,7 @@ import type {
   LayerStorageExactStudy,
   LayerStorageStudyStats,
   MutableStrokePerformanceProfile,
+  ReleaseGpuPhaseTiming,
   RenderFrameTiming,
   StrokePerformanceProfile,
   SubmitTiming,
@@ -671,6 +674,7 @@ import {
   encodeLightGlazeDisplayPyramid,
   ensureStrokeStabilizationSnapshot,
   flushClosingLightGlazeSessionBeforeNewStroke,
+  initializeLightGlazeResourceSet,
   lightGlazeResourcesMatch,
   maybeReleaseIdleLightGlazeResources,
   retargetLightGlazeBindGroups,
@@ -846,6 +850,61 @@ export interface DocumentInconsistentDiagnostic {
   readonly stack: string | null;
 }
 
+/** Exact synchronous work performed when a deferred stroke is lifted. */
+export interface DeferredLiftReplayTelemetry {
+  readonly source: "engine-exact";
+  readonly historyActionId: number;
+  readonly atPerformanceMs: number;
+  readonly blendMode: BrushSettings["blendMode"];
+  readonly deferredGlaze: boolean;
+  readonly previewStampCount: number;
+  readonly presentedPreviewStampCount: number;
+  readonly pendingStampsBefore: number;
+  readonly pendingStampsAfterDiscard: number;
+  readonly provisionalPendingStampsDiscarded: number;
+  readonly queuedStampCountAtLift: number;
+  readonly replayedStampCount: number;
+  readonly pendingStampsAfter: number;
+  readonly glazeAccumulatorPresentBefore: boolean;
+  readonly glazeAccumulatorAbandoned: boolean;
+  readonly glazeAccumulatorRecreated: boolean;
+  readonly cpuMs: number;
+}
+
+interface StraightLineAdjustmentSession {
+  readonly sourceMode: "deferred-preview" | "committed-history";
+  readonly sourceActionId: number;
+  readonly replacementActionId: number;
+  readonly sourceTool: "paint" | "erase";
+  readonly sourceStamps: Stamp[] | null;
+  readonly sourceHeldThicknessStamps: HeldThicknessStamp[] | null;
+  readonly sourceSeedSequenceAfterStroke: number | null;
+  readonly sourceLastInput: LayerPoint | null;
+  readonly sourceStartedAtMs: number | null;
+}
+
+// A completed glaze is already represented exactly in the live presentation
+// cache. Rebuilding the permanent-layer mip pyramid and repainting the same
+// cache before the pointer-up frame can be shown makes release cost grow with
+// the stroke's accumulated bounding box. Keep the exact live pixels for the
+// release frame and rebuild the canonical cache lazily on the next mutation.
+const DEFER_LIGHT_GLAZE_FINAL_CANONICAL_PRESENTATION = true;
+
+const RELEASE_GPU_TIMESTAMP_BOUNDARY_COUNT = 7;
+const RELEASE_GPU_TIMESTAMP_QUERY_COUNT = RELEASE_GPU_TIMESTAMP_BOUNDARY_COUNT * 2;
+const RELEASE_GPU_TIMESTAMP_RESULT_BYTES =
+  RELEASE_GPU_TIMESTAMP_QUERY_COUNT * BigUint64Array.BYTES_PER_ELEMENT;
+// resolveQuerySet() requires a 256-byte aligned destination offset. Keeping the
+// tiny diagnostic buffer at one alignment block also makes reuse unambiguous.
+const RELEASE_GPU_TIMESTAMP_BUFFER_BYTES = 256;
+
+interface ReleaseGpuTimingCaptureResources {
+  querySet: GPUQuerySet;
+  resolveBuffer: GPUBuffer;
+  readbackBuffer: GPUBuffer;
+  generation: number;
+}
+
 /**
  * Il motore. La classe conserva lo stato e il percorso caldo del tratto; il
  * resto vive nei moduli `engine-*`, che ricevono l'istanza come primo
@@ -912,12 +971,20 @@ export class BrushEngine {
   renderFrameError: Error | null = null;
   private context!: GPUCanvasContext;
   canvasFormat!: GPUTextureFormat;
+  releaseGpuTimestampQuerySet: GPUQuerySet | null = null;
+  releaseGpuTimestampResolveBuffer: GPUBuffer | null = null;
+  releaseGpuTimestampReadbackBuffer: GPUBuffer | null = null;
+  releaseGpuTimingBusy = false;
+  releaseGpuTimingGeneration = 0;
+  releaseGpuTimingPromise: Promise<ReleaseGpuPhaseTiming | null> | null = null;
+  lastReleaseGpuTiming: ReleaseGpuPhaseTiming | null = null;
 
   /** Authoritative document pixels are always initialized in linear RGBA16F. */
   layerFormat: LayerFormat = "rgba16float";
   layerTexture!: GPUTexture;
   layerView!: GPUTextureView;
   layerSamplingView!: GPUTextureView;
+  layerResourceRevision = 0;
   blendRenderer: DryBlendRenderer | null = null;
   blendRendererWarmup: (() => Promise<void>) | null = null;
   fillRenderer: FillRenderer | null = null;
@@ -1224,10 +1291,13 @@ export class BrushEngine {
   lightGlazeCommitTileTexture: GPUTexture | null = null;
   lightGlazeCommitTileView: GPUTextureView | null = null;
   lightGlazeCommitTileBindGroup: GPUBindGroup | null = null;
+  lightGlazeInPlaceCommitBindGroup: GPUBindGroup | null = null;
+  lightGlazeInPlaceCommitSupported = false;
   lightGlazeSession: LightGlazeSession | null = null;
   lightGlazeStaleRect: DirtyRect | null = null;
   lightGlazeStorageAllocated = false;
   lightGlazeStorageMode: LightGlazeStorageMode = "none";
+  lightGlazeResourceRevision = 0;
   lightGlazeLoadingPromise: Promise<void> | null = null;
   private lightGlazeLoadingStorageMode: LightGlazeStorageMode = "none";
   private lightGlazeDesiredStorageMode: LightGlazeStorageMode = "none";
@@ -1319,6 +1389,7 @@ export class BrushEngine {
   grainLoadedAssetId: BrushGrainAssetId | null = null;
   grainSamplers!: Record<"fixed" | "moving", Record<GrainFiltering, GPUSampler>>;
   grainTextureIdentity = 0;
+  grainResourceRevision = 0;
   grainTextureWidth = GRAIN_TEXTURE_SIZE;
   grainTextureHeight = GRAIN_TEXTURE_SIZE;
   grainTextureMipLevelCount = GRAIN_TEXTURE_MIP_LEVEL_COUNT;
@@ -1329,6 +1400,7 @@ export class BrushEngine {
   grainStartupUploadMs = 0;
   shapeMaskDecodeStrategy: ShapeMaskDecodeStrategy = SHAPE_CANVAS_DECODE_STRATEGY;
   shapeMaskIdentity = 0;
+  shapeResourceRevision = 0;
   shapeOccupancyActiveCells = new Array<number>(SHAPE_OCCUPANCY_MAP_COUNT).fill(0);
   shapeOccupancyCoverageRatios = new Array<number>(SHAPE_OCCUPANCY_MAP_COUNT).fill(1);
   packedMinimumRadius = Number.POSITIVE_INFINITY;
@@ -1360,6 +1432,7 @@ export class BrushEngine {
   lightGlazeCompositeMipBindGroupLayout!: GPUBindGroupLayout;
   lightGlazeCompositeBindGroupLayout!: GPUBindGroupLayout;
   lightGlazeCommitTileBindGroupLayout!: GPUBindGroupLayout;
+  lightGlazeInPlaceCommitBindGroupLayout: GPUBindGroupLayout | null = null;
   paintMipDownsampleBindGroupLayout!: GPUBindGroupLayout;
   paintStackCompositeMipBindGroupLayout!: GPUBindGroupLayout;
   layerCompositeBindGroupLayout!: GPUBindGroupLayout;
@@ -1495,6 +1568,7 @@ export class BrushEngine {
   lightGlazeFinalRasterStackCompositeMipPipeline!: GPURenderPipeline;
   lightGlazeCompositePipeline!: GPURenderPipeline;
   lightGlazeCommitTilePipeline!: GPURenderPipeline;
+  lightGlazeInPlaceCommitPipeline: GPUComputePipeline | null = null;
   lightGlazeClearR16Pipeline!: GPURenderPipeline;
   lightGlazeClearRgba16FloatPipeline!: GPURenderPipeline;
   paintMipDownsamplePipeline!: GPURenderPipeline;
@@ -1533,6 +1607,9 @@ export class BrushEngine {
   );
 
   settings: BrushSettings = { ...defaultBrushSettings };
+  /** A selected brush is not paint-ready until this submit's GPU fence resolves. */
+  brushGpuWarmupPromise: Promise<void> | null = null;
+  private readonly completedBrushGpuWarmupKeys = new Set<string>();
   readonly customBrushAssets = new CustomBrushAssetRegistry();
   pendingStamps: Stamp[] = [];
   pendingBlendBatches: PendingBlendBatch[] = [];
@@ -1557,18 +1634,19 @@ export class BrushEngine {
     forcePresentationRebuild: boolean;
     allowPresentationShrink: boolean;
   } | null = null;
-  straightLineAdjustment: {
-    readonly sourceActionId: number;
-    readonly sourceTool: "paint" | "erase";
-    readonly sourceStamps: Stamp[];
-    readonly sourceHeldThicknessStamps: HeldThicknessStamp[];
-    readonly sourceSeedSequenceAfterStroke: number;
-    readonly sourceLastInput: LayerPoint;
-    readonly sourceStartedAtMs: number;
-  } | null = null;
+  lastDeferredLiftReplay: DeferredLiftReplayTelemetry | null = null;
+  straightLineAdjustment: StraightLineAdjustmentSession | null = null;
   seedSequence = 1;
 
   readonly history = new HistoryService();
+  historyPublicationCount = 0;
+  historyPublicationTotalMs = 0;
+  historyPublicationMaxMs = 0;
+  historyPublicationLastMs = 0;
+  historyRecordCpuCount = 0;
+  historyRecordCpuTotalMs = 0;
+  historyGpuCaptureCpuCount = 0;
+  historyGpuCaptureCpuTotalMs = 0;
   readonly restoredProjectHistoryBaselines = new Map<
     number,
     RestoredProjectHistoryBaseline
@@ -1837,11 +1915,49 @@ export class BrushEngine {
       this.callbacks.onStatus?.("WebGPU device creation is still in progress…", "working");
     }, 6_000);
     let rawDevice: GPUDevice;
+    const textureFormatsTier2 = "texture-formats-tier2" as GPUFeatureName;
+    const hasReadWriteStorageTextureLanguageFeature =
+      navigator.gpu.wgslLanguageFeatures?.has(
+        "readonly_and_readwrite_storage_textures",
+      ) ?? false;
+    const requestInPlaceGlazeCommit = hasReadWriteStorageTextureLanguageFeature
+      && adapter.features.has(textureFormatsTier2);
+    const requiredFeatures: GPUFeatureName[] = [];
+    if (requestInPlaceGlazeCommit) requiredFeatures.push(textureFormatsTier2);
+    // Timestamp counters are diagnostic-only. The production editor never
+    // requests them; Labs opts in when the adapter advertises support and the
+    // runtime still falls back to queue-fence timings when they are absent.
+    const requestReleaseGpuTimestamps = location.pathname.endsWith("/labs.html")
+      && adapter.features.has("timestamp-query");
+    if (requestReleaseGpuTimestamps) {
+      requiredFeatures.push("timestamp-query");
+    }
     try {
-      rawDevice = await adapter.requestDevice();
+      try {
+        rawDevice = await adapter.requestDevice({ requiredFeatures });
+      } catch (error) {
+        if (!requestReleaseGpuTimestamps) throw error;
+        // A diagnostic counter must never prevent Labs from starting on a
+        // driver that advertises it incorrectly. Retry with the production
+        // feature set and keep the queue-fence attribution available.
+        this.callbacks.onStatus?.(
+          "GPU timestamp counters unavailable; continuing with queue timing…",
+          "working",
+        );
+        rawDevice = await adapter.requestDevice({
+          requiredFeatures: requiredFeatures.filter(
+            (feature) => feature !== "timestamp-query",
+          ),
+        });
+      }
     } finally {
       window.clearTimeout(deviceWaitTimer);
     }
+    const forceGlazeCommitFallback = location.pathname.endsWith("/labs.html")
+      && new URLSearchParams(location.search).get("forceGlazeCommitFallback") === "1";
+    this.lightGlazeInPlaceCommitSupported = requestInPlaceGlazeCommit
+      && rawDevice.features.has(textureFormatsTier2)
+      && !forceGlazeCommitFallback;
     const instrumented = instrumentGpuDevice(rawDevice);
     this.device = instrumented.device;
     this.gpuResourceRegistry = instrumented.registry;
@@ -1928,20 +2044,7 @@ export class BrushEngine {
     this.writeBrushUniforms();
 
     this.initialized = true;
-    if (usesBlendRenderer(this.settings)) {
-      this.blendRenderer?.prewarmScratch();
-    }
-    if (
-      usesStrokeGlazeRenderer(this.settings)
-    ) {
-      await this.ensureLightGlazeResources(this.settings.blendMode);
-    }
-    if (this.settings.grainMode !== "off") {
-      requestGrainLoad(this);
-    }
-    if (this.settings.shape === "shape") {
-      requestShapeLoad(this);
-    }
+    await this.ensureCurrentBrushResources();
     clearAdaptivePreviewCanvas(this);
     this.requestRender();
     this.callbacks.onStatus?.("WebGPU is ready. Draw on the canvas.", "ok");
@@ -2242,6 +2345,12 @@ export class BrushEngine {
       this.writeBrushUniforms();
       if (isTexturizedGrainActive(this.settings)) {
         this.writeGrainUniforms(this.settings);
+      }
+      if (!this.activeStroke && !this.lightGlazeSession) {
+        void this.ensureCurrentBrushResources().catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          this.callbacks.onStatus?.(`Selected brush preparation failed: ${message}`, "error");
+        });
       }
       this.displayDirty = true;
       this.requestRender();
@@ -3855,9 +3964,8 @@ export class BrushEngine {
   }
 
   /**
-   * Starts a mouse/Pencil stroke in a presentation-only surface. This keeps
-   * both the authoritative layer and the Undo journal unchanged until lift,
-   * which lets Quick Line replace its geometry without an intermediate Undo.
+   * Starts the replaceable surface used only after Quick Line's hold gesture
+   * has activated. Ordinary mouse/Pencil freehand uses beginStroke().
    */
   beginDeferredStroke(sample: PointerSample): boolean {
     if (this.settings.tool === "blend") {
@@ -3988,6 +4096,17 @@ export class BrushEngine {
       );
       return false;
     }
+    if (!this.currentBrushResourcesReady()) {
+      void this.ensureCurrentBrushResources().catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.callbacks.onStatus?.(`Selected brush preparation failed: ${message}`, "error");
+      });
+      this.callbacks.onStatus?.(
+        "The selected brush is finishing its GPU warm-up. Try again in a moment…",
+        "working",
+      );
+      return false;
+    }
     pauseLayerColdCompressionIdle(this);
     const normalizedPoint: LayerPoint = {
       ...point,
@@ -4088,6 +4207,7 @@ export class BrushEngine {
       normalizedPoint,
       stabilizationSettings.stabilization,
     ) ?? null;
+    this.lastDeferredLiftReplay = null;
     this.activeStroke = {
       tool,
       lastInput: normalizedPoint,
@@ -4229,9 +4349,158 @@ export class BrushEngine {
     return true;
   }
 
+  private async redoStraightLineSourceAction(sourceActionId: number): Promise<boolean> {
+    if (this.historyActions[this.historyCursor - 1]?.id === sourceActionId) {
+      return true;
+    }
+    if (this.historyActions[this.historyCursor]?.id !== sourceActionId) {
+      return false;
+    }
+    if (!await this.redo()) {
+      return false;
+    }
+    return this.historyActions[this.historyCursor - 1]?.id === sourceActionId;
+  }
+
+  private async restoreCommittedStraightLineSource(
+    session: StraightLineAdjustmentSession,
+  ): Promise<boolean> {
+    if (session.sourceMode !== "committed-history") {
+      return false;
+    }
+    if (this.straightLineAdjustment === session) {
+      this.straightLineAdjustment = null;
+    }
+    const replacement = this.activeStroke;
+    if (replacement) {
+      if (
+        !replacement.deferredPreview
+        || replacement.historyActionId !== session.replacementActionId
+        || !this.cancelStrokeBeforeRender()
+      ) {
+        throw new Error("The temporary Quick Line stroke could not be discarded.");
+      }
+    }
+    return await this.redoStraightLineSourceAction(session.sourceActionId);
+  }
+
+  private async prepareStraightLineFromCommittedStroke(
+    sourceStroke: ActiveStroke,
+    samples: readonly PointerSample[],
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    if (sourceStroke.tool === "blend") {
+      return false;
+    }
+    const sourceActionId = sourceStroke.historyActionId;
+    const sourceTool = sourceStroke.tool;
+    const lastSample = samples[samples.length - 1];
+    let sourceUndone = false;
+    let session: StraightLineAdjustmentSession | null = null;
+
+    // A normal freehand stays on the ordinary hot path. Only the completed
+    // hold gesture pivots it into History temporarily so a real WebGPU Quick
+    // Line can replace it without leaving an intermediate Undo action.
+    try {
+      this.endStroke(lastSample.timeMs);
+      await this.waitForIdle();
+      if (this.historyActions[this.historyCursor - 1]?.id !== sourceActionId) {
+        throw new Error("Quick Line could not identify the completed source stroke.");
+      }
+      if (signal?.aborted) {
+        return false;
+      }
+      if (!await this.undo()) {
+        throw new Error("Quick Line could not temporarily hide the source stroke.");
+      }
+      sourceUndone = true;
+      if (signal?.aborted) {
+        if (!await this.redoStraightLineSourceAction(sourceActionId)) {
+          throw new Error("The original stroke could not be restored after Quick Line cancellation.");
+        }
+        sourceUndone = false;
+        return false;
+      }
+      if (!this.beginDeferredStroke(samples[0])) {
+        if (!await this.redoStraightLineSourceAction(sourceActionId)) {
+          throw new Error("The original stroke could not be restored after Quick Line setup failed.");
+        }
+        sourceUndone = false;
+        throw new Error("Quick Line could not start its temporary replacement stroke.");
+      }
+
+      const replacementStroke = this.activeStroke;
+      if (!replacementStroke?.deferredPreview || replacementStroke.tool !== sourceTool) {
+        if (replacementStroke && !this.cancelStrokeBeforeRender()) {
+          throw new Error("The invalid Quick Line replacement could not be discarded.");
+        }
+        if (!await this.redoStraightLineSourceAction(sourceActionId)) {
+          throw new Error("The original stroke could not be restored after Quick Line setup failed.");
+        }
+        sourceUndone = false;
+        throw new Error("Quick Line created an invalid replacement stroke.");
+      }
+      session = {
+        sourceMode: "committed-history",
+        sourceActionId,
+        replacementActionId: replacementStroke.historyActionId,
+        sourceTool,
+        sourceStamps: null,
+        sourceHeldThicknessStamps: null,
+        sourceSeedSequenceAfterStroke: null,
+        sourceLastInput: null,
+        sourceStartedAtMs: null,
+      };
+      this.straightLineAdjustment = session;
+      if (signal?.aborted) {
+        if (!await this.restoreCommittedStraightLineSource(session)) {
+          throw new Error("The original stroke could not be restored after Quick Line cancellation.");
+        }
+        sourceUndone = false;
+        return false;
+      }
+      if (!this.resetDeferredStrokeGeometry(samples)) {
+        if (!await this.restoreCommittedStraightLineSource(session)) {
+          throw new Error("The original stroke could not be restored after Quick Line setup failed.");
+        }
+        sourceUndone = false;
+        throw new Error("Quick Line could not build its replacement geometry.");
+      }
+      this.publishHistoryState();
+      this.callbacks.onStatus?.("Straight line ready: move the endpoint, then release.", "ok");
+      return true;
+    } catch (error) {
+      if (sourceUndone) {
+        try {
+          const restored = session
+            ? await this.restoreCommittedStraightLineSource(session)
+            : await this.redoStraightLineSourceAction(sourceActionId);
+          if (!restored) {
+            throw new Error("The source action is no longer available in Redo.");
+          }
+        } catch (rollbackError) {
+          const originalMessage = error instanceof Error ? error.message : String(error);
+          const rollbackMessage = rollbackError instanceof Error
+            ? rollbackError.message
+            : String(rollbackError);
+          const combined = new Error(
+            `Quick Line failed (${originalMessage}) and restoring freehand failed `
+            + `(${rollbackMessage}).`,
+          );
+          this.latchDocumentStateInconsistent(
+            "Quick Line could not restore the original stroke. Reload before continuing.",
+            combined,
+          );
+          throw combined;
+        }
+      }
+      throw error;
+    }
+  }
+
   /**
-   * Locks the current deferred freehand into an adjustable line. No layer,
-   * history cursor or Undo entry is touched while the pointer remains down.
+   * Locks a held freehand into an adjustable line. Ordinary freehand stays
+   * authoritative; only this hold path swaps it for a deferred replacement.
    */
   async prepareStraightLineAdjustment(
     samples: readonly PointerSample[],
@@ -4242,12 +4511,33 @@ export class BrushEngine {
     if (
       signal?.aborted
       || !sourceStroke
-      || !sourceStroke.deferredPreview
       || sourceStroke.tool === "blend"
-      || preview?.historyActionId !== sourceStroke.historyActionId
       || this.straightLineAdjustment
       || this.settings.tool !== sourceStroke.tool
+      || samples.length < 2
+      || !samples.every((sample) => (
+        Number.isFinite(sample.clientX)
+        && Number.isFinite(sample.clientY)
+        && Number.isFinite(sample.pressure)
+        && Number.isFinite(sample.timeMs)
+      ))
+      || (
+        sourceStroke.deferredPreview
+          ? preview?.historyActionId !== sourceStroke.historyActionId
+          : preview !== null
+      )
     ) {
+      return false;
+    }
+
+    if (!sourceStroke.deferredPreview) {
+      return await this.prepareStraightLineFromCommittedStroke(
+        sourceStroke,
+        samples,
+        signal,
+      );
+    }
+    if (!preview || preview.historyActionId !== sourceStroke.historyActionId) {
       return false;
     }
 
@@ -4274,7 +4564,9 @@ export class BrushEngine {
       true,
     );
     this.straightLineAdjustment = {
+      sourceMode: "deferred-preview",
       sourceActionId,
+      replacementActionId: sourceActionId,
       sourceTool: sourceStroke.tool,
       sourceStamps: preview.stamps.map((stamp) => ({ ...stamp })),
       sourceHeldThicknessStamps: sourceStroke.heldThicknessStamps
@@ -4302,7 +4594,7 @@ export class BrushEngine {
     if (
       !session
       || this.settings.tool !== session.sourceTool
-      || this.activeStroke?.historyActionId !== session.sourceActionId
+      || this.activeStroke?.historyActionId !== session.replacementActionId
     ) {
       return false;
     }
@@ -4311,14 +4603,27 @@ export class BrushEngine {
 
   async cancelStraightLineAdjustment(): Promise<boolean> {
     const session = this.straightLineAdjustment;
+    if (!session) {
+      return false;
+    }
+    if (session.sourceMode === "committed-history") {
+      const restored = await this.restoreCommittedStraightLineSource(session);
+      if (restored) this.publishHistoryState();
+      return restored;
+    }
+
     const stroke = this.activeStroke;
     const preview = this.deferredStrokePreview;
     if (
-      !session
-      || !stroke
+      !stroke
       || !stroke.deferredPreview
-      || stroke.historyActionId !== session.sourceActionId
-      || preview?.historyActionId !== session.sourceActionId
+      || stroke.historyActionId !== session.replacementActionId
+      || preview?.historyActionId !== session.replacementActionId
+      || !session.sourceStamps
+      || !session.sourceHeldThicknessStamps
+      || session.sourceSeedSequenceAfterStroke === null
+      || !session.sourceLastInput
+      || session.sourceStartedAtMs === null
     ) {
       return false;
     }
@@ -4349,7 +4654,7 @@ export class BrushEngine {
     if (
       !session
       || this.settings.tool !== session.sourceTool
-      || this.activeStroke?.historyActionId !== session.sourceActionId
+      || this.activeStroke?.historyActionId !== session.replacementActionId
       || !this.updateStraightLineAdjustment(samples)
     ) {
       if (session) await this.cancelStraightLineAdjustment();
@@ -4362,7 +4667,7 @@ export class BrushEngine {
       this.endStroke(lastSample.timeMs);
       await this.waitForIdle();
       const committed = this.historyActions[this.historyCursor - 1];
-      if (committed?.id !== session.sourceActionId) return false;
+      if (committed?.id !== session.replacementActionId) return false;
       this.publishHistoryState();
       this.callbacks.onStatus?.("Straight line committed.", "ok");
       return true;
@@ -4375,6 +4680,7 @@ export class BrushEngine {
   }
 
   endStroke(timeMs?: number): void {
+    this.lastDeferredLiftReplay = null;
     const endingStroke = this.activeStroke;
     if (endingStroke?.tool === "blend") {
       endingStroke.stabilizer?.finish();
@@ -4430,11 +4736,18 @@ export class BrushEngine {
       releaseHeldThicknessStamps(this, liftTime, true);
     }
     if (endingStroke?.deferredPreview) {
+      const deferredLiftStartedAt = performance.now();
       const preview = this.deferredStrokePreview;
       if (preview?.historyActionId !== endingStroke.historyActionId) {
         throw new Error("The deferred stroke preview no longer matches the active stroke.");
       }
       const deferredGlaze = usesStrokeGlazeRenderer(preview.settings);
+      const pendingStampsBefore = this.pendingStamps.length;
+      const glazeAccumulatorPresentBefore =
+        this.lightGlazeSession?.historyActionId === endingStroke.historyActionId;
+      let pendingStampsAfterDiscard = pendingStampsBefore;
+      let glazeAccumulatorAbandoned = false;
+      let glazeAccumulatorRecreated = false;
       endingStroke.deferredPreview = false;
       this.deferredStrokePreview = null;
       if (preview.stamps.length > 0) {
@@ -4445,10 +4758,13 @@ export class BrushEngine {
           this.pendingStamps = this.pendingStamps.filter(
             (stamp) => stamp.historyActionId !== endingStroke.historyActionId,
           );
+          pendingStampsAfterDiscard = this.pendingStamps.length;
           if (this.lightGlazeSession?.historyActionId === endingStroke.historyActionId) {
             this.abandonLightGlazeSession();
+            glazeAccumulatorAbandoned = true;
           }
           this.startLightGlazeSession(endingStroke.historyActionId, preview.settings);
+          glazeAccumulatorRecreated = true;
         }
         this.pendingStamps.push(...preview.stamps);
       } else {
@@ -4456,8 +4772,10 @@ export class BrushEngine {
           this.pendingStamps = this.pendingStamps.filter(
             (stamp) => stamp.historyActionId !== endingStroke.historyActionId,
           );
+          pendingStampsAfterDiscard = this.pendingStamps.length;
           if (this.lightGlazeSession?.historyActionId === endingStroke.historyActionId) {
             this.abandonLightGlazeSession();
+            glazeAccumulatorAbandoned = true;
           }
         }
         releasePaintSelectionHistoryMask(this, endingStroke.historyActionId);
@@ -4466,6 +4784,27 @@ export class BrushEngine {
       // render cycle that publishes the final stamps and Undo action.
       this.displayDirty = true;
       this.requestRender();
+      const deferredLiftFinishedAt = performance.now();
+      this.lastDeferredLiftReplay = {
+        source: "engine-exact",
+        historyActionId: endingStroke.historyActionId,
+        atPerformanceMs: deferredLiftFinishedAt,
+        blendMode: preview.settings.blendMode,
+        deferredGlaze,
+        previewStampCount: preview.stamps.length,
+        presentedPreviewStampCount: preview.presentedStampCount,
+        pendingStampsBefore,
+        pendingStampsAfterDiscard,
+        provisionalPendingStampsDiscarded:
+          pendingStampsBefore - pendingStampsAfterDiscard,
+        queuedStampCountAtLift: preview.stamps.length,
+        replayedStampCount: preview.stamps.length,
+        pendingStampsAfter: this.pendingStamps.length,
+        glazeAccumulatorPresentBefore,
+        glazeAccumulatorAbandoned,
+        glazeAccumulatorRecreated,
+        cpuMs: deferredLiftFinishedAt - deferredLiftStartedAt,
+      };
     }
     const historyChanged = endingStroke?.historyCommitted ?? false;
     if (
@@ -6136,6 +6475,9 @@ export class BrushEngine {
     while (this.shapeLoadingPromise) {
       await this.shapeLoadingPromise;
     }
+    while (this.brushGpuWarmupPromise) {
+      await this.brushGpuWarmupPromise;
+    }
     throwIfRenderUnavailable(this);
     for (;;) {
       let progressSignature = this.renderProgressSignature();
@@ -6169,8 +6511,11 @@ export class BrushEngine {
       retireAdaptivePreviewAfterGpuIdle(this);
       // A callback can enqueue a frame while the GPU fence is pending. Recheck
       // instead of returning a false-idle state to a resource transaction.
-      if (!hasPendingRenderWork(this)) {
+      if (!hasPendingRenderWork(this) && !this.brushGpuWarmupPromise) {
         return;
+      }
+      while (this.brushGpuWarmupPromise) {
+        await this.brushGpuWarmupPromise;
       }
     }
   }
@@ -6179,12 +6524,234 @@ export class BrushEngine {
     this.seedSequence = 1;
   }
 
+  private destroyReleaseGpuTimingResources(
+    resources: ReleaseGpuTimingCaptureResources | null = null,
+  ): void {
+    const querySet = resources?.querySet ?? this.releaseGpuTimestampQuerySet;
+    const resolveBuffer = resources?.resolveBuffer ?? this.releaseGpuTimestampResolveBuffer;
+    const readbackBuffer = resources?.readbackBuffer ?? this.releaseGpuTimestampReadbackBuffer;
+    if (this.releaseGpuTimestampQuerySet === querySet) {
+      this.releaseGpuTimestampQuerySet = null;
+    }
+    if (this.releaseGpuTimestampResolveBuffer === resolveBuffer) {
+      this.releaseGpuTimestampResolveBuffer = null;
+    }
+    if (this.releaseGpuTimestampReadbackBuffer === readbackBuffer) {
+      this.releaseGpuTimestampReadbackBuffer = null;
+    }
+    querySet?.destroy();
+    resolveBuffer?.destroy();
+    readbackBuffer?.destroy();
+  }
+
+  private prepareReleaseGpuTimingCapture(): void {
+    this.releaseGpuTimingGeneration += 1;
+    this.lastReleaseGpuTiming = null;
+    this.releaseGpuTimingPromise = null;
+    if (this.releaseGpuTimingBusy) return;
+    this.destroyReleaseGpuTimingResources();
+    if (!this.device.features.has("timestamp-query")) return;
+
+    let querySet: GPUQuerySet | null = null;
+    let resolveBuffer: GPUBuffer | null = null;
+    let readbackBuffer: GPUBuffer | null = null;
+    try {
+      querySet = this.device.createQuerySet({
+        label: "Release GPU phase timestamps",
+        type: "timestamp",
+        count: RELEASE_GPU_TIMESTAMP_QUERY_COUNT,
+      });
+      resolveBuffer = this.device.createBuffer({
+        label: "Release GPU timestamp resolve",
+        size: RELEASE_GPU_TIMESTAMP_BUFFER_BYTES,
+        usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC,
+      });
+      readbackBuffer = this.device.createBuffer({
+        label: "Release GPU timestamp readback",
+        size: RELEASE_GPU_TIMESTAMP_BUFFER_BYTES,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+      this.releaseGpuTimestampQuerySet = querySet;
+      this.releaseGpuTimestampResolveBuffer = resolveBuffer;
+      this.releaseGpuTimestampReadbackBuffer = readbackBuffer;
+    } catch {
+      querySet?.destroy();
+      resolveBuffer?.destroy();
+      readbackBuffer?.destroy();
+    }
+  }
+
+  private encodeReleaseGpuTimestampBoundary(
+    encoder: GPUCommandEncoder,
+    resources: ReleaseGpuTimingCaptureResources,
+    boundaryIndex: number,
+    label: string,
+  ): void {
+    const markerPass = encoder.beginComputePass({
+      label,
+      timestampWrites: {
+        querySet: resources.querySet,
+        beginningOfPassWriteIndex: boundaryIndex * 2,
+        endOfPassWriteIndex: boundaryIndex * 2 + 1,
+      },
+    });
+    markerPass.end();
+  }
+
+  private beginReleaseGpuTimingCapture(
+    encoder: GPUCommandEncoder,
+    commitRequested: boolean,
+  ): ReleaseGpuTimingCaptureResources | null {
+    const resources =
+      this.activeStrokeProfile
+      && commitRequested
+      && !this.releaseGpuTimingBusy
+      && this.releaseGpuTimestampQuerySet
+      && this.releaseGpuTimestampResolveBuffer
+      && this.releaseGpuTimestampReadbackBuffer
+        ? {
+          querySet: this.releaseGpuTimestampQuerySet,
+          resolveBuffer: this.releaseGpuTimestampResolveBuffer,
+          readbackBuffer: this.releaseGpuTimestampReadbackBuffer,
+          generation: this.releaseGpuTimingGeneration,
+        } satisfies ReleaseGpuTimingCaptureResources
+        : null;
+    if (resources) {
+      this.encodeReleaseGpuTimestampBoundary(
+        encoder,
+        resources,
+        0,
+        "Release GPU marker · final submission begins",
+      );
+    }
+    return resources;
+  }
+
+  private finishReleaseGpuTimingEncoding(
+    encoder: GPUCommandEncoder,
+    resources: ReleaseGpuTimingCaptureResources,
+  ): void {
+    this.encodeReleaseGpuTimestampBoundary(
+      encoder,
+      resources,
+      6,
+      "Release GPU marker · history capture complete",
+    );
+    encoder.resolveQuerySet(
+      resources.querySet,
+      0,
+      RELEASE_GPU_TIMESTAMP_QUERY_COUNT,
+      resources.resolveBuffer,
+      0,
+    );
+    encoder.copyBufferToBuffer(
+      resources.resolveBuffer,
+      0,
+      resources.readbackBuffer,
+      0,
+      RELEASE_GPU_TIMESTAMP_RESULT_BYTES,
+    );
+    this.releaseGpuTimingBusy = true;
+  }
+
+  private scheduleReleaseGpuTimingReadback(
+    resources: ReleaseGpuTimingCaptureResources,
+  ): void {
+    const { generation, readbackBuffer } = resources;
+    const timingPromise = readbackBuffer.mapAsync(
+      GPUMapMode.READ,
+      0,
+      RELEASE_GPU_TIMESTAMP_RESULT_BYTES,
+    ).then(() => {
+      try {
+        const timestampCopy = readbackBuffer
+          .getMappedRange(0, RELEASE_GPU_TIMESTAMP_RESULT_BYTES)
+          .slice(0);
+        const timestamps = new BigUint64Array(timestampCopy);
+        const intervalMs = (start: bigint, end: bigint): number | null =>
+          end >= start ? Number(end - start) / 1_000_000 : null;
+        const phaseDurations = Array.from(
+          { length: RELEASE_GPU_TIMESTAMP_BOUNDARY_COUNT - 1 },
+          (_, phaseIndex) => intervalMs(
+            timestamps[phaseIndex * 2 + 1],
+            timestamps[(phaseIndex + 1) * 2],
+          ),
+        );
+        const markerDurations = Array.from(
+          { length: RELEASE_GPU_TIMESTAMP_BOUNDARY_COUNT },
+          (_, boundaryIndex) => intervalMs(
+            timestamps[boundaryIndex * 2],
+            timestamps[boundaryIndex * 2 + 1],
+          ),
+        );
+        if (
+          phaseDurations.some((duration) => duration === null)
+          || markerDurations.some((duration) => duration === null)
+        ) {
+          return null;
+        }
+        const [
+          finalStampAccumulationMs,
+          liveMipAndPresentationMs,
+          permanentCommitMs,
+          canonicalPresentationMs,
+          swapchainCopyMs,
+          historyCaptureMs,
+        ] = phaseDurations as number[];
+        const timestampMarkerOverheadMs = (markerDurations as number[])
+          .reduce((sum, duration) => sum + duration, 0);
+        return {
+          supported: true,
+          finalStampAccumulationMs,
+          liveMipAndPresentationMs,
+          permanentCommitMs,
+          canonicalPresentationMs,
+          swapchainCopyMs,
+          historyCaptureMs,
+          timestampMarkerOverheadMs,
+          totalReleaseSubmissionMs: (phaseDurations as number[])
+            .reduce((sum, duration) => sum + duration, 0),
+        } satisfies ReleaseGpuPhaseTiming;
+      } finally {
+        readbackBuffer.unmap();
+      }
+    }).catch(() => null).then((timing) => {
+      if (generation !== this.releaseGpuTimingGeneration) return null;
+      this.lastReleaseGpuTiming = timing;
+      return timing;
+    }).finally(() => {
+      if (readbackBuffer.mapState === "mapped") readbackBuffer.unmap();
+      this.releaseGpuTimingBusy = false;
+      this.destroyReleaseGpuTimingResources(resources);
+    });
+    this.releaseGpuTimingPromise = timingPromise;
+  }
+
+  private abortReleaseGpuTimingCapture(
+    resources: ReleaseGpuTimingCaptureResources,
+  ): void {
+    this.releaseGpuTimingBusy = false;
+    this.releaseGpuTimingPromise = null;
+    this.lastReleaseGpuTiming = null;
+    this.destroyReleaseGpuTimingResources(resources);
+  }
+
   startStrokePerformanceProfile(): void {
+    this.prepareReleaseGpuTimingCapture();
     startStrokePerformanceProfile(this);
   }
 
   finishStrokePerformanceProfile(): StrokePerformanceProfile | null {
-    return finishStrokePerformanceProfile(this);
+    const profile = finishStrokePerformanceProfile(this);
+    if (!this.releaseGpuTimingBusy && this.releaseGpuTimingPromise === null) {
+      this.destroyReleaseGpuTimingResources();
+    }
+    return profile;
+  }
+
+  waitForReleaseGpuTiming(): Promise<ReleaseGpuPhaseTiming | null> {
+    return this.releaseGpuTimingPromise
+      ?? Promise.resolve(this.lastReleaseGpuTiming);
   }
 
   getBenchmarkEnvironment(): {
@@ -6363,12 +6930,11 @@ export class BrushEngine {
   }
 
   /**
-   * True only when the currently selected brush can accept a pointer-down
-   * without using a placeholder or turning that gesture into lazy warm-up.
+   * Dependencies are separate from the GPU fence: resource objects can exist
+   * while their first clear, pipeline creation or binding transition is still
+   * deferred by the implementation.
    */
-  currentBrushResourcesReady(): boolean {
-    if (!this.initialized) return false;
-    const settings = this.settings;
+  private brushDependenciesReady(settings: BrushSettings): boolean {
     const grainReady = settings.grainMode === "off" || (
       this.grainLoadingPromise === null
       && this.grainResident
@@ -6388,6 +6954,571 @@ export class BrushEngine {
     const selectionReady = this.pixelSelectionState.selectedPixels === 0
       || this.selectionPipelinesReady;
     return grainReady && shapeReady && glazeReady && blendReady && selectionReady;
+  }
+
+  private brushGpuPipelineFamily(settings: BrushSettings): string {
+    if (settings.tool === "blend") return "blend";
+    if (settings.tool === "erase") return "erase";
+    if (usesStrokeGlazeRenderer(settings)) {
+      if (settings.blendMode === "light-glaze" || settings.blendMode === "m1-glaze") {
+        return "light-m1";
+      }
+      return settings.blendMode === "intense-blending" ? "intense" : "uniformed";
+    }
+    return settings.blendMode === "additive" ? "additive" : "normal";
+  }
+
+  private brushGpuWarmupKey(settings: BrushSettings): string {
+    const grainActive = isTexturizedGrainActive(settings);
+    const shape = settings.shape === "shape"
+      ? [
+        "shape",
+        this.shapeLoadedAssetId,
+        this.shapeLoadedInvert ? 1 : 0,
+        this.shapeMaskIdentity,
+        this.shapeResourceRevision,
+      ].join(":" )
+      : "circle";
+    const grain = grainActive
+      ? [
+        "grain",
+        this.grainLoadedAssetId,
+        this.grainTextureIdentity,
+        this.grainResourceRevision,
+        grainCoordinateMode(settings),
+        settings.grainFiltering,
+      ].join(":" )
+      : "grain-off";
+    const glaze = usesStrokeGlazeRenderer(settings)
+      ? `${lightGlazeStorageModeFor(settings.blendMode)}:${this.lightGlazeResourceRevision}`
+      : "no-glaze";
+    const blendVariant = settings.tool === "blend"
+      ? `blur-${settings.blendBlur > 0 ? "on" : "off"}`
+      : "no-blend";
+    return [
+      this.layerFormat,
+      this.layerResourceRevision,
+      this.brushGpuPipelineFamily(settings),
+      shape,
+      grain,
+      glaze,
+      blendVariant,
+      this.pixelSelectionState.selectedPixels > 0 ? "selection-on" : "selection-off",
+    ].join("|");
+  }
+
+  private rasterBrushPipelineForWarmup(
+    settings: BrushSettings,
+    shapeOccupancy: boolean,
+  ): GPURenderPipeline {
+    const grainActive = isTexturizedGrainActive(settings);
+    const isShape = settings.shape === "shape";
+    if (usesStrokeGlazeRenderer(settings)) {
+      const lightNoBuildUp = settings.blendMode === "light-glaze"
+        || settings.blendMode === "m1-glaze";
+      if (lightNoBuildUp) {
+        return grainActive
+          ? isShape
+            ? shapeOccupancy
+              ? this.grainLightNoBuildUpShapeOccupancyPipeline
+              : this.grainLightNoBuildUpShapePipeline
+            : this.grainLightNoBuildUpPipeline
+          : isShape
+            ? shapeOccupancy
+              ? this.lightNoBuildUpShapeOccupancyPipeline
+              : this.lightNoBuildUpShapePipeline
+            : this.lightNoBuildUpPipeline;
+      }
+      if (settings.blendMode === "intense-blending") {
+        return grainActive
+          ? isShape
+            ? shapeOccupancy
+              ? this.grainIntenseBlendingShapeOccupancyPipeline
+              : this.grainIntenseBlendingShapePipeline
+            : this.grainIntenseBlendingPipeline
+          : isShape
+            ? shapeOccupancy
+              ? this.intenseBlendingShapeOccupancyPipeline
+              : this.intenseBlendingShapePipeline
+            : this.intenseBlendingPipeline;
+      }
+      return grainActive
+        ? isShape
+          ? shapeOccupancy
+            ? this.grainUniformedGlazeShapeOccupancyPipeline
+            : this.grainUniformedGlazeShapePipeline
+          : this.grainUniformedGlazePipeline
+        : isShape
+          ? shapeOccupancy
+            ? this.uniformedGlazeShapeOccupancyPipeline
+            : this.uniformedGlazeShapePipeline
+          : this.uniformedGlazePipeline;
+    }
+    if (settings.tool === "erase") {
+      return grainActive
+        ? isShape
+          ? shapeOccupancy
+            ? this.grainShapeOccupancyErasePipeline
+            : this.grainShapeErasePipeline
+          : this.grainErasePipeline
+        : isShape
+          ? shapeOccupancy
+            ? this.shapeOccupancyErasePipeline
+            : this.shapeErasePipeline
+          : this.erasePipeline;
+    }
+    return grainActive
+      ? isShape
+        ? shapeOccupancy
+          ? settings.blendMode === "additive"
+            ? this.grainShapeOccupancyAdditivePipeline
+            : this.grainShapeOccupancyNormalPipeline
+          : settings.blendMode === "additive"
+            ? this.grainShapeAdditivePipeline
+            : this.grainShapeNormalPipeline
+        : settings.blendMode === "additive"
+          ? this.grainAdditivePipeline
+          : this.grainNormalPipeline
+      : isShape
+        ? shapeOccupancy
+          ? settings.blendMode === "additive"
+            ? this.shapeOccupancyAdditivePipeline
+            : this.shapeOccupancyNormalPipeline
+          : settings.blendMode === "additive"
+            ? this.shapeAdditivePipeline
+            : this.shapeNormalPipeline
+        : settings.blendMode === "additive" ? this.additivePipeline : this.normalPipeline;
+  }
+
+  /**
+   * Executes the selected Paint/Eraser bundle against tiny private resources.
+   * It deliberately includes both Shape branches and the release commit path;
+   * nothing here can mutate the document or create a History action.
+   */
+  private async prewarmSelectedRasterBrushGpu(settings: BrushSettings): Promise<void> {
+    const scratchExtent = 8;
+    const buffers: GPUBuffer[] = [];
+    const textures: GPUTexture[] = [];
+    const createBuffer = (
+      label: string,
+      size: number,
+      usage: number,
+    ): GPUBuffer => {
+      const buffer = this.device.createBuffer({ label, size, usage });
+      buffers.push(buffer);
+      return buffer;
+    };
+    const createTexture = (
+      label: string,
+      format: GPUTextureFormat,
+      usage: number,
+    ): GPUTexture => {
+      const texture = this.device.createTexture({
+        label,
+        size: { width: scratchExtent, height: scratchExtent, depthOrArrayLayers: 1 },
+        format,
+        usage,
+      });
+      textures.push(texture);
+      return texture;
+    };
+
+    const brushUniformBuffer = createBuffer(
+      "Selected brush warm-up uniforms",
+      BRUSH_UNIFORM_BYTES,
+      GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    );
+    const instanceBuffer = createBuffer(
+      "Selected brush warm-up stamp",
+      STAMP_STRIDE_BYTES,
+      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    );
+    const occupancyBuffer = createBuffer(
+      "Selected brush warm-up occupancy",
+      SHAPE_OCCUPANCY_MAP_BYTES,
+      GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    );
+    const grainUniformBuffer = createBuffer(
+      "Selected brush warm-up Grain uniforms",
+      GRAIN_UNIFORM_BYTES,
+      GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    );
+
+    const warmSettings: BrushSettings = {
+      ...settings,
+      count: 1,
+      opacity: 1,
+      flow: 1,
+      hueJitterDegrees: 0,
+      saturationJitter: 0,
+      lightnessJitter: 0,
+      darknessJitter: 0,
+      positionJitterLateral: 0,
+      positionJitterLinear: 0,
+      shapeScatter: 0,
+    };
+    const brushUpload = new ArrayBuffer(BRUSH_UNIFORM_BYTES);
+    populateBrushUniformUpload(
+      brushUpload,
+      warmSettings,
+      scratchExtent,
+      scratchExtent,
+      0,
+      0,
+    );
+    const stampUpload = new ArrayBuffer(STAMP_STRIDE_BYTES);
+    const stampFloats = new Float32Array(stampUpload);
+    const stampUnsigned = new Uint32Array(stampUpload);
+    stampFloats[0] = scratchExtent * 0.5;
+    stampFloats[1] = scratchExtent * 0.5;
+    stampFloats[2] = scratchExtent * 0.375;
+    stampFloats[3] = 1;
+    stampUnsigned[4] = 1;
+    stampFloats[6] = 1;
+    stampFloats[7] = 0;
+    const grainUpload = new Float32Array(GRAIN_UNIFORM_BYTES / 4);
+    populateGrainUniformUpload(
+      grainUpload,
+      warmSettings,
+      this.grainTextureWidth,
+      this.grainTextureMipLevelCount,
+    );
+    const occupancyUpload = new Uint32Array(SHAPE_OCCUPANCY_MAP_BYTES / 4);
+    occupancyUpload.fill(0xffffffff);
+    this.device.queue.writeBuffer(brushUniformBuffer, 0, brushUpload);
+    this.device.queue.writeBuffer(instanceBuffer, 0, stampUpload);
+    this.device.queue.writeBuffer(grainUniformBuffer, 0, grainUpload);
+    this.device.queue.writeBuffer(occupancyBuffer, 0, occupancyUpload);
+
+    const baseEntries: GPUBindGroupEntry[] = [
+      { binding: 0, resource: { buffer: brushUniformBuffer } },
+      { binding: 1, resource: { buffer: instanceBuffer } },
+      { binding: 2, resource: this.shapeMaskView },
+      { binding: 3, resource: this.shapeMaskSampler },
+    ];
+    const brushBindGroup = this.device.createBindGroup({
+      label: "Selected brush warm-up bind group",
+      layout: this.brushBindGroupLayout,
+      entries: baseEntries,
+    });
+    const brushOccupancyBindGroup = this.device.createBindGroup({
+      label: "Selected brush warm-up occupancy bind group",
+      layout: this.brushOccupancyBindGroupLayout,
+      entries: [...baseEntries, { binding: 4, resource: { buffer: occupancyBuffer } }],
+    });
+    const coordinateMode = grainCoordinateMode(settings);
+    const grainEntries: GPUBindGroupEntry[] = [
+      ...baseEntries,
+      { binding: 5, resource: this.grainTextureView },
+      { binding: 6, resource: this.grainSamplers[coordinateMode][settings.grainFiltering] },
+      { binding: 7, resource: { buffer: grainUniformBuffer } },
+    ];
+    const grainBindGroup = this.device.createBindGroup({
+      label: "Selected brush warm-up Grain bind group",
+      layout: this.grainBrushBindGroupLayout,
+      entries: grainEntries,
+    });
+    const grainOccupancyBindGroup = this.device.createBindGroup({
+      label: "Selected brush warm-up Grain occupancy bind group",
+      layout: this.grainBrushOccupancyBindGroupLayout,
+      entries: [...grainEntries, { binding: 4, resource: { buffer: occupancyBuffer } }],
+    });
+
+    const glaze = usesStrokeGlazeRenderer(settings);
+    const accumulatorFormat: GPUTextureFormat = glaze
+      && lightGlazeStorageModeFor(settings.blendMode) === "r16float-coverage"
+      ? "r16float"
+      : this.layerFormat;
+    const accumulatorTexture = createTexture(
+      "Selected brush warm-up accumulator",
+      accumulatorFormat,
+      GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    );
+    const accumulatorView = accumulatorTexture.createView();
+    const inPlaceCommit = glaze
+      && this.lightGlazeInPlaceCommitPipeline
+      && this.lightGlazeInPlaceCommitBindGroupLayout;
+    const layerScratchTexture = glaze
+      ? createTexture(
+        "Selected brush warm-up release target",
+        this.layerFormat,
+        GPUTextureUsage.RENDER_ATTACHMENT
+          | GPUTextureUsage.TEXTURE_BINDING
+          | (inPlaceCommit ? GPUTextureUsage.STORAGE_BINDING : 0),
+      )
+      : accumulatorTexture;
+    const layerScratchView = glaze ? layerScratchTexture.createView() : accumulatorView;
+    const canvasScratchTexture = createTexture(
+      "Selected brush warm-up presentation target",
+      this.canvasFormat,
+      GPUTextureUsage.RENDER_ATTACHMENT,
+    );
+    const canvasScratchView = canvasScratchTexture.createView();
+
+    const encoder = this.device.createCommandEncoder({
+      label: `Prewarm selected ${this.brushGpuPipelineFamily(settings)} brush`,
+    });
+    const drawFullscreen = (
+      label: string,
+      view: GPUTextureView,
+      pipeline: GPURenderPipeline,
+      bindGroup: GPUBindGroup | null = null,
+      dynamicOffsets?: readonly number[],
+    ): void => {
+      const pass = encoder.beginRenderPass({
+        label,
+        colorAttachments: [{
+          view,
+          loadOp: "clear",
+          storeOp: "store",
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+        }],
+      });
+      pass.setPipeline(pipeline);
+      if (bindGroup) {
+        pass.setBindGroup(0, bindGroup, dynamicOffsets ?? []);
+      }
+      pass.draw(3, 1, 0, 0);
+      pass.end();
+    };
+
+    try {
+      if (glaze) {
+        drawFullscreen(
+          "Warm selected glaze clear pipeline",
+          accumulatorView,
+          accumulatorFormat === "r16float"
+            ? this.lightGlazeClearR16Pipeline
+            : this.lightGlazeClearRgba16FloatPipeline,
+        );
+      }
+
+      const grainActive = isTexturizedGrainActive(settings);
+      const shapeOccupancyVariants = settings.shape === "shape"
+        ? [false, true]
+        : [false];
+      for (const occupancy of shapeOccupancyVariants) {
+        const pass = encoder.beginRenderPass({
+          label: occupancy
+            ? "Warm selected brush Shape occupancy pipeline"
+            : "Warm selected brush primary pipeline",
+          colorAttachments: [{
+            view: accumulatorView,
+            loadOp: "load",
+            storeOp: "store",
+          }],
+        });
+        bindPaintPipelineWithPixelSelection(
+          this,
+          pass,
+          this.rasterBrushPipelineForWarmup(settings, occupancy),
+        );
+        pass.setBindGroup(
+          0,
+          grainActive
+            ? occupancy ? grainOccupancyBindGroup : grainBindGroup
+            : occupancy ? brushOccupancyBindGroup : brushBindGroup,
+        );
+        pass.draw(STAMP_VERTICES_PER_COPY, 1, 0, 0);
+        pass.end();
+      }
+
+      if (glaze) {
+        const lightUniformBuffer = createBuffer(
+          "Selected brush warm-up glaze uniforms",
+          LIGHT_GLAZE_UNIFORM_BYTES,
+          GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        );
+        const lightUniformUpload = new ArrayBuffer(LIGHT_GLAZE_UNIFORM_BYTES);
+        const lightNoBuildUp = settings.blendMode === "light-glaze"
+          || settings.blendMode === "m1-glaze";
+        populateStrokeGlazeUniformUpload(
+          lightUniformUpload,
+          1,
+          this.layerFormat,
+          lightNoBuildUp
+            ? "light-no-build-up"
+            : settings.blendMode === "intense-blending"
+              ? "encoded-srgb-source-over"
+              : "source-over",
+          [1, 1, 1],
+        );
+        this.device.queue.writeBuffer(lightUniformBuffer, 0, lightUniformUpload);
+
+        drawFullscreen(
+          "Warm selected glaze live mip composite",
+          layerScratchView,
+          this.lightGlazeCompositeMipPipeline,
+          this.lightGlazeCompositeMipBindGroup!,
+        );
+        drawFullscreen(
+          "Warm selected glaze final-stack mip composite",
+          layerScratchView,
+          this.lightGlazeFinalRasterStackCompositeMipPipeline,
+          this.lightGlazeCompositeMipBindGroup!,
+        );
+        if (this.lightGlazeMipDownsampleBindGroups[0]) {
+          drawFullscreen(
+            "Warm selected glaze mip downsample",
+            layerScratchView,
+            this.paintMipDownsamplePipeline,
+            this.lightGlazeMipDownsampleBindGroups[0],
+          );
+        }
+
+        if (lightNoBuildUp) {
+          drawFullscreen(
+            "Warm selected glaze release composite",
+            layerScratchView,
+            this.lightGlazeCompositePipeline,
+            this.lightGlazeCompositeBindGroup!,
+          );
+        } else {
+          const commitUniformBuffer = createBuffer(
+            "Selected brush warm-up commit rectangle",
+            LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BYTES,
+            GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+          );
+          this.device.queue.writeBuffer(
+            commitUniformBuffer,
+            0,
+            new Uint32Array([0, 0, scratchExtent, scratchExtent]),
+          );
+          if (this.lightGlazeInPlaceCommitPipeline && this.lightGlazeInPlaceCommitBindGroupLayout) {
+            const bindGroup = this.device.createBindGroup({
+              label: "Selected brush warm-up in-place commit bind group",
+              layout: this.lightGlazeInPlaceCommitBindGroupLayout,
+              entries: [
+                { binding: 0, resource: layerScratchView },
+                { binding: 1, resource: accumulatorView },
+                { binding: 2, resource: { buffer: lightUniformBuffer } },
+                { binding: 3, resource: { buffer: commitUniformBuffer } },
+              ],
+            });
+            const pass = encoder.beginComputePass({
+              label: "Warm selected high-precision glaze release commit",
+            });
+            pass.setPipeline(this.lightGlazeInPlaceCommitPipeline);
+            pass.setBindGroup(0, bindGroup);
+            pass.dispatchWorkgroups(1, 1, 1);
+            pass.end();
+          } else {
+            const bindGroup = this.device.createBindGroup({
+              label: "Selected brush warm-up tile commit bind group",
+              layout: this.lightGlazeCommitTileBindGroupLayout,
+              entries: [
+                { binding: 0, resource: layerScratchView },
+                { binding: 1, resource: accumulatorView },
+                { binding: 2, resource: { buffer: lightUniformBuffer } },
+                {
+                  binding: 3,
+                  resource: {
+                    buffer: commitUniformBuffer,
+                    offset: 0,
+                    size: LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BYTES,
+                  },
+                },
+              ],
+            });
+            drawFullscreen(
+              "Warm selected high-precision glaze tile release",
+              layerScratchView,
+              this.lightGlazeCommitTilePipeline,
+              bindGroup,
+              [0],
+            );
+          }
+        }
+
+        drawFullscreen(
+          "Warm selected glaze live presentation",
+          canvasScratchView,
+          this.lightGlazeDisplayPipeline,
+          this.lightGlazeDisplayBindGroup!,
+        );
+        drawFullscreen(
+          "Warm selected glaze final-stack live presentation",
+          canvasScratchView,
+          this.lightGlazeFinalRasterStackDisplayPipeline,
+          this.lightGlazeDisplayBindGroup!,
+        );
+      } else if (this.paintMipDownsampleBindGroups[0]) {
+        drawFullscreen(
+          "Warm selected direct-paint mip downsample",
+          layerScratchView,
+          this.paintMipDownsamplePipeline,
+          this.paintMipDownsampleBindGroups[0],
+        );
+      }
+
+      drawFullscreen(
+        "Warm selected brush canonical presentation",
+        canvasScratchView,
+        this.displayPipeline,
+        this.displayBindGroup,
+      );
+      drawFullscreen(
+        "Warm selected brush final-stack presentation",
+        canvasScratchView,
+        this.finalRasterStackDisplayPipeline,
+        this.displayBindGroup,
+      );
+
+      this.device.queue.submit([encoder.finish()]);
+      await this.device.queue.onSubmittedWorkDone();
+    } finally {
+      for (const texture of textures) texture.destroy();
+      for (const buffer of buffers) buffer.destroy();
+    }
+  }
+
+  private rememberCompletedBrushGpuWarmup(key: string): void {
+    if (this.completedBrushGpuWarmupKeys.has(key)) return;
+    if (this.completedBrushGpuWarmupKeys.size >= 64) {
+      const oldest = this.completedBrushGpuWarmupKeys.values().next().value;
+      if (typeof oldest === "string") this.completedBrushGpuWarmupKeys.delete(oldest);
+    }
+    this.completedBrushGpuWarmupKeys.add(key);
+  }
+
+  private async ensureSelectedBrushGpuReady(settings: BrushSettings): Promise<void> {
+    const key = this.brushGpuWarmupKey(settings);
+    if (this.completedBrushGpuWarmupKeys.has(key)) return;
+    if (this.brushGpuWarmupPromise) {
+      await this.brushGpuWarmupPromise;
+      if (!this.completedBrushGpuWarmupKeys.has(key)) {
+        await this.ensureSelectedBrushGpuReady(settings);
+      }
+      return;
+    }
+
+    const warmup = settings.tool === "blend"
+      ? this.blendRenderer!.prewarmSelectedVariant(settings)
+      : this.prewarmSelectedRasterBrushGpu(settings);
+    this.brushGpuWarmupPromise = warmup;
+    try {
+      await warmup;
+      this.rememberCompletedBrushGpuWarmup(key);
+    } finally {
+      if (this.brushGpuWarmupPromise === warmup) {
+        this.brushGpuWarmupPromise = null;
+      }
+      maybeReleaseIdleBlendScratch(this);
+      maybeReleaseIdleLightGlazeResources(this);
+      maybeReleaseIdleGrainResources(this);
+      maybeReleaseIdleShapeResources(this);
+    }
+  }
+
+  /**
+   * True only when the selected brush can accept pointer-down without any
+   * lazy GPU allocation, pipeline creation or first-use initialization.
+   */
+  currentBrushResourcesReady(): boolean {
+    if (!this.initialized) return false;
+    const settings = this.settings;
+    return this.brushDependenciesReady(settings)
+      && this.completedBrushGpuWarmupKeys.has(this.brushGpuWarmupKey(settings));
   }
 
   /**
@@ -6430,6 +7561,11 @@ export class BrushEngine {
       if (usesStrokeGlazeRenderer(settings)) {
         await this.ensureLightGlazeResources(settings.blendMode);
       }
+      if (settings !== this.settings) continue;
+      if (!this.brushDependenciesReady(settings)) {
+        throw new Error("Brush dependencies are incomplete after preparation.");
+      }
+      await this.ensureSelectedBrushGpuReady(settings);
       if (settings !== this.settings) continue;
       if (!this.currentBrushResourcesReady()) {
         throw new Error("Brush resources are incomplete after preparation.");
@@ -8878,13 +10014,19 @@ export class BrushEngine {
         resources = await runGpuAllocationTransaction(
           this.device,
           `Glaze rendering allocation ${storageMode}`,
-          (transaction) => {
+          async (transaction) => {
             const candidate = createLightGlazeResourceSet(this, storageMode);
             this.lightGlazeTransitionPeakMiB = Math.max(
               this.lightGlazeTransitionPeakMiB,
-              steadyTotalMiB + lightGlazeAdditionalMemoryMiB(this.layerFormat, storageMode),
+              steadyTotalMiB + lightGlazeAdditionalMemoryMiB(
+                this.layerFormat,
+                storageMode,
+                undefined,
+                !this.lightGlazeInPlaceCommitPipeline,
+              ),
             );
             transaction.deferRollback(() => destroyLightGlazeResourceSet(candidate));
+            await initializeLightGlazeResourceSet(this, candidate);
             return candidate;
           },
         );
@@ -10778,7 +11920,6 @@ export class BrushEngine {
       // the successful rebuild requests a fresh frame after publishing new views.
       return;
     }
-
     const resizeStart = performance.now();
     this.resizeCanvas();
     const resizeCanvasMs = performance.now() - resizeStart;
@@ -10939,9 +12080,11 @@ export class BrushEngine {
     clearLayer: boolean,
     capturedSlice: GpuHistorySlice | null = timing.historyGpuSlice,
   ): void {
-    if (batch.length === 0 || batch[0].historyActionId === 0) {
-      return;
-    }
+    const recordCpuStartedAt = this.activeStrokeProfile ? performance.now() : 0;
+    try {
+      if (batch.length === 0 || batch[0].historyActionId === 0) {
+        return;
+      }
     const actionId = batch[0].historyActionId;
     if (batch.at(-1)?.historyActionId !== actionId) {
       if (capturedSlice) this.historyGpuStorage.release(capturedSlice);
@@ -11027,9 +12170,15 @@ export class BrushEngine {
       this.activeStroke.submitted = true;
     }
 
-    if (this.activeStrokeProfile) {
-      this.activeStrokeProfile.historyCapturedBaseStamps += batch.length;
-      this.activeStrokeProfile.historyCapturedBatches += 1;
+      if (this.activeStrokeProfile) {
+        this.activeStrokeProfile.historyCapturedBaseStamps += batch.length;
+        this.activeStrokeProfile.historyCapturedBatches += 1;
+      }
+    } finally {
+      if (recordCpuStartedAt > 0) {
+        this.historyRecordCpuCount += 1;
+        this.historyRecordCpuTotalMs += performance.now() - recordCpuStartedAt;
+      }
     }
   }
 
@@ -12092,27 +13241,35 @@ export class BrushEngine {
     if (stamps.length === 0 || stamps[0].historyActionId === 0) {
       return null;
     }
-    const actionId = stamps[0].historyActionId;
-    if (stamps.at(-1)?.historyActionId !== actionId) {
-      throw new Error("A live Paint submission contains multiple strokes.");
-    }
-    const byteLength = stamps.length * STAMP_STRIDE_BYTES;
-    const slice = this.historyGpuStorage.allocate(
-      byteLength,
-      `${label} · action ${actionId} · ${stamps.length} stamps`,
-    );
+    const captureCpuStartedAt = this.activeStrokeProfile ? performance.now() : 0;
     try {
-      encoder.copyBufferToBuffer(
-        this.instanceBuffer,
-        0,
-        slice.buffer,
-        slice.offsetBytes,
+      const actionId = stamps[0].historyActionId;
+      if (stamps.at(-1)?.historyActionId !== actionId) {
+        throw new Error("A live Paint submission contains multiple strokes.");
+      }
+      const byteLength = stamps.length * STAMP_STRIDE_BYTES;
+      const slice = this.historyGpuStorage.allocate(
         byteLength,
+        `${label} · action ${actionId} · ${stamps.length} stamps`,
       );
-      return slice;
-    } catch (error) {
-      this.historyGpuStorage.release(slice);
-      throw error;
+      try {
+        encoder.copyBufferToBuffer(
+          this.instanceBuffer,
+          0,
+          slice.buffer,
+          slice.offsetBytes,
+          byteLength,
+        );
+        return slice;
+      } catch (error) {
+        this.historyGpuStorage.release(slice);
+        throw error;
+      }
+    } finally {
+      if (captureCpuStartedAt > 0) {
+        this.historyGpuCaptureCpuCount += 1;
+        this.historyGpuCaptureCpuTotalMs += performance.now() - captureCpuStartedAt;
+      }
     }
   }
 
@@ -12140,6 +13297,127 @@ export class BrushEngine {
       throw error;
     }
   }
+
+  private encodeLightGlazePermanentCommit(
+    encoder: GPUCommandEncoder,
+    blendMode: BlendMode,
+    dirtyRect: DirtyRect,
+  ): void {
+    if (blendMode !== "uniformed-glaze" && blendMode !== "intense-blending") {
+      const compositePass = encoder.beginRenderPass({
+        label: "Commit complete Light Glaze stroke once",
+        colorAttachments: [{
+          view: this.layerView,
+          loadOp: "load",
+          storeOp: "store",
+        }],
+      });
+      compositePass.setPipeline(this.lightGlazeCompositePipeline);
+      compositePass.setBindGroup(0, this.lightGlazeCompositeBindGroup!);
+      compositePass.setScissorRect(
+        dirtyRect.x,
+        dirtyRect.y,
+        dirtyRect.width,
+        dirtyRect.height,
+      );
+      compositePass.draw(3, 1, 0, 0);
+      compositePass.end();
+      return;
+    }
+
+    const inPlacePipeline = this.lightGlazeInPlaceCommitPipeline;
+    const inPlaceBindGroup = this.lightGlazeInPlaceCommitBindGroup;
+    if (inPlacePipeline && inPlaceBindGroup) {
+      this.device.queue.writeBuffer(
+        this.lightGlazeCommitTileUniformBuffer,
+        0,
+        new Uint32Array([
+          dirtyRect.x,
+          dirtyRect.y,
+          dirtyRect.width,
+          dirtyRect.height,
+        ]),
+      );
+      const computePass = encoder.beginComputePass({
+        label: "Commit high precision glaze directly into resident layer",
+      });
+      computePass.setPipeline(inPlacePipeline);
+      computePass.setBindGroup(0, inPlaceBindGroup);
+      computePass.dispatchWorkgroups(
+        Math.ceil(dirtyRect.width / 8),
+        Math.ceil(dirtyRect.height / 8),
+      );
+      computePass.end();
+      return;
+    }
+
+    if (
+      !this.lightGlazeCommitTileTexture
+      || !this.lightGlazeCommitTileView
+      || !this.lightGlazeCommitTileBindGroup
+    ) {
+      throw new Error("The high precision glaze commit path is unavailable.");
+    }
+    const tileUniformUpload = new Uint32Array(
+      LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BUFFER_BYTES / Uint32Array.BYTES_PER_ELEMENT,
+    );
+    let tileIndex = 0;
+    const dirtyRight = dirtyRect.x + dirtyRect.width;
+    const dirtyBottom = dirtyRect.y + dirtyRect.height;
+    for (
+      let tileY = dirtyRect.y;
+      tileY < dirtyBottom;
+      tileY += LIGHT_GLAZE_COMMIT_TILE_EXTENT
+    ) {
+      for (
+        let tileX = dirtyRect.x;
+        tileX < dirtyRight;
+        tileX += LIGHT_GLAZE_COMMIT_TILE_EXTENT
+      ) {
+        if (tileIndex >= LIGHT_GLAZE_COMMIT_TILE_SLOT_COUNT) {
+          throw new Error("The Intense Blending tile count exceeds the document limit.");
+        }
+        const tileWidth = Math.min(LIGHT_GLAZE_COMMIT_TILE_EXTENT, dirtyRight - tileX);
+        const tileHeight = Math.min(LIGHT_GLAZE_COMMIT_TILE_EXTENT, dirtyBottom - tileY);
+        const uniformWordOffset = (
+          tileIndex * LIGHT_GLAZE_COMMIT_TILE_UNIFORM_STRIDE_BYTES
+        ) / Uint32Array.BYTES_PER_ELEMENT;
+        tileUniformUpload[uniformWordOffset] = tileX;
+        tileUniformUpload[uniformWordOffset + 1] = tileY;
+
+        const tilePass = encoder.beginRenderPass({
+          label: `Commit high precision glaze tile ${tileIndex}`,
+          colorAttachments: [{
+            view: this.lightGlazeCommitTileView,
+            loadOp: "load",
+            storeOp: "store",
+          }],
+        });
+        tilePass.setPipeline(this.lightGlazeCommitTilePipeline);
+        tilePass.setBindGroup(
+          0,
+          this.lightGlazeCommitTileBindGroup,
+          [tileIndex * LIGHT_GLAZE_COMMIT_TILE_UNIFORM_STRIDE_BYTES],
+        );
+        tilePass.setViewport(0, 0, tileWidth, tileHeight, 0, 1);
+        tilePass.setScissorRect(0, 0, tileWidth, tileHeight);
+        tilePass.draw(3, 1, 0, 0);
+        tilePass.end();
+        encoder.copyTextureToTexture(
+          { texture: this.lightGlazeCommitTileTexture },
+          { texture: this.layerTexture, origin: { x: tileX, y: tileY, z: 0 } },
+          { width: tileWidth, height: tileHeight, depthOrArrayLayers: 1 },
+        );
+        tileIndex += 1;
+      }
+    }
+    this.device.queue.writeBuffer(
+      this.lightGlazeCommitTileUniformBuffer,
+      0,
+      tileUniformUpload,
+    );
+  }
+
   private submitLightGlazeImmediate(
     stamps: readonly Stamp[],
     clearLayer: boolean,
@@ -12176,6 +13454,10 @@ export class BrushEngine {
       throw new Error("Glaze rendering resources are missing during rendering.");
     }
     const grainActive = isTexturizedGrainActive(settings);
+    const deferFinalCanonicalPresentation =
+      DEFER_LIGHT_GLAZE_FINAL_CANONICAL_PRESENTATION
+      && present
+      && session.commitRequested;
     const lightNoBuildUp = settings.blendMode === "light-glaze"
       || settings.blendMode === "m1-glaze";
     const stabilizationUpdate = present
@@ -12267,6 +13549,10 @@ export class BrushEngine {
     );
 
     const encoder = this.device.createCommandEncoder({ label: "Light Glaze frame encoder" });
+    const releaseGpuTimingCapture = this.beginReleaseGpuTimingCapture(
+      encoder,
+      session.commitRequested,
+    );
     if (stabilizationRestoreRect && stabilizationRestoreTexture) {
       encoder.copyTextureToTexture(
         { texture: stabilizationRestoreTexture },
@@ -12537,6 +13823,15 @@ export class BrushEngine {
     }
     brushEncodingMs += performance.now() - brushEncodingStart;
 
+    if (releaseGpuTimingCapture) {
+      this.encodeReleaseGpuTimestampBoundary(
+        encoder,
+        releaseGpuTimingCapture,
+        1,
+        "Release GPU marker · final stamp accumulation complete",
+      );
+    }
+
     if (!present && (clearLayer || stampCount > 0 || session.commitRequested)) {
       this.presentationCacheNeedsFullRebuild = true;
       this.paintDisplayMipValidThroughLevel = 0;
@@ -12558,10 +13853,11 @@ export class BrushEngine {
       legacyDisplayShaderPixels = canvasPixels;
       presentationCopiedPixels = canvasPixels;
 
-      // A finalizing frame is presented from the committed permanent layer
-      // below. Intermediate frames use mip 0 for direct live composition and
-      // mip 1+ from the temporary final-composite pyramid.
-      if (!session.commitRequested) {
+      // Intermediate frames, plus the latency-sensitive final frame, use mip 0
+      // for direct live composition and mip 1+ from the temporary exact
+      // final-composite pyramid. The permanent layer is still committed below;
+      // only its duplicate canonical presentation rebuild is deferred.
+      if (!session.commitRequested || deferFinalCanonicalPresentation) {
         const rasterStrokeActive = this.styleStackActive();
         const rasterStrokeUpdate = rasterStrokeActive
           ? this.encodeRasterStrokeUpdate(
@@ -12756,110 +14052,24 @@ export class BrushEngine {
       displayEncodingMs += performance.now() - displayEncodingStart;
     }
 
+    if (releaseGpuTimingCapture) {
+      this.encodeReleaseGpuTimestampBoundary(
+        encoder,
+        releaseGpuTimingCapture,
+        2,
+        "Release GPU marker · live mip and presentation complete",
+      );
+    }
+
     const authoritativeDirtyRect = session.authoritativeDirtyRect;
     if (session.commitRequested) {
       if (session.hasContent && authoritativeDirtyRect) {
         const compositeStart = performance.now();
-        if (
-          session.settings.blendMode === "uniformed-glaze"
-          || session.settings.blendMode === "intense-blending"
-        ) {
-          if (
-            !this.lightGlazeCommitTileTexture
-            || !this.lightGlazeCommitTileView
-            || !this.lightGlazeCommitTileBindGroup
-          ) {
-            throw new Error("The Intense Blending scratch tile is unavailable at commit time.");
-          }
-          const tileUniformUpload = new Uint32Array(
-            LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BUFFER_BYTES / Uint32Array.BYTES_PER_ELEMENT,
-          );
-          let tileIndex = 0;
-          const dirtyRight = authoritativeDirtyRect.x + authoritativeDirtyRect.width;
-          const dirtyBottom = authoritativeDirtyRect.y + authoritativeDirtyRect.height;
-          for (
-            let tileY = authoritativeDirtyRect.y;
-            tileY < dirtyBottom;
-            tileY += LIGHT_GLAZE_COMMIT_TILE_EXTENT
-          ) {
-            for (
-              let tileX = authoritativeDirtyRect.x;
-              tileX < dirtyRight;
-              tileX += LIGHT_GLAZE_COMMIT_TILE_EXTENT
-            ) {
-              if (tileIndex >= LIGHT_GLAZE_COMMIT_TILE_SLOT_COUNT) {
-                throw new Error("The Intense Blending tile count exceeds the document limit.");
-              }
-              const tileWidth = Math.min(
-                LIGHT_GLAZE_COMMIT_TILE_EXTENT,
-                dirtyRight - tileX,
-              );
-              const tileHeight = Math.min(
-                LIGHT_GLAZE_COMMIT_TILE_EXTENT,
-                dirtyBottom - tileY,
-              );
-              const uniformWordOffset = (
-                tileIndex * LIGHT_GLAZE_COMMIT_TILE_UNIFORM_STRIDE_BYTES
-              ) / Uint32Array.BYTES_PER_ELEMENT;
-              tileUniformUpload[uniformWordOffset] = tileX;
-              tileUniformUpload[uniformWordOffset + 1] = tileY;
-
-              const tilePass = encoder.beginRenderPass({
-                label: `Commit high precision glaze tile ${tileIndex}`,
-                colorAttachments: [{
-                  view: this.lightGlazeCommitTileView,
-                  loadOp: "load",
-                  storeOp: "store",
-                }],
-              });
-              tilePass.setPipeline(this.lightGlazeCommitTilePipeline);
-              tilePass.setBindGroup(
-                0,
-                this.lightGlazeCommitTileBindGroup,
-                [tileIndex * LIGHT_GLAZE_COMMIT_TILE_UNIFORM_STRIDE_BYTES],
-              );
-              tilePass.setViewport(0, 0, tileWidth, tileHeight, 0, 1);
-              tilePass.setScissorRect(0, 0, tileWidth, tileHeight);
-              tilePass.draw(3, 1, 0, 0);
-              tilePass.end();
-              encoder.copyTextureToTexture(
-                { texture: this.lightGlazeCommitTileTexture },
-                {
-                  texture: this.layerTexture,
-                  origin: { x: tileX, y: tileY, z: 0 },
-                },
-                { width: tileWidth, height: tileHeight, depthOrArrayLayers: 1 },
-              );
-              tileIndex += 1;
-            }
-          }
-          this.device.queue.writeBuffer(
-            this.lightGlazeCommitTileUniformBuffer,
-            0,
-            tileUniformUpload,
-          );
-        } else {
-          const compositePass = encoder.beginRenderPass({
-            label: "Commit complete Light Glaze stroke once",
-            colorAttachments: [
-              {
-                view: this.layerView,
-                loadOp: "load",
-                storeOp: "store",
-              },
-            ],
-          });
-          compositePass.setPipeline(this.lightGlazeCompositePipeline);
-          compositePass.setBindGroup(0, this.lightGlazeCompositeBindGroup!);
-          compositePass.setScissorRect(
-            authoritativeDirtyRect.x,
-            authoritativeDirtyRect.y,
-            authoritativeDirtyRect.width,
-            authoritativeDirtyRect.height,
-          );
-          compositePass.draw(3, 1, 0, 0);
-          compositePass.end();
-        }
+        this.encodeLightGlazePermanentCommit(
+          encoder,
+          session.settings.blendMode,
+          authoritativeDirtyRect,
+        );
         brushEncodingMs += performance.now() - compositeStart;
         lightGlazeCommits = 1;
         lightGlazeCompositePixels = authoritativeDirtyRect.width
@@ -12867,7 +14077,16 @@ export class BrushEngine {
       }
       this.noteLayerMutation(authoritativeDirtyRect, false);
 
-      if (present) {
+      if (releaseGpuTimingCapture) {
+        this.encodeReleaseGpuTimestampBoundary(
+          encoder,
+          releaseGpuTimingCapture,
+          3,
+          "Release GPU marker · permanent commit complete",
+        );
+      }
+
+      if (present && !deferFinalCanonicalPresentation) {
         const canonicalDisplayStart = performance.now();
         const rasterStrokeActive = this.styleStackActive();
         const rasterStrokeUpdate = rasterStrokeActive
@@ -13045,6 +14264,15 @@ export class BrushEngine {
       }
     }
 
+    if (releaseGpuTimingCapture) {
+      this.encodeReleaseGpuTimestampBoundary(
+        encoder,
+        releaseGpuTimingCapture,
+        4,
+        "Release GPU marker · canonical presentation complete",
+      );
+    }
+
     if (present) {
       const displayEncodingStart = performance.now();
       const currentTexture = this.context.getCurrentTexture();
@@ -13060,6 +14288,15 @@ export class BrushEngine {
       displayEncodingMs += performance.now() - displayEncodingStart;
     }
 
+    if (releaseGpuTimingCapture) {
+      this.encodeReleaseGpuTimestampBoundary(
+        encoder,
+        releaseGpuTimingCapture,
+        5,
+        "Release GPU marker · swapchain copy complete",
+      );
+    }
+
     let historyGpuSlice: GpuHistorySlice | null = null;
     const submitStart = performance.now();
     try {
@@ -13070,9 +14307,18 @@ export class BrushEngine {
           "Paint glaze",
         );
       }
+      if (releaseGpuTimingCapture) {
+        this.finishReleaseGpuTimingEncoding(encoder, releaseGpuTimingCapture);
+      }
       this.device.queue.submit([encoder.finish()]);
+      if (releaseGpuTimingCapture) {
+        this.scheduleReleaseGpuTimingReadback(releaseGpuTimingCapture);
+      }
     } catch (error) {
       if (historyGpuSlice) this.historyGpuStorage.release(historyGpuSlice);
+      if (releaseGpuTimingCapture) {
+        this.abortReleaseGpuTimingCapture(releaseGpuTimingCapture);
+      }
       retiredStabilizationSnapshot?.destroy();
       this.stabilizationSnapshotRect = null;
       throw error;
@@ -13092,6 +14338,13 @@ export class BrushEngine {
       this.presentationCacheNeedsFullRebuild = false;
     }
     if (session.commitRequested) {
+      if (deferFinalCanonicalPresentation) {
+        // The screen cache contains the exact completed live composite, while
+        // the permanent mip chain still describes the pre-commit layer. A
+        // future mutation will rebuild both before publishing new pixels.
+        this.presentationCacheNeedsFullRebuild = true;
+        this.paintDisplayMipValidThroughLevel = 0;
+      }
       if (session.hasContent && authoritativeDirtyRect) {
         this.lightGlazeStaleRect = { ...authoritativeDirtyRect };
       }
@@ -13982,13 +15235,22 @@ export class BrushEngine {
   }
 
   publishHistoryState(): void {
+    const startedAt = performance.now();
     try {
-      this.callbacks.onHistoryChange?.(this.getHistoryState());
-    } catch (error) {
-      console.error("History observer ignored to preserve the transaction:", error);
-    }
-    if (this.initialized && !this.historyStateInconsistent) {
-      scheduleHistoryMaintenance(this);
+      try {
+        this.callbacks.onHistoryChange?.(this.getHistoryState());
+      } catch (error) {
+        console.error("History observer ignored to preserve the transaction:", error);
+      }
+      if (this.initialized && !this.historyStateInconsistent) {
+        scheduleHistoryMaintenance(this);
+      }
+    } finally {
+      const durationMs = performance.now() - startedAt;
+      this.historyPublicationCount += 1;
+      this.historyPublicationTotalMs += durationMs;
+      this.historyPublicationMaxMs = Math.max(this.historyPublicationMaxMs, durationMs);
+      this.historyPublicationLastMs = durationMs;
     }
   }
 

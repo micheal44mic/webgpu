@@ -74,8 +74,8 @@ assert.match(
 );
 assert.match(
   canvasInputSource,
-  /const holdPaintIntent = paintSample !== null && shouldHoldTouchPaintIntent\([\s\S]*?event\.pointerType,[\s\S]*?activeTool,[\s\S]*?\);[\s\S]*?if \(paintSample && !holdPaintIntent\) \{[\s\S]*?const beganStroke = event\.pointerType === "touch"[\s\S]*?engine\.beginStroke\(paintSample\)[\s\S]*?engine\.beginDeferredStroke\(paintSample\);[\s\S]*?if \(!beganStroke\)[\s\S]*?pointerMode === "paint" && paintSample && holdPaintIntent[\s\S]*?startTouchPaintIntentHold\(event\.pointerId, paintSample\);/,
-  "touch Paint must retain its acknowledged path while mouse/Pencil use deferred Quick Line preview",
+  /const holdPaintIntent = paintSample !== null && shouldHoldTouchPaintIntent\([\s\S]*?event\.pointerType,[\s\S]*?activeTool,[\s\S]*?\);[\s\S]*?if \(paintSample && !holdPaintIntent\) \{[\s\S]*?const beganStroke = engine\.beginStroke\(paintSample\);[\s\S]*?if \(!beganStroke\)[\s\S]*?pointerMode === "paint" && paintSample && holdPaintIntent[\s\S]*?startTouchPaintIntentHold\(event\.pointerId, paintSample\);/,
+  "every acknowledged freehand pointer must use the direct path before an actual Quick Line hold",
 );
 assert.match(
   canvasInputSource,
@@ -99,8 +99,8 @@ assert.match(
 );
 assert.match(
   humanLabSource,
-  /HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 64/,
-  "the persisted lab telemetry contract must retain revision 64",
+  /HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 67/,
+  "the persisted lab telemetry contract must retain revision 67",
 );
 assert.match(canvasInputSource, /touchPaintIntentCanceledForNavigation/);
 assert.match(canvasInputSource, /touchPaintIntentMaximumBufferedSamples/);

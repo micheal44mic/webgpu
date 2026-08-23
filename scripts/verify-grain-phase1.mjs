@@ -393,7 +393,7 @@ assert(html.includes('data-mobile-brush-rendering="light-glaze"')
 assert(editorLabs.includes('["human-suite", "Suite tratto umano · 3 rendering"]')
   && editorLabs.includes('grainMode: "texturized" as const'),
   "La suite one-tap e il replay Fixed non sono esposti nei laboratori.");
-assert(humanLab.includes("HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 64"),
+assert(humanLab.includes("HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 67"),
   "Revisione telemetria compositing livelli attesa assente.");
 
 console.log(JSON.stringify({

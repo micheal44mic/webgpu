@@ -33,6 +33,7 @@ export interface EditorExtension {
     events: readonly PointerEvent[],
     samples: readonly PointerSample[],
   ): void;
+  beginPaintReleaseRecording?(event: PointerEvent): void;
   finishPaintRecording?(commit: boolean): void;
   cancelPaintRecording?(): void;
 }

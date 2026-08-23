@@ -327,7 +327,7 @@ assert.equal((engineSource.match(/resamplePaintCurveSegment\(/g) ?? []).length, 
 assert.match(engineSource, /nextPaintStampSeed\(engine\.seedSequence\+\+\)/);
 assert.match(strokeTypesSource, /curvePlanner: CausalStrokeCurvePlanner \| null;/);
 assert.match(engineSource, /strokeCurveStrategy: STROKE_CURVE_STRATEGY/);
-assert.match(humanLabSource, /HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 64/);
+assert.match(humanLabSource, /HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 67/);
 
 const canonicalPath = new URL("../.tmp-canonical-human-stroke.json", import.meta.url);
 let canonicalSummary = null;
@@ -360,8 +360,8 @@ if (existsSync(canonicalPath)) {
   const spacing = canonical.settings.size * canonical.settings.spacingPercent / 100;
   const rawStamps = 1 + Math.floor(rawLength / spacing);
   const curveStamps = 1 + Math.floor(curveLength / spacing);
-  assert.equal(nonzeroSegments, 1565);
-  assert.ok(smoothedSegments > 1300);
+  assert.equal(nonzeroSegments, 186);
+  assert.ok(smoothedSegments > 160);
   assert.ok(maximumBound <= STROKE_CURVE_FLATTENING_TOLERANCE_PX + 1e-9);
   assert.ok(Math.abs(curveLength / rawLength - 1) < 0.002);
   assert.ok(Math.abs(curveStamps / rawStamps - 1) < 0.002);
