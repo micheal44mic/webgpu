@@ -610,6 +610,7 @@ function ordinaryOracle(
     scalePremultiplied(linearRgba(baseRaw), 0.78),
     scalePremultiplied(linearRgba(sourceRaw), 0.57),
     mode,
+    [ORDINARY_SAMPLE.x, ORDINARY_SAMPLE.y],
   );
 }
 

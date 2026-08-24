@@ -166,6 +166,31 @@ assert.equal(normalizeProjectTitle("\n\t"), "Untitled Artwork");
 
 const { request, bytes, tileBytes } = projectRequest();
 validateProjectSaveRequest(request);
+const dissolveProject = structuredClone(request);
+dissolveProject.snapshot.layers[0].blendMode = "dissolve";
+validateProjectSaveRequest(dissolveProject);
+assert.equal(dissolveProject.snapshot.layers[0].blendMode, "dissolve");
+
+const legacyShadeProject = structuredClone(request);
+legacyShadeProject.snapshot.layers[0].blendMode = "shade";
+validateProjectSaveRequest(legacyShadeProject);
+assert.equal(
+  legacyShadeProject.snapshot.layers[0].blendMode,
+  "darken",
+  "legacy provisional Shade must preserve its old Darken appearance",
+);
+
+const frozenCanonicalProject = structuredClone(request);
+Object.freeze(frozenCanonicalProject.snapshot.layers[0]);
+validateProjectSaveRequest(frozenCanonicalProject);
+assert.equal(frozenCanonicalProject.snapshot.layers[0].blendMode, "normal");
+
+const unsupportedBlendProject = structuredClone(request);
+unsupportedBlendProject.snapshot.layers[0].blendMode = "random-mode";
+assert.throws(
+  () => validateProjectSaveRequest(unsupportedBlendProject),
+  ProjectStorageValidationError,
+);
 const legacyBackgroundProject = structuredClone(request);
 delete legacyBackgroundProject.snapshot.background;
 validateProjectSaveRequest(legacyBackgroundProject);

@@ -159,7 +159,7 @@ assert.equal(resolveFillCompositeMode(true, false), "preserve-coverage-recolor")
 assert.equal(resolveFillCompositeMode(false, true), "solid-replace");
 assert.equal(resolveFillCompositeMode(false, false), "solid-replace");
 const underlayFill = [0.2, 0.4, 0.6, 0.25];
-// Procreate-like same-layer Fill is one opaque color placed behind the existing
+// Same-layer underlay Fill is one opaque color placed behind the existing
 // premultiplied pixel. Alpha is coverage, never an instruction to flatten the
 // existing RGB. These four values pin empty, two AA coverages and opaque ink.
 for (const destinationAlpha of [0, 0.25, 0.7, 1]) {

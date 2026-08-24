@@ -6,7 +6,7 @@ import { LAYER_BLEND_MODE_WGSL } from "./layer-blend-modes.ts";
  * rectangle back, so WebGPU never samples and attaches the same subresource.
  */
 export const LAYER_BLEND_FOLD_STRATEGY =
-  "cropped-document-1024-tile-ping-pong-source-map-w3c-over-matte-preserving-clipping-atop-v3" as const;
+  "cropped-document-1024-tile-ping-pong-w3c-over-clipping-atop-dissolve-v4" as const;
 
 export const LAYER_BLEND_FOLD_TILE_EXTENT = 1024 as const;
 
@@ -51,11 +51,14 @@ fn loadFoldSource(pixel: vec2<i32>) -> vec4<f32> {
   return textureLoad(sourceTexture, clamp(pixel, vec2<i32>(0), maximum), 0);
 }
 
-fn sampleFoldSource(fragmentPosition: vec2<f32>) -> vec4<f32> {
+fn foldDocumentPosition(fragmentPosition: vec2<f32>) -> vec2<f32> {
   let destinationScale = max(layer.destinationScale, 1.0);
-  let sourceScale = max(layer.sourceScale, 1.0);
   let targetPixel = fragmentPosition - vec2<f32>(0.5);
-  let documentPosition = layer.destinationOrigin + targetPixel / destinationScale;
+  return layer.destinationOrigin + targetPixel / destinationScale;
+}
+
+fn sampleFoldSource(documentPosition: vec2<f32>) -> vec4<f32> {
+  let sourceScale = max(layer.sourceScale, 1.0);
   let sourcePosition = (documentPosition - layer.sourceOrigin) * sourceScale;
   let sourceFloor = floor(sourcePosition);
   let fraction = sourcePosition - sourceFloor;
@@ -77,22 +80,32 @@ fn layerBlendFoldSourceAtop(
   backdropInput: vec4<f32>,
   sourceInput: vec4<f32>,
   mode: u32,
+  documentPixel: vec2<i32>,
 ) -> vec4<f32> {
   // Clipping children recolor the parent's straight RGB while preserving its
   // alpha matte; this is intentionally not general W3C blend+source-atop.
   let backdropAlpha = clamp(backdropInput.a, 0.0, 1.0);
-  let sourceAlpha = clamp(sourceInput.a, 0.0, 1.0);
+  var sourceAlpha = clamp(sourceInput.a, 0.0, 1.0);
   let backdropPremultiplied = clamp(
     backdropInput.rgb,
     vec3<f32>(0.0),
     vec3<f32>(backdropAlpha),
   );
-  let sourcePremultiplied = clamp(
+  var sourcePremultiplied = clamp(
     sourceInput.rgb,
     vec3<f32>(0.0),
     vec3<f32>(sourceAlpha),
   );
-  if (mode == LAYER_BLEND_NORMAL) {
+  if (mode == LAYER_BLEND_DISSOLVE) {
+    let dissolved = layerBlendDissolveSource(
+      sourcePremultiplied,
+      sourceAlpha,
+      documentPixel,
+    );
+    sourcePremultiplied = dissolved.rgb;
+    sourceAlpha = dissolved.a;
+  }
+  if (mode == LAYER_BLEND_NORMAL || mode == LAYER_BLEND_DISSOLVE) {
     return vec4<f32>(
       sourcePremultiplied * backdropAlpha
         + backdropPremultiplied * (1.0 - sourceAlpha),
@@ -131,10 +144,22 @@ fn fragmentMain(
 ) -> @location(0) vec4<f32> {
   let pixel = vec2<i32>(fragmentPosition.xy);
   let backdrop = textureLoad(backdropTexture, pixel, 0);
-  let source = sampleFoldSource(fragmentPosition.xy);
+  let documentPosition = foldDocumentPosition(fragmentPosition.xy);
+  let documentPixel = vec2<i32>(floor(documentPosition));
+  let source = sampleFoldSource(documentPosition);
   if (layer.compositeOperator == LAYER_BLEND_FOLD_SOURCE_ATOP) {
-    return layerBlendFoldSourceAtop(backdrop, source, layer.blendMode);
+    return layerBlendFoldSourceAtop(
+      backdrop,
+      source,
+      layer.blendMode,
+      documentPixel,
+    );
   }
-  return layerBlendPremultipliedLinearSourceOver(backdrop, source, layer.blendMode);
+  return layerBlendPremultipliedLinearSourceOver(
+    backdrop,
+    source,
+    layer.blendMode,
+    documentPixel,
+  );
 }
 `;

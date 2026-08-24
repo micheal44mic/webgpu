@@ -13,6 +13,7 @@ import {
 } from "./engine-gpu-utils";
 import { lightGlazeInPlaceCommitShader } from "./light-glaze-in-place-commit-shader";
 import {
+  activeLayerBlendModeCanUseLiveComposition,
   effectsRetargetCallerForHistoryReplay,
   type ActiveClippingGroupResources,
   type ActiveClippingSuffixStepResources,
@@ -3945,6 +3946,28 @@ export async function setLayerBlendMode(
   const rebuildCaller = effectsRetargetCallerForHistoryReplay(historyReplay);
   const hadTileCompositor = engine.layerBlendTileCompositor !== null;
   try {
+    const liveActiveComposition = activeLayerBlendModeCanUseLiveComposition(
+      record.id,
+      engine.layerStack.active.id,
+      previousBlendMode,
+      blendMode,
+      engine.layerStack.layers.some(
+        (candidate) => candidate.id !== record.id && candidate.blendMode !== "normal",
+      ),
+    );
+    if (liveActiveComposition) {
+      // The active raster is never baked into mergedBelow/Above or a static
+      // mixed-scene raster run. Both the tile compositor and viewport
+      // compositor read its current mode while encoding the next frame. The
+      // active clipping-child mode is likewise packed by writeDisplayUniforms;
+      // suffixSteps contain only the other children and remain valid.
+      record.blendMode = blendMode;
+      engine.paintDisplayMipValidThroughLevel = 0;
+      engine.presentationCacheNeedsFullRebuild = true;
+      engine.displayDirty = true;
+      engine.requestRender();
+      return true;
+    }
     await engine.waitForIdle();
     const candidateAdvanced = blendMode !== "normal"
       || engine.layerStack.layers.some(
@@ -3971,7 +3994,11 @@ export async function setLayerBlendMode(
     }
     record.blendMode = blendMode;
     engine.paintDisplayMipValidThroughLevel = 0;
-    await engine.rebuildMergedLayerSurfaces(rebuildCaller);
+    await engine.rebuildMergedLayerSurfaces(
+      rebuildCaller,
+      engine.getVectorTextViewState(),
+      { reuseUnchangedRasterRuns: true },
+    );
     if (engine.layerStack.layers.every((candidate) => candidate.blendMode === "normal")) {
       releaseLayerBlendTilePresentationResources(engine);
     }
@@ -3993,7 +4020,11 @@ export async function setLayerBlendMode(
       releaseLayerBlendTilePresentationResources(engine);
     }
     try {
-      await engine.rebuildMergedLayerSurfaces(rebuildCaller);
+      await engine.rebuildMergedLayerSurfaces(
+        rebuildCaller,
+        engine.getVectorTextViewState(),
+        { reuseUnchangedRasterRuns: true },
+      );
       ensureMixedSceneLinearTexture(
         engine,
         Math.max(1, engine.canvas.width),

@@ -22,7 +22,10 @@ import {
   LayerStack,
   layerEffectRendererRequirements,
 } from "../src/layer-stack.ts";
-import { effectsRetargetCallerForHistoryReplay } from "../src/engine-layer-resources.ts";
+import {
+  activeLayerBlendModeCanUseLiveComposition,
+  effectsRetargetCallerForHistoryReplay,
+} from "../src/engine-layer-resources.ts";
 import { runGpuAllocationTransaction } from "../src/gpu-allocation-transaction.ts";
 import {
   MOBILE_TOOLS_SHEET_CLOSE_FLICK_MIN_DISTANCE_PX,
@@ -87,6 +90,31 @@ import {
 assert.equal(
   LAYER_STACK_STRATEGY,
   "ordered-records-single-active-single-reference-per-layer-blend-mode-contiguous-raster-clipping-groups-monotonic-ids",
+);
+
+// An active advanced mode is a live presentation parameter: cycling it must
+// not wait for or rebuild any derived raster surface. Crossing the boundary
+// where the first/last advanced layer appears still takes the transactional
+// allocation/rebuild path. An inactive raster always stays conservative.
+assert.equal(
+  activeLayerBlendModeCanUseLiveComposition(7, 7, "multiply", "screen", false),
+  true,
+);
+assert.equal(
+  activeLayerBlendModeCanUseLiveComposition(7, 7, "normal", "multiply", false),
+  false,
+);
+assert.equal(
+  activeLayerBlendModeCanUseLiveComposition(7, 7, "multiply", "normal", false),
+  false,
+);
+assert.equal(
+  activeLayerBlendModeCanUseLiveComposition(7, 7, "normal", "multiply", true),
+  true,
+);
+assert.equal(
+  activeLayerBlendModeCanUseLiveComposition(8, 7, "multiply", "screen", false),
+  false,
 );
 
 // Color Overlay is an analytic style, not another full-canvas resource owner.
@@ -1240,10 +1268,36 @@ assert.match(layerBlendBody, /isLayerBlendMode\(blendMode\)/,
   "l'API non deve accettare codici WGSL o stringhe arbitrarie");
 assert.match(layerBlendBody, /const previousBlendMode = record\.blendMode/);
 assert.match(layerBlendBody, /record\.blendMode = blendMode/);
+const liveBlendStart = layerBlendBody.indexOf("if (liveActiveComposition)");
+const slowBlendStart = layerBlendBody.indexOf("await engine.waitForIdle()", liveBlendStart);
+assertSection("fusione attiva live", liveBlendStart, slowBlendStart);
+const liveBlendBody = layerBlendBody.slice(liveBlendStart, slowBlendStart);
+assert.match(liveBlendBody, /record\.blendMode = blendMode/);
+assert.doesNotMatch(liveBlendBody, /waitForIdle|rebuildMergedLayerSurfaces/,
+  "advanced→advanced sul raster attivo deve limitarsi ai metadata e al prossimo frame");
+assert.match(
+  engineSource,
+  /displayUniformUpload\[16\][\s\S]{0,300}LAYER_BLEND_MODE_CODES\[this\.layerStack\.active\.blendMode\]/,
+  "il clipping child attivo deve leggere il mode vivo dai display uniforms",
+);
+assert.match(
+  layerBlendTileRuntimeSource,
+  /activeRecord\.blendMode[\s\S]{0,1800}activeOperandMode = parent\.blendMode/,
+  "il tile compositor deve leggere live sia il child attivo sia il parent attivo",
+);
+assert.match(
+  engineSource,
+  /buildActiveClippingGroupResources\([\s\S]{0,3000}unit\.slice\(1, activeIndex\)[\s\S]{0,1200}unit\.slice\(activeIndex \+ 1\)/,
+  "prefix e suffix clipping non devono fotografare il mode del raster attivo",
+);
+const slowBlendPublish = layerBlendBody.indexOf(
+  "record.blendMode = blendMode",
+  slowBlendStart,
+);
 assert.ok(
   layerBlendBody.indexOf("prewarmMixedSceneLinearTextureForLayerBlend(")
-    < layerBlendBody.indexOf("record.blendMode = blendMode"),
-  "cache ordered, ping-pong e tile devono superare validation/OOM prima dei metadata",
+    < slowBlendPublish,
+  "il path che cambia topologia deve validare cache, ping-pong e tile prima dei metadata",
 );
 assert.match(
   layerBlendBody,
@@ -1256,13 +1310,18 @@ assert.match(
   "Undo/Redo della fusione deve propagare l'esenzione della transazione History",
 );
 assert.equal(
-  (layerBlendBody.match(/rebuildMergedLayerSurfaces\(rebuildCaller\)/g) ?? []).length,
+  (layerBlendBody.match(/rebuildMergedLayerSurfaces\(\s*rebuildCaller,/g) ?? []).length,
   2,
   "sia il compositing sia il rollback della fusione devono usare lo stesso caller",
 );
+assert.equal(
+  (layerBlendBody.match(/reuseUnchangedRasterRuns: true/g) ?? []).length,
+  2,
+  "il path lento e il rollback devono conservare i raster-run non coinvolti",
+);
 assert.match(
   layerBlendBody,
-  /record\.blendMode = previousBlendMode;[\s\S]*?await engine\.rebuildMergedLayerSurfaces\(rebuildCaller\)/,
+  /record\.blendMode = previousBlendMode;[\s\S]*?await engine\.rebuildMergedLayerSurfaces\(\s*rebuildCaller,/,
   "un errore GPU deve ripristinare metadata e superfici precedenti",
 );
 assert.match(

@@ -1,6 +1,9 @@
 import type { RasterBevelStyle } from "./bevel-core";
 import type { BrushSettings, LayerFormat } from "./engine-types";
-import type { LayerBlendMode } from "./layer-blend-modes";
+import {
+  migrateLegacyLayerBlendMode,
+  type LayerBlendMode,
+} from "./layer-blend-modes.ts";
 import type { LayerCompressionStorage } from "./layer-compression-codec";
 import type { MixedSceneState } from "./mixed-scene-stack";
 import type { RasterColorOverlayStyle } from "./raster-color-overlay-core";
@@ -40,36 +43,6 @@ const MANIFEST_STORE = "manifests";
 const CHUNK_STORE = "chunks";
 const PROJECT_INDEX = "byProject";
 const GENERATION_INDEX = "byGeneration";
-
-const LAYER_BLEND_MODES = new Set<string>([
-  "multiply",
-  "darken",
-  "shade",
-  "color-burn",
-  "linear-burn",
-  "darker-color",
-  "normal",
-  "lighten",
-  "screen",
-  "color-dodge",
-  "add",
-  "lighter-color",
-  "overlay",
-  "soft-light",
-  "hard-light",
-  "vivid-light",
-  "linear-light",
-  "pin-light",
-  "hard-mix",
-  "difference",
-  "exclusion",
-  "subtract",
-  "divide",
-  "hue",
-  "saturation",
-  "color",
-  "luminosity",
-]);
 
 const PROJECT_ID_PATTERN = /^[A-Za-z0-9._-]{1,160}$/;
 const GENERATION_ID_PATTERN = /^[A-Za-z0-9._-]{1,160}$/;
@@ -818,8 +791,15 @@ function assertLayer(
   if (value.name.trim().length === 0) fail(`${path}.name`, "must not be blank");
   assertBoolean(value.visible, `${path}.visible`);
   assertUnitInterval(value.opacity, `${path}.opacity`);
-  if (typeof value.blendMode !== "string" || !LAYER_BLEND_MODES.has(value.blendMode)) {
+  const migratedBlendMode = migrateLegacyLayerBlendMode(value.blendMode);
+  if (migratedBlendMode === null) {
     fail(`${path}.blendMode`, "is unsupported");
+  }
+  if (value.blendMode === "shade") {
+    // Loaded IDB manifests are structured clones and therefore mutable.
+    // Rewrite only the retired value: canonical save inputs (which callers may
+    // freeze) remain validation-only and are never assigned to.
+    value.blendMode = migratedBlendMode;
   }
   if (value.clippingParentId !== null) {
     assertPositiveInteger(value.clippingParentId, `${path}.clippingParentId`);

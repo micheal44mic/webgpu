@@ -16,23 +16,37 @@ fn clippingSourceAtop(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
 fn clippingBlendSourceAtop(
   sourceInput: vec4<f32>,
   destinationInput: vec4<f32>,
-  mode: u32
+  mode: u32,
+  documentPixel: vec2<i32>,
 ) -> vec4<f32> {
-  if (mode == LAYER_BLEND_NORMAL) {
-    return clippingSourceAtop(sourceInput, destinationInput);
-  }
   let matte = clamp(destinationInput.a, 0.0, 1.0);
-  let sourceAlpha = clamp(sourceInput.a, 0.0, 1.0);
+  var sourceAlpha = clamp(sourceInput.a, 0.0, 1.0);
   let destinationPremultiplied = clamp(
     destinationInput.rgb,
     vec3<f32>(0.0),
     vec3<f32>(matte),
   );
-  let sourcePremultiplied = clamp(
+  var sourcePremultiplied = clamp(
     sourceInput.rgb,
     vec3<f32>(0.0),
     vec3<f32>(sourceAlpha),
   );
+  if (mode == LAYER_BLEND_DISSOLVE) {
+    let dissolved = layerBlendDissolveSource(
+      sourcePremultiplied,
+      sourceAlpha,
+      documentPixel,
+    );
+    sourcePremultiplied = dissolved.rgb;
+    sourceAlpha = dissolved.a;
+  }
+  if (mode == LAYER_BLEND_NORMAL || mode == LAYER_BLEND_DISSOLVE) {
+    return vec4<f32>(
+      sourcePremultiplied * matte
+        + destinationPremultiplied * (1.0 - sourceAlpha),
+      matte,
+    );
+  }
   var destinationLinear = vec3<f32>(0.0);
   var sourceLinear = vec3<f32>(0.0);
   if (matte > 0.0) { destinationLinear = destinationPremultiplied / matte; }
@@ -112,6 +126,7 @@ fn composeActiveClippingGroupTexel(
     activePaint * display.activeLayerAlpha,
     group,
     activeClippingChildBlendMode(),
+    documentPixel,
   );
   group = clippingSourceAtop(suffix, group);
   return group * display.clippingParentOpacity;

@@ -179,6 +179,31 @@ export function effectsRetargetCallerForHistoryReplay(
   return historyReplay ? "history-replay" : "layer-switch";
 }
 
+/**
+ * The active raster is kept outside every derived raster run. Its blend mode
+ * is consumed live by both ordered presentation paths (including the active
+ * clipping parent/child uniforms), so changing that mode cannot invalidate a
+ * merged surface while the document stays in the same Normal/advanced
+ * topology. Inactive rasters remain conservative because their mode can alter
+ * how the surrounding cached run is split.
+ */
+export function activeLayerBlendModeCanUseLiveComposition(
+  targetLayerId: number,
+  activeLayerId: number,
+  currentMode: LayerBlendMode,
+  nextMode: LayerBlendMode,
+  anotherAdvancedModeIsPresent: boolean,
+): boolean {
+  if (targetLayerId !== activeLayerId || currentMode === nextMode) {
+    return false;
+  }
+  const orderedBlendWasRequired = currentMode !== "normal"
+    || anotherAdvancedModeIsPresent;
+  const orderedBlendWillBeRequired = nextMode !== "normal"
+    || anotherAdvancedModeIsPresent;
+  return orderedBlendWasRequired === orderedBlendWillBeRequired;
+}
+
 export type LayerGpuCompletionPolicy =
   | "await-immediately"
   | "defer-to-fold-fence";

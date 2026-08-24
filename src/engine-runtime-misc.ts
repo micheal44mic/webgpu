@@ -62,7 +62,10 @@ import {
   LAYER_BLEND_COMPOSITOR_WGSL,
   writeLayerBlendCompositorUniforms,
 } from "./layer-blend-compositor";
-import { LAYER_BLEND_MODE_ORDER } from "./layer-blend-modes";
+import {
+  LAYER_BLEND_MODE_CODES,
+  LAYER_BLEND_MODE_ORDER,
+} from "./layer-blend-modes";
 import { LAYER_BLEND_FOLD_WGSL } from "./layer-blend-fold-shader";
 import { packStampsIntoUpload } from "./engine-stamp-upload";
 import {
@@ -416,6 +419,11 @@ export async function finishStaticResourceCreation(
             minBindingSize: LAYER_BLEND_COMPOSITOR_UNIFORM_BYTE_SIZE,
           },
         },
+        {
+          binding: 3,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
+        },
       ],
     });
     const blendUniformAlignment = engine.device.limits.minUniformBufferOffsetAlignment;
@@ -433,12 +441,12 @@ export async function finishStaticResourceCreation(
     const blendUniformUpload = new Uint32Array(blendUniformBytes / 4);
     const blendUniformWordStride = engine.layerBlendCompositorUniformStride / 4;
     (["source-over", "source-atop"] as const).forEach((operator, operatorIndex) => {
-      LAYER_BLEND_MODE_ORDER.forEach((mode, modeIndex) => {
+      LAYER_BLEND_MODE_ORDER.forEach((mode) => {
         writeLayerBlendCompositorUniforms(
           blendUniformUpload,
           mode,
           operator,
-          (operatorIndex * LAYER_BLEND_MODE_ORDER.length + modeIndex)
+          (operatorIndex * LAYER_BLEND_MODE_ORDER.length + LAYER_BLEND_MODE_CODES[mode])
             * blendUniformWordStride,
         );
       });

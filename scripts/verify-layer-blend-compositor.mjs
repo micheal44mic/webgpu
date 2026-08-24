@@ -4,6 +4,7 @@ import {
   LAYER_BLEND_MODE_ORDER,
   LAYER_BLEND_MODE_WGSL,
   blendLayerPremultipliedLinear,
+  layerBlendDissolveRandom,
 } from "../src/layer-blend-modes.ts";
 import {
   LAYER_BLEND_COMPOSITOR_MODE_BYTE_OFFSET,
@@ -38,6 +39,10 @@ const tileShaderSource = readFileSync(
   new URL("../src/layer-blend-tile-shader.ts", import.meta.url),
   "utf8",
 );
+const clippingShaderSource = readFileSync(
+  new URL("../src/clipping-group-shader.ts", import.meta.url),
+  "utf8",
+);
 
 assert.deepEqual(normalizeDocumentBackground(undefined), DEFAULT_DOCUMENT_BACKGROUND);
 assert.deepEqual(
@@ -68,6 +73,14 @@ const brushEngineSource = readFileSync(
   new URL("../src/brush-engine.ts", import.meta.url),
   "utf8",
 );
+const engineRuntimeMiscSource = readFileSync(
+  new URL("../src/engine-runtime-misc.ts", import.meta.url),
+  "utf8",
+);
+const engineVectorTextRuntimeSource = readFileSync(
+  new URL("../src/engine-vector-text-runtime.ts", import.meta.url),
+  "utf8",
+);
 
 assert.equal(LAYER_COLD_TILE_COMPOSITE_UNIFORM_BYTES, 32);
 assert.equal(LAYER_COLD_TILE_COMPOSITE_BATCH_TILES, 16);
@@ -87,7 +100,7 @@ assert.match(
 
 assert.equal(
   LAYER_BLEND_COMPOSITOR_STRATEGY,
-  "fullscreen-triangle-textureload-dynamic-mode-w3c-over-matte-preserving-clipping-atop-v2",
+  "viewport-textureload-w3c-over-clipping-atop-document-anchored-dissolve-v3",
 );
 assert.equal(LAYER_BLEND_COMPOSITOR_UNIFORM_BYTE_SIZE, 16);
 assert.equal(LAYER_BLEND_COMPOSITOR_UNIFORM_BYTE_STRIDE, 16);
@@ -98,6 +111,19 @@ assert.deepEqual(LAYER_BLEND_COMPOSITOR_OPERATOR_CODES, {
   "source-over": 0,
   "source-atop": 1,
 });
+assert.match(
+  engineRuntimeMiscSource,
+  /binding: 3,[\s\S]*?visibility: GPUShaderStage\.FRAGMENT,[\s\S]*?buffer: \{ type: "uniform" \}/,
+);
+assert.match(
+  engineVectorTextRuntimeSource,
+  /\{ binding: 3, resource: \{ buffer: engine\.displayUniformBuffer \} \}/,
+);
+assert.match(
+  engineRuntimeMiscSource,
+  /LAYER_BLEND_MODE_CODES\[mode\][\s\S]*?blendUniformWordStride/,
+  "uniform records must be stored by stable numeric code, not menu position",
+);
 
 const uniforms = new Uint32Array(10).fill(0xffffffff);
 assert.equal(
@@ -212,6 +238,41 @@ closeArray(
   "multiply source-atop",
 );
 
+const dissolveAtopSource = [0.08, 0.16, 0.24, 0.4];
+let dissolveAcceptedPixel = null;
+let dissolveRejectedPixel = null;
+for (let x = 0; x < 64 && (!dissolveAcceptedPixel || !dissolveRejectedPixel); x += 1) {
+  const pixel = [x, 23];
+  if (layerBlendDissolveRandom(pixel) < dissolveAtopSource[3]) {
+    dissolveAcceptedPixel ??= pixel;
+  } else {
+    dissolveRejectedPixel ??= pixel;
+  }
+}
+assert.ok(dissolveAcceptedPixel && dissolveRejectedPixel);
+closeArray(
+  blendLayerPremultipliedLinearSourceAtop(
+    backdrop,
+    dissolveAtopSource,
+    "dissolve",
+    dissolveAcceptedPixel,
+  ),
+  [0.16, 0.32, 0.48, 0.8],
+  3e-12,
+  "accepted dissolve source-atop",
+);
+closeArray(
+  blendLayerPremultipliedLinearSourceAtop(
+    backdrop,
+    dissolveAtopSource,
+    "dissolve",
+    dissolveRejectedPixel,
+  ),
+  backdrop,
+  3e-12,
+  "rejected dissolve source-atop",
+);
+
 // A clipping child recolors the parent's matte. General W3C blend+source-atop
 // would leak a source-only white term into this half-alpha black edge.
 closeArray(
@@ -281,6 +342,9 @@ assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /struct LayerBlendCompositorUniforms\s
 assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /@binding\(0\) var layerBlendBackdropTexture: texture_2d<f32>/);
 assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /@binding\(1\) var layerBlendSourceTexture: texture_2d<f32>/);
 assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /@binding\(2\) var<uniform> layerBlendCompositor/);
+assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /@binding\(3\) var<uniform> layerBlendViewport/);
+assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /fn layerBlendDocumentPixel\(fragmentPosition: vec2<f32>\)/);
+assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /layerBlendViewport\.viewCenter \+ documentOffset/);
 assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /@builtin\(vertex_index\) vertexIndex: u32/);
 assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /vec2<f32>\(3\.0, -1\.0\)/);
 assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /vec2<f32>\(-1\.0, 3\.0\)/);
@@ -290,8 +354,14 @@ assert.doesNotMatch(LAYER_BLEND_COMPOSITOR_WGSL, /textureSample/);
 assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /layerBlendCompositor\.blendMode/);
 assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /layerBlendCompositor\.compositeOperator/);
 assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /return LAYER_BLEND_NORMAL/);
-assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /return layerBlendPremultipliedLinearSourceOver\(backdrop, source, mode\)/);
-assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /return layerBlendPremultipliedLinearSourceAtop\(backdrop, source, mode\)/);
+assert.match(
+  LAYER_BLEND_COMPOSITOR_WGSL,
+  /return layerBlendPremultipliedLinearSourceOver\([\s\S]*?backdrop,[\s\S]*?source,[\s\S]*?mode,[\s\S]*?documentPixel/,
+);
+assert.match(
+  LAYER_BLEND_COMPOSITOR_WGSL,
+  /return layerBlendPremultipliedLinearSourceAtop\([\s\S]*?backdrop,[\s\S]*?source,[\s\S]*?mode,[\s\S]*?documentPixel/,
+);
 
 const atopShader = LAYER_BLEND_COMPOSITOR_WGSL.slice(
   LAYER_BLEND_COMPOSITOR_WGSL.indexOf("fn layerBlendPremultipliedLinearSourceAtop"),
@@ -306,10 +376,12 @@ assert.match(atopShader, /sourcePremultiplied \* backdropAlpha/);
 assert.match(atopShader, /blendedLinear \* \(sourceAlpha \* backdropAlpha\)/);
 assert.match(atopShader, /backdropPremultiplied \* \(1\.0 - sourceAlpha\)/);
 assert.match(atopShader, /backdropAlpha,\s*\);/s);
+assert.match(atopShader, /mode == LAYER_BLEND_DISSOLVE/);
+assert.match(atopShader, /layerBlendDissolveSource\([\s\S]*?documentPixel/);
 
 assert.equal(
   LAYER_BLEND_FOLD_STRATEGY,
-  "cropped-document-1024-tile-ping-pong-source-map-w3c-over-matte-preserving-clipping-atop-v3",
+  "cropped-document-1024-tile-ping-pong-w3c-over-clipping-atop-dissolve-v4",
 );
 assert.equal(LAYER_BLEND_FOLD_TILE_EXTENT, 1024);
 assert.equal(LAYER_BLEND_FOLD_UNIFORM_BYTES, 48);
@@ -317,8 +389,16 @@ assert.match(LAYER_BLEND_FOLD_WGSL, /struct LayerBlendFoldUniforms\s*{[\s\S]*?bl
 assert.match(LAYER_BLEND_FOLD_WGSL, /@binding\(0\) var backdropTexture: texture_2d<f32>/);
 assert.match(LAYER_BLEND_FOLD_WGSL, /@binding\(1\) var sourceTexture: texture_2d<f32>/);
 assert.match(LAYER_BLEND_FOLD_WGSL, /textureLoad\(backdropTexture, pixel, 0\)/);
-assert.match(LAYER_BLEND_FOLD_WGSL, /return layerBlendPremultipliedLinearSourceOver\(backdrop, source, layer\.blendMode\)/);
-assert.match(LAYER_BLEND_FOLD_WGSL, /return layerBlendFoldSourceAtop\(backdrop, source, layer\.blendMode\)/);
+assert.match(LAYER_BLEND_FOLD_WGSL, /fn foldDocumentPosition\(fragmentPosition: vec2<f32>\)/);
+assert.match(LAYER_BLEND_FOLD_WGSL, /vec2<i32>\(floor\(documentPosition\)\)/);
+assert.match(
+  LAYER_BLEND_FOLD_WGSL,
+  /return layerBlendPremultipliedLinearSourceOver\([\s\S]*?layer\.blendMode,[\s\S]*?documentPixel/,
+);
+assert.match(
+  LAYER_BLEND_FOLD_WGSL,
+  /return layerBlendFoldSourceAtop\([\s\S]*?layer\.blendMode,[\s\S]*?documentPixel/,
+);
 const foldAtopShader = LAYER_BLEND_FOLD_WGSL.slice(
   LAYER_BLEND_FOLD_WGSL.indexOf("fn layerBlendFoldSourceAtop"),
   LAYER_BLEND_FOLD_WGSL.indexOf("@fragment"),
@@ -330,6 +410,19 @@ assert.ok(
 );
 assert.match(foldAtopShader, /blendedLinear \* \(sourceAlpha \* backdropAlpha\)/);
 assert.match(foldAtopShader, /backdropPremultiplied \* \(1\.0 - sourceAlpha\)/);
+assert.match(foldAtopShader, /mode == LAYER_BLEND_DISSOLVE/);
+assert.match(
+  clippingShaderSource,
+  /fn clippingBlendSourceAtop\([\s\S]*?documentPixel: vec2<i32>/,
+);
+assert.match(
+  clippingShaderSource,
+  /mode == LAYER_BLEND_DISSOLVE[\s\S]*?layerBlendDissolveSource\([\s\S]*?documentPixel/,
+);
+assert.match(
+  clippingShaderSource,
+  /clippingBlendSourceAtop\([\s\S]*?activeClippingChildBlendMode\(\),[\s\S]*?documentPixel/,
+);
 
 // Sparse advanced blends bypass transfer functions when either operand is
 // exactly transparent. This is pixel-identical source-over/source-atop math,

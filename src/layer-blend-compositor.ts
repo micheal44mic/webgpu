@@ -3,7 +3,9 @@ import {
   LAYER_BLEND_MODE_CODES,
   LAYER_BLEND_MODE_WGSL,
   blendLayerPremultipliedLinear,
+  dissolveLayerSourcePremultipliedLinear,
   normalizeLayerBlendMode,
+  type LayerBlendDocumentPixel,
   type LayerBlendMode,
   type LinearPremultipliedRgba,
 } from "./layer-blend-modes.ts";
@@ -17,7 +19,7 @@ import {
  * premultiplied. Source opacity must already be baked into the source texel.
  */
 export const LAYER_BLEND_COMPOSITOR_STRATEGY =
-  "fullscreen-triangle-textureload-dynamic-mode-w3c-over-matte-preserving-clipping-atop-v2" as const;
+  "viewport-textureload-w3c-over-clipping-atop-document-anchored-dissolve-v3" as const;
 
 export const LAYER_BLEND_COMPOSITOR_OPERATOR_CODES = {
   "source-over": 0,
@@ -88,12 +90,21 @@ export function blendLayerPremultipliedLinearSourceAtop(
   backdropInput: LinearPremultipliedRgba,
   sourceInput: LinearPremultipliedRgba,
   mode: LayerBlendMode = DEFAULT_LAYER_BLEND_MODE,
+  documentPixel: LayerBlendDocumentPixel = [0, 0],
 ): LinearPremultipliedRgba {
   const backdrop = sanitizePremultiplied(backdropInput);
-  const source = sanitizePremultiplied(sourceInput);
+  const sanitizedSource = sanitizePremultiplied(sourceInput);
+  const source = mode === "dissolve"
+    ? dissolveLayerSourcePremultipliedLinear(sanitizedSource, documentPixel)
+    : sanitizedSource;
   const backdropAlpha = backdrop[3];
   const sourceOnlyCoverage = 1 - backdropAlpha;
-  const sourceOver = blendLayerPremultipliedLinear(backdrop, source, mode);
+  const sourceOver = blendLayerPremultipliedLinear(
+    backdrop,
+    source,
+    mode === "dissolve" ? "normal" : mode,
+    documentPixel,
+  );
   return [
     Math.min(backdropAlpha, Math.max(0, sourceOver[0] - source[0] * sourceOnlyCoverage)),
     Math.min(backdropAlpha, Math.max(0, sourceOver[1] - source[1] * sourceOnlyCoverage)),
@@ -108,10 +119,11 @@ export function compositeLayerPremultipliedLinear(
   source: LinearPremultipliedRgba,
   mode: LayerBlendMode = DEFAULT_LAYER_BLEND_MODE,
   operator: LayerBlendCompositeOperator = "source-over",
+  documentPixel: LayerBlendDocumentPixel = [0, 0],
 ): LinearPremultipliedRgba {
   return operator === "source-atop"
-    ? blendLayerPremultipliedLinearSourceAtop(backdrop, source, mode)
-    : blendLayerPremultipliedLinear(backdrop, source, mode);
+    ? blendLayerPremultipliedLinearSourceAtop(backdrop, source, mode, documentPixel)
+    : blendLayerPremultipliedLinear(backdrop, source, mode, documentPixel);
 }
 
 /**
@@ -119,6 +131,7 @@ export function compositeLayerPremultipliedLinear(
  *   0 = backdrop texture (linear premultiplied RGBA)
  *   1 = source texture (linear premultiplied RGBA)
  *   2 = LayerBlendCompositorUniforms
+ *   3 = viewport state used only to map framebuffer pixels to document pixels
  *
  * The render target is deliberately not sampled: callers can ping-pong two
  * viewport textures without a read/write attachment hazard. Both textures are
@@ -138,30 +151,64 @@ struct LayerBlendCompositorUniforms {
   reserved1: u32,
 };
 
+struct LayerBlendViewportUniforms {
+  canvasSize: vec2<f32>,
+  viewRotation: vec2<f32>,
+  viewCenter: vec2<f32>,
+  zoom: f32,
+  _checkerSize: f32,
+};
+
 @group(0) @binding(0) var layerBlendBackdropTexture: texture_2d<f32>;
 @group(0) @binding(1) var layerBlendSourceTexture: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> layerBlendCompositor: LayerBlendCompositorUniforms;
+@group(0) @binding(3) var<uniform> layerBlendViewport: LayerBlendViewportUniforms;
+
+fn layerBlendDocumentPixel(fragmentPosition: vec2<f32>) -> vec2<i32> {
+  let displayOffset = (
+    fragmentPosition - layerBlendViewport.canvasSize * 0.5
+  ) / max(layerBlendViewport.zoom, 0.000001);
+  let documentOffset = vec2<f32>(
+    layerBlendViewport.viewRotation.x * displayOffset.x
+      + layerBlendViewport.viewRotation.y * displayOffset.y,
+    -layerBlendViewport.viewRotation.y * displayOffset.x
+      + layerBlendViewport.viewRotation.x * displayOffset.y,
+  );
+  return vec2<i32>(floor(layerBlendViewport.viewCenter + documentOffset));
+}
 
 fn layerBlendPremultipliedLinearSourceAtop(
   backdropInput: vec4<f32>,
   sourceInput: vec4<f32>,
-  mode: u32
+  mode: u32,
+  documentPixel: vec2<i32>,
 ) -> vec4<f32> {
   let backdropAlpha = clamp(backdropInput.a, 0.0, 1.0);
-  let sourceAlpha = clamp(sourceInput.a, 0.0, 1.0);
+  var sourceAlpha = clamp(sourceInput.a, 0.0, 1.0);
   let backdropPremultiplied = clamp(
     backdropInput.rgb,
     vec3<f32>(0.0),
     vec3<f32>(backdropAlpha),
   );
-  let sourcePremultiplied = clamp(
+  var sourcePremultiplied = clamp(
     sourceInput.rgb,
     vec3<f32>(0.0),
     vec3<f32>(sourceAlpha),
   );
 
-  // Exact matte-preserving clipping atop; no transfer conversion for Normal.
-  if (mode == LAYER_BLEND_NORMAL) {
+  if (mode == LAYER_BLEND_DISSOLVE) {
+    let dissolved = layerBlendDissolveSource(
+      sourcePremultiplied,
+      sourceAlpha,
+      documentPixel,
+    );
+    sourcePremultiplied = dissolved.rgb;
+    sourceAlpha = dissolved.a;
+  }
+
+  // Exact matte-preserving clipping atop; Dissolve has Normal color after its
+  // document-anchored binary-coverage decision.
+  if (mode == LAYER_BLEND_NORMAL || mode == LAYER_BLEND_DISSOLVE) {
     let sourceAtop = sourcePremultiplied * backdropAlpha
       + backdropPremultiplied * (1.0 - sourceAlpha);
     return vec4<f32>(
@@ -238,9 +285,20 @@ fn layerBlendCompositorFragmentMain(
     pixel,
   );
   let mode = layerBlendCompositorValidatedMode(layerBlendCompositor.blendMode);
+  let documentPixel = layerBlendDocumentPixel(fragmentPosition.xy);
   if (layerBlendCompositor.compositeOperator == LAYER_BLEND_COMPOSITOR_SOURCE_ATOP) {
-    return layerBlendPremultipliedLinearSourceAtop(backdrop, source, mode);
+    return layerBlendPremultipliedLinearSourceAtop(
+      backdrop,
+      source,
+      mode,
+      documentPixel,
+    );
   }
-  return layerBlendPremultipliedLinearSourceOver(backdrop, source, mode);
+  return layerBlendPremultipliedLinearSourceOver(
+    backdrop,
+    source,
+    mode,
+    documentPixel,
+  );
 }
 `;

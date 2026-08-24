@@ -2626,6 +2626,7 @@ function createMixedSceneBlendScratchCandidate(
           size: LAYER_BLEND_COMPOSITOR_UNIFORM_BYTE_SIZE,
         },
       },
+      { binding: 3, resource: { buffer: engine.displayUniformBuffer } },
     ];
     return {
       texture,

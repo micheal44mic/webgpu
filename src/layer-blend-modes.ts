@@ -4,28 +4,27 @@
  * Storage is linear-light RGBA with premultiplied RGB. Blend functions B(Cb,Cs)
  * run on unassociated sRGB, matching the conventional encoded-sRGB blend
  * interpretation, then return to linear before W3C source-over compositing.
- * Source alpha must already include layer opacity.
- *
- * Dissolve is intentionally absent: it requires coordinate-dependent random
- * coverage and cannot be represented by a deterministic two-color function.
- * Shade has no calibrated transfer function yet; its current fallback is
- * explicitly provisional and must not be described as pixel-identical.
+ * Source alpha must already include layer opacity. Dissolve is the one
+ * coverage mode: it converts that effective source alpha to deterministic
+ * binary coverage using a hash of the document pixel, then performs Normal
+ * source-over. Its color function is therefore Normal; the coverage step lives
+ * in the premultiplied compositors below.
  */
 
 export const LAYER_BLEND_MODE_STRATEGY =
-  "srgb-encoded-blend-functions-over-linear-premultiplied-storage-w3c-alpha-v1" as const;
+  "srgb-blends-linear-premultiplied-w3c-alpha-document-anchored-dissolve-v2" as const;
 
 export const DEFAULT_LAYER_BLEND_MODE = "normal" as const;
 
 /** Canonical blend-mode menu order used by the editor. */
 export const LAYER_BLEND_MODE_ORDER = [
+  "normal",
+  "dissolve",
   "multiply",
   "darken",
-  "shade",
   "color-burn",
   "linear-burn",
   "darker-color",
-  "normal",
   "lighten",
   "screen",
   "color-dodge",
@@ -51,8 +50,8 @@ export const LAYER_BLEND_MODE_ORDER = [
 export type LayerBlendMode = (typeof LAYER_BLEND_MODE_ORDER)[number];
 
 export const LAYER_BLEND_MODE_CATEGORY_ORDER = [
-  "darken",
   "normal",
+  "darken",
   "lighten",
   "contrast",
   "difference",
@@ -69,13 +68,13 @@ export interface LayerBlendModeCategory {
 }
 
 export const LAYER_BLEND_MODE_LABELS: Readonly<Record<LayerBlendMode, string>> = {
+  normal: "Normal",
+  dissolve: "Dissolve",
   multiply: "Multiply",
   darken: "Darken",
-  shade: "Shade (provisional)",
   "color-burn": "Color Burn",
   "linear-burn": "Linear Burn",
   "darker-color": "Darker Color",
-  normal: "Normal",
   lighten: "Lighten",
   screen: "Screen",
   "color-dodge": "Color Dodge",
@@ -100,13 +99,13 @@ export const LAYER_BLEND_MODE_LABELS: Readonly<Record<LayerBlendMode, string>> =
 
 /** Stable numeric ABI shared by TypeScript metadata and WGSL. */
 export const LAYER_BLEND_MODE_CODES: Readonly<Record<LayerBlendMode, number>> = {
+  normal: 6,
+  dissolve: 2,
   multiply: 0,
   darken: 1,
-  shade: 2,
   "color-burn": 3,
   "linear-burn": 4,
   "darker-color": 5,
-  normal: 6,
   lighten: 7,
   screen: 8,
   "color-dodge": 9,
@@ -129,11 +128,14 @@ export const LAYER_BLEND_MODE_CODES: Readonly<Record<LayerBlendMode, number>> = 
   luminosity: 26,
 };
 
-export const PROVISIONAL_LAYER_BLEND_MODES = ["shade"] as const satisfies
-  readonly LayerBlendMode[];
-
-export const LAYER_BLEND_SHADE_COMPATIBILITY_NOTE =
-  "Temporary fallback: Shade uses Darken until its transfer function is calibrated." as const;
+/**
+ * `shade` shipped only as a provisional alias of Darken. Keep that appearance
+ * when opening an old document; never reinterpret the old string as Dissolve
+ * merely because Dissolve inherited numeric runtime slot 2.
+ */
+export const LEGACY_LAYER_BLEND_MODE_MIGRATIONS = {
+  shade: "darken",
+} as const satisfies Readonly<Record<string, LayerBlendMode>>;
 
 const LAYER_BLEND_MODE_SET: ReadonlySet<string> = new Set(LAYER_BLEND_MODE_ORDER);
 
@@ -141,17 +143,22 @@ export function isLayerBlendMode(value: unknown): value is LayerBlendMode {
   return typeof value === "string" && LAYER_BLEND_MODE_SET.has(value);
 }
 
+export function migrateLegacyLayerBlendMode(value: unknown): LayerBlendMode | null {
+  if (value === "shade") return LEGACY_LAYER_BLEND_MODE_MIGRATIONS.shade;
+  return isLayerBlendMode(value) ? value : null;
+}
+
 export function normalizeLayerBlendMode(value: unknown): LayerBlendMode {
-  return isLayerBlendMode(value) ? value : DEFAULT_LAYER_BLEND_MODE;
+  return migrateLegacyLayerBlendMode(value) ?? DEFAULT_LAYER_BLEND_MODE;
 }
 
 export const LAYER_BLEND_MODE_CATEGORIES: readonly LayerBlendModeCategory[] = [
+  { id: "normal", label: "Normal", modes: ["normal", "dissolve"] },
   {
     id: "darken",
     label: "Darken",
-    modes: ["multiply", "darken", "shade", "color-burn", "linear-burn", "darker-color"],
+    modes: ["multiply", "darken", "color-burn", "linear-burn", "darker-color"],
   },
-  { id: "normal", label: "Normal", modes: ["normal"] },
   {
     id: "lighten",
     label: "Lighten",
@@ -189,9 +196,57 @@ export type LinearPremultipliedRgba = readonly [
   alpha: number,
 ];
 
+export type LayerBlendDocumentPixel = readonly [x: number, y: number];
+
 type Rgb = readonly [red: number, green: number, blue: number];
 
 const clamp01 = (value: number): number => Math.min(1, Math.max(0, value));
+
+/** Matches `layerBlendDissolveRandom` in WGSL using unsigned 32-bit math. */
+export function layerBlendDissolveRandom(
+  documentPixel: LayerBlendDocumentPixel,
+): number {
+  const x = Math.floor(documentPixel[0]) | 0;
+  const y = Math.floor(documentPixel[1]) | 0;
+  let state = (
+    Math.imul(x, 0x9e37_79b9)
+    ^ Math.imul(y, 0x85eb_ca6b)
+    ^ 0xc2b2_ae35
+  ) >>> 0;
+  state = Math.imul((state ^ (state >>> 16)) >>> 0, 0x7feb_352d) >>> 0;
+  state = Math.imul((state ^ (state >>> 15)) >>> 0, 0x846c_a68b) >>> 0;
+  state = (state ^ (state >>> 16)) >>> 0;
+  return (state >>> 8) / 0x01_00_00_00;
+}
+
+/**
+ * Converts effective premultiplied source alpha to stochastic binary coverage.
+ * A kept pixel retains the source's straight linear color and
+ * becomes fully covered; a rejected pixel becomes transparent.
+ */
+export function dissolveLayerSourcePremultipliedLinear(
+  source: LinearPremultipliedRgba,
+  documentPixel: LayerBlendDocumentPixel = [0, 0],
+): LinearPremultipliedRgba {
+  const alpha = clamp01(source[3]);
+  if (alpha <= 0 || layerBlendDissolveRandom(documentPixel) >= alpha) {
+    return [0, 0, 0, 0];
+  }
+  if (alpha >= 1) {
+    return [
+      clamp01(source[0]),
+      clamp01(source[1]),
+      clamp01(source[2]),
+      1,
+    ];
+  }
+  return [
+    clamp01(source[0] / alpha),
+    clamp01(source[1] / alpha),
+    clamp01(source[2] / alpha),
+    1,
+  ];
+}
 
 const linearToSrgbChannel = (value: number): number => {
   const channel = clamp01(value);
@@ -315,10 +370,11 @@ export function blendLayerSrgb(
   mode: LayerBlendMode,
 ): Rgb {
   switch (mode) {
+    // Dissolve's color operation is Normal; its stochastic coverage is applied
+    // by the coordinate-aware premultiplied compositor.
+    case "dissolve": return source;
     case "multiply": return separable(backdrop, source, (base, blend) => base * blend);
     case "darken": return separable(backdrop, source, Math.min);
-    // Provisional legacy fallback: intentionally explicit and separately tagged.
-    case "shade": return separable(backdrop, source, Math.min);
     case "color-burn": return separable(backdrop, source, colorBurn);
     case "linear-burn": return separable(
       backdrop,
@@ -414,25 +470,34 @@ export function blendLayerPremultipliedLinear(
   backdrop: LinearPremultipliedRgba,
   source: LinearPremultipliedRgba,
   mode: LayerBlendMode = DEFAULT_LAYER_BLEND_MODE,
+  documentPixel: LayerBlendDocumentPixel = [0, 0],
 ): LinearPremultipliedRgba {
   const backdropAlpha = clamp01(backdrop[3]);
-  const sourceAlpha = clamp01(source[3]);
+  let sourceAlpha = clamp01(source[3]);
   const backdropPremultiplied: Rgb = [
     Math.min(backdropAlpha, Math.max(0, backdrop[0])),
     Math.min(backdropAlpha, Math.max(0, backdrop[1])),
     Math.min(backdropAlpha, Math.max(0, backdrop[2])),
   ];
-  const sourcePremultiplied: Rgb = [
+  let sourcePremultiplied: Rgb = [
     Math.min(sourceAlpha, Math.max(0, source[0])),
     Math.min(sourceAlpha, Math.max(0, source[1])),
     Math.min(sourceAlpha, Math.max(0, source[2])),
   ];
+  if (mode === "dissolve") {
+    const dissolved = dissolveLayerSourcePremultipliedLinear(
+      [...sourcePremultiplied, sourceAlpha],
+      documentPixel,
+    );
+    sourceAlpha = dissolved[3];
+    sourcePremultiplied = [dissolved[0], dissolved[1], dissolved[2]];
+  }
   const outputAlpha = sourceAlpha + backdropAlpha * (1 - sourceAlpha);
   const sourceOverChannel = (channel: 0 | 1 | 2): number => Math.min(
     outputAlpha,
     sourcePremultiplied[channel] + backdropPremultiplied[channel] * (1 - sourceAlpha),
   );
-  if (mode === "normal") {
+  if (mode === "normal" || mode === "dissolve") {
     return [sourceOverChannel(0), sourceOverChannel(1), sourceOverChannel(2), outputAlpha];
   }
 
@@ -470,7 +535,7 @@ export function blendLayerPremultipliedLinear(
 export const LAYER_BLEND_MODE_WGSL = /* wgsl */ `
 const LAYER_BLEND_MULTIPLY: u32 = 0u;
 const LAYER_BLEND_DARKEN: u32 = 1u;
-const LAYER_BLEND_SHADE_PROVISIONAL: u32 = 2u;
+const LAYER_BLEND_DISSOLVE: u32 = 2u;
 const LAYER_BLEND_COLOR_BURN: u32 = 3u;
 const LAYER_BLEND_LINEAR_BURN: u32 = 4u;
 const LAYER_BLEND_DARKER_COLOR: u32 = 5u;
@@ -495,6 +560,39 @@ const LAYER_BLEND_HUE: u32 = 23u;
 const LAYER_BLEND_SATURATION: u32 = 24u;
 const LAYER_BLEND_COLOR: u32 = 25u;
 const LAYER_BLEND_LUMINOSITY: u32 = 26u;
+
+// Stable integer hash in document space. Keeping only the high 24 bits makes
+// the u32 -> f32 conversion exact enough for a uniform [0, 1) threshold.
+fn layerBlendDissolveRandom(documentPixel: vec2<i32>) -> f32 {
+  var state = (bitcast<u32>(documentPixel.x) * 0x9e3779b9u)
+    ^ (bitcast<u32>(documentPixel.y) * 0x85ebca6bu)
+    ^ 0xc2b2ae35u;
+  state = (state ^ (state >> 16u)) * 0x7feb352du;
+  state = (state ^ (state >> 15u)) * 0x846ca68bu;
+  state = state ^ (state >> 16u);
+  return f32(state >> 8u) * (1.0 / 16777216.0);
+}
+
+fn layerBlendDissolveSource(
+  sourcePremultiplied: vec3<f32>,
+  sourceAlpha: f32,
+  documentPixel: vec2<i32>,
+) -> vec4<f32> {
+  if (
+    sourceAlpha <= 0.0
+    || layerBlendDissolveRandom(documentPixel) >= sourceAlpha
+  ) {
+    return vec4<f32>(0.0);
+  }
+  return vec4<f32>(
+    clamp(
+      sourcePremultiplied / sourceAlpha,
+      vec3<f32>(0.0),
+      vec3<f32>(1.0),
+    ),
+    1.0,
+  );
+}
 
 fn layerBlendLinearToSrgbChannel(value: f32) -> f32 {
   let channel = clamp(value, 0.0, 1.0);
@@ -608,10 +706,11 @@ fn layerBlendVividLight(backdrop: f32, source: f32) -> f32 {
 fn layerBlendSrgb(backdrop: vec3<f32>, source: vec3<f32>, mode: u32) -> vec3<f32> {
   var result = source;
   switch mode {
+    // Dissolve uses Normal color; coordinate-dependent binary coverage is
+    // applied by the premultiplied compositor before this function is needed.
+    case LAYER_BLEND_DISSOLVE: { result = source; }
     case LAYER_BLEND_MULTIPLY: { result = backdrop * source; }
     case LAYER_BLEND_DARKEN: { result = min(backdrop, source); }
-    // Shade is not calibrated yet: use the temporary Darken fallback.
-    case LAYER_BLEND_SHADE_PROVISIONAL: { result = min(backdrop, source); }
     case LAYER_BLEND_COLOR_BURN: {
       result = vec3<f32>(
         layerBlendColorBurn(backdrop.r, source.r),
@@ -726,22 +825,32 @@ fn layerBlendSrgb(backdrop: vec3<f32>, source: vec3<f32>, mode: u32) -> vec3<f32
 fn layerBlendPremultipliedLinearSourceOver(
   backdropInput: vec4<f32>,
   sourceInput: vec4<f32>,
-  mode: u32
+  mode: u32,
+  documentPixel: vec2<i32>,
 ) -> vec4<f32> {
   let backdropAlpha = clamp(backdropInput.a, 0.0, 1.0);
-  let sourceAlpha = clamp(sourceInput.a, 0.0, 1.0);
+  var sourceAlpha = clamp(sourceInput.a, 0.0, 1.0);
   let backdropPremultiplied = clamp(
     backdropInput.rgb,
     vec3<f32>(0.0),
     vec3<f32>(backdropAlpha),
   );
-  let sourcePremultiplied = clamp(
+  var sourcePremultiplied = clamp(
     sourceInput.rgb,
     vec3<f32>(0.0),
     vec3<f32>(sourceAlpha),
   );
+  if (mode == LAYER_BLEND_DISSOLVE) {
+    let dissolved = layerBlendDissolveSource(
+      sourcePremultiplied,
+      sourceAlpha,
+      documentPixel,
+    );
+    sourcePremultiplied = dissolved.rgb;
+    sourceAlpha = dissolved.a;
+  }
   let outputAlpha = sourceAlpha + backdropAlpha * (1.0 - sourceAlpha);
-  if (mode == LAYER_BLEND_NORMAL) {
+  if (mode == LAYER_BLEND_NORMAL || mode == LAYER_BLEND_DISSOLVE) {
     let sourceOver = sourcePremultiplied + backdropPremultiplied * (1.0 - sourceAlpha);
     return vec4<f32>(
       clamp(sourceOver, vec3<f32>(0.0), vec3<f32>(outputAlpha)),

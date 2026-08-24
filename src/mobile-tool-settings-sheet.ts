@@ -5,6 +5,7 @@ import {
 } from "./mobile-bottom-sheet-gesture.ts";
 import {
   LAYER_BLEND_MODE_CATEGORIES,
+  LAYER_BLEND_MODE_LABELS,
   type LayerBlendMode,
 } from "./layer-blend-modes.ts";
 import type {
@@ -176,12 +177,7 @@ function colorInputValue(value: string): string {
 }
 
 function mobileBlendModeLabel(mode: LayerBlendMode): string {
-  if (mode === "add") return "Add (Linear Dodge)";
-  if (mode === "shade") return "Shade (Provisional)";
-  return mode
-    .split("-")
-    .map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`)
-    .join(" ");
+  return LAYER_BLEND_MODE_LABELS[mode];
 }
 
 function mobileBlendCategoryLabel(id: string): string {

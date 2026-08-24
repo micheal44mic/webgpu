@@ -7,17 +7,19 @@ import {
   LAYER_BLEND_MODE_ORDER,
   LAYER_BLEND_MODE_STRATEGY,
   LAYER_BLEND_MODE_WGSL,
-  LAYER_BLEND_SHADE_COMPATIBILITY_NOTE,
-  PROVISIONAL_LAYER_BLEND_MODES,
+  LEGACY_LAYER_BLEND_MODE_MIGRATIONS,
   blendLayerPremultipliedLinear,
   blendLayerSrgb,
+  dissolveLayerSourcePremultipliedLinear,
   isLayerBlendMode,
+  layerBlendDissolveRandom,
+  migrateLegacyLayerBlendMode,
   normalizeLayerBlendMode,
 } from "../src/layer-blend-modes.ts";
 
 const EXPECTED_ORDER = [
-  "multiply", "darken", "shade", "color-burn", "linear-burn", "darker-color",
-  "normal",
+  "normal", "dissolve",
+  "multiply", "darken", "color-burn", "linear-burn", "darker-color",
   "lighten", "screen", "color-dodge", "add", "lighter-color",
   "overlay", "soft-light", "hard-light", "vivid-light", "linear-light", "pin-light", "hard-mix",
   "difference", "exclusion", "subtract", "divide",
@@ -26,7 +28,7 @@ const EXPECTED_ORDER = [
 
 assert.equal(
   LAYER_BLEND_MODE_STRATEGY,
-  "srgb-encoded-blend-functions-over-linear-premultiplied-storage-w3c-alpha-v1",
+  "srgb-blends-linear-premultiplied-w3c-alpha-document-anchored-dissolve-v2",
 );
 assert.equal(DEFAULT_LAYER_BLEND_MODE, "normal");
 assert.deepEqual(LAYER_BLEND_MODE_ORDER, EXPECTED_ORDER);
@@ -35,17 +37,31 @@ assert.deepEqual(
   LAYER_BLEND_MODE_CATEGORIES.flatMap((category) => category.modes),
   EXPECTED_ORDER,
 );
-for (const [index, mode] of EXPECTED_ORDER.entries()) {
-  assert.equal(LAYER_BLEND_MODE_CODES[mode], index, `${mode} code`);
+const EXPECTED_CODES = {
+  multiply: 0, darken: 1, dissolve: 2,
+  "color-burn": 3, "linear-burn": 4, "darker-color": 5,
+  normal: 6, lighten: 7, screen: 8, "color-dodge": 9,
+  add: 10, "lighter-color": 11, overlay: 12, "soft-light": 13,
+  "hard-light": 14, "vivid-light": 15, "linear-light": 16,
+  "pin-light": 17, "hard-mix": 18, difference: 19, exclusion: 20,
+  subtract: 21, divide: 22, hue: 23, saturation: 24, color: 25,
+  luminosity: 26,
+};
+for (const mode of EXPECTED_ORDER) {
+  assert.equal(LAYER_BLEND_MODE_CODES[mode], EXPECTED_CODES[mode], `${mode} code`);
   assert.ok(LAYER_BLEND_MODE_LABELS[mode]?.length > 0, `${mode} label`);
   assert.equal(isLayerBlendMode(mode), true);
 }
-assert.equal(isLayerBlendMode("dissolve"), false);
+assert.equal(isLayerBlendMode("dissolve"), true);
+assert.equal(isLayerBlendMode("shade"), false);
 assert.equal(normalizeLayerBlendMode("multiply"), "multiply");
 assert.equal(normalizeLayerBlendMode("unknown"), "normal");
 assert.equal(normalizeLayerBlendMode(null), "normal");
-assert.deepEqual(PROVISIONAL_LAYER_BLEND_MODES, ["shade"]);
-assert.match(LAYER_BLEND_SHADE_COMPATIBILITY_NOTE, /temporary/i);
+assert.equal(normalizeLayerBlendMode("shade"), "darken");
+assert.deepEqual(LEGACY_LAYER_BLEND_MODE_MIGRATIONS, { shade: "darken" });
+assert.equal(migrateLegacyLayerBlendMode("shade"), "darken");
+assert.equal(migrateLegacyLayerBlendMode("dissolve"), "dissolve");
+assert.equal(migrateLegacyLayerBlendMode("unknown"), null);
 
 const clamp = (value) => Math.min(1, Math.max(0, value));
 const close = (actual, expected, epsilon = 2e-12, label = "") => {
@@ -101,9 +117,9 @@ const vivid = (base, blend) => blend <= 0.5 ? burn(base, 2 * blend) : dodge(base
 const channels = (backdrop, source, operation) => backdrop.map((base, index) => operation(base, source[index]));
 const oracleBlend = (backdrop, source, mode) => {
   switch (mode) {
+    case "dissolve": return source;
     case "multiply": return channels(backdrop, source, (base, blend) => base * blend);
-    case "darken":
-    case "shade": return channels(backdrop, source, Math.min);
+    case "darken": return channels(backdrop, source, Math.min);
     case "color-burn": return channels(backdrop, source, burn);
     case "linear-burn": return channels(backdrop, source, (base, blend) => Math.max(0, base + blend - 1));
     case "darker-color": return total(source) < total(backdrop) ? source : backdrop;
@@ -152,13 +168,32 @@ const sanitizePremultiplied = (rgba) => {
     alpha,
   ];
 };
-const oracleComposite = (backdropInput, sourceInput, mode) => {
+const oracleDissolveRandom = ([xInput, yInput]) => {
+  const x = Math.floor(xInput) | 0;
+  const y = Math.floor(yInput) | 0;
+  let state = (
+    Math.imul(x, 0x9e37_79b9)
+    ^ Math.imul(y, 0x85eb_ca6b)
+    ^ 0xc2b2_ae35
+  ) >>> 0;
+  state = Math.imul((state ^ (state >>> 16)) >>> 0, 0x7feb_352d) >>> 0;
+  state = Math.imul((state ^ (state >>> 15)) >>> 0, 0x846c_a68b) >>> 0;
+  state = (state ^ (state >>> 16)) >>> 0;
+  return (state >>> 8) / 0x01_00_00_00;
+};
+const oracleComposite = (backdropInput, sourceInput, mode, documentPixel = [0, 0]) => {
   const backdrop = sanitizePremultiplied(backdropInput);
-  const source = sanitizePremultiplied(sourceInput);
+  let source = sanitizePremultiplied(sourceInput);
+  if (mode === "dissolve") {
+    const alpha = source[3];
+    source = alpha > 0 && oracleDissolveRandom(documentPixel) < alpha
+      ? [source[0] / alpha, source[1] / alpha, source[2] / alpha, 1]
+      : [0, 0, 0, 0];
+  }
   const backdropAlpha = backdrop[3];
   const sourceAlpha = source[3];
   const outputAlpha = sourceAlpha + backdropAlpha * (1 - sourceAlpha);
-  if (mode === "normal") {
+  if (mode === "normal" || mode === "dissolve") {
     return [
       source[0] + backdrop[0] * (1 - sourceAlpha),
       source[1] + backdrop[1] * (1 - sourceAlpha),
@@ -220,12 +255,83 @@ const rgbaFixtures = [
 for (const mode of EXPECTED_ORDER) {
   for (const [backdrop, source] of rgbaFixtures) {
     const actual = blendLayerPremultipliedLinear(backdrop, source, mode);
-    closeArray(actual, oracleComposite(backdrop, source, mode), 3e-12, `${mode} composite`);
-    const expectedAlpha = source[3] + backdrop[3] * (1 - source[3]);
+    const expected = oracleComposite(backdrop, source, mode);
+    closeArray(actual, expected, 3e-12, `${mode} composite`);
+    const expectedAlpha = expected[3];
     close(actual[3], expectedAlpha, 2e-12, `${mode} alpha`);
     assert.ok(actual.slice(0, 3).every((channel) => channel >= 0 && channel <= actual[3] + 1e-12));
   }
 }
+
+// Dissolve treats effective alpha as a probability, not as gray coverage.
+// The hash must be deterministic in document space and statistically uniform.
+for (const pixel of [[0, 0], [17, 29], [-3, 41], [4095, 4095]]) {
+  close(
+    layerBlendDissolveRandom(pixel),
+    oracleDissolveRandom(pixel),
+    0,
+    `dissolve hash ${pixel.join(",")}`,
+  );
+}
+let acceptedPixel = null;
+let rejectedPixel = null;
+let acceptedCount = 0;
+const dissolveAlpha = 0.4;
+for (let y = 0; y < 128; y += 1) {
+  for (let x = 0; x < 128; x += 1) {
+    if (oracleDissolveRandom([x, y]) < dissolveAlpha) {
+      acceptedCount += 1;
+      acceptedPixel ??= [x, y];
+    } else {
+      rejectedPixel ??= [x, y];
+    }
+  }
+}
+const acceptedRatio = acceptedCount / (128 * 128);
+assert.ok(Math.abs(acceptedRatio - dissolveAlpha) < 0.015, acceptedRatio);
+assert.ok(acceptedPixel && rejectedPixel);
+const probabilisticSource = [0.08, 0.16, 0.24, 0.4];
+closeArray(
+  dissolveLayerSourcePremultipliedLinear(probabilisticSource, acceptedPixel),
+  [0.2, 0.4, 0.6, 1],
+  2e-15,
+  "accepted dissolve source",
+);
+assert.deepEqual(
+  dissolveLayerSourcePremultipliedLinear(probabilisticSource, rejectedPixel),
+  [0, 0, 0, 0],
+);
+const dissolveBackdrop = [0.3, 0.2, 0.1, 0.8];
+closeArray(
+  blendLayerPremultipliedLinear(
+    dissolveBackdrop,
+    probabilisticSource,
+    "dissolve",
+    acceptedPixel,
+  ),
+  [0.2, 0.4, 0.6, 1],
+  2e-15,
+  "accepted dissolve pixel",
+);
+closeArray(
+  blendLayerPremultipliedLinear(
+    dissolveBackdrop,
+    probabilisticSource,
+    "dissolve",
+    rejectedPixel,
+  ),
+  dissolveBackdrop,
+  2e-15,
+  "rejected dissolve pixel",
+);
+assert.deepEqual(
+  dissolveLayerSourcePremultipliedLinear([0, 0, 0, 0], acceptedPixel),
+  [0, 0, 0, 0],
+);
+assert.deepEqual(
+  dissolveLayerSourcePremultipliedLinear([0.2, 0.4, 0.6, 1], rejectedPixel),
+  [0.2, 0.4, 0.6, 1],
+);
 
 // The requested Normal fast path is exact linear premultiplied source-over.
 closeArray(
@@ -239,9 +345,9 @@ const encodedMultiply = blendLayerPremultipliedLinear([0.18, 0.18, 0.18, 1], [0.
 assert.ok(Math.abs(encodedMultiply - 0.09) > 0.001, encodedMultiply);
 
 const wgslConstants = {
-  multiply: "MULTIPLY", darken: "DARKEN", shade: "SHADE_PROVISIONAL",
+  normal: "NORMAL", dissolve: "DISSOLVE", multiply: "MULTIPLY", darken: "DARKEN",
   "color-burn": "COLOR_BURN", "linear-burn": "LINEAR_BURN", "darker-color": "DARKER_COLOR",
-  normal: "NORMAL", lighten: "LIGHTEN", screen: "SCREEN", "color-dodge": "COLOR_DODGE",
+  lighten: "LIGHTEN", screen: "SCREEN", "color-dodge": "COLOR_DODGE",
   add: "LINEAR_DODGE_ADD", "lighter-color": "LIGHTER_COLOR", overlay: "OVERLAY",
   "soft-light": "SOFT_LIGHT", "hard-light": "HARD_LIGHT", "vivid-light": "VIVID_LIGHT",
   "linear-light": "LINEAR_LIGHT", "pin-light": "PIN_LIGHT", "hard-mix": "HARD_MIX",
@@ -261,6 +367,9 @@ assert.ok(compositor.indexOf("if (mode == LAYER_BLEND_NORMAL)") < compositor.ind
 assert.match(compositor, /sourcePremultiplied \+ backdropPremultiplied \* \(1\.0 - sourceAlpha\)/);
 assert.match(compositor, /sourcePremultiplied \* \(1\.0 - backdropAlpha\)/);
 assert.match(compositor, /blendedLinear \* \(backdropAlpha \* sourceAlpha\)/);
-assert.match(LAYER_BLEND_MODE_WGSL, /temporary Darken fallback/);
+assert.match(LAYER_BLEND_MODE_WGSL, /fn layerBlendDissolveRandom\(documentPixel: vec2<i32>\)/);
+assert.match(LAYER_BLEND_MODE_WGSL, /fn layerBlendDissolveSource\(/);
+assert.match(compositor, /mode == LAYER_BLEND_DISSOLVE/);
+assert.match(compositor, /layerBlendDissolveSource\([\s\S]*?documentPixel/);
 
 console.log("Layer blend modes verification passed for 27 ordered modes.");
