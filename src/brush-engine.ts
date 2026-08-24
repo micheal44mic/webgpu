@@ -7718,10 +7718,6 @@ export class BrushEngine {
       }
       if (!approved) throw new Error(refusalMessage);
       console.warn("Memory safety limit overridden for one operation.", warning);
-      this.publishStatus(
-        `${action}: proceeding beyond the estimated device memory limit.`,
-        "working",
-      );
     }
     return this.memoryReservations.reserve(request);
   }

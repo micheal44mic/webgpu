@@ -2906,33 +2906,9 @@
       role="alertdialog"
       aria-modal="true"
       aria-labelledby="memoryLimitDialogTitle"
-      aria-describedby="memoryLimitDialogMessage memoryLimitDialogMetrics memoryLimitDialogRisk"
     >
       <div class="memory-limit-dialog-panel">
-        <header class="memory-limit-dialog-header">
-          <span class="memory-limit-dialog-icon" aria-hidden="true">!</span>
-          <div>
-            <p id="memoryLimitDialogAction" class="memory-limit-dialog-action">Memory-intensive action</p>
-            <h2 id="memoryLimitDialogTitle">Memory limit warning</h2>
-          </div>
-        </header>
-        <p id="memoryLimitDialogMessage" class="memory-limit-dialog-message">
-          We can't safely complete this action because it may exceed your device's memory limit.
-          Continuing may cause the app to close unexpectedly, and unsaved changes may be lost.
-        </p>
-        <dl id="memoryLimitDialogMetrics" class="memory-limit-dialog-metrics">
-          <div>
-            <dt>Estimated peak required</dt>
-            <dd id="memoryLimitDialogPeak">—</dd>
-          </div>
-          <div>
-            <dt>Currently available</dt>
-            <dd id="memoryLimitDialogAvailable">—</dd>
-          </div>
-        </dl>
-        <p id="memoryLimitDialogRisk" class="memory-limit-dialog-risk">
-          Proceed only if your work is saved and you accept the risk of the app closing.
-        </p>
+        <h2 id="memoryLimitDialogTitle">Memory limit warning</h2>
         <div class="memory-limit-dialog-actions">
           <button id="memoryLimitDialogCancel" type="button">Cancel</button>
           <button id="memoryLimitDialogProceed" type="button">Proceed anyway</button>

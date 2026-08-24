@@ -1,10 +1,5 @@
-import type { MemoryAdmissionWarning } from "./engine-types";
-
 export interface MemoryLimitDialogControllerOptions {
   readonly root: HTMLDialogElement;
-  readonly action: HTMLElement;
-  readonly peak: HTMLElement;
-  readonly available: HTMLElement;
   readonly cancelButton: HTMLButtonElement;
   readonly proceedButton: HTMLButtonElement;
 }
@@ -26,11 +21,6 @@ function focusTarget(value: unknown): FocusTarget | null {
   return value as FocusTarget;
 }
 
-function formatMebibytes(bytes: number): string {
-  const mebibytes = Math.max(0, bytes) / (1024 * 1024);
-  return `${mebibytes.toFixed(1)} MiB`;
-}
-
 /**
  * Presents one explicit, non-persistent escape hatch when the memory governor
  * refuses an allocation. A second request cannot borrow the visible prompt:
@@ -50,14 +40,11 @@ export class MemoryLimitDialogController {
     options.root.addEventListener("close", this.handleUnexpectedClose);
   }
 
-  confirm(warning: MemoryAdmissionWarning): Promise<boolean> {
+  confirm(): Promise<boolean> {
     if (this.disposed || this.pendingResolution || this.options.root.open) {
       return Promise.resolve(false);
     }
 
-    this.options.action.textContent = warning.action;
-    this.options.peak.textContent = formatMebibytes(warning.requiredBytes);
-    this.options.available.textContent = formatMebibytes(warning.availableBytes);
     this.previousFocus = focusTarget(this.options.root.ownerDocument.activeElement);
 
     return new Promise<boolean>((resolve) => {

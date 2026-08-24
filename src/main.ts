@@ -181,9 +181,6 @@ const appElement = element<HTMLElement>("app");
 const editorStage = element<HTMLElement>("editorStage");
 const memoryLimitDialogController = new MemoryLimitDialogController({
   root: element<HTMLDialogElement>("memoryLimitDialog"),
-  action: element<HTMLElement>("memoryLimitDialogAction"),
-  peak: element<HTMLElement>("memoryLimitDialogPeak"),
-  available: element<HTMLElement>("memoryLimitDialogAvailable"),
   cancelButton: element<HTMLButtonElement>("memoryLimitDialogCancel"),
   proceedButton: element<HTMLButtonElement>("memoryLimitDialogProceed"),
 });
@@ -482,8 +479,8 @@ const engine = new BrushEngine(canvas, {
     }
     rasterAdjustmentsController?.handleEngineStatus(message, kind);
   },
-  onMemoryAdmissionWarning(warning) {
-    return memoryLimitDialogController.confirm(warning);
+  onMemoryAdmissionWarning() {
+    return memoryLimitDialogController.confirm();
   },
   onStats(stats) {
     runtimeStatsController?.update(stats);

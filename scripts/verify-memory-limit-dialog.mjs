@@ -37,53 +37,31 @@ function harness() {
   const previousFocus = new FakeElement();
   const document = { activeElement: previousFocus };
   const root = new FakeDialog(document);
-  const action = new FakeElement();
-  const peak = new FakeElement();
-  const available = new FakeElement();
   const cancelButton = new FakeElement();
   const proceedButton = new FakeElement();
   const controller = new MemoryLimitDialogController({
     root,
-    action,
-    peak,
-    available,
     cancelButton,
     proceedButton,
   });
   return {
     controller,
     root,
-    action,
-    peak,
-    available,
     cancelButton,
     proceedButton,
     previousFocus,
   };
 }
 
-const warning = {
-  action: "Switch layers",
-  category: "layer-switch",
-  requiredBytes: 610.9 * 1024 * 1024,
-  availableBytes: 313.4 * 1024 * 1024,
-  usedBytes: 488.5 * 1024 * 1024,
-  ceilingBytes: 801.9 * 1024 * 1024,
-  reason: "fixture refusal",
-};
-
-// Proceed approves only the visible attempt, renders its estimates, and
-// returns focus. A concurrent attempt must fail closed instead of borrowing it.
+// Proceed approves only the visible attempt and returns focus. A concurrent
+// attempt must fail closed instead of borrowing the current confirmation.
 {
   const ui = harness();
-  const first = ui.controller.confirm(warning);
+  const first = ui.controller.confirm();
   assert.equal(ui.root.open, true);
-  assert.equal(ui.action.textContent, "Switch layers");
-  assert.equal(ui.peak.textContent, "610.9 MiB");
-  assert.equal(ui.available.textContent, "313.4 MiB");
   assert.equal(ui.cancelButton.focused, true, "Cancel must receive initial focus");
   assert.equal(
-    await ui.controller.confirm({ ...warning, action: "Merge layers" }),
+    await ui.controller.confirm(),
     false,
     "a second action cannot reuse the current confirmation",
   );
@@ -97,35 +75,37 @@ const warning = {
 // Cancel, Escape, and disposal all preserve the governor refusal.
 {
   const ui = harness();
-  const cancelled = ui.controller.confirm(warning);
+  const cancelled = ui.controller.confirm();
   ui.cancelButton.dispatchEvent(new Event("click"));
   assert.equal(await cancelled, false);
 
-  const escaped = ui.controller.confirm(warning);
+  const escaped = ui.controller.confirm();
   const cancelEvent = new Event("cancel", { cancelable: true });
   ui.root.dispatchEvent(cancelEvent);
   assert.equal(cancelEvent.defaultPrevented, true);
   assert.equal(await escaped, false);
 
-  const disposed = ui.controller.confirm(warning);
+  const disposed = ui.controller.confirm();
   ui.controller.dispose();
   assert.equal(await disposed, false);
 }
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const html = read("../index.html");
+const dialogHtml = html.match(/<dialog\s+id="memoryLimitDialog"[\s\S]*?<\/dialog>/)?.[0] ?? "";
 const main = read("../src/main.ts");
 const engine = read("../src/brush-engine.ts");
 const merge = read("../src/engine-layer-merge-runtime.ts");
 const liquify = read("../src/engine-liquify-runtime.ts");
 const historyRuntime = read("../src/engine-history-runtime.ts");
 
-assert.match(html, /role="alertdialog"/);
-assert.match(html, /We can't safely complete this action/);
-assert.match(html, /may cause the app to close unexpectedly/);
-assert.match(html, />Cancel</);
-assert.match(html, />Proceed anyway</);
-assert.match(main, /onMemoryAdmissionWarning\(warning\)[\s\S]*?memoryLimitDialogController\.confirm\(warning\)/);
+assert.match(dialogHtml, /role="alertdialog"/);
+assert.match(dialogHtml, />Memory limit warning</);
+assert.match(dialogHtml, />Cancel</);
+assert.match(dialogHtml, />Proceed anyway</);
+assert.doesNotMatch(dialogHtml, /Estimated peak|required|Currently available|unsaved changes|accept the risk/i);
+assert.doesNotMatch(dialogHtml, /memoryLimitDialogAction|memoryLimitDialogMessage|memoryLimitDialogMetrics/);
+assert.match(main, /onMemoryAdmissionWarning\(\)[\s\S]*?memoryLimitDialogController\.confirm\(\)/);
 assert.match(engine, /async reserveMemoryWithAdmissionOverride\(/);
 assert.match(engine, /await this\.reserveLayerDuplicateMemory\(source\)/);
 assert.match(engine, /await this\.reserveLayerSwitchMemory\(index\)/);
@@ -143,4 +123,4 @@ assert.match(
   "internal merge recovery must remain fail-closed",
 );
 
-console.log("Memory limit dialog: one-shot proceed, fail-closed cancel/Escape/concurrency, copy and all five admission gates verified.");
+console.log("Memory limit dialog: title-only copy, one-shot proceed, fail-closed cancel/Escape/concurrency and all five admission gates verified.");
