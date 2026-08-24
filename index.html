@@ -251,6 +251,20 @@
               </span>
             </button>
             <button
+              id="editorFiltersMenu"
+              class="mobile-header-action"
+              type="button"
+              aria-label="Open filters"
+              aria-controls="editorFiltersPanel"
+              aria-expanded="false"
+              title="Filters"
+            >
+              <span class="mobile-icon-stack" aria-hidden="true">
+                <i data-lucide="filter" class="mobile-icon-layer mobile-icon-outline"></i>
+                <i data-lucide="filter" class="mobile-icon-layer mobile-icon-face"></i>
+              </span>
+            </button>
+            <button
               id="editorSettingsMenu"
               class="mobile-header-action"
               type="button"
@@ -1561,6 +1575,106 @@
       </aside>
 
       <aside
+        id="mobileGlassSheet"
+        class="mobile-tools-sheet mobile-glass-sheet"
+        aria-label="Glass settings"
+        aria-hidden="true"
+        data-state="closed"
+        data-snap="peek"
+      >
+        <button
+          id="mobileGlassHandle"
+          class="mobile-tools-sheet-handle"
+          type="button"
+          aria-label="Expand Glass settings"
+          aria-controls="mobileGlassSheet"
+          aria-expanded="false"
+        >
+          <span class="mobile-tools-sheet-grabber" aria-hidden="true"></span>
+        </button>
+
+        <div class="mobile-stroke-sheet-content mobile-glass-shell">
+          <header id="mobileGlassHeader" class="mobile-stroke-header">
+            <h2 class="mobile-stroke-title">Glass</h2>
+          </header>
+
+          <div id="mobileGlassControlsRegion" class="mobile-stroke-controls-region">
+            <div class="mobile-glass-scroll">
+              <div class="mobile-glass-controls">
+                <label class="mobile-stroke-width-control" for="mobileGlassDistortion">
+                  <span class="mobile-stroke-control-label">Distortion</span>
+                  <output id="mobileGlassDistortionOut" for="mobileGlassDistortion">0 px</output>
+                  <input
+                    id="mobileGlassDistortion"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value="35"
+                    aria-label="Glass distortion"
+                  />
+                </label>
+
+                <label class="mobile-stroke-width-control" for="mobileGlassSmoothness">
+                  <span class="mobile-stroke-control-label">Smoothness</span>
+                  <output id="mobileGlassSmoothnessOut" for="mobileGlassSmoothness">55%</output>
+                  <input
+                    id="mobileGlassSmoothness"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value="55"
+                    aria-label="Glass smoothness"
+                  />
+                </label>
+
+                <label class="mobile-stroke-width-control" for="mobileGlassScale">
+                  <span class="mobile-stroke-control-label">Scale</span>
+                  <output id="mobileGlassScaleOut" for="mobileGlassScale">45%</output>
+                  <input
+                    id="mobileGlassScale"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value="45"
+                    aria-label="Glass texture scale"
+                  />
+                </label>
+
+                <label class="mobile-noise-check-control">
+                  <input id="mobileGlassInvert" type="checkbox" />
+                  <span>Invert texture</span>
+                </label>
+
+                <button
+                  id="mobileGlassReseed"
+                  class="mobile-glass-reseed"
+                  type="button"
+                >
+                  New texture
+                </button>
+
+                <p
+                  id="mobileGlassStatus"
+                  class="visually-hidden"
+                  role="status"
+                  aria-live="polite"
+                  aria-atomic="true"
+                >Glass ready.</p>
+
+                <div class="mobile-tool-actions mobile-tool-actions-grid mobile-glass-actions">
+                  <button id="mobileGlassCancel" type="button">Cancel</button>
+                  <button id="mobileGlassApply" class="is-primary" type="button">Apply</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <aside
         id="mobileToolSettingsSheet"
         class="mobile-tools-sheet mobile-tool-settings-sheet"
         aria-label="Tool settings"
@@ -2497,6 +2611,61 @@
           <p id="mobileToolsEmpty" class="mobile-tools-empty" aria-live="polite" hidden>
             No tools found.
           </p>
+        </div>
+      </aside>
+
+      <aside
+        id="editorFiltersPanel"
+        class="mobile-tools-sheet editor-filters-panel"
+        aria-label="Filters"
+        aria-hidden="true"
+        inert
+      >
+        <header class="editor-settings-header editor-filters-header">
+          <div>
+            <h2>Filters</h2>
+            <p>Pixel transformations</p>
+          </div>
+          <button
+            id="editorFiltersClose"
+            class="editor-settings-close"
+            type="button"
+            aria-label="Close filters"
+            title="Close filters"
+          >
+            <span class="mobile-icon-stack" aria-hidden="true">
+              <i data-lucide="x" class="mobile-icon-layer mobile-icon-outline"></i>
+              <i data-lucide="x" class="mobile-icon-layer mobile-icon-face"></i>
+            </span>
+          </button>
+        </header>
+        <div class="editor-settings-content editor-filters-content">
+          <section class="editor-settings-section" aria-labelledby="editorFiltersHeading">
+            <div class="editor-settings-section-heading">
+              <h3 id="editorFiltersHeading">Available filters</h3>
+              <p>Preview on the selected raster layer, then Apply or Cancel.</p>
+            </div>
+            <button
+              id="editorGlassFilter"
+              class="editor-filter-card"
+              type="button"
+              data-editor-filter-kind="glass"
+              aria-label="Open Glass filter"
+              aria-controls="mobileGlassSheet"
+              aria-pressed="false"
+            >
+              <span class="editor-filter-icon" aria-hidden="true">
+                <i data-lucide="lens-convex"></i>
+              </span>
+              <span class="editor-filter-copy">
+                <span class="editor-filter-name">Glass</span>
+                <span class="editor-filter-hint">
+                  Refract pixels through a procedural surface.
+                </span>
+              </span>
+              <span class="editor-filter-open" aria-hidden="true">Open</span>
+            </button>
+          </section>
         </div>
       </aside>
 

@@ -459,6 +459,13 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
     );
     return false;
   }
+  if (engine.activeRasterGlassSession) {
+    engine.publishStatus(
+      "Apply or cancel Glass before using history.",
+      "error",
+    );
+    return false;
+  }
   if (engine.activeRasterLiquifySession) {
     engine.publishStatus(
       "Apply or cancel Liquify before using history.",

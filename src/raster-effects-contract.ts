@@ -14,6 +14,7 @@ export const DESTRUCTIVE_RASTER_ADJUSTMENT_KINDS = [
   "gaussian-blur",
   "motion-blur",
   "noise",
+  "glass",
 ] as const;
 
 export type DestructiveRasterAdjustmentKind =

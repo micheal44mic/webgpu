@@ -127,6 +127,16 @@ import {
 } from "./engine-noise-runtime";
 import type { RasterNoiseSettings } from "./noise-core";
 import {
+  abandonRasterGlassSession,
+  beginRasterGlass as beginRasterGlassRuntime,
+  cancelRasterGlass as cancelRasterGlassRuntime,
+  commitRasterGlass as commitRasterGlassRuntime,
+  reseedRasterGlass as reseedRasterGlassRuntime,
+  updateRasterGlass as updateRasterGlassRuntime,
+  type ActiveRasterGlassSession,
+} from "./engine-glass-runtime";
+import type { RasterGlassSeed, RasterGlassSettings } from "./glass-core";
+import {
   abandonRasterLiquifySession,
   beginRasterLiquify as beginRasterLiquifyRuntime,
   beginRasterLiquifyStroke as beginRasterLiquifyStrokeRuntime,
@@ -843,6 +853,7 @@ export type DestructiveRasterEditKind =
   | "gaussian-blur"
   | "motion-blur"
   | "noise"
+  | "glass"
   | "liquify";
 
 type DestructiveRasterOperationKind = DestructiveRasterEditKind | "rasterize";
@@ -1767,6 +1778,7 @@ export class BrushEngine {
   activeRasterGaussianBlurSession: ActiveRasterGaussianBlurSession | null = null;
   activeRasterMotionBlurSession: ActiveRasterMotionBlurSession | null = null;
   activeRasterNoiseSession: ActiveRasterNoiseSession | null = null;
+  activeRasterGlassSession: ActiveRasterGlassSession | null = null;
   activeRasterLiquifySession: ActiveRasterLiquifySession | null = null;
   historyGpuStorage!: GpuHistoryStorage;
   historyLocalStorage!: HistoryStorageCoordinator;
@@ -1991,6 +2003,7 @@ export class BrushEngine {
     this.deviceLostSignal = this.device.lost.then((info) => {
       this.invalidateAdaptivePreview();
       abandonRasterNoiseSession(this);
+      abandonRasterGlassSession(this);
       abandonRasterLiquifySession(this);
       const reason = info.message || info.reason;
       const error = new Error(`WebGPU device lost: ${reason}`);
@@ -4923,6 +4936,7 @@ export class BrushEngine {
       || this.activeRasterGaussianBlurSession
       || this.activeRasterMotionBlurSession
       || this.activeRasterNoiseSession
+      || this.activeRasterGlassSession
       || this.activeRasterLiquifySession
     ) {
       return false;
@@ -5029,6 +5043,7 @@ export class BrushEngine {
       || this.activeRasterGaussianBlurSession
       || this.activeRasterMotionBlurSession
       || this.activeRasterNoiseSession
+      || this.activeRasterGlassSession
       || this.activeRasterLiquifySession
     ) {
       return false;
@@ -5132,6 +5147,7 @@ export class BrushEngine {
       && this.activeRasterGaussianBlurSession === null
       && this.activeRasterMotionBlurSession === null
       && this.activeRasterNoiseSession === null
+      && this.activeRasterGlassSession === null
       && this.activeRasterLiquifySession === null;
   }
 
@@ -5518,6 +5534,7 @@ export class BrushEngine {
     if (this.activeRasterGaussianBlurSession) return "gaussian-blur";
     if (this.activeRasterMotionBlurSession) return "motion-blur";
     if (this.activeRasterNoiseSession) return "noise";
+    if (this.activeRasterGlassSession) return "glass";
     if (this.activeRasterLiquifySession) return "liquify";
     return null;
   }
@@ -5527,6 +5544,7 @@ export class BrushEngine {
     if (kind === "transform") return "Transform";
     if (kind === "gaussian-blur") return "Gaussian Blur";
     if (kind === "motion-blur") return "Motion Blur";
+    if (kind === "glass") return "Glass";
     if (kind === "liquify") return "Liquify";
     if (kind === "rasterize") return "Rasterize";
     return "Noise";
@@ -8329,6 +8347,7 @@ export class BrushEngine {
       || this.activeRasterGaussianBlurSession
       || this.activeRasterMotionBlurSession
       || this.activeRasterNoiseSession
+      || this.activeRasterGlassSession
       || this.activeRasterLiquifySession
       || this.rasterStrokeBusy
       || this.rasterBevelBusy
@@ -8460,6 +8479,7 @@ export class BrushEngine {
       || this.activeRasterGaussianBlurSession
       || this.activeRasterMotionBlurSession
       || this.activeRasterNoiseSession
+      || this.activeRasterGlassSession
       || this.activeRasterLiquifySession
     ) {
       return false;
@@ -8833,6 +8853,29 @@ export class BrushEngine {
 
   cancelRasterNoise(): Promise<boolean> {
     return cancelRasterNoiseRuntime(this);
+  }
+
+  beginRasterGlass(
+    initial?: Partial<RasterGlassSettings>,
+    initialSeed?: Readonly<RasterGlassSeed>,
+  ) {
+    return beginRasterGlassRuntime(this, initial, initialSeed);
+  }
+
+  updateRasterGlass(update: Partial<RasterGlassSettings>) {
+    return updateRasterGlassRuntime(this, update);
+  }
+
+  reseedRasterGlass(seed?: Readonly<RasterGlassSeed>) {
+    return reseedRasterGlassRuntime(this, seed);
+  }
+
+  commitRasterGlass(): Promise<boolean> {
+    return commitRasterGlassRuntime(this);
+  }
+
+  cancelRasterGlass(): Promise<boolean> {
+    return cancelRasterGlassRuntime(this);
   }
 
   beginRasterLiquify(initial?: Partial<LiquifySettings>) {
@@ -9925,6 +9968,11 @@ export class BrushEngine {
     if (this.activeRasterNoiseSession) {
       throw new Error(
         "Apply or cancel Noise before switching layers.",
+      );
+    }
+    if (this.activeRasterGlassSession) {
+      throw new Error(
+        "Apply or cancel Glass before switching layers.",
       );
     }
     if (this.activeRasterLiquifySession) {

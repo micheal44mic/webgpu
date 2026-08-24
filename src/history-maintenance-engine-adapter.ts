@@ -9,6 +9,7 @@ export type EngineHistoryMaintenanceHost = Pick<
   BrushEngine,
   | "activeFillPreviewSession"
   | "activeRasterGaussianBlurSession"
+  | "activeRasterGlassSession"
   | "activeRasterLayerMetadataHistoryEdit"
   | "activeRasterLiquifySession"
   | "activeRasterMotionBlurSession"

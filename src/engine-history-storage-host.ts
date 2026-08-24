@@ -57,6 +57,7 @@ export function createEngineHistoryRuntimeHost(engine: BrushEngine): HistoryRunt
         || engine.activeRasterGaussianBlurSession
         || engine.activeRasterMotionBlurSession
         || engine.activeRasterNoiseSession
+        || engine.activeRasterGlassSession
         || engine.activeRasterLiquifySession
       ),
       deviceLost: engine.deviceLostError !== null,
@@ -78,6 +79,7 @@ export function createEngineHistoryMaintenanceHost(
       && !engine.selectionBusy
       && engine.activeStroke === null
       && engine.activeFillPreviewSession === null
+      && engine.activeRasterGlassSession === null
       && engine.deviceLostError === null,
     waitForIdle: () => engine.waitForIdle(),
     scheduleIdle: (callback, delayMs) => window.setTimeout(callback, delayMs),

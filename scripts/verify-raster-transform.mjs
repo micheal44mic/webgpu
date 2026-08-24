@@ -603,9 +603,10 @@ console.log("Raster transform math/shader verification passed.");
 // --- Guardie del runtime ------------------------------------------------------
 {
   const engine = readFileSync(new URL("../src/brush-engine.ts", import.meta.url), "utf8");
+  const guardStart = engine.indexOf("  assertLayerSwitchAllowed(): void {");
   const guardia = engine.slice(
-    engine.indexOf("  assertLayerSwitchAllowed(): void {"),
-    engine.indexOf("  assertLayerSwitchAllowed(): void {") + 1_400,
+    guardStart,
+    engine.indexOf("  persistActiveLayerState(): void {", guardStart),
   );
   // La sessione Trasforma tiene viva la texture hot del sorgente: un cambio di
   // livello la evacua e l'Applica successivo la trova mancante, perdendo la

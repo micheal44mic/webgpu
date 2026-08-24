@@ -1,6 +1,7 @@
 import "./styles.css";
 import { EditorToolsController } from "./editor-tools-controller";
 import type { EditorRasterEffectKind } from "./editor-tools-contract";
+import { EditorFiltersController } from "./editor-filters-controller";
 import { MobileBrushStudioController } from "./mobile-brush-studio";
 import { MobileBrushLibraryPreviewRenderer } from "./brush-library-preview";
 import { AuthoritativeBrushStrokePreviewRenderer } from "./brush-stroke-preview-renderer";
@@ -40,12 +41,14 @@ import {
   Eraser,
   Eye,
   EyeOff,
+  Filter,
   Focus,
   Grid3X3,
   Hand,
   House,
   Image as ImageIcon,
   Layers3,
+  LensConvex,
   MoveDiagonal2,
   PaintBucket,
   Palette,
@@ -116,12 +119,14 @@ createIcons({
     Eraser,
     Eye,
     EyeOff,
+    Filter,
     Focus,
     Grid3X3,
     Hand,
     House,
     Image: ImageIcon,
     Layers3,
+    LensConvex,
     MoveDiagonal2,
     PaintBucket,
     Palette,
@@ -211,6 +216,12 @@ const mobileToolsSheetContent = element<HTMLElement>("mobileToolsSheetContent");
 const mobileToolsSearchField = element<HTMLLabelElement>("mobileToolsSearchField");
 const mobileToolsSearchInput = element<HTMLInputElement>("mobileToolsSearch");
 const mobileToolsEmpty = element<HTMLParagraphElement>("mobileToolsEmpty");
+const editorFiltersMenuButton = element<HTMLButtonElement>("editorFiltersMenu");
+const editorFiltersPanel = element<HTMLElement>("editorFiltersPanel");
+const editorFiltersCloseButton = element<HTMLButtonElement>("editorFiltersClose");
+const editorFilterButtons = Array.from(
+  document.querySelectorAll<HTMLButtonElement>("[data-editor-filter-kind]"),
+);
 const editorSettingsMenuButton = element<HTMLButtonElement>("editorSettingsMenu");
 const editorSettingsPanel = element<HTMLElement>("editorSettingsPanel");
 const editorSettingsCloseButton = element<HTMLButtonElement>("editorSettingsClose");
@@ -373,6 +384,22 @@ const mobileNoiseAdditiveInput = element<HTMLInputElement>("mobileNoiseAdditive"
 const mobileNoiseStatus = element<HTMLParagraphElement>("mobileNoiseStatus");
 const mobileNoiseCancelButton = element<HTMLButtonElement>("mobileNoiseCancel");
 const mobileNoiseApplyButton = element<HTMLButtonElement>("mobileNoiseApply");
+const mobileGlassOpenButton = element<HTMLButtonElement>("editorGlassFilter");
+const mobileGlassSheetElement = element<HTMLElement>("mobileGlassSheet");
+const mobileGlassSheetHandle = element<HTMLButtonElement>("mobileGlassHandle");
+const mobileGlassSheetHeader = element<HTMLElement>("mobileGlassHeader");
+const mobileGlassControlsRegion = element<HTMLElement>("mobileGlassControlsRegion");
+const mobileGlassDistortionInput = element<HTMLInputElement>("mobileGlassDistortion");
+const mobileGlassDistortionOutput = element<HTMLOutputElement>("mobileGlassDistortionOut");
+const mobileGlassSmoothnessInput = element<HTMLInputElement>("mobileGlassSmoothness");
+const mobileGlassSmoothnessOutput = element<HTMLOutputElement>("mobileGlassSmoothnessOut");
+const mobileGlassScaleInput = element<HTMLInputElement>("mobileGlassScale");
+const mobileGlassScaleOutput = element<HTMLOutputElement>("mobileGlassScaleOut");
+const mobileGlassInvertInput = element<HTMLInputElement>("mobileGlassInvert");
+const mobileGlassReseedButton = element<HTMLButtonElement>("mobileGlassReseed");
+const mobileGlassStatus = element<HTMLParagraphElement>("mobileGlassStatus");
+const mobileGlassCancelButton = element<HTMLButtonElement>("mobileGlassCancel");
+const mobileGlassApplyButton = element<HTMLButtonElement>("mobileGlassApply");
 const mobileToolSettingsButtons = Array.from(
   document.querySelectorAll<HTMLButtonElement>("[data-mobile-tool-sheet]"),
 );
@@ -436,6 +463,7 @@ let canvasToolController: CanvasToolController | null = null;
 let brushOutlineController: BrushOutlineController | null = null;
 let mixedSceneInitializationPromise: Promise<MixedSceneController> | null = null;
 let editorToolsController: EditorToolsController;
+let editorFiltersController: EditorFiltersController | null = null;
 let editorSettingsController: EditorSettingsController | null = null;
 let canvasGuidesController: CanvasGuidesController | null = null;
 let mobileBrushStudio: MobileBrushStudioController | null = null;
@@ -626,6 +654,7 @@ appDiagnosticsController = new AppDiagnosticsController({
       rasterGaussianBlurUiBusy: false,
       rasterMotionBlurUiBusy: false,
       rasterNoiseUiBusy: false,
+      rasterGlassUiBusy: false,
       rasterLiquifyUiBusy: false,
     },
   }),
@@ -835,6 +864,7 @@ brushLibraryController = new BrushLibraryController({
     if (mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
     if (mobileRasterEffectsSheet?.isOpen) mobileRasterEffectsSheet.close(false);
     if (mobileToolSettingsSheet?.isOpen) mobileToolSettingsSheet.close(false);
+    if (editorFiltersController?.isOpen) editorFiltersController.setOpen(false);
     if (editorSettingsController?.isOpen) editorSettingsController.setOpen(false);
     if (editorToolsController?.isOpen) editorToolsController.setOpen(false);
     if (layerPanelController?.isOpen) layerPanelController.setOpen(false);
@@ -843,6 +873,7 @@ brushLibraryController = new BrushLibraryController({
     if (mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
     if (mobileRasterEffectsSheet?.isOpen) mobileRasterEffectsSheet.close(false);
     if (mobileToolSettingsSheet?.isOpen) mobileToolSettingsSheet.close(false);
+    if (editorFiltersController?.isOpen) editorFiltersController.setOpen(false);
     if (editorSettingsController?.isOpen) editorSettingsController.setOpen(false);
   },
   isPaintSelected: () => (canvasToolController?.activeTool ?? "paint") === "paint",
@@ -882,6 +913,7 @@ editorSettingsController = new EditorSettingsController({
     if (mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
     if (mobileRasterEffectsSheet?.isOpen) mobileRasterEffectsSheet.close(false);
     if (mobileToolSettingsSheet?.isOpen) mobileToolSettingsSheet.close(false);
+    if (editorFiltersController?.isOpen) editorFiltersController.setOpen(false);
     if (editorToolsController?.isOpen) editorToolsController.setOpen(false);
     if (layerPanelController?.isOpen) layerPanelController.setOpen(false);
     if (brushLibraryController.isOpen) brushLibraryController.setOpen(false);
@@ -943,6 +975,7 @@ brushQuickControlsController = new BrushQuickControlsController({
   isSuppressedBySurface: () =>
     layerPanelController?.isOpen === true
     || editorToolsController?.isOpen === true
+    || editorFiltersController?.isOpen === true
     || editorSettingsController?.isOpen === true
     || brushLibraryController.isOpen
     || mobileStrokeSheet?.isOpen === true
@@ -1169,6 +1202,7 @@ mobileStrokeSheet = new MobileStrokeSheetController({
   cancelHistoryEdit: (token) => engine.cancelRasterLayerMetadataHistoryEdit(token),
   beforeOpen: () => {
     editorToolsController?.setOpen(false);
+    editorFiltersController?.setOpen(false);
     editorSettingsController?.setOpen(false);
     setMobileLayersPanelOpen(false);
     brushLibraryController.setOpen(false);
@@ -1201,6 +1235,7 @@ mobileRasterEffectsSheet = new MobileRasterEffectsSheetController({
   cancelHistoryEdit: (token) => engine.cancelRasterLayerMetadataHistoryEdit(token),
   beforeOpen: () => {
     editorToolsController?.setOpen(false);
+    editorFiltersController?.setOpen(false);
     editorSettingsController?.setOpen(false);
     setMobileLayersPanelOpen(false);
     brushLibraryController.setOpen(false);
@@ -1290,6 +1325,24 @@ rasterAdjustmentsController = new RasterAdjustmentsController({
       cancelButton: mobileNoiseCancelButton,
       applyButton: mobileNoiseApplyButton,
     },
+    glass: {
+      openButton: mobileGlassOpenButton,
+      sheet: mobileGlassSheetElement,
+      sheetHandle: mobileGlassSheetHandle,
+      sheetHeader: mobileGlassSheetHeader,
+      controlsRegion: mobileGlassControlsRegion,
+      distortionInput: mobileGlassDistortionInput,
+      distortionOutput: mobileGlassDistortionOutput,
+      smoothnessInput: mobileGlassSmoothnessInput,
+      smoothnessOutput: mobileGlassSmoothnessOutput,
+      scaleInput: mobileGlassScaleInput,
+      scaleOutput: mobileGlassScaleOutput,
+      invertInput: mobileGlassInvertInput,
+      reseedButton: mobileGlassReseedButton,
+      status: mobileGlassStatus,
+      cancelButton: mobileGlassCancelButton,
+      applyButton: mobileGlassApplyButton,
+    },
   },
   isEngineReady: () => engineInitialized,
   getHistoryState: () => historyState,
@@ -1305,6 +1358,7 @@ rasterAdjustmentsController = new RasterAdjustmentsController({
   },
   beforeSheetOpen: () => {
     editorToolsController?.setOpen(false);
+    editorFiltersController?.setOpen(false);
     editorSettingsController?.setOpen(false);
     setMobileLayersPanelOpen(false);
     brushLibraryController.setOpen(false);
@@ -1319,6 +1373,35 @@ rasterAdjustmentsController = new RasterAdjustmentsController({
   },
   updateHistoryControls,
   requestActiveThumbnail: requestMobileLayerThumbnailCapture,
+});
+
+editorFiltersController = new EditorFiltersController({
+  browser: window,
+  document,
+  elements: {
+    trigger: editorFiltersMenuButton,
+    panel: editorFiltersPanel,
+    closeButton: editorFiltersCloseButton,
+    filterButtons: editorFilterButtons,
+  },
+  canOpen: () => mobileBrushStudio?.isBusy !== true
+    && rasterAdjustmentsController?.isAnySurfaceOpen !== true,
+  beforeOpen: () => {
+    if (mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
+    if (mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
+    if (mobileRasterEffectsSheet?.isOpen) mobileRasterEffectsSheet.close(false);
+    if (mobileToolSettingsSheet?.isOpen) mobileToolSettingsSheet.close(false);
+    if (editorToolsController?.isOpen) editorToolsController.setOpen(false);
+    if (editorSettingsController?.isOpen) editorSettingsController.setOpen(false);
+    if (layerPanelController?.isOpen) layerPanelController.setOpen(false);
+    if (brushLibraryController.isOpen) brushLibraryController.setOpen(false);
+  },
+  onOpenChange: () => brushQuickControlsController?.syncVisibility(),
+  openFilter: (kind, trigger, returnFocus) => {
+    if (kind === "glass") {
+      rasterAdjustmentsController?.openGlass(trigger, returnFocus);
+    }
+  },
 });
 
 mobileToolSettingsSheet = new MobileToolSettingsSheetController({
@@ -1516,6 +1599,7 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
   toggleTextDistortEditing: () => canvasToolController?.toggleTextDistortEditing() ?? false,
   beforeOpen: () => {
     editorToolsController?.setOpen(false);
+    editorFiltersController?.setOpen(false);
     editorSettingsController?.setOpen(false);
     setMobileLayersPanelOpen(false);
     brushLibraryController.setOpen(false);
@@ -1557,6 +1641,7 @@ editorToolsController = new EditorToolsController({
     if (mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
     if (mobileRasterEffectsSheet?.isOpen) mobileRasterEffectsSheet.close(false);
     if (mobileToolSettingsSheet?.isOpen) mobileToolSettingsSheet.close(false);
+    if (editorFiltersController?.isOpen) editorFiltersController.setOpen(false);
     if (editorSettingsController?.isOpen) editorSettingsController.setOpen(false);
     if (layerPanelController?.isOpen) layerPanelController.setOpen(false);
     if (brushLibraryController.isOpen) brushLibraryController.setOpen(false);
@@ -1618,6 +1703,7 @@ layerPanelController = new LayerPanelController({
     if (mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
     if (mobileRasterEffectsSheet?.isOpen) mobileRasterEffectsSheet.close(false);
     if (mobileToolSettingsSheet?.isOpen) mobileToolSettingsSheet.close(false);
+    if (editorFiltersController?.isOpen) editorFiltersController.setOpen(false);
     if (editorSettingsController?.isOpen) editorSettingsController.setOpen(false);
     if (editorToolsController.isOpen) editorToolsController.setOpen(false);
     if (brushLibraryController.isOpen) brushLibraryController.setOpen(false);
@@ -1749,6 +1835,7 @@ window.addEventListener("pagehide", () => {
   appDiagnosticsController?.dispose();
   gpuMemoryPanelController?.dispose();
   canvasGuidesController?.dispose();
+  editorFiltersController?.dispose();
   editorSettingsController?.dispose();
   layerPanelController?.dispose();
   canvasInputController?.dispose();
@@ -1882,6 +1969,7 @@ function syncActiveLayerControls(): void {
 }
 
 editorToolsController.setOpen(false);
+editorFiltersController?.setOpen(false);
 brushLibraryController.setOpen(false);
 mobileStrokeSheet?.close(false);
 mobileRasterEffectsSheet?.close(false);

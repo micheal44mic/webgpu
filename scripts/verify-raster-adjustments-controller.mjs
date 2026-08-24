@@ -121,6 +121,7 @@ const liquifySheet = createSheetElements();
 const gaussianSheet = createSheetElements();
 const motionSheet = createSheetElements();
 const noiseSheet = createSheetElements();
+const glassSheet = createSheetElements();
 const elements = {
   canvas: new FakeElement(),
   appStatus: new FakeElement(),
@@ -188,6 +189,21 @@ const elements = {
     cancelButton: new FakeElement(),
     applyButton: new FakeElement(),
   },
+  glass: {
+    openButton: new FakeElement(),
+    ...glassSheet,
+    distortionInput: new FakeElement(),
+    distortionOutput: new FakeElement(),
+    smoothnessInput: new FakeElement(),
+    smoothnessOutput: new FakeElement(),
+    scaleInput: new FakeElement(),
+    scaleOutput: new FakeElement(),
+    invertInput: new FakeElement(),
+    reseedButton: new FakeElement(),
+    status: new FakeElement(),
+    cancelButton: new FakeElement(),
+    applyButton: new FakeElement(),
+  },
 };
 
 let history = {
@@ -204,6 +220,7 @@ let history = {
   openEdit: null,
 };
 const calls = [];
+let glassSettings = null;
 const engine = {
   getHistoryState: () => ({ ...history }),
   getPixelSelectionState: () => ({ selectedPixels: 0 }),
@@ -272,6 +289,31 @@ const engine = {
     history = { ...history, openEdit: null };
     return true;
   },
+  async beginRasterGlass(settings) {
+    calls.push(["begin-glass", settings]);
+    glassSettings = { ...settings };
+    history = { ...history, openEdit: "glass" };
+    return { settings: { ...glassSettings }, seed: { low: 1, high: 2 } };
+  },
+  updateRasterGlass(settings) {
+    calls.push(["update-glass", settings]);
+    glassSettings = { ...settings };
+    return { settings: { ...glassSettings }, seed: { low: 1, high: 2 } };
+  },
+  reseedRasterGlass() {
+    calls.push(["reseed-glass"]);
+    return { settings: { ...glassSettings }, seed: { low: 3, high: 4 } };
+  },
+  async commitRasterGlass() {
+    calls.push(["commit-glass"]);
+    history = { ...history, openEdit: null, actionCount: history.actionCount + 1 };
+    return true;
+  },
+  async cancelRasterGlass() {
+    calls.push(["cancel-glass"]);
+    history = { ...history, openEdit: null };
+    return true;
+  },
   async beginRasterLiquify(settings) {
     calls.push(["begin-liquify", settings]);
     history = { ...history, openEdit: "liquify" };
@@ -337,6 +379,8 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 assert.equal(elements.gaussianBlur.radiusInput.max, "500");
 assert.equal(elements.motionBlur.distanceInput.max, "500");
 assert.equal(elements.noise.amountInput.max, "300");
+assert.equal(elements.glass.scaleInput.min, "0");
+assert.equal(elements.glass.scaleInput.max, "100");
 assert.equal(controller.isAnySurfaceOpen, false);
 
 elements.gaussianBlur.openButton.dispatchEvent(event("click"));
@@ -369,6 +413,32 @@ await settle();
 assert.equal(history.openEdit, null);
 assert.equal(calls.at(-1)[0], "cancel-noise");
 
+const filtersTrigger = new FakeElement();
+controller.openGlass(elements.glass.openButton, filtersTrigger);
+await settle();
+assert.equal(history.openEdit, "glass");
+assert.equal(controller.isOpen("glass"), true);
+assert.equal(elements.glass.distortionInput.value, "30");
+elements.glass.distortionInput.value = "72";
+elements.glass.distortionInput.dispatchEvent(event("input"));
+assert.equal(calls.at(-1)[0], "update-glass");
+assert.equal(calls.at(-1)[1].distortionPercent, 72);
+elements.glass.reseedButton.dispatchEvent(event("click"));
+assert.equal(calls.at(-1)[0], "reseed-glass");
+elements.glass.applyButton.dispatchEvent(event("click"));
+await settle();
+assert.equal(history.openEdit, null);
+assert.equal(thumbnails, 2);
+assert.equal(filtersTrigger.focusCount, 1);
+
+controller.openGlass(elements.glass.openButton, filtersTrigger);
+await settle();
+elements.glass.cancelButton.dispatchEvent(event("click"));
+await settle();
+assert.equal(history.openEdit, null);
+assert.equal(calls.at(-1)[0], "cancel-glass");
+assert.equal(filtersTrigger.focusCount, 2);
+
 elements.liquify.openButton.dispatchEvent(event("click"));
 await settle();
 assert.equal(history.openEdit, "liquify");
@@ -383,7 +453,7 @@ assert.deepEqual(calls.filter(([name]) => name === "end-liquify-stroke").at(-1),
   false,
 ]);
 assert.equal(currentTool, "paint");
-assert.equal(thumbnails, 2);
+assert.equal(thumbnails, 3);
 
 elements.motionBlur.openButton.dispatchEvent(event("click"));
 await settle();

@@ -15,6 +15,7 @@ import {
   type LiquifySettings,
 } from "./liquify-core";
 import { MobileGaussianBlurSheetController } from "./mobile-gaussian-blur-sheet";
+import { MobileGlassSheetController } from "./mobile-glass-sheet";
 import { MobileLiquifySheetController } from "./mobile-liquify-sheet";
 import { MobileMotionBlurSheetController } from "./mobile-motion-blur-sheet";
 import { MobileNoiseSheetController } from "./mobile-noise-sheet";
@@ -36,6 +37,13 @@ import {
   type RasterNoiseSettings,
   type RasterNoiseStyle,
 } from "./noise-core";
+import {
+  DEFAULT_RASTER_GLASS_SETTINGS,
+  normalizeRasterGlassSettings,
+  rasterGlassMaxDisplacementPixels,
+  rasterGlassScalePixels,
+  type RasterGlassSettings,
+} from "./glass-core";
 import type { CanvasInputTool } from "./canvas-input-controller";
 import type { DestructiveRasterAdjustmentKind } from "./raster-effects-contract.ts";
 
@@ -45,14 +53,17 @@ export type RasterAdjustmentsEnginePort = Pick<
   | "beginRasterLiquify"
   | "beginRasterMotionBlur"
   | "beginRasterNoise"
+  | "beginRasterGlass"
   | "cancelRasterGaussianBlur"
   | "cancelRasterLiquify"
   | "cancelRasterMotionBlur"
   | "cancelRasterNoise"
+  | "cancelRasterGlass"
   | "commitRasterGaussianBlur"
   | "commitRasterLiquify"
   | "commitRasterMotionBlur"
   | "commitRasterNoise"
+  | "commitRasterGlass"
   | "endRasterLiquifyStroke"
   | "getHistoryState"
   | "getPixelSelectionState"
@@ -63,6 +74,8 @@ export type RasterAdjustmentsEnginePort = Pick<
   | "updateRasterLiquifySettings"
   | "updateRasterMotionBlur"
   | "updateRasterNoise"
+  | "updateRasterGlass"
+  | "reseedRasterGlass"
 >;
 
 export interface RasterAdjustmentsBrowser extends Window {
@@ -143,6 +156,25 @@ export interface NoiseAdjustmentElements {
   readonly applyButton: HTMLButtonElement;
 }
 
+export interface GlassAdjustmentElements {
+  readonly openButton: HTMLButtonElement;
+  readonly sheet: HTMLElement;
+  readonly sheetHandle: HTMLButtonElement;
+  readonly sheetHeader: HTMLElement;
+  readonly controlsRegion: HTMLElement;
+  readonly distortionInput: HTMLInputElement;
+  readonly distortionOutput: HTMLOutputElement;
+  readonly smoothnessInput: HTMLInputElement;
+  readonly smoothnessOutput: HTMLOutputElement;
+  readonly scaleInput: HTMLInputElement;
+  readonly scaleOutput: HTMLOutputElement;
+  readonly invertInput: HTMLInputElement;
+  readonly reseedButton: HTMLButtonElement;
+  readonly status: HTMLParagraphElement;
+  readonly cancelButton: HTMLButtonElement;
+  readonly applyButton: HTMLButtonElement;
+}
+
 export interface RasterAdjustmentsElements {
   readonly canvas: HTMLCanvasElement;
   readonly appStatus: HTMLParagraphElement;
@@ -150,6 +182,7 @@ export interface RasterAdjustmentsElements {
   readonly gaussianBlur: GaussianBlurAdjustmentElements;
   readonly motionBlur: MotionBlurAdjustmentElements;
   readonly noise: NoiseAdjustmentElements;
+  readonly glass: GlassAdjustmentElements;
 }
 
 export interface RasterAdjustmentsControllerOptions {
@@ -177,6 +210,7 @@ export interface RasterAdjustmentsDiagnostics {
   readonly rasterGaussianBlurUiBusy: boolean;
   readonly rasterMotionBlurUiBusy: boolean;
   readonly rasterNoiseUiBusy: boolean;
+  readonly rasterGlassUiBusy: boolean;
   readonly rasterLiquifyUiBusy: boolean;
 }
 
@@ -213,14 +247,14 @@ function initialTransactionState(): AdjustmentTransactionState {
   };
 }
 
-function formatNoisePeriod(period: number): string {
+function formatPixelMeasure(period: number): string {
   if (period >= 100) return period.toFixed(0);
   if (period >= 10) return period.toFixed(1).replace(/\.0$/, "");
   return period.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
 }
 
 /**
- * Owns the four destructive raster-adjustment transactions and their sheets.
+ * Owns the destructive raster-adjustment transactions and their sheets.
  * The engine remains authoritative for preview pixels and history; this class
  * owns mutual exclusion, recovery UI, focus restoration and commit/cancel.
  */
@@ -230,10 +264,12 @@ export class RasterAdjustmentsController {
   private readonly gaussianBlurSheet: MobileGaussianBlurSheetController;
   private readonly motionBlurSheet: MobileMotionBlurSheetController;
   private readonly noiseSheet: MobileNoiseSheetController;
+  private readonly glassSheet: MobileGlassSheetController;
   private readonly liquify = initialTransactionState();
   private readonly gaussianBlur = initialTransactionState();
   private readonly motionBlur = initialTransactionState();
   private readonly noise = initialTransactionState();
+  private readonly glass = initialTransactionState();
   private liquifySettings: LiquifySettings = { ...DEFAULT_LIQUIFY_SETTINGS };
   private liquifyAmount = 1;
   private liquifyReturnTool: CanvasInputTool | null = null;
@@ -293,9 +329,23 @@ export class RasterAdjustmentsController {
       onRequestCancel: () => void this.cancelNoise(),
       onOpenChange: options.onSheetOpenChange,
     });
+    this.glassSheet = new MobileGlassSheetController({
+      browser: options.browser,
+      document: options.browser.document,
+      elements: {
+        sheet: options.elements.glass.sheet,
+        handle: options.elements.glass.sheetHandle,
+        header: options.elements.glass.sheetHeader,
+        controlsRegion: options.elements.glass.controlsRegion,
+      },
+      beforeOpen: options.beforeSheetOpen,
+      onRequestCancel: () => void this.cancelGlass(),
+      onOpenChange: options.onSheetOpenChange,
+    });
     this.configureControlRanges();
     this.syncLiquifySettings(this.liquifySettings, this.liquifyAmount);
     this.syncNoiseSettings(DEFAULT_RASTER_NOISE_SETTINGS);
+    this.syncGlassSettings(DEFAULT_RASTER_GLASS_SETTINGS);
     this.bindEvents();
     this.syncUi();
   }
@@ -308,18 +358,24 @@ export class RasterAdjustmentsController {
     return this.liquifySheet.isOpen
       || this.gaussianBlurSheet.isOpen
       || this.motionBlurSheet.isOpen
-      || this.noiseSheet.isOpen;
+      || this.noiseSheet.isOpen
+      || this.glassSheet.isOpen;
   }
 
   isOpen(kind: DestructiveRasterAdjustmentKind): boolean {
     return this.state(kind).surfaceOpen;
   }
 
+  openGlass(trigger: HTMLElement, returnFocus: HTMLElement = trigger): void {
+    void this.beginGlass(trigger, returnFocus);
+  }
+
   hasActiveHistoryEdit(history = this.options.getHistoryState()): boolean {
     return history.openEdit === "liquify"
       || history.openEdit === "gaussian-blur"
       || history.openEdit === "motion-blur"
-      || history.openEdit === "noise";
+      || history.openEdit === "noise"
+      || history.openEdit === "glass";
   }
 
   isLiquifyEditActive(history = this.options.getHistoryState()): boolean {
@@ -331,7 +387,8 @@ export class RasterAdjustmentsController {
   ): boolean {
     return (this.gaussianBlur.sessionOpen && history.openEdit === "gaussian-blur")
       || (this.motionBlur.sessionOpen && history.openEdit === "motion-blur")
-      || (this.noise.sessionOpen && history.openEdit === "noise");
+      || (this.noise.sessionOpen && history.openEdit === "noise")
+      || (this.glass.sessionOpen && history.openEdit === "glass");
   }
 
   allowsCanvasViewOperation(history = this.options.getHistoryState()): boolean {
@@ -352,6 +409,10 @@ export class RasterAdjustmentsController {
       this.noise.sessionOpen
         && history.openEdit === "noise"
         && !this.noise.uiBusy
+    ) || (
+      this.glass.sessionOpen
+        && history.openEdit === "glass"
+        && !this.glass.uiBusy
     );
   }
 
@@ -360,6 +421,7 @@ export class RasterAdjustmentsController {
       rasterGaussianBlurUiBusy: this.gaussianBlur.uiBusy,
       rasterMotionBlurUiBusy: this.motionBlur.uiBusy,
       rasterNoiseUiBusy: this.noise.uiBusy,
+      rasterGlassUiBusy: this.glass.uiBusy,
       rasterLiquifyUiBusy: this.liquify.uiBusy,
     };
   }
@@ -380,6 +442,11 @@ export class RasterAdjustmentsController {
       if (kind === "error") this.noise.previewFault = true;
       this.syncNoiseUi();
     }
+    if (this.glass.sessionOpen && message.includes("Glass")) {
+      this.setGlassStatus(message);
+      if (kind === "error") this.glass.previewFault = true;
+      this.syncGlassUi();
+    }
     if (this.liquify.sessionOpen && message.includes("Liquify")) {
       this.setLiquifyStatus(message);
       if (kind === "error") this.liquify.previewFault = true;
@@ -392,6 +459,7 @@ export class RasterAdjustmentsController {
     this.syncGaussianBlurUi();
     this.syncMotionBlurUi();
     this.syncNoiseUi();
+    this.syncGlassUi();
   }
 
   handleResize(): void {
@@ -399,6 +467,7 @@ export class RasterAdjustmentsController {
     this.gaussianBlurSheet.handleResize();
     this.motionBlurSheet.handleResize();
     this.noiseSheet.handleResize();
+    this.glassSheet.handleResize();
   }
 
   dispose(): void {
@@ -409,26 +478,29 @@ export class RasterAdjustmentsController {
     this.gaussianBlurSheet.dispose();
     this.motionBlurSheet.dispose();
     this.noiseSheet.dispose();
+    this.glassSheet.dispose();
     this.options.elements.canvas.classList.remove("liquify-active", "liquify-deforming");
     void this.cancelLiquify();
     void this.cancelGaussianBlur();
     void this.cancelMotionBlur();
     void this.cancelNoise();
+    void this.cancelGlass();
   }
 
   private states(): readonly AdjustmentTransactionState[] {
-    return [this.liquify, this.gaussianBlur, this.motionBlur, this.noise];
+    return [this.liquify, this.gaussianBlur, this.motionBlur, this.noise, this.glass];
   }
 
   private state(kind: DestructiveRasterAdjustmentKind): AdjustmentTransactionState {
     if (kind === "liquify") return this.liquify;
     if (kind === "gaussian-blur") return this.gaussianBlur;
     if (kind === "motion-blur") return this.motionBlur;
-    return this.noise;
+    if (kind === "noise") return this.noise;
+    return this.glass;
   }
 
   private configureControlRanges(): void {
-    const { gaussianBlur, motionBlur, noise } = this.options.elements;
+    const { gaussianBlur, motionBlur, noise, glass } = this.options.elements;
     gaussianBlur.radiusInput.min = "1";
     gaussianBlur.radiusInput.max = String(DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS);
     gaussianBlur.radiusInput.step = String(DESTRUCTIVE_GAUSSIAN_BLUR_RADIUS_STEP);
@@ -451,11 +523,20 @@ export class RasterAdjustmentsController {
       input.max = "100";
       input.step = "1";
     }
+    for (const input of [
+      glass.distortionInput,
+      glass.smoothnessInput,
+      glass.scaleInput,
+    ]) {
+      input.min = "0";
+      input.max = "100";
+      input.step = "1";
+    }
   }
 
   private bindEvents(): void {
     const signal = this.abortController.signal;
-    const { liquify, gaussianBlur, motionBlur, noise } = this.options.elements;
+    const { liquify, gaussianBlur, motionBlur, noise, glass } = this.options.elements;
     liquify.openButton.addEventListener(
       "click",
       () => void this.openLiquify(liquify.openButton),
@@ -573,6 +654,34 @@ export class RasterAdjustmentsController {
       () => void this.applyNoise(),
       { signal },
     );
+
+    for (const input of [
+      glass.distortionInput,
+      glass.smoothnessInput,
+      glass.scaleInput,
+    ]) {
+      input.addEventListener("input", () => this.requestGlassUpdate(), { signal });
+    }
+    glass.invertInput.addEventListener(
+      "change",
+      () => this.requestGlassUpdate(),
+      { signal },
+    );
+    glass.reseedButton.addEventListener(
+      "click",
+      () => this.reseedGlass(),
+      { signal },
+    );
+    glass.cancelButton.addEventListener(
+      "click",
+      () => void this.cancelGlass(),
+      { signal },
+    );
+    glass.applyButton.addEventListener(
+      "click",
+      () => void this.applyGlass(),
+      { signal },
+    );
   }
 
   private handleLiquifyModeKeydown(button: HTMLButtonElement, event: KeyboardEvent): void {
@@ -638,7 +747,9 @@ export class RasterAdjustmentsController {
         ? "Motion Blur"
         : kind === "noise"
           ? "Noise"
-          : "Liquify";
+          : kind === "glass"
+            ? "Glass"
+            : "Liquify";
     if (!this.options.isEngineReady()) {
       return `${label} will be available after initialization.`;
     }
@@ -647,20 +758,26 @@ export class RasterAdjustmentsController {
       "gaussian-blur",
       "motion-blur",
       "noise",
+      "glass",
     ] as const) {
       if (otherKind === kind || !this.state(otherKind).surfaceOpen) continue;
       const otherLabel = otherKind === "gaussian-blur"
         ? "Gaussian Blur"
         : otherKind === "motion-blur"
           ? "Motion Blur"
-          : otherKind === "noise"
-            ? "Noise"
+        : otherKind === "noise"
+          ? "Noise"
+          : otherKind === "glass"
+            ? "Glass"
             : "Liquify";
       return `Apply or cancel ${otherLabel} first.`;
     }
     if (this.options.engine.getPixelSelectionState().selectedPixels > 0) {
       if (kind === "noise") {
         return "Deselect the pixels to apply Noise to the entire layer.";
+      }
+      if (kind === "glass") {
+        return "Deselect the pixels to apply Glass to the entire layer.";
       }
       if (kind === "liquify") {
         return "Deselect the pixels to distort the entire layer.";
@@ -1334,7 +1451,7 @@ export class RasterAdjustmentsController {
     elements.styleSelect.value = settings.style;
     elements.scaleInput.value = String(settings.scalePercent);
     const period = rasterNoisePeriodPixels(settings.scalePercent);
-    elements.scaleOutput.value = `${Math.round(settings.scalePercent)}% · ${formatNoisePeriod(period)} px`;
+    elements.scaleOutput.value = `${Math.round(settings.scalePercent)}% · ${formatPixelMeasure(period)} px`;
     elements.octavesInput.value = String(settings.octavesPercent);
     elements.octavesOutput.value = rasterNoiseOctaveCount(settings.octavesPercent).toFixed(1);
     elements.turbulenceInput.value = String(settings.turbulencePercent);
@@ -1518,6 +1635,228 @@ export class RasterAdjustmentsController {
       state.previewFault = state.sessionOpen;
       this.reportNoiseError("Noise application failed", error);
       if (!state.sessionOpen) this.closeNoise("error");
+    } finally {
+      state.uiBusy = false;
+      this.refreshHistory();
+    }
+  }
+
+  private glassSettingsFromUi(): RasterGlassSettings {
+    const elements = this.options.elements.glass;
+    return normalizeRasterGlassSettings({
+      distortionPercent: Number(elements.distortionInput.value),
+      smoothnessPercent: Number(elements.smoothnessInput.value),
+      scalePercent: Number(elements.scaleInput.value),
+      invert: elements.invertInput.checked,
+    });
+  }
+
+  private syncGlassSettings(settingsInput: Readonly<RasterGlassSettings>): void {
+    const settings = normalizeRasterGlassSettings(settingsInput);
+    const elements = this.options.elements.glass;
+    elements.distortionInput.value = String(settings.distortionPercent);
+    elements.distortionOutput.value =
+      `${Math.round(settings.distortionPercent)}% · `
+      + `${formatPixelMeasure(rasterGlassMaxDisplacementPixels(settings.distortionPercent))} px`;
+    elements.smoothnessInput.value = String(settings.smoothnessPercent);
+    elements.smoothnessOutput.value = `${Math.round(settings.smoothnessPercent)}%`;
+    elements.scaleInput.value = String(settings.scalePercent);
+    elements.scaleOutput.value =
+      `${Math.round(settings.scalePercent)}% · `
+      + `${formatPixelMeasure(rasterGlassScalePixels(settings.scalePercent))} px`;
+    elements.invertInput.checked = settings.invert;
+  }
+
+  private setGlassStatus(message: string): void {
+    this.options.elements.glass.status.textContent = message;
+  }
+
+  private reportGlassError(prefix: string, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    const fullMessage = `${prefix}: ${message}`;
+    this.setGlassStatus(fullMessage);
+    this.setAppError(fullMessage);
+  }
+
+  private resetGlassControls(): void {
+    this.syncGlassSettings(DEFAULT_RASTER_GLASS_SETTINGS);
+    this.setGlassStatus("Glass ready.");
+  }
+
+  private syncGlassUi(): void {
+    const state = this.glass;
+    const elements = this.options.elements.glass;
+    const eligibilityError = state.surfaceOpen || state.sessionOpen || state.uiBusy
+      ? "Glass is already open."
+      : this.adjustmentEligibilityError("glass");
+    const recoveryOnly = state.previewFault || this.history().inconsistent;
+    const controlsDisabled = state.uiBusy || !state.sessionOpen || recoveryOnly;
+    elements.openButton.disabled = eligibilityError !== null;
+    elements.openButton.title = eligibilityError ?? "Open Glass";
+    elements.openButton.setAttribute("aria-pressed", String(state.surfaceOpen));
+    for (const control of [
+      elements.distortionInput,
+      elements.smoothnessInput,
+      elements.scaleInput,
+      elements.invertInput,
+      elements.reseedButton,
+    ]) {
+      control.disabled = controlsDisabled;
+    }
+    elements.applyButton.disabled = controlsDisabled;
+    elements.cancelButton.disabled = state.uiBusy || !state.sessionOpen;
+    elements.sheet.dataset.state = state.uiBusy
+      ? "busy"
+      : recoveryOnly
+        ? "recovery"
+        : state.sessionOpen
+          ? "preview"
+          : "closed";
+    elements.sheet.setAttribute("aria-busy", String(state.uiBusy));
+  }
+
+  private closeGlass(result: AdjustmentResult): void {
+    const state = this.glass;
+    state.surfaceOpen = false;
+    state.cancelPending = false;
+    this.options.elements.glass.openButton.setAttribute("aria-pressed", "false");
+    this.glassSheet.close(false);
+    this.restoreFocus(state);
+    if (result !== "error") this.resetGlassControls();
+    this.syncUi();
+  }
+
+  private async beginGlass(
+    trigger: HTMLElement,
+    returnFocus: HTMLElement,
+  ): Promise<void> {
+    const eligibilityError = this.adjustmentEligibilityError("glass");
+    if (eligibilityError || this.glass.surfaceOpen) {
+      if (eligibilityError) this.setAppError(eligibilityError);
+      return;
+    }
+    if (!this.glassSheet.open(trigger)) return;
+    const state = this.glass;
+    state.surfaceOpen = true;
+    state.returnFocus = returnFocus;
+    state.sessionOpen = false;
+    state.previewFault = false;
+    state.uiBusy = true;
+    const initial = this.glassSettingsFromUi();
+    this.syncGlassSettings(initial);
+    this.setGlassStatus("Preparing Glass…");
+    this.syncUi();
+    try {
+      const preview = await this.options.engine.beginRasterGlass(initial);
+      if (!preview) throw new Error("Select a raster layer to use Glass.");
+      state.sessionOpen = true;
+      this.syncGlassSettings(preview.settings);
+      this.setGlassStatus(
+        `Distortion ${preview.settings.distortionPercent.toFixed(0)}% · `
+        + `smoothness ${preview.settings.smoothnessPercent.toFixed(0)}%.`,
+      );
+    } catch (error) {
+      const history = this.options.engine.getHistoryState();
+      this.options.onHistoryState(history);
+      state.sessionOpen = history.openEdit === "glass";
+      state.previewFault = state.sessionOpen;
+      this.reportGlassError("Unable to open Glass", error);
+      if (!state.sessionOpen) this.closeGlass("error");
+    } finally {
+      state.uiBusy = false;
+      this.refreshHistory();
+      if ((state.cancelPending || this.disposed) && state.sessionOpen) {
+        state.cancelPending = false;
+        void this.cancelGlass();
+      }
+    }
+  }
+
+  private requestGlassUpdate(): void {
+    const settings = this.glassSettingsFromUi();
+    this.syncGlassSettings(settings);
+    const state = this.glass;
+    if (state.uiBusy || !state.sessionOpen || state.previewFault || this.history().inconsistent) {
+      return;
+    }
+    try {
+      const preview = this.options.engine.updateRasterGlass(settings);
+      this.syncGlassSettings(preview.settings);
+      this.setGlassStatus(
+        `Glass preview ${preview.settings.distortionPercent.toFixed(0)}%…`,
+      );
+    } catch (error) {
+      state.previewFault = true;
+      this.reportGlassError("Glass preview failed", error);
+      this.syncGlassUi();
+    }
+  }
+
+  private reseedGlass(): void {
+    const state = this.glass;
+    if (state.uiBusy || !state.sessionOpen || state.previewFault || this.history().inconsistent) {
+      return;
+    }
+    try {
+      const preview = this.options.engine.reseedRasterGlass();
+      this.syncGlassSettings(preview.settings);
+      this.setGlassStatus("Glass texture refreshed…");
+    } catch (error) {
+      state.previewFault = true;
+      this.reportGlassError("Glass texture refresh failed", error);
+      this.syncGlassUi();
+    }
+  }
+
+  private async cancelGlass(): Promise<void> {
+    const state = this.glass;
+    if (state.uiBusy) {
+      state.cancelPending = true;
+      return;
+    }
+    if (!state.sessionOpen) return;
+    state.cancelPending = false;
+    state.uiBusy = true;
+    this.setGlassStatus("Restoring the original pixels…");
+    this.syncGlassUi();
+    try {
+      await this.options.engine.cancelRasterGlass();
+      state.sessionOpen = false;
+      state.previewFault = false;
+      this.closeGlass("cancel");
+    } catch (error) {
+      const history = this.options.engine.getHistoryState();
+      this.options.onHistoryState(history);
+      state.sessionOpen = history.openEdit === "glass";
+      state.previewFault = true;
+      this.reportGlassError("Glass cancellation failed", error);
+    } finally {
+      state.uiBusy = false;
+      this.refreshHistory();
+    }
+  }
+
+  private async applyGlass(): Promise<void> {
+    const state = this.glass;
+    if (state.uiBusy || !state.sessionOpen || state.previewFault || this.history().inconsistent) {
+      return;
+    }
+    state.uiBusy = true;
+    this.setGlassStatus("Applying Glass…");
+    this.syncGlassUi();
+    try {
+      await this.options.engine.commitRasterGlass();
+      state.sessionOpen = false;
+      state.previewFault = false;
+      this.closeGlass("apply");
+      this.options.requestActiveThumbnail();
+    } catch (error) {
+      const history = this.options.engine.getHistoryState();
+      this.options.onHistoryState(history);
+      state.sessionOpen = history.openEdit === "glass";
+      state.previewFault = state.sessionOpen;
+      this.reportGlassError("Glass application failed", error);
+      if (!state.sessionOpen) this.closeGlass("error");
     } finally {
       state.uiBusy = false;
       this.refreshHistory();

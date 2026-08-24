@@ -7,8 +7,8 @@ const html = readFileSync(new URL("index.html", root), "utf8");
 
 assert.match(
   html,
-  /id="mobileToolsMenu"[\s\S]*?<\/button>\s*<button\s+id="editorSettingsMenu"/,
-  "Settings must be the header action immediately after Tools",
+  /id="mobileToolsMenu"[\s\S]*?<\/button>\s*<button\s+id="editorFiltersMenu"[\s\S]*?<\/button>\s*<button\s+id="editorSettingsMenu"/,
+  "Filters must sit between the Tools and Settings header actions",
 );
 assert.match(
   html,

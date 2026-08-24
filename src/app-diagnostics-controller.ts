@@ -32,6 +32,7 @@ export interface AppDiagnosticsUiSnapshot {
     readonly rasterGaussianBlurUiBusy: boolean;
     readonly rasterMotionBlurUiBusy: boolean;
     readonly rasterNoiseUiBusy: boolean;
+    readonly rasterGlassUiBusy: boolean;
     readonly rasterLiquifyUiBusy: boolean;
   };
 }

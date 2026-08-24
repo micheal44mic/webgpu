@@ -381,6 +381,22 @@ export type RasterFilterHistoryAction = RasterFilterHistoryActionCommon & (
     boundsMode: "preserve";
   }
   | {
+    filter: "glass";
+    distortionPercent: number;
+    smoothnessPercent: number;
+    scalePercent: number;
+    invert: boolean;
+    randomSeedLow: number;
+    randomSeedHigh: number;
+    maximumDisplacementPixels: number;
+    surfaceScalePixels: number;
+    algorithm: "analytic-gradient-refraction-v1";
+    algorithmVersion: 1;
+    precision: "rgba16float-source-and-output-f32-field-and-bilinear";
+    edgeMode: "transparent-content-clamp-document-edge";
+    coordinateSpace: "document-pixel-centers";
+  }
+  | {
     filter: "liquify";
     strokeCount: number;
     dabCount: number;

@@ -244,6 +244,7 @@ function historyMaintenanceEngineIdle(
     && !engine.activeRasterGaussianBlurSession
     && !engine.activeRasterMotionBlurSession
     && !engine.activeRasterNoiseSession
+    && !engine.activeRasterGlassSession
     && !engine.activeRasterLiquifySession
     && !engine.rasterStrokeBusy
     && !engine.rasterBevelBusy
