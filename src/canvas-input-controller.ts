@@ -1044,15 +1044,19 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       || requestedPointerMode === "rotate";
     const liquifyEditRequested = requestedPointerMode === "liquify"
       && options.isLiquifyEditActive();
-    const blurTouchNavigationRequested = event.pointerType === "touch"
+    const fillPreviewEditRequested = requestedPointerMode === "fill"
+      && options.getHistoryState().openEdit === "fill"
       && options.isDestructivePreviewNavigationActive();
+    const destructivePreviewTouchNavigationRequested = event.pointerType === "touch"
+      && options.isDestructivePreviewNavigationActive()
+      && !fillPreviewEditRequested;
     const deferPenForPaintReadiness = requestedPointerMode === "paint"
       && event.pointerType === "pen"
       && options.isPaintReadinessPending();
     if (
-      (viewNavigationRequested || blurTouchNavigationRequested)
+      (viewNavigationRequested || destructivePreviewTouchNavigationRequested)
         ? options.viewOperationLocked()
-        : options.operationLocked(liquifyEditRequested)
+        : options.operationLocked(liquifyEditRequested || fillPreviewEditRequested)
     ) {
       if (!deferPenForPaintReadiness) {
         if (options.getHistoryState().openEdit === "raster-property") {
@@ -1063,7 +1067,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       }
     }
 
-    if (blurTouchNavigationRequested) {
+    if (destructivePreviewTouchNavigationRequested) {
       event.preventDefault();
       activePointerId = event.pointerId;
       activeTouchContacts.set(event.pointerId, {

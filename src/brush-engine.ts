@@ -652,7 +652,19 @@ import {
   planLayerDuplicateMemory,
   planLayerSwitchMemory,
 } from "./layer-memory-admission-core";
-import { captureFillDiagnostics, fillAtClientPoint, setFillToolSelected, submitFillHistoryBatch, type FillDiagnosticReport, type FillOperationResult, type LastFillDiagnosticOperation } from "./engine-fill-runtime";
+import {
+  captureFillDiagnostics,
+  fillAtClientPoint,
+  getFillPreviewState,
+  setFillToolSelected,
+  submitFillHistoryBatch,
+  updateFillPreview,
+  type ActiveFillPreviewSession,
+  type FillDiagnosticReport,
+  type FillOperationResult,
+  type FillPreviewState,
+  type LastFillDiagnosticOperation,
+} from "./engine-fill-runtime";
 import {
   clearPixelSelection,
   bindPaintPipelineWithPixelSelection,
@@ -826,6 +838,7 @@ export type {
 } from "./shadow-core";
 
 export type DestructiveRasterEditKind =
+  | "fill"
   | "transform"
   | "gaussian-blur"
   | "motion-blur"
@@ -995,6 +1008,8 @@ export class BrushEngine {
   fillToolSelected = false;
   fillScratchReleaseTimer: number | null = null;
   lastFillDiagnosticOperation: LastFillDiagnosticOperation | null = null;
+  activeFillPreviewSession: ActiveFillPreviewSession | null = null;
+  fillPreviewFinalizationPromise: Promise<boolean> | null = null;
   readonly gpuUncapturedErrors: {
     capturedAt: string;
     constructorName: string;
@@ -3350,6 +3365,14 @@ export class BrushEngine {
     return fillAtClientPoint(this, clientX, clientY, tolerancePercent, color);
   }
 
+  updateFillPreview(tolerancePercent: number): boolean {
+    return updateFillPreview(this, tolerancePercent);
+  }
+
+  getFillPreviewState(): FillPreviewState {
+    return getFillPreviewState(this);
+  }
+
   captureFillDiagnostics(): Promise<FillDiagnosticReport> {
     return captureFillDiagnostics(this);
   }
@@ -4895,6 +4918,7 @@ export class BrushEngine {
       || this.selectionBusy
       || this.activeVectorHistoryEdit
       || this.activeRasterLayerMetadataHistoryEdit
+      || this.activeFillPreviewSession
       || this.activeRasterTransformSession
       || this.activeRasterGaussianBlurSession
       || this.activeRasterMotionBlurSession
@@ -5000,6 +5024,7 @@ export class BrushEngine {
       || this.selectionBusy
       || this.activeVectorHistoryEdit
       || this.activeRasterLayerMetadataHistoryEdit
+      || this.activeFillPreviewSession
       || this.activeRasterTransformSession
       || this.activeRasterGaussianBlurSession
       || this.activeRasterMotionBlurSession
@@ -5102,6 +5127,7 @@ export class BrushEngine {
       && !this.historyStateInconsistent
       && this.activeVectorHistoryEdit === null
       && this.activeRasterLayerMetadataHistoryEdit === null
+      && this.activeFillPreviewSession === null
       && this.activeRasterTransformSession === null
       && this.activeRasterGaussianBlurSession === null
       && this.activeRasterMotionBlurSession === null
@@ -5487,6 +5513,7 @@ export class BrushEngine {
   }
 
   activeDestructiveRasterEditKind(): DestructiveRasterEditKind | null {
+    if (this.activeFillPreviewSession) return "fill";
     if (this.activeRasterTransformSession) return "transform";
     if (this.activeRasterGaussianBlurSession) return "gaussian-blur";
     if (this.activeRasterMotionBlurSession) return "motion-blur";
@@ -5496,6 +5523,7 @@ export class BrushEngine {
   }
 
   destructiveRasterEditLabel(kind: DestructiveRasterOperationKind): string {
+    if (kind === "fill") return "Fill";
     if (kind === "transform") return "Transform";
     if (kind === "gaussian-blur") return "Gaussian Blur";
     if (kind === "motion-blur") return "Motion Blur";
@@ -8296,6 +8324,7 @@ export class BrushEngine {
       || this.selectionBusy
       || this.historyStateInconsistent
       || this.activeVectorHistoryEdit
+      || this.activeFillPreviewSession
       || this.activeRasterTransformSession
       || this.activeRasterGaussianBlurSession
       || this.activeRasterMotionBlurSession
@@ -8426,6 +8455,7 @@ export class BrushEngine {
       || this.layerSwitchBusy
       || this.historyStateInconsistent
       || this.activeRasterLayerMetadataHistoryEdit
+      || this.activeFillPreviewSession
       || this.activeRasterTransformSession
       || this.activeRasterGaussianBlurSession
       || this.activeRasterMotionBlurSession
@@ -9872,6 +9902,11 @@ export class BrushEngine {
     // la trasformazione dell'utente sparisce in silenzio, senza che nulla si
     // rompa. L'Undo era gia' protetto altrove, `addLayer` no. Messaggio
     // dedicato perche' "a motore fermo" non direbbe cosa fare.
+    if (this.activeFillPreviewSession) {
+      throw new Error(
+        "Close Fill before switching layers.",
+      );
+    }
     if (this.activeRasterTransformSession) {
       throw new Error(
         "Apply or cancel the transform before switching layers.",

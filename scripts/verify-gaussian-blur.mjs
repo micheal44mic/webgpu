@@ -212,7 +212,7 @@ assert.match(
   adjustments,
   /isDestructivePreviewNavigationActive\([\s\S]*?history\.openEdit === "gaussian-blur"/,
 );
-assert.match(canvasInput, /blurTouchNavigationRequested/);
+assert.match(canvasInput, /destructivePreviewTouchNavigationRequested/);
 assert.match(canvasInput, /enterTouchNavigation\(\)/);
 assert.match(canvasInput, /options\.viewOperationLocked\(\) \|\| activePointerId !== null/);
 assert.match(canvasInput, /nextGesture\.contactCount >= 2 && previousGesture\.contactCount >= 2/);

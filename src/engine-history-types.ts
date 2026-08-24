@@ -6,6 +6,7 @@ import type { DryBlendHistoryGeometry } from "./blend-renderer";
 import type { DirtyRect, Stamp } from "./engine-stroke-types";
 import type { BrushSettings } from "./engine-types";
 import type { GpuHistorySlice } from "./gpu-history-storage";
+import type { FillCompositeMode } from "./fill-core";
 import type {
   MixedSceneVectorHistoryDelta,
   MixedSceneVectorHistoryState,
@@ -521,9 +522,13 @@ export interface FillHistoryRenderBatch {
   sourceLayerId: number;
   color: string;
   linearColor: readonly [number, number, number, number];
+  /** Premultiplied-linear seed base captured with this immutable Fill mask. */
+  sourceSeedColorLinear: readonly [number, number, number, number];
+  /** Topology-safe darker antialias pixels rendered beyond the stored CCL core. */
+  residualFringeRadius: 0 | 1 | 2 | 3;
   tolerancePercent: number;
-  /** True when selected destination pixels are recolored instead of underlaid. */
-  replaceSelectedColor: boolean;
+  /** Pixel contract used to reproduce the final mask without consulting its source layer. */
+  compositeMode: FillCompositeMode;
   gpuSlice: GpuHistorySlice;
   clearLayer: false;
   dirtyRect: DirtyRect;

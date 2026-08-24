@@ -6,9 +6,10 @@
  * enough to distinguish mask production, fragment commit and presentation.
  */
 import type { LayerFormat } from "./engine-types";
+import type { FillCompositeMode } from "./fill-core";
 
 export const FILL_DIAGNOSTIC_SCHEMA =
-  "webgpu-brush-fill-mask-render-probe-v1" as const;
+  "webgpu-brush-fill-mask-render-probe-v3" as const;
 
 export interface FillMaskDiagnosticSummary {
   readonly metadataSelectedPixels: number;
@@ -31,6 +32,7 @@ export interface FillMaskDiagnosticSummary {
 
 export interface FillRenderedRowDiagnosticSummary {
   readonly format: LayerFormat;
+  readonly compositeMode: FillCompositeMode | null;
   readonly y: number;
   readonly width: number;
   readonly maskSelectedPixels: number;
@@ -38,6 +40,11 @@ export interface FillRenderedRowDiagnosticSummary {
   readonly selectedButDifferentPixels: number;
   readonly selectedButDifferentByXModulo32: readonly number[];
   readonly firstDifferentX: readonly number[];
+}
+
+export interface FillRenderedRowExpectation {
+  readonly compositeMode: FillCompositeMode;
+  readonly fillColor: readonly [number, number, number, number];
 }
 
 export type FillDiagnosticClassification =
@@ -168,6 +175,7 @@ export function summarizeFillRenderedRow(
   maskWords: Uint32Array,
   y: number,
   layerWidth: number,
+  expectation: FillRenderedRowExpectation | null = null,
 ): FillRenderedRowDiagnosticSummary {
   const bytesPerPixel = format === "rgba16float" ? 8 : 4;
   if (pixels.byteLength !== layerWidth * bytesPerPixel) {
@@ -188,10 +196,37 @@ export function summarizeFillRenderedRow(
     const selected = (word & (2 ** (x % 32))) !== 0;
     if (!selected) continue;
     maskSelectedPixels += 1;
-    // A solid underlay makes every selected destination texel opaque. RGB can
-    // legitimately differ from the chosen color because existing translucent
-    // content remains composited above it.
-    const matches = Math.abs(targetChannel(pixels, format, x, 3) - 1) <= tolerance;
+    const alpha = targetChannel(pixels, format, x, 3);
+    let matches = Math.abs(alpha - 1) <= tolerance;
+    if (expectation?.compositeMode === "solid-underlay") {
+      // An opaque underlay makes every reached output opaque. Its RGB depends
+      // on the immutable destination pixel, which diagnostics deliberately do
+      // not retain, so alpha is the complete observable invariant here.
+      matches = Math.abs(alpha - 1) <= tolerance;
+    } else if (expectation?.compositeMode === "solid-replace") {
+      matches = matches && [0, 1, 2].every((channel) =>
+        Math.abs(
+          targetChannel(pixels, format, x, channel)
+          - Math.min(1, Math.max(0, expectation.fillColor[channel])),
+        ) <= tolerance);
+    } else if (expectation?.compositeMode === "preserve-coverage-recolor") {
+      // Same-layer recolor now replaces only the maximum removable contribution
+      // of the sampled base color. Baked RGB antialiasing, shading and line ink
+      // deliberately remain in the result, so the final RGB need not equal the
+      // flat Fill hue. Diagnostics do not retain the immutable source row; the
+      // strongest observable invariant here is therefore a finite, non-empty,
+      // valid premultiplied pixel. Exact base-residual parity is covered by the
+      // CPU/WGSL contract tests.
+      matches = Number.isFinite(alpha)
+        && alpha > 0.000001
+        && alpha <= 1 + tolerance
+        && [0, 1, 2].every((channel) => {
+          const value = targetChannel(pixels, format, x, channel);
+          return Number.isFinite(value)
+            && value >= -tolerance
+            && value <= alpha + tolerance;
+        });
+    }
     if (matches) {
       matchingFillPixels += 1;
     } else {
@@ -202,6 +237,7 @@ export function summarizeFillRenderedRow(
   }
   return {
     format,
+    compositeMode: expectation?.compositeMode ?? null,
     y,
     width: layerWidth,
     maskSelectedPixels,

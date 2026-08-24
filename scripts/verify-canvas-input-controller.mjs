@@ -53,6 +53,17 @@ assert.match(controllerSource, /private readonly runtime: CanvasInputRuntime/);
 assert.match(controllerSource, /new browser\.AbortController\(\)/);
 assert.match(mainSource, /mixedSceneController\?\.isBusy === true/);
 assert.match(mainSource, /isPaintReadinessPending: \(\) => engine\.isPaintReadinessPending\(\)/);
+assert.match(
+  mainSource,
+  /function fillPreviewAllowsCanvasNavigation\(\)[\s\S]*?historyState\.openEdit !== "fill"[\s\S]*?previewState\.active && !previewState\.terminal/,
+  "an active non-terminal Fill preview must explicitly opt into view-only navigation",
+);
+assert.match(
+  mainSource,
+  /isDestructivePreviewNavigationActive:[\s\S]*?fillPreviewAllowsCanvasNavigation\(\)/,
+  "Fill touch input must reuse the destructive-preview navigation path",
+);
+assert.match(controllerSource, /destructivePreviewTouchNavigationRequested/);
 assert.doesNotMatch(controllerSource, /document\.getElementById|element<|mobileBrush/);
 
 const moduleServer = await createServer({
@@ -319,6 +330,7 @@ function createHarness({ holdEnabled = true } = {}) {
   let viewIsLocked = false;
   let liquifyEditActive = false;
   let destructivePreviewNavigationActive = false;
+  let openHistoryEdit = null;
   let beginStrokeAllowed = true;
   let prepareStraightLineAllowed = true;
   let commitStraightLineAllowed = true;
@@ -387,7 +399,7 @@ function createHarness({ holdEnabled = true } = {}) {
         timeMs: sample.timeMs,
       };
     },
-    getHistoryState: historyState,
+    getHistoryState: () => ({ ...historyState(), openEdit: openHistoryEdit }),
     resizeCanvas() { calls.resize += 1; },
   };
   const vector = {
@@ -408,9 +420,11 @@ function createHarness({ holdEnabled = true } = {}) {
     getSelectionMethod: () => selectionMethod,
     getFillSettings: () => ({ tolerance: 17, color: "#123456" }),
     getSelectionSettings: () => ({ tolerance: 23, combineMode: "add" }),
-    getHistoryState: historyState,
+    getHistoryState: () => ({ ...historyState(), openEdit: openHistoryEdit }),
     onHistoryState: () => { calls.historyPublished += 1; },
-    operationLocked: () => operationIsLocked,
+    operationLocked: (allowDestructivePreviewEdit = false) => (
+      operationIsLocked && !allowDestructivePreviewEdit
+    ),
     viewOperationLocked: () => viewIsLocked,
     isPaintReadinessPending: () => paintReadinessPending,
     isLiquifyEditActive: () => liquifyEditActive,
@@ -437,6 +451,7 @@ function createHarness({ holdEnabled = true } = {}) {
     setPaintReadinessPending(value) { paintReadinessPending = value; },
     setViewLocked(value) { viewIsLocked = value; },
     setLiquifyEditActive(value) { liquifyEditActive = value; },
+    setOpenHistoryEdit(value) { openHistoryEdit = value; },
     setDestructivePreviewNavigationActive(value) {
       destructivePreviewNavigationActive = value;
     },
@@ -1054,6 +1069,136 @@ async function flushMicrotasks() {
   harness.canvas.dispatchEvent(makeEvent("pointermove", { pointerId: 4, clientX: 60 }));
   harness.canvas.dispatchEvent(makeEvent("pointerup", { pointerId: 4, clientX: 60 }));
   assert.equal(harness.calls.fill.length, 1);
+  harness.controller.dispose();
+}
+
+// Once Fill owns a live preview, more short Fill taps stay available while all
+// other mutations remain locked. One finger fills; two fingers, Hand/rotate
+// shortcuts and wheel zoom keep using the view-only path.
+{
+  const harness = createHarness();
+  harness.setActiveTool("fill");
+  harness.setOperationLocked(true);
+  harness.setViewLocked(false);
+  harness.setDestructivePreviewNavigationActive(true);
+  harness.setOpenHistoryEdit("fill");
+
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 40,
+    pointerType: "mouse",
+    button: 0,
+    clientX: 30,
+    clientY: 40,
+  }));
+  harness.canvas.dispatchEvent(makeEvent("pointerup", {
+    pointerId: 40,
+    pointerType: "mouse",
+    button: 0,
+    clientX: 32,
+    clientY: 42,
+  }));
+  await Promise.resolve();
+  assert.deepEqual(harness.calls.fill, [[32, 42, 17, "#123456"]],
+    "a second mouse click must enqueue another Fill in the open session");
+
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 41,
+    pointerType: "touch",
+    clientX: 30,
+    clientY: 40,
+  }));
+  assert.equal(harness.controller.pointerMode, "fill");
+  harness.canvas.dispatchEvent(makeEvent("pointerup", {
+    pointerId: 41,
+    pointerType: "touch",
+    clientX: 32,
+    clientY: 42,
+  }));
+  await Promise.resolve();
+  assert.deepEqual(harness.calls.fill.at(-1), [32, 42, 17, "#123456"],
+    "a one-finger tap must add a Fill while its panel remains open");
+
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 44,
+    pointerType: "touch",
+    clientX: 20,
+    clientY: 20,
+  }));
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 45,
+    pointerType: "touch",
+    clientX: 60,
+    clientY: 20,
+  }));
+  assert.equal(harness.controller.pointerMode, "touch-navigation");
+  harness.canvas.dispatchEvent(makeEvent("pointerup", {
+    pointerId: 45,
+    pointerType: "touch",
+  }));
+  harness.canvas.dispatchEvent(makeEvent("pointerup", {
+    pointerId: 44,
+    pointerType: "touch",
+  }));
+  await Promise.resolve();
+  assert.equal(harness.calls.fill.length, 2,
+    "promoting a Fill touch to two-finger navigation must cancel that Fill");
+
+  harness.setActiveTool("paint");
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", { pointerId: 46 }));
+  assert.equal(harness.controller.isPointerActive, false,
+    "the Fill-session exception must not unlock another mutating tool");
+  harness.setActiveTool("fill");
+
+  harness.canvas.dispatchEvent(makeEvent("wheel", {
+    deltaY: 100,
+    clientX: 40,
+    clientY: 50,
+  }));
+  assert.equal(harness.calls.zoom.length, 1);
+
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 42,
+    pointerType: "mouse",
+    button: 1,
+    clientX: 20,
+    clientY: 20,
+  }));
+  harness.canvas.dispatchEvent(makeEvent("pointermove", {
+    pointerId: 42,
+    pointerType: "mouse",
+    button: 1,
+    clientX: 35,
+    clientY: 32,
+  }));
+  assert.deepEqual(harness.calls.pan.at(-1), [15, 12]);
+  harness.canvas.dispatchEvent(makeEvent("pointerup", {
+    pointerId: 42,
+    pointerType: "mouse",
+    button: 1,
+  }));
+
+  harness.browser.dispatchEvent(makeEvent("keydown", { key: "r" }));
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 43,
+    pointerType: "mouse",
+    button: 0,
+    clientX: 20,
+  }));
+  harness.canvas.dispatchEvent(makeEvent("pointermove", {
+    pointerId: 43,
+    pointerType: "mouse",
+    button: 0,
+    clientX: 92,
+  }));
+  assert.equal(harness.calls.rotate.at(-1)[0], Math.PI / 10);
+  harness.canvas.dispatchEvent(makeEvent("pointerup", {
+    pointerId: 43,
+    pointerType: "mouse",
+    button: 0,
+  }));
+  harness.browser.dispatchEvent(makeEvent("keyup", { key: "r" }));
+  assert.equal(harness.calls.fill.length, 2,
+    "view-only shortcuts must not add another Fill");
   harness.controller.dispose();
 }
 

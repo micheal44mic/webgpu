@@ -52,6 +52,7 @@ export function createEngineHistoryRuntimeHost(engine: BrushEngine): HistoryRunt
       openEdit: Boolean(
         engine.activeVectorHistoryEdit
         || engine.activeRasterLayerMetadataHistoryEdit
+        || engine.activeFillPreviewSession
         || engine.activeRasterTransformSession
         || engine.activeRasterGaussianBlurSession
         || engine.activeRasterMotionBlurSession
@@ -76,6 +77,7 @@ export function createEngineHistoryMaintenanceHost(
       && !engine.layerSwitchBusy
       && !engine.selectionBusy
       && engine.activeStroke === null
+      && engine.activeFillPreviewSession === null
       && engine.deviceLostError === null,
     waitForIdle: () => engine.waitForIdle(),
     scheduleIdle: (callback, delayMs) => window.setTimeout(callback, delayMs),

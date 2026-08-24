@@ -1608,13 +1608,27 @@ console.log("History rapid-input queue and retention-floor feedback verified.");
     "i checkpoint periodici devono poter essere spillati e preidratati con accounting residente",
   );
   const fill = fillRuntime.slice(
+    fillRuntime.indexOf("async function startFillPreviewSession"),
     fillRuntime.indexOf("export async function fillAtClientPoint"),
-    fillRuntime.indexOf("export const", fillRuntime.indexOf("export async function fillAtClientPoint") + 1),
   );
   assert(
     fill.indexOf("await engine.historyLocalStorage.prepareRasterReplayAtCursor(")
-      < fill.indexOf("renderer.encodeLiveCommit("),
-    "il Fill deve preidratare il piano di rollback prima di mutare i pixel",
+      < fill.indexOf("renderer.beginLiveSession("),
+    "il Fill deve preidratare il piano prima di catturare la sorgente immutabile",
+  );
+  const fillRollback = fillRuntime.slice(
+    fillRuntime.indexOf("async function rollbackFillSessionPixels"),
+    fillRuntime.indexOf("async function recoverFailedFillSession"),
+  );
+  assert(
+    fillRollback.indexOf("session.stagedFillCount === 0")
+      < fillRollback.indexOf("await restoreOriginalFillPixels(engine, session)"),
+    "un Fill singolo deve tornare allo snapshot immutabile senza replay History",
+  );
+  assert(
+    fillRollback.indexOf("await restoreOriginalFillPixels(engine, session)")
+      < fillRollback.indexOf("await rebuildActiveLayerFromHistory(engine)"),
+    "dopo un rollover multi-Fill il rollback deve ricostruire lo stato precedente all'intero pannello",
   );
   assert(coordinator.includes("this.host.store.selectionClipBindGroups.clear();"));
   assert(coordinator.includes("The History action is too large for the local budget"));

@@ -204,6 +204,7 @@ export interface HistoryState {
   openEdit:
     | "property"
     | "raster-property"
+    | "fill"
     | "transform"
     | "gaussian-blur"
     | "motion-blur"

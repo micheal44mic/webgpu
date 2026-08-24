@@ -502,6 +502,7 @@ const engine = new BrushEngine(canvas, {
       layerPanelController?.resumeThumbnailCapture();
     }
     updateHistoryControls();
+    mobileToolSettingsSheet?.syncOpenState();
   },
   onViewChange() {
     mixedSceneController?.scheduleViewSync();
@@ -583,6 +584,7 @@ projectSessionController = new ProjectSessionController({
   storageReady: projectEditorBootstrap?.storageReady,
   preloadedProjectId: projectEditorBootstrap?.preloadedProjectId,
   preloadedProject: projectEditorBootstrap?.preloadedProject,
+  settleTransientEdits: settleTransientProjectEdits,
   onReturnHome: projectEditorBootstrap?.returnHome,
   browser: window,
   document,
@@ -1324,13 +1326,22 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
   browser: window,
   document,
   selectCanvasTool: selectCanvasToolWithMixedScene,
-  getFillSettings: () => ({
-    ...canvasToolSettingsController.fillSnapshot(),
-    color: brushSettingsController.snapshot().color,
-    locked: interactionLocked(),
-  }),
+  getFillSettings: () => {
+    const previewState = engine.getFillPreviewState();
+    const adjustingPreview = historyState.openEdit === "fill"
+      && previewState.active
+      && !previewState.terminal;
+    return {
+      ...canvasToolSettingsController.fillSnapshot(),
+      color: brushSettingsController.snapshot().color,
+      locked: previewState.terminal || (interactionLocked() && !adjustingPreview),
+    };
+  },
   setFillTolerance: (tolerance) => {
-    canvasToolSettingsController.setFillTolerance(tolerance);
+    const fill = canvasToolSettingsController.setFillTolerance(tolerance);
+    if (engineInitialized) {
+      engine.updateFillPreview(fill.tolerance);
+    }
   },
   setFillColor: (color) => {
     const settings = brushSettingsController.update({ color });
@@ -1518,6 +1529,7 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
   },
   onClose: (kind) => {
     if (kind === "selection") void pixelSelectionController?.finishColorRangePreview();
+    canvasToolController?.finishFillToolOnSheetClose(kind);
     void canvasToolController?.finishTransformToolOnSheetClose(kind);
   },
 });
@@ -1687,7 +1699,8 @@ canvasInputController = new CanvasInputController({
   isLiquifyEditActive: () =>
     rasterAdjustmentsController?.isLiquifyEditActive(historyState) === true,
   isDestructivePreviewNavigationActive: () =>
-    rasterAdjustmentsController?.isDestructivePreviewNavigationActive(historyState) === true,
+    rasterAdjustmentsController?.isDestructivePreviewNavigationActive(historyState) === true
+    || fillPreviewAllowsCanvasNavigation(),
   getVectorController: () => mixedSceneController,
   getEditorExtension: () => editorExtension,
   updateHistoryControls,
@@ -1713,7 +1726,26 @@ documentInteractionController = new DocumentInteractionController({
   cancelTransientInteraction: () => layerPanelController?.cancelActiveGesture(),
 });
 
+async function settleTransientProjectEdits(): Promise<void> {
+  if (!engineInitialized) return;
+  const fillPreviewActive = engine.getFillPreviewState().active;
+  const fillToolActive = engine.fillToolSelected
+    || canvasToolController?.activeTool === "fill";
+  if (!fillPreviewActive && !fillToolActive) return;
+  if (canvasToolController) {
+    canvasToolController.finishFillToolOnSheetClose("fill");
+  }
+  await engine.setFillToolSelected(false);
+  if (engine.getFillPreviewState().active) {
+    throw new Error("Fill could not finish safely.");
+  }
+}
+
 window.addEventListener("pagehide", () => {
+  // Last-resort only. Home and Save await this same gate before navigating or
+  // capturing; pagehide covers browser-level departures where waiting is not
+  // available.
+  void settleTransientProjectEdits();
   appDiagnosticsController?.dispose();
   gpuMemoryPanelController?.dispose();
   canvasGuidesController?.dispose();
@@ -1735,7 +1767,13 @@ window.addEventListener("pagehide", () => {
   pixelSelectionController?.dispose();
 }, { once: true });
 
-function nonHistoryOperationLocked(allowDestructiveBlurEdit = false): boolean {
+function fillPreviewAllowsCanvasNavigation(): boolean {
+  if (!engineInitialized || historyState.openEdit !== "fill") return false;
+  const previewState = engine.getFillPreviewState();
+  return previewState.active && !previewState.terminal;
+}
+
+function nonHistoryOperationLocked(allowDestructivePreviewEdit = false): boolean {
   return !engineInitialized
     || sceneEditorController?.isBusy === true
     || mixedSceneController?.isBusy === true
@@ -1743,8 +1781,11 @@ function nonHistoryOperationLocked(allowDestructiveBlurEdit = false): boolean {
     || mobileBrushStudio?.isOpen === true
     || historyState.openEdit === "transform"
     || (
-      !allowDestructiveBlurEdit
-      && rasterAdjustmentsController?.hasActiveHistoryEdit(historyState) === true
+      !allowDestructivePreviewEdit
+      && (
+        rasterAdjustmentsController?.hasActiveHistoryEdit(historyState) === true
+        || historyState.openEdit === "fill"
+      )
     )
     || historyState.openEdit === "raster-property"
     || rasterStyleController.isBusy
@@ -1752,8 +1793,8 @@ function nonHistoryOperationLocked(allowDestructiveBlurEdit = false): boolean {
     || editorExtension?.isBusy() === true;
 }
 
-function operationLocked(allowDestructiveBlurEdit = false): boolean {
-  return nonHistoryOperationLocked(allowDestructiveBlurEdit)
+function operationLocked(allowDestructivePreviewEdit = false): boolean {
+  return nonHistoryOperationLocked(allowDestructivePreviewEdit)
     || historyControlsController.uiBusy
     || historyState.busy;
 }
@@ -1764,12 +1805,13 @@ function interactionLocked(): boolean {
 
 /**
  * Pan, zoom e rotazione non modificano i pixel e restano disponibili mentre
- * un filtro mostra la sua anteprima distruttiva. Il normale lock del
+ * un filtro o Fill mostrano la loro anteprima distruttiva. Il normale lock del
  * documento continua invece a proteggere pennello, livelli e cronologia.
  */
 function canvasViewOperationLocked(): boolean {
   return operationLocked(
-    rasterAdjustmentsController?.allowsCanvasViewOperation(historyState) === true,
+    rasterAdjustmentsController?.allowsCanvasViewOperation(historyState) === true
+      || fillPreviewAllowsCanvasNavigation(),
   );
 }
 

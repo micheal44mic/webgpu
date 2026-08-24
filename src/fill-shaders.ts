@@ -2,6 +2,7 @@ import {
   FILL_BLOCK_GRID_HEIGHT,
   FILL_BLOCK_GRID_WIDTH,
   FILL_BLOCK_SIZE,
+  FILL_COMPOSITE_MODE_CODE,
   FILL_HISTORY_MASK_WORDS,
   FILL_HISTORY_WORDS_PER_ROW,
   FILL_LABEL_WORDS_PER_BLOCK,
@@ -15,6 +16,7 @@ import {
   FILL_META_MIN_X,
   FILL_META_MIN_Y,
   FILL_META_SELECTED_PIXELS,
+  FILL_META_SOURCE_SEED_COLOR_START,
   FILL_META_TILE_MASK_START,
   FILL_TILE_GRID_SIZE,
   FILL_TILE_HEIGHT,
@@ -80,9 +82,14 @@ struct FillUniforms {
   size: vec2<u32>,
   tolerance: f32,
   transparentSeedAlphaThreshold: f32,
-  replaceSelectedColor: u32,
-  _padding2: f32,
+  compositeMode: u32,
+  sourceIsTarget: u32,
   fillColor: vec4<f32>,
+  sourceSeedColor: vec4<f32>,
+  residualFringeRadius: u32,
+  _padding0: u32,
+  _padding1: u32,
+  _padding2: u32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: FillUniforms;
@@ -136,6 +143,16 @@ fn matchesSeed(value: vec4<f32>) -> bool {
       return alpha == 0.0;
     }
     return alpha < threshold;
+  }
+  if (uniforms.sourceIsTarget != 0u && seedColor.a > COLOR_MATCH_EPSILON) {
+    if (value.a <= COLOR_MATCH_EPSILON) { return false; }
+    let straightValue = straightSrgb(value);
+    let straightSeed = straightSrgb(seedColor);
+    return connectedStraightSrgbColorsMatch(
+      vec4<f32>(straightValue.rgb, 1.0),
+      vec4<f32>(straightSeed.rgb, 1.0),
+      uniforms.tolerance,
+    );
   }
   return connectedStraightSrgbColorsMatch(
     straightSrgb(value),
@@ -237,6 +254,10 @@ fn classifyLocal(
         | select(0u, 1u << 17u, matches)
         | select(0u, ${FILL_DIAGNOSTIC_SEED_TRANSPARENT_BIT}u, seedColor.a == 0.0),
     );
+    atomicStore(&metadata[${FILL_META_SOURCE_SEED_COLOR_START}u], bitcast<u32>(seedColor.r));
+    atomicStore(&metadata[${FILL_META_SOURCE_SEED_COLOR_START + 1}u], bitcast<u32>(seedColor.g));
+    atomicStore(&metadata[${FILL_META_SOURCE_SEED_COLOR_START + 2}u], bitcast<u32>(seedColor.b));
+    atomicStore(&metadata[${FILL_META_SOURCE_SEED_COLOR_START + 3}u], bitcast<u32>(seedColor.a));
   }
   atomicStore(&localParents[localIndex], select(INVALID_U32, localIndex, eligible));
   localComponents[localIndex] = INVALID_LABEL;
@@ -446,6 +467,155 @@ fn rebuildSelection(
   reduceAndRecord(pixel, selected, workgroup.xy, localIndex);
 }
 
+const RESIDUAL_BASE_MIN_CONTRIBUTION: f32 = 0.024;
+const RESIDUAL_MONOTONIC_EPSILON: f32 = 0.002;
+
+fn residualSourceWord(wordIndex: u32, sourceKind: u32) -> u32 {
+  if (sourceKind == 0u) { return atomicLoad(&selectedMask[wordIndex]); }
+  if (sourceKind == 1u) { return atomicLoad(&globalParents[wordIndex]); }
+  return packedLabels[wordIndex];
+}
+
+fn residualSourceContains(pixel: vec2<u32>, sourceKind: u32) -> bool {
+  let word = pixel.y * ${FILL_HISTORY_WORDS_PER_ROW}u + pixel.x / 32u;
+  return fillMaskContains(residualSourceWord(word, sourceKind), pixel.x);
+}
+
+fn residualBaseContributionAt(pixel: vec2<u32>, base: vec3<f32>) -> f32 {
+  let value = textureLoad(sourceLayer, vec2<i32>(pixel), 0);
+  let alpha = clamp(value.a, 0.0, 1.0);
+  let rgb = clamp(value.rgb, vec3<f32>(0.0), vec3<f32>(alpha));
+  var contribution = alpha;
+  for (var channel = 0u; channel < 3u; channel += 1u) {
+    let baseChannel = base[channel];
+    let valueChannel = rgb[channel];
+    if (baseChannel > COLOR_MATCH_EPSILON) {
+      contribution = min(contribution, valueChannel / baseChannel);
+    }
+    if (baseChannel < 1.0 - COLOR_MATCH_EPSILON) {
+      contribution = min(
+        contribution,
+        (alpha - valueChannel) / (1.0 - baseChannel),
+      );
+    }
+  }
+  return clamp(contribution, 0.0, alpha);
+}
+
+fn residualFringeCanReach(
+  pixel: vec2<u32>,
+  sourceKind: u32,
+  base: vec3<f32>,
+) -> bool {
+  let contribution = residualBaseContributionAt(pixel, base);
+  if (contribution <= RESIDUAL_BASE_MIN_CONTRIBUTION) { return false; }
+  let offsets = array<vec2<i32>, 4>(
+    vec2<i32>(-1, 0),
+    vec2<i32>(1, 0),
+    vec2<i32>(0, -1),
+    vec2<i32>(0, 1),
+  );
+  for (var index = 0u; index < 4u; index += 1u) {
+    let neighbor = vec2<i32>(pixel) + offsets[index];
+    if (
+      any(neighbor < vec2<i32>(0))
+      || any(neighbor >= vec2<i32>(uniforms.size))
+    ) { continue; }
+    let safeNeighbor = vec2<u32>(neighbor);
+    if (!residualSourceContains(safeNeighbor, sourceKind)) { continue; }
+    let neighborContribution = residualBaseContributionAt(safeNeighbor, base);
+    if (contribution <= neighborContribution + RESIDUAL_MONOTONIC_EPSILON) {
+      return true;
+    }
+  }
+  return false;
+}
+
+fn expandResidualFringeWord(
+  wordIndex: u32,
+  sourceKind: u32,
+  stage: u32,
+) -> u32 {
+  let source = residualSourceWord(wordIndex, sourceKind);
+  if (uniforms.residualFringeRadius < stage) { return source; }
+  let seed = uniforms.sourceSeedColor;
+  let seedAlpha = clamp(seed.a, 0.0, 1.0);
+  if (seedAlpha <= COLOR_MATCH_EPSILON) { return source; }
+  let base = clamp(
+    seed.rgb / seedAlpha,
+    vec3<f32>(0.0),
+    vec3<f32>(1.0),
+  );
+  let row = wordIndex / ${FILL_HISTORY_WORDS_PER_ROW}u;
+  let firstX = (wordIndex % ${FILL_HISTORY_WORDS_PER_ROW}u) * 32u;
+  var expanded = source;
+  for (var bit = 0u; bit < 32u; bit += 1u) {
+    let x = firstX + bit;
+    if (x >= uniforms.size.x || fillMaskContains(source, x)) { continue; }
+    let pixel = vec2<u32>(x, row);
+    if (residualFringeCanReach(pixel, sourceKind, base)) {
+      expanded = expanded | fillBitMask(x);
+    }
+  }
+  return expanded;
+}
+
+@compute @workgroup_size(256, 1, 1)
+fn expandResidualFringe1(@builtin(global_invocation_id) global: vec3<u32>) {
+  if (global.x >= ${FILL_HISTORY_MASK_WORDS}u) { return; }
+  atomicStore(
+    &globalParents[global.x],
+    expandResidualFringeWord(global.x, 0u, 1u),
+  );
+}
+
+@compute @workgroup_size(256, 1, 1)
+fn expandResidualFringe2(@builtin(global_invocation_id) global: vec3<u32>) {
+  if (global.x >= ${FILL_HISTORY_MASK_WORDS}u) { return; }
+  packedLabels[global.x] = expandResidualFringeWord(global.x, 1u, 2u);
+}
+
+@compute @workgroup_size(256, 1, 1)
+fn expandResidualFringe3(@builtin(global_invocation_id) global: vec3<u32>) {
+  if (global.x >= ${FILL_HISTORY_MASK_WORDS}u) { return; }
+  atomicStore(
+    &globalParents[global.x],
+    expandResidualFringeWord(global.x, 2u, 3u),
+  );
+}
+
+@compute @workgroup_size(16, 16, 1)
+fn recordResidualFringeBlocks(
+  @builtin(workgroup_id) workgroup: vec3<u32>,
+  @builtin(local_invocation_id) local: vec3<u32>,
+  @builtin(local_invocation_index) localIndex: u32,
+) {
+  let pixel = workgroup.xy * BLOCK_EXTENT + local.xy;
+  let inside = all(pixel < uniforms.size);
+  let safePixel = min(pixel, uniforms.size - vec2<u32>(1u));
+  let word = safePixel.y * ${FILL_HISTORY_WORDS_PER_ROW}u + safePixel.x / 32u;
+  let selected = inside
+    && fillMaskContains(atomicLoad(&globalParents[word]), safePixel.x);
+  reduceCount[localIndex] = select(0u, 1u, selected);
+  workgroupBarrier();
+  var stride = 128u;
+  loop {
+    if (localIndex < stride) {
+      reduceCount[localIndex] += reduceCount[localIndex + stride];
+    }
+    workgroupBarrier();
+    if (stride == 1u) { break; }
+    stride = stride >> 1u;
+  }
+  if (localIndex == 0u) {
+    atomicStore(&drawIndirect[0], 4u);
+    if (reduceCount[0] > 0u) {
+      let activeIndex = atomicAdd(&drawIndirect[1], 1u);
+      activeBlocks[activeIndex] = blockIndex(workgroup.xy);
+    }
+  }
+}
+
 fn expandedRenderMaskByte(
   source: u32,
   byteIndex: u32,
@@ -461,7 +631,7 @@ fn expandRenderMask(@builtin(global_invocation_id) global: vec3<u32>) {
   const SOURCE_WORDS_PER_ROW: u32 = ${FILL_HISTORY_WORDS_PER_ROW}u;
   const TARGET_WORDS_PER_ROW: u32 = ${FILL_RENDER_MASK_WORDS_PER_ROW}u;
   if (global.x >= SOURCE_WORDS) { return; }
-  let source = atomicLoad(&selectedMask[global.x]);
+  let source = atomicLoad(&globalParents[global.x]);
   let sourceRow = global.x / SOURCE_WORDS_PER_ROW;
   let sourceWordX = global.x % SOURCE_WORDS_PER_ROW;
   let targetWordX = sourceWordX * 4u;
@@ -531,6 +701,10 @@ export const fillRenderShader = /* wgsl */ `
 const LAYER_EXTENT: vec2<f32> = vec2<f32>(${FILL_LAYER_WIDTH}.0, ${FILL_LAYER_HEIGHT}.0);
 const BLOCK_EXTENT: u32 = ${FILL_BLOCK_SIZE}u;
 const BLOCK_GRID: vec2<u32> = vec2<u32>(${FILL_BLOCK_GRID_WIDTH}u, ${FILL_BLOCK_GRID_HEIGHT}u);
+const COMPOSITE_SOLID_UNDERLAY: u32 = ${FILL_COMPOSITE_MODE_CODE["solid-underlay"]}u;
+const COMPOSITE_PRESERVE_COVERAGE_RECOLOR: u32 = ${FILL_COMPOSITE_MODE_CODE["preserve-coverage-recolor"]}u;
+const COMPOSITE_SOLID_REPLACE: u32 = ${FILL_COMPOSITE_MODE_CODE["solid-replace"]}u;
+const BASE_COLOR_EPSILON: f32 = 0.000001;
 
 ${fillRenderBitMaskHelpers}
 
@@ -539,9 +713,14 @@ struct FillUniforms {
   size: vec2<u32>,
   tolerance: f32,
   transparentSeedAlphaThreshold: f32,
-  replaceSelectedColor: u32,
-  _padding2: f32,
+  compositeMode: u32,
+  sourceIsTarget: u32,
   fillColor: vec4<f32>,
+  sourceSeedColor: vec4<f32>,
+  residualFringeRadius: u32,
+  _padding0: u32,
+  _padding1: u32,
+  _padding2: u32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: FillUniforms;
@@ -552,6 +731,29 @@ struct FillUniforms {
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
 };
+
+fn maximumBaseContribution(
+  destination: vec4<f32>,
+  base: vec3<f32>,
+) -> f32 {
+  let alpha = clamp(destination.a, 0.0, 1.0);
+  let rgb = clamp(destination.rgb, vec3<f32>(0.0), vec3<f32>(alpha));
+  var contribution = alpha;
+  for (var channel = 0u; channel < 3u; channel += 1u) {
+    let baseChannel = base[channel];
+    let destinationChannel = rgb[channel];
+    if (baseChannel > BASE_COLOR_EPSILON) {
+      contribution = min(contribution, destinationChannel / baseChannel);
+    }
+    if (baseChannel < 1.0 - BASE_COLOR_EPSILON) {
+      contribution = min(
+        contribution,
+        (alpha - destinationChannel) / (1.0 - baseChannel),
+      );
+    }
+  }
+  return clamp(contribution, 0.0, alpha);
+}
 
 @vertex
 fn vertexMain(
@@ -586,18 +788,42 @@ fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
   let word = pixel.y * ${FILL_RENDER_MASK_WORDS_PER_ROW}u + pixel.x / 8u;
   if (!fillRenderMaskContains(renderMask[word], pixel.x)) { discard; }
 
-  if (uniforms.replaceSelectedColor != 0u) {
+  if (uniforms.compositeMode == COMPOSITE_SOLID_REPLACE) {
     return vec4<f32>(uniforms.fillColor.rgb, 1.0);
   }
-
   let destination = textureLoad(destinationSnapshot, vec2<i32>(pixel), 0);
-  if (destination.a <= 0.0) {
-    return vec4<f32>(uniforms.fillColor.rgb, 1.0);
-  }
   let destinationAlpha = clamp(destination.a, 0.0, 1.0);
-  return vec4<f32>(
-    destination.rgb + uniforms.fillColor.rgb * (1.0 - destinationAlpha),
-    1.0,
-  );
+  if (uniforms.compositeMode == COMPOSITE_PRESERVE_COVERAGE_RECOLOR) {
+    let sourceAlpha = clamp(uniforms.sourceSeedColor.a, 0.0, 1.0);
+    if (sourceAlpha <= BASE_COLOR_EPSILON || destinationAlpha <= 0.0) {
+      return vec4<f32>(
+        clamp(destination.rgb, vec3<f32>(0.0), vec3<f32>(destinationAlpha)),
+        destinationAlpha,
+      );
+    }
+    let base = clamp(
+      uniforms.sourceSeedColor.rgb / sourceAlpha,
+      vec3<f32>(0.0),
+      vec3<f32>(1.0),
+    );
+    let contribution = maximumBaseContribution(destination, base);
+    return vec4<f32>(
+      clamp(
+        destination.rgb + contribution * (clamp(uniforms.fillColor.rgb, vec3<f32>(0.0), vec3<f32>(1.0)) - base),
+        vec3<f32>(0.0),
+        vec3<f32>(destinationAlpha),
+      ),
+      destinationAlpha,
+    );
+  }
+  if (uniforms.compositeMode == COMPOSITE_SOLID_UNDERLAY) {
+    return vec4<f32>(
+      destination.rgb + uniforms.fillColor.rgb * (1.0 - destinationAlpha),
+      1.0,
+    );
+  }
+  // All public modes are handled above. An invalid History payload must not
+  // mutate selected pixels through an implicit fallback.
+  return destination;
 }
 `;

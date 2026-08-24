@@ -7,6 +7,7 @@ import type { BrushEngine } from "./brush-engine.ts";
  */
 export type EngineHistoryMaintenanceHost = Pick<
   BrushEngine,
+  | "activeFillPreviewSession"
   | "activeRasterGaussianBlurSession"
   | "activeRasterLayerMetadataHistoryEdit"
   | "activeRasterLiquifySession"

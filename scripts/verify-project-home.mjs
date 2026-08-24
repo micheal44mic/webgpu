@@ -65,12 +65,23 @@ expect(main, "captureDocument: () => engine.captureProjectDocument()", "capture 
 expect(main, "restoreDocument: (project) => engine.restoreProjectDocument(project)", "restore engine port");
 expect(main, "projectSessionController?.noteHistoryState(state)", "history dirty tracking port");
 expect(main, "projectSessionController?.noteSceneSnapshot(snapshot)", "scene dirty tracking port");
+expect(main, "settleTransientEdits: settleTransientProjectEdits", "preview settlement gate");
+expect(main, "await engine.setFillToolSelected(false)", "awaited Fill finalization");
+expect(main, "const fillToolActive = engine.fillToolSelected", "selected Fill cleanup without a preview");
+expect(main, 'canvasToolController?.activeTool === "fill"', "Fill sheet cleanup before Home suspension");
+reject(main, 'document.addEventListener("visibilitychange"', "background-triggered Fill commit");
 expect(projectSession, "this.storage.saveProject({", "durable save");
 expect(projectSession, "await this.engine.restoreDocument(saved)", "complete project restore");
 expect(projectSession, "this.storageReady ?? this.storage.initialize()", "shared storage readiness");
 expect(projectSession, "if (this.onReturnHome)", "warm return to project Home");
 expect(projectSession, 'event.key.toLowerCase() !== "s"', "save shortcut");
 expect(projectSession, "private async returnHome()", "save-before-home flow");
+expect(projectSession, "await this.settleTransientEdits?.();", "settled previews before save/home");
+const saveSettlement = projectSession.indexOf("await this.settleTransientEdits?.();");
+const documentCapture = projectSession.indexOf("const captured = await this.engine.captureDocument();");
+if (saveSettlement < 0 || saveSettlement >= documentCapture) {
+  throw new Error("Fill preview settlement must complete before project capture.");
+}
 expect(projectSession, "capturedMutationRevision", "concurrent edit save boundary");
 expect(projectSession, 'this.browser.addEventListener("beforeunload"', "unsaved exit guard");
 reject(main, "async function saveCurrentProject", "legacy project save in main");

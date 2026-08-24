@@ -420,6 +420,13 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
   if (engine.layerSwitchBusy) {
     return false;
   }
+  if (engine.activeFillPreviewSession) {
+    engine.publishStatus(
+      "Close Fill before using history.",
+      "error",
+    );
+    return false;
+  }
   // Queste due erano coperte solo di rimbalzo, perche' chi le apriva lasciava
   // acceso `historyBusy`. Farle valere qui in modo esplicito e' cio' che
   // permette a quel flag di tornare a significare "un'operazione di cronologia

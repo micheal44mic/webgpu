@@ -29,6 +29,10 @@ const canvasToolController = readFileSync(
   new URL("src/canvas-tool-controller.ts", root),
   "utf8",
 );
+const fillRuntime = readFileSync(
+  new URL("src/engine-fill-runtime.ts", root),
+  "utf8",
+);
 const {
   MOBILE_BOTTOM_SHEET_DIRECT_CLOSE_FLICK_VELOCITY_PX_PER_MS,
   nextMobileBottomSheetTapSnap,
@@ -307,6 +311,76 @@ assert.match(
   main,
   /setFillColor: \(color\) => \{[\s\S]*?brushSettingsController\.update\(\{ color \}\)[\s\S]*?brushQuickControlsController\?\.syncSettings/,
   "the Fill color picker must update the shared authoritative paint color",
+);
+assert.match(
+  main,
+  /getFillSettings: \(\) => \{[\s\S]*?engine\.getFillPreviewState\(\)[\s\S]*?historyState\.openEdit === "fill"[\s\S]*?locked: previewState\.terminal \|\| \(interactionLocked\(\) && !adjustingPreview\)/,
+  "only a live non-terminal Fill preview may keep its own controls enabled through the document lock",
+);
+assert.match(
+  main,
+  /setFillTolerance: \(tolerance\) => \{[\s\S]*?const fill = canvasToolSettingsController\.setFillTolerance\(tolerance\)[\s\S]*?engine\.updateFillPreview\(fill\.tolerance\)/,
+  "Fill tolerance input must update the engine preview live",
+);
+const setFillColorSource = main.slice(
+  main.indexOf("  setFillColor: (color) => {"),
+  main.indexOf("  getSelectionSettings:", main.indexOf("  setFillColor: (color) => {")),
+);
+assert(!setFillColorSource.includes("engine.updateFillPreview("));
+assert(setFillColorSource.includes("brushSettingsController.update({ color })"));
+assert.match(
+  controller,
+  /for \(const eventType of \["input", "change"\] as const\)[\s\S]*?setFillTolerance[\s\S]*?setFillColor/,
+  "native range and color controls must both publish continuous and final Fill values",
+);
+assert.match(
+  main,
+  /onClose: \(kind\) => \{[\s\S]*?finishFillToolOnSheetClose\(kind\)/,
+  "every normal, swipe, or Escape Fill close must finalize through one shared callback",
+);
+assert.match(
+  canvasToolController,
+  /finishFillToolOnSheetClose\(kind: MobileToolSettingsKind\): void[\s\S]*?configurationInProgress[\s\S]*?fillClosePanRequested[\s\S]*?this\.configure\("pan", false\)/,
+  "Fill close must bypass the public interaction lock and select Hand without recursive configuration",
+);
+assert.match(
+  fillRuntime,
+  /const batches = \[\.\.\.session\.stagedBatches, batch\];[\s\S]*?commitHistoryActionAtomically\([\s\S]*?batches,/,
+  "all Fill clicks in one panel session must publish as one ordered History action",
+);
+assert.match(
+  fillRuntime,
+  /releasePayloadOnCancel: \(\) => \{[\s\S]*?batches\.map\(\(item\) => item\.gpuSlice\)[\s\S]*?prepareReleaseMany\(slices\)\.commitNoThrow\(\)[\s\S]*?session\.stagedBatches\.length = 0;/,
+  "a canceled History publication must release every staged Fill payload",
+);
+assert.match(
+  fillRuntime,
+  /rollbackFillSessionPixels[\s\S]*?session\.stagedFillCount === 0[\s\S]*?restoreOriginalFillPixels[\s\S]*?rebuildActiveLayerFromHistory/,
+  "rollback must replay the panel-opening History state even after canceled publication emptied staged slices",
+);
+const updateFillPreviewSource = fillRuntime.slice(
+  fillRuntime.indexOf("export function updateFillPreview("),
+  fillRuntime.indexOf("export async function setFillToolSelected("),
+);
+assert(updateFillPreviewSource.includes("const pendingClick = session.pendingClicks.at(-1)"));
+assert(updateFillPreviewSource.includes("pendingClick.tolerancePercent = normalizedTolerance"));
+assert(updateFillPreviewSource.includes("session.tolerancePercent = normalizedTolerance"));
+assert(!updateFillPreviewSource.includes("linearColor ="));
+assert(!updateFillPreviewSource.includes("session.color ="));
+assert.match(
+  fillRuntime,
+  /session\.pendingClicks\[0\] !== click[\s\S]*?session\.pendingClicks\.shift\(\);/,
+  "queued Fill clicks must be installed in strict FIFO order",
+);
+assert.match(
+  fillRuntime,
+  /async function finalizeFillPreview[\s\S]*?await session\.tapDrainPromise;[\s\S]*?await flushFillPreview\(engine, session\);[\s\S]*?renderer\.encodeFinalMaskCapture/,
+  "closing Fill must drain every queued click before capturing the final mask",
+);
+assert.match(
+  fillRuntime,
+  /session\.baseLayerHasContent = engine\.layerHasContent;[\s\S]*?session\.baseStorageTileMask = record\.storageTileMask\.slice\(\);[\s\S]*?session\.analysis = null;[\s\S]*?session\.presentedBounds = null;/,
+  "rollover must advance authoritative metadata before resetting the latest preview state",
 );
 assert.match(
   controller,

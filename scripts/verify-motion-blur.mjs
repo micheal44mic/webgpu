@@ -249,6 +249,6 @@ assert.match(
   /isDestructivePreviewNavigationActive\([\s\S]*?history\.openEdit === "motion-blur"/,
 );
 assert.match(main, /rasterAdjustmentsController\?\.isDestructivePreviewNavigationActive/);
-assert.match(canvasInput, /blurTouchNavigationRequested/);
+assert.match(canvasInput, /destructivePreviewTouchNavigationRequested/);
 
 console.log("Destructive 16-bit Motion Blur document-edge verification passed.");

@@ -6,6 +6,7 @@ import {
   FILL_BLOCK_GRID_SIZE,
   FILL_BLOCK_GRID_WIDTH,
   FILL_BLOCK_SIZE,
+  FILL_COMPOSITE_MODE_CODE,
   FILL_HISTORY_MASK_BYTES,
   FILL_HISTORY_MASK_WORDS,
   FILL_HISTORY_WORDS_PER_ROW,
@@ -17,6 +18,8 @@ import {
   FILL_MAX_COMPONENTS_PER_BLOCK,
   FILL_METADATA_BYTES,
   FILL_METADATA_WORDS,
+  FILL_META_SOURCE_SEED_COLOR_START,
+  FILL_META_TILE_MASK_START,
   FILL_REFERENCE_LAYER_STRATEGY,
   FILL_RENDER_MASK_STRATEGY,
   FILL_RENDER_MASK_BYTES,
@@ -24,22 +27,28 @@ import {
   FILL_RENDER_MASK_WORDS,
   FILL_RENDER_MASK_WORDS_PER_ROW,
   FILL_RESIDENT_SCRATCH_BYTES,
+  FILL_RESIDUAL_FRINGE_MAX_RADIUS,
   FILL_TILE_HEIGHT,
   FILL_TILE_MASK_WORDS,
   FILL_TILE_WIDTH,
+  FILL_UNIFORM_BYTES,
   FILL_WORKGROUP_STORAGE_BYTES,
   GPU_FILL_STRATEGY,
   compositeFillAsSolidUnderlay,
   countFillTiles,
-  fillCommitReplacesSelectedColor,
   fillRenderMaskTargetWord,
   fillColorsMatch,
+  fillResidualFringeRadius,
   hexToLinearFillColor,
   normalizeFillTolerance,
+  recolorFillPreservingCoverage,
+  resolveFillCompositeMode,
+  sameLayerColoredFillColorsMatch,
   srgbChannelToLinear,
   transparentFillAlphaMatches,
 } from "../src/fill-core.ts";
 import {
+  FILL_DIAGNOSTIC_SCHEMA,
   classifyFillDiagnostic,
   summarizeFillMaskWords,
   summarizeFillRenderedRow,
@@ -57,7 +66,7 @@ import { readEngineSource } from "./engine-source.mjs";
 
 assert.equal(
   GPU_FILL_STRATEGY,
-  "webgpu-hierarchical-ccl-4-connected-transparent-underlay-opaque-replace-history1-render8-v9",
+  "webgpu-hierarchical-ccl-4-connected-transparent-underlay-base-residual-fringe3-recolor-reference-replace-live-preview-history1-render8-v12",
 );
 assert.equal(
   FILL_REFERENCE_LAYER_STRATEGY,
@@ -67,6 +76,7 @@ assert.equal(
   FILL_RENDER_MASK_STRATEGY,
   "history-1bit-compute-expanded-row-stride-selected8-reused-label-buffer-v4",
 );
+assert.equal(FILL_DIAGNOSTIC_SCHEMA, "webgpu-brush-fill-mask-render-probe-v3");
 assert.equal(FILL_BLOCK_SIZE, 16);
 assert.equal(FILL_LAYER_SIZE, LAYER_SIZE);
 assert.equal(FILL_LAYER_WIDTH, DOCUMENT_WIDTH);
@@ -108,8 +118,11 @@ assert.equal(
   FILL_RENDER_MASK_WORDS_PER_ROW,
 );
 assert.equal(FILL_TILE_MASK_WORDS, 8);
-assert.equal(FILL_METADATA_WORDS, 16);
-assert.equal(FILL_METADATA_BYTES, 64);
+assert.equal(FILL_UNIFORM_BYTES, 80);
+assert.equal(FILL_METADATA_WORDS, 20);
+assert.equal(FILL_METADATA_BYTES, 80);
+assert.equal(FILL_META_SOURCE_SEED_COLOR_START, 8);
+assert.equal(FILL_META_TILE_MASK_START, 12);
 assert.equal(FILL_TILE_WIDTH, DOCUMENT_TILE_WIDTH);
 assert.equal(FILL_TILE_HEIGHT, DOCUMENT_TILE_HEIGHT);
 assert.equal(FILL_WORKGROUP_STORAGE_BYTES, 9_232);
@@ -120,16 +133,36 @@ assert.equal(normalizeFillTolerance(-1), 0);
 assert.equal(normalizeFillTolerance(10), 0.1);
 assert.equal(normalizeFillTolerance(100), FILL_MAX_COLOR_DISTANCE);
 assert(Math.abs(normalizeFillTolerance(50) - 0.16666666666666669) < 1e-12);
+assert.equal(FILL_RESIDUAL_FRINGE_MAX_RADIUS, 3);
+assert.equal(fillResidualFringeRadius(0), 0);
+assert.equal(fillResidualFringeRadius(10), 0);
+assert.equal(fillResidualFringeRadius(10.1), 1);
+assert.equal(fillResidualFringeRadius(40), 1);
+assert.equal(fillResidualFringeRadius(40.1), 2);
+assert.equal(fillResidualFringeRadius(70), 2);
+assert.equal(fillResidualFringeRadius(70.1), 3);
+assert.equal(fillResidualFringeRadius(100), 3);
+assert.equal(fillResidualFringeRadius(1_000), 3);
+assert.throws(() => fillResidualFringeRadius(Number.NaN));
 assert.equal(countFillTiles(Uint32Array.from([0, 1, 0x80000001])), 3);
 assert.throws(() => normalizeFillTolerance(Number.NaN));
 assert.deepEqual(hexToLinearFillColor("#000000"), [0, 0, 0, 1]);
 assert.deepEqual(hexToLinearFillColor("ffffff"), [1, 1, 1, 1]);
 assert.throws(() => hexToLinearFillColor("#fff"));
-assert.equal(fillCommitReplacesSelectedColor(true, true), false);
-assert.equal(fillCommitReplacesSelectedColor(true, false), true);
-assert.equal(fillCommitReplacesSelectedColor(false, true), true);
+assert.deepEqual(FILL_COMPOSITE_MODE_CODE, {
+  "solid-underlay": 0,
+  "preserve-coverage-recolor": 1,
+  "solid-replace": 2,
+});
+assert.equal(resolveFillCompositeMode(true, true), "solid-underlay");
+assert.equal(resolveFillCompositeMode(true, false), "preserve-coverage-recolor");
+assert.equal(resolveFillCompositeMode(false, true), "solid-replace");
+assert.equal(resolveFillCompositeMode(false, false), "solid-replace");
 const underlayFill = [0.2, 0.4, 0.6, 0.25];
-for (const destinationAlpha of [0, 1 / 255, 0.05, 0.4, 0.99, 1]) {
+// Procreate-like same-layer Fill is one opaque color placed behind the existing
+// premultiplied pixel. Alpha is coverage, never an instruction to flatten the
+// existing RGB. These four values pin empty, two AA coverages and opaque ink.
+for (const destinationAlpha of [0, 0.25, 0.7, 1]) {
   const destination = [
     0.91 * destinationAlpha,
     0.17 * destinationAlpha,
@@ -149,7 +182,7 @@ for (const destinationAlpha of [0, 1 / 255, 0.05, 0.4, 0.99, 1]) {
 }
 assert.deepEqual(
   compositeFillAsSolidUnderlay(
-    [0.01, 0.02, 0.03, 0],
+    [0, 0, 0, 0],
     underlayFill,
   ),
   [0.2, 0.4, 0.6, 1],
@@ -163,6 +196,76 @@ assert.deepEqual(
   compositeFillAsSolidUnderlay(opaqueDestination, underlayFill),
   opaqueDestination,
 );
+const assertPixelNear = (actual, expected, epsilon = 1e-12) => {
+  assert.equal(actual.length, expected.length);
+  for (let channel = 0; channel < actual.length; channel += 1) {
+    assert(
+      Math.abs(actual[channel] - expected[channel]) <= epsilon,
+      `channel ${channel}: ${actual[channel]} != ${expected[channel]}`,
+    );
+  }
+};
+
+// Same-layer opaque imports have their antialiasing baked into RGB. Recoloring
+// replaces only the removable base contribution and leaves every residual
+// line/shading component intact, even though alpha is one everywhere.
+{
+  const base = [0.5, 0.5, 0.5, 1];
+  const fill = [0.8, 0.2, 0.1, 1];
+  for (const [destination, expected] of [
+    [[0.5, 0.5, 0.5, 1], [0.8, 0.2, 0.1, 1]],
+    [[0.35, 0.35, 0.35, 1], [0.56, 0.14, 0.07, 1]],
+    [[0.625, 0.625, 0.625, 1], [0.85, 0.4, 0.325, 1]],
+    [[0, 0, 0, 1], [0, 0, 0, 1]],
+    [[0.35, 0.35, 0.65, 1], [0.56, 0.14, 0.37, 1]],
+    [[0.21, 0.21, 0.21, 0.6], [0.336, 0.084, 0.042, 0.6]],
+  ]) {
+    const actual = recolorFillPreservingCoverage(destination, fill, base);
+    assertPixelNear(actual, expected);
+    assert.equal(actual[3], destination[3], "same-layer Fill must preserve alpha");
+    assert(actual.slice(0, 3).every((channel) => channel >= 0 && channel <= actual[3]));
+  }
+  for (const destination of [
+    [0.5, 0.5, 0.5, 1],
+    [0.35, 0.35, 0.65, 1],
+    [0.21, 0.21, 0.21, 0.6],
+  ]) {
+    assertPixelNear(
+      recolorFillPreservingCoverage(destination, base, base),
+      destination,
+    );
+  }
+}
+
+// CPU mirror of the three render-only fringe passes. It may walk from the CCL
+// core toward a darker contour, but the zero-contribution core stops it and a
+// later increasing value on the far side can never be reached.
+{
+  const contributions = [1, 0.8, 0.6, 0.3, 0, 0.3, 0.6, 0.8, 1];
+  let mask = Uint8Array.from([1, 1, 1, 0, 0, 0, 0, 0, 0]);
+  for (let pass = 0; pass < FILL_RESIDUAL_FRINGE_MAX_RADIUS; pass += 1) {
+    const next = mask.slice();
+    for (let index = 0; index < mask.length; index += 1) {
+      if (mask[index] || contributions[index] <= 0.024) continue;
+      for (const neighbor of [index - 1, index + 1]) {
+        if (
+          neighbor >= 0
+          && neighbor < mask.length
+          && mask[neighbor]
+          && contributions[index] <= contributions[neighbor] + 0.002
+        ) {
+          next[index] = 1;
+        }
+      }
+    }
+    mask = next;
+  }
+  assert.deepEqual([...mask], [1, 1, 1, 1, 0, 0, 0, 0, 0]);
+  assertPixelNear(
+    recolorFillPreservingCoverage([0.15, 0.15, 0.15, 1], [0.8, 0.2, 0.1, 1], [0.5, 0.5, 0.5, 1]),
+    [0.24, 0.06, 0.03, 1],
+  );
+}
 assert.equal(transparentFillAlphaMatches(0, 0), true);
 assert.equal(transparentFillAlphaMatches(2 ** -24, 0), false);
 assert.equal(transparentFillAlphaMatches(1 / 255, 0), false);
@@ -215,6 +318,32 @@ assert.deepEqual(
   [...floodTransparentAlpha([0, 1 / 255, 0.05, 0.4, 0.99, 1, 0], 7, 1, 0, 100)],
   [1, 1, 1, 1, 1, 0, 0],
 );
+
+// At maximum transparent-seed tolerance the AA fringe is reached and receives
+// an underlay, while fully opaque contour ink remains a hard barrier.
+{
+  const alphas = [0, 0.25, 0.7, 1, 0];
+  const selected = floodTransparentAlpha(alphas, alphas.length, 1, 0, 100);
+  assert.deepEqual([...selected], [1, 1, 1, 0, 0]);
+  const blackPremultiplied = alphas.map((alpha) => [0, 0, 0, alpha]);
+  const composited = blackPremultiplied.map((pixel, index) =>
+    selected[index] ? compositeFillAsSolidUnderlay(pixel, underlayFill) : pixel);
+  assert.deepEqual(composited[0], [0.2, 0.4, 0.6, 1]);
+  assert.deepEqual(composited[1], [
+    underlayFill[0] * 0.75,
+    underlayFill[1] * 0.75,
+    underlayFill[2] * 0.75,
+    1,
+  ]);
+  assert.deepEqual(composited[2], [
+    underlayFill[0] * (1 - 0.7),
+    underlayFill[1] * (1 - 0.7),
+    underlayFill[2] * (1 - 0.7),
+    1,
+  ]);
+  assert.deepEqual(composited[3], [0, 0, 0, 1]);
+  assert.deepEqual(composited[4], [0, 0, 0, 0]);
+}
 
 // Regressione Android: il bit 31 deve restare u32 e una word piena non deve
 // lasciare la sottile striscia verticale osservata ogni 32 pixel.
@@ -277,7 +406,9 @@ for (const source of [0x80000000, 0xffffffff, 0xa55a3cc3]) {
     Uint32Array.of(1),
     0,
     1,
+    { compositeMode: "solid-underlay", fillColor: [0, 0, 1, 1] },
   );
+  assert.equal(opaqueEmptyCommit.compositeMode, "solid-underlay");
   assert.equal(opaqueEmptyCommit.matchingFillPixels, 1);
   const invalidPartialAlpha = summarizeFillRenderedRow(
     Uint8Array.of(0, 0, 128, 128),
@@ -285,6 +416,7 @@ for (const source of [0x80000000, 0xffffffff, 0xa55a3cc3]) {
     Uint32Array.of(1),
     0,
     1,
+    { compositeMode: "solid-underlay", fillColor: [0, 0, 1, 1] },
   );
   assert.equal(invalidPartialAlpha.selectedButDifferentPixels, 1);
   const opaqueCompositeRgb = summarizeFillRenderedRow(
@@ -293,8 +425,53 @@ for (const source of [0x80000000, 0xffffffff, 0xa55a3cc3]) {
     Uint32Array.of(1),
     0,
     1,
+    { compositeMode: "solid-underlay", fillColor: [0.2, 0.4, 0.6, 1] },
   );
   assert.equal(opaqueCompositeRgb.matchingFillPixels, 1);
+}
+{
+  const preserveExpectation = {
+    compositeMode: "preserve-coverage-recolor",
+    fillColor: [0, 0, 1, 1],
+  };
+  const preservedCoverage = summarizeFillRenderedRow(
+    Uint8Array.of(0, 0, 128, 128),
+    "rgba8unorm",
+    Uint32Array.of(1),
+    0,
+    1,
+    preserveExpectation,
+  );
+  assert.equal(preservedCoverage.compositeMode, "preserve-coverage-recolor");
+  assert.equal(preservedCoverage.matchingFillPixels, 1);
+  const invalidUnpremultipliedRecolor = summarizeFillRenderedRow(
+    Uint8Array.of(0, 0, 255, 128),
+    "rgba8unorm",
+    Uint32Array.of(1),
+    0,
+    1,
+    preserveExpectation,
+  );
+  assert.equal(invalidUnpremultipliedRecolor.selectedButDifferentPixels, 1);
+
+  const solidReplace = summarizeFillRenderedRow(
+    Uint8Array.of(51, 102, 153, 255),
+    "rgba8unorm",
+    Uint32Array.of(1),
+    0,
+    1,
+    { compositeMode: "solid-replace", fillColor: [0.2, 0.4, 0.6, 1] },
+  );
+  assert.equal(solidReplace.matchingFillPixels, 1);
+  const wrongSolidReplaceHue = summarizeFillRenderedRow(
+    Uint8Array.of(51, 103, 180, 255),
+    "rgba8unorm",
+    Uint32Array.of(1),
+    0,
+    1,
+    { compositeMode: "solid-replace", fillColor: [0.2, 0.4, 0.6, 1] },
+  );
+  assert.equal(wrongSolidReplaceHue.selectedButDifferentPixels, 1);
 }
 
 // Il confronto avviene dopo l'unpremultiply: lo stesso rosso straight con due
@@ -307,6 +484,45 @@ assert.equal(
   fillColorsMatch([0.25, 0, 0, 0.25], [0.5, 0, 0, 0.5], 100),
   true,
 );
+assert.equal(
+  sameLayerColoredFillColorsMatch([0.25, 0, 0, 0.25], [0.5, 0, 0, 0.5], 0),
+  true,
+);
+assert.equal(
+  sameLayerColoredFillColorsMatch([0.25, 0, 0, 0.25], [1, 0, 0, 1], 0),
+  true,
+);
+assert.equal(
+  sameLayerColoredFillColorsMatch([0, 0, 0, 0], [0.5, 0, 0, 0.5], 100),
+  false,
+);
+assert.equal(
+  sameLayerColoredFillColorsMatch([1e-8, 0, 0, 1e-8], [0.5, 0, 0, 0.5], 100),
+  false,
+);
+assert.equal(
+  sameLayerColoredFillColorsMatch([0, 0.25, 0, 0.25], [0.5, 0, 0, 0.5], 100),
+  false,
+);
+{
+  const coloredSeed = [0.5, 0, 0, 0.5];
+  const row = [
+    coloredSeed,
+    [1, 0, 0, 1],
+    [0, 0, 0, 1],
+    [1, 0, 0, 1],
+  ];
+  const eligible = row.map((pixel) =>
+    sameLayerColoredFillColorsMatch(pixel, coloredSeed, 100));
+  assert.deepEqual(eligible, [true, true, false, true]);
+  const reached = new Uint8Array(row.length);
+  for (let x = 0; x < row.length && eligible[x]; x += 1) reached[x] = 1;
+  assert.deepEqual([...reached], [1, 1, 0, 0]);
+  // The contrasting opaque contour and the matching island behind it are not
+  // part of the 4-connected component, hence neither can be recolored.
+  assert.deepEqual(row[2], [0, 0, 0, 1]);
+  assert.deepEqual(row[3], [1, 0, 0, 1]);
+}
 
 const opaqueStraightSrgb = (red, green, blue) => [
   srgbChannelToLinear(red),
@@ -397,6 +613,10 @@ const brushEngine = readFileSync(new URL("../src/brush-engine.ts", import.meta.u
 const renderer = readFileSync(new URL("../src/fill-renderer.ts", import.meta.url), "utf8");
 const shader = readFileSync(new URL("../src/fill-shaders.ts", import.meta.url), "utf8");
 const runtime = readFileSync(new URL("../src/engine-fill-runtime.ts", import.meta.url), "utf8");
+const selectionRuntime = readFileSync(
+  new URL("../src/engine-selection-runtime.ts", import.meta.url),
+  "utf8",
+);
 const layerRuntime = readFileSync(
   new URL("../src/engine-layer-runtime.ts", import.meta.url),
   "utf8",
@@ -439,6 +659,10 @@ for (const entryPoint of [
   "compressComponents",
   "selectSeedComponent",
   "rebuildSelection",
+  "expandResidualFringe1",
+  "expandResidualFringe2",
+  "expandResidualFringe3",
+  "recordResidualFringeBlocks",
   "expandRenderMask",
 ]) {
   assert(shader.includes(`fn ${entryPoint}`), `entry point WGSL mancante: ${entryPoint}`);
@@ -457,7 +681,15 @@ assert(shader.includes("uniforms.transparentSeedAlphaThreshold >= 0.0"));
 assert(shader.includes("seedColor.a == 0.0"));
 assert(shader.includes("threshold == 0.0"));
 assert(shader.includes("return alpha == 0.0"));
-assert(shader.includes("uniforms.replaceSelectedColor != 0u"));
+assert(shader.includes("uniforms.sourceIsTarget != 0u"));
+assert(shader.includes("seedColor.a > COLOR_MATCH_EPSILON"));
+assert(shader.includes("value.a <= COLOR_MATCH_EPSILON"));
+assert(shader.includes("vec4<f32>(straightValue.rgb, 1.0)"));
+assert(shader.includes("vec4<f32>(straightSeed.rgb, 1.0)"));
+assert(shader.includes("uniforms.compositeMode == COMPOSITE_SOLID_REPLACE"));
+assert(shader.includes("uniforms.compositeMode == COMPOSITE_PRESERVE_COVERAGE_RECOLOR"));
+assert(shader.includes("const COMPOSITE_SOLID_UNDERLAY: u32"));
+assert(shader.includes("uniforms.compositeMode == COMPOSITE_SOLID_UNDERLAY"));
 assert(shader.includes("seedColor.a == 0.0"));
 assert(!shader.includes("let threshold = max("));
 assert(shader.includes("fn probeBit31()"));
@@ -480,6 +712,15 @@ assert(shader.includes(
 assert(shader.includes("textureLoad(destinationSnapshot, vec2<i32>(pixel), 0)"));
 assert(shader.includes("return vec4<f32>(uniforms.fillColor.rgb, 1.0)"));
 assert(shader.includes("destination.rgb + uniforms.fillColor.rgb * (1.0 - destinationAlpha)"));
+assert(!shader.includes("if (destinationAlpha <= 0.0)"));
+assert(!shader.includes("uniforms.fillColor.a"));
+assert(shader.includes("return destination;"));
+assert(shader.includes("fn maximumBaseContribution("));
+assert(shader.includes("uniforms.sourceSeedColor.rgb / sourceAlpha"));
+assert(shader.includes("destination.rgb + contribution *"));
+assert(shader.includes("const RESIDUAL_BASE_MIN_CONTRIBUTION: f32 = 0.024"));
+assert(shader.includes("contribution <= neighborContribution + RESIDUAL_MONOTONIC_EPSILON"));
+assert(shader.includes("let source = atomicLoad(&globalParents[global.x])"));
 assert(shader.includes("destinationAlpha = clamp(destination.a, 0.0, 1.0)"));
 assert(!shader.includes("fn fragmentEmpty"));
 assert(!shader.includes("fn fragmentOccupied"));
@@ -496,55 +737,175 @@ assert(!renderer.includes('srcFactor: "dst-alpha"'));
 assert(!renderer.includes('dstFactor: "zero"'));
 assert(!renderer.includes("this.setSourceSamplingView(targetSamplingView)"));
 assert(renderer.includes("destinationSnapshotTexture"));
+assert(renderer.includes("GPUTextureUsage.COPY_SRC"));
 assert(renderer.includes("GPUTextureUsage.COPY_DST"));
 assert(renderer.includes("GPUTextureUsage.TEXTURE_BINDING"));
 assert(renderer.includes("encoder.copyTextureToTexture("));
 assert(renderer.includes("FILL_LAYER_WIDTH * FILL_LAYER_HEIGHT * bytesPerPixel"));
 assert.equal(
   renderer.match(/dispatchWorkgroups\(FILL_BLOCK_GRID_WIDTH, FILL_BLOCK_GRID_HEIGHT\)/g)?.length,
-  5,
-  "classify, boundary, select e i due rebuild devono dispatchare entrambi gli assi della griglia",
+  6,
+  "classify, boundary, select, rebuild e registrazione fringe devono dispatchare entrambi gli assi",
 );
 assert.doesNotMatch(renderer, /\bFILL_BLOCK_GRID_SIZE\b/);
 assert(renderer.includes("pass.drawIndirect"));
 assert(renderer.includes("this.expandRenderMaskPipeline"));
-assert(renderer.includes("buffer: packedLabels, size: FILL_RENDER_MASK_BYTES"));
+assert(renderer.includes("buffer: scratch.packedLabels, size: FILL_RENDER_MASK_BYTES"));
+assert(renderer.includes("async prewarmComposite(): Promise<void>"));
+assert(renderer.includes("Fill composite scratch is not resident."));
+assert(renderer.includes("this.scratch?.composite"));
+assert.match(
+  renderer,
+  /async prewarm\(\): Promise<void>[\s\S]*?composite: null,[\s\S]*?async prewarmComposite\(\): Promise<void>/,
+);
 assert.equal(
   renderer.match(/dispatchWorkgroups\(Math\.ceil\(FILL_HISTORY_MASK_WORDS \/ 256\)\)/g)?.length,
-  3,
-  "intersezione Selezione e commit live/replay devono coprire tutte le word della mask",
+  1,
+  "l’intersezione Selezione deve coprire tutte le word della mask",
+);
+assert(renderer.includes("const wordWorkgroups = Math.ceil(FILL_HISTORY_MASK_WORDS / 256)"));
+assert.equal(
+  renderer.match(/pass\.dispatchWorkgroups\(wordWorkgroups\)/g)?.length,
+  2,
+  "ogni compositing deve espandere la fringe e la mask render su tutte le word",
 );
 assert(renderer.includes("async captureDiagnostics()"));
 assert(renderer.includes("Fill diagnostics: mask readback timed out after 10 s."));
 assert(renderer.includes("allHighBitPathsCorrect"));
 assert(renderer.includes("encoder.copyBufferToBuffer(\n      scratch.selectedMask"));
 assert(renderer.includes("historySlice.buffer"));
-assert(renderer.includes("private sourceSamplingView: GPUTextureView"));
+assert(renderer.includes("private configuredSourceSamplingView: GPUTextureView"));
 assert(renderer.includes("setSourceSamplingView(view: GPUTextureView)"));
-assert(renderer.includes("if (view === this.sourceSamplingView)"));
-assert(renderer.includes("{ binding: 1, resource: this.sourceSamplingView }"));
+assert(renderer.includes("if (view === this.configuredSourceSamplingView)"));
+assert(renderer.includes("? this.requireCompositeScratch(scratch).destinationSnapshotView"));
+assert(renderer.includes("{ binding: 1, resource: sourceSamplingView }"));
 assert(renderer.includes("copyTextureToTexture"));
-assert(renderer.includes("replaceSelectedColor ? 1 : 0"));
+assert(renderer.includes("beginLiveSession("));
+assert(renderer.includes("encodeLiveSnapshotRestore("));
+assert(renderer.includes("encodeLivePreview("));
+assert(renderer.includes("encodeFinalMaskCapture("));
+assert(renderer.includes("endLiveSession()"));
+assert.match(
+  renderer,
+  /this\.uploadLiveCompositeUniforms\([\s\S]{0,180}sourceSeedColorLinear,[\s\S]{0,80}residualFringeRadius/,
+);
+assert(renderer.includes("FILL_COMPOSITE_MODE_CODE[compositeMode]"));
+assert(!renderer.includes("replaceSelectedColor"));
+const beginLiveSessionSource = renderer.slice(
+  renderer.indexOf("  beginLiveSession("),
+  renderer.indexOf("  /** Restores normal source sampling"),
+);
+assert(beginLiveSessionSource.includes("this.encodeDestinationSnapshotCopy("));
+const livePreviewSource = renderer.slice(
+  renderer.indexOf("  encodeLivePreview("),
+  renderer.indexOf("  /** Copies only the final authoritative"),
+);
+assert(!livePreviewSource.includes("encodeDestinationSnapshotCopy"));
+assert(!livePreviewSource.includes("historySlice"));
+const finalMaskCaptureSource = renderer.slice(
+  renderer.indexOf("  encodeFinalMaskCapture("),
+  renderer.indexOf("  encodeReplayCommit("),
+);
+assert(finalMaskCaptureSource.includes("copyBufferToBuffer"));
+assert(!finalMaskCaptureSource.includes("encodeRender"));
 assert(runtime.includes("engine.canPaintSelectedSceneItem()"));
 assert(runtime.includes("export async function captureFillDiagnostics"));
 assert(runtime.includes("summarizeFillMaskWords"));
 assert(runtime.includes("summarizeFillRenderedRow"));
 assert(runtime.includes("renderMaskStrategy: FILL_RENDER_MASK_STRATEGY"));
-assert(runtime.includes("renderer.encodeLiveCommit"));
+assert(runtime.includes("renderer.beginLiveSession"));
+assert(runtime.includes("renderer.encodeLiveSnapshotRestore"));
+assert(runtime.includes("renderer.encodeLivePreview"));
+assert(runtime.includes("renderer.encodeFinalMaskCapture"));
+assert(runtime.includes("endLiveSession()"));
+assert(runtime.includes("requestedSerial"));
+assert(runtime.includes("encodedSerial"));
+assert(runtime.includes("previewInFlight"));
+assert(runtime.includes("requestAnimationFrame"));
+assert(runtime.includes("export function updateFillPreview("));
+assert(runtime.includes("export function getFillPreviewState("));
+assert(runtime.includes("engine.activeFillPreviewSession !== null"));
+assert(runtime.includes("engine.fillPreviewFinalizationPromise !== null"));
+assert.equal(
+  runtime.match(/await renderer\.prewarmComposite\(\);/g)?.length,
+  3,
+  "Fill select, live preview e History replay devono richiedere la snapshot RGBA on demand",
+);
+assert.match(
+  selectionRuntime,
+  /if \(method === "magic-wand"\)[\s\S]{0,220}await fillRenderer\.prewarm\(\);/,
+  "Magic Wand deve allocare soltanto lo scratch CCL, non la snapshot RGBA Fill",
+);
+assert(runtime.includes("FILL_SCRATCH_IDLE_RELEASE_MS = 0"));
+assert(runtime.includes("FILL_SCRATCH_BUSY_RETRY_MS = 50"));
+assert(runtime.includes("allocate-on-demand-release-immediately-after-close-or-replay"));
+assert(renderer.includes("if (!this.resident) return 0"));
+assert(renderer.includes("scratch.uniformBuffer.destroy()"));
+assert.match(
+  renderer,
+  /resources\.computeBindGroup = this\.createComputeBindGroup\([\s\S]{0,220}catch \(error\) \{[\s\S]{0,100}this\.destroyScratchResources\(resources\)/,
+);
+const fillRendererClassHeader = renderer.slice(
+  renderer.indexOf("export class FillRenderer"),
+  renderer.indexOf("  private constructor("),
+);
+assert(!fillRendererClassHeader.includes("readonly uniformBuffer: GPUBuffer;"));
+const fillTapSource = runtime.slice(
+  runtime.indexOf("export async function fillAtClientPoint("),
+  runtime.indexOf("async function finalizeFillPreview("),
+);
+assert(!fillTapSource.includes("commitHistoryActionAtomically("));
+assert(!fillTapSource.includes("historyGpuStorage.allocate("));
+const fillFinalizeSource = runtime.slice(
+  runtime.indexOf("async function finalizeFillPreview("),
+  runtime.indexOf("export async function submitFillHistoryBatch("),
+);
+assert(
+  fillFinalizeSource.indexOf("renderer.encodeFinalMaskCapture(")
+    < fillFinalizeSource.indexOf("commitHistoryActionAtomically("),
+  "History Fill deve catturare e pubblicare solo la mask finale alla chiusura.",
+);
+assert(fillFinalizeSource.includes("await flushFillPreview(engine, session);"));
+assert(fillFinalizeSource.includes("if (engine.historyStateInconsistent) throw error;"));
+assert(runtime.includes("session.analyzedTolerancePercent !== tolerancePercent"));
+assert(runtime.includes("serial !== session.requestedSerial"));
+const updateFillPreviewSource = runtime.slice(
+  runtime.indexOf("export function updateFillPreview("),
+  runtime.indexOf("export async function setFillToolSelected("),
+);
+assert(!updateFillPreviewSource.includes("color: string"));
+assert(updateFillPreviewSource.includes("pendingClick.tolerancePercent = normalizedTolerance"));
+assert(updateFillPreviewSource.includes("session.tolerancePercent = normalizedTolerance"));
+assert(!updateFillPreviewSource.includes("linearColor ="));
+assert(!updateFillPreviewSource.includes("session.color ="));
 assert.match(
   runtime,
-  /renderer\.encodeLiveCommit\([\s\S]{0,180}engine\.layerTexture[\s\S]{0,80}engine\.layerView/,
+  /renderer\.encodeLivePreview\([\s\S]{0,220}engine\.layerTexture[\s\S]{0,100}engine\.layerView/,
 );
 assert.match(
   runtime,
   /renderer\.encodeReplayCommit\([\s\S]{0,180}engine\.layerTexture[\s\S]{0,80}engine\.layerView/,
 );
-assert.doesNotMatch(runtime, /compositeMode/);
+assert(runtime.includes("compositeMode"));
+assert(runtime.includes("sourceSeedColorLinear: [...analysis.sourceSeedColorLinear]"));
+assert(runtime.includes("residualFringeRadius: analysis.residualFringeRadius"));
+assert(runtime.includes("batch.sourceSeedColorLinear"));
+assert(runtime.includes("batch.residualFringeRadius"));
 assert(runtime.includes("kind: \"fill\""));
+assert.match(
+  runtime,
+  /Fill is unavailable:[\s\S]{0,160}scheduleFillScratchRelease\(engine\);/,
+);
+const fillReplaySource = runtime.slice(
+  runtime.indexOf("export async function submitFillHistoryBatch("),
+);
+assert(fillReplaySource.includes("finally"));
+assert(fillReplaySource.includes("if (!engine.fillToolSelected) scheduleFillScratchRelease(engine);"));
 assert(runtime.includes("const source = resolveFillSource(engine)"));
 assert(runtime.includes("sourceLayerId: source.record.id"));
-assert(runtime.includes("fillCommitReplacesSelectedColor("));
-assert(runtime.includes("replaceSelectedColor,"));
+assert(runtime.includes("resolveFillCompositeMode("));
+assert(!runtime.includes("fillCommitReplacesSelectedColor("));
+assert(!runtime.includes("replaceSelectedColor"));
 assert(runtime.includes("record.storageTileMask[index] |= analysis.tileMask[index]"));
 assert(runtime.includes("seedX >= engine.documentWidth"));
 assert(runtime.includes("seedY >= engine.documentHeight"));
@@ -608,8 +969,15 @@ assert.match(
   /getFillSettings: \(\) => \(\{[\s\S]*?color: brushSettingsController\.snapshot\(\)\.color/,
 );
 assert.match(main, /setFillColor: \(color\) => \{[\s\S]*?brushSettingsController\.update\(\{ color \}\)/);
+const setFillColorSource = main.slice(
+  main.indexOf("  setFillColor: (color) => {"),
+  main.indexOf("  onClose:", main.indexOf("  setFillColor: (color) => {")),
+);
+assert(!setFillColorSource.includes("engine.updateFillPreview("));
 assert(!main.includes("getBrushColor:"));
 assert(!main.includes('rangeValue("fillTolerance")'));
+assert(!main.includes("fillHoodProbe"));
+assert(!main.includes("__fill_hood_probe"));
 assert(html.includes('id="gpuMemoryFill"'));
 
 console.log("GPU Fill contract verification passed.");

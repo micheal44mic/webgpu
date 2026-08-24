@@ -4,6 +4,7 @@ import {
   FILL_BLOCK_COUNT,
   FILL_BLOCK_GRID_HEIGHT,
   FILL_BLOCK_GRID_WIDTH,
+  FILL_COMPOSITE_MODE_CODE,
   FILL_HISTORY_MASK_BYTES,
   FILL_HISTORY_MASK_WORDS,
   FILL_INDIRECT_BUFFER_BYTES,
@@ -19,6 +20,7 @@ import {
   FILL_META_MIN_X,
   FILL_META_MIN_Y,
   FILL_META_SELECTED_PIXELS,
+  FILL_META_SOURCE_SEED_COLOR_START,
   FILL_META_TILE_MASK_START,
   FILL_METADATA_BUFFER_BYTES,
   FILL_METADATA_BYTES,
@@ -26,14 +28,20 @@ import {
   FILL_PARENT_BUFFER_BYTES,
   FILL_RENDER_MASK_BYTES,
   FILL_RESIDENT_SCRATCH_BYTES,
+  FILL_TILE_GRID_SIZE,
+  FILL_TILE_HEIGHT,
   FILL_TILE_MASK_WORDS,
+  FILL_TILE_WIDTH,
   FILL_UNIFORM_BUFFER_BYTES,
   FILL_UNIFORM_BYTES,
   FILL_WORKGROUP_STORAGE_BYTES,
   countFillTiles,
+  fillResidualFringeRadius,
   type FillAnalysis,
+  type FillCompositeMode,
 } from "./fill-core";
 import type { LayerFormat } from "./engine-types";
+import type { DirtyRect } from "./engine-stroke-types";
 import type { GpuHistorySlice } from "./gpu-history-storage";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import {
@@ -50,6 +58,7 @@ interface FillRendererOptions {
 }
 
 interface FillScratchResources {
+  readonly uniformBuffer: GPUBuffer;
   readonly packedLabels: GPUBuffer;
   readonly globalParents: GPUBuffer;
   readonly activeParentNodes: GPUBuffer;
@@ -58,9 +67,14 @@ interface FillScratchResources {
   readonly metadata: GPUBuffer;
   readonly drawIndirect: GPUBuffer;
   readonly readback: GPUBuffer;
+  computeBindGroup: GPUBindGroup;
+  composite: FillCompositeScratchResources | null;
+}
+
+interface FillCompositeScratchResources {
   readonly destinationSnapshotTexture: GPUTexture;
   readonly destinationSnapshotView: GPUTextureView;
-  computeBindGroup: GPUBindGroup;
+  readonly fringeBindGroup: GPUBindGroup;
   readonly renderBindGroup: GPUBindGroup;
 }
 
@@ -81,6 +95,7 @@ export interface FillRendererDiagnosticReadback {
   readonly seedY: number;
   readonly tolerance: number;
   readonly fillColor: readonly [number, number, number, number];
+  readonly compositeMode: FillCompositeMode | null;
   readonly analysis: FillAnalysis;
   readonly maskWords: Uint32Array;
   readonly drawIndirect: readonly number[];
@@ -94,7 +109,39 @@ interface LastFillDiagnosticInput {
   readonly seedY: number;
   readonly tolerance: number;
   readonly fillColor: readonly [number, number, number, number];
+  readonly compositeMode: FillCompositeMode | null;
   readonly analysis: FillAnalysis;
+}
+
+function expandResidualFringeBounds(
+  bounds: DirtyRect,
+  radius: number,
+): DirtyRect {
+  if (radius <= 0) return { ...bounds };
+  const x = Math.max(0, bounds.x - radius);
+  const y = Math.max(0, bounds.y - radius);
+  const right = Math.min(FILL_LAYER_WIDTH, bounds.x + bounds.width + radius);
+  const bottom = Math.min(FILL_LAYER_HEIGHT, bounds.y + bounds.height + radius);
+  return { x, y, width: right - x, height: bottom - y };
+}
+
+function markResidualFringeTiles(tileMask: Uint32Array, bounds: DirtyRect): void {
+  const firstTileX = Math.floor(bounds.x / FILL_TILE_WIDTH);
+  const firstTileY = Math.floor(bounds.y / FILL_TILE_HEIGHT);
+  const lastTileX = Math.min(
+    FILL_TILE_GRID_SIZE - 1,
+    Math.floor((bounds.x + bounds.width - 1) / FILL_TILE_WIDTH),
+  );
+  const lastTileY = Math.min(
+    FILL_TILE_GRID_SIZE - 1,
+    Math.floor((bounds.y + bounds.height - 1) / FILL_TILE_HEIGHT),
+  );
+  for (let tileY = firstTileY; tileY <= lastTileY; tileY += 1) {
+    for (let tileX = firstTileX; tileX <= lastTileX; tileX += 1) {
+      const tile = tileY * FILL_TILE_GRID_SIZE + tileX;
+      tileMask[tile >>> 5] |= (2 ** (tile & 31)) >>> 0;
+    }
+  }
 }
 
 function diagnosticHex(value: number): string {
@@ -129,25 +176,31 @@ export class FillRenderer {
   }
 
   readonly device: GPUDevice;
-  readonly uniformBuffer: GPUBuffer;
   readonly computeBindGroupLayout: GPUBindGroupLayout;
   readonly renderBindGroupLayout: GPUBindGroupLayout;
   readonly selectionIntersectionBindGroupLayout: GPUBindGroupLayout;
   private readonly layerFormat: LayerFormat;
-  private sourceSamplingView: GPUTextureView;
+  private configuredSourceSamplingView: GPUTextureView;
   private classifyPipeline!: GPUComputePipeline;
   private boundaryPipeline!: GPUComputePipeline;
   private compressPipeline!: GPUComputePipeline;
   private selectPipeline!: GPUComputePipeline;
   private rebuildPipeline!: GPUComputePipeline;
+  private residualFringePipeline1!: GPUComputePipeline;
+  private residualFringePipeline2!: GPUComputePipeline;
+  private residualFringePipeline3!: GPUComputePipeline;
+  private residualFringeBlockPipeline!: GPUComputePipeline;
   private expandRenderMaskPipeline!: GPUComputePipeline;
   private selectionIntersectionPipeline!: GPUComputePipeline;
   private renderPipeline!: GPURenderPipeline;
   private bitProbePipelinePromise: Promise<GPUComputePipeline> | null = null;
   private scratch: FillScratchResources | null = null;
   private prewarmPromise: Promise<void> | null = null;
+  private compositePrewarmPromise: Promise<void> | null = null;
   private lastDiagnosticInput: LastFillDiagnosticInput | null = null;
   private diagnosticSequence = 0;
+  /** `null` means no snapshot-backed live Fill session is active. */
+  private liveSessionSourceIsTarget: boolean | null = null;
   private destroyed = false;
 
   private constructor(options: FillRendererOptions) {
@@ -167,12 +220,7 @@ export class FillRenderer {
       );
     }
     this.layerFormat = options.layerFormat;
-    this.sourceSamplingView = options.sourceSamplingView;
-    this.uniformBuffer = this.device.createBuffer({
-      label: "Fill · uniforms",
-      size: FILL_UNIFORM_BUFFER_BYTES,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
+    this.configuredSourceSamplingView = options.sourceSamplingView;
     this.computeBindGroupLayout = this.device.createBindGroupLayout({
       label: "Fill · compute bind group layout",
       entries: [
@@ -208,10 +256,12 @@ export class FillRenderer {
   }
 
   get residentBytes(): number {
-    if (!this.resident) return FILL_UNIFORM_BUFFER_BYTES;
+    if (!this.resident) return 0;
     const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
     return FILL_RESIDENT_SCRATCH_BYTES
-      + FILL_LAYER_WIDTH * FILL_LAYER_HEIGHT * bytesPerPixel;
+      + (this.scratch?.composite
+        ? FILL_LAYER_WIDTH * FILL_LAYER_HEIGHT * bytesPerPixel
+        : 0);
   }
 
   private async initialize(): Promise<void> {
@@ -250,6 +300,10 @@ export class FillRenderer {
       "compressComponents",
       "selectSeedComponent",
       "rebuildSelection",
+      "expandResidualFringe1",
+      "expandResidualFringe2",
+      "expandResidualFringe3",
+      "recordResidualFringeBlocks",
       "expandRenderMask",
     ].map((entryPoint) => this.device.createComputePipelineAsync({
       label: `Fill · ${entryPoint}`,
@@ -262,6 +316,10 @@ export class FillRenderer {
       this.compressPipeline,
       this.selectPipeline,
       this.rebuildPipeline,
+      this.residualFringePipeline1,
+      this.residualFringePipeline2,
+      this.residualFringePipeline3,
+      this.residualFringeBlockPipeline,
       this.expandRenderMaskPipeline,
     ] = computePipelines;
     this.selectionIntersectionPipeline = await this.device.createComputePipelineAsync({
@@ -270,7 +328,7 @@ export class FillRenderer {
       compute: { module: intersectionModule, entryPoint: "intersectFillWithSelection" },
     });
     this.renderPipeline = await this.device.createRenderPipelineAsync({
-      label: `Fill · solid color beneath ${this.layerFormat} snapshot`,
+      label: `Fill · composite selected color into ${this.layerFormat} target`,
       layout: renderLayout,
       vertex: { module: renderModule, entryPoint: "vertexMain" },
       fragment: {
@@ -295,6 +353,11 @@ export class FillRenderer {
           transaction.deferRollback(() => buffer.destroy());
           return buffer;
         };
+        const uniformBuffer = create(
+          "Fill · uniforms",
+          FILL_UNIFORM_BUFFER_BYTES,
+          GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        );
         const packedLabels = create(
           "Fill · packed local u8 labels",
           FILL_LABEL_BUFFER_BYTES,
@@ -341,42 +404,21 @@ export class FillRenderer {
           FILL_METADATA_BUFFER_BYTES,
           GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
         );
-        const destinationSnapshotTexture = this.device.createTexture({
-          label: `Fill · ${this.layerFormat} destination snapshot`,
-          size: {
-            width: FILL_LAYER_WIDTH,
-            height: FILL_LAYER_HEIGHT,
-            depthOrArrayLayers: 1,
+        const computeBindGroup = this.createComputeBindGroup(
+          {
+            uniformBuffer,
+            packedLabels,
+            globalParents,
+            activeParentNodes,
+            selectedMask,
+            activeBlocks,
+            metadata,
+            drawIndirect,
           },
-          format: this.layerFormat,
-          usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING,
-        });
-        transaction.deferRollback(() => destinationSnapshotTexture.destroy());
-        const destinationSnapshotView = destinationSnapshotTexture.createView({
-          label: `Fill · ${this.layerFormat} destination snapshot view`,
-        });
-        const computeBindGroup = this.createComputeBindGroup({
-          packedLabels,
-          globalParents,
-          activeParentNodes,
-          selectedMask,
-          activeBlocks,
-          metadata,
-          drawIndirect,
-        });
-        const renderBindGroup = this.device.createBindGroup({
-          label: "Fill · render bind group",
-          layout: this.renderBindGroupLayout,
-          entries: [
-            { binding: 0, resource: { buffer: this.uniformBuffer, size: FILL_UNIFORM_BYTES } },
-            // Dopo la CCL, packedLabels viene riutilizzato come mask render a
-            // word low-8-bit. selectedMask resta autorevole per History.
-            { binding: 1, resource: { buffer: packedLabels, size: FILL_RENDER_MASK_BYTES } },
-            { binding: 2, resource: { buffer: activeBlocks } },
-            { binding: 3, resource: destinationSnapshotView },
-          ],
-        });
+          this.configuredSourceSamplingView,
+        );
         return {
+          uniformBuffer,
           packedLabels,
           globalParents,
           activeParentNodes,
@@ -385,10 +427,8 @@ export class FillRenderer {
           metadata,
           drawIndirect,
           readback,
-          destinationSnapshotTexture,
-          destinationSnapshotView,
           computeBindGroup,
-          renderBindGroup,
+          composite: null,
         };
       },
     );
@@ -399,7 +439,15 @@ export class FillRenderer {
       }
       // Il livello può essere cambiato mentre l'allocazione chiude gli error
       // scope: ricrea il bind group con la view più recente prima di pubblicare.
-      resources.computeBindGroup = this.createComputeBindGroup(resources);
+      try {
+        resources.computeBindGroup = this.createComputeBindGroup(
+          resources,
+          this.configuredSourceSamplingView,
+        );
+      } catch (error) {
+        this.destroyScratchResources(resources);
+        throw error;
+      }
       this.scratch = resources;
     });
     this.prewarmPromise = pending.finally(() => {
@@ -408,18 +456,120 @@ export class FillRenderer {
     return this.prewarmPromise;
   }
 
+  /** Allocates the full RGBA snapshot only for Fill preview/replay, never for Magic Wand. */
+  async prewarmComposite(): Promise<void> {
+    this.assertAlive();
+    await this.prewarm();
+    const scratch = this.requireScratch();
+    if (scratch.composite) return;
+    if (this.compositePrewarmPromise) {
+      await this.compositePrewarmPromise;
+      if (this.scratch === scratch && scratch.composite) return;
+      throw new Error("The Fill composite scratch changed during prewarming.");
+    }
+    const allocation = runGpuAllocationTransaction(
+      this.device,
+      "WebGPU Fill destination snapshot",
+      (transaction): FillCompositeScratchResources => {
+        const destinationSnapshotTexture = this.device.createTexture({
+          label: `Fill · ${this.layerFormat} destination snapshot`,
+          size: {
+            width: FILL_LAYER_WIDTH,
+            height: FILL_LAYER_HEIGHT,
+            depthOrArrayLayers: 1,
+          },
+          format: this.layerFormat,
+          usage: GPUTextureUsage.COPY_SRC
+            | GPUTextureUsage.COPY_DST
+            | GPUTextureUsage.TEXTURE_BINDING,
+        });
+        transaction.deferRollback(() => destinationSnapshotTexture.destroy());
+        const destinationSnapshotView = destinationSnapshotTexture.createView({
+          label: `Fill · ${this.layerFormat} destination snapshot view`,
+        });
+        const fringeBindGroup = this.createComputeBindGroup(
+          scratch,
+          destinationSnapshotView,
+        );
+        const renderBindGroup = this.device.createBindGroup({
+          label: "Fill · render bind group",
+          layout: this.renderBindGroupLayout,
+          entries: [
+            { binding: 0, resource: { buffer: scratch.uniformBuffer, size: FILL_UNIFORM_BYTES } },
+            // Dopo la CCL, packedLabels viene riutilizzato come mask render a
+            // word low-8-bit. selectedMask resta autorevole per History.
+            { binding: 1, resource: { buffer: scratch.packedLabels, size: FILL_RENDER_MASK_BYTES } },
+            { binding: 2, resource: { buffer: scratch.activeBlocks } },
+            { binding: 3, resource: destinationSnapshotView },
+          ],
+        });
+        return {
+          destinationSnapshotTexture,
+          destinationSnapshotView,
+          fringeBindGroup,
+          renderBindGroup,
+        };
+      },
+    );
+    const pending = allocation.then((composite) => {
+      if (this.destroyed || this.scratch !== scratch) {
+        composite.destinationSnapshotTexture.destroy();
+        throw new Error("The Fill renderer changed during composite prewarming.");
+      }
+      scratch.composite = composite;
+    });
+    this.compositePrewarmPromise = pending.finally(() => {
+      this.compositePrewarmPromise = null;
+    });
+    return this.compositePrewarmPromise;
+  }
+
   async waitForPrewarm(): Promise<void> {
     if (this.prewarmPromise) await this.prewarmPromise;
+    if (this.compositePrewarmPromise) await this.compositePrewarmPromise;
   }
 
   setSourceSamplingView(view: GPUTextureView): void {
     this.assertAlive();
-    if (view === this.sourceSamplingView) {
+    if (view === this.configuredSourceSamplingView) {
       return;
     }
-    this.sourceSamplingView = view;
+    this.configuredSourceSamplingView = view;
+    // During a same-layer live session CCL must remain pinned to the immutable
+    // snapshot. The new configured view becomes visible after endLiveSession().
+    if (this.scratch && this.liveSessionSourceIsTarget !== true) {
+      this.rebuildComputeBindGroupForCurrentSource(this.scratch);
+    }
+  }
+
+  /**
+   * Starts one snapshot-backed preview transaction. The caller submits this
+   * encoder before the first analyze(), so every later CCL observes the exact
+   * pre-preview source instead of the pixels rendered by an earlier preview.
+   */
+  beginLiveSession(
+    encoder: GPUCommandEncoder,
+    targetTexture: GPUTexture,
+    sourceIsTarget: boolean,
+  ): void {
+    this.assertAlive();
+    const scratch = this.requireScratch();
+    this.requireCompositeScratch(scratch);
+    if (this.liveSessionSourceIsTarget !== null) {
+      throw new Error("A Fill live session is already active.");
+    }
+    this.liveSessionSourceIsTarget = sourceIsTarget;
+    this.encodeDestinationSnapshotCopy(encoder, targetTexture, scratch);
+    this.rebuildComputeBindGroupForCurrentSource(scratch);
+  }
+
+  /** Restores normal source sampling after commit or rollback. */
+  endLiveSession(): void {
+    this.assertAlive();
+    if (this.liveSessionSourceIsTarget === null) return;
+    this.liveSessionSourceIsTarget = null;
     if (this.scratch) {
-      this.scratch.computeBindGroup = this.createComputeBindGroup(this.scratch);
+      this.rebuildComputeBindGroupForCurrentSource(this.scratch);
     }
   }
 
@@ -449,8 +599,9 @@ export class FillRenderer {
     floats[5] = transparentSeedTolerancePercent === null
       ? -1
       : Math.min(1, Math.max(0, transparentSeedTolerancePercent / 100));
+    unsigned[7] = this.liveSessionSourceIsTarget === true ? 1 : 0;
     floats.set(fillColor, 8);
-    this.device.queue.writeBuffer(this.uniformBuffer, 0, upload);
+    this.device.queue.writeBuffer(scratch.uniformBuffer, 0, upload);
 
     const initialMetadata = new Uint32Array(FILL_METADATA_WORDS);
     initialMetadata[FILL_META_MIN_X] = 0xffffffff;
@@ -495,8 +646,9 @@ export class FillRenderer {
       const clippedMetadata = new Uint32Array(FILL_METADATA_WORDS);
       clippedMetadata[FILL_META_MIN_X] = 0xffffffff;
       clippedMetadata[FILL_META_MIN_Y] = 0xffffffff;
-      // Preserve the source-seed diagnostic written by classifyLocal. The
-      // intersection pass rebuilds every summary field except this word.
+      // Preserve the source-seed diagnostic and exact RGBA bits written by
+      // classifyLocal. The intersection pass rebuilds every summary field
+      // from the tile-mask start onward.
       this.device.queue.writeBuffer(
         scratch.metadata,
         0,
@@ -504,8 +656,8 @@ export class FillRenderer {
       );
       this.device.queue.writeBuffer(
         scratch.metadata,
-        (FILL_META_DIAGNOSTIC + 1) * 4,
-        clippedMetadata.subarray(FILL_META_DIAGNOSTIC + 1),
+        FILL_META_TILE_MASK_START * 4,
+        clippedMetadata.subarray(FILL_META_TILE_MASK_START),
       );
       this.device.queue.writeBuffer(scratch.drawIndirect, 0, new Uint32Array([4, 0, 0, 0]));
       const clipBindGroup = this.device.createBindGroup({
@@ -561,19 +713,40 @@ export class FillRenderer {
       FILL_META_TILE_MASK_START,
       FILL_META_TILE_MASK_START + FILL_TILE_MASK_WORDS,
     );
+    const metadataFloats = new Float32Array(
+      metadata.buffer,
+      metadata.byteOffset,
+      metadata.length,
+    );
+    const sourceSeedTransparent =
+      (metadata[FILL_META_DIAGNOSTIC] & FILL_DIAGNOSTIC_SEED_TRANSPARENT_BIT) !== 0;
+    const residualFringeRadius = this.liveSessionSourceIsTarget === true
+      && !sourceSeedTransparent
+      && selectionMask === null
+      && transparentSeedTolerancePercent !== null
+      ? fillResidualFringeRadius(transparentSeedTolerancePercent)
+      : 0;
+    const bounds = expandResidualFringeBounds({
+      x: metadata[FILL_META_MIN_X],
+      y: metadata[FILL_META_MIN_Y],
+      width: metadata[FILL_META_MAX_X] - metadata[FILL_META_MIN_X],
+      height: metadata[FILL_META_MAX_Y] - metadata[FILL_META_MIN_Y],
+    }, residualFringeRadius);
+    if (residualFringeRadius > 0) markResidualFringeTiles(tileMask, bounds);
     const analysis: FillAnalysis = {
       selectedPixels,
       activeComponents: metadata[FILL_META_ACTIVE_COMPONENTS],
       activeBlocks: metadata[FILL_META_ACTIVE_BLOCKS],
       activeTiles: countFillTiles(tileMask),
-      sourceSeedTransparent:
-        (metadata[FILL_META_DIAGNOSTIC] & FILL_DIAGNOSTIC_SEED_TRANSPARENT_BIT) !== 0,
-      bounds: {
-        x: metadata[FILL_META_MIN_X],
-        y: metadata[FILL_META_MIN_Y],
-        width: metadata[FILL_META_MAX_X] - metadata[FILL_META_MIN_X],
-        height: metadata[FILL_META_MAX_Y] - metadata[FILL_META_MIN_Y],
-      },
+      sourceSeedTransparent,
+      sourceSeedColorLinear: [
+        metadataFloats[FILL_META_SOURCE_SEED_COLOR_START],
+        metadataFloats[FILL_META_SOURCE_SEED_COLOR_START + 1],
+        metadataFloats[FILL_META_SOURCE_SEED_COLOR_START + 2],
+        metadataFloats[FILL_META_SOURCE_SEED_COLOR_START + 3],
+      ],
+      residualFringeRadius,
+      bounds,
       tileMask,
       queueCompletionMs: performance.now() - startedAt,
     };
@@ -584,10 +757,12 @@ export class FillRenderer {
       seedY: y,
       tolerance,
       fillColor: [...fillColor],
+      compositeMode: null,
       analysis: {
         ...analysis,
         bounds: { ...analysis.bounds },
         tileMask: analysis.tileMask.slice(),
+        sourceSeedColorLinear: [...analysis.sourceSeedColorLinear],
       },
     };
     return analysis;
@@ -665,6 +840,7 @@ export class FillRenderer {
         seedY: input.seedY,
         tolerance: input.tolerance,
         fillColor: [...input.fillColor],
+        compositeMode: input.compositeMode,
         analysis: {
           ...input.analysis,
           bounds: { ...input.analysis.bounds },
@@ -792,28 +968,82 @@ export class FillRenderer {
     return this.requireScratch().selectedMask;
   }
 
-  encodeLiveCommit(
+  /**
+   * Restores a preview-dirty rectangle from the one immutable session snapshot.
+   * This does not touch the current CCL mask and is also the rollback primitive.
+   */
+  encodeLiveSnapshotRestore(
+    encoder: GPUCommandEncoder,
+    targetTexture: GPUTexture,
+    rect: DirtyRect,
+  ): void {
+    const scratch = this.requireScratch();
+    const composite = this.requireCompositeScratch(scratch);
+    this.assertLiveSession();
+    const copyRect = this.validateLiveRestoreRect(rect);
+    if (copyRect.width === 0 || copyRect.height === 0) return;
+    encoder.copyTextureToTexture(
+      {
+        texture: composite.destinationSnapshotTexture,
+        origin: { x: copyRect.x, y: copyRect.y },
+      },
+      {
+        texture: targetTexture,
+        origin: { x: copyRect.x, y: copyRect.y },
+      },
+      {
+        width: copyRect.width,
+        height: copyRect.height,
+        depthOrArrayLayers: 1,
+      },
+    );
+  }
+
+  /**
+   * Replaces the previous preview from the immutable snapshot, expands the
+   * latest CCL mask and renders it. Color changes do not require another CCL.
+   */
+  encodeLivePreview(
     encoder: GPUCommandEncoder,
     targetTexture: GPUTexture,
     targetView: GPUTextureView,
-    historySlice: GpuHistorySlice,
-    replaceSelectedColor: boolean,
+    restoreRect: DirtyRect | null,
+    compositeMode: FillCompositeMode,
+    fillColor: readonly [number, number, number, number],
+    sourceSeedColorLinear: readonly [number, number, number, number],
+    residualFringeRadius: 0 | 1 | 2 | 3,
   ): void {
     const scratch = this.requireScratch();
-    this.assertHistorySlice(historySlice);
-    this.device.queue.writeBuffer(
-      this.uniformBuffer,
-      6 * 4,
-      new Uint32Array([replaceSelectedColor ? 1 : 0]),
+    this.assertLiveSession();
+    this.uploadLiveCompositeUniforms(
+      scratch,
+      compositeMode,
+      fillColor,
+      sourceSeedColorLinear,
+      residualFringeRadius,
     );
-    this.encodeDestinationSnapshotCopy(encoder, targetTexture, scratch);
-    const pass = encoder.beginComputePass({
-      label: "Fill · expand low-8-bit mask for live commit",
-    });
-    pass.setPipeline(this.expandRenderMaskPipeline);
-    pass.setBindGroup(0, scratch.computeBindGroup);
-    pass.dispatchWorkgroups(Math.ceil(FILL_HISTORY_MASK_WORDS / 256));
-    pass.end();
+    if (restoreRect) {
+      this.encodeLiveSnapshotRestore(encoder, targetTexture, restoreRect);
+    }
+    this.encodeResidualFringeRenderMask(encoder, scratch);
+    this.encodeRender(encoder, targetView, scratch);
+    if (this.lastDiagnosticInput) {
+      this.lastDiagnosticInput = {
+        ...this.lastDiagnosticInput,
+        fillColor: [...fillColor],
+        compositeMode,
+      };
+    }
+  }
+
+  /** Copies only the final authoritative 1-bit mask into one History slice. */
+  encodeFinalMaskCapture(
+    encoder: GPUCommandEncoder,
+    historySlice: GpuHistorySlice,
+  ): void {
+    const scratch = this.requireScratch();
+    this.assertLiveSession();
+    this.assertHistorySlice(historySlice);
     encoder.copyBufferToBuffer(
       scratch.selectedMask,
       0,
@@ -821,7 +1051,6 @@ export class FillRenderer {
       historySlice.offsetBytes,
       FILL_HISTORY_MASK_BYTES,
     );
-    this.encodeRender(encoder, targetView, scratch);
   }
 
   encodeReplayCommit(
@@ -830,9 +1059,12 @@ export class FillRenderer {
     targetView: GPUTextureView,
     historySlice: GpuHistorySlice,
     fillColor: readonly [number, number, number, number],
-    replaceSelectedColor: boolean,
+    sourceSeedColorLinear: readonly [number, number, number, number],
+    residualFringeRadius: 0 | 1 | 2 | 3,
+    compositeMode: FillCompositeMode,
   ): void {
     const scratch = this.requireScratch();
+    this.assertNoLiveSession("replay a Fill History entry");
     // Replay replaces selectedMask with a historical payload. Do not associate
     // a later Copy report with the seed/metadata of the previous live analyze.
     this.lastDiagnosticInput = null;
@@ -842,9 +1074,12 @@ export class FillRenderer {
     const unsigned = new Uint32Array(upload.buffer);
     unsigned[2] = FILL_LAYER_WIDTH;
     unsigned[3] = FILL_LAYER_HEIGHT;
-    unsigned[6] = replaceSelectedColor ? 1 : 0;
+    unsigned[6] = FILL_COMPOSITE_MODE_CODE[compositeMode];
+    unsigned[7] = 0;
     upload.set(fillColor, 8);
-    this.device.queue.writeBuffer(this.uniformBuffer, 0, upload);
+    upload.set(sourceSeedColorLinear, 12);
+    unsigned[16] = residualFringeRadius;
+    this.device.queue.writeBuffer(scratch.uniformBuffer, 0, upload);
     this.device.queue.writeBuffer(scratch.drawIndirect, 0, new Uint32Array([4, 0, 0, 0]));
     encoder.copyBufferToBuffer(
       historySlice.buffer,
@@ -858,21 +1093,22 @@ export class FillRenderer {
     pass.setPipeline(this.rebuildPipeline);
     pass.setBindGroup(0, scratch.computeBindGroup);
     pass.dispatchWorkgroups(FILL_BLOCK_GRID_WIDTH, FILL_BLOCK_GRID_HEIGHT);
-    pass.setPipeline(this.expandRenderMaskPipeline);
-    pass.dispatchWorkgroups(Math.ceil(FILL_HISTORY_MASK_WORDS / 256));
     pass.end();
+    this.encodeResidualFringeRenderMask(encoder, scratch);
     this.encodeRender(encoder, targetView, scratch);
   }
 
   releaseScratch(): void {
     const scratch = this.scratch;
     this.scratch = null;
+    this.liveSessionSourceIsTarget = null;
     this.lastDiagnosticInput = null;
     if (!scratch) return;
     this.destroyScratchResources(scratch);
   }
 
   private destroyScratchResources(scratch: FillScratchResources): void {
+    scratch.uniformBuffer.destroy();
     scratch.packedLabels.destroy();
     scratch.globalParents.destroy();
     scratch.activeParentNodes.destroy();
@@ -881,30 +1117,28 @@ export class FillRenderer {
     scratch.metadata.destroy();
     scratch.drawIndirect.destroy();
     scratch.readback.destroy();
-    scratch.destinationSnapshotTexture.destroy();
+    scratch.composite?.destinationSnapshotTexture.destroy();
+    scratch.composite = null;
   }
 
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
     this.releaseScratch();
-    this.uniformBuffer.destroy();
   }
 
   private createComputeBindGroup(resources: Omit<
     FillScratchResources,
     | "computeBindGroup"
-    | "renderBindGroup"
     | "readback"
-    | "destinationSnapshotTexture"
-    | "destinationSnapshotView"
-  >): GPUBindGroup {
+    | "composite"
+  >, sourceSamplingView: GPUTextureView): GPUBindGroup {
     return this.device.createBindGroup({
       label: "Fill · compute bind group",
       layout: this.computeBindGroupLayout,
       entries: [
-        { binding: 0, resource: { buffer: this.uniformBuffer, size: FILL_UNIFORM_BYTES } },
-        { binding: 1, resource: this.sourceSamplingView },
+        { binding: 0, resource: { buffer: resources.uniformBuffer, size: FILL_UNIFORM_BYTES } },
+        { binding: 1, resource: sourceSamplingView },
         { binding: 2, resource: { buffer: resources.packedLabels } },
         { binding: 3, resource: { buffer: resources.globalParents } },
         { binding: 4, resource: { buffer: resources.activeParentNodes } },
@@ -916,11 +1150,68 @@ export class FillRenderer {
     });
   }
 
+  private rebuildComputeBindGroupForCurrentSource(
+    scratch: FillScratchResources,
+  ): void {
+    const sourceSamplingView = this.liveSessionSourceIsTarget === true
+      ? this.requireCompositeScratch(scratch).destinationSnapshotView
+      : this.configuredSourceSamplingView;
+    scratch.computeBindGroup = this.createComputeBindGroup(
+      scratch,
+      sourceSamplingView,
+    );
+  }
+
+  private uploadLiveCompositeUniforms(
+    scratch: FillScratchResources,
+    compositeMode: FillCompositeMode,
+    fillColor: readonly [number, number, number, number],
+    sourceSeedColorLinear: readonly [number, number, number, number],
+    residualFringeRadius: 0 | 1 | 2 | 3,
+  ): void {
+    const upload = new ArrayBuffer(14 * 4);
+    const unsigned = new Uint32Array(upload);
+    const floats = new Float32Array(upload);
+    unsigned[0] = FILL_COMPOSITE_MODE_CODE[compositeMode];
+    unsigned[1] = this.liveSessionSourceIsTarget === true ? 1 : 0;
+    floats.set(fillColor, 2);
+    floats.set(sourceSeedColorLinear, 6);
+    unsigned[10] = residualFringeRadius;
+    this.device.queue.writeBuffer(scratch.uniformBuffer, 6 * 4, upload);
+  }
+
+  private encodeResidualFringeRenderMask(
+    encoder: GPUCommandEncoder,
+    scratch: FillScratchResources,
+  ): void {
+    const composite = this.requireCompositeScratch(scratch);
+    encoder.clearBuffer(scratch.drawIndirect);
+    const pass = encoder.beginComputePass({
+      label: "Fill · monotonic residual fringe and low-8-bit render mask",
+    });
+    pass.setBindGroup(0, composite.fringeBindGroup);
+    const wordWorkgroups = Math.ceil(FILL_HISTORY_MASK_WORDS / 256);
+    for (const pipeline of [
+      this.residualFringePipeline1,
+      this.residualFringePipeline2,
+      this.residualFringePipeline3,
+    ]) {
+      pass.setPipeline(pipeline);
+      pass.dispatchWorkgroups(wordWorkgroups);
+    }
+    pass.setPipeline(this.residualFringeBlockPipeline);
+    pass.dispatchWorkgroups(FILL_BLOCK_GRID_WIDTH, FILL_BLOCK_GRID_HEIGHT);
+    pass.setPipeline(this.expandRenderMaskPipeline);
+    pass.dispatchWorkgroups(wordWorkgroups);
+    pass.end();
+  }
+
   private encodeRender(
     encoder: GPUCommandEncoder,
     targetView: GPUTextureView,
     scratch: FillScratchResources,
   ): void {
+    const composite = this.requireCompositeScratch(scratch);
     const pass = encoder.beginRenderPass({
       label: "Fill · commit to selected layer",
       colorAttachments: [{
@@ -929,7 +1220,7 @@ export class FillRenderer {
         storeOp: "store",
       }],
     });
-    pass.setBindGroup(0, scratch.renderBindGroup);
+    pass.setBindGroup(0, composite.renderBindGroup);
     pass.setPipeline(this.renderPipeline);
     pass.drawIndirect(scratch.drawIndirect, 0);
     pass.end();
@@ -940,15 +1231,46 @@ export class FillRenderer {
     targetTexture: GPUTexture,
     scratch: FillScratchResources,
   ): void {
+    const composite = this.requireCompositeScratch(scratch);
     encoder.copyTextureToTexture(
       { texture: targetTexture },
-      { texture: scratch.destinationSnapshotTexture },
+      { texture: composite.destinationSnapshotTexture },
       {
         width: FILL_LAYER_WIDTH,
         height: FILL_LAYER_HEIGHT,
         depthOrArrayLayers: 1,
       },
     );
+  }
+
+  private validateLiveRestoreRect(rect: DirtyRect): DirtyRect {
+    const values = [rect.x, rect.y, rect.width, rect.height];
+    if (!values.every((value) => Number.isSafeInteger(value))) {
+      throw new RangeError("A Fill snapshot restore rectangle must use integer coordinates.");
+    }
+    if (
+      rect.x < 0
+      || rect.y < 0
+      || rect.width < 0
+      || rect.height < 0
+      || rect.x + rect.width > FILL_LAYER_WIDTH
+      || rect.y + rect.height > FILL_LAYER_HEIGHT
+    ) {
+      throw new RangeError("The Fill snapshot restore rectangle is outside the layer.");
+    }
+    return rect;
+  }
+
+  private assertLiveSession(): void {
+    if (this.liveSessionSourceIsTarget === null) {
+      throw new Error("No Fill live session is active.");
+    }
+  }
+
+  private assertNoLiveSession(operation: string): void {
+    if (this.liveSessionSourceIsTarget !== null) {
+      throw new Error(`Cannot ${operation} while a Fill live session is active.`);
+    }
   }
 
   private assertHistorySlice(slice: GpuHistorySlice): void {
@@ -964,6 +1286,15 @@ export class FillRenderer {
       throw new Error("Fill scratch is not resident.");
     }
     return this.scratch;
+  }
+
+  private requireCompositeScratch(
+    scratch: FillScratchResources,
+  ): FillCompositeScratchResources {
+    if (!scratch.composite) {
+      throw new Error("Fill composite scratch is not resident.");
+    }
+    return scratch.composite;
   }
 
   private assertAlive(): void {

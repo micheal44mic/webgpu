@@ -74,6 +74,8 @@ export class CanvasToolController {
   private activeBrushTool: BrushSettings["tool"] = "paint";
   private textDistortReturnTool: CanvasInputTool | null = null;
   private configurationRevision = 0;
+  private configurationInProgress = false;
+  private fillClosePanRequested = false;
   private disposed = false;
 
   constructor(private readonly options: CanvasToolControllerOptions) {
@@ -149,45 +151,68 @@ export class CanvasToolController {
     preserveToolSettings = false,
   ): void {
     if (this.disposed) return;
-    const configurationRevision = ++this.configurationRevision;
-    const previousBrushTool = this.activeBrushTool;
-    this.options.closeBrushStudioForTool(tool);
-    this.options.closeToolSettingsForTool(tool, preserveToolSettings);
-    this.activeCanvasTool = tool;
-    this.options.closeBrushLibraryForTool(tool);
-    this.options.elements.paintButton.setAttribute("aria-pressed", String(tool === "paint"));
-    this.options.elements.eraserButton.setAttribute("aria-pressed", String(tool === "erase"));
-    this.options.elements.blendButton.setAttribute("aria-pressed", String(tool === "blend"));
-    this.options.elements.panButton.setAttribute("aria-pressed", String(tool === "pan"));
-    this.options.elements.canvas.setAttribute("data-active-canvas-tool", tool);
-    this.options.syncBrushLibraryButton();
-    this.options.syncMenuState();
-    const fill = tool === "fill";
-    const pan = tool === "pan";
-    const selection = tool === "selection";
-    const transform = tool === "transform" || tool === "warp" || tool === "perspective";
-    const liquify = tool === "liquify";
-    if (!selection) this.options.cancelKeyboardSelectionGesture(true);
-    if (!fill && !pan && !selection && !transform && !liquify) {
-      this.activeBrushTool = tool;
-      this.options.brushSettings.selectTool(
+    const configurationAlreadyInProgress = this.configurationInProgress;
+    this.configurationInProgress = true;
+    try {
+      const configurationRevision = ++this.configurationRevision;
+      const previousBrushTool = this.activeBrushTool;
+      this.options.closeBrushStudioForTool(tool);
+      this.options.closeToolSettingsForTool(tool, preserveToolSettings);
+      if (this.fillClosePanRequested) {
+        this.fillClosePanRequested = false;
+        tool = "pan";
+        restoreSnapshot = false;
+        this.options.closeBrushStudioForTool(tool);
+      }
+      this.activeCanvasTool = tool;
+      this.options.closeBrushLibraryForTool(tool);
+      this.options.elements.paintButton.setAttribute("aria-pressed", String(tool === "paint"));
+      this.options.elements.eraserButton.setAttribute("aria-pressed", String(tool === "erase"));
+      this.options.elements.blendButton.setAttribute("aria-pressed", String(tool === "blend"));
+      this.options.elements.panButton.setAttribute("aria-pressed", String(tool === "pan"));
+      this.options.elements.canvas.setAttribute("data-active-canvas-tool", tool);
+      this.options.syncBrushLibraryButton();
+      this.options.syncMenuState();
+      const fill = tool === "fill";
+      const selection = tool === "selection";
+      if (!selection) this.options.cancelKeyboardSelectionGesture(true);
+      if (tool === "paint" || tool === "erase" || tool === "blend") {
+        this.activeBrushTool = tool;
+        this.options.brushSettings.selectTool(
+          tool,
+          restoreSnapshot && previousBrushTool !== tool,
+        );
+      }
+      this.syncSelectionKeyboardUi();
+      this.syncVectorControllerState();
+      this.options.syncBrushSettings(this.options.brushSettings.snapshot());
+      this.options.syncQuickControls();
+      if (!this.options.isEngineReady()) return;
+      const method = this.selectionMethod;
+      void this.configureEngineToolSelection(
         tool,
-        restoreSnapshot && previousBrushTool !== tool,
+        fill,
+        selection,
+        method,
+        configurationRevision,
       );
+    } finally {
+      this.configurationInProgress = configurationAlreadyInProgress;
     }
-    this.syncSelectionKeyboardUi();
-    this.syncVectorControllerState();
-    this.options.syncBrushSettings(this.options.brushSettings.snapshot());
-    this.options.syncQuickControls();
-    if (!this.options.isEngineReady()) return;
-    const method = this.selectionMethod;
-    void this.configureEngineToolSelection(
-      tool,
-      fill,
-      selection,
-      method,
-      configurationRevision,
-    );
+  }
+
+  /**
+   * A Fill sheet owns its preview until it closes. Leaving it always returns
+   * the canvas to the Hand tool, even though ordinary tool selection is locked
+   * while the engine finalizes that preview.
+   */
+  finishFillToolOnSheetClose(kind: MobileToolSettingsKind): void {
+    if (kind !== "fill" || this.disposed) return;
+    if (this.configurationInProgress) {
+      this.fillClosePanRequested = true;
+      return;
+    }
+    this.configure("pan", false);
   }
 
   toggleTextDistortEditing(): boolean {

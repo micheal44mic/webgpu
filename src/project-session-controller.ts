@@ -34,6 +34,8 @@ export interface ProjectSessionControllerOptions {
   readonly storageReady?: Promise<void>;
   readonly preloadedProjectId?: string | null;
   readonly preloadedProject?: Promise<ProjectLoadResultV1 | null> | null;
+  /** Flushes preview transactions before project capture or navigation. */
+  readonly settleTransientEdits?: (() => Promise<void>) | null;
   readonly onReturnHome?: (() => Promise<void>) | null;
 }
 
@@ -62,6 +64,7 @@ export class ProjectSessionController {
   private readonly storageReady: Promise<void> | null;
   private readonly preloadedProjectId: string | null;
   private readonly preloadedProject: Promise<ProjectLoadResultV1 | null> | null;
+  private readonly settleTransientEdits: (() => Promise<void>) | null;
   private readonly onReturnHome: (() => Promise<void>) | null;
   private readonly newProjectRequested: boolean;
   private readonly requestedProjectName: string;
@@ -90,6 +93,7 @@ export class ProjectSessionController {
     this.storageReady = options.storageReady ?? null;
     this.preloadedProjectId = options.preloadedProjectId ?? null;
     this.preloadedProject = options.preloadedProject ?? null;
+    this.settleTransientEdits = options.settleTransientEdits ?? null;
     this.onReturnHome = options.onReturnHome ?? null;
 
     this.currentProjectId = options.searchParams.get("project")?.trim() || null;
@@ -195,6 +199,7 @@ export class ProjectSessionController {
     this.syncSaveControl();
     this.setStatus("Saving the complete project…");
     try {
+      await this.settleTransientEdits?.();
       await this.storage.initialize();
       // Capture a mutation boundary so a successful save never clears a newer
       // edit that landed during GPU readback or IndexedDB work.
@@ -257,6 +262,17 @@ export class ProjectSessionController {
       } catch {
         // The explicit retry/leave decision below handles the failed state.
       }
+    }
+    try {
+      await this.settleTransientEdits?.();
+    } catch (error) {
+      this.setStatus(
+        error instanceof Error
+          ? `Could not finish the current edit: ${error.message}`
+          : "Could not finish the current edit.",
+        "error",
+      );
+      return;
     }
     if (this.dirty) {
       try {

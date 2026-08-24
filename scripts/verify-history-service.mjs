@@ -34,7 +34,10 @@ const fakeFillBatch = (actionId) => ({
   sourceLayerId: 1,
   color: "#000000",
   linearColor: [0, 0, 0, 1],
+  sourceSeedColorLinear: [0, 0, 0, 1],
+  residualFringeRadius: 0,
   tolerancePercent: 0,
+  compositeMode: "preserve-coverage-recolor",
   gpuSlice: { id: actionId, logicalBytes: 1 },
   clearLayer: false,
   dirtyRect: null,
@@ -378,13 +381,23 @@ assert.match(
 );
 assert.match(
   fillRuntimeSource,
-  /releasePayloadOnCancel:[\s\S]*?historyGpuStorage\.release\(capturedHistorySlice\)[\s\S]*?historySlice = null/,
-  "Fill deve rilasciare una sola volta la mask se la pubblicazione fallisce",
+  /releasePayloadOnCancel: \(\) => \{[\s\S]*?batches\.map\(\(item\) => item\.gpuSlice\)[\s\S]*?prepareReleaseMany\(slices\)\.commitNoThrow\(\)[\s\S]*?session\.stagedBatches\.length = 0;[\s\S]*?historySlice = null/,
+  "Fill deve rilasciare una sola volta tutte le mask se la pubblicazione multi-batch fallisce",
 );
 assert.match(
   fillRuntimeSource,
-  /catch \(error\)[\s\S]*?await rebuildActiveLayerFromHistory\(engine\)/,
-  "Fill deve ricostruire i pixel se il commit History fallisce",
+  /catch \(error\)[\s\S]*?return recoverFailedFillSession\(engine, session, error, "commit"\)/,
+  "Fill deve avviare il rollback transazionale se il commit History fallisce",
+);
+assert.match(
+  fillRuntimeSource,
+  /async function restoreOriginalFillPixels[\s\S]*?encodeLiveSnapshotRestore\(/,
+  "un Fill senza rollover deve ripristinare lo snapshot immutabile se il commit History fallisce",
+);
+assert.match(
+  fillRuntimeSource,
+  /async function rollbackFillSessionPixels[\s\S]*?session\.stagedFillCount === 0[\s\S]*?restoreOriginalFillPixels[\s\S]*?rebuildActiveLayerFromHistory/,
+  "un Fill multi-batch deve ricostruire l'intera sessione anche se le slice sono gia' state rilasciate",
 );
 assert.match(
   brushEngineSource,

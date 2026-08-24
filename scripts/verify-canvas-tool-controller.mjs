@@ -39,6 +39,11 @@ assert.match(
 );
 assert.match(main, /const mobilePanButton = element<HTMLButtonElement>\("mobilePan"\)/);
 assert.match(main, /panButton: mobilePanButton/);
+assert.match(
+  main,
+  /onClose: \(kind\) => \{[\s\S]*?finishFillToolOnSheetClose\(kind\)/,
+  "closing the Fill settings sheet must use the controller's non-blocked Hand transition",
+);
 
 const server = await createServer({
   appType: "custom",
@@ -107,6 +112,7 @@ const closedToolSettings = [];
 const closedLibraries = [];
 const canceledKeyboard = [];
 const syncedBrushSettings = [];
+let closeToolSettingsHook = null;
 let distortEditing = false;
 let transformApplyResult = true;
 let transformSessionActive = false;
@@ -150,7 +156,10 @@ const controller = new CanvasToolController({
   isEngineReady: () => engineReady,
   isInteractionLocked: () => locked,
   closeBrushStudioForTool: (tool) => closedStudios.push(tool),
-  closeToolSettingsForTool: (tool, preserve) => closedToolSettings.push([tool, preserve]),
+  closeToolSettingsForTool: (tool, preserve) => {
+    closedToolSettings.push([tool, preserve]);
+    closeToolSettingsHook?.();
+  },
   closeBrushLibraryForTool: (tool) => closedLibraries.push(tool),
   syncBrushLibraryButton: () => {},
   toggleBrushLibrary: () => { libraryToggles += 1; },
@@ -216,6 +225,37 @@ assert.equal(panButton.getAttribute("aria-pressed"), "true");
 assert.equal(blendButton.getAttribute("aria-pressed"), "false");
 assert.equal(canvas.getAttribute("data-active-canvas-tool"), "pan");
 assert.deepEqual(brushSelections.at(-1), ["blend", true]);
+
+controller.configure("fill", false);
+await settle();
+assert.equal(controller.activeTool, "fill");
+locked = true;
+const fillDeselectsBeforeClose = engineCalls.filter(
+  ([kind, selected]) => kind === "fill" && selected === false,
+).length;
+closeToolSettingsHook = () => {
+  closeToolSettingsHook = null;
+  controller.finishFillToolOnSheetClose("fill");
+};
+controller.configure("paint", false);
+assert.equal(
+  controller.activeTool,
+  "pan",
+  "the Fill close callback must synchronously override an in-flight tool transition with Hand",
+);
+assert.equal(panButton.getAttribute("aria-pressed"), "true");
+await settle();
+assert.equal(
+  engineCalls.filter(([kind, selected]) => kind === "fill" && selected === false).length,
+  fillDeselectsBeforeClose + 1,
+  "a re-entrant Fill close must finalize through one engine deselection",
+);
+assert.equal(
+  controller.select("paint"),
+  false,
+  "ordinary competing tool selection must remain locked during Fill finalization",
+);
+locked = false;
 
 controller.configure("selection", false);
 await settle();

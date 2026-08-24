@@ -331,7 +331,7 @@ assert(fillRenderer.includes("if (!selectionMask) {"));
 assert(fillRenderer.includes("this.selectionIntersectionPipeline"));
 assert(fillRenderer.includes("The fill area does not intersect the active Pixel Selection."));
 assert(fillRuntime.includes("engine.selectionRenderer?.maskBuffer ?? null"));
-assert.match(fillRuntime, /linearColor,\s+selectionMask,/);
+assert.match(fillRuntime, /linearColor,\s+session\.selectionMask,/);
 assert(runtime.includes("fillRenderer.getAnalyzedSelectionMaskBuffer()"));
 assert(runtime.includes("fillRenderer.setSourceSamplingView(engine.layerSamplingView)"));
 assert(runtime.includes("renderer.setSourceSamplingView(engine.layerSamplingView)"));
