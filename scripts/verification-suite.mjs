@@ -41,6 +41,7 @@ export const verificationScripts = Object.freeze([
   "verify-intense-blending.mjs",
   "verify-layer-blend-compositor.mjs",
   "verify-layer-blend-modes.mjs",
+  "verify-layer-blend-warmup.mjs",
   "verify-layer-compression.mjs",
   "verify-layer-duplicate.mjs",
   "verify-layer-merge-vector-runs.mjs",

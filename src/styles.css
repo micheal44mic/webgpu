@@ -2285,77 +2285,14 @@ select {
     line-height: 1.35;
   }
 
-  .editor-filter-card,
-  .editor-filter-card:hover,
-  .editor-filter-card:active {
-    display: grid;
-    width: 100%;
-    min-height: 86px;
-    grid-template-columns: 48px minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 12px;
-    padding: 12px 14px;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    color: var(--mobile-icon-face);
-    text-align: left;
-    touch-action: manipulation;
+  .editor-filters-grid {
+    padding: 2px;
   }
 
-  .editor-filter-card:not(:disabled):hover {
-    background: #20242c;
-  }
-
-  .editor-filter-card:focus-visible {
-    outline: 2px solid #ff8059;
+  .editor-filter-item:focus-visible {
+    border-radius: 6px;
+    outline: 1px solid #dd5c35;
     outline-offset: -2px;
-  }
-
-  .editor-filter-card:disabled {
-    opacity: 0.45;
-  }
-
-  .editor-filter-icon {
-    display: grid;
-    width: 44px;
-    height: 44px;
-    place-items: center;
-    border: 1px solid #343a45;
-    border-radius: 12px;
-    background: linear-gradient(145deg, #2a303a, #171a20);
-    color: #ff8059;
-  }
-
-  .editor-filter-icon svg {
-    width: 24px;
-    height: 24px;
-  }
-
-  .editor-filter-copy,
-  .editor-filter-name,
-  .editor-filter-hint {
-    display: block;
-    min-width: 0;
-  }
-
-  .editor-filter-name {
-    font-size: 13px;
-    font-weight: 660;
-    line-height: 1.25;
-  }
-
-  .editor-filter-hint {
-    margin-top: 4px;
-    color: var(--mobile-icon-inactive);
-    font-size: 10px;
-    line-height: 1.35;
-  }
-
-  .editor-filter-open {
-    color: #ff8059;
-    font-size: 10px;
-    font-weight: 680;
   }
 
   .editor-settings-toggle {

@@ -17,6 +17,7 @@ import {
 } from "./bevel-core";
 import type { RasterBevelFieldState } from "./bevel-renderer";
 import type { EffectsScratchLease, EffectsScratchPool } from "./effects-scratch-pool";
+import { createComputePipelineAsync } from "./engine-gpu-utils";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import {
   DEFAULT_RASTER_COLOR_OVERLAY_STYLE,
@@ -2843,59 +2844,79 @@ export class RasterStrokeRenderer {
     ]);
 
     this.device.pushErrorScope("validation");
-    this.seedPipeline = this.device.createComputePipeline({
-      label: "Stroke dual seed pipeline",
-      layout: this.device.createPipelineLayout({
-        bindGroupLayouts: [this.seedBindGroupLayout],
-      }),
-      compute: { module: seedModule, entryPoint: "main" },
-    });
-    this.jfaPipeline = this.device.createComputePipeline({
-      label: "Stroke packed dual JFA pipeline",
-      layout: this.device.createPipelineLayout({
-        bindGroupLayouts: [this.jfaBindGroupLayout],
-      }),
-      compute: { module: jfaModule, entryPoint: "main" },
-    });
-    this.resolvePipeline = this.device.createComputePipeline({
-      label: "Stroke packed f16 coverage resolve pipeline",
-      layout: this.device.createPipelineLayout({
-        bindGroupLayouts: [this.resolveBindGroupLayout],
-      }),
-      compute: { module: resolveModule, entryPoint: "main" },
-    });
     const composePipelineLayout = this.device.createPipelineLayout({
       label: "Stroke styled compose pipeline layout",
       bindGroupLayouts: [this.composeBindGroupLayout],
     });
-    this.composePipeline = this.device.createComputePipeline({
-      label: "Stroke styled logical mip 1 compose pipeline",
-      layout: composePipelineLayout,
-      compute: { module: composeModule, entryPoint: "main" },
-    });
-    this.readbackComposePipeline = this.device.createComputePipeline({
-      label: "Style stack analytic logical mip 0 bake pipeline",
-      layout: composePipelineLayout,
-      compute: { module: readbackComposeModule, entryPoint: "main" },
-    });
-    this.thresholdMaskPipeline = this.device.createComputePipeline({
-      label: "Stroke alpha-threshold mask pipeline",
-      layout: this.device.createPipelineLayout({
-        bindGroupLayouts: [this.thresholdMaskBindGroupLayout],
+    const pipelineResults = await Promise.allSettled([
+      createComputePipelineAsync(this.device, {
+        label: "Stroke dual seed pipeline",
+        layout: this.device.createPipelineLayout({
+          bindGroupLayouts: [this.seedBindGroupLayout],
+        }),
+        compute: { module: seedModule, entryPoint: "main" },
       }),
-      compute: { module: thresholdMaskModule, entryPoint: "main" },
-    });
-    this.indirectGatePipeline = this.device.createComputePipeline({
-      label: "Stroke indirect dispatch gate pipeline",
-      layout: this.device.createPipelineLayout({
-        bindGroupLayouts: [this.indirectGateBindGroupLayout],
+      createComputePipelineAsync(this.device, {
+        label: "Stroke packed dual JFA pipeline",
+        layout: this.device.createPipelineLayout({
+          bindGroupLayouts: [this.jfaBindGroupLayout],
+        }),
+        compute: { module: jfaModule, entryPoint: "main" },
       }),
-      compute: { module: indirectGateModule, entryPoint: "main" },
-    });
+      createComputePipelineAsync(this.device, {
+        label: "Stroke packed f16 coverage resolve pipeline",
+        layout: this.device.createPipelineLayout({
+          bindGroupLayouts: [this.resolveBindGroupLayout],
+        }),
+        compute: { module: resolveModule, entryPoint: "main" },
+      }),
+      createComputePipelineAsync(this.device, {
+        label: "Stroke styled logical mip 1 compose pipeline",
+        layout: composePipelineLayout,
+        compute: { module: composeModule, entryPoint: "main" },
+      }),
+      createComputePipelineAsync(this.device, {
+        label: "Style stack analytic logical mip 0 bake pipeline",
+        layout: composePipelineLayout,
+        compute: { module: readbackComposeModule, entryPoint: "main" },
+      }),
+      createComputePipelineAsync(this.device, {
+        label: "Stroke alpha-threshold mask pipeline",
+        layout: this.device.createPipelineLayout({
+          bindGroupLayouts: [this.thresholdMaskBindGroupLayout],
+        }),
+        compute: { module: thresholdMaskModule, entryPoint: "main" },
+      }),
+      createComputePipelineAsync(this.device, {
+        label: "Stroke indirect dispatch gate pipeline",
+        layout: this.device.createPipelineLayout({
+          bindGroupLayouts: [this.indirectGateBindGroupLayout],
+        }),
+        compute: { module: indirectGateModule, entryPoint: "main" },
+      }),
+    ]);
     const validationError = await this.device.popErrorScope();
-    if (validationError) {
-      throw new Error(validationError.message);
+    const pipelineCreationErrors = pipelineResults.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : []);
+    if (pipelineCreationErrors.length > 0 || validationError) {
+      throw new AggregateError(
+        [...pipelineCreationErrors, ...(validationError ? [validationError] : [])],
+        "Stroke pipeline creation failed validation.",
+      );
     }
+    const pipelines = pipelineResults.map((result) => {
+      if (result.status === "rejected") throw result.reason;
+      return result.value;
+    });
+    [
+      this.seedPipeline,
+      this.jfaPipeline,
+      this.resolvePipeline,
+      this.composePipeline,
+      this.readbackComposePipeline,
+      this.thresholdMaskPipeline,
+      this.indirectGatePipeline,
+    ] = pipelines;
 
     this.rebuildScratchBindGroups();
     this.rebuildIndirectGateBindGroup();

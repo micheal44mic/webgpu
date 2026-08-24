@@ -7,6 +7,30 @@ const controllerSource = readFileSync(
   new URL("src/editor-filters-controller.ts", root),
   "utf8",
 );
+const htmlSource = readFileSync(new URL("index.html", root), "utf8");
+const stylesSource = readFileSync(new URL("src/styles.css", root), "utf8");
+
+const filtersPanelStart = htmlSource.indexOf('id="editorFiltersPanel"');
+const filtersPanelEnd = htmlSource.indexOf("</aside>", filtersPanelStart);
+assert.ok(filtersPanelStart >= 0 && filtersPanelEnd > filtersPanelStart);
+const filtersPanelSource = htmlSource.slice(filtersPanelStart, filtersPanelEnd);
+assert.match(filtersPanelSource, /class="mobile-tools-grid editor-filters-grid"/);
+assert.match(
+  filtersPanelSource,
+  /id="editorGlassFilter"[\s\S]*?class="mobile-tools-item editor-filter-item"/,
+);
+assert.match(
+  filtersPanelSource,
+  /class="mobile-icon-stack"[\s\S]*?mobile-icon-outline[\s\S]*?mobile-icon-face/,
+);
+assert.match(filtersPanelSource, /class="mobile-tools-item-label">Glass<\/span>/);
+assert.doesNotMatch(
+  filtersPanelSource,
+  /editor-filter-card|editor-filter-hint|editor-filter-open|Refract pixels|>Open</,
+);
+assert.match(stylesSource, /\.editor-filters-grid\s*\{/);
+assert.match(stylesSource, /\.editor-filter-item:focus-visible\s*\{/);
+assert.doesNotMatch(stylesSource, /\.editor-filter-card/);
 
 assert.doesNotMatch(
   controllerSource,

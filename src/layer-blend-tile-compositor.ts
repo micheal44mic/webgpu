@@ -5,7 +5,10 @@ import {
   DOCUMENT_WIDTH,
   LAYER_COMPOSITE_UNIFORM_BYTES,
 } from "./engine-limits";
-import { assertShaderCompiled } from "./engine-gpu-utils";
+import {
+  assertShaderCompiled,
+  createRenderPipelineAsync,
+} from "./engine-gpu-utils";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import { documentBackgroundLinearPremultiplied } from "./document-background";
 import {
@@ -356,7 +359,7 @@ export class LayerBlendTileCompositor {
           fragmentEntryPoint: string,
           format: GPUTextureFormat,
           blend?: GPUBlendState,
-        ): GPURenderPipeline => engine.device.createRenderPipeline({
+        ): Promise<GPURenderPipeline> => createRenderPipelineAsync(engine.device, {
           label,
           layout: engine.device.createPipelineLayout({
             label: `${label} pipeline layout`,
@@ -370,90 +373,23 @@ export class LayerBlendTileCompositor {
           },
           primitive: { topology: "triangle-list" },
         });
-        const normalOverPipeline = pipeline(
-          "Layer blend tile Normal source-over",
-          normalLayout,
-          engine.layerCompositeShaderModule,
-          "fragmentMain",
-          engine.layerFormat,
-          sourceOverBlend,
-        );
-        const normalAtopPipeline = pipeline(
-          "Layer blend tile Normal source-atop",
-          normalLayout,
-          engine.layerCompositeShaderModule,
-          "fragmentMain",
-          engine.layerFormat,
-          sourceAtopBlend,
-        );
-        if (!engine.layerBlendFoldShaderModule) {
+        const layerBlendFoldShaderModule = engine.layerBlendFoldShaderModule;
+        if (!layerBlendFoldShaderModule) {
           throw new Error("The advanced-fold shader is not initialized.");
         }
-        const advancedPipeline = pipeline(
-          "Layer blend tile advanced fold",
-          advancedLayout,
-          engine.layerBlendFoldShaderModule,
-          "fragmentMain",
-          engine.layerFormat,
-        );
-        if (!engine.mixedSceneClearShaderModule) {
+        const mixedSceneClearShaderModule = engine.mixedSceneClearShaderModule;
+        if (!mixedSceneClearShaderModule) {
           throw new Error("The mixed-scene partial-clear shader is not initialized.");
         }
-        const tileClearPipeline = engine.device.createRenderPipeline({
-          label: "Layer blend tile bounded transparent clear",
-          layout: engine.device.createPipelineLayout({
-            label: "Layer blend tile bounded transparent clear pipeline layout",
-            bindGroupLayouts: [],
-          }),
-          vertex: {
-            module: engine.mixedSceneClearShaderModule,
-            entryPoint: "vertexMain",
-          },
-          fragment: {
-            module: engine.mixedSceneClearShaderModule,
-            entryPoint: "fragmentMain",
-            targets: [{ format: engine.layerFormat }],
-          },
-          primitive: { topology: "triangle-list" },
-        });
+        const mixedScenePresentShaderModule = engine.mixedScenePresentShaderModule;
+        const mixedSceneBackgroundBindGroupLayout = engine.mixedSceneBackgroundBindGroupLayout;
         if (
-          !engine.mixedScenePresentShaderModule
-          || !engine.mixedSceneBackgroundBindGroupLayout
+          !mixedScenePresentShaderModule
+          || !mixedSceneBackgroundBindGroupLayout
           || !engine.mixedSceneBackgroundBindGroup
         ) {
           throw new Error("The document-background pipeline is not initialized.");
         }
-        const tileBackgroundPipeline = engine.device.createRenderPipeline({
-          label: "Layer blend tile bounded document background",
-          layout: engine.device.createPipelineLayout({
-            label: "Layer blend tile bounded document background pipeline layout",
-            bindGroupLayouts: [engine.mixedSceneBackgroundBindGroupLayout],
-          }),
-          vertex: {
-            module: engine.mixedScenePresentShaderModule,
-            entryPoint: "vertexMain",
-          },
-          fragment: {
-            module: engine.mixedScenePresentShaderModule,
-            entryPoint: "backgroundFragmentMain",
-            targets: [{ format: engine.layerFormat }],
-          },
-          primitive: { topology: "triangle-list" },
-        });
-        const tilePresentPipeline = pipeline(
-          "Layer blend tile to linear presentation",
-          presentLayout,
-          presentShader,
-          "fragmentMain",
-          "rgba16float",
-        );
-        const mipOnePipeline = pipeline(
-          "Layer blend tile exact mip 1",
-          mipLayout,
-          mipShader,
-          "fragmentMain",
-          engine.layerFormat,
-        );
 
         const pyramidLayout = engine.device.createBindGroupLayout({
           label: "Layer blend final pyramid present layout",
@@ -475,13 +411,109 @@ export class LayerBlendTileCompositor {
             },
           ],
         });
-        const pyramidPresentPipeline = pipeline(
-          "Layer blend final pyramid to linear presentation",
-          pyramidLayout,
-          pyramidShader,
-          "fragmentMain",
-          "rgba16float",
-        );
+        const [
+          normalOverPipeline,
+          normalAtopPipeline,
+          advancedPipeline,
+          tileClearPipeline,
+          tileBackgroundPipeline,
+          tilePresentPipeline,
+          mipOnePipeline,
+          pyramidPresentPipeline,
+        ] = await (async (): Promise<readonly GPURenderPipeline[]> => {
+          const pipelineResults = await Promise.allSettled([
+            pipeline(
+              "Layer blend tile Normal source-over",
+              normalLayout,
+              engine.layerCompositeShaderModule,
+              "fragmentMain",
+              engine.layerFormat,
+              sourceOverBlend,
+            ),
+            pipeline(
+              "Layer blend tile Normal source-atop",
+              normalLayout,
+              engine.layerCompositeShaderModule,
+              "fragmentMain",
+              engine.layerFormat,
+              sourceAtopBlend,
+            ),
+            pipeline(
+              "Layer blend tile advanced fold",
+              advancedLayout,
+              layerBlendFoldShaderModule,
+              "fragmentMain",
+              engine.layerFormat,
+            ),
+            createRenderPipelineAsync(engine.device, {
+              label: "Layer blend tile bounded transparent clear",
+              layout: engine.device.createPipelineLayout({
+                label: "Layer blend tile bounded transparent clear pipeline layout",
+                bindGroupLayouts: [],
+              }),
+              vertex: {
+                module: mixedSceneClearShaderModule,
+                entryPoint: "vertexMain",
+              },
+              fragment: {
+                module: mixedSceneClearShaderModule,
+                entryPoint: "fragmentMain",
+                targets: [{ format: engine.layerFormat }],
+              },
+              primitive: { topology: "triangle-list" },
+            }),
+            createRenderPipelineAsync(engine.device, {
+              label: "Layer blend tile bounded document background",
+              layout: engine.device.createPipelineLayout({
+                label: "Layer blend tile bounded document background pipeline layout",
+                bindGroupLayouts: [mixedSceneBackgroundBindGroupLayout],
+              }),
+              vertex: {
+                module: mixedScenePresentShaderModule,
+                entryPoint: "vertexMain",
+              },
+              fragment: {
+                module: mixedScenePresentShaderModule,
+                entryPoint: "backgroundFragmentMain",
+                targets: [{ format: engine.layerFormat }],
+              },
+              primitive: { topology: "triangle-list" },
+            }),
+            pipeline(
+              "Layer blend tile to linear presentation",
+              presentLayout,
+              presentShader,
+              "fragmentMain",
+              "rgba16float",
+            ),
+            pipeline(
+              "Layer blend tile exact mip 1",
+              mipLayout,
+              mipShader,
+              "fragmentMain",
+              engine.layerFormat,
+            ),
+            pipeline(
+              "Layer blend final pyramid to linear presentation",
+              pyramidLayout,
+              pyramidShader,
+              "fragmentMain",
+              "rgba16float",
+            ),
+          ]);
+          const pipelineErrors = pipelineResults.flatMap((result) =>
+            result.status === "rejected" ? [result.reason] : []);
+          if (pipelineErrors.length > 0) {
+            throw new AggregateError(
+              pipelineErrors,
+              "Layer blend pipeline creation failed.",
+            );
+          }
+          return pipelineResults.map((result) => {
+            if (result.status === "rejected") throw result.reason;
+            return result.value;
+          });
+        })();
         const pyramidPresentBindGroup = engine.device.createBindGroup({
           label: "Layer blend final pyramid present bind group",
           layout: pyramidLayout,

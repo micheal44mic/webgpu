@@ -464,10 +464,10 @@ assert.match(
   /if \(!inside\) \{\s*discard;\s*\}/s,
 );
 const tilePresentPipelineCall = tileCompositorSource.match(
-  /const tilePresentPipeline = pipeline\(([\s\S]*?)\n\s*\);/,
+  /pipeline\(\s*"Layer blend tile to linear presentation",([\s\S]*?)\n\s*\),/,
 )?.[1] ?? "";
 const pyramidPresentPipelineCall = tileCompositorSource.match(
-  /const pyramidPresentPipeline = pipeline\(([\s\S]*?)\n\s*\);/,
+  /pipeline\(\s*"Layer blend final pyramid to linear presentation",([\s\S]*?)\n\s*\),/,
 )?.[1] ?? "";
 assert.ok(tilePresentPipelineCall.length > 0, "tile present pipeline call not found");
 assert.ok(pyramidPresentPipelineCall.length > 0, "pyramid present pipeline call not found");

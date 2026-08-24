@@ -2640,32 +2640,23 @@
           </button>
         </header>
         <div class="editor-settings-content editor-filters-content">
-          <section class="editor-settings-section" aria-labelledby="editorFiltersHeading">
-            <div class="editor-settings-section-heading">
-              <h3 id="editorFiltersHeading">Available filters</h3>
-              <p>Preview on the selected raster layer, then Apply or Cancel.</p>
-            </div>
+          <div class="mobile-tools-grid editor-filters-grid" aria-label="Available filters">
             <button
               id="editorGlassFilter"
-              class="editor-filter-card"
+              class="mobile-tools-item editor-filter-item"
               type="button"
               data-editor-filter-kind="glass"
               aria-label="Open Glass filter"
               aria-controls="mobileGlassSheet"
               aria-pressed="false"
             >
-              <span class="editor-filter-icon" aria-hidden="true">
-                <i data-lucide="lens-convex"></i>
+              <span class="mobile-icon-stack" aria-hidden="true">
+                <i data-lucide="lens-convex" class="mobile-icon-layer mobile-icon-outline"></i>
+                <i data-lucide="lens-convex" class="mobile-icon-layer mobile-icon-face"></i>
               </span>
-              <span class="editor-filter-copy">
-                <span class="editor-filter-name">Glass</span>
-                <span class="editor-filter-hint">
-                  Refract pixels through a procedural surface.
-                </span>
-              </span>
-              <span class="editor-filter-open" aria-hidden="true">Open</span>
+              <span class="mobile-tools-item-label">Glass</span>
             </button>
-          </section>
+          </div>
         </div>
       </aside>
 

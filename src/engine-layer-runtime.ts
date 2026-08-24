@@ -3999,9 +3999,6 @@ export async function setLayerBlendMode(
       engine.getVectorTextViewState(),
       { reuseUnchangedRasterRuns: true },
     );
-    if (engine.layerStack.layers.every((candidate) => candidate.blendMode === "normal")) {
-      releaseLayerBlendTilePresentationResources(engine);
-    }
     ensureMixedSceneLinearTexture(
       engine,
       Math.max(1, engine.canvas.width),

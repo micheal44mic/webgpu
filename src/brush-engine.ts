@@ -278,6 +278,7 @@ import { LAYER_BLEND_FOLD_TILE_EXTENT } from "./layer-blend-fold-shader";
 import { LAYER_COLD_TILE_COMPOSITE_BATCH_TILES } from "./layer-cold-tile-composite-shader";
 import {
   encodeLayerBlendTilePresentation,
+  ensureLayerBlendTilePresentationResources,
   layerBlendTilePresentationRequired,
 } from "./engine-layer-blend-tile-runtime";
 import {
@@ -1260,6 +1261,9 @@ export class BrushEngine {
   mixedSceneBlendFromScratchBindGroup: GPUBindGroup | null = null;
   mixedSceneBlendFromGroupBindGroup: GPUBindGroup | null = null;
   layerBlendTileCompositor: LayerBlendTileCompositor | null = null;
+  layerBlendTileResourcesPromise: Promise<void> | null = null;
+  layerBlendTileResourcesRevision = 0;
+  layerBlendTileWarmupAttempted = false;
   readonly rasterImageGpuResources = new Map<string, RasterImageGpuResource>();
   nextRasterImageAssetId = 1;
   readonly vectorTextRunTextures = new Map<
@@ -7624,18 +7628,28 @@ export class BrushEngine {
   }
 
   /**
-   * Completes GPU resources used only by text, SVG and raster-image layers.
-   * The promise is shared so idle startup, tests and an early user action can
-   * safely request the same initialization without compiling pipelines twice.
+   * Completes GPU resources used by deferred editor paths. The promise is
+   * shared so idle startup, tests and an early user action can safely request
+   * the same initialization without compiling pipelines twice.
    */
   async ensureOptionalEditorResources(): Promise<void> {
+    const layerBlendResourcesPending = this.mixedSceneEnabled
+      && !this.layerBlendTileWarmupAttempted && (
+      this.layerBlendTileCompositor?.format !== this.layerFormat
+      || this.rasterStrokeRenderer === null
+    );
     const vectorResourcesPending = this.mixedSceneEnabled
       && !this.optionalEditorResourcesReady;
     const selectionResourcesPending = !this.selectionPipelinesReady
       && this.selectionPipelineWarmup !== null;
     const blendResourcesPending = this.blendRenderer === null
       && this.blendRendererWarmup !== null;
-    if (!vectorResourcesPending && !selectionResourcesPending && !blendResourcesPending) return;
+    if (
+      !layerBlendResourcesPending
+      && !vectorResourcesPending
+      && !selectionResourcesPending
+      && !blendResourcesPending
+    ) return;
     if (this.optionalEditorResourcesPromise) {
       await this.optionalEditorResourcesPromise;
       return;
@@ -7648,6 +7662,22 @@ export class BrushEngine {
       );
       // Keep the old mobile driver responsive: optional compilers run in
       // bounded phases instead of all contending for the GPU at once.
+      if (vectorResourcesPending) {
+        await finishStaticResourceCreation(this, "optional");
+        this.optionalEditorResourcesReady = true;
+      }
+      if (layerBlendResourcesPending) {
+        this.layerBlendTileWarmupAttempted = true;
+        try {
+          await ensureLayerBlendTilePresentationResources(this);
+        } catch (error) {
+          if (this.deviceLostError) throw this.deviceLostError;
+          console.warn(
+            "Layer blend warm-up is unavailable; the first blend change will retry.",
+            error,
+          );
+        }
+      }
       if (blendResourcesPending) {
         await this.blendRendererWarmup!();
       }
@@ -7656,21 +7686,16 @@ export class BrushEngine {
         this.selectionPipelinesReady = true;
         this.selectionPipelineWarmup = null;
       }
-      if (vectorResourcesPending) {
-        await finishStaticResourceCreation(this, "optional");
-        this.optionalEditorResourcesReady = true;
-      }
       if (this.deviceLostError) throw this.deviceLostError;
       this.callbacks.onStatus?.("WebGPU is ready. Draw on the canvas.", "ok");
     })();
     this.optionalEditorResourcesPromise = initialization;
     try {
       await initialization;
-    } catch (error) {
+    } finally {
       if (this.optionalEditorResourcesPromise === initialization) {
         this.optionalEditorResourcesPromise = null;
       }
-      throw error;
     }
   }
 

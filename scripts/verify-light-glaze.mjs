@@ -186,7 +186,7 @@ assert.match(
 const brushReadiness = section(
   engine,
   "  private brushDependenciesReady(settings: BrushSettings): boolean",
-  "  /**\n   * Completes GPU resources used only by text",
+  "  async ensureOptionalEditorResources(): Promise<void>",
 );
 for (const requirement of [
   "this.grainLoadingPromise === null",

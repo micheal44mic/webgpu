@@ -90,16 +90,60 @@ export function layerBlendTilePresentationRequired(engine: BrushEngine): boolean
 export async function ensureLayerBlendTilePresentationResources(
   engine: BrushEngine,
 ): Promise<void> {
-  if (
+  const resourcesReady = (): boolean => Boolean(
     engine.layerBlendTileCompositor
-    && engine.layerBlendTileCompositor.format === engine.layerFormat
-  ) {
-    if (!engine.rasterStrokeRenderer) {
+      && engine.layerBlendTileCompositor.format === engine.layerFormat
+      && engine.rasterStrokeRenderer,
+  );
+  if (resourcesReady()) return;
+  if (engine.layerBlendTileResourcesPromise) {
+    await engine.layerBlendTileResourcesPromise;
+    if (!resourcesReady()) {
+      await ensureLayerBlendTilePresentationResources(engine);
+    }
+    return;
+  }
+
+  const revision = engine.layerBlendTileResourcesRevision;
+  const initialization = (async (): Promise<void> => {
+    if (
+      engine.layerBlendTileCompositor
+      && engine.layerBlendTileCompositor.format === engine.layerFormat
+    ) {
+      if (!engine.rasterStrokeRenderer) {
+        await runGpuAllocationTransaction(
+          engine.device,
+          "Stroke renderer for layer blending",
+          async (transaction) => {
+            transaction.deferRollback(() => releaseRasterStrokeRenderer(engine, true));
+            await ensureRasterStrokeRenderer(
+              engine,
+              engine.rasterStrokeStyle.width,
+              engine.rasterStrokeStyle.enabled && engine.rasterStrokeStyle.width > 0,
+            );
+          },
+        );
+      }
+      if (
+        revision !== engine.layerBlendTileResourcesRevision
+        && !engine.layerBlendTileCompositor
+      ) {
+        releaseRasterStrokeRenderer(engine);
+      }
+      return;
+    }
+
+    const oldCompositor = engine.layerBlendTileCompositor;
+    const compositor = await LayerBlendTileCompositor.create(engine);
+    try {
       await runGpuAllocationTransaction(
         engine.device,
-        "Stroke renderer for layer blending",
+        "Stroke renderer for the layer-blend compositor",
         async (transaction) => {
-          transaction.deferRollback(() => releaseRasterStrokeRenderer(engine, true));
+          const hadRenderer = engine.rasterStrokeRenderer !== null;
+          if (!hadRenderer) {
+            transaction.deferRollback(() => releaseRasterStrokeRenderer(engine, true));
+          }
           await ensureRasterStrokeRenderer(
             engine,
             engine.rasterStrokeStyle.width,
@@ -107,36 +151,36 @@ export async function ensureLayerBlendTilePresentationResources(
           );
         },
       );
-    }
-    return;
-  }
-  const oldCompositor = engine.layerBlendTileCompositor;
-  const compositor = await LayerBlendTileCompositor.create(engine);
-  try {
-    await runGpuAllocationTransaction(
-      engine.device,
-      "Stroke renderer for the layer-blend compositor",
-      async (transaction) => {
-        const hadRenderer = engine.rasterStrokeRenderer !== null;
-        if (!hadRenderer) {
-          transaction.deferRollback(() => releaseRasterStrokeRenderer(engine, true));
+      if (revision !== engine.layerBlendTileResourcesRevision) {
+        compositor.destroy();
+        if (!engine.layerBlendTileCompositor) {
+          releaseRasterStrokeRenderer(engine);
         }
-        await ensureRasterStrokeRenderer(
-          engine,
-          engine.rasterStrokeStyle.width,
-          engine.rasterStrokeStyle.enabled && engine.rasterStrokeStyle.width > 0,
-        );
-      },
-    );
-    engine.layerBlendTileCompositor = compositor;
-    oldCompositor?.destroy();
-  } catch (error) {
-    compositor.destroy();
-    throw error;
+        return;
+      }
+      engine.layerBlendTileCompositor = compositor;
+      oldCompositor?.destroy();
+    } catch (error) {
+      compositor.destroy();
+      throw error;
+    }
+  })();
+  engine.layerBlendTileResourcesPromise = initialization;
+  try {
+    await initialization;
+  } finally {
+    if (engine.layerBlendTileResourcesPromise === initialization) {
+      engine.layerBlendTileResourcesPromise = null;
+    }
+  }
+  if (!resourcesReady()) {
+    await ensureLayerBlendTilePresentationResources(engine);
   }
 }
 
 export function releaseLayerBlendTilePresentationResources(engine: BrushEngine): void {
+  engine.layerBlendTileResourcesRevision += 1;
+  engine.layerBlendTileWarmupAttempted = false;
   engine.layerBlendTileCompositor?.destroy();
   engine.layerBlendTileCompositor = null;
   if (!engine.styleStackNeedsCompositor()) {
