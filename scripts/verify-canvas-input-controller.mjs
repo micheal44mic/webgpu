@@ -65,6 +65,24 @@ assert.match(
 );
 assert.match(controllerSource, /destructivePreviewTouchNavigationRequested/);
 assert.doesNotMatch(controllerSource, /document\.getElementById|element<|mobileBrush/);
+const finishPointerSource = controllerSource.slice(
+  controllerSource.indexOf("  const finishPointer ="),
+  controllerSource.indexOf("  const handleCanvasKeydown ="),
+);
+assert.match(
+  finishPointerSource,
+  /try \{[\s\S]*?engine\.endStroke\(event\.timeStamp\);[\s\S]*?\} finally \{[\s\S]*?pointerMode = null;[\s\S]*?activePointerId = null;/,
+  "pointer ownership must be released even if stroke finalization fails",
+);
+const blendEndStrokeSource = engineSource.slice(
+  engineSource.indexOf('if (endingStroke?.tool === "blend")'),
+  engineSource.indexOf("const hadPredictiveThicknessTail"),
+);
+assert.match(
+  blendEndStrokeSource,
+  /catch \(error\) \{[\s\S]*?discardPending\(\);[\s\S]*?throw error;[\s\S]*?\} finally \{[\s\S]*?this\.activeStroke = null;[\s\S]*?this\.settleDeferredBrushSettingsAfterBlend\(\);/,
+  "Blend finalization must release engine stroke ownership after an error",
+);
 
 const moduleServer = await createServer({
   appType: "custom",
@@ -335,6 +353,7 @@ function createHarness({ holdEnabled = true } = {}) {
   let prepareStraightLineAllowed = true;
   let commitStraightLineAllowed = true;
   let cancelStrokeBeforeRender = false;
+  let endStrokeError = null;
   let extension = null;
   const selectionPromises = [];
   const engine = {
@@ -363,7 +382,10 @@ function createHarness({ holdEnabled = true } = {}) {
       calls.cancelStraightLine += 1;
       return Promise.resolve(true);
     },
-    endStroke(timeMs) { calls.endStroke.push(timeMs); },
+    endStroke(timeMs) {
+      calls.endStroke.push(timeMs);
+      if (endStrokeError) throw endStrokeError;
+    },
     cancelStrokeBeforeRender() {
       calls.cancelStroke += 1;
       return cancelStrokeBeforeRender;
@@ -459,6 +481,7 @@ function createHarness({ holdEnabled = true } = {}) {
     setPrepareStraightLineAllowed(value) { prepareStraightLineAllowed = value; },
     setCommitStraightLineAllowed(value) { commitStraightLineAllowed = value; },
     setCancelStrokeBeforeRender(value) { cancelStrokeBeforeRender = value; },
+    setEndStrokeError(value) { endStrokeError = value; },
     enableRecording() {
       extension = {
         wantsPaintRecording: () => true,
@@ -839,6 +862,25 @@ async function flushMicrotasks() {
   assert.equal(harness.calls.layersRefresh, 1);
   assert.equal(harness.calls.thumbnails, 1);
   assert.equal(harness.controller.isPointerActive, false);
+  harness.controller.dispose();
+}
+
+// A failed engine finalization is reported by the host EventTarget, but it
+// must never retain pointer ownership or skip recording/UI cleanup.
+{
+  const harness = createHarness();
+  harness.enableRecording();
+  const expectedError = new Error("simulated Blend finalization failure");
+  harness.setEndStrokeError(expectedError);
+  const reportedError = new Promise((resolve) => {
+    process.once("uncaughtException", resolve);
+  });
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", { pointerId: 109 }));
+  harness.canvas.dispatchEvent(makeEvent("pointerup", { pointerId: 109 }));
+  assert.equal(harness.controller.isPointerActive, false);
+  assert.equal(harness.controller.pointerMode, null);
+  assert.deepEqual(harness.calls.recordingFinish, [true]);
+  assert.equal(await reportedError, expectedError);
   harness.controller.dispose();
 }
 

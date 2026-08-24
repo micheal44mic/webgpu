@@ -11,6 +11,7 @@ export const DRY_BLEND_REFERENCE_STEP_RATIO = 0.06;
 export const DRY_BLEND_REFERENCE_MIN_STEP_PX = 2.5;
 export const DRY_BLEND_REFERENCE_MAX_STEP_PX = 48;
 export const DRY_BLEND_BLUR_MAX_SUPPORT_PX = 64;
+export const DRY_BLEND_BLUR_REDUCED_MAX_SUPPORT_PX = 12;
 export const DRY_BLEND_BLUR_DIAMETER_RATIO = 0.25;
 export const DRY_BLEND_DEFAULT_DOCUMENT_SIZE = LAYER_SIZE;
 export const DRY_BLEND_DEFAULT_SCRATCH_SIZE = 1664;
@@ -286,6 +287,33 @@ export function blendBlurSupportRadius(
     Math.max(1, positive(diameter, "diameter") * DRY_BLEND_BLUR_DIAMETER_RATIO),
   );
   return Math.max(1, Math.ceil(maximum * normalized));
+}
+
+/**
+ * Large brush-local blurs run on a document-anchored reduced grid. Keeping the
+ * Gaussian support at twelve reduced pixels bounds the interactive shader
+ * work while retaining full-resolution convolution for small radii.
+ */
+export function blendBlurSamplingScale(
+  value: number = DEFAULT_DRY_BLEND_CONTROLS.blur,
+  diameter: number = DEFAULT_DRY_BLEND_CONTROLS.size,
+): number {
+  const radius = blendBlurSupportRadius(value, diameter);
+  return radius <= DRY_BLEND_BLUR_REDUCED_MAX_SUPPORT_PX
+    ? 1
+    : Math.ceil(radius / DRY_BLEND_BLUR_REDUCED_MAX_SUPPORT_PX);
+}
+
+/** Conservative read halo for reduced-grid box sampling and bilinear restore. */
+export function blendBlurReadSupportRadius(
+  value: number = DEFAULT_DRY_BLEND_CONTROLS.blur,
+  diameter: number = DEFAULT_DRY_BLEND_CONTROLS.size,
+): number {
+  const radius = blendBlurSupportRadius(value, diameter);
+  const scale = blendBlurSamplingScale(value, diameter);
+  return scale === 1
+    ? radius
+    : Math.ceil(radius / scale) * scale + scale * 2;
 }
 
 export function quantizeDryBlendSample(sample: DryBlendSample): QuantizedDryBlendSample {
@@ -621,6 +649,7 @@ export function createDryBlendPlanner(
   const lastPoint: QuantizedDryBlendSample = { x: 0, y: 0, timeMs: 0, pressure: 1 };
   const fromPoint: QuantizedDryBlendSample = { x: 0, y: 0, timeMs: 0, pressure: 1 };
   const toPoint: QuantizedDryBlendSample = { x: 0, y: 0, timeMs: 0, pressure: 1 };
+  const fitProbe = emptyStep();
   let begun = false;
   let finished = false;
   let moved = false;
@@ -683,11 +712,12 @@ export function createDryBlendPlanner(
     return { ...lastPoint };
   };
 
-  const emitStep = (
+  const populateStep = (
+    target: DryBlendStep,
     from: QuantizedDryBlendSample,
     to: QuantizedDryBlendSample,
+    arcStart: number,
   ): void => {
-    const target = ring[write];
     const deltaX = to.x - from.x;
     const deltaY = to.y - from.y;
     const distance = Math.hypot(deltaX, deltaY);
@@ -723,13 +753,31 @@ export function createDryBlendPlanner(
     target.warpStrength = f32(controls.strength);
     target.flow = f32(controls.flow);
     target.spacing = f32(controls.spacing);
-    target.arcStart = f32(arc);
-    target.arcEnd = f32(arc + distance);
+    target.arcStart = f32(arcStart);
+    target.arcEnd = f32(arcStart + distance);
     target.speed = f32(distance / deltaSeconds);
     target.maxHalo = Math.ceil(distance * target.warpStrength)
       + 2
-      + blendBlurSupportRadius(controls.blur, diameter);
+      + blendBlurReadSupportRadius(controls.blur, diameter);
     sweepBounds(target);
+  };
+
+  const stepFitsScratch = (step: DryBlendStep): boolean => {
+    const x0 = clamp(step.minX, 0, documentWidth);
+    const y0 = clamp(step.minY, 0, documentHeight);
+    const x1 = clamp(step.maxX, 0, documentWidth);
+    const y1 = clamp(step.maxY, 0, documentHeight);
+    return x1 - x0 + step.maxHalo * 2 <= scratchSize
+      && y1 - y0 + step.maxHalo * 2 <= scratchSize;
+  };
+
+  const emitStep = (
+    from: QuantizedDryBlendSample,
+    to: QuantizedDryBlendSample,
+  ): void => {
+    const target = ring[write];
+    populateStep(target, from, to, arc);
+    const distance = target.distance;
     arc += distance;
     write = (write + 1) % maxSteps;
     queued += 1;
@@ -751,7 +799,39 @@ export function createDryBlendPlanner(
       copySample(lastPoint, next);
       return accepted(0, true);
     }
-    const count = Math.max(1, Math.ceil(distance / dryBlendReferenceStep(controls.size)));
+    let count = Math.max(1, Math.ceil(distance / dryBlendReferenceStep(controls.size)));
+    // A large, rotated tip can need a slightly shorter sweep than the regular
+    // reference step once transport and Blur halos are included. Refine the
+    // whole input interval before mutating the ring so every emitted ROI is
+    // guaranteed to fit and capacity rejection remains atomic.
+    copySample(fromPoint, lastPoint);
+    interpolateSample(toPoint, lastPoint, next, Math.min(1, POSITION_QUANTUM / distance));
+    populateStep(fitProbe, fromPoint, toPoint, arc);
+    const tipCanFitScratch = stepFitsScratch(fitProbe);
+    if (!tipCanFitScratch) {
+      throw new RangeError(
+        `Dry Blend tip cannot fit inside scratch size ${scratchSize}`,
+      );
+    }
+    for (;;) {
+      let allFit = true;
+      copySample(fromPoint, lastPoint);
+      for (let index = 1; index <= count; index += 1) {
+        interpolateSample(toPoint, lastPoint, next, index / count);
+        populateStep(fitProbe, fromPoint, toPoint, arc);
+        if (!stepFitsScratch(fitProbe)) {
+          allFit = false;
+          break;
+        }
+        copySample(fromPoint, toPoint);
+      }
+      if (allFit) break;
+      if (count > Math.floor(maxSteps / 2)) {
+        count = maxSteps + 1;
+        break;
+      }
+      count *= 2;
+    }
     if (count > maxSteps - queued) {
       return rejected(count);
     }

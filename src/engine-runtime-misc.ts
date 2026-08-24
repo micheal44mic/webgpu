@@ -1036,20 +1036,26 @@ export function flushPendingWorkBeforeSettingsChange(engine: BrushEngine): void 
   const maximumIterations = Math.ceil(engine.pendingStamps.length / MAX_STAMPS_PER_BATCH)
     + engine.pendingBlendBatches.length
     + 2;
-  while (engine.pendingStamps.length > 0 || engine.pendingBlendBatches.length > 0) {
-    if (engine.frameRequest !== null) {
-      cancelAnimationFrame(engine.frameRequest);
-      engine.frameRequest = null;
+  const previousForcedDrain = engine.forceSynchronousBlendDrain;
+  engine.forceSynchronousBlendDrain = true;
+  try {
+    while (engine.pendingStamps.length > 0 || engine.pendingBlendBatches.length > 0) {
+      if (engine.frameRequest !== null) {
+        cancelAnimationFrame(engine.frameRequest);
+        engine.frameRequest = null;
+      }
+      const pendingBeforeRender = engine.pendingStamps.length + engine.pendingBlendBatches.length;
+      engine.renderFrame(performance.now());
+      iterations += 1;
+      if (
+        engine.pendingStamps.length + engine.pendingBlendBatches.length >= pendingBeforeRender
+        || iterations > maximumIterations
+      ) {
+        throw new Error("Unable to finalize stamps before changing settings.");
+      }
     }
-    const pendingBeforeRender = engine.pendingStamps.length + engine.pendingBlendBatches.length;
-    engine.renderFrame(performance.now());
-    iterations += 1;
-    if (
-      engine.pendingStamps.length + engine.pendingBlendBatches.length >= pendingBeforeRender
-      || iterations > maximumIterations
-    ) {
-      throw new Error("Unable to finalize stamps before changing settings.");
-    }
+  } finally {
+    engine.forceSynchronousBlendDrain = previousForcedDrain;
   }
 }
 

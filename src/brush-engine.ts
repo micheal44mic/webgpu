@@ -1646,6 +1646,9 @@ export class BrushEngine {
   readonly customBrushAssets = new CustomBrushAssetRegistry();
   pendingStamps: Stamp[] = [];
   pendingBlendBatches: PendingBlendBatch[] = [];
+  blendSubmissionInFlight: Promise<void> | null = null;
+  forceSynchronousBlendDrain = false;
+  private brushSettingsResourcesDeferredForBlend = false;
   // Allocating the 8,192-step ring on every pointer-down caused avoidable GC
   // spikes. One planner is safe to reuse because the engine admits only one
   // active stroke and configure/reset fully replace its gesture state.
@@ -2245,7 +2248,11 @@ export class BrushEngine {
         "Settings cannot change during a layer switch or history replay.",
       );
     }
-    flushPendingWorkBeforeSettingsChange(this);
+    const deferResourcesForQueuedBlend = this.initialized
+      && (this.pendingBlendBatches.length > 0 || this.blendSubmissionInFlight !== null);
+    if (!deferResourcesForQueuedBlend) {
+      flushPendingWorkBeforeSettingsChange(this);
+    }
     const previousUsesBlendRenderer = usesBlendRenderer(this.settings);
     const tool = next.tool === "paint" || next.tool === "erase" || next.tool === "blend"
       ? next.tool
@@ -2335,6 +2342,15 @@ export class BrushEngine {
     prepareAdaptivePreviewShapePalette(this, this.settings);
 
     if (this.initialized) {
+      if (deferResourcesForQueuedBlend) {
+        // Every queued Blend batch owns an immutable settings snapshot, but
+        // Shape/Grain views are shared. Publish the new controls immediately
+        // and retarget those resources only after the old GPU work completes.
+        this.brushSettingsResourcesDeferredForBlend = true;
+        this.requestRender();
+        return;
+      }
+      this.brushSettingsResourcesDeferredForBlend = false;
       const nextUsesBlendRenderer = usesBlendRenderer(this.settings);
       const glazeSelected = usesStrokeGlazeRenderer(this.settings);
       this.lightGlazeDesiredStorageMode = glazeSelected
@@ -4150,6 +4166,17 @@ export class BrushEngine {
       );
       return false;
     }
+    if (
+      this.pendingBlendBatches.length > 0
+      || this.brushSettingsResourcesDeferredForBlend
+    ) {
+      this.requestRender();
+      this.callbacks.onStatus?.(
+        "Finishing the previous Blend stroke. Try again in a moment…",
+        "working",
+      );
+      return false;
+    }
     pauseLayerColdCompressionIdle(this);
     const normalizedPoint: LayerPoint = {
       ...point,
@@ -4726,20 +4753,29 @@ export class BrushEngine {
     this.lastDeferredLiftReplay = null;
     const endingStroke = this.activeStroke;
     if (endingStroke?.tool === "blend") {
-      endingStroke.stabilizer?.finish();
-      endingStroke.blendPlanner?.finish();
-      drainBlendPlanner(this, endingStroke);
-      const historyChanged = endingStroke.historyCommitted;
-      this.activeStroke = null;
-      if (this.pendingBlendBatches.length > 0) {
-        this.displayDirty = true;
-        this.requestRender();
+      let historyChanged = false;
+      try {
+        endingStroke.stabilizer?.finish();
+        endingStroke.blendPlanner?.finish();
+        drainBlendPlanner(this, endingStroke);
+        historyChanged = endingStroke.historyCommitted;
+      } catch (error) {
+        endingStroke.blendPlanner?.discardPending();
+        throw error;
+      } finally {
+        this.activeStroke = null;
+        if (this.pendingBlendBatches.length > 0) {
+          this.displayDirty = true;
+          this.requestRender();
+        } else {
+          this.settleDeferredBrushSettingsAfterBlend();
+        }
+        this.scheduleLayerColdCompression();
       }
       if (historyChanged) {
         this.sweepRasterImageGpuResources();
         this.publishHistoryState();
       }
-      this.scheduleLayerColdCompression();
       return;
     }
     const hadPredictiveThicknessTail = Boolean(
@@ -12037,11 +12073,51 @@ export class BrushEngine {
     });
   }
 
+  private settleDeferredBrushSettingsAfterBlend(): void {
+    if (
+      !this.brushSettingsResourcesDeferredForBlend
+      || this.blendSubmissionInFlight !== null
+      || this.pendingBlendBatches.length > 0
+      || this.activeStroke !== null
+    ) {
+      return;
+    }
+    this.brushSettingsResourcesDeferredForBlend = false;
+    // Re-enter through the regular normalization/resource path. The values
+    // are already current; the empty patch only performs the deferred retarget.
+    this.setBrushSettings({});
+  }
+
+  private trackBlendSubmissionCompletion(): void {
+    const completion = this.device.queue.onSubmittedWorkDone();
+    this.blendSubmissionInFlight = completion;
+    const finish = () => {
+      if (this.blendSubmissionInFlight !== completion) return;
+      this.blendSubmissionInFlight = null;
+      if (this.pendingBlendBatches.length > 0) {
+        this.requestRender();
+      } else {
+        this.settleDeferredBrushSettingsAfterBlend();
+        maybeReleaseIdleBlendScratch(this);
+        maybeReleaseIdleGrainResources(this);
+        maybeReleaseIdleShapeResources(this);
+      }
+    };
+    void completion.then(finish, finish);
+  }
+
   requestRender(): void {
     if (!this.initialized || this.renderFrameError || this.deviceLostError) {
       return;
     }
     if (this.frameRequest !== null) {
+      return;
+    }
+    if (
+      this.blendSubmissionInFlight !== null
+      && this.pendingBlendBatches.length > 0
+      && !this.forceSynchronousBlendDrain
+    ) {
       return;
     }
     if (
@@ -12094,7 +12170,12 @@ export class BrushEngine {
     const batchSize = Math.min(availableBatchSize, MAX_STAMPS_PER_BATCH);
     const batch = batchSize > 0 ? this.pendingStamps.slice(0, batchSize) : [];
     let blendBatch: PendingBlendBatch[] = [];
-    if (!lightGlazeSession && batch.length === 0 && this.pendingBlendBatches.length > 0) {
+    if (
+      !lightGlazeSession
+      && batch.length === 0
+      && this.pendingBlendBatches.length > 0
+      && (this.blendSubmissionInFlight === null || this.forceSynchronousBlendDrain)
+    ) {
       const first = this.pendingBlendBatches[0];
       let remainingPixelBudget = DRY_BLEND_FRAME_PIXEL_BUDGET;
       let blendBatchSize = 0;
@@ -12158,6 +12239,7 @@ export class BrushEngine {
     }
     if (blendBatch.length > 0) {
       this.pendingBlendBatches.splice(0, blendBatch.length);
+      this.trackBlendSubmissionCompletion();
     }
     this.lastCpuFrameMs = performance.now() - start;
 

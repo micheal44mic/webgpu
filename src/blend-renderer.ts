@@ -1,5 +1,9 @@
 import {
+  blendBlurDownsampleShader,
   blendBlurHorizontalShader,
+  blendBlurReducedHorizontalShader,
+  blendBlurReducedVerticalShader,
+  blendBlurUpsampleShader,
   blendBlurVerticalShader,
   blendDepositShader,
   blendGatherShader,
@@ -10,6 +14,7 @@ import {
   DRY_BLEND_CORE_BUILD,
   DRY_BLEND_BLUR_MAX_SUPPORT_PX,
   DRY_BLEND_DEFAULT_SCRATCH_SIZE,
+  blendBlurSamplingScale,
   blendBlurSupportRadius,
   blendPaintCoefficient,
   blendStretchCoefficient,
@@ -32,7 +37,7 @@ const BLEND_BLUR_WEIGHT_VEC4_COUNT = Math.ceil(
 const BLEND_BLUR_UNIFORM_BYTES = 16 + BLEND_BLUR_WEIGHT_VEC4_COUNT * 16;
 
 export const DRY_BLEND_RENDERER_BUILD =
-  "dry-blend-webgpu-v6-pure-gaussian-blur";
+  "dry-blend-webgpu-v7-bounded-gaussian-blur";
 
 export interface DryBlendRenderSettings {
   size: number;
@@ -115,6 +120,10 @@ interface ScratchResources {
     buffer: GPUBuffer;
     horizontalBindGroup: GPUBindGroup;
     verticalBindGroup: GPUBindGroup;
+    downsampleBindGroup: GPUBindGroup;
+    reducedHorizontalBindGroup: GPUBindGroup;
+    reducedVerticalBindGroup: GPUBindGroup;
+    upsampleBindGroup: GPUBindGroup;
   } | null;
   gatherBindGroup: GPUBindGroup;
   pickupBindGroup: GPUBindGroup;
@@ -269,6 +278,7 @@ export class DryBlendRenderer {
   private readonly blurKernelUnsigned = new Uint32Array(this.blurKernelUpload);
   private readonly blurKernelBuffer: GPUBuffer;
   private blurKernelRadius = -1;
+  private blurSamplingScale = 1;
 
   private gatherBindGroupLayout!: GPUBindGroupLayout;
   private blurHorizontalBindGroupLayout!: GPUBindGroupLayout;
@@ -279,6 +289,10 @@ export class DryBlendRenderer {
   private gatherPipeline!: GPUComputePipeline;
   private blurHorizontalPipeline!: GPUComputePipeline;
   private blurVerticalPipeline!: GPUComputePipeline;
+  private blurDownsamplePipeline!: GPUComputePipeline;
+  private blurReducedHorizontalPipeline!: GPUComputePipeline;
+  private blurReducedVerticalPipeline!: GPUComputePipeline;
+  private blurUpsamplePipeline!: GPUComputePipeline;
   private pickupPipeline!: GPUComputePipeline;
   private depositPipelines!: Record<
     DryBlendRenderSettings["shape"],
@@ -485,6 +499,34 @@ export class DryBlendRenderer {
           code: blendScatterShader,
         }),
       },
+      {
+        label: "Blend Gaussian reduced-grid downsample",
+        module: this.device.createShaderModule({
+          label: "Blend Gaussian reduced-grid downsample WGSL",
+          code: blendBlurDownsampleShader,
+        }),
+      },
+      {
+        label: "Blend Gaussian reduced-grid horizontal",
+        module: this.device.createShaderModule({
+          label: "Blend Gaussian reduced-grid horizontal WGSL",
+          code: blendBlurReducedHorizontalShader,
+        }),
+      },
+      {
+        label: "Blend Gaussian reduced-grid vertical",
+        module: this.device.createShaderModule({
+          label: "Blend Gaussian reduced-grid vertical WGSL",
+          code: blendBlurReducedVerticalShader,
+        }),
+      },
+      {
+        label: "Blend Gaussian reduced-grid restore",
+        module: this.device.createShaderModule({
+          label: "Blend Gaussian reduced-grid restore WGSL",
+          code: blendBlurUpsampleShader,
+        }),
+      },
     ] as const;
     await assertShaderModules(modules);
 
@@ -529,6 +571,30 @@ export class DryBlendRenderer {
           this.blurVerticalBindGroupLayout,
           modules[3].module,
           "blurVerticalMain",
+        );
+        this.blurDownsamplePipeline = computePipeline(
+          "Blend local Gaussian reduced-grid downsample",
+          this.blurHorizontalBindGroupLayout,
+          modules[6].module,
+          "blurDownsampleMain",
+        );
+        this.blurReducedHorizontalPipeline = computePipeline(
+          "Blend local Gaussian reduced-grid horizontal",
+          this.blurHorizontalBindGroupLayout,
+          modules[7].module,
+          "blurReducedHorizontalMain",
+        );
+        this.blurReducedVerticalPipeline = computePipeline(
+          "Blend local Gaussian reduced-grid vertical",
+          this.blurHorizontalBindGroupLayout,
+          modules[8].module,
+          "blurReducedVerticalMain",
+        );
+        this.blurUpsamplePipeline = computePipeline(
+          "Blend local Gaussian reduced-grid restore",
+          this.blurHorizontalBindGroupLayout,
+          modules[9].module,
+          "blurUpsampleMain",
         );
         const depositPipeline = (
           shape: DryBlendRenderSettings["shape"],
@@ -642,8 +708,9 @@ export class DryBlendRenderer {
     const blurScratch = blurAmount > 0 && groups.length > 0
       ? this.ensureBlurScratchResources(scratch)
       : null;
+    let blurScale = 1;
     if (blurScratch) {
-      this.updateBlurKernel(blurAmount, settings.size);
+      blurScale = this.updateBlurKernel(blurAmount, settings.size);
     }
     const historyBytes = renderable.length * this.uniformStride;
     if (historyTransfer?.capture && historyTransfer.replay) {
@@ -733,18 +800,40 @@ export class DryBlendRenderer {
         workgroups(group.readRect.height),
       );
       if (blurScratch) {
-        computePass.setPipeline(this.blurHorizontalPipeline);
-        computePass.setBindGroup(0, blurScratch.horizontalBindGroup, [groupOffset]);
-        computePass.dispatchWorkgroups(
-          blurWorkgroups(group.readRect.width),
-          group.readRect.height,
-        );
-        computePass.setPipeline(this.blurVerticalPipeline);
-        computePass.setBindGroup(0, blurScratch.verticalBindGroup, [groupOffset]);
-        computePass.dispatchWorkgroups(
-          blurWorkgroups(group.readRect.height),
-          group.readRect.width,
-        );
+        if (blurScale === 1) {
+          computePass.setPipeline(this.blurHorizontalPipeline);
+          computePass.setBindGroup(0, blurScratch.horizontalBindGroup, [groupOffset]);
+          computePass.dispatchWorkgroups(
+            blurWorkgroups(group.readRect.width),
+            group.readRect.height,
+          );
+          computePass.setPipeline(this.blurVerticalPipeline);
+          computePass.setBindGroup(0, blurScratch.verticalBindGroup, [groupOffset]);
+          computePass.dispatchWorkgroups(
+            blurWorkgroups(group.readRect.height),
+            group.readRect.width,
+          );
+        } else {
+          const phaseX = ((group.readRect.x % blurScale) + blurScale) % blurScale;
+          const phaseY = ((group.readRect.y % blurScale) + blurScale) % blurScale;
+          const reducedWidth = Math.ceil((group.readRect.width + phaseX) / blurScale);
+          const reducedHeight = Math.ceil((group.readRect.height + phaseY) / blurScale);
+          computePass.setPipeline(this.blurDownsamplePipeline);
+          computePass.setBindGroup(0, blurScratch.downsampleBindGroup, [groupOffset]);
+          computePass.dispatchWorkgroups(workgroups(reducedWidth), workgroups(reducedHeight));
+          computePass.setPipeline(this.blurReducedHorizontalPipeline);
+          computePass.setBindGroup(0, blurScratch.reducedHorizontalBindGroup, [groupOffset]);
+          computePass.dispatchWorkgroups(workgroups(reducedWidth), workgroups(reducedHeight));
+          computePass.setPipeline(this.blurReducedVerticalPipeline);
+          computePass.setBindGroup(0, blurScratch.reducedVerticalBindGroup, [groupOffset]);
+          computePass.dispatchWorkgroups(workgroups(reducedWidth), workgroups(reducedHeight));
+          computePass.setPipeline(this.blurUpsamplePipeline);
+          computePass.setBindGroup(0, blurScratch.upsampleBindGroup, [groupOffset]);
+          computePass.dispatchWorkgroups(
+            workgroups(group.readRect.width),
+            workgroups(group.readRect.height),
+          );
+        }
       }
       for (let index = 0; index < group.count; index += 1) {
         const batch = renderable[group.start + index];
@@ -913,8 +1002,9 @@ export class DryBlendRenderer {
     const blurScratch = settings.blendBlur > 0
       ? this.ensureBlurScratchResources(scratch)
       : null;
+    let blurScale = 1;
     if (blurScratch) {
-      this.updateBlurKernel(settings.blendBlur, settings.size);
+      blurScale = this.updateBlurKernel(settings.blendBlur, settings.size);
     }
     const target = this.device.createTexture({
       label: "Selected Blend warm-up scatter target",
@@ -943,12 +1033,27 @@ export class DryBlendRenderer {
     computePass.setBindGroup(0, scratch.gatherBindGroup, [0]);
     computePass.dispatchWorkgroups(1, 1, 1);
     if (blurScratch) {
-      computePass.setPipeline(this.blurHorizontalPipeline);
-      computePass.setBindGroup(0, blurScratch.horizontalBindGroup, [0]);
-      computePass.dispatchWorkgroups(1, 1, 1);
-      computePass.setPipeline(this.blurVerticalPipeline);
-      computePass.setBindGroup(0, blurScratch.verticalBindGroup, [0]);
-      computePass.dispatchWorkgroups(1, 1, 1);
+      if (blurScale === 1) {
+        computePass.setPipeline(this.blurHorizontalPipeline);
+        computePass.setBindGroup(0, blurScratch.horizontalBindGroup, [0]);
+        computePass.dispatchWorkgroups(1, 1, 1);
+        computePass.setPipeline(this.blurVerticalPipeline);
+        computePass.setBindGroup(0, blurScratch.verticalBindGroup, [0]);
+        computePass.dispatchWorkgroups(1, 1, 1);
+      } else {
+        computePass.setPipeline(this.blurDownsamplePipeline);
+        computePass.setBindGroup(0, blurScratch.downsampleBindGroup, [0]);
+        computePass.dispatchWorkgroups(1, 1, 1);
+        computePass.setPipeline(this.blurReducedHorizontalPipeline);
+        computePass.setBindGroup(0, blurScratch.reducedHorizontalBindGroup, [0]);
+        computePass.dispatchWorkgroups(1, 1, 1);
+        computePass.setPipeline(this.blurReducedVerticalPipeline);
+        computePass.setBindGroup(0, blurScratch.reducedVerticalBindGroup, [0]);
+        computePass.dispatchWorkgroups(1, 1, 1);
+        computePass.setPipeline(this.blurUpsamplePipeline);
+        computePass.setBindGroup(0, blurScratch.upsampleBindGroup, [0]);
+        computePass.dispatchWorkgroups(1, 1, 1);
+      }
     }
     computePass.setPipeline(this.pickupPipeline);
     computePass.setBindGroup(0, scratch.pickupBindGroup, [0]);
@@ -1295,12 +1400,17 @@ export class DryBlendRenderer {
     }
   }
 
-  private updateBlurKernel(amount: number, diameter: number): void {
+  private updateBlurKernel(amount: number, diameter: number): number {
     const radius = blendBlurSupportRadius(amount, diameter);
-    if (radius === this.blurKernelRadius) return;
-    const kernel = destructiveGaussianBlurKernel(radius);
+    const scale = blendBlurSamplingScale(amount, diameter);
+    if (radius === this.blurKernelRadius && scale === this.blurSamplingScale) {
+      return scale;
+    }
+    const kernel = destructiveGaussianBlurKernel(Math.ceil(radius / scale));
     this.blurKernelFloats.fill(0);
     this.blurKernelUnsigned[0] = kernel.radius;
+    this.blurKernelUnsigned[1] = scale;
+    this.blurKernelUnsigned[2] = radius;
     for (let index = 0; index < kernel.weights.length; index += 1) {
       this.blurKernelFloats[4 + index] = kernel.weights[index];
     }
@@ -1310,17 +1420,26 @@ export class DryBlendRenderer {
       this.blurKernelUpload,
     );
     this.blurKernelRadius = radius;
+    this.blurSamplingScale = scale;
+    return scale;
   }
 
   private ensureBlurScratchResources(
     scratch: ScratchResources,
   ): NonNullable<ScratchResources["blur"]> {
     if (scratch.blur) return scratch.blur;
+    const blurBufferBytes = this.scratchSize * this.scratchSize * 8;
     const blurBuffer = this.device.createBuffer({
       label: "Blend local Gaussian packed intermediate",
-      size: this.scratchSize * this.scratchSize * 8,
+      size: blurBufferBytes,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
+    const storageAlignment = this.device.limits.minStorageBufferOffsetAlignment;
+    const secondRegionOffset = Math.ceil(
+      blurBufferBytes / 2 / storageAlignment,
+    ) * storageAlignment;
+    const firstRegionSize = secondRegionOffset;
+    const secondRegionSize = blurBufferBytes - secondRegionOffset;
     const uniformEntry = {
       binding: 0,
       resource: {
@@ -1357,10 +1476,62 @@ export class DryBlendRenderer {
         kernelEntry,
       ],
     });
+    const packedRegion = (
+      binding: number,
+      offset: number,
+      size: number,
+    ): GPUBindGroupEntry => ({
+      binding,
+      resource: { buffer: blurBuffer, offset, size },
+    });
+    const downsampleBindGroup = this.device.createBindGroup({
+      label: "Blend local Gaussian reduced-grid downsample bind group",
+      layout: this.blurHorizontalBindGroupLayout,
+      entries: [
+        uniformEntry,
+        { binding: 1, resource: { buffer: scratch.stateBuffer } },
+        packedRegion(2, 0, firstRegionSize),
+        kernelEntry,
+      ],
+    });
+    const reducedHorizontalBindGroup = this.device.createBindGroup({
+      label: "Blend local Gaussian reduced-grid horizontal bind group",
+      layout: this.blurHorizontalBindGroupLayout,
+      entries: [
+        uniformEntry,
+        packedRegion(1, 0, firstRegionSize),
+        packedRegion(2, secondRegionOffset, secondRegionSize),
+        kernelEntry,
+      ],
+    });
+    const reducedVerticalBindGroup = this.device.createBindGroup({
+      label: "Blend local Gaussian reduced-grid vertical bind group",
+      layout: this.blurHorizontalBindGroupLayout,
+      entries: [
+        uniformEntry,
+        packedRegion(1, secondRegionOffset, secondRegionSize),
+        packedRegion(2, 0, firstRegionSize),
+        kernelEntry,
+      ],
+    });
+    const upsampleBindGroup = this.device.createBindGroup({
+      label: "Blend local Gaussian reduced-grid restore bind group",
+      layout: this.blurHorizontalBindGroupLayout,
+      entries: [
+        uniformEntry,
+        packedRegion(1, 0, firstRegionSize),
+        { binding: 2, resource: { buffer: scratch.stateBuffer } },
+        kernelEntry,
+      ],
+    });
     scratch.blur = {
       buffer: blurBuffer,
       horizontalBindGroup,
       verticalBindGroup,
+      downsampleBindGroup,
+      reducedHorizontalBindGroup,
+      reducedVerticalBindGroup,
+      upsampleBindGroup,
     };
     return scratch.blur;
   }

@@ -1,4 +1,7 @@
-import { DRY_BLEND_BLUR_MAX_SUPPORT_PX } from "./blend-core.ts";
+import {
+  DRY_BLEND_BLUR_MAX_SUPPORT_PX,
+  DRY_BLEND_BLUR_REDUCED_MAX_SUPPORT_PX,
+} from "./blend-core.ts";
 
 // Compute-first WGSL for the dry Blend brush.
 //
@@ -234,6 +237,211 @@ fn blurVerticalMain(
   let pixel = vec2<i32>(i32(groupId.y), i32(outputY));
   let original = cleanState(pixel);
   let mixed = mix(original, result, clamp(blend.grainAffineAndPhase.w, 0.0, 1.0));
+  let alpha = clamp(mixed.a, 0.0, 1.0);
+  stateBuffer[stateIndex(pixel)] = vec4<f32>(
+    clamp(mixed.rgb, vec3<f32>(0.0), vec3<f32>(alpha)),
+    alpha
+  );
+}
+`;
+
+const blendBlurReducedGridWgsl = /* wgsl */ `
+fn positiveModulo(value: i32, divisor: i32) -> i32 {
+  return ((value % divisor) + divisor) % divisor;
+}
+
+fn reducedScale() -> i32 {
+  return max(2, i32(blurKernel.controls.y));
+}
+
+fn reducedPhase() -> vec2<i32> {
+  let scale = reducedScale();
+  return vec2<i32>(
+    positiveModulo(roiOrigin().x, scale),
+    positiveModulo(roiOrigin().y, scale)
+  );
+}
+
+fn reducedSize() -> vec2<i32> {
+  let scale = reducedScale();
+  return (validSize() + reducedPhase() + vec2<i32>(scale - 1)) / scale;
+}
+
+fn reducedIndex(pixel: vec2<i32>) -> u32 {
+  return u32(pixel.y * reducedSize().x + pixel.x);
+}
+`;
+
+export const blendBlurDownsampleShader = /* wgsl */ `
+${blendUniformsWgsl}
+
+@group(0) @binding(1) var<storage, read> stateBuffer: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> reducedOutput: array<vec2<u32>>;
+
+${blendStateSamplingWgsl}
+${blendBlurKernelWgsl}
+${blendBlurReducedGridWgsl}
+
+fn documentClampedReducedSource(documentPosition: vec2<i32>) -> vec4<f32> {
+  let maximum = max(documentSize() - vec2<i32>(1), vec2<i32>(0));
+  let clampedPosition = clamp(documentPosition, vec2<i32>(0), maximum);
+  return cleanState(clampedPosition - roiOrigin());
+}
+
+@compute @workgroup_size(8, 8)
+fn blurDownsampleMain(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let pixel = vec2<i32>(gid.xy);
+  if (any(pixel >= reducedSize())) {
+    return;
+  }
+  let scale = reducedScale();
+  let base = pixel * scale - reducedPhase();
+  var result = vec4<f32>(0.0);
+  for (var offsetY = 0; offsetY < scale; offsetY += 1) {
+    for (var offsetX = 0; offsetX < scale; offsetX += 1) {
+      result += documentClampedReducedSource(
+        roiOrigin() + base + vec2<i32>(offsetX, offsetY)
+      );
+    }
+  }
+  result /= f32(scale * scale);
+  reducedOutput[reducedIndex(pixel)] = packBlendBlurTexel(result);
+}
+`;
+
+export const blendBlurReducedHorizontalShader = /* wgsl */ `
+${blendUniformsWgsl}
+
+@group(0) @binding(1) var<storage, read> reducedInput: array<vec2<u32>>;
+@group(0) @binding(2) var<storage, read_write> reducedOutput: array<vec2<u32>>;
+
+${blendBlurKernelWgsl}
+${blendBlurReducedGridWgsl}
+
+fn cleanReducedInput(pixel: vec2<i32>) -> vec4<f32> {
+  if (any(pixel < vec2<i32>(0)) || any(pixel >= reducedSize())) {
+    return vec4<f32>(0.0);
+  }
+  return unpackBlendBlurTexel(reducedInput[reducedIndex(pixel)]);
+}
+
+@compute @workgroup_size(8, 8)
+fn blurReducedHorizontalMain(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let pixel = vec2<i32>(gid.xy);
+  if (any(pixel >= reducedSize())) {
+    return;
+  }
+  var result = cleanReducedInput(pixel) * blendBlurWeight(0u);
+  for (
+    var offset = 1u;
+    offset <= ${DRY_BLEND_BLUR_REDUCED_MAX_SUPPORT_PX}u;
+    offset += 1u
+  ) {
+    if (offset > blurKernel.controls.x) {
+      break;
+    }
+    let weight = blendBlurWeight(offset);
+    let delta = vec2<i32>(i32(offset), 0);
+    result += cleanReducedInput(pixel - delta) * weight;
+    result += cleanReducedInput(pixel + delta) * weight;
+  }
+  reducedOutput[reducedIndex(pixel)] = packBlendBlurTexel(result);
+}
+`;
+
+export const blendBlurReducedVerticalShader = /* wgsl */ `
+${blendUniformsWgsl}
+
+@group(0) @binding(1) var<storage, read> reducedInput: array<vec2<u32>>;
+@group(0) @binding(2) var<storage, read_write> reducedOutput: array<vec2<u32>>;
+
+${blendBlurKernelWgsl}
+${blendBlurReducedGridWgsl}
+
+fn cleanReducedInput(pixel: vec2<i32>) -> vec4<f32> {
+  if (any(pixel < vec2<i32>(0)) || any(pixel >= reducedSize())) {
+    return vec4<f32>(0.0);
+  }
+  return unpackBlendBlurTexel(reducedInput[reducedIndex(pixel)]);
+}
+
+@compute @workgroup_size(8, 8)
+fn blurReducedVerticalMain(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let pixel = vec2<i32>(gid.xy);
+  if (any(pixel >= reducedSize())) {
+    return;
+  }
+  var result = cleanReducedInput(pixel) * blendBlurWeight(0u);
+  for (
+    var offset = 1u;
+    offset <= ${DRY_BLEND_BLUR_REDUCED_MAX_SUPPORT_PX}u;
+    offset += 1u
+  ) {
+    if (offset > blurKernel.controls.x) {
+      break;
+    }
+    let weight = blendBlurWeight(offset);
+    let delta = vec2<i32>(0, i32(offset));
+    result += cleanReducedInput(pixel - delta) * weight;
+    result += cleanReducedInput(pixel + delta) * weight;
+  }
+  reducedOutput[reducedIndex(pixel)] = packBlendBlurTexel(result);
+}
+`;
+
+export const blendBlurUpsampleShader = /* wgsl */ `
+${blendUniformsWgsl}
+
+@group(0) @binding(1) var<storage, read> reducedInput: array<vec2<u32>>;
+@group(0) @binding(2) var<storage, read_write> stateBuffer: array<vec4<f32>>;
+
+${blendStateSamplingWgsl}
+${blendBlurKernelWgsl}
+${blendBlurReducedGridWgsl}
+
+fn cleanReducedInput(pixel: vec2<i32>) -> vec4<f32> {
+  if (any(pixel < vec2<i32>(0)) || any(pixel >= reducedSize())) {
+    return vec4<f32>(0.0);
+  }
+  return unpackBlendBlurTexel(reducedInput[reducedIndex(pixel)]);
+}
+
+fn sampleReduced(center: vec2<f32>) -> vec4<f32> {
+  let samplePosition = center - vec2<f32>(0.5);
+  let lower = vec2<i32>(floor(samplePosition));
+  let interpolation = fract(samplePosition);
+  return mix(
+    mix(
+      cleanReducedInput(lower),
+      cleanReducedInput(lower + vec2<i32>(1, 0)),
+      interpolation.x
+    ),
+    mix(
+      cleanReducedInput(lower + vec2<i32>(0, 1)),
+      cleanReducedInput(lower + vec2<i32>(1, 1)),
+      interpolation.x
+    ),
+    interpolation.y
+  );
+}
+
+@compute @workgroup_size(8, 8)
+fn blurUpsampleMain(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let pixel = vec2<i32>(gid.xy);
+  if (any(pixel >= validSize())) {
+    return;
+  }
+  let scale = f32(reducedScale());
+  let reducedCenter = (
+    vec2<f32>(pixel + reducedPhase()) + vec2<f32>(0.5)
+  ) / scale;
+  let original = cleanState(pixel);
+  let blurred = sampleReduced(reducedCenter);
+  let mixed = mix(
+    original,
+    blurred,
+    clamp(blend.grainAffineAndPhase.w, 0.0, 1.0)
+  );
   let alpha = clamp(mixed.a, 0.0, 1.0);
   stateBuffer[stateIndex(pixel)] = vec4<f32>(
     clamp(mixed.rgb, vec3<f32>(0.0), vec3<f32>(alpha)),

@@ -1400,67 +1400,73 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
 
     const paintPointerUpEngineStartedAt = measurePaintPointerUp ? browser.performance.now() : 0;
     const completedPointerMode = pointerMode;
-    if (pointerMode === "paint") {
-      if (!straightLineOwnsPaintCompletion) {
-        options.getEditorExtension()?.beginPaintReleaseRecording?.(event);
-        const endStrokeStartedAt = measurePaintPointerUp ? browser.performance.now() : 0;
-        engine.endStroke(event.timeStamp);
-        if (measurePaintPointerUp) {
-          paintPointerUpEndStrokeMs = browser.performance.now() - endStrokeStartedAt;
+    try {
+      if (pointerMode === "paint") {
+        if (!straightLineOwnsPaintCompletion) {
+          options.getEditorExtension()?.beginPaintReleaseRecording?.(event);
+          const endStrokeStartedAt = measurePaintPointerUp ? browser.performance.now() : 0;
+          try {
+            engine.endStroke(event.timeStamp);
+          } finally {
+            const extensionStartedAt = measurePaintPointerUp ? browser.performance.now() : 0;
+            options.getEditorExtension()?.finishPaintRecording?.(event.type === "pointerup");
+            if (measurePaintPointerUp) {
+              paintPointerUpExtensionMs = browser.performance.now() - extensionStartedAt;
+            }
+          }
+          if (measurePaintPointerUp) {
+            paintPointerUpEndStrokeMs = browser.performance.now() - endStrokeStartedAt;
+          }
         }
+      } else if (pointerMode === "liquify") {
+        engine.endRasterLiquifyStroke(event.type === "pointerup");
+      } else if (pointerMode === "rotate") {
+        engine.endViewRotationGesture();
       }
-      const extensionStartedAt = measurePaintPointerUp ? browser.performance.now() : 0;
-      options.getEditorExtension()?.finishPaintRecording?.(event.type === "pointerup");
+    } finally {
+      const paintPointerUpCleanupStartedAt = measurePaintPointerUp ? browser.performance.now() : 0;
+      if (pointerMode === "rotate" || pointerMode === "pan") {
+        options.getVectorController()?.endViewGesture();
+      }
+      canvas.classList.remove("panning", "rotating", "liquify-deforming");
+      pointerMode = null;
+      activePointerId = null;
+      if (!straightLineOwnsPaintCompletion) {
+        options.scheduleLayersRefresh();
+        if (completedPointerMode === "paint") options.invalidateActiveThumbnail();
+      }
+      touchNavigationGesture = null;
+      fillPointerMoved = false;
+      selectionPointerMoved = false;
+      clearLassoGesture();
+      const paintPointerUpHistoryStartedAt = measurePaintPointerUp ? browser.performance.now() : 0;
+      publishHistoryState();
       if (measurePaintPointerUp) {
-        paintPointerUpExtensionMs = browser.performance.now() - extensionStartedAt;
+        const completedAt = browser.performance.now();
+        const historyControlsMs = completedAt - paintPointerUpHistoryStartedAt;
+        const totalMs = completedAt - paintPointerUpStartedAt;
+        touchPaintIntentCounters.paintPointerUpCount += 1;
+        touchPaintIntentCounters.paintPointerUpLastTotalMs = totalMs;
+        touchPaintIntentCounters.paintPointerUpMaxTotalMs = Math.max(
+          touchPaintIntentCounters.paintPointerUpMaxTotalMs,
+          totalMs,
+        );
+        touchPaintIntentCounters.paintPointerUpLastPreEngineMs = Math.max(
+          0,
+          paintPointerUpEngineStartedAt - paintPointerUpStartedAt,
+        );
+        touchPaintIntentCounters.paintPointerUpLastEndStrokeMs = paintPointerUpEndStrokeMs;
+        touchPaintIntentCounters.paintPointerUpMaxEndStrokeMs = Math.max(
+          touchPaintIntentCounters.paintPointerUpMaxEndStrokeMs,
+          paintPointerUpEndStrokeMs,
+        );
+        touchPaintIntentCounters.paintPointerUpLastExtensionMs = paintPointerUpExtensionMs;
+        touchPaintIntentCounters.paintPointerUpLastUiCleanupMs = Math.max(
+          0,
+          paintPointerUpHistoryStartedAt - paintPointerUpCleanupStartedAt,
+        );
+        touchPaintIntentCounters.paintPointerUpLastHistoryControlsMs = historyControlsMs;
       }
-    } else if (pointerMode === "liquify") {
-      engine.endRasterLiquifyStroke(event.type === "pointerup");
-    } else if (pointerMode === "rotate") {
-      engine.endViewRotationGesture();
-    }
-    const paintPointerUpCleanupStartedAt = measurePaintPointerUp ? browser.performance.now() : 0;
-    if (pointerMode === "rotate" || pointerMode === "pan") {
-      options.getVectorController()?.endViewGesture();
-    }
-    canvas.classList.remove("panning", "rotating", "liquify-deforming");
-    pointerMode = null;
-    activePointerId = null;
-    if (!straightLineOwnsPaintCompletion) {
-      options.scheduleLayersRefresh();
-      if (completedPointerMode === "paint") options.invalidateActiveThumbnail();
-    }
-    touchNavigationGesture = null;
-    fillPointerMoved = false;
-    selectionPointerMoved = false;
-    clearLassoGesture();
-    const paintPointerUpHistoryStartedAt = measurePaintPointerUp ? browser.performance.now() : 0;
-    publishHistoryState();
-    if (measurePaintPointerUp) {
-      const completedAt = browser.performance.now();
-      const historyControlsMs = completedAt - paintPointerUpHistoryStartedAt;
-      const totalMs = completedAt - paintPointerUpStartedAt;
-      touchPaintIntentCounters.paintPointerUpCount += 1;
-      touchPaintIntentCounters.paintPointerUpLastTotalMs = totalMs;
-      touchPaintIntentCounters.paintPointerUpMaxTotalMs = Math.max(
-        touchPaintIntentCounters.paintPointerUpMaxTotalMs,
-        totalMs,
-      );
-      touchPaintIntentCounters.paintPointerUpLastPreEngineMs = Math.max(
-        0,
-        paintPointerUpEngineStartedAt - paintPointerUpStartedAt,
-      );
-      touchPaintIntentCounters.paintPointerUpLastEndStrokeMs = paintPointerUpEndStrokeMs;
-      touchPaintIntentCounters.paintPointerUpMaxEndStrokeMs = Math.max(
-        touchPaintIntentCounters.paintPointerUpMaxEndStrokeMs,
-        paintPointerUpEndStrokeMs,
-      );
-      touchPaintIntentCounters.paintPointerUpLastExtensionMs = paintPointerUpExtensionMs;
-      touchPaintIntentCounters.paintPointerUpLastUiCleanupMs = Math.max(
-        0,
-        paintPointerUpHistoryStartedAt - paintPointerUpCleanupStartedAt,
-      );
-      touchPaintIntentCounters.paintPointerUpLastHistoryControlsMs = historyControlsMs;
     }
 
     if (fillRequest) {

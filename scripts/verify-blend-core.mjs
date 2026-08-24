@@ -7,9 +7,12 @@ import {
   DRY_BLEND_DEFAULT_DOCUMENT_SIZE,
   DRY_BLEND_DEFAULT_SCRATCH_SIZE,
   DRY_BLEND_BLUR_MAX_SUPPORT_PX,
+  DRY_BLEND_BLUR_REDUCED_MAX_SUPPORT_PX,
   DRY_BLEND_SCRATCH_LIFECYCLE_STRATEGY,
   blendPaintCoefficient,
   blendPigmentDepositScale,
+  blendBlurReadSupportRadius,
+  blendBlurSamplingScale,
   blendBlurSupportRadius,
   blendStretchCoefficient,
   createDryBlendPlanner,
@@ -20,7 +23,11 @@ import {
 } from "../src/blend-core.ts";
 import {
   DRY_BLEND_PICKUP_BORDER_STRATEGY,
+  blendBlurDownsampleShader,
   blendBlurHorizontalShader,
+  blendBlurReducedHorizontalShader,
+  blendBlurReducedVerticalShader,
+  blendBlurUpsampleShader,
   blendBlurVerticalShader,
   blendDepositShader,
   blendPickupShader,
@@ -85,10 +92,20 @@ assert.equal(blendBlurSupportRadius(0, 96), 0);
 assert.equal(blendBlurSupportRadius(0.5, 96), 12);
 assert.equal(blendBlurSupportRadius(1, 96), 24);
 assert.equal(blendBlurSupportRadius(1, 1000), DRY_BLEND_BLUR_MAX_SUPPORT_PX);
+assert.equal(DRY_BLEND_BLUR_REDUCED_MAX_SUPPORT_PX, 12);
+assert.equal(blendBlurSamplingScale(1, 48), 1);
+assert.equal(blendBlurSamplingScale(1, 52), 2);
+assert.equal(blendBlurSamplingScale(1, 96), 2);
+assert.equal(blendBlurSamplingScale(1, 1000), 6);
+assert.equal(blendBlurReadSupportRadius(1, 48), 12);
+assert.equal(blendBlurReadSupportRadius(1, 96), 28);
+assert.equal(blendBlurReadSupportRadius(1, 1000), 78);
+const reduced96Scale = blendBlurSamplingScale(1, 96);
 assert.deepEqual(
-  destructiveGaussianBlurKernel(blendBlurSupportRadius(1, 96)),
-  destructiveGaussianBlurKernel(24),
-  "Blend Blur deve usare lo stesso kernel normalizzato del Gaussian Blur layer",
+  destructiveGaussianBlurKernel(
+    Math.ceil(blendBlurSupportRadius(1, 96) / reduced96Scale),
+  ),
+  destructiveGaussianBlurKernel(DRY_BLEND_BLUR_REDUCED_MAX_SUPPORT_PX),
 );
 
 assert.equal(
@@ -146,7 +163,22 @@ assert.match(
 );
 assert.match(
   brushEngineSource,
-  /\|\| engine\.pendingBlendBatches\.length > 0\s*\n\s*\|\| engine\.brushGpuWarmupPromise !== null\s*\n\s*\) \{\s*\n\s*return;/,
+  /\|\| engine\.pendingBlendBatches\.length > 0\s*\n\s*\|\| engine\.blendSubmissionInFlight !== null\s*\n\s*\|\| engine\.brushGpuWarmupPromise !== null\s*\n\s*\) \{\s*\n\s*return;/,
+);
+assert.match(
+  brushEngineSource,
+  /private trackBlendSubmissionCompletion\(\): void \{[\s\S]*?queue\.onSubmittedWorkDone\(\)[\s\S]*?this\.blendSubmissionInFlight = completion;[\s\S]*?this\.blendSubmissionInFlight = null;[\s\S]*?this\.requestRender\(\)/,
+  "Blend must wait for the current GPU submission before scheduling the next one",
+);
+assert.match(
+  brushEngineSource,
+  /this\.blendSubmissionInFlight !== null\s*\n\s*&& this\.pendingBlendBatches\.length > 0\s*\n\s*&& !this\.forceSynchronousBlendDrain[\s\S]*?return;/,
+  "interactive Blend rendering must apply GPU backpressure",
+);
+assert.match(
+  brushEngineSource,
+  /const deferResourcesForQueuedBlend = this\.initialized[\s\S]*?this\.brushSettingsResourcesDeferredForBlend = true;[\s\S]*?this\.requestRender\(\);[\s\S]*?return;/,
+  "changing brush controls must not synchronously drain queued Blend work",
 );
 assert.match(
   brushEngineSource,
@@ -181,6 +213,11 @@ assert.match(blendDepositShader, /override blendGrainEnabled: bool = false/);
 assert.match(blendBlurHorizontalShader, /pack2x16float/);
 assert.match(blendBlurHorizontalShader, /documentClampedState/);
 assert.match(blendBlurVerticalShader, /mix\(original, result, clamp\(blend\.grainAffineAndPhase\.w/);
+assert.match(blendBlurDownsampleShader, /positiveModulo\(roiOrigin\(\)\.x, scale\)/);
+assert.match(blendBlurDownsampleShader, /result \/= f32\(scale \* scale\)/);
+assert.match(blendBlurReducedHorizontalShader, /DRY_BLEND_BLUR_REDUCED_MAX_SUPPORT_PX|offset <= 12u/);
+assert.match(blendBlurReducedVerticalShader, /reducedOutput\[reducedIndex\(pixel\)\]/);
+assert.match(blendBlurUpsampleShader, /mix\([\s\S]*?original,[\s\S]*?blurred/);
 assert.match(
   blendDepositShader,
   /blurAmount > 0\.0[\s\S]*?stretchAmount <= 0\.0[\s\S]*?paintAmount <= 0\.0[\s\S]*?pigmentDepositScale = 0\.0/,
@@ -198,7 +235,10 @@ assert.match(
 );
 assert.match(blendRendererSource, /blurAmount > 0 && groups\.length > 0/);
 assert.match(blendRendererSource, /floats\[31\] = clamp\(settings\.blendBlur, 0, 1\)/);
-assert.match(blendRendererSource, /size: this\.scratchSize \* this\.scratchSize \* 8/);
+assert.match(blendRendererSource, /const blurBufferBytes = this\.scratchSize \* this\.scratchSize \* 8/);
+assert.match(blendRendererSource, /destructiveGaussianBlurKernel\(Math\.ceil\(radius \/ scale\)\)/);
+assert.match(blendRendererSource, /this\.blurKernelUnsigned\[1\] = scale/);
+assert.match(blendRendererSource, /secondRegionOffset[\s\S]*?reducedHorizontalBindGroup[\s\S]*?reducedVerticalBindGroup/);
 assert.match(
   blendDepositShader,
   /let constantCosine = cos\(constantAngle\);[\s\S]*?customAt\([\s\S]*?constantCosine/,
@@ -351,7 +391,10 @@ for (const fastPathCase of [
     samples: [point(2000, 2000, 0), point(2051.375, 1942.625, 9)],
   },
 ]) {
-  const fastPathPlanner = createDryBlendPlanner(fastPathCase.controls, { maxSteps: 256 });
+  const fastPathPlanner = createDryBlendPlanner(fastPathCase.controls, {
+    maxSteps: 256,
+    scratchSize: 8192,
+  });
   fastPathPlanner.reset(fastPathCase.samples[0]);
   assert.equal(fastPathPlanner.pushSamples(fastPathCase.samples.slice(1)).accepted, true);
   for (const step of fastPathPlanner.snapshotSteps()) {
@@ -375,11 +418,51 @@ fullBlurPlanner.reset(blurFixtureSamples[0]);
 assert.equal(fullBlurPlanner.pushSample(blurFixtureSamples[1]).accepted, true);
 const fullBlurBatch = structuredClone(fullBlurPlanner.buildNextBatch());
 assert.deepEqual(fullBlurBatch.writeRect, noBlurBatch.writeRect);
-assert.equal(fullBlurBatch.maxHalo - noBlurBatch.maxHalo, 24);
-assert.equal(fullBlurBatch.readRect.x, noBlurBatch.readRect.x - 24);
-assert.equal(fullBlurBatch.readRect.y, noBlurBatch.readRect.y - 24);
-assert.equal(fullBlurBatch.readRect.width, noBlurBatch.readRect.width + 48);
-assert.equal(fullBlurBatch.readRect.height, noBlurBatch.readRect.height + 48);
+assert.equal(fullBlurBatch.maxHalo - noBlurBatch.maxHalo, 28);
+assert.equal(fullBlurBatch.readRect.x, noBlurBatch.readRect.x - 28);
+assert.equal(fullBlurBatch.readRect.y, noBlurBatch.readRect.y - 28);
+assert.equal(fullBlurBatch.readRect.width, noBlurBatch.readRect.width + 56);
+assert.equal(fullBlurBatch.readRect.height, noBlurBatch.readRect.height + 56);
+
+// Regression: the public maximum tip/Blur combination used to produce a
+// 1665-pixel ROI at this angle and permanently lock pointer interaction.
+const maximumBlurPlanner = createDryBlendPlanner(
+  {
+    size: 1000,
+    blur: 1,
+    strength: 1,
+    angle: 0,
+    orientToStroke: true,
+  },
+  { documentWidth: 2048, documentHeight: 2048, scratchSize: 1664 },
+);
+maximumBlurPlanner.reset(point(1024, 1024, 0));
+const maximumBlurDistance = 47.9;
+const maximumBlurAngle = 35 * Math.PI / 180;
+assert.equal(maximumBlurPlanner.pushSample(point(
+  1024 + Math.cos(maximumBlurAngle) * maximumBlurDistance,
+  1024 + Math.sin(maximumBlurAngle) * maximumBlurDistance,
+  16,
+)).accepted, true);
+let maximumBlurBatchCount = 0;
+let maximumBlurBatch;
+while ((maximumBlurBatch = maximumBlurPlanner.buildNextBatch())) {
+  assert(maximumBlurBatch.readRect.width <= 1664);
+  assert(maximumBlurBatch.readRect.height <= 1664);
+  maximumBlurBatchCount += 1;
+}
+assert(maximumBlurBatchCount >= 2, "the oversized sweep must be subdivided");
+
+const impossibleTipPlanner = createDryBlendPlanner(
+  { size: 1024, aspect: 3.75, angle: -Math.PI / 7, orientToStroke: false },
+  { scratchSize: 1664 },
+);
+impossibleTipPlanner.reset(point(2000, 2000, 0));
+assert.throws(
+  () => impossibleTipPlanner.pushSample(point(2051.375, 1942.625, 9)),
+  /cannot fit inside scratch/,
+  "an unsplittable tip must fail before mutating the planner ring",
+);
 
 const rotatedMaximum = createDryBlendPlanner(
   {
