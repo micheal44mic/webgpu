@@ -37,7 +37,7 @@ const BLEND_BLUR_WEIGHT_VEC4_COUNT = Math.ceil(
 const BLEND_BLUR_UNIFORM_BYTES = 16 + BLEND_BLUR_WEIGHT_VEC4_COUNT * 16;
 
 export const DRY_BLEND_RENDERER_BUILD =
-  "dry-blend-webgpu-v7-bounded-gaussian-blur";
+  "dry-blend-webgpu-v8-distinct-reduced-blur-storage";
 
 export interface DryBlendRenderSettings {
   size: number;
@@ -118,6 +118,7 @@ interface ScratchResources {
   carrierBuffer: GPUBuffer;
   blur: {
     buffer: GPUBuffer;
+    reducedBuffer: GPUBuffer;
     horizontalBindGroup: GPUBindGroup;
     verticalBindGroup: GPUBindGroup;
     downsampleBindGroup: GPUBindGroup;
@@ -897,7 +898,10 @@ export class DryBlendRenderer {
     const stateBytes = pixels * 16;
     const coverageBytes = pixels * 4;
     const carrierBytes = BLEND_CARRIER_SLOT_COUNT * 16;
-    const blurBytes = this.scratch.blur ? pixels * 8 : 0;
+    const reducedSide = Math.ceil((this.scratchSize + 1) / 2);
+    const blurBytes = this.scratch.blur
+      ? pixels * 8 + reducedSide * reducedSide * 8
+      : 0;
     return (
       stateBytes
       + coverageBytes
@@ -1103,6 +1107,7 @@ export class DryBlendRenderer {
     this.scratch.coverageBuffer.destroy();
     this.scratch.carrierBuffer.destroy();
     this.scratch.blur?.buffer.destroy();
+    this.scratch.blur?.reducedBuffer.destroy();
     this.scratch = null;
     this.carrierValid = false;
     this.scratchMaterialized = false;
@@ -1122,6 +1127,7 @@ export class DryBlendRenderer {
       this.scratch.coverageBuffer.destroy();
       this.scratch.carrierBuffer.destroy();
       this.scratch.blur?.buffer.destroy();
+      this.scratch.blur?.reducedBuffer.destroy();
       this.scratch = null;
     }
     this.scratchMaterialized = false;
@@ -1434,12 +1440,16 @@ export class DryBlendRenderer {
       size: blurBufferBytes,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
-    const storageAlignment = this.device.limits.minStorageBufferOffsetAlignment;
-    const secondRegionOffset = Math.ceil(
-      blurBufferBytes / 2 / storageAlignment,
-    ) * storageAlignment;
-    const firstRegionSize = secondRegionOffset;
-    const secondRegionSize = blurBufferBytes - secondRegionOffset;
+    // Keep the reduced-grid ping-pong destination in a distinct allocation.
+    // Some WebGPU backends conservatively treat two storage bindings of one
+    // buffer as aliasing even when their byte ranges do not overlap.
+    const reducedSide = Math.ceil((this.scratchSize + 1) / 2);
+    const reducedBufferBytes = reducedSide * reducedSide * 8;
+    const reducedBuffer = this.device.createBuffer({
+      label: "Blend local Gaussian reduced-grid intermediate",
+      size: reducedBufferBytes,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
     const uniformEntry = {
       binding: 0,
       resource: {
@@ -1478,11 +1488,11 @@ export class DryBlendRenderer {
     });
     const packedRegion = (
       binding: number,
-      offset: number,
+      buffer: GPUBuffer,
       size: number,
     ): GPUBindGroupEntry => ({
       binding,
-      resource: { buffer: blurBuffer, offset, size },
+      resource: { buffer, offset: 0, size },
     });
     const downsampleBindGroup = this.device.createBindGroup({
       label: "Blend local Gaussian reduced-grid downsample bind group",
@@ -1490,7 +1500,7 @@ export class DryBlendRenderer {
       entries: [
         uniformEntry,
         { binding: 1, resource: { buffer: scratch.stateBuffer } },
-        packedRegion(2, 0, firstRegionSize),
+        packedRegion(2, blurBuffer, reducedBufferBytes),
         kernelEntry,
       ],
     });
@@ -1499,8 +1509,8 @@ export class DryBlendRenderer {
       layout: this.blurHorizontalBindGroupLayout,
       entries: [
         uniformEntry,
-        packedRegion(1, 0, firstRegionSize),
-        packedRegion(2, secondRegionOffset, secondRegionSize),
+        packedRegion(1, blurBuffer, reducedBufferBytes),
+        packedRegion(2, reducedBuffer, reducedBufferBytes),
         kernelEntry,
       ],
     });
@@ -1509,8 +1519,8 @@ export class DryBlendRenderer {
       layout: this.blurHorizontalBindGroupLayout,
       entries: [
         uniformEntry,
-        packedRegion(1, secondRegionOffset, secondRegionSize),
-        packedRegion(2, 0, firstRegionSize),
+        packedRegion(1, reducedBuffer, reducedBufferBytes),
+        packedRegion(2, blurBuffer, reducedBufferBytes),
         kernelEntry,
       ],
     });
@@ -1519,13 +1529,14 @@ export class DryBlendRenderer {
       layout: this.blurHorizontalBindGroupLayout,
       entries: [
         uniformEntry,
-        packedRegion(1, 0, firstRegionSize),
+        packedRegion(1, blurBuffer, reducedBufferBytes),
         { binding: 2, resource: { buffer: scratch.stateBuffer } },
         kernelEntry,
       ],
     });
     scratch.blur = {
       buffer: blurBuffer,
+      reducedBuffer,
       horizontalBindGroup,
       verticalBindGroup,
       downsampleBindGroup,

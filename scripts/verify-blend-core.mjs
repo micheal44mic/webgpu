@@ -238,7 +238,27 @@ assert.match(blendRendererSource, /floats\[31\] = clamp\(settings\.blendBlur, 0,
 assert.match(blendRendererSource, /const blurBufferBytes = this\.scratchSize \* this\.scratchSize \* 8/);
 assert.match(blendRendererSource, /destructiveGaussianBlurKernel\(Math\.ceil\(radius \/ scale\)\)/);
 assert.match(blendRendererSource, /this\.blurKernelUnsigned\[1\] = scale/);
-assert.match(blendRendererSource, /secondRegionOffset[\s\S]*?reducedHorizontalBindGroup[\s\S]*?reducedVerticalBindGroup/);
+const reducedBlurStorageSource = blendRendererSource.slice(
+  blendRendererSource.indexOf("  private ensureBlurScratchResources("),
+  blendRendererSource.indexOf("  private ensureScratchResources("),
+);
+assert.match(reducedBlurStorageSource, /reducedBuffer = this\.device\.createBuffer/);
+assert.match(
+  reducedBlurStorageSource,
+  /reducedHorizontalBindGroup[\s\S]*?packedRegion\(1, blurBuffer, reducedBufferBytes\)[\s\S]*?packedRegion\(2, reducedBuffer, reducedBufferBytes\)/,
+  "reduced horizontal Blur must ping-pong into a distinct GPU allocation",
+);
+assert.match(
+  reducedBlurStorageSource,
+  /reducedVerticalBindGroup[\s\S]*?packedRegion\(1, reducedBuffer, reducedBufferBytes\)[\s\S]*?packedRegion\(2, blurBuffer, reducedBufferBytes\)/,
+  "reduced vertical Blur must ping-pong back from the distinct allocation",
+);
+assert.doesNotMatch(
+  reducedBlurStorageSource,
+  /secondRegionOffset/,
+  "two byte ranges of one GPUBuffer are not a safe reduced Blur ping-pong",
+);
+assert.match(blendRendererSource, /this\.scratch\.blur\?\.reducedBuffer\.destroy\(\);/);
 assert.match(
   blendDepositShader,
   /let constantCosine = cos\(constantAngle\);[\s\S]*?customAt\([\s\S]*?constantCosine/,
