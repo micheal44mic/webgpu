@@ -102,6 +102,7 @@ import {
   updateRasterLayerTransform as updateRasterLayerTransformRuntime,
   type ActiveRasterTransformSession,
 } from "./engine-raster-transform-runtime";
+import type { RasterTransformMode } from "./raster-deform-math";
 import {
   beginRasterGaussianBlur as beginRasterGaussianBlurRuntime,
   cancelRasterGaussianBlur as cancelRasterGaussianBlurRuntime,
@@ -642,7 +643,9 @@ import {
   MemoryReservationLedger,
   memoryZoneFor,
   planMemoryAdmission,
+  type MemoryAdmissionDecision,
   type MemoryReservation,
+  type MemoryRequest,
 } from "./memory-governor-core";
 import { memoryGovernorLimitsForDeviceClass } from "./memory-governor-limits";
 import {
@@ -7684,6 +7687,46 @@ export class BrushEngine {
   }
 
   /**
+   * Keeps the governor authoritative while exposing one explicit escape hatch
+   * to interactive UI. Approval applies only to this reservation attempt; no
+   * session-wide flag is retained and recovery work can opt out entirely.
+   */
+  async reserveMemoryWithAdmissionOverride(
+    request: MemoryRequest,
+    decision: MemoryAdmissionDecision,
+    action: string,
+    refusalMessage: string,
+    allowOverride = true,
+  ): Promise<MemoryReservation> {
+    if (decision.outcome !== "admit") {
+      const warning = {
+        action,
+        category: request.category,
+        requiredBytes: request.peakBytes,
+        availableBytes: Math.max(0, decision.ceilingBytes - decision.usedBytes),
+        usedBytes: decision.usedBytes,
+        ceilingBytes: decision.ceilingBytes,
+        reason: decision.reason,
+      } as const;
+      let approved = false;
+      if (allowOverride && this.callbacks.onMemoryAdmissionWarning) {
+        try {
+          approved = await this.callbacks.onMemoryAdmissionWarning(warning) === true;
+        } catch (error) {
+          console.error("The memory-limit warning failed; the allocation remains blocked.", error);
+        }
+      }
+      if (!approved) throw new Error(refusalMessage);
+      console.warn("Memory safety limit overridden for one operation.", warning);
+      this.publishStatus(
+        `${action}: proceeding beyond the estimated device memory limit.`,
+        "working",
+      );
+    }
+    return this.memoryReservations.reserve(request);
+  }
+
+  /**
    * Quando vale la pena comprimere un livello lontano.
    *
    * La compressione costa una decompressione al prossimo cambio livello, quindi
@@ -8802,8 +8845,8 @@ export class BrushEngine {
     return cancelRasterLiquifyRuntime(this);
   }
 
-  beginRasterLayerTransform() {
-    return beginRasterLayerTransformRuntime(this);
+  beginRasterLayerTransform(mode?: RasterTransformMode) {
+    return beginRasterLayerTransformRuntime(this, mode);
   }
 
   updateRasterLayerTransform(
@@ -9029,7 +9072,7 @@ export class BrushEngine {
     return record;
   }
 
-  private reserveLayerDuplicateMemory(source: LayerRecord): MemoryReservation {
+  private async reserveLayerDuplicateMemory(source: LayerRecord): Promise<MemoryReservation> {
     const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
     const fullLayerBytes = this.documentWidth * this.documentHeight * bytesPerPixel;
     const tiledBytes = this.layerColdBytesForMemoryAdmission(source);
@@ -9054,17 +9097,17 @@ export class BrushEngine {
       this.memoryGovernorLimits,
       request,
     );
-    if (decision.outcome !== "admit") {
-      const requiredMiB = request.peakBytes / MEBIBYTE_BYTES;
-      const headroomMiB = Math.max(0, decision.ceilingBytes - decision.usedBytes)
-        / MEBIBYTE_BYTES;
-      throw new Error(
-        "Not enough memory to duplicate the layer: "
+    const requiredMiB = request.peakBytes / MEBIBYTE_BYTES;
+    const headroomMiB = Math.max(0, decision.ceilingBytes - decision.usedBytes)
+      / MEBIBYTE_BYTES;
+    return this.reserveMemoryWithAdmissionOverride(
+      request,
+      decision,
+      "Duplicate layer",
+      "Not enough memory to duplicate the layer: "
         + `${requiredMiB.toFixed(1)} MiB required, ${headroomMiB.toFixed(1)} MiB available. `
         + "Reduce history or wait for inactive layers to be compressed.",
-      );
-    }
-    return this.memoryReservations.reserve(request);
+    );
   }
 
   private async duplicateRasterLayer(
@@ -9101,7 +9144,7 @@ export class BrushEngine {
         // The active record is authoritative only after persistence: a layer
         // painted from empty can otherwise still report zero sparse tiles here.
         // Reserve from the final mask, but still before the first GPU seed.
-        reservation = this.reserveLayerDuplicateMemory(source);
+        reservation = await this.reserveLayerDuplicateMemory(source);
         const storageMask = source.hasContent
           ? coldStorageMaskForRecord(source)
           : new Uint32Array(source.storageTileMask.length);
@@ -9588,7 +9631,7 @@ export class BrushEngine {
    * frozen. The switch itself already releases old composite caches before
    * rebuilding them; this guard covers the remaining unavoidable overlap.
    */
-  private reserveLayerSwitchMemory(targetIndex: number): MemoryReservation {
+  private async reserveLayerSwitchMemory(targetIndex: number): Promise<MemoryReservation> {
     const outgoing = this.layerStack.active;
     const incoming = this.layerStack.at(targetIndex);
     const incomingGpu = this.requireLayerGpu(incoming.id);
@@ -9629,16 +9672,16 @@ export class BrushEngine {
       this.memoryGovernorLimits,
       request,
     );
-    if (decision.outcome !== "admit") {
-      const requiredMiB = request.peakBytes / (1024 * 1024);
-      const headroomMiB = Math.max(0, decision.ceilingBytes - decision.usedBytes) / (1024 * 1024);
-      throw new Error(
-        "Not enough memory to switch layers: "
+    const requiredMiB = request.peakBytes / (1024 * 1024);
+    const headroomMiB = Math.max(0, decision.ceilingBytes - decision.usedBytes) / (1024 * 1024);
+    return this.reserveMemoryWithAdmissionOverride(
+      request,
+      decision,
+      "Switch layers",
+      "Not enough memory to switch layers: "
         + `${requiredMiB.toFixed(1)} MiB required, ${headroomMiB.toFixed(1)} MiB available. `
         + "Wait for inactive layers to be compressed or reduce history before trying again.",
-      );
-    }
-    return this.memoryReservations.reserve(request);
+    );
   }
 
   /** Selects an existing layer, paying the switch cost. */
@@ -9651,13 +9694,14 @@ export class BrushEngine {
       return null;
     }
     this.assertLayerSwitchAllowed();
-    const memoryReservation = this.reserveLayerSwitchMemory(index);
+    let memoryReservation: MemoryReservation | null = null;
     let memoryCommitted = false;
     this.cancelLayerColdCompressionIdle();
     this.layerSwitchBusy = true;
     const fromIndex = this.layerStack.activeIndex;
     let activationStarted = false;
     try {
+      memoryReservation = await this.reserveLayerSwitchMemory(index);
       await this.waitForIdle();
       this.persistActiveLayerState();
       await this.prepareActiveLayerForSwitch();
@@ -9692,8 +9736,10 @@ export class BrushEngine {
       }
       throw error;
     } finally {
-      if (memoryCommitted) this.memoryReservations.settle(memoryReservation);
-      else this.memoryReservations.release(memoryReservation);
+      if (memoryReservation) {
+        if (memoryCommitted) this.memoryReservations.settle(memoryReservation);
+        else this.memoryReservations.release(memoryReservation);
+      }
       this.layerSwitchBusy = false;
       this.scheduleLayerColdCompression();
       if (import.meta.env.DEV) {

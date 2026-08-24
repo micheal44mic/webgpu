@@ -244,7 +244,8 @@ assert.doesNotMatch(
   /engine\.layerSize|\bLAYER_SIZE\b|fieldHeight: DOCUMENT_WIDTH|documentHeight: DOCUMENT_WIDTH/,
   "Liquify non deve duplicare la larghezza nei campi verticali.",
 );
-requireText(runtime, "memoryReservations.reserve", "memory governor reservation");
+requireText(runtime, "reserveMemoryWithAdmissionOverride", "memory governor override gate");
+requireText(runtime, "await reserveSessionMemory", "async memory warning before allocation");
 requireText(runtime, "commitHistoryActionAtomically", "atomic history commit");
 requireText(runtime, 'filter: "liquify"', "Liquify history action");
 requireText(historyTypes, 'filter: "liquify"', "typed Liquify history payload");

@@ -51,6 +51,7 @@ export const verificationScripts = Object.freeze([
   "verify-light-glaze.mjs",
   "verify-liquify.mjs",
   "verify-memory-governor.mjs",
+  "verify-memory-limit-dialog.mjs",
   "verify-mixed-scene-reorder.mjs",
   "verify-mixed-scene-stack.mjs",
   "verify-mobile-layer-multi-selection.mjs",

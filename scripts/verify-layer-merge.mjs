@@ -33,7 +33,7 @@ assert.match(history, /baseTileMask: Uint32Array/);
 assert.match(runtime, /prepareAndApplyLayerMerge/);
 assert.match(runtime, /applyLayerMergeHistory/);
 assert.match(runtime, /reserveLayerMergeCreateMemory/);
-assert.match(runtime, /memoryReservation = reserveLayerMergeCreateMemory/);
+assert.match(runtime, /memoryReservation = await reserveLayerMergeCreateMemory/);
 assert.match(
   runtime,
   /function layerMergeCompressedCpuBytes[\s\S]*?engine\.retainedCompressedLayerStores\(\)/,
@@ -52,7 +52,7 @@ assert.match(
   core,
   /bakesParentBlendModesFromTransparentBackdrop\s*=\s*!onlyOneCompleteRasterUnit\s*&& sceneIndex === 0/,
 );
-assert.match(historyRuntime, /await applyLayerMergeHistory\(engine, crossedAction, delta\)/);
+assert.match(historyRuntime, /await applyLayerMergeHistory\(engine, crossedAction, delta, true\)/);
 assert.match(
   historyService,
   /appendWithoutPush\(this\.discardedLayerMergeActions, action\)/,
@@ -61,8 +61,8 @@ assert.match(
 assert.match(historyRuntime, /destroyLayerMergeHistorySeeds\(action\)/);
 assert.match(engine, /get discardedLayerMergeHistoryActions\(\): LayerMergeHistoryAction\[\]/);
 assert.match(engine, /async mergeMixedSceneItems\(/);
-assert.match(engine, /private reserveLayerSwitchMemory\(/);
-assert.match(engine, /const memoryReservation = this\.reserveLayerSwitchMemory\(index\)/);
+assert.match(engine, /private async reserveLayerSwitchMemory\(/);
+assert.match(engine, /memoryReservation = await this\.reserveLayerSwitchMemory\(index\)/);
 assert.match(controller, /async mergeSceneItems\(/);
 assert.match(controller, /this\.host\.mergeMixedSceneItems\(\{ keys: \[\.\.\.keys\], vectorDraws \}\)/);
 
@@ -244,7 +244,7 @@ assert.match(
   storageCoordinator,
   /crossed\?\.kind === "layer-merge"[\s\S]*?assertRequiredPayloadsAvailable\(required\)/,
 );
-assert.match(runtime, /const reservation = reserveLayerMergeHistoryMemory/);
+assert.match(runtime, /const reservation = await reserveLayerMergeHistoryMemory/);
 assert.match(
   runtime,
   /if \(committed\) engine\.memoryReservations\.settle\(reservation\);[\s\S]*?engine\.memoryReservations\.release\(reservation\)/,

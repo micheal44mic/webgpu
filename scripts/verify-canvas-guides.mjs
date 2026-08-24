@@ -796,7 +796,7 @@ assert.match(
 assert.match(brushEngineSource, /sourcePivot: \{ \.\.\.this\.activeRasterTransformSession\.sourcePivot \}/);
 assert.match(mixedNodeSource, /sourcePivot: node\.sourcePivot \? \{ \.\.\.node\.sourcePivot \} : undefined/);
 const selectedTransformStart = controllerSource.indexOf("  private selectedTransformNode(");
-const prepareRasterStart = controllerSource.indexOf("  private async prepareSelectedRasterTransform(", selectedTransformStart);
+const prepareRasterStart = controllerSource.indexOf("  private prepareSelectedRasterTransform(", selectedTransformStart);
 assert.ok(selectedTransformStart >= 0 && prepareRasterStart > selectedTransformStart);
 assert.match(
   controllerSource.slice(selectedTransformStart, prepareRasterStart),

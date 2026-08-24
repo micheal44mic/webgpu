@@ -932,7 +932,10 @@ function sessionMemoryRequest(memoryBytes: number): MemoryRequest {
   };
 }
 
-function reserveSessionMemory(engine: BrushEngine, memoryBytes: number): MemoryReservation {
+async function reserveSessionMemory(
+  engine: BrushEngine,
+  memoryBytes: number,
+): Promise<MemoryReservation> {
   const request = sessionMemoryRequest(memoryBytes);
   const decision = planMemoryAdmission(
     {
@@ -944,16 +947,16 @@ function reserveSessionMemory(engine: BrushEngine, memoryBytes: number): MemoryR
     engine.memoryGovernorLimits,
     request,
   );
-  if (decision.outcome !== "admit") {
-    const requiredMiB = request.peakBytes / (1024 * 1024);
-    const availableMiB = Math.max(0, decision.ceilingBytes - decision.usedBytes)
-      / (1024 * 1024);
-    throw new Error(
-      `Insufficient memory for Liquify: ${requiredMiB.toFixed(1)} MiB required, `
+  const requiredMiB = request.peakBytes / (1024 * 1024);
+  const availableMiB = Math.max(0, decision.ceilingBytes - decision.usedBytes)
+    / (1024 * 1024);
+  return engine.reserveMemoryWithAdmissionOverride(
+    request,
+    decision,
+    "Open Liquify",
+    `Insufficient memory for Liquify: ${requiredMiB.toFixed(1)} MiB required, `
       + `${availableMiB.toFixed(1)} MiB available.`,
-    );
-  }
-  return engine.memoryReservations.reserve(request);
+  );
 }
 
 export async function beginRasterLiquify(
@@ -1022,7 +1025,7 @@ export async function beginRasterLiquify(
       + DOCUMENT_WIDTH * DOCUMENT_HEIGHT
       + scratchExtent * scratchExtent
     ) * BYTES_PER_RGBA16F_PIXEL + uniformStride * UNIFORM_SLOT_COUNT;
-    reservation = reserveSessionMemory(engine, memoryBytes);
+    reservation = await reserveSessionMemory(engine, memoryBytes);
 
     const session = await runGpuAllocationTransaction(
       engine.device,

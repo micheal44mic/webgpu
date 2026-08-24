@@ -17,7 +17,18 @@ assert.doesNotMatch(
 assert.match(source, /export type CanvasToolEnginePort = Pick</);
 assert.match(source, /configurationRevision/);
 assert.match(source, /startTextDistortEditing/);
+assert.match(source, /syncVectorControllerState/);
 assert.doesNotMatch(source, /document\.getElementById|querySelector/);
+assert.match(
+  main,
+  /function selectCanvasToolWithMixedScene[\s\S]*?initializeMixedSceneController\(\)/,
+  "selecting Transform, Warp, or Perspective must initialize the deferred editor on demand",
+);
+assert.match(
+  main,
+  /mixedSceneController = controller;[\s\S]{0,160}canvasToolController\?\.syncVectorControllerState\(\)/,
+  "the selected transform mode must be replayed when deferred initialization finishes",
+);
 assert.match(
   html,
   /id="mobilePan"[\s\S]*?title="Move"[\s\S]*?data-lucide="hand"/,
@@ -98,9 +109,11 @@ const canceledKeyboard = [];
 const syncedBrushSettings = [];
 let distortEditing = false;
 let transformApplyResult = true;
+let transformSessionActive = false;
+let vectorReady = true;
 const vectorCalls = [];
 const vector = {
-  setTransformToolActive: (active) => vectorCalls.push(["transform-active", active]),
+  setTransformToolActive: (active, mode) => vectorCalls.push(["transform-active", active, mode]),
   isSelectedTextDistortEditing: () => distortEditing,
   startSelectedTextDistortEditing: () => {
     vectorCalls.push(["distort-start"]);
@@ -114,8 +127,15 @@ const vector = {
   setSelectedTextTransform: (mode) => vectorCalls.push(["warp", mode]),
   applyTransform: async () => {
     vectorCalls.push(["apply-transform"]);
+    if (transformApplyResult) transformSessionActive = false;
     return transformApplyResult;
   },
+  getTransformActionSnapshot: () => ({
+    active: transformSessionActive,
+    preparing: false,
+    canApply: transformSessionActive,
+    canCancel: transformSessionActive,
+  }),
   resetSelectedText: () => vectorCalls.push(["reset-text"]),
   deleteSelectedText: () => vectorCalls.push(["delete-text"]),
   rasterizeSelectedTextNode: () => vectorCalls.push(["rasterize-text"]),
@@ -135,7 +155,7 @@ const controller = new CanvasToolController({
   syncBrushLibraryButton: () => {},
   toggleBrushLibrary: () => { libraryToggles += 1; },
   cancelKeyboardSelectionGesture: (hideCursor) => canceledKeyboard.push(hideCursor),
-  getVectorController: () => vector,
+  getVectorController: () => vectorReady ? vector : null,
   getOpenToolSettingsKind: () => toolSettingsKind,
   syncMenuState: () => { menuSyncs += 1; },
   syncBrushSettings: (settings) => syncedBrushSettings.push(settings),
@@ -145,6 +165,17 @@ const controller = new CanvasToolController({
 });
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+vectorReady = false;
+controller.configure("perspective", false);
+await settle();
+vectorReady = true;
+controller.syncVectorControllerState();
+assert.deepEqual(
+  vectorCalls.at(-1),
+  ["transform-active", true, "perspective"],
+  "Perspective must be replayed with its exact mode after deferred editor startup",
+);
 
 controller.configure("paint", false);
 await settle();
@@ -224,13 +255,25 @@ assert(vectorCalls.some(([name]) => name === "rasterize-text"));
 controller.configure("transform", false);
 await settle();
 toolSettingsKind = null;
+transformSessionActive = true;
 await controller.finishTransformToolOnSheetClose("transform");
 assert.equal(controller.activeTool, "paint");
 transformApplyResult = false;
 controller.configure("transform", false);
 await settle();
+transformSessionActive = true;
 await controller.finishTransformToolOnSheetClose("transform");
 assert.equal(controller.activeTool, "transform");
+transformApplyResult = true;
+transformSessionActive = false;
+const applyCallsBeforeCanceledClose = vectorCalls.filter(([name]) => name === "apply-transform").length;
+await controller.finishTransformToolOnSheetClose("transform");
+assert.equal(controller.activeTool, "paint");
+assert.equal(
+  vectorCalls.filter(([name]) => name === "apply-transform").length,
+  applyCallsBeforeCanceledClose,
+  "closing after Cancel must leave Transform without trying to apply a missing session",
+);
 
 assert(menuSyncs > 0);
 assert(closedStudios.length > 0);

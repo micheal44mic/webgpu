@@ -429,7 +429,7 @@ assert.doesNotMatch(
   /history|GPUTexture|LayerRecord|LayerColdStorageResources/,
   "the public import DTO must not expose authoritative history/GPU ownership",
 );
-assert.match(engineSource, /beginRasterLayerTransform\(\)/);
+assert.match(engineSource, /beginRasterLayerTransform\(mode\?: RasterTransformMode\)/);
 
 assert.match(engineSource, /beginVectorHistoryEdit\(scope: "property" \| "transform"/);
 assert.match(engineSource, /async cancelVectorHistoryEdit\(\): Promise<boolean>/);
@@ -439,7 +439,7 @@ assert.match(
   "Cancel must keep the global edit gate until async rollback succeeds",
 );
 assert.match(controllerSource, /beginVectorHistoryEdit\("transform"\)/);
-assert.match(controllerSource, /beginRasterLayerTransform\(\)/);
+assert.match(controllerSource, /beginRasterLayerTransform\(this\.rasterTransformToolMode\)/);
 assert.match(controllerSource, /commitRasterLayerTransform\(\)/);
 assert.match(controllerSource, /cancelRasterLayerTransform\(\)/);
 assert.match(controllerSource, /private async applyTransformSession/);
@@ -462,8 +462,9 @@ assert.match(
   "l'import deve restare bloccato finche upload, mip e prima presentazione sono conclusi",
 );
 assert.match(htmlSource, /data-mobile-canvas-tool="transform"/);
-assert.match(htmlSource, /id="transformApply"/);
-assert.match(htmlSource, /id="transformCancel"/);
+assert.match(htmlSource, /id="mobileTransformApply"/);
+assert.match(htmlSource, /id="mobileTransformCancel"/);
+assert.doesNotMatch(htmlSource, /id="transformApply"|id="transformCancel"/);
 assert.match(htmlSource, /accept="\.png,\.jpg,\.jpeg,\.webp,\.avif/);
 
 const srgbToLinearChannel = (value) => value <= 0.04045

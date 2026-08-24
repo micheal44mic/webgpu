@@ -82,6 +82,7 @@ export interface VectorEffectEditorSnapshot {
 
 export interface VectorTransformActionSnapshot {
   readonly active: boolean;
+  readonly preparing: boolean;
   readonly canApply: boolean;
   readonly canCancel: boolean;
 }

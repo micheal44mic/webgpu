@@ -34,6 +34,7 @@ import {
 import { VECTOR_TEXT_TRANSFORM_STRATEGY } from "./vector-text-transform.ts";
 import type { EditorGuidePreferences } from "./editor-settings-storage";
 import type { SceneSnapMatch } from "./scene-transform-snap";
+import type { RasterTransformMode } from "./raster-deform-math";
 
 export interface VectorRasterizationResult {
   readonly layerId: number;
@@ -164,7 +165,7 @@ export interface MixedSceneHost {
   ): Readonly<RasterImageNode>;
   moveRasterImageNode(id: number, delta: -1 | 1): Promise<boolean>;
   deleteRasterImageNode(id: number): Promise<Readonly<RasterImageNode>>;
-  beginRasterLayerTransform(): Promise<RasterTransformSnapshot | null>;
+  beginRasterLayerTransform(mode?: RasterTransformMode): Promise<RasterTransformSnapshot | null>;
   updateRasterLayerTransform(
     update: Partial<Pick<
       RasterTransformSnapshot,

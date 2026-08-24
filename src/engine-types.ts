@@ -237,6 +237,20 @@ export interface EffectsWorkbenchRetargetResult {
   innerShadow: RasterShadowEncodeResult | null;
 }
 
+export interface MemoryAdmissionWarning {
+  /** Short user-facing name for the operation that was refused. */
+  readonly action: string;
+  /** Stable governor category retained for diagnostics. */
+  readonly category: string;
+  /** Estimated allocation peak for this operation. */
+  readonly requiredBytes: number;
+  /** Remaining space below the device safety ceiling before this operation. */
+  readonly availableBytes: number;
+  readonly usedBytes: number;
+  readonly ceilingBytes: number;
+  readonly reason: string;
+}
+
 export interface EngineCallbacks {
   onStatus?: (message: string, kind: "working" | "ok" | "error") => void;
   onStats?: (stats: EngineStats) => void;
@@ -245,6 +259,13 @@ export interface EngineCallbacks {
   onViewChange?: (state: VectorTextViewState) => void;
   onMixedSceneChange?: (snapshot: MixedSceneSnapshot) => void;
   onPixelSelectionChange?: (state: PixelSelectionState) => void;
+  /**
+   * Asks for a one-time override after the governor has refused an allocation.
+   * Missing, rejected, or failed callbacks preserve the refusal.
+   */
+  onMemoryAdmissionWarning?: (
+    warning: MemoryAdmissionWarning,
+  ) => boolean | Promise<boolean>;
   /**
    * A global undo can move the active layer, so the UI has to be told: without
    * this the layer panel would keep highlighting the layer the user left.

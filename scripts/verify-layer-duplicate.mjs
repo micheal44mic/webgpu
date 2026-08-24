@@ -43,7 +43,7 @@ const duplicateStart = engine.indexOf("  private async duplicateRasterLayer(");
 const duplicateEnd = engine.indexOf("  /** Duplicates the selected raster", duplicateStart);
 assert.ok(duplicateStart >= 0 && duplicateEnd > duplicateStart);
 const duplicate = engine.slice(duplicateStart, duplicateEnd);
-assert.match(duplicate, /reserveLayerDuplicateMemory\(source\)/);
+assert.match(duplicate, /await this\.reserveLayerDuplicateMemory\(source\)/);
 assert.ok(
   duplicate.indexOf("persistActiveLayerState()")
     < duplicate.indexOf("reserveLayerDuplicateMemory(source)")

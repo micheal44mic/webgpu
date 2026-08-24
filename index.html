@@ -2741,16 +2741,6 @@
         <p id="pixelSelectionMoveHelp" class="visually-hidden">
           Drag to move pixels. Arrow keys: one pixel; Shift plus arrow keys: ten pixels. Enter applies; Escape cancels.
         </p>
-        <div id="transformCommitBar" class="transform-commit-bar" role="toolbar" aria-label="Confirm transform" hidden>
-          <span id="transformCommitLabel">Transform</span>
-          <div class="raster-transform-grids" data-raster-transform-grid-controls hidden role="group" aria-label="Warp grid size">
-            <button type="button" data-raster-transform-grid="3" aria-pressed="true">3×3</button>
-            <button type="button" data-raster-transform-grid="4" aria-pressed="false">4×4</button>
-            <button type="button" data-raster-transform-grid="5" aria-pressed="false">5×5</button>
-          </div>
-          <button id="transformCancel" type="button">Cancel</button>
-          <button id="transformApply" class="primary" type="button">Apply</button>
-        </div>
         <canvas id="tipPreviewCanvas" aria-hidden="true"></canvas>
         <p id="status" class="status app-status" role="status" aria-live="polite">
           Initializing WebGPU…
@@ -2909,6 +2899,46 @@
         <p id="layerLoadingLabel">Loading layer…</p>
       </div>
     </div>
+
+    <dialog
+      id="memoryLimitDialog"
+      class="memory-limit-dialog"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="memoryLimitDialogTitle"
+      aria-describedby="memoryLimitDialogMessage memoryLimitDialogMetrics memoryLimitDialogRisk"
+    >
+      <div class="memory-limit-dialog-panel">
+        <header class="memory-limit-dialog-header">
+          <span class="memory-limit-dialog-icon" aria-hidden="true">!</span>
+          <div>
+            <p id="memoryLimitDialogAction" class="memory-limit-dialog-action">Memory-intensive action</p>
+            <h2 id="memoryLimitDialogTitle">Memory limit warning</h2>
+          </div>
+        </header>
+        <p id="memoryLimitDialogMessage" class="memory-limit-dialog-message">
+          We can't safely complete this action because it may exceed your device's memory limit.
+          Continuing may cause the app to close unexpectedly, and unsaved changes may be lost.
+        </p>
+        <dl id="memoryLimitDialogMetrics" class="memory-limit-dialog-metrics">
+          <div>
+            <dt>Estimated peak required</dt>
+            <dd id="memoryLimitDialogPeak">—</dd>
+          </div>
+          <div>
+            <dt>Currently available</dt>
+            <dd id="memoryLimitDialogAvailable">—</dd>
+          </div>
+        </dl>
+        <p id="memoryLimitDialogRisk" class="memory-limit-dialog-risk">
+          Proceed only if your work is saved and you accept the risk of the app closing.
+        </p>
+        <div class="memory-limit-dialog-actions">
+          <button id="memoryLimitDialogCancel" type="button">Cancel</button>
+          <button id="memoryLimitDialogProceed" type="button">Proceed anyway</button>
+        </div>
+      </div>
+    </dialog>
 
     <script type="module" src="/src/startup.ts"></script>
   </body>

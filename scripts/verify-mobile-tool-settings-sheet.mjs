@@ -81,6 +81,11 @@ assert.equal(resolveMobileBottomSheetDrag({
 assert.equal(nextMobileBottomSheetTapSnap("minimized"), "peek");
 assert.equal(nextMobileBottomSheetTapSnap("peek"), "expanded");
 assert.equal(nextMobileBottomSheetTapSnap("expanded"), "peek");
+assert.match(
+  controller,
+  /const initialSnap:[\s\S]*?kind === "warp" \|\| kind === "perspective"[\s\S]*?\? "minimized"[\s\S]*?this\.snapTo\(initialSnap\)/,
+  "Warp and Perspective must start compact so their canvas handles remain reachable",
+);
 
 const sheetStart = html.indexOf('id="mobileToolSettingsSheet"');
 const sheetEnd = html.indexOf('id="mobileRasterEffectSheet"', sheetStart);
@@ -230,8 +235,8 @@ assert.match(
 );
 assert.match(
   main,
-  /mobileToolSettingsSheet = new MobileToolSettingsSheetController\(\{[\s\S]*?selectCanvasTool: \(tool\) => canvasToolController\?\.select\(tool\) \?\? false/,
-  "Fill, Selection and Transform must use the existing authoritative canvas-tool routing",
+  /mobileToolSettingsSheet = new MobileToolSettingsSheetController\(\{[\s\S]*?selectCanvasTool: selectCanvasToolWithMixedScene/,
+  "Fill and Selection must use the authoritative route, while Transform initializes its deferred editor on demand",
 );
 for (const action of [
   "getFillSettings",
@@ -396,7 +401,7 @@ assert.match(
 );
 assert.match(
   canvasToolController,
-  /finishTransformToolOnSheetClose[\s\S]*?await controller\.applyTransform\(\)[\s\S]*?stopSelectedTextDistortEditing\(\)[\s\S]*?activeIsTransform[\s\S]*?const targetTool = activeIsTransform \? "paint"[\s\S]*?this\.select\(targetTool, true\)/,
+  /finishTransformToolOnSheetClose[\s\S]*?getTransformActionSnapshot\(\)\.active[\s\S]*?await controller\.applyTransform\(\)[\s\S]*?stopSelectedTextDistortEditing\(\)[\s\S]*?activeIsTransform[\s\S]*?const targetTool = activeIsTransform \? "paint"[\s\S]*?this\.select\(targetTool, true\)/,
   "closing Transform or Distort must commit safely, remove edit handles and return to Paint",
 );
 assert.match(
@@ -451,7 +456,7 @@ assert.match(
 );
 assert.match(
   mixedController,
-  /private updateTransformCommitUi\(\): void[\s\S]*?this\.onEditorStateChange\?\.\(\)/,
+  /private updateTransformUi\(\): void[\s\S]*?this\.onEditorStateChange\?\.\(\)/,
   "Transform Apply and Cancel must publish explicit state changes",
 );
 assert.match(controller, /this\.options\.getTransformActionSnapshot\(\)/);
@@ -490,10 +495,19 @@ assert.match(
   /\.mobile-tool-actions button:active\s*\{[\s\S]*?height:\s*44px;[\s\S]*?max-height:\s*44px;[\s\S]*?-webkit-appearance:\s*none;/,
   "mobile action buttons must keep a fixed native-independent box while pressed",
 );
+assert.match(html, /id="mobileTransformCancel"[\s\S]*?id="mobileTransformApply"/);
+assert.match(controller, /actionSnapshot\.preparing[\s\S]*?Preparing[\s\S]*?Perspective/);
+assert.doesNotMatch(
+  html,
+  /transformCommitBar|transformCommitLabel|id="transformApply"|id="transformCancel"/,
+  "the obsolete centered Transform toolbar must not exist in the DOM",
+);
+assert.doesNotMatch(css, /transform-commit-bar|#transformCommitBar/);
+assert.doesNotMatch(mixedController, /transformCommitBar|transformCommitLabel|transformApplyButton|transformCancelButton/);
 assert.match(
   css,
-  /#app:has\(#mobileToolSettingsSheet\.is-open\[data-tool="transform"\]\) #transformCommitBar,[\s\S]*?data-tool="warp"[\s\S]*?data-tool="perspective"[\s\S]*?data-tool="text-warp"[\s\S]*?display:\s*none;/,
-  "the upper Transform bar must disappear while the equivalent mobile actions are visible",
+  /@media \(min-width: 700px\)[\s\S]*?\.mobile-tool-settings-sheet\[data-snap="minimized"\][\s\S]*?width:\s*64px;[\s\S]*?\.mobile-tool-settings-shell[\s\S]*?display:\s*none;/,
+  "the desktop Perspective dock must collapse instead of covering the right-side corners",
 );
 
 console.log("Mobile tool settings: authoritative controls, shared detents and accessibility verified.");

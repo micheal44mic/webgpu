@@ -621,10 +621,10 @@ function layerMergeCreateRequest(
   });
 }
 
-function reserveLayerMergeCreateMemory(
+async function reserveLayerMergeCreateMemory(
   engine: BrushEngine,
   plan: ReturnType<typeof planMixedSceneLayerMerge>,
-): MemoryReservation {
+): Promise<MemoryReservation> {
   const request = layerMergeCreateRequest(engine, plan);
   const decision = planMemoryAdmission(
     {
@@ -636,16 +636,16 @@ function reserveLayerMergeCreateMemory(
     engine.memoryGovernorLimits,
     request,
   );
-  if (decision.outcome !== "admit") {
-    const requiredMiB = request.peakBytes / (1024 * 1024);
-    const headroomMiB = Math.max(0, decision.ceilingBytes - decision.usedBytes) / (1024 * 1024);
-    throw new Error(
-      "Not enough memory to merge the layers: "
+  const requiredMiB = request.peakBytes / (1024 * 1024);
+  const headroomMiB = Math.max(0, decision.ceilingBytes - decision.usedBytes) / (1024 * 1024);
+  return engine.reserveMemoryWithAdmissionOverride(
+    request,
+    decision,
+    "Merge layers",
+    "Not enough memory to merge the layers: "
       + `${requiredMiB.toFixed(1)} MiB required, ${headroomMiB.toFixed(1)} MiB available. `
       + "Reduce the selection or wait for History to offload its local copies.",
-    );
-  }
-  return engine.memoryReservations.reserve(request);
+  );
 }
 
 function layerMergeHistoryRequest(
@@ -698,11 +698,12 @@ function layerMergeHistoryRequest(
   };
 }
 
-function reserveLayerMergeHistoryMemory(
+async function reserveLayerMergeHistoryMemory(
   engine: BrushEngine,
   action: LayerMergeHistoryAction,
   delta: -1 | 1,
-): MemoryReservation {
+  allowOverride: boolean,
+): Promise<MemoryReservation> {
   const request = layerMergeHistoryRequest(engine, action, delta);
   const current = engine.gpuResourceRegistry.snapshot().currentBytes;
   const decision = planMemoryAdmission(
@@ -715,15 +716,17 @@ function reserveLayerMergeHistoryMemory(
     engine.memoryGovernorLimits,
     request,
   );
-  if (decision.outcome !== "admit") {
-    const requiredMiB = request.peakBytes / (1024 * 1024);
-    const headroomMiB = Math.max(0, decision.ceilingBytes - decision.usedBytes) / (1024 * 1024);
-    throw new Error(
-      `Not enough memory for merge ${delta < 0 ? "Undo" : "Redo"}: `
+  const requiredMiB = request.peakBytes / (1024 * 1024);
+  const headroomMiB = Math.max(0, decision.ceilingBytes - decision.usedBytes) / (1024 * 1024);
+  const operation = delta < 0 ? "Undo merge" : "Redo merge";
+  return engine.reserveMemoryWithAdmissionOverride(
+    request,
+    decision,
+    operation,
+    `Not enough memory for merge ${delta < 0 ? "Undo" : "Redo"}: `
       + `${requiredMiB.toFixed(1)} MiB required, ${headroomMiB.toFixed(1)} MiB available.`,
-    );
-  }
-  return engine.memoryReservations.reserve(request);
+    allowOverride,
+  );
 }
 
 async function prepareMergeInputGpu(
@@ -1169,7 +1172,7 @@ export async function prepareAndApplyLayerMerge(
     engine.persistActiveLayerState();
     workbenchMayNeedRestore = true;
     const memoryPlan = planMixedSceneLayerMerge(engine.layerStack, scene, request.keys);
-    memoryReservation = reserveLayerMergeCreateMemory(engine, memoryPlan);
+    memoryReservation = await reserveLayerMergeCreateMemory(engine, memoryPlan);
     rendered = await renderMergeOutput(engine, request, actionId);
     await restoreEffectsWorkbenchToActiveLayer(engine, "structural-history");
     workbenchMayNeedRestore = false;
@@ -1290,6 +1293,7 @@ export async function applyLayerMergeHistory(
   engine: BrushEngine,
   action: LayerMergeHistoryAction,
   delta: -1 | 1,
+  allowMemoryOverride = false,
 ): Promise<void> {
   if (action.payloadsRetiredBelowFloor) {
     throw new Error("Merge payloads have already been retired below the History floor.");
@@ -1301,7 +1305,12 @@ export async function applyLayerMergeHistory(
   if (engine.historyLocalStorage.demoteStoredLayerMergeSeeds(action)) {
     engine.historyStorageResidenceChanged();
   }
-  const reservation = reserveLayerMergeHistoryMemory(engine, action, delta);
+  const reservation = await reserveLayerMergeHistoryMemory(
+    engine,
+    action,
+    delta,
+    allowMemoryOverride,
+  );
   let committed = false;
   try {
     if (delta < 0) await applyInputState(engine, action);

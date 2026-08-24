@@ -10,7 +10,7 @@ import {
 } from "./brush-settings-controller";
 import { BrushQuickControlsController } from "./brush-quick-controls-controller";
 import { CanvasToolSettingsController } from "./canvas-tool-settings-controller";
-import { CanvasInputController } from "./canvas-input-controller";
+import { CanvasInputController, type CanvasInputTool } from "./canvas-input-controller";
 import { CanvasToolController } from "./canvas-tool-controller";
 import { BrushOutlineController } from "./brush-outline-controller";
 import { PixelSelectionController } from "./pixel-selection-controller";
@@ -18,6 +18,7 @@ import { AppDiagnosticsController } from "./app-diagnostics-controller";
 import { GpuMemoryPanelController } from "./gpu-memory-panel-controller";
 import { RuntimeStatsController } from "./runtime-stats-controller";
 import { HistoryControlsController } from "./history-controls-controller";
+import { MemoryLimitDialogController } from "./memory-limit-dialog-controller";
 import { MobileStrokeSheetController } from "./mobile-stroke-sheet";
 import { RasterAdjustmentsController } from "./raster-adjustments-controller";
 import { RasterStyleController } from "./raster-style-controller";
@@ -178,6 +179,14 @@ const rasterSelectionGestureContext: CanvasRenderingContext2D =
   rasterSelectionGestureContextCandidate;
 const appElement = element<HTMLElement>("app");
 const editorStage = element<HTMLElement>("editorStage");
+const memoryLimitDialogController = new MemoryLimitDialogController({
+  root: element<HTMLDialogElement>("memoryLimitDialog"),
+  action: element<HTMLElement>("memoryLimitDialogAction"),
+  peak: element<HTMLElement>("memoryLimitDialogPeak"),
+  available: element<HTMLElement>("memoryLimitDialogAvailable"),
+  cancelButton: element<HTMLButtonElement>("memoryLimitDialogCancel"),
+  proceedButton: element<HTMLButtonElement>("memoryLimitDialogProceed"),
+});
 const editorTopbar = element<HTMLElement>("editorTopbar");
 const mobileToolRail = element<HTMLElement>("mobileToolRail");
 const projectHomeButton = element<HTMLButtonElement>("projectHomeButton");
@@ -447,6 +456,23 @@ const projectEditorBootstrap: ProjectEditorBootstrap | undefined =
 const editorExtensionEngineOptions = editorExtensionBootstrap?.engineOptions ?? {};
 let editorExtension: EditorExtension | null = null;
 let projectSessionController: ProjectSessionController | null = null;
+
+function selectCanvasToolWithMixedScene(tool: CanvasInputTool): boolean {
+  const selected = canvasToolController?.select(tool) ?? false;
+  if (
+    selected
+    && engineInitialized
+    && engine.mixedSceneEnabled
+    && (tool === "transform" || tool === "warp" || tool === "perspective")
+    && !mixedSceneController
+  ) {
+    void initializeMixedSceneController().catch((error) => {
+      appDiagnosticsController?.recordOperation("initialize-transform-editor", tool, error);
+      console.error(`Could not initialize the ${tool} editor.`, error);
+    });
+  }
+  return selected;
+}
 const engine = new BrushEngine(canvas, {
   onStatus(message, kind) {
     statusElement.textContent = message;
@@ -455,6 +481,9 @@ const engine = new BrushEngine(canvas, {
       appDiagnosticsController?.recordStatusError(message);
     }
     rasterAdjustmentsController?.handleEngineStatus(message, kind);
+  },
+  onMemoryAdmissionWarning(warning) {
+    return memoryLimitDialogController.confirm(warning);
   },
   onStats(stats) {
     runtimeStatsController?.update(stats);
@@ -1297,7 +1326,7 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
   root: element<HTMLElement>("mobileToolSettingsSheet"),
   browser: window,
   document,
-  selectCanvasTool: (tool) => canvasToolController?.select(tool) ?? false,
+  selectCanvasTool: selectCanvasToolWithMixedScene,
   getFillSettings: () => ({
     ...canvasToolSettingsController.fillSnapshot(),
     color: brushSettingsController.snapshot().color,
@@ -1456,6 +1485,7 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
   },
   getTransformActionSnapshot: () => mixedSceneController?.getTransformActionSnapshot() ?? {
     active: false,
+    preparing: false,
     canApply: false,
     canCancel: false,
   },
@@ -1524,7 +1554,7 @@ editorToolsController = new EditorToolsController({
   },
   onOpenChange: () => brushQuickControlsController?.syncVisibility(),
   syncMenuState: syncMobileToolsMenuState,
-  selectCanvasTool: (tool) => canvasToolController?.select(tool) ?? false,
+  selectCanvasTool: selectCanvasToolWithMixedScene,
   openToolSettings: (kind, trigger) => {
     mobileToolSettingsSheet?.open(kind, trigger);
   },
@@ -1860,6 +1890,7 @@ async function initializeMixedSceneController(): Promise<MixedSceneController> {
     });
     await controller.initialize();
     mixedSceneController = controller;
+    canvasToolController?.syncVectorControllerState();
     const snapshot = engine.getMixedSceneSnapshot();
     if (snapshot) controller.syncScene(snapshot);
     syncMobileToolsMenuState(snapshot);

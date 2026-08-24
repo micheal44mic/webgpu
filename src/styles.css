@@ -1490,6 +1490,172 @@ select {
   }
 }
 
+.memory-limit-dialog {
+  width: min(440px, calc(100vw - 28px));
+  max-width: 440px;
+  max-height: calc(100dvh - 28px);
+  padding: 0;
+  border: 1px solid #414652;
+  border-radius: 18px;
+  margin: auto;
+  overflow: hidden auto;
+  background: #171a20;
+  color: #f4f5f7;
+  box-shadow: 0 26px 72px rgb(0 0 0 / 58%);
+  overscroll-behavior: contain;
+}
+
+.memory-limit-dialog:not([open]) {
+  display: none;
+}
+
+.memory-limit-dialog::backdrop {
+  background: rgb(4 5 8 / 72%);
+  -webkit-backdrop-filter: blur(5px);
+  backdrop-filter: blur(5px);
+}
+
+.memory-limit-dialog-panel {
+  padding:
+    max(22px, env(safe-area-inset-top))
+    max(22px, env(safe-area-inset-right))
+    max(20px, env(safe-area-inset-bottom))
+    max(22px, env(safe-area-inset-left));
+}
+
+.memory-limit-dialog-header {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+}
+
+.memory-limit-dialog-icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  place-items: center;
+  border: 1px solid #8c553c;
+  border-radius: 50%;
+  background: #352219;
+  color: #ff9b72;
+  font-size: 1.1rem;
+  font-weight: 850;
+}
+
+.memory-limit-dialog-action {
+  margin: 0 0 3px;
+  color: #ff9b72;
+  font-size: 0.68rem;
+  font-weight: 780;
+  letter-spacing: 0.1em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.memory-limit-dialog h2 {
+  margin: 0;
+  color: #f7f7f5;
+  font-size: 1.18rem;
+  font-weight: 720;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.memory-limit-dialog-message {
+  margin: 18px 0 0;
+  color: #c8cbd2;
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+.memory-limit-dialog-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 18px 0 0;
+}
+
+.memory-limit-dialog-metrics div {
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid #30343d;
+  border-radius: 11px;
+  background: #111318;
+}
+
+.memory-limit-dialog-metrics dt {
+  color: #858b96;
+  font-size: 0.67rem;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.memory-limit-dialog-metrics dd {
+  margin: 5px 0 0;
+  color: #f1f2f4;
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 720;
+}
+
+.memory-limit-dialog-risk {
+  margin: 13px 0 0;
+  color: #a8acb5;
+  font-size: 0.74rem;
+  line-height: 1.45;
+}
+
+.memory-limit-dialog-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
+  gap: 9px;
+  margin-top: 20px;
+}
+
+.memory-limit-dialog-actions button,
+.memory-limit-dialog-actions button:hover,
+.memory-limit-dialog-actions button:active {
+  min-height: 46px;
+  padding: 10px 13px;
+  border: 1px solid #3b404a;
+  border-radius: 11px;
+  background: #252931;
+  color: #eceef1;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.memory-limit-dialog-actions button:hover {
+  border-color: #545b68;
+  background: #2d323b;
+}
+
+.memory-limit-dialog-actions button:focus-visible {
+  outline: 2px solid #ff9b72;
+  outline-offset: 2px;
+}
+
+#memoryLimitDialogProceed,
+#memoryLimitDialogProceed:hover,
+#memoryLimitDialogProceed:active {
+  border-color: #a85031;
+  background: #b44d2b;
+  color: #fff;
+}
+
+#memoryLimitDialogProceed:hover {
+  border-color: #ca6847;
+  background: #c45a37;
+}
+
+@media (max-width: 380px) {
+  .memory-limit-dialog-metrics,
+  .memory-limit-dialog-actions {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .layer-loading-spinner {
     animation-duration: 1.5s;
@@ -3691,13 +3857,6 @@ select {
     outline-offset: 2px;
   }
 
-  #app:has(#mobileToolSettingsSheet.is-open[data-tool="transform"]) #transformCommitBar,
-  #app:has(#mobileToolSettingsSheet.is-open[data-tool="warp"]) #transformCommitBar,
-  #app:has(#mobileToolSettingsSheet.is-open[data-tool="perspective"]) #transformCommitBar,
-  #app:has(#mobileToolSettingsSheet.is-open[data-tool="text-warp"]) #transformCommitBar {
-    display: none;
-  }
-
   .mobile-raster-effect-sheet[hidden] {
     display: none;
   }
@@ -4765,43 +4924,6 @@ select {
   cursor: grabbing;
 }
 
-.transform-commit-bar {
-  position: absolute;
-  z-index: 8;
-  top: 14px;
-  left: 50%;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  max-width: calc(100% - 28px);
-  min-height: 44px;
-  padding: 6px 8px 6px 13px;
-  transform: translateX(-50%);
-  border: 1px solid rgba(117, 130, 157, 0.7);
-  border-radius: 12px;
-  background: rgba(15, 19, 27, 0.94);
-  color: #eef2f8;
-  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.38);
-  backdrop-filter: blur(12px);
-}
-
-.transform-commit-bar[hidden] {
-  display: none;
-}
-
-.transform-commit-bar span {
-  margin-right: 3px;
-  font-size: 0.75rem;
-  font-weight: 800;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
-
-.transform-commit-bar button {
-  min-height: 32px;
-  padding: 6px 11px;
-}
-
 .raster-transform-modes,
 .raster-transform-grids {
   display: flex;
@@ -5551,6 +5673,17 @@ select {
   .mobile-tools-sheet.is-open {
     transform: translate3d(0, 0, 0);
     transition: transform 180ms cubic-bezier(0.22, 0.72, 0.24, 1);
+  }
+
+  .mobile-tool-settings-sheet[data-snap="minimized"] {
+    width: 64px;
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .mobile-tool-settings-sheet[data-snap="minimized"] .mobile-tool-settings-shell {
+    display: none;
   }
 
   .mobile-tools-sheet-handle,

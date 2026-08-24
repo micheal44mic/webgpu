@@ -4,6 +4,7 @@ import type { MobileTextWarpMode, MobileToolSettingsKind } from "./mobile-tool-s
 import type { SelectionCombineMode, SelectionMethod } from "./selection-core";
 import type { CanvasInputTool } from "./canvas-input-controller";
 import type { RasterTransformMode } from "./raster-deform-math";
+import type { VectorTransformActionSnapshot } from "./vector-editor-contract";
 
 export type CanvasToolEnginePort = Pick<
   BrushEngine,
@@ -28,6 +29,7 @@ export interface CanvasToolVectorPort {
   stopSelectedTextDistortEditing(): void;
   setSelectedTextTransform(mode: MobileTextWarpMode): void;
   applyTransform(): Promise<boolean>;
+  getTransformActionSnapshot(): VectorTransformActionSnapshot;
   resetSelectedText(): void;
   deleteSelectedText(): void;
   rasterizeSelectedTextNode(): void;
@@ -107,6 +109,19 @@ export class CanvasToolController {
     return this.options.selectionSettings.selectionSnapshot().method;
   }
 
+  /** Replays the selected transform tool after the deferred vector editor becomes ready. */
+  syncVectorControllerState(): void {
+    if (this.disposed) return;
+    const tool = this.activeCanvasTool;
+    const mode: RasterTransformMode = tool === "warp"
+      ? "warp"
+      : tool === "perspective"
+        ? "perspective"
+        : "affine";
+    const active = tool === "transform" || tool === "warp" || tool === "perspective";
+    this.options.getVectorController()?.setTransformToolActive(active, mode);
+  }
+
   setSelectionCombineMode(mode: SelectionCombineMode): void {
     this.options.selectionSettings.setSelectionCombineMode(mode);
     this.options.syncToolSettings();
@@ -150,11 +165,6 @@ export class CanvasToolController {
     const fill = tool === "fill";
     const pan = tool === "pan";
     const selection = tool === "selection";
-    const transformMode: RasterTransformMode = tool === "warp"
-      ? "warp"
-      : tool === "perspective"
-        ? "perspective"
-        : "affine";
     const transform = tool === "transform" || tool === "warp" || tool === "perspective";
     const liquify = tool === "liquify";
     if (!selection) this.options.cancelKeyboardSelectionGesture(true);
@@ -166,7 +176,7 @@ export class CanvasToolController {
       );
     }
     this.syncSelectionKeyboardUi();
-    this.options.getVectorController()?.setTransformToolActive(transform, transformMode);
+    this.syncVectorControllerState();
     this.options.syncBrushSettings(this.options.brushSettings.snapshot());
     this.options.syncQuickControls();
     if (!this.options.isEngineReady()) return;
@@ -207,7 +217,10 @@ export class CanvasToolController {
       && kind !== "text-warp"
     ) return;
     const controller = this.options.getVectorController();
-    if (controller && !await controller.applyTransform()) return;
+    if (
+      controller?.getTransformActionSnapshot().active
+      && !await controller.applyTransform()
+    ) return;
     if (kind === "text-warp") controller?.stopSelectedTextDistortEditing();
     this.textDistortReturnTool = null;
     const nextKind = this.options.getOpenToolSettingsKind();

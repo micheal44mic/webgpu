@@ -578,7 +578,7 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
       return true;
     }
     if (crossedAction.kind === "layer-merge") {
-      await applyLayerMergeHistory(engine, crossedAction, delta);
+      await applyLayerMergeHistory(engine, crossedAction, delta, true);
       engine.history.setCursor(nextCursor);
       if (engine.activeStrokeProfile) {
         engine.activeStrokeProfile.historyReplayOperations += 1;

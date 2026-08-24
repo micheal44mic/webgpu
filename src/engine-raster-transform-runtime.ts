@@ -553,10 +553,17 @@ function flushPreview(engine: BrushEngine, session: ActiveRasterTransformSession
 
 export async function beginRasterLayerTransform(
   engine: BrushEngine,
+  requestedMode: RasterTransformMode = "affine",
 ): Promise<RasterTransformSnapshot | null> {
   if (!engine.initialized) throw new Error("The engine has not been initialized yet.");
   if (engine.activeRasterTransformSession) {
-    return transformSnapshot(engine.activeRasterTransformSession);
+    const active = engine.activeRasterTransformSession;
+    if (active.scope === "layer" && active.mode !== requestedMode) {
+      const snapshot = updateRasterLayerTransform(engine, { mode: requestedMode });
+      publishMixedScene(engine);
+      return snapshot;
+    }
+    return transformSnapshot(active);
   }
   engine.assertDestructiveRasterEditCanOpen("transform");
   const selected = engine.mixedSceneStack?.selected;
@@ -774,6 +781,9 @@ export async function beginRasterLayerTransform(
           previewFrame: null,
           terminal: false,
         };
+        if (!selectionScope && requestedMode !== "affine") {
+          transitionRasterTransformMode(created, requestedMode, created.gridSize);
+        }
         writeSessionUniforms(engine, created);
 
         const encoder = engine.device.createCommandEncoder({

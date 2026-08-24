@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createServer } from "vite";
 import {
   RASTER_DEFORM_MAX_VERTICES,
   RASTER_DEFORM_VERTEX_FLOATS,
@@ -364,11 +365,173 @@ assert.match(controller, /updateRasterLayerTransform\(\{[\s\S]{0,180}controlPoin
 assert.match(controller, /hitRasterBezierHandle/);
 assert.match(controller, /bezierHandles: nextBezierHandles/);
 assert.match(controller, /moveRasterWarpControlPoints\(/);
+assert.match(
+  controller,
+  /beginRasterLayerTransform\(this\.rasterTransformToolMode\)/,
+  "Perspective must begin atomically in the requested mode",
+);
+assert.match(
+  controller,
+  /pendingRasterPointerId[\s\S]*?resumeRasterPointerAfterPreparation[\s\S]*?await this\.prepareSelectedRasterTransform\(\)[\s\S]*?this\.onPointerDown\(event\)/,
+  "a mouse or touch drag started during GPU preparation must resume when Perspective is ready",
+);
+assert.match(
+  controller,
+  /pointerType === "touch"[\s\S]{0,80}\? 24[\s\S]{0,120}closestSceneControlPoint/,
+  "Perspective corners must expose a touch-sized hit target on iOS",
+);
+assert.match(
+  runtime,
+  /transitionRasterTransformMode\(created, requestedMode, created\.gridSize\);[\s\S]{0,100}writeSessionUniforms\(engine, created\)/,
+  "the four Perspective corners must exist before the first mixed-scene publication",
+);
 assert.equal((html.match(/data-raster-transform-mode=/g) ?? []).length, 0);
 assert.equal((html.match(/data-mobile-canvas-tool="warp"/g) ?? []).length, 1);
 assert.equal((html.match(/data-mobile-canvas-tool="perspective"/g) ?? []).length, 1);
 for (const size of [3, 4, 5]) {
-  assert.equal((html.match(new RegExp(`data-raster-transform-grid="${size}"`, "g")) ?? []).length, 2);
+  assert.equal((html.match(new RegExp(`data-raster-transform-grid="${size}"`, "g")) ?? []).length, 1);
 }
+assert.doesNotMatch(html, /transformCommitBar|transformCommitLabel|id="transformApply"|id="transformCancel"/);
+
+const server = await createServer({
+  appType: "custom",
+  configFile: false,
+  logLevel: "silent",
+  root: process.cwd(),
+  server: { middlewareMode: true },
+});
+let MixedSceneController;
+try {
+  ({ MixedSceneController } = await server.ssrLoadModule("/src/mixed-scene-controller.ts"));
+} finally {
+  await server.close();
+}
+
+const perspectiveNode = {
+  kind: "raster-layer",
+  id: 7,
+  layerId: 7,
+  name: "Perspective QA",
+  scope: "layer",
+  mode: "perspective",
+  gridSize: 3,
+  controlPoints: rasterDeformInitialPoints(bounds, "perspective", 3),
+  bezierHandles: [],
+  x: 80,
+  y: 70,
+  scale: 1,
+  rotation: 0,
+  sourceBounds: bounds,
+  sourcePivot: { x: 80, y: 70 },
+  resultBounds: bounds,
+};
+let releasePreparation;
+const preparationGate = new Promise((resolve) => { releasePreparation = resolve; });
+const beginModes = [];
+const preparationShell = Object.create(MixedSceneController.prototype);
+Object.assign(preparationShell, {
+  transformToolActive: true,
+  transformSessionOpen: false,
+  transformSessionKind: null,
+  rasterTransformPreparation: null,
+  rasterTransformToolMode: "perspective",
+  rasterTransformRecoveryOnly: false,
+  transformCommitBusy: false,
+  activeInteraction: null,
+  status: { textContent: "" },
+  host: {
+    beginRasterLayerTransform: async (mode) => {
+      beginModes.push(mode);
+      await preparationGate;
+      return { layerId: 7, scope: "layer", mode };
+    },
+    cancelRasterLayerTransform: async () => true,
+  },
+  selectedTransformNode: () => perspectiveNode,
+  updateTransformUi: () => {},
+  scheduleRender: () => {},
+  rasterTransformSessionStillOpen: () => false,
+});
+const firstPreparation = preparationShell.prepareSelectedRasterTransform();
+const repeatedPreparation = preparationShell.prepareSelectedRasterTransform();
+assert.strictEqual(
+  repeatedPreparation,
+  firstPreparation,
+  "desktop and touch callers must await the same in-flight GPU preparation",
+);
+assert.deepEqual(beginModes, ["perspective"]);
+releasePreparation();
+await firstPreparation;
+assert.equal(preparationShell.transformSessionOpen, true);
+assert.equal(preparationShell.transformSessionKind, "raster");
+
+for (const pointerType of ["mouse", "touch"]) {
+  let releasePointerPreparation;
+  const pointerPreparationGate = new Promise((resolve) => {
+    releasePointerPreparation = resolve;
+  });
+  const pointerShell = Object.create(MixedSceneController.prototype);
+  const pointerDown = { pointerId: pointerType === "mouse" ? 21 : 22, pointerType };
+  const pointerMove = { ...pointerDown, clientX: 44, clientY: 55 };
+  const resumed = [];
+  Object.assign(pointerShell, {
+    pendingRasterPointerId: pointerDown.pointerId,
+    pendingRasterPointerMove: pointerMove,
+    transformSessionOpen: false,
+    transformSessionKind: null,
+    activeInteraction: null,
+    prepareSelectedRasterTransform: async () => {
+      await pointerPreparationGate;
+      pointerShell.transformSessionOpen = true;
+      pointerShell.transformSessionKind = "raster";
+    },
+    onPointerDown: (event) => {
+      resumed.push(["down", event.pointerType]);
+      pointerShell.activeInteraction = { pointerId: event.pointerId };
+    },
+    onPointerMove: (event) => resumed.push(["move", event.clientX, event.clientY]),
+  });
+  const resume = pointerShell.resumeRasterPointerAfterPreparation(pointerDown);
+  releasePointerPreparation();
+  await resume;
+  assert.deepEqual(
+    resumed,
+    [["down", pointerType], ["move", 44, 55]],
+    `the first ${pointerType} Perspective drag must resume after GPU preparation`,
+  );
+}
+
+const perspectiveUpdates = [];
+const perspectiveDragShell = Object.create(MixedSceneController.prototype);
+Object.assign(perspectiveDragShell, {
+  activeInteraction: {
+    pointerId: 31,
+    mode: "raster-control",
+    startLayer: { x: 20, y: 20 },
+    startModel: perspectiveNode,
+    rasterControlPointIndex: 0,
+    rasterBezierHandleIndex: null,
+  },
+  pendingRasterPointerId: null,
+  touchContacts: new Map(),
+  touchNavigationActive: false,
+  eventLayerPoint: () => ({ x: 35, y: 42 }),
+  host: {
+    updateRasterLayerTransform: (update) => perspectiveUpdates.push(update),
+  },
+});
+perspectiveDragShell.onPointerMove({
+  pointerId: 31,
+  pointerType: "mouse",
+  shiftKey: false,
+  preventDefault() {},
+});
+assert.equal(perspectiveUpdates.length, 1);
+assert.equal(
+  Object.hasOwn(perspectiveUpdates[0], "bezierHandles"),
+  false,
+  "Perspective corner drags must not send Warp-only Bézier handles",
+);
+assert.deepEqual(perspectiveUpdates[0].controlPoints[0], { x: 35, y: 52 });
 
 console.log("Raster Warp/Perspective verification passed.");

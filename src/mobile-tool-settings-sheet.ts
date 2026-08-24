@@ -494,7 +494,10 @@ export class MobileToolSettingsSheetController {
     }
     this.opener = opener;
     this.openState = true;
-    this.snap = "peek";
+    const initialSnap: MobileBottomSheetSnap = kind === "warp" || kind === "perspective"
+      ? "minimized"
+      : "peek";
+    this.snap = initialSnap;
     this.sheet.dataset.tool = kind;
     this.sheet.dataset.state = "open";
     this.sheet.hidden = false;
@@ -508,7 +511,7 @@ export class MobileToolSettingsSheetController {
     }
     this.syncOpenState();
     this.scroll.scrollTop = 0;
-    this.snapTo("peek");
+    this.snapTo(initialSnap);
     void this.sheet.offsetHeight;
     this.sheet.classList.add("is-open");
     this.options.onOpenChange(true);
@@ -919,12 +922,16 @@ export class MobileToolSettingsSheetController {
   }
 
   private syncTransform(): void {
+    const actionSnapshot = this.options.getTransformActionSnapshot();
     const transactionActive = this.syncTransformActions(
       this.transformCancel,
       this.transformApply,
+      actionSnapshot,
     );
     const kind = this.activeKind;
-    this.transformHint.textContent = transactionActive
+    this.transformHint.textContent = actionSnapshot.preparing
+      ? `Preparing ${kind === "warp" ? "Warp" : kind === "perspective" ? "Perspective" : "Transform"} on the GPU…`
+      : transactionActive
       ? kind === "warp"
         ? "Drag any cell, even beyond the frame: that cell bends most while nearby cells follow smoothly. Each corner has two independent Bézier handles for curving its edges."
         : kind === "perspective"
@@ -940,8 +947,8 @@ export class MobileToolSettingsSheetController {
   private syncTransformActions(
     cancelTarget: HTMLButtonElement,
     applyTarget: HTMLButtonElement,
+    snapshot = this.options.getTransformActionSnapshot(),
   ): boolean {
-    const snapshot = this.options.getTransformActionSnapshot();
     cancelTarget.disabled = !snapshot.canCancel;
     applyTarget.disabled = !snapshot.canApply;
     return snapshot.active;
