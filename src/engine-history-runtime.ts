@@ -509,6 +509,13 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
     );
     return false;
   }
+  if (engine.activeRasterSpatialBlurSession) {
+    engine.publishStatus(
+      "Apply or cancel Point Blur before using history.",
+      "error",
+    );
+    return false;
+  }
   if (engine.activeRasterMotionBlurSession) {
     engine.publishStatus(
       "Apply or cancel Motion Blur before using history.",

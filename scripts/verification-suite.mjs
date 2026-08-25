@@ -30,6 +30,7 @@ export const verificationScripts = Object.freeze([
   "verify-effects-scratch-pool.mjs",
   "verify-fill.mjs",
   "verify-gaussian-blur.mjs",
+  "verify-spatial-blur.mjs",
   "verify-glass.mjs",
   "verify-grain-phase1.mjs",
   "verify-gpu-memory-panel-controller.mjs",

@@ -27,6 +27,7 @@ import type { RasterInnerShadowStyle, RasterOuterShadowStyle } from "./shadow-co
 import type { RasterColorOverlayStyle } from "./raster-color-overlay-core";
 import type { RasterNoiseChannels, RasterNoiseStyle } from "./noise-core";
 import type { LiquifyMode } from "./liquify-core";
+import type { SpatialBlurPin } from "./spatial-blur-core";
 import type { RasterLayerSource } from "./raster-layer-source";
 import type { RasterLayerEffectsSnapshot } from "./raster-layer-effects";
 import type { DocumentBackgroundState } from "./document-background";
@@ -358,6 +359,16 @@ export type RasterFilterHistoryAction = RasterFilterHistoryActionCommon & (
     edgeMode:
       | "transparent-black"
       | "transparent-content-clamp-document-edge";
+  }
+  | {
+    filter: "spatial-blur";
+    pins: readonly SpatialBlurPin[];
+    maximumRadius: number;
+    radiusQuantization: 4;
+    fieldStrategy: "inverse-distance-quarter-pixel-radius";
+    kernelStrategy: "shared-gaussian-kernel-v1";
+    precision: "rgba16float-f32-accumulation";
+    edgeMode: "transparent-content-clamp-document-edge";
   }
   | {
     filter: "motion-blur";

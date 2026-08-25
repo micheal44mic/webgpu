@@ -321,6 +321,10 @@ function createHarness({ holdEnabled = true } = {}) {
     beginLiquify: [],
     extendLiquify: [],
     endLiquify: [],
+    beginSpatialBlur: [],
+    updateSpatialBlur: [],
+    endSpatialBlur: [],
+    cancelSpatialBlurForNavigation: 0,
     beginView: 0,
     endView: 0,
     pan: [],
@@ -347,6 +351,7 @@ function createHarness({ holdEnabled = true } = {}) {
   let paintReadinessPending = false;
   let viewIsLocked = false;
   let liquifyEditActive = false;
+  let spatialBlurEditActive = false;
   let destructivePreviewNavigationActive = false;
   let openHistoryEdit = null;
   let beginStrokeAllowed = true;
@@ -428,6 +433,20 @@ function createHarness({ holdEnabled = true } = {}) {
     beginViewGesture() { calls.vectorBegin += 1; },
     endViewGesture() { calls.vectorEnd += 1; },
   };
+  const spatialBlur = {
+    isSpatialBlurEditActive: () => spatialBlurEditActive,
+    beginSpatialBlurPointer(input) {
+      calls.beginSpatialBlur.push(input);
+      return true;
+    },
+    updateSpatialBlurPointer(input) { calls.updateSpatialBlur.push(input); },
+    endSpatialBlurPointer(input, commit) {
+      calls.endSpatialBlur.push({ input, commit });
+    },
+    cancelSpatialBlurPointerForNavigation() {
+      calls.cancelSpatialBlurForNavigation += 1;
+    },
+  };
   const controller = new CanvasInputController({
     engine,
     browser,
@@ -451,6 +470,7 @@ function createHarness({ holdEnabled = true } = {}) {
     isPaintReadinessPending: () => paintReadinessPending,
     isLiquifyEditActive: () => liquifyEditActive,
     isDestructivePreviewNavigationActive: () => destructivePreviewNavigationActive,
+    getSpatialBlurController: () => spatialBlur,
     getVectorController: () => vector,
     getEditorExtension: () => extension,
     updateHistoryControls: () => { calls.historyControls += 1; },
@@ -473,6 +493,7 @@ function createHarness({ holdEnabled = true } = {}) {
     setPaintReadinessPending(value) { paintReadinessPending = value; },
     setViewLocked(value) { viewIsLocked = value; },
     setLiquifyEditActive(value) { liquifyEditActive = value; },
+    setSpatialBlurEditActive(value) { spatialBlurEditActive = value; },
     setOpenHistoryEdit(value) { openHistoryEdit = value; },
     setDestructivePreviewNavigationActive(value) {
       destructivePreviewNavigationActive = value;
@@ -1241,6 +1262,76 @@ async function flushMicrotasks() {
   harness.browser.dispatchEvent(makeEvent("keyup", { key: "r" }));
   assert.equal(harness.calls.fill.length, 2,
     "view-only shortcuts must not add another Fill");
+  harness.controller.dispose();
+}
+
+// Point Blur owns one-finger point gestures while its transaction is open.
+// A second finger rolls the provisional point gesture back before handing the
+// contacts to the established pan/pinch/rotate path.
+{
+  const harness = createHarness();
+  harness.setOperationLocked(true);
+  harness.setViewLocked(false);
+  harness.setSpatialBlurEditActive(true);
+  harness.setDestructivePreviewNavigationActive(true);
+  harness.setOpenHistoryEdit("spatial-blur");
+
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 70,
+    pointerType: "mouse",
+    clientX: 80,
+    clientY: 90,
+  }));
+  assert.equal(harness.controller.pointerMode, "spatial-blur");
+  assert.equal(harness.calls.beginStroke.length, 0);
+  harness.canvas.dispatchEvent(makeEvent("pointermove", {
+    pointerId: 70,
+    pointerType: "mouse",
+    clientX: 80,
+    clientY: 70,
+  }));
+  harness.canvas.dispatchEvent(makeEvent("pointerup", {
+    pointerId: 70,
+    pointerType: "mouse",
+    clientX: 80,
+    clientY: 70,
+  }));
+  assert.equal(harness.calls.beginSpatialBlur.length, 1);
+  assert.equal(harness.calls.updateSpatialBlur.length, 1);
+  assert.deepEqual(harness.calls.endSpatialBlur.map(({ commit }) => commit), [true]);
+
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 71,
+    pointerType: "touch",
+    clientX: 40,
+    clientY: 40,
+  }));
+  harness.canvas.dispatchEvent(makeEvent("pointermove", {
+    pointerId: 71,
+    pointerType: "touch",
+    clientX: 40,
+    clientY: 25,
+  }));
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 72,
+    pointerType: "touch",
+    clientX: 90,
+    clientY: 40,
+  }));
+  assert.equal(harness.controller.pointerMode, "touch-navigation");
+  assert.equal(harness.calls.cancelSpatialBlurForNavigation, 1);
+  assert.equal(harness.calls.vectorBegin, 1);
+  harness.canvas.dispatchEvent(makeEvent("pointerup", {
+    pointerId: 72,
+    pointerType: "touch",
+  }));
+  harness.canvas.dispatchEvent(makeEvent("pointerup", {
+    pointerId: 71,
+    pointerType: "touch",
+  }));
+  assert.equal(harness.calls.endSpatialBlur.length, 1,
+    "navigation promotion must not commit the provisional point gesture");
+  assert.equal(harness.calls.vectorEnd, 1);
   harness.controller.dispose();
 }
 

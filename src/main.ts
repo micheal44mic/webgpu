@@ -76,6 +76,7 @@ import {
   Wind,
   X,
   createIcons,
+  type IconNode,
 } from "lucide";
 import { BrushEngine } from "./brush-engine";
 import type { EngineStats } from "./engine-stats";
@@ -106,6 +107,12 @@ import type { ProjectEditorBootstrap } from "./project-shell-contract";
 import { ProjectSessionController } from "./project-session-controller";
 import { resolveMixedSceneEnabled } from "./compat/mixed-scene-options";
 
+const pointBlurIcon: IconNode = [
+  ["circle", { cx: "12", cy: "12", r: "2", fill: "currentColor", stroke: "none" }],
+  ["circle", { cx: "12", cy: "12", r: "5", opacity: "0.72" }],
+  ["circle", { cx: "12", cy: "12", r: "9", opacity: "0.36" }],
+];
+
 createIcons({
   icons: {
     Blend,
@@ -133,6 +140,7 @@ createIcons({
     Palette,
     Pencil,
     Plus,
+    PointBlur: pointBlurIcon,
     Redo2,
     Save,
     Scaling,
@@ -354,6 +362,17 @@ const mobileGaussianBlurCancelButton = element<HTMLButtonElement>(
 const mobileGaussianBlurApplyButton = element<HTMLButtonElement>(
   "mobileGaussianBlurApply",
 );
+const spatialBlurOpenButton = element<HTMLButtonElement>("mobileSpatialBlurOpen");
+const spatialBlurOverlay = element<HTMLElement>("spatialBlurOverlay");
+const spatialBlurPinLayer = element<HTMLElement>("spatialBlurPinLayer");
+const spatialBlurTopBar = element<HTMLElement>("spatialBlurTopBar");
+const spatialBlurDock = element<HTMLElement>("spatialBlurDock");
+const spatialBlurModeButtons = Array.from(
+  document.querySelectorAll<HTMLButtonElement>("[data-spatial-blur-mode]"),
+);
+const spatialBlurStatus = element<HTMLOutputElement>("spatialBlurStatus");
+const spatialBlurCancelButton = element<HTMLButtonElement>("spatialBlurCancel");
+const spatialBlurApplyButton = element<HTMLButtonElement>("spatialBlurApply");
 const mobileMotionBlurOpenButton = element<HTMLButtonElement>("mobileMotionBlurOpen");
 const mobileMotionBlurSheetElement = element<HTMLElement>("mobileMotionBlurSheet");
 const mobileMotionBlurSheetHandle = element<HTMLButtonElement>("mobileMotionBlurHandle");
@@ -566,6 +585,7 @@ const engine = new BrushEngine(canvas, {
     canvasGuidesController?.scheduleRender();
     projectSessionController?.markDirty();
     brushOutlineController?.notifyEngineUpdate();
+    rasterAdjustmentsController?.handleViewChange();
   },
   onPixelSelectionChange() {
     mobileToolSettingsSheet?.syncOpenState();
@@ -681,6 +701,7 @@ appDiagnosticsController = new AppDiagnosticsController({
     lastHistoryFailure: historyControlsController.lastFailure,
     rasterAdjustmentLocks: rasterAdjustmentsController?.diagnostics() ?? {
       rasterGaussianBlurUiBusy: false,
+      rasterSpatialBlurUiBusy: false,
       rasterMotionBlurUiBusy: false,
       rasterNoiseUiBusy: false,
       rasterGlassUiBusy: false,
@@ -1324,6 +1345,17 @@ rasterAdjustmentsController = new RasterAdjustmentsController({
       cancelButton: mobileGaussianBlurCancelButton,
       applyButton: mobileGaussianBlurApplyButton,
     },
+    spatialBlur: {
+      openButton: spatialBlurOpenButton,
+      overlay: spatialBlurOverlay,
+      pinLayer: spatialBlurPinLayer,
+      topBar: spatialBlurTopBar,
+      dock: spatialBlurDock,
+      modeButtons: spatialBlurModeButtons,
+      status: spatialBlurStatus,
+      cancelButton: spatialBlurCancelButton,
+      applyButton: spatialBlurApplyButton,
+    },
     motionBlur: {
       openButton: mobileMotionBlurOpenButton,
       sheet: mobileMotionBlurSheetElement,
@@ -1864,6 +1896,7 @@ canvasInputController = new CanvasInputController({
   isDestructivePreviewNavigationActive: () =>
     rasterAdjustmentsController?.isDestructivePreviewNavigationActive(historyState) === true
     || fillPreviewAllowsCanvasNavigation(),
+  getSpatialBlurController: () => rasterAdjustmentsController,
   getVectorController: () => mixedSceneController,
   getEditorExtension: () => editorExtension,
   updateHistoryControls,

@@ -2713,6 +2713,22 @@
                   <span class="mobile-tools-item-label">Motion Blur</span>
                 </button>
                 <button
+                  id="mobileSpatialBlurOpen"
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
+                  data-mobile-tool-search="point blur pins local softness"
+                  aria-label="Open Point Blur"
+                  aria-controls="spatialBlurDock"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="point-blur" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="point-blur" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Point Blur</span>
+                </button>
+                <button
                   id="mobileNoiseOpen"
                   class="mobile-tools-item"
                   type="button"
@@ -3022,6 +3038,63 @@
         <canvas id="vectorTextPresentationCanvas" aria-hidden="true" hidden></canvas>
         <canvas id="vectorTextInteractionCanvas" aria-label="Select and transform elements" hidden></canvas>
         <canvas id="brushOutlineCanvas" aria-hidden="true" hidden></canvas>
+        <div
+          id="spatialBlurOverlay"
+          class="spatial-blur-overlay"
+          aria-label="Point Blur points"
+          aria-hidden="true"
+          inert
+          hidden
+        >
+          <div id="spatialBlurPinLayer" class="spatial-blur-pin-layer"></div>
+        </div>
+        <header
+          id="spatialBlurTopBar"
+          class="spatial-blur-top-bar"
+          aria-hidden="true"
+          inert
+          hidden
+        >
+          <button id="spatialBlurCancel" type="button">Cancel</button>
+          <div>
+            <strong>Point Blur</strong>
+            <output id="spatialBlurStatus" role="status" aria-live="polite">
+              Point Blur ready.
+            </output>
+          </div>
+          <button id="spatialBlurApply" class="is-primary" type="button">Apply</button>
+        </header>
+        <nav
+          id="spatialBlurDock"
+          class="spatial-blur-dock"
+          aria-label="Point Blur mode"
+          aria-hidden="true"
+          inert
+          hidden
+        >
+          <div class="spatial-blur-mode-grid" role="radiogroup" aria-label="Point Blur mode">
+            <button
+              type="button"
+              role="radio"
+              data-spatial-blur-mode="add"
+              aria-checked="true"
+            >ADD</button>
+            <button
+              type="button"
+              role="radio"
+              data-spatial-blur-mode="adjust"
+              aria-checked="false"
+              tabindex="-1"
+            >ADJUST</button>
+            <button
+              type="button"
+              role="radio"
+              data-spatial-blur-mode="remove"
+              aria-checked="false"
+              tabindex="-1"
+            >REMOVE</button>
+          </div>
+        </nav>
         <p id="pixelSelectionMoveHelp" class="visually-hidden">
           Drag to move pixels. Arrow keys: one pixel; Shift plus arrow keys: ten pixels. Enter applies; Escape cancels.
         </p>

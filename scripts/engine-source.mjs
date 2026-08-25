@@ -42,6 +42,7 @@ export const ENGINE_SOURCE_FILES = Object.freeze([
   "engine-raster-transform-runtime.ts",
   "engine-rasterize-layer-runtime.ts",
   "engine-gaussian-blur-runtime.ts",
+  "engine-spatial-blur-runtime.ts",
   "engine-motion-blur-runtime.ts",
   "engine-noise-runtime.ts",
   "engine-glass-runtime.ts",

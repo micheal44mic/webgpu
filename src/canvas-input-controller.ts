@@ -92,6 +92,24 @@ export interface CanvasInputSelectionSettings {
   readonly combineMode: SelectionCombineMode;
 }
 
+export interface CanvasInputSpatialBlurPointer {
+  readonly pointerId: number;
+  readonly pointerType: string;
+  readonly clientX: number;
+  readonly clientY: number;
+}
+
+export interface CanvasInputSpatialBlurPort {
+  readonly isSpatialBlurEditActive: () => boolean;
+  readonly beginSpatialBlurPointer: (input: CanvasInputSpatialBlurPointer) => boolean;
+  readonly updateSpatialBlurPointer: (input: CanvasInputSpatialBlurPointer) => void;
+  readonly endSpatialBlurPointer: (
+    input: CanvasInputSpatialBlurPointer,
+    commit: boolean,
+  ) => void;
+  readonly cancelSpatialBlurPointerForNavigation: () => void;
+}
+
 export interface CanvasInputDiagnostics {
   readonly touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet";
   readonly touchPaintIntentStrategy: typeof TOUCH_PAINT_INTENT_STRATEGY;
@@ -133,6 +151,7 @@ export interface CanvasInputControllerOptions {
   readonly isPaintReadinessPending: () => boolean;
   readonly isLiquifyEditActive: () => boolean;
   readonly isDestructivePreviewNavigationActive: () => boolean;
+  readonly getSpatialBlurController?: () => CanvasInputSpatialBlurPort | null;
   readonly getVectorController: () => CanvasInputVectorPort | null;
   readonly getEditorExtension: () => CanvasInputExtensionPort | null;
   readonly updateHistoryControls: () => void;
@@ -144,6 +163,7 @@ export interface CanvasInputControllerOptions {
 export type CanvasPointerMode =
   | "paint"
   | "liquify"
+  | "spatial-blur"
   | "fill"
   | "selection-tap"
   | "selection-lasso"
@@ -982,6 +1002,8 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       } else if (pointerMode === "liquify") {
         engine.endRasterLiquifyStroke(false);
         canvas.classList.remove("liquify-deforming");
+      } else if (pointerMode === "spatial-blur") {
+        options.getSpatialBlurController?.()?.cancelSpatialBlurPointerForNavigation();
       } else if (pointerMode === "fill") {
         fillPointerMoved = true;
       } else if (pointerMode === "selection-tap") {
@@ -1021,10 +1043,14 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       && rotateShortcutHeld;
     const shouldPan = event.shiftKey || event.button === 1 || event.button === 2;
     const activeTool = options.getActiveTool();
+    const spatialBlurController = options.getSpatialBlurController?.() ?? null;
+    const spatialBlurActive = spatialBlurController?.isSpatialBlurEditActive() === true;
     const requestedPointerMode: CanvasPointerMode = shouldRotate
       ? "rotate"
       : shouldPan
         ? "pan"
+        : spatialBlurActive
+          ? "spatial-blur"
         : activeTool === "fill"
           ? "fill"
           : activeTool === "pan"
@@ -1044,19 +1070,24 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       || requestedPointerMode === "rotate";
     const liquifyEditRequested = requestedPointerMode === "liquify"
       && options.isLiquifyEditActive();
+    const spatialBlurEditRequested = requestedPointerMode === "spatial-blur"
+      && spatialBlurActive;
     const fillPreviewEditRequested = requestedPointerMode === "fill"
       && options.getHistoryState().openEdit === "fill"
       && options.isDestructivePreviewNavigationActive();
     const destructivePreviewTouchNavigationRequested = event.pointerType === "touch"
       && options.isDestructivePreviewNavigationActive()
-      && !fillPreviewEditRequested;
+      && !fillPreviewEditRequested
+      && !spatialBlurEditRequested;
     const deferPenForPaintReadiness = requestedPointerMode === "paint"
       && event.pointerType === "pen"
       && options.isPaintReadinessPending();
     if (
       (viewNavigationRequested || destructivePreviewTouchNavigationRequested)
         ? options.viewOperationLocked()
-        : options.operationLocked(liquifyEditRequested || fillPreviewEditRequested)
+        : options.operationLocked(
+          liquifyEditRequested || fillPreviewEditRequested || spatialBlurEditRequested,
+        )
     ) {
       if (!deferPenForPaintReadiness) {
         if (options.getHistoryState().openEdit === "raster-property") {
@@ -1087,6 +1118,18 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       })
       : null;
     if (liquifyPoint && !engine.beginRasterLiquifyStroke(liquifyPoint)) {
+      publishHistoryState();
+      return;
+    }
+    if (
+      requestedPointerMode === "spatial-blur"
+      && !spatialBlurController?.beginSpatialBlurPointer({
+        pointerId: event.pointerId,
+        pointerType: event.pointerType,
+        clientX: event.clientX,
+        clientY: event.clientY,
+      })
+    ) {
       publishHistoryState();
       return;
     }
@@ -1254,6 +1297,15 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       return;
     }
     if (pointerMode === "transform") return;
+    if (pointerMode === "spatial-blur") {
+      options.getSpatialBlurController?.()?.updateSpatialBlurPointer({
+        pointerId: event.pointerId,
+        pointerType: event.pointerType,
+        clientX: event.clientX,
+        clientY: event.clientY,
+      });
+      return;
+    }
 
     const coalesced = (
       event as PointerEvent & { getCoalescedEvents?: () => PointerEvent[] }
@@ -1420,6 +1472,13 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
         }
       } else if (pointerMode === "liquify") {
         engine.endRasterLiquifyStroke(event.type === "pointerup");
+      } else if (pointerMode === "spatial-blur") {
+        options.getSpatialBlurController?.()?.endSpatialBlurPointer({
+          pointerId: event.pointerId,
+          pointerType: event.pointerType,
+          clientX: event.clientX,
+          clientY: event.clientY,
+        }, event.type === "pointerup");
       } else if (pointerMode === "rotate") {
         engine.endViewRotationGesture();
       }

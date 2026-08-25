@@ -69,6 +69,7 @@ class FakeElement extends EventTarget {
   isConnected = true;
   captures = new Set();
   focusCount = 0;
+  children = [];
 
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   getAttribute(name) { return this.attributes.get(name) ?? null; }
@@ -83,12 +84,18 @@ class FakeElement extends EventTarget {
   setPointerCapture(pointerId) { this.captures.add(pointerId); }
   releasePointerCapture(pointerId) { this.captures.delete(pointerId); }
   hasPointerCapture(pointerId) { return this.captures.has(pointerId); }
+  replaceChildren(...children) { this.children = children; }
+  get lastElementChild() { return this.children.at(-1) ?? null; }
+  getBoundingClientRect() {
+    return { left: 0, top: 0, right: 512, bottom: 512, width: 512, height: 512 };
+  }
 }
 
 globalThis.HTMLElement = FakeElement;
 
 class FakeDocument extends EventTarget {
   activeElement = null;
+  createElement() { return new FakeElement(); }
 }
 
 class FakeBrowser extends EventTarget {
@@ -97,7 +104,15 @@ class FakeBrowser extends EventTarget {
   innerHeight = 800;
   now = 0;
   performance = { now: () => this.now };
+  nextAnimationFrameId = 1;
+  animationFrames = new Map();
   queueMicrotask(callback) { queueMicrotask(callback); }
+  requestAnimationFrame(callback) {
+    const id = this.nextAnimationFrameId++;
+    this.animationFrames.set(id, callback);
+    return id;
+  }
+  cancelAnimationFrame(id) { this.animationFrames.delete(id); }
 }
 
 function event(type, properties = {}) {
@@ -122,6 +137,11 @@ const gaussianSheet = createSheetElements();
 const motionSheet = createSheetElements();
 const noiseSheet = createSheetElements();
 const glassSheet = createSheetElements();
+const spatialBlurModeButtons = ["add", "adjust", "remove"].map((mode) => {
+  const button = new FakeElement();
+  button.dataset.spatialBlurMode = mode;
+  return button;
+});
 const elements = {
   canvas: new FakeElement(),
   appStatus: new FakeElement(),
@@ -156,6 +176,17 @@ const elements = {
     ...gaussianSheet,
     radiusInput: new FakeElement(),
     radiusOutput: new FakeElement(),
+    status: new FakeElement(),
+    cancelButton: new FakeElement(),
+    applyButton: new FakeElement(),
+  },
+  spatialBlur: {
+    openButton: new FakeElement(),
+    overlay: new FakeElement(),
+    pinLayer: new FakeElement(),
+    topBar: new FakeElement(),
+    dock: new FakeElement(),
+    modeButtons: spatialBlurModeButtons,
     status: new FakeElement(),
     cancelButton: new FakeElement(),
     applyButton: new FakeElement(),
@@ -222,6 +253,23 @@ let history = {
 const calls = [];
 let glassSettings = null;
 const engine = {
+  documentWidth: 512,
+  documentHeight: 512,
+  getVectorTextViewState: () => ({
+    canvasWidth: 512,
+    canvasHeight: 512,
+    centerX: 256,
+    centerY: 256,
+    zoom: 1,
+    rotationCos: 1,
+    rotationSin: 0,
+  }),
+  toLayerPoint: ({ clientX, clientY, pressure, timeMs }) => ({
+    x: clientX,
+    y: clientY,
+    pressure,
+    timeMs,
+  }),
   getHistoryState: () => ({ ...history }),
   getPixelSelectionState: () => ({ selectedPixels: 0 }),
   getStats: () => ({
@@ -248,6 +296,25 @@ const engine = {
   },
   async cancelRasterGaussianBlur() {
     calls.push(["cancel-gaussian"]);
+    history = { ...history, openEdit: null };
+    return true;
+  },
+  async beginRasterSpatialBlur(pins) {
+    calls.push(["begin-spatial-blur", pins]);
+    history = { ...history, openEdit: "spatial-blur" };
+    return { pins: pins.map((pin) => ({ ...pin })) };
+  },
+  updateRasterSpatialBlur(pins) {
+    calls.push(["update-spatial-blur", pins]);
+    return { pins: pins.map((pin) => ({ ...pin })) };
+  },
+  async commitRasterSpatialBlur() {
+    calls.push(["commit-spatial-blur"]);
+    history = { ...history, openEdit: null, actionCount: history.actionCount + 1 };
+    return true;
+  },
+  async cancelRasterSpatialBlur() {
+    calls.push(["cancel-spatial-blur"]);
     history = { ...history, openEdit: null };
     return true;
   },
@@ -402,6 +469,93 @@ assert.equal(history.openEdit, null);
 assert.equal(controller.isAnySurfaceOpen, false);
 assert.equal(thumbnails, 1);
 
+elements.spatialBlur.openButton.dispatchEvent(event("click"));
+await settle();
+assert.equal(history.openEdit, "spatial-blur");
+assert.equal(controller.isOpen("spatial-blur"), true);
+assert.equal(currentTool, "pan", "Point Blur must switch the canvas to Move");
+assert.equal(configuredTools.at(-1), "pan");
+assert.equal(elements.spatialBlur.overlay.hidden, false);
+assert.equal(elements.spatialBlur.pinLayer.children.length, 1);
+assert.equal(spatialBlurModeButtons[0].getAttribute("aria-checked"), "true");
+
+assert.equal(controller.beginSpatialBlurPointer({
+  pointerId: 41,
+  pointerType: "mouse",
+  clientX: 100,
+  clientY: 100,
+}), true);
+controller.endSpatialBlurPointer({
+  pointerId: 41,
+  pointerType: "mouse",
+  clientX: 100,
+  clientY: 100,
+}, true);
+assert.equal(calls.at(-1)[0], "update-spatial-blur");
+assert.equal(calls.at(-1)[1].length, 2);
+
+spatialBlurModeButtons[1].dispatchEvent(event("click"));
+assert.equal(spatialBlurModeButtons[1].getAttribute("aria-checked"), "true");
+controller.beginSpatialBlurPointer({
+  pointerId: 42,
+  pointerType: "mouse",
+  clientX: 100,
+  clientY: 100,
+});
+controller.updateSpatialBlurPointer({
+  pointerId: 42,
+  pointerType: "mouse",
+  clientX: 100,
+  clientY: 90,
+});
+controller.endSpatialBlurPointer({
+  pointerId: 42,
+  pointerType: "mouse",
+  clientX: 100,
+  clientY: 90,
+}, true);
+assert.equal(calls.at(-1)[0], "update-spatial-blur");
+assert.equal(calls.at(-1)[1][1].radius, 25);
+
+spatialBlurModeButtons[2].dispatchEvent(event("click"));
+controller.beginSpatialBlurPointer({
+  pointerId: 43,
+  pointerType: "mouse",
+  clientX: 100,
+  clientY: 100,
+});
+controller.endSpatialBlurPointer({
+  pointerId: 43,
+  pointerType: "mouse",
+  clientX: 100,
+  clientY: 100,
+}, true);
+assert.equal(calls.at(-1)[0], "update-spatial-blur");
+assert.equal(calls.at(-1)[1].length, 1);
+
+elements.spatialBlur.applyButton.dispatchEvent(event("click"));
+await settle();
+assert.equal(history.openEdit, null);
+assert.equal(calls.at(-1)[0], "commit-spatial-blur");
+assert.equal(elements.spatialBlur.overlay.hidden, true);
+assert.equal(currentTool, "pan", "Apply must leave Move selected");
+assert.equal(configuredTools.at(-1), "pan");
+assert.equal(elements.spatialBlur.openButton.focusCount, 1);
+assert.equal(thumbnails, 2);
+
+currentTool = "paint";
+elements.spatialBlur.openButton.dispatchEvent(event("click"));
+await settle();
+assert.equal(currentTool, "pan");
+elements.spatialBlur.cancelButton.dispatchEvent(event("click"));
+await settle();
+assert.equal(history.openEdit, null);
+assert.equal(calls.at(-1)[0], "cancel-spatial-blur");
+assert.equal(currentTool, "pan", "Cancel must leave Move selected");
+assert.equal(configuredTools.at(-1), "pan");
+assert.equal(elements.spatialBlur.openButton.focusCount, 2);
+assert.equal(thumbnails, 2, "Cancel must not capture a committed thumbnail");
+
 elements.noise.openButton.dispatchEvent(event("click"));
 await settle();
 assert.equal(history.openEdit, "noise");
@@ -428,7 +582,7 @@ assert.equal(calls.at(-1)[0], "reseed-glass");
 elements.glass.applyButton.dispatchEvent(event("click"));
 await settle();
 assert.equal(history.openEdit, null);
-assert.equal(thumbnails, 2);
+assert.equal(thumbnails, 3);
 assert.equal(filtersTrigger.focusCount, 1);
 
 controller.openGlass(elements.glass.openButton, filtersTrigger);
@@ -452,8 +606,12 @@ assert.deepEqual(calls.filter(([name]) => name === "end-liquify-stroke").at(-1),
   "end-liquify-stroke",
   false,
 ]);
-assert.equal(currentTool, "paint");
-assert.equal(thumbnails, 3);
+assert.equal(
+  currentTool,
+  "pan",
+  "later temporary tools must preserve the Move state left by Point Blur",
+);
+assert.equal(thumbnails, 4);
 
 elements.motionBlur.openButton.dispatchEvent(event("click"));
 await settle();

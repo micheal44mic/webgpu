@@ -13,6 +13,7 @@ assert.deepEqual(contract.NON_DESTRUCTIVE_RASTER_EFFECT_KINDS, [
 assert.deepEqual(contract.DESTRUCTIVE_RASTER_ADJUSTMENT_KINDS, [
   "liquify",
   "gaussian-blur",
+  "spatial-blur",
   "motion-blur",
   "noise",
   "glass",
@@ -29,6 +30,7 @@ assert.equal(contract.isNonDestructiveRasterEffectKind("stroke"), true);
 assert.equal(contract.isNonDestructiveRasterEffectKind("noise"), false);
 assert.equal(contract.isDestructiveRasterAdjustmentKind("noise"), true);
 assert.equal(contract.isDestructiveRasterAdjustmentKind("glass"), true);
+assert.equal(contract.isDestructiveRasterAdjustmentKind("spatial-blur"), true);
 assert.equal(contract.isDestructiveRasterAdjustmentKind("bevel"), false);
 
 const root = new URL("../", import.meta.url);

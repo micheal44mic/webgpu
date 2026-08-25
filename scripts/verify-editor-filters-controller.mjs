@@ -24,6 +24,7 @@ assert.match(
   /class="mobile-icon-stack"[\s\S]*?mobile-icon-outline[\s\S]*?mobile-icon-face/,
 );
 assert.match(filtersPanelSource, /class="mobile-tools-item-label">Glass<\/span>/);
+assert.doesNotMatch(filtersPanelSource, /Point Blur|spatial-blur/);
 assert.doesNotMatch(
   filtersPanelSource,
   /editor-filter-card|editor-filter-hint|editor-filter-open|Refract pixels|>Open</,
@@ -67,6 +68,7 @@ try {
 
 assert.deepEqual(EDITOR_FILTER_KINDS, ["glass"]);
 assert.equal(isEditorFilterKind("glass"), true);
+assert.equal(isEditorFilterKind("spatial-blur"), false);
 assert.equal(isEditorFilterKind("unknown"), false);
 assert.equal(isEditorFilterKind(undefined), false);
 

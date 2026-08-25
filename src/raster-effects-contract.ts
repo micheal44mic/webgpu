@@ -12,6 +12,7 @@ export type NonDestructiveRasterEffectKind =
 export const DESTRUCTIVE_RASTER_ADJUSTMENT_KINDS = [
   "liquify",
   "gaussian-blur",
+  "spatial-blur",
   "motion-blur",
   "noise",
   "glass",

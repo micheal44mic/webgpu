@@ -111,6 +111,16 @@ import {
   type ActiveRasterGaussianBlurSession,
 } from "./engine-gaussian-blur-runtime";
 import {
+  abandonRasterSpatialBlurSession,
+  beginRasterSpatialBlur as beginRasterSpatialBlurRuntime,
+  cancelRasterSpatialBlur as cancelRasterSpatialBlurRuntime,
+  commitRasterSpatialBlur as commitRasterSpatialBlurRuntime,
+  updateRasterSpatialBlur as updateRasterSpatialBlurRuntime,
+  warmRasterSpatialBlurPipelines,
+  type ActiveRasterSpatialBlurSession,
+} from "./engine-spatial-blur-runtime";
+import type { SpatialBlurPin } from "./spatial-blur-core";
+import {
   beginRasterMotionBlur as beginRasterMotionBlurRuntime,
   cancelRasterMotionBlur as cancelRasterMotionBlurRuntime,
   commitRasterMotionBlur as commitRasterMotionBlurRuntime,
@@ -862,6 +872,7 @@ export type DestructiveRasterEditKind =
   | "fill"
   | "transform"
   | "gaussian-blur"
+  | "spatial-blur"
   | "motion-blur"
   | "noise"
   | "glass"
@@ -987,6 +998,7 @@ export class BrushEngine {
   device!: GPUDevice;
   private optionalEditorResourcesPromise: Promise<void> | null = null;
   optionalEditorResourcesReady = false;
+  private spatialBlurPipelinesReady = false;
 
   /** Contabilita' misurata di ogni texture e buffer creati dal device. */
   gpuResourceRegistry = new GpuResourceRegistry();
@@ -1809,6 +1821,7 @@ export class BrushEngine {
   nextRasterLayerMetadataHistoryEditToken = 1;
   activeRasterTransformSession: ActiveRasterTransformSession | null = null;
   activeRasterGaussianBlurSession: ActiveRasterGaussianBlurSession | null = null;
+  activeRasterSpatialBlurSession: ActiveRasterSpatialBlurSession | null = null;
   activeRasterMotionBlurSession: ActiveRasterMotionBlurSession | null = null;
   activeRasterNoiseSession: ActiveRasterNoiseSession | null = null;
   activeRasterGlassSession: ActiveRasterGlassSession | null = null;
@@ -2038,6 +2051,7 @@ export class BrushEngine {
     });
     this.deviceLostSignal = this.device.lost.then((info) => {
       this.invalidateAdaptivePreview();
+      abandonRasterSpatialBlurSession(this);
       abandonRasterNoiseSession(this);
       abandonRasterGlassSession(this);
       abandonRasterLiquifySession(this);
@@ -5012,6 +5026,7 @@ export class BrushEngine {
       || this.activeFillPreviewSession
       || this.activeRasterTransformSession
       || this.activeRasterGaussianBlurSession
+      || this.activeRasterSpatialBlurSession
       || this.activeRasterMotionBlurSession
       || this.activeRasterNoiseSession
       || this.activeRasterGlassSession
@@ -5119,6 +5134,7 @@ export class BrushEngine {
       || this.activeFillPreviewSession
       || this.activeRasterTransformSession
       || this.activeRasterGaussianBlurSession
+      || this.activeRasterSpatialBlurSession
       || this.activeRasterMotionBlurSession
       || this.activeRasterNoiseSession
       || this.activeRasterGlassSession
@@ -5223,6 +5239,7 @@ export class BrushEngine {
       && this.activeFillPreviewSession === null
       && this.activeRasterTransformSession === null
       && this.activeRasterGaussianBlurSession === null
+      && this.activeRasterSpatialBlurSession === null
       && this.activeRasterMotionBlurSession === null
       && this.activeRasterNoiseSession === null
       && this.activeRasterGlassSession === null
@@ -5610,6 +5627,7 @@ export class BrushEngine {
     if (this.activeFillPreviewSession) return "fill";
     if (this.activeRasterTransformSession) return "transform";
     if (this.activeRasterGaussianBlurSession) return "gaussian-blur";
+    if (this.activeRasterSpatialBlurSession) return "spatial-blur";
     if (this.activeRasterMotionBlurSession) return "motion-blur";
     if (this.activeRasterNoiseSession) return "noise";
     if (this.activeRasterGlassSession) return "glass";
@@ -5621,6 +5639,7 @@ export class BrushEngine {
     if (kind === "fill") return "Fill";
     if (kind === "transform") return "Transform";
     if (kind === "gaussian-blur") return "Gaussian Blur";
+    if (kind === "spatial-blur") return "Point Blur";
     if (kind === "motion-blur") return "Motion Blur";
     if (kind === "glass") return "Glass";
     if (kind === "liquify") return "Liquify";
@@ -7722,11 +7741,13 @@ export class BrushEngine {
       && this.selectionPipelineWarmup !== null;
     const blendResourcesPending = this.blendRenderer === null
       && this.blendRendererWarmup !== null;
+    const spatialBlurResourcesPending = !this.spatialBlurPipelinesReady;
     if (
       !layerBlendResourcesPending
       && !vectorResourcesPending
       && !selectionResourcesPending
       && !blendResourcesPending
+      && !spatialBlurResourcesPending
     ) return;
     if (this.optionalEditorResourcesPromise) {
       await this.optionalEditorResourcesPromise;
@@ -7758,6 +7779,10 @@ export class BrushEngine {
       }
       if (blendResourcesPending) {
         await this.blendRendererWarmup!();
+      }
+      if (spatialBlurResourcesPending) {
+        await warmRasterSpatialBlurPipelines(this);
+        this.spatialBlurPipelinesReady = true;
       }
       if (selectionResourcesPending) {
         await this.selectionPipelineWarmup!();
@@ -8473,6 +8498,7 @@ export class BrushEngine {
       || this.activeFillPreviewSession
       || this.activeRasterTransformSession
       || this.activeRasterGaussianBlurSession
+      || this.activeRasterSpatialBlurSession
       || this.activeRasterMotionBlurSession
       || this.activeRasterNoiseSession
       || this.activeRasterGlassSession
@@ -8616,6 +8642,7 @@ export class BrushEngine {
       || this.activeFillPreviewSession
       || this.activeRasterTransformSession
       || this.activeRasterGaussianBlurSession
+      || this.activeRasterSpatialBlurSession
       || this.activeRasterMotionBlurSession
       || this.activeRasterNoiseSession
       || this.activeRasterGlassSession
@@ -8960,6 +8987,22 @@ export class BrushEngine {
 
   cancelRasterGaussianBlur(): Promise<boolean> {
     return cancelRasterGaussianBlurRuntime(this);
+  }
+
+  beginRasterSpatialBlur(initialPins?: readonly Readonly<SpatialBlurPin>[]) {
+    return beginRasterSpatialBlurRuntime(this, initialPins);
+  }
+
+  updateRasterSpatialBlur(pins: readonly Readonly<SpatialBlurPin>[]) {
+    return updateRasterSpatialBlurRuntime(this, pins);
+  }
+
+  commitRasterSpatialBlur(): Promise<boolean> {
+    return commitRasterSpatialBlurRuntime(this);
+  }
+
+  cancelRasterSpatialBlur(): Promise<boolean> {
+    return cancelRasterSpatialBlurRuntime(this);
   }
 
   beginRasterMotionBlur(initialDistance?: number, initialAngle?: number) {
@@ -10157,6 +10200,11 @@ export class BrushEngine {
     if (this.activeRasterGaussianBlurSession) {
       throw new Error(
         "Apply or cancel Gaussian Blur before switching layers.",
+      );
+    }
+    if (this.activeRasterSpatialBlurSession) {
+      throw new Error(
+        "Apply or cancel Point Blur before switching layers.",
       );
     }
     if (this.activeRasterMotionBlurSession) {

@@ -208,6 +208,7 @@ export interface HistoryState {
     | "fill"
     | "transform"
     | "gaussian-blur"
+    | "spatial-blur"
     | "motion-blur"
     | "noise"
     | "glass"

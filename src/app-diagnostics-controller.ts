@@ -30,6 +30,7 @@ export interface AppDiagnosticsUiSnapshot {
   readonly lastHistoryFailure: unknown;
   readonly rasterAdjustmentLocks: {
     readonly rasterGaussianBlurUiBusy: boolean;
+    readonly rasterSpatialBlurUiBusy: boolean;
     readonly rasterMotionBlurUiBusy: boolean;
     readonly rasterNoiseUiBusy: boolean;
     readonly rasterGlassUiBusy: boolean;

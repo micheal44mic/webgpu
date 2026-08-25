@@ -46,20 +46,31 @@ import {
 } from "./glass-core";
 import type { CanvasInputTool } from "./canvas-input-controller";
 import type { DestructiveRasterAdjustmentKind } from "./raster-effects-contract.ts";
+import {
+  SpatialBlurController,
+  type SpatialBlurPointerInput,
+} from "./spatial-blur-controller";
+import {
+  createInitialSpatialBlurPin,
+  type SpatialBlurPin,
+} from "./spatial-blur-core";
 
 export type RasterAdjustmentsEnginePort = Pick<
   BrushEngine,
   | "beginRasterGaussianBlur"
+  | "beginRasterSpatialBlur"
   | "beginRasterLiquify"
   | "beginRasterMotionBlur"
   | "beginRasterNoise"
   | "beginRasterGlass"
   | "cancelRasterGaussianBlur"
+  | "cancelRasterSpatialBlur"
   | "cancelRasterLiquify"
   | "cancelRasterMotionBlur"
   | "cancelRasterNoise"
   | "cancelRasterGlass"
   | "commitRasterGaussianBlur"
+  | "commitRasterSpatialBlur"
   | "commitRasterLiquify"
   | "commitRasterMotionBlur"
   | "commitRasterNoise"
@@ -68,14 +79,19 @@ export type RasterAdjustmentsEnginePort = Pick<
   | "getHistoryState"
   | "getPixelSelectionState"
   | "getStats"
+  | "getVectorTextViewState"
   | "resetRasterLiquify"
   | "setRasterLiquifyAmount"
   | "updateRasterGaussianBlur"
+  | "updateRasterSpatialBlur"
   | "updateRasterLiquifySettings"
   | "updateRasterMotionBlur"
   | "updateRasterNoise"
   | "updateRasterGlass"
   | "reseedRasterGlass"
+  | "toLayerPoint"
+  | "documentWidth"
+  | "documentHeight"
 >;
 
 export interface RasterAdjustmentsBrowser extends Window {
@@ -115,6 +131,18 @@ export interface GaussianBlurAdjustmentElements {
   readonly radiusInput: HTMLInputElement;
   readonly radiusOutput: HTMLOutputElement;
   readonly status: HTMLParagraphElement;
+  readonly cancelButton: HTMLButtonElement;
+  readonly applyButton: HTMLButtonElement;
+}
+
+export interface SpatialBlurAdjustmentElements {
+  readonly openButton: HTMLButtonElement;
+  readonly overlay: HTMLElement;
+  readonly pinLayer: HTMLElement;
+  readonly topBar: HTMLElement;
+  readonly dock: HTMLElement;
+  readonly modeButtons: readonly HTMLButtonElement[];
+  readonly status: HTMLOutputElement;
   readonly cancelButton: HTMLButtonElement;
   readonly applyButton: HTMLButtonElement;
 }
@@ -180,6 +208,7 @@ export interface RasterAdjustmentsElements {
   readonly appStatus: HTMLParagraphElement;
   readonly liquify: LiquifyAdjustmentElements;
   readonly gaussianBlur: GaussianBlurAdjustmentElements;
+  readonly spatialBlur: SpatialBlurAdjustmentElements;
   readonly motionBlur: MotionBlurAdjustmentElements;
   readonly noise: NoiseAdjustmentElements;
   readonly glass: GlassAdjustmentElements;
@@ -208,6 +237,7 @@ export interface RasterAdjustmentsControllerOptions {
 
 export interface RasterAdjustmentsDiagnostics {
   readonly rasterGaussianBlurUiBusy: boolean;
+  readonly rasterSpatialBlurUiBusy: boolean;
   readonly rasterMotionBlurUiBusy: boolean;
   readonly rasterNoiseUiBusy: boolean;
   readonly rasterGlassUiBusy: boolean;
@@ -262,11 +292,13 @@ export class RasterAdjustmentsController {
   private readonly abortController: AbortController;
   private readonly liquifySheet: MobileLiquifySheetController;
   private readonly gaussianBlurSheet: MobileGaussianBlurSheetController;
+  private readonly spatialBlurEditor: SpatialBlurController;
   private readonly motionBlurSheet: MobileMotionBlurSheetController;
   private readonly noiseSheet: MobileNoiseSheetController;
   private readonly glassSheet: MobileGlassSheetController;
   private readonly liquify = initialTransactionState();
   private readonly gaussianBlur = initialTransactionState();
+  private readonly spatialBlur = initialTransactionState();
   private readonly motionBlur = initialTransactionState();
   private readonly noise = initialTransactionState();
   private readonly glass = initialTransactionState();
@@ -302,6 +334,20 @@ export class RasterAdjustmentsController {
       beforeOpen: options.beforeSheetOpen,
       onRequestCancel: () => void this.cancelGaussianBlur(),
       onOpenChange: options.onSheetOpenChange,
+    });
+    this.spatialBlurEditor = new SpatialBlurController({
+      browser: options.browser,
+      document: options.browser.document,
+      engine: options.engine,
+      documentWidth: options.engine.documentWidth,
+      documentHeight: options.engine.documentHeight,
+      elements: {
+        canvas: options.elements.canvas,
+        ...options.elements.spatialBlur,
+      },
+      onPinsChange: (pins) => this.updateSpatialBlur(pins),
+      onRequestCancel: () => void this.cancelSpatialBlur(),
+      onRequestApply: () => void this.applySpatialBlur(),
     });
     this.motionBlurSheet = new MobileMotionBlurSheetController({
       browser: options.browser,
@@ -370,9 +416,41 @@ export class RasterAdjustmentsController {
     void this.beginGlass(trigger, returnFocus);
   }
 
+  openSpatialBlur(trigger: HTMLElement, returnFocus: HTMLElement = trigger): void {
+    void this.beginSpatialBlur(trigger, returnFocus);
+  }
+
+  isSpatialBlurEditActive(history = this.options.getHistoryState()): boolean {
+    return this.spatialBlur.sessionOpen
+      && history.openEdit === "spatial-blur"
+      && !this.spatialBlur.uiBusy
+      && !this.spatialBlur.previewFault;
+  }
+
+  beginSpatialBlurPointer(input: SpatialBlurPointerInput): boolean {
+    return this.isSpatialBlurEditActive() && this.spatialBlurEditor.beginPointer(input);
+  }
+
+  updateSpatialBlurPointer(input: SpatialBlurPointerInput): void {
+    this.spatialBlurEditor.updatePointer(input);
+  }
+
+  endSpatialBlurPointer(input: SpatialBlurPointerInput, commit: boolean): void {
+    this.spatialBlurEditor.endPointer(input, commit);
+  }
+
+  cancelSpatialBlurPointerForNavigation(): void {
+    this.spatialBlurEditor.cancelPointerGestureForNavigation();
+  }
+
+  handleViewChange(): void {
+    this.spatialBlurEditor.handleViewChange();
+  }
+
   hasActiveHistoryEdit(history = this.options.getHistoryState()): boolean {
     return history.openEdit === "liquify"
       || history.openEdit === "gaussian-blur"
+      || history.openEdit === "spatial-blur"
       || history.openEdit === "motion-blur"
       || history.openEdit === "noise"
       || history.openEdit === "glass";
@@ -386,6 +464,7 @@ export class RasterAdjustmentsController {
     history = this.options.getHistoryState(),
   ): boolean {
     return (this.gaussianBlur.sessionOpen && history.openEdit === "gaussian-blur")
+      || (this.spatialBlur.sessionOpen && history.openEdit === "spatial-blur")
       || (this.motionBlur.sessionOpen && history.openEdit === "motion-blur")
       || (this.noise.sessionOpen && history.openEdit === "noise")
       || (this.glass.sessionOpen && history.openEdit === "glass");
@@ -401,6 +480,10 @@ export class RasterAdjustmentsController {
       this.gaussianBlur.sessionOpen
         && history.openEdit === "gaussian-blur"
         && !this.gaussianBlur.uiBusy
+    ) || (
+      this.spatialBlur.sessionOpen
+        && history.openEdit === "spatial-blur"
+        && !this.spatialBlur.uiBusy
     ) || (
       this.motionBlur.sessionOpen
         && history.openEdit === "motion-blur"
@@ -419,6 +502,7 @@ export class RasterAdjustmentsController {
   diagnostics(): RasterAdjustmentsDiagnostics {
     return {
       rasterGaussianBlurUiBusy: this.gaussianBlur.uiBusy,
+      rasterSpatialBlurUiBusy: this.spatialBlur.uiBusy,
       rasterMotionBlurUiBusy: this.motionBlur.uiBusy,
       rasterNoiseUiBusy: this.noise.uiBusy,
       rasterGlassUiBusy: this.glass.uiBusy,
@@ -431,6 +515,11 @@ export class RasterAdjustmentsController {
       this.setGaussianBlurStatus(message);
       if (kind === "error") this.gaussianBlur.previewFault = true;
       this.syncGaussianBlurUi();
+    }
+    if (this.spatialBlur.sessionOpen && message.includes("Point Blur")) {
+      this.spatialBlurEditor.setStatus(message);
+      if (kind === "error") this.spatialBlur.previewFault = true;
+      this.syncSpatialBlurUi();
     }
     if (this.motionBlur.sessionOpen && message.includes("Motion Blur")) {
       this.setMotionBlurStatus(message);
@@ -457,6 +546,7 @@ export class RasterAdjustmentsController {
   syncUi(): void {
     this.syncLiquifyUi();
     this.syncGaussianBlurUi();
+    this.syncSpatialBlurUi();
     this.syncMotionBlurUi();
     this.syncNoiseUi();
     this.syncGlassUi();
@@ -465,6 +555,7 @@ export class RasterAdjustmentsController {
   handleResize(): void {
     this.liquifySheet.handleResize();
     this.gaussianBlurSheet.handleResize();
+    this.spatialBlurEditor.handleViewChange();
     this.motionBlurSheet.handleResize();
     this.noiseSheet.handleResize();
     this.glassSheet.handleResize();
@@ -476,24 +567,34 @@ export class RasterAdjustmentsController {
     this.abortController.abort();
     this.liquifySheet.dispose();
     this.gaussianBlurSheet.dispose();
+    this.spatialBlurEditor.dispose();
     this.motionBlurSheet.dispose();
     this.noiseSheet.dispose();
     this.glassSheet.dispose();
     this.options.elements.canvas.classList.remove("liquify-active", "liquify-deforming");
     void this.cancelLiquify();
     void this.cancelGaussianBlur();
+    void this.cancelSpatialBlur();
     void this.cancelMotionBlur();
     void this.cancelNoise();
     void this.cancelGlass();
   }
 
   private states(): readonly AdjustmentTransactionState[] {
-    return [this.liquify, this.gaussianBlur, this.motionBlur, this.noise, this.glass];
+    return [
+      this.liquify,
+      this.gaussianBlur,
+      this.spatialBlur,
+      this.motionBlur,
+      this.noise,
+      this.glass,
+    ];
   }
 
   private state(kind: DestructiveRasterAdjustmentKind): AdjustmentTransactionState {
     if (kind === "liquify") return this.liquify;
     if (kind === "gaussian-blur") return this.gaussianBlur;
+    if (kind === "spatial-blur") return this.spatialBlur;
     if (kind === "motion-blur") return this.motionBlur;
     if (kind === "noise") return this.noise;
     return this.glass;
@@ -536,7 +637,7 @@ export class RasterAdjustmentsController {
 
   private bindEvents(): void {
     const signal = this.abortController.signal;
-    const { liquify, gaussianBlur, motionBlur, noise, glass } = this.options.elements;
+    const { liquify, gaussianBlur, spatialBlur, motionBlur, noise, glass } = this.options.elements;
     liquify.openButton.addEventListener(
       "click",
       () => void this.openLiquify(liquify.openButton),
@@ -596,6 +697,12 @@ export class RasterAdjustmentsController {
     gaussianBlur.applyButton.addEventListener(
       "click",
       () => void this.applyGaussianBlur(),
+      { signal },
+    );
+
+    spatialBlur.openButton.addEventListener(
+      "click",
+      () => void this.openSpatialBlur(spatialBlur.openButton),
       { signal },
     );
 
@@ -743,6 +850,8 @@ export class RasterAdjustmentsController {
   private adjustmentEligibilityError(kind: DestructiveRasterAdjustmentKind): string | null {
     const label = kind === "gaussian-blur"
       ? "Gaussian Blur"
+      : kind === "spatial-blur"
+        ? "Point Blur"
       : kind === "motion-blur"
         ? "Motion Blur"
         : kind === "noise"
@@ -756,6 +865,7 @@ export class RasterAdjustmentsController {
     for (const otherKind of [
       "liquify",
       "gaussian-blur",
+      "spatial-blur",
       "motion-blur",
       "noise",
       "glass",
@@ -763,6 +873,8 @@ export class RasterAdjustmentsController {
       if (otherKind === kind || !this.state(otherKind).surfaceOpen) continue;
       const otherLabel = otherKind === "gaussian-blur"
         ? "Gaussian Blur"
+        : otherKind === "spatial-blur"
+          ? "Point Blur"
         : otherKind === "motion-blur"
           ? "Motion Blur"
         : otherKind === "noise"
@@ -1237,6 +1349,167 @@ export class RasterAdjustmentsController {
     } finally {
       state.uiBusy = false;
       this.refreshHistory();
+    }
+  }
+
+  private syncSpatialBlurUi(): void {
+    const state = this.spatialBlur;
+    const elements = this.options.elements.spatialBlur;
+    const eligibilityError = state.surfaceOpen || state.sessionOpen || state.uiBusy
+      ? "Point Blur is already open."
+      : this.adjustmentEligibilityError("spatial-blur");
+    const recoveryOnly = state.previewFault || this.history().inconsistent;
+    elements.openButton.disabled = eligibilityError !== null;
+    elements.openButton.title = eligibilityError ?? "Open Point Blur";
+    elements.openButton.setAttribute("aria-pressed", String(state.surfaceOpen));
+    this.spatialBlurEditor.setTransactionState(state.uiBusy, recoveryOnly);
+  }
+
+  private closeSpatialBlur(result: AdjustmentResult): void {
+    const state = this.spatialBlur;
+    state.surfaceOpen = false;
+    state.cancelPending = false;
+    this.options.elements.spatialBlur.openButton.setAttribute("aria-pressed", "false");
+    this.spatialBlurEditor.close();
+    this.options.onSheetOpenChange(false);
+    this.options.configureCanvasTool("pan", false);
+    this.restoreFocus(state);
+    if (result !== "error") this.spatialBlurEditor.setStatus("Point Blur ready.");
+    this.syncUi();
+  }
+
+  private async beginSpatialBlur(
+    _trigger: HTMLElement,
+    returnFocus: HTMLElement,
+  ): Promise<void> {
+    const eligibilityError = this.adjustmentEligibilityError("spatial-blur");
+    if (eligibilityError || this.spatialBlur.surfaceOpen) {
+      if (eligibilityError) this.setAppError(eligibilityError);
+      return;
+    }
+    this.options.beforeSheetOpen();
+    this.options.configureCanvasTool("pan", false);
+    const initialPin = createInitialSpatialBlurPin(
+      this.options.engine.documentWidth,
+      this.options.engine.documentHeight,
+    );
+    if (!this.spatialBlurEditor.open([initialPin])) return;
+    this.options.onSheetOpenChange(true);
+    const state = this.spatialBlur;
+    state.surfaceOpen = true;
+    state.returnFocus = returnFocus;
+    state.sessionOpen = false;
+    state.previewFault = false;
+    state.uiBusy = true;
+    this.spatialBlurEditor.setStatus("Preparing Point Blur…");
+    this.syncUi();
+    try {
+      const preview = await this.options.engine.beginRasterSpatialBlur([initialPin]);
+      if (!preview) throw new Error("Select a raster layer to use Point Blur.");
+      state.sessionOpen = true;
+      this.spatialBlurEditor.replacePins(preview.pins);
+      this.spatialBlurEditor.setStatus(
+        `Point 1 · ${preview.pins[0]?.radius.toFixed(0) ?? "0"} px`,
+      );
+    } catch (error) {
+      const history = this.options.engine.getHistoryState();
+      this.options.onHistoryState(history);
+      state.sessionOpen = history.openEdit === "spatial-blur";
+      state.previewFault = state.sessionOpen;
+      const message = error instanceof Error ? error.message : String(error);
+      this.spatialBlurEditor.setStatus(`Unable to open Point Blur: ${message}`);
+      this.setAppError(`Unable to open Point Blur: ${message}`);
+      if (!state.sessionOpen) this.closeSpatialBlur("error");
+    } finally {
+      state.uiBusy = false;
+      this.refreshHistory();
+      this.syncUi();
+      if ((state.cancelPending || this.disposed) && state.sessionOpen) {
+        state.cancelPending = false;
+        void this.cancelSpatialBlur();
+      }
+    }
+  }
+
+  private updateSpatialBlur(requestedPins: readonly SpatialBlurPin[]): void {
+    const state = this.spatialBlur;
+    if (!state.sessionOpen || state.uiBusy || state.previewFault) return;
+    try {
+      const preview = this.options.engine.updateRasterSpatialBlur(requestedPins);
+      this.spatialBlurEditor.replacePins(preview.pins);
+      this.spatialBlurEditor.setStatus(
+        `Point Blur · ${preview.pins.length} point${preview.pins.length === 1 ? "" : "s"}`,
+      );
+    } catch (error) {
+      state.previewFault = true;
+      const message = error instanceof Error ? error.message : String(error);
+      this.spatialBlurEditor.setStatus(`Point Blur preview interrupted: ${message}`);
+      this.setAppError(`Point Blur preview interrupted: ${message}`);
+      this.syncSpatialBlurUi();
+    }
+  }
+
+  private async cancelSpatialBlur(): Promise<void> {
+    const state = this.spatialBlur;
+    if (state.uiBusy) {
+      state.cancelPending = true;
+      return;
+    }
+    if (!state.sessionOpen) {
+      if (state.surfaceOpen) this.closeSpatialBlur("cancel");
+      return;
+    }
+    state.cancelPending = false;
+    state.uiBusy = true;
+    this.spatialBlurEditor.setStatus("Restoring the original pixels…");
+    this.syncSpatialBlurUi();
+    try {
+      await this.options.engine.cancelRasterSpatialBlur();
+      state.sessionOpen = false;
+      state.previewFault = false;
+      this.closeSpatialBlur("cancel");
+    } catch (error) {
+      const history = this.options.engine.getHistoryState();
+      this.options.onHistoryState(history);
+      state.sessionOpen = history.openEdit === "spatial-blur";
+      state.previewFault = true;
+      const message = error instanceof Error ? error.message : String(error);
+      this.spatialBlurEditor.setStatus(`Point Blur cancellation failed: ${message}`);
+      this.setAppError(`Point Blur cancellation failed: ${message}`);
+    } finally {
+      state.uiBusy = false;
+      this.refreshHistory();
+      this.syncUi();
+    }
+  }
+
+  private async applySpatialBlur(): Promise<void> {
+    const state = this.spatialBlur;
+    if (state.uiBusy || !state.sessionOpen || state.previewFault || this.history().inconsistent) {
+      return;
+    }
+    state.uiBusy = true;
+    this.spatialBlurEditor.setStatus("Applying Point Blur…");
+    this.syncSpatialBlurUi();
+    try {
+      await this.options.engine.commitRasterSpatialBlur();
+      state.sessionOpen = false;
+      state.previewFault = false;
+      this.closeSpatialBlur("apply");
+      this.options.requestActiveThumbnail();
+    } catch (error) {
+      const history = this.options.engine.getHistoryState();
+      this.options.onHistoryState(history);
+      state.sessionOpen = history.openEdit === "spatial-blur";
+      state.previewFault = state.sessionOpen;
+      const message = error instanceof Error ? error.message : String(error);
+      this.spatialBlurEditor.setStatus(`Point Blur application failed: ${message}`);
+      this.setAppError(`Point Blur application failed: ${message}`);
+      if (!state.sessionOpen) this.closeSpatialBlur("error");
+    } finally {
+      state.uiBusy = false;
+      this.refreshHistory();
+      this.syncUi();
     }
   }
 
