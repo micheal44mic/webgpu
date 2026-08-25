@@ -259,6 +259,26 @@ function activeSourceMode(
   return "permanent";
 }
 
+function rasterSegmentContributes(
+  engine: BrushEngine,
+  segment: MixedSceneCompositionSegment,
+  activePresentation: MixedSceneActivePresentation,
+): boolean {
+  if (segment.kind === "active-raster") {
+    const parent = engine.layerStack.clippingUnit(segment.item.rasterLayerId)[0];
+    return Boolean(
+      parent?.visible
+      && parent.opacity > 0
+      && (parent.hasContent || activePresentation.kind !== "base"),
+    );
+  }
+  if (segment.kind !== "raster-run") return false;
+  return segment.items.some((item) => {
+    const parent = engine.layerStack.clippingUnit(item.rasterLayerId)[0];
+    return Boolean(parent?.visible && parent.opacity > 0 && parent.hasContent);
+  });
+}
+
 function alignedMipRect(rect: DirtyRect): DirtyRect | null {
   // WebGPU mip dimensions use floor(base / 2). An odd final document column or
   // row has no texel in mip 1, so it must not produce a fractional scissor or
@@ -478,6 +498,11 @@ export function encodeLayerBlendTilePresentation(
   if (activeSegmentIndex < 0) {
     throw new Error("The tile-blend program has no active raster.");
   }
+  const activeRecord = engine.layerStack.active;
+  const deepFloorSegmentIndex = engine.documentBackground.visible
+    ? -1
+    : engine.mixedSceneCompositionSegments.findIndex((segment) =>
+      rasterSegmentContributes(engine, segment, activePresentation));
   // Hidden semantic records may remain in the ordered program even when its
   // visible semantic count is zero. `staticSegmentSource` intentionally skips
   // them; only visible semantic content selects the viewport compatibility path.
@@ -537,7 +562,23 @@ export function encodeLayerBlendTilePresentation(
   }
 
   const activeNeedsBake = activePresentation.kind !== "base";
-  if (cores.length > 0 && activeNeedsBake) {
+  const activeMode = activeSourceMode(activePresentation);
+  const activeHasVisibleEffects = (
+    engine.rasterStrokeStyle.enabled && engine.rasterStrokeStyle.width > 0
+  )
+    || engine.rasterBevelStyle.enabled
+    || engine.rasterOuterShadowStyle.enabled
+    || engine.rasterInnerShadowStyle.enabled
+    || engine.rasterColorOverlayStyle.enabled;
+  const activeNeedsStyledBake = activeNeedsBake
+    && !(
+      activeRecord.contentOpacity <= 0
+      && !activeHasVisibleEffects
+    );
+  const activeNeedsLiveMatte = activeNeedsBake
+    && activeMode !== "permanent"
+    && activeRecord.cutoutMode !== "off";
+  if (cores.length > 0 && activeNeedsStyledBake) {
     renderer.prepareBakeStyle(
       engine.rasterBevelStyle,
       engine.layerStack.active.contentOpacity,
@@ -550,34 +591,59 @@ export function encodeLayerBlendTilePresentation(
       : clampDocumentRect(expandRect(core, 1))!;
     // With no live style/effect contribution the authoritative layer can be
     // sampled directly. Otherwise materialize only this tile analytically.
-    if (activeNeedsBake) {
-      renderer.encodeBake({
-        encoder,
-        targetView: compositor.views[TILE_INDEX_SOURCE],
-        sourceMode: activeSourceMode(activePresentation),
-        style: engine.rasterStrokeStyle,
-        bevelStyle: engine.rasterBevelStyle,
-        colorOverlayStyle: engine.rasterColorOverlayStyle,
-        contentOpacity: engine.layerStack.active.contentOpacity,
-        rect: textureRect,
-        targetStorageOrigin: { x: 0, y: 0 },
-        parameterSlot: bakeParameterSlot++,
-        deferParameterUpload: true,
-        sharedStylePrepared: true,
-      });
+    if (activeNeedsStyledBake || activeNeedsLiveMatte) {
+      const parameterSlot = bakeParameterSlot++;
+      if (activeNeedsStyledBake) {
+        renderer.encodeBake({
+          encoder,
+          targetView: compositor.views[TILE_INDEX_SOURCE],
+          sourceMode: activeMode,
+          style: engine.rasterStrokeStyle,
+          bevelStyle: engine.rasterBevelStyle,
+          colorOverlayStyle: engine.rasterColorOverlayStyle,
+          contentOpacity: engine.layerStack.active.contentOpacity,
+          rect: textureRect,
+          targetStorageOrigin: { x: 0, y: 0 },
+          parameterSlot,
+          deferParameterUpload: true,
+          sharedStylePrepared: true,
+        });
+      }
+      if (activeNeedsLiveMatte) {
+        renderer.encodeAuthoredMatteBake({
+          encoder,
+          targetView: compositor.authoredMatteView,
+          sourceMode: activeMode,
+          style: engine.rasterStrokeStyle,
+          bevelStyle: engine.rasterBevelStyle,
+          colorOverlayStyle: engine.rasterColorOverlayStyle,
+          contentOpacity: engine.layerStack.active.contentOpacity,
+          rect: textureRect,
+          targetStorageOrigin: { x: 0, y: 0 },
+          parameterSlot,
+          deferParameterUpload: true,
+          sharedStylePrepared: true,
+        });
+      }
     }
     const activeSource: LayerBlendTileSource = activeNeedsBake
       ? {
-        view: compositor.views[TILE_INDEX_SOURCE],
-        cutoutView: engine.layerView,
-        cutoutOrigin: { x: 0, y: 0 },
+        view: activeNeedsStyledBake
+          ? compositor.views[TILE_INDEX_SOURCE]
+          : engine.transparentLayerView,
+        cutoutView: activeNeedsLiveMatte ? compositor.authoredMatteView : engine.layerView,
+        cutoutOrigin: activeNeedsLiveMatte
+          ? { x: textureRect.x, y: textureRect.y }
+          : { x: 0, y: 0 },
         cutoutScale: 1,
-        cutoutWidth: DOCUMENT_WIDTH,
-        cutoutHeight: DOCUMENT_HEIGHT,
-        origin: { x: textureRect.x, y: textureRect.y },
+        cutoutWidth: activeNeedsLiveMatte ? textureRect.width : DOCUMENT_WIDTH,
+        cutoutHeight: activeNeedsLiveMatte ? textureRect.height : DOCUMENT_HEIGHT,
+        origin: activeNeedsStyledBake
+          ? { x: textureRect.x, y: textureRect.y }
+          : { x: 0, y: 0 },
         scale: 1,
-        width: textureRect.width,
-        height: textureRect.height,
+        width: activeNeedsStyledBake ? textureRect.width : DOCUMENT_WIDTH,
+        height: activeNeedsStyledBake ? textureRect.height : DOCUMENT_HEIGHT,
       }
       : {
         view: engine.layerView,
@@ -588,7 +654,6 @@ export function encodeLayerBlendTilePresentation(
         height: DOCUMENT_HEIGHT,
       };
 
-    const activeRecord = engine.layerStack.active;
     const activeUnit = engine.layerStack.clippingUnit(activeRecord.id);
     const parent = activeUnit[0];
     const activeGroup = engine.activeClippingGroup;
@@ -887,11 +952,11 @@ export function encodeLayerBlendTilePresentation(
         );
         activeCompositeSource = withClippingScope({
           view: compositor.views[TILE_INDEX_SOURCE],
-          cutoutView: engine.layerView,
-          cutoutOrigin: { x: 0, y: 0 },
-          cutoutScale: 1,
-          cutoutWidth: DOCUMENT_WIDTH,
-          cutoutHeight: DOCUMENT_HEIGHT,
+          cutoutView: activeSource.cutoutView,
+          cutoutOrigin: activeSource.cutoutOrigin,
+          cutoutScale: activeSource.cutoutScale,
+          cutoutWidth: activeSource.cutoutWidth,
+          cutoutHeight: activeSource.cutoutHeight,
           origin: { x: textureRect.x, y: textureRect.y },
           scale: 1,
           width: textureRect.width,
@@ -909,7 +974,20 @@ export function encodeLayerBlendTilePresentation(
       textureRect.width,
       textureRect.height,
     );
+    compositor.seedDeepFloorWithDocumentBackground(
+      encoder,
+      `${label} · seed Deep floor`,
+    );
     let currentTile: 0 | 1 = TILE_INDEX_A;
+    const captureDeepFloorAfter = (segmentIndex: number): void => {
+      if (segmentIndex !== deepFloorSegmentIndex) return;
+      compositor.copyTileToDeepFloor(
+        encoder,
+        currentTile,
+        textureRect.width,
+        textureRect.height,
+      );
+    };
     for (let index = 0; index < activeSegmentIndex; index += 1) {
       const segment = engine.mixedSceneCompositionSegments[index];
       const source = staticSegmentSource(engine, segment);
@@ -927,6 +1005,7 @@ export function encodeLayerBlendTilePresentation(
         `${label} · below ${segment.key}`,
         record,
       );
+      captureDeepFloorAfter(index);
     }
     currentTile = applyToTile(
       currentTile,
@@ -937,6 +1016,7 @@ export function encodeLayerBlendTilePresentation(
       `${label} · active group`,
       parent,
     );
+    captureDeepFloorAfter(activeSegmentIndex);
     for (
       let index = activeSegmentIndex + 1;
       index < engine.mixedSceneCompositionSegments.length;
@@ -958,6 +1038,7 @@ export function encodeLayerBlendTilePresentation(
         `${label} · above ${segment.key}`,
         record,
       );
+      captureDeepFloorAfter(index);
     }
 
     if (selectedMipLevel > 0) {

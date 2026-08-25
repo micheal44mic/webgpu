@@ -917,6 +917,28 @@ export function flushVectorTextGpuPresentations(engine: BrushEngine): void {
   engine.requestRender();
 }
 
+function mixedSceneSegmentContributesToDeepFloor(
+  engine: BrushEngine,
+  segment: MixedSceneCompositionSegment,
+  activePresentation: MixedSceneActivePresentation,
+): boolean {
+  if (segment.kind === "text-run" || segment.kind === "image") return true;
+  const rasterLayerId = segment.kind === "active-raster"
+    ? segment.item.rasterLayerId
+    : segment.items.find((item) => {
+      const parent = engine.layerStack.clippingUnit(item.rasterLayerId)[0];
+      return parent.visible && parent.opacity > 0 && parent.hasContent;
+    })?.rasterLayerId;
+  if (rasterLayerId === undefined) return false;
+  const parent = engine.layerStack.clippingUnit(rasterLayerId)[0];
+  return parent.visible
+    && parent.opacity > 0
+    && (
+      parent.hasContent
+      || segment.kind === "active-raster" && activePresentation.kind !== "base"
+    );
+}
+
 export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine, 
   encoder: GPUCommandEncoder,
   presentationDirtyRect: DirtyRect,
@@ -948,6 +970,18 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
   ) {
     throw new Error("The segmented raster/text compositor is not ready.");
   }
+  const deepCutoutEnabled = engine.layerStack.layers.some(
+    (record) => record.cutoutMode === "document",
+  );
+  const deepFloorView = engine.mixedSceneBlendDeepFloorView;
+  const deepFloorTexture = engine.mixedSceneBlendDeepFloorTexture;
+  if (deepCutoutEnabled && (!deepFloorView || !deepFloorTexture)) {
+    throw new Error("The ordered Deep floor is not ready.");
+  }
+  const deepFloorSegmentIndex = deepCutoutEnabled && !engine.documentBackground.visible
+    ? engine.mixedSceneCompositionSegments.findIndex((segment) =>
+      mixedSceneSegmentContributesToDeepFloor(engine, segment, activePresentation))
+    : -1;
 
   const drawSegmentSource = (
     pass: GPURenderPassEncoder,
@@ -1054,12 +1088,49 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
       pass.draw(3, 1, 0, 0);
       return;
     }
+    if (activePresentation.kind === "raster-stroke") {
+      const pipeline = engine.mixedSceneActiveRasterStrokeCutoutPipeline;
+      const sourceBindGroup = engine.rasterStrokeDisplayBindGroups.get(
+        activePresentation.sourceMode,
+      );
+      if (!pipeline || !sourceBindGroup) {
+        throw new Error("The active Stroke authored-matte pipeline is not ready.");
+      }
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, engine.rasterStrokeDisplayScreenBindGroup);
+      pass.setBindGroup(1, sourceBindGroup);
+      pass.draw(3, 1, 0, 0);
+      return;
+    }
     const pipeline = engine.mixedSceneActiveCutoutDisplayPipeline;
     if (!pipeline) {
       throw new Error("The active authored-matte pipeline is not ready.");
     }
     pass.setPipeline(pipeline);
     pass.setBindGroup(0, engine.displayBindGroup);
+    pass.draw(3, 1, 0, 0);
+  };
+
+  const drawActiveRasterCutoutSourceOnly = (pass: GPURenderPassEncoder): void => {
+    if (activePresentation.kind === "raster-stroke") {
+      const pipeline = engine.mixedSceneActiveRasterStrokeCutoutPipeline;
+      const sourceBindGroup = engine.rasterStrokeDisplayBindGroups.get(
+        activePresentation.sourceMode,
+      );
+      if (!pipeline || !sourceBindGroup) {
+        throw new Error("The active Stroke authored-matte pipeline is not ready.");
+      }
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, engine.rasterStrokeDisplayScreenBindGroup);
+      pass.setBindGroup(1, sourceBindGroup);
+    } else {
+      const pipeline = engine.mixedSceneActiveCutoutDisplayPipeline;
+      if (!pipeline) {
+        throw new Error("The active authored-matte pipeline is not ready.");
+      }
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, engine.displayBindGroup);
+    }
     pass.draw(3, 1, 0, 0);
   };
 
@@ -1108,6 +1179,26 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
       presentationDirtyRect.height,
     );
   };
+  if (deepCutoutEnabled) {
+    const deepFloorPass = encoder.beginRenderPass({
+      label: `${label} · seed Deep floor`,
+      colorAttachments: [{
+        view: deepFloorView!,
+        loadOp: requiresFullRebuild ? "clear" : "load",
+        storeOp: "store",
+        clearValue: { r: 0, g: 0, b: 0, a: 0 },
+      }],
+    });
+    setDirtyScissor(deepFloorPass);
+    if (!requiresFullRebuild) {
+      deepFloorPass.setPipeline(clearPipeline);
+      deepFloorPass.draw(3, 1, 0, 0);
+    }
+    deepFloorPass.setPipeline(backgroundPipeline);
+    deepFloorPass.setBindGroup(0, backgroundBindGroup);
+    deepFloorPass.draw(3, 1, 0, 0);
+    deepFloorPass.end();
+  }
   const compositionRecordForSegment = (
     segment: MixedSceneCompositionSegment,
   ): LayerRecord | null => {
@@ -1193,7 +1284,38 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
   };
 
   let scenePass: GPURenderPassEncoder | null = beginScenePass();
-  for (const segment of engine.mixedSceneCompositionSegments) {
+  const captureDeepFloorAfter = (segmentIndex: number): void => {
+    if (segmentIndex !== deepFloorSegmentIndex) return;
+    scenePass?.end();
+    scenePass = null;
+    const sourceTexture = currentIsCanonical
+      ? engine.mixedSceneLinearTexture
+      : engine.mixedSceneBlendScratchTexture;
+    if (!sourceTexture || !deepFloorTexture) {
+      throw new Error("The ordered Deep floor snapshot source is unavailable.");
+    }
+    encoder.copyTextureToTexture(
+      {
+        texture: sourceTexture,
+        origin: { x: presentationDirtyRect.x, y: presentationDirtyRect.y, z: 0 },
+      },
+      {
+        texture: deepFloorTexture,
+        origin: { x: presentationDirtyRect.x, y: presentationDirtyRect.y, z: 0 },
+      },
+      {
+        width: presentationDirtyRect.width,
+        height: presentationDirtyRect.height,
+        depthOrArrayLayers: 1,
+      },
+    );
+  };
+  for (
+    let segmentIndex = 0;
+    segmentIndex < engine.mixedSceneCompositionSegments.length;
+    segmentIndex += 1
+  ) {
+    const segment = engine.mixedSceneCompositionSegments[segmentIndex];
     const blendMode = engine.compositionSegmentBlendMode(segment);
     const compositionRecord = compositionRecordForSegment(segment);
     const rasterResources = rasterResourcesForSegment(segment);
@@ -1347,13 +1469,7 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
           setDirtyScissor(activeCutoutPass);
           activeCutoutPass.setPipeline(clearPipeline);
           activeCutoutPass.draw(3, 1, 0, 0);
-          const cutoutPipeline = engine.mixedSceneActiveCutoutDisplayPipeline;
-          if (!cutoutPipeline) {
-            throw new Error("The active clipping authored-matte pipeline is not ready.");
-          }
-          activeCutoutPass.setPipeline(cutoutPipeline);
-          activeCutoutPass.setBindGroup(0, engine.displayBindGroup);
-          activeCutoutPass.draw(3, 1, 0, 0);
+          drawActiveRasterCutoutSourceOnly(activeCutoutPass);
           activeCutoutPass.end();
         }
 
@@ -1560,6 +1676,7 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
       outerBlendPass.draw(3, 1, 0, 0);
       outerBlendPass.end();
       currentIsCanonical = !currentIsCanonical;
+      captureDeepFloorAfter(segmentIndex);
       continue;
     }
     const needsBackdropComposition = blendMode !== "normal"
@@ -1572,6 +1689,7 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
     if (!needsBackdropComposition) {
       scenePass ??= beginScenePass();
       drawSegmentSource(scenePass, segment);
+      captureDeepFloorAfter(segmentIndex);
       continue;
     }
 
@@ -1705,6 +1823,7 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
     blendPass.draw(3, 1, 0, 0);
     blendPass.end();
     currentIsCanonical = !currentIsCanonical;
+    captureDeepFloorAfter(segmentIndex);
   }
   scenePass?.end();
 
@@ -3029,6 +3148,8 @@ type MixedSceneBlendScratchCandidate = {
   clippingBaseView: GPUTextureView;
   documentMaskTexture: GPUTexture;
   documentMaskView: GPUTextureView;
+  deepFloorTexture: GPUTexture | null;
+  deepFloorView: GPUTextureView | null;
   fromLinear: GPUBindGroup;
   fromScratch: GPUBindGroup;
   fromGroup: GPUBindGroup;
@@ -3039,6 +3160,7 @@ function createMixedSceneBlendScratchCandidate(
   width: number,
   height: number,
   linearView: GPUTextureView,
+  needsDeepFloor: boolean,
 ): MixedSceneBlendScratchCandidate {
   const blendLayout = engine.layerBlendCompositorBindGroupLayout;
   const blendUniformBuffer = engine.layerBlendCompositorUniformBuffer;
@@ -3051,6 +3173,7 @@ function createMixedSceneBlendScratchCandidate(
   let groupTexture: GPUTexture | null = null;
   let clippingBaseTexture: GPUTexture | null = null;
   let documentMaskTexture: GPUTexture | null = null;
+  let deepFloorTexture: GPUTexture | null = null;
   try {
     texture = engine.device.createTexture({
       label: `Ordered layer blend ping-pong ${width}×${height}`,
@@ -3098,6 +3221,17 @@ function createMixedSceneBlendScratchCandidate(
       format: MIXED_SCENE_LINEAR_FORMAT,
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
+    if (needsDeepFloor) {
+      deepFloorTexture = engine.device.createTexture({
+        label: `Ordered Deep floor ${width}×${height}`,
+        size: { width, height, depthOrArrayLayers: 1 },
+        format: MIXED_SCENE_LINEAR_FORMAT,
+        usage:
+          GPUTextureUsage.RENDER_ATTACHMENT
+          | GPUTextureUsage.TEXTURE_BINDING
+          | GPUTextureUsage.COPY_DST,
+      });
+    }
     const view = texture.createView({ label: "Ordered layer blend ping-pong view" });
     const operandView = operandTexture.createView({
       label: "Ordered layer blend operand view",
@@ -3114,6 +3248,9 @@ function createMixedSceneBlendScratchCandidate(
     const documentMaskView = documentMaskTexture.createView({
       label: "Ordered clipping document mask view",
     });
+    const deepFloorView = deepFloorTexture?.createView({
+      label: "Ordered Deep floor view",
+    }) ?? null;
     const blendEntries = (backdrop: GPUTextureView): GPUBindGroupEntry[] => [
       { binding: 0, resource: backdrop },
       { binding: 1, resource: operandView },
@@ -3129,6 +3266,7 @@ function createMixedSceneBlendScratchCandidate(
       { binding: 4, resource: cutoutView },
       { binding: 5, resource: clippingBaseView },
       { binding: 6, resource: documentMaskView },
+      { binding: 7, resource: deepFloorView ?? engine.transparentLayerView },
     ];
     return {
       texture,
@@ -3143,6 +3281,8 @@ function createMixedSceneBlendScratchCandidate(
       clippingBaseView,
       documentMaskTexture,
       documentMaskView,
+      deepFloorTexture,
+      deepFloorView,
       fromLinear: engine.device.createBindGroup({
         label: "Layer blend canonical→ping-pong bind group",
         layout: blendLayout,
@@ -3166,6 +3306,7 @@ function createMixedSceneBlendScratchCandidate(
     groupTexture?.destroy();
     clippingBaseTexture?.destroy();
     documentMaskTexture?.destroy();
+    deepFloorTexture?.destroy();
     throw error;
   }
 }
@@ -3186,6 +3327,8 @@ function publishMixedSceneBlendScratchCandidate(
   engine.mixedSceneBlendClippingBaseView = candidate?.clippingBaseView ?? null;
   engine.mixedSceneBlendDocumentMaskTexture = candidate?.documentMaskTexture ?? null;
   engine.mixedSceneBlendDocumentMaskView = candidate?.documentMaskView ?? null;
+  engine.mixedSceneBlendDeepFloorTexture = candidate?.deepFloorTexture ?? null;
+  engine.mixedSceneBlendDeepFloorView = candidate?.deepFloorView ?? null;
   engine.mixedSceneBlendFromLinearBindGroup = candidate?.fromLinear ?? null;
   engine.mixedSceneBlendFromScratchBindGroup = candidate?.fromScratch ?? null;
   engine.mixedSceneBlendFromGroupBindGroup = candidate?.fromGroup ?? null;
@@ -3206,6 +3349,9 @@ export async function prewarmMixedSceneLinearTextureForLayerBlend(
   if (!layout) {
     throw new Error("The mixed-scene presentation layout is not initialized.");
   }
+  const needsDeepFloor = engine.layerStack.layers.some(
+    (record) => record.cutoutMode === "document",
+  );
   const sameLinearTexture = Boolean(
     engine.mixedSceneLinearTexture
       && engine.mixedSceneLinearView
@@ -3225,6 +3371,10 @@ export async function prewarmMixedSceneLinearTextureForLayerBlend(
       && engine.mixedSceneBlendClippingBaseView
       && engine.mixedSceneBlendDocumentMaskTexture
       && engine.mixedSceneBlendDocumentMaskView
+      && (!needsDeepFloor || (
+        engine.mixedSceneBlendDeepFloorTexture
+        && engine.mixedSceneBlendDeepFloorView
+      ))
       && engine.mixedSceneBlendFromLinearBindGroup
       && engine.mixedSceneBlendFromScratchBindGroup
       && engine.mixedSceneBlendFromGroupBindGroup,
@@ -3243,6 +3393,7 @@ export async function prewarmMixedSceneLinearTextureForLayerBlend(
           width,
           height,
           engine.mixedSceneLinearView!,
+          needsDeepFloor,
         );
         transaction.deferRollback(() => {
           scratch.texture.destroy();
@@ -3251,6 +3402,7 @@ export async function prewarmMixedSceneLinearTextureForLayerBlend(
           scratch.groupTexture.destroy();
           scratch.clippingBaseTexture.destroy();
           scratch.documentMaskTexture.destroy();
+          scratch.deepFloorTexture?.destroy();
         });
         return { kind: "scratch" as const, scratch };
       }
@@ -3276,7 +3428,13 @@ export async function prewarmMixedSceneLinearTextureForLayerBlend(
         ],
       });
       const scratch = needsAdvancedBlend
-        ? createMixedSceneBlendScratchCandidate(engine, width, height, view)
+        ? createMixedSceneBlendScratchCandidate(
+          engine,
+          width,
+          height,
+          view,
+          needsDeepFloor,
+        )
         : null;
       if (scratch) {
         transaction.deferRollback(() => {
@@ -3286,6 +3444,7 @@ export async function prewarmMixedSceneLinearTextureForLayerBlend(
           scratch.groupTexture.destroy();
           scratch.clippingBaseTexture.destroy();
           scratch.documentMaskTexture.destroy();
+          scratch.deepFloorTexture?.destroy();
         });
       }
 
@@ -3305,6 +3464,7 @@ export async function prewarmMixedSceneLinearTextureForLayerBlend(
   const oldGroup = engine.mixedSceneBlendGroupTexture;
   const oldClippingBase = engine.mixedSceneBlendClippingBaseTexture;
   const oldDocumentMask = engine.mixedSceneBlendDocumentMaskTexture;
+  const oldDeepFloor = engine.mixedSceneBlendDeepFloorTexture;
   if (candidate.kind === "scratch") {
     publishMixedSceneBlendScratchCandidate(engine, candidate.scratch);
     oldScratch?.destroy();
@@ -3313,6 +3473,7 @@ export async function prewarmMixedSceneLinearTextureForLayerBlend(
     oldGroup?.destroy();
     oldClippingBase?.destroy();
     oldDocumentMask?.destroy();
+    oldDeepFloor?.destroy();
     engine.presentationCacheNeedsFullRebuild = true;
     return;
   }
@@ -3331,6 +3492,7 @@ export async function prewarmMixedSceneLinearTextureForLayerBlend(
   oldGroup?.destroy();
   oldClippingBase?.destroy();
   oldDocumentMask?.destroy();
+  oldDeepFloor?.destroy();
   engine.presentationCacheNeedsFullRebuild = true;
 }
 
@@ -3342,6 +3504,7 @@ export function ensureMixedSceneLinearTexture(engine: BrushEngine, width: number
     engine.mixedSceneBlendGroupTexture?.destroy();
     engine.mixedSceneBlendClippingBaseTexture?.destroy();
     engine.mixedSceneBlendDocumentMaskTexture?.destroy();
+    engine.mixedSceneBlendDeepFloorTexture?.destroy();
     engine.mixedSceneBlendScratchTexture = null;
     engine.mixedSceneBlendScratchView = null;
     engine.mixedSceneBlendOperandTexture = null;
@@ -3354,6 +3517,8 @@ export function ensureMixedSceneLinearTexture(engine: BrushEngine, width: number
     engine.mixedSceneBlendClippingBaseView = null;
     engine.mixedSceneBlendDocumentMaskTexture = null;
     engine.mixedSceneBlendDocumentMaskView = null;
+    engine.mixedSceneBlendDeepFloorTexture = null;
+    engine.mixedSceneBlendDeepFloorView = null;
     engine.mixedSceneBlendFromLinearBindGroup = null;
     engine.mixedSceneBlendFromScratchBindGroup = null;
     engine.mixedSceneBlendFromGroupBindGroup = null;
@@ -3370,6 +3535,9 @@ export function ensureMixedSceneLinearTexture(engine: BrushEngine, width: number
   }
   const needsAdvancedBlend = !engine.usesLayerBlendTilePresentation()
     && engine.layerStack.layers.some(rasterLayerNeedsBackdropComposition);
+  const needsDeepFloor = engine.layerStack.layers.some(
+    (record) => record.cutoutMode === "document",
+  );
   const blendScratchReady = !needsAdvancedBlend || Boolean(
     engine.mixedSceneBlendScratchTexture
       && engine.mixedSceneBlendScratchView
@@ -3383,6 +3551,10 @@ export function ensureMixedSceneLinearTexture(engine: BrushEngine, width: number
       && engine.mixedSceneBlendClippingBaseView
       && engine.mixedSceneBlendDocumentMaskTexture
       && engine.mixedSceneBlendDocumentMaskView
+      && (!needsDeepFloor || (
+        engine.mixedSceneBlendDeepFloorTexture
+        && engine.mixedSceneBlendDeepFloorView
+      ))
       && engine.mixedSceneBlendFromLinearBindGroup
       && engine.mixedSceneBlendFromScratchBindGroup
       && engine.mixedSceneBlendFromGroupBindGroup,
@@ -3410,6 +3582,7 @@ export function ensureMixedSceneLinearTexture(engine: BrushEngine, width: number
   const oldBlendGroup = engine.mixedSceneBlendGroupTexture;
   const oldBlendClippingBase = engine.mixedSceneBlendClippingBaseTexture;
   const oldBlendDocumentMask = engine.mixedSceneBlendDocumentMaskTexture;
+  const oldBlendDeepFloor = engine.mixedSceneBlendDeepFloorTexture;
   const texture = engine.device.createTexture({
     label: `Ordered mixed scene linear cache ${width}×${height}`,
     size: { width, height, depthOrArrayLayers: 1 },
@@ -3426,6 +3599,7 @@ export function ensureMixedSceneLinearTexture(engine: BrushEngine, width: number
   let blendGroup: GPUTexture | null = null;
   let blendClippingBase: GPUTexture | null = null;
   let blendDocumentMask: GPUTexture | null = null;
+  let blendDeepFloor: GPUTexture | null = null;
   try {
     const view = texture.createView({ label: "Ordered mixed scene linear cache view" });
     const bindGroup = engine.device.createBindGroup({
@@ -3442,11 +3616,18 @@ export function ensureMixedSceneLinearTexture(engine: BrushEngine, width: number
     let blendGroupView: GPUTextureView | null = null;
     let blendClippingBaseView: GPUTextureView | null = null;
     let blendDocumentMaskView: GPUTextureView | null = null;
+    let blendDeepFloorView: GPUTextureView | null = null;
     let fromLinear: GPUBindGroup | null = null;
     let fromScratch: GPUBindGroup | null = null;
     let fromGroup: GPUBindGroup | null = null;
     if (needsAdvancedBlend) {
-      const scratch = createMixedSceneBlendScratchCandidate(engine, width, height, view);
+      const scratch = createMixedSceneBlendScratchCandidate(
+        engine,
+        width,
+        height,
+        view,
+        needsDeepFloor,
+      );
       blendScratch = scratch.texture;
       blendScratchView = scratch.view;
       blendOperand = scratch.operandTexture;
@@ -3459,6 +3640,8 @@ export function ensureMixedSceneLinearTexture(engine: BrushEngine, width: number
       blendClippingBaseView = scratch.clippingBaseView;
       blendDocumentMask = scratch.documentMaskTexture;
       blendDocumentMaskView = scratch.documentMaskView;
+      blendDeepFloor = scratch.deepFloorTexture;
+      blendDeepFloorView = scratch.deepFloorView;
       fromLinear = scratch.fromLinear;
       fromScratch = scratch.fromScratch;
       fromGroup = scratch.fromGroup;
@@ -3480,6 +3663,8 @@ export function ensureMixedSceneLinearTexture(engine: BrushEngine, width: number
     engine.mixedSceneBlendClippingBaseView = blendClippingBaseView;
     engine.mixedSceneBlendDocumentMaskTexture = blendDocumentMask;
     engine.mixedSceneBlendDocumentMaskView = blendDocumentMaskView;
+    engine.mixedSceneBlendDeepFloorTexture = blendDeepFloor;
+    engine.mixedSceneBlendDeepFloorView = blendDeepFloorView;
     engine.mixedSceneBlendFromLinearBindGroup = fromLinear;
     engine.mixedSceneBlendFromScratchBindGroup = fromScratch;
     engine.mixedSceneBlendFromGroupBindGroup = fromGroup;
@@ -3491,6 +3676,7 @@ export function ensureMixedSceneLinearTexture(engine: BrushEngine, width: number
     oldBlendGroup?.destroy();
     oldBlendClippingBase?.destroy();
     oldBlendDocumentMask?.destroy();
+    oldBlendDeepFloor?.destroy();
   } catch (error) {
     texture.destroy();
     blendScratch?.destroy();
@@ -3499,6 +3685,7 @@ export function ensureMixedSceneLinearTexture(engine: BrushEngine, width: number
     blendGroup?.destroy();
     blendClippingBase?.destroy();
     blendDocumentMask?.destroy();
+    blendDeepFloor?.destroy();
     throw error;
   }
 }

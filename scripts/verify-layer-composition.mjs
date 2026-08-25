@@ -91,6 +91,41 @@ assert.deepEqual(
   [0, 0, 0, 0],
   "a raw matte must still cut the backdrop when visible content is fully transparent",
 );
+const protectedDeepFloor = [0.05, 0.1, 0.15, 0.4];
+assert.deepEqual(
+  compositeLayerPremultipliedLinear(
+    backdrop,
+    [0, 0, 0, 0],
+    "normal",
+    "source-over",
+    [0, 0],
+    {
+      cutoutMode: "document",
+      tonalBlend: DEFAULT_LAYER_TONAL_BLEND,
+      cutoutAlpha: 1,
+      deepFloor: protectedDeepFloor,
+    },
+  ),
+  protectedDeepFloor,
+  "Deep Fill 0 must reveal the immutable lowest visible contribution",
+);
+assert.deepEqual(
+  compositeLayerPremultipliedLinear(
+    backdrop,
+    [0, 0, 0, 0],
+    "normal",
+    "source-over",
+    [0, 0],
+    {
+      cutoutMode: "group",
+      tonalBlend: DEFAULT_LAYER_TONAL_BLEND,
+      cutoutAlpha: 1,
+      deepFloor: protectedDeepFloor,
+    },
+  ),
+  [0, 0, 0, 0],
+  "Shallow must not consume the document Deep floor",
+);
 
 const opaqueBackdrop = [0.2, 0.3, 0.4, 1];
 const antialiasedFullFill = [0.5, 0, 0, 0.5];
@@ -203,6 +238,17 @@ assert.deepEqual(
   applyDocumentCutoutToBackdrop(externalBackdrop, 0.25, twoDocumentCutouts, 0.5),
   [0, 0, 0.2265625, 0.2265625],
   "group opacity must scale the propagated document cutout once",
+);
+assert.deepEqual(
+  applyDocumentCutoutToBackdrop(
+    externalBackdrop,
+    0.25,
+    twoDocumentCutouts,
+    1,
+    [0.1, 0, 0, 0.1],
+  ),
+  [0.018750000000000003, 0, 0.203125, 0.221875],
+  "a propagated Deep mask must restore the protected floor instead of transparency",
 );
 
 const deepHoleAlpha = 0.25 * (1 - 0.5);

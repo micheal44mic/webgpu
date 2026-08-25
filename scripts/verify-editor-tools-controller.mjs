@@ -426,6 +426,34 @@ function createHarness() {
   harness.controller.renderMenuState({
     activeCanvasTool: "paint",
     engineReady: true,
+    interactionLocked: false,
+    vectorEditorReady: false,
+    vectorEditorLocked: true,
+    textSelected: false,
+    svgSelected: false,
+    textTransformActive: false,
+    vectorOutlineEnabled: false,
+    vectorDropShadowEnabled: false,
+    vectorInnerShadowEnabled: false,
+    vectorBlockShadowEnabled: false,
+    rasterColorOverlayTargetSelected: false,
+    rasterEffectsEnabled: {
+      "color-overlay": false,
+      stroke: false,
+      "outer-shadow": false,
+      "inner-shadow": false,
+      bevel: false,
+    },
+  });
+  assert.equal(
+    harness.importSvgButton.disabled,
+    false,
+    "the native import picker must remain available while optional vector resources warm",
+  );
+
+  harness.controller.renderMenuState({
+    activeCanvasTool: "paint",
+    engineReady: true,
     interactionLocked: true,
     vectorEditorReady: true,
     vectorEditorLocked: false,

@@ -65,6 +65,7 @@ struct LayerBlendFoldUniforms {
 @group(0) @binding(3) var cutoutTexture: texture_2d<f32>;
 @group(0) @binding(4) var clippingBaseTexture: texture_2d<f32>;
 @group(0) @binding(5) var documentMaskTexture: texture_2d<f32>;
+@group(0) @binding(6) var deepFloorTexture: texture_2d<f32>;
 
 const LAYER_BLEND_CONTEXT_DIRECT: u32 = 0u;
 const LAYER_BLEND_CONTEXT_CLIPPING_CHILD: u32 = 1u;
@@ -346,11 +347,18 @@ fn fragmentMain(
   let tonalMask = layerTonalMask(unfilteredSource, backdrop);
   let source = unfilteredSource * tonalMask;
   let clippingBase = layerBlendFoldClippingBase(documentPosition);
+  var deepFloor = vec4<f32>(0.0);
+  if (
+    layer.cutoutMode == LAYER_CUTOUT_DOCUMENT
+    || layer.compositionContext == LAYER_BLEND_CONTEXT_CLIPPING_OUTER
+  ) {
+    deepFloor = textureLoad(deepFloorTexture, pixel, 0);
+  }
   if (layer.compositionContext == LAYER_BLEND_CONTEXT_CLIPPING_OUTER) {
     let documentCoverage = layerBlendFoldDocumentMask(documentPosition)
       * clamp(clippingBase.a, 0.0, 1.0)
       * clamp(layer.documentMaskOpacity, 0.0, 1.0);
-    backdrop *= 1.0 - clamp(documentCoverage, 0.0, 1.0);
+    backdrop = mix(backdrop, deepFloor, clamp(documentCoverage, 0.0, 1.0));
   }
   var compositionBackdrop = backdrop;
   var residual = 0.0;
@@ -401,7 +409,10 @@ fn fragmentMain(
     layer.cutoutMode != 0u
     && layer.compositionContext != LAYER_BLEND_CONTEXT_CLIPPING_CHILD
   ) {
-    let knocked = composited - backdrop * residual;
+    var knocked = composited - backdrop * residual;
+    if (layer.cutoutMode == LAYER_CUTOUT_DOCUMENT) {
+      knocked += deepFloor * residual;
+    }
     let outputAlpha = clamp(knocked.a, 0.0, 1.0);
     return vec4<f32>(
       clamp(knocked.rgb, vec3<f32>(0.0), vec3<f32>(outputAlpha)),

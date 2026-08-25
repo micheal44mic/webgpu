@@ -77,9 +77,29 @@ const engineRuntimeMiscSource = readFileSync(
   new URL("../src/engine-runtime-misc.ts", import.meta.url),
   "utf8",
 );
+const engineResourceSetupSource = readFileSync(
+  new URL("../src/engine-resource-setup.ts", import.meta.url),
+  "utf8",
+);
 const engineVectorTextRuntimeSource = readFileSync(
   new URL("../src/engine-vector-text-runtime.ts", import.meta.url),
   "utf8",
+);
+
+assert.match(
+  engineVectorTextRuntimeSource,
+  /const needsDeepFloor = engine\.layerStack\.layers\.some\([\s\S]*?cutoutMode === "document"/,
+  "the viewport-sized Deep floor must be requested only when a Deep cutout exists",
+);
+assert.match(
+  engineVectorTextRuntimeSource,
+  /if \(needsDeepFloor\) \{[\s\S]*?deepFloorTexture = engine\.device\.createTexture/,
+  "Shallow-only documents must not allocate a viewport-sized Deep floor texture",
+);
+assert.match(
+  engineVectorTextRuntimeSource,
+  /\{ binding: 7, resource: deepFloorView \?\? engine\.transparentLayerView \}/,
+  "the fold pass must use the shared transparent texture when no Deep floor is needed",
 );
 
 assert.equal(LAYER_COLD_TILE_COMPOSITE_UNIFORM_BYTES, 32);
@@ -368,6 +388,7 @@ assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /layerBlendCompositor\.compositeOperat
 assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /@binding\(4\) var layerBlendCutoutTexture/);
 assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /@binding\(5\) var layerBlendClippingBaseTexture/);
 assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /@binding\(6\) var layerBlendDocumentMaskTexture/);
+assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /@binding\(7\) var layerBlendDeepFloorTexture/);
 assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /fn layerBlendDocumentMaskFragmentMain/);
 assert.match(
   LAYER_BLEND_COMPOSITOR_WGSL,
@@ -416,6 +437,19 @@ assert.match(LAYER_BLEND_FOLD_WGSL, /@binding\(1\) var sourceTexture: texture_2d
 assert.match(LAYER_BLEND_FOLD_WGSL, /@binding\(3\) var cutoutTexture: texture_2d<f32>/);
 assert.match(LAYER_BLEND_FOLD_WGSL, /@binding\(4\) var clippingBaseTexture: texture_2d<f32>/);
 assert.match(LAYER_BLEND_FOLD_WGSL, /@binding\(5\) var documentMaskTexture: texture_2d<f32>/);
+assert.match(LAYER_BLEND_FOLD_WGSL, /@binding\(6\) var deepFloorTexture: texture_2d<f32>/);
+assert.match(LAYER_BLEND_FOLD_WGSL, /backdrop = mix\(backdrop, deepFloor,/);
+assert.match(LAYER_BLEND_FOLD_WGSL, /knocked \+= deepFloor \* residual/);
+assert.match(
+  engineResourceSetupSource,
+  /label: "Advanced layer blend fold bind group layout"[\s\S]*?binding: 6,[\s\S]*?texture: \{ sampleType: "unfilterable-float" \}/,
+  "the general fold layout must expose the Deep-floor texture",
+);
+assert.match(
+  layerRuntimeSource,
+  /label: `\$\{label\} · advanced tile backdrop\/source`[\s\S]*?binding: 6, resource: engine\.transparentLayerView/,
+  "isolated static folds must bind a transparent local Deep floor",
+);
 assert.match(LAYER_BLEND_FOLD_WGSL, /cutoutOrigin: vec2<f32>/);
 assert.match(LAYER_BLEND_FOLD_WGSL, /cutoutDimensions: vec2<u32>/);
 assert.match(LAYER_BLEND_FOLD_WGSL, /documentMaskOrigin: vec2<f32>/);
@@ -531,6 +565,26 @@ assert.match(
 assert.match(
   tileRuntimeSource,
   /seed document background tile`,\s*textureRect\.width,\s*textureRect\.height,/s,
+);
+assert.match(
+  tileRuntimeSource,
+  /activeRecord\.contentOpacity <= 0[\s\S]*?!activeHasVisibleEffects[\s\S]*?renderer\.encodeAuthoredMatteBake/,
+  "Fill 0 live knockout must bake only the authored matte when no visible effect needs a styled source",
+);
+assert.match(
+  tileRuntimeSource,
+  /cutoutView: activeNeedsLiveMatte \? compositor\.authoredMatteView : engine\.layerView/,
+  "live tile cutout must read the transient authored matte",
+);
+assert.match(
+  tileRuntimeSource,
+  /parent\?\.visible[\s\S]*?parent\.opacity > 0[\s\S]*?parent\.hasContent/,
+  "the hidden-Background Deep floor must ignore invisible, zero-opacity, and empty raster layers",
+);
+assert.match(
+  layerRuntimeSource,
+  /Deep cutout protects the bottom-most visible contribution[\s\S]*?parent\.visible && parent\.opacity > 0 && parent\.hasContent/,
+  "the ordered program must preserve a boundary after the lowest contributing layer",
 );
 assert.match(
   tileRuntimeSource,

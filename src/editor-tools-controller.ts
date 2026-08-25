@@ -174,9 +174,9 @@ export class EditorToolsController {
       );
     }
     for (const button of elements.vectorCommandButtons) {
-      button.disabled = !state.vectorEditorReady
-        || state.vectorEditorLocked
-        || state.interactionLocked;
+      button.disabled = !state.engineReady
+        || state.interactionLocked
+        || (state.vectorEditorReady && state.vectorEditorLocked);
     }
     for (const button of elements.toolSettingsButtons) {
       const kind = button.dataset.mobileToolSheet;

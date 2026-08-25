@@ -1214,6 +1214,16 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   let storagePosition = vec2<i32>(parameters.localTargetOrigin + globalId.xy);
   textureStore(styledTexture, storagePosition, styledTexel(position));
 }
+
+@compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
+fn authoredMatteMain(@builtin(global_invocation_id) globalId: vec3<u32>) {
+  if (any(globalId.xy >= parameters.targetSize)) {
+    return;
+  }
+  let position = vec2<i32>(parameters.targetOrigin + globalId.xy);
+  let storagePosition = vec2<i32>(parameters.localTargetOrigin + globalId.xy);
+  textureStore(styledTexture, storagePosition, sourceTexel(position));
+}
 `;
 }
 
@@ -1620,6 +1630,31 @@ fn activeSourceFragmentMain(
   }
   return paint * display.activeLayerAlpha;
 }
+
+@fragment
+fn activeCutoutFragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  let displayOffset = (fragmentPosition.xy - display.canvasSize * 0.5) / display.zoom;
+  let layerOffset = vec2<f32>(
+    display.viewRotation.x * displayOffset.x + display.viewRotation.y * displayOffset.y,
+    -display.viewRotation.y * displayOffset.x + display.viewRotation.x * displayOffset.y
+  );
+  let layerPosition = display.viewCenter + layerOffset;
+  let layerSize = vec2<f32>(DOCUMENT_SIZE);
+  let insideLayer = all(layerPosition >= vec2<f32>(0.0))
+    && all(layerPosition < layerSize);
+  if (!insideLayer) {
+    return vec4<f32>(0.0);
+  }
+  let authored = sourceTexel(vec2<i32>(floor(layerPosition)));
+  let opacity = select(
+    display.activeLayerAlpha,
+    display.clippingParentOpacity,
+    display.clippingMode >= 0.5 && display.clippingMode < 1.5,
+  );
+  return authored * opacity;
+}
 `;
 }
 function thresholdMaskShader(
@@ -1852,6 +1887,7 @@ export class RasterStrokeRenderer {
   private resolvePipeline!: GPUComputePipeline;
   private composePipeline!: GPUComputePipeline;
   private readbackComposePipeline: GPUComputePipeline | null = null;
+  private authoredMatteBakePipeline: GPUComputePipeline | null = null;
   private thresholdMaskPipeline!: GPUComputePipeline;
   private indirectGatePipeline!: GPUComputePipeline;
   private jfaBindGroups!: readonly [GPUBindGroup, GPUBindGroup];
@@ -2349,15 +2385,39 @@ export class RasterStrokeRenderer {
    * method never replaces a previously valid bake in-place.
    */
   encodeBake(options: RasterStrokeBakeOptions): RasterStrokeBakeResult {
+    return this.encodeBakePass(options, "styled");
+  }
+
+  /**
+   * Materializes the raw authored pixels, including the current transient
+   * stroke, into a caller-owned texture. Layer Fill and visual effects are
+   * intentionally excluded so cutout composition can use the true live matte.
+   */
+  encodeAuthoredMatteBake(options: RasterStrokeBakeOptions): RasterStrokeBakeResult {
+    return this.encodeBakePass(options, "authored-matte");
+  }
+
+  private encodeBakePass(
+    options: RasterStrokeBakeOptions,
+    output: "styled" | "authored-matte",
+  ): RasterStrokeBakeResult {
     if (this.destroyed) {
       throw new Error("The Stroke renderer has already been destroyed.");
     }
-    if (options.style.enabled && options.style.width > 0 && !this.strokeGeometryEnabled) {
+    if (
+      output === "styled"
+      && options.style.enabled
+      && options.style.width > 0
+      && !this.strokeGeometryEnabled
+    ) {
       throw new Error(
         "Stroke bake rejected: geometry resources are not allocated.",
       );
     }
-    if (!this.readbackComposePipeline) {
+    const pipeline = output === "authored-matte"
+      ? this.authoredMatteBakePipeline
+      : this.readbackComposePipeline;
+    if (!pipeline) {
       throw new Error("The Stroke mip 0 bake pipeline is not initialized.");
     }
     const rect = normalizedRect(
@@ -2399,7 +2459,7 @@ export class RasterStrokeRenderer {
     const bevelStyle = options.bevelStyle ?? DEFAULT_RASTER_BEVEL_STYLE;
     const colorOverlayStyle = options.colorOverlayStyle
       ?? DEFAULT_RASTER_COLOR_OVERLAY_STYLE;
-    if (!options.sharedStylePrepared) {
+    if (output === "styled" && !options.sharedStylePrepared) {
       this.updateBevelParameters(bevelStyle, options.contentOpacity);
     }
     this.writeParameters(parameterSlot, {
@@ -2431,9 +2491,11 @@ export class RasterStrokeRenderer {
 
     const bindGroup = this.bakeBindGroup(options.targetView, mode, sourceMode);
     const pass = options.encoder.beginComputePass({
-      label: "Style stack layer bake analytic mip 0",
+      label: output === "authored-matte"
+        ? "Authored matte live bake analytic mip 0"
+        : "Style stack layer bake analytic mip 0",
     });
-    pass.setPipeline(this.readbackComposePipeline);
+    pass.setPipeline(pipeline);
     pass.setBindGroup(0, bindGroup, this.dynamicOffset(parameterSlot));
     pass.dispatchWorkgroups(
       Math.ceil(rect.width / WORKGROUP_SIZE),
@@ -2936,6 +2998,11 @@ export class RasterStrokeRenderer {
         compute: { module: readbackComposeModule, entryPoint: "main" },
       }),
       createComputePipelineAsync(this.device, {
+        label: "Authored matte analytic logical mip 0 bake pipeline",
+        layout: composePipelineLayout,
+        compute: { module: readbackComposeModule, entryPoint: "authoredMatteMain" },
+      }),
+      createComputePipelineAsync(this.device, {
         label: "Stroke alpha-threshold mask pipeline",
         layout: this.device.createPipelineLayout({
           bindGroupLayouts: [this.thresholdMaskBindGroupLayout],
@@ -2969,6 +3036,7 @@ export class RasterStrokeRenderer {
       this.resolvePipeline,
       this.composePipeline,
       this.readbackComposePipeline,
+      this.authoredMatteBakePipeline,
       this.thresholdMaskPipeline,
       this.indirectGatePipeline,
     ] = pipelines;

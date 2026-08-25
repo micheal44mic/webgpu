@@ -43,6 +43,8 @@ const LABS = [
   ["cold-tile", "GPU test cold tile"],
   ["clipping", "GPU test clipping group"],
   ["layer-blend", "GPU test fusioni livello"],
+  ["empty-import-svg", "GPU smoke import SVG su documento vuoto"],
+  ["empty-import-image", "GPU smoke import immagine su documento vuoto"],
   ["layer-merge-raster", "GPU test merge raster"],
   ["layer-merge-clipping", "GPU test merge clipping"],
   ["layer-merge-mixed", "GPU test merge mixed"],
@@ -397,6 +399,16 @@ class EditorLabController implements EditorExtension {
       case "layer-blend": {
         const { runLayerBlendGpuTest } = await import("./gpu/layer-blend-gpu-test");
         return runLayerBlendGpuTest(engine);
+      }
+      case "empty-import-svg":
+      case "empty-import-image": {
+        const { runEmptyDocumentImportGpuTest } = await import(
+          "./gpu/empty-document-import-gpu-test"
+        );
+        return runEmptyDocumentImportGpuTest(
+          engine,
+          id === "empty-import-svg" ? "svg" : "image",
+        );
       }
       case "layer-merge-raster":
       case "layer-merge-clipping":

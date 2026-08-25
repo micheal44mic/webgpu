@@ -1273,6 +1273,8 @@ export class BrushEngine {
   mixedSceneBlendClippingBaseView: GPUTextureView | null = null;
   mixedSceneBlendDocumentMaskTexture: GPUTexture | null = null;
   mixedSceneBlendDocumentMaskView: GPUTextureView | null = null;
+  mixedSceneBlendDeepFloorTexture: GPUTexture | null = null;
+  mixedSceneBlendDeepFloorView: GPUTextureView | null = null;
   mixedSceneBlendFromLinearBindGroup: GPUBindGroup | null = null;
   mixedSceneBlendFromScratchBindGroup: GPUBindGroup | null = null;
   mixedSceneBlendFromGroupBindGroup: GPUBindGroup | null = null;
@@ -1610,6 +1612,7 @@ export class BrushEngine {
   mixedSceneActiveCutoutDisplayPipeline: GPURenderPipeline | null = null;
   mixedSceneActiveRasterStrokeDisplayPipeline: GPURenderPipeline | null = null;
   mixedSceneActiveRasterStrokeSourcePipeline: GPURenderPipeline | null = null;
+  mixedSceneActiveRasterStrokeCutoutPipeline: GPURenderPipeline | null = null;
   mixedSceneActiveThicknessTailDisplayPipeline: GPURenderPipeline | null = null;
   mixedSceneActiveThicknessTailSourcePipeline: GPURenderPipeline | null = null;
   mixedSceneActiveLightGlazeDisplayPipeline: GPURenderPipeline | null = null;

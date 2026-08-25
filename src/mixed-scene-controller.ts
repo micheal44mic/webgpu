@@ -1014,6 +1014,18 @@ export class MixedSceneController {
     this.imageFileInput.click();
   }
 
+  async importSvgFile(file: File): Promise<void> {
+    try {
+      await this.importSvgSource(await file.text(), file.name);
+    } catch (error) {
+      this.setSvgImportStatus(error instanceof Error ? error.message : String(error), true);
+    }
+  }
+
+  async importRasterImageFile(file: File): Promise<void> {
+    await this.importImageFile(file);
+  }
+
   applyTransform(): Promise<boolean> {
     if (!this.transformSessionOpen) return Promise.resolve(true);
     return this.applyTransformSession();
@@ -2157,23 +2169,6 @@ export class MixedSceneController {
   }
 
   private bindControls(): void {
-    this.imageFileInput.addEventListener("change", () => {
-      const file = this.imageFileInput.files?.[0];
-      this.imageFileInput.value = "";
-      if (file) void this.importImageFile(file);
-    });
-    this.svgFileInput.addEventListener("change", () => {
-      const file = this.svgFileInput.files?.[0];
-      this.svgFileInput.value = "";
-      if (!file) return;
-      void (async () => {
-        try {
-          await this.importSvgSource(await file.text(), file.name);
-        } catch (error) {
-          this.setSvgImportStatus(error instanceof Error ? error.message : String(error), true);
-        }
-      })();
-    });
     for (const button of this.rasterTransformGridButtons) {
       button.addEventListener("click", () => {
         const gridSize = Number(button.dataset.rasterTransformGrid);

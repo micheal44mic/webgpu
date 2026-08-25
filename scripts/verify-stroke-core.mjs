@@ -461,6 +461,17 @@ assert.match(rendererSource, /colorOverlayStyle\?: RasterColorOverlayStyle/);
 assert.match(rendererSource, /return style\.uniformAlpha \? -\(1 \+ opacity\) : opacity;/);
 assert.match(rendererSource, /this\.displayParameterUploadF32\[23\] = encodedColorOverlayMode\(colorOverlayStyle\)/);
 assert.match(rendererSource, /this\.parameterUploadF32\[word \+ 23\] = encodedColorOverlayMode\(colorOverlayStyle\)/);
+assert.match(
+  rendererSource,
+  /fn authoredMatteMain[\s\S]*?textureStore\(styledTexture, storagePosition, sourceTexel\(position\)\)/,
+  "the live cutout bake must use authored pixels before Fill and effects",
+);
+assert.match(rendererSource, /encodeAuthoredMatteBake\(/);
+assert.match(
+  rendererSource,
+  /fn activeCutoutFragmentMain[\s\S]*?let authored = sourceTexel/,
+  "the viewport live cutout path must sample the transient authored source",
+);
 assert.ok(
   rendererSource.indexOf("bevelNode(base, shape.a, position)")
     < rendererSource.indexOf("combinedStrokeNode(shape.a, legacyNode, coverage)"),

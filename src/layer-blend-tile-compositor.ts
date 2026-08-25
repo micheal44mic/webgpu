@@ -115,6 +115,10 @@ export class LayerBlendTileCompositor {
   readonly documentMaskView: GPUTextureView;
   readonly clippingBaseTexture: GPUTexture;
   readonly clippingBaseView: GPUTextureView;
+  readonly authoredMatteTexture: GPUTexture;
+  readonly authoredMatteView: GPUTextureView;
+  readonly deepFloorTexture: GPUTexture;
+  readonly deepFloorView: GPUTextureView;
   readonly stableMemoryBytes: number;
   readonly foldUniformStride: number;
   readonly presentUniformStride: number;
@@ -165,6 +169,10 @@ export class LayerBlendTileCompositor {
     documentMaskView: GPUTextureView;
     clippingBaseTexture: GPUTexture;
     clippingBaseView: GPUTextureView;
+    authoredMatteTexture: GPUTexture;
+    authoredMatteView: GPUTextureView;
+    deepFloorTexture: GPUTexture;
+    deepFloorView: GPUTextureView;
     foldUniformBuffer: GPUBuffer;
     foldUniformStride: number;
     presentUniformBuffer: GPUBuffer;
@@ -194,6 +202,10 @@ export class LayerBlendTileCompositor {
     this.documentMaskView = options.documentMaskView;
     this.clippingBaseTexture = options.clippingBaseTexture;
     this.clippingBaseView = options.clippingBaseView;
+    this.authoredMatteTexture = options.authoredMatteTexture;
+    this.authoredMatteView = options.authoredMatteView;
+    this.deepFloorTexture = options.deepFloorTexture;
+    this.deepFloorView = options.deepFloorView;
     this.foldUniformBuffer = options.foldUniformBuffer;
     this.foldUniformStride = options.foldUniformStride;
     this.presentUniformBuffer = options.presentUniformBuffer;
@@ -229,7 +241,7 @@ export class LayerBlendTileCompositor {
     this.mipUniformU32 = new Uint32Array(this.mipUniformUpload);
     const bytesPerPixel = this.format === "rgba16float" ? 8 : 4;
     this.stableMemoryBytes = this.extent * this.extent
-      * bytesPerPixel * (TILE_TEXTURE_COUNT + 2)
+      * bytesPerPixel * (TILE_TEXTURE_COUNT + 4)
       + FOLD_RECORD_CAPACITY * this.foldUniformStride
       + PRESENT_RECORD_CAPACITY * this.presentUniformStride
       + MIP_RECORD_CAPACITY * this.mipUniformStride;
@@ -298,6 +310,37 @@ export class LayerBlendTileCompositor {
         transaction.deferRollback(() => clippingBaseTexture.destroy());
         const clippingBaseView = clippingBaseTexture.createView({
           label: "Layer blend clipping immutable base view",
+        });
+        const authoredMatteTexture = engine.device.createTexture({
+          label: `Layer blend live authored matte ${LAYER_BLEND_TILE_EXTENT}²`,
+          size: {
+            width: LAYER_BLEND_TILE_EXTENT,
+            height: LAYER_BLEND_TILE_EXTENT,
+            depthOrArrayLayers: 1,
+          },
+          format: engine.layerFormat,
+          usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+        });
+        transaction.deferRollback(() => authoredMatteTexture.destroy());
+        const authoredMatteView = authoredMatteTexture.createView({
+          label: "Layer blend live authored matte view",
+        });
+        const deepFloorTexture = engine.device.createTexture({
+          label: `Layer blend Deep floor ${LAYER_BLEND_TILE_EXTENT}²`,
+          size: {
+            width: LAYER_BLEND_TILE_EXTENT,
+            height: LAYER_BLEND_TILE_EXTENT,
+            depthOrArrayLayers: 1,
+          },
+          format: engine.layerFormat,
+          usage:
+            GPUTextureUsage.RENDER_ATTACHMENT
+            | GPUTextureUsage.TEXTURE_BINDING
+            | GPUTextureUsage.COPY_DST,
+        });
+        transaction.deferRollback(() => deepFloorTexture.destroy());
+        const deepFloorView = deepFloorTexture.createView({
+          label: "Layer blend Deep floor view",
         });
 
         const createUniformBuffer = (label: string, size: number): GPUBuffer => {
@@ -375,6 +418,11 @@ export class LayerBlendTileCompositor {
             },
             {
               binding: 5,
+              visibility: GPUShaderStage.FRAGMENT,
+              texture: { sampleType: "float", viewDimension: "2d" },
+            },
+            {
+              binding: 6,
               visibility: GPUShaderStage.FRAGMENT,
               texture: { sampleType: "float", viewDimension: "2d" },
             },
@@ -631,6 +679,10 @@ export class LayerBlendTileCompositor {
           documentMaskView,
           clippingBaseTexture,
           clippingBaseView,
+          authoredMatteTexture,
+          authoredMatteView,
+          deepFloorTexture,
+          deepFloorView,
           foldUniformBuffer,
           foldUniformStride,
           presentUniformBuffer,
@@ -960,6 +1012,24 @@ export class LayerBlendTileCompositor {
     pass.end();
   }
 
+  seedDeepFloorWithDocumentBackground(
+    encoder: GPUCommandEncoder,
+    label: string,
+  ): void {
+    this.assertAlive();
+    const color = documentBackgroundLinearPremultiplied(this.engine.documentBackground);
+    const pass = encoder.beginRenderPass({
+      label,
+      colorAttachments: [{
+        view: this.deepFloorView,
+        loadOp: "clear",
+        storeOp: "store",
+        clearValue: { r: color[0], g: color[1], b: color[2], a: color[3] },
+      }],
+    });
+    pass.end();
+  }
+
   encodeFold(options: {
     encoder: GPUCommandEncoder;
     targetTile: 0 | 1 | 2;
@@ -1048,6 +1118,20 @@ export class LayerBlendTileCompositor {
     );
   }
 
+  copyTileToDeepFloor(
+    encoder: GPUCommandEncoder,
+    sourceTile: 0 | 1 | 2,
+    width: number,
+    height: number,
+  ): void {
+    this.assertAlive();
+    encoder.copyTextureToTexture(
+      { texture: this.textures[sourceTile] },
+      { texture: this.deepFloorTexture },
+      { width, height, depthOrArrayLayers: 1 },
+    );
+  }
+
   encodeTilePresentation(options: {
     pass: GPURenderPassEncoder;
     sourceTile: 0 | 1 | 2;
@@ -1132,6 +1216,8 @@ export class LayerBlendTileCompositor {
     this.textures.forEach((texture) => texture.destroy());
     this.documentMaskTexture.destroy();
     this.clippingBaseTexture.destroy();
+    this.authoredMatteTexture.destroy();
+    this.deepFloorTexture.destroy();
     this.foldUniformBuffer.destroy();
     this.presentUniformBuffer.destroy();
     this.mipUniformBuffer.destroy();
@@ -1272,6 +1358,7 @@ export class LayerBlendTileCompositor {
         { binding: 3, resource: cutoutView },
         { binding: 4, resource: clippingBaseView },
         { binding: 5, resource: documentMaskView },
+        { binding: 6, resource: this.deepFloorView },
       ],
     });
     byBackdrop.set(backdropTile, bindGroup);

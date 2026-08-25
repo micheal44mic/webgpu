@@ -922,9 +922,9 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     / MEBIBYTE_BYTES;
 
   // The ordered scene owns one RGBA16F canonical cache. When semantic nodes
-  // keep advanced layer blending on the viewport path it also owns three
-  // equally-sized RGBA16F targets (scene ping-pong, isolated operand and the
-  // clipping-group ping-pong used only for ordered advanced children).
+  // keep advanced layer blending on the viewport path it also owns bounded
+  // scratch roles for ping-pong, operands, authored matte, clipping state and
+  // the immutable Deep floor. Count every texture that is actually resident.
   // The raster-only path instead owns the bounded native-format compositor:
   // three 1024² tiles plus its GPU uniform rings. Count the resources that
   // are actually resident, rather than inferring them from the current mode.
@@ -932,7 +932,10 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     + Number(Boolean(engine.mixedSceneBlendScratchTexture))
     + Number(Boolean(engine.mixedSceneBlendOperandTexture))
     + Number(Boolean(engine.mixedSceneBlendCutoutTexture))
-    + Number(Boolean(engine.mixedSceneBlendGroupTexture));
+    + Number(Boolean(engine.mixedSceneBlendGroupTexture))
+    + Number(Boolean(engine.mixedSceneBlendClippingBaseTexture))
+    + Number(Boolean(engine.mixedSceneBlendDocumentMaskTexture))
+    + Number(Boolean(engine.mixedSceneBlendDeepFloorTexture));
   const mixedSceneLinearMiB = mixedSceneTextureCount
     * engine.mixedSceneLinearWidth * engine.mixedSceneLinearHeight
     * 8 / MEBIBYTE_BYTES;

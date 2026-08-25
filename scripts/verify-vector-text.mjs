@@ -154,6 +154,7 @@ const read = (relativePath) =>
 const engineSource = readEngineSource();
 const controllerSource = read("src/mixed-scene-controller.ts");
 const controllerContractSource = read("src/mixed-scene-controller-contract.ts");
+const sceneImportBridgeSource = read("src/scene-import-bridge.ts");
 
 // Hidden semantic nodes are omitted by MixedSceneStack when it names a
 // compositor run. The live controller must omit them from the texture key too;
@@ -2164,7 +2165,13 @@ assert.match(engineSource, /unsigned\[base \+ 32\] = gradient\.kind === "linear"
 assert.match(controllerSource, /svgGradientGpuData\(paint\.gradient\)/);
 assert.doesNotMatch(svgSource, /innerHTML|insertAdjacentHTML|eval\(/);
 assert.match(controllerSource, /parseVectorSvg\(source, sourceName\)/);
-assert.match(controllerSource, /this\.svgFileInput\.files\?\.\[0\]/);
+assert.match(controllerSource, /async importSvgFile\(file: File\)/);
+assert.match(controllerSource, /async importRasterImageFile\(file: File\)/);
+assert.match(sceneImportBridgeSource, /const file = input\.files\?\.\[0\]/);
+assert.match(sceneImportBridgeSource, /svgInput\.addEventListener\("change"/);
+assert.match(sceneImportBridgeSource, /imageInput\.addEventListener\("change"/);
+assert.doesNotMatch(controllerSource, /svgFileInput\.addEventListener\("change"/);
+assert.doesNotMatch(controllerSource, /imageFileInput\.addEventListener\("change"/);
 assert.match(controllerSource, /kind: "source-fill"/);
 assert.match(controllerSource, /this\.svgBlurDraw/);
 assert.match(controllerSource, /kind === "outer"[\s\S]*mode: "mesh-blur"[\s\S]*mode: "mesh-inner-shadow-blur"/);

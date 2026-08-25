@@ -1,6 +1,7 @@
 import "./styles.css";
 import { EditorToolsController } from "./editor-tools-controller";
 import type { EditorRasterEffectKind } from "./editor-tools-contract";
+import { SceneImportBridge } from "./scene-import-bridge";
 import { EditorFiltersController } from "./editor-filters-controller";
 import { MobileBrushStudioController } from "./mobile-brush-studio";
 import { MobileBrushLibraryPreviewRenderer } from "./brush-library-preview";
@@ -194,6 +195,8 @@ const mobileToolRail = element<HTMLElement>("mobileToolRail");
 const projectHomeButton = element<HTMLButtonElement>("projectHomeButton");
 const saveProjectButton = element<HTMLButtonElement>("saveProjectButton");
 const statusElement = element<HTMLParagraphElement>("status");
+const vectorSvgFileInput = element<HTMLInputElement>("vectorSvgFileInput");
+const rasterImageFileInput = element<HTMLInputElement>("rasterImageFileInput");
 const layerSwitchResult = element<HTMLParagraphElement>("layerSwitchResult");
 const layerLoadingOverlay = element<HTMLElement>("layerLoadingOverlay");
 const layerLoadingLabel = element<HTMLParagraphElement>("layerLoadingLabel");
@@ -481,6 +484,32 @@ const projectEditorBootstrap: ProjectEditorBootstrap | undefined =
 const editorExtensionEngineOptions = editorExtensionBootstrap?.engineOptions ?? {};
 let editorExtension: EditorExtension | null = null;
 let projectSessionController: ProjectSessionController | null = null;
+
+function reportQueuedSceneImportFailure(kind: "SVG" | "image", error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  statusElement.textContent = `${kind} import failed: ${message}`;
+  statusElement.className = "status error";
+  appDiagnosticsController?.recordOperation(
+    "queued-scene-import",
+    kind.toLocaleLowerCase("en-US"),
+    error,
+  );
+}
+
+const sceneImportBridge = new SceneImportBridge({
+  svgInput: vectorSvgFileInput,
+  imageInput: rasterImageFileInput,
+  currentController: () => mixedSceneController,
+  ensureController: initializeMixedSceneController,
+  onQueued: (kind, file) => {
+    const label = kind === "svg" ? "SVG" : "image";
+    statusElement.textContent = `Preparing ${label} import for ${file.name}…`;
+    statusElement.className = "status";
+  },
+  onFailure: (kind, error) => {
+    reportQueuedSceneImportFailure(kind === "svg" ? "SVG" : "image", error);
+  },
+});
 
 function selectCanvasToolWithMixedScene(tool: CanvasInputTool): boolean {
   const selected = canvasToolController?.select(tool) ?? false;
@@ -1703,10 +1732,9 @@ editorToolsController = new EditorToolsController({
   },
   runVectorCommand: (command) => {
     if (interactionLocked()) return;
-    const controller = mixedSceneController;
-    if (!controller) return;
-    if (command === "import-svg") controller.requestSvgImport();
-    else controller.requestRasterImageImport();
+    // Preserve transient user activation: opening the native picker after
+    // awaiting the optional GPU warm-up would be rejected by browsers.
+    sceneImportBridge.request(command);
   },
   openRasterEffect: (kind, trigger) => {
     if (!engineInitialized) return;
@@ -1903,6 +1931,7 @@ window.addEventListener("pagehide", () => {
   canvasToolController?.dispose();
   brushQuickControlsController?.dispose();
   sceneEditorController?.dispose();
+  sceneImportBridge.dispose();
   editorToolsController.dispose();
   layerThumbnailController.dispose();
   void mobileBrushStudio?.dispose();

@@ -2762,6 +2762,7 @@ export async function foldViewIntoMergedSurface(
         { binding: 3, resource: cutoutView },
         { binding: 4, resource: clipping?.baseView ?? backdropScratchView },
         { binding: 5, resource: documentMaskScratchView },
+        { binding: 6, resource: engine.transparentLayerView },
       ],
     });
     const encoder = engine.device.createCommandEncoder({ label });
@@ -4219,7 +4220,97 @@ export function splitMixedSceneRasterRunsForLayerBlend(
     }
     flushNormal();
   }
-  return result;
+  if (!engine.layerStack.layers.some((record) => record.cutoutMode === "document")) {
+    return result;
+  }
+
+  // Deep cutout protects the bottom-most visible contribution. Keep a stable
+  // composition boundary immediately after that atomic unit so the presenter
+  // can snapshot it even while the structural Background is currently visible.
+  // Background visibility can then toggle without rebuilding this program.
+  const isolated: MixedSceneCompositionSegment[] = [];
+  let floorBoundaryFound = false;
+  for (const segment of result) {
+    if (floorBoundaryFound) {
+      isolated.push(segment);
+      continue;
+    }
+    if (segment.kind === "text-run") {
+      const first = segment.items[0];
+      if (!first) {
+        isolated.push(segment);
+        continue;
+      }
+      isolated.push({
+        key: `text-run:${first.key}`,
+        kind: "text-run",
+        items: [first],
+      });
+      if (segment.items.length > 1) {
+        const tail = segment.items.slice(1);
+        isolated.push({
+          key: `text-run:${tail.map((item) => item.key).join(",")}`,
+          kind: "text-run",
+          items: tail,
+        });
+      }
+      floorBoundaryFound = true;
+      continue;
+    }
+    if (segment.kind === "image") {
+      isolated.push(segment);
+      floorBoundaryFound = true;
+      continue;
+    }
+    if (segment.kind === "active-raster") {
+      const parent = engine.layerStack.clippingUnit(segment.item.rasterLayerId)[0];
+      isolated.push(segment);
+      if (parent.visible && parent.opacity > 0 && parent.hasContent) {
+        floorBoundaryFound = true;
+      }
+      continue;
+    }
+
+    let boundaryEnd = -1;
+    let index = 0;
+    while (index < segment.items.length) {
+      const item = segment.items[index];
+      const unit = engine.layerStack.clippingUnit(item.rasterLayerId);
+      const unitIds = new Set(unit.map((record) => record.id));
+      let end = index + 1;
+      while (
+        end < segment.items.length
+        && unitIds.has(segment.items[end].rasterLayerId)
+      ) {
+        end += 1;
+      }
+      const parent = unit[0];
+      if (parent.visible && parent.opacity > 0 && parent.hasContent) {
+        boundaryEnd = end;
+        break;
+      }
+      index = end;
+    }
+    if (boundaryEnd < 0 || boundaryEnd >= segment.items.length) {
+      isolated.push(segment);
+      floorBoundaryFound = boundaryEnd === segment.items.length;
+      continue;
+    }
+    const floorItems = segment.items.slice(0, boundaryEnd);
+    const upperItems = segment.items.slice(boundaryEnd);
+    isolated.push({
+      key: `raster-run:${floorItems.map((item) => item.rasterLayerId).join(",")}`,
+      kind: "raster-run",
+      items: floorItems,
+    });
+    isolated.push({
+      key: `raster-run:${upperItems.map((item) => item.rasterLayerId).join(",")}`,
+      kind: "raster-run",
+      items: upperItems,
+    });
+    floorBoundaryFound = true;
+  }
+  return isolated;
 }
 
 export function mixedSceneSegmentLayerBlendMode(

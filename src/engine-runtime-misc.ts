@@ -452,6 +452,11 @@ export async function finishStaticResourceCreation(
           visibility: GPUShaderStage.FRAGMENT,
           texture: { sampleType: "unfilterable-float" },
         },
+        {
+          binding: 7,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "unfilterable-float" },
+        },
       ],
     });
     const blendUniformAlignment = engine.device.limits.minUniformBufferOffsetAlignment;
@@ -793,6 +798,17 @@ export async function finishStaticResourceCreation(
       fragment: {
         module: engine.rasterStrokeDisplayShaderModule,
         entryPoint: "activeSourceFragmentMain",
+        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: mixedSceneSourceOverBlend }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+    engine.mixedSceneActiveRasterStrokeCutoutPipeline = engine.device.createRenderPipeline({
+      label: "Mixed scene active Stroke authored-matte pipeline",
+      layout: rasterStrokeDisplayPipelineLayout,
+      vertex: { module: engine.rasterStrokeDisplayShaderModule, entryPoint: "vertexMain" },
+      fragment: {
+        module: engine.rasterStrokeDisplayShaderModule,
+        entryPoint: "activeCutoutFragmentMain",
         targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: mixedSceneSourceOverBlend }],
       },
       primitive: { topology: "triangle-list" },

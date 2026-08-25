@@ -165,16 +165,18 @@ export function applyDocumentCutoutToBackdrop(
   immutableBaseAlphaInput: number,
   accumulatedCoverageInput: number,
   groupOpacityInput: number,
+  deepFloorInput: LinearPremultipliedRgba = [0, 0, 0, 0],
 ): LinearPremultipliedRgba {
   const backdrop = sanitizePremultiplied(backdropInput);
+  const deepFloor = sanitizePremultiplied(deepFloorInput);
   const coverage = clamp01(immutableBaseAlphaInput)
     * clamp01(accumulatedCoverageInput)
     * clamp01(groupOpacityInput);
   return [
-    backdrop[0] * (1 - coverage),
-    backdrop[1] * (1 - coverage),
-    backdrop[2] * (1 - coverage),
-    backdrop[3] * (1 - coverage),
+    backdrop[0] * (1 - coverage) + deepFloor[0] * coverage,
+    backdrop[1] * (1 - coverage) + deepFloor[1] * coverage,
+    backdrop[2] * (1 - coverage) + deepFloor[2] * coverage,
+    backdrop[3] * (1 - coverage) + deepFloor[3] * coverage,
   ];
 }
 
@@ -228,6 +230,7 @@ export function compositeLayerPremultipliedLinear(
     readonly cutoutMode: LayerCutoutMode;
     readonly tonalBlend: LayerTonalBlend;
     readonly cutoutAlpha?: number;
+    readonly deepFloor?: LinearPremultipliedRgba;
   } | null = null,
 ): LinearPremultipliedRgba {
   const mask = composition
@@ -254,11 +257,25 @@ export function compositeLayerPremultipliedLinear(
   // source (notably when Fill is below 100%); subtracting the full matte again
   // would make antialiased edges translucent even when Fill is 100%.
   const extraHole = clamp01(cutoutCoverage - clamp01(gatedSource[3]));
-  const outputAlpha = clamp01(composited[3] - backdrop[3] * extraHole);
+  const deepFloor = composition.cutoutMode === "document"
+    ? sanitizePremultiplied(composition.deepFloor ?? [0, 0, 0, 0])
+    : [0, 0, 0, 0] as LinearPremultipliedRgba;
+  const outputAlpha = clamp01(
+    composited[3] - backdrop[3] * extraHole + deepFloor[3] * extraHole,
+  );
   return [
-    Math.min(outputAlpha, Math.max(0, composited[0] - backdrop[0] * extraHole)),
-    Math.min(outputAlpha, Math.max(0, composited[1] - backdrop[1] * extraHole)),
-    Math.min(outputAlpha, Math.max(0, composited[2] - backdrop[2] * extraHole)),
+    Math.min(outputAlpha, Math.max(
+      0,
+      composited[0] - backdrop[0] * extraHole + deepFloor[0] * extraHole,
+    )),
+    Math.min(outputAlpha, Math.max(
+      0,
+      composited[1] - backdrop[1] * extraHole + deepFloor[1] * extraHole,
+    )),
+    Math.min(outputAlpha, Math.max(
+      0,
+      composited[2] - backdrop[2] * extraHole + deepFloor[2] * extraHole,
+    )),
     outputAlpha,
   ];
 }
@@ -270,6 +287,7 @@ export function compositeLayerPremultipliedLinear(
  *   2 = LayerBlendCompositorUniforms
  *   3 = viewport state used only to map framebuffer pixels to document pixels
  *   4 = raw authored matte rendered in the same viewport coordinates
+ *   7 = immutable Deep floor in the same viewport coordinates
  *
  * The render target is deliberately not sampled: callers can ping-pong two
  * viewport textures without a read/write attachment hazard. Both textures are
@@ -309,6 +327,7 @@ struct LayerBlendViewportUniforms {
 @group(0) @binding(4) var layerBlendCutoutTexture: texture_2d<f32>;
 @group(0) @binding(5) var layerBlendClippingBaseTexture: texture_2d<f32>;
 @group(0) @binding(6) var layerBlendDocumentMaskTexture: texture_2d<f32>;
+@group(0) @binding(7) var layerBlendDeepFloorTexture: texture_2d<f32>;
 
 const LAYER_BLEND_CONTEXT_DIRECT: u32 = 0u;
 const LAYER_BLEND_CONTEXT_CLIPPING_CHILD: u32 = 1u;
@@ -516,6 +535,16 @@ fn layerBlendCompositorFragmentMain(
     layerBlendClippingBaseTexture,
     pixel,
   );
+  var deepFloor = vec4<f32>(0.0);
+  if (
+    layerBlendCompositor.cutoutMode == LAYER_CUTOUT_DOCUMENT
+    || layerBlendCompositor.compositionContext == LAYER_BLEND_CONTEXT_CLIPPING_OUTER
+  ) {
+    deepFloor = layerBlendCompositorLoadOrTransparent(
+      layerBlendDeepFloorTexture,
+      pixel,
+    );
+  }
   if (layerBlendCompositor.compositionContext == LAYER_BLEND_CONTEXT_CLIPPING_OUTER) {
     let documentMask = layerBlendCompositorLoadOrTransparent(
       layerBlendDocumentMaskTexture,
@@ -524,7 +553,7 @@ fn layerBlendCompositorFragmentMain(
     let documentCoverage = clamp(documentMask.a, 0.0, 1.0)
       * clamp(clippingBase.a, 0.0, 1.0)
       * clamp(layerBlendCompositor.documentMaskOpacity, 0.0, 1.0);
-    backdrop *= 1.0 - clamp(documentCoverage, 0.0, 1.0);
+    backdrop = mix(backdrop, deepFloor, clamp(documentCoverage, 0.0, 1.0));
   }
   var compositionBackdrop = backdrop;
   var residual = 0.0;
@@ -569,7 +598,10 @@ fn layerBlendCompositorFragmentMain(
     layerBlendCompositor.cutoutMode != 0u
     && layerBlendCompositor.compositionContext != LAYER_BLEND_CONTEXT_CLIPPING_CHILD
   ) {
-    let knocked = composited - backdrop * residual;
+    var knocked = composited - backdrop * residual;
+    if (layerBlendCompositor.cutoutMode == LAYER_CUTOUT_DOCUMENT) {
+      knocked += deepFloor * residual;
+    }
     let outputAlpha = clamp(knocked.a, 0.0, 1.0);
     return vec4<f32>(
       clamp(knocked.rgb, vec3<f32>(0.0), vec3<f32>(outputAlpha)),

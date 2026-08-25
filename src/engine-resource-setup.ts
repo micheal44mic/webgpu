@@ -662,6 +662,11 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
         visibility: GPUShaderStage.FRAGMENT,
         texture: { sampleType: "unfilterable-float" },
       },
+      {
+        binding: 6,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "unfilterable-float" },
+      },
     ],
   });
 

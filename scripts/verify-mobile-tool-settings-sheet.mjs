@@ -436,8 +436,8 @@ assert.match(
 );
 assert.match(
   main,
-  /runVectorCommand: \(command\) => \{[\s\S]*?command === "import-svg"\) controller\.requestSvgImport\(\);[\s\S]*?else controller\.requestRasterImageImport\(\);/,
-  "mobile file buttons must open each picker once through the controller API",
+  /runVectorCommand: \(command\) => \{[\s\S]*?sceneImportBridge\.request\(command\);/,
+  "mobile file buttons must preserve native picker activation through the import bridge",
 );
 
 assert.doesNotMatch(

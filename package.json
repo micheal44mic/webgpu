@@ -63,6 +63,7 @@
     "history:verify": "node scripts/verify-history-journal.mjs && node scripts/verify-history-controls-controller.mjs && node scripts/verify-history-retention.mjs",
     "layers:verify": "node scripts/verify-layer-panel-controller.mjs && node scripts/verify-layer-thumbnail-controller.mjs && node scripts/verify-scene-editor-controller.mjs && node scripts/verify-layer-stack.mjs",
     "scene-editor:verify": "node scripts/verify-scene-editor-controller.mjs",
+    "scene-import:verify": "node scripts/verify-scene-import-bridge.mjs",
     "scene-boundaries:verify": "node scripts/verify-scene-boundaries.mjs",
     "stroke:verify": "node scripts/verify-stroke-core.mjs",
     "stroke-curve:verify": "node scripts/verify-stroke-curve.mjs",
