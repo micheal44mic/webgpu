@@ -273,6 +273,11 @@ import {
   type LayerRecord,
 } from "./layer-stack";
 import { LAYER_BLEND_MODE_CODES, type LayerBlendMode } from "./layer-blend-modes";
+import {
+  cloneLayerTonalBlend,
+  type LayerCutoutMode,
+  type LayerTonalBlend,
+} from "./layer-composition.ts";
 import type { LayerBlendTileCompositor } from "./layer-blend-tile-compositor";
 import { LAYER_BLEND_FOLD_TILE_EXTENT } from "./layer-blend-fold-shader";
 import { LAYER_COLD_TILE_COMPOSITE_BATCH_TILES } from "./layer-cold-tile-composite-shader";
@@ -727,6 +732,7 @@ import {
   bindActiveLayerResources,
   buildActiveClippingGroupResources,
   buildMergedSurfaceCandidate,
+  buildMixedSceneCutoutSurfaceCandidate,
   buildMixedMergedSurfaceCandidate,
   cancelEffectsScratchShrink,
   canvasOffsetToLayerOffset,
@@ -756,10 +762,14 @@ import {
   retargetEffectsWorkingSetInternal,
   setLayerClipping,
   setLayerBlendMode,
+  setLayerContentOpacity,
+  setLayerCutoutMode,
   setLayerReference,
   setLayerPresentation,
+  setLayerTonalBlend,
   splitMixedSceneRasterRunsForLayerBlend,
   shrinkEffectsScratchAfterIdle,
+  type ClippingDocumentMaskCollector,
 } from "./engine-layer-runtime";
 import {
   applyGrainTextureResources,
@@ -1255,8 +1265,14 @@ export class BrushEngine {
   mixedSceneBlendScratchView: GPUTextureView | null = null;
   mixedSceneBlendOperandTexture: GPUTexture | null = null;
   mixedSceneBlendOperandView: GPUTextureView | null = null;
+  mixedSceneBlendCutoutTexture: GPUTexture | null = null;
+  mixedSceneBlendCutoutView: GPUTextureView | null = null;
   mixedSceneBlendGroupTexture: GPUTexture | null = null;
   mixedSceneBlendGroupView: GPUTextureView | null = null;
+  mixedSceneBlendClippingBaseTexture: GPUTexture | null = null;
+  mixedSceneBlendClippingBaseView: GPUTextureView | null = null;
+  mixedSceneBlendDocumentMaskTexture: GPUTexture | null = null;
+  mixedSceneBlendDocumentMaskView: GPUTextureView | null = null;
   mixedSceneBlendFromLinearBindGroup: GPUBindGroup | null = null;
   mixedSceneBlendFromScratchBindGroup: GPUBindGroup | null = null;
   mixedSceneBlendFromGroupBindGroup: GPUBindGroup | null = null;
@@ -1586,12 +1602,18 @@ export class BrushEngine {
   mixedScenePresentPipeline: GPURenderPipeline | null = null;
   mixedSceneBackgroundPipeline: GPURenderPipeline | null = null;
   layerBlendCompositorPipeline: GPURenderPipeline | null = null;
+  layerBlendViewportDocumentMaskPipeline: GPURenderPipeline | null = null;
   layerBlendCompositorUniformBuffer: GPUBuffer | null = null;
   layerBlendCompositorUniformStride = 0;
   mixedSceneActiveDisplayPipeline: GPURenderPipeline | null = null;
+  mixedSceneActiveSourceDisplayPipeline: GPURenderPipeline | null = null;
+  mixedSceneActiveCutoutDisplayPipeline: GPURenderPipeline | null = null;
   mixedSceneActiveRasterStrokeDisplayPipeline: GPURenderPipeline | null = null;
+  mixedSceneActiveRasterStrokeSourcePipeline: GPURenderPipeline | null = null;
   mixedSceneActiveThicknessTailDisplayPipeline: GPURenderPipeline | null = null;
+  mixedSceneActiveThicknessTailSourcePipeline: GPURenderPipeline | null = null;
   mixedSceneActiveLightGlazeDisplayPipeline: GPURenderPipeline | null = null;
+  mixedSceneActiveLightGlazeSourcePipeline: GPURenderPipeline | null = null;
   rasterImageSampler: GPUSampler | null = null;
   rasterStrokeDisplayPipeline!: GPURenderPipeline;
   thicknessTailDisplayPipeline!: GPURenderPipeline;
@@ -1615,6 +1637,7 @@ export class BrushEngine {
   layerColdTileCompositePipeline!: GPURenderPipeline;
   layerColdTileSourceAtopPipeline!: GPURenderPipeline;
   layerBlendFoldPipeline!: GPURenderPipeline;
+  layerBlendDocumentMaskPipeline!: GPURenderPipeline;
 
   private readonly instanceUpload = new ArrayBuffer(MAX_STAMPS_PER_BATCH * STAMP_STRIDE_BYTES);
   readonly instanceUploadF32 = new Float32Array(this.instanceUpload);
@@ -1796,6 +1819,9 @@ export class BrushEngine {
   clearRequested = true;
   displayDirty = true;
   semanticPresentationDirtyRect: DirtyRect | null = null;
+  viewPresentationRevision = 0;
+  viewPresentationRetryArmedRevision = 0;
+  viewPresentationRetryRequestedRevision = 0;
   initialized = false;
 
   viewCenterX = DOCUMENT_WIDTH * 0.5;
@@ -2450,6 +2476,7 @@ export class BrushEngine {
       this.rasterOuterShadowStyle,
       this.rasterInnerShadowStyle,
       this.rasterColorOverlayStyle,
+      this.layerStack.active.contentOpacity,
     ).needsStrokeRenderer;
   }
 
@@ -2595,6 +2622,7 @@ export class BrushEngine {
       this.rasterOuterShadowStyle,
       this.rasterInnerShadowStyle,
       normalized,
+      this.layerStack.active.contentOpacity,
     ).needsStrokeRenderer;
     const rendererNeedsCreation = normalizedActive && !this.rasterStrokeRenderer;
     const rendererWillBeReleased = Boolean(
@@ -2927,7 +2955,10 @@ export class BrushEngine {
         this.rasterStrokeRenderer!.updateBevelFieldParameters(
           this.rasterBevelRenderer!.fieldState,
         );
-        this.rasterStrokeRenderer!.updateBevelParameters(normalized);
+        this.rasterStrokeRenderer!.updateBevelParameters(
+          normalized,
+          this.layerStack.active.contentOpacity,
+        );
         this.rebuildRasterStrokeDisplayBindGroups();
         if (!previousActive || change.geometryRebuild) {
           this.rasterBevelHeightValid = false;
@@ -2975,7 +3006,10 @@ export class BrushEngine {
         this.rasterBevelHeightValid = false;
         this.rasterBevelHeightSourceMode = null;
         this.rasterBevelRenderer?.updateStyleResources(previous);
-        this.rasterStrokeRenderer?.updateBevelParameters(previous);
+        this.rasterStrokeRenderer?.updateBevelParameters(
+          previous,
+          this.layerStack.active.contentOpacity,
+        );
       }
       const message = error instanceof Error ? error.message : String(error);
       this.callbacks.onStatus?.(`WebGPU Bevel/Emboss is unavailable: ${message}`, "error");
@@ -3508,6 +3542,7 @@ export class BrushEngine {
   }
 
   notifyViewChange(): void {
+    this.viewPresentationRevision += 1;
     if (this.vectorTextFastPresentationEnabled) {
       // The capture stays fixed while the current camera moves. Updating this
       // tiny uniform selects full-coverage or clipped reprojection before the
@@ -5651,7 +5686,11 @@ export class BrushEngine {
       redoBlockedReason,
       openEdit: this.activeDestructiveRasterEditKind()
         ?? this.activeVectorHistoryEdit?.scope
-        ?? (this.activeRasterLayerMetadataHistoryEdit ? "raster-property" : null),
+        ?? (this.activeRasterLayerMetadataHistoryEdit?.property === "layer-options"
+          ? "layer-options"
+          : this.activeRasterLayerMetadataHistoryEdit
+            ? "raster-property"
+            : null),
     };
   }
 
@@ -8087,6 +8126,7 @@ export class BrushEngine {
           style: record.strokeStyle,
           bevelStyle: record.bevelStyle,
           colorOverlayStyle: record.colorOverlayStyle,
+          contentOpacity: record.contentOpacity,
           rect: nonTransparentBounds,
         });
         this.device.queue.submit([encoder.finish()]);
@@ -8285,21 +8325,45 @@ export class BrushEngine {
             continue;
           }
           const side = index < activePosition ? "below" : "above";
+          const documentMaskCollector = {
+            baseSurface: null,
+            documentMaskSurface: null,
+            opacity: 1,
+          } satisfies ClippingDocumentMaskCollector;
           const surface = await buildMixedMergedSurfaceCandidate(this, 
             segment.items,
             side,
             caller,
             view,
+            documentMaskCollector,
           );
           if (!surface) {
             continue;
           }
+          const cutoutSurface = await buildMixedSceneCutoutSurfaceCandidate(
+            this,
+            segment.items,
+            side,
+            surface,
+          );
           try {
             candidateMixedSegments.push(
-              createMixedSceneRasterSegmentResources(this, segment.key, surface),
+              createMixedSceneRasterSegmentResources(
+                this,
+                segment.key,
+                surface,
+                1,
+                cutoutSurface,
+                documentMaskCollector.baseSurface,
+                documentMaskCollector.documentMaskSurface,
+                documentMaskCollector.opacity,
+              ),
             );
           } catch (error) {
             this.destroyMergedSurface(surface);
+            this.destroyMergedSurface(cutoutSurface);
+            this.destroyMergedSurface(documentMaskCollector.baseSurface);
+            this.destroyMergedSurface(documentMaskCollector.documentMaskSurface);
             throw error;
           }
         }
@@ -8502,7 +8566,18 @@ export class BrushEngine {
     layerId = this.layerStack.active.id,
   ): boolean {
     const edit = this.activeRasterLayerMetadataHistoryEdit;
-    return !edit || (edit.layerId === layerId && edit.property === property);
+    return !edit || (
+      edit.layerId === layerId
+      && (
+        edit.property === property
+        || edit.property === "layer-options" && (
+          property === "opacity"
+          || property === "content-opacity"
+          || property === "cutout"
+          || property === "tonal-blend"
+        )
+      )
+    );
   }
 
   private recordRasterLayerMetadataMutation(
@@ -8511,7 +8586,7 @@ export class BrushEngine {
   ): void {
     const edit = this.activeRasterLayerMetadataHistoryEdit;
     if (edit) {
-      if (edit.layerId !== before.layerId || edit.property !== property) {
+      if (!this.rasterLayerMetadataHistoryEditAllows(property, before.layerId)) {
         throw new Error(
           `The ${edit.property} transaction cannot absorb the ${property} change.`,
         );
@@ -9187,7 +9262,10 @@ export class BrushEngine {
     );
     record.visible = source.visible;
     record.opacity = source.opacity;
+    record.contentOpacity = source.contentOpacity;
     record.blendMode = source.blendMode;
+    record.cutoutMode = source.cutoutMode;
+    record.tonalBlend = cloneLayerTonalBlend(source.tonalBlend);
     record.clippingParentId = source.clippingParentId;
     record.contentBounds = source.contentBounds ? { ...source.contentBounds } : null;
     record.storageTileMask.set(storageMask);
@@ -9711,6 +9789,7 @@ export class BrushEngine {
         normalizeRasterOuterShadowStyle(record.outerShadowStyle),
         normalizeRasterInnerShadowStyle(record.innerShadowStyle),
         normalizeRasterColorOverlayStyle(record.colorOverlayStyle),
+        record.contentOpacity,
       );
       const outgoingWillBecomeCold = outgoingActive
         && record.id !== this.layerStack.referenceLayerId;
@@ -9898,22 +9977,78 @@ export class BrushEngine {
     return changed;
   }
 
+  async setLayerContentOpacity(index: number, opacity: number): Promise<boolean> {
+    const layerId = this.layerStack.at(index).id;
+    if (!this.rasterLayerMetadataHistoryEditAllows("content-opacity", layerId)) {
+      return false;
+    }
+    const before = captureRasterLayerMetadataHistoryState(
+      this,
+      layerId,
+      "content-opacity",
+    );
+    const changed = await setLayerContentOpacity(this, index, opacity);
+    if (changed) this.recordRasterLayerMetadataMutation("content-opacity", before);
+    return changed;
+  }
+
+  async setLayerCutoutMode(
+    index: number,
+    cutoutMode: LayerCutoutMode,
+  ): Promise<boolean> {
+    const layerId = this.layerStack.at(index).id;
+    if (!this.rasterLayerMetadataHistoryEditAllows("cutout", layerId)) {
+      return false;
+    }
+    const before = captureRasterLayerMetadataHistoryState(this, layerId, "cutout");
+    const changed = await setLayerCutoutMode(this, index, cutoutMode);
+    if (changed) this.recordRasterLayerMetadataMutation("cutout", before);
+    return changed;
+  }
+
+  async setLayerTonalBlend(
+    index: number,
+    tonalBlend: LayerTonalBlend,
+  ): Promise<boolean> {
+    const layerId = this.layerStack.at(index).id;
+    if (!this.rasterLayerMetadataHistoryEditAllows("tonal-blend", layerId)) {
+      return false;
+    }
+    const before = captureRasterLayerMetadataHistoryState(
+      this,
+      layerId,
+      "tonal-blend",
+    );
+    const changed = await setLayerTonalBlend(this, index, tonalBlend);
+    if (changed) this.recordRasterLayerMetadataMutation("tonal-blend", before);
+    return changed;
+  }
+
   async setLayerBlendMode(index: number, blendMode: LayerBlendMode): Promise<boolean> {
     const record = this.layerStack.at(index);
-    if (this.activeRasterLayerMetadataHistoryEdit) return false;
+    const layerOptionsEdit = this.activeRasterLayerMetadataHistoryEdit;
+    if (
+      layerOptionsEdit
+      && (
+        layerOptionsEdit.property !== "layer-options"
+        || layerOptionsEdit.layerId !== record.id
+      )
+    ) return false;
     const before = record.blendMode;
     const changed = await setLayerBlendMode(this, index, blendMode);
     if (!changed) {
       return false;
     }
     try {
-      commitHistoryActionAtomically(this, {
-        id: this.nextHistoryActionId,
-        kind: "layer-blend-mode",
-        layerId: record.id,
-        before,
-        after: blendMode,
-      });
+      if (!layerOptionsEdit) {
+        commitHistoryActionAtomically(this, {
+          id: this.nextHistoryActionId,
+          kind: "layer-blend-mode",
+          layerId: record.id,
+          before,
+          after: blendMode,
+        });
+      }
     } catch (error) {
       try {
         await setLayerBlendMode(this, index, before);
@@ -10429,6 +10564,7 @@ export class BrushEngine {
     innerShadowStyle: RasterInnerShadowStyle = this.rasterInnerShadowStyle,
     shadowContentBounds: DirtyRect | null = virtualContentBounds,
     colorOverlayStyle: RasterColorOverlayStyle = this.rasterColorOverlayStyle,
+    contentOpacity: number = this.layerStack.active.contentOpacity,
   ): { dirtyRect: DirtyRect | null; timing: RasterStrokeEncodeResult | null } {
     const renderer = this.rasterStrokeRenderer;
     const styleStackActive = Boolean(
@@ -10437,7 +10573,8 @@ export class BrushEngine {
         || bevelStyle.enabled
         || outerShadowStyle.enabled
         || innerShadowStyle.enabled
-        || rasterColorOverlayIsActive(colorOverlayStyle))
+        || rasterColorOverlayIsActive(colorOverlayStyle)
+        || contentOpacity !== 1)
     );
     if (!renderer || !styleStackActive) {
       if (mutationRect || layerCleared) {
@@ -10646,6 +10783,7 @@ export class BrushEngine {
       style: strokeStyle,
       bevelStyle,
       colorOverlayStyle,
+      contentOpacity,
       sourceMode,
       rebuildRect,
       changeDetectionRect,
@@ -12134,6 +12272,34 @@ export class BrushEngine {
     this.frameRequest = requestAnimationFrame((timestamp) => runRenderFrame(this, timestamp));
   }
 
+  private armViewPresentationRetry(revision: number): void {
+    if (
+      revision <= this.viewPresentationRetryArmedRevision
+      || revision !== this.viewPresentationRevision
+    ) {
+      return;
+    }
+    this.viewPresentationRetryArmedRevision = revision;
+    void this.device.queue.onSubmittedWorkDone().then(() => {
+      if (
+        !this.initialized
+        || this.deviceLostError
+        || this.renderFrameError
+        || revision !== this.viewPresentationRevision
+      ) {
+        return;
+      }
+      // A heavy view rebuild can finish after the browser has selected the
+      // swap-chain image for the current composition. Publish the persistent
+      // cache once more, without rebuilding document-space mips or effects.
+      this.viewPresentationRetryRequestedRevision = revision;
+      this.displayDirty = true;
+      this.requestRender();
+    }, () => {
+      // Device loss has its own authoritative reporting path.
+    });
+  }
+
   renderFrame(timestamp: number): void {
     const frameStart = performance.now();
     this.frameRequest = null;
@@ -12226,6 +12392,7 @@ export class BrushEngine {
       ?? lightGlazeSession?.settings
       ?? this.settings;
     const start = performance.now();
+    const viewPresentationRevision = this.viewPresentationRevision;
     const timing = blendBatch.length > 0
       ? this.submitBlendImmediate(
         blendBatch.map((pending) => pending.batch),
@@ -12234,6 +12401,9 @@ export class BrushEngine {
         blendBatch[0].actionId,
       )
       : this.submitImmediate(batch, clearLayer, renderSettings);
+    if (timing.presentationCacheFullRebuilds > 0) {
+      this.armViewPresentationRetry(viewPresentationRevision);
+    }
     if (batch.length > 0) {
       this.pendingStamps.splice(0, batch.length);
     }
@@ -14177,6 +14347,7 @@ export class BrushEngine {
               this.rasterStrokeStyle,
               this.rasterBevelStyle,
               this.rasterColorOverlayStyle,
+              this.layerStack.active.contentOpacity,
             );
           }
           const lod0FullRebuildCpuEncodingStart = requiresFullRebuild
@@ -14398,6 +14569,7 @@ export class BrushEngine {
               this.rasterStrokeStyle,
               this.rasterBevelStyle,
               this.rasterColorOverlayStyle,
+              this.layerStack.active.contentOpacity,
             );
           }
           const lod0FullRebuildCpuEncodingStart = requiresFullRebuild
@@ -15171,6 +15343,7 @@ export class BrushEngine {
             this.rasterStrokeStyle,
             this.rasterBevelStyle,
             this.rasterColorOverlayStyle,
+            this.layerStack.active.contentOpacity,
           );
         }
         const lod0FullRebuildCpuEncodingStart = requiresFullRebuild

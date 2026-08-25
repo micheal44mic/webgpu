@@ -1814,10 +1814,134 @@
                 <output id="mobileLayerOpacityOut" for="mobileLayerOpacity">100%</output>
                 <input id="mobileLayerOpacity" type="range" min="0" max="100" step="1" value="100" />
               </label>
-              <label id="mobileLayerBlendModeControl" class="mobile-raster-effect-select" for="mobileLayerBlendMode">
-                <span>Blend Mode</span>
-                <select id="mobileLayerBlendMode"></select>
-              </label>
+              <div id="mobileRasterLayerOptions" class="mobile-layer-options-raster">
+                <label id="mobileLayerBlendModeControl" class="mobile-raster-effect-select" for="mobileLayerBlendMode">
+                  <span>Blend Mode</span>
+                  <select id="mobileLayerBlendMode"></select>
+                </label>
+
+                <label class="mobile-raster-effect-range" for="mobileLayerContentOpacity">
+                  <span>Fill</span>
+                  <output id="mobileLayerContentOpacityOut" for="mobileLayerContentOpacity">100%</output>
+                  <input
+                    id="mobileLayerContentOpacity"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value="100"
+                    aria-describedby="mobileLayerContentOpacityHint"
+                  />
+                </label>
+                <p id="mobileLayerContentOpacityHint" class="mobile-tool-settings-status">
+                  Adjusts the layer content while preserving its effects.
+                </p>
+
+                <label class="mobile-raster-effect-select" for="mobileLayerCutoutMode">
+                  <span>Knockout</span>
+                  <select id="mobileLayerCutoutMode" aria-describedby="mobileLayerCutoutModeHint">
+                    <option value="off">None</option>
+                    <option value="group">Shallow</option>
+                    <option value="document">Deep</option>
+                  </select>
+                </label>
+                <p id="mobileLayerCutoutModeHint" class="mobile-tool-settings-status">
+                  Shallow clears within the local group. Deep clears through the document stack.
+                </p>
+
+                <fieldset class="mobile-layer-tonal-blend" aria-describedby="mobileLayerTonalBlendHint">
+                  <legend>Blend If</legend>
+                  <p id="mobileLayerTonalBlendHint" class="mobile-tool-settings-status">
+                    Limit visibility by luminance. Move paired endpoints apart for a softer transition.
+                  </p>
+
+                  <section
+                    id="mobileLayerTonalCurrent"
+                    class="mobile-layer-tonal-range"
+                    aria-labelledby="mobileLayerTonalCurrentTitle"
+                    data-layer-tonal-range="current"
+                  >
+                    <header class="mobile-layer-tonal-range-header">
+                      <h3 id="mobileLayerTonalCurrentTitle">Current Layer</h3>
+                      <output
+                        id="mobileLayerTonalCurrentOut"
+                        for="mobileLayerTonalCurrent0 mobileLayerTonalCurrent1 mobileLayerTonalCurrent2 mobileLayerTonalCurrent3"
+                      >0 / 0 — 255 / 255</output>
+                    </header>
+                    <div class="mobile-layer-tonal-preview" aria-hidden="true">
+                      <span class="mobile-layer-tonal-marker is-shadow-outer"></span>
+                      <span class="mobile-layer-tonal-marker is-shadow-inner"></span>
+                      <span class="mobile-layer-tonal-marker is-highlight-inner"></span>
+                      <span class="mobile-layer-tonal-marker is-highlight-outer"></span>
+                    </div>
+                    <div class="mobile-layer-tonal-controls">
+                      <label class="mobile-layer-tonal-control" for="mobileLayerTonalCurrent0">
+                        <span>Shadows hidden to</span>
+                        <output for="mobileLayerTonalCurrent0">0</output>
+                        <input id="mobileLayerTonalCurrent0" type="range" min="0" max="255" step="1" value="0" data-layer-tonal-index="0" />
+                      </label>
+                      <label class="mobile-layer-tonal-control" for="mobileLayerTonalCurrent1">
+                        <span>Shadows visible from</span>
+                        <output for="mobileLayerTonalCurrent1">0</output>
+                        <input id="mobileLayerTonalCurrent1" type="range" min="0" max="255" step="1" value="0" data-layer-tonal-index="1" />
+                      </label>
+                      <label class="mobile-layer-tonal-control" for="mobileLayerTonalCurrent2">
+                        <span>Highlights visible to</span>
+                        <output for="mobileLayerTonalCurrent2">255</output>
+                        <input id="mobileLayerTonalCurrent2" type="range" min="0" max="255" step="1" value="255" data-layer-tonal-index="2" />
+                      </label>
+                      <label class="mobile-layer-tonal-control" for="mobileLayerTonalCurrent3">
+                        <span>Highlights hidden from</span>
+                        <output for="mobileLayerTonalCurrent3">255</output>
+                        <input id="mobileLayerTonalCurrent3" type="range" min="0" max="255" step="1" value="255" data-layer-tonal-index="3" />
+                      </label>
+                    </div>
+                  </section>
+
+                  <section
+                    id="mobileLayerTonalUnderlying"
+                    class="mobile-layer-tonal-range"
+                    aria-labelledby="mobileLayerTonalUnderlyingTitle"
+                    data-layer-tonal-range="underlying"
+                  >
+                    <header class="mobile-layer-tonal-range-header">
+                      <h3 id="mobileLayerTonalUnderlyingTitle">Underlying Layer</h3>
+                      <output
+                        id="mobileLayerTonalUnderlyingOut"
+                        for="mobileLayerTonalUnderlying0 mobileLayerTonalUnderlying1 mobileLayerTonalUnderlying2 mobileLayerTonalUnderlying3"
+                      >0 / 0 — 255 / 255</output>
+                    </header>
+                    <div class="mobile-layer-tonal-preview" aria-hidden="true">
+                      <span class="mobile-layer-tonal-marker is-shadow-outer"></span>
+                      <span class="mobile-layer-tonal-marker is-shadow-inner"></span>
+                      <span class="mobile-layer-tonal-marker is-highlight-inner"></span>
+                      <span class="mobile-layer-tonal-marker is-highlight-outer"></span>
+                    </div>
+                    <div class="mobile-layer-tonal-controls">
+                      <label class="mobile-layer-tonal-control" for="mobileLayerTonalUnderlying0">
+                        <span>Shadows hidden to</span>
+                        <output for="mobileLayerTonalUnderlying0">0</output>
+                        <input id="mobileLayerTonalUnderlying0" type="range" min="0" max="255" step="1" value="0" data-layer-tonal-index="0" />
+                      </label>
+                      <label class="mobile-layer-tonal-control" for="mobileLayerTonalUnderlying1">
+                        <span>Shadows visible from</span>
+                        <output for="mobileLayerTonalUnderlying1">0</output>
+                        <input id="mobileLayerTonalUnderlying1" type="range" min="0" max="255" step="1" value="0" data-layer-tonal-index="1" />
+                      </label>
+                      <label class="mobile-layer-tonal-control" for="mobileLayerTonalUnderlying2">
+                        <span>Highlights visible to</span>
+                        <output for="mobileLayerTonalUnderlying2">255</output>
+                        <input id="mobileLayerTonalUnderlying2" type="range" min="0" max="255" step="1" value="255" data-layer-tonal-index="2" />
+                      </label>
+                      <label class="mobile-layer-tonal-control" for="mobileLayerTonalUnderlying3">
+                        <span>Highlights hidden from</span>
+                        <output for="mobileLayerTonalUnderlying3">255</output>
+                        <input id="mobileLayerTonalUnderlying3" type="range" min="0" max="255" step="1" value="255" data-layer-tonal-index="3" />
+                      </label>
+                    </div>
+                  </section>
+                </fieldset>
+              </div>
             </section>
 
             <section class="mobile-tool-settings-panel" data-mobile-tool-settings-panel="svg-style" hidden>

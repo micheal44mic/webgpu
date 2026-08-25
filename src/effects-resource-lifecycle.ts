@@ -124,6 +124,10 @@ function includeMetadataAction(
       return;
     case "visibility":
     case "opacity":
+    case "layer-options":
+    case "content-opacity":
+    case "cutout":
+    case "tonal-blend":
     case "clipping":
       return;
   }
@@ -151,6 +155,10 @@ function includeOpenMetadataEdit(
       return;
     case "visibility":
     case "opacity":
+    case "layer-options":
+    case "content-opacity":
+    case "cutout":
+    case "tonal-blend":
     case "clipping":
       return;
   }

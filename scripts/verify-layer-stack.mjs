@@ -1285,11 +1285,25 @@ assert.match(
   /activeRecord\.blendMode[\s\S]{0,1800}activeOperandMode = parent\.blendMode/,
   "il tile compositor deve leggere live sia il child attivo sia il parent attivo",
 );
-assert.match(
-  engineSource,
-  /buildActiveClippingGroupResources\([\s\S]{0,3000}unit\.slice\(1, activeIndex\)[\s\S]{0,1200}unit\.slice\(activeIndex \+ 1\)/,
-  "prefix e suffix clipping non devono fotografare il mode del raster attivo",
+const activeClippingBuildStart = engineSource.indexOf(
+  "export async function buildActiveClippingGroupResources(",
 );
+const activeClippingBuildEnd = engineSource.indexOf(
+  "export function destroyActiveClippingGroupResources(",
+  activeClippingBuildStart,
+);
+assertSection(
+  "costruzione clipping attivo",
+  activeClippingBuildStart,
+  activeClippingBuildEnd,
+);
+const activeClippingBuildBody = engineSource.slice(
+  activeClippingBuildStart,
+  activeClippingBuildEnd,
+);
+assert.match(activeClippingBuildBody, /unit\.slice\(1, activeIndex\)/);
+assert.match(activeClippingBuildBody, /unit\.slice\(activeIndex \+ 1\)/,
+  "prefix e suffix clipping non devono fotografare il mode del raster attivo");
 const slowBlendPublish = layerBlendBody.indexOf(
   "record.blendMode = blendMode",
   slowBlendStart,
@@ -1356,7 +1370,7 @@ assert.match(
 );
 assert.match(
   layerBlendTileRuntimeSource,
-  /prepareBakeStyle\(engine\.rasterBevelStyle\)[\s\S]*?deferParameterUpload: true[\s\S]*?sharedStylePrepared: true[\s\S]*?flushBakeParameters\(bakeParameterSlot\)/,
+  /prepareBakeStyle\([\s\S]{0,160}?engine\.rasterBevelStyle,[\s\S]{0,160}?contentOpacity[\s\S]*?deferParameterUpload: true[\s\S]*?sharedStylePrepared: true[\s\S]*?flushBakeParameters\(bakeParameterSlot\)/,
   "il tile path deve preparare lo stile e caricare tutti i parametri bake una volta per frame",
 );
 assert.match(
@@ -1476,8 +1490,8 @@ assert.match(
   "il wrapper Normal deve conservare l'ABI document-space originale",
 );
 assert.match(foldViewBody, /mergedSurfacePhysicalRect\(/);
-assert.match(foldViewBody, /if \(blendMode === "normal"\)/,
-  "Normal deve conservare il percorso fixed-function senza scratch");
+assert.match(foldViewBody, /if \(!advancedComposition\)/,
+  "Normal senza controlli tonali o cutout deve conservare il percorso fixed-function senza scratch");
 assert.match(
   foldViewBody,
   /operator === "source-atop"[\s\S]*?engine\.layerSourceAtopPipeline[\s\S]*?engine\.layerCompositePipeline/,
@@ -1497,8 +1511,13 @@ assert.match(foldViewBody, /pass\.setBindGroup\(0, bindGroup, \[tileIndex \* uni
   "un solo upload deve alimentare i record uniform dinamici di tutti i tile");
 assert.equal(
   (foldViewBody.match(/encoder\.copyTextureToTexture\(/g) ?? []).length,
-  2,
-  "ogni tile deve copiare canonical→backdrop e output→canonical",
+  4,
+  "ogni tile deve copiare colore e mask tra canonical e scratch senza aliasing",
+);
+assert.match(
+  foldViewBody,
+  /if \(accumulatesDocumentMask\)[\s\S]*?documentMaskSurface\.blendFoldBackdropScratchTexture/,
+  "la union document-scoped deve leggere una mask immutabile separata dalla render attachment",
 );
 assert.match(mergedBody, /engine\.destroyLayerBake\(source\.transientBake\)/);
 assert.match(
@@ -1607,8 +1626,18 @@ const clippingSuffixBuildBody = engineSource.slice(
 );
 assert.match(
   clippingSuffixBuildBody,
-  /visible\.every\(\(record\) => record\.blendMode === "normal"\)[\s\S]*?buildClippingOverlaySurface\(/,
-  "il suffix tutto-Normal deve conservare la superficie aggregata veloce",
+  /visible\.every\(\(record\) => !layerNeedsBackdropComposition\(record\)\)[\s\S]*?buildClippingOverlaySurface\(/,
+  "il suffix senza composizione dipendente dal backdrop deve conservare la superficie aggregata veloce",
+);
+assert.match(
+  clippingSuffixBuildBody,
+  /forceOrderedSteps = false[\s\S]*?!forceOrderedSteps[\s\S]*?visible\.every\(\(record\) => !layerNeedsBackdropComposition\(record\)\)/,
+  "un child attivo avanzato deve poter forzare operandi ordinati anche per i suffix Normal",
+);
+assert.match(
+  activeClippingBuildBody,
+  /Live clipping group suffix[\s\S]*?layerNeedsBackdropComposition\(engine\.layerStack\.active\)[\s\S]*?Boolean\(prefixResources\?\.documentMaskSurface\)/,
+  "il gruppo live deve forzare i suffix ordinati quando il child attivo o una mask precedente dipende dal backdrop",
 );
 assert.match(
   clippingSuffixBuildBody,
@@ -1679,13 +1708,23 @@ assert.match(
 );
 assert.match(
   engineSource,
-  /group\.suffixSteps\.forEach\(\(step\) => \{[\s\S]*?step\.viewportSegment\.uniformBuffer\.destroy\(\);[\s\S]*?engine\.destroyMergedSurface\(step\.surface\)/,
+  /group\.suffixSteps\.forEach\(\(step\) => \{[\s\S]*?destroyMixedSceneRasterSegment\(engine, step\.viewportSegment\)/,
   "distruzione e rollback devono rilasciare binding viewport e operando child",
+);
+assert.match(
+  engineSource,
+  /export function destroyMixedSceneRasterSegment\([\s\S]*?segment\.uniformBuffer\.destroy\(\);[\s\S]*?engine\.destroyMergedSurface\(segment\.surface\)/,
+  "il distruttore condiviso deve rilasciare uniform e superficie dell'operando",
 );
 assert.match(
   engineSource,
   /activeClippingGroup\?\.suffixSteps\.map\(\(step\) => step\.surface\)/,
   "gli operandi child devono entrare nella contabilità GPU del gruppo live",
+);
+assert.match(
+  engineSource,
+  /writeBlendControls\([\s\S]*?blendMode,[\s\S]*?"source-over",[\s\S]*?compositionRecord,[\s\S]*?engine\.activeClippingGroup\?\.parentOpacity \?\? 1/,
+  "il fold esterno del gruppo live deve applicare l'opacità del parent una sola volta",
 );
 
 // Oracle premoltiplicato: anche con due child opachi il bordo al 25% del

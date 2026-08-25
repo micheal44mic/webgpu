@@ -65,6 +65,7 @@ export interface RasterStrokeEncodeOptions {
   style: RasterStrokeStyle;
   bevelStyle?: RasterBevelStyle;
   colorOverlayStyle?: RasterColorOverlayStyle;
+  contentOpacity?: number;
   sourceMode: RasterStrokeSourceMode;
   rebuildRect?: RasterStrokeRect | null;
   changeDetectionRect?: RasterStrokeRect | null;
@@ -94,6 +95,7 @@ export interface RasterStrokeBakeOptions {
   style: RasterStrokeStyle;
   bevelStyle?: RasterBevelStyle;
   colorOverlayStyle?: RasterColorOverlayStyle;
+  contentOpacity?: number;
   sourceMode?: RasterStrokeSourceMode;
   rect?: RasterStrokeRect | null;
   /**
@@ -923,7 +925,7 @@ fn blendEffect(
   return vec4<f32>(mix(base, blended, alpha) * outputAlpha, outputAlpha);
 }
 
-fn bevelNode(base: vec4<f32>, position: vec2<i32>) -> vec4<f32> {
+fn bevelNode(base: vec4<f32>, shapeAlpha: f32, position: vec2<i32>) -> vec4<f32> {
   var node = vec4<f32>(base.rgb * bevel.scalars.y, base.a * bevel.scalars.y);
   let response = bevelResponseAt(position);
   let t = response.x;
@@ -932,8 +934,9 @@ ${contourAA}
   let signedLight = 2.0 * contour - 1.0;
   let highlightWeight = max(signedLight, 0.0) * bevel.highlight.a * response.y;
   let shadowWeight = max(-signedLight, 0.0) * bevel.shadow.a * response.y;
-  let insideWeight = select(base.a, 0.0, bevel.flags.y == 1u);
-  let outsideWeight = select(1.0 - base.a, 0.0, bevel.flags.y == 0u);
+  let effectAlpha = select(base.a, shapeAlpha, bevel.scalars.z < 0.999999);
+  let insideWeight = select(effectAlpha, 0.0, bevel.flags.y == 1u);
+  let outsideWeight = select(1.0 - effectAlpha, 0.0, bevel.flags.y == 0u);
   let innerHighlight = highlightWeight * insideWeight;
   let innerShadow = shadowWeight * insideWeight;
   let outerHighlight = highlightWeight * outsideWeight;
@@ -952,11 +955,12 @@ ${contourAA}
   return node;
 }
 
-fn traceOnlyNode(base: vec4<f32>, coverage: f32) -> vec4<f32> {
+fn traceOnlyNode(base: vec4<f32>, shapeAlpha: f32, coverage: f32) -> vec4<f32> {
   let alpha = base.a;
   var strokeWeight = coverage * parameters.styleColor.a;
   if (parameters.stylePosition == 2u) {
-    strokeWeight = min(strokeWeight, 1.0 - alpha);
+    let boundaryAlpha = select(alpha, shapeAlpha, bevel.scalars.z < 0.999999);
+    strokeWeight = min(strokeWeight, 1.0 - boundaryAlpha);
   }
   let baseWeight = select(
     max(0.0, alpha - strokeWeight),
@@ -986,7 +990,8 @@ fn combinedStrokeNode(sourceAlpha: f32, inputNode: vec4<f32>, coverage: f32) -> 
   var node = inputNode;
   var strokeWeight = coverage * parameters.styleColor.a;
   if (parameters.stylePosition == 2u) {
-    strokeWeight = min(strokeWeight, 1.0 - node.a);
+    let boundaryAlpha = select(node.a, sourceAlpha, bevel.scalars.z < 0.999999);
+    strokeWeight = min(strokeWeight, 1.0 - boundaryAlpha);
   }
   if (strokeWeight > 0.0) {
     if (parameters.stylePosition == 2u) {
@@ -1041,7 +1046,7 @@ fn shadowNoise(
   return mix(coverage, grain, clamp(amount, 0.0, 1.0));
 }
 
-fn outerShadowPlane(base: vec4<f32>, position: vec2<i32>) -> vec4<f32> {
+fn outerShadowPlane(shape: vec4<f32>, position: vec2<i32>) -> vec4<f32> {
   if (outerShadow.flags.x == 0u) {
     return vec4<f32>(0.0);
   }
@@ -1060,14 +1065,14 @@ fn outerShadowPlane(base: vec4<f32>, position: vec2<i32>) -> vec4<f32> {
   );
   coverage *= outerShadow.colorOpacity.a;
   if (outerShadow.geometry.w > 0.5) {
-    coverage *= 1.0 - base.a;
+    coverage *= 1.0 - shape.a;
   }
   coverage = clamp(coverage, 0.0, 1.0);
   return vec4<f32>(outerShadow.colorOpacity.rgb * coverage, coverage);
 }
 
-fn innerShadowNode(base: vec4<f32>, position: vec2<i32>) -> vec4<f32> {
-  if (innerShadow.flags.x == 0u || base.a <= 1e-6) {
+fn innerShadowNode(base: vec4<f32>, shape: vec4<f32>, position: vec2<i32>) -> vec4<f32> {
+  if (innerShadow.flags.x == 0u || shape.a <= 1e-6) {
     return base;
   }
   let samplePosition = vec2<f32>(position) - innerShadow.geometry.xy;
@@ -1083,7 +1088,12 @@ fn innerShadowNode(base: vec4<f32>, position: vec2<i32>) -> vec4<f32> {
     innerShadow.geometry.z,
     innerShadow.metadata.x
   );
-  let weight = clamp(coverage * innerShadow.colorOpacity.a * base.a, 0.0, 1.0);
+  let shapeWeight = clamp(coverage * innerShadow.colorOpacity.a * shape.a, 0.0, 1.0);
+  if (bevel.scalars.z < 0.999999) {
+    let effect = vec4<f32>(innerShadow.colorOpacity.rgb * shapeWeight, shapeWeight);
+    return effect + base * (1.0 - effect.a);
+  }
+  let weight = shapeWeight;
   let straight = base.rgb / base.a;
   let effectColor = select(
     innerShadow.colorOpacity.rgb,
@@ -1093,7 +1103,7 @@ fn innerShadowNode(base: vec4<f32>, position: vec2<i32>) -> vec4<f32> {
   return vec4<f32>(mix(straight, effectColor, weight) * base.a, base.a);
 }
 
-fn colorOverlayNode(base: vec4<f32>) -> vec4<f32> {
+fn colorOverlayNode(base: vec4<f32>, shape: vec4<f32>) -> vec4<f32> {
   let encodedMode = parameters.colorOverlay.a;
   let uniformAlpha = encodedMode < 0.0;
   let opacity = select(
@@ -1102,7 +1112,7 @@ fn colorOverlayNode(base: vec4<f32>) -> vec4<f32> {
     uniformAlpha
   );
   if (uniformAlpha) {
-    if (base.a <= 0.0) {
+    if (shape.a <= 0.0) {
       return vec4<f32>(0.0);
     }
     return vec4<f32>(parameters.colorOverlay.rgb * opacity, opacity);
@@ -1112,6 +1122,12 @@ fn colorOverlayNode(base: vec4<f32>) -> vec4<f32> {
   // no RGB multiply/mix to the hot style-stack pixel path.
   if (opacity <= 0.0) {
     return base;
+  }
+  if (bevel.scalars.z < 0.999999) {
+    return vec4<f32>(
+      mix(base.rgb, parameters.colorOverlay.rgb * shape.a, opacity),
+      mix(base.a, shape.a, opacity)
+    );
   }
   return vec4<f32>(
     mix(base.rgb, parameters.colorOverlay.rgb * base.a, opacity),
@@ -1124,7 +1140,8 @@ fn styledTexel(position: vec2<i32>) -> vec4<f32> {
   // Stroke consume the recolored node without allocating another surface.
   // The default mode preserves alpha; the optional uniform mode replaces only
   // positive source alpha while alpha zero remains unoccupied.
-  let base = colorOverlayNode(sourceTexel(position));
+  let shape = sourceTexel(position);
+  let base = colorOverlayNode(shape * bevel.scalars.z, shape);
   var coverage = 0.0;
   if (parameters.strokeEnabled == 1u) {
     coverage = loadCoverage(position);
@@ -1135,41 +1152,41 @@ fn styledTexel(position: vec2<i32>) -> vec4<f32> {
       if (parameters.strokeEnabled == 0u) {
         return base;
       }
-      return traceOnlyNode(base, coverage);
+      return traceOnlyNode(base, shape.a, coverage);
     }
-    var legacyNode = bevelNode(base, position);
+    var legacyNode = bevelNode(base, shape.a, position);
     if (parameters.strokeEnabled == 1u) {
-      legacyNode = combinedStrokeNode(base.a, legacyNode, coverage);
+      legacyNode = combinedStrokeNode(shape.a, legacyNode, coverage);
     }
     let legacyAlpha = clamp(legacyNode.a, 0.0, 1.0);
     legacyNode = vec4<f32>(
       clamp(legacyNode.rgb, vec3<f32>(0.0), vec3<f32>(legacyAlpha)),
       legacyAlpha
     );
-    return legacyNode * bevel.scalars.z;
+    return legacyNode;
   }
 
-  let shadowedBase = innerShadowNode(base, position);
+  let shadowedBase = innerShadowNode(base, shape, position);
   var node = select(
     shadowedBase,
-    bevelNode(shadowedBase, position),
+    bevelNode(shadowedBase, shape.a, position),
     bevel.flags.x == 1u
   );
   if (parameters.strokeEnabled == 1u) {
     node = select(
-      traceOnlyNode(shadowedBase, coverage),
-      combinedStrokeNode(base.a, node, coverage),
+      traceOnlyNode(shadowedBase, shape.a, coverage),
+      combinedStrokeNode(shape.a, node, coverage),
       bevel.flags.x == 1u
     );
   }
-  let outerPlane = outerShadowPlane(base, position);
+  let outerPlane = outerShadowPlane(shape, position);
   node = node + outerPlane * (1.0 - node.a);
   let clampedAlpha = clamp(node.a, 0.0, 1.0);
   node = vec4<f32>(
     clamp(node.rgb, vec3<f32>(0.0), vec3<f32>(clampedAlpha)),
     clampedAlpha
   );
-  return node * bevel.scalars.z;
+  return node;
 }
 `;
 }
@@ -1565,6 +1582,41 @@ fn activeFragmentMain(
   }
   if (display.clippingMode > 0.5) {
     return paint;
+  }
+  return paint * display.activeLayerAlpha;
+}
+
+@fragment
+fn activeSourceFragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  let displayOffset = (fragmentPosition.xy - display.canvasSize * 0.5) / display.zoom;
+  let layerOffset = vec2<f32>(
+    display.viewRotation.x * displayOffset.x + display.viewRotation.y * displayOffset.y,
+    -display.viewRotation.y * displayOffset.x + display.viewRotation.x * displayOffset.y
+  );
+  let layerPosition = display.viewCenter + layerOffset;
+  let layerSize = vec2<f32>(DOCUMENT_SIZE);
+  let insideLayer = all(layerPosition >= vec2<f32>(0.0))
+    && all(layerPosition < layerSize);
+  var paint: vec4<f32>;
+  if (display.selectedMipLevel < 0.5) {
+    paint = select(
+      directStyledSample(layerPosition),
+      directStyledNearestSample(layerPosition),
+      rasterPixelViewEnabled(1.0),
+    );
+  } else {
+    let uv = clamp(layerPosition / layerSize, vec2<f32>(0.0), vec2<f32>(1.0));
+    paint = textureSampleLevel(
+      coarseStyledTexture,
+      layerSampler,
+      uv,
+      display.selectedMipLevel - 1.0,
+    );
+  }
+  if (!insideLayer) {
+    return vec4<f32>(0.0);
   }
   return paint * display.activeLayerAlpha;
 }
@@ -2348,7 +2400,7 @@ export class RasterStrokeRenderer {
     const colorOverlayStyle = options.colorOverlayStyle
       ?? DEFAULT_RASTER_COLOR_OVERLAY_STYLE;
     if (!options.sharedStylePrepared) {
-      this.updateBevelParameters(bevelStyle);
+      this.updateBevelParameters(bevelStyle, options.contentOpacity);
     }
     this.writeParameters(parameterSlot, {
       targetX: rect.x,
@@ -2395,8 +2447,11 @@ export class RasterStrokeRenderer {
     };
   }
 
-  prepareBakeStyle(bevelStyle: RasterBevelStyle = DEFAULT_RASTER_BEVEL_STYLE): void {
-    this.updateBevelParameters(bevelStyle);
+  prepareBakeStyle(
+    bevelStyle: RasterBevelStyle = DEFAULT_RASTER_BEVEL_STYLE,
+    contentOpacity = 1,
+  ): void {
+    this.updateBevelParameters(bevelStyle, contentOpacity);
   }
 
   flushBakeParameters(parameterCount: number): void {
@@ -3000,7 +3055,7 @@ export class RasterStrokeRenderer {
     this.device.queue.writeBuffer(this.bevelUniformBuffer, 0, this.bevelUniformUpload);
   }
 
-  updateBevelParameters(source: RasterBevelStyle): void {
+  updateBevelParameters(source: RasterBevelStyle, contentOpacity = 1): void {
     if (this.destroyed) {
       throw new Error("The style stack renderer has already been destroyed.");
     }
@@ -3020,7 +3075,10 @@ export class RasterStrokeRenderer {
       * (style.depth / 100)
       * (style.direction === "down" ? -1 : 1);
     this.bevelUniformUploadF32[5] = style.fill / 100;
-    this.bevelUniformUploadF32[6] = 1;
+    this.bevelUniformUploadF32[6] = Math.min(
+      1,
+      Math.max(0, Number.isFinite(contentOpacity) ? contentOpacity : 1),
+    );
     this.bevelUniformUploadF32[8] = light[0];
     this.bevelUniformUploadF32[9] = light[1];
     this.bevelUniformUploadF32[10] = light[2];
@@ -3262,6 +3320,7 @@ export class RasterStrokeRenderer {
     style: RasterStrokeStyle,
     bevelStyle: RasterBevelStyle = DEFAULT_RASTER_BEVEL_STYLE,
     colorOverlayStyle: RasterColorOverlayStyle = DEFAULT_RASTER_COLOR_OVERLAY_STYLE,
+    contentOpacity = 1,
   ): void {
     if (this.destroyed) {
       throw new Error("The Stroke renderer has already been destroyed.");
@@ -3280,7 +3339,7 @@ export class RasterStrokeRenderer {
     this.displayParameterUploadF32[21] = colorOverlayStyle.color[1];
     this.displayParameterUploadF32[22] = colorOverlayStyle.color[2];
     this.displayParameterUploadF32[23] = encodedColorOverlayMode(colorOverlayStyle);
-    this.updateBevelParameters(bevelStyle);
+    this.updateBevelParameters(bevelStyle, contentOpacity);
     this.device.queue.writeBuffer(
       this.displayParameterBuffers[mode],
       0,
@@ -3387,6 +3446,7 @@ export class RasterStrokeRenderer {
       options.style,
       options.bevelStyle ?? DEFAULT_RASTER_BEVEL_STYLE,
       colorOverlayStyle,
+      options.contentOpacity ?? 1,
     );
 
     const jobs = rebuildRect ? this.buildJobs(rebuildRect, options.style.width) : [];

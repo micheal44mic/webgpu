@@ -118,6 +118,15 @@ import {
   copyRasterLayerEffects,
   type RasterLayerEffectsSnapshot,
 } from "./raster-layer-effects";
+import {
+  applyLayerOptionsState,
+  captureLayerOptionsState,
+  cloneLayerTonalBlend,
+  layerOptionsStatesEqual,
+  normalizeLayerContentOpacity,
+  normalizeLayerCutoutMode,
+  normalizeLayerTonalBlend,
+} from "./layer-composition.ts";
 
 export function captureRasterLayerMetadataHistoryState(
   engine: BrushEngine,
@@ -130,6 +139,14 @@ export function captureRasterLayerMetadataHistoryState(
     ? record.visible
     : property === "opacity"
       ? record.opacity
+      : property === "layer-options"
+        ? captureLayerOptionsState(record)
+      : property === "content-opacity"
+        ? record.contentOpacity
+        : property === "cutout"
+          ? record.cutoutMode
+          : property === "tonal-blend"
+            ? cloneLayerTonalBlend(record.tonalBlend)
       : property === "clipping"
         ? engine.layerStack.captureClippingHistoryState()
         : property === "stroke"
@@ -161,7 +178,24 @@ export function rasterLayerMetadataHistoryStatesEqual(
   switch (left.property) {
     case "visibility":
     case "opacity":
+    case "content-opacity":
+    case "cutout":
       return left.value === right.value;
+    case "layer-options": {
+      const rightValue = (
+        right as Extract<RasterLayerMetadataHistoryState, { property: "layer-options" }>
+      ).value;
+      return layerOptionsStatesEqual(left.value, rightValue);
+    }
+    case "tonal-blend": {
+      const rightValue = (
+        right as Extract<RasterLayerMetadataHistoryState, { property: "tonal-blend" }>
+      ).value;
+      return left.value.current.every((entry, index) => entry === rightValue.current[index])
+        && left.value.underlying.every(
+          (entry, index) => entry === rightValue.underlying[index],
+        );
+    }
     case "clipping":
       return clippingHistoryStatesEqual(
         left.value,
@@ -237,6 +271,20 @@ function assignRasterLayerMetadataHistoryValue(
     case "opacity":
       record.opacity = target as number;
       return;
+    case "layer-options": {
+      const options = target as RasterLayerMetadataHistoryValueMap["layer-options"];
+      applyLayerOptionsState(record, options);
+      break;
+    }
+    case "content-opacity":
+      record.contentOpacity = normalizeLayerContentOpacity(target as number);
+      break;
+    case "cutout":
+      record.cutoutMode = normalizeLayerCutoutMode(target);
+      return;
+    case "tonal-blend":
+      record.tonalBlend = normalizeLayerTonalBlend(target);
+      return;
     case "clipping":
       engine.layerStack.restoreClippingHistoryState(
         target as RasterLayerMetadataHistoryValueMap["clipping"],
@@ -280,11 +328,27 @@ async function refreshRasterLayerMetadataPresentation(
   if (
     action.property === "visibility"
     || action.property === "opacity"
+    || action.property === "cutout"
+    || action.property === "tonal-blend"
     || action.property === "clipping"
   ) {
     await engine.rebuildMergedLayerSurfaces(
       "history-replay",
       engine.getVectorTextViewState(),
+    );
+  } else if (action.property === "layer-options") {
+    if (engine.layerStack.active.id === action.layerId) {
+      await restoreEffectsWorkbenchToActiveLayer(
+        engine,
+        "history-replay",
+        true,
+        "content-bounds",
+      );
+    }
+    await engine.rebuildMergedLayerSurfaces(
+      "history-replay",
+      engine.getVectorTextViewState(),
+      { reuseUnchangedRasterRuns: false },
     );
   } else if (engine.layerStack.active.id === action.layerId) {
     // One retarget updates only the active effect resources, bounds and

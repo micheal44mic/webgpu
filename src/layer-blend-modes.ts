@@ -248,7 +248,7 @@ export function dissolveLayerSourcePremultipliedLinear(
   ];
 }
 
-const linearToSrgbChannel = (value: number): number => {
+export const linearToSrgbChannel = (value: number): number => {
   const channel = clamp01(value);
   return channel <= 0.0031308
     ? channel * 12.92

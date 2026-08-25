@@ -71,12 +71,25 @@ import {
 } from "./vector-text-gpu-resources";
 import { recordVectorHistoryAction } from "./engine-history-runtime";
 import { rasterImageBindGroupForNode } from "./engine-raster-image-runtime";
-import { LAYER_BLEND_COMPOSITOR_UNIFORM_BYTE_SIZE } from "./layer-blend-compositor";
-import { LAYER_BLEND_MODE_CODES, LAYER_BLEND_MODE_ORDER } from "./layer-blend-modes";
+import {
+  LAYER_BLEND_COMPOSITOR_UNIFORM_BYTE_SIZE,
+  writeLayerBlendCompositorUniforms,
+  type LayerBlendCompositeOperator,
+  type LayerBlendCompositorContext,
+} from "./layer-blend-compositor";
+import { LAYER_BLEND_MODE_ORDER } from "./layer-blend-modes";
+import { layerTonalBlendIsDefault } from "./layer-composition.ts";
+import type { LayerRecord } from "./layer-stack";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import {
   vectorTextFastPresentationMode,
 } from "./vector-text-adaptive-zoom";
+
+const rasterLayerNeedsBackdropComposition = (record: LayerRecord): boolean => (
+  record.blendMode !== "normal"
+  || record.cutoutMode !== "off"
+  || !layerTonalBlendIsDefault(record.tonalBlend)
+);
 
 export async function initializeVectorTextGpuRenderer(engine: BrushEngine): Promise<void> {
   engine.vectorTextGpuShaderModule = engine.device.createShaderModule({
@@ -1014,6 +1027,79 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
     pass.draw(3, 1, 0, 0);
   };
 
+  const drawSegmentCutoutSource = (
+    pass: GPURenderPassEncoder,
+    segment: MixedSceneCompositionSegment,
+  ): void => {
+    if (segment.kind === "raster-run") {
+      const resources = engine.mixedSceneRasterSegments.find(
+        (candidate) => candidate.key === segment.key,
+      );
+      if (resources) {
+        pass.setPipeline(rasterPipeline);
+        pass.setBindGroup(0, resources.cutoutBindGroup ?? resources.bindGroup);
+        pass.draw(3, 1, 0, 0);
+      }
+      return;
+    }
+    if (segment.kind !== "active-raster") {
+      return;
+    }
+    const parentCutout = engine.activeClippingGroup?.mode === "active-child"
+      ? engine.activeClippingGroup.parentCutoutSegment
+      : null;
+    if (parentCutout) {
+      pass.setPipeline(rasterPipeline);
+      pass.setBindGroup(0, parentCutout.bindGroup);
+      pass.draw(3, 1, 0, 0);
+      return;
+    }
+    const pipeline = engine.mixedSceneActiveCutoutDisplayPipeline;
+    if (!pipeline) {
+      throw new Error("The active authored-matte pipeline is not ready.");
+    }
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, engine.displayBindGroup);
+    pass.draw(3, 1, 0, 0);
+  };
+
+  const drawActiveRasterSourceOnly = (pass: GPURenderPassEncoder): void => {
+    if (activePresentation.kind === "raster-stroke") {
+      const pipeline = engine.mixedSceneActiveRasterStrokeSourcePipeline;
+      const sourceBindGroup = engine.rasterStrokeDisplayBindGroups.get(
+        activePresentation.sourceMode,
+      );
+      if (!pipeline || !sourceBindGroup) {
+        throw new Error("The active-raster source-only effects pipeline is not ready.");
+      }
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, engine.rasterStrokeDisplayScreenBindGroup);
+      pass.setBindGroup(1, sourceBindGroup);
+    } else if (activePresentation.kind === "thickness-tail") {
+      const pipeline = engine.mixedSceneActiveThicknessTailSourcePipeline;
+      if (!pipeline || !engine.thicknessTailDisplayBindGroup) {
+        throw new Error("The active-tail source-only pipeline is not ready.");
+      }
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, engine.thicknessTailDisplayBindGroup);
+    } else if (activePresentation.kind === "light-glaze") {
+      const pipeline = engine.mixedSceneActiveLightGlazeSourcePipeline;
+      if (!pipeline || !engine.lightGlazeDisplayBindGroup) {
+        throw new Error("The active-raster glaze source-only pipeline is not ready.");
+      }
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, engine.lightGlazeDisplayBindGroup);
+    } else {
+      const pipeline = engine.mixedSceneActiveSourceDisplayPipeline;
+      if (!pipeline) {
+        throw new Error("The active-raster source-only pipeline is not ready.");
+      }
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, engine.displayBindGroup);
+    }
+    pass.draw(3, 1, 0, 0);
+  };
+
   const setDirtyScissor = (pass: GPURenderPassEncoder): void => {
     pass.setScissorRect(
       presentationDirtyRect.x,
@@ -1021,6 +1107,61 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
       presentationDirtyRect.width,
       presentationDirtyRect.height,
     );
+  };
+  const compositionRecordForSegment = (
+    segment: MixedSceneCompositionSegment,
+  ): LayerRecord | null => {
+    if (segment.kind === "raster-run") {
+      const first = segment.items[0];
+      return first
+        ? engine.layerStack.clippingUnit(first.rasterLayerId)[0] ?? null
+        : null;
+    }
+    if (segment.kind === "active-raster") {
+      return engine.layerStack.clippingUnit(segment.item.rasterLayerId)[0] ?? null;
+    }
+    return null;
+  };
+  const rasterResourcesForSegment = (
+    segment: MixedSceneCompositionSegment,
+  ): MixedSceneRasterSegmentResources | null => segment.kind === "raster-run"
+    ? engine.mixedSceneRasterSegments.find(
+      (candidate) => candidate.key === segment.key,
+    ) ?? null
+    : null;
+  let blendUniformSlot = 0;
+  const writeBlendControls = (
+    mode: LayerRecord["blendMode"],
+    operator: LayerBlendCompositeOperator,
+    record: LayerRecord | null,
+    sourceOpacity = 1,
+    context: LayerBlendCompositorContext = "direct",
+    documentMaskOpacity = 1,
+  ): number => {
+    const uniformBuffer = engine.layerBlendCompositorUniformBuffer;
+    const stride = engine.layerBlendCompositorUniformStride;
+    if (!uniformBuffer || stride <= 0) {
+      throw new Error("The ordered layer controls are unavailable.");
+    }
+    const capacity = LAYER_BLEND_MODE_ORDER.length * 2;
+    if (blendUniformSlot >= capacity) {
+      throw new Error("The ordered layer program exceeds its uniform capacity.");
+    }
+    const offset = blendUniformSlot * stride;
+    blendUniformSlot += 1;
+    const upload = new Uint32Array(LAYER_BLEND_COMPOSITOR_UNIFORM_BYTE_SIZE / 4);
+    writeLayerBlendCompositorUniforms(
+      upload,
+      mode,
+      operator,
+      0,
+      record,
+      sourceOpacity,
+      context,
+      documentMaskOpacity,
+    );
+    engine.device.queue.writeBuffer(uniformBuffer, offset, upload);
+    return offset;
   };
   let currentIsCanonical = true;
   let firstCanonicalPass = true;
@@ -1054,28 +1195,48 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
   let scenePass: GPURenderPassEncoder | null = beginScenePass();
   for (const segment of engine.mixedSceneCompositionSegments) {
     const blendMode = engine.compositionSegmentBlendMode(segment);
+    const compositionRecord = compositionRecordForSegment(segment);
+    const rasterResources = rasterResourcesForSegment(segment);
+    const activeClippingRecord = segment.kind === "active-raster"
+      ? engine.layerStack.active
+      : null;
+    const explicitActiveChild = segment.kind === "active-raster"
+      && engine.activeClippingGroup?.mode === "active-child"
+      && (
+        engine.activeClippingGroup.suffixSteps.length > 0
+        || engine.activeClippingGroup.prefixDocumentMaskViewportSegment !== null
+        || rasterLayerNeedsBackdropComposition(engine.layerStack.active)
+      );
     const clippingSuffixSteps = segment.kind === "active-raster"
       ? engine.activeClippingGroup?.suffixSteps ?? []
       : [];
-    if (clippingSuffixSteps.length > 0) {
+    if (clippingSuffixSteps.length > 0 || explicitActiveChild) {
       scenePass?.end();
       scenePass = null;
       const scratchView = engine.mixedSceneBlendScratchView;
       const scratchTexture = engine.mixedSceneBlendScratchTexture;
       const operandView = engine.mixedSceneBlendOperandView;
       const operandTexture = engine.mixedSceneBlendOperandTexture;
+      const cutoutView = engine.mixedSceneBlendCutoutView;
       const groupView = engine.mixedSceneBlendGroupView;
       const groupTexture = engine.mixedSceneBlendGroupTexture;
+      const clippingBaseView = engine.mixedSceneBlendClippingBaseView;
+      const documentMaskView = engine.mixedSceneBlendDocumentMaskView;
       const blendPipeline = engine.layerBlendCompositorPipeline;
+      const documentMaskPipeline = engine.layerBlendViewportDocumentMaskPipeline;
       const blendUniformStride = engine.layerBlendCompositorUniformStride;
       if (
         !scratchView
         || !scratchTexture
         || !operandView
         || !operandTexture
+        || !cutoutView
         || !groupView
         || !groupTexture
+        || !clippingBaseView
+        || !documentMaskView
         || !blendPipeline
+        || !documentMaskPipeline
         || blendUniformStride <= 0
         || !engine.mixedSceneBlendFromGroupBindGroup
       ) {
@@ -1101,10 +1262,150 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
       setDirtyScissor(groupStartPass);
       groupStartPass.setPipeline(clearPipeline);
       groupStartPass.draw(3, 1, 0, 0);
-      drawSegmentSource(groupStartPass, segment);
+      if (explicitActiveChild) {
+        const prefixSegment = engine.activeClippingGroup?.prefixViewportSegment;
+        if (prefixSegment) {
+          groupStartPass.setPipeline(rasterPipeline);
+          groupStartPass.setBindGroup(0, prefixSegment.bindGroup);
+          groupStartPass.draw(3, 1, 0, 0);
+        }
+      } else {
+        drawSegmentSource(groupStartPass, segment);
+      }
       groupStartPass.end();
 
+      const clippingBasePass = encoder.beginRenderPass({
+        label: `${label} · live clipping immutable base`,
+        colorAttachments: [{
+          view: clippingBaseView,
+          loadOp: "load",
+          storeOp: "store",
+        }],
+      });
+      setDirtyScissor(clippingBasePass);
+      clippingBasePass.setPipeline(clearPipeline);
+      clippingBasePass.draw(3, 1, 0, 0);
+      if (explicitActiveChild) {
+        const baseSegment = engine.activeClippingGroup?.baseViewportSegment;
+        if (!baseSegment) {
+          throw new Error("The live clipping immutable base is unavailable.");
+        }
+        clippingBasePass.setPipeline(rasterPipeline);
+        clippingBasePass.setBindGroup(0, baseSegment.bindGroup);
+        clippingBasePass.draw(3, 1, 0, 0);
+      } else {
+        drawSegmentSource(clippingBasePass, segment);
+      }
+      clippingBasePass.end();
+
+      const documentMaskSeedPass = encoder.beginRenderPass({
+        label: `${label} · live clipping document-mask seed`,
+        colorAttachments: [{
+          view: documentMaskView,
+          loadOp: "load",
+          storeOp: "store",
+        }],
+      });
+      setDirtyScissor(documentMaskSeedPass);
+      documentMaskSeedPass.setPipeline(clearPipeline);
+      documentMaskSeedPass.draw(3, 1, 0, 0);
+      const prefixDocumentMask = explicitActiveChild
+        ? engine.activeClippingGroup?.prefixDocumentMaskViewportSegment
+        : null;
+      if (prefixDocumentMask) {
+        documentMaskSeedPass.setPipeline(rasterPipeline);
+        documentMaskSeedPass.setBindGroup(0, prefixDocumentMask.bindGroup);
+        documentMaskSeedPass.draw(3, 1, 0, 0);
+      }
+      documentMaskSeedPass.end();
+
       let groupOnDedicatedTexture = false;
+      if (explicitActiveChild && activeClippingRecord) {
+        const activeOperandPass = encoder.beginRenderPass({
+          label: `${label} · active clipping source ${activeClippingRecord.id}`,
+          colorAttachments: [{
+            view: operandView,
+            loadOp: "load",
+            storeOp: "store",
+          }],
+        });
+        setDirtyScissor(activeOperandPass);
+        activeOperandPass.setPipeline(clearPipeline);
+        activeOperandPass.draw(3, 1, 0, 0);
+        drawActiveRasterSourceOnly(activeOperandPass);
+        activeOperandPass.end();
+
+        if (activeClippingRecord.cutoutMode !== "off") {
+          const activeCutoutPass = encoder.beginRenderPass({
+            label: `${label} · active clipping authored matte ${activeClippingRecord.id}`,
+            colorAttachments: [{
+              view: cutoutView,
+              loadOp: "load",
+              storeOp: "store",
+            }],
+          });
+          setDirtyScissor(activeCutoutPass);
+          activeCutoutPass.setPipeline(clearPipeline);
+          activeCutoutPass.draw(3, 1, 0, 0);
+          const cutoutPipeline = engine.mixedSceneActiveCutoutDisplayPipeline;
+          if (!cutoutPipeline) {
+            throw new Error("The active clipping authored-matte pipeline is not ready.");
+          }
+          activeCutoutPass.setPipeline(cutoutPipeline);
+          activeCutoutPass.setBindGroup(0, engine.displayBindGroup);
+          activeCutoutPass.draw(3, 1, 0, 0);
+          activeCutoutPass.end();
+        }
+
+        const activeBackdropBindGroup = currentIsCanonical
+          ? engine.mixedSceneBlendFromScratchBindGroup!
+          : engine.mixedSceneBlendFromLinearBindGroup!;
+        const activeBlendControls = writeBlendControls(
+          activeClippingRecord.blendMode,
+          "source-atop",
+          activeClippingRecord,
+          1,
+          "clipping-child",
+        );
+        if (activeClippingRecord.cutoutMode === "document") {
+          const activeDocumentMaskPass = encoder.beginRenderPass({
+            label: `${label} · active clipping document mask ${activeClippingRecord.id}`,
+            colorAttachments: [{
+              view: documentMaskView,
+              loadOp: "load",
+              storeOp: "store",
+            }],
+          });
+          setDirtyScissor(activeDocumentMaskPass);
+          activeDocumentMaskPass.setPipeline(documentMaskPipeline);
+          activeDocumentMaskPass.setBindGroup(
+            0,
+            activeBackdropBindGroup,
+            [activeBlendControls],
+          );
+          activeDocumentMaskPass.draw(3, 1, 0, 0);
+          activeDocumentMaskPass.end();
+        }
+
+        const activeBlendPass = encoder.beginRenderPass({
+          label: `${label} · active clipping atop ${activeClippingRecord.blendMode}`,
+          colorAttachments: [{
+            view: groupView,
+            loadOp: "load",
+            storeOp: "store",
+          }],
+        });
+        setDirtyScissor(activeBlendPass);
+        activeBlendPass.setPipeline(blendPipeline);
+        activeBlendPass.setBindGroup(
+          0,
+          activeBackdropBindGroup,
+          [activeBlendControls],
+        );
+        activeBlendPass.draw(3, 1, 0, 0);
+        activeBlendPass.end();
+        groupOnDedicatedTexture = true;
+      }
       for (const step of clippingSuffixSteps) {
         const operandPass = encoder.beginRenderPass({
           label: `${label} · clipping source ${step.layerId} (${step.blendMode})`,
@@ -1122,6 +1423,61 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
         operandPass.draw(3, 1, 0, 0);
         operandPass.end();
 
+        const stepRecord = engine.layerStack.byId(step.layerId);
+        if (stepRecord?.cutoutMode !== undefined && stepRecord.cutoutMode !== "off") {
+          const cutoutBindGroup = step.viewportSegment.cutoutBindGroup;
+          if (!cutoutBindGroup) {
+            throw new Error(`Layer ${step.layerId} authored matte is unavailable.`);
+          }
+          const cutoutPass = encoder.beginRenderPass({
+            label: `${label} · clipping authored matte ${step.layerId}`,
+            colorAttachments: [{
+              view: cutoutView,
+              loadOp: "load",
+              storeOp: "store",
+            }],
+          });
+          setDirtyScissor(cutoutPass);
+          cutoutPass.setPipeline(clearPipeline);
+          cutoutPass.draw(3, 1, 0, 0);
+          cutoutPass.setPipeline(rasterPipeline);
+          cutoutPass.setBindGroup(0, cutoutBindGroup);
+          cutoutPass.draw(3, 1, 0, 0);
+          cutoutPass.end();
+        }
+
+        const stepBackdropBindGroup = groupOnDedicatedTexture
+          ? engine.mixedSceneBlendFromGroupBindGroup
+          : currentIsCanonical
+            ? engine.mixedSceneBlendFromScratchBindGroup!
+            : engine.mixedSceneBlendFromLinearBindGroup!;
+        const stepBlendControls = writeBlendControls(
+          step.blendMode,
+          "source-atop",
+          stepRecord,
+          1,
+          "clipping-child",
+        );
+        if (stepRecord?.cutoutMode === "document") {
+          const stepDocumentMaskPass = encoder.beginRenderPass({
+            label: `${label} · clipping document mask ${step.layerId}`,
+            colorAttachments: [{
+              view: documentMaskView,
+              loadOp: "load",
+              storeOp: "store",
+            }],
+          });
+          setDirtyScissor(stepDocumentMaskPass);
+          stepDocumentMaskPass.setPipeline(documentMaskPipeline);
+          stepDocumentMaskPass.setBindGroup(
+            0,
+            stepBackdropBindGroup,
+            [stepBlendControls],
+          );
+          stepDocumentMaskPass.draw(3, 1, 0, 0);
+          stepDocumentMaskPass.end();
+        }
+
         const groupBlendPass = encoder.beginRenderPass({
           label: `${label} · clipping atop ${step.blendMode}`,
           colorAttachments: [{
@@ -1134,17 +1490,8 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
         groupBlendPass.setPipeline(blendPipeline);
         groupBlendPass.setBindGroup(
           0,
-          groupOnDedicatedTexture
-            ? engine.mixedSceneBlendFromGroupBindGroup
-            : currentIsCanonical
-              ? engine.mixedSceneBlendFromScratchBindGroup!
-              : engine.mixedSceneBlendFromLinearBindGroup!,
-          [
-            (
-              LAYER_BLEND_MODE_ORDER.length
-              + LAYER_BLEND_MODE_CODES[step.blendMode]
-            ) * blendUniformStride,
-          ],
+          stepBackdropBindGroup,
+          [stepBlendControls],
         );
         groupBlendPass.draw(3, 1, 0, 0);
         groupBlendPass.end();
@@ -1170,6 +1517,22 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
         },
       );
 
+      if (compositionRecord?.cutoutMode !== undefined && compositionRecord.cutoutMode !== "off") {
+        const cutoutPass = encoder.beginRenderPass({
+          label: `${label} · clipping-group authored matte`,
+          colorAttachments: [{
+            view: cutoutView,
+            loadOp: "load",
+            storeOp: "store",
+          }],
+        });
+        setDirtyScissor(cutoutPass);
+        cutoutPass.setPipeline(clearPipeline);
+        cutoutPass.draw(3, 1, 0, 0);
+        drawSegmentCutoutSource(cutoutPass, segment);
+        cutoutPass.end();
+      }
+
       const outerBlendPass = encoder.beginRenderPass({
         label: `${label} · outer clipping group ${blendMode}`,
         colorAttachments: [{
@@ -1185,14 +1548,28 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
         currentIsCanonical
           ? engine.mixedSceneBlendFromLinearBindGroup!
           : engine.mixedSceneBlendFromScratchBindGroup!,
-        [LAYER_BLEND_MODE_CODES[blendMode] * blendUniformStride],
+        [writeBlendControls(
+          blendMode,
+          "source-over",
+          compositionRecord,
+          engine.activeClippingGroup?.parentOpacity ?? 1,
+          "clipping-outer",
+          engine.activeClippingGroup?.parentOpacity ?? 1,
+        )],
       );
       outerBlendPass.draw(3, 1, 0, 0);
       outerBlendPass.end();
       currentIsCanonical = !currentIsCanonical;
       continue;
     }
-    if (blendMode === "normal") {
+    const needsBackdropComposition = blendMode !== "normal"
+      || compositionRecord?.cutoutMode !== undefined
+        && compositionRecord.cutoutMode !== "off"
+      || compositionRecord?.tonalBlend !== undefined
+        && !layerTonalBlendIsDefault(compositionRecord.tonalBlend)
+      || rasterResources?.documentCutoutMaskSurface !== null
+        && rasterResources?.documentCutoutMaskSurface !== undefined;
+    if (!needsBackdropComposition) {
       scenePass ??= beginScenePass();
       drawSegmentSource(scenePass, segment);
       continue;
@@ -1201,6 +1578,7 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
     scenePass?.end();
     scenePass = null;
     const operandView = engine.mixedSceneBlendOperandView;
+    const cutoutView = engine.mixedSceneBlendCutoutView;
     const targetView = currentIsCanonical
       ? engine.mixedSceneBlendScratchView
       : linearView;
@@ -1210,6 +1588,7 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
     const blendPipeline = engine.layerBlendCompositorPipeline;
     if (
       !operandView
+      || !cutoutView
       || !targetView
       || !blendBindGroup
       || !blendPipeline
@@ -1233,6 +1612,74 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
     drawSegmentSource(operandPass, segment);
     operandPass.end();
 
+    if (compositionRecord?.cutoutMode !== undefined && compositionRecord.cutoutMode !== "off") {
+      const cutoutPass = encoder.beginRenderPass({
+        label: `${label} · authored matte`,
+        colorAttachments: [{
+          view: cutoutView,
+          loadOp: "load",
+          storeOp: "store",
+        }],
+      });
+      setDirtyScissor(cutoutPass);
+      cutoutPass.setPipeline(clearPipeline);
+      cutoutPass.draw(3, 1, 0, 0);
+      drawSegmentCutoutSource(cutoutPass, segment);
+      cutoutPass.end();
+    }
+
+    const hasDocumentCutoutResources = Boolean(
+      rasterResources?.documentCutoutBaseSurface
+        && rasterResources.documentCutoutMaskSurface
+        && rasterResources.documentCutoutBaseBindGroup
+        && rasterResources.documentCutoutMaskBindGroup,
+    );
+    if (
+      rasterResources
+      && (rasterResources.documentCutoutBaseSurface || rasterResources.documentCutoutMaskSurface)
+      && !hasDocumentCutoutResources
+    ) {
+      throw new Error("The raster segment document-cutout resources are incomplete.");
+    }
+    if (hasDocumentCutoutResources) {
+      const clippingBaseView = engine.mixedSceneBlendClippingBaseView;
+      const documentMaskView = engine.mixedSceneBlendDocumentMaskView;
+      if (!clippingBaseView || !documentMaskView) {
+        throw new Error("The raster segment document-cutout targets are unavailable.");
+      }
+      const clippingBasePass = encoder.beginRenderPass({
+        label: `${label} · raster clipping immutable base`,
+        colorAttachments: [{
+          view: clippingBaseView,
+          loadOp: "load",
+          storeOp: "store",
+        }],
+      });
+      setDirtyScissor(clippingBasePass);
+      clippingBasePass.setPipeline(clearPipeline);
+      clippingBasePass.draw(3, 1, 0, 0);
+      clippingBasePass.setPipeline(rasterPipeline);
+      clippingBasePass.setBindGroup(0, rasterResources!.documentCutoutBaseBindGroup!);
+      clippingBasePass.draw(3, 1, 0, 0);
+      clippingBasePass.end();
+
+      const documentMaskPass = encoder.beginRenderPass({
+        label: `${label} · raster clipping document mask`,
+        colorAttachments: [{
+          view: documentMaskView,
+          loadOp: "load",
+          storeOp: "store",
+        }],
+      });
+      setDirtyScissor(documentMaskPass);
+      documentMaskPass.setPipeline(clearPipeline);
+      documentMaskPass.draw(3, 1, 0, 0);
+      documentMaskPass.setPipeline(rasterPipeline);
+      documentMaskPass.setBindGroup(0, rasterResources!.documentCutoutMaskBindGroup!);
+      documentMaskPass.draw(3, 1, 0, 0);
+      documentMaskPass.end();
+    }
+
     const blendPass = encoder.beginRenderPass({
       label: `${label} · blend ${blendMode}`,
       colorAttachments: [{
@@ -1246,7 +1693,14 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
     blendPass.setBindGroup(
       0,
       blendBindGroup,
-      [LAYER_BLEND_MODE_CODES[blendMode] * engine.layerBlendCompositorUniformStride],
+      [writeBlendControls(
+        blendMode,
+        "source-over",
+        compositionRecord,
+        1,
+        hasDocumentCutoutResources ? "clipping-outer" : "direct",
+        rasterResources?.documentCutoutOpacity ?? 1,
+      )],
     );
     blendPass.draw(3, 1, 0, 0);
     blendPass.end();
@@ -2205,12 +2659,21 @@ export async function mutateMixedScenePresentation<Result>(engine: BrushEngine,
     throw new Error("The engine is not initialized yet.");
   }
   const scene = requireMixedSceneStack(engine);
-  engine.assertLayerSwitchAllowed();
+  const absorbedByVectorEdit = history?.targetKey !== undefined
+    && engine.activeVectorHistoryEdit?.key === history.targetKey
+    && engine.activeVectorHistoryEdit.scope === "property";
+  if (absorbedByVectorEdit) {
+    if (engine.historyBusy || engine.layerSwitchBusy || engine.activeStroke !== null) {
+      throw new Error("Finish the current vector property update first.");
+    }
+  } else {
+    engine.assertLayerSwitchAllowed();
+  }
   engine.cancelLayerColdCompressionIdle();
   engine.layerSwitchBusy = true;
   const shareImmutableDocuments = history?.shareImmutableDocuments === true;
   const previousState = scene.captureState(shareImmutableDocuments);
-  const historyBefore = history?.targetKey
+  const historyBefore = history?.targetKey && !absorbedByVectorEdit
     ? scene.captureVectorHistoryState(history.targetKey)
     : null;
   const previousExcludedNodeId = engine.vectorTextPreviewExcludedNodeId;
@@ -2230,7 +2693,7 @@ export async function mutateMixedScenePresentation<Result>(engine: BrushEngine,
       { reuseUnchangedRasterRuns: true },
     );
     engine.callbacks.onStatus?.("Raster/text scene ready.", "ok");
-    if (history) {
+    if (history && !absorbedByVectorEdit) {
       const targetKey = history.targetKey ?? history.addedKey?.(result);
       if (!targetKey) {
         throw new Error("The vector target required by history is missing.");
@@ -2558,8 +3021,14 @@ type MixedSceneBlendScratchCandidate = {
   view: GPUTextureView;
   operandTexture: GPUTexture;
   operandView: GPUTextureView;
+  cutoutTexture: GPUTexture;
+  cutoutView: GPUTextureView;
   groupTexture: GPUTexture;
   groupView: GPUTextureView;
+  clippingBaseTexture: GPUTexture;
+  clippingBaseView: GPUTextureView;
+  documentMaskTexture: GPUTexture;
+  documentMaskView: GPUTextureView;
   fromLinear: GPUBindGroup;
   fromScratch: GPUBindGroup;
   fromGroup: GPUBindGroup;
@@ -2578,7 +3047,10 @@ function createMixedSceneBlendScratchCandidate(
   }
   let texture: GPUTexture | null = null;
   let operandTexture: GPUTexture | null = null;
+  let cutoutTexture: GPUTexture | null = null;
   let groupTexture: GPUTexture | null = null;
+  let clippingBaseTexture: GPUTexture | null = null;
+  let documentMaskTexture: GPUTexture | null = null;
   try {
     texture = engine.device.createTexture({
       label: `Ordered layer blend ping-pong ${width}×${height}`,
@@ -2599,6 +3071,12 @@ function createMixedSceneBlendScratchCandidate(
         | GPUTextureUsage.TEXTURE_BINDING
         | GPUTextureUsage.COPY_DST,
     });
+    cutoutTexture = engine.device.createTexture({
+      label: `Ordered layer raw matte ${width}×${height}`,
+      size: { width, height, depthOrArrayLayers: 1 },
+      format: MIXED_SCENE_LINEAR_FORMAT,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
     groupTexture = engine.device.createTexture({
       label: `Ordered clipping-group blend ping-pong ${width}×${height}`,
       size: { width, height, depthOrArrayLayers: 1 },
@@ -2608,12 +3086,33 @@ function createMixedSceneBlendScratchCandidate(
         | GPUTextureUsage.TEXTURE_BINDING
         | GPUTextureUsage.COPY_SRC,
     });
+    clippingBaseTexture = engine.device.createTexture({
+      label: `Ordered clipping immutable base ${width}×${height}`,
+      size: { width, height, depthOrArrayLayers: 1 },
+      format: MIXED_SCENE_LINEAR_FORMAT,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    documentMaskTexture = engine.device.createTexture({
+      label: `Ordered clipping document mask ${width}×${height}`,
+      size: { width, height, depthOrArrayLayers: 1 },
+      format: MIXED_SCENE_LINEAR_FORMAT,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
     const view = texture.createView({ label: "Ordered layer blend ping-pong view" });
     const operandView = operandTexture.createView({
       label: "Ordered layer blend operand view",
     });
+    const cutoutView = cutoutTexture.createView({
+      label: "Ordered layer raw matte view",
+    });
     const groupView = groupTexture.createView({
       label: "Ordered clipping-group blend ping-pong view",
+    });
+    const clippingBaseView = clippingBaseTexture.createView({
+      label: "Ordered clipping immutable base view",
+    });
+    const documentMaskView = documentMaskTexture.createView({
+      label: "Ordered clipping document mask view",
     });
     const blendEntries = (backdrop: GPUTextureView): GPUBindGroupEntry[] => [
       { binding: 0, resource: backdrop },
@@ -2627,14 +3126,23 @@ function createMixedSceneBlendScratchCandidate(
         },
       },
       { binding: 3, resource: { buffer: engine.displayUniformBuffer } },
+      { binding: 4, resource: cutoutView },
+      { binding: 5, resource: clippingBaseView },
+      { binding: 6, resource: documentMaskView },
     ];
     return {
       texture,
       view,
       operandTexture,
       operandView,
+      cutoutTexture,
+      cutoutView,
       groupTexture,
       groupView,
+      clippingBaseTexture,
+      clippingBaseView,
+      documentMaskTexture,
+      documentMaskView,
       fromLinear: engine.device.createBindGroup({
         label: "Layer blend canonical→ping-pong bind group",
         layout: blendLayout,
@@ -2654,7 +3162,10 @@ function createMixedSceneBlendScratchCandidate(
   } catch (error) {
     texture?.destroy();
     operandTexture?.destroy();
+    cutoutTexture?.destroy();
     groupTexture?.destroy();
+    clippingBaseTexture?.destroy();
+    documentMaskTexture?.destroy();
     throw error;
   }
 }
@@ -2667,8 +3178,14 @@ function publishMixedSceneBlendScratchCandidate(
   engine.mixedSceneBlendScratchView = candidate?.view ?? null;
   engine.mixedSceneBlendOperandTexture = candidate?.operandTexture ?? null;
   engine.mixedSceneBlendOperandView = candidate?.operandView ?? null;
+  engine.mixedSceneBlendCutoutTexture = candidate?.cutoutTexture ?? null;
+  engine.mixedSceneBlendCutoutView = candidate?.cutoutView ?? null;
   engine.mixedSceneBlendGroupTexture = candidate?.groupTexture ?? null;
   engine.mixedSceneBlendGroupView = candidate?.groupView ?? null;
+  engine.mixedSceneBlendClippingBaseTexture = candidate?.clippingBaseTexture ?? null;
+  engine.mixedSceneBlendClippingBaseView = candidate?.clippingBaseView ?? null;
+  engine.mixedSceneBlendDocumentMaskTexture = candidate?.documentMaskTexture ?? null;
+  engine.mixedSceneBlendDocumentMaskView = candidate?.documentMaskView ?? null;
   engine.mixedSceneBlendFromLinearBindGroup = candidate?.fromLinear ?? null;
   engine.mixedSceneBlendFromScratchBindGroup = candidate?.fromScratch ?? null;
   engine.mixedSceneBlendFromGroupBindGroup = candidate?.fromGroup ?? null;
@@ -2700,8 +3217,14 @@ export async function prewarmMixedSceneLinearTextureForLayerBlend(
       && engine.mixedSceneBlendScratchView
       && engine.mixedSceneBlendOperandTexture
       && engine.mixedSceneBlendOperandView
+      && engine.mixedSceneBlendCutoutTexture
+      && engine.mixedSceneBlendCutoutView
       && engine.mixedSceneBlendGroupTexture
       && engine.mixedSceneBlendGroupView
+      && engine.mixedSceneBlendClippingBaseTexture
+      && engine.mixedSceneBlendClippingBaseView
+      && engine.mixedSceneBlendDocumentMaskTexture
+      && engine.mixedSceneBlendDocumentMaskView
       && engine.mixedSceneBlendFromLinearBindGroup
       && engine.mixedSceneBlendFromScratchBindGroup
       && engine.mixedSceneBlendFromGroupBindGroup,
@@ -2724,7 +3247,10 @@ export async function prewarmMixedSceneLinearTextureForLayerBlend(
         transaction.deferRollback(() => {
           scratch.texture.destroy();
           scratch.operandTexture.destroy();
+          scratch.cutoutTexture.destroy();
           scratch.groupTexture.destroy();
+          scratch.clippingBaseTexture.destroy();
+          scratch.documentMaskTexture.destroy();
         });
         return { kind: "scratch" as const, scratch };
       }
@@ -2756,7 +3282,10 @@ export async function prewarmMixedSceneLinearTextureForLayerBlend(
         transaction.deferRollback(() => {
           scratch.texture.destroy();
           scratch.operandTexture.destroy();
+          scratch.cutoutTexture.destroy();
           scratch.groupTexture.destroy();
+          scratch.clippingBaseTexture.destroy();
+          scratch.documentMaskTexture.destroy();
         });
       }
 
@@ -2772,12 +3301,18 @@ export async function prewarmMixedSceneLinearTextureForLayerBlend(
 
   const oldScratch = engine.mixedSceneBlendScratchTexture;
   const oldOperand = engine.mixedSceneBlendOperandTexture;
+  const oldCutout = engine.mixedSceneBlendCutoutTexture;
   const oldGroup = engine.mixedSceneBlendGroupTexture;
+  const oldClippingBase = engine.mixedSceneBlendClippingBaseTexture;
+  const oldDocumentMask = engine.mixedSceneBlendDocumentMaskTexture;
   if (candidate.kind === "scratch") {
     publishMixedSceneBlendScratchCandidate(engine, candidate.scratch);
     oldScratch?.destroy();
     oldOperand?.destroy();
+    oldCutout?.destroy();
     oldGroup?.destroy();
+    oldClippingBase?.destroy();
+    oldDocumentMask?.destroy();
     engine.presentationCacheNeedsFullRebuild = true;
     return;
   }
@@ -2792,7 +3327,10 @@ export async function prewarmMixedSceneLinearTextureForLayerBlend(
   oldTexture?.destroy();
   oldScratch?.destroy();
   oldOperand?.destroy();
+  oldCutout?.destroy();
   oldGroup?.destroy();
+  oldClippingBase?.destroy();
+  oldDocumentMask?.destroy();
   engine.presentationCacheNeedsFullRebuild = true;
 }
 
@@ -2800,13 +3338,22 @@ export function ensureMixedSceneLinearTexture(engine: BrushEngine, width: number
   const releaseBlendScratch = () => {
     engine.mixedSceneBlendScratchTexture?.destroy();
     engine.mixedSceneBlendOperandTexture?.destroy();
+    engine.mixedSceneBlendCutoutTexture?.destroy();
     engine.mixedSceneBlendGroupTexture?.destroy();
+    engine.mixedSceneBlendClippingBaseTexture?.destroy();
+    engine.mixedSceneBlendDocumentMaskTexture?.destroy();
     engine.mixedSceneBlendScratchTexture = null;
     engine.mixedSceneBlendScratchView = null;
     engine.mixedSceneBlendOperandTexture = null;
     engine.mixedSceneBlendOperandView = null;
+    engine.mixedSceneBlendCutoutTexture = null;
+    engine.mixedSceneBlendCutoutView = null;
     engine.mixedSceneBlendGroupTexture = null;
     engine.mixedSceneBlendGroupView = null;
+    engine.mixedSceneBlendClippingBaseTexture = null;
+    engine.mixedSceneBlendClippingBaseView = null;
+    engine.mixedSceneBlendDocumentMaskTexture = null;
+    engine.mixedSceneBlendDocumentMaskView = null;
     engine.mixedSceneBlendFromLinearBindGroup = null;
     engine.mixedSceneBlendFromScratchBindGroup = null;
     engine.mixedSceneBlendFromGroupBindGroup = null;
@@ -2822,14 +3369,20 @@ export function ensureMixedSceneLinearTexture(engine: BrushEngine, width: number
     return;
   }
   const needsAdvancedBlend = !engine.usesLayerBlendTilePresentation()
-    && engine.layerStack.layers.some((record) => record.blendMode !== "normal");
+    && engine.layerStack.layers.some(rasterLayerNeedsBackdropComposition);
   const blendScratchReady = !needsAdvancedBlend || Boolean(
     engine.mixedSceneBlendScratchTexture
       && engine.mixedSceneBlendScratchView
       && engine.mixedSceneBlendOperandTexture
       && engine.mixedSceneBlendOperandView
+      && engine.mixedSceneBlendCutoutTexture
+      && engine.mixedSceneBlendCutoutView
       && engine.mixedSceneBlendGroupTexture
       && engine.mixedSceneBlendGroupView
+      && engine.mixedSceneBlendClippingBaseTexture
+      && engine.mixedSceneBlendClippingBaseView
+      && engine.mixedSceneBlendDocumentMaskTexture
+      && engine.mixedSceneBlendDocumentMaskView
       && engine.mixedSceneBlendFromLinearBindGroup
       && engine.mixedSceneBlendFromScratchBindGroup
       && engine.mixedSceneBlendFromGroupBindGroup,
@@ -2853,7 +3406,10 @@ export function ensureMixedSceneLinearTexture(engine: BrushEngine, width: number
   const oldTexture = engine.mixedSceneLinearTexture;
   const oldBlendScratch = engine.mixedSceneBlendScratchTexture;
   const oldBlendOperand = engine.mixedSceneBlendOperandTexture;
+  const oldBlendCutout = engine.mixedSceneBlendCutoutTexture;
   const oldBlendGroup = engine.mixedSceneBlendGroupTexture;
+  const oldBlendClippingBase = engine.mixedSceneBlendClippingBaseTexture;
+  const oldBlendDocumentMask = engine.mixedSceneBlendDocumentMaskTexture;
   const texture = engine.device.createTexture({
     label: `Ordered mixed scene linear cache ${width}×${height}`,
     size: { width, height, depthOrArrayLayers: 1 },
@@ -2866,7 +3422,10 @@ export function ensureMixedSceneLinearTexture(engine: BrushEngine, width: number
   });
   let blendScratch: GPUTexture | null = null;
   let blendOperand: GPUTexture | null = null;
+  let blendCutout: GPUTexture | null = null;
   let blendGroup: GPUTexture | null = null;
+  let blendClippingBase: GPUTexture | null = null;
+  let blendDocumentMask: GPUTexture | null = null;
   try {
     const view = texture.createView({ label: "Ordered mixed scene linear cache view" });
     const bindGroup = engine.device.createBindGroup({
@@ -2879,7 +3438,10 @@ export function ensureMixedSceneLinearTexture(engine: BrushEngine, width: number
     });
     let blendScratchView: GPUTextureView | null = null;
     let blendOperandView: GPUTextureView | null = null;
+    let blendCutoutView: GPUTextureView | null = null;
     let blendGroupView: GPUTextureView | null = null;
+    let blendClippingBaseView: GPUTextureView | null = null;
+    let blendDocumentMaskView: GPUTextureView | null = null;
     let fromLinear: GPUBindGroup | null = null;
     let fromScratch: GPUBindGroup | null = null;
     let fromGroup: GPUBindGroup | null = null;
@@ -2889,8 +3451,14 @@ export function ensureMixedSceneLinearTexture(engine: BrushEngine, width: number
       blendScratchView = scratch.view;
       blendOperand = scratch.operandTexture;
       blendOperandView = scratch.operandView;
+      blendCutout = scratch.cutoutTexture;
+      blendCutoutView = scratch.cutoutView;
       blendGroup = scratch.groupTexture;
       blendGroupView = scratch.groupView;
+      blendClippingBase = scratch.clippingBaseTexture;
+      blendClippingBaseView = scratch.clippingBaseView;
+      blendDocumentMask = scratch.documentMaskTexture;
+      blendDocumentMaskView = scratch.documentMaskView;
       fromLinear = scratch.fromLinear;
       fromScratch = scratch.fromScratch;
       fromGroup = scratch.fromGroup;
@@ -2904,8 +3472,14 @@ export function ensureMixedSceneLinearTexture(engine: BrushEngine, width: number
     engine.mixedSceneBlendScratchView = blendScratchView;
     engine.mixedSceneBlendOperandTexture = blendOperand;
     engine.mixedSceneBlendOperandView = blendOperandView;
+    engine.mixedSceneBlendCutoutTexture = blendCutout;
+    engine.mixedSceneBlendCutoutView = blendCutoutView;
     engine.mixedSceneBlendGroupTexture = blendGroup;
     engine.mixedSceneBlendGroupView = blendGroupView;
+    engine.mixedSceneBlendClippingBaseTexture = blendClippingBase;
+    engine.mixedSceneBlendClippingBaseView = blendClippingBaseView;
+    engine.mixedSceneBlendDocumentMaskTexture = blendDocumentMask;
+    engine.mixedSceneBlendDocumentMaskView = blendDocumentMaskView;
     engine.mixedSceneBlendFromLinearBindGroup = fromLinear;
     engine.mixedSceneBlendFromScratchBindGroup = fromScratch;
     engine.mixedSceneBlendFromGroupBindGroup = fromGroup;
@@ -2913,12 +3487,18 @@ export function ensureMixedSceneLinearTexture(engine: BrushEngine, width: number
     oldTexture?.destroy();
     oldBlendScratch?.destroy();
     oldBlendOperand?.destroy();
+    oldBlendCutout?.destroy();
     oldBlendGroup?.destroy();
+    oldBlendClippingBase?.destroy();
+    oldBlendDocumentMask?.destroy();
   } catch (error) {
     texture.destroy();
     blendScratch?.destroy();
     blendOperand?.destroy();
+    blendCutout?.destroy();
     blendGroup?.destroy();
+    blendClippingBase?.destroy();
+    blendDocumentMask?.destroy();
     throw error;
   }
 }
@@ -3051,6 +3631,10 @@ export function createMixedSceneRasterSegmentResources(engine: BrushEngine,
   key: MixedSceneRasterRunKey,
   surface: MergedSurfaceResources,
   opacity = 1,
+  cutoutSurface: MergedSurfaceResources | null = null,
+  documentCutoutBaseSurface: MergedSurfaceResources | null = null,
+  documentCutoutMaskSurface: MergedSurfaceResources | null = null,
+  documentCutoutOpacity = 1,
 ): MixedSceneRasterSegmentResources {
   const layout = engine.mixedSceneRasterSegmentBindGroupLayout;
   if (!layout) {
@@ -3061,6 +3645,8 @@ export function createMixedSceneRasterSegmentResources(engine: BrushEngine,
     size: 16,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
+  let documentCutoutBaseUniformBuffer: GPUBuffer | null = null;
+  let documentCutoutMaskUniformBuffer: GPUBuffer | null = null;
   try {
     engine.device.queue.writeBuffer(
       uniformBuffer,
@@ -3082,8 +3668,87 @@ export function createMixedSceneRasterSegmentResources(engine: BrushEngine,
         { binding: 3, resource: engine.sampler },
       ],
     });
-    return { key, surface, uniformBuffer, bindGroup };
+    const cutoutBindGroup = cutoutSurface
+      ? engine.device.createBindGroup({
+        label: `Mixed scene raster segment ${key} cutout bind group`,
+        layout,
+        entries: [
+          { binding: 0, resource: { buffer: engine.displayUniformBuffer } },
+          { binding: 1, resource: { buffer: uniformBuffer } },
+          { binding: 2, resource: cutoutSurface.samplingView },
+          { binding: 3, resource: engine.sampler },
+        ],
+      })
+      : null;
+    const auxiliaryResources = (
+      auxiliary: MergedSurfaceResources | null,
+      suffix: string,
+    ): { uniformBuffer: GPUBuffer; bindGroup: GPUBindGroup } | null => {
+      if (!auxiliary) {
+        return null;
+      }
+      const auxiliaryUniformBuffer = engine.device.createBuffer({
+        label: `Mixed scene raster segment ${key} ${suffix} uniforms`,
+        size: 16,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      try {
+        engine.device.queue.writeBuffer(
+          auxiliaryUniformBuffer,
+          0,
+          new Float32Array([
+            auxiliary.bounds.x,
+            auxiliary.bounds.y,
+            auxiliary.resolutionScale,
+            1,
+          ]),
+        );
+        const bindGroup = engine.device.createBindGroup({
+          label: `Mixed scene raster segment ${key} ${suffix} bind group`,
+          layout,
+          entries: [
+            { binding: 0, resource: { buffer: engine.displayUniformBuffer } },
+            { binding: 1, resource: { buffer: auxiliaryUniformBuffer } },
+            { binding: 2, resource: auxiliary.samplingView },
+            { binding: 3, resource: engine.sampler },
+          ],
+        });
+        return { uniformBuffer: auxiliaryUniformBuffer, bindGroup };
+      } catch (error) {
+        auxiliaryUniformBuffer.destroy();
+        throw error;
+      }
+    };
+    const documentCutoutBaseResources = auxiliaryResources(
+      documentCutoutBaseSurface,
+      "document cutout base",
+    );
+    documentCutoutBaseUniformBuffer = documentCutoutBaseResources?.uniformBuffer ?? null;
+    const documentCutoutBaseBindGroup = documentCutoutBaseResources?.bindGroup ?? null;
+    const documentCutoutMaskResources = auxiliaryResources(
+      documentCutoutMaskSurface,
+      "document cutout mask",
+    );
+    documentCutoutMaskUniformBuffer = documentCutoutMaskResources?.uniformBuffer ?? null;
+    const documentCutoutMaskBindGroup = documentCutoutMaskResources?.bindGroup ?? null;
+    return {
+      key,
+      surface,
+      cutoutSurface,
+      documentCutoutBaseSurface,
+      documentCutoutMaskSurface,
+      documentCutoutOpacity: Math.min(1, Math.max(0, documentCutoutOpacity)),
+      uniformBuffer,
+      bindGroup,
+      cutoutBindGroup,
+      documentCutoutBaseUniformBuffer,
+      documentCutoutBaseBindGroup,
+      documentCutoutMaskUniformBuffer,
+      documentCutoutMaskBindGroup,
+    };
   } catch (error) {
+    documentCutoutBaseUniformBuffer?.destroy();
+    documentCutoutMaskUniformBuffer?.destroy();
     uniformBuffer.destroy();
     throw error;
   }
@@ -3407,8 +4072,28 @@ export function publishMixedScene(engine: BrushEngine): void {
 export function destroyMixedSceneRasterSegment(engine: BrushEngine, 
   segment: MixedSceneRasterSegmentResources,
 ): void {
+  segment.documentCutoutBaseUniformBuffer?.destroy();
+  if (segment.documentCutoutMaskUniformBuffer !== segment.documentCutoutBaseUniformBuffer) {
+    segment.documentCutoutMaskUniformBuffer?.destroy();
+  }
   segment.uniformBuffer.destroy();
   engine.destroyMergedSurface(segment.surface);
+  if (segment.cutoutSurface !== segment.surface) {
+    engine.destroyMergedSurface(segment.cutoutSurface);
+  }
+  if (
+    segment.documentCutoutBaseSurface !== segment.surface
+    && segment.documentCutoutBaseSurface !== segment.cutoutSurface
+  ) {
+    engine.destroyMergedSurface(segment.documentCutoutBaseSurface);
+  }
+  if (
+    segment.documentCutoutMaskSurface !== segment.surface
+    && segment.documentCutoutMaskSurface !== segment.cutoutSurface
+    && segment.documentCutoutMaskSurface !== segment.documentCutoutBaseSurface
+  ) {
+    engine.destroyMergedSurface(segment.documentCutoutMaskSurface);
+  }
 }
 
 export function requireMixedSceneStack(engine: BrushEngine): MixedSceneStack {

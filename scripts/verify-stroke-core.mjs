@@ -440,7 +440,7 @@ assert.match(
 );
 assert.match(
   rendererSource,
-  /if \(uniformAlpha\) \{[\s\S]*?if \(base\.a <= 0\.0\)[\s\S]*?return vec4<f32>\(parameters\.colorOverlay\.rgb \* opacity, opacity\);/,
+  /if \(uniformAlpha\) \{[\s\S]*?if \(shape\.a <= 0\.0\)[\s\S]*?return vec4<f32>\(parameters\.colorOverlay\.rgb \* opacity, opacity\);/,
   "uniform mode must recolor only occupied pixels and replace their alpha",
 );
 assert.match(
@@ -450,11 +450,11 @@ assert.match(
 );
 assert.match(
   rendererSource,
-  /let base = colorOverlayNode\(sourceTexel\(position\)\)/,
+  /let shape = sourceTexel\(position\);[\s\S]*?let base = colorOverlayNode\(shape \* bevel\.scalars\.z, shape\)/,
 );
 assert.ok(
-  rendererSource.indexOf("let base = colorOverlayNode(sourceTexel(position))")
-    < rendererSource.indexOf("let shadowedBase = innerShadowNode(base, position)"),
+  rendererSource.indexOf("let base = colorOverlayNode(shape * bevel.scalars.z, shape)")
+    < rendererSource.indexOf("let shadowedBase = innerShadowNode(base, shape, position)"),
   "Color Overlay deve precedere Ombra interna, Smusso e Traccia.",
 );
 assert.match(rendererSource, /colorOverlayStyle\?: RasterColorOverlayStyle/);
@@ -462,8 +462,8 @@ assert.match(rendererSource, /return style\.uniformAlpha \? -\(1 \+ opacity\) : 
 assert.match(rendererSource, /this\.displayParameterUploadF32\[23\] = encodedColorOverlayMode\(colorOverlayStyle\)/);
 assert.match(rendererSource, /this\.parameterUploadF32\[word \+ 23\] = encodedColorOverlayMode\(colorOverlayStyle\)/);
 assert.ok(
-  rendererSource.indexOf("bevelNode(base, position)")
-    < rendererSource.indexOf("combinedStrokeNode(base.a, node, coverage)"),
+  rendererSource.indexOf("bevelNode(base, shape.a, position)")
+    < rendererSource.indexOf("combinedStrokeNode(shape.a, legacyNode, coverage)"),
   "The style stack must compose bevel before stroke.",
 );
 assert.match(rendererSource, /style\.enabled && style\.width > 0 \? 1 : 0/);

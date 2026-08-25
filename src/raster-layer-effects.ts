@@ -22,11 +22,16 @@ import {
   copyRasterStrokeStyle,
   type RasterStrokeStyle,
 } from "./stroke-core";
+import {
+  DEFAULT_LAYER_CONTENT_OPACITY,
+  normalizeLayerContentOpacity,
+} from "./layer-composition.ts";
 
 export const RASTERIZE_LAYER_EFFECTS_STRATEGY =
-  "bake-style-stack-into-authoritative-pixels-preserve-opacity-blend-and-clipping-v1" as const;
+  "bake-content-and-style-stack-into-authoritative-pixels-preserve-opacity-blend-and-clipping-v2" as const;
 
 export interface RasterLayerEffectsSnapshot {
+  readonly contentOpacity: number;
   readonly strokeStyle: RasterStrokeStyle;
   readonly bevelStyle: RasterBevelStyle;
   readonly outerShadowStyle: RasterOuterShadowStyle;
@@ -35,6 +40,7 @@ export interface RasterLayerEffectsSnapshot {
 }
 
 export interface RasterLayerEffectsOwner {
+  contentOpacity: number;
   strokeStyle: RasterStrokeStyle;
   bevelStyle: RasterBevelStyle;
   outerShadowStyle: RasterOuterShadowStyle;
@@ -46,6 +52,7 @@ export function copyRasterLayerEffects(
   source: RasterLayerEffectsOwner | RasterLayerEffectsSnapshot,
 ): RasterLayerEffectsSnapshot {
   return {
+    contentOpacity: normalizeLayerContentOpacity(source.contentOpacity),
     strokeStyle: copyRasterStrokeStyle(source.strokeStyle),
     bevelStyle: copyRasterBevelStyle(source.bevelStyle),
     outerShadowStyle: copyRasterOuterShadowStyle(source.outerShadowStyle),
@@ -56,6 +63,7 @@ export function copyRasterLayerEffects(
 
 export function defaultRasterLayerEffects(): RasterLayerEffectsSnapshot {
   return {
+    contentOpacity: DEFAULT_LAYER_CONTENT_OPACITY,
     strokeStyle: copyRasterStrokeStyle(DEFAULT_RASTER_STROKE_STYLE),
     bevelStyle: copyRasterBevelStyle(DEFAULT_RASTER_BEVEL_STYLE),
     outerShadowStyle: copyRasterOuterShadowStyle(DEFAULT_RASTER_OUTER_SHADOW_STYLE),
@@ -69,6 +77,7 @@ export function applyRasterLayerEffects(
   source: RasterLayerEffectsSnapshot,
 ): void {
   const copy = copyRasterLayerEffects(source);
+  target.contentOpacity = copy.contentOpacity;
   target.strokeStyle = copy.strokeStyle;
   target.bevelStyle = copy.bevelStyle;
   target.outerShadowStyle = copy.outerShadowStyle;
@@ -79,7 +88,8 @@ export function applyRasterLayerEffects(
 export function rasterLayerEffectsNeedBake(
   source: RasterLayerEffectsOwner | RasterLayerEffectsSnapshot,
 ): boolean {
-  return (source.strokeStyle.enabled && source.strokeStyle.width > 0)
+  return normalizeLayerContentOpacity(source.contentOpacity) !== DEFAULT_LAYER_CONTENT_OPACITY
+    || (source.strokeStyle.enabled && source.strokeStyle.width > 0)
     || source.bevelStyle.enabled
     || source.outerShadowStyle.enabled
     || source.innerShadowStyle.enabled
@@ -89,7 +99,8 @@ export function rasterLayerEffectsNeedBake(
 export function rasterLayerEffectsAreConfigured(
   source: RasterLayerEffectsOwner | RasterLayerEffectsSnapshot,
 ): boolean {
-  return source.strokeStyle.enabled
+  return normalizeLayerContentOpacity(source.contentOpacity) !== DEFAULT_LAYER_CONTENT_OPACITY
+    || source.strokeStyle.enabled
     || source.bevelStyle.enabled
     || source.outerShadowStyle.enabled
     || source.innerShadowStyle.enabled

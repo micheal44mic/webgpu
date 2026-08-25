@@ -360,9 +360,9 @@ assert(rendererSource.includes("segmentDistance"));
 assert(rendererSource.includes("jfaScheduleForExtent"));
 assert(rendererSource.includes("beginComputePass"));
 assert(!rendererSource.includes("mapAsync"));
-assert(styleStackSource.includes("bevelNode(base, position)"));
-assert(styleStackSource.indexOf("bevelNode(base, position)")
-  < styleStackSource.indexOf("combinedStrokeNode(base.a, node, coverage)"));
+assert(styleStackSource.includes("bevelNode(base, shape.a, position)"));
+assert(styleStackSource.indexOf("bevelNode(base, shape.a, position)")
+  < styleStackSource.indexOf("combinedStrokeNode(shape.a, legacyNode, coverage)"));
 assert(!styleStackSource.includes("random24(documentPosition, 4660u)"));
 assert.doesNotMatch(styleStackSource, /0\.75 \/ 255\.0/);
 assert(engineSource.includes("sourceMode: RasterStrokeSourceMode"));

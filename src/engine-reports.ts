@@ -611,7 +611,13 @@ export function getStats(engine: BrushEngine): EngineStats {
         name: record.name,
         visible: record.visible,
         opacity: record.opacity,
+        contentOpacity: record.contentOpacity,
         blendMode: record.blendMode,
+        cutoutMode: record.cutoutMode,
+        tonalBlend: {
+          current: [...record.tonalBlend.current],
+          underlying: [...record.tonalBlend.underlying],
+        },
         reference: record.id === engine.layerStack.referenceLayerId,
         clippingParentId: record.clippingParentId,
         // The record's copy is only written back when the layer stops being
@@ -925,6 +931,7 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
   const mixedSceneTextureCount = Number(Boolean(engine.mixedSceneLinearTexture))
     + Number(Boolean(engine.mixedSceneBlendScratchTexture))
     + Number(Boolean(engine.mixedSceneBlendOperandTexture))
+    + Number(Boolean(engine.mixedSceneBlendCutoutTexture))
     + Number(Boolean(engine.mixedSceneBlendGroupTexture));
   const mixedSceneLinearMiB = mixedSceneTextureCount
     * engine.mixedSceneLinearWidth * engine.mixedSceneLinearHeight

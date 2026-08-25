@@ -11,6 +11,7 @@ import {
 
 const read = (relativePath) => fs.readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
 const engineSource = readEngineSource();
+const appDiagnosticsControllerSource = read("src/app-diagnostics-controller.ts");
 const mainSource = read("src/main.ts");
 const canvasInputSource = read("src/canvas-input-controller.ts");
 const humanLabSource = read("src/labs/human-stroke-lab.ts");
@@ -181,10 +182,14 @@ assert.equal((displayShaders.match(/  mergedAboveOrigin: vec2<f32>,/g) ?? []).le
   "display e compositori mip devono ricevere l'origine del bbox superiore");
 assert.equal((displayShaders.match(/  viewRotation: vec2<f32>,/g) ?? []).length, 6,
   "display e compositori mip devono condividere la stessa ABI di rotazione");
-assert.equal((displayShaders.match(/let displayOffset =/g) ?? []).length, 10,
-  "entry point canonico, final-stack e active-only devono applicare la stessa trasformazione inversa");
+assert.equal((displayShaders.match(/let displayOffset =/g) ?? []).length, 15,
+  "entry point canonico, final-stack, source-only e raw-matte devono applicare la stessa trasformazione inversa");
 assert.equal((displayShaders.match(/fn activeFragmentMain\(/g) ?? []).length, 4,
   "ogni variante display deve offrire la sorgente trasparente al compositore segmentato");
+assert.equal((displayShaders.match(/fn activeSourceFragmentMain\(/g) ?? []).length, 4,
+  "ogni variante display deve offrire una sorgente isolata per il fold avanzato");
+assert.equal((displayShaders.match(/fn activeCutoutFragmentMain\(/g) ?? []).length, 1,
+  "la variante base deve offrire la matte autoriale non filtrata");
 assert.doesNotMatch(displayShaders, /display\.layerSize/,
   "la dimensione layer deve essere ricavata senza allargare l'uniform");
 assert.ok((displayShaders.match(/textureDimensions\(activeLayerBase, 0\)/g) ?? []).length >= 2);
@@ -257,8 +262,8 @@ assert.match(vectorTextShaderSource, /sampleViewportTexture[\s\S]*textureLoad\(s
   "le superfici vettoriali screen-space devono restare analitiche e nitide");
 assert.ok((shaderSource.match(/rasterPixelViewEnabled\(1\.0\)/g) ?? []).length >= 5,
   "base, tail e glaze devono condividere la vista pixel raster");
-assert.equal((strokeRendererSource.match(/directStyledNearestSample\(layerPosition\)/g) ?? []).length, 2,
-  "effetti raster e active-only devono usare lo stesso nearest");
+assert.equal((strokeRendererSource.match(/directStyledNearestSample\(layerPosition\)/g) ?? []).length, 3,
+  "effetti raster, active-only e source-only devono usare lo stesso nearest");
 assert.match(strokeRendererSource, /display-nearest-raster-at-581pct/);
 assert.doesNotMatch(pixelViewSource, /createTexture|createBuffer|writeTexture|copyTexture/,
   "la modalità pixel deve essere solo display e non allocare o mutare risorse");
@@ -400,6 +405,49 @@ assert.deepEqual(oldFringeRgb, [215, 225, 137]);
 assert.deepEqual(correctedRgb, [247, 255, 188]);
 assert(correctedRgb[0] > oldFringeRgb[0] && correctedRgb[1] === 255,
   "la transizione corretta non deve scendere sotto entrambi i colori finali");
+
+const viewChangeSection = engineSource.slice(
+  engineSource.indexOf("  notifyViewChange(): void"),
+  engineSource.indexOf("  setVectorTextFastPresentationEnabled", engineSource.indexOf(
+    "  notifyViewChange(): void",
+  )),
+);
+assert.match(
+  viewChangeSection,
+  /this\.viewPresentationRevision \+= 1;/,
+  "ogni mutazione della camera deve produrre una revisione presentabile",
+);
+const viewRetrySection = engineSource.slice(
+  engineSource.indexOf("  private armViewPresentationRetry"),
+  engineSource.indexOf("  renderFrame(timestamp", engineSource.indexOf(
+    "  private armViewPresentationRetry",
+  )),
+);
+assert.match(
+  viewRetrySection,
+  /revision <= this\.viewPresentationRetryArmedRevision[\s\S]*revision !== this\.viewPresentationRevision/,
+  "il retry deve essere singolo e ignorare le revisioni superate",
+);
+assert.match(
+  viewRetrySection,
+  /queue\.onSubmittedWorkDone\(\)[\s\S]*this\.viewPresentationRetryRequestedRevision = revision;[\s\S]*this\.displayDirty = true;[\s\S]*this\.requestRender\(\)/,
+  "la seconda presentazione deve partire solo dopo la conclusione GPU",
+);
+assert.doesNotMatch(
+  viewRetrySection,
+  /presentationCacheNeedsFullRebuild\s*=/,
+  "il retry deve ricopiare la cache senza ricostruire Glass, livelli o mipmap",
+);
+assert.match(
+  engineSource,
+  /if \(timing\.presentationCacheFullRebuilds > 0\) \{\s*this\.armViewPresentationRetry\(viewPresentationRevision\);/,
+  "solo il frame autorevole che ricostruisce la vista deve armare il present-only",
+);
+assert.match(
+  appDiagnosticsControllerSource,
+  /viewPresentationRevision:[\s\S]*viewPresentationRetryArmedRevision:[\s\S]*viewPresentationRetryRequestedRevision:/,
+  "la diagnostica deve rendere osservabile il lifecycle della presentazione",
+);
 
 assert.equal(packageJson.scripts["view:verify"], "node scripts/verify-view-rotation.mjs");
 

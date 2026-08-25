@@ -145,6 +145,23 @@ export const THICKNESS_TAIL_MAXIMUM_TEXTURE_DIMENSION = DOCUMENT_MAX_EDGE;
 
 export const SHAPE_MASK_SIZE = 2048;
 
+// The logical Shape remains 2048². Only the derived sampling texture reserves
+// this transparent reconstruction guard, so imported/source pixels, previews
+// and brush geometry keep their authored coordinate system.
+export const SHAPE_MASK_FILTER_GUARD_TEXELS = 64;
+
+export const SHAPE_MASK_FILTER_CONTENT_SIZE =
+  SHAPE_MASK_SIZE - SHAPE_MASK_FILTER_GUARD_TEXELS * 2;
+
+export const SHAPE_MASK_FILTER_UV_SCALE =
+  SHAPE_MASK_FILTER_CONTENT_SIZE / SHAPE_MASK_SIZE;
+
+export const SHAPE_MASK_FILTER_UV_OFFSET =
+  SHAPE_MASK_FILTER_GUARD_TEXELS / SHAPE_MASK_SIZE;
+
+export const SHAPE_MASK_FILTER_UV_HALF_EXTENT =
+  SHAPE_MASK_FILTER_UV_SCALE / 2;
+
 export const GRAIN_TEXTURE_SIZE = 800;
 
 export const GRAIN_TEXTURE_MIP_LEVEL_COUNT = Math.floor(Math.log2(GRAIN_TEXTURE_SIZE)) + 1;

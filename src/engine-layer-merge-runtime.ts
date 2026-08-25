@@ -79,6 +79,7 @@ import {
   type MemoryReservation,
   type MemoryRequest,
 } from "./memory-governor-core";
+import { cloneLayerTonalBlend } from "./layer-composition.ts";
 import { planLayerMergeCreateMemory } from "./layer-memory-admission-core";
 import { isHistoryColdSeedHandle } from "./history-cold-seed";
 
@@ -374,6 +375,8 @@ async function renderMergeOutput(
       record.visible = parent.visible;
       record.opacity = parent.opacity;
       record.blendMode = parent.blendMode;
+      record.cutoutMode = parent.cutoutMode;
+      record.tonalBlend = cloneLayerTonalBlend(parent.tonalBlend);
       bounds = await renderSingleRasterUnitPreservingParent(
         engine,
         surface,

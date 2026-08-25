@@ -1,5 +1,12 @@
 import type { EngineStats } from "./engine-stats";
 import type { LayerBlendMode } from "./layer-blend-modes";
+import {
+  normalizeLayerContentOpacity,
+  normalizeLayerCutoutMode,
+  normalizeLayerTonalBlend,
+  type LayerCutoutMode,
+  type LayerTonalBlend,
+} from "./layer-composition";
 import type { MixedSceneItem } from "./mixed-scene-stack";
 
 export type SceneLayerKey = MixedSceneItem["key"];
@@ -11,6 +18,9 @@ export interface SceneLayerProperties {
   readonly kind: SceneLayerKind;
   readonly opacity: number;
   readonly blendMode: LayerBlendMode | null;
+  readonly contentOpacity: number | null;
+  readonly cutoutMode: LayerCutoutMode | null;
+  readonly tonalBlend: LayerTonalBlend | null;
   readonly rasterIndex: number | null;
   readonly semanticId: number | null;
   readonly clippingEnabled: boolean;
@@ -61,6 +71,9 @@ export function selectedSceneLayerProperties(
       kind: "raster",
       opacity: layer.opacity,
       blendMode: layer.blendMode,
+      contentOpacity: normalizeLayerContentOpacity(layer.contentOpacity),
+      cutoutMode: normalizeLayerCutoutMode(layer.cutoutMode),
+      tonalBlend: normalizeLayerTonalBlend(layer.tonalBlend),
       rasterIndex,
       semanticId: null,
       clippingEnabled,
@@ -86,6 +99,9 @@ export function selectedSceneLayerProperties(
       kind: "raster",
       opacity: layer.opacity,
       blendMode: layer.blendMode,
+      contentOpacity: normalizeLayerContentOpacity(layer.contentOpacity),
+      cutoutMode: normalizeLayerCutoutMode(layer.cutoutMode),
+      tonalBlend: normalizeLayerTonalBlend(layer.tonalBlend),
       rasterIndex: item.rasterLayerIndex,
       semanticId: null,
       clippingEnabled,
@@ -105,6 +121,9 @@ export function selectedSceneLayerProperties(
     kind: item.kind,
     opacity: node.opacity,
     blendMode: null,
+    contentOpacity: null,
+    cutoutMode: null,
+    tonalBlend: null,
     rasterIndex: null,
     semanticId: node.id,
     clippingEnabled: false,

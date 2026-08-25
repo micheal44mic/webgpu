@@ -12,6 +12,7 @@ import type {
   RasterOuterShadowStyle,
 } from "./shadow-core";
 import type { RasterStrokeStyle } from "./stroke-core";
+import type { LayerCutoutMode, LayerTonalBlend } from "./layer-composition.ts";
 
 /**
  * Durable, user-owned artwork storage. This database is intentionally
@@ -129,7 +130,13 @@ export interface ProjectLayerV1 {
   readonly name: string;
   readonly visible: boolean;
   readonly opacity: number;
+  /** Optional for V1 manifests saved before content/effect opacity separation. */
+  readonly contentOpacity?: number;
   readonly blendMode: LayerBlendMode;
+  /** Optional for V1 manifests saved before scoped cutout composition. */
+  readonly cutoutMode?: LayerCutoutMode;
+  /** Optional for V1 manifests saved before tonal source/backdrop gating. */
+  readonly tonalBlend?: LayerTonalBlend;
   readonly clippingParentId: number | null;
   readonly contentBounds: ProjectRectV1 | null;
   readonly storageTileMask: Uint32Array;
@@ -791,6 +798,9 @@ function assertLayer(
   if (value.name.trim().length === 0) fail(`${path}.name`, "must not be blank");
   assertBoolean(value.visible, `${path}.visible`);
   assertUnitInterval(value.opacity, `${path}.opacity`);
+  if (value.contentOpacity !== undefined) {
+    assertUnitInterval(value.contentOpacity, `${path}.contentOpacity`);
+  }
   const migratedBlendMode = migrateLegacyLayerBlendMode(value.blendMode);
   if (migratedBlendMode === null) {
     fail(`${path}.blendMode`, "is unsupported");
@@ -800,6 +810,35 @@ function assertLayer(
     // Rewrite only the retired value: canonical save inputs (which callers may
     // freeze) remain validation-only and are never assigned to.
     value.blendMode = migratedBlendMode;
+  }
+  if (
+    value.cutoutMode !== undefined
+    && value.cutoutMode !== "off"
+    && value.cutoutMode !== "group"
+    && value.cutoutMode !== "document"
+  ) {
+    fail(`${path}.cutoutMode`, "is unsupported");
+  }
+  if (value.tonalBlend !== undefined) {
+    if (!isRecord(value.tonalBlend)) {
+      fail(`${path}.tonalBlend`, "must be an object");
+    }
+    for (const key of ["current", "underlying"] as const) {
+      const range = value.tonalBlend[key];
+      if (!Array.isArray(range) || range.length !== 4) {
+        fail(`${path}.tonalBlend.${key}`, "must contain four values");
+      }
+      let previous = -1;
+      range.forEach((entry, index) => {
+        if (!Number.isInteger(entry) || entry < 0 || entry > 255) {
+          fail(`${path}.tonalBlend.${key}[${index}]`, "must be a byte value");
+        }
+        if (entry < previous) {
+          fail(`${path}.tonalBlend.${key}`, "must be ordered from shadow to highlight");
+        }
+        previous = entry;
+      });
+    }
   }
   if (value.clippingParentId !== null) {
     assertPositiveInteger(value.clippingParentId, `${path}.clippingParentId`);

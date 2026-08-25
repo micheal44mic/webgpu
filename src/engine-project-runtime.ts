@@ -46,6 +46,15 @@ import {
 import { cloneRasterLayerSource } from "./raster-layer-source";
 import { normalizeRasterColorOverlayStyle } from "./raster-color-overlay-core";
 import { normalizeDocumentBackground } from "./document-background";
+import {
+  cloneLayerTonalBlend,
+  DEFAULT_LAYER_CONTENT_OPACITY,
+  DEFAULT_LAYER_CUTOUT_MODE,
+  DEFAULT_LAYER_TONAL_BLEND,
+  normalizeLayerContentOpacity,
+  normalizeLayerCutoutMode,
+  normalizeLayerTonalBlend,
+} from "./layer-composition.ts";
 
 export interface CapturedProjectDocumentV1 {
   readonly snapshot: ProjectSnapshotV1;
@@ -196,7 +205,10 @@ function projectLayerMetadata(
     name: record.name,
     visible: record.visible,
     opacity: record.opacity,
+    contentOpacity: record.contentOpacity,
     blendMode: record.blendMode,
+    cutoutMode: record.cutoutMode,
+    tonalBlend: cloneLayerTonalBlend(record.tonalBlend),
     clippingParentId: record.clippingParentId,
     contentBounds: record.contentBounds ? { ...record.contentBounds } : null,
     // Cold capture may conservatively add tiles covered by contentBounds even
@@ -317,7 +329,16 @@ function layerRecordFromProject(layer: ProjectLayerV1): LayerRecord {
     name: layer.name,
     visible: layer.visible,
     opacity: layer.opacity,
+    contentOpacity: normalizeLayerContentOpacity(
+      layer.contentOpacity ?? DEFAULT_LAYER_CONTENT_OPACITY,
+    ),
     blendMode: layer.blendMode,
+    cutoutMode: normalizeLayerCutoutMode(
+      layer.cutoutMode ?? DEFAULT_LAYER_CUTOUT_MODE,
+    ),
+    tonalBlend: normalizeLayerTonalBlend(
+      layer.tonalBlend ?? DEFAULT_LAYER_TONAL_BLEND,
+    ),
     clippingParentId: layer.clippingParentId,
     contentBounds: layer.contentBounds ? { ...layer.contentBounds } : null,
     storageTileMask: layer.storageTileMask.slice(),

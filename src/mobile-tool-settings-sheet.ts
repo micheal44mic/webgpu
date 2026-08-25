@@ -8,6 +8,13 @@ import {
   LAYER_BLEND_MODE_LABELS,
   type LayerBlendMode,
 } from "./layer-blend-modes.ts";
+import {
+  cloneLayerTonalBlend,
+  normalizeLayerTonalRange,
+  type LayerCutoutMode,
+  type LayerTonalBlend,
+  type LayerTonalRange,
+} from "./layer-composition.ts";
 import type {
   VectorEffectEditorPatch,
   VectorEffectEditorSnapshot,
@@ -53,6 +60,9 @@ export interface MobileLayerOptionsSnapshot {
   readonly name: string;
   readonly opacity: number;
   readonly blendMode: LayerBlendMode | null;
+  readonly contentOpacity: number | null;
+  readonly cutoutMode: LayerCutoutMode | null;
+  readonly tonalBlend: LayerTonalBlend | null;
   readonly locked: boolean;
 }
 
@@ -85,8 +95,21 @@ export interface MobileToolSettingsSheetOptions {
   readonly applyTransform: () => void;
   readonly cancelTransform: () => void;
   readonly getSelectedLayerOptions: () => MobileLayerOptionsSnapshot | null;
-  readonly setSelectedLayerOpacity: (opacity: number) => void;
-  readonly setSelectedLayerBlendMode: (blendMode: LayerBlendMode) => void;
+  readonly beginSelectedLayerOptionsEdit: () => boolean;
+  readonly finishSelectedLayerOptionsEdit: () => void | Promise<boolean>;
+  readonly setSelectedLayerOpacity: (opacity: number) => void | Promise<void>;
+  readonly setSelectedLayerBlendMode: (
+    blendMode: LayerBlendMode,
+  ) => void | Promise<void>;
+  readonly setSelectedLayerContentOpacity: (
+    contentOpacity: number,
+  ) => void | Promise<void>;
+  readonly setSelectedLayerCutoutMode: (
+    cutoutMode: LayerCutoutMode,
+  ) => void | Promise<void>;
+  readonly setSelectedLayerTonalBlend: (
+    tonalBlend: LayerTonalBlend,
+  ) => void | Promise<void>;
   readonly getSelectedSvgStyle: () => MobileSvgStyleSnapshot | null;
   readonly setSelectedSvgPaintColor: (index: number, color: string) => void;
   readonly beginSvgPaintEdit: () => boolean;
@@ -184,6 +207,55 @@ function mobileBlendCategoryLabel(id: string): string {
   return `${id.charAt(0).toUpperCase()}${id.slice(1)}`;
 }
 
+type MobileLayerTonalRangeKind = keyof LayerTonalBlend;
+
+interface MobileLayerTonalRangeElements {
+  readonly root: HTMLElement;
+  readonly output: HTMLOutputElement;
+  readonly inputs: readonly [
+    HTMLInputElement,
+    HTMLInputElement,
+    HTMLInputElement,
+    HTMLInputElement,
+  ];
+  readonly valueOutputs: readonly [
+    HTMLOutputElement,
+    HTMLOutputElement,
+    HTMLOutputElement,
+    HTMLOutputElement,
+  ];
+}
+
+function layerTonalRangeElements(
+  root: ParentNode,
+  prefix: "Current" | "Underlying",
+): MobileLayerTonalRangeElements {
+  const rangeRoot = requiredElement<HTMLElement>(root, `mobileLayerTonal${prefix}`);
+  const inputs = [
+    requiredElement<HTMLInputElement>(root, `mobileLayerTonal${prefix}0`),
+    requiredElement<HTMLInputElement>(root, `mobileLayerTonal${prefix}1`),
+    requiredElement<HTMLInputElement>(root, `mobileLayerTonal${prefix}2`),
+    requiredElement<HTMLInputElement>(root, `mobileLayerTonal${prefix}3`),
+  ] as const;
+  const valueOutput = (input: HTMLInputElement): HTMLOutputElement => {
+    const output = input.closest("label")?.querySelector<HTMLOutputElement>("output");
+    if (!output) throw new Error(`Tonal output for #${input.id} was not found.`);
+    return output;
+  };
+  const valueOutputs = [
+    valueOutput(inputs[0]),
+    valueOutput(inputs[1]),
+    valueOutput(inputs[2]),
+    valueOutput(inputs[3]),
+  ] as const;
+  return {
+    root: rangeRoot,
+    output: requiredElement<HTMLOutputElement>(root, `mobileLayerTonal${prefix}Out`),
+    inputs,
+    valueOutputs,
+  };
+}
+
 export function mobileToolSettingsPeekHeight(viewportHeight: number): number {
   return Math.min(
     MOBILE_TOOL_MAX_PEEK_PX,
@@ -225,8 +297,14 @@ export class MobileToolSettingsSheetController {
   private readonly transformApply: HTMLButtonElement;
   private readonly layerOpacity: HTMLInputElement;
   private readonly layerOpacityOut: HTMLOutputElement;
+  private readonly rasterLayerOptions: HTMLElement;
   private readonly layerBlendModeControl: HTMLElement;
   private readonly layerBlendMode: HTMLSelectElement;
+  private readonly layerContentOpacity: HTMLInputElement;
+  private readonly layerContentOpacityOut: HTMLOutputElement;
+  private readonly layerCutoutMode: HTMLSelectElement;
+  private readonly layerTonalCurrent: MobileLayerTonalRangeElements;
+  private readonly layerTonalUnderlying: MobileLayerTonalRangeElements;
   private readonly svgStylePalette: HTMLElement;
   private readonly svgStyleRasterize: HTMLButtonElement;
   private readonly svgStyleStatus: HTMLElement;
@@ -324,6 +402,21 @@ export class MobileToolSettingsSheetController {
   private svgPaletteSignature = "";
   private svgPaintEditIndex: number | null = null;
   private vectorPropertyEditOpen = false;
+  private layerOptionsDraft: {
+    readonly key: string;
+    opacity?: number;
+    blendMode?: LayerBlendMode;
+    contentOpacity?: number;
+    cutoutMode?: LayerCutoutMode;
+  } | null = null;
+  private layerTonalBlendDraft: {
+    readonly key: string;
+    readonly value: LayerTonalBlend;
+  } | null = null;
+  private readonly layerTonalKeyboardEdits = new Set<HTMLInputElement>();
+  private layerOptionsSyncFrame: number | null = null;
+  private openRequestGeneration = 0;
+  private layerOptionsClosePromise: Promise<boolean> | null = null;
 
   constructor(options: MobileToolSettingsSheetOptions) {
     this.options = options;
@@ -354,8 +447,14 @@ export class MobileToolSettingsSheetController {
     this.transformApply = requiredElement<HTMLButtonElement>(options.root, "mobileTransformApply");
     this.layerOpacity = requiredElement<HTMLInputElement>(options.root, "mobileLayerOpacity");
     this.layerOpacityOut = requiredElement<HTMLOutputElement>(options.root, "mobileLayerOpacityOut");
+    this.rasterLayerOptions = requiredElement<HTMLElement>(options.root, "mobileRasterLayerOptions");
     this.layerBlendModeControl = requiredElement<HTMLElement>(options.root, "mobileLayerBlendModeControl");
     this.layerBlendMode = requiredElement<HTMLSelectElement>(options.root, "mobileLayerBlendMode");
+    this.layerContentOpacity = requiredElement<HTMLInputElement>(options.root, "mobileLayerContentOpacity");
+    this.layerContentOpacityOut = requiredElement<HTMLOutputElement>(options.root, "mobileLayerContentOpacityOut");
+    this.layerCutoutMode = requiredElement<HTMLSelectElement>(options.root, "mobileLayerCutoutMode");
+    this.layerTonalCurrent = layerTonalRangeElements(options.root, "Current");
+    this.layerTonalUnderlying = layerTonalRangeElements(options.root, "Underlying");
     this.svgStylePalette = requiredElement<HTMLElement>(options.root, "mobileSvgStylePalette");
     this.svgStyleRasterize = requiredElement<HTMLButtonElement>(options.root, "mobileSvgStyleRasterize");
     this.svgStyleStatus = requiredElement<HTMLElement>(options.root, "mobileSvgStyleStatus");
@@ -448,7 +547,13 @@ export class MobileToolSettingsSheetController {
     options.document.addEventListener("visibilitychange", () => {
       if (options.document.visibilityState !== "visible") this.commitOpenHistoryEdits();
     });
-    options.browser.addEventListener("pagehide", () => this.commitOpenHistoryEdits());
+    options.browser.addEventListener("pagehide", () => {
+      if (this.openState && this.activeKind === "layer-options") {
+        this.close(false);
+      } else {
+        this.commitOpenHistoryEdits();
+      }
+    });
     options.browser.addEventListener("blur", () => this.commitOpenHistoryEdits());
   }
 
@@ -457,6 +562,7 @@ export class MobileToolSettingsSheetController {
   }
 
   commitOpenHistoryEdits(): void {
+    this.finishLayerTonalBlendEdit();
     this.finishSvgPaintEdit();
     this.finishVectorPropertyEdit();
   }
@@ -466,21 +572,57 @@ export class MobileToolSettingsSheetController {
   }
 
   open(kind: MobileToolSettingsKind, opener: HTMLElement | null = null): void {
-    if (isMobileCanvasSettingsTool(kind) && !this.options.selectCanvasTool(kind)) return;
-    if (TEXT_SELECTION_REQUIRED_KINDS.has(kind) && !this.options.hasSelectedText()) return;
+    const requestGeneration = ++this.openRequestGeneration;
+    void this.openWhenReady(kind, opener, requestGeneration);
+  }
+
+  discardLayerOptionsDraft(): void {
+    this.layerOptionsDraft = null;
+    this.layerTonalBlendDraft = null;
+    this.layerTonalKeyboardEdits.clear();
+    this.requestLayerOptionsSync();
+  }
+
+  private selectedTargetAvailable(kind: MobileToolSettingsKind): boolean {
+    if (TEXT_SELECTION_REQUIRED_KINDS.has(kind) && !this.options.hasSelectedText()) {
+      return false;
+    }
     if (
       VECTOR_EFFECT_SELECTION_REQUIRED_KINDS.has(kind)
       && !this.options.hasSelectedVectorEffectTarget()
-    ) return;
+    ) return false;
     if (SELECTED_ITEM_REQUIRED_KINDS.has(kind)) {
       const available = kind === "layer-options"
         ? this.options.getSelectedLayerOptions() !== null
         : this.options.getSelectedSvgStyle() !== null;
-      if (!available) return;
+      if (!available) return false;
     }
+    return true;
+  }
+
+  private async openWhenReady(
+    kind: MobileToolSettingsKind,
+    opener: HTMLElement | null,
+    requestGeneration: number,
+  ): Promise<void> {
+    if (!this.selectedTargetAvailable(kind)) return;
     if (this.openState && this.activeKind === kind) return;
-    if (this.openState) this.close(false);
+    if (this.openState) this.closeCurrent(false);
+    const pendingClose = this.layerOptionsClosePromise;
+    if (pendingClose) {
+      try {
+        await pendingClose;
+      } catch {
+        return;
+      }
+    }
+    if (
+      requestGeneration !== this.openRequestGeneration
+      || !this.selectedTargetAvailable(kind)
+    ) return;
+    if (isMobileCanvasSettingsTool(kind) && !this.options.selectCanvasTool(kind)) return;
     this.options.beforeOpen();
+    if (kind === "layer-options" && !this.options.beginSelectedLayerOptionsEdit()) return;
 
     this.activeKind = kind;
     if (kind === "text") {
@@ -514,9 +656,19 @@ export class MobileToolSettingsSheetController {
   }
 
   close(restoreFocus = false): void {
+    this.openRequestGeneration += 1;
+    this.closeCurrent(restoreFocus);
+  }
+
+  private closeCurrent(restoreFocus: boolean): void {
     if (!this.openState) return;
     const closedKind = this.activeKind;
     this.commitOpenHistoryEdits();
+    if (closedKind === "layer-options") {
+      this.layerOptionsDraft = null;
+      this.layerTonalBlendDraft = null;
+      this.layerTonalKeyboardEdits.clear();
+    }
     this.openState = false;
     this.releaseDragCapture();
     const activeElement = this.options.document.activeElement;
@@ -535,6 +687,26 @@ export class MobileToolSettingsSheetController {
     this.setOffset(this.closedOffset());
     this.options.onOpenChange(false);
     this.opener = null;
+    if (closedKind === "layer-options") {
+      const finish = Promise.resolve().then(async () => (
+        await this.options.finishSelectedLayerOptionsEdit() === true
+      ));
+      this.layerOptionsClosePromise = finish;
+      finish.then(
+        () => {
+          if (this.layerOptionsClosePromise === finish) {
+            this.layerOptionsClosePromise = null;
+          }
+        },
+        (error) => {
+          if (this.layerOptionsClosePromise === finish) {
+            this.layerOptionsClosePromise = null;
+          }
+          console.error("Layer options could not be committed.", error);
+          this.requestLayerOptionsSync();
+        },
+      );
+    }
     if (closedKind) this.options.onClose(closedKind);
   }
 
@@ -771,17 +943,77 @@ export class MobileToolSettingsSheetController {
     });
     this.layerOpacity.addEventListener("input", () => {
       this.layerOpacityOut.value = `${Math.round(Number(this.layerOpacity.value))}%`;
-    });
-    this.layerOpacity.addEventListener("change", () => {
-      this.runAction(() => this.options.setSelectedLayerOpacity(
+      this.stageLayerOptionsDraft({
+        opacity: Number(this.layerOpacity.value) / 100,
+      });
+      this.runLayerOptionAction(() => this.options.setSelectedLayerOpacity(
         Number(this.layerOpacity.value) / 100,
       ));
     });
+    this.layerContentOpacity.addEventListener("input", () => {
+      this.layerContentOpacityOut.value =
+        `${Math.round(Number(this.layerContentOpacity.value))}%`;
+      this.stageLayerOptionsDraft({
+        contentOpacity: Number(this.layerContentOpacity.value) / 100,
+      });
+      this.runLayerOptionAction(() => this.options.setSelectedLayerContentOpacity(
+        Number(this.layerContentOpacity.value) / 100,
+      ));
+    });
     this.layerBlendMode.addEventListener("change", () => {
-      this.runAction(() => this.options.setSelectedLayerBlendMode(
+      this.stageLayerOptionsDraft({
+        blendMode: this.layerBlendMode.value as LayerBlendMode,
+      });
+      this.runLayerOptionAction(() => this.options.setSelectedLayerBlendMode(
         this.layerBlendMode.value as LayerBlendMode,
       ));
     });
+    this.layerCutoutMode.addEventListener("change", () => {
+      this.stageLayerOptionsDraft({
+        cutoutMode: this.layerCutoutMode.value as LayerCutoutMode,
+      });
+      this.runLayerOptionAction(() => this.options.setSelectedLayerCutoutMode(
+        this.layerCutoutMode.value as LayerCutoutMode,
+      ));
+    });
+    for (const [kind, elements] of [
+      ["current", this.layerTonalCurrent],
+      ["underlying", this.layerTonalUnderlying],
+    ] as const) {
+      elements.inputs.forEach((input, index) => {
+        input.addEventListener("input", () => {
+          this.updateLayerTonalBlendDraft(kind, index, Number(input.value));
+        });
+        input.addEventListener("change", () => {
+          if (!this.layerTonalKeyboardEdits.has(input)) {
+            this.finishLayerTonalBlendEdit();
+          }
+        });
+        input.addEventListener("pointercancel", () => this.finishLayerTonalBlendEdit());
+        input.addEventListener("keydown", (event) => {
+          if (
+            event.key === "ArrowLeft"
+            || event.key === "ArrowRight"
+            || event.key === "ArrowUp"
+            || event.key === "ArrowDown"
+            || event.key === "Home"
+            || event.key === "End"
+            || event.key === "PageUp"
+            || event.key === "PageDown"
+          ) {
+            this.layerTonalKeyboardEdits.add(input);
+          }
+        });
+        input.addEventListener("keyup", () => {
+          if (!this.layerTonalKeyboardEdits.delete(input)) return;
+          this.finishLayerTonalBlendEdit();
+        });
+        input.addEventListener("blur", () => {
+          this.layerTonalKeyboardEdits.delete(input);
+          this.finishLayerTonalBlendEdit();
+        });
+      });
+    }
     this.svgStyleRasterize.addEventListener("click", () => {
       this.runAction(() => this.options.rasterizeSelectedSvg());
     });
@@ -832,6 +1064,26 @@ export class MobileToolSettingsSheetController {
   private runAction(action: () => void): void {
     action();
     this.syncAfterAction();
+  }
+
+  private runLayerOptionAction(action: () => void | Promise<void>): void {
+    const result = action();
+    if (result) {
+      void result.then(
+        () => this.requestLayerOptionsSync(),
+        () => this.requestLayerOptionsSync(),
+      );
+      return;
+    }
+    this.requestLayerOptionsSync();
+  }
+
+  private requestLayerOptionsSync(): void {
+    if (this.layerOptionsSyncFrame !== null) return;
+    this.layerOptionsSyncFrame = this.options.browser.requestAnimationFrame(() => {
+      this.layerOptionsSyncFrame = null;
+      this.syncOpenState();
+    });
   }
 
   private startVectorPropertyEdit(): boolean {
@@ -950,20 +1202,151 @@ export class MobileToolSettingsSheetController {
     return snapshot.active;
   }
 
+  private stageLayerOptionsDraft(patch: {
+    readonly opacity?: number;
+    readonly blendMode?: LayerBlendMode;
+    readonly contentOpacity?: number;
+    readonly cutoutMode?: LayerCutoutMode;
+  }): void {
+    const snapshot = this.options.getSelectedLayerOptions();
+    if (!snapshot || snapshot.locked) return;
+    const previous = this.layerOptionsDraft?.key === snapshot.key
+      ? this.layerOptionsDraft
+      : { key: snapshot.key };
+    this.layerOptionsDraft = { ...previous, ...patch };
+  }
+
   private syncLayerOptions(): void {
     const snapshot = this.options.getSelectedLayerOptions();
     if (!snapshot) return;
-    const opacity = Math.min(1, Math.max(0, snapshot.opacity));
+    if (this.layerOptionsDraft?.key !== snapshot.key) this.layerOptionsDraft = null;
+    const draft = this.layerOptionsDraft;
+    const opacity = Math.min(1, Math.max(0, draft?.opacity ?? snapshot.opacity));
     this.layerOpacity.value = String(Math.round(opacity * 100));
     this.layerOpacityOut.value = `${Math.round(opacity * 100)}%`;
     this.layerOpacity.disabled = snapshot.locked;
     this.layerOpacity.setAttribute("aria-label", `Opacity for ${snapshot.name}`);
-    this.layerBlendModeControl.hidden = snapshot.blendMode === null;
-    if (snapshot.blendMode !== null) {
-      this.layerBlendMode.value = snapshot.blendMode;
-      this.layerBlendMode.disabled = snapshot.locked;
-      this.layerBlendMode.setAttribute("aria-label", `Blend mode for ${snapshot.name}`);
+    const rasterOptionsAvailable = snapshot.blendMode !== null
+      && snapshot.contentOpacity !== null
+      && snapshot.cutoutMode !== null
+      && snapshot.tonalBlend !== null;
+    this.rasterLayerOptions.hidden = !rasterOptionsAvailable;
+    this.layerBlendModeControl.hidden = !rasterOptionsAvailable;
+    if (!rasterOptionsAvailable) {
+      this.layerTonalBlendDraft = null;
+      this.layerTonalKeyboardEdits.clear();
+      return;
     }
+
+    this.layerBlendMode.value = draft?.blendMode ?? snapshot.blendMode!;
+    this.layerBlendMode.disabled = snapshot.locked;
+    this.layerBlendMode.setAttribute("aria-label", `Blend mode for ${snapshot.name}`);
+
+    const contentOpacity = Math.min(
+      1,
+      Math.max(0, draft?.contentOpacity ?? snapshot.contentOpacity!),
+    );
+    this.layerContentOpacity.value = String(Math.round(contentOpacity * 100));
+    this.layerContentOpacityOut.value = `${Math.round(contentOpacity * 100)}%`;
+    this.layerContentOpacity.disabled = snapshot.locked;
+    this.layerContentOpacity.setAttribute("aria-label", `Fill for ${snapshot.name}`);
+
+    this.layerCutoutMode.value = draft?.cutoutMode ?? snapshot.cutoutMode!;
+    this.layerCutoutMode.disabled = snapshot.locked;
+    this.layerCutoutMode.setAttribute("aria-label", `Knockout for ${snapshot.name}`);
+
+    if (this.layerTonalBlendDraft?.key !== snapshot.key) {
+      this.layerTonalBlendDraft = null;
+      this.layerTonalKeyboardEdits.clear();
+    }
+    const tonalBlend = this.layerTonalBlendDraft?.value ?? snapshot.tonalBlend!;
+    this.syncLayerTonalRange(
+      this.layerTonalCurrent,
+      tonalBlend.current,
+      "Current Layer",
+      snapshot.name,
+      snapshot.locked,
+    );
+    this.syncLayerTonalRange(
+      this.layerTonalUnderlying,
+      tonalBlend.underlying,
+      "Underlying Layer",
+      snapshot.name,
+      snapshot.locked,
+    );
+  }
+
+  private updateLayerTonalBlendDraft(
+    kind: MobileLayerTonalRangeKind,
+    index: number,
+    value: number,
+  ): void {
+    const snapshot = this.options.getSelectedLayerOptions();
+    if (
+      !snapshot
+      || snapshot.locked
+      || snapshot.tonalBlend === null
+      || snapshot.contentOpacity === null
+      || snapshot.cutoutMode === null
+    ) return;
+    const base = this.layerTonalBlendDraft?.key === snapshot.key
+      ? this.layerTonalBlendDraft.value
+      : cloneLayerTonalBlend(snapshot.tonalBlend);
+    const candidate = [...base[kind]];
+    candidate[index] = value;
+    const range = normalizeLayerTonalRange(candidate);
+    const tonalBlend: LayerTonalBlend = kind === "current"
+      ? { current: range, underlying: base.underlying }
+      : { current: base.current, underlying: range };
+    this.layerTonalBlendDraft = { key: snapshot.key, value: tonalBlend };
+    this.syncLayerTonalRange(
+      kind === "current" ? this.layerTonalCurrent : this.layerTonalUnderlying,
+      range,
+      kind === "current" ? "Current Layer" : "Underlying Layer",
+      snapshot.name,
+      false,
+    );
+    this.runLayerOptionAction(() => this.options.setSelectedLayerTonalBlend(
+      cloneLayerTonalBlend(tonalBlend),
+    ));
+  }
+
+  private finishLayerTonalBlendEdit(): void {
+    if (!this.layerTonalBlendDraft) return;
+    this.requestLayerOptionsSync();
+  }
+
+  private syncLayerTonalRange(
+    elements: MobileLayerTonalRangeElements,
+    value: LayerTonalRange,
+    label: "Current Layer" | "Underlying Layer",
+    layerName: string,
+    locked: boolean,
+  ): void {
+    const stopLabels = [
+      "shadows hidden to",
+      "shadows visible from",
+      "highlights visible to",
+      "highlights hidden from",
+    ] as const;
+    const minimums = [0, value[0], value[1], value[2]] as const;
+    const maximums = [value[1], value[2], value[3], 255] as const;
+    elements.output.value = `${value[0]} / ${value[1]} — ${value[2]} / ${value[3]}`;
+    elements.root.setAttribute("aria-disabled", String(locked));
+    value.forEach((stop, index) => {
+      const input = elements.inputs[index];
+      const output = elements.valueOutputs[index];
+      input.min = String(minimums[index]);
+      input.max = String(maximums[index]);
+      input.value = String(stop);
+      input.disabled = locked;
+      input.setAttribute("aria-label", `${label} ${stopLabels[index]} for ${layerName}`);
+      output.value = String(stop);
+      elements.root.style.setProperty(
+        `--mobile-layer-tonal-stop-${index}`,
+        `${(stop / 255 * 100).toFixed(3)}%`,
+      );
+    });
   }
 
   private startSvgPaintEdit(index: number): void {

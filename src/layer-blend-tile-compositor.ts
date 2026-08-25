@@ -23,15 +23,47 @@ import {
   LAYER_BLEND_TILE_PRESENT_WGSL,
   LAYER_BLEND_PYRAMID_PRESENT_WGSL,
 } from "./layer-blend-tile-shader";
+import {
+  LAYER_BLEND_FOLD_COMPOSITION_CONTEXT_CODES,
+  LAYER_BLEND_FOLD_UNIFORM_BYTES,
+  type LayerBlendFoldCompositionContext,
+} from "./layer-blend-fold-shader";
+import {
+  DEFAULT_LAYER_TONAL_BLEND,
+  LAYER_CUTOUT_MODE_CODES,
+  layerTonalBlendIsDefault,
+  type LayerCutoutMode,
+  type LayerTonalBlend,
+} from "./layer-composition.ts";
 
 export type LayerBlendTileOperator = "source-over" | "source-atop";
 
 export interface LayerBlendTileSource {
   view: GPUTextureView;
+  /** Raw authored matte used only by scoped cutout composition. */
+  cutoutView?: GPUTextureView;
+  /** Cutout textures may have a different document-space crop than the styled source. */
+  cutoutOrigin?: { x: number; y: number };
+  cutoutScale?: number;
+  cutoutWidth?: number;
+  cutoutHeight?: number;
   origin: { x: number; y: number };
   scale: number;
   width: number;
   height: number;
+  /** Optional immutable-base and document-mask resources for clipping scope. */
+  clipping?: {
+    context: Exclude<LayerBlendFoldCompositionContext, "direct">;
+    baseView: GPUTextureView;
+    baseOrigin: { x: number; y: number };
+    baseScale: number;
+    documentMaskView: GPUTextureView;
+    documentMaskOrigin: { x: number; y: number };
+    documentMaskScale: number;
+    documentMaskWidth: number;
+    documentMaskHeight: number;
+    documentMaskOpacity: number;
+  };
 }
 
 const TILE_TEXTURE_COUNT = 3;
@@ -79,6 +111,10 @@ export class LayerBlendTileCompositor {
   readonly format: "rgba8unorm" | "rgba16float";
   readonly textures: readonly [GPUTexture, GPUTexture, GPUTexture];
   readonly views: readonly [GPUTextureView, GPUTextureView, GPUTextureView];
+  readonly documentMaskTexture: GPUTexture;
+  readonly documentMaskView: GPUTextureView;
+  readonly clippingBaseTexture: GPUTexture;
+  readonly clippingBaseView: GPUTextureView;
   readonly stableMemoryBytes: number;
   readonly foldUniformStride: number;
   readonly presentUniformStride: number;
@@ -102,6 +138,7 @@ export class LayerBlendTileCompositor {
   private readonly normalOverPipeline: GPURenderPipeline;
   private readonly normalAtopPipeline: GPURenderPipeline;
   private readonly advancedPipeline: GPURenderPipeline;
+  private readonly documentMaskContributionPipeline: GPURenderPipeline;
   private readonly tileClearPipeline: GPURenderPipeline;
   private readonly tileBackgroundPipeline: GPURenderPipeline;
   private readonly tilePresentPipeline: GPURenderPipeline;
@@ -109,10 +146,10 @@ export class LayerBlendTileCompositor {
   private readonly pyramidPresentPipeline: GPURenderPipeline;
   private readonly pyramidPresentBindGroup: GPUBindGroup;
   private readonly normalFrameBindGroups = new Map<GPUTextureView, GPUBindGroup>();
-  private readonly advancedFrameBindGroups = new Map<
+  private readonly advancedFrameBindGroups = new Map<GPUTextureView, Map<
     GPUTextureView,
-    Map<0 | 1 | 2, GPUBindGroup>
-  >();
+    Map<GPUTextureView, Map<GPUTextureView, Map<0 | 1 | 2, GPUBindGroup>>>
+  >>();
   private readonly presentFrameBindGroups = new Map<0 | 1 | 2, GPUBindGroup>();
   private readonly mipFrameBindGroups = new Map<0 | 1 | 2, GPUBindGroup>();
   private foldRecordCount = 0;
@@ -124,6 +161,10 @@ export class LayerBlendTileCompositor {
     engine: BrushEngine;
     textures: [GPUTexture, GPUTexture, GPUTexture];
     views: [GPUTextureView, GPUTextureView, GPUTextureView];
+    documentMaskTexture: GPUTexture;
+    documentMaskView: GPUTextureView;
+    clippingBaseTexture: GPUTexture;
+    clippingBaseView: GPUTextureView;
     foldUniformBuffer: GPUBuffer;
     foldUniformStride: number;
     presentUniformBuffer: GPUBuffer;
@@ -137,6 +178,7 @@ export class LayerBlendTileCompositor {
     normalOverPipeline: GPURenderPipeline;
     normalAtopPipeline: GPURenderPipeline;
     advancedPipeline: GPURenderPipeline;
+    documentMaskContributionPipeline: GPURenderPipeline;
     tileClearPipeline: GPURenderPipeline;
     tileBackgroundPipeline: GPURenderPipeline;
     tilePresentPipeline: GPURenderPipeline;
@@ -148,6 +190,10 @@ export class LayerBlendTileCompositor {
     this.format = options.engine.layerFormat;
     this.textures = options.textures;
     this.views = options.views;
+    this.documentMaskTexture = options.documentMaskTexture;
+    this.documentMaskView = options.documentMaskView;
+    this.clippingBaseTexture = options.clippingBaseTexture;
+    this.clippingBaseView = options.clippingBaseView;
     this.foldUniformBuffer = options.foldUniformBuffer;
     this.foldUniformStride = options.foldUniformStride;
     this.presentUniformBuffer = options.presentUniformBuffer;
@@ -161,6 +207,7 @@ export class LayerBlendTileCompositor {
     this.normalOverPipeline = options.normalOverPipeline;
     this.normalAtopPipeline = options.normalAtopPipeline;
     this.advancedPipeline = options.advancedPipeline;
+    this.documentMaskContributionPipeline = options.documentMaskContributionPipeline;
     this.tileClearPipeline = options.tileClearPipeline;
     this.tileBackgroundPipeline = options.tileBackgroundPipeline;
     this.tilePresentPipeline = options.tilePresentPipeline;
@@ -182,7 +229,7 @@ export class LayerBlendTileCompositor {
     this.mipUniformU32 = new Uint32Array(this.mipUniformUpload);
     const bytesPerPixel = this.format === "rgba16float" ? 8 : 4;
     this.stableMemoryBytes = this.extent * this.extent
-      * bytesPerPixel * TILE_TEXTURE_COUNT
+      * bytesPerPixel * (TILE_TEXTURE_COUNT + 2)
       + FOLD_RECORD_CAPACITY * this.foldUniformStride
       + PRESENT_RECORD_CAPACITY * this.presentUniformStride
       + MIP_RECORD_CAPACITY * this.mipUniformStride;
@@ -190,7 +237,7 @@ export class LayerBlendTileCompositor {
 
   static async create(engine: BrushEngine): Promise<LayerBlendTileCompositor> {
     const alignment = engine.device.limits.minUniformBufferOffsetAlignment;
-    const foldUniformStride = alignedStride(LAYER_COMPOSITE_UNIFORM_BYTES, alignment);
+    const foldUniformStride = alignedStride(LAYER_BLEND_FOLD_UNIFORM_BYTES, alignment);
     const presentUniformStride = alignedStride(
       LAYER_BLEND_TILE_PRESENT_UNIFORM_BYTES,
       alignment,
@@ -224,6 +271,34 @@ export class LayerBlendTileCompositor {
         const views = textures.map((texture, index) => texture.createView({
           label: `Layer blend document tile view ${index}`,
         })) as [GPUTextureView, GPUTextureView, GPUTextureView];
+        const documentMaskTexture = engine.device.createTexture({
+          label: `Layer blend clipping document mask ${LAYER_BLEND_TILE_EXTENT}²`,
+          size: {
+            width: LAYER_BLEND_TILE_EXTENT,
+            height: LAYER_BLEND_TILE_EXTENT,
+            depthOrArrayLayers: 1,
+          },
+          format: engine.layerFormat,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+        });
+        transaction.deferRollback(() => documentMaskTexture.destroy());
+        const documentMaskView = documentMaskTexture.createView({
+          label: "Layer blend clipping document mask view",
+        });
+        const clippingBaseTexture = engine.device.createTexture({
+          label: `Layer blend clipping immutable base ${LAYER_BLEND_TILE_EXTENT}²`,
+          size: {
+            width: LAYER_BLEND_TILE_EXTENT,
+            height: LAYER_BLEND_TILE_EXTENT,
+            depthOrArrayLayers: 1,
+          },
+          format: engine.layerFormat,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+        });
+        transaction.deferRollback(() => clippingBaseTexture.destroy());
+        const clippingBaseView = clippingBaseTexture.createView({
+          label: "Layer blend clipping immutable base view",
+        });
 
         const createUniformBuffer = (label: string, size: number): GPUBuffer => {
           const buffer = engine.device.createBuffer({
@@ -285,8 +360,23 @@ export class LayerBlendTileCompositor {
               buffer: {
                 type: "uniform",
                 hasDynamicOffset: true,
-                minBindingSize: LAYER_COMPOSITE_UNIFORM_BYTES,
+                minBindingSize: LAYER_BLEND_FOLD_UNIFORM_BYTES,
               },
+            },
+            {
+              binding: 3,
+              visibility: GPUShaderStage.FRAGMENT,
+              texture: { sampleType: "float", viewDimension: "2d" },
+            },
+            {
+              binding: 4,
+              visibility: GPUShaderStage.FRAGMENT,
+              texture: { sampleType: "float", viewDimension: "2d" },
+            },
+            {
+              binding: 5,
+              visibility: GPUShaderStage.FRAGMENT,
+              texture: { sampleType: "float", viewDimension: "2d" },
             },
           ],
         });
@@ -415,6 +505,7 @@ export class LayerBlendTileCompositor {
           normalOverPipeline,
           normalAtopPipeline,
           advancedPipeline,
+          documentMaskContributionPipeline,
           tileClearPipeline,
           tileBackgroundPipeline,
           tilePresentPipeline,
@@ -444,6 +535,14 @@ export class LayerBlendTileCompositor {
               layerBlendFoldShaderModule,
               "fragmentMain",
               engine.layerFormat,
+            ),
+            pipeline(
+              "Layer blend tile document-mask contribution",
+              advancedLayout,
+              layerBlendFoldShaderModule,
+              "documentMaskContributionFragmentMain",
+              engine.layerFormat,
+              sourceOverBlend,
             ),
             createRenderPipelineAsync(engine.device, {
               label: "Layer blend tile bounded transparent clear",
@@ -528,6 +627,10 @@ export class LayerBlendTileCompositor {
           engine,
           textures,
           views,
+          documentMaskTexture,
+          documentMaskView,
+          clippingBaseTexture,
+          clippingBaseView,
           foldUniformBuffer,
           foldUniformStride,
           presentUniformBuffer,
@@ -541,6 +644,7 @@ export class LayerBlendTileCompositor {
           normalOverPipeline,
           normalAtopPipeline,
           advancedPipeline,
+          documentMaskContributionPipeline,
           tileClearPipeline,
           tileBackgroundPipeline,
           tilePresentPipeline,
@@ -626,6 +730,199 @@ export class LayerBlendTileCompositor {
     pass.end();
   }
 
+  clearDocumentMask(
+    encoder: GPUCommandEncoder,
+    label: string,
+    width: number = this.extent,
+    height: number = this.extent,
+  ): void {
+    this.assertAlive();
+    const boundedWidth = Math.min(this.extent, Math.max(0, Math.ceil(width)));
+    const boundedHeight = Math.min(this.extent, Math.max(0, Math.ceil(height)));
+    if (boundedWidth <= 0 || boundedHeight <= 0) return;
+    const clearsWholeTile = boundedWidth === this.extent
+      && boundedHeight === this.extent;
+    const pass = encoder.beginRenderPass({
+      label,
+      colorAttachments: [{
+        view: this.documentMaskView,
+        loadOp: clearsWholeTile ? "clear" : "load",
+        storeOp: "store",
+        clearValue: { r: 0, g: 0, b: 0, a: 0 },
+      }],
+    });
+    if (!clearsWholeTile) {
+      pass.setPipeline(this.tileClearPipeline);
+      pass.setScissorRect(0, 0, boundedWidth, boundedHeight);
+      pass.draw(3, 1, 0, 0);
+    }
+    pass.end();
+  }
+
+  clearClippingBase(
+    encoder: GPUCommandEncoder,
+    label: string,
+    width: number = this.extent,
+    height: number = this.extent,
+  ): void {
+    this.assertAlive();
+    const boundedWidth = Math.min(this.extent, Math.max(0, Math.ceil(width)));
+    const boundedHeight = Math.min(this.extent, Math.max(0, Math.ceil(height)));
+    if (boundedWidth <= 0 || boundedHeight <= 0) return;
+    const clearsWholeTile = boundedWidth === this.extent
+      && boundedHeight === this.extent;
+    const pass = encoder.beginRenderPass({
+      label,
+      colorAttachments: [{
+        view: this.clippingBaseView,
+        loadOp: clearsWholeTile ? "clear" : "load",
+        storeOp: "store",
+        clearValue: { r: 0, g: 0, b: 0, a: 0 },
+      }],
+    });
+    if (!clearsWholeTile) {
+      pass.setPipeline(this.tileClearPipeline);
+      pass.setScissorRect(0, 0, boundedWidth, boundedHeight);
+      pass.draw(3, 1, 0, 0);
+    }
+    pass.end();
+  }
+
+  encodeClippingBaseSeed(options: {
+    encoder: GPUCommandEncoder;
+    source: LayerBlendTileSource;
+    tileDocumentRect: DirtyRect;
+    localScissor: DirtyRect;
+    label: string;
+  }): void {
+    this.assertAlive();
+    const record = this.writeFoldRecord(
+      options.tileDocumentRect,
+      options.source,
+      1,
+      "normal",
+      "source-over",
+      null,
+    );
+    const pass = options.encoder.beginRenderPass({
+      label: options.label,
+      colorAttachments: [{
+        view: this.clippingBaseView,
+        loadOp: "load",
+        storeOp: "store",
+      }],
+    });
+    pass.setPipeline(this.normalOverPipeline);
+    pass.setBindGroup(
+      0,
+      this.normalBindGroup(options.source.view, options.label),
+      [record * this.foldUniformStride],
+    );
+    pass.setScissorRect(
+      options.localScissor.x,
+      options.localScissor.y,
+      options.localScissor.width,
+      options.localScissor.height,
+    );
+    pass.draw(3, 1, 0, 0);
+    pass.end();
+  }
+
+  encodeDocumentMaskSeed(options: {
+    encoder: GPUCommandEncoder;
+    source: LayerBlendTileSource;
+    tileDocumentRect: DirtyRect;
+    localScissor: DirtyRect;
+    label: string;
+  }): void {
+    this.assertAlive();
+    const record = this.writeFoldRecord(
+      options.tileDocumentRect,
+      options.source,
+      1,
+      "normal",
+      "source-over",
+      null,
+    );
+    const pass = options.encoder.beginRenderPass({
+      label: options.label,
+      colorAttachments: [{
+        view: this.documentMaskView,
+        loadOp: "load",
+        storeOp: "store",
+      }],
+    });
+    pass.setPipeline(this.normalOverPipeline);
+    pass.setBindGroup(
+      0,
+      this.normalBindGroup(options.source.view, options.label),
+      [record * this.foldUniformStride],
+    );
+    pass.setScissorRect(
+      options.localScissor.x,
+      options.localScissor.y,
+      options.localScissor.width,
+      options.localScissor.height,
+    );
+    pass.draw(3, 1, 0, 0);
+    pass.end();
+  }
+
+  encodeDocumentMaskContribution(options: {
+    encoder: GPUCommandEncoder;
+    backdropTile: 0 | 1 | 2;
+    source: LayerBlendTileSource;
+    tileDocumentRect: DirtyRect;
+    localScissor: DirtyRect;
+    opacity: number;
+    mode: LayerBlendMode;
+    composition: {
+      readonly cutoutMode: LayerCutoutMode;
+      readonly tonalBlend: LayerTonalBlend;
+    };
+    label: string;
+  }): void {
+    this.assertAlive();
+    const clipping = options.source.clipping;
+    if (!clipping || clipping.context !== "clipping-child") {
+      throw new Error("Document-mask contribution requires clipping-child resources.");
+    }
+    const record = this.writeFoldRecord(
+      options.tileDocumentRect,
+      options.source,
+      options.opacity,
+      options.mode,
+      "source-atop",
+      options.composition,
+    );
+    const bindGroup = this.advancedBindGroup(
+      options.source.view,
+      options.source.cutoutView ?? options.source.view,
+      clipping.baseView,
+      this.engine.transparentLayerView,
+      options.backdropTile,
+      options.label,
+    );
+    const pass = options.encoder.beginRenderPass({
+      label: options.label,
+      colorAttachments: [{
+        view: this.documentMaskView,
+        loadOp: "load",
+        storeOp: "store",
+      }],
+    });
+    pass.setPipeline(this.documentMaskContributionPipeline);
+    pass.setBindGroup(0, bindGroup, [record * this.foldUniformStride]);
+    pass.setScissorRect(
+      options.localScissor.x,
+      options.localScissor.y,
+      options.localScissor.width,
+      options.localScissor.height,
+    );
+    pass.draw(3, 1, 0, 0);
+    pass.end();
+  }
+
   seedTileWithDocumentBackground(
     encoder: GPUCommandEncoder,
     tileIndex: 0 | 1 | 2,
@@ -673,6 +970,10 @@ export class LayerBlendTileCompositor {
     opacity: number;
     mode: LayerBlendMode;
     operator: LayerBlendTileOperator;
+    composition?: {
+      readonly cutoutMode: LayerCutoutMode;
+      readonly tonalBlend: LayerTonalBlend;
+    } | null;
     label: string;
   }): void {
     this.assertAlive();
@@ -682,8 +983,14 @@ export class LayerBlendTileCompositor {
       options.opacity,
       options.mode,
       options.operator,
+      options.composition ?? null,
     );
-    const advanced = options.mode !== "normal";
+    const advanced = options.mode !== "normal"
+      || options.composition?.cutoutMode !== undefined
+        && options.composition.cutoutMode !== "off"
+      || options.composition?.tonalBlend !== undefined
+        && !layerTonalBlendIsDefault(options.composition.tonalBlend)
+      || options.source.clipping !== undefined;
     if (advanced && options.backdropTile === undefined) {
       throw new Error("Advanced fold requires the backdrop tile.");
     }
@@ -691,7 +998,14 @@ export class LayerBlendTileCompositor {
       throw new Error("Advanced fold cannot read from and write to the same tile.");
     }
     const bindGroup = advanced
-      ? this.advancedBindGroup(options.source.view, options.backdropTile!, options.label)
+      ? this.advancedBindGroup(
+        options.source.view,
+        options.source.cutoutView ?? options.source.view,
+        options.source.clipping?.baseView ?? this.engine.transparentLayerView,
+        options.source.clipping?.documentMaskView ?? this.engine.transparentLayerView,
+        options.backdropTile!,
+        options.label,
+      )
       : this.normalBindGroup(options.source.view, options.label);
     const pass = options.encoder.beginRenderPass({
       label: options.label,
@@ -816,6 +1130,8 @@ export class LayerBlendTileCompositor {
     if (this.destroyed) return;
     this.destroyed = true;
     this.textures.forEach((texture) => texture.destroy());
+    this.documentMaskTexture.destroy();
+    this.clippingBaseTexture.destroy();
     this.foldUniformBuffer.destroy();
     this.presentUniformBuffer.destroy();
     this.mipUniformBuffer.destroy();
@@ -827,6 +1143,10 @@ export class LayerBlendTileCompositor {
     opacity: number,
     mode: LayerBlendMode,
     operator: LayerBlendTileOperator,
+    composition: {
+      readonly cutoutMode: LayerCutoutMode;
+      readonly tonalBlend: LayerTonalBlend;
+    } | null,
   ): number {
     if (this.foldRecordCount >= FOLD_RECORD_CAPACITY) {
       throw new Error("Too many tile-blend folds in one frame.");
@@ -845,6 +1165,41 @@ export class LayerBlendTileCompositor {
     this.foldUniformU32[word + 9] = source.height;
     this.foldUniformU32[word + 10] = LAYER_BLEND_MODE_CODES[mode];
     this.foldUniformU32[word + 11] = operator === "source-atop" ? 1 : 0;
+    const tonalBlend = composition?.tonalBlend ?? DEFAULT_LAYER_TONAL_BLEND;
+    tonalBlend.current.forEach((value, index) => {
+      this.foldUniformF32[word + 12 + index] = value / 255;
+    });
+    tonalBlend.underlying.forEach((value, index) => {
+      this.foldUniformF32[word + 16 + index] = value / 255;
+    });
+    this.foldUniformU32[word + 20] = LAYER_CUTOUT_MODE_CODES[
+      composition?.cutoutMode ?? "off"
+    ];
+    const clipping = source.clipping;
+    this.foldUniformU32[word + 21] = LAYER_BLEND_FOLD_COMPOSITION_CONTEXT_CODES[
+      clipping?.context ?? "direct"
+    ];
+    this.foldUniformF32[word + 22] = clipping?.baseScale ?? source.scale;
+    this.foldUniformF32[word + 23] = Math.min(
+      1,
+      Math.max(0, clipping?.documentMaskOpacity ?? 1),
+    );
+    this.foldUniformF32[word + 24] = source.cutoutOrigin?.x ?? source.origin.x;
+    this.foldUniformF32[word + 25] = source.cutoutOrigin?.y ?? source.origin.y;
+    this.foldUniformF32[word + 26] = source.cutoutScale ?? source.scale;
+    this.foldUniformF32[word + 27] = 0;
+    this.foldUniformU32[word + 28] = source.cutoutWidth ?? source.width;
+    this.foldUniformU32[word + 29] = source.cutoutHeight ?? source.height;
+    this.foldUniformF32[word + 30] = clipping?.baseOrigin.x ?? source.origin.x;
+    this.foldUniformF32[word + 31] = clipping?.baseOrigin.y ?? source.origin.y;
+    this.foldUniformF32[word + 32] = clipping?.documentMaskOrigin.x ?? source.origin.x;
+    this.foldUniformF32[word + 33] = clipping?.documentMaskOrigin.y ?? source.origin.y;
+    this.foldUniformF32[word + 34] = clipping?.documentMaskScale ?? source.scale;
+    this.foldUniformF32[word + 35] = 0;
+    this.foldUniformU32[word + 36] = clipping?.documentMaskWidth ?? source.width;
+    this.foldUniformU32[word + 37] = clipping?.documentMaskHeight ?? source.height;
+    this.foldUniformU32[word + 38] = 0;
+    this.foldUniformU32[word + 39] = 0;
     return record;
   }
 
@@ -872,13 +1227,31 @@ export class LayerBlendTileCompositor {
 
   private advancedBindGroup(
     sourceView: GPUTextureView,
+    cutoutView: GPUTextureView,
+    clippingBaseView: GPUTextureView,
+    documentMaskView: GPUTextureView,
     backdropTile: 0 | 1 | 2,
     label: string,
   ): GPUBindGroup {
-    let byBackdrop = this.advancedFrameBindGroups.get(sourceView);
+    let byCutout = this.advancedFrameBindGroups.get(sourceView);
+    if (!byCutout) {
+      byCutout = new Map();
+      this.advancedFrameBindGroups.set(sourceView, byCutout);
+    }
+    let byBase = byCutout.get(cutoutView);
+    if (!byBase) {
+      byBase = new Map();
+      byCutout.set(cutoutView, byBase);
+    }
+    let byMask = byBase.get(clippingBaseView);
+    if (!byMask) {
+      byMask = new Map();
+      byBase.set(clippingBaseView, byMask);
+    }
+    let byBackdrop = byMask.get(documentMaskView);
     if (!byBackdrop) {
       byBackdrop = new Map();
-      this.advancedFrameBindGroups.set(sourceView, byBackdrop);
+      byMask.set(documentMaskView, byBackdrop);
     }
     const cached = byBackdrop.get(backdropTile);
     if (cached) return cached;
@@ -893,9 +1266,12 @@ export class LayerBlendTileCompositor {
           resource: {
             buffer: this.foldUniformBuffer,
             offset: 0,
-            size: LAYER_COMPOSITE_UNIFORM_BYTES,
+            size: LAYER_BLEND_FOLD_UNIFORM_BYTES,
           },
         },
+        { binding: 3, resource: cutoutView },
+        { binding: 4, resource: clippingBaseView },
+        { binding: 5, resource: documentMaskView },
       ],
     });
     byBackdrop.set(backdropTile, bindGroup);

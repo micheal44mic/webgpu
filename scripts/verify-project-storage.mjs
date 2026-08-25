@@ -171,6 +171,44 @@ dissolveProject.snapshot.layers[0].blendMode = "dissolve";
 validateProjectSaveRequest(dissolveProject);
 assert.equal(dissolveProject.snapshot.layers[0].blendMode, "dissolve");
 
+const composedLayerProject = structuredClone(request);
+Object.assign(composedLayerProject.snapshot.layers[0], {
+  contentOpacity: 0.42,
+  cutoutMode: "document",
+  tonalBlend: {
+    current: [12, 28, 224, 246],
+    underlying: [4, 18, 210, 252],
+  },
+});
+validateProjectSaveRequest(composedLayerProject);
+assert.equal(composedLayerProject.snapshot.layers[0].contentOpacity, 0.42);
+assert.equal(composedLayerProject.snapshot.layers[0].cutoutMode, "document");
+assert.deepEqual(composedLayerProject.snapshot.layers[0].tonalBlend, {
+  current: [12, 28, 224, 246],
+  underlying: [4, 18, 210, 252],
+});
+
+const invalidLayerFillProject = structuredClone(composedLayerProject);
+invalidLayerFillProject.snapshot.layers[0].contentOpacity = 1.1;
+assert.throws(
+  () => validateProjectSaveRequest(invalidLayerFillProject),
+  ProjectStorageValidationError,
+);
+
+const invalidLayerCutoutProject = structuredClone(composedLayerProject);
+invalidLayerCutoutProject.snapshot.layers[0].cutoutMode = "unsupported";
+assert.throws(
+  () => validateProjectSaveRequest(invalidLayerCutoutProject),
+  ProjectStorageValidationError,
+);
+
+const invalidTonalRangeProject = structuredClone(composedLayerProject);
+invalidTonalRangeProject.snapshot.layers[0].tonalBlend.current = [0, 80, 64, 255];
+assert.throws(
+  () => validateProjectSaveRequest(invalidTonalRangeProject),
+  ProjectStorageValidationError,
+);
+
 const legacyShadeProject = structuredClone(request);
 legacyShadeProject.snapshot.layers[0].blendMode = "shade";
 validateProjectSaveRequest(legacyShadeProject);

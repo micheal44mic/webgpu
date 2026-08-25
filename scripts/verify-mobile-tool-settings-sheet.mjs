@@ -116,6 +116,13 @@ for (const id of [
   "mobileTransformApply",
   "mobileLayerOpacity",
   "mobileLayerBlendMode",
+  "mobileRasterLayerOptions",
+  "mobileLayerContentOpacity",
+  "mobileLayerCutoutMode",
+  "mobileLayerTonalCurrent",
+  "mobileLayerTonalCurrentOut",
+  "mobileLayerTonalUnderlying",
+  "mobileLayerTonalUnderlyingOut",
   "mobileSvgStylePalette",
   "mobileSvgStyleRasterize",
   "mobileSvgStyleStatus",
@@ -258,8 +265,13 @@ for (const action of [
   "applyTransform",
   "cancelTransform",
   "getSelectedLayerOptions",
+  "beginSelectedLayerOptionsEdit",
+  "finishSelectedLayerOptionsEdit",
   "setSelectedLayerOpacity",
   "setSelectedLayerBlendMode",
+  "setSelectedLayerContentOpacity",
+  "setSelectedLayerCutoutMode",
+  "setSelectedLayerTonalBlend",
   "getSelectedSvgStyle",
   "setSelectedSvgPaintColor",
   "beginSvgPaintEdit",
@@ -482,6 +494,93 @@ assert.match(
   controller,
   /MOBILE_LAYER_OPTIONS_MAX_VISIBLE_PX[\s\S]*?activeKind === "layer-options"/,
   "layer opacity and blend mode must open together in a content-sized compact detent",
+);
+const layerOptionsStart = sheet.indexOf('data-mobile-tool-settings-panel="layer-options"');
+const layerOptionsEnd = sheet.indexOf(
+  'data-mobile-tool-settings-panel="svg-style"',
+  layerOptionsStart,
+);
+const layerOptions = sheet.slice(layerOptionsStart, layerOptionsEnd);
+assert.match(layerOptions, />Fill</);
+assert.match(layerOptions, />Knockout</);
+assert.match(layerOptions, />Blend If</);
+assert.match(layerOptions, />Current Layer</);
+assert.match(layerOptions, />Underlying Layer</);
+assert.match(
+  layerOptions,
+  /<option value="off">None<\/option>[\s\S]*?<option value="group">Shallow<\/option>[\s\S]*?<option value="document">Deep<\/option>/,
+  "the three knockout scopes must remain explicit in the raster layer panel",
+);
+for (const prefix of ["Current", "Underlying"]) {
+  for (let index = 0; index < 4; index += 1) {
+    assert.match(
+      layerOptions,
+      new RegExp(
+        `id="mobileLayerTonal${prefix}${index}"[^>]*type="range"[^>]*min="0"[^>]*max="255"[^>]*step="1"`,
+      ),
+      `${prefix} tonal stop ${index} must be a native 8-bit range control`,
+    );
+  }
+}
+assert.match(
+  controller,
+  /private syncLayerTonalRange\([\s\S]*?input\.min = String\(minimums\[index\]\)[\s\S]*?input\.max = String\(maximums\[index\]\)/,
+  "tonal range controls must expose ordered dynamic bounds",
+);
+assert.match(
+  controller,
+  /private updateLayerTonalBlendDraft\([\s\S]*?this\.runLayerOptionAction\(\(\) => this\.options\.setSelectedLayerTonalBlend/,
+  "tonal range drags must publish their latest ordered draft during every input",
+);
+assert.match(
+  controller,
+  /\["current", this\.layerTonalCurrent\][\s\S]*?\["underlying", this\.layerTonalUnderlying\][\s\S]*?elements\.inputs\.forEach\(\(input, index\)[\s\S]*?input\.addEventListener\("input"[\s\S]*?updateLayerTonalBlendDraft\(kind, index/,
+  "all eight Blend If stops must share the live input path",
+);
+assert.match(
+  controller,
+  /this\.layerOpacity\.addEventListener\("input"[\s\S]*?setSelectedLayerOpacity[\s\S]*?this\.layerContentOpacity\.addEventListener\("input"[\s\S]*?setSelectedLayerContentOpacity/,
+  "Opacity and Fill must update the selected layer live from native range input",
+);
+assert.match(
+  controller,
+  /kind === "layer-options" && !this\.options\.beginSelectedLayerOptionsEdit\(\)/,
+  "opening Layer Options must open its single history transaction",
+);
+assert.match(
+  controller,
+  /closedKind === "layer-options"[\s\S]*?finishSelectedLayerOptionsEdit\(\)/,
+  "the Layer Options history transaction must commit only after the panel closes",
+);
+assert.match(
+  controller,
+  /this\.layerBlendMode\.addEventListener\("change"[\s\S]*?setSelectedLayerBlendMode[\s\S]*?this\.layerCutoutMode\.addEventListener\("change"[\s\S]*?setSelectedLayerCutoutMode/,
+  "Blend Mode and Knockout selects must publish immediately on selection",
+);
+assert.match(
+  controller,
+  /private async openWhenReady\([\s\S]*?if \(this\.openState\) this\.closeCurrent\(false\);[\s\S]*?await pendingClose[\s\S]*?selectCanvasTool\(kind\)[\s\S]*?this\.activeKind = kind/,
+  "a different panel must wait for the single Layer Options commit before selecting its tool",
+);
+assert.match(
+  controller,
+  /pagehide[\s\S]*?this\.activeKind === "layer-options"[\s\S]*?this\.close\(false\)/,
+  "pagehide must close and commit Layer Options instead of leaving History locked",
+);
+assert.match(
+  main,
+  /settleTransientProjectEdits\(\)[\s\S]*?toolKind === "layer-options"[\s\S]*?mobileToolSettingsSheet\.close\(false\)[\s\S]*?await sceneEditorController\?\.finishLayerOptionsEdit\(\)/,
+  "Save and Home must await the final live Layer Options value before capture or navigation",
+);
+assert.match(
+  controller,
+  /this\.rasterLayerOptions\.hidden = !rasterOptionsAvailable/,
+  "Fill, Knockout and tonal blending must remain hidden for non-raster layers",
+);
+assert.match(
+  css,
+  /\.mobile-layer-tonal-control input\[type="range"\][\s\S]*?height:\s*44px;[\s\S]*?touch-action:\s*none;/,
+  "each tonal stop must retain a touch-sized native range target",
 );
 assert.match(
   controller,

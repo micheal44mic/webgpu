@@ -4,6 +4,7 @@ import type { DirtyRect } from "./engine-stroke-types";
 import type { MixedSceneActivePresentation } from "./engine-vector-text-resources";
 import {
   layerDirtyRectToPresentationRect,
+  layerNeedsBackdropComposition,
 } from "./engine-layer-runtime";
 import {
   ensureRasterStrokeRenderer,
@@ -16,6 +17,8 @@ import {
 import type { LayerBlendMode } from "./layer-blend-modes";
 import type { MixedSceneCompositionSegment } from "./mixed-scene-stack";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
+import type { LayerRecord } from "./layer-stack";
+import type { MixedSceneRasterSegmentResources } from "./engine-layer-resources";
 
 export const LIVE_LAYER_BLEND_PRESENTATION_STRATEGY =
   "raster-only-document-space-tile-compose-before-filter-replace-cache-live-v2" as const;
@@ -81,10 +84,47 @@ const sourceForSurface = (
   height: surface.textureHeight,
 });
 
+const sourceForRasterSegment = (
+  resources: MixedSceneRasterSegmentResources,
+): LayerBlendTileSource => {
+  const source = sourceForSurface(resources.surface);
+  if (resources.cutoutSurface) {
+    source.cutoutView = resources.cutoutSurface.samplingView;
+    source.cutoutOrigin = {
+      x: resources.cutoutSurface.bounds.x,
+      y: resources.cutoutSurface.bounds.y,
+    };
+    source.cutoutScale = resources.cutoutSurface.resolutionScale;
+    source.cutoutWidth = resources.cutoutSurface.textureWidth;
+    source.cutoutHeight = resources.cutoutSurface.textureHeight;
+  }
+  if (resources.documentCutoutBaseSurface && resources.documentCutoutMaskSurface) {
+    source.clipping = {
+      context: "clipping-outer",
+      baseView: resources.documentCutoutBaseSurface.samplingView,
+      baseOrigin: {
+        x: resources.documentCutoutBaseSurface.bounds.x,
+        y: resources.documentCutoutBaseSurface.bounds.y,
+      },
+      baseScale: resources.documentCutoutBaseSurface.resolutionScale,
+      documentMaskView: resources.documentCutoutMaskSurface.samplingView,
+      documentMaskOrigin: {
+        x: resources.documentCutoutMaskSurface.bounds.x,
+        y: resources.documentCutoutMaskSurface.bounds.y,
+      },
+      documentMaskScale: resources.documentCutoutMaskSurface.resolutionScale,
+      documentMaskWidth: resources.documentCutoutMaskSurface.textureWidth,
+      documentMaskHeight: resources.documentCutoutMaskSurface.textureHeight,
+      documentMaskOpacity: resources.documentCutoutOpacity,
+    };
+  }
+  return source;
+};
+
 export function layerBlendTilePresentationRequired(engine: BrushEngine): boolean {
   return Boolean(engine.mixedSceneStack)
     && !engine.mixedSceneStack!.visibleSemanticCount
-    && engine.layerStack.layers.some((record) => record.blendMode !== "normal");
+    && engine.layerStack.layers.some(layerNeedsBackdropComposition);
 }
 
 export async function ensureLayerBlendTilePresentationResources(
@@ -201,7 +241,7 @@ function staticSegmentSource(
   if (!resources) {
     return null;
   }
-  return sourceForSurface(resources.surface);
+  return sourceForRasterSegment(resources);
 }
 
 function activeSourceMode(
@@ -498,7 +538,10 @@ export function encodeLayerBlendTilePresentation(
 
   const activeNeedsBake = activePresentation.kind !== "base";
   if (cores.length > 0 && activeNeedsBake) {
-    renderer.prepareBakeStyle(engine.rasterBevelStyle);
+    renderer.prepareBakeStyle(
+      engine.rasterBevelStyle,
+      engine.layerStack.active.contentOpacity,
+    );
   }
   let bakeParameterSlot = 0;
   for (const core of cores) {
@@ -515,6 +558,7 @@ export function encodeLayerBlendTilePresentation(
         style: engine.rasterStrokeStyle,
         bevelStyle: engine.rasterBevelStyle,
         colorOverlayStyle: engine.rasterColorOverlayStyle,
+        contentOpacity: engine.layerStack.active.contentOpacity,
         rect: textureRect,
         targetStorageOrigin: { x: 0, y: 0 },
         parameterSlot: bakeParameterSlot++,
@@ -525,6 +569,11 @@ export function encodeLayerBlendTilePresentation(
     const activeSource: LayerBlendTileSource = activeNeedsBake
       ? {
         view: compositor.views[TILE_INDEX_SOURCE],
+        cutoutView: engine.layerView,
+        cutoutOrigin: { x: 0, y: 0 },
+        cutoutScale: 1,
+        cutoutWidth: DOCUMENT_WIDTH,
+        cutoutHeight: DOCUMENT_HEIGHT,
         origin: { x: textureRect.x, y: textureRect.y },
         scale: 1,
         width: textureRect.width,
@@ -532,6 +581,7 @@ export function encodeLayerBlendTilePresentation(
       }
       : {
         view: engine.layerView,
+        cutoutView: engine.layerView,
         origin: { x: 0, y: 0 },
         scale: 1,
         width: DOCUMENT_WIDTH,
@@ -545,6 +595,26 @@ export function encodeLayerBlendTilePresentation(
     let activeOperandMode: LayerBlendMode = activeRecord.blendMode;
     let activeOperandOpacity = activeRecord.opacity;
     let activeCompositeSource = activeSource;
+    const withClippingScope = (
+      source: LayerBlendTileSource,
+      context: "clipping-child" | "clipping-outer",
+      base: LayerBlendTileSource,
+      documentMaskOpacity: number,
+    ): LayerBlendTileSource => ({
+      ...source,
+      clipping: {
+        context,
+        baseView: base.view,
+        baseOrigin: { ...base.origin },
+        baseScale: base.scale,
+        documentMaskView: compositor.documentMaskView,
+        documentMaskOrigin: { x: textureRect.x, y: textureRect.y },
+        documentMaskScale: 1,
+        documentMaskWidth: textureRect.width,
+        documentMaskHeight: textureRect.height,
+        documentMaskOpacity,
+      },
+    });
 
     const applyToTile = (
       currentTile: 0 | 1,
@@ -553,13 +623,44 @@ export function encodeLayerBlendTilePresentation(
       opacity: number,
       operator: "source-over" | "source-atop",
       stepLabel: string,
+      composition: LayerRecord | null = null,
     ): 0 | 1 => {
       const overlap = intersectRects(textureRect, sourceBounds(source));
       if (!overlap || opacity <= 0) {
         return currentTile;
       }
       const scissor = localRect(overlap, textureRect);
-      if (mode === "normal") {
+      const advanced = mode !== "normal"
+        || composition?.cutoutMode !== undefined && composition.cutoutMode !== "off"
+        || composition?.tonalBlend !== undefined
+          && !(
+            composition.tonalBlend.current[0] === 0
+            && composition.tonalBlend.current[1] === 0
+            && composition.tonalBlend.current[2] === 255
+            && composition.tonalBlend.current[3] === 255
+            && composition.tonalBlend.underlying[0] === 0
+            && composition.tonalBlend.underlying[1] === 0
+            && composition.tonalBlend.underlying[2] === 255
+            && composition.tonalBlend.underlying[3] === 255
+          )
+        || source.clipping !== undefined;
+      if (
+        source.clipping?.context === "clipping-child"
+        && composition?.cutoutMode === "document"
+      ) {
+        compositor.encodeDocumentMaskContribution({
+          encoder,
+          backdropTile: currentTile,
+          source,
+          tileDocumentRect: textureRect,
+          localScissor: scissor,
+          opacity,
+          mode,
+          composition,
+          label: `${stepLabel} · document mask`,
+        });
+      }
+      if (!advanced) {
         compositor.encodeFold({
           encoder,
           targetTile: currentTile,
@@ -569,6 +670,7 @@ export function encodeLayerBlendTilePresentation(
           opacity,
           mode,
           operator,
+          composition,
           label: stepLabel,
         });
         return currentTile;
@@ -597,22 +699,32 @@ export function encodeLayerBlendTilePresentation(
         opacity,
         mode,
         operator,
+        composition,
         label: stepLabel,
       });
       return nextTile;
     };
 
-    const applyClippingSuffix = (initialTile: 0 | 1): 0 | 1 => {
+    const applyClippingSuffix = (
+      initialTile: 0 | 1,
+      clippingBase: LayerBlendTileSource,
+    ): 0 | 1 => {
       let groupTile = initialTile;
       if (activeGroup?.suffixSteps.length) {
         for (const step of activeGroup.suffixSteps) {
           groupTile = applyToTile(
             groupTile,
-            sourceForSurface(step.surface),
+            withClippingScope(
+              sourceForRasterSegment(step.viewportSegment),
+              "clipping-child",
+              clippingBase,
+              1,
+            ),
             step.blendMode,
             step.opacity,
             "source-atop",
             `${label} · clipping child ${step.layerId} (${step.blendMode})`,
+            engine.layerStack.byId(step.layerId),
           );
         }
         return groupTile;
@@ -620,7 +732,12 @@ export function encodeLayerBlendTilePresentation(
       if (activeGroup?.suffix) {
         groupTile = applyToTile(
           groupTile,
-          sourceForSurface(activeGroup.suffix),
+          withClippingScope(
+            sourceForSurface(activeGroup.suffix),
+            "clipping-child",
+            clippingBase,
+            1,
+          ),
           "normal",
           1,
           "source-atop",
@@ -632,6 +749,29 @@ export function encodeLayerBlendTilePresentation(
 
     // Build the clipping unit into operand tile 2 before it meets the external backdrop.
     if (activeGroup?.mode === "active-child") {
+      if (!activeGroup.base) {
+        throw new Error("The active clipping child has no immutable base.");
+      }
+      const clippingBase = sourceForSurface(activeGroup.base);
+      compositor.clearDocumentMask(
+        encoder,
+        `${label} · clear clipping document mask`,
+        textureRect.width,
+        textureRect.height,
+      );
+      if (activeGroup.prefixDocumentMask) {
+        const prefixMaskSource = sourceForSurface(activeGroup.prefixDocumentMask);
+        const prefixMaskOverlap = intersectRects(textureRect, sourceBounds(prefixMaskSource));
+        if (prefixMaskOverlap) {
+          compositor.encodeDocumentMaskSeed({
+            encoder,
+            source: prefixMaskSource,
+            tileDocumentRect: textureRect,
+            localScissor: localRect(prefixMaskOverlap, textureRect),
+            label: `${label} · seed clipping document mask`,
+          });
+        }
+      }
       compositor.clearTile(
         encoder,
         TILE_INDEX_A,
@@ -652,13 +792,19 @@ export function encodeLayerBlendTilePresentation(
       }
       groupTile = applyToTile(
         groupTile,
-        activeSource,
+        withClippingScope(
+          activeSource,
+          "clipping-child",
+          clippingBase,
+          1,
+        ),
         activeRecord.blendMode,
         activeRecord.visible ? activeRecord.opacity : 0,
         "source-atop",
         `${label} · active clipping child ${activeRecord.id}`,
+        activeRecord,
       );
-      groupTile = applyClippingSuffix(groupTile);
+      groupTile = applyClippingSuffix(groupTile, clippingBase);
       compositor.copyTile(
         encoder,
         groupTile,
@@ -668,14 +814,53 @@ export function encodeLayerBlendTilePresentation(
       );
       activeOperandMode = parent.blendMode;
       activeOperandOpacity = activeGroup.parentOpacity;
-      activeCompositeSource = {
+      activeCompositeSource = withClippingScope({
         view: compositor.views[TILE_INDEX_SOURCE],
+        cutoutView: activeGroup.parentCutoutSegment?.surface.samplingView,
+        cutoutOrigin: activeGroup.parentCutoutSegment
+          ? {
+            x: activeGroup.parentCutoutSegment.surface.bounds.x,
+            y: activeGroup.parentCutoutSegment.surface.bounds.y,
+          }
+          : undefined,
+        cutoutScale: activeGroup.parentCutoutSegment?.surface.resolutionScale,
+        cutoutWidth: activeGroup.parentCutoutSegment?.surface.textureWidth,
+        cutoutHeight: activeGroup.parentCutoutSegment?.surface.textureHeight,
+        origin: { x: textureRect.x, y: textureRect.y },
+        scale: 1,
+        width: textureRect.width,
+        height: textureRect.height,
+      }, "clipping-outer", clippingBase, activeGroup.parentOpacity);
+    } else if (activeGroup?.mode === "active-parent") {
+      compositor.clearDocumentMask(
+        encoder,
+        `${label} · clear active-parent document mask`,
+        textureRect.width,
+        textureRect.height,
+      );
+      compositor.clearClippingBase(
+        encoder,
+        `${label} · clear active-parent immutable base`,
+        textureRect.width,
+        textureRect.height,
+      );
+      const parentOverlap = intersectRects(textureRect, sourceBounds(activeSource));
+      if (parentOverlap) {
+        compositor.encodeClippingBaseSeed({
+          encoder,
+          source: activeSource,
+          tileDocumentRect: textureRect,
+          localScissor: localRect(parentOverlap, textureRect),
+          label: `${label} · seed active-parent immutable base`,
+        });
+      }
+      const clippingBase: LayerBlendTileSource = {
+        view: compositor.clippingBaseView,
         origin: { x: textureRect.x, y: textureRect.y },
         scale: 1,
         width: textureRect.width,
         height: textureRect.height,
       };
-    } else if (activeGroup?.mode === "active-parent") {
       if (activeGroup.suffix || activeGroup.suffixSteps.length > 0) {
         compositor.clearTile(
           encoder,
@@ -692,7 +877,7 @@ export function encodeLayerBlendTilePresentation(
           "source-over",
           `${label} · active clipping parent ${activeRecord.id}`,
         );
-        const groupTile = applyClippingSuffix(parentTile);
+        const groupTile = applyClippingSuffix(parentTile, clippingBase);
         compositor.copyTile(
           encoder,
           groupTile,
@@ -700,13 +885,18 @@ export function encodeLayerBlendTilePresentation(
           textureRect.width,
           textureRect.height,
         );
-        activeCompositeSource = {
+        activeCompositeSource = withClippingScope({
           view: compositor.views[TILE_INDEX_SOURCE],
+          cutoutView: engine.layerView,
+          cutoutOrigin: { x: 0, y: 0 },
+          cutoutScale: 1,
+          cutoutWidth: DOCUMENT_WIDTH,
+          cutoutHeight: DOCUMENT_HEIGHT,
           origin: { x: textureRect.x, y: textureRect.y },
           scale: 1,
           width: textureRect.width,
           height: textureRect.height,
-        };
+        }, "clipping-outer", clippingBase, activeGroup.parentOpacity);
       }
       activeOperandMode = parent.blendMode;
       activeOperandOpacity = activeGroup.parentOpacity;
@@ -724,6 +914,10 @@ export function encodeLayerBlendTilePresentation(
       const segment = engine.mixedSceneCompositionSegments[index];
       const source = staticSegmentSource(engine, segment);
       if (!source) continue;
+      const first = segment.kind === "raster-run" ? segment.items[0] : null;
+      const record = first
+        ? engine.layerStack.clippingUnit(first.rasterLayerId)[0] ?? null
+        : null;
       currentTile = applyToTile(
         currentTile,
         source,
@@ -731,6 +925,7 @@ export function encodeLayerBlendTilePresentation(
         1,
         "source-over",
         `${label} · below ${segment.key}`,
+        record,
       );
     }
     currentTile = applyToTile(
@@ -740,6 +935,7 @@ export function encodeLayerBlendTilePresentation(
       activeGroup ? activeOperandOpacity : activeRecord.visible ? activeOperandOpacity : 0,
       "source-over",
       `${label} · active group`,
+      parent,
     );
     for (
       let index = activeSegmentIndex + 1;
@@ -749,6 +945,10 @@ export function encodeLayerBlendTilePresentation(
       const segment = engine.mixedSceneCompositionSegments[index];
       const source = staticSegmentSource(engine, segment);
       if (!source) continue;
+      const first = segment.kind === "raster-run" ? segment.items[0] : null;
+      const record = first
+        ? engine.layerStack.clippingUnit(first.rasterLayerId)[0] ?? null
+        : null;
       currentTile = applyToTile(
         currentTile,
         source,
@@ -756,6 +956,7 @@ export function encodeLayerBlendTilePresentation(
         1,
         "source-over",
         `${label} · above ${segment.key}`,
+        record,
       );
     }
 

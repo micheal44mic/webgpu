@@ -11,6 +11,17 @@ import type { RasterColorOverlayStyle } from "./raster-color-overlay-core";
 import type { LayerStorageTileMask } from "./layer-storage-study";
 import type { LayerBlendMode } from "./layer-blend-modes";
 import {
+  cloneLayerTonalBlend,
+  DEFAULT_LAYER_CONTENT_OPACITY,
+  DEFAULT_LAYER_CUTOUT_MODE,
+  DEFAULT_LAYER_TONAL_BLEND,
+  normalizeLayerContentOpacity,
+  normalizeLayerCutoutMode,
+  normalizeLayerTonalBlend,
+  type LayerCutoutMode,
+  type LayerTonalBlend,
+} from "./layer-composition.ts";
+import {
   cloneRasterLayerSource,
   type RasterLayerSource,
 } from "./raster-layer-source.ts";
@@ -45,8 +56,14 @@ export interface LayerRecord {
   name: string;
   visible: boolean;
   opacity: number;
+  /** Opacity of authored pixels before non-destructive layer effects. */
+  contentOpacity: number;
   /** Non-destructive backdrop-dependent composition mode for this raster. */
   blendMode: LayerBlendMode;
+  /** Scope whose accumulated color is removed by this layer's authored matte. */
+  cutoutMode: LayerCutoutMode;
+  /** Source/backdrop tonal gates applied immediately before layer composition. */
+  tonalBlend: LayerTonalBlend;
   /**
    * A clipping layer remains an ordinary editable raster. Its final
    * premultiplied output is limited by the alpha of this parent raster.
@@ -114,6 +131,7 @@ export function layerEffectRendererRequirements(
       enabled: false,
       opacity: 100,
     },
+  contentOpacity: number = DEFAULT_LAYER_CONTENT_OPACITY,
 ): LayerEffectRendererRequirements {
   const needsBevelRenderer = bevelStyle.enabled;
   const needsOuterShadowRenderer = outerShadowStyle.enabled;
@@ -127,7 +145,8 @@ export function layerEffectRendererRequirements(
       || needsBevelRenderer
       || needsOuterShadowRenderer
       || needsInnerShadowRenderer
-      || needsColorOverlayRenderer,
+      || needsColorOverlayRenderer
+      || normalizeLayerContentOpacity(contentOpacity) !== DEFAULT_LAYER_CONTENT_OPACITY,
     needsBevelRenderer,
     needsOuterShadowRenderer,
     needsInnerShadowRenderer,
@@ -180,7 +199,10 @@ export class LayerStack {
       name,
       visible: true,
       opacity: 1,
+      contentOpacity: DEFAULT_LAYER_CONTENT_OPACITY,
       blendMode: "normal",
+      cutoutMode: DEFAULT_LAYER_CUTOUT_MODE,
+      tonalBlend: cloneLayerTonalBlend(DEFAULT_LAYER_TONAL_BLEND),
       clippingParentId: null,
       contentBounds: null,
       storageTileMask: new Uint32Array(8),
@@ -325,6 +347,7 @@ export class LayerStack {
         ...record,
         contentBounds: record.contentBounds ? { ...record.contentBounds } : null,
         storageTileMask: record.storageTileMask.slice(),
+        tonalBlend: cloneLayerTonalBlend(record.tonalBlend),
         rasterSource: cloneRasterLayerSource(record.rasterSource),
         strokeStyle: structuredClone(record.strokeStyle),
         bevelStyle: structuredClone(record.bevelStyle),
@@ -357,6 +380,18 @@ export class LayerStack {
       }
       return {
         ...record,
+        contentOpacity: normalizeLayerContentOpacity(
+          (record as Partial<LayerRecord>).contentOpacity
+            ?? DEFAULT_LAYER_CONTENT_OPACITY,
+        ),
+        cutoutMode: normalizeLayerCutoutMode(
+          (record as Partial<LayerRecord>).cutoutMode
+            ?? DEFAULT_LAYER_CUTOUT_MODE,
+        ),
+        tonalBlend: normalizeLayerTonalBlend(
+          (record as Partial<LayerRecord>).tonalBlend
+            ?? DEFAULT_LAYER_TONAL_BLEND,
+        ),
         contentBounds: record.contentBounds ? { ...record.contentBounds } : null,
         storageTileMask: record.storageTileMask.slice(),
         rasterSource: cloneRasterLayerSource(record.rasterSource),

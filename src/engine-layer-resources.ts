@@ -76,15 +76,34 @@ export interface ActiveClippingGroupResources {
   mode: "active-parent" | "active-child";
   parentOpacity: number;
   prefix: MergedSurfaceResources | null;
+  prefixViewportSegment: MixedSceneRasterSegmentResources | null;
+  /** Immutable clipping base used by scoped cutout and later clipped siblings. */
+  base: MergedSurfaceResources | null;
+  baseViewportSegment: MixedSceneRasterSegmentResources | null;
+  /** Normalized union of document-scoped cutout below the live child. */
+  prefixDocumentMask: MergedSurfaceResources | null;
+  prefixDocumentMaskViewportSegment: MixedSceneRasterSegmentResources | null;
   suffix: MergedSurfaceResources | null;
   suffixSteps: readonly ActiveClippingSuffixStepResources[];
+  /** Raw parent matte retained when the live active raster is a clipped child. */
+  parentCutoutSegment: MixedSceneRasterSegmentResources | null;
 }
 
 export interface MixedSceneRasterSegmentResources {
   key: MixedSceneRasterRunKey;
   surface: MergedSurfaceResources;
+  /** Optional authored matte, independent from Fill and non-destructive effects. */
+  cutoutSurface: MergedSurfaceResources | null;
+  documentCutoutBaseSurface: MergedSurfaceResources | null;
+  documentCutoutMaskSurface: MergedSurfaceResources | null;
+  documentCutoutOpacity: number;
   uniformBuffer: GPUBuffer;
   bindGroup: GPUBindGroup;
+  cutoutBindGroup: GPUBindGroup | null;
+  documentCutoutBaseUniformBuffer: GPUBuffer | null;
+  documentCutoutBaseBindGroup: GPUBindGroup | null;
+  documentCutoutMaskUniformBuffer: GPUBuffer | null;
+  documentCutoutMaskBindGroup: GPUBindGroup | null;
 }
 
 export interface RebuildMergedLayerSurfacesOptions {

@@ -5,11 +5,13 @@ import {
   LAYER_BLEND_MODE_LABELS,
   type LayerBlendMode,
 } from "./layer-blend-modes";
+import type { LayerCutoutMode, LayerTonalBlend } from "./layer-composition";
 import { mobileLayerMergeCompletionMatches } from "./mobile-layer-multi-selection";
 import type { MixedSceneController } from "./mixed-scene-controller";
 import {
   rasterIndexForSceneLayerKey,
   selectedSceneLayerProperties,
+  type SceneLayerProperties,
   type SceneLayerKey,
 } from "./scene-layer-read-model";
 
@@ -17,6 +19,10 @@ export type SceneEditorEnginePort = Pick<
   BrushEngine,
   | "addClippingMaskLayer"
   | "addLayer"
+  | "beginRasterLayerMetadataHistoryEdit"
+  | "beginVectorHistoryEdit"
+  | "commitRasterLayerMetadataHistoryEdit"
+  | "commitVectorHistoryEdit"
   | "deleteLayer"
   | "deleteRasterImageNode"
   | "deleteVectorSvgNode"
@@ -32,8 +38,11 @@ export type SceneEditorEnginePort = Pick<
   | "setActiveMixedSceneItem"
   | "setLayerBlendMode"
   | "setLayerClipping"
+  | "setLayerContentOpacity"
+  | "setLayerCutoutMode"
   | "setLayerOpacity"
   | "setLayerReference"
+  | "setLayerTonalBlend"
   | "setLayerVisibility"
   | "setRasterImageNodeOpacity"
   | "setRasterImageNodeVisibility"
@@ -79,6 +88,7 @@ export interface SceneEditorControllerOptions {
   readonly renderLayers: (stats: EngineStats) => void;
   readonly syncActiveRasterControls: () => void;
   readonly syncToolSettings: () => void;
+  readonly onLayerOptionsUpdateError: (error: unknown) => void;
   readonly onStats: (stats: EngineStats) => void;
   readonly recordDiagnostic: (
     name: string,
@@ -92,6 +102,29 @@ interface FinishOptions {
   readonly syncActiveRasterControls?: boolean;
 }
 
+type LayerOptionsUpdateField =
+  | "opacity"
+  | "blend-mode"
+  | "content-opacity"
+  | "cutout"
+  | "tonal-blend";
+
+interface LayerOptionsPendingUpdate {
+  readonly sequence: number;
+  readonly apply: (target: SceneLayerProperties) => Promise<void>;
+}
+
+interface LayerOptionsEditSession {
+  readonly key: SceneLayerKey;
+  readonly historyKind: "raster" | "vector";
+  readonly token: number | null;
+  readonly pending: Map<LayerOptionsUpdateField, LayerOptionsPendingUpdate>;
+  sequence: number;
+  running: Promise<void> | null;
+  closing: boolean;
+  finishPromise: Promise<boolean> | null;
+}
+
 /**
  * Owns scene mutations and their UI transaction boundary. Public mutations use
  * stable scene keys; raster indices are resolved only immediately before an
@@ -100,6 +133,7 @@ interface FinishOptions {
 export class SceneEditorController {
   private busy = false;
   private disposed = false;
+  private layerOptionsEdit: LayerOptionsEditSession | null = null;
 
   constructor(private readonly options: SceneEditorControllerOptions) {}
 
@@ -258,12 +292,130 @@ export class SceneEditorController {
     void this.setLayerVisibilityTransaction(key, visible);
   }
 
-  setLayerOpacity(key: SceneLayerKey, opacity: number): void {
-    void this.setLayerOpacityTransaction(key, opacity);
+  beginLayerOptionsEdit(key: SceneLayerKey): boolean {
+    if (this.disposed || this.busy || this.layerOptionsEdit) return false;
+    const stats = this.options.engine.getStats();
+    const target = selectedSceneLayerProperties(stats, false, key);
+    if (!target) return false;
+    let historyKind: LayerOptionsEditSession["historyKind"];
+    let token: number | null = null;
+    if (target.kind === "raster") {
+      if (target.rasterIndex !== stats.activeLayerIndex) return false;
+      token = this.options.engine.beginRasterLayerMetadataHistoryEdit("layer-options");
+      if (token === null) return false;
+      historyKind = "raster";
+    } else {
+      if (!this.options.engine.beginVectorHistoryEdit("property")) return false;
+      historyKind = "vector";
+    }
+    this.layerOptionsEdit = {
+      key,
+      historyKind,
+      token,
+      pending: new Map(),
+      sequence: 0,
+      running: null,
+      closing: false,
+      finishPromise: null,
+    };
+    this.options.onHistoryState(this.options.engine.getHistoryState());
+    this.options.requestLayersRefresh();
+    return true;
   }
 
-  setRasterBlendMode(key: SceneLayerKey, blendMode: LayerBlendMode): void {
-    void this.setRasterBlendModeTransaction(key, blendMode);
+  finishLayerOptionsEdit(): Promise<boolean> {
+    const edit = this.layerOptionsEdit;
+    if (!edit) return Promise.resolve(false);
+    if (edit.finishPromise) return edit.finishPromise;
+    edit.closing = true;
+    const operation = Promise.resolve().then(async (): Promise<boolean> => {
+      try {
+        if (edit.running) await edit.running;
+        return edit.historyKind === "raster"
+          ? this.options.engine.commitRasterLayerMetadataHistoryEdit(edit.token!)
+          : this.options.engine.commitVectorHistoryEdit();
+      } catch (error) {
+        this.options.elements.result.textContent = error instanceof Error
+          ? error.message
+          : "Could not finish the layer options.";
+        this.options.recordDiagnostic("layer-options-commit", edit.key, error);
+        throw error;
+      } finally {
+        if (this.layerOptionsEdit === edit) this.layerOptionsEdit = null;
+        if (!this.disposed) this.refreshAfterLayerOptionsUpdate();
+      }
+    });
+    edit.finishPromise = operation;
+    return operation;
+  }
+
+  setLayerOpacity(key: SceneLayerKey, opacity: number): Promise<void> {
+    if (this.layerOptionsEdit?.key === key) {
+      return this.enqueueLayerOptionsUpdate("opacity", async (target) => {
+        if (target.kind === "raster" && target.rasterIndex !== null) {
+          await this.options.engine.setLayerOpacity(target.rasterIndex, opacity);
+        } else if (target.kind === "text" && target.semanticId !== null) {
+          await this.options.engine.setVectorTextNodeOpacity(target.semanticId, opacity);
+        } else if (target.kind === "svg" && target.semanticId !== null) {
+          await this.options.engine.setVectorSvgNodeOpacity(target.semanticId, opacity);
+        } else if (target.kind === "image" && target.semanticId !== null) {
+          await this.options.engine.setRasterImageNodeOpacity(target.semanticId, opacity);
+        }
+        this.options.elements.result.textContent =
+          `Layer opacity ${Math.round(opacity * 100)}%.`;
+      });
+    }
+    return this.setLayerOpacityTransaction(key, opacity);
+  }
+
+  setRasterBlendMode(key: SceneLayerKey, blendMode: LayerBlendMode): Promise<void> {
+    if (this.layerOptionsEdit?.key === key) {
+      return this.enqueueLayerOptionsUpdate("blend-mode", async (target) => {
+        if (target.kind !== "raster" || target.rasterIndex === null) return;
+        const changed = await this.options.engine.setLayerBlendMode(
+          target.rasterIndex,
+          blendMode,
+        );
+        this.options.elements.result.textContent = changed
+          ? `Layer blend mode: ${LAYER_BLEND_MODE_LABELS[blendMode]}.`
+          : "Layer blend mode already active.";
+      });
+    }
+    return this.setRasterBlendModeTransaction(key, blendMode);
+  }
+
+  setRasterContentOpacity(key: SceneLayerKey, contentOpacity: number): Promise<void> {
+    if (this.layerOptionsEdit?.key === key) {
+      return this.enqueueLayerOptionsUpdate("content-opacity", async (target) => {
+        if (target.kind !== "raster" || target.rasterIndex === null) return;
+        await this.options.engine.setLayerContentOpacity(target.rasterIndex, contentOpacity);
+        this.options.elements.result.textContent =
+          `Layer fill ${Math.round(contentOpacity * 100)}%.`;
+      });
+    }
+    return this.setRasterContentOpacityTransaction(key, contentOpacity);
+  }
+
+  setRasterCutoutMode(key: SceneLayerKey, cutoutMode: LayerCutoutMode): Promise<void> {
+    if (this.layerOptionsEdit?.key === key) {
+      return this.enqueueLayerOptionsUpdate("cutout", async (target) => {
+        if (target.kind !== "raster" || target.rasterIndex === null) return;
+        await this.options.engine.setLayerCutoutMode(target.rasterIndex, cutoutMode);
+        this.options.elements.result.textContent = "Layer knockout updated.";
+      });
+    }
+    return this.setRasterCutoutModeTransaction(key, cutoutMode);
+  }
+
+  setRasterTonalBlend(key: SceneLayerKey, tonalBlend: LayerTonalBlend): Promise<void> {
+    if (this.layerOptionsEdit?.key === key) {
+      return this.enqueueLayerOptionsUpdate("tonal-blend", async (target) => {
+        if (target.kind !== "raster" || target.rasterIndex === null) return;
+        await this.options.engine.setLayerTonalBlend(target.rasterIndex, tonalBlend);
+        this.options.elements.result.textContent = "Layer tonal blend updated.";
+      });
+    }
+    return this.setRasterTonalBlendTransaction(key, tonalBlend);
   }
 
   setRasterClipping(key: SceneLayerKey, enabled: boolean): void {
@@ -309,13 +461,71 @@ export class SceneEditorController {
 
   dispose(): void {
     if (this.disposed) return;
+    const layerOptionsFinish = this.layerOptionsEdit
+      ? this.finishLayerOptionsEdit()
+      : null;
     this.disposed = true;
     this.busy = false;
     this.hideLoading();
+    if (layerOptionsFinish) void layerOptionsFinish.catch(() => undefined);
+  }
+
+  private enqueueLayerOptionsUpdate(
+    field: LayerOptionsUpdateField,
+    apply: LayerOptionsPendingUpdate["apply"],
+  ): Promise<void> {
+    const edit = this.layerOptionsEdit;
+    if (!edit || edit.closing) return Promise.resolve();
+    edit.sequence += 1;
+    edit.pending.set(field, { sequence: edit.sequence, apply });
+    if (!edit.running) {
+      edit.running = this.drainLayerOptionsUpdates(edit).finally(() => {
+        edit.running = null;
+      });
+    }
+    return edit.running;
+  }
+
+  private async drainLayerOptionsUpdates(edit: LayerOptionsEditSession): Promise<void> {
+    while (edit.pending.size > 0) {
+      const next = [...edit.pending.entries()].reduce((earliest, candidate) => (
+        candidate[1].sequence < earliest[1].sequence ? candidate : earliest
+      ));
+      edit.pending.delete(next[0]);
+      try {
+        const target = selectedSceneLayerProperties(
+          this.options.engine.getStats(),
+          false,
+          edit.key,
+        );
+        if (!target) throw new Error("The edited layer is no longer available.");
+        await next[1].apply(target);
+      } catch (error) {
+        this.options.elements.result.textContent = error instanceof Error
+          ? error.message
+          : "Could not update the layer options.";
+        this.options.onLayerOptionsUpdateError(error);
+      } finally {
+        if (!this.disposed) this.refreshAfterLayerOptionsUpdate();
+      }
+    }
+  }
+
+  private refreshAfterLayerOptionsUpdate(): void {
+    this.options.onHistoryState(this.options.engine.getHistoryState());
+    this.options.requestLayersRefresh();
+    const stats = this.options.engine.getStats();
+    this.options.onStats(stats);
+    this.options.syncToolSettings();
   }
 
   private begin(): boolean {
-    if (this.disposed || this.busy || this.options.isInteractionLocked()) return false;
+    if (
+      this.disposed
+      || this.busy
+      || this.layerOptionsEdit !== null
+      || this.options.isInteractionLocked()
+    ) return false;
     this.busy = true;
     this.options.onBusyChange(true);
     this.options.requestLayersRefresh();
@@ -540,6 +750,92 @@ export class SceneEditorController {
       this.options.elements.result.textContent = error instanceof Error
         ? error.message
         : "Could not update the layer blend mode.";
+    } finally {
+      this.finish();
+    }
+  }
+
+  private async setRasterContentOpacityTransaction(
+    key: SceneLayerKey,
+    contentOpacity: number,
+  ): Promise<void> {
+    const target = selectedSceneLayerProperties(
+      this.options.engine.getStats(),
+      false,
+      key,
+    );
+    if (target?.kind !== "raster" || target.rasterIndex === null || !this.begin()) return;
+    try {
+      const changed = await this.options.engine.setLayerContentOpacity(
+        target.rasterIndex,
+        contentOpacity,
+      );
+      this.options.elements.result.textContent = changed
+        ? `Layer fill ${Math.round(contentOpacity * 100)}%.`
+        : "Layer fill already active.";
+    } catch (error) {
+      this.options.elements.result.textContent = error instanceof Error
+        ? error.message
+        : "Could not update the layer fill.";
+    } finally {
+      this.finish();
+    }
+  }
+
+  private async setRasterCutoutModeTransaction(
+    key: SceneLayerKey,
+    cutoutMode: LayerCutoutMode,
+  ): Promise<void> {
+    const target = selectedSceneLayerProperties(
+      this.options.engine.getStats(),
+      false,
+      key,
+    );
+    if (target?.kind !== "raster" || target.rasterIndex === null || !this.begin()) return;
+    try {
+      const changed = await this.options.engine.setLayerCutoutMode(
+        target.rasterIndex,
+        cutoutMode,
+      );
+      const label = cutoutMode === "group"
+        ? "Shallow"
+        : cutoutMode === "document"
+          ? "Deep"
+          : "None";
+      this.options.elements.result.textContent = changed
+        ? `Layer knockout: ${label}.`
+        : "Layer knockout already active.";
+    } catch (error) {
+      this.options.elements.result.textContent = error instanceof Error
+        ? error.message
+        : "Could not update the layer knockout.";
+    } finally {
+      this.finish();
+    }
+  }
+
+  private async setRasterTonalBlendTransaction(
+    key: SceneLayerKey,
+    tonalBlend: LayerTonalBlend,
+  ): Promise<void> {
+    const target = selectedSceneLayerProperties(
+      this.options.engine.getStats(),
+      false,
+      key,
+    );
+    if (target?.kind !== "raster" || target.rasterIndex === null || !this.begin()) return;
+    try {
+      const changed = await this.options.engine.setLayerTonalBlend(
+        target.rasterIndex,
+        tonalBlend,
+      );
+      this.options.elements.result.textContent = changed
+        ? "Layer tonal blend updated."
+        : "Layer tonal blend already active.";
+    } catch (error) {
+      this.options.elements.result.textContent = error instanceof Error
+        ? error.message
+        : "Could not update the layer tonal blend.";
     } finally {
       this.finish();
     }

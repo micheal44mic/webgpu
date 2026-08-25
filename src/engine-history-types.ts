@@ -30,6 +30,11 @@ import type { LiquifyMode } from "./liquify-core";
 import type { RasterLayerSource } from "./raster-layer-source";
 import type { RasterLayerEffectsSnapshot } from "./raster-layer-effects";
 import type { DocumentBackgroundState } from "./document-background";
+import type {
+  LayerCutoutMode,
+  LayerOptionsState,
+  LayerTonalBlend,
+} from "./layer-composition.ts";
 
 export interface SelectionHistoryMaskSnapshot {
   readonly revision: number;
@@ -86,6 +91,11 @@ export interface DocumentBackgroundHistoryAction {
 export interface RasterLayerMetadataHistoryValueMap {
   readonly visibility: boolean;
   readonly opacity: number;
+  /** One panel session owns all continuously previewed layer-composition fields. */
+  readonly "layer-options": LayerOptionsState;
+  readonly "content-opacity": number;
+  readonly cutout: LayerCutoutMode;
+  readonly "tonal-blend": LayerTonalBlend;
   readonly clipping: readonly LayerClippingHistoryEntry[];
   readonly stroke: RasterStrokeStyle;
   readonly bevel: RasterBevelStyle;
@@ -415,7 +425,7 @@ export type RasterFilterHistoryAction = RasterFilterHistoryActionCommon & (
     effectsBefore: RasterLayerEffectsSnapshot;
     effectsAfter: RasterLayerEffectsSnapshot;
     strategy:
-      "bake-style-stack-into-authoritative-pixels-preserve-opacity-blend-and-clipping-v1";
+      "bake-content-and-style-stack-into-authoritative-pixels-preserve-opacity-blend-and-clipping-v2";
     preservesLayerOpacity: true;
     preservesBlendMode: true;
     preservesClipping: true;

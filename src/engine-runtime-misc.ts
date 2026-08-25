@@ -89,6 +89,19 @@ import {
   type RasterShadowRect,
 } from "./shadow-core";
 
+const mixedSceneSourceOverBlend: GPUBlendState = {
+  color: {
+    srcFactor: "one",
+    dstFactor: "one-minus-src-alpha",
+    operation: "add",
+  },
+  alpha: {
+    srcFactor: "one",
+    dstFactor: "one-minus-src-alpha",
+    operation: "add",
+  },
+};
+
 export type StaticResourceCreationPhase = "all" | "core" | "optional";
 
 export async function finishStaticResourceCreation(
@@ -424,6 +437,21 @@ export async function finishStaticResourceCreation(
           visibility: GPUShaderStage.FRAGMENT,
           buffer: { type: "uniform" },
         },
+        {
+          binding: 4,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "unfilterable-float" },
+        },
+        {
+          binding: 5,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "unfilterable-float" },
+        },
+        {
+          binding: 6,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "unfilterable-float" },
+        },
       ],
     });
     const blendUniformAlignment = engine.device.limits.minUniformBufferOffsetAlignment;
@@ -518,19 +546,6 @@ export async function finishStaticResourceCreation(
     magFilter: "linear",
     minFilter: "linear",
   });
-
-  const sourceOverBlend: GPUBlendState = {
-      color: {
-        srcFactor: "one",
-        dstFactor: "one-minus-src-alpha",
-        operation: "add",
-      },
-      alpha: {
-        srcFactor: "one",
-        dstFactor: "one-minus-src-alpha",
-        operation: "add",
-      },
-    };
     const mixedRasterPipelineLayout = engine.device.createPipelineLayout({
       label: "Mixed scene raster segment pipeline layout",
       bindGroupLayouts: [engine.mixedSceneRasterSegmentBindGroupLayout],
@@ -542,7 +557,7 @@ export async function finishStaticResourceCreation(
       fragment: {
         module: engine.mixedSceneRasterSegmentShaderModule,
         entryPoint: "fragmentMain",
-        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: sourceOverBlend }],
+        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: mixedSceneSourceOverBlend }],
       },
       primitive: { topology: "triangle-list" },
     });
@@ -557,7 +572,7 @@ export async function finishStaticResourceCreation(
       fragment: {
         module: engine.mixedSceneTextSegmentShaderModule,
         entryPoint: "fragmentMain",
-        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: sourceOverBlend }],
+        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: mixedSceneSourceOverBlend }],
       },
       primitive: { topology: "triangle-list" },
     });
@@ -608,7 +623,7 @@ export async function finishStaticResourceCreation(
       fragment: {
         module: engine.rasterImageMixedSceneShaderModule,
         entryPoint: "fragmentMain",
-        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: sourceOverBlend }],
+        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: mixedSceneSourceOverBlend }],
       },
       primitive: { topology: "triangle-strip", cullMode: "none" },
     });
@@ -671,6 +686,23 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
+    engine.layerBlendViewportDocumentMaskPipeline = engine.device.createRenderPipeline({
+      label: "Ordered clipping document-mask accumulator",
+      layout: engine.device.createPipelineLayout({
+        label: "Ordered clipping document-mask pipeline layout",
+        bindGroupLayouts: [engine.layerBlendCompositorBindGroupLayout!],
+      }),
+      vertex: {
+        module: engine.layerBlendCompositorShaderModule!,
+        entryPoint: "layerBlendCompositorVertexMain",
+      },
+      fragment: {
+        module: engine.layerBlendCompositorShaderModule!,
+        entryPoint: "layerBlendDocumentMaskFragmentMain",
+        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: mixedSceneSourceOverBlend }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
     engine.mixedSceneActiveDisplayPipeline = engine.device.createRenderPipeline({
       label: "Mixed scene active base layer source-over pipeline",
       layout: displayPipelineLayout,
@@ -678,7 +710,29 @@ export async function finishStaticResourceCreation(
       fragment: {
         module: engine.displayShaderModule,
         entryPoint: "activeFragmentMain",
-        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: sourceOverBlend }],
+        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: mixedSceneSourceOverBlend }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+    engine.mixedSceneActiveSourceDisplayPipeline = engine.device.createRenderPipeline({
+      label: "Mixed scene active base source-only pipeline",
+      layout: displayPipelineLayout,
+      vertex: { module: engine.displayShaderModule, entryPoint: "vertexMain" },
+      fragment: {
+        module: engine.displayShaderModule,
+        entryPoint: "activeSourceFragmentMain",
+        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: mixedSceneSourceOverBlend }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+    engine.mixedSceneActiveCutoutDisplayPipeline = engine.device.createRenderPipeline({
+      label: "Mixed scene active authored matte pipeline",
+      layout: displayPipelineLayout,
+      vertex: { module: engine.displayShaderModule, entryPoint: "vertexMain" },
+      fragment: {
+        module: engine.displayShaderModule,
+        entryPoint: "activeCutoutFragmentMain",
+        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: mixedSceneSourceOverBlend }],
       },
       primitive: { topology: "triangle-list" },
     });
@@ -732,6 +786,17 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
+    engine.mixedSceneActiveRasterStrokeSourcePipeline = engine.device.createRenderPipeline({
+      label: "Mixed scene active Stroke/effects source-only pipeline",
+      layout: rasterStrokeDisplayPipelineLayout,
+      vertex: { module: engine.rasterStrokeDisplayShaderModule, entryPoint: "vertexMain" },
+      fragment: {
+        module: engine.rasterStrokeDisplayShaderModule,
+        entryPoint: "activeSourceFragmentMain",
+        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: mixedSceneSourceOverBlend }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
   }
 
   const thicknessTailDisplayPipelineLayout = engine.device.createPipelineLayout({
@@ -777,6 +842,17 @@ export async function finishStaticResourceCreation(
             },
           },
         }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+    engine.mixedSceneActiveThicknessTailSourcePipeline = engine.device.createRenderPipeline({
+      label: "Mixed scene active thickness tail source-only pipeline",
+      layout: thicknessTailDisplayPipelineLayout,
+      vertex: { module: engine.thicknessTailDisplayShaderModule, entryPoint: "vertexMain" },
+      fragment: {
+        module: engine.thicknessTailDisplayShaderModule,
+        entryPoint: "activeSourceFragmentMain",
+        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: mixedSceneSourceOverBlend }],
       },
       primitive: { topology: "triangle-list" },
     });
@@ -839,6 +915,17 @@ export async function finishStaticResourceCreation(
             },
           },
         }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+    engine.mixedSceneActiveLightGlazeSourcePipeline = engine.device.createRenderPipeline({
+      label: "Mixed scene active Light Glaze source-only pipeline",
+      layout: lightGlazeDisplayPipelineLayout,
+      vertex: { module: engine.lightGlazeDisplayShaderModule, entryPoint: "vertexMain" },
+      fragment: {
+        module: engine.lightGlazeDisplayShaderModule,
+        entryPoint: "activeSourceFragmentMain",
+        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: mixedSceneSourceOverBlend }],
       },
       primitive: { topology: "triangle-list" },
     });

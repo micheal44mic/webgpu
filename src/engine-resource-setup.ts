@@ -11,6 +11,7 @@ import {
   LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BYTES,
   LIGHT_GLAZE_UNIFORM_BYTES,
   MAX_STAMPS_PER_BATCH,
+  SHAPE_MASK_FILTER_GUARD_TEXELS,
   SHAPE_MASK_SIZE,
   SHAPE_OCCUPANCY_MAP_BYTES,
   SHAPE_OCCUPANCY_MAP_COUNT,
@@ -43,6 +44,10 @@ import {
 import { decodeGrayscalePng8 } from "./png-mask";
 import { decodeShapeMaskWithCanvas } from "./shape-mask-decode";
 import { buildShapeOccupancyMaps } from "./shape-occupancy";
+import {
+  downsampleShapeMask2x,
+  resampleShapeMaskIntoTransparentGuard,
+} from "./shape-mask-filtering";
 import { RasterStrokeRenderer } from "./stroke-renderer";
 import {
   RASTER_STROKE_COMPOSITOR_ONLY_SCRATCH_EXTENT,
@@ -68,6 +73,7 @@ import {
 } from "./engine-runtime-misc";
 import { prepareAdaptivePreviewShapePalette } from "./engine-adaptive-preview-runtime";
 import { LAYER_COLD_TILE_COMPOSITE_UNIFORM_BYTES } from "./layer-cold-tile-composite-shader";
+import { LAYER_BLEND_FOLD_UNIFORM_BYTES } from "./layer-blend-fold-shader";
 import { LAYER_STORAGE_TILE_COUNT } from "./layer-storage-study";
 import { planDeferredPreviewTextureExtent } from "./deferred-erase-preview-core";
 
@@ -638,8 +644,23 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
         buffer: {
           type: "uniform",
           hasDynamicOffset: true,
-          minBindingSize: LAYER_COMPOSITE_UNIFORM_BYTES,
+          minBindingSize: LAYER_BLEND_FOLD_UNIFORM_BYTES,
         },
+      },
+      {
+        binding: 3,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "unfilterable-float" },
+      },
+      {
+        binding: 4,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "unfilterable-float" },
+      },
+      {
+        binding: 5,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "unfilterable-float" },
       },
     ],
   });
@@ -1019,6 +1040,42 @@ export async function createShapeMaskResources(
   }
   const outline = buildBrushMaskOutline(baseMask, SHAPE_MASK_SIZE, SHAPE_MASK_SIZE);
 
+  // Occupancy, the pointer outline and the small UI preview all describe the
+  // logical authored frame. They must not inherit the transparent filtering
+  // guard used only by the GPU sampler or the Shape would appear smaller in UI.
+  const occupancyMipMasks: Uint8Array[] = [baseMask];
+  let logicalLevelMask = baseMask;
+  let logicalLevelSize = SHAPE_MASK_SIZE;
+  for (let mipLevel = 1; mipLevel <= SHAPE_OCCUPANCY_MAX_MIP; mipLevel += 1) {
+    logicalLevelMask = downsampleShapeMask2x(logicalLevelMask, logicalLevelSize);
+    logicalLevelSize /= 2;
+    occupancyMipMasks.push(logicalLevelMask);
+  }
+  const occupancy = buildShapeOccupancyMaps(occupancyMipMasks);
+  const previewMask = occupancyMipMasks[SHAPE_OCCUPANCY_MAX_MIP];
+  const previewSize = SHAPE_MASK_SIZE >> SHAPE_OCCUPANCY_MAX_MIP;
+  const previewSprite = document.createElement("canvas");
+  previewSprite.width = previewSize;
+  previewSprite.height = previewSize;
+  const previewContext = previewSprite.getContext("2d");
+  if (previewContext && previewMask) {
+    const image = previewContext.createImageData(previewSize, previewSize);
+    for (let index = 0; index < previewMask.length; index += 1) {
+      const rgbaIndex = index * 4;
+      image.data[rgbaIndex] = 255;
+      image.data[rgbaIndex + 1] = 255;
+      image.data[rgbaIndex + 2] = 255;
+      image.data[rgbaIndex + 3] = previewMask[index];
+    }
+    previewContext.putImageData(image, 0, 0);
+  }
+
+  const protectedMask = resampleShapeMaskIntoTransparentGuard(
+    baseMask,
+    SHAPE_MASK_SIZE,
+    SHAPE_MASK_FILTER_GUARD_TEXELS,
+  );
+
   const mipLevelCount = Math.log2(SHAPE_MASK_SIZE) + 1;
   const texture = engine.device.createTexture({
     label: "Shape 2K white-times-alpha mask",
@@ -1032,13 +1089,9 @@ export async function createShapeMaskResources(
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   });
 
-  let levelMask = baseMask;
+  let levelMask = protectedMask;
   let levelSize = SHAPE_MASK_SIZE;
-  const occupancyMipMasks: Uint8Array[] = [];
   for (let mipLevel = 0; mipLevel < mipLevelCount; mipLevel += 1) {
-    if (mipLevel <= SHAPE_OCCUPANCY_MAX_MIP) {
-      occupancyMipMasks.push(levelMask);
-    }
     const bytesPerRow = Math.ceil(levelSize / 256) * 256;
     let upload = levelMask;
     if (bytesPerRow !== levelSize) {
@@ -1059,42 +1112,8 @@ export async function createShapeMaskResources(
       continue;
     }
 
-    const nextSize = levelSize / 2;
-    const nextMask = new Uint8Array(nextSize * nextSize);
-    for (let y = 0; y < nextSize; y += 1) {
-      for (let x = 0; x < nextSize; x += 1) {
-        const sourceIndex = y * 2 * levelSize + x * 2;
-        nextMask[y * nextSize + x] = Math.round(
-          (
-            levelMask[sourceIndex]
-            + levelMask[sourceIndex + 1]
-            + levelMask[sourceIndex + levelSize]
-            + levelMask[sourceIndex + levelSize + 1]
-          ) / 4,
-        );
-      }
-    }
-    levelMask = nextMask;
-    levelSize = nextSize;
-  }
-
-  const occupancy = buildShapeOccupancyMaps(occupancyMipMasks);
-  const previewMask = occupancyMipMasks[SHAPE_OCCUPANCY_MAX_MIP];
-  const previewSize = SHAPE_MASK_SIZE >> SHAPE_OCCUPANCY_MAX_MIP;
-  const previewSprite = document.createElement("canvas");
-  previewSprite.width = previewSize;
-  previewSprite.height = previewSize;
-  const previewContext = previewSprite.getContext("2d");
-  if (previewContext && previewMask) {
-    const image = previewContext.createImageData(previewSize, previewSize);
-    for (let index = 0; index < previewMask.length; index += 1) {
-      const rgbaIndex = index * 4;
-      image.data[rgbaIndex] = 255;
-      image.data[rgbaIndex + 1] = 255;
-      image.data[rgbaIndex + 2] = 255;
-      image.data[rgbaIndex + 3] = previewMask[index];
-    }
-    previewContext.putImageData(image, 0, 0);
+    levelMask = downsampleShapeMask2x(levelMask, levelSize);
+    levelSize /= 2;
   }
   return {
     assetId,
@@ -1418,7 +1437,10 @@ export async function ensureRasterStrokeRenderer(engine: BrushEngine,
   if (engine.rasterBevelRenderer) {
     renderer.updateBevelFieldParameters(engine.rasterBevelRenderer.fieldState);
   }
-  renderer.updateBevelParameters(engine.rasterBevelStyle);
+  renderer.updateBevelParameters(
+    engine.rasterBevelStyle,
+    engine.layerStack.active.contentOpacity,
+  );
   renderer.setShadowResources(
     "outer",
     engine.rasterOuterShadowRenderer?.coverageBuffer ?? null,
@@ -1452,6 +1474,7 @@ export async function ensureEffectRenderersForRecord(engine: BrushEngine, record
     normalizeRasterOuterShadowStyle(record.outerShadowStyle),
     normalizeRasterInnerShadowStyle(record.innerShadowStyle),
     normalizeRasterColorOverlayStyle(record.colorOverlayStyle),
+    record.contentOpacity,
   );
   const scratchPool = engine.requireEffectsWorkbench().scratchPool;
   if (requirements.needsColorOverlayRenderer) {
@@ -1696,7 +1719,10 @@ export async function ensureRasterBevelRenderer(engine: BrushEngine): Promise<Ra
   if (engine.rasterStrokeRenderer) {
     engine.rasterStrokeRenderer.setBevelResources(renderer.heightView, renderer.glossView);
     engine.rasterStrokeRenderer.updateBevelFieldParameters(renderer.fieldState);
-    engine.rasterStrokeRenderer.updateBevelParameters(engine.rasterBevelStyle);
+    engine.rasterStrokeRenderer.updateBevelParameters(
+      engine.rasterBevelStyle,
+      engine.layerStack.active.contentOpacity,
+    );
     engine.rebuildRasterStrokeDisplayBindGroups();
   }
   return renderer;
@@ -1820,7 +1846,10 @@ export function releaseRasterBevelRenderer(engine: BrushEngine): void {
   engine.rasterBevelLastEncode = null;
   if (engine.rasterStrokeRenderer) {
     engine.rasterStrokeRenderer.setBevelResources(null, null);
-    engine.rasterStrokeRenderer.updateBevelParameters(engine.rasterBevelStyle);
+    engine.rasterStrokeRenderer.updateBevelParameters(
+      engine.rasterBevelStyle,
+      engine.layerStack.active.contentOpacity,
+    );
     engine.rebuildRasterStrokeDisplayBindGroups();
   }
 }

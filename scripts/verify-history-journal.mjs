@@ -724,7 +724,12 @@ const layerMerge = (
   );
   assert.match(
     rasterPropertyHandshake,
-    /edit\.layerId !== before\.layerId \|\| edit\.property !== property/,
+    /edit\.property === "layer-options" && \([\s\S]*?property === "opacity"[\s\S]*?property === "content-opacity"[\s\S]*?property === "cutout"[\s\S]*?property === "tonal-blend"/,
+    "Layer Options deve assorbire soltanto i propri campi live nella stessa azione.",
+  );
+  assert.match(
+    rasterPropertyHandshake,
+    /if \(!this\.rasterLayerMetadataHistoryEditAllows\(property, before\.layerId\)\)[\s\S]*?cannot absorb/,
     "Bevel, Shadow e Stroke non devono mai assorbirsi nella stessa azione.",
   );
   assert.match(
@@ -824,7 +829,10 @@ const layerMerge = (
   assert.match(effectsSheet, /applyLoop = null;[\s\S]{0,180}commitHistoryEditIfIdle/);
   assert.match(strokeSheet, /applyLoop = null;[\s\S]{0,180}commitHistoryEditIfIdle/);
   assert.match(toolSheet, /visibilitychange[\s\S]{0,180}commitOpenHistoryEdits/);
-  assert.match(toolSheet, /pagehide[\s\S]{0,100}commitOpenHistoryEdits/);
+  assert.match(
+    toolSheet,
+    /pagehide[\s\S]{0,260}activeKind === "layer-options"[\s\S]{0,120}close\(false\)[\s\S]{0,120}commitOpenHistoryEdits/,
+  );
   assert.match(
     toolSheet,
     /commitOpenHistoryEdits\(\): void \{[\s\S]{0,120}finishSvgPaintEdit\(\)[\s\S]{0,120}finishVectorPropertyEdit\(\)/,

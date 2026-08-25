@@ -1,10 +1,12 @@
 import { mergedSurfaceSamplingShader } from "./merged-surface-shader";
 import { activeClippingGroupTexelShader } from "./clipping-group-shader";
+import { SHAPE_MASK_FILTER_UV_HALF_EXTENT } from "./engine-limits";
 
 export const brushShader = /* wgsl */ `
 const MAX_COUNT: u32 = 24u;
 const TAU: f32 = 6.283185307179586;
 const SHAPE_OCCUPANCY_GRID_SIZE: u32 = 256u;
+const SHAPE_MASK_UV_HALF_EXTENT: f32 = ${SHAPE_MASK_FILTER_UV_HALF_EXTENT};
 
 struct BrushUniforms {
   layerSize: vec2<f32>,
@@ -281,7 +283,7 @@ fn circleCoverage(input: VertexOutput) -> f32 {
 }
 
 fn shapeCoverage(input: VertexOutput) -> f32 {
-  let uv = input.localPosition * 0.5 + vec2<f32>(0.5);
+  let uv = input.localPosition * SHAPE_MASK_UV_HALF_EXTENT + vec2<f32>(0.5);
   let sourceCoverage = textureSample(shapeMaskTexture, shapeMaskSampler, uv).r;
   let hardness = clamp(brush.controls.y, 0.0, 1.0);
   let coverage = mix(sourceCoverage * sourceCoverage, sourceCoverage, hardness);
@@ -336,15 +338,22 @@ fn shapeOccupancyMayContribute(uv: vec2<f32>) -> bool {
 }
 
 fn occupiedShapeCoverage(input: VertexOutput) -> f32 {
-  let uv = input.localPosition * 0.5 + vec2<f32>(0.5);
-  let uvDx = dpdx(uv);
-  let uvDy = dpdy(uv);
+  let logicalUv = input.localPosition * 0.5 + vec2<f32>(0.5);
+  let samplingUv = input.localPosition * SHAPE_MASK_UV_HALF_EXTENT + vec2<f32>(0.5);
+  let uvDx = dpdx(samplingUv);
+  let uvDy = dpdy(samplingUv);
 
-  if (!shapeOccupancyMayContribute(uv)) {
+  if (!shapeOccupancyMayContribute(logicalUv)) {
     discard;
   }
 
-  let sourceCoverage = textureSampleGrad(shapeMaskTexture, shapeMaskSampler, uv, uvDx, uvDy).r;
+  let sourceCoverage = textureSampleGrad(
+    shapeMaskTexture,
+    shapeMaskSampler,
+    samplingUv,
+    uvDx,
+    uvDy
+  ).r;
   let hardness = clamp(brush.controls.y, 0.0, 1.0);
   let coverage = mix(sourceCoverage * sourceCoverage, sourceCoverage, hardness);
 
@@ -377,6 +386,7 @@ fn shapeOccupancyCoverageFragmentMain(input: VertexOutput) -> @location(0) vec4<
 // and executing the exact previous shader entry points and bindings.
 export const texturizedGrainShader = /* wgsl */ `
 const SHAPE_OCCUPANCY_GRID_SIZE: u32 = 256u;
+const SHAPE_MASK_UV_HALF_EXTENT: f32 = ${SHAPE_MASK_FILTER_UV_HALF_EXTENT};
 
 struct BrushUniforms {
   layerSize: vec2<f32>,
@@ -579,7 +589,7 @@ fn shapeGrainCoverage(input: FragmentInput) -> f32 {
   let grainUv = selectedGrainUv(input);
   let grainUvDx = dpdx(grainUv);
   let grainUvDy = dpdy(grainUv);
-  let uv = input.localPosition * 0.5 + vec2<f32>(0.5);
+  let uv = input.localPosition * SHAPE_MASK_UV_HALF_EXTENT + vec2<f32>(0.5);
   let sourceCoverage = textureSample(shapeMaskTexture, shapeMaskSampler, uv).r;
   let hardness = clamp(brush.controls.y, 0.0, 1.0);
   var coverage = mix(sourceCoverage * sourceCoverage, sourceCoverage, hardness);
@@ -614,15 +624,22 @@ fn occupiedShapeGrainCoverage(input: FragmentInput) -> f32 {
   let grainUv = selectedGrainUv(input);
   let grainUvDx = dpdx(grainUv);
   let grainUvDy = dpdy(grainUv);
-  let uv = input.localPosition * 0.5 + vec2<f32>(0.5);
-  let uvDx = dpdx(uv);
-  let uvDy = dpdy(uv);
+  let logicalUv = input.localPosition * 0.5 + vec2<f32>(0.5);
+  let samplingUv = input.localPosition * SHAPE_MASK_UV_HALF_EXTENT + vec2<f32>(0.5);
+  let uvDx = dpdx(samplingUv);
+  let uvDy = dpdy(samplingUv);
 
-  if (!shapeOccupancyMayContribute(uv)) {
+  if (!shapeOccupancyMayContribute(logicalUv)) {
     discard;
   }
 
-  let sourceCoverage = textureSampleGrad(shapeMaskTexture, shapeMaskSampler, uv, uvDx, uvDy).r;
+  let sourceCoverage = textureSampleGrad(
+    shapeMaskTexture,
+    shapeMaskSampler,
+    samplingUv,
+    uvDx,
+    uvDy
+  ).r;
   let hardness = clamp(brush.controls.y, 0.0, 1.0);
   var coverage = mix(sourceCoverage * sourceCoverage, sourceCoverage, hardness);
 
@@ -1146,6 +1163,54 @@ fn activeFragmentMain(
     display.clippingMode < 0.5
   );
 }
+
+@fragment
+fn activeSourceFragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  let displayOffset = (fragmentPosition.xy - display.canvasSize * 0.5) / display.zoom;
+  let layerOffset = vec2<f32>(
+    display.viewRotation.x * displayOffset.x + display.viewRotation.y * displayOffset.y,
+    -display.viewRotation.y * displayOffset.x + display.viewRotation.x * displayOffset.y
+  );
+  let layerPosition = display.viewCenter + layerOffset;
+  let layerSize = vec2<f32>(textureDimensions(activeLayerBase, 0));
+  if (any(layerPosition < vec2<f32>(0.0)) || any(layerPosition >= layerSize)) {
+    return vec4<f32>(0.0);
+  }
+  let uv = clamp(layerPosition / layerSize, vec2<f32>(0.0), vec2<f32>(1.0));
+  let lod = max(display.selectedMipLevel, 0.0);
+  let source = select(
+    textureSampleLevel(activeLayerBase, layerSampler, uv, 0.0),
+    textureSampleLevel(activeLayerPyramid, layerSampler, uv, max(0.0, lod - 1.0)),
+    lod >= 0.5,
+  );
+  return source * display.activeLayerAlpha;
+}
+
+@fragment
+fn activeCutoutFragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  let displayOffset = (fragmentPosition.xy - display.canvasSize * 0.5) / display.zoom;
+  let layerOffset = vec2<f32>(
+    display.viewRotation.x * displayOffset.x + display.viewRotation.y * displayOffset.y,
+    -display.viewRotation.y * displayOffset.x + display.viewRotation.x * displayOffset.y
+  );
+  let layerPosition = display.viewCenter + layerOffset;
+  let layerSize = vec2<f32>(textureDimensions(activeLayerBase, 0));
+  if (any(layerPosition < vec2<f32>(0.0)) || any(layerPosition >= layerSize)) {
+    return vec4<f32>(0.0);
+  }
+  let uv = clamp(layerPosition / layerSize, vec2<f32>(0.0), vec2<f32>(1.0));
+  let raw = textureSampleLevel(activeLayerBase, layerSampler, uv, 0.0);
+  let opacity = select(
+    display.activeLayerAlpha,
+    display.clippingParentOpacity,
+    display.clippingMode >= 0.5 && display.clippingMode < 1.5,
+  );
+  return raw * opacity;
+}
 `;
 
 // Predictive thickness tails use the exact brush pipeline in a transparent,
@@ -1645,6 +1710,28 @@ fn activeFragmentMain(
     return sampleTailDisplayClippingGroup(layerPosition, layerUv);
   }
   return paint * display.activeLayerAlpha;
+}
+
+@fragment
+fn activeSourceFragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  let displayOffset = (fragmentPosition.xy - display.canvasSize * 0.5) / display.zoom;
+  let layerOffset = vec2<f32>(
+    display.viewRotation.x * displayOffset.x + display.viewRotation.y * displayOffset.y,
+    -display.viewRotation.y * displayOffset.x + display.viewRotation.x * displayOffset.y
+  );
+  let layerPosition = display.viewCenter + layerOffset;
+  let layerSize = vec2<f32>(textureDimensions(activeLayerBase, 0));
+  if (any(layerPosition < vec2<f32>(0.0)) || any(layerPosition >= layerSize)) {
+    return vec4<f32>(0.0);
+  }
+  let layerUv = clamp(
+    layerPosition / layerSize,
+    vec2<f32>(0.0),
+    vec2<f32>(1.0)
+  );
+  return sampleTailDisplayActive(layerPosition, layerUv) * display.activeLayerAlpha;
 }
 `;
 
@@ -2250,6 +2337,40 @@ fn activeFragmentMain(
     paint * display.activeLayerAlpha,
     display.clippingMode < 0.5
   );
+}
+
+@fragment
+fn activeSourceFragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  let displayOffset = (fragmentPosition.xy - display.canvasSize * 0.5) / display.zoom;
+  let layerOffset = vec2<f32>(
+    display.viewRotation.x * displayOffset.x + display.viewRotation.y * displayOffset.y,
+    -display.viewRotation.y * displayOffset.x + display.viewRotation.x * displayOffset.y
+  );
+  let layerPosition = display.viewCenter + layerOffset;
+  let layerSize = vec2<f32>(textureDimensions(layerTexture, 0));
+  if (any(layerPosition < vec2<f32>(0.0)) || any(layerPosition >= layerSize)) {
+    return vec4<f32>(0.0);
+  }
+  let uv = clamp(layerPosition / layerSize, vec2<f32>(0.0), vec2<f32>(1.0));
+  let lod = max(display.selectedMipLevel, 0.0);
+  var paint: vec4<f32>;
+  if (lod < 0.5) {
+    paint = select(
+      sampleCompositedLayerLinear(uv),
+      sampleCompositedLayerNearest(uv),
+      rasterPixelViewEnabled(1.0),
+    );
+  } else {
+    paint = textureSampleLevel(
+      compositedMipTexture,
+      layerSampler,
+      uv,
+      max(0.0, lod - 1.0),
+    );
+  }
+  return paint * display.activeLayerAlpha;
 }
 `;
 

@@ -354,6 +354,12 @@ assert.deepEqual(controller.selectedLayerProperties(), {
   kind: "raster",
   opacity: 0.75,
   blendMode: "normal",
+  contentOpacity: 1,
+  cutoutMode: "off",
+  tonalBlend: {
+    current: [0, 0, 255, 255],
+    underlying: [0, 0, 255, 255],
+  },
   rasterIndex: 0,
   semanticId: null,
   clippingEnabled: false,

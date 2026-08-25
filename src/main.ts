@@ -828,6 +828,9 @@ sceneEditorController = new SceneEditorController({
   renderLayers: renderMobileLayerList,
   syncActiveRasterControls: syncActiveLayerControls,
   syncToolSettings: () => mobileToolSettingsSheet?.syncOpenState(),
+  onLayerOptionsUpdateError: () => {
+    mobileToolSettingsSheet?.discardLayerOptionsDraft();
+  },
   onStats: (stats) => runtimeStatsController?.update(stats),
   recordDiagnostic: (name, detail, error) => {
     appDiagnosticsController?.recordOperation(name, detail, error);
@@ -1081,9 +1084,11 @@ function selectedMobileSvgNode() {
 
 function selectedMobileLayerProperties() {
   if (!engineInitialized) return null;
+  const layerOptionsPreview = historyState.openEdit === "layer-options";
   return selectedSceneLayerProperties(
     engine.getStats(),
-    interactionLocked() || sceneEditorController?.isBusy === true,
+    interactionLocked() && !layerOptionsPreview
+      || sceneEditorController?.isBusy === true,
   );
 }
 
@@ -1481,13 +1486,24 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
       name: properties.name,
       opacity: properties.opacity,
       blendMode: properties.blendMode,
+      contentOpacity: properties.contentOpacity,
+      cutoutMode: properties.cutoutMode,
+      tonalBlend: properties.tonalBlend,
       locked: properties.locked,
     };
   },
+  beginSelectedLayerOptionsEdit: () => {
+    const properties = selectedMobileLayerProperties();
+    return properties !== null
+      && !properties.locked
+      && sceneEditorController?.beginLayerOptionsEdit(properties.key) === true;
+  },
+  finishSelectedLayerOptionsEdit: () =>
+    sceneEditorController?.finishLayerOptionsEdit() ?? false,
   setSelectedLayerOpacity: (opacity) => {
     const properties = selectedMobileLayerProperties();
     if (!properties || properties.locked) return;
-    sceneEditorController?.setLayerOpacity(properties.key, opacity);
+    return sceneEditorController?.setLayerOpacity(properties.key, opacity);
   },
   setSelectedLayerBlendMode: (blendMode) => {
     const properties = selectedMobileLayerProperties();
@@ -1498,7 +1514,40 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
     ) {
       return;
     }
-    sceneEditorController?.setRasterBlendMode(properties.key, blendMode);
+    return sceneEditorController?.setRasterBlendMode(properties.key, blendMode);
+  },
+  setSelectedLayerContentOpacity: (contentOpacity) => {
+    const properties = selectedMobileLayerProperties();
+    if (
+      !properties
+      || properties.locked
+      || properties.kind !== "raster"
+    ) {
+      return;
+    }
+    return sceneEditorController?.setRasterContentOpacity(properties.key, contentOpacity);
+  },
+  setSelectedLayerCutoutMode: (cutoutMode) => {
+    const properties = selectedMobileLayerProperties();
+    if (
+      !properties
+      || properties.locked
+      || properties.kind !== "raster"
+    ) {
+      return;
+    }
+    return sceneEditorController?.setRasterCutoutMode(properties.key, cutoutMode);
+  },
+  setSelectedLayerTonalBlend: (tonalBlend) => {
+    const properties = selectedMobileLayerProperties();
+    if (
+      !properties
+      || properties.locked
+      || properties.kind !== "raster"
+    ) {
+      return;
+    }
+    return sceneEditorController?.setRasterTonalBlend(properties.key, tonalBlend);
   },
   getSelectedSvgStyle: () => {
     const node = selectedMobileSvgNode();
@@ -1814,6 +1863,13 @@ documentInteractionController = new DocumentInteractionController({
 
 async function settleTransientProjectEdits(): Promise<void> {
   if (!engineInitialized) return;
+  if (
+    mobileToolSettingsSheet?.isOpen === true
+    && mobileToolSettingsSheet.toolKind === "layer-options"
+  ) {
+    mobileToolSettingsSheet.close(false);
+  }
+  await sceneEditorController?.finishLayerOptionsEdit();
   const fillPreviewActive = engine.getFillPreviewState().active;
   const fillToolActive = engine.fillToolSelected
     || canvasToolController?.activeTool === "fill";
@@ -1831,7 +1887,9 @@ window.addEventListener("pagehide", () => {
   // Last-resort only. Home and Save await this same gate before navigating or
   // capturing; pagehide covers browser-level departures where waiting is not
   // available.
-  void settleTransientProjectEdits();
+  void settleTransientProjectEdits().catch((error) => {
+    console.error("Could not finish the active edit during page hide.", error);
+  });
   appDiagnosticsController?.dispose();
   gpuMemoryPanelController?.dispose();
   canvasGuidesController?.dispose();
@@ -1875,6 +1933,7 @@ function nonHistoryOperationLocked(allowDestructivePreviewEdit = false): boolean
       )
     )
     || historyState.openEdit === "raster-property"
+    || historyState.openEdit === "layer-options"
     || rasterStyleController.isBusy
     || pixelSelectionController?.isBusy === true
     || editorExtension?.isBusy() === true;

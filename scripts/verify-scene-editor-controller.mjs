@@ -69,6 +69,9 @@ const raster7 = {
   visible: true,
   opacity: 1,
   blendMode: "normal",
+  contentOpacity: 1,
+  cutoutMode: "off",
+  tonalBlend: { current: [0, 0, 255, 255], underlying: [0, 0, 255, 255] },
   reference: false,
   clippingParentId: null,
   hasContent: true,
@@ -79,6 +82,9 @@ const raster8 = {
   visible: true,
   opacity: 1,
   blendMode: "normal",
+  contentOpacity: 1,
+  cutoutMode: "off",
+  tonalBlend: { current: [0, 0, 255, 255], underlying: [0, 0, 255, 255] },
   reference: false,
   clippingParentId: null,
   hasContent: true,
@@ -114,6 +120,9 @@ let stats = {
 };
 const calls = [];
 let pendingMove = null;
+let pendingLayerOptionOpacity = null;
+let layerOptionsHistoryOpen = false;
+let failLayerOptionOpacity = false;
 const engine = {
   getStats: () => stats,
   getHistoryState: () => ({
@@ -121,8 +130,22 @@ const engine = {
     actionCount: 0,
     busy: false,
     inconsistent: false,
-    openEdit: null,
+    canUndo: !layerOptionsHistoryOpen,
+    canRedo: !layerOptionsHistoryOpen,
+    openEdit: layerOptionsHistoryOpen ? "layer-options" : null,
   }),
+  beginRasterLayerMetadataHistoryEdit: (property) => {
+    calls.push(["begin-raster-property", property]);
+    layerOptionsHistoryOpen = true;
+    return 77;
+  },
+  commitRasterLayerMetadataHistoryEdit: (token) => {
+    calls.push(["commit-raster-property", token]);
+    layerOptionsHistoryOpen = false;
+    return true;
+  },
+  beginVectorHistoryEdit: () => true,
+  commitVectorHistoryEdit: () => true,
   getMixedSceneSnapshot: () => stats.mixedScene,
   getMixedSceneReorderTargets: (key) => ({ key }),
   moveMixedSceneItem: (key, slot) => {
@@ -138,10 +161,26 @@ const engine = {
     calls.push(["clipping", index, enabled]);
     return true;
   },
-  setLayerOpacity: async (index, opacity) => calls.push(["raster-opacity", index, opacity]),
+  setLayerOpacity: async (index, opacity) => {
+    calls.push(["raster-opacity", index, opacity]);
+    if (pendingLayerOptionOpacity) await pendingLayerOptionOpacity.promise;
+    if (failLayerOptionOpacity) throw new Error("live layer option failed");
+  },
   setLayerVisibility: async (index, visible) => calls.push(["raster-visible", index, visible]),
   setLayerBlendMode: async (index, mode) => {
     calls.push(["blend", index, mode]);
+    return true;
+  },
+  setLayerContentOpacity: async (index, opacity) => {
+    calls.push(["content-opacity", index, opacity]);
+    return true;
+  },
+  setLayerCutoutMode: async (index, mode) => {
+    calls.push(["cutout", index, mode]);
+    return true;
+  },
+  setLayerTonalBlend: async (index, tonalBlend) => {
+    calls.push(["tonal-blend", index, tonalBlend]);
     return true;
   },
   setVectorTextNodeOpacity: async (id, opacity) => calls.push(["text-opacity", id, opacity]),
@@ -188,6 +227,8 @@ const elements = {
   result: new FakeElement(),
 };
 const busyChanges = [];
+const historyStates = [];
+const layerOptionErrors = [];
 let interactionLocked = false;
 const controller = new SceneEditorController({
   engine,
@@ -201,11 +242,12 @@ const controller = new SceneEditorController({
   getVectorController: () => null,
   isInteractionLocked: () => interactionLocked,
   onBusyChange: (busy) => busyChanges.push(busy),
-  onHistoryState() {},
+  onHistoryState: (state) => historyStates.push(state),
   requestLayersRefresh() {},
   renderLayers() {},
   syncActiveRasterControls() {},
   syncToolSettings() {},
+  onLayerOptionsUpdateError: (error) => layerOptionErrors.push(error),
   onStats() {},
   recordDiagnostic() {},
 });
@@ -227,6 +269,96 @@ assert.deepEqual(calls.at(-1), ["text-opacity", 5, 0.4]);
 controller.setLayerVisibility("image:9", false);
 await settle();
 assert.deepEqual(calls.at(-1), ["image-visible", 9, false]);
+controller.setRasterContentOpacity("raster:7", 0.45);
+await settle();
+assert.deepEqual(calls.at(-1), ["content-opacity", 1, 0.45]);
+controller.setRasterCutoutMode("raster:7", "group");
+await settle();
+assert.deepEqual(calls.at(-1), ["cutout", 1, "group"]);
+const tonalBlend = {
+  current: [16, 48, 208, 240],
+  underlying: [8, 32, 224, 248],
+};
+controller.setRasterTonalBlend("raster:7", tonalBlend);
+await settle();
+assert.deepEqual(calls.at(-1), ["tonal-blend", 1, tonalBlend]);
+
+// Layer Options is one open history transaction. Slider input is live, while
+// superseded values for the same field are coalesced behind the in-flight GPU update.
+assert.equal(controller.beginLayerOptionsEdit("raster:7"), true);
+assert.deepEqual(calls.at(-1), ["begin-raster-property", "layer-options"]);
+assert.equal(historyStates.at(-1).canUndo, false);
+assert.equal(historyStates.at(-1).canRedo, false);
+pendingLayerOptionOpacity = deferred();
+const opacity90 = controller.setLayerOpacity("raster:7", 0.9);
+const opacity80 = controller.setLayerOpacity("raster:7", 0.8);
+const opacity70 = controller.setLayerOpacity("raster:7", 0.7);
+await settle();
+assert.deepEqual(calls.at(-1), ["raster-opacity", 1, 0.9]);
+const finishLayerOptions = controller.finishLayerOptionsEdit();
+assert.strictEqual(
+  controller.finishLayerOptionsEdit(),
+  finishLayerOptions,
+  "all close/save callers must await the same Layer Options commit",
+);
+assert.equal(historyStates.at(-1).canUndo, false);
+assert.equal(historyStates.at(-1).canRedo, false);
+assert.equal(controller.beginLayerOptionsEdit("raster:7"), false);
+const visibilityCallsBeforeClosingCommit = calls.filter(
+  (entry) => entry[0] === "raster-visible",
+).length;
+controller.setLayerVisibility("raster:7", false);
+await settle();
+assert.equal(
+  calls.filter((entry) => entry[0] === "raster-visible").length,
+  visibilityCallsBeforeClosingCommit,
+  "a newly opened panel cannot mutate the scene through the closing history session",
+);
+assert.equal(
+  calls.some((entry) => entry[0] === "commit-raster-property"),
+  false,
+  "history must remain open until the final live GPU update settles",
+);
+pendingLayerOptionOpacity.resolve();
+pendingLayerOptionOpacity = null;
+await Promise.all([opacity90, opacity80, opacity70]);
+assert.deepEqual(
+  calls.filter((entry) => entry[0] === "raster-opacity").slice(-2),
+  [
+    ["raster-opacity", 1, 0.9],
+    ["raster-opacity", 1, 0.7],
+  ],
+);
+assert.equal(await finishLayerOptions, true);
+assert.deepEqual(calls.at(-1), ["commit-raster-property", 77]);
+assert.equal(layerOptionsHistoryOpen, false);
+assert.equal(historyStates.at(-1).canUndo, true);
+assert.equal(historyStates.at(-1).canRedo, true);
+assert.equal(controller.beginLayerOptionsEdit("raster:7"), true);
+failLayerOptionOpacity = true;
+await controller.setLayerOpacity("raster:7", 0.55);
+failLayerOptionOpacity = false;
+assert.equal(layerOptionErrors.length, 1);
+assert.match(elements.result.textContent, /live layer option failed/);
+const sceneBeforeMissingTarget = stats.mixedScene;
+stats = {
+  ...stats,
+  mixedScene: {
+    ...stats.mixedScene,
+    items: stats.mixedScene.items.filter((item) => item.key !== "raster:7"),
+  },
+};
+await controller.setRasterContentOpacity("raster:7", 0.35);
+assert.equal(layerOptionErrors.length, 2);
+assert.match(elements.result.textContent, /no longer available/);
+stats = { ...stats, mixedScene: sceneBeforeMissingTarget };
+const noRunningFinish = controller.finishLayerOptionsEdit();
+assert.strictEqual(
+  controller.finishLayerOptionsEdit(),
+  noRunningFinish,
+  "a close without a running GPU update must still expose one shared commit promise",
+);
+assert.equal(await noRunningFinish, true);
 await controller.deleteLayer("text:5");
 assert.deepEqual(calls.at(-1), ["delete-text", 5]);
 
@@ -258,7 +390,17 @@ await assert.rejects(
 interactionLocked = false;
 assert.deepEqual(
   busyChanges,
-  [true, false, true, false, true, false, true, false, true, false, true, false],
+  [
+    true, false,
+    true, false,
+    true, false,
+    true, false,
+    true, false,
+    true, false,
+    true, false,
+    true, false,
+    true, false,
+  ],
 );
 
 controller.dispose();
@@ -299,6 +441,7 @@ assert.equal(elements.loadingOverlay.hidden, true);
     renderLayers() {},
     syncActiveRasterControls() {},
     syncToolSettings() {},
+    onLayerOptionsUpdateError() {},
     onStats() {},
     recordDiagnostic() {},
   });

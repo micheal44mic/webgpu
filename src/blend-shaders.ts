@@ -2,6 +2,10 @@ import {
   DRY_BLEND_BLUR_MAX_SUPPORT_PX,
   DRY_BLEND_BLUR_REDUCED_MAX_SUPPORT_PX,
 } from "./blend-core.ts";
+import {
+  SHAPE_MASK_FILTER_UV_OFFSET,
+  SHAPE_MASK_FILTER_UV_SCALE,
+} from "./engine-limits.ts";
 
 // Compute-first WGSL for the dry Blend brush.
 //
@@ -588,6 +592,9 @@ ${blendUniformsWgsl}
 @group(0) @binding(6) var grainTexture: texture_2d<f32>;
 @group(0) @binding(7) var grainSampler: sampler;
 
+const SHAPE_MASK_UV_SCALE: f32 = ${SHAPE_MASK_FILTER_UV_SCALE};
+const SHAPE_MASK_UV_OFFSET: f32 = ${SHAPE_MASK_FILTER_UV_OFFSET};
+
 // These are pipeline constants, not per-pixel branches. The renderer creates
 // four resident variants so Circle/Grain-off never carries the register and
 // instruction pressure of the custom-shape and grain paths.
@@ -648,7 +655,8 @@ fn customAt(
     result.coverage = 0.0;
     return result;
   }
-  result.coverage = textureSampleLevel(shapeTexture, shapeSampler, local.uv, 0.0).r;
+  let samplingUv = local.uv * SHAPE_MASK_UV_SCALE + vec2<f32>(SHAPE_MASK_UV_OFFSET);
+  result.coverage = textureSampleLevel(shapeTexture, shapeSampler, samplingUv, 0.0).r;
   return result;
 }
 

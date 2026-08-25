@@ -94,6 +94,7 @@ import type { ThicknessDynamicsStrategy } from "./thickness-dynamics";
 import { STROKE_CURVE_STRATEGY } from "./stroke-curve-core";
 import { STROKE_STABILIZATION_STRATEGY } from "./stroke-stabilization-core";
 import type { LayerBlendMode } from "./layer-blend-modes";
+import type { LayerCutoutMode, LayerTonalBlend } from "./layer-composition.ts";
 import type { DocumentBackgroundState } from "./document-background";
 
 export interface EngineGpuMemoryStats {
@@ -276,7 +277,10 @@ export interface EngineStats {
     name: string;
     visible: boolean;
     opacity: number;
+    contentOpacity: number;
     blendMode: LayerBlendMode;
+    cutoutMode: LayerCutoutMode;
+    tonalBlend: LayerTonalBlend;
     reference: boolean;
     clippingParentId: number | null;
     hasContent: boolean;
