@@ -133,6 +133,9 @@ export interface LayerPanelControllerOptions {
   readonly mergeLayers: (
     orderedKeys: readonly LayerPanelKey[],
   ) => Promise<LayerPanelMergeResult>;
+  readonly canMergeMultiSelection?: () => boolean;
+  readonly prepareMultiSelectionMerge?: () => Promise<boolean>;
+  readonly onMultiSelectionMergeStart?: () => void;
   readonly onMultiSelectionChange?: (
     selection: LayerPanelMultiSelectionSnapshot,
   ) => void;
@@ -240,6 +243,7 @@ export class LayerPanelController {
   private multiSelectEnabled = false;
   private readonly selectedKeys = new Set<LayerPanelKey>();
   private multiSelectionNotificationSignature = "0|";
+  private mergeRequestBusy = false;
   private reorderGesture: LayerPanelReorderGesture | null = null;
   private contextKey: LayerPanelKey | null = null;
   private contextOrderSignature: string | null = null;
@@ -412,7 +416,8 @@ export class LayerPanelController {
     if (this.multiSelectEnabled) {
       const plan = this.currentMergePlan(stats);
       const mergeReason = this.mergeUnavailableReason(plan, stats);
-      mergeSelectionButton.disabled = locked || mergeReason !== null;
+      mergeSelectionButton.disabled = !this.mergeInteractionAvailable()
+        || mergeReason !== null;
       mergeSelectionButton.title = mergeReason ?? "Merge selected layers";
       if (!mergeStatus.classList.contains("is-error")) this.setMergeStatus(mergeReason);
     } else {
@@ -774,6 +779,12 @@ export class LayerPanelController {
     status.classList.toggle("is-error", failed && message !== null);
   }
 
+  private mergeInteractionAvailable(): boolean {
+    if (this.mergeRequestBusy) return false;
+    return !this.options.isInteractionLocked()
+      || this.options.canMergeMultiSelection?.() === true;
+  }
+
   private reconcileMultiSelection(stats: EngineStats): void {
     if (!this.multiSelectEnabled) return;
     const liveKeys = new Set(this.selectionItems(stats).map((item) => item.key));
@@ -916,7 +927,8 @@ export class LayerPanelController {
       const unavailableReason = stats && plan
         ? this.mergeUnavailableReason(plan, stats)
         : "Merge unavailable: the layer controller is not ready yet.";
-      mergeButton.disabled = unavailableReason !== null;
+      mergeButton.disabled = !this.mergeInteractionAvailable()
+        || unavailableReason !== null;
       mergeButton.title = unavailableReason ?? "Merge selected layers";
       if (unavailableReason) {
         mergeReason.textContent = unavailableReason;
@@ -1032,7 +1044,7 @@ export class LayerPanelController {
 
   private async requestMerge(): Promise<void> {
     const stats = this.options.getStats();
-    if (!this.multiSelectEnabled || !stats || this.options.isInteractionLocked()) return;
+    if (!this.multiSelectEnabled || !stats || !this.mergeInteractionAvailable()) return;
     const plan = this.currentMergePlan(stats);
     const unavailableReason = this.mergeUnavailableReason(plan, stats);
     if (unavailableReason || !plan.valid) {
@@ -1045,15 +1057,39 @@ export class LayerPanelController {
       this.announce(message);
       return;
     }
+    const requestedKeys = [...plan.orderedKeys];
+    this.mergeRequestBusy = true;
     this.closeContextMenu(false);
-    this.setMergeStatus(null);
-    const operation = this.options.mergeLayers(plan.orderedKeys);
+    this.setMergeStatus("Preparing selected layers…");
+    this.options.elements.mergeButton.disabled = true;
+    this.options.elements.mergeSelectionButton.disabled = true;
     this.renderSignature = "";
     this.requestRefresh();
     try {
-      const result = await operation;
-      if (this.disposed) return;
+      if (
+        this.options.prepareMultiSelectionMerge
+        && !await this.options.prepareMultiSelectionMerge()
+      ) {
+        throw new Error("Finish or cancel Transform before merging the selected layers.");
+      }
+      if (this.disposed || !this.multiSelectEnabled) return;
+      const latestStats = this.options.getStats();
+      if (!latestStats) throw new Error("Merge unavailable: layer data is not ready.");
+      const latestPlan = this.currentMergePlan(latestStats);
+      const latestUnavailableReason = this.mergeUnavailableReason(latestPlan, latestStats);
+      if (latestUnavailableReason || !latestPlan.valid) {
+        throw new Error(latestUnavailableReason ?? "Merge unavailable.");
+      }
+      if (
+        latestPlan.orderedKeys.length !== requestedKeys.length
+        || latestPlan.orderedKeys.some((key, index) => key !== requestedKeys[index])
+      ) {
+        throw new Error("The selected layers changed before the merge could start.");
+      }
       this.setMultiSelect(false, false);
+      this.options.onMultiSelectionMergeStart?.();
+      const result = await this.options.mergeLayers(latestPlan.orderedKeys);
+      if (this.disposed) return;
       const message = `${result.itemCount} layers merged.`;
       this.options.onLayerResult(message);
       this.setMergeStatus(message);
@@ -1063,13 +1099,14 @@ export class LayerPanelController {
       const message = error instanceof Error ? error.message : "Layer merge failed.";
       this.options.recordDiagnostic(
         "mixed-scene-merge-failed",
-        JSON.stringify({ selectedKeys: plan.orderedKeys }),
+        JSON.stringify({ selectedKeys: requestedKeys }),
         error,
       );
       this.options.onLayerResult(message);
       this.setMergeStatus(message, true);
       this.announce(message);
     } finally {
+      this.mergeRequestBusy = false;
       if (this.disposed) return;
       this.renderSignature = "";
       this.requestRefresh();

@@ -274,6 +274,9 @@ const thumbnailInvalidations = [];
 const thumbnailEnsures = [];
 let multiSelectionFinishAllowed = true;
 let multiSelectionFinishRequests = 0;
+let multiSelectionMergeAllowed = false;
+let mergePreparationAllowed = true;
+const mergeSequence = [];
 const controller = new LayerPanelController({
   browser,
   document,
@@ -303,8 +306,17 @@ const controller = new LayerPanelController({
   moveLayer: async () => false,
   mergeCapabilityError: () => null,
   mergeLayers: async (keys) => {
+    mergeSequence.push("merge");
     mergeCalls.push([...keys]);
     return { itemCount: 2 };
+  },
+  canMergeMultiSelection: () => multiSelectionMergeAllowed,
+  prepareMultiSelectionMerge: async () => {
+    mergeSequence.push("prepare");
+    return mergePreparationAllowed;
+  },
+  onMultiSelectionMergeStart: () => {
+    mergeSequence.push("start");
   },
   onMultiSelectionChange: ({ enabled, orderedKeys }) => {
     multiSelectionUpdates.push({ enabled, orderedKeys: [...orderedKeys] });
@@ -482,6 +494,35 @@ assert.equal(
   false,
   "finishing an inactive multiple selection must be a no-op",
 );
+
+// A transform opened by this same selection is a merge prerequisite, not an
+// unrelated document lock. Merge settles it once, then forwards stable keys.
+controller.setMultiSelect(true);
+controller.toggleMultiSelection("raster:7");
+interactionLocked = true;
+multiSelectionMergeAllowed = true;
+controller.render(stats);
+assert.equal(elements.mergeSelectionButton.disabled, false);
+const firstMerge = controller.requestMerge();
+const duplicateMerge = controller.requestMerge();
+await Promise.all([firstMerge, duplicateMerge]);
+assert.deepEqual(mergeSequence, ["prepare", "start", "merge"]);
+assert.deepEqual(mergeCalls.at(-1), ["raster:7", "raster:8"]);
+assert.equal(controller.isMultiSelect, false);
+
+// A lock owned by any other operation must still block Merge and preserve the
+// selection so the user can retry after that operation completes.
+mergeSequence.length = 0;
+controller.setMultiSelect(true);
+controller.toggleMultiSelection("raster:7");
+multiSelectionMergeAllowed = false;
+await controller.requestMerge();
+assert.deepEqual(mergeSequence, []);
+assert.equal(controller.isMultiSelect, true);
+controller.finishMultiSelection();
+interactionLocked = false;
+mergePreparationAllowed = true;
+thumbnailEnsures.length = 0;
 
 // An open group transform owns the generic interaction lock. Its Done button
 // remains the escape route and delegates to the shared async coordinator.

@@ -29,7 +29,7 @@ function section(source, start, end) {
 const panelCallback = section(
   main,
   "  onMultiSelectionChange: ({ enabled, orderedKeys }) => {",
-  "  rasterizeLayer:",
+  "  canMergeMultiSelection:",
 );
 
 assert.match(
@@ -54,8 +54,8 @@ assert.match(
 );
 assert.match(
   panelCallback,
-  /selectCanvasToolWithMixedScene\("transform"\)/,
-  "A valid multiple selection must switch directly to Transform.",
+  /initializeMixedSceneController\(\)\.then\(\(controller\) => \{[\s\S]*?controller\.setTransformSelection\(transformKeys\)[\s\S]*?selectCanvasToolWithMixedScene\("transform"\)/,
+  "The group selection must reach the controller before Transform can prepare a raster session.",
 );
 assert.match(
   panelCallback,
@@ -94,8 +94,8 @@ assert.match(
   "Done and tool changes must share one completion owner.",
 );
 assert.match(
-  panelCallback,
-  /canFinishMultiSelection: canFinishLayerMultiSelection,[\s\S]*?requestFinishMultiSelection: finishLayerMultiSelectionForToolChange/,
+  main,
+  /canMergeMultiSelection: canMergeLayerMultiSelection,[\s\S]*?prepareMultiSelectionMerge: prepareLayerMultiSelectionMerge,[\s\S]*?onMultiSelectionMergeStart:[\s\S]*?selectCanvasToolWithMixedScene\("pan"\)[\s\S]*?canFinishMultiSelection: canFinishLayerMultiSelection,[\s\S]*?requestFinishMultiSelection: finishLayerMultiSelectionForToolChange/,
   "The panel Done button must use the same exit coordinator as tool changes.",
 );
 assert.match(
@@ -124,7 +124,11 @@ const controllerExitReadiness = section(
   "async function runLayerMultiSelectionFinish(): Promise<boolean> {",
 );
 assert.match(controllerExitReadiness, /if \(action\?\.preparing\) return true;/);
-assert.match(controllerExitReadiness, /if \(action\?\.active\) return action\.canApply;/);
+assert.match(
+  controllerExitReadiness,
+  /if \(action\?\.active\) return action\.canApply \|\| action\.canCancel;/,
+  "Done must remain available for a recovery-only transform that can still cancel.",
+);
 assert.match(
   controllerExitReadiness,
   /return !interactionLocked\(\);/,
@@ -134,6 +138,21 @@ assert.match(
   layerPanel,
   /multiSelectButton\.disabled = this\.multiSelectEnabled[\s\S]*?canFinishMultiSelection\?\.\(\) === false[\s\S]*?: locked \|\| layerCount < 2/,
   "Done must remain available while the open group transaction owns the generic lock.",
+);
+assert.match(
+  toolExitCoordinator,
+  /!await controller\.applyTransform\(\)[\s\S]*?action\.canCancel[\s\S]*?await controller\.cancelTransform\(\)/,
+  "A failed Apply must use Cancel as the final recovery exit.",
+);
+assert.match(
+  layerPanel,
+  /canMergeMultiSelection\?: \(\) => boolean[\s\S]*?prepareMultiSelectionMerge\?: \(\) => Promise<boolean>[\s\S]*?onMultiSelectionMergeStart\?: \(\) => void/,
+  "Merge must expose a narrow way to settle only its own Transform lock.",
+);
+assert.match(
+  layerPanel,
+  /mergeRequestBusy = false[\s\S]*?prepareMultiSelectionMerge[\s\S]*?setMultiSelect\(false, false\)[\s\S]*?onMultiSelectionMergeStart[\s\S]*?mergeLayers\(latestPlan\.orderedKeys\)/,
+  "Merge must be single-flight, settle Transform, and leave its tool before mutating the stack.",
 );
 assert.match(
   controller,

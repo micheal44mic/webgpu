@@ -577,7 +577,7 @@ function canFinishLayerMultiSelection(): boolean {
   if (layerPanelController?.isMultiSelect !== true) return true;
   const action = mixedSceneController?.getTransformActionSnapshot();
   if (action?.preparing) return true;
-  if (action?.active) return action.canApply;
+  if (action?.active) return action.canApply || action.canCancel;
   return !interactionLocked();
 }
 
@@ -585,9 +585,30 @@ async function runLayerMultiSelectionFinish(): Promise<boolean> {
   const panel = layerPanelController;
   if (!panel?.isMultiSelect) return true;
   const controller = mixedSceneController;
-  if (controller && !await controller.applyTransform()) return false;
+  if (controller && !await controller.applyTransform()) {
+    const action = controller.getTransformActionSnapshot();
+    if (action.active && (!action.canCancel || !await controller.cancelTransform())) {
+      return false;
+    }
+  }
   panel.finishMultiSelection();
   return true;
+}
+
+function canMergeLayerMultiSelection(): boolean {
+  if (layerPanelController?.isMultiSelect !== true) return false;
+  const action = mixedSceneController?.getTransformActionSnapshot();
+  if (action?.preparing) return true;
+  if (action?.active) return action.canApply;
+  return !interactionLocked();
+}
+
+async function prepareLayerMultiSelectionMerge(): Promise<boolean> {
+  const controller = mixedSceneController;
+  if (!controller) return !interactionLocked();
+  const action = controller.getTransformActionSnapshot();
+  if (!action.active && !action.preparing) return !interactionLocked();
+  return controller.applyTransform();
 }
 
 function finishLayerMultiSelectionForToolChange(): Promise<boolean> {
@@ -2000,10 +2021,12 @@ layerPanelController = new LayerPanelController({
       mixedSceneController?.setTransformSelection([]);
       return;
     }
-    if (!selectCanvasToolWithMixedScene("transform")) return;
     void initializeMixedSceneController().then((controller) => {
       if (revision !== layerMultiTransformSelectionRevision) return;
       controller.setTransformSelection(transformKeys);
+      if (!selectCanvasToolWithMixedScene("transform")) {
+        controller.setTransformSelection([]);
+      }
     }).catch((error) => {
       appDiagnosticsController?.recordOperation(
         "initialize-group-transform",
@@ -2011,6 +2034,11 @@ layerPanelController = new LayerPanelController({
         error,
       );
     });
+  },
+  canMergeMultiSelection: canMergeLayerMultiSelection,
+  prepareMultiSelectionMerge: prepareLayerMultiSelectionMerge,
+  onMultiSelectionMergeStart: () => {
+    selectCanvasToolWithMixedScene("pan");
   },
   canFinishMultiSelection: canFinishLayerMultiSelection,
   requestFinishMultiSelection: finishLayerMultiSelectionForToolChange,

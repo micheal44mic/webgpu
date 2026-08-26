@@ -181,6 +181,11 @@ assert.match(
   /this\.listen\(elements\.mergeSelectionButton, "click"[\s\S]*?this\.requestMerge\(\)/,
   "the persistent action must use the same controller request as the hold menu",
 );
+assert.match(
+  controller,
+  /mergeInteractionAvailable\(\)[\s\S]*?canMergeMultiSelection[\s\S]*?prepareMultiSelectionMerge[\s\S]*?mergeLayers\(latestPlan\.orderedKeys\)/,
+  "merge must settle the selection-owned Transform lock before the structural operation",
+);
 console.log(
   "Mobile layer multi-selection: order, clipping integrity, UI state and controller callback verified.",
 );
