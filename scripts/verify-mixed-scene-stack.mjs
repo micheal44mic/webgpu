@@ -951,6 +951,64 @@ assert.equal(
 }
 
 {
+  const stack = new MixedSceneStack([1]);
+  const text = stack.addTextAboveSelection({
+    ...seed("AXIS TEXT"),
+    scale: 2,
+    scaleX: 1.5,
+    scaleY: 0.75,
+  });
+  assert.deepEqual(
+    [text.scale, text.scaleX, text.scaleY],
+    [1.5, 1.5, 0.75],
+    "new text nodes must retain independent axes and a horizontal legacy alias",
+  );
+  stack.updateText(text.id, { scaleY: 1.25 });
+  assert.deepEqual([text.scale, text.scaleX, text.scaleY], [1.5, 1.5, 1.25]);
+  stack.updateText(text.id, { scale: 3 });
+  assert.deepEqual(
+    [text.scale, text.scaleX, text.scaleY],
+    [3, 3, 3],
+    "a legacy scale update must remain uniform",
+  );
+
+  const svg = stack.addSvgAboveSelection({
+    ...svgSeed("axis.svg"),
+    scaleX: 2.25,
+    scaleY: 0.5,
+  });
+  stack.updateSvg(svg.id, { scaleX: 1.75 });
+  assert.deepEqual([svg.scale, svg.scaleX, svg.scaleY], [1.75, 1.75, 0.5]);
+
+  const image = stack.addImageAboveSelection({
+    ...imageSeed("axis-image"),
+    scaleX: 0.8,
+    scaleY: 1.4,
+  });
+  stack.updateImage(image.id, { scaleY: 1.1 });
+  assert.deepEqual([image.scale, image.scaleX, image.scaleY], [0.8, 0.8, 1.1]);
+
+  const legacyState = stack.captureState();
+  for (const node of [
+    ...legacyState.textNodes,
+    ...legacyState.svgNodes,
+    ...legacyState.imageNodes,
+  ]) {
+    delete node.scaleX;
+    delete node.scaleY;
+  }
+  stack.restoreState(legacyState);
+  for (const node of [
+    stack.textById(text.id),
+    stack.svgById(svg.id),
+    stack.imageById(image.id),
+  ]) {
+    assert.equal(node.scaleX, node.scale);
+    assert.equal(node.scaleY, node.scale);
+  }
+}
+
+{
   assert.equal(
     MIXED_MEMORY_BENCHMARK_STRATEGY,
     "mixed-raster-vector-64-text-nine-runs-counted-gpu-800mib-v1",

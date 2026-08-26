@@ -372,8 +372,8 @@ assert.match(
 );
 assert.match(
   controller,
-  /pendingRasterPointerId[\s\S]*?resumeRasterPointerAfterPreparation[\s\S]*?await this\.prepareSelectedRasterTransform\(\)[\s\S]*?this\.onPointerDown\(event\)/,
-  "a mouse or touch drag started during GPU preparation must resume when Perspective is ready",
+  /pendingRasterPointerId[\s\S]*?resumeRasterPointerAfterPreparation[\s\S]*?await this\.prepareSelectedRasterTransform\(\)[\s\S]*?this\.onPointerDown\(event, true\)/,
+  "a mouse or touch drag started during GPU preparation must resume without discarding a touch modifier",
 );
 assert.match(
   controller,

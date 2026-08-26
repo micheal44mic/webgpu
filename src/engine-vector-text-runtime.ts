@@ -82,6 +82,14 @@ import { layerTonalBlendIsDefault } from "./layer-composition.ts";
 import type { LayerRecord } from "./layer-stack";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import {
+  mixedSceneRasterTransformPreviewHasSegmentedClipping,
+  mixedSceneRasterTransformPreviewUsesSegmentedClipping,
+} from "./engine-mixed-scene-raster-preview-runtime";
+import {
+  MIXED_SCENE_RASTER_SEGMENT_UNIFORM_BYTES,
+  mixedSceneRasterSegmentUniformValues,
+} from "./mixed-scene-raster-transform-preview";
+import {
   vectorTextFastPresentationMode,
 } from "./vector-text-adaptive-zoom";
 
@@ -935,7 +943,10 @@ function mixedSceneSegmentContributesToDeepFloor(
     structuralKey !== null
     && scene !== null
     && scene.clippingParentKey(structuralKey) !== null
-    && scene.clippingGroupRequiresSegmentedComposition(structuralKey)
+    && (
+      scene.clippingGroupRequiresSegmentedComposition(structuralKey)
+      || mixedSceneRasterTransformPreviewUsesSegmentedClipping(engine, structuralKey)
+    )
   ) {
     return false;
   }
@@ -1000,7 +1011,10 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
     throw new Error("The segmented raster/text compositor is not ready.");
   }
   if (
-    engine.mixedSceneStack?.hasHeterogeneousClipping
+    (
+      engine.mixedSceneStack?.hasHeterogeneousClipping
+      || mixedSceneRasterTransformPreviewHasSegmentedClipping(engine)
+    )
     && (
       !rasterSourceAtopPipeline
       || !textSourceAtopPipeline
@@ -1293,7 +1307,10 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
       if (
         first
         && segment.items.length === 1
-        && engine.mixedSceneStack?.clippingGroupRequiresSegmentedComposition(first.key)
+        && (
+          engine.mixedSceneStack?.clippingGroupRequiresSegmentedComposition(first.key)
+          || mixedSceneRasterTransformPreviewUsesSegmentedClipping(engine, first.key)
+        )
       ) {
         return engine.layerStack.byId(first.rasterLayerId) ?? null;
       }
@@ -1303,8 +1320,14 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
     }
     if (segment.kind === "active-raster") {
       if (
-        engine.mixedSceneStack?.clippingGroupRequiresSegmentedComposition(
-          segment.item.key,
+        (
+          engine.mixedSceneStack?.clippingGroupRequiresSegmentedComposition(
+            segment.item.key,
+          )
+          || mixedSceneRasterTransformPreviewUsesSegmentedClipping(
+            engine,
+            segment.item.key,
+          )
         )
       ) {
         return engine.layerStack.byId(segment.item.rasterLayerId) ?? null;
@@ -1434,7 +1457,10 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
     if (
       baseKey === null
       || scene.clippingParentKey(baseKey) !== null
-      || !scene.clippingGroupRequiresSegmentedComposition(baseKey)
+      || !(
+        scene.clippingGroupRequiresSegmentedComposition(baseKey)
+        || mixedSceneRasterTransformPreviewUsesSegmentedClipping(engine, baseKey)
+      )
     ) {
       return null;
     }
@@ -3461,9 +3487,10 @@ export function writeVectorTextGpuDrawUniform(engine: BrushEngine,
   upload[base + 9] = draw.y;
   upload[base + 10] = Math.cos(draw.rotation);
   upload[base + 11] = Math.sin(draw.rotation);
-  upload[base + 12] = draw.scale;
+  upload[base + 12] = draw.scaleX ?? draw.scale;
   upload[base + 13] = draw.localOffsetX;
   upload[base + 14] = draw.localOffsetY;
+  upload[base + 15] = draw.scaleY ?? draw.scale;
   upload[base + 16] = draw.color[0];
   upload[base + 17] = draw.color[1];
   upload[base + 18] = draw.color[2];
@@ -3925,7 +3952,8 @@ function ensureMixedSceneClippingScratch(
   width: number,
   height: number,
 ): void {
-  const needsScratch = engine.mixedSceneStack?.hasHeterogeneousClipping === true;
+  const needsScratch = engine.mixedSceneStack?.hasHeterogeneousClipping === true
+    || mixedSceneRasterTransformPreviewHasSegmentedClipping(engine);
   if (!needsScratch) {
     releaseMixedSceneClippingScratch(engine);
     return;
@@ -4261,6 +4289,7 @@ export function writeVectorTextGpuBlurSourceUniform(engine: BrushEngine,
   upload[base + 6] = draw.blurScale;
   upload[base + 10] = 1;
   upload[base + 12] = 1;
+  upload[base + 15] = 1;
   upload[base + 16] = 1;
   upload[base + 17] = 1;
   upload[base + 18] = 1;
@@ -4299,6 +4328,7 @@ export function createMixedSceneRasterSegmentResources(engine: BrushEngine,
   documentCutoutBaseSurface: MergedSurfaceResources | null = null,
   documentCutoutMaskSurface: MergedSurfaceResources | null = null,
   documentCutoutOpacity = 1,
+  rasterLayerId: number | null = null,
 ): MixedSceneRasterSegmentResources {
   const layout = engine.mixedSceneRasterSegmentBindGroupLayout;
   if (!layout) {
@@ -4306,7 +4336,7 @@ export function createMixedSceneRasterSegmentResources(engine: BrushEngine,
   }
   const uniformBuffer = engine.device.createBuffer({
     label: `Mixed scene raster segment ${key} uniforms`,
-    size: 16,
+    size: MIXED_SCENE_RASTER_SEGMENT_UNIFORM_BYTES,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
   let documentCutoutBaseUniformBuffer: GPUBuffer | null = null;
@@ -4315,12 +4345,7 @@ export function createMixedSceneRasterSegmentResources(engine: BrushEngine,
     engine.device.queue.writeBuffer(
       uniformBuffer,
       0,
-      new Float32Array([
-        surface.bounds.x,
-        surface.bounds.y,
-        surface.resolutionScale,
-        Math.min(1, Math.max(0, opacity)),
-      ]),
+      mixedSceneRasterSegmentUniformValues(surface, opacity),
     );
     const bindGroup = engine.device.createBindGroup({
       label: `Mixed scene raster segment ${key} bind group`,
@@ -4353,19 +4378,14 @@ export function createMixedSceneRasterSegmentResources(engine: BrushEngine,
       }
       const auxiliaryUniformBuffer = engine.device.createBuffer({
         label: `Mixed scene raster segment ${key} ${suffix} uniforms`,
-        size: 16,
+        size: MIXED_SCENE_RASTER_SEGMENT_UNIFORM_BYTES,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       });
       try {
         engine.device.queue.writeBuffer(
           auxiliaryUniformBuffer,
           0,
-          new Float32Array([
-            auxiliary.bounds.x,
-            auxiliary.bounds.y,
-            auxiliary.resolutionScale,
-            1,
-          ]),
+          mixedSceneRasterSegmentUniformValues(auxiliary, 1),
         );
         const bindGroup = engine.device.createBindGroup({
           label: `Mixed scene raster segment ${key} ${suffix} bind group`,
@@ -4397,6 +4417,8 @@ export function createMixedSceneRasterSegmentResources(engine: BrushEngine,
     const documentCutoutMaskBindGroup = documentCutoutMaskResources?.bindGroup ?? null;
     return {
       key,
+      rasterLayerId,
+      opacity: Math.min(1, Math.max(0, opacity)),
       surface,
       cutoutSurface,
       documentCutoutBaseSurface,

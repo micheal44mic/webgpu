@@ -1,3 +1,5 @@
+import { normalizeSceneAxisScale } from "./scene-axis-scale.ts";
+
 /**
  * Immutable metadata for a decoded raster asset. Blob, ImageBitmap and
  * GPUTexture live in the engine asset registry, so scene snapshots and history
@@ -21,7 +23,10 @@ export interface RasterImageNode {
   document: RasterImageDocument;
   x: number;
   y: number;
+  /** Horizontal compatibility alias; old documents use it for both axes. */
   scale: number;
+  scaleX?: number;
+  scaleY?: number;
   rotation: number;
 }
 
@@ -30,6 +35,8 @@ export interface RasterImageNodeSeed {
   x: number;
   y: number;
   scale: number;
+  scaleX?: number;
+  scaleY?: number;
   rotation: number;
 }
 
@@ -44,6 +51,7 @@ export function cloneRasterImageNode(
 ): RasterImageNode {
   return {
     ...node,
+    ...normalizeSceneAxisScale(node),
     document: cloneRasterImageDocument(node.document),
   };
 }
@@ -54,6 +62,7 @@ export function cloneRasterImageNodeForHistory(
 ): RasterImageNode {
   return {
     ...node,
+    ...normalizeSceneAxisScale(node),
     document: node.document,
   };
 }

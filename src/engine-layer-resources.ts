@@ -91,6 +91,9 @@ export interface ActiveClippingGroupResources {
 
 export interface MixedSceneRasterSegmentResources {
   key: MixedSceneRasterRunKey;
+  /** Present only for a semantic singleton run. */
+  rasterLayerId: number | null;
+  opacity: number;
   surface: MergedSurfaceResources;
   /** Optional authored matte, independent from Fill and non-destructive effects. */
   cutoutSurface: MergedSurfaceResources | null;

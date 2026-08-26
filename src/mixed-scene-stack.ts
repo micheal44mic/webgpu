@@ -41,6 +41,10 @@ import {
   normalizeVectorTextSingleShadowOffset,
   normalizeVectorTextSingleShadowOpacity,
 } from "./scene-vector-effects.ts";
+import {
+  normalizeSceneAxisScale,
+  updateSceneAxisScale,
+} from "./scene-axis-scale.ts";
 
 export {
   cloneVectorTextNode,
@@ -636,6 +640,7 @@ export class MixedSceneStack {
     for (const node of state.textNodes) {
       this.textNodes.set(node.id, {
         ...node,
+        ...normalizeSceneAxisScale(node),
         kind: "text",
         transformType: normalizeVectorTextTransformType(node.transformType),
         transformCurve: normalizeVectorTextTransformCurve(node.transformCurve),
@@ -934,7 +939,7 @@ export class MixedSceneStack {
       innerShadowBlur: normalizeVectorTextInnerShadowBlur(seed.innerShadowBlur),
       x: seed.x,
       y: seed.y,
-      scale: seed.scale,
+      ...normalizeSceneAxisScale(seed),
       rotation: seed.rotation,
     };
     const insertionIndex = this.insertionIndexAboveClippingUnit(this.selectedKey);
@@ -986,7 +991,7 @@ export class MixedSceneStack {
       innerShadowBlur: normalizeVectorTextInnerShadowBlur(seed.innerShadowBlur ?? 12),
       x: seed.x,
       y: seed.y,
-      scale: seed.scale,
+      ...normalizeSceneAxisScale(seed),
       rotation: seed.rotation,
     };
     const insertionIndex = this.insertionIndexAboveClippingUnit(this.selectedKey);
@@ -1026,7 +1031,7 @@ export class MixedSceneStack {
       document: documentValue,
       x: seed.x,
       y: seed.y,
-      scale: seed.scale,
+      ...normalizeSceneAxisScale(seed),
       rotation: seed.rotation,
     };
     const insertionIndex = this.insertionIndexAboveClippingUnit(this.selectedKey);
@@ -1413,8 +1418,12 @@ export class MixedSceneStack {
     if (update.y !== undefined) {
       node.y = update.y;
     }
-    if (update.scale !== undefined) {
-      node.scale = update.scale;
+    if (
+      update.scale !== undefined
+      || update.scaleX !== undefined
+      || update.scaleY !== undefined
+    ) {
+      Object.assign(node, updateSceneAxisScale(node, update));
     }
     if (update.rotation !== undefined) {
       node.rotation = update.rotation;
@@ -1479,7 +1488,11 @@ export class MixedSceneStack {
     if (update.innerShadowBlur !== undefined) node.innerShadowBlur = normalizeVectorTextInnerShadowBlur(update.innerShadowBlur);
     if (update.x !== undefined) node.x = update.x;
     if (update.y !== undefined) node.y = update.y;
-    if (update.scale !== undefined) node.scale = update.scale;
+    if (
+      update.scale !== undefined
+      || update.scaleX !== undefined
+      || update.scaleY !== undefined
+    ) Object.assign(node, updateSceneAxisScale(node, update));
     if (update.rotation !== undefined) node.rotation = update.rotation;
     return node;
   }
@@ -1545,7 +1558,11 @@ export class MixedSceneStack {
     if (update.opacity !== undefined) node.opacity = clampOpacity(update.opacity);
     if (update.x !== undefined) node.x = update.x;
     if (update.y !== undefined) node.y = update.y;
-    if (update.scale !== undefined) node.scale = update.scale;
+    if (
+      update.scale !== undefined
+      || update.scaleX !== undefined
+      || update.scaleY !== undefined
+    ) Object.assign(node, updateSceneAxisScale(node, update));
     if (update.rotation !== undefined) node.rotation = update.rotation;
     return node;
   }
@@ -1605,6 +1622,7 @@ export class MixedSceneStack {
     activeRasterLayerId: number,
     activeClippingUnitIds: readonly number[] = [],
     shapePreviewAfterKey: MixedSceneItem["key"] | null = null,
+    isolatedRasterLayerIds: readonly number[] = [],
   ): readonly MixedSceneCompositionSegment[] {
     const activeKey = `raster:${activeRasterLayerId}` as const;
     const activeItem = this.itemByKey(activeKey);
@@ -1615,6 +1633,13 @@ export class MixedSceneStack {
       ? [...activeClippingUnitIds]
       : [];
     const clippingGroupSet = new Set(clippingGroup);
+    const isolatedRasterSet = new Set(isolatedRasterLayerIds);
+    for (const rasterLayerId of isolatedRasterSet) {
+      const isolated = this.itemByKey(`raster:${rasterLayerId}`);
+      if (isolated.kind !== "raster") {
+        throw new Error(`Item raster:${rasterLayerId} is not a raster layer.`);
+      }
+    }
     if (clippingGroup.length > 0) {
       const segmented = this.clippingGroupRequiresSegmentedComposition(activeKey);
       const groupKeys = segmented
@@ -1638,8 +1663,16 @@ export class MixedSceneStack {
     const segments: MixedSceneCompositionSegment[] = [];
     const segmentedClippingKeys = new Set<MixedSceneItem["key"]>();
     for (const relation of this.clippingRelations()) {
-      if (!this.clippingGroupRequiresSegmentedComposition(relation.parentKey)) continue;
-      this.clippingGroupKeys(relation.parentKey).forEach((key) => {
+      const groupKeys = this.clippingGroupKeys(relation.parentKey);
+      const isolateExactRaster = groupKeys.some((key) => {
+        const item = this.itemByKey(key);
+        return item.kind === "raster" && isolatedRasterSet.has(item.rasterLayerId);
+      });
+      if (
+        !this.clippingGroupRequiresSegmentedComposition(relation.parentKey)
+        && !isolateExactRaster
+      ) continue;
+      groupKeys.forEach((key) => {
         segmentedClippingKeys.add(key);
       });
     }
@@ -1682,7 +1715,11 @@ export class MixedSceneStack {
       if (segmentedClippingKeys.has(item.key)) {
         flushRasterRun();
         flushTextRun();
-        if (item.kind === "raster" && item.rasterLayerId === activeRasterLayerId) {
+        if (
+          item.kind === "raster"
+          && item.rasterLayerId === activeRasterLayerId
+          && !isolatedRasterSet.has(item.rasterLayerId)
+        ) {
           segments.push({
             key: `active-raster:${item.rasterLayerId}`,
             kind: "active-raster",
@@ -1720,6 +1757,14 @@ export class MixedSceneStack {
           key: `active-raster:${activeRasterLayerId}`,
           kind: "active-raster",
           item: activeItem,
+        });
+      } else if (item.kind === "raster" && isolatedRasterSet.has(item.rasterLayerId)) {
+        flushRasterRun();
+        flushTextRun();
+        segments.push({
+          key: `raster-run:${item.rasterLayerId}`,
+          kind: "raster-run",
+          items: [item],
         });
       } else if (item.kind === "raster" && item.rasterLayerId === activeRasterLayerId) {
         flushRasterRun();
@@ -1764,7 +1809,10 @@ export class MixedSceneStack {
       throw new Error(`Shape preview anchor ${shapePreviewAfterKey} is missing from the scene.`);
     }
 
-    if (!segments.some((segment) => segment.kind === "active-raster")) {
+    if (
+      !segments.some((segment) => segment.kind === "active-raster")
+      && !isolatedRasterSet.has(activeRasterLayerId)
+    ) {
       throw new Error(`Active raster ${activeRasterLayerId} is missing from the composition.`);
     }
     return segments;

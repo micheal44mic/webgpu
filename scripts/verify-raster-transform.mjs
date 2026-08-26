@@ -11,6 +11,7 @@ import {
   RASTER_TRANSFORM_TILE_WIDTH,
   RASTER_TRANSFORM_UNIFORM_BYTES,
   clipRasterTransformRect,
+  normalizeRasterTransform,
   packRasterTransformUniforms,
   rasterInverseTransformPoint,
   rasterTransformBounds,
@@ -41,7 +42,7 @@ import {
 
 assert.equal(
   RASTER_TRANSFORM_MATH_STRATEGY,
-  "document-space-uniform-affine-scale-aware-sampling-per-source-tile-mask-v2",
+  "document-space-axis-scale-affine-sampling-per-source-tile-mask-v3",
 );
 assert.equal(
   RASTER_TRANSFORM_SHADER_STRATEGY,
@@ -74,6 +75,29 @@ assert.equal(
 
 const identity = { translationX: 0, translationY: 0, scale: 1, rotation: 0 };
 const pivot = { x: 100, y: 80 };
+assert.deepEqual(normalizeRasterTransform(identity), {
+  ...identity,
+  scaleX: 1,
+  scaleY: 1,
+});
+assert.deepEqual(
+  normalizeRasterTransform({
+    translationX: 0,
+    translationY: 0,
+    scaleX: 2,
+    scaleY: 0.5,
+    rotation: 0,
+  }),
+  {
+    translationX: 0,
+    translationY: 0,
+    scale: 2,
+    scaleX: 2,
+    scaleY: 0.5,
+    rotation: 0,
+  },
+  "axis-only callers must not need the legacy uniform field",
+);
 const immutableSource = {
   document: {
     assetId: "raster-layer-source-7",
@@ -129,6 +153,14 @@ assert.deepEqual(
   ),
   { x: 105, y: 113 },
 );
+assert.deepEqual(
+  rasterTransformPoint(
+    { x: 120, y: 90 },
+    pivot,
+    { translationX: 0, translationY: 0, scaleX: 2, scaleY: 0.5, rotation: 0 },
+  ),
+  { x: 140, y: 85 },
+);
 
 const affine = {
   translationX: 23.25,
@@ -144,6 +176,22 @@ assert.ok(Math.abs(roundTrip.y - sourcePoint.y) < 1e-9);
 const inverseRows = rasterTransformInverseRows(affine);
 assert.equal(inverseRows.row0.length, 2);
 assert.equal(inverseRows.row1.length, 2);
+
+const anisotropicAffine = {
+  translationX: -13.5,
+  translationY: 7.25,
+  scaleX: 2.5,
+  scaleY: 0.4,
+  rotation: -0.37,
+};
+const anisotropicDestination = rasterTransformPoint(sourcePoint, pivot, anisotropicAffine);
+const anisotropicRoundTrip = rasterInverseTransformPoint(
+  anisotropicDestination,
+  pivot,
+  anisotropicAffine,
+);
+assert.ok(Math.abs(anisotropicRoundTrip.x - sourcePoint.x) < 1e-9);
+assert.ok(Math.abs(anisotropicRoundTrip.y - sourcePoint.y) < 1e-9);
 
 assert.deepEqual(
   rasterTransformBounds(
@@ -162,6 +210,24 @@ assert.deepEqual(
     { padding: 0 },
   ),
   { x: 5, y: 25, width: 40, height: 30 },
+);
+assert.deepEqual(
+  rasterTransformBounds(
+    { x: 80, y: 80, width: 20, height: 40 },
+    { x: 90, y: 100 },
+    { ...identity, scaleX: 2, scaleY: 0.5 },
+    { padding: 0 },
+  ),
+  { x: 70, y: 90, width: 40, height: 20 },
+);
+assert.deepEqual(
+  rasterTransformBounds(
+    { x: 80, y: 80, width: 20, height: 40 },
+    { x: 90, y: 100 },
+    { ...identity, scaleX: 2, scaleY: 0.5, rotation: Math.PI / 2 },
+    { padding: 0 },
+  ),
+  { x: 80, y: 80, width: 20, height: 40 },
 );
 assert.deepEqual(
   rasterTransformBounds(
@@ -221,6 +287,21 @@ assert.equal(
   "rotated bilinear support must use its destination AABB",
 );
 assert.equal(rasterTransformSamplingPadding({ ...identity, scale: 0.05 }), 2);
+assert.equal(
+  rasterTransformSamplingPadding({ ...identity, scaleX: 20, scaleY: 2 }),
+  11,
+  "axis-aligned anisotropic padding must use the largest projected radius",
+);
+assert.equal(
+  rasterTransformSamplingPadding({
+    ...identity,
+    scaleX: 20,
+    scaleY: 2,
+    rotation: Math.PI / 4,
+  }),
+  9,
+  "rotation must project both independent axis radii",
+);
 assert.deepEqual(
   rasterTransformSamplingBounds(
     { x: 500, y: 500, width: 10, height: 10 },
@@ -345,6 +426,23 @@ assert.deepEqual([...uniforms.slice(0, 12)], [
   600, 740, 610, 720,
 ]);
 assert.deepEqual([...uniforms.slice(12)], [0.5, 0, 0, 0.5]);
+const anisotropicUniforms = packRasterTransformUniforms({
+  sourceScratchRect: { x: 256, y: 512, width: 768, height: 512 },
+  sourceContentBounds: { x: 300, y: 540, width: 600, height: 400 },
+  sourcePivot: { x: 600, y: 740 },
+  transform: {
+    translationX: 10,
+    translationY: -20,
+    scaleX: 2,
+    scaleY: 0.5,
+    rotation: 0,
+  },
+});
+assert.deepEqual(
+  [...anisotropicUniforms.slice(12)],
+  [0.5, 0, 0, 2],
+  "the unchanged 64-byte ABI must carry the anisotropic inverse matrix rows",
+);
 assert.throws(
   () => packRasterTransformUniforms({
     sourceScratchRect: { x: 256, y: 512, width: 256, height: 256 },
@@ -421,6 +519,27 @@ assert.match(
 assert.match(runtimeSource, /origin: \{[\s\S]{0,120}RASTER_TRANSFORM_TRANSPARENT_GUARD_PX/);
 assert.match(runtimeSource, /padding: 0/);
 assert.match(runtimeSource, /rasterTransformSamplingPadding\(transform\)/);
+assert.match(runtimeSource, /scaleX: session\.transform\.scaleX/);
+assert.match(runtimeSource, /scaleY: session\.transform\.scaleY/);
+assert.match(
+  runtimeSource,
+  /scaleX: update\.scaleX \?\? update\.scale \?\? session\.transform\.scaleX/,
+  "the legacy scale update must remain a uniform fallback",
+);
+assert.match(
+  runtimeSource,
+  /scaleY: update\.scaleY \?\? update\.scale \?\? session\.transform\.scaleY/,
+);
+assert.match(runtimeSource, /const a = cosine \* session\.transform\.scaleX/);
+assert.match(runtimeSource, /const d = cosine \* session\.transform\.scaleY/);
+assert.match(runtimeSource, /Math\.abs\(session\.transform\.scaleX - 1\)/);
+assert.match(runtimeSource, /Math\.abs\(session\.transform\.scaleY - 1\)/);
+assert.match(
+  runtimeSource,
+  /Math\.abs\(session\.transform\.scaleX - session\.transform\.scaleY\) < 1e-7/,
+  "an imported source may retain its uniform source model only when both axes match",
+);
+assert.match(runtimeSource, /independent axis scale cannot be represented/);
 assert.match(runtimeSource, /presentedSamplingBounds/);
 assert.match(runtimeSource, /samplingBounds/);
 assert.match(runtimeSource, /sourceRasterBounds/);

@@ -345,6 +345,24 @@ export type RasterTransformHistoryAction = RasterTransformHistoryActionMetadata 
 );
 
 /**
+ * One Transform gesture can update independent semantic nodes and raster
+ * layers while preserving every item as a separate layer. Raster members keep
+ * the same exact post-Apply checkpoint as a normal raster Transform; their
+ * nested id is the owning group action id so local-storage ownership remains
+ * unambiguous.
+ */
+export interface MixedSceneGroupTransformHistoryAction {
+  id: number;
+  kind: "group-transform";
+  readonly vectors: readonly MixedSceneVectorHistoryDelta[];
+  readonly rasters: readonly RasterTransformHistoryAction[];
+  readonly selectedKeyBefore: MixedSceneItem["key"];
+  readonly selectedKeyAfter: MixedSceneItem["key"];
+  readonly activeRasterLayerIdBefore: number;
+  readonly activeRasterLayerIdAfter: number;
+}
+
+/**
  * Exact post-Apply pixels produced by a destructive raster filter.
  *
  * Undo/Redo hydrates the checkpoint and never evaluates the filter again, so a
@@ -468,6 +486,7 @@ export type HistoryAction =
   | VectorRasterizeHistoryAction
   | RasterImportHistoryAction
   | RasterTransformHistoryAction
+  | MixedSceneGroupTransformHistoryAction
   | RasterFilterHistoryAction
   | LayerAddHistoryAction
   | LayerDeleteHistoryAction

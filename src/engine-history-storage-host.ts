@@ -51,6 +51,7 @@ export function createEngineHistoryRuntimeHost(engine: BrushEngine): HistoryRunt
       activeStroke: engine.activeStroke !== null,
       openEdit: Boolean(
         engine.activeVectorHistoryEdit
+        || engine.activeMixedSceneGroupTransformSession
         || engine.activeRasterLayerMetadataHistoryEdit
         || engine.activeFillPreviewSession
         || engine.activeRasterTransformSession
@@ -78,6 +79,7 @@ export function createEngineHistoryMaintenanceHost(
       && !engine.layerSwitchBusy
       && !engine.selectionBusy
       && engine.activeStroke === null
+      && engine.activeMixedSceneGroupTransformSession === null
       && engine.activeFillPreviewSession === null
       && engine.activeRasterGlassSession === null
       && engine.deviceLostError === null,

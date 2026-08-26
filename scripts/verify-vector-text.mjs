@@ -2118,7 +2118,10 @@ const textCornersEnd = interactionOverlaySource.indexOf(
 assert.ok(textCornersStart >= 0 && textCornersEnd > textCornersStart);
 const textCornersSource = interactionOverlaySource.slice(textCornersStart, textCornersEnd);
 assert.doesNotMatch(textCornersSource, /blockShadow|singleShadow|outlineWidth|blur/);
-assert.match(controllerSource, /effectLodForNode[\s\S]*Math\.abs\(node\.scale \* view\.zoom\)/);
+assert.match(
+  controllerSource,
+  /effectLodForNode[\s\S]*Math\.max\(Math\.abs\(sceneScaleX\(node\)\), Math\.abs\(sceneScaleY\(node\)\)\)[\s\S]*Math\.abs\(view\.zoom\)/,
+);
 assert.match(controllerSource, /!this\.host\.isPaintStrokeActive\(\)/);
 
 // WebGPU resources: MSAA4 senza vecchio stencil, premultiplied source-over e destroy esplicito.
@@ -2599,3 +2602,34 @@ console.log("Mixed scene mutation atomicity verified.");
 }
 
 console.log("Vector rasterize exact active/preview restoration verified.");
+
+// --- Independent semantic axes: GPU ABI and conservative bounds ------------
+{
+  const runtime = fs.readFileSync(
+    new URL("../src/engine-vector-text-runtime.ts", import.meta.url),
+    "utf8",
+  );
+  const meshShader = fs.readFileSync(
+    new URL("../src/vector-text-gpu-shader.ts", import.meta.url),
+    "utf8",
+  );
+  const slugShader = fs.readFileSync(
+    new URL("../src/vector-text-slug-gpu-shader.ts", import.meta.url),
+    "utf8",
+  );
+  const geometry = fs.readFileSync(
+    new URL("../src/engine-geometry.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(runtime, /upload\[base \+ 12\] = draw\.scaleX \?\? draw\.scale;/);
+  assert.match(runtime, /upload\[base \+ 15\] = draw\.scaleY \?\? draw\.scale;/);
+  assert.match(runtime, /writeVectorTextGpuBlurSourceUniform[\s\S]*?upload\[base \+ 15\] = 1;/);
+  assert.match(meshShader, /scaleAndLocalOffset\.xw/);
+  assert.match(slugShader, /scaleAndLocalOffset\.xw/);
+  assert.match(geometry, /const scaleX = draw\.scaleX \?\? draw\.scale;/);
+  assert.match(geometry, /const scaleY = draw\.scaleY \?\? draw\.scale;/);
+  assert.match(geometry, /localOffsetX\) \* scaleX/);
+  assert.match(geometry, /localOffsetY\) \* scaleY/);
+}
+
+console.log("Semantic independent-axis rendering verified.");

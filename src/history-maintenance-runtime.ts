@@ -238,6 +238,7 @@ function historyMaintenanceEngineIdle(
     && !engine.layerSwitchBusy
     && !engine.selectionBusy
     && !engine.activeVectorHistoryEdit
+    && !engine.activeMixedSceneGroupTransformSession
     && !engine.activeRasterLayerMetadataHistoryEdit
     && !engine.activeFillPreviewSession
     && !engine.activeRasterTransformSession
@@ -292,6 +293,7 @@ function rasterActionAffectsPixels(kind: string): boolean {
     || kind === "raster-import"
     || kind === "layer-add"
     || kind === "raster-transform"
+    || kind === "group-transform"
     || kind === "raster-filter"
     || kind === "layer-merge";
 }
@@ -452,6 +454,10 @@ function accountCheckpointSeed(
     account(action.output.seed);
     return;
   }
+  if (action.kind === "group-transform") {
+    for (const entry of action.rasters) account(entry.seed);
+    return;
+  }
   if (
     action.kind !== "vector-rasterize"
     && action.kind !== "raster-import"
@@ -482,12 +488,25 @@ function accountHistoryAction(
   if (action.kind === "raster-transform") {
     accountSelectionSnapshot(engine, state, action.selectionBefore);
     accountSelectionSnapshot(engine, state, action.selectionAfter);
+  } else if (action.kind === "group-transform") {
+    for (const transform of action.rasters) {
+      accountSelectionSnapshot(engine, state, transform.selectionBefore);
+      accountSelectionSnapshot(engine, state, transform.selectionAfter);
+    }
   }
   if (liveIndex !== null && action.kind === "layer-merge") {
     const layerId = action.output.layerRecord.id;
     state.actionIndexById.set(action.id, liveIndex);
     state.lastRasterActionByLayer.set(layerId, { id: action.id, index: liveIndex });
     state.replayTailByLayer.set(layerId, emptyReplayTail());
+    return;
+  }
+  if (liveIndex !== null && action.kind === "group-transform") {
+    state.actionIndexById.set(action.id, liveIndex);
+    for (const entry of action.rasters) {
+      state.lastRasterActionByLayer.set(entry.layerId, { id: action.id, index: liveIndex });
+      state.replayTailByLayer.set(entry.layerId, emptyReplayTail());
+    }
     return;
   }
   if (
@@ -810,6 +829,10 @@ function changedTileMask(
   let requiresFull = false;
   for (let index = afterActionIndex + 1; index < engine.historyCursor; index += 1) {
     const action = engine.historyActions[index];
+    if (action.kind === "group-transform") {
+      if (action.rasters.some((entry) => entry.layerId === layerId)) requiresFull = true;
+      continue;
+    }
     if (!("layerId" in action) || action.layerId !== layerId) continue;
     if (action.kind === "clear") {
       mask.fill(0);
@@ -1120,6 +1143,14 @@ function latestFullCheckpointByLayer(
   const rasterLayerIdsWithHistory = new Set<number>();
   for (let index = 0; index < engine.historyCursor; index += 1) {
     const action = engine.historyActions[index];
+    if (action.kind === "group-transform") {
+      for (const entry of action.rasters) {
+        if (engine.layerStack.byId(entry.layerId)) {
+          rasterLayerIdsWithHistory.add(entry.layerId);
+        }
+      }
+      continue;
+    }
     const layerId = action.kind === "layer-merge"
       ? action.output.layerRecord.id
       : "layerId" in action

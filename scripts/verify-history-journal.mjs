@@ -17,7 +17,7 @@ import {
 
 assert.equal(
   HISTORY_JOURNAL_STRATEGY,
-  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-metadata-document-background-scene-reorder-merge-seeded-add-rasterize-before-v13",
+  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-metadata-document-background-scene-reorder-merge-seeded-add-rasterize-before-group-transform-v14",
 );
 
 const stroke = (id, layerId) => ({ id, kind: "stroke", layerId });

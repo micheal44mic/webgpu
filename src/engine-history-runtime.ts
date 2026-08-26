@@ -41,6 +41,7 @@ import {
   type LayerAddHistoryAction,
   type LayerDeleteHistoryAction,
   type LayerMergeHistoryAction,
+  type MixedSceneGroupTransformHistoryAction,
   type MixedSceneReorderHistoryAction,
   type RasterLayerMetadataHistoryAction,
   type RasterLayerMetadataHistoryProperty,
@@ -492,6 +493,13 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
     );
     return false;
   }
+  if (engine.activeMixedSceneGroupTransformSession) {
+    engine.publishStatus(
+      "Apply or cancel the group transform before using history.",
+      "error",
+    );
+    return false;
+  }
   // Queste due erano coperte solo di rimbalzo, perche' chi le apriva lasciava
   // acceso `historyBusy`. Farle valere qui in modo esplicito e' cio' che
   // permette a quel flag di tornare a significare "un'operazione di cronologia
@@ -629,6 +637,8 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
       ? delta < 0 ? "Undo: restoring layer property…" : "Redo: restoring layer property…"
       : crossedAction.kind === "vector"
       ? delta < 0 ? "Undo: restoring vector…" : "Redo: restoring vector…"
+      : crossedAction.kind === "group-transform"
+      ? delta < 0 ? "Undo: restoring transformed layers…" : "Redo: transforming layers…"
       : delta < 0
         ? "Undo: rebuilding layer…"
         : "Redo: rebuilding layer…",
@@ -647,6 +657,22 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
       }
       engine.publishStatus(
         delta < 0 ? "Document background undone." : "Document background redone.",
+        "ok",
+      );
+      return true;
+    }
+    if (crossedAction.kind === "group-transform") {
+      await applyMixedSceneGroupTransformHistory(
+        engine,
+        crossedAction,
+        delta,
+        nextCursor,
+      );
+      if (engine.activeStrokeProfile) {
+        engine.activeStrokeProfile.historyReplayOperations += 1;
+      }
+      engine.publishStatus(
+        delta < 0 ? "Group transform undone." : "Group transform redone.",
         "ok",
       );
       return true;
@@ -1419,6 +1445,196 @@ export async function applyVectorHistoryState(engine: BrushEngine,
   }
 }
 
+async function applyGroupVectorHistoryStates(
+  engine: BrushEngine,
+  targets: readonly MixedSceneVectorHistoryState[],
+  selectedKey: MixedSceneItem["key"],
+): Promise<void> {
+  // Raster members are replayed immediately before this phase and their last
+  // reconstruction may have queued a presentation frame. Let that frame and
+  // its GPU work finish before freezing the presentation again for the shared
+  // semantic/compositor rebuild.
+  await engine.waitForIdle();
+  const scene = requireMixedSceneStack(engine);
+  const previousStates = targets.map((target) => scene.captureVectorHistoryState(target.key));
+  const previousSelectedKey = scene.selected.key;
+  const previousExcludedNodeId = engine.vectorTextPreviewExcludedNodeId;
+  engine.layerSwitchBusy = true;
+  try {
+    for (const target of targets) scene.restoreVectorHistoryState(target);
+    scene.select(selectedKey);
+    const selected = scene.selected;
+    engine.vectorTextPreviewExcludedNodeId = selected.kind === "text"
+      ? selected.textNodeId
+      : null;
+    clearVectorTextPresentationForTransaction(engine);
+    await engine.rebuildMergedLayerSurfaces(
+      "history-replay",
+      engine.getVectorTextViewState(),
+      { reuseUnchangedRasterRuns: true },
+    );
+    ensureMixedSceneLinearTexture(
+      engine,
+      Math.max(1, engine.canvas.width),
+      Math.max(1, engine.canvas.height),
+    );
+    engine.presentationCacheNeedsFullRebuild = true;
+    engine.displayDirty = true;
+    engine.requestRender();
+  } catch (error) {
+    const restoreErrors: unknown[] = [];
+    try {
+      for (const previous of previousStates) scene.restoreVectorHistoryState(previous);
+      scene.select(previousSelectedKey);
+      engine.vectorTextPreviewExcludedNodeId = previousExcludedNodeId;
+      clearVectorTextPresentationForTransaction(engine);
+      await engine.rebuildMergedLayerSurfaces(
+        "history-replay",
+        engine.getVectorTextViewState(),
+        { reuseUnchangedRasterRuns: true },
+      );
+    } catch (restoreError) {
+      restoreErrors.push(restoreError);
+    }
+    if (restoreErrors.length > 0) {
+      const originalMessage = error instanceof Error ? error.message : String(error);
+      const restoreMessage = restoreErrors.map((restoreError) => (
+        restoreError instanceof Error ? restoreError.message : String(restoreError)
+      )).join("; ");
+      const combined = new Error(
+        `Group semantic replay failed (${originalMessage}) and restore failed (${restoreMessage}).`,
+      );
+      engine.latchDocumentStateInconsistent(
+        "State is inconsistent after group Transform replay. Reload the page.",
+        combined,
+      );
+      throw combined;
+    }
+    throw error;
+  } finally {
+    engine.layerSwitchBusy = false;
+  }
+}
+
+async function switchGroupHistoryRaster(
+  engine: BrushEngine,
+  layerId: number,
+): Promise<void> {
+  const targetIndex = engine.layerStack.indexOfId(layerId);
+  if (targetIndex < 0) throw new Error(`Group Transform raster ${layerId} is missing.`);
+  const previousIndex = engine.layerStack.activeIndex;
+  if (targetIndex === previousIndex) return;
+  engine.persistActiveLayerState();
+  await engine.prepareActiveLayerForSwitch();
+  engine.layerStack.setActiveIndex(targetIndex);
+  try {
+    await engine.activateLayer(previousIndex, "history-replay");
+  } catch (error) {
+    try {
+      evictReconstructibleLayerResources(engine, engine.layerStack.at(targetIndex));
+      engine.layerStack.setActiveIndex(previousIndex);
+      await engine.activateLayer(targetIndex, "history-replay");
+    } catch (restoreError) {
+      const operationMessage = error instanceof Error ? error.message : String(error);
+      const restoreMessage = restoreError instanceof Error
+        ? restoreError.message
+        : String(restoreError);
+      const combined = new Error(
+        `Group Transform layer switch failed (${operationMessage}) and restore failed (${restoreMessage}).`,
+      );
+      engine.latchDocumentStateInconsistent(
+        "State is inconsistent after group Transform layer switching. Reload the page.",
+        combined,
+      );
+      throw combined;
+    }
+    throw error;
+  }
+}
+
+async function replayGroupRasterMembers(
+  engine: BrushEngine,
+  action: MixedSceneGroupTransformHistoryAction,
+  delta: -1 | 1,
+): Promise<void> {
+  const finalActiveLayerId = delta < 0
+    ? action.activeRasterLayerIdBefore
+    : action.activeRasterLayerIdAfter;
+  const ordered = [...action.rasters].sort((left, right) => (
+    Number(left.layerId === finalActiveLayerId) - Number(right.layerId === finalActiveLayerId)
+  ));
+  for (const entry of ordered) {
+    await switchGroupHistoryRaster(engine, entry.layerId);
+    const record = engine.layerStack.active;
+    record.rasterSource = cloneRasterLayerSource(
+      delta < 0 ? entry.rasterSourceBefore : entry.rasterSourceAfter,
+    );
+    await rebuildActiveLayerFromHistory(engine);
+    record.rasterSource = cloneRasterLayerSource(
+      delta < 0 ? entry.rasterSourceBefore : entry.rasterSourceAfter,
+    );
+  }
+  await switchGroupHistoryRaster(engine, finalActiveLayerId);
+}
+
+async function applyMixedSceneGroupTransformHistory(
+  engine: BrushEngine,
+  action: MixedSceneGroupTransformHistoryAction,
+  delta: -1 | 1,
+  nextCursor: number,
+): Promise<void> {
+  const previousCursor = engine.historyCursor;
+  const targetVectorStates = action.vectors.map((entry) => (
+    delta < 0 ? entry.before : entry.after
+  ));
+  const rollbackVectorStates = action.vectors.map((entry) => (
+    delta < 0 ? entry.after : entry.before
+  ));
+  const targetSelectedKey = delta < 0 ? action.selectedKeyBefore : action.selectedKeyAfter;
+  const rollbackSelectedKey = delta < 0 ? action.selectedKeyAfter : action.selectedKeyBefore;
+  try {
+    engine.history.setCursor(nextCursor);
+    await replayGroupRasterMembers(engine, action, delta);
+    await applyGroupVectorHistoryStates(engine, targetVectorStates, targetSelectedKey);
+  } catch (error) {
+    const rollbackErrors: unknown[] = [];
+    engine.history.setCursor(previousCursor);
+    try {
+      await replayGroupRasterMembers(engine, action, delta < 0 ? 1 : -1);
+    } catch (restoreRasterError) {
+      rollbackErrors.push(restoreRasterError);
+    }
+    try {
+      await applyGroupVectorHistoryStates(
+        engine,
+        rollbackVectorStates,
+        rollbackSelectedKey,
+      );
+    } catch (restoreVectorError) {
+      rollbackErrors.push(restoreVectorError);
+    }
+    if (rollbackErrors.length > 0) {
+      const operationMessage = error instanceof Error ? error.message : String(error);
+      const rollbackMessage = rollbackErrors.map((rollbackError) => (
+        rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+      )).join("; ");
+      const combined = new Error(
+        `Group Transform replay failed (${operationMessage}) and rollback failed (${rollbackMessage}).`,
+      );
+      engine.latchDocumentStateInconsistent(
+        "State is inconsistent after group Transform Undo/Redo. Reload the page.",
+        combined,
+      );
+      throw combined;
+    }
+    throw error;
+  } finally {
+    engine.scheduleLayerColdCompression();
+    publishMixedScene(engine);
+    engine.publishStats();
+  }
+}
+
 export function recordBlendHistoryBatch(engine: BrushEngine, 
   pending: readonly PendingBlendBatch[],
   timing: SubmitTiming,
@@ -1544,7 +1760,9 @@ export async function compactDiscardedHistoryIncrementally(
   const vectorRasterActionsToDestroy: VectorRasterizeHistoryAction[] = [];
   const importActionsToDestroy: RasterImportHistoryAction[] = [];
   const transformActionsToDestroy: Array<
-    RasterTransformHistoryAction | RasterFilterHistoryAction
+    RasterTransformHistoryAction
+    | RasterFilterHistoryAction
+    | MixedSceneGroupTransformHistoryAction
   > = [];
   const layerAddActionsToDestroy: LayerAddHistoryAction[] = [];
   const layerDeleteActionsToDestroy: LayerDeleteHistoryAction[] = [];
@@ -1664,6 +1882,16 @@ export async function compactDiscardedHistoryIncrementally(
       retainedTransformIds.add(action.id);
       retainRasterLayerSource(action.rasterSourceBefore);
       retainRasterLayerSource(action.rasterSourceAfter);
+    } else if (action.kind === "group-transform") {
+      retainedTransformIds.add(action.id);
+      for (const delta of action.vectors) {
+        retainRasterImageNode(delta.before.node);
+        retainRasterImageNode(delta.after.node);
+      }
+      for (const entry of action.rasters) {
+        retainRasterLayerSource(entry.rasterSourceBefore);
+        retainRasterLayerSource(entry.rasterSourceAfter);
+      }
     } else if (action.kind === "layer-add") {
       retainedLayerAddIds.add(action.id);
       retainRasterLayerSource(action.layerRecord.rasterSource);
@@ -1743,8 +1971,13 @@ export async function compactDiscardedHistoryIncrementally(
   if (!await processArrayPhase(engine.discardedRasterTransformHistoryActions, (action) => {
     if (retainedTransformIds.has(action.id)) return;
     transformActionsToDestroy.push(action);
-    if (action.kind === "raster-transform") {
-      for (const snapshot of [action.selectionBefore, action.selectionAfter]) {
+    const transforms = action.kind === "raster-transform"
+      ? [action]
+      : action.kind === "group-transform"
+        ? action.rasters
+        : [];
+    for (const transform of transforms) {
+      for (const snapshot of [transform.selectionBefore, transform.selectionAfter]) {
         if (!snapshot || releasedTransformSelectionSlices.has(snapshot.gpuSlice.id)) continue;
         releasedTransformSelectionSlices.add(snapshot.gpuSlice.id);
         if (reserveSliceToRelease(snapshot.gpuSlice)) {
@@ -1799,6 +2032,10 @@ export async function compactDiscardedHistoryIncrementally(
     destroyRasterImportHistorySeed(action);
   })) return abortResult();
   if (!await processArrayPhase(transformActionsToDestroy, (action) => {
+    if (action.kind === "group-transform") {
+      for (const entry of action.rasters) destroyLayerColdStorage(entry.seed);
+      return;
+    }
     destroyLayerColdStorage(action.seed);
     if (
       action.kind === "raster-filter"
@@ -1847,6 +2084,94 @@ export function recordVectorHistoryAction(engine: BrushEngine,
     kind: "vector",
     delta: { before, after },
   });
+  engine.sweepRasterImageGpuResources();
+  if (engine.activeStrokeProfile) {
+    engine.activeStrokeProfile.historyCommittedActions += 1;
+  }
+  return true;
+}
+
+export function recordMixedSceneGroupTransformHistoryAction(
+  engine: BrushEngine,
+  payload: Omit<MixedSceneGroupTransformHistoryAction, "id" | "kind">,
+): boolean {
+  const vectors = payload.vectors.filter((delta) => (
+    !vectorHistoryStatesEqual(delta.before, delta.after)
+  ));
+  if (vectors.length === 0 && payload.rasters.length === 0) return false;
+  const actionId = engine.nextHistoryActionId;
+  const rasterLayerIds = new Set<number>();
+  const rasters = payload.rasters.map((entry) => {
+    if (rasterLayerIds.has(entry.layerId)) {
+      throw new Error(`Group Transform contains raster ${entry.layerId} more than once.`);
+    }
+    rasterLayerIds.add(entry.layerId);
+    if (!engine.layerStack.byId(entry.layerId)) {
+      throw new Error(`Group Transform raster ${entry.layerId} is no longer in the document.`);
+    }
+    if (entry.scope !== "layer") {
+      throw new Error("Group Transform cannot own a Pixel Selection transform.");
+    }
+    if (entry.selectionBefore || entry.selectionAfter) {
+      throw new Error("Group Transform raster members cannot own selection snapshots.");
+    }
+    const common = {
+      ...entry,
+      id: actionId,
+      kind: "raster-transform" as const,
+      baseTileMask: entry.baseTileMask.slice(),
+      geometryBounds: entry.geometryBounds ? { ...entry.geometryBounds } : null,
+      matrix: [...entry.matrix] as RasterTransformHistoryAction["matrix"],
+      rasterSourceBefore: cloneRasterLayerSource(entry.rasterSourceBefore),
+      rasterSourceAfter: cloneRasterLayerSource(entry.rasterSourceAfter),
+    };
+    return entry.seed && entry.baseBounds
+      ? { ...common, seed: entry.seed, baseBounds: { ...entry.baseBounds } }
+      : { ...common, seed: null, baseBounds: null };
+  });
+  const vectorKeys = new Set<MixedSceneVectorHistoryState["key"]>();
+  for (const delta of vectors) {
+    if (
+      !delta.before.node
+      || !delta.after.node
+      || vectorKeys.has(delta.after.key)
+      || delta.before.key !== delta.after.key
+    ) {
+      throw new Error(`Group Transform contains an invalid vector delta for ${delta.after.key}.`);
+    }
+    vectorKeys.add(delta.after.key);
+  }
+  const scene = requireMixedSceneStack(engine);
+  for (const key of [payload.selectedKeyBefore, payload.selectedKeyAfter]) {
+    scene.itemByKey(key);
+  }
+  for (const layerId of [
+    payload.activeRasterLayerIdBefore,
+    payload.activeRasterLayerIdAfter,
+  ]) {
+    if (!engine.layerStack.byId(layerId)) {
+      throw new Error(`Group Transform active raster ${layerId} is missing.`);
+    }
+  }
+  for (const [key, activeRasterLayerId] of [
+    [payload.selectedKeyBefore, payload.activeRasterLayerIdBefore],
+    [payload.selectedKeyAfter, payload.activeRasterLayerIdAfter],
+  ] as const) {
+    if (key.startsWith("raster:") && key !== `raster:${activeRasterLayerId}`) {
+      throw new Error("Group Transform raster selection and active layer disagree.");
+    }
+  }
+  const action: MixedSceneGroupTransformHistoryAction = {
+    id: actionId,
+    kind: "group-transform",
+    vectors,
+    rasters,
+    selectedKeyBefore: payload.selectedKeyBefore,
+    selectedKeyAfter: payload.selectedKeyAfter,
+    activeRasterLayerIdBefore: payload.activeRasterLayerIdBefore,
+    activeRasterLayerIdAfter: payload.activeRasterLayerIdAfter,
+  };
+  commitHistoryActionAtomically(engine, action);
   engine.sweepRasterImageGpuResources();
   if (engine.activeStrokeProfile) {
     engine.activeStrokeProfile.historyCommittedActions += 1;
@@ -2078,6 +2403,7 @@ export function historyStepTargetLayerIndex(engine: BrushEngine, delta: -1 | 1):
     || action.kind === "layer-add"
     || action.kind === "layer-delete"
     || action.kind === "layer-merge"
+    || action.kind === "group-transform"
   ) {
     return null;
   }
@@ -2122,6 +2448,11 @@ export function commitHistoryActionAtomically(
     if (record) {
       record.rasterSource = cloneRasterLayerSource(action.rasterSourceAfter);
     }
+  } else if (action.kind === "group-transform") {
+    for (const entry of action.rasters) {
+      const record = engine.layerStack.byId(entry.layerId);
+      if (record) record.rasterSource = cloneRasterLayerSource(entry.rasterSourceAfter);
+    }
   }
 }
 
@@ -2130,6 +2461,25 @@ export function historyStepBlockedByLayer(engine: BrushEngine, delta: -1 | 1): b
     ? engine.historyActions[engine.historyCursor - 1]
     : engine.historyActions[engine.historyCursor];
   if (action?.kind === "document-background") return false;
+  if (action?.kind === "group-transform") {
+    if (historyStepTargetsMissingLayer(
+      engine.historyActions,
+      engine.historyCursor,
+      delta,
+      new Set(engine.layerStack.layers.map((record) => record.id)),
+    )) return true;
+    const scene = engine.mixedSceneStack;
+    if (!scene) return true;
+    return action.vectors.some((entry) => {
+      const expected = delta < 0 ? entry.after : entry.before;
+      if (!expected.node) return true;
+      try {
+        return scene.itemByKey(expected.key).kind === "raster";
+      } catch {
+        return true;
+      }
+    });
+  }
   if (action?.kind === "layer-metadata") {
     if (!engine.layerStack.byId(action.layerId)) return true;
     if (action.property !== "clipping") return false;

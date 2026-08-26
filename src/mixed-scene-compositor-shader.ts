@@ -62,6 +62,8 @@ struct SegmentUniforms {
   origin: vec2<f32>,
   resolutionScale: f32,
   opacity: f32,
+  inverseRowX: vec4<f32>,
+  inverseRowY: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> display: DisplayUniforms;
@@ -75,9 +77,13 @@ ${fullscreenVertexShader}
 @fragment
 fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
   let layerPosition = layerPositionAt(fragmentPosition.xy);
+  let sourceLayerPosition = vec2<f32>(
+    dot(segment.inverseRowX.xy, layerPosition) + segment.inverseRowX.z,
+    dot(segment.inverseRowY.xy, layerPosition) + segment.inverseRowY.z
+  );
   let dimensions = vec2<f32>(textureDimensions(sourceTexture, 0));
   let resolutionScale = max(segment.resolutionScale, 1.0);
-  let localPosition = (layerPosition - segment.origin) * resolutionScale;
+  let localPosition = (sourceLayerPosition - segment.origin) * resolutionScale;
   let inside = all(localPosition >= vec2<f32>(0.0))
     && all(localPosition < dimensions);
   if (!inside) {
@@ -89,12 +95,14 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     vec2<f32>(1.0)
   );
   let maximumLod = f32(max(1u, textureNumLevels(sourceTexture)) - 1u);
+  let inverseFootprint = max(segment.inverseRowX.w, 0.000001);
+  let effectiveResolutionScale = resolutionScale * inverseFootprint;
   let lod = clamp(
-    max(0.0, log2(resolutionScale / max(display.zoom, 0.000001))),
+    max(0.0, log2(effectiveResolutionScale / max(display.zoom, 0.000001))),
     0.0,
     maximumLod
   );
-  if (rasterPixelViewEnabled(resolutionScale)) {
+  if (rasterPixelViewEnabled(effectiveResolutionScale)) {
     return textureLoad(
       sourceTexture,
       rasterPixelViewTexel(

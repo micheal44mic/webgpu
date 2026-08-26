@@ -1,5 +1,5 @@
 export const HISTORY_JOURNAL_STRATEGY =
-  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-metadata-document-background-scene-reorder-merge-seeded-add-rasterize-before-v13" as const;
+  "global-order-per-layer-clear-barrier-raster-checkpoints-layer-metadata-document-background-scene-reorder-merge-seeded-add-rasterize-before-group-transform-v14" as const;
 
 /**
  * One entry of the global journal. `layerId` is what makes a single stack usable
@@ -34,6 +34,15 @@ export type JournalAction =
   | {
     id: number;
     kind: "vector";
+  }
+  | {
+    id: number;
+    kind: "group-transform";
+    rasters: readonly {
+      layerId: number;
+      /** Null means that this member ended fully outside the document. */
+      baseBounds: unknown | null;
+    }[];
   }
   | {
     id: number;
@@ -109,7 +118,8 @@ export type JournalCheckpointAction<TAction extends JournalAction = JournalActio
       | "raster-transform"
       | "raster-filter"
       | "layer-add"
-      | "layer-merge";
+      | "layer-merge"
+      | "group-transform";
   }
 >;
 
@@ -117,11 +127,19 @@ function journalActionLayerId(action: JournalAction): number | null {
   if (action.kind === "layer-merge") return action.output.layerRecord.id;
   if (
     action.kind === "vector"
+    || action.kind === "group-transform"
     || action.kind === "document-background"
     || action.kind === "scene-reorder"
     || action.kind === "layer-delete"
   ) return null;
   return action.layerId;
+}
+
+function groupTransformRasterForLayer(
+  action: Extract<JournalAction, { kind: "group-transform" }>,
+  layerId: number,
+): (typeof action.rasters)[number] | null {
+  return action.rasters.find((entry) => entry.layerId === layerId) ?? null;
 }
 
 function mergeRasterInputIds(
@@ -215,6 +233,14 @@ export function hasVisibleContent(
       // layerId: Duplicate usa proprio quel checkpoint come baseline raster.
       || action.kind === "layer-delete"
     ) continue;
+    if (action.kind === "group-transform") {
+      for (const entry of action.rasters) {
+        if (layerId === undefined || entry.layerId === layerId) {
+          contentByLayer.set(entry.layerId, entry.baseBounds !== null);
+        }
+      }
+      continue;
+    }
     if (action.kind === "layer-merge") {
       for (const inputLayerId of mergeRasterInputIds(action)) {
         if (layerId === undefined || inputLayerId === layerId) {
@@ -256,6 +282,16 @@ export function latestLayerReplayCheckpoint<TAction extends JournalAction>(
   let checkpoint: LayerReplayCheckpoint<TAction> | null = null;
   for (let index = first; index < end; index += 1) {
     const action = actions[index];
+    if (
+      action.kind === "group-transform"
+      && groupTransformRasterForLayer(action, layerId)
+    ) {
+      checkpoint = {
+        action: action as JournalCheckpointAction<TAction>,
+        actionIndex: index,
+      };
+      continue;
+    }
     if (
       action.kind !== "vector"
       && action.kind !== "document-background"
@@ -300,6 +336,7 @@ export function visibleRasterBatchActionIdsAfterCheckpoint<TAction extends Journ
     const action = actions[index];
     if (
       action.kind !== "vector"
+      && action.kind !== "group-transform"
       && action.kind !== "document-background"
       && action.kind !== "scene-reorder"
       && action.kind !== "layer-delete"
@@ -393,10 +430,14 @@ export function historyStepTargetsMissingLayer(
   if (
     !action
     || action.kind === "vector"
+    || (action.kind === "group-transform" && action.rasters.length === 0)
     || action.kind === "document-background"
     || action.kind === "scene-reorder"
     || action.kind === "layer-delete"
   ) return false;
+  if (action.kind === "group-transform") {
+    return action.rasters.some((entry) => !liveLayerIds.has(entry.layerId));
+  }
   if (action.kind === "layer-merge") {
     const outputIsLive = liveLayerIds.has(action.output.layerRecord.id);
     const rasterInputIds = mergeRasterInputIds(action);
@@ -435,6 +476,8 @@ export function layersWithVisibleContent(
       || action.kind === "raster-filter"
     ) {
       layers.add(action.layerId);
+    } else if (action.kind === "group-transform") {
+      for (const entry of action.rasters) layers.add(entry.layerId);
     } else if (action.kind === "layer-merge") {
       layers.add(action.output.layerRecord.id);
       for (const inputLayerId of mergeRasterInputIds(action)) layers.add(inputLayerId);

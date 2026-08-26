@@ -117,6 +117,11 @@ let distortEditing = false;
 let transformApplyResult = true;
 let transformSessionActive = false;
 let vectorReady = true;
+let multiSelectionActive = false;
+let canFinishMultiSelection = true;
+let finishMultiSelectionResult = true;
+let finishMultiSelectionGate = null;
+let finishMultiSelectionCalls = 0;
 const vectorCalls = [];
 const vector = {
   setTransformToolActive: (active, mode) => vectorCalls.push(["transform-active", active, mode]),
@@ -155,6 +160,19 @@ const controller = new CanvasToolController({
   selectionSettings,
   isEngineReady: () => engineReady,
   isInteractionLocked: () => locked,
+  isMultiSelectionActive: () => multiSelectionActive,
+  canFinishMultiSelectionForToolChange: () => canFinishMultiSelection,
+  finishMultiSelectionForToolChange: async () => {
+    finishMultiSelectionCalls += 1;
+    const finished = finishMultiSelectionGate
+      ? await finishMultiSelectionGate
+      : finishMultiSelectionResult;
+    if (finished) {
+      multiSelectionActive = false;
+      locked = false;
+    }
+    return finished;
+  },
   closeBrushStudioForTool: (tool) => closedStudios.push(tool),
   closeToolSettingsForTool: (tool, preserve) => {
     closedToolSettings.push([tool, preserve]);
@@ -217,14 +235,81 @@ assert.equal(controller.select("paint"), false);
 assert.equal(controller.activeTool, "blend");
 locked = false;
 
+controller.configure("transform", false);
+await settle();
+multiSelectionActive = true;
+locked = true;
+let releaseMultiSelection;
+finishMultiSelectionGate = new Promise((resolve) => {
+  releaseMultiSelection = resolve;
+});
+const finishCallsBeforeRace = finishMultiSelectionCalls;
+paintButton.dispatchEvent(new Event("click"));
+eraserButton.dispatchEvent(new Event("click"));
+assert.equal(
+  controller.activeTool,
+  "transform",
+  "the group must remain in Transform until its atomic Apply finishes",
+);
+assert.equal(finishMultiSelectionCalls, finishCallsBeforeRace + 1);
+releaseMultiSelection(true);
+await settle();
+await settle();
+assert.equal(controller.activeTool, "erase", "the latest requested tool must win");
+assert.equal(multiSelectionActive, false);
+assert.equal(
+  finishMultiSelectionCalls,
+  finishCallsBeforeRace + 1,
+  "concurrent tool requests must share one group completion",
+);
+finishMultiSelectionGate = null;
+
+controller.configure("transform", false);
+await settle();
+multiSelectionActive = true;
+locked = true;
+canFinishMultiSelection = false;
+const callsBeforeBlockedGroupExit = finishMultiSelectionCalls;
+assert.equal(controller.select("paint"), false);
+assert.equal(finishMultiSelectionCalls, callsBeforeBlockedGroupExit);
+assert.equal(controller.activeTool, "transform");
+canFinishMultiSelection = true;
+
+finishMultiSelectionResult = false;
+assert.equal(controller.select("paint"), true);
+await settle();
+await settle();
+assert.equal(controller.activeTool, "transform");
+assert.equal(multiSelectionActive, true);
+
+finishMultiSelectionGate = Promise.reject(new Error("group Apply failed"));
+assert.equal(controller.select("erase"), true);
+await settle();
+await settle();
+assert.equal(
+  controller.activeTool,
+  "transform",
+  "an unexpected completion failure must preserve the current Transform tool",
+);
+assert.equal(multiSelectionActive, true);
+finishMultiSelectionGate = null;
+
+finishMultiSelectionResult = true;
+assert.equal(controller.select("pan"), true);
+await settle();
+await settle();
+assert.equal(controller.activeTool, "pan", "a failed Apply must remain retryable");
+assert.equal(multiSelectionActive, false);
+
+const brushBeforePan = controller.activeBrush;
 panButton.dispatchEvent(new Event("click"));
 await settle();
 assert.equal(controller.activeTool, "pan");
-assert.equal(controller.activeBrush, "blend");
+assert.equal(controller.activeBrush, brushBeforePan);
 assert.equal(panButton.getAttribute("aria-pressed"), "true");
 assert.equal(blendButton.getAttribute("aria-pressed"), "false");
 assert.equal(canvas.getAttribute("data-active-canvas-tool"), "pan");
-assert.deepEqual(brushSelections.at(-1), ["blend", true]);
+assert.deepEqual(brushSelections.at(-1), [brushBeforePan, true]);
 
 controller.configure("fill", false);
 await settle();

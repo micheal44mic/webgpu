@@ -16,20 +16,45 @@ export interface SceneTransform {
   readonly x: number;
   readonly y: number;
   readonly scale: number;
+  readonly scaleX?: number;
+  readonly scaleY?: number;
   readonly rotation: number;
 }
 
-export type SceneTransformHandle =
+export type SceneTransformCornerHandle =
   | "north-west"
   | "north-east"
   | "south-east"
   | "south-west";
 
-const TRANSFORM_HANDLES: readonly SceneTransformHandle[] = [
+export type SceneTransformSideHandle =
+  | "north"
+  | "east"
+  | "south"
+  | "west";
+
+export type SceneTransformHandle =
+  | SceneTransformCornerHandle
+  | SceneTransformSideHandle;
+
+export interface SceneTransformHandleHitRadii {
+  readonly corner: number;
+  readonly side: number;
+  readonly rotation: number;
+}
+
+const TRANSFORM_CORNER_HANDLES: readonly SceneTransformCornerHandle[] = [
   "north-west",
   "north-east",
   "south-east",
   "south-west",
+];
+
+const TRANSFORM_SIDE_HANDLES: readonly SceneTransformSideHandle[] = [
+  "north",
+  "east",
+  "south",
+  "west",
 ];
 
 export function scenePointDistance(first: ScenePoint, second: ScenePoint): number {
@@ -96,8 +121,8 @@ export function sceneLocalToLayer(
   point: ScenePoint,
   transform: Readonly<SceneTransform>,
 ): ScenePoint {
-  const scaledX = point.x * transform.scale;
-  const scaledY = point.y * transform.scale;
+  const scaledX = point.x * (transform.scaleX ?? transform.scale);
+  const scaledY = point.y * (transform.scaleY ?? transform.scale);
   const cosine = Math.cos(transform.rotation);
   const sine = Math.sin(transform.rotation);
   return {
@@ -114,10 +139,17 @@ export function sceneLayerToLocal(
   const deltaY = point.y - transform.y;
   const cosine = Math.cos(transform.rotation);
   const sine = Math.sin(transform.rotation);
-  const safeScale = Math.max(Number.EPSILON, Math.abs(transform.scale));
+  const safeScaleX = Math.max(
+    Number.EPSILON,
+    Math.abs(transform.scaleX ?? transform.scale),
+  );
+  const safeScaleY = Math.max(
+    Number.EPSILON,
+    Math.abs(transform.scaleY ?? transform.scale),
+  );
   return {
-    x: (cosine * deltaX + sine * deltaY) / safeScale,
-    y: (-sine * deltaX + cosine * deltaY) / safeScale,
+    x: (cosine * deltaX + sine * deltaY) / safeScaleX,
+    y: (-sine * deltaX + cosine * deltaY) / safeScaleY,
   };
 }
 
@@ -148,6 +180,54 @@ export function sceneTransformCorners(
   ].map((point) => sceneLayerToCanvas(sceneLocalToLayer(point, transform), view));
 }
 
+/** Midpoints in north/east/south/west order, derived in canvas space. */
+export function sceneTransformSideMidpoints(
+  corners: readonly ScenePoint[],
+): readonly ScenePoint[] {
+  if (corners.length !== 4) return [];
+  return corners.map((corner, index) => {
+    const next = corners[(index + 1) % corners.length];
+    return {
+      x: (corner.x + next.x) * 0.5,
+      y: (corner.y + next.y) * 0.5,
+    };
+  });
+}
+
+/** Corners of a small rectangle whose long axis follows a bounding-box side. */
+export function sceneTransformSideHandleCorners(
+  point: Readonly<ScenePoint>,
+  tangent: Readonly<ScenePoint>,
+  width: number,
+  height: number,
+): readonly ScenePoint[] {
+  const tangentLength = Math.hypot(tangent.x, tangent.y);
+  const tangentX = tangentLength > 1e-6 ? tangent.x / tangentLength : 1;
+  const tangentY = tangentLength > 1e-6 ? tangent.y / tangentLength : 0;
+  const normalX = -tangentY;
+  const normalY = tangentX;
+  const halfWidth = Math.max(0, width) * 0.5;
+  const halfHeight = Math.max(0, height) * 0.5;
+  return [
+    {
+      x: point.x - tangentX * halfWidth - normalX * halfHeight,
+      y: point.y - tangentY * halfWidth - normalY * halfHeight,
+    },
+    {
+      x: point.x + tangentX * halfWidth - normalX * halfHeight,
+      y: point.y + tangentY * halfWidth - normalY * halfHeight,
+    },
+    {
+      x: point.x + tangentX * halfWidth + normalX * halfHeight,
+      y: point.y + tangentY * halfWidth + normalY * halfHeight,
+    },
+    {
+      x: point.x - tangentX * halfWidth + normalX * halfHeight,
+      y: point.y - tangentY * halfWidth + normalY * halfHeight,
+    },
+  ];
+}
+
 export function sceneRotationHandle(
   corners: readonly ScenePoint[],
   transform: Readonly<SceneTransform>,
@@ -174,13 +254,50 @@ export function hitSceneTransformHandle(
   point: ScenePoint,
   corners: readonly ScenePoint[],
   rotationHandle: ScenePoint,
-  hitRadius: number,
+  hitRadius: number | Readonly<SceneTransformHandleHitRadii>,
 ): SceneTransformHandle | "rotate" | null {
-  if (scenePointDistance(point, rotationHandle) <= hitRadius) return "rotate";
-  const index = corners.findIndex(
-    (corner) => scenePointDistance(point, corner) <= hitRadius,
-  );
-  return index >= 0 ? TRANSFORM_HANDLES[index] : null;
+  const radii = typeof hitRadius === "number"
+    ? { corner: hitRadius, side: hitRadius, rotation: hitRadius }
+    : hitRadius;
+  if (scenePointDistance(point, rotationHandle) <= radii.rotation) return "rotate";
+
+  const candidates: Array<{
+    readonly handle: SceneTransformHandle;
+    readonly distance: number;
+    readonly priority: number;
+  }> = [];
+  const consider = (
+    handle: SceneTransformHandle,
+    target: ScenePoint,
+    radius: number,
+    priority: number,
+  ): void => {
+    const distance = scenePointDistance(point, target);
+    if (distance > radius) return;
+    candidates.push({ handle, distance, priority });
+  };
+
+  corners.forEach((corner, index) => {
+    const handle = TRANSFORM_CORNER_HANDLES[index];
+    if (handle) consider(handle, corner, radii.corner, 0);
+  });
+  sceneTransformSideMidpoints(corners).forEach((midpoint, index) => {
+    const handle = TRANSFORM_SIDE_HANDLES[index];
+    if (handle) consider(handle, midpoint, radii.side, 1);
+  });
+  let closest = candidates[0] ?? null;
+  for (let index = 1; index < candidates.length; index += 1) {
+    const candidate = candidates[index];
+    if (
+      closest === null
+      || candidate.distance < closest.distance - 1e-6
+      || (
+        Math.abs(candidate.distance - closest.distance) <= 1e-6
+        && candidate.priority < closest.priority
+      )
+    ) closest = candidate;
+  }
+  return closest?.handle ?? null;
 }
 
 export function hitsSceneTransformBody(

@@ -1,4 +1,5 @@
 import type { BrushEngine } from "./brush-engine";
+import { mixedSceneRasterTransformPreviewCompositionLayerIds } from "./engine-mixed-scene-raster-preview-runtime";
 import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits";
 import type { DirtyRect } from "./engine-stroke-types";
 import type { MixedSceneActivePresentation } from "./engine-vector-text-resources";
@@ -124,6 +125,7 @@ const sourceForRasterSegment = (
 export function layerBlendTilePresentationRequired(engine: BrushEngine): boolean {
   return Boolean(engine.mixedSceneStack)
     && engine.shapePreviewAfterKey === null
+    && mixedSceneRasterTransformPreviewCompositionLayerIds(engine).size === 0
     && !engine.mixedSceneStack!.visibleSemanticCount
     && !engine.mixedSceneStack!.hasHeterogeneousClipping
     && engine.layerStack.layers.some(layerNeedsBackdropComposition);

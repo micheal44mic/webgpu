@@ -14,7 +14,7 @@ import {
 } from "./engine-limits.ts";
 
 export const RASTER_TRANSFORM_MATH_STRATEGY =
-  "document-space-uniform-affine-scale-aware-sampling-per-source-tile-mask-v2" as const;
+  "document-space-axis-scale-affine-sampling-per-source-tile-mask-v3" as const;
 
 // La maschera tile consumata qui e' la stessa che producono Selezione e cold
 // storage: griglia 16×16 sul documento, quindi il lato del tile scala con la
@@ -46,12 +46,28 @@ export interface RasterTransformRect {
   height: number;
 }
 
-/** Uniform scale, clockwise-positive rotation in the document's Y-down space. */
+/** Clockwise-positive rotation in the document's Y-down space. */
 export interface RasterTransformAffine {
   translationX: number;
   translationY: number;
-  scale: number;
+  /**
+   * Legacy uniform scale. When an axis scale is omitted it falls back to this
+   * value, or to one when all scale fields are omitted.
+   *
+   * @deprecated Prefer `scaleX` and `scaleY` for new callers.
+   */
+  scale?: number;
+  scaleX?: number;
+  scaleY?: number;
   rotation: number;
+}
+
+/** Canonical affine emitted by `normalizeRasterTransform`. */
+export interface NormalizedRasterTransformAffine extends RasterTransformAffine {
+  /** Compatibility alias for `scaleX`. */
+  scale: number;
+  scaleX: number;
+  scaleY: number;
 }
 
 export interface RasterTransformInverseRows {
@@ -108,36 +124,48 @@ function rectBottom(rect: RasterTransformRect): number {
 }
 
 export function normalizeRasterTransform(
-  transform: RasterTransformAffine,
-): RasterTransformAffine {
+  transform: Readonly<RasterTransformAffine>,
+): NormalizedRasterTransformAffine {
   const translationX = requireFinite(transform.translationX, "translationX");
   const translationY = requireFinite(transform.translationY, "translationY");
-  const requestedScale = requireFinite(transform.scale, "scale");
-  const sign = requestedScale < 0 ? -1 : 1;
-  const scale = sign * Math.min(
-    RASTER_TRANSFORM_MAXIMUM_ABS_SCALE,
-    Math.max(RASTER_TRANSFORM_MINIMUM_ABS_SCALE, Math.abs(requestedScale)),
-  );
+  const legacyScale = transform.scale === undefined
+    ? 1
+    : requireFinite(transform.scale, "scale");
+  const normalizedScale = (requestedScale: number, label: string): number => {
+    requireFinite(requestedScale, label);
+    const sign = requestedScale < 0 ? -1 : 1;
+    return sign * Math.min(
+      RASTER_TRANSFORM_MAXIMUM_ABS_SCALE,
+      Math.max(RASTER_TRANSFORM_MINIMUM_ABS_SCALE, Math.abs(requestedScale)),
+    );
+  };
+  const scaleX = normalizedScale(transform.scaleX ?? legacyScale, "scaleX");
+  const scaleY = normalizedScale(transform.scaleY ?? legacyScale, "scaleY");
+  // A single value cannot describe an anisotropic transform. Keep the legacy
+  // field deterministic by treating it as the horizontal-axis alias; old
+  // uniform inputs still round-trip exactly.
+  const scale = scaleX;
   const rotation = normalizedAngle(requireFinite(transform.rotation, "rotation"));
-  return { translationX, translationY, scale, rotation };
+  return { translationX, translationY, scale, scaleX, scaleY, rotation };
 }
 
 export function rasterTransformInverseRows(
   transform: RasterTransformAffine,
 ): RasterTransformInverseRows {
   const normalized = normalizeRasterTransform(transform);
-  const inverseScale = 1 / normalized.scale;
+  const inverseScaleX = 1 / normalized.scaleX;
+  const inverseScaleY = 1 / normalized.scaleY;
   const cosine = Math.cos(normalized.rotation);
   const sine = Math.sin(normalized.rotation);
   const canonicalZero = (value: number): number => value === 0 ? 0 : value;
   return {
     row0: [
-      canonicalZero(cosine * inverseScale),
-      canonicalZero(sine * inverseScale),
+      canonicalZero(cosine * inverseScaleX),
+      canonicalZero(sine * inverseScaleX),
     ],
     row1: [
-      canonicalZero(-sine * inverseScale),
-      canonicalZero(cosine * inverseScale),
+      canonicalZero(-sine * inverseScaleY),
+      canonicalZero(cosine * inverseScaleY),
     ],
   };
 }
@@ -152,8 +180,8 @@ export function rasterTransformPoint(
   const pointY = requireFinite(point.y, "point.y");
   const pivotX = requireFinite(sourcePivot.x, "sourcePivot.x");
   const pivotY = requireFinite(sourcePivot.y, "sourcePivot.y");
-  const localX = (pointX - pivotX) * normalized.scale;
-  const localY = (pointY - pivotY) * normalized.scale;
+  const localX = (pointX - pivotX) * normalized.scaleX;
+  const localY = (pointY - pivotY) * normalized.scaleY;
   const cosine = Math.cos(normalized.rotation);
   const sine = Math.sin(normalized.rotation);
   return {
@@ -314,9 +342,10 @@ export function rasterTransformDirtyRect(
 
 /**
  * Destination-space support of the linear reconstruction kernel. Magnifying a
- * source texel also magnifies its half-texel filter radius; rotation projects
- * that square onto both destination axes. Minification is already prefiltered
- * by the mip pyramid and needs only the fixed two-pixel reconstruction guard.
+ * source texel also magnifies its half-texel filter radius; independent scales
+ * make that support rectangular, then rotation projects it onto both
+ * destination axes. Minification is already prefiltered by the mip pyramid and
+ * needs only the fixed two-pixel reconstruction guard.
  */
 export function rasterTransformSamplingPadding(
   transform: RasterTransformAffine,
@@ -325,7 +354,8 @@ export function rasterTransformSamplingPadding(
   const nearInteger = (value: number): boolean =>
     Math.abs(value - Math.round(value)) <= 1e-7;
   if (
-    Math.abs(normalized.scale - 1) <= 1e-7
+    Math.abs(normalized.scaleX - 1) <= 1e-7
+    && Math.abs(normalized.scaleY - 1) <= 1e-7
     && Math.abs(normalized.rotation) <= 1e-7
     && nearInteger(normalized.translationX)
     && nearInteger(normalized.translationY)
@@ -334,14 +364,20 @@ export function rasterTransformSamplingPadding(
     // byte-equivalent texel copy and has no reconstruction fringe to reserve.
     return 0;
   }
-  const absoluteScale = Math.abs(normalized.scale);
-  const projectedSourceRadius = absoluteScale * 0.5 * (
-    Math.abs(Math.cos(normalized.rotation))
-    + Math.abs(Math.sin(normalized.rotation))
+  const absoluteScaleX = Math.abs(normalized.scaleX);
+  const absoluteScaleY = Math.abs(normalized.scaleY);
+  const absoluteCosine = Math.abs(Math.cos(normalized.rotation));
+  const absoluteSine = Math.abs(Math.sin(normalized.rotation));
+  const projectedSourceRadiusX = 0.5 * (
+    absoluteCosine * absoluteScaleX + absoluteSine * absoluteScaleY
+  );
+  const projectedSourceRadiusY = 0.5 * (
+    absoluteSine * absoluteScaleX + absoluteCosine * absoluteScaleY
   );
   return Math.ceil(Math.max(
     RASTER_TRANSFORM_FILTER_PADDING_PX,
-    projectedSourceRadius + 1,
+    projectedSourceRadiusX + 1,
+    projectedSourceRadiusY + 1,
   ));
 }
 

@@ -605,7 +605,7 @@ assert.match(
 );
 assert.match(
   engineVectorTextRuntimeSource,
-  /new Float32Array\(\[\s*auxiliary\.bounds\.x,\s*auxiliary\.bounds\.y,\s*auxiliary\.resolutionScale,\s*1,\s*\]\)[\s\S]*?\{ binding: 1, resource: \{ buffer: auxiliaryUniformBuffer \} \}/,
+  /mixedSceneRasterSegmentUniformValues\(auxiliary, 1\)[\s\S]*?\{ binding: 1, resource: \{ buffer: auxiliaryUniformBuffer \} \}/,
   "viewport companion surfaces must sample with their own crop origin and scale",
 );
 assert.match(

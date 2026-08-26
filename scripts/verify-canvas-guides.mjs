@@ -29,6 +29,7 @@ let sceneBoundsSnapTargets;
 let sceneIndexedSnapTargets;
 let sceneDocumentSnapTargets;
 let scenePointCloudBounds;
+let sceneQuantizeAbsoluteRotation;
 let sceneTransformedAxisAlignedBounds;
 let sceneWrappedAngleDelta;
 let adaptiveCanvasGridStep;
@@ -42,6 +43,7 @@ try {
     sceneIndexedSnapTargets,
     sceneDocumentSnapTargets,
     scenePointCloudBounds,
+    sceneQuantizeAbsoluteRotation,
     sceneTransformedAxisAlignedBounds,
     sceneWrappedAngleDelta,
   } = await moduleServer.ssrLoadModule("/src/scene-transform-snap.ts"));
@@ -342,6 +344,19 @@ assert.deepEqual(rotatedScaleGridSnap.matches, [{
   anchor: "end",
 }]);
 
+const northSideScaleGridSnap = resolveSceneScaleSnap({
+  ...scaleSnapInput,
+  handle: "north",
+  rawScale: 4.9,
+});
+closeTo(northSideScaleGridSnap.scale, 5, "north side resize grid scale");
+assert.deepEqual(northSideScaleGridSnap.matches, [{
+  axis: "y",
+  position: 50,
+  kind: "grid",
+  anchor: "start",
+}]);
+
 const scaleLayerSnap = resolveSceneScaleSnap({
   ...scaleSnapInput,
   rawScale: 2.45,
@@ -476,6 +491,35 @@ closeTo(
   "wide rotation contact must use the handle threshold",
 );
 
+const nonUniformContactRotation = 42 * Math.PI / 180;
+const nonUniformRotationContact = resolveSceneRotationSnap({
+  transform: {
+    x: 0,
+    y: 0,
+    scale: 1,
+    scaleX: 2,
+    scaleY: 0.5,
+    rotation: 0,
+  },
+  localBounds: { left: -10, top: -10, right: 10, bottom: 10 },
+  rawRotation: wideRawRotation,
+  handleRadius: 50,
+  handleAngle: wideRawRotation,
+  targets: [{
+    axis: "x",
+    position: 20 * Math.cos(nonUniformContactRotation)
+      + 5 * Math.sin(nonUniformContactRotation),
+    kind: "layer",
+    key: "non-uniform",
+  }],
+  view: identityView,
+});
+closeTo(
+  nonUniformRotationContact.rotation,
+  nonUniformContactRotation,
+  "rotation contact respects independent axis scales",
+);
+
 const rotationLayerInput = {
   transform: { x: 100, y: 100, scale: 1, rotation: 0 },
   localBounds: { left: -10, top: -10, right: 10, bottom: 10 },
@@ -555,6 +599,33 @@ for (const degrees of [-170, -10, 170, -170]) {
   previousPointerAngle = nextPointerAngle;
 }
 closeTo(accumulatedTurn, 380 * Math.PI / 180, "rotation multi-turn accumulation");
+
+for (const [degrees, expected] of [
+  [0, 0],
+  [22, 0],
+  [23, 45],
+  [44, 45],
+  [67, 45],
+  [68, 90],
+  [-47, -45],
+  [401, 405],
+]) {
+  closeTo(
+    sceneQuantizeAbsoluteRotation(degrees * Math.PI / 180),
+    expected * Math.PI / 180,
+    `absolute 45 degree rotation constraint for ${degrees}`,
+  );
+}
+assert.throws(
+  () => sceneQuantizeAbsoluteRotation(1, 0),
+  /positive step/,
+  "rotation constraint rejects a zero step",
+);
+assert.throws(
+  () => sceneQuantizeAbsoluteRotation(Number.NaN),
+  /finite/,
+  "rotation constraint rejects a non-finite angle",
+);
 
 const rotationBypassed = resolveSceneRotationSnap({
   transform: { x: 100, y: 100, scale: 1, rotation: 0 },
@@ -719,6 +790,21 @@ const movedDistortStart = controllerSource.indexOf("  private movedDistortPoints
 assert.ok(pointerDownStart >= 0 && movedDistortStart > pointerDownStart);
 const pointerDownSource = controllerSource.slice(pointerDownStart, movedDistortStart);
 assert.match(pointerDownSource, /snap: this\.snapContextForInteraction\(mode, node, view, handle\)/);
+assert.match(
+  pointerDownSource,
+  /rasterControlPointIndex === null[\s\S]*?&& handle === null[\s\S]*?&& event\.shiftKey/,
+  "Shift-pan must not steal rotation or resize handles.",
+);
+assert.match(
+  pointerDownSource,
+  /this\.touchTransformModifierPointerId \?\?= event\.pointerId/,
+  "A second touch must be captured as an explicit transform modifier.",
+);
+assert.match(
+  pointerDownSource,
+  /if \(!this\.touchConstraintApplies\(this\.activeInteraction\)\) \{[\s\S]*?this\.enterTouchNavigation\(\)/,
+  "Two-touch view navigation must remain the fallback for unsupported transform interactions.",
+);
 
 const pointerMoveStart = controllerSource.indexOf("  private onPointerMove(");
 const finishPointerStart = controllerSource.indexOf("  private finishPointer(", pointerMoveStart);
@@ -729,6 +815,11 @@ assert.match(pointerMoveSource, /gridStep: preferences\?\.grid \? interaction\.s
 assert.match(pointerMoveSource, /disabled: preferences\?\.snapping !== true \|\| event\.altKey/);
 assert.match(pointerMoveSource, /resolveSceneScaleSnap\(/);
 assert.match(pointerMoveSource, /resolveSceneRotationSnap\(/);
+assert.match(
+  pointerMoveSource,
+  /const constrained = event\.shiftKey \|\| this\.touchConstraintApplies\(interaction\)/,
+  "Shift and the touch modifier must share the same transform constraint.",
+);
 assert.match(
   pointerMoveSource,
   /const angleIncrement = sceneWrappedAngleDelta\(angle, interaction\.lastAngle\)/,
@@ -750,6 +841,11 @@ const scaleSnapSource = pointerMoveSource.slice(
 );
 const rotationSnapSource = pointerMoveSource.slice(
   pointerMoveSource.indexOf('} else if (interaction.mode === "rotate")'),
+);
+assert.match(
+  rotationSnapSource,
+  /constrained[\s\S]*?sceneQuantizeAbsoluteRotation\(rawRotation\)[\s\S]*?matches: \[\][\s\S]*?latch: null[\s\S]*?: interaction\.snap/,
+  "The absolute angle constraint must override magnetic rotation snapping and clear its latch.",
 );
 for (const [name, source] of [
   ["move", moveSnapSource],

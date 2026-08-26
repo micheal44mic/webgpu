@@ -6,6 +6,7 @@ import type {
   LayerAddHistoryAction,
   LayerDeleteHistoryAction,
   LayerMergeHistoryAction,
+  MixedSceneGroupTransformHistoryAction,
   PaintHistoryRenderBatch,
   RasterFilterHistoryAction,
   RasterImportHistoryAction,
@@ -149,7 +150,9 @@ export class HistoryService {
   discardedVectorRasterActions: VectorRasterizeHistoryAction[] = [];
   discardedRasterImportActions: RasterImportHistoryAction[] = [];
   discardedRasterTransformActions: Array<
-    RasterTransformHistoryAction | RasterFilterHistoryAction
+    RasterTransformHistoryAction
+    | RasterFilterHistoryAction
+    | MixedSceneGroupTransformHistoryAction
   > = [];
   discardedLayerAddActions: LayerAddHistoryAction[] = [];
   discardedLayerDeleteActions: LayerDeleteHistoryAction[] = [];
@@ -415,7 +418,11 @@ export class HistoryService {
         appendWithoutPush(this.discardedVectorRasterActions, action);
       } else if (action.kind === "raster-import") {
         appendWithoutPush(this.discardedRasterImportActions, action);
-      } else if (action.kind === "raster-transform" || action.kind === "raster-filter") {
+      } else if (
+        action.kind === "raster-transform"
+        || action.kind === "raster-filter"
+        || action.kind === "group-transform"
+      ) {
         appendWithoutPush(this.discardedRasterTransformActions, action);
       } else if (action.kind === "layer-add") {
         appendWithoutPush(this.discardedLayerAddActions, action);

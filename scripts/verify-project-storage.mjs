@@ -166,6 +166,20 @@ assert.equal(normalizeProjectTitle("\n\t"), "Untitled Artwork");
 
 const { request, bytes, tileBytes } = projectRequest();
 validateProjectSaveRequest(request);
+const axisScaleProject = structuredClone(request);
+Object.assign(axisScaleProject.snapshot.mixedScene.svgNodes[0], {
+  scale: 1.25,
+  scaleX: 1.25,
+  scaleY: 0.6,
+});
+validateProjectSaveRequest(axisScaleProject);
+const invalidAxisScaleProject = structuredClone(axisScaleProject);
+invalidAxisScaleProject.snapshot.mixedScene.svgNodes[0].scaleY = 0;
+assert.throws(
+  () => validateProjectSaveRequest(invalidAxisScaleProject),
+  ProjectStorageValidationError,
+  "semantic axis scales must remain positive",
+);
 const clippedSceneProject = structuredClone(request);
 clippedSceneProject.snapshot.mixedScene.clippingRelations = [{
   childKey: "svg:1",
@@ -503,6 +517,24 @@ assert.ok(loadedFirst.manifest.snapshot.layers[0].storageTileMask instanceof Uin
 const svgPath = loadedFirst.manifest.snapshot.mixedScene.svgNodes[0].document.paths[0];
 assert.ok(svgPath.commands instanceof Uint8Array);
 assert.ok(svgPath.coordinates instanceof Float32Array);
+
+const axisScaleSummary = await storage.saveProject({
+  ...axisScaleProject,
+  name: "Axis Scale Round Trip",
+});
+const loadedAxisScale = await storage.loadProject(axisScaleSummary.id);
+assert.ok(loadedAxisScale);
+validateLoadedProject(loadedAxisScale);
+assert.deepEqual(
+  loadedAxisScale.manifest.snapshot.mixedScene.svgNodes.map((node) => [
+    node.scale,
+    node.scaleX,
+    node.scaleY,
+  ]),
+  [[1.25, 1.25, 0.6]],
+  "project persistence must retain independent semantic axes",
+);
+assert.equal(await storage.deleteProject(axisScaleSummary.id), true);
 
 // Returned snapshots are defensive clones, not aliases into the cache.
 loadedFirst.manifest.snapshot.layers[0].storageTileMask[0] = 0;

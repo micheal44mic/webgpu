@@ -515,6 +515,7 @@ let cloneToolController: CloneToolController | null = null;
 let shapeToolController: ShapeToolController | null = null;
 let cloneSourcePreparationToken = 0;
 let mixedSceneInitializationPromise: Promise<MixedSceneController> | null = null;
+let layerMultiTransformSelectionRevision = 0;
 let editorToolsController: EditorToolsController;
 let editorFiltersController: EditorFiltersController | null = null;
 let editorSettingsController: EditorSettingsController | null = null;
@@ -581,6 +582,15 @@ function selectCanvasToolWithMixedScene(tool: CanvasInputTool): boolean {
     });
   }
   return selected;
+}
+
+async function finishLayerMultiSelectionForToolChange(): Promise<boolean> {
+  const panel = layerPanelController;
+  if (!panel?.isMultiSelect) return true;
+  const controller = mixedSceneController;
+  if (controller && !await controller.applyTransform()) return false;
+  panel.finishMultiSelection();
+  return true;
 }
 const engine = new BrushEngine(canvas, {
   onStatus(message, kind) {
@@ -787,10 +797,11 @@ const historyControlsController = new HistoryControlsController({
   onControlsLockChange: (locked) => {
     brushQuickControlsController?.setLocked(locked);
     cloneToolController?.notifyInteractionState();
-    mobilePaintButton.disabled = locked;
-    mobileEraserButton.disabled = locked;
-    mobileBlendButton.disabled = locked;
-    mobilePanButton.disabled = locked;
+    const toolSelectionLocked = canvasToolSelectionLocked();
+    mobilePaintButton.disabled = toolSelectionLocked;
+    mobileEraserButton.disabled = toolSelectionLocked;
+    mobileBlendButton.disabled = toolSelectionLocked;
+    mobilePanButton.disabled = toolSelectionLocked;
     mobileToolSettingsSheet?.syncOpenState();
     syncMobileToolsMenuState();
     brushQuickControlsController?.syncVisibility();
@@ -1193,7 +1204,15 @@ canvasToolController = new CanvasToolController({
   brushSettings: brushSettingsController,
   selectionSettings: canvasToolSettingsController,
   isEngineReady: () => engineInitialized,
-  isInteractionLocked: interactionLocked,
+  isInteractionLocked: canvasToolSelectionLocked,
+  isMultiSelectionActive: () => layerPanelController?.isMultiSelect === true,
+  canFinishMultiSelectionForToolChange: () => {
+    const action = mixedSceneController?.getTransformActionSnapshot();
+    if (action?.preparing) return true;
+    if (action?.active) return action.canApply;
+    return !interactionLocked();
+  },
+  finishMultiSelectionForToolChange: finishLayerMultiSelectionForToolChange,
   closeBrushStudioForTool: (tool) => {
     if (tool !== "paint" && mobileBrushStudio?.isOpen) {
       mobileBrushStudio.cancel(false);
@@ -1323,6 +1342,7 @@ function syncMobileToolsMenuState(
     activeCanvasTool: canvasToolController?.activeTool ?? "paint",
     engineReady: engineInitialized,
     interactionLocked: interactionLocked(),
+    canvasToolSelectionLocked: canvasToolSelectionLocked(),
     vectorEditorReady: mixedSceneController !== null,
     vectorEditorLocked: mixedSceneController?.getTextEditorSnapshot().locked ?? true,
     textSelected: selectedText !== null,
@@ -1972,6 +1992,25 @@ layerPanelController = new LayerPanelController({
   mergeCapabilityError: (keys, stats) =>
     sceneEditorController!.mergeCapabilityError(keys, stats),
   mergeLayers: (keys) => sceneEditorController!.mergeLayers(keys),
+  onMultiSelectionChange: ({ enabled, orderedKeys }) => {
+    const revision = ++layerMultiTransformSelectionRevision;
+    const transformKeys = enabled && orderedKeys.length >= 2 ? orderedKeys : [];
+    if (transformKeys.length === 0) {
+      mixedSceneController?.setTransformSelection([]);
+      return;
+    }
+    if (!selectCanvasToolWithMixedScene("transform")) return;
+    void initializeMixedSceneController().then((controller) => {
+      if (revision !== layerMultiTransformSelectionRevision) return;
+      controller.setTransformSelection(transformKeys);
+    }).catch((error) => {
+      appDiagnosticsController?.recordOperation(
+        "initialize-group-transform",
+        transformKeys.join(","),
+        error,
+      );
+    });
+  },
   rasterizeLayer: (key) => sceneEditorController!.rasterizeLayer(key),
   addRasterLayer: () => sceneEditorController?.addRasterLayer(),
   duplicateSelectedLayer: () => sceneEditorController!.duplicateSelectedLayer(),
@@ -2164,6 +2203,16 @@ function interactionLocked(): boolean {
   return operationLocked() || canvasInputController?.isPointerActive === true;
 }
 
+function canvasToolSelectionLocked(): boolean {
+  if (!interactionLocked()) return false;
+  const action = mixedSceneController?.getTransformActionSnapshot();
+  return !(
+    layerPanelController?.isMultiSelect === true
+    && canvasToolController?.activeTool === "transform"
+    && (action?.active === true || action?.preparing === true)
+  );
+}
+
 /**
  * Pan, zoom e rotazione non modificano i pixel e restano disponibili mentre
  * un filtro o Fill mostrano la loro anteprima distruttiva. Il normale lock del
@@ -2283,7 +2332,10 @@ async function initializeMixedSceneController(): Promise<MixedSceneController> {
       browser: window,
       clippedRefreshPolicy:
         editorExtensionBootstrap?.vectorTextClippedRefreshPolicy ?? "during-gesture",
-      onEditorStateChange: () => mobileToolSettingsSheet?.syncOpenState(),
+      onEditorStateChange: () => {
+        mobileToolSettingsSheet?.syncOpenState();
+        updateHistoryControls();
+      },
       canvasGuides: {
         getPreferences: () => editorSettingsController?.preferences
           ?? DEFAULT_EDITOR_GUIDE_PREFERENCES,

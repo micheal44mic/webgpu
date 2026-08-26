@@ -40,6 +40,7 @@ import { assertShaderCompiled } from "./engine-gpu-utils";
 import { vectorTextDisplayShader } from "./vector-text-shader";
 import { initializeVectorTextGpuRenderer } from "./engine-vector-text-runtime";
 import { VECTOR_TEXT_GPU_UNIFORM_STRIDE } from "./vector-text-gpu-shader";
+import { MIXED_SCENE_RASTER_SEGMENT_UNIFORM_BYTES } from "./mixed-scene-raster-transform-preview";
 import { type ActiveStroke, type DirtyRect, type Stamp } from "./engine-stroke-types";
 import { paintMipDimensions } from "./engine-geometry";
 import { type BrushSettings, type LayerPoint } from "./engine-types";
@@ -397,7 +398,14 @@ export async function finishStaticResourceCreation(
       label: "Mixed scene raster segment bind group layout",
       entries: [
         { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
-        { binding: 1, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: {
+            type: "uniform",
+            minBindingSize: MIXED_SCENE_RASTER_SEGMENT_UNIFORM_BYTES,
+          },
+        },
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
         { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
       ],

@@ -51,6 +51,7 @@ const requiredRows = [
   "destructive-raster-filters",
   "layer-rasterize",
   "raster-transform",
+  "group-transform",
   "layer-blend-mode",
   "layer-metadata-effects",
   "document-background",

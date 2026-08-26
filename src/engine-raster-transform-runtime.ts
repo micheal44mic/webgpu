@@ -7,6 +7,7 @@ import {
 import { assertShaderCompiled } from "./engine-gpu-utils";
 import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits";
 import type { LayerFormat, RasterTransformSnapshot } from "./engine-types";
+import type { LayerColdStorageResources } from "./engine-layer-resources";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import { commitHistoryActionAtomically } from "./engine-history-runtime";
 import { publishMixedScene } from "./engine-vector-text-runtime";
@@ -27,6 +28,7 @@ import {
   tileMaskCoveringRect,
   RASTER_TRANSFORM_UNIFORM_BYTES,
   type RasterTransformAffine,
+  type NormalizedRasterTransformAffine,
 } from "./raster-transform-math";
 import {
   rasterTransformMipmapShader,
@@ -119,7 +121,7 @@ export interface ActiveRasterTransformSession {
   readonly deformVertexUpload: Float32Array;
   readonly shared: RasterTransformSharedResources;
   readonly memoryBytes: number;
-  transform: RasterTransformAffine;
+  transform: NormalizedRasterTransformAffine;
   mode: RasterTransformMode;
   gridSize: RasterWarpGridSize;
   controlPoints: RasterTransformControlPoint[];
@@ -134,6 +136,13 @@ export interface ActiveRasterTransformSession {
   encodedSerial: number;
   previewFrame: number | null;
   terminal: boolean;
+}
+
+export interface BeginRasterLayerTransformOptions {
+  /** Internal group transactions always operate on the complete raster. */
+  readonly forceWholeLayer?: boolean;
+  /** The group owns scene selection, so the hot raster need not be selected. */
+  readonly allowSelectionMismatch?: boolean;
 }
 
 const sharedResources = new WeakMap<
@@ -188,6 +197,8 @@ function transformSnapshot(session: ActiveRasterTransformSession): RasterTransfo
     x: center.x,
     y: center.y,
     scale: session.transform.scale,
+    scaleX: session.transform.scaleX,
+    scaleY: session.transform.scaleY,
     rotation: session.transform.rotation,
     sourceBounds: { ...session.sourceBounds },
     sourcePivot: { ...session.sourcePivot },
@@ -398,7 +409,7 @@ function destroySessionResources(session: ActiveRasterTransformSession): void {
 function writeSessionUniforms(
   engine: BrushEngine,
   session: ActiveRasterTransformSession,
-  transform = session.transform,
+  transform: RasterTransformAffine = session.transform,
 ): void {
   packRasterTransformUniforms({
     sourceScratchRect: session.sourceTextureRect,
@@ -554,8 +565,16 @@ function flushPreview(engine: BrushEngine, session: ActiveRasterTransformSession
 export async function beginRasterLayerTransform(
   engine: BrushEngine,
   requestedMode: RasterTransformMode = "affine",
+  options: Readonly<BeginRasterLayerTransformOptions> = {},
 ): Promise<RasterTransformSnapshot | null> {
   if (!engine.initialized) throw new Error("The engine has not been initialized yet.");
+  const groupSession = engine.activeMixedSceneGroupTransformSession;
+  if (
+    groupSession
+    && !(options.allowSelectionMismatch && groupSession.internalRasterOperation)
+  ) {
+    throw new Error("The group Transform already owns the Transform transaction.");
+  }
   if (engine.activeRasterTransformSession) {
     const active = engine.activeRasterTransformSession;
     if (active.scope === "layer" && active.mode !== requestedMode) {
@@ -566,21 +585,24 @@ export async function beginRasterLayerTransform(
     return transformSnapshot(active);
   }
   engine.assertDestructiveRasterEditCanOpen("transform");
-  const selected = engine.mixedSceneStack?.selected;
-  if (selected?.kind !== "raster") return null;
   const record = engine.layerStack.active;
-  if (selected.rasterLayerId !== record.id) {
-    throw new Error(
-      `Transform invariant: selected raster ${selected.rasterLayerId}, `
-      + `but active raster ${record.id}.`,
-    );
+  if (!options.allowSelectionMismatch) {
+    const selected = engine.mixedSceneStack?.selected;
+    if (selected?.kind !== "raster") return null;
+    if (selected.rasterLayerId !== record.id) {
+      throw new Error(
+        `Transform invariant: selected raster ${selected.rasterLayerId}, `
+        + `but active raster ${record.id}.`,
+      );
+    }
   }
   engine.assertLayerSwitchAllowed();
   engine.persistActiveLayerState();
   if (!record.hasContent || !record.contentBounds) {
     throw new Error("The selected raster layer is empty.");
   }
-  const selectionScope = engine.pixelSelectionState.selectedPixels > 0;
+  const selectionScope = !options.forceWholeLayer
+    && engine.pixelSelectionState.selectedPixels > 0;
   const selectionBounds = engine.pixelSelectionState.bounds;
   const selectionRenderer = selectionScope ? engine.selectionRenderer : null;
   if (selectionScope && (!selectionBounds || !selectionRenderer)) {
@@ -610,12 +632,17 @@ export async function beginRasterLayerTransform(
           || action.kind === "layer-add"
           || action.kind === "layer-delete"
           || action.kind === "layer-merge"
-          || action.layerId !== record.id
         ) continue;
+        const transformAction = action.kind === "group-transform"
+          ? action.rasters.find((entry) => entry.layerId === record.id) ?? null
+          : action.kind === "raster-transform" && action.layerId === record.id
+            ? action
+            : null;
+        if (action.kind === "group-transform" && !transformAction) continue;
+        if (action.kind !== "group-transform" && action.layerId !== record.id) continue;
         if (
-          action.kind === "raster-transform"
-          && action.scope === "layer"
-          && action.geometryBounds
+          transformAction?.scope === "layer"
+          && transformAction.geometryBounds
         ) {
           // Unione, non sostituzione. Il `geometryBounds` journaled e'
           // l'estensione della geometria trasformata, e si riusa proprio
@@ -627,7 +654,7 @@ export async function beginRasterLayerTransform(
           // scratch su un rettangolo che non contiene i pixel del livello, e la
           // riapertura muore su "sourceContentBounds deve essere contenuto
           // nello scratch": da li' Trasforma non si apre piu' su quel livello.
-          sourceBounds = unionRects(sourceRasterBounds, action.geometryBounds)
+          sourceBounds = unionRects(sourceRasterBounds, transformAction.geometryBounds)
             ?? sourceRasterBounds;
         }
         break;
@@ -721,12 +748,12 @@ export async function beginRasterLayerTransform(
             entries: [{ binding: 0, resource: { buffer: selectionRenderer!.maskBuffer } }],
           })
           : null;
-        const transform: RasterTransformAffine = {
+        const transform = normalizeRasterTransform({
           translationX: 0,
           translationY: 0,
           scale: 1,
           rotation: 0,
-        };
+        });
         const created: ActiveRasterTransformSession = {
           layerId: record.id,
           scope: selectionScope ? "selection" : "layer",
@@ -875,7 +902,7 @@ export async function beginRasterLayerTransform(
 
 function affineApproximationForDeform(
   session: ActiveRasterTransformSession,
-): RasterTransformAffine {
+): NormalizedRasterTransformAffine {
   const size = rasterDeformGridSize(session.mode, session.gridSize);
   const topLeft = session.controlPoints[0];
   const topRight = session.controlPoints[size - 1];
@@ -888,7 +915,6 @@ function affineApproximationForDeform(
     bottomLeft.x - topLeft.x,
     bottomLeft.y - topLeft.y,
   ) / Math.max(1e-6, session.sourceBounds.height);
-  const scale = (horizontalScale + verticalScale) * 0.5;
   const rotation = Math.atan2(topRight.y - topLeft.y, topRight.x - topLeft.x);
   const sourceCenter = {
     x: session.sourceBounds.x + session.sourceBounds.width * 0.5,
@@ -901,10 +927,13 @@ function affineApproximationForDeform(
   const sourceDeltaY = sourceCenter.y - session.sourcePivot.y;
   return normalizeRasterTransform({
     translationX: destinationCenter.x - session.sourcePivot.x
-      - scale * (cosine * sourceDeltaX - sine * sourceDeltaY),
+      - (cosine * horizontalScale * sourceDeltaX
+        - sine * verticalScale * sourceDeltaY),
     translationY: destinationCenter.y - session.sourcePivot.y
-      - scale * (sine * sourceDeltaX + cosine * sourceDeltaY),
-    scale,
+      - (sine * horizontalScale * sourceDeltaX
+        + cosine * verticalScale * sourceDeltaY),
+    scaleX: horizontalScale,
+    scaleY: verticalScale,
     rotation,
   });
 }
@@ -957,12 +986,26 @@ function transitionRasterTransformMode(
     : [];
   session.mode = nextMode;
   session.gridSize = nextGridSize;
-  session.transform = { translationX: 0, translationY: 0, scale: 1, rotation: 0 };
+  session.transform = normalizeRasterTransform({
+    translationX: 0,
+    translationY: 0,
+    scale: 1,
+    rotation: 0,
+  });
 }
 
 type RasterTransformUpdate = Partial<Pick<
   RasterTransformSnapshot,
-  "x" | "y" | "scale" | "rotation" | "mode" | "gridSize" | "controlPoints" | "bezierHandles"
+  | "x"
+  | "y"
+  | "scale"
+  | "scaleX"
+  | "scaleY"
+  | "rotation"
+  | "mode"
+  | "gridSize"
+  | "controlPoints"
+  | "bezierHandles"
 >>;
 
 export function updateRasterLayerTransform(
@@ -988,6 +1031,8 @@ export function updateRasterLayerTransform(
       || update.controlPoints !== undefined
       || update.bezierHandles !== undefined
       || (update.scale !== undefined && Math.abs(update.scale - 1) > 1e-7)
+      || (update.scaleX !== undefined && Math.abs(update.scaleX - 1) > 1e-7)
+      || (update.scaleY !== undefined && Math.abs(update.scaleY - 1) > 1e-7)
       || (update.rotation !== undefined && Math.abs(update.rotation) > 1e-7))
   ) {
     throw new Error(
@@ -1007,7 +1052,10 @@ export function updateRasterLayerTransform(
       translationY: update.y === undefined
         ? session.transform.translationY
         : update.y - session.sourcePivot.y,
-      scale: update.scale ?? session.transform.scale,
+      // The legacy field remains a uniform update. Explicit axis fields take
+      // precedence so callers can also change both axes atomically.
+      scaleX: update.scaleX ?? update.scale ?? session.transform.scaleX,
+      scaleY: update.scaleY ?? update.scale ?? session.transform.scaleY,
       rotation: update.rotation ?? session.transform.rotation,
     });
     if (session.scope === "selection") {
@@ -1015,6 +1063,8 @@ export function updateRasterLayerTransform(
         translationX: Math.round(transform.translationX),
         translationY: Math.round(transform.translationY),
         scale: 1,
+        scaleX: 1,
+        scaleY: 1,
         rotation: 0,
       };
     }
@@ -1029,7 +1079,12 @@ export function updateRasterLayerTransform(
       { documentWidth: DOCUMENT_WIDTH, documentHeight: DOCUMENT_HEIGHT, padding: 0 },
     ) as DirtyRect | null;
   } else {
-    if (update.scale !== undefined || update.rotation !== undefined) {
+    if (
+      update.scale !== undefined
+      || update.scaleX !== undefined
+      || update.scaleY !== undefined
+      || update.rotation !== undefined
+    ) {
       throw new Error("Warp and Perspective are edited by dragging the control points.");
     }
     const previousPoints = session.controlPoints;
@@ -1173,10 +1228,10 @@ function rasterTransformMatrix(session: ActiveRasterTransformSession): readonly 
 ] {
   const cosine = Math.cos(session.transform.rotation);
   const sine = Math.sin(session.transform.rotation);
-  const a = cosine * session.transform.scale;
-  const b = sine * session.transform.scale;
-  const c = -sine * session.transform.scale;
-  const d = cosine * session.transform.scale;
+  const a = cosine * session.transform.scaleX;
+  const b = sine * session.transform.scaleX;
+  const c = -sine * session.transform.scaleY;
+  const d = cosine * session.transform.scaleY;
   const destinationX = session.sourcePivot.x + session.transform.translationX;
   const destinationY = session.sourcePivot.y + session.transform.translationY;
   return [
@@ -1202,7 +1257,8 @@ function rasterTransformIsIdentity(session: ActiveRasterTransformSession): boole
   }
   return Math.abs(session.transform.translationX) < 1e-7
     && Math.abs(session.transform.translationY) < 1e-7
-    && Math.abs(session.transform.scale - 1) < 1e-7
+    && Math.abs(session.transform.scaleX - 1) < 1e-7
+    && Math.abs(session.transform.scaleY - 1) < 1e-7
     && Math.abs(session.transform.rotation) < 1e-7;
 }
 
@@ -1313,6 +1369,147 @@ export async function cancelRasterLayerTransform(engine: BrushEngine): Promise<b
   return true;
 }
 
+/**
+ * Materializes an already-open whole-layer Transform and returns its exact
+ * checkpoint without publishing a journal action. The caller owns the seed
+ * until it either publishes a compound action or destroys it during rollback.
+ */
+export async function materializeRasterLayerTransformHistoryAction(
+  engine: BrushEngine,
+): Promise<RasterTransformHistoryAction | null> {
+  const session = engine.activeRasterTransformSession;
+  if (!session) return null;
+  if (session.scope !== "layer") {
+    throw new Error("A group Transform cannot materialize a Pixel Selection.");
+  }
+  if (session.terminal) {
+    throw new Error("The raster transform is already finishing.");
+  }
+  if (rasterTransformIsIdentity(session)) {
+    await cancelRasterLayerTransform(engine);
+    return null;
+  }
+
+  session.terminal = true;
+  let seed: LayerColdStorageResources | null = null;
+  let retainSessionForRecovery = false;
+  const rasterSourceBefore = cloneRasterLayerSource(session.rasterSourceBefore);
+  let rasterSourceAfter: RasterLayerSource | null = null;
+  try {
+    flushPreview(engine, session);
+    const record = engine.layerStack.active;
+    if (record.id !== session.layerId) {
+      throw new Error(
+        `Raster Transform session ${session.layerId} is not the active raster ${record.id}.`,
+      );
+    }
+    const affineSourceTransformIsRepresentable = session.mode === "affine"
+      && Math.abs(session.transform.scaleX - session.transform.scaleY) < 1e-7;
+    if (affineSourceTransformIsRepresentable && session.rasterSourceBefore) {
+      rasterSourceAfter = composeRasterLayerSourceTransform(
+        session.rasterSourceBefore,
+        session.transform,
+      );
+      record.rasterSource = cloneRasterLayerSource(rasterSourceAfter);
+      const dirtyRect = await rebuildRasterLayerFromImmutableSource(engine, record);
+      const exactBounds = rasterLayerSourceBounds(
+        rasterSourceAfter,
+        DOCUMENT_WIDTH,
+        DOCUMENT_HEIGHT,
+      ) as DirtyRect | null;
+      session.resultBounds = copyRect(exactBounds);
+      session.samplingBounds = copyRect(exactBounds);
+      session.mutationBounds = copyRect(exactBounds);
+      session.resultTileMask = record.storageTileMask.slice();
+      if (dirtyRect) {
+        engine.submitImmediate([], false, engine.settings, true, null, dirtyRect, false);
+        setAuthoritativeMetadata(engine, exactBounds, session.resultTileMask);
+        record.rasterSource = cloneRasterLayerSource(rasterSourceAfter);
+      }
+    } else if (session.rasterSourceBefore) {
+      // Independent axis scale is an intentional rasterization boundary.
+      record.rasterSource = null;
+    }
+    await engine.waitForGpuCapped("Materialize group Raster Transform", 60_000);
+    if (session.samplingBounds) {
+      const hot = engine.requireLayerGpu(session.layerId).hot;
+      if (!hot) throw new Error("The transformed raster's hot texture is missing.");
+      seed = await createLayerColdStorageCandidate(
+        engine,
+        record,
+        hot,
+        session.resultTileMask.slice(),
+        engine.nextHistoryActionId,
+        "history",
+      );
+    }
+    const common = {
+      id: engine.nextHistoryActionId,
+      kind: "raster-transform",
+      layerId: session.layerId,
+      baseTileMask: session.resultTileMask.slice(),
+      geometryBounds: copyRect(session.resultBounds),
+      matrix: rasterTransformMatrix(session),
+      filterStrategy: rasterSourceAfter
+        ? RASTER_SOURCE_MATRIX_TRANSFORM_STRATEGY
+        : RASTER_TRANSFORM_SHADER_STRATEGY,
+      scope: "layer",
+      selectionBefore: null,
+      selectionAfter: null,
+      rasterSourceBefore,
+      rasterSourceAfter: cloneRasterLayerSource(rasterSourceAfter),
+    } as const;
+    return session.samplingBounds && seed
+      ? {
+        ...common,
+        seed,
+        baseBounds: { ...session.samplingBounds },
+      }
+      : {
+        ...common,
+        seed: null,
+        baseBounds: null,
+      };
+  } catch (error) {
+    try {
+      engine.layerStack.active.rasterSource = cloneRasterLayerSource(rasterSourceBefore);
+      await restoreOriginalPixels(engine, session);
+      engine.layerStack.active.rasterSource = cloneRasterLayerSource(rasterSourceBefore);
+    } catch (restoreError) {
+      retainSessionForRecovery = true;
+      session.terminal = false;
+      engine.latchDocumentStateInconsistent(
+        "Group Transform raster rollback failed: reload the page.",
+        restoreError,
+      );
+      const operationMessage = error instanceof Error ? error.message : String(error);
+      const rollbackMessage = restoreError instanceof Error
+        ? restoreError.message
+        : String(restoreError);
+      throw new Error(
+        `Raster materialization failed: ${operationMessage}; rollback failed: ${rollbackMessage}`,
+      );
+    } finally {
+      destroyLayerColdStorage(seed);
+    }
+    throw error;
+  } finally {
+    if (!retainSessionForRecovery) {
+      destroySessionResources(session);
+      engine.activeRasterTransformSession = null;
+      engine.historyBusy = engine.historyStateInconsistent;
+      engine.scheduleLayerColdCompression();
+      engine.selectionOverlaySuppressed = false;
+      engine.selectionOverlayOffsetX = 0;
+      engine.selectionOverlayOffsetY = 0;
+      renderPixelSelectionOverlay(engine);
+    }
+    engine.publishHistoryState();
+    engine.publishStats();
+    publishMixedScene(engine);
+  }
+}
+
 export async function commitRasterLayerTransform(engine: BrushEngine): Promise<boolean> {
   const session = engine.activeRasterTransformSession;
   if (!session) return false;
@@ -1335,9 +1532,11 @@ export async function commitRasterLayerTransform(engine: BrushEngine): Promise<b
   try {
     flushPreview(engine, session);
     const record = engine.layerStack.active;
+    const affineSourceTransformIsRepresentable = session.mode === "affine"
+      && Math.abs(session.transform.scaleX - session.transform.scaleY) < 1e-7;
     if (
       session.scope === "layer"
-      && session.mode === "affine"
+      && affineSourceTransformIsRepresentable
       && session.rasterSourceBefore
     ) {
       rasterSourceAfter = composeRasterLayerSourceTransform(
@@ -1362,10 +1561,14 @@ export async function commitRasterLayerTransform(engine: BrushEngine): Promise<b
         setAuthoritativeMetadata(engine, exactBounds, session.resultTileMask);
         record.rasterSource = cloneRasterLayerSource(rasterSourceAfter);
       }
-    } else if (session.scope === "layer" && session.mode !== "affine") {
-      // A free mesh cannot be represented by the imported source's affine
-      // matrix. Applica is the intentional rasterization boundary; Undo still
-      // restores rasterSourceBefore and Redo hydrates the exact GPU checkpoint.
+    } else if (
+      session.scope === "layer"
+      && (session.mode !== "affine" || session.rasterSourceBefore)
+    ) {
+      // A free mesh or independent axis scale cannot be represented by the
+      // imported source's uniform-scale matrix. Apply is the intentional
+      // rasterization boundary; Undo still restores rasterSourceBefore and
+      // Redo hydrates the exact GPU checkpoint.
       record.rasterSource = null;
     } else if (session.scope === "selection" && session.rasterSourceBefore) {
       // A pixel selection is intentionally destructive: it is the explicit

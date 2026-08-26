@@ -46,7 +46,7 @@ fn localToClip(localPosition: vec2<f32>) -> vec4<f32> {
   let targetSize = slug.targetOriginAndSize.zw;
   let scaled = (
     localPosition + slug.scaleAndLocalOffset.yz
-  ) * slug.scaleAndLocalOffset.x;
+  ) * slug.scaleAndLocalOffset.xw;
   let layerPosition = nodePosition + vec2<f32>(
     nodeRotation.x * scaled.x - nodeRotation.y * scaled.y,
     nodeRotation.y * scaled.x + nodeRotation.x * scaled.y
@@ -76,11 +76,11 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> SlugVertexOutput {
     vec2<f32>(0.0, 1.0)
   );
   let localPixelsPerUnit = max(
-    abs(slug.scaleAndLocalOffset.x * slug.viewCenterAndZoom.z),
-    1.0e-8
+    abs(slug.scaleAndLocalOffset.xw * slug.viewCenterAndZoom.z),
+    vec2<f32>(1.0e-8)
   );
   let pad = 1.5 / localPixelsPerUnit;
-  let bounds = slug.shapeBounds + vec4<f32>(-pad, -pad, pad, pad);
+  let bounds = slug.shapeBounds + vec4<f32>(-pad, pad);
   let corner = corners[vertexIndex];
   let localPosition = mix(bounds.xy, bounds.zw, corner);
   var output: SlugVertexOutput;

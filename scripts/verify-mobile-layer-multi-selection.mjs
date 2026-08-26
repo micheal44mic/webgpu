@@ -117,6 +117,32 @@ assert.match(
 assert.match(controller, /scene\.items\.map\(\(item\) => \(\{/);
 assert.match(
   controller,
+  /onMultiSelectionChange\?:[\s\S]*?LayerPanelMultiSelectionSnapshot/,
+  "the panel must expose a narrow, optional multiple-selection notification port",
+);
+assert.match(
+  controller,
+  /private notifyMultiSelection\([\s\S]*?orderedKeys[\s\S]*?onMultiSelectionChange/,
+  "selection notifications must publish stable scene order instead of tap order",
+);
+const setOpenStart = controller.indexOf("  setOpen(open: boolean): void {");
+const selectedPropertiesStart = controller.indexOf(
+  "  selectedLayerProperties(",
+  setOpenStart,
+);
+assert.ok(setOpenStart >= 0 && selectedPropertiesStart > setOpenStart);
+assert.doesNotMatch(
+  controller.slice(setOpenStart, selectedPropertiesStart),
+  /setMultiSelect\(false/,
+  "closing the panel must not discard the multiple selection",
+);
+assert.doesNotMatch(
+  controller,
+  /remove it from the merge selection|to the merge selection|adjacent layers to merge/,
+  "generic selection guidance must not describe the selection itself as merge-only",
+);
+assert.match(
+  controller,
   /this\.multiSelectEnabled[\s\S]*?this\.toggleMultiSelection\(key\)[\s\S]*?return;[\s\S]*?this\.options\.selectLayer\(key\)/,
   "multi-select taps must stay local while ordinary taps retain single selection",
 );

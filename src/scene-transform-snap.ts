@@ -388,13 +388,19 @@ function localPointForHandle(
   bounds: Readonly<SceneLocalBounds>,
   handle: SceneTransformHandle,
 ): Readonly<{ x: number; y: number }> {
+  const centerX = (bounds.left + bounds.right) * 0.5;
+  const centerY = (bounds.top + bounds.bottom) * 0.5;
   return {
-    x: handle === "north-west" || handle === "south-west"
-      ? bounds.left
-      : bounds.right,
-    y: handle === "north-west" || handle === "north-east"
-      ? bounds.top
-      : bounds.bottom,
+    x: handle === "north" || handle === "south"
+      ? centerX
+      : handle === "north-west" || handle === "south-west" || handle === "west"
+        ? bounds.left
+        : bounds.right,
+    y: handle === "east" || handle === "west"
+      ? centerY
+      : handle === "north-west" || handle === "north-east" || handle === "north"
+        ? bounds.top
+        : bounds.bottom,
   };
 }
 
@@ -588,14 +594,28 @@ export function sceneWrappedAngleDelta(current: number, previous: number): numbe
   return Math.atan2(Math.sin(delta), Math.cos(delta));
 }
 
+export const SCENE_ROTATION_CONSTRAINT_STEP = Math.PI / 4;
+
+/** Quantizes an absolute scene rotation without collapsing completed turns. */
+export function sceneQuantizeAbsoluteRotation(
+  rotation: number,
+  step = SCENE_ROTATION_CONSTRAINT_STEP,
+): number {
+  if (!finite(rotation) || !finite(step) || step <= 0) {
+    throw new RangeError("Rotation and step must be finite, with a positive step.");
+  }
+  const quantized = Math.round(rotation / step) * step;
+  return Object.is(quantized, -0) ? 0 : quantized;
+}
+
 function contactAngles(
   input: Readonly<SceneRotationSnapInput>,
   localPoint: Readonly<{ x: number; y: number }>,
   axis: SceneSnapAxis,
   position: number,
 ): readonly number[] {
-  const scaledX = localPoint.x * input.transform.scale;
-  const scaledY = localPoint.y * input.transform.scale;
+  const scaledX = localPoint.x * (input.transform.scaleX ?? input.transform.scale);
+  const scaledY = localPoint.y * (input.transform.scaleY ?? input.transform.scale);
   const a = axis === "x" ? scaledX : scaledY;
   const b = axis === "x" ? -scaledY : scaledX;
   const radius = Math.hypot(a, b);
@@ -765,9 +785,9 @@ export function resolveSceneRotationSnap(
       const rawCoordinate = axis === "x"
         ? rawCorners[cornerIndex].x
         : rawCorners[cornerIndex].y;
-      const supportRadius = Math.abs(input.transform.scale) * Math.hypot(
-        corners[cornerIndex].x,
-        corners[cornerIndex].y,
+      const supportRadius = Math.hypot(
+        corners[cornerIndex].x * (input.transform.scaleX ?? input.transform.scale),
+        corners[cornerIndex].y * (input.transform.scaleY ?? input.transform.scale),
       );
       const maximumAxisDistance = handleLayerDistance
         * supportRadius / input.handleRadius;

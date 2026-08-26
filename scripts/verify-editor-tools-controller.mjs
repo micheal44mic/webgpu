@@ -201,6 +201,10 @@ function createHarness() {
   const category = new FakeElement();
   category.queryResults = [blurTool, brushTool];
   const paintButton = button({ mobileCanvasTool: "paint" });
+  const fillButton = button({
+    mobileCanvasTool: "fill",
+    mobileToolSheet: "fill",
+  });
   const invalidCanvasButton = button({ mobileCanvasTool: "unknown" });
   const textButton = button({ mobileToolSheet: "text" });
   const textWarpButton = button({ mobileToolSheet: "text-warp" });
@@ -238,8 +242,9 @@ function createHarness() {
     searchInput,
     empty,
     categories: [category],
-    canvasButtons: [paintButton, invalidCanvasButton],
+    canvasButtons: [paintButton, fillButton, invalidCanvasButton],
     toolSettingsButtons: [
+      fillButton,
       textButton,
       textWarpButton,
       svgStyleButton,
@@ -273,6 +278,7 @@ function createHarness() {
     brushTool,
     category,
     paintButton,
+    fillButton,
     invalidCanvasButton,
     textButton,
     textWarpButton,
@@ -389,6 +395,7 @@ function createHarness() {
     activeCanvasTool: "paint",
     engineReady: true,
     interactionLocked: false,
+    canvasToolSelectionLocked: false,
     vectorEditorReady: true,
     vectorEditorLocked: false,
     textSelected: true,
@@ -427,6 +434,7 @@ function createHarness() {
     activeCanvasTool: "paint",
     engineReady: true,
     interactionLocked: false,
+    canvasToolSelectionLocked: false,
     vectorEditorReady: false,
     vectorEditorLocked: true,
     textSelected: false,
@@ -455,6 +463,7 @@ function createHarness() {
     activeCanvasTool: "paint",
     engineReady: true,
     interactionLocked: true,
+    canvasToolSelectionLocked: false,
     vectorEditorReady: true,
     vectorEditorLocked: false,
     textSelected: true,
@@ -477,6 +486,43 @@ function createHarness() {
     harness.importSvgButton.disabled,
     true,
     "vector imports must lock while Undo/Redo or another interaction owns the engine",
+  );
+  assert.equal(
+    harness.fillButton.disabled,
+    false,
+    "canvas tools with settings must remain available while a ready group Transform is open",
+  );
+  assert.equal(harness.textButton.disabled, true);
+  assert.equal(harness.strokeButton.disabled, true);
+
+  harness.controller.renderMenuState({
+    activeCanvasTool: "paint",
+    engineReady: true,
+    interactionLocked: true,
+    canvasToolSelectionLocked: true,
+    vectorEditorReady: true,
+    vectorEditorLocked: false,
+    textSelected: true,
+    svgSelected: true,
+    textTransformActive: false,
+    vectorOutlineEnabled: false,
+    vectorDropShadowEnabled: false,
+    vectorInnerShadowEnabled: false,
+    vectorBlockShadowEnabled: false,
+    rasterColorOverlayTargetSelected: true,
+    rasterDeformTargetSelected: true,
+    rasterEffectsEnabled: {
+      "color-overlay": false,
+      stroke: false,
+      "outer-shadow": false,
+      "inner-shadow": false,
+      bevel: false,
+    },
+  });
+  assert.equal(
+    harness.fillButton.disabled,
+    true,
+    "canvas settings tools must remain locked for ordinary busy interactions",
   );
   harness.controller.dispose();
 }

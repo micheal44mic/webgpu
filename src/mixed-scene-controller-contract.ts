@@ -35,6 +35,7 @@ import { VECTOR_TEXT_TRANSFORM_STRATEGY } from "./vector-text-transform.ts";
 import type { EditorGuidePreferences } from "./editor-settings-storage";
 import type { SceneSnapMatch } from "./scene-transform-snap";
 import type { RasterTransformMode } from "./raster-deform-math";
+import type { MixedSceneRasterTransformPreview } from "./mixed-scene-raster-transform-preview";
 
 export interface VectorRasterizationResult {
   readonly layerId: number;
@@ -65,6 +66,17 @@ export interface VectorRasterHistoryGpuTestReport {
 }
 
 export type VectorTextClippedRefreshPolicy = "during-gesture" | "on-release";
+
+export interface MixedSceneGroupTransformUpdate {
+  readonly key: MixedSceneItem["key"];
+  readonly x: number;
+  readonly y: number;
+  /** Compatibility alias for callers that still read one uniform scale. */
+  readonly scale: number;
+  readonly scaleX: number;
+  readonly scaleY: number;
+  readonly rotation: number;
+}
 
 export interface MixedSceneControllerOptions {
   readonly root: ParentNode;
@@ -169,12 +181,36 @@ export interface MixedSceneHost {
   updateRasterLayerTransform(
     update: Partial<Pick<
       RasterTransformSnapshot,
-      "x" | "y" | "scale" | "rotation" | "mode" | "gridSize" | "controlPoints" | "bezierHandles"
+      | "x"
+      | "y"
+      | "scale"
+      | "scaleX"
+      | "scaleY"
+      | "rotation"
+      | "mode"
+      | "gridSize"
+      | "controlPoints"
+      | "bezierHandles"
     >>,
   ): RasterTransformSnapshot;
   nudgeRasterLayerTransform(deltaX: number, deltaY: number): RasterTransformSnapshot;
   commitRasterLayerTransform(): Promise<boolean>;
   cancelRasterLayerTransform(): Promise<boolean>;
+  setMixedSceneRasterTransformPreview(
+    transforms: readonly MixedSceneRasterTransformPreview[],
+  ): Promise<void>;
+  updateMixedSceneRasterTransformPreview(
+    transforms: readonly MixedSceneRasterTransformPreview[],
+  ): void;
+  clearMixedSceneRasterTransformPreview(): Promise<void>;
+  beginMixedSceneGroupTransform(
+    orderedKeys: readonly MixedSceneItem["key"][],
+  ): Promise<boolean>;
+  updateMixedSceneGroupTransform(
+    updates: readonly MixedSceneGroupTransformUpdate[],
+  ): void;
+  commitMixedSceneGroupTransform(): Promise<boolean>;
+  cancelMixedSceneGroupTransform(): Promise<boolean>;
   zoomBy(factor: number, clientX?: number, clientY?: number): void;
   panByClientDelta(deltaClientX: number, deltaClientY: number): void;
   beginViewRotationGesture(): void;

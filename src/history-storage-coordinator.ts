@@ -1321,9 +1321,15 @@ export class HistoryStorageCoordinator {
       addGpu(snapshot.gpuSlice, "selection-mask-gpu", actionId, null);
     }
     for (const action of this.host.store.actions) {
-      if (action.kind !== "raster-transform") continue;
-      for (const snapshot of [action.selectionBefore, action.selectionAfter]) {
-        if (snapshot) addGpu(snapshot.gpuSlice, "selection-mask-gpu", action.id, null);
+      const transforms = action.kind === "raster-transform"
+        ? [action]
+        : action.kind === "group-transform"
+          ? action.rasters
+          : [];
+      for (const transform of transforms) {
+        for (const snapshot of [transform.selectionBefore, transform.selectionAfter]) {
+          if (snapshot) addGpu(snapshot.gpuSlice, "selection-mask-gpu", action.id, null);
+        }
       }
     }
     const cold: ColdPayloadCandidate[] = [];
@@ -1490,10 +1496,17 @@ export class HistoryStorageCoordinator {
         if (input.kind === "raster") addSeed(input.entry.seed);
       }
       addSeed(crossed.output.seed);
+    } else if (crossed.kind === "group-transform") {
+      for (const entry of crossed.rasters) addSeed(entry.seed);
     }
-    if (crossed.kind === "raster-transform") {
-      addSnapshot(crossed.selectionBefore);
-      addSnapshot(crossed.selectionAfter);
+    const crossedTransforms = crossed.kind === "raster-transform"
+      ? [crossed]
+      : crossed.kind === "group-transform"
+        ? crossed.rasters
+        : [];
+    for (const transform of crossedTransforms) {
+      addSnapshot(transform.selectionBefore);
+      addSnapshot(transform.selectionAfter);
     }
 
     if (
@@ -1508,6 +1521,14 @@ export class HistoryStorageCoordinator {
         crossed.layerId,
         [previousCursor, nextCursor],
       );
+    } else if (crossed.kind === "group-transform") {
+      for (const entry of crossed.rasters) {
+        this.addRasterReplayRequirements(
+          collector,
+          entry.layerId,
+          [previousCursor, nextCursor],
+        );
+      }
     }
     return [...required.values()];
   }
@@ -1555,6 +1576,12 @@ export class HistoryStorageCoordinator {
             action.id,
             action.output.layerRecord.id,
           );
+        }
+      } else if (action.kind === "group-transform") {
+        for (const entry of action.rasters) {
+          if (entry.seed) {
+            entry.seed = this.wrapSeed(entry.seed, action.id, entry.layerId);
+          }
         }
       }
     }

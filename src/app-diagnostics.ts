@@ -344,6 +344,14 @@ export function summarizeAppDiagnosticHistoryAction(
         filterStrategy: action.filterStrategy,
         baseBounds: action.baseBounds,
       };
+    case "group-transform":
+      return {
+        ...common,
+        vectorKeys: action.vectors.map((delta) => delta.after.key),
+        rasterLayerIds: action.rasters.map((entry) => entry.layerId),
+        selectedKeyBefore: action.selectedKeyBefore,
+        selectedKeyAfter: action.selectedKeyAfter,
+      };
     case "raster-filter":
       return {
         ...common,

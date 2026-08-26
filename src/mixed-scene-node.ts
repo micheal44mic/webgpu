@@ -2,6 +2,7 @@ import type { MixedSceneSnapshot, RasterTransformSnapshot } from "./engine-types
 import type { RasterImageNode } from "./scene-image-model";
 import { cloneVectorSvgNode, type VectorSvgNode } from "./scene-svg-model";
 import { cloneVectorTextNode, type VectorTextNode } from "./scene-text-model";
+import type { SceneLocalBounds } from "./scene-transform-geometry";
 
 export type VectorDrawableNode = VectorTextNode | VectorSvgNode;
 export type VectorSceneNode = VectorDrawableNode | RasterImageNode;
@@ -12,7 +13,27 @@ export interface RasterLayerTransformNode extends RasterTransformSnapshot {
   name: string;
 }
 
-export type TransformSceneNode = VectorSceneNode | RasterLayerTransformNode;
+/** Presentation-only aggregate used while exact scene items are transformed together. */
+export interface SceneGroupTransformNode {
+  readonly kind: "group-transform";
+  readonly id: -1;
+  readonly name: string;
+  readonly keys: readonly MixedSceneSnapshot["selectedKey"][];
+  readonly anchorKey: MixedSceneSnapshot["selectedKey"];
+  readonly localBounds: SceneLocalBounds;
+  x: number;
+  y: number;
+  /** @deprecated Compatibility alias for `scaleX`. */
+  scale: number;
+  scaleX: number;
+  scaleY: number;
+  rotation: number;
+}
+
+export type TransformSceneNode =
+  | VectorSceneNode
+  | RasterLayerTransformNode
+  | SceneGroupTransformNode;
 
 export type VectorSceneNodeUpdate =
   | Partial<Omit<VectorTextNode, "id" | "visible" | "opacity">>
@@ -43,6 +64,12 @@ export function isRasterLayerTransformNode(
   return node.kind === "raster-layer";
 }
 
+export function isSceneGroupTransformNode(
+  node: Readonly<TransformSceneNode>,
+): node is Readonly<SceneGroupTransformNode> {
+  return node.kind === "group-transform";
+}
+
 export function vectorNodeKey(
   node: Readonly<VectorSceneNode>,
 ): `text:${number}` | `svg:${number}` | `image:${number}` {
@@ -64,13 +91,21 @@ export function copyVectorSceneNode(node: Readonly<VectorSceneNode>): VectorScen
 export function transformNodeKey(
   node: Readonly<TransformSceneNode>,
 ): MixedSceneSnapshot["selectedKey"] {
-  return isRasterLayerTransformNode(node)
+  return isSceneGroupTransformNode(node)
+    ? node.anchorKey
+    : isRasterLayerTransformNode(node)
     ? `raster:${node.layerId}`
     : vectorNodeKey(node);
 }
 
 export function copyTransformNode(node: Readonly<TransformSceneNode>): TransformSceneNode {
-  return isRasterLayerTransformNode(node)
+  return isSceneGroupTransformNode(node)
+    ? {
+      ...node,
+      keys: [...node.keys],
+      localBounds: { ...node.localBounds },
+    }
+    : isRasterLayerTransformNode(node)
     ? {
       ...node,
       controlPoints: node.controlPoints.map((point) => ({ ...point })),

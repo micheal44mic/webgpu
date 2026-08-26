@@ -53,6 +53,24 @@ import {
   type MixedSceneVectorKey,
 } from "./mixed-scene-stack";
 import {
+  clearMixedSceneRasterTransformPreview as clearMixedSceneRasterTransformPreviewRuntime,
+  mixedSceneRasterTransformPreviewCompositionLayerIds,
+  mixedSceneRasterTransformPreviewUsesSegmentedClipping,
+  setMixedSceneRasterTransformPreview as setMixedSceneRasterTransformPreviewRuntime,
+  updateMixedSceneRasterTransformPreview as updateMixedSceneRasterTransformPreviewRuntime,
+} from "./engine-mixed-scene-raster-preview-runtime";
+import type {
+  MixedSceneRasterTransformPreview,
+} from "./mixed-scene-raster-transform-preview";
+import {
+  beginMixedSceneGroupTransform as beginMixedSceneGroupTransformRuntime,
+  cancelMixedSceneGroupTransform as cancelMixedSceneGroupTransformRuntime,
+  commitMixedSceneGroupTransform as commitMixedSceneGroupTransformRuntime,
+  updateMixedSceneGroupTransform as updateMixedSceneGroupTransformRuntime,
+  type ActiveMixedSceneGroupTransformSession,
+} from "./engine-mixed-scene-group-transform-runtime";
+import type { MixedSceneGroupTransformUpdate } from "./mixed-scene-controller-contract";
+import {
   cloneVectorTextNode,
   type VectorTextNode,
   type VectorTextNodeSeed,
@@ -384,6 +402,7 @@ import {
   type LayerAddHistoryAction,
   type LayerDeleteHistoryAction,
   type LayerMergeHistoryAction,
+  type MixedSceneGroupTransformHistoryAction,
   type DeletedLayerEntry,
   type RasterFilterHistoryAction,
   type RasterImportHistoryAction,
@@ -680,6 +699,7 @@ import {
   recordBlendHistoryBatch,
   recordRasterLayerMetadataHistoryAction,
   recordMixedSceneReorderHistoryAction,
+  recordMixedSceneGroupTransformHistoryAction,
   recordVectorHistoryAction,
   rebuildActiveLayerFromHistory,
   restoreRasterLayerMetadataHistorySnapshot,
@@ -1821,7 +1841,9 @@ export class BrushEngine {
 
   /** Post-action raster checkpoints abandoned with Redo (Transform + filters). */
   get discardedRasterTransformHistoryActions(): Array<
-    RasterTransformHistoryAction | RasterFilterHistoryAction
+    RasterTransformHistoryAction
+    | RasterFilterHistoryAction
+    | MixedSceneGroupTransformHistoryAction
   > {
     return this.history.discardedRasterTransformActions;
   }
@@ -1878,6 +1900,7 @@ export class BrushEngine {
   ) | null = null;
   nextRasterLayerMetadataHistoryEditToken = 1;
   activeRasterTransformSession: ActiveRasterTransformSession | null = null;
+  activeMixedSceneGroupTransformSession: ActiveMixedSceneGroupTransformSession | null = null;
   activeRasterGaussianBlurSession: ActiveRasterGaussianBlurSession | null = null;
   activeRasterSpatialBlurSession: ActiveRasterSpatialBlurSession | null = null;
   activeRasterMotionBlurSession: ActiveRasterMotionBlurSession | null = null;
@@ -2561,6 +2584,7 @@ export class BrushEngine {
 
   usesOrderedScenePresentation(): boolean {
     return this.shapePreviewAfterKey !== null
+      || mixedSceneRasterTransformPreviewCompositionLayerIds(this).size > 0
       || Boolean(this.mixedSceneStack?.visibleSemanticCount)
       || Boolean(this.mixedSceneStack?.hasHeterogeneousClipping)
       || orderedLayerBlendPresentationRequired(this);
@@ -2572,6 +2596,52 @@ export class BrushEngine {
 
   compositionSegmentBlendMode(segment: MixedSceneCompositionSegment): LayerBlendMode {
     return mixedSceneSegmentLayerBlendMode(this, segment);
+  }
+
+  async setMixedSceneRasterTransformPreview(
+    transforms: readonly MixedSceneRasterTransformPreview[],
+  ): Promise<void> {
+    await setMixedSceneRasterTransformPreviewRuntime(this, transforms);
+    ensureMixedSceneLinearTexture(
+      this,
+      Math.max(1, this.canvas.width),
+      Math.max(1, this.canvas.height),
+    );
+  }
+
+  async clearMixedSceneRasterTransformPreview(): Promise<void> {
+    await clearMixedSceneRasterTransformPreviewRuntime(this);
+    ensureMixedSceneLinearTexture(
+      this,
+      Math.max(1, this.canvas.width),
+      Math.max(1, this.canvas.height),
+    );
+  }
+
+  updateMixedSceneRasterTransformPreview(
+    transforms: readonly MixedSceneRasterTransformPreview[],
+  ): void {
+    updateMixedSceneRasterTransformPreviewRuntime(this, transforms);
+  }
+
+  beginMixedSceneGroupTransform(
+    orderedKeys: readonly MixedSceneItem["key"][],
+  ): Promise<boolean> {
+    return beginMixedSceneGroupTransformRuntime(this, orderedKeys);
+  }
+
+  updateMixedSceneGroupTransform(
+    updates: readonly MixedSceneGroupTransformUpdate[],
+  ): void {
+    updateMixedSceneGroupTransformRuntime(this, updates);
+  }
+
+  commitMixedSceneGroupTransform(): Promise<boolean> {
+    return commitMixedSceneGroupTransformRuntime(this);
+  }
+
+  cancelMixedSceneGroupTransform(): Promise<boolean> {
+    return cancelMixedSceneGroupTransformRuntime(this);
   }
 
   mergedBelowView(): GPUTextureView {
@@ -3444,6 +3514,8 @@ export class BrushEngine {
                   return (Math.min(...ys) + Math.max(...ys)) * 0.5;
                 })(),
               scale: this.activeRasterTransformSession.transform.scale,
+              scaleX: this.activeRasterTransformSession.transform.scaleX,
+              scaleY: this.activeRasterTransformSession.transform.scaleY,
               rotation: this.activeRasterTransformSession.transform.rotation,
               sourceBounds: { ...this.activeRasterTransformSession.sourceBounds },
               sourcePivot: { ...this.activeRasterTransformSession.sourcePivot },
@@ -5231,6 +5303,7 @@ export class BrushEngine {
       || this.activeVectorHistoryEdit
       || this.activeRasterLayerMetadataHistoryEdit
       || this.activeFillPreviewSession
+      || this.activeMixedSceneGroupTransformSession
       || this.activeRasterTransformSession
       || this.activeRasterGaussianBlurSession
       || this.activeRasterSpatialBlurSession
@@ -5339,6 +5412,7 @@ export class BrushEngine {
       || this.activeVectorHistoryEdit
       || this.activeRasterLayerMetadataHistoryEdit
       || this.activeFillPreviewSession
+      || this.activeMixedSceneGroupTransformSession
       || this.activeRasterTransformSession
       || this.activeRasterGaussianBlurSession
       || this.activeRasterSpatialBlurSession
@@ -5832,6 +5906,7 @@ export class BrushEngine {
 
   activeDestructiveRasterEditKind(): DestructiveRasterEditKind | null {
     if (this.activeFillPreviewSession) return "fill";
+    if (this.activeMixedSceneGroupTransformSession) return "transform";
     if (this.activeRasterTransformSession) return "transform";
     if (this.activeRasterGaussianBlurSession) return "gaussian-blur";
     if (this.activeRasterSpatialBlurSession) return "spatial-blur";
@@ -8520,6 +8595,7 @@ export class BrushEngine {
           this.layerStack.active.id,
           activeClippingUnitIds,
           this.shapePreviewAfterKey,
+          [...mixedSceneRasterTransformPreviewCompositionLayerIds(this)],
         ),
       );
     }
@@ -8590,8 +8666,14 @@ export class BrushEngine {
             opacity: 1,
           } satisfies ClippingDocumentMaskCollector;
           const isolateClippingSource = segment.items.length === 1
-            && this.mixedSceneStack.clippingGroupRequiresSegmentedComposition(
-              segment.items[0].key,
+            && (
+              this.mixedSceneStack.clippingGroupRequiresSegmentedComposition(
+                segment.items[0].key,
+              )
+              || mixedSceneRasterTransformPreviewUsesSegmentedClipping(
+                this,
+                segment.items[0].key,
+              )
             );
           const surface = await buildMixedMergedSurfaceCandidate(this, 
             segment.items,
@@ -8622,6 +8704,9 @@ export class BrushEngine {
                 documentMaskCollector.baseSurface,
                 documentMaskCollector.documentMaskSurface,
                 documentMaskCollector.opacity,
+                segment.items.length === 1
+                  ? segment.items[0].rasterLayerId
+                  : null,
               ),
             );
           } catch (error) {
@@ -8710,6 +8795,12 @@ export class BrushEngine {
     return recordVectorHistoryAction(this, before, after);
   }
 
+  recordMixedSceneGroupTransformHistoryAction(
+    payload: Omit<MixedSceneGroupTransformHistoryAction, "id" | "kind">,
+  ): boolean {
+    return recordMixedSceneGroupTransformHistoryAction(this, payload);
+  }
+
   getMixedSceneReorderTargets(key: MixedSceneItem["key"]) {
     return getMixedSceneReorderTargets(this, key);
   }
@@ -8733,6 +8824,7 @@ export class BrushEngine {
       || this.historyStateInconsistent
       || this.activeVectorHistoryEdit
       || this.activeFillPreviewSession
+      || this.activeMixedSceneGroupTransformSession
       || this.activeRasterTransformSession
       || this.activeRasterGaussianBlurSession
       || this.activeRasterSpatialBlurSession
@@ -8877,6 +8969,7 @@ export class BrushEngine {
       || this.historyStateInconsistent
       || this.activeRasterLayerMetadataHistoryEdit
       || this.activeFillPreviewSession
+      || this.activeMixedSceneGroupTransformSession
       || this.activeRasterTransformSession
       || this.activeRasterGaussianBlurSession
       || this.activeRasterSpatialBlurSession
@@ -10689,6 +10782,14 @@ export class BrushEngine {
     if (this.activeFillPreviewSession) {
       throw new Error(
         "Close Fill before switching layers.",
+      );
+    }
+    if (
+      this.activeMixedSceneGroupTransformSession
+      && !this.activeMixedSceneGroupTransformSession.internalRasterOperation
+    ) {
+      throw new Error(
+        "Apply or cancel the group transform before switching layers.",
       );
     }
     if (this.activeRasterTransformSession) {
@@ -13246,6 +13347,8 @@ export class BrushEngine {
         ) {
           destroyLayerColdStorage(action.beforeSeed);
         }
+      } else if (action.kind === "group-transform") {
+        for (const entry of action.rasters) destroyLayerColdStorage(entry.seed);
       } else if (action.kind === "layer-add") {
         destroyLayerColdStorage(action.seed);
       } else if (action.kind === "layer-delete") {
@@ -13308,6 +13411,15 @@ export class BrushEngine {
       } else if (action.kind === "raster-transform") {
         retainRasterSource(action.rasterSourceBefore);
         retainRasterSource(action.rasterSourceAfter);
+      } else if (action.kind === "group-transform") {
+        for (const delta of action.vectors) {
+          retainNode(delta.before.node);
+          retainNode(delta.after.node);
+        }
+        for (const entry of action.rasters) {
+          retainRasterSource(entry.rasterSourceBefore);
+          retainRasterSource(entry.rasterSourceAfter);
+        }
       } else if (
         action.kind === "stroke"
         || action.kind === "fill"
@@ -13342,8 +13454,19 @@ export class BrushEngine {
       retainRasterSource(action.rasterSource);
     }
     for (const action of this.discardedRasterTransformHistoryActions) {
-      retainRasterSource(action.rasterSourceBefore);
-      retainRasterSource(action.rasterSourceAfter);
+      if (action.kind === "group-transform") {
+        for (const delta of action.vectors) {
+          retainNode(delta.before.node);
+          retainNode(delta.after.node);
+        }
+        for (const entry of action.rasters) {
+          retainRasterSource(entry.rasterSourceBefore);
+          retainRasterSource(entry.rasterSourceAfter);
+        }
+      } else {
+        retainRasterSource(action.rasterSourceBefore);
+        retainRasterSource(action.rasterSourceAfter);
+      }
     }
     for (const action of this.discardedLayerAddHistoryActions) {
       retainRasterSource(action.layerRecord.rasterSource);

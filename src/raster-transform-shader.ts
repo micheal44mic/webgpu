@@ -125,9 +125,9 @@ fn fragmentMain(
     transform.inverseRow0.y / transform.sourceExtent.x,
     transform.inverseRow1.y / transform.sourceExtent.y
   );
-  // Uniform scale + rotation has an isotropic footprint, so anisotropic taps
-  // add no information. Selecting the two mip levels explicitly lets both use
-  // a real transparent border instead of clamp-to-edge color replication.
+  // The inverse rows carry the complete affine footprint, including independent
+  // axis scales. Selecting its dominant mip explicitly keeps both levels on a
+  // real transparent border instead of clamp-to-edge color replication.
   let baseDimensions = vec2<f32>(textureDimensions(sourceTexture, 0));
   let footprint = max(
     length(sourceUvDx * baseDimensions),

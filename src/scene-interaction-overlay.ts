@@ -11,6 +11,9 @@ import {
   scenePointDistance,
   sceneRotationHandle,
   sceneTransformCorners,
+  sceneTransformSideHandleCorners,
+  sceneTransformSideMidpoints,
+  type SceneTransformHandleHitRadii,
   type SceneLocalBounds,
   type ScenePoint,
 } from "./scene-transform-geometry";
@@ -25,7 +28,10 @@ import {
 
 export const SCENE_TRANSFORM_HANDLE_RADIUS_CSS_PX = 5;
 export const SCENE_TRANSFORM_HIT_RADIUS_CSS_PX = 13;
+export const SCENE_TRANSFORM_TOUCH_HIT_RADIUS_CSS_PX = 22;
 export const SCENE_TRANSFORM_CORNER_HIT_RADIUS_CSS_PX = 18;
+export const SCENE_TRANSFORM_SIDE_HANDLE_WIDTH_CSS_PX = 20;
+export const SCENE_TRANSFORM_SIDE_HANDLE_HEIGHT_CSS_PX = 6;
 const ROTATION_HANDLE_OFFSET_CSS_PX = 38;
 const SCENE_BOUNDING_BOX_STROKE_STYLE = "#ff7a33";
 const SCENE_BOUNDING_BOX_AUXILIARY_STROKE_STYLE = "rgba(255, 122, 51, 0.72)";
@@ -43,6 +49,36 @@ function renderSceneBoundingBoxHandle(
   context.arc(point.x, point.y, radius, 0, Math.PI * 2);
   context.fill();
   context.stroke();
+}
+
+function renderSceneBoundingBoxSideHandle(
+  context: CanvasRenderingContext2D,
+  point: Readonly<ScenePoint>,
+  tangent: Readonly<ScenePoint>,
+  width: number,
+  height: number,
+): void {
+  const points = sceneTransformSideHandleCorners(point, tangent, width, height);
+  context.beginPath();
+  context.moveTo(points[0].x, points[0].y);
+  for (let index = 1; index < points.length; index += 1) {
+    context.lineTo(points[index].x, points[index].y);
+  }
+  context.closePath();
+  context.fill();
+  context.stroke();
+}
+
+export function sceneOverlayTransformHitRadii(
+  view: Readonly<VectorTextViewState>,
+  pointerType: string,
+): SceneTransformHandleHitRadii {
+  const backingPerCssPixel = view.canvasWidth / Math.max(1, view.cssWidth);
+  const cssRadius = pointerType === "touch"
+    ? SCENE_TRANSFORM_TOUCH_HIT_RADIUS_CSS_PX
+    : SCENE_TRANSFORM_HIT_RADIUS_CSS_PX;
+  const radius = cssRadius * backingPerCssPixel;
+  return { corner: radius, side: radius, rotation: radius };
 }
 
 export function sceneOverlayCorners(
@@ -433,6 +469,10 @@ export function renderSceneInteractionOverlay(
     SCENE_BOUNDING_BOX_HANDLE_STROKE_WIDTH_CSS_PX * backingPerCssPixel,
   );
   const handleRadius = SCENE_TRANSFORM_HANDLE_RADIUS_CSS_PX * backingPerCssPixel;
+  const sideHandleWidth = SCENE_TRANSFORM_SIDE_HANDLE_WIDTH_CSS_PX
+    * backingPerCssPixel;
+  const sideHandleHeight = SCENE_TRANSFORM_SIDE_HANDLE_HEIGHT_CSS_PX
+    * backingPerCssPixel;
 
   renderTransformGuide(context, view, node, options.transformGuide);
   context.save();
@@ -460,6 +500,18 @@ export function renderSceneInteractionOverlay(
   context.lineTo(rotationHandle.x, rotationHandle.y);
   context.stroke();
   context.lineWidth = handleStrokeWidth;
+  const sideMidpoints = sceneTransformSideMidpoints(corners);
+  for (let index = 0; index < sideMidpoints.length; index += 1) {
+    const start = corners[index];
+    const end = corners[(index + 1) % corners.length];
+    renderSceneBoundingBoxSideHandle(
+      context,
+      sideMidpoints[index],
+      { x: end.x - start.x, y: end.y - start.y },
+      sideHandleWidth,
+      sideHandleHeight,
+    );
+  }
   for (const corner of corners) {
     renderSceneBoundingBoxHandle(context, corner, handleRadius);
   }

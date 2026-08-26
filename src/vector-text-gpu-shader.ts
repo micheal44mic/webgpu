@@ -54,7 +54,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   let nodeRotation = text.nodePositionAndRotation.zw;
   let local = (
     input.localPosition + text.scaleAndLocalOffset.yz
-  ) * text.scaleAndLocalOffset.x;
+  ) * text.scaleAndLocalOffset.xw;
   let layerPosition = nodePosition + vec2<f32>(
     nodeRotation.x * local.x - nodeRotation.y * local.y,
     nodeRotation.y * local.x + nodeRotation.x * local.y
@@ -220,7 +220,7 @@ fn meshInnerShadowVertexMain(input: VertexInput) -> MeshInnerShadowVertexOutput 
   let viewCenter = text.viewCenterAndZoom.xy;
   let zoom = text.viewCenterAndZoom.z;
   let absoluteLocal = input.localPosition + text.scaleAndLocalOffset.yz;
-  let local = absoluteLocal * text.scaleAndLocalOffset.x;
+  let local = absoluteLocal * text.scaleAndLocalOffset.xw;
   let nodeRotation = text.nodePositionAndRotation.zw;
   let layerPosition = text.nodePositionAndRotation.xy + vec2<f32>(
     nodeRotation.x * local.x - nodeRotation.y * local.y,
@@ -372,7 +372,7 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
     composite.shapeBounds.zw,
     corner
   ) + composite.scaleAndLocalOffset.yz;
-  let scaled = localPosition * composite.scaleAndLocalOffset.x;
+  let scaled = localPosition * composite.scaleAndLocalOffset.xw;
   let nodeRotation = composite.nodePositionAndRotation.zw;
   let layerPosition = composite.nodePositionAndRotation.xy + vec2<f32>(
     nodeRotation.x * scaled.x - nodeRotation.y * scaled.y,

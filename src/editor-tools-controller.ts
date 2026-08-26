@@ -58,6 +58,7 @@ export interface EditorToolsMenuState {
   readonly activeCanvasTool: EditorCanvasTool | "liquify";
   readonly engineReady: boolean;
   readonly interactionLocked: boolean;
+  readonly canvasToolSelectionLocked: boolean;
   readonly vectorEditorReady: boolean;
   readonly vectorEditorLocked: boolean;
   readonly textSelected: boolean;
@@ -185,6 +186,11 @@ export class EditorToolsController {
         continue;
       }
       const svgEditor = kind === "svg-style";
+      const canvasToolEditor = kind === "fill"
+        || kind === "selection"
+        || kind === "transform"
+        || kind === "warp"
+        || kind === "perspective";
       const rasterDeformEditor = kind === "warp" || kind === "perspective";
       const textEditor = kind === "text" || kind === "text-warp";
       const vectorEffectEditor = kind === "text-outline"
@@ -192,7 +198,9 @@ export class EditorToolsController {
         || kind === "text-inner-shadow"
         || kind === "text-block-shadow";
       button.disabled = !state.engineReady
-        || state.interactionLocked
+        || (canvasToolEditor
+          ? state.canvasToolSelectionLocked
+          : state.interactionLocked)
         || (rasterDeformEditor && !state.rasterDeformTargetSelected)
         || ((textEditor || vectorEffectEditor) && !state.vectorEditorReady)
         || (kind === "text-warp" && !state.textSelected)

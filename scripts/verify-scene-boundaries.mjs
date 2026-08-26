@@ -7,6 +7,8 @@ import {
   sceneLocalToLayer,
   sceneRotationHandle,
   sceneTransformCorners,
+  sceneTransformSideHandleCorners,
+  sceneTransformSideMidpoints,
 } from "../src/scene-transform-geometry.ts";
 
 const root = new URL("../", import.meta.url);
@@ -83,12 +85,26 @@ assert.match(
 assert.match(
   interactionOverlay,
   /function renderSceneBoundingBoxHandle[\s\S]*?context\.arc\(/,
-  "All transform, Distort, Warp and Perspective handles must use the shared circle renderer.",
+  "Corner, rotation, Distort, Warp and Perspective handles must use the shared circle renderer.",
 );
-assert.doesNotMatch(
+assert.match(
   interactionOverlay,
-  /context\.rect\(/,
-  "Scene interaction handles must never fall back to square corners.",
+  /function renderSceneBoundingBoxSideHandle[\s\S]*?context\.lineTo\(/,
+  "Side handles must use their dedicated rotated rectangle renderer.",
+);
+assert.match(interactionOverlay, /SCENE_TRANSFORM_SIDE_HANDLE_WIDTH_CSS_PX = 20/);
+assert.match(interactionOverlay, /SCENE_TRANSFORM_SIDE_HANDLE_HEIGHT_CSS_PX = 6/);
+assert.match(interactionOverlay, /SCENE_TRANSFORM_TOUCH_HIT_RADIUS_CSS_PX = 22/);
+assert.match(interactionOverlay, /export function sceneOverlayTransformHitRadii/);
+assert.match(
+  interactionOverlay,
+  /pointerType === "touch"[\s\S]*?SCENE_TRANSFORM_TOUCH_HIT_RADIUS_CSS_PX/,
+  "Touch hit targets must use the dedicated larger radius.",
+);
+assert.match(
+  interactionOverlay,
+  /const radius = cssRadius \* backingPerCssPixel/,
+  "Hit targets must remain stable in CSS pixels at every backing-store scale.",
 );
 assert.doesNotMatch(
   interactionOverlay,
@@ -105,6 +121,19 @@ const layer = sceneLocalToLayer(local, transform);
 const roundTrip = sceneLayerToLocal(layer, transform);
 assert.ok(Math.abs(roundTrip.x - local.x) < 1e-10);
 assert.ok(Math.abs(roundTrip.y - local.y) < 1e-10);
+
+const axisTransform = {
+  x: -15,
+  y: 24,
+  scale: 1.75,
+  scaleX: 1.75,
+  scaleY: 0.625,
+  rotation: -Math.PI / 7,
+};
+const axisLayer = sceneLocalToLayer(local, axisTransform);
+const axisRoundTrip = sceneLayerToLocal(axisLayer, axisTransform);
+assert.ok(Math.abs(axisRoundTrip.x - local.x) < 1e-10);
+assert.ok(Math.abs(axisRoundTrip.y - local.y) < 1e-10);
 
 const view = {
   centerX: 0,
@@ -134,5 +163,69 @@ assert.equal(
   hitSceneTransformHandle(rotationHandle, corners, rotationHandle, 2),
   "rotate",
 );
+
+const sideMidpoints = sceneTransformSideMidpoints(corners);
+assert.deepEqual(sideMidpoints, [
+  { x: 200, y: 145 },
+  { x: 210, y: 150 },
+  { x: 200, y: 155 },
+  { x: 190, y: 150 },
+]);
+for (const [index, handle] of ["north", "east", "south", "west"].entries()) {
+  assert.equal(
+    hitSceneTransformHandle(sideMidpoints[index], corners, rotationHandle, {
+      corner: 6,
+      side: 8,
+      rotation: 6,
+    }),
+    handle,
+  );
+}
+
+assert.equal(
+  hitSceneTransformHandle({ x: 200, y: 125 }, corners, rotationHandle, {
+    corner: 6,
+    side: 22,
+    rotation: 6,
+  }),
+  "north",
+  "A side handle may expose a touch target larger than its visual rectangle.",
+);
+assert.equal(
+  hitSceneTransformHandle(corners[0], corners, rotationHandle, {
+    corner: 22,
+    side: 22,
+    rotation: 6,
+  }),
+  "north-west",
+  "The closest corner wins when touch targets overlap.",
+);
+assert.deepEqual(
+  sceneTransformSideHandleCorners({ x: 100, y: 100 }, { x: 0, y: 10 }, 10, 6),
+  [
+    { x: 103, y: 95 },
+    { x: 103, y: 105 },
+    { x: 97, y: 105 },
+    { x: 97, y: 95 },
+  ],
+  "The visual rectangle must rotate with the side tangent.",
+);
+const rotatedCorners = sceneTransformCorners(
+  { left: -12, top: -6, right: 12, bottom: 6 },
+  { x: 4, y: -3, scale: 1.5, rotation: Math.PI / 3 },
+  {
+    ...view,
+    rotationCos: Math.cos(-Math.PI / 7),
+    rotationSin: Math.sin(-Math.PI / 7),
+  },
+);
+const rotatedSides = sceneTransformSideMidpoints(rotatedCorners);
+for (let index = 0; index < 4; index += 1) {
+  const next = (index + 1) % 4;
+  assert.ok(Math.abs(rotatedSides[index].x
+    - (rotatedCorners[index].x + rotatedCorners[next].x) * 0.5) < 1e-10);
+  assert.ok(Math.abs(rotatedSides[index].y
+    - (rotatedCorners[index].y + rotatedCorners[next].y) * 0.5) < 1e-10);
+}
 
 console.log("Scene boundaries: models, naming and transform geometry ownership verified.");

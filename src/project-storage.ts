@@ -921,6 +921,11 @@ function assertSemanticNodeBasics(
     assertFinite(value[coordinate], `${path}.${coordinate}`);
   }
   if ((value.scale as number) <= 0) fail(`${path}.scale`, "must be positive");
+  for (const axis of ["scaleX", "scaleY"] as const) {
+    if (value[axis] === undefined) continue;
+    assertFinite(value[axis], `${path}.${axis}`);
+    if ((value[axis] as number) <= 0) fail(`${path}.${axis}`, "must be positive");
+  }
 }
 
 function assertMixedScene(

@@ -94,6 +94,10 @@ import {
   type MixedSceneRasterRunKey,
 } from "./mixed-scene-stack";
 import { type VectorTextViewState } from "./vector-text-types";
+import {
+  mixedSceneRasterTransformPreviewCompositionLayerIds,
+  mixedSceneRasterTransformPreviewUsesSegmentedClipping,
+} from "./engine-mixed-scene-raster-preview-runtime";
 import { normalizeRasterBevelStyle } from "./bevel-core";
 import { normalizeRasterInnerShadowStyle, normalizeRasterOuterShadowStyle } from "./shadow-core";
 import { normalizeRasterStrokeStyle } from "./stroke-core";
@@ -1712,6 +1716,7 @@ export async function recreateLayerResources(
       engine.layerStack.active.id,
       engine.layerStack.clippingUnit(engine.layerStack.active.id).map((record) => record.id),
       engine.shapePreviewAfterKey,
+      [...mixedSceneRasterTransformPreviewCompositionLayerIds(engine)],
     )
     : [];
   engine.normalPipeline = normalPipeline;
@@ -4225,6 +4230,7 @@ export function splitMixedSceneRasterRunsForLayerBlend(
       }
       if (
         engine.mixedSceneStack?.clippingGroupRequiresSegmentedComposition(item.key)
+        || mixedSceneRasterTransformPreviewUsesSegmentedClipping(engine, item.key)
       ) {
         flushNormal();
         result.push(segment);

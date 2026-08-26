@@ -84,6 +84,8 @@ export function planRasterHistoryReplay(options: {
       baseBounds: checkpointAction.output.baseBounds,
       baseTileMask: checkpointAction.output.baseTileMask,
     }
+    : checkpointAction?.kind === "group-transform"
+      ? checkpointAction.rasters.find((entry) => entry.layerId === options.layerId)
     : checkpointAction;
   // The saved project is the invisible cursor-zero base only while replay is
   // still in that original raster lineage. A visible Clear moves the first

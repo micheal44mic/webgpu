@@ -49,6 +49,9 @@ export interface CanvasToolControllerOptions {
   readonly selectionSettings: CanvasToolSelectionSettingsPort;
   readonly isEngineReady: () => boolean;
   readonly isInteractionLocked: () => boolean;
+  readonly isMultiSelectionActive: () => boolean;
+  readonly canFinishMultiSelectionForToolChange: () => boolean;
+  readonly finishMultiSelectionForToolChange: () => Promise<boolean>;
   readonly closeBrushStudioForTool: (tool: CanvasInputTool) => void;
   readonly closeToolSettingsForTool: (
     tool: CanvasInputTool,
@@ -76,6 +79,11 @@ export class CanvasToolController {
   private textDistortReturnTool: CanvasInputTool | null = null;
   private configurationRevision = 0;
   private configurationInProgress = false;
+  private pendingMultiSelectionTool: {
+    readonly tool: CanvasInputTool;
+    readonly preserveToolSettings: boolean;
+  } | null = null;
+  private multiSelectionExitPromise: Promise<void> | null = null;
   private fillClosePanRequested = false;
   private disposed = false;
 
@@ -140,10 +148,56 @@ export class CanvasToolController {
   }
 
   select(tool: CanvasInputTool, preserveToolSettings = false): boolean {
-    if (this.disposed || this.options.isInteractionLocked()) return false;
+    if (this.disposed) return false;
+    if (
+      this.activeCanvasTool === "transform"
+      && tool !== "transform"
+      && this.options.isMultiSelectionActive()
+    ) {
+      if (!this.options.canFinishMultiSelectionForToolChange()) return false;
+      this.queueToolAfterMultiSelection(tool, preserveToolSettings);
+      return true;
+    }
+    if (this.options.isInteractionLocked()) return false;
     this.configure(tool, true, preserveToolSettings);
     this.options.updateHistoryControls();
     return true;
+  }
+
+  private queueToolAfterMultiSelection(
+    tool: CanvasInputTool,
+    preserveToolSettings: boolean,
+  ): void {
+    this.pendingMultiSelectionTool = { tool, preserveToolSettings };
+    if (this.multiSelectionExitPromise) return;
+    const exit = this.finishMultiSelectionAndSelectTool();
+    this.multiSelectionExitPromise = exit;
+    void exit.finally(() => {
+      if (this.multiSelectionExitPromise === exit) {
+        this.multiSelectionExitPromise = null;
+      }
+    });
+  }
+
+  private async finishMultiSelectionAndSelectTool(): Promise<void> {
+    let finished = false;
+    try {
+      finished = await this.options.finishMultiSelectionForToolChange();
+    } catch {
+      // Keep both Transform and the multiple selection intact so the user can
+      // retry instead of landing in a partially changed tool state.
+      this.pendingMultiSelectionTool = null;
+      return;
+    }
+    if (!finished || this.disposed) {
+      this.pendingMultiSelectionTool = null;
+      return;
+    }
+    const pending = this.pendingMultiSelectionTool;
+    this.pendingMultiSelectionTool = null;
+    if (!pending || this.options.isInteractionLocked()) return;
+    this.configure(pending.tool, true, pending.preserveToolSettings);
+    this.options.updateHistoryControls();
   }
 
   configure(
@@ -243,6 +297,7 @@ export class CanvasToolController {
       && kind !== "perspective"
       && kind !== "text-warp"
     ) return;
+    if (this.configurationInProgress) return;
     const controller = this.options.getVectorController();
     if (
       controller?.getTransformActionSnapshot().active
@@ -290,6 +345,7 @@ export class CanvasToolController {
     if (this.disposed) return;
     this.disposed = true;
     this.configurationRevision += 1;
+    this.pendingMultiSelectionTool = null;
     this.abortController.abort();
   }
 

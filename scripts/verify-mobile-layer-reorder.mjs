@@ -145,8 +145,22 @@ assert.doesNotMatch(controller, /from "\.\/brush-engine"|document\.getElementByI
 const pointerMoveStart = controller.indexOf("private handleReorderPointerMove");
 const pointerMoveEnd = controller.indexOf("private handleReorderPointerUp", pointerMoveStart);
 assert.ok(pointerMoveStart >= 0 && pointerMoveEnd > pointerMoveStart);
+const pointerMoveSource = controller.slice(pointerMoveStart, pointerMoveEnd);
+const pendingHoldFallback = pointerMoveSource.indexOf("mobileLayerReorderHoldReached");
+const pendingMovementCancel = pointerMoveSource.indexOf("mobileLayerReorderMovementExceeded");
+assert.ok(
+  pendingHoldFallback >= 0
+    && pendingMovementCancel >= 0
+    && pendingHoldFallback < pendingMovementCancel,
+  "pointer movement after a completed hold must arm reorder before applying movement slop",
+);
+assert.match(
+  pointerMoveSource,
+  /mobileLayerReorderHoldReached[\s\S]*?clearTimeout\(gesture\.holdTimer\)[\s\S]*?this\.armContextGesture\(\)[\s\S]*?gesture\.phase === "armed"[\s\S]*?this\.activateReorder\(\)/,
+  "a delayed hold timer must still transition the same mouse move into reorder",
+);
 assert.doesNotMatch(
-  controller.slice(pointerMoveStart, pointerMoveEnd),
+  pointerMoveSource,
   /moveLayer|captureRasterLayerThumbnail|\.render\(/,
   "pointermove may schedule DOM/scroll RAF work only",
 );

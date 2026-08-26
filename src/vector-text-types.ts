@@ -57,7 +57,10 @@ interface VectorTextGpuDrawBase {
   readonly meshKey: string;
   readonly x: number;
   readonly y: number;
+  /** Horizontal compatibility alias used by existing draw producers. */
   readonly scale: number;
+  readonly scaleX?: number;
+  readonly scaleY?: number;
   readonly rotation: number;
   readonly localOffsetX: number;
   readonly localOffsetY: number;

@@ -7,6 +7,7 @@ import {
   cloneVectorShapeDefinition,
   type VectorShapeDefinition,
 } from "./vector-shape-core.ts";
+import { normalizeSceneAxisScale } from "./scene-axis-scale.ts";
 
 export interface VectorSvgNode {
   readonly id: number;
@@ -41,7 +42,10 @@ export interface VectorSvgNode {
   innerShadowBlur: number;
   x: number;
   y: number;
+  /** Horizontal compatibility alias; old documents use it for both axes. */
   scale: number;
+  scaleX?: number;
+  scaleY?: number;
   rotation: number;
 }
 
@@ -73,12 +77,15 @@ export interface VectorSvgNodeSeed {
   x: number;
   y: number;
   scale: number;
+  scaleX?: number;
+  scaleY?: number;
   rotation: number;
 }
 
 export function cloneVectorSvgNode(node: Readonly<VectorSvgNode>): VectorSvgNode {
   return {
     ...node,
+    ...normalizeSceneAxisScale(node),
     document: cloneVectorSvgDocument(node.document),
     shapeDefinition: cloneVectorShapeDefinition(node.shapeDefinition),
     paintColors: [...node.paintColors],
@@ -91,6 +98,7 @@ export function cloneVectorSvgNodeForHistory(
 ): VectorSvgNode {
   return {
     ...node,
+    ...normalizeSceneAxisScale(node),
     document: node.document,
     shapeDefinition: cloneVectorShapeDefinition(node.shapeDefinition),
     paintColors: [...node.paintColors],

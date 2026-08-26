@@ -31,9 +31,11 @@ export function vectorTextGpuRunBounds(
       [bounds[2], bounds[3]],
       [bounds[0], bounds[3]],
     ] as const;
+    const scaleX = draw.scaleX ?? draw.scale;
+    const scaleY = draw.scaleY ?? draw.scale;
     for (const [sourceX, sourceY] of localCorners) {
-      const localX = (sourceX + draw.localOffsetX) * draw.scale;
-      const localY = (sourceY + draw.localOffsetY) * draw.scale;
+      const localX = (sourceX + draw.localOffsetX) * scaleX;
+      const localY = (sourceY + draw.localOffsetY) * scaleY;
       const layerX = draw.x + cosine * localX - sine * localY;
       const layerY = draw.y + sine * localX + cosine * localY;
       const deltaX = layerX - view.centerX;

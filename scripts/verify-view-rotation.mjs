@@ -254,7 +254,7 @@ const mixedTextSegment = mixedSceneCompositorSource.slice(
   mixedSceneCompositorSource.indexOf("export const mixedSceneTextSegmentShader"),
   mixedSceneCompositorSource.indexOf("export const mixedSceneClearShader"),
 );
-assert.match(mixedRasterSegment, /rasterPixelViewEnabled\(resolutionScale\)/,
+assert.match(mixedRasterSegment, /rasterPixelViewEnabled\(effectiveResolutionScale\)/,
   "le run raster del compositore misto devono mostrare texel reali");
 assert.doesNotMatch(mixedTextSegment, /rasterPixelViewEnabled/,
   "le run testo/SVG devono restare vettoriali");

@@ -38,6 +38,8 @@ export const ENGINE_SOURCE_FILES = Object.freeze([
   "engine-cold-storage.ts",
   "engine-reports.ts",
   "engine-vector-text-runtime.ts",
+  "engine-mixed-scene-raster-preview-runtime.ts",
+  "engine-mixed-scene-group-transform-runtime.ts",
   "engine-raster-image-runtime.ts",
   "engine-raster-transform-runtime.ts",
   "engine-rasterize-layer-runtime.ts",

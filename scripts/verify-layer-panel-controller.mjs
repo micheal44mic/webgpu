@@ -267,7 +267,9 @@ let interactionLocked = false;
 const referenceCalls = [];
 const clippingCalls = [];
 const rasterizeCalls = [];
+const mergeCalls = [];
 const layerResults = [];
+const multiSelectionUpdates = [];
 const thumbnailInvalidations = [];
 const thumbnailEnsures = [];
 const controller = new LayerPanelController({
@@ -298,7 +300,13 @@ const controller = new LayerPanelController({
   }),
   moveLayer: async () => false,
   mergeCapabilityError: () => null,
-  mergeLayers: async () => ({ itemCount: 2 }),
+  mergeLayers: async (keys) => {
+    mergeCalls.push([...keys]);
+    return { itemCount: 2 };
+  },
+  onMultiSelectionChange: ({ enabled, orderedKeys }) => {
+    multiSelectionUpdates.push({ enabled, orderedKeys: [...orderedKeys] });
+  },
   rasterizeLayer: async (key) => {
     rasterizeCalls.push(key);
     return { kind: "raster", name: "Layer 2", changed: true, outputKey: key };
@@ -410,6 +418,62 @@ assert.deepEqual(
   "a clipping row must point to its real base layer, even when rendered top-first",
 );
 controller.setOpen(true);
+controller.setMultiSelect(true);
+assert.equal(controller.isMultiSelect, true);
+assert.deepEqual(multiSelectionUpdates.at(-1), {
+  enabled: true,
+  orderedKeys: ["raster:8"],
+});
+controller.toggleMultiSelection("raster:7");
+assert.deepEqual(
+  multiSelectionUpdates.at(-1),
+  {
+    enabled: true,
+    orderedKeys: ["raster:7", "raster:8"],
+  },
+  "multi-selection notifications must follow bottom-to-top scene order",
+);
+const notificationsBeforePanelClose = multiSelectionUpdates.length;
+controller.setOpen(false);
+assert.equal(
+  controller.isMultiSelect,
+  true,
+  "closing the panel must preserve the current multiple selection",
+);
+assert.equal(
+  multiSelectionUpdates.length,
+  notificationsBeforePanelClose,
+  "closing the panel must not publish a false selection reset",
+);
+controller.setOpen(true);
+assert.equal(controller.isMultiSelect, true);
+controller.reconcileMultiSelection({
+  ...stats,
+  activeLayerIndex: 0,
+  activeLayerId: 8,
+  layers: [stats.layers[1]],
+});
+assert.deepEqual(
+  multiSelectionUpdates.at(-1),
+  {
+    enabled: true,
+    orderedKeys: ["raster:8"],
+  },
+  "reconciliation must remove stale keys and publish the surviving selection",
+);
+const mergeCallsBeforeFinish = mergeCalls.length;
+assert.equal(controller.finishMultiSelection(), true);
+assert.deepEqual(multiSelectionUpdates.at(-1), {
+  enabled: false,
+  orderedKeys: [],
+});
+assert.equal(controller.isMultiSelect, false);
+assert.equal(mergeCalls.length, mergeCallsBeforeFinish);
+assert.equal(
+  controller.finishMultiSelection(),
+  false,
+  "finishing an inactive multiple selection must be a no-op",
+);
 const clippingRequest = controller.requestClippingToggle.bind(controller);
 controller.contextKey = "raster:8";
 clippingRequest();
@@ -517,6 +581,65 @@ interactionLocked = false;
 controller.syncInteractionState();
 assert.equal(elements.list.getAttribute("inert"), null);
 controller.setOpen(false);
+
+// A busy desktop frame may postpone the hold timer. The first mouse movement
+// after the real hold deadline must arm and enter reorder instead of being
+// rejected by the pre-hold movement tolerance.
+const delayedMouseGesture = {
+  pointerId: 41,
+  key: "raster:8",
+  name: "Layer 2",
+  row: new FakeElement(),
+  select: new FakeElement(),
+  startClientX: 10,
+  startClientY: 10,
+  startTime: 0,
+  startScrollTop: 0,
+  restoreFocus: false,
+  sceneOrderSignature: "test-order",
+  holdTimer: 73,
+  phase: "pending",
+  plan: null,
+  currentSlot: 0,
+  clientY: 10,
+  frame: null,
+  lastFrameTime: 0,
+};
+const originalNow = browser.performance.now;
+const originalClearTimeout = browser.clearTimeout;
+const originalArmContextGesture = controller.armContextGesture;
+const originalActivateReorder = controller.activateReorder;
+let clearedHoldTimer = null;
+let armedMouseReorder = 0;
+let activatedMouseReorder = 0;
+let preventedMouseMove = 0;
+browser.performance.now = () => 321;
+browser.clearTimeout = (timer) => { clearedHoldTimer = timer; };
+controller.reorderGesture = delayedMouseGesture;
+controller.armContextGesture = () => {
+  armedMouseReorder += 1;
+  delayedMouseGesture.phase = "armed";
+};
+controller.activateReorder = () => {
+  activatedMouseReorder += 1;
+  delayedMouseGesture.phase = "dragging";
+};
+controller.handleReorderPointerMove({
+  pointerId: 41,
+  clientX: 10,
+  clientY: 30,
+  preventDefault: () => { preventedMouseMove += 1; },
+});
+assert.equal(clearedHoldTimer, 73);
+assert.equal(armedMouseReorder, 1);
+assert.equal(activatedMouseReorder, 1);
+assert.equal(preventedMouseMove, 1);
+assert.equal(delayedMouseGesture.phase, "dragging");
+controller.reorderGesture = null;
+browser.performance.now = originalNow;
+browser.clearTimeout = originalClearTimeout;
+controller.armContextGesture = originalArmContextGesture;
+controller.activateReorder = originalActivateReorder;
 
 stats = null;
 controller.setOpen(true);

@@ -4,6 +4,7 @@ import {
   type VectorTextTransformType,
 } from "./vector-text-transform.ts";
 import type { VectorTextOutlineJoin } from "./scene-vector-effects.ts";
+import { normalizeSceneAxisScale } from "./scene-axis-scale.ts";
 
 export interface VectorTextNode {
   readonly id: number;
@@ -43,7 +44,10 @@ export interface VectorTextNode {
   innerShadowBlur: number;
   x: number;
   y: number;
+  /** Horizontal compatibility alias; old documents use it for both axes. */
   scale: number;
+  scaleX?: number;
+  scaleY?: number;
   rotation: number;
 }
 
@@ -81,6 +85,8 @@ export interface VectorTextNodeSeed {
   x: number;
   y: number;
   scale: number;
+  scaleX?: number;
+  scaleY?: number;
   rotation: number;
 }
 
@@ -89,6 +95,7 @@ export function cloneVectorTextNode(
 ): VectorTextNode {
   return {
     ...node,
+    ...normalizeSceneAxisScale(node),
     distortPoints: normalizeVectorTextDistortPoints(node.distortPoints),
   };
 }

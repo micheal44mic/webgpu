@@ -141,7 +141,10 @@ export interface RasterTransformSnapshot {
   bezierHandles: readonly RasterTransformControlPoint[];
   x: number;
   y: number;
+  /** @deprecated Compatibility alias for `scaleX`. */
   scale: number;
+  scaleX: number;
+  scaleY: number;
   rotation: number;
   sourceBounds: DirtyRect;
   /** Exact affine pivot used by the raster runtime; older snapshots may omit it. */
