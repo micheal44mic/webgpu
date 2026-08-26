@@ -141,7 +141,11 @@ assert.match(
 );
 assert.match(panel, /this\.setMergeStatus\(message, true\)/);
 assert.match(panel, /\.mobile-layer-row\.is-active-layer \.mobile-layer-select/);
-assert.match(toolbar, /multiSelectButton\.disabled = locked/);
+assert.match(
+  toolbar,
+  /multiSelectButton\.disabled = this\.multiSelectEnabled[\s\S]*?canFinishMultiSelection[\s\S]*?: locked \|\| layerCount < 2/,
+  "il controllo multi-selezione deve poter concludere una selezione attiva anche durante il lock della trasformazione",
+);
 assert.match(panel, /this\.options\.thumbnails\.copyRasterEntry/);
 assert.match(gpuHistoryTest, /const duplicateResult = await engine\.duplicateSelectedLayer\(\)/);
 assert.match(gpuHistoryTest, /duplicateWasInitiallyByteExact/);

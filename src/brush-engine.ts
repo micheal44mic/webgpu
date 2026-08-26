@@ -724,8 +724,6 @@ import {
 import {
   MemoryReservationLedger,
   memoryZoneFor,
-  planMemoryAdmission,
-  type MemoryAdmissionDecision,
   type MemoryReservation,
   type MemoryRequest,
 } from "./memory-governor-core";
@@ -8158,39 +8156,8 @@ export class BrushEngine {
     throw new Error(`Injected cold-storage fault: ${point}.`);
   }
 
-  /**
-   * Keeps the governor authoritative while exposing one explicit escape hatch
-   * to interactive UI. Approval applies only to this reservation attempt; no
-   * session-wide flag is retained and recovery work can opt out entirely.
-   */
-  async reserveMemoryWithAdmissionOverride(
-    request: MemoryRequest,
-    decision: MemoryAdmissionDecision,
-    action: string,
-    refusalMessage: string,
-    allowOverride = true,
-  ): Promise<MemoryReservation> {
-    if (decision.outcome !== "admit") {
-      const warning = {
-        action,
-        category: request.category,
-        requiredBytes: request.peakBytes,
-        availableBytes: Math.max(0, decision.ceilingBytes - decision.usedBytes),
-        usedBytes: decision.usedBytes,
-        ceilingBytes: decision.ceilingBytes,
-        reason: decision.reason,
-      } as const;
-      let approved = false;
-      if (allowOverride && this.callbacks.onMemoryAdmissionWarning) {
-        try {
-          approved = await this.callbacks.onMemoryAdmissionWarning(warning) === true;
-        } catch (error) {
-          console.error("The memory-limit warning failed; the allocation remains blocked.", error);
-        }
-      }
-      if (!approved) throw new Error(refusalMessage);
-      console.warn("Memory safety limit overridden for one operation.", warning);
-    }
+  /** Memory pressure is observed in diagnostics and never blocks an operation. */
+  async reservePlannedMemory(request: MemoryRequest): Promise<MemoryReservation> {
     return this.memoryReservations.reserve(request);
   }
 
@@ -9126,10 +9093,6 @@ export class BrushEngine {
       }
 
       this.assertLayerSwitchAllowed();
-      // Drain any already-scheduled frame before releasing text textures. The
-      // transactional clear deliberately leaves bind groups untouched until
-      // activation publishes the replacement layer resources.
-      await this.waitForIdle();
       const previousState = scene.captureState();
       const previousExcludedNodeId = this.vectorTextPreviewExcludedNodeId;
       scene.select(key);
@@ -9825,27 +9788,7 @@ export class BrushEngine {
       ).totalBytes,
       foldTransientBytes: fullLayerBytes * 2,
     });
-    const decision = planMemoryAdmission(
-      {
-        committedBytes: this.gpuResourceRegistry.snapshot().currentBytes,
-        reservedBytes: this.memoryReservations.pendingBytes,
-        reclaimableBytes: 0,
-        inFlightBytes: this.layerSwitchCompressedCpuBytes(),
-      },
-      this.memoryGovernorLimits,
-      request,
-    );
-    const requiredMiB = request.peakBytes / MEBIBYTE_BYTES;
-    const headroomMiB = Math.max(0, decision.ceilingBytes - decision.usedBytes)
-      / MEBIBYTE_BYTES;
-    return this.reserveMemoryWithAdmissionOverride(
-      request,
-      decision,
-      "Duplicate layer",
-      "Not enough memory to duplicate the layer: "
-        + `${requiredMiB.toFixed(1)} MiB required, ${headroomMiB.toFixed(1)} MiB available. `
-        + "Reduce history or wait for inactive layers to be compressed.",
-    );
+    return this.reservePlannedMemory(request);
   }
 
   private async duplicateRasterLayer(
@@ -10311,14 +10254,6 @@ export class BrushEngine {
     return retained;
   }
 
-  private layerSwitchCompressedCpuBytes(): number {
-    let bytes = this.layerColdRestoreActiveBytes;
-    for (const compressed of this.retainedCompressedLayerStores()) {
-      bytes += compressed.storedBytes;
-    }
-    return bytes;
-  }
-
   /** Maximum source-side working set alive during one sequential composite fold. */
   private layerSwitchFoldTransientBytes(targetIndex: number, fullLayerBytes: number): number {
     const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
@@ -10429,26 +10364,7 @@ export class BrushEngine {
       ),
       foldTransientBytes: this.layerSwitchFoldTransientBytes(targetIndex, fullLayerBytes),
     });
-    const decision = planMemoryAdmission(
-      {
-        committedBytes: this.gpuResourceRegistry.snapshot().currentBytes,
-        reservedBytes: this.memoryReservations.pendingBytes,
-        reclaimableBytes: 0,
-        inFlightBytes: this.layerSwitchCompressedCpuBytes(),
-      },
-      this.memoryGovernorLimits,
-      request,
-    );
-    const requiredMiB = request.peakBytes / (1024 * 1024);
-    const headroomMiB = Math.max(0, decision.ceilingBytes - decision.usedBytes) / (1024 * 1024);
-    return this.reserveMemoryWithAdmissionOverride(
-      request,
-      decision,
-      "Switch layers",
-      "Not enough memory to switch layers: "
-        + `${requiredMiB.toFixed(1)} MiB required, ${headroomMiB.toFixed(1)} MiB available. `
-        + "Wait for inactive layers to be compressed or reduce history before trying again.",
-    );
+    return this.reservePlannedMemory(request);
   }
 
   /** Selects an existing layer, paying the switch cost. */

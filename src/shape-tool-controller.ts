@@ -91,6 +91,15 @@ export class ShapeToolController {
     return this.busyCount > 0;
   }
 
+  /** The ordered preview is being prepared, but pointer input may already be retained. */
+  get isPresentationPreparing(): boolean {
+    return this.active
+      && !this.previewReady
+      && this.committingDraft === null
+      && this.busyCount > 0
+      && !this.disposed;
+  }
+
   get hasGesture(): boolean {
     return this.gesture !== null;
   }
@@ -109,7 +118,13 @@ export class ShapeToolController {
   }
 
   beginPointer(input: Readonly<ShapeToolPointerInput>): boolean {
-    if (!this.active || this.isBusy || !this.previewReady || this.gesture || this.disposed) {
+    if (
+      !this.active
+      || this.committingDraft !== null
+      || (this.isBusy && !this.isPresentationPreparing)
+      || this.gesture
+      || this.disposed
+    ) {
       return false;
     }
     this.gesture = beginShapeCreation(this.kind, {
@@ -281,6 +296,11 @@ export class ShapeToolController {
   private async commitDraft(draft: Readonly<ShapeCreationDraft>): Promise<boolean> {
     this.beginBusy();
     try {
+      // A fast touch can finish before the ordered WebGPU preview is ready on
+      // mobile hardware. Preserve that gesture and serialize its one commit
+      // behind the existing preparation transaction.
+      await this.previewLifecycle;
+      if (this.disposed || !this.active || !this.previewReady) return false;
       const color = normalizedColor(this.options.elements.fillColor.value);
       const created = createVectorShapeDraft(
         draft.kind,
@@ -323,7 +343,13 @@ export class ShapeToolController {
   private render(): void {
     const draft = this.committingDraft
       ?? (this.gesture ? currentShapeCreationDraft(this.gesture) : null);
-    if (!this.active || !this.previewReady || !draft) {
+    if (
+      !this.active
+      || !this.previewReady
+      || !draft
+      || draft.frame.width <= 0
+      || draft.frame.height <= 0
+    ) {
       this.options.engine.updateShapePreview(null);
       return;
     }

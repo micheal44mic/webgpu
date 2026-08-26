@@ -17,11 +17,7 @@ import type { DirtyRect } from "./engine-stroke-types";
 import type { LayerPoint } from "./engine-types";
 import { publishMixedScene } from "./engine-vector-text-runtime";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
-import {
-  planMemoryAdmission,
-  type MemoryReservation,
-  type MemoryRequest,
-} from "./memory-governor-core";
+import type { MemoryReservation, MemoryRequest } from "./memory-governor-core";
 import { tileMaskCoveringRect } from "./raster-transform-math";
 import {
   DEFAULT_LIQUIFY_SETTINGS,
@@ -937,26 +933,7 @@ async function reserveSessionMemory(
   memoryBytes: number,
 ): Promise<MemoryReservation> {
   const request = sessionMemoryRequest(memoryBytes);
-  const decision = planMemoryAdmission(
-    {
-      committedBytes: engine.gpuResourceRegistry.snapshot().currentBytes,
-      reservedBytes: engine.memoryReservations.pendingBytes,
-      reclaimableBytes: 0,
-      inFlightBytes: 0,
-    },
-    engine.memoryGovernorLimits,
-    request,
-  );
-  const requiredMiB = request.peakBytes / (1024 * 1024);
-  const availableMiB = Math.max(0, decision.ceilingBytes - decision.usedBytes)
-    / (1024 * 1024);
-  return engine.reserveMemoryWithAdmissionOverride(
-    request,
-    decision,
-    "Open Liquify",
-    `Insufficient memory for Liquify: ${requiredMiB.toFixed(1)} MiB required, `
-      + `${availableMiB.toFixed(1)} MiB available.`,
-  );
+  return engine.reservePlannedMemory(request);
 }
 
 export async function beginRasterLiquify(

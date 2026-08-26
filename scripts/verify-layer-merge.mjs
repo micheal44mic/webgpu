@@ -28,6 +28,7 @@ const layerStack = read("../src/layer-stack.ts");
 const coldStorage = read("../src/engine-cold-storage.ts");
 const layerStructure = read("../src/engine-layer-structure-runtime.ts");
 const storageCoordinator = read("../src/history-storage-coordinator.ts");
+const gpuLab = read("../src/labs/gpu/layer-merge-gpu-test.ts");
 
 assert.match(history, /kind: "layer-merge"/);
 assert.match(history, /readonly inputs: readonly LayerMergeHistoryInput\[\]/);
@@ -37,16 +38,26 @@ assert.match(runtime, /prepareAndApplyLayerMerge/);
 assert.match(runtime, /applyLayerMergeHistory/);
 assert.match(runtime, /reserveLayerMergeCreateMemory/);
 assert.match(runtime, /memoryReservation = await reserveLayerMergeCreateMemory/);
-assert.match(
-  runtime,
-  /function layerMergeCompressedCpuBytes[\s\S]*?engine\.retainedCompressedLayerStores\(\)/,
-  "Merge memory admission must count saved-project baselines and deduplicate shared stores",
-);
+assert.match(runtime, /return engine\.reservePlannedMemory\(request\)/);
+assert.doesNotMatch(runtime, /planMemoryAdmission|reserveMemoryWithAdmissionOverride/);
 assert.match(runtime, /baseTileMask: rendered\.record\.storageTileMask\.slice\(\)/);
 assert.match(runtime, /entry\.layerRecord\.storageTileMask\.set\(entry\.baseTileMask\)/);
 assert.match(history, /payloadsRetiredBelowFloor: boolean/);
 assert.match(runtime, /payloadsRetiredBelowFloor: false/);
 assert.match(runtime, /action\.output\.layerRecord\.visible = false/);
+const applyMergedStart = runtime.indexOf("async function applyMergedState(");
+const applyMergedEnd = runtime.indexOf("async function applyInputState(", applyMergedStart);
+const applyMergedBody = runtime.slice(applyMergedStart, applyMergedEnd);
+assert.equal(
+  (applyMergedBody.match(/await engine\.activateLayer\(/g) ?? []).length,
+  2,
+  "il percorso principale deve attivare una volta; la seconda attivazione appartiene solo al rollback",
+);
+assert.doesNotMatch(
+  applyMergedBody.slice(0, applyMergedBody.indexOf("} catch (error)")),
+  /await engine\.waitForIdle\(\)/,
+  "il merge non deve ricostruire e drenare una presentazione transitoria",
+);
 assert.match(
   runtime,
   /plan\.bakesParentBlendModesFromTransparentBackdrop\s*\? parent\.blendMode\s*:\s*"normal"/,
@@ -68,6 +79,9 @@ assert.match(engine, /private async reserveLayerSwitchMemory\(/);
 assert.match(engine, /memoryReservation = await this\.reserveLayerSwitchMemory\(index\)/);
 assert.match(controller, /async mergeSceneItems\(/);
 assert.match(controller, /this\.host\.mergeMixedSceneItems\(\{ keys: \[\.\.\.keys\], vectorDraws \}\)/);
+assert.match(gpuLab, /function documentCenter\(engine: BrushEngine\)/);
+assert.match(gpuLab, /Math\.min\(760, environment\.canvasWidth - 8, engine\.documentWidth\)/);
+assert.doesNotMatch(gpuLab, /const center = \{ x: 2048, y: 2048 \}/);
 
 // Vectors are drawn into a transient cropped surface. They must never take the
 // old per-node conversion path, which would publish N layers and N actions.

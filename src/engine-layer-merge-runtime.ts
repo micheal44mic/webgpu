@@ -74,11 +74,7 @@ import {
   restoreBorrowedLayerMergeColdSeedAfterDetachFailure,
   transferBorrowedLayerMergeColdSeedForDetach,
 } from "./layer-merge-seed-ownership";
-import {
-  planMemoryAdmission,
-  type MemoryReservation,
-  type MemoryRequest,
-} from "./memory-governor-core";
+import type { MemoryReservation, MemoryRequest } from "./memory-governor-core";
 import { cloneLayerTonalBlend } from "./layer-composition.ts";
 import { planLayerMergeCreateMemory } from "./layer-memory-admission-core";
 import { isHistoryColdSeedHandle } from "./history-cold-seed";
@@ -321,6 +317,11 @@ async function renderSingleRasterUnitPreservingParent(
       "source-over",
       false,
       `Merge preserve raster ${parent.id}`,
+      null,
+      source.rawView,
+      null,
+      null,
+      "defer-to-fold-fence",
     );
     return { ...source.nonTransparentBounds };
   } finally {
@@ -406,6 +407,9 @@ async function renderMergeOutput(
               plan.bakesParentBlendModesFromTransparentBackdrop
                 ? parent.blendMode
                 : "normal",
+              parent,
+              null,
+              "defer-to-fold-fence",
             )
             : await foldRasterRecordIntoMergedSurface(
               engine,
@@ -417,6 +421,9 @@ async function renderMergeOutput(
               plan.bakesParentBlendModesFromTransparentBackdrop
                 ? parent.blendMode
                 : "normal",
+              parent,
+              false,
+              "defer-to-fold-fence",
             );
           if (folded) bounds = mergeDirtyRects(bounds, layerCompositeVisualBounds(engine, parent));
           continue;
@@ -434,8 +441,8 @@ async function renderMergeOutput(
         bounds = mergeDirtyRects(bounds, vectorBounds);
       }
     }
-    releaseLayerBlendFoldScratch(surface);
     await engine.waitForGpuCapped(`Render merge layer ${record.id}`, 60_000);
+    releaseLayerBlendFoldScratch(surface);
     record.contentBounds = bounds ? { ...bounds } : null;
     record.hasContent = bounds !== null;
     record.storageTileMask.fill(0);
@@ -454,6 +461,11 @@ async function renderMergeOutput(
       : null;
     return { record, gpu, seed, baseBounds: bounds ? { ...bounds } : null, plan };
   } catch (error) {
+    try {
+      await engine.waitForGpuCapped(`Drain failed merge layer ${record.id}`, 60_000);
+    } catch {
+      // Preserve the original merge failure.
+    }
     releaseLayerBlendFoldScratch(surface);
     destroyLayerGpuResources(engine, gpu);
     throw error;
@@ -576,14 +588,6 @@ function layerMergeFullTextureBytes(engine: BrushEngine): number {
     * (engine.layerFormat === "rgba16float" ? 8 : 4);
 }
 
-function layerMergeCompressedCpuBytes(engine: BrushEngine): number {
-  let bytes = 0;
-  for (const compressed of engine.retainedCompressedLayerStores()) {
-    bytes += compressed.storedBytes;
-  }
-  return bytes;
-}
-
 function layerMergeColdBytesForRecord(engine: BrushEngine, layerId: number): number {
   const record = engine.layerStack.byId(layerId);
   if (!record || !record.hasContent) return 0;
@@ -632,26 +636,7 @@ async function reserveLayerMergeCreateMemory(
   plan: ReturnType<typeof planMixedSceneLayerMerge>,
 ): Promise<MemoryReservation> {
   const request = layerMergeCreateRequest(engine, plan);
-  const decision = planMemoryAdmission(
-    {
-      committedBytes: engine.gpuResourceRegistry.snapshot().currentBytes,
-      reservedBytes: engine.memoryReservations.pendingBytes,
-      reclaimableBytes: 0,
-      inFlightBytes: layerMergeCompressedCpuBytes(engine),
-    },
-    engine.memoryGovernorLimits,
-    request,
-  );
-  const requiredMiB = request.peakBytes / (1024 * 1024);
-  const headroomMiB = Math.max(0, decision.ceilingBytes - decision.usedBytes) / (1024 * 1024);
-  return engine.reserveMemoryWithAdmissionOverride(
-    request,
-    decision,
-    "Merge layers",
-    "Not enough memory to merge the layers: "
-      + `${requiredMiB.toFixed(1)} MiB required, ${headroomMiB.toFixed(1)} MiB available. `
-      + "Reduce the selection or wait for History to offload its local copies.",
-  );
+  return engine.reservePlannedMemory(request);
 }
 
 function layerMergeHistoryRequest(
@@ -708,31 +693,10 @@ async function reserveLayerMergeHistoryMemory(
   engine: BrushEngine,
   action: LayerMergeHistoryAction,
   delta: -1 | 1,
-  allowOverride: boolean,
+  _allowOverride: boolean,
 ): Promise<MemoryReservation> {
   const request = layerMergeHistoryRequest(engine, action, delta);
-  const current = engine.gpuResourceRegistry.snapshot().currentBytes;
-  const decision = planMemoryAdmission(
-    {
-      committedBytes: current,
-      reservedBytes: engine.memoryReservations.pendingBytes,
-      reclaimableBytes: 0,
-      inFlightBytes: layerMergeCompressedCpuBytes(engine),
-    },
-    engine.memoryGovernorLimits,
-    request,
-  );
-  const requiredMiB = request.peakBytes / (1024 * 1024);
-  const headroomMiB = Math.max(0, decision.ceilingBytes - decision.usedBytes) / (1024 * 1024);
-  const operation = delta < 0 ? "Undo merge" : "Redo merge";
-  return engine.reserveMemoryWithAdmissionOverride(
-    request,
-    decision,
-    operation,
-    `Not enough memory for merge ${delta < 0 ? "Undo" : "Redo"}: `
-      + `${requiredMiB.toFixed(1)} MiB required, ${headroomMiB.toFixed(1)} MiB available.`,
-    allowOverride,
-  );
+  return engine.reservePlannedMemory(request);
 }
 
 async function prepareMergeInputGpu(
@@ -899,9 +863,8 @@ async function applyMergedState(
   try {
     engine.persistActiveLayerState();
     await engine.prepareActiveLayerForSwitch();
-    // The replacement coexists briefly with its inputs while the active
-    // workbench is retargeted. Keeping it invisible makes that drain render
-    // the exact pre-merge stack instead of a double-composited frame.
+    // Keep the replacement hidden while it is attached. Presentation is already
+    // frozen, so the final structure can be assembled before one activation.
     action.output.layerRecord.visible = false;
     if (!preparedGpu) {
       await engine.historyLocalStorage.ensureLayerMergeSeedResident(action.output.seed);
@@ -913,11 +876,6 @@ async function applyMergedState(
         action.output.seed,
       );
     }
-    const outgoingIndex = engine.layerStack.indexOfId(originalActiveId);
-    if (outgoingIndex < 0) throw new Error("The active raster was lost before the merge.");
-    await engine.activateLayer(outgoingIndex, "structural-history");
-    await engine.waitForIdle();
-    engine.layerPresentationFrozen = true;
     action.output.layerRecord.visible = outputVisible;
 
     for (const input of [...action.inputs].reverse()) {
@@ -938,6 +896,8 @@ async function applyMergedState(
     const outputIndex = engine.layerStack.indexOfId(action.activeRasterLayerIdAfter);
     if (outputIndex < 0) throw new Error("The merge output was lost while detaching an input.");
     engine.layerStack.setActiveIndex(outputIndex);
+    // The outgoing GPU authorities are staged and retained until commit, so the
+    // activation must not look them up through their now-removed stack indices.
     await engine.activateLayer(outputIndex, "structural-history");
     engine.vectorTextPreviewExcludedNodeId = scene.selected.kind === "text"
       ? scene.selected.textNodeId

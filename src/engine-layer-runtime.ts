@@ -2325,6 +2325,7 @@ async function foldAuthoritativeColdTilesIntoMergedSurface(
   clearDestination: boolean,
   documentRect: DirtyRect,
   label: string,
+  completionPolicy: LayerGpuCompletionPolicy = "await-immediately",
 ): Promise<void> {
   writeColdTileCompositeUniforms(engine, destination, opacity);
   if (!coldTileCompositeSourceIsCurrent(source)) {
@@ -2510,7 +2511,9 @@ async function foldAuthoritativeColdTilesIntoMergedSurface(
       }
       foldedTileCount = firstTile;
     }
-    await engine.waitForGpuCapped(label);
+    if (completionPolicy === "await-immediately" || source.compressed !== null) {
+      await engine.waitForGpuCapped(label);
+    }
     completed = true;
     if (!coldTileCompositeSourceIsCurrent(source)) {
       throw new Error(`Layer ${source.recordId} tile fold: authority changed after submission.`);
@@ -2549,6 +2552,7 @@ async function tryFoldAuthoritativeColdTilesIntoMergedSurface(
   operator: LayerFoldCompositeOperator,
   clearDestination: boolean,
   label: string,
+  completionPolicy: LayerGpuCompletionPolicy = "await-immediately",
 ): Promise<boolean | null> {
   if (destination.resolutionScale !== 1) {
     return null;
@@ -2575,6 +2579,7 @@ async function tryFoldAuthoritativeColdTilesIntoMergedSurface(
     clearDestination,
     rect,
     label,
+    completionPolicy,
   );
   return true;
 }
@@ -2588,6 +2593,26 @@ interface LayerFoldClippingResources {
   };
   readonly documentMaskSurface: MergedSurfaceResources | null;
   readonly documentMaskOpacity?: number;
+}
+
+const LAYER_BAKE_CACHE_MAX_COUNT = 8;
+const LAYER_BAKE_CACHE_MAX_BYTES = 256 * 1024 * 1024;
+
+function retainedLayerBakeIds(engine: BrushEngine): ReadonlySet<number> {
+  const bytesPerLayer = DOCUMENT_WIDTH * DOCUMENT_HEIGHT
+    * (engine.layerFormat === "rgba16float" ? 8 : 4);
+  const capacity = Math.min(
+    LAYER_BAKE_CACHE_MAX_COUNT,
+    Math.max(1, Math.floor(LAYER_BAKE_CACHE_MAX_BYTES / bytesPerLayer)),
+  );
+  const activeIndex = engine.layerStack.activeIndex;
+  return new Set(
+    engine.layerStack.layers
+      .map((record, index) => ({ id: record.id, distance: Math.abs(index - activeIndex), index }))
+      .sort((left, right) => left.distance - right.distance || left.index - right.index)
+      .slice(0, capacity)
+      .map((entry) => entry.id),
+  );
 }
 
 export async function foldViewIntoMergedSurface(
@@ -2613,6 +2638,7 @@ export async function foldViewIntoMergedSurface(
     readonly height: number;
   } | null = null,
   clipping: LayerFoldClippingResources | null = null,
+  completionPolicy: LayerGpuCompletionPolicy = "await-immediately",
 ): Promise<void> {
   const clipped = intersectMergedSurfaceRects(
     documentRect,
@@ -2869,7 +2895,9 @@ export async function foldViewIntoMergedSurface(
     });
     engine.device.queue.submit([encoder.finish()]);
   }
-  await engine.waitForGpuCapped(label);
+  if (completionPolicy === "await-immediately") {
+    await engine.waitForGpuCapped(label);
+  }
   destination.foldedPixels += physicalRect.width * physicalRect.height;
 }
 
@@ -3763,6 +3791,7 @@ export async function foldClippingGroupIntoMergedSurface(
   externalBlendMode: LayerBlendMode = unit[0].blendMode,
   composition: Pick<LayerRecord, "cutoutMode" | "tonalBlend"> | null = unit[0],
   documentMaskCollector: ClippingDocumentMaskCollector | null = null,
+  completionPolicy: LayerGpuCompletionPolicy = "await-immediately",
 ): Promise<boolean> {
   const parent = unit[0];
   if (!parent.visible || parent.opacity <= 0) {
@@ -3846,6 +3875,7 @@ export async function foldClippingGroupIntoMergedSurface(
           documentMaskOpacity: parent.opacity,
         }
         : null,
+      completionPolicy,
     );
     if (documentMaskCollector && groupResources.documentMaskSurface) {
       if (documentMaskCollector.documentMaskSurface || documentMaskCollector.baseSurface) {
@@ -3877,6 +3907,7 @@ export async function foldRasterRecordIntoMergedSurface(engine: BrushEngine,
   externalBlendMode: LayerBlendMode = record.blendMode,
   composition: Pick<LayerRecord, "cutoutMode" | "tonalBlend"> | null = record,
   allowClippingChild = false,
+  completionPolicy: LayerGpuCompletionPolicy = "await-immediately",
 ): Promise<boolean> {
   if (record.clippingParentId !== null && !allowClippingChild) {
     throw new Error(`Child ${record.id} must be folded with its own group.`);
@@ -3890,6 +3921,7 @@ export async function foldRasterRecordIntoMergedSurface(engine: BrushEngine,
     "source-over",
     first,
     `Fold cold tiles for layer ${record.id} into merged ${side}`,
+    completionPolicy,
   );
   if (directTileFold !== null) {
     return directTileFold;
@@ -3924,6 +3956,9 @@ export async function foldRasterRecordIntoMergedSurface(engine: BrushEngine,
       `Fold layer ${record.id} into merged ${side}`,
       composition,
       source.rawView,
+      null,
+      null,
+      completionPolicy,
     );
     return true;
   } finally {
@@ -4037,6 +4072,7 @@ export async function buildMixedMergedSurfaceCandidate(engine: BrushEngine,
           "normal",
           null,
           documentMaskCollector,
+          "defer-to-fold-fence",
         )
         : await foldRasterRecordIntoMergedSurface(
           engine,
@@ -4048,6 +4084,7 @@ export async function buildMixedMergedSurfaceCandidate(engine: BrushEngine,
           "normal",
           null,
           options.isolateClippingSources === true,
+          "defer-to-fold-fence",
         );
       if (unit.length > 1) {
         unit.forEach((member) => foldedGroupMembers.add(member.id));
@@ -4058,7 +4095,6 @@ export async function buildMixedMergedSurfaceCandidate(engine: BrushEngine,
       engine.destroyMergedSurface(surface);
       return null;
     }
-    releaseLayerBlendFoldScratch(surface);
     const initialMipLevel = requiredMergedSurfaceMipLevel(engine, surface);
     if (initialMipLevel > 0) {
       const encoder = engine.device.createCommandEncoder({
@@ -4066,10 +4102,16 @@ export async function buildMixedMergedSurfaceCandidate(engine: BrushEngine,
       });
       encodeMergedSurfacePyramid(engine, encoder, surface, initialMipLevel);
       engine.device.queue.submit([encoder.finish()]);
-      await engine.waitForGpuCapped(`Merged raster ${side} pyramid`);
     }
+    await engine.waitForGpuCapped(`Merged raster ${side} folds`);
+    releaseLayerBlendFoldScratch(surface);
     return surface;
   } catch (error) {
+    try {
+      await engine.waitForGpuCapped(`Merged raster ${side} rollback drain`);
+    } catch {
+      // The original failure remains authoritative.
+    }
     engine.destroyMergedSurface(surface);
     throw error;
   }
@@ -4167,15 +4209,22 @@ export async function materializeLayerCompositeSource(engine: BrushEngine,
     );
     const transientBake = await engine.createLayerBakeCandidate(
       record,
-      1,
+      (gpu.bake?.generation ?? 0) + 1,
       false,
       "defer-to-fold-fence",
     );
+    const retainBake = retainedLayerBakeIds(engine).has(record.id);
+    const previousBake = gpu.bake;
+    if (retainBake) {
+      gpu.bake = transientBake;
+      gpu.bakeValid = true;
+      if (previousBake !== transientBake) engine.destroyLayerBake(previousBake);
+    }
     return {
       texture: transientBake.texture,
       view: transientBake.samplingView,
       rawView: hot.view,
-      transientBake,
+      transientBake: retainBake ? null : transientBake,
       transientHydration,
       nonTransparentBounds: { ...transientBake.nonTransparentBounds },
       analyticBakePixels:
@@ -5463,6 +5512,10 @@ export async function buildMergedSurfaceCandidate(engine: BrushEngine,
             side,
             caller,
             first,
+            unit[0].blendMode,
+            unit[0],
+            null,
+            "defer-to-fold-fence",
           )
           : await foldRasterRecordIntoMergedSurface(
             engine,
@@ -5471,6 +5524,10 @@ export async function buildMergedSurfaceCandidate(engine: BrushEngine,
             side,
             caller,
             first,
+            record.blendMode,
+            record,
+            false,
+            "defer-to-fold-fence",
           );
         if (unit.length > 1) {
           unit.forEach((member) => foldedGroupMembers.add(member.id));
@@ -5482,8 +5539,6 @@ export async function buildMergedSurfaceCandidate(engine: BrushEngine,
         engine.destroyMergedSurface(surface);
         return null;
       }
-      releaseLayerBlendFoldScratch(surface);
-
       if (engine.paintDisplaySelectedMipLevel > 0) {
         const encoder = engine.device.createCommandEncoder({
           label: `Build merged ${side} display pyramid`,
@@ -5494,8 +5549,9 @@ export async function buildMergedSurfaceCandidate(engine: BrushEngine,
           engine.paintDisplaySelectedMipLevel,
         );
         engine.device.queue.submit([encoder.finish()]);
-        await engine.waitForGpuCapped(`Merged ${side} pyramid`);
       }
+      await engine.waitForGpuCapped(`Merged ${side} folds`);
+      releaseLayerBlendFoldScratch(surface);
       return surface;
     },
   );
@@ -5984,7 +6040,9 @@ export function maybeInjectLayerCompositeFault(engine: BrushEngine, point: Layer
 }
 
 export function releaseFusedLayerBakes(engine: BrushEngine): void {
-  for (const gpu of engine.layerGpu.values()) {
+  const retained = retainedLayerBakeIds(engine);
+  for (const [layerId, gpu] of engine.layerGpu) {
+    if (gpu.bake && gpu.bakeValid && retained.has(layerId)) continue;
     engine.destroyLayerBake(gpu.bake);
     gpu.bake = null;
     gpu.bakeValid = false;

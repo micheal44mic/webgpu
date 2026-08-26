@@ -846,9 +846,13 @@ export async function runLayerCompositeGpuTest(
       && fiveLayerMemory.layerColdMiB < 4 * fullLayerMiB,
     fiveLayerHydrationsWereReleased:
       fiveLayerMemory.layerHydrationMiB < 0.01,
-    fiveLayerBakesWereReleased:
-      fiveLayerMemory.layerBakeMiB < 0.01
-      && fiveLayerBakeStates.every((state) => !state.allocated && !state.valid),
+    fiveLayerBakeCacheIsBounded:
+      fiveLayerBakeStates.every((state) => state.allocated === state.valid)
+      && fiveLayerMemory.layerBakeMiB <= 256 + 0.01
+      && Math.abs(
+        fiveLayerMemory.layerBakeMiB
+          - fiveLayerBakeStates.filter((state) => state.valid).length * fullLayerMiB,
+      ) < 0.01,
     fiveLayersUseOneFusedSide:
       fiveLayerCompositeState.below.layerCount === 4
       && !fiveLayerCompositeState.above.allocated,

@@ -28,11 +28,7 @@ import {
   type RasterGlassSettings,
 } from "./glass-core";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
-import {
-  planMemoryAdmission,
-  type MemoryRequest,
-  type MemoryReservation,
-} from "./memory-governor-core";
+import type { MemoryRequest, MemoryReservation } from "./memory-governor-core";
 import { tileMaskCoveringRect } from "./raster-transform-math";
 
 export const DESTRUCTIVE_RASTER_GLASS_RUNTIME_BUILD =
@@ -679,26 +675,7 @@ async function reserveSessionMemory(
   memoryBytes: number,
 ): Promise<MemoryReservation> {
   const request = sessionMemoryRequest(memoryBytes);
-  const decision = planMemoryAdmission(
-    {
-      committedBytes: engine.gpuResourceRegistry.snapshot().currentBytes,
-      reservedBytes: engine.memoryReservations.pendingBytes,
-      reclaimableBytes: 0,
-      inFlightBytes: 0,
-    },
-    engine.memoryGovernorLimits,
-    request,
-  );
-  const requiredMiB = request.peakBytes / (1024 * 1024);
-  const availableMiB = Math.max(0, decision.ceilingBytes - decision.usedBytes)
-    / (1024 * 1024);
-  return engine.reserveMemoryWithAdmissionOverride(
-    request,
-    decision,
-    "Open Glass",
-    `Insufficient memory for Glass: ${requiredMiB.toFixed(1)} MiB required, `
-      + `${availableMiB.toFixed(1)} MiB available.`,
-  );
+  return engine.reservePlannedMemory(request);
 }
 
 export async function beginRasterGlass(

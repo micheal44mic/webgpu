@@ -314,7 +314,6 @@ assert.doesNotMatch(
   "la RAM compressa non deve gonfiare il totale GPU conteggiato",
 );
 assert.match(engineSource, /const countedGpuPlusCompressedCpuMiB = countedTotalMiB \+ layerCompressedCpuMiB/);
-assert.match(mainSource, /const appleMobileMemoryLifecycle =/);
 assert.match(mainSource, /const layerColdCompressionRequested =[\s\S]*?layerColdCompressionMode === "1"/);
 assert.match(mainSource, /layerColdCompressionEnabled: layerColdCompressionRequested/);
 assert.match(mainSource, /layerColdCompressionStatusEnabled: layerColdCompressionMode === "1"/);
@@ -327,6 +326,11 @@ assert.doesNotMatch(
 assert.match(mainSource, /pageSearchParams\.get\("layerDirectHotHydration"\) !== "0"/);
 assert.match(mainSource, /layerColdDirectHotHydrationEnabled,/);
 assert.match(mainSource, /layerColdAdjacentPrefetchEnabled,/);
+assert.match(
+  mainSource,
+  /const layerColdAdjacentPrefetchEnabled = layerColdAdjacentPrefetchMode === "1"/,
+  "il pre-caricamento adiacente deve essere esplicito e fuori dal percorso veloce predefinito",
+);
 assert.match(gpuMemoryPanelSource, /gpuMemoryLayerCompressed/);assert.match(engineSource, /layerColdCompressionProgress: \{/);
 assert.match(engineSource, /completedTileCount: engine\.layerColdCompressionProgress\.nextArrayLayer/);
 assert.match(engineSource, /pausedByStroke: engine\.activeStroke !== null/);

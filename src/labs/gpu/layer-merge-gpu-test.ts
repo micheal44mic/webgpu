@@ -148,14 +148,24 @@ function compareFloat16Scale(
 
 function captureRect(engine: BrushEngine, centerX: number, centerY: number): DirtyRect {
   const environment = engine.getBenchmarkEnvironment();
-  const width = Math.max(64, Math.min(760, environment.canvasWidth - 8));
-  const height = Math.max(64, Math.min(620, environment.canvasHeight - 8));
+  const width = Math.max(
+    64,
+    Math.min(760, environment.canvasWidth - 8, engine.documentWidth),
+  );
+  const height = Math.max(
+    64,
+    Math.min(620, environment.canvasHeight - 8, engine.documentHeight),
+  );
   return {
-    x: Math.round(centerX - width * 0.5),
-    y: Math.round(centerY - height * 0.5),
+    x: Math.max(0, Math.min(engine.documentWidth - width, Math.round(centerX - width * 0.5))),
+    y: Math.max(0, Math.min(engine.documentHeight - height, Math.round(centerY - height * 0.5))),
     width,
     height,
   };
+}
+
+function documentCenter(engine: BrushEngine): { readonly x: number; readonly y: number } {
+  return { x: engine.documentWidth * 0.5, y: engine.documentHeight * 0.5 };
 }
 
 async function settlePresentation(
@@ -259,7 +269,7 @@ async function runRasterCase(
   engine: BrushEngine,
   controller: MixedSceneController,
 ): Promise<LayerMergeGpuTestReport> {
-  const center = { x: 2048, y: 2048 };
+  const center = documentCenter(engine);
   setLayerCompositeTestView(engine, center.x, center.y, 1);
   await drawTap(engine, center.x, center.y, "#d95d39", 820, 0.45, 1_000);
   await engine.setLayerOpacity(0, 0.35);
@@ -314,7 +324,7 @@ async function runClippingCase(
   const variant = new URLSearchParams(window.location.search).get("layerMergeVariant")
     ?? "single";
   const multiUnit = variant === "multi";
-  const center = { x: 2048, y: 2048 };
+  const center = documentCenter(engine);
   setLayerCompositeTestView(engine, center.x, center.y, 1);
   await drawTap(engine, center.x, center.y, "#4b8fd8", 650, 0, 2_000);
   await engine.setLayerOpacity(0, 0.83);
@@ -433,7 +443,7 @@ async function runMixedCase(
     || variant === "rasternormal"
     || variant === "rasteropaque"
     || variant === "rastereffect";
-  const center = { x: 2048, y: 2048 };
+  const center = documentCenter(engine);
   setLayerCompositeTestView(engine, center.x, center.y, 1);
   if (includeRaster) {
     await drawTap(engine, center.x - 130, center.y + 40, "#264653", 900, 0.4, 3_000);
@@ -672,7 +682,7 @@ async function runRejectCase(
   engine: BrushEngine,
   controller: MixedSceneController,
 ): Promise<LayerMergeGpuTestReport> {
-  const center = { x: 2048, y: 2048 };
+  const center = documentCenter(engine);
   setLayerCompositeTestView(engine, center.x, center.y, 1);
   await drawTap(engine, center.x, center.y, "#26734d", 980, 0.55, 4_000);
   await engine.setLayerOpacity(0, 0.88);

@@ -136,6 +136,8 @@ export interface LayerPanelControllerOptions {
   readonly onMultiSelectionChange?: (
     selection: LayerPanelMultiSelectionSnapshot,
   ) => void;
+  readonly canFinishMultiSelection?: () => boolean;
+  readonly requestFinishMultiSelection?: () => Promise<boolean>;
   readonly rasterizeLayer: (
     key: LayerPanelKey,
   ) => Promise<LayerPanelRasterizeResult>;
@@ -599,8 +601,16 @@ export class LayerPanelController {
       if (!elements.addMaskButton.disabled) this.options.addClippingMaskLayer();
     });
     this.listen(elements.multiSelectButton, "click", () => {
-      if (elements.multiSelectButton.disabled || this.options.isInteractionLocked()) return;
-      this.setMultiSelect(!this.multiSelectEnabled);
+      if (elements.multiSelectButton.disabled) return;
+      if (this.multiSelectEnabled) {
+        if (this.options.canFinishMultiSelection?.() === false) return;
+        const request = this.options.requestFinishMultiSelection;
+        if (request) void request();
+        else this.finishMultiSelection();
+        return;
+      }
+      if (this.options.isInteractionLocked()) return;
+      this.setMultiSelect(true);
     });
     this.listen(elements.list, "pointerdown", (raw) => {
       this.handleReorderPointerDown(raw as PointerEvent);
@@ -1523,8 +1533,9 @@ export class LayerPanelController {
       || stats.layers.length >= LAYER_STACK_MAXIMUM
       || !selectedCanAnchorClipping;
     const layerCount = scene?.items.length ?? stats.layers.length;
-    multiSelectButton.disabled = locked
-      || (!this.multiSelectEnabled && layerCount < 2);
+    multiSelectButton.disabled = this.multiSelectEnabled
+      ? this.options.canFinishMultiSelection?.() === false
+      : locked || layerCount < 2;
   }
 
   private createIconStack(icon: IconNode, size = 20): HTMLSpanElement {

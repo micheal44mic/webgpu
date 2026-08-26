@@ -1107,6 +1107,10 @@ assert.throws(
 // dropped submit leaves the previous image in place. Guard it against silent
 // removal, and against losing its dev gate.
 const engineSource = readEngineSource();
+const coldStorageSource = readFileSync(
+  new URL("../src/engine-cold-storage.ts", import.meta.url),
+  "utf8",
+);
 const layerThumbnailSource = readFileSync(
   new URL("../src/layer-thumbnail-renderer.ts", import.meta.url),
   "utf8",
@@ -1466,6 +1470,16 @@ assert.ok(
     < foldViewBody.indexOf("await engine.waitForGpuCapped(label);"),
   "il fence unico del fold deve seguire il submit",
 );
+assert.match(
+  foldViewBody,
+  /if \(completionPolicy === "await-immediately"\) \{\s*await engine\.waitForGpuCapped\(label\);\s*\}/,
+  "i compositi in serie devono poter condividere il fence finale",
+);
+assert.match(
+  mergedBody,
+  /"defer-to-fold-fence"[\s\S]*?await engine\.waitForGpuCapped\(`Merged \$\{side\} folds`\)/,
+  "una ricostruzione multi-livello deve attendere la GPU una sola volta alla fine",
+);
 assert.match(foldViewBody, /pass\.setScissorRect\(/,
   "i fold renderizzati devono restare limitati ai bounds conservativi");
 assert.match(foldViewBody, /loadOp: clearDestination \? "clear" : "load"/,
@@ -1582,6 +1596,23 @@ assert.match(engineSource, /firstDocumentInconsistentDiagnostic/);
 assert.match(engineSource, /this\.historyStateInconsistent = true;[\s\S]*?this\.historyBusy = true;/,
   "il latch documentale deve bloccare ogni mutazione successiva");
 assert.match(engineSource, /releaseFusedLayerBakes\(this\)/);
+assert.match(engineSource, /const LAYER_BAKE_CACHE_MAX_COUNT = 8/);
+assert.match(engineSource, /const LAYER_BAKE_CACHE_MAX_BYTES = 256 \* 1024 \* 1024/);
+assert.match(
+  engineSource,
+  /const retainBake = retainedLayerBakeIds\(engine\)\.has\(record\.id\)[\s\S]*?gpu\.bake = transientBake;[\s\S]*?gpu\.bakeValid = true/,
+  "i risultati derivati vicini devono essere riusati senza superare il budget fisso",
+);
+assert.match(
+  engineSource,
+  /for \(const \[layerId, gpu\] of engine\.layerGpu\) \{\s*if \(gpu\.bake && gpu\.bakeValid && retained\.has\(layerId\)\) continue;/,
+  "la pulizia deve conservare soltanto cache valide incluse nel budget",
+);
+assert.match(
+  coldStorageSource,
+  /if \(!gpu\.bakeValid\) \{\s*engine\.destroyLayerBake\(gpu\.bake\);\s*gpu\.bake = null;\s*\}/,
+  "l'espulsione del raw hot non deve eliminare una cache derivata ancora valida",
+);
 assert.match(engineSource, /readonly liveMergedSurfaceTextures = new Map<GPUTexture, MergedSurfaceResources>\(\)/);
 assert.match(engineSource, /layerCompositeMiB/,
   "le superfici fuse e i bake transitori devono avere righe di memoria distinte");
@@ -2418,17 +2449,22 @@ assert.match(
 const loadingStart = sceneEditorSource.indexOf("private async showLoading(");
 const loadingBody = sceneEditorSource.slice(loadingStart, loadingStart + 1_300);
 assert.match(loadingBody, /loadingOverlay\.hidden = false;/);
-assert.match(
+assert.doesNotMatch(
   loadingBody,
-  /await this\.nextAnimationFrame\(\);\s*if \(this\.disposed\) return false;\s*await this\.nextAnimationFrame\(\);/,
-  "il loader deve ricevere un paint prima del lavoro di cambio livello",
+  /nextAnimationFrame|requestAnimationFrame/,
+  "il loader non deve aggiungere frame di latenza prima dell'operazione",
 );
 assert.match(loadingBody, /loadingOverlay\.hidden = true;/);
 const selectUiBody = sceneEditorSource.slice(selectStart, selectStart + 5_500);
 assert.match(
   selectUiBody,
-  /await this\.showLoading\("Loading layer…"\)[\s\S]*?await this\.options\.engine\.setActiveLayer\(target\.rasterIndex\);[\s\S]*?await this\.options\.engine\.waitForIdle\(\);/,
-  "il loader dello switch deve coprire anche presentazione e completamento GPU",
+  /await this\.showLoading\("Loading layer…"\)[\s\S]*?await this\.options\.engine\.setActiveLayer\(target\.rasterIndex\);/,
+  "il loader dello switch deve avvolgere l'operazione del motore",
+);
+assert.doesNotMatch(
+  selectUiBody,
+  /setActiveLayer\(target\.rasterIndex\);[\s\S]{0,300}?waitForIdle\(\)/,
+  "il controller non deve duplicare il fence già posseduto dal cambio livello",
 );
 assert.match(selectUiBody, /finally \{[\s\S]*?this\.finish\(\{ loading: true \}\);/);
 const addUiStart = sceneEditorSource.indexOf("private async addRasterLayerTransaction(");
@@ -2831,7 +2867,7 @@ assert.match(layerCompositeGpuTestSource, /zoomBuiltFinalRasterStackMip2/,
   "il test visuale zoom deve verificare il percorso final-raster-stack corrente");
 assert.match(layerCompositeGpuTestSource, /zoomExplicitReadbackCompletedMergedAboveMip2/);
 assert.match(layerCompositeGpuTestSource, /zoomMip2MatchesIndependentBoxFilter/);
-assert.match(layerCompositeGpuTestSource, /fiveLayerBakesWereReleased/);
+assert.match(layerCompositeGpuTestSource, /fiveLayerBakeCacheIsBounded/);
 assert.match(layerCompositeGpuTestSource, /opaqueRawFastPathIsByteExact/);
 // The switch lock has to be held across the awaits, or a pointerdown landing
 // during the 150-215 ms rebuild starts a stroke on a half-swapped layer.

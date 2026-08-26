@@ -98,7 +98,7 @@ function pointer(pointerId, pointerType, clientX, clientY, constrainAspect) {
   };
 }
 
-async function createHarness() {
+async function createHarness({ deferPreparation = false, awaitActivation = true } = {}) {
   const browser = new FakeBrowser();
   const dock = new FakeElement();
   const rectangle = new FakeElement();
@@ -113,6 +113,10 @@ async function createHarness() {
   const previewUpdates = [];
   let preparations = 0;
   let releases = 0;
+  let releasePreparation = () => {};
+  const preparationBarrier = deferPreparation
+    ? new Promise((resolve) => { releasePreparation = resolve; })
+    : Promise.resolve();
   const engine = {
     getVectorTextViewState: () => ({
       canvasWidth: 1000,
@@ -133,11 +137,15 @@ async function createHarness() {
     },
     async prepareShapePreviewPresentation() {
       preparations += 1;
+      await preparationBarrier;
     },
     async releaseShapePreviewPresentation() {
       releases += 1;
     },
     updateShapePreview(preview) {
+      if (preview && (preview.width <= 0 || preview.height <= 0)) {
+        throw new RangeError("Shape preview bounds must be greater than zero.");
+      }
       previewUpdates.push(preview ? { ...preview } : null);
       return true;
     },
@@ -153,8 +161,10 @@ async function createHarness() {
     },
     initialColor: "#345678",
   });
-  await controller.setActive(true);
+  const activation = controller.setActive(true);
+  if (awaitActivation) await activation;
   return {
+    activation,
     additions,
     controller,
     ellipse,
@@ -162,10 +172,34 @@ async function createHarness() {
     get preparations() { return preparations; },
     get releases() { return releases; },
     previewUpdates,
+    releasePreparation,
     rectangle,
     star,
     status,
   };
+}
+
+// Touch may begin and even finish before the ordered preview transaction is
+// ready. The zero-area pointerdown stays valid, movement is retained, and the
+// single SVG commit waits for preparation instead of losing the gesture.
+{
+  const harness = await createHarness({ deferPreparation: true, awaitActivation: false });
+  assert.equal(harness.controller.isPresentationPreparing, true);
+  assert.equal(harness.controller.beginPointer(pointer(41, "touch", 20, 30)), true);
+  assert.equal(harness.previewUpdates.at(-1), null);
+  harness.controller.updatePointer(pointer(41, "touch", 90, 70));
+  const completion = harness.controller.endPointer(pointer(41, "touch", 90, 70), true);
+  assert.equal(harness.additions.length, 0);
+  harness.releasePreparation();
+  await harness.activation;
+  assert.equal(await completion, true);
+  assert.equal(harness.additions.length, 1);
+  assert.equal(harness.additions[0].name, "Rectangle");
+  assert.deepEqual(
+    [harness.additions[0].seed.shapeDefinition.width, harness.additions[0].seed.shapeDefinition.height],
+    [140, 80],
+  );
+  harness.controller.dispose();
 }
 
 // One touch grows symmetrically from its fixed center; touch two changes only

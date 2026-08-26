@@ -1100,13 +1100,20 @@ assert.equal(
     engineSource.indexOf("async setActiveMixedSceneItem"),
     engineSource.indexOf("  updateVectorTextNode("),
   );
-  const rasterSelectionDrain = rasterSelection.indexOf("await this.waitForIdle();");
   const rasterSelectionClear = rasterSelection.indexOf(
     "clearVectorTextPresentationForTransaction(this);",
   );
+  const rasterSelectionActivation = rasterSelection.indexOf(
+    "return await this.setActiveLayer(index);",
+  );
   assert(
-    rasterSelectionDrain >= 0 && rasterSelectionClear > rasterSelectionDrain,
-    "la selezione raster deve drenare il frame prima del clear transazionale",
+    rasterSelectionClear >= 0 && rasterSelectionActivation > rasterSelectionClear,
+    "la selezione raster deve pulire la preview prima di delegare l'attivazione al motore",
+  );
+  assert.doesNotMatch(
+    rasterSelection.slice(rasterSelectionClear, rasterSelectionActivation),
+    /waitForIdle\(\)/,
+    "la selezione raster non deve duplicare il fence già posseduto da setActiveLayer",
   );
 }
 

@@ -360,6 +360,7 @@ function createHarness({ holdEnabled = true } = {}) {
   let spatialBlurEditActive = false;
   let shapeToolActive = true;
   let shapeToolBusy = false;
+  let shapePresentationPreparing = false;
   let destructivePreviewNavigationActive = false;
   let openHistoryEdit = null;
   let beginStrokeAllowed = true;
@@ -458,6 +459,7 @@ function createHarness({ holdEnabled = true } = {}) {
   const shape = {
     get isActive() { return shapeToolActive; },
     get isBusy() { return shapeToolBusy; },
+    get isPresentationPreparing() { return shapePresentationPreparing; },
     beginPointer(input) {
       calls.beginShape.push(input);
       return true;
@@ -490,8 +492,13 @@ function createHarness({ holdEnabled = true } = {}) {
     getSelectionSettings: () => ({ tolerance: 23, combineMode: "add" }),
     getHistoryState: () => ({ ...historyState(), openEdit: openHistoryEdit }),
     onHistoryState: () => { calls.historyPublished += 1; },
-    operationLocked: (allowDestructivePreviewEdit = false) => (
-      operationIsLocked && !allowDestructivePreviewEdit
+    operationLocked: (
+      allowDestructivePreviewEdit = false,
+      allowShapePresentationPreparation = false,
+    ) => (
+      operationIsLocked
+      && !allowDestructivePreviewEdit
+      && !(allowShapePresentationPreparation && shapePresentationPreparing)
     ),
     viewOperationLocked: () => viewIsLocked,
     isPaintReadinessPending: () => paintReadinessPending,
@@ -524,6 +531,7 @@ function createHarness({ holdEnabled = true } = {}) {
     setSpatialBlurEditActive(value) { spatialBlurEditActive = value; },
     setShapeToolActive(value) { shapeToolActive = value; },
     setShapeToolBusy(value) { shapeToolBusy = value; },
+    setShapePresentationPreparing(value) { shapePresentationPreparing = value; },
     setOpenHistoryEdit(value) { openHistoryEdit = value; },
     setDestructivePreviewNavigationActive(value) {
       destructivePreviewNavigationActive = value;
@@ -1007,6 +1015,33 @@ async function flushMicrotasks() {
   assert.equal(harness.calls.zoom.length, 0);
   assert.equal(harness.calls.rotate.length, 0);
   assert.equal(harness.controller.isPointerActive, false);
+  harness.controller.dispose();
+}
+
+// On slower mobile GPUs the first touch can arrive while ordered shape
+// presentation is still preparing. That one preparation lock is bypassed for
+// Shapes only, while the pointer is captured normally.
+{
+  const harness = createHarness();
+  harness.setActiveTool("shapes");
+  harness.setShapeToolBusy(true);
+  harness.setShapePresentationPreparing(true);
+  harness.setOperationLocked(true);
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 205,
+    pointerType: "touch",
+    clientX: 30,
+    clientY: 40,
+  }));
+  assert.equal(harness.controller.pointerMode, "shape");
+  assert.equal(harness.calls.beginShape.length, 1);
+  assert.equal(harness.canvas.captures.has(205), true);
+  harness.canvas.dispatchEvent(makeEvent("pointerup", {
+    pointerId: 205,
+    pointerType: "touch",
+    clientX: 30,
+    clientY: 40,
+  }));
   harness.controller.dispose();
 }
 

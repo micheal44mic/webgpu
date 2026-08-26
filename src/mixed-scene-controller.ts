@@ -413,6 +413,8 @@ export class MixedSceneController {
   private transformCommitBusy = false;
   private pendingRasterPointerId: number | null = null;
   private pendingRasterPointerMove: PointerEvent | null = null;
+  private pendingRasterPointerGeneration = 0;
+  private cancelledPendingRasterPointerGeneration: number | null = null;
   private readonly touchContacts = new Map<number, ScenePoint>();
   private touchTransformModifierPointerId: number | null = null;
   private touchNavigationGesture: TouchNavigationGesture | null = null;
@@ -1092,8 +1094,11 @@ export class MixedSceneController {
     return this.applyTransformSession();
   }
 
-  cancelTransform(): Promise<boolean> {
-    if (!this.transformSessionOpen) return Promise.resolve(true);
+  async cancelTransform(): Promise<boolean> {
+    const preparation = this.groupTransformPreparation
+      ?? this.rasterTransformPreparation;
+    if (preparation) await preparation;
+    if (!this.transformSessionOpen) return true;
     return this.cancelTransformSession();
   }
 
@@ -4251,6 +4256,9 @@ export class MixedSceneController {
   }
 
   private enterTouchNavigation(): void {
+    if (this.pendingRasterPointerId !== null) {
+      this.cancelledPendingRasterPointerGeneration = this.pendingRasterPointerGeneration;
+    }
     this.pendingRasterPointerId = null;
     this.pendingRasterPointerMove = null;
     this.touchTransformModifierPointerId = null;
@@ -4346,10 +4354,12 @@ export class MixedSceneController {
       event.preventDefault();
       this.pendingRasterPointerId = event.pointerId;
       this.pendingRasterPointerMove = null;
+      const generation = ++this.pendingRasterPointerGeneration;
+      this.cancelledPendingRasterPointerGeneration = null;
       if (!this.interactionCanvas.hasPointerCapture(event.pointerId)) {
         this.interactionCanvas.setPointerCapture(event.pointerId);
       }
-      void this.resumeGroupPointerAfterPreparation(event);
+      void this.resumeGroupPointerAfterPreparation(event, generation);
       return;
     }
     if (
@@ -4359,10 +4369,12 @@ export class MixedSceneController {
       event.preventDefault();
       this.pendingRasterPointerId = event.pointerId;
       this.pendingRasterPointerMove = null;
+      const generation = ++this.pendingRasterPointerGeneration;
+      this.cancelledPendingRasterPointerGeneration = null;
       if (!this.interactionCanvas.hasPointerCapture(event.pointerId)) {
         this.interactionCanvas.setPointerCapture(event.pointerId);
       }
-      void this.resumeRasterPointerAfterPreparation(event);
+      void this.resumeRasterPointerAfterPreparation(event, generation);
       return;
     }
     const view = this.host.getVectorTextViewState();
@@ -4517,9 +4529,23 @@ export class MixedSceneController {
     this.updateTransformUi();
   }
 
-  private async resumeRasterPointerAfterPreparation(event: PointerEvent): Promise<void> {
+  private async resumeRasterPointerAfterPreparation(
+    event: PointerEvent,
+    generation: number,
+  ): Promise<void> {
     await this.prepareSelectedRasterTransform();
-    if (this.pendingRasterPointerId !== event.pointerId) return;
+    if (
+      this.pendingRasterPointerId !== event.pointerId
+      || this.pendingRasterPointerGeneration !== generation
+    ) {
+      if (this.cancelledPendingRasterPointerGeneration === generation) {
+        this.cancelledPendingRasterPointerGeneration = null;
+        if (this.transformSessionKind === "raster" && !this.activeInteraction) {
+          await this.cancelTransformSession();
+        }
+      }
+      return;
+    }
     const pendingMove = this.pendingRasterPointerMove;
     this.pendingRasterPointerId = null;
     this.pendingRasterPointerMove = null;
@@ -4530,9 +4556,23 @@ export class MixedSceneController {
     }
   }
 
-  private async resumeGroupPointerAfterPreparation(event: PointerEvent): Promise<void> {
+  private async resumeGroupPointerAfterPreparation(
+    event: PointerEvent,
+    generation: number,
+  ): Promise<void> {
     await this.prepareSelectedGroupTransform();
-    if (this.pendingRasterPointerId !== event.pointerId) return;
+    if (
+      this.pendingRasterPointerId !== event.pointerId
+      || this.pendingRasterPointerGeneration !== generation
+    ) {
+      if (this.cancelledPendingRasterPointerGeneration === generation) {
+        this.cancelledPendingRasterPointerGeneration = null;
+        if (this.transformSessionKind === "group" && !this.activeInteraction) {
+          await this.cancelTransformSession();
+        }
+      }
+      return;
+    }
     const pendingMove = this.pendingRasterPointerMove;
     this.pendingRasterPointerId = null;
     this.pendingRasterPointerMove = null;
@@ -4901,6 +4941,7 @@ export class MixedSceneController {
 
   private finishPointer(event: PointerEvent): void {
     if (this.pendingRasterPointerId === event.pointerId) {
+      this.cancelledPendingRasterPointerGeneration = this.pendingRasterPointerGeneration;
       this.pendingRasterPointerId = null;
       this.pendingRasterPointerMove = null;
     }

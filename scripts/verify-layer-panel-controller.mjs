@@ -272,6 +272,8 @@ const layerResults = [];
 const multiSelectionUpdates = [];
 const thumbnailInvalidations = [];
 const thumbnailEnsures = [];
+let multiSelectionFinishAllowed = true;
+let multiSelectionFinishRequests = 0;
 const controller = new LayerPanelController({
   browser,
   document,
@@ -306,6 +308,12 @@ const controller = new LayerPanelController({
   },
   onMultiSelectionChange: ({ enabled, orderedKeys }) => {
     multiSelectionUpdates.push({ enabled, orderedKeys: [...orderedKeys] });
+  },
+  canFinishMultiSelection: () => multiSelectionFinishAllowed,
+  requestFinishMultiSelection: async () => {
+    multiSelectionFinishRequests += 1;
+    controller.finishMultiSelection();
+    return true;
   },
   rasterizeLayer: async (key) => {
     rasterizeCalls.push(key);
@@ -474,6 +482,19 @@ assert.equal(
   false,
   "finishing an inactive multiple selection must be a no-op",
 );
+
+// An open group transform owns the generic interaction lock. Its Done button
+// remains the escape route and delegates to the shared async coordinator.
+controller.setMultiSelect(true);
+interactionLocked = true;
+controller.syncToolbar(stats, true);
+assert.equal(elements.multiSelectButton.disabled, false);
+elements.multiSelectButton.dispatchEvent(new Event("click"));
+await Promise.resolve();
+assert.equal(multiSelectionFinishRequests, 1);
+assert.equal(controller.isMultiSelect, false);
+interactionLocked = false;
+
 const clippingRequest = controller.requestClippingToggle.bind(controller);
 controller.contextKey = "raster:8";
 clippingRequest();

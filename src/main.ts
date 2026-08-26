@@ -23,7 +23,6 @@ import { AppDiagnosticsController } from "./app-diagnostics-controller";
 import { GpuMemoryPanelController } from "./gpu-memory-panel-controller";
 import { RuntimeStatsController } from "./runtime-stats-controller";
 import { HistoryControlsController } from "./history-controls-controller";
-import { MemoryLimitDialogController } from "./memory-limit-dialog-controller";
 import { MobileStrokeSheetController } from "./mobile-stroke-sheet";
 import { RasterAdjustmentsController } from "./raster-adjustments-controller";
 import { RasterStyleController } from "./raster-style-controller";
@@ -221,11 +220,6 @@ const rasterSelectionGestureContext: CanvasRenderingContext2D =
   rasterSelectionGestureContextCandidate;
 const appElement = element<HTMLElement>("app");
 const editorStage = element<HTMLElement>("editorStage");
-const memoryLimitDialogController = new MemoryLimitDialogController({
-  root: element<HTMLDialogElement>("memoryLimitDialog"),
-  cancelButton: element<HTMLButtonElement>("memoryLimitDialogCancel"),
-  proceedButton: element<HTMLButtonElement>("memoryLimitDialogProceed"),
-});
 const editorTopbar = element<HTMLElement>("editorTopbar");
 const mobileToolRail = element<HTMLElement>("mobileToolRail");
 const projectHomeButton = element<HTMLButtonElement>("projectHomeButton");
@@ -483,24 +477,18 @@ const bevelBoundingFieldEnabled = pageSearchParams.get("bevelField") === "bbox";
 // Same-build A/B escape hatch: ROI is production-default, `vectorTextRoi=0`
 // restores the previous full-viewport run textures for local measurements.
 const vectorTextRoiCacheEnabled = pageSearchParams.get("vectorTextRoi") !== "0";
-const appleMobileMemoryLifecycle =
-  /iPhone|iPad|iPod/i.test(navigator.userAgent)
-  || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 const layerColdCompressionMode = pageSearchParams.get("layerCompressionRuntime");
-// Attiva di default: il codec segue ormai il formato del documento e il
-// cancello decide da solo quando vale la pena, quindi non c'e' piu' niente da
-// tenere dietro a un flag. `?layerCompressionRuntime=0` la spegne, e resta
-// l'unico modo di misurare un prima/dopo sullo stesso build.
-const layerColdCompressionRequested = layerColdCompressionMode !== "0";
+// Compression trades interaction latency for a smaller inactive working set.
+// Keep the speed-first path as the default and expose compression for explicit
+// memory-constrained sessions only.
+const layerColdCompressionRequested = layerColdCompressionMode === "1";
 const layerColdDirectHotHydrationEnabled =
   pageSearchParams.get("layerDirectHotHydration") !== "0";
 const layerColdTileCompositeEnabled =
   pageSearchParams.get("layerColdTileComposite") !== "0";
 const layerColdAdjacentPrefetchMode =
   pageSearchParams.get("layerAdjacentPrefetch");
-const layerColdAdjacentPrefetchEnabled =
-  layerColdAdjacentPrefetchMode === "1"
-  || (!appleMobileMemoryLifecycle && layerColdAdjacentPrefetchMode !== "0");
+const layerColdAdjacentPrefetchEnabled = layerColdAdjacentPrefetchMode === "1";
 element<HTMLElement>("gpuMemoryVectorTextRow").hidden = false;
 element<HTMLElement>("gpuMemoryRasterImageRow").hidden = false;
 let mixedSceneController: MixedSceneController | null = null;
@@ -516,6 +504,7 @@ let shapeToolController: ShapeToolController | null = null;
 let cloneSourcePreparationToken = 0;
 let mixedSceneInitializationPromise: Promise<MixedSceneController> | null = null;
 let layerMultiTransformSelectionRevision = 0;
+let layerMultiSelectionFinishPromise: Promise<boolean> | null = null;
 let editorToolsController: EditorToolsController;
 let editorFiltersController: EditorFiltersController | null = null;
 let editorSettingsController: EditorSettingsController | null = null;
@@ -584,13 +573,33 @@ function selectCanvasToolWithMixedScene(tool: CanvasInputTool): boolean {
   return selected;
 }
 
-async function finishLayerMultiSelectionForToolChange(): Promise<boolean> {
+function canFinishLayerMultiSelection(): boolean {
+  if (layerPanelController?.isMultiSelect !== true) return true;
+  const action = mixedSceneController?.getTransformActionSnapshot();
+  if (action?.preparing) return true;
+  if (action?.active) return action.canApply;
+  return !interactionLocked();
+}
+
+async function runLayerMultiSelectionFinish(): Promise<boolean> {
   const panel = layerPanelController;
   if (!panel?.isMultiSelect) return true;
   const controller = mixedSceneController;
   if (controller && !await controller.applyTransform()) return false;
   panel.finishMultiSelection();
   return true;
+}
+
+function finishLayerMultiSelectionForToolChange(): Promise<boolean> {
+  if (layerMultiSelectionFinishPromise) return layerMultiSelectionFinishPromise;
+  const pending = runLayerMultiSelectionFinish();
+  layerMultiSelectionFinishPromise = pending;
+  void pending.finally(() => {
+    if (layerMultiSelectionFinishPromise === pending) {
+      layerMultiSelectionFinishPromise = null;
+    }
+  });
+  return pending;
 }
 const engine = new BrushEngine(canvas, {
   onStatus(message, kind) {
@@ -600,9 +609,6 @@ const engine = new BrushEngine(canvas, {
       appDiagnosticsController?.recordStatusError(message);
     }
     rasterAdjustmentsController?.handleEngineStatus(message, kind);
-  },
-  onMemoryAdmissionWarning() {
-    return memoryLimitDialogController.confirm();
   },
   onStats(stats) {
     runtimeStatsController?.update(stats);
@@ -1206,12 +1212,7 @@ canvasToolController = new CanvasToolController({
   isEngineReady: () => engineInitialized,
   isInteractionLocked: canvasToolSelectionLocked,
   isMultiSelectionActive: () => layerPanelController?.isMultiSelect === true,
-  canFinishMultiSelectionForToolChange: () => {
-    const action = mixedSceneController?.getTransformActionSnapshot();
-    if (action?.preparing) return true;
-    if (action?.active) return action.canApply;
-    return !interactionLocked();
-  },
+  canFinishMultiSelectionForToolChange: canFinishLayerMultiSelection,
   finishMultiSelectionForToolChange: finishLayerMultiSelectionForToolChange,
   closeBrushStudioForTool: (tool) => {
     if (tool !== "paint" && mobileBrushStudio?.isOpen) {
@@ -2011,6 +2012,8 @@ layerPanelController = new LayerPanelController({
       );
     });
   },
+  canFinishMultiSelection: canFinishLayerMultiSelection,
+  requestFinishMultiSelection: finishLayerMultiSelectionForToolChange,
   rasterizeLayer: (key) => sceneEditorController!.rasterizeLayer(key),
   addRasterLayer: () => sceneEditorController?.addRasterLayer(),
   duplicateSelectedLayer: () => sceneEditorController!.duplicateSelectedLayer(),
@@ -2171,11 +2174,20 @@ function fillPreviewAllowsCanvasNavigation(): boolean {
   return previewState.active && !previewState.terminal;
 }
 
-function nonHistoryOperationLocked(allowDestructivePreviewEdit = false): boolean {
+function nonHistoryOperationLocked(
+  allowDestructivePreviewEdit = false,
+  allowShapePresentationPreparation = false,
+): boolean {
   return !engineInitialized
     || sceneEditorController?.isBusy === true
     || mixedSceneController?.isBusy === true
-    || shapeToolController?.isBusy === true
+    || (
+      shapeToolController?.isBusy === true
+      && !(
+        allowShapePresentationPreparation
+        && shapeToolController.isPresentationPreparing
+      )
+    )
     || brushQuickControlsController?.isDragging === true
     || mobileBrushStudio?.isOpen === true
     || historyState.openEdit === "transform"
@@ -2193,8 +2205,14 @@ function nonHistoryOperationLocked(allowDestructivePreviewEdit = false): boolean
     || editorExtension?.isBusy() === true;
 }
 
-function operationLocked(allowDestructivePreviewEdit = false): boolean {
-  return nonHistoryOperationLocked(allowDestructivePreviewEdit)
+function operationLocked(
+  allowDestructivePreviewEdit = false,
+  allowShapePresentationPreparation = false,
+): boolean {
+  return nonHistoryOperationLocked(
+    allowDestructivePreviewEdit,
+    allowShapePresentationPreparation,
+  )
     || historyControlsController.uiBusy
     || historyState.busy;
 }

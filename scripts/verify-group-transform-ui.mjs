@@ -75,7 +75,7 @@ assert.doesNotMatch(
 
 const toolExitCoordinator = section(
   main,
-  "async function finishLayerMultiSelectionForToolChange()",
+  "function canFinishLayerMultiSelection()",
   "const engine = new BrushEngine(",
 );
 assert.match(
@@ -87,6 +87,16 @@ assert.doesNotMatch(
   toolExitCoordinator,
   /mergeLayers|mergeSceneItems|requestMerge/,
   "Leaving multiple selection through a tool must never merge layers.",
+);
+assert.match(
+  toolExitCoordinator,
+  /if \(layerMultiSelectionFinishPromise\) return layerMultiSelectionFinishPromise;[\s\S]*?layerMultiSelectionFinishPromise = pending/,
+  "Done and tool changes must share one completion owner.",
+);
+assert.match(
+  panelCallback,
+  /canFinishMultiSelection: canFinishLayerMultiSelection,[\s\S]*?requestFinishMultiSelection: finishLayerMultiSelectionForToolChange/,
+  "The panel Done button must use the same exit coordinator as tool changes.",
 );
 assert.match(
   canvasTools,
@@ -110,8 +120,8 @@ assert.match(
 );
 const controllerExitReadiness = section(
   main,
-  "  canFinishMultiSelectionForToolChange: () => {",
-  "  finishMultiSelectionForToolChange:",
+  "function canFinishLayerMultiSelection(): boolean {",
+  "async function runLayerMultiSelectionFinish(): Promise<boolean> {",
 );
 assert.match(controllerExitReadiness, /if \(action\?\.preparing\) return true;/);
 assert.match(controllerExitReadiness, /if \(action\?\.active\) return action\.canApply;/);
@@ -119,6 +129,21 @@ assert.match(
   controllerExitReadiness,
   /return !interactionLocked\(\);/,
   "An unrelated engine lock must not inherit the group-selection escape hatch.",
+);
+assert.match(
+  layerPanel,
+  /multiSelectButton\.disabled = this\.multiSelectEnabled[\s\S]*?canFinishMultiSelection\?\.\(\) === false[\s\S]*?: locked \|\| layerCount < 2/,
+  "Done must remain available while the open group transaction owns the generic lock.",
+);
+assert.match(
+  controller,
+  /cancelledPendingRasterPointerGeneration[\s\S]*?await this\.cancelTransformSession\(\)/,
+  "A release during async preparation must close the no-op transaction after preparation.",
+);
+assert.match(
+  controller,
+  /async cancelTransform\(\): Promise<boolean> \{[\s\S]*?if \(preparation\) await preparation;/,
+  "Cancel must serialize behind an in-flight group preparation.",
 );
 
 const setSelection = section(
@@ -422,6 +447,58 @@ preparedApplyShell.transformSessionOpen = true;
 releasePreparation();
 assert.equal(await preparedApply, true);
 assert.equal(preparedApplyCalls, 1);
+
+let releaseCancelPreparation;
+const cancelPreparationGate = new Promise((resolve) => {
+  releaseCancelPreparation = resolve;
+});
+let preparedCancelCalls = 0;
+const preparedCancelShell = Object.create(MixedSceneController.prototype);
+Object.assign(preparedCancelShell, {
+  groupTransformPreparation: cancelPreparationGate,
+  rasterTransformPreparation: null,
+  transformSessionOpen: false,
+  cancelTransformSession: async () => {
+    preparedCancelCalls += 1;
+    return true;
+  },
+});
+const preparedCancel = preparedCancelShell.cancelTransform();
+await Promise.resolve();
+preparedCancelShell.transformSessionOpen = true;
+releaseCancelPreparation();
+assert.equal(await preparedCancel, true);
+assert.equal(preparedCancelCalls, 1);
+
+let releaseEarlyPointerPreparation;
+const earlyPointerPreparation = new Promise((resolve) => {
+  releaseEarlyPointerPreparation = resolve;
+});
+let earlyPointerCancels = 0;
+const earlyPointerShell = Object.create(MixedSceneController.prototype);
+Object.assign(earlyPointerShell, {
+  pendingRasterPointerId: null,
+  pendingRasterPointerMove: null,
+  pendingRasterPointerGeneration: 4,
+  cancelledPendingRasterPointerGeneration: 4,
+  transformSessionKind: null,
+  activeInteraction: null,
+  prepareSelectedGroupTransform: () => earlyPointerPreparation,
+  cancelTransformSession: async () => {
+    earlyPointerCancels += 1;
+    return true;
+  },
+});
+const earlyPointerResume = earlyPointerShell.resumeGroupPointerAfterPreparation(
+  { pointerId: 31 },
+  4,
+);
+await Promise.resolve();
+earlyPointerShell.transformSessionKind = "group";
+releaseEarlyPointerPreparation();
+await earlyPointerResume;
+assert.equal(earlyPointerCancels, 1);
+assert.equal(earlyPointerShell.cancelledPendingRasterPointerGeneration, null);
 
 let pointerFinishUiUpdates = 0;
 const pointerFinishShell = Object.create(MixedSceneController.prototype);

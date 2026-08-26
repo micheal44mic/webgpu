@@ -204,7 +204,6 @@ export class SceneEditorController {
           "The merge finished, but the published scene does not contain the expected replacement.",
         );
       }
-      await this.options.engine.waitForIdle();
       return { itemCount: result.itemCount };
     } finally {
       this.finish({ loading: true, syncActiveRasterControls: true });
@@ -555,9 +554,7 @@ export class SceneEditorController {
     loadingLabel.textContent = message;
     loadingOverlay.hidden = false;
     app.setAttribute("aria-busy", "true");
-    await this.nextAnimationFrame();
-    if (this.disposed) return false;
-    await this.nextAnimationFrame();
+    await Promise.resolve();
     return !this.disposed;
   }
 
@@ -565,10 +562,6 @@ export class SceneEditorController {
     const { app, loadingOverlay } = this.options.elements;
     loadingOverlay.hidden = true;
     app.removeAttribute("aria-busy");
-  }
-
-  private nextAnimationFrame(): Promise<number> {
-    return new Promise((resolve) => this.options.browser.requestAnimationFrame(resolve));
   }
 
   private async selectLayerTransaction(key: SceneLayerKey): Promise<void> {
@@ -589,7 +582,6 @@ export class SceneEditorController {
         if (!(await this.showLoading("Loading layer…"))) return;
         const result = await this.options.engine.setActiveLayer(target.rasterIndex);
         this.options.syncActiveRasterControls();
-        await this.options.engine.waitForIdle();
         this.options.elements.result.textContent = result
           ? `Layer ${result.toIndex + 1} active in ${result.totalMs.toFixed(0)} ms`
             + ` (effects ${result.effectsMs.toFixed(0)} ms).`
@@ -627,7 +619,6 @@ export class SceneEditorController {
       ) return;
       const result = await this.options.engine.setActiveMixedSceneItem(key);
       if (item.kind === "raster") this.options.syncActiveRasterControls();
-      await this.options.engine.waitForIdle();
       const snapshot = this.options.engine.getMixedSceneSnapshot();
       if (snapshot) this.options.getVectorController()?.syncScene(snapshot);
       this.options.elements.result.textContent = item.kind === "text"

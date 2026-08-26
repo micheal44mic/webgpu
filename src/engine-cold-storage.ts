@@ -1071,9 +1071,10 @@ export function evictReconstructibleLayerResources(engine: BrushEngine, record: 
     );
   }
   engine.layerPresentationFrozen = true;
-  engine.destroyLayerBake(gpu.bake);
-  gpu.bake = null;
-  gpu.bakeValid = false;
+  if (!gpu.bakeValid) {
+    engine.destroyLayerBake(gpu.bake);
+    gpu.bake = null;
+  }
   destroyLayerHot(gpu.hot);
   gpu.hot = null;
 }

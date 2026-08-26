@@ -138,6 +138,7 @@ export type CanvasInputShapePort = Pick<
   ShapeToolController,
   | "isActive"
   | "isBusy"
+  | "isPresentationPreparing"
   | "beginPointer"
   | "addPointer"
   | "updatePointer"
@@ -182,7 +183,10 @@ export interface CanvasInputControllerOptions {
   readonly getSelectionSettings: () => CanvasInputSelectionSettings;
   readonly getHistoryState: () => HistoryState;
   readonly onHistoryState: (state: HistoryState) => void;
-  readonly operationLocked: (allowDestructiveEdit?: boolean) => boolean;
+  readonly operationLocked: (
+    allowDestructiveEdit?: boolean,
+    allowShapePresentationPreparation?: boolean,
+  ) => boolean;
   readonly viewOperationLocked: () => boolean;
   readonly isPaintReadinessPending: () => boolean;
   readonly isLiquifyEditActive: () => boolean;
@@ -1150,6 +1154,8 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
         ? options.viewOperationLocked()
         : options.operationLocked(
           liquifyEditRequested || fillPreviewEditRequested || spatialBlurEditRequested,
+          requestedPointerMode === "shape"
+            && shapeController?.isPresentationPreparing === true,
         )
     ) {
       if (!deferPenForPaintReadiness) {

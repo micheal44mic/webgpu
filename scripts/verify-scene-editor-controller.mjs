@@ -419,8 +419,8 @@ controller.dispose();
 assert.equal(controller.isBusy, false);
 assert.equal(elements.loadingOverlay.hidden, true);
 
-// Disposal while the two-frame loader is waiting must prevent a new engine
-// mutation from starting after pagehide.
+// The loader yields only to the promise microtask: it adds no animation-frame
+// latency, while disposal can still stop the mutation before it starts.
 {
   const queuedFrames = [];
   let addCalls = 0;
@@ -459,9 +459,8 @@ assert.equal(elements.loadingOverlay.hidden, true);
   });
   lifecycleController.addRasterLayer();
   assert.equal(lifecycleController.isBusy, true);
-  assert.equal(queuedFrames.length, 1);
+  assert.equal(queuedFrames.length, 0);
   lifecycleController.dispose();
-  queuedFrames.shift()(0);
   await settle();
   assert.equal(addCalls, 0);
   assert.equal(lifecycleController.isBusy, false);
