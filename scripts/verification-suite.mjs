@@ -88,6 +88,8 @@ export const verificationScripts = Object.freeze([
   "verify-scene-boundaries.mjs",
   "verify-selection.mjs",
   "verify-shadow-core.mjs",
+  "verify-shape-creation-interaction.mjs",
+  "verify-shape-tool-controller.mjs",
   "verify-source-boundaries.mjs",
   "verify-stabilization-ui.mjs",
   "verify-stroke-core.mjs",
@@ -99,5 +101,6 @@ export const verificationScripts = Object.freeze([
   "verify-unified-editor-ui.mjs",
   "verify-vector-text.mjs",
   "verify-vector-shadow-3d.mjs",
+  "verify-vector-shapes.mjs",
   "verify-view-rotation.mjs",
 ]);

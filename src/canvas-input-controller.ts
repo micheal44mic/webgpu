@@ -21,10 +21,15 @@ import type {
   CloneToolController,
   CloneToolPointerInput,
 } from "./clone-tool-controller";
+import type {
+  ShapeToolController,
+  ShapeToolPointerInput,
+} from "./shape-tool-controller";
 
 export type CanvasInputTool =
   | BrushSettings["tool"]
   | "clone"
+  | "shapes"
   | "fill"
   | "pan"
   | "selection"
@@ -129,6 +134,18 @@ export type CanvasInputClonePort = Pick<
   | "handleHover"
 >;
 
+export type CanvasInputShapePort = Pick<
+  ShapeToolController,
+  | "isActive"
+  | "isBusy"
+  | "beginPointer"
+  | "addPointer"
+  | "updatePointer"
+  | "endPointer"
+  | "cancelGesture"
+  | "setConstraintRequested"
+>;
+
 export interface CanvasInputDiagnostics {
   readonly touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet";
   readonly touchPaintIntentStrategy: typeof TOUCH_PAINT_INTENT_STRATEGY;
@@ -172,6 +189,7 @@ export interface CanvasInputControllerOptions {
   readonly isDestructivePreviewNavigationActive: () => boolean;
   readonly getSpatialBlurController?: () => CanvasInputSpatialBlurPort | null;
   readonly getCloneController?: () => CanvasInputClonePort | null;
+  readonly getShapeController?: () => CanvasInputShapePort | null;
   readonly getVectorController: () => CanvasInputVectorPort | null;
   readonly getEditorExtension: () => CanvasInputExtensionPort | null;
   readonly updateHistoryControls: () => void;
@@ -183,6 +201,7 @@ export interface CanvasInputControllerOptions {
 export type CanvasPointerMode =
   | "paint"
   | "clone"
+  | "shape"
   | "liquify"
   | "spatial-blur"
   | "fill"
@@ -1024,6 +1043,8 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       } else if (pointerMode === "clone") {
         const action = options.getCloneController?.()?.cancelPointerForNavigation();
         if (action?.kind === "stroke-end") engine.cancelCloneStroke();
+      } else if (pointerMode === "shape") {
+        options.getShapeController?.()?.cancelGesture();
       } else if (pointerMode === "liquify") {
         engine.endRasterLiquifyStroke(false);
         canvas.classList.remove("liquify-deforming");
@@ -1050,7 +1071,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       event.pointerType === "touch"
       && activePointerId !== null
       && activeTouchContacts.size > 0
-      && !options.viewOperationLocked()
+      && (pointerMode === "shape" || !options.viewOperationLocked())
     ) {
       event.preventDefault();
       activeTouchContacts.set(event.pointerId, {
@@ -1058,19 +1079,31 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
         clientY: event.clientY,
       });
       canvas.setPointerCapture(event.pointerId);
+      if (pointerMode === "shape") {
+        options.getShapeController?.()?.addPointer({
+          pointerId: event.pointerId,
+          pointerType: event.pointerType,
+          clientX: event.clientX,
+          clientY: event.clientY,
+        });
+        return;
+      }
       if (activeTouchContacts.size >= 2) enterTouchNavigation();
       return;
     }
     if (activePointerId !== null) return;
 
+    const activeTool = options.getActiveTool();
     const shouldRotate = event.pointerType === "mouse"
       && event.button === 0
       && rotateShortcutHeld;
-    const shouldPan = event.shiftKey || event.button === 1 || event.button === 2;
-    const activeTool = options.getActiveTool();
+    const shouldPan = (event.shiftKey && activeTool !== "shapes")
+      || event.button === 1
+      || event.button === 2;
     const spatialBlurController = options.getSpatialBlurController?.() ?? null;
     const spatialBlurActive = spatialBlurController?.isSpatialBlurEditActive() === true;
     const cloneController = options.getCloneController?.() ?? null;
+    const shapeController = options.getShapeController?.() ?? null;
     const requestedPointerMode: CanvasPointerMode = shouldRotate
       ? "rotate"
       : shouldPan
@@ -1079,6 +1112,8 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
           ? "spatial-blur"
         : activeTool === "clone" && cloneController?.isActive
           ? "clone"
+        : activeTool === "shapes" && shapeController?.isActive
+          ? "shape"
         : activeTool === "fill"
           ? "fill"
           : activeTool === "pan"
@@ -1147,6 +1182,15 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
         clientY: event.clientY,
       }
       : null;
+    const shapeInput: ShapeToolPointerInput | null = requestedPointerMode === "shape"
+      ? {
+        pointerId: event.pointerId,
+        pointerType: event.pointerType,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        constrainAspect: event.shiftKey,
+      }
+      : null;
     const liquifyPoint = requestedPointerMode === "liquify"
       ? engine.toLayerPoint({
         ...toPointerSample(event),
@@ -1201,6 +1245,10 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
           return;
         }
       }
+    }
+    if (shapeInput && !shapeController?.beginPointer(shapeInput)) {
+      publishHistoryState();
+      return;
     }
     const holdPaintIntent = paintSample !== null && shouldHoldTouchPaintIntent(
       options.touchPaintIntentHoldEnabled,
@@ -1290,6 +1338,10 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
         clientX: event.clientX,
         clientY: event.clientY,
       });
+      if (pointerMode === "shape" && event.pointerId !== activePointerId) {
+        event.preventDefault();
+        return;
+      }
       if (pointerMode === "touch-navigation") {
         event.preventDefault();
         const nextGesture = currentTouchNavigationGesture();
@@ -1377,6 +1429,16 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       return;
     }
     if (pointerMode === "transform") return;
+    if (pointerMode === "shape") {
+      options.getShapeController?.()?.updatePointer({
+        pointerId: event.pointerId,
+        pointerType: event.pointerType,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        constrainAspect: event.shiftKey,
+      });
+      return;
+    }
     if (pointerMode === "spatial-blur") {
       options.getSpatialBlurController?.()?.updateSpatialBlurPointer({
         pointerId: event.pointerId,
@@ -1444,6 +1506,16 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
 
   const finishPointer = (event: PointerEvent): void => {
     if (event.pointerType === "touch") activeTouchContacts.delete(event.pointerId);
+    if (pointerMode === "shape" && event.pointerId !== activePointerId) {
+      event.preventDefault();
+      void options.getShapeController?.()?.endPointer({
+        pointerId: event.pointerId,
+        pointerType: event.pointerType,
+        clientX: event.clientX,
+        clientY: event.clientY,
+      }, event.type === "pointerup");
+      return;
+    }
     if (pointerMode === "touch-navigation") {
       event.preventDefault();
       const remainingPointerId = activeTouchContacts.keys().next().value;
@@ -1603,6 +1675,14 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
             engine.cancelCloneStroke();
           }
         }
+      } else if (pointerMode === "shape") {
+        void options.getShapeController?.()?.endPointer({
+          pointerId: event.pointerId,
+          pointerType: event.pointerType,
+          clientX: event.clientX,
+          clientY: event.clientY,
+          constrainAspect: event.shiftKey,
+        }, event.type === "pointerup");
       } else if (pointerMode === "liquify") {
         engine.endRasterLiquifyStroke(event.type === "pointerup");
       } else if (pointerMode === "spatial-blur") {
@@ -1623,6 +1703,11 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       canvas.classList.remove("panning", "rotating", "liquify-deforming");
       pointerMode = null;
       activePointerId = null;
+      if (completedPointerMode === "shape") {
+        releasePointerCapture(event.pointerId);
+        for (const pointerId of activeTouchContacts.keys()) releasePointerCapture(pointerId);
+        activeTouchContacts.clear();
+      }
       if (!straightLineOwnsPaintCompletion) {
         options.scheduleLayersRefresh();
         if (completedPointerMode === "paint") options.invalidateActiveThumbnail();
@@ -1811,6 +1896,10 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
   }, { passive: false, signal: abortController.signal });
 
   browser.addEventListener("keydown", (event) => {
+    if (event.key === "Shift" && pointerMode === "shape") {
+      options.getShapeController?.()?.setConstraintRequested(true);
+      return;
+    }
     if (
       event.defaultPrevented
       || event.isComposing
@@ -1825,11 +1914,18 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     event.preventDefault();
   }, { signal: abortController.signal });
   browser.addEventListener("keyup", (event) => {
+    if (event.key === "Shift" && pointerMode === "shape") {
+      options.getShapeController?.()?.setConstraintRequested(false);
+      return;
+    }
     if (event.key.toLowerCase() !== "r") return;
     rotateShortcutHeld = false;
     canvas.classList.remove("rotation-ready");
   }, { signal: abortController.signal });
   browser.addEventListener("blur", () => {
+    if (pointerMode === "shape") {
+      options.getShapeController?.()?.setConstraintRequested(false);
+    }
     rotateShortcutHeld = false;
     canvas.classList.remove("rotation-ready");
   }, { signal: abortController.signal });
@@ -1885,6 +1981,8 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     } else if (mode === "clone") {
       const action = options.getCloneController?.()?.cancelPointerForNavigation();
       if (action?.kind === "stroke-end") engine.cancelCloneStroke();
+    } else if (mode === "shape") {
+      options.getShapeController?.()?.cancelGesture();
     } else if (mode === "rotate" || mode === "touch-navigation") {
       engine.endViewRotationGesture();
     }
@@ -1907,7 +2005,9 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
   };
 
   return {
-    isPointerActive: () => activePointerId !== null || cloneFinalizationInFlight,
+    isPointerActive: () => activePointerId !== null
+      || cloneFinalizationInFlight
+      || options.getShapeController?.()?.isBusy === true,
     pointerMode: () => pointerMode,
     diagnostics: () => canvasInputDiagnostics(
       options.touchPaintIntentHoldEnabled,

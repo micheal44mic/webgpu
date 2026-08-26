@@ -3,6 +3,7 @@ export const EDITOR_CANVAS_TOOLS = [
   "erase",
   "blend",
   "clone",
+  "shapes",
   "fill",
   "pan",
   "selection",

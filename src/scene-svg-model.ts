@@ -3,6 +3,10 @@ import {
   type VectorSvgDocument,
 } from "./vector-svg-import.ts";
 import type { VectorTextOutlineJoin } from "./scene-vector-effects.ts";
+import {
+  cloneVectorShapeDefinition,
+  type VectorShapeDefinition,
+} from "./vector-shape-core.ts";
 
 export interface VectorSvgNode {
   readonly id: number;
@@ -11,6 +15,8 @@ export interface VectorSvgNode {
   visible: boolean;
   opacity: number;
   document: VectorSvgDocument;
+  /** Present for internally generated geometry that remains parametrically editable. */
+  readonly shapeDefinition?: VectorShapeDefinition;
   paintColors: string[];
   outlineWidth: number;
   outlineColor: string;
@@ -41,6 +47,7 @@ export interface VectorSvgNode {
 
 export interface VectorSvgNodeSeed {
   document: VectorSvgDocument;
+  readonly shapeDefinition?: VectorShapeDefinition;
   paintColors?: readonly string[];
   outlineWidth?: number;
   outlineColor?: string;
@@ -73,6 +80,7 @@ export function cloneVectorSvgNode(node: Readonly<VectorSvgNode>): VectorSvgNode
   return {
     ...node,
     document: cloneVectorSvgDocument(node.document),
+    shapeDefinition: cloneVectorShapeDefinition(node.shapeDefinition),
     paintColors: [...node.paintColors],
   };
 }
@@ -84,6 +92,7 @@ export function cloneVectorSvgNodeForHistory(
   return {
     ...node,
     document: node.document,
+    shapeDefinition: cloneVectorShapeDefinition(node.shapeDefinition),
     paintColors: [...node.paintColors],
   };
 }

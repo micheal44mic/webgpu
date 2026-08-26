@@ -18,6 +18,7 @@ import {
   type VectorSvgNode,
   type VectorSvgNodeSeed,
 } from "./scene-svg-model.ts";
+import { cloneVectorShapeDefinition } from "./vector-shape-core.ts";
 import {
   cloneRasterImageDocument,
   cloneRasterImageNode,
@@ -685,6 +686,7 @@ export class MixedSceneStack {
       visible: true,
       opacity: 1,
       document: documentValue,
+      shapeDefinition: cloneVectorShapeDefinition(seed.shapeDefinition),
       paintColors,
       outlineWidth: normalizeVectorTextOutlineWidth(seed.outlineWidth ?? 0),
       outlineColor: seed.outlineColor ?? "#111111",

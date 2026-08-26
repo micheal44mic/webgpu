@@ -2445,6 +2445,21 @@
                   class="mobile-tools-item"
                   type="button"
                   data-mobile-tool
+                  data-mobile-canvas-tool="shapes"
+                  data-mobile-tool-search="shapes rectangle square ellipse circle star vector draw"
+                  aria-label="Select Shapes"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="shapes" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="shapes" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Shapes</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
                   data-mobile-vector-command="import-svg"
                   data-mobile-tool-search="svg vector shape shapes import"
                   aria-label="Import SVG"
@@ -3052,6 +3067,7 @@
         <canvas id="rasterSelectionGestureCanvas" aria-hidden="true" hidden></canvas>
         <canvas id="vectorTextPresentationCanvas" aria-hidden="true" hidden></canvas>
         <canvas id="vectorTextInteractionCanvas" aria-label="Select and transform elements" hidden></canvas>
+        <canvas id="shapeCreationCanvas" aria-hidden="true" hidden></canvas>
         <canvas id="brushOutlineCanvas" aria-hidden="true" hidden></canvas>
         <div
           id="cloneSourceOverlay"
@@ -3135,6 +3151,61 @@
           <p>
             Visible raster layers only. Vector and semantic objects are ignored until rasterized.
           </p>
+        </nav>
+        <nav
+          id="shapeToolDock"
+          class="shape-tool-dock"
+          aria-label="Shape controls"
+          hidden
+          inert
+        >
+          <div class="shape-kind-grid" role="radiogroup" aria-label="Shape type">
+            <button
+              type="button"
+              role="radio"
+              data-shape-kind="rectangle"
+              aria-checked="true"
+            >
+              <span class="mobile-icon-stack" aria-hidden="true">
+                <i data-lucide="square" class="mobile-icon-layer mobile-icon-outline"></i>
+                <i data-lucide="square" class="mobile-icon-layer mobile-icon-face"></i>
+              </span>
+              <span>RECTANGLE</span>
+            </button>
+            <button
+              type="button"
+              role="radio"
+              data-shape-kind="ellipse"
+              aria-checked="false"
+              tabindex="-1"
+            >
+              <span class="mobile-icon-stack" aria-hidden="true">
+                <i data-lucide="circle" class="mobile-icon-layer mobile-icon-outline"></i>
+                <i data-lucide="circle" class="mobile-icon-layer mobile-icon-face"></i>
+              </span>
+              <span>ELLIPSE</span>
+            </button>
+            <button
+              type="button"
+              role="radio"
+              data-shape-kind="star"
+              aria-checked="false"
+              tabindex="-1"
+            >
+              <span class="mobile-icon-stack" aria-hidden="true">
+                <i data-lucide="star" class="mobile-icon-layer mobile-icon-outline"></i>
+                <i data-lucide="star" class="mobile-icon-layer mobile-icon-face"></i>
+              </span>
+              <span>STAR</span>
+            </button>
+          </div>
+          <label class="shape-fill-control" for="shapeFillColor">
+            <span>FILL</span>
+            <input id="shapeFillColor" type="color" value="#111111" aria-label="Shape fill color">
+          </label>
+          <output id="shapeToolStatus" role="status" aria-live="polite">
+            Drag from the center. Shift or a second finger locks 1:1.
+          </output>
         </nav>
         <div
           id="spatialBlurOverlay"

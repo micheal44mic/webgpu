@@ -17,6 +17,7 @@ import { CanvasToolController } from "./canvas-tool-controller";
 import { BrushOutlineController } from "./brush-outline-controller";
 import { CloneToolController } from "./clone-tool-controller";
 import type { CloneSampleMode } from "./clone-interaction-core";
+import { ShapeToolController } from "./shape-tool-controller";
 import { PixelSelectionController } from "./pixel-selection-controller";
 import { AppDiagnosticsController } from "./app-diagnostics-controller";
 import { GpuMemoryPanelController } from "./gpu-memory-panel-controller";
@@ -37,6 +38,7 @@ import {
   Brush,
   Check,
   ChevronDown,
+  Circle,
   CircleDashed,
   CircleDotDashed,
   Copy,
@@ -69,7 +71,9 @@ import {
   Sparkles,
   Spline,
   SquareDashed,
+  Square,
   SquareStack,
+  Star,
   Sun,
   Type as TypeIcon,
   TypeOutline,
@@ -122,6 +126,7 @@ createIcons({
     Brush,
     Check,
     ChevronDown,
+    Circle,
     CircleDashed,
     CircleDotDashed,
     Copy,
@@ -155,7 +160,9 @@ createIcons({
     Sparkles,
     Spline,
     SquareDashed,
+    Square,
     SquareStack,
+    Star,
     Sun,
     Type: TypeIcon,
     TypeOutline,
@@ -190,6 +197,13 @@ const cloneAngleInput = element<HTMLInputElement>("cloneAngle");
 const cloneAngleValue = element<HTMLOutputElement>("cloneAngleValue");
 const cloneAngleResetButton = element<HTMLButtonElement>("cloneAngleReset");
 const cloneToolStatus = element<HTMLOutputElement>("cloneToolStatus");
+const shapeCreationCanvas = element<HTMLCanvasElement>("shapeCreationCanvas");
+const shapeToolDock = element<HTMLElement>("shapeToolDock");
+const shapeKindButtons = Array.from(
+  document.querySelectorAll<HTMLButtonElement>("[data-shape-kind]"),
+);
+const shapeFillColor = element<HTMLInputElement>("shapeFillColor");
+const shapeToolStatus = element<HTMLOutputElement>("shapeToolStatus");
 const canvasGuidesOverlayCanvas = element<HTMLCanvasElement>("canvasGuidesOverlayCanvas");
 const tipPreviewCanvas = element<HTMLCanvasElement>("tipPreviewCanvas");
 const rasterSelectionOverlayCanvas = element<HTMLCanvasElement>(
@@ -499,6 +513,7 @@ let brushQuickControlsController: BrushQuickControlsController | null = null;
 let canvasToolController: CanvasToolController | null = null;
 let brushOutlineController: BrushOutlineController | null = null;
 let cloneToolController: CloneToolController | null = null;
+let shapeToolController: ShapeToolController | null = null;
 let cloneSourcePreparationToken = 0;
 let mixedSceneInitializationPromise: Promise<MixedSceneController> | null = null;
 let editorToolsController: EditorToolsController;
@@ -553,7 +568,12 @@ function selectCanvasToolWithMixedScene(tool: CanvasInputTool): boolean {
     selected
     && engineInitialized
     && engine.mixedSceneEnabled
-    && (tool === "transform" || tool === "warp" || tool === "perspective")
+    && (
+      tool === "shapes"
+      || tool === "transform"
+      || tool === "warp"
+      || tool === "perspective"
+    )
     && !mixedSceneController
   ) {
     void initializeMixedSceneController().catch((error) => {
@@ -613,6 +633,7 @@ const engine = new BrushEngine(canvas, {
     projectSessionController?.markDirty();
     brushOutlineController?.notifyEngineUpdate();
     cloneToolController?.notifyViewChange();
+    shapeToolController?.notifyViewChange();
     rasterAdjustmentsController?.handleViewChange();
   },
   onPixelSelectionChange() {
@@ -1120,6 +1141,31 @@ cloneToolController = new CloneToolController({
   },
 });
 
+shapeToolController = new ShapeToolController({
+  browser: window,
+  engine,
+  elements: {
+    overlay: shapeCreationCanvas,
+    dock: shapeToolDock,
+    kindButtons: shapeKindButtons,
+    fillColor: shapeFillColor,
+    status: shapeToolStatus,
+  },
+  initialColor: brushSettingsController.snapshot().color,
+  onBusyChange: () => {
+    updateHistoryControls();
+    layerPanelController?.syncInteractionState();
+  },
+  onCreated: () => {
+    requestMobileLayersRefresh();
+    scheduleMobileLayersRefresh();
+    updateHistoryControls();
+  },
+  onError: (error) => {
+    appDiagnosticsController?.recordOperation("shape-create", "vector", error);
+  },
+});
+
 function prepareActiveCloneSource(sampleMode: CloneSampleMode): void {
   if (!engineInitialized || !cloneToolController?.isActive) return;
   const token = ++cloneSourcePreparationToken;
@@ -1190,6 +1236,7 @@ canvasToolController = new CanvasToolController({
   updateHistoryControls,
   onToolChange: (tool) => {
     cloneToolController?.setActive(tool === "clone");
+    shapeToolController?.setActive(tool === "shapes");
     if (tool === "clone" && engineInitialized) {
       prepareActiveCloneSource(cloneToolController.snapshot().sampleMode);
     } else if (engineInitialized) {
@@ -2001,6 +2048,7 @@ canvasInputController = new CanvasInputController({
     || fillPreviewAllowsCanvasNavigation(),
   getSpatialBlurController: () => rasterAdjustmentsController,
   getCloneController: () => cloneToolController,
+  getShapeController: () => shapeToolController,
   getVectorController: () => mixedSceneController,
   getEditorExtension: () => editorExtension,
   updateHistoryControls,
@@ -2063,6 +2111,7 @@ window.addEventListener("pagehide", () => {
   layerPanelController?.dispose();
   canvasInputController?.dispose();
   cloneToolController?.dispose();
+  shapeToolController?.dispose();
   brushOutlineController?.dispose();
   documentInteractionController?.dispose();
   rasterAdjustmentsController?.dispose();
@@ -2089,6 +2138,7 @@ function nonHistoryOperationLocked(allowDestructivePreviewEdit = false): boolean
   return !engineInitialized
     || sceneEditorController?.isBusy === true
     || mixedSceneController?.isBusy === true
+    || shapeToolController?.isBusy === true
     || brushQuickControlsController?.isDragging === true
     || mobileBrushStudio?.isOpen === true
     || historyState.openEdit === "transform"

@@ -325,6 +325,12 @@ function createHarness({ holdEnabled = true } = {}) {
     updateSpatialBlur: [],
     endSpatialBlur: [],
     cancelSpatialBlurForNavigation: 0,
+    beginShape: [],
+    addShapePointer: [],
+    updateShape: [],
+    endShape: [],
+    cancelShape: 0,
+    shapeConstraint: [],
     beginView: 0,
     endView: 0,
     pan: [],
@@ -352,6 +358,8 @@ function createHarness({ holdEnabled = true } = {}) {
   let viewIsLocked = false;
   let liquifyEditActive = false;
   let spatialBlurEditActive = false;
+  let shapeToolActive = true;
+  let shapeToolBusy = false;
   let destructivePreviewNavigationActive = false;
   let openHistoryEdit = null;
   let beginStrokeAllowed = true;
@@ -447,6 +455,25 @@ function createHarness({ holdEnabled = true } = {}) {
       calls.cancelSpatialBlurForNavigation += 1;
     },
   };
+  const shape = {
+    get isActive() { return shapeToolActive; },
+    get isBusy() { return shapeToolBusy; },
+    beginPointer(input) {
+      calls.beginShape.push(input);
+      return true;
+    },
+    addPointer(input) {
+      calls.addShapePointer.push(input);
+      return true;
+    },
+    updatePointer(input) { calls.updateShape.push(input); },
+    endPointer(input, commit) {
+      calls.endShape.push({ input, commit });
+      return Promise.resolve(commit);
+    },
+    cancelGesture() { calls.cancelShape += 1; },
+    setConstraintRequested(requested) { calls.shapeConstraint.push(requested); },
+  };
   const controller = new CanvasInputController({
     engine,
     browser,
@@ -471,6 +498,7 @@ function createHarness({ holdEnabled = true } = {}) {
     isLiquifyEditActive: () => liquifyEditActive,
     isDestructivePreviewNavigationActive: () => destructivePreviewNavigationActive,
     getSpatialBlurController: () => spatialBlur,
+    getShapeController: () => shape,
     getVectorController: () => vector,
     getEditorExtension: () => extension,
     updateHistoryControls: () => { calls.historyControls += 1; },
@@ -494,6 +522,8 @@ function createHarness({ holdEnabled = true } = {}) {
     setViewLocked(value) { viewIsLocked = value; },
     setLiquifyEditActive(value) { liquifyEditActive = value; },
     setSpatialBlurEditActive(value) { spatialBlurEditActive = value; },
+    setShapeToolActive(value) { shapeToolActive = value; },
+    setShapeToolBusy(value) { shapeToolBusy = value; },
     setOpenHistoryEdit(value) { openHistoryEdit = value; },
     setDestructivePreviewNavigationActive(value) {
       destructivePreviewNavigationActive = value;
@@ -919,6 +949,156 @@ async function flushMicrotasks() {
   assert.equal(harness.calls.beginStroke.length, 1);
   harness.canvas.dispatchEvent(makeEvent("pointerup", { pointerId: 2 }));
   assert.equal(harness.calls.endStroke.length, 0);
+  harness.controller.dispose();
+}
+
+// Shapes keep the first touch as the drawing pointer. A second touch is sent
+// to the 1:1 modifier and never enters pan, pinch or rotation.
+{
+  const harness = createHarness();
+  harness.setActiveTool("shapes");
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 201,
+    pointerType: "touch",
+    clientX: 20,
+    clientY: 30,
+  }));
+  assert.equal(harness.controller.pointerMode, "shape");
+  assert.equal(harness.calls.beginShape.length, 1);
+  harness.canvas.dispatchEvent(makeEvent("pointermove", {
+    pointerId: 201,
+    pointerType: "touch",
+    clientX: 100,
+    clientY: 70,
+  }));
+  assert.equal(harness.calls.updateShape.length, 1);
+
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 202,
+    pointerType: "touch",
+    clientX: 480,
+    clientY: 390,
+  }));
+  assert.equal(harness.calls.addShapePointer.length, 1);
+  assert.equal(harness.calls.beginView, 0);
+  assert.equal(harness.calls.vectorBegin, 0);
+  assert.equal(harness.controller.pointerMode, "shape");
+
+  harness.canvas.dispatchEvent(makeEvent("pointerup", {
+    pointerId: 202,
+    pointerType: "touch",
+    clientX: 480,
+    clientY: 390,
+  }));
+  assert.equal(harness.calls.endShape.length, 1);
+  assert.equal(harness.calls.endShape[0].input.pointerId, 202);
+  assert.equal(harness.controller.isPointerActive, true);
+  harness.canvas.dispatchEvent(makeEvent("pointerup", {
+    pointerId: 201,
+    pointerType: "touch",
+    clientX: 100,
+    clientY: 70,
+  }));
+  assert.equal(harness.calls.endShape.length, 2);
+  assert.equal(harness.calls.endShape[1].input.pointerId, 201);
+  assert.equal(harness.calls.endShape[1].commit, true);
+  assert.equal(harness.calls.beginView, 0);
+  assert.equal(harness.calls.pan.length, 0);
+  assert.equal(harness.calls.zoom.length, 0);
+  assert.equal(harness.calls.rotate.length, 0);
+  assert.equal(harness.controller.isPointerActive, false);
+  harness.controller.dispose();
+}
+
+// If the drawing touch lifts first, remaining modifier captures are cleared so
+// they cannot keep the canvas in a half-owned gesture.
+{
+  const harness = createHarness();
+  harness.setActiveTool("shapes");
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 211,
+    pointerType: "touch",
+  }));
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 212,
+    pointerType: "touch",
+  }));
+  assert.equal(harness.canvas.captures.size, 2);
+  harness.canvas.dispatchEvent(makeEvent("pointerup", {
+    pointerId: 211,
+    pointerType: "touch",
+  }));
+  assert.equal(harness.canvas.captures.size, 0);
+  assert.equal(harness.controller.pointerMode, null);
+  harness.controller.dispose();
+}
+
+// Shift belongs to the regular-shape constraint while Shapes is active. It
+// must work even when already held on pointerdown and must never divert that
+// gesture into canvas panning.
+{
+  const harness = createHarness();
+  harness.setActiveTool("shapes");
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 221,
+    pointerType: "mouse",
+    clientX: 40,
+    clientY: 50,
+    shiftKey: true,
+  }));
+  assert.equal(harness.controller.pointerMode, "shape");
+  assert.equal(harness.calls.beginShape.length, 1);
+  assert.equal(harness.calls.beginShape[0].constrainAspect, true);
+  assert.equal(harness.calls.pan.length, 0);
+  assert.equal(harness.calls.vectorBegin, 0);
+
+  harness.canvas.dispatchEvent(makeEvent("pointermove", {
+    pointerId: 221,
+    pointerType: "mouse",
+    clientX: 80,
+    clientY: 70,
+    shiftKey: true,
+  }));
+  assert.equal(harness.calls.updateShape.length, 1);
+  assert.equal(harness.calls.updateShape[0].constrainAspect, true);
+  assert.equal(harness.calls.pan.length, 0);
+
+  harness.browser.dispatchEvent(makeEvent("keyup", { key: "Shift" }));
+  harness.browser.dispatchEvent(makeEvent("keydown", { key: "Shift", shiftKey: true }));
+  harness.browser.dispatchEvent(makeEvent("blur"));
+  assert.deepEqual(harness.calls.shapeConstraint, [false, true, false]);
+
+  harness.canvas.dispatchEvent(makeEvent("pointerup", {
+    pointerId: 221,
+    pointerType: "mouse",
+    clientX: 100,
+    clientY: 90,
+    shiftKey: true,
+  }));
+  assert.equal(harness.calls.endShape.length, 1);
+  assert.equal(harness.calls.endShape[0].input.constrainAspect, true);
+  assert.equal(harness.controller.isPointerActive, false);
+  harness.controller.dispose();
+}
+
+// Shift remains the canvas-pan shortcut for tools that do not own it as a
+// shape constraint.
+{
+  const harness = createHarness();
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 222,
+    pointerType: "mouse",
+    shiftKey: true,
+  }));
+  assert.equal(harness.controller.pointerMode, "pan");
+  assert.equal(harness.calls.beginShape.length, 0);
+  assert.equal(harness.calls.vectorBegin, 1);
+  harness.canvas.dispatchEvent(makeEvent("pointerup", {
+    pointerId: 222,
+    pointerType: "mouse",
+    shiftKey: true,
+  }));
+  assert.equal(harness.controller.isPointerActive, false);
   harness.controller.dispose();
 }
 
