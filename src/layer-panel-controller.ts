@@ -133,9 +133,14 @@ export interface LayerPanelControllerOptions {
   readonly mergeLayers: (
     orderedKeys: readonly LayerPanelKey[],
   ) => Promise<LayerPanelMergeResult>;
+  /** True only when the current lock belongs to this panel's multiple selection. */
+  readonly canChangeMultiSelection?: () => boolean;
+  /** Settles the selection-owned edit before its exact key set changes. */
+  readonly prepareMultiSelectionChange?: () => Promise<boolean>;
   readonly canMergeMultiSelection?: () => boolean;
   readonly prepareMultiSelectionMerge?: () => Promise<boolean>;
-  readonly onMultiSelectionMergeStart?: () => void;
+  /** Leaves the owning Transform tool after the exact selection is safely captured. */
+  readonly onMultiSelectionMergeStart?: () => Promise<boolean>;
   readonly onMultiSelectionChange?: (
     selection: LayerPanelMultiSelectionSnapshot,
   ) => void;
@@ -243,6 +248,8 @@ export class LayerPanelController {
   private multiSelectEnabled = false;
   private readonly selectedKeys = new Set<LayerPanelKey>();
   private multiSelectionNotificationSignature = "0|";
+  private multiSelectionMutationTail: Promise<void> = Promise.resolve();
+  private multiSelectionMutationPending = 0;
   private mergeRequestBusy = false;
   private reorderGesture: LayerPanelReorderGesture | null = null;
   private contextKey: LayerPanelKey | null = null;
@@ -270,6 +277,15 @@ export class LayerPanelController {
 
   get isMultiSelect(): boolean {
     return this.multiSelectEnabled;
+  }
+
+  /** Returns a detached selection snapshot in current bottom-to-top scene order. */
+  getMultiSelectionSnapshot(): LayerPanelMultiSelectionSnapshot {
+    const stats = this.options.getStats();
+    return {
+      enabled: this.multiSelectEnabled,
+      orderedKeys: this.orderedSelectedKeys(stats),
+    };
   }
 
   /** Ends selection mode without merging or otherwise changing layer content. */
@@ -337,6 +353,8 @@ export class LayerPanelController {
 
   requestRefresh(): void {
     this.refreshRequested = true;
+    const stats = this.options.getStats();
+    if (stats) this.reconcileMultiSelection(stats);
   }
 
   scheduleRefresh(): void {
@@ -364,14 +382,15 @@ export class LayerPanelController {
   syncInteractionState(): void {
     if (this.disposed) return;
     const locked = this.options.isInteractionLocked();
+    const listLocked = locked && !this.multiSelectionInteractionAvailable(locked);
     const { list } = this.options.elements;
-    if (locked) {
+    if (listLocked) {
       list.setAttribute("inert", "");
       this.closeContextMenu(false);
     } else {
       list.removeAttribute("inert");
     }
-    list.setAttribute("aria-disabled", String(locked));
+    list.setAttribute("aria-disabled", String(listLocked));
     const stats = this.options.getStats();
     if (stats) this.syncToolbar(stats, locked);
     this.requestRefresh();
@@ -381,10 +400,12 @@ export class LayerPanelController {
     if (!this.openState || !this.refreshRequested) return;
     this.options.thumbnails.queueMissing();
     const locked = this.options.isInteractionLocked();
+    const multiSelectionAvailable = this.multiSelectionInteractionAvailable(locked);
+    const listLocked = locked && !multiSelectionAvailable;
     const { list } = this.options.elements;
-    if (locked) list.setAttribute("inert", "");
+    if (listLocked) list.setAttribute("inert", "");
     else list.removeAttribute("inert");
-    list.setAttribute("aria-disabled", String(locked));
+    list.setAttribute("aria-disabled", String(listLocked));
     this.reconcileMultiSelection(stats);
     const liveKeys = new Set(this.selectionItems(stats).map((item) => item.key));
     const contextStillSelected = this.contextKey === null
@@ -424,7 +445,7 @@ export class LayerPanelController {
       mergeSelectionButton.disabled = true;
       mergeSelectionButton.title = "";
     }
-    const signature = this.listSignature(views, locked);
+    const signature = this.listSignature(views, locked, multiSelectionAvailable);
     if (signature === this.renderSignature) {
       this.refreshRequested = false;
       return;
@@ -481,7 +502,8 @@ export class LayerPanelController {
         + `${clippingChild ? " is-clipping-child" : ""}`;
       row.setAttribute("aria-posinset", String(position + 1));
       row.setAttribute("aria-setsize", String(views.length));
-      select.disabled = locked || background;
+      select.disabled = background
+        || (this.multiSelectEnabled ? !multiSelectionAvailable : locked);
       select.setAttribute("aria-current", String(view.selected));
       if (this.multiSelectEnabled) select.setAttribute("aria-pressed", String(selected));
       else select.removeAttribute("aria-pressed");
@@ -747,14 +769,17 @@ export class LayerPanelController {
     );
   }
 
-  private notifyMultiSelection(stats = this.options.getStats()): void {
-    const orderedKeys = this.multiSelectEnabled && stats
+  private orderedSelectedKeys(stats: EngineStats | null): LayerPanelKey[] {
+    if (!this.multiSelectEnabled) return [];
+    return stats
       ? this.selectionItems(stats)
         .filter((item) => this.selectedKeys.has(item.key))
         .map((item) => item.key)
-      : this.multiSelectEnabled
-        ? [...this.selectedKeys]
-        : [];
+      : [...this.selectedKeys];
+  }
+
+  private notifyMultiSelection(stats = this.options.getStats()): void {
+    const orderedKeys = this.orderedSelectedKeys(stats);
     const signature = `${this.multiSelectEnabled ? 1 : 0}|${orderedKeys.join("|")}`;
     if (signature === this.multiSelectionNotificationSignature) return;
     this.multiSelectionNotificationSignature = signature;
@@ -780,9 +805,16 @@ export class LayerPanelController {
   }
 
   private mergeInteractionAvailable(): boolean {
-    if (this.mergeRequestBusy) return false;
+    if (this.mergeRequestBusy || this.multiSelectionMutationPending > 0) return false;
     return !this.options.isInteractionLocked()
       || this.options.canMergeMultiSelection?.() === true;
+  }
+
+  private multiSelectionInteractionAvailable(
+    locked = this.options.isInteractionLocked(),
+  ): boolean {
+    if (!this.multiSelectEnabled || this.mergeRequestBusy) return false;
+    return !locked || this.options.canChangeMultiSelection?.() === true;
   }
 
   private reconcileMultiSelection(stats: EngineStats): void {
@@ -809,6 +841,17 @@ export class LayerPanelController {
       const primaryKey = this.primaryKey(stats);
       if (primaryKey) this.selectedKeys.add(primaryKey);
     }
+    this.syncMultiSelectPresentation(enabled);
+    this.notifyMultiSelection(stats);
+    this.scheduleRefresh();
+    if (announce) {
+      this.announce(enabled
+        ? "Multiple selection on. Select the layers you want to work with."
+        : "Multiple selection off.");
+    }
+  }
+
+  private syncMultiSelectPresentation(enabled: boolean): void {
     const { panel, multiActions, mergeSelectionButton, multiSelectButton } =
       this.options.elements;
     panel.classList.toggle("is-multi-select", enabled);
@@ -822,16 +865,28 @@ export class LayerPanelController {
     multiSelectButton.title = enabled ? "Done selecting layers" : "Select multiple layers";
     this.renderSignature = "";
     this.setMergeStatus(null);
-    this.notifyMultiSelection(stats);
-    this.scheduleRefresh();
-    if (announce) {
-      this.announce(enabled
-        ? "Multiple selection on. Select the layers you want to work with."
-        : "Multiple selection off.");
-    }
   }
 
-  private toggleMultiSelection(key: LayerPanelKey): void {
+  private restoreMultiSelection(keys: readonly LayerPanelKey[]): boolean {
+    const stats = this.options.getStats();
+    if (!stats) return false;
+    const requested = new Set(keys);
+    const liveOrderedKeys = this.selectionItems(stats)
+      .filter((item) => requested.has(item.key))
+      .map((item) => item.key);
+    if (liveOrderedKeys.length !== keys.length || liveOrderedKeys.length < 2) return false;
+    this.closeContextMenu(false);
+    this.cancelReorder(false, false, false);
+    this.multiSelectEnabled = true;
+    this.selectedKeys.clear();
+    for (const key of liveOrderedKeys) this.selectedKeys.add(key);
+    this.syncMultiSelectPresentation(true);
+    this.notifyMultiSelection(stats);
+    this.scheduleRefresh();
+    return true;
+  }
+
+  private commitMultiSelectionToggle(key: LayerPanelKey): void {
     if (!this.multiSelectEnabled) return;
     if (this.selectedKeys.has(key)) {
       if (this.selectedKeys.size === 1) {
@@ -848,6 +903,51 @@ export class LayerPanelController {
     this.notifyMultiSelection();
     this.renderSignature = "";
     this.scheduleRefresh();
+  }
+
+  private requestMultiSelectionToggle(key: LayerPanelKey): Promise<void> {
+    if (!this.multiSelectionInteractionAvailable()) return Promise.resolve();
+    this.multiSelectionMutationPending += 1;
+    this.renderSignature = "";
+    this.scheduleRefresh();
+    const previous = this.multiSelectionMutationTail;
+    const operation = previous.catch(() => {}).then(async () => {
+      if (this.disposed || !this.multiSelectEnabled) return;
+      const locked = this.options.isInteractionLocked();
+      if (locked && this.options.canChangeMultiSelection?.() !== true) return;
+      try {
+        if (
+          this.options.prepareMultiSelectionChange
+          && !await this.options.prepareMultiSelectionChange()
+        ) {
+          this.announce("Finish or cancel Transform before changing the selection.");
+          return;
+        }
+        if (this.disposed || !this.multiSelectEnabled) return;
+        const stillLocked = this.options.isInteractionLocked();
+        if (stillLocked && this.options.canChangeMultiSelection?.() !== true) return;
+        this.commitMultiSelectionToggle(key);
+      } catch (error) {
+        if (this.disposed) return;
+        const message = error instanceof Error
+          ? error.message
+          : "Could not update the multiple selection.";
+        this.options.recordDiagnostic(
+          "mixed-scene-multi-selection-change-failed",
+          JSON.stringify({ key }),
+          error,
+        );
+        this.options.onStatus(message, true);
+        this.announce(message);
+      }
+    }).finally(() => {
+      this.multiSelectionMutationPending = Math.max(0, this.multiSelectionMutationPending - 1);
+      if (this.disposed) return;
+      this.renderSignature = "";
+      this.scheduleRefresh();
+    });
+    this.multiSelectionMutationTail = operation.catch(() => {});
+    return operation;
   }
 
   private focusFirstContextAction(): void {
@@ -1058,6 +1158,7 @@ export class LayerPanelController {
       return;
     }
     const requestedKeys = [...plan.orderedKeys];
+    let selectionClosedForMerge = false;
     this.mergeRequestBusy = true;
     this.closeContextMenu(false);
     this.setMergeStatus("Preparing selected layers…");
@@ -1087,7 +1188,14 @@ export class LayerPanelController {
         throw new Error("The selected layers changed before the merge could start.");
       }
       this.setMultiSelect(false, false);
-      this.options.onMultiSelectionMergeStart?.();
+      selectionClosedForMerge = true;
+      if (
+        this.options.onMultiSelectionMergeStart
+        && !await this.options.onMultiSelectionMergeStart()
+      ) {
+        throw new Error("Could not leave Transform before merging the selected layers.");
+      }
+      if (this.disposed) return;
       const result = await this.options.mergeLayers(latestPlan.orderedKeys);
       if (this.disposed) return;
       const message = `${result.itemCount} layers merged.`;
@@ -1096,6 +1204,9 @@ export class LayerPanelController {
       this.announce(`${result.itemCount} layers merged.`);
     } catch (error) {
       if (this.disposed) return;
+      if (selectionClosedForMerge && !this.multiSelectEnabled) {
+        this.restoreMultiSelection(requestedKeys);
+      }
       const message = error instanceof Error ? error.message : "Layer merge failed.";
       this.options.recordDiagnostic(
         "mixed-scene-merge-failed",
@@ -1262,11 +1373,12 @@ export class LayerPanelController {
       this.suppressClickUntil = 0;
       return;
     }
-    if (this.options.isInteractionLocked()) return;
     if (action === "select" && this.multiSelectEnabled) {
-      this.toggleMultiSelection(key);
+      if (!this.multiSelectionInteractionAvailable()) return;
+      void this.requestMultiSelectionToggle(key);
       return;
     }
+    if (this.options.isInteractionLocked()) return;
     const stats = this.options.getStats();
     if (!stats) return;
     const scene = stats.mixedScene;
@@ -1498,11 +1610,16 @@ export class LayerPanelController {
     };
   }
 
-  private listSignature(views: readonly LayerPanelView[], locked: boolean): string {
+  private listSignature(
+    views: readonly LayerPanelView[],
+    locked: boolean,
+    multiSelectionAvailable: boolean,
+  ): string {
     const selectionSignature = this.multiSelectEnabled
       ? [...this.selectedKeys].sort().join(",")
       : "";
-    return `${locked ? 1 : 0}|${this.multiSelectEnabled ? 1 : 0}|${selectionSignature}|`
+    return `${locked ? 1 : 0}|${multiSelectionAvailable ? 1 : 0}|`
+      + `${this.multiSelectEnabled ? 1 : 0}|${selectionSignature}|`
       + views.map((view) => {
         const bounds = view.contentBounds;
         return [

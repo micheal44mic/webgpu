@@ -403,9 +403,11 @@ export class MixedSceneController {
   private atomicEffectPendingNodes = 0;
   private distortEditingNodeId: number | null = null;
   private transformToolActive = false;
+  private transformToolDeactivationPending = false;
   private rasterTransformToolMode: RasterTransformMode = "affine";
   private transformSessionOpen = false;
   private transformSessionKind: "vector" | "raster" | "group" | null = null;
+  private requestedGroupTransformKeys: readonly MixedSceneItem["key"][] = [];
   private groupTransformSelection: GroupTransformSelection | null = null;
   private groupTransformPreparation: Promise<void> | null = null;
   private rasterTransformPreparation: Promise<void> | null = null;
@@ -485,10 +487,12 @@ export class MixedSceneController {
   setTransformToolActive(
     active: boolean,
     mode: RasterTransformMode = "affine",
-  ): void {
+  ): boolean {
     if (!active && this.transformSessionOpen) {
-      return;
+      this.transformToolDeactivationPending = true;
+      return false;
     }
+    this.transformToolDeactivationPending = false;
     this.rasterTransformToolMode = mode;
     if (active) {
       const latestSnapshot = this.host.getMixedSceneSnapshot();
@@ -506,7 +510,7 @@ export class MixedSceneController {
     this.scheduleRender();
     if (!active) {
       this.canvasGuides?.setSmartGuides([]);
-      return;
+      return true;
     }
     const node = this.selectedTransformNode();
     if (
@@ -523,9 +527,9 @@ export class MixedSceneController {
       } catch (error) {
         this.status.textContent = error instanceof Error ? error.message : String(error);
       }
-      return;
+      return true;
     }
-    void this.prepareSelectedRasterTransform();
+    return true;
   }
 
   private updateTransformUi(): void {
@@ -632,6 +636,9 @@ export class MixedSceneController {
         : "Could not apply Transform.";
     } finally {
       this.transformCommitBusy = false;
+      if (!this.transformSessionOpen && this.transformToolDeactivationPending) {
+        this.setTransformToolActive(false, this.rasterTransformToolMode);
+      }
       this.updateTransformUi();
       this.syncControlsFromSelection(this.selectedVectorNode());
       this.scheduleRender();
@@ -674,6 +681,9 @@ export class MixedSceneController {
         : "Could not cancel Transform.";
     } finally {
       this.transformCommitBusy = false;
+      if (!this.transformSessionOpen && this.transformToolDeactivationPending) {
+        this.setTransformToolActive(false, this.rasterTransformToolMode);
+      }
       this.updateTransformUi();
       this.syncControlsFromSelection(this.selectedVectorNode());
       this.scheduleRender();
@@ -816,7 +826,6 @@ export class MixedSceneController {
     } else {
       this.scheduleRender();
     }
-    if (this.transformToolActive) void this.prepareSelectedRasterTransform();
   }
   scheduleViewSync(): void {
     this.viewRevision += 1;
@@ -1450,10 +1459,18 @@ export class MixedSceneController {
 
   getTransformActionSnapshot(): VectorTransformActionSnapshot {
     const active = this.transformSessionOpen;
+    const selectionKeys = active
+      ? this.transformSessionKind === "group"
+        ? this.groupTransformSelection?.orderedKeys ?? []
+        : []
+      : this.requestedGroupTransformKeys;
     return {
+      toolActive: this.transformToolActive,
       active,
       preparing: this.rasterTransformPreparation !== null
         || this.groupTransformPreparation !== null,
+      sessionKind: this.transformSessionKind,
+      selectionKeys: [...selectionKeys],
       canApply: active
         && !this.transformCommitBusy
         && !this.activeInteraction
@@ -1783,11 +1800,11 @@ export class MixedSceneController {
 
   /** Replaces the single active item with an exact, ordered transform selection. */
   setTransformSelection(orderedKeys: readonly MixedSceneItem["key"][]): void {
-    if (this.transformSessionOpen && this.transformSessionKind === "group") return;
     const uniqueKeys = [...new Set(orderedKeys)];
-    this.groupTransformSelection = uniqueKeys.length >= 2
-      ? this.createGroupTransformSelection(uniqueKeys)
-      : null;
+    this.requestedGroupTransformKeys = uniqueKeys.length >= 2 ? uniqueKeys : [];
+    if (!this.transformSessionOpen) {
+      this.refreshGroupTransformSelection();
+    }
     const hasSelection = this.selectedTransformNode() !== null;
     this.interactionCanvas.hidden = !this.transformToolActive || !hasSelection;
     this.interactionCanvas.classList.toggle(
@@ -1901,15 +1918,22 @@ export class MixedSceneController {
   }
 
   private refreshGroupTransformSelection(): void {
-    const current = this.groupTransformSelection;
-    if (!current || (this.transformSessionOpen && this.transformSessionKind === "group")) return;
-    this.groupTransformSelection = this.createGroupTransformSelection(current.orderedKeys);
+    if (this.transformSessionOpen) return;
+    this.groupTransformSelection = this.requestedGroupTransformKeys.length >= 2
+      ? this.createGroupTransformSelection(this.requestedGroupTransformKeys)
+      : null;
   }
 
   private selectedTransformNode(): Readonly<TransformSceneNode> | null {
     const snapshot = this.snapshot;
     if (!snapshot) return null;
-    if (this.groupTransformSelection) return this.groupTransformSelection.node;
+    if (this.transformSessionOpen) {
+      if (this.transformSessionKind === "group") {
+        return this.groupTransformSelection?.node ?? null;
+      }
+    } else if (this.requestedGroupTransformKeys.length >= 2) {
+      return this.groupTransformSelection?.node ?? null;
+    }
     const selected = snapshot.items.find((item) => item.key === snapshot.selectedKey);
     const pixelSelection = this.host.getPixelSelectionState();
     if (
@@ -2413,6 +2437,59 @@ export class MixedSceneController {
     this.scheduleRender();
   }
 
+  private async nudgeSelectedTransform(deltaX: number, deltaY: number): Promise<void> {
+    const requested = this.selectedTransformNode();
+    if (
+      !this.transformToolActive
+      || !requested
+      || (!isRasterLayerTransformNode(requested) && !isSceneGroupTransformNode(requested))
+    ) return;
+    const requestedRasterLayerId = isRasterLayerTransformNode(requested)
+      ? requested.layerId
+      : null;
+    const requestedGroupKeys = isSceneGroupTransformNode(requested)
+      ? [...requested.keys]
+      : null;
+    if (requestedGroupKeys) await this.prepareSelectedGroupTransform();
+    else await this.prepareSelectedRasterTransform();
+    if (
+      this.transformCommitBusy
+      || this.activeInteraction
+      || this.rasterTransformRecoveryOnly
+    ) return;
+    const current = this.selectedTransformNode();
+    try {
+      if (
+        requestedGroupKeys
+        && this.transformSessionKind === "group"
+        && current
+        && isSceneGroupTransformNode(current)
+        && current.keys.length === requestedGroupKeys.length
+        && current.keys.every((key, index) => key === requestedGroupKeys[index])
+      ) {
+        this.updateTransformNode(current, {
+          x: current.x + deltaX,
+          y: current.y + deltaY,
+        });
+      } else if (
+        requestedRasterLayerId !== null
+        && this.transformSessionKind === "raster"
+        && current
+        && isRasterLayerTransformNode(current)
+        && current.layerId === requestedRasterLayerId
+      ) {
+        this.host.nudgeRasterLayerTransform(deltaX, deltaY);
+      } else {
+        return;
+      }
+      this.scheduleRender();
+    } catch (error) {
+      this.status.textContent = error instanceof Error
+        ? error.message
+        : "Could not move the selected content.";
+    }
+  }
+
   private bindControls(): void {
     for (const button of this.rasterTransformGridButtons) {
       button.addEventListener("click", () => {
@@ -2440,7 +2517,7 @@ export class MixedSceneController {
       });
     }
     this.browser.addEventListener("keydown", (event) => {
-      if (!this.transformSessionOpen || event.defaultPrevented || event.isComposing) return;
+      if (event.defaultPrevented || event.isComposing) return;
       const target = event.target instanceof Element ? event.target : null;
       const editable = Boolean(target?.closest("input, textarea, select, [contenteditable]"));
       const arrow = event.key === "ArrowLeft"
@@ -2454,14 +2531,14 @@ export class MixedSceneController {
               : null;
       const node = this.selectedTransformNode();
       const rasterKeyboardMove = Boolean(
-        node
+        this.transformToolActive
+        && node
         && isRasterLayerTransformNode(node)
-        && this.transformSessionKind === "raster"
       );
       const groupKeyboardMove = Boolean(
-        node
+        this.transformToolActive
+        && node
         && isSceneGroupTransformNode(node)
-        && this.transformSessionKind === "group"
       );
       if (
         arrow
@@ -2473,22 +2550,11 @@ export class MixedSceneController {
       ) {
         event.preventDefault();
         const step = event.shiftKey ? 10 : 1;
-        try {
-          if (node && isSceneGroupTransformNode(node)) {
-            this.updateTransformNode(node, {
-              x: node.x + arrow.x * step,
-              y: node.y + arrow.y * step,
-            });
-          } else {
-            this.host.nudgeRasterLayerTransform(arrow.x * step, arrow.y * step);
-          }
-          this.scheduleRender();
-        } catch (error) {
-          this.status.textContent = error instanceof Error
-            ? error.message
-            : "Could not move the raster.";
-        }
-      } else if (event.key === "Escape") {
+        void this.nudgeSelectedTransform(arrow.x * step, arrow.y * step);
+        return;
+      }
+      if (!this.transformSessionOpen) return;
+      if (event.key === "Escape") {
         event.preventDefault();
         this.abortActiveTransformInteraction();
         void this.cancelTransformSession();
@@ -4251,6 +4317,10 @@ export class MixedSceneController {
     this.host.commitVectorHistoryEdit();
     this.transformSessionOpen = false;
     this.transformSessionKind = null;
+    this.refreshGroupTransformSelection();
+    if (this.transformToolDeactivationPending) {
+      this.setTransformToolActive(false, this.rasterTransformToolMode);
+    }
     this.updateTransformUi();
     this.syncControlsFromSelection(this.selectedVectorNode());
   }
@@ -4311,6 +4381,24 @@ export class MixedSceneController {
     this.touchNavigationGesture = nextGesture;
   }
 
+  private lazyTransformPointerIntent(
+    event: PointerEvent,
+    node: Readonly<TransformSceneNode>,
+  ): "pan" | "transform" | null {
+    if (event.button === 1 || event.button === 2) return "pan";
+    const view = this.host.getVectorTextViewState();
+    const canvasPoint = this.eventCanvasPoint(event);
+    const corners = sceneOverlayCorners(this.metrics, node, view);
+    const handle = this.hitHandle(canvasPoint, corners, view, node, event.pointerType);
+    const rasterDeformRequested = isRasterLayerTransformNode(node)
+      && node.scope === "layer"
+      && this.rasterTransformToolMode !== "affine";
+    if (event.shiftKey && !rasterDeformRequested && handle === null) return "pan";
+    return handle !== null || this.hitsTransformBody(canvasPoint, corners, view, node)
+      ? "transform"
+      : null;
+  }
+
   private onPointerDown(event: PointerEvent, resumedAfterPreparation = false): void {
     if (this.transformCommitBusy || this.rasterTransformRecoveryOnly) return;
     const node = this.selectedTransformNode();
@@ -4347,9 +4435,17 @@ export class MixedSceneController {
     }
     if (this.touchNavigationActive) return;
     if (this.activeInteraction) return;
+    const needsGroupPreparation = isSceneGroupTransformNode(node)
+      && (!this.transformSessionOpen || this.transformSessionKind !== "group");
+    const needsRasterPreparation = isRasterLayerTransformNode(node)
+      && (!this.transformSessionOpen || this.transformSessionKind !== "raster");
+    const lazyPointerIntent = needsGroupPreparation || needsRasterPreparation
+      ? this.lazyTransformPointerIntent(event, node)
+      : null;
+    if ((needsGroupPreparation || needsRasterPreparation) && lazyPointerIntent === null) return;
     if (
-      isSceneGroupTransformNode(node)
-      && (!this.transformSessionOpen || this.transformSessionKind !== "group")
+      needsGroupPreparation
+      && lazyPointerIntent === "transform"
     ) {
       event.preventDefault();
       this.pendingRasterPointerId = event.pointerId;
@@ -4363,8 +4459,8 @@ export class MixedSceneController {
       return;
     }
     if (
-      isRasterLayerTransformNode(node)
-      && (!this.transformSessionOpen || this.transformSessionKind !== "raster")
+      needsRasterPreparation
+      && lazyPointerIntent === "transform"
     ) {
       event.preventDefault();
       this.pendingRasterPointerId = event.pointerId;
@@ -4551,6 +4647,10 @@ export class MixedSceneController {
     this.pendingRasterPointerMove = null;
     if (!this.transformSessionOpen || this.transformSessionKind !== "raster") return;
     this.onPointerDown(event, true);
+    if (!this.activeInteraction || this.activeInteraction.pointerId !== event.pointerId) {
+      await this.cancelTransformSession();
+      return;
+    }
     if (pendingMove && this.activeInteraction?.pointerId === event.pointerId) {
       this.onPointerMove(pendingMove);
     }
@@ -4578,6 +4678,10 @@ export class MixedSceneController {
     this.pendingRasterPointerMove = null;
     if (!this.transformSessionOpen || this.transformSessionKind !== "group") return;
     this.onPointerDown(event, true);
+    if (!this.activeInteraction || this.activeInteraction.pointerId !== event.pointerId) {
+      await this.cancelTransformSession();
+      return;
+    }
     if (pendingMove && this.activeInteraction?.pointerId === event.pointerId) {
       this.onPointerMove(pendingMove);
     }

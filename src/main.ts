@@ -92,7 +92,10 @@ import {
 } from "./engine-types";
 import { DOCUMENT_HEIGHT, DOCUMENT_MAX_EDGE, DOCUMENT_WIDTH } from "./engine-limits";
 import { LayerThumbnailController } from "./layer-thumbnail-controller";
-import { LayerPanelController } from "./layer-panel-controller";
+import {
+  LayerPanelController,
+  type LayerPanelMultiSelectionSnapshot,
+} from "./layer-panel-controller";
 import {
   sceneLayerDisplayName,
   selectedSceneLayerProperties,
@@ -107,6 +110,7 @@ import {
 } from "./editor-settings-storage";
 
 import type { MixedSceneController } from "./mixed-scene-controller";
+import type { VectorTransformActionSnapshot } from "./vector-editor-contract";
 import { createProjectStorage } from "./project-storage";
 import type { ProjectEditorBootstrap } from "./project-shell-contract";
 import { ProjectSessionController } from "./project-session-controller";
@@ -573,42 +577,137 @@ function selectCanvasToolWithMixedScene(tool: CanvasInputTool): boolean {
   return selected;
 }
 
+const inactiveTransformAction = (): VectorTransformActionSnapshot => ({
+  toolActive: false,
+  active: false,
+  preparing: false,
+  sessionKind: null,
+  selectionKeys: [],
+  canApply: false,
+  canCancel: false,
+});
+
+function transformActionSnapshot(): VectorTransformActionSnapshot {
+  return mixedSceneController?.getTransformActionSnapshot() ?? inactiveTransformAction();
+}
+
+function layerMultiSelectionSnapshot(): LayerPanelMultiSelectionSnapshot {
+  return layerPanelController?.getMultiSelectionSnapshot() ?? {
+    enabled: false,
+    orderedKeys: [],
+  };
+}
+
+function sameOrderedKeys(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  return left.length === right.length
+    && left.every((key, index) => key === right[index]);
+}
+
+function transformActionBelongsToLayerMultiSelection(
+  action: Readonly<VectorTransformActionSnapshot>,
+  selection = layerMultiSelectionSnapshot(),
+): boolean {
+  if (!selection.enabled || selection.orderedKeys.length < 2) return false;
+  if (sameOrderedKeys(action.selectionKeys, selection.orderedKeys)) return true;
+  // Recovery for older split state: a multiple selection could accidentally
+  // open a single-item Transform transaction. It is safe to cancel, never
+  // apply, that transaction while the selection-owned tool is still active.
+  return canvasToolController?.activeTool === "transform"
+    && (action.active || action.preparing);
+}
+
+function exactGroupTransformRequested(
+  action: Readonly<VectorTransformActionSnapshot>,
+  selection = layerMultiSelectionSnapshot(),
+): boolean {
+  return selection.enabled
+    && selection.orderedKeys.length >= 2
+    && sameOrderedKeys(action.selectionKeys, selection.orderedKeys);
+}
+
+function canSettleLayerMultiSelectionTransform(requireApply: boolean): boolean {
+  const selection = layerMultiSelectionSnapshot();
+  if (!selection.enabled) return true;
+  const action = transformActionSnapshot();
+  if (!action.active && !action.preparing) return !interactionLocked();
+  if (!transformActionBelongsToLayerMultiSelection(action, selection)) return false;
+  if (action.preparing) return true;
+  const exactGroup = exactGroupTransformRequested(action, selection)
+    && action.sessionKind === "group";
+  if (exactGroup) {
+    return requireApply ? action.canApply : action.canApply || action.canCancel;
+  }
+  return action.canCancel;
+}
+
+async function settleLayerMultiSelectionTransform(): Promise<boolean> {
+  const selection = layerMultiSelectionSnapshot();
+  if (!selection.enabled) return true;
+  const controller = mixedSceneController;
+  if (!controller) return !interactionLocked();
+  const action = controller.getTransformActionSnapshot();
+  if (!action.active && !action.preparing) return !interactionLocked();
+  if (!transformActionBelongsToLayerMultiSelection(action, selection)) return false;
+
+  const exactGroup = exactGroupTransformRequested(action, selection);
+  if (exactGroup && (action.preparing || action.sessionKind === "group")) {
+    if (!await controller.applyTransform()) {
+      const recovery = controller.getTransformActionSnapshot();
+      if (!recovery.active || !recovery.canCancel || !await controller.cancelTransform()) {
+        return false;
+      }
+    }
+  } else if (!await controller.cancelTransform()) {
+    // Never commit a single-item fallback or a stale group on behalf of a
+    // different layer selection.
+    return false;
+  }
+
+  const settled = controller.getTransformActionSnapshot();
+  return !settled.active && !settled.preparing;
+}
+
+function leaveLayerMultiSelectionTransformTool(): boolean {
+  const controller = mixedSceneController;
+  controller?.setTransformSelection([]);
+  if (canvasToolController?.activeTool === "transform") {
+    // This is called only after the owned transaction is verified as settled,
+    // so it intentionally bypasses the one-tick-late generic history lock.
+    canvasToolController.configure("pan", true);
+  } else if (controller?.getTransformActionSnapshot().toolActive) {
+    controller.setTransformToolActive(false);
+  }
+  const action = controller?.getTransformActionSnapshot();
+  return canvasToolController?.activeTool !== "transform"
+    && action?.toolActive !== true
+    && action?.active !== true
+    && action?.preparing !== true;
+}
+
 function canFinishLayerMultiSelection(): boolean {
   if (layerPanelController?.isMultiSelect !== true) return true;
-  const action = mixedSceneController?.getTransformActionSnapshot();
-  if (action?.preparing) return true;
-  if (action?.active) return action.canApply || action.canCancel;
-  return !interactionLocked();
+  return canSettleLayerMultiSelectionTransform(false);
 }
 
 async function runLayerMultiSelectionFinish(): Promise<boolean> {
   const panel = layerPanelController;
   if (!panel?.isMultiSelect) return true;
-  const controller = mixedSceneController;
-  if (controller && !await controller.applyTransform()) {
-    const action = controller.getTransformActionSnapshot();
-    if (action.active && (!action.canCancel || !await controller.cancelTransform())) {
-      return false;
-    }
-  }
+  if (!await settleLayerMultiSelectionTransform()) return false;
+  if (!leaveLayerMultiSelectionTransformTool()) return false;
   panel.finishMultiSelection();
-  return true;
+  return !panel.isMultiSelect;
 }
 
 function canMergeLayerMultiSelection(): boolean {
   if (layerPanelController?.isMultiSelect !== true) return false;
-  const action = mixedSceneController?.getTransformActionSnapshot();
-  if (action?.preparing) return true;
-  if (action?.active) return action.canApply;
-  return !interactionLocked();
+  return canSettleLayerMultiSelectionTransform(true);
 }
 
 async function prepareLayerMultiSelectionMerge(): Promise<boolean> {
-  const controller = mixedSceneController;
-  if (!controller) return !interactionLocked();
-  const action = controller.getTransformActionSnapshot();
-  if (!action.active && !action.preparing) return !interactionLocked();
-  return controller.applyTransform();
+  return settleLayerMultiSelectionTransform();
 }
 
 function finishLayerMultiSelectionForToolChange(): Promise<boolean> {
@@ -817,6 +916,10 @@ const historyControlsController = new HistoryControlsController({
   initialState: historyState,
   interactionLocked,
   requestLocked: historyRequestLocked,
+  prepareOperation: async () => {
+    if (layerPanelController?.isMultiSelect !== true) return true;
+    return finishLayerMultiSelectionForToolChange();
+  },
   onStateChange: (state) => {
     historyState = state;
     mobileBrushStudio?.retryPendingAssetRelease();
@@ -1875,8 +1978,11 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
     };
   },
   getTransformActionSnapshot: () => mixedSceneController?.getTransformActionSnapshot() ?? {
+    toolActive: false,
     active: false,
     preparing: false,
+    sessionKind: null,
+    selectionKeys: [],
     canApply: false,
     canCancel: false,
   },
@@ -2018,7 +2124,13 @@ layerPanelController = new LayerPanelController({
     const revision = ++layerMultiTransformSelectionRevision;
     const transformKeys = enabled && orderedKeys.length >= 2 ? orderedKeys : [];
     if (transformKeys.length === 0) {
+      const wasLayerGroupTool = transformActionSnapshot().selectionKeys.length >= 2
+        || (
+          layerPanelController?.isMultiSelect !== true
+          && canvasToolController?.activeTool === "transform"
+        );
       mixedSceneController?.setTransformSelection([]);
+      if (wasLayerGroupTool) leaveLayerMultiSelectionTransformTool();
       return;
     }
     void initializeMixedSceneController().then((controller) => {
@@ -2035,11 +2147,11 @@ layerPanelController = new LayerPanelController({
       );
     });
   },
+  canChangeMultiSelection: () => canSettleLayerMultiSelectionTransform(false),
+  prepareMultiSelectionChange: settleLayerMultiSelectionTransform,
   canMergeMultiSelection: canMergeLayerMultiSelection,
   prepareMultiSelectionMerge: prepareLayerMultiSelectionMerge,
-  onMultiSelectionMergeStart: () => {
-    selectCanvasToolWithMixedScene("pan");
-  },
+  onMultiSelectionMergeStart: async () => leaveLayerMultiSelectionTransformTool(),
   canFinishMultiSelection: canFinishLayerMultiSelection,
   requestFinishMultiSelection: finishLayerMultiSelectionForToolChange,
   rasterizeLayer: (key) => sceneEditorController!.rasterizeLayer(key),
@@ -2145,6 +2257,22 @@ documentInteractionController = new DocumentInteractionController({
 async function settleTransientProjectEdits(): Promise<void> {
   if (!engineInitialized) return;
   if (
+    layerPanelController?.isMultiSelect === true
+    && !await finishLayerMultiSelectionForToolChange()
+  ) {
+    throw new Error("The multiple-layer edit could not finish safely.");
+  }
+  const transformAction = mixedSceneController?.getTransformActionSnapshot();
+  if (transformAction?.active || transformAction?.preparing) {
+    if (!await mixedSceneController!.applyTransform()) {
+      throw new Error("Transform could not finish safely.");
+    }
+    const settledTransform = mixedSceneController!.getTransformActionSnapshot();
+    if (settledTransform.active || settledTransform.preparing) {
+      throw new Error("Transform is still active.");
+    }
+  }
+  if (
     mobileToolSettingsSheet?.isOpen === true
     && mobileToolSettingsSheet.toolKind === "layer-options"
   ) {
@@ -2205,6 +2333,7 @@ function fillPreviewAllowsCanvasNavigation(): boolean {
 function nonHistoryOperationLocked(
   allowDestructivePreviewEdit = false,
   allowShapePresentationPreparation = false,
+  allowLayerMultiTransformEdit = false,
 ): boolean {
   return !engineInitialized
     || sceneEditorController?.isBusy === true
@@ -2218,7 +2347,7 @@ function nonHistoryOperationLocked(
     )
     || brushQuickControlsController?.isDragging === true
     || mobileBrushStudio?.isOpen === true
-    || historyState.openEdit === "transform"
+    || (historyState.openEdit === "transform" && !allowLayerMultiTransformEdit)
     || (
       !allowDestructivePreviewEdit
       && (
@@ -2282,7 +2411,14 @@ function canvasViewOperationLocked(): boolean {
  * verificare che sia ancora possibile.
  */
 function historyRequestLocked(): boolean {
-  return nonHistoryOperationLocked() || canvasInputController?.isPointerActive === true;
+  const selection = layerMultiSelectionSnapshot();
+  const action = transformActionSnapshot();
+  const canPrepareLayerMultiTransform = transformActionBelongsToLayerMultiSelection(
+    action,
+    selection,
+  ) && canSettleLayerMultiSelectionTransform(false);
+  return nonHistoryOperationLocked(false, false, canPrepareLayerMultiTransform)
+    || canvasInputController?.isPointerActive === true;
 }
 
 function updateHistoryControls(): void {

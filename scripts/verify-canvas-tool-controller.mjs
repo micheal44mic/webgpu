@@ -122,6 +122,7 @@ let canFinishMultiSelection = true;
 let finishMultiSelectionResult = true;
 let finishMultiSelectionGate = null;
 let finishMultiSelectionCalls = 0;
+let clearLockOnMultiSelectionFinish = true;
 const vectorCalls = [];
 const vector = {
   setTransformToolActive: (active, mode) => vectorCalls.push(["transform-active", active, mode]),
@@ -169,7 +170,7 @@ const controller = new CanvasToolController({
       : finishMultiSelectionResult;
     if (finished) {
       multiSelectionActive = false;
-      locked = false;
+      if (clearLockOnMultiSelectionFinish) locked = false;
     }
     return finished;
   },
@@ -239,6 +240,7 @@ controller.configure("transform", false);
 await settle();
 multiSelectionActive = true;
 locked = true;
+clearLockOnMultiSelectionFinish = false;
 let releaseMultiSelection;
 finishMultiSelectionGate = new Promise((resolve) => {
   releaseMultiSelection = resolve;
@@ -246,6 +248,7 @@ finishMultiSelectionGate = new Promise((resolve) => {
 const finishCallsBeforeRace = finishMultiSelectionCalls;
 paintButton.dispatchEvent(new Event("click"));
 eraserButton.dispatchEvent(new Event("click"));
+panButton.dispatchEvent(new Event("click"));
 assert.equal(
   controller.activeTool,
   "transform",
@@ -255,14 +258,25 @@ assert.equal(finishMultiSelectionCalls, finishCallsBeforeRace + 1);
 releaseMultiSelection(true);
 await settle();
 await settle();
-assert.equal(controller.activeTool, "erase", "the latest requested tool must win");
+assert.equal(
+  controller.activeTool,
+  "pan",
+  "the latest requested tool must win even while the unlocked notification is stale",
+);
 assert.equal(multiSelectionActive, false);
+assert.equal(
+  locked,
+  true,
+  "the successful post-selection transition must not depend on the generic lock clearing first",
+);
 assert.equal(
   finishMultiSelectionCalls,
   finishCallsBeforeRace + 1,
   "concurrent tool requests must share one group completion",
 );
 finishMultiSelectionGate = null;
+clearLockOnMultiSelectionFinish = true;
+locked = false;
 
 controller.configure("transform", false);
 await settle();

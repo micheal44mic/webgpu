@@ -11,6 +11,7 @@ const main = read("src/main.ts");
 const canvasTools = read("src/canvas-tool-controller.ts");
 const layerPanel = read("src/layer-panel-controller.ts");
 const controller = read("src/mixed-scene-controller.ts");
+const vectorContract = read("src/vector-editor-contract.ts");
 const contract = read("src/mixed-scene-controller-contract.ts");
 const node = read("src/mixed-scene-node.ts");
 const geometry = read("src/scene-transform-geometry.ts");
@@ -39,7 +40,7 @@ assert.match(
 );
 assert.match(
   layerPanel,
-  /private notifyMultiSelection\([\s\S]*?selectionItems\(stats\)[\s\S]*?filter\(\(item\) => this\.selectedKeys\.has\(item\.key\)\)[\s\S]*?map\(\(item\) => item\.key\)[\s\S]*?onMultiSelectionChange/,
+  /private orderedSelectedKeys\([\s\S]*?selectionItems\(stats\)[\s\S]*?filter\(\(item\) => this\.selectedKeys\.has\(item\.key\)\)[\s\S]*?map\(\(item\) => item\.key\)[\s\S]*?private notifyMultiSelection\([\s\S]*?orderedSelectedKeys\(stats\)[\s\S]*?onMultiSelectionChange/,
   "The callback must publish every selected key in stable scene order.",
 );
 assert.match(
@@ -78,10 +79,15 @@ const toolExitCoordinator = section(
   "function canFinishLayerMultiSelection()",
   "const engine = new BrushEngine(",
 );
+const transformSettlement = section(
+  main,
+  "async function settleLayerMultiSelectionTransform()",
+  "function leaveLayerMultiSelectionTransformTool()",
+);
 assert.match(
   toolExitCoordinator,
-  /await controller\.applyTransform\(\)[\s\S]*?panel\.finishMultiSelection\(\)/,
-  "Changing tools must apply the group before closing multiple selection.",
+  /if \(!await settleLayerMultiSelectionTransform\(\)\) return false;[\s\S]*?if \(!leaveLayerMultiSelectionTransformTool\(\)\) return false;[\s\S]*?panel\.finishMultiSelection\(\)/,
+  "Changing tools must settle the owned group and verify tool exit before closing multiple selection.",
 );
 assert.doesNotMatch(
   toolExitCoordinator,
@@ -95,7 +101,7 @@ assert.match(
 );
 assert.match(
   main,
-  /canMergeMultiSelection: canMergeLayerMultiSelection,[\s\S]*?prepareMultiSelectionMerge: prepareLayerMultiSelectionMerge,[\s\S]*?onMultiSelectionMergeStart:[\s\S]*?selectCanvasToolWithMixedScene\("pan"\)[\s\S]*?canFinishMultiSelection: canFinishLayerMultiSelection,[\s\S]*?requestFinishMultiSelection: finishLayerMultiSelectionForToolChange/,
+  /canChangeMultiSelection:[\s\S]*?canSettleLayerMultiSelectionTransform\(false\)[\s\S]*?prepareMultiSelectionChange: settleLayerMultiSelectionTransform,[\s\S]*?canMergeMultiSelection: canMergeLayerMultiSelection,[\s\S]*?prepareMultiSelectionMerge: prepareLayerMultiSelectionMerge,[\s\S]*?onMultiSelectionMergeStart:[\s\S]*?leaveLayerMultiSelectionTransformTool\(\)[\s\S]*?canFinishMultiSelection: canFinishLayerMultiSelection,[\s\S]*?requestFinishMultiSelection: finishLayerMultiSelectionForToolChange/,
   "The panel Done button must use the same exit coordinator as tool changes.",
 );
 assert.match(
@@ -120,14 +126,18 @@ assert.match(
 );
 const controllerExitReadiness = section(
   main,
-  "function canFinishLayerMultiSelection(): boolean {",
-  "async function runLayerMultiSelectionFinish(): Promise<boolean> {",
+  "function canSettleLayerMultiSelectionTransform(requireApply: boolean): boolean {",
+  "async function settleLayerMultiSelectionTransform(): Promise<boolean> {",
 );
-assert.match(controllerExitReadiness, /if \(action\?\.preparing\) return true;/);
 assert.match(
   controllerExitReadiness,
-  /if \(action\?\.active\) return action\.canApply \|\| action\.canCancel;/,
-  "Done must remain available for a recovery-only transform that can still cancel.",
+  /if \(!transformActionBelongsToLayerMultiSelection\(action, selection\)\) return false;[\s\S]*?if \(action\.preparing\) return true;/,
+  "Only a Transform owned by the exact panel selection may keep its layer rows actionable.",
+);
+assert.match(
+  controllerExitReadiness,
+  /return requireApply \? action\.canApply : action\.canApply \|\| action\.canCancel;[\s\S]*?return action\.canCancel;/,
+  "Done may recover by cancelling, while Merge requires Apply for an exact group.",
 );
 assert.match(
   controllerExitReadiness,
@@ -140,19 +150,19 @@ assert.match(
   "Done must remain available while the open group transaction owns the generic lock.",
 );
 assert.match(
-  toolExitCoordinator,
-  /!await controller\.applyTransform\(\)[\s\S]*?action\.canCancel[\s\S]*?await controller\.cancelTransform\(\)/,
+  transformSettlement,
+  /!await controller\.applyTransform\(\)[\s\S]*?recovery\.canCancel[\s\S]*?await controller\.cancelTransform\(\)/,
   "A failed Apply must use Cancel as the final recovery exit.",
 );
 assert.match(
   layerPanel,
-  /canMergeMultiSelection\?: \(\) => boolean[\s\S]*?prepareMultiSelectionMerge\?: \(\) => Promise<boolean>[\s\S]*?onMultiSelectionMergeStart\?: \(\) => void/,
-  "Merge must expose a narrow way to settle only its own Transform lock.",
+  /canChangeMultiSelection\?: \(\) => boolean[\s\S]*?prepareMultiSelectionChange\?: \(\) => Promise<boolean>[\s\S]*?canMergeMultiSelection\?: \(\) => boolean[\s\S]*?prepareMultiSelectionMerge\?: \(\) => Promise<boolean>[\s\S]*?onMultiSelectionMergeStart\?: \(\) => Promise<boolean>/,
+  "Selection changes and Merge must settle only the Transform lock they own.",
 );
 assert.match(
   layerPanel,
-  /mergeRequestBusy = false[\s\S]*?prepareMultiSelectionMerge[\s\S]*?setMultiSelect\(false, false\)[\s\S]*?onMultiSelectionMergeStart[\s\S]*?mergeLayers\(latestPlan\.orderedKeys\)/,
-  "Merge must be single-flight, settle Transform, and leave its tool before mutating the stack.",
+  /mergeRequestBusy = false[\s\S]*?prepareMultiSelectionMerge[\s\S]*?setMultiSelect\(false, false\)[\s\S]*?await this\.options\.onMultiSelectionMergeStart\(\)[\s\S]*?mergeLayers\(latestPlan\.orderedKeys\)/,
+  "Merge must capture its exact selection, verify tool exit, then mutate the stack.",
 );
 assert.match(
   controller,
@@ -173,8 +183,13 @@ const setSelection = section(
 assert.match(setSelection, /const uniqueKeys = \[\.\.\.new Set\(orderedKeys\)\]/);
 assert.match(
   setSelection,
-  /uniqueKeys\.length >= 2[\s\S]*?createGroupTransformSelection\(uniqueKeys\)/,
-  "The controller must preserve an exact two-or-more key set, including gaps in scene order.",
+  /this\.requestedGroupTransformKeys = uniqueKeys\.length >= 2 \? uniqueKeys : \[\]/,
+  "The controller must retain the exact requested two-or-more key set, even when it cannot currently form a group.",
+);
+assert.match(
+  setSelection,
+  /if \(!this\.transformSessionOpen\) \{[\s\S]*?this\.refreshGroupTransformSelection\(\)/,
+  "A selection change during an open session must be recorded without replacing the transaction owner.",
 );
 assert.doesNotMatch(
   setSelection,
@@ -224,6 +239,54 @@ assert.match(
   "The overlay must render the shared group box, not a member box.",
 );
 assert.match(node, /export interface SceneGroupTransformNode[\s\S]*?readonly keys:/);
+
+const selectedTransformNode = section(
+  controller,
+  "  private selectedTransformNode()",
+  "  private prepareSelectedRasterTransform()",
+);
+assert.match(
+  selectedTransformNode,
+  /if \(this\.requestedGroupTransformKeys\.length >= 2\) \{[\s\S]*?return this\.groupTransformSelection\?\.node \?\? null;/,
+  "An invalid exact group must not silently fall back to the active single layer.",
+);
+
+const activation = section(
+  controller,
+  "  setTransformToolActive(",
+  "  private updateTransformUi()",
+);
+assert.doesNotMatch(
+  activation,
+  /prepareSelectedRasterTransform|prepareSelectedGroupTransform/,
+  "Selecting Transform must not eagerly open a raster or group transaction.",
+);
+assert.match(
+  activation,
+  /if \(!active && this\.transformSessionOpen\) \{[\s\S]*?this\.transformToolDeactivationPending = true;[\s\S]*?return false;/,
+  "A rejected deactivation must be observable and queued until the owning session settles.",
+);
+const sceneSync = section(controller, "  syncScene(", "  scheduleViewSync()");
+assert.doesNotMatch(
+  sceneSync,
+  /prepareSelectedRasterTransform|prepareSelectedGroupTransform/,
+  "Scene synchronization must not eagerly open a Transform transaction.",
+);
+assert.match(
+  vectorContract,
+  /interface VectorTransformActionSnapshot[\s\S]*?toolActive: boolean;[\s\S]*?sessionKind: "vector" \| "raster" \| "group" \| null;[\s\S]*?selectionKeys: readonly string\[\];/,
+  "The shell must be able to verify Transform tool, session, and exact selection ownership.",
+);
+assert.match(
+  controller,
+  /private async nudgeSelectedTransform\([\s\S]*?await this\.prepareSelectedGroupTransform\(\)[\s\S]*?await this\.prepareSelectedRasterTransform\(\)/,
+  "Keyboard movement must lazily prepare its group or raster transaction.",
+);
+assert.match(
+  controller,
+  /const lazyPointerIntent = needsGroupPreparation \|\| needsRasterPreparation[\s\S]*?lazyTransformPointerIntent\(event, node\)[\s\S]*?lazyPointerIntent === null\) return;[\s\S]*?needsGroupPreparation[\s\S]*?lazyPointerIntent === "transform"[\s\S]*?resumeGroupPointerAfterPreparation[\s\S]*?needsRasterPreparation[\s\S]*?lazyPointerIntent === "transform"[\s\S]*?resumeRasterPointerAfterPreparation/,
+  "Raster and group transactions must start only after the pointer targets a real transform gesture.",
+);
 
 assert.match(
   contract,
@@ -353,6 +416,187 @@ try {
 } finally {
   await moduleServer.close();
 }
+
+function rasterSceneItem(id, bounds) {
+  return {
+    key: `raster:${id}`,
+    kind: "raster",
+    rasterLayerId: id,
+    rasterLayerIndex: id - 1,
+    rasterLayerName: `Layer ${id}`,
+    rasterVisible: true,
+    rasterOpacity: 1,
+    rasterClippingParentId: null,
+    rasterHasContent: bounds !== null,
+    rasterContentBounds: bounds,
+    rasterTransform: null,
+    clippingParentKey: null,
+  };
+}
+
+const emptyRasterKey = "raster:1";
+const activeRasterKey = "raster:2";
+const otherRasterKey = "raster:3";
+const exactSelectionShell = Object.create(MixedSceneController.prototype);
+Object.assign(exactSelectionShell, {
+  host: {
+    getPixelSelectionState: () => ({ selectedPixels: 0, bounds: null }),
+  },
+  snapshot: {
+    selectedKey: activeRasterKey,
+    activeRasterLayerId: 2,
+    items: [
+      rasterSceneItem(1, null),
+      rasterSceneItem(2, { x: 20, y: 30, width: 40, height: 50 }),
+      rasterSceneItem(3, { x: 90, y: 100, width: 30, height: 20 }),
+    ],
+  },
+  transformToolActive: false,
+  transformToolDeactivationPending: false,
+  transformSessionOpen: false,
+  transformSessionKind: null,
+  requestedGroupTransformKeys: [],
+  groupTransformSelection: null,
+  rasterTransformPreparation: null,
+  groupTransformPreparation: null,
+  transformCommitBusy: false,
+  activeInteraction: null,
+  rasterTransformRecoveryOnly: false,
+  interactionCanvas: {
+    hidden: false,
+    classList: { toggle() {} },
+    setAttribute() {},
+  },
+  updateTransformUi() {},
+  scheduleRender() {},
+});
+exactSelectionShell.setTransformSelection([emptyRasterKey, activeRasterKey]);
+assert.deepEqual(
+  exactSelectionShell.requestedGroupTransformKeys,
+  [emptyRasterKey, activeRasterKey],
+);
+assert.equal(exactSelectionShell.groupTransformSelection, null);
+assert.equal(
+  exactSelectionShell.selectedTransformNode(),
+  null,
+  "an exact group containing the empty default layer must not fall back to the active raster",
+);
+assert.deepEqual(
+  exactSelectionShell.getTransformActionSnapshot().selectionKeys,
+  [emptyRasterKey, activeRasterKey],
+);
+
+exactSelectionShell.setTransformSelection([activeRasterKey, otherRasterKey]);
+const openGroupOwner = exactSelectionShell.groupTransformSelection;
+assert.ok(openGroupOwner, "two transformable layers must create the requested group");
+exactSelectionShell.transformSessionOpen = true;
+exactSelectionShell.transformSessionKind = "group";
+exactSelectionShell.setTransformSelection([emptyRasterKey, activeRasterKey]);
+assert.deepEqual(
+  exactSelectionShell.requestedGroupTransformKeys,
+  [emptyRasterKey, activeRasterKey],
+  "selection changes must be retained while the previous group owns the transaction",
+);
+assert.equal(
+  exactSelectionShell.groupTransformSelection,
+  openGroupOwner,
+  "an open group transaction must keep its original owner until it settles",
+);
+assert.deepEqual(
+  exactSelectionShell.getTransformActionSnapshot().selectionKeys,
+  [activeRasterKey, otherRasterKey],
+  "the action snapshot must report the open session owner, not the deferred request",
+);
+exactSelectionShell.transformSessionOpen = false;
+exactSelectionShell.transformSessionKind = null;
+exactSelectionShell.refreshGroupTransformSelection();
+assert.equal(
+  exactSelectionShell.groupTransformSelection,
+  null,
+  "the latest exact selection must be reconciled immediately after the old session closes",
+);
+assert.equal(exactSelectionShell.selectedTransformNode(), null);
+assert.deepEqual(
+  exactSelectionShell.getTransformActionSnapshot().selectionKeys,
+  [emptyRasterKey, activeRasterKey],
+  "after settlement the action snapshot must expose the reconciled request",
+);
+
+exactSelectionShell.transformSessionOpen = true;
+exactSelectionShell.transformSessionKind = "raster";
+exactSelectionShell.setTransformSelection([activeRasterKey, otherRasterKey]);
+assert.equal(
+  exactSelectionShell.groupTransformSelection,
+  null,
+  "a pending group request must not replace a raster session owner",
+);
+assert.deepEqual(exactSelectionShell.getTransformActionSnapshot().selectionKeys, []);
+assert.equal(exactSelectionShell.selectedTransformNode()?.layerId, 2);
+exactSelectionShell.transformSessionOpen = false;
+exactSelectionShell.transformSessionKind = null;
+exactSelectionShell.refreshGroupTransformSelection();
+assert.ok(
+  exactSelectionShell.groupTransformSelection,
+  "the pending group request must become active after the raster session settles",
+);
+
+let eagerRasterPreparations = 0;
+const lazyActivationShell = Object.create(MixedSceneController.prototype);
+Object.assign(lazyActivationShell, {
+  host: { getMixedSceneSnapshot: () => null },
+  transformToolActive: false,
+  transformToolDeactivationPending: false,
+  transformSessionOpen: false,
+  transformSessionKind: null,
+  rasterTransformToolMode: "affine",
+  selectedTransformNode: () => ({ kind: "raster-layer", scope: "layer", mode: "affine" }),
+  prepareSelectedRasterTransform: () => {
+    eagerRasterPreparations += 1;
+    return Promise.resolve();
+  },
+  interactionCanvas: {
+    hidden: true,
+    classList: { toggle() {} },
+    setAttribute() {},
+  },
+  updateTransformUi() {},
+  scheduleRender() {},
+});
+assert.equal(lazyActivationShell.setTransformToolActive(true), true);
+assert.equal(
+  eagerRasterPreparations,
+  0,
+  "activating Transform must not create a raster transaction before a real gesture",
+);
+
+let queuedCancelCalls = 0;
+Object.assign(lazyActivationShell, {
+  transformSessionOpen: true,
+  transformSessionKind: "vector",
+  transformCommitBusy: false,
+  activeInteraction: null,
+  rasterTransformRecoveryOnly: false,
+  requestedGroupTransformKeys: [],
+  groupTransformSelection: null,
+  host: {
+    getMixedSceneSnapshot: () => null,
+    cancelVectorHistoryEdit: async () => {
+      queuedCancelCalls += 1;
+      return true;
+    },
+  },
+  status: { textContent: "" },
+  refreshGroupTransformSelection() {},
+  syncControlsFromSelection() {},
+  selectedVectorNode: () => null,
+});
+assert.equal(lazyActivationShell.setTransformToolActive(false), false);
+assert.equal(lazyActivationShell.transformToolActive, true);
+assert.equal(lazyActivationShell.transformToolDeactivationPending, true);
+assert.equal(await lazyActivationShell.cancelTransformSession(), true);
+assert.equal(queuedCancelCalls, 1);
+assert.equal(lazyActivationShell.transformToolActive, false);
+assert.equal(lazyActivationShell.transformToolDeactivationPending, false);
 
 function touchEvent(pointerId) {
   return {
@@ -519,6 +763,35 @@ await earlyPointerResume;
 assert.equal(earlyPointerCancels, 1);
 assert.equal(earlyPointerShell.cancelledPendingRasterPointerGeneration, null);
 
+let noGestureCancels = 0;
+const noGestureShell = Object.create(MixedSceneController.prototype);
+Object.assign(noGestureShell, {
+  pendingRasterPointerId: 41,
+  pendingRasterPointerMove: null,
+  pendingRasterPointerGeneration: 7,
+  cancelledPendingRasterPointerGeneration: null,
+  transformSessionOpen: false,
+  transformSessionKind: null,
+  activeInteraction: null,
+  prepareSelectedGroupTransform: async function prepareGroup() {
+    this.transformSessionOpen = true;
+    this.transformSessionKind = "group";
+  },
+  onPointerDown() {
+    // Deliberately leave activeInteraction empty: the pointer hit no handle or body.
+  },
+  cancelTransformSession: async () => {
+    noGestureCancels += 1;
+    return true;
+  },
+});
+await noGestureShell.resumeGroupPointerAfterPreparation({ pointerId: 41 }, 7);
+assert.equal(
+  noGestureCancels,
+  1,
+  "a prepared group session must be cancelled when the resumed pointer creates no gesture",
+);
+
 let pointerFinishUiUpdates = 0;
 const pointerFinishShell = Object.create(MixedSceneController.prototype);
 const pointerInteraction = { pointerId: 17, mode: "move" };
@@ -553,5 +826,5 @@ assert.equal(
 );
 
 console.log(
-  "Group Transform UI: exact layer selection, automatic activation, shared box, side handles and atomic Apply/Cancel verified.",
+  "Group Transform UI: exact ownership, lazy preparation, shared box, side handles and atomic Apply/Cancel verified.",
 );

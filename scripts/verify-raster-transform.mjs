@@ -583,13 +583,28 @@ assert.match(
   controllerSource,
   /if \(isRasterLayerTransformNode\(node\) && node\.scope === "selection"\) return null/,
 );
-assert.match(controllerSource, /nudgeRasterLayerTransform\(arrow\.x \* step, arrow\.y \* step\)/);
+assert.match(
+  controllerSource,
+  /private async nudgeSelectedTransform\([\s\S]*?await this\.prepareSelectedRasterTransform\(\)[\s\S]*?this\.host\.nudgeRasterLayerTransform\(deltaX, deltaY\)/,
+  "keyboard movement must lazily prepare the raster transaction before updating it",
+);
 assert.match(controllerSource, /const rasterKeyboardMove = Boolean/);
 assert.match(controllerSource, /event\.shiftKey \? 10 : 1/);
 assert.match(
   controllerSource,
-  /setTransformToolActive\([\s\S]{0,100}active: boolean,[\s\S]{0,100}\): void \{[\s\S]{0,300}const latestSnapshot = this\.host\.getMixedSceneSnapshot\(\);[\s\S]{0,120}this\.syncScene\(latestSnapshot\);[\s\S]{0,120}this\.transformToolActive = active;/,
+  /setTransformToolActive\([\s\S]{0,100}active: boolean,[\s\S]{0,100}\): boolean \{[\s\S]{0,500}const latestSnapshot = this\.host\.getMixedSceneSnapshot\(\);[\s\S]{0,120}this\.syncScene\(latestSnapshot\);[\s\S]{0,120}this\.transformToolActive = active;/,
   "l'ingresso in Trasforma deve aggiornare la scena dopo l'ultimo gesto raster",
+);
+const transformActivationStart = controllerSource.indexOf("  setTransformToolActive(");
+const transformActivationEnd = controllerSource.indexOf(
+  "  private updateTransformUi()",
+  transformActivationStart,
+);
+assert.ok(transformActivationStart >= 0 && transformActivationEnd > transformActivationStart);
+assert.doesNotMatch(
+  controllerSource.slice(transformActivationStart, transformActivationEnd),
+  /prepareSelectedRasterTransform/,
+  "l'ingresso in Trasforma non deve aprire una transazione raster prima del primo gesto",
 );
 assert.match(
   brushEngineSource,

@@ -73,7 +73,10 @@ assert.match(
 assert.match(controllerSource, /views\.push\(this\.backgroundView\(stats\)\)/);
 assert.match(controllerSource, /candidate !== undefined && isLayerPanelKey\(candidate\)/);
 assert.match(controllerSource, /this\.listen\(elements\.list, "change", \(raw\) => this\.handleBackgroundColorInput\(raw\)\)/);
-assert.match(controllerSource, /select\.disabled = locked \|\| background/);
+assert.match(
+  controllerSource,
+  /select\.disabled = background[\s\S]*?this\.multiSelectEnabled \? !multiSelectionAvailable : locked/,
+);
 assert.match(controllerSource, /this\.options\.setRasterReference\(key,/);
 assert.match(controllerSource, /this\.options\.setLayerClipping\(properties\.key,/);
 const panelCompositionStart = mainSource.indexOf("layerPanelController = new LayerPanelController({");
@@ -276,7 +279,13 @@ let multiSelectionFinishAllowed = true;
 let multiSelectionFinishRequests = 0;
 let multiSelectionMergeAllowed = false;
 let mergePreparationAllowed = true;
+let multiSelectionChangeAllowed = false;
+let selectionPreparationAllowed = true;
+let mergeExitAllowed = true;
+let mergeShouldFail = false;
 const mergeSequence = [];
+const selectionSequence = [];
+const mergeExitSelectionStates = [];
 const controller = new LayerPanelController({
   browser,
   document,
@@ -308,15 +317,23 @@ const controller = new LayerPanelController({
   mergeLayers: async (keys) => {
     mergeSequence.push("merge");
     mergeCalls.push([...keys]);
+    if (mergeShouldFail) throw new Error("Injected merge failure.");
     return { itemCount: 2 };
+  },
+  canChangeMultiSelection: () => multiSelectionChangeAllowed,
+  prepareMultiSelectionChange: async () => {
+    selectionSequence.push("prepare");
+    return selectionPreparationAllowed;
   },
   canMergeMultiSelection: () => multiSelectionMergeAllowed,
   prepareMultiSelectionMerge: async () => {
     mergeSequence.push("prepare");
     return mergePreparationAllowed;
   },
-  onMultiSelectionMergeStart: () => {
+  onMultiSelectionMergeStart: async () => {
     mergeSequence.push("start");
+    mergeExitSelectionStates.push(controller.isMultiSelect);
+    return mergeExitAllowed;
   },
   onMultiSelectionChange: ({ enabled, orderedKeys }) => {
     multiSelectionUpdates.push({ enabled, orderedKeys: [...orderedKeys] });
@@ -444,7 +461,7 @@ assert.deepEqual(multiSelectionUpdates.at(-1), {
   enabled: true,
   orderedKeys: ["raster:8"],
 });
-controller.toggleMultiSelection("raster:7");
+await controller.requestMultiSelectionToggle("raster:7");
 assert.deepEqual(
   multiSelectionUpdates.at(-1),
   {
@@ -465,22 +482,30 @@ assert.equal(
   notificationsBeforePanelClose,
   "closing the panel must not publish a false selection reset",
 );
-controller.setOpen(true);
-assert.equal(controller.isMultiSelect, true);
-controller.reconcileMultiSelection({
+const completeStats = stats;
+stats = {
   ...stats,
   activeLayerIndex: 0,
   activeLayerId: 8,
   layers: [stats.layers[1]],
-});
+};
+controller.requestRefresh();
 assert.deepEqual(
   multiSelectionUpdates.at(-1),
   {
     enabled: true,
     orderedKeys: ["raster:8"],
   },
-  "reconciliation must remove stale keys and publish the surviving selection",
+  "closed-panel reconciliation must remove stale keys and publish the survivor",
 );
+assert.deepEqual(controller.getMultiSelectionSnapshot(), {
+  enabled: true,
+  orderedKeys: ["raster:8"],
+});
+stats = completeStats;
+controller.requestRefresh();
+controller.setOpen(true);
+assert.equal(controller.isMultiSelect, true);
 const mergeCallsBeforeFinish = mergeCalls.length;
 assert.equal(controller.finishMultiSelection(), true);
 assert.deepEqual(multiSelectionUpdates.at(-1), {
@@ -498,11 +523,37 @@ assert.equal(
 // A transform opened by this same selection is a merge prerequisite, not an
 // unrelated document lock. Merge settles it once, then forwards stable keys.
 controller.setMultiSelect(true);
-controller.toggleMultiSelection("raster:7");
+await controller.requestMultiSelectionToggle("raster:7");
 interactionLocked = true;
+multiSelectionChangeAllowed = true;
 multiSelectionMergeAllowed = true;
+controller.syncInteractionState();
+assert.equal(
+  elements.list.getAttribute("inert"),
+  null,
+  "the layer list must remain actionable for its own Transform lock",
+);
 controller.render(stats);
 assert.equal(elements.mergeSelectionButton.disabled, false);
+
+// A failed verified tool exit must leave the exact selection available for a
+// retry and must never enter the structural mutation.
+mergeExitAllowed = false;
+await controller.requestMerge();
+assert.deepEqual(mergeSequence, ["prepare", "start"]);
+assert.equal(
+  mergeExitSelectionStates.at(-1),
+  false,
+  "the tool exits only after the exact panel selection has been captured",
+);
+assert.deepEqual(controller.getMultiSelectionSnapshot(), {
+  enabled: true,
+  orderedKeys: ["raster:7", "raster:8"],
+});
+assert.equal(mergeCalls.length, mergeCallsBeforeFinish);
+
+mergeSequence.length = 0;
+mergeExitAllowed = true;
 const firstMerge = controller.requestMerge();
 const duplicateMerge = controller.requestMerge();
 await Promise.all([firstMerge, duplicateMerge]);
@@ -514,14 +565,76 @@ assert.equal(controller.isMultiSelect, false);
 // selection so the user can retry after that operation completes.
 mergeSequence.length = 0;
 controller.setMultiSelect(true);
-controller.toggleMultiSelection("raster:7");
+await controller.requestMultiSelectionToggle("raster:7");
+multiSelectionChangeAllowed = false;
 multiSelectionMergeAllowed = false;
 await controller.requestMerge();
 assert.deepEqual(mergeSequence, []);
 assert.equal(controller.isMultiSelect, true);
+await controller.requestMultiSelectionToggle("raster:7");
+assert.deepEqual(
+  controller.getMultiSelectionSnapshot().orderedKeys,
+  ["raster:7", "raster:8"],
+  "an unrelated lock must also block selected-key mutations",
+);
 controller.finishMultiSelection();
 interactionLocked = false;
+multiSelectionChangeAllowed = false;
 mergePreparationAllowed = true;
+thumbnailEnsures.length = 0;
+
+// Selection changes are serialized behind the owned Transform settlement.
+// Rapid clicks cannot race two independently prepared key sets.
+controller.setMultiSelect(true);
+interactionLocked = true;
+multiSelectionChangeAllowed = true;
+let releaseFirstSelectionPreparation;
+const firstSelectionPreparation = new Promise((resolve) => {
+  releaseFirstSelectionPreparation = resolve;
+});
+let selectionPreparationCount = 0;
+controller.options.prepareMultiSelectionChange = async () => {
+  selectionSequence.push(`prepare-${selectionPreparationCount + 1}`);
+  selectionPreparationCount += 1;
+  if (selectionPreparationCount === 1) await firstSelectionPreparation;
+  return true;
+};
+const rapidAdd = controller.requestMultiSelectionToggle("raster:7");
+const rapidRemove = controller.requestMultiSelectionToggle("raster:7");
+for (let turn = 0; turn < 8 && selectionPreparationCount === 0; turn += 1) {
+  await Promise.resolve();
+}
+assert.deepEqual(selectionSequence.slice(-1), ["prepare-1"]);
+releaseFirstSelectionPreparation();
+await Promise.all([rapidAdd, rapidRemove]);
+assert.deepEqual(selectionSequence.slice(-2), ["prepare-1", "prepare-2"]);
+assert.deepEqual(controller.getMultiSelectionSnapshot(), {
+  enabled: true,
+  orderedKeys: ["raster:8"],
+});
+controller.finishMultiSelection();
+interactionLocked = false;
+multiSelectionChangeAllowed = false;
+
+// If the structural operation itself fails atomically, all still-live keys are
+// restored instead of leaving the user in a dead-end mode.
+controller.options.prepareMultiSelectionChange = async () => true;
+controller.setMultiSelect(true);
+await controller.requestMultiSelectionToggle("raster:7");
+interactionLocked = true;
+multiSelectionMergeAllowed = true;
+mergeShouldFail = true;
+mergeSequence.length = 0;
+await controller.requestMerge();
+assert.deepEqual(mergeSequence, ["prepare", "start", "merge"]);
+assert.deepEqual(controller.getMultiSelectionSnapshot(), {
+  enabled: true,
+  orderedKeys: ["raster:7", "raster:8"],
+});
+mergeShouldFail = false;
+controller.finishMultiSelection();
+interactionLocked = false;
+multiSelectionMergeAllowed = false;
 thumbnailEnsures.length = 0;
 
 // An open group transform owns the generic interaction lock. Its Done button

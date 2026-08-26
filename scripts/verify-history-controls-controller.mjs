@@ -97,7 +97,12 @@ function waitFor(predicate, label) {
   });
 }
 
-function controllerHarness({ engine, interactionLocked, requestLocked } = {}) {
+function controllerHarness({
+  engine,
+  interactionLocked,
+  requestLocked,
+  prepareOperation,
+} = {}) {
   const browser = new FakeWindow();
   const undoButton = new FakeButton();
   const redoButton = new FakeButton();
@@ -119,6 +124,7 @@ function controllerHarness({ engine, interactionLocked, requestLocked } = {}) {
     initialState: historyState(),
     interactionLocked: interactionLocked ?? (() => false),
     requestLocked: requestLocked ?? (() => false),
+    prepareOperation,
     onStateChange: (state) => publishedStates.push(state),
     onControlsLockChange: (locked) => lockStates.push(locked),
     onReplayComplete: () => {
@@ -137,6 +143,40 @@ function controllerHarness({ engine, interactionLocked, requestLocked } = {}) {
     lockStates,
     replayCompletions: () => replayCompletions,
   };
+}
+
+// A controller-owned transient edit is settled before lock and journal
+// availability are re-read. Undo then crosses the newly visible atomic action.
+{
+  const calls = [];
+  let transientOpen = true;
+  let currentState = historyState({
+    canUndo: false,
+    openEdit: "transform",
+    undoBlockedReason: "Finish Transform before undoing.",
+  });
+  const harness = controllerHarness({
+    engine: {
+      state: () => currentState,
+      undo: async () => {
+        calls.push("undo");
+        return true;
+      },
+      redo: async () => true,
+      crossedAction: () => ({ action: "group-transform", cursor: 3 }),
+    },
+    interactionLocked: () => transientOpen,
+    prepareOperation: async (operation) => {
+      calls.push(`prepare-${operation}`);
+      transientOpen = false;
+      currentState = historyState({ cursor: 3 });
+      return true;
+    },
+  });
+  harness.controller.request("undo");
+  await waitFor(() => !harness.controller.isQueueDraining, "prepared history step");
+  assert.deepEqual(calls, ["prepare-undo", "undo"]);
+  assert.equal(harness.publishedStates.at(0).openEdit, null);
 }
 
 // Availability is semantic (`aria-disabled`), never native-disabled: queued

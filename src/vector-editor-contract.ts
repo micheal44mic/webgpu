@@ -81,8 +81,12 @@ export interface VectorEffectEditorSnapshot {
 }
 
 export interface VectorTransformActionSnapshot {
+  readonly toolActive: boolean;
   readonly active: boolean;
   readonly preparing: boolean;
+  readonly sessionKind: "vector" | "raster" | "group" | null;
+  /** Exact group session owner, or pending group request. Empty means the active item owns Transform. */
+  readonly selectionKeys: readonly string[];
   readonly canApply: boolean;
   readonly canCancel: boolean;
 }

@@ -143,8 +143,18 @@ assert.doesNotMatch(
 );
 assert.match(
   controller,
-  /this\.multiSelectEnabled[\s\S]*?this\.toggleMultiSelection\(key\)[\s\S]*?return;[\s\S]*?this\.options\.selectLayer\(key\)/,
+  /action === "select" && this\.multiSelectEnabled[\s\S]*?this\.requestMultiSelectionToggle\(key\)[\s\S]*?return;[\s\S]*?this\.options\.isInteractionLocked\(\)[\s\S]*?this\.options\.selectLayer\(key\)/,
   "multi-select taps must stay local while ordinary taps retain single selection",
+);
+assert.match(
+  controller,
+  /requestRefresh\(\): void \{[\s\S]*?reconcileMultiSelection\(stats\)/,
+  "selection ownership must reconcile even while the panel is closed",
+);
+assert.match(
+  controller,
+  /multiSelectionMutationTail[\s\S]*?previous\.catch[\s\S]*?prepareMultiSelectionChange[\s\S]*?commitMultiSelectionToggle/,
+  "rapid layer taps must serialize behind the selection-owned Transform settlement",
 );
 assert.match(
   controller,
@@ -183,8 +193,8 @@ assert.match(
 );
 assert.match(
   controller,
-  /mergeInteractionAvailable\(\)[\s\S]*?canMergeMultiSelection[\s\S]*?prepareMultiSelectionMerge[\s\S]*?mergeLayers\(latestPlan\.orderedKeys\)/,
-  "merge must settle the selection-owned Transform lock before the structural operation",
+  /mergeInteractionAvailable\(\)[\s\S]*?canMergeMultiSelection[\s\S]*?prepareMultiSelectionMerge[\s\S]*?await this\.options\.onMultiSelectionMergeStart\(\)[\s\S]*?mergeLayers\(latestPlan\.orderedKeys\)/,
+  "merge must verify the selection-owned Transform exit before structural mutation",
 );
 console.log(
   "Mobile layer multi-selection: order, clipping integrity, UI state and controller callback verified.",

@@ -27,6 +27,8 @@ export interface HistoryControlsControllerOptions {
   readonly initialState: HistoryState;
   readonly interactionLocked: () => boolean;
   readonly requestLocked: () => boolean;
+  /** Settles a controller-owned transient edit before history is revalidated. */
+  readonly prepareOperation?: (operation: HistoryOperation) => Promise<boolean>;
   readonly onStateChange: (state: HistoryState) => void;
   readonly onControlsLockChange: (locked: boolean) => void;
   readonly onReplayComplete: () => void;
@@ -50,6 +52,7 @@ export class HistoryControlsController {
   private readonly redoButton: HTMLButtonElement;
   private readonly interactionLocked: () => boolean;
   private readonly requestLocked: () => boolean;
+  private readonly prepareOperation?: (operation: HistoryOperation) => Promise<boolean>;
   private readonly onStateChange: (state: HistoryState) => void;
   private readonly onControlsLockChange: (locked: boolean) => void;
   private readonly onReplayComplete: () => void;
@@ -76,6 +79,7 @@ export class HistoryControlsController {
     this.currentState = options.initialState;
     this.interactionLocked = options.interactionLocked;
     this.requestLocked = options.requestLocked;
+    this.prepareOperation = options.prepareOperation;
     this.onStateChange = options.onStateChange;
     this.onControlsLockChange = options.onControlsLockChange;
     this.onReplayComplete = options.onReplayComplete;
@@ -175,6 +179,24 @@ export class HistoryControlsController {
   }
 
   private async runOperation(operation: HistoryOperation): Promise<boolean> {
+    if (this.prepareOperation) {
+      let prepared = false;
+      try {
+        prepared = await this.prepareOperation(operation);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.recordDiagnostic("history-preparation-failed", operation, error);
+        this.setStatus(message, "error");
+        return false;
+      }
+      if (!prepared) {
+        this.setStatus("Finish the current operation and try again.");
+        return false;
+      }
+      // Preparation may have committed one atomic edit. Re-read the journal so
+      // this request crosses the state that is actually visible now.
+      this.refreshFromEngine();
+    }
     if (this.interactionLocked()) {
       const reason = operation === "undo"
         ? this.currentState.undoBlockedReason

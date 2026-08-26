@@ -195,7 +195,12 @@ export class CanvasToolController {
     }
     const pending = this.pendingMultiSelectionTool;
     this.pendingMultiSelectionTool = null;
-    if (!pending || this.options.isInteractionLocked()) return;
+    if (!pending) return;
+    // The completion promise is the ownership boundary for the group edit.
+    // History can publish its unlocked state one notification later, so
+    // consulting the generic lock again here would discard a tool request that
+    // has already settled the edit successfully. Ordinary selections still
+    // pass through the lock guard in select().
     this.configure(pending.tool, true, pending.preserveToolSettings);
     this.options.updateHistoryControls();
   }
