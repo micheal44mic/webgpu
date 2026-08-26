@@ -186,7 +186,8 @@ export type EffectsRetargetCaller =
   | "public"
   | "layer-switch"
   | "history-replay"
-  | "structural-history";
+  | "structural-history"
+  | "clone-source";
 
 /**
  * A blend-mode change uses the layer-switch gate during a direct edit, but an

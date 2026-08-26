@@ -696,10 +696,13 @@ const layerMerge = (
   assert(selectionRuntime.includes("identity: engine.pixelSelectionIdentity"));
   assert(selectionRuntime.includes("engine.selectionHistoryMasksByRevision.get(revision)"));
   assert(selectionRuntime.includes("engine.selectionHistoryMasksByRevision.set(revision, snapshot)"));
-  const beginStroke = brushEngine.slice(
-    brushEngine.indexOf("  beginStrokeAtLayer(point: LayerPoint, deferredPreview = false): boolean"),
-    brushEngine.indexOf("  extendStroke(samples: readonly PointerSample[]): void"),
+  const beginStrokeStart = brushEngine.indexOf("  beginStrokeAtLayer(");
+  const beginStrokeEnd = brushEngine.indexOf(
+    "  extendStroke(samples: readonly PointerSample[]): void",
+    beginStrokeStart,
   );
+  assert(beginStrokeStart >= 0 && beginStrokeEnd > beginStrokeStart);
+  const beginStroke = brushEngine.slice(beginStrokeStart, beginStrokeEnd);
   assert(beginStroke.includes("return false;"));
   assert(beginStroke.includes("return true;"));
   assert(

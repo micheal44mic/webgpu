@@ -133,7 +133,7 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
 `;
 
 function brushToolActive(tool: CanvasInputTool): boolean {
-  return tool === "paint" || tool === "erase" || tool === "blend";
+  return tool === "paint" || tool === "erase" || tool === "blend" || tool === "clone";
 }
 
 function clampPixelRatio(value: number): number {

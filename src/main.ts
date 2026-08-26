@@ -15,6 +15,8 @@ import { CanvasToolSettingsController } from "./canvas-tool-settings-controller"
 import { CanvasInputController, type CanvasInputTool } from "./canvas-input-controller";
 import { CanvasToolController } from "./canvas-tool-controller";
 import { BrushOutlineController } from "./brush-outline-controller";
+import { CloneToolController } from "./clone-tool-controller";
+import type { CloneSampleMode } from "./clone-interaction-core";
 import { PixelSelectionController } from "./pixel-selection-controller";
 import { AppDiagnosticsController } from "./app-diagnostics-controller";
 import { GpuMemoryPanelController } from "./gpu-memory-panel-controller";
@@ -175,6 +177,19 @@ function element<T extends HTMLElement>(id: string): T {
 document.title = `WebGPU Brush Engine ${DOCUMENT_WIDTH}×${DOCUMENT_HEIGHT}`;
 const canvas = element<HTMLCanvasElement>("gpuCanvas");
 const brushOutlineCanvas = element<HTMLCanvasElement>("brushOutlineCanvas");
+const cloneSourceOverlay = element<HTMLElement>("cloneSourceOverlay");
+const cloneSourceMarker = element<HTMLElement>("cloneSourceMarker");
+const cloneSamplePreview = element<HTMLCanvasElement>("cloneSamplePreview");
+const cloneToolDock = element<HTMLElement>("cloneToolDock");
+const cloneSetSourceButton = element<HTMLButtonElement>("cloneSetSource");
+const cloneSampleModeButtons = Array.from(
+  document.querySelectorAll<HTMLButtonElement>("[data-clone-sample-mode]"),
+);
+const cloneAlignedButton = element<HTMLButtonElement>("cloneAligned");
+const cloneAngleInput = element<HTMLInputElement>("cloneAngle");
+const cloneAngleValue = element<HTMLOutputElement>("cloneAngleValue");
+const cloneAngleResetButton = element<HTMLButtonElement>("cloneAngleReset");
+const cloneToolStatus = element<HTMLOutputElement>("cloneToolStatus");
 const canvasGuidesOverlayCanvas = element<HTMLCanvasElement>("canvasGuidesOverlayCanvas");
 const tipPreviewCanvas = element<HTMLCanvasElement>("tipPreviewCanvas");
 const rasterSelectionOverlayCanvas = element<HTMLCanvasElement>(
@@ -483,6 +498,8 @@ let documentInteractionController: DocumentInteractionController | null = null;
 let brushQuickControlsController: BrushQuickControlsController | null = null;
 let canvasToolController: CanvasToolController | null = null;
 let brushOutlineController: BrushOutlineController | null = null;
+let cloneToolController: CloneToolController | null = null;
+let cloneSourcePreparationToken = 0;
 let mixedSceneInitializationPromise: Promise<MixedSceneController> | null = null;
 let editorToolsController: EditorToolsController;
 let editorFiltersController: EditorFiltersController | null = null;
@@ -563,6 +580,7 @@ const engine = new BrushEngine(canvas, {
     brushQuickControlsController?.notifyEngineUpdate();
     mobileBrushStudio?.notifyEngineUpdate();
     brushOutlineController?.notifyEngineUpdate();
+    cloneToolController?.notifyBrushChange();
   },
   onHistoryChange(state) {
     projectSessionController?.noteHistoryState(state);
@@ -579,12 +597,22 @@ const engine = new BrushEngine(canvas, {
     }
     updateHistoryControls();
     mobileToolSettingsSheet?.syncOpenState();
+    if (
+      cloneToolController?.isActive
+      && !state.busy
+      && state.openEdit === null
+      && !state.inconsistent
+      && canvasInputController?.isPointerActive !== true
+    ) {
+      prepareActiveCloneSource(cloneToolController.snapshot().sampleMode);
+    }
   },
   onViewChange() {
     mixedSceneController?.scheduleViewSync();
     canvasGuidesController?.scheduleRender();
     projectSessionController?.markDirty();
     brushOutlineController?.notifyEngineUpdate();
+    cloneToolController?.notifyViewChange();
     rasterAdjustmentsController?.handleViewChange();
   },
   onPixelSelectionChange() {
@@ -624,6 +652,9 @@ const engine = new BrushEngine(canvas, {
     layerSwitchResult.textContent =
       `Undo/Redo selected layer ${activeIndex + 1}.`;
     projectSessionController?.markDirty();
+    if (cloneToolController?.isActive && canvasInputController?.isPointerActive !== true) {
+      prepareActiveCloneSource(cloneToolController.snapshot().sampleMode);
+    }
   },
 }, tipPreviewCanvas, {
   bevelBoundingFieldEnabled:
@@ -735,6 +766,7 @@ const historyControlsController = new HistoryControlsController({
   },
   onControlsLockChange: (locked) => {
     brushQuickControlsController?.setLocked(locked);
+    cloneToolController?.notifyInteractionState();
     mobilePaintButton.disabled = locked;
     mobileEraserButton.disabled = locked;
     mobileBlendButton.disabled = locked;
@@ -1043,6 +1075,67 @@ brushQuickControlsController = new BrushQuickControlsController({
   updateHistoryControls,
 });
 
+cloneToolController = new CloneToolController({
+  browser: window,
+  document,
+  elements: {
+    canvas,
+    overlay: cloneSourceOverlay,
+    marker: cloneSourceMarker,
+    previewCanvas: cloneSamplePreview,
+    dock: cloneToolDock,
+    setSourceButton: cloneSetSourceButton,
+    sampleModeButtons: cloneSampleModeButtons,
+    alignedButton: cloneAlignedButton,
+    angleInput: cloneAngleInput,
+    angleValue: cloneAngleValue,
+    angleResetButton: cloneAngleResetButton,
+    status: cloneToolStatus,
+  },
+  toDocumentPoint: (clientX, clientY) => {
+    const point = engine.toLayerPoint({
+      clientX,
+      clientY,
+      pressure: 1,
+      timeMs: performance.now(),
+    });
+    return { x: point.x, y: point.y };
+  },
+  getView: () => engine.getVectorTextViewState(),
+  getBrushDiameterCssPixels: () => engine.getBrushOutlineSnapshot().diameterCssPixels,
+  isInteractionLocked: interactionLocked,
+  onConfigurationChange: (state, reason) => {
+    if (reason !== "angle") updateHistoryControls();
+    if (reason === "sample-mode") prepareActiveCloneSource(state.sampleMode);
+  },
+  onPreviewChange: (request) => {
+    if (!request || !engineInitialized) return false;
+    return engine.renderCloneToolPreview(cloneSamplePreview, {
+      sourceX: request.sourcePoint.x,
+      sourceY: request.sourcePoint.y,
+      angleDegrees: request.angleDegrees,
+      sampleMode: request.sampleMode,
+      diameterCssPixels: request.diameterCssPixels,
+    });
+  },
+});
+
+function prepareActiveCloneSource(sampleMode: CloneSampleMode): void {
+  if (!engineInitialized || !cloneToolController?.isActive) return;
+  const token = ++cloneSourcePreparationToken;
+  cloneToolController.setSourcePreparing(true);
+  void engine.prepareCloneTool(sampleMode).catch((error) => {
+    if (token !== cloneSourcePreparationToken) return;
+    const message = error instanceof Error ? error.message : String(error);
+    statusElement.textContent = `Clone preparation failed: ${message}`;
+    statusElement.className = "status error";
+  }).finally(() => {
+    if (token === cloneSourcePreparationToken) {
+      cloneToolController?.setSourcePreparing(false);
+    }
+  });
+}
+
 canvasToolController = new CanvasToolController({
   engine,
   browser: window,
@@ -1095,6 +1188,16 @@ canvasToolController = new CanvasToolController({
   },
   syncToolSettings: () => mobileToolSettingsSheet?.syncOpenState(),
   updateHistoryControls,
+  onToolChange: (tool) => {
+    cloneToolController?.setActive(tool === "clone");
+    if (tool === "clone" && engineInitialized) {
+      prepareActiveCloneSource(cloneToolController.snapshot().sampleMode);
+    } else if (engineInitialized) {
+      cloneSourcePreparationToken += 1;
+      cloneToolController?.setSourcePreparing(false);
+      engine.releaseCloneToolSource();
+    }
+  },
 });
 
 pixelSelectionController = new PixelSelectionController({
@@ -1897,6 +2000,7 @@ canvasInputController = new CanvasInputController({
     rasterAdjustmentsController?.isDestructivePreviewNavigationActive(historyState) === true
     || fillPreviewAllowsCanvasNavigation(),
   getSpatialBlurController: () => rasterAdjustmentsController,
+  getCloneController: () => cloneToolController,
   getVectorController: () => mixedSceneController,
   getEditorExtension: () => editorExtension,
   updateHistoryControls,
@@ -1958,6 +2062,7 @@ window.addEventListener("pagehide", () => {
   editorSettingsController?.dispose();
   layerPanelController?.dispose();
   canvasInputController?.dispose();
+  cloneToolController?.dispose();
   brushOutlineController?.dispose();
   documentInteractionController?.dispose();
   rasterAdjustmentsController?.dispose();
@@ -2041,6 +2146,7 @@ function updateHistoryControls(): void {
   historyControlsController.acceptState(historyState);
   if (editorToolsController?.isOpen) syncMobileToolsMenuState();
   brushOutlineController?.notifyEngineUpdate();
+  cloneToolController?.notifyInteractionState();
 }
 
 

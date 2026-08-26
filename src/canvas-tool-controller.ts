@@ -65,6 +65,7 @@ export interface CanvasToolControllerOptions {
   readonly syncQuickControls: () => void;
   readonly syncToolSettings: () => void;
   readonly updateHistoryControls: () => void;
+  readonly onToolChange?: (tool: CanvasInputTool) => void;
 }
 
 /** Owns active canvas/brush tool state and all transitions between tools. */
@@ -171,6 +172,7 @@ export class CanvasToolController {
       this.options.elements.blendButton.setAttribute("aria-pressed", String(tool === "blend"));
       this.options.elements.panButton.setAttribute("aria-pressed", String(tool === "pan"));
       this.options.elements.canvas.setAttribute("data-active-canvas-tool", tool);
+      this.options.onToolChange?.(tool);
       this.options.syncBrushLibraryButton();
       this.options.syncMenuState();
       const fill = tool === "fill";

@@ -121,6 +121,35 @@ import {
 } from "./engine-spatial-blur-runtime";
 import type { SpatialBlurPin } from "./spatial-blur-core";
 import {
+  CLONE_HISTORY_BUFFER_ALIGNMENT_BYTES,
+  type CloneStrokeConfiguration,
+} from "./clone-gpu-core";
+import {
+  clonePipelineAndBindGroup,
+  cloneSessionMatchesAction,
+  cloneSettingsForCurrentBrush,
+  createActiveCloneStrokeSession,
+  destroyActiveCloneStrokeSession,
+  encodeCloneReplaySource,
+  ensureCloneSourceForStamps,
+  isPreparedCloneSourcePending,
+  isPreparedCloneSourceReady,
+  planCloneHistoryCapture,
+  prepareCloneSourceSnapshot,
+  releasePreparedCloneSource,
+  requestCloneSourceForRect,
+  retireCloneReplaySource,
+  warmClonePipelines,
+  type ActiveCloneStrokeSession,
+  type CloneHistoryCapturePlan,
+  type CloneRendererResources,
+} from "./engine-clone-runtime";
+import {
+  renderCloneSamplePreview,
+  warmCloneSamplePreview,
+  type CloneSamplePreviewRequest,
+} from "./engine-clone-preview-runtime";
+import {
   beginRasterMotionBlur as beginRasterMotionBlurRuntime,
   cancelRasterMotionBlur as cancelRasterMotionBlurRuntime,
   commitRasterMotionBlur as commitRasterMotionBlurRuntime,
@@ -348,6 +377,7 @@ import {
   type ActiveVectorHistoryEdit,
   type ActiveRasterLayerMetadataHistoryEdit,
   type BlendHistoryRenderBatch,
+  type CloneHistorySourcePayload,
   type FillHistoryRenderBatch,
   type HistoryAction,
   type HistoryRenderBatch,
@@ -999,6 +1029,9 @@ export class BrushEngine {
   private optionalEditorResourcesPromise: Promise<void> | null = null;
   optionalEditorResourcesReady = false;
   private spatialBlurPipelinesReady = false;
+  cloneRendererResources: CloneRendererResources | null = null;
+  cloneRendererPromise: Promise<CloneRendererResources> | null = null;
+  activeCloneStrokeSession: ActiveCloneStrokeSession | null = null;
 
   /** Contabilita' misurata di ogni texture e buffer creati dal device. */
   gpuResourceRegistry = new GpuResourceRegistry();
@@ -4070,6 +4103,116 @@ export class BrushEngine {
     applyViewRotation(this, 0);
   }
 
+  async prepareCloneTool(
+    sampleMode: CloneStrokeConfiguration["sampleMode"] = "current-and-below",
+  ): Promise<void> {
+    if (!this.initialized) return;
+    await Promise.all([
+      this.ensureCurrentBrushResources(),
+      warmClonePipelines(this),
+      warmCloneSamplePreview(this),
+      prepareCloneSourceSnapshot(this, sampleMode),
+    ]);
+  }
+
+  renderCloneToolPreview(
+    canvas: HTMLCanvasElement,
+    request: Readonly<CloneSamplePreviewRequest>,
+  ): boolean {
+    if (!this.initialized || this.deviceLostError) return false;
+    return renderCloneSamplePreview(this, canvas, request);
+  }
+
+  releaseCloneToolSource(): void {
+    releasePreparedCloneSource(this);
+  }
+
+  isCloneReadinessPending(
+    sampleMode: CloneStrokeConfiguration["sampleMode"] = "current-and-below",
+  ): boolean {
+    if (!this.initialized) return true;
+    const settings = cloneSettingsForCurrentBrush(this.settings);
+    return this.cloneRendererResources === null
+      || this.cloneRendererPromise !== null
+      || !this.brushDependenciesReady(settings)
+      || isPreparedCloneSourcePending(this, sampleMode);
+  }
+
+  beginCloneStroke(
+    point: LayerPoint,
+    configuration: Readonly<CloneStrokeConfiguration>,
+  ): boolean {
+    if (
+      !this.cloneRendererResources
+      || !this.brushDependenciesReady(cloneSettingsForCurrentBrush(this.settings))
+      || !isPreparedCloneSourceReady(this, configuration.sampleMode)
+    ) {
+      void this.prepareCloneTool(configuration.sampleMode).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.callbacks.onStatus?.(`Clone preparation failed: ${message}`, "error");
+      });
+      this.callbacks.onStatus?.(
+        "Clone is finishing its GPU preparation. Try again in a moment…",
+        "working",
+      );
+      return false;
+    }
+    return this.beginStrokeAtLayer(point, true, configuration);
+  }
+
+  extendCloneStroke(points: readonly LayerPoint[]): void {
+    const session = this.activeCloneStrokeSession;
+    if (!session || !cloneSessionMatchesAction(session, this.activeStroke?.historyActionId)) {
+      return;
+    }
+    this.extendStrokeAtLayer(points);
+  }
+
+  async endCloneStroke(timeMs?: number): Promise<boolean> {
+    const stroke = this.activeStroke;
+    const session = this.activeCloneStrokeSession;
+    if (!stroke || !cloneSessionMatchesAction(session, stroke.historyActionId)) return false;
+    const requestedLiftTime = Number.isFinite(timeMs) ? timeMs as number : stroke.lastInput.timeMs;
+    releaseHeldThicknessStamps(
+      this,
+      Math.max(stroke.lastInput.timeMs, requestedLiftTime),
+      true,
+    );
+    const preview = this.deferredStrokePreview;
+    if (preview?.historyActionId !== stroke.historyActionId) {
+      throw new Error("The Clone preview no longer matches its stroke.");
+    }
+    session.ending = true;
+    try {
+      await ensureCloneSourceForStamps(this, preview.stamps, session.settings);
+      this.endStroke(timeMs);
+      if (!this.pendingStamps.some((stamp) => stamp.historyActionId === session.actionId)) {
+        destroyActiveCloneStrokeSession(this, session);
+      }
+      return true;
+    } catch (error) {
+      this.cancelCloneStroke();
+      throw error;
+    }
+  }
+
+  cancelCloneStroke(): void {
+    const session = this.activeCloneStrokeSession;
+    if (!session) return;
+    if (this.activeStroke?.historyActionId === session.actionId) {
+      this.cancelStrokeBeforeRender();
+    } else {
+      this.pendingStamps = this.pendingStamps.filter(
+        (stamp) => stamp.historyActionId !== session.actionId,
+      );
+      releasePaintSelectionHistoryMask(this, session.actionId);
+    }
+    destroyActiveCloneStrokeSession(this, session);
+    this.presentationCacheNeedsFullRebuild = true;
+    this.displayDirty = true;
+    this.requestRender();
+  }
+
   beginStroke(sample: PointerSample): boolean {
     return this.beginStrokeAtLayer(this.toLayerPoint(sample));
   }
@@ -4091,7 +4234,14 @@ export class BrushEngine {
       && (this.layerSwitchBusy || !this.currentBrushResourcesReady());
   }
 
-  beginStrokeAtLayer(point: LayerPoint, deferredPreview = false): boolean {
+  beginStrokeAtLayer(
+    point: LayerPoint,
+    deferredPreview = false,
+    cloneConfiguration: Readonly<CloneStrokeConfiguration> | null = null,
+  ): boolean {
+    const renderSettings = cloneConfiguration
+      ? cloneSettingsForCurrentBrush(this.settings)
+      : { ...this.settings };
     // layerSwitchBusy is held across the switch's awaits, so a pointerdown
     // landing mid-switch cannot start a stroke on a half-swapped layer.
     const destructiveEdit = this.activeDestructiveRasterEditKind();
@@ -4128,7 +4278,7 @@ export class BrushEngine {
       );
       return false;
     }
-    if (this.settings.tool === "blend" && !this.blendRenderer) {
+    if (renderSettings.tool === "blend" && !this.blendRenderer) {
       void this.ensureOptionalEditorResources().catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         this.callbacks.onStatus?.(`Blend renderer is unavailable: ${message}`, "error");
@@ -4139,7 +4289,7 @@ export class BrushEngine {
       );
       return false;
     }
-    if (this.settings.tool === "blend" && this.pixelSelectionState.selectedPixels > 0) {
+    if (renderSettings.tool === "blend" && this.pixelSelectionState.selectedPixels > 0) {
       this.callbacks.onStatus?.(
         "Blend does not modify a pixel selection. Deselect it or use Paint, Erase, or Fill.",
         "working",
@@ -4161,10 +4311,10 @@ export class BrushEngine {
       return false;
     }
     if (
-      this.settings.grainMode !== "off"
+      renderSettings.grainMode !== "off"
       && (
         !this.grainResident
-        || this.grainLoadedAssetId !== grainAssetIdForSettings(this.settings)
+        || this.grainLoadedAssetId !== grainAssetIdForSettings(renderSettings)
       )
     ) {
       // Senza texture residente i pixel non sarebbero identici: il tratto
@@ -4177,11 +4327,11 @@ export class BrushEngine {
       return false;
     }
     if (
-      this.settings.shape === "shape"
+      renderSettings.shape === "shape"
       && (
         !this.shapeResident
-        || this.shapeLoadedAssetId !== shapeAssetIdForSettings(this.settings)
-        || this.shapeLoadedInvert !== shapeInvertForSettings(this.settings)
+        || this.shapeLoadedAssetId !== shapeAssetIdForSettings(renderSettings)
+        || this.shapeLoadedInvert !== shapeInvertForSettings(renderSettings)
       )
     ) {
       requestShapeLoad(this);
@@ -4192,22 +4342,27 @@ export class BrushEngine {
       return false;
     }
     if (
-      usesStrokeGlazeRenderer(this.settings)
+      usesStrokeGlazeRenderer(renderSettings)
       && (
         this.lightGlazeLoadingPromise !== null
         || !lightGlazeResourcesMatch(this, 
-          lightGlazeStorageModeFor(this.settings.blendMode),
+          lightGlazeStorageModeFor(renderSettings.blendMode),
         )
       )
     ) {
-      requestLightGlazeResources(this, this.settings.blendMode);
+      requestLightGlazeResources(this, renderSettings.blendMode);
       this.callbacks.onStatus?.(
         "Glaze rendering is being prepared. Try again in a moment…",
         "working",
       );
       return false;
     }
-    if (!this.currentBrushResourcesReady()) {
+    if (
+      cloneConfiguration
+        ? !this.brushDependenciesReady(renderSettings)
+          || this.cloneRendererResources === null
+        : !this.currentBrushResourcesReady()
+    ) {
       void this.ensureCurrentBrushResources().catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         this.callbacks.onStatus?.(`Selected brush preparation failed: ${message}`, "error");
@@ -4250,9 +4405,9 @@ export class BrushEngine {
       this.rasterInnerShadowRenderer?.prewarmWorkspace(this.rasterInnerShadowStyle);
     }
     this.invalidateAdaptivePreview();
-    const tool: BrushTool = this.settings.tool;
-    const lightGlazeSettings = usesStrokeGlazeRenderer(this.settings)
-      ? { ...this.settings }
+    const tool: BrushTool = renderSettings.tool;
+    const lightGlazeSettings = usesStrokeGlazeRenderer(renderSettings)
+      ? { ...renderSettings }
       : null;
     if (lightGlazeSettings && this.thicknessTailPresentedRect) {
       this.thicknessTailPresentedRect = null;
@@ -4280,24 +4435,41 @@ export class BrushEngine {
         return false;
       }
     }
+    let cloneSession: ActiveCloneStrokeSession | null = null;
+    if (cloneConfiguration) {
+      try {
+        cloneSession = createActiveCloneStrokeSession(
+          this,
+          historyActionId,
+          renderSettings,
+          cloneConfiguration,
+        );
+      } catch (error) {
+        releasePaintSelectionHistoryMask(this, historyActionId);
+        this.scheduleLayerColdCompression();
+        const message = error instanceof Error ? error.message : String(error);
+        this.callbacks.onStatus?.(`Clone stroke could not start: ${message}`, "error");
+        return false;
+      }
+    }
     this.history.reserveActionId();
-    const thicknessSource = lightGlazeSettings ?? this.settings;
+    const thicknessSource = renderSettings;
     const thicknessSettings = {
       startThickness: thicknessSource.startThickness,
       endThickness: thicknessSource.endThickness,
     };
     const blendControls = tool === "blend"
       ? {
-        size: this.settings.size,
-        strength: this.settings.opacity,
-        spacing: this.settings.spacingPercent / 100,
-        flow: this.settings.flow,
-        stretch: this.settings.blendStretch,
-        paint: this.settings.blendPaint,
-        blur: this.settings.blendBlur,
+        size: renderSettings.size,
+        strength: renderSettings.opacity,
+        spacing: renderSettings.spacingPercent / 100,
+        flow: renderSettings.flow,
+        stretch: renderSettings.blendStretch,
+        paint: renderSettings.blendPaint,
+        blur: renderSettings.blendBlur,
         aspect: 1,
         angle: 0,
-        orientToStroke: this.settings.shapeRotation === "follow-stroke",
+        orientToStroke: renderSettings.shapeRotation === "follow-stroke",
         seed: historyActionId,
       }
       : null;
@@ -4313,13 +4485,14 @@ export class BrushEngine {
     blendPlanner?.reset(normalizedPoint);
     const curvePlanner = tool === "blend" ? null : this.paintCurvePlanner;
     curvePlanner?.reset();
-    // Public Paint modes already own a per-gesture accumulator. Stabilization
-    // keeps only its recent tail revisionable in that accumulator; the exact
-    // zero setting deliberately stays on the pre-existing hot path below.
-    const stabilizationSettings = lightGlazeSettings ?? this.settings;
+    // Brush modes already own a per-gesture accumulator. Stabilization keeps
+    // only its recent tail revisionable in that accumulator; the exact zero
+    // setting deliberately stays on the pre-existing hot path below.
+    const stabilizationSettings = renderSettings;
     const stabilizer = (
       tool === "blend"
       || tool === "erase"
+      || cloneConfiguration !== null
       || (tool === "paint" && lightGlazeSettings !== null)
     )
       && stabilizationSettings.stabilization > 0
@@ -4332,6 +4505,7 @@ export class BrushEngine {
     this.lastDeferredLiftReplay = null;
     this.activeStroke = {
       tool,
+      renderSettings,
       lastInput: normalizedPoint,
       startedAtMs: normalizedPoint.timeMs,
       thicknessSettings,
@@ -4345,14 +4519,14 @@ export class BrushEngine {
       heldThicknessStamps: [],
       heldThicknessHead: 0,
       distanceSinceStamp: 0,
-      adaptiveSpacingInitialPercent: lightGlazeSettings?.spacingPercent ?? this.settings.spacingPercent,
-      adaptiveSpacingPercent: lightGlazeSettings?.spacingPercent ?? this.settings.spacingPercent,
+      adaptiveSpacingInitialPercent: renderSettings.spacingPercent,
+      adaptiveSpacingPercent: renderSettings.spacingPercent,
       historyActionId,
       historyCommitted: false,
       submitted: false,
       seedSequenceBeforeStroke: this.seedSequence,
       lightGlazeSettings,
-      blendSettings: tool === "blend" ? { ...this.settings } : null,
+      blendSettings: tool === "blend" ? { ...renderSettings } : null,
       blendPlanner,
       curvePlanner,
       stabilizer,
@@ -4363,6 +4537,7 @@ export class BrushEngine {
       stabilizationCommittedInput: { ...normalizedPoint },
       deferredPreview,
     };
+    this.activeCloneStrokeSession = cloneSession;
     if (stabilizer && this.activeStrokeProfile) {
       this.activeStrokeProfile.strokeStabilizationInputSamples += 1;
       this.activeStrokeProfile.strokeStabilizationMaximumTailPoints = Math.max(
@@ -4373,7 +4548,7 @@ export class BrushEngine {
     if (deferredPreview) {
       this.deferredStrokePreview = {
         historyActionId,
-        settings: { ...this.settings },
+        settings: { ...renderSettings },
         stamps: [],
         presentedStampCount: 0,
         presentedRect: null,
@@ -4387,7 +4562,7 @@ export class BrushEngine {
     if (lightGlazeSettings) {
       this.startLightGlazeSession(historyActionId, lightGlazeSettings);
     }
-    if (usesBlendRenderer(this.settings)) {
+    if (usesBlendRenderer(renderSettings)) {
       this.blendRenderer?.beginStroke(historyActionId);
     }
     if (tool !== "blend") {
@@ -11305,7 +11480,7 @@ export class BrushEngine {
       return;
     }
 
-    const generationSettings = stroke.lightGlazeSettings ?? this.settings;
+    const generationSettings = stroke.renderSettings;
     const spacing = Math.max(
       0.1,
       generationSettings.size * (stroke.adaptiveSpacingPercent / 100),
@@ -11417,7 +11592,7 @@ export class BrushEngine {
       return;
     }
 
-    const generationSettings = stroke.lightGlazeSettings ?? this.settings;
+    const generationSettings = stroke.renderSettings;
     const spacing = Math.max(
       0.1,
       generationSettings.size * (stroke.adaptiveSpacingPercent / 100),
@@ -11721,6 +11896,15 @@ export class BrushEngine {
     if (!this.thicknessTailPresentedRect) return false;
     const stroke = this.activeStroke;
     const preview = this.deferredStrokePreview;
+    if (
+      cloneSessionMatchesAction(
+        this.activeCloneStrokeSession,
+        stroke?.historyActionId,
+      )
+      && this.activeCloneStrokeSession.fault !== null
+    ) {
+      return false;
+    }
     const retainedDeferredPreview = stroke?.deferredPreview === true
       && preview?.historyActionId === stroke?.historyActionId
       && preview.presentationTexture === this.thicknessTailTexture
@@ -11753,11 +11937,11 @@ export class BrushEngine {
       ? Math.min(preview.presentedStampCount, preview.stamps.length)
       : 0;
     let stamps = preview.stamps.slice(requestedStampStart);
-    const retainedDeferredFrame = (): ThicknessTailFrame | null => {
+    const retainedDeferredFrame = (allowStale = false): ThicknessTailFrame | null => {
       if (
         !preview.presentedRect
         || preview.presentationTexture !== this.thicknessTailTexture
-        || preview.presentedStampCount !== preview.stamps.length
+        || (!allowStale && preview.presentedStampCount !== preview.stamps.length)
         || preview.forcePresentationRebuild
         || stroke.thicknessTailHoldback
       ) {
@@ -11816,6 +12000,13 @@ export class BrushEngine {
       preview.presentedStampCount = preview.stamps.length;
       return retainedDeferredFrame();
     }
+    const clonePreview = cloneSessionMatchesAction(
+      this.activeCloneStrokeSession,
+      stroke.historyActionId,
+    );
+    if (clonePreview && !requestCloneSourceForRect(this, dirtyRect)) {
+      return retainedDeferredFrame(true);
+    }
 
     const requestedPresentedRect = incrementalPreview
       ? mergeDirtyRects(preview.presentedRect, dirtyRect)!
@@ -11860,6 +12051,9 @@ export class BrushEngine {
       if (!dirtyRect) {
         preview.presentedStampCount = preview.stamps.length;
         return null;
+      }
+      if (clonePreview && !requestCloneSourceForRect(this, dirtyRect)) {
+        return retainedDeferredFrame(true);
       }
       ensureThicknessTailOverlayResources(
         this,
@@ -12018,7 +12212,20 @@ export class BrushEngine {
     const isShape = settings.shape === "shape";
     const shapeOccupancyMip = frame.shapeOccupancySelection?.selectedMipLevel ?? null;
     const useShapeOccupancy = isShape && shapeOccupancyMip !== null;
-    const pipeline = settings.tool === "erase"
+    const cloneSession = cloneSessionMatchesAction(
+      this.activeCloneStrokeSession,
+      frame.stamps[0]?.historyActionId,
+    ) ? this.activeCloneStrokeSession : null;
+    const cloneRender = cloneSession
+      ? clonePipelineAndBindGroup(
+        this,
+        cloneSession,
+        settings,
+        true,
+        shapeOccupancyMip,
+      )
+      : null;
+    const pipeline = cloneRender?.pipeline ?? (settings.tool === "erase"
       ? frame.grainActive
         ? isShape
           ? useShapeOccupancy
@@ -12050,8 +12257,8 @@ export class BrushEngine {
             : settings.blendMode === "additive"
               ? this.shapeAdditivePipeline
               : this.shapeNormalPipeline
-          : settings.blendMode === "additive" ? this.additivePipeline : this.normalPipeline;
-    const bindGroup = frame.grainActive
+          : settings.blendMode === "additive" ? this.additivePipeline : this.normalPipeline);
+    const bindGroup = cloneRender?.bindGroup ?? (frame.grainActive
       ? useShapeOccupancy
         ? this.thicknessTailGrainBrushOccupancyBindGroups[
           grainCoordinateMode(settings)
@@ -12061,7 +12268,7 @@ export class BrushEngine {
         ][settings.grainFiltering]
       : useShapeOccupancy
         ? this.thicknessTailBrushOccupancyBindGroups[shapeOccupancyMip!]
-        : this.thicknessTailBrushBindGroup;
+        : this.thicknessTailBrushBindGroup);
 
     if (frame.replacement) {
       encoder.copyTextureToTexture(
@@ -12439,8 +12646,17 @@ export class BrushEngine {
     }
 
     const clearLayer = this.clearRequested;
+    const batchActionId = batch[0]?.historyActionId;
+    const cloneRenderSettings = cloneSessionMatchesAction(
+      this.activeCloneStrokeSession,
+      batchActionId ?? this.activeStroke?.historyActionId,
+    )
+      ? this.activeCloneStrokeSession.settings
+      : null;
     const renderSettings = blendBatch[0]?.settings
       ?? lightGlazeSession?.settings
+      ?? cloneRenderSettings
+      ?? this.activeStroke?.renderSettings
       ?? this.settings;
     const start = performance.now();
     const viewPresentationRevision = this.viewPresentationRevision;
@@ -12556,7 +12772,12 @@ export class BrushEngine {
       this.historyGpuStorage.release(capturedSlice);
       return;
     }
-    const expectedBytes = batch.length * STAMP_STRIDE_BYTES;
+    const cloneSource = timing.cloneHistorySource ?? null;
+    const expectedStampBytes = batch.length * STAMP_STRIDE_BYTES;
+    const expectedBytes = cloneSource
+      ? cloneSource.sourceByteOffset
+        + cloneSource.tileStrideBytes * cloneSource.tileIndices.length
+      : expectedStampBytes;
     if (capturedSlice.logicalBytes !== expectedBytes) {
       this.historyGpuStorage.release(capturedSlice);
       throw new Error(
@@ -12589,6 +12810,7 @@ export class BrushEngine {
         ? this.grainTextureIdentity
         : null,
       selectionMask,
+      cloneSource,
     } satisfies HistoryRenderBatch;
     const actionAlreadyPublished = this.historyActions.some((action) => action.id === actionId);
     const releasePayloadOnCancel = () => this.historyGpuStorage.release(capturedSlice);
@@ -12621,6 +12843,14 @@ export class BrushEngine {
     if (this.activeStroke?.historyActionId === actionId) {
       this.activeStroke.historyCommitted = true;
       this.activeStroke.submitted = true;
+    }
+    const cloneSession = this.activeCloneStrokeSession;
+    if (
+      cloneSessionMatchesAction(cloneSession, actionId)
+      && cloneSession.ending
+      && !this.pendingStamps.some((stamp) => stamp.historyActionId === actionId)
+    ) {
+      destroyActiveCloneStrokeSession(this, cloneSession);
     }
 
       if (this.activeStrokeProfile) {
@@ -13682,7 +13912,7 @@ export class BrushEngine {
       replayBatch.gpuSlice.offsetBytes,
       this.instanceBuffer,
       0,
-      replayBatch.gpuSlice.logicalBytes,
+      replayBatch.cloneSource?.stampBytes ?? replayBatch.gpuSlice.logicalBytes,
     );
   }
 
@@ -13690,6 +13920,7 @@ export class BrushEngine {
     encoder: GPUCommandEncoder,
     stamps: readonly Stamp[],
     label: string,
+    clonePlan: CloneHistoryCapturePlan | null = null,
   ): GpuHistorySlice | null {
     if (stamps.length === 0 || stamps[0].historyActionId === 0) {
       return null;
@@ -13700,10 +13931,12 @@ export class BrushEngine {
       if (stamps.at(-1)?.historyActionId !== actionId) {
         throw new Error("A live Paint submission contains multiple strokes.");
       }
-      const byteLength = stamps.length * STAMP_STRIDE_BYTES;
+      const stampBytes = stamps.length * STAMP_STRIDE_BYTES;
+      const byteLength = clonePlan?.logicalBytes ?? stampBytes;
       const slice = this.historyGpuStorage.allocate(
         byteLength,
         `${label} · action ${actionId} · ${stamps.length} stamps`,
+        clonePlan ? CLONE_HISTORY_BUFFER_ALIGNMENT_BYTES : undefined,
       );
       try {
         encoder.copyBufferToBuffer(
@@ -13711,8 +13944,9 @@ export class BrushEngine {
           0,
           slice.buffer,
           slice.offsetBytes,
-          byteLength,
+          stampBytes,
         );
+        clonePlan?.encode(encoder, slice);
         return slice;
       } catch (error) {
         this.historyGpuStorage.release(slice);
@@ -15055,6 +15289,19 @@ export class BrushEngine {
     }
     const encoder = externalEncoder
       ?? this.device.createCommandEncoder({ label: "Brush frame encoder" });
+    if (replayBatch?.cloneSource && externalEncoder) {
+      throw new Error("Clone History replay requires its own ordered GPU submission.");
+    }
+    const cloneReplaySource = replayBatch?.cloneSource
+      ? encodeCloneReplaySource(this, encoder, replayBatch)
+      : null;
+    const liveCloneSession = !replayBatch && cloneSessionMatchesAction(
+      this.activeCloneStrokeSession,
+      stamps[0]?.historyActionId,
+    )
+      ? this.activeCloneStrokeSession
+      : null;
+    const cloneRenderSource = cloneReplaySource ?? liveCloneSession;
     let stampPackingMs = 0;
     let instanceUploadMs = 0;
     let brushEncodingMs = 0;
@@ -15151,7 +15398,16 @@ export class BrushEngine {
         const isShape = settings.shape === "shape";
         const shapeOccupancyMip = shapeOccupancySelection?.selectedMipLevel ?? null;
         const useShapeOccupancy = isShape && shapeOccupancyMip !== null;
-        const pipeline = settings.tool === "erase"
+        const cloneRender = cloneRenderSource
+          ? clonePipelineAndBindGroup(
+            this,
+            cloneRenderSource,
+            settings,
+            false,
+            shapeOccupancyMip,
+          )
+          : null;
+        const pipeline = cloneRender?.pipeline ?? (settings.tool === "erase"
           ? grainActive
             ? isShape
               ? useShapeOccupancy
@@ -15183,11 +15439,11 @@ export class BrushEngine {
               : settings.blendMode === "additive"
                 ? this.shapeAdditivePipeline
                 : this.shapeNormalPipeline
-            : settings.blendMode === "additive" ? this.additivePipeline : this.normalPipeline;
+            : settings.blendMode === "additive" ? this.additivePipeline : this.normalPipeline);
         bindPaintPipelineWithPixelSelection(this, brushPass, pipeline, replayBatch);
         brushPass.setBindGroup(
           0,
-          grainActive
+          cloneRender?.bindGroup ?? (grainActive
             ? useShapeOccupancy
               ? this.grainBrushOccupancyBindGroups[
                 grainCoordinateMode(settings)
@@ -15197,7 +15453,7 @@ export class BrushEngine {
               ][settings.grainFiltering]
             : useShapeOccupancy
               ? this.brushOccupancyBindGroups[shapeOccupancyMip!]
-              : this.brushBindGroup,
+              : this.brushBindGroup),
         );
         brushPass.setScissorRect(dirtyRect.x, dirtyRect.y, dirtyRect.width, dirtyRect.height);
         if (isShape && shapeOccupancySelection && !replayBatch) {
@@ -15519,18 +15775,26 @@ export class BrushEngine {
     }
 
     let historyGpuSlice: GpuHistorySlice | null = null;
+    let cloneHistorySource: CloneHistorySourcePayload | null = null;
     const submitStart = performance.now();
     try {
       if (!replayBatch) {
+        const clonePlan = liveCloneSession && stamps.length > 0
+          ? planCloneHistoryCapture(this, liveCloneSession, stamps)
+          : null;
+        cloneHistorySource = clonePlan?.metadata ?? null;
         historyGpuSlice = this.encodePaintHistoryCapture(
           encoder,
           stamps,
-          "Paint",
+          liveCloneSession ? "Clone" : "Paint",
+          clonePlan,
         );
       }
       this.device.queue.submit([encoder.finish()]);
+      retireCloneReplaySource(this, cloneReplaySource);
     } catch (error) {
       if (historyGpuSlice) this.historyGpuStorage.release(historyGpuSlice);
+      retireCloneReplaySource(this, cloneReplaySource);
       throw error;
     }
     commandSubmitMs = performance.now() - submitStart;
@@ -15585,6 +15849,7 @@ export class BrushEngine {
       grainCircleBatches,
       grainShapeBatches,
       historyGpuSlice,
+      cloneHistorySource,
     };
   }
 

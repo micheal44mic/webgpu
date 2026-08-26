@@ -2981,7 +2981,7 @@ assert.match(
 // are the history transaction.
 assert.match(
   engineSource,
-  /type EffectsRetargetCaller =[\s\S]*?\| "public"[\s\S]*?\| "layer-switch"[\s\S]*?\| "history-replay"[\s\S]*?\| "structural-history";/,
+  /type EffectsRetargetCaller =[\s\S]*?\| "public"[\s\S]*?\| "layer-switch"[\s\S]*?\| "history-replay"[\s\S]*?\| "structural-history"[\s\S]*?\| "clone-source";/,
 );
 assert.match(engineSource, /\(!duringLayerSwitch && engine\.layerSwitchBusy\)/,
   "solo i retarget interni possono attraversare il lock di switch");

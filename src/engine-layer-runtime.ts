@@ -1835,10 +1835,14 @@ export async function retargetEffectsWorkingSetInternal(engine: BrushEngine,
   // historyBusy is high because each is the current history transaction, so
   // neither can go through the public method.
   const duringLayerSwitch = caller !== "public";
+  const duringCloneSource = caller === "clone-source"
+    && engine.activeCloneStrokeSession !== null
+    && engine.activeStroke?.historyActionId
+      === engine.activeCloneStrokeSession.actionId;
   const duringHistoryTransaction =
     caller === "history-replay" || caller === "structural-history";
   if (
-    engine.activeStroke
+    (engine.activeStroke && !duringCloneSource)
     || (!duringHistoryTransaction && engine.historyBusy)
     || (!duringLayerSwitch && engine.layerSwitchBusy)
     || engine.rasterStrokeBusy
@@ -3306,6 +3310,7 @@ export async function buildClippingPrefixResources(
   caller: EffectsRetargetCaller,
   maintainMips: boolean,
   label: string,
+  requestedBounds: DirtyRect | null = null,
 ): Promise<ClippingGroupSurfaceResources | null> {
   if (!recordHasLiveContent(engine, parent)) {
     return null;
@@ -3322,6 +3327,19 @@ export async function buildClippingPrefixResources(
     destroyTransientLayerHydration(engine, parentSource?.transientHydration);
     return null;
   }
+  const boundedParentBounds = requestedBounds
+    ? intersectMergedSurfaceRects(
+      parentBounds,
+      requestedBounds,
+      DOCUMENT_WIDTH,
+      DOCUMENT_HEIGHT,
+    )
+    : parentBounds;
+  if (!boundedParentBounds) {
+    engine.destroyLayerBake(parentSource?.transientBake);
+    destroyTransientLayerHydration(engine, parentSource?.transientHydration);
+    return null;
+  }
   let surface: MergedSurfaceResources | null = null;
   let baseSurface: MergedSurfaceResources | null = null;
   let documentMaskSurface: MergedSurfaceResources | null = null;
@@ -3331,7 +3349,13 @@ export async function buildClippingPrefixResources(
       engine.layerFormat,
       "below",
       1 + children.length,
-      alignedMergedSurfaceBounds(parentBounds, DOCUMENT_WIDTH, 64, 64, DOCUMENT_HEIGHT),
+      alignedMergedSurfaceBounds(
+        boundedParentBounds,
+        DOCUMENT_WIDTH,
+        64,
+        64,
+        DOCUMENT_HEIGHT,
+      ),
       1,
       maintainMips,
     );
@@ -3377,7 +3401,7 @@ export async function buildClippingPrefixResources(
         1,
         "source-over",
         true,
-        parentBounds,
+        boundedParentBounds,
         `${label} · parent ${parent.id} direct cold tiles`,
       );
     } else {
@@ -3390,7 +3414,7 @@ export async function buildClippingPrefixResources(
         DOCUMENT_WIDTH,
         DOCUMENT_HEIGHT,
         1,
-        parentBounds,
+        boundedParentBounds,
         "normal",
         "source-over",
         true,
@@ -3740,6 +3764,7 @@ export async function foldClippingGroupIntoMergedSurface(
     caller,
     false,
     `Fold clipping group ${parent.id}`,
+    surface.bounds,
   );
   if (!groupResources) {
     return false;
@@ -5675,7 +5700,7 @@ export async function restoreEffectsWorkbenchToActiveLayer(engine: BrushEngine,
     record,
     false,
     true,
-    "await-immediately",
+    caller === "clone-source" ? "defer-to-fold-fence" : "await-immediately",
     rebuildDomain,
   );
 }

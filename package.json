@@ -45,6 +45,7 @@
     "brush-quick-controls:verify": "node scripts/verify-brush-quick-controls-controller.mjs",
     "canvas-input:verify": "node scripts/verify-canvas-input-controller.mjs",
     "canvas-tool:verify": "node scripts/verify-canvas-tool-controller.mjs",
+    "clone:verify": "node scripts/verify-clone-interaction.mjs && node scripts/verify-clone-tool-controller.mjs && node scripts/verify-clone.mjs",
     "controller-boundaries:verify": "node scripts/verify-controller-boundaries.mjs",
     "raster-adjustments:verify": "node scripts/verify-raster-adjustments-controller.mjs",
     "raster-effects-boundaries:verify": "node scripts/verify-raster-effects-boundaries.mjs",

@@ -1021,7 +1021,7 @@ export function emitStamp(engine: BrushEngine, point: LayerPoint, directionX: nu
   if (!stroke) {
     return;
   }
-  const generationSettings = stroke.lightGlazeSettings ?? engine.settings;
+  const generationSettings = stroke.renderSettings;
   const pressure = clamp(point.pressure, 0.01, 1);
   const baseRadius = Math.max(0.5, generationSettings.size * 0.5);
   const liveThicknessFactor = stroke.thicknessDynamicsNeutral
@@ -1166,7 +1166,7 @@ export function commitThicknessStamp(engine: BrushEngine, stamp: Stamp, stroke: 
   if (stamp.radius <= 0) {
     return;
   }
-  const generationSettings = stroke.lightGlazeSettings ?? engine.settings;
+  const generationSettings = stroke.renderSettings;
   const jitterReach = stamp.radius * 2 * (
     generationSettings.positionJitterLinear + generationSettings.positionJitterLateral
   );

@@ -194,7 +194,7 @@ assert.match(
   "il worker deve invertire lo shuffle in base al tag del payload",
 );
 const beginStrokeStart = engineSource.indexOf(
-  "beginStrokeAtLayer(point: LayerPoint, deferredPreview = false)",
+  "beginStrokeAtLayer(",
 );
 const beginStrokeEnd = engineSource.indexOf("extendStroke(", beginStrokeStart);
 const beginStrokeBody = engineSource.slice(beginStrokeStart, beginStrokeEnd);

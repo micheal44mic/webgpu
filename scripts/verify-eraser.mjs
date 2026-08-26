@@ -54,7 +54,7 @@ for (const pipeline of [
 }
 assert.match(
   engine,
-  /const pipeline = settings\.tool === "erase"[\s\S]*?grainShapeOccupancyErasePipeline[\s\S]*?shapeOccupancyErasePipeline[\s\S]*?erasePipeline/,
+  /const pipeline = cloneRender\?\.pipeline \?\? \(settings\.tool === "erase"[\s\S]*?grainShapeOccupancyErasePipeline[\s\S]*?shapeOccupancyErasePipeline[\s\S]*?erasePipeline/,
   "direct stamp submission must select Eraser pipelines for shape and grain",
 );
 assert.match(

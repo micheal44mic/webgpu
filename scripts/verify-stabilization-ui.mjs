@@ -55,7 +55,7 @@ assert.match(sitesBuildSource, /blendIntensity: 1,\s*stabilization: 0,/);
 // hard branch around the pre-existing point generators.
 assert.match(
   engineSource,
-  /const stabilizationSettings = lightGlazeSettings \?\? this\.settings;[\s\S]*?tool === "blend"[\s\S]*?tool === "erase"[\s\S]*?stabilizationSettings\.stabilization > 0/,
+  /const stabilizationSettings = renderSettings;[\s\S]*?tool === "blend"[\s\S]*?tool === "erase"[\s\S]*?cloneConfiguration !== null[\s\S]*?stabilizationSettings\.stabilization > 0/,
 );
 assert.match(
   engineSource,

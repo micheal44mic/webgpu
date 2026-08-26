@@ -2323,6 +2323,21 @@
                   class="mobile-tools-item"
                   type="button"
                   data-mobile-tool
+                  data-mobile-canvas-tool="clone"
+                  data-mobile-tool-search="clone sample copy retouch raster"
+                  aria-label="Select Clone"
+                  aria-pressed="false"
+                >
+                  <span class="mobile-icon-stack" aria-hidden="true">
+                    <i data-lucide="copy" class="mobile-icon-layer mobile-icon-outline"></i>
+                    <i data-lucide="copy" class="mobile-icon-layer mobile-icon-face"></i>
+                  </span>
+                  <span class="mobile-tools-item-label">Clone</span>
+                </button>
+                <button
+                  class="mobile-tools-item"
+                  type="button"
+                  data-mobile-tool
                   data-mobile-canvas-tool="fill"
                   data-mobile-tool-sheet="fill"
                   data-mobile-tool-search="fill bucket color paint"
@@ -3038,6 +3053,89 @@
         <canvas id="vectorTextPresentationCanvas" aria-hidden="true" hidden></canvas>
         <canvas id="vectorTextInteractionCanvas" aria-label="Select and transform elements" hidden></canvas>
         <canvas id="brushOutlineCanvas" aria-hidden="true" hidden></canvas>
+        <div
+          id="cloneSourceOverlay"
+          class="clone-source-overlay"
+          aria-hidden="true"
+          hidden
+        >
+          <canvas
+            id="cloneSamplePreview"
+            class="clone-sample-preview"
+            aria-hidden="true"
+            hidden
+          ></canvas>
+          <div id="cloneSourceMarker" class="clone-source-marker" aria-hidden="true"></div>
+        </div>
+        <nav
+          id="cloneToolDock"
+          class="clone-tool-dock"
+          aria-label="Clone controls"
+          hidden
+          inert
+        >
+          <div class="clone-tool-controls">
+            <button
+              id="cloneSetSource"
+              class="clone-set-source"
+              type="button"
+              aria-pressed="false"
+            >SET SOURCE</button>
+            <div class="clone-sample-modes" role="radiogroup" aria-label="Raster sample range">
+              <button
+                type="button"
+                role="radio"
+                data-clone-sample-mode="current"
+                aria-checked="false"
+                tabindex="-1"
+              >CURRENT</button>
+              <button
+                type="button"
+                role="radio"
+                data-clone-sample-mode="current-and-below"
+                aria-checked="true"
+              >CURRENT &amp; BELOW</button>
+              <button
+                type="button"
+                role="radio"
+                data-clone-sample-mode="all-visible"
+                aria-checked="false"
+                tabindex="-1"
+              >ALL VISIBLE</button>
+            </div>
+            <button
+              id="cloneAligned"
+              class="clone-aligned"
+              type="button"
+              aria-pressed="false"
+            >ALIGNED</button>
+            <div class="clone-angle-control">
+              <label for="cloneAngle">ANGLE</label>
+              <input
+                id="cloneAngle"
+                type="range"
+                min="-180"
+                max="180"
+                step="1"
+                value="0"
+                aria-label="Clone source angle"
+              >
+              <output id="cloneAngleValue" class="clone-angle-value" for="cloneAngle">0°</output>
+              <button
+                id="cloneAngleReset"
+                class="clone-angle-reset"
+                type="button"
+                aria-label="Reset Clone source angle"
+              >RESET</button>
+            </div>
+          </div>
+          <output id="cloneToolStatus" role="status" aria-live="polite">
+            Choose SET SOURCE, then tap the canvas.
+          </output>
+          <p>
+            Visible raster layers only. Vector and semantic objects are ignored until rasterized.
+          </p>
+        </nav>
         <div
           id="spatialBlurOverlay"
           class="spatial-blur-overlay"

@@ -29,7 +29,7 @@ fn pixelSelectionContains(fragmentPosition: vec4<f32>) -> bool {
 }
 `;
 
-function injectSelectionClip(
+export function injectSelectionClip(
   source: string,
   bindingMarker: string,
   inputType: "VertexOutput" | "FragmentInput",

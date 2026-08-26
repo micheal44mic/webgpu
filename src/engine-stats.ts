@@ -11,6 +11,7 @@ import { EFFECTS_SCRATCH_POOL_STRATEGY } from "./effects-scratch-pool";
 import { EFFECTS_WORKING_SET_STRATEGY } from "./effects-workbench";
 import { FILL_REFERENCE_LAYER_STRATEGY } from "./fill-core";
 import type { MemoryZone } from "./memory-governor-core";
+import type { CloneHistorySourcePayload } from "./engine-history-types";
 
 /**
  * Dove vive un livello in questo istante. E' lo stesso vocabolario del motore:
@@ -649,6 +650,7 @@ export interface SubmitTiming {
   grainCircleBatches: number;
   grainShapeBatches: number;
   historyGpuSlice: GpuHistorySlice | null;
+  cloneHistorySource?: CloneHistorySourcePayload | null;
 }
 
 export interface RenderFrameTiming {

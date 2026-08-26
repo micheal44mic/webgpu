@@ -32,6 +32,8 @@ export interface HeldThicknessStamp {
 
 export interface ActiveStroke {
   tool: BrushTool;
+  /** Immutable brush controls used to generate and render this gesture. */
+  renderSettings: BrushSettings;
   lastInput: LayerPoint;
   startedAtMs: number;
   thicknessSettings: Pick<BrushSettings, "startThickness" | "endThickness">;

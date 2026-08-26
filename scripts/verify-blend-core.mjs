@@ -135,7 +135,7 @@ assert.match(
 );
 assert.match(
   brushEngineSource,
-  /strength: this\.settings\.opacity,[\s\S]*?orientToStroke: this\.settings\.shapeRotation === "follow-stroke"/,
+  /strength: renderSettings\.opacity,[\s\S]*?orientToStroke: renderSettings\.shapeRotation === "follow-stroke"/,
   "Blend must inherit Brush Studio opacity and Fixed/Follow Stroke orientation",
 );
 assert.doesNotMatch(

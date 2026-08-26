@@ -17,9 +17,14 @@ import {
   compactStraightLineSamples,
   straightenPointerSamples,
 } from "./stroke-straightening-core";
+import type {
+  CloneToolController,
+  CloneToolPointerInput,
+} from "./clone-tool-controller";
 
 export type CanvasInputTool =
   | BrushSettings["tool"]
+  | "clone"
   | "fill"
   | "pan"
   | "selection"
@@ -31,15 +36,18 @@ export type CanvasInputTool =
 export type CanvasInputEnginePort = Pick<
   BrushEngine,
   | "beginRasterLiquifyStroke"
+  | "beginCloneStroke"
   | "beginStroke"
   | "beginViewRotationGesture"
   | "cancelStraightLineAdjustment"
   | "cancelStrokeBeforeRender"
   | "commitStraightLineAdjustment"
   | "endRasterLiquifyStroke"
+  | "endCloneStroke"
   | "endStroke"
   | "endViewRotationGesture"
   | "extendRasterLiquifyStroke"
+  | "extendCloneStroke"
   | "extendStroke"
   | "fillAtClientPoint"
   | "getHistoryState"
@@ -52,6 +60,7 @@ export type CanvasInputEnginePort = Pick<
   | "toLayerPoint"
   | "updateStraightLineAdjustment"
   | "zoomBy"
+  | "cancelCloneStroke"
 >;
 
 export type CanvasInputVectorPort = Pick<
@@ -110,6 +119,16 @@ export interface CanvasInputSpatialBlurPort {
   readonly cancelSpatialBlurPointerForNavigation: () => void;
 }
 
+export type CanvasInputClonePort = Pick<
+  CloneToolController,
+  | "isActive"
+  | "beginPointer"
+  | "updatePointer"
+  | "endPointer"
+  | "cancelPointerForNavigation"
+  | "handleHover"
+>;
+
 export interface CanvasInputDiagnostics {
   readonly touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet";
   readonly touchPaintIntentStrategy: typeof TOUCH_PAINT_INTENT_STRATEGY;
@@ -152,6 +171,7 @@ export interface CanvasInputControllerOptions {
   readonly isLiquifyEditActive: () => boolean;
   readonly isDestructivePreviewNavigationActive: () => boolean;
   readonly getSpatialBlurController?: () => CanvasInputSpatialBlurPort | null;
+  readonly getCloneController?: () => CanvasInputClonePort | null;
   readonly getVectorController: () => CanvasInputVectorPort | null;
   readonly getEditorExtension: () => CanvasInputExtensionPort | null;
   readonly updateHistoryControls: () => void;
@@ -162,6 +182,7 @@ export interface CanvasInputControllerOptions {
 
 export type CanvasPointerMode =
   | "paint"
+  | "clone"
   | "liquify"
   | "spatial-blur"
   | "fill"
@@ -372,6 +393,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
   let deferredPenPaint: DeferredPenPaint | null = null;
   let straightLineGesture: StraightLineGesture | null = null;
   let straightLineReplacementInFlight = false;
+  let cloneFinalizationInFlight = false;
   const touchPaintIntentCounters = {
     starts: 0,
     releasedByMovement: 0,
@@ -999,6 +1021,9 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
           options.invalidateActiveThumbnail();
         }
         options.getEditorExtension()?.cancelPaintRecording?.();
+      } else if (pointerMode === "clone") {
+        const action = options.getCloneController?.()?.cancelPointerForNavigation();
+        if (action?.kind === "stroke-end") engine.cancelCloneStroke();
       } else if (pointerMode === "liquify") {
         engine.endRasterLiquifyStroke(false);
         canvas.classList.remove("liquify-deforming");
@@ -1020,7 +1045,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
   };
 
   const handlePointerDown = (event: PointerEvent): void => {
-    if (straightLineReplacementInFlight) return;
+    if (straightLineReplacementInFlight || cloneFinalizationInFlight) return;
     if (
       event.pointerType === "touch"
       && activePointerId !== null
@@ -1045,12 +1070,15 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     const activeTool = options.getActiveTool();
     const spatialBlurController = options.getSpatialBlurController?.() ?? null;
     const spatialBlurActive = spatialBlurController?.isSpatialBlurEditActive() === true;
+    const cloneController = options.getCloneController?.() ?? null;
     const requestedPointerMode: CanvasPointerMode = shouldRotate
       ? "rotate"
       : shouldPan
         ? "pan"
         : spatialBlurActive
           ? "spatial-blur"
+        : activeTool === "clone" && cloneController?.isActive
+          ? "clone"
         : activeTool === "fill"
           ? "fill"
           : activeTool === "pan"
@@ -1111,6 +1139,14 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     }
 
     const paintSample = requestedPointerMode === "paint" ? toPointerSample(event) : null;
+    const cloneInput: CloneToolPointerInput | null = requestedPointerMode === "clone"
+      ? {
+        pointerId: event.pointerId,
+        pointerType: event.pointerType,
+        clientX: event.clientX,
+        clientY: event.clientY,
+      }
+      : null;
     const liquifyPoint = requestedPointerMode === "liquify"
       ? engine.toLayerPoint({
         ...toPointerSample(event),
@@ -1132,6 +1168,39 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     ) {
       publishHistoryState();
       return;
+    }
+    if (cloneInput) {
+      const action = cloneController?.beginPointer(
+        cloneInput,
+        event.altKey && event.button === 0,
+      ) ?? { kind: "ignored" as const };
+      if (action.kind === "ignored" || action.kind === "needs-source") {
+        publishHistoryState();
+        return;
+      }
+      if (action.kind === "stroke-begin") {
+        const began = engine.beginCloneStroke(
+          {
+            x: action.sample.targetPoint.x,
+            y: action.sample.targetPoint.y,
+            pressure: normalizedPressure(event),
+            timeMs: event.timeStamp,
+          },
+          {
+            sampleMode: action.sampleMode,
+            sourceX: action.sample.sourceAnchorPoint.x,
+            sourceY: action.sample.sourceAnchorPoint.y,
+            destinationX: action.sample.destinationAnchorPoint.x,
+            destinationY: action.sample.destinationAnchorPoint.y,
+            angleDegrees: action.sample.angleDegrees,
+          },
+        );
+        if (!began) {
+          cloneController?.cancelPointerForNavigation();
+          publishHistoryState();
+          return;
+        }
+      }
     }
     const holdPaintIntent = paintSample !== null && shouldHoldTouchPaintIntent(
       options.touchPaintIntentHoldEnabled,
@@ -1254,6 +1323,17 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
         return;
       }
     }
+    if (activePointerId === null) {
+      if (options.getActiveTool() === "clone") {
+        options.getCloneController?.()?.handleHover({
+          pointerId: event.pointerId,
+          pointerType: event.pointerType,
+          clientX: event.clientX,
+          clientY: event.clientY,
+        });
+      }
+      return;
+    }
     if (event.pointerId !== activePointerId || pointerMode === null) return;
 
     event.preventDefault();
@@ -1311,6 +1391,27 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       event as PointerEvent & { getCoalescedEvents?: () => PointerEvent[] }
     ).getCoalescedEvents?.() ?? [];
     const sourceEvents = coalesced.length > 0 ? coalesced : [event];
+    if (pointerMode === "clone") {
+      const controller = options.getCloneController?.() ?? null;
+      const points = [];
+      for (const source of sourceEvents) {
+        const action = controller?.updatePointer({
+          pointerId: source.pointerId,
+          pointerType: source.pointerType,
+          clientX: source.clientX,
+          clientY: source.clientY,
+        });
+        if (action?.kind !== "stroke-update") continue;
+        points.push({
+          x: action.sample.targetPoint.x,
+          y: action.sample.targetPoint.y,
+          pressure: normalizedPressure(source),
+          timeMs: source.timeStamp,
+        });
+      }
+      if (points.length > 0) engine.extendCloneStroke(points);
+      return;
+    }
     if (pointerMode === "liquify") {
       engine.extendRasterLiquifyStroke(sourceEvents.map((source) => engine.toLayerPoint({
         ...toPointerSample(source),
@@ -1468,6 +1569,38 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
           }
           if (measurePaintPointerUp) {
             paintPointerUpEndStrokeMs = browser.performance.now() - endStrokeStartedAt;
+          }
+        }
+      } else if (pointerMode === "clone") {
+        const controller = options.getCloneController?.() ?? null;
+        const action = controller?.endPointer({
+          pointerId: event.pointerId,
+          pointerType: event.pointerType,
+          clientX: event.clientX,
+          clientY: event.clientY,
+        }, event.type === "pointerup");
+        if (action?.kind === "stroke-end") {
+          if (action.commit) {
+            engine.extendCloneStroke([{
+              x: action.sample.targetPoint.x,
+              y: action.sample.targetPoint.y,
+              pressure: normalizedPressure(event),
+              timeMs: event.timeStamp,
+            }]);
+            cloneFinalizationInFlight = true;
+            void engine.endCloneStroke(event.timeStamp).catch((error) => {
+              const message = error instanceof Error ? error.message : String(error);
+              status.textContent = `Clone could not finish: ${message}`;
+              status.className = "status error";
+            }).finally(() => {
+              cloneFinalizationInFlight = false;
+              if (disposed) return;
+              options.scheduleLayersRefresh();
+              options.invalidateActiveThumbnail();
+              publishHistoryState();
+            });
+          } else {
+            engine.cancelCloneStroke();
           }
         }
       } else if (pointerMode === "liquify") {
@@ -1749,6 +1882,9 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       }
     } else if (mode === "liquify") {
       engine.endRasterLiquifyStroke(false);
+    } else if (mode === "clone") {
+      const action = options.getCloneController?.()?.cancelPointerForNavigation();
+      if (action?.kind === "stroke-end") engine.cancelCloneStroke();
     } else if (mode === "rotate" || mode === "touch-navigation") {
       engine.endViewRotationGesture();
     }
@@ -1771,7 +1907,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
   };
 
   return {
-    isPointerActive: () => activePointerId !== null,
+    isPointerActive: () => activePointerId !== null || cloneFinalizationInFlight,
     pointerMode: () => pointerMode,
     diagnostics: () => canvasInputDiagnostics(
       options.touchPaintIntentHoldEnabled,

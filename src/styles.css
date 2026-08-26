@@ -1036,6 +1036,273 @@ select {
   display: none;
 }
 
+.clone-source-overlay {
+  position: absolute;
+  z-index: 5;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.clone-source-overlay[hidden],
+.clone-tool-dock[hidden] {
+  display: none;
+}
+
+.clone-sample-preview {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--clone-preview-diameter, 1px);
+  height: var(--clone-preview-diameter, 1px);
+  border: 1px solid rgba(255, 255, 255, 0.62);
+  border-radius: 50%;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.48);
+  contain: strict;
+  opacity: 0.78;
+  pointer-events: none;
+  transform:
+    translate3d(var(--clone-preview-x, 0), var(--clone-preview-y, 0), 0)
+    translate(-50%, -50%);
+  transform-origin: center;
+  will-change: transform;
+}
+
+.clone-sample-preview[hidden] {
+  display: none;
+}
+
+.clone-source-marker {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--clone-source-diameter, 1px);
+  height: var(--clone-source-diameter, 1px);
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+  color: #fff;
+  contain: layout style paint;
+  mix-blend-mode: difference;
+  pointer-events: none;
+  transform:
+    translate3d(var(--clone-source-x, 0), var(--clone-source-y, 0), 0)
+    translate(-50%, -50%);
+  transform-origin: center;
+  will-change: transform;
+}
+
+.clone-source-marker::before,
+.clone-source-marker::after {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: block;
+  background: currentColor;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.46);
+  content: "";
+  transform: translate(-50%, -50%);
+}
+
+.clone-source-marker::before {
+  width: 16px;
+  height: 1.5px;
+}
+
+.clone-source-marker::after {
+  width: 1.5px;
+  height: 16px;
+}
+
+.clone-source-marker[data-gesture="source-pick"],
+.clone-source-marker[data-gesture="source-drag"] {
+  border-width: 2px;
+}
+
+.clone-tool-dock {
+  position: absolute;
+  z-index: 8;
+  bottom: max(14px, env(safe-area-inset-bottom));
+  left: 50%;
+  display: grid;
+  width: min(820px, calc(100% - 28px));
+  gap: 5px;
+  padding: 7px;
+  border: 1px solid rgba(103, 111, 126, 0.62);
+  border-radius: 14px;
+  background: rgba(19, 23, 30, 0.94);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.44);
+  backdrop-filter: blur(12px);
+  transform: translateX(-50%);
+}
+
+.clone-tool-controls {
+  display: grid;
+  grid-template-columns: minmax(112px, 0.8fr) minmax(330px, 2.4fr) minmax(96px, 0.7fr);
+  gap: 5px;
+}
+
+.clone-sample-modes {
+  display: grid;
+  grid-template-columns: 0.8fr 1.35fr 0.95fr;
+  gap: 5px;
+}
+
+.clone-angle-control {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: auto minmax(120px, 1fr) 50px 70px;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 4px 0 10px;
+  border: 1px solid #373e4b;
+  border-radius: 9px;
+  background: rgba(28, 33, 41, 0.72);
+}
+
+.clone-angle-control label {
+  color: #bbc2ce;
+  font-size: 0.64rem;
+  font-weight: 760;
+  letter-spacing: 0.055em;
+}
+
+.clone-angle-control input[type="range"] {
+  width: 100%;
+  min-width: 0;
+  accent-color: #ff8059;
+  touch-action: pan-x;
+}
+
+.clone-tool-dock .clone-angle-value {
+  min-height: 0;
+  color: #f0f2f6;
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-align: right;
+}
+
+.clone-tool-dock .clone-angle-reset {
+  min-height: 44px;
+}
+
+.clone-tool-dock button {
+  min-height: 44px;
+  padding: 0 9px;
+  border: 1px solid #373e4b;
+  border-radius: 9px;
+  background: #262b34;
+  color: #e4e8ef;
+  font-size: 0.68rem;
+  font-weight: 760;
+  letter-spacing: 0.045em;
+  white-space: nowrap;
+}
+
+.clone-tool-dock button[aria-checked="true"],
+.clone-tool-dock button[aria-pressed="true"] {
+  border-color: #ff8059;
+  background: rgba(221, 92, 53, 0.2);
+  color: #fff6f2;
+  box-shadow: inset 0 0 0 1px rgba(255, 128, 89, 0.2);
+}
+
+.clone-tool-dock button:focus-visible {
+  outline: 2px solid #ff8a66;
+  outline-offset: 2px;
+}
+
+.clone-tool-dock output {
+  overflow: hidden;
+  min-height: 15px;
+  color: #c4cad4;
+  font-size: 0.64rem;
+  line-height: 1.25;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clone-tool-dock > p {
+  margin: 0;
+  color: #8f98a8;
+  font-size: 0.59rem;
+  line-height: 1.25;
+  text-align: center;
+}
+
+#gpuCanvas.clone-tool-active {
+  cursor: crosshair;
+}
+
+#gpuCanvas.clone-source-picking {
+  cursor: copy;
+}
+
+@media (max-width: 700px) {
+  /* The compact diagnostics badge shares the bottom safe-area lane with the
+     Clone controls. Keep every touch target and status message unobstructed. */
+  #gpuCanvas.clone-tool-active ~ .gpu-memory-monitor {
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .clone-tool-dock {
+    bottom: max(9px, env(safe-area-inset-bottom));
+    width: calc(100% - 18px);
+    padding: 5px;
+  }
+
+  .clone-tool-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .clone-set-source {
+    grid-row: 1;
+    grid-column: 1;
+  }
+
+  .clone-aligned {
+    grid-row: 1;
+    grid-column: 2;
+  }
+
+  .clone-sample-modes {
+    grid-row: 2;
+    grid-column: 1 / -1;
+    grid-template-columns: 0.78fr 1.42fr 0.94fr;
+  }
+
+  .clone-angle-control {
+    grid-row: 3;
+    grid-column: 1 / -1;
+    grid-template-columns: auto minmax(80px, 1fr) 46px 62px;
+    min-height: 46px;
+    gap: 6px;
+    padding-left: 8px;
+  }
+
+  .clone-tool-dock .clone-angle-reset {
+    min-height: 44px;
+    padding-inline: 4px;
+  }
+
+  .clone-tool-dock button {
+    min-height: 46px;
+    padding-inline: 5px;
+    font-size: 0.62rem;
+  }
+
+  .clone-tool-dock > p {
+    font-size: 0.55rem;
+  }
+}
+
 .spatial-blur-overlay {
   position: absolute;
   z-index: 5;

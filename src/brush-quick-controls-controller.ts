@@ -97,8 +97,9 @@ export class BrushQuickControlsController {
 
   syncAvailability(locked = this.options.isInteractionLocked()): void {
     const tool = this.options.getActiveTool();
-    const brushContext = tool === "paint" || tool === "erase" || tool === "blend";
-    const colorDisabled = locked || !brushContext || tool === "erase";
+    const brushContext = tool === "paint" || tool === "erase" || tool === "blend"
+      || tool === "clone";
+    const colorDisabled = locked || !brushContext || tool === "erase" || tool === "clone";
     this.options.elements.colorInput.disabled = colorDisabled;
     this.options.elements.colorLabel.classList.toggle("is-disabled", colorDisabled);
     const disabledByKind: Readonly<Record<BrushQuickControlKind, boolean>> = {
@@ -118,7 +119,8 @@ export class BrushQuickControlsController {
 
   syncVisibility(): void {
     const tool = this.options.getActiveTool();
-    const brushContext = tool === "paint" || tool === "erase" || tool === "blend";
+    const brushContext = tool === "paint" || tool === "erase" || tool === "blend"
+      || tool === "clone";
     const blend = tool === "blend";
     const suppressed = !brushContext || this.options.isSuppressedBySurface();
     if (suppressed && this.drag) this.finishDrag(true);
@@ -131,7 +133,9 @@ export class BrushQuickControlsController {
         ? "Blend size, opacity, stretch, paint and blur"
         : tool === "erase"
           ? "Eraser size and opacity"
-          : "Brush size and opacity",
+          : tool === "clone"
+            ? "Clone size and opacity"
+            : "Brush size and opacity",
     );
     tracks.opacity.hidden = false;
     tracks.stretch.hidden = !blend;

@@ -19,6 +19,7 @@ import type { ShapeOccupancySelection } from "./shape-occupancy";
 import { MAX_STAMPS_PER_BATCH, STAMP_STRIDE_BYTES } from "./engine-limits";
 import type { LayerColdStorageResources } from "./engine-layer-resources";
 import type { LayerClippingHistoryEntry, LayerRecord } from "./layer-stack";
+import { CLONE_SOURCE_PAGE_TABLE_LENGTH } from "./clone-gpu-core";
 import type { LayerBlendMode } from "./layer-blend-modes";
 import type { MixedSceneOrderState } from "./mixed-scene-reorder-core";
 import type { RasterStrokeStyle } from "./stroke-core";
@@ -536,6 +537,31 @@ export interface PaintHistoryRenderBatch {
   shapeMaskIdentity: number | null;
   grainTextureIdentity: number | null;
   selectionMask: SelectionHistoryMaskSnapshot | null;
+  /** Immutable virtual-texture pages required to replay a Clone batch. */
+  cloneSource: CloneHistorySourcePayload | null;
+}
+
+export interface CloneHistorySourcePayload {
+  /** Retained for diagnostics; rotated replay uses the authoritative affine fields below. */
+  readonly offsetX: number;
+  readonly offsetY: number;
+  readonly sourceX: number;
+  readonly sourceY: number;
+  readonly destinationX: number;
+  readonly destinationY: number;
+  readonly rotationCos: number;
+  readonly rotationSin: number;
+  readonly angleDegrees: number;
+  readonly tileIndices: readonly number[];
+  readonly stampBytes: number;
+  readonly sourceByteOffset: number;
+  readonly bytesPerRow: number;
+  readonly rowsPerImage: number;
+  readonly tileStrideBytes: number;
+  readonly tileWidth: number;
+  readonly tileHeight: number;
+  readonly documentWidth: number;
+  readonly documentHeight: number;
 }
 
 export interface BlendHistoryRenderBatch {
@@ -594,7 +620,51 @@ export function resolvePaintHistoryStampCount(
   ) {
     throw new RangeError("Invalid GPU history stamp count.");
   }
-  const expectedBytes = replayBatch.stampCount * STAMP_STRIDE_BYTES;
+  const expectedStampBytes = replayBatch.stampCount * STAMP_STRIDE_BYTES;
+  const cloneSource = replayBatch.cloneSource;
+  const expectedBytes = cloneSource
+    ? cloneSource.sourceByteOffset
+      + cloneSource.tileStrideBytes * cloneSource.tileIndices.length
+    : expectedStampBytes;
+  const cloneTransformValues = cloneSource
+    ? [
+      cloneSource.sourceX,
+      cloneSource.sourceY,
+      cloneSource.destinationX,
+      cloneSource.destinationY,
+      cloneSource.rotationCos,
+      cloneSource.rotationSin,
+      cloneSource.angleDegrees,
+    ]
+    : [];
+  const cloneTiles = cloneSource?.tileIndices ?? [];
+  const cloneRotationLength = cloneSource
+    ? cloneSource.rotationCos * cloneSource.rotationCos
+      + cloneSource.rotationSin * cloneSource.rotationSin
+    : 1;
+  if (
+    cloneSource
+    && (
+      cloneSource.stampBytes !== expectedStampBytes
+      || cloneSource.sourceByteOffset < expectedStampBytes
+      || cloneSource.sourceByteOffset % 256 !== 0
+      || cloneSource.bytesPerRow % 256 !== 0
+      || cloneSource.tileStrideBytes
+        !== cloneSource.bytesPerRow * cloneSource.rowsPerImage
+      || cloneTransformValues.some((value) => !Number.isFinite(value))
+      || cloneSource.angleDegrees < -180
+      || cloneSource.angleDegrees > 180
+      || Math.abs(cloneRotationLength - 1) > 1e-5
+      || new Set(cloneTiles).size !== cloneTiles.length
+      || cloneTiles.some((tileIndex) => (
+        !Number.isInteger(tileIndex)
+        || tileIndex < 0
+        || tileIndex >= CLONE_SOURCE_PAGE_TABLE_LENGTH
+      ))
+    )
+  ) {
+    throw new Error("Invalid Clone history source layout.");
+  }
   if (replayBatch.gpuSlice.logicalBytes !== expectedBytes) {
     throw new Error(
       `GPU Paint payload ${replayBatch.gpuSlice.logicalBytes} B; `
