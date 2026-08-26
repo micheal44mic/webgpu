@@ -1,6 +1,5 @@
-import type { PointerSample } from "./engine-types";
+import type { PointerSample, ShapePreviewState } from "./engine-types";
 import type { VectorSvgNode, VectorSvgNodeSeed } from "./scene-svg-model";
-import { sceneLayerToCanvas } from "./scene-transform-geometry";
 import {
   addShapeCreationPointer,
   beginShapeCreation,
@@ -12,11 +11,7 @@ import {
   type ShapeCreationGesture,
   type ShapeCreationKind,
 } from "./shape-creation-interaction-core";
-import {
-  createVectorShapeDraft,
-  VECTOR_SHAPE_DEFAULT_STAR_INNER_RATIO,
-  VECTOR_SHAPE_DEFAULT_STAR_POINTS,
-} from "./vector-shape-core";
+import { createVectorShapeDraft } from "./vector-shape-core";
 import type { VectorTextViewState } from "./vector-text-types";
 
 const MINIMUM_SHAPE_CSS_PIXELS = 3;
@@ -36,10 +31,12 @@ export interface ShapeToolEnginePort {
     seed: VectorSvgNodeSeed,
     name?: string,
   ): Promise<Readonly<VectorSvgNode>>;
+  prepareShapePreviewPresentation(): Promise<void>;
+  releaseShapePreviewPresentation(): Promise<void>;
+  updateShapePreview(preview: Readonly<ShapePreviewState> | null): boolean;
 }
 
 export interface ShapeToolElements {
-  readonly overlay: HTMLCanvasElement;
   readonly dock: HTMLElement;
   readonly kindButtons: readonly HTMLButtonElement[];
   readonly fillColor: HTMLInputElement;
@@ -66,43 +63,21 @@ function shapeName(draft: Readonly<ShapeCreationDraft>): string {
   return draft.aspectConstrained ? "Circle" : "Ellipse";
 }
 
-function starPoints(draft: Readonly<ShapeCreationDraft>): readonly { x: number; y: number }[] {
-  const raw: { x: number; y: number }[] = [];
-  for (let index = 0; index < VECTOR_SHAPE_DEFAULT_STAR_POINTS * 2; index += 1) {
-    const angle = -Math.PI * 0.5 + index * Math.PI / VECTOR_SHAPE_DEFAULT_STAR_POINTS;
-    const radius = index % 2 === 0 ? 1 : VECTOR_SHAPE_DEFAULT_STAR_INNER_RATIO;
-    raw.push({ x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
-  }
-  const left = Math.min(...raw.map((point) => point.x));
-  const right = Math.max(...raw.map((point) => point.x));
-  const top = Math.min(...raw.map((point) => point.y));
-  const bottom = Math.max(...raw.map((point) => point.y));
-  return raw.map((point) => ({
-    x: draft.frame.x + (point.x - left) / Math.max(Number.EPSILON, right - left)
-      * draft.frame.width,
-    y: draft.frame.y + (point.y - top) / Math.max(Number.EPSILON, bottom - top)
-      * draft.frame.height,
-  }));
-}
-
 /** Owns the live vector-shape draft, compact controls and one release-time history commit. */
 export class ShapeToolController {
   private readonly abortController: AbortController;
-  private readonly context: CanvasRenderingContext2D;
   private active = false;
-  private busy = false;
+  private busyCount = 0;
+  private previewReady = false;
+  private previewLifecycle: Promise<void> = Promise.resolve();
+  private previewRequest = 0;
   private kind: ShapeCreationKind = "rectangle";
   private gesture: ShapeCreationGesture | null = null;
+  private committingDraft: ShapeCreationDraft | null = null;
   private disposed = false;
 
   constructor(private readonly options: ShapeToolControllerOptions) {
     this.abortController = new options.browser.AbortController();
-    const context = options.elements.overlay.getContext("2d", {
-      alpha: true,
-      desynchronized: true,
-    });
-    if (!context) throw new Error("Canvas2D is unavailable for the shape preview.");
-    this.context = context;
     options.elements.fillColor.value = normalizedColor(options.initialColor);
     this.bind();
     this.syncUi();
@@ -113,23 +88,30 @@ export class ShapeToolController {
   }
 
   get isBusy(): boolean {
-    return this.busy;
+    return this.busyCount > 0;
   }
 
   get hasGesture(): boolean {
     return this.gesture !== null;
   }
 
-  setActive(active: boolean): void {
-    if (this.disposed || this.active === active) return;
+  setActive(active: boolean): Promise<void> {
+    if (this.disposed || this.active === active) return this.previewLifecycle;
     this.active = active;
-    if (!active) this.gesture = null;
+    this.previewReady = false;
+    if (!active) {
+      this.gesture = null;
+      this.committingDraft = null;
+    }
     this.syncUi();
     this.render();
+    return this.queuePreviewPlacement(active);
   }
 
   beginPointer(input: Readonly<ShapeToolPointerInput>): boolean {
-    if (!this.active || this.busy || this.gesture || this.disposed) return false;
+    if (!this.active || this.isBusy || !this.previewReady || this.gesture || this.disposed) {
+      return false;
+    }
     this.gesture = beginShapeCreation(this.kind, {
       pointerId: input.pointerId,
       pointerType: input.pointerType,
@@ -189,8 +171,8 @@ export class ShapeToolController {
     });
     const ended = endShapeCreationPointer(gesture, input.pointerId, commit);
     this.gesture = ended.gesture;
-    this.render();
     if (!ended.primaryEnded) {
+      this.render();
       this.options.elements.status.value = this.creationStatus();
       return false;
     }
@@ -199,8 +181,11 @@ export class ShapeToolController {
       this.options.elements.status.value = draft
         ? "Drag farther to create a shape."
         : "Shape creation canceled.";
+      this.render();
       return false;
     }
+    this.committingDraft = draft;
+    this.render();
     return this.commitDraft(draft);
   }
 
@@ -220,9 +205,12 @@ export class ShapeToolController {
     this.disposed = true;
     this.abortController.abort();
     this.gesture = null;
+    this.committingDraft = null;
     this.active = false;
+    this.previewReady = false;
     this.syncUi();
     this.render();
+    void this.queuePreviewPlacement(false);
   }
 
   private bind(): void {
@@ -256,18 +244,17 @@ export class ShapeToolController {
   }
 
   private syncUi(): void {
-    const { dock, overlay, kindButtons, fillColor } = this.options.elements;
+    const { dock, kindButtons, fillColor } = this.options.elements;
     dock.hidden = !this.active;
-    overlay.hidden = !this.active;
     if (this.active) dock.removeAttribute("inert");
     else dock.setAttribute("inert", "");
     for (const button of kindButtons) {
       const selected = button.dataset.shapeKind === this.kind;
       button.setAttribute("aria-checked", String(selected));
       button.tabIndex = selected ? 0 : -1;
-      button.disabled = this.busy;
+      button.disabled = this.isBusy;
     }
-    fillColor.disabled = this.busy;
+    fillColor.disabled = this.isBusy;
   }
 
   private creationStatus(): string {
@@ -292,9 +279,7 @@ export class ShapeToolController {
   }
 
   private async commitDraft(draft: Readonly<ShapeCreationDraft>): Promise<boolean> {
-    this.busy = true;
-    this.syncUi();
-    this.options.onBusyChange?.(true);
+    this.beginBusy();
     try {
       const color = normalizedColor(this.options.elements.fillColor.value);
       const created = createVectorShapeDraft(
@@ -316,6 +301,9 @@ export class ShapeToolController {
         scale: created.scale,
         rotation: created.rotation,
       }, shapeName(draft));
+      await new Promise<void>((resolve) => {
+        this.options.browser.requestAnimationFrame(() => resolve());
+      });
       this.options.elements.status.value = `${shapeName(draft)} created.`;
       this.options.onCreated?.(node);
       return true;
@@ -326,62 +314,75 @@ export class ShapeToolController {
       this.options.onError?.(error);
       return false;
     } finally {
-      this.busy = false;
-      this.syncUi();
-      this.options.onBusyChange?.(false);
+      this.committingDraft = null;
+      this.render();
+      this.endBusy();
     }
   }
 
   private render(): void {
-    const { overlay } = this.options.elements;
-    const view = this.options.engine.getVectorTextViewState();
-    if (overlay.width !== view.canvasWidth) overlay.width = view.canvasWidth;
-    if (overlay.height !== view.canvasHeight) overlay.height = view.canvasHeight;
-    this.context.clearRect(0, 0, overlay.width, overlay.height);
-    if (!this.active || !this.gesture) return;
-
-    const draft = currentShapeCreationDraft(this.gesture);
-    const color = normalizedColor(this.options.elements.fillColor.value);
-    const context = this.context;
-    context.save();
-    context.beginPath();
-    if (draft.kind === "rectangle") {
-      const corners = [
-        { x: draft.frame.x, y: draft.frame.y },
-        { x: draft.frame.x + draft.frame.width, y: draft.frame.y },
-        { x: draft.frame.x + draft.frame.width, y: draft.frame.y + draft.frame.height },
-        { x: draft.frame.x, y: draft.frame.y + draft.frame.height },
-      ].map((point) => sceneLayerToCanvas(point, view));
-      context.moveTo(corners[0].x, corners[0].y);
-      for (let index = 1; index < corners.length; index += 1) {
-        context.lineTo(corners[index].x, corners[index].y);
-      }
-      context.closePath();
-    } else if (draft.kind === "ellipse") {
-      const center = sceneLayerToCanvas({
-        x: draft.frame.x + draft.frame.width * 0.5,
-        y: draft.frame.y + draft.frame.height * 0.5,
-      }, view);
-      context.ellipse(
-        center.x,
-        center.y,
-        draft.frame.width * view.zoom * 0.5,
-        draft.frame.height * view.zoom * 0.5,
-        view.rotationRadians,
-        0,
-        Math.PI * 2,
-      );
-    } else {
-      const points = starPoints(draft).map((point) => sceneLayerToCanvas(point, view));
-      context.moveTo(points[0].x, points[0].y);
-      for (let index = 1; index < points.length; index += 1) {
-        context.lineTo(points[index].x, points[index].y);
-      }
-      context.closePath();
+    const draft = this.committingDraft
+      ?? (this.gesture ? currentShapeCreationDraft(this.gesture) : null);
+    if (!this.active || !this.previewReady || !draft) {
+      this.options.engine.updateShapePreview(null);
+      return;
     }
-    context.globalAlpha = 1;
-    context.fillStyle = color;
-    context.fill();
-    context.restore();
+    this.options.engine.updateShapePreview({
+      kind: draft.kind,
+      x: draft.frame.x,
+      y: draft.frame.y,
+      width: draft.frame.width,
+      height: draft.frame.height,
+      color: normalizedColor(this.options.elements.fillColor.value),
+    });
+  }
+
+  private queuePreviewPlacement(prepare: boolean): Promise<void> {
+    const request = ++this.previewRequest;
+    this.beginBusy();
+    const next = this.previewLifecycle
+      .catch(() => undefined)
+      .then(async () => {
+        if (prepare && this.active && !this.disposed) {
+          await this.options.engine.prepareShapePreviewPresentation();
+          if (request === this.previewRequest && this.active && !this.disposed) {
+            this.previewReady = true;
+            this.render();
+          }
+        } else {
+          await this.options.engine.releaseShapePreviewPresentation();
+          this.previewReady = false;
+        }
+      })
+      .catch((error) => {
+        this.previewReady = false;
+        this.options.elements.status.value = error instanceof Error
+          ? error.message
+          : "Could not prepare the shape preview.";
+        this.options.onError?.(error);
+      })
+      .finally(() => {
+        this.endBusy();
+      });
+    this.previewLifecycle = next;
+    return next;
+  }
+
+  private beginBusy(): void {
+    const wasBusy = this.isBusy;
+    this.busyCount += 1;
+    if (!wasBusy) {
+      this.syncUi();
+      this.options.onBusyChange?.(true);
+    }
+  }
+
+  private endBusy(): void {
+    if (this.busyCount <= 0) return;
+    this.busyCount -= 1;
+    if (!this.isBusy) {
+      this.syncUi();
+      this.options.onBusyChange?.(false);
+    }
   }
 }

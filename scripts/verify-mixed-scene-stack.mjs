@@ -602,6 +602,196 @@ assert.equal(
   assert.equal(stack.svgCount, 0);
 }
 
+// Clipping is one scene relation for raster, editable text and SVG in every
+// supported direction. Any group containing a vector layer remains segmented
+// until the ordered GPU compositor.
+{
+  const rasterBase = new MixedSceneStack([1]);
+  const svgChild = rasterBase.addSvgAboveSelection(svgSeed("child.svg"));
+  assert.equal(rasterBase.setClippingEnabled(`svg:${svgChild.id}`, true), true);
+  assert.deepEqual(rasterBase.clippingRelations(), [{
+    childKey: "svg:1",
+    parentKey: "raster:1",
+  }]);
+  assert.equal(rasterBase.hasHeterogeneousClipping, true);
+  assert.deepEqual(
+    rasterBase.compositionSegments(1).map((segment) => segment.key),
+    ["active-raster:1", "text-run:svg:1"],
+  );
+
+  const svgBase = new MixedSceneStack([1, 2]);
+  svgBase.select("raster:1");
+  const base = svgBase.addSvgAboveSelection(svgSeed("base.svg"));
+  assert.deepEqual(
+    svgBase.items.map((item) => item.key),
+    ["raster:1", "svg:1", "raster:2"],
+  );
+  assert.equal(svgBase.setClippingEnabled("raster:2", true), true);
+  assert.deepEqual(svgBase.clippingRelations(), [{
+    childKey: "raster:2",
+    parentKey: `svg:${base.id}`,
+  }]);
+  assert.deepEqual(
+    svgBase.rasterClippingProjection([1, 2]),
+    [
+      { layerId: 1, parentId: null },
+      { layerId: 2, parentId: null },
+    ],
+    "a vector base must not leak an invalid parent into the raster projection",
+  );
+  assert.deepEqual(
+    svgBase.compositionSegments(2).map((segment) => segment.key),
+    ["raster-run:1", "text-run:svg:1", "active-raster:2"],
+  );
+
+  const vectorPair = new MixedSceneStack([1]);
+  vectorPair.addSvgAboveSelection(svgSeed("vector-base.svg"));
+  vectorPair.addSvgAboveSelection(svgSeed("vector-child.svg"));
+  assert.equal(vectorPair.setClippingEnabled("svg:2", true), true);
+  assert.deepEqual(
+    vectorPair.compositionSegments(1).map((segment) => segment.key),
+    ["active-raster:1", "text-run:svg:1", "text-run:svg:2"],
+  );
+
+  const rasterPair = new MixedSceneStack([1, 2]);
+  assert.equal(rasterPair.setClippingEnabled("raster:2", true), true);
+  assert.equal(rasterPair.hasHeterogeneousClipping, false);
+  assert.deepEqual(rasterPair.rasterClippingProjection([1, 2]), [
+    { layerId: 1, parentId: null },
+    { layerId: 2, parentId: 1 },
+  ]);
+
+  const restored = new MixedSceneStack([1]);
+  restored.restoreState(rasterBase.captureState());
+  assert.deepEqual(restored.clippingRelations(), rasterBase.clippingRelations());
+  restored.select("svg:1");
+  const duplicate = restored.duplicateSelectedSemanticAboveSelection();
+  assert.equal(duplicate.kind, "svg");
+  assert.deepEqual(restored.clippingRelations(), [
+    { childKey: "svg:1", parentKey: "raster:1" },
+    { childKey: "svg:2", parentKey: "raster:1" },
+  ]);
+  assert.equal(restored.setClippingEnabled("svg:1", false), true);
+  assert.deepEqual(restored.clippingRelations(), [{
+    childKey: "svg:2",
+    parentKey: "svg:1",
+  }]);
+
+  const rasterText = new MixedSceneStack([1]);
+  const textChild = rasterText.addTextAboveSelection(seed("TEXT CHILD"));
+  assert.equal(rasterText.setClippingEnabled(`text:${textChild.id}`, true), true);
+  assert.deepEqual(rasterText.clippingRelations(), [{
+    childKey: "text:1",
+    parentKey: "raster:1",
+  }]);
+  assert.deepEqual(
+    rasterText.compositionSegments(1).map((segment) => segment.key),
+    ["active-raster:1", "text-run:text:1"],
+  );
+
+  const textRaster = new MixedSceneStack([1, 2]);
+  textRaster.select("raster:1");
+  const textBase = textRaster.addTextAboveSelection(seed("TEXT BASE"));
+  assert.equal(textRaster.setClippingEnabled("raster:2", true), true);
+  assert.deepEqual(textRaster.clippingRelations(), [{
+    childKey: "raster:2",
+    parentKey: `text:${textBase.id}`,
+  }]);
+  assert.deepEqual(
+    textRaster.compositionSegments(2).map((segment) => segment.key),
+    ["raster-run:1", "text-run:text:1", "active-raster:2"],
+  );
+  assert.deepEqual(textRaster.rasterClippingProjection([1, 2]), [
+    { layerId: 1, parentId: null },
+    { layerId: 2, parentId: null },
+  ]);
+
+  const textPair = new MixedSceneStack([1]);
+  textPair.addTextAboveSelection(seed("BASE"));
+  textPair.addTextAboveSelection(seed("CHILD"));
+  assert.equal(textPair.setClippingEnabled("text:2", true), true);
+  textPair.select("text:2");
+  const duplicateText = textPair.duplicateSelectedSemanticAboveSelection();
+  assert.equal(duplicateText.kind, "text");
+  assert.deepEqual(textPair.clippingRelations(), [
+    { childKey: "text:2", parentKey: "text:1" },
+    { childKey: "text:3", parentKey: "text:1" },
+  ]);
+  const clippedTextOrder = textPair.items.map((item) => item.key);
+  assert.equal(textPair.moveText(1, 1), false);
+  assert.equal(textPair.moveText(2, -1), false);
+  assert.deepEqual(
+    textPair.items.map((item) => item.key),
+    clippedTextOrder,
+    "legacy single-row text moves must not split a clipping unit",
+  );
+  assert.deepEqual(
+    textPair.compositionSegments(1).map((segment) => segment.key),
+    [
+      "active-raster:1",
+      "text-run:text:1",
+      "text-run:text:2",
+      "text-run:text:3",
+    ],
+  );
+
+  const textChildHistory = textPair.captureVectorHistoryState("text:2");
+  textPair.deleteText(2, 1);
+  assert.deepEqual(textPair.clippingRelations(), [{
+    childKey: "text:3",
+    parentKey: "text:1",
+  }]);
+  textPair.restoreVectorHistoryState(textChildHistory);
+  assert.deepEqual(textPair.clippingRelations(), [
+    { childKey: "text:2", parentKey: "text:1" },
+    { childKey: "text:3", parentKey: "text:1" },
+  ]);
+
+  const mixedChildren = new MixedSceneStack([1, 2]);
+  mixedChildren.select("raster:1");
+  mixedChildren.addTextAboveSelection(seed("MIXED CHILD"));
+  assert.equal(mixedChildren.setClippingEnabled("text:1", true), true);
+  assert.equal(mixedChildren.setClippingEnabled("raster:2", true), true);
+  assert.deepEqual(mixedChildren.clippingRelations(), [
+    { childKey: "text:1", parentKey: "raster:1" },
+    { childKey: "raster:2", parentKey: "raster:1" },
+  ]);
+  assert.deepEqual(
+    mixedChildren.compositionSegments(1, [1, 2]).map((segment) => segment.key),
+    [
+      "active-raster:1",
+      "text-run:text:1",
+      "raster-run:2@scene-clipping-source",
+    ],
+    "a mixed clipping unit must remain segmented when its raster base is active",
+  );
+  assert.deepEqual(
+    mixedChildren.compositionSegments(2, [1, 2]).map((segment) => segment.key),
+    [
+      "raster-run:1@scene-clipping-source",
+      "text-run:text:1",
+      "active-raster:2",
+    ],
+    "a mixed clipping unit must remain segmented when its raster child is active",
+  );
+
+  const textIntruder = new MixedSceneStack([1, 2]);
+  textIntruder.setClippingEnabled("raster:2", true);
+  textIntruder.select("raster:2");
+  textIntruder.addTextAboveSelection(seed("OUTSIDE"));
+  const textIntruderOrder = textIntruder.items.map((item) => item.key);
+  assert.equal(textIntruder.moveText(1, -1), false);
+  assert.deepEqual(textIntruder.items.map((item) => item.key), textIntruderOrder);
+
+  const svgIntruder = new MixedSceneStack([1, 2]);
+  svgIntruder.setClippingEnabled("raster:2", true);
+  svgIntruder.select("raster:2");
+  svgIntruder.addSvgAboveSelection(svgSeed("outside.svg"));
+  const svgIntruderOrder = svgIntruder.items.map((item) => item.key);
+  assert.equal(svgIntruder.moveSvg(1, -1), false);
+  assert.deepEqual(svgIntruder.items.map((item) => item.key), svgIntruderOrder);
+}
+
 // The global journal stores one affected vector node, its order and selection:
 // unrelated nodes and immutable SVG path data are never duplicated per action.
 {
@@ -802,6 +992,11 @@ assert.equal(
   const editorLabsSource = readFileSync(
     new URL("../src/labs/editor-labs.ts", import.meta.url),
     "utf8",
+  );
+  assert.match(
+    engineSource,
+    /if \(item\.kind === "text"\) \{[\s\S]*?clippingParentKey: scene\.clippingParentKey\(item\.key\)/,
+    "the published text snapshot must retain its clipping relation",
   );
   assert.doesNotMatch(mainSource, /mixedMemoryBenchmark|runMixedMemoryBenchmark/);
   assert.match(editorLabsSource, /\["mixed-memory", "Benchmark memoria mista"\]/);

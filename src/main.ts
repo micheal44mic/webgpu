@@ -197,7 +197,6 @@ const cloneAngleInput = element<HTMLInputElement>("cloneAngle");
 const cloneAngleValue = element<HTMLOutputElement>("cloneAngleValue");
 const cloneAngleResetButton = element<HTMLButtonElement>("cloneAngleReset");
 const cloneToolStatus = element<HTMLOutputElement>("cloneToolStatus");
-const shapeCreationCanvas = element<HTMLCanvasElement>("shapeCreationCanvas");
 const shapeToolDock = element<HTMLElement>("shapeToolDock");
 const shapeKindButtons = Array.from(
   document.querySelectorAll<HTMLButtonElement>("[data-shape-kind]"),
@@ -1145,7 +1144,6 @@ shapeToolController = new ShapeToolController({
   browser: window,
   engine,
   elements: {
-    overlay: shapeCreationCanvas,
     dock: shapeToolDock,
     kindButtons: shapeKindButtons,
     fillColor: shapeFillColor,
@@ -1999,8 +1997,8 @@ layerPanelController = new LayerPanelController({
     }
     return changed;
   },
-  setRasterClipping: (key, enabled) =>
-    sceneEditorController?.setRasterClipping(key, enabled),
+  setLayerClipping: (key, enabled) =>
+    sceneEditorController?.setLayerClipping(key, enabled),
   deleteLayer: (key) => sceneEditorController!.deleteLayer(key),
   openLayerOptions: (trigger) => {
     mobileToolSettingsSheet?.open("layer-options", trigger);

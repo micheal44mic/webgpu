@@ -1707,10 +1707,11 @@ export async function recreateLayerResources(
   destroyActiveClippingGroupResources(engine, engine.activeClippingGroup);
   engine.activeClippingGroup = null;
   engine.mixedSceneRasterSegments = [];
-  engine.mixedSceneCompositionSegments = engine.mixedSceneStack?.visibleSemanticCount
-    ? engine.mixedSceneStack.compositionSegments(
+  engine.mixedSceneCompositionSegments = engine.usesOrderedScenePresentation()
+    ? engine.mixedSceneStack!.compositionSegments(
       engine.layerStack.active.id,
       engine.layerStack.clippingUnit(engine.layerStack.active.id).map((record) => record.id),
+      engine.shapePreviewAfterKey,
     )
     : [];
   engine.normalPipeline = normalPipeline;
@@ -2968,6 +2969,7 @@ export async function buildMixedSceneCutoutSurfaceCandidate(
   items: readonly MixedSceneItem[],
   side: "below" | "above",
   referenceSurface: MergedSurfaceResources,
+  isolateClippingSource = false,
 ): Promise<MergedSurfaceResources | null> {
   const first = items.find(
     (item): item is Extract<MixedSceneItem, { kind: "raster" }> => item.kind === "raster",
@@ -2975,7 +2977,11 @@ export async function buildMixedSceneCutoutSurfaceCandidate(
   if (!first) {
     return null;
   }
-  const parent = engine.layerStack.clippingUnit(first.rasterLayerId)[0];
+  const record = engine.layerStack.byId(first.rasterLayerId);
+  if (!record) throw new Error(`Raster ${first.rasterLayerId} is missing.`);
+  const parent = isolateClippingSource
+    ? record
+    : engine.layerStack.clippingUnit(first.rasterLayerId)[0];
   return buildLayerCutoutSurfaceCandidate(
     engine,
     parent,
@@ -3865,8 +3871,9 @@ export async function foldRasterRecordIntoMergedSurface(engine: BrushEngine,
   first: boolean,
   externalBlendMode: LayerBlendMode = record.blendMode,
   composition: Pick<LayerRecord, "cutoutMode" | "tonalBlend"> | null = record,
+  allowClippingChild = false,
 ): Promise<boolean> {
-  if (record.clippingParentId !== null) {
+  if (record.clippingParentId !== null && !allowClippingChild) {
     throw new Error(`Child ${record.id} must be folded with its own group.`);
   }
   const directTileFold = await tryFoldAuthoritativeColdTilesIntoMergedSurface(
@@ -3926,6 +3933,7 @@ export async function buildMixedMergedSurfaceCandidate(engine: BrushEngine,
   caller: EffectsRetargetCaller,
   view: VectorTextViewState,
   documentMaskCollector: ClippingDocumentMaskCollector | null = null,
+  options: { readonly isolateClippingSources?: boolean } = {},
 ): Promise<MergedSurfaceResources | null> {
   const rasterItems = items.filter(
     (item): item is Extract<MixedSceneItem, { kind: "raster" }> => item.kind === "raster",
@@ -4010,7 +4018,9 @@ export async function buildMixedMergedSurfaceCandidate(engine: BrushEngine,
       if (foldedGroupMembers.has(record.id)) {
         continue;
       }
-      const unit = engine.layerStack.clippingUnit(record.id);
+      const unit = options.isolateClippingSources
+        ? [record]
+        : engine.layerStack.clippingUnit(record.id);
       const didFold: boolean = unit.length > 1
         ? await foldClippingGroupIntoMergedSurface(
           engine,
@@ -4032,6 +4042,7 @@ export async function buildMixedMergedSurfaceCandidate(engine: BrushEngine,
           first,
           "normal",
           null,
+          options.isolateClippingSources === true,
         );
       if (unit.length > 1) {
         unit.forEach((member) => foldedGroupMembers.add(member.id));
@@ -4212,6 +4223,14 @@ export function splitMixedSceneRasterRunsForLayerBlend(
       if (consumed.has(item.rasterLayerId)) {
         continue;
       }
+      if (
+        engine.mixedSceneStack?.clippingGroupRequiresSegmentedComposition(item.key)
+      ) {
+        flushNormal();
+        result.push(segment);
+        segment.items.forEach((candidate) => consumed.add(candidate.rasterLayerId));
+        break;
+      }
       const unit = engine.layerStack.clippingUnit(item.rasterLayerId);
       const parent = unit[0];
       const unitItems = unit
@@ -4285,6 +4304,11 @@ export function splitMixedSceneRasterRunsForLayerBlend(
     if (segment.kind === "image") {
       isolated.push(segment);
       floorBoundaryFound = true;
+      continue;
+    }
+    if (segment.kind === "shape-preview") {
+      isolated.push(segment);
+      if (engine.shapePreviewVisible) floorBoundaryFound = true;
       continue;
     }
     if (segment.kind === "active-raster") {
@@ -4697,15 +4721,15 @@ async function setLayerCompositionField(
     await engine.waitForIdle();
     apply(record);
     const candidateAdvanced = orderedLayerBlendPresentationRequired(engine);
-    const visibleSemantics = Boolean(engine.mixedSceneStack?.visibleSemanticCount);
+    const usesViewportComposition = engine.usesOrderedScenePresentation();
     if (candidateAdvanced) {
       await prewarmMixedSceneLinearTextureForLayerBlend(
         engine,
         Math.max(1, engine.canvas.width),
         Math.max(1, engine.canvas.height),
-        visibleSemantics,
+        usesViewportComposition,
       );
-      if (!visibleSemantics) {
+      if (!usesViewportComposition) {
         await ensureLayerBlendTilePresentationResources(engine);
       }
     }
@@ -4914,9 +4938,9 @@ export async function setLayerBlendMode(
       || engine.layerStack.layers.some(
         (candidate) => candidate.id !== record.id && candidate.blendMode !== "normal",
       );
-    const visibleSemantics = Boolean(engine.mixedSceneStack?.visibleSemanticCount);
-    const candidateNeedsTile = candidateAdvanced && !visibleSemantics;
-    const candidateNeedsViewportBlend = candidateAdvanced && visibleSemantics;
+    const usesViewportComposition = engine.usesOrderedScenePresentation();
+    const candidateNeedsTile = candidateAdvanced && !usesViewportComposition;
+    const candidateNeedsViewportBlend = candidateAdvanced && usesViewportComposition;
     if (candidateAdvanced) {
       // The screen-linear cache is also the destination of the exact tile
       // path. With semantic nodes, validate its two RGBA16F ping-pong peers as

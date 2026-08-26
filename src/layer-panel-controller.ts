@@ -138,7 +138,7 @@ export interface LayerPanelControllerOptions {
   readonly setRasterReference: (key: LayerPanelKey, enabled: boolean) => void;
   readonly setDocumentBackgroundVisibility: (visible: boolean) => boolean;
   readonly setDocumentBackgroundColor: (color: string) => boolean;
-  readonly setRasterClipping: (key: LayerPanelKey, enabled: boolean) => void;
+  readonly setLayerClipping: (key: LayerPanelKey, enabled: boolean) => void;
   readonly deleteLayer: (key: LayerPanelKey) => Promise<void>;
   readonly openLayerOptions: (trigger: HTMLElement) => void;
   readonly onLayerResult: (message: string) => void;
@@ -684,9 +684,7 @@ export class LayerPanelController {
         + entries.reverse().join("|");
     }
     const entries = scene.items.map((item) => (
-      item.kind === "raster"
-        ? `${item.key}>${item.rasterClippingParentId ?? "root"}`
-        : `${item.key}>semantic`
+      `${item.key}>${item.clippingParentKey ?? "root"}`
     ));
     return `${scene.selectedKey}|${entries.reverse().join("|")}`;
   }
@@ -705,9 +703,7 @@ export class LayerPanelController {
     }
     return scene.items.map((item) => ({
       key: item.key,
-      clippingParentKey: item.kind === "raster" && item.rasterClippingParentId !== null
-        ? `raster:${item.rasterClippingParentId}`
-        : null,
+      clippingParentKey: item.clippingParentKey,
     }));
   }
 
@@ -849,8 +845,11 @@ export class LayerPanelController {
     this.contextKey = key;
     this.contextOrderSignature = this.orderSignature(stats);
     contextMenu.dataset.layerKey = key;
-    clippingButton.hidden = this.multiSelectEnabled || properties.kind !== "raster";
-    clippingButton.disabled = properties.kind !== "raster" || !properties.clippingAvailable;
+    const clippingKind = properties.kind === "raster"
+      || properties.kind === "text"
+      || properties.kind === "svg";
+    clippingButton.hidden = this.multiSelectEnabled || !clippingKind;
+    clippingButton.disabled = !clippingKind || !properties.clippingAvailable;
     clippingButton.setAttribute("aria-checked", String(properties.clippingEnabled));
     clippingButton.textContent = properties.clippingEnabled
       ? "Disable Clipping Mask"
@@ -919,13 +918,16 @@ export class LayerPanelController {
     const properties = this.selectedLayerProperties(this.contextKey);
     if (
       !properties
-      || properties.kind !== "raster"
-      || properties.rasterIndex === null
+      || (
+        properties.kind !== "raster"
+        && properties.kind !== "text"
+        && properties.kind !== "svg"
+      )
       || properties.locked
       || !properties.clippingAvailable
     ) return;
     this.closeContextMenu(false);
-    this.options.setRasterClipping(properties.key, !properties.clippingEnabled);
+    this.options.setLayerClipping(properties.key, !properties.clippingEnabled);
   }
 
   private requestLayerOptions(): void {
@@ -1266,7 +1268,10 @@ export class LayerPanelController {
           name: layerPanelDisplayName(layer.name),
           visible: layer.visible,
           selected: index === stats.activeLayerIndex,
-          clippingParent: this.clippingParentView(stats, layer.clippingParentId),
+          clippingParent: this.clippingParentView(
+            stats,
+            layer.clippingParentId === null ? null : `raster:${layer.clippingParentId}`,
+          ),
           rasterIndex: index,
           rasterLayerId: layer.id,
           reference: layer.reference,
@@ -1295,7 +1300,7 @@ export class LayerPanelController {
           name: layerPanelDisplayName(layer.name),
           visible: layer.visible,
           selected,
-          clippingParent: this.clippingParentView(stats, item.rasterClippingParentId),
+          clippingParent: this.clippingParentView(stats, item.clippingParentKey),
           rasterIndex: item.rasterLayerIndex,
           rasterLayerId: item.rasterLayerId,
           reference: layer.reference,
@@ -1322,7 +1327,7 @@ export class LayerPanelController {
           name: layerPanelDisplayName(node.name),
           visible: node.visible,
           selected,
-          clippingParent: null,
+          clippingParent: this.clippingParentView(stats, item.clippingParentKey),
           rasterIndex: null,
           rasterLayerId: null,
           reference: false,
@@ -1348,7 +1353,7 @@ export class LayerPanelController {
           name: layerPanelDisplayName(node.name),
           visible: node.visible,
           selected,
-          clippingParent: null,
+          clippingParent: this.clippingParentView(stats, item.clippingParentKey),
           rasterIndex: null,
           rasterLayerId: null,
           reference: false,
@@ -1388,13 +1393,24 @@ export class LayerPanelController {
 
   private clippingParentView(
     stats: EngineStats,
-    rasterLayerId: number | null,
+    parentKey: LayerPanelKey | null,
   ): LayerPanelViewBase["clippingParent"] {
-    if (rasterLayerId === null) return null;
-    const parent = stats.layers.find((layer) => layer.id === rasterLayerId);
+    if (parentKey === null) return null;
+    const sceneItem = stats.mixedScene?.items.find((item) => item.key === parentKey);
+    const name = sceneItem?.kind === "raster"
+      ? stats.layers[sceneItem.rasterLayerIndex]?.name
+      : sceneItem?.kind === "text"
+        ? sceneItem.textNode.name
+      : sceneItem?.kind === "svg"
+        ? sceneItem.svgNode.name
+        : parentKey.startsWith("raster:")
+          ? stats.layers.find(
+            (layer) => layer.id === Number(parentKey.slice("raster:".length)),
+          )?.name
+          : null;
     return {
-      key: `raster:${rasterLayerId}`,
-      name: parent ? layerPanelDisplayName(parent.name) : "base layer",
+      key: parentKey,
+      name: name ? layerPanelDisplayName(name) : "base layer",
     };
   }
 
@@ -1438,6 +1454,9 @@ export class LayerPanelController {
     const selectedRasterReferenceAvailable = selectedSceneItem?.kind === "raster"
       ? selectedSceneItem.rasterLayerId === scene?.activeRasterLayerId
       : fallbackRaster !== undefined;
+    const selectedCanAnchorClipping = selectedKind === "raster"
+      ? selectedRasterReferenceAvailable
+      : selectedKind === "text" || selectedKind === "svg";
     const { addButton, copyButton, addMaskButton, multiSelectButton } =
       this.options.elements;
     addButton.disabled = this.multiSelectEnabled
@@ -1465,8 +1484,7 @@ export class LayerPanelController {
     addMaskButton.disabled = this.multiSelectEnabled
       || locked
       || stats.layers.length >= LAYER_STACK_MAXIMUM
-      || selectedKind !== "raster"
-      || !selectedRasterReferenceAvailable;
+      || !selectedCanAnchorClipping;
     const layerCount = scene?.items.length ?? stats.layers.length;
     multiSelectButton.disabled = locked
       || (!this.multiSelectEnabled && layerCount < 2);

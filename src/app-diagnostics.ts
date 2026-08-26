@@ -217,6 +217,9 @@ export function inspectAppDiagnosticInvariants(
           id: layer.id,
           clippingParentId: layer.clippingParentId,
         })),
+        scene.items.flatMap((item) => item.clippingParentKey
+          ? [{ childKey: item.key, parentKey: item.clippingParentKey }]
+          : []),
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

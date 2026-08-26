@@ -50,14 +50,14 @@ assert.ok(
   "the global layer result live region must remain outside the inert Layers panel",
 );
 assert.match(controllerSource, /setRasterReference: \(key: LayerPanelKey/);
-assert.match(controllerSource, /setRasterClipping: \(key: LayerPanelKey/);
+assert.match(controllerSource, /setLayerClipping: \(key: LayerPanelKey/);
 assert.match(controllerSource, /DOCUMENT_BACKGROUND_ROW_KEY = "background"/);
 assert.match(controllerSource, /name: "Background"/);
 assert.match(controllerSource, /mobile-layer-background-color/);
 assert.match(controllerSource, /CornerRightDown/);
 assert.match(controllerSource, /mobile-layer-clipping-indicator/);
-assert.match(controllerSource, /clippingParent: this\.clippingParentView\(stats, layer\.clippingParentId\)/);
-assert.match(controllerSource, /clippingParent: this\.clippingParentView\(stats, item\.rasterClippingParentId\)/);
+assert.match(controllerSource, /layer\.clippingParentId === null \? null : `raster:\$\{layer\.clippingParentId\}`/);
+assert.match(controllerSource, /clippingParent: this\.clippingParentView\(stats, item\.clippingParentKey\)/);
 assert.match(controllerSource, /is-clipping-child/);
 assert.match(controllerSource, /view\.clippingParent\?\.key \?\? ""/);
 assert.match(controllerSource, /Clipped to \$\{view\.clippingParent\.name\}/);
@@ -75,7 +75,7 @@ assert.match(controllerSource, /candidate !== undefined && isLayerPanelKey\(cand
 assert.match(controllerSource, /this\.listen\(elements\.list, "change", \(raw\) => this\.handleBackgroundColorInput\(raw\)\)/);
 assert.match(controllerSource, /select\.disabled = locked \|\| background/);
 assert.match(controllerSource, /this\.options\.setRasterReference\(key,/);
-assert.match(controllerSource, /this\.options\.setRasterClipping\(properties\.key,/);
+assert.match(controllerSource, /this\.options\.setLayerClipping\(properties\.key,/);
 const panelCompositionStart = mainSource.indexOf("layerPanelController = new LayerPanelController({");
 const panelCompositionEnd = mainSource.indexOf("window.addEventListener(\"pagehide\"", panelCompositionStart);
 const panelComposition = mainSource.slice(panelCompositionStart, panelCompositionEnd);
@@ -93,9 +93,9 @@ assert.match(
 );
 assert.match(
   panelComposition,
-  /setRasterClipping: \(key, enabled\) =>\s*sceneEditorController\?\.setRasterClipping\(key, enabled\)/,
+  /setLayerClipping: \(key, enabled\) =>\s*sceneEditorController\?\.setLayerClipping\(key, enabled\)/,
 );
-assert.match(sceneEditorSource, /rasterIndexForSceneLayerKey\(stats, key\)/);
+assert.match(sceneEditorSource, /setSceneLayerClipping\(key, enabled\)/);
 assert.match(mainSource, /onHistoryChange\(state\)[\s\S]*?cancelTransientInteractions\(\)/);
 assert.match(controllerSource, /cancelTransientInteractions\(\)[\s\S]*?this\.closeContextMenu\(false\)/);
 
@@ -313,7 +313,7 @@ const controller = new LayerPanelController({
   setRasterReference: (key, enabled) => referenceCalls.push({ key, enabled }),
   setDocumentBackgroundVisibility: () => true,
   setDocumentBackgroundColor: () => true,
-  setRasterClipping: (key, enabled) => clippingCalls.push({ key, enabled }),
+  setLayerClipping: (key, enabled) => clippingCalls.push({ key, enabled }),
   deleteLayer: async () => {},
   openLayerOptions() {},
   onLayerResult: (message) => layerResults.push(message),
@@ -364,6 +364,7 @@ assert.deepEqual(controller.selectedLayerProperties(), {
   semanticId: null,
   clippingEnabled: false,
   clippingAvailable: false,
+  clippingParentKey: null,
   locked: false,
 });
 
@@ -433,6 +434,69 @@ assert.equal(elements.rasterizeButton.disabled, false);
 await controller.requestRasterize();
 assert.deepEqual(rasterizeCalls, ["raster:8"]);
 assert.equal(layerResults.at(-1), "Layer 2 rasterized.");
+
+// A raster directly above editable text can use that text as its clipping base.
+stats = {
+  documentBackground: { visible: true, color: "#ffffff" },
+  activeLayerIndex: 0,
+  activeLayerId: 8,
+  layers: [{ ...stats.layers[1], id: 8, name: "Image paint" }],
+  mixedScene: {
+    selectedKey: "raster:8",
+    activeRasterLayerId: 8,
+    items: [
+      {
+        key: "text:5",
+        kind: "text",
+        clippingParentKey: null,
+        textNode: {
+          id: 5,
+          name: "Editable text",
+          visible: true,
+          opacity: 1,
+          text: "Editable",
+          color: "#ffffff",
+        },
+      },
+      {
+        key: "raster:8",
+        kind: "raster",
+        rasterLayerId: 8,
+        rasterLayerIndex: 0,
+        rasterClippingParentId: null,
+        clippingParentKey: null,
+      },
+    ],
+  },
+};
+assert.equal(controller.selectedLayerProperties("raster:8")?.clippingAvailable, true);
+assert.equal(controller.openContextMenu("raster:8", contextRow), true);
+assert.equal(elements.clippingButton.hidden, false);
+assert.equal(elements.clippingButton.disabled, false);
+controller.contextKey = "raster:8";
+clippingRequest();
+assert.deepEqual(clippingCalls.at(-1), { key: "raster:8", enabled: true });
+stats.mixedScene.items[1].clippingParentKey = "text:5";
+assert.deepEqual(
+  controller.views(stats).find((view) => view.key === "raster:8")?.clippingParent,
+  { key: "text:5", name: "Editable text" },
+  "a raster clipped to editable text must name its real text base",
+);
+assert.equal(controller.selectedLayerProperties("raster:8")?.clippingEnabled, true);
+controller.contextKey = "raster:8";
+clippingRequest();
+assert.deepEqual(clippingCalls.at(-1), { key: "raster:8", enabled: false });
+
+// The quick Add mask control must also be available when editable text is the
+// selected base. The created child is still a normal paintable raster layer.
+stats.mixedScene.selectedKey = "text:5";
+controller.syncToolbar(stats, false);
+assert.equal(
+  elements.addMaskButton.disabled,
+  false,
+  "editable text must be able to anchor a newly created raster clipping layer",
+);
+stats.mixedScene.selectedKey = "raster:8";
 assert.deepEqual(thumbnailInvalidations, [0]);
 assert.deepEqual(thumbnailEnsures, []);
 assert.equal(elements.contextMenu.hidden, true);

@@ -93,6 +93,11 @@ export type MixedSceneItem =
 export type MixedSceneVectorItem = Extract<MixedSceneItem, { readonly kind: "text" | "svg" }>;
 export type MixedSceneSemanticItem = Exclude<MixedSceneItem, { readonly kind: "raster" }>;
 
+export interface MixedSceneClippingRelation {
+  readonly childKey: MixedSceneItem["key"];
+  readonly parentKey: MixedSceneItem["key"];
+}
+
 export interface MixedScenePartition {
   below: readonly MixedSceneItem[];
   activeRaster: MixedSceneItem & { kind: "raster" };
@@ -119,6 +124,10 @@ export type MixedSceneCompositionSegment =
     readonly key: `image:${number}`;
     readonly kind: "image";
     readonly item: MixedSceneItem & { readonly kind: "image" };
+  }
+  | {
+    readonly key: "shape-preview";
+    readonly kind: "shape-preview";
   };
 
 export type MixedSceneRasterRunKey =
@@ -172,6 +181,8 @@ export function reusableMixedSceneRasterRunKeys(
 
 export interface MixedSceneState {
   readonly items: readonly MixedSceneItem[];
+  /** Optional only so projects written before heterogeneous clipping still load. */
+  readonly clippingRelations?: readonly MixedSceneClippingRelation[];
   readonly textNodes: readonly VectorTextNode[];
   readonly selectedKey: MixedSceneItem["key"];
   readonly svgNodes: readonly VectorSvgNode[];
@@ -216,6 +227,8 @@ export interface MixedSceneVectorHistoryState {
   readonly key: MixedSceneVectorKey;
   readonly index: number;
   readonly selectedKey: MixedSceneItem["key"];
+  readonly clippingParentKey?: MixedSceneItem["key"] | null;
+  readonly clippingChildKeys?: readonly MixedSceneItem["key"][];
   readonly node: VectorTextNode | VectorSvgNode | RasterImageNode | null;
 }
 
@@ -270,6 +283,10 @@ export class MixedSceneStack {
   readonly strategy = MIXED_SCENE_STACK_STRATEGY;
 
   private readonly orderedItems: MixedSceneItem[];
+  private readonly clippingParents = new Map<
+    MixedSceneItem["key"],
+    MixedSceneItem["key"]
+  >();
   private readonly textNodes = new Map<number, VectorTextNode>();
   private selectedKey: MixedSceneItem["key"];
   private readonly svgNodes = new Map<number, VectorSvgNode>();
@@ -299,6 +316,13 @@ export class MixedSceneStack {
 
   get selected(): MixedSceneItem {
     return this.itemByKey(this.selectedKey);
+  }
+
+  get hasHeterogeneousClipping(): boolean {
+    return this.clippingRelations().some(({ childKey, parentKey }) => (
+      this.itemByKey(childKey).kind !== "raster"
+      || this.itemByKey(parentKey).kind !== "raster"
+    ));
   }
 
   get textCount(): number {
@@ -373,9 +397,222 @@ export class MixedSceneStack {
     return this.orderedItems.findIndex((item) => item.key === key);
   }
 
+  clippingParentKey(key: MixedSceneItem["key"]): MixedSceneItem["key"] | null {
+    this.itemByKey(key);
+    return this.clippingParents.get(key) ?? null;
+  }
+
+  clippingRelations(): readonly MixedSceneClippingRelation[] {
+    return this.orderedItems.flatMap((item) => {
+      const parentKey = this.clippingParents.get(item.key);
+      return parentKey ? [{ childKey: item.key, parentKey }] : [];
+    });
+  }
+
+  clippingChildrenKeys(parentKey: MixedSceneItem["key"]): readonly MixedSceneItem["key"][] {
+    this.itemByKey(parentKey);
+    return this.orderedItems
+      .filter((item) => this.clippingParents.get(item.key) === parentKey)
+      .map((item) => item.key);
+  }
+
+  clippingBaseKey(key: MixedSceneItem["key"]): MixedSceneItem["key"] {
+    this.itemByKey(key);
+    return this.clippingParents.get(key) ?? key;
+  }
+
+  clippingGroupKeys(key: MixedSceneItem["key"]): readonly MixedSceneItem["key"][] {
+    const baseKey = this.clippingBaseKey(key);
+    return [baseKey, ...this.clippingChildrenKeys(baseKey)];
+  }
+
+  clippingGroupHasVector(key: MixedSceneItem["key"]): boolean {
+    return this.clippingGroupKeys(key).some(
+      (candidate) => {
+        const kind = this.itemByKey(candidate).kind;
+        return kind === "text" || kind === "svg";
+      },
+    );
+  }
+
+  clippingGroupRequiresSegmentedComposition(key: MixedSceneItem["key"]): boolean {
+    const group = this.clippingGroupKeys(key);
+    return group.length > 1 && this.clippingGroupHasVector(key);
+  }
+
+  setClippingEnabled(key: MixedSceneItem["key"], enabled: boolean): boolean {
+    const item = this.itemByKey(key);
+    if (item.kind !== "raster" && item.kind !== "text" && item.kind !== "svg") {
+      throw new Error("Only raster, text, and SVG layers can participate in clipping.");
+    }
+    const previousParent = this.clippingParents.get(key) ?? null;
+    if ((previousParent !== null) === enabled) return false;
+    const previous = this.clippingRelations();
+    try {
+      if (enabled) {
+        const index = this.indexOfKey(key);
+        if (index <= 0) {
+          throw new Error("A clipping layer requires a compatible layer immediately below.");
+        }
+        const below = this.orderedItems[index - 1];
+        if (below.kind !== "raster" && below.kind !== "text" && below.kind !== "svg") {
+          throw new Error("The layer immediately below cannot be used as a clipping base.");
+        }
+        const parentKey = this.clippingParents.get(below.key) ?? below.key;
+        const parent = this.itemByKey(parentKey);
+        if (parent.kind !== "raster" && parent.kind !== "text" && parent.kind !== "svg") {
+          throw new Error("The clipping base is not compatible.");
+        }
+        const unit = [key, ...this.clippingChildrenKeys(key)];
+        unit.forEach((memberKey) => this.clippingParents.set(memberKey, parentKey));
+      } else {
+        this.clippingParents.delete(key);
+        for (const candidate of this.orderedItems.slice(this.indexOfKey(key) + 1)) {
+          if (this.clippingParents.get(candidate.key) !== previousParent) break;
+          this.clippingParents.set(candidate.key, key);
+        }
+      }
+      this.assertValidClippingRelations();
+      return true;
+    } catch (error) {
+      this.restoreClippingRelations(previous);
+      throw error;
+    }
+  }
+
+  setClippingParentKey(
+    childKey: MixedSceneItem["key"],
+    parentKey: MixedSceneItem["key"] | null,
+  ): boolean {
+    this.itemByKey(childKey);
+    if (parentKey !== null) this.itemByKey(parentKey);
+    const previousParent = this.clippingParents.get(childKey) ?? null;
+    if (previousParent === parentKey) return false;
+    const previous = this.clippingRelations();
+    try {
+      if (parentKey === null) this.clippingParents.delete(childKey);
+      else this.clippingParents.set(childKey, parentKey);
+      this.assertValidClippingRelations();
+      return true;
+    } catch (error) {
+      this.restoreClippingRelations(previous);
+      throw error;
+    }
+  }
+
+  restoreClippingRelations(
+    relations: readonly MixedSceneClippingRelation[],
+  ): void {
+    const previous = new Map(this.clippingParents);
+    this.clippingParents.clear();
+    try {
+      for (const relation of relations) {
+        if (this.clippingParents.has(relation.childKey)) {
+          throw new Error(`Layer ${relation.childKey} has more than one clipping base.`);
+        }
+        this.clippingParents.set(relation.childKey, relation.parentKey);
+      }
+      this.assertValidClippingRelations();
+    } catch (error) {
+      this.clippingParents.clear();
+      previous.forEach((parentKey, childKey) => {
+        this.clippingParents.set(childKey, parentKey);
+      });
+      throw error;
+    }
+  }
+
+  synchronizeRasterClippingRelations(
+    rasterLayers: readonly {
+      readonly id: number;
+      readonly clippingParentId: number | null;
+    }[],
+  ): void {
+    const candidate = this.clippingRelations().filter(({ childKey, parentKey }) => (
+      !childKey.startsWith("raster:") || !parentKey.startsWith("raster:")
+    ));
+    for (const layer of rasterLayers) {
+      if (layer.clippingParentId === null) continue;
+      candidate.push({
+        childKey: `raster:${layer.id}`,
+        parentKey: `raster:${layer.clippingParentId}`,
+      });
+    }
+    this.restoreClippingRelations(candidate);
+  }
+
+  rasterClippingProjection(
+    rasterLayerIds: readonly number[],
+  ): readonly { readonly layerId: number; readonly parentId: number | null }[] {
+    const known = new Set(rasterLayerIds);
+    return rasterLayerIds.map((layerId) => {
+      const parentKey = this.clippingParents.get(`raster:${layerId}`) ?? null;
+      if (parentKey === null || !parentKey.startsWith("raster:")) {
+        return { layerId, parentId: null };
+      }
+      const parentId = Number(parentKey.slice("raster:".length));
+      if (!Number.isInteger(parentId) || !known.has(parentId)) {
+        throw new Error(`Raster clipping base ${parentKey} is missing.`);
+      }
+      return { layerId, parentId };
+    });
+  }
+
+  private assertValidClippingRelations(): void {
+    const capable = (item: MixedSceneItem) => (
+      item.kind === "raster" || item.kind === "text" || item.kind === "svg"
+    );
+    for (const [childKey, parentKey] of this.clippingParents) {
+      const child = this.itemByKey(childKey);
+      const parent = this.itemByKey(parentKey);
+      if (!capable(child) || !capable(parent)) {
+        throw new Error("Only raster, text, and SVG layers can participate in clipping.");
+      }
+      if (childKey === parentKey || this.clippingParents.has(parentKey)) {
+        throw new Error("Clipping chains are not supported.");
+      }
+      if (this.indexOfKey(parentKey) >= this.indexOfKey(childKey)) {
+        throw new Error(`Clipping base ${parentKey} must remain below ${childKey}.`);
+      }
+    }
+    for (const item of this.orderedItems) {
+      if (this.clippingParents.has(item.key)) continue;
+      const children = this.clippingChildrenKeys(item.key);
+      if (children.length === 0) continue;
+      const start = this.indexOfKey(item.key);
+      children.forEach((childKey, offset) => {
+        if (this.orderedItems[start + offset + 1]?.key !== childKey) {
+          throw new Error(`Clipping group ${item.key} must remain contiguous.`);
+        }
+      });
+    }
+  }
+
+  private removeClippingKey(key: MixedSceneItem["key"]): void {
+    this.clippingParents.delete(key);
+    for (const [childKey, parentKey] of [...this.clippingParents]) {
+      if (parentKey === key) this.clippingParents.delete(childKey);
+    }
+  }
+
+  private replaceClippingKey(
+    previousKey: MixedSceneItem["key"],
+    nextKey: MixedSceneItem["key"],
+  ): void {
+    const parentKey = this.clippingParents.get(previousKey) ?? null;
+    this.clippingParents.delete(previousKey);
+    if (parentKey !== null) this.clippingParents.set(nextKey, parentKey);
+    for (const [childKey, candidateParentKey] of [...this.clippingParents]) {
+      if (candidateParentKey === previousKey) {
+        this.clippingParents.set(childKey, nextKey);
+      }
+    }
+  }
+
   captureState(shareImmutableDocuments = false): MixedSceneState {
     return {
       items: this.orderedItems.map((item) => ({ ...item })),
+      clippingRelations: this.clippingRelations(),
       textNodes: [...this.textNodes.values()].map(cloneVectorTextNode),
       svgNodes: [...this.svgNodes.values()].map((node) => (
         shareImmutableDocuments ? cloneVectorSvgNodeForHistory(node) : cloneVectorSvgNode(node)
@@ -427,6 +664,7 @@ export class MixedSceneStack {
         kind: "image",
       });
     }
+    this.restoreClippingRelations(state.clippingRelations ?? []);
     this.selectedKey = state.selectedKey;
     this.nextTextNodeId = state.nextTextNodeId;
     this.nextSvgNodeId = state.nextSvgNodeId;
@@ -443,6 +681,8 @@ export class MixedSceneStack {
         key,
         index: -1,
         selectedKey: selectedKeyWhenAbsent,
+        clippingParentKey: null,
+        clippingChildKeys: [],
         node: null,
       };
     }
@@ -461,6 +701,8 @@ export class MixedSceneStack {
       key,
       index,
       selectedKey: this.selectedKey,
+      clippingParentKey: this.clippingParentKey(key),
+      clippingChildKeys: this.clippingChildrenKeys(key),
       node,
     };
   }
@@ -469,6 +711,7 @@ export class MixedSceneStack {
     const existingIndex = this.indexOfKey(state.key);
     if (existingIndex >= 0) {
       const [existing] = this.orderedItems.splice(existingIndex, 1);
+      this.removeClippingKey(existing.key);
       if (existing.kind === "text") {
         this.textNodes.delete(existing.textNodeId);
       } else if (existing.kind === "svg") {
@@ -505,6 +748,14 @@ export class MixedSceneStack {
         this.orderedItems.splice(insertionIndex, 0, imageItem(node.id));
         this.nextImageNodeId = Math.max(this.nextImageNodeId, node.id + 1);
       }
+      if (state.clippingParentKey !== undefined && state.clippingParentKey !== null) {
+        this.clippingParents.set(state.key, state.clippingParentKey);
+      }
+      for (const childKey of state.clippingChildKeys ?? []) {
+        if (this.indexOfKey(childKey) >= 0) {
+          this.clippingParents.set(childKey, state.key);
+        }
+      }
     }
 
     this.selectedKey = this.indexOfKey(state.selectedKey) >= 0
@@ -512,6 +763,7 @@ export class MixedSceneStack {
       : this.orderedItems.find((item) => item.kind === "raster")?.key
         ?? this.orderedItems[0]?.key
         ?? state.selectedKey;
+    this.assertValidClippingRelations();
   }
 
   select(key: MixedSceneItem["key"]): boolean {
@@ -521,6 +773,11 @@ export class MixedSceneStack {
     }
     this.selectedKey = key;
     return true;
+  }
+
+  private insertionIndexAboveClippingUnit(key: MixedSceneItem["key"]): number {
+    const group = this.clippingGroupKeys(key);
+    return Math.max(...group.map((candidate) => this.indexOfKey(candidate))) + 1;
   }
 
   /**
@@ -557,8 +814,17 @@ export class MixedSceneStack {
         name: uniqueLayerDuplicateName(source.name, existingNames),
       };
       this.textNodes.set(id, duplicate);
-      this.orderedItems.splice(selectedIndex + 1, 0, textItem(id));
-      this.selectedKey = `text:${id}`;
+      const duplicateKey = `text:${id}` as const;
+      const clippingParentKey = this.clippingParents.get(selected.key) ?? null;
+      const insertionIndex = clippingParentKey === null
+        ? this.insertionIndexAboveClippingUnit(selected.key)
+        : selectedIndex + 1;
+      this.orderedItems.splice(insertionIndex, 0, textItem(id));
+      if (clippingParentKey !== null) {
+        this.clippingParents.set(duplicateKey, clippingParentKey);
+      }
+      this.assertValidClippingRelations();
+      this.selectedKey = duplicateKey;
       return duplicate;
     }
 
@@ -574,8 +840,17 @@ export class MixedSceneStack {
         name: uniqueLayerDuplicateName(source.name, existingNames),
       };
       this.svgNodes.set(id, duplicate);
-      this.orderedItems.splice(selectedIndex + 1, 0, svgItem(id));
-      this.selectedKey = `svg:${id}`;
+      const duplicateKey = `svg:${id}` as const;
+      const clippingParentKey = this.clippingParents.get(selected.key) ?? null;
+      const insertionIndex = clippingParentKey === null
+        ? this.insertionIndexAboveClippingUnit(selected.key)
+        : selectedIndex + 1;
+      this.orderedItems.splice(insertionIndex, 0, svgItem(id));
+      if (clippingParentKey !== null) {
+        this.clippingParents.set(duplicateKey, clippingParentKey);
+      }
+      this.assertValidClippingRelations();
+      this.selectedKey = duplicateKey;
       return duplicate;
     }
 
@@ -662,8 +937,8 @@ export class MixedSceneStack {
       scale: seed.scale,
       rotation: seed.rotation,
     };
-    const selectedIndex = this.indexOfKey(this.selectedKey);
-    this.orderedItems.splice(selectedIndex + 1, 0, textItem(id));
+    const insertionIndex = this.insertionIndexAboveClippingUnit(this.selectedKey);
+    this.orderedItems.splice(insertionIndex, 0, textItem(id));
     this.textNodes.set(id, node);
     this.selectedKey = `text:${id}`;
     return node;
@@ -714,8 +989,8 @@ export class MixedSceneStack {
       scale: seed.scale,
       rotation: seed.rotation,
     };
-    const selectedIndex = this.indexOfKey(this.selectedKey);
-    this.orderedItems.splice(selectedIndex + 1, 0, svgItem(id));
+    const insertionIndex = this.insertionIndexAboveClippingUnit(this.selectedKey);
+    this.orderedItems.splice(insertionIndex, 0, svgItem(id));
     this.svgNodes.set(id, node);
     this.selectedKey = `svg:${id}`;
     return node;
@@ -754,8 +1029,8 @@ export class MixedSceneStack {
       scale: seed.scale,
       rotation: seed.rotation,
     };
-    const selectedIndex = this.indexOfKey(this.selectedKey);
-    this.orderedItems.splice(selectedIndex + 1, 0, imageItem(id));
+    const insertionIndex = this.insertionIndexAboveClippingUnit(this.selectedKey);
+    this.orderedItems.splice(insertionIndex, 0, imageItem(id));
     this.imageNodes.set(id, node);
     this.selectedKey = `image:${id}`;
     return node;
@@ -766,6 +1041,7 @@ export class MixedSceneStack {
     const key = `svg:${id}` as const;
     const index = this.indexOfKey(key);
     if (index < 0) throw new Error(`SVG item ${id} is missing from the stack.`);
+    this.removeClippingKey(key);
     this.orderedItems.splice(index, 1);
     this.svgNodes.delete(id);
     if (this.selectedKey === key) {
@@ -781,6 +1057,7 @@ export class MixedSceneStack {
     const key = `image:${id}` as const;
     const index = this.indexOfKey(key);
     if (index < 0) throw new Error(`Image item ${id} is missing from the stack.`);
+    this.removeClippingKey(key);
     this.orderedItems.splice(index, 1);
     this.imageNodes.delete(id);
     if (this.selectedKey === key) {
@@ -798,6 +1075,7 @@ export class MixedSceneStack {
     if (index < 0) {
       throw new Error(`Text item ${id} is missing from the stack.`);
     }
+    this.removeClippingKey(key);
     this.orderedItems.splice(index, 1);
     this.textNodes.delete(id);
     if (this.selectedKey === key) {
@@ -817,7 +1095,7 @@ export class MixedSceneStack {
     if (this.indexOfKey(`raster:${newRasterLayerId}`) >= 0) {
       throw new Error(`Raster ${newRasterLayerId} is already present in the scene.`);
     }
-    const selectedIndex = this.indexOfKey(this.selectedKey);
+    const selectedIndex = this.insertionIndexAboveClippingUnit(this.selectedKey) - 1;
     const item = rasterItem(newRasterLayerId);
     this.orderedItems.splice(selectedIndex + 1, 0, item);
     this.selectedKey = item.key;
@@ -877,7 +1155,9 @@ export class MixedSceneStack {
     } else {
       throw new Error("Item " + key + " is not semantic.");
     }
+    this.replaceClippingKey(key, rasterKey);
     this.orderedItems.splice(index, 1, raster);
+    this.assertValidClippingRelations();
     this.selectedKey = rasterKey;
     return index;
   }
@@ -904,20 +1184,24 @@ export class MixedSceneStack {
     }
     if (restoredKind === "text") {
       const node = cloneVectorTextNode(state.node as VectorTextNode);
+      this.replaceClippingKey(rasterKey, state.key);
       this.orderedItems.splice(index, 1, textItem(node.id));
       this.textNodes.set(node.id, node);
       this.nextTextNodeId = Math.max(this.nextTextNodeId, node.id + 1);
     } else if (restoredKind === "svg") {
       const node = cloneVectorSvgNodeForHistory(state.node as VectorSvgNode);
+      this.replaceClippingKey(rasterKey, state.key);
       this.orderedItems.splice(index, 1, svgItem(node.id));
       this.svgNodes.set(node.id, node);
       this.nextSvgNodeId = Math.max(this.nextSvgNodeId, node.id + 1);
     } else {
       const node = cloneRasterImageNodeForHistory(state.node as RasterImageNode);
+      this.replaceClippingKey(rasterKey, state.key);
       this.orderedItems.splice(index, 1, imageItem(node.id));
       this.imageNodes.set(node.id, node);
       this.nextImageNodeId = Math.max(this.nextImageNodeId, node.id + 1);
     }
+    this.assertValidClippingRelations();
     this.selectedKey = state.key;
     return index;
   }
@@ -943,6 +1227,7 @@ export class MixedSceneStack {
       throw new Error(`Raster ${rasterLayerId} is missing from the scene.`);
     }
     const [removed] = this.orderedItems.splice(index, 1);
+    this.removeClippingKey(key);
     if (this.selectedKey === key) {
       const fallbackKey = `raster:${fallbackRasterLayerId}` as const;
       this.itemByKey(fallbackKey);
@@ -951,17 +1236,29 @@ export class MixedSceneStack {
     return removed;
   }
 
+  private moveSemanticOneStep(
+    key: Extract<MixedSceneItem["key"], `text:${number}` | `svg:${number}`>,
+    delta: -1 | 1,
+  ): boolean {
+    const from = this.indexOfKey(key);
+    const to = from + delta;
+    if (to < 0 || to >= this.orderedItems.length) return false;
+    const previousItems = [...this.orderedItems];
+    const [item] = this.orderedItems.splice(from, 1);
+    this.orderedItems.splice(to, 0, item);
+    try {
+      this.assertValidClippingRelations();
+      return true;
+    } catch {
+      this.orderedItems.splice(0, this.orderedItems.length, ...previousItems);
+      return false;
+    }
+  }
+
   moveText(id: number, delta: -1 | 1): boolean {
     this.textById(id);
     const key = `text:${id}` as const;
-    const from = this.indexOfKey(key);
-    const to = from + delta;
-    if (to < 0 || to >= this.orderedItems.length) {
-      return false;
-    }
-    const [item] = this.orderedItems.splice(from, 1);
-    this.orderedItems.splice(to, 0, item);
-    return true;
+    return this.moveSemanticOneStep(key, delta);
   }
 
   setTextVisibility(id: number, visible: boolean): boolean {
@@ -1128,12 +1425,7 @@ export class MixedSceneStack {
   moveSvg(id: number, delta: -1 | 1): boolean {
     this.svgById(id);
     const key = `svg:${id}` as const;
-    const from = this.indexOfKey(key);
-    const to = from + delta;
-    if (to < 0 || to >= this.orderedItems.length) return false;
-    const [item] = this.orderedItems.splice(from, 1);
-    this.orderedItems.splice(to, 0, item);
-    return true;
+    return this.moveSemanticOneStep(key, delta);
   }
 
   setSvgVisibility(id: number, visible: boolean): boolean {
@@ -1272,11 +1564,20 @@ export class MixedSceneStack {
       throw new Error(`Item ${key} is not a raster layer.`);
     }
     if (activeClippingUnitIds.length > 1) {
-      const groupIndices = activeClippingUnitIds.map((id) =>
-        this.indexOfKey(`raster:${id}` as const));
+      const segmented = this.clippingGroupRequiresSegmentedComposition(key);
+      const groupKeys = segmented
+        ? this.clippingGroupKeys(key)
+        : activeClippingUnitIds.map((id) => `raster:${id}` as const);
+      const projectedRasterIds = groupKeys.flatMap((candidate) => {
+        const item = this.itemByKey(candidate);
+        return item.kind === "raster" ? [item.rasterLayerId] : [];
+      });
+      const groupIndices = groupKeys.map((candidate) => this.indexOfKey(candidate));
       if (
         groupIndices.some((candidate) => candidate < 0)
         || groupIndices.some((candidate, offset) => candidate !== groupIndices[0] + offset)
+        || projectedRasterIds.length !== activeClippingUnitIds.length
+        || projectedRasterIds.some((id, offset) => id !== activeClippingUnitIds[offset])
       ) {
         throw new Error("The clipping group must remain contiguous in the mixed scene.");
       }
@@ -1303,6 +1604,7 @@ export class MixedSceneStack {
   compositionSegments(
     activeRasterLayerId: number,
     activeClippingUnitIds: readonly number[] = [],
+    shapePreviewAfterKey: MixedSceneItem["key"] | null = null,
   ): readonly MixedSceneCompositionSegment[] {
     const activeKey = `raster:${activeRasterLayerId}` as const;
     const activeItem = this.itemByKey(activeKey);
@@ -1314,16 +1616,33 @@ export class MixedSceneStack {
       : [];
     const clippingGroupSet = new Set(clippingGroup);
     if (clippingGroup.length > 0) {
-      const indices = clippingGroup.map((id) => this.indexOfKey(`raster:${id}` as const));
+      const segmented = this.clippingGroupRequiresSegmentedComposition(activeKey);
+      const groupKeys = segmented
+        ? this.clippingGroupKeys(activeKey)
+        : clippingGroup.map((id) => `raster:${id}` as const);
+      const projectedRasterIds = groupKeys.flatMap((candidate) => {
+        const item = this.itemByKey(candidate);
+        return item.kind === "raster" ? [item.rasterLayerId] : [];
+      });
+      const indices = groupKeys.map((candidate) => this.indexOfKey(candidate));
       if (
         indices.some((candidate) => candidate < 0)
         || indices.some((candidate, offset) => candidate !== indices[0] + offset)
+        || projectedRasterIds.length !== clippingGroup.length
+        || projectedRasterIds.some((id, offset) => id !== clippingGroup[offset])
       ) {
         throw new Error("The clipping group must remain contiguous in the mixed scene.");
       }
     }
 
     const segments: MixedSceneCompositionSegment[] = [];
+    const segmentedClippingKeys = new Set<MixedSceneItem["key"]>();
+    for (const relation of this.clippingRelations()) {
+      if (!this.clippingGroupRequiresSegmentedComposition(relation.parentKey)) continue;
+      this.clippingGroupKeys(relation.parentKey).forEach((key) => {
+        segmentedClippingKeys.add(key);
+      });
+    }
     let rasterRun: (MixedSceneItem & { kind: "raster" })[] = [];
     let textRun: MixedSceneVectorItem[] = [];
     const flushRasterRun = () => {
@@ -1350,13 +1669,49 @@ export class MixedSceneStack {
         items,
       });
     };
+    let shapePreviewInserted = false;
+    const insertShapePreviewAfter = (key: MixedSceneItem["key"]): void => {
+      if (shapePreviewAfterKey !== key) return;
+      flushRasterRun();
+      flushTextRun();
+      segments.push({ key: "shape-preview", kind: "shape-preview" });
+      shapePreviewInserted = true;
+    };
 
     for (const item of this.orderedItems) {
-      if (
+      if (segmentedClippingKeys.has(item.key)) {
+        flushRasterRun();
+        flushTextRun();
+        if (item.kind === "raster" && item.rasterLayerId === activeRasterLayerId) {
+          segments.push({
+            key: `active-raster:${item.rasterLayerId}`,
+            kind: "active-raster",
+            item,
+          });
+        } else if (item.kind === "raster") {
+          segments.push({
+            key: `raster-run:${item.rasterLayerId}@scene-clipping-source`,
+            kind: "raster-run",
+            items: [item],
+          });
+        } else if (item.kind === "text" || item.kind === "svg") {
+          // Keep even hidden bases/children as structural group boundaries.
+          // Their missing texture contributes transparent alpha while still
+          // preventing clipped children from escaping into the outer scene.
+          segments.push({
+            key: `text-run:${item.key}`,
+            kind: "text-run",
+            items: [item],
+          });
+        } else {
+          throw new Error("A segmented clipping group contains an unsupported layer.");
+        }
+      } else if (
         item.kind === "raster"
         && clippingGroupSet.has(item.rasterLayerId)
       ) {
         if (item.rasterLayerId !== clippingGroup[0]) {
+          insertShapePreviewAfter(item.key);
           continue;
         }
         flushRasterRun();
@@ -1380,6 +1735,7 @@ export class MixedSceneStack {
       } else if (item.kind === "image") {
         const image = this.imageById(item.imageNodeId);
         if (!image.visible || image.opacity <= 0) {
+          insertShapePreviewAfter(item.key);
           continue;
         }
         flushRasterRun();
@@ -1399,9 +1755,14 @@ export class MixedSceneStack {
         flushRasterRun();
         textRun.push(item);
       }
+      insertShapePreviewAfter(item.key);
     }
     flushRasterRun();
     flushTextRun();
+
+    if (shapePreviewAfterKey !== null && !shapePreviewInserted) {
+      throw new Error(`Shape preview anchor ${shapePreviewAfterKey} is missing from the scene.`);
+    }
 
     if (!segments.some((segment) => segment.kind === "active-raster")) {
       throw new Error(`Active raster ${activeRasterLayerId} is missing from the composition.`);

@@ -1,4 +1,4 @@
-import { LAYER_STACK_MAXIMUM, type LayerStack } from "./layer-stack";
+import { LAYER_STACK_MAXIMUM, type LayerStack } from "./layer-stack.ts";
 import type {
   MixedSceneItem,
   MixedSceneStack,
@@ -105,6 +105,11 @@ export function planMixedSceneLayerMerge(
   if (interval.some((item) => item.kind === "image")) {
     throw new Error(
       "Merge v1 does not yet rasterize image nodes: select only raster, text, and SVG items.",
+    );
+  }
+  if (interval.some((item) => scene.clippingGroupRequiresSegmentedComposition(item.key))) {
+    throw new Error(
+      "Merge does not yet support clipping groups containing editable text or SVG layers.",
     );
   }
 

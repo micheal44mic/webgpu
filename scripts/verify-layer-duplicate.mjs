@@ -52,8 +52,15 @@ assert.ok(
   "l'ammissione deve usare i tile persistiti e precedere qualsiasi seed GPU",
 );
 assert.match(duplicate, /createLayerColdStorageCandidate\([\s\S]*?"history"/);
-assert.match(duplicate, /this\.layerStack\.clippingUnit\(source\.id\)/);
+assert.match(duplicate, /scene\.clippingGroupKeys\(sourceKey\)/);
+assert.match(duplicate, /scene\.rasterIndexForSceneIndex\(sceneInsertionIndex\)/);
 assert.match(duplicate, /clippingParentId: source\.clippingParentId/);
+assert.match(duplicate, /sceneClippingParentKey,/);
+assert.match(
+  structure,
+  /sceneClippingParentKey: action\.sceneClippingParentKey/,
+  "Undo/Redo Duplicate must retain an SVG or raster clipping base",
+);
 assert.match(duplicate, /applyLayerAddHistory\(this, action, 1\)/);
 assert.match(duplicate, /commitHistoryActionAtomically\(this, action\)/);
 assert.match(duplicate, /applyLayerAddHistory\(this, action, -1\)/);

@@ -5,7 +5,12 @@ import {
   type LayerBlendMode,
 } from "./layer-blend-modes.ts";
 import type { LayerCompressionStorage } from "./layer-compression-codec";
-import type { MixedSceneState } from "./mixed-scene-stack";
+import type {
+  MixedSceneClippingRelation,
+  MixedSceneItem,
+  MixedSceneState,
+} from "./mixed-scene-stack";
+import { assertValidMixedSceneOrder } from "./mixed-scene-reorder-core.ts";
 import type { RasterColorOverlayStyle } from "./raster-color-overlay-core";
 import type {
   RasterInnerShadowStyle,
@@ -1008,24 +1013,45 @@ function assertMixedScene(
   ) {
     fail(`${path}.items`, "must contain every semantic node exactly once");
   }
-  const sceneIndexByRasterId = new Map<number, number>();
-  (value.items as Record<string, unknown>[]).forEach((item, index) => {
-    if (item.kind === "raster") sceneIndexByRasterId.set(item.rasterLayerId as number, index);
-  });
-  layers.forEach((base) => {
-    if (base.clippingParentId !== null) return;
-    const dependents = layers.filter((layer) => layer.clippingParentId === base.id);
-    const baseSceneIndex = sceneIndexByRasterId.get(base.id);
-    if (baseSceneIndex === undefined) return;
-    dependents.forEach((dependent, offset) => {
-      if (sceneIndexByRasterId.get(dependent.id) !== baseSceneIndex + offset + 1) {
-        fail(
-          `${path}.items`,
-          `clipping group for raster ${base.id} must remain contiguous in the mixed scene`,
-        );
+  const clippingRelations: MixedSceneClippingRelation[] = [];
+  if (value.clippingRelations !== undefined) {
+    if (!Array.isArray(value.clippingRelations)) {
+      fail(`${path}.clippingRelations`, "must be an array");
+    }
+    (value.clippingRelations as unknown[]).forEach((relation, index) => {
+      const relationPath = `${path}.clippingRelations[${index}]`;
+      if (!isRecord(relation)) fail(relationPath, "must be an object");
+      assertString(relation.childKey, `${relationPath}.childKey`, 192);
+      assertString(relation.parentKey, `${relationPath}.parentKey`, 192);
+      if (!seenKeys.has(relation.childKey)) {
+        fail(`${relationPath}.childKey`, "must reference an existing scene item");
       }
+      if (!seenKeys.has(relation.parentKey)) {
+        fail(`${relationPath}.parentKey`, "must reference an existing scene item");
+      }
+      clippingRelations.push({
+        childKey: relation.childKey as MixedSceneItem["key"],
+        parentKey: relation.parentKey as MixedSceneItem["key"],
+      });
     });
-  });
+  }
+  try {
+    assertValidMixedSceneOrder(
+      (value.items as Record<string, unknown>[]).map(
+        (item) => item.key as MixedSceneItem["key"],
+      ),
+      layers.map((layer) => ({
+        id: layer.id,
+        clippingParentId: layer.clippingParentId,
+      })),
+      clippingRelations,
+    );
+  } catch (error) {
+    fail(
+      `${path}.clippingRelations`,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
   if (typeof value.selectedKey !== "string" || !seenKeys.has(value.selectedKey)) {
     fail(`${path}.selectedKey`, "must select an existing scene item");
   }

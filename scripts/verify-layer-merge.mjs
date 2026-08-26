@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { blendLayerPremultipliedLinear } from "../src/layer-blend-modes.ts";
+import { LayerStack } from "../src/layer-stack.ts";
+import { MixedSceneStack } from "../src/mixed-scene-stack.ts";
+import { planMixedSceneLayerMerge } from "../src/layer-merge-core.ts";
 import {
   borrowLayerMergeColdSeed,
   layerMergeColdSeedIsLiveAuthority,
@@ -81,8 +84,77 @@ for (const fragment of [
   "depends on the external",
   "extend the selection to the bottom",
   "item.kind === \"image\"",
+  "clippingGroupRequiresSegmentedComposition",
 ]) {
   assert.ok(core.includes(fragment), `validazione merge mancante: ${fragment}`);
+}
+
+const mergeStyles = () => ({
+  strokeStyle: {},
+  bevelStyle: {},
+  outerShadowStyle: {},
+  innerShadowStyle: {},
+  colorOverlayStyle: {},
+});
+const mergeTextSeed = (text = "TEXT") => ({
+  text,
+  fontFamily: "sans-serif",
+  fontSize: 32,
+  color: "#ffffff",
+  outlineWidth: 0,
+  outlineColor: "#000000",
+  outlineJoin: "round",
+  blockShadowEnabled: false,
+  blockShadowColor: "#000000",
+  blockShadowOpacity: 1,
+  blockShadowOffset: 0,
+  blockShadowAngle: 0,
+  blockShadowOutlineWidth: 0,
+  singleShadowEnabled: false,
+  singleShadowColor: "#000000",
+  singleShadowOpacity: 1,
+  singleShadowOffset: 0,
+  singleShadowAngle: 0,
+  singleShadowBlur: 0,
+  innerShadowEnabled: false,
+  innerShadowColor: "#000000",
+  innerShadowOpacity: 1,
+  innerShadowOffset: 0,
+  innerShadowAngle: 0,
+  innerShadowBlur: 0,
+  x: 0,
+  y: 0,
+  scale: 1,
+  rotation: 0,
+});
+
+{
+  const stack = new LayerStack(mergeStyles);
+  const scene = new MixedSceneStack([1]);
+  scene.addTextAboveSelection(mergeTextSeed("ORDINARY"));
+  assert.doesNotThrow(() => planMixedSceneLayerMerge(
+    stack,
+    scene,
+    ["raster:1", "text:1"],
+  ));
+  scene.setClippingEnabled("text:1", true);
+  assert.throws(
+    () => planMixedSceneLayerMerge(stack, scene, ["raster:1", "text:1"]),
+    /clipping groups containing editable text or SVG/,
+  );
+}
+
+{
+  const stack = new LayerStack(mergeStyles);
+  stack.add("Raster child");
+  const scene = new MixedSceneStack([1, 2]);
+  scene.select("raster:1");
+  scene.addTextAboveSelection(mergeTextSeed("BASE"));
+  scene.setClippingEnabled("raster:2", true);
+  assert.throws(
+    () => planMixedSceneLayerMerge(stack, scene, ["text:1", "raster:2"]),
+    /clipping groups containing editable text or SVG/,
+  );
 }
 
 // Normal multi-item merges bake presentation exactly once; a single complete

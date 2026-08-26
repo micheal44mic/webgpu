@@ -52,7 +52,12 @@ export async function detachLayer(
   engine: BrushEngine,
   layerId: number,
   fallbackLayerId: number,
-): Promise<{ rasterLayerIndex: number; sceneIndex: number }> {
+): Promise<{
+  rasterLayerIndex: number;
+  sceneIndex: number;
+  sceneClippingParentKey: DeletedLayerEntry["sceneClippingParentKey"];
+  sceneClippingChildKeys: DeletedLayerEntry["sceneClippingChildKeys"];
+}> {
   const scene = requireMixedSceneStack(engine);
   const targetIndex = engine.layerStack.indexOfId(layerId);
   if (targetIndex < 0) throw new Error(`Layer ${layerId} to detach is not present.`);
@@ -63,6 +68,9 @@ export async function detachLayer(
   const gpu = engine.layerGpu.get(layerId);
   if (!gpu) throw new Error(`GPU resources for layer ${layerId} are missing.`);
   const record = engine.layerStack.at(targetIndex);
+  const sceneKey = `raster:${layerId}` as const;
+  const sceneClippingParentKey = scene.clippingParentKey(sceneKey);
+  const sceneClippingChildKeys = [...scene.clippingChildrenKeys(sceneKey)];
 
   // Prima la scena, poi lo stack: il contrario lascia una chiave raster che
   // punta a un livello inesistente, e la presentazione lo rileva subito.
@@ -72,7 +80,12 @@ export async function detachLayer(
   if (detached !== record) throw new Error(`Inconsistent detachment for layer ${layerId}.`);
   engine.layerGpu.delete(layerId);
   destroyLayerGpuResources(engine, gpu);
-  return { rasterLayerIndex: targetIndex, sceneIndex };
+  return {
+    rasterLayerIndex: targetIndex,
+    sceneIndex,
+    sceneClippingParentKey,
+    sceneClippingChildKeys,
+  };
 }
 
 /**
@@ -121,12 +134,25 @@ export async function attachLayer(
     );
     engine.layerGpu.set(layerId, gpu);
     scene.insertRasterAt(layerId, sceneInsertionIndex, true);
-    if (entry.clippingParentId !== null) {
-      engine.layerStack.setClippingParent(
-        engine.layerStack.indexOfId(layerId),
-        entry.clippingParentId,
-      );
+    const sceneKey = `raster:${layerId}` as const;
+    const parentKey = entry.sceneClippingParentKey === undefined
+      ? entry.clippingParentId === null
+        ? null
+        : `raster:${entry.clippingParentId}` as const
+      : entry.sceneClippingParentKey;
+    if (parentKey !== null) {
+      scene.setClippingParentKey(sceneKey, parentKey);
     }
+    for (const childKey of entry.sceneClippingChildKeys ?? []) {
+      if (scene.indexOfKey(childKey) >= 0) {
+        scene.setClippingParentKey(childKey, sceneKey);
+      }
+    }
+    engine.layerStack.restoreClippingHistoryState(
+      scene.rasterClippingProjection(
+        engine.layerStack.layers.map((record) => record.id),
+      ),
+    );
   } catch (error) {
     const rollbackErrors: unknown[] = [];
 
@@ -344,6 +370,8 @@ export async function applyLayerDeleteHistory(
         );
         entry.rasterLayerIndex = observed.rasterLayerIndex;
         entry.sceneIndex = observed.sceneIndex;
+        entry.sceneClippingParentKey = observed.sceneClippingParentKey;
+        entry.sceneClippingChildKeys = observed.sceneClippingChildKeys;
         detached.push(entry);
       }
       // `switchActiveForStructuralHistory` congela la presentazione; lo stacco
@@ -449,6 +477,7 @@ export async function applyLayerAddHistory(
     rasterLayerIndex: action.rasterLayerIndex,
     sceneIndex: action.sceneIndex,
     clippingParentId: action.clippingParentId,
+    sceneClippingParentKey: action.sceneClippingParentKey,
     seed: action.seed,
     baseBounds: action.baseBounds,
   };
@@ -472,4 +501,5 @@ export async function applyLayerAddHistory(
   );
   action.rasterLayerIndex = entry.rasterLayerIndex;
   action.sceneIndex = entry.sceneIndex;
+  action.sceneClippingParentKey = entry.sceneClippingParentKey;
 }

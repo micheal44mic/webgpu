@@ -212,6 +212,98 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
 }
 `;
 
+/**
+ * Draws the live parametric shape directly into the ordered scene. The
+ * geometry stays in document space, so view changes need no geometry upload.
+ */
+export const mixedSceneShapePreviewShader = /* wgsl */ `
+${displayUniformsShader}
+struct ShapePreviewUniforms {
+  frame: vec4<f32>,
+  color: vec4<f32>,
+  controls: vec4<f32>,
+};
+
+@group(0) @binding(0) var<uniform> display: DisplayUniforms;
+@group(0) @binding(1) var<uniform> preview: ShapePreviewUniforms;
+
+${fullscreenVertexShader}
+
+fn segmentDistance(point: vec2<f32>, first: vec2<f32>, second: vec2<f32>) -> f32 {
+  let edge = second - first;
+  let amount = clamp(
+    dot(point - first, edge) / max(dot(edge, edge), 0.000001),
+    0.0,
+    1.0
+  );
+  return length(point - (first + edge * amount));
+}
+
+fn starPoint(index: u32) -> vec2<f32> {
+  let angle = -1.57079632679 + f32(index) * 0.62831853072;
+  let radius = select(0.5, 1.0, (index & 1u) == 0u);
+  let raw = vec2<f32>(cos(angle), sin(angle)) * radius;
+  return vec2<f32>(
+    (raw.x + 0.95105651630) / 1.90211303259,
+    (raw.y + 1.0) / 1.80901699437
+  );
+}
+
+fn starSignedDistance(point: vec2<f32>, frame: vec4<f32>) -> f32 {
+  var inside = false;
+  var minimumDistance = 1000000000.0;
+  for (var index = 0u; index < 10u; index += 1u) {
+    let firstUnit = starPoint(index);
+    let secondUnit = starPoint((index + 1u) % 10u);
+    let first = frame.xy + firstUnit * frame.zw;
+    let second = frame.xy + secondUnit * frame.zw;
+    minimumDistance = min(minimumDistance, segmentDistance(point, first, second));
+    let crosses = (first.y > point.y) != (second.y > point.y);
+    let crossingX = (second.x - first.x) * (point.y - first.y)
+      / max(abs(second.y - first.y), 0.000001)
+      * select(-1.0, 1.0, second.y >= first.y)
+      + first.x;
+    if (crosses && point.x < crossingX) {
+      inside = !inside;
+    }
+  }
+  return select(minimumDistance, -minimumDistance, inside);
+}
+
+@fragment
+fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
+  if (preview.controls.y < 0.5 || any(preview.frame.zw <= vec2<f32>(0.0))) {
+    return vec4<f32>(0.0);
+  }
+  let point = layerPositionAt(fragmentPosition.xy);
+  let center = preview.frame.xy + preview.frame.zw * 0.5;
+  let halfSize = preview.frame.zw * 0.5;
+  let kind = preview.controls.x;
+  var signedDistance = 0.0;
+  if (kind < 0.5) {
+    let distanceVector = abs(point - center) - halfSize;
+    signedDistance = length(max(distanceVector, vec2<f32>(0.0)))
+      + min(max(distanceVector.x, distanceVector.y), 0.0);
+  } else if (kind < 1.5) {
+    let normalized = (point - center) / max(halfSize, vec2<f32>(0.000001));
+    signedDistance = (length(normalized) - 1.0) * min(halfSize.x, halfSize.y);
+  } else {
+    signedDistance = starSignedDistance(point, preview.frame);
+  }
+  let documentUnitsPerPixel = max(
+    max(fwidth(point.x), fwidth(point.y)),
+    0.000001
+  );
+  let coverage = 1.0 - smoothstep(
+    -documentUnitsPerPixel * 0.5,
+    documentUnitsPerPixel * 0.5,
+    signedDistance
+  );
+  let alpha = preview.color.a * coverage;
+  return vec4<f32>(preview.color.rgb * alpha, alpha);
+}
+`;
+
 export const mixedSceneClearShader = /* wgsl */ `
 ${fullscreenVertexShader}
 
@@ -263,6 +355,18 @@ ${fullscreenVertexShader}
 fn backgroundFragmentMain() -> @location(0) vec4<f32> {
   let alpha = select(0.0, 1.0, display.backgroundColor.a > 0.5);
   return vec4<f32>(srgbToLinear(display.backgroundColor.rgb) * alpha, alpha);
+}
+
+@fragment
+fn sourceFragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  let dimensions = vec2<i32>(textureDimensions(sceneTexture, 0));
+  let pixel = vec2<i32>(fragmentPosition.xy);
+  if (any(pixel < vec2<i32>(0)) || any(pixel >= dimensions)) {
+    return vec4<f32>(0.0);
+  }
+  return textureLoad(sceneTexture, pixel, 0);
 }
 
 @fragment

@@ -166,6 +166,115 @@ assert.equal(normalizeProjectTitle("\n\t"), "Untitled Artwork");
 
 const { request, bytes, tileBytes } = projectRequest();
 validateProjectSaveRequest(request);
+const clippedSceneProject = structuredClone(request);
+clippedSceneProject.snapshot.mixedScene.clippingRelations = [{
+  childKey: "svg:1",
+  parentKey: "raster:1",
+}];
+validateProjectSaveRequest(clippedSceneProject);
+assert.deepEqual(clippedSceneProject.snapshot.mixedScene.clippingRelations, [{
+  childKey: "svg:1",
+  parentKey: "raster:1",
+}]);
+const reverseClippedSceneProject = structuredClone(request);
+reverseClippedSceneProject.snapshot.mixedScene.items.reverse();
+reverseClippedSceneProject.snapshot.mixedScene.clippingRelations = [{
+  childKey: "raster:1",
+  parentKey: "svg:1",
+}];
+validateProjectSaveRequest(reverseClippedSceneProject);
+
+const textNode = (id, name) => ({
+  id,
+  kind: "text",
+  name,
+  visible: true,
+  opacity: 1,
+  x: 0,
+  y: 0,
+  scale: 1,
+  rotation: 0,
+});
+const addBlankRaster = (project, id, clippingParentId = null) => {
+  const layer = structuredClone(project.snapshot.layers[0]);
+  Object.assign(layer, {
+    id,
+    name: `Layer ${id}`,
+    clippingParentId,
+    contentBounds: null,
+    storageTileMask: new Uint32Array(8),
+    hasContent: false,
+    pixels: null,
+  });
+  project.snapshot.layers.push(layer);
+};
+
+const mixedRasterBaseProject = structuredClone(request);
+addBlankRaster(mixedRasterBaseProject, 2, 1);
+Object.assign(mixedRasterBaseProject.snapshot.mixedScene, {
+  items: [
+    { key: "raster:1", kind: "raster", rasterLayerId: 1 },
+    { key: "text:1", kind: "text", textNodeId: 1 },
+    { key: "raster:2", kind: "raster", rasterLayerId: 2 },
+    { key: "svg:1", kind: "svg", svgNodeId: 1 },
+  ],
+  textNodes: [textNode(1, "Text child")],
+  clippingRelations: [
+    { childKey: "text:1", parentKey: "raster:1" },
+    { childKey: "raster:2", parentKey: "raster:1" },
+  ],
+  nextTextNodeId: 2,
+});
+validateProjectSaveRequest(mixedRasterBaseProject);
+
+const mixedRasterBaseWithGap = structuredClone(mixedRasterBaseProject);
+mixedRasterBaseWithGap.snapshot.mixedScene.clippingRelations = [{
+  childKey: "raster:2",
+  parentKey: "raster:1",
+}];
+assert.throws(
+  () => validateProjectSaveRequest(mixedRasterBaseWithGap),
+  /consecutive|clipping/i,
+  "an unrelated text row must not split a clipping unit",
+);
+
+const textBaseProject = structuredClone(request);
+addBlankRaster(textBaseProject, 2);
+Object.assign(textBaseProject.snapshot.mixedScene, {
+  items: [
+    { key: "raster:1", kind: "raster", rasterLayerId: 1 },
+    { key: "text:1", kind: "text", textNodeId: 1 },
+    { key: "raster:2", kind: "raster", rasterLayerId: 2 },
+    { key: "svg:1", kind: "svg", svgNodeId: 1 },
+  ],
+  textNodes: [textNode(1, "Text base")],
+  clippingRelations: [{ childKey: "raster:2", parentKey: "text:1" }],
+  nextTextNodeId: 2,
+});
+validateProjectSaveRequest(textBaseProject);
+
+const textPairProject = structuredClone(request);
+Object.assign(textPairProject.snapshot.mixedScene, {
+  items: [
+    { key: "raster:1", kind: "raster", rasterLayerId: 1 },
+    { key: "text:1", kind: "text", textNodeId: 1 },
+    { key: "text:2", kind: "text", textNodeId: 2 },
+    { key: "svg:1", kind: "svg", svgNodeId: 1 },
+  ],
+  textNodes: [textNode(1, "Text base"), textNode(2, "Text child")],
+  clippingRelations: [{ childKey: "text:2", parentKey: "text:1" }],
+  nextTextNodeId: 3,
+});
+validateProjectSaveRequest(textPairProject);
+const invalidClippingChainProject = structuredClone(clippedSceneProject);
+invalidClippingChainProject.snapshot.mixedScene.clippingRelations.push({
+  childKey: "raster:1",
+  parentKey: "svg:1",
+});
+assert.throws(
+  () => validateProjectSaveRequest(invalidClippingChainProject),
+  /Clipping chains|clipping/i,
+);
 const dissolveProject = structuredClone(request);
 dissolveProject.snapshot.layers[0].blendMode = "dissolve";
 validateProjectSaveRequest(dissolveProject);
@@ -469,6 +578,28 @@ assert.deepEqual(
   "save/load must retain the cumulative transform matrix parameters",
 );
 assert.equal(await storage.deleteProject(sourceSummary.id), true);
+
+const mixedClippingSummary = await storage.saveProject({
+  ...mixedRasterBaseProject,
+  name: "Mixed Text Clipping",
+});
+const loadedMixedClipping = await storage.loadProject(mixedClippingSummary.id);
+assert.ok(loadedMixedClipping);
+validateLoadedProject(loadedMixedClipping);
+assert.deepEqual(
+  loadedMixedClipping.manifest.snapshot.mixedScene.items,
+  mixedRasterBaseProject.snapshot.mixedScene.items,
+);
+assert.deepEqual(
+  loadedMixedClipping.manifest.snapshot.mixedScene.clippingRelations,
+  mixedRasterBaseProject.snapshot.mixedScene.clippingRelations,
+);
+assert.deepEqual(
+  loadedMixedClipping.manifest.snapshot.layers.map((layer) => layer.clippingParentId),
+  [null, 1],
+  "save/load must retain the raster projection of a mixed clipping unit",
+);
+assert.equal(await storage.deleteProject(mixedClippingSummary.id), true);
 
 const source = readFileSync(new URL("../src/project-storage.ts", import.meta.url), "utf8");
 const runtimeSource = readFileSync(

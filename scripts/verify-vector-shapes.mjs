@@ -212,6 +212,80 @@ const importedStyleNode = stack.addSvgAboveSelection({
 });
 assert.equal(importedStyleNode.shapeDefinition, undefined);
 
+// The live shape occupies the exact future layer slot. Runs on either side
+// are split so both the raster compositor and vector texture keys preserve
+// document order while the draft is moving.
+{
+  const rasterOrder = new MixedSceneStack([1, 2]);
+  rasterOrder.select("raster:1");
+  assert.deepEqual(
+    rasterOrder.compositionSegments(1, [], "raster:1").map((segment) => segment.key),
+    ["active-raster:1", "shape-preview", "raster-run:2"],
+  );
+
+  const vectorOrder = new MixedSceneStack([1]);
+  const first = vectorOrder.addSvgAboveSelection({
+    document: rectangle.document,
+    x: rectangle.x,
+    y: rectangle.y,
+    scale: 1,
+    rotation: 0,
+  });
+  const second = vectorOrder.addSvgAboveSelection({
+    document: ellipse.document,
+    x: ellipse.x,
+    y: ellipse.y,
+    scale: 1,
+    rotation: 0,
+  });
+  vectorOrder.select(`svg:${first.id}`);
+  assert.deepEqual(
+    vectorOrder.compositionSegments(1, [], `svg:${first.id}`).map((segment) => segment.key),
+    [
+      "active-raster:1",
+      `text-run:svg:${first.id}`,
+      "shape-preview",
+      `text-run:svg:${second.id}`,
+    ],
+  );
+
+  const clippedOrder = new MixedSceneStack([1]);
+  const base = clippedOrder.addSvgAboveSelection({
+    document: rectangle.document,
+    x: rectangle.x,
+    y: rectangle.y,
+    scale: 1,
+    rotation: 0,
+  });
+  const child = clippedOrder.addSvgAboveSelection({
+    document: ellipse.document,
+    x: ellipse.x,
+    y: ellipse.y,
+    scale: 1,
+    rotation: 0,
+  });
+  clippedOrder.setClippingEnabled(`svg:${child.id}`, true);
+  clippedOrder.select(`svg:${base.id}`);
+  const boundary = clippedOrder.clippingGroupKeys(`svg:${base.id}`).at(-1);
+  assert.equal(boundary, `svg:${child.id}`);
+  assert.deepEqual(
+    clippedOrder.compositionSegments(1, [], boundary).map((segment) => segment.key),
+    [
+      "active-raster:1",
+      `text-run:svg:${base.id}`,
+      `text-run:svg:${child.id}`,
+      "shape-preview",
+    ],
+  );
+
+  const topOrder = new MixedSceneStack([1, 2]);
+  topOrder.select("raster:2");
+  assert.deepEqual(
+    topOrder.compositionSegments(2, [], "raster:2").map((segment) => segment.key),
+    ["raster-run:1", "active-raster:2", "shape-preview"],
+  );
+}
+
 console.log(
-  "Vector shapes: parametric rectangle, ellipse and star geometry, stable documents and scene retention verified.",
+  "Vector shapes: geometry, scene retention and exact ordered live-preview insertion verified.",
 );

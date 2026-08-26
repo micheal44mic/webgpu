@@ -1,4 +1,7 @@
-import type { MixedSceneItem } from "./mixed-scene-stack";
+import type {
+  MixedSceneClippingRelation,
+  MixedSceneItem,
+} from "./mixed-scene-stack";
 
 /**
  * Pure document-order planner used by the mobile drag UI and by the engine
@@ -36,6 +39,7 @@ export interface MixedSceneReorderPlan extends MixedSceneReorderTargets {
 export interface MixedSceneOrderState {
   readonly bottomUpKeys: readonly MixedSceneItem["key"][];
   readonly rasterLayerIds: readonly number[];
+  readonly clippingRelations?: readonly MixedSceneClippingRelation[];
 }
 
 export interface MixedSceneRasterInsertionPlan {
@@ -46,16 +50,19 @@ export interface MixedSceneRasterInsertionPlan {
 }
 
 /**
- * Checks whether a compact history order is still applicable to the live
- * document. Clipping membership is deliberately read from the current raster
- * records: clipping changes are not journalled, so an old permutation that
- * would now split a clipping unit must be refused before Undo/Redo starts.
+ * Checks whether a compact scene state is still applicable to the live
+ * document. Newer states carry their clipping graph; older reorder-only states
+ * use the current graph supplied by the caller.
  */
 export function isMixedSceneOrderStateApplicable(
   target: MixedSceneOrderState,
   liveBottomUpKeys: readonly MixedSceneItem["key"][],
   liveRasterLayers: readonly MixedSceneRasterOrderEntry[],
+  clippingRelations: readonly MixedSceneClippingRelation[] = [],
 ): boolean {
+  const targetClippingRelations = target.clippingRelations ?? clippingRelations;
+  const targetCarriesClippingGraph = target.clippingRelations !== undefined
+    || clippingRelations.length > 0;
   const liveKeys = new Set(liveBottomUpKeys);
   const targetKeys = new Set(target.bottomUpKeys);
   if (
@@ -79,14 +86,30 @@ export function isMixedSceneOrderStateApplicable(
   }
 
   const liveRasterById = new Map(liveRasterLayers.map((entry) => [entry.id, entry]));
+  const targetParentByChild = new Map(
+    targetClippingRelations.map((relation) => [relation.childKey, relation.parentKey]),
+  );
   const targetRasterOrder: MixedSceneRasterOrderEntry[] = [];
   for (const id of target.rasterLayerIds) {
     const entry = liveRasterById.get(id);
     if (!entry) return false;
-    targetRasterOrder.push(entry);
+    const parentKey = targetParentByChild.get(`raster:${id}`);
+    const clippingParentId = targetCarriesClippingGraph
+      ? parentKey?.startsWith("raster:")
+        ? Number(parentKey.slice("raster:".length))
+        : null
+      : entry.clippingParentId;
+    if (clippingParentId !== null && !Number.isInteger(clippingParentId)) {
+      return false;
+    }
+    targetRasterOrder.push({ id, clippingParentId });
   }
   try {
-    assertValidMixedSceneOrder(target.bottomUpKeys, targetRasterOrder);
+    assertValidMixedSceneOrder(
+      target.bottomUpKeys,
+      targetRasterOrder,
+      targetClippingRelations,
+    );
     return true;
   } catch {
     return false;
@@ -132,6 +155,112 @@ function assertRasterModel(
   }
 }
 
+interface MixedSceneClippingModel {
+  readonly parentByChild: ReadonlyMap<
+    MixedSceneItem["key"],
+    MixedSceneItem["key"]
+  >;
+  readonly childrenByParent: ReadonlyMap<
+    MixedSceneItem["key"],
+    readonly MixedSceneItem["key"][]
+  >;
+}
+
+function isClippingCapableKey(
+  key: MixedSceneItem["key"],
+): key is Extract<
+  MixedSceneItem["key"],
+  `raster:${number}` | `text:${number}` | `svg:${number}`
+> {
+  return key.startsWith("raster:")
+    || key.startsWith("text:")
+    || key.startsWith("svg:");
+}
+
+/**
+ * Builds one authoritative clipping graph from the retained raster projection
+ * and the heterogeneous scene relations. Matching raster-to-raster entries are
+ * intentionally deduplicated; any disagreement is a structural error rather
+ * than a last-writer-wins choice.
+ */
+function mixedSceneClippingModel(
+  bottomUpKeys: readonly MixedSceneItem["key"][],
+  rasterLayers: readonly MixedSceneRasterOrderEntry[],
+  clippingRelations: readonly MixedSceneClippingRelation[],
+): MixedSceneClippingModel {
+  const keySet = new Set(bottomUpKeys);
+  const parentByChild = new Map<
+    MixedSceneItem["key"],
+    MixedSceneItem["key"]
+  >();
+  const addRelation = (
+    childKey: MixedSceneItem["key"],
+    parentKey: MixedSceneItem["key"],
+    source: "raster" | "scene",
+  ): void => {
+    if (!keySet.has(childKey)) {
+      throw new Error(`Clipping child ${childKey} is missing from the scene.`);
+    }
+    if (!keySet.has(parentKey)) {
+      throw new Error(`Clipping base ${parentKey} is missing from the scene.`);
+    }
+    if (!isClippingCapableKey(childKey) || !isClippingCapableKey(parentKey)) {
+      throw new Error("Only raster, text, and SVG layers can participate in clipping.");
+    }
+    const existing = parentByChild.get(childKey);
+    if (existing !== undefined) {
+      if (existing !== parentKey) {
+        throw new Error(
+          `Clipping child ${childKey} has conflicting bases ${existing} and ${parentKey}.`,
+        );
+      }
+      if (source === "scene") {
+        // One equal raster projection plus one generic relation is expected.
+        // Equal generic duplicates, however, are malformed input.
+        return;
+      }
+      throw new Error(`Clipping child ${childKey} has more than one base.`);
+    }
+    parentByChild.set(childKey, parentKey);
+  };
+
+  for (const layer of rasterLayers) {
+    if (layer.clippingParentId === null) continue;
+    addRelation(
+      `raster:${layer.id}`,
+      `raster:${layer.clippingParentId}`,
+      "raster",
+    );
+  }
+  const genericChildren = new Set<MixedSceneItem["key"]>();
+  for (const relation of clippingRelations) {
+    if (genericChildren.has(relation.childKey)) {
+      throw new Error(`Clipping child ${relation.childKey} has more than one scene relation.`);
+    }
+    genericChildren.add(relation.childKey);
+    addRelation(relation.childKey, relation.parentKey, "scene");
+  }
+
+  for (const [childKey, parentKey] of parentByChild) {
+    if (childKey === parentKey || parentByChild.has(parentKey)) {
+      throw new Error("Clipping chains are not supported.");
+    }
+  }
+
+  const childrenByParent = new Map<
+    MixedSceneItem["key"],
+    MixedSceneItem["key"][]
+  >();
+  for (const key of bottomUpKeys) {
+    const parentKey = parentByChild.get(key);
+    if (parentKey === undefined) continue;
+    const children = childrenByParent.get(parentKey) ?? [];
+    children.push(key);
+    childrenByParent.set(parentKey, children);
+  }
+  return { parentByChild, childrenByParent };
+}
+
 /**
  * Validates both raster-only and heterogeneous clipping invariants. A base and
  * every child are consecutive not only among raster records, but also among
@@ -139,61 +268,39 @@ function assertRasterModel(
  */
 function assertClippingOrder(
   bottomUpKeys: readonly MixedSceneItem["key"][],
-  rasterLayersById: ReadonlyMap<number, MixedSceneRasterOrderEntry>,
-): void {
-  const rasterIds = bottomUpKeys
-    .map(rasterIdForKey)
-    .filter((id): id is number => id !== null);
-  const rasterIndexById = new Map(rasterIds.map((id, index) => [id, index]));
-  const sceneIndexByRasterId = new Map<number, number>();
-  bottomUpKeys.forEach((key, index) => {
-    const id = rasterIdForKey(key);
-    if (id !== null) sceneIndexByRasterId.set(id, index);
-  });
-
-  for (const entry of rasterLayersById.values()) {
-    if (entry.clippingParentId === null) continue;
-    const parent = rasterLayersById.get(entry.clippingParentId);
-    if (!parent || parent.clippingParentId !== null) {
-      throw new Error(`Invalid raster parent ${entry.clippingParentId}.`);
+  rasterLayers: readonly MixedSceneRasterOrderEntry[],
+  clippingRelations: readonly MixedSceneClippingRelation[] = [],
+): MixedSceneClippingModel {
+  const model = mixedSceneClippingModel(
+    bottomUpKeys,
+    rasterLayers,
+    clippingRelations,
+  );
+  const indexByKey = new Map(
+    bottomUpKeys.map((key, index) => [key, index] as const),
+  );
+  for (const [parentKey, children] of model.childrenByParent) {
+    const parentIndex = indexByKey.get(parentKey);
+    if (parentIndex === undefined) {
+      throw new Error(`Clipping base ${parentKey} is missing from the reorder model.`);
     }
-  }
-
-  for (const parent of rasterLayersById.values()) {
-    if (parent.clippingParentId !== null) continue;
-    const children = rasterIds.filter((id) =>
-      rasterLayersById.get(id)?.clippingParentId === parent.id
-    );
-    if (children.length === 0) continue;
-    const rasterStart = rasterIndexById.get(parent.id);
-    const sceneStart = sceneIndexByRasterId.get(parent.id);
-    if (rasterStart === undefined || sceneStart === undefined) {
-      throw new Error(`Base raster ${parent.id} is missing from the reorder model.`);
-    }
-    const expected = [parent.id, ...children];
-    expected.forEach((id, offset) => {
-      if (
-        rasterIds[rasterStart + offset] !== id
-        || bottomUpKeys[sceneStart + offset] !== `raster:${id}`
-      ) {
-        throw new Error(
-          `Clipping group ${parent.id} must remain consecutive.`,
-        );
+    children.forEach((childKey, offset) => {
+      if (bottomUpKeys[parentIndex + offset + 1] !== childKey) {
+        throw new Error(`Clipping group ${parentKey} must remain consecutive.`);
       }
     });
   }
+  return model;
 }
 
 export function assertValidMixedSceneOrder(
   bottomUpKeys: readonly MixedSceneItem["key"][],
   rasterLayers: readonly MixedSceneRasterOrderEntry[],
+  clippingRelations: readonly MixedSceneClippingRelation[] = [],
 ): void {
   assertUniqueKeys(bottomUpKeys);
   assertRasterModel(bottomUpKeys, rasterLayers);
-  assertClippingOrder(
-    bottomUpKeys,
-    new Map(rasterLayers.map((entry) => [entry.id, entry])),
-  );
+  assertClippingOrder(bottomUpKeys, rasterLayers, clippingRelations);
 }
 
 /**
@@ -207,41 +314,33 @@ export function planMixedSceneRasterInsertion(
   rasterLayers: readonly MixedSceneRasterOrderEntry[],
   selectedKey: MixedSceneItem["key"],
   clippingParentId: number | null,
+  clippingRelations: readonly MixedSceneClippingRelation[] = [],
 ): MixedSceneRasterInsertionPlan {
-  assertValidMixedSceneOrder(bottomUpKeys, rasterLayers);
+  assertValidMixedSceneOrder(bottomUpKeys, rasterLayers, clippingRelations);
   const selectedSceneIndex = bottomUpKeys.indexOf(selectedKey);
   if (selectedSceneIndex < 0) {
     throw new Error(`Scene item ${selectedKey} does not exist.`);
   }
   const rasterById = new Map(rasterLayers.map((entry) => [entry.id, entry]));
-  const selectedRasterId = rasterIdForKey(selectedKey);
-  let sceneIndex = selectedSceneIndex + 1;
-
-  if (clippingParentId !== null || selectedRasterId !== null) {
-    const anchorId = clippingParentId ?? selectedRasterId;
-    if (anchorId === null) {
-      throw new Error("The raster insertion anchor is missing.");
-    }
-    const anchor = rasterById.get(anchorId);
-    if (!anchor) throw new Error(`Raster ${anchorId} is missing from LayerStack.`);
-    const parentId = clippingParentId ?? anchor.clippingParentId ?? anchor.id;
-    const parent = rasterById.get(parentId);
+  const clipping = assertClippingOrder(
+    bottomUpKeys,
+    rasterLayers,
+    clippingRelations,
+  );
+  let baseKey = clipping.parentByChild.get(selectedKey) ?? selectedKey;
+  if (clippingParentId !== null) {
+    const parent = rasterById.get(clippingParentId);
     if (!parent || parent.clippingParentId !== null) {
-      throw new Error(`Invalid raster parent ${parentId}.`);
+      throw new Error(`Invalid raster parent ${clippingParentId}.`);
     }
-    const unitIds = [
-      parent.id,
-      ...rasterLayers
-        .filter((entry) => entry.clippingParentId === parent.id)
-        .map((entry) => entry.id),
-    ];
-    const lastKey = `raster:${unitIds[unitIds.length - 1]}` as const;
-    const lastSceneIndex = bottomUpKeys.indexOf(lastKey);
-    if (lastSceneIndex < 0) {
-      throw new Error(`Raster group ${parent.id} is missing from the scene.`);
-    }
-    sceneIndex = lastSceneIndex + 1;
+    baseKey = `raster:${parent.id}`;
   }
+  const unit = [baseKey, ...(clipping.childrenByParent.get(baseKey) ?? [])];
+  const lastSceneIndex = bottomUpKeys.indexOf(unit[unit.length - 1]);
+  if (lastSceneIndex < 0) {
+    throw new Error(`Clipping unit ${baseKey} is missing from the scene.`);
+  }
+  const sceneIndex = lastSceneIndex + 1;
 
   const rasterLayerIndex = bottomUpKeys
     .slice(0, sceneIndex)
@@ -258,28 +357,26 @@ export function planMixedSceneRasterInsertion(
     id: candidateId,
     clippingParentId,
   });
-  assertValidMixedSceneOrder(candidateKeys, candidateRasterLayers);
+  assertValidMixedSceneOrder(
+    candidateKeys,
+    candidateRasterLayers,
+    clippingRelations,
+  );
   return { sceneIndex, rasterLayerIndex };
 }
 
 function movingBottomUpKeys(
   bottomUpKeys: readonly MixedSceneItem["key"][],
-  rasterLayers: readonly MixedSceneRasterOrderEntry[],
   key: MixedSceneItem["key"],
+  clipping: MixedSceneClippingModel,
 ): readonly MixedSceneItem["key"][] {
   if (!bottomUpKeys.includes(key)) {
     throw new Error(`Scene item ${key} does not exist.`);
   }
-  const rasterId = rasterIdForKey(key);
-  if (rasterId === null) return [key];
-  const record = rasterLayers.find((entry) => entry.id === rasterId);
-  if (!record) throw new Error(`Raster ${rasterId} is missing from LayerStack.`);
-  if (record.clippingParentId !== null) return [key];
+  if (clipping.parentByChild.has(key)) return [key];
   return [
     key,
-    ...rasterLayers
-      .filter((entry) => entry.clippingParentId === rasterId)
-      .map((entry) => `raster:${entry.id}` as const),
+    ...(clipping.childrenByParent.get(key) ?? []),
   ];
 }
 
@@ -299,11 +396,16 @@ export function mixedSceneReorderTargets(
   bottomUpKeys: readonly MixedSceneItem["key"][],
   rasterLayers: readonly MixedSceneRasterOrderEntry[],
   key: MixedSceneItem["key"],
+  clippingRelations: readonly MixedSceneClippingRelation[] = [],
 ): MixedSceneReorderTargets {
-  assertValidMixedSceneOrder(bottomUpKeys, rasterLayers);
-  const rasterLayersById = new Map(rasterLayers.map((entry) => [entry.id, entry]));
+  assertValidMixedSceneOrder(bottomUpKeys, rasterLayers, clippingRelations);
+  const clipping = assertClippingOrder(
+    bottomUpKeys,
+    rasterLayers,
+    clippingRelations,
+  );
 
-  const movingBottomUp = movingBottomUpKeys(bottomUpKeys, rasterLayers, key);
+  const movingBottomUp = movingBottomUpKeys(bottomUpKeys, key, clipping);
   const movingSet = new Set(movingBottomUp);
   const movingKeys = [...movingBottomUp].reverse();
   const topFirstKeysWithoutMoving = [...bottomUpKeys]
@@ -313,7 +415,7 @@ export function mixedSceneReorderTargets(
   for (let slot = 0; slot <= topFirstKeysWithoutMoving.length; slot += 1) {
     const candidate = candidateForSlot(topFirstKeysWithoutMoving, movingKeys, slot);
     try {
-      assertClippingOrder(candidate, rasterLayersById);
+      assertClippingOrder(candidate, rasterLayers, clippingRelations);
       validTargetTopFirstSlots.push(slot);
     } catch {
       // Invalid drop gaps remain absent from the UI model and never reach GPU.
@@ -334,8 +436,14 @@ export function planMixedSceneReorder(
   rasterLayers: readonly MixedSceneRasterOrderEntry[],
   key: MixedSceneItem["key"],
   targetTopFirstSlot: number,
+  clippingRelations: readonly MixedSceneClippingRelation[] = [],
 ): MixedSceneReorderPlan {
-  const targets = mixedSceneReorderTargets(bottomUpKeys, rasterLayers, key);
+  const targets = mixedSceneReorderTargets(
+    bottomUpKeys,
+    rasterLayers,
+    key,
+    clippingRelations,
+  );
   if (
     !Number.isInteger(targetTopFirstSlot)
     || !targets.validTargetTopFirstSlots.includes(targetTopFirstSlot)

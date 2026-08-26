@@ -642,6 +642,7 @@ export async function restoreProjectDocument(
     engine.layerGpu.clear();
     for (const [layerId, gpu] of nextGpu) engine.layerGpu.set(layerId, gpu);
     engine.mixedSceneStack?.restoreState(snapshot.mixedScene);
+    engine.mixedSceneStack?.synchronizeRasterClippingRelations(records);
     engine.documentBackground = normalizeDocumentBackground(
       snapshot.background ?? { visible: false, color: "#ffffff" },
     );

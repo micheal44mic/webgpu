@@ -55,6 +55,160 @@ const clippedBottomUp = [
   "raster:1", "raster:2", "raster:3", "text:1", "raster:4", "svg:1",
 ];
 
+const mixedClippingBottomUp = [
+  "svg:10", "raster:1", "svg:11", "raster:2", "text:1", "raster:3",
+];
+const mixedClippingRelations = [
+  { childKey: "raster:1", parentKey: "svg:10" },
+  { childKey: "svg:11", parentKey: "svg:10" },
+  { childKey: "raster:2", parentKey: "svg:10" },
+];
+
+// Heterogeneous bases carry their complete raster/vector unit. The raster-only
+// projection changes in the same plan without losing the semantic members.
+{
+  const targets = mixedSceneReorderTargets(
+    mixedClippingBottomUp,
+    ordinaryRaster,
+    "svg:10",
+    mixedClippingRelations,
+  );
+  assert.deepEqual(targets.movingKeys, [
+    "raster:2", "svg:11", "raster:1", "svg:10",
+  ]);
+  const plan = planMixedSceneReorder(
+    mixedClippingBottomUp,
+    ordinaryRaster,
+    "svg:10",
+    0,
+    mixedClippingRelations,
+  );
+  assert.deepEqual(plan.bottomUpKeys, [
+    "text:1", "raster:3", "svg:10", "raster:1", "svg:11", "raster:2",
+  ]);
+  assert.deepEqual(plan.rasterLayerIds, [3, 1, 2]);
+
+  const childTargets = mixedSceneReorderTargets(
+    mixedClippingBottomUp,
+    ordinaryRaster,
+    "raster:1",
+    mixedClippingRelations,
+  );
+  assert.deepEqual(childTargets.movingKeys, ["raster:1"]);
+  assert.ok(!childTargets.validTargetTopFirstSlots.includes(0));
+  const childPlan = planMixedSceneReorder(
+    mixedClippingBottomUp,
+    ordinaryRaster,
+    "raster:1",
+    2,
+    mixedClippingRelations,
+  );
+  assert.deepEqual(childPlan.bottomUpKeys, [
+    "svg:10", "svg:11", "raster:2", "raster:1", "text:1", "raster:3",
+  ]);
+  assert.deepEqual(childPlan.rasterLayerIds, [2, 1, 3]);
+}
+
+// The retained raster projection and the generic graph may describe the same
+// raster-to-raster edge. It is deduplicated while SVG siblings remain part of
+// the one atomic unit.
+{
+  const hybridBottomUp = [
+    "raster:1", "svg:20", "raster:2", "text:1", "raster:3",
+  ];
+  const hybridRaster = [
+    { id: 1, clippingParentId: null },
+    { id: 2, clippingParentId: 1 },
+    { id: 3, clippingParentId: null },
+  ];
+  const hybridRelations = [
+    { childKey: "svg:20", parentKey: "raster:1" },
+    { childKey: "raster:2", parentKey: "raster:1" },
+  ];
+  const targets = mixedSceneReorderTargets(
+    hybridBottomUp,
+    hybridRaster,
+    "raster:1",
+    hybridRelations,
+  );
+  assert.deepEqual(targets.movingKeys, ["raster:2", "svg:20", "raster:1"]);
+}
+
+// Generic clipping rejects split groups, chains, incompatible participants
+// and disagreement with the raster projection before producing any targets.
+assert.throws(
+  () => mixedSceneReorderTargets(
+    ["svg:1", "text:1", "raster:1", "raster:2", "raster:3"],
+    ordinaryRaster,
+    "svg:1",
+    [{ childKey: "raster:1", parentKey: "svg:1" }],
+  ),
+  /remain consecutive/,
+);
+assert.throws(
+  () => mixedSceneReorderTargets(
+    ["svg:1", "raster:1", "svg:2", "raster:2", "raster:3"],
+    ordinaryRaster,
+    "svg:1",
+    [
+      { childKey: "raster:1", parentKey: "svg:1" },
+      { childKey: "svg:2", parentKey: "raster:1" },
+    ],
+  ),
+  /chains are not supported/,
+);
+assert.throws(
+  () => mixedSceneReorderTargets(
+    ["raster:1", "image:1", "raster:2", "raster:3"],
+    ordinaryRaster,
+    "raster:1",
+    [{ childKey: "image:1", parentKey: "raster:1" }],
+  ),
+  /Only raster, text, and SVG/,
+);
+assert.throws(
+  () => mixedSceneReorderTargets(
+    ["raster:1", "svg:1", "raster:2", "raster:3"],
+    [
+      { id: 1, clippingParentId: null },
+      { id: 2, clippingParentId: 1 },
+      { id: 3, clippingParentId: null },
+    ],
+    "raster:1",
+    [{ childKey: "raster:2", parentKey: "svg:1" }],
+  ),
+  /conflicting bases/,
+);
+
+// Editable text participates in the same atomic unit as raster and SVG.
+{
+  const textBottomUp = [
+    "raster:1", "text:1", "svg:1", "raster:2", "raster:3",
+  ];
+  const relations = [
+    { childKey: "svg:1", parentKey: "text:1" },
+    { childKey: "raster:2", parentKey: "text:1" },
+  ];
+  const targets = mixedSceneReorderTargets(
+    textBottomUp,
+    ordinaryRaster,
+    "text:1",
+    relations,
+  );
+  assert.deepEqual(targets.movingKeys, ["raster:2", "svg:1", "text:1"]);
+  const plan = planMixedSceneReorder(
+    textBottomUp,
+    ordinaryRaster,
+    "text:1",
+    0,
+    relations,
+  );
+  assert.deepEqual(plan.bottomUpKeys, [
+    "raster:1", "raster:3", "text:1", "svg:1", "raster:2",
+  ]);
+  assert.deepEqual(plan.rasterLayerIds, [1, 3, 2]);
+}
+
 // Dragging a base extracts the complete clipping unit, preserving child order.
 {
   const targets = mixedSceneReorderTargets(clippedBottomUp, clippedRaster, "raster:1");
@@ -145,6 +299,39 @@ assert.throws(
     ),
     false,
     "Undo deve rifiutare l'ordine storico che ora spezzerebbe il clipping",
+  );
+}
+
+// Applicability uses the live heterogeneous graph as well as the retained
+// raster projection, so an old permutation cannot split an SVG-based unit.
+{
+  const valid = {
+    bottomUpKeys: mixedClippingBottomUp,
+    rasterLayerIds: [1, 2, 3],
+  };
+  const split = {
+    bottomUpKeys: [
+      "svg:10", "raster:1", "text:1", "svg:11", "raster:2", "raster:3",
+    ],
+    rasterLayerIds: [1, 2, 3],
+  };
+  assert.equal(
+    isMixedSceneOrderStateApplicable(
+      valid,
+      mixedClippingBottomUp,
+      ordinaryRaster,
+      mixedClippingRelations,
+    ),
+    true,
+  );
+  assert.equal(
+    isMixedSceneOrderStateApplicable(
+      split,
+      mixedClippingBottomUp,
+      ordinaryRaster,
+      mixedClippingRelations,
+    ),
+    false,
   );
 }
 
@@ -259,6 +446,27 @@ const textSeed = (text = "INSERT") => ({
   assert.deepEqual(
     planMixedSceneRasterInsertion(clippedBottomUp, clippedRaster, "raster:1", 1),
     { sceneIndex: 3, rasterLayerIndex: 3 },
+  );
+
+  assert.deepEqual(
+    planMixedSceneRasterInsertion(
+      mixedClippingBottomUp,
+      ordinaryRaster,
+      "svg:10",
+      null,
+      mixedClippingRelations,
+    ),
+    { sceneIndex: 4, rasterLayerIndex: 2 },
+  );
+  assert.deepEqual(
+    planMixedSceneRasterInsertion(
+      mixedClippingBottomUp,
+      ordinaryRaster,
+      "svg:11",
+      null,
+      mixedClippingRelations,
+    ),
+    { sceneIndex: 4, rasterLayerIndex: 2 },
   );
 }
 

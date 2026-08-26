@@ -308,6 +308,18 @@ const engineSource = readFileSync(
   new URL("../src/brush-engine.ts", import.meta.url),
   "utf8",
 );
+const mixedPresentationSource = readFileSync(
+  new URL("../src/engine-vector-text-runtime.ts", import.meta.url),
+  "utf8",
+);
+const runtimeSetupSource = readFileSync(
+  new URL("../src/engine-runtime-misc.ts", import.meta.url),
+  "utf8",
+);
+const mixedControllerSource = readFileSync(
+  new URL("../src/mixed-scene-controller.ts", import.meta.url),
+  "utf8",
+);
 assert.match(
   historyTypesSource,
   /readonly "layer-options": LayerOptionsState;/,
@@ -327,6 +339,41 @@ assert.match(
   engineSource,
   /if \(!layerOptionsEdit\) \{[\s\S]*?kind: "layer-blend-mode"/,
   "live blend-mode previews must be absorbed instead of publishing per-input history",
+);
+assert.match(
+  mixedPresentationSource,
+  /encodeSimpleHeterogeneousClippingProgram[\s\S]*?"source-atop"/,
+  "the common raster/vector clipping path must stay on one fixed-function GPU pass",
+);
+assert.match(
+  mixedPresentationSource,
+  /encodeAdvancedHeterogeneousClippingProgram/,
+  "advanced raster composition inside a raster/vector group must retain its exact path",
+);
+assert.match(
+  mixedPresentationSource,
+  /const needsScratch = engine\.mixedSceneStack\?\.hasHeterogeneousClipping === true/,
+  "the extra full-size clipping surface must exist only while a heterogeneous group needs it",
+);
+assert.match(
+  runtimeSetupSource,
+  /const mixedSceneSourceAtopBlend[\s\S]*?color: \{[\s\S]*?srcFactor: "dst-alpha"[\s\S]*?dstFactor: "one-minus-src-alpha"[\s\S]*?alpha: \{[\s\S]*?srcFactor: "zero"[\s\S]*?dstFactor: "one"/,
+  "the fixed-function source-atop operator must preserve clipping-base alpha without cumulative rounding",
+);
+assert.doesNotMatch(
+  mixedPresentationSource,
+  /getImageData|putImageData|CanvasRenderingContext2D/,
+  "heterogeneous clipping must not introduce a CPU pixel-composition path",
+);
+assert.match(
+  mixedControllerSource,
+  /return kind === "text" \|\| kind === "svg";/,
+  "editable text and SVG clipping members must both receive isolated vector run keys",
+);
+assert.match(
+  mixedPresentationSource,
+  /scene\.clippingParentKey\(structuralKey\) !== null[\s\S]*?scene\.clippingGroupRequiresSegmentedComposition\(structuralKey\)[\s\S]*?vectorTextRunTextures\.get\(segment\.key\)\?\.initialized === true/,
+  "Deep floor selection must ignore segmented clipping children and uninitialized vector bases",
 );
 
 console.log("Layer composition verification passed.");

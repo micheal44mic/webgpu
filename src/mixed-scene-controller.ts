@@ -3198,12 +3198,34 @@ export class MixedSceneController {
         }
         pendingNodes.push(node);
       };
+      type SnapshotItemKey = (typeof snapshot.items)[number]["key"];
+      const itemByKey = new Map(snapshot.items.map((item) => [item.key, item]));
+      const childrenByParent = new Map<SnapshotItemKey, SnapshotItemKey[]>();
       for (const item of snapshot.items) {
+        if (item.clippingParentKey === null) continue;
+        const children = childrenByParent.get(item.clippingParentKey) ?? [];
+        children.push(item.key);
+        childrenByParent.set(item.clippingParentKey, children);
+      }
+      const isolatedClippingKeys = new Set<SnapshotItemKey>();
+      for (const [parentKey, childKeys] of childrenByParent) {
+        const groupKeys = [parentKey, ...childKeys];
+        if (!groupKeys.some((key) => {
+          const kind = itemByKey.get(key)?.kind;
+          return kind === "text" || kind === "svg";
+        })) continue;
+        groupKeys.forEach((key) => isolatedClippingKeys.add(key));
+      }
+      for (const item of snapshot.items) {
+        const isolated = isolatedClippingKeys.has(item.key);
+        if (isolated) flushVectorRun();
         if (item.kind === "text") appendVectorToRun(item.textNode);
         else if (item.kind === "svg") appendVectorToRun(item.svgNode);
         else if (item.kind === "image") {
           if (item.imageNode.visible && item.imageNode.opacity > 0) flushVectorRun();
         } else flushVectorRun();
+        if (isolated) flushVectorRun();
+        if (item.key === snapshot.shapePreviewAfterKey) flushVectorRun();
       }
       flushVectorRun();
 

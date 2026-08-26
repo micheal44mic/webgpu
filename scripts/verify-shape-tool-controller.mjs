@@ -6,13 +6,36 @@ const root = new URL("../", import.meta.url);
 const html = readFileSync(new URL("index.html", root), "utf8");
 const mainSource = readFileSync(new URL("src/main.ts", root), "utf8");
 const inputSource = readFileSync(new URL("src/canvas-input-controller.ts", root), "utf8");
+const controllerSource = readFileSync(new URL("src/shape-tool-controller.ts", root), "utf8");
+const engineSource = readFileSync(new URL("src/brush-engine.ts", root), "utf8");
+const tileSource = readFileSync(new URL("src/engine-layer-blend-tile-runtime.ts", root), "utf8");
+const compositorSource = readFileSync(new URL("src/engine-vector-text-runtime.ts", root), "utf8");
 
 assert.match(html, /data-mobile-canvas-tool="shapes"[\s\S]*?data-lucide="shapes"[\s\S]*?>Shapes</);
 assert.match(html, /id="shapeToolDock"[\s\S]*?data-shape-kind="rectangle"[\s\S]*?data-shape-kind="ellipse"[\s\S]*?data-shape-kind="star"/);
-assert.match(html, /id="shapeCreationCanvas"/);
+assert.doesNotMatch(html, /id="shapeCreationCanvas"/);
 assert.match(mainSource, /shapeToolController = new ShapeToolController\(\{/);
 assert.match(mainSource, /shapeToolController\?\.setActive\(tool === "shapes"\)/);
 assert.match(mainSource, /getShapeController: \(\) => shapeToolController/);
+assert.doesNotMatch(controllerSource, /getContext\(|CanvasRenderingContext2D|\.fill\(\)/,
+  "the live draft must not bypass layer order through a DOM canvas");
+assert.match(controllerSource, /updateShapePreview\(\{/,
+  "pointer updates must feed the persistent GPU preview resource");
+assert.match(engineSource, /shapePreviewAfterKey !== null[\s\S]*?visibleSemanticCount/,
+  "a raster-only document must enter ordered presentation while the preview is prepared");
+assert.match(tileSource, /shapePreviewAfterKey === null/,
+  "the raster-only tile path cannot bypass the inserted preview slot");
+assert.match(compositorSource, /segment\.kind === "shape-preview"[\s\S]*?mixedSceneShapePreviewPipeline/,
+  "the preview segment must be encoded inside the ordered WebGPU compositor");
+const liveUpdateBody = engineSource.match(
+  /updateShapePreview\([\s\S]*?\n  private async changeShapePreviewPlacement/,
+)?.[0] ?? "";
+assert.match(liveUpdateBody, /queue\.writeBuffer/,
+  "live pointer updates must upload only the persistent preview uniforms");
+assert.match(liveUpdateBody, /semanticPresentationDirtyRect/,
+  "live pointer updates must invalidate only their affected presentation region");
+assert.doesNotMatch(liveUpdateBody, /waitForIdle|rebuildMergedLayerSurfaces|createBuffer|createTexture/,
+  "pointer movement must not synchronize, rebuild the stack or allocate GPU resources");
 assert.match(inputSource, /pointerMode === "shape"[\s\S]*?addPointer\(/,
   "a second touch must route to the shape modifier instead of view navigation");
 assert.match(inputSource, /completedPointerMode === "shape"[\s\S]*?activeTouchContacts\.clear\(\)/,
@@ -56,48 +79,13 @@ class FakeElement extends EventTarget {
   }
 }
 
-class FakeContext {
-  clearCount = 0;
-  fillCount = 0;
-  fillStates = [];
-  strokeCount = 0;
-  globalAlpha = 1;
-  fillStyle = "";
-  strokeStyle = "";
-  lineWidth = 1;
-
-  clearRect() { this.clearCount += 1; }
-  save() {}
-  restore() {}
-  beginPath() {}
-  moveTo() {}
-  lineTo() {}
-  closePath() {}
-  ellipse() {}
-  setLineDash() {}
-  fill() {
-    this.fillCount += 1;
-    this.fillStates.push({
-      globalAlpha: this.globalAlpha,
-      fillStyle: this.fillStyle,
-    });
-  }
-  stroke() { this.strokeCount += 1; }
-}
-
-class FakeCanvas extends FakeElement {
-  width = 0;
-  height = 0;
-  context = new FakeContext();
-
-  getContext() {
-    return this.context;
-  }
-}
-
 class FakeBrowser extends EventTarget {
   AbortController = globalThis.AbortController;
   performance = { now: () => 100 };
+  requestAnimationFrame(callback) {
+    queueMicrotask(() => callback(116));
+    return 1;
+  }
 }
 
 function pointer(pointerId, pointerType, clientX, clientY, constrainAspect) {
@@ -110,9 +98,8 @@ function pointer(pointerId, pointerType, clientX, clientY, constrainAspect) {
   };
 }
 
-function createHarness() {
+async function createHarness() {
   const browser = new FakeBrowser();
-  const overlay = new FakeCanvas();
   const dock = new FakeElement();
   const rectangle = new FakeElement();
   rectangle.dataset.shapeKind = "rectangle";
@@ -123,6 +110,9 @@ function createHarness() {
   const fillColor = new FakeElement();
   const status = new FakeElement();
   const additions = [];
+  const previewUpdates = [];
+  let preparations = 0;
+  let releases = 0;
   const engine = {
     getVectorTextViewState: () => ({
       canvasWidth: 1000,
@@ -141,12 +131,21 @@ function createHarness() {
       additions.push({ seed, name });
       return { id: additions.length, kind: "svg", name, ...seed };
     },
+    async prepareShapePreviewPresentation() {
+      preparations += 1;
+    },
+    async releaseShapePreviewPresentation() {
+      releases += 1;
+    },
+    updateShapePreview(preview) {
+      previewUpdates.push(preview ? { ...preview } : null);
+      return true;
+    },
   };
   const controller = new ShapeToolController({
     browser,
     engine,
     elements: {
-      overlay,
       dock,
       kindButtons: [rectangle, ellipse, star],
       fillColor,
@@ -154,13 +153,15 @@ function createHarness() {
     },
     initialColor: "#345678",
   });
-  controller.setActive(true);
+  await controller.setActive(true);
   return {
     additions,
     controller,
     ellipse,
     fillColor,
-    overlay,
+    get preparations() { return preparations; },
+    get releases() { return releases; },
+    previewUpdates,
     rectangle,
     star,
     status,
@@ -171,7 +172,8 @@ function createHarness() {
 // the aspect policy and lifting it restores the centered free rectangle before
 // the single release-time commit.
 {
-  const harness = createHarness();
+  const harness = await createHarness();
+  assert.equal(harness.preparations, 1);
   assert.equal(harness.controller.beginPointer(pointer(1, "touch", 10, 20)), true);
   harness.controller.updatePointer(pointer(1, "touch", 90, 60));
   assert.match(harness.status.value, /160 × 80 · centered · free/);
@@ -192,19 +194,24 @@ function createHarness() {
     [harness.additions[0].seed.x, harness.additions[0].seed.y],
     [10, 20],
   );
-  assert.ok(harness.overlay.context.fillCount > 0);
-  assert.deepEqual(harness.overlay.context.fillStates.at(-1), {
-    globalAlpha: 1,
-    fillStyle: "#345678",
+  assert.deepEqual(harness.previewUpdates.findLast((preview) => preview !== null), {
+    kind: "rectangle",
+    x: -70,
+    y: -20,
+    width: 160,
+    height: 80,
+    color: "#345678",
   });
-  assert.equal(harness.overlay.context.strokeCount, 0);
+  assert.equal(harness.previewUpdates.at(-1), null);
+  await harness.controller.setActive(false);
+  assert.equal(harness.releases, 1);
   harness.controller.dispose();
 }
 
 // Releasing while the second touch remains produces a circle; the second
 // contact position never enters the geometry.
 {
-  const harness = createHarness();
+  const harness = await createHarness();
   harness.ellipse.dispatchEvent(new Event("click"));
   harness.controller.beginPointer(pointer(5, "touch", 100, 100));
   harness.controller.updatePointer(pointer(5, "touch", 180, 140));
@@ -219,25 +226,28 @@ function createHarness() {
     [harness.additions[0].seed.x, harness.additions[0].seed.y],
     [100, 100],
   );
+  await harness.controller.setActive(false);
   harness.controller.dispose();
 }
 
 // Stars are intrinsically proportional, while a canceled draft never enters
 // the scene or History.
 {
-  const harness = createHarness();
+  const harness = await createHarness();
   harness.star.dispatchEvent(new Event("click"));
   harness.controller.beginPointer(pointer(9, "mouse", 0, 0));
   harness.controller.updatePointer(pointer(9, "mouse", 70, 30));
   assert.match(harness.status.value, /140 × 140 · centered · proportional/);
   await harness.controller.endPointer(pointer(9, "mouse", 70, 30), false);
   assert.equal(harness.additions.length, 0);
+  assert.equal(harness.previewUpdates.at(-1), null);
+  await harness.controller.setActive(false);
   harness.controller.dispose();
 }
 
 // Desktop 1:1 keeps the same fixed-center geometry and commits one square.
 {
-  const harness = createHarness();
+  const harness = await createHarness();
   harness.controller.beginPointer(pointer(15, "mouse", 100, 100, true));
   harness.controller.updatePointer(pointer(15, "mouse", 180, 140, true));
   assert.match(harness.status.value, /160 × 160 · centered · 1:1/);
@@ -254,9 +264,10 @@ function createHarness() {
     [harness.additions[0].seed.x, harness.additions[0].seed.y],
     [100, 100],
   );
+  await harness.controller.setActive(false);
   harness.controller.dispose();
 }
 
 console.log(
-  "Shape tool controller: unified picker, fixed-center drag, two-touch 1:1 modifier and one release-time vector commit verified.",
+  "Shape tool controller: ordered GPU preview lifecycle, fixed-center drag, two-touch modifier and one release-time commit verified.",
 );

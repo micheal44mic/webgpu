@@ -25,6 +25,7 @@ export interface SceneLayerProperties {
   readonly semanticId: number | null;
   readonly clippingEnabled: boolean;
   readonly clippingAvailable: boolean;
+  readonly clippingParentKey: SceneLayerKey | null;
   readonly locked: boolean;
 }
 
@@ -78,6 +79,9 @@ export function selectedSceneLayerProperties(
       semanticId: null,
       clippingEnabled,
       clippingAvailable: clippingEnabled || rasterIndex > 0,
+      clippingParentKey: layer.clippingParentId === null
+        ? null
+        : `raster:${layer.clippingParentId}`,
       locked,
     };
   }
@@ -90,9 +94,11 @@ export function selectedSceneLayerProperties(
   if (item.kind === "raster") {
     const layer = stats.layers[item.rasterLayerIndex];
     if (!layer) return null;
-    const clippingEnabled = item.rasterClippingParentId !== null;
-    const hasAdjacentRasterBelow = sceneIndex > 0
-      && scene.items[sceneIndex - 1]?.kind === "raster";
+    const clippingEnabled = item.clippingParentKey !== null;
+    const below = sceneIndex > 0 ? scene.items[sceneIndex - 1] : null;
+    const hasCompatibleBelow = below?.kind === "raster"
+      || below?.kind === "text"
+      || below?.kind === "svg";
     return {
       key,
       name: sceneLayerDisplayName(layer.name),
@@ -105,7 +111,8 @@ export function selectedSceneLayerProperties(
       rasterIndex: item.rasterLayerIndex,
       semanticId: null,
       clippingEnabled,
-      clippingAvailable: clippingEnabled || hasAdjacentRasterBelow,
+      clippingAvailable: clippingEnabled || hasCompatibleBelow,
+      clippingParentKey: item.clippingParentKey,
       locked,
     };
   }
@@ -115,6 +122,12 @@ export function selectedSceneLayerProperties(
     : item.kind === "svg"
       ? item.svgNode
       : item.imageNode;
+  const clippingKind = item.kind === "text" || item.kind === "svg";
+  const clippingEnabled = clippingKind && item.clippingParentKey !== null;
+  const below = sceneIndex > 0 ? scene.items[sceneIndex - 1] : null;
+  const hasCompatibleBelow = below?.kind === "raster"
+    || below?.kind === "text"
+    || below?.kind === "svg";
   return {
     key,
     name: sceneLayerDisplayName(node.name),
@@ -126,8 +139,9 @@ export function selectedSceneLayerProperties(
     tonalBlend: null,
     rasterIndex: null,
     semanticId: node.id,
-    clippingEnabled: false,
-    clippingAvailable: false,
+    clippingEnabled,
+    clippingAvailable: clippingKind && (clippingEnabled || hasCompatibleBelow),
+    clippingParentKey: clippingKind ? item.clippingParentKey : null,
     locked,
   };
 }

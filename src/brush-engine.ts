@@ -558,6 +558,7 @@ import {
   type LayerSwitchResult,
   type MixedSceneSnapshot,
   type PointerSample,
+  type ShapePreviewState,
 } from "./engine-types";
 import { resolveMixedSceneEnabled } from "./compat/mixed-scene-options";
 import {
@@ -597,9 +598,11 @@ import {
 } from "./stroke-stabilization-core";
 import {
   mergeDirtyRects,
+  normalizeLayerRect,
   paintMipDimensions,
   vectorTextGpuRunBounds,
 } from "./engine-geometry";
+import { gpuLinearColor } from "./scene-gpu-paint";
 import {
   deferredEraseTextureMinimum,
   planDeferredErasePreview,
@@ -644,6 +647,7 @@ import {
   encodeMixedSceneSegmentedPresentation,
   ensureVectorTextGpuBlurCache,
   ensureVectorTextGpuResource,
+  ensureMixedSceneLinearTexture,
   ensureVectorTextPresentationTexture,
   flushVectorTextGpuPresentations,
   getVectorTextFallbackPresentationStats,
@@ -660,6 +664,7 @@ import {
 } from "./engine-vector-text-runtime";
 import {
   applyVectorHistoryState,
+  captureMixedSceneOrderState,
   captureRasterLayerMetadataHistoryState,
   getMixedSceneReorderTargets,
   compactDiscardedHistoryIncrementally,
@@ -674,6 +679,7 @@ import {
   rasterLayerMetadataHistoryStatesEqual,
   recordBlendHistoryBatch,
   recordRasterLayerMetadataHistoryAction,
+  recordMixedSceneReorderHistoryAction,
   recordVectorHistoryAction,
   rebuildActiveLayerFromHistory,
   restoreRasterLayerMetadataHistorySnapshot,
@@ -1273,6 +1279,9 @@ export class BrushEngine {
   mergedAbove: MergedSurfaceResources | null = null;
   activeClippingGroup: ActiveClippingGroupResources | null = null;
   mixedSceneCompositionSegments: readonly MixedSceneCompositionSegment[] = [];
+  shapePreviewAfterKey: MixedSceneItem["key"] | null = null;
+  shapePreviewVisible = false;
+  shapePreviewBounds: DirtyRect | null = null;
   mixedSceneRasterSegments: MixedSceneRasterSegmentResources[] = [];
   paintMipViews: GPUTextureView[] = [];
   paintMipDownsampleBindGroups: GPUBindGroup[] = [];
@@ -1323,6 +1332,9 @@ export class BrushEngine {
   mixedSceneBlendFromLinearBindGroup: GPUBindGroup | null = null;
   mixedSceneBlendFromScratchBindGroup: GPUBindGroup | null = null;
   mixedSceneBlendFromGroupBindGroup: GPUBindGroup | null = null;
+  mixedSceneClippingScratchTexture: GPUTexture | null = null;
+  mixedSceneClippingScratchView: GPUTextureView | null = null;
+  mixedSceneClippingScratchBindGroup: GPUBindGroup | null = null;
   layerBlendTileCompositor: LayerBlendTileCompositor | null = null;
   layerBlendTileResourcesPromise: Promise<void> | null = null;
   layerBlendTileResourcesRevision = 0;
@@ -1510,6 +1522,7 @@ export class BrushEngine {
   vectorTextDisplayBindGroupLayout: GPUBindGroupLayout | null = null;
   mixedSceneRasterSegmentBindGroupLayout: GPUBindGroupLayout | null = null;
   mixedSceneTextSegmentBindGroupLayout: GPUBindGroupLayout | null = null;
+  mixedSceneShapePreviewBindGroupLayout: GPUBindGroupLayout | null = null;
   rasterImageMipmapBindGroupLayout: GPUBindGroupLayout | null = null;
   rasterImageMixedSceneBindGroupLayout: GPUBindGroupLayout | null = null;
   vectorTextGpuSlugBindGroupLayout: GPUBindGroupLayout | null = null;
@@ -1570,6 +1583,7 @@ export class BrushEngine {
   vectorTextGpuInnerShadowShaderModule: GPUShaderModule | null = null;
   mixedSceneRasterSegmentShaderModule: GPUShaderModule | null = null;
   mixedSceneTextSegmentShaderModule: GPUShaderModule | null = null;
+  mixedSceneShapePreviewShaderModule: GPUShaderModule | null = null;
   rasterImageMipmapShaderModule: GPUShaderModule | null = null;
   rasterImageMixedSceneShaderModule: GPUShaderModule | null = null;
   mixedSceneClearShaderModule: GPUShaderModule | null = null;
@@ -1642,26 +1656,37 @@ export class BrushEngine {
   vectorTextGpuClearPipeline: GPURenderPipeline | null = null;
   mixedSceneClearPipeline: GPURenderPipeline | null = null;
   mixedSceneRasterSegmentPipeline: GPURenderPipeline | null = null;
+  mixedSceneRasterSegmentSourceAtopPipeline: GPURenderPipeline | null = null;
   mixedSceneTextSegmentPipeline: GPURenderPipeline | null = null;
+  mixedSceneTextSegmentSourceAtopPipeline: GPURenderPipeline | null = null;
+  mixedSceneShapePreviewPipeline: GPURenderPipeline | null = null;
+  mixedSceneShapePreviewUniformBuffer: GPUBuffer | null = null;
+  mixedSceneShapePreviewBindGroup: GPUBindGroup | null = null;
+  readonly mixedSceneShapePreviewUniformUpload = new Float32Array(12);
   rasterImageMipmapPipeline: GPURenderPipeline | null = null;
   rasterImagePremultiplyPipeline: GPURenderPipeline | null = null;
   rasterImageMixedScenePipeline: GPURenderPipeline | null = null;
   mixedScenePresentPipeline: GPURenderPipeline | null = null;
   mixedSceneBackgroundPipeline: GPURenderPipeline | null = null;
+  mixedSceneClippingScratchCompositePipeline: GPURenderPipeline | null = null;
   layerBlendCompositorPipeline: GPURenderPipeline | null = null;
   layerBlendViewportDocumentMaskPipeline: GPURenderPipeline | null = null;
   layerBlendCompositorUniformBuffer: GPUBuffer | null = null;
   layerBlendCompositorUniformStride = 0;
   mixedSceneActiveDisplayPipeline: GPURenderPipeline | null = null;
   mixedSceneActiveSourceDisplayPipeline: GPURenderPipeline | null = null;
+  mixedSceneActiveSourceAtopDisplayPipeline: GPURenderPipeline | null = null;
   mixedSceneActiveCutoutDisplayPipeline: GPURenderPipeline | null = null;
   mixedSceneActiveRasterStrokeDisplayPipeline: GPURenderPipeline | null = null;
   mixedSceneActiveRasterStrokeSourcePipeline: GPURenderPipeline | null = null;
+  mixedSceneActiveRasterStrokeSourceAtopPipeline: GPURenderPipeline | null = null;
   mixedSceneActiveRasterStrokeCutoutPipeline: GPURenderPipeline | null = null;
   mixedSceneActiveThicknessTailDisplayPipeline: GPURenderPipeline | null = null;
   mixedSceneActiveThicknessTailSourcePipeline: GPURenderPipeline | null = null;
+  mixedSceneActiveThicknessTailSourceAtopPipeline: GPURenderPipeline | null = null;
   mixedSceneActiveLightGlazeDisplayPipeline: GPURenderPipeline | null = null;
   mixedSceneActiveLightGlazeSourcePipeline: GPURenderPipeline | null = null;
+  mixedSceneActiveLightGlazeSourceAtopPipeline: GPURenderPipeline | null = null;
   rasterImageSampler: GPUSampler | null = null;
   rasterStrokeDisplayPipeline!: GPURenderPipeline;
   thicknessTailDisplayPipeline!: GPURenderPipeline;
@@ -2535,7 +2560,9 @@ export class BrushEngine {
   }
 
   usesOrderedScenePresentation(): boolean {
-    return Boolean(this.mixedSceneStack?.visibleSemanticCount)
+    return this.shapePreviewAfterKey !== null
+      || Boolean(this.mixedSceneStack?.visibleSemanticCount)
+      || Boolean(this.mixedSceneStack?.hasHeterogeneousClipping)
       || orderedLayerBlendPresentationRequired(this);
   }
 
@@ -3373,6 +3400,7 @@ export class BrushEngine {
       selectedKey: scene.selected.key,
       activeRasterLayerId: this.layerStack.active.id,
       previewTextNodeId: this.vectorTextPreviewExcludedNodeId,
+      shapePreviewAfterKey: this.shapePreviewAfterKey,
       items: scene.items.map((item) => {
         if (item.kind === "raster") {
           const rasterLayerIndex = this.layerStack.indexOfId(item.rasterLayerId);
@@ -3436,6 +3464,7 @@ export class BrushEngine {
             rasterHasContent,
             rasterContentBounds: rasterContentBounds ? { ...rasterContentBounds } : null,
             rasterTransform: transform,
+            clippingParentKey: scene.clippingParentKey(item.key),
           };
         }
         if (item.kind === "text") {
@@ -3443,6 +3472,7 @@ export class BrushEngine {
             key: item.key,
             kind: item.kind,
             textNode: cloneVectorTextNode(scene.textById(item.textNodeId)),
+            clippingParentKey: scene.clippingParentKey(item.key),
           };
         }
         if (item.kind === "svg") {
@@ -3450,12 +3480,14 @@ export class BrushEngine {
             key: item.key,
             kind: item.kind,
             svgNode: cloneVectorSvgNode(scene.svgById(item.svgNodeId)),
+            clippingParentKey: scene.clippingParentKey(item.key),
           };
         }
         return {
           key: item.key,
           kind: item.kind,
           imageNode: cloneRasterImageNode(scene.imageById(item.imageNodeId)),
+          clippingParentKey: null,
         };
       }),
     };
@@ -5907,6 +5939,22 @@ export class BrushEngine {
   async deleteLayer(index: number): Promise<void> {
     if (!this.initialized) throw new Error("The engine is not initialized yet.");
     const target = this.layerStack.at(index);
+    const scene = this.mixedSceneStack;
+    if (!scene) throw new Error("The mixed scene is unavailable for deletion.");
+    const targetKey = `raster:${target.id}` as const;
+    const semanticChildren = scene.clippingChildrenKeys(targetKey).filter((childKey) => {
+      const kind = scene.itemByKey(childKey).kind;
+      return kind === "text" || kind === "svg";
+    });
+    if (
+      scene.clippingParentKey(targetKey) === null
+      && semanticChildren.length > 0
+    ) {
+      throw new Error(
+        "This clipping base has editable text or SVG children. Unlink or delete those "
+        + "clipping layers first.",
+      );
+    }
     const unit = target.clippingParentId === null
       ? this.layerStack.clippingUnit(target.id)
       : [target];
@@ -5928,8 +5976,6 @@ export class BrushEngine {
     this.cancelLayerColdCompressionIdle();
     await this.waitForIdle();
 
-    const scene = this.mixedSceneStack;
-    if (!scene) throw new Error("The mixed scene is unavailable for deletion.");
     // L'elenco e' dal basso verso l'alto: il ripristino reinserisce in avanti e
     // gli indici restano validi mentre la pila ricresce.
     const ordered = [...unit].sort(
@@ -5955,6 +6001,8 @@ export class BrushEngine {
           rasterLayerIndex: this.layerStack.indexOfId(record.id),
           sceneIndex: scene.indexOfKey(`raster:${record.id}`),
           clippingParentId: record.clippingParentId,
+          sceneClippingParentKey: scene.clippingParentKey(`raster:${record.id}`),
+          sceneClippingChildKeys: scene.clippingChildrenKeys(`raster:${record.id}`),
           seed,
           baseBounds: record.contentBounds ? { ...record.contentBounds } : null,
         });
@@ -8451,6 +8499,13 @@ export class BrushEngine {
     const previousMixedSegments = this.mixedSceneRasterSegments;
     const previousCompositionSegments = this.mixedSceneCompositionSegments;
     const previousActiveClippingGroup = this.activeClippingGroup;
+    if (this.mixedSceneStack && this.shapePreviewAfterKey !== null) {
+      const group = this.mixedSceneStack.clippingGroupKeys(
+        this.mixedSceneStack.selected.key,
+      );
+      this.shapePreviewAfterKey = group[group.length - 1]
+        ?? this.mixedSceneStack.selected.key;
+    }
     const activeClippingUnit = this.layerStack.clippingUnit(this.layerStack.active.id);
     const activeClippingUnitIds = activeClippingUnit.length > 1
       ? activeClippingUnit.map((record) => record.id)
@@ -8464,6 +8519,7 @@ export class BrushEngine {
         this.mixedSceneStack.compositionSegments(
           this.layerStack.active.id,
           activeClippingUnitIds,
+          this.shapePreviewAfterKey,
         ),
       );
     }
@@ -8533,12 +8589,17 @@ export class BrushEngine {
             documentMaskSurface: null,
             opacity: 1,
           } satisfies ClippingDocumentMaskCollector;
+          const isolateClippingSource = segment.items.length === 1
+            && this.mixedSceneStack.clippingGroupRequiresSegmentedComposition(
+              segment.items[0].key,
+            );
           const surface = await buildMixedMergedSurfaceCandidate(this, 
             segment.items,
             side,
             caller,
             view,
             documentMaskCollector,
+            { isolateClippingSources: isolateClippingSource },
           );
           if (!surface) {
             continue;
@@ -8548,6 +8609,7 @@ export class BrushEngine {
             segment.items,
             side,
             surface,
+            isolateClippingSource,
           );
           try {
             candidateMixedSegments.push(
@@ -9054,6 +9116,160 @@ export class BrushEngine {
       },
     );
     return cloneVectorSvgNode(node);
+  }
+
+  async prepareShapePreviewPresentation(): Promise<void> {
+    const scene = requireMixedSceneStack(this);
+    const group = scene.clippingGroupKeys(scene.selected.key);
+    const nextAfterKey = group[group.length - 1] ?? scene.selected.key;
+    if (this.shapePreviewAfterKey === nextAfterKey) return;
+    await this.changeShapePreviewPlacement(nextAfterKey);
+  }
+
+  async releaseShapePreviewPresentation(): Promise<void> {
+    this.updateShapePreview(null);
+    if (this.shapePreviewAfterKey === null) return;
+    await this.changeShapePreviewPlacement(null);
+  }
+
+  updateShapePreview(preview: Readonly<ShapePreviewState> | null): boolean {
+    const buffer = this.mixedSceneShapePreviewUniformBuffer;
+    if (!buffer || this.shapePreviewAfterKey === null) {
+      if (preview === null) {
+        this.shapePreviewVisible = false;
+        this.shapePreviewBounds = null;
+        return false;
+      }
+      throw new Error("The ordered shape preview is not prepared.");
+    }
+
+    const previousBounds = this.shapePreviewBounds;
+    if (preview === null) {
+      if (!this.shapePreviewVisible) return false;
+      this.mixedSceneShapePreviewUniformUpload[9] = 0;
+      this.device.queue.writeBuffer(
+        buffer,
+        0,
+        this.mixedSceneShapePreviewUniformUpload,
+      );
+      this.shapePreviewVisible = false;
+      this.shapePreviewBounds = null;
+      this.semanticPresentationDirtyRect = mergeDirtyRects(
+        this.semanticPresentationDirtyRect,
+        previousBounds,
+      );
+      this.displayDirty = true;
+      this.requestRender();
+      return true;
+    }
+
+    const numericValues = [
+      preview.x,
+      preview.y,
+      preview.width,
+      preview.height,
+    ];
+    if (
+      numericValues.some((value) => !Number.isFinite(value))
+      || preview.width <= 0
+      || preview.height <= 0
+    ) {
+      throw new RangeError("Shape preview bounds must be finite and greater than zero.");
+    }
+    const color = gpuLinearColor(preview.color);
+    const kind = preview.kind === "rectangle" ? 0 : preview.kind === "ellipse" ? 1 : 2;
+    const nextValues = [
+      preview.x,
+      preview.y,
+      preview.width,
+      preview.height,
+      color[0],
+      color[1],
+      color[2],
+      1,
+      kind,
+      1,
+      0,
+      0,
+    ] as const;
+    let changed = !this.shapePreviewVisible;
+    nextValues.forEach((value, index) => {
+      const rounded = Math.fround(value);
+      if (!Object.is(this.mixedSceneShapePreviewUniformUpload[index], rounded)) {
+        this.mixedSceneShapePreviewUniformUpload[index] = rounded;
+        changed = true;
+      }
+    });
+    if (!changed) return false;
+
+    this.device.queue.writeBuffer(
+      buffer,
+      0,
+      this.mixedSceneShapePreviewUniformUpload,
+    );
+    const padding = 2 / Math.max(this.zoom, Number.EPSILON);
+    const nextBounds = normalizeLayerRect({
+      x: preview.x - padding,
+      y: preview.y - padding,
+      width: preview.width + padding * 2,
+      height: preview.height + padding * 2,
+    });
+    this.shapePreviewVisible = true;
+    this.shapePreviewBounds = nextBounds;
+    this.semanticPresentationDirtyRect = mergeDirtyRects(
+      this.semanticPresentationDirtyRect,
+      mergeDirtyRects(previousBounds, nextBounds),
+    );
+    this.displayDirty = true;
+    this.requestRender();
+    return true;
+  }
+
+  private async changeShapePreviewPlacement(
+    nextAfterKey: MixedSceneItem["key"] | null,
+  ): Promise<void> {
+    if (this.shapePreviewAfterKey === nextAfterKey) return;
+    this.assertLayerSwitchAllowed();
+    this.cancelLayerColdCompressionIdle();
+    this.layerSwitchBusy = true;
+    const previousAfterKey = this.shapePreviewAfterKey;
+    try {
+      await this.waitForIdle();
+      this.shapePreviewAfterKey = nextAfterKey;
+      clearVectorTextPresentationForTransaction(this);
+      await this.rebuildMergedLayerSurfaces(
+        "layer-switch",
+        this.getVectorTextViewState(),
+        { reuseUnchangedRasterRuns: true },
+      );
+      this.presentationCacheNeedsFullRebuild = true;
+      this.displayDirty = true;
+      this.requestRender();
+    } catch (error) {
+      this.shapePreviewAfterKey = previousAfterKey;
+      clearVectorTextPresentationForTransaction(this);
+      try {
+        await this.rebuildMergedLayerSurfaces(
+          "layer-switch",
+          this.getVectorTextViewState(),
+          { reuseUnchangedRasterRuns: true },
+        );
+        this.presentationCacheNeedsFullRebuild = true;
+        this.displayDirty = true;
+        this.requestRender();
+      } catch (restoreError) {
+        this.latchDocumentStateInconsistent(
+          "The document became inconsistent while changing the shape preview. Reload the page.",
+          restoreError,
+        );
+      }
+      throw error;
+    } finally {
+      this.layerSwitchBusy = false;
+      this.scheduleLayerColdCompression();
+      publishMixedScene(this);
+      this.publishStats();
+    }
   }
 
   updateVectorSvgNode(
@@ -9593,14 +9809,17 @@ export class BrushEngine {
           );
         }
 
-        const anchor = source.clippingParentId === null
-          ? this.layerStack.clippingUnit(source.id).at(-1) ?? source
-          : source;
-        const anchorRasterIndex = this.layerStack.indexOfId(anchor.id);
-        const anchorSceneIndex = scene.indexOfKey(`raster:${anchor.id}`);
-        if (anchorRasterIndex < 0 || anchorSceneIndex < 0) {
+        const sourceKey = `raster:${source.id}` as const;
+        const sceneClippingParentKey = scene.clippingParentKey(sourceKey);
+        const anchorKey = sceneClippingParentKey === null
+          ? scene.clippingGroupKeys(sourceKey).at(-1) ?? sourceKey
+          : sourceKey;
+        const anchorSceneIndex = scene.indexOfKey(anchorKey);
+        if (anchorSceneIndex < 0) {
           throw new Error("The source layer position is inconsistent in the scene.");
         }
+        const sceneInsertionIndex = anchorSceneIndex + 1;
+        const rasterInsertionIndex = scene.rasterIndexForSceneIndex(sceneInsertionIndex);
         const record = this.createDuplicatedRasterRecord(source, storageMask);
         action = {
           id: this.nextHistoryActionId,
@@ -9612,9 +9831,10 @@ export class BrushEngine {
           baseBounds: source.contentBounds ? { ...source.contentBounds } : null,
           baseTileMask: storageMask.slice(),
           layerRecord: record,
-          rasterLayerIndex: anchorRasterIndex + 1,
-          sceneIndex: anchorSceneIndex + 1,
+          rasterLayerIndex: rasterInsertionIndex,
+          sceneIndex: sceneInsertionIndex,
           clippingParentId: source.clippingParentId,
+          sceneClippingParentKey,
           selectedKeyBefore: scene.selected.key,
           activeRasterLayerIdBefore: source.id,
           baseNoiseMipSmoothing: source.noiseMipSmoothing,
@@ -9735,6 +9955,7 @@ export class BrushEngine {
   async addLayer(
     name?: string,
     clippingParentId: number | null = null,
+    sceneClippingParentKey?: MixedSceneItem["key"] | null,
   ): Promise<LayerSwitchResult> {
     if (!this.initialized) {
       throw new Error("The engine is not initialized yet.");
@@ -9748,6 +9969,14 @@ export class BrushEngine {
     try {
       await this.waitForIdle();
       const scene = this.mixedSceneStack;
+      const requestedSceneClippingParentKey = sceneClippingParentKey === undefined
+        ? clippingParentId === null
+          ? null
+          : `raster:${clippingParentId}` as const
+        : sceneClippingParentKey;
+      if (!scene && requestedSceneClippingParentKey !== null) {
+        throw new Error("The mixed scene is required to create a clipping layer.");
+      }
       const mixedSceneState = scene?.captureState() ?? null;
       const previousExcludedNodeId = this.vectorTextPreviewExcludedNodeId;
       let layerInsertIndex: number;
@@ -9761,6 +9990,7 @@ export class BrushEngine {
           })),
           scene.selected.key,
           clippingParentId,
+          scene.clippingRelations(),
         );
         layerInsertIndex = insertion.rasterLayerIndex;
         sceneInsertIndex = insertion.sceneIndex;
@@ -9793,6 +10023,17 @@ export class BrushEngine {
         }
         if (scene && sceneInsertIndex !== null) {
           scene.insertRasterAt(record.id, sceneInsertIndex);
+          if (requestedSceneClippingParentKey !== null) {
+            scene.setClippingParentKey(
+              `raster:${record.id}`,
+              requestedSceneClippingParentKey,
+            );
+          }
+          this.layerStack.restoreClippingHistoryState(
+            scene.rasterClippingProjection(
+              this.layerStack.layers.map((layer) => layer.id),
+            ),
+          );
           this.vectorTextPreviewExcludedNodeId = null;
         }
         outgoingIndexAfterInsertion = this.layerStack.indexOfId(activeRasterLayerIdBefore);
@@ -9873,7 +10114,10 @@ export class BrushEngine {
             layerRecord: record,
             rasterLayerIndex: this.layerStack.indexOfId(record.id),
             sceneIndex: this.mixedSceneStack.indexOfKey(`raster:${record.id}`),
-            clippingParentId: clippingParentId,
+            clippingParentId: record.clippingParentId,
+            sceneClippingParentKey: this.mixedSceneStack.clippingParentKey(
+              `raster:${record.id}`,
+            ),
             selectedKeyBefore,
             activeRasterLayerIdBefore,
             baseNoiseMipSmoothing: false,
@@ -10298,6 +10542,9 @@ export class BrushEngine {
 
   async setLayerClipping(index: number, enabled: boolean): Promise<boolean> {
     const layerId = this.layerStack.at(index).id;
+    if (this.mixedSceneStack) {
+      return this.setSceneLayerClipping(`raster:${layerId}`, enabled);
+    }
     if (!this.rasterLayerMetadataHistoryEditAllows("clipping", layerId)) return false;
     const before = captureRasterLayerMetadataHistoryState(this, layerId, "clipping");
     const changed = await setLayerClipping(this, index, Boolean(enabled));
@@ -10305,28 +10552,105 @@ export class BrushEngine {
     return changed;
   }
 
-  /**
-   * Create a clipping mask as a normal raster immediately above the selected
-   * raster. The base directly underneath becomes its parent.
-   */
+  async setSceneLayerClipping(
+    key: MixedSceneItem["key"],
+    enabled: boolean,
+  ): Promise<boolean> {
+    if (!this.initialized) throw new Error("The engine has not been initialized yet.");
+    const scene = requireMixedSceneStack(this);
+    const item = scene.itemByKey(key);
+    if (item.kind !== "raster" && item.kind !== "text" && item.kind !== "svg") {
+      throw new Error("Only raster, text, and SVG layers can participate in clipping.");
+    }
+    if ((scene.clippingParentKey(key) !== null) === Boolean(enabled)) return false;
+    this.assertLayerSwitchAllowed();
+    this.cancelLayerColdCompressionIdle();
+    const before = captureMixedSceneOrderState(this);
+    const previousRelations = scene.clippingRelations();
+    const previousRasterProjection = this.layerStack.captureClippingHistoryState();
+    this.layerSwitchBusy = true;
+    let changed = false;
+    try {
+      await this.waitForIdle();
+      this.persistActiveLayerState();
+      changed = scene.setClippingEnabled(key, Boolean(enabled));
+      this.layerStack.restoreClippingHistoryState(
+        scene.rasterClippingProjection(
+          this.layerStack.layers.map((record) => record.id),
+        ),
+      );
+      clearVectorTextPresentationForTransaction(this);
+      await this.rebuildMergedLayerSurfaces();
+      ensureMixedSceneLinearTexture(
+        this,
+        Math.max(1, this.canvas.width),
+        Math.max(1, this.canvas.height),
+      );
+      this.paintDisplayMipValidThroughLevel = 0;
+      this.presentationCacheNeedsFullRebuild = true;
+      this.displayDirty = true;
+      this.requestRender();
+      const after = captureMixedSceneOrderState(this);
+      recordMixedSceneReorderHistoryAction(this, before, after, "clipping");
+      this.publishHistoryState();
+      return changed;
+    } catch (error) {
+      if (changed) {
+        try {
+          scene.restoreClippingRelations(previousRelations);
+          this.layerStack.restoreClippingHistoryState(previousRasterProjection);
+          clearVectorTextPresentationForTransaction(this);
+          await this.rebuildMergedLayerSurfaces("layer-switch");
+          ensureMixedSceneLinearTexture(
+            this,
+            Math.max(1, this.canvas.width),
+            Math.max(1, this.canvas.height),
+          );
+          this.paintDisplayMipValidThroughLevel = 0;
+          this.presentationCacheNeedsFullRebuild = true;
+          this.displayDirty = true;
+          this.requestRender();
+        } catch (restoreError) {
+          this.latchDocumentStateInconsistent(
+            "State is inconsistent after changing clipping. Reload before continuing.",
+            restoreError,
+          );
+        }
+      }
+      throw error;
+    } finally {
+      this.layerSwitchBusy = false;
+      this.scheduleLayerColdCompression();
+      publishMixedScene(this);
+      this.publishStats();
+    }
+  }
+
+  /** Creates a raster clipping layer above the selected compatible group. */
   async addClippingMaskLayer(): Promise<LayerSwitchResult> {
     const scene = requireMixedSceneStack(this);
     const selected = scene.selected;
-    if (selected.kind !== "raster") {
-      throw new Error("Select a raster layer to create the mask.");
+    if (
+      selected.kind !== "raster"
+      && selected.kind !== "text"
+      && selected.kind !== "svg"
+    ) {
+      throw new Error("Select a raster, text, or SVG layer to create the mask.");
     }
-    const selectedIndex = this.layerStack.indexOfId(selected.rasterLayerId);
-    if (selectedIndex < 0 || selectedIndex !== this.layerStack.activeIndex) {
-      throw new Error("The selected raster must be the active layer.");
+    const baseKey = scene.clippingBaseKey(selected.key);
+    const base = scene.itemByKey(baseKey);
+    if (base.kind !== "raster" && base.kind !== "text" && base.kind !== "svg") {
+      throw new Error("The selected clipping base is not compatible.");
     }
-    const selectedRecord = this.layerStack.at(selectedIndex);
-    const parentId = selectedRecord.clippingParentId ?? selectedRecord.id;
-    const parent = this.layerStack.byId(parentId);
-    if (!parent || parent.clippingParentId !== null) {
-      throw new Error("The mask's raster parent is invalid.");
+    const parentId = base.kind === "raster" ? base.rasterLayerId : null;
+    if (parentId !== null) {
+      const parent = this.layerStack.byId(parentId);
+      if (!parent || parent.clippingParentId !== null) {
+        throw new Error("The mask's raster parent is invalid.");
+      }
     }
-    const ordinal = this.layerStack.clippingDependents(parent.id).length + 1;
-    return await this.addLayer(`Clipping Mask ${ordinal}`, parent.id);
+    const ordinal = scene.clippingChildrenKeys(baseKey).length + 1;
+    return await this.addLayer(`Clipping Mask ${ordinal}`, parentId, baseKey);
   }
 
   async setLayerReference(index: number, enabled: boolean): Promise<boolean> {

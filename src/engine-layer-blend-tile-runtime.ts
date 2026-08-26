@@ -123,7 +123,9 @@ const sourceForRasterSegment = (
 
 export function layerBlendTilePresentationRequired(engine: BrushEngine): boolean {
   return Boolean(engine.mixedSceneStack)
+    && engine.shapePreviewAfterKey === null
     && !engine.mixedSceneStack!.visibleSemanticCount
+    && !engine.mixedSceneStack!.hasHeterogeneousClipping
     && engine.layerStack.layers.some(layerNeedsBackdropComposition);
 }
 

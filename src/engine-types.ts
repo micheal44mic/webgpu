@@ -154,6 +154,8 @@ export interface MixedSceneSnapshot {
   selectedKey: MixedSceneItem["key"];
   activeRasterLayerId: number;
   previewTextNodeId: number | null;
+  /** Structural break used only while the shape tool owns a live GPU preview. */
+  shapePreviewAfterKey: MixedSceneItem["key"] | null;
   items: readonly (
     | {
       key: `raster:${number}`;
@@ -168,23 +170,37 @@ export interface MixedSceneSnapshot {
       rasterHasContent: boolean;
       rasterContentBounds: DirtyRect | null;
       rasterTransform: RasterTransformSnapshot | null;
+      /** Generic scene relation; may target a raster, editable text, or SVG base. */
+      clippingParentKey: MixedSceneItem["key"] | null;
     }
     | {
       key: `text:${number}`;
       kind: "text";
       textNode: Readonly<VectorTextNode>;
+      clippingParentKey: MixedSceneItem["key"] | null;
     }
     | {
       key: `svg:${number}`;
       kind: "svg";
       svgNode: Readonly<VectorSvgNode>;
+      clippingParentKey: MixedSceneItem["key"] | null;
     }
     | {
       key: `image:${number}`;
       kind: "image";
       imageNode: Readonly<RasterImageNode>;
+      clippingParentKey: null;
     }
   )[];
+}
+
+export interface ShapePreviewState {
+  readonly kind: "rectangle" | "ellipse" | "star";
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+  readonly color: string;
 }
 
 export interface HistoryState {

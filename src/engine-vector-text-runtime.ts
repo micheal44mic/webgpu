@@ -922,7 +922,32 @@ function mixedSceneSegmentContributesToDeepFloor(
   segment: MixedSceneCompositionSegment,
   activePresentation: MixedSceneActivePresentation,
 ): boolean {
-  if (segment.kind === "text-run" || segment.kind === "image") return true;
+  const scene = engine.mixedSceneStack;
+  if (segment.kind === "shape-preview") return engine.shapePreviewVisible;
+  const structuralKey = segment.kind === "active-raster" || segment.kind === "image"
+    ? segment.item.key
+    : segment.items.length === 1
+      ? segment.items[0].key
+      : null;
+  // A clipping child never contributes independently: the completed group is
+  // represented by its base segment and keeps the base alpha authoritative.
+  if (
+    structuralKey !== null
+    && scene !== null
+    && scene.clippingParentKey(structuralKey) !== null
+    && scene.clippingGroupRequiresSegmentedComposition(structuralKey)
+  ) {
+    return false;
+  }
+  if (segment.kind === "text-run") {
+    // Structural hidden/empty vector members deliberately keep their segment
+    // boundary but have no live texture and therefore no visible floor.
+    return engine.vectorTextRunTextures.get(segment.key)?.initialized === true;
+  }
+  if (segment.kind === "image") {
+    const node = scene?.imageById(segment.item.imageNodeId);
+    return Boolean(node?.visible && node.opacity > 0);
+  }
   const rasterLayerId = segment.kind === "active-raster"
     ? segment.item.rasterLayerId
     : segment.items.find((item) => {
@@ -950,7 +975,10 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
   const presentBindGroup = engine.mixedScenePresentBindGroup;
   const clearPipeline = engine.mixedSceneClearPipeline;
   const rasterPipeline = engine.mixedSceneRasterSegmentPipeline;
+  const rasterSourceAtopPipeline = engine.mixedSceneRasterSegmentSourceAtopPipeline;
   const textPipeline = engine.mixedSceneTextSegmentPipeline;
+  const textSourceAtopPipeline = engine.mixedSceneTextSegmentSourceAtopPipeline;
+  const shapePreviewPipeline = engine.mixedSceneShapePreviewPipeline;
   const imagePipeline = engine.rasterImageMixedScenePipeline;
   const presentPipeline = engine.mixedScenePresentPipeline;
   const backgroundPipeline = engine.mixedSceneBackgroundPipeline;
@@ -962,6 +990,7 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
     || !clearPipeline
     || !rasterPipeline
     || !textPipeline
+    || !shapePreviewPipeline
     || !imagePipeline
     || !presentPipeline
     || !backgroundPipeline
@@ -969,6 +998,22 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
     || !engine.presentationCacheView
   ) {
     throw new Error("The segmented raster/text compositor is not ready.");
+  }
+  if (
+    engine.mixedSceneStack?.hasHeterogeneousClipping
+    && (
+      !rasterSourceAtopPipeline
+      || !textSourceAtopPipeline
+      || !engine.mixedSceneClippingScratchView
+      || !engine.mixedSceneClippingScratchBindGroup
+      || !engine.mixedSceneClippingScratchCompositePipeline
+      || !engine.mixedSceneActiveSourceAtopDisplayPipeline
+      || !engine.mixedSceneActiveRasterStrokeSourceAtopPipeline
+      || !engine.mixedSceneActiveThicknessTailSourceAtopPipeline
+      || !engine.mixedSceneActiveLightGlazeSourceAtopPipeline
+    )
+  ) {
+    throw new Error("The heterogeneous clipping compositor is not ready.");
   }
   const deepCutoutEnabled = engine.layerStack.layers.some(
     (record) => record.cutoutMode === "document",
@@ -986,13 +1031,17 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
   const drawSegmentSource = (
     pass: GPURenderPassEncoder,
     segment: MixedSceneCompositionSegment,
+    operator: LayerBlendCompositeOperator = "source-over",
+    isolatedActive = false,
   ): void => {
     if (segment.kind === "raster-run") {
       const resources = engine.mixedSceneRasterSegments.find(
         (candidate) => candidate.key === segment.key,
       );
       if (resources) {
-        pass.setPipeline(rasterPipeline);
+        pass.setPipeline(
+          operator === "source-atop" ? rasterSourceAtopPipeline! : rasterPipeline,
+        );
         pass.setBindGroup(0, resources.bindGroup);
         pass.draw(3, 1, 0, 0);
       }
@@ -1001,7 +1050,9 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
     if (segment.kind === "text-run") {
       const resources = engine.vectorTextRunTextures.get(segment.key);
       if (resources) {
-        pass.setPipeline(textPipeline);
+        pass.setPipeline(
+          operator === "source-atop" ? textSourceAtopPipeline! : textPipeline,
+        );
         pass.setBindGroup(0, resources.bindGroup);
         pass.draw(3, 1, 0, 0);
       }
@@ -1021,9 +1072,28 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
       }
       return;
     }
+    if (segment.kind === "shape-preview") {
+      if (!engine.mixedSceneShapePreviewBindGroup) {
+        throw new Error("The live shape preview bindings are not ready.");
+      }
+      if (operator !== "source-over") {
+        throw new Error("The live shape preview cannot be a clipping child.");
+      }
+      pass.setPipeline(shapePreviewPipeline);
+      pass.setBindGroup(0, engine.mixedSceneShapePreviewBindGroup);
+      pass.draw(3, 1, 0, 0);
+      return;
+    }
 
     if (segment.kind !== "active-raster") {
       return;
+    }
+    if (isolatedActive) {
+      drawActiveRasterSourceOnly(pass, operator);
+      return;
+    }
+    if (operator !== "source-over") {
+      throw new Error("Only isolated active raster sources can use source-atop.");
     }
     if (activePresentation.kind === "raster-stroke") {
       const pipeline = engine.mixedSceneActiveRasterStrokeDisplayPipeline;
@@ -1064,6 +1134,7 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
   const drawSegmentCutoutSource = (
     pass: GPURenderPassEncoder,
     segment: MixedSceneCompositionSegment,
+    isolatedActive = false,
   ): void => {
     if (segment.kind === "raster-run") {
       const resources = engine.mixedSceneRasterSegments.find(
@@ -1077,6 +1148,10 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
       return;
     }
     if (segment.kind !== "active-raster") {
+      return;
+    }
+    if (isolatedActive) {
+      drawActiveRasterCutoutSourceOnly(pass);
       return;
     }
     const parentCutout = engine.activeClippingGroup?.mode === "active-child"
@@ -1134,9 +1209,14 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
     pass.draw(3, 1, 0, 0);
   };
 
-  const drawActiveRasterSourceOnly = (pass: GPURenderPassEncoder): void => {
+  const drawActiveRasterSourceOnly = (
+    pass: GPURenderPassEncoder,
+    operator: LayerBlendCompositeOperator = "source-over",
+  ): void => {
     if (activePresentation.kind === "raster-stroke") {
-      const pipeline = engine.mixedSceneActiveRasterStrokeSourcePipeline;
+      const pipeline = operator === "source-atop"
+        ? engine.mixedSceneActiveRasterStrokeSourceAtopPipeline
+        : engine.mixedSceneActiveRasterStrokeSourcePipeline;
       const sourceBindGroup = engine.rasterStrokeDisplayBindGroups.get(
         activePresentation.sourceMode,
       );
@@ -1147,21 +1227,27 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
       pass.setBindGroup(0, engine.rasterStrokeDisplayScreenBindGroup);
       pass.setBindGroup(1, sourceBindGroup);
     } else if (activePresentation.kind === "thickness-tail") {
-      const pipeline = engine.mixedSceneActiveThicknessTailSourcePipeline;
+      const pipeline = operator === "source-atop"
+        ? engine.mixedSceneActiveThicknessTailSourceAtopPipeline
+        : engine.mixedSceneActiveThicknessTailSourcePipeline;
       if (!pipeline || !engine.thicknessTailDisplayBindGroup) {
         throw new Error("The active-tail source-only pipeline is not ready.");
       }
       pass.setPipeline(pipeline);
       pass.setBindGroup(0, engine.thicknessTailDisplayBindGroup);
     } else if (activePresentation.kind === "light-glaze") {
-      const pipeline = engine.mixedSceneActiveLightGlazeSourcePipeline;
+      const pipeline = operator === "source-atop"
+        ? engine.mixedSceneActiveLightGlazeSourceAtopPipeline
+        : engine.mixedSceneActiveLightGlazeSourcePipeline;
       if (!pipeline || !engine.lightGlazeDisplayBindGroup) {
         throw new Error("The active-raster glaze source-only pipeline is not ready.");
       }
       pass.setPipeline(pipeline);
       pass.setBindGroup(0, engine.lightGlazeDisplayBindGroup);
     } else {
-      const pipeline = engine.mixedSceneActiveSourceDisplayPipeline;
+      const pipeline = operator === "source-atop"
+        ? engine.mixedSceneActiveSourceAtopDisplayPipeline
+        : engine.mixedSceneActiveSourceDisplayPipeline;
       if (!pipeline) {
         throw new Error("The active-raster source-only pipeline is not ready.");
       }
@@ -1204,11 +1290,25 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
   ): LayerRecord | null => {
     if (segment.kind === "raster-run") {
       const first = segment.items[0];
+      if (
+        first
+        && segment.items.length === 1
+        && engine.mixedSceneStack?.clippingGroupRequiresSegmentedComposition(first.key)
+      ) {
+        return engine.layerStack.byId(first.rasterLayerId) ?? null;
+      }
       return first
         ? engine.layerStack.clippingUnit(first.rasterLayerId)[0] ?? null
         : null;
     }
     if (segment.kind === "active-raster") {
+      if (
+        engine.mixedSceneStack?.clippingGroupRequiresSegmentedComposition(
+          segment.item.key,
+        )
+      ) {
+        return engine.layerStack.byId(segment.item.rasterLayerId) ?? null;
+      }
       return engine.layerStack.clippingUnit(segment.item.rasterLayerId)[0] ?? null;
     }
     return null;
@@ -1310,12 +1410,329 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
       },
     );
   };
+  const itemKeyForSegment = (
+    segment: MixedSceneCompositionSegment,
+  ): MixedSceneItem["key"] | null => {
+    if (segment.kind === "shape-preview") return null;
+    if (segment.kind === "active-raster" || segment.kind === "image") {
+      return segment.item.key;
+    }
+    return segment.items.length === 1 ? segment.items[0].key : null;
+  };
+  interface HeterogeneousClippingProgram {
+    readonly baseKey: MixedSceneItem["key"];
+    readonly segments: readonly MixedSceneCompositionSegment[];
+    readonly endSegmentIndex: number;
+  }
+  const heterogeneousClippingProgramAt = (
+    segmentIndex: number,
+  ): HeterogeneousClippingProgram | null => {
+    const scene = engine.mixedSceneStack;
+    if (!scene) return null;
+    const baseSegment = engine.mixedSceneCompositionSegments[segmentIndex];
+    const baseKey = itemKeyForSegment(baseSegment);
+    if (
+      baseKey === null
+      || scene.clippingParentKey(baseKey) !== null
+      || !scene.clippingGroupRequiresSegmentedComposition(baseKey)
+    ) {
+      return null;
+    }
+    const groupKeys = scene.clippingGroupKeys(baseKey);
+    const segments = groupKeys.map((key, offset) => {
+      const candidate = engine.mixedSceneCompositionSegments[segmentIndex + offset];
+      if (!candidate || itemKeyForSegment(candidate) !== key) {
+        throw new Error(`Clipping group ${baseKey} is not contiguous in the GPU program.`);
+      }
+      return candidate;
+    });
+    return {
+      baseKey,
+      segments,
+      endSegmentIndex: segmentIndex + segments.length - 1,
+    };
+  };
+  const heterogeneousClippingProgramIsSimple = (
+    program: HeterogeneousClippingProgram,
+  ): boolean => program.segments.every((candidate) => {
+    const record = compositionRecordForSegment(candidate);
+    const resources = rasterResourcesForSegment(candidate);
+    return (!record || !rasterLayerNeedsBackdropComposition(record))
+      && !resources?.documentCutoutMaskSurface;
+  });
+  const encodeSimpleHeterogeneousClippingProgram = (
+    program: HeterogeneousClippingProgram,
+    baseSegmentIndex: number,
+  ): void => {
+    const scratchView = engine.mixedSceneClippingScratchView;
+    const scratchBindGroup = engine.mixedSceneClippingScratchBindGroup;
+    const compositePipeline = engine.mixedSceneClippingScratchCompositePipeline;
+    if (!scratchView || !scratchBindGroup || !compositePipeline) {
+      throw new Error("The fast clipping-group scratch is unavailable.");
+    }
+    scenePass?.end();
+    scenePass = null;
+    const groupPass = encoder.beginRenderPass({
+      label: `${label} · clipping group ${program.baseKey}`,
+      colorAttachments: [{
+        view: scratchView,
+        loadOp: "load",
+        storeOp: "store",
+      }],
+    });
+    setDirtyScissor(groupPass);
+    groupPass.setPipeline(clearPipeline);
+    groupPass.draw(3, 1, 0, 0);
+    drawSegmentSource(groupPass, program.segments[0], "source-over", true);
+    for (const child of program.segments.slice(1)) {
+      drawSegmentSource(groupPass, child, "source-atop", true);
+    }
+    groupPass.end();
+
+    scenePass = beginScenePass();
+    scenePass.setPipeline(compositePipeline);
+    scenePass.setBindGroup(0, scratchBindGroup);
+    scenePass.draw(3, 1, 0, 0);
+    captureDeepFloorAfter(baseSegmentIndex);
+  };
+  const encodeAdvancedHeterogeneousClippingProgram = (
+    program: HeterogeneousClippingProgram,
+    baseSegmentIndex: number,
+  ): void => {
+    scenePass?.end();
+    scenePass = null;
+    const scratchView = engine.mixedSceneBlendScratchView;
+    const scratchTexture = engine.mixedSceneBlendScratchTexture;
+    const operandView = engine.mixedSceneBlendOperandView;
+    const operandTexture = engine.mixedSceneBlendOperandTexture;
+    const cutoutView = engine.mixedSceneBlendCutoutView;
+    const groupView = engine.mixedSceneBlendGroupView;
+    const groupTexture = engine.mixedSceneBlendGroupTexture;
+    const clippingBaseView = engine.mixedSceneBlendClippingBaseView;
+    const documentMaskView = engine.mixedSceneBlendDocumentMaskView;
+    const blendPipeline = engine.layerBlendCompositorPipeline;
+    const documentMaskPipeline = engine.layerBlendViewportDocumentMaskPipeline;
+    if (
+      !scratchView
+      || !scratchTexture
+      || !operandView
+      || !operandTexture
+      || !cutoutView
+      || !groupView
+      || !groupTexture
+      || !clippingBaseView
+      || !documentMaskView
+      || !blendPipeline
+      || !documentMaskPipeline
+      || !engine.mixedSceneBlendFromLinearBindGroup
+      || !engine.mixedSceneBlendFromScratchBindGroup
+      || !engine.mixedSceneBlendFromGroupBindGroup
+      || engine.layerBlendCompositorUniformStride <= 0
+    ) {
+      throw new Error("The advanced heterogeneous clipping compositor is unavailable.");
+    }
+    const baseSegment = program.segments[0];
+    const baseRecord = compositionRecordForSegment(baseSegment);
+    const groupStartView = currentIsCanonical ? scratchView : linearView;
+    const groupStartTexture = currentIsCanonical
+      ? scratchTexture
+      : engine.mixedSceneLinearTexture!;
+
+    const basePass = encoder.beginRenderPass({
+      label: `${label} · clipping base ${program.baseKey}`,
+      colorAttachments: [{ view: groupStartView, loadOp: "load", storeOp: "store" }],
+    });
+    setDirtyScissor(basePass);
+    basePass.setPipeline(clearPipeline);
+    basePass.draw(3, 1, 0, 0);
+    drawSegmentSource(basePass, baseSegment, "source-over", true);
+    basePass.end();
+
+    const immutableBasePass = encoder.beginRenderPass({
+      label: `${label} · clipping immutable base ${program.baseKey}`,
+      colorAttachments: [{ view: clippingBaseView, loadOp: "load", storeOp: "store" }],
+    });
+    setDirtyScissor(immutableBasePass);
+    immutableBasePass.setPipeline(clearPipeline);
+    immutableBasePass.draw(3, 1, 0, 0);
+    drawSegmentSource(immutableBasePass, baseSegment, "source-over", true);
+    immutableBasePass.end();
+
+    const documentMaskSeedPass = encoder.beginRenderPass({
+      label: `${label} · clipping document mask seed ${program.baseKey}`,
+      colorAttachments: [{ view: documentMaskView, loadOp: "load", storeOp: "store" }],
+    });
+    setDirtyScissor(documentMaskSeedPass);
+    documentMaskSeedPass.setPipeline(clearPipeline);
+    documentMaskSeedPass.draw(3, 1, 0, 0);
+    documentMaskSeedPass.end();
+
+    let groupOnDedicatedTexture = false;
+    for (const childSegment of program.segments.slice(1)) {
+      const childRecord = compositionRecordForSegment(childSegment);
+      const childResources = rasterResourcesForSegment(childSegment);
+      const childNeedsAdvancedComposition = Boolean(
+        childRecord && rasterLayerNeedsBackdropComposition(childRecord)
+          || childResources?.documentCutoutMaskSurface,
+      );
+      if (!childNeedsAdvancedComposition) {
+        const childPass = encoder.beginRenderPass({
+          label: `${label} · clipping child ${itemKeyForSegment(childSegment) ?? "unknown"}`,
+          colorAttachments: [{
+            view: groupOnDedicatedTexture ? groupView : groupStartView,
+            loadOp: "load",
+            storeOp: "store",
+          }],
+        });
+        setDirtyScissor(childPass);
+        drawSegmentSource(childPass, childSegment, "source-atop", true);
+        childPass.end();
+        continue;
+      }
+      if (!childRecord) {
+        throw new Error("An advanced clipping child has no raster record.");
+      }
+
+      const operandPass = encoder.beginRenderPass({
+        label: `${label} · clipping operand ${childRecord.id}`,
+        colorAttachments: [{ view: operandView, loadOp: "load", storeOp: "store" }],
+      });
+      setDirtyScissor(operandPass);
+      operandPass.setPipeline(clearPipeline);
+      operandPass.draw(3, 1, 0, 0);
+      drawSegmentSource(operandPass, childSegment, "source-over", true);
+      operandPass.end();
+
+      if (childRecord.cutoutMode !== "off") {
+        const cutoutPass = encoder.beginRenderPass({
+          label: `${label} · clipping authored matte ${childRecord.id}`,
+          colorAttachments: [{ view: cutoutView, loadOp: "load", storeOp: "store" }],
+        });
+        setDirtyScissor(cutoutPass);
+        cutoutPass.setPipeline(clearPipeline);
+        cutoutPass.draw(3, 1, 0, 0);
+        drawSegmentCutoutSource(cutoutPass, childSegment, true);
+        cutoutPass.end();
+      }
+
+      const childBackdropBindGroup = groupOnDedicatedTexture
+        ? engine.mixedSceneBlendFromGroupBindGroup
+        : currentIsCanonical
+          ? engine.mixedSceneBlendFromScratchBindGroup
+          : engine.mixedSceneBlendFromLinearBindGroup;
+      const childControls = writeBlendControls(
+        childRecord.blendMode,
+        "source-atop",
+        childRecord,
+        1,
+        "clipping-child",
+      );
+      if (childRecord.cutoutMode === "document") {
+        const documentMaskPass = encoder.beginRenderPass({
+          label: `${label} · clipping document mask ${childRecord.id}`,
+          colorAttachments: [{ view: documentMaskView, loadOp: "load", storeOp: "store" }],
+        });
+        setDirtyScissor(documentMaskPass);
+        documentMaskPass.setPipeline(documentMaskPipeline);
+        documentMaskPass.setBindGroup(0, childBackdropBindGroup, [childControls]);
+        documentMaskPass.draw(3, 1, 0, 0);
+        documentMaskPass.end();
+      }
+
+      const childBlendPass = encoder.beginRenderPass({
+        label: `${label} · clipping blend ${childRecord.id}`,
+        colorAttachments: [{
+          view: groupOnDedicatedTexture ? groupStartView : groupView,
+          loadOp: "load",
+          storeOp: "store",
+        }],
+      });
+      setDirtyScissor(childBlendPass);
+      childBlendPass.setPipeline(blendPipeline);
+      childBlendPass.setBindGroup(0, childBackdropBindGroup, [childControls]);
+      childBlendPass.draw(3, 1, 0, 0);
+      childBlendPass.end();
+      groupOnDedicatedTexture = !groupOnDedicatedTexture;
+    }
+
+    const completedGroupTexture = groupOnDedicatedTexture
+      ? groupTexture
+      : groupStartTexture;
+    encoder.copyTextureToTexture(
+      {
+        texture: completedGroupTexture,
+        origin: { x: presentationDirtyRect.x, y: presentationDirtyRect.y, z: 0 },
+      },
+      {
+        texture: operandTexture,
+        origin: { x: presentationDirtyRect.x, y: presentationDirtyRect.y, z: 0 },
+      },
+      {
+        width: presentationDirtyRect.width,
+        height: presentationDirtyRect.height,
+        depthOrArrayLayers: 1,
+      },
+    );
+
+    if (baseRecord?.cutoutMode !== undefined && baseRecord.cutoutMode !== "off") {
+      const baseCutoutPass = encoder.beginRenderPass({
+        label: `${label} · clipping base authored matte`,
+        colorAttachments: [{ view: cutoutView, loadOp: "load", storeOp: "store" }],
+      });
+      setDirtyScissor(baseCutoutPass);
+      baseCutoutPass.setPipeline(clearPipeline);
+      baseCutoutPass.draw(3, 1, 0, 0);
+      drawSegmentCutoutSource(baseCutoutPass, baseSegment, true);
+      baseCutoutPass.end();
+    }
+
+    const outerBlendPass = encoder.beginRenderPass({
+      label: `${label} · clipping group output ${program.baseKey}`,
+      colorAttachments: [{ view: groupStartView, loadOp: "load", storeOp: "store" }],
+    });
+    setDirtyScissor(outerBlendPass);
+    outerBlendPass.setPipeline(blendPipeline);
+    outerBlendPass.setBindGroup(
+      0,
+      currentIsCanonical
+        ? engine.mixedSceneBlendFromLinearBindGroup
+        : engine.mixedSceneBlendFromScratchBindGroup,
+      [writeBlendControls(
+        baseRecord?.blendMode ?? "normal",
+        "source-over",
+        baseRecord,
+        1,
+        "clipping-outer",
+        baseRecord?.opacity ?? 1,
+      )],
+    );
+    outerBlendPass.draw(3, 1, 0, 0);
+    outerBlendPass.end();
+    currentIsCanonical = !currentIsCanonical;
+    captureDeepFloorAfter(baseSegmentIndex);
+  };
   for (
     let segmentIndex = 0;
     segmentIndex < engine.mixedSceneCompositionSegments.length;
     segmentIndex += 1
   ) {
     const segment = engine.mixedSceneCompositionSegments[segmentIndex];
+    const heterogeneousClippingProgram = heterogeneousClippingProgramAt(segmentIndex);
+    if (heterogeneousClippingProgram) {
+      if (heterogeneousClippingProgramIsSimple(heterogeneousClippingProgram)) {
+        encodeSimpleHeterogeneousClippingProgram(
+          heterogeneousClippingProgram,
+          segmentIndex,
+        );
+      } else {
+        encodeAdvancedHeterogeneousClippingProgram(
+          heterogeneousClippingProgram,
+          segmentIndex,
+        );
+      }
+      segmentIndex = heterogeneousClippingProgram.endSegmentIndex;
+      continue;
+    }
     const blendMode = engine.compositionSegmentBlendMode(segment);
     const compositionRecord = compositionRecordForSegment(segment);
     const rasterResources = rasterResourcesForSegment(segment);
@@ -3496,6 +3913,64 @@ export async function prewarmMixedSceneLinearTextureForLayerBlend(
   engine.presentationCacheNeedsFullRebuild = true;
 }
 
+function releaseMixedSceneClippingScratch(engine: BrushEngine): void {
+  engine.mixedSceneClippingScratchTexture?.destroy();
+  engine.mixedSceneClippingScratchTexture = null;
+  engine.mixedSceneClippingScratchView = null;
+  engine.mixedSceneClippingScratchBindGroup = null;
+}
+
+function ensureMixedSceneClippingScratch(
+  engine: BrushEngine,
+  width: number,
+  height: number,
+): void {
+  const needsScratch = engine.mixedSceneStack?.hasHeterogeneousClipping === true;
+  if (!needsScratch) {
+    releaseMixedSceneClippingScratch(engine);
+    return;
+  }
+  if (
+    engine.mixedSceneClippingScratchTexture
+    && engine.mixedSceneClippingScratchView
+    && engine.mixedSceneClippingScratchBindGroup
+    && engine.mixedSceneLinearWidth === width
+    && engine.mixedSceneLinearHeight === height
+  ) {
+    return;
+  }
+  const layout = engine.mixedScenePresentBindGroupLayout;
+  if (!layout || !engine.mixedSceneClippingScratchCompositePipeline) {
+    throw new Error("The mixed-scene clipping compositor is not initialized.");
+  }
+  const texture = engine.device.createTexture({
+    label: `Mixed scene clipping scratch ${width}×${height}`,
+    size: { width, height, depthOrArrayLayers: 1 },
+    format: MIXED_SCENE_LINEAR_FORMAT,
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+  });
+  try {
+    const view = texture.createView({ label: "Mixed scene clipping scratch view" });
+    const bindGroup = engine.device.createBindGroup({
+      label: "Mixed scene clipping scratch source bind group",
+      layout,
+      entries: [
+        { binding: 0, resource: { buffer: engine.displayUniformBuffer } },
+        { binding: 1, resource: view },
+      ],
+    });
+    const previousTexture = engine.mixedSceneClippingScratchTexture;
+    engine.mixedSceneClippingScratchTexture = texture;
+    engine.mixedSceneClippingScratchView = view;
+    engine.mixedSceneClippingScratchBindGroup = bindGroup;
+    previousTexture?.destroy();
+    engine.presentationCacheNeedsFullRebuild = true;
+  } catch (error) {
+    texture.destroy();
+    throw error;
+  }
+}
+
 export function ensureMixedSceneLinearTexture(engine: BrushEngine, width: number, height: number): void {
   const releaseBlendScratch = () => {
     engine.mixedSceneBlendScratchTexture?.destroy();
@@ -3526,6 +4001,7 @@ export function ensureMixedSceneLinearTexture(engine: BrushEngine, width: number
   if (!engine.usesOrderedScenePresentation()) {
     engine.mixedSceneLinearTexture?.destroy();
     releaseBlendScratch();
+    releaseMixedSceneClippingScratch(engine);
     engine.mixedSceneLinearTexture = null;
     engine.mixedSceneLinearView = null;
     engine.mixedSceneLinearWidth = 0;
@@ -3533,6 +4009,7 @@ export function ensureMixedSceneLinearTexture(engine: BrushEngine, width: number
     engine.mixedScenePresentBindGroup = null;
     return;
   }
+  ensureMixedSceneClippingScratch(engine, width, height);
   const needsAdvancedBlend = !engine.usesLayerBlendTilePresentation()
     && engine.layerStack.layers.some(rasterLayerNeedsBackdropComposition);
   const needsDeepFloor = engine.layerStack.layers.some(

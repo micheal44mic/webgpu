@@ -929,6 +929,7 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
   // three 1024² tiles plus its GPU uniform rings. Count the resources that
   // are actually resident, rather than inferring them from the current mode.
   const mixedSceneTextureCount = Number(Boolean(engine.mixedSceneLinearTexture))
+    + Number(Boolean(engine.mixedSceneClippingScratchTexture))
     + Number(Boolean(engine.mixedSceneBlendScratchTexture))
     + Number(Boolean(engine.mixedSceneBlendOperandTexture))
     + Number(Boolean(engine.mixedSceneBlendCutoutTexture))

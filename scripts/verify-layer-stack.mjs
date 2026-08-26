@@ -1315,7 +1315,7 @@ assert.ok(
 );
 assert.match(
   layerBlendBody,
-  /const visibleSemantics = Boolean\(engine\.mixedSceneStack\?\.visibleSemanticCount\)[\s\S]*?candidateNeedsTile = candidateAdvanced && !visibleSemantics[\s\S]*?candidateNeedsViewportBlend = candidateAdvanced && visibleSemantics/,
+  /const usesViewportComposition = engine\.usesOrderedScenePresentation\(\)[\s\S]*?candidateNeedsTile = candidateAdvanced && !usesViewportComposition[\s\S]*?candidateNeedsViewportBlend = candidateAdvanced && usesViewportComposition/,
   "il prewarm deve allocare soltanto la famiglia realmente usata dalla scena candidata",
 );
 assert.match(
@@ -2343,11 +2343,11 @@ assert.match(
   "la scelta UI deve pubblicare subito il modo, senza un pulsante Applica",
 );
 assert.match(mainSource, /mobileLayerClippingButton/);
-assert.match(sceneEditorSource, /private async setRasterClippingTransaction\(/);
+assert.match(sceneEditorSource, /private async setLayerClippingTransaction\(/);
 assert.match(
   sceneEditorSource,
-  /const changed = await this\.options\.engine\.setLayerClipping\(target\.rasterIndex, enabled\)/,
-  "il controllo per riga deve agire anche su un raster esistente, non crearne uno nuovo",
+  /const changed = await this\.options\.engine\.setSceneLayerClipping\(key, enabled\)/,
+  "il controllo per riga deve usare l'identità stabile di raster o SVG",
 );
 assert.match(sceneEditorSource, /Additional consecutive masks will use the same base/);
 assert.doesNotMatch(indexSource, /id="addClippingMask"/,
@@ -2913,6 +2913,16 @@ assert.match(
   /scene\.insertRasterAt\(record\.id, sceneInsertIndex\)/,
   "l'inserimento eterogeneo pianificato deve pubblicare lo stesso raster nella scena",
 );
+assert.match(
+  addMethodBody,
+  /requestedSceneClippingParentKey[\s\S]*?scene\.setClippingParentKey\([\s\S]*?`raster:\$\{record\.id\}`,[\s\S]*?requestedSceneClippingParentKey/,
+  "Add mask deve poter collegare atomicamente il nuovo raster a una base vettoriale",
+);
+assert.match(
+  addMethodBody,
+  /sceneClippingParentKey: this\.mixedSceneStack\.clippingParentKey\(/,
+  "la relazione eterogenea di Add deve essere inclusa nella stessa azione Undo",
+);
 assert.match(addMethodBody, /await allocateLayerGpuResources\(this,/);
 const addActivation = addMethodBody.indexOf(
   "const result = await this.activateLayer(outgoingIndexAfterInsertion);",
@@ -2936,6 +2946,22 @@ assert.match(addMethodBody, /evictReconstructibleLayerResources\(this, record\);
   "il rollback di addLayer deve evacuare il nuovo hot prima di reidratare l'origine");
 assert.match(addMethodBody, /this\.layerGpu\.delete\(record\.id\);[\s\S]*?destroyLayerGpuResources\(this, gpu\);[\s\S]*?await this\.activateLayer\(restoredIndex\);/,
   "il candidato fallito deve essere rimosso prima di ricostruire la scena originaria");
+
+const addMaskStart = engineSource.indexOf("async addClippingMaskLayer(");
+const addMaskEnd = engineSource.indexOf("async setLayerReference(", addMaskStart);
+assertSection("add clipping mask", addMaskStart, addMaskEnd);
+const addMaskBody = engineSource.slice(addMaskStart, addMaskEnd);
+assert.match(
+  addMaskBody,
+  /selected\.kind !== "raster"[\s\S]*?selected\.kind !== "text"[\s\S]*?selected\.kind !== "svg"/,
+  "Add mask deve accettare raster, testo editabile e SVG",
+);
+assert.match(addMaskBody, /const baseKey = scene\.clippingBaseKey\(selected\.key\)/);
+assert.match(
+  addMaskBody,
+  /this\.addLayer\(`Clipping Mask \$\{ordinal\}`, parentId, baseKey\)/,
+  "creazione e relazione devono restare una sola transazione strutturale",
+);
 
 // Measurement setups reset the GLOBAL journal but clear only the active layer.
 assert.match(engineSource, /get documentWideResetBlockedByLayers\(\): boolean/);
@@ -3289,6 +3315,11 @@ console.log("Layer stack verification passed.");
     deleteLayer,
     /Delete the masks first, /,
     "il messaggio deve dire cosa fare, non solo cosa non si puo' fare",
+  );
+  assert.match(
+    deleteLayer,
+    /semanticChildren[\s\S]*?Unlink or delete those[\s\S]*?clipping layers first/,
+    "una base raster con figli testo o SVG deve fermarsi prima della mutazione strutturale",
   );
 
   // Il livello bloccato usciva in silenzio: pulsante inerte, nessun messaggio,

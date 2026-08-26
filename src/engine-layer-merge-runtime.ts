@@ -466,6 +466,7 @@ async function captureRasterInput(
   actionId: number,
   sceneIndex: number,
 ): Promise<LayerMergeHistoryInput> {
+  const scene = requireMixedSceneStack(engine);
   const rasterLayerIndex = engine.layerStack.indexOfId(layerId);
   if (rasterLayerIndex < 0) throw new Error(`Raster ${layerId} is missing from the merge.`);
   const record = engine.layerStack.at(rasterLayerIndex);
@@ -501,6 +502,8 @@ async function captureRasterInput(
     rasterLayerIndex,
     sceneIndex,
     clippingParentId: record.clippingParentId,
+    sceneClippingParentKey: scene.clippingParentKey(`raster:${layerId}`),
+    sceneClippingChildKeys: scene.clippingChildrenKeys(`raster:${layerId}`),
     seed,
     baseBounds: record.contentBounds ? { ...record.contentBounds } : null,
   };

@@ -37,7 +37,7 @@ export type SceneEditorEnginePort = Pick<
   | "setActiveLayer"
   | "setActiveMixedSceneItem"
   | "setLayerBlendMode"
-  | "setLayerClipping"
+  | "setSceneLayerClipping"
   | "setLayerContentOpacity"
   | "setLayerCutoutMode"
   | "setLayerOpacity"
@@ -418,8 +418,8 @@ export class SceneEditorController {
     return this.setRasterTonalBlendTransaction(key, tonalBlend);
   }
 
-  setRasterClipping(key: SceneLayerKey, enabled: boolean): void {
-    void this.setRasterClippingTransaction(key, enabled);
+  setLayerClipping(key: SceneLayerKey, enabled: boolean): void {
+    void this.setLayerClippingTransaction(key, enabled);
   }
 
   setRasterReference(key: SceneLayerKey, enabled: boolean): void {
@@ -841,32 +841,39 @@ export class SceneEditorController {
     }
   }
 
-  private async setRasterClippingTransaction(
+  private async setLayerClippingTransaction(
     key: SceneLayerKey,
     enabled: boolean,
   ): Promise<void> {
     const beforeStats = this.options.engine.getStats();
     const target = selectedSceneLayerProperties(beforeStats, false, key);
-    if (target?.kind !== "raster" || target.rasterIndex === null || !this.begin()) return;
-    const before = beforeStats.layers[target.rasterIndex];
+    if (
+      !target
+      || (
+        target.kind !== "raster"
+        && target.kind !== "text"
+        && target.kind !== "svg"
+      )
+      || !this.begin()
+    ) return;
+    const beforeName = target.name;
     try {
       if (
         !(await this.showLoading(
           enabled ? "Linking clipping mask…" : "Unlinking clipping mask…",
         ))
       ) return;
-      const changed = await this.options.engine.setLayerClipping(target.rasterIndex, enabled);
+      const changed = await this.options.engine.setSceneLayerClipping(key, enabled);
       const stats = this.options.engine.getStats();
-      const liveIndex = rasterIndexForSceneLayerKey(stats, key);
-      const layer = stats.layers[liveIndex];
-      const parent = layer?.clippingParentId === null || layer?.clippingParentId === undefined
-        ? null
-        : stats.layers.find((candidate) => candidate.id === layer.clippingParentId) ?? null;
+      const live = selectedSceneLayerProperties(stats, false, key);
+      const parent = live?.clippingParentKey
+        ? selectedSceneLayerProperties(stats, false, live.clippingParentKey)
+        : null;
       this.options.elements.result.textContent = changed
         ? enabled
-          ? `${layer?.name ?? before?.name ?? "Layer"} is now clipped to `
-            + `${parent?.name ?? "the raster layer below"}. Additional consecutive masks will use the same base.`
-          : `${layer?.name ?? before?.name ?? "Layer"} is now an independent base. `
+          ? `${live?.name ?? beforeName} is now clipped to `
+            + `${parent?.name ?? "the layer below"}. Additional consecutive masks will use the same base.`
+          : `${live?.name ?? beforeName} is now an independent base. `
             + "Any masks above remain linked to this new base."
         : "Clipping mask setting already active.";
     } catch (error) {
@@ -924,8 +931,11 @@ export class SceneEditorController {
       const result = await this.options.engine.addClippingMaskLayer();
       this.options.syncActiveRasterControls();
       await this.options.engine.waitForIdle();
+      const created = this.options.engine.getStats().layers.find(
+        (layer) => layer.id === result.layerId,
+      );
       this.options.elements.result.textContent =
-        `Clipping Mask ${result.toIndex + 1} created and selected in `
+        `${created?.name ?? "Clipping layer"} created and selected in `
         + `${result.totalMs.toFixed(0)} ms.`;
     } catch (error) {
       this.options.recordDiagnostic("raster-clipping-mask-add-failed", null, error);

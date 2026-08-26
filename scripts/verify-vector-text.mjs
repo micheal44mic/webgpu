@@ -2208,6 +2208,15 @@ assert.match(vectorRasterSource, /record\.storageTileMask\.set\(occupancy\.tileM
 assert.doesNotMatch(vectorRasterSource, /markLayerStorageRect\(record\.storageTileMask/);
 assert.match(vectorRasterSource, /replaceVectorWithRaster\(/);
 assert.match(vectorRasterSource, /replaceRasterWithVector\(/);
+assert.match(
+  vectorRasterSource,
+  /function synchronizeRasterClippingProjection\([\s\S]*?scene\.rasterClippingProjection\(/,
+  "la conversione vettore/raster deve conservare la relazione di clipping",
+);
+assert.ok(
+  (vectorRasterSource.match(/synchronizeRasterClippingProjection\(engine\);/g) ?? []).length >= 7,
+  "conversione, Undo/Redo e rollback devono riallineare tutti la proiezione raster",
+);
 assert.match(vectorRasterSource, /action\.seed\.format !== engine\.layerFormat/);
 assert.match(vectorRasterSource, /allocateLayerGpuResources\([\s\S]{0,100}action\.seed\.format/);
 assert.match(vectorRasterSource, /runGpuAllocationTransaction\(/);

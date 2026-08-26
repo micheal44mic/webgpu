@@ -17,7 +17,13 @@ assert.doesNotMatch(
 );
 assert.match(source, /export type SceneEditorEnginePort = Pick</);
 assert.match(source, /selectedSceneLayerProperties\([\s\S]*?key/);
-assert.match(source, /rasterIndexForSceneLayerKey\(stats, key\)/);
+assert.match(source, /rasterIndexForSceneLayerKey\(this\.options\.engine\.getStats\(\), key\)/);
+assert.match(source, /setSceneLayerClipping\(key, enabled\)/);
+assert.match(
+  source,
+  /layers\.find\([\s\S]*?layer\.id === result\.layerId[\s\S]*?created\?\.name \?\? "Clipping layer"/,
+  "Add mask status must use the created layer name rather than its raster-stack index",
+);
 assert.doesNotMatch(source, /document\.getElementById|\belement<|window\./);
 
 const moduleServer = await createServer({
@@ -105,6 +111,7 @@ let stats = {
         rasterLayerId: 8,
         rasterLayerIndex: 0,
         rasterClippingParentId: null,
+        clippingParentKey: null,
       },
       {
         key: "raster:7",
@@ -112,9 +119,10 @@ let stats = {
         rasterLayerId: 7,
         rasterLayerIndex: 1,
         rasterClippingParentId: null,
+        clippingParentKey: null,
       },
-      { key: "text:5", kind: "text", textNode },
-      { key: "image:9", kind: "image", imageNode },
+      { key: "text:5", kind: "text", clippingParentKey: null, textNode },
+      { key: "image:9", kind: "image", clippingParentKey: null, imageNode },
     ],
   },
 };
@@ -157,8 +165,8 @@ const engine = {
     calls.push(["reference", index, enabled]);
     return true;
   },
-  setLayerClipping: async (index, enabled) => {
-    calls.push(["clipping", index, enabled]);
+  setSceneLayerClipping: async (key, enabled) => {
+    calls.push(["clipping", key, enabled]);
     return true;
   },
   setLayerOpacity: async (index, opacity) => {
@@ -266,6 +274,9 @@ assert.equal(elements.app.getAttribute("aria-busy"), null);
 controller.setLayerOpacity("text:5", 0.4);
 await settle();
 assert.deepEqual(calls.at(-1), ["text-opacity", 5, 0.4]);
+controller.setLayerClipping("text:5", true);
+await settle();
+assert.deepEqual(calls.at(-1), ["clipping", "text:5", true]);
 controller.setLayerVisibility("image:9", false);
 await settle();
 assert.deepEqual(calls.at(-1), ["image-visible", 9, false]);
@@ -391,6 +402,7 @@ interactionLocked = false;
 assert.deepEqual(
   busyChanges,
   [
+    true, false,
     true, false,
     true, false,
     true, false,

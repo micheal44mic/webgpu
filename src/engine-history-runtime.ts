@@ -18,6 +18,7 @@ import {
 } from "./mixed-scene-stack";
 import {
   clearVectorTextPresentationForTransaction,
+  ensureMixedSceneLinearTexture,
   publishMixedScene,
   requireMixedSceneStack,
 } from "./engine-vector-text-runtime";
@@ -1368,6 +1369,11 @@ export async function applyVectorHistoryState(engine: BrushEngine,
       engine.getVectorTextViewState(),
       { reuseUnchangedRasterRuns: true },
     );
+    ensureMixedSceneLinearTexture(
+      engine,
+      Math.max(1, engine.canvas.width),
+      Math.max(1, engine.canvas.height),
+    );
     engine.presentationCacheNeedsFullRebuild = true;
     engine.displayDirty = true;
     engine.requestRender();
@@ -1380,6 +1386,11 @@ export async function applyVectorHistoryState(engine: BrushEngine,
         caller,
         engine.getVectorTextViewState(),
         { reuseUnchangedRasterRuns: true },
+      );
+      ensureMixedSceneLinearTexture(
+        engine,
+        Math.max(1, engine.canvas.width),
+        Math.max(1, engine.canvas.height),
       );
       engine.presentationCacheNeedsFullRebuild = true;
       engine.displayDirty = true;
@@ -1843,11 +1854,12 @@ export function recordVectorHistoryAction(engine: BrushEngine,
   return true;
 }
 
-function captureMixedSceneOrderState(engine: BrushEngine): MixedSceneOrderState {
+export function captureMixedSceneOrderState(engine: BrushEngine): MixedSceneOrderState {
   const scene = requireMixedSceneStack(engine);
   return {
     bottomUpKeys: scene.items.map((item) => item.key),
     rasterLayerIds: engine.layerStack.layers.map((record) => record.id),
+    clippingRelations: scene.clippingRelations(),
   };
 }
 
@@ -1867,6 +1879,7 @@ export function getMixedSceneReorderTargets(
     scene.items.map((item) => item.key),
     rasterOrderEntries(engine),
     key,
+    scene.clippingRelations(),
   );
 }
 
@@ -1885,20 +1898,39 @@ export async function applyMixedSceneOrderState(
   const activeRasterId = engine.layerStack.active.id;
   const referenceRasterId = engine.layerStack.referenceLayerId;
   const selectedKey = scene.selected.key;
+  const targetClippingRelations = target.clippingRelations ?? scene.clippingRelations();
+  const parentByChild = new Map(
+    targetClippingRelations.map((relation) => [relation.childKey, relation.parentKey]),
+  );
   const recordsById = new Map(
     engine.layerStack.layers.map((record) => [record.id, record]),
   );
   const targetRasterOrder = target.rasterLayerIds.map((id) => {
     const record = recordsById.get(id);
     if (!record) throw new Error(`Raster ${id} is missing from the reorder operation.`);
-    return { id, clippingParentId: record.clippingParentId };
+    const parentKey = parentByChild.get(`raster:${id}`);
+    const clippingParentId = parentKey?.startsWith("raster:")
+      ? Number(parentKey.slice("raster:".length))
+      : null;
+    if (clippingParentId !== null && !Number.isInteger(clippingParentId)) {
+      throw new Error(`Raster clipping base ${parentKey} is invalid.`);
+    }
+    return { id, clippingParentId };
   });
-  assertValidMixedSceneOrder(target.bottomUpKeys, targetRasterOrder);
+  assertValidMixedSceneOrder(
+    target.bottomUpKeys,
+    targetRasterOrder,
+    targetClippingRelations,
+  );
   engine.layerSwitchBusy = true;
   try {
     await engine.waitForIdle();
     engine.layerStack.reorderByIds(target.rasterLayerIds);
     scene.reorderByKeys(target.bottomUpKeys);
+    scene.restoreClippingRelations(targetClippingRelations);
+    engine.layerStack.restoreClippingHistoryState(
+      scene.rasterClippingProjection(target.rasterLayerIds),
+    );
     if (
       engine.layerStack.active.id !== activeRasterId
       || engine.layerStack.referenceLayerId !== referenceRasterId
@@ -1920,6 +1952,10 @@ export async function applyMixedSceneOrderState(
     try {
       engine.layerStack.reorderByIds(previous.rasterLayerIds);
       scene.reorderByKeys(previous.bottomUpKeys);
+      scene.restoreClippingRelations(previous.clippingRelations ?? []);
+      engine.layerStack.restoreClippingHistoryState(
+        scene.rasterClippingProjection(previous.rasterLayerIds),
+      );
       clearVectorTextPresentationForTransaction(engine);
       await engine.rebuildMergedLayerSurfaces(
         caller,
@@ -1955,14 +1991,16 @@ export async function applyMixedSceneOrderState(
   }
 }
 
-function recordMixedSceneReorderHistoryAction(
+export function recordMixedSceneReorderHistoryAction(
   engine: BrushEngine,
   before: MixedSceneOrderState,
   after: MixedSceneOrderState,
+  operation: "reorder" | "clipping" = "reorder",
 ): void {
   const action: MixedSceneReorderHistoryAction = {
     id: engine.nextHistoryActionId,
     kind: "scene-reorder",
+    operation,
     before,
     after,
   };
@@ -1988,11 +2026,13 @@ export async function moveMixedSceneItem(
     rasterOrderEntries(engine),
     key,
     targetTopFirstSlot,
+    before.clippingRelations ?? [],
   );
   if (!plan.changed) return false;
   const after: MixedSceneOrderState = {
     bottomUpKeys: [...plan.bottomUpKeys],
     rasterLayerIds: [...plan.rasterLayerIds],
+    clippingRelations: before.clippingRelations,
   };
   engine.cancelLayerColdCompressionIdle();
   await applyMixedSceneOrderState(engine, after);
@@ -2104,6 +2144,7 @@ export function historyStepBlockedByLayer(engine: BrushEngine, delta: -1 | 1): b
       target,
       scene.items.map((item) => item.key),
       rasterOrderEntries(engine),
+      scene.clippingRelations(),
     );
   }
   return historyStepTargetsMissingLayer(

@@ -86,6 +86,15 @@ const pipelinesByDevice = new WeakMap<
   Map<LayerFormat, Promise<VectorRasterPipelines>>
 >();
 
+function synchronizeRasterClippingProjection(engine: BrushEngine): void {
+  const scene = requireMixedSceneStack(engine);
+  engine.layerStack.restoreClippingHistoryState(
+    scene.rasterClippingProjection(
+      engine.layerStack.layers.map((record) => record.id),
+    ),
+  );
+}
+
 function sourceOverBlend(): GPUBlendState {
   return {
     color: {
@@ -882,6 +891,7 @@ export async function rasterizeVectorNodeToLayer(
     record.hasContent = true;
     record.storageTileMask.set(occupancy.tileMask);
     scene.replaceVectorWithRaster(vectorKey, record.id);
+    synchronizeRasterClippingProjection(engine);
     engine.vectorTextPreviewExcludedNodeId = null;
     clearVectorTextPresentationForTransaction(engine);
     const previousIndexAfterInsertion = engine.layerStack.indexOfId(originalActiveId);
@@ -930,6 +940,7 @@ export async function rasterizeVectorNodeToLayer(
     if (rollbackPrepared) {
       try {
         scene.restoreState(originalSceneState);
+        synchronizeRasterClippingProjection(engine);
         engine.vectorTextPreviewExcludedNodeId = originalExcludedNodeId;
         clearVectorTextPresentationForTransaction(engine);
       } catch (restoreSceneError) {
@@ -993,6 +1004,7 @@ export async function rollbackUnpublishedVectorRasterization(
   try {
     await freezeVectorRasterPresentationForRollback(engine);
     scene.replaceRasterWithVector(action.layerId, action.vectorState);
+    synchronizeRasterClippingProjection(engine);
     const restoredSelection = scene.selected;
     engine.vectorTextPreviewExcludedNodeId = restoredSelection.kind === "text"
       ? restoredSelection.textNodeId
@@ -1073,6 +1085,7 @@ async function undoVectorRasterization(
   // generated layer, which is about to leave the scene; packing that same hot
   // texture into a second cold copy would only add a GPU fence and memory peak.
   scene.replaceRasterWithVector(action.layerId, action.vectorState);
+  synchronizeRasterClippingProjection(engine);
   const restoredSelection = scene.selected;
   engine.vectorTextPreviewExcludedNodeId = restoredSelection.kind === "text"
     ? restoredSelection.textNodeId
@@ -1085,6 +1098,7 @@ async function undoVectorRasterization(
     const rollbackErrors: unknown[] = [];
     try {
       scene.restoreState(sceneState);
+      synchronizeRasterClippingProjection(engine);
       clearVectorTextPresentationForTransaction(engine);
       const restoredTargetIndex = engine.layerStack.indexOfId(action.layerId);
       engine.layerStack.setActiveIndex(restoredTargetIndex);
@@ -1148,6 +1162,7 @@ async function redoVectorRasterization(
     engine.layerStack.attach(action.layerRecord, action.rasterLayerIndex);
     engine.layerGpu.set(action.layerId, gpu);
     scene.replaceVectorWithRaster(action.vectorState.key, action.layerId);
+    synchronizeRasterClippingProjection(engine);
     engine.vectorTextPreviewExcludedNodeId = null;
     clearVectorTextPresentationForTransaction(engine);
     const previousIndexAfterInsertion = engine.layerStack.indexOfId(originalActiveId);
@@ -1166,6 +1181,7 @@ async function redoVectorRasterization(
     if (rollbackPrepared) {
       try {
         scene.restoreState(sceneState);
+        synchronizeRasterClippingProjection(engine);
         engine.vectorTextPreviewExcludedNodeId = originalExcludedNodeId;
         clearVectorTextPresentationForTransaction(engine);
       } catch (restoreError) {

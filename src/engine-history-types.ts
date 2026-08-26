@@ -77,6 +77,7 @@ export interface LayerBlendModeHistoryAction {
 export interface MixedSceneReorderHistoryAction {
   id: number;
   kind: "scene-reorder";
+  operation?: "reorder" | "clipping";
   before: MixedSceneOrderState;
   after: MixedSceneOrderState;
 }
@@ -199,6 +200,10 @@ export interface DeletedLayerEntry {
   rasterLayerIndex: number;
   sceneIndex: number;
   clippingParentId: number | null;
+  /** Authoritative heterogeneous clipping base; absent in legacy actions. */
+  sceneClippingParentKey?: MixedSceneItem["key"] | null;
+  /** Existing semantic children that must reconnect when this base returns. */
+  sceneClippingChildKeys?: readonly MixedSceneItem["key"][];
   /** `null` quando il livello era vuoto: non c'e' nulla da reidratare. */
   seed: LayerColdStorageResources | null;
   baseBounds: DirtyRect | null;
@@ -287,6 +292,8 @@ export interface LayerAddHistoryAction extends RasterHistoryCheckpoint {
   rasterLayerIndex: number;
   sceneIndex: number;
   clippingParentId: number | null;
+  /** Authoritative heterogeneous clipping base; absent in legacy actions. */
+  sceneClippingParentKey?: MixedSceneItem["key"] | null;
   selectedKeyBefore: MixedSceneItem["key"];
   activeRasterLayerIdBefore: number;
   /** Baseline presentation policy copied with the duplicated raster. */
@@ -505,6 +512,9 @@ export function vectorHistoryStatesEqual(
     left.key !== right.key
     || left.index !== right.index
     || left.selectedKey !== right.selectedKey
+    || (left.clippingParentKey ?? null) !== (right.clippingParentKey ?? null)
+    || JSON.stringify(left.clippingChildKeys ?? [])
+      !== JSON.stringify(right.clippingChildKeys ?? [])
   ) {
     return false;
   }

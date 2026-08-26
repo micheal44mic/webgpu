@@ -42,6 +42,26 @@ assert.match(
   /seed: LayerColdStorageResources \| null/,
   "un livello vuoto non deve allocare un seed",
 );
+assert.match(
+  types,
+  /sceneClippingParentKey\?: MixedSceneItem\["key"\] \| null/,
+  "la storia strutturale deve conservare anche una base SVG",
+);
+assert.match(
+  structure,
+  /scene\.setClippingParentKey\(sceneKey, parentKey\)/,
+  "il riattacco deve ripristinare la relazione eterogenea autorevole",
+);
+assert.match(
+  structure,
+  /scene\.rasterClippingProjection\(/,
+  "dopo il riattacco la proiezione raster deve essere riallineata",
+);
+assert.match(
+  engine,
+  /sceneClippingParentKey: this\.mixedSceneStack\.clippingParentKey\([\s\S]*?`raster:\$\{record\.id\}`/,
+  "Add deve journalizzare la base eterogenea del nuovo livello",
+);
 
 // I due kind devono essere membri distinti dell'unione del journal. Con un solo
 // membro `"layer-add" | "layer-delete"` TypeScript riduce il discriminante a
