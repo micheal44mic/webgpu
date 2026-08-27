@@ -34,6 +34,7 @@ export interface AppDiagnosticsUiSnapshot {
     readonly rasterMotionBlurUiBusy: boolean;
     readonly rasterNoiseUiBusy: boolean;
     readonly rasterGlassUiBusy: boolean;
+    readonly rasterCurvesUiBusy: boolean;
     readonly rasterLiquifyUiBusy: boolean;
   };
 }

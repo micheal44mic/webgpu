@@ -17,6 +17,7 @@ assert.deepEqual(contract.DESTRUCTIVE_RASTER_ADJUSTMENT_KINDS, [
   "motion-blur",
   "noise",
   "glass",
+  "curves",
 ]);
 const overlap = contract.NON_DESTRUCTIVE_RASTER_EFFECT_KINDS.filter(
   (kind) => contract.DESTRUCTIVE_RASTER_ADJUSTMENT_KINDS.includes(kind),

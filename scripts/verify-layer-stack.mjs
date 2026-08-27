@@ -1259,6 +1259,87 @@ assert.match(
 );
 assert.match(clippingToggleBody, /publishMixedScene\(engine\)/,
   "la UI mista deve ricevere subito i nuovi parent id");
+const layerPresentationStart = engineSource.indexOf(
+  "export async function setLayerPresentation(",
+);
+const layerPresentationEnd = engineSource.indexOf(
+  "type LayerCompositionField",
+  layerPresentationStart,
+);
+assertSection(
+  "presentazione livello raster",
+  layerPresentationStart,
+  layerPresentationEnd,
+);
+const layerPresentationBody = engineSource.slice(
+  layerPresentationStart,
+  layerPresentationEnd,
+);
+const liveOpacityStart = layerPresentationBody.indexOf(
+  'if (visible === undefined && index === engine.layerStack.activeIndex)',
+);
+const slowPresentationStart = layerPresentationBody.indexOf(
+  "engine.cancelLayerColdCompressionIdle()",
+  liveOpacityStart,
+);
+assertSection(
+  "opacita raster attiva live",
+  liveOpacityStart,
+  slowPresentationStart,
+);
+const liveOpacityBody = layerPresentationBody.slice(
+  liveOpacityStart,
+  slowPresentationStart,
+);
+assert.match(liveOpacityBody, /record\.opacity = nextOpacity/);
+assert.match(liveOpacityBody, /engine\.requestRender\(\)/);
+assert.doesNotMatch(
+  liveOpacityBody,
+  /waitForIdle|rebuildMergedLayerSurfaces|publishMixedScene/,
+  "l'opacita attiva deve arrivare all'uniform del frame senza fence o rebuild estranei",
+);
+
+const layerContentOpacityStart = engineSource.indexOf(
+  "export async function setLayerContentOpacity(",
+);
+const layerContentOpacityEnd = engineSource.indexOf(
+  "export async function setLayerCutoutMode(",
+  layerContentOpacityStart,
+);
+assertSection(
+  "fill raster attivo",
+  layerContentOpacityStart,
+  layerContentOpacityEnd,
+);
+const layerContentOpacityBody = engineSource.slice(
+  layerContentOpacityStart,
+  layerContentOpacityEnd,
+);
+const liveContentOpacityStart = layerContentOpacityBody.indexOf(
+  "if (record.id === engine.layerStack.active.id)",
+);
+const inactiveContentOpacityStart = layerContentOpacityBody.indexOf(
+  "return setLayerCompositionField(",
+  liveContentOpacityStart,
+);
+assertSection(
+  "fill raster attivo live",
+  liveContentOpacityStart,
+  inactiveContentOpacityStart,
+);
+const liveContentOpacityBody = layerContentOpacityBody.slice(
+  liveContentOpacityStart,
+  inactiveContentOpacityStart,
+);
+assert.match(liveContentOpacityBody, /await ensureEffectRenderersForRecord\(engine, record\)/);
+assert.match(liveContentOpacityBody, /rasterStrokePendingComposeRect = mergeDirtyRects/);
+assert.match(liveContentOpacityBody, /layerCompositeVisualBounds\(engine, record\)/);
+assert.match(liveContentOpacityBody, /engine\.requestRender\(\)/);
+assert.doesNotMatch(
+  liveContentOpacityBody,
+  /waitForIdle|restoreEffectsWorkbenchToActiveLayer|rebuildMergedLayerSurfaces|publishMixedScene/,
+  "il Fill attivo deve ricomporre soltanto il suo output live senza bloccare o invalidare SVG e testo",
+);
 const layerBlendStart = engineSource.indexOf("export async function setLayerBlendMode(");
 const layerBlendEnd = engineSource.indexOf(
   "export function resolveFillSource(",

@@ -4704,6 +4704,18 @@ export async function setLayerPresentation(engine: BrushEngine,
     record,
     visible !== undefined ? "visibility" : "opacity",
   );
+  if (visible === undefined && index === engine.layerStack.activeIndex) {
+    // Active-layer opacity is consumed directly by the display uniforms. It is
+    // not part of mergedBelow/Above, including while the active layer owns a
+    // clipping group, so a queue fence and merged-surface rebuild would only
+    // make the thumb present an older value before the current one.
+    record.opacity = nextOpacity;
+    engine.paintDisplayMipValidThroughLevel = 0;
+    engine.presentationCacheNeedsFullRebuild = true;
+    engine.displayDirty = true;
+    engine.requestRender();
+    return true;
+  }
   engine.cancelLayerColdCompressionIdle();
   engine.layerSwitchBusy = true;
   const previousVisible = record.visible;
@@ -4880,6 +4892,59 @@ export async function setLayerContentOpacity(
   const next = normalizeLayerContentOpacity(value);
   if (record.contentOpacity === next) return false;
   const previous = record.contentOpacity;
+  if (record.id === engine.layerStack.active.id) {
+    if (!engine.initialized) {
+      throw new Error("The engine has not been initialized yet.");
+    }
+    assertLayerLiveMetadataUpdateAllowed(engine, record, "content-opacity");
+    engine.layerSwitchBusy = true;
+    const gpu = engine.requireLayerGpu(record.id);
+    const previousBakeValid = gpu.bakeValid;
+    const queuePreview = (): void => {
+      if (engine.styleStackActive() && record.hasContent) {
+        engine.rasterStrokePendingComposeRect = mergeDirtyRects(
+          engine.rasterStrokePendingComposeRect,
+          layerCompositeVisualBounds(engine, record),
+        );
+      }
+      engine.paintDisplayMipValidThroughLevel = 0;
+      engine.presentationCacheNeedsFullRebuild = true;
+      engine.displayDirty = true;
+      engine.requestRender();
+    };
+    try {
+      record.contentOpacity = next;
+      await ensureEffectRenderersForRecord(engine, record);
+      gpu.bakeValid = false;
+      invalidateActiveLayerBake(engine);
+      queuePreview();
+      return true;
+    } catch (error) {
+      record.contentOpacity = previous;
+      gpu.bakeValid = previousBakeValid;
+      try {
+        await ensureEffectRenderersForRecord(engine, record);
+        queuePreview();
+      } catch (restoreError) {
+        const originalMessage = error instanceof Error ? error.message : String(error);
+        const restoreMessage = restoreError instanceof Error
+          ? restoreError.message
+          : String(restoreError);
+        const combined = new Error(
+          `Live layer fill failed (${originalMessage}) and restoration failed `
+          + `(${restoreMessage}). Reload the page before continuing.`,
+        );
+        engine.latchDocumentStateInconsistent(
+          "Inconsistent state after live layer fill: reload before continuing.",
+          combined,
+        );
+        throw combined;
+      }
+      throw error;
+    } finally {
+      engine.layerSwitchBusy = false;
+    }
+  }
   return setLayerCompositionField(
     engine,
     index,

@@ -407,9 +407,8 @@ verificabile e separata dalle future ottimizzazioni della memoria.
   dimostrate obsolete e senza valore di baseline; organizzare quelle conservate
   sotto una directory QA esplicita. Non eliminare
   `artifacts/first-stroke-runtime.png` prima della chiusura del piano.
-- [ ] Spostare `procreate-audit/` sotto una directory di ricerca chiaramente
-  separata oppure prepararlo per un archivio esterno; eliminare soltanto output
-  rigenerabili, senza perdere input, script o conoscenza ancora utile.
+- [x] Rimuovere dal repository gli archivi di confronto non appartenenti al
+  prodotto; gli input restano recuperabili dalla cronologia Git.
 - [ ] Conservare `benchmarks/results.json` come baseline candidata fino alla fine
   della Fase 9 e rendere esplicito che non e un asset dell'applicazione.
 - [ ] Verificare e conservare gli asset produttivi e le fixture reali, inclusi

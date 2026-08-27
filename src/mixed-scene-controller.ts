@@ -1178,6 +1178,23 @@ export class MixedSceneController {
     void this.rasterizeSelectedText();
   }
 
+  async rasterizeSelectedTextLayer(): Promise<VectorRasterizationResult | null> {
+    if (this.transformSessionOpen) {
+      throw new Error("Apply or cancel the text transform before rasterizing.");
+    }
+    const node = this.selectedTextNode();
+    if (!node) {
+      throw new Error("Select a text layer before rasterizing.");
+    }
+    if (node.text.length === 0) {
+      throw new Error("Empty text contains no pixels to rasterize.");
+    }
+    if (this.sceneOperationBusy) {
+      throw new Error("Another vector operation is still in progress.");
+    }
+    return this.rasterizeSelectedText(true);
+  }
+
   /**
    * Destructive dev-only WebGPU regression for a fresh document. It exercises
    * both semantic source kinds through their real mesh compiler, tiled RGBA16F
@@ -2245,7 +2262,9 @@ export class MixedSceneController {
     }
   }
 
-  private async rasterizeSelectedText(): Promise<VectorRasterizationResult | null> {
+  private async rasterizeSelectedText(
+    propagateError = false,
+  ): Promise<VectorRasterizationResult | null> {
     const selected = this.selectedTextNode();
     if (!selected || selected.text.length === 0) return null;
     const textId = selected.id;
@@ -2314,7 +2333,7 @@ export class MixedSceneController {
           this.effectCompiler.releasePinnedSlot(slot);
         }
       }
-    });
+    }, propagateError);
     return rasterized ?? null;
   }
 

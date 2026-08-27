@@ -9,6 +9,7 @@ const controllerSource = readFileSync(
 );
 const htmlSource = readFileSync(new URL("index.html", root), "utf8");
 const stylesSource = readFileSync(new URL("src/styles.css", root), "utf8");
+const mainSource = readFileSync(new URL("src/main.ts", root), "utf8");
 
 const filtersPanelStart = htmlSource.indexOf('id="editorFiltersPanel"');
 const filtersPanelEnd = htmlSource.indexOf("</aside>", filtersPanelStart);
@@ -24,6 +25,16 @@ assert.match(
   /class="mobile-icon-stack"[\s\S]*?mobile-icon-outline[\s\S]*?mobile-icon-face/,
 );
 assert.match(filtersPanelSource, /class="mobile-tools-item-label">Glass<\/span>/);
+assert.match(
+  filtersPanelSource,
+  /id="editorCurvesFilter"[\s\S]*?class="mobile-tools-item editor-filter-item"/,
+);
+assert.match(
+  filtersPanelSource,
+  /id="editorCurvesFilter"[\s\S]{0,420}data-lucide="spline"/,
+  "Curves must use an icon registered by the production icon set.",
+);
+assert.match(filtersPanelSource, /class="mobile-tools-item-label">Curves<\/span>/);
 assert.doesNotMatch(filtersPanelSource, /Point Blur|spatial-blur/);
 assert.doesNotMatch(
   filtersPanelSource,
@@ -32,6 +43,16 @@ assert.doesNotMatch(
 assert.match(stylesSource, /\.editor-filters-grid\s*\{/);
 assert.match(stylesSource, /\.editor-filter-item:focus-visible\s*\{/);
 assert.doesNotMatch(stylesSource, /\.editor-filter-card/);
+assert.match(
+  mainSource,
+  /editorFiltersController = new EditorFiltersController\([\s\S]*?beforeOpen: \(\) => \{[\s\S]*?rasterAdjustmentsController\?\.syncUi\(\)/,
+  "Opening Filters must refresh raster eligibility after paint, import or Undo/Redo.",
+);
+assert.match(
+  mainSource,
+  /function updateHistoryControls\(\): void \{[\s\S]{0,260}rasterAdjustmentsController\?\.syncUi\(\)/,
+  "History completion must refresh filter eligibility while the catalog remains open.",
+);
 
 assert.doesNotMatch(
   controllerSource,
@@ -66,8 +87,9 @@ try {
   await moduleServer.close();
 }
 
-assert.deepEqual(EDITOR_FILTER_KINDS, ["glass"]);
+assert.deepEqual(EDITOR_FILTER_KINDS, ["glass", "curves"]);
 assert.equal(isEditorFilterKind("glass"), true);
+assert.equal(isEditorFilterKind("curves"), true);
 assert.equal(isEditorFilterKind("spatial-blur"), false);
 assert.equal(isEditorFilterKind("unknown"), false);
 assert.equal(isEditorFilterKind(undefined), false);
@@ -154,9 +176,11 @@ function createHarness(initiallyCanOpen = true) {
   const panel = new FakeElement(document);
   const closeButton = new FakeElement(document);
   const glassButton = new FakeElement(document, { editorFilterKind: "glass" });
+  const curvesButton = new FakeElement(document, { editorFilterKind: "curves" });
   const unknownButton = new FakeElement(document, { editorFilterKind: "unknown" });
   panel.contained.add(closeButton);
   panel.contained.add(glassButton);
+  panel.contained.add(curvesButton);
   panel.contained.add(unknownButton);
   let canOpen = initiallyCanOpen;
   const lifecycle = [];
@@ -169,7 +193,7 @@ function createHarness(initiallyCanOpen = true) {
       trigger,
       panel,
       closeButton,
-      filterButtons: [glassButton, unknownButton],
+      filterButtons: [glassButton, curvesButton, unknownButton],
     },
     canOpen: () => canOpen,
     beforeOpen: () => lifecycle.push("before-open"),
@@ -191,6 +215,7 @@ function createHarness(initiallyCanOpen = true) {
     panel,
     closeButton,
     glassButton,
+    curvesButton,
     unknownButton,
     lifecycle,
     routed,

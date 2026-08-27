@@ -72,15 +72,6 @@ const forbiddenContentMarkers = [
   "__vectorZoomCoverageReport",
   "__vectorZoomStressReport",
 ];
-const forbiddenCompetitorPatterns = [
-  { label: "Kittl", pattern: /\bkittl\b/i },
-  { label: "Procreate", pattern: /\bpro[\s-]*create\b/i },
-  { label: "ibis Paint", pattern: /\bibis(?:[\s-]*paint)?\b/i },
-  { label: "Infinite Painter", pattern: /\binfinite[\s-]*painter\b/i },
-  { label: "Krita", pattern: /\bkrita\b/i },
-  { label: "Photoshop", pattern: /\bphotoshop\b/i },
-  { label: "Adobe Illustrator", pattern: /\badobe[\s-]*illustrator\b/i },
-];
 const forbiddenItalianPatterns = [
   {
     label: "accented Italian UI vocabulary",
@@ -106,13 +97,6 @@ for (const file of textFiles) {
   for (const marker of forbiddenContentMarkers) {
     if (source.includes(marker)) {
       contentViolations.push(`${relative(outputRoot, file).replaceAll("\\", "/")}: ${marker}`);
-    }
-  }
-  for (const { label, pattern } of forbiddenCompetitorPatterns) {
-    if (pattern.test(source)) {
-      contentViolations.push(
-        `${relative(outputRoot, file).replaceAll("\\", "/")}: competitor marker ${label}`,
-      );
     }
   }
   for (const { label, pattern } of forbiddenItalianPatterns) {

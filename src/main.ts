@@ -448,6 +448,21 @@ const mobileGlassReseedButton = element<HTMLButtonElement>("mobileGlassReseed");
 const mobileGlassStatus = element<HTMLParagraphElement>("mobileGlassStatus");
 const mobileGlassCancelButton = element<HTMLButtonElement>("mobileGlassCancel");
 const mobileGlassApplyButton = element<HTMLButtonElement>("mobileGlassApply");
+const mobileCurvesOpenButton = element<HTMLButtonElement>("editorCurvesFilter");
+const mobileCurvesSheetElement = element<HTMLElement>("mobileCurvesSheet");
+const mobileCurvesSheetHandle = element<HTMLButtonElement>("mobileCurvesHandle");
+const mobileCurvesSheetHeader = element<HTMLElement>("mobileCurvesHeader");
+const mobileCurvesControlsRegion = element<HTMLElement>("mobileCurvesControlsRegion");
+const mobileCurvesGraph = element<HTMLCanvasElement>("mobileCurvesGraph");
+const mobileCurvesChannelSelect = element<HTMLSelectElement>("mobileCurvesChannel");
+const mobileCurvesInputValue = element<HTMLInputElement>("mobileCurvesInputValue");
+const mobileCurvesOutputValue = element<HTMLInputElement>("mobileCurvesOutputValue");
+const mobileCurvesAutoButton = element<HTMLButtonElement>("mobileCurvesAuto");
+const mobileCurvesResetButton = element<HTMLButtonElement>("mobileCurvesReset");
+const mobileCurvesDeletePointButton = element<HTMLButtonElement>("mobileCurvesDeletePoint");
+const mobileCurvesStatus = element<HTMLParagraphElement>("mobileCurvesStatus");
+const mobileCurvesCancelButton = element<HTMLButtonElement>("mobileCurvesCancel");
+const mobileCurvesApplyButton = element<HTMLButtonElement>("mobileCurvesApply");
 const mobileToolSettingsButtons = Array.from(
   document.querySelectorAll<HTMLButtonElement>("[data-mobile-tool-sheet]"),
 );
@@ -892,6 +907,7 @@ appDiagnosticsController = new AppDiagnosticsController({
       rasterMotionBlurUiBusy: false,
       rasterNoiseUiBusy: false,
       rasterGlassUiBusy: false,
+      rasterCurvesUiBusy: false,
       rasterLiquifyUiBusy: false,
     },
   }),
@@ -1702,6 +1718,23 @@ rasterAdjustmentsController = new RasterAdjustmentsController({
       cancelButton: mobileGlassCancelButton,
       applyButton: mobileGlassApplyButton,
     },
+    curves: {
+      openButton: mobileCurvesOpenButton,
+      sheet: mobileCurvesSheetElement,
+      sheetHandle: mobileCurvesSheetHandle,
+      sheetHeader: mobileCurvesSheetHeader,
+      controlsRegion: mobileCurvesControlsRegion,
+      canvas: mobileCurvesGraph,
+      channelSelect: mobileCurvesChannelSelect,
+      inputValue: mobileCurvesInputValue,
+      outputValue: mobileCurvesOutputValue,
+      autoButton: mobileCurvesAutoButton,
+      resetButton: mobileCurvesResetButton,
+      deleteButton: mobileCurvesDeletePointButton,
+      status: mobileCurvesStatus,
+      cancelButton: mobileCurvesCancelButton,
+      applyButton: mobileCurvesApplyButton,
+    },
   },
   isEngineReady: () => engineInitialized,
   getHistoryState: () => historyState,
@@ -1710,10 +1743,17 @@ rasterAdjustmentsController = new RasterAdjustmentsController({
   },
   isInteractionLocked: interactionLocked,
   isSceneBusy: () => sceneEditorController?.isBusy === true,
+  isMultiSelectionActive: () => layerPanelController?.isMultiSelect === true,
   getActiveCanvasTool: () => canvasToolController?.activeTool ?? "paint",
   getActiveBrushTool: () => canvasToolController?.activeBrush ?? "paint",
   configureCanvasTool: (tool, restoreSnapshot) => {
     canvasToolController?.configure(tool, restoreSnapshot);
+  },
+  confirmCurvesVectorRasterization: (message) => window.confirm(message),
+  rasterizeVectorLayersForCurves: async () => {
+    await initializeMixedSceneController();
+    const result = await sceneEditorController!.rasterizeVectorLayersForCurves();
+    return result.rasterizedCount;
   },
   beforeSheetOpen: () => {
     editorToolsController?.setOpen(false);
@@ -1754,11 +1794,14 @@ editorFiltersController = new EditorFiltersController({
     if (editorSettingsController?.isOpen) editorSettingsController.setOpen(false);
     if (layerPanelController?.isOpen) layerPanelController.setOpen(false);
     if (brushLibraryController.isOpen) brushLibraryController.setOpen(false);
+    rasterAdjustmentsController?.syncUi();
   },
   onOpenChange: () => brushQuickControlsController?.syncVisibility(),
   openFilter: (kind, trigger, returnFocus) => {
     if (kind === "glass") {
       rasterAdjustmentsController?.openGlass(trigger, returnFocus);
+    } else if (kind === "curves") {
+      rasterAdjustmentsController?.openCurves(trigger, returnFocus);
     }
   },
 });
@@ -1854,10 +1897,8 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
   },
   finishSelectedLayerOptionsEdit: () =>
     sceneEditorController?.finishLayerOptionsEdit() ?? false,
-  setSelectedLayerOpacity: (opacity) => {
-    const properties = selectedMobileLayerProperties();
-    if (!properties || properties.locked) return;
-    return sceneEditorController?.setLayerOpacity(properties.key, opacity);
+  setSelectedLayerOpacity: (key, opacity) => {
+    return sceneEditorController?.setLayerOpacity(key, opacity);
   },
   setSelectedLayerBlendMode: (blendMode) => {
     const properties = selectedMobileLayerProperties();
@@ -1870,16 +1911,8 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
     }
     return sceneEditorController?.setRasterBlendMode(properties.key, blendMode);
   },
-  setSelectedLayerContentOpacity: (contentOpacity) => {
-    const properties = selectedMobileLayerProperties();
-    if (
-      !properties
-      || properties.locked
-      || properties.kind !== "raster"
-    ) {
-      return;
-    }
-    return sceneEditorController?.setRasterContentOpacity(properties.key, contentOpacity);
+  setSelectedLayerContentOpacity: (key, contentOpacity) => {
+    return sceneEditorController?.setRasterContentOpacity(key, contentOpacity);
   },
   setSelectedLayerCutoutMode: (cutoutMode) => {
     const properties = selectedMobileLayerProperties();
@@ -2013,7 +2046,11 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
     mobileStrokeSheet?.close(false);
     mobileRasterEffectsSheet?.close(false);
   },
-  onOpenChange: () => {
+  onOpenChange: (open) => {
+    canvas.classList.toggle(
+      "layer-options-active",
+      open && mobileToolSettingsSheet?.toolKind === "layer-options",
+    );
     syncMobileToolsMenuState();
     brushQuickControlsController?.syncVisibility();
   },
@@ -2121,6 +2158,7 @@ layerPanelController = new LayerPanelController({
     sceneEditorController!.mergeCapabilityError(keys, stats),
   mergeLayers: (keys) => sceneEditorController!.mergeLayers(keys),
   onMultiSelectionChange: ({ enabled, orderedKeys }) => {
+    rasterAdjustmentsController?.syncUi();
     const revision = ++layerMultiTransformSelectionRevision;
     const transformKeys = enabled && orderedKeys.length >= 2 ? orderedKeys : [];
     if (transformKeys.length === 0) {
@@ -2424,6 +2462,7 @@ function historyRequestLocked(): boolean {
 function updateHistoryControls(): void {
   historyControlsController.acceptState(historyState);
   if (editorToolsController?.isOpen) syncMobileToolsMenuState();
+  else rasterAdjustmentsController?.syncUi();
   brushOutlineController?.notifyEngineUpdate();
   cloneToolController?.notifyInteractionState();
 }
@@ -2575,6 +2614,17 @@ void engine.initialize()
       "deferred-gpu-pipelines",
       () => engine.ensureOptionalEditorResources(),
       500,
+    );
+    scheduleDeferredStartupTask(
+      "deferred-raster-tone-curves",
+      async () => {
+        // Preserve one-way sequencing for GPU validation scopes: Curves waits
+        // for shared optional resources, while their consumers never wait for
+        // Curves and retain independent failure behavior.
+        await engine.ensureOptionalEditorResources();
+        await engine.prewarmRasterToneCurvesResources();
+      },
+      2_000,
     );
     if (engine.mixedSceneEnabled) {
       scheduleDeferredStartupTask(

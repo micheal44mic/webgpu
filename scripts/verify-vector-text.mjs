@@ -2235,7 +2235,15 @@ assert.match(
   /async rasterizeSelectedSvg\(\s*propagateError = false,\s*\)/,
 );
 assert.match(controllerSource, /await this\.host\.rasterizeVectorSvgNode\(svgId, draws\)/);
-assert.match(controllerSource, /async rasterizeSelectedText\(\)/);
+assert.match(
+  controllerSource,
+  /async rasterizeSelectedText\(\s*propagateError = false,\s*\)/,
+);
+assert.match(
+  controllerSource,
+  /async rasterizeSelectedTextLayer\(\)[\s\S]{0,700}return this\.rasterizeSelectedText\(true\)/,
+  "batch callers need an awaited text rasterization boundary with propagated failures",
+);
 assert.match(controllerSource, /await this\.host\.rasterizeVectorTextNode\(textId, draws\)/);
 assert.match(controllerSource, /vectorRasterFormatLabel\(result\.format\)/);
 assert.doesNotMatch(controllerSource, /rasterizzato in RGBA8/);

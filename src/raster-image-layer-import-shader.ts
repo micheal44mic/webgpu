@@ -60,8 +60,8 @@ fn fragmentPremultiplyMain(
   );
   let straightLinear = textureLoad(sourceTexture, coordinate, 0);
   // The immutable source pyramid deliberately stores encoded-sRGB,
-  // premultiplied values. Exact-area reductions therefore preserve Canva-like
-  // dark line weight instead of averaging ink in photometric linear light.
+  // premultiplied values. Exact-area reductions therefore preserve dense dark
+  // line weight instead of averaging ink in photometric linear light.
   return vec4<f32>(
     linearToSrgb(straightLinear.rgb) * straightLinear.a,
     straightLinear.a

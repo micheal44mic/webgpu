@@ -24,6 +24,7 @@ import type {
   VectorTransformActionSnapshot,
 } from "./vector-editor-contract";
 import type { EditorToolSettingsKind } from "./editor-tools-contract";
+import type { SceneLayerKey } from "./scene-layer-read-model";
 
 export type MobileToolSettingsKind =
   | EditorToolSettingsKind
@@ -56,7 +57,7 @@ export interface MobileSelectionSettingsSnapshot {
 }
 
 export interface MobileLayerOptionsSnapshot {
-  readonly key: string;
+  readonly key: SceneLayerKey;
   readonly name: string;
   readonly opacity: number;
   readonly blendMode: LayerBlendMode | null;
@@ -97,11 +98,15 @@ export interface MobileToolSettingsSheetOptions {
   readonly getSelectedLayerOptions: () => MobileLayerOptionsSnapshot | null;
   readonly beginSelectedLayerOptionsEdit: () => boolean;
   readonly finishSelectedLayerOptionsEdit: () => void | Promise<boolean>;
-  readonly setSelectedLayerOpacity: (opacity: number) => void | Promise<void>;
+  readonly setSelectedLayerOpacity: (
+    key: SceneLayerKey,
+    opacity: number,
+  ) => void | Promise<void>;
   readonly setSelectedLayerBlendMode: (
     blendMode: LayerBlendMode,
   ) => void | Promise<void>;
   readonly setSelectedLayerContentOpacity: (
+    key: SceneLayerKey,
     contentOpacity: number,
   ) => void | Promise<void>;
   readonly setSelectedLayerCutoutMode: (
@@ -142,7 +147,7 @@ export interface MobileToolSettingsSheetOptions {
 const MOBILE_TOOL_MIN_PEEK_PX = 160;
 const MOBILE_TOOL_MAX_PEEK_PX = 240;
 const MOBILE_TOOL_PEEK_VIEWPORT_RATIO = 0.26;
-const MOBILE_LAYER_OPTIONS_MAX_VISIBLE_PX = 288;
+const MOBILE_LAYER_OPTIONS_MAX_VISIBLE_PX = 360;
 
 const MOBILE_TOOL_TITLES: Readonly<Record<MobileToolSettingsKind, string>> = {
   fill: "Fill",
@@ -403,7 +408,7 @@ export class MobileToolSettingsSheetController {
   private svgPaintEditIndex: number | null = null;
   private vectorPropertyEditOpen = false;
   private layerOptionsDraft: {
-    readonly key: string;
+    readonly key: SceneLayerKey;
     opacity?: number;
     blendMode?: LayerBlendMode;
     contentOpacity?: number;
@@ -414,6 +419,12 @@ export class MobileToolSettingsSheetController {
     readonly value: LayerTonalBlend;
   } | null = null;
   private readonly layerTonalKeyboardEdits = new Set<HTMLInputElement>();
+  private readonly activeLayerRangeGestures = new Set<HTMLInputElement>();
+  private readonly pendingLayerRangeUpdates = new Map<
+    "opacity" | "content-opacity",
+    { readonly key: SceneLayerKey; readonly value: number }
+  >();
+  private layerRangeUpdateFrame: number | null = null;
   private layerOptionsSyncFrame: number | null = null;
   private openRequestGeneration = 0;
   private layerOptionsClosePromise: Promise<boolean> | null = null;
@@ -663,11 +674,13 @@ export class MobileToolSettingsSheetController {
   private closeCurrent(restoreFocus: boolean): void {
     if (!this.openState) return;
     const closedKind = this.activeKind;
+    if (closedKind === "layer-options") this.flushLayerRangeUpdates();
     this.commitOpenHistoryEdits();
     if (closedKind === "layer-options") {
       this.layerOptionsDraft = null;
       this.layerTonalBlendDraft = null;
       this.layerTonalKeyboardEdits.clear();
+      this.activeLayerRangeGestures.clear();
     }
     this.openState = false;
     this.releaseDragCapture();
@@ -941,25 +954,16 @@ export class MobileToolSettingsSheetController {
     this.transformApply.addEventListener("click", () => {
       this.runAction(() => this.options.applyTransform());
     });
-    this.layerOpacity.addEventListener("input", () => {
-      this.layerOpacityOut.value = `${Math.round(Number(this.layerOpacity.value))}%`;
-      this.stageLayerOptionsDraft({
-        opacity: Number(this.layerOpacity.value) / 100,
-      });
-      this.runLayerOptionAction(() => this.options.setSelectedLayerOpacity(
-        Number(this.layerOpacity.value) / 100,
-      ));
-    });
-    this.layerContentOpacity.addEventListener("input", () => {
-      this.layerContentOpacityOut.value =
-        `${Math.round(Number(this.layerContentOpacity.value))}%`;
-      this.stageLayerOptionsDraft({
-        contentOpacity: Number(this.layerContentOpacity.value) / 100,
-      });
-      this.runLayerOptionAction(() => this.options.setSelectedLayerContentOpacity(
-        Number(this.layerContentOpacity.value) / 100,
-      ));
-    });
+    this.bindLayerRange(
+      this.layerOpacity,
+      this.layerOpacityOut,
+      "opacity",
+    );
+    this.bindLayerRange(
+      this.layerContentOpacity,
+      this.layerContentOpacityOut,
+      "content-opacity",
+    );
     this.layerBlendMode.addEventListener("change", () => {
       this.stageLayerOptionsDraft({
         blendMode: this.layerBlendMode.value as LayerBlendMode,
@@ -1076,6 +1080,71 @@ export class MobileToolSettingsSheetController {
       return;
     }
     this.requestLayerOptionsSync();
+  }
+
+  private bindLayerRange(
+    input: HTMLInputElement,
+    output: HTMLOutputElement,
+    field: "opacity" | "content-opacity",
+  ): void {
+    const publish = (): void => {
+      const percent = Math.min(100, Math.max(0, Number(input.value)));
+      output.value = `${Math.round(percent)}%`;
+      const patch = field === "opacity"
+        ? { opacity: percent / 100 }
+        : { contentOpacity: percent / 100 };
+      this.stageLayerOptionsDraft(patch);
+      const key = this.layerOptionsDraft?.key;
+      if (!key) return;
+      this.pendingLayerRangeUpdates.set(field, { key, value: percent / 100 });
+      this.requestLayerRangeUpdate();
+    };
+    const beginGesture = (): void => {
+      this.activeLayerRangeGestures.add(input);
+    };
+    const finishGesture = (): void => {
+      this.activeLayerRangeGestures.delete(input);
+      this.flushLayerRangeUpdates();
+    };
+    input.addEventListener("input", publish);
+    input.addEventListener("pointerdown", beginGesture);
+    input.addEventListener("pointerup", finishGesture);
+    input.addEventListener("pointercancel", finishGesture);
+    input.addEventListener("lostpointercapture", finishGesture);
+    input.addEventListener("change", finishGesture);
+    input.addEventListener("keydown", beginGesture);
+    input.addEventListener("keyup", finishGesture);
+    input.addEventListener("blur", finishGesture);
+  }
+
+  private requestLayerRangeUpdate(): void {
+    if (this.layerRangeUpdateFrame !== null) return;
+    this.layerRangeUpdateFrame = this.options.browser.requestAnimationFrame(() => {
+      this.layerRangeUpdateFrame = null;
+      this.flushLayerRangeUpdates();
+    });
+  }
+
+  private flushLayerRangeUpdates(): void {
+    if (this.layerRangeUpdateFrame !== null) {
+      this.options.browser.cancelAnimationFrame(this.layerRangeUpdateFrame);
+      this.layerRangeUpdateFrame = null;
+    }
+    const updates = [...this.pendingLayerRangeUpdates.entries()];
+    this.pendingLayerRangeUpdates.clear();
+    for (const [field, update] of updates) {
+      const result = field === "opacity"
+        ? this.options.setSelectedLayerOpacity(update.key, update.value)
+        : this.options.setSelectedLayerContentOpacity(update.key, update.value);
+      if (result) {
+        // SceneEditorController already schedules the authoritative UI refresh
+        // once its latest-only queue drains. Avoid a second full stats snapshot
+        // for the same slider frame.
+        void result.catch(() => this.requestLayerOptionsSync());
+      } else {
+        this.requestLayerOptionsSync();
+      }
+    }
   }
 
   private requestLayerOptionsSync(): void {
@@ -1208,21 +1277,21 @@ export class MobileToolSettingsSheetController {
     readonly contentOpacity?: number;
     readonly cutoutMode?: LayerCutoutMode;
   }): void {
-    const snapshot = this.options.getSelectedLayerOptions();
-    if (!snapshot || snapshot.locked) return;
-    const previous = this.layerOptionsDraft?.key === snapshot.key
-      ? this.layerOptionsDraft
-      : { key: snapshot.key };
-    this.layerOptionsDraft = { ...previous, ...patch };
+    if (!this.layerOptionsDraft) return;
+    this.layerOptionsDraft = { ...this.layerOptionsDraft, ...patch };
   }
 
   private syncLayerOptions(): void {
     const snapshot = this.options.getSelectedLayerOptions();
     if (!snapshot) return;
-    if (this.layerOptionsDraft?.key !== snapshot.key) this.layerOptionsDraft = null;
+    if (this.layerOptionsDraft?.key !== snapshot.key) {
+      this.layerOptionsDraft = { key: snapshot.key };
+    }
     const draft = this.layerOptionsDraft;
     const opacity = Math.min(1, Math.max(0, draft?.opacity ?? snapshot.opacity));
-    this.layerOpacity.value = String(Math.round(opacity * 100));
+    if (!this.activeLayerRangeGestures.has(this.layerOpacity)) {
+      this.layerOpacity.value = String(Math.round(opacity * 100));
+    }
     this.layerOpacityOut.value = `${Math.round(opacity * 100)}%`;
     this.layerOpacity.disabled = snapshot.locked;
     this.layerOpacity.setAttribute("aria-label", `Opacity for ${snapshot.name}`);
@@ -1246,7 +1315,9 @@ export class MobileToolSettingsSheetController {
       1,
       Math.max(0, draft?.contentOpacity ?? snapshot.contentOpacity!),
     );
-    this.layerContentOpacity.value = String(Math.round(contentOpacity * 100));
+    if (!this.activeLayerRangeGestures.has(this.layerContentOpacity)) {
+      this.layerContentOpacity.value = String(Math.round(contentOpacity * 100));
+    }
     this.layerContentOpacityOut.value = `${Math.round(contentOpacity * 100)}%`;
     this.layerContentOpacity.disabled = snapshot.locked;
     this.layerContentOpacity.setAttribute("aria-label", `Fill for ${snapshot.name}`);

@@ -21,8 +21,33 @@ assert.match(source, /rasterIndexForSceneLayerKey\(this\.options\.engine\.getSta
 assert.match(source, /setSceneLayerClipping\(key, enabled\)/);
 assert.match(
   source,
+  /private requestLayerOptionsRefresh\(\): void \{[\s\S]*?layerOptionsRefreshScheduled[\s\S]*?requestAnimationFrame\([\s\S]*?refreshAfterLayerOptionsUpdate\(\)/,
+  "Layer Options completions must coalesce expensive stats and layer UI refreshes per frame",
+);
+assert.match(
+  source,
+  /private async drainLayerOptionsUpdates\([\s\S]*?finally \{[\s\S]*?requestLayerOptionsRefresh\(\)/,
+  "each drained live value must schedule rather than synchronously duplicate full UI snapshots",
+);
+assert.match(
+  source,
+  /finishLayerOptionsEdit\(\)[\s\S]*?finally \{[\s\S]*?flushLayerOptionsRefresh\(\)/,
+  "the panel close must still publish one final authoritative UI snapshot after History commits",
+);
+assert.match(
+  source,
   /layers\.find\([\s\S]*?layer\.id === result\.layerId[\s\S]*?created\?\.name \?\? "Clipping layer"/,
   "Add mask status must use the created layer name rather than its raster-stack index",
+);
+assert.match(
+  source,
+  /rasterizeVectorLayersForCurves\(\)[\s\S]*?requiredRasterCount[\s\S]*?LAYER_STACK_MAXIMUM/,
+  "Curves vector preparation must reject an impossible batch before the first conversion",
+);
+assert.match(
+  source,
+  /while \(history\.cursor > initialHistoryCursor\)[\s\S]*?await this\.options\.engine\.undo\(\)/,
+  "a failed multi-vector rasterization must roll back every published conversion",
 );
 assert.doesNotMatch(source, /document\.getElementById|\belement<|window\./);
 
@@ -465,6 +490,155 @@ assert.equal(elements.loadingOverlay.hidden, true);
   assert.equal(addCalls, 0);
   assert.equal(lifecycleController.isBusy, false);
   assert.equal(lifecycleElements.loadingOverlay.hidden, true);
+}
+
+// Curves preparation rasterizes every editable vector in stable order, then
+// restores the raster replacing the original selection. A later failure rolls
+// back already-published conversions and restores that semantic selection.
+{
+  const initialVectorScene = () => ({
+    selectedKey: "text:21",
+    activeRasterLayerId: 1,
+    items: [
+      { key: "raster:1", kind: "raster", rasterLayerId: 1, rasterHasContent: true },
+      {
+        key: "text:21",
+        kind: "text",
+        textNode: { id: 21, name: "Heading", text: "Editable", visible: true, opacity: 1 },
+      },
+      {
+        key: "svg:22",
+        kind: "svg",
+        svgNode: { id: 22, name: "Shape", visible: true, opacity: 1 },
+      },
+    ],
+  });
+  let vectorScene = initialVectorScene();
+  let historyCursor = 5;
+  let failSvg = false;
+  const undoScenes = [];
+  const batchCalls = [];
+  const batchEngine = {
+    ...engine,
+    getMixedSceneSnapshot: () => vectorScene,
+    getStats: () => ({
+      activeLayerId: vectorScene.activeRasterLayerId,
+      layers: vectorScene.items
+        .filter((item) => item.kind === "raster")
+        .map((item) => ({ id: item.rasterLayerId, hasContent: true })),
+      mixedScene: vectorScene,
+    }),
+    getHistoryState: () => ({
+      cursor: historyCursor,
+      actionCount: historyCursor,
+      busy: false,
+      inconsistent: false,
+      canUndo: historyCursor > 0,
+      canRedo: false,
+      openEdit: null,
+    }),
+    async setActiveMixedSceneItem(key) {
+      batchCalls.push(`select:${key}`);
+      const selected = vectorScene.items.find((item) => item.key === key);
+      if (!selected) throw new Error(`Missing ${key}`);
+      vectorScene = {
+        ...vectorScene,
+        selectedKey: key,
+        activeRasterLayerId: selected.kind === "raster"
+          ? selected.rasterLayerId
+          : vectorScene.activeRasterLayerId,
+      };
+      return null;
+    },
+    async undo() {
+      const previous = undoScenes.pop();
+      if (!previous) return false;
+      vectorScene = previous;
+      historyCursor -= 1;
+      batchCalls.push("undo-vector-rasterization");
+      return true;
+    },
+    async waitForIdle() {
+      batchCalls.push("wait-for-idle");
+    },
+  };
+  const rasterizeSelected = async (kind, outputId) => {
+    const selected = vectorScene.items.find((item) => item.key === vectorScene.selectedKey);
+    assert.equal(selected?.kind, kind);
+    if (kind === "svg" && failSvg) throw new Error("Injected SVG rasterization failure.");
+    undoScenes.push(structuredClone(vectorScene));
+    const outputKey = `raster:${outputId}`;
+    vectorScene = {
+      ...vectorScene,
+      selectedKey: outputKey,
+      activeRasterLayerId: outputId,
+      items: vectorScene.items.map((item) => item.key === selected.key
+        ? { key: outputKey, kind: "raster", rasterLayerId: outputId, rasterHasContent: true }
+        : item),
+    };
+    historyCursor += 1;
+    batchCalls.push(`rasterize:${kind}:${selected.key}`);
+    return { layerId: outputId };
+  };
+  const vectorPort = {
+    syncScene(snapshot) {
+      vectorScene = snapshot;
+    },
+    rasterizeSelectedTextLayer: () => rasterizeSelected("text", 201),
+    rasterizeSelectedSvgLayer: () => rasterizeSelected("svg", 202),
+    async mergeSceneItems() {
+      throw new Error("Not used by this test.");
+    },
+  };
+  const batchElements = {
+    app: new FakeElement(),
+    loadingOverlay: new FakeElement(),
+    loadingLabel: new FakeElement(),
+    result: new FakeElement(),
+  };
+  const batchController = new SceneEditorController({
+    engine: batchEngine,
+    browser: { requestAnimationFrame: (callback) => (callback(0), 1) },
+    elements: batchElements,
+    getVectorController: () => vectorPort,
+    isInteractionLocked: () => false,
+    onBusyChange() {},
+    onHistoryState() {},
+    requestLayersRefresh() {},
+    renderLayers() {},
+    syncActiveRasterControls() {},
+    syncToolSettings() {},
+    onLayerOptionsUpdateError() {},
+    onStats() {},
+    recordDiagnostic() {},
+  });
+
+  const prepared = await batchController.rasterizeVectorLayersForCurves();
+  assert.deepEqual(prepared, { rasterizedCount: 2, selectedKey: "raster:201" });
+  assert.equal(vectorScene.selectedKey, "raster:201");
+  assert.deepEqual(
+    batchCalls.filter((call) => call.startsWith("rasterize:")),
+    ["rasterize:text:text:21", "rasterize:svg:svg:22"],
+  );
+  assert.match(batchElements.result.textContent, /2 vector layers rasterized for Curves/);
+
+  vectorScene = initialVectorScene();
+  historyCursor = 5;
+  undoScenes.length = 0;
+  batchCalls.length = 0;
+  failSvg = true;
+  await assert.rejects(
+    batchController.rasterizeVectorLayersForCurves(),
+    /Injected SVG rasterization failure/,
+  );
+  assert.equal(historyCursor, 5);
+  assert.equal(vectorScene.selectedKey, "text:21");
+  assert.deepEqual(
+    vectorScene.items.map((item) => item.key),
+    ["raster:1", "text:21", "svg:22"],
+  );
+  assert.equal(batchCalls.filter((call) => call === "undo-vector-rasterization").length, 1);
+  batchController.dispose();
 }
 
 console.log("Scene editor controller: stable keys, transactions, locks and lifecycle verified.");

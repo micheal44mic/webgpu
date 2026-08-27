@@ -19,6 +19,7 @@ import { MobileGlassSheetController } from "./mobile-glass-sheet";
 import { MobileLiquifySheetController } from "./mobile-liquify-sheet";
 import { MobileMotionBlurSheetController } from "./mobile-motion-blur-sheet";
 import { MobileNoiseSheetController } from "./mobile-noise-sheet";
+import { MobileRasterToneCurvesSheetController } from "./mobile-raster-tone-curves-sheet.ts";
 import {
   DESTRUCTIVE_MOTION_BLUR_DEFAULT_ANGLE,
   DESTRUCTIVE_MOTION_BLUR_DEFAULT_DISTANCE,
@@ -54,6 +55,18 @@ import {
   createInitialSpatialBlurPin,
   type SpatialBlurPin,
 } from "./spatial-blur-core";
+import {
+  DEFAULT_RASTER_TONE_CURVE_SET,
+  type RasterToneCurveSet,
+} from "./raster-tone-curves-core.ts";
+import {
+  RasterToneCurvesEditorController,
+  type RasterToneCurvesEditorElements,
+} from "./raster-tone-curves-editor-controller.ts";
+
+export const CURVES_VECTOR_RASTERIZATION_CONFIRMATION =
+  "Curves works on raster layers. Rasterize all SVG and text layers before continuing?\n\n"
+  + "This converts editable content to pixels. You can undo the rasterization.";
 
 export type RasterAdjustmentsEnginePort = Pick<
   BrushEngine,
@@ -63,18 +76,21 @@ export type RasterAdjustmentsEnginePort = Pick<
   | "beginRasterMotionBlur"
   | "beginRasterNoise"
   | "beginRasterGlass"
+  | "beginRasterToneCurves"
   | "cancelRasterGaussianBlur"
   | "cancelRasterSpatialBlur"
   | "cancelRasterLiquify"
   | "cancelRasterMotionBlur"
   | "cancelRasterNoise"
   | "cancelRasterGlass"
+  | "cancelRasterToneCurves"
   | "commitRasterGaussianBlur"
   | "commitRasterSpatialBlur"
   | "commitRasterLiquify"
   | "commitRasterMotionBlur"
   | "commitRasterNoise"
   | "commitRasterGlass"
+  | "commitRasterToneCurves"
   | "endRasterLiquifyStroke"
   | "getHistoryState"
   | "getPixelSelectionState"
@@ -88,6 +104,7 @@ export type RasterAdjustmentsEnginePort = Pick<
   | "updateRasterMotionBlur"
   | "updateRasterNoise"
   | "updateRasterGlass"
+  | "updateRasterToneCurves"
   | "reseedRasterGlass"
   | "toLayerPoint"
   | "documentWidth"
@@ -203,6 +220,17 @@ export interface GlassAdjustmentElements {
   readonly applyButton: HTMLButtonElement;
 }
 
+export interface RasterToneCurvesAdjustmentElements extends RasterToneCurvesEditorElements {
+  readonly openButton: HTMLButtonElement;
+  readonly sheet: HTMLElement;
+  readonly sheetHandle: HTMLButtonElement;
+  readonly sheetHeader: HTMLElement;
+  readonly controlsRegion: HTMLElement;
+  readonly status: HTMLParagraphElement;
+  readonly cancelButton: HTMLButtonElement;
+  readonly applyButton: HTMLButtonElement;
+}
+
 export interface RasterAdjustmentsElements {
   readonly canvas: HTMLCanvasElement;
   readonly appStatus: HTMLParagraphElement;
@@ -212,6 +240,7 @@ export interface RasterAdjustmentsElements {
   readonly motionBlur: MotionBlurAdjustmentElements;
   readonly noise: NoiseAdjustmentElements;
   readonly glass: GlassAdjustmentElements;
+  readonly curves: RasterToneCurvesAdjustmentElements;
 }
 
 export interface RasterAdjustmentsControllerOptions {
@@ -223,12 +252,15 @@ export interface RasterAdjustmentsControllerOptions {
   readonly onHistoryState: (state: HistoryState) => void;
   readonly isInteractionLocked: () => boolean;
   readonly isSceneBusy: () => boolean;
+  readonly isMultiSelectionActive: () => boolean;
   readonly getActiveCanvasTool: () => CanvasInputTool;
   readonly getActiveBrushTool: () => BrushTool;
   readonly configureCanvasTool: (
     tool: CanvasInputTool,
     restoreSnapshot: boolean,
   ) => void;
+  readonly confirmCurvesVectorRasterization: (message: string) => boolean;
+  readonly rasterizeVectorLayersForCurves: () => Promise<number>;
   readonly beforeSheetOpen: () => void;
   readonly onSheetOpenChange: (open: boolean) => void;
   readonly updateHistoryControls: () => void;
@@ -241,6 +273,7 @@ export interface RasterAdjustmentsDiagnostics {
   readonly rasterMotionBlurUiBusy: boolean;
   readonly rasterNoiseUiBusy: boolean;
   readonly rasterGlassUiBusy: boolean;
+  readonly rasterCurvesUiBusy: boolean;
   readonly rasterLiquifyUiBusy: boolean;
 }
 
@@ -296,12 +329,16 @@ export class RasterAdjustmentsController {
   private readonly motionBlurSheet: MobileMotionBlurSheetController;
   private readonly noiseSheet: MobileNoiseSheetController;
   private readonly glassSheet: MobileGlassSheetController;
+  private readonly curvesSheet: MobileRasterToneCurvesSheetController;
+  private readonly curvesEditor: RasterToneCurvesEditorController;
   private readonly liquify = initialTransactionState();
   private readonly gaussianBlur = initialTransactionState();
   private readonly spatialBlur = initialTransactionState();
   private readonly motionBlur = initialTransactionState();
   private readonly noise = initialTransactionState();
   private readonly glass = initialTransactionState();
+  private readonly curves = initialTransactionState();
+  private engineUnavailableError: string | null = null;
   private liquifySettings: LiquifySettings = { ...DEFAULT_LIQUIFY_SETTINGS };
   private liquifyAmount = 1;
   private liquifyReturnTool: CanvasInputTool | null = null;
@@ -388,6 +425,24 @@ export class RasterAdjustmentsController {
       onRequestCancel: () => void this.cancelGlass(),
       onOpenChange: options.onSheetOpenChange,
     });
+    this.curvesSheet = new MobileRasterToneCurvesSheetController({
+      browser: options.browser,
+      document: options.browser.document,
+      elements: {
+        sheet: options.elements.curves.sheet,
+        handle: options.elements.curves.sheetHandle,
+        header: options.elements.curves.sheetHeader,
+        controlsRegion: options.elements.curves.controlsRegion,
+      },
+      beforeOpen: options.beforeSheetOpen,
+      onRequestCancel: () => void this.cancelCurves(),
+      onOpenChange: options.onSheetOpenChange,
+    });
+    this.curvesEditor = new RasterToneCurvesEditorController({
+      browser: options.browser,
+      elements: options.elements.curves,
+      onChange: (curves) => this.requestCurvesUpdate(curves),
+    });
     this.configureControlRanges();
     this.syncLiquifySettings(this.liquifySettings, this.liquifyAmount);
     this.syncNoiseSettings(DEFAULT_RASTER_NOISE_SETTINGS);
@@ -397,7 +452,7 @@ export class RasterAdjustmentsController {
   }
 
   get isAnySurfaceOpen(): boolean {
-    return this.states().some((state) => state.surfaceOpen);
+    return this.states().some((state) => state.surfaceOpen || state.uiBusy);
   }
 
   get isAnySheetOpen(): boolean {
@@ -405,7 +460,8 @@ export class RasterAdjustmentsController {
       || this.gaussianBlurSheet.isOpen
       || this.motionBlurSheet.isOpen
       || this.noiseSheet.isOpen
-      || this.glassSheet.isOpen;
+      || this.glassSheet.isOpen
+      || this.curvesSheet.isOpen;
   }
 
   isOpen(kind: DestructiveRasterAdjustmentKind): boolean {
@@ -414,6 +470,10 @@ export class RasterAdjustmentsController {
 
   openGlass(trigger: HTMLElement, returnFocus: HTMLElement = trigger): void {
     void this.beginGlass(trigger, returnFocus);
+  }
+
+  openCurves(trigger: HTMLElement, returnFocus: HTMLElement = trigger): void {
+    void this.beginCurves(trigger, returnFocus);
   }
 
   openSpatialBlur(trigger: HTMLElement, returnFocus: HTMLElement = trigger): void {
@@ -453,7 +513,8 @@ export class RasterAdjustmentsController {
       || history.openEdit === "spatial-blur"
       || history.openEdit === "motion-blur"
       || history.openEdit === "noise"
-      || history.openEdit === "glass";
+      || history.openEdit === "glass"
+      || history.openEdit === "curves";
   }
 
   isLiquifyEditActive(history = this.options.getHistoryState()): boolean {
@@ -467,7 +528,8 @@ export class RasterAdjustmentsController {
       || (this.spatialBlur.sessionOpen && history.openEdit === "spatial-blur")
       || (this.motionBlur.sessionOpen && history.openEdit === "motion-blur")
       || (this.noise.sessionOpen && history.openEdit === "noise")
-      || (this.glass.sessionOpen && history.openEdit === "glass");
+      || (this.glass.sessionOpen && history.openEdit === "glass")
+      || (this.curves.sessionOpen && history.openEdit === "curves");
   }
 
   allowsCanvasViewOperation(history = this.options.getHistoryState()): boolean {
@@ -495,7 +557,11 @@ export class RasterAdjustmentsController {
     ) || (
       this.glass.sessionOpen
         && history.openEdit === "glass"
-        && !this.glass.uiBusy
+      && !this.glass.uiBusy
+    ) || (
+      this.curves.sessionOpen
+        && history.openEdit === "curves"
+        && !this.curves.uiBusy
     );
   }
 
@@ -506,11 +572,17 @@ export class RasterAdjustmentsController {
       rasterMotionBlurUiBusy: this.motionBlur.uiBusy,
       rasterNoiseUiBusy: this.noise.uiBusy,
       rasterGlassUiBusy: this.glass.uiBusy,
+      rasterCurvesUiBusy: this.curves.uiBusy,
       rasterLiquifyUiBusy: this.liquify.uiBusy,
     };
   }
 
   handleEngineStatus(message: string, kind: "working" | "ok" | "error"): void {
+    if (kind === "error" && message.startsWith("WebGPU device lost:")) {
+      this.engineUnavailableError = message;
+      this.closeSurfacesAfterDeviceLoss(message);
+      return;
+    }
     if (this.gaussianBlur.sessionOpen && message.includes("Gaussian Blur")) {
       this.setGaussianBlurStatus(message);
       if (kind === "error") this.gaussianBlur.previewFault = true;
@@ -536,11 +608,54 @@ export class RasterAdjustmentsController {
       if (kind === "error") this.glass.previewFault = true;
       this.syncGlassUi();
     }
+    if (this.curves.sessionOpen && message.includes("Curves")) {
+      this.setCurvesStatus(message);
+      if (kind === "error") this.curves.previewFault = true;
+      this.syncCurvesUi();
+    }
     if (this.liquify.sessionOpen && message.includes("Liquify")) {
       this.setLiquifyStatus(message);
       if (kind === "error") this.liquify.previewFault = true;
       this.syncLiquifyUi();
     }
+  }
+
+  private closeSurfacesAfterDeviceLoss(message: string): void {
+    const close = (
+      state: AdjustmentTransactionState,
+      setStatus: (status: string) => void,
+      closeSurface: (result: AdjustmentResult) => void,
+    ): void => {
+      if (!state.surfaceOpen && !state.sessionOpen) return;
+      state.sessionOpen = false;
+      state.uiBusy = false;
+      state.previewFault = true;
+      state.cancelPending = false;
+      setStatus(message);
+      closeSurface("error");
+    };
+    close(this.liquify, (status) => this.setLiquifyStatus(status), (result) => this.closeLiquify(result));
+    close(
+      this.gaussianBlur,
+      (status) => this.setGaussianBlurStatus(status),
+      (result) => this.closeGaussianBlur(result),
+    );
+    close(
+      this.spatialBlur,
+      (status) => this.spatialBlurEditor.setStatus(status),
+      (result) => this.closeSpatialBlur(result),
+    );
+    close(
+      this.motionBlur,
+      (status) => this.setMotionBlurStatus(status),
+      (result) => this.closeMotionBlur(result),
+    );
+    close(this.noise, (status) => this.setNoiseStatus(status), (result) => this.closeNoise(result));
+    close(this.glass, (status) => this.setGlassStatus(status), (result) => this.closeGlass(result));
+    close(this.curves, (status) => this.setCurvesStatus(status), (result) => this.closeCurves(result));
+    this.setAppError(message);
+    this.refreshHistory();
+    this.syncUi();
   }
 
   syncUi(): void {
@@ -550,6 +665,7 @@ export class RasterAdjustmentsController {
     this.syncMotionBlurUi();
     this.syncNoiseUi();
     this.syncGlassUi();
+    this.syncCurvesUi();
   }
 
   handleResize(): void {
@@ -559,6 +675,8 @@ export class RasterAdjustmentsController {
     this.motionBlurSheet.handleResize();
     this.noiseSheet.handleResize();
     this.glassSheet.handleResize();
+    this.curvesSheet.handleResize();
+    this.curvesEditor.handleResize();
   }
 
   dispose(): void {
@@ -571,13 +689,20 @@ export class RasterAdjustmentsController {
     this.motionBlurSheet.dispose();
     this.noiseSheet.dispose();
     this.glassSheet.dispose();
-    this.options.elements.canvas.classList.remove("liquify-active", "liquify-deforming");
+    this.curvesSheet.dispose();
+    this.curvesEditor.dispose();
+    this.options.elements.canvas.classList.remove(
+      "liquify-active",
+      "liquify-deforming",
+      "raster-curves-active",
+    );
     void this.cancelLiquify();
     void this.cancelGaussianBlur();
     void this.cancelSpatialBlur();
     void this.cancelMotionBlur();
     void this.cancelNoise();
     void this.cancelGlass();
+    void this.cancelCurves();
   }
 
   private states(): readonly AdjustmentTransactionState[] {
@@ -588,16 +713,24 @@ export class RasterAdjustmentsController {
       this.motionBlur,
       this.noise,
       this.glass,
+      this.curves,
     ];
   }
 
   private state(kind: DestructiveRasterAdjustmentKind): AdjustmentTransactionState {
-    if (kind === "liquify") return this.liquify;
-    if (kind === "gaussian-blur") return this.gaussianBlur;
-    if (kind === "spatial-blur") return this.spatialBlur;
-    if (kind === "motion-blur") return this.motionBlur;
-    if (kind === "noise") return this.noise;
-    return this.glass;
+    switch (kind) {
+      case "liquify": return this.liquify;
+      case "gaussian-blur": return this.gaussianBlur;
+      case "spatial-blur": return this.spatialBlur;
+      case "motion-blur": return this.motionBlur;
+      case "noise": return this.noise;
+      case "glass": return this.glass;
+      case "curves": return this.curves;
+      default: {
+        const unsupported: never = kind;
+        throw new Error(`Unsupported raster adjustment: ${String(unsupported)}`);
+      }
+    }
   }
 
   private configureControlRanges(): void {
@@ -637,7 +770,7 @@ export class RasterAdjustmentsController {
 
   private bindEvents(): void {
     const signal = this.abortController.signal;
-    const { liquify, gaussianBlur, spatialBlur, motionBlur, noise, glass } = this.options.elements;
+    const { liquify, gaussianBlur, spatialBlur, motionBlur, noise, glass, curves } = this.options.elements;
     liquify.openButton.addEventListener(
       "click",
       () => void this.openLiquify(liquify.openButton),
@@ -789,6 +922,16 @@ export class RasterAdjustmentsController {
       () => void this.applyGlass(),
       { signal },
     );
+    curves.cancelButton.addEventListener(
+      "click",
+      () => void this.cancelCurves(),
+      { signal },
+    );
+    curves.applyButton.addEventListener(
+      "click",
+      () => void this.applyCurves(),
+      { signal },
+    );
   }
 
   private handleLiquifyModeKeydown(button: HTMLButtonElement, event: KeyboardEvent): void {
@@ -858,10 +1001,13 @@ export class RasterAdjustmentsController {
           ? "Noise"
           : kind === "glass"
             ? "Glass"
-            : "Liquify";
+            : kind === "curves"
+              ? "Curves"
+              : "Liquify";
     if (!this.options.isEngineReady()) {
       return `${label} will be available after initialization.`;
     }
+    if (this.engineUnavailableError) return this.engineUnavailableError;
     for (const otherKind of [
       "liquify",
       "gaussian-blur",
@@ -869,6 +1015,7 @@ export class RasterAdjustmentsController {
       "motion-blur",
       "noise",
       "glass",
+      "curves",
     ] as const) {
       if (otherKind === kind || !this.state(otherKind).surfaceOpen) continue;
       const otherLabel = otherKind === "gaussian-blur"
@@ -881,8 +1028,13 @@ export class RasterAdjustmentsController {
           ? "Noise"
           : otherKind === "glass"
             ? "Glass"
-            : "Liquify";
+            : otherKind === "curves"
+              ? "Curves"
+              : "Liquify";
       return `Apply or cancel ${otherLabel} first.`;
+    }
+    if (this.options.isMultiSelectionActive()) {
+      return `Finish the layer multi-selection before opening ${label}.`;
     }
     if (this.options.engine.getPixelSelectionState().selectedPixels > 0) {
       if (kind === "noise") {
@@ -891,19 +1043,36 @@ export class RasterAdjustmentsController {
       if (kind === "glass") {
         return "Deselect the pixels to apply Glass to the entire layer.";
       }
+      if (kind === "curves") {
+        return "Deselect the pixels to apply Curves to the entire layer.";
+      }
       if (kind === "liquify") {
         return "Deselect the pixels to distort the entire layer.";
       }
       return "Deselect the pixels to blur the entire layer.";
     }
     const stats = this.options.engine.getStats();
-    const active = stats.layers.find((layer) => layer.id === stats.activeLayerId);
-    if (!active?.hasContent) return "The selected raster layer is empty.";
     const selected = stats.mixedScene?.items.find(
       (item) => item.key === stats.mixedScene?.selectedKey,
     );
+    const curvesVectorTarget = kind === "curves"
+      && (selected?.kind === "text" || selected?.kind === "svg");
+    if (kind === "curves" && selected?.kind === "text" && selected.textNode.text.length === 0) {
+      return "The selected text layer is empty.";
+    }
+    const active = stats.layers.find((layer) => layer.id === stats.activeLayerId);
+    if (!curvesVectorTarget && !active?.hasContent) {
+      return "The selected raster layer is empty.";
+    }
     const wrongRasterTarget = kind === "liquify"
       ? selected?.kind !== "raster" || selected.rasterLayerId !== stats.activeLayerId
+      : kind === "curves"
+        ? selected !== undefined
+          && !(
+            (selected.kind === "raster" && selected.rasterLayerId === stats.activeLayerId)
+            || selected.kind === "text"
+            || selected.kind === "svg"
+          )
       : selected !== undefined
         && (selected.kind !== "raster" || selected.rasterLayerId !== stats.activeLayerId);
     if (wrongRasterTarget) {
@@ -919,6 +1088,11 @@ export class RasterAdjustmentsController {
     const returnFocus = state.returnFocus;
     state.returnFocus = null;
     if (!returnFocus?.isConnected || this.disposed) return;
+    this.options.browser.queueMicrotask(() => returnFocus.focus({ preventScroll: true }));
+  }
+
+  private restoreCurvesRequestFocus(returnFocus: HTMLElement): void {
+    if (!returnFocus.isConnected || this.disposed) return;
     this.options.browser.queueMicrotask(() => returnFocus.focus({ preventScroll: true }));
   }
 
@@ -1068,6 +1242,7 @@ export class RasterAdjustmentsController {
     } finally {
       state.uiBusy = false;
       this.refreshHistory();
+      this.syncUi();
       if ((state.cancelPending || this.disposed) && state.sessionOpen) {
         state.cancelPending = false;
         void this.cancelLiquify();
@@ -2130,6 +2305,217 @@ export class RasterAdjustmentsController {
       state.previewFault = state.sessionOpen;
       this.reportGlassError("Glass application failed", error);
       if (!state.sessionOpen) this.closeGlass("error");
+    } finally {
+      state.uiBusy = false;
+      this.refreshHistory();
+    }
+  }
+
+  private setCurvesStatus(message: string): void {
+    this.options.elements.curves.status.textContent = message;
+  }
+
+  private reportCurvesError(prefix: string, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    const fullMessage = `${prefix}: ${message}`;
+    this.setCurvesStatus(fullMessage);
+    this.setAppError(fullMessage);
+  }
+
+  private resetCurvesControls(): void {
+    this.curvesEditor.setState(DEFAULT_RASTER_TONE_CURVE_SET);
+    this.setCurvesStatus("Curves ready.");
+  }
+
+  private syncCurvesUi(): void {
+    const state = this.curves;
+    const elements = this.options.elements.curves;
+    const eligibilityError = state.surfaceOpen || state.sessionOpen || state.uiBusy
+      ? "Curves is already open."
+      : this.adjustmentEligibilityError("curves");
+    const recoveryOnly = state.previewFault || this.history().inconsistent;
+    const controlsDisabled = state.uiBusy || !state.sessionOpen || recoveryOnly;
+    elements.openButton.disabled = eligibilityError !== null;
+    elements.openButton.title = eligibilityError ?? "Open Curves";
+    elements.openButton.setAttribute("aria-pressed", String(state.surfaceOpen));
+    this.curvesEditor.setDisabled(controlsDisabled);
+    elements.applyButton.disabled = controlsDisabled;
+    elements.cancelButton.disabled = state.uiBusy || !state.sessionOpen;
+    elements.sheet.dataset.state = state.uiBusy
+      ? "busy"
+      : recoveryOnly
+        ? "recovery"
+        : state.sessionOpen
+          ? "preview"
+          : "closed";
+    elements.sheet.setAttribute("aria-busy", String(state.uiBusy));
+    this.options.elements.canvas.classList.toggle("raster-curves-active", state.surfaceOpen);
+  }
+
+  private closeCurves(result: AdjustmentResult): void {
+    const state = this.curves;
+    state.surfaceOpen = false;
+    state.cancelPending = false;
+    this.options.elements.curves.openButton.setAttribute("aria-pressed", "false");
+    this.curvesSheet.close(false);
+    this.restoreFocus(state);
+    if (result !== "error") this.resetCurvesControls();
+    this.syncUi();
+  }
+
+  private async beginCurves(
+    trigger: HTMLElement,
+    returnFocus: HTMLElement,
+  ): Promise<void> {
+    if (this.curves.uiBusy) return;
+    const eligibilityError = this.adjustmentEligibilityError("curves");
+    if (eligibilityError || this.curves.surfaceOpen) {
+      if (eligibilityError) this.setAppError(eligibilityError);
+      this.restoreCurvesRequestFocus(returnFocus);
+      return;
+    }
+    const vectorLayerCount = this.options.engine.getStats().mixedScene?.items.filter(
+      (item) => item.kind === "text" || item.kind === "svg",
+    ).length ?? 0;
+    if (vectorLayerCount > 0) {
+      if (!this.options.confirmCurvesVectorRasterization(
+        CURVES_VECTOR_RASTERIZATION_CONFIRMATION,
+      )) {
+        this.restoreCurvesRequestFocus(returnFocus);
+        return;
+      }
+      const state = this.curves;
+      state.uiBusy = true;
+      this.options.elements.appStatus.textContent = "Rasterizing SVG and text layers…";
+      this.options.elements.appStatus.className = "status";
+      this.syncUi();
+      try {
+        const rasterizedCount = await this.options.rasterizeVectorLayersForCurves();
+        if (rasterizedCount !== vectorLayerCount) {
+          throw new Error(
+            `Expected ${vectorLayerCount} vector layers but rasterized ${rasterizedCount}.`,
+          );
+        }
+      } catch (error) {
+        this.reportCurvesError("Unable to prepare Curves", error);
+        this.restoreCurvesRequestFocus(returnFocus);
+        return;
+      } finally {
+        state.uiBusy = false;
+        this.refreshHistory();
+        this.syncUi();
+      }
+      const preparedEligibilityError = this.adjustmentEligibilityError("curves");
+      if (preparedEligibilityError) {
+        this.setAppError(preparedEligibilityError);
+        this.restoreCurvesRequestFocus(returnFocus);
+        return;
+      }
+    }
+    if (!this.curvesSheet.open(trigger)) {
+      this.restoreCurvesRequestFocus(returnFocus);
+      return;
+    }
+    const state = this.curves;
+    state.surfaceOpen = true;
+    state.returnFocus = returnFocus;
+    state.sessionOpen = false;
+    state.previewFault = false;
+    state.uiBusy = true;
+    this.curvesEditor.setState(DEFAULT_RASTER_TONE_CURVE_SET);
+    this.setCurvesStatus("Preparing Curves…");
+    this.syncUi();
+    try {
+      const preview = await this.options.engine.beginRasterToneCurves(
+        DEFAULT_RASTER_TONE_CURVE_SET,
+      );
+      if (!preview) throw new Error("Select a raster layer to use Curves.");
+      state.sessionOpen = true;
+      this.curvesEditor.setState(preview.curves, preview.histogram);
+      this.setCurvesStatus("Curves preview ready.");
+    } catch (error) {
+      const history = this.options.engine.getHistoryState();
+      this.options.onHistoryState(history);
+      state.sessionOpen = history.openEdit === "curves";
+      state.previewFault = state.sessionOpen;
+      this.reportCurvesError("Unable to open Curves", error);
+      if (!state.sessionOpen) this.closeCurves("error");
+    } finally {
+      state.uiBusy = false;
+      this.refreshHistory();
+      this.syncUi();
+      if ((state.cancelPending || this.disposed) && state.sessionOpen) {
+        state.cancelPending = false;
+        void this.cancelCurves();
+      }
+    }
+  }
+
+  private requestCurvesUpdate(curves: Readonly<RasterToneCurveSet>): void {
+    const state = this.curves;
+    if (state.uiBusy || !state.sessionOpen || state.previewFault || this.history().inconsistent) {
+      return;
+    }
+    try {
+      const preview = this.options.engine.updateRasterToneCurves(curves);
+      this.curvesEditor.setState(preview.curves);
+      this.setCurvesStatus("Curves preview updated…");
+    } catch (error) {
+      state.previewFault = true;
+      this.reportCurvesError("Curves preview failed", error);
+      this.syncCurvesUi();
+    }
+  }
+
+  private async cancelCurves(): Promise<void> {
+    const state = this.curves;
+    if (state.uiBusy) {
+      state.cancelPending = true;
+      return;
+    }
+    if (!state.sessionOpen) return;
+    state.cancelPending = false;
+    state.uiBusy = true;
+    this.setCurvesStatus("Restoring the original pixels…");
+    this.syncCurvesUi();
+    try {
+      await this.options.engine.cancelRasterToneCurves();
+      state.sessionOpen = false;
+      state.previewFault = false;
+      this.closeCurves("cancel");
+    } catch (error) {
+      const history = this.options.engine.getHistoryState();
+      this.options.onHistoryState(history);
+      state.sessionOpen = history.openEdit === "curves";
+      state.previewFault = true;
+      this.reportCurvesError("Curves cancellation failed", error);
+    } finally {
+      state.uiBusy = false;
+      this.refreshHistory();
+    }
+  }
+
+  private async applyCurves(): Promise<void> {
+    const state = this.curves;
+    if (state.uiBusy || !state.sessionOpen || state.previewFault || this.history().inconsistent) {
+      return;
+    }
+    state.uiBusy = true;
+    this.setCurvesStatus("Applying Curves…");
+    this.syncCurvesUi();
+    try {
+      const changed = await this.options.engine.commitRasterToneCurves();
+      state.sessionOpen = false;
+      state.previewFault = false;
+      this.closeCurves("apply");
+      if (changed) this.options.requestActiveThumbnail();
+    } catch (error) {
+      const history = this.options.engine.getHistoryState();
+      this.options.onHistoryState(history);
+      state.sessionOpen = history.openEdit === "curves";
+      state.previewFault = state.sessionOpen;
+      this.reportCurvesError("Curves application failed", error);
+      if (!state.sessionOpen) this.closeCurves("error");
     } finally {
       state.uiBusy = false;
       this.refreshHistory();

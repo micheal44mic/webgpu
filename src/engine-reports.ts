@@ -958,9 +958,11 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     rasterImageGpuMemoryBytes(engine)
     + (engine.activeRasterTransformSession?.memoryBytes ?? 0)
     + (engine.activeRasterGaussianBlurSession?.memoryBytes ?? 0)
+    + (engine.activeRasterSpatialBlurSession?.memoryBytes ?? 0)
     + (engine.activeRasterMotionBlurSession?.memoryBytes ?? 0)
     + (engine.activeRasterNoiseSession?.memoryBytes ?? 0)
     + (engine.activeRasterGlassSession?.memoryBytes ?? 0)
+    + (engine.activeRasterToneCurvesSession?.memoryBytes ?? 0)
     + (engine.activeRasterLiquifySession?.memoryBytes ?? 0)
   ) / MEBIBYTE_BYTES;
   const rasterStrokeStyledMiB =

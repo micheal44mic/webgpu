@@ -27,6 +27,7 @@ import type { RasterBevelStyle } from "./bevel-core";
 import type { RasterInnerShadowStyle, RasterOuterShadowStyle } from "./shadow-core";
 import type { RasterColorOverlayStyle } from "./raster-color-overlay-core";
 import type { RasterNoiseChannels, RasterNoiseStyle } from "./noise-core";
+import type { RasterToneCurveSet } from "./raster-tone-curves-core.ts";
 import type { LiquifyMode } from "./liquify-core";
 import type { SpatialBlurPin } from "./spatial-blur-core";
 import type { RasterLayerSource } from "./raster-layer-source";
@@ -442,6 +443,15 @@ export type RasterFilterHistoryAction = RasterFilterHistoryActionCommon & (
     precision: "rgba16float-source-and-output-f32-field-and-bilinear";
     edgeMode: "transparent-content-clamp-document-edge";
     coordinateSpace: "document-pixel-centers";
+  }
+  | {
+    filter: "curves";
+    curves: RasterToneCurveSet;
+    lutSize: 256;
+    precision: "rgba16float-source-and-output-f32-lut";
+    colorSpace: "straight-encoded-rgb";
+    alphaMode: "preserve";
+    boundsMode: "preserve";
   }
   | {
     filter: "liquify";

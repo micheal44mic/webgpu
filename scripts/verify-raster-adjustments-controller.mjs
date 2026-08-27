@@ -106,7 +106,13 @@ class FakeBrowser extends EventTarget {
   performance = { now: () => this.now };
   nextAnimationFrameId = 1;
   animationFrames = new Map();
+  confirmations = [];
+  confirmResult = true;
   queueMicrotask(callback) { queueMicrotask(callback); }
+  confirm(message) {
+    this.confirmations.push(message);
+    return this.confirmResult;
+  }
   requestAnimationFrame(callback) {
     const id = this.nextAnimationFrameId++;
     this.animationFrames.set(id, callback);
@@ -137,6 +143,7 @@ const gaussianSheet = createSheetElements();
 const motionSheet = createSheetElements();
 const noiseSheet = createSheetElements();
 const glassSheet = createSheetElements();
+const curvesSheet = createSheetElements();
 const spatialBlurModeButtons = ["add", "adjust", "remove"].map((mode) => {
   const button = new FakeElement();
   button.dataset.spatialBlurMode = mode;
@@ -235,6 +242,20 @@ const elements = {
     cancelButton: new FakeElement(),
     applyButton: new FakeElement(),
   },
+  curves: {
+    openButton: new FakeElement(),
+    ...curvesSheet,
+    canvas: new FakeElement(),
+    channelSelect: new FakeElement(),
+    inputValue: new FakeElement(),
+    outputValue: new FakeElement(),
+    autoButton: new FakeElement(),
+    resetButton: new FakeElement(),
+    deleteButton: new FakeElement(),
+    status: new FakeElement(),
+    cancelButton: new FakeElement(),
+    applyButton: new FakeElement(),
+  },
 };
 
 let history = {
@@ -252,6 +273,11 @@ let history = {
 };
 const calls = [];
 let glassSettings = null;
+let selectedItem = { key: "raster:1", kind: "raster", rasterLayerId: 1 };
+let additionalSceneItems = [];
+let multiSelectionActive = false;
+let curvesCommitChanged = true;
+let curvesRasterizationPromise = null;
 const engine = {
   documentWidth: 512,
   documentHeight: 512,
@@ -276,8 +302,8 @@ const engine = {
     activeLayerId: 1,
     layers: [{ id: 1, hasContent: true }],
     mixedScene: {
-      selectedKey: "raster:1",
-      items: [{ key: "raster:1", kind: "raster", rasterLayerId: 1 }],
+      selectedKey: selectedItem.key,
+      items: [selectedItem, ...additionalSceneItems],
     },
   }),
   async beginRasterGaussianBlur(radius) {
@@ -381,6 +407,37 @@ const engine = {
     history = { ...history, openEdit: null };
     return true;
   },
+  async beginRasterToneCurves(curves) {
+    calls.push(["begin-curves", curves]);
+    history = { ...history, openEdit: "curves" };
+    return {
+      curves,
+      histogram: new Uint32Array(1024),
+      sourceBounds: { x: 0, y: 0, width: 512, height: 512 },
+    };
+  },
+  updateRasterToneCurves(curves) {
+    calls.push(["update-curves", curves]);
+    return {
+      curves,
+      histogram: new Uint32Array(1024),
+      sourceBounds: { x: 0, y: 0, width: 512, height: 512 },
+    };
+  },
+  async commitRasterToneCurves() {
+    calls.push(["commit-curves"]);
+    history = {
+      ...history,
+      openEdit: null,
+      actionCount: history.actionCount + (curvesCommitChanged ? 1 : 0),
+    };
+    return curvesCommitChanged;
+  },
+  async cancelRasterToneCurves() {
+    calls.push(["cancel-curves"]);
+    history = { ...history, openEdit: null };
+    return true;
+  },
   async beginRasterLiquify(settings) {
     calls.push(["begin-liquify", settings]);
     history = { ...history, openEdit: "liquify" };
@@ -429,11 +486,25 @@ const controller = new RasterAdjustmentsController({
   onHistoryState: (next) => { history = next; },
   isInteractionLocked: () => false,
   isSceneBusy: () => false,
+  isMultiSelectionActive: () => multiSelectionActive,
   getActiveCanvasTool: () => currentTool,
   getActiveBrushTool: () => "paint",
   configureCanvasTool: (tool) => {
     configuredTools.push(tool);
     currentTool = tool;
+  },
+  confirmCurvesVectorRasterization: (message) => browser.confirm(message),
+  rasterizeVectorLayersForCurves: async () => {
+    const vectorCount = [selectedItem, ...additionalSceneItems].filter(
+      (item) => item.kind === "text" || item.kind === "svg",
+    ).length;
+    calls.push(["rasterize-curves-vectors", vectorCount]);
+    if (curvesRasterizationPromise) await curvesRasterizationPromise;
+    if (selectedItem.kind === "text" || selectedItem.kind === "svg") {
+      selectedItem = { key: "raster:1", kind: "raster", rasterLayerId: 1 };
+    }
+    additionalSceneItems = [];
+    return vectorCount;
   },
   beforeSheetOpen: () => { beforeOpenCount += 1; },
   onSheetOpenChange: () => {},
@@ -593,6 +664,37 @@ assert.equal(history.openEdit, null);
 assert.equal(calls.at(-1)[0], "cancel-glass");
 assert.equal(filtersTrigger.focusCount, 2);
 
+controller.openCurves(elements.curves.openButton, filtersTrigger);
+await settle();
+assert.equal(history.openEdit, "curves");
+assert.equal(controller.isOpen("curves"), true);
+assert.equal(elements.canvas.classList.contains("raster-curves-active"), true);
+assert.equal(elements.curves.channelSelect.value, "composite");
+elements.curves.outputValue.value = "144";
+elements.curves.outputValue.dispatchEvent(event("input"));
+assert.equal(calls.at(-1)[0], "update-curves");
+elements.curves.applyButton.dispatchEvent(event("click"));
+await settle();
+assert.equal(history.openEdit, null);
+assert.equal(calls.at(-1)[0], "commit-curves");
+assert.equal(thumbnails, 4);
+assert.equal(filtersTrigger.focusCount, 3);
+assert.equal(elements.canvas.classList.contains("raster-curves-active"), false);
+
+// Applying an identity curve closes the transaction without inventing an
+// Undo entry or recapturing an identical thumbnail.
+const actionsBeforeIdentityCurves = history.actionCount;
+const thumbnailsBeforeIdentityCurves = thumbnails;
+curvesCommitChanged = false;
+controller.openCurves(elements.curves.openButton, filtersTrigger);
+await settle();
+elements.curves.applyButton.dispatchEvent(event("click"));
+await settle();
+assert.equal(history.openEdit, null);
+assert.equal(history.actionCount, actionsBeforeIdentityCurves);
+assert.equal(thumbnails, thumbnailsBeforeIdentityCurves);
+curvesCommitChanged = true;
+
 elements.liquify.openButton.dispatchEvent(event("click"));
 await settle();
 assert.equal(history.openEdit, "liquify");
@@ -611,7 +713,7 @@ assert.equal(
   "pan",
   "later temporary tools must preserve the Move state left by Point Blur",
 );
-assert.equal(thumbnails, 4);
+assert.equal(thumbnails, 5);
 
 elements.motionBlur.openButton.dispatchEvent(event("click"));
 await settle();
@@ -624,6 +726,144 @@ await settle();
 assert.equal(history.openEdit, null);
 assert.equal(controller.hasActiveHistoryEdit(history), false);
 assert(historyRefreshes >= 4);
+
+// Canceling the English rasterization warning leaves vectors, History and the
+// Curves engine transaction untouched, then restores focus outside the closed catalog.
+selectedItem = { key: "raster:1", kind: "raster", rasterLayerId: 1 };
+additionalSceneItems = [{
+  key: "text:9",
+  kind: "text",
+  textNode: { id: 9, name: "Caption", text: "Editable" },
+}];
+browser.confirmResult = false;
+controller.syncUi();
+const beginCurvesBeforeRejectedRasterization = calls.filter(
+  ([name]) => name === "begin-curves",
+).length;
+const rejectedFocusBefore = filtersTrigger.focusCount;
+controller.openCurves(elements.curves.openButton, filtersTrigger);
+await settle();
+assert.match(
+  browser.confirmations.at(-1),
+  /Rasterize all SVG and text layers before continuing\?[\s\S]*You can undo the rasterization\./,
+);
+assert.equal(
+  calls.filter(([name]) => name === "rasterize-curves-vectors").length,
+  0,
+);
+assert.equal(
+  calls.filter(([name]) => name === "begin-curves").length,
+  beginCurvesBeforeRejectedRasterization,
+);
+assert.equal(filtersTrigger.focusCount, rejectedFocusBefore + 1);
+
+// A second tap while the confirmed conversion is in flight cannot open a
+// second warning or launch another batch.
+selectedItem = { key: "raster:1", kind: "raster", rasterLayerId: 1 };
+additionalSceneItems = [{
+  key: "svg:12",
+  kind: "svg",
+  svgNode: { id: 12, name: "Badge" },
+}];
+browser.confirmResult = true;
+let releaseCurvesRasterization;
+curvesRasterizationPromise = new Promise((resolve) => {
+  releaseCurvesRasterization = resolve;
+});
+const confirmationCountBeforeDoubleTap = browser.confirmations.length;
+const batchCountBeforeDoubleTap = calls.filter(
+  ([name]) => name === "rasterize-curves-vectors",
+).length;
+controller.openCurves(elements.curves.openButton, filtersTrigger);
+controller.openCurves(elements.curves.openButton, filtersTrigger);
+await settle();
+assert.equal(controller.isAnySurfaceOpen, true);
+assert.equal(browser.confirmations.length, confirmationCountBeforeDoubleTap + 1);
+assert.equal(
+  calls.filter(([name]) => name === "rasterize-curves-vectors").length,
+  batchCountBeforeDoubleTap + 1,
+);
+releaseCurvesRasterization();
+curvesRasterizationPromise = null;
+await settle();
+assert.equal(controller.isOpen("curves"), true);
+elements.curves.cancelButton.dispatchEvent(event("click"));
+await settle();
+
+// Confirmation rasterizes every text/SVG item first and then starts Curves on
+// the raster replacing the originally selected vector layer.
+selectedItem = {
+  key: "text:10",
+  kind: "text",
+  textNode: { id: 10, name: "Heading", text: "Curves" },
+};
+additionalSceneItems = [{
+  key: "svg:11",
+  kind: "svg",
+  svgNode: { id: 11, name: "Shape" },
+}];
+browser.confirmResult = true;
+controller.syncUi();
+assert.equal(elements.curves.openButton.disabled, false);
+controller.openCurves(elements.curves.openButton, filtersTrigger);
+await settle();
+assert.deepEqual(
+  calls.filter(([name]) => name === "rasterize-curves-vectors").at(-1),
+  ["rasterize-curves-vectors", 2],
+);
+assert.equal(controller.isOpen("curves"), true);
+assert.equal(history.openEdit, "curves");
+elements.curves.cancelButton.dispatchEvent(event("click"));
+await settle();
+
+// Imported image nodes are outside this conversion path.
+selectedItem = { key: "image:9", kind: "image" };
+additionalSceneItems = [];
+controller.syncUi();
+const confirmationCountBeforeImage = browser.confirmations.length;
+controller.openCurves(elements.curves.openButton, filtersTrigger);
+await settle();
+assert.equal(elements.curves.openButton.disabled, true);
+assert.equal(browser.confirmations.length, confirmationCountBeforeImage);
+
+selectedItem = { key: "raster:1", kind: "raster", rasterLayerId: 1 };
+multiSelectionActive = true;
+controller.syncUi();
+const beginCurvesBeforeMulti = calls.filter(([name]) => name === "begin-curves").length;
+controller.openCurves(elements.curves.openButton, filtersTrigger);
+await settle();
+assert.equal(elements.curves.openButton.disabled, true);
+assert.equal(calls.filter(([name]) => name === "begin-curves").length, beginCurvesBeforeMulti);
+multiSelectionActive = false;
+
+// Device loss abandons the engine session without a GPU rollback. The UI must
+// close immediately, restore focus and avoid issuing a stale Cancel command.
+selectedItem = { key: "raster:1", kind: "raster", rasterLayerId: 1 };
+controller.openCurves(elements.curves.openButton, filtersTrigger);
+await settle();
+assert.equal(controller.isOpen("curves"), true);
+const cancelCurvesBeforeDeviceLoss = calls.filter(([name]) => name === "cancel-curves").length;
+history = { ...history, openEdit: null };
+controller.handleEngineStatus("WebGPU device lost: injected test", "error");
+await settle();
+assert.equal(controller.isOpen("curves"), false);
+assert.equal(
+  calls.filter(([name]) => name === "cancel-curves").length,
+  cancelCurvesBeforeDeviceLoss,
+);
+assert.equal(elements.curves.status.textContent, "WebGPU device lost: injected test");
+for (const adjustment of Object.values(elements)) {
+  if (adjustment?.openButton) {
+    assert.equal(adjustment.openButton.disabled, true);
+    assert.equal(adjustment.openButton.title, "WebGPU device lost: injected test");
+  }
+}
+
+assert.match(
+  main,
+  /onMultiSelectionChange: \(\{ enabled, orderedKeys \}\) => \{\s*rasterAdjustmentsController\?\.syncUi\(\)/,
+  "Changing layer multi-selection must refresh filter eligibility immediately.",
+);
 
 controller.dispose();
 controller.dispose();

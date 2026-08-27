@@ -303,10 +303,10 @@ assert.match(
   historyStorageHost,
   /openEdit: Boolean\([\s\S]{0,520}activeRasterGlassSession/,
 );
-assert.match(
-  historyStorageHost,
-  /canMaintain: \(\) =>[\s\S]{0,360}activeRasterGlassSession === null/,
-);
+const historyMaintenanceGuard = historyStorageHost.match(
+  /canMaintain: \(\) =>([\s\S]*?)\n\s*waitForIdle:/,
+)?.[1] ?? "";
+assert.match(historyMaintenanceGuard, /activeRasterGlassSession === null/);
 assert.match(historyMaintenanceAdapter, /\| "activeRasterGlassSession"/);
 assert.match(
   historyMaintenance,

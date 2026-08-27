@@ -6,6 +6,7 @@ import {
   type LayerBlendMode,
 } from "./layer-blend-modes";
 import type { LayerCutoutMode, LayerTonalBlend } from "./layer-composition";
+import { LAYER_STACK_MAXIMUM } from "./layer-stack";
 import { mobileLayerMergeCompletionMatches } from "./mobile-layer-multi-selection";
 import type { MixedSceneController } from "./mixed-scene-controller";
 import {
@@ -50,12 +51,16 @@ export type SceneEditorEnginePort = Pick<
   | "setVectorSvgNodeVisibility"
   | "setVectorTextNodeOpacity"
   | "setVectorTextNodeVisibility"
+  | "undo"
   | "waitForIdle"
 >;
 
 export type SceneEditorVectorPort = Pick<
   MixedSceneController,
-  "mergeSceneItems" | "rasterizeSelectedSvgLayer" | "syncScene"
+  | "mergeSceneItems"
+  | "rasterizeSelectedSvgLayer"
+  | "rasterizeSelectedTextLayer"
+  | "syncScene"
 >;
 
 export interface SceneEditorRasterizeResult {
@@ -63,6 +68,11 @@ export interface SceneEditorRasterizeResult {
   readonly name: string;
   readonly changed: boolean;
   readonly outputKey: SceneLayerKey;
+}
+
+export interface SceneEditorCurvesRasterizationResult {
+  readonly rasterizedCount: number;
+  readonly selectedKey: SceneLayerKey;
 }
 
 export interface SceneEditorBrowser {
@@ -134,6 +144,8 @@ export class SceneEditorController {
   private busy = false;
   private disposed = false;
   private layerOptionsEdit: LayerOptionsEditSession | null = null;
+  private layerOptionsRefreshScheduled = false;
+  private layerOptionsRefreshGeneration = 0;
 
   constructor(private readonly options: SceneEditorControllerOptions) {}
 
@@ -267,6 +279,123 @@ export class SceneEditorController {
     }
   }
 
+  async rasterizeVectorLayersForCurves(): Promise<SceneEditorCurvesRasterizationResult> {
+    const initialScene = this.options.engine.getMixedSceneSnapshot();
+    if (!initialScene) throw new Error("The editable scene is unavailable.");
+    const initialSelected = initialScene.items.find(
+      (item) => item.key === initialScene.selectedKey,
+    );
+    if (
+      !initialSelected
+      || (initialSelected.kind !== "raster"
+        && initialSelected.kind !== "text"
+        && initialSelected.kind !== "svg")
+    ) {
+      throw new Error("Select a raster, SVG, or text layer before opening Curves.");
+    }
+    const vectorItems = initialScene.items.filter(
+      (item) => item.kind === "text" || item.kind === "svg",
+    );
+    const emptyText = vectorItems.find(
+      (item) => item.kind === "text" && item.textNode.text.length === 0,
+    );
+    if (emptyText?.kind === "text") {
+      throw new Error(`“${emptyText.textNode.name}” is empty and cannot be rasterized.`);
+    }
+    const stats = this.options.engine.getStats();
+    const requiredRasterCount = stats.layers.length + vectorItems.length;
+    if (requiredRasterCount > LAYER_STACK_MAXIMUM) {
+      throw new Error(
+        `Rasterizing every SVG and text layer would require ${requiredRasterCount} raster layers; `
+        + `the maximum is ${LAYER_STACK_MAXIMUM}.`,
+      );
+    }
+    if (vectorItems.length === 0) {
+      return { rasterizedCount: 0, selectedKey: initialSelected.key };
+    }
+
+    const vector = this.options.getVectorController();
+    if (!vector) throw new Error("Vector rasterization is not ready.");
+    this.beginOrThrow("Rasterization is unavailable while another operation is in progress.");
+    const initialHistoryCursor = this.options.engine.getHistoryState().cursor;
+    let selectedKey: SceneLayerKey | null = initialSelected.kind === "raster"
+      ? initialSelected.key
+      : null;
+    let rasterizedCount = 0;
+    try {
+      if (!(await this.showLoading("Rasterizing SVG and text layers…"))) {
+        throw new Error("Scene editor disposed.");
+      }
+      for (const plannedItem of vectorItems) {
+        const liveScene = this.options.engine.getMixedSceneSnapshot();
+        const liveItem = liveScene?.items.find((item) => item.key === plannedItem.key);
+        if (!liveScene || !liveItem || liveItem.kind !== plannedItem.kind) {
+          throw new Error("A vector layer changed before it could be rasterized.");
+        }
+        await this.options.engine.setActiveMixedSceneItem(liveItem.key);
+        const selectedScene = this.options.engine.getMixedSceneSnapshot();
+        if (!selectedScene) throw new Error("The editable scene became unavailable.");
+        vector.syncScene(selectedScene);
+        const result = liveItem.kind === "text"
+          ? await vector.rasterizeSelectedTextLayer()
+          : await vector.rasterizeSelectedSvgLayer();
+        if (!result) throw new Error(`${liveItem.kind.toUpperCase()} rasterization failed.`);
+        const outputKey = `raster:${result.layerId}` as SceneLayerKey;
+        if (liveItem.key === initialScene.selectedKey) selectedKey = outputKey;
+        rasterizedCount += 1;
+        const rasterizedScene = this.options.engine.getMixedSceneSnapshot();
+        if (!rasterizedScene) throw new Error("The rasterized scene became unavailable.");
+        vector.syncScene(rasterizedScene);
+      }
+      if (!selectedKey) throw new Error("The selected vector layer was not rasterized.");
+      await this.options.engine.setActiveMixedSceneItem(selectedKey);
+      const finalScene = this.options.engine.getMixedSceneSnapshot();
+      if (!finalScene) throw new Error("The final raster scene is unavailable.");
+      vector.syncScene(finalScene);
+      await this.options.engine.waitForIdle();
+      this.options.elements.result.textContent = rasterizedCount === 1
+        ? "1 vector layer rasterized for Curves."
+        : `${rasterizedCount} vector layers rasterized for Curves.`;
+      return { rasterizedCount, selectedKey };
+    } catch (error) {
+      let rollbackError: unknown = null;
+      try {
+        let history = this.options.engine.getHistoryState();
+        while (history.cursor > initialHistoryCursor) {
+          const previousCursor = history.cursor;
+          if (!(await this.options.engine.undo())) {
+            throw new Error("Undo did not restore the rasterized vector layers.");
+          }
+          history = this.options.engine.getHistoryState();
+          if (history.cursor >= previousCursor) {
+            throw new Error("Rasterization rollback did not advance.");
+          }
+        }
+        const restoredScene = this.options.engine.getMixedSceneSnapshot();
+        if (!restoredScene) throw new Error("The restored scene is unavailable.");
+        if (restoredScene.items.some((item) => item.key === initialScene.selectedKey)) {
+          await this.options.engine.setActiveMixedSceneItem(initialScene.selectedKey);
+        }
+        const restoredSelection = this.options.engine.getMixedSceneSnapshot();
+        if (restoredSelection) vector.syncScene(restoredSelection);
+      } catch (caught) {
+        rollbackError = caught;
+      }
+      if (rollbackError) {
+        const operationMessage = error instanceof Error ? error.message : String(error);
+        const rollbackMessage = rollbackError instanceof Error
+          ? rollbackError.message
+          : String(rollbackError);
+        throw new Error(
+          `Vector rasterization failed: ${operationMessage}; rollback failed: ${rollbackMessage}`,
+        );
+      }
+      throw error;
+    } finally {
+      this.finish({ loading: true, syncActiveRasterControls: true });
+    }
+  }
+
   async duplicateSelectedLayer(): Promise<LayerDuplicateResult> {
     this.beginOrThrow("Duplication unavailable while another operation is in progress.");
     let syncActiveRasterControls = false;
@@ -341,7 +470,7 @@ export class SceneEditorController {
         throw error;
       } finally {
         if (this.layerOptionsEdit === edit) this.layerOptionsEdit = null;
-        if (!this.disposed) this.refreshAfterLayerOptionsUpdate();
+        if (!this.disposed) this.flushLayerOptionsRefresh();
       }
     });
     edit.finishPromise = operation;
@@ -505,14 +634,35 @@ export class SceneEditorController {
           : "Could not update the layer options.";
         this.options.onLayerOptionsUpdateError(error);
       } finally {
-        if (!this.disposed) this.refreshAfterLayerOptionsUpdate();
+        const rangeDraftOwnsVisibleValue = next[0] === "opacity"
+          || next[0] === "content-opacity";
+        if (!this.disposed && !rangeDraftOwnsVisibleValue) {
+          this.requestLayerOptionsRefresh();
+        }
       }
     }
   }
 
-  private refreshAfterLayerOptionsUpdate(): void {
+  private requestLayerOptionsRefresh(): void {
+    if (this.layerOptionsRefreshScheduled) return;
+    this.layerOptionsRefreshScheduled = true;
+    const generation = ++this.layerOptionsRefreshGeneration;
+    this.options.browser.requestAnimationFrame(() => {
+      if (generation !== this.layerOptionsRefreshGeneration) return;
+      this.layerOptionsRefreshScheduled = false;
+      if (!this.disposed) this.refreshAfterLayerOptionsUpdate(false);
+    });
+  }
+
+  private flushLayerOptionsRefresh(): void {
+    this.layerOptionsRefreshGeneration += 1;
+    this.layerOptionsRefreshScheduled = false;
+    this.refreshAfterLayerOptionsUpdate();
+  }
+
+  private refreshAfterLayerOptionsUpdate(refreshLayers = true): void {
     this.options.onHistoryState(this.options.engine.getHistoryState());
-    this.options.requestLayersRefresh();
+    if (refreshLayers) this.options.requestLayersRefresh();
     const stats = this.options.engine.getStats();
     this.options.onStats(stats);
     this.options.syncToolSettings();

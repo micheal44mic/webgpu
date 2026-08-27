@@ -4,10 +4,9 @@ Date: 2026-08-12
 
 ## Visual target
 
-- Reference: `C:\Users\michi\AppData\Local\Temp\codex-clipboard-03d9ed05-df83-431d-b5ef-916d2755244e.png`
 - Implementation capture: `design-qa-assets/project-home-393x852.png`
-- Target hierarchy retained: brand header, icon navigation, one primary content surface, canvas creation flow, recent-project grid.
-- Product-specific direction applied: `M1M4.COM` is top-right, navigation has exactly `Projects` and `New Canvas`, and the existing orange/dark editor tokens replace the reference coral palette.
+- Product hierarchy: brand header, icon navigation, one primary content surface, canvas creation flow, recent-project grid.
+- `M1M4.COM` is top-right, navigation has exactly `Projects` and `New Canvas`, and the established orange/dark editor tokens define the palette.
 
 ## Responsive checks
 
@@ -32,7 +31,7 @@ Date: 2026-08-12
 - Kept 44 px minimum interactive targets on mobile.
 - Added reduced-motion handling for card transitions and the save indicator.
 - Replaced unreliable HTML WebGPU canvas serialization with a GPU presentation-cache readback for full-composite thumbnails; thumbnail failure cannot block the authoritative project save.
-- Blank-state density and vertical rhythm intentionally differ from the reference because the requested first screen has two tabs and no promotional/challenge actions.
+- Blank-state density and vertical rhythm support the requested two-tab first screen without promotional actions.
 
 ## Verification
 

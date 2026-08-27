@@ -194,6 +194,16 @@ import {
 } from "./engine-glass-runtime";
 import type { RasterGlassSeed, RasterGlassSettings } from "./glass-core";
 import {
+  abandonRasterToneCurvesSession,
+  beginRasterToneCurves as beginRasterToneCurvesRuntime,
+  cancelRasterToneCurves as cancelRasterToneCurvesRuntime,
+  commitRasterToneCurves as commitRasterToneCurvesRuntime,
+  prewarmRasterToneCurvesRuntime,
+  updateRasterToneCurves as updateRasterToneCurvesRuntime,
+  type ActiveRasterToneCurvesSession,
+} from "./engine-raster-tone-curves-runtime";
+import type { RasterToneCurveSet } from "./raster-tone-curves-core.ts";
+import {
   abandonRasterLiquifySession,
   beginRasterLiquify as beginRasterLiquifyRuntime,
   beginRasterLiquifyStroke as beginRasterLiquifyStrokeRuntime,
@@ -931,6 +941,7 @@ export type DestructiveRasterEditKind =
   | "motion-blur"
   | "noise"
   | "glass"
+  | "curves"
   | "liquify";
 
 type DestructiveRasterOperationKind = DestructiveRasterEditKind | "rasterize";
@@ -1054,6 +1065,8 @@ export class BrushEngine {
   private optionalEditorResourcesPromise: Promise<void> | null = null;
   optionalEditorResourcesReady = false;
   private spatialBlurPipelinesReady = false;
+  private rasterToneCurvesPipelinesReady = false;
+  private rasterToneCurvesPrewarmPromise: Promise<void> | null = null;
   cloneRendererResources: CloneRendererResources | null = null;
   cloneRendererPromise: Promise<CloneRendererResources> | null = null;
   activeCloneStrokeSession: ActiveCloneStrokeSession | null = null;
@@ -1906,6 +1919,7 @@ export class BrushEngine {
   activeRasterMotionBlurSession: ActiveRasterMotionBlurSession | null = null;
   activeRasterNoiseSession: ActiveRasterNoiseSession | null = null;
   activeRasterGlassSession: ActiveRasterGlassSession | null = null;
+  activeRasterToneCurvesSession: ActiveRasterToneCurvesSession | null = null;
   activeRasterLiquifySession: ActiveRasterLiquifySession | null = null;
   historyGpuStorage!: GpuHistoryStorage;
   historyLocalStorage!: HistoryStorageCoordinator;
@@ -2135,6 +2149,7 @@ export class BrushEngine {
       abandonRasterSpatialBlurSession(this);
       abandonRasterNoiseSession(this);
       abandonRasterGlassSession(this);
+      abandonRasterToneCurvesSession(this);
       abandonRasterLiquifySession(this);
       const reason = info.message || info.reason;
       const error = new Error(`WebGPU device lost: ${reason}`);
@@ -2144,6 +2159,8 @@ export class BrushEngine {
         cancelAnimationFrame(this.frameRequest);
         this.frameRequest = null;
       }
+      this.publishHistoryState();
+      this.publishStats();
       this.callbacks.onStatus?.(`WebGPU device lost: ${reason}`, "error");
       return error;
     });
@@ -5311,6 +5328,7 @@ export class BrushEngine {
       || this.activeRasterMotionBlurSession
       || this.activeRasterNoiseSession
       || this.activeRasterGlassSession
+      || this.activeRasterToneCurvesSession
       || this.activeRasterLiquifySession
     ) {
       return false;
@@ -5420,6 +5438,7 @@ export class BrushEngine {
       || this.activeRasterMotionBlurSession
       || this.activeRasterNoiseSession
       || this.activeRasterGlassSession
+      || this.activeRasterToneCurvesSession
       || this.activeRasterLiquifySession
     ) {
       return false;
@@ -5525,6 +5544,7 @@ export class BrushEngine {
       && this.activeRasterMotionBlurSession === null
       && this.activeRasterNoiseSession === null
       && this.activeRasterGlassSession === null
+      && this.activeRasterToneCurvesSession === null
       && this.activeRasterLiquifySession === null;
   }
 
@@ -5914,6 +5934,7 @@ export class BrushEngine {
     if (this.activeRasterMotionBlurSession) return "motion-blur";
     if (this.activeRasterNoiseSession) return "noise";
     if (this.activeRasterGlassSession) return "glass";
+    if (this.activeRasterToneCurvesSession) return "curves";
     if (this.activeRasterLiquifySession) return "liquify";
     return null;
   }
@@ -5925,6 +5946,7 @@ export class BrushEngine {
     if (kind === "spatial-blur") return "Point Blur";
     if (kind === "motion-blur") return "Motion Blur";
     if (kind === "glass") return "Glass";
+    if (kind === "curves") return "Curves";
     if (kind === "liquify") return "Liquify";
     if (kind === "rasterize") return "Rasterize";
     return "Noise";
@@ -8142,6 +8164,33 @@ export class BrushEngine {
   }
 
   /**
+   * Prewarms Curves independently from the shared optional-editor path. A
+   * driver-specific failure here must not delay or reject selection, vector or
+   * mixed-scene initialization; opening Curves can retry the same runtime on
+   * demand.
+   */
+  async prewarmRasterToneCurvesResources(): Promise<void> {
+    if (this.rasterToneCurvesPipelinesReady) return;
+    if (this.rasterToneCurvesPrewarmPromise) {
+      await this.rasterToneCurvesPrewarmPromise;
+      return;
+    }
+    const initialization = (async (): Promise<void> => {
+      await prewarmRasterToneCurvesRuntime(this.device);
+      if (this.deviceLostError) throw this.deviceLostError;
+      this.rasterToneCurvesPipelinesReady = true;
+    })();
+    this.rasterToneCurvesPrewarmPromise = initialization;
+    try {
+      await initialization;
+    } finally {
+      if (this.rasterToneCurvesPrewarmPromise === initialization) {
+        this.rasterToneCurvesPrewarmPromise = null;
+      }
+    }
+  }
+
+  /**
    * One authoritative layer is exactly one document-sized mip-0 texture. Display
    * mips live in one reusable active-layer pyramid instead of every layer
    * texture.
@@ -8841,6 +8890,7 @@ export class BrushEngine {
       || this.activeRasterMotionBlurSession
       || this.activeRasterNoiseSession
       || this.activeRasterGlassSession
+      || this.activeRasterToneCurvesSession
       || this.activeRasterLiquifySession
       || this.rasterStrokeBusy
       || this.rasterBevelBusy
@@ -8986,6 +9036,7 @@ export class BrushEngine {
       || this.activeRasterMotionBlurSession
       || this.activeRasterNoiseSession
       || this.activeRasterGlassSession
+      || this.activeRasterToneCurvesSession
       || this.activeRasterLiquifySession
     ) {
       return false;
@@ -9548,6 +9599,22 @@ export class BrushEngine {
 
   cancelRasterGlass(): Promise<boolean> {
     return cancelRasterGlassRuntime(this);
+  }
+
+  beginRasterToneCurves(initial?: Partial<RasterToneCurveSet>) {
+    return beginRasterToneCurvesRuntime(this, initial);
+  }
+
+  updateRasterToneCurves(update: Partial<RasterToneCurveSet>) {
+    return updateRasterToneCurvesRuntime(this, update);
+  }
+
+  commitRasterToneCurves(): Promise<boolean> {
+    return commitRasterToneCurvesRuntime(this);
+  }
+
+  cancelRasterToneCurves(): Promise<boolean> {
+    return cancelRasterToneCurvesRuntime(this);
   }
 
   beginRasterLiquify(initial?: Partial<LiquifySettings>) {
@@ -10779,6 +10846,11 @@ export class BrushEngine {
     if (this.activeRasterGlassSession) {
       throw new Error(
         "Apply or cancel Glass before switching layers.",
+      );
+    }
+    if (this.activeRasterToneCurvesSession) {
+      throw new Error(
+        "Apply or cancel Curves before switching layers.",
       );
     }
     if (this.activeRasterLiquifySession) {

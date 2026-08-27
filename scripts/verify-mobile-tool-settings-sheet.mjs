@@ -495,6 +495,11 @@ assert.match(
   /MOBILE_LAYER_OPTIONS_MAX_VISIBLE_PX[\s\S]*?activeKind === "layer-options"/,
   "layer opacity and blend mode must open together in a content-sized compact detent",
 );
+assert.match(
+  controller,
+  /const MOBILE_LAYER_OPTIONS_MAX_VISIBLE_PX = 360;/,
+  "Layer Options must keep Fill above the lower safe-area lane on short phones",
+);
 const layerOptionsStart = sheet.indexOf('data-mobile-tool-settings-panel="layer-options"');
 const layerOptionsEnd = sheet.indexOf(
   'data-mobile-tool-settings-panel="svg-style"',
@@ -539,8 +544,33 @@ assert.match(
 );
 assert.match(
   controller,
-  /this\.layerOpacity\.addEventListener\("input"[\s\S]*?setSelectedLayerOpacity[\s\S]*?this\.layerContentOpacity\.addEventListener\("input"[\s\S]*?setSelectedLayerContentOpacity/,
-  "Opacity and Fill must update the selected layer live from native range input",
+  /this\.bindLayerRange\(\s*this\.layerOpacity,[\s\S]*?"opacity"[\s\S]*?this\.bindLayerRange\(\s*this\.layerContentOpacity,[\s\S]*?"content-opacity"/,
+  "Opacity and Fill must share the touch-safe live range path",
+);
+assert.match(
+  controller,
+  /private bindLayerRange\([\s\S]*?addEventListener\("input", publish\)[\s\S]*?addEventListener\("pointerdown", beginGesture\)[\s\S]*?addEventListener\("pointerup", finishGesture\)[\s\S]*?addEventListener\("pointercancel", finishGesture\)[\s\S]*?addEventListener\("change", finishGesture\)/,
+  "touch, cancel and final native range events must share one flush lifecycle",
+);
+assert.match(
+  controller,
+  /pendingLayerRangeUpdates\.set\(field,[\s\S]*?requestLayerRangeUpdate\(\)[\s\S]*?requestAnimationFrame\([\s\S]*?flushLayerRangeUpdates\(\)/,
+  "range bursts must keep only the latest value for each field and publish at most once per frame",
+);
+assert.match(
+  controller,
+  /closedKind === "layer-options"\) this\.flushLayerRangeUpdates\(\)[\s\S]*?finishSelectedLayerOptionsEdit\(\)/,
+  "closing Layer Options must flush the final range value before committing its one History action",
+);
+assert.match(
+  controller,
+  /activeLayerRangeGestures\.has\(this\.layerOpacity\)[\s\S]*?this\.layerOpacity\.value[\s\S]*?activeLayerRangeGestures\.has\(this\.layerContentOpacity\)[\s\S]*?this\.layerContentOpacity\.value/,
+  "async UI synchronization must not rewrite either native range while its pointer is active",
+);
+assert.match(
+  main,
+  /setSelectedLayerOpacity: \(key, opacity\) => \{\s*return sceneEditorController\?\.setLayerOpacity\(key, opacity\);[\s\S]*?setSelectedLayerContentOpacity: \(key, contentOpacity\) => \{\s*return sceneEditorController\?\.setRasterContentOpacity\(key, contentOpacity\);/,
+  "raw range input must reuse the captured layer key instead of rebuilding a full stats snapshot",
 );
 assert.match(
   controller,
@@ -581,6 +611,21 @@ assert.match(
   css,
   /\.mobile-layer-tonal-control input\[type="range"\][\s\S]*?height:\s*44px;[\s\S]*?touch-action:\s*none;/,
   "each tonal stop must retain a touch-sized native range target",
+);
+assert.match(
+  css,
+  /#gpuCanvas\.layer-options-active ~ \.gpu-memory-monitor\s*\{[\s\S]*?visibility:\s*hidden;[\s\S]*?pointer-events:\s*none;/,
+  "Layer Options must remove compact telemetry from the Fill touch lane",
+);
+assert.match(
+  main,
+  /onOpenChange: \(open\) => \{[\s\S]*?classList\.toggle\(\s*"layer-options-active"[\s\S]*?toolKind === "layer-options"/,
+  "the composition root must expose the Layer Options overlap state on the canvas sibling",
+);
+assert.match(
+  css,
+  /#mobileLayerOpacity::-webkit-slider-thumb,[\s\S]*?#mobileLayerContentOpacity::-webkit-slider-thumb[\s\S]*?width:\s*24px;[\s\S]*?height:\s*24px;/,
+  "Opacity and Fill need deterministic touch thumbs on WebKit",
 );
 assert.match(
   controller,

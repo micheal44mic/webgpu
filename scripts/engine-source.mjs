@@ -50,6 +50,7 @@ export const ENGINE_SOURCE_FILES = Object.freeze([
   "engine-motion-blur-runtime.ts",
   "engine-noise-runtime.ts",
   "engine-glass-runtime.ts",
+  "engine-raster-tone-curves-runtime.ts",
   "engine-liquify-runtime.ts",
   "engine-vector-raster-runtime.ts",
   "engine-history-runtime.ts",

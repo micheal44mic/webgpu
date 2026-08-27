@@ -231,6 +231,7 @@ export interface HistoryState {
     | "motion-blur"
     | "noise"
     | "glass"
+    | "curves"
     | "liquify"
     | null;
 }
