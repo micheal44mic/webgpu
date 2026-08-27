@@ -232,6 +232,7 @@ export interface HistoryState {
     | "noise"
     | "glass"
     | "curves"
+    | "color-adjust"
     | "liquify"
     | null;
 }

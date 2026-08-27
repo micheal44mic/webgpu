@@ -41,3 +41,54 @@ Date: 2026-08-12
 - `npm run layer-structure:verify`
 - `npx tsc --noEmit`
 - `npm run build`
+
+---
+
+# Color Adjust — Design QA
+
+Date: 2026-08-27
+
+## Visual target
+
+- Three always-visible controls in one floating bottom dock: Hue, Saturation and Brightness.
+- The dock follows the editor's existing dark surface, border, radius, icon and focus styles.
+- Hue uses a full spectrum track; Saturation and Brightness use semantic low-to-high tracks.
+- Reset and Cancel appear in a compact two-button menu at the canvas press position.
+
+## Responsive checks
+
+- 390 × 844: passed. All three controls remain on one row, the quick-tool lane stays clear and touch targets remain usable.
+- 844 × 390: passed. The dock stays above the lower safe area without hiding the active canvas region.
+- 834 × 1194: passed after widening the dock for the tablet portrait proportion.
+- 1194 × 834: passed. The horizontal layout matches the supplied landscape composition and remains centered around the working area.
+- The supplied portrait and landscape references were compared directly beside the corresponding implementation captures.
+
+## Interaction checks
+
+- Live Hue, Saturation and Brightness preview: passed on the WebGPU device path.
+- Fifty-one consecutive slider updates: passed; the latest value won, the UI stayed responsive and no new browser errors were reported.
+- Reset returns all controls to neutral and keeps the session open: passed.
+- Cancel restores the byte-exact source and creates no history action: passed.
+- Switching to Move or selecting the active Paint tool commits once and closes the surface: passed.
+- Long-press lifecycle, movement threshold, second-pointer cancellation and menu clamping are covered by the surface-controller verification.
+- Keyboard focus, Escape handling and minimum touch targets: passed.
+
+## Rendering and transaction checks
+
+- Immutable cropped `rgba16float` source and authoritative `rgba16float` output: passed.
+- One compute dispatch per accepted preview, one in-flight submission and latest-wins scheduling: passed.
+- Alpha and raster bounds preservation: passed.
+- One history action on commit and no history action on neutral commit or cancel: passed.
+- Native-raster target guard and semantic-layer rejection: passed.
+- The 32-byte uniform ABI was validated on a real WebGPU device and is protected by regression assertions.
+
+## Verification
+
+- `npm run verify` — 116/116 suites passed.
+- `npm run typecheck` — passed.
+- `npm run build:bundle` — passed.
+- `npm run labs:build` — passed.
+- Production bundle boundary check — passed.
+- Source-language audit — no external creative-product references.
+
+Final result: passed.

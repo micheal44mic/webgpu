@@ -2929,6 +2929,21 @@
               </span>
               <span class="mobile-tools-item-label">Curves</span>
             </button>
+            <button
+              id="editorColorAdjustFilter"
+              class="mobile-tools-item editor-filter-item"
+              type="button"
+              data-editor-filter-kind="color-adjust"
+              aria-label="Open Color Adjust filter"
+              aria-controls="colorAdjustSurface"
+              aria-pressed="false"
+            >
+              <span class="mobile-icon-stack" aria-hidden="true">
+                <i data-lucide="palette" class="mobile-icon-layer mobile-icon-outline"></i>
+                <i data-lucide="palette" class="mobile-icon-layer mobile-icon-face"></i>
+              </span>
+              <span class="mobile-tools-item-label">Color Adjust</span>
+            </button>
           </div>
         </div>
       </aside>
@@ -3309,6 +3324,77 @@
             Drag from the center. Shift or a second finger locks 1:1.
           </output>
         </nav>
+        <section
+          id="colorAdjustSurface"
+          class="color-adjust-surface"
+          role="region"
+          aria-label="Hue, Saturation and Brightness controls"
+          aria-hidden="true"
+          hidden
+          inert
+        >
+          <div class="color-adjust-control-grid">
+            <label class="color-adjust-control color-adjust-hue" for="colorAdjustHue">
+              <span class="color-adjust-control-heading">
+                <span>Hue</span>
+                <output id="colorAdjustHueOut" for="colorAdjustHue">0°</output>
+              </span>
+              <input
+                id="colorAdjustHue"
+                type="range"
+                min="0"
+                max="100"
+                step="0.5"
+                value="50"
+                aria-label="Hue shift"
+              >
+            </label>
+            <label class="color-adjust-control color-adjust-saturation" for="colorAdjustSaturation">
+              <span class="color-adjust-control-heading">
+                <span>Saturation</span>
+                <output id="colorAdjustSaturationOut" for="colorAdjustSaturation">0%</output>
+              </span>
+              <input
+                id="colorAdjustSaturation"
+                type="range"
+                min="0"
+                max="100"
+                step="0.5"
+                value="50"
+                aria-label="Saturation adjustment"
+              >
+            </label>
+            <label class="color-adjust-control color-adjust-brightness" for="colorAdjustBrightness">
+              <span class="color-adjust-control-heading">
+                <span>Brightness</span>
+                <output id="colorAdjustBrightnessOut" for="colorAdjustBrightness">0%</output>
+              </span>
+              <input
+                id="colorAdjustBrightness"
+                type="range"
+                min="0"
+                max="100"
+                step="0.5"
+                value="50"
+                aria-label="Brightness adjustment"
+              >
+            </label>
+          </div>
+          <p id="colorAdjustStatus" class="visually-hidden" role="status" aria-live="polite">
+            Color Adjust ready.
+          </p>
+        </section>
+        <div
+          id="colorAdjustMenu"
+          class="color-adjust-menu"
+          role="menu"
+          aria-label="Color Adjust actions"
+          aria-hidden="true"
+          hidden
+        >
+          <button id="colorAdjustReset" type="button" role="menuitem">Reset</button>
+          <button id="colorAdjustCancel" type="button" role="menuitem">Cancel</button>
+        </div>
         <div
           id="spatialBlurOverlay"
           class="spatial-blur-overlay"

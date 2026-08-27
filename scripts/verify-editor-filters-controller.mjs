@@ -35,6 +35,16 @@ assert.match(
   "Curves must use an icon registered by the production icon set.",
 );
 assert.match(filtersPanelSource, /class="mobile-tools-item-label">Curves<\/span>/);
+assert.match(
+  filtersPanelSource,
+  /id="editorColorAdjustFilter"[\s\S]*?data-editor-filter-kind="color-adjust"/,
+);
+assert.match(
+  filtersPanelSource,
+  /id="editorColorAdjustFilter"[\s\S]{0,520}data-lucide="palette"/,
+  "Color Adjust must use an icon registered by the production icon set.",
+);
+assert.match(filtersPanelSource, /class="mobile-tools-item-label">Color Adjust<\/span>/);
 assert.doesNotMatch(filtersPanelSource, /Point Blur|spatial-blur/);
 assert.doesNotMatch(
   filtersPanelSource,
@@ -87,9 +97,10 @@ try {
   await moduleServer.close();
 }
 
-assert.deepEqual(EDITOR_FILTER_KINDS, ["glass", "curves"]);
+assert.deepEqual(EDITOR_FILTER_KINDS, ["glass", "curves", "color-adjust"]);
 assert.equal(isEditorFilterKind("glass"), true);
 assert.equal(isEditorFilterKind("curves"), true);
+assert.equal(isEditorFilterKind("color-adjust"), true);
 assert.equal(isEditorFilterKind("spatial-blur"), false);
 assert.equal(isEditorFilterKind("unknown"), false);
 assert.equal(isEditorFilterKind(undefined), false);
@@ -177,10 +188,12 @@ function createHarness(initiallyCanOpen = true) {
   const closeButton = new FakeElement(document);
   const glassButton = new FakeElement(document, { editorFilterKind: "glass" });
   const curvesButton = new FakeElement(document, { editorFilterKind: "curves" });
+  const colorAdjustButton = new FakeElement(document, { editorFilterKind: "color-adjust" });
   const unknownButton = new FakeElement(document, { editorFilterKind: "unknown" });
   panel.contained.add(closeButton);
   panel.contained.add(glassButton);
   panel.contained.add(curvesButton);
+  panel.contained.add(colorAdjustButton);
   panel.contained.add(unknownButton);
   let canOpen = initiallyCanOpen;
   const lifecycle = [];
@@ -193,7 +206,7 @@ function createHarness(initiallyCanOpen = true) {
       trigger,
       panel,
       closeButton,
-      filterButtons: [glassButton, curvesButton, unknownButton],
+      filterButtons: [glassButton, curvesButton, colorAdjustButton, unknownButton],
     },
     canOpen: () => canOpen,
     beforeOpen: () => lifecycle.push("before-open"),
@@ -216,6 +229,7 @@ function createHarness(initiallyCanOpen = true) {
     closeButton,
     glassButton,
     curvesButton,
+    colorAdjustButton,
     unknownButton,
     lifecycle,
     routed,

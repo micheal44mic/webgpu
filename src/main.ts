@@ -463,6 +463,18 @@ const mobileCurvesDeletePointButton = element<HTMLButtonElement>("mobileCurvesDe
 const mobileCurvesStatus = element<HTMLParagraphElement>("mobileCurvesStatus");
 const mobileCurvesCancelButton = element<HTMLButtonElement>("mobileCurvesCancel");
 const mobileCurvesApplyButton = element<HTMLButtonElement>("mobileCurvesApply");
+const colorAdjustOpenButton = element<HTMLButtonElement>("editorColorAdjustFilter");
+const colorAdjustSurface = element<HTMLElement>("colorAdjustSurface");
+const colorAdjustHueInput = element<HTMLInputElement>("colorAdjustHue");
+const colorAdjustHueOutput = element<HTMLOutputElement>("colorAdjustHueOut");
+const colorAdjustSaturationInput = element<HTMLInputElement>("colorAdjustSaturation");
+const colorAdjustSaturationOutput = element<HTMLOutputElement>("colorAdjustSaturationOut");
+const colorAdjustBrightnessInput = element<HTMLInputElement>("colorAdjustBrightness");
+const colorAdjustBrightnessOutput = element<HTMLOutputElement>("colorAdjustBrightnessOut");
+const colorAdjustStatus = element<HTMLParagraphElement>("colorAdjustStatus");
+const colorAdjustMenu = element<HTMLElement>("colorAdjustMenu");
+const colorAdjustResetButton = element<HTMLButtonElement>("colorAdjustReset");
+const colorAdjustCancelButton = element<HTMLButtonElement>("colorAdjustCancel");
 const mobileToolSettingsButtons = Array.from(
   document.querySelectorAll<HTMLButtonElement>("[data-mobile-tool-sheet]"),
 );
@@ -908,6 +920,7 @@ appDiagnosticsController = new AppDiagnosticsController({
       rasterNoiseUiBusy: false,
       rasterGlassUiBusy: false,
       rasterCurvesUiBusy: false,
+      rasterColorAdjustUiBusy: false,
       rasterLiquifyUiBusy: false,
     },
   }),
@@ -1354,6 +1367,10 @@ canvasToolController = new CanvasToolController({
   isMultiSelectionActive: () => layerPanelController?.isMultiSelect === true,
   canFinishMultiSelectionForToolChange: canFinishLayerMultiSelection,
   finishMultiSelectionForToolChange: finishLayerMultiSelectionForToolChange,
+  shouldPrepareActiveAdjustmentForToolChange: () =>
+    rasterAdjustmentsController?.isColorAdjustAutoCommitActive(historyState) === true,
+  prepareActiveAdjustmentForToolChange: () =>
+    rasterAdjustmentsController?.commitColorAdjustForToolChange() ?? Promise.resolve(true),
   closeBrushStudioForTool: (tool) => {
     if (tool !== "paint" && mobileBrushStudio?.isOpen) {
       mobileBrushStudio.cancel(false);
@@ -1484,6 +1501,8 @@ function syncMobileToolsMenuState(
     engineReady: engineInitialized,
     interactionLocked: interactionLocked(),
     canvasToolSelectionLocked: canvasToolSelectionLocked(),
+    toolSettingsSelectionLocked: interactionLocked()
+      && rasterAdjustmentsController?.isColorAdjustAutoCommitActive(historyState) !== true,
     vectorEditorReady: mixedSceneController !== null,
     vectorEditorLocked: mixedSceneController?.getTextEditorSnapshot().locked ?? true,
     textSelected: selectedText !== null,
@@ -1735,6 +1754,20 @@ rasterAdjustmentsController = new RasterAdjustmentsController({
       cancelButton: mobileCurvesCancelButton,
       applyButton: mobileCurvesApplyButton,
     },
+    colorAdjust: {
+      openButton: colorAdjustOpenButton,
+      surface: colorAdjustSurface,
+      hueInput: colorAdjustHueInput,
+      hueOutput: colorAdjustHueOutput,
+      saturationInput: colorAdjustSaturationInput,
+      saturationOutput: colorAdjustSaturationOutput,
+      brightnessInput: colorAdjustBrightnessInput,
+      brightnessOutput: colorAdjustBrightnessOutput,
+      status: colorAdjustStatus,
+      menu: colorAdjustMenu,
+      resetButton: colorAdjustResetButton,
+      cancelButton: colorAdjustCancelButton,
+    },
   },
   isEngineReady: () => engineInitialized,
   getHistoryState: () => historyState,
@@ -1802,6 +1835,8 @@ editorFiltersController = new EditorFiltersController({
       rasterAdjustmentsController?.openGlass(trigger, returnFocus);
     } else if (kind === "curves") {
       rasterAdjustmentsController?.openCurves(trigger, returnFocus);
+    } else if (kind === "color-adjust") {
+      rasterAdjustmentsController?.openColorAdjust(trigger, returnFocus);
     }
   },
 });
@@ -2078,7 +2113,10 @@ editorToolsController = new EditorToolsController({
     effectButtons: mobileToolsEffectButtons,
   },
   canOpen: () => mobileBrushStudio?.isBusy !== true
-    && rasterAdjustmentsController?.isAnySurfaceOpen !== true,
+    && (
+      rasterAdjustmentsController?.isAnySurfaceOpen !== true
+      || rasterAdjustmentsController?.isColorAdjustAutoCommitActive(historyState) === true
+    ),
   beforeOpen: () => {
     if (mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
     if (mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
@@ -2093,7 +2131,14 @@ editorToolsController = new EditorToolsController({
   syncMenuState: syncMobileToolsMenuState,
   selectCanvasTool: selectCanvasToolWithMixedScene,
   openToolSettings: (kind, trigger) => {
-    mobileToolSettingsSheet?.open(kind, trigger);
+    if (rasterAdjustmentsController?.isColorAdjustAutoCommitActive(historyState) !== true) {
+      mobileToolSettingsSheet?.open(kind, trigger);
+      return;
+    }
+    const requestedKind = kind;
+    void rasterAdjustmentsController.commitColorAdjustForToolChange().then((committed) => {
+      if (committed) mobileToolSettingsSheet?.open(requestedKind, trigger);
+    });
   },
   runVectorCommand: (command) => {
     if (interactionLocked()) return;
@@ -2418,6 +2463,9 @@ function interactionLocked(): boolean {
 
 function canvasToolSelectionLocked(): boolean {
   if (!interactionLocked()) return false;
+  if (rasterAdjustmentsController?.isColorAdjustAutoCommitActive(historyState) === true) {
+    return false;
+  }
   const action = mixedSceneController?.getTransformActionSnapshot();
   return !(
     layerPanelController?.isMultiSelect === true
@@ -2623,6 +2671,7 @@ void engine.initialize()
         // Curves and retain independent failure behavior.
         await engine.ensureOptionalEditorResources();
         await engine.prewarmRasterToneCurvesResources();
+        await engine.prewarmRasterColorAdjustResources();
       },
       2_000,
     );

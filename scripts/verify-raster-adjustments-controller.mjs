@@ -79,6 +79,7 @@ class FakeElement extends EventTarget {
     else this.removeAttribute(name);
   }
   contains() { return false; }
+  querySelector() { return null; }
   focus() { this.focusCount += 1; }
   blur() {}
   setPointerCapture(pointerId) { this.captures.add(pointerId); }
@@ -102,6 +103,7 @@ class FakeBrowser extends EventTarget {
   AbortController = globalThis.AbortController;
   document = new FakeDocument();
   innerHeight = 800;
+  innerWidth = 1200;
   now = 0;
   performance = { now: () => this.now };
   nextAnimationFrameId = 1;
@@ -119,6 +121,8 @@ class FakeBrowser extends EventTarget {
     return id;
   }
   cancelAnimationFrame(id) { this.animationFrames.delete(id); }
+  setTimeout(callback, delay) { return globalThis.setTimeout(callback, delay); }
+  clearTimeout(id) { globalThis.clearTimeout(id); }
 }
 
 function event(type, properties = {}) {
@@ -256,6 +260,20 @@ const elements = {
     cancelButton: new FakeElement(),
     applyButton: new FakeElement(),
   },
+  colorAdjust: {
+    openButton: new FakeElement(),
+    surface: new FakeElement(),
+    hueInput: new FakeElement(),
+    hueOutput: new FakeElement(),
+    saturationInput: new FakeElement(),
+    saturationOutput: new FakeElement(),
+    brightnessInput: new FakeElement(),
+    brightnessOutput: new FakeElement(),
+    status: new FakeElement(),
+    menu: new FakeElement(),
+    resetButton: new FakeElement(),
+    cancelButton: new FakeElement(),
+  },
 };
 
 let history = {
@@ -278,6 +296,7 @@ let additionalSceneItems = [];
 let multiSelectionActive = false;
 let curvesCommitChanged = true;
 let curvesRasterizationPromise = null;
+let colorAdjustSettings = null;
 const engine = {
   documentWidth: 512,
   documentHeight: 512,
@@ -435,6 +454,33 @@ const engine = {
   },
   async cancelRasterToneCurves() {
     calls.push(["cancel-curves"]);
+    history = { ...history, openEdit: null };
+    return true;
+  },
+  async beginRasterColorAdjust(settings) {
+    calls.push(["begin-color-adjust", settings]);
+    colorAdjustSettings = { ...settings };
+    history = { ...history, openEdit: "color-adjust" };
+    return {
+      settings: { ...colorAdjustSettings },
+      sourceBounds: { x: 0, y: 0, width: 512, height: 512 },
+    };
+  },
+  updateRasterColorAdjust(settings) {
+    calls.push(["update-color-adjust", settings]);
+    colorAdjustSettings = { ...settings };
+    return {
+      settings: { ...colorAdjustSettings },
+      sourceBounds: { x: 0, y: 0, width: 512, height: 512 },
+    };
+  },
+  async commitRasterColorAdjust() {
+    calls.push(["commit-color-adjust"]);
+    history = { ...history, openEdit: null, actionCount: history.actionCount + 1 };
+    return true;
+  },
+  async cancelRasterColorAdjust() {
+    calls.push(["cancel-color-adjust"]);
     history = { ...history, openEdit: null };
     return true;
   },
@@ -835,6 +881,50 @@ await settle();
 assert.equal(elements.curves.openButton.disabled, true);
 assert.equal(calls.filter(([name]) => name === "begin-curves").length, beginCurvesBeforeMulti);
 multiSelectionActive = false;
+
+// Color Adjust targets only the selected raster, previews every slider input,
+// and commits exactly once before a requested canvas-tool transition.
+selectedItem = { key: "image:9", kind: "image" };
+controller.syncUi();
+assert.equal(elements.colorAdjust.openButton.disabled, true);
+selectedItem = { key: "raster:1", kind: "raster", rasterLayerId: 1 };
+controller.syncUi();
+const colorThumbnailCount = thumbnails;
+controller.openColorAdjust(elements.colorAdjust.openButton, filtersTrigger);
+await settle();
+await settle();
+assert.equal(history.openEdit, "color-adjust");
+assert.equal(controller.isOpen("color-adjust"), true);
+assert.equal(elements.colorAdjust.surface.hidden, false);
+assert.equal(controller.canAutoCommitColorAdjust(history), true);
+elements.colorAdjust.hueInput.value = "75";
+elements.colorAdjust.saturationInput.value = "60";
+elements.colorAdjust.brightnessInput.value = "40";
+elements.colorAdjust.brightnessInput.dispatchEvent(event("input"));
+assert.deepEqual(calls.at(-1), [
+  "update-color-adjust",
+  { hueDegrees: 90, saturationPercent: 20, brightnessPercent: -20 },
+]);
+assert.equal(await controller.commitColorAdjustForToolChange(), true);
+assert.equal(history.openEdit, null);
+assert.equal(controller.isOpen("color-adjust"), false);
+assert.equal(elements.colorAdjust.surface.hidden, true);
+assert.equal(calls.at(-1)[0], "commit-color-adjust");
+assert.equal(thumbnails, colorThumbnailCount + 1);
+
+controller.openColorAdjust(elements.colorAdjust.openButton, filtersTrigger);
+await settle();
+elements.colorAdjust.hueInput.value = "90";
+elements.colorAdjust.hueInput.dispatchEvent(event("input"));
+elements.colorAdjust.resetButton.dispatchEvent(event("click"));
+assert.deepEqual(calls.at(-1), [
+  "update-color-adjust",
+  { hueDegrees: 0, saturationPercent: 0, brightnessPercent: 0 },
+]);
+elements.colorAdjust.cancelButton.dispatchEvent(event("click"));
+await settle();
+assert.equal(history.openEdit, null);
+assert.equal(calls.at(-1)[0], "cancel-color-adjust");
 
 // Device loss abandons the engine session without a GPU rollback. The UI must
 // close immediately, restore focus and avoid issuing a stale Cancel command.

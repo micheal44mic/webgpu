@@ -204,6 +204,16 @@ import {
 } from "./engine-raster-tone-curves-runtime";
 import type { RasterToneCurveSet } from "./raster-tone-curves-core.ts";
 import {
+  abandonRasterColorAdjustSession,
+  beginRasterColorAdjust as beginRasterColorAdjustRuntime,
+  cancelRasterColorAdjust as cancelRasterColorAdjustRuntime,
+  commitRasterColorAdjust as commitRasterColorAdjustRuntime,
+  prewarmRasterColorAdjustRuntime,
+  updateRasterColorAdjust as updateRasterColorAdjustRuntime,
+  type ActiveRasterColorAdjustSession,
+} from "./engine-raster-color-adjust-runtime";
+import type { RasterColorAdjustSettings } from "./raster-color-adjust-core.ts";
+import {
   abandonRasterLiquifySession,
   beginRasterLiquify as beginRasterLiquifyRuntime,
   beginRasterLiquifyStroke as beginRasterLiquifyStrokeRuntime,
@@ -942,6 +952,7 @@ export type DestructiveRasterEditKind =
   | "noise"
   | "glass"
   | "curves"
+  | "color-adjust"
   | "liquify";
 
 type DestructiveRasterOperationKind = DestructiveRasterEditKind | "rasterize";
@@ -1067,6 +1078,8 @@ export class BrushEngine {
   private spatialBlurPipelinesReady = false;
   private rasterToneCurvesPipelinesReady = false;
   private rasterToneCurvesPrewarmPromise: Promise<void> | null = null;
+  private rasterColorAdjustPipelinesReady = false;
+  private rasterColorAdjustPrewarmPromise: Promise<void> | null = null;
   cloneRendererResources: CloneRendererResources | null = null;
   cloneRendererPromise: Promise<CloneRendererResources> | null = null;
   activeCloneStrokeSession: ActiveCloneStrokeSession | null = null;
@@ -1920,6 +1933,7 @@ export class BrushEngine {
   activeRasterNoiseSession: ActiveRasterNoiseSession | null = null;
   activeRasterGlassSession: ActiveRasterGlassSession | null = null;
   activeRasterToneCurvesSession: ActiveRasterToneCurvesSession | null = null;
+  activeRasterColorAdjustSession: ActiveRasterColorAdjustSession | null = null;
   activeRasterLiquifySession: ActiveRasterLiquifySession | null = null;
   historyGpuStorage!: GpuHistoryStorage;
   historyLocalStorage!: HistoryStorageCoordinator;
@@ -2150,6 +2164,7 @@ export class BrushEngine {
       abandonRasterNoiseSession(this);
       abandonRasterGlassSession(this);
       abandonRasterToneCurvesSession(this);
+      abandonRasterColorAdjustSession(this);
       abandonRasterLiquifySession(this);
       const reason = info.message || info.reason;
       const error = new Error(`WebGPU device lost: ${reason}`);
@@ -5329,6 +5344,7 @@ export class BrushEngine {
       || this.activeRasterNoiseSession
       || this.activeRasterGlassSession
       || this.activeRasterToneCurvesSession
+      || this.activeRasterColorAdjustSession
       || this.activeRasterLiquifySession
     ) {
       return false;
@@ -5439,6 +5455,7 @@ export class BrushEngine {
       || this.activeRasterNoiseSession
       || this.activeRasterGlassSession
       || this.activeRasterToneCurvesSession
+      || this.activeRasterColorAdjustSession
       || this.activeRasterLiquifySession
     ) {
       return false;
@@ -5545,6 +5562,7 @@ export class BrushEngine {
       && this.activeRasterNoiseSession === null
       && this.activeRasterGlassSession === null
       && this.activeRasterToneCurvesSession === null
+      && this.activeRasterColorAdjustSession === null
       && this.activeRasterLiquifySession === null;
   }
 
@@ -5935,6 +5953,7 @@ export class BrushEngine {
     if (this.activeRasterNoiseSession) return "noise";
     if (this.activeRasterGlassSession) return "glass";
     if (this.activeRasterToneCurvesSession) return "curves";
+    if (this.activeRasterColorAdjustSession) return "color-adjust";
     if (this.activeRasterLiquifySession) return "liquify";
     return null;
   }
@@ -5947,6 +5966,7 @@ export class BrushEngine {
     if (kind === "motion-blur") return "Motion Blur";
     if (kind === "glass") return "Glass";
     if (kind === "curves") return "Curves";
+    if (kind === "color-adjust") return "Color Adjust";
     if (kind === "liquify") return "Liquify";
     if (kind === "rasterize") return "Rasterize";
     return "Noise";
@@ -8190,6 +8210,28 @@ export class BrushEngine {
     }
   }
 
+  /** Prewarms the lightweight Color Adjust pipeline without opening an edit. */
+  async prewarmRasterColorAdjustResources(): Promise<void> {
+    if (this.rasterColorAdjustPipelinesReady) return;
+    if (this.rasterColorAdjustPrewarmPromise) {
+      await this.rasterColorAdjustPrewarmPromise;
+      return;
+    }
+    const initialization = (async (): Promise<void> => {
+      await prewarmRasterColorAdjustRuntime(this.device);
+      if (this.deviceLostError) throw this.deviceLostError;
+      this.rasterColorAdjustPipelinesReady = true;
+    })();
+    this.rasterColorAdjustPrewarmPromise = initialization;
+    try {
+      await initialization;
+    } finally {
+      if (this.rasterColorAdjustPrewarmPromise === initialization) {
+        this.rasterColorAdjustPrewarmPromise = null;
+      }
+    }
+  }
+
   /**
    * One authoritative layer is exactly one document-sized mip-0 texture. Display
    * mips live in one reusable active-layer pyramid instead of every layer
@@ -8891,6 +8933,7 @@ export class BrushEngine {
       || this.activeRasterNoiseSession
       || this.activeRasterGlassSession
       || this.activeRasterToneCurvesSession
+      || this.activeRasterColorAdjustSession
       || this.activeRasterLiquifySession
       || this.rasterStrokeBusy
       || this.rasterBevelBusy
@@ -9037,6 +9080,7 @@ export class BrushEngine {
       || this.activeRasterNoiseSession
       || this.activeRasterGlassSession
       || this.activeRasterToneCurvesSession
+      || this.activeRasterColorAdjustSession
       || this.activeRasterLiquifySession
     ) {
       return false;
@@ -9615,6 +9659,22 @@ export class BrushEngine {
 
   cancelRasterToneCurves(): Promise<boolean> {
     return cancelRasterToneCurvesRuntime(this);
+  }
+
+  beginRasterColorAdjust(initial?: Partial<RasterColorAdjustSettings>) {
+    return beginRasterColorAdjustRuntime(this, initial);
+  }
+
+  updateRasterColorAdjust(update: Partial<RasterColorAdjustSettings>) {
+    return updateRasterColorAdjustRuntime(this, update);
+  }
+
+  commitRasterColorAdjust(): Promise<boolean> {
+    return commitRasterColorAdjustRuntime(this);
+  }
+
+  cancelRasterColorAdjust(): Promise<boolean> {
+    return cancelRasterColorAdjustRuntime(this);
   }
 
   beginRasterLiquify(initial?: Partial<LiquifySettings>) {
@@ -10851,6 +10911,11 @@ export class BrushEngine {
     if (this.activeRasterToneCurvesSession) {
       throw new Error(
         "Apply or cancel Curves before switching layers.",
+      );
+    }
+    if (this.activeRasterColorAdjustSession) {
+      throw new Error(
+        "Apply or cancel Color Adjust before switching layers.",
       );
     }
     if (this.activeRasterLiquifySession) {

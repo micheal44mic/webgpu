@@ -52,6 +52,8 @@ export interface CanvasToolControllerOptions {
   readonly isMultiSelectionActive: () => boolean;
   readonly canFinishMultiSelectionForToolChange: () => boolean;
   readonly finishMultiSelectionForToolChange: () => Promise<boolean>;
+  readonly shouldPrepareActiveAdjustmentForToolChange: () => boolean;
+  readonly prepareActiveAdjustmentForToolChange: () => Promise<boolean>;
   readonly closeBrushStudioForTool: (tool: CanvasInputTool) => void;
   readonly closeToolSettingsForTool: (
     tool: CanvasInputTool,
@@ -84,6 +86,11 @@ export class CanvasToolController {
     readonly preserveToolSettings: boolean;
   } | null = null;
   private multiSelectionExitPromise: Promise<void> | null = null;
+  private pendingAdjustmentTool: {
+    readonly tool: CanvasInputTool;
+    readonly preserveToolSettings: boolean;
+  } | null = null;
+  private adjustmentExitPromise: Promise<void> | null = null;
   private fillClosePanRequested = false;
   private disposed = false;
 
@@ -91,7 +98,11 @@ export class CanvasToolController {
     this.abortController = new options.browser.AbortController();
     const signal = this.abortController.signal;
     options.elements.paintButton.addEventListener("click", () => {
-      if (this.activeCanvasTool === "paint") {
+      if (
+        this.activeCanvasTool === "paint"
+        && this.adjustmentExitPromise === null
+        && !options.shouldPrepareActiveAdjustmentForToolChange()
+      ) {
         options.toggleBrushLibrary();
         return;
       }
@@ -150,6 +161,13 @@ export class CanvasToolController {
   select(tool: CanvasInputTool, preserveToolSettings = false): boolean {
     if (this.disposed) return false;
     if (
+      this.adjustmentExitPromise !== null
+      || this.options.shouldPrepareActiveAdjustmentForToolChange()
+    ) {
+      this.queueToolAfterActiveAdjustment(tool, preserveToolSettings);
+      return true;
+    }
+    if (
       this.activeCanvasTool === "transform"
       && tool !== "transform"
       && this.options.isMultiSelectionActive()
@@ -162,6 +180,38 @@ export class CanvasToolController {
     this.configure(tool, true, preserveToolSettings);
     this.options.updateHistoryControls();
     return true;
+  }
+
+  private queueToolAfterActiveAdjustment(
+    tool: CanvasInputTool,
+    preserveToolSettings: boolean,
+  ): void {
+    this.pendingAdjustmentTool = { tool, preserveToolSettings };
+    if (this.adjustmentExitPromise) return;
+    const exit = this.finishActiveAdjustmentAndSelectTool();
+    this.adjustmentExitPromise = exit;
+    void exit.finally(() => {
+      if (this.adjustmentExitPromise === exit) this.adjustmentExitPromise = null;
+    });
+  }
+
+  private async finishActiveAdjustmentAndSelectTool(): Promise<void> {
+    let finished = false;
+    try {
+      finished = await this.options.prepareActiveAdjustmentForToolChange();
+    } catch {
+      this.pendingAdjustmentTool = null;
+      return;
+    }
+    if (!finished || this.disposed) {
+      this.pendingAdjustmentTool = null;
+      return;
+    }
+    const pending = this.pendingAdjustmentTool;
+    this.pendingAdjustmentTool = null;
+    if (!pending) return;
+    this.configure(pending.tool, true, pending.preserveToolSettings);
+    this.options.updateHistoryControls();
   }
 
   private queueToolAfterMultiSelection(
@@ -351,6 +401,7 @@ export class CanvasToolController {
     this.disposed = true;
     this.configurationRevision += 1;
     this.pendingMultiSelectionTool = null;
+    this.pendingAdjustmentTool = null;
     this.abortController.abort();
   }
 

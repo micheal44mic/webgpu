@@ -17,6 +17,7 @@ export const DESTRUCTIVE_RASTER_ADJUSTMENT_KINDS = [
   "noise",
   "glass",
   "curves",
+  "color-adjust",
 ] as const;
 
 export type DestructiveRasterAdjustmentKind =

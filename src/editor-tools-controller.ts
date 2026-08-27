@@ -59,6 +59,7 @@ export interface EditorToolsMenuState {
   readonly engineReady: boolean;
   readonly interactionLocked: boolean;
   readonly canvasToolSelectionLocked: boolean;
+  readonly toolSettingsSelectionLocked: boolean;
   readonly vectorEditorReady: boolean;
   readonly vectorEditorLocked: boolean;
   readonly textSelected: boolean;
@@ -200,7 +201,7 @@ export class EditorToolsController {
       button.disabled = !state.engineReady
         || (canvasToolEditor
           ? state.canvasToolSelectionLocked
-          : state.interactionLocked)
+          : state.toolSettingsSelectionLocked)
         || (rasterDeformEditor && !state.rasterDeformTargetSelected)
         || ((textEditor || vectorEffectEditor) && !state.vectorEditorReady)
         || (kind === "text-warp" && !state.textSelected)

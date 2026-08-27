@@ -123,6 +123,10 @@ let finishMultiSelectionResult = true;
 let finishMultiSelectionGate = null;
 let finishMultiSelectionCalls = 0;
 let clearLockOnMultiSelectionFinish = true;
+let adjustmentActive = false;
+let finishAdjustmentGate = null;
+let finishAdjustmentCalls = 0;
+let finishAdjustmentResult = true;
 const vectorCalls = [];
 const vector = {
   setTransformToolActive: (active, mode) => vectorCalls.push(["transform-active", active, mode]),
@@ -172,6 +176,15 @@ const controller = new CanvasToolController({
       multiSelectionActive = false;
       if (clearLockOnMultiSelectionFinish) locked = false;
     }
+    return finished;
+  },
+  shouldPrepareActiveAdjustmentForToolChange: () => adjustmentActive,
+  prepareActiveAdjustmentForToolChange: async () => {
+    finishAdjustmentCalls += 1;
+    const finished = finishAdjustmentGate
+      ? await finishAdjustmentGate
+      : finishAdjustmentResult;
+    if (finished) adjustmentActive = false;
     return finished;
   },
   closeBrushStudioForTool: (tool) => closedStudios.push(tool),
@@ -234,6 +247,30 @@ assert.deepEqual(brushSelections.at(-1), ["blend", true]);
 locked = true;
 assert.equal(controller.select("paint"), false);
 assert.equal(controller.activeTool, "blend");
+locked = false;
+
+controller.configure("paint", false);
+await settle();
+adjustmentActive = true;
+locked = true;
+let releaseAdjustment;
+finishAdjustmentGate = new Promise((resolve) => {
+  releaseAdjustment = resolve;
+});
+const adjustmentCallsBeforeRace = finishAdjustmentCalls;
+paintButton.dispatchEvent(new Event("click"));
+eraserButton.dispatchEvent(new Event("click"));
+panButton.dispatchEvent(new Event("click"));
+assert.equal(controller.activeTool, "paint");
+assert.equal(finishAdjustmentCalls, adjustmentCallsBeforeRace + 1);
+assert.equal(libraryToggles, 1, "the active Paint button must commit instead of opening brushes");
+releaseAdjustment(true);
+await settle();
+await settle();
+assert.equal(controller.activeTool, "pan", "the latest tool request must win after auto-commit");
+assert.equal(finishAdjustmentCalls, adjustmentCallsBeforeRace + 1);
+assert.equal(locked, true, "the settled adjustment owns the post-lock transition");
+finishAdjustmentGate = null;
 locked = false;
 
 controller.configure("transform", false);
@@ -316,6 +353,7 @@ assert.equal(controller.activeTool, "pan", "a failed Apply must remain retryable
 assert.equal(multiSelectionActive, false);
 
 const brushBeforePan = controller.activeBrush;
+const brushSelectionCountBeforePan = brushSelections.length;
 panButton.dispatchEvent(new Event("click"));
 await settle();
 assert.equal(controller.activeTool, "pan");
@@ -323,7 +361,11 @@ assert.equal(controller.activeBrush, brushBeforePan);
 assert.equal(panButton.getAttribute("aria-pressed"), "true");
 assert.equal(blendButton.getAttribute("aria-pressed"), "false");
 assert.equal(canvas.getAttribute("data-active-canvas-tool"), "pan");
-assert.deepEqual(brushSelections.at(-1), [brushBeforePan, true]);
+assert.equal(
+  brushSelections.length,
+  brushSelectionCountBeforePan,
+  "selecting Move must not rewrite the active brush settings",
+);
 
 controller.configure("fill", false);
 await settle();
