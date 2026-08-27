@@ -19,6 +19,22 @@ assert.doesNotMatch(
 assert.match(source, /export type RasterAdjustmentsEnginePort = Pick</);
 assert.match(source, /hasActiveHistoryEdit/);
 assert.match(source, /allowsCanvasViewOperation/);
+assert.match(source, /GRADIENT_MAP_VECTOR_RASTERIZATION_CONFIRMATION/);
+assert.match(
+  source,
+  /Rasterize the selected SVG or text layer before continuing\?[\s\S]{0,220}selected editable layer/,
+  "Gradient Map must describe selected-only vector rasterization before it mutates the scene.",
+);
+assert.match(
+  main,
+  /confirmGradientMapVectorRasterization:[\s\S]{0,120}window\.confirm/,
+  "main must inject the selected-vector confirmation boundary.",
+);
+assert.match(
+  main,
+  /rasterizeSelectedVectorLayerForGradientMap:[\s\S]{0,360}sceneEditorController!\.rasterizeSelectedVectorLayer\(\)/,
+  "main must route Gradient Map preparation through the selected-layer scene mutation.",
+);
 assert.doesNotMatch(source, /document\.getElementById|querySelector/);
 
 const server = await createServer({
@@ -79,7 +95,33 @@ class FakeElement extends EventTarget {
     else this.removeAttribute(name);
   }
   contains() { return false; }
-  querySelector() { return null; }
+  closest(selector) {
+    if (selector === "[data-gradient-map-stop-id]") {
+      return this.dataset.gradientMapStopId === undefined ? null : this;
+    }
+    return null;
+  }
+  querySelector(selector) {
+    if (selector === "button:not(:disabled)") {
+      return this.children.find((child) => !child.disabled) ?? null;
+    }
+    const stopMatch = /^\[data-gradient-map-stop-id="(.+)"\]$/.exec(selector);
+    if (stopMatch) {
+      return this.children.find(
+        (child) => child.dataset.gradientMapStopId === stopMatch[1],
+      ) ?? null;
+    }
+    return null;
+  }
+  querySelectorAll(selector) {
+    if (selector === "[data-gradient-map-stop-id]") {
+      return this.children.filter(
+        (child) => child.dataset.gradientMapStopId !== undefined,
+      );
+    }
+    return [];
+  }
+  append(...children) { this.children.push(...children); }
   focus() { this.focusCount += 1; }
   blur() {}
   setPointerCapture(pointerId) { this.captures.add(pointerId); }
@@ -151,6 +193,27 @@ const curvesSheet = createSheetElements();
 const spatialBlurModeButtons = ["add", "adjust", "remove"].map((mode) => {
   const button = new FakeElement();
   button.dataset.spatialBlurMode = mode;
+  return button;
+});
+const gradientMapPresetButtons = [
+  "monochrome",
+  "cool-light",
+  "warm-light",
+  "sunset",
+  "forest",
+  "ember",
+].map((presetId) => {
+  const button = new FakeElement();
+  button.dataset.gradientMapPresetId = presetId;
+  return button;
+});
+const gradientMapInterpolationButtons = [
+  "perceptual",
+  "linear-light",
+  "encoded-rgb",
+].map((interpolation) => {
+  const button = new FakeElement();
+  button.dataset.gradientMapInterpolation = interpolation;
   return button;
 });
 const elements = {
@@ -297,9 +360,33 @@ const elements = {
     resetButton: new FakeElement(),
     cancelButton: new FakeElement(),
   },
+  gradientMap: {
+    openButton: new FakeElement(),
+    surface: new FakeElement(),
+    chooser: new FakeElement(),
+    presetButtons: gradientMapPresetButtons,
+    chooserCancelButton: new FakeElement(),
+    editor: new FakeElement(),
+    presetsButton: new FakeElement(),
+    gradientTrack: new FakeElement(),
+    gradientPreview: new FakeElement(),
+    stopLayer: new FakeElement(),
+    colorInput: new FakeElement(),
+    settingsButton: new FakeElement(),
+    settingsMenu: new FakeElement(),
+    reverseButton: new FakeElement(),
+    ditherButton: new FakeElement(),
+    interpolationButtons: gradientMapInterpolationButtons,
+    actionMenu: new FakeElement(),
+    resetButton: new FakeElement(),
+    cancelButton: new FakeElement(),
+    status: new FakeElement(),
+  },
 };
 elements.colorBalance.settingsMenu.hidden = true;
 elements.colorBalance.actionMenu.hidden = true;
+elements.gradientMap.settingsMenu.hidden = true;
+elements.gradientMap.actionMenu.hidden = true;
 
 let history = {
   canUndo: false,
@@ -321,8 +408,14 @@ let additionalSceneItems = [];
 let multiSelectionActive = false;
 let curvesCommitChanged = true;
 let curvesRasterizationPromise = null;
+let gradientMapRasterizationPromise = null;
 let colorAdjustSettings = null;
 let colorBalanceSettings = null;
+let gradientMapSettings = null;
+let gradientMapPrewarmPromise = null;
+let gradientMapBeginPromise = null;
+let gradientMapCommitPromise = null;
+let failGradientMapBegin = false;
 const engine = {
   documentWidth: 512,
   documentHeight: 512,
@@ -537,6 +630,40 @@ const engine = {
     history = { ...history, openEdit: null };
     return true;
   },
+  async beginRasterGradientMap(settings) {
+    calls.push(["begin-gradient-map", settings]);
+    if (gradientMapBeginPromise) await gradientMapBeginPromise;
+    if (failGradientMapBegin) throw new Error("Injected Gradient Map prepare failure.");
+    gradientMapSettings = structuredClone(settings);
+    history = { ...history, openEdit: "gradient-map" };
+    return {
+      settings: structuredClone(gradientMapSettings),
+      sourceBounds: { x: 0, y: 0, width: 512, height: 512 },
+    };
+  },
+  async prewarmRasterGradientMapResources() {
+    calls.push(["prewarm-gradient-map"]);
+    if (gradientMapPrewarmPromise) await gradientMapPrewarmPromise;
+  },
+  updateRasterGradientMap(settings) {
+    calls.push(["update-gradient-map", settings]);
+    gradientMapSettings = structuredClone(settings);
+    return {
+      settings: structuredClone(gradientMapSettings),
+      sourceBounds: { x: 0, y: 0, width: 512, height: 512 },
+    };
+  },
+  async commitRasterGradientMap() {
+    calls.push(["commit-gradient-map"]);
+    if (gradientMapCommitPromise) await gradientMapCommitPromise;
+    history = { ...history, openEdit: null, actionCount: history.actionCount + 1 };
+    return true;
+  },
+  async cancelRasterGradientMap() {
+    calls.push(["cancel-gradient-map"]);
+    history = { ...history, openEdit: null };
+    return true;
+  },
   async beginRasterLiquify(settings) {
     calls.push(["begin-liquify", settings]);
     history = { ...history, openEdit: "liquify" };
@@ -605,6 +732,17 @@ const controller = new RasterAdjustmentsController({
     additionalSceneItems = [];
     return vectorCount;
   },
+  confirmGradientMapVectorRasterization: (message) => browser.confirm(message),
+  rasterizeSelectedVectorLayerForGradientMap: async () => {
+    const selectedKind = selectedItem.kind;
+    calls.push(["rasterize-gradient-map-vector", selectedItem.key, selectedKind]);
+    if (gradientMapRasterizationPromise) await gradientMapRasterizationPromise;
+    if (selectedKind !== "text" && selectedKind !== "svg") {
+      throw new Error("Select an SVG or text layer to rasterize.");
+    }
+    selectedItem = { key: "raster:1", kind: "raster", rasterLayerId: 1 };
+    return { outputKey: "raster:1" };
+  },
   beforeSheetOpen: () => { beforeOpenCount += 1; },
   onSheetOpenChange: () => {},
   updateHistoryControls: () => { historyRefreshes += 1; },
@@ -612,6 +750,13 @@ const controller = new RasterAdjustmentsController({
 });
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+};
 
 assert.equal(elements.gaussianBlur.radiusInput.max, "500");
 assert.equal(elements.motionBlur.distanceInput.max, "500");
@@ -1047,6 +1192,330 @@ elements.colorBalance.cancelButton.dispatchEvent(event("click"));
 await settle();
 assert.equal(history.openEdit, null);
 assert.equal(calls.at(-1)[0], "cancel-color-balance");
+
+// Opening Gradient Map is a chooser-only state: it must not touch pixels,
+// open History or capture a thumbnail until a preset is explicitly chosen.
+selectedItem = { key: "raster:1", kind: "raster", rasterLayerId: 1 };
+additionalSceneItems = [];
+controller.syncUi();
+const gradientBeginsBeforeChooser = calls.filter(
+  ([name]) => name === "begin-gradient-map",
+).length;
+const gradientCommitsBeforeChooser = calls.filter(
+  ([name]) => name === "commit-gradient-map",
+).length;
+const gradientActionsBeforeChooser = history.actionCount;
+const gradientThumbnailsBeforeChooser = thumbnails;
+const heldGradientPrewarm = deferred();
+gradientMapPrewarmPromise = heldGradientPrewarm.promise;
+const gradientPrewarmsBeforeChooser = calls.filter(
+  ([name]) => name === "prewarm-gradient-map",
+).length;
+controller.openGradientMap(elements.gradientMap.openButton, filtersTrigger);
+await settle();
+assert.equal(controller.isOpen("gradient-map"), true);
+assert.equal(history.openEdit, null);
+assert.equal(elements.gradientMap.surface.hidden, false);
+assert.equal(elements.gradientMap.chooser.hidden, false);
+assert.equal(elements.gradientMap.editor.hidden, true);
+assert.equal(elements.gradientMap.surface.dataset.state, "chooser");
+assert.equal(elements.canvas.classList.contains("raster-gradient-map-active"), true);
+assert.equal(
+  calls.filter(([name]) => name === "begin-gradient-map").length,
+  gradientBeginsBeforeChooser,
+);
+assert.equal(
+  calls.filter(([name]) => name === "prewarm-gradient-map").length,
+  gradientPrewarmsBeforeChooser + 1,
+  "opening the chooser must start non-blocking Gradient Map prewarm",
+);
+heldGradientPrewarm.resolve();
+gradientMapPrewarmPromise = null;
+assert.equal(controller.isAutoCommitAdjustmentActive(history), true);
+assert.equal(controller.canAutoCommitActiveAdjustment(history), true);
+assert.equal(await controller.commitActiveAdjustmentForToolChange(), true);
+assert.equal(controller.isOpen("gradient-map"), false);
+assert.equal(history.openEdit, null);
+assert.equal(history.actionCount, gradientActionsBeforeChooser);
+assert.equal(thumbnails, gradientThumbnailsBeforeChooser);
+assert.equal(
+  calls.filter(([name]) => name === "commit-gradient-map").length,
+  gradientCommitsBeforeChooser,
+  "leaving the chooser must not invent a Gradient Map commit",
+);
+assert.equal(elements.canvas.classList.contains("raster-gradient-map-active"), false);
+
+// Choosing a preset starts the first live transaction. Settings update that
+// same preview and concurrent tool-change requests publish exactly one Undo.
+controller.openGradientMap(elements.gradientMap.openButton, filtersTrigger);
+await settle();
+elements.gradientMap.presetButtons[0].dispatchEvent(event("click"));
+await settle();
+await settle();
+assert.equal(history.openEdit, "gradient-map");
+assert.equal(controller.isOpen("gradient-map"), true);
+assert.equal(elements.gradientMap.chooser.hidden, true);
+assert.equal(elements.gradientMap.editor.hidden, false);
+assert.equal(elements.gradientMap.surface.dataset.state, "preview");
+assert.equal(calls.at(-1)[0], "begin-gradient-map");
+assert.equal(calls.at(-1)[1].stops.length, 2);
+assert.equal(calls.at(-1)[1].dither, true);
+elements.gradientMap.reverseButton.dispatchEvent(event("click"));
+assert.equal(calls.at(-1)[0], "update-gradient-map");
+assert.equal(calls.at(-1)[1].reverse, true);
+const gradientCommitsBeforeToolChange = calls.filter(
+  ([name]) => name === "commit-gradient-map",
+).length;
+assert.deepEqual(
+  await Promise.all([
+    controller.commitActiveAdjustmentForToolChange(),
+    controller.commitActiveAdjustmentForToolChange(),
+  ]),
+  [true, true],
+);
+assert.equal(
+  calls.filter(([name]) => name === "commit-gradient-map").length,
+  gradientCommitsBeforeToolChange + 1,
+  "concurrent settlement requests must share one Gradient Map commit",
+);
+assert.equal(history.openEdit, null);
+assert.equal(controller.isOpen("gradient-map"), false);
+assert.equal(history.actionCount, gradientActionsBeforeChooser + 1);
+assert.equal(thumbnails, gradientThumbnailsBeforeChooser + 1);
+
+// Reset restores the originally chosen preset in the live runtime. Returning
+// to the preset chooser does not end that transaction; a later tool switch
+// must still commit the current preview once.
+controller.openGradientMap(elements.gradientMap.openButton, filtersTrigger);
+await settle();
+elements.gradientMap.presetButtons[3].dispatchEvent(event("click"));
+await settle();
+await settle();
+elements.gradientMap.reverseButton.dispatchEvent(event("click"));
+assert.equal(calls.at(-1)[0], "update-gradient-map");
+assert.equal(calls.at(-1)[1].reverse, true);
+elements.gradientMap.resetButton.dispatchEvent(event("click"));
+assert.equal(calls.at(-1)[0], "update-gradient-map");
+assert.equal(calls.at(-1)[1].reverse, false);
+assert.equal(calls.at(-1)[1].dither, true);
+assert.equal(calls.at(-1)[1].stops.length, 4);
+elements.gradientMap.presetsButton.dispatchEvent(event("click"));
+assert.equal(elements.gradientMap.chooser.hidden, false);
+assert.equal(elements.gradientMap.editor.hidden, true);
+assert.equal(history.openEdit, "gradient-map");
+const gradientCommitsBeforeChooserReturn = calls.filter(
+  ([name]) => name === "commit-gradient-map",
+).length;
+assert.equal(await controller.commitActiveAdjustmentForToolChange(), true);
+assert.equal(
+  calls.filter(([name]) => name === "commit-gradient-map").length,
+  gradientCommitsBeforeChooserReturn + 1,
+  "returning to presets must not turn an active preview into a no-op chooser",
+);
+assert.equal(history.openEdit, null);
+assert.equal(controller.isOpen("gradient-map"), false);
+
+// Commit is terminal: every control, including Cancel, stays disabled until
+// the one History publication finishes.
+controller.openGradientMap(elements.gradientMap.openButton, filtersTrigger);
+await settle();
+elements.gradientMap.presetButtons[0].dispatchEvent(event("click"));
+await settle();
+await settle();
+const heldGradientCommit = deferred();
+gradientMapCommitPromise = heldGradientCommit.promise;
+const gradientCancelsBeforeCommit = calls.filter(
+  ([name]) => name === "cancel-gradient-map",
+).length;
+const heldCommitSettlement = controller.commitActiveAdjustmentForToolChange();
+await settle();
+assert.equal(elements.gradientMap.surface.getAttribute("aria-busy"), "true");
+assert.equal(elements.gradientMap.settingsButton.disabled, true);
+assert.equal(elements.gradientMap.cancelButton.disabled, true);
+elements.gradientMap.cancelButton.dispatchEvent(event("click"));
+assert.equal(
+  calls.filter(([name]) => name === "cancel-gradient-map").length,
+  gradientCancelsBeforeCommit,
+  "Cancel must not interrupt a terminal Gradient Map commit",
+);
+assert.equal(history.openEdit, "gradient-map");
+heldGradientCommit.resolve();
+gradientMapCommitPromise = null;
+assert.equal(await heldCommitSettlement, true);
+assert.equal(history.openEdit, null);
+assert.equal(controller.isOpen("gradient-map"), false);
+
+// A tool switch during first-preview preparation waits for the transaction,
+// then commits it once instead of leaving a hidden History edit behind.
+controller.openGradientMap(elements.gradientMap.openButton, filtersTrigger);
+await settle();
+const heldGradientBegin = deferred();
+gradientMapBeginPromise = heldGradientBegin.promise;
+elements.gradientMap.presetButtons[1].dispatchEvent(event("click"));
+await settle();
+assert.equal(calls.at(-1)[0], "begin-gradient-map");
+const gradientCommitsBeforeHeldBegin = calls.filter(
+  ([name]) => name === "commit-gradient-map",
+).length;
+const heldSettlement = Promise.all([
+  controller.commitActiveAdjustmentForToolChange(),
+  controller.commitActiveAdjustmentForToolChange(),
+]);
+heldGradientBegin.resolve();
+gradientMapBeginPromise = null;
+assert.deepEqual(await heldSettlement, [true, true]);
+await settle();
+assert.equal(history.openEdit, null);
+assert.equal(controller.isOpen("gradient-map"), false);
+assert.equal(
+  calls.filter(([name]) => name === "commit-gradient-map").length,
+  gradientCommitsBeforeHeldBegin + 1,
+);
+
+// A failed first preview closes cleanly. A pending tool transition can then
+// continue and History must not retain an orphaned adjustment transaction.
+controller.openGradientMap(elements.gradientMap.openButton, filtersTrigger);
+await settle();
+failGradientMapBegin = true;
+elements.gradientMap.presetButtons[4].dispatchEvent(event("click"));
+await settle();
+await settle();
+failGradientMapBegin = false;
+assert.equal(controller.isOpen("gradient-map"), false);
+assert.equal(history.openEdit, null);
+assert.equal(await controller.commitActiveAdjustmentForToolChange(), true);
+assert.equal(history.openEdit, null);
+
+// Recovery disables mutations but keeps Cancel available so the immutable
+// source can still be restored after a preview fault.
+controller.openGradientMap(elements.gradientMap.openButton, filtersTrigger);
+await settle();
+elements.gradientMap.presetButtons[0].dispatchEvent(event("click"));
+await settle();
+await settle();
+controller.handleEngineStatus("Gradient Map preview failed: injected recovery", "error");
+assert.equal(elements.gradientMap.surface.dataset.state, "recovery");
+assert.equal(elements.gradientMap.settingsButton.disabled, true);
+assert.equal(elements.gradientMap.cancelButton.disabled, false);
+elements.gradientMap.cancelButton.dispatchEvent(event("click"));
+await settle();
+assert.equal(calls.at(-1)[0], "cancel-gradient-map");
+assert.equal(history.openEdit, null);
+assert.equal(controller.isOpen("gradient-map"), false);
+
+// Vector preparation is opt-in and converts only the selected SVG or text
+// layer after a preset is chosen. Other editable layers remain untouched.
+for (const selectedKind of ["text", "svg"]) {
+  const selectedKey = `${selectedKind}:${selectedKind === "text" ? 31 : 32}`;
+  selectedItem = selectedKind === "text"
+    ? {
+      key: selectedKey,
+      kind: "text",
+      textNode: { id: 31, name: "Caption", text: "Editable" },
+    }
+    : {
+      key: selectedKey,
+      kind: "svg",
+      svgNode: { id: 32, name: "Mark" },
+    };
+  additionalSceneItems = selectedKind === "text"
+    ? [{ key: "svg:41", kind: "svg", svgNode: { id: 41, name: "Untouched SVG" } }]
+    : [{
+      key: "text:42",
+      kind: "text",
+      textNode: { id: 42, name: "Untouched Text", text: "Keep editable" },
+    }];
+  browser.confirmResult = false;
+  controller.syncUi();
+  assert.equal(
+    elements.gradientMap.openButton.disabled,
+    false,
+    `Gradient Map must accept a selected ${selectedKind} layer for rasterization`,
+  );
+  const rasterizationsBeforeDecline = calls.filter(
+    ([name]) => name === "rasterize-gradient-map-vector",
+  ).length;
+  const confirmationsBeforeChooser = browser.confirmations.length;
+  controller.openGradientMap(elements.gradientMap.openButton, filtersTrigger);
+  await settle();
+  assert.equal(controller.isOpen("gradient-map"), true);
+  assert.equal(elements.gradientMap.chooser.hidden, false);
+  assert.equal(history.openEdit, null);
+  assert.equal(browser.confirmations.length, confirmationsBeforeChooser);
+  elements.gradientMap.presetButtons[2].dispatchEvent(event("click"));
+  await settle();
+  assert.match(
+    browser.confirmations.at(-1),
+    /Rasterize the selected SVG or text layer before continuing\?[\s\S]*selected editable layer[\s\S]*undo the rasterization\./,
+  );
+  assert.equal(
+    calls.filter(([name]) => name === "rasterize-gradient-map-vector").length,
+    rasterizationsBeforeDecline,
+  );
+  assert.equal(controller.isOpen("gradient-map"), true);
+  assert.equal(elements.gradientMap.chooser.hidden, false);
+  assert.equal(history.openEdit, null);
+
+  browser.confirmResult = true;
+  elements.gradientMap.presetButtons[2].dispatchEvent(event("click"));
+  await settle();
+  await settle();
+  assert.deepEqual(
+    calls.filter(([name]) => name === "rasterize-gradient-map-vector").at(-1),
+    ["rasterize-gradient-map-vector", selectedKey, selectedKind],
+  );
+  assert.equal(additionalSceneItems.length, 1);
+  assert.equal(additionalSceneItems[0].kind, selectedKind === "text" ? "svg" : "text");
+  assert.equal(controller.isOpen("gradient-map"), true);
+  assert.equal(history.openEdit, "gradient-map");
+  assert.equal(elements.gradientMap.editor.hidden, false);
+  elements.gradientMap.cancelButton.dispatchEvent(event("click"));
+  await settle();
+  assert.equal(controller.isOpen("gradient-map"), false);
+  assert.equal(history.openEdit, null);
+}
+
+// Cancel remains actionable while selected-vector preparation is in flight.
+// The completed conversion stays as its own Undo step, but the filter must not
+// start afterward or leave a hidden transaction open.
+selectedItem = {
+  key: "text:51",
+  kind: "text",
+  textNode: { id: 51, name: "Held Caption", text: "Editable" },
+};
+additionalSceneItems = [];
+browser.confirmResult = true;
+controller.syncUi();
+controller.openGradientMap(elements.gradientMap.openButton, filtersTrigger);
+await settle();
+const heldVectorRasterization = deferred();
+gradientMapRasterizationPromise = heldVectorRasterization.promise;
+const gradientBeginsBeforeCanceledRasterization = calls.filter(
+  ([name]) => name === "begin-gradient-map",
+).length;
+elements.gradientMap.presetButtons[5].dispatchEvent(event("click"));
+await settle();
+assert.equal(elements.gradientMap.settingsButton.disabled, true);
+assert.equal(
+  elements.gradientMap.cancelButton.disabled,
+  false,
+  "Cancel must remain available while Gradient Map vector preparation can be aborted",
+);
+elements.gradientMap.cancelButton.dispatchEvent(event("click"));
+heldVectorRasterization.resolve();
+gradientMapRasterizationPromise = null;
+await settle();
+await settle();
+assert.equal(controller.isOpen("gradient-map"), false);
+assert.equal(history.openEdit, null);
+assert.equal(
+  calls.filter(([name]) => name === "begin-gradient-map").length,
+  gradientBeginsBeforeCanceledRasterization,
+  "cancel during vector preparation must prevent a late preview from opening",
+);
+browser.confirmResult = true;
+selectedItem = { key: "raster:1", kind: "raster", rasterLayerId: 1 };
+additionalSceneItems = [];
 
 // Device loss abandons the engine session without a GPU rollback. The UI must
 // close immediately, restore focus and avoid issuing a stale Cancel command.

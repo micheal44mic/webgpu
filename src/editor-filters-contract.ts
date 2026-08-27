@@ -3,6 +3,7 @@ export const EDITOR_FILTER_KINDS = [
   "curves",
   "color-adjust",
   "color-balance",
+  "gradient-map",
 ] as const;
 
 export type EditorFilterKind = (typeof EDITOR_FILTER_KINDS)[number];

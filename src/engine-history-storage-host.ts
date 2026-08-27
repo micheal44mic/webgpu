@@ -63,6 +63,7 @@ export function createEngineHistoryRuntimeHost(engine: BrushEngine): HistoryRunt
         || engine.activeRasterToneCurvesSession
         || engine.activeRasterColorAdjustSession
         || engine.activeRasterColorBalanceSession
+        || engine.activeRasterGradientMapSession
         || engine.activeRasterLiquifySession
       ),
       deviceLost: engine.deviceLostError !== null,
@@ -94,6 +95,7 @@ export function createEngineHistoryMaintenanceHost(
       && engine.activeRasterToneCurvesSession === null
       && engine.activeRasterColorAdjustSession === null
       && engine.activeRasterColorBalanceSession === null
+      && engine.activeRasterGradientMapSession === null
       && engine.activeRasterLiquifySession === null
       && engine.deviceLostError === null,
     waitForIdle: () => engine.waitForIdle(),

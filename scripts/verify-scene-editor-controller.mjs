@@ -49,6 +49,11 @@ assert.match(
   /while \(history\.cursor > initialHistoryCursor\)[\s\S]*?await this\.options\.engine\.undo\(\)/,
   "a failed multi-vector rasterization must roll back every published conversion",
 );
+assert.match(
+  source,
+  /rasterizeSelectedVectorLayer\(\)[\s\S]*?initialScene\.selectedKey[\s\S]*?rasterizeSelectedTextLayer[\s\S]*?rasterizeSelectedSvgLayer/,
+  "selected-layer preparation must support both editable text and SVG without scanning the stack",
+);
 assert.doesNotMatch(source, /document\.getElementById|\belement<|window\./);
 
 const moduleServer = await createServer({
@@ -638,6 +643,52 @@ assert.equal(elements.loadingOverlay.hidden, true);
     ["raster:1", "text:21", "svg:22"],
   );
   assert.equal(batchCalls.filter((call) => call === "undo-vector-rasterization").length, 1);
+
+  // Gradient-style selected-layer preparation converts exactly one editable
+  // target and leaves every other text/SVG item editable and in stack order.
+  failSvg = false;
+  vectorScene = initialVectorScene();
+  batchCalls.length = 0;
+  undoScenes.length = 0;
+  const selectedTextResult = await batchController.rasterizeSelectedVectorLayer();
+  assert.deepEqual(selectedTextResult, {
+    kind: "text",
+    name: "Heading",
+    changed: true,
+    outputKey: "raster:201",
+  });
+  assert.equal(vectorScene.selectedKey, "raster:201");
+  assert.deepEqual(
+    vectorScene.items.map((item) => item.key),
+    ["raster:1", "raster:201", "svg:22"],
+  );
+  assert.deepEqual(
+    batchCalls.filter((call) => call.startsWith("rasterize:")),
+    ["rasterize:text:text:21"],
+  );
+
+  vectorScene = {
+    ...initialVectorScene(),
+    selectedKey: "svg:22",
+  };
+  batchCalls.length = 0;
+  undoScenes.length = 0;
+  const selectedSvgResult = await batchController.rasterizeSelectedVectorLayer();
+  assert.deepEqual(selectedSvgResult, {
+    kind: "svg",
+    name: "Shape",
+    changed: true,
+    outputKey: "raster:202",
+  });
+  assert.equal(vectorScene.selectedKey, "raster:202");
+  assert.deepEqual(
+    vectorScene.items.map((item) => item.key),
+    ["raster:1", "text:21", "raster:202"],
+  );
+  assert.deepEqual(
+    batchCalls.filter((call) => call.startsWith("rasterize:")),
+    ["rasterize:svg:svg:22"],
+  );
   batchController.dispose();
 }
 

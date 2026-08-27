@@ -234,6 +234,7 @@ export interface HistoryState {
     | "curves"
     | "color-adjust"
     | "color-balance"
+    | "gradient-map"
     | "liquify"
     | null;
 }

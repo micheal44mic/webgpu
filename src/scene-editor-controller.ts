@@ -70,6 +70,13 @@ export interface SceneEditorRasterizeResult {
   readonly outputKey: SceneLayerKey;
 }
 
+export interface SceneEditorSelectedVectorRasterizeResult {
+  readonly kind: "svg" | "text";
+  readonly name: string;
+  readonly changed: true;
+  readonly outputKey: SceneLayerKey;
+}
+
 export interface SceneEditorCurvesRasterizationResult {
   readonly rasterizedCount: number;
   readonly selectedKey: SceneLayerKey;
@@ -92,6 +99,7 @@ export interface SceneEditorControllerOptions {
   readonly elements: SceneEditorElements;
   readonly getVectorController: () => SceneEditorVectorPort | null;
   readonly isInteractionLocked: () => boolean;
+  readonly isAdjustmentRasterizationLocked?: () => boolean;
   readonly onBusyChange: (busy: boolean) => void;
   readonly onHistoryState: (state: HistoryState) => void;
   readonly requestLayersRefresh: () => void;
@@ -271,6 +279,53 @@ export class SceneEditorController {
       return {
         kind: "svg",
         name: liveTarget.name,
+        changed: true,
+        outputKey,
+      };
+    } finally {
+      this.finish({ loading: true, syncActiveRasterControls: true });
+    }
+  }
+
+  async rasterizeSelectedVectorLayer(): Promise<SceneEditorSelectedVectorRasterizeResult> {
+    const initialScene = this.options.engine.getMixedSceneSnapshot();
+    if (!initialScene) throw new Error("The editable scene is unavailable.");
+    const initialSelected = initialScene.items.find(
+      (item) => item.key === initialScene.selectedKey,
+    );
+    if (!initialSelected || (initialSelected.kind !== "text" && initialSelected.kind !== "svg")) {
+      throw new Error("Select an SVG or text layer to rasterize.");
+    }
+    if (initialSelected.kind === "text" && initialSelected.textNode.text.length === 0) {
+      throw new Error(`“${initialSelected.textNode.name}” is empty and cannot be rasterized.`);
+    }
+    const vector = this.options.getVectorController();
+    if (!vector) throw new Error("Vector rasterization is not ready.");
+    this.beginOrThrow(
+      "Rasterization is unavailable while another operation is in progress.",
+      this.options.isAdjustmentRasterizationLocked,
+    );
+    try {
+      if (!(await this.showLoading("Rasterizing selected layer…"))) {
+        throw new Error("Scene editor disposed.");
+      }
+      const liveScene = this.options.engine.getMixedSceneSnapshot();
+      const liveSelected = liveScene?.items.find((item) => item.key === liveScene.selectedKey);
+      if (!liveScene || !liveSelected || liveSelected.key !== initialSelected.key
+        || liveSelected.kind !== initialSelected.kind) {
+        throw new Error("The selected vector layer changed during rasterization.");
+      }
+      vector.syncScene(liveScene);
+      const result = liveSelected.kind === "text"
+        ? await vector.rasterizeSelectedTextLayer()
+        : await vector.rasterizeSelectedSvgLayer();
+      if (!result) throw new Error("Vector rasterization failed.");
+      await this.options.engine.waitForIdle();
+      const outputKey = `raster:${result.layerId}` as SceneLayerKey;
+      this.options.elements.result.textContent = `${liveSelected.kind.toUpperCase()} layer rasterized.`;
+      return {
+        kind: liveSelected.kind,
+        name: liveSelected.kind === "text" ? liveSelected.textNode.name : liveSelected.svgNode.name,
         changed: true,
         outputKey,
       };
@@ -668,12 +723,12 @@ export class SceneEditorController {
     this.options.syncToolSettings();
   }
 
-  private begin(): boolean {
+  private begin(isLocked = this.options.isInteractionLocked): boolean {
     if (
       this.disposed
       || this.busy
       || this.layerOptionsEdit !== null
-      || this.options.isInteractionLocked()
+      || isLocked()
     ) return false;
     this.busy = true;
     this.options.onBusyChange(true);
@@ -681,8 +736,8 @@ export class SceneEditorController {
     return true;
   }
 
-  private beginOrThrow(message: string): void {
-    if (!this.begin()) throw new Error(message);
+  private beginOrThrow(message: string, isLocked?: () => boolean): void {
+    if (!this.begin(isLocked ?? this.options.isInteractionLocked)) throw new Error(message);
   }
 
   private finish(options: FinishOptions = {}): void {

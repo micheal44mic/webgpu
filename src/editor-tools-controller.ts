@@ -58,6 +58,7 @@ export interface EditorToolsMenuState {
   readonly activeCanvasTool: EditorCanvasTool | "liquify";
   readonly engineReady: boolean;
   readonly interactionLocked: boolean;
+  readonly adjustmentSettlementAvailable: boolean;
   readonly canvasToolSelectionLocked: boolean;
   readonly toolSettingsSelectionLocked: boolean;
   readonly vectorEditorReady: boolean;
@@ -177,8 +178,12 @@ export class EditorToolsController {
     }
     for (const button of elements.vectorCommandButtons) {
       button.disabled = !state.engineReady
-        || state.interactionLocked
-        || (state.vectorEditorReady && state.vectorEditorLocked);
+        || (state.interactionLocked && !state.adjustmentSettlementAvailable)
+        || (
+          state.vectorEditorReady
+          && state.vectorEditorLocked
+          && !state.adjustmentSettlementAvailable
+        );
     }
     for (const button of elements.toolSettingsButtons) {
       const kind = button.dataset.mobileToolSheet;
@@ -234,7 +239,7 @@ export class EditorToolsController {
         continue;
       }
       button.disabled = !state.engineReady
-        || state.interactionLocked
+        || (state.interactionLocked && !state.adjustmentSettlementAvailable)
         || (kind === "color-overlay" && !state.rasterColorOverlayTargetSelected);
       button.setAttribute(
         "aria-pressed",

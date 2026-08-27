@@ -224,6 +224,16 @@ import {
 } from "./engine-raster-color-balance-runtime";
 import type { RasterColorBalanceSettings } from "./raster-color-balance-core.ts";
 import {
+  abandonRasterGradientMapSession,
+  beginRasterGradientMap as beginRasterGradientMapRuntime,
+  cancelRasterGradientMap as cancelRasterGradientMapRuntime,
+  commitRasterGradientMap as commitRasterGradientMapRuntime,
+  prewarmRasterGradientMapRuntime,
+  updateRasterGradientMap as updateRasterGradientMapRuntime,
+  type ActiveRasterGradientMapSession,
+} from "./engine-raster-gradient-map-runtime";
+import type { RasterGradientMapSettings } from "./raster-gradient-map-core.ts";
+import {
   abandonRasterLiquifySession,
   beginRasterLiquify as beginRasterLiquifyRuntime,
   beginRasterLiquifyStroke as beginRasterLiquifyStrokeRuntime,
@@ -964,6 +974,7 @@ export type DestructiveRasterEditKind =
   | "curves"
   | "color-adjust"
   | "color-balance"
+  | "gradient-map"
   | "liquify";
 
 type DestructiveRasterOperationKind = DestructiveRasterEditKind | "rasterize";
@@ -1093,6 +1104,8 @@ export class BrushEngine {
   private rasterColorAdjustPrewarmPromise: Promise<void> | null = null;
   private rasterColorBalancePipelinesReady = false;
   private rasterColorBalancePrewarmPromise: Promise<void> | null = null;
+  private rasterGradientMapPipelinesReady = false;
+  private rasterGradientMapPrewarmPromise: Promise<void> | null = null;
   cloneRendererResources: CloneRendererResources | null = null;
   cloneRendererPromise: Promise<CloneRendererResources> | null = null;
   activeCloneStrokeSession: ActiveCloneStrokeSession | null = null;
@@ -1948,6 +1961,7 @@ export class BrushEngine {
   activeRasterToneCurvesSession: ActiveRasterToneCurvesSession | null = null;
   activeRasterColorAdjustSession: ActiveRasterColorAdjustSession | null = null;
   activeRasterColorBalanceSession: ActiveRasterColorBalanceSession | null = null;
+  activeRasterGradientMapSession: ActiveRasterGradientMapSession | null = null;
   activeRasterLiquifySession: ActiveRasterLiquifySession | null = null;
   historyGpuStorage!: GpuHistoryStorage;
   historyLocalStorage!: HistoryStorageCoordinator;
@@ -2180,6 +2194,7 @@ export class BrushEngine {
       abandonRasterToneCurvesSession(this);
       abandonRasterColorAdjustSession(this);
       abandonRasterColorBalanceSession(this);
+      abandonRasterGradientMapSession(this);
       abandonRasterLiquifySession(this);
       const reason = info.message || info.reason;
       const error = new Error(`WebGPU device lost: ${reason}`);
@@ -5361,6 +5376,7 @@ export class BrushEngine {
       || this.activeRasterToneCurvesSession
       || this.activeRasterColorAdjustSession
       || this.activeRasterColorBalanceSession
+      || this.activeRasterGradientMapSession
       || this.activeRasterLiquifySession
     ) {
       return false;
@@ -5473,6 +5489,7 @@ export class BrushEngine {
       || this.activeRasterToneCurvesSession
       || this.activeRasterColorAdjustSession
       || this.activeRasterColorBalanceSession
+      || this.activeRasterGradientMapSession
       || this.activeRasterLiquifySession
     ) {
       return false;
@@ -5581,6 +5598,7 @@ export class BrushEngine {
       && this.activeRasterToneCurvesSession === null
       && this.activeRasterColorAdjustSession === null
       && this.activeRasterColorBalanceSession === null
+      && this.activeRasterGradientMapSession === null
       && this.activeRasterLiquifySession === null;
   }
 
@@ -5973,6 +5991,7 @@ export class BrushEngine {
     if (this.activeRasterToneCurvesSession) return "curves";
     if (this.activeRasterColorAdjustSession) return "color-adjust";
     if (this.activeRasterColorBalanceSession) return "color-balance";
+    if (this.activeRasterGradientMapSession) return "gradient-map";
     if (this.activeRasterLiquifySession) return "liquify";
     return null;
   }
@@ -5987,6 +6006,7 @@ export class BrushEngine {
     if (kind === "curves") return "Curves";
     if (kind === "color-adjust") return "Color Adjust";
     if (kind === "color-balance") return "Color Balance";
+    if (kind === "gradient-map") return "Gradient Map";
     if (kind === "liquify") return "Liquify";
     if (kind === "rasterize") return "Rasterize";
     return "Noise";
@@ -8274,6 +8294,28 @@ export class BrushEngine {
     }
   }
 
+  /** Prewarms the lightweight Gradient Map pipeline without opening an edit. */
+  async prewarmRasterGradientMapResources(): Promise<void> {
+    if (this.rasterGradientMapPipelinesReady) return;
+    if (this.rasterGradientMapPrewarmPromise) {
+      await this.rasterGradientMapPrewarmPromise;
+      return;
+    }
+    const initialization = (async (): Promise<void> => {
+      await prewarmRasterGradientMapRuntime(this.device);
+      if (this.deviceLostError) throw this.deviceLostError;
+      this.rasterGradientMapPipelinesReady = true;
+    })();
+    this.rasterGradientMapPrewarmPromise = initialization;
+    try {
+      await initialization;
+    } finally {
+      if (this.rasterGradientMapPrewarmPromise === initialization) {
+        this.rasterGradientMapPrewarmPromise = null;
+      }
+    }
+  }
+
   /**
    * One authoritative layer is exactly one document-sized mip-0 texture. Display
    * mips live in one reusable active-layer pyramid instead of every layer
@@ -8977,6 +9019,7 @@ export class BrushEngine {
       || this.activeRasterToneCurvesSession
       || this.activeRasterColorAdjustSession
       || this.activeRasterColorBalanceSession
+      || this.activeRasterGradientMapSession
       || this.activeRasterLiquifySession
       || this.rasterStrokeBusy
       || this.rasterBevelBusy
@@ -9125,6 +9168,7 @@ export class BrushEngine {
       || this.activeRasterToneCurvesSession
       || this.activeRasterColorAdjustSession
       || this.activeRasterColorBalanceSession
+      || this.activeRasterGradientMapSession
       || this.activeRasterLiquifySession
     ) {
       return false;
@@ -9735,6 +9779,22 @@ export class BrushEngine {
 
   cancelRasterColorBalance(): Promise<boolean> {
     return cancelRasterColorBalanceRuntime(this);
+  }
+
+  beginRasterGradientMap(initial: RasterGradientMapSettings) {
+    return beginRasterGradientMapRuntime(this, initial);
+  }
+
+  updateRasterGradientMap(update: Partial<RasterGradientMapSettings>) {
+    return updateRasterGradientMapRuntime(this, update);
+  }
+
+  commitRasterGradientMap(): Promise<boolean> {
+    return commitRasterGradientMapRuntime(this);
+  }
+
+  cancelRasterGradientMap(): Promise<boolean> {
+    return cancelRasterGradientMapRuntime(this);
   }
 
   beginRasterLiquify(initial?: Partial<LiquifySettings>) {
@@ -10981,6 +11041,11 @@ export class BrushEngine {
     if (this.activeRasterColorBalanceSession) {
       throw new Error(
         "Apply or cancel Color Balance before switching layers.",
+      );
+    }
+    if (this.activeRasterGradientMapSession) {
+      throw new Error(
+        "Apply or cancel Gradient Map before switching layers.",
       );
     }
     if (this.activeRasterLiquifySession) {

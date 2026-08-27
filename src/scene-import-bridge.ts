@@ -11,6 +11,7 @@ export interface SceneImportBridgeOptions {
   readonly imageInput: HTMLInputElement;
   readonly currentController: () => SceneImportController | null;
   readonly ensureController: () => Promise<SceneImportController>;
+  readonly beforeAccept?: () => Promise<boolean>;
   readonly onQueued?: (kind: "svg" | "image", file: File) => void;
   readonly onFailure?: (kind: "svg" | "image", error: unknown) => void;
 }
@@ -58,12 +59,16 @@ export class SceneImportBridge {
     input.value = "";
     if (!file) return;
 
-    const current = this.#options.currentController();
-    if (!current) this.#options.onQueued?.(kind, file);
-    const controller = current
-      ? Promise.resolve(current)
-      : this.#options.ensureController();
-    void controller
+    const settlement = this.#options.beforeAccept?.() ?? Promise.resolve(true);
+    void settlement
+      .then((readyForImport) => {
+        if (!readyForImport) {
+          throw new Error("The active raster adjustment could not finish before import.");
+        }
+        const current = this.#options.currentController();
+        if (!current) this.#options.onQueued?.(kind, file);
+        return current ? current : this.#options.ensureController();
+      })
       .then((ready) => kind === "svg"
         ? ready.importSvgFile(file)
         : ready.importRasterImageFile(file))

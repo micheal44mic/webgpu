@@ -257,6 +257,7 @@ export async function beginMixedSceneGroupTransform(
     || engine.activeRasterToneCurvesSession
     || engine.activeRasterColorAdjustSession
     || engine.activeRasterColorBalanceSession
+    || engine.activeRasterGradientMapSession
     || engine.activeRasterLiquifySession
   ) {
     return false;

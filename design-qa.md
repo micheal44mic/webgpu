@@ -92,3 +92,21 @@ Date: 2026-08-27
 - Source-language audit — no external creative-product references.
 
 Final result: passed.
+
+---
+
+# Gradient Map — Design QA
+
+Date: 2026-08-27
+
+- Compared the supplied portrait reference and the local implementation in one visual review at a matching portrait viewport.
+- The initial preset chooser uses the same dark, translucent, rounded dock as the existing color controls.
+- The chooser has no visible title or helper copy, and preset ramps have no bright leading edge or individual backing card.
+- Verified desktop, 390 × 844 portrait, 844 × 390 landscape, and 768 × 1100 portrait layouts without document overflow.
+- Verified the contextual Reset/Cancel controls remain centered on the touch point and clamped inside the viewport.
+- Verified the color picker anchor aligns with the selected stop and sits 3 px above its visible color swatch, including the rightmost stop on a 390 px viewport.
+- Verified the workflow with a real imported photograph, including live preview, stop insertion, preset reset, Reverse, interpolation, automatic commit, and one-step Undo/Redo.
+- Verified the real WebGPU RGBA16F laboratory, raster imports, selected-only SVG/text conversion, clipping, alpha/bounds preservation, and empty GPU error scope.
+- Verified production and laboratory builds, type checking, focused controller verifiers, and product-neutral source naming.
+
+final result: passed

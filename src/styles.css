@@ -1778,6 +1778,392 @@ select {
   pointer-events: none;
 }
 
+.gradient-map-surface[hidden],
+.gradient-map-chooser[hidden],
+.gradient-map-editor[hidden],
+.gradient-map-settings-menu[hidden],
+.gradient-map-action-menu[hidden] {
+  display: none;
+}
+
+.gradient-map-surface {
+  position: absolute;
+  z-index: 10;
+  bottom: max(14px, env(safe-area-inset-bottom));
+  left: calc(50% + 26px);
+  display: block;
+  width: min(1120px, calc(100% - 150px));
+  padding: 18px 18px 16px;
+  border: 1px solid rgba(104, 111, 124, 0.48);
+  border-radius: 28px;
+  background: rgba(23, 25, 29, 0.96);
+  box-shadow: 0 18px 52px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(16px);
+  transform: translateX(-50%);
+}
+
+.gradient-map-chooser {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  padding-right: 58px;
+}
+
+.gradient-map-chooser-header {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 2;
+}
+
+.gradient-map-chooser-header > :not(.gradient-map-icon-button) {
+  display: none;
+}
+
+.gradient-map-icon-button,
+.gradient-map-presets-button {
+  min-height: 48px;
+  border: 1px solid #3b414c;
+  border-radius: 15px;
+  background: #292e37;
+  color: #e9ebef;
+  cursor: pointer;
+}
+
+.gradient-map-icon-button {
+  display: grid;
+  width: 48px;
+  min-width: 48px;
+  padding: 0;
+  place-items: center;
+}
+
+.gradient-map-icon-button svg {
+  width: 19px;
+  height: 19px;
+}
+
+.gradient-map-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(104px, 1fr));
+  gap: 9px;
+}
+
+.gradient-map-preset-grid > button {
+  display: grid;
+  min-width: 0;
+  min-height: 64px;
+  gap: 7px;
+  padding: 5px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: #dfe2e8;
+  font-size: 0.68rem;
+  font-weight: 720;
+  text-align: left;
+  cursor: pointer;
+}
+
+.gradient-map-preset-grid > button:is(:hover, :focus-visible),
+.gradient-map-preset-grid > button[aria-pressed="true"] {
+  background: transparent;
+}
+
+.gradient-map-preset-preview {
+  display: block;
+  width: 100%;
+  height: 28px;
+  border: 0;
+  border-radius: 9px;
+  box-shadow: 0 5px 14px rgba(0, 0, 0, 0.28);
+  transition: box-shadow 130ms ease, transform 130ms ease;
+}
+
+.gradient-map-preset-grid > button:is(:hover, :focus-visible) .gradient-map-preset-preview,
+.gradient-map-preset-grid > button[aria-pressed="true"] .gradient-map-preset-preview {
+  box-shadow: 0 0 0 2px #8e9bff, 0 7px 18px rgba(0, 0, 0, 0.34);
+  transform: translateY(-1px);
+}
+
+.gradient-map-preset-grid > button:focus-visible {
+  outline: none;
+}
+
+.gradient-map-preset-grid > button > span:last-child {
+  text-shadow:
+    -1px -1px 0 #111318,
+    1px -1px 0 #111318,
+    -1px 1px 0 #111318,
+    1px 1px 0 #111318,
+    0 2px 5px rgba(0, 0, 0, 0.92);
+}
+
+.gradient-map-chooser-cancel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 2;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.34);
+}
+
+.gradient-map-preset-preview.is-monochrome {
+  background: linear-gradient(90deg, #000, #fff);
+}
+
+.gradient-map-preset-preview.is-cool-light {
+  background: linear-gradient(90deg, #10172b, #326c9e 55%, #d8fbff);
+}
+
+.gradient-map-preset-preview.is-warm-light {
+  background: linear-gradient(90deg, #1b1026, #c75545 55%, #fff0bd);
+}
+
+.gradient-map-preset-preview.is-sunset {
+  background: linear-gradient(90deg, #07142a, #7a286f 42%, #f36b36 75%, #ffe165);
+}
+
+.gradient-map-preset-preview.is-forest {
+  background: linear-gradient(90deg, #06110f, #1b6652 55%, #d4f2cf);
+}
+
+.gradient-map-preset-preview.is-ember {
+  background: linear-gradient(90deg, #0a0504, #9d1e1a 52%, #ffb52f);
+}
+
+.gradient-map-editor {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.gradient-map-presets-button {
+  display: grid;
+  min-width: 82px;
+  grid-template-columns: 18px auto;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px;
+  font-size: 0.68rem;
+  font-weight: 740;
+}
+
+.gradient-map-presets-button svg {
+  width: 17px;
+  height: 17px;
+}
+
+.gradient-map-track {
+  position: relative;
+  min-width: 0;
+  height: 52px;
+  border-radius: 14px;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.gradient-map-preview {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  left: 10px;
+  height: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.48);
+  border-radius: 7px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.gradient-map-stop-layer {
+  position: absolute;
+  inset: 0 10px;
+  pointer-events: none;
+}
+
+.gradient-map-stop {
+  position: absolute;
+  top: 50%;
+  z-index: 1;
+  display: grid;
+  padding: 0;
+  border: 0;
+  appearance: none;
+  background: transparent;
+  transform: translate(-50%, -50%);
+  place-items: center;
+  pointer-events: auto;
+  cursor: ew-resize;
+}
+
+.gradient-map-stop::before {
+  width: 17px;
+  height: 25px;
+  border: 2px solid #f3f4f7;
+  border-radius: 7px;
+  background: var(--gradient-map-stop-color);
+  box-shadow: 0 2px 7px rgba(0, 0, 0, 0.7);
+  content: "";
+}
+
+.gradient-map-stop.is-selected::before {
+  outline: 2px solid #8e9bff;
+  outline-offset: 2px;
+}
+
+.gradient-map-color-anchor {
+  position: absolute;
+  z-index: 4;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  opacity: 0.001;
+  transform: translate(-50%, -100%);
+  pointer-events: none;
+}
+
+.gradient-map-settings-menu {
+  position: absolute;
+  z-index: 3;
+  right: 12px;
+  bottom: calc(100% + 12px);
+  display: grid;
+  width: min(292px, calc(100vw - 24px));
+  gap: 8px;
+  padding: 11px;
+  border: 1px solid rgba(104, 111, 124, 0.58);
+  border-radius: 18px;
+  background: rgba(23, 25, 29, 0.99);
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.52);
+}
+
+.gradient-map-settings-menu > button,
+.gradient-map-interpolation-options button {
+  min-height: 46px;
+  border: 1px solid #3a404c;
+  border-radius: 13px;
+  background: #292e37;
+  color: #dadde4;
+  font-size: 0.7rem;
+  font-weight: 720;
+  cursor: pointer;
+}
+
+.gradient-map-settings-menu > button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding-inline: 12px;
+}
+
+.gradient-map-settings-menu > p {
+  margin: 3px 2px 0;
+  color: #9298a4;
+  font-size: 0.62rem;
+  font-weight: 740;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.gradient-map-interpolation-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.gradient-map-interpolation-options button[aria-checked="true"] {
+  border-color: #8e9bff;
+  background: #343b50;
+  color: #fff;
+}
+
+.gradient-map-switch {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #555b66;
+}
+
+.gradient-map-switch::after {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #f2f3f5;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  content: "";
+  transition: transform 140ms ease;
+}
+
+.gradient-map-settings-menu > button.is-enabled .gradient-map-switch {
+  background: #6e7df0;
+}
+
+.gradient-map-settings-menu > button.is-enabled .gradient-map-switch::after {
+  transform: translateX(16px);
+}
+
+.gradient-map-action-menu {
+  position: fixed;
+  z-index: 24;
+  display: grid;
+  min-width: 212px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.gradient-map-action-menu button {
+  min-height: 50px;
+  padding: 0 16px;
+  border: 1px solid rgba(104, 111, 124, 0.48);
+  border-radius: 15px;
+  background: rgba(23, 25, 29, 0.97);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.42);
+  color: #eef0f5;
+  font-size: 0.76rem;
+  font-weight: 760;
+}
+
+.gradient-map-action-menu button:last-child {
+  color: #ff9c91;
+}
+
+.gradient-map-icon-button:focus-visible,
+.gradient-map-presets-button:focus-visible,
+.gradient-map-stop:focus-visible,
+.gradient-map-settings-menu button:focus-visible,
+.gradient-map-action-menu button:focus-visible {
+  outline: 2px solid #8e9bff;
+  outline-offset: 2px;
+}
+
+.gradient-map-surface[aria-busy="true"] {
+  cursor: wait;
+}
+
+#gpuCanvas.raster-gradient-map-active {
+  cursor: grab;
+}
+
+#gpuCanvas.raster-gradient-map-active ~ #brushOutlineCanvas {
+  display: none;
+}
+
+#gpuCanvas.raster-gradient-map-active ~ .gpu-memory-monitor {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
 @media (max-width: 1100px), (hover: none) and (pointer: coarse) {
   .color-adjust-surface {
     right: max(9px, env(safe-area-inset-right));
@@ -1791,6 +2177,13 @@ select {
   }
 
   .color-balance-surface {
+    right: max(9px, env(safe-area-inset-right));
+    left: max(9px, env(safe-area-inset-left));
+    width: auto;
+    transform: none;
+  }
+
+  .gradient-map-surface {
     right: max(9px, env(safe-area-inset-right));
     left: max(9px, env(safe-area-inset-left));
     width: auto;
@@ -1964,6 +2357,61 @@ select {
   .color-balance-tone-button svg {
     width: 13px;
     height: 13px;
+  }
+
+  .gradient-map-surface {
+    bottom: max(9px, env(safe-area-inset-bottom));
+    padding: 13px 10px 11px;
+    border-radius: 22px;
+  }
+
+  .gradient-map-preset-grid {
+    overflow-x: auto;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(112px, 31vw);
+    grid-template-columns: none;
+    padding-bottom: 2px;
+    scrollbar-width: none;
+    scroll-snap-type: x proximity;
+  }
+
+  .gradient-map-preset-grid::-webkit-scrollbar {
+    display: none;
+  }
+
+  .gradient-map-preset-grid > button {
+    scroll-snap-align: start;
+  }
+
+  .gradient-map-editor {
+    gap: 7px;
+  }
+
+  .gradient-map-presets-button {
+    min-width: 58px;
+    grid-template-columns: 1fr;
+    gap: 1px;
+    padding: 3px 6px;
+    font-size: 0.57rem;
+  }
+
+  .gradient-map-track {
+    height: 54px;
+  }
+
+  .gradient-map-settings-menu {
+    right: 8px;
+  }
+}
+
+@media (max-height: 520px) and (orientation: landscape) {
+  .gradient-map-surface {
+    bottom: max(6px, env(safe-area-inset-bottom));
+    padding-block: 8px;
+  }
+
+  .gradient-map-preset-grid > button {
+    min-height: 62px;
   }
 }
 

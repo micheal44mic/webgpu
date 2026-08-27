@@ -250,6 +250,7 @@ function historyMaintenanceEngineIdle(
     && !engine.activeRasterToneCurvesSession
     && !engine.activeRasterColorAdjustSession
     && !engine.activeRasterColorBalanceSession
+    && !engine.activeRasterGradientMapSession
     && !engine.activeRasterLiquifySession
     && !engine.rasterStrokeBusy
     && !engine.rasterBevelBusy

@@ -567,6 +567,13 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
     );
     return false;
   }
+  if (engine.activeRasterGradientMapSession) {
+    engine.publishStatus(
+      "Apply or cancel Gradient Map before using history.",
+      "error",
+    );
+    return false;
+  }
   if (engine.activeRasterLiquifySession) {
     engine.publishStatus(
       "Apply or cancel Liquify before using history.",

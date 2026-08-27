@@ -23,8 +23,13 @@ assert.match(
 );
 assert.match(
   mainSource,
-  /runVectorCommand: \(command\) => \{\s*if \(interactionLocked\(\)\) return;/,
-  "the composition root must reject stale import clicks while Undo/Redo owns the engine",
+  /runVectorCommand: \(command\) => \{[\s\S]{0,260}canSettleAdjustment[\s\S]{0,180}interactionLocked\(\) && !canSettleAdjustment[\s\S]{0,260}sceneImportBridge\.request\(command\)/,
+  "imports must preserve native picker activation while allowing an active adjustment to settle",
+);
+assert.match(
+  mainSource,
+  /openRasterEffect: \(kind, trigger\) => \{[\s\S]{0,720}commitActiveAdjustmentForToolChange\(\)\.then\(\(committed\) => \{[\s\S]{0,120}if \(committed\) openEffect\(\)/,
+  "raster effects must wait for a live adjustment settlement before opening",
 );
 assert.match(
   mainSource,
@@ -395,6 +400,7 @@ function createHarness() {
     activeCanvasTool: "paint",
     engineReady: true,
     interactionLocked: false,
+    adjustmentSettlementAvailable: false,
     canvasToolSelectionLocked: false,
     toolSettingsSelectionLocked: false,
     vectorEditorReady: true,
@@ -435,6 +441,7 @@ function createHarness() {
     activeCanvasTool: "paint",
     engineReady: true,
     interactionLocked: false,
+    adjustmentSettlementAvailable: false,
     canvasToolSelectionLocked: false,
     toolSettingsSelectionLocked: false,
     vectorEditorReady: false,
@@ -465,6 +472,7 @@ function createHarness() {
     activeCanvasTool: "paint",
     engineReady: true,
     interactionLocked: true,
+    adjustmentSettlementAvailable: false,
     canvasToolSelectionLocked: false,
     toolSettingsSelectionLocked: true,
     vectorEditorReady: true,
@@ -502,6 +510,43 @@ function createHarness() {
     activeCanvasTool: "paint",
     engineReady: true,
     interactionLocked: true,
+    adjustmentSettlementAvailable: true,
+    canvasToolSelectionLocked: false,
+    toolSettingsSelectionLocked: true,
+    vectorEditorReady: true,
+    vectorEditorLocked: false,
+    textSelected: true,
+    svgSelected: true,
+    textTransformActive: false,
+    vectorOutlineEnabled: false,
+    vectorDropShadowEnabled: false,
+    vectorInnerShadowEnabled: false,
+    vectorBlockShadowEnabled: false,
+    rasterColorOverlayTargetSelected: true,
+    rasterEffectsEnabled: {
+      "color-overlay": false,
+      stroke: false,
+      "outer-shadow": false,
+      "inner-shadow": false,
+      bevel: false,
+    },
+  });
+  assert.equal(
+    harness.importSvgButton.disabled,
+    false,
+    "imports must stay selectable when the only lock is a settleable adjustment",
+  );
+  assert.equal(
+    harness.strokeButton.disabled,
+    false,
+    "raster effects must stay selectable when the active adjustment can settle",
+  );
+
+  harness.controller.renderMenuState({
+    activeCanvasTool: "paint",
+    engineReady: true,
+    interactionLocked: true,
+    adjustmentSettlementAvailable: false,
     canvasToolSelectionLocked: true,
     toolSettingsSelectionLocked: true,
     vectorEditorReady: true,

@@ -2959,6 +2959,21 @@
               </span>
               <span class="mobile-tools-item-label">Color Balance</span>
             </button>
+            <button
+              id="editorGradientMapFilter"
+              class="mobile-tools-item editor-filter-item"
+              type="button"
+              data-editor-filter-kind="gradient-map"
+              aria-label="Open Gradient Map filter"
+              aria-controls="gradientMapSurface"
+              aria-pressed="false"
+            >
+              <span class="mobile-icon-stack" aria-hidden="true">
+                <i data-lucide="blend" class="mobile-icon-layer mobile-icon-outline"></i>
+                <i data-lucide="blend" class="mobile-icon-layer mobile-icon-face"></i>
+              </span>
+              <span class="mobile-tools-item-label">Gradient Map</span>
+            </button>
           </div>
         </div>
       </aside>
@@ -3536,6 +3551,125 @@
         >
           <button id="colorBalanceReset" type="button" role="menuitem">Reset</button>
           <button id="colorBalanceCancel" type="button" role="menuitem">Cancel</button>
+        </div>
+        <section
+          id="gradientMapSurface"
+          class="gradient-map-surface"
+          role="region"
+          aria-label="Gradient Map controls"
+          aria-hidden="true"
+          hidden
+          inert
+        >
+          <section
+            id="gradientMapChooser"
+            class="gradient-map-chooser"
+            aria-label="Choose a gradient"
+          >
+            <div class="gradient-map-preset-grid" role="group" aria-label="Gradient presets">
+              <button type="button" data-gradient-map-preset-id="monochrome">
+                <span class="gradient-map-preset-preview is-monochrome" aria-hidden="true"></span>
+                <span>Monochrome</span>
+              </button>
+              <button type="button" data-gradient-map-preset-id="cool-light">
+                <span class="gradient-map-preset-preview is-cool-light" aria-hidden="true"></span>
+                <span>Cool Light</span>
+              </button>
+              <button type="button" data-gradient-map-preset-id="warm-light">
+                <span class="gradient-map-preset-preview is-warm-light" aria-hidden="true"></span>
+                <span>Warm Light</span>
+              </button>
+              <button type="button" data-gradient-map-preset-id="sunset">
+                <span class="gradient-map-preset-preview is-sunset" aria-hidden="true"></span>
+                <span>Sunset</span>
+              </button>
+              <button type="button" data-gradient-map-preset-id="forest">
+                <span class="gradient-map-preset-preview is-forest" aria-hidden="true"></span>
+                <span>Forest</span>
+              </button>
+              <button type="button" data-gradient-map-preset-id="ember">
+                <span class="gradient-map-preset-preview is-ember" aria-hidden="true"></span>
+                <span>Ember</span>
+              </button>
+            </div>
+            <button
+              id="gradientMapChooserCancel"
+              class="gradient-map-icon-button gradient-map-chooser-cancel"
+              type="button"
+              aria-label="Close Gradient Map"
+            >
+              <i data-lucide="x" aria-hidden="true"></i>
+            </button>
+          </section>
+          <section
+            id="gradientMapEditor"
+            class="gradient-map-editor"
+            aria-label="Edit gradient"
+            hidden
+            inert
+          >
+            <button id="gradientMapPresets" class="gradient-map-presets-button" type="button">
+              <i data-lucide="grid-3-x-3" aria-hidden="true"></i>
+              <span>Presets</span>
+            </button>
+            <div id="gradientMapTrack" class="gradient-map-track">
+              <div id="gradientMapPreview" class="gradient-map-preview" aria-hidden="true"></div>
+              <div id="gradientMapStopLayer" class="gradient-map-stop-layer"></div>
+            </div>
+            <input
+              id="gradientMapColor"
+              class="gradient-map-color-anchor"
+              type="color"
+              value="#000000"
+              tabindex="-1"
+              aria-hidden="true"
+            >
+            <button
+              id="gradientMapSettingsButton"
+              class="gradient-map-icon-button"
+              type="button"
+              aria-label="Gradient Map settings"
+              aria-controls="gradientMapSettingsMenu"
+              aria-expanded="false"
+            >
+              <i data-lucide="sliders-horizontal" aria-hidden="true"></i>
+            </button>
+            <div
+              id="gradientMapSettingsMenu"
+              class="gradient-map-settings-menu"
+              role="menu"
+              aria-label="Gradient Map settings"
+              aria-hidden="true"
+              hidden
+            >
+              <button id="gradientMapReverse" type="button" role="menuitemcheckbox" aria-checked="false">
+                <span>Reverse</span><span class="gradient-map-switch" aria-hidden="true"></span>
+              </button>
+              <button id="gradientMapDither" type="button" role="menuitemcheckbox" aria-checked="true">
+                <span>Dither</span><span class="gradient-map-switch" aria-hidden="true"></span>
+              </button>
+              <p>Interpolation</p>
+              <div class="gradient-map-interpolation-options" role="group" aria-label="Interpolation">
+                <button type="button" role="menuitemradio" data-gradient-map-interpolation="perceptual" aria-checked="true">Perceptual</button>
+                <button type="button" role="menuitemradio" data-gradient-map-interpolation="linear-light" aria-checked="false">Linear Light</button>
+                <button type="button" role="menuitemradio" data-gradient-map-interpolation="encoded-rgb" aria-checked="false">Encoded RGB</button>
+              </div>
+            </div>
+            <p id="gradientMapStatus" class="visually-hidden" role="status" aria-live="polite">
+              Gradient Map ready.
+            </p>
+          </section>
+        </section>
+        <div
+          id="gradientMapActionMenu"
+          class="gradient-map-action-menu"
+          role="menu"
+          aria-label="Gradient Map actions"
+          aria-hidden="true"
+          hidden
+        >
+          <button id="gradientMapReset" type="button" role="menuitem">Reset</button>
+          <button id="gradientMapCancel" type="button" role="menuitem">Cancel</button>
         </div>
         <div
           id="spatialBlurOverlay"

@@ -79,10 +79,104 @@ import {
   RasterColorBalanceSurfaceController,
   type RasterColorBalanceSurfaceElements,
 } from "./raster-color-balance-surface-controller.ts";
+import {
+  RasterGradientMapSurfaceController,
+  type RasterGradientMapPreset,
+  type RasterGradientMapSurfaceElements,
+} from "./raster-gradient-map-surface-controller.ts";
+import {
+  normalizeRasterGradientMapSettings,
+  type RasterGradientMapSettings,
+} from "./raster-gradient-map-core.ts";
 
 export const CURVES_VECTOR_RASTERIZATION_CONFIRMATION =
   "Curves works on raster layers. Rasterize all SVG and text layers before continuing?\n\n"
   + "This converts editable content to pixels. You can undo the rasterization.";
+
+export const GRADIENT_MAP_VECTOR_RASTERIZATION_CONFIRMATION =
+  "Gradient Map works on raster layers. Rasterize the selected SVG or text layer before continuing?\n\n"
+  + "This converts the selected editable layer to pixels. You can undo the rasterization.";
+
+const RASTER_GRADIENT_MAP_PRESETS: readonly RasterGradientMapPreset[] = Object.freeze([
+  {
+    id: "monochrome",
+    label: "Monochrome",
+    settings: normalizeRasterGradientMapSettings({
+      stops: [
+        { position: 0, color: [0, 0, 0] },
+        { position: 1, color: [1, 1, 1] },
+      ],
+      dither: true,
+      interpolation: "perceptual",
+    }),
+  },
+  {
+    id: "cool-light",
+    label: "Cool Light",
+    settings: normalizeRasterGradientMapSettings({
+      stops: [
+        { position: 0, color: [0.063, 0.09, 0.169] },
+        { position: 0.55, color: [0.196, 0.424, 0.62] },
+        { position: 1, color: [0.847, 0.984, 1] },
+      ],
+      dither: true,
+      interpolation: "perceptual",
+    }),
+  },
+  {
+    id: "warm-light",
+    label: "Warm Light",
+    settings: normalizeRasterGradientMapSettings({
+      stops: [
+        { position: 0, color: [0.106, 0.063, 0.149] },
+        { position: 0.55, color: [0.78, 0.333, 0.271] },
+        { position: 1, color: [1, 0.941, 0.741] },
+      ],
+      dither: true,
+      interpolation: "perceptual",
+    }),
+  },
+  {
+    id: "sunset",
+    label: "Sunset",
+    settings: normalizeRasterGradientMapSettings({
+      stops: [
+        { position: 0, color: [0.027, 0.078, 0.165] },
+        { position: 0.42, color: [0.478, 0.157, 0.435] },
+        { position: 0.75, color: [0.953, 0.42, 0.212] },
+        { position: 1, color: [1, 0.882, 0.396] },
+      ],
+      dither: true,
+      interpolation: "perceptual",
+    }),
+  },
+  {
+    id: "forest",
+    label: "Forest",
+    settings: normalizeRasterGradientMapSettings({
+      stops: [
+        { position: 0, color: [0.024, 0.067, 0.059] },
+        { position: 0.55, color: [0.106, 0.4, 0.322] },
+        { position: 1, color: [0.831, 0.949, 0.812] },
+      ],
+      dither: true,
+      interpolation: "perceptual",
+    }),
+  },
+  {
+    id: "ember",
+    label: "Ember",
+    settings: normalizeRasterGradientMapSettings({
+      stops: [
+        { position: 0, color: [0.039, 0.02, 0.016] },
+        { position: 0.52, color: [0.616, 0.118, 0.102] },
+        { position: 1, color: [1, 0.71, 0.184] },
+      ],
+      dither: true,
+      interpolation: "perceptual",
+    }),
+  },
+]);
 
 export type RasterAdjustmentsEnginePort = Pick<
   BrushEngine,
@@ -95,6 +189,8 @@ export type RasterAdjustmentsEnginePort = Pick<
   | "beginRasterToneCurves"
   | "beginRasterColorAdjust"
   | "beginRasterColorBalance"
+  | "beginRasterGradientMap"
+  | "prewarmRasterGradientMapResources"
   | "cancelRasterGaussianBlur"
   | "cancelRasterSpatialBlur"
   | "cancelRasterLiquify"
@@ -104,6 +200,7 @@ export type RasterAdjustmentsEnginePort = Pick<
   | "cancelRasterToneCurves"
   | "cancelRasterColorAdjust"
   | "cancelRasterColorBalance"
+  | "cancelRasterGradientMap"
   | "commitRasterGaussianBlur"
   | "commitRasterSpatialBlur"
   | "commitRasterLiquify"
@@ -113,6 +210,7 @@ export type RasterAdjustmentsEnginePort = Pick<
   | "commitRasterToneCurves"
   | "commitRasterColorAdjust"
   | "commitRasterColorBalance"
+  | "commitRasterGradientMap"
   | "endRasterLiquifyStroke"
   | "getHistoryState"
   | "getPixelSelectionState"
@@ -129,6 +227,7 @@ export type RasterAdjustmentsEnginePort = Pick<
   | "updateRasterToneCurves"
   | "updateRasterColorAdjust"
   | "updateRasterColorBalance"
+  | "updateRasterGradientMap"
   | "reseedRasterGlass"
   | "toLayerPoint"
   | "documentWidth"
@@ -265,6 +364,11 @@ export interface RasterColorBalanceAdjustmentElements extends RasterColorBalance
   readonly status: HTMLParagraphElement;
 }
 
+export interface RasterGradientMapAdjustmentElements extends RasterGradientMapSurfaceElements {
+  readonly openButton: HTMLButtonElement;
+  readonly status: HTMLParagraphElement;
+}
+
 export interface RasterAdjustmentsElements {
   readonly canvas: HTMLCanvasElement;
   readonly appStatus: HTMLParagraphElement;
@@ -277,6 +381,7 @@ export interface RasterAdjustmentsElements {
   readonly curves: RasterToneCurvesAdjustmentElements;
   readonly colorAdjust: RasterColorAdjustAdjustmentElements;
   readonly colorBalance: RasterColorBalanceAdjustmentElements;
+  readonly gradientMap: RasterGradientMapAdjustmentElements;
 }
 
 export interface RasterAdjustmentsControllerOptions {
@@ -297,6 +402,10 @@ export interface RasterAdjustmentsControllerOptions {
   ) => void;
   readonly confirmCurvesVectorRasterization: (message: string) => boolean;
   readonly rasterizeVectorLayersForCurves: () => Promise<number>;
+  readonly confirmGradientMapVectorRasterization: (message: string) => boolean;
+  readonly rasterizeSelectedVectorLayerForGradientMap: () => Promise<{
+    readonly outputKey: string;
+  }>;
   readonly beforeSheetOpen: () => void;
   readonly onSheetOpenChange: (open: boolean) => void;
   readonly updateHistoryControls: () => void;
@@ -312,6 +421,7 @@ export interface RasterAdjustmentsDiagnostics {
   readonly rasterCurvesUiBusy: boolean;
   readonly rasterColorAdjustUiBusy: boolean;
   readonly rasterColorBalanceUiBusy: boolean;
+  readonly rasterGradientMapUiBusy: boolean;
   readonly rasterLiquifyUiBusy: boolean;
 }
 
@@ -371,6 +481,7 @@ export class RasterAdjustmentsController {
   private readonly curvesEditor: RasterToneCurvesEditorController;
   private readonly colorAdjustSurface: RasterColorAdjustSurfaceController;
   private readonly colorBalanceSurface: RasterColorBalanceSurfaceController;
+  private readonly gradientMapSurface: RasterGradientMapSurfaceController;
   private readonly liquify = initialTransactionState();
   private readonly gaussianBlur = initialTransactionState();
   private readonly spatialBlur = initialTransactionState();
@@ -380,11 +491,15 @@ export class RasterAdjustmentsController {
   private readonly curves = initialTransactionState();
   private readonly colorAdjust = initialTransactionState();
   private readonly colorBalance = initialTransactionState();
+  private readonly gradientMap = initialTransactionState();
   private engineUnavailableError: string | null = null;
   private liquifySettings: LiquifySettings = { ...DEFAULT_LIQUIFY_SETTINGS };
   private liquifyAmount = 1;
   private liquifyReturnTool: CanvasInputTool | null = null;
   private activeAutoCommitPromise: Promise<boolean> | null = null;
+  private gradientMapPreparePromise: Promise<boolean> | null = null;
+  private gradientMapExitIntent: "none" | "cancel" | "commit" = "none";
+  private gradientMapGeneration = 0;
   private disposed = false;
 
   constructor(private readonly options: RasterAdjustmentsControllerOptions) {
@@ -504,6 +619,16 @@ export class RasterAdjustmentsController {
       onRequestReset: () => this.resetColorBalance(),
       onRequestCancel: () => void this.cancelColorBalance(),
     });
+    this.gradientMapSurface = new RasterGradientMapSurfaceController({
+      browser: options.browser,
+      document: options.browser.document,
+      canvas: options.elements.canvas,
+      elements: options.elements.gradientMap,
+      presets: RASTER_GRADIENT_MAP_PRESETS,
+      onChange: (settings, presetId) => this.requestGradientMapUpdate(settings, presetId),
+      onRequestReset: () => this.resetGradientMap(),
+      onRequestCancel: () => void this.cancelGradientMap(),
+    });
     this.configureControlRanges();
     this.syncLiquifySettings(this.liquifySettings, this.liquifyAmount);
     this.syncNoiseSettings(DEFAULT_RASTER_NOISE_SETTINGS);
@@ -543,6 +668,10 @@ export class RasterAdjustmentsController {
 
   openColorBalance(trigger: HTMLElement, returnFocus: HTMLElement = trigger): void {
     void this.beginColorBalance(returnFocus);
+  }
+
+  openGradientMap(trigger: HTMLElement, returnFocus: HTMLElement = trigger): void {
+    void this.beginGradientMap(returnFocus);
   }
 
   openSpatialBlur(trigger: HTMLElement, returnFocus: HTMLElement = trigger): void {
@@ -585,7 +714,8 @@ export class RasterAdjustmentsController {
       || history.openEdit === "glass"
       || history.openEdit === "curves"
       || history.openEdit === "color-adjust"
-      || history.openEdit === "color-balance";
+      || history.openEdit === "color-balance"
+      || history.openEdit === "gradient-map";
   }
 
   isLiquifyEditActive(history = this.options.getHistoryState()): boolean {
@@ -602,7 +732,8 @@ export class RasterAdjustmentsController {
       || (this.glass.sessionOpen && history.openEdit === "glass")
       || (this.curves.sessionOpen && history.openEdit === "curves")
       || (this.colorAdjust.sessionOpen && history.openEdit === "color-adjust")
-      || (this.colorBalance.sessionOpen && history.openEdit === "color-balance");
+      || (this.colorBalance.sessionOpen && history.openEdit === "color-balance")
+      || (this.gradientMap.sessionOpen && history.openEdit === "gradient-map");
   }
 
   allowsCanvasViewOperation(history = this.options.getHistoryState()): boolean {
@@ -643,10 +774,16 @@ export class RasterAdjustmentsController {
       this.colorBalance.sessionOpen
         && history.openEdit === "color-balance"
         && !this.colorBalance.uiBusy
+    ) || (
+      this.gradientMap.surfaceOpen
+        && (!this.gradientMap.sessionOpen || history.openEdit === "gradient-map")
+        && !this.gradientMap.uiBusy
     );
   }
 
-  isAutoCommitAdjustmentActive(history = this.options.getHistoryState()): boolean {
+  needsAdjustmentSettlementForToolChange(
+    history = this.options.getHistoryState(),
+  ): boolean {
     return (
       this.colorAdjust.surfaceOpen
       && this.colorAdjust.sessionOpen
@@ -655,7 +792,17 @@ export class RasterAdjustmentsController {
       this.colorBalance.surfaceOpen
       && this.colorBalance.sessionOpen
       && history.openEdit === "color-balance"
+    ) || (
+      this.gradientMap.surfaceOpen
+      && (
+        (!this.gradientMap.sessionOpen && history.openEdit === null)
+        || (this.gradientMap.sessionOpen && history.openEdit === "gradient-map")
+      )
     );
+  }
+
+  isAutoCommitAdjustmentActive(history = this.options.getHistoryState()): boolean {
+    return this.needsAdjustmentSettlementForToolChange(history);
   }
 
   isColorAdjustAutoCommitActive(history = this.options.getHistoryState()): boolean {
@@ -677,6 +824,13 @@ export class RasterAdjustmentsController {
         && !this.colorBalance.uiBusy
         && !this.colorBalance.previewFault;
     }
+    if (this.gradientMap.surfaceOpen) {
+      if (this.gradientMap.previewFault) return false;
+      if (this.gradientMap.uiBusy) return this.gradientMapPreparePromise !== null;
+      return this.gradientMap.sessionOpen
+        ? history.openEdit === "gradient-map"
+        : history.openEdit === null;
+    }
     return false;
   }
 
@@ -686,17 +840,34 @@ export class RasterAdjustmentsController {
 
   async commitActiveAdjustmentForToolChange(): Promise<boolean> {
     if (this.activeAutoCommitPromise) return this.activeAutoCommitPromise;
-    if (!this.isAutoCommitAdjustmentActive()) return true;
+    if (!this.needsAdjustmentSettlementForToolChange()) return true;
+    const settlement = this.settleActiveAdjustmentForToolChange();
+    this.activeAutoCommitPromise = settlement;
+    try {
+      return await settlement;
+    } finally {
+      if (this.activeAutoCommitPromise === settlement) this.activeAutoCommitPromise = null;
+    }
+  }
+
+  private async settleActiveAdjustmentForToolChange(): Promise<boolean> {
+    if (this.gradientMap.surfaceOpen) {
+      if (this.gradientMap.previewFault || this.history().inconsistent) return false;
+      if (this.gradientMapPreparePromise) {
+        this.gradientMapExitIntent = "commit";
+        if (!await this.gradientMapPreparePromise) return false;
+      }
+      if (!this.gradientMap.surfaceOpen) return true;
+      if (!this.gradientMap.sessionOpen) {
+        this.closeGradientMap("cancel", false);
+        return true;
+      }
+      return this.commitGradientMap(false);
+    }
     if (!this.canAutoCommitActiveAdjustment()) return false;
-    const commit = this.history().openEdit === "color-balance"
+    return this.history().openEdit === "color-balance"
       ? this.commitColorBalance(false)
       : this.commitColorAdjust(false);
-    this.activeAutoCommitPromise = commit;
-    try {
-      return await commit;
-    } finally {
-      if (this.activeAutoCommitPromise === commit) this.activeAutoCommitPromise = null;
-    }
   }
 
   commitColorAdjustForToolChange(): Promise<boolean> {
@@ -713,6 +884,7 @@ export class RasterAdjustmentsController {
       rasterCurvesUiBusy: this.curves.uiBusy,
       rasterColorAdjustUiBusy: this.colorAdjust.uiBusy,
       rasterColorBalanceUiBusy: this.colorBalance.uiBusy,
+      rasterGradientMapUiBusy: this.gradientMap.uiBusy,
       rasterLiquifyUiBusy: this.liquify.uiBusy,
     };
   }
@@ -762,6 +934,11 @@ export class RasterAdjustmentsController {
       this.setColorBalanceStatus(message);
       if (kind === "error") this.colorBalance.previewFault = true;
       this.syncColorBalanceUi();
+    }
+    if (this.gradientMap.sessionOpen && message.includes("Gradient Map")) {
+      this.setGradientMapStatus(message);
+      if (kind === "error") this.gradientMap.previewFault = true;
+      this.syncGradientMapUi();
     }
     if (this.liquify.sessionOpen && message.includes("Liquify")) {
       this.setLiquifyStatus(message);
@@ -813,6 +990,11 @@ export class RasterAdjustmentsController {
       (status) => this.setColorBalanceStatus(status),
       (result) => this.closeColorBalance(result),
     );
+    close(
+      this.gradientMap,
+      (status) => this.setGradientMapStatus(status),
+      (result) => this.closeGradientMap(result),
+    );
     this.setAppError(message);
     this.refreshHistory();
     this.syncUi();
@@ -828,6 +1010,7 @@ export class RasterAdjustmentsController {
     this.syncCurvesUi();
     this.syncColorAdjustUi();
     this.syncColorBalanceUi();
+    this.syncGradientMapUi();
   }
 
   handleResize(): void {
@@ -855,12 +1038,14 @@ export class RasterAdjustmentsController {
     this.curvesEditor.dispose();
     this.colorAdjustSurface.dispose();
     this.colorBalanceSurface.dispose();
+    this.gradientMapSurface.dispose();
     this.options.elements.canvas.classList.remove(
       "liquify-active",
       "liquify-deforming",
       "raster-curves-active",
       "raster-color-adjust-active",
       "raster-color-balance-active",
+      "raster-gradient-map-active",
     );
     void this.cancelLiquify();
     void this.cancelGaussianBlur();
@@ -871,6 +1056,7 @@ export class RasterAdjustmentsController {
     void this.cancelCurves();
     void this.cancelColorAdjust();
     void this.cancelColorBalance();
+    void this.cancelGradientMap();
   }
 
   private states(): readonly AdjustmentTransactionState[] {
@@ -884,6 +1070,7 @@ export class RasterAdjustmentsController {
       this.curves,
       this.colorAdjust,
       this.colorBalance,
+      this.gradientMap,
     ];
   }
 
@@ -898,6 +1085,7 @@ export class RasterAdjustmentsController {
       case "curves": return this.curves;
       case "color-adjust": return this.colorAdjust;
       case "color-balance": return this.colorBalance;
+      case "gradient-map": return this.gradientMap;
       default: {
         const unsupported: never = kind;
         throw new Error(`Unsupported raster adjustment: ${String(unsupported)}`);
@@ -1179,6 +1367,8 @@ export class RasterAdjustmentsController {
                 ? "Color Adjust"
                 : kind === "color-balance"
                   ? "Color Balance"
+                  : kind === "gradient-map"
+                    ? "Gradient Map"
                   : "Liquify";
     if (!this.options.isEngineReady()) {
       return `${label} will be available after initialization.`;
@@ -1194,6 +1384,7 @@ export class RasterAdjustmentsController {
       "curves",
       "color-adjust",
       "color-balance",
+      "gradient-map",
     ] as const) {
       if (otherKind === kind || !this.state(otherKind).surfaceOpen) continue;
       const otherLabel = otherKind === "gaussian-blur"
@@ -1212,6 +1403,8 @@ export class RasterAdjustmentsController {
                 ? "Color Adjust"
                 : otherKind === "color-balance"
                   ? "Color Balance"
+                  : otherKind === "gradient-map"
+                    ? "Gradient Map"
                   : "Liquify";
       return `Apply or cancel ${otherLabel} first.`;
     }
@@ -1234,6 +1427,9 @@ export class RasterAdjustmentsController {
       if (kind === "color-balance") {
         return "Deselect the pixels to apply Color Balance to the entire layer.";
       }
+      if (kind === "gradient-map") {
+        return "Deselect the pixels to apply Gradient Map to the entire layer.";
+      }
       if (kind === "liquify") {
         return "Deselect the pixels to distort the entire layer.";
       }
@@ -1245,16 +1441,32 @@ export class RasterAdjustmentsController {
     );
     const curvesVectorTarget = kind === "curves"
       && (selected?.kind === "text" || selected?.kind === "svg");
+    const gradientMapVectorTarget = kind === "gradient-map"
+      && (selected?.kind === "text" || selected?.kind === "svg");
     if (kind === "curves" && selected?.kind === "text" && selected.textNode.text.length === 0) {
       return "The selected text layer is empty.";
     }
+    if (
+      kind === "gradient-map"
+      && selected?.kind === "text"
+      && selected.textNode.text.length === 0
+    ) {
+      return "The selected text layer is empty.";
+    }
     const active = stats.layers.find((layer) => layer.id === stats.activeLayerId);
-    if (!curvesVectorTarget && !active?.hasContent) {
+    if (!curvesVectorTarget && !gradientMapVectorTarget && !active?.hasContent) {
       return "The selected raster layer is empty.";
     }
     const wrongRasterTarget = kind === "liquify"
       ? selected?.kind !== "raster" || selected.rasterLayerId !== stats.activeLayerId
       : kind === "curves"
+        ? selected !== undefined
+          && !(
+            (selected.kind === "raster" && selected.rasterLayerId === stats.activeLayerId)
+            || selected.kind === "text"
+            || selected.kind === "svg"
+          )
+      : kind === "gradient-map"
         ? selected !== undefined
           && !(
             (selected.kind === "raster" && selected.rasterLayerId === stats.activeLayerId)
@@ -3082,6 +3294,292 @@ export class RasterAdjustmentsController {
       state.previewFault = state.sessionOpen;
       this.reportColorBalanceError("Color Balance application failed", error);
       if (!state.sessionOpen) this.closeColorBalance("error", restoreRequestFocus);
+      return false;
+    } finally {
+      state.uiBusy = false;
+      this.refreshHistory();
+      this.syncUi();
+    }
+  }
+
+  private setGradientMapStatus(message: string): void {
+    this.options.elements.gradientMap.status.textContent = message;
+  }
+
+  private reportGradientMapError(prefix: string, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    const fullMessage = `${prefix}: ${message}`;
+    this.setGradientMapStatus(fullMessage);
+    this.setAppError(fullMessage);
+  }
+
+  private syncGradientMapUi(): void {
+    const state = this.gradientMap;
+    const elements = this.options.elements.gradientMap;
+    const eligibilityError = state.surfaceOpen || state.sessionOpen || state.uiBusy
+      ? "Gradient Map is already open."
+      : this.adjustmentEligibilityError("gradient-map");
+    const recoveryOnly = state.previewFault || this.history().inconsistent;
+    elements.openButton.disabled = eligibilityError !== null;
+    elements.openButton.title = eligibilityError ?? "Open Gradient Map";
+    elements.openButton.setAttribute("aria-pressed", String(state.surfaceOpen));
+    const controlsDisabled = state.uiBusy || recoveryOnly;
+    const cancellationAvailable = state.surfaceOpen && (
+      !state.uiBusy
+      || this.gradientMapPreparePromise !== null
+      || recoveryOnly
+    );
+    this.gradientMapSurface.setDisabled(controlsDisabled, cancellationAvailable);
+    elements.surface.dataset.state = state.uiBusy
+      ? "busy"
+      : recoveryOnly
+        ? "recovery"
+        : state.sessionOpen
+          ? "preview"
+          : state.surfaceOpen
+            ? "chooser"
+            : "closed";
+  }
+
+  private closeGradientMap(
+    result: AdjustmentResult,
+    restoreRequestFocus = true,
+  ): void {
+    const state = this.gradientMap;
+    this.gradientMapGeneration += 1;
+    this.gradientMapExitIntent = "none";
+    state.surfaceOpen = false;
+    state.cancelPending = false;
+    this.options.elements.gradientMap.openButton.setAttribute("aria-pressed", "false");
+    this.gradientMapSurface.close();
+    if (restoreRequestFocus) this.restoreFocus(state);
+    else state.returnFocus = null;
+    if (result !== "error") this.setGradientMapStatus("Gradient Map ready.");
+    this.options.onSheetOpenChange(false);
+    this.syncUi();
+  }
+
+  private async beginGradientMap(returnFocus: HTMLElement): Promise<void> {
+    if (this.gradientMap.uiBusy) return;
+    const eligibilityError = this.adjustmentEligibilityError("gradient-map");
+    if (eligibilityError || this.gradientMap.surfaceOpen) {
+      if (eligibilityError) this.setAppError(eligibilityError);
+      this.restoreCurvesRequestFocus(returnFocus);
+      return;
+    }
+    // The chooser provides enough idle time to compile the small preview
+    // pipeline before the first preset is selected. This never opens history
+    // or mutates layer pixels, and beginRasterGradientMap reuses the promise.
+    void this.options.engine.prewarmRasterGradientMapResources().catch(() => undefined);
+    this.options.beforeSheetOpen();
+    if (!this.gradientMapSurface.open()) {
+      this.restoreCurvesRequestFocus(returnFocus);
+      return;
+    }
+    const state = this.gradientMap;
+    state.surfaceOpen = true;
+    state.returnFocus = returnFocus;
+    state.sessionOpen = false;
+    state.previewFault = false;
+    state.cancelPending = false;
+    state.uiBusy = false;
+    this.gradientMapGeneration += 1;
+    this.gradientMapExitIntent = "none";
+    this.setGradientMapStatus("Choose a gradient to start the live preview.");
+    this.options.onSheetOpenChange(true);
+    this.syncUi();
+  }
+
+  private requestGradientMapUpdate(
+    settings: Readonly<RasterGradientMapSettings>,
+    selectedPresetId: string | null,
+  ): void {
+    const state = this.gradientMap;
+    if (
+      state.uiBusy
+      || !state.surfaceOpen
+      || state.previewFault
+      || this.history().inconsistent
+    ) return;
+    if (!state.sessionOpen) {
+      const stats = this.options.engine.getStats();
+      const selected = stats.mixedScene?.items.find(
+        (item) => item.key === stats.mixedScene?.selectedKey,
+      );
+      const vectorTarget = selected?.kind === "text" || selected?.kind === "svg";
+      if (
+        vectorTarget
+        && !this.options.confirmGradientMapVectorRasterization(
+          GRADIENT_MAP_VECTOR_RASTERIZATION_CONFIRMATION,
+        )
+      ) {
+        this.gradientMapSurface.showChooser();
+        this.setGradientMapStatus("Choose a gradient when you are ready.");
+        return;
+      }
+      const generation = this.gradientMapGeneration;
+      const preparation = Promise.resolve().then(() => this.beginGradientMapPreview(
+        settings,
+        selectedPresetId,
+        vectorTarget,
+        generation,
+      ));
+      this.gradientMapPreparePromise = preparation;
+      void preparation.finally(() => {
+        if (this.gradientMapPreparePromise === preparation) {
+          this.gradientMapPreparePromise = null;
+        }
+      });
+      return;
+    }
+    try {
+      this.options.engine.updateRasterGradientMap(settings);
+      this.setGradientMapStatus("Gradient Map preview updated…");
+    } catch (error) {
+      state.previewFault = true;
+      this.reportGradientMapError("Gradient Map preview failed", error);
+      this.syncGradientMapUi();
+    }
+  }
+
+  private gradientMapShouldCancelPreparation(): boolean {
+    return this.gradientMapExitIntent === "cancel" || this.disposed;
+  }
+
+  private async beginGradientMapPreview(
+    settings: Readonly<RasterGradientMapSettings>,
+    selectedPresetId: string | null,
+    rasterizeSelectedVector: boolean,
+    generation: number,
+  ): Promise<boolean> {
+    const state = this.gradientMap;
+    if (state.uiBusy || state.sessionOpen || !state.surfaceOpen) return false;
+    state.uiBusy = true;
+    this.gradientMapExitIntent = "none";
+    this.setGradientMapStatus(
+      rasterizeSelectedVector
+        ? "Rasterizing the selected layer…"
+        : "Preparing Gradient Map…",
+    );
+    this.syncGradientMapUi();
+    try {
+      if (rasterizeSelectedVector) {
+        const rasterized = await this.options.rasterizeSelectedVectorLayerForGradientMap();
+        if (generation !== this.gradientMapGeneration || !state.surfaceOpen) return true;
+        const preparedStats = this.options.engine.getStats();
+        const preparedSelected = preparedStats.mixedScene?.items.find(
+          (item) => item.key === preparedStats.mixedScene?.selectedKey,
+        );
+        if (
+          preparedStats.mixedScene?.selectedKey !== rasterized.outputKey
+          || preparedSelected?.kind !== "raster"
+          || preparedSelected.rasterLayerId !== preparedStats.activeLayerId
+        ) {
+          throw new Error("The rasterized layer is no longer the selected raster.");
+        }
+      }
+      if (generation !== this.gradientMapGeneration || !state.surfaceOpen) return true;
+      if (this.gradientMapShouldCancelPreparation()) {
+        this.closeGradientMap("cancel");
+        return true;
+      }
+      this.setGradientMapStatus("Preparing Gradient Map…");
+      const preview = await this.options.engine.beginRasterGradientMap(settings);
+      if (!preview) throw new Error("Select a raster layer to use Gradient Map.");
+      if (generation !== this.gradientMapGeneration || !state.surfaceOpen) {
+        await this.options.engine.cancelRasterGradientMap();
+        return true;
+      }
+      state.sessionOpen = true;
+      this.gradientMapSurface.setState(preview.settings, selectedPresetId);
+      this.setGradientMapStatus("Gradient Map preview ready.");
+      return true;
+    } catch (error) {
+      if (generation !== this.gradientMapGeneration) return true;
+      const history = this.options.engine.getHistoryState();
+      this.options.onHistoryState(history);
+      state.sessionOpen = history.openEdit === "gradient-map";
+      state.previewFault = state.sessionOpen;
+      this.reportGradientMapError("Unable to open Gradient Map", error);
+      if (!state.sessionOpen) this.closeGradientMap("error");
+      return false;
+    } finally {
+      state.uiBusy = false;
+      this.refreshHistory();
+      this.syncUi();
+    }
+  }
+
+  private resetGradientMap(): void {
+    if (!this.gradientMap.sessionOpen || !this.canAutoCommitActiveAdjustment()) return;
+    this.gradientMapSurface.reset();
+    const settings = this.gradientMapSurface.state;
+    if (settings) this.requestGradientMapUpdate(settings, this.gradientMapSurface.activePresetId);
+    this.setGradientMapStatus("Gradient Map reset to the chosen preset.");
+  }
+
+  private async cancelGradientMap(): Promise<void> {
+    const state = this.gradientMap;
+    if (this.gradientMapPreparePromise) {
+      this.gradientMapExitIntent = "cancel";
+      await this.gradientMapPreparePromise;
+      if (!state.surfaceOpen) return;
+    }
+    if (state.uiBusy) {
+      state.cancelPending = true;
+      return;
+    }
+    if (!state.sessionOpen) {
+      if (state.surfaceOpen) this.closeGradientMap("cancel");
+      return;
+    }
+    state.cancelPending = false;
+    state.uiBusy = true;
+    this.setGradientMapStatus("Restoring the original pixels…");
+    this.syncGradientMapUi();
+    try {
+      await this.options.engine.cancelRasterGradientMap();
+      state.sessionOpen = false;
+      state.previewFault = false;
+      this.closeGradientMap("cancel");
+    } catch (error) {
+      const history = this.options.engine.getHistoryState();
+      this.options.onHistoryState(history);
+      state.sessionOpen = history.openEdit === "gradient-map";
+      state.previewFault = true;
+      this.reportGradientMapError("Gradient Map cancellation failed", error);
+    } finally {
+      state.uiBusy = false;
+      this.refreshHistory();
+      this.syncUi();
+    }
+  }
+
+  private async commitGradientMap(restoreRequestFocus = true): Promise<boolean> {
+    const state = this.gradientMap;
+    if (
+      state.uiBusy
+      || !state.sessionOpen
+      || state.previewFault
+      || this.history().inconsistent
+    ) return false;
+    state.uiBusy = true;
+    this.setGradientMapStatus("Applying Gradient Map…");
+    this.syncGradientMapUi();
+    try {
+      const changed = await this.options.engine.commitRasterGradientMap();
+      state.sessionOpen = false;
+      state.previewFault = false;
+      if (changed) this.options.requestActiveThumbnail(0);
+      this.closeGradientMap("apply", restoreRequestFocus);
+      return true;
+    } catch (error) {
+      const history = this.options.engine.getHistoryState();
+      this.options.onHistoryState(history);
+      state.sessionOpen = history.openEdit === "gradient-map";
+      state.previewFault = state.sessionOpen;
+      this.reportGradientMapError("Gradient Map application failed", error);
+      if (!state.sessionOpen) this.closeGradientMap("error", restoreRequestFocus);
       return false;
     } finally {
       state.uiBusy = false;

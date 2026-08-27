@@ -79,13 +79,28 @@ if (transientSettlementStart < 0 || transientSettlementEnd <= transientSettlemen
 const transientSettlement = main.slice(transientSettlementStart, transientSettlementEnd);
 expect(
   transientSettlement,
-  "rasterAdjustmentsController?.isAutoCommitAdjustmentActive(historyState) === true",
-  "generic live color-adjustment settlement detection",
+  "rasterAdjustmentsController?.needsAdjustmentSettlementForToolChange(historyState) === true",
+  "generic live raster-adjustment settlement detection",
 );
 expect(
   transientSettlement,
   "await rasterAdjustmentsController.commitActiveAdjustmentForToolChange()",
-  "generic live color-adjustment commit before Save or Home",
+  "generic live raster-adjustment settlement before Save or Home",
+);
+expect(
+  transientSettlement,
+  'throw new Error("The active raster adjustment could not finish safely.")',
+  "product-neutral failed adjustment settlement status",
+);
+expect(
+  transientSettlement,
+  'throw new Error("The active raster adjustment is still open.")',
+  "product-neutral incomplete adjustment settlement status",
+);
+reject(
+  transientSettlement,
+  "active color adjustment",
+  "color-only wording for the generic adjustment settlement gate",
 );
 expect(main, "await engine.setFillToolSelected(false)", "awaited Fill finalization");
 expect(main, "const fillToolActive = engine.fillToolSelected", "selected Fill cleanup without a preview");

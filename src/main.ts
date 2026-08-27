@@ -498,6 +498,32 @@ const colorBalanceStatus = element<HTMLParagraphElement>("colorBalanceStatus");
 const colorBalanceActionMenu = element<HTMLElement>("colorBalanceActionMenu");
 const colorBalanceResetButton = element<HTMLButtonElement>("colorBalanceReset");
 const colorBalanceCancelButton = element<HTMLButtonElement>("colorBalanceCancel");
+const gradientMapOpenButton = element<HTMLButtonElement>("editorGradientMapFilter");
+const gradientMapSurface = element<HTMLElement>("gradientMapSurface");
+const gradientMapChooser = element<HTMLElement>("gradientMapChooser");
+const gradientMapPresetButtons = Array.from(
+  document.querySelectorAll<HTMLButtonElement>("[data-gradient-map-preset-id]"),
+);
+const gradientMapChooserCancelButton = element<HTMLButtonElement>(
+  "gradientMapChooserCancel",
+);
+const gradientMapEditor = element<HTMLElement>("gradientMapEditor");
+const gradientMapPresetsButton = element<HTMLButtonElement>("gradientMapPresets");
+const gradientMapTrack = element<HTMLElement>("gradientMapTrack");
+const gradientMapPreview = element<HTMLElement>("gradientMapPreview");
+const gradientMapStopLayer = element<HTMLElement>("gradientMapStopLayer");
+const gradientMapColorInput = element<HTMLInputElement>("gradientMapColor");
+const gradientMapSettingsButton = element<HTMLButtonElement>("gradientMapSettingsButton");
+const gradientMapSettingsMenu = element<HTMLElement>("gradientMapSettingsMenu");
+const gradientMapReverseButton = element<HTMLButtonElement>("gradientMapReverse");
+const gradientMapDitherButton = element<HTMLButtonElement>("gradientMapDither");
+const gradientMapInterpolationButtons = Array.from(
+  document.querySelectorAll<HTMLButtonElement>("[data-gradient-map-interpolation]"),
+);
+const gradientMapActionMenu = element<HTMLElement>("gradientMapActionMenu");
+const gradientMapResetButton = element<HTMLButtonElement>("gradientMapReset");
+const gradientMapCancelButton = element<HTMLButtonElement>("gradientMapCancel");
+const gradientMapStatus = element<HTMLParagraphElement>("gradientMapStatus");
 const mobileToolSettingsButtons = Array.from(
   document.querySelectorAll<HTMLButtonElement>("[data-mobile-tool-sheet]"),
 );
@@ -595,6 +621,12 @@ const sceneImportBridge = new SceneImportBridge({
   imageInput: rasterImageFileInput,
   currentController: () => mixedSceneController,
   ensureController: initializeMixedSceneController,
+  beforeAccept: async () => {
+    if (rasterAdjustmentsController?.needsAdjustmentSettlementForToolChange(historyState) !== true) {
+      return true;
+    }
+    return rasterAdjustmentsController.commitActiveAdjustmentForToolChange();
+  },
   onQueued: (kind, file) => {
     const label = kind === "svg" ? "SVG" : "image";
     statusElement.textContent = `Preparing ${label} import for ${file.name}…`;
@@ -945,6 +977,7 @@ appDiagnosticsController = new AppDiagnosticsController({
       rasterCurvesUiBusy: false,
       rasterColorAdjustUiBusy: false,
       rasterColorBalanceUiBusy: false,
+      rasterGradientMapUiBusy: false,
       rasterLiquifyUiBusy: false,
     },
   }),
@@ -1113,6 +1146,7 @@ sceneEditorController = new SceneEditorController({
   },
   getVectorController: () => mixedSceneController,
   isInteractionLocked: interactionLocked,
+  isAdjustmentRasterizationLocked: adjustmentRasterizationLocked,
   onBusyChange: () => {
     updateHistoryControls();
     layerPanelController?.syncInteractionState();
@@ -1392,7 +1426,7 @@ canvasToolController = new CanvasToolController({
   canFinishMultiSelectionForToolChange: canFinishLayerMultiSelection,
   finishMultiSelectionForToolChange: finishLayerMultiSelectionForToolChange,
   shouldPrepareActiveAdjustmentForToolChange: () =>
-    rasterAdjustmentsController?.isAutoCommitAdjustmentActive(historyState) === true,
+    rasterAdjustmentsController?.needsAdjustmentSettlementForToolChange(historyState) === true,
   prepareActiveAdjustmentForToolChange: () =>
     rasterAdjustmentsController?.commitActiveAdjustmentForToolChange() ?? Promise.resolve(true),
   closeBrushStudioForTool: (tool) => {
@@ -1524,9 +1558,11 @@ function syncMobileToolsMenuState(
     activeCanvasTool: canvasToolController?.activeTool ?? "paint",
     engineReady: engineInitialized,
     interactionLocked: interactionLocked(),
+    adjustmentSettlementAvailable:
+      rasterAdjustmentsController?.needsAdjustmentSettlementForToolChange(historyState) === true,
     canvasToolSelectionLocked: canvasToolSelectionLocked(),
     toolSettingsSelectionLocked: interactionLocked()
-      && rasterAdjustmentsController?.isAutoCommitAdjustmentActive(historyState) !== true,
+      && rasterAdjustmentsController?.needsAdjustmentSettlementForToolChange(historyState) !== true,
     vectorEditorReady: mixedSceneController !== null,
     vectorEditorLocked: mixedSceneController?.getTextEditorSnapshot().locked ?? true,
     textSelected: selectedText !== null,
@@ -1811,6 +1847,28 @@ rasterAdjustmentsController = new RasterAdjustmentsController({
       resetButton: colorBalanceResetButton,
       cancelButton: colorBalanceCancelButton,
     },
+    gradientMap: {
+      openButton: gradientMapOpenButton,
+      surface: gradientMapSurface,
+      chooser: gradientMapChooser,
+      presetButtons: gradientMapPresetButtons,
+      chooserCancelButton: gradientMapChooserCancelButton,
+      editor: gradientMapEditor,
+      presetsButton: gradientMapPresetsButton,
+      gradientTrack: gradientMapTrack,
+      gradientPreview: gradientMapPreview,
+      stopLayer: gradientMapStopLayer,
+      colorInput: gradientMapColorInput,
+      settingsButton: gradientMapSettingsButton,
+      settingsMenu: gradientMapSettingsMenu,
+      reverseButton: gradientMapReverseButton,
+      ditherButton: gradientMapDitherButton,
+      interpolationButtons: gradientMapInterpolationButtons,
+      actionMenu: gradientMapActionMenu,
+      resetButton: gradientMapResetButton,
+      cancelButton: gradientMapCancelButton,
+      status: gradientMapStatus,
+    },
   },
   isEngineReady: () => engineInitialized,
   getHistoryState: () => historyState,
@@ -1830,6 +1888,11 @@ rasterAdjustmentsController = new RasterAdjustmentsController({
     await initializeMixedSceneController();
     const result = await sceneEditorController!.rasterizeVectorLayersForCurves();
     return result.rasterizedCount;
+  },
+  confirmGradientMapVectorRasterization: (message) => window.confirm(message),
+  rasterizeSelectedVectorLayerForGradientMap: async () => {
+    await initializeMixedSceneController();
+    return sceneEditorController!.rasterizeSelectedVectorLayer();
   },
   beforeSheetOpen: () => {
     editorToolsController?.setOpen(false);
@@ -1882,6 +1945,8 @@ editorFiltersController = new EditorFiltersController({
       rasterAdjustmentsController?.openColorAdjust(trigger, returnFocus);
     } else if (kind === "color-balance") {
       rasterAdjustmentsController?.openColorBalance(trigger, returnFocus);
+    } else if (kind === "gradient-map") {
+      rasterAdjustmentsController?.openGradientMap(trigger, returnFocus);
     }
   },
 });
@@ -2160,7 +2225,7 @@ editorToolsController = new EditorToolsController({
   canOpen: () => mobileBrushStudio?.isBusy !== true
     && (
       rasterAdjustmentsController?.isAnySurfaceOpen !== true
-      || rasterAdjustmentsController?.isAutoCommitAdjustmentActive(historyState) === true
+      || rasterAdjustmentsController?.needsAdjustmentSettlementForToolChange(historyState) === true
     ),
   beforeOpen: () => {
     if (mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
@@ -2176,7 +2241,7 @@ editorToolsController = new EditorToolsController({
   syncMenuState: syncMobileToolsMenuState,
   selectCanvasTool: selectCanvasToolWithMixedScene,
   openToolSettings: (kind, trigger) => {
-    if (rasterAdjustmentsController?.isAutoCommitAdjustmentActive(historyState) !== true) {
+    if (rasterAdjustmentsController?.needsAdjustmentSettlementForToolChange(historyState) !== true) {
       mobileToolSettingsSheet?.open(kind, trigger);
       return;
     }
@@ -2186,15 +2251,26 @@ editorToolsController = new EditorToolsController({
     });
   },
   runVectorCommand: (command) => {
-    if (interactionLocked()) return;
+    const canSettleAdjustment =
+      rasterAdjustmentsController?.needsAdjustmentSettlementForToolChange(historyState) === true;
+    if (interactionLocked() && !canSettleAdjustment) return;
     // Preserve transient user activation: opening the native picker after
     // awaiting the optional GPU warm-up would be rejected by browsers.
     sceneImportBridge.request(command);
   },
   openRasterEffect: (kind, trigger) => {
-    if (!engineInitialized) return;
-    if (kind === "stroke") mobileStrokeSheet?.open(trigger);
-    else mobileRasterEffectsSheet?.open(kind, trigger);
+    const openEffect = (): void => {
+      if (!engineInitialized || interactionLocked()) return;
+      if (kind === "stroke") mobileStrokeSheet?.open(trigger);
+      else mobileRasterEffectsSheet?.open(kind, trigger);
+    };
+    if (rasterAdjustmentsController?.needsAdjustmentSettlementForToolChange(historyState) !== true) {
+      openEffect();
+      return;
+    }
+    void rasterAdjustmentsController.commitActiveAdjustmentForToolChange().then((committed) => {
+      if (committed) openEffect();
+    });
   },
 });
 
@@ -2384,12 +2460,12 @@ documentInteractionController = new DocumentInteractionController({
 
 async function settleTransientProjectEdits(): Promise<void> {
   if (!engineInitialized) return;
-  if (rasterAdjustmentsController?.isAutoCommitAdjustmentActive(historyState) === true) {
+  if (rasterAdjustmentsController?.needsAdjustmentSettlementForToolChange(historyState) === true) {
     if (!await rasterAdjustmentsController.commitActiveAdjustmentForToolChange()) {
-      throw new Error("The active color adjustment could not finish safely.");
+      throw new Error("The active raster adjustment could not finish safely.");
     }
-    if (rasterAdjustmentsController.isAutoCommitAdjustmentActive(historyState)) {
-      throw new Error("The active color adjustment is still open.");
+    if (rasterAdjustmentsController.needsAdjustmentSettlementForToolChange(historyState)) {
+      throw new Error("The active raster adjustment is still open.");
     }
   }
   if (
@@ -2470,6 +2546,7 @@ function nonHistoryOperationLocked(
   allowDestructivePreviewEdit = false,
   allowShapePresentationPreparation = false,
   allowLayerMultiTransformEdit = false,
+  allowRasterAdjustmentSurface = false,
 ): boolean {
   return !engineInitialized
     || sceneEditorController?.isBusy === true
@@ -2492,10 +2569,22 @@ function nonHistoryOperationLocked(
       )
     )
     || historyState.openEdit === "raster-property"
+    || (
+      !allowDestructivePreviewEdit
+      && !allowRasterAdjustmentSurface
+      && rasterAdjustmentsController?.isAnySurfaceOpen === true
+    )
     || historyState.openEdit === "layer-options"
     || rasterStyleController.isBusy
     || pixelSelectionController?.isBusy === true
     || editorExtension?.isBusy() === true;
+}
+
+function adjustmentRasterizationLocked(): boolean {
+  return nonHistoryOperationLocked(false, false, false, true)
+    || historyControlsController.uiBusy
+    || historyState.busy
+    || canvasInputController?.isPointerActive === true;
 }
 
 function operationLocked(
@@ -2516,7 +2605,7 @@ function interactionLocked(): boolean {
 
 function canvasToolSelectionLocked(): boolean {
   if (!interactionLocked()) return false;
-  if (rasterAdjustmentsController?.isAutoCommitAdjustmentActive(historyState) === true) {
+  if (rasterAdjustmentsController?.needsAdjustmentSettlementForToolChange(historyState) === true) {
     return false;
   }
   const action = mixedSceneController?.getTransformActionSnapshot();
@@ -2726,6 +2815,7 @@ void engine.initialize()
         await engine.prewarmRasterToneCurvesResources();
         await engine.prewarmRasterColorAdjustResources();
         await engine.prewarmRasterColorBalanceResources();
+        await engine.prewarmRasterGradientMapResources();
       },
       2_000,
     );

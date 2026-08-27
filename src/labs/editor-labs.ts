@@ -44,6 +44,7 @@ const LABS = [
   ["clipping", "GPU test clipping group"],
   ["raster-tone-curves", "GPU test curve raster · 512"],
   ["raster-color-balance", "GPU test bilanciamento colore · 512"],
+  ["raster-gradient-map", "GPU test mappa gradiente · 512"],
   ["layer-blend", "GPU test fusioni livello"],
   ["group-transform", "GPU test trasformazione gruppo"],
   ["empty-import-svg", "GPU smoke import SVG su documento vuoto"],
@@ -431,6 +432,28 @@ class EditorLabController implements EditorExtension {
                 this.#latchedBusy = true;
                 reject(new Error(
                   "Test bilanciamento colore scaduto dopo 180 s; ricarica la pagina Labs.",
+                ));
+              }, DESTRUCTIVE_GPU_LAB_TIMEOUT_MS);
+            }),
+          ]);
+        } finally {
+          window.clearTimeout(timeoutId);
+        }
+      }
+      case "raster-gradient-map": {
+        await this.#host.ensureMixedSceneController();
+        const { runRasterGradientMapGpuTest } = await import(
+          "./gpu/raster-gradient-map-gpu-test"
+        );
+        let timeoutId = 0;
+        try {
+          return await Promise.race([
+            runRasterGradientMapGpuTest(engine),
+            new Promise<never>((_resolve, reject) => {
+              timeoutId = window.setTimeout(() => {
+                this.#latchedBusy = true;
+                reject(new Error(
+                  "Test mappa gradiente scaduto dopo 180 s; ricarica la pagina Labs.",
                 ));
               }, DESTRUCTIVE_GPU_LAB_TIMEOUT_MS);
             }),
