@@ -1,5 +1,18 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { createServer } from "vite";
+
+const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
+assert.match(
+  styles,
+  /\.color-balance-settings\s*\{[^}]*width:\s*108px;[^}]*min-width:\s*108px;[^}]*max-width:\s*108px;/s,
+  "desktop tone selector must keep a fixed width",
+);
+assert.match(
+  styles,
+  /@media \(max-width:\s*700px\)[\s\S]*?\.color-balance-settings\s*\{[^}]*width:\s*84px;[^}]*min-width:\s*84px;[^}]*max-width:\s*84px;/s,
+  "mobile tone selector must keep a fixed width",
+);
 
 const server = await createServer({
   appType: "custom",
