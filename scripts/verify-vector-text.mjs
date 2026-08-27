@@ -847,7 +847,7 @@ assert.equal(VECTOR_TEXT_GPU_BLUR_BYTES_PER_PIXEL, 2);
 assert.equal(MIXED_SCENE_LINEAR_FORMAT, "rgba16float");
 assert.equal(
   MIXED_SCENE_COMPOSITOR_STRATEGY,
-  "ordered-raster-vector-gpu-runs-rgba16f-roi-source-over-raster-nearest-at-581pct-v5",
+  "ordered-raster-vector-gpu-runs-rgba16f-roi-source-over-raster-floor-mip-parity-v6",
 );
 assert.equal(
   VECTOR_TEXT_FONT_GEOMETRY_STRATEGY,

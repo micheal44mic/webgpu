@@ -371,13 +371,13 @@ assert.match(brushEngineSource, /async redo\(\): Promise<boolean>\s*{\s*return t
 assert.match(brushEngineSource, /this\.history\.reset\(\);/);
 assert.match(
   brushEngineSource,
-  /recordHistoryBatch\([\s\S]*?releasePayloadOnCancel[\s\S]*?this\.history\.commitAction\(/,
-  "Paint deve trasferire al proprietario anche il rilascio del payload",
+  /recordHistoryBatch\([\s\S]*?releasePayloadOnCancel[\s\S]*?commitHistoryActionAtomically\(\s*this,/,
+  "Paint deve trasferire payload e provenienza raster con una pubblicazione atomica",
 );
 assert.match(
   historyRuntimeSource,
-  /recordBlendHistoryBatch\([\s\S]*?releasePayloadOnCancel[\s\S]*?engine\.history\.commitAction\(/,
-  "Blend deve trasferire al proprietario anche il rilascio del payload",
+  /recordBlendHistoryBatch\([\s\S]*?releasePayloadOnCancel[\s\S]*?commitHistoryActionAtomically\(\s*engine,/,
+  "Blend deve trasferire payload e provenienza raster con una pubblicazione atomica",
 );
 assert.match(
   fillRuntimeSource,

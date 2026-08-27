@@ -1592,43 +1592,47 @@ async function applyMixedSceneGroupTransformHistory(
   ));
   const targetSelectedKey = delta < 0 ? action.selectedKeyBefore : action.selectedKeyAfter;
   const rollbackSelectedKey = delta < 0 ? action.selectedKeyAfter : action.selectedKeyBefore;
+  await engine.beginPresentationTransaction();
   try {
-    engine.history.setCursor(nextCursor);
-    await replayGroupRasterMembers(engine, action, delta);
-    await applyGroupVectorHistoryStates(engine, targetVectorStates, targetSelectedKey);
-  } catch (error) {
-    const rollbackErrors: unknown[] = [];
-    engine.history.setCursor(previousCursor);
     try {
-      await replayGroupRasterMembers(engine, action, delta < 0 ? 1 : -1);
-    } catch (restoreRasterError) {
-      rollbackErrors.push(restoreRasterError);
+      engine.history.setCursor(nextCursor);
+      await replayGroupRasterMembers(engine, action, delta);
+      await applyGroupVectorHistoryStates(engine, targetVectorStates, targetSelectedKey);
+    } catch (error) {
+      const rollbackErrors: unknown[] = [];
+      engine.history.setCursor(previousCursor);
+      try {
+        await replayGroupRasterMembers(engine, action, delta < 0 ? 1 : -1);
+      } catch (restoreRasterError) {
+        rollbackErrors.push(restoreRasterError);
+      }
+      try {
+        await applyGroupVectorHistoryStates(
+          engine,
+          rollbackVectorStates,
+          rollbackSelectedKey,
+        );
+      } catch (restoreVectorError) {
+        rollbackErrors.push(restoreVectorError);
+      }
+      if (rollbackErrors.length > 0) {
+        const operationMessage = error instanceof Error ? error.message : String(error);
+        const rollbackMessage = rollbackErrors.map((rollbackError) => (
+          rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+        )).join("; ");
+        const combined = new Error(
+          `Group Transform replay failed (${operationMessage}) and rollback failed (${rollbackMessage}).`,
+        );
+        engine.latchDocumentStateInconsistent(
+          "State is inconsistent after group Transform Undo/Redo. Reload the page.",
+          combined,
+        );
+        throw combined;
+      }
+      throw error;
     }
-    try {
-      await applyGroupVectorHistoryStates(
-        engine,
-        rollbackVectorStates,
-        rollbackSelectedKey,
-      );
-    } catch (restoreVectorError) {
-      rollbackErrors.push(restoreVectorError);
-    }
-    if (rollbackErrors.length > 0) {
-      const operationMessage = error instanceof Error ? error.message : String(error);
-      const rollbackMessage = rollbackErrors.map((rollbackError) => (
-        rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
-      )).join("; ");
-      const combined = new Error(
-        `Group Transform replay failed (${operationMessage}) and rollback failed (${rollbackMessage}).`,
-      );
-      engine.latchDocumentStateInconsistent(
-        "State is inconsistent after group Transform Undo/Redo. Reload the page.",
-        combined,
-      );
-      throw combined;
-    }
-    throw error;
   } finally {
+    engine.endPresentationTransaction();
     engine.scheduleLayerColdCompression();
     publishMixedScene(engine);
     engine.publishStats();
@@ -1685,7 +1689,8 @@ export function recordBlendHistoryBatch(engine: BrushEngine,
       releasePayloadOnCancel,
     });
   } else {
-    engine.history.commitAction(
+    commitHistoryActionAtomically(
+      engine,
       {
         id: actionId,
         kind: "stroke",

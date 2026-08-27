@@ -5677,33 +5677,94 @@ export function encodeMergedSurfacePyramid(engine: BrushEngine,
   return passes;
 }
 
-export function encodeMergedDisplayPyramids(engine: BrushEngine, 
+function mixedSceneRasterSegmentSurfaces(
+  segment: Readonly<MixedSceneRasterSegmentResources>,
+): readonly (MergedSurfaceResources | null)[] {
+  return [
+    segment.surface,
+    segment.cutoutSurface,
+    segment.documentCutoutBaseSurface,
+    segment.documentCutoutMaskSurface,
+  ];
+}
+
+/**
+ * Completes every already-allocated sampling pyramid while group Transform is
+ * still preparing. Live pointer updates then remain uniform-only even when a
+ * resize crosses several minification levels in one frame.
+ */
+export async function prewarmMixedSceneRasterTransformPreviewPyramids(
+  engine: BrushEngine,
+): Promise<number> {
+  const previewLayerIds = mixedSceneRasterTransformPreviewCompositionLayerIds(engine);
+  if (previewLayerIds.size === 0) return 0;
+  const surfaces = new Set<MergedSurfaceResources>();
+  for (const segment of engine.mixedSceneRasterSegments) {
+    if (
+      segment.rasterLayerId === null
+      || !previewLayerIds.has(segment.rasterLayerId)
+    ) continue;
+    for (const surface of mixedSceneRasterSegmentSurfaces(segment)) {
+      if (surface) surfaces.add(surface);
+    }
+  }
+  if (surfaces.size === 0) return 0;
+  const encoder = engine.device.createCommandEncoder({
+    label: "Prepare group Transform raster sampling pyramids",
+  });
+  let passes = 0;
+  for (const surface of surfaces) {
+    passes += encodeMergedSurfacePyramid(
+      engine,
+      encoder,
+      surface,
+      surface.mipViews.length - 1,
+    );
+  }
+  if (passes === 0) return 0;
+  engine.device.queue.submit([encoder.finish()]);
+  await engine.waitForGpuCapped("Prepare group Transform raster sampling pyramids");
+  return passes;
+}
+
+export function encodeMergedDisplayPyramids(engine: BrushEngine,
   encoder: GPUCommandEncoder,
   selectedMipLevel: number,
 ): number {
-  let passes = 0;
-  if (engine.mergedBelow) {
-    passes += encodeMergedSurfacePyramid(engine, 
-      encoder,
-      engine.mergedBelow,
-      Math.max(selectedMipLevel, requiredMergedSurfaceMipLevel(engine, engine.mergedBelow)),
+  const targets = new Map<MergedSurfaceResources, number>();
+  const previewLayerIds = mixedSceneRasterTransformPreviewCompositionLayerIds(engine);
+  const includeSurface = (
+    surface: MergedSurfaceResources | null,
+    previewMipLevel = 0,
+  ): void => {
+    if (!surface) return;
+    const requiredLevel = Math.max(
+      selectedMipLevel,
+      requiredMergedSurfaceMipLevel(engine, surface),
+      previewMipLevel,
     );
-  }
-  if (engine.mergedAbove) {
-    passes += encodeMergedSurfacePyramid(engine, 
-      encoder,
-      engine.mergedAbove,
-      Math.max(selectedMipLevel, requiredMergedSurfaceMipLevel(engine, engine.mergedAbove)),
-    );
-  }
+    targets.set(surface, Math.max(targets.get(surface) ?? 0, requiredLevel));
+  };
+
+  includeSurface(engine.mergedBelow);
+  includeSurface(engine.mergedAbove);
   for (const segment of engine.mixedSceneRasterSegments) {
+    const previewActive = segment.rasterLayerId !== null
+      && previewLayerIds.has(segment.rasterLayerId);
+    for (const surface of mixedSceneRasterSegmentSurfaces(segment)) {
+      const previewMipLevel = surface && previewActive
+        ? surface.mipViews.length - 1
+        : 0;
+      includeSurface(surface, previewMipLevel);
+    }
+  }
+
+  let passes = 0;
+  for (const [surface, requiredLevel] of targets) {
     passes += encodeMergedSurfacePyramid(engine, 
       encoder,
-      segment.surface,
-      Math.max(
-        selectedMipLevel,
-        requiredMergedSurfaceMipLevel(engine, segment.surface),
-      ),
+      surface,
+      requiredLevel,
     );
   }
   return passes;

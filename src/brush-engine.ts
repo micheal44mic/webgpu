@@ -818,6 +818,7 @@ import {
   maybeInjectLayerCompositeFault,
   mixedSceneSegmentLayerBlendMode,
   orderedLayerBlendPresentationRequired,
+  prewarmMixedSceneRasterTransformPreviewPyramids,
   rebuildLayerDisplayBindGroups,
   recreateLayerResources,
   releaseFusedLayerBakes,
@@ -1183,6 +1184,7 @@ export class BrushEngine {
    * Every successful activation/rebuild clears the flag before requesting a frame.
    */
   layerPresentationFrozen = false;
+  presentationTransactionDepth = 0;
 
   /** Dev-only injections for post-submit rollback boundaries. */
   layerBakeFaultQueue: LayerBakeFaultPoint[] = [];
@@ -2600,6 +2602,7 @@ export class BrushEngine {
     transforms: readonly MixedSceneRasterTransformPreview[],
   ): Promise<void> {
     await setMixedSceneRasterTransformPreviewRuntime(this, transforms);
+    await prewarmMixedSceneRasterTransformPreviewPyramids(this);
     ensureMixedSceneLinearTexture(
       this,
       Math.max(1, this.canvas.width),
@@ -6868,7 +6871,12 @@ export class BrushEngine {
       Number(Boolean(this.lightGlazeSession?.commitRequested)),
       Number(Boolean(this.lightGlazeSession?.endRequested)),
       Number(this.layerPresentationFrozen),
+      this.presentationTransactionDepth,
     ].join(":");
+  }
+
+  private presentationBlocked(): boolean {
+    return this.layerPresentationFrozen || this.presentationTransactionDepth > 0;
   }
 
   /**
@@ -6882,7 +6890,7 @@ export class BrushEngine {
    */
   private discardFrozenDerivedPresentationWork(): boolean {
     if (
-      !this.layerPresentationFrozen
+      !this.presentationBlocked()
       || this.pendingStamps.length > 0
       || this.pendingBlendBatches.length > 0
       || this.clearRequested
@@ -6929,6 +6937,16 @@ export class BrushEngine {
       let progressSignature = this.renderProgressSignature();
       let lastProgressAt = performance.now();
       while (hasPendingRenderWork(this)) {
+        if (this.presentationTransactionDepth > 0) {
+          if (this.discardFrozenDerivedPresentationWork()) {
+            progressSignature = this.renderProgressSignature();
+            lastProgressAt = performance.now();
+            continue;
+          }
+          throw new Error(
+            "A presentation transaction contains authoritative render work and cannot continue.",
+          );
+        }
         if (this.layerPresentationFrozen) {
           if (
             options.allowFrozenDerivedPresentation === true
@@ -6964,6 +6982,31 @@ export class BrushEngine {
         await this.brushGpuWarmupPromise;
       }
     }
+  }
+
+  /**
+   * Keeps the last complete screen cache visible while one document transaction
+   * replaces several authoritative resources. Internal rebuilds may temporarily
+   * release their own structural freeze; this independent depth remains the
+   * presentation owner until the transaction publishes one final frame.
+   */
+  async beginPresentationTransaction(): Promise<void> {
+    if (this.presentationTransactionDepth === 0) {
+      await this.waitForIdle();
+    }
+    this.presentationTransactionDepth += 1;
+    this.presentationCacheNeedsFullRebuild = true;
+  }
+
+  endPresentationTransaction(): void {
+    if (this.presentationTransactionDepth <= 0) {
+      throw new Error("There is no presentation transaction to close.");
+    }
+    this.presentationTransactionDepth -= 1;
+    if (this.presentationTransactionDepth > 0) return;
+    this.presentationCacheNeedsFullRebuild = true;
+    this.displayDirty = true;
+    this.requestRender();
   }
 
   resetStrokeRandomSeed(): void {
@@ -12847,6 +12890,9 @@ export class BrushEngine {
     if (!this.initialized || this.renderFrameError || this.deviceLostError) {
       return;
     }
+    if (this.presentationTransactionDepth > 0) {
+      return;
+    }
     if (this.frameRequest !== null) {
       return;
     }
@@ -12909,6 +12955,11 @@ export class BrushEngine {
       // The persistent screen cache already contains the last complete stack.
       // Do not submit bind groups that may still name an evicted derived texture;
       // the successful rebuild requests a fresh frame after publishing new views.
+      return;
+    }
+    if (this.presentationTransactionDepth > 0) {
+      // Keep the last complete presentation visible while a multi-step mutation
+      // replaces its preview with the corresponding authoritative surfaces.
       return;
     }
     const resizeStart = performance.now();
@@ -13161,7 +13212,8 @@ export class BrushEngine {
         releasePayloadOnCancel,
       });
     } else {
-      this.history.commitAction(
+      commitHistoryActionAtomically(
+        this,
         {
           id: actionId,
           kind: "stroke",
@@ -15621,6 +15673,10 @@ export class BrushEngine {
     externalLayerCleared = false,
     externalEncoder: GPUCommandEncoder | null = null,
   ): SubmitTiming {
+    // A compound document transaction owns the visible frame. GPU mutations
+    // still run in FIFO order, but only the final authoritative composition may
+    // replace the persistent screen cache.
+    present = present && !this.presentationBlocked();
     const stampCount = resolvePaintHistoryStampCount(stamps, replayBatch);
     if (usesStrokeGlazeRenderer(settings)) {
       if (this.lightGlazeSession) {

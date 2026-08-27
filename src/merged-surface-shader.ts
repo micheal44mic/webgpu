@@ -8,11 +8,15 @@ import { rasterPixelViewShaderHelpers } from "./raster-pixel-view.ts";
 export const mergedSurfaceSamplingShader = /* wgsl */ `
 ${rasterPixelViewShaderHelpers}
 fn mergedSamplingLod(resolutionScale: f32, maximumLod: f32) -> f32 {
-  return clamp(
+  let continuousLod = clamp(
     max(0.0, log2(max(resolutionScale, 1.0) / max(display.zoom, 0.000001))),
     0.0,
     maximumLod
   );
+  // The active layer uses the lower complete logical mip until the next exact
+  // power-of-two boundary. Keep merged layers on that same level so selecting
+  // a layer cannot change its apparent detail.
+  return floor(continuousLod + 0.000001);
 }
 
 fn sampleMergedBelow(layerPosition: vec2<f32>) -> vec4<f32> {

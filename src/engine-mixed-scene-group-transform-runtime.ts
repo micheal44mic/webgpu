@@ -108,6 +108,33 @@ function rasterUpdateIsIdentity(member: Readonly<MixedSceneGroupRasterMember>): 
     && Math.abs(member.update.rotation) < 1e-7;
 }
 
+/**
+ * Converts the pivot used by the live group preview into the pivot owned by
+ * the authoritative per-layer Transform. Both paths must describe the same
+ * document-space affine even when their source pivots differ.
+ */
+export function mixedSceneGroupRasterMaterializationPivot(
+  previewPivot: Readonly<{ x: number; y: number }>,
+  sourcePivot: Readonly<{ x: number; y: number }>,
+  update: Pick<
+    MixedSceneGroupTransformUpdate,
+    "x" | "y" | "scaleX" | "scaleY" | "rotation"
+  >,
+): { x: number; y: number } {
+  const cosine = Math.cos(update.rotation);
+  const sine = Math.sin(update.rotation);
+  const deltaX = sourcePivot.x - previewPivot.x;
+  const deltaY = sourcePivot.y - previewPivot.y;
+  return {
+    x: update.x
+      + cosine * update.scaleX * deltaX
+      - sine * update.scaleY * deltaY,
+    y: update.y
+      + sine * update.scaleX * deltaX
+      + cosine * update.scaleY * deltaY,
+  };
+}
+
 function publishSemanticMutation(engine: BrushEngine): void {
   engine.presentationCacheNeedsFullRebuild = true;
   engine.displayDirty = true;
@@ -358,11 +385,19 @@ export async function cancelMixedSceneGroupTransform(engine: BrushEngine): Promi
   if (session.terminal) throw new Error("The group Transform is already finishing.");
   session.terminal = true;
   try {
+    await engine.beginPresentationTransaction();
+  } catch (error) {
+    session.terminal = false;
+    throw error;
+  }
+  try {
     restoreSemanticMembers(engine, session);
     await engine.clearMixedSceneRasterTransformPreview();
   } catch (error) {
     session.terminal = false;
     throw error;
+  } finally {
+    engine.endPresentationTransaction();
   }
   engine.activeMixedSceneGroupTransformSession = null;
   engine.scheduleLayerColdCompression();
@@ -376,6 +411,12 @@ export async function commitMixedSceneGroupTransform(engine: BrushEngine): Promi
   if (!session) return false;
   if (session.terminal) throw new Error("The group Transform is already finishing.");
   session.terminal = true;
+  try {
+    await engine.beginPresentationTransaction();
+  } catch (error) {
+    session.terminal = false;
+    throw error;
+  }
   const scene = requireMixedSceneStack(engine);
   const rasterActions: RasterTransformHistoryAction[] = [];
   try {
@@ -391,9 +432,14 @@ export async function commitMixedSceneGroupTransform(engine: BrushEngine): Promi
       ));
       if (!snapshot) throw new Error(`Raster ${member.layerId} could not open Transform.`);
       const sourcePivot = snapshot.sourcePivot ?? { x: snapshot.x, y: snapshot.y };
+      const destinationPivot = mixedSceneGroupRasterMaterializationPivot(
+        { x: member.pivotX, y: member.pivotY },
+        sourcePivot,
+        member.update,
+      );
       updateRasterLayerTransform(engine, {
-        x: sourcePivot.x + member.update.x - member.pivotX,
-        y: sourcePivot.y + member.update.y - member.pivotY,
+        x: destinationPivot.x,
+        y: destinationPivot.y,
         scaleX: member.update.scaleX,
         scaleY: member.update.scaleY,
         rotation: member.update.rotation,
@@ -468,5 +514,7 @@ export async function commitMixedSceneGroupTransform(engine: BrushEngine): Promi
     engine.publishHistoryState();
     engine.scheduleLayerColdCompression();
     throw error;
+  } finally {
+    engine.endPresentationTransaction();
   }
 }

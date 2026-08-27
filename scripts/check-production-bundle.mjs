@@ -38,6 +38,7 @@ const forbiddenFileFragments = [
   "effects-benchmark",
   "engine-lab-operations",
   "human-stroke-lab",
+  "group-transform-gpu-test",
   "iphone-memory-limit-test",
   "layer-blend-gpu-test",
   "layer-cold-tile-composite-gpu-test",

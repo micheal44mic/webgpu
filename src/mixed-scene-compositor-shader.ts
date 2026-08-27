@@ -2,7 +2,7 @@ import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits.ts";
 import { rasterPixelViewShaderHelpers } from "./raster-pixel-view.ts";
 
 export const MIXED_SCENE_COMPOSITOR_STRATEGY =
-  "ordered-raster-vector-gpu-runs-rgba16f-roi-source-over-raster-nearest-at-581pct-v5" as const;
+  "ordered-raster-vector-gpu-runs-rgba16f-roi-source-over-raster-floor-mip-parity-v6" as const;
 
 export const MIXED_SCENE_LINEAR_FORMAT = "rgba16float" as const;
 
@@ -97,11 +97,15 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   let maximumLod = f32(max(1u, textureNumLevels(sourceTexture)) - 1u);
   let inverseFootprint = max(segment.inverseRowX.w, 0.000001);
   let effectiveResolutionScale = resolutionScale * inverseFootprint;
-  let lod = clamp(
+  let continuousLod = clamp(
     max(0.0, log2(effectiveResolutionScale / max(display.zoom, 0.000001))),
     0.0,
     maximumLod
   );
+  // Match the active raster's integer display policy. With nearest-mip
+  // sampling, passing a fractional value would otherwise round at half a mip
+  // and make identical pixels change sharpness when layer activation changes.
+  let lod = floor(continuousLod + 0.000001);
   if (rasterPixelViewEnabled(effectiveResolutionScale)) {
     return textureLoad(
       sourceTexture,

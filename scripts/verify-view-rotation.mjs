@@ -8,6 +8,7 @@ import {
   RASTER_SMOOTH_LAYER_COMPOSITE_STRATEGY,
   rasterPixelViewEnabled,
 } from "../src/raster-pixel-view.ts";
+import { planPaintDisplayMips } from "../src/noise-mip-smoothing-core.ts";
 
 const read = (relativePath) => fs.readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
 const engineSource = readEngineSource();
@@ -26,6 +27,25 @@ const styleSource = read("src/styles.css");
 const packageJson = JSON.parse(read("package.json"));
 
 const EPSILON = 1e-9;
+
+const inactiveRasterMip = (zoom, maximumMip = 12) => Math.min(
+  maximumMip,
+  Math.max(0, Math.floor(Math.log2(1 / Math.max(zoom, 1e-6)) + 1e-6)),
+);
+
+for (const zoom of [1, 0.6, 0.5, 0.25]) {
+  assert.equal(
+    inactiveRasterMip(zoom),
+    planPaintDisplayMips(zoom, 13, false).legacyMipLevel,
+    `active and inactive raster mip policy diverged at zoom ${zoom}`,
+  );
+}
+assert.equal(
+  Math.round(Math.log2(1 / 0.6)),
+  1,
+  "the regression fixture must distinguish the former nearest-mip rounding",
+);
+assert.equal(inactiveRasterMip(0.6), 0);
 
 function normalizeAngle(angle) {
   const turn = Math.PI * 2;
@@ -245,7 +265,10 @@ assert.doesNotMatch(mainSource, /updateViewZoomControl|viewZoomPercentOutput/);
 
 assert.equal((mergedSurfaceSource.match(/rasterPixelViewEnabled\(resolutionScale\)/g) ?? []).length, 2,
   "entrambe le superfici raster unite devono usare nearest sopra soglia");
-assert.match(mixedSceneCompositorSource, /ordered-raster-vector-gpu-runs-rgba16f-roi-source-over-raster-nearest-at-581pct-v5/);
+assert.match(
+  mixedSceneCompositorSource,
+  /ordered-raster-vector-gpu-runs-rgba16f-roi-source-over-raster-floor-mip-parity-v6/,
+);
 const mixedRasterSegment = mixedSceneCompositorSource.slice(
   mixedSceneCompositorSource.indexOf("export const mixedSceneRasterSegmentShader"),
   mixedSceneCompositorSource.indexOf("export const mixedSceneTextSegmentShader"),
@@ -256,6 +279,16 @@ const mixedTextSegment = mixedSceneCompositorSource.slice(
 );
 assert.match(mixedRasterSegment, /rasterPixelViewEnabled\(effectiveResolutionScale\)/,
   "le run raster del compositore misto devono mostrare texel reali");
+assert.match(
+  mixedRasterSegment,
+  /let continuousLod = clamp\([\s\S]*?let lod = floor\(continuousLod \+ 0\.000001\)/,
+  "le run raster attive e inattive devono scegliere lo stesso livello mip intero",
+);
+assert.match(
+  mergedSurfaceSource,
+  /fn mergedSamplingLod[\s\S]*?return floor\(continuousLod \+ 0\.000001\)/,
+  "le superfici raster unite devono usare la stessa soglia mip del livello attivo",
+);
 assert.doesNotMatch(mixedTextSegment, /rasterPixelViewEnabled/,
   "le run testo/SVG devono restare vettoriali");
 assert.match(vectorTextShaderSource, /sampleViewportTexture[\s\S]*textureLoad\(source, pixel, 0\)/,

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { createServer } from "vite";
 import { MixedSceneStack } from "../src/mixed-scene-stack.ts";
 import {
   MIXED_SCENE_RASTER_SEGMENT_UNIFORM_BYTES,
@@ -12,6 +13,7 @@ import {
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
 const runtimeSource = read("src/engine-mixed-scene-raster-preview-runtime.ts");
+const layerRuntimeSource = read("src/engine-layer-runtime.ts");
 const compositorSource = read("src/mixed-scene-compositor-shader.ts");
 const engineSource = read("src/brush-engine.ts");
 const resourceSetupSource = read("src/engine-runtime-misc.ts");
@@ -95,8 +97,246 @@ const hotUpdateSource = runtimeSource.slice(hotUpdateStart, hotUpdateEnd);
 assert.match(hotUpdateSource, /writePreparedPreviewUniforms/);
 assert.doesNotMatch(hotUpdateSource, /rebuildMergedLayerSurfaces|await /);
 assert.match(runtimeSource, /documentCutoutBaseUniformBuffer[\s\S]*?documentCutoutMaskUniformBuffer/);
+const pyramidStart = layerRuntimeSource.indexOf("export function encodeMergedDisplayPyramids");
+const pyramidEnd = layerRuntimeSource.indexOf("export async function freezeActiveLayerToCold", pyramidStart);
+const pyramidSource = layerRuntimeSource.slice(pyramidStart, pyramidEnd);
+assert.match(
+  pyramidSource,
+  /const previewLayerIds = mixedSceneRasterTransformPreviewCompositionLayerIds\(engine\)/,
+);
+assert.match(
+  pyramidSource,
+  /previewLayerIds\.has\(segment\.rasterLayerId\)/,
+  "only surfaces owned by the live raster preview should be prewarmed",
+);
+assert.match(
+  pyramidSource,
+  /previewActive[\s\S]*?surface\.mipViews\.length - 1/,
+  "the first preview frame must make every later minification sample valid",
+);
+assert.match(
+  layerRuntimeSource,
+  /function mixedSceneRasterSegmentSurfaces[\s\S]*?segment\.surface[\s\S]*?segment\.cutoutSurface[\s\S]*?segment\.documentCutoutBaseSurface[\s\S]*?segment\.documentCutoutMaskSurface/,
+  "every transformed color or clipping surface must own valid sampled mips",
+);
+assert.match(
+  pyramidSource,
+  /for \(const \[surface, requiredLevel\] of targets\)[\s\S]*?encodeMergedSurfacePyramid/,
+  "deduplicated mip work must be encoded before the frame compositor consumes it",
+);
+assert.doesNotMatch(
+  pyramidSource,
+  /await |waitForGpu|onSubmittedWorkDone/,
+  "mip prewarm must stay in the frame command encoder without a CPU/GPU stall",
+);
+const prewarmStart = layerRuntimeSource.indexOf(
+  "export async function prewarmMixedSceneRasterTransformPreviewPyramids",
+);
+const prewarmEnd = layerRuntimeSource.indexOf(
+  "export function encodeMergedDisplayPyramids",
+  prewarmStart,
+);
+const prewarmSource = layerRuntimeSource.slice(prewarmStart, prewarmEnd);
+assert.match(prewarmSource, /new Set<MergedSurfaceResources>\(\)/);
+assert.match(prewarmSource, /mixedSceneRasterSegmentSurfaces\(segment\)/);
+assert.match(prewarmSource, /surface\.mipViews\.length - 1/);
+assert.match(prewarmSource, /device\.queue\.submit[\s\S]*?await engine\.waitForGpuCapped/);
+assert.match(
+  engineSource,
+  /await setMixedSceneRasterTransformPreviewRuntime\(this, transforms\);[\s\S]*?await prewarmMixedSceneRasterTransformPreviewPyramids\(this\);[\s\S]*?ensureMixedSceneLinearTexture/,
+  "group Transform must finish sampling preparation before the tool becomes ready",
+);
 assert.match(compositorSource, /sourceLayerPosition[\s\S]*?inverseRowX[\s\S]*?inverseRowY/);
 assert.match(resourceSetupSource, /minBindingSize: MIXED_SCENE_RASTER_SEGMENT_UNIFORM_BYTES/);
 assert.match(engineSource, /compositionSegments\([\s\S]*?mixedSceneRasterTransformPreviewCompositionLayerIds/);
+
+const vite = await createServer({
+  server: { middlewareMode: true },
+  appType: "custom",
+  logLevel: "silent",
+});
+try {
+  const previewRuntime = await vite.ssrLoadModule(
+    "/src/engine-mixed-scene-raster-preview-runtime.ts",
+  );
+  const layerRuntime = await vite.ssrLoadModule("/src/engine-layer-runtime.ts");
+  const events = [];
+  const makeSurface = (name, levels) => ({
+    name,
+    bounds: { x: 0, y: 0, width: 64, height: 64 },
+    resolutionScale: 1,
+    mipViews: Array.from({ length: levels }, (_, index) => `${name}:view:${index}`),
+    mipDownsampleBindGroups: Array.from(
+      { length: levels - 1 },
+      (_, index) => `${name}:bind:${index}`,
+    ),
+    validThroughLevel: 0,
+  });
+  const primary = makeSurface("primary", 6);
+  const sharedAuxiliary = makeSurface("sharedAuxiliary", 5);
+  const mask = makeSurface("mask", 4);
+  const unselected = makeSurface("unselected", 7);
+  const unowned = makeSurface("unowned", 6);
+  const makeEncoder = () => ({
+    beginRenderPass: ({ label }) => {
+      events.push(`begin:${label}`);
+      return {
+        setPipeline() {},
+        setBindGroup() {},
+        draw() {},
+        end() {
+          events.push(`end:${label}`);
+        },
+      };
+    },
+    finish() {
+      events.push("finish");
+      return {};
+    },
+  });
+  const selectedSegment = {
+    rasterLayerId: 1,
+    surface: primary,
+    cutoutSurface: sharedAuxiliary,
+    documentCutoutBaseSurface: sharedAuxiliary,
+    documentCutoutMaskSurface: mask,
+    documentCutoutBaseUniformBuffer: {},
+    documentCutoutMaskUniformBuffer: {},
+    uniformBuffer: {},
+    opacity: 1,
+  };
+  const engine = {
+    mixedSceneStack: { itemByKey: () => ({ kind: "raster" }) },
+    mixedSceneRasterSegments: [
+      selectedSegment,
+      {
+        ...selectedSegment,
+        rasterLayerId: 2,
+        surface: unselected,
+        cutoutSurface: null,
+        documentCutoutBaseSurface: null,
+        documentCutoutMaskSurface: null,
+        documentCutoutBaseUniformBuffer: null,
+        documentCutoutMaskUniformBuffer: null,
+      },
+      {
+        ...selectedSegment,
+        rasterLayerId: null,
+        surface: unowned,
+        cutoutSurface: null,
+        documentCutoutBaseSurface: null,
+        documentCutoutMaskSurface: null,
+        documentCutoutBaseUniformBuffer: null,
+        documentCutoutMaskUniformBuffer: null,
+      },
+    ],
+    mergedBelow: null,
+    mergedAbove: null,
+    zoom: 1,
+    paintMipDownsamplePipeline: {},
+    device: {
+      createCommandEncoder() {
+        events.push("create");
+        return makeEncoder();
+      },
+      queue: {
+        writeBuffer() {
+          events.push("write");
+        },
+        submit() {
+          events.push("submit");
+        },
+      },
+    },
+    async waitForIdle() {},
+    async rebuildMergedLayerSurfaces() {},
+    getVectorTextViewState() {
+      return {};
+    },
+    async waitForGpuCapped() {
+      events.push("wait");
+    },
+    requestRender() {
+      events.push("request");
+    },
+  };
+  const previewTransform = (scaleX, scaleY = scaleX) => ({
+    key: "raster:1",
+    pivotX: 32,
+    pivotY: 32,
+    translationX: 0,
+    translationY: 0,
+    scaleX,
+    scaleY,
+    rotation: 0,
+  });
+
+  await previewRuntime.setMixedSceneRasterTransformPreview(
+    engine,
+    [previewTransform(1)],
+  );
+  const prewarmEventStart = events.length;
+  const passes = await layerRuntime.prewarmMixedSceneRasterTransformPreviewPyramids(engine);
+  assert.equal(passes, 12);
+  assert.deepEqual(
+    [primary.validThroughLevel, sharedAuxiliary.validThroughLevel, mask.validThroughLevel],
+    [5, 4, 3],
+  );
+  assert.equal(unselected.validThroughLevel, 0);
+  assert.equal(unowned.validThroughLevel, 0);
+  assert.equal(
+    events.slice(prewarmEventStart).filter((event) => event === "submit").length,
+    1,
+  );
+  const readyIndex = events.lastIndexOf("wait");
+  engine.mixedSceneRasterSegments = [selectedSegment];
+
+  for (const [scaleX, scaleY, zoom] of [
+    [0.05, 0.05, 1],
+    [0.05, 1, 1],
+    [1, 0.05, 1],
+    [0.05, 0.05, 0.02],
+  ]) {
+    engine.zoom = zoom;
+    previewRuntime.updateMixedSceneRasterTransformPreview(
+      engine,
+      [previewTransform(scaleX, scaleY)],
+    );
+    assert.ok(readyIndex < events.lastIndexOf("write"));
+    assert.equal(
+      layerRuntime.encodeMergedDisplayPyramids(engine, makeEncoder(), 0),
+      0,
+      `live ${scaleX}x${scaleY} at zoom ${zoom} must not build a mip`,
+    );
+  }
+
+  engine.zoom = 1;
+  primary.validThroughLevel = 0;
+  sharedAuxiliary.validThroughLevel = 0;
+  mask.validThroughLevel = 0;
+  const fallbackEventStart = events.length;
+  assert.equal(
+    layerRuntime.encodeMergedDisplayPyramids(engine, makeEncoder(), 0),
+    12,
+  );
+  events.push("sample");
+  const fallbackEvents = events.slice(fallbackEventStart);
+  assert.ok(fallbackEvents.lastIndexOf("end:Build merged surface mip 3") >= 0);
+  assert.ok(
+    fallbackEvents.lastIndexOf("end:Build merged surface mip 3")
+      < fallbackEvents.indexOf("sample"),
+  );
+
+  await previewRuntime.clearMixedSceneRasterTransformPreview(engine);
+  primary.validThroughLevel = 0;
+  sharedAuxiliary.validThroughLevel = 0;
+  mask.validThroughLevel = 0;
+  assert.equal(
+    layerRuntime.encodeMergedDisplayPyramids(engine, makeEncoder(), 0),
+    0,
+  );
+} finally {
+  await vite.close();
+}
 
 console.log("Mixed-scene raster transform preview verification passed.");

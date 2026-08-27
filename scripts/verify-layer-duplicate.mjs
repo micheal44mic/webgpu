@@ -10,6 +10,10 @@ import {
   planLayerDuplicateMemory,
 } from "../src/layer-memory-admission-core.ts";
 import { uniqueLayerDuplicateName } from "../src/mixed-scene-stack.ts";
+import {
+  cloneRasterLayerSource,
+  rasterLayerSourcesEqual,
+} from "../src/raster-layer-source.ts";
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const engine = read("../src/brush-engine.ts");
@@ -29,6 +33,33 @@ assert.equal(uniqueLayerDuplicateName("Ink", ["Ink"]), "Ink copy");
 assert.equal(
   uniqueLayerDuplicateName("Ink copy 2", ["Ink", "Ink copy", "Ink copy 2"]),
   "Ink copy 3",
+);
+
+const rasterSource = {
+  document: {
+    assetId: "shared-raster-master",
+    sourceName: "source.png",
+    mimeType: "image/png",
+    sourceBytes: 4096,
+    width: 320,
+    height: 180,
+  },
+  x: 160,
+  y: 90,
+  scale: 0.75,
+  rotation: Math.PI / 9,
+};
+const clonedRasterSource = cloneRasterLayerSource(rasterSource);
+assert.ok(clonedRasterSource);
+assert.notEqual(clonedRasterSource, rasterSource);
+assert.notEqual(clonedRasterSource.document, rasterSource.document);
+assert.ok(rasterLayerSourcesEqual(clonedRasterSource, rasterSource));
+clonedRasterSource.x += 10;
+assert.equal(rasterSource.x, 160, "a duplicate must own an independent transform matrix");
+assert.equal(
+  clonedRasterSource.document.assetId,
+  rasterSource.document.assetId,
+  "a clean duplicate must keep the same immutable raster master",
 );
 
 assert.match(types, /interface LayerAddHistoryAction extends RasterHistoryCheckpoint/);
@@ -64,6 +95,11 @@ assert.match(
 assert.match(duplicate, /applyLayerAddHistory\(this, action, 1\)/);
 assert.match(duplicate, /commitHistoryActionAtomically\(this, action\)/);
 assert.match(duplicate, /applyLayerAddHistory\(this, action, -1\)/);
+assert.match(
+  engine,
+  /createDuplicatedRasterRecord[\s\S]*?record\.rasterSource = cloneRasterLayerSource\(source\.rasterSource\)/,
+  "Duplicate must preserve immutable raster provenance instead of baking the current cache",
+);
 assert.doesNotMatch(
   duplicate,
   /copyTextureToBuffer|mapAsync|getMappedRange|Uint8Array\([^)]*pixel/i,
