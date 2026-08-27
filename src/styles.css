@@ -1466,21 +1466,20 @@ select {
   display: grid;
   min-width: 212px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-  padding: 6px;
-  border: 1px solid rgba(114, 121, 136, 0.7);
-  border-radius: 18px;
-  background: rgba(22, 25, 31, 0.98);
-  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.58);
-  backdrop-filter: blur(14px);
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
 }
 
 .color-adjust-menu button {
-  min-height: 48px;
+  min-height: 50px;
   padding: 0 16px;
-  border: 1px solid #3a404c;
-  border-radius: 13px;
-  background: #292e37;
+  border: 1px solid rgba(104, 111, 124, 0.48);
+  border-radius: 15px;
+  background: rgba(23, 25, 29, 0.96);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(16px);
   color: #eef0f5;
   font-size: 0.76rem;
   font-weight: 760;
@@ -1506,9 +1505,12 @@ select {
   pointer-events: none;
 }
 
-@media (min-width: 701px) and (max-width: 1100px) {
+@media (max-width: 1100px), (hover: none) and (pointer: coarse) {
   .color-adjust-surface {
-    width: calc(100% - 88px);
+    right: max(9px, env(safe-area-inset-right));
+    left: max(9px, env(safe-area-inset-left));
+    width: auto;
+    transform: none;
   }
 
   .color-adjust-control {
@@ -1614,8 +1616,6 @@ select {
 
   .color-adjust-surface {
     bottom: max(9px, env(safe-area-inset-bottom));
-    left: calc(50% + 26px);
-    width: calc(100% - 70px);
     padding: 13px 12px 11px;
     border-radius: 22px;
   }

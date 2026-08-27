@@ -34,6 +34,7 @@ export interface RasterColorAdjustSurfaceControllerOptions {
 const LONG_PRESS_DELAY_MS = 480;
 const LONG_PRESS_MOVEMENT_PX = 10;
 const MENU_VIEWPORT_MARGIN_PX = 12;
+const MENU_TOUCH_GAP_PX = 14;
 
 function sliderToSettings(
   hue: number,
@@ -293,19 +294,35 @@ export class RasterColorAdjustSurfaceController {
     menu.style.top = "0px";
     const rect = menu.getBoundingClientRect();
     const surfaceTop = surface.getBoundingClientRect().top;
+    const minLeft = MENU_VIEWPORT_MARGIN_PX;
     const maxLeft = Math.max(
-      MENU_VIEWPORT_MARGIN_PX,
+      minLeft,
       this.options.browser.innerWidth - rect.width - MENU_VIEWPORT_MARGIN_PX,
     );
-    const maxTop = Math.max(
-      MENU_VIEWPORT_MARGIN_PX,
+    const safeTop = MENU_VIEWPORT_MARGIN_PX;
+    const safeBottom = Math.max(
+      safeTop + rect.height,
       Math.min(
-        this.options.browser.innerHeight - rect.height - MENU_VIEWPORT_MARGIN_PX,
-        surfaceTop - rect.height - MENU_VIEWPORT_MARGIN_PX,
+        this.options.browser.innerHeight - MENU_VIEWPORT_MARGIN_PX,
+        surfaceTop - MENU_VIEWPORT_MARGIN_PX,
       ),
     );
-    menu.style.left = `${Math.min(maxLeft, Math.max(MENU_VIEWPORT_MARGIN_PX, clientX))}px`;
-    menu.style.top = `${Math.min(maxTop, Math.max(MENU_VIEWPORT_MARGIN_PX, clientY))}px`;
+    const maxTop = Math.max(
+      safeTop,
+      safeBottom - rect.height,
+    );
+    const aboveTop = clientY - MENU_TOUCH_GAP_PX - rect.height;
+    const belowTop = clientY + MENU_TOUCH_GAP_PX;
+    const fitsAbove = aboveTop >= safeTop;
+    const fitsBelow = belowTop <= maxTop;
+    const spaceAbove = clientY - MENU_TOUCH_GAP_PX - safeTop;
+    const spaceBelow = safeBottom - clientY - MENU_TOUCH_GAP_PX;
+    const placeBelow = fitsBelow && (!fitsAbove || spaceBelow >= spaceAbove);
+    const desiredTop = placeBelow ? belowTop : aboveTop;
+
+    menu.dataset.placement = placeBelow ? "below" : "above";
+    menu.style.left = `${Math.min(maxLeft, Math.max(minLeft, clientX - rect.width / 2))}px`;
+    menu.style.top = `${Math.min(maxTop, Math.max(safeTop, desiredTop))}px`;
     elementsFocus(menu);
   }
 

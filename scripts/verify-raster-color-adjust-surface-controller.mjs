@@ -26,6 +26,7 @@ class FakeClassList {
 class FakeElement extends EventTarget {
   attributes = new Map();
   classList = new FakeClassList();
+  dataset = {};
   style = {};
   value = "";
   textContent = "";
@@ -33,6 +34,7 @@ class FakeElement extends EventTarget {
   disabled = false;
   focusCount = 0;
   firstButton = null;
+  rect = { left: 0, top: 600, right: 220, bottom: 660, width: 220, height: 60 };
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   getAttribute(name) { return this.attributes.get(name) ?? null; }
   removeAttribute(name) { this.attributes.delete(name); }
@@ -43,9 +45,7 @@ class FakeElement extends EventTarget {
   contains(node) { return node === this || node === this.firstButton; }
   querySelector() { return this.firstButton; }
   focus() { this.focusCount += 1; }
-  getBoundingClientRect() {
-    return { left: 0, top: 600, right: 220, bottom: 660, width: 220, height: 60 };
-  }
+  getBoundingClientRect() { return this.rect; }
 }
 
 class FakeDocument extends EventTarget {}
@@ -80,6 +80,7 @@ const resetButton = new FakeElement();
 const cancelButton = new FakeElement();
 const menu = new FakeElement();
 menu.firstButton = resetButton;
+menu.rect = { left: 0, top: 0, right: 220, bottom: 60, width: 220, height: 60 };
 const elements = {
   surface: new FakeElement(),
   hueInput: new FakeElement(),
@@ -92,6 +93,7 @@ const elements = {
   resetButton,
   cancelButton,
 };
+elements.surface.rect = { left: 9, top: 730, right: 381, bottom: 835, width: 372, height: 105 };
 const updates = [];
 let resets = 0;
 let cancels = 0;
@@ -128,13 +130,14 @@ canvas.dispatchEvent(event("pointerdown", {
   pointerId: 1,
   button: 0,
   clientX: 370,
-  clientY: 580,
+  clientY: 680,
 }));
 browser.fireTimers();
 assert.equal(menu.hidden, false);
 assert.equal(resetButton.focusCount, 1);
-assert.ok(Number.parseFloat(menu.style.left) <= 158, "menu must stay inside the right edge");
-assert.ok(Number.parseFloat(menu.style.top) <= 528, "menu must stay above the control dock");
+assert.equal(menu.style.left, "158px", "menu must stay inside the right edge");
+assert.equal(menu.style.top, "606px", "lower touches must place the menu just above the finger");
+assert.equal(menu.dataset.placement, "above");
 
 resetButton.dispatchEvent(event("click"));
 cancelButton.dispatchEvent(event("click"));
@@ -146,11 +149,38 @@ canvas.dispatchEvent(event("pointerup", { pointerId: 1 }));
 canvas.dispatchEvent(event("pointerdown", {
   pointerId: 2,
   button: 0,
+  clientX: 195,
+  clientY: 150,
+}));
+browser.fireTimers();
+assert.equal(menu.hidden, false);
+assert.equal(menu.style.left, "85px", "menu must be horizontally centered on the touch");
+assert.equal(menu.style.top, "164px", "upper touches must place the menu just below the finger");
+assert.equal(menu.dataset.placement, "below");
+
+menu.hidden = true;
+canvas.dispatchEvent(event("pointerup", { pointerId: 2 }));
+canvas.dispatchEvent(event("pointerdown", {
+  pointerId: 3,
+  button: 0,
+  clientX: 20,
+  clientY: 300,
+}));
+browser.fireTimers();
+assert.equal(menu.hidden, false);
+assert.equal(menu.style.left, "12px", "left-edge touches must open the menu toward the right");
+assert.equal(menu.style.top, "314px");
+
+menu.hidden = true;
+canvas.dispatchEvent(event("pointerup", { pointerId: 3 }));
+canvas.dispatchEvent(event("pointerdown", {
+  pointerId: 4,
+  button: 0,
   clientX: 100,
   clientY: 100,
 }));
 canvas.dispatchEvent(event("pointermove", {
-  pointerId: 2,
+  pointerId: 4,
   clientX: 112,
   clientY: 100,
 }));
