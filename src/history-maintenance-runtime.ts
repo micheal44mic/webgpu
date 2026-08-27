@@ -248,6 +248,8 @@ function historyMaintenanceEngineIdle(
     && !engine.activeRasterNoiseSession
     && !engine.activeRasterGlassSession
     && !engine.activeRasterToneCurvesSession
+    && !engine.activeRasterColorAdjustSession
+    && !engine.activeRasterColorBalanceSession
     && !engine.activeRasterLiquifySession
     && !engine.rasterStrokeBusy
     && !engine.rasterBevelBusy

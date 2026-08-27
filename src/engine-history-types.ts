@@ -29,6 +29,7 @@ import type { RasterColorOverlayStyle } from "./raster-color-overlay-core";
 import type { RasterNoiseChannels, RasterNoiseStyle } from "./noise-core";
 import type { RasterToneCurveSet } from "./raster-tone-curves-core.ts";
 import type { RasterColorAdjustSettings } from "./raster-color-adjust-core.ts";
+import type { RasterColorBalanceSettings } from "./raster-color-balance-core.ts";
 import type { LiquifyMode } from "./liquify-core";
 import type { SpatialBlurPin } from "./spatial-blur-core";
 import type { RasterLayerSource } from "./raster-layer-source";
@@ -460,6 +461,16 @@ export type RasterFilterHistoryAction = RasterFilterHistoryActionCommon & (
     algorithm: "hsv-relative-adjust-v1";
     algorithmVersion: 1;
     precision: "rgba16float-source-and-output-f32-hsv";
+    colorSpace: "straight-encoded-rgb";
+    alphaMode: "preserve";
+    boundsMode: "preserve";
+  }
+  | {
+    filter: "color-balance";
+    settings: RasterColorBalanceSettings;
+    algorithm: "tonal-channel-balance-v1";
+    algorithmVersion: 1;
+    precision: "rgba16float-source-and-output-f32-tonal-balance";
     colorSpace: "straight-encoded-rgb";
     alphaMode: "preserve";
     boundsMode: "preserve";

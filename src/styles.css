@@ -1495,6 +1495,275 @@ select {
   outline-offset: 2px;
 }
 
+.color-balance-surface[hidden],
+.color-balance-settings-menu[hidden],
+.color-balance-action-menu[hidden] {
+  display: none;
+}
+
+.color-balance-surface {
+  position: absolute;
+  z-index: 9;
+  bottom: max(14px, env(safe-area-inset-bottom));
+  left: calc(50% + 26px);
+  display: block;
+  width: min(1120px, calc(100% - 150px));
+  padding: 18px 18px 16px;
+  border: 1px solid rgba(104, 111, 124, 0.48);
+  border-radius: 28px;
+  background: rgba(23, 25, 29, 0.96);
+  box-shadow: 0 18px 52px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(16px);
+  transform: translateX(-50%);
+}
+
+.color-balance-control-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  gap: clamp(10px, 2.2vw, 32px);
+  align-items: stretch;
+}
+
+.color-balance-control {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+  color: #aeb3bd;
+  font-size: clamp(0.68rem, 1vw, 0.86rem);
+  line-height: 1;
+}
+
+.color-balance-control-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.color-balance-control-heading > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.color-balance-control output {
+  flex: 0 0 auto;
+  color: #eceef2;
+  font-variant-numeric: tabular-nums;
+}
+
+.color-balance-control input[type="range"] {
+  width: 100%;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  appearance: none;
+  background: transparent;
+  cursor: ew-resize;
+  touch-action: pan-x;
+}
+
+.color-balance-control input[type="range"]::-webkit-slider-runnable-track {
+  height: 5px;
+  border-radius: 999px;
+  background: var(--color-balance-track);
+}
+
+.color-balance-control input[type="range"]::-moz-range-track {
+  height: 5px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--color-balance-track);
+}
+
+.color-balance-control input[type="range"]::-webkit-slider-thumb {
+  width: 22px;
+  height: 22px;
+  margin-top: -8.5px;
+  border: 2px solid #f4f5f7;
+  border-radius: 50%;
+  appearance: none;
+  background: #dde0e5;
+  box-shadow: 0 2px 7px rgba(0, 0, 0, 0.58);
+}
+
+.color-balance-control input[type="range"]::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border: 2px solid #f4f5f7;
+  border-radius: 50%;
+  background: #dde0e5;
+  box-shadow: 0 2px 7px rgba(0, 0, 0, 0.58);
+}
+
+.color-balance-control input[type="range"]:focus-visible,
+.color-balance-tone-button:focus-visible,
+.color-balance-settings-menu button:focus-visible {
+  outline: 2px solid #8e9bff;
+  outline-offset: 2px;
+}
+
+.color-balance-control input[type="range"]:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.color-balance-cyan-red {
+  --color-balance-track: linear-gradient(90deg, #33cbd5 0%, #8b8f97 50%, #f25959 100%);
+}
+
+.color-balance-magenta-green {
+  --color-balance-track: linear-gradient(90deg, #d350ca 0%, #8b8f97 50%, #50c976 100%);
+}
+
+.color-balance-yellow-blue {
+  --color-balance-track: linear-gradient(90deg, #e7d64f 0%, #8b8f97 50%, #4d72dc 100%);
+}
+
+.color-balance-settings {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+}
+
+.color-balance-tone-button {
+  display: grid;
+  min-width: 96px;
+  min-height: 58px;
+  grid-template-columns: minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 12px;
+  border: 1px solid rgba(104, 111, 124, 0.48);
+  border-radius: 16px;
+  background: rgba(36, 39, 46, 0.96);
+  color: #eef0f5;
+  font-size: 0.74rem;
+  font-weight: 720;
+  cursor: pointer;
+}
+
+.color-balance-tone-button > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.color-balance-tone-button svg {
+  width: 16px;
+  height: 16px;
+  transition: transform 140ms ease;
+}
+
+.color-balance-tone-button[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+
+.color-balance-settings-menu {
+  position: absolute;
+  z-index: 3;
+  right: 0;
+  bottom: calc(100% + 12px);
+  display: grid;
+  width: min(292px, calc(100vw - 24px));
+  gap: 9px;
+  padding: 11px;
+  border: 1px solid rgba(104, 111, 124, 0.58);
+  border-radius: 18px;
+  background: rgba(23, 25, 29, 0.98);
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.52);
+  backdrop-filter: blur(16px);
+}
+
+.color-balance-settings-label {
+  margin: 0;
+  color: #9298a4;
+  font-size: 0.64rem;
+  font-weight: 740;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.color-balance-tone-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.color-balance-tone-options button,
+.color-balance-preserve {
+  min-height: 46px;
+  border: 1px solid #3a404c;
+  border-radius: 13px;
+  background: #292e37;
+  color: #dadde4;
+  font-size: 0.7rem;
+  font-weight: 720;
+  cursor: pointer;
+}
+
+.color-balance-tone-options button[aria-checked="true"] {
+  border-color: #8e9bff;
+  background: #343b50;
+  color: #ffffff;
+}
+
+.color-balance-preserve {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 0 12px;
+  text-align: left;
+}
+
+.color-balance-switch {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #555b66;
+  transition: background 140ms ease;
+}
+
+.color-balance-switch::after {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #f2f3f5;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  content: "";
+  transition: transform 140ms ease;
+}
+
+.color-balance-preserve.is-enabled .color-balance-switch {
+  background: #6e7df0;
+}
+
+.color-balance-preserve.is-enabled .color-balance-switch::after {
+  transform: translateX(16px);
+}
+
+#gpuCanvas.raster-color-balance-active {
+  cursor: grab;
+}
+
+#gpuCanvas.raster-color-balance-active ~ #brushOutlineCanvas,
+#gpuCanvas.raster-color-adjust-active ~ #brushOutlineCanvas {
+  display: none;
+}
+
+#gpuCanvas.raster-color-balance-active ~ .gpu-memory-monitor {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
 #gpuCanvas.raster-color-adjust-active {
   cursor: grab;
 }
@@ -1515,6 +1784,13 @@ select {
 
   .color-adjust-control {
     font-size: 0.78rem;
+  }
+
+  .color-balance-surface {
+    right: max(9px, env(safe-area-inset-right));
+    left: max(9px, env(safe-area-inset-left));
+    width: auto;
+    transform: none;
   }
 }
 
@@ -1638,6 +1914,47 @@ select {
   .color-adjust-control input[type="range"]::-moz-range-thumb {
     width: 20px;
     height: 20px;
+  }
+
+  .color-balance-surface {
+    bottom: max(9px, env(safe-area-inset-bottom));
+    padding: 13px 10px 11px;
+    border-radius: 22px;
+  }
+
+  .color-balance-control-grid {
+    gap: clamp(5px, 1.7vw, 10px);
+  }
+
+  .color-balance-control {
+    gap: 4px;
+    font-size: clamp(0.52rem, 2.35vw, 0.68rem);
+  }
+
+  .color-balance-control input[type="range"]::-webkit-slider-thumb {
+    width: 24px;
+    height: 24px;
+    margin-top: -9.5px;
+  }
+
+  .color-balance-control input[type="range"]::-moz-range-thumb {
+    width: 20px;
+    height: 20px;
+  }
+
+  .color-balance-tone-button {
+    min-width: 76px;
+    min-height: 54px;
+    grid-template-columns: minmax(0, 1fr) 13px;
+    gap: 2px;
+    padding: 0 7px;
+    border-radius: 14px;
+    font-size: clamp(0.56rem, 2.4vw, 0.67rem);
+  }
+
+  .color-balance-tone-button svg {
+    width: 13px;
+    height: 13px;
   }
 }
 

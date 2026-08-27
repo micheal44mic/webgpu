@@ -45,6 +45,16 @@ assert.match(
   "Color Adjust must use an icon registered by the production icon set.",
 );
 assert.match(filtersPanelSource, /class="mobile-tools-item-label">Color Adjust<\/span>/);
+assert.match(
+  filtersPanelSource,
+  /id="editorColorBalanceFilter"[\s\S]*?data-editor-filter-kind="color-balance"/,
+);
+assert.match(
+  filtersPanelSource,
+  /id="editorColorBalanceFilter"[\s\S]{0,520}data-lucide="scale"/,
+  "Color Balance must use an icon registered by the production icon set.",
+);
+assert.match(filtersPanelSource, /class="mobile-tools-item-label">Color Balance<\/span>/);
 assert.doesNotMatch(filtersPanelSource, /Point Blur|spatial-blur/);
 assert.doesNotMatch(
   filtersPanelSource,
@@ -97,10 +107,11 @@ try {
   await moduleServer.close();
 }
 
-assert.deepEqual(EDITOR_FILTER_KINDS, ["glass", "curves", "color-adjust"]);
+assert.deepEqual(EDITOR_FILTER_KINDS, ["glass", "curves", "color-adjust", "color-balance"]);
 assert.equal(isEditorFilterKind("glass"), true);
 assert.equal(isEditorFilterKind("curves"), true);
 assert.equal(isEditorFilterKind("color-adjust"), true);
+assert.equal(isEditorFilterKind("color-balance"), true);
 assert.equal(isEditorFilterKind("spatial-blur"), false);
 assert.equal(isEditorFilterKind("unknown"), false);
 assert.equal(isEditorFilterKind(undefined), false);
@@ -189,11 +200,13 @@ function createHarness(initiallyCanOpen = true) {
   const glassButton = new FakeElement(document, { editorFilterKind: "glass" });
   const curvesButton = new FakeElement(document, { editorFilterKind: "curves" });
   const colorAdjustButton = new FakeElement(document, { editorFilterKind: "color-adjust" });
+  const colorBalanceButton = new FakeElement(document, { editorFilterKind: "color-balance" });
   const unknownButton = new FakeElement(document, { editorFilterKind: "unknown" });
   panel.contained.add(closeButton);
   panel.contained.add(glassButton);
   panel.contained.add(curvesButton);
   panel.contained.add(colorAdjustButton);
+  panel.contained.add(colorBalanceButton);
   panel.contained.add(unknownButton);
   let canOpen = initiallyCanOpen;
   const lifecycle = [];
@@ -206,7 +219,13 @@ function createHarness(initiallyCanOpen = true) {
       trigger,
       panel,
       closeButton,
-      filterButtons: [glassButton, curvesButton, colorAdjustButton, unknownButton],
+      filterButtons: [
+        glassButton,
+        curvesButton,
+        colorAdjustButton,
+        colorBalanceButton,
+        unknownButton,
+      ],
     },
     canOpen: () => canOpen,
     beforeOpen: () => lifecycle.push("before-open"),
@@ -230,6 +249,7 @@ function createHarness(initiallyCanOpen = true) {
     glassButton,
     curvesButton,
     colorAdjustButton,
+    colorBalanceButton,
     unknownButton,
     lifecycle,
     routed,
@@ -311,6 +331,19 @@ function createHarness(initiallyCanOpen = true) {
   harness.unknownButton.click();
   assert.equal(harness.controller.isOpen, true);
   assert.equal(harness.routed.length, 1);
+  harness.controller.dispose();
+}
+
+// The tonal balance card participates in the same typed route and focus contract.
+{
+  const harness = createHarness();
+  harness.controller.setOpen(true);
+  harness.colorBalanceButton.click();
+  assert.equal(harness.controller.isOpen, false);
+  assert.equal(harness.routed.length, 1);
+  assert.equal(harness.routed[0].kind, "color-balance");
+  assert.equal(harness.routed[0].opener, harness.colorBalanceButton);
+  assert.equal(harness.routed[0].returnFocus, harness.trigger);
   harness.controller.dispose();
 }
 

@@ -66,6 +66,27 @@ expect(main, "restoreDocument: (project) => engine.restoreProjectDocument(projec
 expect(main, "projectSessionController?.noteHistoryState(state)", "history dirty tracking port");
 expect(main, "projectSessionController?.noteSceneSnapshot(snapshot)", "scene dirty tracking port");
 expect(main, "settleTransientEdits: settleTransientProjectEdits", "preview settlement gate");
+const transientSettlementStart = main.indexOf(
+  "async function settleTransientProjectEdits(): Promise<void>",
+);
+const transientSettlementEnd = main.indexOf(
+  'window.addEventListener("pagehide"',
+  transientSettlementStart,
+);
+if (transientSettlementStart < 0 || transientSettlementEnd <= transientSettlementStart) {
+  throw new Error("Missing transient project-edit settlement boundary.");
+}
+const transientSettlement = main.slice(transientSettlementStart, transientSettlementEnd);
+expect(
+  transientSettlement,
+  "rasterAdjustmentsController?.isAutoCommitAdjustmentActive(historyState) === true",
+  "generic live color-adjustment settlement detection",
+);
+expect(
+  transientSettlement,
+  "await rasterAdjustmentsController.commitActiveAdjustmentForToolChange()",
+  "generic live color-adjustment commit before Save or Home",
+);
 expect(main, "await engine.setFillToolSelected(false)", "awaited Fill finalization");
 expect(main, "const fillToolActive = engine.fillToolSelected", "selected Fill cleanup without a preview");
 expect(main, 'canvasToolController?.activeTool === "fill"', "Fill sheet cleanup before Home suspension");

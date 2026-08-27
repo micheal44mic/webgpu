@@ -1,4 +1,9 @@
-export const EDITOR_FILTER_KINDS = ["glass", "curves", "color-adjust"] as const;
+export const EDITOR_FILTER_KINDS = [
+  "glass",
+  "curves",
+  "color-adjust",
+  "color-balance",
+] as const;
 
 export type EditorFilterKind = (typeof EDITOR_FILTER_KINDS)[number];
 

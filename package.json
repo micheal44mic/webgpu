@@ -95,13 +95,15 @@
     "curves-gpu-lab:verify": "node scripts/verify-raster-tone-curves-gpu-lab.mjs",
     "curves:verify": "node scripts/verify-raster-tone-curves-core.mjs && node scripts/verify-raster-tone-curves-editor-controller.mjs && node scripts/verify-raster-tone-curves-runtime.mjs && npm run curves-gpu-lab:verify",
     "color-adjust:verify": "node scripts/verify-raster-color-adjust-core.mjs && node scripts/verify-raster-color-adjust-runtime.mjs && node scripts/verify-raster-color-adjust-surface-controller.mjs",
+    "color-balance-gpu-lab:verify": "node scripts/verify-raster-color-balance-gpu-lab.mjs",
+    "color-balance:verify": "node scripts/verify-raster-color-balance-core.mjs && node scripts/verify-raster-color-balance-runtime.mjs && node scripts/verify-raster-color-balance-surface-controller.mjs && npm run color-balance-gpu-lab:verify",
     "filters-ui:verify": "node scripts/verify-editor-filters-controller.mjs",
     "motion-blur:verify": "node scripts/verify-motion-blur.mjs && node scripts/verify-motion-blur-ui.mjs",
     "noise:verify": "node scripts/verify-noise.mjs",
     "noise-mip:verify": "node scripts/verify-noise-mip-smoothing.mjs",
     "layer-thumbnails:verify": "node scripts/verify-layer-thumbnail-controller.mjs && node scripts/verify-restored-layer-thumbnails.mjs",
     "liquify:verify": "node scripts/verify-liquify.mjs",
-    "raster-filters:verify": "npm run gaussian-blur:verify && npm run spatial-blur:verify && npm run motion-blur:verify && npm run noise:verify && npm run glass:verify && npm run curves:verify && npm run color-adjust:verify && npm run liquify:verify && npm run precision:verify"
+    "raster-filters:verify": "npm run gaussian-blur:verify && npm run spatial-blur:verify && npm run motion-blur:verify && npm run noise:verify && npm run glass:verify && npm run curves:verify && npm run color-adjust:verify && npm run color-balance:verify && npm run liquify:verify && npm run precision:verify"
   },
   "devDependencies": {
     "@types/earcut": "^3.0.0",

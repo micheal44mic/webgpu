@@ -2944,6 +2944,21 @@
               </span>
               <span class="mobile-tools-item-label">Color Adjust</span>
             </button>
+            <button
+              id="editorColorBalanceFilter"
+              class="mobile-tools-item editor-filter-item"
+              type="button"
+              data-editor-filter-kind="color-balance"
+              aria-label="Open Color Balance filter"
+              aria-controls="colorBalanceSurface"
+              aria-pressed="false"
+            >
+              <span class="mobile-icon-stack" aria-hidden="true">
+                <i data-lucide="scale" class="mobile-icon-layer mobile-icon-outline"></i>
+                <i data-lucide="scale" class="mobile-icon-layer mobile-icon-face"></i>
+              </span>
+              <span class="mobile-tools-item-label">Color Balance</span>
+            </button>
           </div>
         </div>
       </aside>
@@ -3394,6 +3409,133 @@
         >
           <button id="colorAdjustReset" type="button" role="menuitem">Reset</button>
           <button id="colorAdjustCancel" type="button" role="menuitem">Cancel</button>
+        </div>
+        <section
+          id="colorBalanceSurface"
+          class="color-balance-surface"
+          role="region"
+          aria-label="Color Balance controls"
+          aria-hidden="true"
+          hidden
+          inert
+        >
+          <div class="color-balance-control-grid">
+            <label class="color-balance-control color-balance-cyan-red" for="colorBalanceCyanRed">
+              <span class="color-balance-control-heading">
+                <span>Cyan · Red</span>
+                <output id="colorBalanceCyanRedOut" for="colorBalanceCyanRed">0%</output>
+              </span>
+              <input
+                id="colorBalanceCyanRed"
+                type="range"
+                min="-100"
+                max="100"
+                step="1"
+                value="0"
+                aria-label="Cyan to red balance"
+              >
+            </label>
+            <label class="color-balance-control color-balance-magenta-green" for="colorBalanceMagentaGreen">
+              <span class="color-balance-control-heading">
+                <span>Magenta · Green</span>
+                <output id="colorBalanceMagentaGreenOut" for="colorBalanceMagentaGreen">0%</output>
+              </span>
+              <input
+                id="colorBalanceMagentaGreen"
+                type="range"
+                min="-100"
+                max="100"
+                step="1"
+                value="0"
+                aria-label="Magenta to green balance"
+              >
+            </label>
+            <label class="color-balance-control color-balance-yellow-blue" for="colorBalanceYellowBlue">
+              <span class="color-balance-control-heading">
+                <span>Yellow · Blue</span>
+                <output id="colorBalanceYellowBlueOut" for="colorBalanceYellowBlue">0%</output>
+              </span>
+              <input
+                id="colorBalanceYellowBlue"
+                type="range"
+                min="-100"
+                max="100"
+                step="1"
+                value="0"
+                aria-label="Yellow to blue balance"
+              >
+            </label>
+            <div class="color-balance-settings">
+              <button
+                id="colorBalanceToneButton"
+                class="color-balance-tone-button"
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded="false"
+                aria-controls="colorBalanceSettingsMenu"
+              >
+                <span id="colorBalanceToneButtonLabel">Midtones</span>
+                <i data-lucide="chevron-down" aria-hidden="true"></i>
+              </button>
+              <div
+                id="colorBalanceSettingsMenu"
+                class="color-balance-settings-menu"
+                role="menu"
+                aria-label="Color Balance settings"
+                aria-hidden="true"
+                hidden
+              >
+                <p class="color-balance-settings-label">Tone Range</p>
+                <div class="color-balance-tone-options" role="group" aria-label="Tone range">
+                  <button
+                    type="button"
+                    role="menuitemradio"
+                    data-color-balance-tone="shadows"
+                    aria-checked="false"
+                    tabindex="-1"
+                  >Shadows</button>
+                  <button
+                    type="button"
+                    role="menuitemradio"
+                    data-color-balance-tone="midtones"
+                    aria-checked="true"
+                    tabindex="0"
+                  >Midtones</button>
+                  <button
+                    type="button"
+                    role="menuitemradio"
+                    data-color-balance-tone="highlights"
+                    aria-checked="false"
+                    tabindex="-1"
+                  >Highlights</button>
+                </div>
+                <button
+                  id="colorBalancePreserveLuminosity"
+                  class="color-balance-preserve"
+                  type="button"
+                  role="menuitemcheckbox"
+                  aria-checked="true"
+                >
+                  <span>Preserve Luminosity</span>
+                  <span class="color-balance-switch" aria-hidden="true"></span>
+                </button>
+              </div>
+            </div>
+          </div>
+          <p id="colorBalanceStatus" class="visually-hidden" role="status" aria-live="polite">
+            Color Balance ready.
+          </p>
+        </section>
+        <div
+          id="colorBalanceActionMenu"
+          class="color-adjust-menu color-balance-action-menu"
+          role="menu"
+          aria-label="Color Balance actions"
+          aria-hidden="true"
+          hidden
+        >
+          <button id="colorBalanceReset" type="button" role="menuitem">Reset</button>
+          <button id="colorBalanceCancel" type="button" role="menuitem">Cancel</button>
         </div>
         <div
           id="spatialBlurOverlay"

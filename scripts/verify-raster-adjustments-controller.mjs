@@ -274,7 +274,32 @@ const elements = {
     resetButton: new FakeElement(),
     cancelButton: new FakeElement(),
   },
+  colorBalance: {
+    openButton: new FakeElement(),
+    surface: new FakeElement(),
+    cyanRedInput: new FakeElement(),
+    cyanRedOutput: new FakeElement(),
+    magentaGreenInput: new FakeElement(),
+    magentaGreenOutput: new FakeElement(),
+    yellowBlueInput: new FakeElement(),
+    yellowBlueOutput: new FakeElement(),
+    toneButton: new FakeElement(),
+    toneButtonLabel: new FakeElement(),
+    settingsMenu: new FakeElement(),
+    toneButtons: ["shadows", "midtones", "highlights"].map((tone) => {
+      const button = new FakeElement();
+      button.dataset.colorBalanceTone = tone;
+      return button;
+    }),
+    preserveLuminosityButton: new FakeElement(),
+    status: new FakeElement(),
+    actionMenu: new FakeElement(),
+    resetButton: new FakeElement(),
+    cancelButton: new FakeElement(),
+  },
 };
+elements.colorBalance.settingsMenu.hidden = true;
+elements.colorBalance.actionMenu.hidden = true;
 
 let history = {
   canUndo: false,
@@ -297,6 +322,7 @@ let multiSelectionActive = false;
 let curvesCommitChanged = true;
 let curvesRasterizationPromise = null;
 let colorAdjustSettings = null;
+let colorBalanceSettings = null;
 const engine = {
   documentWidth: 512,
   documentHeight: 512,
@@ -481,6 +507,33 @@ const engine = {
   },
   async cancelRasterColorAdjust() {
     calls.push(["cancel-color-adjust"]);
+    history = { ...history, openEdit: null };
+    return true;
+  },
+  async beginRasterColorBalance(settings) {
+    calls.push(["begin-color-balance", settings]);
+    colorBalanceSettings = structuredClone(settings);
+    history = { ...history, openEdit: "color-balance" };
+    return {
+      settings: structuredClone(colorBalanceSettings),
+      sourceBounds: { x: 0, y: 0, width: 512, height: 512 },
+    };
+  },
+  updateRasterColorBalance(settings) {
+    calls.push(["update-color-balance", settings]);
+    colorBalanceSettings = structuredClone(settings);
+    return {
+      settings: structuredClone(colorBalanceSettings),
+      sourceBounds: { x: 0, y: 0, width: 512, height: 512 },
+    };
+  },
+  async commitRasterColorBalance() {
+    calls.push(["commit-color-balance"]);
+    history = { ...history, openEdit: null, actionCount: history.actionCount + 1 };
+    return true;
+  },
+  async cancelRasterColorBalance() {
+    calls.push(["cancel-color-balance"]);
     history = { ...history, openEdit: null };
     return true;
   },
@@ -925,6 +978,75 @@ elements.colorAdjust.cancelButton.dispatchEvent(event("click"));
 await settle();
 assert.equal(history.openEdit, null);
 assert.equal(calls.at(-1)[0], "cancel-color-adjust");
+
+// Color Balance keeps separate tonal values, remains native-raster-only and
+// shares the generic exactly-once auto-commit path used by tool changes and persistence.
+selectedItem = { key: "image:9", kind: "image" };
+controller.syncUi();
+assert.equal(elements.colorBalance.openButton.disabled, true);
+selectedItem = { key: "raster:1", kind: "raster", rasterLayerId: 1 };
+controller.syncUi();
+const balanceThumbnailCount = thumbnails;
+controller.openColorBalance(elements.colorBalance.openButton, filtersTrigger);
+await settle();
+await settle();
+assert.equal(history.openEdit, "color-balance");
+assert.equal(controller.isOpen("color-balance"), true);
+assert.equal(elements.colorBalance.surface.hidden, false);
+assert.equal(controller.isAutoCommitAdjustmentActive(history), true);
+assert.equal(controller.canAutoCommitActiveAdjustment(history), true);
+elements.colorBalance.toneButton.dispatchEvent(event("click"));
+elements.colorBalance.toneButtons[2].dispatchEvent(event("click"));
+assert.equal(elements.colorBalance.toneButtonLabel.textContent, "Highlights");
+elements.colorBalance.cyanRedInput.value = "25";
+elements.colorBalance.magentaGreenInput.value = "-35";
+elements.colorBalance.yellowBlueInput.value = "45";
+elements.colorBalance.yellowBlueInput.dispatchEvent(event("input"));
+assert.deepEqual(calls.at(-1), [
+  "update-color-balance",
+  {
+    shadows: { cyanRedPercent: 0, magentaGreenPercent: 0, yellowBluePercent: 0 },
+    midtones: { cyanRedPercent: 0, magentaGreenPercent: 0, yellowBluePercent: 0 },
+    highlights: { cyanRedPercent: 25, magentaGreenPercent: -35, yellowBluePercent: 45 },
+    preserveLuminosity: true,
+  },
+]);
+const balanceCommitsBefore = calls.filter(([name]) => name === "commit-color-balance").length;
+assert.deepEqual(
+  await Promise.all([
+    controller.commitActiveAdjustmentForToolChange(),
+    controller.commitActiveAdjustmentForToolChange(),
+  ]),
+  [true, true],
+);
+assert.equal(
+  calls.filter(([name]) => name === "commit-color-balance").length,
+  balanceCommitsBefore + 1,
+  "concurrent settlement requests must share one Color Balance commit",
+);
+assert.equal(history.openEdit, null);
+assert.equal(controller.isOpen("color-balance"), false);
+assert.equal(elements.colorBalance.surface.hidden, true);
+assert.equal(thumbnails, balanceThumbnailCount + 1);
+
+controller.openColorBalance(elements.colorBalance.openButton, filtersTrigger);
+await settle();
+elements.colorBalance.cyanRedInput.value = "70";
+elements.colorBalance.cyanRedInput.dispatchEvent(event("input"));
+elements.colorBalance.resetButton.dispatchEvent(event("click"));
+assert.deepEqual(calls.at(-1), [
+  "update-color-balance",
+  {
+    shadows: { cyanRedPercent: 0, magentaGreenPercent: 0, yellowBluePercent: 0 },
+    midtones: { cyanRedPercent: 0, magentaGreenPercent: 0, yellowBluePercent: 0 },
+    highlights: { cyanRedPercent: 0, magentaGreenPercent: 0, yellowBluePercent: 0 },
+    preserveLuminosity: true,
+  },
+]);
+elements.colorBalance.cancelButton.dispatchEvent(event("click"));
+await settle();
+assert.equal(history.openEdit, null);
+assert.equal(calls.at(-1)[0], "cancel-color-balance");
 
 // Device loss abandons the engine session without a GPU rollback. The UI must
 // close immediately, restore focus and avoid issuing a stale Cancel command.

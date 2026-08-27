@@ -19,6 +19,7 @@ assert.deepEqual(contract.DESTRUCTIVE_RASTER_ADJUSTMENT_KINDS, [
   "glass",
   "curves",
   "color-adjust",
+  "color-balance",
 ]);
 const overlap = contract.NON_DESTRUCTIVE_RASTER_EFFECT_KINDS.filter(
   (kind) => contract.DESTRUCTIVE_RASTER_ADJUSTMENT_KINDS.includes(kind),
@@ -34,6 +35,7 @@ assert.equal(contract.isDestructiveRasterAdjustmentKind("noise"), true);
 assert.equal(contract.isDestructiveRasterAdjustmentKind("glass"), true);
 assert.equal(contract.isDestructiveRasterAdjustmentKind("spatial-blur"), true);
 assert.equal(contract.isDestructiveRasterAdjustmentKind("color-adjust"), true);
+assert.equal(contract.isDestructiveRasterAdjustmentKind("color-balance"), true);
 assert.equal(contract.isDestructiveRasterAdjustmentKind("bevel"), false);
 
 const root = new URL("../", import.meta.url);

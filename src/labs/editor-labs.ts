@@ -43,6 +43,7 @@ const LABS = [
   ["cold-tile", "GPU test cold tile"],
   ["clipping", "GPU test clipping group"],
   ["raster-tone-curves", "GPU test curve raster · 512"],
+  ["raster-color-balance", "GPU test bilanciamento colore · 512"],
   ["layer-blend", "GPU test fusioni livello"],
   ["group-transform", "GPU test trasformazione gruppo"],
   ["empty-import-svg", "GPU smoke import SVG su documento vuoto"],
@@ -410,6 +411,27 @@ class EditorLabController implements EditorExtension {
               timeoutId = window.setTimeout(() => {
                 this.#latchedBusy = true;
                 reject(new Error("Test curve scaduto dopo 180 s; ricarica la pagina Labs."));
+              }, DESTRUCTIVE_GPU_LAB_TIMEOUT_MS);
+            }),
+          ]);
+        } finally {
+          window.clearTimeout(timeoutId);
+        }
+      }
+      case "raster-color-balance": {
+        const { runRasterColorBalanceGpuTest } = await import(
+          "./gpu/raster-color-balance-gpu-test"
+        );
+        let timeoutId = 0;
+        try {
+          return await Promise.race([
+            runRasterColorBalanceGpuTest(engine),
+            new Promise<never>((_resolve, reject) => {
+              timeoutId = window.setTimeout(() => {
+                this.#latchedBusy = true;
+                reject(new Error(
+                  "Test bilanciamento colore scaduto dopo 180 s; ricarica la pagina Labs.",
+                ));
               }, DESTRUCTIVE_GPU_LAB_TIMEOUT_MS);
             }),
           ]);

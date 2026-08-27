@@ -233,6 +233,7 @@ export interface HistoryState {
     | "glass"
     | "curves"
     | "color-adjust"
+    | "color-balance"
     | "liquify"
     | null;
 }

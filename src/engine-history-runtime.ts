@@ -553,6 +553,20 @@ export async function moveHistoryCursor(engine: BrushEngine, delta: -1 | 1): Pro
     );
     return false;
   }
+  if (engine.activeRasterColorAdjustSession) {
+    engine.publishStatus(
+      "Apply or cancel Color Adjust before using history.",
+      "error",
+    );
+    return false;
+  }
+  if (engine.activeRasterColorBalanceSession) {
+    engine.publishStatus(
+      "Apply or cancel Color Balance before using history.",
+      "error",
+    );
+    return false;
+  }
   if (engine.activeRasterLiquifySession) {
     engine.publishStatus(
       "Apply or cancel Liquify before using history.",

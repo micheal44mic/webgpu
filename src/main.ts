@@ -60,6 +60,7 @@ import {
   Plus,
   Redo2,
   Save,
+  Scale,
   Scaling,
   Scan,
   Search,
@@ -153,6 +154,7 @@ createIcons({
     PointBlur: pointBlurIcon,
     Redo2,
     Save,
+    Scale,
     Scaling,
     Scan,
     Search,
@@ -475,6 +477,27 @@ const colorAdjustStatus = element<HTMLParagraphElement>("colorAdjustStatus");
 const colorAdjustMenu = element<HTMLElement>("colorAdjustMenu");
 const colorAdjustResetButton = element<HTMLButtonElement>("colorAdjustReset");
 const colorAdjustCancelButton = element<HTMLButtonElement>("colorAdjustCancel");
+const colorBalanceOpenButton = element<HTMLButtonElement>("editorColorBalanceFilter");
+const colorBalanceSurface = element<HTMLElement>("colorBalanceSurface");
+const colorBalanceCyanRedInput = element<HTMLInputElement>("colorBalanceCyanRed");
+const colorBalanceCyanRedOutput = element<HTMLOutputElement>("colorBalanceCyanRedOut");
+const colorBalanceMagentaGreenInput = element<HTMLInputElement>("colorBalanceMagentaGreen");
+const colorBalanceMagentaGreenOutput = element<HTMLOutputElement>("colorBalanceMagentaGreenOut");
+const colorBalanceYellowBlueInput = element<HTMLInputElement>("colorBalanceYellowBlue");
+const colorBalanceYellowBlueOutput = element<HTMLOutputElement>("colorBalanceYellowBlueOut");
+const colorBalanceToneButton = element<HTMLButtonElement>("colorBalanceToneButton");
+const colorBalanceToneButtonLabel = element<HTMLElement>("colorBalanceToneButtonLabel");
+const colorBalanceSettingsMenu = element<HTMLElement>("colorBalanceSettingsMenu");
+const colorBalanceToneButtons = Array.from(
+  document.querySelectorAll<HTMLButtonElement>("[data-color-balance-tone]"),
+);
+const colorBalancePreserveLuminosityButton = element<HTMLButtonElement>(
+  "colorBalancePreserveLuminosity",
+);
+const colorBalanceStatus = element<HTMLParagraphElement>("colorBalanceStatus");
+const colorBalanceActionMenu = element<HTMLElement>("colorBalanceActionMenu");
+const colorBalanceResetButton = element<HTMLButtonElement>("colorBalanceReset");
+const colorBalanceCancelButton = element<HTMLButtonElement>("colorBalanceCancel");
 const mobileToolSettingsButtons = Array.from(
   document.querySelectorAll<HTMLButtonElement>("[data-mobile-tool-sheet]"),
 );
@@ -921,6 +944,7 @@ appDiagnosticsController = new AppDiagnosticsController({
       rasterGlassUiBusy: false,
       rasterCurvesUiBusy: false,
       rasterColorAdjustUiBusy: false,
+      rasterColorBalanceUiBusy: false,
       rasterLiquifyUiBusy: false,
     },
   }),
@@ -1368,9 +1392,9 @@ canvasToolController = new CanvasToolController({
   canFinishMultiSelectionForToolChange: canFinishLayerMultiSelection,
   finishMultiSelectionForToolChange: finishLayerMultiSelectionForToolChange,
   shouldPrepareActiveAdjustmentForToolChange: () =>
-    rasterAdjustmentsController?.isColorAdjustAutoCommitActive(historyState) === true,
+    rasterAdjustmentsController?.isAutoCommitAdjustmentActive(historyState) === true,
   prepareActiveAdjustmentForToolChange: () =>
-    rasterAdjustmentsController?.commitColorAdjustForToolChange() ?? Promise.resolve(true),
+    rasterAdjustmentsController?.commitActiveAdjustmentForToolChange() ?? Promise.resolve(true),
   closeBrushStudioForTool: (tool) => {
     if (tool !== "paint" && mobileBrushStudio?.isOpen) {
       mobileBrushStudio.cancel(false);
@@ -1502,7 +1526,7 @@ function syncMobileToolsMenuState(
     interactionLocked: interactionLocked(),
     canvasToolSelectionLocked: canvasToolSelectionLocked(),
     toolSettingsSelectionLocked: interactionLocked()
-      && rasterAdjustmentsController?.isColorAdjustAutoCommitActive(historyState) !== true,
+      && rasterAdjustmentsController?.isAutoCommitAdjustmentActive(historyState) !== true,
     vectorEditorReady: mixedSceneController !== null,
     vectorEditorLocked: mixedSceneController?.getTextEditorSnapshot().locked ?? true,
     textSelected: selectedText !== null,
@@ -1768,6 +1792,25 @@ rasterAdjustmentsController = new RasterAdjustmentsController({
       resetButton: colorAdjustResetButton,
       cancelButton: colorAdjustCancelButton,
     },
+    colorBalance: {
+      openButton: colorBalanceOpenButton,
+      surface: colorBalanceSurface,
+      cyanRedInput: colorBalanceCyanRedInput,
+      cyanRedOutput: colorBalanceCyanRedOutput,
+      magentaGreenInput: colorBalanceMagentaGreenInput,
+      magentaGreenOutput: colorBalanceMagentaGreenOutput,
+      yellowBlueInput: colorBalanceYellowBlueInput,
+      yellowBlueOutput: colorBalanceYellowBlueOutput,
+      toneButton: colorBalanceToneButton,
+      toneButtonLabel: colorBalanceToneButtonLabel,
+      settingsMenu: colorBalanceSettingsMenu,
+      toneButtons: colorBalanceToneButtons,
+      preserveLuminosityButton: colorBalancePreserveLuminosityButton,
+      status: colorBalanceStatus,
+      actionMenu: colorBalanceActionMenu,
+      resetButton: colorBalanceResetButton,
+      cancelButton: colorBalanceCancelButton,
+    },
   },
   isEngineReady: () => engineInitialized,
   getHistoryState: () => historyState,
@@ -1837,6 +1880,8 @@ editorFiltersController = new EditorFiltersController({
       rasterAdjustmentsController?.openCurves(trigger, returnFocus);
     } else if (kind === "color-adjust") {
       rasterAdjustmentsController?.openColorAdjust(trigger, returnFocus);
+    } else if (kind === "color-balance") {
+      rasterAdjustmentsController?.openColorBalance(trigger, returnFocus);
     }
   },
 });
@@ -2115,7 +2160,7 @@ editorToolsController = new EditorToolsController({
   canOpen: () => mobileBrushStudio?.isBusy !== true
     && (
       rasterAdjustmentsController?.isAnySurfaceOpen !== true
-      || rasterAdjustmentsController?.isColorAdjustAutoCommitActive(historyState) === true
+      || rasterAdjustmentsController?.isAutoCommitAdjustmentActive(historyState) === true
     ),
   beforeOpen: () => {
     if (mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
@@ -2131,12 +2176,12 @@ editorToolsController = new EditorToolsController({
   syncMenuState: syncMobileToolsMenuState,
   selectCanvasTool: selectCanvasToolWithMixedScene,
   openToolSettings: (kind, trigger) => {
-    if (rasterAdjustmentsController?.isColorAdjustAutoCommitActive(historyState) !== true) {
+    if (rasterAdjustmentsController?.isAutoCommitAdjustmentActive(historyState) !== true) {
       mobileToolSettingsSheet?.open(kind, trigger);
       return;
     }
     const requestedKind = kind;
-    void rasterAdjustmentsController.commitColorAdjustForToolChange().then((committed) => {
+    void rasterAdjustmentsController.commitActiveAdjustmentForToolChange().then((committed) => {
       if (committed) mobileToolSettingsSheet?.open(requestedKind, trigger);
     });
   },
@@ -2339,6 +2384,14 @@ documentInteractionController = new DocumentInteractionController({
 
 async function settleTransientProjectEdits(): Promise<void> {
   if (!engineInitialized) return;
+  if (rasterAdjustmentsController?.isAutoCommitAdjustmentActive(historyState) === true) {
+    if (!await rasterAdjustmentsController.commitActiveAdjustmentForToolChange()) {
+      throw new Error("The active color adjustment could not finish safely.");
+    }
+    if (rasterAdjustmentsController.isAutoCommitAdjustmentActive(historyState)) {
+      throw new Error("The active color adjustment is still open.");
+    }
+  }
   if (
     layerPanelController?.isMultiSelect === true
     && !await finishLayerMultiSelectionForToolChange()
@@ -2463,7 +2516,7 @@ function interactionLocked(): boolean {
 
 function canvasToolSelectionLocked(): boolean {
   if (!interactionLocked()) return false;
-  if (rasterAdjustmentsController?.isColorAdjustAutoCommitActive(historyState) === true) {
+  if (rasterAdjustmentsController?.isAutoCommitAdjustmentActive(historyState) === true) {
     return false;
   }
   const action = mixedSceneController?.getTransformActionSnapshot();
@@ -2672,6 +2725,7 @@ void engine.initialize()
         await engine.ensureOptionalEditorResources();
         await engine.prewarmRasterToneCurvesResources();
         await engine.prewarmRasterColorAdjustResources();
+        await engine.prewarmRasterColorBalanceResources();
       },
       2_000,
     );

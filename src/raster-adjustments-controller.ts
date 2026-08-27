@@ -71,6 +71,14 @@ import {
   RasterColorAdjustSurfaceController,
   type RasterColorAdjustSurfaceElements,
 } from "./raster-color-adjust-surface-controller.ts";
+import {
+  DEFAULT_RASTER_COLOR_BALANCE_SETTINGS,
+  type RasterColorBalanceSettings,
+} from "./raster-color-balance-core.ts";
+import {
+  RasterColorBalanceSurfaceController,
+  type RasterColorBalanceSurfaceElements,
+} from "./raster-color-balance-surface-controller.ts";
 
 export const CURVES_VECTOR_RASTERIZATION_CONFIRMATION =
   "Curves works on raster layers. Rasterize all SVG and text layers before continuing?\n\n"
@@ -86,6 +94,7 @@ export type RasterAdjustmentsEnginePort = Pick<
   | "beginRasterGlass"
   | "beginRasterToneCurves"
   | "beginRasterColorAdjust"
+  | "beginRasterColorBalance"
   | "cancelRasterGaussianBlur"
   | "cancelRasterSpatialBlur"
   | "cancelRasterLiquify"
@@ -94,6 +103,7 @@ export type RasterAdjustmentsEnginePort = Pick<
   | "cancelRasterGlass"
   | "cancelRasterToneCurves"
   | "cancelRasterColorAdjust"
+  | "cancelRasterColorBalance"
   | "commitRasterGaussianBlur"
   | "commitRasterSpatialBlur"
   | "commitRasterLiquify"
@@ -102,6 +112,7 @@ export type RasterAdjustmentsEnginePort = Pick<
   | "commitRasterGlass"
   | "commitRasterToneCurves"
   | "commitRasterColorAdjust"
+  | "commitRasterColorBalance"
   | "endRasterLiquifyStroke"
   | "getHistoryState"
   | "getPixelSelectionState"
@@ -117,6 +128,7 @@ export type RasterAdjustmentsEnginePort = Pick<
   | "updateRasterGlass"
   | "updateRasterToneCurves"
   | "updateRasterColorAdjust"
+  | "updateRasterColorBalance"
   | "reseedRasterGlass"
   | "toLayerPoint"
   | "documentWidth"
@@ -248,6 +260,11 @@ export interface RasterColorAdjustAdjustmentElements extends RasterColorAdjustSu
   readonly status: HTMLParagraphElement;
 }
 
+export interface RasterColorBalanceAdjustmentElements extends RasterColorBalanceSurfaceElements {
+  readonly openButton: HTMLButtonElement;
+  readonly status: HTMLParagraphElement;
+}
+
 export interface RasterAdjustmentsElements {
   readonly canvas: HTMLCanvasElement;
   readonly appStatus: HTMLParagraphElement;
@@ -259,6 +276,7 @@ export interface RasterAdjustmentsElements {
   readonly glass: GlassAdjustmentElements;
   readonly curves: RasterToneCurvesAdjustmentElements;
   readonly colorAdjust: RasterColorAdjustAdjustmentElements;
+  readonly colorBalance: RasterColorBalanceAdjustmentElements;
 }
 
 export interface RasterAdjustmentsControllerOptions {
@@ -293,6 +311,7 @@ export interface RasterAdjustmentsDiagnostics {
   readonly rasterGlassUiBusy: boolean;
   readonly rasterCurvesUiBusy: boolean;
   readonly rasterColorAdjustUiBusy: boolean;
+  readonly rasterColorBalanceUiBusy: boolean;
   readonly rasterLiquifyUiBusy: boolean;
 }
 
@@ -351,6 +370,7 @@ export class RasterAdjustmentsController {
   private readonly curvesSheet: MobileRasterToneCurvesSheetController;
   private readonly curvesEditor: RasterToneCurvesEditorController;
   private readonly colorAdjustSurface: RasterColorAdjustSurfaceController;
+  private readonly colorBalanceSurface: RasterColorBalanceSurfaceController;
   private readonly liquify = initialTransactionState();
   private readonly gaussianBlur = initialTransactionState();
   private readonly spatialBlur = initialTransactionState();
@@ -359,11 +379,12 @@ export class RasterAdjustmentsController {
   private readonly glass = initialTransactionState();
   private readonly curves = initialTransactionState();
   private readonly colorAdjust = initialTransactionState();
+  private readonly colorBalance = initialTransactionState();
   private engineUnavailableError: string | null = null;
   private liquifySettings: LiquifySettings = { ...DEFAULT_LIQUIFY_SETTINGS };
   private liquifyAmount = 1;
   private liquifyReturnTool: CanvasInputTool | null = null;
-  private colorAdjustCommitPromise: Promise<boolean> | null = null;
+  private activeAutoCommitPromise: Promise<boolean> | null = null;
   private disposed = false;
 
   constructor(private readonly options: RasterAdjustmentsControllerOptions) {
@@ -474,6 +495,15 @@ export class RasterAdjustmentsController {
       onRequestReset: () => this.resetColorAdjust(),
       onRequestCancel: () => void this.cancelColorAdjust(),
     });
+    this.colorBalanceSurface = new RasterColorBalanceSurfaceController({
+      browser: options.browser,
+      document: options.browser.document,
+      canvas: options.elements.canvas,
+      elements: options.elements.colorBalance,
+      onChange: (settings) => this.requestColorBalanceUpdate(settings),
+      onRequestReset: () => this.resetColorBalance(),
+      onRequestCancel: () => void this.cancelColorBalance(),
+    });
     this.configureControlRanges();
     this.syncLiquifySettings(this.liquifySettings, this.liquifyAmount);
     this.syncNoiseSettings(DEFAULT_RASTER_NOISE_SETTINGS);
@@ -509,6 +539,10 @@ export class RasterAdjustmentsController {
 
   openColorAdjust(trigger: HTMLElement, returnFocus: HTMLElement = trigger): void {
     void this.beginColorAdjust(returnFocus);
+  }
+
+  openColorBalance(trigger: HTMLElement, returnFocus: HTMLElement = trigger): void {
+    void this.beginColorBalance(returnFocus);
   }
 
   openSpatialBlur(trigger: HTMLElement, returnFocus: HTMLElement = trigger): void {
@@ -550,7 +584,8 @@ export class RasterAdjustmentsController {
       || history.openEdit === "noise"
       || history.openEdit === "glass"
       || history.openEdit === "curves"
-      || history.openEdit === "color-adjust";
+      || history.openEdit === "color-adjust"
+      || history.openEdit === "color-balance";
   }
 
   isLiquifyEditActive(history = this.options.getHistoryState()): boolean {
@@ -566,7 +601,8 @@ export class RasterAdjustmentsController {
       || (this.noise.sessionOpen && history.openEdit === "noise")
       || (this.glass.sessionOpen && history.openEdit === "glass")
       || (this.curves.sessionOpen && history.openEdit === "curves")
-      || (this.colorAdjust.sessionOpen && history.openEdit === "color-adjust");
+      || (this.colorAdjust.sessionOpen && history.openEdit === "color-adjust")
+      || (this.colorBalance.sessionOpen && history.openEdit === "color-balance");
   }
 
   allowsCanvasViewOperation(history = this.options.getHistoryState()): boolean {
@@ -603,6 +639,22 @@ export class RasterAdjustmentsController {
       this.colorAdjust.sessionOpen
         && history.openEdit === "color-adjust"
         && !this.colorAdjust.uiBusy
+    ) || (
+      this.colorBalance.sessionOpen
+        && history.openEdit === "color-balance"
+        && !this.colorBalance.uiBusy
+    );
+  }
+
+  isAutoCommitAdjustmentActive(history = this.options.getHistoryState()): boolean {
+    return (
+      this.colorAdjust.surfaceOpen
+      && this.colorAdjust.sessionOpen
+      && history.openEdit === "color-adjust"
+    ) || (
+      this.colorBalance.surfaceOpen
+      && this.colorBalance.sessionOpen
+      && history.openEdit === "color-balance"
     );
   }
 
@@ -612,24 +664,43 @@ export class RasterAdjustmentsController {
       && history.openEdit === "color-adjust";
   }
 
-  canAutoCommitColorAdjust(history = this.options.getHistoryState()): boolean {
-    return this.isColorAdjustAutoCommitActive(history)
-      && !this.colorAdjust.uiBusy
-      && !this.colorAdjust.previewFault
-      && !history.inconsistent;
+  canAutoCommitActiveAdjustment(history = this.options.getHistoryState()): boolean {
+    if (history.inconsistent) return false;
+    if (history.openEdit === "color-adjust") {
+      return this.isColorAdjustAutoCommitActive(history)
+        && !this.colorAdjust.uiBusy
+        && !this.colorAdjust.previewFault;
+    }
+    if (history.openEdit === "color-balance") {
+      return this.colorBalance.surfaceOpen
+        && this.colorBalance.sessionOpen
+        && !this.colorBalance.uiBusy
+        && !this.colorBalance.previewFault;
+    }
+    return false;
   }
 
-  async commitColorAdjustForToolChange(): Promise<boolean> {
-    if (this.colorAdjustCommitPromise) return this.colorAdjustCommitPromise;
-    if (!this.isColorAdjustAutoCommitActive()) return true;
-    if (!this.canAutoCommitColorAdjust()) return false;
-    const commit = this.commitColorAdjust(false);
-    this.colorAdjustCommitPromise = commit;
+  canAutoCommitColorAdjust(history = this.options.getHistoryState()): boolean {
+    return history.openEdit === "color-adjust" && this.canAutoCommitActiveAdjustment(history);
+  }
+
+  async commitActiveAdjustmentForToolChange(): Promise<boolean> {
+    if (this.activeAutoCommitPromise) return this.activeAutoCommitPromise;
+    if (!this.isAutoCommitAdjustmentActive()) return true;
+    if (!this.canAutoCommitActiveAdjustment()) return false;
+    const commit = this.history().openEdit === "color-balance"
+      ? this.commitColorBalance(false)
+      : this.commitColorAdjust(false);
+    this.activeAutoCommitPromise = commit;
     try {
       return await commit;
     } finally {
-      if (this.colorAdjustCommitPromise === commit) this.colorAdjustCommitPromise = null;
+      if (this.activeAutoCommitPromise === commit) this.activeAutoCommitPromise = null;
     }
+  }
+
+  commitColorAdjustForToolChange(): Promise<boolean> {
+    return this.commitActiveAdjustmentForToolChange();
   }
 
   diagnostics(): RasterAdjustmentsDiagnostics {
@@ -641,6 +712,7 @@ export class RasterAdjustmentsController {
       rasterGlassUiBusy: this.glass.uiBusy,
       rasterCurvesUiBusy: this.curves.uiBusy,
       rasterColorAdjustUiBusy: this.colorAdjust.uiBusy,
+      rasterColorBalanceUiBusy: this.colorBalance.uiBusy,
       rasterLiquifyUiBusy: this.liquify.uiBusy,
     };
   }
@@ -685,6 +757,11 @@ export class RasterAdjustmentsController {
       this.setColorAdjustStatus(message);
       if (kind === "error") this.colorAdjust.previewFault = true;
       this.syncColorAdjustUi();
+    }
+    if (this.colorBalance.sessionOpen && message.includes("Color Balance")) {
+      this.setColorBalanceStatus(message);
+      if (kind === "error") this.colorBalance.previewFault = true;
+      this.syncColorBalanceUi();
     }
     if (this.liquify.sessionOpen && message.includes("Liquify")) {
       this.setLiquifyStatus(message);
@@ -731,6 +808,11 @@ export class RasterAdjustmentsController {
       (status) => this.setColorAdjustStatus(status),
       (result) => this.closeColorAdjust(result),
     );
+    close(
+      this.colorBalance,
+      (status) => this.setColorBalanceStatus(status),
+      (result) => this.closeColorBalance(result),
+    );
     this.setAppError(message);
     this.refreshHistory();
     this.syncUi();
@@ -745,6 +827,7 @@ export class RasterAdjustmentsController {
     this.syncGlassUi();
     this.syncCurvesUi();
     this.syncColorAdjustUi();
+    this.syncColorBalanceUi();
   }
 
   handleResize(): void {
@@ -771,11 +854,13 @@ export class RasterAdjustmentsController {
     this.curvesSheet.dispose();
     this.curvesEditor.dispose();
     this.colorAdjustSurface.dispose();
+    this.colorBalanceSurface.dispose();
     this.options.elements.canvas.classList.remove(
       "liquify-active",
       "liquify-deforming",
       "raster-curves-active",
       "raster-color-adjust-active",
+      "raster-color-balance-active",
     );
     void this.cancelLiquify();
     void this.cancelGaussianBlur();
@@ -785,6 +870,7 @@ export class RasterAdjustmentsController {
     void this.cancelGlass();
     void this.cancelCurves();
     void this.cancelColorAdjust();
+    void this.cancelColorBalance();
   }
 
   private states(): readonly AdjustmentTransactionState[] {
@@ -797,6 +883,7 @@ export class RasterAdjustmentsController {
       this.glass,
       this.curves,
       this.colorAdjust,
+      this.colorBalance,
     ];
   }
 
@@ -810,6 +897,7 @@ export class RasterAdjustmentsController {
       case "glass": return this.glass;
       case "curves": return this.curves;
       case "color-adjust": return this.colorAdjust;
+      case "color-balance": return this.colorBalance;
       default: {
         const unsupported: never = kind;
         throw new Error(`Unsupported raster adjustment: ${String(unsupported)}`);
@@ -1089,7 +1177,9 @@ export class RasterAdjustmentsController {
               ? "Curves"
               : kind === "color-adjust"
                 ? "Color Adjust"
-              : "Liquify";
+                : kind === "color-balance"
+                  ? "Color Balance"
+                  : "Liquify";
     if (!this.options.isEngineReady()) {
       return `${label} will be available after initialization.`;
     }
@@ -1103,6 +1193,7 @@ export class RasterAdjustmentsController {
       "glass",
       "curves",
       "color-adjust",
+      "color-balance",
     ] as const) {
       if (otherKind === kind || !this.state(otherKind).surfaceOpen) continue;
       const otherLabel = otherKind === "gaussian-blur"
@@ -1119,7 +1210,9 @@ export class RasterAdjustmentsController {
               ? "Curves"
               : otherKind === "color-adjust"
                 ? "Color Adjust"
-              : "Liquify";
+                : otherKind === "color-balance"
+                  ? "Color Balance"
+                  : "Liquify";
       return `Apply or cancel ${otherLabel} first.`;
     }
     if (this.options.isMultiSelectionActive()) {
@@ -1137,6 +1230,9 @@ export class RasterAdjustmentsController {
       }
       if (kind === "color-adjust") {
         return "Deselect the pixels to apply Color Adjust to the entire layer.";
+      }
+      if (kind === "color-balance") {
+        return "Deselect the pixels to apply Color Balance to the entire layer.";
       }
       if (kind === "liquify") {
         return "Deselect the pixels to distort the entire layer.";
@@ -2797,6 +2893,195 @@ export class RasterAdjustmentsController {
       state.previewFault = state.sessionOpen;
       this.reportColorAdjustError("Color Adjust application failed", error);
       if (!state.sessionOpen) this.closeColorAdjust("error", restoreRequestFocus);
+      return false;
+    } finally {
+      state.uiBusy = false;
+      this.refreshHistory();
+      this.syncUi();
+    }
+  }
+
+  private setColorBalanceStatus(message: string): void {
+    this.options.elements.colorBalance.status.textContent = message;
+  }
+
+  private reportColorBalanceError(prefix: string, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    const fullMessage = `${prefix}: ${message}`;
+    this.setColorBalanceStatus(fullMessage);
+    this.setAppError(fullMessage);
+  }
+
+  private syncColorBalanceUi(): void {
+    const state = this.colorBalance;
+    const elements = this.options.elements.colorBalance;
+    const eligibilityError = state.surfaceOpen || state.sessionOpen || state.uiBusy
+      ? "Color Balance is already open."
+      : this.adjustmentEligibilityError("color-balance");
+    const recoveryOnly = state.previewFault || this.history().inconsistent;
+    const controlsDisabled = state.uiBusy || !state.sessionOpen || recoveryOnly;
+    elements.openButton.disabled = eligibilityError !== null;
+    elements.openButton.title = eligibilityError ?? "Open Color Balance";
+    elements.openButton.setAttribute("aria-pressed", String(state.surfaceOpen));
+    this.colorBalanceSurface.setDisabled(controlsDisabled);
+    elements.surface.dataset.state = state.uiBusy
+      ? "busy"
+      : recoveryOnly
+        ? "recovery"
+        : state.sessionOpen
+          ? "preview"
+          : "closed";
+  }
+
+  private closeColorBalance(
+    result: AdjustmentResult,
+    restoreRequestFocus = true,
+  ): void {
+    const state = this.colorBalance;
+    state.surfaceOpen = false;
+    state.cancelPending = false;
+    this.options.elements.colorBalance.openButton.setAttribute("aria-pressed", "false");
+    this.colorBalanceSurface.close();
+    if (restoreRequestFocus) this.restoreFocus(state);
+    else state.returnFocus = null;
+    if (result !== "error") {
+      this.colorBalanceSurface.setState(DEFAULT_RASTER_COLOR_BALANCE_SETTINGS);
+      this.setColorBalanceStatus("Color Balance ready.");
+    }
+    this.options.onSheetOpenChange(false);
+    this.syncUi();
+  }
+
+  private async beginColorBalance(returnFocus: HTMLElement): Promise<void> {
+    if (this.colorBalance.uiBusy) return;
+    const eligibilityError = this.adjustmentEligibilityError("color-balance");
+    if (eligibilityError || this.colorBalance.surfaceOpen) {
+      if (eligibilityError) this.setAppError(eligibilityError);
+      this.restoreCurvesRequestFocus(returnFocus);
+      return;
+    }
+    this.options.beforeSheetOpen();
+    if (!this.colorBalanceSurface.open(DEFAULT_RASTER_COLOR_BALANCE_SETTINGS)) {
+      this.restoreCurvesRequestFocus(returnFocus);
+      return;
+    }
+    const state = this.colorBalance;
+    state.surfaceOpen = true;
+    state.returnFocus = returnFocus;
+    state.sessionOpen = false;
+    state.previewFault = false;
+    state.uiBusy = true;
+    this.setColorBalanceStatus("Preparing Color Balance…");
+    this.options.onSheetOpenChange(true);
+    this.syncUi();
+    try {
+      const preview = await this.options.engine.beginRasterColorBalance(
+        DEFAULT_RASTER_COLOR_BALANCE_SETTINGS,
+      );
+      if (!preview) throw new Error("Select a raster layer to use Color Balance.");
+      state.sessionOpen = true;
+      this.colorBalanceSurface.setState(preview.settings);
+      this.setColorBalanceStatus("Color Balance preview ready.");
+    } catch (error) {
+      const history = this.options.engine.getHistoryState();
+      this.options.onHistoryState(history);
+      state.sessionOpen = history.openEdit === "color-balance";
+      state.previewFault = state.sessionOpen;
+      this.reportColorBalanceError("Unable to open Color Balance", error);
+      if (!state.sessionOpen) this.closeColorBalance("error");
+    } finally {
+      state.uiBusy = false;
+      this.refreshHistory();
+      this.syncUi();
+      if ((state.cancelPending || this.disposed) && state.sessionOpen) {
+        state.cancelPending = false;
+        void this.cancelColorBalance();
+      }
+    }
+  }
+
+  private requestColorBalanceUpdate(
+    settings: Readonly<RasterColorBalanceSettings>,
+  ): void {
+    const state = this.colorBalance;
+    if (state.uiBusy || !state.sessionOpen || state.previewFault || this.history().inconsistent) {
+      return;
+    }
+    try {
+      const preview = this.options.engine.updateRasterColorBalance(settings);
+      this.colorBalanceSurface.setState(preview.settings);
+      this.setColorBalanceStatus("Color Balance preview updated…");
+    } catch (error) {
+      state.previewFault = true;
+      this.reportColorBalanceError("Color Balance preview failed", error);
+      this.syncColorBalanceUi();
+    }
+  }
+
+  private resetColorBalance(): void {
+    if (this.history().openEdit !== "color-balance" || !this.canAutoCommitActiveAdjustment()) return;
+    this.colorBalanceSurface.reset();
+    this.requestColorBalanceUpdate(DEFAULT_RASTER_COLOR_BALANCE_SETTINGS);
+    this.setColorBalanceStatus("Color Balance reset to neutral.");
+  }
+
+  private async cancelColorBalance(): Promise<void> {
+    const state = this.colorBalance;
+    if (state.uiBusy) {
+      state.cancelPending = true;
+      return;
+    }
+    if (!state.sessionOpen) {
+      if (state.surfaceOpen) this.closeColorBalance("cancel");
+      return;
+    }
+    state.cancelPending = false;
+    state.uiBusy = true;
+    this.setColorBalanceStatus("Restoring the original pixels…");
+    this.syncColorBalanceUi();
+    try {
+      await this.options.engine.cancelRasterColorBalance();
+      state.sessionOpen = false;
+      state.previewFault = false;
+      this.closeColorBalance("cancel");
+    } catch (error) {
+      const history = this.options.engine.getHistoryState();
+      this.options.onHistoryState(history);
+      state.sessionOpen = history.openEdit === "color-balance";
+      state.previewFault = true;
+      this.reportColorBalanceError("Color Balance cancellation failed", error);
+    } finally {
+      state.uiBusy = false;
+      this.refreshHistory();
+      this.syncUi();
+    }
+  }
+
+  private async commitColorBalance(restoreRequestFocus = true): Promise<boolean> {
+    const state = this.colorBalance;
+    if (
+      state.uiBusy
+      || !state.sessionOpen
+      || state.previewFault
+      || this.history().inconsistent
+    ) return false;
+    state.uiBusy = true;
+    this.setColorBalanceStatus("Applying Color Balance…");
+    this.syncColorBalanceUi();
+    try {
+      const changed = await this.options.engine.commitRasterColorBalance();
+      state.sessionOpen = false;
+      state.previewFault = false;
+      if (changed) this.options.requestActiveThumbnail(0);
+      this.closeColorBalance("apply", restoreRequestFocus);
+      return true;
+    } catch (error) {
+      const history = this.options.engine.getHistoryState();
+      this.options.onHistoryState(history);
+      state.sessionOpen = history.openEdit === "color-balance";
+      state.previewFault = state.sessionOpen;
+      this.reportColorBalanceError("Color Balance application failed", error);
+      if (!state.sessionOpen) this.closeColorBalance("error", restoreRequestFocus);
       return false;
     } finally {
       state.uiBusy = false;

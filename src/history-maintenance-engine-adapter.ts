@@ -12,6 +12,8 @@ export type EngineHistoryMaintenanceHost = Pick<
   | "activeRasterGaussianBlurSession"
   | "activeRasterGlassSession"
   | "activeRasterToneCurvesSession"
+  | "activeRasterColorAdjustSession"
+  | "activeRasterColorBalanceSession"
   | "activeRasterLayerMetadataHistoryEdit"
   | "activeRasterLiquifySession"
   | "activeRasterMotionBlurSession"
