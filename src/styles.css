@@ -3819,6 +3819,12 @@ select {
     border-bottom: 0;
   }
 
+  .editor-settings-symmetry-row {
+    grid-template-columns: minmax(0, 1fr) 44px 44px;
+    gap: 8px;
+    border-bottom: 0;
+  }
+
   .editor-settings-copy,
   .editor-settings-name,
   .editor-settings-hint {
@@ -3904,6 +3910,102 @@ select {
   }
 
   .editor-settings-toggle:focus-within .editor-settings-switch {
+    outline: 1px solid #dd5c35;
+    outline-offset: 2px;
+  }
+
+  .editor-settings-options-button,
+  .editor-settings-options-button:hover,
+  .editor-settings-options-button:active {
+    display: grid;
+    width: 44px;
+    height: 44px;
+    place-items: center;
+    padding: 0;
+    border: 1px solid #343842;
+    border-radius: 9px;
+    background: #292c33;
+    color: var(--mobile-icon-inactive);
+  }
+
+  .editor-settings-options-button[aria-expanded="true"] {
+    border-color: #dd5c35;
+    color: var(--mobile-icon-face);
+  }
+
+  .editor-settings-options-button:focus-visible {
+    outline: 1px solid #dd5c35;
+    outline-offset: 2px;
+  }
+
+  .editor-settings-symmetry-options {
+    min-width: 0;
+    margin: 0;
+    padding: 12px 14px 14px;
+    border: 0;
+    border-top: 1px solid #252a32;
+  }
+
+  .editor-settings-symmetry-options[hidden] {
+    display: none;
+  }
+
+  .editor-settings-symmetry-options legend {
+    padding: 0;
+    color: var(--mobile-icon-inactive);
+    font-size: 10px;
+    font-weight: 620;
+    line-height: 1.35;
+  }
+
+  .editor-settings-axis-options {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 8px;
+  }
+
+  .editor-settings-axis-choice {
+    position: relative;
+    display: block;
+    min-width: 0;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .editor-settings-axis-choice input {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    opacity: 0;
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+  }
+
+  .editor-settings-axis-choice span {
+    display: grid;
+    min-height: 44px;
+    place-items: center;
+    border: 1px solid #343842;
+    border-radius: 9px;
+    background: #292c33;
+    color: var(--mobile-icon-inactive);
+    font-size: 11px;
+    font-weight: 620;
+  }
+
+  .editor-settings-axis-choice input:checked + span {
+    border-color: #dd5c35;
+    background: #dd5c35;
+    color: var(--mobile-icon-face);
+  }
+
+  .editor-settings-axis-choice:focus-within span {
     outline: 1px solid #dd5c35;
     outline-offset: 2px;
   }

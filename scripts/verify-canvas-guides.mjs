@@ -665,6 +665,7 @@ assert.equal(adaptiveCanvasGridStep(rotatedNonUniformView), 200);
 
 class RecordingCanvasContext {
   strokeCount = 0;
+  clipCount = 0;
   clearCount = 0;
   points = [];
   transforms = [];
@@ -675,7 +676,7 @@ class RecordingCanvasContext {
   setTransform(...values) { this.transforms.push(values); }
   beginPath() {}
   closePath() {}
-  clip() {}
+  clip() { this.clipCount += 1; }
   setLineDash() {}
   fillRect(...values) { this.fills.push(values); }
   strokeRect() {}
@@ -729,6 +730,109 @@ assert.equal(guideCanvas.hidden, false);
 assert.equal(guideContext.strokeCount, 1);
 assert.ok(guideContext.points.flat().every(Number.isFinite));
 
+function projectedDocumentPoint(point, targetView) {
+  const deltaX = point.x - targetView.centerX;
+  const deltaY = point.y - targetView.centerY;
+  return {
+    x: targetView.canvasWidth * 0.5 + targetView.zoom * (
+      targetView.rotationCos * deltaX - targetView.rotationSin * deltaY
+    ),
+    y: targetView.canvasHeight * 0.5 + targetView.zoom * (
+      targetView.rotationSin * deltaX + targetView.rotationCos * deltaY
+    ),
+  };
+}
+
+function assertPointClose(actual, expected, label) {
+  closeTo(actual[0], expected.x, `${label} x`);
+  closeTo(actual[1], expected.y, `${label} y`);
+}
+
+// Symmetry alone keeps the overlay alive. Its axis is authored in document
+// space, so zoom, pan and view rotation affect the two clipped endpoints.
+const verticalSymmetryView = view({
+  canvasWidth: 1600,
+  canvasHeight: 1000,
+  cssWidth: 800,
+  cssHeight: 500,
+  centerX: 430,
+  centerY: 315,
+  zoom: 1.75,
+  rotationRadians: Math.PI / 6,
+});
+const verticalSymmetryCanvas = { width: 1, height: 1, hidden: true };
+const verticalSymmetryContext = new RecordingCanvasContext();
+renderCanvasGuides({
+  canvas: verticalSymmetryCanvas,
+  context: verticalSymmetryContext,
+  view: verticalSymmetryView,
+  documentWidth: 1201,
+  documentHeight: 801,
+  preferences: {
+    rulers: false,
+    grid: false,
+    snapping: false,
+    symmetryEnabled: true,
+    symmetryAxis: "vertical",
+  },
+});
+assert.equal(verticalSymmetryCanvas.hidden, false);
+assert.equal(verticalSymmetryCanvas.width, 800);
+assert.equal(verticalSymmetryCanvas.height, 500);
+assert.equal(verticalSymmetryContext.strokeCount, 1);
+assert.equal(verticalSymmetryContext.clipCount, 1);
+assert.equal(verticalSymmetryContext.strokeStyle, "#dd5c35");
+assertPointClose(
+  verticalSymmetryContext.points.at(-2),
+  projectedDocumentPoint({ x: 600.5, y: 0 }, verticalSymmetryView),
+  "vertical symmetry start",
+);
+assertPointClose(
+  verticalSymmetryContext.points.at(-1),
+  projectedDocumentPoint({ x: 600.5, y: 801 }, verticalSymmetryView),
+  "vertical symmetry end",
+);
+
+const horizontalSymmetryView = view({
+  canvasWidth: 900,
+  canvasHeight: 1400,
+  cssWidth: 600,
+  cssHeight: 700,
+  centerX: 710,
+  centerY: 180,
+  zoom: 0.42,
+  rotationRadians: -Math.PI / 3,
+});
+const horizontalSymmetryCanvas = { width: 1, height: 1, hidden: true };
+const horizontalSymmetryContext = new RecordingCanvasContext();
+renderCanvasGuides({
+  canvas: horizontalSymmetryCanvas,
+  context: horizontalSymmetryContext,
+  view: horizontalSymmetryView,
+  documentWidth: 1501,
+  documentHeight: 901,
+  preferences: {
+    rulers: false,
+    grid: false,
+    snapping: false,
+    symmetryEnabled: true,
+    symmetryAxis: "horizontal",
+  },
+});
+assert.equal(horizontalSymmetryCanvas.hidden, false);
+assert.equal(horizontalSymmetryContext.strokeCount, 1);
+assert.equal(horizontalSymmetryContext.clipCount, 1);
+assertPointClose(
+  horizontalSymmetryContext.points.at(-2),
+  projectedDocumentPoint({ x: 0, y: 450.5 }, horizontalSymmetryView),
+  "horizontal symmetry start",
+);
+assertPointClose(
+  horizontalSymmetryContext.points.at(-1),
+  projectedDocumentPoint({ x: 1501, y: 450.5 }, horizontalSymmetryView),
+  "horizontal symmetry end",
+);
+
 // Turning every guide off releases the viewport-sized Canvas2D backing store.
 renderCanvasGuides({
   canvas: guideCanvas,
@@ -736,7 +840,13 @@ renderCanvasGuides({
   view: identityView,
   documentWidth: 100,
   documentHeight: 80,
-  preferences: { rulers: false, grid: false, snapping: false },
+  preferences: {
+    rulers: false,
+    grid: false,
+    snapping: false,
+    symmetryEnabled: false,
+    symmetryAxis: "vertical",
+  },
 });
 assert.equal(guideCanvas.hidden, true);
 assert.equal(guideCanvas.width, 1);

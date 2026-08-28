@@ -41,6 +41,10 @@ import type {
   LayerOptionsState,
   LayerTonalBlend,
 } from "./layer-composition.ts";
+import {
+  normalizeStrokeSymmetryMode,
+  type StrokeSymmetryMode,
+} from "./stroke-symmetry-core";
 
 export interface SelectionHistoryMaskSnapshot {
   readonly revision: number;
@@ -601,6 +605,8 @@ export interface PaintHistoryRenderBatch {
   actionId: number;
   layerId: number;
   settings: BrushSettings;
+  /** Gesture-level reflection metadata; stamp bytes retain their 32-byte ABI. */
+  symmetryMode: StrokeSymmetryMode;
   stampCount: number;
   firstSeed: number;
   gpuSlice: GpuHistorySlice;
@@ -695,6 +701,14 @@ export function resolvePaintHistoryStampCount(
   }
   const expectedStampBytes = replayBatch.stampCount * STAMP_STRIDE_BYTES;
   const cloneSource = replayBatch.cloneSource;
+  const rawSymmetryMode = (replayBatch as Partial<PaintHistoryRenderBatch>).symmetryMode;
+  const symmetryMode = normalizeStrokeSymmetryMode(rawSymmetryMode);
+  if (
+    (rawSymmetryMode !== undefined && rawSymmetryMode !== symmetryMode)
+    || (cloneSource && symmetryMode !== "off")
+  ) {
+    throw new Error("Invalid Paint history symmetry mode.");
+  }
   const expectedBytes = cloneSource
     ? cloneSource.sourceByteOffset
       + cloneSource.tileStrideBytes * cloneSource.tileIndices.length

@@ -1,9 +1,19 @@
 import { mergedSurfaceSamplingShader } from "./merged-surface-shader";
 import { activeClippingGroupTexelShader } from "./clipping-group-shader";
-import { SHAPE_MASK_FILTER_UV_HALF_EXTENT } from "./engine-limits";
+import {
+  DOCUMENT_HEIGHT,
+  DOCUMENT_WIDTH,
+  SHAPE_MASK_FILTER_UV_HALF_EXTENT,
+} from "./engine-limits";
 
 export const brushShader = /* wgsl */ `
 const MAX_COUNT: u32 = 24u;
+const COPY_COUNT_MASK: u32 = 0xffu;
+const SYMMETRY_MODE_SHIFT: u32 = 8u;
+const SYMMETRY_MODE_VERTICAL: u32 = 1u;
+const SYMMETRY_MODE_HORIZONTAL: u32 = 2u;
+const DOCUMENT_WIDTH: f32 = ${DOCUMENT_WIDTH};
+const DOCUMENT_HEIGHT: f32 = ${DOCUMENT_HEIGHT};
 const TAU: f32 = 6.283185307179586;
 const SHAPE_OCCUPANCY_GRID_SIZE: u32 = 256u;
 const SHAPE_MASK_UV_HALF_EXTENT: f32 = ${SHAPE_MASK_FILTER_UV_HALF_EXTENT};
@@ -136,6 +146,23 @@ fn jitteredLinearColorFromCopySeed(copySeed: u32) -> vec3<f32> {
   return srgbToLinear(hslToSrgb(vec3<f32>(hue, saturation, lightness)));
 }
 
+fn reflectedLayerPosition(
+  layerPosition: vec2<f32>,
+  symmetryMode: u32,
+  symmetryCopyIndex: u32
+) -> vec2<f32> {
+  if (symmetryCopyIndex == 0u) {
+    return layerPosition;
+  }
+  if (symmetryMode == SYMMETRY_MODE_VERTICAL) {
+    return vec2<f32>(DOCUMENT_WIDTH - layerPosition.x, layerPosition.y);
+  }
+  if (symmetryMode == SYMMETRY_MODE_HORIZONTAL) {
+    return vec2<f32>(layerPosition.x, DOCUMENT_HEIGHT - layerPosition.y);
+  }
+  return layerPosition;
+}
+
 @vertex
 fn vertexMain(
   @builtin(vertex_index) vertexIndex: u32,
@@ -148,9 +175,14 @@ fn vertexMain(
     vec2<f32>( 1.0,  1.0)
   );
 
-  let copyCount = max(1u, min(brush.options.x, MAX_COUNT));
-  let stampIndex = instanceIndex / copyCount;
-  let copyIndex = instanceIndex % copyCount;
+  let copyCount = max(1u, min(brush.options.x & COPY_COUNT_MASK, MAX_COUNT));
+  let symmetryMode = brush.options.x >> SYMMETRY_MODE_SHIFT;
+  let symmetryCopyCount = select(1u, 2u, symmetryMode != 0u);
+  let copiesPerStamp = copyCount * symmetryCopyCount;
+  let stampIndex = instanceIndex / copiesPerStamp;
+  let copyWithinStamp = instanceIndex % copiesPerStamp;
+  let copyIndex = copyWithinStamp / symmetryCopyCount;
+  let symmetryCopyIndex = copyWithinStamp % symmetryCopyCount;
   let stamp = stamps[stampIndex];
   let localPosition = corners[vertexIndex];
   let directionLength = length(stamp.direction);
@@ -161,7 +193,11 @@ fn vertexMain(
   let jitteredCenter = stamp.center
     + direction * linearOffset
     + vec2<f32>(-direction.y, direction.x) * lateralOffset;
-  let layerPosition = jitteredCenter + localPosition * stamp.radius;
+  let layerPosition = reflectedLayerPosition(
+    jitteredCenter + localPosition * stamp.radius,
+    symmetryMode,
+    symmetryCopyIndex
+  );
   let targetPosition = layerPosition - brush.renderTargetOrigin;
   let clipPosition = vec2<f32>(
     targetPosition.x / brush.layerSize.x * 2.0 - 1.0,
@@ -192,9 +228,14 @@ fn shapeVertexMain(
     vec2<f32>( 1.0,  1.0)
   );
 
-  let copyCount = max(1u, min(brush.options.x, MAX_COUNT));
-  let stampIndex = instanceIndex / copyCount;
-  let copyIndex = instanceIndex % copyCount;
+  let copyCount = max(1u, min(brush.options.x & COPY_COUNT_MASK, MAX_COUNT));
+  let symmetryMode = brush.options.x >> SYMMETRY_MODE_SHIFT;
+  let symmetryCopyCount = select(1u, 2u, symmetryMode != 0u);
+  let copiesPerStamp = copyCount * symmetryCopyCount;
+  let stampIndex = instanceIndex / copiesPerStamp;
+  let copyWithinStamp = instanceIndex % copiesPerStamp;
+  let copyIndex = copyWithinStamp / symmetryCopyCount;
+  let symmetryCopyIndex = copyWithinStamp % symmetryCopyCount;
   let stamp = stamps[stampIndex];
   let localPosition = corners[vertexIndex];
   let directionLength = length(stamp.direction);
@@ -219,7 +260,11 @@ fn shapeVertexMain(
     );
   }
 
-  let layerPosition = jitteredCenter + geometryPosition * stamp.radius;
+  let layerPosition = reflectedLayerPosition(
+    jitteredCenter + geometryPosition * stamp.radius,
+    symmetryMode,
+    symmetryCopyIndex
+  );
   let targetPosition = layerPosition - brush.renderTargetOrigin;
   let clipPosition = vec2<f32>(
     targetPosition.x / brush.layerSize.x * 2.0 - 1.0,

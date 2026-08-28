@@ -281,6 +281,7 @@ function generateProjectedPreviewStroke(
       directionX,
       directionY,
       historyActionId: 0,
+      symmetryMode: "off",
     };
     candidates.push({ stamp, baseRadius, liveThicknessFactor, timeMs: point.timeMs });
   };

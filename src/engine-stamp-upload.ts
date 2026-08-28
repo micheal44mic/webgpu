@@ -7,6 +7,11 @@ import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH, STAMP_STRIDE_BYTES } from "./engine-li
  * upload. Formato binario condiviso con gli shader: le taglie vivono in
  * `engine-limits`, qui c'e' solo la scrittura.
  */
+import {
+  encodeStrokeSymmetryOptions,
+  reflectStrokeSymmetryCenter,
+  type StrokeSymmetryMode,
+} from "./stroke-symmetry-core";
 
 export function populateGrainUniformUpload(
   upload: ArrayBuffer | Float32Array,
@@ -75,6 +80,7 @@ export function populateBrushUniformUpload(
   targetHeight: number,
   targetOriginX: number,
   targetOriginY: number,
+  symmetryMode: StrokeSymmetryMode = "off",
 ): void {
   const floats = new Float32Array(upload);
   const unsigned = new Uint32Array(upload);
@@ -106,7 +112,7 @@ export function populateBrushUniformUpload(
   floats[16] = settings.positionJitterLinear;
   floats[17] = settings.positionJitterLateral;
   floats[18] = settings.shapeScatter;
-  unsigned[20] = settings.count >>> 0;
+  unsigned[20] = encodeStrokeSymmetryOptions(settings.count, symmetryMode);
   unsigned[21] = settings.jitterPerCopy ? 1 : 0;
   unsigned[22] = settings.blendMode === "additive" ? 1 : 0;
   // Previously unused ABI lane: opt-in base rotation along the stamp direction.
@@ -178,6 +184,20 @@ export function packStampsIntoUpload(
     minimumY = Math.min(minimumY, packedY - reachY);
     maximumX = Math.max(maximumX, packedX + reachX);
     maximumY = Math.max(maximumY, packedY + reachY);
+
+    if (stamp.symmetryMode !== "off") {
+      const [reflectedX, reflectedY] = reflectStrokeSymmetryCenter(
+        packedX,
+        packedY,
+        stamp.symmetryMode,
+        DOCUMENT_WIDTH,
+        DOCUMENT_HEIGHT,
+      );
+      minimumX = Math.min(minimumX, reflectedX - reachX);
+      minimumY = Math.min(minimumY, reflectedY - reachY);
+      maximumX = Math.max(maximumX, reflectedX + reachX);
+      maximumY = Math.max(maximumY, reflectedY + reachY);
+    }
   }
 
   const x = clamp(Math.floor(minimumX), 0, DOCUMENT_WIDTH - 1);

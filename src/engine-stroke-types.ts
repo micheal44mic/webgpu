@@ -11,6 +11,7 @@ import type {
   CausalFadedStrokeStabilizer,
   StrokeStabilizationUpdate,
 } from "./stroke-stabilization-core";
+import type { StrokeSymmetryMode } from "./stroke-symmetry-core";
 
 export interface Stamp {
   x: number;
@@ -21,6 +22,8 @@ export interface Stamp {
   directionX: number;
   directionY: number;
   historyActionId: number;
+  /** CPU metadata retained outside the fixed 32-byte GPU stamp record. */
+  symmetryMode: StrokeSymmetryMode;
 }
 
 export interface HeldThicknessStamp {
@@ -34,6 +37,8 @@ export interface ActiveStroke {
   tool: BrushTool;
   /** Immutable brush controls used to generate and render this gesture. */
   renderSettings: BrushSettings;
+  /** Immutable document-space reflection selected when the gesture begins. */
+  readonly symmetryMode: StrokeSymmetryMode;
   lastInput: LayerPoint;
   startedAtMs: number;
   thicknessSettings: Pick<BrushSettings, "startThickness" | "endThickness">;
@@ -77,6 +82,7 @@ export interface PackedStampUpload {
 
 export interface ThicknessTailFrame {
   settings: BrushSettings;
+  symmetryMode: StrokeSymmetryMode;
   stamps: Stamp[];
   /** Pixels changed by this frame and therefore requiring a redraw. */
   dirtyRect: DirtyRect;
@@ -98,6 +104,7 @@ export interface ThicknessTailFrame {
 
 export interface StabilizationTailFrame {
   settings: BrushSettings;
+  symmetryMode: StrokeSymmetryMode;
   stampCount: number;
   dirtyRect: DirtyRect;
   shapeOccupancySelection: ShapeOccupancySelection | null;

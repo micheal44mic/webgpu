@@ -594,6 +594,13 @@ import type {
   ThicknessTailFrame,
 } from "./engine-stroke-types";
 import {
+  normalizeStrokeSymmetryMode,
+  strokeSymmetryModeForStampBatch,
+  strokeSymmetryPhysicalCopyCount,
+  type StrokeSymmetryMode,
+} from "./stroke-symmetry-core";
+export type { StrokeSymmetryMode } from "./stroke-symmetry-core";
+import {
   defaultBrushSettings,
   type AdaptiveSpacingTriggerReason,
   type BlendMode,
@@ -1808,6 +1815,7 @@ export class BrushEngine {
   );
 
   settings: BrushSettings = { ...defaultBrushSettings };
+  private strokeSymmetryMode: StrokeSymmetryMode = "off";
   /** A selected brush is not paint-ready until this submit's GPU fence resolves. */
   brushGpuWarmupPromise: Promise<void> | null = null;
   private readonly completedBrushGpuWarmupKeys = new Set<string>();
@@ -2592,6 +2600,11 @@ export class BrushEngine {
       this.displayDirty = true;
       this.requestRender();
     }
+  }
+
+  /** Applies to new Paint/Erase gestures; the active gesture keeps its snapshot. */
+  setStrokeSymmetryMode(mode: StrokeSymmetryMode): void {
+    this.strokeSymmetryMode = normalizeStrokeSymmetryMode(mode);
   }
 
   getRasterStrokeStyle(): RasterStrokeStyle {
@@ -4388,11 +4401,19 @@ export class BrushEngine {
    * Starts the replaceable surface used only after Quick Line's hold gesture
    * has activated. Ordinary mouse/Pencil freehand uses beginStroke().
    */
-  beginDeferredStroke(sample: PointerSample): boolean {
+  beginDeferredStroke(
+    sample: PointerSample,
+    symmetryModeOverride: StrokeSymmetryMode | null = null,
+  ): boolean {
     if (this.settings.tool === "blend") {
       return this.beginStroke(sample);
     }
-    return this.beginStrokeAtLayer(this.toLayerPoint(sample), true);
+    return this.beginStrokeAtLayer(
+      this.toLayerPoint(sample),
+      true,
+      null,
+      symmetryModeOverride,
+    );
   }
 
   /** True only for short-lived setup that can safely retain one Pencil contact. */
@@ -4405,6 +4426,7 @@ export class BrushEngine {
     point: LayerPoint,
     deferredPreview = false,
     cloneConfiguration: Readonly<CloneStrokeConfiguration> | null = null,
+    symmetryModeOverride: StrokeSymmetryMode | null = null,
   ): boolean {
     const renderSettings = cloneConfiguration
       ? cloneSettingsForCurrentBrush(this.settings)
@@ -4573,6 +4595,10 @@ export class BrushEngine {
     }
     this.invalidateAdaptivePreview();
     const tool: BrushTool = renderSettings.tool;
+    const symmetryMode: StrokeSymmetryMode = cloneConfiguration === null
+      && (tool === "paint" || tool === "erase")
+      ? normalizeStrokeSymmetryMode(symmetryModeOverride ?? this.strokeSymmetryMode)
+      : "off";
     const lightGlazeSettings = usesStrokeGlazeRenderer(renderSettings)
       ? { ...renderSettings }
       : null;
@@ -4584,6 +4610,7 @@ export class BrushEngine {
       this.displayDirty = true;
     }
     this.adaptivePreviewForceStroke = tool === "paint"
+      && symmetryMode === "off"
       && ADAPTIVE_PREVIEW_FORCE
       && !lightGlazeSettings
       && !deferredPreview
@@ -4673,6 +4700,7 @@ export class BrushEngine {
     this.activeStroke = {
       tool,
       renderSettings,
+      symmetryMode,
       lastInput: normalizedPoint,
       startedAtMs: normalizedPoint.timeMs,
       thicknessSettings,
@@ -4885,7 +4913,7 @@ export class BrushEngine {
         sourceUndone = false;
         return false;
       }
-      if (!this.beginDeferredStroke(samples[0])) {
+      if (!this.beginDeferredStroke(samples[0], sourceStroke.symmetryMode)) {
         if (!await this.redoStraightLineSourceAction(sourceActionId)) {
           throw new Error("The original stroke could not be restored after Quick Line setup failed.");
         }
@@ -11740,7 +11768,10 @@ export class BrushEngine {
     this.device.queue.writeBuffer(this.grainUniformBuffer, 0, this.grainUniformUpload);
   }
 
-  writeBrushUniforms(settings: BrushSettings = this.settings): void {
+  writeBrushUniforms(
+    settings: BrushSettings = this.settings,
+    symmetryMode: StrokeSymmetryMode = "off",
+  ): void {
     populateBrushUniformUpload(
       this.brushUniformUpload,
       settings,
@@ -11748,6 +11779,7 @@ export class BrushEngine {
       DOCUMENT_HEIGHT,
       0,
       0,
+      symmetryMode,
     );
     this.device.queue.writeBuffer(this.brushUniformBuffer, 0, this.brushUniformUpload);
   }
@@ -11758,6 +11790,7 @@ export class BrushEngine {
     targetHeight: number,
     targetOriginX: number,
     targetOriginY: number,
+    symmetryMode: StrokeSymmetryMode,
   ): void {
     populateBrushUniformUpload(
       this.thicknessTailBrushUniformUpload,
@@ -11766,6 +11799,7 @@ export class BrushEngine {
       targetHeight,
       targetOriginX,
       targetOriginY,
+      symmetryMode,
     );
     this.device.queue.writeBuffer(
       this.thicknessTailBrushUniformBuffer,
@@ -12304,6 +12338,7 @@ export class BrushEngine {
         directionX: 1,
         directionY: 0,
         historyActionId: 0,
+        symmetryMode: "off",
       };
       this.stabilizationPreviewStamps[index] = stamp;
     }
@@ -12358,6 +12393,7 @@ export class BrushEngine {
       target.directionX = candidate.stamp.directionX;
       target.directionY = candidate.stamp.directionY;
       target.historyActionId = candidate.stamp.historyActionId;
+      target.symmetryMode = candidate.stamp.symmetryMode;
       stampCount += 1;
     }
 
@@ -12428,6 +12464,7 @@ export class BrushEngine {
       stamp.directionX = directionX;
       stamp.directionY = directionY;
       stamp.historyActionId = stroke.historyActionId;
+      stamp.symmetryMode = stroke.symmetryMode;
       stampCount += 1;
     };
 
@@ -12510,7 +12547,7 @@ export class BrushEngine {
       ...settings,
       opacity: intenseBlending ? settings.opacity : 1,
       blendMode: "normal",
-    }, DOCUMENT_WIDTH, DOCUMENT_HEIGHT, 0, 0);
+    }, DOCUMENT_WIDTH, DOCUMENT_HEIGHT, 0, 0, stroke.symmetryMode);
     this.device.queue.writeBuffer(
       this.thicknessTailInstanceBuffer,
       0,
@@ -12520,6 +12557,7 @@ export class BrushEngine {
     );
     return {
       settings,
+      symmetryMode: stroke.symmetryMode,
       stampCount,
       dirtyRect: packed.dirtyRect,
       shapeOccupancySelection: settings.shape === "shape"
@@ -12606,6 +12644,7 @@ export class BrushEngine {
       );
       return {
         settings,
+        symmetryMode: stroke.symmetryMode,
         stamps: [],
         dirtyRect: { ...preview.presentedRect },
         presentedRect: { ...preview.presentedRect },
@@ -12741,6 +12780,7 @@ export class BrushEngine {
       this.thicknessTailTextureHeight,
       originX,
       originY,
+      stroke.symmetryMode,
     );
     // Mode 2 means that the patch already contains the permanent pixels and
     // replaces them verbatim. This is what makes Erase a real live preview.
@@ -12760,6 +12800,7 @@ export class BrushEngine {
     preview.forcePresentationRebuild = false;
     return {
       settings,
+      symmetryMode: stroke.symmetryMode,
       stamps,
       dirtyRect,
       presentedRect,
@@ -12822,6 +12863,7 @@ export class BrushEngine {
       this.thicknessTailTextureHeight,
       packed.dirtyRect.x,
       packed.dirtyRect.y,
+      stroke.symmetryMode,
     );
     this.writeThicknessTailDisplayUniforms(
       packed.dirtyRect.x,
@@ -12838,6 +12880,7 @@ export class BrushEngine {
 
     return {
       settings,
+      symmetryMode: stroke.symmetryMode,
       stamps,
       dirtyRect: packed.dirtyRect,
       presentedRect: packed.dirtyRect,
@@ -12958,14 +13001,18 @@ export class BrushEngine {
       frame.dirtyRect.width,
       frame.dirtyRect.height,
     );
-    pass.draw(STAMP_VERTICES_PER_COPY, frame.stamps.length * settings.count, 0, 0);
+    const physicalCopyCount = strokeSymmetryPhysicalCopyCount(
+      settings.count,
+      frame.symmetryMode,
+    );
+    pass.draw(STAMP_VERTICES_PER_COPY, frame.stamps.length * physicalCopyCount, 0, 0);
     pass.end();
 
     const profile = this.activeStrokeProfile;
     if (profile) {
       profile.thicknessDynamicsPreviewFrames += 1;
       profile.thicknessDynamicsPreviewBaseStamps += frame.stamps.length;
-      profile.thicknessDynamicsPreviewPhysicalCopies += frame.stamps.length * settings.count;
+      profile.thicknessDynamicsPreviewPhysicalCopies += frame.stamps.length * physicalCopyCount;
       profile.thicknessDynamicsPreviewMaximumTexturePixels = Math.max(
         profile.thicknessDynamicsPreviewMaximumTexturePixels,
         this.thicknessTailTextureWidth * this.thicknessTailTextureHeight,
@@ -13047,13 +13094,17 @@ export class BrushEngine {
       frame.dirtyRect.width,
       frame.dirtyRect.height,
     );
-    pass.draw(STAMP_VERTICES_PER_COPY, frame.stampCount * settings.count, 0, 0);
+    const physicalCopyCount = strokeSymmetryPhysicalCopyCount(
+      settings.count,
+      frame.symmetryMode,
+    );
+    pass.draw(STAMP_VERTICES_PER_COPY, frame.stampCount * physicalCopyCount, 0, 0);
     pass.end();
     if (this.activeStrokeProfile) {
       this.activeStrokeProfile.strokeStabilizationTailFrames += 1;
       this.activeStrokeProfile.strokeStabilizationTailBaseStamps += frame.stampCount;
       this.activeStrokeProfile.strokeStabilizationTailPhysicalCopies +=
-        frame.stampCount * settings.count;
+        frame.stampCount * physicalCopyCount;
     }
   }
 
@@ -13252,6 +13303,7 @@ export class BrushEngine {
     }
     const batchSize = Math.min(availableBatchSize, MAX_STAMPS_PER_BATCH);
     const batch = batchSize > 0 ? this.pendingStamps.slice(0, batchSize) : [];
+    const batchSymmetryMode = strokeSymmetryModeForStampBatch(batch);
     let blendBatch: PendingBlendBatch[] = [];
     if (
       !lightGlazeSession
@@ -13355,7 +13407,11 @@ export class BrushEngine {
     this.displayDirty = false;
     this.totalBaseStamps += batch.length + blendBatch.length;
     if (batch.length > 0) {
-      this.avoidedLogicalDraws += batch.length * Math.max(0, renderSettings.count - 1);
+      const physicalCopyCount = strokeSymmetryPhysicalCopyCount(
+        renderSettings.count,
+        batchSymmetryMode,
+      );
+      this.avoidedLogicalDraws += batch.length * Math.max(0, physicalCopyCount - 1);
     }
     this.recordRenderedFrame(timestamp);
     if (this.vectorTextFastPresentationEnabled) {
@@ -13381,7 +13437,9 @@ export class BrushEngine {
     this.recordStrokeFrameTiming(
       timestamp,
       batch.length + blendBatch.length,
-      blendBatch.length > 0 ? 1 : renderSettings.count,
+      blendBatch.length > 0
+        ? 1
+        : strokeSymmetryPhysicalCopyCount(renderSettings.count, batchSymmetryMode),
       timing,
       {
       totalCpuMs: performance.now() - frameStart,
@@ -13414,6 +13472,7 @@ export class BrushEngine {
         return;
       }
     const actionId = batch[0].historyActionId;
+    const symmetryMode = strokeSymmetryModeForStampBatch(batch);
     if (batch.at(-1)?.historyActionId !== actionId) {
       if (capturedSlice) this.historyGpuStorage.release(capturedSlice);
       throw new Error("A historical Paint batch contains multiple strokes.");
@@ -13432,6 +13491,10 @@ export class BrushEngine {
       return;
     }
     const cloneSource = timing.cloneHistorySource ?? null;
+    if (cloneSource && symmetryMode !== "off") {
+      if (capturedSlice) this.historyGpuStorage.release(capturedSlice);
+      throw new Error("Clone history cannot contain a reflected Paint batch.");
+    }
     const expectedStampBytes = batch.length * STAMP_STRIDE_BYTES;
     const expectedBytes = cloneSource
       ? cloneSource.sourceByteOffset
@@ -13458,6 +13521,7 @@ export class BrushEngine {
       // the stamps is still the active one when the batch is stored.
       layerId: this.layerStack.active.id,
       settings,
+      symmetryMode,
       stampCount: batch.length,
       firstSeed: batch[0].seed,
       gpuSlice: capturedSlice,
@@ -14118,6 +14182,12 @@ export class BrushEngine {
       );
     }
 
+    if (strokeSymmetryModeForStampBatch(batch) !== "off") {
+      this.adaptivePreviewCandidates.length = 0;
+      clearAdaptivePreviewCanvas(this);
+      return;
+    }
+
     for (const candidate of this.adaptivePreviewCandidates) {
       if (candidate.serial !== null) {
         continue;
@@ -14247,6 +14317,7 @@ export class BrushEngine {
       || !scratchCanvas
       || !context
       || candidates.length === 0
+      || candidates.some((candidate) => candidate.stamp.symmetryMode !== "off")
     ) {
       finishIncompleteAdaptivePreviewFrame(this, startedAt, false, candidates, false);
       return;
@@ -14802,6 +14873,9 @@ export class BrushEngine {
     }
     const session = this.lightGlazeSession;
     const stampCount = resolvePaintHistoryStampCount(stamps, replayBatch);
+    const symmetryMode = replayBatch
+      ? normalizeStrokeSymmetryMode(replayBatch.symmetryMode)
+      : strokeSymmetryModeForStampBatch(stamps, this.activeStroke?.symmetryMode ?? "off");
     if (!session || !isStrokeGlazeBlendMode(session.settings.blendMode)) {
       throw new Error("The Light Glaze session is missing during rendering.");
     }
@@ -14889,7 +14963,7 @@ export class BrushEngine {
       ...settings,
       opacity: intenseBlending ? settings.opacity : 1,
       blendMode: "normal",
-    });
+    }, symmetryMode);
     if (grainActive) {
       this.writeGrainUniforms(settings);
     }
@@ -15120,11 +15194,15 @@ export class BrushEngine {
         if (isShape && submittedShapeOccupancySelection && !replayBatch) {
           this.recordShapeSampling(submittedShapeOccupancySelection);
         }
-        brushPass.draw(STAMP_VERTICES_PER_COPY, stampCount * settings.count, 0, 0);
+        const physicalCopyCount = strokeSymmetryPhysicalCopyCount(
+          settings.count,
+          symmetryMode,
+        );
+        brushPass.draw(STAMP_VERTICES_PER_COPY, stampCount * physicalCopyCount, 0, 0);
         if (grainActive) {
           grainBatches = 1;
           grainBaseStamps = stampCount;
-          grainPhysicalCopies = stampCount * settings.count;
+          grainPhysicalCopies = stampCount * physicalCopyCount;
           grainCircleBatches = isShape ? 0 : 1;
           grainShapeBatches = isShape ? 1 : 0;
         }
@@ -15959,6 +16037,10 @@ export class BrushEngine {
         );
       }
     }
+    const symmetryMode = replayBatch
+      ? normalizeStrokeSymmetryMode(replayBatch.symmetryMode)
+      : strokeSymmetryModeForStampBatch(stamps, this.activeStroke?.symmetryMode ?? "off");
+    this.writeBrushUniforms(settings, symmetryMode);
     const grainActive = isTexturizedGrainActive(settings);
     if (grainActive) {
       this.writeGrainUniforms(settings);
@@ -16145,11 +16227,15 @@ export class BrushEngine {
         if (isShape && shapeOccupancySelection && !replayBatch) {
           this.recordShapeSampling(shapeOccupancySelection);
         }
-        brushPass.draw(STAMP_VERTICES_PER_COPY, stampCount * settings.count, 0, 0);
+        const physicalCopyCount = strokeSymmetryPhysicalCopyCount(
+          settings.count,
+          symmetryMode,
+        );
+        brushPass.draw(STAMP_VERTICES_PER_COPY, stampCount * physicalCopyCount, 0, 0);
         if (grainActive) {
           grainBatches = 1;
           grainBaseStamps = stampCount;
-          grainPhysicalCopies = stampCount * settings.count;
+          grainPhysicalCopies = stampCount * physicalCopyCount;
           grainCircleBatches = isShape ? 0 : 1;
           grainShapeBatches = isShape ? 1 : 0;
         }

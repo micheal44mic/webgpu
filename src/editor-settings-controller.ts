@@ -3,6 +3,7 @@ import {
   saveEditorGuidePreferences,
   type EditorGuidePreferences,
   type EditorSettingsStoragePort,
+  type EditorSymmetryAxis,
 } from "./editor-settings-storage.ts";
 
 export interface EditorSettingsElements {
@@ -12,6 +13,10 @@ export interface EditorSettingsElements {
   readonly rulersInput: HTMLInputElement;
   readonly gridInput: HTMLInputElement;
   readonly snappingInput: HTMLInputElement;
+  readonly symmetryEnabledInput: HTMLInputElement;
+  readonly symmetryOptionsButton: HTMLButtonElement;
+  readonly symmetryOptionsPanel: HTMLElement;
+  readonly symmetryAxisInputs: readonly HTMLInputElement[];
 }
 
 export interface EditorSettingsBrowser {
@@ -35,6 +40,10 @@ export interface EditorSettingsControllerOptions {
 export class EditorSettingsController {
   private readonly options: EditorSettingsControllerOptions;
   private readonly abortController: AbortController;
+  private readonly symmetryEnabledInput: HTMLInputElement;
+  private readonly symmetryOptionsButton: HTMLButtonElement;
+  private readonly symmetryOptionsPanel: HTMLElement;
+  private readonly symmetryAxisInputs: readonly HTMLInputElement[];
   private openState = false;
   private preferencesState: EditorGuidePreferences;
   private disposed = false;
@@ -42,8 +51,19 @@ export class EditorSettingsController {
   constructor(options: EditorSettingsControllerOptions) {
     this.options = options;
     this.abortController = new options.browser.AbortController();
+    this.symmetryEnabledInput = options.elements.symmetryEnabledInput;
+    this.symmetryOptionsButton = options.elements.symmetryOptionsButton;
+    this.symmetryOptionsPanel = options.elements.symmetryOptionsPanel;
+    this.symmetryAxisInputs = [...options.elements.symmetryAxisInputs];
+    if (
+      !this.symmetryAxisInputs.some((input) => input.value === "vertical")
+      || !this.symmetryAxisInputs.some((input) => input.value === "horizontal")
+    ) {
+      throw new Error("Symmetry axis controls are incomplete.");
+    }
     this.preferencesState = loadEditorGuidePreferences(options.storage);
     this.syncInputs();
+    this.setSymmetryOptionsOpen(false);
     this.syncClosedAccessibility();
     this.bindControls();
   }
@@ -80,6 +100,7 @@ export class EditorSettingsController {
       this.options.elements.closeButton.focus({ preventScroll: true });
     } else {
       panel.classList.remove("is-open");
+      this.setSymmetryOptionsOpen(false);
       if (restoreFocus && trigger.isConnected) trigger.focus({ preventScroll: true });
     }
     this.options.onOpenChange(open);
@@ -102,9 +123,14 @@ export class EditorSettingsController {
       elements.rulersInput,
       elements.gridInput,
       elements.snappingInput,
+      this.symmetryEnabledInput,
+      ...this.symmetryAxisInputs,
     ]) {
       input.addEventListener("change", () => this.handlePreferenceChange(), { signal });
     }
+    this.symmetryOptionsButton.addEventListener("click", () => {
+      this.setSymmetryOptionsOpen(this.symmetryOptionsPanel.hidden !== false);
+    }, { signal });
     document.addEventListener("keydown", (event) => {
       if (event.key !== "Escape" || !this.openState) return;
       event.preventDefault();
@@ -126,6 +152,8 @@ export class EditorSettingsController {
       rulers: elements.rulersInput.checked,
       grid: elements.gridInput.checked,
       snapping: elements.snappingInput.checked,
+      symmetryEnabled: this.symmetryEnabledInput.checked,
+      symmetryAxis: this.selectedSymmetryAxis(),
     };
     const preferences = this.preferences;
     this.options.onPreferencesChange(preferences);
@@ -137,6 +165,21 @@ export class EditorSettingsController {
     elements.rulersInput.checked = this.preferencesState.rulers;
     elements.gridInput.checked = this.preferencesState.grid;
     elements.snappingInput.checked = this.preferencesState.snapping;
+    this.symmetryEnabledInput.checked = this.preferencesState.symmetryEnabled;
+    for (const input of this.symmetryAxisInputs) {
+      input.checked = input.value === this.preferencesState.symmetryAxis;
+    }
+  }
+
+  private selectedSymmetryAxis(): EditorSymmetryAxis {
+    const selected = this.symmetryAxisInputs.find((input) => input.checked)?.value;
+    return selected === "horizontal" ? "horizontal" : "vertical";
+  }
+
+  private setSymmetryOptionsOpen(open: boolean): void {
+    this.symmetryOptionsButton.setAttribute("aria-expanded", String(open));
+    this.symmetryOptionsPanel.hidden = !open;
+    this.symmetryOptionsPanel.setAttribute("aria-hidden", String(!open));
   }
 
   private syncClosedAccessibility(): void {

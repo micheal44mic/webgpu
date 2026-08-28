@@ -1,4 +1,7 @@
-import type { EditorGuidePreferences } from "./editor-settings-storage";
+import type {
+  EditorGuidePreferences,
+  EditorSymmetryAxis,
+} from "./editor-settings-storage";
 import {
   sceneLayerToCanvas,
   type ScenePoint,
@@ -172,6 +175,37 @@ function drawSmartGuides(
   context.restore();
 }
 
+function drawSymmetryAxis(
+  context: CanvasRenderingContext2D,
+  view: Readonly<VectorTextViewState>,
+  documentWidth: number,
+  documentHeight: number,
+  axis: EditorSymmetryAxis,
+): void {
+  const backing = Math.max(1, Math.min(
+    view.canvasWidth / Math.max(1, view.cssWidth),
+    view.canvasHeight / Math.max(1, view.cssHeight),
+  ));
+  const start = axis === "vertical"
+    ? sceneLayerToCanvas({ x: documentWidth * 0.5, y: 0 }, view)
+    : sceneLayerToCanvas({ x: 0, y: documentHeight * 0.5 }, view);
+  const end = axis === "vertical"
+    ? sceneLayerToCanvas({ x: documentWidth * 0.5, y: documentHeight }, view)
+    : sceneLayerToCanvas({ x: documentWidth, y: documentHeight * 0.5 }, view);
+
+  context.save();
+  documentPath(context, view, documentWidth, documentHeight);
+  context.clip();
+  context.strokeStyle = "#dd5c35";
+  context.lineWidth = Math.max(1, 1.5 * backing);
+  context.setLineDash([8 * backing, 4 * backing]);
+  context.beginPath();
+  context.moveTo(start.x, start.y);
+  context.lineTo(end.x, end.y);
+  context.stroke();
+  context.restore();
+}
+
 function formatRulerValue(value: number): string {
   const absolute = Math.abs(value);
   if (absolute >= 10000) return `${Math.round(value / 1000)}k`;
@@ -323,7 +357,11 @@ export interface RenderCanvasGuidesOptions {
 export function renderCanvasGuides(options: Readonly<RenderCanvasGuidesOptions>): void {
   const { canvas, context, view, preferences } = options;
   const smartGuides = options.smartGuides ?? [];
-  const visible = preferences.rulers || preferences.grid || smartGuides.length > 0;
+  const symmetryEnabled = preferences.symmetryEnabled;
+  const visible = preferences.rulers
+    || preferences.grid
+    || symmetryEnabled
+    || smartGuides.length > 0;
   canvas.hidden = !visible;
   if (!visible) {
     // Resizing releases the full viewport backing store when every guide is off.
@@ -358,6 +396,15 @@ export function renderCanvasGuides(options: Readonly<RenderCanvasGuidesOptions>)
       options.documentWidth,
       options.documentHeight,
       adaptiveCanvasGridStep(view),
+    );
+  }
+  if (symmetryEnabled) {
+    drawSymmetryAxis(
+      context,
+      view,
+      options.documentWidth,
+      options.documentHeight,
+      preferences.symmetryAxis,
     );
   }
   drawSmartGuides(

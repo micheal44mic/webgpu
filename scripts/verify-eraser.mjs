@@ -319,7 +319,7 @@ assert.match(engine, /frame\.replacement \|\| frame\.incremental \? "load" : "cl
 assert.match(engine, /if \(frame\.replacement\) \{\s+encoder\.copyTextureToTexture/);
 assert.match(
   engine,
-  /pass\.draw\(STAMP_VERTICES_PER_COPY, frame\.stamps\.length \* settings\.count, 0, 0\)/,
+  /pass\.draw\(STAMP_VERTICES_PER_COPY, frame\.stamps\.length \* physicalCopyCount, 0, 0\)/,
 );
 assert.match(engine, /\? \{ \.\.\.thicknessTailFrame\.presentedRect \}/);
 assert.match(engine, /thicknessTailPresentationNeedsRefresh\(\)/);

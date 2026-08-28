@@ -3060,6 +3060,65 @@
                 <span class="editor-settings-switch" aria-hidden="true"><span></span></span>
               </span>
             </label>
+
+            <div class="editor-settings-row editor-settings-symmetry-row">
+              <label class="editor-settings-copy" for="editorSymmetryEnabled">
+                <span class="editor-settings-name">Symmetry</span>
+                <span id="editorSymmetryHint" class="editor-settings-hint">
+                  Mirror Paint and Erase strokes across the selected document axis.
+                </span>
+              </label>
+              <span class="editor-settings-toggle">
+                <input
+                  id="editorSymmetryEnabled"
+                  type="checkbox"
+                  aria-describedby="editorSymmetryHint"
+                >
+                <span class="editor-settings-switch" aria-hidden="true"><span></span></span>
+              </span>
+              <button
+                id="editorSymmetryOptionsButton"
+                class="editor-settings-options-button"
+                type="button"
+                aria-label="Symmetry options"
+                aria-controls="editorSymmetryOptions"
+                aria-expanded="false"
+                title="Symmetry options"
+              >
+                <span class="mobile-icon-stack" aria-hidden="true">
+                  <i data-lucide="settings" class="mobile-icon-layer mobile-icon-outline"></i>
+                  <i data-lucide="settings" class="mobile-icon-layer mobile-icon-face"></i>
+                </span>
+              </button>
+            </div>
+
+            <fieldset
+              id="editorSymmetryOptions"
+              class="editor-settings-symmetry-options"
+              aria-hidden="true"
+              hidden
+            >
+              <legend>Mirror axis</legend>
+              <div class="editor-settings-axis-options">
+                <label class="editor-settings-axis-choice">
+                  <input
+                    type="radio"
+                    name="editorSymmetryAxis"
+                    value="vertical"
+                    checked
+                  >
+                  <span>Vertical</span>
+                </label>
+                <label class="editor-settings-axis-choice">
+                  <input
+                    type="radio"
+                    name="editorSymmetryAxis"
+                    value="horizontal"
+                  >
+                  <span>Horizontal</span>
+                </label>
+              </div>
+            </fieldset>
           </section>
         </div>
       </aside>

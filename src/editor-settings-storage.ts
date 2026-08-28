@@ -1,7 +1,11 @@
+export type EditorSymmetryAxis = "vertical" | "horizontal";
+
 export interface EditorGuidePreferences {
   readonly rulers: boolean;
   readonly grid: boolean;
   readonly snapping: boolean;
+  readonly symmetryEnabled: boolean;
+  readonly symmetryAxis: EditorSymmetryAxis;
 }
 
 export interface EditorSettingsStoragePort {
@@ -21,6 +25,8 @@ export const DEFAULT_EDITOR_GUIDE_PREFERENCES: Readonly<EditorGuidePreferences> 
     rulers: false,
     grid: false,
     snapping: true,
+    symmetryEnabled: false,
+    symmetryAxis: "vertical",
   });
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -39,6 +45,12 @@ function normalizedPreferences(value: unknown): EditorGuidePreferences {
     snapping: typeof candidate.snapping === "boolean"
       ? candidate.snapping
       : DEFAULT_EDITOR_GUIDE_PREFERENCES.snapping,
+    symmetryEnabled: typeof candidate.symmetryEnabled === "boolean"
+      ? candidate.symmetryEnabled
+      : DEFAULT_EDITOR_GUIDE_PREFERENCES.symmetryEnabled,
+    symmetryAxis: candidate.symmetryAxis === "vertical" || candidate.symmetryAxis === "horizontal"
+      ? candidate.symmetryAxis
+      : DEFAULT_EDITOR_GUIDE_PREFERENCES.symmetryAxis,
   };
 }
 

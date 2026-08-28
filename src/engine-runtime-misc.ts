@@ -1192,6 +1192,7 @@ export function emitStamp(engine: BrushEngine, point: LayerPoint, directionX: nu
     directionX,
     directionY,
     historyActionId: stroke.historyActionId,
+    symmetryMode: stroke.symmetryMode,
   };
 
   if (stroke.thicknessTailHoldback) {

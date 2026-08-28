@@ -183,6 +183,7 @@ export function generateBenchmarkStamps(engine: BrushEngine, count: number, sett
       directionX: -Math.sin(angle),
       directionY: Math.cos(angle * 1.037),
       historyActionId: 0,
+      symmetryMode: "off",
     };
   }
 
