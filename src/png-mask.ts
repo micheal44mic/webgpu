@@ -126,7 +126,7 @@ export async function decodeGrayscalePng(
         || interlaceMethod !== 0
       ) {
         throw new Error(
-          "Shape or Grain requires a non-interlaced 8-bit or 16-bit grayscale PNG with standard compression.",
+          "Shape or Grain requires a supported non-interlaced grayscale PNG.",
         );
       }
       sourceBitDepth = bitDepth;

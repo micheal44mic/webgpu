@@ -30,14 +30,6 @@ for (const id of [
   "mobileBrushStudioPreviewCanvas",
   "mobileBrushStudioStrokeTab",
   "mobileBrushStudioShapeTab",
-  "mobileBrushStudioColor16Hex",
-  "mobileBrushStudioColor16Red",
-  "mobileBrushStudioColor16Green",
-  "mobileBrushStudioColor16Blue",
-  "mobileBrushColor16Status",
-  "mobileBrushStudioColor16Sample",
-  "mobileBrushStudioShapeSourcePrecision",
-  "mobileBrushStudioGrainSourcePrecision",
   "mobileBrushStudioGrainTab",
   "mobileBrushStudioDynamicsTab",
   "mobileBrushStudioShapeFile",
@@ -147,41 +139,29 @@ assert.match(
   /private applyDraftNow\(\): void \{[\s\S]*?this\.options\.applySettings\(this\.withBrushPrecision\(this\.draftSettings\)\)/,
   "live Studio apply must cross the global precision boundary",
 );
-assert.match(
-  studio,
-  /canonicalBrushColor16\(hexInput\.value\)[\s\S]*?draft\.color = color/,
-  "the exact color editor must preserve a canonical 16-bit-per-channel source",
-);
-assert.match(
-  studio,
-  /brushColor16FromChannels\(channels\[0\], channels\[1\], channels\[2\]\)[\s\S]*?draft\.color = color/,
-  "the numeric RGB editor must write the authoritative 16-bit color",
-);
-assert.match(
-  studio,
-  /draft\.color = "#7fff7fff7fff";[\s\S]*?Comparison sample ready\. Tap Done, then switch 8-bit and 16-bit in Settings/,
-  "the comparison sample must retain an off-grid 16-bit source and direct precision changes to Settings",
-);
-const comparisonSampleStart = studio.indexOf("const sampleButton =");
-const comparisonSampleEnd = studio.indexOf("private element<", comparisonSampleStart);
-assert.ok(
-  comparisonSampleStart >= 0 && comparisonSampleEnd > comparisonSampleStart,
-  "Brush Studio comparison sample boundary missing",
+const brushStudioMarkup = html.slice(
+  html.indexOf('id="mobileBrushStudioSheet"'),
+  html.indexOf('id="mobileToolsSheet"'),
 );
 assert.doesNotMatch(
-  studio.slice(comparisonSampleStart, comparisonSampleEnd),
-  /shapeMaskFormat\s*=/,
-  "the comparison sample must not override global Brush Precision",
+  brushStudioMarkup,
+  /16-bit|16F|R16F|HEX16/i,
+  "Brush Studio must not expose implementation precision copy",
+);
+assert.doesNotMatch(
+  brushStudioMarkup,
+  /mobileBrushStudioColor16|mobileBrushColor16|SourcePrecision/,
+  "Brush Studio must not restore removed precision presentation elements",
+);
+assert.doesNotMatch(
+  studio,
+  /bindColor16Controls|syncColor16Controls|syncSourcePrecisionLabels|assetPrecisionLabel/,
+  "Brush Studio must not keep inactive precision-presentation code",
 );
 assert.doesNotMatch(
   studio,
   /shapeMaskFormat\s*=\s*"r16float"/,
   "Brush Studio must never silently force Full 16F over the global choice",
-);
-assert.match(
-  studio,
-  /8-bit comparison · 16-bit source retained/,
-  "the 8-bit status must explain that it never destroys the exact color source",
 );
 assert.doesNotMatch(
   main,

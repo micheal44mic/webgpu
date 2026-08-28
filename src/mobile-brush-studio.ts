@@ -16,7 +16,6 @@ import {
   brushDefinitionSettingsFromRuntime,
   type BrushDefinitionSettings,
 } from "./brush-definition.ts";
-import { canonicalBrushColor16 } from "./brush-color";
 import {
   brushStudioAssetStorageKey,
   deleteBrushStudioAsset,
@@ -41,7 +40,6 @@ import type {
   CustomBrushShapeAssetId,
   GrainMode,
 } from "./engine-types";
-import { shapeMaskFormatForSettings } from "./engine-brush-assets";
 import { decodeGrayscalePng } from "./png-mask";
 
 type BrushStudioTab = "stroke" | "shape" | "grain" | "dynamics";
@@ -139,22 +137,6 @@ function percent(value: number): string {
 function signedPercent(value: number): string {
   const rounded = Math.round(value);
   return `${rounded > 0 ? "+" : ""}${rounded}%`;
-}
-
-function brushColor16Channels(color: string): readonly [number, number, number] {
-  const canonical = canonicalBrushColor16(color).slice(1);
-  return [
-    Number.parseInt(canonical.slice(0, 4), 16),
-    Number.parseInt(canonical.slice(4, 8), 16),
-    Number.parseInt(canonical.slice(8, 12), 16),
-  ];
-}
-
-function brushColor16FromChannels(red: number, green: number, blue: number): string {
-  const channel = (value: number): string => Math.round(clamp(value, 0, 65_535))
-    .toString(16)
-    .padStart(4, "0");
-  return `#${channel(red)}${channel(green)}${channel(blue)}`;
 }
 
 function settingsForPersistence(settings: BrushSettings): BrushDefinitionSettings {
@@ -660,8 +642,6 @@ export class MobileBrushStudioController {
       this.listen(tab, "keydown", (event) => this.handleTabKeydown(event, tab));
     }
 
-    this.bindColor16Controls();
-
     this.bindRange("mobileBrushStudioSize", "mobileBrushStudioSizeOut", (value) => {
       this.changeDraft((draft) => { draft.size = value; });
     }, (value) => `${Math.round(value)} px`);
@@ -819,79 +799,6 @@ export class MobileBrushStudioController {
     this.listen(input, "change", () => update(input.checked));
   }
 
-  private bindColor16Controls(): void {
-    const hexInput = this.element<HTMLInputElement>("mobileBrushStudioColor16Hex");
-    const redInput = this.element<HTMLInputElement>("mobileBrushStudioColor16Red");
-    const greenInput = this.element<HTMLInputElement>("mobileBrushStudioColor16Green");
-    const blueInput = this.element<HTMLInputElement>("mobileBrushStudioColor16Blue");
-    const status = this.element<HTMLOutputElement>("mobileBrushColor16Status");
-
-    const applyHex = (): void => {
-      if (!this.draftSettings) return;
-      try {
-        const color = canonicalBrushColor16(hexInput.value);
-        hexInput.removeAttribute("aria-invalid");
-        this.changeDraft((draft) => { draft.color = color; });
-        if (this.draftSettings) this.syncColor16Controls(this.draftSettings);
-      } catch {
-        hexInput.setAttribute("aria-invalid", "true");
-        status.value = "Enter exactly 12 hexadecimal digits";
-      }
-    };
-    this.listen(hexInput, "change", applyHex);
-    this.listen(hexInput, "keydown", (event) => {
-      if (event.key !== "Enter") return;
-      event.preventDefault();
-      applyHex();
-    });
-
-    const applyChannels = (): void => {
-      if (!this.draftSettings) return;
-      const channels = [redInput, greenInput, blueInput].map((input) => (
-        clamp(Number.isFinite(input.valueAsNumber) ? input.valueAsNumber : 0, 0, 65_535)
-      ));
-      const color = brushColor16FromChannels(channels[0], channels[1], channels[2]);
-      this.changeDraft((draft) => { draft.color = color; });
-      if (this.draftSettings) this.syncColor16Controls(this.draftSettings);
-    };
-    for (const input of [redInput, greenInput, blueInput]) {
-      this.listen(input, "change", applyChannels);
-    }
-
-    const sampleButton = this.element<HTMLButtonElement>("mobileBrushStudioColor16Sample");
-    this.listen(sampleButton, "click", () => {
-      this.changeDraft((draft) => {
-        draft.color = "#7fff7fff7fff";
-        draft.shape = "circle";
-        draft.shapeAssetId = "legacy-shape";
-        draft.shapeInvert = false;
-        draft.shapeRotation = "follow-stroke";
-        draft.shapeScatter = 0;
-        draft.grainMode = "off";
-        draft.grainInvert = false;
-        draft.size = 160;
-        draft.spacingPercent = 0.5;
-        draft.flow = 0.035;
-        draft.opacity = 1;
-        draft.stabilization = 0;
-        draft.count = 1;
-        draft.blendMode = "light-glaze";
-        draft.hueJitterDegrees = 0;
-        draft.saturationJitter = 0;
-        draft.lightnessJitter = 0;
-        draft.darknessJitter = 0;
-        draft.positionJitterLateral = 0;
-        draft.positionJitterLinear = 0;
-      }, true);
-      if (!this.draftSettings) return;
-      this.populateControls(this.draftSettings);
-      this.reportStatus(
-        "Comparison sample ready. Tap Done, then switch 8-bit and 16-bit in Settings.",
-        "ok",
-      );
-    });
-  }
-
   private element<T extends HTMLElement>(id: string): T {
     return requiredDescendant<T>(this.sheet, id);
   }
@@ -999,53 +906,6 @@ export class MobileBrushStudioController {
     this.syncRadioButtons(this.shapeRotationButtons, "mobileBrushShapeRotation", settings.shapeRotation);
     this.syncRadioButtons(this.grainModeButtons, "mobileBrushGrainMode", settings.grainMode);
     this.syncGrainAvailability(settings.grainMode);
-    this.syncColor16Controls(settings);
-    this.syncSourcePrecisionLabels(settings);
-  }
-
-  private syncColor16Controls(settings: Readonly<BrushSettings>): void {
-    const canonical = canonicalBrushColor16(settings.color);
-    const [red, green, blue] = brushColor16Channels(canonical);
-    const hexInput = this.element<HTMLInputElement>("mobileBrushStudioColor16Hex");
-    hexInput.value = canonical;
-    hexInput.removeAttribute("aria-invalid");
-    this.element<HTMLInputElement>("mobileBrushStudioColor16Red").value = red.toString();
-    this.element<HTMLInputElement>("mobileBrushStudioColor16Green").value = green.toString();
-    this.element<HTMLInputElement>("mobileBrushStudioColor16Blue").value = blue.toString();
-    const comparing8Bit = shapeMaskFormatForSettings(settings) === "r8unorm";
-    const status = this.element<HTMLOutputElement>("mobileBrushColor16Status");
-    status.value = comparing8Bit
-      ? "8-bit comparison · 16-bit source retained"
-      : "16-bit source · Full 16F";
-    status.dataset.precision = comparing8Bit ? "compare-8" : "full-16f";
-  }
-
-  private syncSourcePrecisionLabels(settings: Readonly<BrushSettings>): void {
-    const comparisonSuffix = shapeMaskFormatForSettings(settings) === "r8unorm"
-      ? " · 8-bit comparison"
-      : " · R16F GPU";
-    const shapeLabel = settings.shape === "circle"
-      ? `Analytic source${comparisonSuffix}`
-      : this.assetPrecisionLabel(settings.shapeAssetId, comparisonSuffix);
-    const grainLabel = settings.grainMode === "off"
-      ? "Grain off"
-      : this.assetPrecisionLabel(settings.grainAssetId, comparisonSuffix);
-    this.element<HTMLOutputElement>("mobileBrushStudioShapeSourcePrecision").value = shapeLabel;
-    this.element<HTMLOutputElement>("mobileBrushStudioGrainSourcePrecision").value = grainLabel;
-  }
-
-  private assetPrecisionLabel(
-    assetId: BrushShapeAssetId | BrushGrainAssetId,
-    suffix: string,
-  ): string {
-    const custom = this.options.assets.getCustomBrushAsset(assetId);
-    if (custom) {
-      return `${custom.sourceBitDepth === 16 ? "Native 16-bit source" : "8-bit source"}${suffix}`;
-    }
-    if (isCustomShapeAssetId(assetId) || isCustomGrainAssetId(assetId)) {
-      return `Custom source pending${suffix}`;
-    }
-    return `8-bit source${suffix}`;
   }
 
   private setRange(
@@ -1205,7 +1065,6 @@ export class MobileBrushStudioController {
   private async drawSourcePreviews(): Promise<void> {
     const settings = this.draftSettings;
     if (!settings) return;
-    this.syncSourcePrecisionLabels(settings);
     const revision = ++this.sourcePreviewRevision;
     await Promise.all([
       this.drawSourcePreview("shape", settings, revision),

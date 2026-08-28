@@ -777,46 +777,6 @@
               data-mobile-brush-studio-panel="stroke"
             >
               <h3>Primary</h3>
-              <section class="mobile-brush-color16" aria-labelledby="mobileBrushColor16Title">
-                <div class="mobile-brush-studio-section-heading">
-                  <h3 id="mobileBrushColor16Title">16-bit Color</h3>
-                  <output id="mobileBrushColor16Status" class="mobile-brush-precision-badge">16-bit source</output>
-                </div>
-                <label class="mobile-brush-color16-hex" for="mobileBrushStudioColor16Hex">
-                  <span>HEX16</span>
-                  <input
-                    id="mobileBrushStudioColor16Hex"
-                    type="text"
-                    value="#ff805b803580"
-                    maxlength="13"
-                    inputmode="text"
-                    autocomplete="off"
-                    spellcheck="false"
-                    aria-describedby="mobileBrushColor16Help"
-                  />
-                </label>
-                <div class="mobile-brush-color16-channels" aria-label="16-bit RGB channels">
-                  <label for="mobileBrushStudioColor16Red">
-                    <span>R</span>
-                    <input id="mobileBrushStudioColor16Red" type="number" min="0" max="65535" step="1" value="65408" />
-                  </label>
-                  <label for="mobileBrushStudioColor16Green">
-                    <span>G</span>
-                    <input id="mobileBrushStudioColor16Green" type="number" min="0" max="65535" step="1" value="23424" />
-                  </label>
-                  <label for="mobileBrushStudioColor16Blue">
-                    <span>B</span>
-                    <input id="mobileBrushStudioColor16Blue" type="number" min="0" max="65535" step="1" value="13696" />
-                  </label>
-                </div>
-                <p id="mobileBrushColor16Help" class="mobile-brush-precision-note">
-                  Values run from 0 to 65,535. The rail picker remains a fast coarse control; these fields preserve the exact source.
-                </p>
-                <button id="mobileBrushStudioColor16Sample" class="mobile-brush-color16-sample" type="button">
-                  Load visible comparison sample
-                </button>
-              </section>
-
               <label class="mobile-brush-studio-range" for="mobileBrushStudioSize">
                 <span>Size</span>
                 <output id="mobileBrushStudioSizeOut" for="mobileBrushStudioSize">30 px</output>
@@ -898,9 +858,6 @@
                   </span>
                 </button>
                 <div class="mobile-brush-studio-source-actions">
-                  <output id="mobileBrushStudioShapeSourcePrecision" class="mobile-brush-source-precision">
-                    16F pipeline
-                  </output>
                   <input
                     id="mobileBrushStudioShapeFile"
                     class="mobile-brush-studio-file"
@@ -987,9 +944,6 @@
                   </span>
                 </button>
                 <div class="mobile-brush-studio-source-actions">
-                  <output id="mobileBrushStudioGrainSourcePrecision" class="mobile-brush-source-precision">
-                    16F pipeline
-                  </output>
                   <input
                     id="mobileBrushStudioGrainFile"
                     class="mobile-brush-studio-file"
