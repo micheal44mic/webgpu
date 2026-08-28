@@ -58,7 +58,10 @@ const GPU_STARTUP_DIAGNOSTIC_RUN_CODE = /^diag-[a-f0-9]{32}$/;
 const GPU_STARTUP_DIAGNOSTIC_WRITE_TOKEN = /^[a-f0-9]{64}$/;
 const GPU_STARTUP_DIAGNOSTIC_STATUSES = new Set(["running", "completed", "failed", "interrupted"]);
 const GPU_STARTUP_DIAGNOSTIC_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
-const GPU_STARTUP_DIAGNOSTIC_PAGE_PATH = "/gpu-startup-diagnostics.html";
+const GPU_STARTUP_DIAGNOSTIC_PAGE_PATHS = new Set([
+  "/gpu-startup-diagnostics",
+  "/gpu-startup-diagnostics.html",
+]);
 const VECTOR_ZOOM_CHECK_NAMES = [
   "exactlyTenDistributedTexts",
   "fixedFastZoomOutCompleted",
@@ -1013,7 +1016,7 @@ export default {
 
     if (
       (request.method === "GET" || request.method === "HEAD")
-      && url.pathname === GPU_STARTUP_DIAGNOSTIC_PAGE_PATH
+      && GPU_STARTUP_DIAGNOSTIC_PAGE_PATHS.has(url.pathname)
     ) {
       if (request.method === "GET") {
         const recording = recordGpuStartupDiagnosticPageRequest(request, env).catch((error) => {

@@ -38,7 +38,9 @@ assert.match(moduleSource, /import\("\.\.\/brush-engine"\)/);
 assert.match(moduleSource, /engine\.initialize\(\)/);
 assert.match(moduleSource, /engine-initialize-completed/);
 
-assert.match(workerBuilder, /GPU_STARTUP_DIAGNOSTIC_PAGE_PATH = "\/gpu-startup-diagnostics\.html"/);
+assert.match(workerBuilder, /GPU_STARTUP_DIAGNOSTIC_PAGE_PATHS = new Set/);
+assert.match(workerBuilder, /"\/gpu-startup-diagnostics"/);
+assert.match(workerBuilder, /"\/gpu-startup-diagnostics\.html"/);
 assert.match(workerBuilder, /readLimitedJson\(request, 64 \* 1024\)/);
 assert.match(workerBuilder, /sha256Hex\(payload\.writeToken\)/);
 assert.match(workerBuilder, /write_token_hash/);
@@ -141,7 +143,7 @@ if (existsSync(builtWorkerPath)) {
   const runCode = `diag-${"a".repeat(32)}`;
   const writeToken = "b".repeat(64);
   const pageResponse = await worker.fetch(
-    new Request(`https://example.test/gpu-startup-diagnostics.html?run=${runCode}`, {
+    new Request(`https://example.test/gpu-startup-diagnostics?run=${runCode}`, {
       headers: { "User-Agent": "Diagnostic Test Browser" },
     }),
     environment,
