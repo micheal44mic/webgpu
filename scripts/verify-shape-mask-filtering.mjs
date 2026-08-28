@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { registerHooks } from "node:module";
 import { performance } from "node:perf_hooks";
+import { deflateSync } from "node:zlib";
 import {
   SHAPE_MASK_FILTER_CONTENT_SIZE,
   SHAPE_MASK_FILTER_GUARD_TEXELS,
@@ -8,15 +10,105 @@ import {
   SHAPE_MASK_FILTER_UV_OFFSET,
   SHAPE_MASK_FILTER_UV_SCALE,
   SHAPE_MASK_SIZE,
+  SHAPE_OCCUPANCY_GRID_SIZE,
+  SHAPE_OCCUPANCY_MAP_COUNT,
+  SHAPE_OCCUPANCY_WORDS_PER_MAP,
 } from "../src/engine-limits.ts";
 import {
   downsampleShapeMask2x,
+  downsampleShapeMaskSupport2x,
   resampleShapeMaskIntoTransparentGuard,
+  resampleShapeMaskSupportIntoTransparentGuard,
 } from "../src/shape-mask-filtering.ts";
-import { decodeGrayscalePng8 } from "../src/png-mask.ts";
+import { decodeGrayscalePng, decodeGrayscalePng8 } from "../src/png-mask.ts";
+
+const crc32 = (bytes) => {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+};
+const pngChunk = (type, payload) => {
+  const typeBytes = new TextEncoder().encode(type);
+  const output = new Uint8Array(12 + payload.length);
+  const view = new DataView(output.buffer);
+  view.setUint32(0, payload.length, false);
+  output.set(typeBytes, 4);
+  output.set(payload, 8);
+  view.setUint32(8 + payload.length, crc32(output.subarray(4, 8 + payload.length)), false);
+  return output;
+};
+const grayscalePng = (width, height, bitDepth, samples) => {
+  const signature = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  const ihdr = new Uint8Array(13);
+  const ihdrView = new DataView(ihdr.buffer);
+  ihdrView.setUint32(0, width, false);
+  ihdrView.setUint32(4, height, false);
+  ihdr[8] = bitDepth;
+  const bytesPerSample = bitDepth / 8;
+  const rows = new Uint8Array((width * bytesPerSample + 1) * height);
+  for (let y = 0; y < height; y += 1) {
+    let offset = y * (width * bytesPerSample + 1) + 1;
+    for (let x = 0; x < width; x += 1) {
+      const value = samples[y * width + x];
+      if (bitDepth === 16) rows[offset++] = value >>> 8;
+      rows[offset++] = value & 0xff;
+    }
+  }
+  const chunks = [pngChunk("IHDR", ihdr), pngChunk("IDAT", deflateSync(rows)), pngChunk("IEND", new Uint8Array())];
+  const totalBytes = signature.length + chunks.reduce((total, chunk) => total + chunk.length, 0);
+  const png = new Uint8Array(totalBytes);
+  png.set(signature);
+  let offset = signature.length;
+  for (const chunk of chunks) {
+    png.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return png.buffer;
+};
+
+const sourceRootUrl = new URL("../src/", import.meta.url).href;
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (
+      context.parentURL?.startsWith(sourceRootUrl)
+      && /^\.{1,2}\//.test(specifier)
+      && !/\.[a-z0-9]+$/i.test(specifier)
+    ) {
+      return nextResolve(`${specifier}.ts`, context);
+    }
+    return nextResolve(specifier, context);
+  },
+});
+const [
+  { shapeTextureMemoryMiB },
+  { buildShapeOccupancyMaps },
+] = await Promise.all([
+  import("../src/engine-memory-model.ts"),
+  import("../src/shape-occupancy.ts"),
+]);
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
+
+const native16Fixture = grayscalePng(2, 2, 16, [0, 1, 256, 65535]);
+const decodedNative16 = await decodeGrayscalePng(native16Fixture);
+assert.equal(decodedNative16.sourceBitDepth, 16);
+assert.equal(decodedNative16.width, 2);
+assert.equal(decodedNative16.height, 2);
+assert.deepEqual([...decodedNative16.pixels], [0, 1, 256, 65535]);
+assert.deepEqual(
+  [...(await decodeGrayscalePng8(native16Fixture)).pixels],
+  [0, 0, 1, 255],
+  "the compatibility proxy must not replace native16 authoritative samples",
+);
+const expanded8 = await decodeGrayscalePng(grayscalePng(3, 1, 8, [0, 128, 255]));
+assert.equal(expanded8.sourceBitDepth, 8);
+assert.deepEqual([...expanded8.pixels], [0, 128 * 257, 65535]);
 
 assert.equal(SHAPE_MASK_SIZE, 2048);
 assert.equal(SHAPE_MASK_FILTER_GUARD_TEXELS, 64);
@@ -37,6 +129,36 @@ assert.throws(
   () => downsampleShapeMask2x(new Uint8Array(9), 3),
   /positive even integer/,
 );
+assert.throws(
+  () => resampleShapeMaskSupportIntoTransparentGuard(new Uint8Array(3), 2, 0),
+  /byte length/,
+);
+assert.throws(
+  () => resampleShapeMaskSupportIntoTransparentGuard(new Uint8Array(4), 2, 1),
+  /does not fit/,
+);
+assert.throws(
+  () => downsampleShapeMaskSupport2x(new Uint8Array(9), 3),
+  /positive even integer/,
+);
+
+const faintImpulse = new Uint8Array([
+  1, 0,
+  0, 0,
+]);
+assert.equal(
+  downsampleShapeMask2x(faintImpulse, 2)[0],
+  0,
+  "the R8 visual mip demonstrates the expected quarter-code rounding loss",
+);
+assert.equal(
+  downsampleShapeMaskSupport2x(faintImpulse, 2)[0],
+  1,
+  "R16F occupancy support must preserve a non-zero texel through max reduction",
+);
+const supportSnapshot = Uint8Array.from(faintImpulse);
+downsampleShapeMaskSupport2x(faintImpulse, 2);
+assert.deepEqual(faintImpulse, supportSnapshot, "support max-pooling must not mutate its input");
 
 const lowCoverageSource = new Uint8Array(64).fill(1);
 const lowCoverageSnapshot = Uint8Array.from(lowCoverageSource);
@@ -129,6 +251,100 @@ for (let level = 1; level <= 6; level += 1) {
 }
 assert.equal(mipSize, 32, "the 64 px guard must survive through the 30 px-tip mip");
 
+const sparseLogical = new Uint8Array(SHAPE_MASK_SIZE * SHAPE_MASK_SIZE);
+sparseLogical[(SHAPE_MASK_SIZE / 2) * SHAPE_MASK_SIZE + SHAPE_MASK_SIZE / 2] = 1;
+const protectedSupport = resampleShapeMaskSupportIntoTransparentGuard(
+  sparseLogical,
+  SHAPE_MASK_SIZE,
+  SHAPE_MASK_FILTER_GUARD_TEXELS,
+);
+assert.equal(protectedSupport[0], 0, "the conservative support frame keeps its guard empty");
+assert.ok(
+  protectedSupport.some((value) => value === 1),
+  "a one-code authored impulse must survive protected-frame reconstruction",
+);
+let supportMip = protectedSupport;
+let supportMipSize = SHAPE_MASK_SIZE;
+const protectedSupportMips = [protectedSupport];
+for (let level = 1; level <= 4; level += 1) {
+  supportMip = downsampleShapeMaskSupport2x(supportMip, supportMipSize);
+  supportMipSize /= 2;
+  protectedSupportMips.push(supportMip);
+  assert.ok(
+    supportMip.some((value) => value === 1),
+    `a one-code authored impulse must survive support mip ${level}`,
+  );
+}
+const sparseProtectedOccupancy = buildShapeOccupancyMaps(
+  protectedSupportMips,
+  { coordinateFrame: "protected" },
+);
+assert.ok(
+  sparseProtectedOccupancy.activeCells.every((count) => count > 0),
+  "the conservative one-code impulse must remain eligible through every occupancy mip",
+);
+
+const emptyOccupancyMips = Array.from(
+  { length: SHAPE_OCCUPANCY_MAP_COUNT },
+  (_, mipLevel) => new Uint8Array((SHAPE_MASK_SIZE >> mipLevel) ** 2),
+);
+const protectedEdgeMips = emptyOccupancyMips.map((mask) => Uint8Array.from(mask));
+protectedEdgeMips[0][
+  SHAPE_MASK_FILTER_GUARD_TEXELS * SHAPE_MASK_SIZE
+  + SHAPE_MASK_FILTER_GUARD_TEXELS
+] = 1;
+const protectedEdgeOccupancy = buildShapeOccupancyMaps(
+  protectedEdgeMips,
+  { coordinateFrame: "protected" },
+);
+const logicalEdgeOccupancy = buildShapeOccupancyMaps(protectedEdgeMips);
+const occupancyHasCell = (words, mipLevel, cellX, cellY) => {
+  const cellIndex = cellY * SHAPE_OCCUPANCY_GRID_SIZE + cellX;
+  const word = words[
+    mipLevel * SHAPE_OCCUPANCY_WORDS_PER_MAP + (cellIndex >>> 5)
+  ];
+  return (word & ((1 << (cellIndex & 31)) >>> 0)) !== 0;
+};
+assert.equal(
+  occupancyHasCell(protectedEdgeOccupancy.words, 0, 0, 0),
+  true,
+  "the inner protected-frame edge must map back to the first authored cell",
+);
+assert.equal(
+  occupancyHasCell(protectedEdgeOccupancy.words, 0, 8, 8),
+  false,
+  "protected coordinates must not leak into logical occupancy as raw texel coordinates",
+);
+assert.equal(
+  occupancyHasCell(logicalEdgeOccupancy.words, 0, 8, 8),
+  true,
+  "the control case proves that logical-frame occupancy interprets the same texel directly",
+);
+
+const protectedGuardMips = emptyOccupancyMips.map((mask) => Uint8Array.from(mask));
+protectedGuardMips[0][0] = 1;
+const protectedGuardOccupancy = buildShapeOccupancyMaps(
+  protectedGuardMips,
+  { coordinateFrame: "protected" },
+);
+assert.equal(
+  protectedGuardOccupancy.activeCells[0],
+  0,
+  "support wholly inside the transparent guard must not occupy authored cells",
+);
+
+let expectedMipPixels = 0;
+for (let dimension = SHAPE_MASK_SIZE; dimension >= 1; dimension /= 2) {
+  expectedMipPixels += dimension * dimension;
+}
+const mebibyteBytes = 1024 * 1024;
+const r8ShapeMemoryMiB = shapeTextureMemoryMiB("r8unorm");
+const r16ShapeMemoryMiB = shapeTextureMemoryMiB("r16float");
+assert.equal(shapeTextureMemoryMiB(), r16ShapeMemoryMiB, "R16F is the resident memory profile");
+assert.equal(r8ShapeMemoryMiB, expectedMipPixels * 2 / mebibyteBytes);
+assert.equal(r16ShapeMemoryMiB, expectedMipPixels * 2 / mebibyteBytes);
+assert.equal(r16ShapeMemoryMiB, r8ShapeMemoryMiB, "both comparisons retain identical R16F storage");
+
 const pencilPng = readFileSync(new URL("Shapepencil.png", root));
 const pencilSource = pencilPng.buffer.slice(
   pencilPng.byteOffset,
@@ -151,12 +367,24 @@ const resourceSource = read("src/engine-resource-setup.ts");
 const shadersSource = read("src/shaders.ts");
 const blendShadersSource = read("src/blend-shaders.ts");
 const outlineIndex = resourceSource.indexOf("buildBrushMaskOutline(baseMask");
-const occupancyIndex = resourceSource.indexOf("buildShapeOccupancyMaps(occupancyMipMasks)");
-const guardIndex = resourceSource.indexOf("resampleShapeMaskIntoTransparentGuard(");
-const uploadIndex = resourceSource.indexOf("engine.device.createTexture", guardIndex);
-assert.ok(outlineIndex >= 0 && occupancyIndex > outlineIndex);
-assert.ok(guardIndex > occupancyIndex && uploadIndex > guardIndex,
-  "outline/occupancy/preview must use logical coverage before the GPU-only guard");
+const supportGuardIndex = resourceSource.indexOf("resampleShapeMaskSupportIntoTransparentGuard(");
+const occupancyIndex = resourceSource.indexOf("const occupancy = buildShapeOccupancyMaps(");
+const r16UploadIndex = resourceSource.indexOf(
+  "const texture = await createR16FloatShapeTexture(",
+  occupancyIndex,
+);
+assert.ok(outlineIndex >= 0 && supportGuardIndex > outlineIndex);
+assert.ok(occupancyIndex > supportGuardIndex && r16UploadIndex > occupancyIndex);
+assert.match(
+  resourceSource,
+  /coordinateFrame: "protected"/,
+  "both comparisons use the same protected R16F sampling frame",
+);
+assert.doesNotMatch(resourceSource, /format: "r8unorm"/);
+assert.match(resourceSource, /format: "r16uint"/);
+assert.match(resourceSource, /basePipelines\[sourceFormat\]/);
+assert.match(shadersSource, /f32\(textureLoad\(sourceTexture,[\s\S]*?\/ 65535\.0/);
+assert.match(shadersSource, /round\(normalized \* 255\.0\) \/ 255\.0/);
 
 assert.equal(
   (shadersSource.match(/const SHAPE_MASK_UV_HALF_EXTENT: f32 = \$\{SHAPE_MASK_FILTER_UV_HALF_EXTENT\}/g)
@@ -218,7 +446,8 @@ const protectedMipMedianMs = measure(() => buildFullMipChain(protectedPencil));
 
 console.log(
   "Shape mask filtering verified: immutable logical mask, 64 px transparent guard, "
-  + "mip-6 boundary, Paint/Blend UV parity, unchanged GPU bytes. "
+  + "R16F max-pooled support/protected occupancy, Paint/Blend UV parity, "
+  + `${r8ShapeMemoryMiB.toFixed(2)} MiB R8 / ${r16ShapeMemoryMiB.toFixed(2)} MiB R16F. `
   + `Preparation medians: guard ${guardMedianMs.toFixed(1)} ms, `
   + `logical mips ${logicalMipMedianMs.toFixed(1)} ms, `
   + `protected mips ${protectedMipMedianMs.toFixed(1)} ms.`,

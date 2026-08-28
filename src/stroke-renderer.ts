@@ -2075,15 +2075,16 @@ export class RasterStrokeRenderer {
     this.goldenMip0SamplingView = this.readbackStyledTexture?.createView({
       label: "Stroke golden logical mip 0 sampling view",
     }) ?? null;
+    const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
     this.dummyTexture = this.device.createTexture({
       label: "Stroke transparent transient placeholder",
       size: { width: 1, height: 1, depthOrArrayLayers: 1 },
-      format: "rgba8unorm",
+      format: this.layerFormat,
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
     this.device.queue.writeTexture(
       { texture: this.dummyTexture },
-      new Uint8Array(256),
+      this.layerFormat === "rgba16float" ? new Uint16Array(128) : new Uint8Array(256),
       { bytesPerRow: 256, rowsPerImage: 1 },
       { width: 1, height: 1, depthOrArrayLayers: 1 },
     );
@@ -2094,7 +2095,6 @@ export class RasterStrokeRenderer {
       2: this.dummyView,
     };
 
-    const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
     this.dummyBevelTexture = this.device.createTexture({
       label: "Style stack disabled Bevel R32F placeholder",
       size: { width: 1, height: 1, depthOrArrayLayers: 1 },

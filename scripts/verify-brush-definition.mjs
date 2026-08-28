@@ -9,6 +9,7 @@ const defaults = definitions.DEFAULT_BRUSH_DEFINITION_SETTINGS;
 assert.equal(definitions.BRUSH_DEFINITION_VERSION, 1);
 assert.equal("color" in defaults, false, "active color must not be persisted in a brush");
 assert.equal("tool" in defaults, false, "active tool must not be persisted in a brush");
+assert.equal(defaults.shapeMaskFormat, "r16float", "new brushes must default to native 16F masks");
 
 const migrated = definitions.normalizeBrushDefinition({
   version: 1,
@@ -23,7 +24,36 @@ const migrated = definitions.normalizeBrushDefinition({
 });
 assert.equal(migrated.settings.grainAssetId, "pencil-grain");
 assert.equal(migrated.settings.blendBlur, 0);
+assert.equal(
+  migrated.settings.shapeMaskFormat,
+  "r16float",
+  "brush definitions saved before mask precision existed must migrate to native 16F",
+);
 assert.equal(Object.keys(migrated.settings).length, Object.keys(defaults).length);
+
+const { shapeMaskFormat: _legacyShapeMaskFormat, ...legacyStrictSettings } = defaults;
+assert.equal(
+  definitions.normalizeBrushDefinitionSettings(legacyStrictSettings, { strict: true })
+    .shapeMaskFormat,
+  "r16float",
+  "strict portable ingress must upgrade version 1 brushes without mask precision",
+);
+assert.equal(
+  definitions.normalizeBrushDefinitionSettings(
+    { ...defaults, shapeMaskFormat: "r16float" },
+    { strict: true },
+  ).shapeMaskFormat,
+  "r16float",
+  "16-bit Float must survive strict definition normalization",
+);
+assert.throws(
+  () => definitions.normalizeBrushDefinitionSettings(
+    { ...defaults, shapeMaskFormat: "rgba16float" },
+    { strict: true },
+  ),
+  /shapeMaskFormat/,
+  "unknown mask formats must not enter durable brush definitions",
+);
 
 assert.throws(
   () => definitions.normalizeBrushDefinition({ version: 99, settings: defaults }),

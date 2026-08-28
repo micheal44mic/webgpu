@@ -50,6 +50,9 @@ export type BrushShapeAssetId = "legacy-shape" | "pencil-shape" | CustomBrushSha
 
 export type BrushShapeRotation = "fixed" | "follow-stroke";
 
+/** Brush-wide A/B precision mode; both modes stay resident in R16F on the GPU. */
+export type BrushShapeMaskFormat = "r8unorm" | "r16float";
+
 export type GrainMode = "off" | "texturized" | "moving";
 
 export type CustomBrushGrainAssetId = `custom-grain:${string}`;
@@ -69,6 +72,8 @@ export interface BrushSettings {
   shapeAssetId: BrushShapeAssetId;
   /** User polarity applied after the source asset's authored polarity. */
   shapeInvert: boolean;
+  /** Master A/B: diagnostic 8-bit quantization or the unmodified high-precision source. */
+  shapeMaskFormat: BrushShapeMaskFormat;
   shapeRotation: BrushShapeRotation;
   shapeScatter: number;
   grainMode: GrainMode;
@@ -83,6 +88,7 @@ export interface BrushSettings {
   grainInvert: boolean;
   grainFiltering: GrainFiltering;
   grainBlendMode: GrainBlendMode;
+  /** Encoded-sRGB #RRGGBB or native #RRRRGGGGBBBB brush color. */
   color: string;
   size: number;
   spacingPercent: number;
@@ -372,6 +378,6 @@ export interface LayerSwitchResult {
 
 export const defaultBrushSettings: BrushSettings = {
   tool: "paint",
-  color: "#ff5b35",
+  color: "#ff805b803580",
   ...DEFAULT_BRUSH_DEFINITION_SETTINGS,
 };

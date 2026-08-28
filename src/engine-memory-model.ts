@@ -18,7 +18,7 @@ import {
   STATIC_PAINT_BUFFER_BYTES,
 } from "./engine-limits.ts";
 import type { LightGlazeStorageMode } from "./engine-strategies";
-import type { LayerFormat } from "./engine-types";
+import type { BrushShapeMaskFormat, LayerFormat } from "./engine-types";
 
 export interface DocumentExtent {
   width?: number;
@@ -104,8 +104,10 @@ export function lightGlazeAdditionalMemoryMiB(
     + commitTileMiB;
 }
 
-export function shapeTextureMemoryMiB(): number {
-  return SHAPE_MASK_PIXEL_COUNT / MEBIBYTE_BYTES;
+export function shapeTextureMemoryMiB(_format: BrushShapeMaskFormat = "r16float"): number {
+  // Both comparison modes use the same guarded R16F allocation. The 8-bit
+  // mode quantizes source samples in the reconstruction shader only.
+  return SHAPE_MASK_PIXEL_COUNT * 2 / MEBIBYTE_BYTES;
 }
 
 export function staticPaintBufferMemoryMiB(): number {

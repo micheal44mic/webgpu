@@ -5,8 +5,9 @@
 import type { MutableStrokePerformanceProfile } from "./engine-stats";
 import type { Stamp } from "./engine-stroke-types";
 import type { BrushSettings } from "./engine-types";
-import { clamp, hexToHsl } from "./color";
-import { previewHslToRgb, previewRandom01 } from "./engine-math";
+import { brushColorHsl } from "./brush-color.ts";
+import { clamp } from "./color";
+import { previewHslToSrgb, previewRandom01 } from "./engine-math";
 
 export type AdaptivePreviewConcreteActivationReason =
   | "probe-timeout"
@@ -129,7 +130,17 @@ export function adaptiveSpacingMaxExtraPercentPointsForPlatform(): number {
 export function adaptivePreviewRgb(
   colorSeed: number,
   settings: BrushSettings,
-  baseHsl: readonly [number, number, number] = hexToHsl(settings.color),
+  baseHsl: readonly [number, number, number] = brushColorHsl(settings),
+): [number, number, number] {
+  const [red, green, blue] = adaptivePreviewSrgb(colorSeed, settings, baseHsl);
+  return [red * 255, green * 255, blue * 255];
+}
+
+/** Float encoded-sRGB used by authoritative GPU preview and glaze tinting. */
+export function adaptivePreviewSrgb(
+  colorSeed: number,
+  settings: BrushSettings,
+  baseHsl: readonly [number, number, number] = brushColorHsl(settings),
 ): [number, number, number] {
   const hueDelta = (previewRandom01(colorSeed, 1) - 0.5)
     * 2
@@ -142,7 +153,7 @@ export function adaptivePreviewRgb(
     * settings.lightnessJitter;
   const darkness = previewRandom01(colorSeed, 4) * settings.darknessJitter;
   const lightnessBeforeDarkness = clamp(baseHsl[2] + lightnessDelta, 0, 1);
-  return previewHslToRgb(
+  return previewHslToSrgb(
     baseHsl[0] + hueDelta,
     baseHsl[1] + saturationDelta,
     lightnessBeforeDarkness * (1 - darkness),

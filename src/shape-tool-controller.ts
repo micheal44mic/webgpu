@@ -13,6 +13,7 @@ import {
 } from "./shape-creation-interaction-core";
 import { createVectorShapeDraft } from "./vector-shape-core";
 import type { VectorTextViewState } from "./vector-text-types";
+import { brushColorCssHex } from "./brush-color.ts";
 
 const MINIMUM_SHAPE_CSS_PIXELS = 3;
 
@@ -54,7 +55,11 @@ export interface ShapeToolControllerOptions {
 }
 
 function normalizedColor(value: string, fallback = "#111111"): string {
-  return /^#[0-9a-f]{6}$/i.test(value.trim()) ? value.trim().toLowerCase() : fallback;
+  try {
+    return brushColorCssHex(value);
+  } catch {
+    return fallback;
+  }
 }
 
 function shapeName(draft: Readonly<ShapeCreationDraft>): string {

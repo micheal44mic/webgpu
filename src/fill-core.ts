@@ -17,6 +17,9 @@ import {
   CONNECTED_COLOR_MAX_DISTANCE,
   connectedStraightSrgbColorsMatch,
 } from "./color-match-core.ts";
+import { parseBrushColorSrgb, srgbChannelToLinear } from "./brush-color.ts";
+
+export { srgbChannelToLinear } from "./brush-color.ts";
 
 export const GPU_FILL_STRATEGY =
   "webgpu-hierarchical-ccl-4-connected-transparent-underlay-base-residual-fringe3-recolor-reference-replace-live-preview-history1-render8-v12" as const;
@@ -330,22 +333,17 @@ export function fillResidualFringeRadius(percent: number): 0 | 1 | 2 | 3 {
   return FILL_RESIDUAL_FRINGE_MAX_RADIUS;
 }
 
-export function srgbChannelToLinear(value: number): number {
-  const normalized = Math.min(1, Math.max(0, value));
-  return normalized <= 0.04045
-    ? normalized / 12.92
-    : ((normalized + 0.055) / 1.055) ** 2.4;
-}
-
 export function hexToLinearFillColor(hex: string): readonly [number, number, number, 1] {
-  const normalized = hex.trim().replace(/^#/, "");
-  if (!/^[0-9a-fA-F]{6}$/.test(normalized)) {
+  let color: readonly [number, number, number];
+  try {
+    color = parseBrushColorSrgb(hex);
+  } catch {
     throw new Error(`Invalid Fill HEX color: ${hex}`);
   }
   return [
-    srgbChannelToLinear(Number.parseInt(normalized.slice(0, 2), 16) / 255),
-    srgbChannelToLinear(Number.parseInt(normalized.slice(2, 4), 16) / 255),
-    srgbChannelToLinear(Number.parseInt(normalized.slice(4, 6), 16) / 255),
+    srgbChannelToLinear(color[0]),
+    srgbChannelToLinear(color[1]),
+    srgbChannelToLinear(color[2]),
     1,
   ];
 }

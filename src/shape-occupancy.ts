@@ -5,6 +5,8 @@
  */
 import {
   SHAPE_MASK_SIZE,
+  SHAPE_MASK_FILTER_GUARD_TEXELS,
+  SHAPE_MASK_FILTER_UV_SCALE,
   SHAPE_OCCUPANCY_CELL_COUNT,
   SHAPE_OCCUPANCY_CELL_SIZE,
   SHAPE_OCCUPANCY_GRID_SIZE,
@@ -27,7 +29,15 @@ export interface ShapeOccupancySelection {
   candidateCoverageRatio: number;
 }
 
-export function buildShapeOccupancyMaps(mipMasks: readonly Uint8Array[]): {
+export interface ShapeOccupancyBuildOptions {
+  /** Protected masks include the transparent sampling guard and are mapped back to authored space. */
+  coordinateFrame?: "logical" | "protected";
+}
+
+export function buildShapeOccupancyMaps(
+  mipMasks: readonly Uint8Array[],
+  options: ShapeOccupancyBuildOptions = {},
+): {
   words: Uint32Array;
   activeCells: number[];
   coverageRatios: number[];
@@ -36,6 +46,12 @@ export function buildShapeOccupancyMaps(mipMasks: readonly Uint8Array[]): {
   const occupied = new Uint8Array(SHAPE_OCCUPANCY_CELL_COUNT);
   const activeCells: number[] = [];
   const coverageRatios: number[] = [];
+  const protectedFrame = options.coordinateFrame === "protected";
+  const toLogicalCoordinate = protectedFrame
+    ? (coordinate: number): number => (
+      coordinate - SHAPE_MASK_FILTER_GUARD_TEXELS
+    ) / SHAPE_MASK_FILTER_UV_SCALE
+    : (coordinate: number): number => coordinate;
 
   for (let mipLevel = 0; mipLevel < SHAPE_OCCUPANCY_MAP_COUNT; mipLevel += 1) {
     const levelMask = mipMasks[mipLevel];
@@ -48,10 +64,22 @@ export function buildShapeOccupancyMaps(mipMasks: readonly Uint8Array[]): {
           continue;
         }
 
-        const minimumSourceX = Math.max(0, (x - 0.5) * sourceScale);
-        const maximumSourceX = Math.min(SHAPE_MASK_SIZE, (x + 1.5) * sourceScale);
-        const minimumSourceY = Math.max(0, (y - 0.5) * sourceScale);
-        const maximumSourceY = Math.min(SHAPE_MASK_SIZE, (y + 1.5) * sourceScale);
+        const minimumSourceX = Math.max(
+          0,
+          toLogicalCoordinate((x - 0.5) * sourceScale),
+        );
+        const maximumSourceX = Math.min(
+          SHAPE_MASK_SIZE,
+          toLogicalCoordinate((x + 1.5) * sourceScale),
+        );
+        const minimumSourceY = Math.max(
+          0,
+          toLogicalCoordinate((y - 0.5) * sourceScale),
+        );
+        const maximumSourceY = Math.min(
+          SHAPE_MASK_SIZE,
+          toLogicalCoordinate((y + 1.5) * sourceScale),
+        );
         const minimumCellX = Math.max(0, Math.floor(minimumSourceX / SHAPE_OCCUPANCY_CELL_SIZE));
         const maximumCellX = Math.min(
           SHAPE_OCCUPANCY_GRID_SIZE - 1,

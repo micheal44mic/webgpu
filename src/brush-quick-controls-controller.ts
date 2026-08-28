@@ -1,4 +1,5 @@
 import type { BrushQuickControlKind, BrushQuickControlSnapshot } from "./brush-settings-controller";
+import { brushColorCssHex, canonicalBrushColorForFormat } from "./brush-color.ts";
 import type { BrushSettings } from "./engine-types";
 import type { CanvasInputTool } from "./canvas-input-controller";
 
@@ -85,8 +86,9 @@ export class BrushQuickControlsController {
   }
 
   syncSettings(settings = this.options.settings.snapshot()): void {
-    this.options.elements.colorInput.value = settings.color;
-    this.options.elements.colorSwatch.style.backgroundColor = settings.color;
+    const cssColor = brushColorCssHex(settings.color);
+    this.options.elements.colorInput.value = cssColor;
+    this.options.elements.colorSwatch.style.backgroundColor = cssColor;
     this.syncVisuals();
     this.options.markLibraryPreviewDirty();
   }
@@ -187,7 +189,10 @@ export class BrushQuickControlsController {
     if (activeTool !== "paint" && activeTool !== "blend") {
       this.options.selectPaintTool();
     }
-    const settings = this.options.settings.update({ color: colorInput.value });
+    const current = this.options.settings.snapshot();
+    const settings = this.options.settings.update({
+      color: canonicalBrushColorForFormat(colorInput.value, current.shapeMaskFormat),
+    });
     this.syncSettings(settings);
     this.options.updateHistoryControls();
   }

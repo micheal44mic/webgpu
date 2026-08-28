@@ -148,6 +148,10 @@ assert.equal(countFillTiles(Uint32Array.from([0, 1, 0x80000001])), 3);
 assert.throws(() => normalizeFillTolerance(Number.NaN));
 assert.deepEqual(hexToLinearFillColor("#000000"), [0, 0, 0, 1]);
 assert.deepEqual(hexToLinearFillColor("ffffff"), [1, 1, 1, 1]);
+assert.equal(
+  hexToLinearFillColor("#800180018001")[0],
+  srgbChannelToLinear(0x8001 / 65_535),
+);
 assert.throws(() => hexToLinearFillColor("#fff"));
 assert.deepEqual(FILL_COMPOSITE_MODE_CODE, {
   "solid-underlay": 0,
@@ -968,7 +972,10 @@ assert.match(
   main,
   /getFillSettings: \(\) => \(\{[\s\S]*?color: brushSettingsController\.snapshot\(\)\.color/,
 );
-assert.match(main, /setFillColor: \(color\) => \{[\s\S]*?brushSettingsController\.update\(\{ color \}\)/);
+assert.match(
+  main,
+  /setFillColor: \(color\) => \{[\s\S]*?canonicalBrushColorForFormat\(color, current\.shapeMaskFormat\)/,
+);
 const setFillColorSource = main.slice(
   main.indexOf("  setFillColor: (color) => {"),
   main.indexOf("  onClose:", main.indexOf("  setFillColor: (color) => {")),

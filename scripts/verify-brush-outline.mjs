@@ -561,13 +561,48 @@ assert.ok(device.buffers.every((buffer) => buffer.destroyed),
   "dispose deve liberare tutti i buffer GPU della preview");
 assert.equal(context.unconfigureCalls, 1);
 
-const polarityIndex = resourcesSource.indexOf(
-  "if (!polarityAlreadyApplied && authoredInvert !== shapeInvert)",
+const shapeResourcesStart = resourcesSource.indexOf(
+  "export async function createShapeMaskResources(",
 );
-const boundaryIndex = resourcesSource.indexOf("buildBrushMaskOutline(baseMask");
-const uploadIndex = resourcesSource.indexOf("engine.device.createTexture", boundaryIndex);
-assert.ok(polarityIndex >= 0 && boundaryIndex > polarityIndex && uploadIndex > boundaryIndex,
-  "outline e texture WebGPU devono usare la stessa maschera post-polarita");
+const shapeResourcesEnd = resourcesSource.indexOf(
+  "export function destroyShapeMaskResources(",
+  shapeResourcesStart,
+);
+const shapeResourcesSource = resourcesSource.slice(shapeResourcesStart, shapeResourcesEnd);
+const polarityIndex = shapeResourcesSource.indexOf(
+  "if (authoredInvert !== shapeInvert)",
+);
+const polarityMutationIndex = shapeResourcesSource.indexOf(
+  "scalar16[index] = 65535 - scalar16[index]",
+  polarityIndex,
+);
+const boundaryIndex = shapeResourcesSource.indexOf(
+  "buildBrushMaskOutline(baseMask",
+  polarityMutationIndex,
+);
+const uploadIndex = shapeResourcesSource.indexOf(
+  "const texture = await createR16FloatShapeTexture(",
+  boundaryIndex,
+);
+assert.ok(
+  shapeResourcesStart >= 0
+    && shapeResourcesEnd > shapeResourcesStart
+    && polarityIndex >= 0
+    && polarityMutationIndex > polarityIndex
+    && boundaryIndex > polarityMutationIndex
+    && uploadIndex > boundaryIndex,
+  "outline e texture WebGPU devono usare la stessa maschera post-polarita",
+);
+assert.match(
+  shapeResourcesSource,
+  /const value = quantizeSource\(scalar16\[index\]\)/,
+  "l'outline deve derivare dal campo scalar16 dopo la polarita",
+);
+assert.match(
+  shapeResourcesSource,
+  /const texture = await createR16FloatShapeTexture\(\s*engine,\s*scalar16,\s*sourceWidth,\s*sourceHeight,\s*sourceLabel,\s*shapeMaskFormat,\s*\)/,
+  "la texture R16F deve ricevere lo stesso campo scalar16 post-polarita dell'outline",
+);
 assert.match(engineSource, /getBrushOutlineSnapshot\(\): BrushOutlineSnapshot/);
 assert.match(engineSource, /getBrushOutlineGpuTarget\(\): BrushOutlineGpuTarget \| null/);
 assert.match(engineSource, /this\.shapeLoadedAssetId === shapeAssetIdForSettings\(this\.settings\)/);

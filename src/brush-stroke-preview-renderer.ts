@@ -1,6 +1,7 @@
 import {
-  adaptivePreviewRgb,
+  adaptivePreviewSrgb,
 } from "./adaptive-preview-runtime";
+import { srgbChannelToLinear } from "./brush-color.ts";
 import type { BrushEngine } from "./brush-engine";
 import {
   destroyGrainTextureResources,
@@ -18,7 +19,8 @@ import {
   STAMP_VERTICES_PER_COPY,
 } from "./engine-limits";
 import { assertShaderCompiled } from "./engine-gpu-utils";
-import { previewHash32, srgbByteToLinear } from "./engine-math";
+import { previewHash32 } from "./engine-math";
+import { RGBA16_FLOAT_BYTES_PER_PIXEL } from "./float16";
 import {
   packStampsIntoUpload,
   populateBrushUniformUpload,
@@ -35,6 +37,11 @@ import type {
   LayerPoint,
 } from "./engine-types";
 import type { GrainTextureResources, ShapeMaskResources } from "./engine-paint-resources";
+import {
+  shapeAssetIdForSettings,
+  shapeInvertForSettings,
+  shapeMaskFormatForSettings,
+} from "./engine-brush-assets";
 import type { Stamp } from "./engine-stroke-types";
 import {
   nextPaintStampSeed,
@@ -130,9 +137,14 @@ function nextPowerOfTwo(value: number): number {
   return result;
 }
 
-function hashPreviewPixels(bytes: Uint8Array, width: number, height: number, bytesPerRow: number): string {
+function hashPreviewPixels(
+  bytes: Uint8Array,
+  width: number,
+  height: number,
+  bytesPerRow: number,
+): string {
   let hash = 0x811c9dc5;
-  const rowBytes = width * 4;
+  const rowBytes = width * RGBA16_FLOAT_BYTES_PER_PIXEL;
   for (let y = 0; y < height; y += 1) {
     const rowStart = y * bytesPerRow;
     for (let offset = 0; offset < rowBytes; offset += 1) {
@@ -454,7 +466,9 @@ export class AuthoritativeBrushStrokePreviewRenderer {
       let readback: GPUBuffer | null = null;
       let readbackBytesPerRow = 0;
       if (options.computePixelHash) {
-        readbackBytesPerRow = Math.ceil((width * 4) / 256) * 256;
+        readbackBytesPerRow = Math.ceil(
+          (width * RGBA16_FLOAT_BYTES_PER_PIXEL) / 256,
+        ) * 256;
         readback = this.engine.device.createBuffer({
           label: "Authoritative brush preview diagnostic readback",
           size: readbackBytesPerRow * height,
@@ -693,12 +707,16 @@ export class AuthoritativeBrushStrokePreviewRenderer {
     try {
       const shapeRequired = settings.shape === "shape";
       const grainRequired = isTexturizedGrainActive(settings);
+      const shapeAssetId = shapeAssetIdForSettings(settings);
+      const shapeInvert = shapeInvertForSettings(settings);
+      const shapeMaskFormat = shapeMaskFormatForSettings(settings);
       const activeLoads: Promise<unknown>[] = [];
       if (
         shapeRequired
         && this.engine.shapeLoadingPromise
-        && this.engine.shapeDesiredAssetId === settings.shapeAssetId
-        && this.engine.shapeDesiredInvert === settings.shapeInvert
+        && this.engine.shapeDesiredAssetId === shapeAssetId
+        && this.engine.shapeDesiredInvert === shapeInvert
+        && this.engine.shapeDesiredFormat === shapeMaskFormat
       ) {
         activeLoads.push(this.engine.shapeLoadingPromise);
       }
@@ -714,8 +732,9 @@ export class AuthoritativeBrushStrokePreviewRenderer {
 
       const activeShapeMatches = !shapeRequired || (
         this.engine.shapeResourceSet
-        && this.engine.shapeLoadedAssetId === settings.shapeAssetId
-        && this.engine.shapeLoadedInvert === settings.shapeInvert
+        && this.engine.shapeLoadedAssetId === shapeAssetId
+        && this.engine.shapeLoadedInvert === shapeInvert
+        && this.engine.shapeLoadedFormat === shapeMaskFormat
       );
       const activeGrainMatches = !grainRequired || (
         this.engine.grainResourceSet
@@ -736,8 +755,9 @@ export class AuthoritativeBrushStrokePreviewRenderer {
           shapeRequired
             ? createShapeMaskResources(
               this.engine,
-              settings.shapeAssetId,
-              settings.shapeInvert,
+              shapeAssetId,
+              shapeInvert,
+              shapeMaskFormat,
             )
             : Promise.resolve(null),
           grainRequired
@@ -948,14 +968,14 @@ export class AuthoritativeBrushStrokePreviewRenderer {
     const intense = settings.blendMode === "intense-blending";
     let tintLinear: readonly [number, number, number] | null = null;
     if (light && stamps.length > 0) {
-      const [red, green, blue] = adaptivePreviewRgb(
+      const [red, green, blue] = adaptivePreviewSrgb(
         previewHash32(stamps[0].seed),
         settings,
       );
       tintLinear = [
-        srgbByteToLinear(red),
-        srgbByteToLinear(green),
-        srgbByteToLinear(blue),
+        srgbChannelToLinear(red),
+        srgbChannelToLinear(green),
+        srgbChannelToLinear(blue),
       ];
     }
     const glazeUpload = new ArrayBuffer(LIGHT_GLAZE_UNIFORM_BYTES);

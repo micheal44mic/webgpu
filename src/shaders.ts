@@ -3,6 +3,8 @@ import { activeClippingGroupTexelShader } from "./clipping-group-shader";
 import {
   DOCUMENT_HEIGHT,
   DOCUMENT_WIDTH,
+  SHAPE_MASK_FILTER_CONTENT_SIZE,
+  SHAPE_MASK_FILTER_GUARD_TEXELS,
   SHAPE_MASK_FILTER_UV_HALF_EXTENT,
 } from "./engine-limits";
 
@@ -10,6 +12,7 @@ export const brushShader = /* wgsl */ `
 const MAX_COUNT: u32 = 24u;
 const COPY_COUNT_MASK: u32 = 0xffu;
 const SYMMETRY_MODE_SHIFT: u32 = 8u;
+const DIAGNOSTIC_8_BIT_FLAG: u32 = 2u;
 const DOCUMENT_WIDTH: f32 = ${DOCUMENT_WIDTH};
 const DOCUMENT_HEIGHT: f32 = ${DOCUMENT_HEIGHT};
 const TAU: f32 = 6.283185307179586;
@@ -111,6 +114,15 @@ fn srgbToLinear(value: vec3<f32>) -> vec3<f32> {
     srgbToLinearChannel(value.r),
     srgbToLinearChannel(value.g),
     srgbToLinearChannel(value.b)
+  );
+}
+
+fn sourcePrecisionCoverage(value: f32) -> f32 {
+  let continuous = clamp(value, 0.0, 1.0);
+  return select(
+    continuous,
+    round(continuous * 255.0) / 255.0,
+    (brush.options.z & DIAGNOSTIC_8_BIT_FLAG) != 0u
   );
 }
 
@@ -318,7 +330,9 @@ fn circleCoverage(input: VertexOutput) -> f32 {
 
   let hardness = clamp(brush.controls.y, 0.0, 1.0);
   let innerEdge = min(hardness * hardness, 1.0 - antialiasWidth);
-  let coverage = 1.0 - smoothstep(innerEdge, 1.0 + antialiasWidth, radiusSquared);
+  let coverage = sourcePrecisionCoverage(
+    1.0 - smoothstep(innerEdge, 1.0 + antialiasWidth, radiusSquared)
+  );
 
   if (coverage <= 0.0) {
     discard;
@@ -328,7 +342,9 @@ fn circleCoverage(input: VertexOutput) -> f32 {
 
 fn shapeCoverage(input: VertexOutput) -> f32 {
   let uv = input.localPosition * SHAPE_MASK_UV_HALF_EXTENT + vec2<f32>(0.5);
-  let sourceCoverage = textureSample(shapeMaskTexture, shapeMaskSampler, uv).r;
+  let sourceCoverage = sourcePrecisionCoverage(
+    textureSample(shapeMaskTexture, shapeMaskSampler, uv).r
+  );
   let hardness = clamp(brush.controls.y, 0.0, 1.0);
   let coverage = mix(sourceCoverage * sourceCoverage, sourceCoverage, hardness);
 
@@ -391,13 +407,13 @@ fn occupiedShapeCoverage(input: VertexOutput) -> f32 {
     discard;
   }
 
-  let sourceCoverage = textureSampleGrad(
+  let sourceCoverage = sourcePrecisionCoverage(textureSampleGrad(
     shapeMaskTexture,
     shapeMaskSampler,
     samplingUv,
     uvDx,
     uvDy
-  ).r;
+  ).r);
   let hardness = clamp(brush.controls.y, 0.0, 1.0);
   let coverage = mix(sourceCoverage * sourceCoverage, sourceCoverage, hardness);
 
@@ -425,12 +441,13 @@ fn shapeOccupancyCoverageFragmentMain(input: VertexOutput) -> @location(0) vec4<
 }
 `;
 
-// Grain remains an opt-in fragment path. The legacy brushShader above is not
-// modified or given an inactive branch: Grain Off therefore keeps compiling
-// and executing the exact previous shader entry points and bindings.
+// Grain remains an opt-in fragment path. Grain Off keeps its smaller shader
+// entry points and bindings; the shared precision flag is resolved only where
+// a coverage value is produced.
 export const texturizedGrainShader = /* wgsl */ `
 const SHAPE_OCCUPANCY_GRID_SIZE: u32 = 256u;
 const SHAPE_MASK_UV_HALF_EXTENT: f32 = ${SHAPE_MASK_FILTER_UV_HALF_EXTENT};
+const DIAGNOSTIC_8_BIT_FLAG: u32 = 2u;
 
 struct BrushUniforms {
   layerSize: vec2<f32>,
@@ -472,6 +489,15 @@ struct ShapeOccupancy {
 @group(0) @binding(6) var grainSampler: sampler;
 @group(0) @binding(7) var<uniform> grain: GrainUniforms;
 
+fn sourcePrecisionCoverage(value: f32) -> f32 {
+  let continuous = clamp(value, 0.0, 1.0);
+  return select(
+    continuous,
+    round(continuous * 255.0) / 255.0,
+    (brush.options.z & DIAGNOSTIC_8_BIT_FLAG) != 0u
+  );
+}
+
 fn adjustedGrainCoverage(
   grainUv: vec2<f32>,
   grainUvDx: vec2<f32>,
@@ -512,7 +538,7 @@ fn adjustedGrainCoverage(
   // sampled value is identical to the previous per-fragment dot(rgb) result,
   // without carrying three unused channels.
   // The source image alpha does not modulate the paint, as before.
-  let source = sourceSample.r;
+  let source = sourcePrecisionCoverage(sourceSample.r);
   let adjusted = clamp(
     (source - 0.5) * grain.contrastFactor + 0.5 + grain.brightness,
     0.0,
@@ -601,7 +627,9 @@ fn circleGrainCoverage(input: FragmentInput) -> f32 {
 
   let hardness = clamp(brush.controls.y, 0.0, 1.0);
   let innerEdge = min(hardness * hardness, 1.0 - antialiasWidth);
-  var coverage = 1.0 - smoothstep(innerEdge, 1.0 + antialiasWidth, radiusSquared);
+  var coverage = sourcePrecisionCoverage(
+    1.0 - smoothstep(innerEdge, 1.0 + antialiasWidth, radiusSquared)
+  );
 
   if (coverage <= 0.0) {
     discard;
@@ -634,7 +662,9 @@ fn shapeGrainCoverage(input: FragmentInput) -> f32 {
   let grainUvDx = dpdx(grainUv);
   let grainUvDy = dpdy(grainUv);
   let uv = input.localPosition * SHAPE_MASK_UV_HALF_EXTENT + vec2<f32>(0.5);
-  let sourceCoverage = textureSample(shapeMaskTexture, shapeMaskSampler, uv).r;
+  let sourceCoverage = sourcePrecisionCoverage(
+    textureSample(shapeMaskTexture, shapeMaskSampler, uv).r
+  );
   let hardness = clamp(brush.controls.y, 0.0, 1.0);
   var coverage = mix(sourceCoverage * sourceCoverage, sourceCoverage, hardness);
 
@@ -677,13 +707,13 @@ fn occupiedShapeGrainCoverage(input: FragmentInput) -> f32 {
     discard;
   }
 
-  let sourceCoverage = textureSampleGrad(
+  let sourceCoverage = sourcePrecisionCoverage(textureSampleGrad(
     shapeMaskTexture,
     shapeMaskSampler,
     samplingUv,
     uvDx,
     uvDy
-  ).r;
+  ).r);
   let hardness = clamp(brush.controls.y, 0.0, 1.0);
   var coverage = mix(sourceCoverage * sourceCoverage, sourceCoverage, hardness);
 
@@ -720,27 +750,13 @@ fn shapeOccupancyCoverageFragmentMain(input: FragmentInput) -> @location(0) vec4
 // immediately preceding mip with a linear clamp sampler and writes the next
 // level. This keeps asset preparation on WebGPU/WGSL and handles the native
 // source dimensions directly without an intermediate resample.
-/**
- * Conversione della sorgente RGBA in campo scalare, una sola volta al carico.
- *
- * La luma e' esattamente quella che il fragment shader di pittura calcolava a
- * ogni campionamento: stessi pesi, stesso risultato. Cambia solo **quando**
- * viene calcolata. E poiche' la luma e' una combinazione lineare di R, G e B e
- * anche il downsample delle mip e' lineare, le due operazioni commutano: la
- * catena mip generata sulla luma coincide con la luma della catena generata su
- * RGB. L'unica differenza e' la quantizzazione, e va nella direzione buona —
- * prima ogni livello mip veniva arrotondato a 8 bit per canale, ora resta in
- * mezza precisione.
- *
- * `textureLoad` invece di un campionamento filtrato: sorgente e destinazione
- * hanno la stessa taglia, quindi la corrispondenza deve essere texel a texel.
- */
+/** Converts native unsigned 16-bit scalar samples to the resident R16F field. */
 export const grainLumaShader = /* wgsl */ `
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
 };
 
-@group(0) @binding(0) var sourceTexture: texture_2d<f32>;
+@group(0) @binding(0) var sourceTexture: texture_2d<u32>;
 
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
@@ -756,9 +772,80 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 
 @fragment
 fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
-  let texel = textureLoad(sourceTexture, vec2<i32>(fragmentPosition.xy), 0);
-  let luma = dot(texel.rgb, vec3<f32>(0.299, 0.587, 0.114));
-  return vec4<f32>(luma, 0.0, 0.0, 1.0);
+  let sample = textureLoad(sourceTexture, vec2<i32>(fragmentPosition.xy), 0).r;
+  return vec4<f32>(f32(sample) / 65535.0, 0.0, 0.0, 1.0);
+}
+`;
+
+/**
+ * Reconstructs native unsigned 16-bit samples into the guarded R16F frame.
+ * The diagnostic 8-bit entry point quantizes source texels before the same
+ * bilinear reconstruction; guard geometry and every later R16F mip stay equal.
+ */
+export const shapeR16FloatBaseShader = /* wgsl */ `
+struct VertexOutput {
+  @builtin(position) position: vec4<f32>,
+};
+
+const GUARD_TEXELS: f32 = ${SHAPE_MASK_FILTER_GUARD_TEXELS};
+const CONTENT_SIZE: f32 = ${SHAPE_MASK_FILTER_CONTENT_SIZE};
+
+@group(0) @binding(0) var sourceTexture: texture_2d<u32>;
+
+@vertex
+fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+  let positions = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>( 3.0, -1.0),
+    vec2<f32>(-1.0,  3.0)
+  );
+  var output: VertexOutput;
+  output.position = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
+  return output;
+}
+
+fn sourceCoverage(coordinate: vec2<i32>, quantizeTo8Bit: bool) -> f32 {
+  let dimensions = vec2<i32>(textureDimensions(sourceTexture, 0));
+  let clamped = clamp(coordinate, vec2<i32>(0), dimensions - vec2<i32>(1));
+  let normalized = f32(textureLoad(sourceTexture, clamped, 0).r) / 65535.0;
+  return select(normalized, round(normalized * 255.0) / 255.0, quantizeTo8Bit);
+}
+
+fn reconstructedCoverage(fragmentPosition: vec4<f32>, quantizeTo8Bit: bool) -> f32 {
+  let innerPosition = fragmentPosition.xy - vec2<f32>(GUARD_TEXELS);
+  if (
+    any(innerPosition < vec2<f32>(0.0))
+    || any(innerPosition >= vec2<f32>(CONTENT_SIZE))
+  ) {
+    return 0.0;
+  }
+  let dimensions = vec2<f32>(textureDimensions(sourceTexture, 0));
+  let sourcePosition = innerPosition * dimensions / vec2<f32>(CONTENT_SIZE) - vec2<f32>(0.5);
+  let lower = vec2<i32>(floor(sourcePosition));
+  let fraction = fract(sourcePosition);
+  let top = mix(
+    sourceCoverage(lower, quantizeTo8Bit),
+    sourceCoverage(lower + vec2<i32>(1, 0), quantizeTo8Bit),
+    fraction.x
+  );
+  let bottom = mix(
+    sourceCoverage(lower + vec2<i32>(0, 1), quantizeTo8Bit),
+    sourceCoverage(lower + vec2<i32>(1, 1), quantizeTo8Bit),
+    fraction.x
+  );
+  return mix(top, bottom, fraction.y);
+}
+
+@fragment
+fn fragmentMain16(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
+  let coverage = reconstructedCoverage(fragmentPosition, false);
+  return vec4<f32>(coverage, 0.0, 0.0, 1.0);
+}
+
+@fragment
+fn fragmentMain8(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
+  let coverage = reconstructedCoverage(fragmentPosition, true);
+  return vec4<f32>(coverage, 0.0, 0.0, 1.0);
 }
 `;
 

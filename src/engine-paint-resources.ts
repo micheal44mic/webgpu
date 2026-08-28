@@ -8,6 +8,7 @@ import type {
   BrushGrainAssetId,
   BrushSettings,
   BrushShapeAssetId,
+  BrushShapeMaskFormat,
 } from "./engine-types";
 import type { BrushMaskOutline } from "./brush-outline-core";
 
@@ -49,7 +50,9 @@ export interface LightGlazeResourceSet {
 export interface ShapeMaskResources {
   assetId: BrushShapeAssetId;
   invert: boolean;
+  format: BrushShapeMaskFormat;
   texture: GPUTexture;
+  memoryBytes: number;
   decodeStrategy: ShapeMaskDecodeStrategy;
   identity: number;
   occupancyWords: Uint32Array;

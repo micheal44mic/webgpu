@@ -13,6 +13,7 @@ const catalog = readFileSync(`${root}/src/brush-catalog.ts`, "utf8");
 const definition = readFileSync(`${root}/src/brush-definition.ts`, "utf8");
 const transfer = readFileSync(`${root}/src/brush-studio-transfer.ts`, "utf8");
 const engine = readFileSync(`${root}/src/brush-engine.ts`, "utf8");
+const assetRegistry = readFileSync(`${root}/src/brush-asset-registry.ts`, "utf8");
 const previewRenderer = readFileSync(`${root}/src/brush-stroke-preview-renderer.ts`, "utf8");
 const brushSettingsController = readFileSync(
   `${root}/src/brush-settings-controller.ts`,
@@ -29,6 +30,15 @@ for (const id of [
   "mobileBrushStudioPreviewCanvas",
   "mobileBrushStudioStrokeTab",
   "mobileBrushStudioShapeTab",
+  "mobileBrushStudioShapeMaskFormat",
+  "mobileBrushStudioColor16Hex",
+  "mobileBrushStudioColor16Red",
+  "mobileBrushStudioColor16Green",
+  "mobileBrushStudioColor16Blue",
+  "mobileBrushColor16Status",
+  "mobileBrushStudioColor16Sample",
+  "mobileBrushStudioShapeSourcePrecision",
+  "mobileBrushStudioGrainSourcePrecision",
   "mobileBrushStudioGrainTab",
   "mobileBrushStudioDynamicsTab",
   "mobileBrushStudioShapeFile",
@@ -74,6 +84,54 @@ assert.match(storage, /transaction\.addEventListener\("complete"/);
 assert.match(storage, /export function deleteBrushStudioSavedBrush/);
 assert.match(html, /id="mobileBrushStudioName"[\s\S]*?maxlength="48"/);
 assert.match(html, /id="mobileBrushStudioSpacing"[^>]*max="99"/);
+const precisionStart = html.indexOf('id="mobileBrushStudioShapeMaskFormat"');
+const shapeMaskPrecisionMarkup = html.slice(
+  precisionStart,
+  html.indexOf("</fieldset>", precisionStart),
+);
+assert.match(shapeMaskPrecisionMarkup, /role="radiogroup"/);
+assert.equal(
+  (shapeMaskPrecisionMarkup.match(/role="radio"/g) ?? []).length,
+  2,
+  "Brush Precision must expose exactly the diagnostic 8-bit and Full 16F choices",
+);
+assert.match(shapeMaskPrecisionMarkup, /data-mobile-brush-shape-mask-format="r8unorm"[^>]*>8-bit Compare</);
+assert.match(shapeMaskPrecisionMarkup, /data-mobile-brush-shape-mask-format="r16float"[^>]*>Full 16F</);
+assert.match(
+  studio,
+  /const format = button\.dataset\.mobileBrushShapeMaskFormat;[\s\S]*?format !== "r8unorm" && format !== "r16float"[\s\S]*?draft\.shapeMaskFormat = format;[\s\S]*?}, true\)/,
+  "Brush Precision must update the draft and immediately refresh brush resources",
+);
+assert.match(
+  studio,
+  /this\.shapeMaskFormatButtons,[\s\S]*?"mobileBrushShapeMaskFormat",[\s\S]*?shapeMaskFormatForSettings\(settings\)/,
+  "Brush Precision controls must restore both current and legacy brush settings",
+);
+assert.match(
+  studio,
+  /canonicalBrushColor16\(hexInput\.value\)[\s\S]*?draft\.color = color/,
+  "the exact color editor must preserve a canonical 16-bit-per-channel source",
+);
+assert.match(
+  studio,
+  /brushColor16FromChannels\(channels\[0\], channels\[1\], channels\[2\]\)[\s\S]*?draft\.color = color/,
+  "the numeric RGB editor must write the authoritative 16-bit color",
+);
+assert.match(
+  studio,
+  /draft\.shapeMaskFormat = "r16float";[\s\S]*?draft\.color = "#7fff7fff7fff";[\s\S]*?Comparison sample ready/,
+  "the comparison sample must start in Full 16F and retain an off-grid 16-bit color",
+);
+assert.doesNotMatch(
+  studio,
+  /formatButton\.disabled\s*=\s*!hasSource/,
+  "Brush Precision must remain available for the analytic Shape source",
+);
+assert.match(
+  studio,
+  /8-bit comparison · 16-bit source retained/,
+  "the A\/B switch must explain that it never destroys the exact color source",
+);
 assert.doesNotMatch(
   main,
   /readBrushSettings|applyBrushControls/,
@@ -230,9 +288,22 @@ assert.match(
 );
 assert.match(
   studio,
-  /normalizedBrushSourceBlob\(this\.document, decoded\)[\s\S]*?blob: normalizedBlob/,
-  "Shape and Grain must persist their bounded normalized source, not the original file",
+  /normalizedBrushSourceBlob\(this\.document, decoded, file\)[\s\S]*?blob: normalizedBlob/,
+  "Shape and Grain must persist the precision-preserving source selected during decode",
 );
+assert.match(
+  studio,
+  /directGrayscalePng[\s\S]*?decodeGrayscalePng\(await blob\.arrayBuffer\(\)\)[\s\S]*?scalar16: decoded\.pixels[\s\S]*?sourceBitDepth: decoded\.sourceBitDepth/,
+  "native grayscale PNGs must bypass browser bitmap and Canvas decoding",
+);
+assert.match(
+  studio,
+  /if \(source\.scalar16 && originalBlob\)[\s\S]*?originalBlob\.slice\(0, originalBlob\.size, "image\/png"\)/,
+  "native grayscale PNG storage and transfer must preserve the original byte stream",
+);
+assert.match(assetRegistry, /readonly scalar16: Uint16Array/);
+assert.match(assetRegistry, /readonly sourceBitDepth: 8 \| 16/);
+assert.match(assetRegistry, /scalar16FromRgba\(rgba!, kind\)/);
 assert.match(
   studio,
   /brushSourceDimensionsFromBytes\(header\)[\s\S]*?brushSourceResizePlan[\s\S]*?browser\.createImageBitmap\(blob,[\s\S]*?resizeWidth: plan\.width/,
@@ -415,6 +486,7 @@ try {
     spacingPercent: 37,
     flow: 0.63,
     opacity: 0.41,
+    shapeMaskFormat: "r16float",
     shapeRotation: "fixed",
     shapeScatter: 0.28,
     grainMode: "moving",
@@ -432,6 +504,7 @@ try {
     "spacingPercent",
     "flow",
     "opacity",
+    "shapeMaskFormat",
     "shapeRotation",
     "shapeScatter",
     "grainMode",

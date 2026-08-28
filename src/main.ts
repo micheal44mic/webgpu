@@ -1,4 +1,5 @@
 import "./styles.css";
+import { canonicalBrushColorForFormat } from "./brush-color.ts";
 import { EditorToolsController } from "./editor-tools-controller";
 import type { EditorRasterEffectKind } from "./editor-tools-contract";
 import { SceneImportBridge } from "./scene-import-bridge";
@@ -2000,7 +2001,10 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
     }
   },
   setFillColor: (color) => {
-    const settings = brushSettingsController.update({ color });
+    const current = brushSettingsController.snapshot();
+    const settings = brushSettingsController.update({
+      color: canonicalBrushColorForFormat(color, current.shapeMaskFormat),
+    });
     brushQuickControlsController?.syncSettings(settings);
     updateHistoryControls();
   },

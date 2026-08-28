@@ -18,6 +18,7 @@ import type {
   BrushGrainAssetId,
   BrushSettings,
   BrushShapeAssetId,
+  BrushShapeMaskFormat,
 } from "./engine-types";
 export {
   CustomBrushAssetRegistry,
@@ -52,6 +53,12 @@ export function shapeInvertForSettings(
   settings: Readonly<BrushSettings> | Partial<BrushSettings>,
 ): boolean {
   return settings.shapeInvert === true;
+}
+
+export function shapeMaskFormatForSettings(
+  settings: Readonly<BrushSettings> | Partial<BrushSettings>,
+): BrushShapeMaskFormat {
+  return settings.shapeMaskFormat === "r8unorm" ? "r8unorm" : "r16float";
 }
 
 export function shapeAssetIdForSettings(

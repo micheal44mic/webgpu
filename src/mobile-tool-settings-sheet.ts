@@ -25,6 +25,7 @@ import type {
 } from "./vector-editor-contract";
 import type { EditorToolSettingsKind } from "./editor-tools-contract";
 import type { SceneLayerKey } from "./scene-layer-read-model";
+import { brushColorCssHex } from "./brush-color.ts";
 
 export type MobileToolSettingsKind =
   | EditorToolSettingsKind
@@ -201,7 +202,11 @@ function requiredElement<T extends HTMLElement>(root: ParentNode, id: string): T
 }
 
 function colorInputValue(value: string): string {
-  return /^#[0-9a-f]{6}$/i.test(value) ? value : "#000000";
+  try {
+    return brushColorCssHex(value);
+  } catch {
+    return "#000000";
+  }
 }
 
 function mobileBlendModeLabel(mode: LayerBlendMode): string {

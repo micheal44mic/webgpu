@@ -97,10 +97,13 @@ function enumValue<const T extends readonly string[]>(
   values: T,
   fallback: T[number],
   strict: boolean,
+  optional = false,
 ): T[number] {
   const value = record[key];
   if (typeof value === "string" && values.includes(value)) return value as T[number];
-  if (strict) throw new BrushDefinitionValidationError(`settings.${key}`);
+  if (strict && !(optional && value === undefined)) {
+    throw new BrushDefinitionValidationError(`settings.${key}`);
+  }
   return fallback;
 }
 
@@ -115,6 +118,7 @@ export const DEFAULT_BRUSH_DEFINITION_SETTINGS: Readonly<BrushDefinitionSettings
   shape: "circle",
   shapeAssetId: "legacy-shape",
   shapeInvert: false,
+  shapeMaskFormat: "r16float",
   shapeRotation: "fixed",
   shapeScatter: 0,
   grainMode: "off",
@@ -189,6 +193,14 @@ export function normalizeBrushDefinitionSettings(
     shape: enumValue(record, "shape", ["circle", "shape"] as const, fallback.shape, strict),
     shapeAssetId,
     shapeInvert: booleanValue(record, "shapeInvert", fallback.shapeInvert, strict),
+    shapeMaskFormat: enumValue(
+      record,
+      "shapeMaskFormat",
+      ["r8unorm", "r16float"] as const,
+      fallback.shapeMaskFormat,
+      strict,
+      true,
+    ),
     shapeRotation: enumValue(
       record,
       "shapeRotation",

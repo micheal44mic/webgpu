@@ -120,6 +120,7 @@ const elements = {
 let state = {
   tool: "paint",
   color: "#ff0000",
+  shapeMaskFormat: "r8unorm",
   size: 100,
   opacity: 0.5,
   blendStretch: 0.2,
@@ -192,6 +193,14 @@ elements.colorInput.dispatchEvent(event("input"));
 assert.equal(paintSelections, 0);
 assert.equal(state.color, "#00ff00");
 assert.equal(historyRefreshes, 1);
+
+state = { ...state, color: "#800180018001", shapeMaskFormat: "r16float" };
+controller.syncSettings();
+assert.equal(elements.colorInput.value, "#808080");
+assert.equal(elements.colorSwatch.style.backgroundColor, "#808080");
+elements.colorInput.value = "#010203";
+elements.colorInput.dispatchEvent(event("input"));
+assert.equal(state.color, "#010102020303");
 
 activeTool = "blend";
 controller.syncAvailability(false);

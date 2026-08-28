@@ -27,6 +27,7 @@ export function brushLibraryPreviewFingerprint(
     settings.shape,
     settings.shapeAssetId,
     settings.shapeInvert ? "1" : "0",
+    settings.shapeMaskFormat === "r8unorm" ? "r8unorm" : "r16float",
     settings.shapeRotation,
     fingerprintNumber(settings.shapeScatter),
     settings.grainMode,

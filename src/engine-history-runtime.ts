@@ -94,6 +94,7 @@ import {
   grainAssetIdForSettings,
   shapeAssetIdForSettings,
   shapeInvertForSettings,
+  shapeMaskFormatForSettings,
 } from "./engine-brush-assets";
 import {
   maybeReleaseIdleGrainResources,
@@ -1133,6 +1134,7 @@ export async function rebuildActiveLayerFromHistory(
       await engine.ensureShapeResources(
         shapeAssetIdForSettings(settings),
         shapeInvertForSettings(settings),
+        shapeMaskFormatForSettings(settings),
       );
     }
     if (isTexturizedGrainActive(settings)) {
@@ -1346,10 +1348,12 @@ export async function rebuildActiveLayerFromHistory(
       await engine.ensureShapeResources(
         shapeAssetIdForSettings(engine.settings),
         shapeInvertForSettings(engine.settings),
+        shapeMaskFormatForSettings(engine.settings),
       );
     } else {
       engine.shapeDesiredAssetId = shapeAssetIdForSettings(engine.settings);
       engine.shapeDesiredInvert = shapeInvertForSettings(engine.settings);
+      engine.shapeDesiredFormat = shapeMaskFormatForSettings(engine.settings);
     }
     if (usesStrokeGlazeRenderer(engine.settings)) {
       await engine.ensureLightGlazeResources(engine.settings.blendMode);

@@ -17,6 +17,10 @@ const threeToneMaskPng = Uint8Array.from(Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAMAAAABCAAAAAA+i0toAAAADElEQVR4nGNgaPgPAAIDAYAkYfWXAAAAAElFTkSuQmCC",
   "base64",
 ));
+const native16MaskPng = Uint8Array.from(Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAMAAAABEAAAAABuG5crAAAAD0lEQVR4nGNgYGBkbGAAAAEOAIPpuZi8AAAAAElFTkSuQmCC",
+  "base64",
+));
 
 const decodedThreeToneMask = await pngMask.decodeGrayscalePng8(
   threeToneMaskPng.slice().buffer,
@@ -30,12 +34,16 @@ assert.deepEqual(
   },
   "the portable regression fixture must contain exact 0/128/255 mask samples",
 );
+const decodedNative16Mask = await pngMask.decodeGrayscalePng(native16MaskPng.slice().buffer);
+assert.equal(decodedNative16Mask.sourceBitDepth, 16);
+assert.deepEqual([...decodedNative16Mask.pixels], [0, 257, 32768]);
 
 function persistedSettings(overrides = {}) {
   return {
     shape: "circle",
     shapeAssetId: "legacy-shape",
     shapeInvert: false,
+    shapeMaskFormat: "r8unorm",
     shapeRotation: "fixed",
     shapeScatter: 0,
     grainMode: "off",
@@ -152,6 +160,7 @@ assert.equal(maximumSpacing.settings.spacingPercent, 99);
 
 const legacyPlainParts = await unpackTransfer(plainBlob);
 delete legacyPlainParts.manifest.settings.blendBlur;
+delete legacyPlainParts.manifest.settings.shapeMaskFormat;
 legacyPlainParts.manifest.settings.grainAssetId = "legacy-grain";
 const legacyPlain = await transfer.parseBrushStudioTransferBlob(packTransfer(
   legacyPlainParts.manifest,
@@ -168,10 +177,16 @@ assert.equal(
   "pencil-grain",
   "brushes referencing the removed Cotton Fleece source must migrate to Pencil Grain",
 );
+assert.equal(
+  legacyPlain.settings.shapeMaskFormat,
+  "r16float",
+  "legacy brushes without a precision field must migrate to the native R16F path",
+);
 
 const customSettings = persistedSettings({
   shape: "shape",
   shapeAssetId: "custom-shape:roundtrip",
+  shapeMaskFormat: "r16float",
   grainMode: "off",
   grainAssetId: "custom-grain:roundtrip",
 });
@@ -191,6 +206,11 @@ const customBlob = await transfer.createBrushStudioTransferBlob({
 const custom = await transfer.parseBrushStudioTransferBlob(customBlob);
 assert.equal(custom.name, "Cloud Paper");
 assert.deepEqual(custom.settings, customSettings);
+assert.equal(
+  custom.settings.shapeMaskFormat,
+  "r16float",
+  "16-bit Float precision must survive a portable brush round trip",
+);
 assert.equal(custom.shapeAsset?.name, "cloud shape.png");
 assert.equal(custom.grainAsset?.name, "paper grain.png");
 assert.deepEqual(
@@ -202,6 +222,43 @@ assert.deepEqual(
   new Uint8Array(await custom.grainAsset.blob.arrayBuffer()),
   threeToneMaskPng,
   "dormant Grain samples 0/128/255 must remain embedded and byte-exact",
+);
+
+const native16Settings = persistedSettings({
+  shape: "shape",
+  shapeAssetId: "custom-shape:native16-roundtrip",
+  shapeMaskFormat: "r16float",
+  grainMode: "moving",
+  grainAssetId: "custom-grain:native16-roundtrip",
+});
+const native16ShapeAsset = storedAsset("shape", "native shape.png", native16MaskPng);
+const native16GrainAsset = storedAsset("grain", "native grain.png", native16MaskPng);
+const native16Blob = await transfer.createBrushStudioTransferBlob({
+  name: "Native Precision",
+  savedBrush: {
+    version: 1,
+    settings: native16Settings,
+    shapeAssetKey: native16ShapeAsset.key,
+    grainAssetKey: native16GrainAsset.key,
+  },
+  shapeAsset: native16ShapeAsset,
+  grainAsset: native16GrainAsset,
+});
+const native16RoundTrip = await transfer.parseBrushStudioTransferBlob(native16Blob);
+assert.deepEqual(
+  new Uint8Array(await native16RoundTrip.shapeAsset.blob.arrayBuffer()),
+  native16MaskPng,
+  "native 16-bit Shape PNG must survive storage/transfer byte-exactly",
+);
+assert.deepEqual(
+  new Uint8Array(await native16RoundTrip.grainAsset.blob.arrayBuffer()),
+  native16MaskPng,
+  "native 16-bit Grain PNG must survive storage/transfer byte-exactly",
+);
+assert.equal(
+  (await pngMask.decodeGrayscalePng(await native16RoundTrip.shapeAsset.blob.arrayBuffer()))
+    .sourceBitDepth,
+  16,
 );
 
 const customParts = await unpackTransfer(customBlob);
@@ -269,6 +326,17 @@ await assert.rejects(
     customParts.grainBytes,
   )),
   /settings\.jitterPerCopy/,
+);
+
+const invalidShapeMaskFormat = structuredClone(customParts.manifest);
+invalidShapeMaskFormat.settings.shapeMaskFormat = "rgba16float";
+await assert.rejects(
+  transfer.parseBrushStudioTransferBlob(packTransfer(
+    invalidShapeMaskFormat,
+    customParts.shapeBytes,
+    customParts.grainBytes,
+  )),
+  /settings\.shapeMaskFormat/,
 );
 
 const invalidLayout = structuredClone(customParts.manifest);

@@ -211,16 +211,16 @@ assert(!selectedGrainUv.includes("input.localPosition * 0.5"),
   "Moving usa ancora UV stamp 0..1 che ignorano Scale.");
 assert(grainShader.includes("max(1u, grain.mipLevelCount) - 1u"),
   "Il numero di mip Grain non è più dinamico nell'uniform.");
-// La sorgente Pencil viene convertita una volta nel campo scalare R16F usato
-// dalla pittura. Il percorso resta valido anche per Grain custom RGB/RGBA.
+// Built-in and custom sources reach the GPU as authoritative scalar16 samples,
+// then normalize once into the resident R16F field.
 assert(shaders.includes("export const grainLumaShader")
   && shaders.match(
-    /grainLumaShader[\s\S]*?dot\(texel\.rgb, vec3<f32>\(0\.299, 0\.587, 0\.114\)\)/,
+    /grainLumaShader[\s\S]*?texture_2d<u32>[\s\S]*?f32\(sample\) \/ 65535\.0/,
   ),
-  "Conversione luma RGB della grana non trovata nel caricamento.");
+  "Normalizzazione scalar16 nativa della grana non trovata nel caricamento.");
 assert(shaders.match(/grainLumaShader[\s\S]*?textureLoad\(sourceTexture/),
   "La conversione luma deve leggere texel a texel, non campionare filtrato.");
-assert(grainShader.includes("let source = sourceSample.r;"),
+assert(grainShader.match(/let source = (?:sourcePrecisionCoverage\()?sourceSample\.r\)?;/),
   "Il fragment shader di pittura non consuma il campo scalare della grana.");
 assert(!grainShader.includes("dot(sourceSample.rgb"),
   "La luma non deve essere ricalcolata a ogni campionamento.");
@@ -248,10 +248,10 @@ assert(engine.includes('const GRAIN_TEXTURE_SIZE = 800;')
   && engine.includes('format: "r16float"')
   && engine.includes("mipLevelCountForSize(width, height)"),
   "Dimensione/formato nativi del Grain non configurati.");
-// Lo staging RGBA e' un transitorio: se sopravvivesse alla conversione, il
-// risparmio verrebbe annullato dal doppio della memoria al carico.
-assert(engine.includes("stagingTexture.destroy()"),
-  "Lo staging RGBA della grana non viene distrutto dopo la conversione.");
+assert(engine.includes('format: "r16uint"') && engine.includes("stagingTexture.destroy()"),
+  "Lo staging R16Uint della grana deve essere nativo e transitorio.");
+assert(!engine.includes('format: "rgba8unorm"'),
+  "Il caricamento Shape/Grain non deve allocare staging o placeholder RGBA8.");
 assert(engine.includes("r16MipChainBytes(width, height)"),
   "La contabilita' della grana non segue il formato scalare.");
 assert(engine.includes('"r16float-dynamic-fixed-coverage-multiply"')
@@ -271,7 +271,7 @@ assert(blendShader.includes(
 ) && blendShader.includes("grainUv = mix(movingUv, fixedUv, movement)")
   && blendShader.includes("movingUvDx = vec2<f32>(cosine, -sine)"),
 "Blend dry non usa il mapping Moving scalato e rotation-aware.");
-assert(blendShader.includes("let source = sourceSample.r;"),
+assert(blendShader.match(/let source = (?:sourcePrecisionCoverage\()?sourceSample\.r\)?;/),
   "Blend dry non consuma il campo scalare R16F della grana.");
 assert(!blendShader.includes("dot(sourceSample.rgb"),
   "Blend dry ricalcola ancora la luma RGB su una texture Grain R16F.");

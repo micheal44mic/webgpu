@@ -184,6 +184,14 @@ assert.match(librarySource, /this\.renderer\.cacheIdentity/);
 assert.match(previewSource, /get cacheIdentity\(\): string[\s\S]*?this\.engine\.layerFormat/);
 assert.match(previewSource, /this\.engine\.shapeLoadingPromise === null/);
 assert.match(previewSource, /this\.engine\.grainLoadingPromise === null/);
+assert.match(previewSource, /const shapeMaskFormat = shapeMaskFormatForSettings\(settings\)/);
+assert.match(previewSource, /this\.engine\.shapeDesiredFormat === shapeMaskFormat/);
+assert.match(previewSource, /this\.engine\.shapeLoadedFormat === shapeMaskFormat/);
+assert.match(
+  previewSource,
+  /createShapeMaskResources\([\s\S]*?shapeAssetId,[\s\S]*?shapeInvert,[\s\S]*?shapeMaskFormat,/,
+  "la preview deve acquisire una shape con la stessa precisione del tratto autorevole",
+);
 assert.match(librarySource, /color: BRUSH_LIBRARY_PREVIEW_NEUTRAL_COLOR/);
 assert.match(librarySource, /computePixelHash: true/);
 assert.doesNotMatch(
@@ -201,6 +209,7 @@ const pencil = {
   shape: "shape",
   shapeAssetId: "pencil-shape",
   shapeInvert: false,
+  shapeMaskFormat: "r8unorm",
   shapeRotation: "follow-stroke",
   shapeScatter: 0.51,
   grainMode: "moving",
@@ -244,6 +253,7 @@ for (const [field, value] of [
   ["shape", "circle"],
   ["shapeAssetId", "legacy-shape"],
   ["shapeInvert", true],
+  ["shapeMaskFormat", "r16float"],
   ["shapeRotation", "fixed"],
   ["shapeScatter", 0.2],
   ["grainMode", "texturized"],

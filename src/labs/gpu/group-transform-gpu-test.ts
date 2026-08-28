@@ -1,6 +1,10 @@
 import type { BrushEngine } from "../../brush-engine";
 import { setLayerPresentation } from "../../engine-layer-runtime";
-import { decodeFloat16 } from "../../float16";
+import {
+  RGBA16_FLOAT_BYTES_PER_PIXEL,
+  decodeFloat16,
+  rgba16FloatRowsToRgba8Unorm,
+} from "../../float16";
 import type { MixedSceneGroupTransformUpdate } from "../../mixed-scene-controller-contract";
 import type { MixedSceneItem } from "../../mixed-scene-stack";
 import { setLayerCompositeTestView } from "../engine-lab-operations";
@@ -301,8 +305,8 @@ async function readPresentationCanvas(engine: BrushEngine): Promise<Uint8Array> 
   const width = engine.canvas.width;
   const height = engine.canvas.height;
   assert(width > 0 && height > 0, "The presentation canvas has invalid dimensions.");
-  const unpaddedBytesPerRow = width * 4;
-  const bytesPerRow = Math.ceil(unpaddedBytesPerRow / 256) * 256;
+  const sourceBytesPerRow = width * RGBA16_FLOAT_BYTES_PER_PIXEL;
+  const bytesPerRow = Math.ceil(sourceBytesPerRow / 256) * 256;
   const buffer = engine.device.createBuffer({
     label: `Group Transform presentation probe ${width}×${height}`,
     size: bytesPerRow * height,
@@ -333,18 +337,7 @@ async function readPresentationCanvas(engine: BrushEngine): Promise<Uint8Array> 
       if (timer !== 0) window.clearTimeout(timer);
     }
     const mapped = new Uint8Array(buffer.getMappedRange());
-    const rgba = new Uint8Array(unpaddedBytesPerRow * height);
-    const bgra = engine.canvasFormat.startsWith("bgra");
-    for (let row = 0; row < height; row += 1) {
-      for (let column = 0; column < width; column += 1) {
-        const sourceOffset = row * bytesPerRow + column * 4;
-        const targetOffset = row * unpaddedBytesPerRow + column * 4;
-        rgba[targetOffset] = mapped[sourceOffset + (bgra ? 2 : 0)];
-        rgba[targetOffset + 1] = mapped[sourceOffset + 1];
-        rgba[targetOffset + 2] = mapped[sourceOffset + (bgra ? 0 : 2)];
-        rgba[targetOffset + 3] = mapped[sourceOffset + 3];
-      }
-    }
+    const rgba = rgba16FloatRowsToRgba8Unorm(mapped, width, height, bytesPerRow);
     buffer.unmap();
     return rgba;
   } finally {

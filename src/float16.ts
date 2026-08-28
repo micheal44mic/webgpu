@@ -36,6 +36,77 @@ export function decodeFloat16(bits: number): number {
   return sign * (1 + fraction / 1024) * 2 ** (exponent - 15);
 }
 
+export const RGBA16_FLOAT_BYTES_PER_PIXEL = 8;
+export const RGBA8_UNORM_BYTES_PER_PIXEL = 4;
+
+let float16ToUnorm8Table: Uint8Array<ArrayBuffer> | null = null;
+
+function float16ToUnorm8(bits: number): number {
+  if (!float16ToUnorm8Table) {
+    const table = new Uint8Array(0x1_0000);
+    for (let candidate = 0; candidate < table.length; candidate += 1) {
+      const decoded = decodeFloat16(candidate);
+      const clamped = Number.isNaN(decoded)
+        ? 0
+        : Math.min(1, Math.max(0, decoded));
+      table[candidate] = Math.round(clamped * 255);
+    }
+    float16ToUnorm8Table = table;
+  }
+  return float16ToUnorm8Table[bits & 0xffff];
+}
+
+/**
+ * Converts padded RGBA16F rows to tightly packed RGBA8 at an explicit output
+ * boundary. WebGPU texture copies preserve binary16 channel words in little
+ * endian order; values outside the display range are clamped before rounding.
+ */
+export function rgba16FloatRowsToRgba8Unorm(
+  source: Uint8Array,
+  width: number,
+  height: number,
+  sourceBytesPerRow: number,
+): Uint8Array<ArrayBuffer> {
+  if (
+    !Number.isSafeInteger(width)
+    || !Number.isSafeInteger(height)
+    || width < 0
+    || height < 0
+  ) {
+    throw new Error("RGBA16F dimensions must be non-negative safe integers.");
+  }
+  const sourceTightBytesPerRow = width * RGBA16_FLOAT_BYTES_PER_PIXEL;
+  if (
+    !Number.isSafeInteger(sourceBytesPerRow)
+    || sourceBytesPerRow < sourceTightBytesPerRow
+  ) {
+    throw new Error("RGBA16F row stride is smaller than one packed source row.");
+  }
+  const requiredBytes = height === 0
+    ? 0
+    : (height - 1) * sourceBytesPerRow + sourceTightBytesPerRow;
+  if (source.byteLength < requiredBytes) {
+    throw new Error("RGBA16F source does not contain every requested row.");
+  }
+
+  const target = new Uint8Array(
+    width * height * RGBA8_UNORM_BYTES_PER_PIXEL,
+  );
+  for (let row = 0; row < height; row += 1) {
+    for (let column = 0; column < width; column += 1) {
+      const sourceOffset = row * sourceBytesPerRow
+        + column * RGBA16_FLOAT_BYTES_PER_PIXEL;
+      const targetOffset = (row * width + column) * RGBA8_UNORM_BYTES_PER_PIXEL;
+      for (let channel = 0; channel < 4; channel += 1) {
+        const channelOffset = sourceOffset + channel * 2;
+        const bits = source[channelOffset] | (source[channelOffset + 1] << 8);
+        target[targetOffset + channel] = float16ToUnorm8(bits);
+      }
+    }
+  }
+  return target;
+}
+
 const UNORM8_TO_FLOAT16 = Uint16Array.from(
   { length: 256 },
   (_, value) => encodeFloat16(value / 255),

@@ -133,11 +133,35 @@ assert.deepEqual(
   [0, 0, 0, 255, 255, 255, 255, 64],
   "Il registro deve possedere una copia persistibile dei pixel decodificati.",
 );
+assert.equal(firstSnapshot.sourceBitDepth, 8);
+assert.deepEqual(
+  [...firstSnapshot.scalar16],
+  [0, Math.round(Math.round(255) * (64 / 255)) * 257],
+  "legacy RGBA Shape input must be converted once into authoritative scalar16 coverage",
+);
 firstSnapshot.rgba.fill(9);
+firstSnapshot.scalar16.fill(9);
 assert.deepEqual(
   [...customRegistry.snapshot(persistedShapeId).rgba],
   [0, 0, 0, 255, 255, 255, 255, 64],
   "L'API read-only non deve esporre il backing store autorevole.",
+);
+const nativeShapeSamples = Uint16Array.of(1, 32768, 65534);
+const nativeShapeId = customRegistry.registerShape({
+  width: 3,
+  height: 1,
+  scalar16: nativeShapeSamples,
+  sourceBitDepth: 16,
+  name: "Native Shape",
+});
+nativeShapeSamples.fill(0);
+const nativeShapeSnapshot = customRegistry.snapshot(nativeShapeId);
+assert.equal(nativeShapeSnapshot.sourceBitDepth, 16);
+assert.deepEqual([...nativeShapeSnapshot.scalar16], [1, 32768, 65534]);
+assert.deepEqual(
+  [...nativeShapeSnapshot.rgba],
+  [0, 0, 0, 255, 128, 128, 128, 255, 255, 255, 255, 255],
+  "RGBA8 is a derived preview proxy for scalar16-native assets",
 );
 assert.throws(
   () => customRegistry.registerShape({ ...decodedShape, rgba: new Uint8Array(8) }, persistedShapeId),
@@ -190,6 +214,7 @@ assert(engine.includes("shapeAssetId: BrushShapeAssetId")
   "Le nuove capacità devono appartenere al contratto BrushSettings generale.");
 assert(definitionSource.includes('shapeAssetId: "legacy-shape"')
   && definitionSource.includes("shapeInvert: false")
+  && definitionSource.includes('shapeMaskFormat: "r16float"')
   && definitionSource.includes('shapeRotation: "fixed"')
   && definitionSource.includes('grainAssetId: "pencil-grain"')
   && definitionSource.includes("grainMovement: 0"),
@@ -214,9 +239,12 @@ assert(engine.includes("ensureReplayBrushAssets(batch.settings)")
 assert(engine.includes("shapeDesiredInvert")
   && engine.includes("shapeLoadingInvert")
   && engine.includes("shapeLoadedInvert")
+  && engine.includes("shapeDesiredFormat")
+  && engine.includes("shapeLoadingFormat")
+  && engine.includes("shapeLoadedFormat")
   && engine.includes("runGpuAllocationTransaction")
-  && engine.includes("createShapeMaskResources(this, assetId, invert)"),
-  "Il retarget Shape asset+invert non conserva latest-only e transazione GPU.");
+  && engine.includes("createShapeMaskResources(this, assetId, invert, format)"),
+  "Il retarget Shape asset+invert+format non conserva latest-only e transazione GPU.");
 assert(engine.includes('hardness: tool === "blend"')
   && engine.includes(': 1,')
   && definitionSource.includes("hardness: 1"),

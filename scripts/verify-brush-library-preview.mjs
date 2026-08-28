@@ -17,6 +17,7 @@ const settings = {
   shape: "shape",
   shapeAssetId: "pencil-shape",
   shapeInvert: false,
+  shapeMaskFormat: "r16float",
   shapeRotation: "follow-stroke",
   shapeScatter: 0.51,
   grainMode: "moving",
@@ -64,6 +65,20 @@ assert.equal(
   core.brushLibraryPreviewFingerprint("m1m4-pencil-v1", { ...settings, color: "#00ff00" }),
   fingerprintA,
   "neutral library preview must not invalidate for artist color",
+);
+const { shapeMaskFormat: _legacyShapeMaskFormat, ...legacySettings } = settings;
+assert.equal(
+  core.brushLibraryPreviewFingerprint("m1m4-pencil-v1", legacySettings),
+  fingerprintA,
+  "settings without an explicit precision mode must fingerprint as the Full 16F default",
+);
+assert.notEqual(
+  core.brushLibraryPreviewFingerprint("m1m4-pencil-v1", {
+    ...settings,
+    shapeMaskFormat: "r8unorm",
+  }),
+  fingerprintA,
+  "mask precision must invalidate the rendered preview",
 );
 assert.notEqual(
   core.brushLibraryPreviewFingerprint("m1m4-pencil-v1", { ...settings, size: 31 }),

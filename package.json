@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "build:bundle": "vite build && node scripts/check-production-bundle.mjs && node scripts/prepare-sites-build.mjs && node scripts/check-sites-asset-cache-build.mjs",
     "labs:build": "vite build --mode labs",
+    "sites:build-with-human-replay": "npm run build && npm run labs:build && node scripts/attach-human-replay-site-build.mjs",
     "build": "npm run typecheck && npm run build:bundle",
     "preview": "vite preview --host 0.0.0.0",
     "verify": "node scripts/run-verifications.mjs",

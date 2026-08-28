@@ -3,6 +3,7 @@ import {
   type AuthoritativeBrushStrokePreviewRenderer,
 } from "./brush-stroke-preview-renderer";
 import type { BrushSettings } from "./engine-types";
+import { RGBA16_FLOAT_BYTES_PER_PIXEL } from "./float16";
 import { brushLibraryPreviewFingerprint } from "./brush-library-preview-core";
 
 export const BRUSH_LIBRARY_PREVIEW_WIDTH = 240;
@@ -12,14 +13,13 @@ export const BRUSH_LIBRARY_PREVIEW_MAX_CARDS = 10;
 /** Assets are owned transiently by the shared authoritative renderer. */
 export const BRUSH_LIBRARY_PREVIEW_MAX_ASSETS = 0;
 
-const RGBA_BYTES_PER_PIXEL = 4;
 const OUTPUT_BYTES = (
   BRUSH_LIBRARY_PREVIEW_WIDTH
   * BRUSH_LIBRARY_PREVIEW_HEIGHT
-  * RGBA_BYTES_PER_PIXEL
+  * RGBA16_FLOAT_BYTES_PER_PIXEL
 );
 const READBACK_BYTES_PER_ROW = Math.ceil(
-  (BRUSH_LIBRARY_PREVIEW_WIDTH * RGBA_BYTES_PER_PIXEL) / 256,
+  (BRUSH_LIBRARY_PREVIEW_WIDTH * RGBA16_FLOAT_BYTES_PER_PIXEL) / 256,
 ) * 256;
 const READBACK_BYTES = READBACK_BYTES_PER_ROW * BRUSH_LIBRARY_PREVIEW_HEIGHT;
 

@@ -37,6 +37,7 @@ export const PENCIL_BRUSH_PRESET: BuiltinBrushCatalogEntry = {
     shape: "shape",
     shapeAssetId: "pencil-shape",
     shapeInvert: false,
+    shapeMaskFormat: "r16float",
     shapeRotation: "follow-stroke",
     shapeScatter: 0.51,
     grainMode: "moving",

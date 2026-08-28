@@ -75,6 +75,7 @@ import {
   grainAssetIdForSettings,
   shapeAssetIdForSettings,
   shapeInvertForSettings,
+  shapeMaskFormatForSettings,
 } from "./engine-brush-assets";
 import {
   rasterBevelInfluenceBounds,
@@ -1591,23 +1592,27 @@ export function requestGrainLoad(engine: BrushEngine): void {
 export function requestShapeLoad(engine: BrushEngine): void {
   const assetId = shapeAssetIdForSettings(engine.settings);
   const invert = shapeInvertForSettings(engine.settings);
+  const format = shapeMaskFormatForSettings(engine.settings);
   engine.shapeDesiredAssetId = assetId;
   engine.shapeDesiredInvert = invert;
+  engine.shapeDesiredFormat = format;
   if (
     (
       engine.shapeResident
       && engine.shapeLoadedAssetId === assetId
       && engine.shapeLoadedInvert === invert
+      && engine.shapeLoadedFormat === format
     )
     || (
       engine.shapeLoadingPromise
       && engine.shapeLoadingAssetId === assetId
       && engine.shapeLoadingInvert === invert
+      && engine.shapeLoadingFormat === format
     )
   ) {
     return;
   }
-  void engine.ensureShapeResources(assetId, invert).catch((error) => {
+  void engine.ensureShapeResources(assetId, invert, format).catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
     engine.callbacks.onStatus?.(`Shape 2K is unavailable: ${message}`, "error");
   });

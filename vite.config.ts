@@ -86,21 +86,23 @@ function devHumanStrokeApi(): Plugin {
 function labsHtmlShell(): Plugin {
   return {
     name: "labs-html-shell",
-    enforce: "pre",
-    async transformIndexHtml(html, context) {
-      if (!context.path.endsWith("/labs.html")) {
-        return html;
-      }
-      const editorHtml = await readFile(resolve(__dirname, "index.html"), "utf8");
-      return editorHtml
-        .replace(
-          '<script type="module" src="/src/startup.ts"></script>',
-          '<script type="module" src="/src/labs/startup.ts"></script>',
-        )
-        .replace(
-          "<title>WebGPU Brush Engine</title>",
-          "<title>WebGPU Brush Engine Labs</title>",
-        );
+    transformIndexHtml: {
+      order: "pre",
+      async handler(html, context) {
+        if (!context.path.endsWith("/labs.html")) {
+          return html;
+        }
+        const editorHtml = await readFile(resolve(__dirname, "index.html"), "utf8");
+        return editorHtml
+          .replace(
+            '<script type="module" src="/src/startup.ts"></script>',
+            '<script type="module" src="/src/labs/startup.ts"></script>',
+          )
+          .replace(
+            "<title>WebGPU Brush Engine</title>",
+            "<title>WebGPU Brush Engine Labs</title>",
+          );
+      },
     },
   };
 }

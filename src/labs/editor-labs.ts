@@ -68,6 +68,7 @@ const LABS = [
   ["human-suite", "Suite tratto umano · 3 rendering"],
 ] as const;
 const DESTRUCTIVE_GPU_LAB_TIMEOUT_MS = 180_000;
+const HOSTED_REPLAY_ONLY = import.meta.env.PROD;
 
 type LabId = (typeof LABS)[number][0];
 
@@ -155,10 +156,15 @@ class EditorLabController implements EditorExtension {
       () => host.refreshControls(),
     );
     for (const [id, label] of LABS) {
+      if (HOSTED_REPLAY_ONLY && id !== "human-replay") continue;
       this.#select.add(new Option(label, id));
     }
     const requested = new URLSearchParams(window.location.search).get("lab");
-    if (isLabId(requested)) this.#select.value = requested;
+    if (HOSTED_REPLAY_ONLY) {
+      this.#select.value = "human-replay";
+    } else if (isLabId(requested)) {
+      this.#select.value = requested;
+    }
     this.#runButton.addEventListener("click", () => {
       void this.#runSelected();
     });
@@ -194,12 +200,13 @@ class EditorLabController implements EditorExtension {
   }
 
   async afterEngineInitialized(): Promise<void> {
-    const requested = new URLSearchParams(window.location.search).get("lab");
+    const search = new URLSearchParams(window.location.search);
+    const requested = HOSTED_REPLAY_ONLY ? "human-replay" : search.get("lab");
     this.#result.textContent = requested === "human-record"
       ? `Preset pronto: ${HUMAN_RECORDING_PRESET_LABEL}.`
       : "Pronto. I test distruttivi richiedono una pagina nuova.";
     this.syncControls(false);
-    if (isLabId(requested) && new URLSearchParams(window.location.search).get("autorun") === "1") {
+    if (isLabId(requested) && search.get("autorun") === "1") {
       if (requested === "human-record") {
         await this.#startHumanRecording();
       } else {

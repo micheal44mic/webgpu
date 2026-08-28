@@ -321,7 +321,7 @@ assert.match(
 );
 assert.match(
   main,
-  /setFillColor: \(color\) => \{[\s\S]*?brushSettingsController\.update\(\{ color \}\)[\s\S]*?brushQuickControlsController\?\.syncSettings/,
+  /setFillColor: \(color\) => \{[\s\S]*?canonicalBrushColorForFormat\(color, current\.shapeMaskFormat\)[\s\S]*?brushQuickControlsController\?\.syncSettings/,
   "the Fill color picker must update the shared authoritative paint color",
 );
 assert.match(
@@ -339,7 +339,7 @@ const setFillColorSource = main.slice(
   main.indexOf("  getSelectionSettings:", main.indexOf("  setFillColor: (color) => {")),
 );
 assert(!setFillColorSource.includes("engine.updateFillPreview("));
-assert(setFillColorSource.includes("brushSettingsController.update({ color })"));
+assert(setFillColorSource.includes("canonicalBrushColorForFormat(color, current.shapeMaskFormat)"));
 assert.match(
   controller,
   /for \(const eventType of \["input", "change"\] as const\)[\s\S]*?setFillTolerance[\s\S]*?setFillColor/,

@@ -1,4 +1,9 @@
-import { clamp, hexToHsl } from "./color";
+import { brushColorHsl, srgbChannelToLinear } from "./brush-color.ts";
+import { clamp } from "./color";
+import {
+  RGBA16_FLOAT_BYTES_PER_PIXEL,
+  rgba16FloatRowsToRgba8Unorm,
+} from "./float16";
 import {
   documentBackgroundSrgb,
   normalizeDocumentBackground,
@@ -426,6 +431,7 @@ import {
   type AdaptivePreviewCopy,
   type AdaptivePreviewProbe,
   adaptivePreviewRgb,
+  adaptivePreviewSrgb,
   type AdaptivePreviewShapePaletteEntry,
   adaptiveSpacingMaxExtraPercentPointsForPlatform,
   readAdaptivePreviewContextAttributes,
@@ -510,7 +516,6 @@ import {
   normalizeViewRotation,
   previewHash32,
   previewRandom01,
-  srgbByteToLinear,
 } from "./engine-math";
 import { lightGlazeAdditionalMemoryMiB } from "./engine-memory-model";
 import {
@@ -611,6 +616,7 @@ import {
   type BrushGrainAssetId,
   type BrushSettings,
   type BrushShapeAssetId,
+  type BrushShapeMaskFormat,
   type CustomBrushGrainAssetId,
   type CustomBrushShapeAssetId,
   type BrushTool,
@@ -641,6 +647,7 @@ import {
   normalizeShapeAssetId,
   shapeAssetIdForSettings,
   shapeInvertForSettings,
+  shapeMaskFormatForSettings,
 } from "./engine-brush-assets";
 import {
   vectorTextGpuDrawUsesBlur,
@@ -1562,10 +1569,14 @@ export class BrushEngine {
   shapeLoadingPromise: Promise<void> | null = null;
   shapeDesiredAssetId: BrushShapeAssetId = "legacy-shape";
   shapeDesiredInvert = false;
+  shapeDesiredFormat: BrushShapeMaskFormat = "r16float";
   shapeLoadingAssetId: BrushShapeAssetId | null = null;
   shapeLoadingInvert: boolean | null = null;
+  shapeLoadingFormat: BrushShapeMaskFormat | null = null;
   shapeLoadedAssetId: BrushShapeAssetId | null = null;
   shapeLoadedInvert: boolean | null = null;
+  shapeLoadedFormat: BrushShapeMaskFormat | null = null;
+  shapeTextureMemoryBytes = 0;
   shapeMaskSampler!: GPUSampler;
   grainTexture: GPUTexture | null = null;
   grainResourceSet: GrainTextureResources | null = null;
@@ -2228,7 +2239,7 @@ export class BrushEngine {
     }
     this.context = context;
 
-    this.canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+    this.canvasFormat = "rgba16float";
     this.context.configure({
       device: this.device,
       format: this.canvasFormat,
@@ -2361,7 +2372,8 @@ export class BrushEngine {
     const ready = resources !== null
       && this.shapeResident
       && this.shapeLoadedAssetId === shapeAssetIdForSettings(this.settings)
-      && this.shapeLoadedInvert === shapeInvertForSettings(this.settings);
+      && this.shapeLoadedInvert === shapeInvertForSettings(this.settings)
+      && this.shapeLoadedFormat === shapeMaskFormatForSettings(this.settings);
     return {
       kind: ready ? "shape" : "unavailable",
       outline: ready ? resources.outline : null,
@@ -2472,6 +2484,11 @@ export class BrushEngine {
       shapeInvert: typeof next.shapeInvert === "boolean"
         ? next.shapeInvert
         : this.settings.shapeInvert,
+      shapeMaskFormat: next.shapeMaskFormat === "r16float"
+        ? "r16float"
+        : next.shapeMaskFormat === "r8unorm"
+          ? "r8unorm"
+          : shapeMaskFormatForSettings(this.settings),
       shapeRotation: next.shapeRotation === "follow-stroke" || next.shapeRotation === "fixed"
         ? next.shapeRotation
         : this.settings.shapeRotation,
@@ -4541,6 +4558,7 @@ export class BrushEngine {
         !this.shapeResident
         || this.shapeLoadedAssetId !== shapeAssetIdForSettings(renderSettings)
         || this.shapeLoadedInvert !== shapeInvertForSettings(renderSettings)
+        || this.shapeLoadedFormat !== shapeMaskFormatForSettings(renderSettings)
       )
     ) {
       requestShapeLoad(this);
@@ -5891,31 +5909,45 @@ export class BrushEngine {
   ensureShapeResources(
     requestedAssetId: BrushShapeAssetId = shapeAssetIdForSettings(this.settings),
     requestedInvert: boolean = shapeInvertForSettings(this.settings),
+    requestedFormat: BrushShapeMaskFormat = shapeMaskFormatForSettings(this.settings),
   ): Promise<void> {
     const assetId = normalizeShapeAssetId(requestedAssetId);
     const invert = requestedInvert === true;
+    const format = requestedFormat === "r16float" ? "r16float" : "r8unorm";
     this.shapeDesiredAssetId = assetId;
     this.shapeDesiredInvert = invert;
+    this.shapeDesiredFormat = format;
     const inFlight = this.shapeLoadingPromise;
     if (inFlight) {
       const inFlightAssetId = this.shapeLoadingAssetId;
       const inFlightInvert = this.shapeLoadingInvert;
+      const inFlightFormat = this.shapeLoadingFormat;
       return inFlight.then(
         () => {
-          if (this.shapeDesiredAssetId !== assetId || this.shapeDesiredInvert !== invert) return;
-          return this.ensureShapeResources(assetId, invert);
+          if (
+            this.shapeDesiredAssetId !== assetId
+            || this.shapeDesiredInvert !== invert
+            || this.shapeDesiredFormat !== format
+          ) return;
+          return this.ensureShapeResources(assetId, invert, format);
         },
         (error: unknown) => {
           if (
             this.shapeDesiredAssetId === assetId
             && this.shapeDesiredInvert === invert
+            && this.shapeDesiredFormat === format
             && inFlightAssetId === assetId
             && inFlightInvert === invert
+            && inFlightFormat === format
           ) {
             throw error;
           }
-          if (this.shapeDesiredAssetId === assetId && this.shapeDesiredInvert === invert) {
-            return this.ensureShapeResources(assetId, invert);
+          if (
+            this.shapeDesiredAssetId === assetId
+            && this.shapeDesiredInvert === invert
+            && this.shapeDesiredFormat === format
+          ) {
+            return this.ensureShapeResources(assetId, invert, format);
           }
         },
       );
@@ -5924,11 +5956,13 @@ export class BrushEngine {
       this.shapeResident
       && this.shapeLoadedAssetId === assetId
       && this.shapeLoadedInvert === invert
+      && this.shapeLoadedFormat === format
     ) {
       return Promise.resolve();
     }
 
-    const label = assetId === "pencil-shape" ? "Shape Pencil" : "Shape 2K";
+    const precisionLabel = format === "r16float" ? "16F" : "8-bit";
+    const label = `${assetId === "pencil-shape" ? "Shape Pencil" : "Shape 2K"} ${precisionLabel}`;
     this.callbacks.onStatus?.(`Loading ${label}…`, "working");
     const loading = (async () => {
       let resources: ShapeMaskResources;
@@ -5937,17 +5971,25 @@ export class BrushEngine {
           this.device,
           `${label} allocation`,
           async (transaction) => {
-            const candidate = await createShapeMaskResources(this, assetId, invert);
+            const candidate = await createShapeMaskResources(this, assetId, invert, format);
             transaction.deferRollback(() => destroyShapeMaskResources(candidate));
             return candidate;
           },
         );
       } catch (error) {
-        if (this.shapeDesiredAssetId !== assetId || this.shapeDesiredInvert !== invert) return;
+        if (
+          this.shapeDesiredAssetId !== assetId
+          || this.shapeDesiredInvert !== invert
+          || this.shapeDesiredFormat !== format
+        ) return;
         throw error;
       }
 
-      if (this.shapeDesiredAssetId !== assetId || this.shapeDesiredInvert !== invert) {
+      if (
+        this.shapeDesiredAssetId !== assetId
+        || this.shapeDesiredInvert !== invert
+        || this.shapeDesiredFormat !== format
+      ) {
         destroyShapeMaskResources(resources);
         return;
       }
@@ -5956,7 +5998,11 @@ export class BrushEngine {
       if (previous) {
         await this.waitForGpuCapped("Shape asset change", 60_000);
       }
-      if (this.shapeDesiredAssetId !== assetId || this.shapeDesiredInvert !== invert) {
+      if (
+        this.shapeDesiredAssetId !== assetId
+        || this.shapeDesiredInvert !== invert
+        || this.shapeDesiredFormat !== format
+      ) {
         destroyShapeMaskResources(resources);
         return;
       }
@@ -5970,7 +6016,11 @@ export class BrushEngine {
         },
       );
 
-      if (this.shapeDesiredAssetId !== assetId || this.shapeDesiredInvert !== invert) {
+      if (
+        this.shapeDesiredAssetId !== assetId
+        || this.shapeDesiredInvert !== invert
+        || this.shapeDesiredFormat !== format
+      ) {
         try {
           await runGpuAllocationTransaction(
             this.device,
@@ -5990,7 +6040,11 @@ export class BrushEngine {
       }
 
       destroyShapeMaskResources(previous);
-      if (this.shapeDesiredAssetId === assetId && this.shapeDesiredInvert === invert) {
+      if (
+        this.shapeDesiredAssetId === assetId
+        && this.shapeDesiredInvert === invert
+        && this.shapeDesiredFormat === format
+      ) {
         this.callbacks.onStatus?.(`${label} ready.`, "ok");
       }
       this.publishStats();
@@ -6003,8 +6057,10 @@ export class BrushEngine {
       this.shapeLoadingPromise = null;
       this.shapeLoadingAssetId = null;
       this.shapeLoadingInvert = null;
+      this.shapeLoadingFormat = null;
       const selectedAssetId = shapeAssetIdForSettings(this.settings);
       const selectedInvert = shapeInvertForSettings(this.settings);
+      const selectedFormat = shapeMaskFormatForSettings(this.settings);
       if (
         completedSuccessfully
         && !this.historyBusy
@@ -6012,6 +6068,7 @@ export class BrushEngine {
         && (
           this.shapeLoadedAssetId !== selectedAssetId
           || this.shapeLoadedInvert !== selectedInvert
+          || this.shapeLoadedFormat !== selectedFormat
           || !this.shapeResident
         )
       ) {
@@ -6023,6 +6080,7 @@ export class BrushEngine {
     this.shapeLoadingPromise = tracked;
     this.shapeLoadingAssetId = assetId;
     this.shapeLoadingInvert = invert;
+    this.shapeLoadingFormat = format;
     return tracked;
   }
 
@@ -6372,8 +6430,8 @@ export class BrushEngine {
       : Math.max(1, Math.min(height, Math.round(width / documentAspect)));
     const originX = Math.floor((width - captureWidth) * 0.5);
     const originY = Math.floor((height - captureHeight) * 0.5);
-    const unpaddedBytesPerRow = captureWidth * 4;
-    const bytesPerRow = Math.ceil(unpaddedBytesPerRow / 256) * 256;
+    const sourceBytesPerRow = captureWidth * RGBA16_FLOAT_BYTES_PER_PIXEL;
+    const bytesPerRow = Math.ceil(sourceBytesPerRow / 256) * 256;
     const buffer = this.device.createBuffer({
       label: `Project thumbnail ${captureWidth}×${captureHeight}`,
       size: bytesPerRow * captureHeight,
@@ -6402,18 +6460,13 @@ export class BrushEngine {
         if (timer !== 0) window.clearTimeout(timer);
       }
       const mapped = new Uint8Array(buffer.getMappedRange());
-      const rgba = new Uint8ClampedArray(unpaddedBytesPerRow * captureHeight);
-      const bgra = this.canvasFormat.startsWith("bgra");
-      for (let row = 0; row < captureHeight; row += 1) {
-        for (let column = 0; column < captureWidth; column += 1) {
-          const source = row * bytesPerRow + column * 4;
-          const target = row * unpaddedBytesPerRow + column * 4;
-          rgba[target] = mapped[source + (bgra ? 2 : 0)];
-          rgba[target + 1] = mapped[source + 1];
-          rgba[target + 2] = mapped[source + (bgra ? 0 : 2)];
-          rgba[target + 3] = mapped[source + 3];
-        }
-      }
+      const converted = rgba16FloatRowsToRgba8Unorm(
+        mapped,
+        captureWidth,
+        captureHeight,
+        bytesPerRow,
+      );
+      const rgba = new Uint8ClampedArray(converted.buffer);
       buffer.unmap();
       return { width: captureWidth, height: captureHeight, rgba };
     } finally {
@@ -6712,8 +6765,8 @@ export class BrushEngine {
       throw new Error("The presentation probe rectangle is outside the canvas.");
     }
 
-    const unpaddedBytesPerRow = width * 4;
-    const bytesPerRow = Math.ceil(unpaddedBytesPerRow / 256) * 256;
+    const sourceBytesPerRow = width * RGBA16_FLOAT_BYTES_PER_PIXEL;
+    const bytesPerRow = Math.ceil(sourceBytesPerRow / 256) * 256;
     const buffer = this.device.createBuffer({
       label: `Layer presentation rect probe ${width}×${height}`,
       size: bytesPerRow * height,
@@ -6749,18 +6802,12 @@ export class BrushEngine {
         }
       }
       const mapped = new Uint8Array(buffer.getMappedRange());
-      const rgba = new Uint8Array(unpaddedBytesPerRow * height);
-      const bgra = this.canvasFormat.startsWith("bgra");
-      for (let row = 0; row < height; row += 1) {
-        for (let column = 0; column < width; column += 1) {
-          const sourceOffset = row * bytesPerRow + column * 4;
-          const targetOffset = row * unpaddedBytesPerRow + column * 4;
-          rgba[targetOffset] = mapped[sourceOffset + (bgra ? 2 : 0)];
-          rgba[targetOffset + 1] = mapped[sourceOffset + 1];
-          rgba[targetOffset + 2] = mapped[sourceOffset + (bgra ? 0 : 2)];
-          rgba[targetOffset + 3] = mapped[sourceOffset + 3];
-        }
-      }
+      const rgba = rgba16FloatRowsToRgba8Unorm(
+        mapped,
+        width,
+        height,
+        bytesPerRow,
+      );
       buffer.unmap();
       return rgba;
     } finally {
@@ -6819,10 +6866,8 @@ export class BrushEngine {
           window.clearTimeout(timer);
         }
       }
-      const stored = new Uint8Array(buffer.getMappedRange(), 0, 4);
-      const rgba = this.canvasFormat.startsWith("bgra")
-        ? new Uint8Array([stored[2], stored[1], stored[0], stored[3]])
-        : new Uint8Array(stored);
+      const stored = new Uint8Array(buffer.getMappedRange());
+      const rgba = rgba16FloatRowsToRgba8Unorm(stored, 1, 1, 256);
       buffer.unmap();
       return rgba;
     } finally {
@@ -7575,6 +7620,7 @@ export class BrushEngine {
       && this.shapeResident
       && this.shapeLoadedAssetId === shapeAssetIdForSettings(settings)
       && this.shapeLoadedInvert === shapeInvertForSettings(settings)
+      && this.shapeLoadedFormat === shapeMaskFormatForSettings(settings)
     );
     const glazeReady = !usesStrokeGlazeRenderer(settings) || (
       this.lightGlazeLoadingPromise === null
@@ -7605,6 +7651,7 @@ export class BrushEngine {
         "shape",
         this.shapeLoadedAssetId,
         this.shapeLoadedInvert ? 1 : 0,
+        this.shapeLoadedFormat,
         this.shapeMaskIdentity,
         this.shapeResourceRevision,
       ].join(":" )
@@ -8185,6 +8232,7 @@ export class BrushEngine {
         await this.ensureShapeResources(
           shapeAssetIdForSettings(settings),
           shapeInvertForSettings(settings),
+          shapeMaskFormatForSettings(settings),
         );
       }
       if (settings !== this.settings) continue;
@@ -14437,7 +14485,7 @@ export class BrushEngine {
       const directionLength = Math.hypot(directionXRaw, directionYRaw);
       const directionX = directionLength > 0.0001 ? directionXRaw / directionLength : 1;
       const directionY = directionLength > 0.0001 ? directionYRaw / directionLength : 0;
-      const baseHsl = hexToHsl(candidateSettings.color);
+      const baseHsl = brushColorHsl(candidateSettings);
       const alpha = clamp(
         candidateSettings.flow * candidateSettings.opacity,
         0,
@@ -15034,14 +15082,14 @@ export class BrushEngine {
       ?? stamps[0]?.seed
       ?? (stabilizationFrame ? this.stabilizationPreviewStamps[0]?.seed : undefined);
     if (lightNoBuildUp && session.tintLinear === null && firstSeed !== undefined) {
-      const [red, green, blue] = adaptivePreviewRgb(
+      const [red, green, blue] = adaptivePreviewSrgb(
         previewHash32(firstSeed),
         settings,
       );
       session.tintLinear = [
-        srgbByteToLinear(red),
-        srgbByteToLinear(green),
-        srgbByteToLinear(blue),
+        srgbChannelToLinear(red),
+        srgbChannelToLinear(green),
+        srgbChannelToLinear(blue),
       ];
     }
     this.writeLightGlazeUniforms(

@@ -1,5 +1,6 @@
 import type { BrushEngine } from "./brush-engine";
 import { type LayerFormat } from "./engine-types";
+import { RGBA16_FLOAT_BYTES_PER_PIXEL } from "./float16";
 import { STROKE_CURVE_STRATEGY } from "./stroke-curve-core";
 import { STROKE_STABILIZATION_STRATEGY } from "./stroke-stabilization-core";
 import {
@@ -126,7 +127,6 @@ import {
   layerBaseMemoryMiB,
   lightGlazeAdditionalMemoryMiB,
   paintDisplayPyramidAdditionalMemoryMiB,
-  shapeTextureMemoryMiB,
   staticPaintBufferMemoryMiB,
 } from "./engine-memory-model";
 import {
@@ -879,11 +879,14 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     ? engine.grainTextureMemoryBytes / MEBIBYTE_BYTES
     : 0;
   const shapeTextureMiB = baseResourcesAllocated && engine.shapeResident
-    ? shapeTextureMemoryMiB()
+    ? engine.shapeTextureMemoryBytes / MEBIBYTE_BYTES
     : 0;
   const paintBuffersMiB = baseResourcesAllocated ? staticPaintBufferMemoryMiB() : 0;
   const presentationCacheMiB = engine.presentationCacheTexture
-    ? engine.presentationCacheWidth * engine.presentationCacheHeight * 4 / MEBIBYTE_BYTES
+    ? engine.presentationCacheWidth
+      * engine.presentationCacheHeight
+      * RGBA16_FLOAT_BYTES_PER_PIXEL
+      / MEBIBYTE_BYTES
     : 0;
   const layerThumbnailMiB =
     (engine.layerThumbnailRenderer?.residentBytes ?? 0) / MEBIBYTE_BYTES;

@@ -24,6 +24,7 @@ import {
 } from "./blend-core";
 import { destructiveGaussianBlurKernel } from "./gaussian-blur-core";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
+import { brushColorLinearRgb } from "./brush-color.ts";
 
 const BLEND_UNIFORM_BYTES = 192;
 const BLEND_MAX_BATCHES_PER_SUBMIT = 256;
@@ -51,6 +52,7 @@ export interface DryBlendRenderSettings {
   grainInvert: boolean;
   grainFiltering: "no" | "classic" | "improved";
   color: string;
+  shapeMaskFormat: "r8unorm" | "r16float";
   hardness: number;
   blendStretch: number;
   blendPaint: number;
@@ -163,25 +165,6 @@ function mergeRects(left: BlendRect | null, right: BlendRect): BlendRect {
     width: maximumX - x,
     height: maximumY - y,
   };
-}
-
-function srgbChannelToLinear(value: number): number {
-  const normalized = clamp(value, 0, 1);
-  return normalized <= 0.04045
-    ? normalized / 12.92
-    : ((normalized + 0.055) / 1.055) ** 2.4;
-}
-
-function hexToLinearRgb(hex: string): readonly [number, number, number] {
-  const normalized = hex.trim().replace(/^#/, "");
-  if (!/^[0-9a-fA-F]{6}$/.test(normalized)) {
-    throw new Error(`Invalid Blend HEX color: ${hex}`);
-  }
-  return [
-    srgbChannelToLinear(Number.parseInt(normalized.slice(0, 2), 16) / 255),
-    srgbChannelToLinear(Number.parseInt(normalized.slice(2, 4), 16) / 255),
-    srgbChannelToLinear(Number.parseInt(normalized.slice(4, 6), 16) / 255),
-  ];
 }
 
 function cloneRect(rect: BlendRect): BlendRect {
@@ -1215,7 +1198,7 @@ export class DryBlendRenderer {
     groups: readonly BlendStepGroup[],
     settings: DryBlendRenderSettings,
   ): void {
-    const paintColor = hexToLinearRgb(settings.color);
+    const paintColor = brushColorLinearRgb(settings);
     const grainPolarity = settings.grainInvert ? -1 : 1;
     const grainScale = clamp(settings.grainScale, 0.1, 4);
     const grainMode = settings.grainMode === "moving"
@@ -1278,7 +1261,9 @@ export class DryBlendRenderer {
         floats[39] = batch.writeRect.height;
         unsigned[40] = settings.shape === "shape" ? 1 : 0;
         unsigned[41] = grainMode;
-        unsigned[42] = filtering;
+        // Low two bits select filtering; bit 2 activates the explicit 8-bit
+        // comparison without changing the resident R16F Shape/Grain fields.
+        unsigned[42] = filtering | (settings.shapeMaskFormat === "r8unorm" ? 4 : 0);
         unsigned[43] = this.carrierValid || index > 0 ? 1 : 0;
         unsigned[44] = carrierReadSlot;
         unsigned[45] = carrierWriteSlot;

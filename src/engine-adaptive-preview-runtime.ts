@@ -9,7 +9,8 @@ import {
   type AdaptivePreviewShapePaletteEntry,
 } from "./adaptive-preview-runtime";
 import { type BrushSettings } from "./engine-types";
-import { clamp, hexToHsl } from "./color";
+import { brushColorHsl } from "./brush-color.ts";
+import { clamp } from "./color";
 import { previewHash32 } from "./engine-math";
 
 export function freezeAdaptivePreviewAtLift(engine: BrushEngine): void {
@@ -89,6 +90,7 @@ export function prepareAdaptivePreviewShapePalette(engine: BrushEngine, settings
   }
   const key = [
     settings.color,
+    settings.shapeMaskFormat,
     settings.hueJitterDegrees,
     settings.saturationJitter,
     settings.lightnessJitter,
@@ -99,7 +101,7 @@ export function prepareAdaptivePreviewShapePalette(engine: BrushEngine, settings
     return;
   }
 
-  const baseHsl = hexToHsl(settings.color);
+  const baseHsl = brushColorHsl(settings);
   const coverageSource = document.createElement("canvas");
   coverageSource.width = source.width;
   coverageSource.height = source.height;

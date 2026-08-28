@@ -1,6 +1,7 @@
 
 import { type BrushSettings, type LayerFormat } from "./engine-types";
-import { clamp, hexToHsl } from "./color";
+import { brushColorHsl } from "./brush-color.ts";
+import { clamp } from "./color";
 import { type PackedStampUpload, type Stamp } from "./engine-stroke-types";
 import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH, STAMP_STRIDE_BYTES } from "./engine-limits";/**
  * Impacchettamento degli stamp e degli uniform del pennello nei buffer di
@@ -89,7 +90,7 @@ export function populateBrushUniformUpload(
   const unsigned = new Uint32Array(upload);
   floats.fill(0);
 
-  const [hue, saturation, lightness] = hexToHsl(settings.color);
+  const [hue, saturation, lightness] = brushColorHsl(settings);
 
   floats[0] = targetWidth;
   floats[1] = targetHeight;
@@ -123,7 +124,10 @@ export function populateBrushUniformUpload(
   floats[19] = reflectionSine;
   unsigned[20] = encodeStrokeSymmetryOptions(settings.count, symmetryMode);
   unsigned[21] = settings.jitterPerCopy ? 1 : 0;
-  unsigned[22] = settings.blendMode === "additive" ? 1 : 0;
+  // Bit 0 retains the render-mode ABI. Bit 1 selects the explicit 8-bit A/B
+  // comparison while the authoritative textures and render targets stay 16F.
+  unsigned[22] = (settings.blendMode === "additive" ? 1 : 0)
+    | (settings.shapeMaskFormat === "r8unorm" ? 2 : 0);
   // Previously unused ABI lane: opt-in base rotation along the stamp direction.
   unsigned[23] = settings.shapeRotation === "follow-stroke" ? 1 : 0;
 }

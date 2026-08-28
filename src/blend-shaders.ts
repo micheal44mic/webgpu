@@ -32,7 +32,7 @@ struct BlendUniforms {
   grainAffineAndPhase: vec4<f32>, // grain contrast, movement, mip count, blur amount
   paintColor: vec4<f32>,
   depositRect: vec4<f32>,         // step write rect in group-local pixels X,Y,W,H
-  options: vec4<u32>,             // shape custom, grain mode, filtering, has previous
+  options: vec4<u32>,             // shape custom, grain mode, filtering + precision, has previous
   slots: vec4<u32>,               // carrier read slot, carrier write slot, scratch row stride, 0
 };
 
@@ -594,6 +594,7 @@ ${blendUniformsWgsl}
 
 const SHAPE_MASK_UV_SCALE: f32 = ${SHAPE_MASK_FILTER_UV_SCALE};
 const SHAPE_MASK_UV_OFFSET: f32 = ${SHAPE_MASK_FILTER_UV_OFFSET};
+const DIAGNOSTIC_8_BIT_FLAG: u32 = 4u;
 
 // These are pipeline constants, not per-pixel branches. The renderer creates
 // four resident variants so Circle/Grain-off never carries the register and
@@ -602,6 +603,15 @@ override blendCustomShape: bool = false;
 override blendGrainEnabled: bool = false;
 
 ${blendStateSamplingWgsl}
+
+fn sourcePrecisionCoverage(value: f32) -> f32 {
+  let continuous = clamp(value, 0.0, 1.0);
+  return select(
+    continuous,
+    round(continuous * 255.0) / 255.0,
+    (blend.options.z & DIAGNOSTIC_8_BIT_FLAG) != 0u
+  );
+}
 
 struct LocalSample {
   uv: vec2<f32>,
@@ -656,7 +666,9 @@ fn customAt(
     return result;
   }
   let samplingUv = local.uv * SHAPE_MASK_UV_SCALE + vec2<f32>(SHAPE_MASK_UV_OFFSET);
-  result.coverage = textureSampleLevel(shapeTexture, shapeSampler, samplingUv, 0.0).r;
+  result.coverage = sourcePrecisionCoverage(
+    textureSampleLevel(shapeTexture, shapeSampler, samplingUv, 0.0).r
+  );
   return result;
 }
 
@@ -668,7 +680,7 @@ fn adjustedGrainCoverage(
   grainUvDy: vec2<f32>,
 ) -> f32 {
   var sourceSample: vec4<f32>;
-  if (blend.options.z == 0u) {
+  if ((blend.options.z & 3u) == 0u) {
     let baseDimensions = vec2<f32>(textureDimensions(grainTexture, 0));
     let footprint = max(
       length(grainUvDx * baseDimensions),
@@ -698,7 +710,7 @@ fn adjustedGrainCoverage(
   // Grain assets are converted once at upload into a scalar R16F field.
   // Sampling RGB here silently attenuates that field to 0.299 × R because
   // the implicit G/B components of an R16F texture are zero.
-  let source = sourceSample.r;
+  let source = sourcePrecisionCoverage(sourceSample.r);
   let adjusted = clamp(
     (source - 0.5) * blend.grainAffineAndPhase.x
       + 0.5
@@ -763,11 +775,11 @@ fn depositMain(@builtin(global_invocation_id) gid: vec3<u32>) {
       1.6 / max(radius, 0.001),
       0.55 / max(radius, 1.0)
     );
-    coverage = 1.0 - smoothstep(
+    coverage = sourcePrecisionCoverage(1.0 - smoothstep(
       core - antialiasWidth,
       1.0 + antialiasWidth,
       normalizedRadius
-    );
+    ));
   } else {
     var selected = customAt(
       documentPosition,
