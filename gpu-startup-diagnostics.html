@@ -12,10 +12,15 @@
       (function () {
         "use strict";
 
-        var BUILD = "gpu-startup-rgba16f-timed-app-boot-v3";
+        var BUILD = "gpu-startup-rgba16f-timed-app-boot-v4";
         var API_URL = "/api/gpu-startup-diagnostics";
         var CAPABILITY_VERSION = 1;
         var CAPABILITY_LIFETIME_MS = 30 * 60 * 1000;
+        var BACKUP_VERSION = 1;
+        var BACKUP_LIFETIME_MS = 24 * 60 * 60 * 1000;
+        var BACKUP_STORAGE_KEY_PREFIX = "gpu-startup-diagnostic-manual-backup-v1:";
+        var MAX_BACKUP_ATTEMPTS = 4;
+        var MAX_BACKUP_EVENT_COUNT = 128;
         var MAX_EVENT_COUNT = 24;
         var MAX_EVENT_DETAIL_BYTES = 1200;
         var MAX_SNAPSHOT_BYTES = 48 * 1024;
@@ -24,6 +29,7 @@
         var runCode = params.get("run") || "";
         var fragmentWriteToken = fragment.get("token") || "";
         var capabilityKey = "gpu-startup-diagnostic-capability-v1:" + runCode;
+        var backupStorageKey = BACKUP_STORAGE_KEY_PREFIX + runCode;
         var capabilityRestored = false;
         var capabilityStorageAvailable = false;
         var recoveredCapability = null;
@@ -46,13 +52,42 @@
         }
         var writeToken = fragmentWriteToken
           || (recoveredCapability ? recoveredCapability.writeToken : "");
+        var backupCredentialForRedaction = writeToken;
         capabilityRestored = !fragmentWriteToken && Boolean(recoveredCapability && writeToken);
+        var backupStorageAvailable = false;
+        var recoveredBackupAttempts = [];
+        try {
+          var recoveredBackupJournal = runCode
+            ? JSON.parse(window.localStorage.getItem(backupStorageKey) || "null")
+            : null;
+          backupStorageAvailable = true;
+          if (
+            recoveredBackupJournal
+            && recoveredBackupJournal.version === BACKUP_VERSION
+            && recoveredBackupJournal.build === BUILD
+            && recoveredBackupJournal.runCode === runCode
+            && Number(recoveredBackupJournal.expiresAt) > Date.now()
+            && Array.isArray(recoveredBackupJournal.attempts)
+          ) {
+            recoveredBackupAttempts = sanitizeBackupValue(
+              recoveredBackupJournal.attempts.slice(-MAX_BACKUP_ATTEMPTS),
+              0,
+              [],
+            );
+          } else if (runCode && recoveredBackupJournal) {
+            window.localStorage.removeItem(backupStorageKey);
+          }
+        } catch (_) {
+          backupStorageAvailable = false;
+          recoveredBackupAttempts = [];
+        }
         var createdAt = new Date().toISOString();
         var sequenceCounter = 0;
         var sequenceHighWater = recoveredCapability
           ? Math.max(0, Number(recoveredCapability.sequenceHighWater) || 0)
           : 0;
         var events = [];
+        var backupEvents = [];
         var currentStatus = "running";
         var probeFinished = false;
         var reportStored = false;
@@ -174,6 +209,54 @@
 
         function redactUrls(value) {
           return String(value).replace(/\b(?:https?:\/\/|blob:https?:\/\/)[^\s<>"']+/gi, "[url-redacted]");
+        }
+
+        function isSensitiveBackupKey(value) {
+          return /token|authorization|cookie|password|secret|credential|capability|api[-_]?key/i.test(String(value));
+        }
+
+        function redactBackupText(value) {
+          var text = redactUrls(value)
+            .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi, "Bearer [credential-redacted]")
+            .replace(/([?#&](?:token|access_token|write_token)=)[^&\s<>"']+/gi, "$1[credential-redacted]");
+          if (backupCredentialForRedaction && backupCredentialForRedaction.length >= 16) {
+            text = text.split(backupCredentialForRedaction).join("[credential-redacted]");
+          }
+          return text;
+        }
+
+        function sanitizeBackupValue(value, depth, seen) {
+          if (value === null || value === undefined) return value === undefined ? null : value;
+          if (typeof value === "boolean") return value;
+          if (typeof value === "number") return Number.isFinite(value) ? value : String(value);
+          if (typeof value === "string") return redactBackupText(value).slice(0, 64 * 1024);
+          if (typeof value !== "object") return redactBackupText(value).slice(0, 1600);
+          if (depth >= 12) return "[depth-limited]";
+          if (seen.indexOf(value) >= 0) return "[circular]";
+          seen.push(value);
+          try {
+            if (Array.isArray(value)) {
+              return value.slice(0, 256).map(function (entry) {
+                return sanitizeBackupValue(entry, depth + 1, seen);
+              });
+            }
+            var result = {};
+            Object.keys(value).slice(0, 256).forEach(function (key) {
+              if (String(key).toLowerCase() === "writetoken") return;
+              if (isSensitiveBackupKey(key)) {
+                result[key] = "[credential-redacted]";
+                return;
+              }
+              try {
+                result[key] = sanitizeBackupValue(value[key], depth + 1, seen);
+              } catch (_) {
+                result[key] = "[unreadable]";
+              }
+            });
+            return result;
+          } finally {
+            seen.pop();
+          }
         }
 
         function compactValue(value, depth, seen) {
@@ -475,6 +558,112 @@
           });
         }
 
+        function currentDiagnosticBackupPayload() {
+          var payload;
+          try {
+            payload = terminalBody ? JSON.parse(terminalBody) : snapshotPayload();
+          } catch (_) {
+            payload = snapshotPayload();
+          }
+          payload.events = backupEvents.slice(-MAX_BACKUP_EVENT_COUNT);
+          return sanitizeBackupValue(payload, 0, []);
+        }
+
+        function persistDiagnosticBackupJournal() {
+          if (!runCode || !backupStorageAvailable) return false;
+          try {
+            var savedAt = new Date().toISOString();
+            var attempts = recoveredBackupAttempts.concat([{
+              attemptCreatedAt: createdAt,
+              savedAt: savedAt,
+              status: currentStatus,
+              finished: probeFinished,
+              payload: currentDiagnosticBackupPayload(),
+            }]).slice(-MAX_BACKUP_ATTEMPTS);
+            window.localStorage.setItem(backupStorageKey, JSON.stringify({
+              version: BACKUP_VERSION,
+              build: BUILD,
+              runCode: runCode,
+              savedAt: savedAt,
+              expiresAt: Date.now() + BACKUP_LIFETIME_MS,
+              attempts: attempts,
+            }));
+            return true;
+          } catch (_) {
+            backupStorageAvailable = false;
+            return false;
+          }
+        }
+
+        function manualDiagnosticBackupPayload() {
+          return {
+            version: 1,
+            type: "gpu-startup-diagnostic-manual-backup",
+            build: BUILD,
+            runCode: runCode,
+            exportedAt: new Date().toISOString(),
+            manualBackup: {
+              automaticUploadAvailable: reportingAvailable,
+              automaticUploadStored: reportStored,
+              crashJournalAvailable: Boolean(runCode && backupStorageAvailable),
+              recoveredAttemptCount: recoveredBackupAttempts.length,
+              runCodeSuffix: runCode ? runCode.slice(-8).toUpperCase() : "LOCAL",
+            },
+            recoveredAttempts: sanitizeBackupValue(recoveredBackupAttempts, 0, []),
+            currentAttempt: currentDiagnosticBackupPayload(),
+          };
+        }
+
+        function serializedManualDiagnosticBackup() {
+          return JSON.stringify(manualDiagnosticBackupPayload(), null, 2);
+        }
+
+        function updateManualBackupSurface() {
+          var section = document.getElementById("manualDiagnosticBackup");
+          var output = document.getElementById("diagnosticJson");
+          var hint = document.getElementById("diagnosticBackupHint");
+          var backupAvailable = probeFinished || recoveredBackupAttempts.length > 0;
+          if (section) section.hidden = !backupAvailable;
+          if (output && backupAvailable && (!output.value || probeFinished)) {
+            output.value = serializedManualDiagnosticBackup();
+          }
+          if (hint && recoveredBackupAttempts.length > 0) {
+            hint.textContent = "Recovered data from the attempt before this page reloaded. Copy the JSON and paste it into the chat.";
+          }
+        }
+
+        async function copyManualDiagnosticBackup() {
+          var output = document.getElementById("diagnosticJson");
+          var copyStatus = document.getElementById("diagnosticCopyStatus");
+          if (!output) return;
+          var json = serializedManualDiagnosticBackup();
+          output.value = json;
+          var copied = false;
+          try {
+            if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+              await navigator.clipboard.writeText(json);
+              copied = true;
+            }
+          } catch (_) {
+            copied = false;
+          }
+          if (!copied) {
+            try {
+              output.focus();
+              output.select();
+              output.setSelectionRange(0, output.value.length);
+              copied = document.execCommand("copy") === true;
+            } catch (_) {
+              copied = false;
+            }
+          }
+          if (copyStatus) {
+            copyStatus.textContent = copied
+              ? "JSON copied. Paste it into the chat."
+              : "JSON selected. Press and hold the box, then choose Copy.";
+          }
+        }
+
         function snapshotPayload() {
           return {
             version: 1,
@@ -599,7 +788,9 @@
             }
           }
           if (summary) {
-            if (reportStored) {
+            if (recoveredBackupAttempts.length > 0 && !probeFinished) {
+              summary.textContent = "The attempt before this reload was recovered. Its JSON backup is available below while a new test runs.";
+            } else if (reportStored) {
               summary.textContent = "The report has been stored. You can close this page.";
             } else if (!reportingAvailable) {
               summary.textContent = probeFinished
@@ -616,6 +807,7 @@
           if (code) code.textContent = runCode ? runCode.slice(-8).toUpperCase() : "LOCAL";
           renderStartupTimeline();
           updateTimerSurface();
+          updateManualBackupSurface();
         }
 
         async function postSnapshot(body, keepalive, expectedSequence, expectedStatus) {
@@ -729,6 +921,7 @@
               if (result.stored) {
                 reportStored = true;
                 clearCapability();
+                persistDiagnosticBackupJournal();
                 updateSurface();
                 return true;
               }
@@ -757,13 +950,17 @@
           } else if (status && !probeFinished && currentStatus !== "failed") {
             currentStatus = status;
           }
-          events.push({
+          var event = {
             sequence: nextSequence(),
             at: new Date().toISOString(),
             name: String(name).slice(0, 96),
             detail: latestEventDetail,
-          });
+          };
+          events.push(event);
+          backupEvents.push(event);
           if (events.length > MAX_EVENT_COUNT) events.shift();
+          if (backupEvents.length > MAX_BACKUP_EVENT_COUNT) backupEvents.shift();
+          persistDiagnosticBackupJournal();
           updateSurface();
           return sendSnapshot(delivery || "wait");
         }
@@ -784,15 +981,19 @@
           currentStatus = status;
           latestEventName = name;
           latestEventDetail = compactDetail(detail);
-          events.push({
+          var event = {
             sequence: nextSequence(),
             at: new Date().toISOString(),
             name: String(name).slice(0, 96),
             detail: latestEventDetail,
-          });
+          };
+          events.push(event);
+          backupEvents.push(event);
           if (events.length > MAX_EVENT_COUNT) events.shift();
+          if (backupEvents.length > MAX_BACKUP_EVENT_COUNT) backupEvents.shift();
           terminalBody = serializedSnapshot();
           terminalUploadRetryAllowed = true;
+          persistDiagnosticBackupJournal();
           updateSurface();
           if (!reportingAvailable) return false;
           return confirmTerminalUpload();
@@ -810,6 +1011,8 @@
           serializeError: serializeError,
           setModuleLoaded: setModuleLoaded,
           snapshot: snapshotPayload,
+          manualBackup: serializedManualDiagnosticBackup,
+          copyManualBackup: copyManualDiagnosticBackup,
         };
 
         window.addEventListener("error", function (event) {
@@ -851,7 +1054,13 @@
           updateTimerSurface();
         });
 
-        document.addEventListener("DOMContentLoaded", updateSurface, { once: true });
+        document.addEventListener("DOMContentLoaded", function () {
+          var copyButton = document.getElementById("copyDiagnosticJson");
+          if (copyButton) copyButton.addEventListener("click", function () {
+            void copyManualDiagnosticBackup();
+          });
+          updateSurface();
+        }, { once: true });
         record("inline-bootstrap-started", {
           tokenAvailable: writeToken.length >= 32,
           runCodeAvailable: runCode.length >= 16,
@@ -1112,6 +1321,65 @@
 
       .diagnostic-meta code { color: #ffb477; }
 
+      .manual-backup {
+        margin-top: 1.25rem;
+        padding-top: 1.15rem;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+      }
+
+      .manual-backup[hidden] { display: none; }
+
+      .manual-backup h2 {
+        margin: 0;
+        color: #f8f2e9;
+        font-size: 1rem;
+        letter-spacing: -0.01em;
+      }
+
+      .manual-backup p {
+        margin: 0.45rem 0 0.8rem;
+        color: #9e978f;
+        font-size: 0.76rem;
+        line-height: 1.5;
+      }
+
+      #copyDiagnosticJson {
+        width: 100%;
+        min-height: 3rem;
+        border: 0;
+        border-radius: 0.9rem;
+        background: #ff7a1a;
+        color: #17110c;
+        font: inherit;
+        font-weight: 850;
+        cursor: pointer;
+      }
+
+      #copyDiagnosticJson:focus-visible {
+        outline: 3px solid rgba(255, 180, 119, 0.75);
+        outline-offset: 3px;
+      }
+
+      #diagnosticJson {
+        width: 100%;
+        min-height: 12rem;
+        margin-top: 0.75rem;
+        padding: 0.8rem;
+        resize: vertical;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 0.8rem;
+        background: #0d0c0b;
+        color: #d8d1c8;
+        font: 0.68rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+        overflow-wrap: normal;
+        white-space: pre;
+      }
+
+      #diagnosticCopyStatus {
+        min-height: 1.2em;
+        color: #ffb477;
+      }
+
       .diagnostic-privacy {
         margin: 1rem 0 0;
         color: #8f8982;
@@ -1182,6 +1450,21 @@
           <span>One-time diagnostic</span>
           <span>Run <code id="diagnosticCode">LOCAL</code></span>
         </div>
+        <section id="manualDiagnosticBackup" class="manual-backup" hidden>
+          <h2>Diagnostic JSON backup</h2>
+          <p id="diagnosticBackupHint">
+            This backup is always available, even when the automatic upload fails.
+            Copy it and paste it into the chat.
+          </p>
+          <button id="copyDiagnosticJson" type="button">Copy JSON</button>
+          <textarea
+            id="diagnosticJson"
+            readonly
+            spellcheck="false"
+            aria-label="Diagnostic JSON backup"
+          ></textarea>
+          <p id="diagnosticCopyStatus" role="status" aria-live="polite"></p>
+        </section>
         <p class="diagnostic-privacy">
           The report contains technical browser and GPU startup data only. It excludes artwork,
           project content, filenames, clipboard data and account information.

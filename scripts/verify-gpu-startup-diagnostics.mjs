@@ -21,7 +21,7 @@ const startup = read("src/startup.ts");
 const inlineBootstrapIndex = html.indexOf("inline-bootstrap-started");
 const moduleScriptIndex = html.indexOf('type="module" src="/src/labs/gpu-startup-diagnostics.ts"');
 const diagnosticBuild = html.match(/var BUILD = "([^"]+)"/)?.[1];
-assert.equal(diagnosticBuild, "gpu-startup-rgba16f-timed-app-boot-v3");
+assert.equal(diagnosticBuild, "gpu-startup-rgba16f-timed-app-boot-v4");
 assert.ok(
   workerBuilder.includes(`GPU_STARTUP_DIAGNOSTIC_BUILD = "${diagnosticBuild}"`),
   "Client and Worker diagnostic builds must match.",
@@ -43,7 +43,17 @@ assert.match(html, /reportStored/);
 assert.match(html, /lastHeartbeatAt/);
 assert.match(html, /acknowledgement\.acknowledged === true/);
 assert.match(html, /storedStatus === expectedStatus/);
-assert.doesNotMatch(html, /localStorage|clipboard\./);
+assert.match(html, /localStorage\.getItem\(backupStorageKey\)/);
+assert.match(html, /localStorage\.setItem\(backupStorageKey/);
+assert.match(html, /BACKUP_LIFETIME_MS = 24 \* 60 \* 60 \* 1000/);
+assert.match(html, /MAX_BACKUP_EVENT_COUNT = 128/);
+assert.match(html, /recoveredBackupAttempts/);
+assert.match(html, /manualDiagnosticBackup/);
+assert.match(html, /sanitizeBackupValue/);
+assert.match(html, /String\(key\)\.toLowerCase\(\) === "writetoken"/);
+assert.match(html, /navigator\.clipboard\.writeText/);
+assert.match(html, /document\.execCommand\("copy"\)/);
+assert.match(html, />Copy JSON</);
 assert.match(html, /sessionStorage\.setItem\(capabilityKey/);
 assert.match(html, /sessionStorage\.getItem\(capabilityKey/);
 assert.match(html, /application-startup-phase/);
@@ -139,7 +149,12 @@ function diagnosticBootstrapHarness({
   writeToken = "b".repeat(64),
   fetchResults = [],
   sharedSessionStorage = new Map(),
+  sharedLocalStorage = new Map(),
+  clipboardMode = "success",
+  legacyCopyResult = true,
 } = {}) {
+  let selectionCount = 0;
+  const legacyCopyCommands = [];
   const elements = new Map([
     ["diagnosticStatus", { dataset: {}, textContent: "" }],
     ["diagnosticSummary", { textContent: "" }],
@@ -152,6 +167,16 @@ function diagnosticBootstrapHarness({
     }],
     ["diagnosticCurrentPhase", { textContent: "" }],
     ["diagnosticLiveness", { dataset: {}, textContent: "" }],
+    ["manualDiagnosticBackup", { hidden: true }],
+    ["diagnosticJson", {
+      value: "",
+      focus() {},
+      select() { selectionCount += 1; },
+      setSelectionRange() { selectionCount += 1; },
+    }],
+    ["diagnosticBackupHint", { textContent: "" }],
+    ["diagnosticCopyStatus", { textContent: "" }],
+    ["copyDiagnosticJson", { addEventListener() {} }],
   ]);
   const stepChildren = [];
   elements.set("diagnosticSteps", {
@@ -160,6 +185,7 @@ function diagnosticBootstrapHarness({
     appendChild(child) { stepChildren.push(child); },
   });
   const postedBodies = [];
+  let copiedText = null;
   let fetchIndex = 0;
   let timerId = 0;
   const location = {
@@ -189,6 +215,11 @@ function diagnosticBootstrapHarness({
       getItem(key) { return sharedSessionStorage.get(key) ?? null; },
       setItem(key, value) { sharedSessionStorage.set(key, String(value)); },
       removeItem(key) { sharedSessionStorage.delete(key); },
+    },
+    localStorage: {
+      getItem(key) { return sharedLocalStorage.get(key) ?? null; },
+      setItem(key, value) { sharedLocalStorage.set(key, String(value)); },
+      removeItem(key) { sharedLocalStorage.delete(key); },
     },
     addEventListener() {},
     setTimeout(callback, delay) {
@@ -233,6 +264,14 @@ function diagnosticBootstrapHarness({
     onLine: true,
     sendBeacon() { return true; },
   };
+  if (clipboardMode !== "missing") {
+    navigator.clipboard = {
+      async writeText(value) {
+        if (clipboardMode === "reject") throw new Error("Clipboard permission denied");
+        copiedText = String(value);
+      },
+    };
+  }
   const document = {
     visibilityState: "visible",
     getElementById(id) { return elements.get(id) ?? null; },
@@ -246,6 +285,10 @@ function diagnosticBootstrapHarness({
       };
     },
     addEventListener() {},
+    execCommand(command) {
+      legacyCopyCommands.push(command);
+      return command === "copy" && legacyCopyResult;
+    },
   };
   browser.window = browser;
   runInNewContext(inlineBootstrapSource, {
@@ -271,7 +314,16 @@ function diagnosticBootstrapHarness({
     unescape,
     queueMicrotask,
   });
-  return { browser, elements, postedBodies, sharedSessionStorage };
+  return {
+    browser,
+    elements,
+    postedBodies,
+    sharedSessionStorage,
+    sharedLocalStorage,
+    copiedText: () => copiedText,
+    selectionCount: () => selectionCount,
+    legacyCopyCommands,
+  };
 }
 
 {
@@ -304,6 +356,20 @@ function diagnosticBootstrapHarness({
   assert.ok(!Object.hasOwn(terminalPayload.summary, "reportStored"));
   assert.ok(Buffer.byteLength(JSON.stringify(terminalPayload.events.at(-1).detail), "utf8") <= 1200);
   assert.equal(harness.elements.get("diagnosticStatus").textContent, "Diagnostic complete");
+  assert.equal(harness.elements.get("manualDiagnosticBackup").hidden, false);
+  const manualPayload = JSON.parse(harness.elements.get("diagnosticJson").value);
+  assert.equal(manualPayload.type, "gpu-startup-diagnostic-manual-backup");
+  assert.ok(!Object.hasOwn(manualPayload.currentAttempt, "writeToken"));
+  assert.equal(manualPayload.manualBackup.automaticUploadStored, true);
+  assert.equal(manualPayload.manualBackup.runCodeSuffix, "AAAAAAAA");
+  assert.doesNotMatch(JSON.stringify(manualPayload), /writeToken/);
+  await harness.browser.__gpuStartupDiagnostics.copyManualBackup();
+  assert.equal(harness.copiedText(), harness.elements.get("diagnosticJson").value);
+  assert.doesNotMatch(harness.copiedText(), new RegExp("b".repeat(64)));
+  assert.equal(
+    harness.elements.get("diagnosticCopyStatus").textContent,
+    "JSON copied. Paste it into the chat.",
+  );
 }
 
 {
@@ -322,26 +388,51 @@ function diagnosticBootstrapHarness({
 
 {
   const sharedSessionStorage = new Map();
+  const sharedLocalStorage = new Map();
   const runCode = `diag-${"f".repeat(32)}`;
   const writeToken = "9".repeat(64);
   const firstLoad = diagnosticBootstrapHarness({
     runCode,
     writeToken,
     sharedSessionStorage,
+    sharedLocalStorage,
   });
   assert.equal(firstLoad.browser.location.hash, "", "A stored capability must be removed from the URL.");
   assert.equal(sharedSessionStorage.size, 1, "The write capability must survive a same-tab reload.");
+  firstLoad.browser.__gpuStartupDiagnostics.record(
+    "crash-checkpoint",
+    {
+      nested: { accessToken: writeToken },
+      mirroredCredential: writeToken,
+    },
+    "running",
+    "beacon",
+  );
+  const storedJournal = [...sharedLocalStorage.values()].join("\n");
+  assert.doesNotMatch(storedJournal, new RegExp(writeToken));
+  assert.doesNotMatch(storedJournal, /writeToken/);
 
   const reloaded = diagnosticBootstrapHarness({
     runCode,
     writeToken: "",
     sharedSessionStorage,
+    sharedLocalStorage,
   });
   assert.equal(
     reloaded.browser.__gpuStartupDiagnostics.snapshot().writeToken,
     writeToken,
     "A same-tab reload must recover the diagnostic write capability.",
   );
+  assert.equal(reloaded.elements.get("manualDiagnosticBackup").hidden, false);
+  const recoveredBackup = JSON.parse(reloaded.elements.get("diagnosticJson").value);
+  assert.equal(recoveredBackup.manualBackup.recoveredAttemptCount, 1);
+  assert.ok(
+    recoveredBackup.recoveredAttempts[0].payload.events.some(
+      ({ name }) => name === "crash-checkpoint",
+    ),
+  );
+  assert.doesNotMatch(JSON.stringify(recoveredBackup), new RegExp(writeToken));
+  assert.match(reloaded.elements.get("diagnosticBackupHint").textContent, /Recovered data/);
   const stored = await reloaded.browser.__gpuStartupDiagnostics.finish(
     "completed",
     "diagnostic-completed",
@@ -387,6 +478,15 @@ function diagnosticBootstrapHarness({
   assert.equal(timeline.phases.find(({ phase }) => phase === "application-navigation").state, "completed");
   assert.equal(timeline.phases.find(({ phase }) => phase === "application-module").state, "completed");
   assert.equal(timeline.phases.find(({ phase }) => phase === "adapter-request").phaseElapsedMs, 10);
+  for (let index = 0; index < 30; index += 1) {
+    harness.browser.__gpuStartupDiagnostics.record(
+      `historical-checkpoint-${index}`,
+      null,
+      "running",
+      "wait",
+    );
+  }
+  assert.equal(harness.browser.__gpuStartupDiagnostics.snapshot().events.length, 24);
   const stored = await harness.browser.__gpuStartupDiagnostics.finish(
     "completed",
     "diagnostic-completed",
@@ -396,6 +496,54 @@ function diagnosticBootstrapHarness({
   assert.equal(harness.postedBodies.length, 0);
   assert.equal(harness.elements.get("diagnosticStatus").textContent, "Local diagnostic complete");
   assert.match(harness.elements.get("diagnosticSummary").textContent, /No report was uploaded/);
+  assert.equal(harness.elements.get("manualDiagnosticBackup").hidden, false);
+  const localBackup = JSON.parse(harness.elements.get("diagnosticJson").value);
+  assert.ok(!Object.hasOwn(localBackup.currentAttempt, "writeToken"));
+  assert.equal(localBackup.manualBackup.automaticUploadStored, false);
+  assert.equal(localBackup.manualBackup.runCodeSuffix, "LOCAL");
+  assert.ok(localBackup.currentAttempt.events.length > 24);
+  assert.ok(localBackup.currentAttempt.events.some(({ name }) => name === "historical-checkpoint-0"));
+}
+
+{
+  const missingClipboard = diagnosticBootstrapHarness({
+    runCode: "",
+    writeToken: "",
+    clipboardMode: "missing",
+  });
+  await missingClipboard.browser.__gpuStartupDiagnostics.finish(
+    "failed",
+    "diagnostic-failed",
+    null,
+  );
+  await missingClipboard.browser.__gpuStartupDiagnostics.copyManualBackup();
+  assert.deepEqual(missingClipboard.legacyCopyCommands, ["copy"]);
+  assert.ok(missingClipboard.selectionCount() >= 2);
+  assert.equal(
+    missingClipboard.elements.get("diagnosticCopyStatus").textContent,
+    "JSON copied. Paste it into the chat.",
+  );
+}
+
+{
+  const deniedClipboard = diagnosticBootstrapHarness({
+    runCode: "",
+    writeToken: "",
+    clipboardMode: "reject",
+    legacyCopyResult: false,
+  });
+  await deniedClipboard.browser.__gpuStartupDiagnostics.finish(
+    "failed",
+    "diagnostic-failed",
+    null,
+  );
+  await deniedClipboard.browser.__gpuStartupDiagnostics.copyManualBackup();
+  assert.deepEqual(deniedClipboard.legacyCopyCommands, ["copy"]);
+  assert.ok(deniedClipboard.selectionCount() >= 2);
+  assert.equal(
+    deniedClipboard.elements.get("diagnosticCopyStatus").textContent,
+    "JSON selected. Press and hold the box, then choose Copy.",
+  );
 }
 
 const builtWorkerPath = resolve(root, "dist/server/index.js");
@@ -704,7 +852,7 @@ if (existsSync(builtWorkerPath)) {
   const sequence = Date.now() * 1000 + 1;
   const payload = {
     version: 1,
-    build: "gpu-startup-rgba16f-timed-app-boot-v3",
+    build: "gpu-startup-rgba16f-timed-app-boot-v4",
     runCode,
     writeToken,
     sequence,
