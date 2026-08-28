@@ -36,6 +36,7 @@ import type {
   BrushSettings,
   BrushGrainAssetId,
   BrushShapeAssetId,
+  BrushShapeMaskFormat,
   CustomBrushGrainAssetId,
   CustomBrushShapeAssetId,
   GrainMode,
@@ -61,6 +62,7 @@ export interface MobileBrushStudioOptions {
   readonly root: HTMLElement;
   readonly appRoot: HTMLElement;
   readonly browser: MobileBrushStudioBrowser;
+  getBrushPrecision(): BrushShapeMaskFormat;
   readonly applySettings: (settings: BrushSettings) => void;
   readonly setBrushLibraryOpen: (open: boolean) => void;
   readonly onOpenChange: (open: boolean) => void;
@@ -137,10 +139,6 @@ function percent(value: number): string {
 function signedPercent(value: number): string {
   const rounded = Math.round(value);
   return `${rounded > 0 ? "+" : ""}${rounded}%`;
-}
-
-function copySettings(settings: Readonly<BrushSettings>): BrushSettings {
-  return { ...settings };
 }
 
 function brushColor16Channels(color: string): readonly [number, number, number] {
@@ -350,7 +348,6 @@ export class MobileBrushStudioController {
   readonly tabs: HTMLButtonElement[];
   readonly panels: HTMLElement[];
   readonly renderingButtons: HTMLButtonElement[];
-  readonly shapeMaskFormatButtons: HTMLButtonElement[];
   readonly shapeRotationButtons: HTMLButtonElement[];
   readonly grainModeButtons: HTMLButtonElement[];
 
@@ -416,9 +413,6 @@ export class MobileBrushStudioController {
     this.renderingButtons = Array.from(
       this.sheet.querySelectorAll<HTMLButtonElement>("[data-mobile-brush-rendering]"),
     );
-    this.shapeMaskFormatButtons = Array.from(
-      this.sheet.querySelectorAll<HTMLButtonElement>("[data-mobile-brush-shape-mask-format]"),
-    );
     this.shapeRotationButtons = Array.from(
       this.sheet.querySelectorAll<HTMLButtonElement>("[data-mobile-brush-shape-rotation]"),
     );
@@ -441,7 +435,9 @@ export class MobileBrushStudioController {
   dispose(): Promise<void> {
     if (this.disposePromise) return this.disposePromise;
     if (this.disposed) return Promise.resolve();
-    const original = this.originalSettings ? copySettings(this.originalSettings) : undefined;
+    const original = this.originalSettings
+      ? this.withBrushPrecision(this.originalSettings)
+      : undefined;
     this.disposed = true;
     this.importRevision += 1;
     this.sourcePreviewRevision += 1;
@@ -468,7 +464,7 @@ export class MobileBrushStudioController {
   }
 
   rememberSettings(brushId: string, settings: Readonly<BrushSettings>): void {
-    this.settingsCache.set(brushId, copySettings(settings));
+    this.settingsCache.set(brushId, this.withBrushPrecision(settings));
   }
 
   forgetSettings(brushId: string): void {
@@ -481,17 +477,24 @@ export class MobileBrushStudioController {
   ): BrushSettings {
     const cached = this.settingsCache.get(brushId);
     if (cached) {
-      return { ...cached, tool: "paint", color: fallback.color, hardness: 1 };
+      return this.withBrushPrecision({
+        ...cached,
+        tool: "paint",
+        color: fallback.color,
+        hardness: 1,
+      });
     }
     const saved = loadBrushStudioSavedBrush(brushId);
-    if (!saved) return { ...fallback, tool: "paint", hardness: 1 };
-    return {
+    if (!saved) {
+      return this.withBrushPrecision({ ...fallback, tool: "paint", hardness: 1 });
+    }
+    return this.withBrushPrecision({
       ...fallback,
       ...saved.settings,
       tool: "paint",
       color: fallback.color,
       hardness: 1,
-    };
+    });
   }
 
   async resolveBrushSettings(
@@ -501,12 +504,21 @@ export class MobileBrushStudioController {
     this.assertUsable();
     const cached = this.settingsCache.get(brushId);
     if (cached) {
-      return { ...cached, tool: "paint", color: fallback.color, hardness: 1 };
+      return this.withBrushPrecision({
+        ...cached,
+        tool: "paint",
+        color: fallback.color,
+        hardness: 1,
+      });
     }
 
     const saved = loadBrushStudioSavedBrush(brushId);
     if (!saved) {
-      const resolved = { ...fallback, tool: "paint" as const, hardness: 1 };
+      const resolved = this.withBrushPrecision({
+        ...fallback,
+        tool: "paint" as const,
+        hardness: 1,
+      });
       this.rememberSettings(brushId, resolved);
       return resolved;
     }
@@ -526,8 +538,9 @@ export class MobileBrushStudioController {
       throw error;
     }
     this.assertUsable();
+    resolved.shapeMaskFormat = this.options.getBrushPrecision();
     this.rememberSettings(brushId, resolved);
-    return copySettings(resolved);
+    return this.withBrushPrecision(resolved);
   }
 
   async releasePreviewAssets(
@@ -578,8 +591,8 @@ export class MobileBrushStudioController {
     if (this.disposed || this.busy) return;
     this.activeBrushId = brushId;
     this.activeBrushName = brushName;
-    this.originalSettings = copySettings(originalSettings);
-    this.draftSettings = { ...settings, tool: "paint", hardness: 1 };
+    this.originalSettings = this.withBrushPrecision(originalSettings);
+    this.draftSettings = this.withBrushPrecision({ ...settings, tool: "paint", hardness: 1 });
     this.openState = true;
     this.nameElement.value = brushName;
     this.nameElement.readOnly = !isBrushStudioCustomBrushId(brushId);
@@ -605,7 +618,7 @@ export class MobileBrushStudioController {
     this.cancelScheduledWork();
     const original = this.originalSettings;
     this.closeSheet();
-    if (original) this.options.applySettings(original);
+    if (original) this.options.applySettings(this.withBrushPrecision(original));
     void this.requestTransientAssetRelease();
     if (reopenLibrary) {
       this.options.setBrushLibraryOpen(true);
@@ -736,18 +749,6 @@ export class MobileBrushStudioController {
         this.syncRadioButtons(this.shapeRotationButtons, "mobileBrushShapeRotation", rotation);
       });
     }
-    for (const button of this.shapeMaskFormatButtons) {
-      this.listen(button, "click", () => {
-        const format = button.dataset.mobileBrushShapeMaskFormat;
-        if (format !== "r8unorm" && format !== "r16float") return;
-        this.changeDraft((draft) => { draft.shapeMaskFormat = format; }, true);
-        this.syncRadioButtons(this.shapeMaskFormatButtons, "mobileBrushShapeMaskFormat", format);
-        if (this.draftSettings) {
-          this.syncColor16Controls(this.draftSettings);
-          this.syncSourcePrecisionLabels(this.draftSettings);
-        }
-      });
-    }
     for (const button of this.grainModeButtons) {
       this.listen(button, "click", () => {
         const mode = button.dataset.mobileBrushGrainMode;
@@ -860,7 +861,6 @@ export class MobileBrushStudioController {
     const sampleButton = this.element<HTMLButtonElement>("mobileBrushStudioColor16Sample");
     this.listen(sampleButton, "click", () => {
       this.changeDraft((draft) => {
-        draft.shapeMaskFormat = "r16float";
         draft.color = "#7fff7fff7fff";
         draft.shape = "circle";
         draft.shapeAssetId = "legacy-shape";
@@ -886,7 +886,7 @@ export class MobileBrushStudioController {
       if (!this.draftSettings) return;
       this.populateControls(this.draftSettings);
       this.reportStatus(
-        "Comparison sample ready. Switch between 8-bit Compare and Full 16F without changing the source.",
+        "Comparison sample ready. Tap Done, then switch 8-bit and 16-bit in Settings.",
         "ok",
       );
     });
@@ -898,6 +898,13 @@ export class MobileBrushStudioController {
 
   private assertUsable(): void {
     if (this.disposed) throw new Error("Brush Studio has been disposed.");
+  }
+
+  private withBrushPrecision(settings: Readonly<BrushSettings>): BrushSettings {
+    return {
+      ...settings,
+      shapeMaskFormat: this.options.getBrushPrecision(),
+    };
   }
 
   private requestSourceImport(
@@ -927,6 +934,7 @@ export class MobileBrushStudioController {
     change(this.draftSettings);
     this.draftSettings.tool = "paint";
     this.draftSettings.hardness = 1;
+    this.draftSettings.shapeMaskFormat = this.options.getBrushPrecision();
     this.scheduleApply();
     if (redrawSources) void this.drawSourcePreviews();
   }
@@ -944,7 +952,8 @@ export class MobileBrushStudioController {
 
   private applyDraftNow(): void {
     if (!this.openState || !this.draftSettings) return;
-    this.options.applySettings(copySettings(this.draftSettings));
+    this.draftSettings.shapeMaskFormat = this.options.getBrushPrecision();
+    this.options.applySettings(this.withBrushPrecision(this.draftSettings));
     this.schedulePreview();
   }
 
@@ -954,7 +963,7 @@ export class MobileBrushStudioController {
       this.applyFrame = null;
       this.applyDraftNow();
     }
-    return this.draftSettings ? copySettings(this.draftSettings) : null;
+    return this.draftSettings ? this.withBrushPrecision(this.draftSettings) : null;
   }
 
   private populateControls(settings: BrushSettings): void {
@@ -987,11 +996,6 @@ export class MobileBrushStudioController {
       ? settings.blendMode
       : "light-glaze";
     this.syncRadioButtons(this.renderingButtons, "mobileBrushRendering", rendering);
-    this.syncRadioButtons(
-      this.shapeMaskFormatButtons,
-      "mobileBrushShapeMaskFormat",
-      shapeMaskFormatForSettings(settings),
-    );
     this.syncRadioButtons(this.shapeRotationButtons, "mobileBrushShapeRotation", settings.shapeRotation);
     this.syncRadioButtons(this.grainModeButtons, "mobileBrushGrainMode", settings.grainMode);
     this.syncGrainAvailability(settings.grainMode);
@@ -1060,7 +1064,6 @@ export class MobileBrushStudioController {
     buttons: readonly HTMLButtonElement[],
     datasetKey:
       | "mobileBrushRendering"
-      | "mobileBrushShapeMaskFormat"
       | "mobileBrushShapeRotation"
       | "mobileBrushGrainMode",
     value: string,
@@ -1320,8 +1323,11 @@ export class MobileBrushStudioController {
   }
 
   private async renderPreview(): Promise<void> {
-    const settings = this.draftSettings;
+    const settings = this.draftSettings
+      ? this.withBrushPrecision(this.draftSettings)
+      : null;
     if (!settings || !this.openState) return;
+    this.draftSettings = settings;
     const bounds = this.previewCanvas.getBoundingClientRect();
     if (bounds.width < 1 || bounds.height < 1) return;
     const width = Math.max(1, Math.round(bounds.width));

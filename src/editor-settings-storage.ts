@@ -1,9 +1,14 @@
+import type { BrushShapeMaskFormat } from "./engine-types.ts";
+
+export type BrushPrecision = BrushShapeMaskFormat;
+
 export interface EditorGuidePreferences {
   readonly rulers: boolean;
   readonly grid: boolean;
   readonly snapping: boolean;
   readonly symmetryEnabled: boolean;
   readonly symmetryAngleDegrees: number;
+  readonly brushPrecision: BrushPrecision;
 }
 
 export interface EditorSettingsStoragePort {
@@ -25,6 +30,7 @@ export const DEFAULT_EDITOR_GUIDE_PREFERENCES: Readonly<EditorGuidePreferences> 
     snapping: true,
     symmetryEnabled: false,
     symmetryAngleDegrees: 90,
+    brushPrecision: "r16float",
   });
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -43,6 +49,10 @@ export function normalizeSymmetryAngleDegrees(
     : finiteFallback;
   const rounded = Math.round(numeric);
   return ((rounded % 180) + 180) % 180;
+}
+
+export function normalizeBrushPrecision(value: unknown): BrushPrecision {
+  return value === "r8unorm" ? "r8unorm" : "r16float";
 }
 
 function normalizedPreferences(value: unknown): EditorGuidePreferences {
@@ -68,6 +78,7 @@ function normalizedPreferences(value: unknown): EditorGuidePreferences {
           ? 90
           : DEFAULT_EDITOR_GUIDE_PREFERENCES.symmetryAngleDegrees,
     ),
+    brushPrecision: normalizeBrushPrecision(candidate.brushPrecision),
   };
 }
 

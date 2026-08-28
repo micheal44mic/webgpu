@@ -4,6 +4,7 @@ import { createServer } from "vite";
 
 const root = new URL("../", import.meta.url);
 const html = readFileSync(new URL("index.html", root), "utf8");
+const mainSource = readFileSync(new URL("src/main.ts", root), "utf8");
 
 assert.match(
   html,
@@ -19,6 +20,26 @@ assert.match(
   html,
   /<aside\b[^>]*id="editorSettingsPanel"[^>]*aria-label="Settings"[^>]*aria-hidden="true"[^>]*\binert\b[^>]*>/,
   "the initially closed Settings panel must be labelled, hidden and inert",
+);
+assert.match(
+  html,
+  /<div\b[^>]*id="editorBrushPrecision"[^>]*role="radiogroup"[^>]*aria-label="Brush precision"[^>]*aria-describedby="editorBrushPrecisionHint"[^>]*>/,
+  "Brush precision must be exposed as a labelled radio group with explanatory text",
+);
+for (const [precision, checked, label] of [
+  ["r8unorm", false, "8-bit"],
+  ["r16float", true, "16-bit"],
+]) {
+  assert.match(
+    html,
+    new RegExp(`<button\\b[^>]*role="radio"[^>]*aria-checked="${checked}"[^>]*data-editor-brush-precision="${precision}"[^>]*>\\s*${label}\\s*<\\/button>`),
+    `${label} must remain an accessible Brush precision choice`,
+  );
+}
+assert.doesNotMatch(
+  html,
+  /data-mobile-brush-shape-mask-format/,
+  "Brush Studio must not retain a competing per-brush precision selector",
 );
 
 for (const [id, hint] of [
@@ -74,6 +95,32 @@ for (const [id, type] of [
   );
 }
 
+const initialBrushPrecisionApplication = mainSource.indexOf(
+  "applyGlobalBrushPrecision(editorSettingsController.preferences.brushPrecision);",
+);
+const engineInitialization = mainSource.indexOf("void engine.initialize()");
+assert.ok(
+  initialBrushPrecisionApplication >= 0
+    && engineInitialization >= 0
+    && initialBrushPrecisionApplication < engineInitialization,
+  "the persisted Brush precision must be applied before engine initialization",
+);
+assert.match(
+  mainSource,
+  /function applyBrushSettings\(settings: Readonly<BrushSettings>\): void \{[\s\S]*?brushSettingsController\.replace\(\{[\s\S]*?shapeMaskFormat:\s*editorSettingsController\?\.preferences\.brushPrecision\s*\?\?\s*DEFAULT_EDITOR_GUIDE_PREFERENCES\.brushPrecision,[\s\S]*?\}\);/,
+  "every applied brush must be forced through the global Brush precision preference",
+);
+assert.match(
+  mainSource,
+  /new MobileBrushStudioController\(\{[\s\S]*?getBrushPrecision:\s*\(\)\s*=>\s*editorSettingsController\?\.preferences\.brushPrecision\s*\?\?\s*DEFAULT_EDITOR_GUIDE_PREFERENCES\.brushPrecision,[\s\S]*?applySettings:\s*applyBrushSettings,/,
+  "Brush Studio must read the global Brush precision instead of owning one",
+);
+assert.match(
+  mainSource,
+  /new EditorSettingsController\(\{[\s\S]*?canOpen:\s*\(\)\s*=>\s*!interactionLocked\(\)[\s\S]*?mobileBrushStudio\?\.isBusy !== true/,
+  "Settings must remain closed while editor interaction is locked",
+);
+
 const moduleServer = await createServer({
   appType: "custom",
   configFile: false,
@@ -86,6 +133,7 @@ let EditorSettingsController;
 let DEFAULT_EDITOR_GUIDE_PREFERENCES;
 let EDITOR_SETTINGS_STORAGE_KEY;
 let loadEditorGuidePreferences;
+let normalizeBrushPrecision;
 let normalizeSymmetryAngleDegrees;
 let saveEditorGuidePreferences;
 try {
@@ -93,6 +141,7 @@ try {
     DEFAULT_EDITOR_GUIDE_PREFERENCES,
     EDITOR_SETTINGS_STORAGE_KEY,
     loadEditorGuidePreferences,
+    normalizeBrushPrecision,
     normalizeSymmetryAngleDegrees,
     saveEditorGuidePreferences,
   } = await moduleServer.ssrLoadModule("/src/editor-settings-storage.ts"));
@@ -109,6 +158,7 @@ const defaults = {
   snapping: true,
   symmetryEnabled: false,
   symmetryAngleDegrees: 90,
+  brushPrecision: "r16float",
 };
 assert.deepEqual(DEFAULT_EDITOR_GUIDE_PREFERENCES, defaults);
 assert.equal(EDITOR_SETTINGS_STORAGE_KEY, "m1m4.editor-settings.v1");
@@ -117,6 +167,15 @@ assert.equal(normalizeSymmetryAngleDegrees(180), 0);
 assert.equal(normalizeSymmetryAngleDegrees(541), 1);
 assert.equal(normalizeSymmetryAngleDegrees(37.6), 38);
 assert.equal(normalizeSymmetryAngleDegrees("45", 90), 90);
+assert.equal(normalizeBrushPrecision("r8unorm"), "r8unorm");
+assert.equal(normalizeBrushPrecision("r16float"), "r16float");
+for (const malformed of [undefined, null, "rgba8unorm", "R16F", 8, {}]) {
+  assert.equal(
+    normalizeBrushPrecision(malformed),
+    "r16float",
+    `malformed Brush precision must fall back to 16-bit: ${String(malformed)}`,
+  );
+}
 
 class FakeStorage {
   constructor(serialized = null, options = {}) {
@@ -164,6 +223,28 @@ for (const serialized of [
   );
 }
 
+for (const brushPrecision of [undefined, null, "rgba8unorm", "R16F", 8, {}]) {
+  const preferences = {
+    rulers: true,
+    grid: true,
+    snapping: false,
+    symmetryEnabled: true,
+    symmetryAngleDegrees: 23,
+    brushPrecision,
+  };
+  assert.deepEqual(
+    loadEditorGuidePreferences(new FakeStorage(JSON.stringify({
+      version: 1,
+      preferences,
+    }))),
+    {
+      ...preferences,
+      brushPrecision: "r16float",
+    },
+    `missing or malformed persisted Brush precision must migrate to 16-bit: ${String(brushPrecision)}`,
+  );
+}
+
 for (const [legacyAxis, expectedAngle] of [
   ["horizontal", 0],
   ["vertical", 90],
@@ -185,6 +266,7 @@ for (const [legacyAxis, expectedAngle] of [
       snapping: true,
       symmetryEnabled: false,
       symmetryAngleDegrees: expectedAngle,
+      brushPrecision: "r16float",
     },
     `legacy ${legacyAxis} settings must migrate to an angle`,
   );
@@ -197,6 +279,7 @@ const customPreferences = {
   snapping: false,
   symmetryEnabled: true,
   symmetryAngleDegrees: 37,
+  brushPrecision: "r8unorm",
 };
 assert.equal(saveEditorGuidePreferences(roundTripStorage, customPreferences), true);
 assert.deepEqual(JSON.parse(roundTripStorage.serialized), {
@@ -221,6 +304,7 @@ saveEditorGuidePreferences(normalizedSaveStorage, {
   snapping: null,
   symmetryEnabled: "true",
   symmetryAngleDegrees: 181,
+  brushPrecision: "rgba8unorm",
 });
 assert.deepEqual(JSON.parse(normalizedSaveStorage.serialized).preferences, {
   rulers: false,
@@ -228,7 +312,8 @@ assert.deepEqual(JSON.parse(normalizedSaveStorage.serialized).preferences, {
   snapping: true,
   symmetryEnabled: false,
   symmetryAngleDegrees: 1,
-}, "save must serialize one canonical half-turn angle");
+  brushPrecision: "r16float",
+}, "save must serialize canonical angle and Brush precision values");
 
 class FakeClassList {
   values = new Set();
@@ -253,6 +338,7 @@ class FakeElement extends EventTarget {
   hidden = false;
   checked = false;
   value = "";
+  tabIndex = 0;
   isConnected = true;
   offsetWidth = 320;
   focusCount = 0;
@@ -283,11 +369,17 @@ function createHarness({
   storage = new FakeStorage(),
   initiallyCanOpen = true,
   preferenceEvent = () => {},
+  brushPrecisionValues = ["r8unorm", "r16float"],
 } = {}) {
   const document = new FakeDocument();
   const trigger = new FakeElement(document);
   const panel = new FakeElement(document);
   const closeButton = new FakeElement(document);
+  const brushPrecisionButtons = brushPrecisionValues.map((precision) => {
+    const button = new FakeElement(document);
+    button.setAttribute("data-editor-brush-precision", precision);
+    return button;
+  });
   const rulersInput = new FakeElement(document);
   const gridInput = new FakeElement(document);
   const snappingInput = new FakeElement(document);
@@ -303,6 +395,7 @@ function createHarness({
   const symmetryAngleValueInput = new FakeElement(document);
   for (const element of [
     closeButton,
+    ...brushPrecisionButtons,
     rulersInput,
     gridInput,
     snappingInput,
@@ -317,6 +410,7 @@ function createHarness({
     trigger,
     panel,
     closeButton,
+    brushPrecisionButtons,
     rulersInput,
     gridInput,
     snappingInput,
@@ -354,6 +448,21 @@ function createHarness({
   };
 }
 
+for (const brushPrecisionValues of [
+  [],
+  ["r8unorm"],
+  ["r16float"],
+  ["r8unorm", "r8unorm"],
+  ["r16float", "r16float"],
+  ["r8unorm", "rgba8unorm"],
+]) {
+  assert.throws(
+    () => createHarness({ brushPrecisionValues }),
+    /Brush precision controls are incomplete/,
+    `controller must reject incomplete precision controls: ${brushPrecisionValues.join(",")}`,
+  );
+}
+
 // Construction restores a custom angle without treating startup as a user change.
 {
   const storage = new FakeStorage(JSON.stringify({
@@ -367,6 +476,10 @@ function createHarness({
   assert.equal(harness.elements.symmetryEnabledInput.checked, true);
   assert.equal(harness.elements.symmetryAngleInput.value, "37");
   assert.equal(harness.elements.symmetryAngleValueInput.value, "37");
+  assert.equal(harness.elements.brushPrecisionButtons[0].getAttribute("aria-checked"), "true");
+  assert.equal(harness.elements.brushPrecisionButtons[0].tabIndex, 0);
+  assert.equal(harness.elements.brushPrecisionButtons[1].getAttribute("aria-checked"), "false");
+  assert.equal(harness.elements.brushPrecisionButtons[1].tabIndex, -1);
   assert.equal(harness.elements.symmetryPresetButtons[0].getAttribute("aria-pressed"), "false");
   assert.equal(harness.elements.symmetryPresetButtons[1].getAttribute("aria-pressed"), "false");
   assert.equal(harness.elements.symmetryOptionsPanel.hidden, true);
@@ -375,6 +488,81 @@ function createHarness({
   const snapshot = harness.controller.preferences;
   snapshot.grid = false;
   assert.equal(harness.controller.preferences.grid, true);
+  harness.controller.dispose();
+}
+
+// Precision changes publish and persist exactly once, with roving radio focus.
+{
+  const order = [];
+  const storage = new FakeStorage(null, { onSet: () => order.push("persist") });
+  const harness = createHarness({
+    storage,
+    preferenceEvent: () => order.push("live"),
+  });
+  const [eightBitButton, sixteenBitButton] = harness.elements.brushPrecisionButtons;
+
+  eightBitButton.dispatchEvent(new Event("click"));
+  assert.equal(harness.controller.preferences.brushPrecision, "r8unorm");
+  assert.deepEqual(order, ["live", "persist"]);
+  assert.equal(harness.preferenceChanges.length, 1);
+  assert.equal(storage.writes.length, 1);
+  assert.equal(eightBitButton.getAttribute("aria-checked"), "true");
+  assert.equal(eightBitButton.tabIndex, 0);
+  assert.equal(sixteenBitButton.getAttribute("aria-checked"), "false");
+  assert.equal(sixteenBitButton.tabIndex, -1);
+
+  eightBitButton.dispatchEvent(new Event("click"));
+  assert.equal(harness.preferenceChanges.length, 1, "clicking the active choice must be inert");
+  assert.equal(storage.writes.length, 1, "clicking the active choice must not persist again");
+
+  const right = keyEvent("ArrowRight");
+  eightBitButton.dispatchEvent(right);
+  assert.equal(right.defaultPrevented, true);
+  assert.equal(harness.controller.preferences.brushPrecision, "r16float");
+  assert.equal(harness.preferenceChanges.length, 2);
+  assert.equal(storage.writes.length, 2);
+  assert.equal(sixteenBitButton.focusCount, 1);
+  assert.equal(sixteenBitButton.getAttribute("aria-checked"), "true");
+  assert.equal(sixteenBitButton.tabIndex, 0);
+
+  const left = keyEvent("ArrowLeft");
+  sixteenBitButton.dispatchEvent(left);
+  assert.equal(left.defaultPrevented, true);
+  assert.equal(harness.controller.preferences.brushPrecision, "r8unorm");
+  assert.equal(harness.preferenceChanges.length, 3);
+  assert.equal(storage.writes.length, 3);
+  assert.equal(eightBitButton.focusCount, 1);
+
+  const end = keyEvent("End");
+  eightBitButton.dispatchEvent(end);
+  assert.equal(harness.controller.preferences.brushPrecision, "r16float");
+  assert.equal(harness.preferenceChanges.length, 4);
+  assert.equal(storage.writes.length, 4);
+  assert.equal(sixteenBitButton.focusCount, 2);
+  harness.controller.dispose();
+}
+
+// A failed live application rolls the selected radio and preference back atomically.
+{
+  const storage = new FakeStorage();
+  const harness = createHarness({
+    storage,
+    preferenceEvent: () => {
+      throw new Error("precision apply failed");
+    },
+  });
+  const [eightBitButton, sixteenBitButton] = harness.elements.brushPrecisionButtons;
+  assert.throws(
+    () => harness.controller.applyBrushPrecision("r8unorm"),
+    /precision apply failed/,
+  );
+  assert.equal(harness.controller.preferences.brushPrecision, "r16float");
+  assert.equal(eightBitButton.getAttribute("aria-checked"), "false");
+  assert.equal(eightBitButton.tabIndex, -1);
+  assert.equal(sixteenBitButton.getAttribute("aria-checked"), "true");
+  assert.equal(sixteenBitButton.tabIndex, 0);
+  assert.equal(harness.preferenceChanges.length, 1);
+  assert.equal(storage.writes.length, 0, "a failed live application must not persist");
   harness.controller.dispose();
 }
 
@@ -455,11 +643,15 @@ function createHarness({
 
   const writesBeforeDispose = storage.writes.length;
   const changesBeforeDispose = harness.preferenceChanges.length;
+  const precisionBeforeDispose = harness.controller.preferences.brushPrecision;
   harness.controller.dispose();
   harness.elements.symmetryAngleInput.value = "22";
   harness.elements.symmetryAngleInput.dispatchEvent(new Event("input"));
+  harness.elements.brushPrecisionButtons[0].dispatchEvent(new Event("click"));
+  harness.elements.brushPrecisionButtons[1].dispatchEvent(keyEvent("ArrowLeft"));
   assert.equal(storage.writes.length, writesBeforeDispose);
   assert.equal(harness.preferenceChanges.length, changesBeforeDispose);
+  assert.equal(harness.controller.preferences.brushPrecision, precisionBeforeDispose);
 }
 
 // Persistence failure must not roll back or suppress the live callback.
@@ -473,5 +665,5 @@ function createHarness({
 }
 
 console.log(
-  "editor-settings: symmetry angle storage, migration, live controls and accessibility verified.",
+  "editor-settings: global Brush precision, symmetry, storage and accessibility verified.",
 );

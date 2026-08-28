@@ -3783,6 +3783,10 @@ select {
     background: #171a20;
   }
 
+  .editor-settings-section + .editor-settings-section {
+    margin-top: 12px;
+  }
+
   .editor-settings-section-heading {
     padding: 14px 14px 12px;
     border-bottom: 1px solid #2a2f38;
@@ -3844,6 +3848,69 @@ select {
     color: var(--mobile-icon-inactive);
     font-size: 10px;
     line-height: 1.35;
+  }
+
+  .editor-settings-precision {
+    min-width: 0;
+    margin: 0;
+    padding: 12px 14px 14px;
+    border: 0;
+  }
+
+  .editor-settings-precision legend {
+    padding: 0;
+    color: var(--mobile-icon-face);
+    font-size: 12px;
+    font-weight: 630;
+    line-height: 1.25;
+  }
+
+  .editor-settings-precision-options {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 9px;
+  }
+
+  .editor-settings-precision-choice {
+    display: grid;
+    min-width: 0;
+    min-height: 44px;
+    place-items: center;
+    padding: 0 12px;
+    border: 1px solid #343842;
+    border-radius: 9px;
+    background: #292c33;
+    color: var(--mobile-icon-inactive);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 650;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .editor-settings-precision-choice:hover,
+  .editor-settings-precision-choice:active {
+    border-color: #4a4e58;
+    background: #30343d;
+  }
+
+  .editor-settings-precision-choice[aria-checked="true"],
+  .editor-settings-precision-choice[aria-checked="true"]:hover,
+  .editor-settings-precision-choice[aria-checked="true"]:active {
+    border-color: #dd5c35;
+    background: #dd5c35;
+    color: var(--mobile-icon-face);
+  }
+
+  .editor-settings-precision-choice:focus-visible {
+    outline: 1px solid #dd5c35;
+    outline-offset: 2px;
+  }
+
+  .editor-settings-precision > .editor-settings-hint {
+    margin: 9px 0 0;
   }
 
   .editor-filters-grid {
@@ -4705,20 +4772,6 @@ select {
     line-height: 1.2;
     letter-spacing: 0.035em;
     text-transform: uppercase;
-  }
-
-  .mobile-brush-precision-fieldset {
-    margin-top: 4px;
-    padding: 11px;
-    border: 1px solid color-mix(in srgb, #dd5c35 48%, #343842);
-    border-radius: 14px;
-    background: color-mix(in srgb, #dd5c35 7%, #15181e);
-  }
-
-  .mobile-brush-precision-fieldset legend {
-    margin-bottom: 0;
-    padding: 0 4px;
-    color: #ff8059;
   }
 
   .mobile-brush-precision-note {

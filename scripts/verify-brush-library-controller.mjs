@@ -212,4 +212,132 @@ function controllerShell(overrides = {}) {
   assert.equal(readinessCalls, 2, "previous brush readiness was not restored");
 }
 
+// Precision normalization belongs to the Studio port. The Library must apply
+// its resolved object verbatim instead of rebuilding it from a legacy fallback.
+// This models a global 16-bit preference resolving a legacy 8-bit brush.
+{
+  const legacyFallback = {
+    name: "legacy-8-bit",
+    shapeMaskFormat: "r8unorm",
+  };
+  const studioResolved = {
+    name: "studio-normalized-16-bit",
+    shapeMaskFormat: "r16float",
+  };
+  const applied = [];
+  const resolveCalls = [];
+  let currentSettings = {
+    name: "current",
+    shapeMaskFormat: "r16float",
+  };
+  const controller = controllerShell({
+    engine: {
+      getSettings: () => ({ ...currentSettings }),
+      ensureCurrentBrushResources: async () => {},
+    },
+    studio: {
+      isOpen: false,
+      rememberSettings() {},
+      resolveBrushSettings: async (id, fallback) => {
+        resolveCalls.push({ id, fallback });
+        return studioResolved;
+      },
+      releasePreviewAssets: async () => {},
+      open() {},
+    },
+    applySettings: (settings) => {
+      applied.push(settings);
+      currentSettings = { ...settings };
+    },
+    fallbackFor: () => legacyFallback,
+    categoryFor: () => "painting",
+  });
+
+  await controller.selectBrush("legacy-brush");
+  assert.equal(resolveCalls.length, 1, "selection bypassed Studio resolution");
+  assert.strictEqual(resolveCalls[0].fallback, legacyFallback);
+  assert.strictEqual(
+    applied[0],
+    studioResolved,
+    "selection rebuilt settings instead of applying the Studio result",
+  );
+  assert.equal(currentSettings.shapeMaskFormat, "r16float");
+}
+
+// The restore path has the same port contract in the opposite direction: a
+// global 8-bit preference must survive restoration of a legacy 16-bit brush.
+{
+  const legacyFallback = {
+    name: "legacy-16-bit",
+    shapeMaskFormat: "r16float",
+  };
+  const studioResolved = {
+    name: "studio-normalized-8-bit",
+    shapeMaskFormat: "r8unorm",
+  };
+  const applied = [];
+  const controller = controllerShell({
+    activeBrushId: "legacy-brush",
+    engine: {
+      getSettings: () => ({ name: "current", shapeMaskFormat: "r8unorm" }),
+      ensureCurrentBrushResources: async () => {},
+    },
+    studio: {
+      resolveBrushSettings: async (id, fallback) => {
+        assert.equal(id, "legacy-brush");
+        assert.strictEqual(fallback, legacyFallback);
+        return studioResolved;
+      },
+    },
+    applySettings: (settings) => applied.push(settings),
+    fallbackFor: () => legacyFallback,
+    categoryFor: () => "painting",
+  });
+
+  await controller.restoreActiveBrush();
+  assert.strictEqual(
+    applied[0],
+    studioResolved,
+    "restore rebuilt settings instead of applying the Studio result",
+  );
+  assert.equal(applied[0].shapeMaskFormat, "r8unorm");
+}
+
+// A new brush candidate is sent to both the global apply boundary and Studio.
+// Studio owns draft normalization; the Library must not open a different copy.
+{
+  const current = {
+    color: "#111122223333",
+    shapeMaskFormat: "r8unorm",
+  };
+  const remembered = [];
+  const applied = [];
+  const opened = [];
+  const controller = controllerShell({
+    engine: { getSettings: () => current },
+    studio: {
+      rememberSettings: (id, settings) => remembered.push({ id, settings }),
+      open: (id, name, settings, original) => opened.push({ id, name, settings, original }),
+    },
+    applySettings: (settings) => applied.push(settings),
+  });
+
+  await controller.createBrush();
+  assert.deepEqual(remembered, [{ id: "current", settings: current }]);
+  assert.equal(applied.length, 1, "new brush skipped the global apply boundary");
+  assert.equal(opened.length, 1, "new brush skipped the Studio normalization boundary");
+  assert.strictEqual(opened[0].settings, applied[0]);
+  assert.strictEqual(opened[0].original, current);
+}
+
+// Import must resolve stored settings through Studio before catalog adoption,
+// then enter the already-covered selection transaction that applies its result.
+{
+  const importSource = BrushLibraryController.prototype.importBrush.toString();
+  const resolveIndex = importSource.indexOf("studio.resolveBrushSettings");
+  const selectIndex = importSource.indexOf("this.selectBrush(brushId)");
+  assert.ok(resolveIndex >= 0, "import bypassed Studio settings resolution");
+  assert.ok(selectIndex > resolveIndex, "import selected before Studio resolution completed");
+}
+
 console.info("Brush Library controller transaction verification passed.");

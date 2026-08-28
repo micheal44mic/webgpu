@@ -777,22 +777,6 @@
               data-mobile-brush-studio-panel="stroke"
             >
               <h3>Primary</h3>
-              <fieldset class="mobile-brush-studio-fieldset mobile-brush-precision-fieldset">
-                <legend>Brush Precision</legend>
-                <div
-                  id="mobileBrushStudioShapeMaskFormat"
-                  class="mobile-brush-studio-segments"
-                  role="radiogroup"
-                  aria-label="Brush precision comparison"
-                >
-                  <button type="button" role="radio" aria-checked="false" data-mobile-brush-shape-mask-format="r8unorm">8-bit Compare</button>
-                  <button type="button" role="radio" aria-checked="true" data-mobile-brush-shape-mask-format="r16float">Full 16F</button>
-                </div>
-                <p class="mobile-brush-precision-note">
-                  Uses the same color and source in both modes. 8-bit Compare only adds diagnostic quantization.
-                </p>
-              </fieldset>
-
               <section class="mobile-brush-color16" aria-labelledby="mobileBrushColor16Title">
                 <div class="mobile-brush-studio-section-heading">
                   <h3 id="mobileBrushColor16Title">16-bit Color</h3>
@@ -3050,7 +3034,7 @@
         <header class="editor-settings-header">
           <div>
             <h2>Settings</h2>
-            <p>Canvas alignment</p>
+            <p>Canvas &amp; brush</p>
           </div>
           <button
             id="editorSettingsClose"
@@ -3066,6 +3050,42 @@
           </button>
         </header>
         <div class="editor-settings-content">
+          <section class="editor-settings-section" aria-labelledby="editorBrushPrecisionHeading">
+            <div class="editor-settings-section-heading">
+              <h3 id="editorBrushPrecisionHeading">Brush precision</h3>
+              <p>Set the signal precision used by every brush tool.</p>
+            </div>
+
+            <fieldset class="editor-settings-precision">
+              <legend>Precision</legend>
+              <div
+                id="editorBrushPrecision"
+                class="editor-settings-precision-options"
+                role="radiogroup"
+                aria-label="Brush precision"
+                aria-describedby="editorBrushPrecisionHint"
+              >
+                <button
+                  class="editor-settings-precision-choice"
+                  type="button"
+                  role="radio"
+                  aria-checked="false"
+                  data-editor-brush-precision="r8unorm"
+                >8-bit</button>
+                <button
+                  class="editor-settings-precision-choice"
+                  type="button"
+                  role="radio"
+                  aria-checked="true"
+                  data-editor-brush-precision="r16float"
+                >16-bit</button>
+              </div>
+              <p id="editorBrushPrecisionHint" class="editor-settings-hint">
+                8-bit quantizes brush color, shape and grain; canvas and layer storage remain 16F in both modes.
+              </p>
+            </fieldset>
+          </section>
+
           <section class="editor-settings-section" aria-labelledby="editorGuidesHeading">
             <div class="editor-settings-section-heading">
               <h3 id="editorGuidesHeading">Guides &amp; grid</h3>

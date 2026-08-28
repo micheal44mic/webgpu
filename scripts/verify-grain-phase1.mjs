@@ -381,9 +381,10 @@ assert(html.includes('data-mobile-brush-grain-mode="texturized">Fixed')
 assert(html.includes('id="mobileBrushStudioGrainInvert" type="checkbox"')
   && mobileBrushStudio.includes("draft.grainInvert = checked")
   && main.includes("applySettings: applyBrushSettings")
-  && main.includes("brushSettingsController.replace(settings)")
+  && main.includes("brushSettingsController.replace({")
+  && main.includes("DEFAULT_EDITOR_GUIDE_PREFERENCES.brushPrecision")
   && humanLab.includes('grainInvert: false'),
-  "Invert Grain deve fluire dal Brush Studio al controller autorevole, con default canonico Off.");
+  "Invert Grain deve fluire dal Brush Studio al controller autorevole e mantenere la precisione globale, con default canonico Off.");
 assert(!html.includes('id="grainInvert"') && !main.includes('element<HTMLInputElement>("grainInvert")'),
   "Invert Grain non deve dipendere da un controllo nascosto legacy.");
 assert(html.includes('data-mobile-brush-rendering="light-glaze"')

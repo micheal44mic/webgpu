@@ -265,6 +265,11 @@ const editorFilterButtons = Array.from(
 const editorSettingsMenuButton = element<HTMLButtonElement>("editorSettingsMenu");
 const editorSettingsPanel = element<HTMLElement>("editorSettingsPanel");
 const editorSettingsCloseButton = element<HTMLButtonElement>("editorSettingsClose");
+const editorBrushPrecisionButtons = Array.from(
+  editorSettingsPanel.querySelectorAll<HTMLButtonElement>(
+    "[data-editor-brush-precision]",
+  ),
+);
 const editorRulersEnabledInput = element<HTMLInputElement>("editorRulersEnabled");
 const editorGridEnabledInput = element<HTMLInputElement>("editorGridEnabled");
 const editorSnappingEnabledInput = element<HTMLInputElement>("editorSnappingEnabled");
@@ -1246,6 +1251,7 @@ editorSettingsController = new EditorSettingsController({
     trigger: editorSettingsMenuButton,
     panel: editorSettingsPanel,
     closeButton: editorSettingsCloseButton,
+    brushPrecisionButtons: editorBrushPrecisionButtons,
     rulersInput: editorRulersEnabledInput,
     gridInput: editorGridEnabledInput,
     snappingInput: editorSnappingEnabledInput,
@@ -1256,7 +1262,8 @@ editorSettingsController = new EditorSettingsController({
     symmetryAngleInput: editorSymmetryAngleInput,
     symmetryAngleValueInput: editorSymmetryAngleValueInput,
   },
-  canOpen: () => mobileBrushStudio?.isBusy !== true
+  canOpen: () => !interactionLocked()
+    && mobileBrushStudio?.isBusy !== true
     && rasterAdjustmentsController?.isAnySurfaceOpen !== true,
   beforeOpen: () => {
     if (mobileBrushStudio?.isOpen) mobileBrushStudio.cancel(false);
@@ -1274,6 +1281,7 @@ editorSettingsController = new EditorSettingsController({
       preferences.symmetryEnabled,
       preferences.symmetryAngleDegrees,
     );
+    applyGlobalBrushPrecision(preferences.brushPrecision);
     canvasGuidesController?.preferencesChanged();
   },
 });
@@ -1281,6 +1289,7 @@ engine.setStrokeSymmetry(
   editorSettingsController.preferences.symmetryEnabled,
   editorSettingsController.preferences.symmetryAngleDegrees,
 );
+applyGlobalBrushPrecision(editorSettingsController.preferences.brushPrecision);
 canvasGuidesController = new CanvasGuidesController({
   browser: window,
   canvas: canvasGuidesOverlayCanvas,
@@ -1635,8 +1644,20 @@ function setMobileLayersPanelOpen(open: boolean): void {
 }
 
 function applyBrushSettings(settings: Readonly<BrushSettings>): void {
-  const applied = brushSettingsController.replace(settings);
+  const applied = brushSettingsController.replace({
+    ...settings,
+    shapeMaskFormat: editorSettingsController?.preferences.brushPrecision
+      ?? DEFAULT_EDITOR_GUIDE_PREFERENCES.brushPrecision,
+  });
   canvasToolController?.configure(applied.tool, false);
+}
+
+function applyGlobalBrushPrecision(
+  brushPrecision: BrushSettings["shapeMaskFormat"],
+): void {
+  if (brushSettingsController.snapshot().shapeMaskFormat === brushPrecision) return;
+  brushSettingsController.update({ shapeMaskFormat: brushPrecision });
+  brushLibraryController.markPreviewDirty();
 }
 
 const brushStudioIntegration = brushLibraryController.studioIntegration();
@@ -1656,6 +1677,8 @@ mobileBrushStudio = new MobileBrushStudioController({
   root: element<HTMLElement>("mobileBrushStudioSheet"),
   appRoot: appElement,
   browser: window,
+  getBrushPrecision: () => editorSettingsController?.preferences.brushPrecision
+    ?? DEFAULT_EDITOR_GUIDE_PREFERENCES.brushPrecision,
   applySettings: applyBrushSettings,
   ...brushStudioIntegration,
 });

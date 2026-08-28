@@ -151,6 +151,7 @@ assert.match(resourceSetupSource, /minBindingSize: MIXED_SCENE_RASTER_SEGMENT_UN
 assert.match(engineSource, /compositionSegments\([\s\S]*?mixedSceneRasterTransformPreviewCompositionLayerIds/);
 
 const vite = await createServer({
+  configFile: false,
   server: { middlewareMode: true },
   appType: "custom",
   logLevel: "silent",

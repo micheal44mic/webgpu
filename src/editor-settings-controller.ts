@@ -1,7 +1,9 @@
 import {
   loadEditorGuidePreferences,
+  normalizeBrushPrecision,
   normalizeSymmetryAngleDegrees,
   saveEditorGuidePreferences,
+  type BrushPrecision,
   type EditorGuidePreferences,
   type EditorSettingsStoragePort,
 } from "./editor-settings-storage.ts";
@@ -10,6 +12,7 @@ export interface EditorSettingsElements {
   readonly trigger: HTMLButtonElement;
   readonly panel: HTMLElement;
   readonly closeButton: HTMLButtonElement;
+  readonly brushPrecisionButtons: readonly HTMLButtonElement[];
   readonly rulersInput: HTMLInputElement;
   readonly gridInput: HTMLInputElement;
   readonly snappingInput: HTMLInputElement;
@@ -38,10 +41,11 @@ export interface EditorSettingsControllerOptions {
   ) => void;
 }
 
-/** Owns the editor Settings surface and its locally persisted guide controls. */
+/** Owns the editor Settings surface and its locally persisted preferences. */
 export class EditorSettingsController {
   private readonly options: EditorSettingsControllerOptions;
   private readonly abortController: AbortController;
+  private readonly brushPrecisionButtons: readonly HTMLButtonElement[];
   private readonly symmetryEnabledInput: HTMLInputElement;
   private readonly symmetryOptionsButton: HTMLButtonElement;
   private readonly symmetryOptionsPanel: HTMLElement;
@@ -55,12 +59,25 @@ export class EditorSettingsController {
   constructor(options: EditorSettingsControllerOptions) {
     this.options = options;
     this.abortController = new options.browser.AbortController();
+    this.brushPrecisionButtons = [...options.elements.brushPrecisionButtons];
     this.symmetryEnabledInput = options.elements.symmetryEnabledInput;
     this.symmetryOptionsButton = options.elements.symmetryOptionsButton;
     this.symmetryOptionsPanel = options.elements.symmetryOptionsPanel;
     this.symmetryPresetButtons = [...options.elements.symmetryPresetButtons];
     this.symmetryAngleInput = options.elements.symmetryAngleInput;
     this.symmetryAngleValueInput = options.elements.symmetryAngleValueInput;
+    const brushPrecisions = this.brushPrecisionButtons.map((button) =>
+      this.brushPrecision(button)
+    );
+    if (
+      brushPrecisions.length !== 2
+      || brushPrecisions.some((precision) => precision === null)
+      || new Set(brushPrecisions).size !== 2
+      || !brushPrecisions.includes("r8unorm")
+      || !brushPrecisions.includes("r16float")
+    ) {
+      throw new Error("Brush precision controls are incomplete.");
+    }
     if (
       !this.symmetryPresetButtons.some((button) => this.symmetryPresetAngle(button) === 90)
       || !this.symmetryPresetButtons.some((button) => this.symmetryPresetAngle(button) === 0)
@@ -125,6 +142,39 @@ export class EditorSettingsController {
     const signal = this.abortController.signal;
     elements.trigger.addEventListener("click", () => this.toggle(), { signal });
     elements.closeButton.addEventListener("click", () => this.closeAndRestoreFocus(), { signal });
+    for (const button of this.brushPrecisionButtons) {
+      button.addEventListener("click", () => {
+        const brushPrecision = this.brushPrecision(button);
+        if (brushPrecision !== null) this.applyBrushPrecision(brushPrecision);
+      }, { signal });
+      button.addEventListener("keydown", (event) => {
+        const key = event.key;
+        if (
+          key !== "ArrowLeft"
+          && key !== "ArrowRight"
+          && key !== "ArrowUp"
+          && key !== "ArrowDown"
+          && key !== "Home"
+          && key !== "End"
+        ) return;
+        event.preventDefault();
+        const currentIndex = this.brushPrecisionButtons.indexOf(button);
+        const lastIndex = this.brushPrecisionButtons.length - 1;
+        const nextIndex = key === "Home"
+          ? 0
+          : key === "End"
+            ? lastIndex
+            : key === "ArrowLeft" || key === "ArrowUp"
+              ? (currentIndex - 1 + this.brushPrecisionButtons.length)
+                % this.brushPrecisionButtons.length
+              : (currentIndex + 1) % this.brushPrecisionButtons.length;
+        const nextButton = this.brushPrecisionButtons[nextIndex];
+        const brushPrecision = this.brushPrecision(nextButton);
+        if (brushPrecision === null) return;
+        this.applyBrushPrecision(brushPrecision);
+        nextButton.focus({ preventScroll: true });
+      }, { signal });
+    }
     for (const input of [
       elements.rulersInput,
       elements.gridInput,
@@ -179,6 +229,7 @@ export class EditorSettingsController {
       snapping: elements.snappingInput.checked,
       symmetryEnabled: this.symmetryEnabledInput.checked,
       symmetryAngleDegrees: this.preferencesState.symmetryAngleDegrees,
+      brushPrecision: this.preferencesState.brushPrecision,
     };
     const preferences = this.preferences;
     this.options.onPreferencesChange(preferences);
@@ -191,7 +242,41 @@ export class EditorSettingsController {
     elements.gridInput.checked = this.preferencesState.grid;
     elements.snappingInput.checked = this.preferencesState.snapping;
     this.symmetryEnabledInput.checked = this.preferencesState.symmetryEnabled;
+    this.syncBrushPrecisionButtons();
     this.syncSymmetryAngleControls();
+  }
+
+  private brushPrecision(button: HTMLButtonElement): BrushPrecision | null {
+    const value = button.getAttribute("data-editor-brush-precision");
+    return value === "r8unorm" || value === "r16float" ? value : null;
+  }
+
+  private applyBrushPrecision(value: BrushPrecision): void {
+    const brushPrecision = normalizeBrushPrecision(value);
+    const changed = brushPrecision !== this.preferencesState.brushPrecision;
+    if (!changed) return;
+    const previousPreferences = this.preferencesState;
+    this.preferencesState = {
+      ...this.preferencesState,
+      brushPrecision,
+    };
+    this.syncBrushPrecisionButtons();
+    try {
+      this.options.onPreferencesChange(this.preferences);
+    } catch (error) {
+      this.preferencesState = previousPreferences;
+      this.syncBrushPrecisionButtons();
+      throw error;
+    }
+    this.persistPreferences();
+  }
+
+  private syncBrushPrecisionButtons(): void {
+    for (const button of this.brushPrecisionButtons) {
+      const selected = this.brushPrecision(button) === this.preferencesState.brushPrecision;
+      button.setAttribute("aria-checked", String(selected));
+      button.tabIndex = selected ? 0 : -1;
+    }
   }
 
   private symmetryPresetAngle(button: HTMLButtonElement): number {

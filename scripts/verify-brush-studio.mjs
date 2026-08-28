@@ -30,7 +30,6 @@ for (const id of [
   "mobileBrushStudioPreviewCanvas",
   "mobileBrushStudioStrokeTab",
   "mobileBrushStudioShapeTab",
-  "mobileBrushStudioShapeMaskFormat",
   "mobileBrushStudioColor16Hex",
   "mobileBrushStudioColor16Red",
   "mobileBrushStudioColor16Green",
@@ -84,28 +83,69 @@ assert.match(storage, /transaction\.addEventListener\("complete"/);
 assert.match(storage, /export function deleteBrushStudioSavedBrush/);
 assert.match(html, /id="mobileBrushStudioName"[\s\S]*?maxlength="48"/);
 assert.match(html, /id="mobileBrushStudioSpacing"[^>]*max="99"/);
-const precisionStart = html.indexOf('id="mobileBrushStudioShapeMaskFormat"');
-const shapeMaskPrecisionMarkup = html.slice(
-  precisionStart,
-  html.indexOf("</fieldset>", precisionStart),
+assert.doesNotMatch(
+  html,
+  /mobileBrushStudioShapeMaskFormat|data-mobile-brush-shape-mask-format/,
+  "Brush Studio must not duplicate the global Brush Precision selector",
 );
-assert.match(shapeMaskPrecisionMarkup, /role="radiogroup"/);
+assert.doesNotMatch(
+  studio,
+  /shapeMaskFormatButtons|mobileBrushStudioShapeMaskFormat|mobileBrushShapeMaskFormat|data-mobile-brush-shape-mask-format/,
+  "Brush Studio must not retain the removed precision property or DOM query",
+);
+assert.match(
+  studio,
+  /getBrushPrecision\(\): BrushShapeMaskFormat;/,
+  "Brush Studio must receive the global precision through an explicit boundary",
+);
+assert.match(
+  studio,
+  /private withBrushPrecision\(settings: Readonly<BrushSettings>\): BrushSettings \{[\s\S]*?shapeMaskFormat: this\.options\.getBrushPrecision\(\),[\s\S]*?\}/,
+  "Brush Studio must centralize the global precision override",
+);
+assert.match(
+  studio,
+  /rememberSettings\([\s\S]*?settingsCache\.set\(brushId, this\.withBrushPrecision\(settings\)\)/,
+  "cached brush settings must adopt the current global precision",
+);
+const settingsSnapshotStart = studio.indexOf("settingsSnapshot(");
+const settingsSnapshotEnd = studio.indexOf("async resolveBrushSettings(", settingsSnapshotStart);
+assert.ok(
+  settingsSnapshotStart >= 0 && settingsSnapshotEnd > settingsSnapshotStart,
+  "Brush Studio settingsSnapshot boundary missing",
+);
+const settingsSnapshotBody = studio.slice(settingsSnapshotStart, settingsSnapshotEnd);
+assert.match(
+  settingsSnapshotBody,
+  /return this\.withBrushPrecision\(/,
+  "every settingsSnapshot result must cross the global precision boundary",
+);
 assert.equal(
-  (shapeMaskPrecisionMarkup.match(/role="radio"/g) ?? []).length,
-  2,
-  "Brush Precision must expose exactly the diagnostic 8-bit and Full 16F choices",
+  (settingsSnapshotBody.match(/return this\.withBrushPrecision\(/g) ?? []).length,
+  3,
+  "cached, fallback and saved settings snapshots must all use global precision",
 );
-assert.match(shapeMaskPrecisionMarkup, /data-mobile-brush-shape-mask-format="r8unorm"[^>]*>8-bit Compare</);
-assert.match(shapeMaskPrecisionMarkup, /data-mobile-brush-shape-mask-format="r16float"[^>]*>Full 16F</);
+const resolveSettingsStart = studio.indexOf("async resolveBrushSettings(");
+const resolveSettingsEnd = studio.indexOf("async releasePreviewAssets(", resolveSettingsStart);
+assert.ok(
+  resolveSettingsStart >= 0 && resolveSettingsEnd > resolveSettingsStart,
+  "Brush Studio resolveBrushSettings boundary missing",
+);
+const resolveSettingsBody = studio.slice(resolveSettingsStart, resolveSettingsEnd);
+assert.match(
+  resolveSettingsBody,
+  /this\.withBrushPrecision\(/,
+  "resolved brush settings must adopt the current global precision",
+);
 assert.match(
   studio,
-  /const format = button\.dataset\.mobileBrushShapeMaskFormat;[\s\S]*?format !== "r8unorm" && format !== "r16float"[\s\S]*?draft\.shapeMaskFormat = format;[\s\S]*?}, true\)/,
-  "Brush Precision must update the draft and immediately refresh brush resources",
+  /open\([\s\S]*?originalSettings = this\.withBrushPrecision\(originalSettings\)[\s\S]*?draftSettings = this\.withBrushPrecision\(/,
+  "opening Brush Studio must pin both restore and draft settings to global precision",
 );
 assert.match(
   studio,
-  /this\.shapeMaskFormatButtons,[\s\S]*?"mobileBrushShapeMaskFormat",[\s\S]*?shapeMaskFormatForSettings\(settings\)/,
-  "Brush Precision controls must restore both current and legacy brush settings",
+  /private applyDraftNow\(\): void \{[\s\S]*?this\.options\.applySettings\(this\.withBrushPrecision\(this\.draftSettings\)\)/,
+  "live Studio apply must cross the global precision boundary",
 );
 assert.match(
   studio,
@@ -119,18 +159,29 @@ assert.match(
 );
 assert.match(
   studio,
-  /draft\.shapeMaskFormat = "r16float";[\s\S]*?draft\.color = "#7fff7fff7fff";[\s\S]*?Comparison sample ready/,
-  "the comparison sample must start in Full 16F and retain an off-grid 16-bit color",
+  /draft\.color = "#7fff7fff7fff";[\s\S]*?Comparison sample ready\. Tap Done, then switch 8-bit and 16-bit in Settings/,
+  "the comparison sample must retain an off-grid 16-bit source and direct precision changes to Settings",
+);
+const comparisonSampleStart = studio.indexOf("const sampleButton =");
+const comparisonSampleEnd = studio.indexOf("private element<", comparisonSampleStart);
+assert.ok(
+  comparisonSampleStart >= 0 && comparisonSampleEnd > comparisonSampleStart,
+  "Brush Studio comparison sample boundary missing",
+);
+assert.doesNotMatch(
+  studio.slice(comparisonSampleStart, comparisonSampleEnd),
+  /shapeMaskFormat\s*=/,
+  "the comparison sample must not override global Brush Precision",
 );
 assert.doesNotMatch(
   studio,
-  /formatButton\.disabled\s*=\s*!hasSource/,
-  "Brush Precision must remain available for the analytic Shape source",
+  /shapeMaskFormat\s*=\s*"r16float"/,
+  "Brush Studio must never silently force Full 16F over the global choice",
 );
 assert.match(
   studio,
   /8-bit comparison · 16-bit source retained/,
-  "the A\/B switch must explain that it never destroys the exact color source",
+  "the 8-bit status must explain that it never destroys the exact color source",
 );
 assert.doesNotMatch(
   main,
@@ -138,7 +189,11 @@ assert.doesNotMatch(
   "Brush Library and Studio must not use hidden form controls as state",
 );
 assert.match(main, /applyBrushSettings\(settings: Readonly<BrushSettings>\)/);
-assert.match(main, /brushSettingsController\.replace\(settings\)/);
+assert.match(
+  main,
+  /brushSettingsController\.replace\(\{[\s\S]*?\.\.\.settings,[\s\S]*?shapeMaskFormat: editorSettingsController\?\.preferences\.brushPrecision[\s\S]*?\?\? DEFAULT_EDITOR_GUIDE_PREFERENCES\.brushPrecision,[\s\S]*?\}\)/,
+  "the composition root must apply global Brush Precision over every brush definition",
+);
 assert.doesNotMatch(
   brushSettingsController,
   /toolSnapshots|spacingPercent: 10,[\s\S]*?flow: 0\.45/,
@@ -520,6 +575,44 @@ try {
   }
 }
 
+// Cached brush definitions can carry an older per-brush precision value, but
+// every cache read and write must follow the current global Settings choice.
+{
+  let globalPrecision = "r16float";
+  const settingsCache = new Map([
+    ["legacy-8", { ...defaultBrushSettings, shapeMaskFormat: "r8unorm" }],
+    ["legacy-16", { ...defaultBrushSettings, shapeMaskFormat: "r16float" }],
+  ]);
+  const controller = Object.assign(
+    Object.create(MobileBrushStudioController.prototype),
+    {
+      settingsCache,
+      options: { getBrushPrecision: () => globalPrecision },
+    },
+  );
+  const fallback = { ...defaultBrushSettings, color: "#123412341234" };
+
+  const fullPrecisionSnapshot = controller.settingsSnapshot("legacy-8", fallback);
+  assert.equal(fullPrecisionSnapshot.shapeMaskFormat, "r16float");
+
+  globalPrecision = "r8unorm";
+  const compactPrecisionSnapshot = controller.settingsSnapshot("legacy-16", fallback);
+  assert.equal(compactPrecisionSnapshot.shapeMaskFormat, "r8unorm");
+
+  controller.rememberSettings("remembered", {
+    ...defaultBrushSettings,
+    shapeMaskFormat: "r16float",
+  });
+  assert.equal(settingsCache.get("remembered").shapeMaskFormat, "r8unorm");
+
+  globalPrecision = "r16float";
+  controller.rememberSettings("remembered", {
+    ...defaultBrushSettings,
+    shapeMaskFormat: "r8unorm",
+  });
+  assert.equal(settingsCache.get("remembered").shapeMaskFormat, "r16float");
+}
+
 // Teardown is an idempotent ownership boundary: the draft is restored once,
 // listeners are aborted once, in-flight persistence settles, and failed asset
 // ids remain queued for a later History/resource retry.
@@ -543,7 +636,10 @@ try {
       sourcePreviewRevision: 8,
       commitPromise,
       importPromise,
-      options: { applySettings: (settings) => applied.push(settings) },
+      options: {
+        getBrushPrecision: () => "r16float",
+        applySettings: (settings) => applied.push(settings),
+      },
       eventAbortController: { abort: () => { abortCount += 1; } },
       closeSheet() {
         closeCount += 1;

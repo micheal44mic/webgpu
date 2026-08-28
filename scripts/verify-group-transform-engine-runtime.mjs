@@ -151,6 +151,7 @@ assert.match(
 );
 
 const vite = await createServer({
+  configFile: false,
   server: { middlewareMode: true },
   appType: "custom",
   logLevel: "silent",
