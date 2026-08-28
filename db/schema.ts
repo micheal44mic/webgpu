@@ -57,3 +57,28 @@ CREATE TABLE IF NOT EXISTS vector_zoom_runs (
   payload_json TEXT NOT NULL
 )
 `;
+
+/** One capability-scoped, expiring snapshot from the isolated GPU startup lab. */
+export interface GpuStartupDiagnosticRunRecord {
+  runCode: string;
+  writeTokenHash: string;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+  status: "html-requested" | "running" | "completed" | "failed" | "interrupted";
+  sequence: number;
+  payloadJson: string;
+}
+
+export const gpuStartupDiagnosticRunsSchemaSql = `
+CREATE TABLE IF NOT EXISTS gpu_startup_diagnostic_runs (
+  run_code TEXT PRIMARY KEY NOT NULL,
+  write_token_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  status TEXT NOT NULL,
+  sequence INTEGER NOT NULL,
+  payload_json TEXT NOT NULL
+)
+`;

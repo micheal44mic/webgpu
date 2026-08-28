@@ -121,5 +121,13 @@ export default defineConfig(({ mode }) => ({
           input: resolve(__dirname, "labs.html"),
         },
       }
-    : undefined,
+    : mode === "gpu-diagnostics"
+      ? {
+          outDir: "dist-gpu-diagnostics",
+          emptyOutDir: true,
+          rollupOptions: {
+            input: resolve(__dirname, "gpu-startup-diagnostics.html"),
+          },
+        }
+      : undefined,
 }));

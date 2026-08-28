@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="color-scheme" content="dark" />
+    <title>GPU Startup Diagnostics</title>
+    <script>
+      (function () {
+        "use strict";
+
+        var BUILD = "gpu-startup-rgba16f-probe-v1";
+        var API_URL = "/api/gpu-startup-diagnostics";
+        var params = new URLSearchParams(window.location.search);
+        var fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+        var runCode = params.get("run") || "";
+        var writeToken = fragment.get("token") || "";
+        var createdAt = new Date().toISOString();
+        var sequenceCounter = 0;
+        var events = [];
+        var currentStatus = "running";
+        var completed = false;
+        var moduleLoaded = false;
+        var latestEventName = "html-ready";
+        var latestEventDetail = null;
+
+        if (window.location.hash) {
+          window.history.replaceState(null, "", window.location.pathname + window.location.search);
+        }
+
+        function nextSequence() {
+          sequenceCounter += 1;
+          return Date.now() * 1000 + sequenceCounter;
+        }
+
+        function serializeError(value) {
+          if (!value) return null;
+          if (typeof value === "string") return { name: "Error", message: value, stack: null };
+          var result = {
+            name: typeof value.name === "string" ? value.name : "Error",
+            message: typeof value.message === "string" ? value.message : String(value),
+            stack: typeof value.stack === "string" ? value.stack.slice(0, 12000) : null,
+          };
+          if (value.cause && value.cause !== value) result.cause = serializeError(value.cause);
+          return result;
+        }
+
+        function inlineEnvironment() {
+          var uaData = navigator.userAgentData;
+          var orientation = window.screen && window.screen.orientation;
+          return {
+            capturedBeforeModule: true,
+            userAgent: navigator.userAgent || null,
+            platform: navigator.platform || null,
+            vendor: navigator.vendor || null,
+            language: navigator.language || null,
+            languages: navigator.languages ? Array.prototype.slice.call(navigator.languages, 0, 12) : [],
+            userAgentData: uaData ? {
+              brands: uaData.brands || null,
+              mobile: typeof uaData.mobile === "boolean" ? uaData.mobile : null,
+              platform: uaData.platform || null,
+            } : null,
+            maxTouchPoints: navigator.maxTouchPoints || 0,
+            hardwareConcurrency: navigator.hardwareConcurrency || null,
+            deviceMemoryGiB: navigator.deviceMemory || null,
+            viewportCss: { width: window.innerWidth, height: window.innerHeight },
+            screenCss: window.screen ? {
+              width: window.screen.width,
+              height: window.screen.height,
+              availableWidth: window.screen.availWidth,
+              availableHeight: window.screen.availHeight,
+              colorDepth: window.screen.colorDepth,
+              pixelDepth: window.screen.pixelDepth,
+              orientation: orientation && orientation.type ? orientation.type : null,
+            } : null,
+            devicePixelRatio: window.devicePixelRatio || 1,
+            secureContext: window.isSecureContext === true,
+            crossOriginIsolated: window.crossOriginIsolated === true,
+            online: navigator.onLine !== false,
+            visibility: document.visibilityState || null,
+            path: window.location.pathname,
+          };
+        }
+
+        function snapshotPayload() {
+          return {
+            version: 1,
+            build: BUILD,
+            runCode: runCode,
+            writeToken: writeToken,
+            sequence: events.length ? events[events.length - 1].sequence : nextSequence(),
+            createdAt: createdAt,
+            updatedAt: new Date().toISOString(),
+            status: currentStatus,
+            privacy: "Technical startup data only. No artwork pixels, document text, filenames, clipboard data, project identifiers, or full URLs.",
+            environment: inlineEnvironment(),
+            events: events.slice(-96),
+            summary: {
+              latestEvent: latestEventName,
+              latestDetail: latestEventDetail,
+              moduleLoaded: moduleLoaded,
+              completed: completed,
+            },
+          };
+        }
+
+        function updateSurface() {
+          var status = document.getElementById("diagnosticStatus");
+          var summary = document.getElementById("diagnosticSummary");
+          var code = document.getElementById("diagnosticCode");
+          var steps = document.getElementById("diagnosticSteps");
+          if (status) {
+            status.dataset.state = currentStatus;
+            status.textContent = completed
+              ? (currentStatus === "completed" ? "Diagnostic complete" : "Diagnostic captured")
+              : "Automatic test running";
+          }
+          if (summary) {
+            summary.textContent = completed
+              ? "The report has been stored. You can close this page."
+              : "Keep this page open. No taps or settings changes are required.";
+          }
+          if (code) code.textContent = runCode ? runCode.slice(-8).toUpperCase() : "LOCAL";
+          if (steps) {
+            while (steps.firstChild) steps.removeChild(steps.firstChild);
+            events.slice(-7).forEach(function (event) {
+              var item = document.createElement("li");
+              item.textContent = event.name.replace(/-/g, " ");
+              steps.appendChild(item);
+            });
+          }
+        }
+
+        function sendSnapshot(delivery) {
+          if (!runCode || !writeToken) return false;
+          var body = JSON.stringify(snapshotPayload());
+          if (delivery === "beacon" && navigator.sendBeacon) {
+            try {
+              if (navigator.sendBeacon(API_URL, new Blob([body], { type: "text/plain;charset=UTF-8" }))) {
+                return true;
+              }
+            } catch (_) {
+              // Fall through to a keepalive request.
+            }
+          }
+          if (typeof window.fetch !== "function") return false;
+          try {
+            var request = window.fetch(API_URL, {
+              method: "POST",
+              body: body,
+              cache: "no-store",
+              credentials: "same-origin",
+              keepalive: true,
+              headers: { "Content-Type": "text/plain;charset=UTF-8" },
+            });
+            if (request && typeof request.then === "function") {
+              return request.then(function (response) { return response.ok; }).catch(function () { return false; });
+            }
+            return request;
+          } catch (_) {
+            return false;
+          }
+        }
+
+        function record(name, detail, status, delivery) {
+          latestEventName = name;
+          latestEventDetail = detail === undefined ? null : detail;
+          if (status && (!completed || status === "failed")) currentStatus = status;
+          events.push({
+            sequence: nextSequence(),
+            at: new Date().toISOString(),
+            name: String(name).slice(0, 96),
+            detail: detail === undefined ? null : detail,
+          });
+          if (events.length > 96) events.shift();
+          updateSurface();
+          return sendSnapshot(delivery || "wait");
+        }
+
+        function finish(status, name, detail) {
+          completed = true;
+          currentStatus = status;
+          return record(name, detail, status, "wait");
+        }
+
+        function setModuleLoaded() {
+          moduleLoaded = true;
+        }
+
+        window.__gpuStartupDiagnostics = {
+          build: BUILD,
+          runCode: runCode,
+          record: record,
+          finish: finish,
+          serializeError: serializeError,
+          setModuleLoaded: setModuleLoaded,
+          snapshot: snapshotPayload,
+        };
+
+        window.addEventListener("error", function (event) {
+          var target = event.target;
+          if (target && target !== window) {
+            record("resource-load-error", {
+              tag: target.tagName || null,
+              source: target.src ? String(target.src).split("/").pop() : null,
+            }, "failed", "beacon");
+            return;
+          }
+          record("window-error", {
+            message: event.message || null,
+            source: event.filename ? String(event.filename).split("/").pop() : null,
+            line: event.lineno || null,
+            column: event.colno || null,
+            error: serializeError(event.error),
+          }, "failed", "beacon");
+        }, true);
+
+        window.addEventListener("unhandledrejection", function (event) {
+          record("unhandled-promise-rejection", {
+            error: serializeError(event.reason),
+          }, "failed", "beacon");
+        });
+
+        window.addEventListener("pagehide", function (event) {
+          if (!completed) {
+            record("page-hidden-before-completion", { persisted: event.persisted === true }, "interrupted", "beacon");
+          }
+        });
+
+        document.addEventListener("visibilitychange", function () {
+          if (!completed && document.visibilityState === "hidden") {
+            record("document-hidden-before-completion", null, "running", "beacon");
+          }
+        });
+
+        document.addEventListener("DOMContentLoaded", updateSurface, { once: true });
+        record("inline-bootstrap-started", {
+          tokenAvailable: writeToken.length >= 32,
+          runCodeAvailable: runCode.length >= 16,
+        }, "running", "beacon");
+
+        window.setTimeout(function () {
+          if (!moduleLoaded && !completed) {
+            record("module-start-timeout", { elapsedMs: 20000 }, "failed", "beacon");
+          }
+        }, 20000);
+
+        var heartbeatCount = 0;
+        var heartbeat = window.setInterval(function () {
+          if (completed || heartbeatCount >= 12) {
+            window.clearInterval(heartbeat);
+            return;
+          }
+          heartbeatCount += 1;
+          record("startup-heartbeat", {
+            count: heartbeatCount,
+            latestEvent: latestEventName,
+            elapsedMs: Date.now() - Date.parse(createdAt),
+          }, currentStatus, "beacon");
+        }, 5000);
+      })();
+    </script>
+    <style>
+      :root {
+        color: #f6f2eb;
+        background: #11100f;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-synthesis: none;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        min-height: 100svh;
+        background:
+          radial-gradient(circle at 50% -10%, rgba(255, 122, 26, 0.2), transparent 42%),
+          #11100f;
+      }
+
+      main {
+        width: min(100%, 34rem);
+        min-height: 100svh;
+        margin: 0 auto;
+        padding: max(2rem, env(safe-area-inset-top)) 1.35rem max(2rem, env(safe-area-inset-bottom));
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+      }
+
+      .diagnostic-card {
+        padding: 1.5rem;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 1.5rem;
+        background: rgba(28, 26, 24, 0.92);
+        box-shadow: 0 1.5rem 4rem rgba(0, 0, 0, 0.38);
+      }
+
+      .diagnostic-mark {
+        width: 3rem;
+        height: 3rem;
+        display: grid;
+        place-items: center;
+        margin-bottom: 1.25rem;
+        border-radius: 1rem;
+        background: #ff7a1a;
+        color: #17110c;
+        font-size: 1.25rem;
+        font-weight: 900;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(1.75rem, 7vw, 2.35rem);
+        line-height: 1.05;
+        letter-spacing: -0.04em;
+      }
+
+      #diagnosticSummary {
+        margin: 0.85rem 0 1.35rem;
+        color: #bcb5ac;
+        line-height: 1.5;
+      }
+
+      .diagnostic-state {
+        display: flex;
+        align-items: center;
+        gap: 0.7rem;
+        padding: 0.85rem 1rem;
+        border-radius: 1rem;
+        background: rgba(255, 122, 26, 0.1);
+        color: #ffb477;
+        font-weight: 750;
+      }
+
+      .diagnostic-state::before {
+        content: "";
+        width: 0.7rem;
+        height: 0.7rem;
+        flex: 0 0 auto;
+        border-radius: 999px;
+        background: #ff7a1a;
+        box-shadow: 0 0 0 0 rgba(255, 122, 26, 0.5);
+        animation: pulse 1.4s ease-out infinite;
+      }
+
+      .diagnostic-state[data-state="completed"]::before {
+        background: #71d7a1;
+        animation: none;
+      }
+
+      .diagnostic-state[data-state="failed"]::before,
+      .diagnostic-state[data-state="interrupted"]::before {
+        background: #ff7a1a;
+        animation: none;
+      }
+
+      ol {
+        margin: 1.2rem 0 0;
+        padding-left: 1.25rem;
+        color: #d7d1c9;
+        font-size: 0.88rem;
+        line-height: 1.65;
+      }
+
+      .diagnostic-meta {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        margin-top: 1.35rem;
+        padding-top: 1rem;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+        color: #8f8982;
+        font-size: 0.75rem;
+      }
+
+      .diagnostic-meta code { color: #ffb477; }
+
+      .diagnostic-privacy {
+        margin: 1rem 0 0;
+        color: #8f8982;
+        font-size: 0.72rem;
+        line-height: 1.5;
+      }
+
+      .probe-canvas {
+        position: fixed;
+        left: -128px;
+        top: -128px;
+        width: 64px;
+        height: 64px;
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      @keyframes pulse {
+        70% { box-shadow: 0 0 0 0.6rem rgba(255, 122, 26, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(255, 122, 26, 0); }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .diagnostic-state::before { animation: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="diagnostic-card" aria-labelledby="diagnosticTitle">
+        <div class="diagnostic-mark" aria-hidden="true">D</div>
+        <h1 id="diagnosticTitle">GPU startup diagnostics</h1>
+        <p id="diagnosticSummary">Keep this page open. No taps or settings changes are required.</p>
+        <div id="diagnosticStatus" class="diagnostic-state" role="status" aria-live="polite">
+          Automatic test running
+        </div>
+        <ol id="diagnosticSteps" aria-label="Completed diagnostic stages"></ol>
+        <div class="diagnostic-meta">
+          <span>One-time diagnostic</span>
+          <span>Run <code id="diagnosticCode">LOCAL</code></span>
+        </div>
+        <p class="diagnostic-privacy">
+          The report contains technical browser and GPU startup data only. It excludes artwork,
+          project content, filenames, clipboard data and account information.
+        </p>
+      </section>
+    </main>
+    <canvas id="gpuDiagnosticProbeCanvas" class="probe-canvas" width="64" height="64"></canvas>
+    <canvas id="gpuDiagnosticEngineCanvas" class="probe-canvas" width="64" height="64"></canvas>
+    <noscript>This diagnostic requires JavaScript. The server has still recorded that the page was reached.</noscript>
+    <script type="module" src="/src/labs/gpu-startup-diagnostics.ts"></script>
+  </body>
+</html>

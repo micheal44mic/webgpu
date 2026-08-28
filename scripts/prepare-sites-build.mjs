@@ -51,6 +51,14 @@ const LAYER_COMPRESSION_INDEX_SQL = "CREATE INDEX IF NOT EXISTS layer_compressio
 const VECTOR_ZOOM_C_STRATEGY = "ten-semantic-text-dual-gpu-fallback-auto-post-raster-window2-roi-aware-zoom8-to-0.3-v7";
 const VECTOR_ZOOM_RUNS_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS vector_zoom_runs (run_code TEXT PRIMARY KEY NOT NULL, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)";
 const VECTOR_ZOOM_RUN_CODE = /^[2-9A-HJ-NP-Z]{8}$/;
+const GPU_STARTUP_DIAGNOSTIC_BUILD = "gpu-startup-rgba16f-probe-v1";
+const GPU_STARTUP_DIAGNOSTIC_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS gpu_startup_diagnostic_runs (run_code TEXT PRIMARY KEY NOT NULL, write_token_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, expires_at TEXT NOT NULL, status TEXT NOT NULL, sequence INTEGER NOT NULL, payload_json TEXT NOT NULL)";
+const GPU_STARTUP_DIAGNOSTIC_INDEX_SQL = "CREATE INDEX IF NOT EXISTS gpu_startup_diagnostic_runs_expires_at_idx ON gpu_startup_diagnostic_runs (expires_at)";
+const GPU_STARTUP_DIAGNOSTIC_RUN_CODE = /^diag-[a-f0-9]{32}$/;
+const GPU_STARTUP_DIAGNOSTIC_WRITE_TOKEN = /^[a-f0-9]{64}$/;
+const GPU_STARTUP_DIAGNOSTIC_STATUSES = new Set(["running", "completed", "failed", "interrupted"]);
+const GPU_STARTUP_DIAGNOSTIC_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+const GPU_STARTUP_DIAGNOSTIC_PAGE_PATH = "/gpu-startup-diagnostics.html";
 const VECTOR_ZOOM_CHECK_NAMES = [
   "exactlyTenDistributedTexts",
   "fixedFastZoomOutCompleted",
@@ -114,6 +122,13 @@ async function ensureLayerCompressionSchema(db) {
 
 async function ensureVectorZoomRunsSchema(db) {
   await db.prepare(VECTOR_ZOOM_RUNS_SCHEMA_SQL).run();
+}
+
+async function ensureGpuStartupDiagnosticSchema(db) {
+  await db.batch([
+    db.prepare(GPU_STARTUP_DIAGNOSTIC_SCHEMA_SQL),
+    db.prepare(GPU_STARTUP_DIAGNOSTIC_INDEX_SQL),
+  ]);
 }
 
 function finiteNumberArray(value, maximumLength = 360) {
@@ -759,8 +774,220 @@ async function handleVectorZoomRuns(request, env) {
   return new Response(null, { status: 405, headers: { Allow: "GET, POST" } });
 }
 
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function validIsoDate(value) {
+  return typeof value === "string"
+    && value.length >= 20
+    && value.length <= 40
+    && Number.isFinite(Date.parse(value));
+}
+
+function validGpuStartupDiagnosticEvent(event) {
+  if (!isRecord(event)) return false;
+  const allowedKeys = new Set(["sequence", "at", "name", "detail"]);
+  if (Object.keys(event).some((key) => !allowedKeys.has(key))) return false;
+  return Number.isSafeInteger(event.sequence)
+    && event.sequence > 0
+    && validIsoDate(event.at)
+    && typeof event.name === "string"
+    && /^[a-z0-9-]{1,96}$/.test(event.name);
+}
+
+function normalizeGpuStartupDiagnosticPayload(payload) {
+  if (!isRecord(payload)) return null;
+  const allowedKeys = new Set([
+    "version",
+    "build",
+    "runCode",
+    "writeToken",
+    "sequence",
+    "createdAt",
+    "updatedAt",
+    "status",
+    "privacy",
+    "environment",
+    "events",
+    "summary",
+  ]);
+  if (Object.keys(payload).some((key) => !allowedKeys.has(key))) return null;
+  if (
+    payload.version !== 1
+    || payload.build !== GPU_STARTUP_DIAGNOSTIC_BUILD
+    || typeof payload.runCode !== "string"
+    || !GPU_STARTUP_DIAGNOSTIC_RUN_CODE.test(payload.runCode)
+    || typeof payload.writeToken !== "string"
+    || !GPU_STARTUP_DIAGNOSTIC_WRITE_TOKEN.test(payload.writeToken)
+    || !Number.isSafeInteger(payload.sequence)
+    || payload.sequence <= 0
+    || !validIsoDate(payload.createdAt)
+    || !validIsoDate(payload.updatedAt)
+    || !GPU_STARTUP_DIAGNOSTIC_STATUSES.has(payload.status)
+    || typeof payload.privacy !== "string"
+    || payload.privacy.length > 400
+    || !isRecord(payload.environment)
+    || !Array.isArray(payload.events)
+    || payload.events.length < 1
+    || payload.events.length > 96
+    || !payload.events.every(validGpuStartupDiagnosticEvent)
+    || !isRecord(payload.summary)
+  ) {
+    return null;
+  }
+  return {
+    version: 1,
+    build: GPU_STARTUP_DIAGNOSTIC_BUILD,
+    runCode: payload.runCode,
+    sequence: payload.sequence,
+    createdAt: payload.createdAt,
+    updatedAt: payload.updatedAt,
+    status: payload.status,
+    privacy: payload.privacy,
+    environment: payload.environment,
+    events: payload.events,
+    summary: payload.summary,
+    writeToken: payload.writeToken,
+  };
+}
+
+async function sha256Hex(value) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function deleteExpiredGpuStartupDiagnostics(db, now) {
+  await db
+    .prepare("DELETE FROM gpu_startup_diagnostic_runs WHERE expires_at < ?1")
+    .bind(now)
+    .run();
+}
+
+async function recordGpuStartupDiagnosticPageRequest(request, env) {
+  if (!env.DB) return;
+  const url = new URL(request.url);
+  const runCode = url.searchParams.get("run") ?? "";
+  if (!GPU_STARTUP_DIAGNOSTIC_RUN_CODE.test(runCode)) return;
+  await ensureGpuStartupDiagnosticSchema(env.DB);
+  const createdAt = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + GPU_STARTUP_DIAGNOSTIC_RETENTION_MS).toISOString();
+  const payload = {
+    version: 1,
+    build: GPU_STARTUP_DIAGNOSTIC_BUILD,
+    runCode,
+    sequence: 0,
+    createdAt,
+    updatedAt: createdAt,
+    status: "html-requested",
+    privacy: "Server request metadata only. No IP address, cookies, referrer, artwork, project data, or URL query is stored.",
+    environment: {
+      serverRequest: {
+        userAgent: request.headers.get("User-Agent"),
+        acceptLanguage: request.headers.get("Accept-Language"),
+        secChUa: request.headers.get("Sec-CH-UA"),
+        secChUaMobile: request.headers.get("Sec-CH-UA-Mobile"),
+        secChUaPlatform: request.headers.get("Sec-CH-UA-Platform"),
+      },
+    },
+    events: [{ sequence: 0, at: createdAt, name: "html-requested", detail: null }],
+    summary: { latestEvent: "html-requested", moduleLoaded: false, completed: false },
+  };
+  await env.DB
+    .prepare("INSERT OR IGNORE INTO gpu_startup_diagnostic_runs (run_code, write_token_hash, created_at, updated_at, expires_at, status, sequence, payload_json) VALUES (?1, '', ?2, ?2, ?3, 'html-requested', 0, ?4)")
+    .bind(runCode, createdAt, expiresAt, JSON.stringify(payload))
+    .run();
+  await deleteExpiredGpuStartupDiagnostics(env.DB, createdAt);
+}
+
+async function handleGpuStartupDiagnostics(request, env) {
+  if (request.method !== "POST") {
+    return new Response(null, { status: 405, headers: { Allow: "POST" } });
+  }
+  if (!env.DB) {
+    return jsonResponse({ error: "Diagnostic storage is unavailable." }, 503);
+  }
+  const url = new URL(request.url);
+  const origin = request.headers.get("Origin");
+  const fetchSite = request.headers.get("Sec-Fetch-Site");
+  if ((origin && origin !== url.origin) || (fetchSite && fetchSite !== "same-origin")) {
+    return jsonResponse({ error: "Cross-origin diagnostic writes are not accepted." }, 403);
+  }
+  const contentType = request.headers.get("Content-Type")?.toLowerCase() ?? "";
+  if (!contentType.startsWith("text/plain") && !contentType.startsWith("application/json")) {
+    return jsonResponse({ error: "Unsupported diagnostic content type." }, 415);
+  }
+
+  const decoded = await readLimitedJson(request, 64 * 1024);
+  if (decoded.error) {
+    return jsonResponse({ error: decoded.error === "too-large" ? "Diagnostic payload is too large." : "Diagnostic payload is invalid." }, decoded.error === "too-large" ? 413 : 400);
+  }
+  const payload = normalizeGpuStartupDiagnosticPayload(decoded.value);
+  if (!payload) {
+    return jsonResponse({ error: "Diagnostic payload is invalid." }, 400);
+  }
+
+  await ensureGpuStartupDiagnosticSchema(env.DB);
+  const tokenHash = await sha256Hex(payload.writeToken);
+  const existing = await env.DB
+    .prepare("SELECT write_token_hash, created_at, sequence FROM gpu_startup_diagnostic_runs WHERE run_code = ?1")
+    .bind(payload.runCode)
+    .first();
+  if (existing?.write_token_hash && existing.write_token_hash !== tokenHash) {
+    return jsonResponse({ error: "Diagnostic write capability is invalid." }, 403);
+  }
+  if (existing && Number(existing.sequence) > payload.sequence) {
+    return jsonResponse({ runCode: payload.runCode, stale: true, sequence: Number(existing.sequence) }, 202);
+  }
+
+  const serverNow = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + GPU_STARTUP_DIAGNOSTIC_RETENTION_MS).toISOString();
+  const storedPayload = {
+    version: payload.version,
+    build: payload.build,
+    runCode: payload.runCode,
+    sequence: payload.sequence,
+    createdAt: existing?.created_at ?? serverNow,
+    clientCreatedAt: payload.createdAt,
+    clientUpdatedAt: payload.updatedAt,
+    serverUpdatedAt: serverNow,
+    status: payload.status,
+    privacy: payload.privacy,
+    environment: payload.environment,
+    events: payload.events,
+    summary: payload.summary,
+  };
+  const storedJson = JSON.stringify(storedPayload);
+  if (storedJson.length > 64 * 1024) {
+    return jsonResponse({ error: "Diagnostic payload is too large." }, 413);
+  }
+
+  await env.DB
+    .prepare("INSERT INTO gpu_startup_diagnostic_runs (run_code, write_token_hash, created_at, updated_at, expires_at, status, sequence, payload_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT(run_code) DO UPDATE SET write_token_hash = CASE WHEN gpu_startup_diagnostic_runs.write_token_hash = '' THEN excluded.write_token_hash ELSE gpu_startup_diagnostic_runs.write_token_hash END, updated_at = excluded.updated_at, expires_at = excluded.expires_at, status = excluded.status, sequence = excluded.sequence, payload_json = excluded.payload_json WHERE excluded.sequence >= gpu_startup_diagnostic_runs.sequence")
+    .bind(
+      payload.runCode,
+      tokenHash,
+      existing?.created_at ?? serverNow,
+      serverNow,
+      expiresAt,
+      payload.status,
+      payload.sequence,
+      storedJson,
+    )
+    .run();
+  await deleteExpiredGpuStartupDiagnostics(env.DB, serverNow);
+  return jsonResponse({
+    runCode: payload.runCode,
+    status: payload.status,
+    sequence: payload.sequence,
+    storedAt: serverNow,
+  }, 201);
+}
+
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, context) {
     const url = new URL(request.url);
 
     if (url.pathname === "/api/human-stroke") {
@@ -779,6 +1006,33 @@ export default {
     }
     if (url.pathname === "/api/vector-zoom-runs") {
       return handleVectorZoomRuns(request, env);
+    }
+    if (url.pathname === "/api/gpu-startup-diagnostics") {
+      return handleGpuStartupDiagnostics(request, env);
+    }
+
+    if (
+      (request.method === "GET" || request.method === "HEAD")
+      && url.pathname === GPU_STARTUP_DIAGNOSTIC_PAGE_PATH
+    ) {
+      if (request.method === "GET") {
+        const recording = recordGpuStartupDiagnosticPageRequest(request, env).catch((error) => {
+          console.error("GPU startup diagnostic navigation could not be recorded.", error);
+        });
+        if (context?.waitUntil) {
+          context.waitUntil(recording);
+        } else {
+          await recording;
+        }
+      }
+      const response = await env.ASSETS.fetch(request);
+      const headers = new Headers(response.headers);
+      headers.set("Cache-Control", "no-store");
+      return new Response(request.method === "HEAD" ? null : response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers,
+      });
     }
 
     if (
