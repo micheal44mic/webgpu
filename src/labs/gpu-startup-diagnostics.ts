@@ -90,6 +90,18 @@ async function withTimeout<Value>(
 const DIAGNOSTIC_DOCUMENT_WIDTH = 2048;
 const DIAGNOSTIC_DOCUMENT_HEIGHT = 2048;
 const RGBA16FLOAT_BYTES_PER_PIXEL = 8;
+const APPLICATION_BOOT_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
+
+function comparisonPolicy(): Record<string, unknown> {
+  return {
+    diagnosticVariant: APPLICATION_BOOT_VARIANT,
+    layerFormat: "rgba16float",
+    canvasFormat: "rgba16float",
+    textureFormatsTier2Enabled: false,
+    inPlaceGlazeCommitEnabled: false,
+    inPlaceGlazeCommitPipelineCreated: false,
+  };
+}
 
 function readSupportedLimits(limits: GPUSupportedLimits): Record<string, number> {
   const names = [
@@ -316,7 +328,11 @@ async function runDirectWebGpuProbe(): Promise<void> {
   const requiredFeatures: GPUFeatureName[] = needsTextureFormatsTier2
     ? [textureFormatsTier2]
     : [];
-  await checkpoint("device-request-started", { requiredFeatures }, "running", "beacon");
+  await checkpoint("device-request-started", {
+    requiredFeatures,
+    probeVariant: "advertised-tier2-baseline",
+    textureFormatsTier2Requested: needsTextureFormatsTier2,
+  }, "running", "beacon");
   const deviceRequest = adapter.requestDevice({ requiredFeatures });
   let device: GPUDevice;
   try {
@@ -347,6 +363,8 @@ async function runDirectWebGpuProbe(): Promise<void> {
   await checkpoint("device-acquired", {
     features: [...device.features].map(String).sort().slice(0, 24),
     limits: readSupportedLimits(device.limits),
+    probeVariant: "advertised-tier2-baseline",
+    textureFormatsTier2Requested: needsTextureFormatsTier2,
   });
 
   let probeTexture: GPUTexture | null = null;
@@ -476,6 +494,8 @@ async function runDirectWebGpuProbe(): Promise<void> {
     device.destroy();
   }
   await checkpoint("direct-webgpu-probe-completed", {
+    probeVariant: "advertised-tier2-baseline",
+    textureFormatsTier2Requested: needsTextureFormatsTier2,
     adapterMode,
     rgba16floatCanvasConfigured: true,
     documentTexture: {
@@ -588,6 +608,29 @@ function validateApplicationEngineReport(detail: unknown): Record<string, unknow
       `The authoritative application layer format is ${String(detail.layerFormat)}, not rgba16float.`,
     );
   }
+  if (detail.canvasFormat !== "rgba16float") {
+    throw new Error(
+      `The authoritative application canvas format is ${String(detail.canvasFormat)}, not rgba16float.`,
+    );
+  }
+  if (detail.diagnosticVariant !== APPLICATION_BOOT_VARIANT) {
+    throw new Error(
+      `The application frame reported variant ${String(detail.diagnosticVariant)} instead of `
+        + `${APPLICATION_BOOT_VARIANT}.`,
+    );
+  }
+  const featureIsolation = detail.featureIsolation;
+  if (
+    !isRecord(featureIsolation)
+    || typeof featureIsolation.textureFormatsTier2Advertised !== "boolean"
+    || featureIsolation.textureFormatsTier2Enabled !== false
+    || featureIsolation.inPlaceGlazeCommitEnabled !== false
+    || featureIsolation.inPlaceGlazeCommitPipelineCreated !== false
+  ) {
+    throw new Error(
+      "The RGBA16F comparison did not keep texture-formats-tier2 and its in-place commit path disabled.",
+    );
+  }
 
   const expectedLayerMiB = DIAGNOSTIC_DOCUMENT_WIDTH
     * DIAGNOSTIC_DOCUMENT_HEIGHT
@@ -674,6 +717,8 @@ async function runFullApplicationBoot(): Promise<Record<string, unknown>> {
   target.searchParams.set("documentHeight", String(DIAGNOSTIC_DOCUMENT_HEIGHT));
   target.searchParams.set("documentSize", String(DIAGNOSTIC_DOCUMENT_WIDTH));
   target.searchParams.set("deviceClass", "mobile");
+  target.searchParams.set("diagnosticVariant", APPLICATION_BOOT_VARIANT);
+  target.searchParams.set("forceGlazeCommitFallback", "1");
   let bootstrapReady = false;
   let extensionCreated = false;
   let engineReport: Record<string, unknown> | null = null;
@@ -740,6 +785,10 @@ async function runFullApplicationBoot(): Promise<Record<string, unknown>> {
       persistedProjectRestore: false,
       persistedBrushRestore: true,
       reporterChannel: APP_FRAME_DIAGNOSTIC_CHANNEL,
+      diagnosticVariant: APPLICATION_BOOT_VARIANT,
+      layerFormat: "rgba16float",
+      canvasFormat: "rgba16float",
+      textureFormatsTier2: "disabled",
     }, "running", "beacon");
 
     const loaded = new Promise<void>((resolve, reject) => {
@@ -917,6 +966,7 @@ async function run(): Promise<void> {
   await checkpoint("diagnostic-module-started", {
     build: bridge.build,
     runCodeSuffix: bridge.runCode.slice(-8),
+    ...comparisonPolicy(),
   }, "running", "beacon");
   let applicationBoot: Record<string, unknown>;
   try {
@@ -924,21 +974,26 @@ async function run(): Promise<void> {
   } catch (applicationError) {
     await checkpoint("environment-captured-after-app-failure", await captureHighEntropyEnvironment());
     await checkpoint("application-boot-failed", {
+      ...comparisonPolicy(),
       error: describeError(applicationError),
       nextStep: "Run the isolated WebGPU probe after the failed cold application boot.",
     }, "failed", "beacon");
     try {
       await runDirectWebGpuProbe();
       await bridge.finish("failed", "diagnostic-failed", {
-        conclusion: "The full application startup failed, but the isolated 2048 RGBA16F probe passed.",
+        ...comparisonPolicy(),
+        conclusion: "The no-Tier-2 application startup failed, but the follow-up advertised-Tier-2 baseline probe passed.",
         applicationError: describeError(applicationError),
+        isolatedProbeVariant: "advertised-tier2-baseline",
         isolatedProbeCompleted: true,
       });
     } catch (probeError) {
       await bridge.finish("failed", "diagnostic-failed", {
-        conclusion: "Both the full application startup and the isolated WebGPU probe failed.",
+        ...comparisonPolicy(),
+        conclusion: "Both the no-Tier-2 application startup and the follow-up advertised-Tier-2 baseline probe failed.",
         applicationError: describeError(applicationError),
         isolatedProbeError: describeError(probeError),
+        isolatedProbeVariant: "advertised-tier2-baseline",
         isolatedProbeCompleted: false,
       });
     }
@@ -947,6 +1002,7 @@ async function run(): Promise<void> {
 
   await checkpoint("environment-captured-after-app-boot", await captureHighEntropyEnvironment());
   await bridge.finish("completed", "diagnostic-completed", {
+    ...comparisonPolicy(),
     conclusion: "The cold full application remained ready through its deferred startup window.",
     documentWidth: DIAGNOSTIC_DOCUMENT_WIDTH,
     documentHeight: DIAGNOSTIC_DOCUMENT_HEIGHT,
@@ -958,6 +1014,7 @@ try {
   await run();
 } catch (error) {
   await bridge.finish("failed", "diagnostic-failed", {
+    ...comparisonPolicy(),
     error: describeError(error),
   });
 }

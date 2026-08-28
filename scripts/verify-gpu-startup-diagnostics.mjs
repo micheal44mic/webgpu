@@ -17,11 +17,36 @@ const vite = read("vite.config.ts");
 const attach = read("scripts/attach-human-replay-site-build.mjs");
 const indexHtml = read("index.html");
 const startup = read("src/startup.ts");
+const engineSource = read("src/brush-engine.ts");
+const featurePolicySource = read("src/gpu-startup-feature-policy.ts");
+
+const featurePolicyModule = await import(
+  `data:text/javascript;base64,${Buffer.from(featurePolicySource).toString("base64")}`
+);
+const suppressTier2 = featurePolicyModule.suppressTextureFormatsTier2ForGpuStartup;
+assert.equal(typeof suppressTier2, "function");
+assert.equal(
+  suppressTier2(
+    "/gpu-startup-app-frame",
+    "?diagnosticBoot=1&forceGlazeCommitFallback=1",
+  ),
+  true,
+);
+for (const [pathname, search] of [
+  ["/gpu-startup-app-frame", "?forceGlazeCommitFallback=1"],
+  ["/gpu-startup-app-frame", "?diagnosticBoot=1"],
+  ["/", "?diagnosticBoot=1&forceGlazeCommitFallback=1"],
+  ["/index.html", "?diagnosticBoot=1&forceGlazeCommitFallback=1"],
+  ["/prefix/gpu-startup-app-frame", "?diagnosticBoot=1&forceGlazeCommitFallback=1"],
+  ["/gpu-startup-app-frame-extra", "?diagnosticBoot=1&forceGlazeCommitFallback=1"],
+]) {
+  assert.equal(suppressTier2(pathname, search), false, `Tier 2 leaked into ${pathname}.`);
+}
 
 const inlineBootstrapIndex = html.indexOf("inline-bootstrap-started");
 const moduleScriptIndex = html.indexOf('type="module" src="/src/labs/gpu-startup-diagnostics.ts"');
 const diagnosticBuild = html.match(/var BUILD = "([^"]+)"/)?.[1];
-assert.equal(diagnosticBuild, "gpu-startup-rgba16f-timed-app-boot-v4");
+assert.equal(diagnosticBuild, "gpu-startup-rgba16f-no-tier2-app-boot-v5");
 assert.ok(
   workerBuilder.includes(`GPU_STARTUP_DIAGNOSTIC_BUILD = "${diagnosticBuild}"`),
   "Client and Worker diagnostic builds must match.",
@@ -59,6 +84,9 @@ assert.match(html, /sessionStorage\.getItem\(capabilityKey/);
 assert.match(html, /application-startup-phase/);
 assert.match(html, /diagnosticElapsed/);
 assert.match(html, /Very slow or stopped here/);
+assert.match(html, /App boot · RGBA16F · Tier 2 off/);
+assert.match(html, /diagnosticVariant: DIAGNOSTIC_VARIANT/);
+assert.match(html, /textureFormatsTier2Enabled: false/);
 
 assert.match(moduleSource, /requestAdapter\(adapterOptions\)/);
 assert.match(moduleSource, /featureLevel: "compatibility"/);
@@ -74,6 +102,13 @@ assert.match(moduleSource, /application-boot-completed/);
 assert.match(moduleSource, /projectSessionReady/);
 assert.match(moduleSource, /runFullApplicationBoot\(\)/);
 assert.match(moduleSource, /APP_FRAME_DIAGNOSTIC_CHANNEL = "gpu-startup-app-frame-v3"/);
+assert.match(moduleSource, /APPLICATION_BOOT_VARIANT = "rgba16float-no-texture-formats-tier2-v1"/);
+assert.match(moduleSource, /target\.searchParams\.set\("forceGlazeCommitFallback", "1"\)/);
+assert.match(moduleSource, /target\.searchParams\.set\("diagnosticVariant", APPLICATION_BOOT_VARIANT\)/);
+assert.match(moduleSource, /featureIsolation\.textureFormatsTier2Enabled !== false/);
+assert.match(moduleSource, /featureIsolation\.inPlaceGlazeCommitEnabled !== false/);
+assert.match(moduleSource, /featureIsolation\.inPlaceGlazeCommitPipelineCreated !== false/);
+assert.match(moduleSource, /probeVariant: "advertised-tier2-baseline"/);
 assert.match(moduleSource, /APPLICATION_BOOT_TIMEOUT_MS = 10 \* 60_000/);
 assert.match(moduleSource, /APPLICATION_DOCUMENT_LOAD_TIMEOUT_MS = 3 \* 60_000/);
 assert.match(moduleSource, /application-startup-phase/);
@@ -81,12 +116,21 @@ assert.match(moduleSource, /validateApplicationEngineReport/);
 assert.match(moduleSource, /lateDevice\.destroy\(\)/);
 assert.doesNotMatch(moduleSource, /import\("\.\.\/brush-engine"\)/);
 
+assert.match(engineSource, /suppressTextureFormatsTier2ForGpuStartup/);
+assert.match(engineSource, /const requestInPlaceGlazeCommit = !suppressTier2ForDiagnostic/);
+assert.match(engineSource, /&& !forceGlazeCommitFallback/);
+
 assert.match(workerBuilder, /GPU_STARTUP_DIAGNOSTIC_HTML/);
 assert.match(workerBuilder, /GPU_STARTUP_DIAGNOSTIC_PAGE_PATH = "\/gpu-startup-lab"/);
 assert.match(workerBuilder, /GPU_STARTUP_APP_FRAME_PATH = "\/gpu-startup-app-frame"/);
 assert.match(workerBuilder, /restorePersistedBrushOnStartup: true/);
 assert.match(workerBuilder, /startupProgressEnabled: true/);
 assert.match(workerBuilder, /handleEngineStartupProgress/);
+assert.match(workerBuilder, /textureFormatsTier2Enabled: engine\.device\.features\.has\("texture-formats-tier2"\)/);
+assert.match(workerBuilder, /textureFormatsTier2Advertised: engine\.adapter\?\.features\?\.has\("texture-formats-tier2"\) === true/);
+assert.match(workerBuilder, /inPlaceGlazeCommitEnabled: engine\.lightGlazeInPlaceCommitSupported === true/);
+assert.match(workerBuilder, /inPlaceGlazeCommitPipelineCreated: engine\.lightGlazeInPlaceCommitPipeline != null/);
+assert.match(workerBuilder, /payload\.summary\.diagnosticVariant !== GPU_STARTUP_DIAGNOSTIC_VARIANT/);
 assert.match(workerBuilder, /readLimitedJson\(request, 64 \* 1024\)/);
 assert.match(workerBuilder, /sha256Hex\(payload\.writeToken\)/);
 assert.match(workerBuilder, /write_token_hash/);
@@ -354,6 +398,20 @@ function diagnosticBootstrapHarness({
   assert.ok(Buffer.byteLength(harness.postedBodies[0], "utf8") <= 48 * 1024);
   const terminalPayload = JSON.parse(harness.postedBodies[0]);
   assert.ok(!Object.hasOwn(terminalPayload.summary, "reportStored"));
+  assert.equal(
+    terminalPayload.summary.diagnosticVariant,
+    "rgba16float-no-texture-formats-tier2-v1",
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(terminalPayload.summary.comparison)),
+    {
+      layerFormat: "rgba16float",
+      canvasFormat: "rgba16float",
+      textureFormatsTier2Enabled: false,
+      inPlaceGlazeCommitEnabled: false,
+      inPlaceGlazeCommitPipelineCreated: false,
+    },
+  );
   assert.ok(Buffer.byteLength(JSON.stringify(terminalPayload.events.at(-1).detail), "utf8") <= 1200);
   assert.equal(harness.elements.get("diagnosticStatus").textContent, "Diagnostic complete");
   assert.equal(harness.elements.get("manualDiagnosticBackup").hidden, false);
@@ -487,6 +545,10 @@ function diagnosticBootstrapHarness({
     );
   }
   assert.equal(harness.browser.__gpuStartupDiagnostics.snapshot().events.length, 24);
+  assert.equal(
+    harness.browser.__gpuStartupDiagnostics.snapshot().summary.diagnosticVariant,
+    "rgba16float-no-texture-formats-tier2-v1",
+  );
   const stored = await harness.browser.__gpuStartupDiagnostics.finish(
     "completed",
     "diagnostic-completed",
@@ -737,7 +799,7 @@ if (existsSync(builtWorkerPath)) {
 
   const frameResponse = await worker.fetch(
     new Request(
-      "https://example.test/gpu-startup-app-frame?diagnosticBoot=1&documentWidth=2048&documentHeight=2048&documentSize=2048",
+      "https://example.test/gpu-startup-app-frame?diagnosticBoot=1&documentWidth=2048&documentHeight=2048&documentSize=2048&diagnosticVariant=rgba16float-no-texture-formats-tier2-v1&forceGlazeCommitFallback=1",
     ),
     environment,
   );
@@ -758,7 +820,11 @@ if (existsSync(builtWorkerPath)) {
   assert.ok(frameBootstrapSource, "The protected frame must contain an executable early reporter.");
   const frameMessages = [];
   const frameWindow = {
-    location: { origin: "https://example.test" },
+    location: {
+      origin: "https://example.test",
+      pathname: "/gpu-startup-app-frame",
+      search: "?diagnosticBoot=1&diagnosticVariant=rgba16float-no-texture-formats-tier2-v1&forceGlazeCommitFallback=1",
+    },
     isSecureContext: true,
     addEventListener() {},
     parent: {
@@ -781,6 +847,7 @@ if (existsSync(builtWorkerPath)) {
     Math,
     Error,
     Promise,
+    URLSearchParams,
   });
   const frameExtension = frameWindow.__editorExtensionBootstrap.create({
     engine: {
@@ -788,6 +855,10 @@ if (existsSync(builtWorkerPath)) {
       documentHeight: 2048,
       layerFormat: "rgba16float",
       canvasFormat: "rgba16float",
+      adapter: { features: { has: () => true } },
+      device: { features: { has: () => false } },
+      lightGlazeInPlaceCommitSupported: false,
+      lightGlazeInPlaceCommitPipeline: null,
       getStats: () => ({
         layerFormat: "rgba16float",
         layerCount: 1,
@@ -824,6 +895,18 @@ if (existsSync(builtWorkerPath)) {
   assert.equal(engineReadyMessage.message.detail.documentWidth, 2048);
   assert.equal(engineReadyMessage.message.detail.documentHeight, 2048);
   assert.equal(engineReadyMessage.message.detail.layerFormat, "rgba16float");
+  assert.equal(engineReadyMessage.message.detail.canvasFormat, "rgba16float");
+  assert.equal(
+    engineReadyMessage.message.detail.diagnosticVariant,
+    "rgba16float-no-texture-formats-tier2-v1",
+  );
+  assert.equal(engineReadyMessage.message.detail.featureIsolation.textureFormatsTier2Enabled, false);
+  assert.equal(engineReadyMessage.message.detail.featureIsolation.textureFormatsTier2Advertised, true);
+  assert.equal(engineReadyMessage.message.detail.featureIsolation.inPlaceGlazeCommitEnabled, false);
+  assert.equal(
+    engineReadyMessage.message.detail.featureIsolation.inPlaceGlazeCommitPipelineCreated,
+    false,
+  );
   assert.equal(engineReadyMessage.message.detail.storage.bytesPerPixel, 8);
   assert.equal(engineReadyMessage.message.detail.storage.fullLayerMiB, 32);
   frameConsole.error("Failure at https://example.test/private/path?token=secret");
@@ -832,11 +915,61 @@ if (existsSync(builtWorkerPath)) {
   assert.doesNotMatch(JSON.stringify(consoleErrorMessage.message.detail), /secret|private\/path/);
   assert.ok(frameMessages.every(({ targetOrigin }) => targetOrigin === "https://example.test"));
 
+  const contradictoryMessages = [];
+  frameWindow.parent.postMessage = (message, targetOrigin) => {
+    contradictoryMessages.push({ message, targetOrigin });
+  };
+  const contradictoryExtension = frameWindow.__editorExtensionBootstrap.create({
+    engine: {
+      documentWidth: 2048,
+      documentHeight: 2048,
+      layerFormat: "rgba16float",
+      canvasFormat: "rgba16float",
+      adapter: { features: { has: () => true } },
+      device: { features: { has: (feature) => feature === "texture-formats-tier2" } },
+      lightGlazeInPlaceCommitSupported: true,
+      lightGlazeInPlaceCommitPipeline: {},
+      getStats: () => ({ layerFormat: "rgba16float", layerCount: 1 }),
+    },
+  });
+  await contradictoryExtension.afterEngineInitialized();
+  const contradictoryEngineReady = contradictoryMessages.find(
+    ({ message }) => message.type === "engine-ready",
+  );
+  assert.ok(contradictoryEngineReady);
+  assert.equal(
+    contradictoryEngineReady.message.detail.featureIsolation.textureFormatsTier2Enabled,
+    true,
+  );
+  assert.equal(
+    contradictoryEngineReady.message.detail.featureIsolation.textureFormatsTier2Advertised,
+    true,
+  );
+  assert.equal(
+    contradictoryEngineReady.message.detail.featureIsolation.inPlaceGlazeCommitEnabled,
+    true,
+  );
+  assert.equal(
+    contradictoryEngineReady.message.detail.featureIsolation.inPlaceGlazeCommitPipelineCreated,
+    true,
+  );
+
   const rootResponse = await worker.fetch(new Request("https://example.test/"), environment);
   assert.equal(rootResponse.status, 200);
   const rootHtml = await rootResponse.text();
   assert.doesNotMatch(rootHtml, /gpu-startup-app-frame-v3/);
   assert.equal(rootHtml, readFileSync(resolve(root, "dist/client/index.html"), "utf8"));
+  const flaggedRootResponse = await worker.fetch(
+    new Request(
+      "https://example.test/?diagnosticBoot=1&diagnosticVariant=rgba16float-no-texture-formats-tier2-v1&forceGlazeCommitFallback=1",
+    ),
+    environment,
+  );
+  assert.equal(flaggedRootResponse.status, 200);
+  assert.equal(
+    await flaggedRootResponse.text(),
+    readFileSync(resolve(root, "dist/client/index.html"), "utf8"),
+  );
   const unprotectedFrameResponse = await worker.fetch(
     new Request("https://example.test/gpu-startup-app-frame"),
     environment,
@@ -852,7 +985,7 @@ if (existsSync(builtWorkerPath)) {
   const sequence = Date.now() * 1000 + 1;
   const payload = {
     version: 1,
-    build: "gpu-startup-rgba16f-timed-app-boot-v4",
+    build: "gpu-startup-rgba16f-no-tier2-app-boot-v5",
     runCode,
     writeToken,
     sequence,
@@ -863,6 +996,14 @@ if (existsSync(builtWorkerPath)) {
     environment: { secureContext: true },
     events: [{ sequence, at: clientNow, name: "inline-bootstrap-started", detail: null }],
     summary: {
+      diagnosticVariant: "rgba16float-no-texture-formats-tier2-v1",
+      comparison: {
+        layerFormat: "rgba16float",
+        canvasFormat: "rgba16float",
+        textureFormatsTier2Enabled: false,
+        inPlaceGlazeCommitEnabled: false,
+        inPlaceGlazeCommitPipelineCreated: false,
+      },
       latestEvent: "inline-bootstrap-started",
       moduleLoaded: false,
       probeFinished: false,
@@ -892,6 +1033,15 @@ if (existsSync(builtWorkerPath)) {
   assert.equal(stored.latest_event, "inline-bootstrap-started");
   assert.ok(stored.payload_bytes > 0);
   assert.doesNotMatch(stored.payload_json, new RegExp(writeToken));
+
+  const wrongVariantResponse = await upload({
+    ...payload,
+    summary: {
+      ...payload.summary,
+      diagnosticVariant: "unexpected-variant",
+    },
+  });
+  assert.equal(wrongVariantResponse.status, 400);
 
   const staleResponse = await upload({
     ...payload,
@@ -962,6 +1112,7 @@ if (existsSync(builtWorkerPath)) {
       detail: { documentWidth: 2048, documentHeight: 2048 },
     }],
     summary: {
+      ...payload.summary,
       latestEvent: "diagnostic-completed",
       moduleLoaded: true,
       probeFinished: true,

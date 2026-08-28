@@ -12,7 +12,8 @@
       (function () {
         "use strict";
 
-        var BUILD = "gpu-startup-rgba16f-timed-app-boot-v4";
+        var BUILD = "gpu-startup-rgba16f-no-tier2-app-boot-v5";
+        var DIAGNOSTIC_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
         var API_URL = "/api/gpu-startup-diagnostics";
         var CAPABILITY_VERSION = 1;
         var CAPABILITY_LIFETIME_MS = 30 * 60 * 1000;
@@ -676,6 +677,14 @@
             status: currentStatus,
             privacy: "Technical startup data only. No artwork pixels, document text, filenames, clipboard data, project identifiers, or full URLs.",
             summary: {
+              diagnosticVariant: DIAGNOSTIC_VARIANT,
+              comparison: {
+                layerFormat: "rgba16float",
+                canvasFormat: "rgba16float",
+                textureFormatsTier2Enabled: false,
+                inPlaceGlazeCommitEnabled: false,
+                inPlaceGlazeCommitPipelineCreated: false,
+              },
               latestEvent: latestEventName,
               latestDetail: latestEventDetail,
               moduleLoaded: moduleLoaded,
@@ -722,6 +731,14 @@
             status: currentStatus,
             privacy: "Technical startup data only; no user content.",
             summary: {
+              diagnosticVariant: DIAGNOSTIC_VARIANT,
+              comparison: {
+                layerFormat: "rgba16float",
+                canvasFormat: "rgba16float",
+                textureFormatsTier2Enabled: false,
+                inPlaceGlazeCommitEnabled: false,
+                inPlaceGlazeCommitPipelineCreated: false,
+              },
               latestEvent: lastEvent.name,
               latestDetail: null,
               moduleLoaded: moduleLoaded,
@@ -762,7 +779,17 @@
           minimalPayload.runCode = truncateUtf8(minimalPayload.runCode, 96);
           minimalPayload.writeToken = truncateUtf8(minimalPayload.writeToken, 96);
           minimalPayload.privacy = "";
-          minimalPayload.summary = { latestEvent: lastEvent.name };
+          minimalPayload.summary = {
+            diagnosticVariant: DIAGNOSTIC_VARIANT,
+            comparison: {
+              layerFormat: "rgba16float",
+              canvasFormat: "rgba16float",
+              textureFormatsTier2Enabled: false,
+              inPlaceGlazeCommitEnabled: false,
+              inPlaceGlazeCommitPipelineCreated: false,
+            },
+            latestEvent: lastEvent.name,
+          };
           minimalPayload.environment = {};
           return JSON.stringify(minimalPayload);
         }
@@ -1152,6 +1179,20 @@
         letter-spacing: -0.04em;
       }
 
+      .diagnostic-variant {
+        display: inline-flex;
+        margin: 0.75rem 0 1.25rem;
+        padding: 0.38rem 0.62rem;
+        border: 1px solid rgba(255, 122, 26, 0.42);
+        border-radius: 999px;
+        color: #ffb477;
+        background: rgba(255, 122, 26, 0.1);
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
       #diagnosticSummary {
         margin: 0.85rem 0 1.35rem;
         color: #bcb5ac;
@@ -1423,6 +1464,7 @@
       <section class="diagnostic-card" aria-labelledby="diagnosticTitle">
         <div class="diagnostic-mark" aria-hidden="true">D</div>
         <h1 id="diagnosticTitle">GPU startup diagnostics</h1>
+        <p class="diagnostic-variant">App boot · RGBA16F · Tier 2 off</p>
         <p id="diagnosticSummary">Keep this page open. No taps or settings changes are required.</p>
         <div id="diagnosticStatus" class="diagnostic-state" role="status" aria-live="polite">
           Automatic test running

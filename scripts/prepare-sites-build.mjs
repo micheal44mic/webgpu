@@ -217,6 +217,16 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
           emit("engine-ready", {
             documentWidth: finiteNumber(engine.documentWidth),
             documentHeight: finiteNumber(engine.documentHeight),
+            diagnosticVariant: clippedString(
+              new URLSearchParams(window.location.search).get("diagnosticVariant") || "",
+              120,
+            ),
+            featureIsolation: {
+              textureFormatsTier2Advertised: engine.adapter?.features?.has("texture-formats-tier2") === true,
+              textureFormatsTier2Enabled: engine.device.features.has("texture-formats-tier2"),
+              inPlaceGlazeCommitEnabled: engine.lightGlazeInPlaceCommitSupported === true,
+              inPlaceGlazeCommitPipelineCreated: engine.lightGlazeInPlaceCommitPipeline != null,
+            },
             layerFormat: typeof stats.layerFormat === "string"
               ? stats.layerFormat
               : clippedString(engine.layerFormat, 80),
@@ -280,7 +290,8 @@ const LAYER_COMPRESSION_INDEX_SQL = "CREATE INDEX IF NOT EXISTS layer_compressio
 const VECTOR_ZOOM_C_STRATEGY = "ten-semantic-text-dual-gpu-fallback-auto-post-raster-window2-roi-aware-zoom8-to-0.3-v7";
 const VECTOR_ZOOM_RUNS_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS vector_zoom_runs (run_code TEXT PRIMARY KEY NOT NULL, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)";
 const VECTOR_ZOOM_RUN_CODE = /^[2-9A-HJ-NP-Z]{8}$/;
-const GPU_STARTUP_DIAGNOSTIC_BUILD = "gpu-startup-rgba16f-timed-app-boot-v4";
+const GPU_STARTUP_DIAGNOSTIC_BUILD = "gpu-startup-rgba16f-no-tier2-app-boot-v5";
+const GPU_STARTUP_DIAGNOSTIC_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
 const GPU_STARTUP_DIAGNOSTIC_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS gpu_startup_diagnostic_runs (run_code TEXT PRIMARY KEY NOT NULL, write_token_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, expires_at TEXT NOT NULL, status TEXT NOT NULL, sequence INTEGER NOT NULL, latest_event TEXT NOT NULL DEFAULT 'html-requested', result_summary TEXT NOT NULL DEFAULT '', payload_bytes INTEGER NOT NULL DEFAULT 0, payload_json TEXT NOT NULL)";
 const GPU_STARTUP_DIAGNOSTIC_INDEX_SQL = "CREATE INDEX IF NOT EXISTS gpu_startup_diagnostic_runs_expires_at_idx ON gpu_startup_diagnostic_runs (expires_at)";
 const GPU_STARTUP_DIAGNOSTIC_RUN_CODE = /^diag-[a-f0-9]{32}$/;
@@ -1052,6 +1063,7 @@ function normalizeGpuStartupDiagnosticPayload(payload) {
     ));
   const lastEvent = eventsValid ? payload.events[payload.events.length - 1] : null;
   const summaryJson = isRecord(payload.summary) ? JSON.stringify(payload.summary) : "";
+  const comparison = isRecord(payload.summary?.comparison) ? payload.summary.comparison : null;
   const environmentJson = isRecord(payload.environment) ? JSON.stringify(payload.environment) : "";
   if (
     payload.version !== 1
@@ -1072,6 +1084,13 @@ function normalizeGpuStartupDiagnosticPayload(payload) {
     || !eventsValid
     || !isRecord(payload.summary)
     || new TextEncoder().encode(summaryJson).byteLength > 8 * 1024
+    || payload.summary.diagnosticVariant !== GPU_STARTUP_DIAGNOSTIC_VARIANT
+    || !comparison
+    || comparison.layerFormat !== "rgba16float"
+    || comparison.canvasFormat !== "rgba16float"
+    || comparison.textureFormatsTier2Enabled !== false
+    || comparison.inPlaceGlazeCommitEnabled !== false
+    || comparison.inPlaceGlazeCommitPipelineCreated !== false
     || typeof payload.summary.latestEvent !== "string"
     || payload.summary.latestEvent !== lastEvent?.name
     || payload.sequence !== lastEvent?.sequence
@@ -1136,6 +1155,14 @@ async function recordGpuStartupDiagnosticPageRequest(request, env) {
     },
     events: [{ sequence: 0, at: createdAt, name: "html-requested", detail: null }],
     summary: {
+      diagnosticVariant: GPU_STARTUP_DIAGNOSTIC_VARIANT,
+      comparison: {
+        layerFormat: "rgba16float",
+        canvasFormat: "rgba16float",
+        textureFormatsTier2Enabled: false,
+        inPlaceGlazeCommitEnabled: false,
+        inPlaceGlazeCommitPipelineCreated: false,
+      },
       latestEvent: "html-requested",
       moduleLoaded: false,
       probeFinished: false,

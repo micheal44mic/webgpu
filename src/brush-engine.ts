@@ -1,4 +1,5 @@
 import { brushColorHsl, srgbChannelToLinear } from "./brush-color.ts";
+import { suppressTextureFormatsTier2ForGpuStartup } from "./gpu-startup-feature-policy.ts";
 import { clamp } from "./color";
 import {
   RGBA16_FLOAT_BYTES_PER_PIXEL,
@@ -2269,11 +2270,19 @@ export class BrushEngine {
     }, 6_000);
     let rawDevice: GPUDevice;
     const textureFormatsTier2 = "texture-formats-tier2" as GPUFeatureName;
+    const startupUrlParameters = new URLSearchParams(location.search);
+    const suppressTier2ForDiagnostic = suppressTextureFormatsTier2ForGpuStartup(
+      location.pathname,
+      location.search,
+    );
+    const forceGlazeCommitFallback = location.pathname.endsWith("/labs.html")
+      && startupUrlParameters.get("forceGlazeCommitFallback") === "1";
     const hasReadWriteStorageTextureLanguageFeature =
       navigator.gpu.wgslLanguageFeatures?.has(
         "readonly_and_readwrite_storage_textures",
       ) ?? false;
-    const requestInPlaceGlazeCommit = hasReadWriteStorageTextureLanguageFeature
+    const requestInPlaceGlazeCommit = !suppressTier2ForDiagnostic
+      && hasReadWriteStorageTextureLanguageFeature
       && adapter.features.has(textureFormatsTier2);
     const requiredFeatures: GPUFeatureName[] = [];
     if (requestInPlaceGlazeCommit) requiredFeatures.push(textureFormatsTier2);
@@ -2309,8 +2318,6 @@ export class BrushEngine {
     } finally {
       window.clearTimeout(deviceWaitTimer);
     }
-    const forceGlazeCommitFallback = location.pathname.endsWith("/labs.html")
-      && new URLSearchParams(location.search).get("forceGlazeCommitFallback") === "1";
     this.lightGlazeInPlaceCommitSupported = requestInPlaceGlazeCommit
       && rawDevice.features.has(textureFormatsTier2)
       && !forceGlazeCommitFallback;

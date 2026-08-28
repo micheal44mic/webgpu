@@ -72,7 +72,7 @@ const forbiddenContentMarkers = [
   "/api/vector-zoom-runs",
   "__vectorZoomCoverageReport",
   "__vectorZoomStressReport",
-  "gpu-startup-rgba16f-timed-app-boot-v4",
+  "gpu-startup-rgba16f-no-tier2-app-boot-v5",
   "gpu-startup-app-frame-v3",
   "/api/gpu-startup-diagnostics",
   "gpuDiagnosticAppFrame",
