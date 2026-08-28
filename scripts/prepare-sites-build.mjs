@@ -5,6 +5,10 @@ const clientDirectory = new URL("client/", distDirectory);
 const serverDirectory = new URL("server/", distDirectory);
 const hostingDirectory = new URL(".openai/", distDirectory);
 const workerFile = new URL("index.js", serverDirectory);
+const gpuStartupDiagnosticHtmlFile = new URL(
+  "../dist-gpu-diagnostics/gpu-startup-diagnostics.html",
+  import.meta.url,
+);
 
 await mkdir(clientDirectory, { recursive: true });
 
@@ -32,10 +36,14 @@ await cp(
 );
 const indexHtmlFile = new URL("index.html", clientDirectory);
 const indexHtml = (await readFile(indexHtmlFile, "utf8")).replace(/\r\n?/g, "\n");
+const gpuStartupDiagnosticHtml = (
+  await readFile(gpuStartupDiagnosticHtmlFile, "utf8")
+).replace(/\r\n?/g, "\n");
 await writeFile(indexHtmlFile, indexHtml);
 await writeFile(
   workerFile,
   `const INDEX_HTML = ${JSON.stringify(indexHtml)};
+const GPU_STARTUP_DIAGNOSTIC_HTML = ${JSON.stringify(gpuStartupDiagnosticHtml)};
 const HUMAN_STROKE_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS human_stroke_benchmark (id TEXT PRIMARY KEY NOT NULL CHECK (id = 'canonical'), payload_json TEXT NOT NULL, captured_at TEXT NOT NULL)";
 const HUMAN_STROKE_ID = "canonical";
 const HUMAN_STROKE_PRESET_REVISION = 4;
@@ -58,10 +66,7 @@ const GPU_STARTUP_DIAGNOSTIC_RUN_CODE = /^diag-[a-f0-9]{32}$/;
 const GPU_STARTUP_DIAGNOSTIC_WRITE_TOKEN = /^[a-f0-9]{64}$/;
 const GPU_STARTUP_DIAGNOSTIC_STATUSES = new Set(["running", "completed", "failed", "interrupted"]);
 const GPU_STARTUP_DIAGNOSTIC_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
-const GPU_STARTUP_DIAGNOSTIC_PAGE_PATHS = new Set([
-  "/gpu-startup-diagnostics",
-  "/gpu-startup-diagnostics.html",
-]);
+const GPU_STARTUP_DIAGNOSTIC_PAGE_PATH = "/gpu-startup-lab";
 const VECTOR_ZOOM_CHECK_NAMES = [
   "exactlyTenDistributedTexts",
   "fixedFastZoomOutCompleted",
@@ -1016,7 +1021,7 @@ export default {
 
     if (
       (request.method === "GET" || request.method === "HEAD")
-      && GPU_STARTUP_DIAGNOSTIC_PAGE_PATHS.has(url.pathname)
+      && url.pathname === GPU_STARTUP_DIAGNOSTIC_PAGE_PATH
     ) {
       if (request.method === "GET") {
         const recording = recordGpuStartupDiagnosticPageRequest(request, env).catch((error) => {
@@ -1028,13 +1033,15 @@ export default {
           await recording;
         }
       }
-      const response = await env.ASSETS.fetch(request);
-      const headers = new Headers(response.headers);
-      headers.set("Cache-Control", "no-store");
-      return new Response(request.method === "HEAD" ? null : response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers,
+      return new Response(request.method === "HEAD" ? null : GPU_STARTUP_DIAGNOSTIC_HTML, {
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "private, no-store, max-age=0",
+          "CDN-Cache-Control": "no-store",
+          "Cloudflare-CDN-Cache-Control": "no-store",
+          "Referrer-Policy": "no-referrer",
+          "X-Content-Type-Options": "nosniff",
+        },
       });
     }
 

@@ -38,15 +38,15 @@ assert.match(moduleSource, /import\("\.\.\/brush-engine"\)/);
 assert.match(moduleSource, /engine\.initialize\(\)/);
 assert.match(moduleSource, /engine-initialize-completed/);
 
-assert.match(workerBuilder, /GPU_STARTUP_DIAGNOSTIC_PAGE_PATHS = new Set/);
-assert.match(workerBuilder, /"\/gpu-startup-diagnostics"/);
-assert.match(workerBuilder, /"\/gpu-startup-diagnostics\.html"/);
+assert.match(workerBuilder, /GPU_STARTUP_DIAGNOSTIC_HTML/);
+assert.match(workerBuilder, /GPU_STARTUP_DIAGNOSTIC_PAGE_PATH = "\/gpu-startup-lab"/);
 assert.match(workerBuilder, /readLimitedJson\(request, 64 \* 1024\)/);
 assert.match(workerBuilder, /sha256Hex\(payload\.writeToken\)/);
 assert.match(workerBuilder, /write_token_hash/);
 assert.match(workerBuilder, /DELETE FROM gpu_startup_diagnostic_runs WHERE expires_at < \?1/);
 assert.match(workerBuilder, /url\.pathname === "\/api\/gpu-startup-diagnostics"/);
-assert.match(workerBuilder, /headers\.set\("Cache-Control", "no-store"\)/);
+assert.match(workerBuilder, /"Cache-Control": "private, no-store, max-age=0"/);
+assert.match(workerBuilder, /"Cloudflare-CDN-Cache-Control": "no-store"/);
 assert.doesNotMatch(workerBuilder, /SELECT \* FROM gpu_startup_diagnostic_runs/);
 
 assert.match(migration, /run_code TEXT PRIMARY KEY NOT NULL/);
@@ -143,13 +143,14 @@ if (existsSync(builtWorkerPath)) {
   const runCode = `diag-${"a".repeat(32)}`;
   const writeToken = "b".repeat(64);
   const pageResponse = await worker.fetch(
-    new Request(`https://example.test/gpu-startup-diagnostics?run=${runCode}`, {
+    new Request(`https://example.test/gpu-startup-lab?run=${runCode}`, {
       headers: { "User-Agent": "Diagnostic Test Browser" },
     }),
     environment,
   );
   assert.equal(pageResponse.status, 200);
-  assert.equal(pageResponse.headers.get("Cache-Control"), "no-store");
+  assert.match(pageResponse.headers.get("Cache-Control") ?? "", /\bno-store\b/);
+  assert.equal(pageResponse.headers.get("Referrer-Policy"), "no-referrer");
   assert.equal(database.rows.get(runCode)?.status, "html-requested");
 
   const clientNow = new Date().toISOString();
