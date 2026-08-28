@@ -828,6 +828,9 @@ const engine = new BrushEngine(canvas, {
     }
     rasterAdjustmentsController?.handleEngineStatus(message, kind);
   },
+  onStartupProgress: editorExtensionBootstrap?.startupProgressEnabled
+    ? (progress) => editorExtension?.handleEngineStartupProgress?.(progress)
+    : undefined,
   onStats(stats) {
     runtimeStatsController?.update(stats);
     brushQuickControlsController?.notifyEngineUpdate();
@@ -2839,19 +2842,27 @@ void engine.initialize()
     if (!projectSessionController) {
       throw new Error("Project session controller is unavailable.");
     }
-    if (
-      mobileBrushStudio
-      && (editorExtensionBootstrap?.restorePersistedBrushOnStartup ?? true)
-    ) {
-      await brushLibraryController.restoreActiveBrush();
-    }
-    await projectSessionController.initialize();
-    syncMobileToolsMenuState();
-    historyState = engine.getHistoryState();
-    layerPanelController?.ensureActiveThumbnail(0);
-    updateHistoryControls();
-    runtimeStatsController?.start();
-    await editorExtension?.afterEngineInitialized();
+    await engine.runStartupPhase("restore-active-brush", "Restoring the saved brush", async () => {
+      if (
+        mobileBrushStudio
+        && (editorExtensionBootstrap?.restorePersistedBrushOnStartup ?? true)
+      ) {
+        await brushLibraryController.restoreActiveBrush();
+      }
+    });
+    await engine.runStartupPhase(
+      "project-session",
+      "Opening the project session",
+      () => projectSessionController.initialize(),
+    );
+    await engine.runStartupPhase("editor-ready", "Connecting the editor controls", async () => {
+      syncMobileToolsMenuState();
+      historyState = engine.getHistoryState();
+      layerPanelController?.ensureActiveThumbnail(0);
+      updateHistoryControls();
+      runtimeStatsController?.start();
+      await editorExtension?.afterEngineInitialized();
+    });
 
     scheduleDeferredStartupTask(
       "deferred-gpu-pipelines",

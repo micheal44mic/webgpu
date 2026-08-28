@@ -684,7 +684,13 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
   rebuildGrainBrushBindGroups(engine);
   // Text/vector/raster-image pipelines are not needed to show the initial
   // raster canvas. They are completed after the editor is interactive.
-  await finishStaticResourceCreation(engine, "core");
+  engine.completeStartupPhase("core-layouts", "Creating core GPU layouts and buffers");
+  await engine.runStartupPhase(
+    "core-pipelines",
+    "Compiling core canvas pipelines",
+    () => finishStaticResourceCreation(engine, "core"),
+    { canvasFormat: engine.canvasFormat },
+  );
 }
 
 export async function createGrainTextureResources(

@@ -1992,6 +1992,8 @@ export class BrushEngine {
   layerHasContent = false;
 
   frameRequest: number | null = null;
+  private startupTimelineStartedAtMs: number | null = null;
+  private readonly startupPhaseStartedAtMs = new Map<string, number>();
   clearRequested = true;
   displayDirty = true;
   semanticPresentationDirtyRect: DirtyRect | null = null;
@@ -2079,77 +2081,189 @@ export class BrushEngine {
     );
   }
 
+  beginStartupPhase(
+    phase: string,
+    label: string,
+    detail: Readonly<Record<string, unknown>> | null = null,
+  ): void {
+    const callback = this.callbacks.onStartupProgress;
+    if (!callback) return;
+    const now = performance.now();
+    this.startupTimelineStartedAtMs ??= now;
+    this.startupPhaseStartedAtMs.set(phase, now);
+    try {
+      callback({
+        phase,
+        label,
+        state: "started",
+        totalElapsedMs: now - this.startupTimelineStartedAtMs,
+        phaseElapsedMs: 0,
+        detail,
+      });
+    } catch {
+      // Optional diagnostics must never alter the editor startup path.
+    }
+  }
+
+  completeStartupPhase(
+    phase: string,
+    label: string,
+    detail: Readonly<Record<string, unknown>> | null = null,
+  ): void {
+    const callback = this.callbacks.onStartupProgress;
+    const startedAt = this.startupPhaseStartedAtMs.get(phase);
+    if (!callback || startedAt === undefined || this.startupTimelineStartedAtMs === null) return;
+    const now = performance.now();
+    this.startupPhaseStartedAtMs.delete(phase);
+    try {
+      callback({
+        phase,
+        label,
+        state: "completed",
+        totalElapsedMs: now - this.startupTimelineStartedAtMs,
+        phaseElapsedMs: now - startedAt,
+        detail,
+      });
+    } catch {
+      // Optional diagnostics must never alter the editor startup path.
+    }
+  }
+
+  failStartupPhase(phase: string, label: string, error: unknown): void {
+    const callback = this.callbacks.onStartupProgress;
+    const startedAt = this.startupPhaseStartedAtMs.get(phase);
+    if (!callback || startedAt === undefined || this.startupTimelineStartedAtMs === null) return;
+    const now = performance.now();
+    this.startupPhaseStartedAtMs.delete(phase);
+    const detail = error instanceof Error
+      ? { name: error.name, message: error.message }
+      : { name: null, message: String(error) };
+    try {
+      callback({
+        phase,
+        label,
+        state: "failed",
+        totalElapsedMs: now - this.startupTimelineStartedAtMs,
+        phaseElapsedMs: now - startedAt,
+        detail,
+      });
+    } catch {
+      // Optional diagnostics must never alter the editor startup path.
+    }
+  }
+
+  async runStartupPhase<Value>(
+    phase: string,
+    label: string,
+    operation: () => Value | Promise<Value>,
+    detail: Readonly<Record<string, unknown>> | null = null,
+  ): Promise<Value> {
+    if (!this.callbacks.onStartupProgress) return operation();
+    this.beginStartupPhase(phase, label, detail);
+    await this.yieldStartupProgress();
+    try {
+      const result = await operation();
+      this.completeStartupPhase(phase, label, detail);
+      return result;
+    } catch (error) {
+      this.failStartupPhase(phase, label, error);
+      throw error;
+    }
+  }
+
+  async yieldStartupProgress(): Promise<void> {
+    if (!this.callbacks.onStartupProgress) return;
+    // The diagnostic build yields once so its progress surface can paint before
+    // a driver enters a long synchronous compile or allocation call.
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+  }
+
   async initialize(): Promise<void> {
     this.callbacks.onStatus?.("Requesting WebGPU adapter…", "working");
+    this.beginStartupPhase("adapter-request", "Finding a WebGPU adapter");
+    await this.yieldStartupProgress();
 
-    if (!navigator.gpu) {
-      throw new Error("WebGPU is not available in this browser or context.");
-    }
-
-    const android = /\bAndroid\b/i.test(navigator.userAgent);
-    // On Android there is commonly a single usable adapter. Requesting the
-    // high-performance profile can make Chrome discard it, so mobile starts
-    // from the neutral choice and only desktop keeps the preference.
-    const adapterOptions: GPURequestAdapterOptions | undefined =
-      /\bWindows\b/i.test(navigator.userAgent) || android
-        ? undefined
-        : { powerPreference: "high-performance" };
-    const adapterWaitTimer = window.setTimeout(() => {
-      this.callbacks.onStatus?.(
-        "GPU discovery is still in progress… Chrome may take a few seconds.",
-        "working",
-      );
-    }, 6_000);
-    let adapter: GPUAdapter | null = null;
-    let primaryAdapterError: unknown = null;
+    let adapter: GPUAdapter;
     try {
-      try {
-        adapter = await navigator.gpu.requestAdapter(adapterOptions);
-      } catch (error) {
-        primaryAdapterError = error;
+      if (!navigator.gpu) {
+        throw new Error("WebGPU is not available in this browser or context.");
       }
-      if (!adapter && adapterOptions !== undefined) {
-        this.callbacks.onStatus?.(
-          "Retrying WebGPU selection without a power preference…",
-          "working",
-        );
-        adapter = await navigator.gpu.requestAdapter();
-      }
-      if (!adapter && android) {
-        this.callbacks.onStatus?.(
-          "Trying WebGPU compatibility mode for Android…",
-          "working",
-        );
-        try {
-          adapter = await navigator.gpu.requestAdapter({
-            featureLevel: "compatibility",
-          } as GPURequestAdapterOptions & { featureLevel: "compatibility" });
-        } catch {
-          // Older implementations reject this option instead of ignoring it.
-        }
-      }
-    } finally {
-      window.clearTimeout(adapterWaitTimer);
-    }
-    if (!adapter) {
-      if (primaryAdapterError && adapterOptions === undefined) {
-        throw primaryAdapterError;
-      }
-      throw new Error("No compatible WebGPU adapter was found.");
-    }
-    this.adapter = adapter;
 
-    if (adapter.limits.maxTextureDimension2D < DOCUMENT_MAX_EDGE) {
-      throw new Error(
-        `The GPU supports textures up to ${adapter.limits.maxTextureDimension2D}px, below the `
-        + `required ${DOCUMENT_MAX_EDGE}px.`,
-      );
+      const android = /\bAndroid\b/i.test(navigator.userAgent);
+      // On Android there is commonly a single usable adapter. Requesting the
+      // high-performance profile can make Chrome discard it, so mobile starts
+      // from the neutral choice and only desktop keeps the preference.
+      const adapterOptions: GPURequestAdapterOptions | undefined =
+        /\bWindows\b/i.test(navigator.userAgent) || android
+          ? undefined
+          : { powerPreference: "high-performance" };
+      const adapterWaitTimer = window.setTimeout(() => {
+        this.callbacks.onStatus?.(
+          "GPU discovery is still in progress… Chrome may take a few seconds.",
+          "working",
+        );
+      }, 6_000);
+      let selectedAdapter: GPUAdapter | null = null;
+      let primaryAdapterError: unknown = null;
+      try {
+        try {
+          selectedAdapter = await navigator.gpu.requestAdapter(adapterOptions);
+        } catch (error) {
+          primaryAdapterError = error;
+        }
+        if (!selectedAdapter && adapterOptions !== undefined) {
+          this.callbacks.onStatus?.(
+            "Retrying WebGPU selection without a power preference…",
+            "working",
+          );
+          selectedAdapter = await navigator.gpu.requestAdapter();
+        }
+        if (!selectedAdapter && android) {
+          this.callbacks.onStatus?.(
+            "Trying WebGPU compatibility mode for Android…",
+            "working",
+          );
+          try {
+            selectedAdapter = await navigator.gpu.requestAdapter({
+              featureLevel: "compatibility",
+            } as GPURequestAdapterOptions & { featureLevel: "compatibility" });
+          } catch {
+            // Older implementations reject this option instead of ignoring it.
+          }
+        }
+      } finally {
+        window.clearTimeout(adapterWaitTimer);
+      }
+      if (!selectedAdapter) {
+        if (primaryAdapterError && adapterOptions === undefined) {
+          throw primaryAdapterError;
+        }
+        throw new Error("No compatible WebGPU adapter was found.");
+      }
+      adapter = selectedAdapter;
+      this.adapter = adapter;
+
+      if (adapter.limits.maxTextureDimension2D < DOCUMENT_MAX_EDGE) {
+        throw new Error(
+          `The GPU supports textures up to ${adapter.limits.maxTextureDimension2D}px, below the `
+          + `required ${DOCUMENT_MAX_EDGE}px.`,
+        );
+      }
+      this.completeStartupPhase("adapter-request", "Finding a WebGPU adapter", {
+        android,
+        maxTextureDimension2D: adapter.limits.maxTextureDimension2D,
+      });
+    } catch (error) {
+      this.failStartupPhase("adapter-request", "Finding a WebGPU adapter", error);
+      throw error;
     }
 
     // Unico punto da cui il motore ottiene il device: strumentarlo qui rende
     // contabilizzata ogni allocazione, presente e futura, senza toccare i 125
     // siti che creano texture e buffer.
     this.callbacks.onStatus?.("Adapter found. Creating WebGPU device…", "working");
+    this.beginStartupPhase("device-request", "Creating the WebGPU device");
+    await this.yieldStartupProgress();
     const deviceWaitTimer = window.setTimeout(() => {
       this.callbacks.onStatus?.("WebGPU device creation is still in progress…", "working");
     }, 6_000);
@@ -2189,6 +2303,9 @@ export class BrushEngine {
           ),
         });
       }
+    } catch (error) {
+      this.failStartupPhase("device-request", "Creating the WebGPU device", error);
+      throw error;
     } finally {
       window.clearTimeout(deviceWaitTimer);
     }
@@ -2200,6 +2317,9 @@ export class BrushEngine {
     const instrumented = instrumentGpuDevice(rawDevice);
     this.device = instrumented.device;
     this.gpuResourceRegistry = instrumented.registry;
+    this.completeStartupPhase("device-request", "Creating the WebGPU device", {
+      requiredFeatures: [...requiredFeatures],
+    });
     this.device.addEventListener("uncapturederror", (event) => {
       const error = event.error;
       if (this.gpuUncapturedErrors.length === 8) this.gpuUncapturedErrors.shift();
@@ -2233,20 +2353,30 @@ export class BrushEngine {
       return error;
     });
 
-    const context = this.canvas.getContext("webgpu") as GPUCanvasContext | null;
-    if (!context) {
-      throw new Error("Could not obtain GPUCanvasContext.");
-    }
-    this.context = context;
+    this.beginStartupPhase("canvas-rgba16float", "Configuring the 16-bit canvas");
+    await this.yieldStartupProgress();
+    try {
+      const context = this.canvas.getContext("webgpu") as GPUCanvasContext | null;
+      if (!context) {
+        throw new Error("Could not obtain GPUCanvasContext.");
+      }
+      this.context = context;
 
-    this.canvasFormat = "rgba16float";
-    this.context.configure({
-      device: this.device,
-      format: this.canvasFormat,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
-      alphaMode: "opaque",
-      colorSpace: "srgb",
-    });
+      this.canvasFormat = "rgba16float";
+      this.context.configure({
+        device: this.device,
+        format: this.canvasFormat,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
+        alphaMode: "opaque",
+        colorSpace: "srgb",
+      });
+      this.completeStartupPhase("canvas-rgba16float", "Configuring the 16-bit canvas", {
+        format: this.canvasFormat,
+      });
+    } catch (error) {
+      this.failStartupPhase("canvas-rgba16float", "Configuring the 16-bit canvas", error);
+      throw error;
+    }
 
     this.gpuLabel = describeAdapter(adapter);
     this.callbacks.onStatus?.(
@@ -2257,6 +2387,8 @@ export class BrushEngine {
     // updates can be presented even on slow drivers.
     await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
     try {
+      this.beginStartupPhase("core-layouts", "Creating core GPU layouts and buffers");
+      await this.yieldStartupProgress();
       await createStaticResources(this);
       prepareAdaptivePreviewShapePalette(this, this.settings);
       this.callbacks.onStatus?.("Creating the initial document…", "working");
@@ -2265,6 +2397,12 @@ export class BrushEngine {
         deferSelectionPipelines: true,
       });
     } catch (error) {
+      if (this.startupPhaseStartedAtMs.has("core-layouts")) {
+        this.failStartupPhase("core-layouts", "Creating core GPU layouts and buffers", error);
+      }
+      if (this.startupPhaseStartedAtMs.has("document-bindings")) {
+        this.failStartupPhase("document-bindings", "Publishing document GPU resources", error);
+      }
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(
         `The GPU does not support all resources required by the ${this.layerFormat} document. `
@@ -2272,27 +2410,36 @@ export class BrushEngine {
       );
     }
 
-    this.historyGpuStorage = new GpuHistoryStorage(this.device);
-    const historyHost = createEngineHistoryHost(this);
-    this.historyLocalStorage = new HistoryStorageCoordinator(historyHost.storage);
-    this.history.configureHooks({
-      prepareBranchCut: () => this.historyLocalStorage.prepareBranchCut(),
-      scheduleDiscardedCleanup: () => this.scheduleEffectsScratchShrink(),
+    await this.runStartupPhase("history-view", "Preparing history and canvas view", () => {
+      this.historyGpuStorage = new GpuHistoryStorage(this.device);
+      const historyHost = createEngineHistoryHost(this);
+      this.historyLocalStorage = new HistoryStorageCoordinator(historyHost.storage);
+      this.history.configureHooks({
+        prepareBranchCut: () => this.historyLocalStorage.prepareBranchCut(),
+        scheduleDiscardedCleanup: () => this.scheduleEffectsScratchShrink(),
+      });
+      this.history.configureCommands({
+        undo: () => moveHistoryCursor(this, -1),
+        redo: () => moveHistoryCursor(this, 1),
+      });
+      this.historyGpuStorage.setReleaseListener((slice) => {
+        this.historyLocalStorage.onGpuSliceReleased(slice);
+      });
+      this.resizeCanvas();
+      this.fitView();
+      this.writeBrushUniforms();
     });
-    this.history.configureCommands({
-      undo: () => moveHistoryCursor(this, -1),
-      redo: () => moveHistoryCursor(this, 1),
-    });
-    this.historyGpuStorage.setReleaseListener((slice) => {
-      this.historyLocalStorage.onGpuSliceReleased(slice);
-    });
-    this.resizeCanvas();
-    this.fitView();
-    this.writeBrushUniforms();
 
     this.initialized = true;
-    await this.ensureCurrentBrushResources();
+    await this.runStartupPhase(
+      "selected-brush-first-use",
+      "Preparing the selected brush",
+      () => this.ensureCurrentBrushResources(),
+      { format: this.layerFormat },
+    );
     clearAdaptivePreviewCanvas(this);
+    this.beginStartupPhase("first-frame-submit", "Submitting the first canvas frame");
+    await this.yieldStartupProgress();
     this.requestRender();
     this.callbacks.onStatus?.("WebGPU is ready. Draw on the canvas.", "ok");
     this.publishStats();
@@ -13512,6 +13659,19 @@ export class BrushEngine {
       this.avoidedLogicalDraws += batch.length * Math.max(0, physicalCopyCount - 1);
     }
     this.recordRenderedFrame(timestamp);
+    if (this.startupPhaseStartedAtMs.has("first-frame-submit")) {
+      this.completeStartupPhase("first-frame-submit", "Submitting the first canvas frame", {
+        canvasWidth: this.canvas.width,
+        canvasHeight: this.canvas.height,
+        cpuFrameMs: this.lastCpuFrameMs,
+      });
+      this.beginStartupPhase("first-frame-gpu", "Waiting for the first GPU frame");
+      void this.device.queue.onSubmittedWorkDone().then(() => {
+        this.completeStartupPhase("first-frame-gpu", "Waiting for the first GPU frame");
+      }, (error: unknown) => {
+        this.failStartupPhase("first-frame-gpu", "Waiting for the first GPU frame", error);
+      });
+    }
     if (this.vectorTextFastPresentationEnabled) {
       this.trackVectorTextFastPresentationSubmission();
     }

@@ -547,7 +547,9 @@ function compactFrameResourceSummary(frame: HTMLIFrameElement): Record<string, u
   };
 }
 
-const APP_FRAME_DIAGNOSTIC_CHANNEL = "gpu-startup-app-frame-v2";
+const APP_FRAME_DIAGNOSTIC_CHANNEL = "gpu-startup-app-frame-v3";
+const APPLICATION_DOCUMENT_LOAD_TIMEOUT_MS = 3 * 60_000;
+const APPLICATION_BOOT_TIMEOUT_MS = 10 * 60_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -678,6 +680,7 @@ async function runFullApplicationBoot(): Promise<Record<string, unknown>> {
   let applicationRuntimeError: unknown = null;
   const applicationConsoleErrors: unknown[] = [];
   let frameMessageCount = 0;
+  let lastStartupProgress: Record<string, unknown> | null = null;
   let observer: MutationObserver | null = null;
 
   const handleFrameMessage = (event: MessageEvent<unknown>): void => {
@@ -695,6 +698,11 @@ async function runFullApplicationBoot(): Promise<Record<string, unknown>> {
     if (type === "extension-created") {
       extensionCreated = true;
       void bridge.record("application-frame-extension-created", detail, "running", "beacon");
+      return;
+    }
+    if (type === "startup-progress") {
+      lastStartupProgress = isRecord(detail) ? { ...detail } : null;
+      void bridge.record("application-startup-phase", detail, "running", "beacon");
       return;
     }
     if (type === "engine-ready") {
@@ -756,7 +764,11 @@ async function runFullApplicationBoot(): Promise<Record<string, unknown>> {
       });
     });
     frame.src = target.href;
-    await withTimeout(loaded, 30_000, "Full application document load");
+    await withTimeout(
+      loaded,
+      APPLICATION_DOCUMENT_LOAD_TIMEOUT_MS,
+      "Full application document load",
+    );
     await checkpoint("application-document-loaded", {
       ...frameState(frame),
       bootstrapReady,
@@ -811,7 +823,7 @@ async function runFullApplicationBoot(): Promise<Record<string, unknown>> {
     });
     publishStatus();
 
-    const deadline = Date.now() + 120_000;
+    const deadline = Date.now() + APPLICATION_BOOT_TIMEOUT_MS;
     while (Date.now() < deadline) {
       if (applicationRuntimeError) {
         throw new Error(
@@ -869,6 +881,7 @@ async function runFullApplicationBoot(): Promise<Record<string, unknown>> {
             bootstrapReady,
             extensionCreated,
             frameMessageCount,
+            lastStartupProgress,
           },
           engine: observedEngineReport,
           rgba16floatLayerBytes: DIAGNOSTIC_DOCUMENT_WIDTH
@@ -888,6 +901,8 @@ async function runFullApplicationBoot(): Promise<Record<string, unknown>> {
         extensionCreated,
         engineReportReceived: engineReport !== null,
         frameMessageCount,
+        lastStartupProgress,
+        timeoutMs: APPLICATION_BOOT_TIMEOUT_MS,
       })}`,
     );
   } finally {

@@ -271,7 +271,7 @@ assert.match(library, /rollbackImport[\s\S]*?forgetSettings\(brushId\)/);
 assert.match(library, /this\.elements\.list\.inert = busy/);
 assert.match(
   main,
-  /if \(\s*mobileBrushStudio\s*&& \(editorExtensionBootstrap\?\.restorePersistedBrushOnStartup \?\? true\)\s*\) \{\s*await brushLibraryController\.restoreActiveBrush\(\);\s*\}\s*await projectSessionController\.initialize\(\)/,
+  /runStartupPhase\(\s*"restore-active-brush"[\s\S]*?if \(\s*mobileBrushStudio\s*&& \(editorExtensionBootstrap\?\.restorePersistedBrushOnStartup \?\? true\)\s*\) \{\s*await brushLibraryController\.restoreActiveBrush\(\);\s*\}[\s\S]*?runStartupPhase\(\s*"project-session"[\s\S]*?projectSessionController\.initialize\(\)/,
   "startup must prepare only the active custom brush before opening the project",
 );
 assert.doesNotMatch(main, /deferred-brush-restore/);

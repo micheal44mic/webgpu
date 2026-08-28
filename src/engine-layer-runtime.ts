@@ -219,10 +219,13 @@ export async function recreateLayerResources(
     layerBlendFoldPipeline,
     layerBlendDocumentMaskPipeline,
     warmSelectionPipelines,
-  } = await runGpuAllocationTransaction(
-    engine.device,
-    `Layer format pipeline ${format}`,
-    async () => {
+  } = await engine.runStartupPhase(
+    "document-pipelines",
+    "Compiling 16-bit document pipelines",
+    () => runGpuAllocationTransaction(
+      engine.device,
+      `Layer format pipeline ${format}`,
+      async () => {
   const brushPipelineLayout = engine.device.createPipelineLayout({
     label: `Brush legacy pipeline layout ${format}`,
     bindGroupLayouts: [engine.brushBindGroupLayout],
@@ -1513,7 +1516,9 @@ export async function recreateLayerResources(
         layerBlendDocumentMaskPipeline,
         warmSelectionPipelines,
       };
-    },
+      },
+    ),
+    { format },
   );
 
   // Recreating the document invalidates every layer's texture, not just the
@@ -1530,38 +1535,55 @@ export async function recreateLayerResources(
   let nextTransparentTexture: GPUTexture | null = null;
   let nextTransparentView: GPUTextureView | null = null;
   try {
-    const displayInfrastructure = await runGpuAllocationTransaction(
-      engine.device,
-      `Display layer infrastructure ${format}`,
-      (transaction) => {
-        const pyramid = allocateActiveLayerDisplayPyramid(engine, format);
-        transaction.deferRollback(() => pyramid.texture.destroy());
-        const transparentTexture = engine.device.createTexture({
-          label: `Transparent layer placeholder ${format}`,
-          size: { width: 1, height: 1, depthOrArrayLayers: 1 },
-          format,
-          usage: GPUTextureUsage.TEXTURE_BINDING,
-        });
-        transaction.deferRollback(() => transparentTexture.destroy());
-        return {
-          pyramid,
-          transparentTexture,
-          transparentView: transparentTexture.createView(),
-        };
-      },
+    const displayInfrastructure = await engine.runStartupPhase(
+      "document-display-textures",
+      "Allocating document display textures",
+      () => runGpuAllocationTransaction(
+        engine.device,
+        `Display layer infrastructure ${format}`,
+        (transaction) => {
+          const pyramid = allocateActiveLayerDisplayPyramid(engine, format);
+          transaction.deferRollback(() => pyramid.texture.destroy());
+          const transparentTexture = engine.device.createTexture({
+            label: `Transparent layer placeholder ${format}`,
+            size: { width: 1, height: 1, depthOrArrayLayers: 1 },
+            format,
+            usage: GPUTextureUsage.TEXTURE_BINDING,
+          });
+          transaction.deferRollback(() => transparentTexture.destroy());
+          return {
+            pyramid,
+            transparentTexture,
+            transparentView: transparentTexture.createView(),
+          };
+        },
+      ),
+      { format },
     );
     nextDisplayPyramid = displayInfrastructure.pyramid;
     nextTransparentTexture = displayInfrastructure.transparentTexture;
     nextTransparentView = displayInfrastructure.transparentView;
-    for (const record of engine.layerStack.layers) {
-      const gpu = record.id === engine.layerStack.active.id
-        ? await allocateLayerGpuResources(engine, 
-          format,
-          `Format change: layer ${record.id}`,
-        )
-        : createColdLayerGpuResources();
-      replacement.set(record.id, gpu);
-    }
+    await engine.runStartupPhase(
+      "document-layer-texture",
+      `Allocating the ${DOCUMENT_WIDTH}×${DOCUMENT_HEIGHT} 16-bit layer`,
+      async () => {
+        for (const record of engine.layerStack.layers) {
+          const gpu = record.id === engine.layerStack.active.id
+            ? await allocateLayerGpuResources(engine,
+              format,
+              `Format change: layer ${record.id}`,
+            )
+            : createColdLayerGpuResources();
+          replacement.set(record.id, gpu);
+        }
+      },
+      {
+        format,
+        width: DOCUMENT_WIDTH,
+        height: DOCUMENT_HEIGHT,
+        bytesPerPixel: format === "rgba16float" ? 8 : 4,
+      },
+    );
 
     const activeGpu = replacement.get(engine.layerStack.active.id);
     const activeHot = activeGpu?.hot;
@@ -1632,6 +1654,8 @@ export async function recreateLayerResources(
     }
     throw new Error("The format change transaction is incomplete.");
   }
+  engine.beginStartupPhase("document-bindings", "Publishing document GPU resources");
+  await engine.yieldStartupProgress();
   const { texture, view, samplingView } = activeHot;
 
   destroyLightGlazeResources(engine);
@@ -1811,6 +1835,9 @@ export async function recreateLayerResources(
   if (layerBlendTilePresentationRequired(engine)) {
     await ensureLayerBlendTilePresentationResources(engine);
   }
+  engine.completeStartupPhase("document-bindings", "Publishing document GPU resources", {
+    format,
+  });
 }
 
 export async function retargetEffectsWorkingSetInternal(engine: BrushEngine, 

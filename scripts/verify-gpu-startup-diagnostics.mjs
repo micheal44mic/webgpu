@@ -21,7 +21,7 @@ const startup = read("src/startup.ts");
 const inlineBootstrapIndex = html.indexOf("inline-bootstrap-started");
 const moduleScriptIndex = html.indexOf('type="module" src="/src/labs/gpu-startup-diagnostics.ts"');
 const diagnosticBuild = html.match(/var BUILD = "([^"]+)"/)?.[1];
-assert.equal(diagnosticBuild, "gpu-startup-rgba16f-app-boot-v2");
+assert.equal(diagnosticBuild, "gpu-startup-rgba16f-timed-app-boot-v3");
 assert.ok(
   workerBuilder.includes(`GPU_STARTUP_DIAGNOSTIC_BUILD = "${diagnosticBuild}"`),
   "Client and Worker diagnostic builds must match.",
@@ -43,7 +43,12 @@ assert.match(html, /reportStored/);
 assert.match(html, /lastHeartbeatAt/);
 assert.match(html, /acknowledgement\.acknowledged === true/);
 assert.match(html, /storedStatus === expectedStatus/);
-assert.doesNotMatch(html, /localStorage|sessionStorage|clipboard\./);
+assert.doesNotMatch(html, /localStorage|clipboard\./);
+assert.match(html, /sessionStorage\.setItem\(capabilityKey/);
+assert.match(html, /sessionStorage\.getItem\(capabilityKey/);
+assert.match(html, /application-startup-phase/);
+assert.match(html, /diagnosticElapsed/);
+assert.match(html, /Very slow or stopped here/);
 
 assert.match(moduleSource, /requestAdapter\(adapterOptions\)/);
 assert.match(moduleSource, /featureLevel: "compatibility"/);
@@ -58,7 +63,10 @@ assert.match(moduleSource, /application-navigation-started/);
 assert.match(moduleSource, /application-boot-completed/);
 assert.match(moduleSource, /projectSessionReady/);
 assert.match(moduleSource, /runFullApplicationBoot\(\)/);
-assert.match(moduleSource, /APP_FRAME_DIAGNOSTIC_CHANNEL = "gpu-startup-app-frame-v2"/);
+assert.match(moduleSource, /APP_FRAME_DIAGNOSTIC_CHANNEL = "gpu-startup-app-frame-v3"/);
+assert.match(moduleSource, /APPLICATION_BOOT_TIMEOUT_MS = 10 \* 60_000/);
+assert.match(moduleSource, /APPLICATION_DOCUMENT_LOAD_TIMEOUT_MS = 3 \* 60_000/);
+assert.match(moduleSource, /application-startup-phase/);
 assert.match(moduleSource, /validateApplicationEngineReport/);
 assert.match(moduleSource, /lateDevice\.destroy\(\)/);
 assert.doesNotMatch(moduleSource, /import\("\.\.\/brush-engine"\)/);
@@ -67,6 +75,8 @@ assert.match(workerBuilder, /GPU_STARTUP_DIAGNOSTIC_HTML/);
 assert.match(workerBuilder, /GPU_STARTUP_DIAGNOSTIC_PAGE_PATH = "\/gpu-startup-lab"/);
 assert.match(workerBuilder, /GPU_STARTUP_APP_FRAME_PATH = "\/gpu-startup-app-frame"/);
 assert.match(workerBuilder, /restorePersistedBrushOnStartup: true/);
+assert.match(workerBuilder, /startupProgressEnabled: true/);
+assert.match(workerBuilder, /handleEngineStartupProgress/);
 assert.match(workerBuilder, /readLimitedJson\(request, 64 \* 1024\)/);
 assert.match(workerBuilder, /sha256Hex\(payload\.writeToken\)/);
 assert.match(workerBuilder, /write_token_hash/);
@@ -128,11 +138,20 @@ function diagnosticBootstrapHarness({
   runCode = `diag-${"a".repeat(32)}`,
   writeToken = "b".repeat(64),
   fetchResults = [],
+  sharedSessionStorage = new Map(),
 } = {}) {
   const elements = new Map([
     ["diagnosticStatus", { dataset: {}, textContent: "" }],
     ["diagnosticSummary", { textContent: "" }],
     ["diagnosticCode", { textContent: "" }],
+    ["diagnosticElapsed", { textContent: "" }],
+    ["diagnosticProgressBar", {
+      style: {},
+      attributes: {},
+      setAttribute(name, value) { this.attributes[name] = String(value); },
+    }],
+    ["diagnosticCurrentPhase", { textContent: "" }],
+    ["diagnosticLiveness", { dataset: {}, textContent: "" }],
   ]);
   const stepChildren = [];
   elements.set("diagnosticSteps", {
@@ -166,6 +185,11 @@ function diagnosticBootstrapHarness({
       orientation: { type: "portrait-primary" },
     },
     AbortController,
+    sessionStorage: {
+      getItem(key) { return sharedSessionStorage.get(key) ?? null; },
+      setItem(key, value) { sharedSessionStorage.set(key, String(value)); },
+      removeItem(key) { sharedSessionStorage.delete(key); },
+    },
     addEventListener() {},
     setTimeout(callback, delay) {
       timerId += 1;
@@ -212,7 +236,15 @@ function diagnosticBootstrapHarness({
   const document = {
     visibilityState: "visible",
     getElementById(id) { return elements.get(id) ?? null; },
-    createElement() { return { textContent: "" }; },
+    createElement() {
+      return {
+        className: "",
+        dataset: {},
+        textContent: "",
+        children: [],
+        appendChild(child) { this.children.push(child); },
+      };
+    },
     addEventListener() {},
   };
   browser.window = browser;
@@ -225,6 +257,7 @@ function diagnosticBootstrapHarness({
     TextEncoder,
     AbortController,
     Blob,
+    performance: { now: () => 1000 },
     Date,
     JSON,
     Number,
@@ -238,7 +271,7 @@ function diagnosticBootstrapHarness({
     unescape,
     queueMicrotask,
   });
-  return { browser, elements, postedBodies };
+  return { browser, elements, postedBodies, sharedSessionStorage };
 }
 
 {
@@ -288,7 +321,72 @@ function diagnosticBootstrapHarness({
 }
 
 {
+  const sharedSessionStorage = new Map();
+  const runCode = `diag-${"f".repeat(32)}`;
+  const writeToken = "9".repeat(64);
+  const firstLoad = diagnosticBootstrapHarness({
+    runCode,
+    writeToken,
+    sharedSessionStorage,
+  });
+  assert.equal(firstLoad.browser.location.hash, "", "A stored capability must be removed from the URL.");
+  assert.equal(sharedSessionStorage.size, 1, "The write capability must survive a same-tab reload.");
+
+  const reloaded = diagnosticBootstrapHarness({
+    runCode,
+    writeToken: "",
+    sharedSessionStorage,
+  });
+  assert.equal(
+    reloaded.browser.__gpuStartupDiagnostics.snapshot().writeToken,
+    writeToken,
+    "A same-tab reload must recover the diagnostic write capability.",
+  );
+  const stored = await reloaded.browser.__gpuStartupDiagnostics.finish(
+    "completed",
+    "diagnostic-completed",
+    null,
+  );
+  assert.equal(stored, true);
+  assert.equal(sharedSessionStorage.size, 0, "A terminal acknowledgement must clear the capability.");
+}
+
+{
   const harness = diagnosticBootstrapHarness({ runCode: "", writeToken: "" });
+  harness.browser.__gpuStartupDiagnostics.record(
+    "application-navigation-started",
+    null,
+    "running",
+    "wait",
+  );
+  harness.browser.__gpuStartupDiagnostics.record(
+    "application-document-loaded",
+    null,
+    "running",
+    "wait",
+  );
+  harness.browser.__gpuStartupDiagnostics.record(
+    "application-frame-extension-created",
+    null,
+    "running",
+    "wait",
+  );
+  harness.browser.__gpuStartupDiagnostics.record(
+    "application-startup-phase",
+    {
+      phase: "adapter-request",
+      label: "Finding a WebGPU adapter",
+      state: "completed",
+      totalElapsedMs: 25,
+      phaseElapsedMs: 10,
+    },
+    "running",
+    "wait",
+  );
+  const timeline = harness.browser.__gpuStartupDiagnostics.snapshot().summary.startupTimeline;
+  assert.equal(timeline.phases.find(({ phase }) => phase === "application-navigation").state, "completed");
+  assert.equal(timeline.phases.find(({ phase }) => phase === "application-module").state, "completed");
+  assert.equal(timeline.phases.find(({ phase }) => phase === "adapter-request").phaseElapsedMs, 10);
   const stored = await harness.browser.__gpuStartupDiagnostics.finish(
     "completed",
     "diagnostic-completed",
@@ -500,7 +598,7 @@ if (existsSync(builtWorkerPath)) {
   assert.equal(frameResponse.headers.get("X-Frame-Options"), "SAMEORIGIN");
   assert.equal(frameResponse.headers.get("Content-Security-Policy"), "frame-ancestors 'self'");
   const frameHtml = await frameResponse.text();
-  const frameBootstrapIndex = frameHtml.indexOf("gpu-startup-app-frame-v2");
+  const frameBootstrapIndex = frameHtml.indexOf("gpu-startup-app-frame-v3");
   const frameModuleIndex = frameHtml.search(/<script\s+type="module"/);
   assert.ok(frameBootstrapIndex >= 0 && frameModuleIndex > frameBootstrapIndex);
   assert.match(frameHtml, /restorePersistedBrushOnStartup:\s*true/);
@@ -508,7 +606,7 @@ if (existsSync(builtWorkerPath)) {
 
   const frameBootstrapSource = [...frameHtml.matchAll(/<script>([\s\S]*?)<\/script>/g)]
     .map((match) => match[1])
-    .find((source) => source.includes("gpu-startup-app-frame-v2"));
+    .find((source) => source.includes("gpu-startup-app-frame-v3"));
   assert.ok(frameBootstrapSource, "The protected frame must contain an executable early reporter.");
   const frameMessages = [];
   const frameWindow = {
@@ -559,7 +657,20 @@ if (existsSync(builtWorkerPath)) {
       }),
     },
   });
+  frameExtension.handleEngineStartupProgress({
+    phase: "device-request",
+    label: "Creating the WebGPU device",
+    state: "completed",
+    totalElapsedMs: 42,
+    phaseElapsedMs: 12,
+    detail: null,
+  });
   await frameExtension.afterEngineInitialized();
+  const startupProgressMessage = frameMessages.find(
+    ({ message }) => message.type === "startup-progress",
+  );
+  assert.ok(startupProgressMessage, "The protected frame must forward timed startup phases.");
+  assert.equal(startupProgressMessage.message.detail.phase, "device-request");
   const engineReadyMessage = frameMessages.find(({ message }) => message.type === "engine-ready");
   assert.ok(engineReadyMessage, "The early frame extension must report the observed engine state.");
   assert.equal(engineReadyMessage.message.detail.documentWidth, 2048);
@@ -576,7 +687,7 @@ if (existsSync(builtWorkerPath)) {
   const rootResponse = await worker.fetch(new Request("https://example.test/"), environment);
   assert.equal(rootResponse.status, 200);
   const rootHtml = await rootResponse.text();
-  assert.doesNotMatch(rootHtml, /gpu-startup-app-frame-v2/);
+  assert.doesNotMatch(rootHtml, /gpu-startup-app-frame-v3/);
   assert.equal(rootHtml, readFileSync(resolve(root, "dist/client/index.html"), "utf8"));
   const unprotectedFrameResponse = await worker.fetch(
     new Request("https://example.test/gpu-startup-app-frame"),
@@ -593,7 +704,7 @@ if (existsSync(builtWorkerPath)) {
   const sequence = Date.now() * 1000 + 1;
   const payload = {
     version: 1,
-    build: "gpu-startup-rgba16f-app-boot-v2",
+    build: "gpu-startup-rgba16f-timed-app-boot-v3",
     runCode,
     writeToken,
     sequence,

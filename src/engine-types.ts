@@ -270,8 +270,20 @@ export interface EffectsWorkbenchRetargetResult {
   innerShadow: RasterShadowEncodeResult | null;
 }
 
+export type EngineStartupProgressState = "started" | "completed" | "failed";
+
+export interface EngineStartupProgress {
+  readonly phase: string;
+  readonly label: string;
+  readonly state: EngineStartupProgressState;
+  readonly totalElapsedMs: number;
+  readonly phaseElapsedMs: number;
+  readonly detail: Readonly<Record<string, unknown>> | null;
+}
+
 export interface EngineCallbacks {
   onStatus?: (message: string, kind: "working" | "ok" | "error") => void;
+  onStartupProgress?: (progress: EngineStartupProgress) => void;
   onStats?: (stats: EngineStats) => void;
   onHistoryChange?: (state: HistoryState) => void;
   onViewRotationChange?: (degrees: number, snappedToZero: boolean) => void;

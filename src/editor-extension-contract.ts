@@ -1,5 +1,9 @@
 import type { BrushEngine } from "./brush-engine";
-import type { BrushEngineOptions, BrushSettings } from "./engine-types";
+import type {
+  BrushEngineOptions,
+  BrushSettings,
+  EngineStartupProgress,
+} from "./engine-types";
 import type { EngineStats } from "./engine-stats";
 import type { MixedSceneController } from "./mixed-scene-controller";
 import type { PointerSample } from "./engine-types";
@@ -27,6 +31,7 @@ export interface EditorExtension {
   syncControls(editorLocked: boolean): void;
   afterEngineInitialized(): Promise<void>;
   handleEngineInitializationError(error: unknown): void;
+  handleEngineStartupProgress?(progress: EngineStartupProgress): void;
   wantsPaintRecording?(): boolean;
   beginPaintRecording?(event: PointerEvent, sample: PointerSample): void;
   capturePaintRecording?(
@@ -42,6 +47,7 @@ export interface EditorExtensionBootstrap {
   readonly engineOptions?: Partial<BrushEngineOptions>;
   readonly vectorTextClippedRefreshPolicy?: "during-gesture" | "on-release";
   readonly restorePersistedBrushOnStartup?: boolean;
+  readonly startupProgressEnabled?: boolean;
   readonly create: (host: EditorExtensionHost) => EditorExtension;
 }
 
