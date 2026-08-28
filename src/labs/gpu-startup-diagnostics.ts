@@ -87,49 +87,24 @@ async function withTimeout<Value>(
   }
 }
 
+const DIAGNOSTIC_DOCUMENT_WIDTH = 2048;
+const DIAGNOSTIC_DOCUMENT_HEIGHT = 2048;
+const RGBA16FLOAT_BYTES_PER_PIXEL = 8;
+
 function readSupportedLimits(limits: GPUSupportedLimits): Record<string, number> {
-  const names = new Set<string>([
-    ...Object.keys(limits),
-    ...Object.getOwnPropertyNames(Object.getPrototypeOf(limits) ?? {}),
-    "maxTextureDimension1D",
+  const names = [
     "maxTextureDimension2D",
-    "maxTextureDimension3D",
-    "maxTextureArrayLayers",
     "maxBindGroups",
-    "maxBindGroupsPlusVertexBuffers",
-    "maxBindingsPerBindGroup",
-    "maxDynamicUniformBuffersPerPipelineLayout",
-    "maxDynamicStorageBuffersPerPipelineLayout",
-    "maxSampledTexturesPerShaderStage",
-    "maxSamplersPerShaderStage",
     "maxStorageBuffersPerShaderStage",
     "maxStorageTexturesPerShaderStage",
-    "maxUniformBuffersPerShaderStage",
-    "maxUniformBufferBindingSize",
     "maxStorageBufferBindingSize",
-    "minUniformBufferOffsetAlignment",
-    "minStorageBufferOffsetAlignment",
-    "maxVertexBuffers",
     "maxBufferSize",
-    "maxVertexAttributes",
-    "maxVertexBufferArrayStride",
-    "maxInterStageShaderVariables",
-    "maxColorAttachments",
-    "maxColorAttachmentBytesPerSample",
-    "maxComputeWorkgroupStorageSize",
     "maxComputeInvocationsPerWorkgroup",
     "maxComputeWorkgroupSizeX",
-    "maxComputeWorkgroupSizeY",
-    "maxComputeWorkgroupSizeZ",
-    "maxComputeWorkgroupsPerDimension",
-    "maxStorageBuffersInVertexStage",
-    "maxStorageTexturesInVertexStage",
-    "maxSampledTexturesInVertexStage",
-    "maxSamplersInVertexStage",
-  ]);
+  ];
   const source = limits as unknown as Record<string, unknown>;
   const result: Record<string, number> = {};
-  for (const name of [...names].sort()) {
+  for (const name of names) {
     try {
       const value = source[name];
       if (typeof value === "number" && Number.isFinite(value)) result[name] = value;
@@ -241,6 +216,9 @@ async function validationCheck(
     validationError: describeError(validationError),
     outOfMemoryError: describeError(outOfMemoryError),
   });
+  if (!ok) {
+    throw new Error(`${name} failed WebGPU validation or memory checks.`);
+  }
   return ok;
 }
 
@@ -320,10 +298,16 @@ async function runDirectWebGpuProbe(): Promise<void> {
   await checkpoint("adapter-acquired", {
     mode: adapterMode,
     info: readAdapterInfo(adapter),
-    features: adapterFeatures,
+    featureCount: adapterFeatures.length,
+    features: adapterFeatures.slice(0, 24),
     limits: adapterLimits,
-    wgslLanguageFeatures,
+    wgslLanguageFeatures: wgslLanguageFeatures.slice(0, 24),
   });
+  if ((adapterLimits.maxTextureDimension2D ?? 0) < DIAGNOSTIC_DOCUMENT_WIDTH) {
+    throw new Error(
+      `The adapter texture limit is below ${DIAGNOSTIC_DOCUMENT_WIDTH}px.`,
+    );
+  }
 
   const textureFormatsTier2 = "texture-formats-tier2" as GPUFeatureName;
   const needsTextureFormatsTier2 = wgslLanguageFeatures.includes(
@@ -333,11 +317,20 @@ async function runDirectWebGpuProbe(): Promise<void> {
     ? [textureFormatsTier2]
     : [];
   await checkpoint("device-request-started", { requiredFeatures }, "running", "beacon");
-  const device = await withTimeout(
-    adapter.requestDevice({ requiredFeatures }),
-    20_000,
-    "WebGPU device request",
-  );
+  const deviceRequest = adapter.requestDevice({ requiredFeatures });
+  let device: GPUDevice;
+  try {
+    device = await withTimeout(
+      deviceRequest,
+      20_000,
+      "WebGPU device request",
+    );
+  } catch (error) {
+    // Promise.race cannot cancel requestDevice(). If an implementation resolves
+    // after our deadline, release that device instead of leaking it in the lab.
+    void deviceRequest.then((lateDevice) => lateDevice.destroy()).catch(() => undefined);
+    throw error;
+  }
   let intentionalDestroy = false;
   device.addEventListener("uncapturederror", (event) => {
     void checkpoint("device-uncaptured-error", {
@@ -352,21 +345,25 @@ async function runDirectWebGpuProbe(): Promise<void> {
     }, "failed", "beacon");
   });
   await checkpoint("device-acquired", {
-    features: [...device.features].map(String).sort(),
+    features: [...device.features].map(String).sort().slice(0, 24),
     limits: readSupportedLimits(device.limits),
   });
 
-  const probeCanvas = document.getElementById("gpuDiagnosticProbeCanvas") as HTMLCanvasElement | null;
-  if (!probeCanvas) throw new Error("The probe canvas is missing.");
-  const context = probeCanvas.getContext("webgpu") as GPUCanvasContext | null;
-  if (!context) throw new Error("Could not obtain a GPUCanvasContext.");
+  let probeTexture: GPUTexture | null = null;
+  let context: GPUCanvasContext | null = null;
+  try {
+    const probeCanvas = document.getElementById("gpuDiagnosticProbeCanvas") as HTMLCanvasElement | null;
+    if (!probeCanvas) throw new Error("The probe canvas is missing.");
+    context = probeCanvas.getContext("webgpu") as GPUCanvasContext | null;
+    if (!context) throw new Error("Could not obtain a GPUCanvasContext.");
+    const configuredContext = context;
 
   await checkpoint("rgba16float-canvas-configure-started", {
     width: probeCanvas.width,
     height: probeCanvas.height,
     usage: ["render-attachment", "copy-dst"],
   }, "running", "beacon");
-  context.configure({
+  configuredContext.configure({
     device,
     format: "rgba16float",
     usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
@@ -378,7 +375,7 @@ async function runDirectWebGpuProbe(): Promise<void> {
     const encoder = device.createCommandEncoder({ label: "diagnostic-rgba16float-canvas" });
     const pass = encoder.beginRenderPass({
       colorAttachments: [{
-        view: context.getCurrentTexture().createView(),
+        view: configuredContext.getCurrentTexture().createView(),
         clearValue: { r: 1, g: 0.2, b: 0.02, a: 1 },
         loadOp: "clear",
         storeOp: "store",
@@ -389,11 +386,10 @@ async function runDirectWebGpuProbe(): Promise<void> {
     await withTimeout(device.queue.onSubmittedWorkDone(), 15_000, "RGBA16F canvas submission");
   });
 
-  let probeTexture: GPUTexture | null = null;
   await validationCheck(device, "rgba16float-combined-usage-texture", () => {
     probeTexture = device.createTexture({
-      label: "diagnostic-rgba16float-combined-usage",
-      size: [64, 64, 1],
+      label: "diagnostic-2048-rgba16float-combined-usage",
+      size: [DIAGNOSTIC_DOCUMENT_WIDTH, DIAGNOSTIC_DOCUMENT_HEIGHT, 1],
       format: "rgba16float",
       usage: GPUTextureUsage.STORAGE_BINDING
         | GPUTextureUsage.RENDER_ATTACHMENT
@@ -404,6 +400,21 @@ async function runDirectWebGpuProbe(): Promise<void> {
   });
 
   if (probeTexture) {
+    await validationCheck(device, "rgba16float-document-texture-cleared", async () => {
+      const encoder = device.createCommandEncoder({ label: "diagnostic-2048-rgba16float-clear" });
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [{
+          view: probeTexture!.createView(),
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          loadOp: "clear",
+          storeOp: "store",
+        }],
+      });
+      pass.end();
+      device.queue.submit([encoder.finish()]);
+      await withTimeout(device.queue.onSubmittedWorkDone(), 20_000, "2048 RGBA16F document clear");
+    });
+
     await validationCheck(device, "rgba16float-storage-write-pipeline", async () => {
       const module = device.createShaderModule({
         label: "diagnostic-rgba16float-storage-write",
@@ -458,72 +469,433 @@ async function runDirectWebGpuProbe(): Promise<void> {
     });
   });
 
-  (probeTexture as GPUTexture | null)?.destroy();
-  context.unconfigure();
-  intentionalDestroy = true;
-  device.destroy();
+  } finally {
+    (probeTexture as GPUTexture | null)?.destroy();
+    context?.unconfigure();
+    intentionalDestroy = true;
+    device.destroy();
+  }
   await checkpoint("direct-webgpu-probe-completed", {
     adapterMode,
     rgba16floatCanvasConfigured: true,
+    documentTexture: {
+      width: DIAGNOSTIC_DOCUMENT_WIDTH,
+      height: DIAGNOSTIC_DOCUMENT_HEIGHT,
+      format: "rgba16float",
+      bytes: DIAGNOSTIC_DOCUMENT_WIDTH
+        * DIAGNOSTIC_DOCUMENT_HEIGHT
+        * RGBA16FLOAT_BYTES_PER_PIXEL,
+      mebibytes: DIAGNOSTIC_DOCUMENT_WIDTH
+        * DIAGNOSTIC_DOCUMENT_HEIGHT
+        * RGBA16FLOAT_BYTES_PER_PIXEL
+        / (1024 * 1024),
+    },
   });
   await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
 }
 
-async function runRealEngineStartup(): Promise<void> {
-  const search = new URLSearchParams(window.location.search);
-  const documentWidth = Number(search.get("documentWidth") ?? "2048");
-  const documentHeight = Number(search.get("documentHeight") ?? "2048");
-  await checkpoint("engine-module-import-started", {
-    documentWidth,
-    documentHeight,
-  }, "running", "beacon");
-  const engineModule = await withTimeout(
-    import("../brush-engine"),
-    30_000,
-    "Engine module import",
-  );
-  await checkpoint("engine-module-imported", null);
+function frameState(frame: HTMLIFrameElement): Record<string, unknown> {
+  const frameWindow = frame.contentWindow;
+  const frameDocument = frame.contentDocument;
+  if (!frameWindow || !frameDocument) {
+    return { accessible: false };
+  }
+  const status = frameDocument.getElementById("status");
+  const canvas = frameDocument.getElementById("gpuCanvas") as HTMLCanvasElement | null;
+  const app = frameDocument.getElementById("app") as HTMLElement | null;
+  const homeButton = frameDocument.getElementById("projectHomeButton") as HTMLButtonElement | null;
+  const fps = frameDocument.getElementById("fpsStat");
+  const gpu = frameDocument.getElementById("gpuStat");
+  return {
+    accessible: true,
+    readyState: frameDocument.readyState,
+    title: frameDocument.title.slice(0, 160),
+    statusText: status?.textContent?.trim().slice(0, 1000) ?? null,
+    statusClass: status?.className.slice(0, 240) ?? null,
+    appHidden: app?.hidden ?? null,
+    projectSessionReady: homeButton ? !homeButton.disabled : false,
+    runtimeStatsStarted: Boolean(
+      fps && fps.textContent?.trim() && fps.textContent.trim() !== "—",
+    ),
+    fpsText: fps?.textContent?.trim().slice(0, 40) ?? null,
+    gpuText: gpu?.textContent?.trim().slice(0, 240) ?? null,
+    canvas: canvas ? {
+      width: canvas.width,
+      height: canvas.height,
+      clientWidth: canvas.clientWidth,
+      clientHeight: canvas.clientHeight,
+    } : null,
+  };
+}
 
-  const engineCanvas = document.getElementById("gpuDiagnosticEngineCanvas") as HTMLCanvasElement | null;
-  if (!engineCanvas) throw new Error("The engine diagnostic canvas is missing.");
-  engineCanvas.width = 64;
-  engineCanvas.height = 64;
-
-  const engineStatuses: Array<{ message: string; kind: string; at: string }> = [];
-  const engine = new engineModule.BrushEngine(engineCanvas, {
-    onStatus: (message, kind) => {
-      engineStatuses.push({ message, kind, at: new Date().toISOString() });
-      if (engineStatuses.length > 32) engineStatuses.shift();
-      void bridge.record("engine-status", {
-        message,
-        kind,
-        history: engineStatuses.slice(),
-      }, kind === "error" ? "failed" : "running", "beacon");
-    },
+function compactFrameResourceSummary(frame: HTMLIFrameElement): Record<string, unknown> {
+  const entries = frame.contentWindow?.performance.getEntriesByType("resource") ?? [];
+  const failed = entries.filter((entry) => {
+    const timing = entry as PerformanceResourceTiming & { readonly responseStatus?: number };
+    return typeof timing.responseStatus === "number" && timing.responseStatus >= 400;
   });
-  await checkpoint("engine-initialize-started", {
-    documentWidth,
-    documentHeight,
-    canvasFormatExpected: "rgba16float",
-    layerFormatExpected: "rgba16float",
-  }, "running", "beacon");
+  return {
+    resourceCount: entries.length,
+    failedResources: failed.slice(0, 12).map((entry) => {
+      try {
+        const url = new URL(entry.name);
+        return url.pathname.split("/").pop() || url.pathname;
+      } catch {
+        return "unreadable-resource";
+      }
+    }),
+  };
+}
 
-  await withTimeout(engine.initialize(), 90_000, "Full engine initialization");
-  const stats = engine.getStats();
-  const measured = engine.measuredGpuMemory();
-  await checkpoint("engine-initialize-completed", {
-    webGpu: engine.getWebGpuDiagnosticInfo(),
-    gpuLabel: stats.gpuLabel,
-    gpuMemory: stats.gpuMemory,
-    measuredGpuMemory: {
-      currentMiB: measured.currentBytes / (1024 * 1024),
-      peakMiB: measured.peakBytes / (1024 * 1024),
-      textureCount: measured.textureCount,
-      bufferCount: measured.bufferCount,
-      unmeasurableCount: measured.unmeasurableCount,
-    },
-    statusHistory: engineStatuses,
-  });
+const APP_FRAME_DIAGNOSTIC_CHANNEL = "gpu-startup-app-frame-v2";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readOptionalFiniteNumber(
+  source: Record<string, unknown>,
+  key: string,
+): number | null {
+  const value = source[key];
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`The application engine report contains an invalid ${key}.`);
+  }
+  return value;
+}
+
+function validateApplicationEngineReport(detail: unknown): Record<string, unknown> {
+  if (!isRecord(detail)) {
+    throw new Error("The application frame did not provide a structured engine report.");
+  }
+
+  const documentWidth = readOptionalFiniteNumber(detail, "documentWidth");
+  const documentHeight = readOptionalFiniteNumber(detail, "documentHeight");
+  if (
+    documentWidth !== DIAGNOSTIC_DOCUMENT_WIDTH
+    || documentHeight !== DIAGNOSTIC_DOCUMENT_HEIGHT
+  ) {
+    throw new Error(
+      `The application engine initialized ${String(documentWidth)}x${String(documentHeight)} instead of `
+        + `${DIAGNOSTIC_DOCUMENT_WIDTH}x${DIAGNOSTIC_DOCUMENT_HEIGHT}.`,
+    );
+  }
+  if (detail.layerFormat !== "rgba16float") {
+    throw new Error(
+      `The authoritative application layer format is ${String(detail.layerFormat)}, not rgba16float.`,
+    );
+  }
+
+  const expectedLayerMiB = DIAGNOSTIC_DOCUMENT_WIDTH
+    * DIAGNOSTIC_DOCUMENT_HEIGHT
+    * RGBA16FLOAT_BYTES_PER_PIXEL
+    / (1024 * 1024);
+  const layerCount = readOptionalFiniteNumber(detail, "layerCount");
+  if (layerCount !== null && (!Number.isInteger(layerCount) || layerCount !== 1)) {
+    throw new Error(`The isolated application initialized ${layerCount} layers instead of one.`);
+  }
+
+  const storageValue = detail.storage;
+  if (storageValue !== undefined && storageValue !== null) {
+    if (!isRecord(storageValue)) {
+      throw new Error("The application engine report contains an invalid storage summary.");
+    }
+    const bytesPerPixel = readOptionalFiniteNumber(storageValue, "bytesPerPixel");
+    const fullLayerMiB = readOptionalFiniteNumber(storageValue, "fullLayerMiB");
+    const eagerFullRawMiB = readOptionalFiniteNumber(storageValue, "eagerFullRawMiB");
+    const actualRawMiB = readOptionalFiniteNumber(storageValue, "actualRawMiB");
+    const tileSizePx = readOptionalFiniteNumber(storageValue, "tileSizePx");
+    const tileCount = readOptionalFiniteNumber(storageValue, "tileCount");
+    const isNear = (left: number, right: number): boolean => Math.abs(left - right) <= 0.05;
+
+    if (bytesPerPixel !== null && bytesPerPixel !== RGBA16FLOAT_BYTES_PER_PIXEL) {
+      throw new Error(`The application layer storage uses ${bytesPerPixel} bytes per pixel instead of 8.`);
+    }
+    if (fullLayerMiB !== null && !isNear(fullLayerMiB, expectedLayerMiB)) {
+      throw new Error(
+        `The application reports ${fullLayerMiB} MiB per layer instead of ${expectedLayerMiB} MiB.`,
+      );
+    }
+    if (
+      eagerFullRawMiB !== null
+      && layerCount !== null
+      && !isNear(eagerFullRawMiB, expectedLayerMiB * layerCount)
+    ) {
+      throw new Error("The eager layer-storage total does not match the observed RGBA16F layer count.");
+    }
+    if (
+      actualRawMiB !== null
+      && layerCount === 1
+      && !isNear(actualRawMiB, expectedLayerMiB)
+    ) {
+      throw new Error("The active layer's raw storage does not match one full 2048 RGBA16F layer.");
+    }
+    if (tileSizePx !== null && (!Number.isInteger(tileSizePx) || tileSizePx <= 0)) {
+      throw new Error("The application engine report contains an invalid storage tile size.");
+    }
+    if (tileCount !== null && (!Number.isInteger(tileCount) || tileCount <= 0)) {
+      throw new Error("The application engine report contains an invalid storage tile count.");
+    }
+    if (
+      bytesPerPixel !== null
+      && tileSizePx !== null
+      && tileCount !== null
+      && !isNear(
+        tileSizePx * tileSizePx * tileCount * bytesPerPixel / (1024 * 1024),
+        expectedLayerMiB,
+      )
+    ) {
+      throw new Error("The reported tile geometry does not cover one full 2048 RGBA16F layer.");
+    }
+
+    const layerMemoryMiB = readOptionalFiniteNumber(detail, "layerMemoryMiB");
+    if (
+      layerMemoryMiB !== null
+      && actualRawMiB !== null
+      && !isNear(layerMemoryMiB, actualRawMiB)
+    ) {
+      throw new Error("The engine layer-memory total disagrees with its raw storage summary.");
+    }
+  }
+
+  return { ...detail };
+}
+
+async function runFullApplicationBoot(): Promise<Record<string, unknown>> {
+  const frame = document.getElementById("gpuDiagnosticAppFrame") as HTMLIFrameElement | null;
+  if (!frame) throw new Error("The isolated application frame is missing.");
+
+  const target = new URL("/gpu-startup-app-frame", window.location.origin);
+  target.searchParams.set("diagnosticBoot", "1");
+  target.searchParams.set("documentWidth", String(DIAGNOSTIC_DOCUMENT_WIDTH));
+  target.searchParams.set("documentHeight", String(DIAGNOSTIC_DOCUMENT_HEIGHT));
+  target.searchParams.set("documentSize", String(DIAGNOSTIC_DOCUMENT_WIDTH));
+  target.searchParams.set("deviceClass", "mobile");
+  let bootstrapReady = false;
+  let extensionCreated = false;
+  let engineReport: Record<string, unknown> | null = null;
+  let applicationRuntimeError: unknown = null;
+  const applicationConsoleErrors: unknown[] = [];
+  let frameMessageCount = 0;
+  let observer: MutationObserver | null = null;
+
+  const handleFrameMessage = (event: MessageEvent<unknown>): void => {
+    if (event.origin !== window.location.origin || event.source !== frame.contentWindow) return;
+    if (!isRecord(event.data) || event.data.channel !== APP_FRAME_DIAGNOSTIC_CHANNEL) return;
+    const type = event.data.type;
+    if (typeof type !== "string") return;
+    const detail = event.data.detail ?? null;
+    frameMessageCount += 1;
+    if (type === "bootstrap-ready") {
+      bootstrapReady = true;
+      void bridge.record("application-frame-bootstrap-ready", detail, "running", "beacon");
+      return;
+    }
+    if (type === "extension-created") {
+      extensionCreated = true;
+      void bridge.record("application-frame-extension-created", detail, "running", "beacon");
+      return;
+    }
+    if (type === "engine-ready") {
+      void bridge.record("application-frame-engine-ready", detail, "running", "beacon");
+      try {
+        engineReport = validateApplicationEngineReport(detail);
+      } catch (error) {
+        applicationRuntimeError = error;
+        void bridge.record("application-frame-engine-report-invalid", {
+          error: describeError(error),
+          report: detail,
+        }, "failed", "beacon");
+      }
+      return;
+    }
+    if (type === "console-error") {
+      applicationConsoleErrors.push(detail);
+      if (applicationConsoleErrors.length > 8) applicationConsoleErrors.shift();
+      void bridge.record("application-frame-console-error", detail, "running", "beacon");
+      return;
+    }
+    if (type === "engine-error" || type === "window-error" || type === "unhandled-rejection") {
+      applicationRuntimeError = { type, detail };
+      void bridge.record(`application-frame-${type}`, detail, "failed", "beacon");
+    }
+  };
+  window.addEventListener("message", handleFrameMessage);
+
+  try {
+    await checkpoint("application-navigation-started", {
+      path: target.pathname,
+      documentWidth: DIAGNOSTIC_DOCUMENT_WIDTH,
+      documentHeight: DIAGNOSTIC_DOCUMENT_HEIGHT,
+      deviceClass: "mobile",
+      persistedProjectRestore: false,
+      persistedBrushRestore: true,
+      reporterChannel: APP_FRAME_DIAGNOSTIC_CHANNEL,
+    }, "running", "beacon");
+
+    const loaded = new Promise<void>((resolve, reject) => {
+      const handleLoad = (): void => {
+        try {
+          const loadedUrl = new URL(frame.contentWindow?.location.href ?? "about:blank");
+          if (
+            loadedUrl.origin === target.origin
+            && loadedUrl.pathname === target.pathname
+            && loadedUrl.searchParams.get("diagnosticBoot") === "1"
+          ) {
+            frame.removeEventListener("load", handleLoad);
+            resolve();
+          }
+        } catch {
+          // Ignore the iframe's initial about:blank load and wait for the target.
+        }
+      };
+      frame.addEventListener("load", handleLoad);
+      frame.addEventListener("error", () => reject(new Error("The application frame failed to load.")), {
+        once: true,
+      });
+    });
+    frame.src = target.href;
+    await withTimeout(loaded, 30_000, "Full application document load");
+    await checkpoint("application-document-loaded", {
+      ...frameState(frame),
+      bootstrapReady,
+      extensionCreated,
+      frameMessageCount,
+    });
+
+    const frameWindow = frame.contentWindow;
+    const frameDocument = frame.contentDocument;
+    if (!frameWindow || !frameDocument) {
+      throw new Error("The same-origin application frame could not be inspected.");
+    }
+
+    // The injected reporter is installed before the application module. These
+    // listeners remain as a same-origin fallback for failures after document load.
+    frameWindow.addEventListener("error", (event) => {
+      applicationRuntimeError = event.error ?? new Error(event.message);
+      void bridge.record("application-window-error-fallback", {
+        message: event.message,
+        source: event.filename ? event.filename.split("/").pop() : null,
+        line: event.lineno,
+        column: event.colno,
+        error: describeError(event.error),
+      }, "failed", "beacon");
+    });
+    frameWindow.addEventListener("unhandledrejection", (event) => {
+      applicationRuntimeError = event.reason;
+      void bridge.record("application-unhandled-rejection-fallback", {
+        error: describeError(event.reason),
+      }, "failed", "beacon");
+    });
+
+    const status = frameDocument.getElementById("status");
+    let lastStatusSignature = "";
+    const publishStatus = (): void => {
+      const state = frameState(frame);
+      const signature = JSON.stringify({
+        statusText: state.statusText,
+        statusClass: state.statusClass,
+        projectSessionReady: state.projectSessionReady,
+      });
+      if (signature === lastStatusSignature) return;
+      lastStatusSignature = signature;
+      void bridge.record("application-status-changed", state, "running", "beacon");
+    };
+    observer = status ? new MutationObserver(publishStatus) : null;
+    observer?.observe(status!, {
+      attributes: true,
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+    publishStatus();
+
+    const deadline = Date.now() + 120_000;
+    while (Date.now() < deadline) {
+      if (applicationRuntimeError) {
+        throw new Error(
+          `Full application startup raised an uncaught error: ${JSON.stringify(describeError(applicationRuntimeError))}`,
+        );
+      }
+      const state = frameState(frame);
+      const statusText = String(state.statusText ?? "");
+      const statusClass = String(state.statusClass ?? "");
+      if (/\berror\b/.test(statusClass)) {
+        throw new Error(`Full application startup reported an error: ${statusText}`);
+      }
+      const engineReady = /\bok\b/.test(statusClass)
+        && statusText.includes("WebGPU is ready");
+      if (
+        engineReady
+        && state.projectSessionReady === true
+        && bootstrapReady
+        && extensionCreated
+        && engineReport !== null
+      ) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 5_000));
+        if (applicationRuntimeError) {
+          throw new Error(
+            `Full application startup raised a deferred uncaught error: ${JSON.stringify(describeError(applicationRuntimeError))}`,
+          );
+        }
+        const completedState = frameState(frame);
+        const completedStatusText = String(completedState.statusText ?? "");
+        const completedStatusClass = String(completedState.statusClass ?? "");
+        if (
+          !/\bok\b/.test(completedStatusClass)
+          || !completedStatusText.includes("WebGPU is ready")
+          || completedState.projectSessionReady !== true
+          || completedState.runtimeStatsStarted !== true
+          || !bootstrapReady
+          || !extensionCreated
+          || engineReport === null
+        ) {
+          throw new Error(
+            `The application did not remain ready through deferred startup: ${JSON.stringify(completedState)}`,
+          );
+        }
+        if (applicationConsoleErrors.length > 0) {
+          throw new Error(
+            `The application logged errors during startup: ${JSON.stringify(applicationConsoleErrors)}`,
+          );
+        }
+        const observedEngineReport = validateApplicationEngineReport(engineReport);
+        const result = {
+          ...completedState,
+          ...compactFrameResourceSummary(frame),
+          reporter: {
+            channel: APP_FRAME_DIAGNOSTIC_CHANNEL,
+            bootstrapReady,
+            extensionCreated,
+            frameMessageCount,
+          },
+          engine: observedEngineReport,
+          rgba16floatLayerBytes: DIAGNOSTIC_DOCUMENT_WIDTH
+            * DIAGNOSTIC_DOCUMENT_HEIGHT
+            * RGBA16FLOAT_BYTES_PER_PIXEL,
+          deferredStartupObservationMs: 5_000,
+        };
+        await checkpoint("application-boot-completed", result);
+        return result;
+      }
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 400));
+    }
+    throw new Error(
+      `Full application startup timed out. Last state: ${JSON.stringify({
+        ...frameState(frame),
+        bootstrapReady,
+        extensionCreated,
+        engineReportReceived: engineReport !== null,
+        frameMessageCount,
+      })}`,
+    );
+  } finally {
+    observer?.disconnect();
+    window.removeEventListener("message", handleFrameMessage);
+    frame.remove();
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 1_000));
+  }
 }
 
 async function run(): Promise<void> {
@@ -531,11 +903,39 @@ async function run(): Promise<void> {
     build: bridge.build,
     runCodeSuffix: bridge.runCode.slice(-8),
   }, "running", "beacon");
-  await checkpoint("environment-captured", await captureHighEntropyEnvironment());
-  await runDirectWebGpuProbe();
-  await runRealEngineStartup();
+  let applicationBoot: Record<string, unknown>;
+  try {
+    applicationBoot = await runFullApplicationBoot();
+  } catch (applicationError) {
+    await checkpoint("environment-captured-after-app-failure", await captureHighEntropyEnvironment());
+    await checkpoint("application-boot-failed", {
+      error: describeError(applicationError),
+      nextStep: "Run the isolated WebGPU probe after the failed cold application boot.",
+    }, "failed", "beacon");
+    try {
+      await runDirectWebGpuProbe();
+      await bridge.finish("failed", "diagnostic-failed", {
+        conclusion: "The full application startup failed, but the isolated 2048 RGBA16F probe passed.",
+        applicationError: describeError(applicationError),
+        isolatedProbeCompleted: true,
+      });
+    } catch (probeError) {
+      await bridge.finish("failed", "diagnostic-failed", {
+        conclusion: "Both the full application startup and the isolated WebGPU probe failed.",
+        applicationError: describeError(applicationError),
+        isolatedProbeError: describeError(probeError),
+        isolatedProbeCompleted: false,
+      });
+    }
+    return;
+  }
+
+  await checkpoint("environment-captured-after-app-boot", await captureHighEntropyEnvironment());
   await bridge.finish("completed", "diagnostic-completed", {
-    conclusion: "The direct WebGPU probe and the full engine startup both completed.",
+    conclusion: "The cold full application remained ready through its deferred startup window.",
+    documentWidth: DIAGNOSTIC_DOCUMENT_WIDTH,
+    documentHeight: DIAGNOSTIC_DOCUMENT_HEIGHT,
+    applicationBoot,
   });
 }
 

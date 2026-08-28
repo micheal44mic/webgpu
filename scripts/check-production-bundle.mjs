@@ -39,6 +39,7 @@ const forbiddenFileFragments = [
   "engine-lab-operations",
   "human-stroke-lab",
   "group-transform-gpu-test",
+  "gpu-startup-diagnostics",
   "iphone-memory-limit-test",
   "layer-blend-gpu-test",
   "layer-cold-tile-composite-gpu-test",
@@ -71,6 +72,10 @@ const forbiddenContentMarkers = [
   "/api/vector-zoom-runs",
   "__vectorZoomCoverageReport",
   "__vectorZoomStressReport",
+  "gpu-startup-rgba16f-app-boot-v2",
+  "gpu-startup-app-frame-v2",
+  "/api/gpu-startup-diagnostics",
+  "gpuDiagnosticAppFrame",
 ];
 const forbiddenItalianPatterns = [
   {

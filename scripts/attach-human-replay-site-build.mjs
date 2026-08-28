@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cp, readFile, stat } from "node:fs/promises";
+import { copyFile, cp, mkdir, readFile, readdir, stat } from "node:fs/promises";
 
 const labsDirectory = new URL("../dist-labs/", import.meta.url);
 const labsAssetsDirectory = new URL("assets/", labsDirectory);
@@ -10,7 +10,36 @@ const gpuDiagnosticsHtmlFile = new URL("gpu-startup-diagnostics.html", gpuDiagno
 const siteClientDirectory = new URL("../dist/client/", import.meta.url);
 const siteAssetsDirectory = new URL("assets/", siteClientDirectory);
 const siteLabsHtmlFile = new URL("labs.html", siteClientDirectory);
-const siteGpuDiagnosticsHtmlFile = new URL("gpu-startup-diagnostics.html", siteClientDirectory);
+
+async function copyAssetsCollisionSafe(sourceDirectory, destinationDirectory) {
+  await mkdir(destinationDirectory, { recursive: true });
+  for (const entry of await readdir(sourceDirectory, { withFileTypes: true })) {
+    const source = new URL(entry.name + (entry.isDirectory() ? "/" : ""), sourceDirectory);
+    const destination = new URL(
+      entry.name + (entry.isDirectory() ? "/" : ""),
+      destinationDirectory,
+    );
+    if (entry.isDirectory()) {
+      await copyAssetsCollisionSafe(source, destination);
+      continue;
+    }
+    if (!entry.isFile()) {
+      throw new Error(`Unsupported diagnostic asset entry: ${entry.name}`);
+    }
+    const sourceBytes = await readFile(source);
+    let destinationBytes;
+    try {
+      destinationBytes = await readFile(destination);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      await copyFile(source, destination);
+      continue;
+    }
+    if (!sourceBytes.equals(destinationBytes)) {
+      throw new Error(`Diagnostic asset collision has different bytes: ${entry.name}`);
+    }
+  }
+}
 
 await stat(labsHtmlFile);
 await stat(labsAssetsDirectory);
@@ -20,14 +49,13 @@ await stat(siteClientDirectory);
 
 await cp(labsAssetsDirectory, siteAssetsDirectory, { recursive: true, force: true });
 await cp(labsHtmlFile, siteLabsHtmlFile, { force: true });
-await cp(gpuDiagnosticsAssetsDirectory, siteAssetsDirectory, { recursive: true, force: true });
-await cp(gpuDiagnosticsHtmlFile, siteGpuDiagnosticsHtmlFile, { force: true });
+await copyAssetsCollisionSafe(gpuDiagnosticsAssetsDirectory, siteAssetsDirectory);
 
 const labsHtml = await readFile(siteLabsHtmlFile, "utf8");
 assert.match(labsHtml, /src="\.\/assets\/[^\"]+\.js"/);
 assert.match(labsHtml, /href="\.\/assets\/[^\"]+\.css"/);
 
-const gpuDiagnosticsHtml = await readFile(siteGpuDiagnosticsHtmlFile, "utf8");
+const gpuDiagnosticsHtml = await readFile(gpuDiagnosticsHtmlFile, "utf8");
 assert.match(gpuDiagnosticsHtml, /inline-bootstrap-started/);
 assert.match(gpuDiagnosticsHtml, /src="\.\/assets\/[^\"]+\.js"/);
 

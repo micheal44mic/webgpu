@@ -38,6 +38,7 @@ export const verificationScripts = Object.freeze([
   "verify-glass.mjs",
   "verify-grain-phase1.mjs",
   "verify-gpu-memory-panel-controller.mjs",
+  "verify-gpu-startup-diagnostics.mjs",
   "verify-group-transform-ui.mjs",
   "verify-group-transform-engine-runtime.mjs",
   "verify-high-precision-formats.mjs",

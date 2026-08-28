@@ -12,8 +12,11 @@
       (function () {
         "use strict";
 
-        var BUILD = "gpu-startup-rgba16f-probe-v1";
+        var BUILD = "gpu-startup-rgba16f-app-boot-v2";
         var API_URL = "/api/gpu-startup-diagnostics";
+        var MAX_EVENT_COUNT = 24;
+        var MAX_EVENT_DETAIL_BYTES = 1200;
+        var MAX_SNAPSHOT_BYTES = 48 * 1024;
         var params = new URLSearchParams(window.location.search);
         var fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
         var runCode = params.get("run") || "";
@@ -22,10 +25,17 @@
         var sequenceCounter = 0;
         var events = [];
         var currentStatus = "running";
-        var completed = false;
+        var probeFinished = false;
+        var reportStored = false;
         var moduleLoaded = false;
         var latestEventName = "html-ready";
         var latestEventDetail = null;
+        var terminalBody = null;
+        var terminalUploadPromise = null;
+        var terminalUploadRetryAllowed = true;
+        var lastHeartbeatAt = null;
+        var lastHeartbeatCount = 0;
+        var reportingAvailable = Boolean(runCode && writeToken);
 
         if (window.location.hash) {
           window.history.replaceState(null, "", window.location.pathname + window.location.search);
@@ -36,15 +46,108 @@
           return Date.now() * 1000 + sequenceCounter;
         }
 
+        function byteLength(value) {
+          try {
+            return new TextEncoder().encode(value).byteLength;
+          } catch (_) {
+            return unescape(encodeURIComponent(value)).length;
+          }
+        }
+
+        function truncateUtf8(value, maximumBytes) {
+          var text = String(value);
+          if (maximumBytes <= 0) return "";
+          if (byteLength(text) <= maximumBytes) return text;
+          var low = 0;
+          var high = text.length;
+          while (low < high) {
+            var midpoint = Math.ceil((low + high) / 2);
+            if (byteLength(text.slice(0, midpoint)) <= maximumBytes) {
+              low = midpoint;
+            } else {
+              high = midpoint - 1;
+            }
+          }
+          if (low > 0) {
+            var lastCodeUnit = text.charCodeAt(low - 1);
+            if (lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff) low -= 1;
+          }
+          return text.slice(0, low);
+        }
+
+        function redactUrls(value) {
+          return String(value).replace(/\b(?:https?:\/\/|blob:https?:\/\/)[^\s<>"']+/gi, "[url-redacted]");
+        }
+
+        function compactValue(value, depth, seen) {
+          if (value === null || value === undefined) return value === undefined ? null : value;
+          if (typeof value === "boolean") return value;
+          if (typeof value === "number") return Number.isFinite(value) ? value : String(value);
+          if (typeof value === "string") return redactUrls(value).slice(0, 1600);
+          if (typeof value !== "object") return redactUrls(value).slice(0, 1600);
+          if (depth >= 5) return "[depth-limited]";
+          if (seen.indexOf(value) >= 0) return "[circular]";
+          seen.push(value);
+          try {
+            if (Array.isArray(value)) {
+              return value.slice(0, 24).map(function (entry) {
+                return compactValue(entry, depth + 1, seen);
+              });
+            }
+            var result = {};
+            Object.keys(value).slice(0, 48).forEach(function (key) {
+              try {
+                result[key] = compactValue(value[key], depth + 1, seen);
+              } catch (_) {
+                result[key] = "[unreadable]";
+              }
+            });
+            return result;
+          } finally {
+            seen.pop();
+          }
+        }
+
+        function compactDetail(value) {
+          var compacted = compactValue(value === undefined ? null : value, 0, []);
+          var encoded;
+          try {
+            encoded = JSON.stringify(compacted);
+          } catch (_) {
+            return { truncated: true, reason: "unserializable" };
+          }
+          var originalBytes = byteLength(encoded);
+          if (originalBytes <= MAX_EVENT_DETAIL_BYTES) return compacted;
+          var truncated = {
+            truncated: true,
+            originalBytes: originalBytes,
+            preview: truncateUtf8(encoded, 800),
+          };
+          var truncatedBytes = byteLength(JSON.stringify(truncated));
+          while (truncatedBytes > MAX_EVENT_DETAIL_BYTES && truncated.preview) {
+            truncated.preview = truncateUtf8(
+              truncated.preview,
+              Math.max(0, byteLength(truncated.preview) - (truncatedBytes - MAX_EVENT_DETAIL_BYTES) - 16),
+            );
+            truncatedBytes = byteLength(JSON.stringify(truncated));
+          }
+          return truncated;
+        }
+
         function serializeError(value) {
           if (!value) return null;
-          if (typeof value === "string") return { name: "Error", message: value, stack: null };
+          if (typeof value === "string") return { name: "Error", message: redactUrls(value).slice(0, 1024), stack: null };
           var result = {
-            name: typeof value.name === "string" ? value.name : "Error",
-            message: typeof value.message === "string" ? value.message : String(value),
-            stack: typeof value.stack === "string" ? value.stack.slice(0, 12000) : null,
+            name: typeof value.name === "string" ? redactUrls(value.name).slice(0, 120) : "Error",
+            message: redactUrls(typeof value.message === "string" ? value.message : String(value)).slice(0, 1024),
+            stack: typeof value.stack === "string" ? redactUrls(value.stack).slice(0, 2048) : null,
           };
-          if (value.cause && value.cause !== value) result.cause = serializeError(value.cause);
+          if (value.cause && value.cause !== value) {
+            result.cause = {
+              name: typeof value.cause.name === "string" ? redactUrls(value.cause.name).slice(0, 120) : "Error",
+              message: redactUrls(typeof value.cause.message === "string" ? value.cause.message : String(value.cause)).slice(0, 1024),
+            };
+          }
           return result;
         }
 
@@ -96,15 +199,91 @@
             updatedAt: new Date().toISOString(),
             status: currentStatus,
             privacy: "Technical startup data only. No artwork pixels, document text, filenames, clipboard data, project identifiers, or full URLs.",
-            environment: inlineEnvironment(),
-            events: events.slice(-96),
             summary: {
               latestEvent: latestEventName,
               latestDetail: latestEventDetail,
               moduleLoaded: moduleLoaded,
-              completed: completed,
+              probeFinished: probeFinished,
+              lastHeartbeatAt: lastHeartbeatAt,
+              heartbeatCount: lastHeartbeatCount,
             },
+            environment: inlineEnvironment(),
+            events: events.slice(-MAX_EVENT_COUNT),
           };
+        }
+
+        function serializedSnapshot() {
+          var payload = snapshotPayload();
+          var body = JSON.stringify(payload);
+          if (byteLength(body) <= MAX_SNAPSHOT_BYTES) return body;
+          payload.events = payload.events.slice(-12).map(function (event, index, retained) {
+            return {
+              sequence: event.sequence,
+              at: event.at,
+              name: event.name,
+              detail: index === retained.length - 1 ? event.detail : null,
+            };
+          });
+          payload.summary.latestDetail = compactDetail(payload.summary.latestDetail);
+          body = JSON.stringify(payload);
+          if (byteLength(body) <= MAX_SNAPSHOT_BYTES) return body;
+
+          var lastEvent = payload.events[payload.events.length - 1] || {
+            sequence: payload.sequence,
+            at: payload.updatedAt,
+            name: "diagnostic-snapshot-compacted",
+            detail: null,
+          };
+          var minimalPayload = {
+            version: 1,
+            build: BUILD,
+            runCode: truncateUtf8(runCode, 128),
+            writeToken: truncateUtf8(writeToken, 128),
+            sequence: lastEvent.sequence,
+            createdAt: createdAt,
+            updatedAt: payload.updatedAt,
+            status: currentStatus,
+            privacy: "Technical startup data only; no user content.",
+            summary: {
+              latestEvent: lastEvent.name,
+              latestDetail: null,
+              moduleLoaded: moduleLoaded,
+              probeFinished: probeFinished,
+              lastHeartbeatAt: lastHeartbeatAt,
+              heartbeatCount: lastHeartbeatCount,
+              snapshotCompacted: true,
+            },
+            environment: {
+              userAgent: truncateUtf8(navigator.userAgent || "", 512) || null,
+              platform: truncateUtf8(navigator.platform || "", 128) || null,
+              maxTouchPoints: navigator.maxTouchPoints || 0,
+              hardwareConcurrency: navigator.hardwareConcurrency || null,
+              deviceMemoryGiB: navigator.deviceMemory || null,
+              viewportCss: { width: window.innerWidth, height: window.innerHeight },
+              screenCss: window.screen ? {
+                width: window.screen.width,
+                height: window.screen.height,
+                colorDepth: window.screen.colorDepth,
+              } : null,
+              devicePixelRatio: window.devicePixelRatio || 1,
+              secureContext: window.isSecureContext === true,
+            },
+            events: [{
+              sequence: lastEvent.sequence,
+              at: lastEvent.at,
+              name: lastEvent.name,
+              detail: null,
+            }],
+          };
+          body = JSON.stringify(minimalPayload);
+          if (byteLength(body) <= MAX_SNAPSHOT_BYTES) return body;
+
+          minimalPayload.runCode = truncateUtf8(minimalPayload.runCode, 96);
+          minimalPayload.writeToken = truncateUtf8(minimalPayload.writeToken, 96);
+          minimalPayload.privacy = "";
+          minimalPayload.summary = { latestEvent: lastEvent.name };
+          minimalPayload.environment = {};
+          return JSON.stringify(minimalPayload);
         }
 
         function updateSurface() {
@@ -113,15 +292,35 @@
           var code = document.getElementById("diagnosticCode");
           var steps = document.getElementById("diagnosticSteps");
           if (status) {
-            status.dataset.state = currentStatus;
-            status.textContent = completed
-              ? (currentStatus === "completed" ? "Diagnostic complete" : "Diagnostic captured")
-              : "Automatic test running";
+            status.dataset.state = reportStored || (probeFinished && !reportingAvailable)
+              ? currentStatus
+              : (probeFinished && !terminalUploadRetryAllowed ? "interrupted" : "running");
+            if (reportStored) {
+              status.textContent = currentStatus === "completed" ? "Diagnostic complete" : "Diagnostic captured";
+            } else if (!reportingAvailable) {
+              status.textContent = probeFinished
+                ? (currentStatus === "completed" ? "Local diagnostic complete" : "Local diagnostic captured")
+                : "Automatic local test running";
+            } else if (probeFinished && !terminalUploadRetryAllowed) {
+              status.textContent = "Report upload unavailable";
+            } else {
+              status.textContent = probeFinished ? "Finalizing report" : "Automatic test running";
+            }
           }
           if (summary) {
-            summary.textContent = completed
-              ? "The report has been stored. You can close this page."
-              : "Keep this page open. No taps or settings changes are required.";
+            if (reportStored) {
+              summary.textContent = "The report has been stored. You can close this page.";
+            } else if (!reportingAvailable) {
+              summary.textContent = probeFinished
+                ? "The local test has finished. No report was uploaded."
+                : "This test is running locally. No report destination is attached, so nothing will be uploaded.";
+            } else if (probeFinished && !terminalUploadRetryAllowed) {
+              summary.textContent = "The tests finished, but the report could not be uploaded from this page.";
+            } else {
+              summary.textContent = probeFinished
+                ? "The tests have finished. Keep this page open while the report is confirmed."
+                : "Keep this page open. No taps or settings changes are required.";
+            }
           }
           if (code) code.textContent = runCode ? runCode.slice(-8).toUpperCase() : "LOCAL";
           if (steps) {
@@ -134,9 +333,73 @@
           }
         }
 
-        function sendSnapshot(delivery) {
+        async function postSnapshot(body, keepalive, expectedSequence, expectedStatus) {
+          if (typeof window.fetch !== "function") {
+            return { stored: false, retryable: false, status: 0 };
+          }
+          var controller = typeof window.AbortController === "function"
+            ? new window.AbortController()
+            : null;
+          var timeoutId = null;
+          try {
+            var request = window.fetch(API_URL, {
+              method: "POST",
+              body: body,
+              cache: "no-store",
+              credentials: "same-origin",
+              keepalive: keepalive === true,
+              headers: { "Content-Type": "text/plain;charset=UTF-8" },
+              signal: controller ? controller.signal : undefined,
+            });
+            var timeout = new Promise(function (_, reject) {
+              timeoutId = window.setTimeout(function () {
+                if (controller) controller.abort();
+                reject(new Error("Diagnostic upload timed out"));
+              }, 8000);
+            });
+            var response = await Promise.race([request, timeout]);
+            if (!response.ok) {
+              return {
+                stored: false,
+                retryable: response.status === 408
+                  || response.status === 425
+                  || response.status === 429
+                  || response.status >= 500,
+                status: response.status,
+              };
+            }
+            var acknowledgement;
+            try {
+              acknowledgement = await response.json();
+            } catch (_) {
+              return { stored: false, retryable: true, status: response.status };
+            }
+            var stored = Boolean(acknowledgement
+              && acknowledgement.acknowledged === true
+              && acknowledgement.runCode === runCode
+              && acknowledgement.storedStatus === expectedStatus
+              && Number(acknowledgement.storedSequence) >= expectedSequence);
+            return {
+              stored: stored,
+              retryable: !stored,
+              status: response.status,
+            };
+          } catch (_) {
+            return { stored: false, retryable: true, status: 0 };
+          } finally {
+            if (timeoutId !== null) window.clearTimeout(timeoutId);
+          }
+        }
+
+        function sendSnapshot(delivery, fixedBody) {
           if (!runCode || !writeToken) return false;
-          var body = JSON.stringify(snapshotPayload());
+          var body = fixedBody || serializedSnapshot();
+          var payload;
+          try {
+            payload = JSON.parse(body);
+          } catch (_) {
+            return false;
+          }
           if (delivery === "beacon" && navigator.sendBeacon) {
             try {
               if (navigator.sendBeacon(API_URL, new Blob([body], { type: "text/plain;charset=UTF-8" }))) {
@@ -146,44 +409,102 @@
               // Fall through to a keepalive request.
             }
           }
-          if (typeof window.fetch !== "function") return false;
-          try {
-            var request = window.fetch(API_URL, {
-              method: "POST",
-              body: body,
-              cache: "no-store",
-              credentials: "same-origin",
-              keepalive: true,
-              headers: { "Content-Type": "text/plain;charset=UTF-8" },
-            });
-            if (request && typeof request.then === "function") {
-              return request.then(function (response) { return response.ok; }).catch(function () { return false; });
-            }
-            return request;
-          } catch (_) {
-            return false;
+          return postSnapshot(
+            body,
+            delivery === "beacon",
+            Number(payload.sequence),
+            String(payload.status),
+          ).then(function (result) { return result.stored; });
+        }
+
+        function confirmTerminalUpload() {
+          if (!reportingAvailable || !terminalBody || !terminalUploadRetryAllowed) {
+            return Promise.resolve(false);
           }
+          if (terminalUploadPromise) return terminalUploadPromise;
+          terminalUploadPromise = (async function () {
+            var payload;
+            try {
+              payload = JSON.parse(terminalBody);
+            } catch (_) {
+              terminalUploadRetryAllowed = false;
+              return false;
+            }
+            var delays = [0, 500, 1500, 3500];
+            for (var attempt = 0; attempt < delays.length; attempt += 1) {
+              if (delays[attempt] > 0) {
+                await new Promise(function (resolve) { window.setTimeout(resolve, delays[attempt]); });
+              }
+              var result = await postSnapshot(
+                terminalBody,
+                false,
+                Number(payload.sequence),
+                String(payload.status),
+              );
+              if (result.stored) {
+                reportStored = true;
+                updateSurface();
+                return true;
+              }
+              if (!result.retryable) {
+                terminalUploadRetryAllowed = false;
+                updateSurface();
+                return false;
+              }
+            }
+            return false;
+          })().finally(function () {
+            terminalUploadPromise = null;
+          });
+          return terminalUploadPromise;
         }
 
         function record(name, detail, status, delivery) {
           latestEventName = name;
-          latestEventDetail = detail === undefined ? null : detail;
-          if (status && (!completed || status === "failed")) currentStatus = status;
+          latestEventDetail = compactDetail(detail);
+          if (status === "failed") {
+            currentStatus = "failed";
+          } else if (status && !probeFinished && currentStatus !== "failed") {
+            currentStatus = status;
+          }
           events.push({
             sequence: nextSequence(),
             at: new Date().toISOString(),
             name: String(name).slice(0, 96),
-            detail: detail === undefined ? null : detail,
+            detail: latestEventDetail,
           });
-          if (events.length > 96) events.shift();
+          if (events.length > MAX_EVENT_COUNT) events.shift();
           updateSurface();
           return sendSnapshot(delivery || "wait");
         }
 
-        function finish(status, name, detail) {
-          completed = true;
+        async function finish(status, name, detail) {
+          probeFinished = true;
+          if (currentStatus === "failed" && status === "completed") {
+            status = "failed";
+            detail = {
+              conclusion: "A required global diagnostic error was captured before completion.",
+              requestedTerminalEvent: name,
+              precedingEvent: latestEventName,
+              precedingDetail: latestEventDetail,
+            };
+            name = "diagnostic-failed";
+          }
           currentStatus = status;
-          return record(name, detail, status, "wait");
+          latestEventName = name;
+          latestEventDetail = compactDetail(detail);
+          events.push({
+            sequence: nextSequence(),
+            at: new Date().toISOString(),
+            name: String(name).slice(0, 96),
+            detail: latestEventDetail,
+          });
+          if (events.length > MAX_EVENT_COUNT) events.shift();
+          terminalBody = serializedSnapshot();
+          terminalUploadRetryAllowed = true;
+          updateSurface();
+          if (!reportingAvailable) return false;
+          return confirmTerminalUpload();
         }
 
         function setModuleLoaded() {
@@ -225,13 +546,15 @@
         });
 
         window.addEventListener("pagehide", function (event) {
-          if (!completed) {
+          if (!probeFinished) {
             record("page-hidden-before-completion", { persisted: event.persisted === true }, "interrupted", "beacon");
+          } else if (!reportStored && terminalBody && terminalUploadRetryAllowed && !terminalUploadPromise) {
+            sendSnapshot("beacon", terminalBody);
           }
         });
 
         document.addEventListener("visibilitychange", function () {
-          if (!completed && document.visibilityState === "hidden") {
+          if (!probeFinished && document.visibilityState === "hidden") {
             record("document-hidden-before-completion", null, "running", "beacon");
           }
         });
@@ -243,23 +566,29 @@
         }, "running", "beacon");
 
         window.setTimeout(function () {
-          if (!moduleLoaded && !completed) {
+          if (!moduleLoaded && !probeFinished) {
             record("module-start-timeout", { elapsedMs: 20000 }, "failed", "beacon");
           }
         }, 20000);
 
         var heartbeatCount = 0;
         var heartbeat = window.setInterval(function () {
-          if (completed || heartbeatCount >= 12) {
+          if (reportStored || heartbeatCount >= 30) {
+            if (!reportStored && probeFinished && reportingAvailable) {
+              terminalUploadRetryAllowed = false;
+              updateSurface();
+            }
             window.clearInterval(heartbeat);
             return;
           }
           heartbeatCount += 1;
-          record("startup-heartbeat", {
-            count: heartbeatCount,
-            latestEvent: latestEventName,
-            elapsedMs: Date.now() - Date.parse(createdAt),
-          }, currentStatus, "beacon");
+          lastHeartbeatCount = heartbeatCount;
+          lastHeartbeatAt = new Date().toISOString();
+          if (probeFinished && terminalBody) {
+            void confirmTerminalUpload();
+            return;
+          }
+          sendSnapshot("beacon");
         }, 5000);
       })();
     </script>
@@ -396,6 +725,17 @@
         pointer-events: none;
       }
 
+      .application-probe {
+        position: fixed;
+        left: -420px;
+        top: 0;
+        width: 360px;
+        height: 640px;
+        border: 0;
+        opacity: 0.01;
+        pointer-events: none;
+      }
+
       @keyframes pulse {
         70% { box-shadow: 0 0 0 0.6rem rgba(255, 122, 26, 0); }
         100% { box-shadow: 0 0 0 0 rgba(255, 122, 26, 0); }
@@ -427,7 +767,13 @@
       </section>
     </main>
     <canvas id="gpuDiagnosticProbeCanvas" class="probe-canvas" width="64" height="64"></canvas>
-    <canvas id="gpuDiagnosticEngineCanvas" class="probe-canvas" width="64" height="64"></canvas>
+    <iframe
+      id="gpuDiagnosticAppFrame"
+      class="application-probe"
+      title="Isolated application startup probe"
+      aria-hidden="true"
+      tabindex="-1"
+    ></iframe>
     <noscript>This diagnostic requires JavaScript. The server has still recorded that the page was reached.</noscript>
     <script type="module" src="/src/labs/gpu-startup-diagnostics.ts"></script>
   </body>

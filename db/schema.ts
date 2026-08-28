@@ -67,6 +67,9 @@ export interface GpuStartupDiagnosticRunRecord {
   expiresAt: string;
   status: "html-requested" | "running" | "completed" | "failed" | "interrupted";
   sequence: number;
+  latestEvent: string;
+  resultSummary: string;
+  payloadBytes: number;
   payloadJson: string;
 }
 
@@ -79,6 +82,9 @@ CREATE TABLE IF NOT EXISTS gpu_startup_diagnostic_runs (
   expires_at TEXT NOT NULL,
   status TEXT NOT NULL,
   sequence INTEGER NOT NULL,
+  latest_event TEXT NOT NULL DEFAULT 'html-requested',
+  result_summary TEXT NOT NULL DEFAULT '',
+  payload_bytes INTEGER NOT NULL DEFAULT 0,
   payload_json TEXT NOT NULL
 )
 `;

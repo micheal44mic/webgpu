@@ -8,7 +8,7 @@
     "labs:dev": "vite --mode labs --host 0.0.0.0",
     "gpu-diagnostics:dev": "vite --mode gpu-diagnostics --host 0.0.0.0",
     "typecheck": "tsc --noEmit",
-    "build:bundle": "npm run gpu-diagnostics:build && vite build && node scripts/check-production-bundle.mjs && node scripts/prepare-sites-build.mjs && node scripts/check-sites-asset-cache-build.mjs",
+    "build:bundle": "npm run gpu-diagnostics:build && vite build && node scripts/check-production-bundle.mjs && node scripts/prepare-sites-build.mjs && node scripts/verify-gpu-startup-diagnostics.mjs --require-build && node scripts/check-sites-asset-cache-build.mjs",
     "labs:build": "vite build --mode labs",
     "gpu-diagnostics:build": "vite build --mode gpu-diagnostics",
     "sites:build-with-human-replay": "npm run build && npm run labs:build && node scripts/attach-human-replay-site-build.mjs",

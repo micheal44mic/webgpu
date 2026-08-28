@@ -9,6 +9,40 @@ const gpuStartupDiagnosticHtmlFile = new URL(
   "../dist-gpu-diagnostics/gpu-startup-diagnostics.html",
   import.meta.url,
 );
+const gpuStartupDiagnosticAssetsDirectory = new URL(
+  "../dist-gpu-diagnostics/assets/",
+  import.meta.url,
+);
+
+async function copyAssetsCollisionSafe(sourceDirectory, destinationDirectory) {
+  await mkdir(destinationDirectory, { recursive: true });
+  for (const entry of await readdir(sourceDirectory, { withFileTypes: true })) {
+    const source = new URL(entry.name + (entry.isDirectory() ? "/" : ""), sourceDirectory);
+    const destination = new URL(
+      entry.name + (entry.isDirectory() ? "/" : ""),
+      destinationDirectory,
+    );
+    if (entry.isDirectory()) {
+      await copyAssetsCollisionSafe(source, destination);
+      continue;
+    }
+    if (!entry.isFile()) {
+      throw new Error(`Unsupported diagnostic asset entry: ${entry.name}`);
+    }
+    const sourceBytes = await readFile(source);
+    let destinationBytes;
+    try {
+      destinationBytes = await readFile(destination);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      await copyFile(source, destination);
+      continue;
+    }
+    if (!sourceBytes.equals(destinationBytes)) {
+      throw new Error(`Diagnostic asset collision has different bytes: ${entry.name}`);
+    }
+  }
+}
 
 await mkdir(clientDirectory, { recursive: true });
 
@@ -22,6 +56,11 @@ for (const entry of await readdir(distDirectory, { withFileTypes: true })) {
     new URL(entry.name, clientDirectory),
   );
 }
+
+await copyAssetsCollisionSafe(
+  gpuStartupDiagnosticAssetsDirectory,
+  new URL("assets/", clientDirectory),
+);
 
 await mkdir(serverDirectory, { recursive: true });
 await mkdir(hostingDirectory, { recursive: true });
@@ -39,11 +78,189 @@ const indexHtml = (await readFile(indexHtmlFile, "utf8")).replace(/\r\n?/g, "\n"
 const gpuStartupDiagnosticHtml = (
   await readFile(gpuStartupDiagnosticHtmlFile, "utf8")
 ).replace(/\r\n?/g, "\n");
+const gpuStartupAppFrameBootstrap = String.raw`<script>
+(function () {
+  "use strict";
+
+  var CHANNEL = "gpu-startup-app-frame-v2";
+  var MAX_STRING_LENGTH = 1200;
+  var originalConsoleError = console.error;
+
+  function clippedString(value, maximumLength) {
+    var text;
+    try {
+      text = String(value);
+    } catch (_error) {
+      text = "[unprintable]";
+    }
+    text = text.replace(/\b(?:https?:\/\/|blob:https?:\/\/)[^\s<>"']+/gi, function () {
+      return "[url-redacted]";
+    });
+    return text.length <= maximumLength
+      ? text
+      : text.slice(0, maximumLength) + "...[truncated]";
+  }
+
+  function finiteNumber(value) {
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  }
+
+  function errorDetail(error) {
+    if (error instanceof Error) {
+      return {
+        name: clippedString(error.name || "Error", 120),
+        message: clippedString(error.message || String(error), MAX_STRING_LENGTH),
+        stack: typeof error.stack === "string"
+          ? clippedString(error.stack, 2400)
+          : null,
+      };
+    }
+    return {
+      name: null,
+      message: clippedString(error, MAX_STRING_LENGTH),
+      stack: null,
+    };
+  }
+
+  function safeValue(value, depth) {
+    if (value === null || value === undefined) return value === null ? null : "undefined";
+    if (typeof value === "string") return clippedString(value, MAX_STRING_LENGTH);
+    if (typeof value === "number") return Number.isFinite(value) ? value : String(value);
+    if (typeof value === "boolean") return value;
+    if (value instanceof Error) return errorDetail(value);
+    if (depth >= 2) return clippedString(value, MAX_STRING_LENGTH);
+    if (Array.isArray(value)) {
+      return value.slice(0, 8).map(function (entry) {
+        return safeValue(entry, depth + 1);
+      });
+    }
+    if (typeof value === "object") {
+      var result = {};
+      var keys;
+      try {
+        keys = Object.keys(value).slice(0, 12);
+      } catch (_error) {
+        return "[uninspectable object]";
+      }
+      keys.forEach(function (key) {
+        try {
+          result[clippedString(key, 120)] = safeValue(value[key], depth + 1);
+        } catch (_error) {
+          result[clippedString(key, 120)] = "[unavailable]";
+        }
+      });
+      return result;
+    }
+    return clippedString(value, MAX_STRING_LENGTH);
+  }
+
+  function emit(type, detail) {
+    if (window.parent === window) return;
+    try {
+      window.parent.postMessage({
+        channel: CHANNEL,
+        type: type,
+        detail: safeValue(detail, 0),
+      }, window.location.origin);
+    } catch (_error) {
+      // Reporting must never alter the editor bootstrap path.
+    }
+  }
+
+  window.addEventListener("error", function (event) {
+    emit("window-error", {
+      message: clippedString(event.message || "Window error", MAX_STRING_LENGTH),
+      filename: clippedString(event.filename || "", 600),
+      line: finiteNumber(event.lineno),
+      column: finiteNumber(event.colno),
+      error: event.error ? errorDetail(event.error) : null,
+    });
+  }, true);
+
+  window.addEventListener("unhandledrejection", function (event) {
+    emit("unhandled-rejection", {
+      reason: errorDetail(event.reason),
+    });
+  }, true);
+
+  console.error = function () {
+    var argumentsList = Array.prototype.slice.call(arguments, 0, 8);
+    try {
+      Reflect.apply(originalConsoleError, console, arguments);
+    } finally {
+      emit("console-error", {
+        arguments: argumentsList.map(function (entry) {
+          return safeValue(entry, 0);
+        }),
+      });
+    }
+  };
+
+  window.__editorExtensionBootstrap = {
+    restorePersistedBrushOnStartup: true,
+    create: function (host) {
+      emit("extension-created", {});
+      return {
+        isBusy: function () {
+          return false;
+        },
+        syncControls: function () {},
+        afterEngineInitialized: async function () {
+          var engine = host.engine;
+          var stats = engine.getStats();
+          var storage = stats.layerStorageStudy || {};
+          var gpuMemory = stats.gpuMemory || {};
+          emit("engine-ready", {
+            documentWidth: finiteNumber(engine.documentWidth),
+            documentHeight: finiteNumber(engine.documentHeight),
+            layerFormat: typeof stats.layerFormat === "string"
+              ? stats.layerFormat
+              : clippedString(engine.layerFormat, 80),
+            canvasFormat: clippedString(engine.canvasFormat, 80),
+            layerCount: finiteNumber(stats.layerCount),
+            layerMemoryMiB: finiteNumber(stats.layerMemoryMiB),
+            storage: {
+              bytesPerPixel: finiteNumber(storage.bytesPerPixel),
+              fullLayerMiB: finiteNumber(storage.fullLayerMiB),
+              eagerFullRawMiB: finiteNumber(storage.eagerFullRawMiB),
+              actualRawMiB: finiteNumber(storage.actualRawMiB),
+              tileSizePx: finiteNumber(storage.tileSizePx),
+              tileCount: finiteNumber(storage.tileCount),
+            },
+            gpu: {
+              label: clippedString(stats.gpuLabel || "", 300),
+              countedTotalMiB: finiteNumber(gpuMemory.countedTotalMiB),
+              registeredCurrentMiB: finiteNumber(gpuMemory.registeredCurrentMiB),
+            },
+          });
+        },
+        handleEngineInitializationError: function (error) {
+          emit("engine-error", errorDetail(error));
+        },
+      };
+    },
+  };
+
+  emit("bootstrap-ready", {
+    secureContext: window.isSecureContext,
+    visibilityState: document.visibilityState,
+    restorePersistedBrushOnStartup: true,
+  });
+}());
+</script>`;
+const gpuStartupAppFrameHtml = indexHtml.replace(
+  /(?=<script\s+type="module"(?=\s|>))/,
+  `${gpuStartupAppFrameBootstrap}\n`,
+);
+if (gpuStartupAppFrameHtml === indexHtml) {
+  throw new Error("The diagnostic app-frame bootstrap insertion point is unavailable.");
+}
 await writeFile(indexHtmlFile, indexHtml);
 await writeFile(
   workerFile,
   `const INDEX_HTML = ${JSON.stringify(indexHtml)};
 const GPU_STARTUP_DIAGNOSTIC_HTML = ${JSON.stringify(gpuStartupDiagnosticHtml)};
+const GPU_STARTUP_APP_FRAME_HTML = ${JSON.stringify(gpuStartupAppFrameHtml)};
 const HUMAN_STROKE_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS human_stroke_benchmark (id TEXT PRIMARY KEY NOT NULL CHECK (id = 'canonical'), payload_json TEXT NOT NULL, captured_at TEXT NOT NULL)";
 const HUMAN_STROKE_ID = "canonical";
 const HUMAN_STROKE_PRESET_REVISION = 4;
@@ -59,14 +276,15 @@ const LAYER_COMPRESSION_INDEX_SQL = "CREATE INDEX IF NOT EXISTS layer_compressio
 const VECTOR_ZOOM_C_STRATEGY = "ten-semantic-text-dual-gpu-fallback-auto-post-raster-window2-roi-aware-zoom8-to-0.3-v7";
 const VECTOR_ZOOM_RUNS_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS vector_zoom_runs (run_code TEXT PRIMARY KEY NOT NULL, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)";
 const VECTOR_ZOOM_RUN_CODE = /^[2-9A-HJ-NP-Z]{8}$/;
-const GPU_STARTUP_DIAGNOSTIC_BUILD = "gpu-startup-rgba16f-probe-v1";
-const GPU_STARTUP_DIAGNOSTIC_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS gpu_startup_diagnostic_runs (run_code TEXT PRIMARY KEY NOT NULL, write_token_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, expires_at TEXT NOT NULL, status TEXT NOT NULL, sequence INTEGER NOT NULL, payload_json TEXT NOT NULL)";
+const GPU_STARTUP_DIAGNOSTIC_BUILD = "gpu-startup-rgba16f-app-boot-v2";
+const GPU_STARTUP_DIAGNOSTIC_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS gpu_startup_diagnostic_runs (run_code TEXT PRIMARY KEY NOT NULL, write_token_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, expires_at TEXT NOT NULL, status TEXT NOT NULL, sequence INTEGER NOT NULL, latest_event TEXT NOT NULL DEFAULT 'html-requested', result_summary TEXT NOT NULL DEFAULT '', payload_bytes INTEGER NOT NULL DEFAULT 0, payload_json TEXT NOT NULL)";
 const GPU_STARTUP_DIAGNOSTIC_INDEX_SQL = "CREATE INDEX IF NOT EXISTS gpu_startup_diagnostic_runs_expires_at_idx ON gpu_startup_diagnostic_runs (expires_at)";
 const GPU_STARTUP_DIAGNOSTIC_RUN_CODE = /^diag-[a-f0-9]{32}$/;
 const GPU_STARTUP_DIAGNOSTIC_WRITE_TOKEN = /^[a-f0-9]{64}$/;
 const GPU_STARTUP_DIAGNOSTIC_STATUSES = new Set(["running", "completed", "failed", "interrupted"]);
 const GPU_STARTUP_DIAGNOSTIC_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 const GPU_STARTUP_DIAGNOSTIC_PAGE_PATH = "/gpu-startup-lab";
+const GPU_STARTUP_APP_FRAME_PATH = "/gpu-startup-app-frame";
 const VECTOR_ZOOM_CHECK_NAMES = [
   "exactlyTenDistributedTexts",
   "fixedFastZoomOutCompleted",
@@ -821,6 +1039,16 @@ function normalizeGpuStartupDiagnosticPayload(payload) {
     "summary",
   ]);
   if (Object.keys(payload).some((key) => !allowedKeys.has(key))) return null;
+  const eventsValid = Array.isArray(payload.events)
+    && payload.events.length >= 1
+    && payload.events.length <= 24
+    && payload.events.every(validGpuStartupDiagnosticEvent)
+    && payload.events.every((event, index) => (
+      index === 0 || event.sequence > payload.events[index - 1].sequence
+    ));
+  const lastEvent = eventsValid ? payload.events[payload.events.length - 1] : null;
+  const summaryJson = isRecord(payload.summary) ? JSON.stringify(payload.summary) : "";
+  const environmentJson = isRecord(payload.environment) ? JSON.stringify(payload.environment) : "";
   if (
     payload.version !== 1
     || payload.build !== GPU_STARTUP_DIAGNOSTIC_BUILD
@@ -836,11 +1064,13 @@ function normalizeGpuStartupDiagnosticPayload(payload) {
     || typeof payload.privacy !== "string"
     || payload.privacy.length > 400
     || !isRecord(payload.environment)
-    || !Array.isArray(payload.events)
-    || payload.events.length < 1
-    || payload.events.length > 96
-    || !payload.events.every(validGpuStartupDiagnosticEvent)
+    || new TextEncoder().encode(environmentJson).byteLength > 8 * 1024
+    || !eventsValid
     || !isRecord(payload.summary)
+    || new TextEncoder().encode(summaryJson).byteLength > 8 * 1024
+    || typeof payload.summary.latestEvent !== "string"
+    || payload.summary.latestEvent !== lastEvent?.name
+    || payload.sequence !== lastEvent?.sequence
   ) {
     return null;
   }
@@ -901,11 +1131,23 @@ async function recordGpuStartupDiagnosticPageRequest(request, env) {
       },
     },
     events: [{ sequence: 0, at: createdAt, name: "html-requested", detail: null }],
-    summary: { latestEvent: "html-requested", moduleLoaded: false, completed: false },
+    summary: {
+      latestEvent: "html-requested",
+      moduleLoaded: false,
+      probeFinished: false,
+    },
   };
+  const payloadJson = JSON.stringify(payload);
   await env.DB
-    .prepare("INSERT OR IGNORE INTO gpu_startup_diagnostic_runs (run_code, write_token_hash, created_at, updated_at, expires_at, status, sequence, payload_json) VALUES (?1, '', ?2, ?2, ?3, 'html-requested', 0, ?4)")
-    .bind(runCode, createdAt, expiresAt, JSON.stringify(payload))
+    .prepare("INSERT OR IGNORE INTO gpu_startup_diagnostic_runs (run_code, write_token_hash, created_at, updated_at, expires_at, status, sequence, latest_event, result_summary, payload_bytes, payload_json) VALUES (?1, '', ?2, ?2, ?3, 'html-requested', 0, 'html-requested', ?4, ?5, ?6)")
+    .bind(
+      runCode,
+      createdAt,
+      expiresAt,
+      JSON.stringify(payload.summary),
+      new TextEncoder().encode(payloadJson).byteLength,
+      payloadJson,
+    )
     .run();
   await deleteExpiredGpuStartupDiagnostics(env.DB, createdAt);
 }
@@ -940,14 +1182,22 @@ async function handleGpuStartupDiagnostics(request, env) {
   await ensureGpuStartupDiagnosticSchema(env.DB);
   const tokenHash = await sha256Hex(payload.writeToken);
   const existing = await env.DB
-    .prepare("SELECT write_token_hash, created_at, sequence FROM gpu_startup_diagnostic_runs WHERE run_code = ?1")
+    .prepare("SELECT write_token_hash, created_at, sequence, status, latest_event, payload_bytes FROM gpu_startup_diagnostic_runs WHERE run_code = ?1")
     .bind(payload.runCode)
     .first();
   if (existing?.write_token_hash && existing.write_token_hash !== tokenHash) {
     return jsonResponse({ error: "Diagnostic write capability is invalid." }, 403);
   }
   if (existing && Number(existing.sequence) > payload.sequence) {
-    return jsonResponse({ runCode: payload.runCode, stale: true, sequence: Number(existing.sequence) }, 202);
+    return jsonResponse({
+      acknowledged: true,
+      runCode: payload.runCode,
+      storedStatus: existing.status,
+      storedSequence: Number(existing.sequence),
+      latestEvent: existing.latest_event,
+      payloadBytes: Number(existing.payload_bytes),
+      stale: true,
+    }, 200);
   }
 
   const serverNow = new Date().toISOString();
@@ -963,17 +1213,20 @@ async function handleGpuStartupDiagnostics(request, env) {
     serverUpdatedAt: serverNow,
     status: payload.status,
     privacy: payload.privacy,
+    summary: payload.summary,
     environment: payload.environment,
     events: payload.events,
-    summary: payload.summary,
   };
   const storedJson = JSON.stringify(storedPayload);
-  if (storedJson.length > 64 * 1024) {
+  const storedBytes = new TextEncoder().encode(storedJson).byteLength;
+  if (storedBytes > 64 * 1024) {
     return jsonResponse({ error: "Diagnostic payload is too large." }, 413);
   }
+  const latestEvent = payload.events[payload.events.length - 1].name;
+  const resultSummary = JSON.stringify(payload.summary);
 
-  await env.DB
-    .prepare("INSERT INTO gpu_startup_diagnostic_runs (run_code, write_token_hash, created_at, updated_at, expires_at, status, sequence, payload_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT(run_code) DO UPDATE SET write_token_hash = CASE WHEN gpu_startup_diagnostic_runs.write_token_hash = '' THEN excluded.write_token_hash ELSE gpu_startup_diagnostic_runs.write_token_hash END, updated_at = excluded.updated_at, expires_at = excluded.expires_at, status = excluded.status, sequence = excluded.sequence, payload_json = excluded.payload_json WHERE excluded.sequence >= gpu_startup_diagnostic_runs.sequence")
+  const writeResult = await env.DB
+    .prepare("INSERT INTO gpu_startup_diagnostic_runs (run_code, write_token_hash, created_at, updated_at, expires_at, status, sequence, latest_event, result_summary, payload_bytes, payload_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) ON CONFLICT(run_code) DO UPDATE SET write_token_hash = CASE WHEN gpu_startup_diagnostic_runs.write_token_hash = '' THEN excluded.write_token_hash ELSE gpu_startup_diagnostic_runs.write_token_hash END, updated_at = excluded.updated_at, expires_at = excluded.expires_at, status = excluded.status, sequence = excluded.sequence, latest_event = excluded.latest_event, result_summary = excluded.result_summary, payload_bytes = excluded.payload_bytes, payload_json = excluded.payload_json WHERE (gpu_startup_diagnostic_runs.write_token_hash = '' OR gpu_startup_diagnostic_runs.write_token_hash = excluded.write_token_hash) AND excluded.sequence >= gpu_startup_diagnostic_runs.sequence AND (gpu_startup_diagnostic_runs.status NOT IN ('completed', 'failed') OR excluded.status IN ('completed', 'failed'))")
     .bind(
       payload.runCode,
       tokenHash,
@@ -982,14 +1235,40 @@ async function handleGpuStartupDiagnostics(request, env) {
       expiresAt,
       payload.status,
       payload.sequence,
+      latestEvent,
+      resultSummary,
+      storedBytes,
       storedJson,
     )
     .run();
+  const stored = await env.DB
+    .prepare("SELECT write_token_hash, status, sequence, latest_event, payload_bytes FROM gpu_startup_diagnostic_runs WHERE run_code = ?1")
+    .bind(payload.runCode)
+    .first();
+  if (!stored) {
+    return jsonResponse({ error: "Diagnostic acknowledgement is unavailable." }, 503);
+  }
+  if (stored.write_token_hash !== tokenHash) {
+    return jsonResponse({ error: "Diagnostic write capability is invalid." }, 403);
+  }
+  const retainedTerminalStatus = (stored.status === "completed" || stored.status === "failed")
+    && payload.status !== "completed"
+    && payload.status !== "failed";
+  if (
+    Number(writeResult?.meta?.changes ?? 0) === 0
+    && Number(stored.sequence) < payload.sequence
+    && !retainedTerminalStatus
+  ) {
+    return jsonResponse({ error: "Diagnostic acknowledgement is unavailable." }, 503);
+  }
   await deleteExpiredGpuStartupDiagnostics(env.DB, serverNow);
   return jsonResponse({
+    acknowledged: true,
     runCode: payload.runCode,
-    status: payload.status,
-    sequence: payload.sequence,
+    storedStatus: stored.status,
+    storedSequence: Number(stored.sequence),
+    latestEvent: stored.latest_event,
+    payloadBytes: Number(stored.payload_bytes),
     storedAt: serverNow,
   }, 201);
 }
@@ -1041,6 +1320,27 @@ export default {
           "Cloudflare-CDN-Cache-Control": "no-store",
           "Referrer-Policy": "no-referrer",
           "X-Content-Type-Options": "nosniff",
+        },
+      });
+    }
+
+    if (
+      (request.method === "GET" || request.method === "HEAD")
+      && url.pathname === GPU_STARTUP_APP_FRAME_PATH
+      && url.searchParams.get("diagnosticBoot") === "1"
+    ) {
+      return new Response(request.method === "HEAD" ? null : GPU_STARTUP_APP_FRAME_HTML, {
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "private, no-store, max-age=0",
+          "CDN-Cache-Control": "no-store",
+          "Cloudflare-CDN-Cache-Control": "no-store",
+          "Content-Security-Policy": "frame-ancestors 'self'",
+          "Cross-Origin-Resource-Policy": "same-origin",
+          "Referrer-Policy": "no-referrer",
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-Robots-Tag": "noindex, noarchive",
         },
       });
     }
