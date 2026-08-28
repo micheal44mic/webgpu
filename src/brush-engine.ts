@@ -594,9 +594,12 @@ import type {
   ThicknessTailFrame,
 } from "./engine-stroke-types";
 import {
+  normalizeStrokeSymmetryAngleRadians,
   normalizeStrokeSymmetryMode,
-  strokeSymmetryModeForStampBatch,
+  strokeSymmetryCopiesIntersectDocument,
   strokeSymmetryPhysicalCopyCount,
+  strokeSymmetryTransformForStampBatch,
+  resolvedStrokeSymmetryAngleRadians,
   type StrokeSymmetryMode,
 } from "./stroke-symmetry-core";
 export type { StrokeSymmetryMode } from "./stroke-symmetry-core";
@@ -1816,6 +1819,7 @@ export class BrushEngine {
 
   settings: BrushSettings = { ...defaultBrushSettings };
   private strokeSymmetryMode: StrokeSymmetryMode = "off";
+  private strokeSymmetryAngleRadians = Math.PI * 0.5;
   /** A selected brush is not paint-ready until this submit's GPU fence resolves. */
   brushGpuWarmupPromise: Promise<void> | null = null;
   private readonly completedBrushGpuWarmupKeys = new Set<string>();
@@ -2605,6 +2609,19 @@ export class BrushEngine {
   /** Applies to new Paint/Erase gestures; the active gesture keeps its snapshot. */
   setStrokeSymmetryMode(mode: StrokeSymmetryMode): void {
     this.strokeSymmetryMode = normalizeStrokeSymmetryMode(mode);
+    this.strokeSymmetryAngleRadians = resolvedStrokeSymmetryAngleRadians(
+      this.strokeSymmetryMode,
+      this.strokeSymmetryAngleRadians,
+    );
+  }
+
+  /** Applies to new Paint/Erase gestures; the active gesture keeps its snapshot. */
+  setStrokeSymmetry(enabled: boolean, angleDegrees: number): void {
+    this.strokeSymmetryMode = enabled ? "angle" : "off";
+    this.strokeSymmetryAngleRadians = normalizeStrokeSymmetryAngleRadians(
+      angleDegrees * Math.PI / 180,
+      this.strokeSymmetryAngleRadians,
+    );
   }
 
   getRasterStrokeStyle(): RasterStrokeStyle {
@@ -4404,6 +4421,7 @@ export class BrushEngine {
   beginDeferredStroke(
     sample: PointerSample,
     symmetryModeOverride: StrokeSymmetryMode | null = null,
+    symmetryAngleRadiansOverride: number | null = null,
   ): boolean {
     if (this.settings.tool === "blend") {
       return this.beginStroke(sample);
@@ -4413,6 +4431,7 @@ export class BrushEngine {
       true,
       null,
       symmetryModeOverride,
+      symmetryAngleRadiansOverride,
     );
   }
 
@@ -4427,6 +4446,7 @@ export class BrushEngine {
     deferredPreview = false,
     cloneConfiguration: Readonly<CloneStrokeConfiguration> | null = null,
     symmetryModeOverride: StrokeSymmetryMode | null = null,
+    symmetryAngleRadiansOverride: number | null = null,
   ): boolean {
     const renderSettings = cloneConfiguration
       ? cloneSettingsForCurrentBrush(this.settings)
@@ -4599,6 +4619,12 @@ export class BrushEngine {
       && (tool === "paint" || tool === "erase")
       ? normalizeStrokeSymmetryMode(symmetryModeOverride ?? this.strokeSymmetryMode)
       : "off";
+    const symmetryAngleRadians = resolvedStrokeSymmetryAngleRadians(
+      symmetryMode,
+      symmetryModeOverride === null
+        ? this.strokeSymmetryAngleRadians
+        : symmetryAngleRadiansOverride ?? undefined,
+    );
     const lightGlazeSettings = usesStrokeGlazeRenderer(renderSettings)
       ? { ...renderSettings }
       : null;
@@ -4701,6 +4727,7 @@ export class BrushEngine {
       tool,
       renderSettings,
       symmetryMode,
+      symmetryAngleRadians,
       lastInput: normalizedPoint,
       startedAtMs: normalizedPoint.timeMs,
       thicknessSettings,
@@ -4913,7 +4940,11 @@ export class BrushEngine {
         sourceUndone = false;
         return false;
       }
-      if (!this.beginDeferredStroke(samples[0], sourceStroke.symmetryMode)) {
+      if (!this.beginDeferredStroke(
+        samples[0],
+        sourceStroke.symmetryMode,
+        sourceStroke.symmetryAngleRadians,
+      )) {
         if (!await this.redoStraightLineSourceAction(sourceActionId)) {
           throw new Error("The original stroke could not be restored after Quick Line setup failed.");
         }
@@ -11771,6 +11802,7 @@ export class BrushEngine {
   writeBrushUniforms(
     settings: BrushSettings = this.settings,
     symmetryMode: StrokeSymmetryMode = "off",
+    symmetryAngleRadians = resolvedStrokeSymmetryAngleRadians(symmetryMode),
   ): void {
     populateBrushUniformUpload(
       this.brushUniformUpload,
@@ -11780,6 +11812,7 @@ export class BrushEngine {
       0,
       0,
       symmetryMode,
+      symmetryAngleRadians,
     );
     this.device.queue.writeBuffer(this.brushUniformBuffer, 0, this.brushUniformUpload);
   }
@@ -11791,6 +11824,7 @@ export class BrushEngine {
     targetOriginX: number,
     targetOriginY: number,
     symmetryMode: StrokeSymmetryMode,
+    symmetryAngleRadians: number,
   ): void {
     populateBrushUniformUpload(
       this.thicknessTailBrushUniformUpload,
@@ -11800,6 +11834,7 @@ export class BrushEngine {
       targetOriginX,
       targetOriginY,
       symmetryMode,
+      symmetryAngleRadians,
     );
     this.device.queue.writeBuffer(
       this.thicknessTailBrushUniformBuffer,
@@ -12339,6 +12374,7 @@ export class BrushEngine {
         directionY: 0,
         historyActionId: 0,
         symmetryMode: "off",
+        symmetryAngleRadians: 0,
       };
       this.stabilizationPreviewStamps[index] = stamp;
     }
@@ -12394,6 +12430,7 @@ export class BrushEngine {
       target.directionY = candidate.stamp.directionY;
       target.historyActionId = candidate.stamp.historyActionId;
       target.symmetryMode = candidate.stamp.symmetryMode;
+      target.symmetryAngleRadians = candidate.stamp.symmetryAngleRadians;
       stampCount += 1;
     }
 
@@ -12444,12 +12481,17 @@ export class BrushEngine {
       const jitterReach = radius * 2 * (
         settings.positionJitterLinear + settings.positionJitterLateral
       );
-      if (
-        pointX + radius + jitterReach < 0
-        || pointY + radius + jitterReach < 0
-        || pointX - radius - jitterReach >= DOCUMENT_WIDTH
-        || pointY - radius - jitterReach >= DOCUMENT_HEIGHT
-      ) {
+      const conservativeReach = radius + jitterReach;
+      if (!strokeSymmetryCopiesIntersectDocument(
+        pointX,
+        pointY,
+        conservativeReach,
+        conservativeReach,
+        stroke.symmetryMode,
+        DOCUMENT_WIDTH,
+        DOCUMENT_HEIGHT,
+        stroke.symmetryAngleRadians,
+      )) {
         return;
       }
       if (stampCount >= MAX_STAMPS_PER_BATCH) {
@@ -12465,6 +12507,7 @@ export class BrushEngine {
       stamp.directionY = directionY;
       stamp.historyActionId = stroke.historyActionId;
       stamp.symmetryMode = stroke.symmetryMode;
+      stamp.symmetryAngleRadians = stroke.symmetryAngleRadians;
       stampCount += 1;
     };
 
@@ -12547,7 +12590,7 @@ export class BrushEngine {
       ...settings,
       opacity: intenseBlending ? settings.opacity : 1,
       blendMode: "normal",
-    }, DOCUMENT_WIDTH, DOCUMENT_HEIGHT, 0, 0, stroke.symmetryMode);
+    }, DOCUMENT_WIDTH, DOCUMENT_HEIGHT, 0, 0, stroke.symmetryMode, stroke.symmetryAngleRadians);
     this.device.queue.writeBuffer(
       this.thicknessTailInstanceBuffer,
       0,
@@ -12558,6 +12601,7 @@ export class BrushEngine {
     return {
       settings,
       symmetryMode: stroke.symmetryMode,
+      symmetryAngleRadians: stroke.symmetryAngleRadians,
       stampCount,
       dirtyRect: packed.dirtyRect,
       shapeOccupancySelection: settings.shape === "shape"
@@ -12645,6 +12689,7 @@ export class BrushEngine {
       return {
         settings,
         symmetryMode: stroke.symmetryMode,
+        symmetryAngleRadians: stroke.symmetryAngleRadians,
         stamps: [],
         dirtyRect: { ...preview.presentedRect },
         presentedRect: { ...preview.presentedRect },
@@ -12781,6 +12826,7 @@ export class BrushEngine {
       originX,
       originY,
       stroke.symmetryMode,
+      stroke.symmetryAngleRadians,
     );
     // Mode 2 means that the patch already contains the permanent pixels and
     // replaces them verbatim. This is what makes Erase a real live preview.
@@ -12801,6 +12847,7 @@ export class BrushEngine {
     return {
       settings,
       symmetryMode: stroke.symmetryMode,
+      symmetryAngleRadians: stroke.symmetryAngleRadians,
       stamps,
       dirtyRect,
       presentedRect,
@@ -12864,6 +12911,7 @@ export class BrushEngine {
       packed.dirtyRect.x,
       packed.dirtyRect.y,
       stroke.symmetryMode,
+      stroke.symmetryAngleRadians,
     );
     this.writeThicknessTailDisplayUniforms(
       packed.dirtyRect.x,
@@ -12881,6 +12929,7 @@ export class BrushEngine {
     return {
       settings,
       symmetryMode: stroke.symmetryMode,
+      symmetryAngleRadians: stroke.symmetryAngleRadians,
       stamps,
       dirtyRect: packed.dirtyRect,
       presentedRect: packed.dirtyRect,
@@ -13303,7 +13352,8 @@ export class BrushEngine {
     }
     const batchSize = Math.min(availableBatchSize, MAX_STAMPS_PER_BATCH);
     const batch = batchSize > 0 ? this.pendingStamps.slice(0, batchSize) : [];
-    const batchSymmetryMode = strokeSymmetryModeForStampBatch(batch);
+    const batchSymmetry = strokeSymmetryTransformForStampBatch(batch);
+    const batchSymmetryMode = batchSymmetry.mode;
     let blendBatch: PendingBlendBatch[] = [];
     if (
       !lightGlazeSession
@@ -13472,7 +13522,8 @@ export class BrushEngine {
         return;
       }
     const actionId = batch[0].historyActionId;
-    const symmetryMode = strokeSymmetryModeForStampBatch(batch);
+    const symmetryTransform = strokeSymmetryTransformForStampBatch(batch);
+    const symmetryMode = symmetryTransform.mode;
     if (batch.at(-1)?.historyActionId !== actionId) {
       if (capturedSlice) this.historyGpuStorage.release(capturedSlice);
       throw new Error("A historical Paint batch contains multiple strokes.");
@@ -13522,6 +13573,7 @@ export class BrushEngine {
       layerId: this.layerStack.active.id,
       settings,
       symmetryMode,
+      symmetryAngleRadians: symmetryTransform.angleRadians,
       stampCount: batch.length,
       firstSeed: batch[0].seed,
       gpuSlice: capturedSlice,
@@ -14182,7 +14234,7 @@ export class BrushEngine {
       );
     }
 
-    if (strokeSymmetryModeForStampBatch(batch) !== "off") {
+    if (strokeSymmetryTransformForStampBatch(batch).mode !== "off") {
       this.adaptivePreviewCandidates.length = 0;
       clearAdaptivePreviewCanvas(this);
       return;
@@ -14873,9 +14925,20 @@ export class BrushEngine {
     }
     const session = this.lightGlazeSession;
     const stampCount = resolvePaintHistoryStampCount(stamps, replayBatch);
-    const symmetryMode = replayBatch
-      ? normalizeStrokeSymmetryMode(replayBatch.symmetryMode)
-      : strokeSymmetryModeForStampBatch(stamps, this.activeStroke?.symmetryMode ?? "off");
+    const symmetryTransform = replayBatch
+      ? {
+        mode: normalizeStrokeSymmetryMode(replayBatch.symmetryMode),
+        angleRadians: resolvedStrokeSymmetryAngleRadians(
+          normalizeStrokeSymmetryMode(replayBatch.symmetryMode),
+          replayBatch.symmetryAngleRadians,
+        ),
+      }
+      : strokeSymmetryTransformForStampBatch(
+        stamps,
+        this.activeStroke?.symmetryMode ?? "off",
+        this.activeStroke?.symmetryAngleRadians,
+      );
+    const symmetryMode = symmetryTransform.mode;
     if (!session || !isStrokeGlazeBlendMode(session.settings.blendMode)) {
       throw new Error("The Light Glaze session is missing during rendering.");
     }
@@ -14963,7 +15026,7 @@ export class BrushEngine {
       ...settings,
       opacity: intenseBlending ? settings.opacity : 1,
       blendMode: "normal",
-    }, symmetryMode);
+    }, symmetryMode, symmetryTransform.angleRadians);
     if (grainActive) {
       this.writeGrainUniforms(settings);
     }
@@ -16037,10 +16100,21 @@ export class BrushEngine {
         );
       }
     }
-    const symmetryMode = replayBatch
-      ? normalizeStrokeSymmetryMode(replayBatch.symmetryMode)
-      : strokeSymmetryModeForStampBatch(stamps, this.activeStroke?.symmetryMode ?? "off");
-    this.writeBrushUniforms(settings, symmetryMode);
+    const symmetryTransform = replayBatch
+      ? {
+        mode: normalizeStrokeSymmetryMode(replayBatch.symmetryMode),
+        angleRadians: resolvedStrokeSymmetryAngleRadians(
+          normalizeStrokeSymmetryMode(replayBatch.symmetryMode),
+          replayBatch.symmetryAngleRadians,
+        ),
+      }
+      : strokeSymmetryTransformForStampBatch(
+        stamps,
+        this.activeStroke?.symmetryMode ?? "off",
+        this.activeStroke?.symmetryAngleRadians,
+      );
+    const symmetryMode = symmetryTransform.mode;
+    this.writeBrushUniforms(settings, symmetryMode, symmetryTransform.angleRadians);
     const grainActive = isTexturizedGrainActive(settings);
     if (grainActive) {
       this.writeGrainUniforms(settings);

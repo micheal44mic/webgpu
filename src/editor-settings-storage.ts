@@ -1,11 +1,9 @@
-export type EditorSymmetryAxis = "vertical" | "horizontal";
-
 export interface EditorGuidePreferences {
   readonly rulers: boolean;
   readonly grid: boolean;
   readonly snapping: boolean;
   readonly symmetryEnabled: boolean;
-  readonly symmetryAxis: EditorSymmetryAxis;
+  readonly symmetryAngleDegrees: number;
 }
 
 export interface EditorSettingsStoragePort {
@@ -26,11 +24,25 @@ export const DEFAULT_EDITOR_GUIDE_PREFERENCES: Readonly<EditorGuidePreferences> 
     grid: false,
     snapping: true,
     symmetryEnabled: false,
-    symmetryAxis: "vertical",
+    symmetryAngleDegrees: 90,
   });
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+export function normalizeSymmetryAngleDegrees(
+  value: unknown,
+  fallback = DEFAULT_EDITOR_GUIDE_PREFERENCES.symmetryAngleDegrees,
+): number {
+  const finiteFallback = Number.isFinite(fallback)
+    ? fallback
+    : DEFAULT_EDITOR_GUIDE_PREFERENCES.symmetryAngleDegrees;
+  const numeric = typeof value === "number" && Number.isFinite(value)
+    ? value
+    : finiteFallback;
+  const rounded = Math.round(numeric);
+  return ((rounded % 180) + 180) % 180;
 }
 
 function normalizedPreferences(value: unknown): EditorGuidePreferences {
@@ -48,9 +60,14 @@ function normalizedPreferences(value: unknown): EditorGuidePreferences {
     symmetryEnabled: typeof candidate.symmetryEnabled === "boolean"
       ? candidate.symmetryEnabled
       : DEFAULT_EDITOR_GUIDE_PREFERENCES.symmetryEnabled,
-    symmetryAxis: candidate.symmetryAxis === "vertical" || candidate.symmetryAxis === "horizontal"
-      ? candidate.symmetryAxis
-      : DEFAULT_EDITOR_GUIDE_PREFERENCES.symmetryAxis,
+    symmetryAngleDegrees: normalizeSymmetryAngleDegrees(
+      candidate.symmetryAngleDegrees,
+      candidate.symmetryAxis === "horizontal"
+        ? 0
+        : candidate.symmetryAxis === "vertical"
+          ? 90
+          : DEFAULT_EDITOR_GUIDE_PREFERENCES.symmetryAngleDegrees,
+    ),
   };
 }
 

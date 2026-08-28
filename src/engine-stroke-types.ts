@@ -24,6 +24,7 @@ export interface Stamp {
   historyActionId: number;
   /** CPU metadata retained outside the fixed 32-byte GPU stamp record. */
   symmetryMode: StrokeSymmetryMode;
+  symmetryAngleRadians: number;
 }
 
 export interface HeldThicknessStamp {
@@ -39,6 +40,7 @@ export interface ActiveStroke {
   renderSettings: BrushSettings;
   /** Immutable document-space reflection selected when the gesture begins. */
   readonly symmetryMode: StrokeSymmetryMode;
+  readonly symmetryAngleRadians: number;
   lastInput: LayerPoint;
   startedAtMs: number;
   thicknessSettings: Pick<BrushSettings, "startThickness" | "endThickness">;
@@ -83,6 +85,7 @@ export interface PackedStampUpload {
 export interface ThicknessTailFrame {
   settings: BrushSettings;
   symmetryMode: StrokeSymmetryMode;
+  symmetryAngleRadians: number;
   stamps: Stamp[];
   /** Pixels changed by this frame and therefore requiring a redraw. */
   dirtyRect: DirtyRect;
@@ -105,6 +108,7 @@ export interface ThicknessTailFrame {
 export interface StabilizationTailFrame {
   settings: BrushSettings;
   symmetryMode: StrokeSymmetryMode;
+  symmetryAngleRadians: number;
   stampCount: number;
   dirtyRect: DirtyRect;
   shapeOccupancySelection: ShapeOccupancySelection | null;

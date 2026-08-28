@@ -50,6 +50,7 @@ import { clamp } from "./color";
 import { startThicknessFactor } from "./thickness-dynamics";
 import { flushClosingLightGlazeSessionBeforeNewStroke } from "./engine-glaze-runtime";
 import { normalizeViewRotation } from "./engine-math";
+import { strokeSymmetryCopiesIntersectDocument } from "./stroke-symmetry-core";
 import {
   canvasOffsetToLayerOffset,
   clientToLayer,
@@ -1193,6 +1194,7 @@ export function emitStamp(engine: BrushEngine, point: LayerPoint, directionX: nu
     directionY,
     historyActionId: stroke.historyActionId,
     symmetryMode: stroke.symmetryMode,
+    symmetryAngleRadians: stroke.symmetryAngleRadians,
   };
 
   if (stroke.thicknessTailHoldback) {
@@ -1321,12 +1323,17 @@ export function commitThicknessStamp(engine: BrushEngine, stamp: Stamp, stroke: 
     generationSettings.positionJitterLinear + generationSettings.positionJitterLateral
   );
 
-  if (
-    stamp.x + stamp.radius + jitterReach < 0 ||
-    stamp.y + stamp.radius + jitterReach < 0 ||
-    stamp.x - stamp.radius - jitterReach >= DOCUMENT_WIDTH ||
-    stamp.y - stamp.radius - jitterReach >= DOCUMENT_HEIGHT
-  ) {
+  const conservativeReach = stamp.radius + jitterReach;
+  if (!strokeSymmetryCopiesIntersectDocument(
+    stamp.x,
+    stamp.y,
+    conservativeReach,
+    conservativeReach,
+    stroke.symmetryMode,
+    DOCUMENT_WIDTH,
+    DOCUMENT_HEIGHT,
+    stroke.symmetryAngleRadians,
+  )) {
     return;
   }
 

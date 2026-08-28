@@ -43,6 +43,7 @@ import type {
 } from "./layer-composition.ts";
 import {
   normalizeStrokeSymmetryMode,
+  resolvedStrokeSymmetryAngleRadians,
   type StrokeSymmetryMode,
 } from "./stroke-symmetry-core";
 
@@ -607,6 +608,7 @@ export interface PaintHistoryRenderBatch {
   settings: BrushSettings;
   /** Gesture-level reflection metadata; stamp bytes retain their 32-byte ABI. */
   symmetryMode: StrokeSymmetryMode;
+  symmetryAngleRadians: number;
   stampCount: number;
   firstSeed: number;
   gpuSlice: GpuHistorySlice;
@@ -703,11 +705,26 @@ export function resolvePaintHistoryStampCount(
   const cloneSource = replayBatch.cloneSource;
   const rawSymmetryMode = (replayBatch as Partial<PaintHistoryRenderBatch>).symmetryMode;
   const symmetryMode = normalizeStrokeSymmetryMode(rawSymmetryMode);
+  const rawSymmetryAngle = (replayBatch as Partial<PaintHistoryRenderBatch>)
+    .symmetryAngleRadians;
+  const symmetryAngleRadians = resolvedStrokeSymmetryAngleRadians(
+    symmetryMode,
+    rawSymmetryAngle,
+  );
   if (
     (rawSymmetryMode !== undefined && rawSymmetryMode !== symmetryMode)
+    || (symmetryMode === "angle" && (
+      typeof rawSymmetryAngle !== "number"
+      || !Number.isFinite(rawSymmetryAngle)
+      || Math.abs(rawSymmetryAngle - symmetryAngleRadians) > 1e-7
+    ))
+    || (rawSymmetryAngle !== undefined && (
+      typeof rawSymmetryAngle !== "number"
+      || !Number.isFinite(rawSymmetryAngle)
+    ))
     || (cloneSource && symmetryMode !== "off")
   ) {
-    throw new Error("Invalid Paint history symmetry mode.");
+    throw new Error("Invalid Paint history symmetry transform.");
   }
   const expectedBytes = cloneSource
     ? cloneSource.sourceByteOffset

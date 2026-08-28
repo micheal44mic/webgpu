@@ -1,9 +1,9 @@
 import {
   loadEditorGuidePreferences,
+  normalizeSymmetryAngleDegrees,
   saveEditorGuidePreferences,
   type EditorGuidePreferences,
   type EditorSettingsStoragePort,
-  type EditorSymmetryAxis,
 } from "./editor-settings-storage.ts";
 
 export interface EditorSettingsElements {
@@ -16,7 +16,9 @@ export interface EditorSettingsElements {
   readonly symmetryEnabledInput: HTMLInputElement;
   readonly symmetryOptionsButton: HTMLButtonElement;
   readonly symmetryOptionsPanel: HTMLElement;
-  readonly symmetryAxisInputs: readonly HTMLInputElement[];
+  readonly symmetryPresetButtons: readonly HTMLButtonElement[];
+  readonly symmetryAngleInput: HTMLInputElement;
+  readonly symmetryAngleValueInput: HTMLInputElement;
 }
 
 export interface EditorSettingsBrowser {
@@ -43,7 +45,9 @@ export class EditorSettingsController {
   private readonly symmetryEnabledInput: HTMLInputElement;
   private readonly symmetryOptionsButton: HTMLButtonElement;
   private readonly symmetryOptionsPanel: HTMLElement;
-  private readonly symmetryAxisInputs: readonly HTMLInputElement[];
+  private readonly symmetryPresetButtons: readonly HTMLButtonElement[];
+  private readonly symmetryAngleInput: HTMLInputElement;
+  private readonly symmetryAngleValueInput: HTMLInputElement;
   private openState = false;
   private preferencesState: EditorGuidePreferences;
   private disposed = false;
@@ -54,12 +58,14 @@ export class EditorSettingsController {
     this.symmetryEnabledInput = options.elements.symmetryEnabledInput;
     this.symmetryOptionsButton = options.elements.symmetryOptionsButton;
     this.symmetryOptionsPanel = options.elements.symmetryOptionsPanel;
-    this.symmetryAxisInputs = [...options.elements.symmetryAxisInputs];
+    this.symmetryPresetButtons = [...options.elements.symmetryPresetButtons];
+    this.symmetryAngleInput = options.elements.symmetryAngleInput;
+    this.symmetryAngleValueInput = options.elements.symmetryAngleValueInput;
     if (
-      !this.symmetryAxisInputs.some((input) => input.value === "vertical")
-      || !this.symmetryAxisInputs.some((input) => input.value === "horizontal")
+      !this.symmetryPresetButtons.some((button) => this.symmetryPresetAngle(button) === 90)
+      || !this.symmetryPresetButtons.some((button) => this.symmetryPresetAngle(button) === 0)
     ) {
-      throw new Error("Symmetry axis controls are incomplete.");
+      throw new Error("Symmetry angle presets are incomplete.");
     }
     this.preferencesState = loadEditorGuidePreferences(options.storage);
     this.syncInputs();
@@ -124,10 +130,29 @@ export class EditorSettingsController {
       elements.gridInput,
       elements.snappingInput,
       this.symmetryEnabledInput,
-      ...this.symmetryAxisInputs,
     ]) {
       input.addEventListener("change", () => this.handlePreferenceChange(), { signal });
     }
+    for (const button of this.symmetryPresetButtons) {
+      button.addEventListener("click", () => {
+        this.applySymmetryAngle(this.symmetryPresetAngle(button), true);
+      }, { signal });
+    }
+    this.symmetryAngleInput.addEventListener("input", () => {
+      this.applySymmetryAngle(Number(this.symmetryAngleInput.value), false);
+    }, { signal });
+    this.symmetryAngleInput.addEventListener("change", () => {
+      this.persistPreferences();
+    }, { signal });
+    this.symmetryAngleValueInput.addEventListener("input", () => {
+      const value = this.symmetryAngleValue();
+      if (value !== null) this.applySymmetryAngle(value, false);
+    }, { signal });
+    this.symmetryAngleValueInput.addEventListener("change", () => {
+      const value = this.symmetryAngleValue();
+      if (value === null) this.syncSymmetryAngleControls();
+      else this.applySymmetryAngle(value, true);
+    }, { signal });
     this.symmetryOptionsButton.addEventListener("click", () => {
       this.setSymmetryOptionsOpen(this.symmetryOptionsPanel.hidden !== false);
     }, { signal });
@@ -153,11 +178,11 @@ export class EditorSettingsController {
       grid: elements.gridInput.checked,
       snapping: elements.snappingInput.checked,
       symmetryEnabled: this.symmetryEnabledInput.checked,
-      symmetryAxis: this.selectedSymmetryAxis(),
+      symmetryAngleDegrees: this.preferencesState.symmetryAngleDegrees,
     };
     const preferences = this.preferences;
     this.options.onPreferencesChange(preferences);
-    saveEditorGuidePreferences(this.options.storage, preferences);
+    this.persistPreferences();
   }
 
   private syncInputs(): void {
@@ -166,14 +191,48 @@ export class EditorSettingsController {
     elements.gridInput.checked = this.preferencesState.grid;
     elements.snappingInput.checked = this.preferencesState.snapping;
     this.symmetryEnabledInput.checked = this.preferencesState.symmetryEnabled;
-    for (const input of this.symmetryAxisInputs) {
-      input.checked = input.value === this.preferencesState.symmetryAxis;
+    this.syncSymmetryAngleControls();
+  }
+
+  private symmetryPresetAngle(button: HTMLButtonElement): number {
+    return Number(button.getAttribute("data-editor-symmetry-angle"));
+  }
+
+  private applySymmetryAngle(value: number, persist: boolean): void {
+    const symmetryAngleDegrees = normalizeSymmetryAngleDegrees(
+      value,
+      this.preferencesState.symmetryAngleDegrees,
+    );
+    const changed = symmetryAngleDegrees !== this.preferencesState.symmetryAngleDegrees;
+    this.preferencesState = {
+      ...this.preferencesState,
+      symmetryAngleDegrees,
+    };
+    this.syncSymmetryAngleControls();
+    if (changed) this.options.onPreferencesChange(this.preferences);
+    if (persist) this.persistPreferences();
+  }
+
+  private symmetryAngleValue(): number | null {
+    if (this.symmetryAngleValueInput.value.trim() === "") return null;
+    const value = Number(this.symmetryAngleValueInput.value);
+    return Number.isFinite(value) ? value : null;
+  }
+
+  private syncSymmetryAngleControls(): void {
+    const value = String(this.preferencesState.symmetryAngleDegrees);
+    this.symmetryAngleInput.value = value;
+    this.symmetryAngleValueInput.value = value;
+    for (const button of this.symmetryPresetButtons) {
+      button.setAttribute(
+        "aria-pressed",
+        String(this.symmetryPresetAngle(button) === this.preferencesState.symmetryAngleDegrees),
+      );
     }
   }
 
-  private selectedSymmetryAxis(): EditorSymmetryAxis {
-    const selected = this.symmetryAxisInputs.find((input) => input.checked)?.value;
-    return selected === "horizontal" ? "horizontal" : "vertical";
+  private persistPreferences(): void {
+    saveEditorGuidePreferences(this.options.storage, this.preferencesState);
   }
 
   private setSymmetryOptionsOpen(open: boolean): void {

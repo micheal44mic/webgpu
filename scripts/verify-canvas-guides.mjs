@@ -773,7 +773,7 @@ renderCanvasGuides({
     grid: false,
     snapping: false,
     symmetryEnabled: true,
-    symmetryAxis: "vertical",
+    symmetryAngleDegrees: 90,
   },
 });
 assert.equal(verticalSymmetryCanvas.hidden, false);
@@ -816,7 +816,7 @@ renderCanvasGuides({
     grid: false,
     snapping: false,
     symmetryEnabled: true,
-    symmetryAxis: "horizontal",
+    symmetryAngleDegrees: 0,
   },
 });
 assert.equal(horizontalSymmetryCanvas.hidden, false);
@@ -833,6 +833,36 @@ assertPointClose(
   "horizontal symmetry end",
 );
 
+const angledSymmetryCanvas = { width: 1, height: 1, hidden: true };
+const angledSymmetryContext = new RecordingCanvasContext();
+renderCanvasGuides({
+  canvas: angledSymmetryCanvas,
+  context: angledSymmetryContext,
+  view: verticalSymmetryView,
+  documentWidth: 1200,
+  documentHeight: 800,
+  preferences: {
+    rulers: false,
+    grid: false,
+    snapping: false,
+    symmetryEnabled: true,
+    symmetryAngleDegrees: 45,
+  },
+});
+assert.equal(angledSymmetryContext.strokeCount, 1);
+assert.equal(angledSymmetryContext.clipCount, 1);
+assert.equal(angledSymmetryContext.strokeStyle, "#dd5c35");
+assertPointClose(
+  angledSymmetryContext.points.at(-2),
+  projectedDocumentPoint({ x: 200, y: 0 }, verticalSymmetryView),
+  "angled symmetry start",
+);
+assertPointClose(
+  angledSymmetryContext.points.at(-1),
+  projectedDocumentPoint({ x: 1000, y: 800 }, verticalSymmetryView),
+  "angled symmetry end",
+);
+
 // Turning every guide off releases the viewport-sized Canvas2D backing store.
 renderCanvasGuides({
   canvas: guideCanvas,
@@ -845,7 +875,7 @@ renderCanvasGuides({
     grid: false,
     snapping: false,
     symmetryEnabled: false,
-    symmetryAxis: "vertical",
+    symmetryAngleDegrees: 90,
   },
 });
 assert.equal(guideCanvas.hidden, true);

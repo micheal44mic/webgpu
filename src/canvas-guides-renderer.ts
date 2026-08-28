@@ -1,7 +1,4 @@
-import type {
-  EditorGuidePreferences,
-  EditorSymmetryAxis,
-} from "./editor-settings-storage";
+import type { EditorGuidePreferences } from "./editor-settings-storage";
 import {
   sceneLayerToCanvas,
   type ScenePoint,
@@ -180,18 +177,31 @@ function drawSymmetryAxis(
   view: Readonly<VectorTextViewState>,
   documentWidth: number,
   documentHeight: number,
-  axis: EditorSymmetryAxis,
+  angleDegrees: number,
 ): void {
   const backing = Math.max(1, Math.min(
     view.canvasWidth / Math.max(1, view.cssWidth),
     view.canvasHeight / Math.max(1, view.cssHeight),
   ));
-  const start = axis === "vertical"
-    ? sceneLayerToCanvas({ x: documentWidth * 0.5, y: 0 }, view)
-    : sceneLayerToCanvas({ x: 0, y: documentHeight * 0.5 }, view);
-  const end = axis === "vertical"
-    ? sceneLayerToCanvas({ x: documentWidth * 0.5, y: documentHeight }, view)
-    : sceneLayerToCanvas({ x: documentWidth, y: documentHeight * 0.5 }, view);
+  const angleRadians = angleDegrees * Math.PI / 180;
+  const rawDirectionX = Math.cos(angleRadians);
+  const rawDirectionY = Math.sin(angleRadians);
+  const directionX = Math.abs(rawDirectionX) < 1e-12 ? 0 : rawDirectionX;
+  const directionY = Math.abs(rawDirectionY) < 1e-12 ? 0 : rawDirectionY;
+  const centerX = documentWidth * 0.5;
+  const centerY = documentHeight * 0.5;
+  const halfReach = Math.min(
+    directionX === 0 ? Number.POSITIVE_INFINITY : centerX / Math.abs(directionX),
+    directionY === 0 ? Number.POSITIVE_INFINITY : centerY / Math.abs(directionY),
+  );
+  const start = sceneLayerToCanvas({
+    x: centerX - directionX * halfReach,
+    y: centerY - directionY * halfReach,
+  }, view);
+  const end = sceneLayerToCanvas({
+    x: centerX + directionX * halfReach,
+    y: centerY + directionY * halfReach,
+  }, view);
 
   context.save();
   documentPath(context, view, documentWidth, documentHeight);
@@ -404,7 +414,7 @@ export function renderCanvasGuides(options: Readonly<RenderCanvasGuidesOptions>)
       view,
       options.documentWidth,
       options.documentHeight,
-      preferences.symmetryAxis,
+      preferences.symmetryAngleDegrees,
     );
   }
   drawSmartGuides(

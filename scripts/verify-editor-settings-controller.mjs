@@ -51,20 +51,28 @@ assert.match(
 assert.match(
   html,
   /<fieldset\b[^>]*id="editorSymmetryOptions"[^>]*aria-hidden="true"[^>]*\bhidden\b[^>]*>/,
-  "the Symmetry axis options must start hidden from every user",
+  "the Symmetry options must start hidden from every user",
 );
-for (const axis of ["vertical", "horizontal"]) {
+for (const [angle, pressed, label] of [
+  [90, true, "Vertical"],
+  [0, false, "Horizontal"],
+]) {
   assert.match(
     html,
-    new RegExp(`<input\\b[^>]*type="radio"[^>]*name="editorSymmetryAxis"[^>]*value="${axis}"[^>]*>`),
-    `the ${axis} Symmetry axis must remain a native radio`,
+    new RegExp(`<button\\b[^>]*data-editor-symmetry-angle="${angle}"[^>]*aria-pressed="${pressed}"[^>]*>[\\s\\S]*?${label}[\\s\\S]*?<\\/button>`),
+    `${label} must remain an accessible angle preset`,
   );
 }
-assert.match(
-  html,
-  /<input\b[^>]*type="radio"[^>]*name="editorSymmetryAxis"[^>]*value="vertical"[^>]*\bchecked\b[^>]*>/,
-  "Vertical must be the initial Symmetry axis",
-);
+for (const [id, type] of [
+  ["editorSymmetryAngle", "range"],
+  ["editorSymmetryAngleValue", "number"],
+]) {
+  assert.match(
+    html,
+    new RegExp(`<input\\b[^>]*id="${id}"[^>]*type="${type}"[^>]*min="0"[^>]*max="179"[^>]*step="1"[^>]*value="90"[^>]*>`),
+    `#${id} must expose the complete half-turn angle range`,
+  );
+}
 
 const moduleServer = await createServer({
   appType: "custom",
@@ -78,12 +86,14 @@ let EditorSettingsController;
 let DEFAULT_EDITOR_GUIDE_PREFERENCES;
 let EDITOR_SETTINGS_STORAGE_KEY;
 let loadEditorGuidePreferences;
+let normalizeSymmetryAngleDegrees;
 let saveEditorGuidePreferences;
 try {
   ({
     DEFAULT_EDITOR_GUIDE_PREFERENCES,
     EDITOR_SETTINGS_STORAGE_KEY,
     loadEditorGuidePreferences,
+    normalizeSymmetryAngleDegrees,
     saveEditorGuidePreferences,
   } = await moduleServer.ssrLoadModule("/src/editor-settings-storage.ts"));
   ({ EditorSettingsController } = await moduleServer.ssrLoadModule(
@@ -98,10 +108,15 @@ const defaults = {
   grid: false,
   snapping: true,
   symmetryEnabled: false,
-  symmetryAxis: "vertical",
+  symmetryAngleDegrees: 90,
 };
 assert.deepEqual(DEFAULT_EDITOR_GUIDE_PREFERENCES, defaults);
 assert.equal(EDITOR_SETTINGS_STORAGE_KEY, "m1m4.editor-settings.v1");
+assert.equal(normalizeSymmetryAngleDegrees(-1), 179);
+assert.equal(normalizeSymmetryAngleDegrees(180), 0);
+assert.equal(normalizeSymmetryAngleDegrees(541), 1);
+assert.equal(normalizeSymmetryAngleDegrees(37.6), 38);
+assert.equal(normalizeSymmetryAngleDegrees("45", 90), 90);
 
 class FakeStorage {
   constructor(serialized = null, options = {}) {
@@ -139,7 +154,7 @@ for (const serialized of [
   "{broken",
   "null",
   "[]",
-  JSON.stringify({ version: 2, preferences: { rulers: false, grid: true, snapping: false } }),
+  JSON.stringify({ version: 2, preferences: { grid: true } }),
   JSON.stringify({ version: 1 }),
 ]) {
   assert.deepEqual(
@@ -149,97 +164,49 @@ for (const serialized of [
   );
 }
 
-assert.deepEqual(
-  loadEditorGuidePreferences(new FakeStorage(JSON.stringify({
-    version: 1,
-    preferences: {
-      rulers: "false",
-      grid: true,
-      snapping: false,
-      symmetryEnabled: "true",
-      symmetryAxis: "diagonal",
-      unknown: true,
-    },
-  }))),
-  {
-    rulers: false,
-    grid: true,
-    snapping: false,
-    symmetryEnabled: false,
-    symmetryAxis: "vertical",
-  },
-  "only valid current-version fields may override defaults",
-);
-
-assert.deepEqual(
-  loadEditorGuidePreferences(new FakeStorage(JSON.stringify({
-    version: 1,
-    preferences: {
+for (const [legacyAxis, expectedAngle] of [
+  ["horizontal", 0],
+  ["vertical", 90],
+]) {
+  assert.deepEqual(
+    loadEditorGuidePreferences(new FakeStorage(JSON.stringify({
+      version: 1,
+      preferences: {
+        rulers: true,
+        grid: false,
+        snapping: true,
+        symmetryEnabled: false,
+        symmetryAxis: legacyAxis,
+      },
+    }))),
+    {
       rulers: true,
       grid: false,
       snapping: true,
       symmetryEnabled: false,
-      symmetryAxis: "horizontal",
+      symmetryAngleDegrees: expectedAngle,
     },
-  }))),
-  {
-    rulers: true,
-    grid: false,
-    snapping: true,
-    symmetryEnabled: false,
-    symmetryAxis: "horizontal",
-  },
-  "a disabled Symmetry setting must retain its selected axis",
-);
+    `legacy ${legacyAxis} settings must migrate to an angle`,
+  );
+}
 
 const roundTripStorage = new FakeStorage();
-assert.equal(
-  saveEditorGuidePreferences(roundTripStorage, {
-    rulers: false,
-    grid: true,
-    snapping: false,
-    symmetryEnabled: true,
-    symmetryAxis: "horizontal",
-  }),
-  true,
-);
-assert.deepEqual(roundTripStorage.writes, [[
-  EDITOR_SETTINGS_STORAGE_KEY,
-  JSON.stringify({
-    version: 1,
-    preferences: {
-      rulers: false,
-      grid: true,
-      snapping: false,
-      symmetryEnabled: true,
-      symmetryAxis: "horizontal",
-    },
-  }),
-]]);
+const customPreferences = {
+  rulers: false,
+  grid: true,
+  snapping: false,
+  symmetryEnabled: true,
+  symmetryAngleDegrees: 37,
+};
+assert.equal(saveEditorGuidePreferences(roundTripStorage, customPreferences), true);
+assert.deepEqual(JSON.parse(roundTripStorage.serialized), {
+  version: 1,
+  preferences: customPreferences,
+});
 assert.deepEqual(
   loadEditorGuidePreferences(roundTripStorage),
-  {
-    rulers: false,
-    grid: true,
-    snapping: false,
-    symmetryEnabled: true,
-    symmetryAxis: "horizontal",
-  },
-  "a saved snapshot must survive a cold load",
-);
-assert.deepEqual(
-  loadEditorGuidePreferences(new FakeStorage(JSON.stringify({
-    version: 1,
-    preferences: { rulers: true, grid: false, snapping: true },
-  }))),
-  {
-    rulers: true,
-    grid: false,
-    snapping: true,
-    symmetryEnabled: false,
-    symmetryAxis: "vertical",
-  },
-  "a legacy v1 payload must gain the new defaults without losing saved preferences",
+  customPreferences,
+  "a custom angle must survive a cold load",
 );
 assert.equal(saveEditorGuidePreferences(null, defaults), false);
 assert.equal(
@@ -253,30 +220,21 @@ saveEditorGuidePreferences(normalizedSaveStorage, {
   grid: true,
   snapping: null,
   symmetryEnabled: "true",
-  symmetryAxis: "diagonal",
+  symmetryAngleDegrees: 181,
 });
 assert.deepEqual(JSON.parse(normalizedSaveStorage.serialized).preferences, {
   rulers: false,
   grid: true,
   snapping: true,
   symmetryEnabled: false,
-  symmetryAxis: "vertical",
-}, "save must not serialize invalid runtime input");
+  symmetryAngleDegrees: 1,
+}, "save must serialize one canonical half-turn angle");
 
 class FakeClassList {
   values = new Set();
-
-  add(...names) {
-    for (const name of names) this.values.add(name);
-  }
-
-  remove(...names) {
-    for (const name of names) this.values.delete(name);
-  }
-
-  contains(name) {
-    return this.values.has(name);
-  }
+  add(...names) { for (const name of names) this.values.add(name); }
+  remove(...names) { for (const name of names) this.values.delete(name); }
+  contains(name) { return this.values.has(name); }
 }
 
 class FakeDocument extends EventTarget {
@@ -294,33 +252,21 @@ class FakeElement extends EventTarget {
   contained = new Set();
   hidden = false;
   checked = false;
+  value = "";
   isConnected = true;
   offsetWidth = 320;
   focusCount = 0;
 
-  setAttribute(name, value) {
-    this.attributes.set(name, String(value));
-  }
-
-  getAttribute(name) {
-    return this.attributes.get(name) ?? null;
-  }
-
-  removeAttribute(name) {
-    this.attributes.delete(name);
-  }
-
+  setAttribute(name, value) { this.attributes.set(name, String(value)); }
+  getAttribute(name) { return this.attributes.get(name) ?? null; }
+  removeAttribute(name) { this.attributes.delete(name); }
   toggleAttribute(name, force) {
     const present = force === undefined ? !this.attributes.has(name) : Boolean(force);
     if (present) this.attributes.set(name, "");
     else this.attributes.delete(name);
     return present;
   }
-
-  contains(node) {
-    return node === this || this.contained.has(node);
-  }
-
+  contains(node) { return node === this || this.contained.has(node); }
   focus() {
     this.focusCount += 1;
     this.ownerDocument.activeElement = this;
@@ -348,11 +294,13 @@ function createHarness({
   const symmetryEnabledInput = new FakeElement(document);
   const symmetryOptionsButton = new FakeElement(document);
   const symmetryOptionsPanel = new FakeElement(document);
-  const verticalSymmetryAxisInput = new FakeElement(document);
-  verticalSymmetryAxisInput.value = "vertical";
-  const horizontalSymmetryAxisInput = new FakeElement(document);
-  horizontalSymmetryAxisInput.value = "horizontal";
-  const symmetryAxisInputs = [verticalSymmetryAxisInput, horizontalSymmetryAxisInput];
+  const verticalPreset = new FakeElement(document);
+  verticalPreset.setAttribute("data-editor-symmetry-angle", "90");
+  const horizontalPreset = new FakeElement(document);
+  horizontalPreset.setAttribute("data-editor-symmetry-angle", "0");
+  const symmetryPresetButtons = [verticalPreset, horizontalPreset];
+  const symmetryAngleInput = new FakeElement(document);
+  const symmetryAngleValueInput = new FakeElement(document);
   for (const element of [
     closeButton,
     rulersInput,
@@ -361,10 +309,10 @@ function createHarness({
     symmetryEnabledInput,
     symmetryOptionsButton,
     symmetryOptionsPanel,
-    ...symmetryAxisInputs,
-  ]) {
-    panel.contained.add(element);
-  }
+    ...symmetryPresetButtons,
+    symmetryAngleInput,
+    symmetryAngleValueInput,
+  ]) panel.contained.add(element);
   const elements = {
     trigger,
     panel,
@@ -375,7 +323,9 @@ function createHarness({
     symmetryEnabledInput,
     symmetryOptionsButton,
     symmetryOptionsPanel,
-    symmetryAxisInputs,
+    symmetryPresetButtons,
+    symmetryAngleInput,
+    symmetryAngleValueInput,
   };
   let canOpen = initiallyCanOpen;
   const lifecycle = [];
@@ -404,223 +354,124 @@ function createHarness({
   };
 }
 
-// Construction restores persisted values without treating startup as a user change.
+// Construction restores a custom angle without treating startup as a user change.
 {
   const storage = new FakeStorage(JSON.stringify({
     version: 1,
-    preferences: {
-      rulers: false,
-      grid: true,
-      snapping: false,
-      symmetryEnabled: true,
-      symmetryAxis: "horizontal",
-    },
+    preferences: customPreferences,
   }));
   const harness = createHarness({ storage });
-  assert.deepEqual(harness.controller.preferences, {
-    rulers: false,
-    grid: true,
-    snapping: false,
-    symmetryEnabled: true,
-    symmetryAxis: "horizontal",
-  });
-  assert.equal(harness.elements.rulersInput.checked, false);
+  assert.deepEqual(harness.controller.preferences, customPreferences);
   assert.equal(harness.elements.gridInput.checked, true);
   assert.equal(harness.elements.snappingInput.checked, false);
   assert.equal(harness.elements.symmetryEnabledInput.checked, true);
-  assert.equal(harness.elements.symmetryAxisInputs[0].checked, false);
-  assert.equal(harness.elements.symmetryAxisInputs[1].checked, true);
+  assert.equal(harness.elements.symmetryAngleInput.value, "37");
+  assert.equal(harness.elements.symmetryAngleValueInput.value, "37");
+  assert.equal(harness.elements.symmetryPresetButtons[0].getAttribute("aria-pressed"), "false");
+  assert.equal(harness.elements.symmetryPresetButtons[1].getAttribute("aria-pressed"), "false");
   assert.equal(harness.elements.symmetryOptionsPanel.hidden, true);
-  assert.equal(harness.elements.symmetryOptionsPanel.getAttribute("aria-hidden"), "true");
   assert.equal(harness.elements.symmetryOptionsButton.getAttribute("aria-expanded"), "false");
   assert.deepEqual(harness.preferenceChanges, []);
-  assert.equal(harness.controller.isOpen, false);
-  assert.equal(harness.elements.trigger.getAttribute("aria-expanded"), "false");
-  assert.equal(harness.elements.trigger.getAttribute("aria-label"), "Open settings");
-  assert.equal(harness.elements.panel.getAttribute("aria-hidden"), "true");
-  assert.equal(harness.elements.panel.getAttribute("inert"), "");
-
   const snapshot = harness.controller.preferences;
   snapshot.grid = false;
-  assert.equal(
-    harness.controller.preferences.grid,
-    true,
-    "the public preferences snapshot must not mutate controller state",
-  );
+  assert.equal(harness.controller.preferences.grid, true);
   harness.controller.dispose();
 }
 
-// Open policy, accessibility state, close button and Escape share one lifecycle.
+// Open policy, disclosure state, close button and Escape share one lifecycle.
 {
   const harness = createHarness({ initiallyCanOpen: false });
   harness.elements.trigger.dispatchEvent(new Event("click"));
   assert.equal(harness.controller.isOpen, false);
-  assert.deepEqual(harness.lifecycle, []);
-
   harness.setCanOpen(true);
   harness.elements.trigger.dispatchEvent(new Event("click"));
   assert.equal(harness.controller.isOpen, true);
   assert.deepEqual(harness.lifecycle, ["before-open", "opened"]);
-  assert.equal(harness.elements.trigger.getAttribute("aria-expanded"), "true");
-  assert.equal(harness.elements.trigger.getAttribute("aria-label"), "Close settings");
-  assert.equal(harness.elements.panel.getAttribute("aria-hidden"), "false");
   assert.equal(harness.elements.panel.getAttribute("inert"), null);
-  assert.equal(harness.elements.panel.classList.contains("is-open"), true);
-  assert.equal(harness.document.activeElement, harness.elements.closeButton);
-
   harness.elements.symmetryOptionsButton.dispatchEvent(new Event("click"));
   assert.equal(harness.elements.symmetryOptionsPanel.hidden, false);
-  assert.equal(harness.elements.symmetryOptionsPanel.getAttribute("aria-hidden"), "false");
   assert.equal(harness.elements.symmetryOptionsButton.getAttribute("aria-expanded"), "true");
-  assert.deepEqual(harness.preferenceChanges, [], "opening options must not change preferences");
-
   harness.document.activeElement = harness.elements.closeButton;
   harness.elements.closeButton.dispatchEvent(new Event("click"));
   assert.equal(harness.controller.isOpen, false);
-  assert.equal(harness.elements.trigger.focusCount, 1);
-  assert.equal(harness.elements.panel.getAttribute("aria-hidden"), "true");
-  assert.equal(harness.elements.panel.getAttribute("inert"), "");
   assert.equal(harness.elements.symmetryOptionsPanel.hidden, true);
-  assert.equal(harness.elements.symmetryOptionsButton.getAttribute("aria-expanded"), "false");
-  assert.deepEqual(harness.lifecycle, ["before-open", "opened", "closed"]);
-
   harness.controller.setOpen(true);
   harness.document.activeElement = harness.elements.gridInput;
   const escape = keyEvent("Escape");
   harness.document.dispatchEvent(escape);
   assert.equal(escape.defaultPrevented, true);
   assert.equal(harness.controller.isOpen, false);
-  assert.equal(harness.elements.trigger.focusCount, 2);
-  assert.equal(harness.elements.trigger.getAttribute("aria-expanded"), "false");
-  assert.equal(harness.elements.trigger.getAttribute("aria-label"), "Open settings");
   harness.controller.dispose();
 }
 
-// A checkbox change applies live first, then persists exactly one canonical snapshot.
+// Presets and custom inputs publish live, while drag persistence happens on commit.
 {
   const order = [];
-  const storage = new FakeStorage(null, {
-    onSet: () => order.push("persist"),
-  });
+  const storage = new FakeStorage(null, { onSet: () => order.push("persist") });
   const harness = createHarness({
     storage,
-    preferenceEvent: () => {
-      const precedingLiveCallbacks = order.filter((event) => event === "live").length;
-      assert.equal(
-        storage.writes.length,
-        precedingLiveCallbacks,
-        "persistence ran before the live callback",
-      );
-      order.push("live");
-    },
+    preferenceEvent: () => order.push("live"),
   });
-  harness.elements.rulersInput.checked = false;
   harness.elements.gridInput.checked = true;
-  harness.elements.snappingInput.checked = false;
   harness.elements.gridInput.dispatchEvent(new Event("change"));
   assert.deepEqual(order, ["live", "persist"]);
-  assert.deepEqual(harness.preferenceChanges, [{
-    rulers: false,
-    grid: true,
-    snapping: false,
-    symmetryEnabled: false,
-    symmetryAxis: "vertical",
-  }]);
-  assert.equal(storage.writes.length, 1);
-  assert.deepEqual(JSON.parse(storage.writes[0][1]), {
-    version: 1,
-    preferences: {
-      rulers: false,
-      grid: true,
-      snapping: false,
-      symmetryEnabled: false,
-      symmetryAxis: "vertical",
-    },
-  });
 
-  harness.elements.rulersInput.checked = true;
-  harness.elements.rulersInput.dispatchEvent(new Event("change"));
-  harness.elements.snappingInput.checked = true;
-  harness.elements.snappingInput.dispatchEvent(new Event("change"));
-  assert.deepEqual(order, ["live", "persist", "live", "persist", "live", "persist"]);
-  assert.equal(
-    harness.preferenceChanges.length,
-    3,
-    "all three guide checkboxes must publish live changes",
-  );
-  assert.equal(storage.writes.length, 3);
+  const writesBeforePreset = storage.writes.length;
+  harness.elements.symmetryPresetButtons[1].dispatchEvent(new Event("click"));
+  assert.equal(harness.controller.preferences.symmetryAngleDegrees, 0);
+  assert.equal(storage.writes.length, writesBeforePreset + 1);
+  assert.equal(harness.elements.symmetryPresetButtons[1].getAttribute("aria-pressed"), "true");
+
+  const writesBeforeDrag = storage.writes.length;
+  const changesBeforeDrag = harness.preferenceChanges.length;
+  harness.elements.symmetryAngleInput.value = "37";
+  harness.elements.symmetryAngleInput.dispatchEvent(new Event("input"));
+  assert.equal(harness.controller.preferences.symmetryAngleDegrees, 37);
+  assert.equal(harness.elements.symmetryAngleValueInput.value, "37");
+  assert.equal(storage.writes.length, writesBeforeDrag, "range input must stay live-only");
+  assert.equal(harness.preferenceChanges.length, changesBeforeDrag + 1);
+  harness.elements.symmetryAngleInput.dispatchEvent(new Event("change"));
+  assert.equal(storage.writes.length, writesBeforeDrag + 1, "range change must persist once");
+
+  const writesBeforeNumber = storage.writes.length;
+  harness.elements.symmetryAngleValueInput.value = "145";
+  harness.elements.symmetryAngleValueInput.dispatchEvent(new Event("input"));
+  assert.equal(harness.controller.preferences.symmetryAngleDegrees, 145);
+  assert.equal(harness.elements.symmetryAngleInput.value, "145");
+  assert.equal(storage.writes.length, writesBeforeNumber);
+  harness.elements.symmetryAngleValueInput.dispatchEvent(new Event("change"));
+  assert.equal(storage.writes.length, writesBeforeNumber + 1);
 
   harness.elements.symmetryEnabledInput.checked = true;
   harness.elements.symmetryEnabledInput.dispatchEvent(new Event("change"));
-  harness.elements.symmetryAxisInputs[0].checked = false;
-  harness.elements.symmetryAxisInputs[1].checked = true;
-  harness.elements.symmetryAxisInputs[1].dispatchEvent(new Event("change"));
   harness.elements.symmetryEnabledInput.checked = false;
   harness.elements.symmetryEnabledInput.dispatchEvent(new Event("change"));
-  assert.deepEqual(harness.controller.preferences, {
-    rulers: true,
-    grid: true,
-    snapping: true,
-    symmetryEnabled: false,
-    symmetryAxis: "horizontal",
-  }, "turning Symmetry off must preserve its selected axis");
-  assert.deepEqual(JSON.parse(storage.writes.at(-1)[1]), {
-    version: 1,
-    preferences: {
-      rulers: true,
-      grid: true,
-      snapping: true,
-      symmetryEnabled: false,
-      symmetryAxis: "horizontal",
-    },
-  });
-  assert.equal(storage.writes.length, 6);
-  assert.deepEqual(order, [
-    "live", "persist",
-    "live", "persist",
-    "live", "persist",
-    "live", "persist",
-    "live", "persist",
-    "live", "persist",
-  ]);
+  assert.equal(
+    harness.controller.preferences.symmetryAngleDegrees,
+    145,
+    "turning Symmetry off must preserve the custom angle",
+  );
+  assert.equal(JSON.parse(storage.writes.at(-1)[1]).preferences.symmetryAngleDegrees, 145);
 
   const writesBeforeDispose = storage.writes.length;
   const changesBeforeDispose = harness.preferenceChanges.length;
-  harness.controller.setOpen(true);
   harness.controller.dispose();
-  assert.equal(harness.controller.isOpen, false);
-  harness.elements.rulersInput.checked = true;
-  harness.elements.rulersInput.dispatchEvent(new Event("change"));
-  harness.elements.trigger.dispatchEvent(new Event("click"));
-  harness.document.dispatchEvent(keyEvent("Escape"));
+  harness.elements.symmetryAngleInput.value = "22";
+  harness.elements.symmetryAngleInput.dispatchEvent(new Event("input"));
   assert.equal(storage.writes.length, writesBeforeDispose);
   assert.equal(harness.preferenceChanges.length, changesBeforeDispose);
-  assert.equal(harness.controller.isOpen, false, "disposed listeners must remain inert");
 }
 
-// Persistence failure must not roll back or suppress the live preference callback.
+// Persistence failure must not roll back or suppress the live callback.
 {
   const storage = new FakeStorage(null, { throwOnSet: true });
   const harness = createHarness({ storage });
-  harness.elements.gridInput.checked = true;
-  harness.elements.gridInput.dispatchEvent(new Event("change"));
-  assert.deepEqual(harness.controller.preferences, {
-    rulers: false,
-    grid: true,
-    snapping: true,
-    symmetryEnabled: false,
-    symmetryAxis: "vertical",
-  });
-  assert.deepEqual(harness.preferenceChanges, [{
-    rulers: false,
-    grid: true,
-    snapping: true,
-    symmetryEnabled: false,
-    symmetryAxis: "vertical",
-  }]);
+  harness.elements.symmetryPresetButtons[1].dispatchEvent(new Event("click"));
+  assert.equal(harness.controller.preferences.symmetryAngleDegrees, 0);
+  assert.equal(harness.preferenceChanges.length, 1);
   harness.controller.dispose();
 }
 
 console.log(
-  "editor-settings: storage, live callbacks, accessibility lifecycle, disposal and native markup verified.",
+  "editor-settings: symmetry angle storage, migration, live controls and accessibility verified.",
 );

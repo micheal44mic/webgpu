@@ -10,8 +10,6 @@ export const brushShader = /* wgsl */ `
 const MAX_COUNT: u32 = 24u;
 const COPY_COUNT_MASK: u32 = 0xffu;
 const SYMMETRY_MODE_SHIFT: u32 = 8u;
-const SYMMETRY_MODE_VERTICAL: u32 = 1u;
-const SYMMETRY_MODE_HORIZONTAL: u32 = 2u;
 const DOCUMENT_WIDTH: f32 = ${DOCUMENT_WIDTH};
 const DOCUMENT_HEIGHT: f32 = ${DOCUMENT_HEIGHT};
 const TAU: f32 = 6.283185307179586;
@@ -151,16 +149,17 @@ fn reflectedLayerPosition(
   symmetryMode: u32,
   symmetryCopyIndex: u32
 ) -> vec2<f32> {
-  if (symmetryCopyIndex == 0u) {
+  if (symmetryCopyIndex == 0u || symmetryMode == 0u) {
     return layerPosition;
   }
-  if (symmetryMode == SYMMETRY_MODE_VERTICAL) {
-    return vec2<f32>(DOCUMENT_WIDTH - layerPosition.x, layerPosition.y);
-  }
-  if (symmetryMode == SYMMETRY_MODE_HORIZONTAL) {
-    return vec2<f32>(layerPosition.x, DOCUMENT_HEIGHT - layerPosition.y);
-  }
-  return layerPosition;
+  let documentCenter = vec2<f32>(DOCUMENT_WIDTH, DOCUMENT_HEIGHT) * 0.5;
+  let offset = layerPosition - documentCenter;
+  let cosineDoubleAngle = brush.controls.w;
+  let sineDoubleAngle = brush.positionJitter.w;
+  return documentCenter + vec2<f32>(
+    cosineDoubleAngle * offset.x + sineDoubleAngle * offset.y,
+    sineDoubleAngle * offset.x - cosineDoubleAngle * offset.y
+  );
 }
 
 @vertex

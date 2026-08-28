@@ -3098,25 +3098,49 @@
               aria-hidden="true"
               hidden
             >
-              <legend>Mirror axis</legend>
-              <div class="editor-settings-axis-options">
-                <label class="editor-settings-axis-choice">
-                  <input
-                    type="radio"
-                    name="editorSymmetryAxis"
-                    value="vertical"
-                    checked
-                  >
-                  <span>Vertical</span>
+              <legend>Symmetry axis</legend>
+              <div class="editor-settings-axis-options" role="group" aria-label="Axis presets">
+                <button
+                  class="editor-settings-axis-choice"
+                  type="button"
+                  data-editor-symmetry-angle="90"
+                  aria-pressed="true"
+                >Vertical</button>
+                <button
+                  class="editor-settings-axis-choice"
+                  type="button"
+                  data-editor-symmetry-angle="0"
+                  aria-pressed="false"
+                >Horizontal</button>
+              </div>
+              <div class="editor-settings-angle-control">
+                <label class="editor-settings-angle-label" for="editorSymmetryAngle">
+                  <span>Angle</span>
+                  <span>0° Horizontal · 90° Vertical</span>
                 </label>
-                <label class="editor-settings-axis-choice">
+                <div class="editor-settings-angle-inputs">
                   <input
-                    type="radio"
-                    name="editorSymmetryAxis"
-                    value="horizontal"
+                    id="editorSymmetryAngle"
+                    type="range"
+                    min="0"
+                    max="179"
+                    step="1"
+                    value="90"
+                    aria-label="Symmetry axis angle"
                   >
-                  <span>Horizontal</span>
-                </label>
+                  <label class="editor-settings-angle-value">
+                    <input
+                      id="editorSymmetryAngleValue"
+                      type="number"
+                      min="0"
+                      max="179"
+                      step="1"
+                      value="90"
+                      aria-label="Symmetry axis angle in degrees"
+                    >
+                    <span aria-hidden="true">°</span>
+                  </label>
+                </div>
               </div>
             </fieldset>
           </section>

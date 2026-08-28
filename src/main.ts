@@ -270,11 +270,13 @@ const editorSnappingEnabledInput = element<HTMLInputElement>("editorSnappingEnab
 const editorSymmetryEnabledInput = element<HTMLInputElement>("editorSymmetryEnabled");
 const editorSymmetryOptionsButton = element<HTMLButtonElement>("editorSymmetryOptionsButton");
 const editorSymmetryOptionsPanel = element<HTMLElement>("editorSymmetryOptions");
-const editorSymmetryAxisInputs = Array.from(
-  editorSymmetryOptionsPanel.querySelectorAll<HTMLInputElement>(
-    'input[name="editorSymmetryAxis"]',
+const editorSymmetryPresetButtons = Array.from(
+  editorSymmetryOptionsPanel.querySelectorAll<HTMLButtonElement>(
+    "[data-editor-symmetry-angle]",
   ),
 );
+const editorSymmetryAngleInput = element<HTMLInputElement>("editorSymmetryAngle");
+const editorSymmetryAngleValueInput = element<HTMLInputElement>("editorSymmetryAngleValue");
 const mobileLayersMenuButton = element<HTMLButtonElement>("mobileLayersMenu");
 const mobileLayersPanel = element<HTMLElement>("mobileLayersPanel");
 const mobileAddLayerButton = element<HTMLButtonElement>("mobileAddLayer");
@@ -1249,7 +1251,9 @@ editorSettingsController = new EditorSettingsController({
     symmetryEnabledInput: editorSymmetryEnabledInput,
     symmetryOptionsButton: editorSymmetryOptionsButton,
     symmetryOptionsPanel: editorSymmetryOptionsPanel,
-    symmetryAxisInputs: editorSymmetryAxisInputs,
+    symmetryPresetButtons: editorSymmetryPresetButtons,
+    symmetryAngleInput: editorSymmetryAngleInput,
+    symmetryAngleValueInput: editorSymmetryAngleValueInput,
   },
   canOpen: () => mobileBrushStudio?.isBusy !== true
     && rasterAdjustmentsController?.isAnySurfaceOpen !== true,
@@ -1265,16 +1269,16 @@ editorSettingsController = new EditorSettingsController({
   },
   onOpenChange: () => brushQuickControlsController?.syncVisibility(),
   onPreferencesChange: (preferences) => {
-    engine.setStrokeSymmetryMode(
-      preferences.symmetryEnabled ? preferences.symmetryAxis : "off",
+    engine.setStrokeSymmetry(
+      preferences.symmetryEnabled,
+      preferences.symmetryAngleDegrees,
     );
     canvasGuidesController?.preferencesChanged();
   },
 });
-engine.setStrokeSymmetryMode(
-  editorSettingsController.preferences.symmetryEnabled
-    ? editorSettingsController.preferences.symmetryAxis
-    : "off",
+engine.setStrokeSymmetry(
+  editorSettingsController.preferences.symmetryEnabled,
+  editorSettingsController.preferences.symmetryAngleDegrees,
 );
 canvasGuidesController = new CanvasGuidesController({
   browser: window,

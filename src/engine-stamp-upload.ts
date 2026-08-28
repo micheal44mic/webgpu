@@ -9,7 +9,9 @@ import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH, STAMP_STRIDE_BYTES } from "./engine-li
  */
 import {
   encodeStrokeSymmetryOptions,
+  reflectedStrokeSymmetryExtent,
   reflectStrokeSymmetryCenter,
+  strokeSymmetryReflectionCoefficients,
   type StrokeSymmetryMode,
 } from "./stroke-symmetry-core";
 
@@ -81,6 +83,7 @@ export function populateBrushUniformUpload(
   targetOriginX: number,
   targetOriginY: number,
   symmetryMode: StrokeSymmetryMode = "off",
+  symmetryAngleRadians?: number,
 ): void {
   const floats = new Float32Array(upload);
   const unsigned = new Uint32Array(upload);
@@ -107,11 +110,17 @@ export function populateBrushUniformUpload(
   floats[13] = settings.hardness;
   // Legacy ABI lane: Blend Intensity is permanently neutralized.
   floats[14] = 1;
-  // Keep the uniform ABI stable; pressure-to-alpha has been removed.
-  floats[15] = 0;
+  // Precomputed reflection coefficients occupy two retired ABI lanes. This
+  // keeps arbitrary-axis symmetry out of the per-vertex trigonometry path.
+  const [reflectionCosine, reflectionSine] = strokeSymmetryReflectionCoefficients(
+    symmetryMode,
+    symmetryAngleRadians,
+  );
+  floats[15] = reflectionCosine;
   floats[16] = settings.positionJitterLinear;
   floats[17] = settings.positionJitterLateral;
   floats[18] = settings.shapeScatter;
+  floats[19] = reflectionSine;
   unsigned[20] = encodeStrokeSymmetryOptions(settings.count, symmetryMode);
   unsigned[21] = settings.jitterPerCopy ? 1 : 0;
   unsigned[22] = settings.blendMode === "additive" ? 1 : 0;
@@ -192,11 +201,18 @@ export function packStampsIntoUpload(
         stamp.symmetryMode,
         DOCUMENT_WIDTH,
         DOCUMENT_HEIGHT,
+        stamp.symmetryAngleRadians,
       );
-      minimumX = Math.min(minimumX, reflectedX - reachX);
-      minimumY = Math.min(minimumY, reflectedY - reachY);
-      maximumX = Math.max(maximumX, reflectedX + reachX);
-      maximumY = Math.max(maximumY, reflectedY + reachY);
+      const [reflectedReachX, reflectedReachY] = reflectedStrokeSymmetryExtent(
+        reachX,
+        reachY,
+        stamp.symmetryMode,
+        stamp.symmetryAngleRadians,
+      );
+      minimumX = Math.min(minimumX, reflectedX - reflectedReachX);
+      minimumY = Math.min(minimumY, reflectedY - reflectedReachY);
+      maximumX = Math.max(maximumX, reflectedX + reflectedReachX);
+      maximumY = Math.max(maximumY, reflectedY + reflectedReachY);
     }
   }
 
