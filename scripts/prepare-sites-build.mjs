@@ -85,12 +85,14 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
   var CHANNEL = "gpu-startup-app-frame-v3";
   var MAX_STRING_LENGTH = 1200;
   var DOCUMENT_PIPELINE_TEST_ID = "document-pipeline-bisect-v1";
+  var APPLICATION_4096_TEST_ID = "application-4096-startup-v1";
   var DOCUMENT_PIPELINE_PHASE = "document-pipelines";
   var EXPECTED_DOCUMENT_PIPELINE_LAYOUTS = 17;
   var EXPECTED_DOCUMENT_RENDER_PIPELINES = 52;
   var EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS = 2;
   var diagnosticTestId = new URLSearchParams(window.location.search).get("test") || "";
   var documentPipelineInstrumentationEnabled = diagnosticTestId === DOCUMENT_PIPELINE_TEST_ID;
+  var application4096StartupEnabled = diagnosticTestId === APPLICATION_4096_TEST_ID;
   var activeStartupPhase = null;
   var activeStartupPhaseState = null;
   var documentGpuCallIndex = 0;
@@ -109,6 +111,8 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
   var slowestCompletedRenderPipeline = null;
   var patchedAdapters = [];
   var patchedDevices = [];
+  var observedApplicationAdapters = [];
+  var observedApplicationDevices = [];
   var originalConsoleError = console.error;
 
   window.__gpuStartupDiagnosticTeardown = false;
@@ -679,17 +683,143 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
     }
   }
 
-  function updateDocumentPipelinePhase(progress) {
-    if (!documentPipelineInstrumentationEnabled || !progress || typeof progress !== "object") return;
-    if (progress.phase !== DOCUMENT_PIPELINE_PHASE) return;
-    activeStartupPhase = DOCUMENT_PIPELINE_PHASE;
+  function observeApplicationGpuDevice(device, requestDescriptor) {
+    if (!device || observedApplicationDevices.indexOf(device) >= 0) return device;
+    observedApplicationDevices.push(device);
+    var requiredFeatures = [];
+    try {
+      requiredFeatures = Array.from(requestDescriptor?.requiredFeatures || []).map(function (feature) {
+        return clippedString(feature, 120);
+      });
+    } catch (_error) {}
+    emit("application-gpu-device-observed", {
+      deviceCount: observedApplicationDevices.length,
+      requiredFeatures: requiredFeatures,
+      textureFormatsTier2Enabled: device.features?.has("texture-formats-tier2") === true,
+    });
+    try {
+      device.addEventListener("uncapturederror", function (event) {
+        if (window.__gpuStartupDiagnosticTeardown === true) return;
+        var detail = {
+          source: "uncapturederror",
+          error: errorDetail(event?.error || event),
+          activePhase: activeStartupPhase,
+          phaseState: activeStartupPhaseState,
+          durableCheckpoint: false,
+        };
+        detail.durableCheckpoint = durableRecord(
+          "application-gpu-uncaptured-error",
+          detail,
+          "failed",
+        );
+        emit("application-gpu-uncaptured-error", detail);
+      });
+    } catch (_error) {}
+    try {
+      Promise.resolve(device.lost).then(function (info) {
+        if (window.__gpuStartupDiagnosticTeardown === true) return;
+        var detail = {
+          reason: typeof info?.reason === "string" ? clippedString(info.reason, 120) : null,
+          message: typeof info?.message === "string" ? clippedString(info.message, 600) : null,
+          activePhase: activeStartupPhase,
+          phaseState: activeStartupPhaseState,
+          durableCheckpoint: false,
+        };
+        detail.durableCheckpoint = durableRecord(
+          "application-gpu-device-lost",
+          detail,
+          "failed",
+        );
+        emit("application-gpu-device-lost", detail);
+      });
+    } catch (_error) {}
+    return device;
+  }
+
+  function observeApplicationGpuAdapter(adapter) {
+    if (!adapter || observedApplicationAdapters.indexOf(adapter) >= 0) return adapter;
+    observedApplicationAdapters.push(adapter);
+    var originalRequestDevice;
+    try {
+      originalRequestDevice = adapter.requestDevice;
+    } catch (_error) {
+      originalRequestDevice = null;
+    }
+    if (typeof originalRequestDevice !== "function") return adapter;
+    var wrappedRequestDevice = function (descriptor) {
+      var request;
+      try {
+        request = Reflect.apply(originalRequestDevice, adapter, arguments);
+      } catch (error) {
+        durableRecord("application-gpu-device-request-failed", errorDetail(error), "failed");
+        throw error;
+      }
+      return Promise.resolve(request).then(function (device) {
+        return observeApplicationGpuDevice(device, descriptor || {});
+      }, function (error) {
+        durableRecord("application-gpu-device-request-failed", errorDetail(error), "failed");
+        throw error;
+      });
+    };
+    var installed = replaceMethod(adapter, "requestDevice", wrappedRequestDevice);
+    emit("application-gpu-adapter-observed", {
+      requestDeviceObserved: installed,
+      adapterCount: observedApplicationAdapters.length,
+    });
+    return adapter;
+  }
+
+  function installApplicationGpuObservation() {
+    if (!application4096StartupEnabled) return;
+    var gpu = navigator.gpu;
+    var originalRequestAdapter = gpu?.requestAdapter;
+    if (!gpu || typeof originalRequestAdapter !== "function") return;
+    var wrappedRequestAdapter = function () {
+      var request;
+      try {
+        request = Reflect.apply(originalRequestAdapter, gpu, arguments);
+      } catch (error) {
+        durableRecord("application-gpu-adapter-request-attempt-failed", errorDetail(error), "running");
+        throw error;
+      }
+      return Promise.resolve(request).then(function (adapter) {
+        return observeApplicationGpuAdapter(adapter);
+      }, function (error) {
+        durableRecord("application-gpu-adapter-request-attempt-failed", errorDetail(error), "running");
+        throw error;
+      });
+    };
+    var installed = replaceMethod(gpu, "requestAdapter", wrappedRequestAdapter);
+    emit("application-gpu-observation", {
+      installed: installed,
+      testId: diagnosticTestId,
+      nativePipelineMethodsWrapped: false,
+    });
+  }
+
+  function updateApplicationStartupPhase(progress) {
+    if (!progress || typeof progress !== "object") return false;
+    activeStartupPhase = typeof progress.phase === "string" ? progress.phase : null;
     activeStartupPhaseState = typeof progress.state === "string" ? progress.state : null;
-    if (activeStartupPhaseState === "completed" || activeStartupPhaseState === "failed") {
+    var durableCheckpoint = false;
+    if (application4096StartupEnabled) {
+      durableCheckpoint = durableRecord(
+        "application-startup-phase",
+        progress,
+        activeStartupPhaseState === "failed" ? "failed" : "running",
+      );
+    }
+    if (
+      documentPipelineInstrumentationEnabled
+      && activeStartupPhase === DOCUMENT_PIPELINE_PHASE
+      && (activeStartupPhaseState === "completed" || activeStartupPhaseState === "failed")
+    ) {
       var summary = documentPipelineSummary();
       var status = activeStartupPhaseState === "failed" ? "failed" : "running";
       durableRecord("application-document-pipeline-phase-" + activeStartupPhaseState, summary, status);
       emit("document-pipeline-phase", summary);
     }
+    return durableCheckpoint;
   }
 
   window.addEventListener("error", function (event) {
@@ -722,6 +852,7 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
   };
 
   installDocumentPipelineInstrumentation();
+  installApplicationGpuObservation();
 
   window.__editorExtensionBootstrap = {
     restorePersistedBrushOnStartup: true,
@@ -734,8 +865,11 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
         },
         syncControls: function () {},
         handleEngineStartupProgress: function (progress) {
-          updateDocumentPipelinePhase(progress);
-          emit("startup-progress", progress);
+          var durableCheckpoint = updateApplicationStartupPhase(progress);
+          emit("startup-progress", {
+            ...progress,
+            durableCheckpoint: durableCheckpoint,
+          });
         },
         afterEngineInitialized: async function () {
           var engine = host.engine;
@@ -821,13 +955,15 @@ const LAYER_COMPRESSION_INDEX_SQL = "CREATE INDEX IF NOT EXISTS layer_compressio
 const VECTOR_ZOOM_C_STRATEGY = "ten-semantic-text-dual-gpu-fallback-auto-post-raster-window2-roi-aware-zoom8-to-0.3-v7";
 const VECTOR_ZOOM_RUNS_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS vector_zoom_runs (run_code TEXT PRIMARY KEY NOT NULL, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)";
 const VECTOR_ZOOM_RUN_CODE = /^[2-9A-HJ-NP-Z]{8}$/;
-const GPU_STARTUP_DIAGNOSTIC_BUILD = "gpu-diagnostics-document-pipeline-bisect-v8";
+const GPU_STARTUP_DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v9";
 const GPU_STARTUP_DEFAULT_TEST_ID = "startup-no-tier2-v1";
 const GPU_STARTUP_STORAGE_FORMAT_TEST_ID = "storage-format-ab-v1";
 const GPU_STARTUP_DOCUMENT_PIPELINE_TEST_ID = "document-pipeline-bisect-v1";
+const GPU_STARTUP_APPLICATION_4096_TEST_ID = "application-4096-startup-v1";
 const GPU_STARTUP_DEFAULT_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
 const GPU_STARTUP_STORAGE_FORMAT_VARIANT = "storage-format-ab-rgba8unorm-control-rgba16float-target-write-only-1x1-no-tier2-v1";
 const GPU_STARTUP_DOCUMENT_PIPELINE_VARIANT = "document-pipeline-bisect-rgba16float-no-tier2-v1";
+const GPU_STARTUP_APPLICATION_4096_VARIANT = "application-startup-rgba16float-4096x4096-no-tier2-v1";
 const GPU_STARTUP_DIAGNOSTIC_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS gpu_startup_diagnostic_runs (run_code TEXT PRIMARY KEY NOT NULL, write_token_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, expires_at TEXT NOT NULL, status TEXT NOT NULL, sequence INTEGER NOT NULL, latest_event TEXT NOT NULL DEFAULT 'html-requested', result_summary TEXT NOT NULL DEFAULT '', payload_bytes INTEGER NOT NULL DEFAULT 0, payload_json TEXT NOT NULL)";
 const GPU_STARTUP_DIAGNOSTIC_INDEX_SQL = "CREATE INDEX IF NOT EXISTS gpu_startup_diagnostic_runs_expires_at_idx ON gpu_startup_diagnostic_runs (expires_at)";
 const GPU_STARTUP_DIAGNOSTIC_RUN_CODE = /^diag-[a-f0-9]{32}$/;
@@ -885,6 +1021,24 @@ function gpuStartupDiagnosticDefinition(testId) {
         expectedSynchronousPipelineLayouts: 17,
         expectedSynchronousRenderPipelines: 52,
         expectedErrorScopeDrains: 2,
+      },
+    };
+  }
+  if (testId === GPU_STARTUP_APPLICATION_4096_TEST_ID) {
+    return {
+      testId,
+      diagnosticVariant: GPU_STARTUP_APPLICATION_4096_VARIANT,
+      comparison: {
+        kind: "application-startup",
+        documentWidth: 4096,
+        documentHeight: 4096,
+        layerFormat: "rgba16float",
+        canvasFormat: "rgba16float",
+        requiredFeatures: [],
+        textureFormatsTier2Requested: false,
+        applicationFrame: "isolated-production-startup",
+        startupMode: "cold-empty-document",
+        deferredObservationMs: 5000,
       },
     };
   }

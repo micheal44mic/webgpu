@@ -21,7 +21,7 @@ const engineSource = read("src/brush-engine.ts");
 const layerRuntimeSource = read("src/engine-layer-runtime.ts");
 const featurePolicySource = read("src/gpu-startup-feature-policy.ts");
 
-const DIAGNOSTIC_BUILD = "gpu-diagnostics-document-pipeline-bisect-v8";
+const DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v9";
 const DEFAULT_TEST_ID = "startup-no-tier2-v1";
 const DEFAULT_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
 const STORAGE_FORMAT_TEST_ID = "storage-format-ab-v1";
@@ -29,6 +29,8 @@ const STORAGE_FORMAT_VARIANT =
   "storage-format-ab-rgba8unorm-control-rgba16float-target-write-only-1x1-no-tier2-v1";
 const DOCUMENT_PIPELINE_TEST_ID = "document-pipeline-bisect-v1";
 const DOCUMENT_PIPELINE_VARIANT = "document-pipeline-bisect-rgba16float-no-tier2-v1";
+const APPLICATION_4096_TEST_ID = "application-4096-startup-v1";
+const APPLICATION_4096_VARIANT = "application-startup-rgba16float-4096x4096-no-tier2-v1";
 const DEFAULT_COMPARISON = {
   layerFormat: "rgba16float",
   canvasFormat: "rgba16float",
@@ -60,6 +62,18 @@ const DOCUMENT_PIPELINE_COMPARISON = {
   expectedSynchronousPipelineLayouts: 17,
   expectedSynchronousRenderPipelines: 52,
   expectedErrorScopeDrains: 2,
+};
+const APPLICATION_4096_COMPARISON = {
+  kind: "application-startup",
+  documentWidth: 4096,
+  documentHeight: 4096,
+  layerFormat: "rgba16float",
+  canvasFormat: "rgba16float",
+  requiredFeatures: [],
+  textureFormatsTier2Requested: false,
+  applicationFrame: "isolated-production-startup",
+  startupMode: "cold-empty-document",
+  deferredObservationMs: 5000,
 };
 const STORAGE_FORMAT_STAGES = [
   "shader-module",
@@ -165,6 +179,13 @@ function diagnosticDefinition(testId) {
       comparison: DOCUMENT_PIPELINE_COMPARISON,
     };
   }
+  if (testId === APPLICATION_4096_TEST_ID) {
+    return {
+      testId,
+      diagnosticVariant: APPLICATION_4096_VARIANT,
+      comparison: APPLICATION_4096_COMPARISON,
+    };
+  }
   throw new Error(`Unknown verification diagnostic test: ${testId}`);
 }
 
@@ -252,9 +273,14 @@ assert.match(html, /Very slow or stopped here/);
 assert.match(html, /App boot · RGBA16F · Tier 2 off/);
 assert.match(html, /1×1 · RGBA8 vs RGBA16F · storage write/);
 assert.match(html, /Real document pipelines · RGBA16F · Tier 2 off/);
+assert.match(html, /Real 4096×4096 document · RGBA16F · Tier 2 off/);
 assert.match(html, /requestedTestId \|\| "startup-no-tier2-v1"/);
 assert.match(html, /DIAGNOSTIC_TEST_ID === "storage-format-ab-v1"/);
 assert.match(html, /DIAGNOSTIC_TEST_ID === "document-pipeline-bisect-v1"/);
+assert.match(html, /DIAGNOSTIC_TEST_ID === "application-4096-startup-v1"/);
+assert.match(html, /documentWidth: 4096/);
+assert.match(html, /documentHeight: 4096/);
+assert.match(html, /deferredObservationMs: 5000/);
 assert.match(html, /expectedSynchronousPipelineLayouts: 17/);
 assert.match(html, /expectedSynchronousRenderPipelines: 52/);
 assert.match(html, /expectedErrorScopeDrains: 2/);
@@ -282,9 +308,14 @@ assert.match(moduleSource, /STORAGE_FORMAT_AB_TEST = "storage-format-ab-v1"/);
 assert.match(moduleSource, new RegExp(STORAGE_FORMAT_VARIANT));
 assert.match(moduleSource, /DOCUMENT_PIPELINE_TEST = "document-pipeline-bisect-v1"/);
 assert.match(moduleSource, new RegExp(DOCUMENT_PIPELINE_VARIANT));
+assert.match(moduleSource, /APPLICATION_4096_TEST = "application-4096-startup-v1"/);
+assert.match(moduleSource, new RegExp(APPLICATION_4096_VARIANT));
+assert.match(moduleSource, /APPLICATION_4096_DOCUMENT_WIDTH = 4096/);
+assert.match(moduleSource, /APPLICATION_4096_DOCUMENT_HEIGHT = 4096/);
 assert.match(moduleSource, /diagnosticTest !== DOCUMENT_PIPELINE_TEST[\s\S]*Unsupported GPU diagnostic test/);
 assert.match(moduleSource, /if \(storageFormatAbEnabled\) \{\s*await runStorageFormatAbDiagnostic\(\);\s*return;/);
 assert.match(moduleSource, /if \(documentPipelineBisectEnabled\) \{\s*await runDocumentPipelineBisectDiagnostic\(\);\s*return;/);
+assert.match(moduleSource, /if \(application4096StartupEnabled\) \{\s*await runApplication4096StartupDiagnostic\(\);\s*return;/);
 assert.match(moduleSource, /applicationBoot = await runFullApplicationBoot\(\)/);
 assert.match(moduleSource, /const requiredFeatures: GPUFeatureName\[\] = \[\]/);
 assert.match(moduleSource, /adapter\.requestDevice\(\{ requiredFeatures \}\)/);
@@ -323,6 +354,31 @@ assert.ok(
 assert.match(moduleSource, /target\.searchParams\.set\("forceGlazeCommitFallback", "1"\)/);
 assert.match(moduleSource, /target\.searchParams\.set\("diagnosticVariant", expectedDiagnosticVariant\)/);
 assert.match(moduleSource, /target\.searchParams\.set\("test", options\.diagnosticTestId\)/);
+assert.match(moduleSource, /target\.searchParams\.set\("documentWidth", String\(documentWidth\)\)/);
+assert.match(moduleSource, /target\.searchParams\.set\("documentHeight", String\(documentHeight\)\)/);
+assert.match(moduleSource, /target\.searchParams\.set\("documentSize", String\(documentWidth\)\)/);
+assert.match(moduleSource, /documentWidth: APPLICATION_4096_DOCUMENT_WIDTH/);
+assert.match(moduleSource, /documentHeight: APPLICATION_4096_DOCUMENT_HEIGHT/);
+assert.match(moduleSource, /"first-frame-submit"/);
+assert.match(moduleSource, /"first-frame-gpu"/);
+assert.match(moduleSource, /"editor-ready"/);
+assert.match(moduleSource, /applicationGpuObservationPassed/);
+assert.match(moduleSource, /requireStorageSummary: true/);
+assert.match(moduleSource, /requireGpuObservation: true/);
+assert.match(moduleSource, /verdict: "application-4096-startup-passed"/);
+assert.match(moduleSource, /rgba16floatLayerBytes: APPLICATION_4096_DOCUMENT_WIDTH/);
+assert.match(
+  moduleSource,
+  /const engineReady = \/\\bok\\b\/\.test\(statusClass\)[\s\S]*statusText\.includes\("WebGPU is ready"\)/,
+);
+assert.match(
+  moduleSource,
+  /engineReady[\s\S]*state\.projectSessionReady === true[\s\S]*bootstrapReady[\s\S]*extensionCreated[\s\S]*engineReport !== null[\s\S]*requiredStartupPhasesCompleted/,
+);
+assert.match(
+  moduleSource,
+  /window\.setTimeout\(resolve, APPLICATION_DEFERRED_OBSERVATION_MS\)[\s\S]*completedState\.runtimeStatsStarted !== true[\s\S]*applicationConsoleErrors\.length > 0[\s\S]*required GPU startup phase regressed/,
+);
 assert.match(moduleSource, /renderPipelineStartedCount === EXPECTED_DOCUMENT_RENDER_PIPELINES/);
 assert.match(moduleSource, /renderPipelineCompletedCount === EXPECTED_DOCUMENT_RENDER_PIPELINES/);
 assert.match(moduleSource, /pipelineLayoutStartedCount === EXPECTED_DOCUMENT_PIPELINE_LAYOUTS/);
@@ -406,6 +462,8 @@ assert.match(workerBuilder, /restorePersistedBrushOnStartup: true/);
 assert.match(workerBuilder, /startupProgressEnabled: true/);
 assert.match(workerBuilder, /handleEngineStartupProgress/);
 assert.match(workerBuilder, /DOCUMENT_PIPELINE_TEST_ID = "document-pipeline-bisect-v1"/);
+assert.match(workerBuilder, /APPLICATION_4096_TEST_ID = "application-4096-startup-v1"/);
+assert.match(workerBuilder, new RegExp(APPLICATION_4096_VARIANT));
 assert.match(workerBuilder, /EXPECTED_DOCUMENT_RENDER_PIPELINES = 52/);
 assert.match(workerBuilder, /EXPECTED_DOCUMENT_PIPELINE_LAYOUTS = 17/);
 assert.match(workerBuilder, /EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS = 2/);
@@ -418,7 +476,12 @@ assert.match(workerBuilder, /durableRecord\(\s*"application-document-gpu-call-st
 assert.match(workerBuilder, /previousCompletedRenderPipeline: lastCompletedRenderPipeline/);
 assert.match(workerBuilder, /window\.__gpuStartupDiagnosticTeardown === true/);
 assert.doesNotMatch(workerBuilder, /applicationEngineReady/);
-assert.match(workerBuilder, /updateDocumentPipelinePhase\(progress\)/);
+assert.match(workerBuilder, /updateApplicationStartupPhase\(progress\)/);
+assert.match(workerBuilder, /installApplicationGpuObservation\(\)/);
+assert.match(workerBuilder, /nativePipelineMethodsWrapped: false/);
+assert.match(workerBuilder, /application-gpu-device-lost/);
+assert.match(workerBuilder, /application-gpu-uncaptured-error/);
+assert.match(workerBuilder, /durableCheckpoint: durableCheckpoint/);
 assert.match(workerBuilder, /textureFormatsTier2Enabled: engine\.device\.features\.has\("texture-formats-tier2"\)/);
 assert.match(workerBuilder, /textureFormatsTier2Advertised: engine\.adapter\?\.features\?\.has\("texture-formats-tier2"\) === true/);
 assert.match(workerBuilder, /inPlaceGlazeCommitEnabled: engine\.lightGlazeInPlaceCommitSupported === true/);
@@ -481,6 +544,11 @@ assert.match(attach, /copyAssetsCollisionSafe/);
 assert.doesNotMatch(attach, /siteGpuDiagnosticsHtmlFile/);
 assert.doesNotMatch(indexHtml, /gpu-startup-diagnostics/);
 assert.doesNotMatch(startup, /gpu-startup-diagnostics/);
+for (const productionSource of [indexHtml, startup, engineSource, layerRuntimeSource]) {
+  assert.doesNotMatch(productionSource, new RegExp(APPLICATION_4096_TEST_ID));
+  assert.doesNotMatch(productionSource, new RegExp(APPLICATION_4096_VARIANT));
+  assert.doesNotMatch(productionSource, new RegExp(DIAGNOSTIC_BUILD));
+}
 
 const inlineBootstrapSource = html.match(/<script>\s*([\s\S]*?)<\/script>/)?.[1];
 assert.ok(inlineBootstrapSource, "The diagnostic inline bootstrap must be executable in isolation.");
@@ -747,6 +815,174 @@ function diagnosticBootstrapHarness({
   assert.equal(
     harness.elements.get("diagnosticCopyStatus").textContent,
     "JSON copied. Paste it into the chat.",
+  );
+}
+
+{
+  const phaseStates = {
+    "adapter-request": "completed",
+    "device-request": "completed",
+    "canvas-rgba16float": "completed",
+    "document-display-textures": "completed",
+    "document-layer-texture": "completed",
+    "document-bindings": "completed",
+    "first-frame-submit": "completed",
+    "first-frame-gpu": "completed",
+    "editor-ready": "completed",
+  };
+  const requiredPhaseStates = Object.fromEntries([
+    "document-display-textures",
+    "document-layer-texture",
+    "document-bindings",
+    "first-frame-submit",
+    "first-frame-gpu",
+    "editor-ready",
+  ].map((phase) => [phase, "completed"]));
+  const successResult = {
+    ...APPLICATION_4096_COMPARISON,
+    testId: APPLICATION_4096_TEST_ID,
+    diagnosticVariant: APPLICATION_4096_VARIANT,
+    verdict: "application-4096-startup-passed",
+    conclusion: "The real 4096x4096 application document completed its first GPU frame and remained ready for five seconds.",
+    rgba16floatLayerBytes: 134_217_728,
+    startupTrace: {
+      lastProgress: { phase: "editor-ready", state: "completed", totalElapsedMs: 44_000 },
+      phaseStates,
+      requiredPhaseStates,
+      deviceLost: null,
+      uncapturedError: null,
+      gpuObservation: {
+        installed: true,
+        requestDeviceObserved: true,
+        adapterCount: 1,
+        deviceCount: 1,
+        requiredFeatures: [],
+        textureFormatsTier2Enabled: false,
+      },
+    },
+    applicationBoot: {
+      accessible: true,
+      statusText: "WebGPU is ready",
+      statusClass: "ok",
+      projectSessionReady: true,
+      runtimeStatsStarted: true,
+      canvas: { width: 780, height: 1280, clientWidth: 390, clientHeight: 640 },
+      startupPhaseStates: phaseStates,
+      rgba16floatLayerBytes: 134_217_728,
+      resourceCount: 12,
+      failedResources: [],
+      deferredStartupObservationMs: 5000,
+      reporter: {
+        channel: "gpu-startup-app-frame-v3",
+        bootstrapReady: true,
+        extensionCreated: true,
+        frameMessageCount: 52,
+        lastStartupProgress: { phase: "editor-ready", state: "completed" },
+      },
+      engine: {
+        documentWidth: 4096,
+        documentHeight: 4096,
+        diagnosticVariant: APPLICATION_4096_VARIANT,
+        layerFormat: "rgba16float",
+        canvasFormat: "rgba16float",
+        featureIsolation: {
+          textureFormatsTier2Advertised: true,
+          textureFormatsTier2Enabled: false,
+          inPlaceGlazeCommitEnabled: false,
+          inPlaceGlazeCommitPipelineCreated: false,
+        },
+        layerCount: 1,
+        layerMemoryMiB: 128,
+        storage: {
+          bytesPerPixel: 8,
+          fullLayerMiB: 128,
+          eagerFullRawMiB: 128,
+          actualRawMiB: 128,
+          tileSizePx: 256,
+          tileCount: 256,
+        },
+        gpu: {
+          label: "Verification mobile GPU",
+          countedTotalMiB: 192,
+          registeredCurrentMiB: 192,
+        },
+      },
+    },
+  };
+  const resultBytes = Buffer.byteLength(JSON.stringify(successResult), "utf8");
+  assert.ok(resultBytes < 12 * 1024, `The realistic 4096 result is ${resultBytes} bytes.`);
+  const harness = diagnosticBootstrapHarness({
+    testId: APPLICATION_4096_TEST_ID,
+    userAgent: "界".repeat(100_000),
+  });
+  assert.equal(
+    harness.elements.get("diagnosticVariantLabel").textContent,
+    "Real 4096×4096 document · RGBA16F · Tier 2 off",
+  );
+  const stored = await harness.browser.__gpuStartupDiagnostics.finish(
+    "completed",
+    "diagnostic-completed",
+    successResult,
+  );
+  assert.equal(stored, true);
+  const terminalPayload = JSON.parse(harness.postedBodies[0]);
+  assert.notEqual(terminalPayload.summary.result?.truncated, true);
+  assertDiagnosticSummary(terminalPayload.summary, APPLICATION_4096_TEST_ID, successResult);
+  const manualPayload = JSON.parse(harness.elements.get("diagnosticJson").value);
+  assertDiagnosticSummary(
+    manualPayload.currentAttempt.summary,
+    APPLICATION_4096_TEST_ID,
+    successResult,
+  );
+
+  const failureResult = {
+    ...APPLICATION_4096_COMPARISON,
+    testId: APPLICATION_4096_TEST_ID,
+    diagnosticVariant: APPLICATION_4096_VARIANT,
+    verdict: "application-4096-out-of-memory",
+    conclusion: "The real 4096x4096 application document failed with explicit out-of-memory evidence.",
+    failedPhase: "document-layer-texture",
+    applicationError: { name: "GPUOutOfMemoryError", message: "Allocation failed." },
+    startupTrace: {
+      ...successResult.startupTrace,
+      lastProgress: { phase: "document-layer-texture", state: "failed" },
+      phaseStates: {
+        ...phaseStates,
+        "document-layer-texture": "failed",
+        "document-bindings": "unknown",
+        "first-frame-submit": "unknown",
+        "first-frame-gpu": "unknown",
+        "editor-ready": "unknown",
+      },
+      requiredPhaseStates: {
+        ...requiredPhaseStates,
+        "document-layer-texture": "failed",
+      },
+    },
+  };
+  const failureHarness = diagnosticBootstrapHarness({
+    testId: APPLICATION_4096_TEST_ID,
+    userAgent: "界".repeat(100_000),
+  });
+  await failureHarness.browser.__gpuStartupDiagnostics.finish(
+    "failed",
+    "diagnostic-failed",
+    failureResult,
+  );
+  const failurePayload = JSON.parse(failureHarness.postedBodies[0]);
+  assert.notEqual(failurePayload.summary.result?.truncated, true);
+  assertDiagnosticSummary(
+    failurePayload.summary,
+    APPLICATION_4096_TEST_ID,
+    failureResult,
+  );
+  const failureManualPayload = JSON.parse(
+    failureHarness.elements.get("diagnosticJson").value,
+  );
+  assertDiagnosticSummary(
+    failureManualPayload.currentAttempt.summary,
+    APPLICATION_4096_TEST_ID,
+    failureResult,
   );
 }
 
@@ -1293,6 +1529,7 @@ function diagnosticBootstrapHarness({
   const defaultToken = "7".repeat(64);
   const storageToken = "8".repeat(64);
   const documentPipelineToken = "9".repeat(64);
+  const application4096Token = "a".repeat(64);
   const defaultLoad = diagnosticBootstrapHarness({
     runCode,
     writeToken: defaultToken,
@@ -1331,14 +1568,29 @@ function diagnosticBootstrapHarness({
     "running",
     "beacon",
   );
-  assert.equal(sharedSessionStorage.size, 3);
-  assert.equal(sharedLocalStorage.size, 3);
+  const application4096Load = diagnosticBootstrapHarness({
+    runCode,
+    writeToken: application4096Token,
+    testId: APPLICATION_4096_TEST_ID,
+    sharedSessionStorage,
+    sharedLocalStorage,
+  });
+  application4096Load.browser.__gpuStartupDiagnostics.record(
+    "application-4096-only-checkpoint",
+    null,
+    "running",
+    "beacon",
+  );
+  assert.equal(sharedSessionStorage.size, 4);
+  assert.equal(sharedLocalStorage.size, 4);
   assert.ok([...sharedSessionStorage.keys()].some((key) => key.endsWith(`:${DEFAULT_TEST_ID}`)));
   assert.ok([...sharedSessionStorage.keys()].some((key) => key.endsWith(`:${STORAGE_FORMAT_TEST_ID}`)));
   assert.ok([...sharedSessionStorage.keys()].some((key) => key.endsWith(`:${DOCUMENT_PIPELINE_TEST_ID}`)));
+  assert.ok([...sharedSessionStorage.keys()].some((key) => key.endsWith(`:${APPLICATION_4096_TEST_ID}`)));
   assert.ok([...sharedLocalStorage.keys()].some((key) => key.endsWith(`:${DEFAULT_TEST_ID}`)));
   assert.ok([...sharedLocalStorage.keys()].some((key) => key.endsWith(`:${STORAGE_FORMAT_TEST_ID}`)));
   assert.ok([...sharedLocalStorage.keys()].some((key) => key.endsWith(`:${DOCUMENT_PIPELINE_TEST_ID}`)));
+  assert.ok([...sharedLocalStorage.keys()].some((key) => key.endsWith(`:${APPLICATION_4096_TEST_ID}`)));
 
   const defaultReload = diagnosticBootstrapHarness({
     runCode,
@@ -1360,20 +1612,35 @@ function diagnosticBootstrapHarness({
     sharedSessionStorage,
     sharedLocalStorage,
   });
+  const application4096Reload = diagnosticBootstrapHarness({
+    runCode,
+    writeToken: "",
+    testId: APPLICATION_4096_TEST_ID,
+    sharedSessionStorage,
+    sharedLocalStorage,
+  });
   assert.equal(defaultReload.browser.__gpuStartupDiagnostics.snapshot().writeToken, defaultToken);
   assert.equal(storageReload.browser.__gpuStartupDiagnostics.snapshot().writeToken, storageToken);
   assert.equal(
     documentPipelineReload.browser.__gpuStartupDiagnostics.snapshot().writeToken,
     documentPipelineToken,
   );
+  assert.equal(
+    application4096Reload.browser.__gpuStartupDiagnostics.snapshot().writeToken,
+    application4096Token,
+  );
   const defaultBackup = JSON.parse(defaultReload.browser.__gpuStartupDiagnostics.manualBackup());
   const storageBackup = JSON.parse(storageReload.browser.__gpuStartupDiagnostics.manualBackup());
   const documentPipelineBackup = JSON.parse(
     documentPipelineReload.browser.__gpuStartupDiagnostics.manualBackup(),
   );
+  const application4096Backup = JSON.parse(
+    application4096Reload.browser.__gpuStartupDiagnostics.manualBackup(),
+  );
   assert.equal(defaultBackup.testId, DEFAULT_TEST_ID);
   assert.equal(storageBackup.testId, STORAGE_FORMAT_TEST_ID);
   assert.equal(documentPipelineBackup.testId, DOCUMENT_PIPELINE_TEST_ID);
+  assert.equal(application4096Backup.testId, APPLICATION_4096_TEST_ID);
   assert.ok(JSON.stringify(defaultBackup.recoveredAttempts).includes("default-only-checkpoint"));
   assert.ok(!JSON.stringify(defaultBackup.recoveredAttempts).includes("storage-only-checkpoint"));
   assert.ok(JSON.stringify(storageBackup.recoveredAttempts).includes("storage-only-checkpoint"));
@@ -1384,11 +1651,22 @@ function diagnosticBootstrapHarness({
     ),
   );
   assert.ok(!JSON.stringify(documentPipelineBackup.recoveredAttempts).includes("storage-only-checkpoint"));
+  assert.ok(
+    JSON.stringify(application4096Backup.recoveredAttempts).includes(
+      "application-4096-only-checkpoint",
+    ),
+  );
+  assert.ok(!JSON.stringify(application4096Backup.recoveredAttempts).includes("default-only-checkpoint"));
   assertDiagnosticSummary(defaultBackup.currentAttempt.summary, DEFAULT_TEST_ID, null);
   assertDiagnosticSummary(storageBackup.currentAttempt.summary, STORAGE_FORMAT_TEST_ID, null);
   assertDiagnosticSummary(
     documentPipelineBackup.currentAttempt.summary,
     DOCUMENT_PIPELINE_TEST_ID,
+    null,
+  );
+  assertDiagnosticSummary(
+    application4096Backup.currentAttempt.summary,
+    APPLICATION_4096_TEST_ID,
     null,
   );
 }
@@ -1766,6 +2044,26 @@ if (existsSync(builtWorkerPath)) {
     null,
   );
 
+  const application4096RunCode = `diag-${"1".repeat(32)}`;
+  const application4096PageResponse = await worker.fetch(
+    new Request(
+      `https://example.test/gpu-startup-lab?run=${application4096RunCode}&test=${APPLICATION_4096_TEST_ID}`,
+      { headers: { "User-Agent": "Application 4096 Diagnostic Test Browser" } },
+    ),
+    environment,
+  );
+  assert.equal(application4096PageResponse.status, 200);
+  assert.equal(
+    await application4096PageResponse.text(),
+    builtDiagnosticHtml.replace(/\r\n?/g, "\n"),
+  );
+  assert.equal(database.rows.get(application4096RunCode)?.status, "html-requested");
+  assertDiagnosticSummary(
+    JSON.parse(database.rows.get(application4096RunCode).result_summary),
+    APPLICATION_4096_TEST_ID,
+    null,
+  );
+
   const mismatchedPageResponse = await worker.fetch(
     new Request(
       `https://example.test/gpu-startup-lab?run=${runCode}&test=${STORAGE_FORMAT_TEST_ID}`,
@@ -1906,6 +2204,143 @@ if (existsSync(builtWorkerPath)) {
   assert.ok(consoleErrorMessage);
   assert.doesNotMatch(JSON.stringify(consoleErrorMessage.message.detail), /secret|private\/path/);
   assert.ok(frameMessages.every(({ targetOrigin }) => targetOrigin === "https://example.test"));
+
+  const application4096Messages = [];
+  const application4096Records = [];
+  const application4096Order = [];
+  const application4096DeviceListeners = new Map();
+  let resolveApplication4096Lost;
+  const application4096Lost = new Promise((resolve) => {
+    resolveApplication4096Lost = resolve;
+  });
+  const originalApplication4096CreatePipelineLayout = function (descriptor) {
+    return { label: descriptor.label };
+  };
+  const application4096Device = {
+    features: { has: () => false },
+    addEventListener(type, listener) {
+      application4096DeviceListeners.set(type, listener);
+    },
+    lost: application4096Lost,
+    createPipelineLayout: originalApplication4096CreatePipelineLayout,
+  };
+  let application4096RequestDescriptor = null;
+  const application4096Adapter = {
+    async requestDevice(descriptor) {
+      application4096RequestDescriptor = descriptor;
+      return application4096Device;
+    },
+  };
+  const application4096Gpu = {
+    async requestAdapter() {
+      return application4096Adapter;
+    },
+  };
+  const application4096Parent = {
+    __gpuStartupDiagnostics: {
+      record() { return true; },
+      recordBreadcrumb(name, detail, status) {
+        application4096Records.push({ name, detail, status });
+        application4096Order.push(`record:${name}`);
+        return true;
+      },
+    },
+    postMessage(message, targetOrigin) {
+      application4096Messages.push({ message, targetOrigin });
+      application4096Order.push(`message:${message.type}`);
+    },
+  };
+  const application4096FrameWindow = {
+    location: {
+      origin: "https://example.test",
+      pathname: "/gpu-startup-app-frame",
+      search: `?diagnosticBoot=1&test=${APPLICATION_4096_TEST_ID}&documentWidth=4096&documentHeight=4096&documentSize=4096&diagnosticVariant=${APPLICATION_4096_VARIANT}&forceGlazeCommitFallback=1`,
+    },
+    isSecureContext: true,
+    addEventListener() {},
+    parent: application4096Parent,
+  };
+  application4096FrameWindow.window = application4096FrameWindow;
+  runInNewContext(frameBootstrapSource, {
+    window: application4096FrameWindow,
+    document: { visibilityState: "visible" },
+    navigator: { gpu: application4096Gpu },
+    performance: { now: () => 100 },
+    console: { error() {} },
+    Reflect,
+    Array,
+    Object,
+    String,
+    Number,
+    Math,
+    Error,
+    Promise,
+    URLSearchParams,
+  });
+  const observedApplication4096Adapter = await application4096Gpu.requestAdapter();
+  assert.equal(observedApplication4096Adapter, application4096Adapter);
+  const observedApplication4096Device = await observedApplication4096Adapter.requestDevice({
+    requiredFeatures: [],
+  });
+  assert.equal(observedApplication4096Device, application4096Device);
+  assert.deepEqual(application4096RequestDescriptor.requiredFeatures, []);
+  assert.equal(
+    application4096Device.createPipelineLayout,
+    originalApplication4096CreatePipelineLayout,
+    "The 4096 observer must not wrap native pipeline methods.",
+  );
+  const observationMessage = application4096Messages.find(
+    ({ message }) => message.type === "application-gpu-observation",
+  );
+  const observedAdapterMessage = application4096Messages.find(
+    ({ message }) => message.type === "application-gpu-adapter-observed",
+  );
+  const observedDeviceMessage = application4096Messages.find(
+    ({ message }) => message.type === "application-gpu-device-observed",
+  );
+  assert.equal(observationMessage.message.detail.installed, true);
+  assert.equal(observationMessage.message.detail.nativePipelineMethodsWrapped, false);
+  assert.equal(observedAdapterMessage.message.detail.requestDeviceObserved, true);
+  assert.equal(observedAdapterMessage.message.detail.adapterCount, 1);
+  assert.equal(observedDeviceMessage.message.detail.deviceCount, 1);
+  assert.deepEqual(observedDeviceMessage.message.detail.requiredFeatures, []);
+  assert.equal(observedDeviceMessage.message.detail.textureFormatsTier2Enabled, false);
+
+  const application4096Extension = application4096FrameWindow.__editorExtensionBootstrap.create({
+    engine: {},
+  });
+  application4096Extension.handleEngineStartupProgress({
+    phase: "document-layer-texture",
+    state: "started",
+    totalElapsedMs: 100,
+    phaseElapsedMs: 0,
+  });
+  const phaseRecordIndex = application4096Order.indexOf("record:application-startup-phase");
+  const phaseMessageIndex = application4096Order.indexOf("message:startup-progress");
+  assert.ok(phaseRecordIndex >= 0 && phaseMessageIndex > phaseRecordIndex);
+  const phaseMessage = application4096Messages.find(
+    ({ message }) => message.type === "startup-progress",
+  );
+  assert.equal(phaseMessage.message.detail.durableCheckpoint, true);
+
+  application4096DeviceListeners.get("uncapturederror")?.({
+    error: new Error("4096 verification uncaptured error"),
+  });
+  assert.ok(
+    application4096Records.some(({ name }) => name === "application-gpu-uncaptured-error"),
+  );
+  resolveApplication4096Lost({ reason: "unknown", message: "4096 verification device lost" });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.ok(
+    application4096Records.some(({ name }) => name === "application-gpu-device-lost"),
+  );
+  const recordCountBeforeTeardown = application4096Records.length;
+  application4096FrameWindow.__gpuStartupDiagnosticTeardown = true;
+  application4096DeviceListeners.get("uncapturederror")?.({
+    error: new Error("ignored teardown error"),
+  });
+  assert.equal(application4096Records.length, recordCountBeforeTeardown);
 
   const pipelineFrameMessages = [];
   const durablePipelineRecords = [];
@@ -2206,6 +2641,15 @@ if (existsSync(builtWorkerPath)) {
     await storageFlaggedRootResponse.text(),
     readFileSync(resolve(root, "dist/client/index.html"), "utf8"),
   );
+  const application4096FlaggedRootResponse = await worker.fetch(
+    new Request(`https://example.test/?test=${APPLICATION_4096_TEST_ID}`),
+    environment,
+  );
+  assert.equal(application4096FlaggedRootResponse.status, 200);
+  assert.equal(
+    await application4096FlaggedRootResponse.text(),
+    readFileSync(resolve(root, "dist/client/index.html"), "utf8"),
+  );
   const unprotectedFrameResponse = await worker.fetch(
     new Request("https://example.test/gpu-startup-app-frame"),
     environment,
@@ -2375,6 +2819,50 @@ if (existsSync(builtWorkerPath)) {
     null,
   );
 
+  const application4096WriteToken = "8".repeat(64);
+  const application4096Sequence = sequence + 400;
+  const application4096BasePayload = createUploadPayload({
+    payloadRunCode: application4096RunCode,
+    payloadWriteToken: application4096WriteToken,
+    payloadSequence: application4096Sequence,
+    testId: APPLICATION_4096_TEST_ID,
+    latestEvent: "application-startup-phase",
+    eventDetail: {
+      phase: "document-layer-texture",
+      state: "started",
+      detail: { width: 4096, height: 4096, format: "rgba16float" },
+    },
+    moduleLoaded: true,
+  });
+  const invalidApplication4096Comparisons = [
+    { ...APPLICATION_4096_COMPARISON, kind: "synthetic-startup" },
+    { ...APPLICATION_4096_COMPARISON, documentWidth: 2048 },
+    { ...APPLICATION_4096_COMPARISON, documentHeight: 2048 },
+    { ...APPLICATION_4096_COMPARISON, layerFormat: "rgba8unorm" },
+    { ...APPLICATION_4096_COMPARISON, canvasFormat: "rgba8unorm" },
+    { ...APPLICATION_4096_COMPARISON, requiredFeatures: ["texture-formats-tier2"] },
+    { ...APPLICATION_4096_COMPARISON, textureFormatsTier2Requested: true },
+    { ...APPLICATION_4096_COMPARISON, applicationFrame: "synthetic" },
+    { ...APPLICATION_4096_COMPARISON, startupMode: "restored-project" },
+    { ...APPLICATION_4096_COMPARISON, deferredObservationMs: 0 },
+    { ...APPLICATION_4096_COMPARISON, unexpected: true },
+  ];
+  for (const comparison of invalidApplication4096Comparisons) {
+    const invalidProtocolResponse = await upload({
+      ...application4096BasePayload,
+      summary: { ...application4096BasePayload.summary, comparison },
+    });
+    assert.equal(invalidProtocolResponse.status, 400);
+  }
+  const application4096RunningResponse = await upload(application4096BasePayload);
+  assert.equal(application4096RunningResponse.status, 201);
+  assert.equal(database.rows.get(application4096RunCode).latest_event, "application-startup-phase");
+  assertDiagnosticSummary(
+    JSON.parse(database.rows.get(application4096RunCode).result_summary),
+    APPLICATION_4096_TEST_ID,
+    null,
+  );
+
   const mismatchedPostResponse = await upload(createUploadPayload({
     payloadRunCode: runCode,
     payloadWriteToken: writeToken,
@@ -2498,6 +2986,99 @@ if (existsSync(builtWorkerPath)) {
     storedDocumentPipelineSummary.result.documentPipelineTrace.renderPipelineCompletedCount,
     52,
   );
+
+  const application4096Result = {
+    ...APPLICATION_4096_COMPARISON,
+    testId: APPLICATION_4096_TEST_ID,
+    diagnosticVariant: APPLICATION_4096_VARIANT,
+    verdict: "application-4096-startup-passed",
+    conclusion: "The real 4096x4096 application document completed its first GPU frame and remained ready for five seconds.",
+    rgba16floatLayerBytes: 134_217_728,
+    startupTrace: {
+      lastProgress: { phase: "editor-ready", state: "completed" },
+      requiredPhaseStates: {
+        "document-display-textures": "completed",
+        "document-layer-texture": "completed",
+        "document-bindings": "completed",
+        "first-frame-submit": "completed",
+        "first-frame-gpu": "completed",
+        "editor-ready": "completed",
+      },
+      deviceLost: null,
+      uncapturedError: null,
+      gpuObservation: {
+        installed: true,
+        requestDeviceObserved: true,
+        adapterCount: 1,
+        deviceCount: 1,
+        requiredFeatures: [],
+        textureFormatsTier2Enabled: false,
+      },
+    },
+    applicationBoot: {
+      statusText: "WebGPU is ready",
+      statusClass: "ok",
+      projectSessionReady: true,
+      runtimeStatsStarted: true,
+      deferredStartupObservationMs: 5000,
+      engine: {
+        documentWidth: 4096,
+        documentHeight: 4096,
+        layerFormat: "rgba16float",
+        canvasFormat: "rgba16float",
+        layerCount: 1,
+        layerMemoryMiB: 128,
+        storage: {
+          bytesPerPixel: 8,
+          fullLayerMiB: 128,
+          eagerFullRawMiB: 128,
+          actualRawMiB: 128,
+          tileSizePx: 256,
+          tileCount: 256,
+        },
+      },
+    },
+  };
+  const application4096CompletedSequence = application4096Sequence + 1;
+  const application4096CompletedPayload = createUploadPayload({
+    payloadRunCode: application4096RunCode,
+    payloadWriteToken: application4096WriteToken,
+    payloadSequence: application4096CompletedSequence,
+    testId: APPLICATION_4096_TEST_ID,
+    status: "completed",
+    latestEvent: "diagnostic-completed",
+    result: application4096Result,
+    eventDetail: {
+      verdict: "application-4096-startup-passed",
+      firstFrameGpu: "completed",
+    },
+    moduleLoaded: true,
+    probeFinished: true,
+  });
+  const application4096CompletedResponse = await upload(application4096CompletedPayload);
+  assert.equal(application4096CompletedResponse.status, 201);
+  const application4096Acknowledgement = await application4096CompletedResponse.json();
+  assert.equal(application4096Acknowledgement.acknowledged, true);
+  assert.equal(application4096Acknowledgement.storedStatus, "completed");
+  assert.equal(
+    application4096Acknowledgement.storedSequence,
+    application4096CompletedSequence,
+  );
+  const storedApplication4096Run = database.rows.get(application4096RunCode);
+  assert.equal(storedApplication4096Run.status, "completed");
+  const storedApplication4096Summary = JSON.parse(storedApplication4096Run.result_summary);
+  assertDiagnosticSummary(
+    storedApplication4096Summary,
+    APPLICATION_4096_TEST_ID,
+    application4096Result,
+  );
+  assert.equal(storedApplication4096Summary.result.verdict, "application-4096-startup-passed");
+  assert.equal(storedApplication4096Summary.result.rgba16floatLayerBytes, 134_217_728);
+  assert.equal(
+    storedApplication4096Summary.result.startupTrace.requiredPhaseStates["first-frame-gpu"],
+    "completed",
+  );
+  assert.notEqual(storedApplication4096Summary.result.truncated, true);
 
   const staleResponse = await upload({
     ...payload,
