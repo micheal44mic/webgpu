@@ -916,6 +916,7 @@ const engine = new BrushEngine(canvas, {
 }, tipPreviewCanvas, {
   bevelBoundingFieldEnabled:
     editorExtensionEngineOptions.bevelBoundingFieldEnabled ?? bevelBoundingFieldEnabled,
+  deferSelectedBrushPreparation: true,
   layerMemoryStressTestEnabled:
     editorExtensionEngineOptions.layerMemoryStressTestEnabled ?? false,
   layerCompressionTestEnabled:
@@ -1079,7 +1080,7 @@ runtimeStatsController = new RuntimeStatsController({
     gpu: element<HTMLElement>("gpuStat"),
   },
   isEngineReady: () => engineInitialized,
-  getActiveCanvasTool: () => canvasToolController?.activeTool ?? "paint",
+  getActiveCanvasTool: () => canvasToolController?.activeTool ?? "pan",
   getActiveBrushTool: () => canvasToolController?.activeBrush ?? "paint",
   getBrushBlendMode: () => brushSettingsController.snapshot().blendMode,
   renderLayers: renderMobileLayerList,
@@ -1210,7 +1211,7 @@ brushLibraryController = new BrushLibraryController({
   previewRenderer: mobileBrushLibraryPreviewRenderer,
   strokePreviewRenderer: authoritativeBrushStrokePreviewRenderer,
   applySettings: applyBrushSettings,
-  canOpen: () => (canvasToolController?.activeTool ?? "paint") === "paint"
+  canOpen: () => (canvasToolController?.activeTool ?? "pan") === "paint"
     && rasterAdjustmentsController?.isAnySurfaceOpen !== true,
   beforeOpen: () => {
     if (mobileStrokeSheet?.isOpen) mobileStrokeSheet.close(false);
@@ -1228,7 +1229,7 @@ brushLibraryController = new BrushLibraryController({
     if (editorFiltersController?.isOpen) editorFiltersController.setOpen(false);
     if (editorSettingsController?.isOpen) editorSettingsController.setOpen(false);
   },
-  isPaintSelected: () => (canvasToolController?.activeTool ?? "paint") === "paint",
+  isPaintSelected: () => (canvasToolController?.activeTool ?? "pan") === "paint",
   onVisibilityChange: () => {
     brushQuickControlsController?.syncVisibility();
     syncMobileToolsMenuState();
@@ -1342,7 +1343,7 @@ brushQuickControlsController = new BrushQuickControlsController({
     previewLabel: mobileBrushPreviewLabel,
     previewCanvas: mobileBrushPreviewCanvas,
   },
-  getActiveTool: () => canvasToolController?.activeTool ?? "paint",
+  getActiveTool: () => canvasToolController?.activeTool ?? "pan",
   isInteractionLocked: interactionLocked,
   isSuppressedBySurface: () =>
     layerPanelController?.isOpen === true
@@ -1530,7 +1531,7 @@ pixelSelectionController = new PixelSelectionController({
     clearPixelSelection: () => engine.clearPixelSelection(),
   },
   isEngineReady: () => engineInitialized,
-  getActiveTool: () => canvasToolController?.activeTool ?? "paint",
+  getActiveTool: () => canvasToolController?.activeTool ?? "pan",
   getSelectionSettings: () => canvasToolSettingsController.selectionSnapshot(),
   onBusyChange: updateHistoryControls,
   onSettled: () => mobileToolSettingsSheet?.syncOpenState(),
@@ -1594,7 +1595,7 @@ function syncMobileToolsMenuState(
         bevel: false,
       };
   editorToolsController?.renderMenuState({
-    activeCanvasTool: canvasToolController?.activeTool ?? "paint",
+    activeCanvasTool: canvasToolController?.activeTool ?? "pan",
     engineReady: engineInitialized,
     interactionLocked: interactionLocked(),
     adjustmentSettlementAvailable:
@@ -1646,13 +1647,18 @@ function setMobileLayersPanelOpen(open: boolean): void {
   layerPanelController?.setOpen(open);
 }
 
-function applyBrushSettings(settings: Readonly<BrushSettings>): void {
+function applyBrushSettings(
+  settings: Readonly<BrushSettings>,
+  options: Readonly<{ preserveCanvasTool?: boolean }> = {},
+): void {
   const applied = brushSettingsController.replace({
     ...settings,
     shapeMaskFormat: editorSettingsController?.preferences.brushPrecision
       ?? DEFAULT_EDITOR_GUIDE_PREFERENCES.brushPrecision,
   });
-  canvasToolController?.configure(applied.tool, false);
+  if (!options.preserveCanvasTool) {
+    canvasToolController?.configure(applied.tool, false);
+  }
 }
 
 function applyGlobalBrushPrecision(
@@ -1931,7 +1937,7 @@ rasterAdjustmentsController = new RasterAdjustmentsController({
   isInteractionLocked: interactionLocked,
   isSceneBusy: () => sceneEditorController?.isBusy === true,
   isMultiSelectionActive: () => layerPanelController?.isMultiSelect === true,
-  getActiveCanvasTool: () => canvasToolController?.activeTool ?? "paint",
+  getActiveCanvasTool: () => canvasToolController?.activeTool ?? "pan",
   getActiveBrushTool: () => canvasToolController?.activeBrush ?? "paint",
   configureCanvasTool: (tool, restoreSnapshot) => {
     canvasToolController?.configure(tool, restoreSnapshot);
@@ -2467,7 +2473,7 @@ canvasInputController = new CanvasInputController({
     status: statusElement,
   },
   touchPaintIntentHoldEnabled,
-  getActiveTool: () => canvasToolController?.activeTool ?? "paint",
+  getActiveTool: () => canvasToolController?.activeTool ?? "pan",
   getSelectionMethod: () => canvasToolController?.selectionMethod ?? "automatic",
   getFillSettings: () => ({
     ...canvasToolSettingsController.fillSnapshot(),
@@ -2504,7 +2510,7 @@ brushOutlineController = new BrushOutlineController({
   browser: window,
   canvas,
   overlay: brushOutlineCanvas,
-  getActiveTool: () => canvasToolController?.activeTool ?? "paint",
+  getActiveTool: () => canvasToolController?.activeTool ?? "pan",
 });
 
 documentInteractionController = new DocumentInteractionController({
@@ -2766,7 +2772,7 @@ mobileStrokeSheet?.close(false);
 mobileRasterEffectsSheet?.close(false);
 mobileToolSettingsSheet?.close(false);
 canvasToolController?.setSelectionCombineMode("replace");
-canvasToolController?.configure("paint", false);
+canvasToolController?.configure("pan", false);
 updateHistoryControls();
 
 function scheduleDeferredStartupTask(
@@ -2847,7 +2853,7 @@ void engine.initialize()
         mobileBrushStudio
         && (editorExtensionBootstrap?.restorePersistedBrushOnStartup ?? true)
       ) {
-        await brushLibraryController.restoreActiveBrush();
+        await brushLibraryController.restoreActiveBrush({ prepareResources: false });
       }
     });
     await engine.runStartupPhase(

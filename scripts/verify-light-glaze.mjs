@@ -179,8 +179,8 @@ assert.doesNotMatch(
 );
 assert.match(
   activateLayer,
-  /await this\.rebuildMergedLayerSurfaces\(caller\);[\s\S]*await this\.ensureCurrentBrushResources\(\);[\s\S]*commitActiveLayerResidency/,
-  "Il livello viene pubblicato prima che le risorse del pennello corrente siano pronte.",
+  /await this\.rebuildMergedLayerSurfaces\(caller\);[\s\S]*if \(!this\.selectedBrushPreparationDeferred\) \{\s*await this\.ensureCurrentBrushResources\(\);\s*\}[\s\S]*commitActiveLayerResidency/,
+  "Dopo il primo uso, il livello deve attendere le risorse del pennello corrente.",
 );
 
 const brushReadiness = section(
@@ -189,6 +189,7 @@ const brushReadiness = section(
   "  async ensureOptionalEditorResources(): Promise<void>",
 );
 for (const requirement of [
+  "this.selectedBrushPreparationDeferred = false",
   "this.grainLoadingPromise === null",
   "this.shapeLoadingPromise === null",
   "this.lightGlazeLoadingPromise === null",

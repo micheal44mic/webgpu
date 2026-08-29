@@ -168,7 +168,10 @@ assert.doesNotMatch(
   /readBrushSettings|applyBrushControls/,
   "Brush Library and Studio must not use hidden form controls as state",
 );
-assert.match(main, /applyBrushSettings\(settings: Readonly<BrushSettings>\)/);
+assert.match(
+  main,
+  /function applyBrushSettings\(\s*settings: Readonly<BrushSettings>,\s*options: Readonly<\{ preserveCanvasTool\?: boolean \}> = \{\},/,
+);
 assert.match(
   main,
   /brushSettingsController\.replace\(\{[\s\S]*?\.\.\.settings,[\s\S]*?shapeMaskFormat: editorSettingsController\?\.preferences\.brushPrecision[\s\S]*?\?\? DEFAULT_EDITOR_GUIDE_PREFERENCES\.brushPrecision,[\s\S]*?\}\)/,
@@ -271,8 +274,8 @@ assert.match(library, /rollbackImport[\s\S]*?forgetSettings\(brushId\)/);
 assert.match(library, /this\.elements\.list\.inert = busy/);
 assert.match(
   main,
-  /runStartupPhase\(\s*"restore-active-brush"[\s\S]*?if \(\s*mobileBrushStudio\s*&& \(editorExtensionBootstrap\?\.restorePersistedBrushOnStartup \?\? true\)\s*\) \{\s*await brushLibraryController\.restoreActiveBrush\(\);\s*\}[\s\S]*?runStartupPhase\(\s*"project-session"[\s\S]*?projectSessionController\.initialize\(\)/,
-  "startup must prepare only the active custom brush before opening the project",
+  /runStartupPhase\(\s*"restore-active-brush"[\s\S]*?if \(\s*mobileBrushStudio\s*&& \(editorExtensionBootstrap\?\.restorePersistedBrushOnStartup \?\? true\)\s*\) \{\s*await brushLibraryController\.restoreActiveBrush\(\{ prepareResources: false \}\);\s*\}[\s\S]*?runStartupPhase\(\s*"project-session"[\s\S]*?projectSessionController\.initialize\(\)/,
+  "startup must restore the active brush definition without warming its GPU resources",
 );
 assert.doesNotMatch(main, /deferred-brush-restore/);
 assert.doesNotMatch(main, /mobileUiMediaQuery|mobileMediaQuery/);

@@ -276,11 +276,13 @@ function controllerShell(overrides = {}) {
     shapeMaskFormat: "r8unorm",
   };
   const applied = [];
+  const applicationOptions = [];
+  let preparationCount = 0;
   const controller = controllerShell({
     activeBrushId: "legacy-brush",
     engine: {
       getSettings: () => ({ name: "current", shapeMaskFormat: "r8unorm" }),
-      ensureCurrentBrushResources: async () => {},
+      ensureCurrentBrushResources: async () => { preparationCount += 1; },
     },
     studio: {
       resolveBrushSettings: async (id, fallback) => {
@@ -289,12 +291,20 @@ function controllerShell(overrides = {}) {
         return studioResolved;
       },
     },
-    applySettings: (settings) => applied.push(settings),
+    applySettings: (settings, options) => {
+      applied.push(settings);
+      applicationOptions.push(options);
+    },
     fallbackFor: () => legacyFallback,
     categoryFor: () => "painting",
   });
 
+  await controller.restoreActiveBrush({ prepareResources: false });
+  assert.equal(preparationCount, 0, "startup restore warmed the deferred brush");
+  assert.equal(applicationOptions[0]?.preserveCanvasTool, true);
   await controller.restoreActiveBrush();
+  assert.equal(preparationCount, 1, "interactive restore skipped brush readiness");
+  assert.equal(applicationOptions[1]?.preserveCanvasTool, false);
   assert.strictEqual(
     applied[0],
     studioResolved,

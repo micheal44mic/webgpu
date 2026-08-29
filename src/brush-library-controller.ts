@@ -128,7 +128,10 @@ export interface BrushLibraryControllerOptions {
   readonly elements: BrushLibraryElements;
   readonly previewRenderer: BrushLibraryPreviewPort;
   readonly strokePreviewRenderer: BrushLibraryStrokePreviewPort;
-  readonly applySettings: (settings: Readonly<BrushSettings>) => void;
+  readonly applySettings: (
+    settings: Readonly<BrushSettings>,
+    options?: Readonly<{ preserveCanvasTool?: boolean }>,
+  ) => void;
   readonly canOpen: () => boolean;
   readonly beforeOpen: () => void;
   readonly beforeStudioOpen: () => void;
@@ -160,7 +163,7 @@ export class BrushLibraryController {
   private readonly elements: BrushLibraryElements;
   private readonly previewRenderer: BrushLibraryPreviewPort;
   private readonly strokePreviewRenderer: BrushLibraryStrokePreviewPort;
-  private readonly applySettings: (settings: Readonly<BrushSettings>) => void;
+  private readonly applySettings: BrushLibraryControllerOptions["applySettings"];
   private readonly canOpen: () => boolean;
   private readonly beforeOpen: () => void;
   private readonly beforeStudioOpen: () => void;
@@ -398,19 +401,23 @@ export class BrushLibraryController {
     if (this.openState && this.dragPointerId === null) this.setOffset(0);
   }
 
-  async restoreActiveBrush(): Promise<void> {
-    return this.enqueueSelection(() => this.performActiveBrushRestore());
+  async restoreActiveBrush(
+    options: Readonly<{ prepareResources?: boolean }> = {},
+  ): Promise<void> {
+    return this.enqueueSelection(
+      () => this.performActiveBrushRestore(options.prepareResources !== false),
+    );
   }
 
-  private async performActiveBrushRestore(): Promise<void> {
+  private async performActiveBrushRestore(prepareResources: boolean): Promise<void> {
     const studio = this.studio;
     if (!studio) return;
     const current = this.engine.getSettings();
     const fallback = this.fallbackFor(this.activeBrushId, current);
     try {
       const restored = await studio.resolveBrushSettings(this.activeBrushId, fallback);
-      this.applySettings(restored);
-      await this.engine.ensureCurrentBrushResources();
+      this.applySettings(restored, { preserveCanvasTool: !prepareResources });
+      if (prepareResources) await this.engine.ensureCurrentBrushResources();
       this.setCategory(this.categoryFor(this.activeBrushId));
       this.syncSelection();
       this.syncAddState();
@@ -418,15 +425,17 @@ export class BrushLibraryController {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       try {
-        this.applySettings(currentBrushFallback(current));
-        await this.engine.ensureCurrentBrushResources();
+        this.applySettings(currentBrushFallback(current), {
+          preserveCanvasTool: !prepareResources,
+        });
+        if (prepareResources) await this.engine.ensureCurrentBrushResources();
         this.activeBrushId = "current";
         this.setCategory("painting");
         this.persistActiveBrush();
         this.syncSelection();
         this.reportStatus(`${message} Default Brush selected.`, "error");
       } catch (fallbackError) {
-        this.applySettings(current);
+        this.applySettings(current, { preserveCanvasTool: !prepareResources });
         this.reportStatus(
           fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
           "error",

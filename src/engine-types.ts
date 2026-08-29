@@ -300,6 +300,12 @@ export interface EngineCallbacks {
 export interface BrushEngineOptions {
   bevelBoundingFieldEnabled?: boolean;
   /**
+   * Leaves the selected brush's first-use resources cold until the editor
+   * explicitly prepares a brush interaction. Core canvas rendering remains
+   * available so navigation can be the initial interaction on slower devices.
+   */
+  deferSelectedBrushPreparation?: boolean;
+  /**
    * Enables the destructive, query-gated layer memory stress fixture. Normal
    * application sessions never need to reserve deliberately pessimistic cold
    * tile capacity, so the public helper remains unavailable unless the page

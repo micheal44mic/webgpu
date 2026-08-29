@@ -12,7 +12,7 @@
       (function () {
         "use strict";
 
-        var BUILD = "gpu-diagnostics-application-4096-startup-v9";
+        var BUILD = "gpu-diagnostics-application-4096-startup-v10";
         var params = new URLSearchParams(window.location.search);
         var requestedTestId = params.get("test") || "";
         var DIAGNOSTIC_TEST_ID = requestedTestId || "startup-no-tier2-v1";
@@ -205,7 +205,6 @@
           ],
           ["document-bindings", "Publishing document GPU resources"],
           ["history-view", "Preparing history and canvas view"],
-          ["selected-brush-first-use", "Preparing the selected brush"],
           ["first-frame-submit", "Submitting the first canvas frame"],
           ["first-frame-gpu", "Waiting for the first GPU frame"],
           ["restore-active-brush", "Restoring the saved brush"],

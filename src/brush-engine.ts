@@ -1,5 +1,4 @@
 import { brushColorHsl, srgbChannelToLinear } from "./brush-color.ts";
-import { suppressTextureFormatsTier2ForGpuStartup } from "./gpu-startup-feature-policy.ts";
 import { clamp } from "./color";
 import {
   RGBA16_FLOAT_BYTES_PER_PIXEL,
@@ -1835,6 +1834,9 @@ export class BrushEngine {
   /** A selected brush is not paint-ready until this submit's GPU fence resolves. */
   brushGpuWarmupPromise: Promise<void> | null = null;
   private readonly completedBrushGpuWarmupKeys = new Set<string>();
+  private selectedBrushPreparationDeferred = false;
+  private selectedBrushPreparationRequested = false;
+  private selectedBrushInteractionPreparationPromise: Promise<boolean> | null = null;
   readonly customBrushAssets = new CustomBrushAssetRegistry();
   pendingStamps: Stamp[] = [];
   pendingBlendBatches: PendingBlendBatch[] = [];
@@ -2041,6 +2043,7 @@ export class BrushEngine {
     this.canvas = canvas;
     this.callbacks = callbacks;
     this.bevelBoundingFieldEnabled = options.bevelBoundingFieldEnabled === true;
+    this.selectedBrushPreparationDeferred = options.deferSelectedBrushPreparation === true;
     this.layerMemoryStressTestEnabled = options.layerMemoryStressTestEnabled === true;
     this.layerCompressionTestEnabled = options.layerCompressionTestEnabled === true;
     this.layerColdCompressionEnabled = options.layerColdCompressionEnabled === true;
@@ -2269,23 +2272,10 @@ export class BrushEngine {
       this.callbacks.onStatus?.("WebGPU device creation is still in progress…", "working");
     }, 6_000);
     let rawDevice: GPUDevice;
-    const textureFormatsTier2 = "texture-formats-tier2" as GPUFeatureName;
-    const startupUrlParameters = new URLSearchParams(location.search);
-    const suppressTier2ForDiagnostic = suppressTextureFormatsTier2ForGpuStartup(
-      location.pathname,
-      location.search,
-    );
-    const forceGlazeCommitFallback = location.pathname.endsWith("/labs.html")
-      && startupUrlParameters.get("forceGlazeCommitFallback") === "1";
-    const hasReadWriteStorageTextureLanguageFeature =
-      navigator.gpu.wgslLanguageFeatures?.has(
-        "readonly_and_readwrite_storage_textures",
-      ) ?? false;
-    const requestInPlaceGlazeCommit = !suppressTier2ForDiagnostic
-      && hasReadWriteStorageTextureLanguageFeature
-      && adapter.features.has(textureFormatsTier2);
+    // Production startup stays on the feature-neutral device path. High
+    // precision glaze commits retain their exact tile fallback, while an
+    // optional read-write storage feature can never become a boot dependency.
     const requiredFeatures: GPUFeatureName[] = [];
-    if (requestInPlaceGlazeCommit) requiredFeatures.push(textureFormatsTier2);
     // Timestamp counters are diagnostic-only. The production editor never
     // requests them; Labs opts in when the adapter advertises support and the
     // runtime still falls back to queue-fence timings when they are absent.
@@ -2318,9 +2308,7 @@ export class BrushEngine {
     } finally {
       window.clearTimeout(deviceWaitTimer);
     }
-    this.lightGlazeInPlaceCommitSupported = requestInPlaceGlazeCommit
-      && rawDevice.features.has(textureFormatsTier2)
-      && !forceGlazeCommitFallback;
+    this.lightGlazeInPlaceCommitSupported = false;
     const instrumented = instrumentGpuDevice(rawDevice);
     this.device = instrumented.device;
     this.gpuResourceRegistry = instrumented.registry;
@@ -2438,12 +2426,19 @@ export class BrushEngine {
     });
 
     this.initialized = true;
-    await this.runStartupPhase(
-      "selected-brush-first-use",
-      "Preparing the selected brush",
-      () => this.ensureCurrentBrushResources(),
-      { format: this.layerFormat },
-    );
+    if (
+      !this.selectedBrushPreparationDeferred
+      || this.selectedBrushPreparationRequested
+    ) {
+      this.selectedBrushPreparationDeferred = false;
+      this.selectedBrushPreparationRequested = false;
+      await this.runStartupPhase(
+        "selected-brush-first-use",
+        "Preparing the selected brush",
+        () => this.ensureCurrentBrushResources(),
+        { format: this.layerFormat },
+      );
+    }
     clearAdaptivePreviewCanvas(this);
     this.beginStartupPhase("first-frame-submit", "Submitting the first canvas frame");
     await this.yieldStartupProgress();
@@ -2711,6 +2706,13 @@ export class BrushEngine {
     prepareAdaptivePreviewShapePalette(this, this.settings);
 
     if (this.initialized) {
+      if (this.selectedBrushPreparationDeferred) {
+        this.invalidateAdaptivePreview();
+        this.writeBrushUniforms();
+        this.displayDirty = true;
+        this.requestRender();
+        return;
+      }
       if (deferResourcesForQueuedBlend) {
         // Every queued Blend batch owns an immutable settings snapshot, but
         // Shape/Grain views are shared. Publish the new controls immediately
@@ -8352,6 +8354,43 @@ export class BrushEngine {
       && this.completedBrushGpuWarmupKeys.has(this.brushGpuWarmupKey(settings));
   }
 
+  /** Releases the one-shot startup deferral and warms the selected brush. */
+  async prepareSelectedBrushForInteraction(): Promise<boolean> {
+    this.selectedBrushPreparationRequested = true;
+    if (!this.initialized) return true;
+    if (this.currentBrushResourcesReady()) {
+      this.selectedBrushPreparationDeferred = false;
+      this.selectedBrushPreparationRequested = false;
+      return true;
+    }
+    if (this.selectedBrushInteractionPreparationPromise) {
+      return this.selectedBrushInteractionPreparationPromise;
+    }
+    this.selectedBrushPreparationDeferred = false;
+    const preparation = (async (): Promise<boolean> => {
+      this.callbacks.onStatus?.("Preparing the selected brush…", "working");
+      try {
+        await this.ensureCurrentBrushResources();
+        this.callbacks.onStatus?.("WebGPU is ready. Draw on the canvas.", "ok");
+        return true;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.callbacks.onStatus?.(`Selected brush preparation failed: ${message}`, "error");
+        return false;
+      } finally {
+        this.selectedBrushPreparationRequested = false;
+      }
+    })();
+    this.selectedBrushInteractionPreparationPromise = preparation;
+    try {
+      return await preparation;
+    } finally {
+      if (this.selectedBrushInteractionPreparationPromise === preparation) {
+        this.selectedBrushInteractionPreparationPromise = null;
+      }
+    }
+  }
+
   /**
    * Completes every lazy dependency of the selected brush. The settings object
    * is replaced atomically by setBrushSettings(), so a change that lands while
@@ -8361,6 +8400,8 @@ export class BrushEngine {
     if (!this.initialized) {
       throw new Error("The engine is not initialized yet.");
     }
+    this.selectedBrushPreparationDeferred = false;
+    this.selectedBrushPreparationRequested = false;
 
     for (;;) {
       const settings = this.settings;
@@ -11408,10 +11449,12 @@ export class BrushEngine {
     const compositeStartedAt = performance.now();
     await this.rebuildMergedLayerSurfaces(caller);
     const compositeMs = performance.now() - compositeStartedAt;
-    // Do not expose a fully switched layer whose first pointer-down would only
-    // start lazy texture/renderer creation. The UI keeps layerSwitchBusy held
-    // until this barrier has made the selected brush genuinely paint-ready.
-    await this.ensureCurrentBrushResources();
+    // Before the first brush interaction, navigation may publish a switched
+    // layer without warming the inactive brush. After that one-shot deferral,
+    // layerSwitchBusy keeps every later switch paint-ready before publication.
+    if (!this.selectedBrushPreparationDeferred) {
+      await this.ensureCurrentBrushResources();
+    }
     commitActiveLayerResidency(this, fromIndex);
 
     this.presentationCacheNeedsFullRebuild = true;

@@ -39,6 +39,16 @@ assert.match(
 );
 assert.match(main, /const mobilePanButton = element<HTMLButtonElement>\("mobilePan"\)/);
 assert.match(main, /panButton: mobilePanButton/);
+assert.match(main, /deferSelectedBrushPreparation: true/);
+assert.match(main, /canvasToolController\?\.configure\("pan", false\)/);
+assert.match(
+  main,
+  /function applyBrushSettings\([\s\S]*?if \(!options\.preserveCanvasTool\) \{\s*canvasToolController\?\.configure\(applied\.tool, false\);/,
+);
+assert.match(
+  html,
+  /id="mobilePaint"[\s\S]*?aria-pressed="false"[\s\S]*?id="mobilePan"[\s\S]*?aria-pressed="true"/,
+);
 assert.match(
   main,
   /onClose: \(kind\) => \{[\s\S]*?finishFillToolOnSheetClose\(kind\)/,
@@ -91,6 +101,10 @@ const selectionSettings = {
 const engineCalls = [];
 const engine = {
   fillToolSelected: false,
+  async prepareSelectedBrushForInteraction() {
+    engineCalls.push(["brush-prepare"]);
+    return true;
+  },
   async setFillToolSelected(selected) {
     engineCalls.push(["fill", selected]);
     this.fillToolSelected = selected;
@@ -207,6 +221,7 @@ const controller = new CanvasToolController({
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+assert.equal(controller.activeTool, "pan", "Move must be the initial canvas tool");
 vectorReady = false;
 controller.configure("perspective", false);
 await settle();
@@ -228,6 +243,7 @@ assert.equal(blendButton.getAttribute("aria-pressed"), "false");
 assert.equal(panButton.getAttribute("aria-pressed"), "false");
 assert.equal(canvas.getAttribute("data-active-canvas-tool"), "paint");
 assert.equal(canvas.tabIndex, -1);
+assert(engineCalls.some(([kind]) => kind === "brush-prepare"));
 
 paintButton.dispatchEvent(new Event("click"));
 assert.equal(libraryToggles, 1);

@@ -38,7 +38,10 @@ assert.match(
   brushStudioSource,
   /setRange\("mobileBrushStudioStabilization"[\s\S]*?settings\.stabilization \* 100/,
 );
-assert.match(mainSource, /applyBrushSettings\(settings: Readonly<BrushSettings>\)/);
+assert.match(
+  mainSource,
+  /applyBrushSettings\(\s*settings: Readonly<BrushSettings>,\s*options: Readonly<\{ preserveCanvasTool\?: boolean \}> = \{\},/,
+);
 assert.match(brushSettingsControllerSource, /replace\(settings: Readonly<BrushSettings>\)/);
 assert.doesNotMatch(mainSource, /rangeValue\("stabilization"\)/);
 

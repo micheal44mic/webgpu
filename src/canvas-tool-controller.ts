@@ -8,7 +8,10 @@ import type { VectorTransformActionSnapshot } from "./vector-editor-contract";
 
 export type CanvasToolEnginePort = Pick<
   BrushEngine,
-  "fillToolSelected" | "setFillToolSelected" | "setSelectionToolSelected"
+  | "fillToolSelected"
+  | "prepareSelectedBrushForInteraction"
+  | "setFillToolSelected"
+  | "setSelectionToolSelected"
 >;
 
 export interface CanvasToolBrushSettingsPort {
@@ -76,7 +79,7 @@ export interface CanvasToolControllerOptions {
 /** Owns active canvas/brush tool state and all transitions between tools. */
 export class CanvasToolController {
   private readonly abortController: AbortController;
-  private activeCanvasTool: CanvasInputTool = "paint";
+  private activeCanvasTool: CanvasInputTool = "pan";
   private activeBrushTool: BrushSettings["tool"] = "paint";
   private textDistortReturnTool: CanvasInputTool | null = null;
   private configurationRevision = 0;
@@ -293,6 +296,7 @@ export class CanvasToolController {
           tool,
           restoreSnapshot && previousBrushTool !== tool,
         );
+        void this.options.engine.prepareSelectedBrushForInteraction();
       }
       this.syncSelectionKeyboardUi();
       this.syncVectorControllerState();

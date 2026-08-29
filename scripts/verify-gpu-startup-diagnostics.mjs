@@ -21,7 +21,7 @@ const engineSource = read("src/brush-engine.ts");
 const layerRuntimeSource = read("src/engine-layer-runtime.ts");
 const featurePolicySource = read("src/gpu-startup-feature-policy.ts");
 
-const DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v9";
+const DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v10";
 const DEFAULT_TEST_ID = "startup-no-tier2-v1";
 const DEFAULT_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
 const STORAGE_FORMAT_TEST_ID = "storage-format-ab-v1";
@@ -402,9 +402,13 @@ assert.match(moduleSource, /validateApplicationEngineReport/);
 assert.match(moduleSource, /lateDevice\.destroy\(\)/);
 assert.doesNotMatch(moduleSource, /import\("\.\.\/brush-engine"\)/);
 
-assert.match(engineSource, /suppressTextureFormatsTier2ForGpuStartup/);
-assert.match(engineSource, /const requestInPlaceGlazeCommit = !suppressTier2ForDiagnostic/);
-assert.match(engineSource, /&& !forceGlazeCommitFallback/);
+assert.doesNotMatch(engineSource, /requiredFeatures\.push\(textureFormatsTier2\)/);
+assert.match(engineSource, /const requiredFeatures: GPUFeatureName\[\] = \[\]/);
+assert.match(engineSource, /this\.lightGlazeInPlaceCommitSupported = false/);
+assert.match(
+  engineSource,
+  /if \(\s*!this\.selectedBrushPreparationDeferred\s*\|\| this\.selectedBrushPreparationRequested\s*\) \{[\s\S]*?await this\.runStartupPhase\(\s*"selected-brush-first-use"/,
+);
 assert.match(
   engineSource,
   /recreateLayerResources\(this, this\.layerFormat, \{\s*deferBlendRenderer: true,\s*deferSelectionPipelines: true,/,

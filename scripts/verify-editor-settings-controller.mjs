@@ -107,7 +107,7 @@ assert.ok(
 );
 assert.match(
   mainSource,
-  /function applyBrushSettings\(settings: Readonly<BrushSettings>\): void \{[\s\S]*?brushSettingsController\.replace\(\{[\s\S]*?shapeMaskFormat:\s*editorSettingsController\?\.preferences\.brushPrecision\s*\?\?\s*DEFAULT_EDITOR_GUIDE_PREFERENCES\.brushPrecision,[\s\S]*?\}\);/,
+  /function applyBrushSettings\(\s*settings: Readonly<BrushSettings>,\s*options: Readonly<\{ preserveCanvasTool\?: boolean \}> = \{\},\s*\): void \{[\s\S]*?brushSettingsController\.replace\(\{[\s\S]*?shapeMaskFormat:\s*editorSettingsController\?\.preferences\.brushPrecision\s*\?\?\s*DEFAULT_EDITOR_GUIDE_PREFERENCES\.brushPrecision,[\s\S]*?\}\);/,
   "every applied brush must be forced through the global Brush precision preference",
 );
 assert.match(
