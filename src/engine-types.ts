@@ -300,6 +300,11 @@ export interface EngineCallbacks {
 export interface BrushEngineOptions {
   bevelBoundingFieldEnabled?: boolean;
   /**
+   * Gives the browser a presentation turn after a startup phase is announced.
+   * Leave disabled for observers that only record the timeline.
+   */
+  startupProgressPresentationYieldEnabled?: boolean;
+  /**
    * Leaves the selected brush's first-use resources cold until the editor
    * explicitly prepares a brush interaction. Core canvas rendering remains
    * available so navigation can be the initial interaction on slower devices.

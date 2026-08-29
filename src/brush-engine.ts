@@ -1099,6 +1099,7 @@ export class BrushEngine {
   readonly canvas: HTMLCanvasElement;
   readonly callbacks: EngineCallbacks;
   readonly bevelBoundingFieldEnabled: boolean;
+  readonly startupProgressPresentationYieldEnabled: boolean;
   readonly layerMemoryStressTestEnabled: boolean;
   readonly layerCompressionTestEnabled: boolean;
   readonly layerColdCompressionEnabled: boolean;
@@ -2043,6 +2044,8 @@ export class BrushEngine {
     this.canvas = canvas;
     this.callbacks = callbacks;
     this.bevelBoundingFieldEnabled = options.bevelBoundingFieldEnabled === true;
+    this.startupProgressPresentationYieldEnabled =
+      options.startupProgressPresentationYieldEnabled === true;
     this.selectedBrushPreparationDeferred = options.deferSelectedBrushPreparation === true;
     this.layerMemoryStressTestEnabled = options.layerMemoryStressTestEnabled === true;
     this.layerCompressionTestEnabled = options.layerCompressionTestEnabled === true;
@@ -2176,9 +2179,9 @@ export class BrushEngine {
   }
 
   async yieldStartupProgress(): Promise<void> {
-    if (!this.callbacks.onStartupProgress) return;
-    // The diagnostic build yields once so its progress surface can paint before
-    // a driver enters a long synchronous compile or allocation call.
+    if (!this.startupProgressPresentationYieldEnabled) return;
+    // Yield once so the startup surface can paint before a driver enters a long
+    // synchronous compile or allocation call.
     await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
   }
 

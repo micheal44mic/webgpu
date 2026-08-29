@@ -1,5 +1,6 @@
 import "./styles.css";
 import { canonicalBrushColorForFormat } from "./brush-color.ts";
+import { getCanvasStartupOverlayController } from "./canvas-startup-overlay-controller";
 import { EditorToolsController } from "./editor-tools-controller";
 import type {
   EditorRasterEffectKind,
@@ -822,6 +823,9 @@ function finishLayerMultiSelectionForToolChange(): Promise<boolean> {
   });
   return pending;
 }
+const canvasStartupOverlay = getCanvasStartupOverlayController();
+const canvasStartupProgressObserved =
+  canvasStartupOverlay.isVisible() || editorExtensionBootstrap?.startupProgressEnabled === true;
 const engine = new BrushEngine(canvas, {
   onStatus(message, kind) {
     statusElement.textContent = message;
@@ -831,8 +835,22 @@ const engine = new BrushEngine(canvas, {
     }
     rasterAdjustmentsController?.handleEngineStatus(message, kind);
   },
-  onStartupProgress: editorExtensionBootstrap?.startupProgressEnabled
-    ? (progress) => editorExtension?.handleEngineStartupProgress?.(progress)
+  onStartupProgress: canvasStartupProgressObserved
+    ? (progress) => {
+      canvasStartupOverlay.report(progress);
+      if (progress.state === "failed") {
+        const detailMessage = progress.detail?.message;
+        const message = typeof detailMessage === "string" && detailMessage.length > 0
+          ? detailMessage
+          : `${progress.label} failed.`;
+        statusElement.textContent = message;
+        statusElement.className = "status error";
+        appDiagnosticsController?.recordStatusError(message);
+      }
+      if (editorExtensionBootstrap?.startupProgressEnabled) {
+        editorExtension?.handleEngineStartupProgress?.(progress);
+      }
+    }
     : undefined,
   onStats(stats) {
     runtimeStatsController?.update(stats);
@@ -919,6 +937,7 @@ const engine = new BrushEngine(canvas, {
 }, tipPreviewCanvas, {
   bevelBoundingFieldEnabled:
     editorExtensionEngineOptions.bevelBoundingFieldEnabled ?? bevelBoundingFieldEnabled,
+  startupProgressPresentationYieldEnabled: canvasStartupProgressObserved,
   deferSelectedBrushPreparation: true,
   layerMemoryStressTestEnabled:
     editorExtensionEngineOptions.layerMemoryStressTestEnabled ?? false,
@@ -2874,6 +2893,7 @@ void engine.initialize()
     });
   })
   .catch((error) => {
+    canvasStartupOverlay.fail();
     editorExtension?.handleEngineInitializationError(error);
     const message = error instanceof Error ? error.message : String(error);
     const secureContextHint = !window.isSecureContext

@@ -1,5 +1,6 @@
 :root {
   --app-background: #0d0f13;
+  --app-accent: #dd5c35;
   --mobile-icon-face: #f2f0e9;
   --mobile-icon-inactive: #85888f;
   --mobile-icon-outline: #202226;
@@ -3048,6 +3049,179 @@ select {
   transform: translateX(-50%);
   pointer-events: none;
   text-align: center;
+}
+
+.canvas-startup-overlay {
+  --canvas-startup-progress: 0.04;
+  position: fixed;
+  z-index: 120;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding:
+    max(24px, env(safe-area-inset-top))
+    max(24px, env(safe-area-inset-right))
+    max(24px, env(safe-area-inset-bottom))
+    max(24px, env(safe-area-inset-left));
+  overflow: hidden;
+  background: rgb(9 11 15 / 64%);
+  color: #f4f3ef;
+  cursor: progress;
+  opacity: 1;
+  touch-action: none;
+  transition: opacity 180ms ease;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+
+.canvas-startup-overlay[hidden] {
+  display: none;
+}
+
+.canvas-startup-overlay[data-state="complete"] {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.canvas-startup-content {
+  display: grid;
+  justify-items: center;
+  gap: 42px;
+  width: min(100%, 320px);
+}
+
+.canvas-startup-wordmark {
+  margin: 0;
+  color: #f6f4ee;
+  font-size: clamp(0.92rem, 2.8vw, 1.08rem);
+  font-weight: 780;
+  letter-spacing: -0.035em;
+  line-height: 1;
+}
+
+.canvas-startup-wordmark-reveal {
+  display: block;
+}
+
+.canvas-startup-wordmark-characters {
+  display: inline-flex;
+}
+
+.canvas-startup-wordmark-characters > span {
+  display: block;
+  animation-duration: 3.2s;
+  animation-iteration-count: infinite;
+  animation-timing-function: step-end;
+  opacity: 0;
+}
+
+.canvas-startup-wordmark-characters > span:first-child {
+  animation-name: canvas-startup-character-first;
+}
+
+.canvas-startup-wordmark-characters > span:nth-child(2) {
+  animation-name: canvas-startup-character-second;
+}
+
+.canvas-startup-wordmark-characters > span:nth-child(3) {
+  animation-name: canvas-startup-character-third;
+}
+
+.canvas-startup-wordmark-characters > span:nth-child(4) {
+  animation-name: canvas-startup-character-fourth;
+}
+
+.canvas-startup-wordmark-characters > span:nth-child(5) {
+  animation-name: canvas-startup-character-fifth;
+}
+
+.canvas-startup-wordmark-characters > span:nth-child(6) {
+  animation-name: canvas-startup-character-sixth;
+}
+
+.canvas-startup-wordmark-characters > span:nth-child(7) {
+  animation-name: canvas-startup-character-seventh;
+}
+
+.canvas-startup-wordmark-characters > span:nth-child(8) {
+  animation-name: canvas-startup-character-eighth;
+}
+
+.canvas-startup-progress {
+  width: clamp(180px, 40vw, 280px);
+  height: 4px;
+  overflow: hidden;
+  background: #2a2e37;
+  border-radius: 0;
+}
+
+.canvas-startup-progress-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--app-accent);
+  transform: scaleX(var(--canvas-startup-progress));
+  transform-origin: left center;
+  transition: transform 220ms ease-out;
+}
+
+@keyframes canvas-startup-character-first {
+  0%, 99.99% { opacity: 1; }
+  100% { opacity: 1; }
+}
+
+@keyframes canvas-startup-character-second {
+  0%, 11.99% { opacity: 0; }
+  12%, 99.99% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@keyframes canvas-startup-character-third {
+  0%, 21.99% { opacity: 0; }
+  22%, 99.99% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@keyframes canvas-startup-character-fourth {
+  0%, 31.99% { opacity: 0; }
+  32%, 99.99% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@keyframes canvas-startup-character-fifth {
+  0%, 41.99% { opacity: 0; }
+  42%, 99.99% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@keyframes canvas-startup-character-sixth {
+  0%, 51.99% { opacity: 0; }
+  52%, 99.99% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@keyframes canvas-startup-character-seventh {
+  0%, 61.99% { opacity: 0; }
+  62%, 99.99% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@keyframes canvas-startup-character-eighth {
+  0%, 71.99% { opacity: 0; }
+  72%, 99.99% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .canvas-startup-overlay,
+  .canvas-startup-progress-fill {
+    transition: none;
+  }
+
+  .canvas-startup-wordmark-characters > span {
+    animation: none;
+    opacity: 1;
+  }
 }
 
 .stats {

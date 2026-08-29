@@ -3,11 +3,21 @@ import fs from "node:fs";
 const html = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const startup = fs.readFileSync(new URL("../src/startup.ts", import.meta.url), "utf8");
 const main = fs.readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const canvasStartupOverlay = fs.readFileSync(
+  new URL("../src/canvas-startup-overlay-controller.ts", import.meta.url),
+  "utf8",
+);
+const brushEngine = fs.readFileSync(new URL("../src/brush-engine.ts", import.meta.url), "utf8");
+const engineTypes = fs.readFileSync(new URL("../src/engine-types.ts", import.meta.url), "utf8");
 const projectSession = fs.readFileSync(
   new URL("../src/project-session-controller.ts", import.meta.url),
   "utf8",
 );
 const styles = fs.readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+const {
+  createCanvasStartupOverlayState,
+  reduceCanvasStartupOverlayState,
+} = await import("../src/canvas-startup-overlay-controller.ts");
 
 function expect(source, value, label) {
   if (!source.includes(value)) throw new Error(`Missing ${label}: ${value}`);
@@ -15,6 +25,10 @@ function expect(source, value, label) {
 
 function reject(source, value, label) {
   if (source.includes(value)) throw new Error(`Unexpected ${label}: ${value}`);
+}
+
+function assert(condition, label) {
+  if (!condition) throw new Error(`Failed ${label}.`);
 }
 
 expect(html, '<html lang="en">', "English document language");
@@ -36,12 +50,57 @@ expect(html, 'max="4000"', "maximum canvas dimension");
 expect(html, 'id="saveProjectButton"', "editor save control");
 expect(html, 'id="projectHomeButton"', "editor home control");
 expect(html, 'src="/src/startup.ts"', "deferred editor entrypoint");
+expect(html, 'id="canvasStartupOverlay"', "canvas startup overlay");
+expect(html, 'aria-label="M1M4.COM"', "stable startup wordmark label");
+expect(
+  html,
+  '<span>M</span><span>1</span><span>M</span><span>4</span><span>.</span><span>C</span><span>O</span><span>M</span>',
+  "complete animated startup wordmark",
+);
+expect(html, 'id="canvasStartupProgress"', "canvas startup progressbar");
+expect(html, 'role="progressbar"', "canvas startup progress semantics");
+expect(html, 'aria-valuemin="0"', "canvas startup progress minimum");
+expect(html, 'aria-valuemax="100"', "canvas startup progress maximum");
+reject(html, 'aria-describedby="canvasStartupLabel"', "duplicate canvas startup progress label");
+const startupOverlayMarkupStart = html.indexOf('id="canvasStartupOverlay"');
+const startupOverlayMarkupEnd = html.indexOf('<header id="editorTopbar"', startupOverlayMarkupStart);
+assert(
+  startupOverlayMarkupStart >= 0 && startupOverlayMarkupEnd > startupOverlayMarkupStart,
+  "canvas startup overlay markup boundary",
+);
+const startupOverlayMarkup = html.slice(startupOverlayMarkupStart, startupOverlayMarkupEnd);
+expect(startupOverlayMarkup, "hidden", "initially hidden canvas startup overlay");
+expect(startupOverlayMarkup, 'aria-busy="true"', "canvas startup busy state");
+expect(startupOverlayMarkup, 'role="status"', "single canvas startup live status");
+expect(startupOverlayMarkup, 'aria-live="polite"', "polite canvas startup live status");
+expect(startupOverlayMarkup, 'aria-atomic="true"', "atomic canvas startup live status");
 
 expect(startup, 'await import("./main")', "dynamic editor boot");
 expect(startup, "storageReady", "parallel project storage startup");
 expect(startup, "preloadedProject", "project read overlapped with WebGPU startup");
 expect(startup, 'window.history.pushState(null, "", url)', "warm Home/editor navigation");
 expect(startup, 'showApplicationSurface("editor")', "warm editor surface reuse");
+expect(
+  startup,
+  "const startupOverlay = getCanvasStartupOverlayController();",
+  "canvas startup overlay composition",
+);
+expect(startup, "startupOverlay.reset();", "canvas startup overlay reset");
+expect(startup, "startupOverlay.fail();", "canvas startup import failure cleanup");
+expect(
+  startup,
+  "The editor application code could not load. Reload the page to try again.",
+  "visible editor module failure status",
+);
+const startupOverlayReset = startup.indexOf("startupOverlay.reset();");
+const editorSurfaceShow = startup.indexOf('showApplicationSurface("editor")', startupOverlayReset);
+const editorImport = startup.indexOf('await import("./main")', startupOverlayReset);
+assert(
+  startupOverlayReset >= 0
+    && editorSurfaceShow > startupOverlayReset
+    && editorImport > editorSurfaceShow,
+  "canvas startup overlay reset before editor surface and module import",
+);
 reject(startup, "this.browser.location.assign", "Home-triggered full-page navigation");
 expect(startup, 'this.storage.listProjects()', "recent project loading");
 expect(startup, 'this.storage.renameProject', "project rename");
@@ -61,6 +120,42 @@ expect(startup, "options.root.querySelectorAll", "root-scoped preset discovery")
 reject(startup, "private readonly home = element", "global Home field lookup");
 
 expect(main, "new ProjectSessionController({", "project session composition");
+expect(
+  main,
+  "const canvasStartupOverlay = getCanvasStartupOverlayController();",
+  "shared canvas startup overlay controller",
+);
+expect(main, "canvasStartupOverlay.report(progress);", "real engine startup progress forwarding");
+expect(
+  main,
+  "if (editorExtensionBootstrap?.startupProgressEnabled)",
+  "diagnostic startup progress forwarding gate",
+);
+expect(main, "canvasStartupOverlay.fail();", "engine startup failure cleanup");
+expect(
+  main,
+  "const canvasStartupProgressObserved =",
+  "shared visible UI or diagnostic startup observer gate",
+);
+expect(
+  main,
+  "onStartupProgress: canvasStartupProgressObserved",
+  "hidden non-diagnostic startup fast path",
+);
+expect(
+  main,
+  "startupProgressPresentationYieldEnabled: canvasStartupProgressObserved",
+  "startup presentation turns share the observer gate",
+);
+const overlayProgressForward = main.indexOf("canvasStartupOverlay.report(progress);");
+const diagnosticProgressGate = main.indexOf(
+  "if (editorExtensionBootstrap?.startupProgressEnabled)",
+  overlayProgressForward,
+);
+assert(
+  overlayProgressForward >= 0 && diagnosticProgressGate > overlayProgressForward,
+  "canvas progress before optional diagnostic forwarding",
+);
 expect(main, "captureDocument: () => engine.captureProjectDocument()", "capture engine port");
 expect(main, "restoreDocument: (project) => engine.restoreProjectDocument(project)", "restore engine port");
 expect(main, "projectSessionController?.noteHistoryState(state)", "history dirty tracking port");
@@ -138,7 +233,122 @@ reject(main, "async function returnToProjectHome", "legacy project navigation in
 expect(styles, ".project-home", "home styling");
 expect(styles, ".project-grid", "recent-project styling");
 expect(styles, ".canvas-preset-grid", "canvas selector styling");
+expect(styles, "--app-accent: #dd5c35", "shared orange application accent");
+const startupStylesStart = styles.indexOf(".canvas-startup-overlay {");
+const startupStylesEnd = styles.indexOf(".stats {", startupStylesStart);
+assert(startupStylesStart >= 0 && startupStylesEnd > startupStylesStart, "startup style boundary");
+const startupStyles = styles.slice(startupStylesStart, startupStylesEnd);
+expect(startupStyles, "backdrop-filter: blur(6px)", "canvas startup background blur");
+expect(startupStyles, "background: #2a2e37", "canvas startup progress track");
+expect(startupStyles, "background: var(--app-accent)", "canvas startup progress fill");
+expect(startupStyles, "border-radius: 0", "square canvas startup progress track");
+expect(startupStyles, "@keyframes canvas-startup-character-eighth", "complete wordmark reveal loop");
+expect(
+  startupStyles,
+  ".canvas-startup-wordmark-characters > span {\n    animation: none;\n    opacity: 1;",
+  "static reduced-motion wordmark",
+);
+expect(startupStyles, "transition: none", "reduced-motion startup transitions");
 expect(styles, "@media (max-width: 680px)", "mobile layout");
 expect(styles, "@media (prefers-reduced-motion: reduce)", "reduced-motion support");
+
+expect(canvasStartupOverlay, '"document-pipelines": { started: 40, completed: 70 }', "pipeline progress range");
+expect(canvasStartupOverlay, "Math.max(current.percent, phasePercent)", "monotonic startup progress");
+expect(
+  canvasStartupOverlay,
+  "const complete = !failed && firstFrameGpuReady && editorReady;",
+  "first GPU frame and editor-ready completion gate",
+);
+expect(canvasStartupOverlay, "percent: complete ? 100", "terminal canvas startup progress");
+expect(canvasStartupOverlay, 'complete ? "Canvas ready"', "terminal canvas startup label");
+expect(canvasStartupOverlay, 'overlay.dataset.state = "complete"', "canvas startup completion state");
+expect(canvasStartupOverlay, "overlay.hidden = true", "canvas startup overlay dismissal");
+expect(canvasStartupOverlay, "child.inert = true", "blocked editor interaction during startup");
+expect(canvasStartupOverlay, "element.inert = false", "restored editor interaction after startup");
+expect(canvasStartupOverlay, "isVisible(): boolean", "visible startup overlay presentation gate");
+reject(canvasStartupOverlay, "BrushEngine", "engine implementation dependency in startup overlay");
+reject(canvasStartupOverlay, "createTexture", "GPU resource creation in startup overlay");
+reject(canvasStartupOverlay, "requestDevice", "GPU device change in startup overlay");
+
+expect(
+  engineTypes,
+  "startupProgressPresentationYieldEnabled?: boolean;",
+  "opt-in startup presentation-turn option",
+);
+expect(
+  brushEngine,
+  "options.startupProgressPresentationYieldEnabled === true",
+  "startup presentation-turn default-off gate",
+);
+expect(
+  brushEngine,
+  "if (!this.startupProgressPresentationYieldEnabled) return;",
+  "startup presentation turn independent from observer presence",
+);
+
+const startupEvent = (phase, state, label = phase) => ({
+  phase,
+  label,
+  state,
+  totalElapsedMs: 0,
+  phaseElapsedMs: 0,
+  detail: null,
+});
+const initialStartupState = createCanvasStartupOverlayState();
+assert(initialStartupState.percent === 4, "initial canvas startup progress");
+const unknownStartupState = reduceCanvasStartupOverlayState(
+  initialStartupState,
+  startupEvent("unknown-phase", "completed"),
+);
+assert(unknownStartupState.percent === 4, "unknown startup phase stability");
+const pipelineStartupState = reduceCanvasStartupOverlayState(
+  unknownStartupState,
+  startupEvent("document-pipelines", "completed"),
+);
+const outOfOrderStartupState = reduceCanvasStartupOverlayState(
+  pipelineStartupState,
+  startupEvent("adapter-request", "started"),
+);
+assert(outOfOrderStartupState.percent === 70, "out-of-order monotonic startup progress");
+const editorFirstStartupState = reduceCanvasStartupOverlayState(
+  outOfOrderStartupState,
+  startupEvent("editor-ready", "completed"),
+);
+assert(
+  editorFirstStartupState.percent === 99 && !editorFirstStartupState.complete,
+  "editor-ready waits for first GPU frame",
+);
+const editorThenGpuStartupState = reduceCanvasStartupOverlayState(
+  editorFirstStartupState,
+  startupEvent("first-frame-gpu", "completed"),
+);
+assert(
+  editorThenGpuStartupState.percent === 100
+    && editorThenGpuStartupState.complete
+    && editorThenGpuStartupState.label === "Canvas ready",
+  "editor-then-GPU terminal startup state",
+);
+const gpuFirstStartupState = reduceCanvasStartupOverlayState(
+  createCanvasStartupOverlayState(),
+  startupEvent("first-frame-gpu", "completed"),
+);
+assert(!gpuFirstStartupState.complete, "first GPU frame waits for editor-ready");
+const gpuThenEditorStartupState = reduceCanvasStartupOverlayState(
+  gpuFirstStartupState,
+  startupEvent("editor-ready", "completed"),
+);
+assert(
+  gpuThenEditorStartupState.percent === 100 && gpuThenEditorStartupState.complete,
+  "GPU-then-editor terminal startup state",
+);
+const failedStartupState = reduceCanvasStartupOverlayState(
+  createCanvasStartupOverlayState(),
+  startupEvent("device-request", "failed"),
+);
+const postFailureStartupState = reduceCanvasStartupOverlayState(
+  failedStartupState,
+  startupEvent("editor-ready", "completed"),
+);
+assert(failedStartupState.failed && !postFailureStartupState.complete, "terminal startup failure");
 
 console.info("Project home verification passed.");

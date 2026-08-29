@@ -21,6 +21,7 @@ import {
   type ProjectSummaryV1,
 } from "./project-storage";
 import type { ProjectEditorBootstrap } from "./project-shell-contract";
+import { getCanvasStartupOverlayController } from "./canvas-startup-overlay-controller";
 
 const HOME_ICONS: Readonly<Record<string, IconNode>> = {
   "arrow-up-right": ArrowUpRight,
@@ -589,8 +590,20 @@ async function boot(): Promise<void> {
       returnHome: () => showHome(true),
     };
     window.__projectEditorBootstrap = bootstrap;
+    const startupOverlay = getCanvasStartupOverlayController();
+    startupOverlay.reset();
     showApplicationSurface("editor");
-    await import("./main");
+    try {
+      await import("./main");
+    } catch (error) {
+      const editorStatus = document.getElementById("status");
+      if (editorStatus) {
+        editorStatus.textContent = "The editor application code could not load. Reload the page to try again.";
+        editorStatus.className = "status app-status error";
+      }
+      startupOverlay.fail();
+      throw error;
+    }
     editorLoaded = true;
     suspendedEditorUrl = new URL(window.location.href);
   };

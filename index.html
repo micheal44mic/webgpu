@@ -220,6 +220,45 @@
     </section>
 
     <div id="app" hidden>
+      <div
+        id="canvasStartupOverlay"
+        class="canvas-startup-overlay"
+        aria-busy="true"
+        hidden
+      >
+        <div class="canvas-startup-content">
+          <p class="canvas-startup-wordmark" aria-label="M1M4.COM">
+            <span class="canvas-startup-wordmark-reveal" aria-hidden="true">
+              <span class="canvas-startup-wordmark-characters">
+                <span>M</span><span>1</span><span>M</span><span>4</span><span>.</span><span>C</span><span>O</span><span>M</span>
+              </span>
+            </span>
+          </p>
+          <div
+            id="canvasStartupProgress"
+            class="canvas-startup-progress"
+            role="progressbar"
+            aria-label="Loading canvas"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow="4"
+            aria-valuetext="Opening canvas"
+          >
+            <span
+              id="canvasStartupProgressFill"
+              class="canvas-startup-progress-fill"
+              aria-hidden="true"
+            ></span>
+          </div>
+          <p
+            id="canvasStartupLabel"
+            class="visually-hidden"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >Opening canvas</p>
+        </div>
+      </div>
       <header id="editorTopbar" class="topbar">
         <nav class="mobile-header" aria-label="Editor navigation">
           <button

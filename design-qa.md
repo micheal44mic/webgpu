@@ -110,3 +110,46 @@ Date: 2026-08-27
 - Verified production and laboratory builds, type checking, focused controller verifiers, and product-neutral source naming.
 
 final result: passed
+
+---
+
+# Canvas Startup Overlay — Design QA
+
+Date: 2026-08-29
+
+## Visual truth and evidence
+
+- Supplied visual reference: `design-qa-assets/canvas-startup-overlay-reference.png`.
+- Initial one-character implementation state: `design-qa-assets/canvas-startup-overlay-451x189.png`.
+- Completed-wordmark implementation state: `design-qa-assets/canvas-startup-overlay-451x189-wordmark.png`.
+- Direct comparison, reference on the left and implementation on the right: `design-qa-assets/canvas-startup-overlay-comparison.png`.
+- Capture viewport: 451 × 189 CSS pixels at device pixel ratio 1, matching the supplied reference exactly.
+- Captured state: 4096 × 4096 canvas startup, with the long document-pipeline phase active and the progress bar at 40%.
+- Full-view evidence is sufficient because the complete component and its surrounding blur fit legibly inside the matched viewport; no separate focused crop was needed.
+
+## Visual comparison
+
+- The implementation preserves the reference's restrained dark full-screen veil, centered loading group, thin rectangular gray track and minimal visual density.
+- The supplied activity mark is replaced by the requested stable `M1M4.COM` wordmark. Characters reveal in order, hold as a complete word, then restart together without moving the final text bounds.
+- The progress track measures about 180 × 4 CSS pixels at the reference viewport, has a computed radius of 0 px, and uses the established gray `rgb(42, 46, 55)`.
+- The progress fill uses the project orange `rgb(221, 92, 53)` and reports real engine milestones rather than elapsed-time simulation.
+- The 6 px background blur and dark fallback preserve legibility while reducing compositor cost during startup on older devices.
+- Typography uses the existing application font stack, 14.72 px at the captured viewport, with no new runtime image or font assets.
+- Visible copy is limited to `M1M4.COM`; phase labels remain available to assistive technology without adding visual noise.
+
+## Interaction and lifecycle checks
+
+- The overlay resets before the editor surface and dynamic module import become active.
+- Progress is monotonic for duplicate, unknown and out-of-order engine events.
+- Completion requires both `first-frame-gpu` and `editor-ready`; 100% remains fully visible for a short hold before the fade begins.
+- Editor controls are inert behind the veil and become interactive again after completion or failure.
+- The wordmark animation remains CSS-driven during synchronous driver work. Reduced-motion mode shows the complete wordmark and removes transitions.
+- Engine feature requests, texture formats, pipeline creation and GPU resource ownership remain outside the overlay controller.
+- Browser console review reported no warnings or errors during the captured 4096 × 4096 startup.
+
+## Comparison history
+
+- First pass: corrected an overly wide fixed-cell wordmark, an insufficient brand-to-track gap, a 100% state that faded too early, keyboard access behind the veil and a 12 px blur that was unnecessarily expensive for the target device.
+- Final pass: natural-width wordmark, 42 px vertical gap, visible terminal hold, inert background, 6 px blur, square track and matched 451 × 189 comparison all passed.
+
+final result: passed
