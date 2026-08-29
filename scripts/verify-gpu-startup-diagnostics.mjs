@@ -17,11 +17,13 @@ const vite = read("vite.config.ts");
 const attach = read("scripts/attach-human-replay-site-build.mjs");
 const indexHtml = read("index.html");
 const startup = read("src/startup.ts");
+const mainSource = read("src/main.ts");
+const projectSessionSource = read("src/project-session-controller.ts");
 const engineSource = read("src/brush-engine.ts");
 const layerRuntimeSource = read("src/engine-layer-runtime.ts");
 const featurePolicySource = read("src/gpu-startup-feature-policy.ts");
 
-const DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v10";
+const DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v11";
 const DEFAULT_TEST_ID = "startup-no-tier2-v1";
 const DEFAULT_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
 const STORAGE_FORMAT_TEST_ID = "storage-format-ab-v1";
@@ -72,7 +74,7 @@ const APPLICATION_4096_COMPARISON = {
   requiredFeatures: [],
   textureFormatsTier2Requested: false,
   applicationFrame: "isolated-production-startup",
-  startupMode: "cold-empty-document",
+  startupMode: "cold-new-project",
   deferredObservationMs: 5000,
 };
 const STORAGE_FORMAT_STAGES = [
@@ -280,6 +282,7 @@ assert.match(html, /DIAGNOSTIC_TEST_ID === "document-pipeline-bisect-v1"/);
 assert.match(html, /DIAGNOSTIC_TEST_ID === "application-4096-startup-v1"/);
 assert.match(html, /documentWidth: 4096/);
 assert.match(html, /documentHeight: 4096/);
+assert.match(html, /startupMode: "cold-new-project"/);
 assert.match(html, /deferredObservationMs: 5000/);
 assert.match(html, /expectedSynchronousPipelineLayouts: 17/);
 assert.match(html, /expectedSynchronousRenderPipelines: 52/);
@@ -312,6 +315,9 @@ assert.match(moduleSource, /APPLICATION_4096_TEST = "application-4096-startup-v1
 assert.match(moduleSource, new RegExp(APPLICATION_4096_VARIANT));
 assert.match(moduleSource, /APPLICATION_4096_DOCUMENT_WIDTH = 4096/);
 assert.match(moduleSource, /APPLICATION_4096_DOCUMENT_HEIGHT = 4096/);
+assert.match(moduleSource, /target\.searchParams\.set\("project", "diagnostic-new-project"\)/);
+assert.match(moduleSource, /target\.searchParams\.set\("newProject", "1"\)/);
+assert.match(moduleSource, /createNewProject: true/);
 assert.match(moduleSource, /diagnosticTest !== DOCUMENT_PIPELINE_TEST[\s\S]*Unsupported GPU diagnostic test/);
 assert.match(moduleSource, /if \(storageFormatAbEnabled\) \{\s*await runStorageFormatAbDiagnostic\(\);\s*return;/);
 assert.match(moduleSource, /if \(documentPipelineBisectEnabled\) \{\s*await runDocumentPipelineBisectDiagnostic\(\);\s*return;/);
@@ -468,6 +474,7 @@ assert.match(workerBuilder, /handleEngineStartupProgress/);
 assert.match(workerBuilder, /DOCUMENT_PIPELINE_TEST_ID = "document-pipeline-bisect-v1"/);
 assert.match(workerBuilder, /APPLICATION_4096_TEST_ID = "application-4096-startup-v1"/);
 assert.match(workerBuilder, new RegExp(APPLICATION_4096_VARIANT));
+assert.match(workerBuilder, /startupMode: "cold-new-project"/);
 assert.match(workerBuilder, /EXPECTED_DOCUMENT_RENDER_PIPELINES = 52/);
 assert.match(workerBuilder, /EXPECTED_DOCUMENT_PIPELINE_LAYOUTS = 17/);
 assert.match(workerBuilder, /EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS = 2/);
@@ -490,6 +497,20 @@ assert.match(workerBuilder, /textureFormatsTier2Enabled: engine\.device\.feature
 assert.match(workerBuilder, /textureFormatsTier2Advertised: engine\.adapter\?\.features\?\.has\("texture-formats-tier2"\) === true/);
 assert.match(workerBuilder, /inPlaceGlazeCommitEnabled: engine\.lightGlazeInPlaceCommitSupported === true/);
 assert.match(workerBuilder, /inPlaceGlazeCommitPipelineCreated: engine\.lightGlazeInPlaceCommitPipeline != null/);
+const productionStartupStart = mainSource.indexOf("void engine.initialize()");
+const productionStartupEnd = mainSource.indexOf(
+  "\n  .catch((error) => {",
+  productionStartupStart,
+);
+assert.ok(productionStartupStart >= 0 && productionStartupEnd > productionStartupStart);
+const productionStartupBody = mainSource.slice(productionStartupStart, productionStartupEnd);
+assert.doesNotMatch(
+  productionStartupBody,
+  /scheduleDeferredStartupTask|ensureOptionalEditorResources|prewarmRaster|initializeMixedSceneController|prepareGpuResources/,
+  "the diagnostic production startup must remain free of optional GPU warm-up",
+);
+assert.match(projectSessionSource, /await this\.save\(\{ captureThumbnail: false \}\)/);
+assert.match(projectSessionSource, /options\.captureThumbnail !== false/);
 assert.match(workerBuilder, /gpuStartupDiagnosticDefinition\(payload\.summary\.testId\)/);
 assert.match(workerBuilder, /validGpuStartupDiagnosticComparison\(comparison, definition\.comparison\)/);
 assert.match(workerBuilder, /new TextEncoder\(\)\.encode\(summaryJson\)\.byteLength > 24 \* 1024/);

@@ -37,7 +37,12 @@ assert.match(engine, /activeRasterColorAdjustSession: ActiveRasterColorAdjustSes
 assert.match(engine, /abandonRasterColorAdjustSession\(this\)/);
 assert.match(engine, /if \(this\.activeRasterColorAdjustSession\) return "color-adjust"/);
 assert.match(engine, /prewarmRasterColorAdjustResources/);
-assert.match(main, /await engine\.prewarmRasterToneCurvesResources\(\);\s*await engine\.prewarmRasterColorAdjustResources\(\);/);
+assert.doesNotMatch(main, /prewarmRasterColorAdjustResources\(\)/);
+assert.match(
+  runtime,
+  /export async function beginRasterColorAdjust[\s\S]{0,6000}const shared = await requireSharedResources\(engine\.device\)/,
+  "opening Color Adjust must compile its shared resources on demand",
+);
 
 const curveGateCount = (engine.match(/activeRasterToneCurvesSession/g) ?? []).length;
 const colorGateCount = (engine.match(/activeRasterColorAdjustSession/g) ?? []).length;

@@ -1,7 +1,10 @@
 import "./styles.css";
 import { canonicalBrushColorForFormat } from "./brush-color.ts";
 import { EditorToolsController } from "./editor-tools-controller";
-import type { EditorRasterEffectKind } from "./editor-tools-contract";
+import type {
+  EditorRasterEffectKind,
+  EditorToolSettingsKind,
+} from "./editor-tools-contract";
 import { SceneImportBridge } from "./scene-import-bridge";
 import { EditorFiltersController } from "./editor-filters-controller";
 import { MobileBrushStudioController } from "./mobile-brush-studio";
@@ -1569,6 +1572,10 @@ function rasterEffectMenuEnabled(kind: EditorRasterEffectKind): boolean {
   return rasterStyleController.effectEnabled(kind);
 }
 
+function toolSettingsRequireMixedScene(kind: EditorToolSettingsKind): boolean {
+  return kind === "svg-style" || kind.startsWith("text");
+}
+
 function syncMobileToolsMenuState(
   sceneSnapshot = engineInitialized ? engine.getMixedSceneSnapshot() : null,
 ): void {
@@ -2303,13 +2310,28 @@ editorToolsController = new EditorToolsController({
   syncMenuState: syncMobileToolsMenuState,
   selectCanvasTool: selectCanvasToolWithMixedScene,
   openToolSettings: (kind, trigger) => {
+    const openRequestedSettings = (requestedKind: EditorToolSettingsKind): void => {
+      void (async () => {
+        if (toolSettingsRequireMixedScene(requestedKind)) {
+          await initializeMixedSceneController();
+        }
+        mobileToolSettingsSheet?.open(requestedKind, trigger);
+      })().catch((error) => {
+        appDiagnosticsController?.recordOperation(
+          "initialize-tool-settings",
+          requestedKind,
+          error,
+        );
+        console.error(`Could not initialize the ${requestedKind} settings.`, error);
+      });
+    };
     if (rasterAdjustmentsController?.needsAdjustmentSettlementForToolChange(historyState) !== true) {
-      mobileToolSettingsSheet?.open(kind, trigger);
+      openRequestedSettings(kind);
       return;
     }
     const requestedKind = kind;
     void rasterAdjustmentsController.commitActiveAdjustmentForToolChange().then((committed) => {
-      if (committed) mobileToolSettingsSheet?.open(requestedKind, trigger);
+      if (committed) openRequestedSettings(requestedKind);
     });
   },
   runVectorCommand: (command) => {
@@ -2775,24 +2797,6 @@ canvasToolController?.setSelectionCombineMode("replace");
 canvasToolController?.configure("pan", false);
 updateHistoryControls();
 
-function scheduleDeferredStartupTask(
-  name: string,
-  task: () => Promise<void>,
-  timeout: number,
-): void {
-  const run = (): void => {
-    void task().catch((error) => {
-      appDiagnosticsController?.recordOperation(name, null, error);
-      console.error(`Deferred startup task ${name} failed.`, error);
-    });
-  };
-  if (typeof window.requestIdleCallback === "function") {
-    window.requestIdleCallback(run, { timeout });
-    return;
-  }
-  window.setTimeout(run, 0);
-}
-
 async function initializeMixedSceneController(): Promise<MixedSceneController> {
   if (mixedSceneController) return mixedSceneController;
   if (mixedSceneInitializationPromise) return mixedSceneInitializationPromise;
@@ -2844,7 +2848,6 @@ async function initializeMixedSceneController(): Promise<MixedSceneController> {
 void engine.initialize()
   .then(async () => {
     engineInitialized = true;
-    brushOutlineController?.prepareGpuResources();
     if (!projectSessionController) {
       throw new Error("Project session controller is unavailable.");
     }
@@ -2869,35 +2872,6 @@ void engine.initialize()
       runtimeStatsController?.start();
       await editorExtension?.afterEngineInitialized();
     });
-
-    scheduleDeferredStartupTask(
-      "deferred-gpu-pipelines",
-      () => engine.ensureOptionalEditorResources(),
-      500,
-    );
-    scheduleDeferredStartupTask(
-      "deferred-raster-tone-curves",
-      async () => {
-        // Preserve one-way sequencing for GPU validation scopes: Curves waits
-        // for shared optional resources, while their consumers never wait for
-        // Curves and retain independent failure behavior.
-        await engine.ensureOptionalEditorResources();
-        await engine.prewarmRasterToneCurvesResources();
-        await engine.prewarmRasterColorAdjustResources();
-        await engine.prewarmRasterColorBalanceResources();
-        await engine.prewarmRasterGradientMapResources();
-      },
-      2_000,
-    );
-    if (engine.mixedSceneEnabled) {
-      scheduleDeferredStartupTask(
-        "deferred-mixed-scene",
-        async () => {
-          await initializeMixedSceneController();
-        },
-        1_500,
-      );
-    }
   })
   .catch((error) => {
     editorExtension?.handleEngineInitializationError(error);

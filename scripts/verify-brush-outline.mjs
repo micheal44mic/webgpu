@@ -624,7 +624,12 @@ assert.doesNotMatch(coreSource, /document|window|HTMLCanvasElement|CanvasRenderi
   "l'estrazione della frontiera deve restare indipendente dal DOM");
 
 assert.match(mainSource, /new BrushOutlineController\(\{[\s\S]*?overlay: brushOutlineCanvas/);
-assert.match(mainSource, /brushOutlineController\?\.prepareGpuResources\(\)/);
+assert.doesNotMatch(mainSource, /brushOutlineController\?\.prepareGpuResources\(\)/);
+assert.match(
+  controllerSource,
+  /private drawGpuOutline\([\s\S]{0,350}const resources = this\.ensureGpuResources\(\)/,
+  "the brush outline must allocate GPU resources only when it is first drawn",
+);
 assert.match(registrySource, /"Brush preview"/,
   "il costo GPU della preview deve comparire come riga autonoma nel pannello memoria");
 assert.match(mainSource, /brushOutlineController\?\.dispose\(\)/);

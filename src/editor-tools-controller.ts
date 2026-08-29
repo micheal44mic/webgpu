@@ -208,10 +208,9 @@ export class EditorToolsController {
           ? state.canvasToolSelectionLocked
           : state.toolSettingsSelectionLocked)
         || (rasterDeformEditor && !state.rasterDeformTargetSelected)
-        || ((textEditor || vectorEffectEditor) && !state.vectorEditorReady)
         || (kind === "text-warp" && !state.textSelected)
         || (vectorEffectEditor && !state.textSelected && !state.svgSelected)
-        || (svgEditor && (!state.vectorEditorReady || !state.svgSelected));
+        || (svgEditor && !state.svgSelected);
       const pressed = svgEditor
         ? state.svgSelected
         : kind === "text"

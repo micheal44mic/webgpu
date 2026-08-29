@@ -39,6 +39,10 @@ export interface ProjectSessionControllerOptions {
   readonly onReturnHome?: (() => Promise<void>) | null;
 }
 
+interface ProjectSaveOptions {
+  readonly captureThumbnail?: boolean;
+}
+
 function canvasBlob(
   source: HTMLCanvasElement,
   type: string,
@@ -170,7 +174,7 @@ export class ProjectSessionController {
       // The URL token selects the editor route; durable storage generates the
       // canonical id when the first head is committed.
       this.currentProjectId = null;
-      await this.save();
+      await this.save({ captureThumbnail: false });
     } else {
       this.updateIdentity("Untitled Artwork");
       this.dirty = true;
@@ -182,9 +186,9 @@ export class ProjectSessionController {
     this.syncSaveControl();
   }
 
-  async save(): Promise<void> {
+  async save(options: Readonly<ProjectSaveOptions> = {}): Promise<void> {
     if (this.savePromise) return this.savePromise;
-    const operation = this.performSave();
+    const operation = this.performSave(options);
     this.savePromise = operation;
     try {
       await operation;
@@ -193,7 +197,7 @@ export class ProjectSessionController {
     }
   }
 
-  private async performSave(): Promise<void> {
+  private async performSave(options: Readonly<ProjectSaveOptions>): Promise<void> {
     if (!this.editorReady) throw new Error("The editor is still starting.");
     this.saveBusy = true;
     this.syncSaveControl();
@@ -206,7 +210,10 @@ export class ProjectSessionController {
       const capturedMutationRevision = this.mutationRevision;
       const captured = await this.engine.captureDocument();
       let thumbnail: Blob | null = null;
-      if (this.mutationRevision === capturedMutationRevision) {
+      if (
+        options.captureThumbnail !== false
+        && this.mutationRevision === capturedMutationRevision
+      ) {
         try {
           thumbnail = await this.captureThumbnailBlob();
         } catch (error) {

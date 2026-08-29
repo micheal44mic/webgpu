@@ -465,8 +465,16 @@ function createHarness() {
   assert.equal(
     harness.importSvgButton.disabled,
     false,
-    "the native import picker must remain available while optional vector resources warm",
+    "the native import picker must remain available before optional vector resources load",
   );
+  assert.equal(
+    harness.textButton.disabled,
+    false,
+    "Text must remain available as an explicit lazy-load trigger",
+  );
+  assert.equal(harness.textWarpButton.disabled, true);
+  assert.equal(harness.outlineButton.disabled, true);
+  assert.equal(harness.svgStyleButton.disabled, true);
 
   harness.controller.renderMenuState({
     activeCanvasTool: "paint",

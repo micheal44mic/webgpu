@@ -108,6 +108,17 @@ expect(main, 'canvasToolController?.activeTool === "fill"', "Fill sheet cleanup 
 reject(main, 'document.addEventListener("visibilitychange"', "background-triggered Fill commit");
 expect(projectSession, "this.storage.saveProject({", "durable save");
 expect(projectSession, "await this.engine.restoreDocument(saved)", "complete project restore");
+expect(
+  projectSession,
+  "await this.save({ captureThumbnail: false })",
+  "thumbnail-free initial project save",
+);
+expect(
+  projectSession,
+  "options.captureThumbnail !== false",
+  "manual thumbnail capture remains opt-out",
+);
+expect(projectSession, "await this.captureThumbnailBlob()", "thumbnail capture remains available on save");
 expect(projectSession, "this.storageReady ?? this.storage.initialize()", "shared storage readiness");
 expect(projectSession, "if (this.onReturnHome)", "warm return to project Home");
 expect(projectSession, 'event.key.toLowerCase() !== "s"', "save shortcut");

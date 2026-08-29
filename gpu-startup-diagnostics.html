@@ -12,7 +12,7 @@
       (function () {
         "use strict";
 
-        var BUILD = "gpu-diagnostics-application-4096-startup-v10";
+        var BUILD = "gpu-diagnostics-application-4096-startup-v11";
         var params = new URLSearchParams(window.location.search);
         var requestedTestId = params.get("test") || "";
         var DIAGNOSTIC_TEST_ID = requestedTestId || "startup-no-tier2-v1";
@@ -63,7 +63,7 @@
                   requiredFeatures: [],
                   textureFormatsTier2Requested: false,
                   applicationFrame: "isolated-production-startup",
-                  startupMode: "cold-empty-document",
+                  startupMode: "cold-new-project",
                   deferredObservationMs: 5000,
                 }
               : {

@@ -40,9 +40,11 @@ assert.match(engine, /activeRasterColorBalanceSession: ActiveRasterColorBalanceS
 assert.match(engine, /abandonRasterColorBalanceSession\(this\)/);
 assert.match(engine, /if \(this\.activeRasterColorBalanceSession\) return "color-balance"/);
 assert.match(engine, /prewarmRasterColorBalanceResources/);
+assert.doesNotMatch(main, /prewarmRasterColorBalanceResources\(\)/);
 assert.match(
-  main,
-  /await engine\.prewarmRasterToneCurvesResources\(\);\s*await engine\.prewarmRasterColorAdjustResources\(\);\s*await engine\.prewarmRasterColorBalanceResources\(\);/,
+  runtime,
+  /export async function beginRasterColorBalance[\s\S]{0,6000}const shared = await requireSharedResources\(engine\.device\)/,
+  "opening Color Balance must compile its shared resources on demand",
 );
 assert.match(engineSource, /engine-raster-color-balance-runtime\.ts/);
 

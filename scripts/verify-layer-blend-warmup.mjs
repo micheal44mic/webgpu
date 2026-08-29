@@ -75,9 +75,15 @@ assert.doesNotMatch(
   "returning to Normal must retain the warmed compositor for the next blend choice",
 );
 
-assert.match(
+assert.doesNotMatch(
   mainSource,
-  /scheduleDeferredStartupTask\(\s*"deferred-gpu-pipelines",\s*\(\) => engine\.ensureOptionalEditorResources\(\),\s*500,/,
+  /scheduleDeferredStartupTask|deferred-gpu-pipelines/,
+  "the optional blend compositor must not be allocated during startup",
+);
+assert.match(
+  engineSource,
+  /settings\.tool === "blend" && !this\.blendRenderer[\s\S]{0,160}await this\.ensureOptionalEditorResources\(\)/,
+  "selecting Blend must retain an explicit on-demand resource path",
 );
 
-console.log("Layer blend idle warm-up and asynchronous pipeline verification passed.");
+console.log("Layer blend on-demand warm-up and asynchronous pipeline verification passed.");

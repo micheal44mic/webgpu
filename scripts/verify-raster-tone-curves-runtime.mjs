@@ -172,15 +172,11 @@ const curvesPrewarm = engine.slice(
 );
 assert.match(curvesPrewarm, /await prewarmRasterToneCurvesRuntime\(this\.device\)/);
 assert.match(curvesPrewarm, /this\.rasterToneCurvesPrewarmPromise = initialization/);
-assert.match(main, /"deferred-raster-tone-curves"/);
+assert.doesNotMatch(main, /deferred-raster-tone-curves|prewarmRasterToneCurvesResources\(\)/);
 assert.match(
-  main,
-  /"deferred-raster-tone-curves"[\s\S]{0,500}await engine\.ensureOptionalEditorResources\(\)[\s\S]{0,180}await engine\.prewarmRasterToneCurvesResources\(\)/,
+  runtime,
+  /export async function beginRasterToneCurves[\s\S]{0,7000}const shared = await requireSharedResources\(engine\.device\)/,
+  "opening Curves must compile its shared resources on demand",
 );
-const mixedSceneStartup = main.slice(
-  main.indexOf('"deferred-mixed-scene"'),
-  main.indexOf(".catch((error)"),
-);
-assert.doesNotMatch(mixedSceneStartup, /prewarmRasterToneCurvesResources/);
 
 console.log("Raster tone curves transactional runtime verification passed.");

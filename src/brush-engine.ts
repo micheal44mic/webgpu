@@ -8448,8 +8448,8 @@ export class BrushEngine {
   }
 
   /**
-   * Completes GPU resources used by deferred editor paths. The promise is
-   * shared so idle startup, tests and an early user action can safely request
+   * Completes GPU resources used by explicitly requested editor paths. The
+   * promise is shared so concurrent tool actions and tests can safely request
    * the same initialization without compiling pipelines twice.
    */
   async ensureOptionalEditorResources(): Promise<void> {
@@ -8479,7 +8479,7 @@ export class BrushEngine {
 
     const initialization = (async (): Promise<void> => {
       this.callbacks.onStatus?.(
-        "The editor is ready. Finishing advanced tools in the background…",
+        "Preparing the selected advanced tool…",
         "working",
       );
       // Keep the old mobile driver responsive: optional compilers run in

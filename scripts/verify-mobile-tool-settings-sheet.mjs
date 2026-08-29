@@ -241,8 +241,13 @@ assert.match(
 );
 assert.match(
   main,
-  /new EditorToolsController\(\{[\s\S]*?openToolSettings: \(kind, trigger\)[\s\S]*?mobileToolSettingsSheet\?\.open\(kind, trigger\)/,
+  /new EditorToolsController\(\{[\s\S]*?openToolSettings: \(kind, trigger\)[\s\S]*?const openRequestedSettings[\s\S]*?mobileToolSettingsSheet\?\.open\(requestedKind, trigger\)/,
   "the composition root must route typed tool cards to the shared settings sheet",
+);
+assert.match(
+  main,
+  /toolSettingsRequireMixedScene\(requestedKind\)[\s\S]{0,120}await initializeMixedSceneController\(\)/,
+  "vector settings must initialize their optional GPU resources only after the user requests them",
 );
 assert.match(
   main,

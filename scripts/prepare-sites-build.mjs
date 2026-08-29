@@ -955,7 +955,7 @@ const LAYER_COMPRESSION_INDEX_SQL = "CREATE INDEX IF NOT EXISTS layer_compressio
 const VECTOR_ZOOM_C_STRATEGY = "ten-semantic-text-dual-gpu-fallback-auto-post-raster-window2-roi-aware-zoom8-to-0.3-v7";
 const VECTOR_ZOOM_RUNS_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS vector_zoom_runs (run_code TEXT PRIMARY KEY NOT NULL, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)";
 const VECTOR_ZOOM_RUN_CODE = /^[2-9A-HJ-NP-Z]{8}$/;
-const GPU_STARTUP_DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v10";
+const GPU_STARTUP_DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v11";
 const GPU_STARTUP_DEFAULT_TEST_ID = "startup-no-tier2-v1";
 const GPU_STARTUP_STORAGE_FORMAT_TEST_ID = "storage-format-ab-v1";
 const GPU_STARTUP_DOCUMENT_PIPELINE_TEST_ID = "document-pipeline-bisect-v1";
@@ -1037,7 +1037,7 @@ function gpuStartupDiagnosticDefinition(testId) {
         requiredFeatures: [],
         textureFormatsTier2Requested: false,
         applicationFrame: "isolated-production-startup",
-        startupMode: "cold-empty-document",
+        startupMode: "cold-new-project",
         deferredObservationMs: 5000,
       },
     };

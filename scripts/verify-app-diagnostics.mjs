@@ -179,7 +179,19 @@ assert.match(brushEngineSource, /deferBlendRenderer: true/);
 assert.match(brushEngineSource, /deferSelectionPipelines: true/);
 assert.match(brushEngineSource, /ensureOptionalEditorResources\(\)/);
 assert.match(resourceSetupSource, /finishStaticResourceCreation\(engine, "core"\)/);
-assert.match(mainSource, /"deferred-gpu-pipelines"/);
+const startupStart = mainSource.indexOf("void engine.initialize()");
+const startupEnd = mainSource.indexOf("\n  .catch((error) => {", startupStart);
+assert.ok(startupStart >= 0 && startupEnd > startupStart);
+const startupBody = mainSource.slice(startupStart, startupEnd);
+assert.doesNotMatch(
+  startupBody,
+  /scheduleDeferredStartupTask|ensureOptionalEditorResources|prewarmRaster|initializeMixedSceneController|prepareGpuResources/,
+  "startup must not prepare optional GPU resources after the first frame",
+);
+assert.match(
+  mainSource,
+  /toolSettingsRequireMixedScene\(requestedKind\)[\s\S]{0,120}await initializeMixedSceneController\(\)[\s\S]{0,160}mobileToolSettingsSheet\?\.open\(requestedKind, trigger\)/,
+);
 assert.match(mainSource, /runtimeStatsController\?\.start\(\)/);
 assert.match(runtimeStatsSource, /this\.options\.browser\.setInterval\(\(\) => this\.refresh\(\), 1_000\)/);
 assert.match(runtimeStatsSource, /recordDiagnostic\("runtime-stats-poll", null, error\)/);

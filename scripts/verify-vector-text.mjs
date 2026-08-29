@@ -204,6 +204,7 @@ const svgSource = read("src/vector-svg-import.ts");
 const svgGradientStrokeFixture = read("scripts/fixtures/svg-gradient-stroke.svg");
 const vectorRasterSource = read("src/engine-vector-raster-runtime.ts");
 const mainSource = read("src/main.ts");
+const editorToolsSource = read("src/editor-tools-controller.ts");
 const canvasInputSource = read("src/canvas-input-controller.ts");
 const editorLabsSource = read("src/labs/editor-labs.ts");
 const labsStartupSource = read("src/labs/startup.ts");
@@ -2345,7 +2346,21 @@ assert.match(
   mainSource,
   /mixedSceneEnabled:\s*resolveMixedSceneEnabled\(editorExtensionEngineOptions, true\)/,
 );
-assert.match(mainSource, /if \(engine\.mixedSceneEnabled\)[\s\S]*?"deferred-mixed-scene"/);
+assert.doesNotMatch(mainSource, /deferred-mixed-scene/);
+assert.match(
+  mainSource,
+  /function toolSettingsRequireMixedScene\(kind: EditorToolSettingsKind\)[\s\S]{0,160}kind\.startsWith\("text"\)/,
+);
+assert.match(
+  mainSource,
+  /toolSettingsRequireMixedScene\(requestedKind\)[\s\S]{0,120}await initializeMixedSceneController\(\)[\s\S]{0,160}mobileToolSettingsSheet\?\.open\(requestedKind, trigger\)/,
+  "Text must initialize the mixed-scene editor only after the user requests it",
+);
+assert.match(
+  editorToolsSource,
+  /kind === "text-warp" && !state\.textSelected[\s\S]{0,160}vectorEffectEditor && !state\.textSelected && !state\.svgSelected[\s\S]{0,120}svgEditor && !state\.svgSelected/,
+  "vector settings must remain selectable by content instead of GPU warm-up state",
+);
 assert.doesNotMatch(mainSource, /pageSearchParams\.get\("vectorTextTest"\)/);
 assert.doesNotMatch(mainSource, /innerShadowTest/);
 assert.doesNotMatch(htmlSource, /id="vectorTextZoomMode"/);
