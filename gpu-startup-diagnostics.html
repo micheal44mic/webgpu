@@ -12,20 +12,26 @@
       (function () {
         "use strict";
 
-        var BUILD = "gpu-diagnostics-application-4096-startup-v12";
+        var BUILD = "gpu-diagnostics-application-4096-startup-v13";
         var params = new URLSearchParams(window.location.search);
         var requestedTestId = params.get("test") || "";
         var DIAGNOSTIC_TEST_ID = requestedTestId || "startup-no-tier2-v1";
         var STORAGE_FORMAT_AB_TEST = DIAGNOSTIC_TEST_ID === "storage-format-ab-v1";
         var DOCUMENT_PIPELINE_TEST = DIAGNOSTIC_TEST_ID === "document-pipeline-bisect-v1";
         var APPLICATION_4096_TEST = DIAGNOSTIC_TEST_ID === "application-4096-startup-v1";
+        var APPLICATION_4096_PIPELINES_ASYNC2_TEST =
+          DIAGNOSTIC_TEST_ID === "application-4096-pipelines-async2-v1";
+        var APPLICATION_4096_DOCUMENT_TEST =
+          APPLICATION_4096_TEST || APPLICATION_4096_PIPELINES_ASYNC2_TEST;
         var DIAGNOSTIC_VARIANT = STORAGE_FORMAT_AB_TEST
           ? "storage-format-ab-rgba8unorm-control-rgba16float-target-write-only-1x1-no-tier2-v1"
           : DOCUMENT_PIPELINE_TEST
             ? "document-pipeline-bisect-rgba16float-no-tier2-v1"
-            : APPLICATION_4096_TEST
-              ? "application-startup-rgba16float-4096x4096-no-tier2-v1"
-              : "rgba16float-no-texture-formats-tier2-v1";
+            : APPLICATION_4096_PIPELINES_ASYNC2_TEST
+              ? "application-startup-rgba16float-4096x4096-no-tier2-render-pipelines-async2-v1"
+              : APPLICATION_4096_TEST
+                ? "application-startup-rgba16float-4096x4096-no-tier2-v1"
+                : "rgba16float-no-texture-formats-tier2-v1";
         var DIAGNOSTIC_COMPARISON = STORAGE_FORMAT_AB_TEST
           ? {
               kind: "storage-texture-format-ab",
@@ -53,7 +59,24 @@
                 expectedSynchronousRenderPipelines: 52,
                 expectedErrorScopeDrains: 2,
               }
-            : APPLICATION_4096_TEST
+            : APPLICATION_4096_PIPELINES_ASYNC2_TEST
+              ? {
+                  kind: "application-startup-pipeline-compilation",
+                  documentWidth: 4096,
+                  documentHeight: 4096,
+                  layerFormat: "rgba16float",
+                  canvasFormat: "rgba16float",
+                  requiredFeatures: [],
+                  textureFormatsTier2Requested: false,
+                  applicationFrame: "isolated-production-startup",
+                  startupMode: "cold-empty-document",
+                  deferredObservationMs: 5000,
+                  pipelineCompilationMethod: "createRenderPipelineAsync",
+                  pipelineCompilationConcurrency: 2,
+                  expectedRenderPipelines: 52,
+                  asyncFallbackAllowed: false,
+                }
+              : APPLICATION_4096_TEST
               ? {
                   kind: "application-startup",
                   documentWidth: 4096,
@@ -199,7 +222,7 @@
           ["document-display-textures", "Allocating document display textures"],
           [
             "document-layer-texture",
-            APPLICATION_4096_TEST
+            APPLICATION_4096_DOCUMENT_TEST
               ? "Allocating the 4096×4096 16-bit layer"
               : "Allocating the 2048×2048 16-bit layer",
           ],
@@ -1402,9 +1425,11 @@
               ? "1×1 · RGBA8 vs RGBA16F · storage write"
               : DOCUMENT_PIPELINE_TEST
                 ? "Real document pipelines · RGBA16F · Tier 2 off"
-                : APPLICATION_4096_TEST
-                  ? "Real 4096×4096 document · RGBA16F · Tier 2 off"
-                  : "App boot · RGBA16F · Tier 2 off";
+                : APPLICATION_4096_PIPELINES_ASYNC2_TEST
+                  ? "Real 4096×4096 document · async pipeline queue 2 · Tier 2 off"
+                  : APPLICATION_4096_TEST
+                    ? "Real 4096×4096 document · RGBA16F · Tier 2 off"
+                    : "App boot · RGBA16F · Tier 2 off";
           }
           var copyButton = document.getElementById("copyDiagnosticJson");
           if (copyButton) copyButton.addEventListener("click", function () {

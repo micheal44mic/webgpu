@@ -938,6 +938,8 @@ const engine = new BrushEngine(canvas, {
   bevelBoundingFieldEnabled:
     editorExtensionEngineOptions.bevelBoundingFieldEnabled ?? bevelBoundingFieldEnabled,
   startupProgressPresentationYieldEnabled: canvasStartupProgressObserved,
+  documentPipelineCompilationConcurrency:
+    editorExtensionEngineOptions.documentPipelineCompilationConcurrency,
   deferSelectedBrushPreparation: true,
   layerMemoryStressTestEnabled:
     editorExtensionEngineOptions.layerMemoryStressTestEnabled ?? false,

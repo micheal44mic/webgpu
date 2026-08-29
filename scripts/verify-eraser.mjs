@@ -49,7 +49,16 @@ for (const pipeline of [
   "grainShapeOccupancyErasePipeline",
 ]) {
   assert.match(engine, new RegExp(`${pipeline}!: GPURenderPipeline`), `${pipeline} field missing`);
-  assert.match(runtime, new RegExp(`const ${pipeline} = createErasePipeline`), `${pipeline} creation missing`);
+  assert.match(
+    runtime,
+    new RegExp(`const ${pipeline}Promise = createErasePipeline`),
+    `${pipeline} creation missing`,
+  );
+  assert.match(
+    runtime,
+    new RegExp(`${pipeline}Promise,[\\s\\S]*?\\]\\);`),
+    `${pipeline} must be included in a settled pipeline batch`,
+  );
   assert.match(runtime, new RegExp(`(?:brush|grain)Variant\\(${pipeline},[\\s\\S]*?eraseBlend\\)`), `${pipeline} selection clip missing`);
 }
 assert.match(

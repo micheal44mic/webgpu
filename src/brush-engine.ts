@@ -1100,6 +1100,7 @@ export class BrushEngine {
   readonly callbacks: EngineCallbacks;
   readonly bevelBoundingFieldEnabled: boolean;
   readonly startupProgressPresentationYieldEnabled: boolean;
+  readonly documentPipelineCompilationConcurrency: number | null;
   readonly layerMemoryStressTestEnabled: boolean;
   readonly layerCompressionTestEnabled: boolean;
   readonly layerColdCompressionEnabled: boolean;
@@ -2046,6 +2047,22 @@ export class BrushEngine {
     this.bevelBoundingFieldEnabled = options.bevelBoundingFieldEnabled === true;
     this.startupProgressPresentationYieldEnabled =
       options.startupProgressPresentationYieldEnabled === true;
+    const documentPipelineCompilationConcurrency =
+      options.documentPipelineCompilationConcurrency;
+    if (
+      documentPipelineCompilationConcurrency !== undefined
+      && (
+        !Number.isInteger(documentPipelineCompilationConcurrency)
+        || documentPipelineCompilationConcurrency < 1
+        || documentPipelineCompilationConcurrency > 8
+      )
+    ) {
+      throw new RangeError(
+        "Document pipeline compilation concurrency must be an integer from 1 to 8.",
+      );
+    }
+    this.documentPipelineCompilationConcurrency =
+      documentPipelineCompilationConcurrency ?? null;
     this.selectedBrushPreparationDeferred = options.deferSelectedBrushPreparation === true;
     this.layerMemoryStressTestEnabled = options.layerMemoryStressTestEnabled === true;
     this.layerCompressionTestEnabled = options.layerCompressionTestEnabled === true;
@@ -2136,15 +2153,23 @@ export class BrushEngine {
     }
   }
 
-  failStartupPhase(phase: string, label: string, error: unknown): void {
+  failStartupPhase(
+    phase: string,
+    label: string,
+    error: unknown,
+    phaseDetail: Readonly<Record<string, unknown>> | null = null,
+  ): void {
     const callback = this.callbacks.onStartupProgress;
     const startedAt = this.startupPhaseStartedAtMs.get(phase);
     if (!callback || startedAt === undefined || this.startupTimelineStartedAtMs === null) return;
     const now = performance.now();
     this.startupPhaseStartedAtMs.delete(phase);
-    const detail = error instanceof Error
+    const errorDetail = error instanceof Error
       ? { name: error.name, message: error.message }
       : { name: null, message: String(error) };
+    const detail = phaseDetail === null
+      ? errorDetail
+      : { ...phaseDetail, ...errorDetail };
     try {
       callback({
         phase,
@@ -2173,7 +2198,7 @@ export class BrushEngine {
       this.completeStartupPhase(phase, label, detail);
       return result;
     } catch (error) {
-      this.failStartupPhase(phase, label, error);
+      this.failStartupPhase(phase, label, error, detail);
       throw error;
     }
   }
@@ -2393,6 +2418,8 @@ export class BrushEngine {
       await recreateLayerResources(this, this.layerFormat, {
         deferBlendRenderer: true,
         deferSelectionPipelines: true,
+        documentPipelineCompilationConcurrency:
+          this.documentPipelineCompilationConcurrency ?? undefined,
       });
     } catch (error) {
       if (this.startupPhaseStartedAtMs.has("core-layouts")) {

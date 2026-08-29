@@ -1697,7 +1697,9 @@ assert.match(
 assert.match(engineSource, /readonly liveMergedSurfaceTextures = new Map<GPUTexture, MergedSurfaceResources>\(\)/);
 assert.match(engineSource, /layerCompositeMiB/,
   "le superfici fuse e i bake transitori devono avere righe di memoria distinte");
-const compositePipelineStart = engineSource.indexOf("const layerCompositePipeline = engine.device.createRenderPipeline(");
+const compositePipelineStart = engineSource.indexOf(
+  "const layerCompositePipelinePromise = compileDocumentRenderPipeline(",
+);
 const compositePipelineBody = engineSource.slice(compositePipelineStart, compositePipelineStart + 1_100);
 assert.match(
   compositePipelineBody,
@@ -1705,7 +1707,7 @@ assert.match(
   "la fusione deve usare source-over premoltiplicato",
 );
 const sourceAtopPipelineStart = engineSource.indexOf(
-  "const layerSourceAtopPipeline = engine.device.createRenderPipeline(",
+  "const layerSourceAtopPipelinePromise = compileDocumentRenderPipeline(",
 );
 const sourceAtopPipelineBody = engineSource.slice(sourceAtopPipelineStart, sourceAtopPipelineStart + 1_100);
 assert.match(sourceAtopPipelineBody, /srcFactor: "dst-alpha"/,
@@ -3100,6 +3102,85 @@ assert.ok(recreateStart >= 0 && recreateEnd > recreateStart,
 const recreateBody = engineSource.slice(recreateStart, recreateEnd);
 assert.match(recreateBody, /runGpuAllocationTransaction\(\s*engine\.device,\s*`Layer format pipeline/,
   "anche pipeline e layout devono chiudere validation/OOM scope");
+assert.match(
+  engineSource,
+  /documentPipelineCompilationConcurrency\?: number;/,
+  "l'abilitazione async deve restare un'opzione esplicita del motore",
+);
+assert.match(
+  engineSource,
+  /this\.documentPipelineCompilationConcurrency\s*=\s*documentPipelineCompilationConcurrency \?\? null;/,
+  "omettere l'opzione deve conservare il percorso sincrono predefinito",
+);
+assert.match(
+  recreateBody,
+  /options\.documentPipelineCompilationConcurrency \?\? null/,
+  "la ricreazione deve distinguere esplicitamente default sincrono e opt-in async",
+);
+const documentPipelineCompilerStart = engineSource.indexOf(
+  "function createDocumentRenderPipelineCompiler(",
+);
+const documentPipelineCompilerEnd = engineSource.indexOf(
+  "export async function recreateLayerResources(",
+  documentPipelineCompilerStart,
+);
+assertSection(
+  "compilatore pipeline documento",
+  documentPipelineCompilerStart,
+  documentPipelineCompilerEnd,
+);
+const documentPipelineCompilerBody = engineSource.slice(
+  documentPipelineCompilerStart,
+  documentPipelineCompilerEnd,
+);
+assert.match(
+  documentPipelineCompilerBody,
+  /if \(concurrency === null\)[\s\S]*?device\.createRenderPipeline\(descriptor\)/,
+  "il percorso predefinito deve continuare a creare le pipeline in modo sincrono",
+);
+assert.match(
+  documentPipelineCompilerBody,
+  /typeof device\.createRenderPipelineAsync !== "function"[\s\S]*?Native createRenderPipelineAsync is required/,
+  "l'esperimento async non deve degradare silenziosamente al percorso sincrono",
+);
+assert.match(
+  documentPipelineCompilerBody,
+  /await acquire\(\)[\s\S]*?await device\.createRenderPipelineAsync\(descriptor\)[\s\S]*?release\(\)/,
+  "la compilazione async deve rispettare il limite di concorrenza",
+);
+assert.match(
+  engineSource,
+  /const settlements = await Promise\.allSettled\(promises\);/,
+  "ogni batch deve attendere anche le pipeline fallite prima di chiudere gli error scope",
+);
+assert.match(
+  engineSource,
+  /const EXPECTED_DOCUMENT_RENDER_PIPELINE_COUNT = 52;/,
+  "il contratto deve dichiarare tutte le 52 pipeline documento",
+);
+const settledDocumentPipelineBatches = [
+  ...recreateBody.matchAll(/await settleRenderPipelineBatch\(\[([\s\S]*?)\]\);/g),
+].map((match) => match[1].match(/\b[A-Za-z][A-Za-z0-9]*PipelinePromise\b/g) ?? []);
+assert.deepEqual(
+  settledDocumentPipelineBatches.map((batch) => batch.length),
+  [36, 4, 12],
+  "i tre batch devono attendere esattamente tutte le 52 pipeline fisse",
+);
+assert.equal(
+  new Set(settledDocumentPipelineBatches.flat()).size,
+  52,
+  "ogni pipeline fissa deve comparire una sola volta nei batch di settlement",
+);
+assert.match(
+  recreateBody,
+  /completedCount\s*!== EXPECTED_DOCUMENT_RENDER_PIPELINE_COUNT[\s\S]*?settledCount\s*!== EXPECTED_DOCUMENT_RENDER_PIPELINE_COUNT[\s\S]*?activeCount !== 0/,
+  "la fase non deve terminare finche tutte le 52 pipeline sono completate e nessun job resta attivo",
+);
+assert.match(
+  mainSource,
+  /documentPipelineCompilationConcurrency:\s*editorExtensionEngineOptions\.documentPipelineCompilationConcurrency/,
+  "l'app principale deve lasciare l'opt-in alla sola configurazione esterna",
+);
 assert.match(recreateBody, /record\.id === engine\.layerStack\.active\.id[\s\S]*?await allocateLayerGpuResources\(engine,[\s\S]*?: createColdLayerGpuResources\(\)/,
   "il cambio formato deve allocare full solo per il livello attivo");
 assert.match(recreateBody, /for \(const gpu of replacement\.values\(\)\) \{\s*destroyLayerGpuResources\(engine, gpu\);/,

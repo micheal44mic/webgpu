@@ -104,6 +104,9 @@ const DOCUMENT_PIPELINE_TEST = "document-pipeline-bisect-v1";
 const DOCUMENT_PIPELINE_VARIANT = "document-pipeline-bisect-rgba16float-no-tier2-v1";
 const APPLICATION_4096_TEST = "application-4096-startup-v1";
 const APPLICATION_4096_VARIANT = "application-startup-rgba16float-4096x4096-no-tier2-v1";
+const APPLICATION_4096_PIPELINES_ASYNC2_TEST = "application-4096-pipelines-async2-v1";
+const APPLICATION_4096_PIPELINES_ASYNC2_VARIANT =
+  "application-startup-rgba16float-4096x4096-no-tier2-render-pipelines-async2-v1";
 const APPLICATION_4096_DOCUMENT_WIDTH = 4096;
 const APPLICATION_4096_DOCUMENT_HEIGHT = 4096;
 const APPLICATION_DEFERRED_OBSERVATION_MS = 5_000;
@@ -114,6 +117,8 @@ const diagnosticTest = new URLSearchParams(window.location.search).get("test");
 const storageFormatAbEnabled = diagnosticTest === STORAGE_FORMAT_AB_TEST;
 const documentPipelineBisectEnabled = diagnosticTest === DOCUMENT_PIPELINE_TEST;
 const application4096StartupEnabled = diagnosticTest === APPLICATION_4096_TEST;
+const application4096PipelinesAsync2Enabled =
+  diagnosticTest === APPLICATION_4096_PIPELINES_ASYNC2_TEST;
 
 function comparisonPolicy(): Record<string, unknown> {
   if (storageFormatAbEnabled) {
@@ -163,6 +168,26 @@ function comparisonPolicy(): Record<string, unknown> {
       applicationFrame: "isolated-production-startup",
       startupMode: "cold-empty-document",
       deferredObservationMs: APPLICATION_DEFERRED_OBSERVATION_MS,
+    };
+  }
+  if (application4096PipelinesAsync2Enabled) {
+    return {
+      testId: APPLICATION_4096_PIPELINES_ASYNC2_TEST,
+      diagnosticVariant: APPLICATION_4096_PIPELINES_ASYNC2_VARIANT,
+      kind: "application-startup-pipeline-compilation",
+      documentWidth: APPLICATION_4096_DOCUMENT_WIDTH,
+      documentHeight: APPLICATION_4096_DOCUMENT_HEIGHT,
+      layerFormat: "rgba16float",
+      canvasFormat: "rgba16float",
+      requiredFeatures: [],
+      textureFormatsTier2Requested: false,
+      applicationFrame: "isolated-production-startup",
+      startupMode: "cold-empty-document",
+      deferredObservationMs: APPLICATION_DEFERRED_OBSERVATION_MS,
+      pipelineCompilationMethod: "createRenderPipelineAsync",
+      pipelineCompilationConcurrency: 2,
+      expectedRenderPipelines: EXPECTED_DOCUMENT_RENDER_PIPELINES,
+      asyncFallbackAllowed: false,
     };
   }
   return {
@@ -1450,6 +1475,7 @@ interface ApplicationBootOptions {
 interface ApplicationStartupTraceState {
   lastProgress: Record<string, unknown> | null;
   readonly phaseStates: Record<string, string>;
+  readonly phaseProgress: Record<string, Record<string, unknown>>;
   deviceLost: unknown;
   uncapturedError: unknown;
   observationInstalled: boolean | null;
@@ -1471,6 +1497,7 @@ function createApplicationStartupTraceState(): ApplicationStartupTraceState {
   return {
     lastProgress: null,
     phaseStates: {},
+    phaseProgress: {},
     deviceLost: null,
     uncapturedError: null,
     observationInstalled: null,
@@ -2075,6 +2102,14 @@ async function runFullApplicationBoot(
       }
       if (options.startupTrace) {
         options.startupTrace.lastProgress = lastStartupProgress;
+        if (lastStartupProgress && typeof lastStartupProgress.phase === "string") {
+          options.startupTrace.phaseProgress[lastStartupProgress.phase] = {
+            ...lastStartupProgress,
+            detail: isRecord(lastStartupProgress.detail)
+              ? { ...lastStartupProgress.detail }
+              : (lastStartupProgress.detail ?? null),
+          };
+        }
       }
       if (
         documentPipelineTrace
@@ -2574,6 +2609,10 @@ const REQUIRED_APPLICATION_4096_STARTUP_PHASES = [
   "first-frame-gpu",
   "editor-ready",
 ] as const;
+const REQUIRED_APPLICATION_4096_ASYNC2_STARTUP_PHASES = [
+  "document-pipelines",
+  ...REQUIRED_APPLICATION_4096_STARTUP_PHASES,
+] as const;
 
 function applicationStartupTraceSummary(
   trace: ApplicationStartupTraceState,
@@ -2581,6 +2620,8 @@ function applicationStartupTraceSummary(
   return {
     lastProgress: trace.lastProgress,
     phaseStates: { ...trace.phaseStates },
+    documentPipelinesPhase: trace.phaseProgress["document-pipelines"] ?? null,
+    editorReadyPhase: trace.phaseProgress["editor-ready"] ?? null,
     requiredPhaseStates: Object.fromEntries(
       REQUIRED_APPLICATION_4096_STARTUP_PHASES.map((phase) => [
         phase,
@@ -2600,16 +2641,73 @@ function applicationStartupTraceSummary(
   };
 }
 
-async function runApplication4096StartupDiagnostic(): Promise<void> {
+function validateAsyncPipelineCompilation(
+  trace: ApplicationStartupTraceState,
+): Record<string, unknown> {
+  const phase = trace.phaseProgress["document-pipelines"] ?? null;
+  const stats = isRecord(phase?.detail) ? phase.detail : null;
+  const issues: string[] = [];
+  const expect = (condition: boolean, issue: string): void => {
+    if (!condition) issues.push(issue);
+  };
+  expect(phase?.state === "completed", "document-pipelines did not complete");
+  expect(stats !== null, "document-pipelines did not report compilation statistics");
+  if (stats) {
+    expect(stats.strategy === "async-bounded", "strategy was not async-bounded");
+    expect(stats.requestedConcurrency === 2, "requested concurrency was not 2");
+    expect(stats.nativeAsyncSupported === true, "native createRenderPipelineAsync was unavailable");
+    expect(
+      stats.expectedRenderPipelineCount === EXPECTED_DOCUMENT_RENDER_PIPELINES,
+      "expected render-pipeline count was not 52",
+    );
+    for (const field of ["scheduledCount", "startedCount", "completedCount", "settledCount"]) {
+      expect(stats[field] === EXPECTED_DOCUMENT_RENDER_PIPELINES, `${field} was not 52`);
+    }
+    expect(stats.failedCount === 0, "one or more render pipelines failed");
+    expect(stats.activeCount === 0, "render-pipeline work remained active after the phase");
+    expect(stats.fallbackCount === 0, "a synchronous fallback was used");
+    const peakActiveCount = stats.peakActiveCount;
+    expect(
+      typeof peakActiveCount === "number"
+        && Number.isInteger(peakActiveCount)
+        && peakActiveCount === 2,
+      "peak active render-pipeline work did not reach the requested concurrency of 2",
+    );
+  }
+  return {
+    passed: issues.length === 0,
+    issues,
+    phase,
+    stats,
+  };
+}
+
+interface Application4096DiagnosticOptions {
+  readonly asynchronousPipelineCompilation?: boolean;
+}
+
+async function runApplication4096StartupDiagnostic(
+  options: Application4096DiagnosticOptions = {},
+): Promise<void> {
+  const asynchronousPipelineCompilation = options.asynchronousPipelineCompilation === true;
+  const diagnosticVariant = asynchronousPipelineCompilation
+    ? APPLICATION_4096_PIPELINES_ASYNC2_VARIANT
+    : APPLICATION_4096_VARIANT;
+  const diagnosticTestId = asynchronousPipelineCompilation
+    ? APPLICATION_4096_PIPELINES_ASYNC2_TEST
+    : APPLICATION_4096_TEST;
+  const requiredStartupPhases = asynchronousPipelineCompilation
+    ? REQUIRED_APPLICATION_4096_ASYNC2_STARTUP_PHASES
+    : REQUIRED_APPLICATION_4096_STARTUP_PHASES;
   const startupTrace = createApplicationStartupTraceState();
   let applicationBoot: Record<string, unknown>;
   try {
     applicationBoot = await runFullApplicationBoot({
-      diagnosticVariant: APPLICATION_4096_VARIANT,
-      diagnosticTestId: APPLICATION_4096_TEST,
+      diagnosticVariant,
+      diagnosticTestId,
       documentWidth: APPLICATION_4096_DOCUMENT_WIDTH,
       documentHeight: APPLICATION_4096_DOCUMENT_HEIGHT,
-      requiredStartupPhases: REQUIRED_APPLICATION_4096_STARTUP_PHASES,
+      requiredStartupPhases,
       requireStorageSummary: true,
       requireGpuObservation: true,
       startupTrace,
@@ -2620,10 +2718,10 @@ async function runApplication4096StartupDiagnostic(): Promise<void> {
     const lastProgress = startupTrace.lastProgress;
     const explicitlyFailedPhase = Object.entries(startupTrace.phaseStates)
       .find(([, state]) => state === "failed")?.[0] ?? null;
-    const startedRequiredPhase = REQUIRED_APPLICATION_4096_STARTUP_PHASES.find(
+    const startedRequiredPhase = requiredStartupPhases.find(
       (phase) => startupTrace.phaseStates[phase] === "started",
     ) ?? null;
-    const missingRequiredPhase = REQUIRED_APPLICATION_4096_STARTUP_PHASES.find(
+    const missingRequiredPhase = requiredStartupPhases.find(
       (phase) => startupTrace.phaseStates[phase] !== "completed",
     ) ?? null;
     const activeDevicePhase = isRecord(startupTrace.deviceLost)
@@ -2643,7 +2741,15 @@ async function runApplication4096StartupDiagnostic(): Promise<void> {
       : null;
     let verdict = "application-4096-startup-failed";
     let conclusion = "The real 4096x4096 application document did not complete startup.";
-    if (startupTrace.deviceLost !== null) {
+    if (
+      asynchronousPipelineCompilation
+      && /native createrenderpipelineasync is required|createrenderpipelineasync[^.]*unavailable/.test(
+        serializedError,
+      )
+    ) {
+      verdict = "application-4096-pipelines-async2-unsupported";
+      conclusion = "This run is inconclusive because native createRenderPipelineAsync was unavailable and no synchronous fallback was allowed.";
+    } else if (startupTrace.deviceLost !== null) {
       verdict = "application-4096-device-lost";
       conclusion = "The WebGPU device was lost while the real 4096x4096 application document was starting.";
     } else if (startupTrace.uncapturedError !== null) {
@@ -2676,6 +2782,31 @@ async function runApplication4096StartupDiagnostic(): Promise<void> {
       failedPhase,
       applicationError: describedError,
       startupTrace: applicationStartupTraceSummary(startupTrace),
+      ...(asynchronousPipelineCompilation
+        ? { asyncPipelineCompilation: validateAsyncPipelineCompilation(startupTrace) }
+        : {}),
+    });
+    return;
+  }
+
+  const asyncPipelineCompilation = asynchronousPipelineCompilation
+    ? validateAsyncPipelineCompilation(startupTrace)
+    : null;
+  if (
+    asyncPipelineCompilation
+    && asyncPipelineCompilation.passed !== true
+  ) {
+    await checkpoint(
+      "environment-captured-after-application-4096-async-pipeline-inconclusive",
+      await captureHighEntropyEnvironment(),
+    );
+    await bridge.finish("failed", "diagnostic-failed", {
+      ...comparisonPolicy(),
+      verdict: "application-4096-pipelines-async2-inconclusive",
+      conclusion: "The real 4096x4096 application opened, but the bounded asynchronous pipeline contract was not fully observed.",
+      asyncPipelineCompilation,
+      startupTrace: applicationStartupTraceSummary(startupTrace),
+      applicationBoot: documentPipelineApplicationSummary(applicationBoot),
     });
     return;
   }
@@ -2686,12 +2817,17 @@ async function runApplication4096StartupDiagnostic(): Promise<void> {
   );
   await bridge.finish("completed", "diagnostic-completed", {
     ...comparisonPolicy(),
-    verdict: "application-4096-startup-passed",
-    conclusion: "The real 4096x4096 application document completed its first GPU frame and remained ready for five seconds.",
+    verdict: asynchronousPipelineCompilation
+      ? "application-4096-pipelines-async2-passed"
+      : "application-4096-startup-passed",
+    conclusion: asynchronousPipelineCompilation
+      ? "The real 4096x4096 application completed startup after all 52 render pipelines settled through the native bounded asynchronous path."
+      : "The real 4096x4096 application document completed its first GPU frame and remained ready for five seconds.",
     rgba16floatLayerBytes: APPLICATION_4096_DOCUMENT_WIDTH
       * APPLICATION_4096_DOCUMENT_HEIGHT
       * RGBA16FLOAT_BYTES_PER_PIXEL,
     startupTrace: applicationStartupTraceSummary(startupTrace),
+    ...(asyncPipelineCompilation ? { asyncPipelineCompilation } : {}),
     applicationBoot: documentPipelineApplicationSummary(applicationBoot),
   });
 }
@@ -2707,6 +2843,7 @@ async function run(): Promise<void> {
     && diagnosticTest !== STORAGE_FORMAT_AB_TEST
     && diagnosticTest !== DOCUMENT_PIPELINE_TEST
     && diagnosticTest !== APPLICATION_4096_TEST
+    && diagnosticTest !== APPLICATION_4096_PIPELINES_ASYNC2_TEST
   ) {
     throw new Error(`Unsupported GPU diagnostic test: ${diagnosticTest}.`);
   }
@@ -2720,6 +2857,10 @@ async function run(): Promise<void> {
   }
   if (application4096StartupEnabled) {
     await runApplication4096StartupDiagnostic();
+    return;
+  }
+  if (application4096PipelinesAsync2Enabled) {
+    await runApplication4096StartupDiagnostic({ asynchronousPipelineCompilation: true });
     return;
   }
   let applicationBoot: Record<string, unknown>;

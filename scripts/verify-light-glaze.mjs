@@ -152,8 +152,8 @@ assert.match(
 
 const finalComposite = section(
   engine,
-  "const lightGlazeCompositePipeline =",
-  "const lightGlazeCommitTilePipeline =",
+  "const lightGlazeCompositePipelinePromise =",
+  "const lightGlazeCommitTilePipelinePromise =",
 );
 assert.equal(
   (finalComposite.match(/one-minus-src-alpha/g) ?? []).length,
@@ -161,6 +161,11 @@ assert.equal(
   "Il commit fra gesture deve essere source-over premoltiplicato.",
 );
 assert.match(finalComposite, /label: `Light Glaze final source-over composite/);
+assert.match(
+  engine,
+  /lightGlazeCompositePipeline,[\s\S]*?lightGlazeCommitTilePipeline,[\s\S]*?= await settleRenderPipelineBatch\(\[[\s\S]*?lightGlazeCompositePipelinePromise,[\s\S]*?lightGlazeCommitTilePipelinePromise,[\s\S]*?\]\);/,
+  "Le pipeline finali Light Glaze devono essere pubblicate solo dopo il settlement del batch.",
+);
 
 const beginStroke = section(engine, "beginStrokeAtLayer", "extendStroke(");
 assert.match(beginStroke, /this\.startLightGlazeSession\(historyActionId, lightGlazeSettings\)/);

@@ -305,6 +305,12 @@ export interface BrushEngineOptions {
    */
   startupProgressPresentationYieldEnabled?: boolean;
   /**
+   * Compiles the fixed document render-pipeline set through the native async
+   * WebGPU API with a bounded number of concurrent jobs. Omit this option to
+   * preserve the synchronous startup path.
+   */
+  documentPipelineCompilationConcurrency?: number;
+  /**
    * Leaves the selected brush's first-use resources cold until the editor
    * explicitly prepares a brush interaction. Core canvas rendering remains
    * available so navigation can be the initial interaction on slower devices.
