@@ -89,12 +89,17 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
   var APPLICATION_4096_PIPELINES_ASYNC2_TEST_ID = "application-4096-pipelines-async2-v1";
   var APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST_ID =
     "application-4096-pipelines-first-frame-v1";
+  var APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID =
+    "application-4096-pipeline-breakdown-v1";
   var DOCUMENT_PIPELINE_PHASE = "document-pipelines";
   var EXPECTED_DOCUMENT_PIPELINE_LAYOUTS = 17;
   var EXPECTED_DOCUMENT_RENDER_PIPELINES = 52;
   var EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS = 2;
   var diagnosticTestId = new URLSearchParams(window.location.search).get("test") || "";
-  var documentPipelineInstrumentationEnabled = diagnosticTestId === DOCUMENT_PIPELINE_TEST_ID;
+  var application4096PipelineBreakdownEnabled =
+    diagnosticTestId === APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID;
+  var documentPipelineInstrumentationEnabled =
+    diagnosticTestId === DOCUMENT_PIPELINE_TEST_ID || application4096PipelineBreakdownEnabled;
   var application4096PipelinesAsync2Enabled =
     diagnosticTestId === APPLICATION_4096_PIPELINES_ASYNC2_TEST_ID;
   var application4096PipelinesFirstFrameEnabled =
@@ -102,7 +107,8 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
   var application4096StartupEnabled =
     diagnosticTestId === APPLICATION_4096_TEST_ID
     || application4096PipelinesAsync2Enabled
-    || application4096PipelinesFirstFrameEnabled;
+    || application4096PipelinesFirstFrameEnabled
+    || application4096PipelineBreakdownEnabled;
   if (application4096PipelinesFirstFrameEnabled) {
     if (document.documentElement && document.documentElement.style) {
       document.documentElement.style.pointerEvents = "none";
@@ -213,7 +219,7 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
     if (typeof value === "number") return Number.isFinite(value) ? value : String(value);
     if (typeof value === "boolean") return value;
     if (value instanceof Error) return errorDetail(value);
-    if (depth >= 2) return clippedString(value, MAX_STRING_LENGTH);
+    if (depth >= 3) return clippedString(value, MAX_STRING_LENGTH);
     if (Array.isArray(value)) {
       return value.slice(0, 8).map(function (entry) {
         return safeValue(entry, depth + 1);
@@ -426,6 +432,7 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
       previousCompletedRenderPipeline: lastCompletedRenderPipeline,
       checkpointStartedAtMs: finiteNumber(performance.now()),
       nativeStartedAtMs: null,
+      instrumentationPreparationMs: null,
       durableCheckpoint: false,
     };
     detail.durableCheckpoint = durableRecord(
@@ -433,7 +440,6 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
       detail,
       "running",
     );
-    detail.nativeStartedAtMs = finiteNumber(performance.now());
     lastStartedDocumentGpuCall = detail;
     currentDocumentGpuCall = detail;
     emit("document-gpu-call-started", detail);
@@ -529,6 +535,11 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
       var call = beginDocumentGpuCall(method, arguments[0]);
       var result;
       try {
+        var preNativeAtMs = performance.now();
+        call.instrumentationPreparationMs = finiteNumber(
+          Math.max(0, preNativeAtMs - Number(call.checkpointStartedAtMs || 0)),
+        );
+        call.nativeStartedAtMs = finiteNumber(performance.now());
         result = Reflect.apply(original, device, arguments);
       } catch (error) {
         failDocumentGpuCall(call, error);
@@ -984,19 +995,21 @@ const LAYER_COMPRESSION_INDEX_SQL = "CREATE INDEX IF NOT EXISTS layer_compressio
 const VECTOR_ZOOM_C_STRATEGY = "ten-semantic-text-dual-gpu-fallback-auto-post-raster-window2-roi-aware-zoom8-to-0.3-v7";
 const VECTOR_ZOOM_RUNS_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS vector_zoom_runs (run_code TEXT PRIMARY KEY NOT NULL, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)";
 const VECTOR_ZOOM_RUN_CODE = /^[2-9A-HJ-NP-Z]{8}$/;
-const GPU_STARTUP_DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v14";
+const GPU_STARTUP_DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v15";
 const GPU_STARTUP_DEFAULT_TEST_ID = "startup-no-tier2-v1";
 const GPU_STARTUP_STORAGE_FORMAT_TEST_ID = "storage-format-ab-v1";
 const GPU_STARTUP_DOCUMENT_PIPELINE_TEST_ID = "document-pipeline-bisect-v1";
 const GPU_STARTUP_APPLICATION_4096_TEST_ID = "application-4096-startup-v1";
 const GPU_STARTUP_APPLICATION_4096_PIPELINES_ASYNC2_TEST_ID = "application-4096-pipelines-async2-v1";
 const GPU_STARTUP_APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST_ID = "application-4096-pipelines-first-frame-v1";
+const GPU_STARTUP_APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID = "application-4096-pipeline-breakdown-v1";
 const GPU_STARTUP_DEFAULT_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
 const GPU_STARTUP_STORAGE_FORMAT_VARIANT = "storage-format-ab-rgba8unorm-control-rgba16float-target-write-only-1x1-no-tier2-v1";
 const GPU_STARTUP_DOCUMENT_PIPELINE_VARIANT = "document-pipeline-bisect-rgba16float-no-tier2-v1";
 const GPU_STARTUP_APPLICATION_4096_VARIANT = "application-startup-rgba16float-4096x4096-no-tier2-v1";
 const GPU_STARTUP_APPLICATION_4096_PIPELINES_ASYNC2_VARIANT = "application-startup-rgba16float-4096x4096-no-tier2-render-pipelines-async2-v1";
 const GPU_STARTUP_APPLICATION_4096_PIPELINES_FIRST_FRAME_VARIANT = "application-startup-rgba16float-4096x4096-no-tier2-render-pipelines-first-frame-1-v1";
+const GPU_STARTUP_APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT = "application-startup-rgba16float-4096x4096-no-tier2-render-pipeline-breakdown-sync-v1";
 const GPU_STARTUP_DIAGNOSTIC_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS gpu_startup_diagnostic_runs (run_code TEXT PRIMARY KEY NOT NULL, write_token_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, expires_at TEXT NOT NULL, status TEXT NOT NULL, sequence INTEGER NOT NULL, latest_event TEXT NOT NULL DEFAULT 'html-requested', result_summary TEXT NOT NULL DEFAULT '', payload_bytes INTEGER NOT NULL DEFAULT 0, payload_json TEXT NOT NULL)";
 const GPU_STARTUP_DIAGNOSTIC_INDEX_SQL = "CREATE INDEX IF NOT EXISTS gpu_startup_diagnostic_runs_expires_at_idx ON gpu_startup_diagnostic_runs (expires_at)";
 const GPU_STARTUP_DIAGNOSTIC_RUN_CODE = /^diag-[a-f0-9]{32}$/;
@@ -1116,6 +1129,32 @@ function gpuStartupDiagnosticDefinition(testId) {
         expectedRenderPipelines: 1,
         excludedRenderPipelines: 51,
         editorInteractionEnabled: false,
+      },
+    };
+  }
+  if (testId === GPU_STARTUP_APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID) {
+    return {
+      testId,
+      diagnosticVariant: GPU_STARTUP_APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT,
+      comparison: {
+        kind: "application-startup-render-pipeline-breakdown",
+        documentWidth: 4096,
+        documentHeight: 4096,
+        layerFormat: "rgba16float",
+        canvasFormat: "rgba16float",
+        requiredFeatures: [],
+        textureFormatsTier2Requested: false,
+        applicationFrame: "isolated-production-startup",
+        startupMode: "empty-document",
+        targetPhase: "document-pipelines",
+        instrumentation: "native-device-call-boundaries",
+        pipelineCompilationMethod: "createRenderPipeline",
+        pipelineCompilationOrder: "sync-sequential",
+        expectedPipelineLayouts: 17,
+        expectedRenderPipelines: 52,
+        expectedErrorScopeDrains: 2,
+        capture: "all-native-call-durations",
+        deferredObservationMs: 5000,
       },
     };
   }

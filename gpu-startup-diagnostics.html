@@ -12,7 +12,7 @@
       (function () {
         "use strict";
 
-        var BUILD = "gpu-diagnostics-application-4096-startup-v14";
+        var BUILD = "gpu-diagnostics-application-4096-startup-v15";
         var params = new URLSearchParams(window.location.search);
         var requestedTestId = params.get("test") || "";
         var DIAGNOSTIC_TEST_ID = requestedTestId || "startup-no-tier2-v1";
@@ -23,16 +23,23 @@
           DIAGNOSTIC_TEST_ID === "application-4096-pipelines-async2-v1";
         var APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST =
           DIAGNOSTIC_TEST_ID === "application-4096-pipelines-first-frame-v1";
+        var APPLICATION_4096_PIPELINE_BREAKDOWN_TEST =
+          DIAGNOSTIC_TEST_ID === "application-4096-pipeline-breakdown-v1";
+        var DOCUMENT_PIPELINE_TIMING_TEST =
+          DOCUMENT_PIPELINE_TEST || APPLICATION_4096_PIPELINE_BREAKDOWN_TEST;
         var APPLICATION_4096_DOCUMENT_TEST =
           APPLICATION_4096_TEST
           || APPLICATION_4096_PIPELINES_ASYNC2_TEST
-          || APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST;
+          || APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST
+          || APPLICATION_4096_PIPELINE_BREAKDOWN_TEST;
         var DIAGNOSTIC_VARIANT = STORAGE_FORMAT_AB_TEST
           ? "storage-format-ab-rgba8unorm-control-rgba16float-target-write-only-1x1-no-tier2-v1"
           : DOCUMENT_PIPELINE_TEST
             ? "document-pipeline-bisect-rgba16float-no-tier2-v1"
             : APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST
               ? "application-startup-rgba16float-4096x4096-no-tier2-render-pipelines-first-frame-1-v1"
+              : APPLICATION_4096_PIPELINE_BREAKDOWN_TEST
+                ? "application-startup-rgba16float-4096x4096-no-tier2-render-pipeline-breakdown-sync-v1"
               : APPLICATION_4096_PIPELINES_ASYNC2_TEST
               ? "application-startup-rgba16float-4096x4096-no-tier2-render-pipelines-async2-v1"
               : APPLICATION_4096_TEST
@@ -82,6 +89,27 @@
                   excludedRenderPipelines: 51,
                   editorInteractionEnabled: false,
                 }
+              : APPLICATION_4096_PIPELINE_BREAKDOWN_TEST
+                ? {
+                    kind: "application-startup-render-pipeline-breakdown",
+                    documentWidth: 4096,
+                    documentHeight: 4096,
+                    layerFormat: "rgba16float",
+                    canvasFormat: "rgba16float",
+                    requiredFeatures: [],
+                    textureFormatsTier2Requested: false,
+                    applicationFrame: "isolated-production-startup",
+                    startupMode: "empty-document",
+                    targetPhase: "document-pipelines",
+                    instrumentation: "native-device-call-boundaries",
+                    pipelineCompilationMethod: "createRenderPipeline",
+                    pipelineCompilationOrder: "sync-sequential",
+                    expectedPipelineLayouts: 17,
+                    expectedRenderPipelines: 52,
+                    expectedErrorScopeDrains: 2,
+                    capture: "all-native-call-durations",
+                    deferredObservationMs: 5000,
+                  }
               : APPLICATION_4096_PIPELINES_ASYNC2_TEST
               ? {
                   kind: "application-startup-pipeline-compilation",
@@ -129,7 +157,9 @@
         var MAX_BACKUP_EVENT_COUNT = 128;
         var MAX_EVENT_COUNT = 24;
         var MAX_EVENT_DETAIL_BYTES = 1200;
-        var MAX_DIAGNOSTIC_RESULT_BYTES = 12 * 1024;
+        var MAX_DIAGNOSTIC_RESULT_BYTES = APPLICATION_4096_PIPELINE_BREAKDOWN_TEST
+          ? 18 * 1024
+          : 12 * 1024;
         var MAX_SNAPSHOT_BYTES = 48 * 1024;
         var fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
         var runCode = params.get("run") || "";
@@ -214,6 +244,8 @@
         var lastStartupProgressAtMs = surfaceStartedAtMs;
         var lastStartupProgress = null;
         var documentPipelineProgress = null;
+        var documentPipelineBreakdownOpen = true;
+        var documentPipelineBreakdown = [];
         var startupPhases = (STORAGE_FORMAT_AB_TEST ? [
           ["adapter-request", "Finding a WebGPU adapter"],
           ["device-request", "Creating a feature-neutral WebGPU device"],
@@ -399,7 +431,9 @@
           if (typeof value === "number") return Number.isFinite(value) ? value : String(value);
           if (typeof value === "string") return redactUrls(value).slice(0, 1600);
           if (typeof value !== "object") return redactUrls(value).slice(0, 1600);
-          if (depth >= 5) return "[depth-limited]";
+          if (depth >= (APPLICATION_4096_PIPELINE_BREAKDOWN_TEST ? 7 : 5)) {
+            return "[depth-limited]";
+          }
           if (seen.indexOf(value) >= 0) return "[circular]";
           seen.push(value);
           try {
@@ -636,6 +670,87 @@
           return Number.isFinite(number) && number >= 0 ? number : null;
         }
 
+        function documentPipelineBreakdownKind(method) {
+          if (method === "createPipelineLayout") return "layout";
+          if (method === "createRenderPipeline") return "pipeline";
+          if (method === "popErrorScope") return "validation";
+          return null;
+        }
+
+        function applyDocumentPipelineBreakdownEvent(name, detail) {
+          if (!APPLICATION_4096_PIPELINE_BREAKDOWN_TEST) return;
+          if (!detail || typeof detail !== "object") return;
+          if (
+            name !== "application-document-gpu-call-started"
+            && name !== "application-document-gpu-call-completed"
+            && name !== "application-document-gpu-call-failed"
+          ) return;
+          var callIndex = Number(detail.callIndex);
+          var method = typeof detail.method === "string" ? detail.method : "";
+          var kind = documentPipelineBreakdownKind(method);
+          if (!Number.isInteger(callIndex) || callIndex < 1 || !kind) return;
+          var state = name === "application-document-gpu-call-started"
+            ? "started"
+            : name === "application-document-gpu-call-completed"
+              ? "completed"
+              : "failed";
+          var existing = documentPipelineBreakdown.find(function (entry) {
+            return entry.callIndex === callIndex;
+          });
+          var next = {
+            callIndex: callIndex,
+            method: method,
+            kind: kind,
+            itemIndex: kind === "layout"
+              ? Number(detail.pipelineLayoutIndex)
+              : kind === "pipeline"
+                ? Number(detail.renderPipelineIndex)
+                : Number(detail.errorScopeDrainIndex),
+            label: typeof detail.label === "string" ? detail.label.slice(0, 300) : method,
+            durationMs: finiteMilliseconds(detail.durationMs),
+            instrumentationPreparationMs: finiteMilliseconds(detail.instrumentationPreparationMs),
+            state: state,
+          };
+          if (existing) {
+            Object.assign(existing, next);
+          } else {
+            documentPipelineBreakdown.push(next);
+            documentPipelineBreakdown.sort(function (left, right) {
+              return left.callIndex - right.callIndex;
+            });
+          }
+        }
+
+        function displayDocumentPipelineLabel(label) {
+          return String(label || "GPU component")
+            .replace(/\s+(?:rgba16float|rgba8unorm|bgra8unorm)$/i, "")
+            .trim();
+        }
+
+        function sumDocumentPipelineDurations(entries) {
+          return entries.reduce(function (sum, entry) {
+            return sum + (entry.durationMs === null ? 0 : entry.durationMs);
+          }, 0);
+        }
+
+        function sumDocumentPipelineInstrumentation(entries) {
+          return entries.reduce(function (sum, entry) {
+            return sum + (
+              entry.instrumentationPreparationMs === null
+                ? 0
+                : entry.instrumentationPreparationMs
+            );
+          }, 0);
+        }
+
+        function formatComponentDuration(entry) {
+          if (entry.state === "started") return "now";
+          if (entry.state === "failed") return entry.durationMs === null
+            ? "failed"
+            : (entry.durationMs / 1000).toFixed(3) + " s";
+          return entry.durationMs === null ? "done" : (entry.durationMs / 1000).toFixed(3) + " s";
+        }
+
         function setSurfacePhase(phaseName, state) {
           var phase = startupPhases.find(function (entry) {
             return entry.phase === phaseName;
@@ -761,7 +876,7 @@
           });
           if (currentPhase) {
             if (
-              DOCUMENT_PIPELINE_TEST
+              DOCUMENT_PIPELINE_TIMING_TEST
               && active
               && active.phase === "document-pipelines"
               && documentPipelineProgress
@@ -781,11 +896,15 @@
                   : reportStored || probeFinished
                     ? (STORAGE_FORMAT_AB_TEST
                       ? "Storage comparison finished"
+                      : APPLICATION_4096_PIPELINE_BREAKDOWN_TEST
+                        ? "Pipeline breakdown finished"
                       : DOCUMENT_PIPELINE_TEST
                         ? "Pipeline bisect finished"
                         : "Startup test finished")
                     : (STORAGE_FORMAT_AB_TEST
                       ? "Preparing the storage comparison"
+                      : APPLICATION_4096_PIPELINE_BREAKDOWN_TEST
+                        ? "Opening the measured pipeline path"
                       : DOCUMENT_PIPELINE_TEST
                         ? "Opening the document pipeline path"
                         : "Opening the real application");
@@ -799,12 +918,12 @@
               liveness.textContent = reportingAvailable
                 ? (STORAGE_FORMAT_AB_TEST
                   ? "Comparison measured · saving the report"
-                  : DOCUMENT_PIPELINE_TEST
+                  : DOCUMENT_PIPELINE_TIMING_TEST
                     ? "Pipeline path measured · saving the report"
                     : "Startup measured · saving the report")
                 : (STORAGE_FORMAT_AB_TEST
                   ? "Local comparison finished"
-                  : DOCUMENT_PIPELINE_TEST
+                  : DOCUMENT_PIPELINE_TIMING_TEST
                     ? "Local pipeline measurement finished"
                     : "Local startup measurement finished");
               liveness.dataset.state = currentStatus;
@@ -824,6 +943,8 @@
                   ? "Running normally"
                   : (STORAGE_FORMAT_AB_TEST
                     ? "Starting the storage format comparison"
+                    : APPLICATION_4096_PIPELINE_BREAKDOWN_TEST
+                      ? "Starting the pipeline breakdown"
                     : DOCUMENT_PIPELINE_TEST
                       ? "Starting the document pipeline bisect"
                       : "Starting the timed canvas test");
@@ -831,6 +952,121 @@
               }
             }
           }
+        }
+
+        function appendDocumentPipelineBreakdownGroup(container, title, entries, expectedCount) {
+          var group = document.createElement("section");
+          group.className = "pipeline-breakdown-group";
+          var heading = document.createElement("div");
+          heading.className = "pipeline-breakdown-heading";
+          var headingLabel = document.createElement("strong");
+          headingLabel.textContent = title + " (" + entries.length + "/" + expectedCount + ")";
+          var headingDuration = document.createElement("span");
+          headingDuration.textContent = (sumDocumentPipelineDurations(entries) / 1000).toFixed(3) + " s";
+          heading.appendChild(headingLabel);
+          heading.appendChild(headingDuration);
+          group.appendChild(heading);
+          var rows = document.createElement("div");
+          rows.className = "pipeline-breakdown-rows";
+          entries.forEach(function (entry) {
+            var row = document.createElement("div");
+            row.className = "pipeline-breakdown-row";
+            row.dataset.state = entry.state;
+            var index = document.createElement("span");
+            index.className = "pipeline-breakdown-index";
+            index.textContent = Number.isInteger(entry.itemIndex) && entry.itemIndex > 0
+              ? String(entry.itemIndex).padStart(2, "0")
+              : "–";
+            var label = document.createElement("span");
+            label.className = "pipeline-breakdown-label";
+            label.textContent = displayDocumentPipelineLabel(entry.label);
+            var duration = document.createElement("span");
+            duration.className = "pipeline-breakdown-duration";
+            duration.textContent = formatComponentDuration(entry);
+            row.appendChild(index);
+            row.appendChild(label);
+            row.appendChild(duration);
+            rows.appendChild(row);
+          });
+          if (entries.length === 0) {
+            var empty = document.createElement("p");
+            empty.className = "pipeline-breakdown-empty";
+            empty.textContent = "Waiting for measurements…";
+            rows.appendChild(empty);
+          }
+          group.appendChild(rows);
+          container.appendChild(group);
+        }
+
+        function createDocumentPipelineBreakdown(phase) {
+          var details = document.createElement("details");
+          details.className = "pipeline-breakdown";
+          details.open = documentPipelineBreakdownOpen;
+          details.addEventListener("toggle", function () {
+            documentPipelineBreakdownOpen = details.open;
+          });
+          var summary = document.createElement("summary");
+          var timedEntries = documentPipelineBreakdown.filter(function (entry) {
+            return (
+              entry.state === "completed" || entry.state === "failed"
+            ) && entry.durationMs !== null;
+          });
+          var measuredDurationMs = sumDocumentPipelineDurations(timedEntries);
+          var instrumentationDurationMs = sumDocumentPipelineInstrumentation(timedEntries);
+          summary.textContent = timedEntries.length
+            + "/71 timed calls · " + (measuredDurationMs / 1000).toFixed(3) + " s";
+          details.appendChild(summary);
+          var body = document.createElement("div");
+          body.className = "pipeline-breakdown-body";
+          var note = document.createElement("p");
+          note.className = "pipeline-breakdown-note";
+          note.textContent = "Native-call times exclude the checkpoints before each call. The phase total also includes engine work and diagnostic reporting outside those calls.";
+          body.appendChild(note);
+          appendDocumentPipelineBreakdownGroup(
+            body,
+            "Pipeline layouts",
+            documentPipelineBreakdown.filter(function (entry) { return entry.kind === "layout"; }),
+            17,
+          );
+          appendDocumentPipelineBreakdownGroup(
+            body,
+            "Render pipelines",
+            documentPipelineBreakdown.filter(function (entry) { return entry.kind === "pipeline"; }),
+            52,
+          );
+          appendDocumentPipelineBreakdownGroup(
+            body,
+            "Error-scope drains",
+            documentPipelineBreakdown.filter(function (entry) { return entry.kind === "validation"; }),
+            2,
+          );
+          if (phase.state === "completed" && phase.phaseElapsedMs !== null) {
+            var instrumentation = document.createElement("div");
+            instrumentation.className = "pipeline-breakdown-residual";
+            var instrumentationLabel = document.createElement("strong");
+            instrumentationLabel.textContent = "Pre-call diagnostic checkpoints";
+            var instrumentationDuration = document.createElement("span");
+            instrumentationDuration.textContent = (instrumentationDurationMs / 1000).toFixed(3) + " s";
+            instrumentation.appendChild(instrumentationLabel);
+            instrumentation.appendChild(instrumentationDuration);
+            body.appendChild(instrumentation);
+            var other = document.createElement("div");
+            other.className = "pipeline-breakdown-residual pipeline-breakdown-residual-secondary";
+            var otherLabel = document.createElement("strong");
+            otherLabel.textContent = "Remaining phase work and reporting";
+            var otherDuration = document.createElement("span");
+            otherDuration.textContent = (
+              Math.max(
+                0,
+                phase.phaseElapsedMs - measuredDurationMs - instrumentationDurationMs,
+              ) / 1000
+            ).toFixed(3) + " s";
+            other.appendChild(otherLabel);
+            other.appendChild(otherDuration);
+            body.appendChild(other);
+          }
+          details.appendChild(body);
+          return details;
         }
 
         function renderStartupTimeline() {
@@ -854,6 +1090,14 @@
                   : (phase.phaseElapsedMs / 1000).toFixed(2) + " s";
             item.appendChild(label);
             item.appendChild(duration);
+            if (
+              APPLICATION_4096_PIPELINE_BREAKDOWN_TEST
+              && phase.phase === "document-pipelines"
+              && phase.state !== "pending"
+            ) {
+              item.className = "phase-with-breakdown";
+              item.appendChild(createDocumentPipelineBreakdown(phase));
+            }
             steps.appendChild(item);
           });
         }
@@ -1304,6 +1548,7 @@
         }
 
         function appendDiagnosticEvent(name, detail, status, breadcrumb) {
+          applyDocumentPipelineBreakdownEvent(name, detail);
           applyApplicationMilestone(name);
           if (name === "application-startup-phase") {
             applyStartupProgress(detail);
@@ -1350,6 +1595,19 @@
           return sendBreadcrumbSnapshot(event);
         }
 
+        function display(name, detail) {
+          applyDocumentPipelineBreakdownEvent(name, detail);
+          if (
+            name === "application-document-gpu-call-started"
+            || name === "application-document-gpu-call-completed"
+            || name === "application-document-gpu-call-failed"
+          ) {
+            documentPipelineProgress = detail && typeof detail === "object" ? detail : null;
+            lastStartupProgressAtMs = performance.now();
+          }
+          updateSurface();
+        }
+
         async function finish(status, name, detail) {
           probeFinished = true;
           surfaceFinishedAtMs = performance.now();
@@ -1394,6 +1652,7 @@
           runCode: runCode,
           record: record,
           recordBreadcrumb: recordBreadcrumb,
+          display: display,
           finish: finish,
           serializeError: serializeError,
           setModuleLoaded: setModuleLoaded,
@@ -1448,6 +1707,8 @@
               ? "1×1 · RGBA8 vs RGBA16F · storage write"
               : DOCUMENT_PIPELINE_TEST
                 ? "Real document pipelines · RGBA16F · Tier 2 off"
+                : APPLICATION_4096_PIPELINE_BREAKDOWN_TEST
+                  ? "Real 4096×4096 document · 71 timed GPU calls · Tier 2 off"
                 : APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST
                   ? "Real 4096×4096 document · one first-frame pipeline · Tier 2 off"
                   : APPLICATION_4096_PIPELINES_ASYNC2_TEST
@@ -1723,6 +1984,119 @@
         color: #928b84;
         font-variant-numeric: tabular-nums;
         white-space: nowrap;
+      }
+
+      ol li.phase-with-breakdown {
+        align-items: start;
+        padding: 0.32rem 0 0.48rem;
+      }
+
+      .pipeline-breakdown {
+        grid-column: 2 / -1;
+        width: 100%;
+        min-width: 0;
+        margin: 0.32rem 0 0.18rem;
+        border: 1px solid rgba(255, 255, 255, 0.075);
+        border-radius: 0.55rem;
+        background: rgba(255, 255, 255, 0.018);
+        color: #c8c1b9;
+      }
+
+      .pipeline-breakdown > summary {
+        cursor: pointer;
+        padding: 0.62rem 0.7rem;
+        color: #ffb477;
+        font-size: 0.72rem;
+        font-variant-numeric: tabular-nums;
+        user-select: none;
+      }
+
+      .pipeline-breakdown-body {
+        padding: 0 0.7rem 0.68rem;
+      }
+
+      .pipeline-breakdown-note {
+        margin: 0 0 0.72rem;
+        color: #817a73;
+        font-size: 0.64rem;
+        line-height: 1.4;
+      }
+
+      .pipeline-breakdown-group + .pipeline-breakdown-group {
+        margin-top: 0.72rem;
+      }
+
+      .pipeline-breakdown-heading,
+      .pipeline-breakdown-residual {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 0.8rem;
+        color: #aaa39b;
+        font-size: 0.68rem;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .pipeline-breakdown-heading strong,
+      .pipeline-breakdown-residual strong {
+        color: #d7d1c9;
+        font-weight: 600;
+      }
+
+      .pipeline-breakdown-rows {
+        margin-top: 0.24rem;
+        border-top: 1px solid rgba(255, 255, 255, 0.045);
+      }
+
+      .pipeline-breakdown-row {
+        display: grid;
+        grid-template-columns: 1.7rem minmax(0, 1fr) auto;
+        align-items: baseline;
+        gap: 0.45rem;
+        min-height: 1.48rem;
+        padding: 0.2rem 0;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.035);
+        font-size: 0.66rem;
+      }
+
+      .pipeline-breakdown-row[data-state="started"] {
+        color: #ffb477;
+      }
+
+      .pipeline-breakdown-row[data-state="failed"] {
+        color: #ff9a55;
+      }
+
+      .pipeline-breakdown-index,
+      .pipeline-breakdown-duration {
+        color: #817a73;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+
+      .pipeline-breakdown-label {
+        min-width: 0;
+        overflow-wrap: anywhere;
+        line-height: 1.3;
+      }
+
+      .pipeline-breakdown-empty {
+        margin: 0;
+        padding: 0.45rem 0;
+        color: #746f69;
+        font-size: 0.66rem;
+      }
+
+      .pipeline-breakdown-residual {
+        margin-top: 0.78rem;
+        padding-top: 0.62rem;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+      }
+
+      .pipeline-breakdown-residual-secondary {
+        margin-top: 0.34rem;
+        padding-top: 0;
+        border-top: 0;
       }
 
       .diagnostic-meta {

@@ -23,7 +23,7 @@ const engineSource = read("src/brush-engine.ts");
 const layerRuntimeSource = read("src/engine-layer-runtime.ts");
 const featurePolicySource = read("src/gpu-startup-feature-policy.ts");
 
-const DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v14";
+const DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v15";
 const DEFAULT_TEST_ID = "startup-no-tier2-v1";
 const DEFAULT_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
 const STORAGE_FORMAT_TEST_ID = "storage-format-ab-v1";
@@ -40,6 +40,10 @@ const APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST_ID =
   "application-4096-pipelines-first-frame-v1";
 const APPLICATION_4096_PIPELINES_FIRST_FRAME_VARIANT =
   "application-startup-rgba16float-4096x4096-no-tier2-render-pipelines-first-frame-1-v1";
+const APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID =
+  "application-4096-pipeline-breakdown-v1";
+const APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT =
+  "application-startup-rgba16float-4096x4096-no-tier2-render-pipeline-breakdown-sync-v1";
 const DEFAULT_COMPARISON = {
   layerFormat: "rgba16float",
   canvasFormat: "rgba16float",
@@ -115,6 +119,26 @@ const APPLICATION_4096_PIPELINES_FIRST_FRAME_COMPARISON = {
   expectedRenderPipelines: 1,
   excludedRenderPipelines: 51,
   editorInteractionEnabled: false,
+};
+const APPLICATION_4096_PIPELINE_BREAKDOWN_COMPARISON = {
+  kind: "application-startup-render-pipeline-breakdown",
+  documentWidth: 4096,
+  documentHeight: 4096,
+  layerFormat: "rgba16float",
+  canvasFormat: "rgba16float",
+  requiredFeatures: [],
+  textureFormatsTier2Requested: false,
+  applicationFrame: "isolated-production-startup",
+  startupMode: "empty-document",
+  targetPhase: "document-pipelines",
+  instrumentation: "native-device-call-boundaries",
+  pipelineCompilationMethod: "createRenderPipeline",
+  pipelineCompilationOrder: "sync-sequential",
+  expectedPipelineLayouts: 17,
+  expectedRenderPipelines: 52,
+  expectedErrorScopeDrains: 2,
+  capture: "all-native-call-durations",
+  deferredObservationMs: 5000,
 };
 const STORAGE_FORMAT_STAGES = [
   "shader-module",
@@ -241,6 +265,13 @@ function diagnosticDefinition(testId) {
       comparison: APPLICATION_4096_PIPELINES_FIRST_FRAME_COMPARISON,
     };
   }
+  if (testId === APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID) {
+    return {
+      testId,
+      diagnosticVariant: APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT,
+      comparison: APPLICATION_4096_PIPELINE_BREAKDOWN_COMPARISON,
+    };
+  }
   throw new Error(`Unknown verification diagnostic test: ${testId}`);
 }
 
@@ -300,7 +331,10 @@ assert.match(html, /function compactBreadcrumbDetail\(name, value\)/);
 assert.match(html, /function recordBreadcrumb\(name, detail, status\)/);
 assert.match(html, /return postSnapshot\(\s*body,\s*false,/);
 assert.match(html, /MAX_SNAPSHOT_BYTES = 48 \* 1024/);
-assert.match(html, /MAX_DIAGNOSTIC_RESULT_BYTES = 12 \* 1024/);
+assert.match(
+  html,
+  /MAX_DIAGNOSTIC_RESULT_BYTES = APPLICATION_4096_PIPELINE_BREAKDOWN_TEST[\s\S]*18 \* 1024[\s\S]*12 \* 1024/,
+);
 assert.match(html, /truncateUtf8/);
 assert.match(html, /terminalUploadPromise/);
 assert.match(html, /new window\.AbortController/);
@@ -329,14 +363,17 @@ assert.match(html, /App boot · RGBA16F · Tier 2 off/);
 assert.match(html, /1×1 · RGBA8 vs RGBA16F · storage write/);
 assert.match(html, /Real document pipelines · RGBA16F · Tier 2 off/);
 assert.match(html, /Real 4096×4096 document · RGBA16F · Tier 2 off/);
+assert.match(html, /Real 4096×4096 document · 71 timed GPU calls · Tier 2 off/);
 assert.match(html, /requestedTestId \|\| "startup-no-tier2-v1"/);
 assert.match(html, /DIAGNOSTIC_TEST_ID === "storage-format-ab-v1"/);
 assert.match(html, /DIAGNOSTIC_TEST_ID === "document-pipeline-bisect-v1"/);
 assert.match(html, /DIAGNOSTIC_TEST_ID === "application-4096-startup-v1"/);
 assert.match(html, /DIAGNOSTIC_TEST_ID === "application-4096-pipelines-async2-v1"/);
 assert.match(html, /DIAGNOSTIC_TEST_ID === "application-4096-pipelines-first-frame-v1"/);
+assert.match(html, /DIAGNOSTIC_TEST_ID === "application-4096-pipeline-breakdown-v1"/);
 assert.match(html, new RegExp(APPLICATION_4096_PIPELINES_ASYNC2_VARIANT));
 assert.match(html, new RegExp(APPLICATION_4096_PIPELINES_FIRST_FRAME_VARIANT));
+assert.match(html, new RegExp(APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT));
 assert.match(html, /documentWidth: 4096/);
 assert.match(html, /documentHeight: 4096/);
 assert.match(html, /startupMode: "cold-empty-document"/);
@@ -349,6 +386,18 @@ assert.match(html, /pipelineCompilationScope: "first-frame-diagnostic"/);
 assert.match(html, /expectedRenderPipelines: 1/);
 assert.match(html, /excludedRenderPipelines: 51/);
 assert.match(html, /editorInteractionEnabled: false/);
+assert.match(html, /kind: "application-startup-render-pipeline-breakdown"/);
+assert.match(html, /pipelineCompilationOrder: "sync-sequential"/);
+assert.match(html, /capture: "all-native-call-durations"/);
+assert.match(html, /function applyDocumentPipelineBreakdownEvent\(name, detail\)/);
+assert.match(html, /function createDocumentPipelineBreakdown\(phase\)/);
+assert.match(html, /"Pipeline layouts"/);
+assert.match(html, /"Render pipelines"/);
+assert.match(html, /"Error-scope drains"/);
+assert.match(html, /"Pre-call diagnostic checkpoints"/);
+assert.match(html, /"Remaining phase work and reporting"/);
+assert.match(html, /grid-column: 2 \/ -1/);
+assert.match(html, /display: display/);
 assert.match(html, /expectedSynchronousPipelineLayouts: 17/);
 assert.match(html, /expectedSynchronousRenderPipelines: 52/);
 assert.match(html, /expectedErrorScopeDrains: 2/);
@@ -356,6 +405,10 @@ assert.match(html, /diagnosticVariant: DIAGNOSTIC_VARIANT/);
 assert.match(html, /testId: DIAGNOSTIC_TEST_ID/);
 assert.match(html, /result: diagnosticResult/);
 assert.match(html, /textureFormatsTier2Enabled: false/);
+assert.match(
+  workerBuilder,
+  /call\.instrumentationPreparationMs = finiteNumber\([\s\S]*?call\.nativeStartedAtMs = finiteNumber\(performance\.now\(\)\);\s*result = Reflect\.apply\(original, device, arguments\);/,
+);
 
 assert.match(moduleSource, /requestAdapter\(adapterOptions\)/);
 assert.match(moduleSource, /featureLevel: "compatibility"/);
@@ -388,6 +441,11 @@ assert.match(
   /APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST =\s*"application-4096-pipelines-first-frame-v1"/,
 );
 assert.match(moduleSource, new RegExp(APPLICATION_4096_PIPELINES_FIRST_FRAME_VARIANT));
+assert.match(
+  moduleSource,
+  /APPLICATION_4096_PIPELINE_BREAKDOWN_TEST =\s*"application-4096-pipeline-breakdown-v1"/,
+);
+assert.match(moduleSource, new RegExp(APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT));
 assert.match(moduleSource, /APPLICATION_4096_DOCUMENT_WIDTH = 4096/);
 assert.match(moduleSource, /APPLICATION_4096_DOCUMENT_HEIGHT = 4096/);
 assert.doesNotMatch(moduleSource, /createNewProject|diagnostic-new-project/);
@@ -402,6 +460,10 @@ assert.match(
 assert.match(
   moduleSource,
   /if \(application4096PipelinesFirstFrameEnabled\) \{\s*await runApplication4096StartupDiagnostic\(\{ firstFramePipelineCompilation: true \}\);\s*return;/,
+);
+assert.match(
+  moduleSource,
+  /if \(application4096PipelineBreakdownEnabled\) \{\s*await runApplication4096PipelineBreakdownDiagnostic\(\);\s*return;/,
 );
 assert.match(moduleSource, /applicationBoot = await runFullApplicationBoot\(\)/);
 assert.match(moduleSource, /const requiredFeatures: GPUFeatureName\[\] = \[\]/);
@@ -473,6 +535,28 @@ assert.match(moduleSource, /stats\.compiledPipelineKeys\[0\] === "paint-mip-down
 assert.match(moduleSource, /stats\.peakActiveCount === 1/);
 assert.match(moduleSource, /"application-4096-pipelines-first-frame-passed"/);
 assert.match(moduleSource, /verdict: "application-4096-pipelines-first-frame-inconclusive"/);
+assert.match(moduleSource, /function documentPipelineBreakdownSummary\(/);
+assert.match(moduleSource, /expectedMeasuredCallCount: EXPECTED_DOCUMENT_PIPELINE_LAYOUTS/);
+assert.match(moduleSource, /slowestRenderPipelineIndex:/);
+assert.match(moduleSource, /slowestRenderPipelineDurationMs:/);
+assert.match(moduleSource, /pipelineLayouts: layoutCalls/);
+assert.match(moduleSource, /renderPipelineGroups: DOCUMENT_RENDER_PIPELINE_GROUPS\.map/);
+assert.match(moduleSource, /errorScopeDrains: errorScopeCalls/);
+assert.match(moduleSource, /preCallDiagnosticTotalMs:/);
+assert.match(moduleSource, /phaseMinusPreCallDiagnosticMs:/);
+assert.match(moduleSource, /remainingPhaseWorkAndReportingMs:/);
+assert.doesNotMatch(moduleSource, /rankedSlowestRenderPipelines/);
+assert.doesNotMatch(
+  moduleSource.match(/function compactTimedDocumentPipelineCall[\s\S]*?\n}\n/)?.[0] ?? "",
+  /instrumentationPreparationMs/,
+);
+assert.match(moduleSource, /"erase-stamps"/);
+assert.match(moduleSource, /"document-composition"/);
+assert.match(moduleSource, /documentPipelineBreakdownPassed/);
+assert.match(moduleSource, /"application-4096-pipeline-breakdown-passed"/);
+assert.match(moduleSource, /verdict: "application-4096-pipeline-breakdown-inconclusive"/);
+assert.match(moduleSource, /two error-scope drains were timed individually/);
+assert.match(moduleSource, /bridge\.display\?\./);
 assert.match(
   moduleSource,
   /const engineReady = \/\\bok\\b\/\.test\(statusClass\)[\s\S]*statusText\.includes\("WebGPU is ready"\)/,
@@ -599,6 +683,15 @@ assert.match(
   /APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST_ID =[\s\S]*"application-4096-pipelines-first-frame-v1"/,
 );
 assert.match(workerBuilder, new RegExp(APPLICATION_4096_PIPELINES_FIRST_FRAME_VARIANT));
+assert.match(
+  workerBuilder,
+  /APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID =\s*"application-4096-pipeline-breakdown-v1"/,
+);
+assert.match(workerBuilder, new RegExp(APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT));
+assert.match(
+  workerBuilder,
+  /documentPipelineInstrumentationEnabled =\s*diagnosticTestId === DOCUMENT_PIPELINE_TEST_ID \|\| application4096PipelineBreakdownEnabled/,
+);
 assert.match(workerBuilder, /startupMode: "cold-empty-document"/);
 assert.match(workerBuilder, /document\.documentElement\.style\.pointerEvents = "none"/);
 assert.match(workerBuilder, /document\.body\.inert = true/);
@@ -607,6 +700,7 @@ assert.match(workerBuilder, /EXPECTED_DOCUMENT_RENDER_PIPELINES = 52/);
 assert.match(workerBuilder, /EXPECTED_DOCUMENT_PIPELINE_LAYOUTS = 17/);
 assert.match(workerBuilder, /EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS = 2/);
 assert.match(workerBuilder, /Object\.keys\(value\)\.slice\(0, 24\)/);
+assert.match(workerBuilder, /if \(depth >= 3\) return clippedString/);
 assert.match(workerBuilder, /bridge\.recordBreadcrumb\(name, detail, status \|\| "running"\)/);
 assert.match(workerBuilder, /wrapDocumentGpuMethod\(device, "createPipelineLayout", false\)/);
 assert.match(workerBuilder, /wrapDocumentGpuMethod\(device, "createRenderPipeline", false\)/);
@@ -710,6 +804,8 @@ for (const productionSource of [indexHtml, startup, engineSource, layerRuntimeSo
     productionSource,
     new RegExp(APPLICATION_4096_PIPELINES_FIRST_FRAME_VARIANT),
   );
+  assert.doesNotMatch(productionSource, new RegExp(APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID));
+  assert.doesNotMatch(productionSource, new RegExp(APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT));
   assert.doesNotMatch(productionSource, new RegExp(DIAGNOSTIC_BUILD));
 }
 
@@ -874,6 +970,7 @@ function diagnosticBootstrapHarness({
         dataset: {},
         textContent: "",
         children: [],
+        addEventListener() {},
         appendChild(child) { this.children.push(child); },
       };
     },
@@ -921,6 +1018,7 @@ function diagnosticBootstrapHarness({
     copiedText: () => copiedText,
     selectionCount: () => selectionCount,
     legacyCopyCommands,
+    stepChildren,
   };
 }
 
@@ -1256,6 +1354,261 @@ function diagnosticBootstrapHarness({
     DOCUMENT_PIPELINE_TEST_ID,
     null,
   );
+}
+
+{
+  const harness = diagnosticBootstrapHarness({
+    testId: APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID,
+  });
+  assert.equal(
+    harness.elements.get("diagnosticVariantLabel").textContent,
+    "Real 4096×4096 document · 71 timed GPU calls · Tier 2 off",
+  );
+  await harness.browser.__gpuStartupDiagnostics.record(
+    "application-startup-phase",
+    {
+      phase: "document-pipelines",
+      label: "Compiling 16-bit document pipelines",
+      state: "started",
+      totalElapsedMs: 400,
+      phaseElapsedMs: 0,
+    },
+    "running",
+  );
+  await harness.browser.__gpuStartupDiagnostics.record(
+    "application-document-gpu-call-started",
+    {
+      callIndex: 1,
+      method: "createPipelineLayout",
+      pipelineLayoutIndex: 1,
+      label: "Verification layout rgba16float",
+    },
+    "running",
+  );
+  harness.browser.__gpuStartupDiagnostics.display(
+    "application-document-gpu-call-completed",
+    {
+      callIndex: 1,
+      method: "createPipelineLayout",
+      pipelineLayoutIndex: 1,
+      label: "Verification layout rgba16float",
+      durationMs: 12.345,
+      instrumentationPreparationMs: 3.5,
+    },
+  );
+  const breakdownPhase = harness.stepChildren.find(
+    (child) => child.className === "phase-with-breakdown",
+  );
+  assert.ok(breakdownPhase);
+  const details = breakdownPhase.children.find(
+    (child) => child.className === "pipeline-breakdown",
+  );
+  assert.ok(details);
+  assert.equal(details.children[0].textContent, "1/71 timed calls · 0.012 s");
+  assert.equal(
+    harness.elements.get("diagnosticCurrentPhase").textContent,
+    "Verification layout rgba16float",
+  );
+  assertDiagnosticSummary(
+    harness.browser.__gpuStartupDiagnostics.snapshot().summary,
+    APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID,
+    null,
+  );
+  const worstCaseLabel = (kind, index) => (
+    `${kind}-${String(index).padStart(2, "0")}-` + "x".repeat(80)
+  ).slice(0, 80);
+  const compactGroups = [
+    [1, 6],
+    [7, 18],
+    [19, 30],
+    [31, 36],
+    [37, 40],
+    [41, 46],
+    [47, 52],
+  ].map(([first, last], groupIndex) => ({
+    key: `group-${groupIndex + 1}`,
+    label: worstCaseLabel("group", groupIndex + 1),
+    totalDurationMs: last - first + 1,
+    calls: Array.from({ length: last - first + 1 }, (_, offset) => ({
+      index: first + offset,
+      label: worstCaseLabel("render-pipeline", first + offset),
+      durationMs: first + offset + 0.123,
+    })),
+  }));
+  const compactLayouts = Array.from({ length: 17 }, (_, index) => ({
+    index: index + 1,
+    label: worstCaseLabel("pipeline-layout", index + 1),
+    durationMs: index + 0.456,
+  }));
+  const compactErrorScopeDrains = [
+    { index: 1, label: worstCaseLabel("validation-scope-drain", 1), durationMs: 1.234 },
+    { index: 2, label: worstCaseLabel("memory-scope-drain", 2), durationMs: 2.345 },
+  ];
+  const compactNativeCallTotalMs = [
+    ...compactLayouts,
+    ...compactGroups.flatMap((group) => group.calls),
+    ...compactErrorScopeDrains,
+  ].reduce((sum, call) => sum + call.durationMs, 0);
+  const compactBreakdownResult = {
+    ...APPLICATION_4096_PIPELINE_BREAKDOWN_COMPARISON,
+    testId: APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID,
+    diagnosticVariant: APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT,
+    verdict: "application-4096-pipeline-breakdown-passed",
+    pipelineBreakdown: {
+      expectedMeasuredCallCount: 71,
+      measuredCallCount: 71,
+      phaseElapsedMs: 54_321.987,
+      nativeCallTotalMs: compactNativeCallTotalMs,
+      preCallDiagnosticTotalMs: 1_234.567,
+      phaseMinusPreCallDiagnosticMs: 53_087.42,
+      remainingPhaseWorkAndReportingMs: 53_087.42 - compactNativeCallTotalMs,
+      pipelineLayoutTotalMs: compactLayouts.reduce((sum, call) => sum + call.durationMs, 0),
+      renderPipelineTotalMs: compactGroups
+        .flatMap((group) => group.calls)
+        .reduce((sum, call) => sum + call.durationMs, 0),
+      errorScopeDrainTotalMs: compactErrorScopeDrains
+        .reduce((sum, call) => sum + call.durationMs, 0),
+      slowestRenderPipelineIndex: 52,
+      slowestRenderPipelineDurationMs: 52.123,
+      pipelineLayouts: compactLayouts,
+      renderPipelineGroups: compactGroups,
+      failedCallCount: 0,
+      errorScopeDrains: compactErrorScopeDrains,
+    },
+    startupTrace: {
+      lastProgress: {
+        phase: "editor-ready",
+        label: worstCaseLabel("startup-phase", 17),
+        state: "completed",
+        totalElapsedMs: 54_999.999,
+        phaseElapsedMs: 12.345,
+      },
+      phaseStates: Object.fromEntries(
+        Array.from({ length: 17 }, (_, index) => [`phase-${index + 1}`, "completed"]),
+      ),
+      documentPipelinesPhase: {
+        phase: "document-pipelines",
+        label: worstCaseLabel("document-pipelines", 1),
+        state: "completed",
+        totalElapsedMs: 54_321.987,
+        phaseElapsedMs: 54_321.987,
+        detail: { format: "rgba16float", strategy: "sync-sequential" },
+      },
+      editorReadyPhase: {
+        phase: "editor-ready",
+        label: worstCaseLabel("editor-ready", 1),
+        state: "completed",
+        totalElapsedMs: 54_999.999,
+        phaseElapsedMs: 12.345,
+      },
+      requiredPhaseStates: Object.fromEntries(
+        Array.from({ length: 17 }, (_, index) => [`required-phase-${index + 1}`, "completed"]),
+      ),
+      deviceLost: null,
+      uncapturedError: null,
+      gpuObservation: {
+        installed: true,
+        requestDeviceObserved: true,
+        adapterCount: 1,
+        deviceCount: 1,
+        requiredFeatures: [],
+        textureFormatsTier2Enabled: false,
+      },
+    },
+    applicationBoot: {
+      accessible: true,
+      statusText: worstCaseLabel("application-ready", 1),
+      statusClass: "ok",
+      projectSessionReady: true,
+      runtimeStatsStarted: true,
+      canvas: { width: 4096, height: 4096, format: "rgba16float" },
+      startupPhaseStates: Object.fromEntries(
+        Array.from({ length: 17 }, (_, index) => [`phase-${index + 1}`, "completed"]),
+      ),
+      rgba16floatLayerBytes: 134_217_728,
+      resourceCount: 25,
+      failedResources: [],
+      deferredStartupObservationMs: 5000,
+      reporter: {
+        channel: "gpu-startup-diagnostics-v1",
+        bootstrapReady: true,
+        extensionCreated: true,
+        frameMessageCount: 999,
+        lastStartupProgress: { phase: "editor-ready", state: "completed" },
+      },
+      engine: {
+        documentWidth: 4096,
+        documentHeight: 4096,
+        diagnosticVariant: APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT,
+        layerFormat: "rgba16float",
+        canvasFormat: "rgba16float",
+        featureIsolation: {
+          textureFormatsTier2Advertised: true,
+          textureFormatsTier2Enabled: false,
+          inPlaceGlazeCommitEnabled: false,
+          inPlaceGlazeCommitPipelineCreated: false,
+        },
+        layerCount: 1,
+        layerMemoryMiB: 128,
+        storage: { format: "rgba16float", width: 4096, height: 4096 },
+        gpu: { adapter: "ARM Valhall", architecture: "Valhall", description: "x".repeat(300) },
+      },
+    },
+  };
+  await harness.browser.__gpuStartupDiagnostics.finish(
+    "completed",
+    "diagnostic-completed",
+    compactBreakdownResult,
+  );
+  const terminalPayload = JSON.parse(harness.postedBodies.at(-1));
+  assertDiagnosticSummary(
+    terminalPayload.summary,
+    APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID,
+    compactBreakdownResult,
+  );
+  assert.equal(
+    terminalPayload.summary.result.pipelineBreakdown.renderPipelineGroups
+      .flatMap((group) => group.calls).length,
+    52,
+  );
+  assert.deepEqual(
+    terminalPayload.summary.result.pipelineBreakdown.renderPipelineGroups
+      .flatMap((group) => group.calls).map((call) => call.index),
+    Array.from({ length: 52 }, (_, index) => index + 1),
+  );
+  assert.deepEqual(
+    terminalPayload.summary.result.pipelineBreakdown.pipelineLayouts.map((call) => call.index),
+    Array.from({ length: 17 }, (_, index) => index + 1),
+  );
+  assert.deepEqual(
+    terminalPayload.summary.result.pipelineBreakdown.errorScopeDrains.map((call) => call.index),
+    [1, 2],
+  );
+  const storedCalls = [
+    ...terminalPayload.summary.result.pipelineBreakdown.pipelineLayouts,
+    ...terminalPayload.summary.result.pipelineBreakdown.renderPipelineGroups
+      .flatMap((group) => group.calls),
+    ...terminalPayload.summary.result.pipelineBreakdown.errorScopeDrains,
+  ];
+  assert.equal(storedCalls.length, 71);
+  assert.ok(storedCalls.every((call) => Number.isFinite(call.durationMs) && call.durationMs >= 0));
+  assert.equal(
+    terminalPayload.summary.result.pipelineBreakdown.renderPipelineGroups
+      .flatMap((group) => group.calls)
+      .sort((left, right) => right.durationMs - left.durationMs)[0].index,
+    terminalPayload.summary.result.pipelineBreakdown.slowestRenderPipelineIndex,
+  );
+  assert.ok(
+    terminalPayload.summary.result.pipelineBreakdown.renderPipelineGroups
+      .flatMap((group) => group.calls)
+      .every((call) => !("instrumentationPreparationMs" in call)),
+  );
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(terminalPayload.summary.result), "utf8") <= 18 * 1024,
+  );
+  assert.ok(Buffer.byteLength(JSON.stringify(terminalPayload.summary), "utf8") <= 24 * 1024);
+  assert.notEqual(terminalPayload.summary.result.truncated, true);
+  assert.ok(Buffer.byteLength(JSON.stringify(terminalPayload), "utf8") <= 48 * 1024);
 }
 
 {
@@ -2330,6 +2683,46 @@ if (existsSync(builtWorkerPath)) {
     null,
   );
 
+  const application4096BreakdownRunCode = `diag-${"4".repeat(32)}`;
+  const application4096BreakdownPageResponse = await worker.fetch(
+    new Request(
+      `https://example.test/gpu-startup-lab?run=${application4096BreakdownRunCode}&test=${APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID}`,
+      { headers: { "User-Agent": "Application Pipeline Breakdown Diagnostic Test Browser" } },
+    ),
+    environment,
+  );
+  assert.equal(application4096BreakdownPageResponse.status, 200);
+  assert.equal(
+    await application4096BreakdownPageResponse.text(),
+    builtDiagnosticHtml.replace(/\r\n?/g, "\n"),
+  );
+  assert.equal(database.rows.get(application4096BreakdownRunCode)?.status, "html-requested");
+  assertDiagnosticSummary(
+    JSON.parse(database.rows.get(application4096BreakdownRunCode).result_summary),
+    APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID,
+    null,
+  );
+
+  const application4096BreakdownSecondRunCode = `diag-${"5".repeat(32)}`;
+  const application4096BreakdownSecondPageResponse = await worker.fetch(
+    new Request(
+      `https://example.test/gpu-startup-lab?run=${application4096BreakdownSecondRunCode}&test=${APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID}`,
+      { headers: { "User-Agent": "Second Platform Pipeline Breakdown Test Browser" } },
+    ),
+    environment,
+  );
+  assert.equal(application4096BreakdownSecondPageResponse.status, 200);
+  assert.equal(
+    await application4096BreakdownSecondPageResponse.text(),
+    builtDiagnosticHtml.replace(/\r\n?/g, "\n"),
+  );
+  assert.equal(database.rows.get(application4096BreakdownSecondRunCode)?.status, "html-requested");
+  assertDiagnosticSummary(
+    JSON.parse(database.rows.get(application4096BreakdownSecondRunCode).result_summary),
+    APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID,
+    null,
+  );
+
   const mismatchedPageResponse = await worker.fetch(
     new Request(
       `https://example.test/gpu-startup-lab?run=${runCode}&test=${STORAGE_FORMAT_TEST_ID}`,
@@ -2620,6 +3013,49 @@ if (existsSync(builtWorkerPath)) {
     Object.keys(application4096FirstFrameWindow.__editorExtensionBootstrap.engineOptions),
     ["documentPipelineCompilationScope"],
   );
+  const application4096BreakdownMessages = [];
+  const application4096BreakdownFrameWindow = {
+    location: {
+      origin: "https://example.test",
+      pathname: "/gpu-startup-app-frame",
+      search: `?diagnosticBoot=1&test=${APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID}&documentWidth=4096&documentHeight=4096&documentSize=4096&diagnosticVariant=${APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT}&forceGlazeCommitFallback=1`,
+    },
+    isSecureContext: true,
+    addEventListener() {},
+    parent: {
+      postMessage(message, targetOrigin) {
+        application4096BreakdownMessages.push({ message, targetOrigin });
+      },
+    },
+  };
+  application4096BreakdownFrameWindow.window = application4096BreakdownFrameWindow;
+  runInNewContext(frameBootstrapSource, {
+    window: application4096BreakdownFrameWindow,
+    document: { visibilityState: "visible" },
+    navigator: { gpu: { requestAdapter: async () => null } },
+    performance: { now: () => 100 },
+    console: { error() {} },
+    Reflect,
+    Array,
+    Object,
+    String,
+    Number,
+    Math,
+    Error,
+    Promise,
+    URLSearchParams,
+  });
+  assert.deepEqual(
+    Object.keys(application4096BreakdownFrameWindow.__editorExtensionBootstrap.engineOptions),
+    [],
+    "The breakdown must measure the unchanged synchronous engine path.",
+  );
+  assert.ok(
+    application4096BreakdownMessages.some(({ message }) => (
+      message.type === "document-pipeline-instrumentation"
+      && message.detail.installed === true
+    )),
+  );
   const observedApplication4096Adapter = await application4096Gpu.requestAdapter();
   assert.equal(observedApplication4096Adapter, application4096Adapter);
   const observedApplication4096Device = await observedApplication4096Adapter.requestDevice({
@@ -2851,6 +3287,10 @@ if (existsSync(builtWorkerPath)) {
   assert.equal(fallbackPipelineRecords.length, 0);
   assert.ok(durableStarts.every(({ detail }) => detail.nativeStartedAtMs > detail.checkpointStartedAtMs));
   assert.ok(
+    durableStarts.every(({ detail }) => detail.instrumentationPreparationMs >= 1_000),
+    "Pre-native diagnostic work must be measured separately from the native GPU call.",
+  );
+  assert.ok(
     pipelineCallOrder.indexOf("breadcrumb:application-document-gpu-call-started:Accepted pipeline")
       < pipelineCallOrder.indexOf("native:Accepted pipeline"),
     "The durable breadcrumb must precede the native pipeline call.",
@@ -2899,6 +3339,7 @@ if (existsSync(builtWorkerPath)) {
   );
   assert.ok(acceptedCompletion);
   assert.equal(acceptedCompletion.message.detail.durationMs, 5);
+  assert.ok(acceptedCompletion.message.detail.instrumentationPreparationMs >= 1_000);
   assert.ok(
     pipelineFrameMessages.some(
       ({ message }) => message.type === "document-pipeline-instrumentation"
@@ -3290,6 +3731,102 @@ if (existsSync(builtWorkerPath)) {
     null,
   );
 
+  const application4096BreakdownWriteToken = "4".repeat(64);
+  const application4096BreakdownSequence = sequence + 700;
+  const application4096BreakdownBasePayload = createUploadPayload({
+    payloadRunCode: application4096BreakdownRunCode,
+    payloadWriteToken: application4096BreakdownWriteToken,
+    payloadSequence: application4096BreakdownSequence,
+    testId: APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID,
+    latestEvent: "application-document-gpu-call-started",
+    eventDetail: {
+      callIndex: 1,
+      method: "createPipelineLayout",
+      pipelineLayoutIndex: 1,
+      label: "Verification pipeline layout",
+    },
+    moduleLoaded: true,
+  });
+  const invalidApplication4096BreakdownComparisons = [
+    { ...APPLICATION_4096_PIPELINE_BREAKDOWN_COMPARISON, kind: "application-startup" },
+    { ...APPLICATION_4096_PIPELINE_BREAKDOWN_COMPARISON, documentWidth: 2048 },
+    { ...APPLICATION_4096_PIPELINE_BREAKDOWN_COMPARISON, requiredFeatures: ["texture-formats-tier2"] },
+    { ...APPLICATION_4096_PIPELINE_BREAKDOWN_COMPARISON, textureFormatsTier2Requested: true },
+    { ...APPLICATION_4096_PIPELINE_BREAKDOWN_COMPARISON, instrumentation: "descriptor-copy" },
+    { ...APPLICATION_4096_PIPELINE_BREAKDOWN_COMPARISON, pipelineCompilationMethod: "createRenderPipelineAsync" },
+    { ...APPLICATION_4096_PIPELINE_BREAKDOWN_COMPARISON, pipelineCompilationOrder: "async-bounded" },
+    { ...APPLICATION_4096_PIPELINE_BREAKDOWN_COMPARISON, expectedPipelineLayouts: 16 },
+    { ...APPLICATION_4096_PIPELINE_BREAKDOWN_COMPARISON, expectedRenderPipelines: 51 },
+    { ...APPLICATION_4096_PIPELINE_BREAKDOWN_COMPARISON, expectedErrorScopeDrains: 1 },
+    { ...APPLICATION_4096_PIPELINE_BREAKDOWN_COMPARISON, capture: "slowest-only" },
+    { ...APPLICATION_4096_PIPELINE_BREAKDOWN_COMPARISON, unexpected: true },
+  ];
+  for (const comparison of invalidApplication4096BreakdownComparisons) {
+    const invalidProtocolResponse = await upload({
+      ...application4096BreakdownBasePayload,
+      summary: { ...application4096BreakdownBasePayload.summary, comparison },
+    });
+    assert.equal(invalidProtocolResponse.status, 400);
+  }
+  const application4096BreakdownRunningResponse = await upload(
+    application4096BreakdownBasePayload,
+  );
+  assert.equal(application4096BreakdownRunningResponse.status, 201);
+  assertDiagnosticSummary(
+    JSON.parse(database.rows.get(application4096BreakdownRunCode).result_summary),
+    APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID,
+    null,
+  );
+
+  const application4096BreakdownSecondWriteToken = "5".repeat(64);
+  const application4096BreakdownSecondSequence = sequence + 800;
+  const application4096BreakdownSecondBasePayload = createUploadPayload({
+    payloadRunCode: application4096BreakdownSecondRunCode,
+    payloadWriteToken: application4096BreakdownSecondWriteToken,
+    payloadSequence: application4096BreakdownSecondSequence,
+    testId: APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID,
+    latestEvent: "application-document-gpu-call-started",
+    eventDetail: {
+      callIndex: 1,
+      method: "createPipelineLayout",
+      pipelineLayoutIndex: 1,
+      label: "Second platform verification pipeline layout",
+    },
+    moduleLoaded: true,
+  });
+  const application4096BreakdownSecondRunningResponse = await upload(
+    application4096BreakdownSecondBasePayload,
+  );
+  assert.equal(application4096BreakdownSecondRunningResponse.status, 201);
+  const firstBreakdownRowBeforeCrossWrite = {
+    ...database.rows.get(application4096BreakdownRunCode),
+  };
+  const secondBreakdownRowBeforeCrossWrite = {
+    ...database.rows.get(application4096BreakdownSecondRunCode),
+  };
+  const firstTokenAgainstSecondRunResponse = await upload(createUploadPayload({
+    payloadRunCode: application4096BreakdownSecondRunCode,
+    payloadWriteToken: application4096BreakdownWriteToken,
+    payloadSequence: application4096BreakdownSecondSequence + 1,
+    testId: APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID,
+  }));
+  assert.equal(firstTokenAgainstSecondRunResponse.status, 403);
+  const secondTokenAgainstFirstRunResponse = await upload(createUploadPayload({
+    payloadRunCode: application4096BreakdownRunCode,
+    payloadWriteToken: application4096BreakdownSecondWriteToken,
+    payloadSequence: application4096BreakdownSequence + 1,
+    testId: APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID,
+  }));
+  assert.equal(secondTokenAgainstFirstRunResponse.status, 403);
+  assert.deepEqual(
+    database.rows.get(application4096BreakdownRunCode),
+    firstBreakdownRowBeforeCrossWrite,
+  );
+  assert.deepEqual(
+    database.rows.get(application4096BreakdownSecondRunCode),
+    secondBreakdownRowBeforeCrossWrite,
+  );
+
   const mismatchedPostResponse = await upload(createUploadPayload({
     payloadRunCode: runCode,
     payloadWriteToken: writeToken,
@@ -3661,6 +4198,159 @@ if (existsSync(builtWorkerPath)) {
     storedApplication4096FirstFrameSummary.result.startupTrace
       .documentPipelinesPhase.detail.completedCount,
     1,
+  );
+
+  const breakdownLayoutCalls = Array.from({ length: 17 }, (_, index) => ({
+    index: index + 1,
+    label: `Pipeline layout ${index + 1}`,
+    durationMs: 0.1,
+  }));
+  const breakdownRenderCalls = Array.from({ length: 52 }, (_, index) => ({
+    index: index + 1,
+    label: `Render pipeline ${index + 1}`,
+    durationMs: index === 40 ? 28_000 : 10,
+  }));
+  const breakdownGroupDefinitions = [
+    ["erase-stamps", "Erase stamps", 1, 6],
+    ["direct-color-stamps", "Direct color stamps", 7, 18],
+    ["precision-color-accumulation", "Precision color accumulation", 19, 30],
+    ["coverage-accumulation", "Coverage accumulation", 31, 36],
+    ["live-accumulation-resolve", "Live accumulation resolve", 37, 40],
+    ["display-and-live-mips", "Display and live mips", 41, 46],
+    ["document-composition", "Document composition", 47, 52],
+  ];
+  const breakdownErrorScopeCalls = [
+    { index: 1, label: "Validation error scope drain", durationMs: 1 },
+    { index: 2, label: "Out-of-memory error scope drain", durationMs: 1 },
+  ];
+  const breakdownNativeCallTotalMs = breakdownLayoutCalls.reduce(
+    (sum, call) => sum + call.durationMs,
+    0,
+  ) + breakdownRenderCalls.reduce((sum, call) => sum + call.durationMs, 0)
+    + breakdownErrorScopeCalls.reduce((sum, call) => sum + call.durationMs, 0);
+  const application4096BreakdownResult = {
+    ...APPLICATION_4096_PIPELINE_BREAKDOWN_COMPARISON,
+    testId: APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID,
+    diagnosticVariant: APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT,
+    verdict: "application-4096-pipeline-breakdown-passed",
+    conclusion: "All native document-pipeline calls were timed individually.",
+    pipelineBreakdown: {
+      expectedMeasuredCallCount: 71,
+      measuredCallCount: 71,
+      phaseElapsedMs: 29_000,
+      nativeCallTotalMs: breakdownNativeCallTotalMs,
+      preCallDiagnosticTotalMs: 100,
+      phaseMinusPreCallDiagnosticMs: 28_900,
+      remainingPhaseWorkAndReportingMs: 28_900 - breakdownNativeCallTotalMs,
+      pipelineLayoutTotalMs: 1.7,
+      renderPipelineTotalMs: 28_510,
+      errorScopeDrainTotalMs: 2,
+      slowestRenderPipelineIndex: breakdownRenderCalls[40].index,
+      slowestRenderPipelineDurationMs: breakdownRenderCalls[40].durationMs,
+      pipelineLayouts: breakdownLayoutCalls,
+      renderPipelineGroups: breakdownGroupDefinitions.map(([key, label, first, last]) => {
+        const calls = breakdownRenderCalls.filter(
+          (call) => call.index >= first && call.index <= last,
+        );
+        return {
+          key,
+          label,
+          totalDurationMs: calls.reduce((sum, call) => sum + call.durationMs, 0),
+          calls,
+        };
+      }),
+      failedCallCount: 0,
+      errorScopeDrains: breakdownErrorScopeCalls,
+    },
+    startupTrace: {
+      documentPipelinesPhase: {
+        phase: "document-pipelines",
+        state: "completed",
+        phaseElapsedMs: 29_000,
+      },
+      editorReadyPhase: { phase: "editor-ready", state: "completed", phaseElapsedMs: 20 },
+    },
+    applicationBoot: {
+      statusText: "WebGPU is ready",
+      projectSessionReady: true,
+      runtimeStatsStarted: true,
+    },
+  };
+  const application4096BreakdownCompletedPayload = createUploadPayload({
+    payloadRunCode: application4096BreakdownRunCode,
+    payloadWriteToken: application4096BreakdownWriteToken,
+    payloadSequence: application4096BreakdownSequence + 1,
+    testId: APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID,
+    status: "completed",
+    latestEvent: "diagnostic-completed",
+    result: application4096BreakdownResult,
+    eventDetail: {
+      verdict: "application-4096-pipeline-breakdown-passed",
+      measuredCallCount: 71,
+      slowestRenderPipelineIndex: 41,
+    },
+    moduleLoaded: true,
+    probeFinished: true,
+  });
+  const application4096BreakdownCompletedResponse = await upload(
+    application4096BreakdownCompletedPayload,
+  );
+  assert.equal(application4096BreakdownCompletedResponse.status, 201);
+  const storedApplication4096BreakdownSummary = JSON.parse(
+    database.rows.get(application4096BreakdownRunCode).result_summary,
+  );
+  assertDiagnosticSummary(
+    storedApplication4096BreakdownSummary,
+    APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID,
+    application4096BreakdownResult,
+  );
+  assert.equal(
+    storedApplication4096BreakdownSummary.result.pipelineBreakdown.measuredCallCount,
+    71,
+  );
+  assert.equal(
+    storedApplication4096BreakdownSummary.result.pipelineBreakdown.renderPipelineGroups
+      .flatMap((group) => group.calls).length,
+    52,
+  );
+  assert.equal(
+    storedApplication4096BreakdownSummary.result.pipelineBreakdown.slowestRenderPipelineIndex,
+    41,
+  );
+  assert.notEqual(storedApplication4096BreakdownSummary.result.truncated, true);
+
+  const application4096BreakdownSecondCompletedPayload = createUploadPayload({
+    payloadRunCode: application4096BreakdownSecondRunCode,
+    payloadWriteToken: application4096BreakdownSecondWriteToken,
+    payloadSequence: application4096BreakdownSecondSequence + 1,
+    testId: APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID,
+    status: "completed",
+    latestEvent: "diagnostic-completed",
+    result: application4096BreakdownResult,
+    eventDetail: {
+      verdict: "application-4096-pipeline-breakdown-passed",
+      measuredCallCount: 71,
+      slowestRenderPipelineIndex: 41,
+    },
+    moduleLoaded: true,
+    probeFinished: true,
+  });
+  const application4096BreakdownSecondCompletedResponse = await upload(
+    application4096BreakdownSecondCompletedPayload,
+  );
+  assert.equal(application4096BreakdownSecondCompletedResponse.status, 201);
+  const storedApplication4096BreakdownSecondSummary = JSON.parse(
+    database.rows.get(application4096BreakdownSecondRunCode).result_summary,
+  );
+  assertDiagnosticSummary(
+    storedApplication4096BreakdownSecondSummary,
+    APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID,
+    application4096BreakdownResult,
+  );
+  assert.equal(database.rows.get(application4096BreakdownRunCode).sequence, application4096BreakdownSequence + 1);
+  assert.equal(
+    database.rows.get(application4096BreakdownSecondRunCode).sequence,
+    application4096BreakdownSecondSequence + 1,
   );
 
   const staleResponse = await upload({
