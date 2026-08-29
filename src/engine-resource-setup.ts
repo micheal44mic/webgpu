@@ -78,6 +78,7 @@ import { ensureMixedSceneLinearTexture } from "./engine-vector-text-runtime";
 import {
   cancelBevelFieldShrink,
   commitThicknessStamp,
+  ensureRasterStrokePresentationPipeline,
   finishStaticResourceCreation,
   setRasterStrokeGeometryEnabled,
 } from "./engine-runtime-misc";
@@ -1702,6 +1703,7 @@ export async function ensureRasterStrokeRenderer(engine: BrushEngine,
   strokeGeometryActive =
     engine.rasterStrokeStyle.enabled && styleWidth > 0,
 ): Promise<RasterStrokeRenderer> {
+  await ensureRasterStrokePresentationPipeline(engine);
   if (engine.rasterStrokeRenderer) {
     await setRasterStrokeGeometryEnabled(engine, strokeGeometryActive);
     return engine.rasterStrokeRenderer;

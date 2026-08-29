@@ -16,6 +16,7 @@ import {
   type BrushOutlineSnapshot,
 } from "./brush-outline-core";
 import {
+  blendBlurSamplingScale,
   createDryBlendPlanner,
   DRY_BLEND_SCRATCH_LIFECYCLE_STRATEGY,
   type DryBlendPlanner,
@@ -932,6 +933,10 @@ import {
   drainBlendPlanner,
   emitStamp,
   encodeRasterStrokeDisplayPyramid,
+  ensureAdvancedCanvasPresentationPipelines,
+  ensureLightGlazePresentationPipelines,
+  ensureRasterStrokePresentationPipeline,
+  ensureThicknessTailPresentationPipeline,
   finishStaticResourceCreation,
   flushPendingWorkBeforeSettingsChange,
   hasPendingRenderWork,
@@ -1116,7 +1121,16 @@ export class BrushEngine {
   private adapter!: GPUAdapter;
   device!: GPUDevice;
   private optionalEditorResourcesPromise: Promise<void> | null = null;
+  private blendRendererResourcesPromise: Promise<void> | null = null;
   optionalEditorResourcesReady = false;
+  advancedCanvasPresentationPipelinesReady = false;
+  advancedCanvasPresentationPipelinesPromise: Promise<void> | null = null;
+  rasterStrokePresentationPipelineReady = false;
+  rasterStrokePresentationPipelinePromise: Promise<void> | null = null;
+  thicknessTailPresentationPipelineReady = false;
+  thicknessTailPresentationPipelinePromise: Promise<void> | null = null;
+  lightGlazePresentationPipelinesReady = false;
+  lightGlazePresentationPipelinesPromise: Promise<void> | null = null;
   private spatialBlurPipelinesReady = false;
   private rasterToneCurvesPipelinesReady = false;
   private rasterToneCurvesPrewarmPromise: Promise<void> | null = null;
@@ -1670,6 +1684,7 @@ export class BrushEngine {
   texturizedGrainShaderModule!: GPUShaderModule;
   selectionBrushShaderModule!: GPUShaderModule;
   selectionTexturizedGrainShaderModule!: GPUShaderModule;
+  singleRasterDisplayShaderModule!: GPUShaderModule;
   displayShaderModule!: GPUShaderModule;
   vectorTextGpuSlugShaderModule: GPUShaderModule | null = null;
   vectorTextDisplayShaderModule: GPUShaderModule | null = null;
@@ -4713,7 +4728,7 @@ export class BrushEngine {
       return false;
     }
     if (renderSettings.tool === "blend" && !this.blendRenderer) {
-      void this.ensureOptionalEditorResources().catch((error) => {
+      void this.ensureBlendRendererResources(renderSettings).catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         this.callbacks.onStatus?.(`Blend renderer is unavailable: ${message}`, "error");
       });
@@ -5274,6 +5289,21 @@ export class BrushEngine {
         sourceStroke.deferredPreview
           ? preview?.historyActionId !== sourceStroke.historyActionId
           : preview !== null
+      )
+    ) {
+      return false;
+    }
+
+    await ensureThicknessTailPresentationPipeline(this);
+    if (
+      signal?.aborted
+      || this.activeStroke !== sourceStroke
+      || this.straightLineAdjustment !== null
+      || this.settings.tool !== sourceStroke.tool
+      || (
+        sourceStroke.deferredPreview
+          ? this.deferredStrokePreview !== preview
+          : this.deferredStrokePreview !== null
       )
     ) {
       return false;
@@ -7323,6 +7353,9 @@ export class BrushEngine {
     while (this.shapeLoadingPromise) {
       await this.shapeLoadingPromise;
     }
+    while (this.blendRendererResourcesPromise) {
+      await this.blendRendererResourcesPromise;
+    }
     while (this.brushGpuWarmupPromise) {
       await this.brushGpuWarmupPromise;
     }
@@ -7369,8 +7402,15 @@ export class BrushEngine {
       retireAdaptivePreviewAfterGpuIdle(this);
       // A callback can enqueue a frame while the GPU fence is pending. Recheck
       // instead of returning a false-idle state to a resource transaction.
-      if (!hasPendingRenderWork(this) && !this.brushGpuWarmupPromise) {
+      if (
+        !hasPendingRenderWork(this)
+        && !this.blendRendererResourcesPromise
+        && !this.brushGpuWarmupPromise
+      ) {
         return;
+      }
+      while (this.blendRendererResourcesPromise) {
+        await this.blendRendererResourcesPromise;
       }
       while (this.brushGpuWarmupPromise) {
         await this.brushGpuWarmupPromise;
@@ -7812,6 +7852,42 @@ export class BrushEngine {
     await finishStaticResourceCreation(this);
   }
 
+  async ensureAdvancedCanvasPresentation(): Promise<void> {
+    await ensureAdvancedCanvasPresentationPipelines(this);
+  }
+
+  async ensureRasterStrokePresentation(): Promise<void> {
+    await ensureRasterStrokePresentationPipeline(this);
+  }
+
+  private selectedBrushPresentationPipelinesReady(settings: BrushSettings): boolean {
+    const tailReady = settings.tool !== "paint"
+      || !thicknessDynamicsNeedsTailHoldback(settings.endThickness)
+      || this.thicknessTailPresentationPipelineReady;
+    const glazeReady = !usesStrokeGlazeRenderer(settings)
+      || this.lightGlazePresentationPipelinesReady;
+    const styledReady = !this.styleStackNeedsCompositor()
+      || this.rasterStrokePresentationPipelineReady;
+    return tailReady && glazeReady && styledReady;
+  }
+
+  private async ensureSelectedBrushPresentationPipelines(
+    settings: BrushSettings,
+  ): Promise<void> {
+    if (this.styleStackNeedsCompositor()) {
+      await ensureRasterStrokePresentationPipeline(this);
+    }
+    if (
+      settings.tool === "paint"
+      && thicknessDynamicsNeedsTailHoldback(settings.endThickness)
+    ) {
+      await ensureThicknessTailPresentationPipeline(this);
+    }
+    if (usesStrokeGlazeRenderer(settings)) {
+      await ensureLightGlazePresentationPipelines(this);
+    }
+  }
+
   /**
    * Dependencies are separate from the GPU fence: resource objects can exist
    * while their first clear, pipeline creation or binding transition is still
@@ -7834,10 +7910,16 @@ export class BrushEngine {
       this.lightGlazeLoadingPromise === null
       && lightGlazeResourcesMatch(this, lightGlazeStorageModeFor(settings.blendMode))
     );
-    const blendReady = settings.tool !== "blend" || this.blendRenderer !== null;
+    const blendReady = settings.tool !== "blend"
+      || this.blendRenderer?.selectedVariantPipelinesReady(settings) === true;
     const selectionReady = this.pixelSelectionState.selectedPixels === 0
       || this.selectionPipelinesReady;
-    return grainReady && shapeReady && glazeReady && blendReady && selectionReady;
+    return grainReady
+      && shapeReady
+      && glazeReady
+      && blendReady
+      && selectionReady
+      && this.selectedBrushPresentationPipelinesReady(settings);
   }
 
   private brushGpuPipelineFamily(settings: BrushSettings): string {
@@ -7878,7 +7960,14 @@ export class BrushEngine {
       ? `${lightGlazeStorageModeFor(settings.blendMode)}:${this.lightGlazeResourceRevision}`
       : "no-glaze";
     const blendVariant = settings.tool === "blend"
-      ? `blur-${settings.blendBlur > 0 ? "on" : "off"}`
+      ? [
+        `deposit-${settings.shape}-${settings.grainMode === "off" ? "off" : "on"}`,
+        `blur-${settings.blendBlur <= 0
+          ? "off"
+          : blendBlurSamplingScale(settings.blendBlur, settings.size) === 1
+            ? "direct"
+            : "reduced"}`,
+      ].join(":" )
       : "no-blend";
     return [
       this.layerFormat,
@@ -8342,12 +8431,14 @@ export class BrushEngine {
         this.displayPipeline,
         this.displayBindGroup,
       );
-      drawFullscreen(
-        "Warm selected brush final-stack presentation",
-        canvasScratchView,
-        this.finalRasterStackDisplayPipeline,
-        this.displayBindGroup,
-      );
+      if (this.advancedCanvasPresentationPipelinesReady) {
+        drawFullscreen(
+          "Warm selected brush final-stack presentation",
+          canvasScratchView,
+          this.finalRasterStackDisplayPipeline,
+          this.displayBindGroup,
+        );
+      }
 
       this.device.queue.submit([encoder.finish()]);
       await this.device.queue.onSubmittedWorkDone();
@@ -8461,20 +8552,9 @@ export class BrushEngine {
 
     for (;;) {
       const settings = this.settings;
-      if (
-        (settings.tool === "blend" && !this.blendRenderer)
-        || (this.pixelSelectionState.selectedPixels > 0 && !this.selectionPipelinesReady)
-      ) {
-        await this.ensureOptionalEditorResources();
-      }
-      if (settings !== this.settings) continue;
-      if (settings.tool === "blend" && !this.blendRenderer) {
-        throw new Error("The Blend renderer is unavailable for the first stroke.");
-      }
-      if (this.pixelSelectionState.selectedPixels > 0 && !this.selectionPipelinesReady) {
-        throw new Error("The pixel selection pipeline is unavailable for the first stroke.");
-      }
-
+      // Shape and Grain loading can already be in flight after a settings
+      // change. Finish those allocation transactions before opening Blend
+      // pipeline error scopes on the same device.
       if (settings.grainMode !== "off") {
         await this.ensureGrainResources(grainAssetIdForSettings(settings));
       }
@@ -8486,6 +8566,30 @@ export class BrushEngine {
           shapeMaskFormatForSettings(settings),
         );
       }
+      if (settings !== this.settings) continue;
+
+      if (
+        settings.tool === "blend"
+        && !this.blendRenderer?.selectedVariantPipelinesReady(settings)
+      ) {
+        await this.ensureBlendRendererResources(settings);
+      }
+      if (settings !== this.settings) continue;
+      if (this.pixelSelectionState.selectedPixels > 0 && !this.selectionPipelinesReady) {
+        await this.ensureOptionalEditorResources();
+      }
+      if (settings !== this.settings) continue;
+      if (
+        settings.tool === "blend"
+        && !this.blendRenderer?.selectedVariantPipelinesReady(settings)
+      ) {
+        throw new Error("The selected Blend renderer variant is unavailable for the first stroke.");
+      }
+      if (this.pixelSelectionState.selectedPixels > 0 && !this.selectionPipelinesReady) {
+        throw new Error("The pixel selection pipeline is unavailable for the first stroke.");
+      }
+
+      await this.ensureSelectedBrushPresentationPipelines(settings);
       if (settings !== this.settings) continue;
       if (usesStrokeGlazeRenderer(settings)) {
         await this.ensureLightGlazeResources(settings.blendMode);
@@ -8501,6 +8605,47 @@ export class BrushEngine {
       }
       return;
     }
+  }
+
+  /** Prepares only the renderer required by the Blend brush. */
+  async ensureBlendRendererResources(settings: BrushSettings = this.settings): Promise<void> {
+    if (this.documentPipelineCompilationScope === "first-frame-diagnostic") {
+      throw new Error("Blend resources are disabled during first-frame diagnostics.");
+    }
+    if (this.blendRenderer?.selectedVariantPipelinesReady(settings)) return;
+    if (this.blendRendererResourcesPromise) {
+      await this.blendRendererResourcesPromise;
+      if (!this.blendRenderer?.selectedVariantPipelinesReady(settings)) {
+        await this.ensureBlendRendererResources(settings);
+      }
+      return;
+    }
+    const initialization = (async (): Promise<void> => {
+      if (!this.blendRenderer) {
+        const warmup = this.blendRendererWarmup;
+        if (!warmup) {
+          throw new Error("The Blend renderer cannot be prepared for this document.");
+        }
+        await warmup();
+      }
+      if (this.deviceLostError) throw this.deviceLostError;
+      const renderer = this.blendRenderer;
+      if (!renderer) {
+        throw new Error("The Blend renderer is unavailable after preparation.");
+      }
+      await renderer.ensureVariantPipelines(settings);
+      if (!renderer.selectedVariantPipelinesReady(settings)) {
+        throw new Error("The selected Blend pipeline variant is unavailable after preparation.");
+      }
+    })();
+    let tracked!: Promise<void>;
+    tracked = initialization.finally(() => {
+      if (this.blendRendererResourcesPromise === tracked) {
+        this.blendRendererResourcesPromise = null;
+      }
+    });
+    this.blendRendererResourcesPromise = tracked;
+    await tracked;
   }
 
   /**
@@ -8521,14 +8666,11 @@ export class BrushEngine {
       && !this.optionalEditorResourcesReady;
     const selectionResourcesPending = !this.selectionPipelinesReady
       && this.selectionPipelineWarmup !== null;
-    const blendResourcesPending = this.blendRenderer === null
-      && this.blendRendererWarmup !== null;
     const spatialBlurResourcesPending = !this.spatialBlurPipelinesReady;
     if (
       !layerBlendResourcesPending
       && !vectorResourcesPending
       && !selectionResourcesPending
-      && !blendResourcesPending
       && !spatialBlurResourcesPending
     ) return;
     if (this.optionalEditorResourcesPromise) {
@@ -8558,9 +8700,6 @@ export class BrushEngine {
             error,
           );
         }
-      }
-      if (blendResourcesPending) {
-        await this.blendRendererWarmup!();
       }
       if (spatialBlurResourcesPending) {
         await warmRasterSpatialBlurPipelines(this);
@@ -9289,6 +9428,12 @@ export class BrushEngine {
         candidateAbove = await buildMergedSurfaceCandidate(this, 
           this.layerStack.layers.slice(activeUnitEnd), "above", caller,
         );
+      }
+      if (
+        candidateCompositionSegments.length === 0
+        && (candidateBelow || candidateAbove || candidateActiveClippingGroup)
+      ) {
+        await ensureAdvancedCanvasPresentationPipelines(this);
       }
       await restoreEffectsWorkbenchToActiveLayer(this, caller);
       activeWorkbenchRestored = true;
@@ -11537,7 +11682,7 @@ export class BrushEngine {
     destroyThicknessTailOverlayResources(this);
   }
 
-  ensureLightGlazeResources(blendMode: BlendMode): Promise<void> {
+  async ensureLightGlazeResources(blendMode: BlendMode): Promise<void> {
     const storageMode = lightGlazeStorageModeFor(blendMode);
     this.lightGlazeDesiredStorageMode = storageMode;
 
@@ -11564,11 +11709,18 @@ export class BrushEngine {
         },
       );
     }
-    if (lightGlazeResourcesMatch(this, storageMode)) {
+    if (
+      this.lightGlazePresentationPipelinesReady
+      && lightGlazeResourcesMatch(this, storageMode)
+    ) {
       return Promise.resolve();
     }
 
     const loading = (async () => {
+      await ensureLightGlazePresentationPipelines(this);
+      if (this.lightGlazeDesiredStorageMode !== storageMode) return;
+      if (lightGlazeResourcesMatch(this, storageMode)) return;
+
       const steadyTotalMiB = getGpuMemoryStats(this).countedTotalMiB;
       let resources: LightGlazeResourceSet;
       try {

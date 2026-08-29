@@ -126,9 +126,9 @@ const APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST =
 const APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT =
   "application-startup-rgba16float-4096x4096-no-tier2-first-use-controls-async1-v1";
 const APPLICATION_4096_CLEAN_QUEUE_CORE_TEST =
-  "application-4096-clean-queue-core-attribution-v1";
+  "application-4096-progressive-core-startup-v1";
 const APPLICATION_4096_CLEAN_QUEUE_CORE_VARIANT =
-  "application-startup-rgba16float-4096x4096-no-tier2-clean-queue-core-readiness-async1-v1";
+  "application-startup-rgba16float-4096x4096-no-tier2-progressive-core-readiness-async1-v1";
 const APPLICATION_4096_DOCUMENT_WIDTH = 4096;
 const APPLICATION_4096_DOCUMENT_HEIGHT = 4096;
 const APPLICATION_DEFERRED_OBSERVATION_MS = 5_000;
@@ -136,24 +136,14 @@ const EXPECTED_DOCUMENT_PIPELINE_LAYOUTS = 17;
 const EXPECTED_DOCUMENT_RENDER_PIPELINES = 52;
 const EXPECTED_FIRST_FRAME_RENDER_PIPELINES = 1;
 const EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS = 2;
-const EXPECTED_CORE_RENDER_PIPELINES = 8;
+const EXPECTED_CORE_RENDER_PIPELINES = 3;
 const EXPECTED_CORE_PIPELINE_LABELS = [
   "Light Glaze R16F stale dirty-region clear pipeline",
   "Uniformed/Intense RGBA16F stale dirty-region clear pipeline",
-  "Display pipeline",
-  "Final raster stack mip display pipeline",
-  "Stroke direct LOD 0 and coarse mip display pipeline",
-  "Predictive thickness tail display pipeline",
-  "Light Glaze live display pipeline",
-  "Light Glaze live final raster stack display pipeline",
+  "Single raster RGBA16F display pipeline",
 ] as const;
 const EXPECTED_CORE_PIPELINE_TARGET_FORMATS = [
   "r16float",
-  "rgba16float",
-  "rgba16float",
-  "rgba16float",
-  "rgba16float",
-  "rgba16float",
   "rgba16float",
   "rgba16float",
 ] as const;
@@ -371,7 +361,7 @@ function comparisonPolicy(): Record<string, unknown> {
       cleanQueueProbeBeforeApplicationDeviceExposure: true,
       expectedCoreRenderPipelines: EXPECTED_CORE_RENDER_PIPELINES,
       corePipelineObservationMethod: "sync-create-plus-async-duplicate-readiness",
-      coreReadinessBoundaryCount: 9,
+      coreReadinessBoundaryCount: EXPECTED_CORE_RENDER_PIPELINES + 1,
       coreReadinessBarrierBeforeDocumentPipelines: true,
       postCoreBaselineCount: 1,
       pipelineCompilationMethod: "createRenderPipelineAsync",
@@ -379,7 +369,8 @@ function comparisonPolicy(): Record<string, unknown> {
       expectedPipelineLayouts: EXPECTED_DOCUMENT_PIPELINE_LAYOUTS,
       expectedRenderPipelines: EXPECTED_DOCUMENT_RENDER_PIPELINES,
       expectedErrorScopeDrains: EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS,
-      totalNativeAsyncPipelineInvocations: 63,
+      totalNativeAsyncPipelineInvocations:
+        EXPECTED_DOCUMENT_RENDER_PIPELINES + EXPECTED_CORE_RENDER_PIPELINES + 3,
       deferredObservationMs: APPLICATION_DEFERRED_OBSERVATION_MS,
     };
   }
@@ -1940,7 +1931,7 @@ function compactCoreReadinessSummary(detail: Record<string, unknown>): Record<st
     completedPipelineCount: detail.completedPipelineCount ?? null,
     failedPipelineCount: detail.failedPipelineCount ?? null,
     completionOrder: Array.isArray(detail.completionOrder)
-      ? detail.completionOrder.slice(0, 9)
+      ? detail.completionOrder.slice(0, EXPECTED_CORE_RENDER_PIPELINES + 1)
       : [],
     completionOrderPreserved: detail.completionOrderPreserved === true,
     totalDurationMs: finiteDurationMilliseconds(detail.totalDurationMs),
@@ -1964,7 +1955,10 @@ function compactCoreReadinessSummary(detail: Record<string, unknown>): Record<st
         }
       : null,
     entries: Array.isArray(detail.entries)
-      ? detail.entries.slice(0, 9).map(compactCoreReadinessEntry).filter(isRecord)
+      ? detail.entries
+        .slice(0, EXPECTED_CORE_RENDER_PIPELINES + 1)
+        .map(compactCoreReadinessEntry)
+        .filter(isRecord)
       : [],
   };
 }
@@ -2325,7 +2319,7 @@ function cleanQueueCoreAttributionPassed(trace: DocumentPipelineTraceState): boo
     typeof value === "number" && Number.isFinite(value) && value >= 0
   );
   const expectedLabels = ["Pre-core queue boundary", ...EXPECTED_CORE_PIPELINE_LABELS];
-  const completionPermutation = completionOrder.length === 9
+  const completionPermutation = completionOrder.length === EXPECTED_CORE_RENDER_PIPELINES + 1
     && [...completionOrder]
       .map(Number)
       .sort((left, right) => left - right)
@@ -2354,7 +2348,7 @@ function cleanQueueCoreAttributionPassed(trace: DocumentPipelineTraceState): boo
     && validDuration(core.totalDurationMs)
     && validDuration(core.barrierWaitMs)
     && completionPermutation
-    && entries.length === 9
+    && entries.length === EXPECTED_CORE_RENDER_PIPELINES + 1
     && entries.every((entry, index) => (
       entry.corePipelineIndex === index
       && entry.label === expectedLabels[index]
@@ -2396,7 +2390,7 @@ function cleanQueueCoreAttributionSummary(
     probeTotalMs: finiteDurationMilliseconds(probe.totalDurationMs),
     coreCompletionOrderPreserved: ordered,
     coreCompletionOrder: Array.isArray(core.completionOrder)
-      ? core.completionOrder.slice(0, 9)
+      ? core.completionOrder.slice(0, EXPECTED_CORE_RENDER_PIPELINES + 1)
       : [],
     coreDrainMs: finiteDurationMilliseconds(core.totalDurationMs),
     coreBarrierWaitMs: finiteDurationMilliseconds(core.barrierWaitMs),
@@ -3959,7 +3953,7 @@ async function runApplication4096PipelineBreakdownDiagnostic(): Promise<void> {
     verdict: `${verdictPrefix}-passed`,
     conclusion: attributionEnabled
       ? cleanQueueCoreEnabled
-        ? "The blocking empty-queue RGBA16F probe completed before the application received its device; the eight core render pipelines, drained-queue baseline, and all 52 document pipelines were then observed separately."
+        ? "The blocking empty-queue RGBA16F probe completed before the application received its device; the three core render pipelines, drained-queue baseline, and all 52 document pipelines were then observed separately."
         : firstUseControlsEnabled
           ? "The independent control, shared brush-module control, original Eraser pipeline, and all 52 application render pipelines were timed sequentially without overlap during the isolated 4096x4096 startup."
           : "All 52 native asynchronous render pipelines were compiled one at a time and timed without overlap during the isolated 4096x4096 startup."

@@ -24,7 +24,7 @@ const layerRuntimeSource = read("src/engine-layer-runtime.ts");
 const featurePolicySource = read("src/gpu-startup-feature-policy.ts");
 const productionBundleCheckSource = read("scripts/check-production-bundle.mjs");
 
-const DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v18";
+const DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v19";
 const DEFAULT_TEST_ID = "startup-no-tier2-v1";
 const DEFAULT_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
 const STORAGE_FORMAT_TEST_ID = "storage-format-ab-v1";
@@ -54,9 +54,9 @@ const APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID =
 const APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT =
   "application-startup-rgba16float-4096x4096-no-tier2-first-use-controls-async1-v1";
 const APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID =
-  "application-4096-clean-queue-core-attribution-v1";
+  "application-4096-progressive-core-startup-v1";
 const APPLICATION_4096_CLEAN_QUEUE_CORE_VARIANT =
-  "application-startup-rgba16float-4096x4096-no-tier2-clean-queue-core-readiness-async1-v1";
+  "application-startup-rgba16float-4096x4096-no-tier2-progressive-core-readiness-async1-v1";
 const DEFAULT_COMPARISON = {
   layerFormat: "rgba16float",
   canvasFormat: "rgba16float",
@@ -217,9 +217,9 @@ const APPLICATION_4096_CLEAN_QUEUE_CORE_COMPARISON = {
   cleanQueueProbeFormat: "rgba16float",
   cleanQueueProbeBlocking: true,
   cleanQueueProbeBeforeApplicationDeviceExposure: true,
-  expectedCoreRenderPipelines: 8,
+  expectedCoreRenderPipelines: 3,
   corePipelineObservationMethod: "sync-create-plus-async-duplicate-readiness",
-  coreReadinessBoundaryCount: 9,
+  coreReadinessBoundaryCount: 4,
   coreReadinessBarrierBeforeDocumentPipelines: true,
   postCoreBaselineCount: 1,
   pipelineCompilationMethod: "createRenderPipelineAsync",
@@ -227,18 +227,13 @@ const APPLICATION_4096_CLEAN_QUEUE_CORE_COMPARISON = {
   expectedPipelineLayouts: 17,
   expectedRenderPipelines: 52,
   expectedErrorScopeDrains: 2,
-  totalNativeAsyncPipelineInvocations: 63,
+  totalNativeAsyncPipelineInvocations: 58,
   deferredObservationMs: 5000,
 };
 const APPLICATION_4096_CORE_PIPELINE_LABELS = [
   "Light Glaze R16F stale dirty-region clear pipeline",
   "Uniformed/Intense RGBA16F stale dirty-region clear pipeline",
-  "Display pipeline",
-  "Final raster stack mip display pipeline",
-  "Stroke direct LOD 0 and coarse mip display pipeline",
-  "Predictive thickness tail display pipeline",
-  "Light Glaze live display pipeline",
-  "Light Glaze live final raster stack display pipeline",
+  "Single raster RGBA16F display pipeline",
 ];
 const STORAGE_FORMAT_STAGES = [
   "shader-module",
@@ -454,7 +449,7 @@ assert.match(html, /return postSnapshot\(\s*body,\s*false,/);
 assert.match(html, /MAX_SNAPSHOT_BYTES = 48 \* 1024/);
 assert.match(
   html,
-  /MAX_DIAGNOSTIC_RESULT_BYTES = APPLICATION_4096_PIPELINE_BREAKDOWN_TEST[\s\S]*18 \* 1024[\s\S]*12 \* 1024/,
+  /MAX_DIAGNOSTIC_RESULT_BYTES = APPLICATION_4096_CLEAN_QUEUE_CORE_TEST[\s\S]*28 \* 1024[\s\S]*APPLICATION_4096_PIPELINE_BREAKDOWN_TEST[\s\S]*18 \* 1024[\s\S]*12 \* 1024/,
 );
 assert.match(html, /truncateUtf8/);
 assert.match(html, /terminalUploadPromise/);
@@ -502,7 +497,7 @@ assert.match(
 );
 assert.match(
   html,
-  /DIAGNOSTIC_TEST_ID === "application-4096-clean-queue-core-attribution-v1"/,
+  /DIAGNOSTIC_TEST_ID === "application-4096-progressive-core-startup-v1"/,
 );
 assert.match(html, new RegExp(APPLICATION_4096_PIPELINES_ASYNC2_VARIANT));
 assert.match(html, new RegExp(APPLICATION_4096_PIPELINES_FIRST_FRAME_VARIANT));
@@ -537,12 +532,12 @@ assert.match(html, /kind: "application-startup-clean-queue-core-attribution"/);
 assert.match(html, /cleanQueueProbeFormat: "rgba16float"/);
 assert.match(html, /cleanQueueProbeBlocking: true/);
 assert.match(html, /cleanQueueProbeBeforeApplicationDeviceExposure: true/);
-assert.match(html, /expectedCoreRenderPipelines: 8/);
+assert.match(html, /expectedCoreRenderPipelines: 3/);
 assert.match(html, /corePipelineObservationMethod: "sync-create-plus-async-duplicate-readiness"/);
-assert.match(html, /coreReadinessBoundaryCount: 9/);
+assert.match(html, /coreReadinessBoundaryCount: 4/);
 assert.match(html, /coreReadinessBarrierBeforeDocumentPipelines: true/);
 assert.match(html, /postCoreBaselineCount: 1/);
-assert.match(html, /totalNativeAsyncPipelineInvocations: 63/);
+assert.match(html, /totalNativeAsyncPipelineInvocations: 58/);
 assert.match(html, /function applyCleanQueueCoreAttribution\(name, detail\)/);
 assert.match(html, /function appendCleanQueueCoreGroups\(container\)/);
 assert.match(html, /"Empty-queue RGBA16F probe"/);
@@ -650,7 +645,7 @@ assert.match(
 assert.match(moduleSource, new RegExp(APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT));
 assert.match(
   moduleSource,
-  /APPLICATION_4096_CLEAN_QUEUE_CORE_TEST =\s*"application-4096-clean-queue-core-attribution-v1"/,
+  /APPLICATION_4096_CLEAN_QUEUE_CORE_TEST =\s*"application-4096-progressive-core-startup-v1"/,
 );
 assert.match(moduleSource, new RegExp(APPLICATION_4096_CLEAN_QUEUE_CORE_VARIANT));
 assert.match(moduleSource, /EXPECTED_CORE_PIPELINE_TARGET_FORMATS = \[/);
@@ -966,7 +961,7 @@ assert.match(
 assert.match(workerBuilder, new RegExp(APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT));
 assert.match(
   workerBuilder,
-  /GPU_STARTUP_APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID = "application-4096-clean-queue-core-attribution-v1"/,
+  /GPU_STARTUP_APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID = "application-4096-progressive-core-startup-v1"/,
 );
 assert.match(workerBuilder, new RegExp(APPLICATION_4096_CLEAN_QUEUE_CORE_VARIANT));
 assert.match(
@@ -1011,7 +1006,7 @@ assert.match(workerBuilder, /emitFirstUseStepEvent\("started", "running"/);
 assert.match(workerBuilder, /emitFirstUseStepEvent\("completed", "running"/);
 assert.match(workerBuilder, /emitFirstUseStepEvent\("failed", "failed"/);
 assert.match(workerBuilder, /Object\.keys\(value\)\.slice\(0, 24\)/);
-assert.match(workerBuilder, /if \(depth >= 3\) return clippedString/);
+assert.match(workerBuilder, /if \(depth >= 4\) return clippedString/);
 assert.match(workerBuilder, /bridge\.recordBreadcrumb\(name, detail, status \|\| "running"\)/);
 assert.match(workerBuilder, /wrapDocumentGpuMethod\(device, "createPipelineLayout", false\)/);
 assert.match(
@@ -1057,7 +1052,11 @@ assert.match(projectSessionSource, /await this\.save\(\{ captureThumbnail: false
 assert.match(projectSessionSource, /options\.captureThumbnail !== false/);
 assert.match(workerBuilder, /gpuStartupDiagnosticDefinition\(payload\.summary\.testId\)/);
 assert.match(workerBuilder, /validGpuStartupDiagnosticComparison\(comparison, definition\.comparison\)/);
-assert.match(workerBuilder, /new TextEncoder\(\)\.encode\(summaryJson\)\.byteLength > 24 \* 1024/);
+assert.match(workerBuilder, /maximumSummaryBytes[\s\S]*32 \* 1024[\s\S]*24 \* 1024/);
+assert.match(
+  workerBuilder,
+  /new TextEncoder\(\)\.encode\(summaryJson\)\.byteLength > maximumSummaryBytes/,
+);
 assert.match(workerBuilder, /SELECT result_summary FROM gpu_startup_diagnostic_runs/);
 assert.match(workerBuilder, /Diagnostic run is already bound to another test/);
 assert.match(workerBuilder, /Unknown GPU diagnostic test/);
@@ -1088,13 +1087,13 @@ assert.match(workerBuilder, /schema: "pipeline-first-use-controls-summary-overfl
 assert.match(workerBuilder, /function serializeGpuStartupCleanQueueCoreResultSummary\(summary\)/);
 assert.match(
   workerBuilder,
-  /GPU_STARTUP_CLEAN_QUEUE_CORE_SCHEMA = "empty-queue-core-ladder-ms-v1"/,
+  /GPU_STARTUP_CLEAN_QUEUE_CORE_SCHEMA = "empty-queue-core-ladder-ms-v2"/,
 );
 assert.match(
   workerBuilder,
   /GPU_STARTUP_CLEAN_QUEUE_CORE_VERDICT =\s*"application-4096-clean-queue-core-attribution-passed"/,
 );
-assert.match(workerBuilder, /schema: "empty-queue-core-ladder-summary-overflow-v1"/);
+assert.match(workerBuilder, /schema: "empty-queue-core-ladder-summary-overflow-v2"/);
 assert.match(workerBuilder, /return runCleanQueueProbe\(/);
 assert.match(workerBuilder, /function wrapCoreRenderPipelineMethod\(device\)/);
 assert.match(workerBuilder, /function schedulePreCoreReadinessBoundary\(/);
@@ -2010,6 +2009,32 @@ function diagnosticBootstrapHarness({
   );
   assert.ok(Buffer.byteLength(JSON.stringify(terminalPayload.summary), "utf8") <= 24 * 1024);
   assert.notEqual(terminalPayload.summary.result.truncated, true);
+  assert.ok(Buffer.byteLength(JSON.stringify(terminalPayload), "utf8") <= 48 * 1024);
+}
+
+{
+  const harness = diagnosticBootstrapHarness({
+    testId: APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID,
+  });
+  const expandedCleanQueueResult = {
+    verdict: "application-4096-clean-queue-core-attribution-passed",
+    chunks: Array.from(
+      { length: 14 },
+      (_, index) => `${String(index).padStart(2, "0")}:${"x".repeat(1_496)}`,
+    ),
+  };
+  await harness.browser.__gpuStartupDiagnostics.finish(
+    "completed",
+    "diagnostic-completed",
+    expandedCleanQueueResult,
+  );
+  const terminalPayload = JSON.parse(harness.postedBodies.at(-1));
+  assert.equal(terminalPayload.summary.result.truncated, undefined);
+  assert.equal(terminalPayload.summary.result.chunks.length, 14);
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(terminalPayload.summary.result), "utf8") <= 28 * 1024,
+  );
+  assert.ok(Buffer.byteLength(JSON.stringify(terminalPayload.summary), "utf8") <= 32 * 1024);
   assert.ok(Buffer.byteLength(JSON.stringify(terminalPayload), "utf8") <= 48 * 1024);
 }
 
@@ -4346,7 +4371,7 @@ if (existsSync(builtWorkerPath)) {
     for (let attempt = 0; attempt < attempts && !predicate(); attempt += 1) {
       await Promise.resolve();
     }
-    assert.equal(predicate(), true, "The v18 diagnostic promise chain did not advance.");
+    assert.equal(predicate(), true, "The v19 diagnostic promise chain did not advance.");
   };
   const observedCleanQueueCoreAdapter = await cleanQueueCoreGpu.requestAdapter();
   let cleanQueueCoreDeviceExposed = false;
@@ -4405,13 +4430,13 @@ if (existsSync(builtWorkerPath)) {
     assert.equal(pipeline.label, label);
   }
   assert.deepEqual(cleanQueueCoreNativeSyncLabels, APPLICATION_4096_CORE_PIPELINE_LABELS);
-  assert.equal(cleanQueueCoreNativeAsyncCalls.length, 10);
+  assert.equal(cleanQueueCoreNativeAsyncCalls.length, 5);
   assert.equal(
     cleanQueueCoreNativeAsyncCalls[1].descriptor.label,
     "Diagnostic pre-core queue boundary RGBA16F pipeline",
   );
   assert.deepEqual(
-    cleanQueueCoreNativeAsyncCalls.slice(2, 10).map(({ descriptor }) => descriptor.label),
+    cleanQueueCoreNativeAsyncCalls.slice(2, 5).map(({ descriptor }) => descriptor.label),
     APPLICATION_4096_CORE_PIPELINE_LABELS,
   );
 
@@ -4432,7 +4457,7 @@ if (existsSync(builtWorkerPath)) {
       targets: [{ format: "rgba16float" }],
     },
   });
-  assert.equal(cleanQueueCoreNativeAsyncCalls.length, 10);
+  assert.equal(cleanQueueCoreNativeAsyncCalls.length, 5);
   assert.equal(
     cleanQueueCoreBreadcrumbs.filter(
       ({ name }) => name === "application-document-gpu-call-started",
@@ -4440,14 +4465,14 @@ if (existsSync(builtWorkerPath)) {
     0,
     "The first document pipeline must wait for the complete core readiness barrier.",
   );
-  for (let index = 1; index <= 9; index += 1) {
+  for (let index = 1; index <= 4; index += 1) {
     cleanQueueCoreClock += 20 + index;
     cleanQueueCoreNativeAsyncCalls[index].resolve();
     await Promise.resolve();
   }
-  await flushCleanQueueCore(() => cleanQueueCoreNativeAsyncCalls.length === 11);
+  await flushCleanQueueCore(() => cleanQueueCoreNativeAsyncCalls.length === 6);
   assert.equal(
-    cleanQueueCoreNativeAsyncCalls[10].descriptor.label,
+    cleanQueueCoreNativeAsyncCalls[5].descriptor.label,
     "Diagnostic post-core drained-queue RGBA16F pipeline",
   );
   assert.equal(
@@ -4457,10 +4482,10 @@ if (existsSync(builtWorkerPath)) {
     0,
   );
   cleanQueueCoreClock += 35;
-  cleanQueueCoreNativeAsyncCalls[10].resolve();
-  await flushCleanQueueCore(() => cleanQueueCoreNativeAsyncCalls.length === 12);
+  cleanQueueCoreNativeAsyncCalls[5].resolve();
+  await flushCleanQueueCore(() => cleanQueueCoreNativeAsyncCalls.length === 7);
   assert.equal(
-    cleanQueueCoreNativeAsyncCalls[11].descriptor.label,
+    cleanQueueCoreNativeAsyncCalls[6].descriptor.label,
     "Verification document RGBA16F pipeline 1",
   );
   assert.equal(
@@ -4470,7 +4495,7 @@ if (existsSync(builtWorkerPath)) {
     1,
   );
   cleanQueueCoreClock += 15;
-  cleanQueueCoreNativeAsyncCalls[11].resolve();
+  cleanQueueCoreNativeAsyncCalls[6].resolve();
   const cleanQueueCoreDocumentPipeline = await cleanQueueCoreDocumentPromise;
   assert.equal(cleanQueueCoreDocumentPipeline.label, "Verification document RGBA16F pipeline 1");
   const coreBarrierCompletion = cleanQueueCoreMessages.find(
@@ -4479,13 +4504,19 @@ if (existsSync(builtWorkerPath)) {
   assert.ok(coreBarrierCompletion);
   assert.deepEqual(
     jsonValue(coreBarrierCompletion.message.detail.completionOrder),
-    [0, 1, 2, 3, 4, 5, 6, 7, 8],
+    [0, 1, 2, 3],
   );
   assert.equal(coreBarrierCompletion.message.detail.completionOrderPreserved, true);
-  assert.equal(coreBarrierCompletion.message.detail.entries.length, 9);
+  assert.equal(coreBarrierCompletion.message.detail.entries.length, 4);
   assert.deepEqual(
     jsonValue(coreBarrierCompletion.message.detail.entries.map(({ label }) => label)),
     ["Pre-core queue boundary", ...APPLICATION_4096_CORE_PIPELINE_LABELS],
+  );
+  assert.deepEqual(
+    jsonValue(coreBarrierCompletion.message.detail.entries.map(({ targetFormats }) => (
+      targetFormats
+    ))),
+    [["rgba16float"], ["r16float"], ["rgba16float"], ["rgba16float"]],
   );
   assert.equal(coreBarrierCompletion.message.detail.postCoreBaseline.state, "completed");
   assert.equal(coreBarrierCompletion.message.detail.postCoreBaseline.format, "rgba16float");
@@ -6674,21 +6705,16 @@ if (existsSync(builtWorkerPath)) {
     APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID,
     null,
   );
-  const cleanQueueCoreCompletionOrder = Array.from({ length: 9 }, (_, index) => index);
-  const cleanQueueCoreSentinelMs = [11.1, 22.2, 33.3, 44.4, 55.5, 66.6, 77.7, 88.8, 99.9];
+  const cleanQueueCoreCompletionOrder = Array.from({ length: 4 }, (_, index) => index);
+  const cleanQueueCoreSentinelMs = [11.1, 22.2, 33.3, 44.4];
   const cleanQueueCoreCumulativeMs = [
     11.1,
     33.3,
     66.6,
     111,
-    166.5,
-    233.1,
-    310.8,
-    399.6,
-    499.5,
   ];
-  const cleanQueueCoreIntervalMs = [22.2, 33.3, 44.4, 55.5, 66.6, 77.7, 88.8, 99.9];
-  const cleanQueueCoreSyncMs = [0.1, 0.2, 0.1, 0.2, 0.1, 0.2, 0.1, 0.2];
+  const cleanQueueCoreIntervalMs = [22.2, 33.3, 44.4];
+  const cleanQueueCoreSyncMs = [0.1, 0.2, 0.1];
   const cleanQueueCoreEntries = ["Pre-core queue boundary", ...APPLICATION_4096_CORE_PIPELINE_LABELS]
     .map((label, index) => ({
       corePipelineIndex: index,
@@ -6712,8 +6738,8 @@ if (existsSync(builtWorkerPath)) {
     probeTotalMs: 28_101.025,
     coreCompletionOrderPreserved: true,
     coreCompletionOrder: cleanQueueCoreCompletionOrder,
-    coreDrainMs: 499.5,
-    coreBarrierWaitMs: 510.75,
+    coreDrainMs: 111,
+    coreBarrierWaitMs: 122.25,
     coreSyncReturnMs: cleanQueueCoreSyncMs,
     coreSentinelElapsedMs: cleanQueueCoreSentinelMs,
     coreCumulativeMs: cleanQueueCoreCumulativeMs,
@@ -6758,8 +6784,8 @@ if (existsSync(builtWorkerPath)) {
     eventDetail: {
       verdict: "application-4096-clean-queue-core-attribution-passed",
       cleanQueueProbeFormat: "rgba16float",
-      expectedCoreRenderPipelines: 8,
-      totalNativeAsyncPipelineInvocations: 63,
+      expectedCoreRenderPipelines: 3,
+      totalNativeAsyncPipelineInvocations: 58,
     },
     moduleLoaded: true,
     probeFinished: true,
@@ -6769,7 +6795,7 @@ if (existsSync(builtWorkerPath)) {
   const compactCleanQueueCoreSummary = JSON.parse(storedCleanQueueCoreRow.result_summary);
   assert.equal(compactCleanQueueCoreSummary.testId, APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID);
   assert.equal(compactCleanQueueCoreSummary.diagnosticVariant, APPLICATION_4096_CLEAN_QUEUE_CORE_VARIANT);
-  assert.equal(compactCleanQueueCoreSummary.schema, "empty-queue-core-ladder-ms-v1");
+  assert.equal(compactCleanQueueCoreSummary.schema, "empty-queue-core-ladder-ms-v2");
   assert.equal(
     compactCleanQueueCoreSummary.verdict,
     "application-4096-clean-queue-core-attribution-passed",
@@ -6784,8 +6810,8 @@ if (existsSync(builtWorkerPath)) {
   assert.equal(compactCleanQueueCoreSummary.ordered, true);
   assert.equal(compactCleanQueueCoreSummary.preCoreBacklogMs, 11.1);
   assert.deepEqual(compactCleanQueueCoreSummary.baselineMs, [0.3, 12.25, 12.55]);
-  assert.equal(compactCleanQueueCoreSummary.gateWaitMs, 510.75);
-  assert.equal(compactCleanQueueCoreSummary.coreDrainMs, 499.5);
+  assert.equal(compactCleanQueueCoreSummary.gateWaitMs, 122.25);
+  assert.equal(compactCleanQueueCoreSummary.coreDrainMs, 111);
   assert.equal(compactCleanQueueCoreSummary.documentPhaseMs, attributionPhaseMs);
   assert.equal(compactCleanQueueCoreSummary.documentPipelineTotalMs, attributionPipelineTotalMs);
   assert.equal(compactCleanQueueCoreSummary.documentGroupMs.length, 7);
@@ -6816,11 +6842,6 @@ if (existsSync(builtWorkerPath)) {
     2,
     1,
     3,
-    4,
-    5,
-    6,
-    7,
-    8,
   ];
   cleanQueueCoreNonFifoResult.cleanQueueCoreAttribution.coreIntervalMs = [];
   cleanQueueCoreNonFifoResult.cleanQueueCoreAttribution.preCoreBacklogMs = null;
@@ -6843,13 +6864,13 @@ if (existsSync(builtWorkerPath)) {
   const compactCleanQueueCoreNonFifoSummary = JSON.parse(
     database.rows.get(cleanQueueCoreNonFifoRunCode).result_summary,
   );
-  assert.equal(compactCleanQueueCoreNonFifoSummary.schema, "empty-queue-core-ladder-ms-v1");
+  assert.equal(compactCleanQueueCoreNonFifoSummary.schema, "empty-queue-core-ladder-ms-v2");
   assert.equal(compactCleanQueueCoreNonFifoSummary.ordered, false);
   assert.deepEqual(compactCleanQueueCoreNonFifoSummary.intervalMs, []);
   assert.equal(compactCleanQueueCoreNonFifoSummary.preCoreBacklogMs, null);
   assert.deepEqual(
     compactCleanQueueCoreNonFifoSummary.completionOrder,
-    [0, 2, 1, 3, 4, 5, 6, 7, 8],
+    [0, 2, 1, 3],
   );
   assert.ok(
     Buffer.byteLength(

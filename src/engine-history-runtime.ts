@@ -1141,9 +1141,9 @@ export async function rebuildActiveLayerFromHistory(
       await engine.ensureGrainResources(grainAssetIdForSettings(settings));
     }
   };
-  // Force the first historical Blend action to reset its persistent carrier,
-  // even when its numeric id matches the last live action rendered.
-  engine.blendRenderer?.beginStroke(0);
+  // The renderer can still be deferred when replay begins. Reset its carrier
+  // immediately after the first historical Blend variant becomes available.
+  let historicalBlendCarrierReset = false;
   let firstVisibleBatchIndex = -1;
   let lastVisibleBatchIndex = -1;
   const lastVisiblePaintBatchIndexByAction = new Map<number, number>();
@@ -1280,6 +1280,11 @@ export async function rebuildActiveLayerFromHistory(
             continue;
           }
           await ensureReplayBrushAssets(batch.settings);
+          await engine.ensureBlendRendererResources(batch.settings);
+          if (!historicalBlendCarrierReset) {
+            engine.blendRenderer!.beginStroke(0);
+            historicalBlendCarrierReset = true;
+          }
           engine.submitBlendImmediate(
             batch.batches,
             hasReplaySeed ? false : batch.clearLayer,

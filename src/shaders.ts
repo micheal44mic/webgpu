@@ -878,6 +878,190 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
 }
 `;
 
+// Minimal presentation path for one authoritative RGBA16F raster surface.
+// Bindings intentionally retain the matching slots from the full display ABI
+// so this shader can reuse that bind group without compiling its composite
+// surface graph. The render pipeline continues to own the canvas target format.
+export const singleRasterRgba16FloatDisplayShader = /* wgsl */ `
+struct SingleRasterDisplayUniforms {
+  canvasSize: vec2<f32>,
+  viewRotation: vec2<f32>,
+  viewCenter: vec2<f32>,
+  zoom: f32,
+  checkerSize: f32,
+  selectedMipLevel: f32,
+  _reservedSurface0: f32,
+  _reservedSurface1: f32,
+  rasterAlpha: f32,
+  _reservedOrigin0: vec2<f32>,
+  _reservedOrigin1: vec2<f32>,
+  _reservedComposition0: f32,
+  _reservedComposition1: f32,
+  _reservedComposition2: f32,
+  _reservedComposition3: f32,
+  _reservedCompositionOrigin0: vec2<f32>,
+  _reservedCompositionOrigin1: vec2<f32>,
+  backgroundColor: vec4<f32>,
+};
+
+struct SingleRasterVertexOutput {
+  @builtin(position) position: vec4<f32>,
+};
+
+@group(0) @binding(0) var<uniform> display: SingleRasterDisplayUniforms;
+@group(0) @binding(1) var rasterMipZero: texture_2d<f32>;
+@group(0) @binding(2) var rasterMipPyramid: texture_2d<f32>;
+@group(0) @binding(5) var rasterSampler: sampler;
+
+const SINGLE_RASTER_PIXEL_VIEW_ZOOM_THRESHOLD: f32 = 5.81;
+
+fn singleRasterPixelViewEnabled() -> bool {
+  return display.zoom >= SINGLE_RASTER_PIXEL_VIEW_ZOOM_THRESHOLD;
+}
+
+fn singleRasterPixelViewTexel(
+  uv: vec2<f32>,
+  dimensions: vec2<i32>
+) -> vec2<i32> {
+  return clamp(
+    vec2<i32>(floor(uv * vec2<f32>(dimensions))),
+    vec2<i32>(0),
+    dimensions - vec2<i32>(1)
+  );
+}
+
+fn singleRasterSrgbToLinearChannel(value: f32) -> f32 {
+  if (value <= 0.04045) {
+    return value / 12.92;
+  }
+  return pow((value + 0.055) / 1.055, 2.4);
+}
+
+fn singleRasterSrgbToLinear(value: vec3<f32>) -> vec3<f32> {
+  return vec3<f32>(
+    singleRasterSrgbToLinearChannel(value.r),
+    singleRasterSrgbToLinearChannel(value.g),
+    singleRasterSrgbToLinearChannel(value.b)
+  );
+}
+
+fn singleRasterLinearToSrgbChannel(value: f32) -> f32 {
+  let clamped = clamp(value, 0.0, 1.0);
+  if (clamped <= 0.0031308) {
+    return clamped * 12.92;
+  }
+  return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
+}
+
+fn singleRasterLinearToSrgb(value: vec3<f32>) -> vec3<f32> {
+  return vec3<f32>(
+    singleRasterLinearToSrgbChannel(value.r),
+    singleRasterLinearToSrgbChannel(value.g),
+    singleRasterLinearToSrgbChannel(value.b)
+  );
+}
+
+fn sampleSingleRasterMipZero(uv: vec2<f32>) -> vec4<f32> {
+  if (singleRasterPixelViewEnabled()) {
+    return textureLoad(
+      rasterMipZero,
+      singleRasterPixelViewTexel(
+        uv,
+        vec2<i32>(textureDimensions(rasterMipZero, 0))
+      ),
+      0
+    );
+  }
+  return textureSampleLevel(rasterMipZero, rasterSampler, uv, 0.0);
+}
+
+fn sampleSingleRasterLogicalMip(
+  uv: vec2<f32>,
+  logicalMip: f32
+) -> vec4<f32> {
+  if (logicalMip < 0.5) {
+    return sampleSingleRasterMipZero(uv);
+  }
+  return textureSampleLevel(
+    rasterMipPyramid,
+    rasterSampler,
+    uv,
+    logicalMip - 1.0
+  );
+}
+
+fn sampleSingleRaster(uv: vec2<f32>) -> vec4<f32> {
+  let lod = max(display.selectedMipLevel, 0.0);
+  let lowerMip = floor(lod);
+  let upperMip = ceil(lod);
+  if (upperMip <= lowerMip) {
+    return sampleSingleRasterLogicalMip(uv, lowerMip);
+  }
+  return mix(
+    sampleSingleRasterLogicalMip(uv, lowerMip),
+    sampleSingleRasterLogicalMip(uv, upperMip),
+    lod - lowerMip
+  );
+}
+
+@vertex
+fn vertexMain(
+  @builtin(vertex_index) vertexIndex: u32
+) -> SingleRasterVertexOutput {
+  let positions = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>( 3.0, -1.0),
+    vec2<f32>(-1.0,  3.0)
+  );
+  var output: SingleRasterVertexOutput;
+  output.position = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
+  return output;
+}
+
+@fragment
+fn fragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  let singleRasterDisplayOffset =
+    (fragmentPosition.xy - display.canvasSize * 0.5) / display.zoom;
+  let rasterOffset = vec2<f32>(
+    display.viewRotation.x * singleRasterDisplayOffset.x
+      + display.viewRotation.y * singleRasterDisplayOffset.y,
+    -display.viewRotation.y * singleRasterDisplayOffset.x
+      + display.viewRotation.x * singleRasterDisplayOffset.y
+  );
+  let rasterPosition = display.viewCenter + rasterOffset;
+  let rasterSize = vec2<f32>(textureDimensions(rasterMipZero, 0));
+  let insideRaster = all(rasterPosition >= vec2<f32>(0.0))
+    && all(rasterPosition < rasterSize);
+  if (!insideRaster) {
+    return vec4<f32>(vec3<f32>(0.055), 1.0);
+  }
+
+  let uv = clamp(
+    rasterPosition / rasterSize,
+    vec2<f32>(0.0),
+    vec2<f32>(1.0)
+  );
+  let paint = sampleSingleRaster(uv) * display.rasterAlpha;
+  let checkerCell = vec2<i32>(floor(rasterPosition / display.checkerSize));
+  let checkerParity = (checkerCell.x + checkerCell.y) & 1;
+  let checkerSrgb = select(
+    vec3<f32>(0.82),
+    vec3<f32>(0.91),
+    checkerParity == 0
+  );
+  let backgroundSrgb = select(
+    checkerSrgb,
+    display.backgroundColor.rgb,
+    display.backgroundColor.a > 0.5
+  );
+  let backgroundLinear = singleRasterSrgbToLinear(backgroundSrgb);
+  let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
+  return vec4<f32>(singleRasterLinearToSrgb(compositedLinear), 1.0);
+}
+`;
+
 export const displayShader = /* wgsl */ `
 struct DisplayUniforms {
   canvasSize: vec2<f32>,

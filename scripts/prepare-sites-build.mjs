@@ -96,27 +96,17 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
   var APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID =
     "application-4096-pipeline-first-use-controls-v1";
   var APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID =
-    "application-4096-clean-queue-core-attribution-v1";
+    "application-4096-progressive-core-startup-v1";
   var CORE_PIPELINE_PHASE = "core-pipelines";
   var DOCUMENT_PIPELINE_PHASE = "document-pipelines";
-  var EXPECTED_CORE_RENDER_PIPELINES = 8;
+  var EXPECTED_CORE_RENDER_PIPELINES = 3;
   var EXPECTED_CORE_PIPELINE_LABELS = [
     "Light Glaze R16F stale dirty-region clear pipeline",
     "Uniformed/Intense RGBA16F stale dirty-region clear pipeline",
-    "Display pipeline",
-    "Final raster stack mip display pipeline",
-    "Stroke direct LOD 0 and coarse mip display pipeline",
-    "Predictive thickness tail display pipeline",
-    "Light Glaze live display pipeline",
-    "Light Glaze live final raster stack display pipeline",
+    "Single raster RGBA16F display pipeline",
   ];
   var EXPECTED_CORE_PIPELINE_TARGET_FORMATS = [
     "r16float",
-    "rgba16float",
-    "rgba16float",
-    "rgba16float",
-    "rgba16float",
-    "rgba16float",
     "rgba16float",
     "rgba16float",
   ];
@@ -345,7 +335,7 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
     if (typeof value === "number") return Number.isFinite(value) ? value : String(value);
     if (typeof value === "boolean") return value;
     if (value instanceof Error) return errorDetail(value);
-    if (depth >= 3) return clippedString(value, MAX_STRING_LENGTH);
+    if (depth >= 4) return clippedString(value, MAX_STRING_LENGTH);
     if (Array.isArray(value)) {
       return value.slice(0, 12).map(function (entry) {
         return safeValue(entry, depth + 1);
@@ -1458,7 +1448,7 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
         pipelineReason: null,
         contractError: descriptorContractValid
           ? null
-          : new Error("The core render-pipeline label or 16-bit target no longer matches the v18 diagnostic contract."),
+          : new Error("The core render-pipeline label or 16-bit target no longer matches the v19 diagnostic contract."),
       };
       coreReadinessEntries.push(entry);
       var syncStartedAtMs = performance.now();
@@ -1545,7 +1535,7 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
         || coreReadinessEntries.length !== EXPECTED_CORE_RENDER_PIPELINES + 1
         || coreReadinessEntries.some(function (entry) { return entry.state !== "completed"; })
       ) {
-        throw new Error("The complete eight-pipeline core readiness ladder was not observed.");
+        throw new Error("The complete three-pipeline core readiness ladder was not observed.");
       }
       emitCoreReadinessEvent("sequence-completed", null, "running");
       await runPostCoreBaseline(nativeCreateRenderPipelineAsync, device);
@@ -1814,12 +1804,14 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
         ? INJECTED_FIRST_USE_RENDER_PIPELINES
         : 0,
       cleanQueueProbePipelines: application4096CleanQueueCoreEnabled ? 1 : 0,
-      coreReadinessBoundaryPipelines: application4096CleanQueueCoreEnabled ? 9 : 0,
+      coreReadinessBoundaryPipelines: application4096CleanQueueCoreEnabled
+        ? EXPECTED_CORE_RENDER_PIPELINES + 1
+        : 0,
       postCoreBaselinePipelines: application4096CleanQueueCoreEnabled ? 1 : 0,
       totalNativeAsyncPipelineInvocations: application4096PipelineFirstUseControlsEnabled
         ? EXPECTED_DOCUMENT_RENDER_PIPELINES + INJECTED_FIRST_USE_RENDER_PIPELINES
         : application4096CleanQueueCoreEnabled
-          ? EXPECTED_DOCUMENT_RENDER_PIPELINES + 11
+          ? EXPECTED_DOCUMENT_RENDER_PIPELINES + EXPECTED_CORE_RENDER_PIPELINES + 3
         : EXPECTED_DOCUMENT_RENDER_PIPELINES,
       instrumentedMethods: [
         "createPipelineLayout",
@@ -2116,7 +2108,7 @@ const LAYER_COMPRESSION_INDEX_SQL = "CREATE INDEX IF NOT EXISTS layer_compressio
 const VECTOR_ZOOM_C_STRATEGY = "ten-semantic-text-dual-gpu-fallback-auto-post-raster-window2-roi-aware-zoom8-to-0.3-v7";
 const VECTOR_ZOOM_RUNS_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS vector_zoom_runs (run_code TEXT PRIMARY KEY NOT NULL, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)";
 const VECTOR_ZOOM_RUN_CODE = /^[2-9A-HJ-NP-Z]{8}$/;
-const GPU_STARTUP_DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v18";
+const GPU_STARTUP_DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v19";
 const GPU_STARTUP_DEFAULT_TEST_ID = "startup-no-tier2-v1";
 const GPU_STARTUP_STORAGE_FORMAT_TEST_ID = "storage-format-ab-v1";
 const GPU_STARTUP_DOCUMENT_PIPELINE_TEST_ID = "document-pipeline-bisect-v1";
@@ -2126,7 +2118,7 @@ const GPU_STARTUP_APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST_ID = "application-
 const GPU_STARTUP_APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID = "application-4096-pipeline-breakdown-v1";
 const GPU_STARTUP_APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID = "application-4096-pipeline-attribution-async1-v1";
 const GPU_STARTUP_APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID = "application-4096-pipeline-first-use-controls-v1";
-const GPU_STARTUP_APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID = "application-4096-clean-queue-core-attribution-v1";
+const GPU_STARTUP_APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID = "application-4096-progressive-core-startup-v1";
 const GPU_STARTUP_DEFAULT_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
 const GPU_STARTUP_STORAGE_FORMAT_VARIANT = "storage-format-ab-rgba8unorm-control-rgba16float-target-write-only-1x1-no-tier2-v1";
 const GPU_STARTUP_DOCUMENT_PIPELINE_VARIANT = "document-pipeline-bisect-rgba16float-no-tier2-v1";
@@ -2136,7 +2128,7 @@ const GPU_STARTUP_APPLICATION_4096_PIPELINES_FIRST_FRAME_VARIANT = "application-
 const GPU_STARTUP_APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT = "application-startup-rgba16float-4096x4096-no-tier2-render-pipeline-breakdown-sync-v1";
 const GPU_STARTUP_APPLICATION_4096_PIPELINE_ATTRIBUTION_VARIANT = "application-startup-rgba16float-4096x4096-no-tier2-render-pipeline-attribution-async1-v1";
 const GPU_STARTUP_APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT = "application-startup-rgba16float-4096x4096-no-tier2-first-use-controls-async1-v1";
-const GPU_STARTUP_APPLICATION_4096_CLEAN_QUEUE_CORE_VARIANT = "application-startup-rgba16float-4096x4096-no-tier2-clean-queue-core-readiness-async1-v1";
+const GPU_STARTUP_APPLICATION_4096_CLEAN_QUEUE_CORE_VARIANT = "application-startup-rgba16float-4096x4096-no-tier2-progressive-core-readiness-async1-v1";
 const GPU_STARTUP_DIAGNOSTIC_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS gpu_startup_diagnostic_runs (run_code TEXT PRIMARY KEY NOT NULL, write_token_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, expires_at TEXT NOT NULL, status TEXT NOT NULL, sequence INTEGER NOT NULL, latest_event TEXT NOT NULL DEFAULT 'html-requested', result_summary TEXT NOT NULL DEFAULT '', payload_bytes INTEGER NOT NULL DEFAULT 0, payload_json TEXT NOT NULL)";
 const GPU_STARTUP_DIAGNOSTIC_INDEX_SQL = "CREATE INDEX IF NOT EXISTS gpu_startup_diagnostic_runs_expires_at_idx ON gpu_startup_diagnostic_runs (expires_at)";
 const GPU_STARTUP_DIAGNOSTIC_RUN_CODE = /^diag-[a-f0-9]{32}$/;
@@ -2365,9 +2357,9 @@ function gpuStartupDiagnosticDefinition(testId) {
         cleanQueueProbeFormat: "rgba16float",
         cleanQueueProbeBlocking: true,
         cleanQueueProbeBeforeApplicationDeviceExposure: true,
-        expectedCoreRenderPipelines: 8,
+        expectedCoreRenderPipelines: 3,
         corePipelineObservationMethod: "sync-create-plus-async-duplicate-readiness",
-        coreReadinessBoundaryCount: 9,
+        coreReadinessBoundaryCount: 4,
         coreReadinessBarrierBeforeDocumentPipelines: true,
         postCoreBaselineCount: 1,
         pipelineCompilationMethod: "createRenderPipelineAsync",
@@ -2375,7 +2367,7 @@ function gpuStartupDiagnosticDefinition(testId) {
         expectedPipelineLayouts: 17,
         expectedRenderPipelines: 52,
         expectedErrorScopeDrains: 2,
-        totalNativeAsyncPipelineInvocations: 63,
+        totalNativeAsyncPipelineInvocations: 58,
         deferredObservationMs: 5000,
       },
     };
@@ -2423,26 +2415,16 @@ const GPU_STARTUP_PIPELINE_FIRST_USE_CONTROLS_STEP_KEYS = [
 ];
 const GPU_STARTUP_CLEAN_QUEUE_CORE_VERDICT =
   "application-4096-clean-queue-core-attribution-passed";
-const GPU_STARTUP_CLEAN_QUEUE_CORE_SCHEMA = "empty-queue-core-ladder-ms-v1";
+const GPU_STARTUP_CLEAN_QUEUE_CORE_SCHEMA = "empty-queue-core-ladder-ms-v2";
 const GPU_STARTUP_CLEAN_QUEUE_CORE_LABELS = [
   "Pre-core queue boundary",
   "Light Glaze R16F stale dirty-region clear pipeline",
   "Uniformed/Intense RGBA16F stale dirty-region clear pipeline",
-  "Display pipeline",
-  "Final raster stack mip display pipeline",
-  "Stroke direct LOD 0 and coarse mip display pipeline",
-  "Predictive thickness tail display pipeline",
-  "Light Glaze live display pipeline",
-  "Light Glaze live final raster stack display pipeline",
+  "Single raster RGBA16F display pipeline",
 ];
 const GPU_STARTUP_CLEAN_QUEUE_CORE_TARGET_FORMATS = [
   "rgba16float",
   "r16float",
-  "rgba16float",
-  "rgba16float",
-  "rgba16float",
-  "rgba16float",
-  "rgba16float",
   "rgba16float",
   "rgba16float",
 ];
@@ -2638,15 +2620,15 @@ function serializeGpuStartupCleanQueueCoreResultSummary(summary) {
   const coreEntries = Array.isArray(attribution?.coreEntries)
     ? attribution.coreEntries
     : null;
-  const coreSyncMs = fixedGpuStartupTimingArray(attribution?.coreSyncReturnMs, 8);
-  const sentinelElapsedMs = fixedGpuStartupTimingArray(attribution?.coreSentinelElapsedMs, 9);
-  const cumulativeMs = fixedGpuStartupTimingArray(attribution?.coreCumulativeMs, 9);
+  const coreSyncMs = fixedGpuStartupTimingArray(attribution?.coreSyncReturnMs, 3);
+  const sentinelElapsedMs = fixedGpuStartupTimingArray(attribution?.coreSentinelElapsedMs, 4);
+  const cumulativeMs = fixedGpuStartupTimingArray(attribution?.coreCumulativeMs, 4);
   const completionOrder = Array.isArray(attribution?.coreCompletionOrder)
     ? attribution.coreCompletionOrder.map(Number)
     : null;
   const ordered = attribution?.coreCompletionOrderPreserved === true;
   const intervalMs = ordered
-    ? fixedGpuStartupTimingArray(attribution?.coreIntervalMs, 8)
+    ? fixedGpuStartupTimingArray(attribution?.coreIntervalMs, 3)
     : Array.isArray(attribution?.coreIntervalMs) && attribution.coreIntervalMs.length === 0
       ? []
       : null;
@@ -2665,7 +2647,7 @@ function serializeGpuStartupCleanQueueCoreResultSummary(summary) {
     finiteGpuStartupTiming(baseline?.totalDurationMs),
   ];
   const completionPermutation = completionOrder
-    && completionOrder.length === 9
+    && completionOrder.length === 4
     && [...completionOrder].sort((left, right) => left - right)
       .every((value, index) => value === index);
   if (
@@ -2675,7 +2657,7 @@ function serializeGpuStartupCleanQueueCoreResultSummary(summary) {
     || !groups
     || groups.length !== 7
     || !coreEntries
-    || coreEntries.length !== 9
+    || coreEntries.length !== 4
     || !coreSyncMs
     || !sentinelElapsedMs
     || !cumulativeMs
@@ -2776,7 +2758,7 @@ function serializeGpuStartupCleanQueueCoreResultSummary(summary) {
   }
   return JSON.stringify({
     testId: GPU_STARTUP_APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID,
-    schema: "empty-queue-core-ladder-summary-overflow-v1",
+    schema: "empty-queue-core-ladder-summary-overflow-v2",
     verdict: GPU_STARTUP_CLEAN_QUEUE_CORE_VERDICT,
   });
 }
@@ -3665,6 +3647,10 @@ function normalizeGpuStartupDiagnosticPayload(payload) {
   const definition = typeof payload.summary?.testId === "string"
     ? gpuStartupDiagnosticDefinition(payload.summary.testId)
     : null;
+  const maximumSummaryBytes = payload.summary?.testId
+      === GPU_STARTUP_APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID
+    ? 32 * 1024
+    : 24 * 1024;
   const environmentJson = isRecord(payload.environment) ? JSON.stringify(payload.environment) : "";
   if (
     payload.version !== 1
@@ -3684,7 +3670,7 @@ function normalizeGpuStartupDiagnosticPayload(payload) {
     || new TextEncoder().encode(environmentJson).byteLength > 8 * 1024
     || !eventsValid
     || !isRecord(payload.summary)
-    || new TextEncoder().encode(summaryJson).byteLength > 24 * 1024
+    || new TextEncoder().encode(summaryJson).byteLength > maximumSummaryBytes
     || !definition
     || payload.summary.diagnosticVariant !== definition.diagnosticVariant
     || !validGpuStartupDiagnosticComparison(comparison, definition.comparison)

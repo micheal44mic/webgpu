@@ -12,7 +12,7 @@
       (function () {
         "use strict";
 
-        var BUILD = "gpu-diagnostics-application-4096-startup-v18";
+        var BUILD = "gpu-diagnostics-application-4096-startup-v19";
         var params = new URLSearchParams(window.location.search);
         var requestedTestId = params.get("test") || "";
         var DIAGNOSTIC_TEST_ID = requestedTestId || "startup-no-tier2-v1";
@@ -28,7 +28,7 @@
         var APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST =
           DIAGNOSTIC_TEST_ID === "application-4096-pipeline-first-use-controls-v1";
         var APPLICATION_4096_CLEAN_QUEUE_CORE_TEST =
-          DIAGNOSTIC_TEST_ID === "application-4096-clean-queue-core-attribution-v1";
+          DIAGNOSTIC_TEST_ID === "application-4096-progressive-core-startup-v1";
         var APPLICATION_4096_PIPELINE_BREAKDOWN_TEST =
           DIAGNOSTIC_TEST_ID === "application-4096-pipeline-breakdown-v1"
           || APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST
@@ -48,7 +48,7 @@
             : APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST
               ? "application-startup-rgba16float-4096x4096-no-tier2-render-pipelines-first-frame-1-v1"
               : APPLICATION_4096_CLEAN_QUEUE_CORE_TEST
-                ? "application-startup-rgba16float-4096x4096-no-tier2-clean-queue-core-readiness-async1-v1"
+                ? "application-startup-rgba16float-4096x4096-no-tier2-progressive-core-readiness-async1-v1"
               : APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST
                 ? "application-startup-rgba16float-4096x4096-no-tier2-first-use-controls-async1-v1"
               : APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST
@@ -118,9 +118,9 @@
                     cleanQueueProbeFormat: "rgba16float",
                     cleanQueueProbeBlocking: true,
                     cleanQueueProbeBeforeApplicationDeviceExposure: true,
-                    expectedCoreRenderPipelines: 8,
+                    expectedCoreRenderPipelines: 3,
                     corePipelineObservationMethod: "sync-create-plus-async-duplicate-readiness",
-                    coreReadinessBoundaryCount: 9,
+                    coreReadinessBoundaryCount: 4,
                     coreReadinessBarrierBeforeDocumentPipelines: true,
                     postCoreBaselineCount: 1,
                     pipelineCompilationMethod: "createRenderPipelineAsync",
@@ -128,7 +128,7 @@
                     expectedPipelineLayouts: 17,
                     expectedRenderPipelines: 52,
                     expectedErrorScopeDrains: 2,
-                    totalNativeAsyncPipelineInvocations: 63,
+                    totalNativeAsyncPipelineInvocations: 58,
                     deferredObservationMs: 5000,
                   }
               : APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST
@@ -252,9 +252,11 @@
         var MAX_BACKUP_EVENT_COUNT = 128;
         var MAX_EVENT_COUNT = 24;
         var MAX_EVENT_DETAIL_BYTES = 1200;
-        var MAX_DIAGNOSTIC_RESULT_BYTES = APPLICATION_4096_PIPELINE_BREAKDOWN_TEST
-          ? 18 * 1024
-          : 12 * 1024;
+        var MAX_DIAGNOSTIC_RESULT_BYTES = APPLICATION_4096_CLEAN_QUEUE_CORE_TEST
+          ? 28 * 1024
+          : APPLICATION_4096_PIPELINE_BREAKDOWN_TEST
+            ? 18 * 1024
+            : 12 * 1024;
         var MAX_SNAPSHOT_BYTES = 48 * 1024;
         var fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
         var runCode = params.get("run") || "";
@@ -1200,7 +1202,7 @@
           coreHeading.className = "pipeline-breakdown-heading";
           var coreHeadingLabel = document.createElement("strong");
           coreHeadingLabel.textContent = "Core pipeline readiness ladder ("
-            + Math.max(0, coreEntries.length - 1) + "/8)";
+            + Math.max(0, coreEntries.length - 1) + "/3)";
           var coreHeadingDuration = document.createElement("span");
           var coreDrainMs = finiteMilliseconds(cleanQueueCoreAttribution.coreDrainMs);
           coreHeadingDuration.textContent = coreDrainMs === null

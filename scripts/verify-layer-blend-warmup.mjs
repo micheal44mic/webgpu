@@ -82,8 +82,13 @@ assert.doesNotMatch(
 );
 assert.match(
   engineSource,
-  /settings\.tool === "blend" && !this\.blendRenderer[\s\S]{0,160}await this\.ensureOptionalEditorResources\(\)/,
-  "selecting Blend must retain an explicit on-demand resource path",
+  /settings\.tool === "blend"[\s\S]{0,180}!this\.blendRenderer\?\.selectedVariantPipelinesReady\(settings\)[\s\S]{0,180}await this\.ensureBlendRendererResources\(settings\)/,
+  "selecting Blend must retain a dedicated variant-aware on-demand resource path",
+);
+assert.doesNotMatch(
+  engineSource,
+  /settings\.tool === "blend"[\s\S]{0,180}await this\.ensureOptionalEditorResources\(\)/,
+  "Blend must not pull unrelated optional editor pipelines into its first-use path",
 );
 
 console.log("Layer blend on-demand warm-up and asynchronous pipeline verification passed.");

@@ -9,6 +9,7 @@ import {
   lightGlazeDisplayShader,
   paintMipDownsampleShader,
   paintStackCompositeMipShader,
+  singleRasterRgba16FloatDisplayShader,
   texturizedGrainShader,
   thicknessTailDisplayShader,
 } from "./shaders";
@@ -36,7 +37,7 @@ import {
   rasterImageMipmapShader,
   rasterImageMixedSceneShader,
 } from "./raster-image-shader";
-import { assertShaderCompiled } from "./engine-gpu-utils";
+import { assertShaderCompiled, createRenderPipelineAsync } from "./engine-gpu-utils";
 import { vectorTextDisplayShader } from "./vector-text-shader";
 import { initializeVectorTextGpuRenderer } from "./engine-vector-text-runtime";
 import { VECTOR_TEXT_GPU_UNIFORM_STRIDE } from "./vector-text-gpu-shader";
@@ -144,6 +145,10 @@ export async function finishStaticResourceCreation(
     label: "Pixel Selection clipped grain WGSL",
     code: selectionTexturizedGrainShader,
   });
+  engine.singleRasterDisplayShaderModule = engine.device.createShaderModule({
+    label: "Single raster RGBA16F display WGSL",
+    code: singleRasterRgba16FloatDisplayShader,
+  });
   engine.displayShaderModule = engine.device.createShaderModule({ label: "Display WGSL", code: displayShader });
   engine.rasterStrokeDisplayShaderModule = engine.device.createShaderModule({
     label: "Stroke direct LOD 0 and coarse mip display WGSL",
@@ -205,6 +210,7 @@ export async function finishStaticResourceCreation(
       engine.selectionTexturizedGrainShaderModule,
       "Pixel Selection clipped texturized grain",
     ),
+    assertShaderCompiled(engine.singleRasterDisplayShaderModule, "single raster RGBA16F display"),
     assertShaderCompiled(engine.displayShaderModule, "display"),
     assertShaderCompiled(engine.rasterStrokeDisplayShaderModule, "Stroke display"),
     assertShaderCompiled(
@@ -279,29 +285,15 @@ export async function finishStaticResourceCreation(
 
   if (createCore) {
   engine.displayPipeline = engine.device.createRenderPipeline({
-    label: "Display pipeline",
+    label: "Single raster RGBA16F display pipeline",
     layout: displayPipelineLayout,
     vertex: {
-      module: engine.displayShaderModule,
+      module: engine.singleRasterDisplayShaderModule,
       entryPoint: "vertexMain",
     },
     fragment: {
-      module: engine.displayShaderModule,
+      module: engine.singleRasterDisplayShaderModule,
       entryPoint: "fragmentMain",
-      targets: [{ format: engine.canvasFormat }],
-    },
-    primitive: { topology: "triangle-list" },
-  });
-  engine.finalRasterStackDisplayPipeline = engine.device.createRenderPipeline({
-    label: "Final raster stack mip display pipeline",
-    layout: displayPipelineLayout,
-    vertex: {
-      module: engine.displayShaderModule,
-      entryPoint: "vertexMain",
-    },
-    fragment: {
-      module: engine.displayShaderModule,
-      entryPoint: "finalStackFragmentMain",
       targets: [{ format: engine.canvasFormat }],
     },
     primitive: { topology: "triangle-list" },
@@ -868,20 +860,9 @@ export async function finishStaticResourceCreation(
     ],
   });
   if (createCore) {
-  engine.rasterStrokeDisplayPipeline = engine.device.createRenderPipeline({
-    label: "Stroke direct LOD 0 and coarse mip display pipeline",
-    layout: rasterStrokeDisplayPipelineLayout,
-    vertex: {
-      module: engine.rasterStrokeDisplayShaderModule,
-      entryPoint: "vertexMain",
-    },
-    fragment: {
-      module: engine.rasterStrokeDisplayShaderModule,
-      entryPoint: "fragmentMain",
-      targets: [{ format: engine.canvasFormat }],
-    },
-    primitive: { topology: "triangle-list" },
-  });
+    // The styled presenter is prepared only when an active layer actually uses
+    // raster effects. Keeping it out of the first frame avoids compiling a
+    // large, unreachable shader graph for an empty single-raster document.
   }
   if (createOptional) {
     engine.mixedSceneActiveRasterStrokeDisplayPipeline = engine.device.createRenderPipeline({
@@ -949,20 +930,8 @@ export async function finishStaticResourceCreation(
     bindGroupLayouts: [engine.thicknessTailDisplayBindGroupLayout],
   });
   if (createCore) {
-  engine.thicknessTailDisplayPipeline = engine.device.createRenderPipeline({
-    label: "Predictive thickness tail display pipeline",
-    layout: thicknessTailDisplayPipelineLayout,
-    vertex: {
-      module: engine.thicknessTailDisplayShaderModule,
-      entryPoint: "vertexMain",
-    },
-    fragment: {
-      module: engine.thicknessTailDisplayShaderModule,
-      entryPoint: "fragmentMain",
-      targets: [{ format: engine.canvasFormat }],
-    },
-    primitive: { topology: "triangle-list" },
-  });
+    // Predictive-tail presentation is selected-brush work and is compiled by
+    // the brush readiness gate when non-neutral thickness is requested.
   }
   if (createOptional) {
     engine.mixedSceneActiveThicknessTailDisplayPipeline = engine.device.createRenderPipeline({
@@ -1019,34 +988,9 @@ export async function finishStaticResourceCreation(
     bindGroupLayouts: [engine.lightGlazeDisplayBindGroupLayout],
   });
   if (createCore) {
-  engine.lightGlazeDisplayPipeline = engine.device.createRenderPipeline({
-    label: "Light Glaze live display pipeline",
-    layout: lightGlazeDisplayPipelineLayout,
-    vertex: {
-      module: engine.lightGlazeDisplayShaderModule,
-      entryPoint: "vertexMain",
-    },
-    fragment: {
-      module: engine.lightGlazeDisplayShaderModule,
-      entryPoint: "fragmentMain",
-      targets: [{ format: engine.canvasFormat }],
-    },
-    primitive: { topology: "triangle-list" },
-  });
-  engine.lightGlazeFinalRasterStackDisplayPipeline = engine.device.createRenderPipeline({
-    label: "Light Glaze live final raster stack display pipeline",
-    layout: lightGlazeDisplayPipelineLayout,
-    vertex: {
-      module: engine.lightGlazeDisplayShaderModule,
-      entryPoint: "vertexMain",
-    },
-    fragment: {
-      module: engine.lightGlazeDisplayShaderModule,
-      entryPoint: "finalStackFragmentMain",
-      targets: [{ format: engine.canvasFormat }],
-    },
-    primitive: { topology: "triangle-list" },
-  });
+    // Glaze presentation is compiled when a glaze brush is selected. The two
+    // clear pipelines above remain core because their 16-bit allocation path
+    // is small and also validates both storage formats up front.
   }
   if (createOptional) {
     engine.mixedSceneActiveLightGlazeDisplayPipeline = engine.device.createRenderPipeline({
@@ -1096,6 +1040,189 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
+  }
+}
+
+export async function ensureAdvancedCanvasPresentationPipelines(
+  engine: BrushEngine,
+): Promise<void> {
+  if (engine.advancedCanvasPresentationPipelinesReady) return;
+  if (engine.advancedCanvasPresentationPipelinesPromise) {
+    await engine.advancedCanvasPresentationPipelinesPromise;
+    return;
+  }
+  const initialization = (async (): Promise<void> => {
+    const layout = engine.device.createPipelineLayout({
+      label: "Advanced canvas display pipeline layout",
+      bindGroupLayouts: [engine.displayBindGroupLayout],
+    });
+    const displayPipeline = await createRenderPipelineAsync(engine.device, {
+      label: "Composite canvas display pipeline",
+      layout,
+      vertex: { module: engine.displayShaderModule, entryPoint: "vertexMain" },
+      fragment: {
+        module: engine.displayShaderModule,
+        entryPoint: "fragmentMain",
+        targets: [{ format: engine.canvasFormat }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+    const finalRasterStackDisplayPipeline = await createRenderPipelineAsync(engine.device, {
+      label: "Final raster stack mip display pipeline",
+      layout,
+      vertex: { module: engine.displayShaderModule, entryPoint: "vertexMain" },
+      fragment: {
+        module: engine.displayShaderModule,
+        entryPoint: "finalStackFragmentMain",
+        targets: [{ format: engine.canvasFormat }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+    engine.displayPipeline = displayPipeline;
+    engine.finalRasterStackDisplayPipeline = finalRasterStackDisplayPipeline;
+    engine.advancedCanvasPresentationPipelinesReady = true;
+  })();
+  engine.advancedCanvasPresentationPipelinesPromise = initialization;
+  try {
+    await initialization;
+  } finally {
+    if (engine.advancedCanvasPresentationPipelinesPromise === initialization) {
+      engine.advancedCanvasPresentationPipelinesPromise = null;
+    }
+  }
+}
+
+export async function ensureRasterStrokePresentationPipeline(
+  engine: BrushEngine,
+): Promise<void> {
+  if (engine.rasterStrokePresentationPipelineReady) return;
+  if (engine.rasterStrokePresentationPipelinePromise) {
+    await engine.rasterStrokePresentationPipelinePromise;
+    return;
+  }
+  const initialization = (async (): Promise<void> => {
+    const layout = engine.device.createPipelineLayout({
+      label: "Stroke display pipeline layout",
+      bindGroupLayouts: [
+        engine.rasterStrokeDisplayScreenBindGroupLayout,
+        engine.rasterStrokeDisplaySourceBindGroupLayout,
+      ],
+    });
+    engine.rasterStrokeDisplayPipeline = await createRenderPipelineAsync(engine.device, {
+      label: "Stroke direct LOD 0 and coarse mip display pipeline",
+      layout,
+      vertex: {
+        module: engine.rasterStrokeDisplayShaderModule,
+        entryPoint: "vertexMain",
+      },
+      fragment: {
+        module: engine.rasterStrokeDisplayShaderModule,
+        entryPoint: "fragmentMain",
+        targets: [{ format: engine.canvasFormat }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+    engine.rasterStrokePresentationPipelineReady = true;
+  })();
+  engine.rasterStrokePresentationPipelinePromise = initialization;
+  try {
+    await initialization;
+  } finally {
+    if (engine.rasterStrokePresentationPipelinePromise === initialization) {
+      engine.rasterStrokePresentationPipelinePromise = null;
+    }
+  }
+}
+
+export async function ensureThicknessTailPresentationPipeline(
+  engine: BrushEngine,
+): Promise<void> {
+  if (engine.thicknessTailPresentationPipelineReady) return;
+  if (engine.thicknessTailPresentationPipelinePromise) {
+    await engine.thicknessTailPresentationPipelinePromise;
+    return;
+  }
+  const initialization = (async (): Promise<void> => {
+    const layout = engine.device.createPipelineLayout({
+      label: "Predictive thickness tail display pipeline layout",
+      bindGroupLayouts: [engine.thicknessTailDisplayBindGroupLayout],
+    });
+    engine.thicknessTailDisplayPipeline = await createRenderPipelineAsync(engine.device, {
+      label: "Predictive thickness tail display pipeline",
+      layout,
+      vertex: {
+        module: engine.thicknessTailDisplayShaderModule,
+        entryPoint: "vertexMain",
+      },
+      fragment: {
+        module: engine.thicknessTailDisplayShaderModule,
+        entryPoint: "fragmentMain",
+        targets: [{ format: engine.canvasFormat }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+    engine.thicknessTailPresentationPipelineReady = true;
+  })();
+  engine.thicknessTailPresentationPipelinePromise = initialization;
+  try {
+    await initialization;
+  } finally {
+    if (engine.thicknessTailPresentationPipelinePromise === initialization) {
+      engine.thicknessTailPresentationPipelinePromise = null;
+    }
+  }
+}
+
+export async function ensureLightGlazePresentationPipelines(
+  engine: BrushEngine,
+): Promise<void> {
+  if (engine.lightGlazePresentationPipelinesReady) return;
+  if (engine.lightGlazePresentationPipelinesPromise) {
+    await engine.lightGlazePresentationPipelinesPromise;
+    return;
+  }
+  const initialization = (async (): Promise<void> => {
+    const layout = engine.device.createPipelineLayout({
+      label: "Glaze display pipeline layout",
+      bindGroupLayouts: [engine.lightGlazeDisplayBindGroupLayout],
+    });
+    const lightGlazeDisplayPipeline = await createRenderPipelineAsync(engine.device, {
+      label: "Glaze live display pipeline",
+      layout,
+      vertex: { module: engine.lightGlazeDisplayShaderModule, entryPoint: "vertexMain" },
+      fragment: {
+        module: engine.lightGlazeDisplayShaderModule,
+        entryPoint: "fragmentMain",
+        targets: [{ format: engine.canvasFormat }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+    const lightGlazeFinalRasterStackDisplayPipeline = await createRenderPipelineAsync(
+      engine.device,
+      {
+        label: "Glaze live final raster stack display pipeline",
+        layout,
+        vertex: { module: engine.lightGlazeDisplayShaderModule, entryPoint: "vertexMain" },
+        fragment: {
+          module: engine.lightGlazeDisplayShaderModule,
+          entryPoint: "finalStackFragmentMain",
+          targets: [{ format: engine.canvasFormat }],
+        },
+        primitive: { topology: "triangle-list" },
+      },
+    );
+    engine.lightGlazeDisplayPipeline = lightGlazeDisplayPipeline;
+    engine.lightGlazeFinalRasterStackDisplayPipeline =
+      lightGlazeFinalRasterStackDisplayPipeline;
+    engine.lightGlazePresentationPipelinesReady = true;
+  })();
+  engine.lightGlazePresentationPipelinesPromise = initialization;
+  try {
+    await initialization;
+  } finally {
+    if (engine.lightGlazePresentationPipelinesPromise === initialization) {
+      engine.lightGlazePresentationPipelinesPromise = null;
+    }
   }
 }
 

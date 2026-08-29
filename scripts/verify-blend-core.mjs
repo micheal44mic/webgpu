@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { createServer as createViteServer } from "vite";
 import { readEngineSource } from "./engine-source.mjs";
 import {
   DEFAULT_DRY_BLEND_CONTROLS,
@@ -264,9 +265,53 @@ assert.match(
   /let constantCosine = cos\(constantAngle\);[\s\S]*?customAt\([\s\S]*?constantCosine/,
   "la base Shape costante deve essere calcolata una volta fuori dalla scansione",
 );
-assert.match(blendRendererSource, /private depositPipelines!:/);
+assert.match(blendRendererSource, /private depositPipelines: Record</);
+assert.match(
+  blendRendererSource,
+  /circle: \{ off: null, on: null \},\s*shape: \{ off: null, on: null \}/,
+  "le varianti deposit devono partire non compilate",
+);
 assert.match(blendRendererSource, /blendCustomShape: shape === "shape" \? 1 : 0/);
 assert.match(blendRendererSource, /blendGrainEnabled: grain === "on" \? 1 : 0/);
+assert.match(blendRendererSource, /async ensureVariantPipelines\(settings: DryBlendRenderSettings\)/);
+assert.match(blendRendererSource, /selectedVariantPipelinesReady\(settings: DryBlendRenderSettings\)/);
+assert.match(blendRendererSource, /await this\.ensureVariantPipelines\(settings\)/);
+assert.match(blendRendererSource, /createComputePipelineAsync\(this\.device/);
+assert.match(blendRendererSource, /createRenderPipelineAsync\(this\.device/);
+assert.match(
+  brushEngineSource,
+  /async ensureBlendRendererResources\(settings: BrushSettings = this\.settings\)/,
+  "Blend deve avere un gate separato dalle risorse editor avanzate",
+);
+const currentBrushResourcesStart = brushEngineSource.indexOf(
+  "  async ensureCurrentBrushResources(): Promise<void>",
+);
+const blendResourcesStart = brushEngineSource.indexOf(
+  "  async ensureBlendRendererResources(",
+  currentBrushResourcesStart,
+);
+assert.ok(currentBrushResourcesStart >= 0 && blendResourcesStart > currentBrushResourcesStart);
+const currentBrushResourcesBody = brushEngineSource.slice(
+  currentBrushResourcesStart,
+  blendResourcesStart,
+);
+const currentBrushGrainIndex = currentBrushResourcesBody.indexOf(
+  "await this.ensureGrainResources",
+);
+const currentBrushShapeIndex = currentBrushResourcesBody.indexOf(
+  "await this.ensureShapeResources",
+);
+const currentBrushBlendIndex = currentBrushResourcesBody.indexOf(
+  "await this.ensureBlendRendererResources(settings)",
+);
+assert.ok(
+  currentBrushGrainIndex >= 0 && currentBrushGrainIndex < currentBrushBlendIndex,
+  "Grain allocation scopes must finish before Blend pipeline scopes open",
+);
+assert.ok(
+  currentBrushShapeIndex >= 0 && currentBrushShapeIndex < currentBrushBlendIndex,
+  "Shape allocation scopes must finish before Blend pipeline scopes open",
+);
 assert.match(blendRendererSource, /encode\(\s*encoder: GPUCommandEncoder,/);
 const blendEncodeMatch = blendRendererSource.match(
   /(?:^|\r?\n)  encode\(\s*encoder: GPUCommandEncoder,[\s\S]*?(?=\r?\n  memoryMiB\(\): number)/,
@@ -570,5 +615,219 @@ assert.doesNotMatch(
   /private readonly layerView: GPUTextureView/,
   "layerView non può restare readonly se il renderer è retargettabile",
 );
+
+class FakeBlendPipelineDevice {
+  pipelineDescriptors = [];
+  shaderModuleDescriptors = [];
+  errorScopes = [];
+  limits = { minUniformBufferOffsetAlignment: 256 };
+
+  createBuffer(descriptor) {
+    return {
+      descriptor,
+      destroyed: false,
+      destroy() { this.destroyed = true; },
+    };
+  }
+
+  createBindGroupLayout(descriptor) {
+    return { descriptor };
+  }
+
+  createShaderModule(descriptor) {
+    this.shaderModuleDescriptors.push(descriptor);
+    return {
+      descriptor,
+      getCompilationInfo: async () => ({ messages: [] }),
+    };
+  }
+
+  createPipelineLayout(descriptor) {
+    return { descriptor };
+  }
+
+  async createComputePipelineAsync(descriptor) {
+    const pipeline = { kind: "compute", descriptor };
+    this.pipelineDescriptors.push(pipeline);
+    return pipeline;
+  }
+
+  async createRenderPipelineAsync(descriptor) {
+    const pipeline = { kind: "render", descriptor };
+    this.pipelineDescriptors.push(pipeline);
+    return pipeline;
+  }
+
+  pushErrorScope(filter) {
+    this.errorScopes.push(filter);
+  }
+
+  async popErrorScope() {
+    assert.notEqual(this.errorScopes.pop(), undefined);
+    return null;
+  }
+}
+
+const blendVariantSettings = (overrides = {}) => ({
+  size: 48,
+  shape: "circle",
+  grainMode: "off",
+  grainScale: 1,
+  grainMovement: 0,
+  grainDepth: 1,
+  grainBrightness: 0,
+  grainContrast: 0,
+  grainInvert: false,
+  grainFiltering: "improved",
+  color: "#ffffffffffff",
+  shapeMaskFormat: "r16float",
+  hardness: 1,
+  blendStretch: 0.18,
+  blendPaint: 0.14,
+  blendBlur: 0,
+  ...overrides,
+});
+
+const fakeGrainSamplers = () => ({
+  fixed: { no: {}, classic: {}, improved: {} },
+  moving: { no: {}, classic: {}, improved: {} },
+});
+
+const createFakeBlendRenderer = async (DryBlendRenderer) => {
+  const device = new FakeBlendPipelineDevice();
+  const view = {};
+  const renderer = await DryBlendRenderer.create({
+    device,
+    documentWidth: 64,
+    documentHeight: 64,
+    layerFormat: "rgba16float",
+    layerView: view,
+    layerSamplingView: view,
+    shapeMaskView: view,
+    shapeMaskSampler: {},
+    grainTextureView: view,
+    grainTextureWidth: 1,
+    grainTextureMipLevelCount: 1,
+    grainSamplers: fakeGrainSamplers(),
+    scratchSize: 64,
+  });
+  return { device, renderer };
+};
+
+const previousGpuBufferUsage = globalThis.GPUBufferUsage;
+const previousGpuShaderStage = globalThis.GPUShaderStage;
+globalThis.GPUBufferUsage = { UNIFORM: 1, COPY_SRC: 2, COPY_DST: 4 };
+globalThis.GPUShaderStage = { COMPUTE: 1, FRAGMENT: 2 };
+
+const vite = await createViteServer({
+  configFile: false,
+  root: process.cwd(),
+  logLevel: "silent",
+  appType: "custom",
+  server: { middlewareMode: true },
+});
+try {
+  const { DryBlendRenderer } = await vite.ssrLoadModule("/src/blend-renderer.ts");
+  const { device, renderer } = await createFakeBlendRenderer(DryBlendRenderer);
+  const defaultVariant = blendVariantSettings();
+
+  assert.deepEqual(
+    device.pipelineDescriptors.map(({ descriptor }) => descriptor.label),
+    [
+      "Blend dry gather ROI",
+      "Blend dry 8x8 weighted pigment pickup",
+      "Blend dry scatter to canonical layer",
+    ],
+    "creating the Blend renderer must compile only its three common pipelines",
+  );
+  assert.equal(renderer.selectedVariantPipelinesReady(defaultVariant), false);
+
+  await renderer.ensureVariantPipelines(defaultVariant);
+  assert.equal(device.pipelineDescriptors.length, 4);
+  assert.equal(renderer.selectedVariantPipelinesReady(defaultVariant), true);
+  assert.equal(
+    device.pipelineDescriptors.at(-1).descriptor.label,
+    "Blend dry circle off fused sweep and pigment deposit",
+  );
+  assert.deepEqual(
+    device.pipelineDescriptors.at(-1).descriptor.compute.constants,
+    { blendCustomShape: 0, blendGrainEnabled: 0 },
+  );
+  await renderer.ensureVariantPipelines(defaultVariant);
+  assert.equal(device.pipelineDescriptors.length, 4, "the default variant must be deduplicated");
+
+  const shapeVariant = blendVariantSettings({ shape: "shape" });
+  await renderer.ensureVariantPipelines(shapeVariant);
+  assert.equal(device.pipelineDescriptors.length, 5);
+  assert.deepEqual(
+    device.pipelineDescriptors.at(-1).descriptor.compute.constants,
+    { blendCustomShape: 1, blendGrainEnabled: 0 },
+  );
+
+  const grainVariant = blendVariantSettings({ grainMode: "texturized" });
+  await renderer.ensureVariantPipelines(grainVariant);
+  assert.equal(device.pipelineDescriptors.length, 6);
+  assert.deepEqual(
+    device.pipelineDescriptors.at(-1).descriptor.compute.constants,
+    { blendCustomShape: 0, blendGrainEnabled: 1 },
+  );
+
+  const shapeGrainVariant = blendVariantSettings({
+    shape: "shape",
+    grainMode: "moving",
+  });
+  await renderer.ensureVariantPipelines(shapeGrainVariant);
+  assert.equal(device.pipelineDescriptors.length, 7);
+  assert.deepEqual(
+    device.pipelineDescriptors.at(-1).descriptor.compute.constants,
+    { blendCustomShape: 1, blendGrainEnabled: 1 },
+  );
+
+  const directBlurVariant = blendVariantSettings({ blendBlur: 1, size: 48 });
+  await renderer.ensureVariantPipelines(directBlurVariant);
+  assert.equal(renderer.selectedVariantPipelinesReady(directBlurVariant), true);
+  assert.deepEqual(
+    device.pipelineDescriptors.slice(7).map(({ descriptor }) => descriptor.label),
+    ["Blend local Gaussian horizontal", "Blend local Gaussian vertical"],
+    "small Blur must compile only the direct two-pass bundle",
+  );
+
+  const reducedBlurVariant = blendVariantSettings({ blendBlur: 1, size: 96 });
+  await renderer.ensureVariantPipelines(reducedBlurVariant);
+  assert.equal(renderer.selectedVariantPipelinesReady(reducedBlurVariant), true);
+  assert.deepEqual(
+    device.pipelineDescriptors.slice(9).map(({ descriptor }) => descriptor.label),
+    [
+      "Blend local Gaussian reduced-grid downsample",
+      "Blend local Gaussian reduced-grid horizontal",
+      "Blend local Gaussian reduced-grid vertical",
+      "Blend local Gaussian reduced-grid restore",
+    ],
+    "large Blur must compile only the reduced-grid four-pass bundle",
+  );
+  assert.equal(device.pipelineDescriptors.length, 13);
+  renderer.destroy();
+
+  const concurrent = await createFakeBlendRenderer(DryBlendRenderer);
+  await Promise.all([
+    concurrent.renderer.ensureVariantPipelines(shapeGrainVariant),
+    concurrent.renderer.ensureVariantPipelines(shapeGrainVariant),
+  ]);
+  assert.equal(
+    concurrent.device.pipelineDescriptors.filter(({ descriptor }) =>
+      descriptor.label === "Blend dry shape on fused sweep and pigment deposit"
+    ).length,
+    1,
+    "concurrent requests for one Blend variant must share one compilation",
+  );
+  assert.equal(concurrent.device.pipelineDescriptors.length, 4);
+  concurrent.renderer.destroy();
+} finally {
+  await vite.close();
+  if (previousGpuBufferUsage === undefined) delete globalThis.GPUBufferUsage;
+  else globalThis.GPUBufferUsage = previousGpuBufferUsage;
+  if (previousGpuShaderStage === undefined) delete globalThis.GPUShaderStage;
+  else globalThis.GPUShaderStage = previousGpuShaderStage;
+}
 
 console.log("Dry Blend core verification passed.");

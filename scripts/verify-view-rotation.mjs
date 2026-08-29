@@ -194,14 +194,98 @@ assert.match(engineSource, /rotation: rotation \+ this\.viewRotation/,
   "la tip preview Shape deve ruotare insieme alla vista");
 
 const displayShaders = `${shaderSource}\n${strokeRendererSource}`;
+const singleRasterDisplayStart = shaderSource.indexOf(
+  "export const singleRasterRgba16FloatDisplayShader",
+);
+const singleRasterDisplayEnd = shaderSource.indexOf(
+  "export const displayShader",
+  singleRasterDisplayStart,
+);
+assert.ok(
+  singleRasterDisplayStart >= 0 && singleRasterDisplayEnd > singleRasterDisplayStart,
+  "la presentazione specializzata del singolo raster deve restare isolabile",
+);
+const singleRasterDisplay = shaderSource.slice(
+  singleRasterDisplayStart,
+  singleRasterDisplayEnd,
+);
+assert.equal(
+  (singleRasterDisplay.match(/@group\(0\) @binding\(/g) ?? []).length,
+  4,
+  "il percorso singolo deve dichiarare solo uniforms, mip 0, piramide e sampler",
+);
+for (const binding of [0, 1, 2, 5]) {
+  assert.match(singleRasterDisplay, new RegExp(`@group\\(0\\) @binding\\(${binding}\\)`));
+}
+for (const binding of [3, 4, 6, 7]) {
+  assert.doesNotMatch(
+    singleRasterDisplay,
+    new RegExp(`@group\\(0\\) @binding\\(${binding}\\)`),
+    `il binding composito ${binding} non deve entrare nello shader specializzato`,
+  );
+}
+assert.equal((singleRasterDisplay.match(/@vertex\s*fn vertexMain\(/g) ?? []).length, 1);
+assert.equal((singleRasterDisplay.match(/@fragment\s*fn fragmentMain\(/g) ?? []).length, 1);
+assert.match(
+  singleRasterDisplay,
+  /@binding\(1\) var rasterMipZero: texture_2d<f32>/,
+  "mip 0 deve restare una sorgente lineare RGBA16F campionabile",
+);
+assert.match(
+  singleRasterDisplay,
+  /@binding\(2\) var rasterMipPyramid: texture_2d<f32>/,
+  "la piramide deve restare una sorgente lineare RGBA16F campionabile",
+);
+assert.match(
+  singleRasterDisplay,
+  /sampleSingleRasterMipZero[\s\S]*textureLoad\([\s\S]*textureSampleLevel\(rasterMipZero/,
+  "mip 0 deve conservare sia la vista pixel sia il filtraggio continuo",
+);
+assert.match(
+  singleRasterDisplay,
+  /logicalMip - 1\.0[\s\S]*let lowerMip = floor\(lod\)[\s\S]*let upperMip = ceil\(lod\)[\s\S]*return mix\(/,
+  "mip 0 separato e piramide devono condividere la transizione LOD frazionaria",
+);
+assert.match(
+  singleRasterDisplay,
+  /display\.viewRotation\.x \* singleRasterDisplayOffset\.x[\s\S]*display\.viewCenter \+ rasterOffset/,
+  "la variante minima deve conservare rotazione, centro e zoom del canvas",
+);
+assert.match(singleRasterDisplay, /sampleSingleRaster\(uv\) \* display\.rasterAlpha/);
+assert.match(singleRasterDisplay, /checkerParity[\s\S]*display\.backgroundColor\.rgb/);
+assert.match(
+  singleRasterDisplay,
+  /singleRasterSrgbToLinear\(backgroundSrgb\)[\s\S]*singleRasterLinearToSrgb\(compositedLinear\)/,
+  "sfondo e raster premoltiplicato devono essere composti in lineare e presentati in sRGB",
+);
+assert.match(
+  singleRasterDisplay,
+  /@location\(0\) vec4<f32>/,
+  "il formato canvas resta responsabilità del target della render pipeline",
+);
+assert.doesNotMatch(
+  singleRasterDisplay,
+  /activeClipping|composeActiveClipping|mergedBelow|mergedAbove|mergedSurface|sourceOver/,
+  "lo shader specializzato non deve includere il grafo di clipping o superfici unite",
+);
+assert.match(
+  engineSource,
+  /singleRasterRgba16FloatDisplayShader/,
+  "la presentazione raster minima deve essere collegata al runtime iniziale",
+);
+assert.match(
+  engineSource,
+  /Single raster RGBA16F display pipeline/,
+  "la pipeline iniziale deve dichiarare esplicitamente il percorso raster RGBA16F minimo",
+);
 assert.equal((displayShaders.match(/struct DisplayUniforms/g) ?? []).length, 6,
   "le quattro varianti display e i due compositori mip devono condividere l'ABI");
 assert.equal((displayShaders.match(/  mergedBelowOrigin: vec2<f32>,/g) ?? []).length, 6,
   "display e compositori mip devono ricevere l'origine del bbox inferiore");
 assert.equal((displayShaders.match(/  mergedAboveOrigin: vec2<f32>,/g) ?? []).length, 6,
   "display e compositori mip devono ricevere l'origine del bbox superiore");
-assert.equal((displayShaders.match(/  viewRotation: vec2<f32>,/g) ?? []).length, 6,
-  "display e compositori mip devono condividere la stessa ABI di rotazione");
+assert.equal((displayShaders.match(/  viewRotation: vec2<f32>,/g) ?? []).length, 7,
+  "display, compositori mip e presentazione raster minima devono condividere la stessa ABI di rotazione");
 assert.equal((displayShaders.match(/let displayOffset =/g) ?? []).length, 16,
   "entry point canonico, final-stack, source-only e raw-matte devono applicare la stessa trasformazione inversa");
 assert.equal((displayShaders.match(/fn activeFragmentMain\(/g) ?? []).length, 4,
