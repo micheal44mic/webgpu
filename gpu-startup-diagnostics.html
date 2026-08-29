@@ -12,14 +12,17 @@
       (function () {
         "use strict";
 
-        var BUILD = "gpu-diagnostics-storage-format-ab-v7";
+        var BUILD = "gpu-diagnostics-document-pipeline-bisect-v8";
         var params = new URLSearchParams(window.location.search);
         var requestedTestId = params.get("test") || "";
         var DIAGNOSTIC_TEST_ID = requestedTestId || "startup-no-tier2-v1";
         var STORAGE_FORMAT_AB_TEST = DIAGNOSTIC_TEST_ID === "storage-format-ab-v1";
+        var DOCUMENT_PIPELINE_TEST = DIAGNOSTIC_TEST_ID === "document-pipeline-bisect-v1";
         var DIAGNOSTIC_VARIANT = STORAGE_FORMAT_AB_TEST
           ? "storage-format-ab-rgba8unorm-control-rgba16float-target-write-only-1x1-no-tier2-v1"
-          : "rgba16float-no-texture-formats-tier2-v1";
+          : DOCUMENT_PIPELINE_TEST
+            ? "document-pipeline-bisect-rgba16float-no-tier2-v1"
+            : "rgba16float-no-texture-formats-tier2-v1";
         var DIAGNOSTIC_COMPARISON = STORAGE_FORMAT_AB_TEST
           ? {
               kind: "storage-texture-format-ab",
@@ -34,6 +37,19 @@
               deviceReuse: "single-device",
               executionOrder: ["rgba8unorm", "rgba16float"],
             }
+          : DOCUMENT_PIPELINE_TEST
+            ? {
+                kind: "document-pipeline-bisect",
+                targetPhase: "document-pipelines",
+                layerFormat: "rgba16float",
+                requiredFeatures: [],
+                textureFormatsTier2Requested: false,
+                applicationFrame: "isolated-production-startup",
+                instrumentation: "native-device-call-boundaries",
+                expectedSynchronousPipelineLayouts: 17,
+                expectedSynchronousRenderPipelines: 52,
+                expectedErrorScopeDrains: 2,
+              }
           : {
               layerFormat: "rgba16float",
               canvasFormat: "rgba16float",
@@ -135,6 +151,7 @@
         var surfaceFinishedAtMs = null;
         var lastStartupProgressAtMs = surfaceStartedAtMs;
         var lastStartupProgress = null;
+        var documentPipelineProgress = null;
         var startupPhases = (STORAGE_FORMAT_AB_TEST ? [
           ["adapter-request", "Finding a WebGPU adapter"],
           ["device-request", "Creating a feature-neutral WebGPU device"],
@@ -368,6 +385,132 @@
           return truncated;
         }
 
+        function compactBreadcrumbError(value) {
+          if (!value || typeof value !== "object") return value == null ? null : String(value).slice(0, 400);
+          return {
+            name: typeof value.name === "string" ? value.name.slice(0, 120) : null,
+            message: typeof value.message === "string" ? redactUrls(value.message).slice(0, 400) : null,
+          };
+        }
+
+        function compactBreadcrumbCall(value) {
+          if (!value || typeof value !== "object") return null;
+          var previous = value.previousCompletedRenderPipeline;
+          return {
+            callIndex: value.callIndex ?? null,
+            method: value.method ?? null,
+            pipelineLayoutIndex: value.pipelineLayoutIndex ?? null,
+            renderPipelineIndex: value.renderPipelineIndex ?? null,
+            errorScopeDrainIndex: value.errorScopeDrainIndex ?? null,
+            label: typeof value.label === "string" ? value.label.slice(0, 240) : null,
+            vertexEntryPoint: typeof value.vertexEntryPoint === "string"
+              ? value.vertexEntryPoint.slice(0, 80)
+              : null,
+            fragmentEntryPoint: typeof value.fragmentEntryPoint === "string"
+              ? value.fragmentEntryPoint.slice(0, 80)
+              : null,
+            targetFormats: Array.isArray(value.targetFormats) ? value.targetFormats.slice(0, 4) : [],
+            topology: value.topology ?? null,
+            previousCompletedRenderPipeline: previous && typeof previous === "object" ? {
+              renderPipelineIndex: previous.renderPipelineIndex ?? null,
+              label: typeof previous.label === "string" ? previous.label.slice(0, 120) : null,
+              durationMs: previous.durationMs ?? null,
+            } : null,
+            checkpointStartedAtMs: value.checkpointStartedAtMs ?? null,
+            nativeStartedAtMs: value.nativeStartedAtMs ?? null,
+            durationMs: value.durationMs ?? null,
+            pipelineReason: value.pipelineReason ?? null,
+            error: compactBreadcrumbError(value.error),
+            scopeError: compactBreadcrumbError(value.scopeError),
+            durableCheckpoint: value.durableCheckpoint === true,
+          };
+        }
+
+        function compactBreadcrumbCallIdentity(value) {
+          if (!value || typeof value !== "object") return null;
+          var previous = value.previousCompletedRenderPipeline;
+          return {
+            callIndex: value.callIndex ?? null,
+            method: value.method ?? null,
+            pipelineLayoutIndex: value.pipelineLayoutIndex ?? null,
+            renderPipelineIndex: value.renderPipelineIndex ?? null,
+            errorScopeDrainIndex: value.errorScopeDrainIndex ?? null,
+            label: typeof value.label === "string" ? value.label.slice(0, 160) : null,
+            targetFormats: Array.isArray(value.targetFormats) ? value.targetFormats.slice(0, 4) : [],
+            previousCompletedRenderPipelineIndex: previous && typeof previous === "object"
+              ? previous.renderPipelineIndex ?? null
+              : null,
+          };
+        }
+
+        function compactBreadcrumbGpuEvent(value) {
+          var source = value && typeof value === "object" ? value : {};
+          var error = compactBreadcrumbError(source.error);
+          var lastCompleted = source.lastCompletedRenderPipeline;
+          return compactDetail({
+            source: source.source ?? null,
+            reason: typeof source.reason === "string" ? source.reason.slice(0, 120) : null,
+            message: typeof source.message === "string" ? source.message.slice(0, 240) : null,
+            error: error && typeof error === "object" ? {
+              name: error.name,
+              message: typeof error.message === "string" ? error.message.slice(0, 240) : null,
+            } : error,
+            activePhase: source.activePhase ?? null,
+            phaseState: source.phaseState ?? null,
+            duringTargetPhase: source.duringTargetPhase === true,
+            currentCall: compactBreadcrumbCallIdentity(source.currentCall),
+            lastCompletedRenderPipeline: lastCompleted && typeof lastCompleted === "object" ? {
+              renderPipelineIndex: lastCompleted.renderPipelineIndex ?? null,
+              label: typeof lastCompleted.label === "string"
+                ? lastCompleted.label.slice(0, 120)
+                : null,
+              durationMs: lastCompleted.durationMs ?? null,
+            } : null,
+          });
+        }
+
+        function compactBreadcrumbDetail(name, value) {
+          if (
+            name === "application-document-gpu-call-started"
+            || name === "application-document-gpu-call-failed"
+            || name === "application-document-gpu-scope-error"
+          ) {
+            return compactDetail(compactBreadcrumbCall(value));
+          }
+          if (
+            name === "application-document-gpu-device-lost"
+            || name === "application-document-gpu-uncaptured-error"
+          ) {
+            return compactBreadcrumbGpuEvent(value);
+          }
+          if (
+            name === "application-document-pipeline-sequence-completed"
+            || name === "application-document-pipeline-phase-completed"
+            || name === "application-document-pipeline-phase-failed"
+          ) {
+            var source = value && typeof value === "object" ? value : {};
+            return compactDetail({
+              enabled: source.enabled ?? null,
+              phaseState: source.phaseState ?? null,
+              adapterPatchCount: source.adapterPatchCount ?? null,
+              devicePatchCount: source.devicePatchCount ?? null,
+              startedCallCount: source.startedCallCount ?? null,
+              completedCallCount: source.completedCallCount ?? null,
+              failedCallCount: source.failedCallCount ?? null,
+              scopeErrorCount: source.scopeErrorCount ?? null,
+              pipelineLayoutStartedCount: source.pipelineLayoutStartedCount ?? null,
+              pipelineLayoutCompletedCount: source.pipelineLayoutCompletedCount ?? null,
+              renderPipelineStartedCount: source.renderPipelineStartedCount ?? null,
+              renderPipelineCompletedCount: source.renderPipelineCompletedCount ?? null,
+              popErrorScopeStartedCount: source.popErrorScopeStartedCount ?? null,
+              popErrorScopeCompletedCount: source.popErrorScopeCompletedCount ?? null,
+              lastStartedCall: compactBreadcrumbCall(source.lastStartedCall),
+              finalCall: compactBreadcrumbCall(source.finalCall),
+            });
+          }
+          return compactDetail(value);
+        }
+
         function serializeError(value) {
           if (!value) return null;
           if (typeof value === "string") return { name: "Error", message: redactUrls(value).slice(0, 1024), stack: null };
@@ -551,13 +694,36 @@
             return phase.state === "failed";
           });
           if (currentPhase) {
-            currentPhase.textContent = failed
-              ? failed.label
-                : active
-                ? active.label
-                : reportStored || probeFinished
-                  ? (STORAGE_FORMAT_AB_TEST ? "Storage comparison finished" : "Startup test finished")
-                  : (STORAGE_FORMAT_AB_TEST ? "Preparing the storage comparison" : "Opening the real application");
+            if (
+              DOCUMENT_PIPELINE_TEST
+              && active
+              && active.phase === "document-pipelines"
+              && documentPipelineProgress
+            ) {
+              var pipelineIndex = Number(documentPipelineProgress.renderPipelineIndex);
+              var pipelineLabel = typeof documentPipelineProgress.label === "string"
+                ? documentPipelineProgress.label
+                : "document pipeline";
+              currentPhase.textContent = Number.isFinite(pipelineIndex) && pipelineIndex > 0
+                ? "Pipeline " + pipelineIndex + "/52 · " + pipelineLabel
+                : pipelineLabel;
+            } else {
+              currentPhase.textContent = failed
+                ? failed.label
+                  : active
+                  ? active.label
+                  : reportStored || probeFinished
+                    ? (STORAGE_FORMAT_AB_TEST
+                      ? "Storage comparison finished"
+                      : DOCUMENT_PIPELINE_TEST
+                        ? "Pipeline bisect finished"
+                        : "Startup test finished")
+                    : (STORAGE_FORMAT_AB_TEST
+                      ? "Preparing the storage comparison"
+                      : DOCUMENT_PIPELINE_TEST
+                        ? "Opening the document pipeline path"
+                        : "Opening the real application");
+            }
           }
           if (liveness) {
             if (reportStored) {
@@ -565,8 +731,16 @@
               liveness.dataset.state = "completed";
             } else if (probeFinished) {
               liveness.textContent = reportingAvailable
-                ? (STORAGE_FORMAT_AB_TEST ? "Comparison measured · saving the report" : "Startup measured · saving the report")
-                : (STORAGE_FORMAT_AB_TEST ? "Local comparison finished" : "Local startup measurement finished");
+                ? (STORAGE_FORMAT_AB_TEST
+                  ? "Comparison measured · saving the report"
+                  : DOCUMENT_PIPELINE_TEST
+                    ? "Pipeline path measured · saving the report"
+                    : "Startup measured · saving the report")
+                : (STORAGE_FORMAT_AB_TEST
+                  ? "Local comparison finished"
+                  : DOCUMENT_PIPELINE_TEST
+                    ? "Local pipeline measurement finished"
+                    : "Local startup measurement finished");
               liveness.dataset.state = currentStatus;
             } else if (document.visibilityState === "hidden") {
               liveness.textContent = "Timing paused while this page is in the background";
@@ -582,7 +756,11 @@
               } else {
                 liveness.textContent = active
                   ? "Running normally"
-                  : (STORAGE_FORMAT_AB_TEST ? "Starting the storage format comparison" : "Starting the timed canvas test");
+                  : (STORAGE_FORMAT_AB_TEST
+                    ? "Starting the storage format comparison"
+                    : DOCUMENT_PIPELINE_TEST
+                      ? "Starting the document pipeline bisect"
+                      : "Starting the timed canvas test");
                 liveness.dataset.state = "running";
               }
             }
@@ -840,6 +1018,34 @@
           return JSON.stringify(minimalPayload);
         }
 
+        function serializedBreadcrumbSnapshot(event) {
+          return JSON.stringify({
+            version: 1,
+            build: BUILD,
+            runCode: runCode,
+            writeToken: writeToken,
+            sequence: event.sequence,
+            createdAt: createdAt,
+            updatedAt: event.at,
+            status: currentStatus,
+            privacy: "Technical browser and GPU diagnostic data only.",
+            summary: {
+              testId: DIAGNOSTIC_TEST_ID,
+              diagnosticVariant: DIAGNOSTIC_VARIANT,
+              comparison: DIAGNOSTIC_COMPARISON,
+              result: null,
+              latestEvent: event.name,
+              moduleLoaded: moduleLoaded,
+              probeFinished: probeFinished,
+            },
+            environment: {
+              secureContext: window.isSecureContext,
+              visibilityState: document.visibilityState,
+            },
+            events: [event],
+          });
+        }
+
         function updateSurface() {
           var status = document.getElementById("diagnosticStatus");
           var summary = document.getElementById("diagnosticSummary");
@@ -967,6 +1173,26 @@
           ).then(function (result) { return result.stored; });
         }
 
+        function sendBreadcrumbSnapshot(event) {
+          if (!runCode || !writeToken) return false;
+          var body = serializedBreadcrumbSnapshot(event);
+          if (navigator.sendBeacon) {
+            try {
+              if (navigator.sendBeacon(API_URL, new Blob([body], { type: "text/plain;charset=UTF-8" }))) {
+                return true;
+              }
+            } catch (_) {
+              // A regular request below avoids the keepalive quota for the latest breadcrumb.
+            }
+          }
+          return postSnapshot(
+            body,
+            false,
+            Number(event.sequence),
+            String(currentStatus),
+          ).then(function (result) { return result.stored; });
+        }
+
         function confirmTerminalUpload() {
           if (!reportingAvailable || !terminalBody || !terminalUploadRetryAllowed) {
             return Promise.resolve(false);
@@ -1011,13 +1237,23 @@
           return terminalUploadPromise;
         }
 
-        function record(name, detail, status, delivery) {
+        function appendDiagnosticEvent(name, detail, status, breadcrumb) {
           applyApplicationMilestone(name);
           if (name === "application-startup-phase") {
             applyStartupProgress(detail);
           }
+          if (
+            name === "application-document-gpu-call-started"
+            || name === "application-document-gpu-call-completed"
+            || name === "application-document-gpu-call-failed"
+          ) {
+            documentPipelineProgress = detail && typeof detail === "object" ? detail : null;
+            lastStartupProgressAtMs = performance.now();
+          }
           latestEventName = name;
-          latestEventDetail = compactDetail(detail);
+          latestEventDetail = breadcrumb
+            ? compactBreadcrumbDetail(name, detail)
+            : compactDetail(detail);
           if (status === "failed") {
             currentStatus = "failed";
           } else if (status && !probeFinished && currentStatus !== "failed") {
@@ -1035,7 +1271,17 @@
           if (backupEvents.length > MAX_BACKUP_EVENT_COUNT) backupEvents.shift();
           persistDiagnosticBackupJournal();
           updateSurface();
+          return event;
+        }
+
+        function record(name, detail, status, delivery) {
+          appendDiagnosticEvent(name, detail, status);
           return sendSnapshot(delivery || "wait");
+        }
+
+        function recordBreadcrumb(name, detail, status) {
+          var event = appendDiagnosticEvent(name, detail, status, true);
+          return sendBreadcrumbSnapshot(event);
         }
 
         async function finish(status, name, detail) {
@@ -1081,6 +1327,7 @@
           build: BUILD,
           runCode: runCode,
           record: record,
+          recordBreadcrumb: recordBreadcrumb,
           finish: finish,
           serializeError: serializeError,
           setModuleLoaded: setModuleLoaded,
@@ -1133,7 +1380,9 @@
           if (variantLabel) {
             variantLabel.textContent = STORAGE_FORMAT_AB_TEST
               ? "1×1 · RGBA8 vs RGBA16F · storage write"
-              : "App boot · RGBA16F · Tier 2 off";
+              : DOCUMENT_PIPELINE_TEST
+                ? "Real document pipelines · RGBA16F · Tier 2 off"
+                : "App boot · RGBA16F · Tier 2 off";
           }
           var copyButton = document.getElementById("copyDiagnosticJson");
           if (copyButton) copyButton.addEventListener("click", function () {

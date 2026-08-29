@@ -18,14 +18,17 @@ const attach = read("scripts/attach-human-replay-site-build.mjs");
 const indexHtml = read("index.html");
 const startup = read("src/startup.ts");
 const engineSource = read("src/brush-engine.ts");
+const layerRuntimeSource = read("src/engine-layer-runtime.ts");
 const featurePolicySource = read("src/gpu-startup-feature-policy.ts");
 
-const DIAGNOSTIC_BUILD = "gpu-diagnostics-storage-format-ab-v7";
+const DIAGNOSTIC_BUILD = "gpu-diagnostics-document-pipeline-bisect-v8";
 const DEFAULT_TEST_ID = "startup-no-tier2-v1";
 const DEFAULT_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
 const STORAGE_FORMAT_TEST_ID = "storage-format-ab-v1";
 const STORAGE_FORMAT_VARIANT =
   "storage-format-ab-rgba8unorm-control-rgba16float-target-write-only-1x1-no-tier2-v1";
+const DOCUMENT_PIPELINE_TEST_ID = "document-pipeline-bisect-v1";
+const DOCUMENT_PIPELINE_VARIANT = "document-pipeline-bisect-rgba16float-no-tier2-v1";
 const DEFAULT_COMPARISON = {
   layerFormat: "rgba16float",
   canvasFormat: "rgba16float",
@@ -45,6 +48,18 @@ const STORAGE_FORMAT_COMPARISON = {
   textureFormatsTier2Requested: false,
   deviceReuse: "single-device",
   executionOrder: ["rgba8unorm", "rgba16float"],
+};
+const DOCUMENT_PIPELINE_COMPARISON = {
+  kind: "document-pipeline-bisect",
+  targetPhase: "document-pipelines",
+  layerFormat: "rgba16float",
+  requiredFeatures: [],
+  textureFormatsTier2Requested: false,
+  applicationFrame: "isolated-production-startup",
+  instrumentation: "native-device-call-boundaries",
+  expectedSynchronousPipelineLayouts: 17,
+  expectedSynchronousRenderPipelines: 52,
+  expectedErrorScopeDrains: 2,
 };
 const STORAGE_FORMAT_STAGES = [
   "shader-module",
@@ -143,6 +158,13 @@ function diagnosticDefinition(testId) {
       comparison: STORAGE_FORMAT_COMPARISON,
     };
   }
+  if (testId === DOCUMENT_PIPELINE_TEST_ID) {
+    return {
+      testId,
+      diagnosticVariant: DOCUMENT_PIPELINE_VARIANT,
+      comparison: DOCUMENT_PIPELINE_COMPARISON,
+    };
+  }
   throw new Error(`Unknown verification diagnostic test: ${testId}`);
 }
 
@@ -195,6 +217,12 @@ assert.match(html, /window\.addEventListener\("unhandledrejection"/);
 assert.match(html, /window\.addEventListener\("pagehide"/);
 assert.match(html, /navigator\.sendBeacon/);
 assert.match(html, /keepalive: keepalive === true/);
+assert.match(html, /function serializedBreadcrumbSnapshot\(event\)/);
+assert.match(html, /function compactBreadcrumbCall\(value\)/);
+assert.match(html, /function compactBreadcrumbGpuEvent\(value\)/);
+assert.match(html, /function compactBreadcrumbDetail\(name, value\)/);
+assert.match(html, /function recordBreadcrumb\(name, detail, status\)/);
+assert.match(html, /return postSnapshot\(\s*body,\s*false,/);
 assert.match(html, /MAX_SNAPSHOT_BYTES = 48 \* 1024/);
 assert.match(html, /MAX_DIAGNOSTIC_RESULT_BYTES = 12 \* 1024/);
 assert.match(html, /truncateUtf8/);
@@ -223,8 +251,13 @@ assert.match(html, /diagnosticElapsed/);
 assert.match(html, /Very slow or stopped here/);
 assert.match(html, /App boot · RGBA16F · Tier 2 off/);
 assert.match(html, /1×1 · RGBA8 vs RGBA16F · storage write/);
+assert.match(html, /Real document pipelines · RGBA16F · Tier 2 off/);
 assert.match(html, /requestedTestId \|\| "startup-no-tier2-v1"/);
 assert.match(html, /DIAGNOSTIC_TEST_ID === "storage-format-ab-v1"/);
+assert.match(html, /DIAGNOSTIC_TEST_ID === "document-pipeline-bisect-v1"/);
+assert.match(html, /expectedSynchronousPipelineLayouts: 17/);
+assert.match(html, /expectedSynchronousRenderPipelines: 52/);
+assert.match(html, /expectedErrorScopeDrains: 2/);
 assert.match(html, /diagnosticVariant: DIAGNOSTIC_VARIANT/);
 assert.match(html, /testId: DIAGNOSTIC_TEST_ID/);
 assert.match(html, /result: diagnosticResult/);
@@ -247,8 +280,11 @@ assert.match(moduleSource, /APP_FRAME_DIAGNOSTIC_CHANNEL = "gpu-startup-app-fram
 assert.match(moduleSource, /APPLICATION_BOOT_VARIANT = "rgba16float-no-texture-formats-tier2-v1"/);
 assert.match(moduleSource, /STORAGE_FORMAT_AB_TEST = "storage-format-ab-v1"/);
 assert.match(moduleSource, new RegExp(STORAGE_FORMAT_VARIANT));
-assert.match(moduleSource, /if \(diagnosticTest && diagnosticTest !== STORAGE_FORMAT_AB_TEST\)[\s\S]*Unsupported GPU diagnostic test/);
+assert.match(moduleSource, /DOCUMENT_PIPELINE_TEST = "document-pipeline-bisect-v1"/);
+assert.match(moduleSource, new RegExp(DOCUMENT_PIPELINE_VARIANT));
+assert.match(moduleSource, /diagnosticTest !== DOCUMENT_PIPELINE_TEST[\s\S]*Unsupported GPU diagnostic test/);
 assert.match(moduleSource, /if \(storageFormatAbEnabled\) \{\s*await runStorageFormatAbDiagnostic\(\);\s*return;/);
+assert.match(moduleSource, /if \(documentPipelineBisectEnabled\) \{\s*await runDocumentPipelineBisectDiagnostic\(\);\s*return;/);
 assert.match(moduleSource, /applicationBoot = await runFullApplicationBoot\(\)/);
 assert.match(moduleSource, /const requiredFeatures: GPUFeatureName\[\] = \[\]/);
 assert.match(moduleSource, /adapter\.requestDevice\(\{ requiredFeatures \}\)/);
@@ -285,7 +321,20 @@ assert.ok(
   "The Tier 2 observation must read the created feature-neutral device.",
 );
 assert.match(moduleSource, /target\.searchParams\.set\("forceGlazeCommitFallback", "1"\)/);
-assert.match(moduleSource, /target\.searchParams\.set\("diagnosticVariant", APPLICATION_BOOT_VARIANT\)/);
+assert.match(moduleSource, /target\.searchParams\.set\("diagnosticVariant", expectedDiagnosticVariant\)/);
+assert.match(moduleSource, /target\.searchParams\.set\("test", options\.diagnosticTestId\)/);
+assert.match(moduleSource, /renderPipelineStartedCount === EXPECTED_DOCUMENT_RENDER_PIPELINES/);
+assert.match(moduleSource, /renderPipelineCompletedCount === EXPECTED_DOCUMENT_RENDER_PIPELINES/);
+assert.match(moduleSource, /pipelineLayoutStartedCount === EXPECTED_DOCUMENT_PIPELINE_LAYOUTS/);
+assert.match(moduleSource, /pipelineLayoutCompletedCount === EXPECTED_DOCUMENT_PIPELINE_LAYOUTS/);
+assert.match(moduleSource, /popErrorScopeStartedCount === EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS/);
+assert.match(moduleSource, /popErrorScopeCompletedCount === EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS/);
+assert.match(moduleSource, /lastScopeError: trace\.lastScopeError/);
+assert.match(moduleSource, /function compactDocumentPipelineError\(value: unknown\)/);
+assert.match(moduleSource, /calls: trace\.calls\.slice\(-4\)/);
+assert.match(moduleSource, /applicationBoot: documentPipelineApplicationSummary\(applicationBoot\)/);
+assert.match(moduleSource, /verdict: "document-pipelines-passed"/);
+assert.match(moduleSource, /verdict = "document-pipelines-passed-later-startup-failed"/);
 assert.match(moduleSource, /featureIsolation\.textureFormatsTier2Enabled !== false/);
 assert.match(moduleSource, /featureIsolation\.inPlaceGlazeCommitEnabled !== false/);
 assert.match(moduleSource, /featureIsolation\.inPlaceGlazeCommitPipelineCreated !== false/);
@@ -300,6 +349,55 @@ assert.doesNotMatch(moduleSource, /import\("\.\.\/brush-engine"\)/);
 assert.match(engineSource, /suppressTextureFormatsTier2ForGpuStartup/);
 assert.match(engineSource, /const requestInPlaceGlazeCommit = !suppressTier2ForDiagnostic/);
 assert.match(engineSource, /&& !forceGlazeCommitFallback/);
+assert.match(
+  engineSource,
+  /recreateLayerResources\(this, this\.layerFormat, \{\s*deferBlendRenderer: true,\s*deferSelectionPipelines: true,/,
+);
+const documentPipelinePhaseStart = layerRuntimeSource.indexOf('"document-pipelines"');
+const documentPipelinePhaseEnd = layerRuntimeSource.indexOf(
+  "// Recreating the document",
+  documentPipelinePhaseStart,
+);
+assert.ok(documentPipelinePhaseStart >= 0 && documentPipelinePhaseEnd > documentPipelinePhaseStart);
+const documentPipelinePhaseSource = layerRuntimeSource.slice(
+  documentPipelinePhaseStart,
+  documentPipelinePhaseEnd,
+);
+const literalRenderPipelineCalls = (
+  documentPipelinePhaseSource.match(/engine\.device\.createRenderPipeline\(/g) ?? []
+).length;
+const literalPipelineLayoutCalls = (
+  documentPipelinePhaseSource.match(/engine\.device\.createPipelineLayout\(/g) ?? []
+).length;
+const erasePipelineFactoryCalls = (
+  documentPipelinePhaseSource.match(/createErasePipeline\(/g) ?? []
+).length;
+const glazePipelineFactoryCalls = (
+  documentPipelinePhaseSource.match(/createRgba16FloatGlazePipeline\(/g) ?? []
+).length;
+const lightPipelineFactoryCalls = (
+  documentPipelinePhaseSource.match(/createLightNoBuildUpPipeline\(/g) ?? []
+).length;
+assert.equal(literalRenderPipelineCalls, 31);
+assert.equal(literalPipelineLayoutCalls, 18);
+assert.equal(erasePipelineFactoryCalls, 6);
+assert.equal(glazePipelineFactoryCalls, 12);
+assert.equal(lightPipelineFactoryCalls, 6);
+assert.equal(
+  literalRenderPipelineCalls - 3
+    + erasePipelineFactoryCalls
+    + glazePipelineFactoryCalls
+    + lightPipelineFactoryCalls,
+  DOCUMENT_PIPELINE_COMPARISON.expectedSynchronousRenderPipelines,
+  "The diagnostic pipeline count must track the exact synchronous production path.",
+);
+assert.equal(
+  literalPipelineLayoutCalls - 1,
+  DOCUMENT_PIPELINE_COMPARISON.expectedSynchronousPipelineLayouts,
+  "The no-Tier-2 layout count must exclude only the conditional in-place layout.",
+);
+assert.equal(DOCUMENT_PIPELINE_COMPARISON.expectedErrorScopeDrains, 2);
+assert.match(documentPipelinePhaseSource, /if \(!options\.deferSelectionPipelines\)/);
 
 assert.match(workerBuilder, /GPU_STARTUP_DIAGNOSTIC_HTML/);
 assert.match(workerBuilder, /GPU_STARTUP_DIAGNOSTIC_PAGE_PATH = "\/gpu-startup-lab"/);
@@ -307,6 +405,20 @@ assert.match(workerBuilder, /GPU_STARTUP_APP_FRAME_PATH = "\/gpu-startup-app-fra
 assert.match(workerBuilder, /restorePersistedBrushOnStartup: true/);
 assert.match(workerBuilder, /startupProgressEnabled: true/);
 assert.match(workerBuilder, /handleEngineStartupProgress/);
+assert.match(workerBuilder, /DOCUMENT_PIPELINE_TEST_ID = "document-pipeline-bisect-v1"/);
+assert.match(workerBuilder, /EXPECTED_DOCUMENT_RENDER_PIPELINES = 52/);
+assert.match(workerBuilder, /EXPECTED_DOCUMENT_PIPELINE_LAYOUTS = 17/);
+assert.match(workerBuilder, /EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS = 2/);
+assert.match(workerBuilder, /Object\.keys\(value\)\.slice\(0, 24\)/);
+assert.match(workerBuilder, /bridge\.recordBreadcrumb\(name, detail, status \|\| "running"\)/);
+assert.match(workerBuilder, /wrapDocumentGpuMethod\(device, "createPipelineLayout", false\)/);
+assert.match(workerBuilder, /wrapDocumentGpuMethod\(device, "createRenderPipeline", false\)/);
+assert.match(workerBuilder, /wrapDocumentGpuMethod\(device, "popErrorScope", true\)/);
+assert.match(workerBuilder, /durableRecord\(\s*"application-document-gpu-call-started"/);
+assert.match(workerBuilder, /previousCompletedRenderPipeline: lastCompletedRenderPipeline/);
+assert.match(workerBuilder, /window\.__gpuStartupDiagnosticTeardown === true/);
+assert.doesNotMatch(workerBuilder, /applicationEngineReady/);
+assert.match(workerBuilder, /updateDocumentPipelinePhase\(progress\)/);
 assert.match(workerBuilder, /textureFormatsTier2Enabled: engine\.device\.features\.has\("texture-formats-tier2"\)/);
 assert.match(workerBuilder, /textureFormatsTier2Advertised: engine\.adapter\?\.features\?\.has\("texture-formats-tier2"\) === true/);
 assert.match(workerBuilder, /inPlaceGlazeCommitEnabled: engine\.lightGlazeInPlaceCommitSupported === true/);
@@ -384,6 +496,8 @@ function diagnosticBootstrapHarness({
   clipboardMode = "success",
   legacyCopyResult = true,
   TextEncoderClass = TextEncoder,
+  beaconByteLimit = Number.POSITIVE_INFINITY,
+  beaconThrows = false,
 } = {}) {
   let selectionCount = 0;
   const legacyCopyCommands = [];
@@ -418,6 +532,9 @@ function diagnosticBootstrapHarness({
     appendChild(child) { stepChildren.push(child); },
   });
   const postedBodies = [];
+  const fetchRequests = [];
+  const beaconRequests = [];
+  let acceptedBeaconBytes = 0;
   let copiedText = null;
   let fetchIndex = 0;
   let timerId = 0;
@@ -468,6 +585,7 @@ function diagnosticBootstrapHarness({
     clearInterval() {},
     async fetch(_url, options) {
       postedBodies.push(String(options.body));
+      fetchRequests.push({ url: String(_url), options, body: String(options.body) });
       const result = fetchResults[fetchIndex++] ?? { kind: "valid" };
       const parsed = JSON.parse(String(options.body));
       if (result.kind === "http") {
@@ -498,7 +616,15 @@ function diagnosticBootstrapHarness({
     hardwareConcurrency: 4,
     deviceMemory: 2,
     onLine: true,
-    sendBeacon() { return true; },
+    sendBeacon(url, blob) {
+      if (beaconThrows) throw new Error("Verification beacon failure");
+      const size = typeof blob?.size === "number" ? blob.size : 0;
+      const accepted = acceptedBeaconBytes + size <= beaconByteLimit;
+      beaconRequests.push({ url: String(url), blob, accepted });
+      if (!accepted) return false;
+      acceptedBeaconBytes += size;
+      return true;
+    },
   };
   if (clipboardMode !== "missing") {
     navigator.clipboard = {
@@ -556,6 +682,9 @@ function diagnosticBootstrapHarness({
     browser,
     elements,
     postedBodies,
+    fetchRequests,
+    beaconRequests,
+    acceptedBeaconBytes: () => acceptedBeaconBytes,
     sharedSessionStorage,
     sharedLocalStorage,
     copiedText: () => copiedText,
@@ -651,6 +780,396 @@ function diagnosticBootstrapHarness({
     manualPayload.currentAttempt.summary,
     STORAGE_FORMAT_TEST_ID,
     result,
+  );
+}
+
+{
+  const harness = diagnosticBootstrapHarness({ testId: DOCUMENT_PIPELINE_TEST_ID });
+  assert.equal(
+    harness.elements.get("diagnosticVariantLabel").textContent,
+    "Real document pipelines · RGBA16F · Tier 2 off",
+  );
+  assertDiagnosticSummary(
+    harness.browser.__gpuStartupDiagnostics.snapshot().summary,
+    DOCUMENT_PIPELINE_TEST_ID,
+    null,
+  );
+}
+
+{
+  const harness = diagnosticBootstrapHarness({
+    testId: DOCUMENT_PIPELINE_TEST_ID,
+    beaconByteLimit: 16 * 1024,
+  });
+  for (let index = 1; index <= 71; index += 1) {
+    const method = index <= 17
+      ? "createPipelineLayout"
+      : index <= 69
+        ? "createRenderPipeline"
+        : "popErrorScope";
+    const stored = await harness.browser.__gpuStartupDiagnostics.recordBreadcrumb(
+      "application-document-gpu-call-started",
+      {
+        callIndex: index,
+        method,
+        pipelineLayoutIndex: method === "createPipelineLayout" ? index : null,
+        renderPipelineIndex: method === "createRenderPipeline" ? index - 17 : null,
+        errorScopeDrainIndex: method === "popErrorScope" ? index - 69 : null,
+        label: `Verification ${method} ${index}`,
+        previousCompletedRenderPipeline: index > 18
+          ? { renderPipelineIndex: Math.min(index - 18, 52) }
+          : null,
+        durableCheckpoint: false,
+      },
+      "running",
+    );
+    assert.equal(stored, true);
+  }
+  const beaconBodies = await Promise.all(
+    harness.beaconRequests.map(({ blob }) => blob.text()),
+  );
+  const boundaryBodies = beaconBodies.filter((body) => (
+    JSON.parse(body).summary.latestEvent === "application-document-gpu-call-started"
+  ));
+  assert.equal(boundaryBodies.length, 71);
+  assert.ok(harness.acceptedBeaconBytes() <= 16 * 1024);
+  assert.ok(
+    harness.fetchRequests.some(({ body }) => (
+      JSON.parse(body).summary.latestEvent === "application-document-gpu-call-started"
+    )),
+    "Breadcrumbs rejected by the beacon quota must fall back to fetch.",
+  );
+  const rejectedBoundaryBodies = await Promise.all(
+    harness.beaconRequests
+      .filter(({ accepted }) => !accepted)
+      .map(({ blob }) => blob.text()),
+  );
+  for (const rejectedBody of rejectedBoundaryBodies.filter((body) => (
+    JSON.parse(body).summary.latestEvent === "application-document-gpu-call-started"
+  ))) {
+    assert.equal(
+      harness.fetchRequests.filter(({ body }) => body === rejectedBody).length,
+      1,
+      "Each rejected beacon body must be retried byte-identically once.",
+    );
+  }
+  for (const request of harness.fetchRequests.filter(({ body }) => (
+    JSON.parse(body).summary.latestEvent === "application-document-gpu-call-started"
+  ))) {
+    assert.equal(request.options.keepalive, false);
+    assert.equal(request.options.method, "POST");
+  }
+  for (const body of boundaryBodies) {
+    const payload = JSON.parse(body);
+    assert.ok(Buffer.byteLength(body, "utf8") < 4 * 1024);
+    assert.equal(payload.events.length, 1);
+    assert.equal(payload.sequence, payload.events[0].sequence);
+    assert.equal(payload.summary.latestEvent, payload.events[0].name);
+    assert.equal(payload.summary.result, null);
+    assertDiagnosticSummary(payload.summary, DOCUMENT_PIPELINE_TEST_ID, null);
+  }
+  const lastBoundary = JSON.parse(boundaryBodies.at(-1));
+  assert.equal(lastBoundary.events[0].detail.callIndex, 71);
+  assert.equal(lastBoundary.events[0].detail.errorScopeDrainIndex, 2);
+  assert.ok(
+    harness.browser.__gpuStartupDiagnostics.snapshot().events.length <= 24,
+    "The display snapshot must retain only its bounded event tail.",
+  );
+}
+
+{
+  const harness = diagnosticBootstrapHarness({
+    testId: DOCUMENT_PIPELINE_TEST_ID,
+    beaconThrows: true,
+  });
+  const stored = await harness.browser.__gpuStartupDiagnostics.recordBreadcrumb(
+    "application-document-gpu-call-started",
+    { callIndex: 1, method: "createPipelineLayout", label: "Beacon exception fallback" },
+    "running",
+  );
+  assert.equal(stored, true);
+  const fallback = harness.fetchRequests.find(({ body }) => (
+    JSON.parse(body).summary.latestEvent === "application-document-gpu-call-started"
+  ));
+  assert.ok(fallback);
+  assert.equal(fallback.options.keepalive, false);
+}
+
+{
+  const harness = diagnosticBootstrapHarness({ testId: DOCUMENT_PIPELINE_TEST_ID });
+  const stored = harness.browser.__gpuStartupDiagnostics.recordBreadcrumb(
+    "application-document-gpu-call-failed",
+    {
+      callIndex: 42,
+      method: "createRenderPipeline",
+      renderPipelineIndex: 25,
+      label: "Structured failure breadcrumb",
+      targetFormats: ["rgba16float"],
+      durationMs: 25_200,
+      pipelineReason: "validation",
+      error: {
+        name: "OperationError",
+        message: "The verification pipeline failed validation.",
+        stack: "s".repeat(4_000),
+      },
+      durableCheckpoint: false,
+    },
+    "failed",
+  );
+  assert.equal(stored, true);
+  const failureBody = await harness.beaconRequests.at(-1).blob.text();
+  const failurePayload = JSON.parse(failureBody);
+  assert.equal(failurePayload.events[0].detail.truncated, undefined);
+  assert.equal(failurePayload.events[0].detail.callIndex, 42);
+  assert.equal(failurePayload.events[0].detail.pipelineReason, "validation");
+  assert.equal(
+    failurePayload.events[0].detail.error.message,
+    "The verification pipeline failed validation.",
+  );
+  assert.ok(Buffer.byteLength(failureBody, "utf8") < 4 * 1024);
+}
+
+{
+  const harness = diagnosticBootstrapHarness({ testId: DOCUMENT_PIPELINE_TEST_ID });
+  const currentCall = {
+    callIndex: 41,
+    method: "createRenderPipeline",
+    renderPipelineIndex: 24,
+    label: "Pipeline active during asynchronous GPU error",
+    targetFormats: ["rgba16float"],
+    previousCompletedRenderPipeline: { renderPipelineIndex: 23 },
+  };
+  const stored = harness.browser.__gpuStartupDiagnostics.recordBreadcrumb(
+    "application-document-gpu-uncaptured-error",
+    {
+      source: "uncapturederror",
+      error: {
+        name: "GPUValidationError",
+        message: "u".repeat(1_000),
+        stack: "s".repeat(4_000),
+      },
+      activePhase: "document-pipelines",
+      phaseState: "started",
+      duringTargetPhase: true,
+      currentCall,
+      lastCompletedRenderPipeline: {
+        renderPipelineIndex: 23,
+        label: "Previous completed pipeline",
+        durationMs: 15.2,
+      },
+      durableCheckpoint: false,
+    },
+    "failed",
+  );
+  assert.equal(stored, true);
+  const errorBody = await harness.beaconRequests.at(-1).blob.text();
+  const errorPayload = JSON.parse(errorBody);
+  const detail = errorPayload.events[0].detail;
+  assert.equal(detail.truncated, undefined);
+  assert.equal(detail.duringTargetPhase, true);
+  assert.equal(detail.currentCall.callIndex, 41);
+  assert.equal(detail.currentCall.method, "createRenderPipeline");
+  assert.equal(detail.currentCall.renderPipelineIndex, 24);
+  assert.equal(detail.currentCall.label, currentCall.label);
+  assert.equal(detail.lastCompletedRenderPipeline.renderPipelineIndex, 23);
+  assert.equal(detail.error.name, "GPUValidationError");
+  assert.ok(Buffer.byteLength(errorBody, "utf8") < 4 * 1024);
+}
+
+{
+  const calls = Array.from({ length: 8 }, (_entry, index) => ({
+    callIndex: 64 + index,
+    method: index < 6 ? "createRenderPipeline" : "popErrorScope",
+    renderPipelineIndex: index < 6 ? 47 + index : null,
+    errorScopeDrainIndex: index < 6 ? null : index - 5,
+    label: `${`Terminal call ${64 + index} `.padEnd(300, "L")}`,
+    vertexEntryPoint: "v".repeat(120),
+    fragmentEntryPoint: "f".repeat(120),
+    targetFormats: ["rgba16float", "rgba16float", "rgba16float", "rgba16float"],
+    topology: "triangle-list",
+    durationMs: 4.5 + index,
+    state: "completed",
+  }));
+  const engineProbe = {
+    enabled: true,
+    targetPhase: "document-pipelines",
+    expectedSynchronousPipelineLayouts: 17,
+    expectedSynchronousRenderPipelines: 52,
+    expectedErrorScopeDrains: 2,
+    activePhase: "document-pipelines",
+    phaseState: "completed",
+    adapterPatchCount: 1,
+    devicePatchCount: 1,
+    startedCallCount: 71,
+    completedCallCount: 71,
+    failedCallCount: 0,
+    scopeErrorCount: 0,
+    pipelineLayoutStartedCount: 17,
+    pipelineLayoutCompletedCount: 17,
+    renderPipelineStartedCount: 52,
+    renderPipelineCompletedCount: 52,
+    popErrorScopeStartedCount: 2,
+    popErrorScopeCompletedCount: 2,
+    lastStartedCall: calls.at(-1),
+    lastCompletedRenderPipeline: calls[5],
+    slowestCompletedRenderPipeline: calls[5],
+  };
+  const result = {
+    ...DOCUMENT_PIPELINE_COMPARISON,
+    testId: DOCUMENT_PIPELINE_TEST_ID,
+    diagnosticVariant: DOCUMENT_PIPELINE_VARIANT,
+    verdict: "document-pipelines-passed",
+    conclusion: "All real pipeline layouts, render pipelines, and error scopes passed.",
+    documentWidth: 2048,
+    documentHeight: 2048,
+    documentPipelineTrace: {
+      instrumentationInstalled: true,
+      adapterRequestDevicePatched: true,
+      pipelineLayoutPatched: true,
+      renderPipelinePatched: true,
+      popErrorScopePatched: true,
+      requiredFeatures: [],
+      textureFormatsTier2Enabled: false,
+      phaseState: "completed",
+      expectedSynchronousPipelineLayouts: 17,
+      expectedSynchronousRenderPipelines: 52,
+      expectedErrorScopeDrains: 2,
+      startedCallCount: 71,
+      completedCallCount: 71,
+      failedCallCount: 0,
+      scopeErrorCount: 0,
+      pipelineLayoutStartedCount: 17,
+      pipelineLayoutCompletedCount: 17,
+      renderPipelineStartedCount: 52,
+      renderPipelineCompletedCount: 52,
+      popErrorScopeStartedCount: 2,
+      popErrorScopeCompletedCount: 2,
+      deviceLost: null,
+      uncapturedError: null,
+      lastStartedCall: null,
+      lastCompletedCall: calls.at(-1),
+      lastFailedCall: null,
+      lastScopeError: null,
+      slowestCompletedRenderPipeline: calls[5],
+      engineProbe,
+      calls: calls.slice(-4),
+    },
+    applicationBoot: {
+      accessible: true,
+      statusText: "WebGPU is ready",
+      statusClass: "ok",
+      projectSessionReady: true,
+      runtimeStatsStarted: true,
+      canvas: { width: 2048, height: 2048 },
+      reporter: {
+        bootstrapReady: true,
+        extensionCreated: true,
+        frameMessageCount: 160,
+        lastStartupProgress: {
+          phase: "document-pipelines",
+          state: "completed",
+          totalElapsedMs: 25_200,
+          phaseElapsedMs: 25_200,
+        },
+      },
+      engine: {
+        documentWidth: 2048,
+        documentHeight: 2048,
+        layerFormat: "rgba16float",
+        canvasFormat: "rgba16float",
+        featureIsolation: {
+          textureFormatsTier2Advertised: true,
+          textureFormatsTier2Enabled: false,
+          inPlaceGlazeCommitEnabled: false,
+          inPlaceGlazeCommitPipelineCreated: false,
+        },
+      },
+    },
+  };
+  const resultBytes = Buffer.byteLength(JSON.stringify(result), "utf8");
+  assert.ok(
+    resultBytes > 1200 && resultBytes < 12 * 1024,
+    `The realistic document-pipeline result is ${resultBytes} bytes.`,
+  );
+  const harness = diagnosticBootstrapHarness({
+    testId: DOCUMENT_PIPELINE_TEST_ID,
+    userAgent: "界".repeat(100_000),
+  });
+  const stored = await harness.browser.__gpuStartupDiagnostics.finish(
+    "completed",
+    "diagnostic-completed",
+    result,
+  );
+  assert.equal(stored, true);
+  const terminalPayload = JSON.parse(harness.postedBodies[0]);
+  assert.notEqual(terminalPayload.summary.result?.truncated, true);
+  assertDiagnosticSummary(terminalPayload.summary, DOCUMENT_PIPELINE_TEST_ID, result);
+  assert.equal(terminalPayload.summary.result.documentPipelineTrace.calls.length, 4);
+  assert.equal(terminalPayload.summary.result.documentPipelineTrace.completedCallCount, 71);
+  const manualPayload = JSON.parse(harness.elements.get("diagnosticJson").value);
+  assertDiagnosticSummary(
+    manualPayload.currentAttempt.summary,
+    DOCUMENT_PIPELINE_TEST_ID,
+    result,
+  );
+
+  const failedCall = {
+    ...calls[2],
+    state: "failed",
+    error: {
+      name: "OperationError",
+      message: "m".repeat(600),
+    },
+    pipelineReason: "validation",
+  };
+  const failureResult = {
+    ...DOCUMENT_PIPELINE_COMPARISON,
+    testId: DOCUMENT_PIPELINE_TEST_ID,
+    diagnosticVariant: DOCUMENT_PIPELINE_VARIANT,
+    verdict: "document-gpu-call-failed",
+    conclusion: "A native WebGPU call failed inside the real document-pipeline phase.",
+    applicationError: {
+      name: "Error",
+      message: "a".repeat(600),
+    },
+    documentPipelineTrace: {
+      ...result.documentPipelineTrace,
+      phaseState: "failed",
+      startedCallCount: 42,
+      completedCallCount: 41,
+      failedCallCount: 1,
+      renderPipelineStartedCount: 25,
+      renderPipelineCompletedCount: 24,
+      popErrorScopeStartedCount: 0,
+      popErrorScopeCompletedCount: 0,
+      lastStartedCall: null,
+      lastCompletedCall: calls[1],
+      lastFailedCall: failedCall,
+      lastScopeError: null,
+      calls: [calls[0], calls[1], failedCall],
+    },
+  };
+  const failureResultBytes = Buffer.byteLength(JSON.stringify(failureResult), "utf8");
+  assert.ok(
+    failureResultBytes > 1200 && failureResultBytes < 12 * 1024,
+    `The realistic failed document-pipeline result is ${failureResultBytes} bytes.`,
+  );
+  const failureHarness = diagnosticBootstrapHarness({
+    testId: DOCUMENT_PIPELINE_TEST_ID,
+    userAgent: "界".repeat(100_000),
+  });
+  const failureStored = await failureHarness.browser.__gpuStartupDiagnostics.finish(
+    "failed",
+    "diagnostic-failed",
+    failureResult,
+  );
+  assert.equal(failureStored, true);
+  const failedTerminalPayload = JSON.parse(failureHarness.postedBodies[0]);
+  assert.notEqual(failedTerminalPayload.summary.result?.truncated, true);
+  assertDiagnosticSummary(
+    failedTerminalPayload.summary,
+    DOCUMENT_PIPELINE_TEST_ID,
+    failureResult,
   );
 }
 
@@ -773,6 +1292,7 @@ function diagnosticBootstrapHarness({
   const runCode = `diag-${"e".repeat(32)}`;
   const defaultToken = "7".repeat(64);
   const storageToken = "8".repeat(64);
+  const documentPipelineToken = "9".repeat(64);
   const defaultLoad = diagnosticBootstrapHarness({
     runCode,
     writeToken: defaultToken,
@@ -798,12 +1318,27 @@ function diagnosticBootstrapHarness({
     "running",
     "beacon",
   );
-  assert.equal(sharedSessionStorage.size, 2);
-  assert.equal(sharedLocalStorage.size, 2);
+  const documentPipelineLoad = diagnosticBootstrapHarness({
+    runCode,
+    writeToken: documentPipelineToken,
+    testId: DOCUMENT_PIPELINE_TEST_ID,
+    sharedSessionStorage,
+    sharedLocalStorage,
+  });
+  documentPipelineLoad.browser.__gpuStartupDiagnostics.record(
+    "document-pipeline-only-checkpoint",
+    null,
+    "running",
+    "beacon",
+  );
+  assert.equal(sharedSessionStorage.size, 3);
+  assert.equal(sharedLocalStorage.size, 3);
   assert.ok([...sharedSessionStorage.keys()].some((key) => key.endsWith(`:${DEFAULT_TEST_ID}`)));
   assert.ok([...sharedSessionStorage.keys()].some((key) => key.endsWith(`:${STORAGE_FORMAT_TEST_ID}`)));
+  assert.ok([...sharedSessionStorage.keys()].some((key) => key.endsWith(`:${DOCUMENT_PIPELINE_TEST_ID}`)));
   assert.ok([...sharedLocalStorage.keys()].some((key) => key.endsWith(`:${DEFAULT_TEST_ID}`)));
   assert.ok([...sharedLocalStorage.keys()].some((key) => key.endsWith(`:${STORAGE_FORMAT_TEST_ID}`)));
+  assert.ok([...sharedLocalStorage.keys()].some((key) => key.endsWith(`:${DOCUMENT_PIPELINE_TEST_ID}`)));
 
   const defaultReload = diagnosticBootstrapHarness({
     runCode,
@@ -818,18 +1353,44 @@ function diagnosticBootstrapHarness({
     sharedSessionStorage,
     sharedLocalStorage,
   });
+  const documentPipelineReload = diagnosticBootstrapHarness({
+    runCode,
+    writeToken: "",
+    testId: DOCUMENT_PIPELINE_TEST_ID,
+    sharedSessionStorage,
+    sharedLocalStorage,
+  });
   assert.equal(defaultReload.browser.__gpuStartupDiagnostics.snapshot().writeToken, defaultToken);
   assert.equal(storageReload.browser.__gpuStartupDiagnostics.snapshot().writeToken, storageToken);
+  assert.equal(
+    documentPipelineReload.browser.__gpuStartupDiagnostics.snapshot().writeToken,
+    documentPipelineToken,
+  );
   const defaultBackup = JSON.parse(defaultReload.browser.__gpuStartupDiagnostics.manualBackup());
   const storageBackup = JSON.parse(storageReload.browser.__gpuStartupDiagnostics.manualBackup());
+  const documentPipelineBackup = JSON.parse(
+    documentPipelineReload.browser.__gpuStartupDiagnostics.manualBackup(),
+  );
   assert.equal(defaultBackup.testId, DEFAULT_TEST_ID);
   assert.equal(storageBackup.testId, STORAGE_FORMAT_TEST_ID);
+  assert.equal(documentPipelineBackup.testId, DOCUMENT_PIPELINE_TEST_ID);
   assert.ok(JSON.stringify(defaultBackup.recoveredAttempts).includes("default-only-checkpoint"));
   assert.ok(!JSON.stringify(defaultBackup.recoveredAttempts).includes("storage-only-checkpoint"));
   assert.ok(JSON.stringify(storageBackup.recoveredAttempts).includes("storage-only-checkpoint"));
   assert.ok(!JSON.stringify(storageBackup.recoveredAttempts).includes("default-only-checkpoint"));
+  assert.ok(
+    JSON.stringify(documentPipelineBackup.recoveredAttempts).includes(
+      "document-pipeline-only-checkpoint",
+    ),
+  );
+  assert.ok(!JSON.stringify(documentPipelineBackup.recoveredAttempts).includes("storage-only-checkpoint"));
   assertDiagnosticSummary(defaultBackup.currentAttempt.summary, DEFAULT_TEST_ID, null);
   assertDiagnosticSummary(storageBackup.currentAttempt.summary, STORAGE_FORMAT_TEST_ID, null);
+  assertDiagnosticSummary(
+    documentPipelineBackup.currentAttempt.summary,
+    DOCUMENT_PIPELINE_TEST_ID,
+    null,
+  );
 }
 
 {
@@ -1185,6 +1746,26 @@ if (existsSync(builtWorkerPath)) {
     null,
   );
 
+  const documentPipelineRunCode = `diag-${"f".repeat(32)}`;
+  const documentPipelinePageResponse = await worker.fetch(
+    new Request(
+      `https://example.test/gpu-startup-lab?run=${documentPipelineRunCode}&test=${DOCUMENT_PIPELINE_TEST_ID}`,
+      { headers: { "User-Agent": "Document Pipeline Diagnostic Test Browser" } },
+    ),
+    environment,
+  );
+  assert.equal(documentPipelinePageResponse.status, 200);
+  assert.equal(
+    await documentPipelinePageResponse.text(),
+    builtDiagnosticHtml.replace(/\r\n?/g, "\n"),
+  );
+  assert.equal(database.rows.get(documentPipelineRunCode)?.status, "html-requested");
+  assertDiagnosticSummary(
+    JSON.parse(database.rows.get(documentPipelineRunCode).result_summary),
+    DOCUMENT_PIPELINE_TEST_ID,
+    null,
+  );
+
   const mismatchedPageResponse = await worker.fetch(
     new Request(
       `https://example.test/gpu-startup-lab?run=${runCode}&test=${STORAGE_FORMAT_TEST_ID}`,
@@ -1326,6 +1907,241 @@ if (existsSync(builtWorkerPath)) {
   assert.doesNotMatch(JSON.stringify(consoleErrorMessage.message.detail), /secret|private\/path/);
   assert.ok(frameMessages.every(({ targetOrigin }) => targetOrigin === "https://example.test"));
 
+  const pipelineFrameMessages = [];
+  const durablePipelineRecords = [];
+  const fallbackPipelineRecords = [];
+  const pipelineCallOrder = [];
+  const pipelineDeviceListeners = new Map();
+  let pipelineClock = 100;
+  const popScopeResults = [null, new Error("Verification validation scope error")];
+  const pipelineDevice = {
+    features: { has: () => false },
+    addEventListener(type, listener) { pipelineDeviceListeners.set(type, listener); },
+    lost: new Promise(() => {}),
+    createPipelineLayout(descriptor) {
+      pipelineCallOrder.push(`native:${descriptor.label}`);
+      return { label: descriptor.label };
+    },
+    createRenderPipeline(descriptor) {
+      pipelineCallOrder.push(`native:${descriptor.label}`);
+      if (descriptor.label === "Rejected pipeline") {
+        const error = new Error("Pipeline rejected by verification device.");
+        error.reason = "validation";
+        throw error;
+      }
+      return { label: descriptor.label };
+    },
+    popErrorScope() {
+      pipelineCallOrder.push("native:popErrorScope");
+      return Promise.resolve(popScopeResults.shift() ?? null);
+    },
+  };
+  const pipelineAdapter = {
+    requestDevice: async () => pipelineDevice,
+  };
+  const pipelineGpu = {
+    requestAdapter: async () => pipelineAdapter,
+  };
+  const pipelineParent = {
+    __gpuStartupDiagnostics: {
+      record(name, detail, status, delivery) {
+        fallbackPipelineRecords.push({ name, detail, status, delivery });
+        pipelineCallOrder.push(`record:${name}:${detail?.label ?? ""}`);
+        return true;
+      },
+      recordBreadcrumb(name, detail, status) {
+        durablePipelineRecords.push({ name, detail, status });
+        pipelineClock += 1_000;
+        pipelineCallOrder.push(`breadcrumb:${name}:${detail?.label ?? ""}`);
+        return true;
+      },
+    },
+    postMessage(message, targetOrigin) {
+      pipelineFrameMessages.push({ message, targetOrigin });
+    },
+  };
+  const pipelineFrameWindow = {
+    location: {
+      origin: "https://example.test",
+      pathname: "/gpu-startup-app-frame",
+      search: `?diagnosticBoot=1&test=${DOCUMENT_PIPELINE_TEST_ID}&diagnosticVariant=${DOCUMENT_PIPELINE_VARIANT}&forceGlazeCommitFallback=1`,
+    },
+    isSecureContext: true,
+    addEventListener() {},
+    parent: pipelineParent,
+  };
+  pipelineFrameWindow.window = pipelineFrameWindow;
+  runInNewContext(frameBootstrapSource, {
+    window: pipelineFrameWindow,
+    document: { visibilityState: "visible" },
+    navigator: { gpu: pipelineGpu },
+    performance: { now: () => (pipelineClock += 5) },
+    console: { error() {} },
+    Reflect,
+    Array,
+    Object,
+    String,
+    Number,
+    Math,
+    Error,
+    Promise,
+    URLSearchParams,
+  });
+  const observedPipelineAdapter = await pipelineGpu.requestAdapter();
+  assert.equal(observedPipelineAdapter, pipelineAdapter);
+  const observedPipelineDevice = await observedPipelineAdapter.requestDevice({ requiredFeatures: [] });
+  assert.equal(
+    observedPipelineDevice,
+    pipelineDevice,
+    "Instrumentation must retain the native device object for WebIDL consumers.",
+  );
+  const pipelineExtension = pipelineFrameWindow.__editorExtensionBootstrap.create({
+    engine: {
+      documentWidth: 2048,
+      documentHeight: 2048,
+      layerFormat: "rgba16float",
+      canvasFormat: "rgba16float",
+      adapter: pipelineAdapter,
+      device: pipelineDevice,
+      lightGlazeInPlaceCommitSupported: false,
+      lightGlazeInPlaceCommitPipeline: null,
+      getStats: () => ({ layerFormat: "rgba16float", layerCount: 1 }),
+    },
+  });
+  pipelineDevice.createPipelineLayout({ label: "Outside layout before phase" });
+  pipelineDevice.createRenderPipeline({ label: "Outside render before phase" });
+  pipelineExtension.handleEngineStartupProgress({
+    phase: "document-pipelines",
+    label: "Compiling document pipelines",
+    state: "started",
+    totalElapsedMs: 10,
+    phaseElapsedMs: 0,
+    detail: { format: "rgba16float" },
+  });
+  pipelineDevice.createPipelineLayout({ label: "Accepted pipeline layout" });
+  pipelineDevice.createRenderPipeline({
+    label: "Accepted pipeline",
+    vertex: { entryPoint: "vertexMain" },
+    fragment: { entryPoint: "fragmentMain", targets: [{ format: "rgba16float" }] },
+    primitive: { topology: "triangle-list" },
+  });
+  pipelineDeviceListeners.get("uncapturederror")?.({
+    error: new Error("During-phase uncaptured verification error"),
+  });
+  await pipelineDevice.popErrorScope();
+  await pipelineDevice.popErrorScope();
+  assert.throws(
+    () => pipelineDevice.createRenderPipeline({
+      label: "Rejected pipeline",
+      vertex: { entryPoint: "vertexMain" },
+      fragment: { entryPoint: "fragmentMain", targets: [{ format: "rgba16float" }] },
+    }),
+    /Pipeline rejected/,
+  );
+  pipelineExtension.handleEngineStartupProgress({
+    phase: "document-pipelines",
+    label: "Compiling document pipelines",
+    state: "failed",
+    totalElapsedMs: 30,
+    phaseElapsedMs: 20,
+    detail: { name: "OperationError" },
+  });
+  pipelineDeviceListeners.get("uncapturederror")?.({
+    error: new Error("Post-phase uncaptured verification error"),
+  });
+  const messageCountBeforeTeardownError = pipelineFrameMessages.length;
+  pipelineFrameWindow.__gpuStartupDiagnosticTeardown = true;
+  pipelineDeviceListeners.get("uncapturederror")?.({
+    error: new Error("Intentional teardown verification error"),
+  });
+  assert.equal(pipelineFrameMessages.length, messageCountBeforeTeardownError);
+  pipelineDevice.createPipelineLayout({ label: "Outside layout after phase" });
+  pipelineDevice.createRenderPipeline({ label: "Outside render after phase" });
+
+  const durableStarts = durablePipelineRecords.filter(
+    ({ name }) => name === "application-document-gpu-call-started",
+  );
+  assert.equal(durableStarts.length, 5);
+  assert.equal(durableStarts[0].detail.pipelineLayoutIndex, 1);
+  assert.equal(durableStarts[1].detail.renderPipelineIndex, 1);
+  assert.equal(durableStarts[2].detail.errorScopeDrainIndex, 1);
+  assert.equal(durableStarts[2].detail.label, "Validation error scope drain");
+  assert.equal(durableStarts[3].detail.errorScopeDrainIndex, 2);
+  assert.equal(durableStarts[3].detail.label, "Out-of-memory error scope drain");
+  assert.equal(durableStarts[4].detail.renderPipelineIndex, 2);
+  assert.equal(durableStarts[4].detail.previousCompletedRenderPipeline.renderPipelineIndex, 1);
+  assert.equal(fallbackPipelineRecords.length, 0);
+  assert.ok(durableStarts.every(({ detail }) => detail.nativeStartedAtMs > detail.checkpointStartedAtMs));
+  assert.ok(
+    pipelineCallOrder.indexOf("breadcrumb:application-document-gpu-call-started:Accepted pipeline")
+      < pipelineCallOrder.indexOf("native:Accepted pipeline"),
+    "The durable breadcrumb must precede the native pipeline call.",
+  );
+  assert.ok(
+    pipelineCallOrder.indexOf("breadcrumb:application-document-gpu-call-started:Rejected pipeline")
+      < pipelineCallOrder.indexOf("native:Rejected pipeline"),
+    "The rejected pipeline must be checkpointed before entering the native call.",
+  );
+  const durableFailure = durablePipelineRecords.find(
+    ({ name }) => name === "application-document-gpu-call-failed",
+  );
+  assert.ok(durableFailure);
+  assert.equal(durableFailure.detail.label, "Rejected pipeline");
+  assert.equal(durableFailure.detail.pipelineReason, "validation");
+  const emittedFailure = pipelineFrameMessages.find(
+    ({ message }) => message.type === "document-gpu-call-failed",
+  );
+  assert.ok(emittedFailure);
+  assert.equal(emittedFailure.message.detail.error.message, "Pipeline rejected by verification device.");
+  assert.equal(emittedFailure.message.detail.pipelineReason, "validation");
+  assert.equal(emittedFailure.message.detail.durableCheckpoint, true);
+  const emittedScopeError = pipelineFrameMessages.find(
+    ({ message }) => message.type === "document-gpu-scope-error",
+  );
+  assert.ok(emittedScopeError);
+  assert.equal(emittedScopeError.message.detail.scopeError.message, "Verification validation scope error");
+  assert.equal(emittedScopeError.message.detail.durableCheckpoint, true);
+  const emittedUncapturedErrors = pipelineFrameMessages.filter(
+    ({ message }) => message.type === "document-gpu-uncaptured-error",
+  );
+  assert.equal(emittedUncapturedErrors.length, 2);
+  assert.equal(emittedUncapturedErrors[0].message.detail.duringTargetPhase, true);
+  assert.equal(emittedUncapturedErrors[0].message.detail.durableCheckpoint, true);
+  assert.equal(emittedUncapturedErrors[1].message.detail.duringTargetPhase, false);
+  assert.equal(emittedUncapturedErrors[1].message.detail.durableCheckpoint, false);
+  assert.equal(
+    durablePipelineRecords.filter(
+      ({ name }) => name === "application-document-gpu-uncaptured-error",
+    ).length,
+    1,
+  );
+  const acceptedCompletion = pipelineFrameMessages.find(
+    ({ message }) => message.type === "document-gpu-call-completed"
+      && message.detail.label === "Accepted pipeline",
+  );
+  assert.ok(acceptedCompletion);
+  assert.equal(acceptedCompletion.message.detail.durationMs, 5);
+  assert.ok(
+    pipelineFrameMessages.some(
+      ({ message }) => message.type === "document-pipeline-instrumentation"
+        && message.detail.installed === true,
+    ),
+  );
+  assert.ok(
+    pipelineFrameMessages.some(
+      ({ message }) => message.type === "document-pipeline-device-patched"
+        && message.detail.pipelineLayoutPatched === true
+        && message.detail.renderPipelinePatched === true
+        && message.detail.popErrorScopePatched === true
+        && message.detail.textureFormatsTier2Enabled === false,
+    ),
+  );
+  assert.equal(
+    pipelineFrameMessages.filter(({ message }) => message.type === "document-gpu-call-started").length,
+    5,
+    "Calls outside document-pipelines must not enter the diagnostic trace.",
+  );
+
   const contradictoryMessages = [];
   frameWindow.parent.postMessage = (message, targetOrigin) => {
     contradictoryMessages.push({ message, targetOrigin });
@@ -1456,7 +2272,7 @@ if (existsSync(builtWorkerPath)) {
   }), environment);
 
   const uploadResponse = await upload(payload);
-  assert.equal(uploadResponse.status, 201);
+  assert.equal(uploadResponse.status, 201, await uploadResponse.clone().text());
   const acknowledgement = await uploadResponse.json();
   assert.equal(acknowledgement.acknowledged, true);
   assert.equal(acknowledgement.runCode, runCode);
@@ -1515,6 +2331,50 @@ if (existsSync(builtWorkerPath)) {
     assert.equal(invalidProtocolResponse.status, 400);
   }
 
+  const documentPipelineWriteToken = "7".repeat(64);
+  const documentPipelineSequence = sequence + 300;
+  const documentPipelineBasePayload = createUploadPayload({
+    payloadRunCode: documentPipelineRunCode,
+    payloadWriteToken: documentPipelineWriteToken,
+    payloadSequence: documentPipelineSequence,
+    testId: DOCUMENT_PIPELINE_TEST_ID,
+    latestEvent: "application-document-gpu-call-started",
+    eventDetail: {
+      method: "createRenderPipeline",
+      renderPipelineIndex: 27,
+      label: "Verification document pipeline",
+      previousCompletedRenderPipeline: { renderPipelineIndex: 26 },
+    },
+    moduleLoaded: true,
+  });
+  const invalidDocumentPipelineComparisons = [
+    { ...DOCUMENT_PIPELINE_COMPARISON, targetPhase: "core-pipelines" },
+    { ...DOCUMENT_PIPELINE_COMPARISON, layerFormat: "rgba8unorm" },
+    { ...DOCUMENT_PIPELINE_COMPARISON, requiredFeatures: ["texture-formats-tier2"] },
+    { ...DOCUMENT_PIPELINE_COMPARISON, textureFormatsTier2Requested: true },
+    { ...DOCUMENT_PIPELINE_COMPARISON, applicationFrame: "synthetic" },
+    { ...DOCUMENT_PIPELINE_COMPARISON, instrumentation: "descriptor-copy" },
+    { ...DOCUMENT_PIPELINE_COMPARISON, expectedSynchronousPipelineLayouts: 16 },
+    { ...DOCUMENT_PIPELINE_COMPARISON, expectedSynchronousRenderPipelines: 51 },
+    { ...DOCUMENT_PIPELINE_COMPARISON, expectedErrorScopeDrains: 1 },
+    { ...DOCUMENT_PIPELINE_COMPARISON, unexpected: true },
+  ];
+  for (const comparison of invalidDocumentPipelineComparisons) {
+    const invalidProtocolResponse = await upload({
+      ...documentPipelineBasePayload,
+      summary: { ...documentPipelineBasePayload.summary, comparison },
+    });
+    assert.equal(invalidProtocolResponse.status, 400);
+  }
+  const documentPipelineRunningResponse = await upload(documentPipelineBasePayload);
+  assert.equal(documentPipelineRunningResponse.status, 201);
+  assert.equal(database.rows.get(documentPipelineRunCode).latest_event, "application-document-gpu-call-started");
+  assertDiagnosticSummary(
+    JSON.parse(database.rows.get(documentPipelineRunCode).result_summary),
+    DOCUMENT_PIPELINE_TEST_ID,
+    null,
+  );
+
   const mismatchedPostResponse = await upload(createUploadPayload({
     payloadRunCode: runCode,
     payloadWriteToken: writeToken,
@@ -1563,6 +2423,81 @@ if (existsSync(builtWorkerPath)) {
   assert.notEqual(storedStorageSummary.result.truncated, true);
   assert.deepEqual(storedStorageSummary.result.control.timingsMs, storageResult.control.timingsMs);
   assert.deepEqual(storedStorageSummary.result.target.timingsMs, storageResult.target.timingsMs);
+
+  const documentPipelineResult = {
+    verdict: "document-pipelines-passed",
+    conclusion: "All real synchronous document render pipelines and final error scopes passed.",
+    documentPipelineTrace: {
+      instrumentationInstalled: true,
+      adapterRequestDevicePatched: true,
+      pipelineLayoutPatched: true,
+      renderPipelinePatched: true,
+      popErrorScopePatched: true,
+      requiredFeatures: [],
+      textureFormatsTier2Enabled: false,
+      phaseState: "completed",
+      expectedSynchronousPipelineLayouts: 17,
+      expectedSynchronousRenderPipelines: 52,
+      expectedErrorScopeDrains: 2,
+      startedCallCount: 71,
+      completedCallCount: 71,
+      pipelineLayoutStartedCount: 17,
+      pipelineLayoutCompletedCount: 17,
+      renderPipelineStartedCount: 52,
+      renderPipelineCompletedCount: 52,
+      popErrorScopeStartedCount: 2,
+      popErrorScopeCompletedCount: 2,
+      failedCallCount: 0,
+      scopeErrorCount: 0,
+      lastCompletedCall: {
+        method: "popErrorScope",
+        state: "completed",
+      },
+      slowestCompletedRenderPipeline: {
+        renderPipelineIndex: 31,
+        label: "Verification document pipeline",
+        durationMs: 287.4,
+      },
+    },
+  };
+  const documentPipelineCompletedSequence = documentPipelineSequence + 1;
+  const documentPipelineCompletedPayload = createUploadPayload({
+    payloadRunCode: documentPipelineRunCode,
+    payloadWriteToken: documentPipelineWriteToken,
+    payloadSequence: documentPipelineCompletedSequence,
+    testId: DOCUMENT_PIPELINE_TEST_ID,
+    status: "completed",
+    latestEvent: "diagnostic-completed",
+    result: documentPipelineResult,
+    eventDetail: {
+      verdict: "document-pipelines-passed",
+      renderPipelineCompletedCount: 52,
+    },
+    moduleLoaded: true,
+    probeFinished: true,
+  });
+  const documentPipelineCompletedResponse = await upload(documentPipelineCompletedPayload);
+  assert.equal(documentPipelineCompletedResponse.status, 201);
+  const documentPipelineAcknowledgement = await documentPipelineCompletedResponse.json();
+  assert.equal(documentPipelineAcknowledgement.acknowledged, true);
+  assert.equal(documentPipelineAcknowledgement.storedStatus, "completed");
+  assert.equal(
+    documentPipelineAcknowledgement.storedSequence,
+    documentPipelineCompletedSequence,
+  );
+  const storedDocumentPipelineRun = database.rows.get(documentPipelineRunCode);
+  assert.equal(storedDocumentPipelineRun.status, "completed");
+  const storedDocumentPipelineSummary = JSON.parse(storedDocumentPipelineRun.result_summary);
+  assertDiagnosticSummary(
+    storedDocumentPipelineSummary,
+    DOCUMENT_PIPELINE_TEST_ID,
+    documentPipelineResult,
+  );
+  assert.equal(storedDocumentPipelineSummary.result.verdict, "document-pipelines-passed");
+  assert.equal(
+    storedDocumentPipelineSummary.result.documentPipelineTrace.renderPipelineCompletedCount,
+    52,
+  );
 
   const staleResponse = await upload({
     ...payload,

@@ -12,6 +12,11 @@ interface StartupDiagnosticBridge {
     status?: DiagnosticStatus,
     delivery?: DiagnosticDelivery,
   ): PromiseLike<boolean> | boolean;
+  recordBreadcrumb(
+    name: string,
+    detail?: unknown,
+    status?: DiagnosticStatus,
+  ): PromiseLike<boolean> | boolean;
   finish(
     status: Exclude<DiagnosticStatus, "running">,
     name: string,
@@ -95,8 +100,14 @@ const APPLICATION_BOOT_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
 const STORAGE_FORMAT_AB_TEST = "storage-format-ab-v1";
 const STORAGE_FORMAT_AB_VARIANT =
   "storage-format-ab-rgba8unorm-control-rgba16float-target-write-only-1x1-no-tier2-v1";
+const DOCUMENT_PIPELINE_TEST = "document-pipeline-bisect-v1";
+const DOCUMENT_PIPELINE_VARIANT = "document-pipeline-bisect-rgba16float-no-tier2-v1";
+const EXPECTED_DOCUMENT_PIPELINE_LAYOUTS = 17;
+const EXPECTED_DOCUMENT_RENDER_PIPELINES = 52;
+const EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS = 2;
 const diagnosticTest = new URLSearchParams(window.location.search).get("test");
 const storageFormatAbEnabled = diagnosticTest === STORAGE_FORMAT_AB_TEST;
+const documentPipelineBisectEnabled = diagnosticTest === DOCUMENT_PIPELINE_TEST;
 
 function comparisonPolicy(): Record<string, unknown> {
   if (storageFormatAbEnabled) {
@@ -114,6 +125,22 @@ function comparisonPolicy(): Record<string, unknown> {
       textureFormatsTier2Requested: false,
       deviceReuse: "single-device",
       executionOrder: ["rgba8unorm", "rgba16float"],
+    };
+  }
+  if (documentPipelineBisectEnabled) {
+    return {
+      testId: DOCUMENT_PIPELINE_TEST,
+      diagnosticVariant: DOCUMENT_PIPELINE_VARIANT,
+      kind: "document-pipeline-bisect",
+      targetPhase: "document-pipelines",
+      layerFormat: "rgba16float",
+      requiredFeatures: [],
+      textureFormatsTier2Requested: false,
+      applicationFrame: "isolated-production-startup",
+      instrumentation: "native-device-call-boundaries",
+      expectedSynchronousPipelineLayouts: EXPECTED_DOCUMENT_PIPELINE_LAYOUTS,
+      expectedSynchronousRenderPipelines: EXPECTED_DOCUMENT_RENDER_PIPELINES,
+      expectedErrorScopeDrains: EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS,
     };
   }
   return {
@@ -1354,6 +1381,315 @@ const APP_FRAME_DIAGNOSTIC_CHANNEL = "gpu-startup-app-frame-v3";
 const APPLICATION_DOCUMENT_LOAD_TIMEOUT_MS = 3 * 60_000;
 const APPLICATION_BOOT_TIMEOUT_MS = 10 * 60_000;
 
+interface DocumentPipelineTraceState {
+  instrumentationInstalled: boolean | null;
+  adapterRequestDevicePatched: boolean | null;
+  adapterPatchCount: number;
+  devicePatchCount: number;
+  pipelineLayoutPatched: boolean | null;
+  renderPipelinePatched: boolean | null;
+  popErrorScopePatched: boolean | null;
+  requiredFeatures: unknown[] | null;
+  textureFormatsTier2Enabled: boolean | null;
+  phaseState: string | null;
+  startedCallCount: number;
+  completedCallCount: number;
+  failedCallCount: number;
+  scopeErrorCount: number;
+  pipelineLayoutStartedCount: number;
+  pipelineLayoutCompletedCount: number;
+  renderPipelineStartedCount: number;
+  renderPipelineCompletedCount: number;
+  popErrorScopeStartedCount: number;
+  popErrorScopeCompletedCount: number;
+  deviceLost: unknown;
+  uncapturedError: unknown;
+  lastStartedCall: Record<string, unknown> | null;
+  lastCompletedCall: Record<string, unknown> | null;
+  lastFailedCall: Record<string, unknown> | null;
+  lastScopeError: Record<string, unknown> | null;
+  slowestCompletedRenderPipeline: Record<string, unknown> | null;
+  engineProbe: Record<string, unknown> | null;
+  calls: Array<Record<string, unknown>>;
+}
+
+interface ApplicationBootOptions {
+  readonly diagnosticVariant?: string;
+  readonly diagnosticTestId?: string;
+  readonly documentPipelineTrace?: DocumentPipelineTraceState;
+}
+
+function createDocumentPipelineTraceState(): DocumentPipelineTraceState {
+  return {
+    instrumentationInstalled: null,
+    adapterRequestDevicePatched: null,
+    adapterPatchCount: 0,
+    devicePatchCount: 0,
+    pipelineLayoutPatched: null,
+    renderPipelinePatched: null,
+    popErrorScopePatched: null,
+    requiredFeatures: null,
+    textureFormatsTier2Enabled: null,
+    phaseState: null,
+    startedCallCount: 0,
+    completedCallCount: 0,
+    failedCallCount: 0,
+    scopeErrorCount: 0,
+    pipelineLayoutStartedCount: 0,
+    pipelineLayoutCompletedCount: 0,
+    renderPipelineStartedCount: 0,
+    renderPipelineCompletedCount: 0,
+    popErrorScopeStartedCount: 0,
+    popErrorScopeCompletedCount: 0,
+    deviceLost: null,
+    uncapturedError: null,
+    lastStartedCall: null,
+    lastCompletedCall: null,
+    lastFailedCall: null,
+    lastScopeError: null,
+    slowestCompletedRenderPipeline: null,
+    engineProbe: null,
+    calls: [],
+  };
+}
+
+function compactDocumentPipelineError(value: unknown): unknown {
+  if (!isRecord(value)) {
+    return typeof value === "string" ? value.slice(0, 600) : value ?? null;
+  }
+  return {
+    name: typeof value.name === "string" ? value.name.slice(0, 120) : null,
+    message: typeof value.message === "string" ? value.message.slice(0, 600) : null,
+  };
+}
+
+function compactDocumentPipelineGpuEvent(
+  detail: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    source: detail.source ?? null,
+    reason: detail.reason ?? null,
+    message: detail.message ?? null,
+    activePhase: detail.activePhase ?? null,
+    phaseState: detail.phaseState ?? null,
+    duringTargetPhase: detail.duringTargetPhase === true,
+    currentCall: isRecord(detail.currentCall)
+      ? traceCallDetail(detail.currentCall, "active")
+      : null,
+    lastCompletedRenderPipeline: detail.lastCompletedRenderPipeline ?? null,
+    error: compactDocumentPipelineError(detail.error),
+  };
+}
+
+function traceCallDetail(detail: Record<string, unknown>, state: string): Record<string, unknown> {
+  return {
+    callIndex: detail.callIndex ?? null,
+    method: detail.method ?? null,
+    pipelineLayoutIndex: detail.pipelineLayoutIndex ?? null,
+    renderPipelineIndex: detail.renderPipelineIndex ?? null,
+    errorScopeDrainIndex: detail.errorScopeDrainIndex ?? null,
+    label: detail.label ?? null,
+    vertexEntryPoint: detail.vertexEntryPoint ?? null,
+    fragmentEntryPoint: detail.fragmentEntryPoint ?? null,
+    targetFormats: Array.isArray(detail.targetFormats) ? detail.targetFormats.slice(0, 4) : [],
+    topology: detail.topology ?? null,
+    durationMs: detail.durationMs ?? null,
+    pipelineReason: detail.pipelineReason ?? null,
+    error: compactDocumentPipelineError(detail.error),
+    scopeError: compactDocumentPipelineError(detail.scopeError),
+    state,
+  };
+}
+
+function updateDocumentPipelineTrace(
+  trace: DocumentPipelineTraceState,
+  type: string,
+  rawDetail: unknown,
+): void {
+  const detail = isRecord(rawDetail) ? rawDetail : {};
+  if (type === "document-pipeline-instrumentation") {
+    trace.instrumentationInstalled = detail.installed === true;
+    return;
+  }
+  if (type === "document-pipeline-adapter-patched") {
+    trace.adapterRequestDevicePatched = detail.requestDevicePatched === true;
+    trace.adapterPatchCount = typeof detail.adapterPatchCount === "number"
+      ? detail.adapterPatchCount
+      : trace.adapterPatchCount + 1;
+    return;
+  }
+  if (type === "document-pipeline-device-patched") {
+    trace.devicePatchCount = typeof detail.devicePatchCount === "number"
+      ? detail.devicePatchCount
+      : trace.devicePatchCount + 1;
+    trace.pipelineLayoutPatched = detail.pipelineLayoutPatched === true;
+    trace.renderPipelinePatched = detail.renderPipelinePatched === true;
+    trace.popErrorScopePatched = detail.popErrorScopePatched === true;
+    trace.requiredFeatures = Array.isArray(detail.requiredFeatures)
+      ? detail.requiredFeatures.slice(0, 16)
+      : null;
+    trace.textureFormatsTier2Enabled = detail.textureFormatsTier2Enabled === true;
+    return;
+  }
+  if (type === "document-pipeline-phase") {
+    trace.phaseState = typeof detail.phaseState === "string" ? detail.phaseState : trace.phaseState;
+    return;
+  }
+  if (type === "document-gpu-device-lost") {
+    const existingDuringTarget = isRecord(trace.deviceLost)
+      && trace.deviceLost.duringTargetPhase === true;
+    if (trace.deviceLost === null || (!existingDuringTarget && detail.duringTargetPhase === true)) {
+      trace.deviceLost = compactDocumentPipelineGpuEvent(detail);
+    }
+    return;
+  }
+  if (type === "document-gpu-uncaptured-error") {
+    const existingDuringTarget = isRecord(trace.uncapturedError)
+      && trace.uncapturedError.duringTargetPhase === true;
+    if (
+      trace.uncapturedError === null
+      || (!existingDuringTarget && detail.duringTargetPhase === true)
+    ) {
+      trace.uncapturedError = compactDocumentPipelineGpuEvent(detail);
+    }
+    return;
+  }
+  if (type === "document-gpu-scope-error") {
+    trace.scopeErrorCount += 1;
+    trace.lastScopeError = traceCallDetail(detail, "scope-error");
+    return;
+  }
+  if (
+    type !== "document-gpu-call-started"
+    && type !== "document-gpu-call-completed"
+    && type !== "document-gpu-call-failed"
+  ) {
+    return;
+  }
+
+  const callIndex = typeof detail.callIndex === "number" ? detail.callIndex : null;
+  const method = typeof detail.method === "string" ? detail.method : null;
+  const pipelineLayout = method === "createPipelineLayout";
+  const renderPipeline = method === "createRenderPipeline";
+  const errorScopeDrain = method === "popErrorScope";
+  const callState = type === "document-gpu-call-started"
+    ? "started"
+    : type === "document-gpu-call-completed"
+      ? "completed"
+      : "failed";
+  const compactCall = traceCallDetail(detail, callState);
+  const existing = callIndex === null
+    ? null
+    : trace.calls.find((entry) => entry.callIndex === callIndex) ?? null;
+  if (existing) {
+    Object.assign(existing, compactCall);
+  } else {
+    trace.calls.push(compactCall);
+    if (trace.calls.length > 96) trace.calls.shift();
+  }
+
+  if (callState === "started") {
+    trace.startedCallCount += 1;
+    if (pipelineLayout) trace.pipelineLayoutStartedCount += 1;
+    if (renderPipeline) trace.renderPipelineStartedCount += 1;
+    if (errorScopeDrain) trace.popErrorScopeStartedCount += 1;
+    trace.lastStartedCall = compactCall;
+    return;
+  }
+  if (callState === "failed") {
+    trace.failedCallCount += 1;
+    trace.lastFailedCall = compactCall;
+    return;
+  }
+
+  trace.completedCallCount += 1;
+  if (pipelineLayout) trace.pipelineLayoutCompletedCount += 1;
+  trace.lastCompletedCall = compactCall;
+  if (errorScopeDrain) trace.popErrorScopeCompletedCount += 1;
+  if (renderPipeline) {
+    trace.renderPipelineCompletedCount += 1;
+    const durationMs = typeof detail.durationMs === "number" ? detail.durationMs : -1;
+    const slowestDuration = typeof trace.slowestCompletedRenderPipeline?.durationMs === "number"
+      ? trace.slowestCompletedRenderPipeline.durationMs
+      : -1;
+    if (durationMs > slowestDuration) trace.slowestCompletedRenderPipeline = compactCall;
+  }
+}
+
+function documentPipelineTraceSummary(
+  trace: DocumentPipelineTraceState,
+): Record<string, unknown> {
+  const unmatchedStartedCall = trace.startedCallCount
+    > trace.completedCallCount + trace.failedCallCount;
+  return {
+    instrumentationInstalled: trace.instrumentationInstalled,
+    adapterRequestDevicePatched: trace.adapterRequestDevicePatched,
+    adapterPatchCount: trace.adapterPatchCount,
+    devicePatchCount: trace.devicePatchCount,
+    pipelineLayoutPatched: trace.pipelineLayoutPatched,
+    renderPipelinePatched: trace.renderPipelinePatched,
+    popErrorScopePatched: trace.popErrorScopePatched,
+    requiredFeatures: trace.requiredFeatures,
+    textureFormatsTier2Enabled: trace.textureFormatsTier2Enabled,
+    phaseState: trace.phaseState,
+    expectedSynchronousPipelineLayouts: EXPECTED_DOCUMENT_PIPELINE_LAYOUTS,
+    expectedSynchronousRenderPipelines: EXPECTED_DOCUMENT_RENDER_PIPELINES,
+    expectedErrorScopeDrains: EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS,
+    startedCallCount: trace.startedCallCount,
+    completedCallCount: trace.completedCallCount,
+    failedCallCount: trace.failedCallCount,
+    scopeErrorCount: trace.scopeErrorCount,
+    pipelineLayoutStartedCount: trace.pipelineLayoutStartedCount,
+    pipelineLayoutCompletedCount: trace.pipelineLayoutCompletedCount,
+    renderPipelineStartedCount: trace.renderPipelineStartedCount,
+    renderPipelineCompletedCount: trace.renderPipelineCompletedCount,
+    popErrorScopeStartedCount: trace.popErrorScopeStartedCount,
+    popErrorScopeCompletedCount: trace.popErrorScopeCompletedCount,
+    deviceLost: trace.deviceLost,
+    uncapturedError: trace.uncapturedError,
+    lastStartedCall: unmatchedStartedCall ? trace.lastStartedCall : null,
+    lastCompletedCall: trace.lastCompletedCall,
+    lastFailedCall: trace.lastFailedCall,
+    lastScopeError: trace.lastScopeError,
+    slowestCompletedRenderPipeline: trace.slowestCompletedRenderPipeline,
+    engineProbe: trace.engineProbe,
+    calls: trace.calls.slice(-4),
+  };
+}
+
+function documentPipelineApplicationSummary(
+  applicationBoot: Record<string, unknown>,
+): Record<string, unknown> {
+  const reporter = isRecord(applicationBoot.reporter) ? applicationBoot.reporter : {};
+  const engine = isRecord(applicationBoot.engine) ? applicationBoot.engine : {};
+  return {
+    accessible: applicationBoot.accessible ?? null,
+    statusText: applicationBoot.statusText ?? null,
+    statusClass: applicationBoot.statusClass ?? null,
+    projectSessionReady: applicationBoot.projectSessionReady ?? null,
+    runtimeStatsStarted: applicationBoot.runtimeStatsStarted ?? null,
+    canvas: applicationBoot.canvas ?? null,
+    resourceCount: applicationBoot.resourceCount ?? null,
+    failedResources: applicationBoot.failedResources ?? null,
+    deferredStartupObservationMs: applicationBoot.deferredStartupObservationMs ?? null,
+    reporter: {
+      channel: reporter.channel ?? null,
+      bootstrapReady: reporter.bootstrapReady ?? null,
+      extensionCreated: reporter.extensionCreated ?? null,
+      frameMessageCount: reporter.frameMessageCount ?? null,
+      lastStartupProgress: reporter.lastStartupProgress ?? null,
+    },
+    engine: {
+      documentWidth: engine.documentWidth ?? null,
+      documentHeight: engine.documentHeight ?? null,
+      diagnosticVariant: engine.diagnosticVariant ?? null,
+      layerFormat: engine.layerFormat ?? null,
+      canvasFormat: engine.canvasFormat ?? null,
+      featureIsolation: engine.featureIsolation ?? null,
+    },
+  };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -1370,7 +1706,10 @@ function readOptionalFiniteNumber(
   return value;
 }
 
-function validateApplicationEngineReport(detail: unknown): Record<string, unknown> {
+function validateApplicationEngineReport(
+  detail: unknown,
+  expectedVariant = APPLICATION_BOOT_VARIANT,
+): Record<string, unknown> {
   if (!isRecord(detail)) {
     throw new Error("The application frame did not provide a structured engine report.");
   }
@@ -1396,10 +1735,10 @@ function validateApplicationEngineReport(detail: unknown): Record<string, unknow
       `The authoritative application canvas format is ${String(detail.canvasFormat)}, not rgba16float.`,
     );
   }
-  if (detail.diagnosticVariant !== APPLICATION_BOOT_VARIANT) {
+  if (detail.diagnosticVariant !== expectedVariant) {
     throw new Error(
       `The application frame reported variant ${String(detail.diagnosticVariant)} instead of `
-        + `${APPLICATION_BOOT_VARIANT}.`,
+        + `${expectedVariant}.`,
     );
   }
   const featureIsolation = detail.featureIsolation;
@@ -1413,6 +1752,40 @@ function validateApplicationEngineReport(detail: unknown): Record<string, unknow
     throw new Error(
       "The RGBA16F comparison did not keep texture-formats-tier2 and its in-place commit path disabled.",
     );
+  }
+  if (expectedVariant === DOCUMENT_PIPELINE_VARIANT) {
+    const probe = detail.documentPipelineProbe;
+    if (
+      !isRecord(probe)
+      || probe.enabled !== true
+      || probe.targetPhase !== "document-pipelines"
+      || probe.phaseState !== "completed"
+      || probe.adapterPatchCount !== 1
+      || probe.devicePatchCount !== 1
+      || probe.expectedSynchronousPipelineLayouts !== EXPECTED_DOCUMENT_PIPELINE_LAYOUTS
+      || probe.expectedSynchronousRenderPipelines !== EXPECTED_DOCUMENT_RENDER_PIPELINES
+      || probe.expectedErrorScopeDrains !== EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS
+      || probe.pipelineLayoutStartedCount !== EXPECTED_DOCUMENT_PIPELINE_LAYOUTS
+      || probe.pipelineLayoutCompletedCount !== EXPECTED_DOCUMENT_PIPELINE_LAYOUTS
+      || probe.renderPipelineStartedCount !== EXPECTED_DOCUMENT_RENDER_PIPELINES
+      || probe.renderPipelineCompletedCount !== EXPECTED_DOCUMENT_RENDER_PIPELINES
+      || probe.popErrorScopeStartedCount !== EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS
+      || probe.popErrorScopeCompletedCount !== EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS
+      || probe.startedCallCount !== (
+        EXPECTED_DOCUMENT_PIPELINE_LAYOUTS
+        + EXPECTED_DOCUMENT_RENDER_PIPELINES
+        + EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS
+      )
+      || probe.completedCallCount !== (
+        EXPECTED_DOCUMENT_PIPELINE_LAYOUTS
+        + EXPECTED_DOCUMENT_RENDER_PIPELINES
+        + EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS
+      )
+      || probe.failedCallCount !== 0
+      || probe.scopeErrorCount !== 0
+    ) {
+      throw new Error("The document-pipeline probe did not complete all expected native call boundaries.");
+    }
   }
 
   const expectedLayerMiB = DIAGNOSTIC_DOCUMENT_WIDTH
@@ -1490,9 +1863,13 @@ function validateApplicationEngineReport(detail: unknown): Record<string, unknow
   return { ...detail };
 }
 
-async function runFullApplicationBoot(): Promise<Record<string, unknown>> {
+async function runFullApplicationBoot(
+  options: ApplicationBootOptions = {},
+): Promise<Record<string, unknown>> {
   const frame = document.getElementById("gpuDiagnosticAppFrame") as HTMLIFrameElement | null;
   if (!frame) throw new Error("The isolated application frame is missing.");
+  const expectedDiagnosticVariant = options.diagnosticVariant ?? APPLICATION_BOOT_VARIANT;
+  const documentPipelineTrace = options.documentPipelineTrace ?? null;
 
   const target = new URL("/gpu-startup-app-frame", window.location.origin);
   target.searchParams.set("diagnosticBoot", "1");
@@ -1500,7 +1877,8 @@ async function runFullApplicationBoot(): Promise<Record<string, unknown>> {
   target.searchParams.set("documentHeight", String(DIAGNOSTIC_DOCUMENT_HEIGHT));
   target.searchParams.set("documentSize", String(DIAGNOSTIC_DOCUMENT_WIDTH));
   target.searchParams.set("deviceClass", "mobile");
-  target.searchParams.set("diagnosticVariant", APPLICATION_BOOT_VARIANT);
+  target.searchParams.set("diagnosticVariant", expectedDiagnosticVariant);
+  if (options.diagnosticTestId) target.searchParams.set("test", options.diagnosticTestId);
   target.searchParams.set("forceGlazeCommitFallback", "1");
   let bootstrapReady = false;
   let extensionCreated = false;
@@ -1510,6 +1888,27 @@ async function runFullApplicationBoot(): Promise<Record<string, unknown>> {
   let frameMessageCount = 0;
   let lastStartupProgress: Record<string, unknown> | null = null;
   let observer: MutationObserver | null = null;
+  let observedFrameWindow: Window | null = null;
+  let tearingDown = false;
+
+  const handleFrameWindowError = (event: ErrorEvent): void => {
+    if (tearingDown) return;
+    applicationRuntimeError = event.error ?? new Error(event.message);
+    void bridge.record("application-window-error-fallback", {
+      message: event.message,
+      source: event.filename ? event.filename.split("/").pop() : null,
+      line: event.lineno,
+      column: event.colno,
+      error: describeError(event.error),
+    }, "failed", "beacon");
+  };
+  const handleFrameUnhandledRejection = (event: PromiseRejectionEvent): void => {
+    if (tearingDown) return;
+    applicationRuntimeError = event.reason;
+    void bridge.record("application-unhandled-rejection-fallback", {
+      error: describeError(event.reason),
+    }, "failed", "beacon");
+  };
 
   const handleFrameMessage = (event: MessageEvent<unknown>): void => {
     if (event.origin !== window.location.origin || event.source !== frame.contentWindow) return;
@@ -1530,13 +1929,59 @@ async function runFullApplicationBoot(): Promise<Record<string, unknown>> {
     }
     if (type === "startup-progress") {
       lastStartupProgress = isRecord(detail) ? { ...detail } : null;
+      if (
+        documentPipelineTrace
+        && isRecord(detail)
+        && detail.phase === "document-pipelines"
+        && typeof detail.state === "string"
+      ) {
+        documentPipelineTrace.phaseState = detail.state;
+      }
       void bridge.record("application-startup-phase", detail, "running", "beacon");
+      return;
+    }
+    if (type.startsWith("document-pipeline-") || type.startsWith("document-gpu-")) {
+      if (documentPipelineTrace) updateDocumentPipelineTrace(documentPipelineTrace, type, detail);
+      const durableCheckpoint = isRecord(detail) && detail.durableCheckpoint === true;
+      if (
+        type === "document-pipeline-instrumentation"
+        || type === "document-pipeline-adapter-patched"
+        || type === "document-pipeline-device-patched"
+      ) {
+        void bridge.record(`application-frame-${type}`, detail, "running", "beacon");
+      } else if (type === "document-gpu-call-started" && !durableCheckpoint) {
+        void bridge.record("application-document-gpu-call-started", detail, "running", "beacon");
+      } else if (
+        (
+          type === "document-gpu-call-failed"
+          || type === "document-gpu-scope-error"
+          || type === "document-pipeline-adapter-request-failed"
+          || type === "document-pipeline-device-request-failed"
+        )
+        && !durableCheckpoint
+      ) {
+        void bridge.record(`application-frame-${type}`, detail, "failed", "beacon");
+      } else if (
+        (type === "document-gpu-device-lost" || type === "document-gpu-uncaptured-error")
+        && !durableCheckpoint
+      ) {
+        const targetPhaseFailure = isRecord(detail) && detail.duringTargetPhase === true;
+        void bridge.record(
+          `application-frame-${type}`,
+          detail,
+          targetPhaseFailure ? "failed" : "running",
+          "beacon",
+        );
+      }
       return;
     }
     if (type === "engine-ready") {
       void bridge.record("application-frame-engine-ready", detail, "running", "beacon");
       try {
-        engineReport = validateApplicationEngineReport(detail);
+        if (documentPipelineTrace && isRecord(detail) && isRecord(detail.documentPipelineProbe)) {
+          documentPipelineTrace.engineProbe = { ...detail.documentPipelineProbe };
+        }
+        engineReport = validateApplicationEngineReport(detail, expectedDiagnosticVariant);
       } catch (error) {
         applicationRuntimeError = error;
         void bridge.record("application-frame-engine-report-invalid", {
@@ -1568,7 +2013,8 @@ async function runFullApplicationBoot(): Promise<Record<string, unknown>> {
       persistedProjectRestore: false,
       persistedBrushRestore: true,
       reporterChannel: APP_FRAME_DIAGNOSTIC_CHANNEL,
-      diagnosticVariant: APPLICATION_BOOT_VARIANT,
+      diagnosticVariant: expectedDiagnosticVariant,
+      diagnosticTestId: options.diagnosticTestId ?? APPLICATION_BOOT_TEST,
       layerFormat: "rgba16float",
       canvasFormat: "rgba16float",
       textureFormatsTier2: "disabled",
@@ -1613,25 +2059,12 @@ async function runFullApplicationBoot(): Promise<Record<string, unknown>> {
     if (!frameWindow || !frameDocument) {
       throw new Error("The same-origin application frame could not be inspected.");
     }
+    observedFrameWindow = frameWindow;
 
     // The injected reporter is installed before the application module. These
     // listeners remain as a same-origin fallback for failures after document load.
-    frameWindow.addEventListener("error", (event) => {
-      applicationRuntimeError = event.error ?? new Error(event.message);
-      void bridge.record("application-window-error-fallback", {
-        message: event.message,
-        source: event.filename ? event.filename.split("/").pop() : null,
-        line: event.lineno,
-        column: event.colno,
-        error: describeError(event.error),
-      }, "failed", "beacon");
-    });
-    frameWindow.addEventListener("unhandledrejection", (event) => {
-      applicationRuntimeError = event.reason;
-      void bridge.record("application-unhandled-rejection-fallback", {
-        error: describeError(event.reason),
-      }, "failed", "beacon");
-    });
+    frameWindow.addEventListener("error", handleFrameWindowError);
+    frameWindow.addEventListener("unhandledrejection", handleFrameUnhandledRejection);
 
     const status = frameDocument.getElementById("status");
     let lastStatusSignature = "";
@@ -1704,7 +2137,10 @@ async function runFullApplicationBoot(): Promise<Record<string, unknown>> {
             `The application logged errors during startup: ${JSON.stringify(applicationConsoleErrors)}`,
           );
         }
-        const observedEngineReport = validateApplicationEngineReport(engineReport);
+        const observedEngineReport = validateApplicationEngineReport(
+          engineReport,
+          expectedDiagnosticVariant,
+        );
         const result = {
           ...completedState,
           ...compactFrameResourceSummary(frame),
@@ -1714,6 +2150,9 @@ async function runFullApplicationBoot(): Promise<Record<string, unknown>> {
             extensionCreated,
             frameMessageCount,
             lastStartupProgress,
+            documentPipelineTrace: documentPipelineTrace
+              ? documentPipelineTraceSummary(documentPipelineTrace)
+              : null,
           },
           engine: observedEngineReport,
           rgba16floatLayerBytes: DIAGNOSTIC_DOCUMENT_WIDTH
@@ -1734,15 +2173,174 @@ async function runFullApplicationBoot(): Promise<Record<string, unknown>> {
         engineReportReceived: engineReport !== null,
         frameMessageCount,
         lastStartupProgress,
+        documentPipelineTrace: documentPipelineTrace
+          ? documentPipelineTraceSummary(documentPipelineTrace)
+          : null,
         timeoutMs: APPLICATION_BOOT_TIMEOUT_MS,
       })}`,
     );
   } finally {
+    tearingDown = true;
     observer?.disconnect();
     window.removeEventListener("message", handleFrameMessage);
+    observedFrameWindow?.removeEventListener("error", handleFrameWindowError);
+    observedFrameWindow?.removeEventListener(
+      "unhandledrejection",
+      handleFrameUnhandledRejection,
+    );
+    try {
+      const diagnosticFrameWindow = frame.contentWindow as (
+        Window & { __gpuStartupDiagnosticTeardown?: boolean }
+      ) | null;
+      if (diagnosticFrameWindow) diagnosticFrameWindow.__gpuStartupDiagnosticTeardown = true;
+    } catch {
+      // A navigated frame may no longer be same-origin; removal is still safe.
+    }
     frame.remove();
     await new Promise<void>((resolve) => window.setTimeout(resolve, 1_000));
   }
+}
+
+function documentPipelineNativeCallsCompleted(trace: DocumentPipelineTraceState): boolean {
+  return trace.phaseState === "completed"
+    && trace.pipelineLayoutStartedCount === EXPECTED_DOCUMENT_PIPELINE_LAYOUTS
+    && trace.pipelineLayoutCompletedCount === EXPECTED_DOCUMENT_PIPELINE_LAYOUTS
+    && trace.renderPipelineStartedCount === EXPECTED_DOCUMENT_RENDER_PIPELINES
+    && trace.renderPipelineCompletedCount === EXPECTED_DOCUMENT_RENDER_PIPELINES
+    && trace.popErrorScopeStartedCount === EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS
+    && trace.popErrorScopeCompletedCount === EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS
+    && trace.startedCallCount === (
+      EXPECTED_DOCUMENT_PIPELINE_LAYOUTS
+      + EXPECTED_DOCUMENT_RENDER_PIPELINES
+      + EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS
+    )
+    && trace.completedCallCount === (
+      EXPECTED_DOCUMENT_PIPELINE_LAYOUTS
+      + EXPECTED_DOCUMENT_RENDER_PIPELINES
+      + EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS
+    )
+    && trace.failedCallCount === 0
+    && trace.scopeErrorCount === 0;
+}
+
+function documentPipelineTracePassed(trace: DocumentPipelineTraceState): boolean {
+  return trace.instrumentationInstalled === true
+    && trace.adapterRequestDevicePatched === true
+    && trace.adapterPatchCount === 1
+    && trace.devicePatchCount === 1
+    && trace.pipelineLayoutPatched === true
+    && trace.renderPipelinePatched === true
+    && trace.popErrorScopePatched === true
+    && Array.isArray(trace.requiredFeatures)
+    && trace.requiredFeatures.length === 0
+    && trace.textureFormatsTier2Enabled === false
+    && documentPipelineNativeCallsCompleted(trace)
+    && trace.deviceLost === null
+    && trace.uncapturedError === null;
+}
+
+function occurredDuringDocumentPipeline(value: unknown): boolean {
+  return isRecord(value) && value.duringTargetPhase === true;
+}
+
+async function runDocumentPipelineBisectDiagnostic(): Promise<void> {
+  const trace = createDocumentPipelineTraceState();
+  let applicationBoot: Record<string, unknown>;
+  try {
+    applicationBoot = await runFullApplicationBoot({
+      diagnosticVariant: DOCUMENT_PIPELINE_VARIANT,
+      diagnosticTestId: DOCUMENT_PIPELINE_TEST,
+      documentPipelineTrace: trace,
+    });
+  } catch (applicationError) {
+    const traceSummary = documentPipelineTraceSummary(trace);
+    let verdict = "document-pipeline-inconclusive";
+    let conclusion = "The real document-pipeline path failed without a complete native-call classification.";
+    const unmatchedStartedCall = trace.startedCallCount
+      > trace.completedCallCount + trace.failedCallCount;
+    if (unmatchedStartedCall) {
+      verdict = "document-gpu-call-interrupted";
+      conclusion = "The last recorded native document-pipeline call started but did not report completion.";
+    } else if (trace.lastFailedCall !== null) {
+      verdict = "document-gpu-call-failed";
+      conclusion = "A native WebGPU call failed inside the real document-pipeline phase.";
+    } else if (trace.lastScopeError !== null) {
+      verdict = "document-pipeline-error-scope-failure";
+      conclusion = "The document-pipeline validation or memory scope reported an error after the synchronous calls returned.";
+    } else if (occurredDuringDocumentPipeline(trace.deviceLost)) {
+      verdict = "document-pipeline-device-lost";
+      conclusion = "The WebGPU device was lost while the real document-pipeline path was running.";
+    } else if (occurredDuringDocumentPipeline(trace.uncapturedError)) {
+      verdict = "document-pipeline-uncaptured-error";
+      conclusion = "The real document-pipeline path produced an uncaptured WebGPU error.";
+    } else if (documentPipelineNativeCallsCompleted(trace)) {
+      verdict = "document-pipelines-passed-later-startup-failed";
+      conclusion = "All real document pipelines passed; the application failed later in startup.";
+    } else if (trace.deviceLost !== null || trace.uncapturedError !== null) {
+      verdict = "startup-failed-outside-document-pipelines";
+      conclusion = "A WebGPU error occurred before or outside the target document-pipeline phase.";
+    } else if (trace.startedCallCount === 0) {
+      verdict = "startup-failed-before-document-pipelines";
+      conclusion = "Startup failed before the first instrumented document-pipeline call was observed.";
+    }
+    await checkpoint(
+      "environment-captured-after-document-pipeline-failure",
+      await captureHighEntropyEnvironment(),
+    );
+    await bridge.finish("failed", "diagnostic-failed", {
+      ...comparisonPolicy(),
+      verdict,
+      conclusion,
+      applicationError: compactDocumentPipelineError(describeError(applicationError)),
+      documentPipelineTrace: traceSummary,
+    });
+    return;
+  }
+
+  const traceSummary = documentPipelineTraceSummary(trace);
+  if (!documentPipelineTracePassed(trace)) {
+    let verdict = "document-pipeline-instrumentation-inconclusive";
+    let conclusion = "The application opened, but the document-pipeline instrumentation did not observe the complete expected path.";
+    if (occurredDuringDocumentPipeline(trace.deviceLost)) {
+      verdict = "document-pipeline-device-lost";
+      conclusion = "The WebGPU device was lost during the real document-pipeline phase.";
+    } else if (occurredDuringDocumentPipeline(trace.uncapturedError)) {
+      verdict = "document-pipeline-uncaptured-error";
+      conclusion = "The real document-pipeline phase produced an uncaptured WebGPU error.";
+    } else if (
+      documentPipelineNativeCallsCompleted(trace)
+      && (trace.deviceLost !== null || trace.uncapturedError !== null)
+    ) {
+      verdict = "document-pipelines-passed-outside-gpu-error";
+      conclusion = "All real document-pipeline calls passed, but a WebGPU error was observed outside the target phase.";
+    }
+    await checkpoint(
+      "environment-captured-after-document-pipeline-inconclusive",
+      await captureHighEntropyEnvironment(),
+    );
+    await bridge.finish("failed", "diagnostic-failed", {
+      ...comparisonPolicy(),
+      verdict,
+      conclusion,
+      documentPipelineTrace: traceSummary,
+      applicationBoot: documentPipelineApplicationSummary(applicationBoot),
+    });
+    return;
+  }
+
+  await checkpoint(
+    "environment-captured-after-document-pipeline-pass",
+    await captureHighEntropyEnvironment(),
+  );
+  await bridge.finish("completed", "diagnostic-completed", {
+    ...comparisonPolicy(),
+    verdict: "document-pipelines-passed",
+    conclusion: "All 17 real pipeline layouts, 52 synchronous render pipelines, and both final error-scope drains passed with Tier 2 disabled.",
+    documentWidth: DIAGNOSTIC_DOCUMENT_WIDTH,
+    documentHeight: DIAGNOSTIC_DOCUMENT_HEIGHT,
+    documentPipelineTrace: traceSummary,
+    applicationBoot: documentPipelineApplicationSummary(applicationBoot),
+  });
 }
 
 async function run(): Promise<void> {
@@ -1751,11 +2349,19 @@ async function run(): Promise<void> {
     runCodeSuffix: bridge.runCode.slice(-8),
     ...comparisonPolicy(),
   }, "running", "beacon");
-  if (diagnosticTest && diagnosticTest !== STORAGE_FORMAT_AB_TEST) {
+  if (
+    diagnosticTest
+    && diagnosticTest !== STORAGE_FORMAT_AB_TEST
+    && diagnosticTest !== DOCUMENT_PIPELINE_TEST
+  ) {
     throw new Error(`Unsupported GPU diagnostic test: ${diagnosticTest}.`);
   }
   if (storageFormatAbEnabled) {
     await runStorageFormatAbDiagnostic();
+    return;
+  }
+  if (documentPipelineBisectEnabled) {
+    await runDocumentPipelineBisectDiagnostic();
     return;
   }
   let applicationBoot: Record<string, unknown>;
