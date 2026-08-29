@@ -161,7 +161,7 @@ function comparisonPolicy(): Record<string, unknown> {
       requiredFeatures: [],
       textureFormatsTier2Requested: false,
       applicationFrame: "isolated-production-startup",
-      startupMode: "cold-new-project",
+      startupMode: "cold-empty-document",
       deferredObservationMs: APPLICATION_DEFERRED_OBSERVATION_MS,
     };
   }
@@ -1441,7 +1441,6 @@ interface ApplicationBootOptions {
   readonly documentPipelineTrace?: DocumentPipelineTraceState;
   readonly documentWidth?: number;
   readonly documentHeight?: number;
-  readonly createNewProject?: boolean;
   readonly requiredStartupPhases?: readonly string[];
   readonly requireStorageSummary?: boolean;
   readonly requireGpuObservation?: boolean;
@@ -2018,11 +2017,6 @@ async function runFullApplicationBoot(
   target.searchParams.set("deviceClass", "mobile");
   target.searchParams.set("diagnosticVariant", expectedDiagnosticVariant);
   if (options.diagnosticTestId) target.searchParams.set("test", options.diagnosticTestId);
-  if (options.createNewProject === true) {
-    target.searchParams.set("project", "diagnostic-new-project");
-    target.searchParams.set("newProject", "1");
-    target.searchParams.set("projectName", "Startup diagnostic");
-  }
   target.searchParams.set("forceGlazeCommitFallback", "1");
   let bootstrapReady = false;
   let extensionCreated = false;
@@ -2615,7 +2609,6 @@ async function runApplication4096StartupDiagnostic(): Promise<void> {
       diagnosticTestId: APPLICATION_4096_TEST,
       documentWidth: APPLICATION_4096_DOCUMENT_WIDTH,
       documentHeight: APPLICATION_4096_DOCUMENT_HEIGHT,
-      createNewProject: true,
       requiredStartupPhases: REQUIRED_APPLICATION_4096_STARTUP_PHASES,
       requireStorageSummary: true,
       requireGpuObservation: true,

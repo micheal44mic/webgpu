@@ -23,7 +23,7 @@ const engineSource = read("src/brush-engine.ts");
 const layerRuntimeSource = read("src/engine-layer-runtime.ts");
 const featurePolicySource = read("src/gpu-startup-feature-policy.ts");
 
-const DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v11";
+const DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v12";
 const DEFAULT_TEST_ID = "startup-no-tier2-v1";
 const DEFAULT_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
 const STORAGE_FORMAT_TEST_ID = "storage-format-ab-v1";
@@ -74,7 +74,7 @@ const APPLICATION_4096_COMPARISON = {
   requiredFeatures: [],
   textureFormatsTier2Requested: false,
   applicationFrame: "isolated-production-startup",
-  startupMode: "cold-new-project",
+  startupMode: "cold-empty-document",
   deferredObservationMs: 5000,
 };
 const STORAGE_FORMAT_STAGES = [
@@ -282,7 +282,7 @@ assert.match(html, /DIAGNOSTIC_TEST_ID === "document-pipeline-bisect-v1"/);
 assert.match(html, /DIAGNOSTIC_TEST_ID === "application-4096-startup-v1"/);
 assert.match(html, /documentWidth: 4096/);
 assert.match(html, /documentHeight: 4096/);
-assert.match(html, /startupMode: "cold-new-project"/);
+assert.match(html, /startupMode: "cold-empty-document"/);
 assert.match(html, /deferredObservationMs: 5000/);
 assert.match(html, /expectedSynchronousPipelineLayouts: 17/);
 assert.match(html, /expectedSynchronousRenderPipelines: 52/);
@@ -315,9 +315,7 @@ assert.match(moduleSource, /APPLICATION_4096_TEST = "application-4096-startup-v1
 assert.match(moduleSource, new RegExp(APPLICATION_4096_VARIANT));
 assert.match(moduleSource, /APPLICATION_4096_DOCUMENT_WIDTH = 4096/);
 assert.match(moduleSource, /APPLICATION_4096_DOCUMENT_HEIGHT = 4096/);
-assert.match(moduleSource, /target\.searchParams\.set\("project", "diagnostic-new-project"\)/);
-assert.match(moduleSource, /target\.searchParams\.set\("newProject", "1"\)/);
-assert.match(moduleSource, /createNewProject: true/);
+assert.doesNotMatch(moduleSource, /createNewProject|diagnostic-new-project/);
 assert.match(moduleSource, /diagnosticTest !== DOCUMENT_PIPELINE_TEST[\s\S]*Unsupported GPU diagnostic test/);
 assert.match(moduleSource, /if \(storageFormatAbEnabled\) \{\s*await runStorageFormatAbDiagnostic\(\);\s*return;/);
 assert.match(moduleSource, /if \(documentPipelineBisectEnabled\) \{\s*await runDocumentPipelineBisectDiagnostic\(\);\s*return;/);
@@ -474,7 +472,7 @@ assert.match(workerBuilder, /handleEngineStartupProgress/);
 assert.match(workerBuilder, /DOCUMENT_PIPELINE_TEST_ID = "document-pipeline-bisect-v1"/);
 assert.match(workerBuilder, /APPLICATION_4096_TEST_ID = "application-4096-startup-v1"/);
 assert.match(workerBuilder, new RegExp(APPLICATION_4096_VARIANT));
-assert.match(workerBuilder, /startupMode: "cold-new-project"/);
+assert.match(workerBuilder, /startupMode: "cold-empty-document"/);
 assert.match(workerBuilder, /EXPECTED_DOCUMENT_RENDER_PIPELINES = 52/);
 assert.match(workerBuilder, /EXPECTED_DOCUMENT_PIPELINE_LAYOUTS = 17/);
 assert.match(workerBuilder, /EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS = 2/);
