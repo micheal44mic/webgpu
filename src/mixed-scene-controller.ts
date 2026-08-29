@@ -321,6 +321,16 @@ function percentile(values: readonly number[], ratio: number): number {
   return ordered[Math.min(ordered.length - 1, Math.floor((ordered.length - 1) * ratio))];
 }
 
+function emptyTextMetricsBox(): TextMetricsBox {
+  return {
+    left: -1,
+    top: -1,
+    right: 1,
+    bottom: 1,
+    baseline: 0,
+  };
+}
+
 export class MixedSceneController {
   private readonly host: MixedSceneHost;
   private readonly browser: Window;
@@ -347,14 +357,9 @@ export class MixedSceneController {
   private effectReadyIdleTimer: number | null = null;
   private effectReadyRenderPending = false;
 
+  private documentGeneration = 0;
   private snapshot: MixedSceneSnapshot | null = null;
-  private metrics: TextMetricsBox = {
-    left: -1,
-    top: -1,
-    right: 1,
-    bottom: 1,
-    baseline: 0,
-  };
+  private metrics: TextMetricsBox = emptyTextMetricsBox();
   private activeInteraction: ActiveInteraction | null = null;
   private renderRequest: number | null = null;
   private renderCount = 0;
@@ -482,6 +487,165 @@ export class MixedSceneController {
       throw new Error("The engine did not create the mixed scene.");
     }
     this.syncScene(initialSnapshot);
+  }
+
+  /**
+   * Detaches all document-owned editor state while retaining the controller's
+   * font registry and effect compiler. The composition root must settle scene
+   * operations and transform transactions before crossing this boundary.
+   */
+  resetForDocument(): number {
+    if (
+      this.sceneOperationBusy
+      || this.transformCommitBusy
+      || this.transformSessionOpen
+      || this.groupTransformPreparation !== null
+      || this.rasterTransformPreparation !== null
+    ) {
+      throw new Error(
+        "The mixed scene must be idle with no open transform before its document can reset.",
+      );
+    }
+    if (this.documentGeneration >= Number.MAX_SAFE_INTEGER) {
+      throw new Error("The mixed-scene document generation counter is exhausted.");
+    }
+    const nextGeneration = this.documentGeneration + 1;
+    this.documentGeneration = nextGeneration;
+
+    const capturedPointerIds = new Set<number>(this.touchContacts.keys());
+    if (this.activeInteraction) capturedPointerIds.add(this.activeInteraction.pointerId);
+    if (this.pendingRasterPointerId !== null) {
+      capturedPointerIds.add(this.pendingRasterPointerId);
+    }
+    if (this.touchTransformModifierPointerId !== null) {
+      capturedPointerIds.add(this.touchTransformModifierPointerId);
+    }
+    for (const pointerId of capturedPointerIds) {
+      if (this.interactionCanvas.hasPointerCapture(pointerId)) {
+        this.interactionCanvas.releasePointerCapture(pointerId);
+      }
+    }
+    if (this.touchNavigationActive) this.host.endViewRotationGesture();
+
+    // Ending a navigation gesture may synchronously notify the composition
+    // root and enqueue one last view render, so cancellation happens after the
+    // host gesture has closed as well as after the pointer captures are gone.
+    if (this.effectReadyIdleTimer !== null) {
+      this.browser.clearTimeout(this.effectReadyIdleTimer);
+      this.effectReadyIdleTimer = null;
+    }
+    this.cancelAdaptiveZoomTimers();
+    if (this.unsafeExactRefreshRequest !== null) {
+      this.browser.cancelAnimationFrame(this.unsafeExactRefreshRequest);
+      this.unsafeExactRefreshRequest = null;
+    }
+    if (this.fastOverlayRequest !== null) {
+      this.browser.cancelAnimationFrame(this.fastOverlayRequest);
+      this.fastOverlayRequest = null;
+    }
+    if (this.renderRequest !== null) {
+      this.browser.cancelAnimationFrame(this.renderRequest);
+      this.renderRequest = null;
+    }
+
+    this.activeInteraction = null;
+    this.pendingRasterPointerId = null;
+    this.pendingRasterPointerMove = null;
+    this.pendingRasterPointerGeneration += 1;
+    this.cancelledPendingRasterPointerGeneration = null;
+    this.touchContacts.clear();
+    this.touchTransformModifierPointerId = null;
+    this.touchNavigationGesture = null;
+    this.touchNavigationActive = false;
+
+    this.transformSessionOpen = false;
+    this.transformSessionKind = null;
+    this.requestedGroupTransformKeys = [];
+    this.groupTransformSelection = null;
+    this.groupTransformPreparation = null;
+    this.rasterTransformPreparation = null;
+    this.rasterTransformRecoveryOnly = false;
+    this.transformCommitBusy = false;
+    this.transformToolDeactivationPending = false;
+    this.distortEditingNodeId = null;
+
+    this.snapshot = null;
+    this.metrics = emptyTextMetricsBox();
+    this.geometryByNodeId.clear();
+    this.displayedDrawsByNodeKey.clear();
+    this.displayedMetricsByNodeKey.clear();
+    this.renderedTextRunKeys.clear();
+    this.effectCompiler.retainSlots(new Set<string>());
+
+    this.effectReadyRenderPending = false;
+    this.sceneOperationRenderDeferred = false;
+    this.pendingViewRender = false;
+    this.pendingViewRenderStartedAt = 0;
+    this.lastViewRenderEndToEndMs = 0;
+    this.zoomRenderMode = "precise";
+    this.viewGestureActive = false;
+    this.viewRevision = 0;
+    this.pendingExactRecoveryRevision = null;
+    this.unsafeExactRefreshInFlight = false;
+    this.unsafeExactRefreshRevision = 0;
+    this.exitFastAfterScheduledRender = false;
+    this.zoomFastActivationCount = 0;
+    this.zoomExactRecoveryCount = 0;
+    this.zoomViewEventCount = 0;
+    this.zoomSafeReprojectionCount = 0;
+    this.zoomFallbackReprojectionCount = 0;
+    this.zoomClippedReprojectionCount = 0;
+    this.zoomUnsafeExactRefreshCount = 0;
+    this.zoomUnsafeExactRefreshCompletedCount = 0;
+    this.zoomUnsafeExactCoalescedCount = 0;
+    this.lastExactCanvasWidth = 0;
+    this.lastExactCanvasHeight = 0;
+    this.fallbackPresentationDirty = true;
+    this.fallbackPresentationGpuMemoryMiB = 0;
+    this.fallbackPresentationRebuildCount = 0;
+    this.atomicEffectHoldCount = 0;
+    this.atomicEffectPendingNodes = 0;
+
+    this.renderCount = 0;
+    this.lastRenderMs = 0;
+    this.renderSamples = [];
+    this.liveGpuMemoryMiB = 0;
+    this.singleShadowGpuMemoryMiB = 0;
+    this.singleShadowGpuCacheEntries = 0;
+    this.viewportTextureCount = 0;
+
+    this.host.setVectorTextFastPresentationEnabled(false);
+    this.host.clearVectorTextFallbackPresentation();
+    this.host.clearVectorTextPresentation();
+    this.host.pruneVectorTextGpuMeshes(new Set<string>());
+    this.canvasGuides?.setSmartGuides([]);
+    clearSceneInteractionOverlay(
+      this.interactionContext,
+      this.host.getVectorTextViewState(),
+    );
+    this.interactionCanvas.hidden = true;
+    this.interactionCanvas.tabIndex = -1;
+    this.interactionCanvas.classList.remove(
+      "is-move",
+      "is-scale",
+      "is-rotate",
+      "is-pan",
+      "is-distort",
+      "is-raster-control",
+      "is-editing",
+      "is-distort-editing",
+      "is-pixel-selection",
+    );
+    this.interactionCanvas.style.removeProperty("cursor");
+    this.interactionCanvas.setAttribute("aria-hidden", "true");
+    this.status.dataset.atomicEffectPendingNodes = "0";
+    this.status.dataset.atomicEffectHoldCount = "0";
+    this.status.textContent = "Vector editor ready.";
+    this.svgImportStatus.textContent = "SVG import ready.";
+    this.imageImportStatus.textContent = "Image import ready.";
+    this.textRasterStatus.textContent = "Vector rasterization ready.";
+    this.updateTransformUi();
+    return nextGeneration;
   }
 
   setTransformToolActive(
@@ -925,7 +1089,12 @@ export class MixedSceneController {
 
   private armViewIdleTimer(revision: number): void {
     this.clearViewIdleTimer();
-    this.viewIdleTimer = this.browser.setTimeout(() => {
+    const generation = this.documentGeneration;
+    const request = this.browser.setTimeout(() => {
+      if (
+        generation !== this.documentGeneration
+        || this.viewIdleTimer !== request
+      ) return;
       this.viewIdleTimer = null;
       if (vectorTextExactRecoveryIsCurrent(
         revision,
@@ -935,6 +1104,7 @@ export class MixedSceneController {
         this.requestExactRecovery(revision);
       }
     }, VECTOR_TEXT_ADAPTIVE_ZOOM_SETTLE_MS);
+    this.viewIdleTimer = request;
   }
 
   private enterFastZoomMode(): boolean {
@@ -968,7 +1138,12 @@ export class MixedSceneController {
       this.browser.cancelAnimationFrame(this.unsafeExactRefreshRequest);
       this.unsafeExactRefreshRequest = null;
     }
-    this.exactRecoveryRequest = this.browser.requestAnimationFrame(() => {
+    const generation = this.documentGeneration;
+    const request = this.browser.requestAnimationFrame(() => {
+      if (
+        generation !== this.documentGeneration
+        || this.exactRecoveryRequest !== request
+      ) return;
       this.exactRecoveryRequest = null;
       if (
         this.zoomRenderMode !== "fast"
@@ -985,6 +1160,7 @@ export class MixedSceneController {
         this.exitFastAfterScheduledRender = true;
       }
     });
+    this.exactRecoveryRequest = request;
   }
 
   private requestUnsafeExactRefresh(revision: number): void {
@@ -996,7 +1172,12 @@ export class MixedSceneController {
       this.zoomUnsafeExactCoalescedCount += 1;
       return;
     }
-    this.unsafeExactRefreshRequest = this.browser.requestAnimationFrame(() => {
+    const generation = this.documentGeneration;
+    const request = this.browser.requestAnimationFrame(() => {
+      if (
+        generation !== this.documentGeneration
+        || this.unsafeExactRefreshRequest !== request
+      ) return;
       this.unsafeExactRefreshRequest = null;
       const targetRevision = this.unsafeExactRefreshRevision;
       if (
@@ -1016,6 +1197,7 @@ export class MixedSceneController {
         return;
       }
       void this.host.waitForVectorTextPresentationCompletion().then(() => {
+        if (generation !== this.documentGeneration) return;
         this.zoomUnsafeExactRefreshCompletedCount += 1;
         this.unsafeExactRefreshInFlight = false;
         const pendingRecovery = this.pendingExactRecoveryRevision;
@@ -1040,14 +1222,21 @@ export class MixedSceneController {
       }).catch(() => {
         // Device loss is reported by the engine. This completion signal is a
         // backpressure gate only, never GPU-duration telemetry.
+        if (generation !== this.documentGeneration) return;
         this.unsafeExactRefreshInFlight = false;
       });
     });
+    this.unsafeExactRefreshRequest = request;
   }
 
   private scheduleFastInteractionOverlay(): void {
     if (this.fastOverlayRequest !== null) return;
-    this.fastOverlayRequest = this.browser.requestAnimationFrame(() => {
+    const generation = this.documentGeneration;
+    const request = this.browser.requestAnimationFrame(() => {
+      if (
+        generation !== this.documentGeneration
+        || this.fastOverlayRequest !== request
+      ) return;
       this.fastOverlayRequest = null;
       if (this.zoomRenderMode !== "fast") return;
       const view = this.host.getVectorTextViewState();
@@ -1071,6 +1260,7 @@ export class MixedSceneController {
         clearSceneInteractionOverlay(this.interactionContext, view);
       }
     });
+    this.fastOverlayRequest = request;
   }
 
   requestSvgImport(): void {
@@ -2745,7 +2935,12 @@ export class MixedSceneController {
     if (this.effectReadyIdleTimer !== null) {
       return;
     }
-    this.effectReadyIdleTimer = this.browser.setTimeout(() => {
+    const generation = this.documentGeneration;
+    const request = this.browser.setTimeout(() => {
+      if (
+        generation !== this.documentGeneration
+        || this.effectReadyIdleTimer !== request
+      ) return;
       this.effectReadyIdleTimer = null;
       if (!this.effectReadyRenderPending) {
         return;
@@ -2760,16 +2955,23 @@ export class MixedSceneController {
         this.scheduleRender();
       }
     }, 32);
+    this.effectReadyIdleTimer = request;
   }
 
   private scheduleRender(): void {
     if (this.renderRequest !== null) {
       return;
     }
-    this.renderRequest = this.browser.requestAnimationFrame(() => {
+    const generation = this.documentGeneration;
+    const request = this.browser.requestAnimationFrame(() => {
+      if (
+        generation !== this.documentGeneration
+        || this.renderRequest !== request
+      ) return;
       this.renderRequest = null;
       this.renderNow();
     });
+    this.renderRequest = request;
   }
 
   private markPendingViewRender(): void {

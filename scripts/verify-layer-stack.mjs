@@ -2962,8 +2962,16 @@ assert.match(
   /if \(\s*this\.historyBusy\s*\|\| this\.activeStroke\s*\|\| this\.straightLineAdjustment\s*\|\| this\.layerSwitchBusy\s*\|\| this\.selectionBusy\s*\) \{/,
   "beginStrokeAtLayer deve rifiutare durante uno switch",
 );
-assert.match(mainSource, /return !engineInitialized\s*\|\| sceneEditorController\?\.isBusy === true/,
-  "il lock di switch deve entrare in operationLocked, non solo nella lista");
+assert.match(
+  mainSource,
+  /function nonHistoryOperationLocked\([\s\S]*?return documentSwitchInProgress\s*\|\| !engineInitialized/,
+  "il lock del cambio documento deve entrare nel lock comune non-history",
+);
+assert.match(
+  mainSource,
+  /function operationLocked\([\s\S]*?return nonHistoryOperationLocked\(/,
+  "operationLocked deve includere il lock comune non-history",
+);
 
 // The workbench is one retargetable instance, so a layer whose record says
 // Traccia OR Smusso is enabled can arrive after another layer released the

@@ -961,7 +961,12 @@ import {
   throwIfRenderUnavailable,
   waitForRenderPump,
 } from "./engine-runtime-misc";
-import { captureProjectDocument, restoreProjectDocument, type CapturedProjectDocumentV1 } from "./engine-project-runtime";
+import {
+  captureProjectDocument,
+  resetEngineToFreshProjectState,
+  restoreProjectDocument,
+  type CapturedProjectDocumentV1,
+} from "./engine-project-runtime";
 import type { ProjectLoadResultV1 } from "./project-storage";
 
 export type {
@@ -1263,6 +1268,13 @@ export class BrushEngine {
    * a layer that is halfway through being swapped.
    */
   layerSwitchBusy = false;
+
+  /**
+   * Monotonic identity of the document currently attached to this long-lived
+   * GPU engine. Async document work captures the value before it starts and
+   * must discard its result after a project switch changes the generation.
+   */
+  documentGeneration = 1;
 
   /**
    * While reconstructible layer resources are evicted, keep presenting the last
@@ -3769,7 +3781,7 @@ export class BrushEngine {
     if (!this.hasFittedView) {
       this.fitView();
     } else {
-      this.notifyViewChange();
+      this.notifyViewChange(false);
       this.requestRender();
     }
   }
@@ -4028,7 +4040,7 @@ export class BrushEngine {
     };
   }
 
-  notifyViewChange(): void {
+  notifyViewChange(documentViewChanged = true): void {
     this.viewPresentationRevision += 1;
     if (this.vectorTextFastPresentationEnabled) {
       // The capture stays fixed while the current camera moves. Updating this
@@ -4037,7 +4049,10 @@ export class BrushEngine {
       this.vectorTextFastRequestedRevision += 1;
       writeVectorTextCaptureUniforms(this);
     }
-    this.callbacks.onViewChange?.(this.getVectorTextViewState());
+    this.callbacks.onViewChange?.(
+      this.getVectorTextViewState(),
+      documentViewChanged,
+    );
     renderPixelSelectionOverlay(this);
   }
 
@@ -6638,6 +6653,28 @@ export class BrushEngine {
 
   restoreProjectDocument(project: ProjectLoadResultV1): Promise<void> {
     return restoreProjectDocument(this, project);
+  }
+
+  /**
+   * Detaches the current same-size project while retaining the WebGPU device,
+   * immutable brush assets and compiled pipelines for the next project.
+   */
+  resetToFreshProjectState(): Promise<number> {
+    return resetEngineToFreshProjectState(this);
+  }
+
+  getDocumentGeneration(): number {
+    return this.documentGeneration;
+  }
+
+  isDocumentGenerationCurrent(generation: number): boolean {
+    return (
+      Number.isSafeInteger(generation)
+      && generation === this.documentGeneration
+      && this.initialized
+      && this.deviceLostError === null
+      && !this.historyStateInconsistent
+    );
   }
 
   /**

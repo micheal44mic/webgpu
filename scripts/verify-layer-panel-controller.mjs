@@ -84,11 +84,11 @@ const panelCompositionEnd = mainSource.indexOf("window.addEventListener(\"pagehi
 const panelComposition = mainSource.slice(panelCompositionStart, panelCompositionEnd);
 assert.match(
   panelComposition,
-  /setDocumentBackgroundVisibility:[\s\S]*?projectSessionController\?\.markDirty\(\)/,
+  /setDocumentBackgroundVisibility:[\s\S]*?projectSessionController\?\.markDirty\("document background visibility"\)/,
 );
 assert.match(
   panelComposition,
-  /setDocumentBackgroundColor:[\s\S]*?projectSessionController\?\.markDirty\(\)/,
+  /setDocumentBackgroundColor:[\s\S]*?projectSessionController\?\.markDirty\("document background color"\)/,
 );
 assert.match(
   panelComposition,

@@ -175,6 +175,33 @@ export class MobileStrokeSheetController {
     this.options.onOpenChange(false);
   }
 
+  /** Flushes every coalesced style update before a document can be replaced. */
+  async settleDocumentEdits(): Promise<void> {
+    this.close(false);
+    this.requestHistoryEditFinish();
+    for (;;) {
+      if (this.applyFrame !== null) {
+        this.options.browser.cancelAnimationFrame(this.applyFrame);
+        this.applyFrame = null;
+        this.startApplyLoop();
+      }
+      const activeLoop = this.applyLoop;
+      if (activeLoop) {
+        await activeLoop;
+        continue;
+      }
+      if (this.pendingStyle) {
+        this.startApplyLoop();
+        continue;
+      }
+      break;
+    }
+    this.commitHistoryEditIfIdle();
+    if (this.historyEditToken !== null) {
+      throw new Error("Stroke settings are still finishing.");
+    }
+  }
+
   sync(style = this.options.getStyle()): void {
     const color = colorToHex(style.color);
     this.colorInput.value = color;

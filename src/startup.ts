@@ -20,7 +20,11 @@ import {
   type ProjectStorage,
   type ProjectSummaryV1,
 } from "./project-storage";
-import type { ProjectEditorBootstrap } from "./project-shell-contract";
+import type {
+  ProjectEditorBootstrap,
+  ProjectSessionSwitchRequest,
+  ProjectSessionSwitchResult,
+} from "./project-shell-contract";
 import { getCanvasStartupOverlayController } from "./canvas-startup-overlay-controller";
 
 const HOME_ICONS: Readonly<Record<string, IconNode>> = {
@@ -79,8 +83,10 @@ function shouldOpenEditor(search: URLSearchParams): boolean {
 
 function projectEditorUrl(summary: ProjectSummaryV1, currentHref: string): URL {
   const url = new URL(currentHref);
+  const forceReloadSwitch = url.searchParams.get("projectSwitch") === "reload";
   url.search = "";
   url.hash = "";
+  if (forceReloadSwitch) url.searchParams.set("projectSwitch", "reload");
   url.searchParams.set("project", summary.id);
   url.searchParams.set("documentWidth", String(summary.documentWidth));
   url.searchParams.set("documentHeight", String(summary.documentHeight));
@@ -128,6 +134,43 @@ function editorDimensionsAreValid(search: URLSearchParams): boolean {
     );
 }
 
+function explicitEditorDimensions(url: URL): readonly [number, number] | null {
+  const width = Number(url.searchParams.get("documentWidth"));
+  const height = Number(url.searchParams.get("documentHeight"));
+  if (Number.isInteger(width) && Number.isInteger(height) && width > 0 && height > 0) {
+    return [width, height];
+  }
+  const square = Number(url.searchParams.get("documentSize"));
+  return Number.isInteger(square) && square > 0 ? [square, square] : null;
+}
+
+function projectSessionSwitchRequest(
+  url: URL,
+  preloadedProjectId: string | null,
+  preloadedProject: Promise<ProjectLoadResultV1 | null> | null,
+  historyMode: "push" | "replace",
+): ProjectSessionSwitchRequest | null {
+  if (url.searchParams.get("newProject") === "1") {
+    const dimensions = explicitEditorDimensions(url);
+    if (!dimensions) return null;
+    return {
+      kind: "new",
+      name: normalizeProjectTitle(url.searchParams.get("projectName") ?? "Untitled Artwork"),
+      documentWidth: dimensions[0],
+      documentHeight: dimensions[1],
+      historyMode,
+    };
+  }
+  const projectId = preloadedProjectId?.trim() || url.searchParams.get("project")?.trim();
+  if (!projectId) return null;
+  return {
+    kind: "existing",
+    projectId,
+    preloadedProject,
+    historyMode,
+  };
+}
+
 function freshProjectId(): string {
   return `project-${crypto.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`}`;
 }
@@ -169,6 +212,9 @@ interface ProjectHomeControllerOptions {
   readonly document: Document;
   readonly objectUrl: Pick<typeof URL, "createObjectURL" | "revokeObjectURL">;
   readonly openEditor: OpenEditor;
+  readonly isSuspendedProject: (projectId: string) => boolean;
+  readonly onSuspendedProjectDeleted: (projectId: string) => Promise<void>;
+  readonly onProjectSummaryChanged: (summary: ProjectSummaryV1) => void;
 }
 
 class ProjectHomeController {
@@ -178,6 +224,11 @@ class ProjectHomeController {
   private readonly document: Document;
   private readonly objectUrl: ProjectHomeControllerOptions["objectUrl"];
   private readonly openEditor: OpenEditor;
+  private readonly isSuspendedProject: ProjectHomeControllerOptions["isSuspendedProject"];
+  private readonly onSuspendedProjectDeleted:
+    ProjectHomeControllerOptions["onSuspendedProjectDeleted"];
+  private readonly onProjectSummaryChanged:
+    ProjectHomeControllerOptions["onProjectSummaryChanged"];
   private readonly home: HTMLElement;
   private readonly tabs: readonly [HTMLButtonElement, HTMLButtonElement];
   private readonly panels: readonly [HTMLElement, HTMLElement];
@@ -200,6 +251,9 @@ class ProjectHomeController {
     this.document = options.document;
     this.objectUrl = options.objectUrl;
     this.openEditor = options.openEditor;
+    this.isSuspendedProject = options.isSuspendedProject;
+    this.onSuspendedProjectDeleted = options.onSuspendedProjectDeleted;
+    this.onProjectSummaryChanged = options.onProjectSummaryChanged;
     this.home = element<HTMLElement>(options.root, "projectHome");
     this.tabs = [
       element<HTMLButtonElement>(options.root, "projectsTab"),
@@ -341,8 +395,10 @@ class ProjectHomeController {
         return;
       }
       const url = new URL(this.browser.location.href);
+      const forceReloadSwitch = url.searchParams.get("projectSwitch") === "reload";
       url.search = "";
       url.hash = "";
+      if (forceReloadSwitch) url.searchParams.set("projectSwitch", "reload");
       const projectId = freshProjectId();
       url.searchParams.set("project", projectId);
       url.searchParams.set("newProject", "1");
@@ -438,7 +494,8 @@ class ProjectHomeController {
       if (requested === null) return;
       this.setBusy(true);
       try {
-        await this.storage.renameProject(project.id, requested);
+        const renamed = await this.storage.renameProject(project.id, requested);
+        this.onProjectSummaryChanged(renamed);
         await this.refreshProjects();
         this.showStatus("Project renamed.");
       } catch (error) {
@@ -457,7 +514,12 @@ class ProjectHomeController {
       if (!this.browser.confirm(`Delete “${project.name}” from this device?`)) return;
       this.setBusy(true);
       try {
+        const suspendedProjectDeleted = this.isSuspendedProject(project.id);
         await this.storage.deleteProject(project.id);
+        if (suspendedProjectDeleted) {
+          await this.onSuspendedProjectDeleted(project.id);
+          return;
+        }
         await this.refreshProjects();
         await this.refreshStorageSummary();
         this.showStatus("Project deleted.");
@@ -522,6 +584,10 @@ async function boot(): Promise<void> {
   let editorLoaded = false;
   let suspendedEditorUrl: URL | null = null;
   let suspendedEditorTitle = "M1M4.COM — Editor";
+  let shellTransitionInProgress = false;
+  let queuedHistoryTarget: URL | null = null;
+  const inPlaceProjectSwitchEnabled =
+    new URLSearchParams(window.location.search).get("projectSwitch") !== "reload";
 
   const ensureHomeController = async (): Promise<ProjectHomeController> => {
     if (homeController) return homeController;
@@ -532,6 +598,28 @@ async function boot(): Promise<void> {
       document,
       objectUrl: URL,
       openEditor,
+      isSuspendedProject: (projectId) => (
+        suspendedEditorUrl?.searchParams.get("project") === projectId
+      ),
+      onSuspendedProjectDeleted: async () => {
+        window.__projectEditorSessionLifecycle?.dispose();
+        suspendedEditorUrl = null;
+        const url = new URL(window.location.href);
+        url.search = "";
+        url.hash = "";
+        if (!inPlaceProjectSwitchEnabled) {
+          url.searchParams.set("home", "1");
+          url.searchParams.set("projectSwitch", "reload");
+        }
+        window.history.replaceState(null, "", url);
+        window.location.reload();
+      },
+      onProjectSummaryChanged: (summary) => {
+        if (suspendedEditorUrl?.searchParams.get("project") !== summary.id) return;
+        if (window.__projectEditorSessionLifecycle?.refreshCurrentProjectSummary(summary)) {
+          suspendedEditorTitle = document.title;
+        }
+      },
     });
     homeController = controller;
     await controller.initialize();
@@ -546,7 +634,15 @@ async function boot(): Promise<void> {
     const url = new URL(window.location.href);
     url.search = "";
     url.hash = "";
-    if (pushHistory) window.history.pushState(null, "", url);
+    if (!inPlaceProjectSwitchEnabled) {
+      url.searchParams.set("home", "1");
+      url.searchParams.set("projectSwitch", "reload");
+    }
+    if (pushHistory) {
+      window.history.pushState(null, "", url);
+    } else if (window.location.href !== url.href) {
+      window.history.replaceState(null, "", url);
+    }
     showApplicationSurface("home");
     document.title = "M1M4.COM — Projects";
     const alreadyInitialized = homeController !== null;
@@ -554,27 +650,111 @@ async function boot(): Promise<void> {
     if (alreadyInitialized) await controller.refresh();
   };
 
-  const sameSuspendedProject = (url: URL): boolean => (
-    suspendedEditorUrl !== null
-    && suspendedEditorUrl.searchParams.get("project") === url.searchParams.get("project")
-    && suspendedEditorUrl.searchParams.get("documentWidth")
-      === url.searchParams.get("documentWidth")
-    && suspendedEditorUrl.searchParams.get("documentHeight")
-      === url.searchParams.get("documentHeight")
-  );
+  const sameSuspendedProject = (url: URL): boolean => {
+    if (
+      !suspendedEditorUrl
+      || suspendedEditorUrl.searchParams.get("project") !== url.searchParams.get("project")
+    ) return false;
+    const suspended = explicitEditorDimensions(suspendedEditorUrl);
+    const requested = explicitEditorDimensions(url);
+    return suspended !== null
+      && requested !== null
+      && suspended[0] === requested[0]
+      && suspended[1] === requested[1];
+  };
+
+  const sameSuspendedDimensions = (url: URL): boolean => {
+    if (!suspendedEditorUrl) return false;
+    const suspended = explicitEditorDimensions(suspendedEditorUrl);
+    const requested = explicitEditorDimensions(url);
+    return suspended !== null
+      && requested !== null
+      && suspended[0] === requested[0]
+      && suspended[1] === requested[1];
+  };
 
   const openEditor: OpenEditor = async (url, preloadedProjectId, preloadedProject) => {
     if (editorLoaded) {
+      const lifecycle = window.__projectEditorSessionLifecycle;
       if (sameSuspendedProject(url)) {
+        if (preloadedProject) {
+          shellTransitionInProgress = true;
+          let project: ProjectLoadResultV1 | null;
+          try {
+            project = await preloadedProject;
+          } finally {
+            shellTransitionInProgress = false;
+          }
+          if (!project) throw new Error("This project is no longer available on this device.");
+          if (!lifecycle?.refreshCurrentProjectSummary(project.summary)) {
+            window.location.assign(url);
+            return;
+          }
+          suspendedEditorTitle = document.title;
+        } else if (!lifecycle) {
+          window.location.assign(url);
+          return;
+        }
         if (window.location.href !== url.href) {
           window.history.pushState(null, "", url);
         }
         showApplicationSurface("editor");
         document.title = suspendedEditorTitle;
+        if (await flushQueuedHistoryTarget()) return;
         return;
       }
-      // Document dimensions are compile-time WebGPU constants. A different
-      // project gets a fresh engine, while immutable HTTP assets stay cached.
+
+      const switchRequest = projectSessionSwitchRequest(
+        url,
+        preloadedProjectId,
+        preloadedProject,
+        window.location.href === url.href ? "replace" : "push",
+      );
+      if (
+        inPlaceProjectSwitchEnabled
+        && sameSuspendedDimensions(url)
+        && lifecycle
+        && switchRequest
+      ) {
+        const startupOverlay = getCanvasStartupOverlayController();
+        startupOverlay.reset();
+        showApplicationSurface("editor");
+        shellTransitionInProgress = true;
+        let result: ProjectSessionSwitchResult;
+        try {
+          result = await lifecycle.switchProject(switchRequest);
+        } finally {
+          shellTransitionInProgress = false;
+        }
+        if (result.status === "committed") {
+          suspendedEditorUrl = new URL(window.location.href);
+          suspendedEditorTitle = document.title;
+          if (await flushQueuedHistoryTarget()) return;
+          return;
+        }
+        if (result.status === "unchanged") {
+          startupOverlay.dismiss();
+          suspendedEditorUrl = new URL(window.location.href);
+          suspendedEditorTitle = document.title;
+          if (await flushQueuedHistoryTarget()) return;
+          return;
+        }
+
+        startupOverlay.fail();
+        if (result.fallback.action === "reload-source") {
+          queuedHistoryTarget = null;
+          lifecycle.dispose();
+          if (result.fallback.url) window.location.assign(result.fallback.url);
+          else window.location.reload();
+          return;
+        }
+        if (await flushQueuedHistoryTarget()) return;
+        await showHome(false);
+        throw new Error(result.message);
+      }
+
+      // A different size needs module-evaluated document constants and gets a
+      // fresh engine. The query kill switch also retains this recovery path.
       window.location.assign(url);
       return;
     }
@@ -587,7 +767,7 @@ async function boot(): Promise<void> {
       storageReady,
       preloadedProjectId,
       preloadedProject,
-      returnHome: () => showHome(true),
+      returnHome: (pushHistory = true) => showHome(pushHistory),
     };
     window.__projectEditorBootstrap = bootstrap;
     const startupOverlay = getCanvasStartupOverlayController();
@@ -608,18 +788,60 @@ async function boot(): Promise<void> {
     suspendedEditorUrl = new URL(window.location.href);
   };
 
+  const openHistoryTarget = async (target: URL): Promise<void> => {
+    if (!shouldOpenEditor(target.searchParams)) {
+      const lifecycle = window.__projectEditorSessionLifecycle;
+      if (editorLoaded && lifecycle) {
+        shellTransitionInProgress = true;
+        try {
+          await lifecycle.returnHome("none");
+        } finally {
+          shellTransitionInProgress = false;
+        }
+        if (!home.hidden && home.inert === false) return;
+        if (suspendedEditorUrl && window.location.href !== suspendedEditorUrl.href) {
+          window.history.replaceState(null, "", suspendedEditorUrl);
+        }
+      } else {
+        await showHome(false);
+      }
+      return;
+    }
+    if (!editorDimensionsAreValid(target.searchParams)) {
+      window.location.reload();
+      return;
+    }
+    const projectId = target.searchParams.get("project")?.trim() || null;
+    const preloadedProject = projectId && target.searchParams.get("newProject") !== "1"
+      ? storageReady.then(() => storage.loadProject(projectId))
+      : null;
+    if (preloadedProject) void preloadedProject.catch(() => null);
+    await openEditor(target, projectId, preloadedProject);
+  };
+
+  const flushQueuedHistoryTarget = async (): Promise<boolean> => {
+    if (shellTransitionInProgress || !queuedHistoryTarget) return false;
+    const target = queuedHistoryTarget;
+    queuedHistoryTarget = null;
+    if (window.location.href !== target.href) {
+      window.history.replaceState(null, "", target);
+    }
+    await openHistoryTarget(target);
+    return true;
+  };
+
   window.addEventListener("popstate", () => {
     const target = new URL(window.location.href);
-    if (!shouldOpenEditor(target.searchParams)) {
-      void showHome(false);
+    if (shellTransitionInProgress) {
+      queuedHistoryTarget = target;
       return;
     }
-    if (editorLoaded && sameSuspendedProject(target)) {
-      showApplicationSurface("editor");
-      document.title = suspendedEditorTitle;
-      return;
-    }
-    window.location.reload();
+    void openHistoryTarget(target)
+      .then(() => flushQueuedHistoryTarget())
+      .catch((error) => {
+        console.error("History navigation failed:", error);
+        getCanvasStartupOverlayController().fail();
+      });
   });
 
   const search = new URLSearchParams(window.location.search);

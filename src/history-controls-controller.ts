@@ -120,6 +120,25 @@ export class HistoryControlsController {
     this.refreshControls();
   }
 
+  /**
+   * Drops intent that has not started yet. The operation currently crossing
+   * the engine journal, if any, remains authoritative and can be awaited via
+   * the public busy/queue state before replacing the document.
+   */
+  discardPendingOperations(): void {
+    this.operationQueue.length = 0;
+  }
+
+  /** Re-bases the reusable controls after the engine installs a new journal. */
+  resetForDocument(state: HistoryState): void {
+    if (this.replayBusy || this.queueDraining) {
+      throw new Error("History controls are still finishing the previous document.");
+    }
+    this.operationQueue.length = 0;
+    this.failure = null;
+    this.acceptState(state);
+  }
+
   refreshFromEngine(): HistoryState {
     const state = this.engine.state();
     this.acceptState(state);

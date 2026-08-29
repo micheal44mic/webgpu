@@ -270,5 +270,10 @@ assert.doesNotMatch(
 );
 assert.doesNotMatch(controller, /setInterval\(/, "Il controller Stroke non deve introdurre polling.");
 assert.match(controller, /accessibilityRegions: \[this\.controlsRegion\]/);
+assert.match(
+  controller,
+  /async settleDocumentEdits\(\): Promise<void>[\s\S]*?this\.requestHistoryEditFinish\(\)[\s\S]*?await activeLoop[\s\S]*?this\.historyEditToken !== null/,
+  "Lo switch documento deve drenare aggiornamenti e token Stroke prima del reset.",
+);
 
 console.log("Mobile Stroke sheet: markup, runtime autorevole, snap e accessibilità verificati.");

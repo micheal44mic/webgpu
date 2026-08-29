@@ -753,6 +753,28 @@ export function releasePreparedCloneSource(engine: CloneEngineHost): void {
   state.ready = null;
 }
 
+/**
+ * Invalidates document-scoped Clone preparation and waits until an already
+ * running snapshot builder has stopped touching the outgoing layer resources.
+ * Pipeline objects remain owned by the engine and are intentionally preserved.
+ */
+export async function releasePreparedCloneSourceAndWait(
+  engine: CloneEngineHost,
+): Promise<void> {
+  const state = preparedCloneSourceState(engine);
+  releasePreparedCloneSource(engine);
+  const inFlight = state.promise;
+  if (inFlight) {
+    await inFlight;
+  }
+  if (state.promise === inFlight) {
+    state.promise = null;
+    state.promiseKey = null;
+  }
+  destroyPreparedCloneSource(engine, state.ready);
+  state.ready = null;
+}
+
 function takePreparedCloneSource(
   engine: CloneEngineHost,
   sampleMode: Exclude<CloneSampleMode, "current">,

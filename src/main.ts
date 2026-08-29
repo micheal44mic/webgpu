@@ -118,7 +118,11 @@ import {
 import type { MixedSceneController } from "./mixed-scene-controller";
 import type { VectorTransformActionSnapshot } from "./vector-editor-contract";
 import { createProjectStorage } from "./project-storage";
-import type { ProjectEditorBootstrap } from "./project-shell-contract";
+import type {
+  ProjectEditorBootstrap,
+  ProjectSessionSwitchResult,
+  ProjectSessionSwitchStage,
+} from "./project-shell-contract";
 import { ProjectSessionController } from "./project-session-controller";
 import { resolveMixedSceneEnabled } from "./compat/mixed-scene-options";
 
@@ -624,6 +628,26 @@ const projectEditorBootstrap: ProjectEditorBootstrap | undefined =
 const editorExtensionEngineOptions = editorExtensionBootstrap?.engineOptions ?? {};
 let editorExtension: EditorExtension | null = null;
 let projectSessionController: ProjectSessionController | null = null;
+let documentSwitchInProgress = false;
+let documentSwitchSourcesInvalidated = false;
+let documentSwitchStartedAt = 0;
+let documentSwitchGeneration = 0;
+
+const DOCUMENT_SWITCH_STAGE_LABELS: Readonly<Record<ProjectSessionSwitchStage, string>> = {
+  availability: "Checking the current editor session",
+  "preload-target": "Loading the selected project",
+  start: "Preparing the document switch",
+  "settle-source": "Finishing edits in the current project",
+  "save-source": "Saving the current project",
+  "verify-source": "Verifying the saved project",
+  "preflight-engine": "Preparing reusable GPU resources",
+  "reset-engine": "Resetting document resources",
+  "restore-target": "Restoring the selected project",
+  "commit-target": "Connecting project controls",
+  "first-frame": "Waiting for the first project frame",
+  "save-target": "Saving the new project",
+  "publish-target": "Opening the project",
+};
 
 function reportQueuedSceneImportFailure(kind: "SVG" | "image", error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
@@ -884,10 +908,10 @@ const engine = new BrushEngine(canvas, {
       prepareActiveCloneSource(cloneToolController.snapshot().sampleMode);
     }
   },
-  onViewChange() {
+  onViewChange(_state, documentViewChanged) {
     mixedSceneController?.scheduleViewSync();
     canvasGuidesController?.scheduleRender();
-    projectSessionController?.markDirty();
+    if (documentViewChanged) projectSessionController?.markDirty("view state");
     brushOutlineController?.notifyEngineUpdate();
     cloneToolController?.notifyViewChange();
     shapeToolController?.notifyViewChange();
@@ -929,7 +953,7 @@ const engine = new BrushEngine(canvas, {
     }
     layerSwitchResult.textContent =
       `Undo/Redo selected layer ${activeIndex + 1}.`;
-    projectSessionController?.markDirty();
+    projectSessionController?.markDirty("active layer");
     if (cloneToolController?.isActive && canvasInputController?.isPointerActive !== true) {
       prepareActiveCloneSource(cloneToolController.snapshot().sampleMode);
     }
@@ -971,6 +995,22 @@ projectSessionController = new ProjectSessionController({
     setInitialLayerName: (name) => {
       engine.layerStack.active.name = name;
     },
+    preflightDocumentSwitch: async (target) => {
+      if (
+        target.documentWidth !== engine.documentWidth
+        || target.documentHeight !== engine.documentHeight
+      ) {
+        throw new Error("The selected canvas needs a different GPU document runtime.");
+      }
+      await engine.waitForIdle();
+    },
+    resetDocumentForSwitch: async () => {
+      await engine.resetToFreshProjectState();
+    },
+    waitForDocumentFirstFrame: async () => {
+      engine.requestRender();
+      await engine.waitForIdle();
+    },
   },
   storage: projectEditorBootstrap?.storage ?? createProjectStorage(),
   storageReady: projectEditorBootstrap?.storageReady,
@@ -978,6 +1018,24 @@ projectSessionController = new ProjectSessionController({
   preloadedProject: projectEditorBootstrap?.preloadedProject,
   settleTransientEdits: settleTransientProjectEdits,
   onReturnHome: projectEditorBootstrap?.returnHome,
+  onDocumentSwitchStart: async () => {
+    if (!canvasStartupOverlay.isVisible()) canvasStartupOverlay.reset();
+    documentSwitchGeneration += 1;
+    documentSwitchInProgress = true;
+    documentSwitchSourcesInvalidated = false;
+  },
+  onDocumentSwitchStage: (stage) => {
+    reportDocumentSwitchStage(stage);
+  },
+  onDocumentSwitchPreReset: async () => {
+    await prepareEditorForDocumentReset();
+  },
+  onDocumentSwitchCommit: async () => {
+    rebaseEditorAfterDocumentSwitch();
+  },
+  onDocumentSwitchFinish: async (result) => {
+    await finishEditorDocumentSwitch(result);
+  },
   browser: window,
   document,
   searchParams: pageSearchParams,
@@ -2333,11 +2391,18 @@ editorToolsController = new EditorToolsController({
   syncMenuState: syncMobileToolsMenuState,
   selectCanvasTool: selectCanvasToolWithMixedScene,
   openToolSettings: (kind, trigger) => {
+    const requestedDocumentSwitchGeneration = documentSwitchGeneration;
+    const requestIsCurrent = (): boolean => (
+      !documentSwitchInProgress
+      && requestedDocumentSwitchGeneration === documentSwitchGeneration
+    );
     const openRequestedSettings = (requestedKind: EditorToolSettingsKind): void => {
       void (async () => {
+        if (!requestIsCurrent()) return;
         if (toolSettingsRequireMixedScene(requestedKind)) {
           await initializeMixedSceneController();
         }
+        if (!requestIsCurrent()) return;
         mobileToolSettingsSheet?.open(requestedKind, trigger);
       })().catch((error) => {
         appDiagnosticsController?.recordOperation(
@@ -2354,7 +2419,7 @@ editorToolsController = new EditorToolsController({
     }
     const requestedKind = kind;
     void rasterAdjustmentsController.commitActiveAdjustmentForToolChange().then((committed) => {
-      if (committed) openRequestedSettings(requestedKind);
+      if (committed && requestIsCurrent()) openRequestedSettings(requestedKind);
     });
   },
   runVectorCommand: (command) => {
@@ -2477,7 +2542,7 @@ layerPanelController = new LayerPanelController({
   setDocumentBackgroundVisibility: (visible) => {
     const changed = engine.setDocumentBackgroundVisibility(visible);
     if (changed) {
-      projectSessionController?.markDirty();
+      projectSessionController?.markDirty("document background visibility");
       scheduleMobileLayersRefresh();
     }
     return changed;
@@ -2485,7 +2550,7 @@ layerPanelController = new LayerPanelController({
   setDocumentBackgroundColor: (color) => {
     const changed = engine.setDocumentBackgroundColor(color);
     if (changed) {
-      projectSessionController?.markDirty();
+      projectSessionController?.markDirty("document background color");
       scheduleMobileLayersRefresh();
     }
     return changed;
@@ -2565,8 +2630,178 @@ documentInteractionController = new DocumentInteractionController({
   cancelTransientInteraction: () => layerPanelController?.cancelActiveGesture(),
 });
 
+function reportDocumentSwitchStage(stage: ProjectSessionSwitchStage): void {
+  const now = performance.now();
+  if (stage === "availability" || documentSwitchStartedAt <= 0) {
+    documentSwitchStartedAt = now;
+  }
+  canvasStartupOverlay.report({
+    phase: `document-switch-${stage}`,
+    label: DOCUMENT_SWITCH_STAGE_LABELS[stage],
+    state: "completed",
+    totalElapsedMs: Math.max(0, now - documentSwitchStartedAt),
+    phaseElapsedMs: 0,
+    detail: null,
+  });
+}
+
+async function waitForOutgoingHistoryControls(): Promise<void> {
+  historyControlsController.discardPendingOperations();
+  const startedAt = performance.now();
+  while (
+    historyControlsController.uiBusy
+    || historyControlsController.isQueueDraining
+    || historyControlsController.queuedOperationCount > 0
+    || historyState.busy
+  ) {
+    if (performance.now() - startedAt > 65_000) {
+      throw new Error("History did not finish before the project switch.");
+    }
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+  }
+}
+
+async function settleDocumentSwitchSources(): Promise<void> {
+  if (!documentSwitchInProgress || documentSwitchSourcesInvalidated) return;
+  if (canvasInputController?.isPointerActive === true) {
+    throw new Error("Finish the active pointer gesture before opening another project.");
+  }
+
+  await waitForOutgoingHistoryControls();
+  await sceneImportBridge.resetForDocument();
+  await mobileStrokeSheet?.settleDocumentEdits();
+  await mobileRasterEffectsSheet?.settleDocumentEdits();
+  await mobileToolSettingsSheet?.settleDocumentEdits();
+  await pixelSelectionController?.finishColorRangePreview();
+  documentSwitchSourcesInvalidated = true;
+}
+
+async function waitForDocumentSwitchControllersIdle(): Promise<void> {
+  const startedAt = performance.now();
+  for (;;) {
+    if (canvasInputController?.isPointerActive === true) {
+      throw new Error("A pointer gesture is still active.");
+    }
+    const busy = historyControlsController.uiBusy
+      || historyControlsController.isQueueDraining
+      || historyControlsController.queuedOperationCount > 0
+      || historyState.busy
+      || sceneEditorController?.isBusy === true
+      || mixedSceneController?.isBusy === true
+      || shapeToolController?.isBusy === true
+      || pixelSelectionController?.isBusy === true
+      || rasterStyleController.isBusy
+      || brushQuickControlsController?.isDragging === true
+      || editorExtension?.isBusy() === true;
+    if (!busy) return;
+    if (performance.now() - startedAt > 65_000) {
+      throw new Error("The current project did not become idle in time.");
+    }
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+  }
+}
+
+async function prepareEditorForDocumentReset(): Promise<void> {
+  if (!documentSwitchInProgress) {
+    throw new Error("The document-switch boundary is not active.");
+  }
+  await waitForDocumentSwitchControllersIdle();
+  if (historyState.openEdit !== null) {
+    throw new Error("The current project still has an open edit.");
+  }
+
+  layerPanelController?.cancelTransientInteractions();
+  layerPanelController?.finishMultiSelection(false);
+  layerPanelController?.setOpen(false);
+  await canvasToolController?.resetForDocument();
+  await shapeToolController?.setActive(false);
+  cloneSourcePreparationToken += 1;
+  cloneToolController?.setSourcePreparing(false);
+  cloneToolController?.setActive(false);
+  cloneToolController?.setSourcePoint(null);
+  engine.releaseCloneToolSource();
+  canvasInputController?.cancelKeyboardSelectionGesture(true);
+
+  editorToolsController.setOpen(false);
+  editorFiltersController?.setOpen(false);
+  editorSettingsController?.setOpen(false);
+  brushLibraryController.setOpen(false);
+  mobileBrushStudio?.cancel(false);
+  mobileStrokeSheet?.close(false);
+  mobileRasterEffectsSheet?.close(false);
+  mobileToolSettingsSheet?.close(false);
+  layerThumbnailController.resetForDocument();
+  await mixedSceneController?.resetForDocument();
+  canvasGuidesController?.setSmartGuides([]);
+
+  await engine.waitForIdle();
+  await waitForDocumentSwitchControllersIdle();
+}
+
+function rebaseEditorAfterDocumentSwitch(): void {
+  historyState = engine.getHistoryState();
+  historyControlsController.resetForDocument(historyState);
+  const snapshot = engine.getMixedSceneSnapshot();
+  if (snapshot) mixedSceneController?.syncScene(snapshot);
+  layerPanelController?.cancelTransientInteractions();
+  requestMobileLayersRefresh();
+  layerPanelController?.ensureActiveThumbnail(0);
+  syncActiveLayerControls();
+  rasterAdjustmentsController?.syncUi();
+  syncMobileToolsMenuState(snapshot);
+  mobileToolSettingsSheet?.syncOpenState();
+  canvasGuidesController?.setSmartGuides([]);
+  canvasGuidesController?.scheduleRender();
+  brushOutlineController?.notifyEngineUpdate();
+  cloneToolController?.notifyViewChange();
+  runtimeStatsController?.update(engine.getStats());
+  updateHistoryControls();
+}
+
+async function finishEditorDocumentSwitch(
+  result: ProjectSessionSwitchResult,
+): Promise<void> {
+  try {
+    if (result.status === "committed") {
+      const elapsed = Math.max(0, performance.now() - documentSwitchStartedAt);
+      canvasStartupOverlay.report({
+        phase: "first-frame-gpu",
+        label: "Waiting for the first project frame",
+        state: "completed",
+        totalElapsedMs: elapsed,
+        phaseElapsedMs: 0,
+        detail: null,
+      });
+      canvasStartupOverlay.report({
+        phase: "editor-ready",
+        label: "Project ready",
+        state: "completed",
+        totalElapsedMs: elapsed,
+        phaseElapsedMs: 0,
+        detail: null,
+      });
+      return;
+    }
+    if (result.status === "failed" && !result.destructive) {
+      rebaseEditorAfterDocumentSwitch();
+    }
+    canvasStartupOverlay.fail();
+  } finally {
+    documentSwitchInProgress = false;
+    documentSwitchSourcesInvalidated = false;
+    documentSwitchStartedAt = 0;
+    if (
+      result.status === "committed"
+      || (result.status === "failed" && !result.destructive)
+    ) {
+      updateHistoryControls();
+    }
+  }
+}
+
 async function settleTransientProjectEdits(): Promise<void> {
   if (!engineInitialized) return;
+  await settleDocumentSwitchSources();
   if (rasterAdjustmentsController?.needsAdjustmentSettlementForToolChange(historyState) === true) {
     if (!await rasterAdjustmentsController.commitActiveAdjustmentForToolChange()) {
       throw new Error("The active raster adjustment could not finish safely.");
@@ -2601,13 +2836,27 @@ async function settleTransientProjectEdits(): Promise<void> {
   const fillPreviewActive = engine.getFillPreviewState().active;
   const fillToolActive = engine.fillToolSelected
     || canvasToolController?.activeTool === "fill";
-  if (!fillPreviewActive && !fillToolActive) return;
-  if (canvasToolController) {
-    canvasToolController.finishFillToolOnSheetClose("fill");
+  if (fillPreviewActive || fillToolActive) {
+    if (canvasToolController) {
+      canvasToolController.finishFillToolOnSheetClose("fill");
+    }
+    await engine.setFillToolSelected(false);
+    if (engine.getFillPreviewState().active) {
+      throw new Error("Fill could not finish safely.");
+    }
   }
-  await engine.setFillToolSelected(false);
-  if (engine.getFillPreviewState().active) {
-    throw new Error("Fill could not finish safely.");
+
+  if (documentSwitchInProgress) {
+    if (
+      rasterAdjustmentsController?.isAnySurfaceOpen === true
+      || rasterAdjustmentsController?.hasActiveHistoryEdit(historyState) === true
+    ) {
+      throw new Error("Apply or cancel the open raster adjustment before switching projects.");
+    }
+    await waitForDocumentSwitchControllersIdle();
+    if (historyState.openEdit !== null) {
+      throw new Error("Finish the open document edit before switching projects.");
+    }
   }
 }
 
@@ -2639,6 +2888,7 @@ window.addEventListener("pagehide", () => {
   void mobileBrushStudio?.dispose();
   brushLibraryController.dispose();
   historyControlsController.dispose();
+  projectSessionController?.dispose();
   runtimeStatsController?.dispose();
   pixelSelectionController?.dispose();
 }, { once: true });
@@ -2655,7 +2905,8 @@ function nonHistoryOperationLocked(
   allowLayerMultiTransformEdit = false,
   allowRasterAdjustmentSurface = false,
 ): boolean {
-  return !engineInitialized
+  return documentSwitchInProgress
+    || !engineInitialized
     || sceneEditorController?.isBusy === true
     || mixedSceneController?.isBusy === true
     || (

@@ -225,4 +225,102 @@ await failureObserved;
 assert.match(failures.at(-1)[1], /optional warm-up failed/);
 failingBridge.dispose();
 
-console.log("Scene import bridge: immediate picker, queued cold start, failure, and disposal verified.");
+// A picker opened for document A cannot import a file after the composition
+// root advances to document B, even if the native picker returns afterwards.
+{
+  const stalePickerInput = new FakeFileInput();
+  const stalePickerImports = [];
+  const stalePickerFailures = [];
+  const stalePickerBridge = new SceneImportBridge({
+    svgInput: stalePickerInput,
+    imageInput: new FakeFileInput(),
+    currentController: () => ({
+      async importSvgFile(file) { stalePickerImports.push(file.name); },
+      async importRasterImageFile(file) { stalePickerImports.push(file.name); },
+    }),
+    ensureController: async () => {
+      throw new Error("A stale picker must not initialize the controller.");
+    },
+    onFailure: (_kind, error) => stalePickerFailures.push(String(error)),
+  });
+  stalePickerBridge.request("import-svg");
+  assert.equal(stalePickerInput.clickCount, 1);
+  assert.equal(await stalePickerBridge.resetForDocument(), 1);
+  stalePickerInput.choose({ name: "document-a.svg" });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(stalePickerImports, []);
+  assert.deepEqual(stalePickerFailures, []);
+  stalePickerBridge.dispose();
+}
+
+// Controller warm-up queued by document A may resolve during document B, but
+// its retained File must never be sent to the replacement controller.
+{
+  const queuedInput = new FakeFileInput();
+  const queuedReadiness = deferred();
+  const queuedImports = [];
+  let queuedEnsureCount = 0;
+  const queuedBridge = new SceneImportBridge({
+    svgInput: queuedInput,
+    imageInput: new FakeFileInput(),
+    currentController: () => null,
+    ensureController: () => {
+      queuedEnsureCount += 1;
+      return queuedReadiness.promise;
+    },
+  });
+  queuedBridge.request("import-svg");
+  queuedInput.choose({ name: "queued-a.svg" });
+  await Promise.resolve();
+  assert.equal(queuedEnsureCount, 1);
+  assert.equal(await queuedBridge.resetForDocument(), 1);
+  queuedReadiness.resolve({
+    async importSvgFile(file) { queuedImports.push(file.name); },
+    async importRasterImageFile(file) { queuedImports.push(file.name); },
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(queuedImports, []);
+  queuedBridge.dispose();
+}
+
+// Once an import has entered a document-owned controller it is allowed to
+// settle on that document. resetForDocument waits for it, so callers cannot
+// replace engine state while that asynchronous publication is still possible.
+{
+  const activeInput = new FakeFileInput();
+  const activeImport = deferred();
+  const activeStarted = deferred();
+  const activeBridge = new SceneImportBridge({
+    svgInput: activeInput,
+    imageInput: new FakeFileInput(),
+    currentController: () => ({
+      async importSvgFile() {
+        activeStarted.resolve();
+        await activeImport.promise;
+      },
+      async importRasterImageFile() {},
+    }),
+    ensureController: async () => {
+      throw new Error("The active controller must not warm again.");
+    },
+  });
+  activeBridge.request("import-svg");
+  activeInput.choose({ name: "active-a.svg" });
+  await activeStarted.promise;
+  assert.equal(activeBridge.isImportInFlight, true);
+  let resetSettled = false;
+  const reset = activeBridge.resetForDocument().then((generation) => {
+    resetSettled = true;
+    return generation;
+  });
+  await Promise.resolve();
+  assert.equal(resetSettled, false, "document reset must wait for an active import");
+  activeImport.resolve();
+  assert.equal(await reset, 1);
+  assert.equal(activeBridge.isImportInFlight, false);
+  activeBridge.dispose();
+}
+
+console.log("Scene import bridge: picker activation, document generations, settlement, failure, and disposal verified.");

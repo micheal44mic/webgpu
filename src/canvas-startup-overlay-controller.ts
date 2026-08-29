@@ -26,6 +26,22 @@ const PHASE_PROGRESS: Readonly<Record<string, PhaseProgressRange>> = {
   "restore-active-brush": { started: 98, completed: 98 },
   "project-session": { started: 99, completed: 99 },
   "editor-ready": { started: 99, completed: 99 },
+  // A same-runtime project switch reuses the already compiled GPU programs,
+  // so its progress follows the document replacement boundary rather than the
+  // one-time adapter/device pipeline phases above.
+  "document-switch-availability": { started: 4, completed: 4 },
+  "document-switch-preload-target": { started: 10, completed: 10 },
+  "document-switch-start": { started: 18, completed: 18 },
+  "document-switch-settle-source": { started: 25, completed: 25 },
+  "document-switch-save-source": { started: 36, completed: 36 },
+  "document-switch-verify-source": { started: 42, completed: 42 },
+  "document-switch-preflight-engine": { started: 50, completed: 50 },
+  "document-switch-reset-engine": { started: 60, completed: 60 },
+  "document-switch-restore-target": { started: 78, completed: 78 },
+  "document-switch-commit-target": { started: 88, completed: 88 },
+  "document-switch-first-frame": { started: 96, completed: 96 },
+  "document-switch-save-target": { started: 98, completed: 98 },
+  "document-switch-publish-target": { started: 99, completed: 99 },
 };
 
 export interface CanvasStartupOverlayState {
@@ -136,6 +152,18 @@ export class CanvasStartupOverlayController {
     if (!overlay) return;
     overlay.hidden = true;
     overlay.dataset.state = "failed";
+    overlay.setAttribute("aria-busy", "false");
+    this.setEditorInteractionBlocked(false);
+  }
+
+  /** Hides a speculative overlay when no document replacement was needed. */
+  dismiss(): void {
+    this.clearHideTimer();
+    this.state = createCanvasStartupOverlayState();
+    const overlay = this.overlay;
+    if (!overlay) return;
+    overlay.hidden = true;
+    overlay.dataset.state = "idle";
     overlay.setAttribute("aria-busy", "false");
     this.setEditorInteractionBlocked(false);
   }

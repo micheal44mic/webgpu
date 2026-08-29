@@ -16,6 +16,7 @@ assert.doesNotMatch(
 );
 assert.match(source, /export type CanvasToolEnginePort = Pick</);
 assert.match(source, /configurationRevision/);
+assert.match(source, /resetForDocument\(\): Promise<void>/);
 assert.match(source, /startTextDistortEditing/);
 assert.match(source, /syncVectorControllerState/);
 assert.doesNotMatch(source, /document\.getElementById|querySelector/);
@@ -471,6 +472,57 @@ assert.equal(
   applyCallsBeforeCanceledClose,
   "closing after Cancel must leave Transform without trying to apply a missing session",
 );
+
+controller.configure("paint", false);
+await settle();
+adjustmentActive = true;
+locked = true;
+let releaseResetAdjustment;
+finishAdjustmentGate = new Promise((resolve) => {
+  releaseResetAdjustment = resolve;
+});
+assert.equal(controller.select("erase"), true);
+const resetDuringAdjustment = controller.resetForDocument();
+assert.equal(
+  controller.select("blend"),
+  false,
+  "new tool requests must be blocked while the document tool state resets",
+);
+releaseResetAdjustment(true);
+await resetDuringAdjustment;
+assert.equal(
+  controller.activeTool,
+  "pan",
+  "an adjustment-era queued tool must not publish after the document reset",
+);
+assert.deepEqual(
+  engineCalls.slice(-2),
+  [["fill", false], ["selection", false, controller.selectionMethod]],
+  "document reset must await both engine tool deselections",
+);
+finishAdjustmentGate = null;
+locked = false;
+
+controller.configure("transform", false);
+await settle();
+multiSelectionActive = true;
+locked = true;
+let releaseResetMultiSelection;
+finishMultiSelectionGate = new Promise((resolve) => {
+  releaseResetMultiSelection = resolve;
+});
+assert.equal(controller.select("paint"), true);
+const resetDuringMultiSelection = controller.resetForDocument();
+releaseResetMultiSelection(true);
+await resetDuringMultiSelection;
+assert.equal(
+  controller.activeTool,
+  "pan",
+  "a multiple-selection queued tool must not publish after the document reset",
+);
+finishMultiSelectionGate = null;
+multiSelectionActive = false;
+locked = false;
 
 assert(menuSyncs > 0);
 assert(closedStudios.length > 0);

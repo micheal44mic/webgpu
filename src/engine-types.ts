@@ -287,7 +287,10 @@ export interface EngineCallbacks {
   onStats?: (stats: EngineStats) => void;
   onHistoryChange?: (state: HistoryState) => void;
   onViewRotationChange?: (degrees: number, snappedToZero: boolean) => void;
-  onViewChange?: (state: VectorTextViewState) => void;
+  onViewChange?: (
+    state: VectorTextViewState,
+    documentViewChanged: boolean,
+  ) => void;
   onMixedSceneChange?: (snapshot: MixedSceneSnapshot) => void;
   onPixelSelectionChange?: (state: PixelSelectionState) => void;
   /**

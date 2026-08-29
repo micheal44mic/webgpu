@@ -10,6 +10,8 @@ assert.match(source, /dirtyGenerationByLayerId/);
 assert.match(source, /invalidateActive\(delayMs = 120\)/);
 assert.match(source, /ensureActive\(delayMs = 0\)/);
 assert.match(source, /resumeCapture\(delayMs = 0\)/);
+assert.match(source, /resetForDocument\(\): number/);
+assert.match(source, /requestedDocumentGeneration !== this\.documentGeneration/);
 assert.match(source, /this\.dirtyGenerationByLayerId\.size > this\.cache\.maximum/);
 assert.match(
   source,
@@ -287,4 +289,49 @@ function createHarness(initialStats) {
   assert.equal(harness.browser.timers.size, 0);
 }
 
-console.log("Layer thumbnail controller: serialization, generations, pause and disposal verified.");
+// A document reset discards same-id pixels captured from the previous
+// document. New work remains serialized behind the old GPU readback and then
+// captures from the replacement document.
+{
+  const harness = createHarness({
+    activeLayerIndex: 0,
+    layers: [{ id: 21, hasContent: true }],
+  });
+  harness.controller.setPanelOpen(true);
+  harness.browser.runNextTimer();
+  assert.deepEqual(harness.captureCalls, [21]);
+
+  assert.equal(harness.controller.activeDocumentGeneration, 0);
+  assert.equal(harness.controller.resetForDocument(), 1);
+  assert.equal(harness.controller.activeDocumentGeneration, 1);
+  assert.equal(harness.browser.timers.size, 0);
+
+  // The replacement document deliberately reuses the layer id. Layer-id and
+  // live-stats checks alone therefore cannot distinguish the stale result.
+  harness.setStats({
+    activeLayerIndex: 0,
+    layers: [{ id: 21, hasContent: true }],
+  });
+  harness.controller.queueMissing(0);
+  assert.equal(harness.browser.timers.size, 0, "new capture waits for the old readback");
+  harness.pendingCaptures.shift().resolve(capture(21, 40));
+  await settle();
+  assert.equal(harness.controller.rasterRevision(21), 0);
+
+  harness.browser.runNextTimer();
+  assert.deepEqual(harness.captureCalls, [21, 21]);
+  harness.pendingCaptures.shift().resolve(capture(21, 80));
+  await settle();
+  assert.ok(harness.controller.rasterRevision(21) > 0);
+
+  harness.controller.invalidateActive(0);
+  assert.equal(harness.browser.timers.size, 1);
+  const dirtyBeforeReset = harness.dirtyNotifications.length;
+  assert.equal(harness.controller.resetForDocument(), 2);
+  assert.equal(harness.browser.timers.size, 0, "document reset cancels queued readbacks");
+  assert.equal(harness.controller.rasterRevision(21), 0, "document reset frees cached pixels");
+  assert.equal(harness.dirtyNotifications.length, dirtyBeforeReset + 1);
+  harness.controller.dispose();
+}
+
+console.log("Layer thumbnail controller: serialization, document generations, pause and disposal verified.");

@@ -95,6 +95,8 @@ export class CanvasToolController {
   } | null = null;
   private adjustmentExitPromise: Promise<void> | null = null;
   private fillClosePanRequested = false;
+  private documentResetInProgress = false;
+  private documentResetPromise: Promise<void> | null = null;
   private disposed = false;
 
   constructor(private readonly options: CanvasToolControllerOptions) {
@@ -161,8 +163,25 @@ export class CanvasToolController {
     }
   }
 
+  /**
+   * Returns the reusable editor shell to its document-neutral Hand state.
+   *
+   * Tool requests that were already waiting for an adjustment or a multiple
+   * selection must finish their source-document settlement, but they must not
+   * publish their queued tool after the document boundary has moved.
+   */
+  resetForDocument(): Promise<void> {
+    if (this.documentResetPromise) return this.documentResetPromise;
+    const operation = this.performDocumentReset();
+    const tracked = operation.finally(() => {
+      if (this.documentResetPromise === tracked) this.documentResetPromise = null;
+    });
+    this.documentResetPromise = tracked;
+    return tracked;
+  }
+
   select(tool: CanvasInputTool, preserveToolSettings = false): boolean {
-    if (this.disposed) return false;
+    if (this.disposed || this.documentResetInProgress) return false;
     if (
       this.adjustmentExitPromise !== null
       || this.options.shouldPrepareActiveAdjustmentForToolChange()
@@ -263,6 +282,16 @@ export class CanvasToolController {
     restoreSnapshot: boolean,
     preserveToolSettings = false,
   ): void {
+    if (this.disposed || this.documentResetInProgress) return;
+    this.configureUnchecked(tool, restoreSnapshot, preserveToolSettings, true);
+  }
+
+  private configureUnchecked(
+    tool: CanvasInputTool,
+    restoreSnapshot: boolean,
+    preserveToolSettings: boolean,
+    syncEngineSelection: boolean,
+  ): void {
     if (this.disposed) return;
     const configurationAlreadyInProgress = this.configurationInProgress;
     this.configurationInProgress = true;
@@ -302,7 +331,7 @@ export class CanvasToolController {
       this.syncVectorControllerState();
       this.options.syncBrushSettings(this.options.brushSettings.snapshot());
       this.options.syncQuickControls();
-      if (!this.options.isEngineReady()) return;
+      if (!this.options.isEngineReady() || !syncEngineSelection) return;
       const method = this.selectionMethod;
       void this.configureEngineToolSelection(
         tool,
@@ -313,6 +342,46 @@ export class CanvasToolController {
       );
     } finally {
       this.configurationInProgress = configurationAlreadyInProgress;
+    }
+  }
+
+  private async performDocumentReset(): Promise<void> {
+    if (this.disposed) return;
+    this.documentResetInProgress = true;
+    // Any setFillToolSelected()/setSelectionToolSelected() continuation from the
+    // outgoing document observes a stale revision and cannot publish its second
+    // step after this point.
+    this.configurationRevision += 1;
+    this.pendingAdjustmentTool = null;
+    this.pendingMultiSelectionTool = null;
+    this.fillClosePanRequested = false;
+    const pendingAdjustmentExit = this.adjustmentExitPromise;
+    const pendingMultiSelectionExit = this.multiSelectionExitPromise;
+    try {
+      await Promise.all([
+        pendingAdjustmentExit ?? Promise.resolve(),
+        pendingMultiSelectionExit ?? Promise.resolve(),
+      ]);
+      if (this.disposed) return;
+
+      // Reassert the boundary after the source exits: their completion handlers
+      // are allowed to settle source history, never to restore a queued tool.
+      this.configurationRevision += 1;
+      this.pendingAdjustmentTool = null;
+      this.pendingMultiSelectionTool = null;
+      this.textDistortReturnTool = null;
+      const vector = this.options.getVectorController();
+      if (vector?.isSelectedTextDistortEditing()) vector.stopSelectedTextDistortEditing();
+      this.configureUnchecked("pan", false, false, false);
+
+      if (this.options.isEngineReady()) {
+        await this.options.engine.setFillToolSelected(false);
+        if (this.disposed) return;
+        await this.options.engine.setSelectionToolSelected(false, this.selectionMethod);
+      }
+      if (!this.disposed) this.options.updateHistoryControls();
+    } finally {
+      this.documentResetInProgress = false;
     }
   }
 
@@ -406,6 +475,7 @@ export class CanvasToolController {
     this.configurationRevision += 1;
     this.pendingMultiSelectionTool = null;
     this.pendingAdjustmentTool = null;
+    this.documentResetInProgress = false;
     this.abortController.abort();
   }
 

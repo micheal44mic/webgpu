@@ -80,6 +80,20 @@ expect(startup, "storageReady", "parallel project storage startup");
 expect(startup, "preloadedProject", "project read overlapped with WebGPU startup");
 expect(startup, 'window.history.pushState(null, "", url)', "warm Home/editor navigation");
 expect(startup, 'showApplicationSurface("editor")', "warm editor surface reuse");
+expect(startup, "window.__projectEditorSessionLifecycle", "stable editor session lifecycle endpoint");
+expect(
+  startup,
+  'suspendedEditorUrl.searchParams.get("project") !== url.searchParams.get("project")',
+  "same-project identity gate",
+);
+expect(startup, "const suspended = explicitEditorDimensions(suspendedEditorUrl)",
+  "canonical suspended dimensions");
+expect(startup, "sameSuspendedDimensions(url)", "same-size in-place switch gate");
+expect(startup, 'get("projectSwitch") !== "reload"', "document switch kill switch");
+expect(startup, "await lifecycle.switchProject(switchRequest)", "in-place project switch request");
+expect(startup, 'await lifecycle.returnHome("none")', "settled popstate return Home");
+expect(startup, "queuedHistoryTarget = target", "serialized history navigation");
+expect(startup, 'result.fallback.action === "reload-source"', "verified source recovery route");
 expect(
   startup,
   "const startupOverlay = getCanvasStartupOverlayController();",
@@ -158,6 +172,16 @@ assert(
 );
 expect(main, "captureDocument: () => engine.captureProjectDocument()", "capture engine port");
 expect(main, "restoreDocument: (project) => engine.restoreProjectDocument(project)", "restore engine port");
+expect(main, "await engine.resetToFreshProjectState();", "same-runtime engine document reset");
+expect(main, "onDocumentSwitchPreReset", "pre-destructive composition boundary");
+expect(main, "await sceneImportBridge.resetForDocument();", "outgoing import generation drain");
+expect(main, "layerThumbnailController.resetForDocument();", "outgoing thumbnail invalidation");
+expect(main, "await canvasToolController?.resetForDocument();", "queued tool invalidation");
+expect(main, "await mixedSceneController?.resetForDocument();", "mixed-scene cache reset");
+expect(main, "historyControlsController.resetForDocument(historyState);", "history UI rebase");
+expect(main, "await mobileStrokeSheet?.settleDocumentEdits();", "stroke draft drain");
+expect(main, "await mobileRasterEffectsSheet?.settleDocumentEdits();", "effect draft drain");
+expect(main, "await mobileToolSettingsSheet?.settleDocumentEdits();", "tool settings drain");
 expect(main, "projectSessionController?.noteHistoryState(state)", "history dirty tracking port");
 expect(main, "projectSessionController?.noteSceneSnapshot(snapshot)", "scene dirty tracking port");
 expect(main, "settleTransientEdits: settleTransientProjectEdits", "preview settlement gate");
@@ -217,7 +241,11 @@ expect(projectSession, "await this.captureThumbnailBlob()", "thumbnail capture r
 expect(projectSession, "this.storageReady ?? this.storage.initialize()", "shared storage readiness");
 expect(projectSession, "if (this.onReturnHome)", "warm return to project Home");
 expect(projectSession, 'event.key.toLowerCase() !== "s"', "save shortcut");
-expect(projectSession, "private async returnHome()", "save-before-home flow");
+expect(
+  projectSession,
+  'async returnHome(historyMode: "push" | "none" = "push")',
+  "save-before-home lifecycle flow",
+);
 expect(projectSession, "await this.settleTransientEdits?.();", "settled previews before save/home");
 const saveSettlement = projectSession.indexOf("await this.settleTransientEdits?.();");
 const documentCapture = projectSession.indexOf("const captured = await this.engine.captureDocument();");
@@ -266,6 +294,22 @@ expect(canvasStartupOverlay, "overlay.hidden = true", "canvas startup overlay di
 expect(canvasStartupOverlay, "child.inert = true", "blocked editor interaction during startup");
 expect(canvasStartupOverlay, "element.inert = false", "restored editor interaction after startup");
 expect(canvasStartupOverlay, "isVisible(): boolean", "visible startup overlay presentation gate");
+expect(canvasStartupOverlay, "dismiss(): void", "unchanged project overlay dismissal");
+expect(main, "documentSwitchGeneration += 1", "document switch continuation generation");
+expect(main, '|| (result.status === "failed" && !result.destructive)',
+  "post-switch control unlock gate");
+expect(brushEngine, "this.notifyViewChange(false);", "presentation-only canvas resize view signal");
+expect(main, "if (documentViewChanged) projectSessionController?.markDirty", "durable view gate");
+expect(
+  main,
+  "requestedDocumentSwitchGeneration === documentSwitchGeneration",
+  "deferred tool settings document guard",
+);
+expect(
+  main,
+  "return documentSwitchInProgress\n    || !engineInitialized",
+  "global shortcut document switch lock",
+);
 reject(canvasStartupOverlay, "BrushEngine", "engine implementation dependency in startup overlay");
 reject(canvasStartupOverlay, "createTexture", "GPU resource creation in startup overlay");
 reject(canvasStartupOverlay, "requestDevice", "GPU device change in startup overlay");
@@ -310,6 +354,15 @@ const outOfOrderStartupState = reduceCanvasStartupOverlayState(
   startupEvent("adapter-request", "started"),
 );
 assert(outOfOrderStartupState.percent === 70, "out-of-order monotonic startup progress");
+const documentSwitchStartupState = reduceCanvasStartupOverlayState(
+  createCanvasStartupOverlayState(),
+  startupEvent("document-switch-restore-target", "completed", "Restoring project"),
+);
+assert(
+  documentSwitchStartupState.percent === 78
+    && documentSwitchStartupState.label === "Restoring project",
+  "same-runtime document switch progress",
+);
 const editorFirstStartupState = reduceCanvasStartupOverlayState(
   outOfOrderStartupState,
   startupEvent("editor-ready", "completed"),

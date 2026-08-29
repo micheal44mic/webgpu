@@ -728,6 +728,11 @@ assert.doesNotMatch(
 assert.doesNotMatch(css, /transform-commit-bar|#transformCommitBar/);
 assert.doesNotMatch(mixedController, /transformCommitBar|transformCommitLabel|transformApplyButton|transformCancelButton/);
 assert.match(
+  controller,
+  /async settleDocumentEdits\(\): Promise<void>[\s\S]*?this\.close\(false\)[\s\S]*?while \(this\.layerOptionsClosePromise\)[\s\S]*?await this\.layerOptionsClosePromise/,
+  "document replacement must invalidate queued opens and await layer-option closure",
+);
+assert.match(
   css,
   /@media \(min-width: 700px\)[\s\S]*?\.mobile-tool-settings-sheet\[data-snap="minimized"\][\s\S]*?width:\s*64px;[\s\S]*?\.mobile-tool-settings-shell[\s\S]*?display:\s*none;/,
   "the desktop Perspective dock must collapse instead of covering the right-side corners",

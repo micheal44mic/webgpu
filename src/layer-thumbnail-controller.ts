@@ -66,6 +66,7 @@ export class LayerThumbnailController {
   private panelOpen = false;
   private revision = 0;
   private sourceGeneration = 0;
+  private documentGeneration = 0;
   private fontRevision = 0;
   private captureTimer: number | null = null;
   private readonly pendingLayerIds = new Set<number>();
@@ -78,6 +79,34 @@ export class LayerThumbnailController {
 
   get isCaptureInFlight(): boolean {
     return this.captureInFlight;
+  }
+
+  get activeDocumentGeneration(): number {
+    return this.documentGeneration;
+  }
+
+  /**
+   * Invalidates every document-owned preview without destroying the reusable
+   * controller. An in-flight GPU readback cannot be cancelled, so its captured
+   * generation prevents it from publishing pixels after the document changes.
+   * The caller may queue previews for the restored document once it is ready.
+   */
+  resetForDocument(): number {
+    if (this.disposed) return this.documentGeneration;
+    this.documentGeneration += 1;
+    const shouldNotify =
+      this.cache.size > 0
+      || this.pendingLayerIds.size > 0
+      || this.dirtyGenerationByLayerId.size > 0
+      || this.fontRevision > 0;
+    this.pendingLayerIds.clear();
+    this.dirtyGenerationByLayerId.clear();
+    this.cancelCaptureTimer();
+    this.cache.clear();
+    this.fontRevision = 0;
+    this.captureUnavailable = false;
+    if (shouldNotify) this.options.onDirty();
+    return this.documentGeneration;
   }
 
   setPanelOpen(open: boolean): void {
@@ -259,10 +288,14 @@ export class LayerThumbnailController {
       canvasRendered = true;
     } else if (view.semanticThumbnail && context) {
       if (view.semanticThumbnail.kind === "text") {
+        const requestedDocumentGeneration = this.documentGeneration;
         requestMobileTextThumbnailFont(
           view.semanticThumbnail.node.fontFamily,
           () => {
-            if (this.disposed) return;
+            if (
+              this.disposed
+              || requestedDocumentGeneration !== this.documentGeneration
+            ) return;
             this.fontRevision += 1;
             this.options.onDirty();
           },
@@ -377,6 +410,7 @@ export class LayerThumbnailController {
     if (layerId === undefined) return;
     this.pendingLayerIds.delete(layerId);
     const requestedGeneration = this.dirtyGenerationByLayerId.get(layerId) ?? 0;
+    const requestedDocumentGeneration = this.documentGeneration;
     const requestedLayer = liveLayers.get(layerId);
     if (!requestedLayer?.hasContent) {
       this.deleteRasterEntry(layerId);
@@ -386,7 +420,10 @@ export class LayerThumbnailController {
     this.captureInFlight = true;
     try {
       const capture = await this.options.captureRasterLayerThumbnail(layerId);
-      if (this.disposed) return;
+      if (
+        this.disposed
+        || requestedDocumentGeneration !== this.documentGeneration
+      ) return;
       if (capture.layerId !== layerId) {
         throw new Error("Thumbnail capture returned an unexpected layer.");
       }
@@ -417,7 +454,10 @@ export class LayerThumbnailController {
       this.dirtyGenerationByLayerId.delete(layerId);
       this.options.onDirty();
     } catch (error) {
-      if (this.disposed) return;
+      if (
+        this.disposed
+        || requestedDocumentGeneration !== this.documentGeneration
+      ) return;
       const message = error instanceof Error ? error.message : String(error);
       const liveStats = this.options.getStats();
       if (message.includes("deferred")) {

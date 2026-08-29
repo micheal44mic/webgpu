@@ -20,6 +20,12 @@ import {
   destroyLayerGpuResources,
 } from "./engine-layer-runtime";
 import {
+  destroyActiveCloneStrokeSession,
+  releasePreparedCloneSourceAndWait,
+} from "./engine-clone-runtime";
+import { destroyLightGlazeResources } from "./engine-glaze-runtime";
+import { resetPixelSelectionState } from "./engine-selection-runtime";
+import {
   DOCUMENT_HEIGHT,
   DOCUMENT_TILE_HEIGHT,
   DOCUMENT_TILE_WIDTH,
@@ -28,6 +34,7 @@ import {
 import { combineCompressionHashes, hashBytes } from "./engine-math";
 import { rgba8UnormToRgba16FloatBytes } from "./float16";
 import type { LayerRecord, LayerStackState } from "./layer-stack";
+import { MixedSceneStack } from "./mixed-scene-stack";
 import type { LayerColdCompressedChunk } from "./layer-cold-compression-client";
 import {
   PROJECT_DOCUMENT_SCHEMA_VERSION,
@@ -59,6 +66,111 @@ import {
 export interface CapturedProjectDocumentV1 {
   readonly snapshot: ProjectSnapshotV1;
   readonly chunks: readonly ProjectChunkWriteV1[];
+}
+
+const DOCUMENT_RESET_WAIT_TIMEOUT_MS = 65_000;
+
+function assertFreshProjectResetAllowed(engine: BrushEngine): void {
+  if (!engine.initialized) {
+    throw new Error("The editor is not ready yet.");
+  }
+  if (engine.deviceLostError) {
+    throw engine.deviceLostError;
+  }
+  if (engine.historyStateInconsistent) {
+    throw new Error("The current document is inconsistent and must be reloaded.");
+  }
+  if (engine.presentationTransactionDepth !== 0) {
+    throw new Error("Another document presentation transaction is already active.");
+  }
+  engine.assertLayerSwitchAllowed();
+}
+
+async function waitForDocumentScopedPreparation(engine: BrushEngine): Promise<void> {
+  while (engine.fillRendererLoadingPromise) {
+    await engine.fillRendererLoadingPromise;
+  }
+  while (engine.selectionRendererLoadingPromise) {
+    await engine.selectionRendererLoadingPromise;
+  }
+  while (engine.layerBlendTileResourcesPromise) {
+    await engine.layerBlendTileResourcesPromise;
+  }
+  await releasePreparedCloneSourceAndWait(engine);
+}
+
+async function waitForColdCompressionCancellation(engine: BrushEngine): Promise<void> {
+  const startedAt = performance.now();
+  while (engine.layerColdCompressionJobRunning) {
+    if (engine.deviceLostError) throw engine.deviceLostError;
+    if (performance.now() - startedAt > DOCUMENT_RESET_WAIT_TIMEOUT_MS) {
+      throw new Error("The outgoing document compression did not stop in time.");
+    }
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+  }
+}
+
+function clearHotLayerForFreshProject(
+  engine: BrushEngine,
+  hot: LayerTextureResources,
+): void {
+  const encoder = engine.device.createCommandEncoder({
+    label: "Clear reusable layer for project switch",
+  });
+  const pass = encoder.beginRenderPass({
+    label: "Clear reusable project layer",
+    colorAttachments: [{
+      view: hot.view,
+      loadOp: "clear",
+      storeOp: "store",
+      clearValue: { r: 0, g: 0, b: 0, a: 0 },
+    }],
+  });
+  pass.end();
+  engine.device.queue.submit([encoder.finish()]);
+}
+
+function resetDocumentScopedTransientState(engine: BrushEngine): void {
+  if (engine.frameRequest !== null) {
+    cancelAnimationFrame(engine.frameRequest);
+    engine.frameRequest = null;
+  }
+  engine.pendingStamps.length = 0;
+  engine.pendingBlendBatches.length = 0;
+  engine.activeStroke = null;
+  engine.deferredStrokePreview = null;
+  engine.straightLineAdjustment = null;
+  engine.lastDeferredLiftReplay = null;
+  destroyActiveCloneStrokeSession(engine);
+  destroyLightGlazeResources(engine);
+  engine.destroyThicknessTailOverlayResources();
+  engine.invalidateAdaptivePreview();
+
+  if (engine.fillScratchReleaseTimer !== null) {
+    window.clearTimeout(engine.fillScratchReleaseTimer);
+    engine.fillScratchReleaseTimer = null;
+  }
+  engine.fillRenderer?.releaseScratch();
+  engine.blendRenderer?.releaseScratch();
+
+  engine.selectionRenderer?.clearSelection();
+  resetPixelSelectionState(engine);
+  engine.clearVectorTextPresentation(undefined, true);
+  engine.vectorTextPreviewExcludedNodeId = null;
+  engine.shapePreviewAfterKey = null;
+  engine.shapePreviewVisible = false;
+  engine.shapePreviewBounds = null;
+  engine.semanticPresentationDirtyRect = null;
+  engine.vectorTextFastPresentationLatestRequested = false;
+  engine.vectorTextFastRequestedRevision = 0;
+  engine.vectorTextFastSubmittedRevision = 0;
+  engine.vectorTextFastCompletedRevision = 0;
+  engine.paintDisplayMipValidThroughLevel = 0;
+  engine.paintDisplayPyramidContent = "active-only";
+  engine.paintDisplaySelectedMipLevel = 0;
+  engine.clearRequested = false;
+  engine.displayDirty = true;
+  engine.presentationCacheNeedsFullRebuild = true;
 }
 
 function cloneBuffer(buffer: ArrayBuffer): ArrayBuffer {
@@ -521,6 +633,138 @@ async function promotePersistedLayer(
 }
 
 /**
+ * Replaces every document-owned resource with one transparent raster while
+ * preserving the long-lived WebGPU device, compiled programs and brush asset
+ * residency. The caller must durably save the outgoing project first: once the
+ * reusable hot texture is cleared, failure is intentionally fail-closed.
+ */
+export async function resetEngineToFreshProjectState(
+  engine: BrushEngine,
+): Promise<number> {
+  assertFreshProjectResetAllowed(engine);
+
+  // These two previews own structural composition state that is stored outside
+  // the layer stack. Withdraw them while the outgoing document is still valid.
+  await engine.releaseShapePreviewPresentation();
+  await engine.clearMixedSceneRasterTransformPreview();
+  await waitForDocumentScopedPreparation(engine);
+  assertFreshProjectResetAllowed(engine);
+
+  engine.persistActiveLayerState();
+  const oldGpu = [...engine.layerGpu.values()];
+  const oldActiveGpu = engine.requireLayerGpu(engine.layerStack.active.id);
+  const reusableBlankHot = oldActiveGpu.hot;
+  if (!reusableBlankHot) {
+    throw new Error("The active project has no reusable layer texture.");
+  }
+  const freshRecord = engine.layerStack.createDetachedRecord("Layer 1");
+  const freshGpu = createColdLayerGpuResources();
+  freshGpu.hot = reusableBlankHot;
+
+  if (engine.documentGeneration >= Number.MAX_SAFE_INTEGER) {
+    throw new Error("The document generation counter is exhausted.");
+  }
+  const nextGeneration = engine.documentGeneration + 1;
+  engine.documentGeneration = nextGeneration;
+  engine.layerSwitchBusy = true;
+  engine.cancelLayerColdCompressionIdle();
+
+  let presentationTransactionStarted = false;
+  let destructiveCommitStarted = false;
+  let freshStatePublished = false;
+  let oldGpuDestroyed = false;
+  let completed = false;
+  try {
+    await waitForColdCompressionCancellation(engine);
+    await engine.waitForIdle();
+    await engine.beginPresentationTransaction();
+    presentationTransactionStarted = true;
+
+    // This is the irreversible boundary. It avoids allocating a second full
+    // 4096² RGBA16F texture merely to manufacture an empty restore target.
+    destructiveCommitStarted = true;
+    clearHotLayerForFreshProject(engine, reusableBlankHot);
+    await engine.waitForGpuCapped(
+      "Clear reusable project layer",
+      DOCUMENT_RESET_WAIT_TIMEOUT_MS,
+    );
+
+    engine.resetHistoryState();
+    resetDocumentScopedTransientState(engine);
+
+    const freshStack: LayerStackState = {
+      layers: [freshRecord],
+      activeLayerId: freshRecord.id,
+      referenceLayerId: null,
+    };
+    engine.layerStack.restoreState(freshStack);
+    engine.layerGpu.clear();
+    engine.layerGpu.set(freshRecord.id, freshGpu);
+    oldActiveGpu.hot = null;
+    freshStatePublished = true;
+
+    if (engine.mixedSceneStack) {
+      const freshScene = new MixedSceneStack([freshRecord.id]);
+      engine.mixedSceneStack.restoreState(freshScene.captureState());
+    }
+    engine.documentBackground = normalizeDocumentBackground(undefined);
+    engine.layerContentBounds = null;
+    engine.layerHasContent = false;
+
+    engine.viewRotation = 0;
+    engine.viewRotationCos = 1;
+    engine.viewRotationSin = 0;
+    engine.viewRotationGestureRaw = 0;
+    engine.viewRotationGestureActive = false;
+    engine.viewRotationSnappedToZero = true;
+    engine.hasFittedView = false;
+    engine.fitView();
+
+    await engine.activateLayer(0, "layer-switch");
+    for (const gpu of oldGpu) destroyLayerGpuResources(engine, gpu);
+    oldGpuDestroyed = true;
+    engine.sweepRasterImageGpuResources();
+
+    engine.publishHistoryState();
+    engine.publishActiveLayerChange();
+    try {
+      engine.callbacks.onViewRotationChange?.(0, true);
+      engine.callbacks.onViewChange?.(engine.getVectorTextViewState(), false);
+    } catch (error) {
+      console.error("Project view observer ignored after document reset:", error);
+    }
+    engine.publishStats();
+    completed = true;
+    return nextGeneration;
+  } catch (error) {
+    if (freshStatePublished && !oldGpuDestroyed) {
+      for (const gpu of oldGpu) destroyLayerGpuResources(engine, gpu);
+      oldGpuDestroyed = true;
+    }
+    if (destructiveCommitStarted) {
+      engine.latchDocumentStateInconsistent(
+        "The project switch could not create a safe restore target. Reload before continuing.",
+        error,
+      );
+    }
+    throw error;
+  } finally {
+    engine.layerSwitchBusy = false;
+    if (
+      presentationTransactionStarted
+      && (completed || !destructiveCommitStarted)
+    ) {
+      engine.endPresentationTransaction();
+    }
+    if (completed) {
+      engine.scheduleEffectsScratchShrink();
+      engine.scheduleBevelFieldShrink();
+      engine.scheduleLayerColdCompression();
+    }
+  }
+}
+
+/**
  * Restores a validated project into the freshly initialized blank engine. The
  * initial hot texture is reused for the saved active layer, avoiding a second
  * 128 MiB allocation when opening a 4096² RGBA16F document.
@@ -667,7 +911,7 @@ export async function restoreProjectDocument(
       snapshot.view.rotationRadians * 180 / Math.PI,
       engine.viewRotationSnappedToZero,
     );
-    engine.callbacks.onViewChange?.(engine.getVectorTextViewState());
+    engine.callbacks.onViewChange?.(engine.getVectorTextViewState(), false);
   } catch (error) {
     engine.restoredProjectHistoryBaselines.clear();
     for (const resource of installedRasterSources) {

@@ -13,6 +13,7 @@ import { planPaintDisplayMips } from "../src/noise-mip-smoothing-core.ts";
 const read = (relativePath) => fs.readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
 const engineSource = readEngineSource();
 const appDiagnosticsControllerSource = read("src/app-diagnostics-controller.ts");
+const engineTypesSource = read("src/engine-types.ts");
 const mainSource = read("src/main.ts");
 const canvasInputSource = read("src/canvas-input-controller.ts");
 const humanLabSource = read("src/labs/human-stroke-lab.ts");
@@ -523,16 +524,43 @@ assert.deepEqual(correctedRgb, [247, 255, 188]);
 assert(correctedRgb[0] > oldFringeRgb[0] && correctedRgb[1] === 255,
   "la transizione corretta non deve scendere sotto entrambi i colori finali");
 
+const viewChangeSignature = "  notifyViewChange(documentViewChanged = true): void";
+const viewChangeStart = engineSource.indexOf(viewChangeSignature);
+assert.ok(viewChangeStart >= 0, "API di notifica vista con semantica persistente mancante");
 const viewChangeSection = engineSource.slice(
-  engineSource.indexOf("  notifyViewChange(): void"),
-  engineSource.indexOf("  setVectorTextFastPresentationEnabled", engineSource.indexOf(
-    "  notifyViewChange(): void",
-  )),
+  viewChangeStart,
+  engineSource.indexOf("  setVectorTextFastPresentationEnabled", viewChangeStart),
 );
 assert.match(
   viewChangeSection,
   /this\.viewPresentationRevision \+= 1;/,
-  "ogni mutazione della camera deve produrre una revisione presentabile",
+  "anche una variazione solo di presentazione deve produrre una revisione presentabile",
+);
+assert.match(
+  viewChangeSection,
+  /this\.callbacks\.onViewChange\?\.\(\s*this\.getVectorTextViewState\(\),\s*documentViewChanged,\s*\);/,
+  "la callback deve ricevere separatamente la persistenza della camera",
+);
+const resizeCanvasStart = engineSource.indexOf("  resizeCanvas(): void");
+const resizeCanvasSection = engineSource.slice(
+  resizeCanvasStart,
+  engineSource.indexOf("  getVectorTextViewState(): VectorTextViewState", resizeCanvasStart),
+);
+assert.ok(resizeCanvasStart >= 0 && resizeCanvasSection.length > 0, "resize canvas non trovato");
+assert.match(
+  resizeCanvasSection,
+  /this\.notifyViewChange\(false\);/,
+  "il ridimensionamento della superficie deve aggiornare la presentazione senza sporcare la camera salvata",
+);
+assert.match(
+  engineTypesSource,
+  /onViewChange\?: \(\s*state: VectorTextViewState,\s*documentViewChanged: boolean,\s*\) => void;/,
+  "il contratto callback deve rendere obbligatoria la distinzione persistente/presentazione",
+);
+assert.match(
+  mainSource,
+  /onViewChange\(_state, documentViewChanged\)[\s\S]*if \(documentViewChanged\) projectSessionController\?\.markDirty\("view state"\);/,
+  "solo una camera persistente deve rendere sporca la sessione progetto",
 );
 const viewRetrySection = engineSource.slice(
   engineSource.indexOf("  private armViewPresentationRetry"),

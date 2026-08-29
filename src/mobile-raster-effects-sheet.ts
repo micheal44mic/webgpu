@@ -522,6 +522,38 @@ export class MobileRasterEffectsSheetController {
     this.options.onOpenChange(false);
   }
 
+  /** Flushes every coalesced effect update before a document can be replaced. */
+  async settleDocumentEdits(): Promise<void> {
+    this.close(false);
+    if (this.applyFrame !== null) {
+      this.options.browser.cancelAnimationFrame(this.applyFrame);
+      this.applyFrame = null;
+    }
+    this.flushDraft();
+    this.requestHistoryEditFinish();
+    for (;;) {
+      const activeLoop = this.applyLoop;
+      if (activeLoop) {
+        await activeLoop;
+        continue;
+      }
+      if (
+        this.draft
+        || this.pendingOrder.length > 0
+        || this.pendingByKind.size > 0
+      ) {
+        this.flushDraft();
+        this.startApplyLoop();
+        continue;
+      }
+      break;
+    }
+    this.commitHistoryEditIfIdle();
+    if (this.historyEditToken !== null) {
+      throw new Error("Raster effect settings are still finishing.");
+    }
+  }
+
   syncOpenStyle(): void {
     if (!this.isOpen || !this.activeKind) return;
     this.sync(this.currentDraftOrStyle(this.activeKind));

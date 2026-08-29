@@ -1869,7 +1869,7 @@ assert.match(
 assert.doesNotMatch(controllerSource, /setExactRefreshDuringViewGestureEnabled/);
 assert.match(
   controllerSource,
-  /waitForVectorTextPresentationCompletion\(\)\.then\(\(\) => \{\s*this\.zoomUnsafeExactRefreshCompletedCount \+= 1/,
+  /waitForVectorTextPresentationCompletion\(\)\.then\(\(\) => \{[\s\S]{0,180}this\.zoomUnsafeExactRefreshCompletedCount \+= 1/,
   "un refresh iniziato non basta: il report deve sapere se è stato completato prima del rilascio",
 );
 assert.match(controllerSource, /zoomUnsafeExactRefreshInFlight: this\.unsafeExactRefreshInFlight/);

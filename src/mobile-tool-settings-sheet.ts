@@ -676,6 +676,18 @@ export class MobileToolSettingsSheetController {
     this.closeCurrent(restoreFocus);
   }
 
+  /** Invalidates a queued open and waits for document-owned edits to close. */
+  async settleDocumentEdits(): Promise<void> {
+    this.close(false);
+    this.commitOpenHistoryEdits();
+    while (this.layerOptionsClosePromise) {
+      await this.layerOptionsClosePromise;
+    }
+    if (this.openState) {
+      throw new Error("Tool settings are still finishing.");
+    }
+  }
+
   private closeCurrent(restoreFocus: boolean): void {
     if (!this.openState) return;
     const closedKind = this.activeKind;

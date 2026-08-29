@@ -495,5 +495,10 @@ assert.match(
   /if \(activeElement instanceof HTMLElement && this\.options\.sheet\.contains\(activeElement\)\)[\s\S]*?activeElement\.blur\(\);[\s\S]*?this\.options\.sheet\.setAttribute\("aria-hidden", "true"\)/,
   "focus must leave the effect sheet before its ancestor becomes aria-hidden",
 );
+assert.match(
+  controllerSource,
+  /async settleDocumentEdits\(\): Promise<void>[\s\S]*?this\.flushDraft\(\)[\s\S]*?await activeLoop[\s\S]*?this\.pendingByKind\.size > 0[\s\S]*?this\.historyEditToken !== null/,
+  "document replacement must drain every coalesced effect and history token",
+);
 
 console.log("Mobile raster effects sheet: exact settings, routing, scroll, gestures and latest-only queue verified.");

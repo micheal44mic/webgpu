@@ -438,7 +438,7 @@ assert.doesNotMatch(
   "A single 4096 edge must not make an otherwise invalid rectangle routable.",
 );
 
-const updateProjectUrlStart = projectSessionSource.indexOf("private updateUrl(");
+const updateProjectUrlStart = projectSessionSource.indexOf("private projectUrl(");
 const updateProjectUrlEnd = projectSessionSource.indexOf(
   "\n  private syncSaveControl",
   updateProjectUrlStart,

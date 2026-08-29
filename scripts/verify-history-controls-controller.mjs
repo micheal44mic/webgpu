@@ -307,6 +307,49 @@ function controllerHarness({
   assert.match(harness.statuses.at(-1).message, /Finish the current operation/);
 }
 
+// A document switch keeps the active authoritative replay, discards only
+// intent that has not started, then re-bases the reusable controls on the new
+// engine journal.
+{
+  const calls = [];
+  let releaseActive;
+  const harness = controllerHarness({
+    engine: {
+      state: () => historyState(),
+      undo: () => new Promise((resolve) => {
+        calls.push("undo");
+        releaseActive = () => resolve(true);
+      }),
+      redo: async () => {
+        calls.push("redo");
+        return true;
+      },
+      crossedAction: () => ({ action: "stroke", cursor: 2 }),
+    },
+  });
+  harness.controller.request("undo");
+  harness.controller.request("redo");
+  harness.controller.request("undo");
+  assert.equal(harness.controller.queuedOperationCount, 2);
+  harness.controller.discardPendingOperations();
+  assert.equal(harness.controller.queuedOperationCount, 0);
+  releaseActive();
+  await waitFor(() => !harness.controller.isQueueDraining, "outgoing history replay");
+  assert.deepEqual(calls, ["undo"]);
+
+  const freshState = historyState({
+    canUndo: false,
+    canRedo: false,
+    actionCount: 0,
+    cursor: 0,
+    undoBlockedReason: "There are no actions to undo.",
+    redoBlockedReason: "There are no actions to redo.",
+  });
+  harness.controller.resetForDocument(freshState);
+  assert.equal(harness.publishedStates.at(-1), freshState);
+  assert.equal(harness.controller.lastFailure, null);
+}
+
 // Failures retain the crossed action and cursor for the diagnostics panel.
 {
   const diagnostics = [];
@@ -353,6 +396,8 @@ function controllerHarness({
     message: "fault injection",
   });
   assert.equal(diagnostics.at(-1).name, "history-step-failed");
+  controller.resetForDocument(historyState({ actionCount: 0, cursor: 0 }));
+  assert.equal(controller.lastFailure, null);
 }
 
 // The active replay is removed before capacity is counted; at most 32 further
