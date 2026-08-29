@@ -12,7 +12,7 @@
       (function () {
         "use strict";
 
-        var BUILD = "gpu-diagnostics-application-4096-startup-v13";
+        var BUILD = "gpu-diagnostics-application-4096-startup-v14";
         var params = new URLSearchParams(window.location.search);
         var requestedTestId = params.get("test") || "";
         var DIAGNOSTIC_TEST_ID = requestedTestId || "startup-no-tier2-v1";
@@ -21,13 +21,19 @@
         var APPLICATION_4096_TEST = DIAGNOSTIC_TEST_ID === "application-4096-startup-v1";
         var APPLICATION_4096_PIPELINES_ASYNC2_TEST =
           DIAGNOSTIC_TEST_ID === "application-4096-pipelines-async2-v1";
+        var APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST =
+          DIAGNOSTIC_TEST_ID === "application-4096-pipelines-first-frame-v1";
         var APPLICATION_4096_DOCUMENT_TEST =
-          APPLICATION_4096_TEST || APPLICATION_4096_PIPELINES_ASYNC2_TEST;
+          APPLICATION_4096_TEST
+          || APPLICATION_4096_PIPELINES_ASYNC2_TEST
+          || APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST;
         var DIAGNOSTIC_VARIANT = STORAGE_FORMAT_AB_TEST
           ? "storage-format-ab-rgba8unorm-control-rgba16float-target-write-only-1x1-no-tier2-v1"
           : DOCUMENT_PIPELINE_TEST
             ? "document-pipeline-bisect-rgba16float-no-tier2-v1"
-            : APPLICATION_4096_PIPELINES_ASYNC2_TEST
+            : APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST
+              ? "application-startup-rgba16float-4096x4096-no-tier2-render-pipelines-first-frame-1-v1"
+              : APPLICATION_4096_PIPELINES_ASYNC2_TEST
               ? "application-startup-rgba16float-4096x4096-no-tier2-render-pipelines-async2-v1"
               : APPLICATION_4096_TEST
                 ? "application-startup-rgba16float-4096x4096-no-tier2-v1"
@@ -59,7 +65,24 @@
                 expectedSynchronousRenderPipelines: 52,
                 expectedErrorScopeDrains: 2,
               }
-            : APPLICATION_4096_PIPELINES_ASYNC2_TEST
+            : APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST
+              ? {
+                  kind: "application-startup-pipeline-compilation",
+                  documentWidth: 4096,
+                  documentHeight: 4096,
+                  layerFormat: "rgba16float",
+                  canvasFormat: "rgba16float",
+                  requiredFeatures: [],
+                  textureFormatsTier2Requested: false,
+                  applicationFrame: "isolated-production-startup",
+                  startupMode: "cold-empty-document",
+                  deferredObservationMs: 5000,
+                  pipelineCompilationScope: "first-frame-diagnostic",
+                  expectedRenderPipelines: 1,
+                  excludedRenderPipelines: 51,
+                  editorInteractionEnabled: false,
+                }
+              : APPLICATION_4096_PIPELINES_ASYNC2_TEST
               ? {
                   kind: "application-startup-pipeline-compilation",
                   documentWidth: 4096,
@@ -1425,7 +1448,9 @@
               ? "1×1 · RGBA8 vs RGBA16F · storage write"
               : DOCUMENT_PIPELINE_TEST
                 ? "Real document pipelines · RGBA16F · Tier 2 off"
-                : APPLICATION_4096_PIPELINES_ASYNC2_TEST
+                : APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST
+                  ? "Real 4096×4096 document · one first-frame pipeline · Tier 2 off"
+                  : APPLICATION_4096_PIPELINES_ASYNC2_TEST
                   ? "Real 4096×4096 document · async pipeline queue 2 · Tier 2 off"
                   : APPLICATION_4096_TEST
                     ? "Real 4096×4096 document · RGBA16F · Tier 2 off"

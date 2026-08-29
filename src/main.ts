@@ -940,6 +940,8 @@ const engine = new BrushEngine(canvas, {
   startupProgressPresentationYieldEnabled: canvasStartupProgressObserved,
   documentPipelineCompilationConcurrency:
     editorExtensionEngineOptions.documentPipelineCompilationConcurrency,
+  documentPipelineCompilationScope:
+    editorExtensionEngineOptions.documentPipelineCompilationScope,
   deferSelectedBrushPreparation: true,
   layerMemoryStressTestEnabled:
     editorExtensionEngineOptions.layerMemoryStressTestEnabled ?? false,

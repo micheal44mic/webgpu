@@ -23,7 +23,7 @@ const engineSource = read("src/brush-engine.ts");
 const layerRuntimeSource = read("src/engine-layer-runtime.ts");
 const featurePolicySource = read("src/gpu-startup-feature-policy.ts");
 
-const DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v13";
+const DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v14";
 const DEFAULT_TEST_ID = "startup-no-tier2-v1";
 const DEFAULT_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
 const STORAGE_FORMAT_TEST_ID = "storage-format-ab-v1";
@@ -36,6 +36,10 @@ const APPLICATION_4096_VARIANT = "application-startup-rgba16float-4096x4096-no-t
 const APPLICATION_4096_PIPELINES_ASYNC2_TEST_ID = "application-4096-pipelines-async2-v1";
 const APPLICATION_4096_PIPELINES_ASYNC2_VARIANT =
   "application-startup-rgba16float-4096x4096-no-tier2-render-pipelines-async2-v1";
+const APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST_ID =
+  "application-4096-pipelines-first-frame-v1";
+const APPLICATION_4096_PIPELINES_FIRST_FRAME_VARIANT =
+  "application-startup-rgba16float-4096x4096-no-tier2-render-pipelines-first-frame-1-v1";
 const DEFAULT_COMPARISON = {
   layerFormat: "rgba16float",
   canvasFormat: "rgba16float",
@@ -95,6 +99,22 @@ const APPLICATION_4096_PIPELINES_ASYNC2_COMPARISON = {
   pipelineCompilationConcurrency: 2,
   expectedRenderPipelines: 52,
   asyncFallbackAllowed: false,
+};
+const APPLICATION_4096_PIPELINES_FIRST_FRAME_COMPARISON = {
+  kind: "application-startup-pipeline-compilation",
+  documentWidth: 4096,
+  documentHeight: 4096,
+  layerFormat: "rgba16float",
+  canvasFormat: "rgba16float",
+  requiredFeatures: [],
+  textureFormatsTier2Requested: false,
+  applicationFrame: "isolated-production-startup",
+  startupMode: "cold-empty-document",
+  deferredObservationMs: 5000,
+  pipelineCompilationScope: "first-frame-diagnostic",
+  expectedRenderPipelines: 1,
+  excludedRenderPipelines: 51,
+  editorInteractionEnabled: false,
 };
 const STORAGE_FORMAT_STAGES = [
   "shader-module",
@@ -214,6 +234,13 @@ function diagnosticDefinition(testId) {
       comparison: APPLICATION_4096_PIPELINES_ASYNC2_COMPARISON,
     };
   }
+  if (testId === APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST_ID) {
+    return {
+      testId,
+      diagnosticVariant: APPLICATION_4096_PIPELINES_FIRST_FRAME_VARIANT,
+      comparison: APPLICATION_4096_PIPELINES_FIRST_FRAME_COMPARISON,
+    };
+  }
   throw new Error(`Unknown verification diagnostic test: ${testId}`);
 }
 
@@ -307,7 +334,9 @@ assert.match(html, /DIAGNOSTIC_TEST_ID === "storage-format-ab-v1"/);
 assert.match(html, /DIAGNOSTIC_TEST_ID === "document-pipeline-bisect-v1"/);
 assert.match(html, /DIAGNOSTIC_TEST_ID === "application-4096-startup-v1"/);
 assert.match(html, /DIAGNOSTIC_TEST_ID === "application-4096-pipelines-async2-v1"/);
+assert.match(html, /DIAGNOSTIC_TEST_ID === "application-4096-pipelines-first-frame-v1"/);
 assert.match(html, new RegExp(APPLICATION_4096_PIPELINES_ASYNC2_VARIANT));
+assert.match(html, new RegExp(APPLICATION_4096_PIPELINES_FIRST_FRAME_VARIANT));
 assert.match(html, /documentWidth: 4096/);
 assert.match(html, /documentHeight: 4096/);
 assert.match(html, /startupMode: "cold-empty-document"/);
@@ -316,6 +345,10 @@ assert.match(html, /pipelineCompilationMethod: "createRenderPipelineAsync"/);
 assert.match(html, /pipelineCompilationConcurrency: 2/);
 assert.match(html, /expectedRenderPipelines: 52/);
 assert.match(html, /asyncFallbackAllowed: false/);
+assert.match(html, /pipelineCompilationScope: "first-frame-diagnostic"/);
+assert.match(html, /expectedRenderPipelines: 1/);
+assert.match(html, /excludedRenderPipelines: 51/);
+assert.match(html, /editorInteractionEnabled: false/);
 assert.match(html, /expectedSynchronousPipelineLayouts: 17/);
 assert.match(html, /expectedSynchronousRenderPipelines: 52/);
 assert.match(html, /expectedErrorScopeDrains: 2/);
@@ -350,6 +383,11 @@ assert.match(
   /APPLICATION_4096_PIPELINES_ASYNC2_TEST = "application-4096-pipelines-async2-v1"/,
 );
 assert.match(moduleSource, new RegExp(APPLICATION_4096_PIPELINES_ASYNC2_VARIANT));
+assert.match(
+  moduleSource,
+  /APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST =\s*"application-4096-pipelines-first-frame-v1"/,
+);
+assert.match(moduleSource, new RegExp(APPLICATION_4096_PIPELINES_FIRST_FRAME_VARIANT));
 assert.match(moduleSource, /APPLICATION_4096_DOCUMENT_WIDTH = 4096/);
 assert.match(moduleSource, /APPLICATION_4096_DOCUMENT_HEIGHT = 4096/);
 assert.doesNotMatch(moduleSource, /createNewProject|diagnostic-new-project/);
@@ -360,6 +398,10 @@ assert.match(moduleSource, /if \(application4096StartupEnabled\) \{\s*await runA
 assert.match(
   moduleSource,
   /if \(application4096PipelinesAsync2Enabled\) \{\s*await runApplication4096StartupDiagnostic\(\{ asynchronousPipelineCompilation: true \}\);\s*return;/,
+);
+assert.match(
+  moduleSource,
+  /if \(application4096PipelinesFirstFrameEnabled\) \{\s*await runApplication4096StartupDiagnostic\(\{ firstFramePipelineCompilation: true \}\);\s*return;/,
 );
 assert.match(moduleSource, /applicationBoot = await runFullApplicationBoot\(\)/);
 assert.match(moduleSource, /const requiredFeatures: GPUFeatureName\[\] = \[\]/);
@@ -422,6 +464,15 @@ assert.match(moduleSource, /"application-4096-pipelines-async2-passed"/);
 assert.match(moduleSource, /verdict = "application-4096-pipelines-async2-unsupported"/);
 assert.match(moduleSource, /native createrenderpipelineasync is required/);
 assert.match(moduleSource, /peakActiveCount === 2/);
+assert.match(moduleSource, /stats\.scope === "first-frame-diagnostic"/);
+assert.match(moduleSource, /stats\.format === "rgba16float"/);
+assert.match(moduleSource, /stats\.requestedConcurrency === 1/);
+assert.match(moduleSource, /stats\.logicalRenderPipelineCount === EXPECTED_DOCUMENT_RENDER_PIPELINES/);
+assert.match(moduleSource, /stats\.excludedRenderPipelineCount/);
+assert.match(moduleSource, /stats\.compiledPipelineKeys\[0\] === "paint-mip-downsample"/);
+assert.match(moduleSource, /stats\.peakActiveCount === 1/);
+assert.match(moduleSource, /"application-4096-pipelines-first-frame-passed"/);
+assert.match(moduleSource, /verdict: "application-4096-pipelines-first-frame-inconclusive"/);
 assert.match(
   moduleSource,
   /const engineReady = \/\\bok\\b\/\.test\(statusClass\)[\s\S]*statusText\.includes\("WebGPU is ready"\)/,
@@ -493,13 +544,13 @@ const glazePipelineFactoryCalls = (
 const lightPipelineFactoryCalls = (
   documentPipelinePhaseSource.match(/createLightNoBuildUpPipeline\(/g) ?? []
 ).length;
-assert.equal(literalRenderPipelineCalls, 31);
+assert.equal(literalRenderPipelineCalls, 30);
 assert.equal(literalPipelineLayoutCalls, 18);
 assert.equal(erasePipelineFactoryCalls, 6);
 assert.equal(glazePipelineFactoryCalls, 12);
 assert.equal(lightPipelineFactoryCalls, 6);
 assert.equal(
-  literalRenderPipelineCalls - 3
+  literalRenderPipelineCalls - 2
     + erasePipelineFactoryCalls
     + glazePipelineFactoryCalls
     + lightPipelineFactoryCalls,
@@ -517,7 +568,12 @@ assert.match(layerRuntimeSource, /Promise\.allSettled\(promises\)/);
 assert.match(layerRuntimeSource, /device\.createRenderPipelineAsync\(descriptor\)/);
 assert.match(layerRuntimeSource, /Native createRenderPipelineAsync is required/);
 assert.match(layerRuntimeSource, /strategy: "sync-sequential" \| "async-bounded"/);
-assert.match(layerRuntimeSource, /expectedRenderPipelineCount: EXPECTED_DOCUMENT_RENDER_PIPELINE_COUNT/);
+assert.match(layerRuntimeSource, /expectedRenderPipelineCount: expectedDocumentRenderPipelineCount/);
+assert.match(layerRuntimeSource, /EXPECTED_FIRST_FRAME_RENDER_PIPELINE_COUNT = 1/);
+assert.match(layerRuntimeSource, /documentPipelineCompilationScope === "first-frame-diagnostic"/);
+assert.match(layerRuntimeSource, /logicalRenderPipelineCount: EXPECTED_DOCUMENT_RENDER_PIPELINE_COUNT/);
+assert.match(layerRuntimeSource, /excludedRenderPipelineCount: EXPECTED_DOCUMENT_RENDER_PIPELINE_COUNT/);
+assert.match(layerRuntimeSource, /compiledPipelineKeys\.push\("paint-mip-downsample"\)/);
 assert.match(layerRuntimeSource, /documentPipelineCompilationStats\.activeCount !== 0/);
 
 assert.match(workerBuilder, /GPU_STARTUP_DIAGNOSTIC_HTML/);
@@ -536,9 +592,17 @@ assert.match(
 assert.match(workerBuilder, new RegExp(APPLICATION_4096_PIPELINES_ASYNC2_VARIANT));
 assert.match(
   workerBuilder,
-  /engineOptions: application4096PipelinesAsync2Enabled[\s\S]*documentPipelineCompilationConcurrency: 2/,
+  /engineOptions: application4096PipelinesFirstFrameEnabled[\s\S]*documentPipelineCompilationScope: "first-frame-diagnostic"[\s\S]*application4096PipelinesAsync2Enabled[\s\S]*documentPipelineCompilationConcurrency: 2/,
 );
+assert.match(
+  workerBuilder,
+  /APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST_ID =[\s\S]*"application-4096-pipelines-first-frame-v1"/,
+);
+assert.match(workerBuilder, new RegExp(APPLICATION_4096_PIPELINES_FIRST_FRAME_VARIANT));
 assert.match(workerBuilder, /startupMode: "cold-empty-document"/);
+assert.match(workerBuilder, /document\.documentElement\.style\.pointerEvents = "none"/);
+assert.match(workerBuilder, /document\.body\.inert = true/);
+assert.match(workerBuilder, /event\.stopImmediatePropagation\(\)/);
 assert.match(workerBuilder, /EXPECTED_DOCUMENT_RENDER_PIPELINES = 52/);
 assert.match(workerBuilder, /EXPECTED_DOCUMENT_PIPELINE_LAYOUTS = 17/);
 assert.match(workerBuilder, /EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS = 2/);
@@ -638,6 +702,14 @@ for (const productionSource of [indexHtml, startup, engineSource, layerRuntimeSo
   assert.doesNotMatch(productionSource, new RegExp(APPLICATION_4096_VARIANT));
   assert.doesNotMatch(productionSource, new RegExp(APPLICATION_4096_PIPELINES_ASYNC2_TEST_ID));
   assert.doesNotMatch(productionSource, new RegExp(APPLICATION_4096_PIPELINES_ASYNC2_VARIANT));
+  assert.doesNotMatch(
+    productionSource,
+    new RegExp(APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST_ID),
+  );
+  assert.doesNotMatch(
+    productionSource,
+    new RegExp(APPLICATION_4096_PIPELINES_FIRST_FRAME_VARIANT),
+  );
   assert.doesNotMatch(productionSource, new RegExp(DIAGNOSTIC_BUILD));
 }
 
@@ -2238,6 +2310,26 @@ if (existsSync(builtWorkerPath)) {
     null,
   );
 
+  const application4096FirstFrameRunCode = `diag-${"3".repeat(32)}`;
+  const application4096FirstFramePageResponse = await worker.fetch(
+    new Request(
+      `https://example.test/gpu-startup-lab?run=${application4096FirstFrameRunCode}&test=${APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST_ID}`,
+      { headers: { "User-Agent": "Application First Frame Diagnostic Test Browser" } },
+    ),
+    environment,
+  );
+  assert.equal(application4096FirstFramePageResponse.status, 200);
+  assert.equal(
+    await application4096FirstFramePageResponse.text(),
+    builtDiagnosticHtml.replace(/\r\n?/g, "\n"),
+  );
+  assert.equal(database.rows.get(application4096FirstFrameRunCode)?.status, "html-requested");
+  assertDiagnosticSummary(
+    JSON.parse(database.rows.get(application4096FirstFrameRunCode).result_summary),
+    APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST_ID,
+    null,
+  );
+
   const mismatchedPageResponse = await worker.fetch(
     new Request(
       `https://example.test/gpu-startup-lab?run=${runCode}&test=${STORAGE_FORMAT_TEST_ID}`,
@@ -2491,6 +2583,42 @@ if (existsSync(builtWorkerPath)) {
   assert.deepEqual(
     Object.keys(application4096Async2FrameWindow.__editorExtensionBootstrap.engineOptions),
     ["documentPipelineCompilationConcurrency"],
+  );
+  const application4096FirstFrameWindow = {
+    location: {
+      origin: "https://example.test",
+      pathname: "/gpu-startup-app-frame",
+      search: `?diagnosticBoot=1&test=${APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST_ID}&documentWidth=4096&documentHeight=4096&documentSize=4096&diagnosticVariant=${APPLICATION_4096_PIPELINES_FIRST_FRAME_VARIANT}&forceGlazeCommitFallback=1`,
+    },
+    isSecureContext: true,
+    addEventListener() {},
+    parent: { postMessage() {} },
+  };
+  application4096FirstFrameWindow.window = application4096FirstFrameWindow;
+  runInNewContext(frameBootstrapSource, {
+    window: application4096FirstFrameWindow,
+    document: { visibilityState: "visible" },
+    navigator: { gpu: { requestAdapter: async () => null } },
+    performance: { now: () => 100 },
+    console: { error() {} },
+    Reflect,
+    Array,
+    Object,
+    String,
+    Number,
+    Math,
+    Error,
+    Promise,
+    URLSearchParams,
+  });
+  assert.equal(
+    application4096FirstFrameWindow.__editorExtensionBootstrap.engineOptions
+      .documentPipelineCompilationScope,
+    "first-frame-diagnostic",
+  );
+  assert.deepEqual(
+    Object.keys(application4096FirstFrameWindow.__editorExtensionBootstrap.engineOptions),
+    ["documentPipelineCompilationScope"],
   );
   const observedApplication4096Adapter = await application4096Gpu.requestAdapter();
   assert.equal(observedApplication4096Adapter, application4096Adapter);
@@ -3120,6 +3248,48 @@ if (existsSync(builtWorkerPath)) {
     null,
   );
 
+  const application4096FirstFrameWriteToken = "a".repeat(64);
+  const application4096FirstFrameSequence = sequence + 600;
+  const application4096FirstFrameBasePayload = createUploadPayload({
+    payloadRunCode: application4096FirstFrameRunCode,
+    payloadWriteToken: application4096FirstFrameWriteToken,
+    payloadSequence: application4096FirstFrameSequence,
+    testId: APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST_ID,
+    latestEvent: "application-startup-phase",
+    eventDetail: {
+      phase: "document-pipelines",
+      state: "started",
+      detail: { scope: "first-frame-diagnostic" },
+    },
+    moduleLoaded: true,
+  });
+  const invalidApplication4096FirstFrameComparisons = [
+    { ...APPLICATION_4096_PIPELINES_FIRST_FRAME_COMPARISON, kind: "application-startup" },
+    { ...APPLICATION_4096_PIPELINES_FIRST_FRAME_COMPARISON, requiredFeatures: ["texture-formats-tier2"] },
+    { ...APPLICATION_4096_PIPELINES_FIRST_FRAME_COMPARISON, textureFormatsTier2Requested: true },
+    { ...APPLICATION_4096_PIPELINES_FIRST_FRAME_COMPARISON, pipelineCompilationScope: "complete" },
+    { ...APPLICATION_4096_PIPELINES_FIRST_FRAME_COMPARISON, expectedRenderPipelines: 2 },
+    { ...APPLICATION_4096_PIPELINES_FIRST_FRAME_COMPARISON, excludedRenderPipelines: 50 },
+    { ...APPLICATION_4096_PIPELINES_FIRST_FRAME_COMPARISON, editorInteractionEnabled: true },
+    { ...APPLICATION_4096_PIPELINES_FIRST_FRAME_COMPARISON, unexpected: true },
+  ];
+  for (const comparison of invalidApplication4096FirstFrameComparisons) {
+    const invalidProtocolResponse = await upload({
+      ...application4096FirstFrameBasePayload,
+      summary: { ...application4096FirstFrameBasePayload.summary, comparison },
+    });
+    assert.equal(invalidProtocolResponse.status, 400);
+  }
+  const application4096FirstFrameRunningResponse = await upload(
+    application4096FirstFrameBasePayload,
+  );
+  assert.equal(application4096FirstFrameRunningResponse.status, 201);
+  assertDiagnosticSummary(
+    JSON.parse(database.rows.get(application4096FirstFrameRunCode).result_summary),
+    APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST_ID,
+    null,
+  );
+
   const mismatchedPostResponse = await upload(createUploadPayload({
     payloadRunCode: runCode,
     payloadWriteToken: writeToken,
@@ -3411,6 +3581,86 @@ if (existsSync(builtWorkerPath)) {
     storedApplication4096Async2Summary.result.startupTrace
       .documentPipelinesPhase.detail.peakActiveCount,
     2,
+  );
+
+  const application4096FirstFrameStats = {
+    format: "rgba16float",
+    scope: "first-frame-diagnostic",
+    strategy: "sync-sequential",
+    requestedConcurrency: 1,
+    nativeAsyncSupported: true,
+    expectedRenderPipelineCount: 1,
+    logicalRenderPipelineCount: 52,
+    excludedRenderPipelineCount: 51,
+    compiledPipelineKeys: ["paint-mip-downsample"],
+    scheduledCount: 1,
+    startedCount: 1,
+    completedCount: 1,
+    failedCount: 0,
+    settledCount: 1,
+    activeCount: 0,
+    peakActiveCount: 1,
+    fallbackCount: 0,
+  };
+  const application4096FirstFrameResult = {
+    ...APPLICATION_4096_PIPELINES_FIRST_FRAME_COMPARISON,
+    testId: APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST_ID,
+    diagnosticVariant: APPLICATION_4096_PIPELINES_FIRST_FRAME_VARIANT,
+    verdict: "application-4096-pipelines-first-frame-passed",
+    conclusion: "The empty 4096x4096 document reached its first frame with one document pipeline.",
+    startupTrace: {
+      documentPipelinesPhase: {
+        phase: "document-pipelines",
+        state: "completed",
+        totalElapsedMs: 800,
+        phaseElapsedMs: 500,
+        detail: application4096FirstFrameStats,
+      },
+      editorReadyPhase: {
+        phase: "editor-ready",
+        state: "completed",
+        totalElapsedMs: 2_000,
+        phaseElapsedMs: 20,
+        detail: null,
+      },
+    },
+    firstFramePipelineCompilation: {
+      passed: true,
+      issues: [],
+      stats: application4096FirstFrameStats,
+    },
+  };
+  const application4096FirstFrameCompletedPayload = createUploadPayload({
+    payloadRunCode: application4096FirstFrameRunCode,
+    payloadWriteToken: application4096FirstFrameWriteToken,
+    payloadSequence: application4096FirstFrameSequence + 1,
+    testId: APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST_ID,
+    status: "completed",
+    latestEvent: "diagnostic-completed",
+    result: application4096FirstFrameResult,
+    eventDetail: {
+      verdict: "application-4096-pipelines-first-frame-passed",
+      completedCount: 1,
+    },
+    moduleLoaded: true,
+    probeFinished: true,
+  });
+  const application4096FirstFrameCompletedResponse = await upload(
+    application4096FirstFrameCompletedPayload,
+  );
+  assert.equal(application4096FirstFrameCompletedResponse.status, 201);
+  const storedApplication4096FirstFrameSummary = JSON.parse(
+    database.rows.get(application4096FirstFrameRunCode).result_summary,
+  );
+  assertDiagnosticSummary(
+    storedApplication4096FirstFrameSummary,
+    APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST_ID,
+    application4096FirstFrameResult,
+  );
+  assert.equal(
+    storedApplication4096FirstFrameSummary.result.startupTrace
+      .documentPipelinesPhase.detail.completedCount,
+    1,
   );
 
   const staleResponse = await upload({

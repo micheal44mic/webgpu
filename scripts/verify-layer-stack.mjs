@@ -3113,6 +3113,11 @@ assert.match(
   "omettere l'opzione deve conservare il percorso sincrono predefinito",
 );
 assert.match(
+  engineSource,
+  /documentPipelineCompilationScope === "first-frame-diagnostic"[\s\S]*?documentPipelineCompilationConcurrency !== undefined[\s\S]*?options\.deferSelectedBrushPreparation !== true[\s\S]*?First-frame document pipeline diagnostics require isolated synchronous startup/,
+  "il profilo sentinel deve richiedere avvio sincrono e pennello differito",
+);
+assert.match(
   recreateBody,
   /options\.documentPipelineCompilationConcurrency \?\? null/,
   "la ricreazione deve distinguere esplicitamente default sincrono e opt-in async",
@@ -3158,6 +3163,21 @@ assert.match(
   /const EXPECTED_DOCUMENT_RENDER_PIPELINE_COUNT = 52;/,
   "il contratto deve dichiarare tutte le 52 pipeline documento",
 );
+assert.match(
+  engineSource,
+  /const EXPECTED_FIRST_FRAME_RENDER_PIPELINE_COUNT = 1;/,
+  "il profilo diagnostico deve dichiarare una sola pipeline per il primo frame vuoto",
+);
+assert.match(
+  recreateBody,
+  /options\.documentPipelineCompilationScope \?\? "complete"/,
+  "la compilazione completa deve restare il comportamento predefinito",
+);
+assert.match(
+  recreateBody,
+  /documentPipelineCompilationScope === "first-frame-diagnostic"[\s\S]*?createPaintMipDownsamplePipeline\(\)/,
+  "il profilo diagnostico deve materializzare subito soltanto il downsample del primo frame",
+);
 const settledDocumentPipelineBatches = [
   ...recreateBody.matchAll(/await settleRenderPipelineBatch\(\[([\s\S]*?)\]\);/g),
 ].map((match) => match[1].match(/\b[A-Za-z][A-Za-z0-9]*PipelinePromise\b/g) ?? []);
@@ -3173,13 +3193,33 @@ assert.equal(
 );
 assert.match(
   recreateBody,
-  /completedCount\s*!== EXPECTED_DOCUMENT_RENDER_PIPELINE_COUNT[\s\S]*?settledCount\s*!== EXPECTED_DOCUMENT_RENDER_PIPELINE_COUNT[\s\S]*?activeCount !== 0/,
-  "la fase non deve terminare finche tutte le 52 pipeline sono completate e nessun job resta attivo",
+  /scheduledCount\s*!== expectedDocumentRenderPipelineCount[\s\S]*?startedCount\s*!== expectedDocumentRenderPipelineCount[\s\S]*?completedCount\s*!== expectedDocumentRenderPipelineCount[\s\S]*?settledCount\s*!== expectedDocumentRenderPipelineCount[\s\S]*?failedCount !== 0[\s\S]*?activeCount !== 0[\s\S]*?fallbackCount !== 0/,
+  "la fase non deve terminare finche tutte le pipeline richieste dal profilo sono completate e nessun job resta attivo",
+);
+assert.match(
+  recreateBody,
+  /logicalRenderPipelineCount: EXPECTED_DOCUMENT_RENDER_PIPELINE_COUNT[\s\S]*?excludedRenderPipelineCount: EXPECTED_DOCUMENT_RENDER_PIPELINE_COUNT[\s\S]*?compiledPipelineKeys: \[\]/,
+  "le statistiche devono provare slot logici, esclusioni e pipeline materializzate",
+);
+assert.match(
+  engineSource,
+  /currentBrushResourcesReady\(\): boolean \{[\s\S]*?documentPipelineCompilationScope === "first-frame-diagnostic"[\s\S]*?return false/,
+  "il profilo diagnostico non deve dichiarare pronto un pennello sentinel-backed",
+);
+assert.match(
+  engineSource,
+  /ensureOptionalEditorResources\(\): Promise<void> \{[\s\S]*?Optional editor resources are disabled during first-frame diagnostics/,
+  "il profilo diagnostico deve rifiutare risorse editor opzionali",
 );
 assert.match(
   mainSource,
   /documentPipelineCompilationConcurrency:\s*editorExtensionEngineOptions\.documentPipelineCompilationConcurrency/,
   "l'app principale deve lasciare l'opt-in alla sola configurazione esterna",
+);
+assert.match(
+  mainSource,
+  /documentPipelineCompilationScope:\s*editorExtensionEngineOptions\.documentPipelineCompilationScope/,
+  "il profilo ridotto deve restare attivabile soltanto dalla configurazione esterna",
 );
 assert.match(recreateBody, /record\.id === engine\.layerStack\.active\.id[\s\S]*?await allocateLayerGpuResources\(engine,[\s\S]*?: createColdLayerGpuResources\(\)/,
   "il cambio formato deve allocare full solo per il livello attivo");

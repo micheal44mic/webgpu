@@ -154,16 +154,23 @@ export interface RecreateLayerResourcesOptions {
   readonly deferBlendRenderer?: boolean;
   /** Omit to preserve synchronous document render-pipeline creation. */
   readonly documentPipelineCompilationConcurrency?: number;
+  /** Isolated empty-first-frame diagnostic; excluded pipeline slots are sentinels. */
+  readonly documentPipelineCompilationScope?: "complete" | "first-frame-diagnostic";
 }
 
 const EXPECTED_DOCUMENT_RENDER_PIPELINE_COUNT = 52;
+const EXPECTED_FIRST_FRAME_RENDER_PIPELINE_COUNT = 1;
 
 interface DocumentPipelineCompilationStats extends Record<string, unknown> {
   format: LayerFormat;
+  scope: "complete" | "first-frame-diagnostic";
   strategy: "sync-sequential" | "async-bounded";
   requestedConcurrency: number;
   nativeAsyncSupported: boolean;
   expectedRenderPipelineCount: number;
+  logicalRenderPipelineCount: number;
+  excludedRenderPipelineCount: number;
+  compiledPipelineKeys: string[];
   scheduledCount: number;
   startedCount: number;
   completedCount: number;
@@ -272,16 +279,39 @@ export async function recreateLayerResources(
   format: LayerFormat,
   options: RecreateLayerResourcesOptions = {},
 ): Promise<void> {
+  const documentPipelineCompilationScope =
+    options.documentPipelineCompilationScope ?? "complete";
+  if (
+    documentPipelineCompilationScope === "first-frame-diagnostic"
+    && (
+      options.deferSelectionPipelines !== true
+      || options.deferBlendRenderer !== true
+      || options.documentPipelineCompilationConcurrency !== undefined
+    )
+  ) {
+    throw new Error(
+      "First-frame document pipeline diagnostics require isolated synchronous startup.",
+    );
+  }
+  const expectedDocumentRenderPipelineCount = documentPipelineCompilationScope
+      === "first-frame-diagnostic"
+    ? EXPECTED_FIRST_FRAME_RENDER_PIPELINE_COUNT
+    : EXPECTED_DOCUMENT_RENDER_PIPELINE_COUNT;
   const requestedPipelineCompilationConcurrency =
     options.documentPipelineCompilationConcurrency ?? null;
   const documentPipelineCompilationStats: DocumentPipelineCompilationStats = {
     format,
+    scope: documentPipelineCompilationScope,
     strategy: requestedPipelineCompilationConcurrency === null
       ? "sync-sequential"
       : "async-bounded",
     requestedConcurrency: requestedPipelineCompilationConcurrency ?? 1,
     nativeAsyncSupported: typeof engine.device.createRenderPipelineAsync === "function",
-    expectedRenderPipelineCount: EXPECTED_DOCUMENT_RENDER_PIPELINE_COUNT,
+    expectedRenderPipelineCount: expectedDocumentRenderPipelineCount,
+    logicalRenderPipelineCount: EXPECTED_DOCUMENT_RENDER_PIPELINE_COUNT,
+    excludedRenderPipelineCount: EXPECTED_DOCUMENT_RENDER_PIPELINE_COUNT
+      - expectedDocumentRenderPipelineCount,
+    compiledPipelineKeys: [],
     scheduledCount: 0,
     startedCount: 0,
     completedCount: 0,
@@ -358,7 +388,7 @@ export async function recreateLayerResources(
       engine.device,
       `Layer format pipeline ${format}`,
       async () => {
-  const compileDocumentRenderPipeline = createDocumentRenderPipelineCompiler(
+  const compileDocumentRenderPipelineActual = createDocumentRenderPipelineCompiler(
     engine.device,
     requestedPipelineCompilationConcurrency,
     documentPipelineCompilationStats,
@@ -470,6 +500,39 @@ export async function recreateLayerResources(
       bindGroupLayouts: [lightGlazeInPlaceCommitBindGroupLayout],
     });
   }
+
+  const createPaintMipDownsamplePipeline = (): Promise<GPURenderPipeline> => {
+    const pipelinePromise = compileDocumentRenderPipelineActual({
+      label: `Paint display mip downsample ${format}`,
+      layout: paintMipDownsamplePipelineLayout,
+      vertex: {
+        module: engine.paintMipDownsampleShaderModule,
+        entryPoint: "vertexMain",
+      },
+      fragment: {
+        module: engine.paintMipDownsampleShaderModule,
+        entryPoint: "fragmentMain",
+        targets: [{ format }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+    if (documentPipelineCompilationScope === "first-frame-diagnostic") {
+      documentPipelineCompilationStats.compiledPipelineKeys.push("paint-mip-downsample");
+    }
+    return pipelinePromise;
+  };
+  let paintMipDownsamplePipelinePromise = documentPipelineCompilationScope
+      === "first-frame-diagnostic"
+    ? createPaintMipDownsamplePipeline()
+    : null;
+  // The diagnostic renders only an empty first frame. Returning its sole real
+  // pipeline as a sentinel lets the unchanged transactional setup publish all
+  // fields without compiling paths that the diagnostic is forbidden to use.
+  const compileDocumentRenderPipeline = documentPipelineCompilationScope
+      === "first-frame-diagnostic"
+    ? (_descriptor: GPURenderPipelineDescriptor): Promise<GPURenderPipeline> =>
+        paintMipDownsamplePipelinePromise!
+    : compileDocumentRenderPipelineActual;
 
   // Premultiplied destination-out. The regular brush shaders keep producing
   // the exact tip/grain coverage; fixed-function blending turns that coverage
@@ -1464,7 +1527,8 @@ export async function recreateLayerResources(
 
   let lightGlazeInPlaceCommitPipeline: GPUComputePipeline | null = null;
   if (
-    lightGlazeInPlaceCommitBindGroupLayout
+    documentPipelineCompilationScope === "complete"
+    && lightGlazeInPlaceCommitBindGroupLayout
     && lightGlazeInPlaceCommitPipelineLayout
   ) {
     try {
@@ -1488,20 +1552,7 @@ export async function recreateLayerResources(
       lightGlazeInPlaceCommitBindGroupLayout = null;
     }
   }
-  const paintMipDownsamplePipelinePromise = compileDocumentRenderPipeline({
-    label: `Paint display mip downsample ${format}`,
-    layout: paintMipDownsamplePipelineLayout,
-    vertex: {
-      module: engine.paintMipDownsampleShaderModule,
-      entryPoint: "vertexMain",
-    },
-    fragment: {
-      module: engine.paintMipDownsampleShaderModule,
-      entryPoint: "fragmentMain",
-      targets: [{ format }],
-    },
-    primitive: { topology: "triangle-list" },
-  });
+  paintMipDownsamplePipelinePromise ??= createPaintMipDownsamplePipeline();
   const layerBlendFoldPipelineLayout = engine.device.createPipelineLayout({
     label: `Advanced layer blend fold pipeline layout ${format}`,
     bindGroupLayouts: [engine.layerBlendFoldBindGroupLayout],
@@ -1712,15 +1763,22 @@ export async function recreateLayerResources(
   ]);
 
   if (
+    documentPipelineCompilationStats.scheduledCount
+      !== expectedDocumentRenderPipelineCount
+    || documentPipelineCompilationStats.startedCount
+      !== expectedDocumentRenderPipelineCount
+    ||
     documentPipelineCompilationStats.completedCount
-      !== EXPECTED_DOCUMENT_RENDER_PIPELINE_COUNT
+      !== expectedDocumentRenderPipelineCount
     || documentPipelineCompilationStats.settledCount
-      !== EXPECTED_DOCUMENT_RENDER_PIPELINE_COUNT
+      !== expectedDocumentRenderPipelineCount
+    || documentPipelineCompilationStats.failedCount !== 0
     || documentPipelineCompilationStats.activeCount !== 0
+    || documentPipelineCompilationStats.fallbackCount !== 0
   ) {
     throw new Error(
       `Document pipeline compilation settled ${documentPipelineCompilationStats.settledCount}`
-      + ` of ${EXPECTED_DOCUMENT_RENDER_PIPELINE_COUNT} render pipelines.`,
+      + ` of ${expectedDocumentRenderPipelineCount} render pipelines.`,
     );
   }
 

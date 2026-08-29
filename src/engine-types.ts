@@ -311,6 +311,13 @@ export interface BrushEngineOptions {
    */
   documentPipelineCompilationConcurrency?: number;
   /**
+   * Restricts document render-pipeline creation to the pipeline required by
+   * the first empty frame. This is an isolated startup diagnostic: editor
+   * interaction must remain disabled because excluded pipeline slots contain
+   * a first-frame-only sentinel in this mode.
+   */
+  documentPipelineCompilationScope?: "complete" | "first-frame-diagnostic";
+  /**
    * Leaves the selected brush's first-use resources cold until the editor
    * explicitly prepares a brush interaction. Core canvas rendering remains
    * available so navigation can be the initial interaction on slower devices.

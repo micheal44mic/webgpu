@@ -1101,6 +1101,7 @@ export class BrushEngine {
   readonly bevelBoundingFieldEnabled: boolean;
   readonly startupProgressPresentationYieldEnabled: boolean;
   readonly documentPipelineCompilationConcurrency: number | null;
+  readonly documentPipelineCompilationScope: "complete" | "first-frame-diagnostic";
   readonly layerMemoryStressTestEnabled: boolean;
   readonly layerCompressionTestEnabled: boolean;
   readonly layerColdCompressionEnabled: boolean;
@@ -2063,6 +2064,26 @@ export class BrushEngine {
     }
     this.documentPipelineCompilationConcurrency =
       documentPipelineCompilationConcurrency ?? null;
+    const documentPipelineCompilationScope =
+      options.documentPipelineCompilationScope ?? "complete";
+    if (
+      documentPipelineCompilationScope !== "complete"
+      && documentPipelineCompilationScope !== "first-frame-diagnostic"
+    ) {
+      throw new RangeError("Unsupported document pipeline compilation scope.");
+    }
+    if (
+      documentPipelineCompilationScope === "first-frame-diagnostic"
+      && (
+        documentPipelineCompilationConcurrency !== undefined
+        || options.deferSelectedBrushPreparation !== true
+      )
+    ) {
+      throw new Error(
+        "First-frame document pipeline diagnostics require isolated synchronous startup.",
+      );
+    }
+    this.documentPipelineCompilationScope = documentPipelineCompilationScope;
     this.selectedBrushPreparationDeferred = options.deferSelectedBrushPreparation === true;
     this.layerMemoryStressTestEnabled = options.layerMemoryStressTestEnabled === true;
     this.layerCompressionTestEnabled = options.layerCompressionTestEnabled === true;
@@ -2420,6 +2441,7 @@ export class BrushEngine {
         deferSelectionPipelines: true,
         documentPipelineCompilationConcurrency:
           this.documentPipelineCompilationConcurrency ?? undefined,
+        documentPipelineCompilationScope: this.documentPipelineCompilationScope,
       });
     } catch (error) {
       if (this.startupPhaseStartedAtMs.has("core-layouts")) {
@@ -8379,6 +8401,7 @@ export class BrushEngine {
    */
   currentBrushResourcesReady(): boolean {
     if (!this.initialized) return false;
+    if (this.documentPipelineCompilationScope === "first-frame-diagnostic") return false;
     const settings = this.settings;
     return this.brushDependenciesReady(settings)
       && this.completedBrushGpuWarmupKeys.has(this.brushGpuWarmupKey(settings));
@@ -8429,6 +8452,9 @@ export class BrushEngine {
   async ensureCurrentBrushResources(): Promise<void> {
     if (!this.initialized) {
       throw new Error("The engine is not initialized yet.");
+    }
+    if (this.documentPipelineCompilationScope === "first-frame-diagnostic") {
+      throw new Error("Editor interaction is disabled during first-frame diagnostics.");
     }
     this.selectedBrushPreparationDeferred = false;
     this.selectedBrushPreparationRequested = false;
@@ -8483,6 +8509,9 @@ export class BrushEngine {
    * the same initialization without compiling pipelines twice.
    */
   async ensureOptionalEditorResources(): Promise<void> {
+    if (this.documentPipelineCompilationScope === "first-frame-diagnostic") {
+      throw new Error("Optional editor resources are disabled during first-frame diagnostics.");
+    }
     const layerBlendResourcesPending = this.mixedSceneEnabled
       && !this.layerBlendTileWarmupAttempted && (
       this.layerBlendTileCompositor?.format !== this.layerFormat

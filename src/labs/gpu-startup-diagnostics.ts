@@ -107,11 +107,16 @@ const APPLICATION_4096_VARIANT = "application-startup-rgba16float-4096x4096-no-t
 const APPLICATION_4096_PIPELINES_ASYNC2_TEST = "application-4096-pipelines-async2-v1";
 const APPLICATION_4096_PIPELINES_ASYNC2_VARIANT =
   "application-startup-rgba16float-4096x4096-no-tier2-render-pipelines-async2-v1";
+const APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST =
+  "application-4096-pipelines-first-frame-v1";
+const APPLICATION_4096_PIPELINES_FIRST_FRAME_VARIANT =
+  "application-startup-rgba16float-4096x4096-no-tier2-render-pipelines-first-frame-1-v1";
 const APPLICATION_4096_DOCUMENT_WIDTH = 4096;
 const APPLICATION_4096_DOCUMENT_HEIGHT = 4096;
 const APPLICATION_DEFERRED_OBSERVATION_MS = 5_000;
 const EXPECTED_DOCUMENT_PIPELINE_LAYOUTS = 17;
 const EXPECTED_DOCUMENT_RENDER_PIPELINES = 52;
+const EXPECTED_FIRST_FRAME_RENDER_PIPELINES = 1;
 const EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS = 2;
 const diagnosticTest = new URLSearchParams(window.location.search).get("test");
 const storageFormatAbEnabled = diagnosticTest === STORAGE_FORMAT_AB_TEST;
@@ -119,6 +124,8 @@ const documentPipelineBisectEnabled = diagnosticTest === DOCUMENT_PIPELINE_TEST;
 const application4096StartupEnabled = diagnosticTest === APPLICATION_4096_TEST;
 const application4096PipelinesAsync2Enabled =
   diagnosticTest === APPLICATION_4096_PIPELINES_ASYNC2_TEST;
+const application4096PipelinesFirstFrameEnabled =
+  diagnosticTest === APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST;
 
 function comparisonPolicy(): Record<string, unknown> {
   if (storageFormatAbEnabled) {
@@ -188,6 +195,27 @@ function comparisonPolicy(): Record<string, unknown> {
       pipelineCompilationConcurrency: 2,
       expectedRenderPipelines: EXPECTED_DOCUMENT_RENDER_PIPELINES,
       asyncFallbackAllowed: false,
+    };
+  }
+  if (application4096PipelinesFirstFrameEnabled) {
+    return {
+      testId: APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST,
+      diagnosticVariant: APPLICATION_4096_PIPELINES_FIRST_FRAME_VARIANT,
+      kind: "application-startup-pipeline-compilation",
+      documentWidth: APPLICATION_4096_DOCUMENT_WIDTH,
+      documentHeight: APPLICATION_4096_DOCUMENT_HEIGHT,
+      layerFormat: "rgba16float",
+      canvasFormat: "rgba16float",
+      requiredFeatures: [],
+      textureFormatsTier2Requested: false,
+      applicationFrame: "isolated-production-startup",
+      startupMode: "cold-empty-document",
+      deferredObservationMs: APPLICATION_DEFERRED_OBSERVATION_MS,
+      pipelineCompilationScope: "first-frame-diagnostic",
+      expectedRenderPipelines: EXPECTED_FIRST_FRAME_RENDER_PIPELINES,
+      excludedRenderPipelines: EXPECTED_DOCUMENT_RENDER_PIPELINES
+        - EXPECTED_FIRST_FRAME_RENDER_PIPELINES,
+      editorInteractionEnabled: false,
     };
   }
   return {
@@ -2653,6 +2681,7 @@ function validateAsyncPipelineCompilation(
   expect(phase?.state === "completed", "document-pipelines did not complete");
   expect(stats !== null, "document-pipelines did not report compilation statistics");
   if (stats) {
+    expect(stats.format === "rgba16float", "pipeline format was not rgba16float");
     expect(stats.strategy === "async-bounded", "strategy was not async-bounded");
     expect(stats.requestedConcurrency === 2, "requested concurrency was not 2");
     expect(stats.nativeAsyncSupported === true, "native createRenderPipelineAsync was unavailable");
@@ -2682,21 +2711,87 @@ function validateAsyncPipelineCompilation(
   };
 }
 
+function validateFirstFramePipelineCompilation(
+  trace: ApplicationStartupTraceState,
+): Record<string, unknown> {
+  const phase = trace.phaseProgress["document-pipelines"] ?? null;
+  const stats = isRecord(phase?.detail) ? phase.detail : null;
+  const issues: string[] = [];
+  const expect = (condition: boolean, issue: string): void => {
+    if (!condition) issues.push(issue);
+  };
+  expect(phase?.state === "completed", "document-pipelines did not complete");
+  expect(stats !== null, "document-pipelines did not report compilation statistics");
+  if (stats) {
+    expect(
+      stats.scope === "first-frame-diagnostic",
+      "pipeline compilation scope was not first-frame-diagnostic",
+    );
+    expect(stats.strategy === "sync-sequential", "strategy was not sync-sequential");
+    expect(stats.requestedConcurrency === 1, "requested concurrency was not 1");
+    expect(
+      typeof stats.nativeAsyncSupported === "boolean",
+      "native async support was not reported as a boolean",
+    );
+    expect(
+      stats.expectedRenderPipelineCount === EXPECTED_FIRST_FRAME_RENDER_PIPELINES,
+      "expected render-pipeline count was not 1",
+    );
+    expect(
+      stats.logicalRenderPipelineCount === EXPECTED_DOCUMENT_RENDER_PIPELINES,
+      "logical render-pipeline count was not 52",
+    );
+    expect(
+      stats.excludedRenderPipelineCount
+        === EXPECTED_DOCUMENT_RENDER_PIPELINES - EXPECTED_FIRST_FRAME_RENDER_PIPELINES,
+      "excluded render-pipeline count was not 51",
+    );
+    expect(
+      Array.isArray(stats.compiledPipelineKeys)
+        && stats.compiledPipelineKeys.length === 1
+        && stats.compiledPipelineKeys[0] === "paint-mip-downsample",
+      "the compiled first-frame pipeline key was not paint-mip-downsample",
+    );
+    for (const field of ["scheduledCount", "startedCount", "completedCount", "settledCount"]) {
+      expect(stats[field] === EXPECTED_FIRST_FRAME_RENDER_PIPELINES, `${field} was not 1`);
+    }
+    expect(stats.failedCount === 0, "the first-frame render pipeline failed");
+    expect(stats.activeCount === 0, "render-pipeline work remained active after the phase");
+    expect(stats.fallbackCount === 0, "a synchronous fallback was used");
+    expect(stats.peakActiveCount === 1, "peak active render-pipeline work was not 1");
+  }
+  return {
+    passed: issues.length === 0,
+    issues,
+    phase,
+    stats,
+  };
+}
+
 interface Application4096DiagnosticOptions {
   readonly asynchronousPipelineCompilation?: boolean;
+  readonly firstFramePipelineCompilation?: boolean;
 }
 
 async function runApplication4096StartupDiagnostic(
   options: Application4096DiagnosticOptions = {},
 ): Promise<void> {
   const asynchronousPipelineCompilation = options.asynchronousPipelineCompilation === true;
-  const diagnosticVariant = asynchronousPipelineCompilation
-    ? APPLICATION_4096_PIPELINES_ASYNC2_VARIANT
-    : APPLICATION_4096_VARIANT;
-  const diagnosticTestId = asynchronousPipelineCompilation
-    ? APPLICATION_4096_PIPELINES_ASYNC2_TEST
-    : APPLICATION_4096_TEST;
-  const requiredStartupPhases = asynchronousPipelineCompilation
+  const firstFramePipelineCompilation = options.firstFramePipelineCompilation === true;
+  if (asynchronousPipelineCompilation && firstFramePipelineCompilation) {
+    throw new Error("Pipeline startup diagnostic modes are mutually exclusive.");
+  }
+  const diagnosticVariant = firstFramePipelineCompilation
+    ? APPLICATION_4096_PIPELINES_FIRST_FRAME_VARIANT
+    : asynchronousPipelineCompilation
+      ? APPLICATION_4096_PIPELINES_ASYNC2_VARIANT
+      : APPLICATION_4096_VARIANT;
+  const diagnosticTestId = firstFramePipelineCompilation
+    ? APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST
+    : asynchronousPipelineCompilation
+      ? APPLICATION_4096_PIPELINES_ASYNC2_TEST
+      : APPLICATION_4096_TEST;
+  const requiredStartupPhases = asynchronousPipelineCompilation || firstFramePipelineCompilation
     ? REQUIRED_APPLICATION_4096_ASYNC2_STARTUP_PHASES
     : REQUIRED_APPLICATION_4096_STARTUP_PHASES;
   const startupTrace = createApplicationStartupTraceState();
@@ -2784,13 +2879,18 @@ async function runApplication4096StartupDiagnostic(
       startupTrace: applicationStartupTraceSummary(startupTrace),
       ...(asynchronousPipelineCompilation
         ? { asyncPipelineCompilation: validateAsyncPipelineCompilation(startupTrace) }
-        : {}),
+        : firstFramePipelineCompilation
+          ? { firstFramePipelineCompilation: validateFirstFramePipelineCompilation(startupTrace) }
+          : {}),
     });
     return;
   }
 
   const asyncPipelineCompilation = asynchronousPipelineCompilation
     ? validateAsyncPipelineCompilation(startupTrace)
+    : null;
+  const firstFramePipelineCompilationResult = firstFramePipelineCompilation
+    ? validateFirstFramePipelineCompilation(startupTrace)
     : null;
   if (
     asyncPipelineCompilation
@@ -2810,6 +2910,24 @@ async function runApplication4096StartupDiagnostic(
     });
     return;
   }
+  if (
+    firstFramePipelineCompilationResult
+    && firstFramePipelineCompilationResult.passed !== true
+  ) {
+    await checkpoint(
+      "environment-captured-after-application-4096-first-frame-pipeline-inconclusive",
+      await captureHighEntropyEnvironment(),
+    );
+    await bridge.finish("failed", "diagnostic-failed", {
+      ...comparisonPolicy(),
+      verdict: "application-4096-pipelines-first-frame-inconclusive",
+      conclusion: "The real 4096x4096 application opened, but the one-pipeline first-frame contract was not fully observed.",
+      firstFramePipelineCompilation: firstFramePipelineCompilationResult,
+      startupTrace: applicationStartupTraceSummary(startupTrace),
+      applicationBoot: documentPipelineApplicationSummary(applicationBoot),
+    });
+    return;
+  }
 
   await checkpoint(
     "environment-captured-after-application-4096-pass",
@@ -2817,17 +2935,24 @@ async function runApplication4096StartupDiagnostic(
   );
   await bridge.finish("completed", "diagnostic-completed", {
     ...comparisonPolicy(),
-    verdict: asynchronousPipelineCompilation
-      ? "application-4096-pipelines-async2-passed"
-      : "application-4096-startup-passed",
-    conclusion: asynchronousPipelineCompilation
-      ? "The real 4096x4096 application completed startup after all 52 render pipelines settled through the native bounded asynchronous path."
-      : "The real 4096x4096 application document completed its first GPU frame and remained ready for five seconds.",
+    verdict: firstFramePipelineCompilation
+      ? "application-4096-pipelines-first-frame-passed"
+      : asynchronousPipelineCompilation
+        ? "application-4096-pipelines-async2-passed"
+        : "application-4096-startup-passed",
+    conclusion: firstFramePipelineCompilation
+      ? "The real 4096x4096 empty application completed its first GPU frame after compiling only the one document render pipeline that frame uses."
+      : asynchronousPipelineCompilation
+        ? "The real 4096x4096 application completed startup after all 52 render pipelines settled through the native bounded asynchronous path."
+        : "The real 4096x4096 application document completed its first GPU frame and remained ready for five seconds.",
     rgba16floatLayerBytes: APPLICATION_4096_DOCUMENT_WIDTH
       * APPLICATION_4096_DOCUMENT_HEIGHT
       * RGBA16FLOAT_BYTES_PER_PIXEL,
     startupTrace: applicationStartupTraceSummary(startupTrace),
     ...(asyncPipelineCompilation ? { asyncPipelineCompilation } : {}),
+    ...(firstFramePipelineCompilationResult
+      ? { firstFramePipelineCompilation: firstFramePipelineCompilationResult }
+      : {}),
     applicationBoot: documentPipelineApplicationSummary(applicationBoot),
   });
 }
@@ -2844,6 +2969,7 @@ async function run(): Promise<void> {
     && diagnosticTest !== DOCUMENT_PIPELINE_TEST
     && diagnosticTest !== APPLICATION_4096_TEST
     && diagnosticTest !== APPLICATION_4096_PIPELINES_ASYNC2_TEST
+    && diagnosticTest !== APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST
   ) {
     throw new Error(`Unsupported GPU diagnostic test: ${diagnosticTest}.`);
   }
@@ -2861,6 +2987,10 @@ async function run(): Promise<void> {
   }
   if (application4096PipelinesAsync2Enabled) {
     await runApplication4096StartupDiagnostic({ asynchronousPipelineCompilation: true });
+    return;
+  }
+  if (application4096PipelinesFirstFrameEnabled) {
+    await runApplication4096StartupDiagnostic({ firstFramePipelineCompilation: true });
     return;
   }
   let applicationBoot: Record<string, unknown>;
