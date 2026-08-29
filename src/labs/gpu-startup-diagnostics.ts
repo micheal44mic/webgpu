@@ -125,6 +125,10 @@ const APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST =
   "application-4096-pipeline-first-use-controls-v1";
 const APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT =
   "application-startup-rgba16float-4096x4096-no-tier2-first-use-controls-async1-v1";
+const APPLICATION_4096_CLEAN_QUEUE_CORE_TEST =
+  "application-4096-clean-queue-core-attribution-v1";
+const APPLICATION_4096_CLEAN_QUEUE_CORE_VARIANT =
+  "application-startup-rgba16float-4096x4096-no-tier2-clean-queue-core-readiness-async1-v1";
 const APPLICATION_4096_DOCUMENT_WIDTH = 4096;
 const APPLICATION_4096_DOCUMENT_HEIGHT = 4096;
 const APPLICATION_DEFERRED_OBSERVATION_MS = 5_000;
@@ -132,6 +136,27 @@ const EXPECTED_DOCUMENT_PIPELINE_LAYOUTS = 17;
 const EXPECTED_DOCUMENT_RENDER_PIPELINES = 52;
 const EXPECTED_FIRST_FRAME_RENDER_PIPELINES = 1;
 const EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS = 2;
+const EXPECTED_CORE_RENDER_PIPELINES = 8;
+const EXPECTED_CORE_PIPELINE_LABELS = [
+  "Light Glaze R16F stale dirty-region clear pipeline",
+  "Uniformed/Intense RGBA16F stale dirty-region clear pipeline",
+  "Display pipeline",
+  "Final raster stack mip display pipeline",
+  "Stroke direct LOD 0 and coarse mip display pipeline",
+  "Predictive thickness tail display pipeline",
+  "Light Glaze live display pipeline",
+  "Light Glaze live final raster stack display pipeline",
+] as const;
+const EXPECTED_CORE_PIPELINE_TARGET_FORMATS = [
+  "r16float",
+  "rgba16float",
+  "rgba16float",
+  "rgba16float",
+  "rgba16float",
+  "rgba16float",
+  "rgba16float",
+  "rgba16float",
+] as const;
 const diagnosticTest = new URLSearchParams(window.location.search).get("test");
 const storageFormatAbEnabled = diagnosticTest === STORAGE_FORMAT_AB_TEST;
 const documentPipelineBisectEnabled = diagnosticTest === DOCUMENT_PIPELINE_TEST;
@@ -146,10 +171,13 @@ const application4096PipelineAttributionEnabled =
   diagnosticTest === APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST;
 const application4096PipelineFirstUseControlsEnabled =
   diagnosticTest === APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST;
+const application4096CleanQueueCoreEnabled =
+  diagnosticTest === APPLICATION_4096_CLEAN_QUEUE_CORE_TEST;
 const application4096PipelineTimingEnabled =
   application4096PipelineBreakdownEnabled
   || application4096PipelineAttributionEnabled
-  || application4096PipelineFirstUseControlsEnabled;
+  || application4096PipelineFirstUseControlsEnabled
+  || application4096CleanQueueCoreEnabled;
 
 function comparisonPolicy(): Record<string, unknown> {
   if (storageFormatAbEnabled) {
@@ -322,6 +350,36 @@ function comparisonPolicy(): Record<string, unknown> {
       ],
       capture: "non-overlapping-first-use-controls-and-application-pipeline-durations",
       timingSemantics: "one-native-async-pipeline-at-a-time",
+      deferredObservationMs: APPLICATION_DEFERRED_OBSERVATION_MS,
+    };
+  }
+  if (application4096CleanQueueCoreEnabled) {
+    return {
+      testId: APPLICATION_4096_CLEAN_QUEUE_CORE_TEST,
+      diagnosticVariant: APPLICATION_4096_CLEAN_QUEUE_CORE_VARIANT,
+      kind: "application-startup-clean-queue-core-attribution",
+      documentWidth: APPLICATION_4096_DOCUMENT_WIDTH,
+      documentHeight: APPLICATION_4096_DOCUMENT_HEIGHT,
+      layerFormat: "rgba16float",
+      canvasFormat: "rgba16float",
+      requiredFeatures: [],
+      textureFormatsTier2Requested: false,
+      applicationFrame: "isolated-production-startup",
+      startupMode: "empty-document",
+      cleanQueueProbeFormat: "rgba16float",
+      cleanQueueProbeBlocking: true,
+      cleanQueueProbeBeforeApplicationDeviceExposure: true,
+      expectedCoreRenderPipelines: EXPECTED_CORE_RENDER_PIPELINES,
+      corePipelineObservationMethod: "sync-create-plus-async-duplicate-readiness",
+      coreReadinessBoundaryCount: 9,
+      coreReadinessBarrierBeforeDocumentPipelines: true,
+      postCoreBaselineCount: 1,
+      pipelineCompilationMethod: "createRenderPipelineAsync",
+      pipelineCompilationConcurrency: 1,
+      expectedPipelineLayouts: EXPECTED_DOCUMENT_PIPELINE_LAYOUTS,
+      expectedRenderPipelines: EXPECTED_DOCUMENT_RENDER_PIPELINES,
+      expectedErrorScopeDrains: EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS,
+      totalNativeAsyncPipelineInvocations: 63,
       deferredObservationMs: APPLICATION_DEFERRED_OBSERVATION_MS,
     };
   }
@@ -1598,6 +1656,14 @@ interface DocumentPipelineTraceState {
   firstUseSequenceFailed: boolean;
   firstUseSequenceError: unknown;
   firstUseSequenceSteps: Array<Record<string, unknown>>;
+  cleanQueueProbe: Record<string, unknown> | null;
+  coreReadinessSequenceStarted: boolean;
+  coreReadinessSequenceCompleted: boolean;
+  coreReadinessSequenceFailed: boolean;
+  coreReadinessBarrierState: string | null;
+  coreReadinessEntries: Array<Record<string, unknown>>;
+  coreReadinessSummary: Record<string, unknown> | null;
+  postCoreBaseline: Record<string, unknown> | null;
   calls: Array<Record<string, unknown>>;
 }
 
@@ -1698,6 +1764,14 @@ function createDocumentPipelineTraceState(): DocumentPipelineTraceState {
     firstUseSequenceFailed: false,
     firstUseSequenceError: null,
     firstUseSequenceSteps: [],
+    cleanQueueProbe: null,
+    coreReadinessSequenceStarted: false,
+    coreReadinessSequenceCompleted: false,
+    coreReadinessSequenceFailed: false,
+    coreReadinessBarrierState: null,
+    coreReadinessEntries: [],
+    coreReadinessSummary: null,
+    postCoreBaseline: null,
     calls: [],
   };
 }
@@ -1825,12 +1899,162 @@ function updateFirstUseSequenceTrace(
   return true;
 }
 
+function compactCleanQueueProbe(detail: Record<string, unknown>): Record<string, unknown> {
+  return {
+    state: detail.state ?? null,
+    format: detail.format ?? null,
+    blocking: detail.blocking === true,
+    beforeApplicationDeviceExposure: detail.beforeApplicationDeviceExposure === true,
+    priorDeviceGpuCallCount: detail.priorDeviceGpuCallCount ?? null,
+    shaderModuleCreationMs: finiteDurationMilliseconds(detail.shaderModuleCreationMs),
+    nativePipelineMs: finiteDurationMilliseconds(detail.nativePipelineMs),
+    scopeDrainMs: finiteDurationMilliseconds(detail.scopeDrainMs),
+    totalDurationMs: finiteDurationMilliseconds(detail.totalDurationMs),
+    scopeErrors: Array.isArray(detail.scopeErrors) ? detail.scopeErrors.slice(0, 4) : [],
+    error: compactDocumentPipelineError(detail.error),
+    pipelineReason: detail.pipelineReason ?? null,
+  };
+}
+
+function compactCoreReadinessEntry(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  return {
+    corePipelineIndex: value.corePipelineIndex ?? null,
+    label: value.label ?? null,
+    targetFormats: Array.isArray(value.targetFormats) ? value.targetFormats.slice(0, 4) : [],
+    syncReturnMs: finiteDurationMilliseconds(value.syncReturnMs),
+    readinessMs: finiteDurationMilliseconds(value.readinessMs),
+    completionOffsetMs: finiteDurationMilliseconds(value.completionOffsetMs),
+    fifoDeltaMs: finiteDurationMilliseconds(value.fifoDeltaMs),
+    completionRank: value.completionRank ?? null,
+    state: value.state ?? null,
+    error: compactDocumentPipelineError(value.error),
+    pipelineReason: value.pipelineReason ?? null,
+  };
+}
+
+function compactCoreReadinessSummary(detail: Record<string, unknown>): Record<string, unknown> {
+  return {
+    expectedPipelineCount: detail.expectedPipelineCount ?? null,
+    startedPipelineCount: detail.startedPipelineCount ?? null,
+    completedPipelineCount: detail.completedPipelineCount ?? null,
+    failedPipelineCount: detail.failedPipelineCount ?? null,
+    completionOrder: Array.isArray(detail.completionOrder)
+      ? detail.completionOrder.slice(0, 9)
+      : [],
+    completionOrderPreserved: detail.completionOrderPreserved === true,
+    totalDurationMs: finiteDurationMilliseconds(detail.totalDurationMs),
+    barrierState: detail.barrierState ?? null,
+    barrierWaitMs: finiteDurationMilliseconds(detail.barrierWaitMs),
+    postCoreBaseline: isRecord(detail.postCoreBaseline)
+      ? {
+          state: detail.postCoreBaseline.state ?? null,
+          format: detail.postCoreBaseline.format ?? null,
+          shaderModuleCreationMs: finiteDurationMilliseconds(
+            detail.postCoreBaseline.shaderModuleCreationMs,
+          ),
+          nativePipelineMs: finiteDurationMilliseconds(
+            detail.postCoreBaseline.nativePipelineMs,
+          ),
+          totalDurationMs: finiteDurationMilliseconds(
+            detail.postCoreBaseline.totalDurationMs,
+          ),
+          error: compactDocumentPipelineError(detail.postCoreBaseline.error),
+          pipelineReason: detail.postCoreBaseline.pipelineReason ?? null,
+        }
+      : null,
+    entries: Array.isArray(detail.entries)
+      ? detail.entries.slice(0, 9).map(compactCoreReadinessEntry).filter(isRecord)
+      : [],
+  };
+}
+
+function updateCleanQueueCoreTrace(
+  trace: DocumentPipelineTraceState,
+  type: string,
+  detail: Record<string, unknown>,
+): boolean {
+  if (type.startsWith("document-pipeline-clean-queue-probe-")) {
+    trace.cleanQueueProbe = compactCleanQueueProbe(detail);
+    return true;
+  }
+  if (type === "document-pipeline-core-readiness-sequence-started") {
+    trace.coreReadinessSequenceStarted = true;
+    trace.coreReadinessSummary = compactCoreReadinessSummary(detail);
+    return true;
+  }
+  if (
+    type === "document-pipeline-core-readiness-entry-started"
+    || type === "document-pipeline-core-readiness-entry-completed"
+    || type === "document-pipeline-core-readiness-entry-failed"
+  ) {
+    const entry = compactCoreReadinessEntry(detail);
+    if (entry) {
+      const entryIndex = Number(entry.corePipelineIndex);
+      const existing = trace.coreReadinessEntries.find((candidate) => (
+        Number(candidate.corePipelineIndex) === entryIndex
+      ));
+      if (existing) Object.assign(existing, entry);
+      else trace.coreReadinessEntries.push(entry);
+      trace.coreReadinessEntries.sort((left, right) => (
+        Number(left.corePipelineIndex ?? 0) - Number(right.corePipelineIndex ?? 0)
+      ));
+    }
+    if (type.endsWith("-failed")) trace.coreReadinessSequenceFailed = true;
+    return true;
+  }
+  if (type === "document-pipeline-core-readiness-sequence-completed") {
+    trace.coreReadinessSequenceCompleted = true;
+    trace.coreReadinessSummary = compactCoreReadinessSummary(detail);
+    trace.coreReadinessEntries = Array.isArray(trace.coreReadinessSummary.entries)
+      ? [...trace.coreReadinessSummary.entries] as Array<Record<string, unknown>>
+      : [];
+    return true;
+  }
+  if (type === "document-pipeline-core-readiness-barrier-started") {
+    trace.coreReadinessBarrierState = "started";
+    return true;
+  }
+  if (type === "document-pipeline-core-readiness-barrier-completed") {
+    trace.coreReadinessBarrierState = "completed";
+    trace.coreReadinessSummary = compactCoreReadinessSummary(detail);
+    trace.coreReadinessEntries = Array.isArray(trace.coreReadinessSummary.entries)
+      ? [...trace.coreReadinessSummary.entries] as Array<Record<string, unknown>>
+      : [];
+    trace.postCoreBaseline = isRecord(trace.coreReadinessSummary.postCoreBaseline)
+      ? { ...trace.coreReadinessSummary.postCoreBaseline }
+      : null;
+    return true;
+  }
+  if (type === "document-pipeline-core-readiness-barrier-failed") {
+    trace.coreReadinessBarrierState = "failed";
+    trace.coreReadinessSequenceFailed = true;
+    trace.coreReadinessSummary = compactCoreReadinessSummary(detail);
+    return true;
+  }
+  if (type.startsWith("document-pipeline-post-core-baseline-")) {
+    trace.postCoreBaseline = {
+      state: detail.state ?? null,
+      format: detail.format ?? null,
+      shaderModuleCreationMs: finiteDurationMilliseconds(detail.shaderModuleCreationMs),
+      nativePipelineMs: finiteDurationMilliseconds(detail.nativePipelineMs),
+      totalDurationMs: finiteDurationMilliseconds(detail.totalDurationMs),
+      error: compactDocumentPipelineError(detail.error),
+      pipelineReason: detail.pipelineReason ?? null,
+    };
+    if (type.endsWith("-failed")) trace.coreReadinessSequenceFailed = true;
+    return true;
+  }
+  return false;
+}
+
 function updateDocumentPipelineTrace(
   trace: DocumentPipelineTraceState,
   type: string,
   rawDetail: unknown,
 ): void {
   const detail = isRecord(rawDetail) ? rawDetail : {};
+  if (updateCleanQueueCoreTrace(trace, type, detail)) return;
   if (updateFirstUseSequenceTrace(trace, type, detail)) return;
   if (type === "document-pipeline-instrumentation") {
     trace.instrumentationInstalled = detail.installed === true;
@@ -1984,6 +2208,13 @@ function documentPipelineTraceSummary(
     slowestCompletedRenderPipeline: trace.slowestCompletedRenderPipeline,
     engineProbe: trace.engineProbe,
     firstUseSequence: firstUseSequenceSummary(trace),
+    cleanQueueProbe: trace.cleanQueueProbe,
+    coreReadinessSequenceStarted: trace.coreReadinessSequenceStarted,
+    coreReadinessSequenceCompleted: trace.coreReadinessSequenceCompleted,
+    coreReadinessSequenceFailed: trace.coreReadinessSequenceFailed,
+    coreReadinessBarrierState: trace.coreReadinessBarrierState,
+    coreReadiness: trace.coreReadinessSummary,
+    postCoreBaseline: trace.postCoreBaseline,
     calls: trace.calls.slice(-4),
   };
 }
@@ -2076,7 +2307,120 @@ function firstUseSequencePassed(trace: DocumentPipelineTraceState): boolean {
       && step.fragmentEntryPoint === "fragmentMain"
       && step.ordinaryRenderPipelineIndex === (index === 2 ? 1 : null)
       && step.topology === (index === 0 ? "triangle-list" : "triangle-strip")
-    ));
+  ));
+}
+
+function cleanQueueCoreAttributionPassed(trace: DocumentPipelineTraceState): boolean {
+  if (!application4096CleanQueueCoreEnabled) return true;
+  const probe = trace.cleanQueueProbe;
+  const core = trace.coreReadinessSummary;
+  const entries = isRecord(core) && Array.isArray(core.entries)
+    ? core.entries.filter(isRecord)
+    : [];
+  const completionOrder = isRecord(core) && Array.isArray(core.completionOrder)
+    ? core.completionOrder
+    : [];
+  const ordered = isRecord(core) && core.completionOrderPreserved === true;
+  const validDuration = (value: unknown): boolean => (
+    typeof value === "number" && Number.isFinite(value) && value >= 0
+  );
+  const expectedLabels = ["Pre-core queue boundary", ...EXPECTED_CORE_PIPELINE_LABELS];
+  const completionPermutation = completionOrder.length === 9
+    && [...completionOrder]
+      .map(Number)
+      .sort((left, right) => left - right)
+      .every((value, index) => value === index);
+  return isRecord(probe)
+    && probe.state === "completed"
+    && probe.format === "rgba16float"
+    && probe.blocking === true
+    && probe.beforeApplicationDeviceExposure === true
+    && probe.priorDeviceGpuCallCount === 0
+    && validDuration(probe.shaderModuleCreationMs)
+    && validDuration(probe.nativePipelineMs)
+    && validDuration(probe.scopeDrainMs)
+    && validDuration(probe.totalDurationMs)
+    && Array.isArray(probe.scopeErrors)
+    && probe.scopeErrors.length === 0
+    && trace.coreReadinessSequenceStarted
+    && trace.coreReadinessSequenceCompleted
+    && !trace.coreReadinessSequenceFailed
+    && trace.coreReadinessBarrierState === "completed"
+    && isRecord(core)
+    && core.expectedPipelineCount === EXPECTED_CORE_RENDER_PIPELINES
+    && core.startedPipelineCount === EXPECTED_CORE_RENDER_PIPELINES
+    && core.completedPipelineCount === EXPECTED_CORE_RENDER_PIPELINES + 1
+    && core.failedPipelineCount === 0
+    && validDuration(core.totalDurationMs)
+    && validDuration(core.barrierWaitMs)
+    && completionPermutation
+    && entries.length === 9
+    && entries.every((entry, index) => (
+      entry.corePipelineIndex === index
+      && entry.label === expectedLabels[index]
+      && Array.isArray(entry.targetFormats)
+      && entry.targetFormats.length === 1
+      && entry.targetFormats[0] === (
+        index === 0 ? "rgba16float" : EXPECTED_CORE_PIPELINE_TARGET_FORMATS[index - 1]
+      )
+      && entry.state === "completed"
+      && validDuration(entry.readinessMs)
+      && validDuration(entry.completionOffsetMs)
+      && validDuration(entry.completionRank)
+      && (index === 0 ? entry.syncReturnMs === null : validDuration(entry.syncReturnMs))
+      && (ordered ? validDuration(entry.fifoDeltaMs) : entry.fifoDeltaMs === null)
+    ))
+    && isRecord(core.postCoreBaseline)
+    && core.postCoreBaseline.state === "completed"
+    && core.postCoreBaseline.format === "rgba16float"
+    && validDuration(core.postCoreBaseline.shaderModuleCreationMs)
+    && validDuration(core.postCoreBaseline.nativePipelineMs)
+    && validDuration(core.postCoreBaseline.totalDurationMs);
+}
+
+function cleanQueueCoreAttributionSummary(
+  trace: DocumentPipelineTraceState,
+): Record<string, unknown> {
+  const probe = isRecord(trace.cleanQueueProbe) ? trace.cleanQueueProbe : {};
+  const core = isRecord(trace.coreReadinessSummary) ? trace.coreReadinessSummary : {};
+  const entries = Array.isArray(core.entries) ? core.entries.filter(isRecord) : [];
+  const ordered = core.completionOrderPreserved === true;
+  return {
+    probeFormat: probe.format ?? "rgba16float",
+    probeBlocking: probe.blocking === true,
+    probeBeforeApplicationDeviceExposure: probe.beforeApplicationDeviceExposure === true,
+    priorDeviceGpuCallCount: probe.priorDeviceGpuCallCount ?? null,
+    probeShaderModuleCreationMs: finiteDurationMilliseconds(probe.shaderModuleCreationMs),
+    probeNativePipelineMs: finiteDurationMilliseconds(probe.nativePipelineMs),
+    probeScopeDrainMs: finiteDurationMilliseconds(probe.scopeDrainMs),
+    probeTotalMs: finiteDurationMilliseconds(probe.totalDurationMs),
+    coreCompletionOrderPreserved: ordered,
+    coreCompletionOrder: Array.isArray(core.completionOrder)
+      ? core.completionOrder.slice(0, 9)
+      : [],
+    coreDrainMs: finiteDurationMilliseconds(core.totalDurationMs),
+    coreBarrierWaitMs: finiteDurationMilliseconds(core.barrierWaitMs),
+    coreSyncReturnMs: entries.slice(1).map((entry) => (
+      finiteDurationMilliseconds(entry.syncReturnMs)
+    )),
+    coreSentinelElapsedMs: entries.map((entry) => (
+      finiteDurationMilliseconds(entry.readinessMs)
+    )),
+    coreCumulativeMs: entries.map((entry) => (
+      finiteDurationMilliseconds(entry.completionOffsetMs)
+    )),
+    coreIntervalMs: ordered
+      ? entries.slice(1).map((entry) => finiteDurationMilliseconds(entry.fifoDeltaMs))
+      : [],
+    preCoreBacklogMs: ordered && isRecord(entries[0])
+      ? finiteDurationMilliseconds(entries[0].fifoDeltaMs)
+      : null,
+    coreEntries: entries,
+    postCoreBaseline: isRecord(core.postCoreBaseline)
+      ? { ...core.postCoreBaseline }
+      : null,
+    individualCoreAttributionValid: ordered,
+  };
 }
 
 function compactTimedDocumentPipelineCall(
@@ -2189,6 +2533,7 @@ function documentPipelineBreakdownSummary(
     firstRenderPipelineMayIncludePriorQueuedGpuWork:
       trace.renderPipelineMethod === "createRenderPipelineAsync"
         ? !application4096PipelineFirstUseControlsEnabled
+          && !application4096CleanQueueCoreEnabled
         : null,
     firstUseSequence: sequence,
     errorScopeDrainTotalMs: finiteDurationMilliseconds(errorScopeTotalMs),
@@ -2502,6 +2847,14 @@ async function runFullApplicationBoot(
   target.searchParams.set("deviceClass", "mobile");
   target.searchParams.set("diagnosticVariant", expectedDiagnosticVariant);
   if (options.diagnosticTestId) target.searchParams.set("test", options.diagnosticTestId);
+  target.searchParams.set(
+    "diagnosticNonce",
+    [
+      bridge.runCode || "local",
+      Date.now().toString(36),
+      Math.random().toString(36).slice(2),
+    ].join("-"),
+  );
   target.searchParams.set("forceGlazeCommitFallback", "1");
   let bootstrapReady = false;
   let extensionCreated = false;
@@ -2962,6 +3315,7 @@ function documentPipelineTracePassed(trace: DocumentPipelineTraceState): boolean
   const expectedRenderPipelineMethod = (
     application4096PipelineAttributionEnabled
     || application4096PipelineFirstUseControlsEnabled
+    || application4096CleanQueueCoreEnabled
   )
     ? "createRenderPipelineAsync"
     : "createRenderPipeline";
@@ -3465,25 +3819,34 @@ function documentPipelineBreakdownPassed(
 
 async function runApplication4096PipelineBreakdownDiagnostic(): Promise<void> {
   const firstUseControlsEnabled = application4096PipelineFirstUseControlsEnabled;
-  const attributionEnabled = application4096PipelineAttributionEnabled || firstUseControlsEnabled;
-  const diagnosticVariant = firstUseControlsEnabled
-    ? APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT
-    : attributionEnabled
-      ? APPLICATION_4096_PIPELINE_ATTRIBUTION_VARIANT
-      : APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT;
-  const diagnosticTestId = firstUseControlsEnabled
-    ? APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST
-    : attributionEnabled
-      ? APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST
-      : APPLICATION_4096_PIPELINE_BREAKDOWN_TEST;
+  const cleanQueueCoreEnabled = application4096CleanQueueCoreEnabled;
+  const attributionEnabled = application4096PipelineAttributionEnabled
+    || firstUseControlsEnabled
+    || cleanQueueCoreEnabled;
+  const diagnosticVariant = cleanQueueCoreEnabled
+    ? APPLICATION_4096_CLEAN_QUEUE_CORE_VARIANT
+    : firstUseControlsEnabled
+      ? APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT
+      : attributionEnabled
+        ? APPLICATION_4096_PIPELINE_ATTRIBUTION_VARIANT
+        : APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT;
+  const diagnosticTestId = cleanQueueCoreEnabled
+    ? APPLICATION_4096_CLEAN_QUEUE_CORE_TEST
+    : firstUseControlsEnabled
+      ? APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST
+      : attributionEnabled
+        ? APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST
+        : APPLICATION_4096_PIPELINE_BREAKDOWN_TEST;
   const renderPipelineMethod = attributionEnabled
     ? "createRenderPipelineAsync"
     : "createRenderPipeline";
-  const verdictPrefix = firstUseControlsEnabled
-    ? "application-4096-pipeline-first-use-controls"
-    : attributionEnabled
-      ? "application-4096-pipeline-attribution"
-      : "application-4096-pipeline-breakdown";
+  const verdictPrefix = cleanQueueCoreEnabled
+    ? "application-4096-clean-queue-core-attribution"
+    : firstUseControlsEnabled
+      ? "application-4096-pipeline-first-use-controls"
+      : attributionEnabled
+        ? "application-4096-pipeline-attribution"
+        : "application-4096-pipeline-breakdown";
   const documentPipelineTrace = createDocumentPipelineTraceState();
   const startupTrace = createApplicationStartupTraceState();
   const displayAttributionTrace = (): void => {
@@ -3493,6 +3856,12 @@ async function runApplication4096PipelineBreakdownDiagnostic(): Promise<void> {
       bridge.display?.(
         "application-document-pipeline-first-use-sequence",
         firstUseSequenceSummary(documentPipelineTrace),
+      );
+    }
+    if (cleanQueueCoreEnabled) {
+      bridge.display?.(
+        "application-clean-queue-core-attribution",
+        cleanQueueCoreAttributionSummary(documentPipelineTrace),
       );
     }
   };
@@ -3529,6 +3898,9 @@ async function runApplication4096PipelineBreakdownDiagnostic(): Promise<void> {
       ...(firstUseControlsEnabled
         ? { firstUseSequence: firstUseSequenceSummary(documentPipelineTrace) }
         : {}),
+      ...(cleanQueueCoreEnabled
+        ? { cleanQueueCoreAttribution: cleanQueueCoreAttributionSummary(documentPipelineTrace) }
+        : {}),
       documentPipelineTrace: documentPipelineTraceSummary(documentPipelineTrace),
       startupTrace: applicationStartupTraceSummary(startupTrace),
     });
@@ -3546,6 +3918,7 @@ async function runApplication4096PipelineBreakdownDiagnostic(): Promise<void> {
     : null;
   if (
     !documentPipelineBreakdownPassed(documentPipelineTrace, breakdown, renderPipelineMethod)
+    || !cleanQueueCoreAttributionPassed(documentPipelineTrace)
     || (asyncPipelineCompilation !== null && asyncPipelineCompilation.passed !== true)
   ) {
     await checkpoint(
@@ -3556,13 +3929,18 @@ async function runApplication4096PipelineBreakdownDiagnostic(): Promise<void> {
       ...comparisonPolicy(),
       verdict: `${verdictPrefix}-inconclusive`,
       conclusion: attributionEnabled
-        ? firstUseControlsEnabled
-          ? "The application opened, but the complete three-step first-use control sequence and 52-pipeline attribution contract were not observed."
-          : "The application opened, but the complete non-overlapping 52-pipeline attribution contract was not observed."
+        ? cleanQueueCoreEnabled
+          ? "The application opened, but the blocking empty-queue RGBA16F probe, complete core readiness ladder, drained-queue baseline, and 52-pipeline contract were not all observed."
+          : firstUseControlsEnabled
+            ? "The application opened, but the complete three-step first-use control sequence and 52-pipeline attribution contract were not observed."
+            : "The application opened, but the complete non-overlapping 52-pipeline attribution contract was not observed."
         : "The application opened, but the complete 71-call timing contract was not observed.",
       pipelineBreakdown: breakdown,
       ...(firstUseControlsEnabled
         ? { firstUseSequence: firstUseSequenceSummary(documentPipelineTrace) }
+        : {}),
+      ...(cleanQueueCoreEnabled
+        ? { cleanQueueCoreAttribution: cleanQueueCoreAttributionSummary(documentPipelineTrace) }
         : {}),
       ...(asyncPipelineCompilation ? { asyncPipelineCompilation } : {}),
       documentPipelineTrace: documentPipelineTraceSummary(documentPipelineTrace),
@@ -3580,13 +3958,18 @@ async function runApplication4096PipelineBreakdownDiagnostic(): Promise<void> {
     ...comparisonPolicy(),
     verdict: `${verdictPrefix}-passed`,
     conclusion: attributionEnabled
-      ? firstUseControlsEnabled
-        ? "The independent control, shared brush-module control, original Eraser pipeline, and all 52 application render pipelines were timed sequentially without overlap during the isolated 4096x4096 startup."
-        : "All 52 native asynchronous render pipelines were compiled one at a time and timed without overlap during the isolated 4096x4096 startup."
+      ? cleanQueueCoreEnabled
+        ? "The blocking empty-queue RGBA16F probe completed before the application received its device; the eight core render pipelines, drained-queue baseline, and all 52 document pipelines were then observed separately."
+        : firstUseControlsEnabled
+          ? "The independent control, shared brush-module control, original Eraser pipeline, and all 52 application render pipelines were timed sequentially without overlap during the isolated 4096x4096 startup."
+          : "All 52 native asynchronous render pipelines were compiled one at a time and timed without overlap during the isolated 4096x4096 startup."
       : "All 17 layouts, 52 synchronous render pipelines, and two error-scope drains were timed individually during the real 4096x4096 startup.",
     pipelineBreakdown: breakdown,
     ...(firstUseControlsEnabled
       ? { firstUseSequence: firstUseSequenceSummary(documentPipelineTrace) }
+      : {}),
+    ...(cleanQueueCoreEnabled
+      ? { cleanQueueCoreAttribution: cleanQueueCoreAttributionSummary(documentPipelineTrace) }
       : {}),
     ...(asyncPipelineCompilation ? { asyncPipelineCompilation } : {}),
     startupTrace: applicationStartupTraceSummary(startupTrace),
@@ -3610,6 +3993,7 @@ async function run(): Promise<void> {
     && diagnosticTest !== APPLICATION_4096_PIPELINE_BREAKDOWN_TEST
     && diagnosticTest !== APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST
     && diagnosticTest !== APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST
+    && diagnosticTest !== APPLICATION_4096_CLEAN_QUEUE_CORE_TEST
   ) {
     throw new Error(`Unsupported GPU diagnostic test: ${diagnosticTest}.`);
   }

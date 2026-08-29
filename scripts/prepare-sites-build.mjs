@@ -95,7 +95,31 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
     "application-4096-pipeline-attribution-async1-v1";
   var APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID =
     "application-4096-pipeline-first-use-controls-v1";
+  var APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID =
+    "application-4096-clean-queue-core-attribution-v1";
+  var CORE_PIPELINE_PHASE = "core-pipelines";
   var DOCUMENT_PIPELINE_PHASE = "document-pipelines";
+  var EXPECTED_CORE_RENDER_PIPELINES = 8;
+  var EXPECTED_CORE_PIPELINE_LABELS = [
+    "Light Glaze R16F stale dirty-region clear pipeline",
+    "Uniformed/Intense RGBA16F stale dirty-region clear pipeline",
+    "Display pipeline",
+    "Final raster stack mip display pipeline",
+    "Stroke direct LOD 0 and coarse mip display pipeline",
+    "Predictive thickness tail display pipeline",
+    "Light Glaze live display pipeline",
+    "Light Glaze live final raster stack display pipeline",
+  ];
+  var EXPECTED_CORE_PIPELINE_TARGET_FORMATS = [
+    "r16float",
+    "rgba16float",
+    "rgba16float",
+    "rgba16float",
+    "rgba16float",
+    "rgba16float",
+    "rgba16float",
+    "rgba16float",
+  ];
   var EXPECTED_DOCUMENT_PIPELINE_LAYOUTS = 17;
   var EXPECTED_DOCUMENT_RENDER_PIPELINES = 52;
   var EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS = 2;
@@ -103,15 +127,23 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
   var EXPECTED_FIRST_USE_SEQUENCE_STEPS = 3;
   var INJECTED_FIRST_USE_RENDER_PIPELINES = 2;
   var diagnosticTestId = new URLSearchParams(window.location.search).get("test") || "";
+  var diagnosticShaderNonce = clippedString(
+    new URLSearchParams(window.location.search).get("diagnosticNonce")
+      || "local",
+    180,
+  );
   var application4096PipelineBreakdownEnabled =
     diagnosticTestId === APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID;
   var application4096PipelineAttributionEnabled =
     diagnosticTestId === APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID;
   var application4096PipelineFirstUseControlsEnabled =
     diagnosticTestId === APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID;
+  var application4096CleanQueueCoreEnabled =
+    diagnosticTestId === APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID;
   var application4096PipelineAsyncTimingEnabled =
     application4096PipelineAttributionEnabled
-    || application4096PipelineFirstUseControlsEnabled;
+    || application4096PipelineFirstUseControlsEnabled
+    || application4096CleanQueueCoreEnabled;
   var documentPipelineInstrumentationEnabled =
     diagnosticTestId === DOCUMENT_PIPELINE_TEST_ID
     || application4096PipelineBreakdownEnabled
@@ -125,7 +157,8 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
     || application4096PipelinesAsync2Enabled
     || application4096PipelinesFirstFrameEnabled
     || application4096PipelineBreakdownEnabled
-    || application4096PipelineAsyncTimingEnabled;
+    || application4096PipelineAsyncTimingEnabled
+    || application4096CleanQueueCoreEnabled;
   if (application4096PipelinesFirstFrameEnabled) {
     if (document.documentElement && document.documentElement.style) {
       document.documentElement.style.pointerEvents = "none";
@@ -156,6 +189,21 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
   var currentDocumentGpuCall = null;
   var lastCompletedRenderPipeline = null;
   var slowestCompletedRenderPipeline = null;
+  var cleanQueueProbeState = "pending";
+  var cleanQueueProbeStartedAtMs = null;
+  var cleanQueueProbeCompletedAtMs = null;
+  var cleanQueueProbe = null;
+  var coreReadinessSequenceStartedAtMs = null;
+  var coreReadinessSequenceCompletedAtMs = null;
+  var coreReadinessCompletionOrder = [];
+  var coreReadinessPromises = [];
+  var coreReadinessEntries = [];
+  var coreReadinessBarrierStartedAtMs = null;
+  var coreReadinessBarrierCompletedAtMs = null;
+  var coreReadinessBarrierState = "pending";
+  var coreReadinessBarrierPromise = null;
+  var postCoreBaseline = null;
+  var coreRenderPipelineIndex = 0;
   var firstUseSequenceStartedAtMs = null;
   var firstUseSequenceCompletedAtMs = null;
   var firstUseInjectedCompletedAtMs = null;
@@ -299,7 +347,7 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
     if (value instanceof Error) return errorDetail(value);
     if (depth >= 3) return clippedString(value, MAX_STRING_LENGTH);
     if (Array.isArray(value)) {
-      return value.slice(0, 8).map(function (entry) {
+      return value.slice(0, 12).map(function (entry) {
         return safeValue(entry, depth + 1);
       });
     }
@@ -365,6 +413,148 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
     return documentPipelineInstrumentationEnabled
       && activeStartupPhase === DOCUMENT_PIPELINE_PHASE
       && activeStartupPhaseState === "started";
+  }
+
+  function corePipelinePhaseActive() {
+    return application4096CleanQueueCoreEnabled
+      && activeStartupPhase === CORE_PIPELINE_PHASE
+      && activeStartupPhaseState === "started";
+  }
+
+  function minimalRgba16FloatPipelineDescriptor(device, label, nonce) {
+    var shaderStartedAtMs = performance.now();
+    var shaderModule = device.createShaderModule({
+      label: label + " WGSL",
+      code: [
+        "// diagnostic-nonce: " + clippedString(nonce || "none", 160),
+        "@vertex",
+        "fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> @builtin(position) vec4<f32> {",
+        "  let positions = array<vec2<f32>, 3>(",
+        "    vec2<f32>(-1.0, -1.0),",
+        "    vec2<f32>( 3.0, -1.0),",
+        "    vec2<f32>(-1.0,  3.0)",
+        "  );",
+        "  return vec4<f32>(positions[vertexIndex], 0.0, 1.0);",
+        "}",
+        "@fragment",
+        "fn fragmentMain() -> @location(0) vec4<f32> {",
+        "  return vec4<f32>(0.0);",
+        "}",
+      ].join("\n"),
+    });
+    return {
+      shaderModuleCreationMs: Math.max(0, performance.now() - shaderStartedAtMs),
+      descriptor: {
+        label: label,
+        layout: "auto",
+        vertex: { module: shaderModule, entryPoint: "vertexMain" },
+        fragment: {
+          module: shaderModule,
+          entryPoint: "fragmentMain",
+          targets: [{ format: "rgba16float" }],
+        },
+        primitive: { topology: "triangle-list" },
+      },
+    };
+  }
+
+  function cleanQueueProbeSummary() {
+    return cleanQueueProbe ? { ...cleanQueueProbe } : {
+      enabled: application4096CleanQueueCoreEnabled,
+      state: cleanQueueProbeState,
+      format: "rgba16float",
+      blocking: true,
+      beforeApplicationDeviceExposure: true,
+    };
+  }
+
+  function emitCleanQueueProbeEvent(suffix, status) {
+    var detail = {
+      ...cleanQueueProbeSummary(),
+      durableCheckpoint: false,
+    };
+    detail.durableCheckpoint = durableRecord(
+      "application-clean-queue-probe-" + suffix,
+      detail,
+      status,
+    );
+    emit("document-pipeline-clean-queue-probe-" + suffix, detail);
+  }
+
+  function coreReadinessEntrySnapshot(entry) {
+    if (!entry || typeof entry !== "object") return null;
+    return {
+      corePipelineIndex: entry.corePipelineIndex,
+      label: entry.label,
+      targetFormats: Array.isArray(entry.targetFormats) ? [...entry.targetFormats] : [],
+      syncReturnMs: finiteNumber(entry.syncReturnMs),
+      readinessMs: finiteNumber(entry.readinessMs),
+      completionOffsetMs: finiteNumber(entry.completionOffsetMs),
+      fifoDeltaMs: finiteNumber(entry.fifoDeltaMs),
+      completionRank: finiteNumber(entry.completionRank),
+      state: entry.state,
+      error: entry.error || null,
+      pipelineReason: entry.pipelineReason || null,
+    };
+  }
+
+  function coreReadinessSummary() {
+    var ordered = coreReadinessCompletionOrder.length === EXPECTED_CORE_RENDER_PIPELINES + 1
+      && coreReadinessCompletionOrder.every(function (index, position) {
+        return index === position;
+      });
+    var totalDurationMs = coreReadinessSequenceStartedAtMs !== null
+      && coreReadinessSequenceCompletedAtMs !== null
+      ? Math.max(0, coreReadinessSequenceCompletedAtMs - coreReadinessSequenceStartedAtMs)
+      : null;
+    return {
+      enabled: application4096CleanQueueCoreEnabled,
+      expectedPipelineCount: EXPECTED_CORE_RENDER_PIPELINES,
+      startedPipelineCount: coreRenderPipelineIndex,
+      completedPipelineCount: coreReadinessEntries.filter(function (entry) {
+        return entry.state === "completed";
+      }).length,
+      failedPipelineCount: coreReadinessEntries.filter(function (entry) {
+        return entry.state === "failed";
+      }).length,
+      completionOrder: [...coreReadinessCompletionOrder],
+      completionOrderPreserved: ordered,
+      totalDurationMs: finiteNumber(totalDurationMs),
+      barrierState: coreReadinessBarrierState,
+      barrierWaitMs: coreReadinessBarrierStartedAtMs !== null
+        && coreReadinessBarrierCompletedAtMs !== null
+        ? finiteNumber(coreReadinessBarrierCompletedAtMs - coreReadinessBarrierStartedAtMs)
+        : null,
+      postCoreBaseline: postCoreBaseline ? { ...postCoreBaseline } : null,
+      entries: coreReadinessEntries.map(coreReadinessEntrySnapshot),
+    };
+  }
+
+  function emitCoreReadinessEvent(suffix, entry, status) {
+    var detail = entry
+      ? coreReadinessEntrySnapshot(entry)
+      : coreReadinessSummary();
+    detail = {
+      ...detail,
+      expectedPipelineCount: EXPECTED_CORE_RENDER_PIPELINES,
+      durableCheckpoint: false,
+    };
+    var durableDetail = entry ? detail : {
+      expectedPipelineCount: detail.expectedPipelineCount,
+      startedPipelineCount: detail.startedPipelineCount,
+      completedPipelineCount: detail.completedPipelineCount,
+      failedPipelineCount: detail.failedPipelineCount,
+      completionOrder: detail.completionOrder,
+      completionOrderPreserved: detail.completionOrderPreserved,
+      totalDurationMs: detail.totalDurationMs,
+      barrierState: detail.barrierState,
+    };
+    detail.durableCheckpoint = durableRecord(
+      "application-core-pipeline-readiness-" + suffix,
+      durableDetail,
+      status,
+    );
+    emit("document-pipeline-core-readiness-" + suffix, detail);
   }
 
   function firstUseSequenceStepSnapshot(step) {
@@ -483,6 +673,12 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
       lastCompletedRenderPipeline: lastCompletedRenderPipeline,
       slowestCompletedRenderPipeline: slowestCompletedRenderPipeline,
       firstUseSequence: firstUseSequenceSummary(),
+      cleanQueueProbe: application4096CleanQueueCoreEnabled
+        ? cleanQueueProbeSummary()
+        : null,
+      coreReadiness: application4096CleanQueueCoreEnabled
+        ? coreReadinessSummary()
+        : null,
     };
   }
 
@@ -1003,6 +1199,383 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
     });
   }
 
+  async function drainCleanQueueProbeScopes(device, pushedScopeCount) {
+    var scopeStartedAtMs = performance.now();
+    var scopeErrors = [];
+    for (var index = 0; index < pushedScopeCount; index += 1) {
+      try {
+        var scopedError = await device.popErrorScope();
+        if (scopedError) scopeErrors.push(errorDetail(scopedError));
+      } catch (error) {
+        scopeErrors.push(errorDetail(error));
+      }
+    }
+    return {
+      scopeDrainMs: Math.max(0, performance.now() - scopeStartedAtMs),
+      scopeErrors: scopeErrors,
+    };
+  }
+
+  async function runCleanQueueProbe(nativeCreateRenderPipelineAsync, device) {
+    if (!application4096CleanQueueCoreEnabled) return device;
+    if (cleanQueueProbeState !== "pending") {
+      throw new Error("The clean-queue probe was started more than once.");
+    }
+    cleanQueueProbeState = "started";
+    cleanQueueProbeStartedAtMs = performance.now();
+    cleanQueueProbe = {
+      enabled: true,
+      state: "started",
+      format: "rgba16float",
+      blocking: true,
+      beforeApplicationDeviceExposure: true,
+      priorDeviceGpuCallCount: 0,
+      shaderModuleCreationMs: null,
+      nativePipelineMs: null,
+      scopeDrainMs: null,
+      totalDurationMs: null,
+      scopeErrors: [],
+      error: null,
+      pipelineReason: null,
+    };
+    emitCleanQueueProbeEvent("started", "running");
+    if (typeof nativeCreateRenderPipelineAsync !== "function") {
+      var unavailable = new Error("Native createRenderPipelineAsync is required for the clean-queue probe.");
+      cleanQueueProbeState = "failed";
+      cleanQueueProbe.state = "failed";
+      cleanQueueProbe.error = errorDetail(unavailable);
+      cleanQueueProbeCompletedAtMs = performance.now();
+      cleanQueueProbe.totalDurationMs = Math.max(
+        0,
+        cleanQueueProbeCompletedAtMs - cleanQueueProbeStartedAtMs,
+      );
+      emitCleanQueueProbeEvent("failed", "failed");
+      throw unavailable;
+    }
+    var pushedScopeCount = 0;
+    try {
+      device.pushErrorScope("validation");
+      pushedScopeCount += 1;
+      device.pushErrorScope("out-of-memory");
+      pushedScopeCount += 1;
+    } catch (_error) {
+      // Scope support is recorded by the drain without changing the native probe.
+    }
+    var pipelineStartedAtMs = null;
+    try {
+      var probeSource = minimalRgba16FloatPipelineDescriptor(
+        device,
+        "Diagnostic empty-queue RGBA16F pipeline",
+        diagnosticShaderNonce + "-empty-queue",
+      );
+      cleanQueueProbe.shaderModuleCreationMs = probeSource.shaderModuleCreationMs;
+      pipelineStartedAtMs = performance.now();
+      var pipeline = await Reflect.apply(
+        nativeCreateRenderPipelineAsync,
+        device,
+        [probeSource.descriptor],
+      );
+      cleanQueueProbe.nativePipelineMs = Math.max(0, performance.now() - pipelineStartedAtMs);
+      var drained = await drainCleanQueueProbeScopes(device, pushedScopeCount);
+      cleanQueueProbe.scopeDrainMs = drained.scopeDrainMs;
+      cleanQueueProbe.scopeErrors = drained.scopeErrors;
+      if (drained.scopeErrors.length > 0) {
+        throw new Error("The clean-queue RGBA16F probe produced a scoped GPU error.");
+      }
+      cleanQueueProbeState = "completed";
+      cleanQueueProbe.state = "completed";
+      cleanQueueProbeCompletedAtMs = performance.now();
+      cleanQueueProbe.totalDurationMs = Math.max(
+        0,
+        cleanQueueProbeCompletedAtMs - cleanQueueProbeStartedAtMs,
+      );
+      emitCleanQueueProbeEvent("completed", "running");
+      return device;
+    } catch (error) {
+      if (cleanQueueProbe.nativePipelineMs === null && pipelineStartedAtMs !== null) {
+        cleanQueueProbe.nativePipelineMs = Math.max(0, performance.now() - pipelineStartedAtMs);
+      }
+      if (cleanQueueProbe.scopeDrainMs === null && pushedScopeCount > 0) {
+        var failedDrain = await drainCleanQueueProbeScopes(device, pushedScopeCount);
+        cleanQueueProbe.scopeDrainMs = failedDrain.scopeDrainMs;
+        cleanQueueProbe.scopeErrors = failedDrain.scopeErrors;
+      }
+      cleanQueueProbeState = "failed";
+      cleanQueueProbe.state = "failed";
+      cleanQueueProbe.error = errorDetail(error);
+      cleanQueueProbe.pipelineReason = error && typeof error.reason === "string"
+        ? clippedString(error.reason, 120)
+        : null;
+      cleanQueueProbeCompletedAtMs = performance.now();
+      cleanQueueProbe.totalDurationMs = Math.max(
+        0,
+        cleanQueueProbeCompletedAtMs - cleanQueueProbeStartedAtMs,
+      );
+      emitCleanQueueProbeEvent("failed", "failed");
+      throw error;
+    }
+  }
+
+  function scheduleCoreReadinessObservation(
+    nativeCreateRenderPipelineAsync,
+    device,
+    entry,
+    descriptor,
+  ) {
+    var readinessStartedAtMs = performance.now();
+    entry.readinessStartedAtMs = readinessStartedAtMs;
+    emitCoreReadinessEvent("entry-started", entry, "running");
+    var result;
+    try {
+      result = Reflect.apply(nativeCreateRenderPipelineAsync, device, [descriptor]);
+    } catch (error) {
+      result = Promise.reject(error);
+    }
+    var tracked = Promise.resolve(result).then(function () {
+      var completedAtMs = performance.now();
+      entry.readinessMs = Math.max(0, completedAtMs - readinessStartedAtMs);
+      entry.completionOffsetMs = coreReadinessSequenceStartedAtMs === null
+        ? null
+        : Math.max(0, completedAtMs - coreReadinessSequenceStartedAtMs);
+      entry.state = entry.contractError ? "failed" : "completed";
+      if (entry.contractError) entry.error = errorDetail(entry.contractError);
+      coreReadinessCompletionOrder.push(entry.corePipelineIndex);
+      entry.completionRank = coreReadinessCompletionOrder.length;
+      if (coreReadinessCompletionOrder.length === EXPECTED_CORE_RENDER_PIPELINES + 1) {
+        coreReadinessSequenceCompletedAtMs = completedAtMs;
+        var ordered = coreReadinessCompletionOrder.every(function (value, position) {
+          return value === position;
+        });
+        var previousOffsetMs = 0;
+        coreReadinessEntries
+          .slice()
+          .sort(function (left, right) {
+            return left.corePipelineIndex - right.corePipelineIndex;
+          })
+          .forEach(function (candidate) {
+            candidate.fifoDeltaMs = ordered && candidate.completionOffsetMs !== null
+              ? Math.max(0, candidate.completionOffsetMs - previousOffsetMs)
+              : null;
+            if (ordered && candidate.completionOffsetMs !== null) {
+              previousOffsetMs = candidate.completionOffsetMs;
+            }
+          });
+      }
+      emitCoreReadinessEvent(
+        entry.state === "completed" ? "entry-completed" : "entry-failed",
+        entry,
+        entry.state === "completed" ? "running" : "failed",
+      );
+      return entry;
+    }, function (error) {
+      var completedAtMs = performance.now();
+      entry.readinessMs = Math.max(0, completedAtMs - readinessStartedAtMs);
+      entry.completionOffsetMs = coreReadinessSequenceStartedAtMs === null
+        ? null
+        : Math.max(0, completedAtMs - coreReadinessSequenceStartedAtMs);
+      entry.state = "failed";
+      entry.error = errorDetail(error);
+      entry.pipelineReason = error && typeof error.reason === "string"
+        ? clippedString(error.reason, 120)
+        : null;
+      coreReadinessCompletionOrder.push(entry.corePipelineIndex);
+      entry.completionRank = coreReadinessCompletionOrder.length;
+      if (coreReadinessCompletionOrder.length === EXPECTED_CORE_RENDER_PIPELINES + 1) {
+        coreReadinessSequenceCompletedAtMs = completedAtMs;
+      }
+      emitCoreReadinessEvent("entry-failed", entry, "failed");
+      return entry;
+    });
+    coreReadinessPromises.push(tracked);
+  }
+
+  function schedulePreCoreReadinessBoundary(nativeCreateRenderPipelineAsync, device) {
+    if (coreReadinessSequenceStartedAtMs !== null) return;
+    coreReadinessSequenceStartedAtMs = performance.now();
+    var source = minimalRgba16FloatPipelineDescriptor(
+      device,
+      "Diagnostic pre-core queue boundary RGBA16F pipeline",
+      diagnosticShaderNonce + "-pre-core-boundary",
+    );
+    var entry = {
+      corePipelineIndex: 0,
+      label: "Pre-core queue boundary",
+      targetFormats: ["rgba16float"],
+      syncReturnMs: null,
+      readinessMs: null,
+      completionOffsetMs: null,
+      fifoDeltaMs: null,
+      completionRank: null,
+      state: "started",
+      error: null,
+      pipelineReason: null,
+      contractError: null,
+    };
+    coreReadinessEntries.push(entry);
+    emitCoreReadinessEvent("sequence-started", null, "running");
+    scheduleCoreReadinessObservation(
+      nativeCreateRenderPipelineAsync,
+      device,
+      entry,
+      source.descriptor,
+    );
+  }
+
+  function wrapCoreRenderPipelineMethod(device) {
+    if (!application4096CleanQueueCoreEnabled) return false;
+    var nativeCreateRenderPipeline = device.createRenderPipeline;
+    var nativeCreateRenderPipelineAsync = device.createRenderPipelineAsync;
+    if (
+      typeof nativeCreateRenderPipeline !== "function"
+      || typeof nativeCreateRenderPipelineAsync !== "function"
+    ) {
+      return false;
+    }
+    var wrapped = function (descriptor) {
+      if (!corePipelinePhaseActive()) {
+        return Reflect.apply(nativeCreateRenderPipeline, device, arguments);
+      }
+      schedulePreCoreReadinessBoundary(nativeCreateRenderPipelineAsync, device);
+      coreRenderPipelineIndex += 1;
+      var descriptorSummary = renderPipelineDescriptorSummary(descriptor);
+      var expectedLabel = EXPECTED_CORE_PIPELINE_LABELS[coreRenderPipelineIndex - 1] || null;
+      var expectedTargetFormat =
+        EXPECTED_CORE_PIPELINE_TARGET_FORMATS[coreRenderPipelineIndex - 1] || null;
+      var descriptorContractValid = descriptorSummary.label === expectedLabel
+        && descriptorSummary.targetFormats.length === 1
+        && descriptorSummary.targetFormats[0] === expectedTargetFormat;
+      var entry = {
+        corePipelineIndex: coreRenderPipelineIndex,
+        label: descriptorSummary.label,
+        targetFormats: descriptorSummary.targetFormats,
+        syncReturnMs: null,
+        readinessMs: null,
+        completionOffsetMs: null,
+        fifoDeltaMs: null,
+        completionRank: null,
+        state: "started",
+        error: null,
+        pipelineReason: null,
+        contractError: descriptorContractValid
+          ? null
+          : new Error("The core render-pipeline label or 16-bit target no longer matches the v18 diagnostic contract."),
+      };
+      coreReadinessEntries.push(entry);
+      var syncStartedAtMs = performance.now();
+      var pipeline;
+      try {
+        pipeline = Reflect.apply(nativeCreateRenderPipeline, device, arguments);
+        entry.syncReturnMs = Math.max(0, performance.now() - syncStartedAtMs);
+      } catch (error) {
+        entry.syncReturnMs = Math.max(0, performance.now() - syncStartedAtMs);
+        entry.state = "failed";
+        entry.error = errorDetail(error);
+        throw error;
+      }
+      scheduleCoreReadinessObservation(
+        nativeCreateRenderPipelineAsync,
+        device,
+        entry,
+        descriptor,
+      );
+      return pipeline;
+    };
+    return replaceMethod(device, "createRenderPipeline", wrapped);
+  }
+
+  async function runPostCoreBaseline(nativeCreateRenderPipelineAsync, device) {
+    if (postCoreBaseline && postCoreBaseline.state === "completed") return postCoreBaseline;
+    var startedAtMs = performance.now();
+    var source = minimalRgba16FloatPipelineDescriptor(
+      device,
+      "Diagnostic post-core drained-queue RGBA16F pipeline",
+      diagnosticShaderNonce + "-post-core-baseline",
+    );
+    postCoreBaseline = {
+      state: "started",
+      format: "rgba16float",
+      shaderModuleCreationMs: source.shaderModuleCreationMs,
+      nativePipelineMs: null,
+      totalDurationMs: null,
+      error: null,
+      pipelineReason: null,
+    };
+    emit("document-pipeline-post-core-baseline-started", { ...postCoreBaseline });
+    var nativeStartedAtMs = performance.now();
+    try {
+      await Reflect.apply(nativeCreateRenderPipelineAsync, device, [source.descriptor]);
+      postCoreBaseline.nativePipelineMs = Math.max(0, performance.now() - nativeStartedAtMs);
+      postCoreBaseline.totalDurationMs = Math.max(0, performance.now() - startedAtMs);
+      postCoreBaseline.state = "completed";
+      var completedDetail = { ...postCoreBaseline, durableCheckpoint: false };
+      completedDetail.durableCheckpoint = durableRecord(
+        "application-post-core-baseline-completed",
+        completedDetail,
+        "running",
+      );
+      emit("document-pipeline-post-core-baseline-completed", completedDetail);
+      return postCoreBaseline;
+    } catch (error) {
+      postCoreBaseline.nativePipelineMs = Math.max(0, performance.now() - nativeStartedAtMs);
+      postCoreBaseline.totalDurationMs = Math.max(0, performance.now() - startedAtMs);
+      postCoreBaseline.state = "failed";
+      postCoreBaseline.error = errorDetail(error);
+      postCoreBaseline.pipelineReason = error && typeof error.reason === "string"
+        ? clippedString(error.reason, 120)
+        : null;
+      var failedDetail = { ...postCoreBaseline, durableCheckpoint: false };
+      failedDetail.durableCheckpoint = durableRecord(
+        "application-post-core-baseline-failed",
+        failedDetail,
+        "failed",
+      );
+      emit("document-pipeline-post-core-baseline-failed", failedDetail);
+      throw error;
+    }
+  }
+
+  function awaitCoreReadinessAndBaseline(nativeCreateRenderPipelineAsync, device) {
+    if (coreReadinessBarrierPromise) return coreReadinessBarrierPromise;
+    coreReadinessBarrierState = "started";
+    coreReadinessBarrierStartedAtMs = performance.now();
+    emit("document-pipeline-core-readiness-barrier-started", coreReadinessSummary());
+    coreReadinessBarrierPromise = Promise.all(coreReadinessPromises).then(async function () {
+      if (
+        coreRenderPipelineIndex !== EXPECTED_CORE_RENDER_PIPELINES
+        || coreReadinessEntries.length !== EXPECTED_CORE_RENDER_PIPELINES + 1
+        || coreReadinessEntries.some(function (entry) { return entry.state !== "completed"; })
+      ) {
+        throw new Error("The complete eight-pipeline core readiness ladder was not observed.");
+      }
+      emitCoreReadinessEvent("sequence-completed", null, "running");
+      await runPostCoreBaseline(nativeCreateRenderPipelineAsync, device);
+      coreReadinessBarrierCompletedAtMs = performance.now();
+      coreReadinessBarrierState = "completed";
+      var summary = coreReadinessSummary();
+      emit("document-pipeline-core-readiness-barrier-completed", summary);
+      return summary;
+    }).catch(function (error) {
+      coreReadinessBarrierCompletedAtMs = performance.now();
+      coreReadinessBarrierState = "failed";
+      var detail = {
+        ...coreReadinessSummary(),
+        error: errorDetail(error),
+        pipelineReason: error && typeof error.reason === "string"
+          ? clippedString(error.reason, 120)
+          : null,
+        durableCheckpoint: false,
+      };
+      detail.durableCheckpoint = durableRecord(
+        "application-core-pipeline-readiness-failed",
+        detail,
+        "failed",
+      );
+      emit("document-pipeline-core-readiness-barrier-failed", detail);
+      throw error;
+    });
+    return coreReadinessBarrierPromise;
+  }
+
   function wrapDocumentGpuMethod(device, method, asynchronous) {
     var original;
     try {
@@ -1025,6 +1598,23 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
       ) {
         return runFirstUseControls(original, device, argumentList);
       }
+      if (
+        application4096CleanQueueCoreEnabled
+        && method === "createRenderPipelineAsync"
+        && asynchronous
+        && documentRenderPipelineIndex === 0
+      ) {
+        return awaitCoreReadinessAndBaseline(original, device).then(function () {
+          return invokeDocumentGpuCall(
+            device,
+            method,
+            asynchronous,
+            original,
+            argumentList,
+            null,
+          );
+        });
+      }
       return invokeDocumentGpuCall(
         device,
         method,
@@ -1040,6 +1630,7 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
   function patchDocumentGpuDevice(device, requestDescriptor) {
     if (!device || patchedDevices.indexOf(device) >= 0) return device;
     patchedDevices.push(device);
+    var coreRenderPipelinePatched = wrapCoreRenderPipelineMethod(device);
     var pipelineLayoutPatched = wrapDocumentGpuMethod(device, "createPipelineLayout", false);
     var renderPipelineMethod = application4096PipelineAsyncTimingEnabled
       ? "createRenderPipelineAsync"
@@ -1064,13 +1655,23 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
       popErrorScopePatched: popErrorScopePatched,
       requiredFeatures: requiredFeatures,
       textureFormatsTier2Enabled: device.features?.has("texture-formats-tier2") === true,
+      cleanQueueCoreAttributionEnabled: application4096CleanQueueCoreEnabled,
+      coreRenderPipelinePatched: coreRenderPipelinePatched,
+      expectedCoreRenderPipelines: application4096CleanQueueCoreEnabled
+        ? EXPECTED_CORE_RENDER_PIPELINES
+        : 0,
       firstUseControlsEnabled: application4096PipelineFirstUseControlsEnabled,
       injectedPreflightRenderPipelines: application4096PipelineFirstUseControlsEnabled
         ? INJECTED_FIRST_USE_RENDER_PIPELINES
         : 0,
     };
     emit("document-pipeline-device-patched", detail);
-    if (!pipelineLayoutPatched || !renderPipelinePatched || !popErrorScopePatched) {
+    if (
+      !pipelineLayoutPatched
+      || !renderPipelinePatched
+      || !popErrorScopePatched
+      || (application4096CleanQueueCoreEnabled && !coreRenderPipelinePatched)
+    ) {
       durableRecord("application-document-pipeline-instrumentation-failed", detail, "failed");
     }
     try {
@@ -1149,7 +1750,15 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
         throw error;
       }
       return Promise.resolve(request).then(function (device) {
-        return patchDocumentGpuDevice(device, descriptor || {});
+        var nativeCreateRenderPipelineAsync = device?.createRenderPipelineAsync;
+        var patchedDevice = patchDocumentGpuDevice(device, descriptor || {});
+        if (!application4096CleanQueueCoreEnabled) return patchedDevice;
+        return runCleanQueueProbe(
+          nativeCreateRenderPipelineAsync,
+          patchedDevice,
+        ).then(function () {
+          return patchedDevice;
+        });
       }, function (error) {
         emit("document-pipeline-device-request-failed", errorDetail(error));
         throw error;
@@ -1204,14 +1813,21 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
       injectedPreflightRenderPipelines: application4096PipelineFirstUseControlsEnabled
         ? INJECTED_FIRST_USE_RENDER_PIPELINES
         : 0,
+      cleanQueueProbePipelines: application4096CleanQueueCoreEnabled ? 1 : 0,
+      coreReadinessBoundaryPipelines: application4096CleanQueueCoreEnabled ? 9 : 0,
+      postCoreBaselinePipelines: application4096CleanQueueCoreEnabled ? 1 : 0,
       totalNativeAsyncPipelineInvocations: application4096PipelineFirstUseControlsEnabled
         ? EXPECTED_DOCUMENT_RENDER_PIPELINES + INJECTED_FIRST_USE_RENDER_PIPELINES
+        : application4096CleanQueueCoreEnabled
+          ? EXPECTED_DOCUMENT_RENDER_PIPELINES + 11
         : EXPECTED_DOCUMENT_RENDER_PIPELINES,
       instrumentedMethods: [
         "createPipelineLayout",
-        application4096PipelineAsyncTimingEnabled
-          ? "createRenderPipelineAsync"
-          : "createRenderPipeline",
+        ...(application4096CleanQueueCoreEnabled
+          ? ["createRenderPipeline", "createRenderPipelineAsync"]
+          : [application4096PipelineAsyncTimingEnabled
+              ? "createRenderPipelineAsync"
+              : "createRenderPipeline"]),
         "popErrorScope",
       ],
     };
@@ -1500,7 +2116,7 @@ const LAYER_COMPRESSION_INDEX_SQL = "CREATE INDEX IF NOT EXISTS layer_compressio
 const VECTOR_ZOOM_C_STRATEGY = "ten-semantic-text-dual-gpu-fallback-auto-post-raster-window2-roi-aware-zoom8-to-0.3-v7";
 const VECTOR_ZOOM_RUNS_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS vector_zoom_runs (run_code TEXT PRIMARY KEY NOT NULL, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)";
 const VECTOR_ZOOM_RUN_CODE = /^[2-9A-HJ-NP-Z]{8}$/;
-const GPU_STARTUP_DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v17";
+const GPU_STARTUP_DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v18";
 const GPU_STARTUP_DEFAULT_TEST_ID = "startup-no-tier2-v1";
 const GPU_STARTUP_STORAGE_FORMAT_TEST_ID = "storage-format-ab-v1";
 const GPU_STARTUP_DOCUMENT_PIPELINE_TEST_ID = "document-pipeline-bisect-v1";
@@ -1510,6 +2126,7 @@ const GPU_STARTUP_APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST_ID = "application-
 const GPU_STARTUP_APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID = "application-4096-pipeline-breakdown-v1";
 const GPU_STARTUP_APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID = "application-4096-pipeline-attribution-async1-v1";
 const GPU_STARTUP_APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID = "application-4096-pipeline-first-use-controls-v1";
+const GPU_STARTUP_APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID = "application-4096-clean-queue-core-attribution-v1";
 const GPU_STARTUP_DEFAULT_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
 const GPU_STARTUP_STORAGE_FORMAT_VARIANT = "storage-format-ab-rgba8unorm-control-rgba16float-target-write-only-1x1-no-tier2-v1";
 const GPU_STARTUP_DOCUMENT_PIPELINE_VARIANT = "document-pipeline-bisect-rgba16float-no-tier2-v1";
@@ -1519,6 +2136,7 @@ const GPU_STARTUP_APPLICATION_4096_PIPELINES_FIRST_FRAME_VARIANT = "application-
 const GPU_STARTUP_APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT = "application-startup-rgba16float-4096x4096-no-tier2-render-pipeline-breakdown-sync-v1";
 const GPU_STARTUP_APPLICATION_4096_PIPELINE_ATTRIBUTION_VARIANT = "application-startup-rgba16float-4096x4096-no-tier2-render-pipeline-attribution-async1-v1";
 const GPU_STARTUP_APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT = "application-startup-rgba16float-4096x4096-no-tier2-first-use-controls-async1-v1";
+const GPU_STARTUP_APPLICATION_4096_CLEAN_QUEUE_CORE_VARIANT = "application-startup-rgba16float-4096x4096-no-tier2-clean-queue-core-readiness-async1-v1";
 const GPU_STARTUP_DIAGNOSTIC_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS gpu_startup_diagnostic_runs (run_code TEXT PRIMARY KEY NOT NULL, write_token_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, expires_at TEXT NOT NULL, status TEXT NOT NULL, sequence INTEGER NOT NULL, latest_event TEXT NOT NULL DEFAULT 'html-requested', result_summary TEXT NOT NULL DEFAULT '', payload_bytes INTEGER NOT NULL DEFAULT 0, payload_json TEXT NOT NULL)";
 const GPU_STARTUP_DIAGNOSTIC_INDEX_SQL = "CREATE INDEX IF NOT EXISTS gpu_startup_diagnostic_runs_expires_at_idx ON gpu_startup_diagnostic_runs (expires_at)";
 const GPU_STARTUP_DIAGNOSTIC_RUN_CODE = /^diag-[a-f0-9]{32}$/;
@@ -1730,6 +2348,38 @@ function gpuStartupDiagnosticDefinition(testId) {
       },
     };
   }
+  if (testId === GPU_STARTUP_APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID) {
+    return {
+      testId,
+      diagnosticVariant: GPU_STARTUP_APPLICATION_4096_CLEAN_QUEUE_CORE_VARIANT,
+      comparison: {
+        kind: "application-startup-clean-queue-core-attribution",
+        documentWidth: 4096,
+        documentHeight: 4096,
+        layerFormat: "rgba16float",
+        canvasFormat: "rgba16float",
+        requiredFeatures: [],
+        textureFormatsTier2Requested: false,
+        applicationFrame: "isolated-production-startup",
+        startupMode: "empty-document",
+        cleanQueueProbeFormat: "rgba16float",
+        cleanQueueProbeBlocking: true,
+        cleanQueueProbeBeforeApplicationDeviceExposure: true,
+        expectedCoreRenderPipelines: 8,
+        corePipelineObservationMethod: "sync-create-plus-async-duplicate-readiness",
+        coreReadinessBoundaryCount: 9,
+        coreReadinessBarrierBeforeDocumentPipelines: true,
+        postCoreBaselineCount: 1,
+        pipelineCompilationMethod: "createRenderPipelineAsync",
+        pipelineCompilationConcurrency: 1,
+        expectedPipelineLayouts: 17,
+        expectedRenderPipelines: 52,
+        expectedErrorScopeDrains: 2,
+        totalNativeAsyncPipelineInvocations: 63,
+        deferredObservationMs: 5000,
+      },
+    };
+  }
   return null;
 }
 
@@ -1770,6 +2420,31 @@ const GPU_STARTUP_PIPELINE_FIRST_USE_CONTROLS_STEP_KEYS = [
   "tiny-independent-rgba16float",
   "shared-brush-source-over-clone",
   "original-eraser",
+];
+const GPU_STARTUP_CLEAN_QUEUE_CORE_VERDICT =
+  "application-4096-clean-queue-core-attribution-passed";
+const GPU_STARTUP_CLEAN_QUEUE_CORE_SCHEMA = "empty-queue-core-ladder-ms-v1";
+const GPU_STARTUP_CLEAN_QUEUE_CORE_LABELS = [
+  "Pre-core queue boundary",
+  "Light Glaze R16F stale dirty-region clear pipeline",
+  "Uniformed/Intense RGBA16F stale dirty-region clear pipeline",
+  "Display pipeline",
+  "Final raster stack mip display pipeline",
+  "Stroke direct LOD 0 and coarse mip display pipeline",
+  "Predictive thickness tail display pipeline",
+  "Light Glaze live display pipeline",
+  "Light Glaze live final raster stack display pipeline",
+];
+const GPU_STARTUP_CLEAN_QUEUE_CORE_TARGET_FORMATS = [
+  "rgba16float",
+  "r16float",
+  "rgba16float",
+  "rgba16float",
+  "rgba16float",
+  "rgba16float",
+  "rgba16float",
+  "rgba16float",
+  "rgba16float",
 ];
 
 function finiteGpuStartupTiming(value) {
@@ -1945,6 +2620,167 @@ function serializeGpuStartupFirstUseControlsResultSummary(summary) {
   });
 }
 
+function fixedGpuStartupTimingArray(values, expectedLength) {
+  if (!Array.isArray(values) || values.length !== expectedLength) return null;
+  const result = values.map(finiteGpuStartupTiming);
+  return result.every((value) => value !== null) ? result : null;
+}
+
+function serializeGpuStartupCleanQueueCoreResultSummary(summary) {
+  const result = isRecord(summary.result) ? summary.result : null;
+  const attribution = isRecord(result?.cleanQueueCoreAttribution)
+    ? result.cleanQueueCoreAttribution
+    : null;
+  const breakdown = isRecord(result?.pipelineBreakdown) ? result.pipelineBreakdown : null;
+  const groups = Array.isArray(breakdown?.renderPipelineGroups)
+    ? breakdown.renderPipelineGroups
+    : null;
+  const coreEntries = Array.isArray(attribution?.coreEntries)
+    ? attribution.coreEntries
+    : null;
+  const coreSyncMs = fixedGpuStartupTimingArray(attribution?.coreSyncReturnMs, 8);
+  const sentinelElapsedMs = fixedGpuStartupTimingArray(attribution?.coreSentinelElapsedMs, 9);
+  const cumulativeMs = fixedGpuStartupTimingArray(attribution?.coreCumulativeMs, 9);
+  const completionOrder = Array.isArray(attribution?.coreCompletionOrder)
+    ? attribution.coreCompletionOrder.map(Number)
+    : null;
+  const ordered = attribution?.coreCompletionOrderPreserved === true;
+  const intervalMs = ordered
+    ? fixedGpuStartupTimingArray(attribution?.coreIntervalMs, 8)
+    : Array.isArray(attribution?.coreIntervalMs) && attribution.coreIntervalMs.length === 0
+      ? []
+      : null;
+  const baseline = isRecord(attribution?.postCoreBaseline)
+    ? attribution.postCoreBaseline
+    : null;
+  const probeMs = [
+    finiteGpuStartupTiming(attribution?.probeShaderModuleCreationMs),
+    finiteGpuStartupTiming(attribution?.probeNativePipelineMs),
+    finiteGpuStartupTiming(attribution?.probeScopeDrainMs),
+    finiteGpuStartupTiming(attribution?.probeTotalMs),
+  ];
+  const baselineMs = [
+    finiteGpuStartupTiming(baseline?.shaderModuleCreationMs),
+    finiteGpuStartupTiming(baseline?.nativePipelineMs),
+    finiteGpuStartupTiming(baseline?.totalDurationMs),
+  ];
+  const completionPermutation = completionOrder
+    && completionOrder.length === 9
+    && [...completionOrder].sort((left, right) => left - right)
+      .every((value, index) => value === index);
+  if (
+    !result
+    || !attribution
+    || !breakdown
+    || !groups
+    || groups.length !== 7
+    || !coreEntries
+    || coreEntries.length !== 9
+    || !coreSyncMs
+    || !sentinelElapsedMs
+    || !cumulativeMs
+    || !completionPermutation
+    || !intervalMs
+    || !baseline
+    || baseline.state !== "completed"
+    || baseline.format !== "rgba16float"
+    || probeMs.some((value) => value === null)
+    || baselineMs.some((value) => value === null)
+    || attribution.probeFormat !== "rgba16float"
+    || attribution.probeBlocking !== true
+    || attribution.probeBeforeApplicationDeviceExposure !== true
+    || attribution.priorDeviceGpuCallCount !== 0
+    || attribution.individualCoreAttributionValid !== ordered
+    || summary.diagnosticVariant !== GPU_STARTUP_APPLICATION_4096_CLEAN_QUEUE_CORE_VARIANT
+    || result.verdict !== GPU_STARTUP_CLEAN_QUEUE_CORE_VERDICT
+    || breakdown.renderPipelineMethod !== GPU_STARTUP_PIPELINE_ATTRIBUTION_METHOD
+  ) {
+    return JSON.stringify(summary);
+  }
+  for (let index = 0; index < coreEntries.length; index += 1) {
+    const entry = coreEntries[index];
+    if (
+      !isRecord(entry)
+      || entry.corePipelineIndex !== index
+      || entry.label !== GPU_STARTUP_CLEAN_QUEUE_CORE_LABELS[index]
+      || !Array.isArray(entry.targetFormats)
+      || entry.targetFormats.length !== 1
+      || entry.targetFormats[0] !== GPU_STARTUP_CLEAN_QUEUE_CORE_TARGET_FORMATS[index]
+      || entry.state !== "completed"
+    ) {
+      return JSON.stringify(summary);
+    }
+  }
+  const documentGroupMs = [];
+  for (let index = 0; index < GPU_STARTUP_PIPELINE_ATTRIBUTION_GROUPS.length; index += 1) {
+    const [key, first, last] = GPU_STARTUP_PIPELINE_ATTRIBUTION_GROUPS[index];
+    const group = groups[index];
+    const calls = isRecord(group) && Array.isArray(group.calls) ? group.calls : null;
+    const groupPipelineMs = calls && calls.length === last - first + 1
+      ? calls.map((call, position) => (
+          isRecord(call) && call.index === first + position
+            ? finiteGpuStartupTiming(call.durationMs)
+            : null
+        ))
+      : null;
+    if (
+      !isRecord(group)
+      || group.key !== key
+      || !groupPipelineMs
+      || groupPipelineMs.some((value) => value === null)
+    ) {
+      return JSON.stringify(summary);
+    }
+    documentGroupMs.push(finiteGpuStartupTiming(
+      groupPipelineMs.reduce((sum, value) => sum + value, 0),
+    ));
+  }
+  const compactSummary = {
+    testId: GPU_STARTUP_APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID,
+    diagnosticVariant: GPU_STARTUP_APPLICATION_4096_CLEAN_QUEUE_CORE_VARIANT,
+    schema: GPU_STARTUP_CLEAN_QUEUE_CORE_SCHEMA,
+    verdict: GPU_STARTUP_CLEAN_QUEUE_CORE_VERDICT,
+    probeFormat: "rgba16float",
+    probeMs,
+    coreSyncMs,
+    sentinelElapsedMs,
+    cumulativeMs,
+    intervalMs,
+    completionOrder,
+    ordered,
+    preCoreBacklogMs: ordered
+      ? finiteGpuStartupTiming(attribution.preCoreBacklogMs)
+      : null,
+    baselineMs,
+    gateWaitMs: finiteGpuStartupTiming(attribution.coreBarrierWaitMs),
+    coreDrainMs: finiteGpuStartupTiming(attribution.coreDrainMs),
+    documentPhaseMs: finiteGpuStartupTiming(breakdown.phaseElapsedMs),
+    documentPipelineTotalMs: finiteGpuStartupTiming(breakdown.renderPipelineTotalMs),
+    documentGroupMs,
+  };
+  if (
+    compactSummary.gateWaitMs === null
+    || compactSummary.coreDrainMs === null
+    || compactSummary.documentPhaseMs === null
+    || compactSummary.documentPipelineTotalMs === null
+    || documentGroupMs.some((value) => value === null)
+  ) {
+    return JSON.stringify(summary);
+  }
+  const serialized = JSON.stringify(compactSummary);
+  if (
+    new TextEncoder().encode(serialized).byteLength
+    <= GPU_STARTUP_PIPELINE_ATTRIBUTION_SUMMARY_MAX_BYTES
+  ) {
+    return serialized;
+  }
+  return JSON.stringify({
+    testId: GPU_STARTUP_APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID,
+    schema: "empty-queue-core-ladder-summary-overflow-v1",
+    verdict: GPU_STARTUP_CLEAN_QUEUE_CORE_VERDICT,
+  });
+}
+
 function serializeGpuStartupDiagnosticResultSummary(summary, status) {
   if (
     status !== "completed"
@@ -1954,6 +2790,9 @@ function serializeGpuStartupDiagnosticResultSummary(summary, status) {
   }
   if (summary.testId === GPU_STARTUP_APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID) {
     return serializeGpuStartupFirstUseControlsResultSummary(summary);
+  }
+  if (summary.testId === GPU_STARTUP_APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID) {
+    return serializeGpuStartupCleanQueueCoreResultSummary(summary);
   }
   if (summary.testId !== GPU_STARTUP_APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID) {
     return JSON.stringify(summary);

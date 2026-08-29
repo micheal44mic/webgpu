@@ -24,7 +24,7 @@ const layerRuntimeSource = read("src/engine-layer-runtime.ts");
 const featurePolicySource = read("src/gpu-startup-feature-policy.ts");
 const productionBundleCheckSource = read("scripts/check-production-bundle.mjs");
 
-const DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v17";
+const DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v18";
 const DEFAULT_TEST_ID = "startup-no-tier2-v1";
 const DEFAULT_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
 const STORAGE_FORMAT_TEST_ID = "storage-format-ab-v1";
@@ -53,6 +53,10 @@ const APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID =
   "application-4096-pipeline-first-use-controls-v1";
 const APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT =
   "application-startup-rgba16float-4096x4096-no-tier2-first-use-controls-async1-v1";
+const APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID =
+  "application-4096-clean-queue-core-attribution-v1";
+const APPLICATION_4096_CLEAN_QUEUE_CORE_VARIANT =
+  "application-startup-rgba16float-4096x4096-no-tier2-clean-queue-core-readiness-async1-v1";
 const DEFAULT_COMPARISON = {
   layerFormat: "rgba16float",
   canvasFormat: "rgba16float",
@@ -200,6 +204,42 @@ const APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_COMPARISON = {
   timingSemantics: "one-native-async-pipeline-at-a-time",
   deferredObservationMs: 5000,
 };
+const APPLICATION_4096_CLEAN_QUEUE_CORE_COMPARISON = {
+  kind: "application-startup-clean-queue-core-attribution",
+  documentWidth: 4096,
+  documentHeight: 4096,
+  layerFormat: "rgba16float",
+  canvasFormat: "rgba16float",
+  requiredFeatures: [],
+  textureFormatsTier2Requested: false,
+  applicationFrame: "isolated-production-startup",
+  startupMode: "empty-document",
+  cleanQueueProbeFormat: "rgba16float",
+  cleanQueueProbeBlocking: true,
+  cleanQueueProbeBeforeApplicationDeviceExposure: true,
+  expectedCoreRenderPipelines: 8,
+  corePipelineObservationMethod: "sync-create-plus-async-duplicate-readiness",
+  coreReadinessBoundaryCount: 9,
+  coreReadinessBarrierBeforeDocumentPipelines: true,
+  postCoreBaselineCount: 1,
+  pipelineCompilationMethod: "createRenderPipelineAsync",
+  pipelineCompilationConcurrency: 1,
+  expectedPipelineLayouts: 17,
+  expectedRenderPipelines: 52,
+  expectedErrorScopeDrains: 2,
+  totalNativeAsyncPipelineInvocations: 63,
+  deferredObservationMs: 5000,
+};
+const APPLICATION_4096_CORE_PIPELINE_LABELS = [
+  "Light Glaze R16F stale dirty-region clear pipeline",
+  "Uniformed/Intense RGBA16F stale dirty-region clear pipeline",
+  "Display pipeline",
+  "Final raster stack mip display pipeline",
+  "Stroke direct LOD 0 and coarse mip display pipeline",
+  "Predictive thickness tail display pipeline",
+  "Light Glaze live display pipeline",
+  "Light Glaze live final raster stack display pipeline",
+];
 const STORAGE_FORMAT_STAGES = [
   "shader-module",
   "compilation-info",
@@ -346,6 +386,13 @@ function diagnosticDefinition(testId) {
       comparison: APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_COMPARISON,
     };
   }
+  if (testId === APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID) {
+    return {
+      testId,
+      diagnosticVariant: APPLICATION_4096_CLEAN_QUEUE_CORE_VARIANT,
+      comparison: APPLICATION_4096_CLEAN_QUEUE_CORE_COMPARISON,
+    };
+  }
   throw new Error(`Unknown verification diagnostic test: ${testId}`);
 }
 
@@ -453,11 +500,16 @@ assert.match(
   html,
   /DIAGNOSTIC_TEST_ID === "application-4096-pipeline-first-use-controls-v1"/,
 );
+assert.match(
+  html,
+  /DIAGNOSTIC_TEST_ID === "application-4096-clean-queue-core-attribution-v1"/,
+);
 assert.match(html, new RegExp(APPLICATION_4096_PIPELINES_ASYNC2_VARIANT));
 assert.match(html, new RegExp(APPLICATION_4096_PIPELINES_FIRST_FRAME_VARIANT));
 assert.match(html, new RegExp(APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT));
 assert.match(html, new RegExp(APPLICATION_4096_PIPELINE_ATTRIBUTION_VARIANT));
 assert.match(html, new RegExp(APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT));
+assert.match(html, new RegExp(APPLICATION_4096_CLEAN_QUEUE_CORE_VARIANT));
 assert.match(html, /documentWidth: 4096/);
 assert.match(html, /documentHeight: 4096/);
 assert.match(html, /startupMode: "cold-empty-document"/);
@@ -481,6 +533,21 @@ assert.match(html, /capture: "non-overlapping-async-pipeline-durations"/);
 assert.match(html, /timingSemantics: "one-native-async-pipeline-at-a-time"/);
 assert.match(html, /injectedPreflightRenderPipelines: 2/);
 assert.match(html, /totalNativeAsyncPipelineInvocations: 54/);
+assert.match(html, /kind: "application-startup-clean-queue-core-attribution"/);
+assert.match(html, /cleanQueueProbeFormat: "rgba16float"/);
+assert.match(html, /cleanQueueProbeBlocking: true/);
+assert.match(html, /cleanQueueProbeBeforeApplicationDeviceExposure: true/);
+assert.match(html, /expectedCoreRenderPipelines: 8/);
+assert.match(html, /corePipelineObservationMethod: "sync-create-plus-async-duplicate-readiness"/);
+assert.match(html, /coreReadinessBoundaryCount: 9/);
+assert.match(html, /coreReadinessBarrierBeforeDocumentPipelines: true/);
+assert.match(html, /postCoreBaselineCount: 1/);
+assert.match(html, /totalNativeAsyncPipelineInvocations: 63/);
+assert.match(html, /function applyCleanQueueCoreAttribution\(name, detail\)/);
+assert.match(html, /function appendCleanQueueCoreGroups\(container\)/);
+assert.match(html, /"Empty-queue RGBA16F probe"/);
+assert.match(html, /Core pipeline readiness ladder/);
+assert.match(html, /"Drained-queue RGBA16F baseline"/);
 assert.match(html, /"tiny-independent-rgba16float"/);
 assert.match(html, /"shared-brush-source-over-clone"/);
 assert.match(html, /"original-eraser"/);
@@ -581,6 +648,13 @@ assert.match(
   /APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST =\s*"application-4096-pipeline-first-use-controls-v1"/,
 );
 assert.match(moduleSource, new RegExp(APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT));
+assert.match(
+  moduleSource,
+  /APPLICATION_4096_CLEAN_QUEUE_CORE_TEST =\s*"application-4096-clean-queue-core-attribution-v1"/,
+);
+assert.match(moduleSource, new RegExp(APPLICATION_4096_CLEAN_QUEUE_CORE_VARIANT));
+assert.match(moduleSource, /EXPECTED_CORE_PIPELINE_TARGET_FORMATS = \[/);
+assert.match(moduleSource, /target\.searchParams\.set\(\s*"diagnosticNonce"/);
 assert.match(
   moduleSource,
   /application4096PipelineFirstUseControlsEnabled[\s\S]*APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST/,
@@ -734,12 +808,17 @@ assert.doesNotMatch(
 assert.match(moduleSource, /"erase-stamps"/);
 assert.match(moduleSource, /"document-composition"/);
 assert.match(moduleSource, /documentPipelineBreakdownPassed/);
-assert.match(moduleSource, /const verdictPrefix = firstUseControlsEnabled/);
+assert.match(moduleSource, /const verdictPrefix = cleanQueueCoreEnabled/);
+assert.match(moduleSource, /\? "application-4096-clean-queue-core-attribution"/);
 assert.match(moduleSource, /\? "application-4096-pipeline-first-use-controls"/);
 assert.match(moduleSource, /: attributionEnabled\s*\? "application-4096-pipeline-attribution"/);
 assert.match(moduleSource, /: "application-4096-pipeline-breakdown"/);
 assert.match(moduleSource, /verdict: `\$\{verdictPrefix\}-inconclusive`/);
 assert.match(moduleSource, /verdict: `\$\{verdictPrefix\}-passed`/);
+assert.match(
+  moduleSource,
+  /firstRenderPipelineMayIncludePriorQueuedGpuWork:[\s\S]*!application4096PipelineFirstUseControlsEnabled[\s\S]*&& !application4096CleanQueueCoreEnabled/,
+);
 assert.match(moduleSource, /validateAsyncPipelineCompilation\(startupTrace, 1\)/);
 assert.match(moduleSource, /complete non-overlapping 52-pipeline attribution contract/);
 assert.match(moduleSource, /two error-scope drains were timed individually/);
@@ -887,6 +966,11 @@ assert.match(
 assert.match(workerBuilder, new RegExp(APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT));
 assert.match(
   workerBuilder,
+  /GPU_STARTUP_APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID = "application-4096-clean-queue-core-attribution-v1"/,
+);
+assert.match(workerBuilder, new RegExp(APPLICATION_4096_CLEAN_QUEUE_CORE_VARIANT));
+assert.match(
+  workerBuilder,
   /documentPipelineInstrumentationEnabled =\s*diagnosticTestId === DOCUMENT_PIPELINE_TEST_ID\s*\|\| application4096PipelineBreakdownEnabled\s*\|\| application4096PipelineAsyncTimingEnabled/,
 );
 assert.match(
@@ -1001,6 +1085,28 @@ assert.match(workerBuilder, /const firstUseMs = \[\]/);
 assert.match(workerBuilder, /Math\.abs\(firstUseMs\[2\] - pipelineMs\[0\]\) > 0\.01/);
 assert.match(workerBuilder, /firstUseStepKeys: GPU_STARTUP_PIPELINE_FIRST_USE_CONTROLS_STEP_KEYS/);
 assert.match(workerBuilder, /schema: "pipeline-first-use-controls-summary-overflow-v1"/);
+assert.match(workerBuilder, /function serializeGpuStartupCleanQueueCoreResultSummary\(summary\)/);
+assert.match(
+  workerBuilder,
+  /GPU_STARTUP_CLEAN_QUEUE_CORE_SCHEMA = "empty-queue-core-ladder-ms-v1"/,
+);
+assert.match(
+  workerBuilder,
+  /GPU_STARTUP_CLEAN_QUEUE_CORE_VERDICT =\s*"application-4096-clean-queue-core-attribution-passed"/,
+);
+assert.match(workerBuilder, /schema: "empty-queue-core-ladder-summary-overflow-v1"/);
+assert.match(workerBuilder, /return runCleanQueueProbe\(/);
+assert.match(workerBuilder, /function wrapCoreRenderPipelineMethod\(device\)/);
+assert.match(workerBuilder, /function schedulePreCoreReadinessBoundary\(/);
+assert.match(workerBuilder, /function awaitCoreReadinessAndBaseline\(/);
+assert.match(workerBuilder, /function runPostCoreBaseline\(/);
+assert.match(workerBuilder, /diagnosticShaderNonce \+ "-empty-queue"/);
+assert.match(workerBuilder, /diagnosticShaderNonce \+ "-pre-core-boundary"/);
+assert.match(workerBuilder, /diagnosticShaderNonce \+ "-post-core-baseline"/);
+assert.match(workerBuilder, /emitCoreReadinessEvent\("entry-started"/);
+assert.match(workerBuilder, /"entry-completed" : "entry-failed"/);
+assert.match(workerBuilder, /emitCoreReadinessEvent\("entry-failed"/);
+assert.match(workerBuilder, /GPU_STARTUP_CLEAN_QUEUE_CORE_TARGET_FORMATS/);
 assert.match(
   workerBuilder,
   /const resultSummary = serializeGpuStartupDiagnosticResultSummary\(\s*payload\.summary,\s*payload\.status/,
@@ -1059,6 +1165,14 @@ assert.match(
   productionBundleCheckSource,
   new RegExp(APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT),
 );
+assert.match(
+  productionBundleCheckSource,
+  new RegExp(APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID),
+);
+assert.match(
+  productionBundleCheckSource,
+  new RegExp(APPLICATION_4096_CLEAN_QUEUE_CORE_VARIANT),
+);
 assert.doesNotMatch(indexHtml, /gpu-startup-diagnostics/);
 assert.doesNotMatch(startup, /gpu-startup-diagnostics/);
 for (const productionSource of [indexHtml, startup, engineSource, layerRuntimeSource]) {
@@ -1085,6 +1199,14 @@ for (const productionSource of [indexHtml, startup, engineSource, layerRuntimeSo
   assert.doesNotMatch(
     productionSource,
     new RegExp(APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT),
+  );
+  assert.doesNotMatch(
+    productionSource,
+    new RegExp(APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID),
+  );
+  assert.doesNotMatch(
+    productionSource,
+    new RegExp(APPLICATION_4096_CLEAN_QUEUE_CORE_VARIANT),
   );
   assert.doesNotMatch(productionSource, new RegExp(DIAGNOSTIC_BUILD));
 }
@@ -4133,6 +4255,315 @@ if (existsSync(builtWorkerPath)) {
     ),
   );
 
+  const cleanQueueCoreMessages = [];
+  const cleanQueueCoreBreadcrumbs = [];
+  const cleanQueueCoreNativeAsyncCalls = [];
+  const cleanQueueCoreNativeSyncLabels = [];
+  let cleanQueueCoreClock = 2_000;
+  const cleanQueueCoreDevice = {
+    features: { has: () => false },
+    addEventListener() {},
+    lost: new Promise(() => {}),
+    pushErrorScope() {},
+    popErrorScope: async () => null,
+    createShaderModule(descriptor) {
+      return { diagnosticShaderModule: true, descriptor };
+    },
+    createPipelineLayout(descriptor) {
+      return { label: descriptor.label };
+    },
+    createRenderPipeline(descriptor) {
+      cleanQueueCoreNativeSyncLabels.push(descriptor.label);
+      return { label: descriptor.label };
+    },
+    createRenderPipelineAsync(descriptor) {
+      let resolvePipeline;
+      let rejectPipeline;
+      const promise = new Promise((resolve, reject) => {
+        resolvePipeline = resolve;
+        rejectPipeline = reject;
+      });
+      cleanQueueCoreNativeAsyncCalls.push({
+        descriptor,
+        resolve: () => resolvePipeline({ label: descriptor.label }),
+        reject: rejectPipeline,
+      });
+      return promise;
+    },
+  };
+  const cleanQueueCoreAdapter = {
+    requestDevice: async () => cleanQueueCoreDevice,
+  };
+  const cleanQueueCoreGpu = {
+    requestAdapter: async () => cleanQueueCoreAdapter,
+  };
+  const cleanQueueCoreFrameWindow = {
+    location: {
+      origin: "https://example.test",
+      pathname: "/gpu-startup-app-frame",
+      search: `?diagnosticBoot=1&test=${APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID}&documentWidth=4096&documentHeight=4096&documentSize=4096&diagnosticVariant=${APPLICATION_4096_CLEAN_QUEUE_CORE_VARIANT}&forceGlazeCommitFallback=1`,
+    },
+    isSecureContext: true,
+    addEventListener() {},
+    parent: {
+      __gpuStartupDiagnostics: {
+        record() { return true; },
+        recordBreadcrumb(name, detail, status) {
+          cleanQueueCoreBreadcrumbs.push({ name, detail, status });
+          cleanQueueCoreClock += 10;
+          return true;
+        },
+      },
+      postMessage(message, targetOrigin) {
+        cleanQueueCoreMessages.push({ message, targetOrigin });
+      },
+    },
+  };
+  cleanQueueCoreFrameWindow.window = cleanQueueCoreFrameWindow;
+  runInNewContext(frameBootstrapSource, {
+    window: cleanQueueCoreFrameWindow,
+    location: cleanQueueCoreFrameWindow.location,
+    document: { visibilityState: "visible" },
+    navigator: { gpu: cleanQueueCoreGpu },
+    performance: { now: () => (cleanQueueCoreClock += 5) },
+    console: { error() {} },
+    Reflect,
+    Array,
+    Object,
+    String,
+    Number,
+    Math,
+    Error,
+    Promise,
+    URLSearchParams,
+  });
+  assert.equal(
+    cleanQueueCoreFrameWindow.__editorExtensionBootstrap.engineOptions
+      .documentPipelineCompilationConcurrency,
+    1,
+  );
+  const flushCleanQueueCore = async (predicate, attempts = 24) => {
+    for (let attempt = 0; attempt < attempts && !predicate(); attempt += 1) {
+      await Promise.resolve();
+    }
+    assert.equal(predicate(), true, "The v18 diagnostic promise chain did not advance.");
+  };
+  const observedCleanQueueCoreAdapter = await cleanQueueCoreGpu.requestAdapter();
+  let cleanQueueCoreDeviceExposed = false;
+  const cleanQueueCoreDevicePromise = observedCleanQueueCoreAdapter.requestDevice({
+    requiredFeatures: [],
+  }).then((device) => {
+    cleanQueueCoreDeviceExposed = true;
+    return device;
+  });
+  await flushCleanQueueCore(() => cleanQueueCoreNativeAsyncCalls.length === 1);
+  assert.equal(cleanQueueCoreDeviceExposed, false);
+  assert.equal(
+    cleanQueueCoreNativeAsyncCalls[0].descriptor.label,
+    "Diagnostic empty-queue RGBA16F pipeline",
+  );
+  assert.equal(
+    cleanQueueCoreNativeAsyncCalls[0].descriptor.fragment.targets[0].format,
+    "rgba16float",
+  );
+  assert.deepEqual(cleanQueueCoreNativeSyncLabels, []);
+  cleanQueueCoreClock += 120;
+  cleanQueueCoreNativeAsyncCalls[0].resolve();
+  const observedCleanQueueCoreDevice = await cleanQueueCoreDevicePromise;
+  assert.equal(observedCleanQueueCoreDevice, cleanQueueCoreDevice);
+  assert.equal(cleanQueueCoreDeviceExposed, true);
+  const cleanQueueCompleted = cleanQueueCoreMessages.find(
+    ({ message }) => message.type === "document-pipeline-clean-queue-probe-completed",
+  );
+  assert.ok(cleanQueueCompleted);
+  assert.equal(cleanQueueCompleted.message.detail.format, "rgba16float");
+  assert.equal(cleanQueueCompleted.message.detail.blocking, true);
+  assert.equal(cleanQueueCompleted.message.detail.beforeApplicationDeviceExposure, true);
+  assert.equal(cleanQueueCompleted.message.detail.priorDeviceGpuCallCount, 0);
+
+  const cleanQueueCoreExtension = cleanQueueCoreFrameWindow.__editorExtensionBootstrap.create({
+    engine: {},
+  });
+  cleanQueueCoreExtension.handleEngineStartupProgress({
+    phase: "core-pipelines",
+    label: "Compiling core canvas pipelines",
+    state: "started",
+    totalElapsedMs: 20,
+    phaseElapsedMs: 0,
+    detail: { format: "rgba16float" },
+  });
+  for (const [pipelineIndex, label] of APPLICATION_4096_CORE_PIPELINE_LABELS.entries()) {
+    const pipeline = observedCleanQueueCoreDevice.createRenderPipeline({
+      label,
+      vertex: { module: {}, entryPoint: "vertexMain" },
+      fragment: {
+        module: {},
+        entryPoint: "fragmentMain",
+        targets: [{ format: pipelineIndex === 0 ? "r16float" : "rgba16float" }],
+      },
+    });
+    assert.equal(pipeline.label, label);
+  }
+  assert.deepEqual(cleanQueueCoreNativeSyncLabels, APPLICATION_4096_CORE_PIPELINE_LABELS);
+  assert.equal(cleanQueueCoreNativeAsyncCalls.length, 10);
+  assert.equal(
+    cleanQueueCoreNativeAsyncCalls[1].descriptor.label,
+    "Diagnostic pre-core queue boundary RGBA16F pipeline",
+  );
+  assert.deepEqual(
+    cleanQueueCoreNativeAsyncCalls.slice(2, 10).map(({ descriptor }) => descriptor.label),
+    APPLICATION_4096_CORE_PIPELINE_LABELS,
+  );
+
+  cleanQueueCoreExtension.handleEngineStartupProgress({
+    phase: "document-pipelines",
+    label: "Compiling document pipelines",
+    state: "started",
+    totalElapsedMs: 30,
+    phaseElapsedMs: 0,
+    detail: { format: "rgba16float", strategy: "async-bounded" },
+  });
+  const cleanQueueCoreDocumentPromise = observedCleanQueueCoreDevice.createRenderPipelineAsync({
+    label: "Verification document RGBA16F pipeline 1",
+    vertex: { module: {}, entryPoint: "vertexMain" },
+    fragment: {
+      module: {},
+      entryPoint: "fragmentMain",
+      targets: [{ format: "rgba16float" }],
+    },
+  });
+  assert.equal(cleanQueueCoreNativeAsyncCalls.length, 10);
+  assert.equal(
+    cleanQueueCoreBreadcrumbs.filter(
+      ({ name }) => name === "application-document-gpu-call-started",
+    ).length,
+    0,
+    "The first document pipeline must wait for the complete core readiness barrier.",
+  );
+  for (let index = 1; index <= 9; index += 1) {
+    cleanQueueCoreClock += 20 + index;
+    cleanQueueCoreNativeAsyncCalls[index].resolve();
+    await Promise.resolve();
+  }
+  await flushCleanQueueCore(() => cleanQueueCoreNativeAsyncCalls.length === 11);
+  assert.equal(
+    cleanQueueCoreNativeAsyncCalls[10].descriptor.label,
+    "Diagnostic post-core drained-queue RGBA16F pipeline",
+  );
+  assert.equal(
+    cleanQueueCoreBreadcrumbs.filter(
+      ({ name }) => name === "application-document-gpu-call-started",
+    ).length,
+    0,
+  );
+  cleanQueueCoreClock += 35;
+  cleanQueueCoreNativeAsyncCalls[10].resolve();
+  await flushCleanQueueCore(() => cleanQueueCoreNativeAsyncCalls.length === 12);
+  assert.equal(
+    cleanQueueCoreNativeAsyncCalls[11].descriptor.label,
+    "Verification document RGBA16F pipeline 1",
+  );
+  assert.equal(
+    cleanQueueCoreBreadcrumbs.filter(
+      ({ name }) => name === "application-document-gpu-call-started",
+    ).length,
+    1,
+  );
+  cleanQueueCoreClock += 15;
+  cleanQueueCoreNativeAsyncCalls[11].resolve();
+  const cleanQueueCoreDocumentPipeline = await cleanQueueCoreDocumentPromise;
+  assert.equal(cleanQueueCoreDocumentPipeline.label, "Verification document RGBA16F pipeline 1");
+  const coreBarrierCompletion = cleanQueueCoreMessages.find(
+    ({ message }) => message.type === "document-pipeline-core-readiness-barrier-completed",
+  );
+  assert.ok(coreBarrierCompletion);
+  assert.deepEqual(
+    jsonValue(coreBarrierCompletion.message.detail.completionOrder),
+    [0, 1, 2, 3, 4, 5, 6, 7, 8],
+  );
+  assert.equal(coreBarrierCompletion.message.detail.completionOrderPreserved, true);
+  assert.equal(coreBarrierCompletion.message.detail.entries.length, 9);
+  assert.deepEqual(
+    jsonValue(coreBarrierCompletion.message.detail.entries.map(({ label }) => label)),
+    ["Pre-core queue boundary", ...APPLICATION_4096_CORE_PIPELINE_LABELS],
+  );
+  assert.equal(coreBarrierCompletion.message.detail.postCoreBaseline.state, "completed");
+  assert.equal(coreBarrierCompletion.message.detail.postCoreBaseline.format, "rgba16float");
+  assert.equal(
+    cleanQueueCoreMessages.filter(
+      ({ message }) => message.type === "document-gpu-call-completed",
+    ).length,
+    1,
+    "The probe, readiness sentinels, and baseline must remain outside the 71-call document trace.",
+  );
+
+  const rejectedCleanQueueMessages = [];
+  const rejectedCleanQueueError = new Error("Verification clean-queue pipeline rejected.");
+  rejectedCleanQueueError.reason = "validation";
+  const rejectedCleanQueueDevice = {
+    features: { has: () => false },
+    addEventListener() {},
+    lost: new Promise(() => {}),
+    pushErrorScope() {},
+    popErrorScope: async () => null,
+    createShaderModule: () => ({}),
+    createPipelineLayout: () => ({}),
+    createRenderPipeline: () => ({}),
+    createRenderPipelineAsync: () => Promise.reject(rejectedCleanQueueError),
+  };
+  const rejectedCleanQueueGpu = {
+    requestAdapter: async () => ({
+      requestDevice: async () => rejectedCleanQueueDevice,
+    }),
+  };
+  const rejectedCleanQueueWindow = {
+    location: {
+      origin: "https://example.test",
+      pathname: "/gpu-startup-app-frame",
+      search: `?diagnosticBoot=1&test=${APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID}&diagnosticVariant=${APPLICATION_4096_CLEAN_QUEUE_CORE_VARIANT}&diagnosticNonce=rejected-s0`,
+    },
+    isSecureContext: true,
+    addEventListener() {},
+    parent: {
+      __gpuStartupDiagnostics: {
+        record() { return true; },
+        recordBreadcrumb() { return true; },
+      },
+      postMessage(message) {
+        rejectedCleanQueueMessages.push(message);
+      },
+    },
+  };
+  rejectedCleanQueueWindow.window = rejectedCleanQueueWindow;
+  runInNewContext(frameBootstrapSource, {
+    window: rejectedCleanQueueWindow,
+    document: { visibilityState: "visible" },
+    navigator: { gpu: rejectedCleanQueueGpu },
+    performance: { now: () => 5_000 },
+    console: { error() {} },
+    Reflect,
+    Array,
+    Object,
+    String,
+    Number,
+    Math,
+    Error,
+    Promise,
+    URLSearchParams,
+  });
+  const rejectedCleanQueueAdapter = await rejectedCleanQueueGpu.requestAdapter();
+  await assert.rejects(
+    rejectedCleanQueueAdapter.requestDevice({ requiredFeatures: [] }),
+    /clean-queue pipeline rejected/,
+  );
+  const rejectedCleanQueueFailure = rejectedCleanQueueMessages.find(
+    (message) => message.type === "document-pipeline-clean-queue-probe-failed",
+  );
+  assert.ok(rejectedCleanQueueFailure);
+  assert.equal(rejectedCleanQueueFailure.detail.state, "failed");
+  assert.equal(rejectedCleanQueueFailure.detail.pipelineReason, "validation");
+  assert.equal(rejectedCleanQueueFailure.detail.beforeApplicationDeviceExposure, true);
+
   const firstUseMessages = [];
   const firstUseBreadcrumbs = [];
   const firstUseNativeCalls = [];
@@ -6225,6 +6656,204 @@ if (existsSync(builtWorkerPath)) {
   assert.ok(
     Buffer.byteLength(
       database.rows.get(application4096FirstUseFallbackRunCode).result_summary,
+      "utf8",
+    ) <= 1536,
+  );
+
+  const cleanQueueCoreRunCode = `diag-${"8".repeat(32)}`;
+  const cleanQueueCorePageResponse = await worker.fetch(
+    new Request(
+      `https://example.test/gpu-startup-lab?run=${cleanQueueCoreRunCode}&test=${APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID}`,
+      { headers: { "User-Agent": "Clean Queue Core Attribution Test Browser" } },
+    ),
+    environment,
+  );
+  assert.equal(cleanQueueCorePageResponse.status, 200);
+  assertDiagnosticSummary(
+    JSON.parse(database.rows.get(cleanQueueCoreRunCode).result_summary),
+    APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID,
+    null,
+  );
+  const cleanQueueCoreCompletionOrder = Array.from({ length: 9 }, (_, index) => index);
+  const cleanQueueCoreSentinelMs = [11.1, 22.2, 33.3, 44.4, 55.5, 66.6, 77.7, 88.8, 99.9];
+  const cleanQueueCoreCumulativeMs = [
+    11.1,
+    33.3,
+    66.6,
+    111,
+    166.5,
+    233.1,
+    310.8,
+    399.6,
+    499.5,
+  ];
+  const cleanQueueCoreIntervalMs = [22.2, 33.3, 44.4, 55.5, 66.6, 77.7, 88.8, 99.9];
+  const cleanQueueCoreSyncMs = [0.1, 0.2, 0.1, 0.2, 0.1, 0.2, 0.1, 0.2];
+  const cleanQueueCoreEntries = ["Pre-core queue boundary", ...APPLICATION_4096_CORE_PIPELINE_LABELS]
+    .map((label, index) => ({
+      corePipelineIndex: index,
+      label,
+      state: "completed",
+      targetFormats: [index === 1 ? "r16float" : "rgba16float"],
+      syncReturnMs: index === 0 ? null : cleanQueueCoreSyncMs[index - 1],
+      readinessMs: cleanQueueCoreSentinelMs[index],
+      completionOffsetMs: cleanQueueCoreCumulativeMs[index],
+      fifoDeltaMs: index === 0 ? 11.1 : cleanQueueCoreIntervalMs[index - 1],
+      completionRank: index + 1,
+    }));
+  const cleanQueueCoreAttribution = {
+    probeFormat: "rgba16float",
+    probeBlocking: true,
+    probeBeforeApplicationDeviceExposure: true,
+    priorDeviceGpuCallCount: 0,
+    probeShaderModuleCreationMs: 0.4,
+    probeNativePipelineMs: 28_100.125,
+    probeScopeDrainMs: 0.5,
+    probeTotalMs: 28_101.025,
+    coreCompletionOrderPreserved: true,
+    coreCompletionOrder: cleanQueueCoreCompletionOrder,
+    coreDrainMs: 499.5,
+    coreBarrierWaitMs: 510.75,
+    coreSyncReturnMs: cleanQueueCoreSyncMs,
+    coreSentinelElapsedMs: cleanQueueCoreSentinelMs,
+    coreCumulativeMs: cleanQueueCoreCumulativeMs,
+    coreIntervalMs: cleanQueueCoreIntervalMs,
+    preCoreBacklogMs: 11.1,
+    coreEntries: cleanQueueCoreEntries,
+    postCoreBaseline: {
+      state: "completed",
+      format: "rgba16float",
+      shaderModuleCreationMs: 0.3,
+      nativePipelineMs: 12.25,
+      totalDurationMs: 12.55,
+    },
+    individualCoreAttributionValid: true,
+  };
+  const cleanQueueCoreResult = {
+    ...APPLICATION_4096_CLEAN_QUEUE_CORE_COMPARISON,
+    testId: APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID,
+    diagnosticVariant: APPLICATION_4096_CLEAN_QUEUE_CORE_VARIANT,
+    verdict: "application-4096-clean-queue-core-attribution-passed",
+    conclusion: "The clean queue, core ladder, and document pipeline contracts completed.",
+    cleanQueueCoreAttribution,
+    pipelineBreakdown: {
+      expectedMeasuredCallCount: 71,
+      measuredCallCount: 71,
+      phaseElapsedMs: attributionPhaseMs,
+      renderPipelineTotalMs: attributionPipelineTotalMs,
+      renderPipelineMethod: "createRenderPipelineAsync",
+      renderPipelineGroups: attributionGroups,
+    },
+  };
+  const cleanQueueCoreWriteToken = "8".repeat(64);
+  const cleanQueueCoreSequence = sequence + 1_300;
+  const cleanQueueCoreCompletedResponse = await upload(createUploadPayload({
+    payloadRunCode: cleanQueueCoreRunCode,
+    payloadWriteToken: cleanQueueCoreWriteToken,
+    payloadSequence: cleanQueueCoreSequence,
+    testId: APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID,
+    status: "completed",
+    latestEvent: "diagnostic-completed",
+    result: cleanQueueCoreResult,
+    eventDetail: {
+      verdict: "application-4096-clean-queue-core-attribution-passed",
+      cleanQueueProbeFormat: "rgba16float",
+      expectedCoreRenderPipelines: 8,
+      totalNativeAsyncPipelineInvocations: 63,
+    },
+    moduleLoaded: true,
+    probeFinished: true,
+  }));
+  assert.equal(cleanQueueCoreCompletedResponse.status, 201);
+  const storedCleanQueueCoreRow = database.rows.get(cleanQueueCoreRunCode);
+  const compactCleanQueueCoreSummary = JSON.parse(storedCleanQueueCoreRow.result_summary);
+  assert.equal(compactCleanQueueCoreSummary.testId, APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID);
+  assert.equal(compactCleanQueueCoreSummary.diagnosticVariant, APPLICATION_4096_CLEAN_QUEUE_CORE_VARIANT);
+  assert.equal(compactCleanQueueCoreSummary.schema, "empty-queue-core-ladder-ms-v1");
+  assert.equal(
+    compactCleanQueueCoreSummary.verdict,
+    "application-4096-clean-queue-core-attribution-passed",
+  );
+  assert.equal(compactCleanQueueCoreSummary.probeFormat, "rgba16float");
+  assert.deepEqual(compactCleanQueueCoreSummary.probeMs, [0.4, 28_100.125, 0.5, 28_101.025]);
+  assert.deepEqual(compactCleanQueueCoreSummary.coreSyncMs, cleanQueueCoreSyncMs);
+  assert.deepEqual(compactCleanQueueCoreSummary.sentinelElapsedMs, cleanQueueCoreSentinelMs);
+  assert.deepEqual(compactCleanQueueCoreSummary.cumulativeMs, cleanQueueCoreCumulativeMs);
+  assert.deepEqual(compactCleanQueueCoreSummary.intervalMs, cleanQueueCoreIntervalMs);
+  assert.deepEqual(compactCleanQueueCoreSummary.completionOrder, cleanQueueCoreCompletionOrder);
+  assert.equal(compactCleanQueueCoreSummary.ordered, true);
+  assert.equal(compactCleanQueueCoreSummary.preCoreBacklogMs, 11.1);
+  assert.deepEqual(compactCleanQueueCoreSummary.baselineMs, [0.3, 12.25, 12.55]);
+  assert.equal(compactCleanQueueCoreSummary.gateWaitMs, 510.75);
+  assert.equal(compactCleanQueueCoreSummary.coreDrainMs, 499.5);
+  assert.equal(compactCleanQueueCoreSummary.documentPhaseMs, attributionPhaseMs);
+  assert.equal(compactCleanQueueCoreSummary.documentPipelineTotalMs, attributionPipelineTotalMs);
+  assert.equal(compactCleanQueueCoreSummary.documentGroupMs.length, 7);
+  assert.ok(Buffer.byteLength(storedCleanQueueCoreRow.result_summary, "utf8") <= 1536);
+  const storedFullCleanQueueCorePayload = JSON.parse(storedCleanQueueCoreRow.payload_json);
+  assertDiagnosticSummary(
+    storedFullCleanQueueCorePayload.summary,
+    APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID,
+    cleanQueueCoreResult,
+  );
+  assert.equal(
+    storedFullCleanQueueCorePayload.summary.result.cleanQueueCoreAttribution.probeFormat,
+    "rgba16float",
+  );
+
+  const cleanQueueCoreNonFifoRunCode = `diag-${"9".repeat(32)}`;
+  const cleanQueueCoreNonFifoPageResponse = await worker.fetch(
+    new Request(
+      `https://example.test/gpu-startup-lab?run=${cleanQueueCoreNonFifoRunCode}&test=${APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID}`,
+    ),
+    environment,
+  );
+  assert.equal(cleanQueueCoreNonFifoPageResponse.status, 200);
+  const cleanQueueCoreNonFifoResult = structuredClone(cleanQueueCoreResult);
+  cleanQueueCoreNonFifoResult.cleanQueueCoreAttribution.coreCompletionOrderPreserved = false;
+  cleanQueueCoreNonFifoResult.cleanQueueCoreAttribution.coreCompletionOrder = [
+    0,
+    2,
+    1,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+  ];
+  cleanQueueCoreNonFifoResult.cleanQueueCoreAttribution.coreIntervalMs = [];
+  cleanQueueCoreNonFifoResult.cleanQueueCoreAttribution.preCoreBacklogMs = null;
+  cleanQueueCoreNonFifoResult.cleanQueueCoreAttribution.individualCoreAttributionValid = false;
+  for (const entry of cleanQueueCoreNonFifoResult.cleanQueueCoreAttribution.coreEntries) {
+    entry.fifoDeltaMs = null;
+  }
+  const cleanQueueCoreNonFifoResponse = await upload(createUploadPayload({
+    payloadRunCode: cleanQueueCoreNonFifoRunCode,
+    payloadWriteToken: "9".repeat(64),
+    payloadSequence: sequence + 1_400,
+    testId: APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID,
+    status: "completed",
+    latestEvent: "diagnostic-completed",
+    result: cleanQueueCoreNonFifoResult,
+    moduleLoaded: true,
+    probeFinished: true,
+  }));
+  assert.equal(cleanQueueCoreNonFifoResponse.status, 201);
+  const compactCleanQueueCoreNonFifoSummary = JSON.parse(
+    database.rows.get(cleanQueueCoreNonFifoRunCode).result_summary,
+  );
+  assert.equal(compactCleanQueueCoreNonFifoSummary.schema, "empty-queue-core-ladder-ms-v1");
+  assert.equal(compactCleanQueueCoreNonFifoSummary.ordered, false);
+  assert.deepEqual(compactCleanQueueCoreNonFifoSummary.intervalMs, []);
+  assert.equal(compactCleanQueueCoreNonFifoSummary.preCoreBacklogMs, null);
+  assert.deepEqual(
+    compactCleanQueueCoreNonFifoSummary.completionOrder,
+    [0, 2, 1, 3, 4, 5, 6, 7, 8],
+  );
+  assert.ok(
+    Buffer.byteLength(
+      database.rows.get(cleanQueueCoreNonFifoRunCode).result_summary,
       "utf8",
     ) <= 1536,
   );
