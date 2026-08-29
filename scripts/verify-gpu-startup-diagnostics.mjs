@@ -20,7 +20,7 @@ const startup = read("src/startup.ts");
 const engineSource = read("src/brush-engine.ts");
 const featurePolicySource = read("src/gpu-startup-feature-policy.ts");
 
-const DIAGNOSTIC_BUILD = "gpu-diagnostics-storage-format-ab-v6";
+const DIAGNOSTIC_BUILD = "gpu-diagnostics-storage-format-ab-v7";
 const DEFAULT_TEST_ID = "startup-no-tier2-v1";
 const DEFAULT_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
 const STORAGE_FORMAT_TEST_ID = "storage-format-ab-v1";
@@ -252,7 +252,20 @@ assert.match(moduleSource, /if \(storageFormatAbEnabled\) \{\s*await runStorageF
 assert.match(moduleSource, /applicationBoot = await runFullApplicationBoot\(\)/);
 assert.match(moduleSource, /const requiredFeatures: GPUFeatureName\[\] = \[\]/);
 assert.match(moduleSource, /adapter\.requestDevice\(\{ requiredFeatures \}\)/);
-assert.match(moduleSource, /texture_storage_2d<\$\{format\}, write>/);
+assert.match(
+  moduleSource,
+  /var outputTexture: texture_storage_2d<\$\{format\}, write>/,
+);
+assert.match(
+  moduleSource,
+  /textureStore\(outputTexture, vec2<i32>\(0, 0\), vec4<f32>/,
+);
+assert.match(
+  moduleSource,
+  /var outputTexture: texture_storage_2d<rgba16float, write>/,
+);
+assert.doesNotMatch(moduleSource, /\bvar target\s*:/);
+assert.doesNotMatch(moduleSource, /textureStore\(target\b/);
 assert.match(moduleSource, /storageTexture:\s*\{\s*access: "write-only",\s*format,/);
 assert.match(moduleSource, /size: \[1, 1, 1\]/);
 assert.match(moduleSource, /usage: GPUTextureUsage\.STORAGE_BINDING/);

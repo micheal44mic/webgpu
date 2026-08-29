@@ -451,10 +451,10 @@ async function runStorageFormatCase(
       () => device.createShaderModule({
         label: `diagnostic-${format}-storage-write-shader`,
         code: `
-          @group(0) @binding(0) var target: texture_storage_2d<${format}, write>;
+          @group(0) @binding(0) var outputTexture: texture_storage_2d<${format}, write>;
           @compute @workgroup_size(1)
           fn main() {
-            textureStore(target, vec2<i32>(0, 0), vec4<f32>(1.0, 0.25, 0.0, 1.0));
+            textureStore(outputTexture, vec2<i32>(0, 0), vec4<f32>(1.0, 0.25, 0.0, 1.0));
           }
         `,
       }),
@@ -1220,10 +1220,10 @@ async function runDirectWebGpuProbe(): Promise<void> {
       const module = device.createShaderModule({
         label: "diagnostic-rgba16float-storage-write",
         code: `
-          @group(0) @binding(0) var target: texture_storage_2d<rgba16float, write>;
+          @group(0) @binding(0) var outputTexture: texture_storage_2d<rgba16float, write>;
           @compute @workgroup_size(1)
           fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-            textureStore(target, vec2<i32>(id.xy), vec4<f32>(1.0, 0.25, 0.0, 1.0));
+            textureStore(outputTexture, vec2<i32>(id.xy), vec4<f32>(1.0, 0.25, 0.0, 1.0));
           }
         `,
       });
