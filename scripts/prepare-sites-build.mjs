@@ -93,19 +93,29 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
     "application-4096-pipeline-breakdown-v1";
   var APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID =
     "application-4096-pipeline-attribution-async1-v1";
+  var APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID =
+    "application-4096-pipeline-first-use-controls-v1";
   var DOCUMENT_PIPELINE_PHASE = "document-pipelines";
   var EXPECTED_DOCUMENT_PIPELINE_LAYOUTS = 17;
   var EXPECTED_DOCUMENT_RENDER_PIPELINES = 52;
   var EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS = 2;
+  var FIRST_USE_SEQUENCE_ID = "first-use-controls-v1";
+  var EXPECTED_FIRST_USE_SEQUENCE_STEPS = 3;
+  var INJECTED_FIRST_USE_RENDER_PIPELINES = 2;
   var diagnosticTestId = new URLSearchParams(window.location.search).get("test") || "";
   var application4096PipelineBreakdownEnabled =
     diagnosticTestId === APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID;
   var application4096PipelineAttributionEnabled =
     diagnosticTestId === APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID;
+  var application4096PipelineFirstUseControlsEnabled =
+    diagnosticTestId === APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID;
+  var application4096PipelineAsyncTimingEnabled =
+    application4096PipelineAttributionEnabled
+    || application4096PipelineFirstUseControlsEnabled;
   var documentPipelineInstrumentationEnabled =
     diagnosticTestId === DOCUMENT_PIPELINE_TEST_ID
     || application4096PipelineBreakdownEnabled
-    || application4096PipelineAttributionEnabled;
+    || application4096PipelineAsyncTimingEnabled;
   var application4096PipelinesAsync2Enabled =
     diagnosticTestId === APPLICATION_4096_PIPELINES_ASYNC2_TEST_ID;
   var application4096PipelinesFirstFrameEnabled =
@@ -115,7 +125,7 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
     || application4096PipelinesAsync2Enabled
     || application4096PipelinesFirstFrameEnabled
     || application4096PipelineBreakdownEnabled
-    || application4096PipelineAttributionEnabled;
+    || application4096PipelineAsyncTimingEnabled;
   if (application4096PipelinesFirstFrameEnabled) {
     if (document.documentElement && document.documentElement.style) {
       document.documentElement.style.pointerEvents = "none";
@@ -146,6 +156,67 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
   var currentDocumentGpuCall = null;
   var lastCompletedRenderPipeline = null;
   var slowestCompletedRenderPipeline = null;
+  var firstUseSequenceStartedAtMs = null;
+  var firstUseSequenceCompletedAtMs = null;
+  var firstUseInjectedCompletedAtMs = null;
+  var currentFirstUseSequenceStep = null;
+  var lastCompletedFirstUseSequenceStep = null;
+  var firstUseSequenceState = "pending";
+  var firstUseSequenceSteps = application4096PipelineFirstUseControlsEnabled
+    ? [
+        {
+          sequenceStepIndex: 1,
+          stepKey: "tiny-independent-rgba16float",
+          label: "Diagnostic tiny independent RGBA16F preflight",
+          role: "independent-compiler-and-format-control",
+          ordinaryRenderPipelineIndex: null,
+          targetFormats: ["rgba16float"],
+          vertexEntryPoint: "vertexMain",
+          fragmentEntryPoint: "fragmentMain",
+          topology: "triangle-list",
+          durationMs: null,
+          nativePipelineMs: null,
+          instrumentationPreparationMs: null,
+          state: "pending",
+          error: null,
+          pipelineReason: null,
+        },
+        {
+          sequenceStepIndex: 2,
+          stepKey: "shared-brush-source-over-clone",
+          label: "Diagnostic shared brush source-over clone RGBA16F preflight",
+          role: "shared-brush-module-and-entry-point-control",
+          ordinaryRenderPipelineIndex: null,
+          targetFormats: ["rgba16float"],
+          vertexEntryPoint: "vertexMain",
+          fragmentEntryPoint: "fragmentMain",
+          topology: "triangle-strip",
+          durationMs: null,
+          nativePipelineMs: null,
+          instrumentationPreparationMs: null,
+          state: "pending",
+          error: null,
+          pipelineReason: null,
+        },
+        {
+          sequenceStepIndex: 3,
+          stepKey: "original-eraser",
+          label: "Eraser circle rgba16float",
+          role: "original-destination-out-pipeline",
+          ordinaryRenderPipelineIndex: 1,
+          targetFormats: ["rgba16float"],
+          vertexEntryPoint: "vertexMain",
+          fragmentEntryPoint: "fragmentMain",
+          topology: "triangle-strip",
+          durationMs: null,
+          nativePipelineMs: null,
+          instrumentationPreparationMs: null,
+          state: "pending",
+          error: null,
+          pipelineReason: null,
+        },
+      ]
+    : [];
   var patchedAdapters = [];
   var patchedDevices = [];
   var observedApplicationAdapters = [];
@@ -296,13 +367,101 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
       && activeStartupPhaseState === "started";
   }
 
+  function firstUseSequenceStepSnapshot(step) {
+    if (!step || typeof step !== "object") return null;
+    return {
+      sequenceStepIndex: step.sequenceStepIndex,
+      stepKey: step.stepKey,
+      label: step.label,
+      role: step.role,
+      ordinaryRenderPipelineIndex: step.ordinaryRenderPipelineIndex,
+      targetFormats: Array.isArray(step.targetFormats) ? [...step.targetFormats] : [],
+      vertexEntryPoint: step.vertexEntryPoint,
+      fragmentEntryPoint: step.fragmentEntryPoint,
+      topology: step.topology,
+      checkpointStartedAtMs: finiteNumber(step.checkpointStartedAtMs),
+      nativeStartedAtMs: finiteNumber(step.nativeStartedAtMs),
+      completedAtMs: finiteNumber(step.completedAtMs),
+      instrumentationPreparationMs: finiteNumber(step.instrumentationPreparationMs),
+      durationMs: finiteNumber(step.durationMs),
+      nativePipelineMs: finiteNumber(step.nativePipelineMs),
+      state: step.state,
+      error: step.error || null,
+      pipelineReason: step.pipelineReason || null,
+    };
+  }
+
+  function firstUseSequenceSummary() {
+    if (!application4096PipelineFirstUseControlsEnabled) return null;
+    var totalDurationMs = firstUseSequenceStartedAtMs !== null
+      && firstUseSequenceCompletedAtMs !== null
+      ? Math.max(0, firstUseSequenceCompletedAtMs - firstUseSequenceStartedAtMs)
+      : null;
+    var injectedPreflightDurationMs = firstUseSequenceStartedAtMs !== null
+      && firstUseInjectedCompletedAtMs !== null
+      ? Math.max(0, firstUseInjectedCompletedAtMs - firstUseSequenceStartedAtMs)
+      : null;
+    var originalStep = firstUseSequenceSteps[2] || null;
+    return {
+      enabled: true,
+      sequenceId: FIRST_USE_SEQUENCE_ID,
+      state: firstUseSequenceState,
+      started: firstUseSequenceStartedAtMs !== null,
+      completed: firstUseSequenceState === "completed",
+      failed: firstUseSequenceState === "failed",
+      expectedStepCount: EXPECTED_FIRST_USE_SEQUENCE_STEPS,
+      injectedPipelineCount: INJECTED_FIRST_USE_RENDER_PIPELINES,
+      expectedOrdinaryRenderPipelineCount: EXPECTED_DOCUMENT_RENDER_PIPELINES,
+      totalNativeAsyncPipelineInvocations:
+        EXPECTED_DOCUMENT_RENDER_PIPELINES + INJECTED_FIRST_USE_RENDER_PIPELINES,
+      currentStep: firstUseSequenceStepSnapshot(currentFirstUseSequenceStep),
+      lastCompletedStep: firstUseSequenceStepSnapshot(lastCompletedFirstUseSequenceStep),
+      steps: firstUseSequenceSteps.map(firstUseSequenceStepSnapshot),
+      totalDurationMs: finiteNumber(totalDurationMs),
+      injectedPreflightDurationMs: finiteNumber(injectedPreflightDurationMs),
+      originalEraserDurationMs: finiteNumber(originalStep?.nativePipelineMs),
+    };
+  }
+
+  function emitFirstUseSequenceEvent(suffix, status, detail) {
+    var eventDetail = {
+      ...firstUseSequenceSummary(),
+      ...(detail && typeof detail === "object" ? detail : {}),
+      durableCheckpoint: false,
+    };
+    eventDetail.durableCheckpoint = durableRecord(
+      "application-document-pipeline-first-use-sequence-" + suffix,
+      eventDetail,
+      status,
+    );
+    emit("document-pipeline-first-use-sequence-" + suffix, eventDetail);
+  }
+
+  function emitFirstUseStepEvent(suffix, status, step) {
+    var eventDetail = {
+      sequenceId: FIRST_USE_SEQUENCE_ID,
+      expectedStepCount: EXPECTED_FIRST_USE_SEQUENCE_STEPS,
+      injectedPipelineCount: INJECTED_FIRST_USE_RENDER_PIPELINES,
+      totalNativeAsyncPipelineInvocations:
+        EXPECTED_DOCUMENT_RENDER_PIPELINES + INJECTED_FIRST_USE_RENDER_PIPELINES,
+      ...firstUseSequenceStepSnapshot(step),
+      durableCheckpoint: false,
+    };
+    eventDetail.durableCheckpoint = durableRecord(
+      "application-document-pipeline-first-use-step-" + suffix,
+      eventDetail,
+      status,
+    );
+    emit("document-pipeline-first-use-step-" + suffix, eventDetail);
+  }
+
   function documentPipelineSummary() {
     return {
       enabled: documentPipelineInstrumentationEnabled,
       targetPhase: DOCUMENT_PIPELINE_PHASE,
       expectedSynchronousPipelineLayouts: EXPECTED_DOCUMENT_PIPELINE_LAYOUTS,
       expectedSynchronousRenderPipelines: EXPECTED_DOCUMENT_RENDER_PIPELINES,
-      renderPipelineMethod: application4096PipelineAttributionEnabled
+      renderPipelineMethod: application4096PipelineAsyncTimingEnabled
         ? "createRenderPipelineAsync"
         : "createRenderPipeline",
       expectedErrorScopeDrains: EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS,
@@ -323,6 +482,7 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
       lastStartedCall: lastStartedDocumentGpuCall,
       lastCompletedRenderPipeline: lastCompletedRenderPipeline,
       slowestCompletedRenderPipeline: slowestCompletedRenderPipeline,
+      firstUseSequence: firstUseSequenceSummary(),
     };
   }
 
@@ -400,7 +560,213 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
     return summary;
   }
 
-  function beginDocumentGpuCall(method, descriptor) {
+  function startFirstUseSequence() {
+    if (!application4096PipelineFirstUseControlsEnabled || firstUseSequenceState !== "pending") {
+      throw new Error("The first-use control sequence was started more than once.");
+    }
+    firstUseSequenceState = "started";
+    firstUseSequenceStartedAtMs = performance.now();
+    emitFirstUseSequenceEvent("started", "running", {});
+  }
+
+  function completeFirstUseSequence() {
+    if (firstUseSequenceState !== "started") return;
+    firstUseSequenceState = "completed";
+    firstUseSequenceCompletedAtMs = performance.now();
+    currentFirstUseSequenceStep = null;
+    emitFirstUseSequenceEvent("completed", "running", {});
+  }
+
+  function failFirstUseSequence(error, stage) {
+    if (firstUseSequenceState === "failed" || firstUseSequenceState === "completed") return;
+    firstUseSequenceState = "failed";
+    firstUseSequenceCompletedAtMs = performance.now();
+    emitFirstUseSequenceEvent("failed", "failed", {
+      stage: clippedString(stage || "unknown", 120),
+      error: errorDetail(error),
+      pipelineReason: error && typeof error.reason === "string"
+        ? clippedString(error.reason, 120)
+        : null,
+    });
+  }
+
+  function startFirstUseStep(sequenceStepIndex) {
+    var step = firstUseSequenceSteps[sequenceStepIndex - 1];
+    if (!step || step.state !== "pending") {
+      throw new Error("The requested first-use control step is unavailable.");
+    }
+    step.state = "started";
+    step.checkpointStartedAtMs = performance.now();
+    currentFirstUseSequenceStep = step;
+    emitFirstUseStepEvent("started", "running", step);
+    return step;
+  }
+
+  function completeFirstUseStep(step, nativePipelineMs, instrumentationPreparationMs) {
+    if (!step || step.state !== "started") return;
+    var completedAtMs = performance.now();
+    step.completedAtMs = completedAtMs;
+    step.nativePipelineMs = finiteNumber(nativePipelineMs);
+    step.instrumentationPreparationMs = finiteNumber(instrumentationPreparationMs);
+    step.durationMs = finiteNumber(
+      Math.max(0, completedAtMs - Number(step.checkpointStartedAtMs || completedAtMs)),
+    );
+    step.state = "completed";
+    currentFirstUseSequenceStep = null;
+    lastCompletedFirstUseSequenceStep = step;
+    emitFirstUseStepEvent("completed", "running", step);
+  }
+
+  function failFirstUseStep(step, error, nativePipelineMs, instrumentationPreparationMs) {
+    if (!step || step.state !== "started") return;
+    var completedAtMs = performance.now();
+    step.completedAtMs = completedAtMs;
+    step.nativePipelineMs = finiteNumber(nativePipelineMs);
+    step.instrumentationPreparationMs = finiteNumber(instrumentationPreparationMs);
+    step.durationMs = finiteNumber(
+      Math.max(0, completedAtMs - Number(step.checkpointStartedAtMs || completedAtMs)),
+    );
+    step.error = errorDetail(error);
+    step.pipelineReason = error && typeof error.reason === "string"
+      ? clippedString(error.reason, 120)
+      : null;
+    step.state = "failed";
+    currentFirstUseSequenceStep = step;
+    emitFirstUseStepEvent("failed", "failed", step);
+  }
+
+  function validatedOriginalEraserTarget(descriptor) {
+    var targets = Array.from(descriptor?.fragment?.targets || []);
+    var target = targets[0];
+    var blend = target?.blend;
+    var valid = descriptor
+      && typeof descriptor === "object"
+      && descriptor.label === "Eraser circle rgba16float"
+      && descriptor.vertex?.entryPoint === "vertexMain"
+      && descriptor.fragment?.entryPoint === "fragmentMain"
+      && descriptor.vertex?.module
+      && descriptor.vertex.module === descriptor.fragment.module
+      && descriptor.layout
+      && descriptor.primitive?.topology === "triangle-strip"
+      && targets.length === 1
+      && target?.format === "rgba16float"
+      && blend?.color?.operation === "add"
+      && blend.color.srcFactor === "zero"
+      && blend.color.dstFactor === "one-minus-src-alpha"
+      && blend?.alpha?.operation === "add"
+      && blend.alpha.srcFactor === "zero"
+      && blend.alpha.dstFactor === "one-minus-src-alpha";
+    if (!valid) {
+      throw new Error("The first document pipeline no longer matches the locked Eraser control descriptor.");
+    }
+    return target;
+  }
+
+  function tinyFirstUseControlDescriptor(device) {
+    var shaderModule = device.createShaderModule({
+      label: "Diagnostic tiny independent RGBA16F preflight WGSL",
+      code: [
+        "@vertex",
+        "fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> @builtin(position) vec4<f32> {",
+        "  let positions = array<vec2<f32>, 3>(",
+        "    vec2<f32>(-1.0, -1.0),",
+        "    vec2<f32>( 3.0, -1.0),",
+        "    vec2<f32>(-1.0,  3.0)",
+        "  );",
+        "  return vec4<f32>(positions[vertexIndex], 0.0, 1.0);",
+        "}",
+        "@fragment",
+        "fn fragmentMain() -> @location(0) vec4<f32> {",
+        "  return vec4<f32>(0.0);",
+        "}",
+      ].join("\n"),
+    });
+    return {
+      label: "Diagnostic tiny independent RGBA16F preflight",
+      layout: "auto",
+      vertex: { module: shaderModule, entryPoint: "vertexMain" },
+      fragment: {
+        module: shaderModule,
+        entryPoint: "fragmentMain",
+        targets: [{ format: "rgba16float" }],
+      },
+      primitive: { topology: "triangle-list" },
+    };
+  }
+
+  function sharedBrushSourceOverControlDescriptor(originalDescriptor, originalTarget) {
+    return {
+      ...originalDescriptor,
+      label: "Diagnostic shared brush source-over clone RGBA16F preflight",
+      fragment: {
+        ...originalDescriptor.fragment,
+        targets: [{
+          ...originalTarget,
+          blend: {
+            color: {
+              operation: "add",
+              srcFactor: "one",
+              dstFactor: "one-minus-src-alpha",
+            },
+            alpha: {
+              operation: "add",
+              srcFactor: "one",
+              dstFactor: "one-minus-src-alpha",
+            },
+          },
+        }],
+      },
+    };
+  }
+
+  function runRawFirstUsePipelineStep(original, device, sequenceStepIndex, descriptorFactory) {
+    var step = startFirstUseStep(sequenceStepIndex);
+    var descriptor;
+    var nativeStartedAtMs = null;
+    var instrumentationPreparationMs = null;
+    var result;
+    try {
+      descriptor = descriptorFactory();
+      var descriptorSummary = renderPipelineDescriptorSummary(descriptor);
+      step.label = descriptorSummary.label || step.label;
+      step.targetFormats = descriptorSummary.targetFormats;
+      step.vertexEntryPoint = descriptorSummary.vertexEntryPoint;
+      step.fragmentEntryPoint = descriptorSummary.fragmentEntryPoint;
+      step.topology = descriptorSummary.topology;
+      var preNativeAtMs = performance.now();
+      instrumentationPreparationMs = Math.max(
+        0,
+        preNativeAtMs - Number(step.checkpointStartedAtMs || preNativeAtMs),
+      );
+      nativeStartedAtMs = performance.now();
+      step.nativeStartedAtMs = nativeStartedAtMs;
+      result = Reflect.apply(original, device, [descriptor]);
+    } catch (error) {
+      var synchronousDurationMs = nativeStartedAtMs === null
+        ? null
+        : Math.max(0, performance.now() - nativeStartedAtMs);
+      failFirstUseStep(step, error, synchronousDurationMs, instrumentationPreparationMs);
+      throw error;
+    }
+    return Promise.resolve(result).then(function (pipeline) {
+      completeFirstUseStep(
+        step,
+        Math.max(0, performance.now() - Number(nativeStartedAtMs || performance.now())),
+        instrumentationPreparationMs,
+      );
+      return pipeline;
+    }, function (error) {
+      failFirstUseStep(
+        step,
+        error,
+        Math.max(0, performance.now() - Number(nativeStartedAtMs || performance.now())),
+        instrumentationPreparationMs,
+      );
+      throw error;
+    });
+  }
+
+  function beginDocumentGpuCall(method, descriptor, firstUseStep) {
     documentGpuCallIndex += 1;
     var isPipelineLayout = method === "createPipelineLayout";
     var isRenderPipeline = method === "createRenderPipeline"
@@ -446,6 +812,11 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
       instrumentationPreparationMs: null,
       durableCheckpoint: false,
     };
+    if (firstUseStep) {
+      detail.firstUseSequenceId = FIRST_USE_SEQUENCE_ID;
+      detail.sequenceStepIndex = firstUseStep.sequenceStepIndex;
+      detail.stepKey = firstUseStep.stepKey;
+    }
     detail.durableCheckpoint = durableRecord(
       "application-document-gpu-call-started",
       detail,
@@ -515,6 +886,13 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
       );
       emit("document-gpu-scope-error", scopeErrorDetail);
     }
+    if (call.firstUseSequenceId === FIRST_USE_SEQUENCE_ID && call.sequenceStepIndex === 3) {
+      completeFirstUseStep(
+        firstUseSequenceSteps[2],
+        durationMs,
+        call.instrumentationPreparationMs,
+      );
+    }
     if (currentDocumentGpuCall === call) currentDocumentGpuCall = null;
     emit("document-gpu-call-completed", detail);
   }
@@ -535,8 +913,94 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
       detail,
       "failed",
     );
+    if (call.firstUseSequenceId === FIRST_USE_SEQUENCE_ID && call.sequenceStepIndex === 3) {
+      failFirstUseStep(
+        firstUseSequenceSteps[2],
+        error,
+        detail.durationMs,
+        call.instrumentationPreparationMs,
+      );
+    }
     if (currentDocumentGpuCall === call) currentDocumentGpuCall = null;
     emit("document-gpu-call-failed", detail);
+  }
+
+  function invokeDocumentGpuCall(
+    device,
+    method,
+    asynchronous,
+    original,
+    argumentList,
+    firstUseStep,
+  ) {
+    var call = beginDocumentGpuCall(method, argumentList[0], firstUseStep || null);
+    var result;
+    try {
+      var preNativeAtMs = performance.now();
+      call.instrumentationPreparationMs = finiteNumber(
+        Math.max(0, preNativeAtMs - Number(call.checkpointStartedAtMs || 0)),
+      );
+      call.nativeStartedAtMs = finiteNumber(performance.now());
+      result = Reflect.apply(original, device, argumentList);
+    } catch (error) {
+      failDocumentGpuCall(call, error);
+      throw error;
+    }
+    if (!asynchronous) {
+      completeDocumentGpuCall(call, result);
+      return result;
+    }
+    return Promise.resolve(result).then(function (value) {
+      completeDocumentGpuCall(call, value);
+      return value;
+    }, function (error) {
+      failDocumentGpuCall(call, error);
+      throw error;
+    });
+  }
+
+  function runFirstUseControls(original, device, argumentList) {
+    var originalDescriptor = argumentList[0];
+    var originalTarget;
+    try {
+      startFirstUseSequence();
+      originalTarget = validatedOriginalEraserTarget(originalDescriptor);
+    } catch (error) {
+      failFirstUseSequence(error, "original-descriptor-lock");
+      return Promise.reject(error);
+    }
+    return runRawFirstUsePipelineStep(
+      original,
+      device,
+      1,
+      function () { return tinyFirstUseControlDescriptor(device); },
+    ).then(function () {
+      return runRawFirstUsePipelineStep(
+        original,
+        device,
+        2,
+        function () {
+          return sharedBrushSourceOverControlDescriptor(originalDescriptor, originalTarget);
+        },
+      );
+    }).then(function () {
+      firstUseInjectedCompletedAtMs = performance.now();
+      var originalStep = startFirstUseStep(3);
+      return invokeDocumentGpuCall(
+        device,
+        "createRenderPipelineAsync",
+        true,
+        original,
+        argumentList,
+        originalStep,
+      );
+    }).then(function (pipeline) {
+      completeFirstUseSequence();
+      return pipeline;
+    }, function (error) {
+      failFirstUseSequence(error, currentFirstUseSequenceStep?.stepKey || "first-use-controls");
+      throw error;
+    });
   }
 
   function wrapDocumentGpuMethod(device, method, asynchronous) {
@@ -551,30 +1015,24 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
       if (!documentPipelinePhaseActive()) {
         return Reflect.apply(original, device, arguments);
       }
-      var call = beginDocumentGpuCall(method, arguments[0]);
-      var result;
-      try {
-        var preNativeAtMs = performance.now();
-        call.instrumentationPreparationMs = finiteNumber(
-          Math.max(0, preNativeAtMs - Number(call.checkpointStartedAtMs || 0)),
-        );
-        call.nativeStartedAtMs = finiteNumber(performance.now());
-        result = Reflect.apply(original, device, arguments);
-      } catch (error) {
-        failDocumentGpuCall(call, error);
-        throw error;
+      var argumentList = Array.prototype.slice.call(arguments);
+      if (
+        application4096PipelineFirstUseControlsEnabled
+        && method === "createRenderPipelineAsync"
+        && asynchronous
+        && documentRenderPipelineIndex === 0
+        && firstUseSequenceState === "pending"
+      ) {
+        return runFirstUseControls(original, device, argumentList);
       }
-      if (!asynchronous) {
-        completeDocumentGpuCall(call, result);
-        return result;
-      }
-      return Promise.resolve(result).then(function (value) {
-        completeDocumentGpuCall(call, value);
-        return value;
-      }, function (error) {
-        failDocumentGpuCall(call, error);
-        throw error;
-      });
+      return invokeDocumentGpuCall(
+        device,
+        method,
+        asynchronous,
+        original,
+        argumentList,
+        null,
+      );
     };
     return replaceMethod(device, method, wrapped);
   }
@@ -583,13 +1041,13 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
     if (!device || patchedDevices.indexOf(device) >= 0) return device;
     patchedDevices.push(device);
     var pipelineLayoutPatched = wrapDocumentGpuMethod(device, "createPipelineLayout", false);
-    var renderPipelineMethod = application4096PipelineAttributionEnabled
+    var renderPipelineMethod = application4096PipelineAsyncTimingEnabled
       ? "createRenderPipelineAsync"
       : "createRenderPipeline";
     var renderPipelinePatched = wrapDocumentGpuMethod(
       device,
       renderPipelineMethod,
-      application4096PipelineAttributionEnabled,
+      application4096PipelineAsyncTimingEnabled,
     );
     var popErrorScopePatched = wrapDocumentGpuMethod(device, "popErrorScope", true);
     var requiredFeatures = [];
@@ -606,6 +1064,10 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
       popErrorScopePatched: popErrorScopePatched,
       requiredFeatures: requiredFeatures,
       textureFormatsTier2Enabled: device.features?.has("texture-formats-tier2") === true,
+      firstUseControlsEnabled: application4096PipelineFirstUseControlsEnabled,
+      injectedPreflightRenderPipelines: application4096PipelineFirstUseControlsEnabled
+        ? INJECTED_FIRST_USE_RENDER_PIPELINES
+        : 0,
     };
     emit("document-pipeline-device-patched", detail);
     if (!pipelineLayoutPatched || !renderPipelinePatched || !popErrorScopePatched) {
@@ -623,6 +1085,7 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
           phaseState: activeStartupPhaseState,
           duringTargetPhase: duringTargetPhase,
           currentCall: currentDocumentGpuCall,
+          currentFirstUseSequenceStep: firstUseSequenceStepSnapshot(currentFirstUseSequenceStep),
           lastCompletedRenderPipeline: lastCompletedRenderPipeline,
           durableCheckpoint: false,
         };
@@ -647,6 +1110,7 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
           phaseState: activeStartupPhaseState,
           duringTargetPhase: duringTargetPhase,
           currentCall: currentDocumentGpuCall,
+          currentFirstUseSequenceStep: firstUseSequenceStepSnapshot(currentFirstUseSequenceStep),
           lastCompletedRenderPipeline: lastCompletedRenderPipeline,
           durableCheckpoint: false,
         };
@@ -737,9 +1201,15 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
       expectedSynchronousRenderPipelines: EXPECTED_DOCUMENT_RENDER_PIPELINES,
       expectedSynchronousPipelineLayouts: EXPECTED_DOCUMENT_PIPELINE_LAYOUTS,
       expectedErrorScopeDrains: EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS,
+      injectedPreflightRenderPipelines: application4096PipelineFirstUseControlsEnabled
+        ? INJECTED_FIRST_USE_RENDER_PIPELINES
+        : 0,
+      totalNativeAsyncPipelineInvocations: application4096PipelineFirstUseControlsEnabled
+        ? EXPECTED_DOCUMENT_RENDER_PIPELINES + INJECTED_FIRST_USE_RENDER_PIPELINES
+        : EXPECTED_DOCUMENT_RENDER_PIPELINES,
       instrumentedMethods: [
         "createPipelineLayout",
-        application4096PipelineAttributionEnabled
+        application4096PipelineAsyncTimingEnabled
           ? "createRenderPipelineAsync"
           : "createRenderPipeline",
         "popErrorScope",
@@ -925,7 +1395,7 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
   window.__editorExtensionBootstrap = {
     engineOptions: application4096PipelinesFirstFrameEnabled
       ? { documentPipelineCompilationScope: "first-frame-diagnostic" }
-      : application4096PipelineAttributionEnabled
+      : application4096PipelineAsyncTimingEnabled
         ? { documentPipelineCompilationConcurrency: 1 }
       : application4096PipelinesAsync2Enabled
         ? { documentPipelineCompilationConcurrency: 2 }
@@ -1030,7 +1500,7 @@ const LAYER_COMPRESSION_INDEX_SQL = "CREATE INDEX IF NOT EXISTS layer_compressio
 const VECTOR_ZOOM_C_STRATEGY = "ten-semantic-text-dual-gpu-fallback-auto-post-raster-window2-roi-aware-zoom8-to-0.3-v7";
 const VECTOR_ZOOM_RUNS_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS vector_zoom_runs (run_code TEXT PRIMARY KEY NOT NULL, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)";
 const VECTOR_ZOOM_RUN_CODE = /^[2-9A-HJ-NP-Z]{8}$/;
-const GPU_STARTUP_DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v16";
+const GPU_STARTUP_DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v17";
 const GPU_STARTUP_DEFAULT_TEST_ID = "startup-no-tier2-v1";
 const GPU_STARTUP_STORAGE_FORMAT_TEST_ID = "storage-format-ab-v1";
 const GPU_STARTUP_DOCUMENT_PIPELINE_TEST_ID = "document-pipeline-bisect-v1";
@@ -1039,6 +1509,7 @@ const GPU_STARTUP_APPLICATION_4096_PIPELINES_ASYNC2_TEST_ID = "application-4096-
 const GPU_STARTUP_APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST_ID = "application-4096-pipelines-first-frame-v1";
 const GPU_STARTUP_APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID = "application-4096-pipeline-breakdown-v1";
 const GPU_STARTUP_APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID = "application-4096-pipeline-attribution-async1-v1";
+const GPU_STARTUP_APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID = "application-4096-pipeline-first-use-controls-v1";
 const GPU_STARTUP_DEFAULT_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
 const GPU_STARTUP_STORAGE_FORMAT_VARIANT = "storage-format-ab-rgba8unorm-control-rgba16float-target-write-only-1x1-no-tier2-v1";
 const GPU_STARTUP_DOCUMENT_PIPELINE_VARIANT = "document-pipeline-bisect-rgba16float-no-tier2-v1";
@@ -1047,6 +1518,7 @@ const GPU_STARTUP_APPLICATION_4096_PIPELINES_ASYNC2_VARIANT = "application-start
 const GPU_STARTUP_APPLICATION_4096_PIPELINES_FIRST_FRAME_VARIANT = "application-startup-rgba16float-4096x4096-no-tier2-render-pipelines-first-frame-1-v1";
 const GPU_STARTUP_APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT = "application-startup-rgba16float-4096x4096-no-tier2-render-pipeline-breakdown-sync-v1";
 const GPU_STARTUP_APPLICATION_4096_PIPELINE_ATTRIBUTION_VARIANT = "application-startup-rgba16float-4096x4096-no-tier2-render-pipeline-attribution-async1-v1";
+const GPU_STARTUP_APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT = "application-startup-rgba16float-4096x4096-no-tier2-first-use-controls-async1-v1";
 const GPU_STARTUP_DIAGNOSTIC_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS gpu_startup_diagnostic_runs (run_code TEXT PRIMARY KEY NOT NULL, write_token_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, expires_at TEXT NOT NULL, status TEXT NOT NULL, sequence INTEGER NOT NULL, latest_event TEXT NOT NULL DEFAULT 'html-requested', result_summary TEXT NOT NULL DEFAULT '', payload_bytes INTEGER NOT NULL DEFAULT 0, payload_json TEXT NOT NULL)";
 const GPU_STARTUP_DIAGNOSTIC_INDEX_SQL = "CREATE INDEX IF NOT EXISTS gpu_startup_diagnostic_runs_expires_at_idx ON gpu_startup_diagnostic_runs (expires_at)";
 const GPU_STARTUP_DIAGNOSTIC_RUN_CODE = /^diag-[a-f0-9]{32}$/;
@@ -1223,6 +1695,41 @@ function gpuStartupDiagnosticDefinition(testId) {
       },
     };
   }
+  if (testId === GPU_STARTUP_APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID) {
+    return {
+      testId,
+      diagnosticVariant: GPU_STARTUP_APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT,
+      comparison: {
+        kind: "application-startup-render-pipeline-first-use-controls",
+        documentWidth: 4096,
+        documentHeight: 4096,
+        layerFormat: "rgba16float",
+        canvasFormat: "rgba16float",
+        requiredFeatures: [],
+        textureFormatsTier2Requested: false,
+        applicationFrame: "isolated-production-startup",
+        startupMode: "empty-document",
+        targetPhase: "document-pipelines",
+        instrumentation: "native-device-call-boundaries",
+        pipelineCompilationMethod: "createRenderPipelineAsync",
+        pipelineCompilationConcurrency: 1,
+        pipelineCompilationOrder: "async-sequential",
+        expectedPipelineLayouts: 17,
+        expectedRenderPipelines: 52,
+        injectedPreflightRenderPipelines: 2,
+        totalNativeAsyncPipelineInvocations: 54,
+        expectedErrorScopeDrains: 2,
+        firstUseSequence: [
+          "tiny-independent-rgba16float",
+          "shared-brush-source-over-clone",
+          "original-eraser",
+        ],
+        capture: "non-overlapping-first-use-controls-and-application-pipeline-durations",
+        timingSemantics: "one-native-async-pipeline-at-a-time",
+        deferredObservationMs: 5000,
+      },
+    };
+  }
   return null;
 }
 
@@ -1254,6 +1761,16 @@ const GPU_STARTUP_PIPELINE_ATTRIBUTION_VERDICT =
   "application-4096-pipeline-attribution-passed";
 const GPU_STARTUP_PIPELINE_ATTRIBUTION_METHOD = "createRenderPipelineAsync";
 const GPU_STARTUP_PIPELINE_ATTRIBUTION_SUMMARY_MAX_BYTES = 1536;
+const GPU_STARTUP_PIPELINE_FIRST_USE_CONTROLS_VERDICT =
+  "application-4096-pipeline-first-use-controls-passed";
+const GPU_STARTUP_PIPELINE_FIRST_USE_CONTROLS_SCHEMA =
+  "pipeline-first-use-controls-ms-v1";
+const GPU_STARTUP_PIPELINE_FIRST_USE_CONTROLS_SEQUENCE_ID = "first-use-controls-v1";
+const GPU_STARTUP_PIPELINE_FIRST_USE_CONTROLS_STEP_KEYS = [
+  "tiny-independent-rgba16float",
+  "shared-brush-source-over-clone",
+  "original-eraser",
+];
 
 function finiteGpuStartupTiming(value) {
   return typeof value === "number"
@@ -1279,12 +1796,166 @@ function indexedGpuStartupTimings(calls, expectedCount) {
   return timings;
 }
 
+function serializeGpuStartupFirstUseControlsResultSummary(summary) {
+  const result = isRecord(summary.result) ? summary.result : null;
+  const breakdown = isRecord(result?.pipelineBreakdown) ? result.pipelineBreakdown : null;
+  const sequence = isRecord(result?.firstUseSequence) ? result.firstUseSequence : null;
+  const groups = Array.isArray(breakdown?.renderPipelineGroups)
+    ? breakdown.renderPipelineGroups
+    : null;
+  const layoutMs = indexedGpuStartupTimings(breakdown?.pipelineLayouts, 17);
+  const drainMs = indexedGpuStartupTimings(breakdown?.errorScopeDrains, 2);
+  const steps = Array.isArray(sequence?.steps) ? [...sequence.steps] : null;
+  if (
+    !result
+    || !breakdown
+    || !sequence
+    || !groups
+    || groups.length !== 7
+    || !layoutMs
+    || !drainMs
+    || !steps
+    || steps.length !== 3
+    || summary.diagnosticVariant
+      !== GPU_STARTUP_APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT
+    || result.verdict !== GPU_STARTUP_PIPELINE_FIRST_USE_CONTROLS_VERDICT
+    || breakdown.renderPipelineMethod !== GPU_STARTUP_PIPELINE_ATTRIBUTION_METHOD
+    || sequence.sequenceId !== GPU_STARTUP_PIPELINE_FIRST_USE_CONTROLS_SEQUENCE_ID
+    || sequence.started !== true
+    || sequence.completed !== true
+    || sequence.failed !== false
+  ) {
+    return JSON.stringify(summary);
+  }
+  steps.sort((left, right) => (
+    Number(left?.sequenceStepIndex ?? 0) - Number(right?.sequenceStepIndex ?? 0)
+  ));
+  const firstUseMs = [];
+  for (let index = 0; index < GPU_STARTUP_PIPELINE_FIRST_USE_CONTROLS_STEP_KEYS.length; index += 1) {
+    const step = steps[index];
+    const nativePipelineMs = isRecord(step)
+      ? finiteGpuStartupTiming(step.nativePipelineMs)
+      : null;
+    const expectedOrdinaryIndex = index === 2 ? 1 : null;
+    if (
+      !isRecord(step)
+      || step.sequenceStepIndex !== index + 1
+      || step.stepKey !== GPU_STARTUP_PIPELINE_FIRST_USE_CONTROLS_STEP_KEYS[index]
+      || step.ordinaryRenderPipelineIndex !== expectedOrdinaryIndex
+      || step.state !== "completed"
+      || nativePipelineMs === null
+    ) {
+      return JSON.stringify(summary);
+    }
+    firstUseMs.push(nativePipelineMs);
+  }
+  const pipelineCalls = groups.flatMap((group) => (
+    isRecord(group) && Array.isArray(group.calls) ? group.calls : []
+  ));
+  const pipelineMs = indexedGpuStartupTimings(pipelineCalls, 52);
+  if (!pipelineMs || Math.abs(firstUseMs[2] - pipelineMs[0]) > 0.01) {
+    return JSON.stringify(summary);
+  }
+  const groupMs = {};
+  for (let index = 0; index < GPU_STARTUP_PIPELINE_ATTRIBUTION_GROUPS.length; index += 1) {
+    const [key, first, last] = GPU_STARTUP_PIPELINE_ATTRIBUTION_GROUPS[index];
+    const group = groups[index];
+    if (!isRecord(group) || group.key !== key) return JSON.stringify(summary);
+    groupMs[key] = [
+      first,
+      last,
+      finiteGpuStartupTiming(
+        pipelineMs.slice(first - 1, last).reduce((sum, durationMs) => sum + durationMs, 0),
+      ),
+    ];
+  }
+  const slowestIndex = breakdown.slowestRenderPipelineIndex;
+  const slowestMs = finiteGpuStartupTiming(breakdown.slowestRenderPipelineDurationMs);
+  if (!Number.isInteger(slowestIndex) || slowestIndex < 1 || slowestIndex > 52 || slowestMs === null) {
+    return JSON.stringify(summary);
+  }
+  const compactSummary = {
+    testId: GPU_STARTUP_APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID,
+    diagnosticVariant: GPU_STARTUP_APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT,
+    schema: GPU_STARTUP_PIPELINE_FIRST_USE_CONTROLS_SCHEMA,
+    verdict: GPU_STARTUP_PIPELINE_FIRST_USE_CONTROLS_VERDICT,
+    pipelineIndexBase: 1,
+    pipelineMethod: GPU_STARTUP_PIPELINE_ATTRIBUTION_METHOD,
+    firstUseStepKeys: GPU_STARTUP_PIPELINE_FIRST_USE_CONTROLS_STEP_KEYS,
+    firstUseMs,
+    phaseMs: finiteGpuStartupTiming(breakdown.phaseElapsedMs),
+    preCallMs: finiteGpuStartupTiming(breakdown.preCallDiagnosticTotalMs),
+    residualMs: finiteGpuStartupTiming(breakdown.remainingPhaseWorkAndReportingMs),
+    layoutMs,
+    pipelineMs,
+    drainMs,
+    groupMs,
+    slowestIndex,
+    slowestMs,
+  };
+  const serializedCompactSummary = JSON.stringify(compactSummary);
+  if (
+    new TextEncoder().encode(serializedCompactSummary).byteLength
+    <= GPU_STARTUP_PIPELINE_ATTRIBUTION_SUMMARY_MAX_BYTES
+  ) {
+    return serializedCompactSummary;
+  }
+  const essentialTimingSummary = JSON.stringify({
+    testId: GPU_STARTUP_APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID,
+    schema: GPU_STARTUP_PIPELINE_FIRST_USE_CONTROLS_SCHEMA,
+    verdict: GPU_STARTUP_PIPELINE_FIRST_USE_CONTROLS_VERDICT,
+    pipelineIndexBase: 1,
+    firstUseStepKeys: GPU_STARTUP_PIPELINE_FIRST_USE_CONTROLS_STEP_KEYS,
+    firstUseMs,
+    layoutMs,
+    pipelineMs,
+    drainMs,
+    groupMs,
+    compacted: "essential-timings",
+  });
+  if (
+    new TextEncoder().encode(essentialTimingSummary).byteLength
+    <= GPU_STARTUP_PIPELINE_ATTRIBUTION_SUMMARY_MAX_BYTES
+  ) {
+    return essentialTimingSummary;
+  }
+  const minimumTimingSummary = JSON.stringify({
+    testId: GPU_STARTUP_APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID,
+    schema: GPU_STARTUP_PIPELINE_FIRST_USE_CONTROLS_SCHEMA,
+    verdict: GPU_STARTUP_PIPELINE_FIRST_USE_CONTROLS_VERDICT,
+    firstUseMs,
+    layoutMs,
+    pipelineMs,
+    drainMs,
+    groupMs: GPU_STARTUP_PIPELINE_ATTRIBUTION_GROUPS.map(
+      ([key]) => groupMs[key][2],
+    ),
+    compacted: "minimum-timings-fixed-group-order",
+  });
+  if (
+    new TextEncoder().encode(minimumTimingSummary).byteLength
+    <= GPU_STARTUP_PIPELINE_ATTRIBUTION_SUMMARY_MAX_BYTES
+  ) {
+    return minimumTimingSummary;
+  }
+  return JSON.stringify({
+    testId: GPU_STARTUP_APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID,
+    schema: "pipeline-first-use-controls-summary-overflow-v1",
+    verdict: GPU_STARTUP_PIPELINE_FIRST_USE_CONTROLS_VERDICT,
+  });
+}
+
 function serializeGpuStartupDiagnosticResultSummary(summary, status) {
   if (
     status !== "completed"
     || !isRecord(summary)
-    || summary.testId !== GPU_STARTUP_APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID
   ) {
+    return JSON.stringify(summary);
+  }
+  if (summary.testId === GPU_STARTUP_APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID) {
+    return serializeGpuStartupFirstUseControlsResultSummary(summary);
+  }
+  if (summary.testId !== GPU_STARTUP_APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID) {
     return JSON.stringify(summary);
   }
   const result = isRecord(summary.result) ? summary.result : null;

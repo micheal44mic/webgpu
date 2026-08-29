@@ -12,7 +12,7 @@
       (function () {
         "use strict";
 
-        var BUILD = "gpu-diagnostics-application-4096-startup-v16";
+        var BUILD = "gpu-diagnostics-application-4096-startup-v17";
         var params = new URLSearchParams(window.location.search);
         var requestedTestId = params.get("test") || "";
         var DIAGNOSTIC_TEST_ID = requestedTestId || "startup-no-tier2-v1";
@@ -25,9 +25,12 @@
           DIAGNOSTIC_TEST_ID === "application-4096-pipelines-first-frame-v1";
         var APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST =
           DIAGNOSTIC_TEST_ID === "application-4096-pipeline-attribution-async1-v1";
+        var APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST =
+          DIAGNOSTIC_TEST_ID === "application-4096-pipeline-first-use-controls-v1";
         var APPLICATION_4096_PIPELINE_BREAKDOWN_TEST =
           DIAGNOSTIC_TEST_ID === "application-4096-pipeline-breakdown-v1"
-          || APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST;
+          || APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST
+          || APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST;
         var DOCUMENT_PIPELINE_TIMING_TEST =
           DOCUMENT_PIPELINE_TEST || APPLICATION_4096_PIPELINE_BREAKDOWN_TEST;
         var APPLICATION_4096_DOCUMENT_TEST =
@@ -41,6 +44,8 @@
             ? "document-pipeline-bisect-rgba16float-no-tier2-v1"
             : APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST
               ? "application-startup-rgba16float-4096x4096-no-tier2-render-pipelines-first-frame-1-v1"
+              : APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST
+                ? "application-startup-rgba16float-4096x4096-no-tier2-first-use-controls-async1-v1"
               : APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST
                 ? "application-startup-rgba16float-4096x4096-no-tier2-render-pipeline-attribution-async1-v1"
               : APPLICATION_4096_PIPELINE_BREAKDOWN_TEST
@@ -94,6 +99,36 @@
                   excludedRenderPipelines: 51,
                   editorInteractionEnabled: false,
                 }
+              : APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST
+                ? {
+                    kind: "application-startup-render-pipeline-first-use-controls",
+                    documentWidth: 4096,
+                    documentHeight: 4096,
+                    layerFormat: "rgba16float",
+                    canvasFormat: "rgba16float",
+                    requiredFeatures: [],
+                    textureFormatsTier2Requested: false,
+                    applicationFrame: "isolated-production-startup",
+                    startupMode: "empty-document",
+                    targetPhase: "document-pipelines",
+                    instrumentation: "native-device-call-boundaries",
+                    pipelineCompilationMethod: "createRenderPipelineAsync",
+                    pipelineCompilationConcurrency: 1,
+                    pipelineCompilationOrder: "async-sequential",
+                    expectedPipelineLayouts: 17,
+                    expectedRenderPipelines: 52,
+                    injectedPreflightRenderPipelines: 2,
+                    totalNativeAsyncPipelineInvocations: 54,
+                    expectedErrorScopeDrains: 2,
+                    firstUseSequence: [
+                      "tiny-independent-rgba16float",
+                      "shared-brush-source-over-clone",
+                      "original-eraser",
+                    ],
+                    capture: "non-overlapping-first-use-controls-and-application-pipeline-durations",
+                    timingSemantics: "one-native-async-pipeline-at-a-time",
+                    deferredObservationMs: 5000,
+                  }
               : APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST
                 ? {
                     kind: "application-startup-render-pipeline-attribution",
@@ -274,6 +309,7 @@
         var documentPipelineProgress = null;
         var documentPipelineBreakdownOpen = true;
         var documentPipelineBreakdown = [];
+        var documentPipelineFirstUseSequence = null;
         var DOCUMENT_RENDER_PIPELINE_GROUPS = [
           { label: "Erase stamps", first: 1, last: 6 },
           { label: "Direct color stamps", first: 7, last: 18 },
@@ -760,6 +796,34 @@
           }
         }
 
+        function applyDocumentPipelineFirstUseSequence(name, detail) {
+          if (!APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST) return;
+          if (name !== "application-document-pipeline-first-use-sequence") return;
+          if (!detail || typeof detail !== "object" || !Array.isArray(detail.steps)) return;
+          documentPipelineFirstUseSequence = {
+            sequenceId: typeof detail.sequenceId === "string" ? detail.sequenceId : null,
+            completed: detail.completed === true,
+            failed: detail.failed === true,
+            steps: detail.steps.slice(0, 3).map(function (step) {
+              var source = step && typeof step === "object" ? step : {};
+              return {
+                callIndex: Number(source.sequenceStepIndex),
+                method: "createRenderPipelineAsync",
+                kind: "pipeline",
+                itemIndex: Number(source.sequenceStepIndex),
+                label: typeof source.label === "string" ? source.label.slice(0, 300) : "First-use step",
+                durationMs: finiteMilliseconds(source.nativePipelineMs ?? source.durationMs),
+                instrumentationPreparationMs: finiteMilliseconds(
+                  source.instrumentationPreparationMs,
+                ),
+                state: typeof source.state === "string" ? source.state : "completed",
+                stepKey: typeof source.stepKey === "string" ? source.stepKey : null,
+                ordinaryRenderPipelineIndex: source.ordinaryRenderPipelineIndex ?? null,
+              };
+            }),
+          };
+        }
+
         function displayDocumentPipelineLabel(label) {
           return String(label || "GPU component")
             .replace(/\s+(?:rgba16float|rgba8unorm|bgra8unorm)$/i, "")
@@ -790,7 +854,8 @@
               ? "done"
               : (entry.durationMs / 1000).toFixed(3) + " s";
           if (
-            APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST
+            (APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST
+              || APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST)
             && entry.kind === "pipeline"
             && entry.durationMs !== null
             && pipelineTotalMs > 0
@@ -1020,7 +1085,8 @@
           var groupDurationMs = sumDocumentPipelineDurations(entries);
           headingDuration.textContent = (groupDurationMs / 1000).toFixed(3) + " s";
           if (
-            APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST
+            (APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST
+              || APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST)
             && pipelineTotalMs > 0
             && entries.some(function (entry) { return entry.kind === "pipeline"; })
           ) {
@@ -1081,17 +1147,43 @@
             return entry.kind === "pipeline";
           });
           var renderPipelineTotalMs = sumDocumentPipelineDurations(renderPipelineEntries);
+          var firstUseEntries = documentPipelineFirstUseSequence
+            && Array.isArray(documentPipelineFirstUseSequence.steps)
+            ? documentPipelineFirstUseSequence.steps
+            : [];
+          var firstUseTotalMs = sumDocumentPipelineDurations(firstUseEntries);
+          var injectedPreflightMs = sumDocumentPipelineDurations(firstUseEntries.slice(0, 2));
+          var injectedPreflightInstrumentationMs = sumDocumentPipelineInstrumentation(
+            firstUseEntries.slice(0, 2),
+          );
           summary.textContent = timedEntries.length
-            + "/71 timed calls · " + (measuredDurationMs / 1000).toFixed(3) + " s";
+            + (APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST
+              ? "/71 timed application calls"
+              : "/71 timed calls")
+            + (APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST
+              ? " + " + Math.min(2, firstUseEntries.length) + "/2 injected controls"
+              : "")
+            + " · " + ((measuredDurationMs + injectedPreflightMs) / 1000).toFixed(3) + " s";
           details.appendChild(summary);
           var body = document.createElement("div");
           body.className = "pipeline-breakdown-body";
           var note = document.createElement("p");
           note.className = "pipeline-breakdown-note";
-          note.textContent = APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST
+          note.textContent = APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST
+            ? "The first group isolates three sequential readiness barriers: an independent RGBA16F pipeline, a source-over clone using the same brush shader module as Eraser, and the unchanged Eraser pipeline. Step 3 is also application pipeline 01 and is not counted twice in the phase total. The first control can include GPU work queued before this phase."
+            : APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST
             ? "Each value is the incremental time needed to make that native asynchronous render pipeline ready in the real startup order. Concurrency is 1, so durations do not overlap. The first value can also include earlier GPU work queued before this phase. Percentages use the total time of all 52 render pipelines."
             : "Native-call times exclude the checkpoints before each call. The phase total also includes engine work and diagnostic reporting outside those calls.";
           body.appendChild(note);
+          if (APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST) {
+            appendDocumentPipelineBreakdownGroup(
+              body,
+              "First-use control sequence",
+              firstUseEntries,
+              3,
+              firstUseTotalMs,
+            );
+          }
           appendDocumentPipelineBreakdownGroup(
             body,
             "Pipeline layouts",
@@ -1123,7 +1215,9 @@
             var instrumentationLabel = document.createElement("strong");
             instrumentationLabel.textContent = "Pre-call diagnostic checkpoints";
             var instrumentationDuration = document.createElement("span");
-            instrumentationDuration.textContent = (instrumentationDurationMs / 1000).toFixed(3) + " s";
+            instrumentationDuration.textContent = (
+              (instrumentationDurationMs + injectedPreflightInstrumentationMs) / 1000
+            ).toFixed(3) + " s";
             instrumentation.appendChild(instrumentationLabel);
             instrumentation.appendChild(instrumentationDuration);
             body.appendChild(instrumentation);
@@ -1135,7 +1229,11 @@
             otherDuration.textContent = (
               Math.max(
                 0,
-                phase.phaseElapsedMs - measuredDurationMs - instrumentationDurationMs,
+                phase.phaseElapsedMs
+                  - measuredDurationMs
+                  - injectedPreflightMs
+                  - instrumentationDurationMs
+                  - injectedPreflightInstrumentationMs,
               ) / 1000
             ).toFixed(3) + " s";
             other.appendChild(otherLabel);
@@ -1674,6 +1772,7 @@
 
         function display(name, detail) {
           applyDocumentPipelineBreakdownEvent(name, detail);
+          applyDocumentPipelineFirstUseSequence(name, detail);
           if (
             name === "application-document-gpu-call-started"
             || name === "application-document-gpu-call-completed"
@@ -1805,6 +1904,8 @@
               ? "1×1 · RGBA8 vs RGBA16F · storage write"
               : DOCUMENT_PIPELINE_TEST
                 ? "Real document pipelines · RGBA16F · Tier 2 off"
+                : APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST
+                  ? "Real 4096×4096 document · first-use controls + 52 sequential async timings · Tier 2 off"
                 : APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST
                   ? "Real 4096×4096 document · 52 sequential async pipeline timings · Tier 2 off"
                 : APPLICATION_4096_PIPELINE_BREAKDOWN_TEST

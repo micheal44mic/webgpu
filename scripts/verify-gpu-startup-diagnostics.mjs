@@ -22,8 +22,9 @@ const projectSessionSource = read("src/project-session-controller.ts");
 const engineSource = read("src/brush-engine.ts");
 const layerRuntimeSource = read("src/engine-layer-runtime.ts");
 const featurePolicySource = read("src/gpu-startup-feature-policy.ts");
+const productionBundleCheckSource = read("scripts/check-production-bundle.mjs");
 
-const DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v16";
+const DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v17";
 const DEFAULT_TEST_ID = "startup-no-tier2-v1";
 const DEFAULT_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
 const STORAGE_FORMAT_TEST_ID = "storage-format-ab-v1";
@@ -48,6 +49,10 @@ const APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID =
   "application-4096-pipeline-attribution-async1-v1";
 const APPLICATION_4096_PIPELINE_ATTRIBUTION_VARIANT =
   "application-startup-rgba16float-4096x4096-no-tier2-render-pipeline-attribution-async1-v1";
+const APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID =
+  "application-4096-pipeline-first-use-controls-v1";
+const APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT =
+  "application-startup-rgba16float-4096x4096-no-tier2-first-use-controls-async1-v1";
 const DEFAULT_COMPARISON = {
   layerFormat: "rgba16float",
   canvasFormat: "rgba16float",
@@ -163,6 +168,35 @@ const APPLICATION_4096_PIPELINE_ATTRIBUTION_COMPARISON = {
   expectedRenderPipelines: 52,
   expectedErrorScopeDrains: 2,
   capture: "non-overlapping-async-pipeline-durations",
+  timingSemantics: "one-native-async-pipeline-at-a-time",
+  deferredObservationMs: 5000,
+};
+const APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_COMPARISON = {
+  kind: "application-startup-render-pipeline-first-use-controls",
+  documentWidth: 4096,
+  documentHeight: 4096,
+  layerFormat: "rgba16float",
+  canvasFormat: "rgba16float",
+  requiredFeatures: [],
+  textureFormatsTier2Requested: false,
+  applicationFrame: "isolated-production-startup",
+  startupMode: "empty-document",
+  targetPhase: "document-pipelines",
+  instrumentation: "native-device-call-boundaries",
+  pipelineCompilationMethod: "createRenderPipelineAsync",
+  pipelineCompilationConcurrency: 1,
+  pipelineCompilationOrder: "async-sequential",
+  expectedPipelineLayouts: 17,
+  expectedRenderPipelines: 52,
+  injectedPreflightRenderPipelines: 2,
+  totalNativeAsyncPipelineInvocations: 54,
+  expectedErrorScopeDrains: 2,
+  firstUseSequence: [
+    "tiny-independent-rgba16float",
+    "shared-brush-source-over-clone",
+    "original-eraser",
+  ],
+  capture: "non-overlapping-first-use-controls-and-application-pipeline-durations",
   timingSemantics: "one-native-async-pipeline-at-a-time",
   deferredObservationMs: 5000,
 };
@@ -305,6 +339,13 @@ function diagnosticDefinition(testId) {
       comparison: APPLICATION_4096_PIPELINE_ATTRIBUTION_COMPARISON,
     };
   }
+  if (testId === APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID) {
+    return {
+      testId,
+      diagnosticVariant: APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT,
+      comparison: APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_COMPARISON,
+    };
+  }
   throw new Error(`Unknown verification diagnostic test: ${testId}`);
 }
 
@@ -408,10 +449,15 @@ assert.match(
   html,
   /DIAGNOSTIC_TEST_ID === "application-4096-pipeline-attribution-async1-v1"/,
 );
+assert.match(
+  html,
+  /DIAGNOSTIC_TEST_ID === "application-4096-pipeline-first-use-controls-v1"/,
+);
 assert.match(html, new RegExp(APPLICATION_4096_PIPELINES_ASYNC2_VARIANT));
 assert.match(html, new RegExp(APPLICATION_4096_PIPELINES_FIRST_FRAME_VARIANT));
 assert.match(html, new RegExp(APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT));
 assert.match(html, new RegExp(APPLICATION_4096_PIPELINE_ATTRIBUTION_VARIANT));
+assert.match(html, new RegExp(APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT));
 assert.match(html, /documentWidth: 4096/);
 assert.match(html, /documentHeight: 4096/);
 assert.match(html, /startupMode: "cold-empty-document"/);
@@ -428,10 +474,20 @@ assert.match(html, /kind: "application-startup-render-pipeline-breakdown"/);
 assert.match(html, /pipelineCompilationOrder: "sync-sequential"/);
 assert.match(html, /capture: "all-native-call-durations"/);
 assert.match(html, /kind: "application-startup-render-pipeline-attribution"/);
+assert.match(html, /kind: "application-startup-render-pipeline-first-use-controls"/);
 assert.match(html, /pipelineCompilationConcurrency: 1/);
 assert.match(html, /pipelineCompilationOrder: "async-sequential"/);
 assert.match(html, /capture: "non-overlapping-async-pipeline-durations"/);
 assert.match(html, /timingSemantics: "one-native-async-pipeline-at-a-time"/);
+assert.match(html, /injectedPreflightRenderPipelines: 2/);
+assert.match(html, /totalNativeAsyncPipelineInvocations: 54/);
+assert.match(html, /"tiny-independent-rgba16float"/);
+assert.match(html, /"shared-brush-source-over-clone"/);
+assert.match(html, /"original-eraser"/);
+assert.match(
+  html,
+  /capture: "non-overlapping-first-use-controls-and-application-pipeline-durations"/,
+);
 assert.match(html, /function applyDocumentPipelineBreakdownEvent\(name, detail\)/);
 assert.match(html, /function createDocumentPipelineBreakdown\(phase\)/);
 assert.match(html, /"Pipeline layouts"/);
@@ -453,6 +509,16 @@ assert.match(html, /incremental time needed to make that native asynchronous ren
 assert.match(html, /Concurrency is 1, so durations do not overlap/);
 assert.match(html, /first value can also include earlier GPU work queued before this phase/);
 assert.match(html, /Percentages use the total time of all 52 render pipelines/);
+assert.match(html, /function applyDocumentPipelineFirstUseSequence\(name, detail\)/);
+assert.match(html, /"application-document-pipeline-first-use-sequence"/);
+assert.match(
+  html,
+  /durationMs: finiteMilliseconds\(source\.nativePipelineMs \?\? source\.durationMs\)/,
+);
+assert.match(html, /"First-use control sequence"/);
+assert.match(html, /71 timed application calls/);
+assert.match(html, /2 injected controls/);
+assert.match(html, /Step 3 is also application pipeline 01 and is not counted twice/);
 assert.match(html, /grid-column: 2 \/ -1/);
 assert.match(html, /display: display/);
 assert.match(html, /function displayBatch\(entries\)/);
@@ -466,7 +532,7 @@ assert.match(html, /result: diagnosticResult/);
 assert.match(html, /textureFormatsTier2Enabled: false/);
 assert.match(
   workerBuilder,
-  /call\.instrumentationPreparationMs = finiteNumber\([\s\S]*?call\.nativeStartedAtMs = finiteNumber\(performance\.now\(\)\);\s*result = Reflect\.apply\(original, device, arguments\);/,
+  /function invokeDocumentGpuCall\([\s\S]*?call\.instrumentationPreparationMs = finiteNumber\([\s\S]*?call\.nativeStartedAtMs = finiteNumber\(performance\.now\(\)\);\s*result = Reflect\.apply\(original, device, argumentList\);/,
 );
 
 assert.match(moduleSource, /requestAdapter\(adapterOptions\)/);
@@ -510,6 +576,41 @@ assert.match(
   /APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST =\s*"application-4096-pipeline-attribution-async1-v1"/,
 );
 assert.match(moduleSource, new RegExp(APPLICATION_4096_PIPELINE_ATTRIBUTION_VARIANT));
+assert.match(
+  moduleSource,
+  /APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST =\s*"application-4096-pipeline-first-use-controls-v1"/,
+);
+assert.match(moduleSource, new RegExp(APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT));
+assert.match(
+  moduleSource,
+  /application4096PipelineFirstUseControlsEnabled[\s\S]*APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST/,
+);
+assert.match(moduleSource, /function updateFirstUseSequenceTrace\(/);
+assert.match(moduleSource, /sequenceStepIndex: detail\.sequenceStepIndex/);
+assert.match(moduleSource, /stepKey: detail\.stepKey/);
+assert.match(moduleSource, /ordinaryRenderPipelineIndex: detail\.ordinaryRenderPipelineIndex/);
+assert.match(moduleSource, /nativePipelineMs: finiteDurationMilliseconds/);
+assert.match(moduleSource, /function firstUseSequenceSummary\(/);
+assert.match(moduleSource, /function firstUseSequencePassed\(/);
+assert.match(moduleSource, /injectedPreflightNativePipelineMs/);
+assert.match(
+  moduleSource,
+  /firstRenderPipelineMayIncludePriorQueuedGpuWork:[\s\S]*!application4096PipelineFirstUseControlsEnabled/,
+);
+assert.match(
+  moduleSource,
+  /firstUseControlsEnabled[\s\S]*\{ firstUseSequence: firstUseSequenceSummary\(documentPipelineTrace\) \}/,
+);
+for (const eventName of [
+  "document-pipeline-first-use-sequence-started",
+  "document-pipeline-first-use-sequence-completed",
+  "document-pipeline-first-use-sequence-failed",
+  "document-pipeline-first-use-step-started",
+  "document-pipeline-first-use-step-completed",
+  "document-pipeline-first-use-step-failed",
+]) {
+  assert.match(moduleSource, new RegExp(eventName));
+}
 assert.match(moduleSource, /APPLICATION_4096_DOCUMENT_WIDTH = 4096/);
 assert.match(moduleSource, /APPLICATION_4096_DOCUMENT_HEIGHT = 4096/);
 assert.doesNotMatch(moduleSource, /createNewProject|diagnostic-new-project/);
@@ -535,7 +636,11 @@ assert.match(
 );
 assert.match(
   moduleSource,
-  /if \(attributionEnabled\) bridge\.displayBatch\?\.\(documentPipelineTrace\.calls\)/,
+  /if \(!attributionEnabled\) return;\s*bridge\.displayBatch\?\.\(documentPipelineTrace\.calls\)/,
+);
+assert.match(
+  moduleSource,
+  /if \(firstUseControlsEnabled\) \{\s*bridge\.display\?\.\(\s*"application-document-pipeline-first-use-sequence",\s*firstUseSequenceSummary\(documentPipelineTrace\)/,
 );
 assert.match(moduleSource, /applicationBoot = await runFullApplicationBoot\(\)/);
 assert.match(moduleSource, /const requiredFeatures: GPUFeatureName\[\] = \[\]/);
@@ -629,8 +734,9 @@ assert.doesNotMatch(
 assert.match(moduleSource, /"erase-stamps"/);
 assert.match(moduleSource, /"document-composition"/);
 assert.match(moduleSource, /documentPipelineBreakdownPassed/);
-assert.match(moduleSource, /const verdictPrefix = attributionEnabled/);
-assert.match(moduleSource, /\? "application-4096-pipeline-attribution"/);
+assert.match(moduleSource, /const verdictPrefix = firstUseControlsEnabled/);
+assert.match(moduleSource, /\? "application-4096-pipeline-first-use-controls"/);
+assert.match(moduleSource, /: attributionEnabled\s*\? "application-4096-pipeline-attribution"/);
 assert.match(moduleSource, /: "application-4096-pipeline-breakdown"/);
 assert.match(moduleSource, /verdict: `\$\{verdictPrefix\}-inconclusive`/);
 assert.match(moduleSource, /verdict: `\$\{verdictPrefix\}-passed`/);
@@ -776,11 +882,16 @@ assert.match(
 assert.match(workerBuilder, new RegExp(APPLICATION_4096_PIPELINE_ATTRIBUTION_VARIANT));
 assert.match(
   workerBuilder,
-  /documentPipelineInstrumentationEnabled =\s*diagnosticTestId === DOCUMENT_PIPELINE_TEST_ID\s*\|\| application4096PipelineBreakdownEnabled\s*\|\| application4096PipelineAttributionEnabled/,
+  /GPU_STARTUP_APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID = "application-4096-pipeline-first-use-controls-v1"/,
+);
+assert.match(workerBuilder, new RegExp(APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT));
+assert.match(
+  workerBuilder,
+  /documentPipelineInstrumentationEnabled =\s*diagnosticTestId === DOCUMENT_PIPELINE_TEST_ID\s*\|\| application4096PipelineBreakdownEnabled\s*\|\| application4096PipelineAsyncTimingEnabled/,
 );
 assert.match(
   workerBuilder,
-  /application4096PipelineAttributionEnabled[\s\S]*documentPipelineCompilationConcurrency: 1/,
+  /application4096PipelineAsyncTimingEnabled[\s\S]*documentPipelineCompilationConcurrency: 1/,
 );
 assert.match(workerBuilder, /startupMode: "cold-empty-document"/);
 assert.match(workerBuilder, /document\.documentElement\.style\.pointerEvents = "none"/);
@@ -789,17 +900,43 @@ assert.match(workerBuilder, /event\.stopImmediatePropagation\(\)/);
 assert.match(workerBuilder, /EXPECTED_DOCUMENT_RENDER_PIPELINES = 52/);
 assert.match(workerBuilder, /EXPECTED_DOCUMENT_PIPELINE_LAYOUTS = 17/);
 assert.match(workerBuilder, /EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS = 2/);
+assert.match(workerBuilder, /FIRST_USE_SEQUENCE_ID = "first-use-controls-v1"/);
+assert.match(workerBuilder, /EXPECTED_FIRST_USE_SEQUENCE_STEPS = 3/);
+assert.match(workerBuilder, /INJECTED_FIRST_USE_RENDER_PIPELINES = 2/);
+assert.match(workerBuilder, /function tinyFirstUseControlDescriptor\(device\)/);
+assert.match(workerBuilder, /function sharedBrushSourceOverControlDescriptor\(/);
+assert.match(workerBuilder, /function runRawFirstUsePipelineStep\(/);
+assert.match(workerBuilder, /function runFirstUseControls\(/);
+assert.match(workerBuilder, /function validatedOriginalEraserTarget\(descriptor\)/);
+assert.match(
+  workerBuilder,
+  /documentRenderPipelineIndex === 0[\s\S]*firstUseSequenceState === "pending"[\s\S]*return runFirstUseControls\(original, device, argumentList\)/,
+);
+assert.match(
+  workerBuilder,
+  /runRawFirstUsePipelineStep\([\s\S]*?1,[\s\S]*?tinyFirstUseControlDescriptor[\s\S]*?runRawFirstUsePipelineStep\([\s\S]*?2,[\s\S]*?sharedBrushSourceOverControlDescriptor[\s\S]*?startFirstUseStep\(3\)[\s\S]*?invokeDocumentGpuCall/,
+);
+assert.match(workerBuilder, /result = Reflect\.apply\(original, device, \[descriptor\]\)/);
+assert.match(workerBuilder, /ordinaryRenderPipelineIndex: 1/);
+assert.match(workerBuilder, /"document-pipeline-first-use-sequence-" \+ suffix/);
+assert.match(workerBuilder, /"document-pipeline-first-use-step-" \+ suffix/);
+assert.match(workerBuilder, /emitFirstUseSequenceEvent\("started", "running"/);
+assert.match(workerBuilder, /emitFirstUseSequenceEvent\("completed", "running"/);
+assert.match(workerBuilder, /emitFirstUseSequenceEvent\("failed", "failed"/);
+assert.match(workerBuilder, /emitFirstUseStepEvent\("started", "running"/);
+assert.match(workerBuilder, /emitFirstUseStepEvent\("completed", "running"/);
+assert.match(workerBuilder, /emitFirstUseStepEvent\("failed", "failed"/);
 assert.match(workerBuilder, /Object\.keys\(value\)\.slice\(0, 24\)/);
 assert.match(workerBuilder, /if \(depth >= 3\) return clippedString/);
 assert.match(workerBuilder, /bridge\.recordBreadcrumb\(name, detail, status \|\| "running"\)/);
 assert.match(workerBuilder, /wrapDocumentGpuMethod\(device, "createPipelineLayout", false\)/);
 assert.match(
   workerBuilder,
-  /renderPipelineMethod = application4096PipelineAttributionEnabled[\s\S]*\? "createRenderPipelineAsync"[\s\S]*: "createRenderPipeline"/,
+  /renderPipelineMethod = application4096PipelineAsyncTimingEnabled[\s\S]*\? "createRenderPipelineAsync"[\s\S]*: "createRenderPipeline"/,
 );
 assert.match(
   workerBuilder,
-  /wrapDocumentGpuMethod\(\s*device,\s*renderPipelineMethod,\s*application4096PipelineAttributionEnabled/,
+  /wrapDocumentGpuMethod\(\s*device,\s*renderPipelineMethod,\s*application4096PipelineAsyncTimingEnabled/,
 );
 assert.match(
   workerBuilder,
@@ -853,6 +990,17 @@ assert.match(workerBuilder, /schema: "pipeline-attribution-summary-overflow-v1"/
 assert.match(workerBuilder, /const pipelineMs = indexedGpuStartupTimings\(pipelineCalls, 52\)/);
 assert.match(workerBuilder, /const layoutMs = indexedGpuStartupTimings\(breakdown\?\.pipelineLayouts, 17\)/);
 assert.match(workerBuilder, /const drainMs = indexedGpuStartupTimings\(breakdown\?\.errorScopeDrains, 2\)/);
+assert.match(workerBuilder, /function serializeGpuStartupFirstUseControlsResultSummary\(summary\)/);
+assert.match(workerBuilder, /GPU_STARTUP_PIPELINE_FIRST_USE_CONTROLS_SCHEMA =\s*"pipeline-first-use-controls-ms-v1"/);
+assert.match(
+  workerBuilder,
+  /GPU_STARTUP_PIPELINE_FIRST_USE_CONTROLS_VERDICT =\s*"application-4096-pipeline-first-use-controls-passed"/,
+);
+assert.match(workerBuilder, /const sequence = isRecord\(result\?\.firstUseSequence\)/);
+assert.match(workerBuilder, /const firstUseMs = \[\]/);
+assert.match(workerBuilder, /Math\.abs\(firstUseMs\[2\] - pipelineMs\[0\]\) > 0\.01/);
+assert.match(workerBuilder, /firstUseStepKeys: GPU_STARTUP_PIPELINE_FIRST_USE_CONTROLS_STEP_KEYS/);
+assert.match(workerBuilder, /schema: "pipeline-first-use-controls-summary-overflow-v1"/);
 assert.match(
   workerBuilder,
   /const resultSummary = serializeGpuStartupDiagnosticResultSummary\(\s*payload\.summary,\s*payload\.status/,
@@ -902,6 +1050,15 @@ assert.match(vite, /mode === "gpu-diagnostics"/);
 assert.match(vite, /outDir: "dist-gpu-diagnostics"/);
 assert.match(attach, /copyAssetsCollisionSafe/);
 assert.doesNotMatch(attach, /siteGpuDiagnosticsHtmlFile/);
+assert.match(productionBundleCheckSource, new RegExp(DIAGNOSTIC_BUILD));
+assert.match(
+  productionBundleCheckSource,
+  new RegExp(APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID),
+);
+assert.match(
+  productionBundleCheckSource,
+  new RegExp(APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT),
+);
 assert.doesNotMatch(indexHtml, /gpu-startup-diagnostics/);
 assert.doesNotMatch(startup, /gpu-startup-diagnostics/);
 for (const productionSource of [indexHtml, startup, engineSource, layerRuntimeSource]) {
@@ -921,6 +1078,14 @@ for (const productionSource of [indexHtml, startup, engineSource, layerRuntimeSo
   assert.doesNotMatch(productionSource, new RegExp(APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT));
   assert.doesNotMatch(productionSource, new RegExp(APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID));
   assert.doesNotMatch(productionSource, new RegExp(APPLICATION_4096_PIPELINE_ATTRIBUTION_VARIANT));
+  assert.doesNotMatch(
+    productionSource,
+    new RegExp(APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID),
+  );
+  assert.doesNotMatch(
+    productionSource,
+    new RegExp(APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT),
+  );
   assert.doesNotMatch(productionSource, new RegExp(DIAGNOSTIC_BUILD));
 }
 
@@ -1835,6 +2000,176 @@ function diagnosticBootstrapHarness({
   assertDiagnosticSummary(
     harness.browser.__gpuStartupDiagnostics.snapshot().summary,
     APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID,
+    null,
+  );
+}
+
+{
+  const harness = diagnosticBootstrapHarness({
+    testId: APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID,
+  });
+  assert.equal(
+    harness.elements.get("diagnosticVariantLabel").textContent,
+    "Real 4096×4096 document · first-use controls + 52 sequential async timings · Tier 2 off",
+  );
+  await harness.browser.__gpuStartupDiagnostics.record(
+    "application-startup-phase",
+    {
+      phase: "document-pipelines",
+      label: "Compiling 16-bit document pipelines",
+      state: "started",
+      totalElapsedMs: 400,
+      phaseElapsedMs: 0,
+    },
+    "running",
+  );
+  const firstUseOrdinaryEntries = [];
+  for (let index = 1; index <= 17; index += 1) {
+    firstUseOrdinaryEntries.push({
+      callIndex: index,
+      method: "createPipelineLayout",
+      pipelineLayoutIndex: index,
+      label: `Verification layout ${index} rgba16float`,
+      durationMs: 1,
+      instrumentationPreparationMs: 0.1,
+      state: "completed",
+    });
+  }
+  for (let index = 1; index <= 52; index += 1) {
+    firstUseOrdinaryEntries.push({
+      callIndex: 17 + index,
+      method: "createRenderPipelineAsync",
+      renderPipelineIndex: index,
+      label: index === 1
+        ? "Eraser circle rgba16float"
+        : `Verification async pipeline ${index} rgba16float`,
+      durationMs: index * 10,
+      instrumentationPreparationMs: 0.2,
+      state: "completed",
+    });
+  }
+  for (let index = 1; index <= 2; index += 1) {
+    firstUseOrdinaryEntries.push({
+      callIndex: 69 + index,
+      method: "popErrorScope",
+      errorScopeDrainIndex: index,
+      label: `Verification scope drain ${index}`,
+      durationMs: 1,
+      instrumentationPreparationMs: 0.1,
+      state: "completed",
+    });
+  }
+  harness.browser.__gpuStartupDiagnostics.displayBatch(firstUseOrdinaryEntries);
+  harness.browser.__gpuStartupDiagnostics.display(
+    "application-document-pipeline-first-use-sequence",
+    {
+      sequenceId: "first-use-controls-v1",
+      started: true,
+      completed: true,
+      failed: false,
+      steps: [
+        {
+          sequenceStepIndex: 1,
+          stepKey: "tiny-independent-rgba16float",
+          label: "Diagnostic tiny independent RGBA16F preflight",
+          ordinaryRenderPipelineIndex: null,
+          durationMs: 100,
+          nativePipelineMs: 95,
+          state: "completed",
+        },
+        {
+          sequenceStepIndex: 2,
+          stepKey: "shared-brush-source-over-clone",
+          label: "Diagnostic shared brush source-over clone RGBA16F preflight",
+          ordinaryRenderPipelineIndex: null,
+          durationMs: 200,
+          nativePipelineMs: 195,
+          state: "completed",
+        },
+        {
+          sequenceStepIndex: 3,
+          stepKey: "original-eraser",
+          label: "Eraser circle rgba16float",
+          ordinaryRenderPipelineIndex: 1,
+          durationMs: 10,
+          nativePipelineMs: 10,
+          state: "completed",
+        },
+      ],
+      totalDurationMs: 310,
+      injectedPreflightDurationMs: 300,
+      originalEraserDurationMs: 10,
+    },
+  );
+  await harness.browser.__gpuStartupDiagnostics.record(
+    "application-startup-phase",
+    {
+      phase: "document-pipelines",
+      label: "Compiling 16-bit document pipelines",
+      state: "completed",
+      totalElapsedMs: 14_800,
+      phaseElapsedMs: 14_300,
+    },
+    "running",
+  );
+  const breakdownPhase = harness.stepChildren.find(
+    (child) => child.className === "phase-with-breakdown",
+  );
+  const details = breakdownPhase?.children.find(
+    (child) => child.className === "pipeline-breakdown",
+  );
+  assert.ok(details);
+  assert.equal(
+    details.children[0].textContent,
+    "71/71 timed application calls + 2/2 injected controls · 14.089 s",
+  );
+  const descendants = [];
+  const collectDescendants = (node) => {
+    descendants.push(node);
+    for (const child of node.children ?? []) collectDescendants(child);
+  };
+  collectDescendants(details);
+  assert.equal(
+    descendants.filter((node) => node.className === "pipeline-breakdown-row").length,
+    74,
+    "The separate three-step sequence must not change the 71-call application trace.",
+  );
+  const headingLabels = descendants
+    .filter((node) => node.className === "pipeline-breakdown-heading")
+    .map((node) => node.children[0]?.textContent);
+  assert.deepEqual(headingLabels, [
+    "First-use control sequence (3/3)",
+    "Pipeline layouts (17/17)",
+    "Erase stamps (6/6)",
+    "Direct color stamps (12/12)",
+    "Precision color accumulation (12/12)",
+    "Coverage accumulation (6/6)",
+    "Live accumulation resolve (4/4)",
+    "Display and live mips (6/6)",
+    "Document composition (6/6)",
+    "Error-scope drains (2/2)",
+  ]);
+  const firstUseGroup = descendants.find(
+    (node) => node.className === "pipeline-breakdown-group"
+      && node.children[0]?.children[0]?.textContent === "First-use control sequence (3/3)",
+  );
+  const firstUseRows = firstUseGroup?.children
+    .find((node) => node.className === "pipeline-breakdown-rows")?.children ?? [];
+  assert.deepEqual(
+    firstUseRows.map((row) => row.children[1]?.textContent),
+    [
+      "Diagnostic tiny independent RGBA16F preflight",
+      "Diagnostic shared brush source-over clone RGBA16F preflight",
+      "Eraser circle",
+    ],
+  );
+  assert.deepEqual(
+    firstUseRows.map((row) => row.children[2]?.textContent),
+    ["0.095 s · 31.7%", "0.195 s · 65.0%", "0.010 s · 3.3%"],
+  );
+  assertDiagnosticSummary(
+    harness.browser.__gpuStartupDiagnostics.snapshot().summary,
+    APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID,
     null,
   );
 }
@@ -2989,6 +3324,40 @@ if (existsSync(builtWorkerPath)) {
     null,
   );
 
+  const application4096FirstUseRunCode = `diag-${"6".repeat(32)}`;
+  const application4096FirstUsePageResponse = await worker.fetch(
+    new Request(
+      `https://example.test/gpu-startup-lab?run=${application4096FirstUseRunCode}&test=${APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID}`,
+      { headers: { "User-Agent": "Pipeline First-use Controls Test Browser" } },
+    ),
+    environment,
+  );
+  assert.equal(application4096FirstUsePageResponse.status, 200);
+  assert.equal(
+    await application4096FirstUsePageResponse.text(),
+    builtDiagnosticHtml.replace(/\r\n?/g, "\n"),
+  );
+  assertDiagnosticSummary(
+    JSON.parse(database.rows.get(application4096FirstUseRunCode).result_summary),
+    APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID,
+    null,
+  );
+
+  const application4096FirstUseFallbackRunCode = `diag-${"7".repeat(32)}`;
+  const application4096FirstUseFallbackPageResponse = await worker.fetch(
+    new Request(
+      `https://example.test/gpu-startup-lab?run=${application4096FirstUseFallbackRunCode}&test=${APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID}`,
+      { headers: { "User-Agent": "Pipeline First-use Controls Fallback Test Browser" } },
+    ),
+    environment,
+  );
+  assert.equal(application4096FirstUseFallbackPageResponse.status, 200);
+  assertDiagnosticSummary(
+    JSON.parse(database.rows.get(application4096FirstUseFallbackRunCode).result_summary),
+    APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID,
+    null,
+  );
+
   const mismatchedPageResponse = await worker.fetch(
     new Request(
       `https://example.test/gpu-startup-lab?run=${runCode}&test=${STORAGE_FORMAT_TEST_ID}`,
@@ -3764,6 +4133,323 @@ if (existsSync(builtWorkerPath)) {
     ),
   );
 
+  const firstUseMessages = [];
+  const firstUseBreadcrumbs = [];
+  const firstUseNativeCalls = [];
+  let firstUseClock = 1_000;
+  const firstUseDevice = {
+    features: { has: () => false },
+    addEventListener() {},
+    lost: new Promise(() => {}),
+    createShaderModule(descriptor) {
+      return { diagnosticShaderModule: true, descriptor };
+    },
+    createPipelineLayout(descriptor) { return { label: descriptor.label }; },
+    createRenderPipelineAsync(descriptor) {
+      let resolvePipeline;
+      let rejectPipeline;
+      const promise = new Promise((resolve, reject) => {
+        resolvePipeline = resolve;
+        rejectPipeline = reject;
+      });
+      firstUseNativeCalls.push({
+        descriptor,
+        resolve: () => resolvePipeline({ label: descriptor.label }),
+        reject: rejectPipeline,
+      });
+      return promise;
+    },
+    popErrorScope: async () => null,
+  };
+  const firstUseAdapter = { requestDevice: async () => firstUseDevice };
+  const firstUseGpu = { requestAdapter: async () => firstUseAdapter };
+  const firstUseFrameWindow = {
+    location: {
+      origin: "https://example.test",
+      pathname: "/gpu-startup-app-frame",
+      search: `?diagnosticBoot=1&test=${APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID}&documentWidth=4096&documentHeight=4096&documentSize=4096&diagnosticVariant=${APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT}&forceGlazeCommitFallback=1`,
+    },
+    isSecureContext: true,
+    addEventListener() {},
+    parent: {
+      __gpuStartupDiagnostics: {
+        record() { return true; },
+        recordBreadcrumb(name, detail, status) {
+          firstUseBreadcrumbs.push({ name, detail, status });
+          firstUseClock += 25;
+          return true;
+        },
+      },
+      postMessage(message, targetOrigin) {
+        firstUseMessages.push({ message, targetOrigin });
+      },
+    },
+  };
+  firstUseFrameWindow.window = firstUseFrameWindow;
+  runInNewContext(frameBootstrapSource, {
+    window: firstUseFrameWindow,
+    document: { visibilityState: "visible" },
+    navigator: { gpu: firstUseGpu },
+    performance: { now: () => (firstUseClock += 5) },
+    console: { error() {} },
+    Reflect,
+    Array,
+    Object,
+    String,
+    Number,
+    Math,
+    Error,
+    Promise,
+    URLSearchParams,
+  });
+  assert.deepEqual(
+    Object.keys(firstUseFrameWindow.__editorExtensionBootstrap.engineOptions),
+    ["documentPipelineCompilationConcurrency"],
+  );
+  assert.equal(
+    firstUseFrameWindow.__editorExtensionBootstrap.engineOptions
+      .documentPipelineCompilationConcurrency,
+    1,
+  );
+  const observedFirstUseAdapter = await firstUseGpu.requestAdapter();
+  const observedFirstUseDevice = await observedFirstUseAdapter.requestDevice({ requiredFeatures: [] });
+  const firstUseExtension = firstUseFrameWindow.__editorExtensionBootstrap.create({ engine: {} });
+  firstUseExtension.handleEngineStartupProgress({
+    phase: "document-pipelines",
+    label: "Compiling document pipelines",
+    state: "started",
+    totalElapsedMs: 10,
+    phaseElapsedMs: 0,
+    detail: { format: "rgba16float", strategy: "async-bounded" },
+  });
+  const sharedBrushModule = { label: "Shared brush shader module" };
+  const sharedBrushLayout = { label: "Shared brush pipeline layout" };
+  const originalEraserDescriptor = {
+    label: "Eraser circle rgba16float",
+    layout: sharedBrushLayout,
+    vertex: { module: sharedBrushModule, entryPoint: "vertexMain" },
+    fragment: {
+      module: sharedBrushModule,
+      entryPoint: "fragmentMain",
+      targets: [{
+        format: "rgba16float",
+        blend: {
+          color: {
+            operation: "add",
+            srcFactor: "zero",
+            dstFactor: "one-minus-src-alpha",
+          },
+          alpha: {
+            operation: "add",
+            srcFactor: "zero",
+            dstFactor: "one-minus-src-alpha",
+          },
+        },
+      }],
+    },
+    primitive: { topology: "triangle-strip" },
+  };
+  const firstUsePipelinePromise = observedFirstUseDevice.createRenderPipelineAsync(
+    originalEraserDescriptor,
+  );
+  const flushFirstUseNativeCount = async (expectedCount) => {
+    for (let attempt = 0; attempt < 12 && firstUseNativeCalls.length < expectedCount; attempt += 1) {
+      await Promise.resolve();
+    }
+  };
+  assert.equal(firstUseNativeCalls.length, 1);
+  const tinyDescriptor = firstUseNativeCalls[0].descriptor;
+  assert.equal(tinyDescriptor.label, "Diagnostic tiny independent RGBA16F preflight");
+  assert.equal(tinyDescriptor.layout, "auto");
+  assert.equal(tinyDescriptor.primitive.topology, "triangle-list");
+  assert.equal(tinyDescriptor.fragment.targets[0].format, "rgba16float");
+  assert.equal(tinyDescriptor.vertex.module, tinyDescriptor.fragment.module);
+  assert.notEqual(tinyDescriptor.vertex.module, sharedBrushModule);
+  assert.equal(
+    firstUseBreadcrumbs.filter(
+      ({ name }) => name === "application-document-gpu-call-started",
+    ).length,
+    0,
+    "Injected controls must stay outside the 52-pipeline ordinary trace.",
+  );
+  firstUseNativeCalls[0].resolve();
+  await flushFirstUseNativeCount(2);
+  assert.equal(firstUseNativeCalls.length, 2);
+  const sharedCloneDescriptor = firstUseNativeCalls[1].descriptor;
+  assert.equal(
+    sharedCloneDescriptor.label,
+    "Diagnostic shared brush source-over clone RGBA16F preflight",
+  );
+  assert.equal(sharedCloneDescriptor.layout, sharedBrushLayout);
+  assert.equal(sharedCloneDescriptor.vertex.module, sharedBrushModule);
+  assert.equal(sharedCloneDescriptor.fragment.module, sharedBrushModule);
+  assert.equal(sharedCloneDescriptor.primitive.topology, "triangle-strip");
+  assert.deepEqual(jsonValue(sharedCloneDescriptor.fragment.targets[0].blend), {
+    color: {
+      operation: "add",
+      srcFactor: "one",
+      dstFactor: "one-minus-src-alpha",
+    },
+    alpha: {
+      operation: "add",
+      srcFactor: "one",
+      dstFactor: "one-minus-src-alpha",
+    },
+  });
+  assert.deepEqual(
+    jsonValue(originalEraserDescriptor.fragment.targets[0].blend),
+    {
+      color: {
+        operation: "add",
+        srcFactor: "zero",
+        dstFactor: "one-minus-src-alpha",
+      },
+      alpha: {
+        operation: "add",
+        srcFactor: "zero",
+        dstFactor: "one-minus-src-alpha",
+      },
+    },
+    "The shared control must not mutate the production Eraser descriptor.",
+  );
+  firstUseNativeCalls[1].resolve();
+  await flushFirstUseNativeCount(3);
+  assert.equal(firstUseNativeCalls.length, 3);
+  assert.equal(firstUseNativeCalls[2].descriptor, originalEraserDescriptor);
+  const firstOrdinaryStarts = firstUseBreadcrumbs.filter(
+    ({ name }) => name === "application-document-gpu-call-started",
+  );
+  assert.equal(firstOrdinaryStarts.length, 1);
+  assert.equal(firstOrdinaryStarts[0].detail.callIndex, 1);
+  assert.equal(firstOrdinaryStarts[0].detail.renderPipelineIndex, 1);
+  assert.equal(firstOrdinaryStarts[0].detail.firstUseSequenceId, "first-use-controls-v1");
+  assert.equal(firstOrdinaryStarts[0].detail.sequenceStepIndex, 3);
+  assert.equal(firstOrdinaryStarts[0].detail.stepKey, "original-eraser");
+  firstUseNativeCalls[2].resolve();
+  const firstUsePipeline = await firstUsePipelinePromise;
+  assert.equal(firstUsePipeline.label, "Eraser circle rgba16float");
+  const firstUseStepCompletions = firstUseMessages.filter(
+    ({ message }) => message.type === "document-pipeline-first-use-step-completed",
+  );
+  assert.deepEqual(
+    firstUseStepCompletions.map(({ message }) => message.detail.sequenceStepIndex),
+    [1, 2, 3],
+  );
+  assert.deepEqual(
+    firstUseStepCompletions.map(({ message }) => message.detail.stepKey),
+    [
+      "tiny-independent-rgba16float",
+      "shared-brush-source-over-clone",
+      "original-eraser",
+    ],
+  );
+  assert.deepEqual(
+    firstUseStepCompletions.map(({ message }) => message.detail.ordinaryRenderPipelineIndex),
+    [null, null, 1],
+  );
+  assert.ok(firstUseStepCompletions.every(
+    ({ message }) => message.detail.totalNativeAsyncPipelineInvocations === 54,
+  ));
+  assert.equal(
+    firstUseMessages.filter(
+      ({ message }) => message.type === "document-pipeline-first-use-sequence-completed",
+    ).length,
+    1,
+  );
+  const secondOrdinaryPromise = observedFirstUseDevice.createRenderPipelineAsync({
+    ...originalEraserDescriptor,
+    label: "Verification ordinary pipeline 2",
+  });
+  assert.equal(firstUseNativeCalls.length, 4);
+  const ordinaryStartsAfterSecond = firstUseBreadcrumbs.filter(
+    ({ name }) => name === "application-document-gpu-call-started",
+  );
+  assert.equal(ordinaryStartsAfterSecond.length, 2);
+  assert.equal(ordinaryStartsAfterSecond[1].detail.renderPipelineIndex, 2);
+  assert.equal(ordinaryStartsAfterSecond[1].detail.firstUseSequenceId, undefined);
+  firstUseNativeCalls[3].resolve();
+  await secondOrdinaryPromise;
+  assert.equal(
+    firstUseMessages.filter(
+      ({ message }) => message.type === "document-pipeline-first-use-step-started",
+    ).length,
+    3,
+    "The first-use controls must run exactly once.",
+  );
+
+  const lockedDescriptorFailureMessages = [];
+  let lockedDescriptorFailureNativeCalls = 0;
+  const lockedDescriptorFailureDevice = {
+    features: { has: () => false },
+    addEventListener() {},
+    lost: new Promise(() => {}),
+    createShaderModule() { return {}; },
+    createPipelineLayout() { return {}; },
+    createRenderPipelineAsync() {
+      lockedDescriptorFailureNativeCalls += 1;
+      return Promise.resolve({});
+    },
+    popErrorScope: async () => null,
+  };
+  const lockedDescriptorFailureGpu = {
+    requestAdapter: async () => ({ requestDevice: async () => lockedDescriptorFailureDevice }),
+  };
+  const lockedDescriptorFailureWindow = {
+    location: {
+      origin: "https://example.test",
+      pathname: "/gpu-startup-app-frame",
+      search: `?diagnosticBoot=1&test=${APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID}&diagnosticVariant=${APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT}&forceGlazeCommitFallback=1`,
+    },
+    isSecureContext: true,
+    addEventListener() {},
+    parent: {
+      __gpuStartupDiagnostics: {
+        record() { return true; },
+        recordBreadcrumb() { return true; },
+      },
+      postMessage(message) { lockedDescriptorFailureMessages.push(message); },
+    },
+  };
+  lockedDescriptorFailureWindow.window = lockedDescriptorFailureWindow;
+  runInNewContext(frameBootstrapSource, {
+    window: lockedDescriptorFailureWindow,
+    document: { visibilityState: "visible" },
+    navigator: { gpu: lockedDescriptorFailureGpu },
+    performance: { now: () => 100 },
+    console: { error() {} },
+    Reflect,
+    Array,
+    Object,
+    String,
+    Number,
+    Math,
+    Error,
+    Promise,
+    URLSearchParams,
+  });
+  const lockedAdapter = await lockedDescriptorFailureGpu.requestAdapter();
+  const lockedDevice = await lockedAdapter.requestDevice({ requiredFeatures: [] });
+  const lockedExtension = lockedDescriptorFailureWindow.__editorExtensionBootstrap.create({
+    engine: {},
+  });
+  lockedExtension.handleEngineStartupProgress({
+    phase: "document-pipelines",
+    state: "started",
+  });
+  await assert.rejects(
+    lockedDevice.createRenderPipelineAsync({
+      ...originalEraserDescriptor,
+      label: "Changed first pipeline",
+    }),
+    /locked Eraser control descriptor/,
+  );
+  assert.equal(lockedDescriptorFailureNativeCalls, 0);
+  const lockedSequenceFailure = lockedDescriptorFailureMessages.find(
+    (message) => message.type === "document-pipeline-first-use-sequence-failed",
+  );
+  assert.ok(lockedSequenceFailure);
+  assert.equal(lockedSequenceFailure.detail.stage, "original-descriptor-lock");
+
   const contradictoryMessages = [];
   frameWindow.parent.postMessage = (message, targetOrigin) => {
     contradictoryMessages.push({ message, targetOrigin });
@@ -4324,6 +5010,93 @@ if (existsSync(builtWorkerPath)) {
     database.rows.get(application4096AttributionWarmRunCode),
     warmAttributionRowBeforeCrossWrite,
   );
+
+  const application4096FirstUseWriteToken = "0".repeat(64);
+  const application4096FirstUseSequence = sequence + 1_100;
+  const application4096FirstUseBasePayload = createUploadPayload({
+    payloadRunCode: application4096FirstUseRunCode,
+    payloadWriteToken: application4096FirstUseWriteToken,
+    payloadSequence: application4096FirstUseSequence,
+    testId: APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID,
+    latestEvent: "application-document-pipeline-first-use-step-started",
+    eventDetail: {
+      sequenceId: "first-use-controls-v1",
+      sequenceStepIndex: 1,
+      stepKey: "tiny-independent-rgba16float",
+      ordinaryRenderPipelineIndex: null,
+      injectedPipelineCount: 2,
+      totalNativeAsyncPipelineInvocations: 54,
+    },
+    moduleLoaded: true,
+  });
+  const invalidApplication4096FirstUseComparisons = [
+    { ...APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_COMPARISON, kind: "application-startup" },
+    { ...APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_COMPARISON, documentWidth: 2048 },
+    { ...APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_COMPARISON, requiredFeatures: ["texture-formats-tier2"] },
+    { ...APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_COMPARISON, textureFormatsTier2Requested: true },
+    { ...APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_COMPARISON, pipelineCompilationMethod: "createRenderPipeline" },
+    { ...APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_COMPARISON, pipelineCompilationConcurrency: 2 },
+    { ...APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_COMPARISON, pipelineCompilationOrder: "async-bounded" },
+    { ...APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_COMPARISON, expectedPipelineLayouts: 16 },
+    { ...APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_COMPARISON, expectedRenderPipelines: 54 },
+    { ...APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_COMPARISON, injectedPreflightRenderPipelines: 3 },
+    { ...APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_COMPARISON, totalNativeAsyncPipelineInvocations: 55 },
+    { ...APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_COMPARISON, expectedErrorScopeDrains: 1 },
+    {
+      ...APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_COMPARISON,
+      firstUseSequence: [
+        "shared-brush-source-over-clone",
+        "tiny-independent-rgba16float",
+        "original-eraser",
+      ],
+    },
+    { ...APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_COMPARISON, capture: "all-native-call-durations" },
+    { ...APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_COMPARISON, timingSemantics: "overlapping" },
+    { ...APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_COMPARISON, unexpected: true },
+  ];
+  for (const comparison of invalidApplication4096FirstUseComparisons) {
+    const invalidProtocolResponse = await upload({
+      ...application4096FirstUseBasePayload,
+      summary: { ...application4096FirstUseBasePayload.summary, comparison },
+    });
+    assert.equal(invalidProtocolResponse.status, 400);
+  }
+  const application4096FirstUseRunningResponse = await upload(
+    application4096FirstUseBasePayload,
+  );
+  assert.equal(application4096FirstUseRunningResponse.status, 201);
+  assertDiagnosticSummary(
+    JSON.parse(database.rows.get(application4096FirstUseRunCode).result_summary),
+    APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID,
+    null,
+  );
+
+  const application4096FirstUseFallbackWriteToken = "3".repeat(64);
+  const application4096FirstUseFallbackSequence = sequence + 1_200;
+  const application4096FirstUseFallbackRunningResponse = await upload(createUploadPayload({
+    payloadRunCode: application4096FirstUseFallbackRunCode,
+    payloadWriteToken: application4096FirstUseFallbackWriteToken,
+    payloadSequence: application4096FirstUseFallbackSequence,
+    testId: APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID,
+    latestEvent: "application-document-pipeline-first-use-sequence-started",
+    eventDetail: {
+      sequenceId: "first-use-controls-v1",
+      injectedPipelineCount: 2,
+      totalNativeAsyncPipelineInvocations: 54,
+    },
+    moduleLoaded: true,
+  }));
+  assert.equal(application4096FirstUseFallbackRunningResponse.status, 201);
+  const firstUseRowBeforeWrongToken = {
+    ...database.rows.get(application4096FirstUseRunCode),
+  };
+  assert.equal((await upload(createUploadPayload({
+    payloadRunCode: application4096FirstUseRunCode,
+    payloadWriteToken: application4096FirstUseFallbackWriteToken,
+    payloadSequence: application4096FirstUseSequence + 1,
+    testId: APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID,
+  }))).status, 403);
+  assert.deepEqual(database.rows.get(application4096FirstUseRunCode), firstUseRowBeforeWrongToken);
 
   const mismatchedPostResponse = await upload(createUploadPayload({
     payloadRunCode: runCode,
@@ -5123,6 +5896,337 @@ if (existsSync(builtWorkerPath)) {
   assert.notEqual(
     database.rows.get(application4096AttributionRunCode).write_token_hash,
     database.rows.get(application4096AttributionWarmRunCode).write_token_hash,
+  );
+
+  const firstUseNativeMs = [
+    120.125,
+    75.456,
+    attributionRenderCalls[0].durationMs,
+  ];
+  const firstUseResultSequence = {
+    sequenceId: "first-use-controls-v1",
+    started: true,
+    completed: true,
+    failed: false,
+    steps: [
+      {
+        sequenceId: "first-use-controls-v1",
+        sequenceStepIndex: 1,
+        stepKey: "tiny-independent-rgba16float",
+        label: "Diagnostic tiny independent RGBA16F preflight",
+        ordinaryRenderPipelineIndex: null,
+        targetFormats: ["rgba16float"],
+        vertexEntryPoint: "vertexMain",
+        fragmentEntryPoint: "fragmentMain",
+        topology: "triangle-list",
+        durationMs: 125.125,
+        nativePipelineMs: firstUseNativeMs[0],
+        state: "completed",
+      },
+      {
+        sequenceId: "first-use-controls-v1",
+        sequenceStepIndex: 2,
+        stepKey: "shared-brush-source-over-clone",
+        label: "Diagnostic shared brush source-over clone RGBA16F preflight",
+        ordinaryRenderPipelineIndex: null,
+        targetFormats: ["rgba16float"],
+        vertexEntryPoint: "vertexMain",
+        fragmentEntryPoint: "fragmentMain",
+        topology: "triangle-strip",
+        durationMs: 80.456,
+        nativePipelineMs: firstUseNativeMs[1],
+        state: "completed",
+      },
+      {
+        sequenceId: "first-use-controls-v1",
+        sequenceStepIndex: 3,
+        stepKey: "original-eraser",
+        label: "Eraser circle rgba16float",
+        ordinaryRenderPipelineIndex: 1,
+        targetFormats: ["rgba16float"],
+        vertexEntryPoint: "vertexMain",
+        fragmentEntryPoint: "fragmentMain",
+        topology: "triangle-strip",
+        durationMs: firstUseNativeMs[2],
+        nativePipelineMs: firstUseNativeMs[2],
+        state: "completed",
+      },
+    ],
+    totalDurationMs: roundTiming(125.125 + 80.456 + firstUseNativeMs[2]),
+    injectedPreflightDurationMs: roundTiming(125.125 + 80.456),
+    originalEraserDurationMs: firstUseNativeMs[2],
+  };
+  const firstUseInjectedNativeMs = roundTiming(firstUseNativeMs[0] + firstUseNativeMs[1]);
+  const firstUseNativeTotalMs = roundTiming(
+    attributionNativeTotalMs + firstUseInjectedNativeMs,
+  );
+  const firstUsePreCallMs = 16.2;
+  const firstUseResidualMs = 4.21;
+  const firstUsePhaseMs = roundTiming(
+    firstUseNativeTotalMs + firstUsePreCallMs + firstUseResidualMs,
+  );
+  const application4096FirstUseResult = {
+    ...APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_COMPARISON,
+    testId: APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID,
+    diagnosticVariant: APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_VARIANT,
+    verdict: "application-4096-pipeline-first-use-controls-passed",
+    conclusion: "The first-use controls and ordinary application pipelines completed.",
+    pipelineBreakdown: {
+      expectedMeasuredCallCount: 71,
+      measuredCallCount: 71,
+      phaseElapsedMs: firstUsePhaseMs,
+      nativeCallTotalMs: firstUseNativeTotalMs,
+      preCallDiagnosticTotalMs: firstUsePreCallMs,
+      phaseMinusPreCallDiagnosticMs: roundTiming(firstUsePhaseMs - firstUsePreCallMs),
+      remainingPhaseWorkAndReportingMs: firstUseResidualMs,
+      pipelineLayoutTotalMs: attributionLayoutTotalMs,
+      renderPipelineTotalMs: attributionPipelineTotalMs,
+      injectedPreflightPipelineTotalMs: firstUseInjectedNativeMs,
+      renderPipelineMethod: "createRenderPipelineAsync",
+      renderPipelineTimingsOverlap: false,
+      firstRenderPipelineMayIncludePriorQueuedGpuWork: false,
+      firstUseSequence: firstUseResultSequence,
+      errorScopeDrainTotalMs: attributionDrainTotalMs,
+      slowestRenderPipelineIndex: 52,
+      slowestRenderPipelineDurationMs: attributionRenderCalls[51].durationMs,
+      pipelineLayouts: attributionLayoutCalls,
+      renderPipelineGroups: attributionGroups,
+      failedCallCount: 0,
+      errorScopeDrains: attributionDrainCalls,
+    },
+    firstUseSequence: firstUseResultSequence,
+    asyncPipelineCompilation: {
+      passed: true,
+      issues: [],
+      stats: attributionAsyncStats,
+    },
+    startupTrace: {
+      documentPipelinesPhase: {
+        phase: "document-pipelines",
+        state: "completed",
+        phaseElapsedMs: firstUsePhaseMs,
+        detail: attributionAsyncStats,
+      },
+      editorReadyPhase: { phase: "editor-ready", state: "completed", phaseElapsedMs: 20 },
+    },
+    applicationBoot: {
+      statusText: "WebGPU is ready",
+      projectSessionReady: true,
+      runtimeStatsStarted: true,
+    },
+  };
+  assert.deepEqual(
+    application4096FirstUseResult.firstUseSequence,
+    application4096FirstUseResult.pipelineBreakdown.firstUseSequence,
+  );
+  const application4096FirstUseCompletedResponse = await upload(createUploadPayload({
+    payloadRunCode: application4096FirstUseRunCode,
+    payloadWriteToken: application4096FirstUseWriteToken,
+    payloadSequence: application4096FirstUseSequence + 1,
+    testId: APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID,
+    status: "completed",
+    latestEvent: "diagnostic-completed",
+    result: application4096FirstUseResult,
+    eventDetail: {
+      verdict: "application-4096-pipeline-first-use-controls-passed",
+      measuredCallCount: 71,
+      injectedPreflightRenderPipelines: 2,
+      totalNativeAsyncPipelineInvocations: 54,
+    },
+    moduleLoaded: true,
+    probeFinished: true,
+  }));
+  assert.equal(application4096FirstUseCompletedResponse.status, 201);
+  const storedFirstUseRow = database.rows.get(application4096FirstUseRunCode);
+  const compactFirstUseSummary = JSON.parse(storedFirstUseRow.result_summary);
+  assert.equal(
+    compactFirstUseSummary.testId,
+    APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID,
+  );
+  assert.equal(compactFirstUseSummary.schema, "pipeline-first-use-controls-ms-v1");
+  assert.equal(
+    compactFirstUseSummary.verdict,
+    "application-4096-pipeline-first-use-controls-passed",
+  );
+  assert.deepEqual(compactFirstUseSummary.firstUseStepKeys, [
+    "tiny-independent-rgba16float",
+    "shared-brush-source-over-clone",
+    "original-eraser",
+  ]);
+  assert.deepEqual(compactFirstUseSummary.firstUseMs, firstUseNativeMs);
+  assert.deepEqual(
+    compactFirstUseSummary.layoutMs,
+    attributionLayoutCalls.map((call) => call.durationMs),
+  );
+  assert.deepEqual(
+    compactFirstUseSummary.pipelineMs,
+    attributionRenderCalls.map((call) => call.durationMs),
+  );
+  assert.deepEqual(
+    compactFirstUseSummary.drainMs,
+    attributionDrainCalls.map((call) => call.durationMs),
+  );
+  assert.equal(compactFirstUseSummary.firstUseMs.length, 3);
+  assert.equal(compactFirstUseSummary.layoutMs.length, 17);
+  assert.equal(compactFirstUseSummary.pipelineMs.length, 52);
+  assert.equal(compactFirstUseSummary.drainMs.length, 2);
+  assert.equal(compactFirstUseSummary.firstUseMs[2], compactFirstUseSummary.pipelineMs[0]);
+  assert.equal(Object.keys(compactFirstUseSummary.groupMs).length, 7);
+  assert.ok(Buffer.byteLength(storedFirstUseRow.result_summary, "utf8") <= 1536);
+  const storedFullFirstUsePayload = JSON.parse(storedFirstUseRow.payload_json);
+  assertDiagnosticSummary(
+    storedFullFirstUsePayload.summary,
+    APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID,
+    application4096FirstUseResult,
+  );
+  assert.deepEqual(
+    storedFullFirstUsePayload.summary.result.firstUseSequence,
+    storedFullFirstUsePayload.summary.result.pipelineBreakdown.firstUseSequence,
+  );
+  assert.equal(
+    storedFullFirstUsePayload.summary.result.firstUseSequence.steps[1].label,
+    "Diagnostic shared brush source-over clone RGBA16F preflight",
+  );
+  const firstUseMismatchedPageResponse = await worker.fetch(
+    new Request(
+      `https://example.test/gpu-startup-lab?run=${application4096FirstUseRunCode}&test=${STORAGE_FORMAT_TEST_ID}`,
+    ),
+    environment,
+  );
+  assert.equal(firstUseMismatchedPageResponse.status, 409);
+  assert.equal((await upload(createUploadPayload({
+    payloadRunCode: application4096FirstUseRunCode,
+    payloadWriteToken: application4096FirstUseWriteToken,
+    payloadSequence: application4096FirstUseSequence + 2,
+    testId: STORAGE_FORMAT_TEST_ID,
+  }))).status, 409);
+
+  const incompleteFirstUseResult = structuredClone(application4096FirstUseResult);
+  incompleteFirstUseResult.firstUseSequence.steps =
+    incompleteFirstUseResult.firstUseSequence.steps.slice(0, 2);
+  incompleteFirstUseResult.pipelineBreakdown.firstUseSequence =
+    structuredClone(incompleteFirstUseResult.firstUseSequence);
+  const incompleteFirstUseResponse = await upload(createUploadPayload({
+    payloadRunCode: application4096FirstUseFallbackRunCode,
+    payloadWriteToken: application4096FirstUseFallbackWriteToken,
+    payloadSequence: application4096FirstUseFallbackSequence + 1,
+    testId: APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID,
+    status: "completed",
+    latestEvent: "diagnostic-completed",
+    result: incompleteFirstUseResult,
+    moduleLoaded: true,
+    probeFinished: true,
+  }));
+  assert.equal(incompleteFirstUseResponse.status, 201);
+  const incompleteFirstUseSummary = JSON.parse(
+    database.rows.get(application4096FirstUseFallbackRunCode).result_summary,
+  );
+  assert.equal(incompleteFirstUseSummary.schema, undefined);
+  assertDiagnosticSummary(
+    incompleteFirstUseSummary,
+    APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID,
+    incompleteFirstUseResult,
+  );
+
+  const largeFirstUseTimingMs = 7_000.123;
+  const largeFirstUseResult = structuredClone(application4096FirstUseResult);
+  const largeFirstUseBreakdown = largeFirstUseResult.pipelineBreakdown;
+  for (const call of largeFirstUseBreakdown.pipelineLayouts) {
+    call.durationMs = largeFirstUseTimingMs;
+  }
+  for (const group of largeFirstUseBreakdown.renderPipelineGroups) {
+    for (const call of group.calls) call.durationMs = largeFirstUseTimingMs;
+    group.totalDurationMs = roundTiming(group.calls.length * largeFirstUseTimingMs);
+  }
+  for (const call of largeFirstUseBreakdown.errorScopeDrains) {
+    call.durationMs = largeFirstUseTimingMs;
+  }
+  const largeFirstUseSequence = structuredClone(largeFirstUseResult.firstUseSequence);
+  for (const step of largeFirstUseSequence.steps) {
+    step.nativePipelineMs = largeFirstUseTimingMs;
+    step.durationMs = roundTiming(largeFirstUseTimingMs + 1);
+  }
+  largeFirstUseSequence.totalDurationMs = roundTiming(
+    largeFirstUseSequence.steps.reduce((sum, step) => sum + step.durationMs, 0),
+  );
+  largeFirstUseSequence.injectedPreflightDurationMs = roundTiming(
+    largeFirstUseSequence.steps.slice(0, 2)
+      .reduce((sum, step) => sum + step.durationMs, 0),
+  );
+  largeFirstUseSequence.originalEraserDurationMs = largeFirstUseTimingMs;
+  largeFirstUseResult.firstUseSequence = largeFirstUseSequence;
+  largeFirstUseBreakdown.firstUseSequence = structuredClone(largeFirstUseSequence);
+  largeFirstUseBreakdown.pipelineLayoutTotalMs = roundTiming(17 * largeFirstUseTimingMs);
+  largeFirstUseBreakdown.renderPipelineTotalMs = roundTiming(52 * largeFirstUseTimingMs);
+  largeFirstUseBreakdown.injectedPreflightPipelineTotalMs = roundTiming(
+    2 * largeFirstUseTimingMs,
+  );
+  largeFirstUseBreakdown.errorScopeDrainTotalMs = roundTiming(2 * largeFirstUseTimingMs);
+  largeFirstUseBreakdown.nativeCallTotalMs = roundTiming(
+    73 * largeFirstUseTimingMs,
+  );
+  largeFirstUseBreakdown.preCallDiagnosticTotalMs = 10;
+  largeFirstUseBreakdown.remainingPhaseWorkAndReportingMs = 100;
+  largeFirstUseBreakdown.phaseElapsedMs = roundTiming(
+    largeFirstUseBreakdown.nativeCallTotalMs + 110,
+  );
+  largeFirstUseBreakdown.phaseMinusPreCallDiagnosticMs = roundTiming(
+    largeFirstUseBreakdown.phaseElapsedMs - 10,
+  );
+  largeFirstUseBreakdown.slowestRenderPipelineDurationMs = largeFirstUseTimingMs;
+  largeFirstUseResult.startupTrace.documentPipelinesPhase.phaseElapsedMs =
+    largeFirstUseBreakdown.phaseElapsedMs;
+  const largeFirstUseResponse = await upload(createUploadPayload({
+    payloadRunCode: application4096FirstUseFallbackRunCode,
+    payloadWriteToken: application4096FirstUseFallbackWriteToken,
+    payloadSequence: application4096FirstUseFallbackSequence + 2,
+    testId: APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID,
+    status: "completed",
+    latestEvent: "diagnostic-completed",
+    result: largeFirstUseResult,
+    moduleLoaded: true,
+    probeFinished: true,
+  }));
+  assert.equal(largeFirstUseResponse.status, 201);
+  const largeCompactFirstUseSummary = JSON.parse(
+    database.rows.get(application4096FirstUseFallbackRunCode).result_summary,
+  );
+  assert.equal(largeCompactFirstUseSummary.schema, "pipeline-first-use-controls-ms-v1");
+  assert.ok([
+    "essential-timings",
+    "minimum-timings-fixed-group-order",
+  ].includes(largeCompactFirstUseSummary.compacted));
+  assert.deepEqual(
+    largeCompactFirstUseSummary.firstUseMs,
+    Array.from({ length: 3 }, () => largeFirstUseTimingMs),
+  );
+  assert.deepEqual(
+    largeCompactFirstUseSummary.layoutMs,
+    Array.from({ length: 17 }, () => largeFirstUseTimingMs),
+  );
+  assert.deepEqual(
+    largeCompactFirstUseSummary.pipelineMs,
+    Array.from({ length: 52 }, () => largeFirstUseTimingMs),
+  );
+  assert.deepEqual(
+    largeCompactFirstUseSummary.drainMs,
+    Array.from({ length: 2 }, () => largeFirstUseTimingMs),
+  );
+  assert.equal(
+    Array.isArray(largeCompactFirstUseSummary.groupMs)
+      ? largeCompactFirstUseSummary.groupMs.length
+      : Object.keys(largeCompactFirstUseSummary.groupMs).length,
+    7,
+  );
+  assert.equal(
+    largeCompactFirstUseSummary.firstUseMs[2],
+    largeCompactFirstUseSummary.pipelineMs[0],
+  );
+  assert.ok(
+    Buffer.byteLength(
+      database.rows.get(application4096FirstUseFallbackRunCode).result_summary,
+      "utf8",
+    ) <= 1536,
   );
 
   const staleResponse = await upload({
