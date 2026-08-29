@@ -12,8 +12,35 @@
       (function () {
         "use strict";
 
-        var BUILD = "gpu-startup-rgba16f-no-tier2-app-boot-v5";
-        var DIAGNOSTIC_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
+        var BUILD = "gpu-diagnostics-storage-format-ab-v6";
+        var params = new URLSearchParams(window.location.search);
+        var requestedTestId = params.get("test") || "";
+        var DIAGNOSTIC_TEST_ID = requestedTestId || "startup-no-tier2-v1";
+        var STORAGE_FORMAT_AB_TEST = DIAGNOSTIC_TEST_ID === "storage-format-ab-v1";
+        var DIAGNOSTIC_VARIANT = STORAGE_FORMAT_AB_TEST
+          ? "storage-format-ab-rgba8unorm-control-rgba16float-target-write-only-1x1-no-tier2-v1"
+          : "rgba16float-no-texture-formats-tier2-v1";
+        var DIAGNOSTIC_COMPARISON = STORAGE_FORMAT_AB_TEST
+          ? {
+              kind: "storage-texture-format-ab",
+              controlFormat: "rgba8unorm",
+              targetFormat: "rgba16float",
+              width: 1,
+              height: 1,
+              depthOrArrayLayers: 1,
+              storageAccess: "write-only",
+              requiredFeatures: [],
+              textureFormatsTier2Requested: false,
+              deviceReuse: "single-device",
+              executionOrder: ["rgba8unorm", "rgba16float"],
+            }
+          : {
+              layerFormat: "rgba16float",
+              canvasFormat: "rgba16float",
+              textureFormatsTier2Enabled: false,
+              inPlaceGlazeCommitEnabled: false,
+              inPlaceGlazeCommitPipelineCreated: false,
+            };
         var API_URL = "/api/gpu-startup-diagnostics";
         var CAPABILITY_VERSION = 1;
         var CAPABILITY_LIFETIME_MS = 30 * 60 * 1000;
@@ -24,13 +51,13 @@
         var MAX_BACKUP_EVENT_COUNT = 128;
         var MAX_EVENT_COUNT = 24;
         var MAX_EVENT_DETAIL_BYTES = 1200;
+        var MAX_DIAGNOSTIC_RESULT_BYTES = 12 * 1024;
         var MAX_SNAPSHOT_BYTES = 48 * 1024;
-        var params = new URLSearchParams(window.location.search);
         var fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
         var runCode = params.get("run") || "";
         var fragmentWriteToken = fragment.get("token") || "";
-        var capabilityKey = "gpu-startup-diagnostic-capability-v1:" + runCode;
-        var backupStorageKey = BACKUP_STORAGE_KEY_PREFIX + runCode;
+        var capabilityKey = "gpu-startup-diagnostic-capability-v1:" + runCode + ":" + DIAGNOSTIC_TEST_ID;
+        var backupStorageKey = BACKUP_STORAGE_KEY_PREFIX + runCode + ":" + DIAGNOSTIC_TEST_ID;
         var capabilityRestored = false;
         var capabilityStorageAvailable = false;
         var recoveredCapability = null;
@@ -46,6 +73,7 @@
           !recoveredCapability
           || recoveredCapability.version !== CAPABILITY_VERSION
           || recoveredCapability.runCode !== runCode
+          || recoveredCapability.testId !== DIAGNOSTIC_TEST_ID
           || typeof recoveredCapability.writeToken !== "string"
           || Number(recoveredCapability.expiresAt) <= Date.now()
         ) {
@@ -67,6 +95,7 @@
             && recoveredBackupJournal.version === BACKUP_VERSION
             && recoveredBackupJournal.build === BUILD
             && recoveredBackupJournal.runCode === runCode
+            && recoveredBackupJournal.testId === DIAGNOSTIC_TEST_ID
             && Number(recoveredBackupJournal.expiresAt) > Date.now()
             && Array.isArray(recoveredBackupJournal.attempts)
           ) {
@@ -95,6 +124,7 @@
         var moduleLoaded = false;
         var latestEventName = "html-ready";
         var latestEventDetail = null;
+        var diagnosticResult = null;
         var terminalBody = null;
         var terminalUploadPromise = null;
         var terminalUploadRetryAllowed = true;
@@ -105,7 +135,26 @@
         var surfaceFinishedAtMs = null;
         var lastStartupProgressAtMs = surfaceStartedAtMs;
         var lastStartupProgress = null;
-        var startupPhases = [
+        var startupPhases = (STORAGE_FORMAT_AB_TEST ? [
+          ["adapter-request", "Finding a WebGPU adapter"],
+          ["device-request", "Creating a feature-neutral WebGPU device"],
+          ["rgba8-shader-module", "Creating the RGBA8 control shader"],
+          ["rgba8-compilation-info", "Reading RGBA8 shader diagnostics"],
+          ["rgba8-layout", "Creating the RGBA8 storage layout"],
+          ["rgba8-pipeline", "Compiling the RGBA8 storage pipeline"],
+          ["rgba8-texture", "Creating the 1×1 RGBA8 texture"],
+          ["rgba8-binding", "Binding the RGBA8 storage texture"],
+          ["rgba8-dispatch", "Encoding and submitting the RGBA8 compute write"],
+          ["rgba8-fence", "Waiting for the RGBA8 compute write"],
+          ["rgba16-shader-module", "Creating the RGBA16F target shader"],
+          ["rgba16-compilation-info", "Reading RGBA16F shader diagnostics"],
+          ["rgba16-layout", "Creating the RGBA16F storage layout"],
+          ["rgba16-pipeline", "Compiling the RGBA16F storage pipeline"],
+          ["rgba16-texture", "Creating the 1×1 RGBA16F texture"],
+          ["rgba16-binding", "Binding the RGBA16F storage texture"],
+          ["rgba16-dispatch", "Encoding and submitting the RGBA16F compute write"],
+          ["rgba16-fence", "Waiting for the RGBA16F compute write"],
+        ] : [
           ["application-navigation", "Loading the application document"],
           ["application-module", "Loading application code and UI"],
           ["adapter-request", "Finding a WebGPU adapter"],
@@ -124,7 +173,7 @@
           ["restore-active-brush", "Restoring the saved brush"],
           ["project-session", "Opening the project session"],
           ["editor-ready", "Connecting the editor controls"],
-        ].map(function (entry) {
+        ]).map(function (entry) {
           return {
             phase: entry[0],
             label: entry[1],
@@ -141,6 +190,7 @@
             window.sessionStorage.setItem(capabilityKey, JSON.stringify({
               version: CAPABILITY_VERSION,
               runCode: runCode,
+              testId: DIAGNOSTIC_TEST_ID,
               writeToken: writeToken,
               expiresAt: Date.now() + CAPABILITY_LIFETIME_MS,
               sequenceHighWater: sequenceHighWater,
@@ -289,7 +339,10 @@
           }
         }
 
-        function compactDetail(value) {
+        function compactDetail(value, maximumBytes) {
+          maximumBytes = Number.isFinite(maximumBytes)
+            ? Math.max(256, maximumBytes)
+            : MAX_EVENT_DETAIL_BYTES;
           var compacted = compactValue(value === undefined ? null : value, 0, []);
           var encoded;
           try {
@@ -298,17 +351,17 @@
             return { truncated: true, reason: "unserializable" };
           }
           var originalBytes = byteLength(encoded);
-          if (originalBytes <= MAX_EVENT_DETAIL_BYTES) return compacted;
+          if (originalBytes <= maximumBytes) return compacted;
           var truncated = {
             truncated: true,
             originalBytes: originalBytes,
-            preview: truncateUtf8(encoded, 800),
+            preview: truncateUtf8(encoded, Math.min(800, maximumBytes - 96)),
           };
           var truncatedBytes = byteLength(JSON.stringify(truncated));
-          while (truncatedBytes > MAX_EVENT_DETAIL_BYTES && truncated.preview) {
+          while (truncatedBytes > maximumBytes && truncated.preview) {
             truncated.preview = truncateUtf8(
               truncated.preview,
-              Math.max(0, byteLength(truncated.preview) - (truncatedBytes - MAX_EVENT_DETAIL_BYTES) - 16),
+              Math.max(0, byteLength(truncated.preview) - (truncatedBytes - maximumBytes) - 16),
             );
             truncatedBytes = byteLength(JSON.stringify(truncated));
           }
@@ -500,11 +553,11 @@
           if (currentPhase) {
             currentPhase.textContent = failed
               ? failed.label
-              : active
+                : active
                 ? active.label
                 : reportStored || probeFinished
-                  ? "Startup test finished"
-                  : "Opening the real application";
+                  ? (STORAGE_FORMAT_AB_TEST ? "Storage comparison finished" : "Startup test finished")
+                  : (STORAGE_FORMAT_AB_TEST ? "Preparing the storage comparison" : "Opening the real application");
           }
           if (liveness) {
             if (reportStored) {
@@ -512,8 +565,8 @@
               liveness.dataset.state = "completed";
             } else if (probeFinished) {
               liveness.textContent = reportingAvailable
-                ? "Startup measured · saving the report"
-                : "Local startup measurement finished";
+                ? (STORAGE_FORMAT_AB_TEST ? "Comparison measured · saving the report" : "Startup measured · saving the report")
+                : (STORAGE_FORMAT_AB_TEST ? "Local comparison finished" : "Local startup measurement finished");
               liveness.dataset.state = currentStatus;
             } else if (document.visibilityState === "hidden") {
               liveness.textContent = "Timing paused while this page is in the background";
@@ -527,7 +580,9 @@
                 liveness.textContent = "Still working here · no new checkpoint for " + quietSeconds + " s";
                 liveness.dataset.state = "slow";
               } else {
-                liveness.textContent = active ? "Running normally" : "Starting the timed canvas test";
+                liveness.textContent = active
+                  ? "Running normally"
+                  : (STORAGE_FORMAT_AB_TEST ? "Starting the storage format comparison" : "Starting the timed canvas test");
                 liveness.dataset.state = "running";
               }
             }
@@ -585,6 +640,7 @@
               version: BACKUP_VERSION,
               build: BUILD,
               runCode: runCode,
+              testId: DIAGNOSTIC_TEST_ID,
               savedAt: savedAt,
               expiresAt: Date.now() + BACKUP_LIFETIME_MS,
               attempts: attempts,
@@ -602,8 +658,10 @@
             type: "gpu-startup-diagnostic-manual-backup",
             build: BUILD,
             runCode: runCode,
+            testId: DIAGNOSTIC_TEST_ID,
             exportedAt: new Date().toISOString(),
             manualBackup: {
+              testId: DIAGNOSTIC_TEST_ID,
               automaticUploadAvailable: reportingAvailable,
               automaticUploadStored: reportStored,
               crashJournalAvailable: Boolean(runCode && backupStorageAvailable),
@@ -675,16 +733,12 @@
             createdAt: createdAt,
             updatedAt: new Date().toISOString(),
             status: currentStatus,
-            privacy: "Technical startup data only. No artwork pixels, document text, filenames, clipboard data, project identifiers, or full URLs.",
+            privacy: "Technical browser and GPU diagnostic data only. No artwork pixels, document text, filenames, clipboard data, project identifiers, or full URLs.",
             summary: {
+              testId: DIAGNOSTIC_TEST_ID,
               diagnosticVariant: DIAGNOSTIC_VARIANT,
-              comparison: {
-                layerFormat: "rgba16float",
-                canvasFormat: "rgba16float",
-                textureFormatsTier2Enabled: false,
-                inPlaceGlazeCommitEnabled: false,
-                inPlaceGlazeCommitPipelineCreated: false,
-              },
+              comparison: DIAGNOSTIC_COMPARISON,
+              result: diagnosticResult,
               latestEvent: latestEventName,
               latestDetail: latestEventDetail,
               moduleLoaded: moduleLoaded,
@@ -729,16 +783,12 @@
             createdAt: createdAt,
             updatedAt: payload.updatedAt,
             status: currentStatus,
-            privacy: "Technical startup data only; no user content.",
+            privacy: "Technical browser and GPU diagnostic data only; no user content.",
             summary: {
+              testId: DIAGNOSTIC_TEST_ID,
               diagnosticVariant: DIAGNOSTIC_VARIANT,
-              comparison: {
-                layerFormat: "rgba16float",
-                canvasFormat: "rgba16float",
-                textureFormatsTier2Enabled: false,
-                inPlaceGlazeCommitEnabled: false,
-                inPlaceGlazeCommitPipelineCreated: false,
-              },
+              comparison: DIAGNOSTIC_COMPARISON,
+              result: diagnosticResult,
               latestEvent: lastEvent.name,
               latestDetail: null,
               moduleLoaded: moduleLoaded,
@@ -780,14 +830,10 @@
           minimalPayload.writeToken = truncateUtf8(minimalPayload.writeToken, 96);
           minimalPayload.privacy = "";
           minimalPayload.summary = {
+            testId: DIAGNOSTIC_TEST_ID,
             diagnosticVariant: DIAGNOSTIC_VARIANT,
-            comparison: {
-              layerFormat: "rgba16float",
-              canvasFormat: "rgba16float",
-              textureFormatsTier2Enabled: false,
-              inPlaceGlazeCommitEnabled: false,
-              inPlaceGlazeCommitPipelineCreated: false,
-            },
+            comparison: DIAGNOSTIC_COMPARISON,
+            result: diagnosticResult,
             latestEvent: lastEvent.name,
           };
           minimalPayload.environment = {};
@@ -1008,6 +1054,7 @@
           currentStatus = status;
           latestEventName = name;
           latestEventDetail = compactDetail(detail);
+          diagnosticResult = compactDetail(detail, MAX_DIAGNOSTIC_RESULT_BYTES);
           var event = {
             sequence: nextSequence(),
             at: new Date().toISOString(),
@@ -1082,6 +1129,12 @@
         });
 
         document.addEventListener("DOMContentLoaded", function () {
+          var variantLabel = document.getElementById("diagnosticVariantLabel");
+          if (variantLabel) {
+            variantLabel.textContent = STORAGE_FORMAT_AB_TEST
+              ? "1×1 · RGBA8 vs RGBA16F · storage write"
+              : "App boot · RGBA16F · Tier 2 off";
+          }
           var copyButton = document.getElementById("copyDiagnosticJson");
           if (copyButton) copyButton.addEventListener("click", function () {
             void copyManualDiagnosticBackup();
@@ -1089,6 +1142,8 @@
           updateSurface();
         }, { once: true });
         record("inline-bootstrap-started", {
+          testId: DIAGNOSTIC_TEST_ID,
+          diagnosticVariant: DIAGNOSTIC_VARIANT,
           tokenAvailable: writeToken.length >= 32,
           runCodeAvailable: runCode.length >= 16,
           capabilityRestored: capabilityRestored,
@@ -1463,31 +1518,31 @@
     <main>
       <section class="diagnostic-card" aria-labelledby="diagnosticTitle">
         <div class="diagnostic-mark" aria-hidden="true">D</div>
-        <h1 id="diagnosticTitle">GPU startup diagnostics</h1>
-        <p class="diagnostic-variant">App boot · RGBA16F · Tier 2 off</p>
+        <h1 id="diagnosticTitle">GPU diagnostics</h1>
+        <p id="diagnosticVariantLabel" class="diagnostic-variant">Automatic GPU comparison</p>
         <p id="diagnosticSummary">Keep this page open. No taps or settings changes are required.</p>
         <div id="diagnosticStatus" class="diagnostic-state" role="status" aria-live="polite">
           Automatic test running
         </div>
-        <div class="load-overview" aria-label="Timed application startup">
+        <div class="load-overview" aria-label="Timed GPU diagnostic">
           <div class="load-total">
-            <span>Total load time</span>
+            <span>Total test time</span>
             <strong id="diagnosticElapsed">00:00.0</strong>
           </div>
           <div class="load-progress">
             <span
               id="diagnosticProgressBar"
               role="progressbar"
-              aria-label="Application startup progress"
+              aria-label="GPU diagnostic progress"
               aria-valuemin="0"
               aria-valuemax="100"
               aria-valuenow="0"
             ></span>
           </div>
-          <p id="diagnosticCurrentPhase">Opening the real application</p>
-          <p id="diagnosticLiveness" data-state="running">Starting the timed canvas test</p>
+          <p id="diagnosticCurrentPhase">Preparing the diagnostic</p>
+          <p id="diagnosticLiveness" data-state="running">Starting the GPU test</p>
         </div>
-        <ol id="diagnosticSteps" aria-label="Application startup phases"></ol>
+        <ol id="diagnosticSteps" aria-label="GPU diagnostic phases"></ol>
         <div class="diagnostic-meta">
           <span>One-time diagnostic</span>
           <span>Run <code id="diagnosticCode">LOCAL</code></span>

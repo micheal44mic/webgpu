@@ -20,6 +20,142 @@ const startup = read("src/startup.ts");
 const engineSource = read("src/brush-engine.ts");
 const featurePolicySource = read("src/gpu-startup-feature-policy.ts");
 
+const DIAGNOSTIC_BUILD = "gpu-diagnostics-storage-format-ab-v6";
+const DEFAULT_TEST_ID = "startup-no-tier2-v1";
+const DEFAULT_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
+const STORAGE_FORMAT_TEST_ID = "storage-format-ab-v1";
+const STORAGE_FORMAT_VARIANT =
+  "storage-format-ab-rgba8unorm-control-rgba16float-target-write-only-1x1-no-tier2-v1";
+const DEFAULT_COMPARISON = {
+  layerFormat: "rgba16float",
+  canvasFormat: "rgba16float",
+  textureFormatsTier2Enabled: false,
+  inPlaceGlazeCommitEnabled: false,
+  inPlaceGlazeCommitPipelineCreated: false,
+};
+const STORAGE_FORMAT_COMPARISON = {
+  kind: "storage-texture-format-ab",
+  controlFormat: "rgba8unorm",
+  targetFormat: "rgba16float",
+  width: 1,
+  height: 1,
+  depthOrArrayLayers: 1,
+  storageAccess: "write-only",
+  requiredFeatures: [],
+  textureFormatsTier2Requested: false,
+  deviceReuse: "single-device",
+  executionOrder: ["rgba8unorm", "rgba16float"],
+};
+const STORAGE_FORMAT_STAGES = [
+  "shader-module",
+  "compilation-info",
+  "layout",
+  "pipeline",
+  "texture",
+  "binding",
+  "dispatch",
+  "fence",
+];
+
+function storageTimings(offset) {
+  return Object.fromEntries(STORAGE_FORMAT_STAGES.map((stage, index) => [
+    stage,
+    [offset + index + 0.1, offset + index + 0.2],
+  ]));
+}
+
+function storageTargetFailureResult() {
+  return {
+    conclusion: "RGBA8 passed; RGBA16F failed at pipeline.",
+    verdict: "rgba16float-specific-failure",
+    evidence: "format-acceptance-submit-fence-no-readback",
+    adapter: {
+      mode: "neutral",
+      textureFormatsTier2Advertised: true,
+    },
+    device: {
+      requiredFeatures: [],
+      textureFormatsTier2Enabled: false,
+      uncapturedErrorCount: 0,
+      lost: null,
+    },
+    control: {
+      format: "rgba8unorm",
+      outcome: "passed",
+      passed: true,
+      failedStage: null,
+      lastStage: "fence",
+      internalErrorScopeSupported: true,
+      durationMs: 72.8,
+      timingsMs: storageTimings(1),
+      failure: null,
+    },
+    target: {
+      format: "rgba16float",
+      outcome: "failed",
+      passed: false,
+      failedStage: "pipeline",
+      lastStage: "pipeline",
+      internalErrorScopeSupported: true,
+      durationMs: 46.4,
+      timingsMs: storageTimings(11),
+      failure: {
+        thrown: "OperationError: target pipeline rejected",
+        pipelineReason: "validation",
+        semanticError: "rgba16float pipeline creation failed validation.",
+        scopePushErrors: {},
+        scopeErrors: {
+          validation: "GPUValidationError: Storage format validation failed for the target pipeline.",
+        },
+        scopePopErrors: {},
+        result: {
+          available: true,
+          errorCount: 1,
+          warningCount: 0,
+          messageCount: 1,
+          firstMessages: [
+            "error 1:1 The target format was rejected while the control format passed.",
+          ],
+        },
+      },
+    },
+    uncapturedErrors: [],
+    totalElapsedMs: 134.2,
+  };
+}
+
+function jsonValue(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function diagnosticDefinition(testId) {
+  if (testId === DEFAULT_TEST_ID) {
+    return {
+      testId,
+      diagnosticVariant: DEFAULT_VARIANT,
+      comparison: DEFAULT_COMPARISON,
+    };
+  }
+  if (testId === STORAGE_FORMAT_TEST_ID) {
+    return {
+      testId,
+      diagnosticVariant: STORAGE_FORMAT_VARIANT,
+      comparison: STORAGE_FORMAT_COMPARISON,
+    };
+  }
+  throw new Error(`Unknown verification diagnostic test: ${testId}`);
+}
+
+function assertDiagnosticSummary(summary, testId, expectedResult) {
+  const definition = diagnosticDefinition(testId);
+  assert.equal(summary.testId, definition.testId);
+  assert.equal(summary.diagnosticVariant, definition.diagnosticVariant);
+  assert.deepEqual(jsonValue(summary.comparison), definition.comparison);
+  if (arguments.length >= 3) {
+    assert.deepEqual(jsonValue(summary.result), jsonValue(expectedResult));
+  }
+}
+
 const featurePolicyModule = await import(
   `data:text/javascript;base64,${Buffer.from(featurePolicySource).toString("base64")}`
 );
@@ -46,7 +182,7 @@ for (const [pathname, search] of [
 const inlineBootstrapIndex = html.indexOf("inline-bootstrap-started");
 const moduleScriptIndex = html.indexOf('type="module" src="/src/labs/gpu-startup-diagnostics.ts"');
 const diagnosticBuild = html.match(/var BUILD = "([^"]+)"/)?.[1];
-assert.equal(diagnosticBuild, "gpu-startup-rgba16f-no-tier2-app-boot-v5");
+assert.equal(diagnosticBuild, DIAGNOSTIC_BUILD);
 assert.ok(
   workerBuilder.includes(`GPU_STARTUP_DIAGNOSTIC_BUILD = "${diagnosticBuild}"`),
   "Client and Worker diagnostic builds must match.",
@@ -60,6 +196,7 @@ assert.match(html, /window\.addEventListener\("pagehide"/);
 assert.match(html, /navigator\.sendBeacon/);
 assert.match(html, /keepalive: keepalive === true/);
 assert.match(html, /MAX_SNAPSHOT_BYTES = 48 \* 1024/);
+assert.match(html, /MAX_DIAGNOSTIC_RESULT_BYTES = 12 \* 1024/);
 assert.match(html, /truncateUtf8/);
 assert.match(html, /terminalUploadPromise/);
 assert.match(html, /new window\.AbortController/);
@@ -85,7 +222,12 @@ assert.match(html, /application-startup-phase/);
 assert.match(html, /diagnosticElapsed/);
 assert.match(html, /Very slow or stopped here/);
 assert.match(html, /App boot · RGBA16F · Tier 2 off/);
+assert.match(html, /1×1 · RGBA8 vs RGBA16F · storage write/);
+assert.match(html, /requestedTestId \|\| "startup-no-tier2-v1"/);
+assert.match(html, /DIAGNOSTIC_TEST_ID === "storage-format-ab-v1"/);
 assert.match(html, /diagnosticVariant: DIAGNOSTIC_VARIANT/);
+assert.match(html, /testId: DIAGNOSTIC_TEST_ID/);
+assert.match(html, /result: diagnosticResult/);
 assert.match(html, /textureFormatsTier2Enabled: false/);
 
 assert.match(moduleSource, /requestAdapter\(adapterOptions\)/);
@@ -103,6 +245,32 @@ assert.match(moduleSource, /projectSessionReady/);
 assert.match(moduleSource, /runFullApplicationBoot\(\)/);
 assert.match(moduleSource, /APP_FRAME_DIAGNOSTIC_CHANNEL = "gpu-startup-app-frame-v3"/);
 assert.match(moduleSource, /APPLICATION_BOOT_VARIANT = "rgba16float-no-texture-formats-tier2-v1"/);
+assert.match(moduleSource, /STORAGE_FORMAT_AB_TEST = "storage-format-ab-v1"/);
+assert.match(moduleSource, new RegExp(STORAGE_FORMAT_VARIANT));
+assert.match(moduleSource, /if \(diagnosticTest && diagnosticTest !== STORAGE_FORMAT_AB_TEST\)[\s\S]*Unsupported GPU diagnostic test/);
+assert.match(moduleSource, /if \(storageFormatAbEnabled\) \{\s*await runStorageFormatAbDiagnostic\(\);\s*return;/);
+assert.match(moduleSource, /applicationBoot = await runFullApplicationBoot\(\)/);
+assert.match(moduleSource, /const requiredFeatures: GPUFeatureName\[\] = \[\]/);
+assert.match(moduleSource, /adapter\.requestDevice\(\{ requiredFeatures \}\)/);
+assert.match(moduleSource, /texture_storage_2d<\$\{format\}, write>/);
+assert.match(moduleSource, /storageTexture:\s*\{\s*access: "write-only",\s*format,/);
+assert.match(moduleSource, /size: \[1, 1, 1\]/);
+assert.match(moduleSource, /usage: GPUTextureUsage\.STORAGE_BINDING/);
+assert.match(moduleSource, /device\.queue\.onSubmittedWorkDone\(\)/);
+assert.match(moduleSource, /runStorageFormatCase\(\s*device,\s*diagnosticStartedAt,\s*"rgba8unorm",\s*"rgba8"/);
+assert.match(moduleSource, /runStorageFormatCase\(\s*device,\s*diagnosticStartedAt,\s*"rgba16float",\s*"rgba16"/);
+assert.match(moduleSource, /if \(control\.passed && target\.passed\)[\s\S]*verdict = "both-formats-passed"/);
+assert.match(moduleSource, /else if \(control\.passed\)[\s\S]*verdict = "rgba16float-specific-failure"/);
+assert.match(moduleSource, /deviceLostInfo \|\| controlTimedOut[\s\S]*failedStage: deviceLostInfo \? "device-lost" : "control-timeout"/);
+assert.match(moduleSource, /evidence: "format-acceptance-submit-fence-no-readback"/);
+assert.match(moduleSource, /timingsMs: Object\.fromEntries/);
+assert.match(moduleSource, /firstMessages:/);
+assert.match(moduleSource, /const diagnosticCompleted = control\.passed[\s\S]*bridge\.finish\([\s\S]*diagnosticCompleted \? "completed" : "failed"/);
+assert.ok(
+  moduleSource.indexOf("device = await withTimeout(deviceRequest")
+    < moduleSource.indexOf("const textureFormatsTier2Enabled = device.features.has"),
+  "The Tier 2 observation must read the created feature-neutral device.",
+);
 assert.match(moduleSource, /target\.searchParams\.set\("forceGlazeCommitFallback", "1"\)/);
 assert.match(moduleSource, /target\.searchParams\.set\("diagnosticVariant", APPLICATION_BOOT_VARIANT\)/);
 assert.match(moduleSource, /featureIsolation\.textureFormatsTier2Enabled !== false/);
@@ -130,7 +298,12 @@ assert.match(workerBuilder, /textureFormatsTier2Enabled: engine\.device\.feature
 assert.match(workerBuilder, /textureFormatsTier2Advertised: engine\.adapter\?\.features\?\.has\("texture-formats-tier2"\) === true/);
 assert.match(workerBuilder, /inPlaceGlazeCommitEnabled: engine\.lightGlazeInPlaceCommitSupported === true/);
 assert.match(workerBuilder, /inPlaceGlazeCommitPipelineCreated: engine\.lightGlazeInPlaceCommitPipeline != null/);
-assert.match(workerBuilder, /payload\.summary\.diagnosticVariant !== GPU_STARTUP_DIAGNOSTIC_VARIANT/);
+assert.match(workerBuilder, /gpuStartupDiagnosticDefinition\(payload\.summary\.testId\)/);
+assert.match(workerBuilder, /validGpuStartupDiagnosticComparison\(comparison, definition\.comparison\)/);
+assert.match(workerBuilder, /new TextEncoder\(\)\.encode\(summaryJson\)\.byteLength > 24 \* 1024/);
+assert.match(workerBuilder, /SELECT result_summary FROM gpu_startup_diagnostic_runs/);
+assert.match(workerBuilder, /Diagnostic run is already bound to another test/);
+assert.match(workerBuilder, /Unknown GPU diagnostic test/);
 assert.match(workerBuilder, /readLimitedJson\(request, 64 \* 1024\)/);
 assert.match(workerBuilder, /sha256Hex\(payload\.writeToken\)/);
 assert.match(workerBuilder, /write_token_hash/);
@@ -191,11 +364,13 @@ function diagnosticBootstrapHarness({
   userAgent = "Verification Browser",
   runCode = `diag-${"a".repeat(32)}`,
   writeToken = "b".repeat(64),
+  testId = "",
   fetchResults = [],
   sharedSessionStorage = new Map(),
   sharedLocalStorage = new Map(),
   clipboardMode = "success",
   legacyCopyResult = true,
+  TextEncoderClass = TextEncoder,
 } = {}) {
   let selectionCount = 0;
   const legacyCopyCommands = [];
@@ -211,6 +386,7 @@ function diagnosticBootstrapHarness({
     }],
     ["diagnosticCurrentPhase", { textContent: "" }],
     ["diagnosticLiveness", { dataset: {}, textContent: "" }],
+    ["diagnosticVariantLabel", { textContent: "" }],
     ["manualDiagnosticBackup", { hidden: true }],
     ["diagnosticJson", {
       value: "",
@@ -232,9 +408,12 @@ function diagnosticBootstrapHarness({
   let copiedText = null;
   let fetchIndex = 0;
   let timerId = 0;
+  const locationParams = new URLSearchParams();
+  if (runCode) locationParams.set("run", runCode);
+  if (testId) locationParams.set("test", testId);
   const location = {
     pathname: "/gpu-startup-lab",
-    search: runCode ? `?run=${runCode}` : "",
+    search: locationParams.size > 0 ? `?${locationParams}` : "",
     hash: writeToken ? `#token=${writeToken}` : "",
   };
   const browser = {
@@ -328,7 +507,9 @@ function diagnosticBootstrapHarness({
         appendChild(child) { this.children.push(child); },
       };
     },
-    addEventListener() {},
+    addEventListener(name, callback) {
+      if (name === "DOMContentLoaded") callback();
+    },
     execCommand(command) {
       legacyCopyCommands.push(command);
       return command === "copy" && legacyCopyResult;
@@ -341,7 +522,7 @@ function diagnosticBootstrapHarness({
     navigator,
     screen: browser.screen,
     URLSearchParams,
-    TextEncoder,
+    TextEncoder: TextEncoderClass,
     AbortController,
     Blob,
     performance: { now: () => 1000 },
@@ -398,19 +579,10 @@ function diagnosticBootstrapHarness({
   assert.ok(Buffer.byteLength(harness.postedBodies[0], "utf8") <= 48 * 1024);
   const terminalPayload = JSON.parse(harness.postedBodies[0]);
   assert.ok(!Object.hasOwn(terminalPayload.summary, "reportStored"));
-  assert.equal(
-    terminalPayload.summary.diagnosticVariant,
-    "rgba16float-no-texture-formats-tier2-v1",
-  );
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(terminalPayload.summary.comparison)),
-    {
-      layerFormat: "rgba16float",
-      canvasFormat: "rgba16float",
-      textureFormatsTier2Enabled: false,
-      inPlaceGlazeCommitEnabled: false,
-      inPlaceGlazeCommitPipelineCreated: false,
-    },
+  assertDiagnosticSummary(
+    terminalPayload.summary,
+    DEFAULT_TEST_ID,
+    { unicode: "界".repeat(1_600) },
   );
   assert.ok(Buffer.byteLength(JSON.stringify(terminalPayload.events.at(-1).detail), "utf8") <= 1200);
   assert.equal(harness.elements.get("diagnosticStatus").textContent, "Diagnostic complete");
@@ -420,6 +592,12 @@ function diagnosticBootstrapHarness({
   assert.ok(!Object.hasOwn(manualPayload.currentAttempt, "writeToken"));
   assert.equal(manualPayload.manualBackup.automaticUploadStored, true);
   assert.equal(manualPayload.manualBackup.runCodeSuffix, "AAAAAAAA");
+  assert.equal(manualPayload.testId, DEFAULT_TEST_ID);
+  assertDiagnosticSummary(
+    manualPayload.currentAttempt.summary,
+    DEFAULT_TEST_ID,
+    terminalPayload.summary.result,
+  );
   assert.doesNotMatch(JSON.stringify(manualPayload), /writeToken/);
   await harness.browser.__gpuStartupDiagnostics.copyManualBackup();
   assert.equal(harness.copiedText(), harness.elements.get("diagnosticJson").value);
@@ -431,17 +609,93 @@ function diagnosticBootstrapHarness({
 }
 
 {
-  const harness = diagnosticBootstrapHarness({ userAgent: "界".repeat(100_000) });
+  const result = storageTargetFailureResult();
+  const encodedResultBytes = Buffer.byteLength(JSON.stringify(result), "utf8");
+  assert.ok(encodedResultBytes > 1200 && encodedResultBytes < 12 * 1024);
+  const harness = diagnosticBootstrapHarness({ testId: STORAGE_FORMAT_TEST_ID });
+  assert.equal(
+    harness.elements.get("diagnosticVariantLabel").textContent,
+    "1×1 · RGBA8 vs RGBA16F · storage write",
+  );
+  const stored = await harness.browser.__gpuStartupDiagnostics.finish(
+    "completed",
+    "diagnostic-completed",
+    result,
+  );
+  assert.equal(stored, true);
+  const terminalPayload = JSON.parse(harness.postedBodies[0]);
+  assert.equal(terminalPayload.status, "completed");
+  assertDiagnosticSummary(terminalPayload.summary, STORAGE_FORMAT_TEST_ID, result);
+  assert.notEqual(terminalPayload.summary.result?.truncated, true);
+  assert.deepEqual(terminalPayload.summary.result.control.timingsMs, result.control.timingsMs);
+  assert.deepEqual(terminalPayload.summary.result.target.timingsMs, result.target.timingsMs);
+  assert.equal(terminalPayload.events.at(-1).detail.truncated, true);
+  assert.ok(Buffer.byteLength(JSON.stringify(terminalPayload.events.at(-1).detail), "utf8") <= 1200);
+  const manualPayload = JSON.parse(harness.elements.get("diagnosticJson").value);
+  assert.equal(manualPayload.testId, STORAGE_FORMAT_TEST_ID);
+  assert.equal(manualPayload.manualBackup.testId, STORAGE_FORMAT_TEST_ID);
+  assertDiagnosticSummary(
+    manualPayload.currentAttempt.summary,
+    STORAGE_FORMAT_TEST_ID,
+    result,
+  );
+}
+
+{
+  const result = storageTargetFailureResult();
+  const harness = diagnosticBootstrapHarness({
+    userAgent: "界".repeat(100_000),
+    testId: STORAGE_FORMAT_TEST_ID,
+  });
   await harness.browser.__gpuStartupDiagnostics.finish(
-    "failed",
-    "diagnostic-failed",
-    { oversized: "界".repeat(100_000) },
+    "completed",
+    "diagnostic-completed",
+    result,
   );
   assert.equal(harness.postedBodies.length, 1);
   assert.ok(
     Buffer.byteLength(harness.postedBodies[0], "utf8") <= 48 * 1024,
     "Even adversarial Unicode input must remain under the hard client payload limit.",
   );
+  const minimalPayload = JSON.parse(harness.postedBodies[0]);
+  assert.equal(minimalPayload.summary.snapshotCompacted, true);
+  assertDiagnosticSummary(minimalPayload.summary, STORAGE_FORMAT_TEST_ID, result);
+  assert.notEqual(minimalPayload.summary.result?.truncated, true);
+  assert.deepEqual(minimalPayload.summary.result.control.timingsMs, result.control.timingsMs);
+  assert.deepEqual(minimalPayload.summary.result.target.timingsMs, result.target.timingsMs);
+}
+
+{
+  class PayloadInflatingTextEncoder {
+    encode(value) {
+      const bytes = new TextEncoder().encode(String(value));
+      return {
+        byteLength: String(value).includes(`"build":"${DIAGNOSTIC_BUILD}"`)
+          ? bytes.byteLength + 100_000
+          : bytes.byteLength,
+      };
+    }
+  }
+  const result = storageTargetFailureResult();
+  const harness = diagnosticBootstrapHarness({
+    testId: STORAGE_FORMAT_TEST_ID,
+    TextEncoderClass: PayloadInflatingTextEncoder,
+  });
+  await harness.browser.__gpuStartupDiagnostics.finish(
+    "completed",
+    "diagnostic-completed",
+    result,
+  );
+  assert.equal(harness.postedBodies.length, 1);
+  const hardMinimalPayload = JSON.parse(harness.postedBodies[0]);
+  assert.deepEqual(
+    Object.keys(hardMinimalPayload.summary).sort(),
+    ["comparison", "diagnosticVariant", "latestEvent", "result", "testId"].sort(),
+  );
+  assertDiagnosticSummary(hardMinimalPayload.summary, STORAGE_FORMAT_TEST_ID, result);
+  assert.notEqual(hardMinimalPayload.summary.result?.truncated, true);
+  assert.deepEqual(hardMinimalPayload.summary.result.control.timingsMs, result.control.timingsMs);
+  assert.deepEqual(hardMinimalPayload.summary.result.target.timingsMs, result.target.timingsMs);
 }
 
 {
@@ -501,6 +755,71 @@ function diagnosticBootstrapHarness({
 }
 
 {
+  const sharedSessionStorage = new Map();
+  const sharedLocalStorage = new Map();
+  const runCode = `diag-${"e".repeat(32)}`;
+  const defaultToken = "7".repeat(64);
+  const storageToken = "8".repeat(64);
+  const defaultLoad = diagnosticBootstrapHarness({
+    runCode,
+    writeToken: defaultToken,
+    sharedSessionStorage,
+    sharedLocalStorage,
+  });
+  defaultLoad.browser.__gpuStartupDiagnostics.record(
+    "default-only-checkpoint",
+    null,
+    "running",
+    "beacon",
+  );
+  const storageLoad = diagnosticBootstrapHarness({
+    runCode,
+    writeToken: storageToken,
+    testId: STORAGE_FORMAT_TEST_ID,
+    sharedSessionStorage,
+    sharedLocalStorage,
+  });
+  storageLoad.browser.__gpuStartupDiagnostics.record(
+    "storage-only-checkpoint",
+    null,
+    "running",
+    "beacon",
+  );
+  assert.equal(sharedSessionStorage.size, 2);
+  assert.equal(sharedLocalStorage.size, 2);
+  assert.ok([...sharedSessionStorage.keys()].some((key) => key.endsWith(`:${DEFAULT_TEST_ID}`)));
+  assert.ok([...sharedSessionStorage.keys()].some((key) => key.endsWith(`:${STORAGE_FORMAT_TEST_ID}`)));
+  assert.ok([...sharedLocalStorage.keys()].some((key) => key.endsWith(`:${DEFAULT_TEST_ID}`)));
+  assert.ok([...sharedLocalStorage.keys()].some((key) => key.endsWith(`:${STORAGE_FORMAT_TEST_ID}`)));
+
+  const defaultReload = diagnosticBootstrapHarness({
+    runCode,
+    writeToken: "",
+    sharedSessionStorage,
+    sharedLocalStorage,
+  });
+  const storageReload = diagnosticBootstrapHarness({
+    runCode,
+    writeToken: "",
+    testId: STORAGE_FORMAT_TEST_ID,
+    sharedSessionStorage,
+    sharedLocalStorage,
+  });
+  assert.equal(defaultReload.browser.__gpuStartupDiagnostics.snapshot().writeToken, defaultToken);
+  assert.equal(storageReload.browser.__gpuStartupDiagnostics.snapshot().writeToken, storageToken);
+  const defaultBackup = JSON.parse(defaultReload.browser.__gpuStartupDiagnostics.manualBackup());
+  const storageBackup = JSON.parse(storageReload.browser.__gpuStartupDiagnostics.manualBackup());
+  assert.equal(defaultBackup.testId, DEFAULT_TEST_ID);
+  assert.equal(storageBackup.testId, STORAGE_FORMAT_TEST_ID);
+  assert.ok(JSON.stringify(defaultBackup.recoveredAttempts).includes("default-only-checkpoint"));
+  assert.ok(!JSON.stringify(defaultBackup.recoveredAttempts).includes("storage-only-checkpoint"));
+  assert.ok(JSON.stringify(storageBackup.recoveredAttempts).includes("storage-only-checkpoint"));
+  assert.ok(!JSON.stringify(storageBackup.recoveredAttempts).includes("default-only-checkpoint"));
+  assertDiagnosticSummary(defaultBackup.currentAttempt.summary, DEFAULT_TEST_ID, null);
+  assertDiagnosticSummary(storageBackup.currentAttempt.summary, STORAGE_FORMAT_TEST_ID, null);
+}
+
+{
   const harness = diagnosticBootstrapHarness({ runCode: "", writeToken: "" });
   harness.browser.__gpuStartupDiagnostics.record(
     "application-navigation-started",
@@ -545,9 +864,10 @@ function diagnosticBootstrapHarness({
     );
   }
   assert.equal(harness.browser.__gpuStartupDiagnostics.snapshot().events.length, 24);
-  assert.equal(
-    harness.browser.__gpuStartupDiagnostics.snapshot().summary.diagnosticVariant,
-    "rgba16float-no-texture-formats-tier2-v1",
+  assertDiagnosticSummary(
+    harness.browser.__gpuStartupDiagnostics.snapshot().summary,
+    DEFAULT_TEST_ID,
+    null,
   );
   const stored = await harness.browser.__gpuStartupDiagnostics.finish(
     "completed",
@@ -565,6 +885,40 @@ function diagnosticBootstrapHarness({
   assert.equal(localBackup.manualBackup.runCodeSuffix, "LOCAL");
   assert.ok(localBackup.currentAttempt.events.length > 24);
   assert.ok(localBackup.currentAttempt.events.some(({ name }) => name === "historical-checkpoint-0"));
+  assertDiagnosticSummary(localBackup.currentAttempt.summary, DEFAULT_TEST_ID, null);
+}
+
+{
+  const result = storageTargetFailureResult();
+  const harness = diagnosticBootstrapHarness({
+    runCode: "",
+    writeToken: "",
+    testId: STORAGE_FORMAT_TEST_ID,
+  });
+  for (let index = 0; index < 40; index += 1) {
+    harness.browser.__gpuStartupDiagnostics.record(
+      `storage-history-${index}`,
+      { index },
+      "running",
+      "wait",
+    );
+  }
+  assert.equal(harness.browser.__gpuStartupDiagnostics.snapshot().events.length, 24);
+  await harness.browser.__gpuStartupDiagnostics.finish(
+    "completed",
+    "diagnostic-completed",
+    result,
+  );
+  const snapshot = harness.browser.__gpuStartupDiagnostics.snapshot();
+  assert.equal(snapshot.events.length, 24);
+  assertDiagnosticSummary(snapshot.summary, STORAGE_FORMAT_TEST_ID, result);
+  const backup = JSON.parse(harness.elements.get("diagnosticJson").value);
+  assert.ok(backup.currentAttempt.events.length > 24);
+  assert.ok(backup.currentAttempt.events.some(({ name }) => name === "storage-history-0"));
+  assertDiagnosticSummary(backup.currentAttempt.summary, STORAGE_FORMAT_TEST_ID, result);
+  assert.notEqual(backup.currentAttempt.summary.result?.truncated, true);
+  assert.deepEqual(backup.currentAttempt.summary.result.control.timingsMs, result.control.timingsMs);
+  assert.deepEqual(backup.currentAttempt.summary.result.target.timingsMs, result.target.timingsMs);
 }
 
 {
@@ -738,6 +1092,7 @@ if (existsSync(builtWorkerPath)) {
       if (
         this.sql.startsWith("SELECT write_token_hash")
         || this.sql.startsWith("SELECT status, sequence")
+        || this.sql.startsWith("SELECT result_summary")
       ) {
         const row = this.database.rows.get(this.values[0]) ?? null;
         if (
@@ -793,9 +1148,52 @@ if (existsSync(builtWorkerPath)) {
   assert.equal(pageResponse.headers.get("Referrer-Policy"), "no-referrer");
   assert.equal(await pageResponse.text(), builtDiagnosticHtml.replace(/\r\n?/g, "\n"));
   assert.equal(database.rows.get(runCode)?.status, "html-requested");
-  assert.ok(
-    !Object.hasOwn(JSON.parse(database.rows.get(runCode).result_summary), "reportStored"),
+  const requestedDefaultSummary = JSON.parse(database.rows.get(runCode).result_summary);
+  assert.ok(!Object.hasOwn(requestedDefaultSummary, "reportStored"));
+  assertDiagnosticSummary(requestedDefaultSummary, DEFAULT_TEST_ID, null);
+
+  const storageRunCode = `diag-${"c".repeat(32)}`;
+  const storagePageResponse = await worker.fetch(
+    new Request(
+      `https://example.test/gpu-startup-lab?run=${storageRunCode}&test=${STORAGE_FORMAT_TEST_ID}`,
+      { headers: { "User-Agent": "Storage Diagnostic Test Browser" } },
+    ),
+    environment,
   );
+  assert.equal(storagePageResponse.status, 200);
+  assert.equal(
+    await storagePageResponse.text(),
+    builtDiagnosticHtml.replace(/\r\n?/g, "\n"),
+  );
+  assert.equal(database.rows.get(storageRunCode)?.status, "html-requested");
+  assertDiagnosticSummary(
+    JSON.parse(database.rows.get(storageRunCode).result_summary),
+    STORAGE_FORMAT_TEST_ID,
+    null,
+  );
+
+  const mismatchedPageResponse = await worker.fetch(
+    new Request(
+      `https://example.test/gpu-startup-lab?run=${runCode}&test=${STORAGE_FORMAT_TEST_ID}`,
+    ),
+    environment,
+  );
+  assert.equal(mismatchedPageResponse.status, 409);
+  assertDiagnosticSummary(
+    JSON.parse(database.rows.get(runCode).result_summary),
+    DEFAULT_TEST_ID,
+    null,
+  );
+
+  const unknownRunCode = `diag-${"0".repeat(32)}`;
+  const unknownPageResponse = await worker.fetch(
+    new Request(
+      `https://example.test/gpu-startup-lab?run=${unknownRunCode}&test=unknown-test-v1`,
+    ),
+    environment,
+  );
+  assert.equal(unknownPageResponse.status, 400);
+  assert.equal(database.rows.has(unknownRunCode), false);
 
   const frameResponse = await worker.fetch(
     new Request(
@@ -970,6 +1368,15 @@ if (existsSync(builtWorkerPath)) {
     await flaggedRootResponse.text(),
     readFileSync(resolve(root, "dist/client/index.html"), "utf8"),
   );
+  const storageFlaggedRootResponse = await worker.fetch(
+    new Request(`https://example.test/?test=${STORAGE_FORMAT_TEST_ID}`),
+    environment,
+  );
+  assert.equal(storageFlaggedRootResponse.status, 200);
+  assert.equal(
+    await storageFlaggedRootResponse.text(),
+    readFileSync(resolve(root, "dist/client/index.html"), "utf8"),
+  );
   const unprotectedFrameResponse = await worker.fetch(
     new Request("https://example.test/gpu-startup-app-frame"),
     environment,
@@ -983,32 +1390,48 @@ if (existsSync(builtWorkerPath)) {
 
   const clientNow = new Date().toISOString();
   const sequence = Date.now() * 1000 + 1;
-  const payload = {
-    version: 1,
-    build: "gpu-startup-rgba16f-no-tier2-app-boot-v5",
-    runCode,
-    writeToken,
-    sequence,
-    createdAt: clientNow,
-    updatedAt: clientNow,
-    status: "running",
-    privacy: "Technical data only.",
-    environment: { secureContext: true },
-    events: [{ sequence, at: clientNow, name: "inline-bootstrap-started", detail: null }],
-    summary: {
-      diagnosticVariant: "rgba16float-no-texture-formats-tier2-v1",
-      comparison: {
-        layerFormat: "rgba16float",
-        canvasFormat: "rgba16float",
-        textureFormatsTier2Enabled: false,
-        inPlaceGlazeCommitEnabled: false,
-        inPlaceGlazeCommitPipelineCreated: false,
+  function createUploadPayload({
+    payloadRunCode = runCode,
+    payloadWriteToken = writeToken,
+    payloadSequence = sequence,
+    testId = DEFAULT_TEST_ID,
+    status = "running",
+    latestEvent = "inline-bootstrap-started",
+    result = null,
+    eventDetail = null,
+    moduleLoaded = false,
+    probeFinished = false,
+  } = {}) {
+    const definition = diagnosticDefinition(testId);
+    return {
+      version: 1,
+      build: DIAGNOSTIC_BUILD,
+      runCode: payloadRunCode,
+      writeToken: payloadWriteToken,
+      sequence: payloadSequence,
+      createdAt: clientNow,
+      updatedAt: clientNow,
+      status,
+      privacy: "Technical data only.",
+      environment: { secureContext: true },
+      events: [{
+        sequence: payloadSequence,
+        at: clientNow,
+        name: latestEvent,
+        detail: eventDetail,
+      }],
+      summary: {
+        testId: definition.testId,
+        diagnosticVariant: definition.diagnosticVariant,
+        comparison: definition.comparison,
+        result,
+        latestEvent,
+        moduleLoaded,
+        probeFinished,
       },
-      latestEvent: "inline-bootstrap-started",
-      moduleLoaded: false,
-      probeFinished: false,
-    },
+    };
   };
+  const payload = createUploadPayload();
   const upload = (body) => worker.fetch(new Request("https://example.test/api/gpu-startup-diagnostics", {
     method: "POST",
     headers: {
@@ -1033,6 +1456,7 @@ if (existsSync(builtWorkerPath)) {
   assert.equal(stored.latest_event, "inline-bootstrap-started");
   assert.ok(stored.payload_bytes > 0);
   assert.doesNotMatch(stored.payload_json, new RegExp(writeToken));
+  assertDiagnosticSummary(JSON.parse(stored.result_summary), DEFAULT_TEST_ID, null);
 
   const wrongVariantResponse = await upload({
     ...payload,
@@ -1042,6 +1466,90 @@ if (existsSync(builtWorkerPath)) {
     },
   });
   assert.equal(wrongVariantResponse.status, 400);
+  const unknownTestResponse = await upload({
+    ...payload,
+    summary: {
+      ...payload.summary,
+      testId: "unknown-test-v1",
+    },
+  });
+  assert.equal(unknownTestResponse.status, 400);
+
+  const storageWriteToken = "6".repeat(64);
+  const storageBasePayload = createUploadPayload({
+    payloadRunCode: storageRunCode,
+    payloadWriteToken: storageWriteToken,
+    payloadSequence: sequence + 200,
+    testId: STORAGE_FORMAT_TEST_ID,
+  });
+  const invalidStorageComparisons = [
+    { ...STORAGE_FORMAT_COMPARISON, targetFormat: "rgba8unorm" },
+    { ...STORAGE_FORMAT_COMPARISON, width: 2 },
+    { ...STORAGE_FORMAT_COMPARISON, storageAccess: "read-write" },
+    { ...STORAGE_FORMAT_COMPARISON, requiredFeatures: ["texture-formats-tier2"] },
+    { ...STORAGE_FORMAT_COMPARISON, textureFormatsTier2Requested: true },
+    { ...STORAGE_FORMAT_COMPARISON, deviceReuse: "separate-devices" },
+    {
+      ...STORAGE_FORMAT_COMPARISON,
+      executionOrder: ["rgba16float", "rgba8unorm"],
+    },
+  ];
+  for (const comparison of invalidStorageComparisons) {
+    const invalidProtocolResponse = await upload({
+      ...storageBasePayload,
+      summary: { ...storageBasePayload.summary, comparison },
+    });
+    assert.equal(invalidProtocolResponse.status, 400);
+  }
+
+  const mismatchedPostResponse = await upload(createUploadPayload({
+    payloadRunCode: runCode,
+    payloadWriteToken: writeToken,
+    payloadSequence: sequence + 10,
+    testId: STORAGE_FORMAT_TEST_ID,
+  }));
+  assert.equal(mismatchedPostResponse.status, 409);
+  assertDiagnosticSummary(
+    JSON.parse(database.rows.get(runCode).result_summary),
+    DEFAULT_TEST_ID,
+    null,
+  );
+
+  const storageResult = storageTargetFailureResult();
+  const storageCompletedSequence = sequence + 201;
+  const storageCompletedPayload = createUploadPayload({
+    payloadRunCode: storageRunCode,
+    payloadWriteToken: storageWriteToken,
+    payloadSequence: storageCompletedSequence,
+    testId: STORAGE_FORMAT_TEST_ID,
+    status: "completed",
+    latestEvent: "diagnostic-completed",
+    result: storageResult,
+    eventDetail: {
+      verdict: storageResult.verdict,
+      control: { outcome: "passed" },
+      target: { outcome: "failed", failedStage: "pipeline" },
+    },
+    moduleLoaded: true,
+    probeFinished: true,
+  });
+  const storageCompletedResponse = await upload(storageCompletedPayload);
+  assert.equal(storageCompletedResponse.status, 201);
+  const storageAcknowledgement = await storageCompletedResponse.json();
+  assert.equal(storageAcknowledgement.acknowledged, true);
+  assert.equal(storageAcknowledgement.runCode, storageRunCode);
+  assert.equal(storageAcknowledgement.storedStatus, "completed");
+  assert.equal(storageAcknowledgement.storedSequence, storageCompletedSequence);
+  const storedStorageRun = database.rows.get(storageRunCode);
+  assert.equal(storedStorageRun.status, "completed");
+  const storedStorageSummary = JSON.parse(storedStorageRun.result_summary);
+  assertDiagnosticSummary(storedStorageSummary, STORAGE_FORMAT_TEST_ID, storageResult);
+  assert.equal(storedStorageSummary.result.verdict, "rgba16float-specific-failure");
+  assert.equal(storedStorageSummary.result.control.outcome, "passed");
+  assert.equal(storedStorageSummary.result.target.outcome, "failed");
+  assert.notEqual(storedStorageSummary.result.truncated, true);
+  assert.deepEqual(storedStorageSummary.result.control.timingsMs, storageResult.control.timingsMs);
+  assert.deepEqual(storedStorageSummary.result.target.timingsMs, storageResult.target.timingsMs);
 
   const staleResponse = await upload({
     ...payload,

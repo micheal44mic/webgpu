@@ -90,10 +90,34 @@ async function withTimeout<Value>(
 const DIAGNOSTIC_DOCUMENT_WIDTH = 2048;
 const DIAGNOSTIC_DOCUMENT_HEIGHT = 2048;
 const RGBA16FLOAT_BYTES_PER_PIXEL = 8;
+const APPLICATION_BOOT_TEST = "startup-no-tier2-v1";
 const APPLICATION_BOOT_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
+const STORAGE_FORMAT_AB_TEST = "storage-format-ab-v1";
+const STORAGE_FORMAT_AB_VARIANT =
+  "storage-format-ab-rgba8unorm-control-rgba16float-target-write-only-1x1-no-tier2-v1";
+const diagnosticTest = new URLSearchParams(window.location.search).get("test");
+const storageFormatAbEnabled = diagnosticTest === STORAGE_FORMAT_AB_TEST;
 
 function comparisonPolicy(): Record<string, unknown> {
+  if (storageFormatAbEnabled) {
+    return {
+      testId: STORAGE_FORMAT_AB_TEST,
+      diagnosticVariant: STORAGE_FORMAT_AB_VARIANT,
+      kind: "storage-texture-format-ab",
+      controlFormat: "rgba8unorm",
+      targetFormat: "rgba16float",
+      width: 1,
+      height: 1,
+      depthOrArrayLayers: 1,
+      storageAccess: "write-only",
+      requiredFeatures: [],
+      textureFormatsTier2Requested: false,
+      deviceReuse: "single-device",
+      executionOrder: ["rgba8unorm", "rgba16float"],
+    };
+  }
   return {
+    testId: APPLICATION_BOOT_TEST,
     diagnosticVariant: APPLICATION_BOOT_VARIANT,
     layerFormat: "rgba16float",
     canvasFormat: "rgba16float",
@@ -204,6 +228,765 @@ async function captureHighEntropyEnvironment(): Promise<Record<string, unknown>>
       decodedBodySize: navigation.decodedBodySize,
     } : null,
   };
+}
+
+type StorageProbeFormat = "rgba8unorm" | "rgba16float";
+type StorageProbeErrorFilter = "validation" | "internal" | "out-of-memory";
+
+interface StorageProbeStageReport {
+  ok: boolean;
+  operationElapsedMs: number;
+  scopeDrainElapsedMs: number;
+  totalElapsedMs: number;
+  thrown: unknown;
+  scopePushErrors: Partial<Record<StorageProbeErrorFilter, unknown>>;
+  scopeErrors: Partial<Record<StorageProbeErrorFilter, unknown>>;
+  scopePopErrors: Partial<Record<StorageProbeErrorFilter, unknown>>;
+  result: unknown;
+  semanticError: string | null;
+}
+
+interface StorageProbeStageOutcome<Value> {
+  value: Value | null;
+  report: StorageProbeStageReport;
+}
+
+interface StorageFormatProbeResult {
+  format: StorageProbeFormat;
+  passed: boolean;
+  failedStage: string | null;
+  stages: Record<string, StorageProbeStageReport>;
+}
+
+function storageCompilationSummary(info: GPUCompilationInfo): Record<string, unknown> {
+  const allMessages = [...info.messages];
+  const messages = allMessages.slice(0, 16).map((message) => ({
+    type: message.type,
+    message: message.message.slice(0, 800),
+    lineNum: message.lineNum,
+    linePos: message.linePos,
+    offset: message.offset,
+    length: message.length,
+  }));
+  return {
+    errorCount: allMessages.filter((message) => message.type === "error").length,
+    warningCount: allMessages.filter((message) => message.type === "warning").length,
+    messageCount: allMessages.length,
+    messages,
+  };
+}
+
+async function runScopedStorageOperation<Value>(
+  device: GPUDevice,
+  label: string,
+  operation: () => Value | Promise<Value>,
+  summarize: (value: Value) => unknown,
+  semanticValidation?: (value: Value) => string | null,
+): Promise<StorageProbeStageOutcome<Value>> {
+  const startedAt = performance.now();
+  const filters: StorageProbeErrorFilter[] = ["out-of-memory", "internal", "validation"];
+  const pushedFilters: StorageProbeErrorFilter[] = [];
+  const scopePushErrors: Partial<Record<StorageProbeErrorFilter, unknown>> = {};
+  const scopeErrors: Partial<Record<StorageProbeErrorFilter, unknown>> = {};
+  const scopePopErrors: Partial<Record<StorageProbeErrorFilter, unknown>> = {};
+  for (const filter of filters) {
+    try {
+      device.pushErrorScope(filter);
+      pushedFilters.push(filter);
+    } catch (error) {
+      scopePushErrors[filter] = describeError(error);
+    }
+  }
+
+  let value: Value | null = null;
+  let thrown: unknown = null;
+  const operationStartedAt = performance.now();
+  try {
+    value = await withTimeout(
+      Promise.resolve().then(operation),
+      60_000,
+      `${label} operation`,
+    );
+  } catch (error) {
+    const reason = typeof error === "object"
+      && error !== null
+      && "reason" in error
+      && typeof error.reason === "string"
+      ? error.reason
+      : null;
+    thrown = reason === null
+      ? describeError(error)
+      : { error: describeError(error), reason };
+  }
+  const operationElapsedMs = performance.now() - operationStartedAt;
+
+  const scopeDrainStartedAt = performance.now();
+  const pendingScopeErrors = pushedFilters.reverse().map((filter) => {
+    try {
+      return { filter, promise: device.popErrorScope() };
+    } catch (error) {
+      scopePopErrors[filter] = describeError(error);
+      return { filter, promise: null };
+    }
+  });
+  await Promise.all(pendingScopeErrors.map(async ({ filter, promise }) => {
+    if (!promise) return;
+    try {
+      const error = await withTimeout(
+        promise,
+        15_000,
+        `${label} ${filter} error scope`,
+      );
+      if (error) scopeErrors[filter] = describeError(error);
+    } catch (error) {
+      scopePopErrors[filter] = describeError(error);
+    }
+  }));
+  const scopeDrainElapsedMs = performance.now() - scopeDrainStartedAt;
+  const semanticError = value !== null && semanticValidation
+    ? semanticValidation(value)
+    : null;
+  const requiredScopePushFailed = Object.keys(scopePushErrors).some(
+    (filter) => filter !== "internal",
+  );
+  const ok = thrown === null
+    && semanticError === null
+    && !requiredScopePushFailed
+    && Object.keys(scopeErrors).length === 0
+    && Object.keys(scopePopErrors).length === 0;
+
+  return {
+    value,
+    report: {
+      ok,
+      operationElapsedMs,
+      scopeDrainElapsedMs,
+      totalElapsedMs: performance.now() - startedAt,
+      thrown,
+      scopePushErrors,
+      scopeErrors,
+      scopePopErrors,
+      result: value === null ? null : summarize(value),
+      semanticError,
+    },
+  };
+}
+
+async function runStorageProbePhase<Value>(
+  device: GPUDevice,
+  diagnosticStartedAt: number,
+  phase: string,
+  label: string,
+  format: StorageProbeFormat,
+  operation: () => Value | Promise<Value>,
+  summarize: (value: Value) => unknown,
+  semanticValidation?: (value: Value) => string | null,
+): Promise<StorageProbeStageOutcome<Value>> {
+  const phaseStartedAt = performance.now();
+  await checkpoint("application-startup-phase", {
+    phase,
+    label,
+    state: "started",
+    totalElapsedMs: phaseStartedAt - diagnosticStartedAt,
+    phaseElapsedMs: 0,
+    detail: { format },
+  }, "running", "beacon");
+  const outcome = await runScopedStorageOperation(
+    device,
+    label,
+    operation,
+    summarize,
+    semanticValidation,
+  );
+  await checkpoint("application-startup-phase", {
+    phase,
+    label,
+    state: outcome.report.ok ? "completed" : "failed",
+    totalElapsedMs: performance.now() - diagnosticStartedAt,
+    phaseElapsedMs: performance.now() - phaseStartedAt,
+    detail: {
+      format,
+      ...outcome.report,
+    },
+  }, "running", "beacon");
+  return outcome;
+}
+
+async function runStorageFormatCase(
+  device: GPUDevice,
+  diagnosticStartedAt: number,
+  format: StorageProbeFormat,
+  phasePrefix: "rgba8" | "rgba16",
+): Promise<StorageFormatProbeResult> {
+  const stages: Record<string, StorageProbeStageReport> = {};
+  let failedStage: string | null = null;
+  let texture: GPUTexture | null = null;
+
+  const runStage = async <Value>(
+    key: string,
+    label: string,
+    operation: () => Value | Promise<Value>,
+    summarize: (value: Value) => unknown,
+    semanticValidation?: (value: Value) => string | null,
+  ): Promise<Value | null> => {
+    const outcome = await runStorageProbePhase(
+      device,
+      diagnosticStartedAt,
+      `${phasePrefix}-${key}`,
+      label,
+      format,
+      operation,
+      summarize,
+      semanticValidation,
+    );
+    stages[key] = outcome.report;
+    if (!outcome.report.ok && failedStage === null) failedStage = key;
+    return outcome.value;
+  };
+
+  try {
+    const shaderModule = await runStage(
+      "shader-module",
+      `Creating the ${format} storage shader`,
+      () => device.createShaderModule({
+        label: `diagnostic-${format}-storage-write-shader`,
+        code: `
+          @group(0) @binding(0) var target: texture_storage_2d<${format}, write>;
+          @compute @workgroup_size(1)
+          fn main() {
+            textureStore(target, vec2<i32>(0, 0), vec4<f32>(1.0, 0.25, 0.0, 1.0));
+          }
+        `,
+      }),
+      () => ({ created: true }),
+    );
+    if (!shaderModule || failedStage) {
+      return { format, passed: false, failedStage, stages };
+    }
+
+    const compilationInfo = await runStage(
+      "compilation-info",
+      `Reading the ${format} shader diagnostics`,
+      async () => {
+        if (typeof shaderModule.getCompilationInfo !== "function") {
+          return {
+            available: false,
+            errorCount: 0,
+            warningCount: 0,
+            messageCount: 0,
+            messages: [],
+          };
+        }
+        const info = await withTimeout(
+          shaderModule.getCompilationInfo(),
+          20_000,
+          `${format} shader compilation info`,
+        );
+        return { available: true, ...storageCompilationSummary(info) };
+      },
+      (summary) => summary,
+      (summary) => {
+        return Number(summary.errorCount) > 0
+          ? `${format} shader compilation reported errors.`
+          : null;
+      },
+    );
+    if (!compilationInfo || failedStage) {
+      return { format, passed: false, failedStage, stages };
+    }
+
+    const layouts = await runStage(
+      "layout",
+      `Creating the ${format} storage layout`,
+      () => {
+        const bindGroupLayout = device.createBindGroupLayout({
+          label: `diagnostic-${format}-storage-layout`,
+          entries: [{
+            binding: 0,
+            visibility: GPUShaderStage.COMPUTE,
+            storageTexture: {
+              access: "write-only",
+              format,
+              viewDimension: "2d",
+            },
+          }],
+        });
+        const pipelineLayout = device.createPipelineLayout({
+          label: `diagnostic-${format}-pipeline-layout`,
+          bindGroupLayouts: [bindGroupLayout],
+        });
+        return { bindGroupLayout, pipelineLayout };
+      },
+      () => ({ created: true, access: "write-only", format }),
+    );
+    if (!layouts || failedStage) {
+      return { format, passed: false, failedStage, stages };
+    }
+
+    const pipeline = await runStage(
+      "pipeline",
+      `Compiling the ${format} storage pipeline`,
+      () => device.createComputePipelineAsync({
+        label: `diagnostic-${format}-storage-write-pipeline`,
+        layout: layouts.pipelineLayout,
+        compute: { module: shaderModule, entryPoint: "main" },
+      }),
+      () => ({ created: true }),
+    );
+    if (!pipeline || failedStage) {
+      return { format, passed: false, failedStage, stages };
+    }
+
+    const textureResources = await runStage(
+      "texture",
+      `Creating the 1x1 ${format} storage texture`,
+      () => {
+        const createdTexture = device.createTexture({
+          label: `diagnostic-1x1-${format}-storage-texture`,
+          size: [1, 1, 1],
+          format,
+          usage: GPUTextureUsage.STORAGE_BINDING,
+        });
+        return { texture: createdTexture, view: createdTexture.createView() };
+      },
+      () => ({ created: true, width: 1, height: 1, format, usage: ["storage-binding"] }),
+    );
+    if (!textureResources || failedStage) {
+      return { format, passed: false, failedStage, stages };
+    }
+    texture = textureResources.texture;
+
+    const bindGroup = await runStage(
+      "binding",
+      `Binding the ${format} storage texture`,
+      () => device.createBindGroup({
+        label: `diagnostic-${format}-storage-bind-group`,
+        layout: layouts.bindGroupLayout,
+        entries: [{ binding: 0, resource: textureResources.view }],
+      }),
+      () => ({ created: true }),
+    );
+    if (!bindGroup || failedStage) {
+      return { format, passed: false, failedStage, stages };
+    }
+
+    await runStage(
+      "dispatch",
+      `Encoding and submitting the ${format} storage write`,
+      () => {
+        const encoder = device.createCommandEncoder({
+          label: `diagnostic-${format}-storage-write-encoder`,
+        });
+        const pass = encoder.beginComputePass({
+          label: `diagnostic-${format}-storage-write-pass`,
+        });
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, bindGroup);
+        pass.dispatchWorkgroups(1, 1, 1);
+        pass.end();
+        device.queue.submit([encoder.finish()]);
+        return true;
+      },
+      () => ({ submitted: true, workgroups: [1, 1, 1] }),
+    );
+    if (failedStage) {
+      return { format, passed: false, failedStage, stages };
+    }
+    await runStage(
+      "fence",
+      `Waiting for the ${format} storage write`,
+      () => withTimeout(
+        device.queue.onSubmittedWorkDone(),
+        30_000,
+        `${format} storage queue fence`,
+      ),
+      () => ({ completed: true }),
+    );
+    return { format, passed: failedStage === null, failedStage, stages };
+  } finally {
+    texture?.destroy();
+  }
+}
+
+function storageProbeErrorText(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") return value.slice(0, 1_000);
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    if ("error" in record) {
+      const nested = storageProbeErrorText(record.error);
+      const reason = typeof record.reason === "string" ? `reason=${record.reason}; ` : "";
+      return `${reason}${nested ?? "unknown error"}`.slice(0, 1_000);
+    }
+    const name = typeof record.name === "string" ? record.name : "Error";
+    const message = typeof record.message === "string" ? record.message : null;
+    if (message) return `${name}: ${message}`.slice(0, 1_000);
+  }
+  try {
+    return JSON.stringify(value).slice(0, 1_000);
+  } catch {
+    return String(value).slice(0, 1_000);
+  }
+}
+
+function storageCompilationResultSummary(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || !("messageCount" in value)) return null;
+  return {
+    available: "available" in value ? value.available : true,
+    errorCount: "errorCount" in value ? value.errorCount : null,
+    warningCount: "warningCount" in value ? value.warningCount : null,
+    messageCount: value.messageCount,
+    firstMessages: "messages" in value && Array.isArray(value.messages)
+      ? value.messages.slice(0, 3).map((message) => {
+          if (!message || typeof message !== "object") return String(message).slice(0, 320);
+          const type = "type" in message ? String(message.type) : "unknown";
+          const lineNum = "lineNum" in message ? String(message.lineNum) : "?";
+          const linePos = "linePos" in message ? String(message.linePos) : "?";
+          const text = "message" in message && typeof message.message === "string"
+            ? message.message
+            : "";
+          return `${type} ${lineNum}:${linePos} ${text}`.slice(0, 320);
+        })
+      : [],
+  };
+}
+
+function storageFormatResultSummary(result: StorageFormatProbeResult): Record<string, unknown> {
+  const failedReport = result.failedStage ? result.stages[result.failedStage] : null;
+  const stageNames = Object.keys(result.stages);
+  const failedResult = failedReport?.result;
+  const compilation = storageCompilationResultSummary(
+    result.stages["compilation-info"]?.result,
+  );
+  const scopeErrorText = (
+    errors: Partial<Record<StorageProbeErrorFilter, unknown>>,
+  ): Partial<Record<StorageProbeErrorFilter, string | null>> => Object.fromEntries(
+    Object.entries(errors).map(([filter, error]) => [filter, storageProbeErrorText(error)]),
+  );
+  const pipelineReason = failedReport?.thrown
+    && typeof failedReport.thrown === "object"
+    && "reason" in failedReport.thrown
+    && typeof failedReport.thrown.reason === "string"
+    ? failedReport.thrown.reason
+    : null;
+  return {
+    format: result.format,
+    outcome: result.passed ? "passed" : "failed",
+    passed: result.passed,
+    failedStage: result.failedStage,
+    lastStage: stageNames.at(-1) ?? null,
+    internalErrorScopeSupported: stageNames.length > 0
+      ? stageNames.every(
+          (stage) => !Object.hasOwn(result.stages[stage]?.scopePushErrors ?? {}, "internal"),
+        )
+      : null,
+    compilation,
+    durationMs: stageNames.reduce(
+      (total, stage) => total + (result.stages[stage]?.totalElapsedMs ?? 0),
+      0,
+    ),
+    timingsMs: Object.fromEntries(stageNames.map((stage) => [
+      stage,
+      [
+        Math.round((result.stages[stage]?.operationElapsedMs ?? 0) * 10) / 10,
+        Math.round((result.stages[stage]?.scopeDrainElapsedMs ?? 0) * 10) / 10,
+      ],
+    ])),
+    failure: failedReport ? {
+      thrown: storageProbeErrorText(failedReport.thrown),
+      pipelineReason,
+      semanticError: failedReport.semanticError,
+      scopePushErrors: scopeErrorText(failedReport.scopePushErrors),
+      scopeErrors: scopeErrorText(failedReport.scopeErrors),
+      scopePopErrors: scopeErrorText(failedReport.scopePopErrors),
+      result: result.failedStage === "compilation-info" ? compilation : failedResult,
+    } : null,
+  };
+}
+
+function storageFormatResultTimedOut(result: StorageFormatProbeResult): boolean {
+  if (!result.failedStage) return false;
+  const failedReport = result.stages[result.failedStage];
+  if (!failedReport) return false;
+  try {
+    return JSON.stringify({
+      thrown: failedReport.thrown,
+      scopePopErrors: failedReport.scopePopErrors,
+    }).includes("timed out after");
+  } catch {
+    return false;
+  }
+}
+
+function markStorageFormatAsyncFailure(
+  result: StorageFormatProbeResult,
+  stage: "uncaptured-error" | "device-lost",
+): void {
+  if (!result.passed) return;
+  result.passed = false;
+  result.failedStage = stage;
+}
+
+async function runStorageFormatAbDiagnostic(): Promise<void> {
+  const diagnosticStartedAt = performance.now();
+  await checkpoint("storage-format-ab-started", {
+    ...comparisonPolicy(),
+    navigatorGpuPresent: Boolean(navigator.gpu),
+    secureContext: window.isSecureContext,
+  }, "running", "beacon");
+  if (!navigator.gpu) throw new Error("navigator.gpu is not available.");
+
+  const adapterPhaseStartedAt = performance.now();
+  await checkpoint("application-startup-phase", {
+    phase: "adapter-request",
+    label: "Finding a WebGPU adapter",
+    state: "started",
+    totalElapsedMs: adapterPhaseStartedAt - diagnosticStartedAt,
+    phaseElapsedMs: 0,
+  }, "running", "beacon");
+  const android = /\bAndroid\b/i.test(navigator.userAgent);
+  const adapterOptions: GPURequestAdapterOptions | undefined =
+    /\bWindows\b/i.test(navigator.userAgent) || android
+      ? undefined
+      : { powerPreference: "high-performance" };
+  let adapter: GPUAdapter | null = null;
+  let primaryAdapterError: unknown = null;
+  try {
+    adapter = await withTimeout(
+      navigator.gpu.requestAdapter(adapterOptions),
+      20_000,
+      "Storage comparison adapter request",
+    );
+  } catch (error) {
+    primaryAdapterError = error;
+    await checkpoint("storage-format-adapter-primary-error", {
+      error: describeError(error),
+    }, "running", "beacon");
+  }
+  let adapterMode = adapter ? (adapterOptions ? "high-performance" : "neutral") : "none";
+  if (!adapter && adapterOptions !== undefined) {
+    try {
+      adapter = await withTimeout(
+        navigator.gpu.requestAdapter(),
+        20_000,
+        "Storage comparison neutral adapter request",
+      );
+      if (adapter) adapterMode = "neutral";
+    } catch (error) {
+      await checkpoint("storage-format-adapter-neutral-error", {
+        error: describeError(error),
+      }, "running", "beacon");
+    }
+  }
+  if (!adapter && android) {
+    try {
+      adapter = await withTimeout(
+        navigator.gpu.requestAdapter({
+          featureLevel: "compatibility",
+        } as GPURequestAdapterOptions & { featureLevel: "compatibility" }),
+        20_000,
+        "Storage comparison compatibility adapter request",
+      );
+      if (adapter) adapterMode = "compatibility";
+    } catch (error) {
+      await checkpoint("storage-format-adapter-compatibility-error", {
+        error: describeError(error),
+      }, "running", "beacon");
+    }
+  }
+  if (!adapter) {
+    throw new Error(
+      primaryAdapterError
+        ? `No compatible WebGPU adapter was found. Primary error: ${String((primaryAdapterError as Error).message ?? primaryAdapterError)}`
+        : "No compatible WebGPU adapter was found.",
+    );
+  }
+  const textureFormatsTier2Advertised = adapter.features.has(
+    "texture-formats-tier2" as GPUFeatureName,
+  );
+  await checkpoint("application-startup-phase", {
+    phase: "adapter-request",
+    label: "Finding a WebGPU adapter",
+    state: "completed",
+    totalElapsedMs: performance.now() - diagnosticStartedAt,
+    phaseElapsedMs: performance.now() - adapterPhaseStartedAt,
+    detail: {
+      mode: adapterMode,
+      info: readAdapterInfo(adapter),
+      features: [...adapter.features].map(String).sort().slice(0, 32),
+      limits: readSupportedLimits(adapter.limits),
+      textureFormatsTier2Advertised,
+    },
+  }, "running", "beacon");
+
+  const requiredFeatures: GPUFeatureName[] = [];
+  const devicePhaseStartedAt = performance.now();
+  await checkpoint("application-startup-phase", {
+    phase: "device-request",
+    label: "Creating a feature-neutral WebGPU device",
+    state: "started",
+    totalElapsedMs: devicePhaseStartedAt - diagnosticStartedAt,
+    phaseElapsedMs: 0,
+    detail: { requiredFeatures },
+  }, "running", "beacon");
+  const deviceRequest = adapter.requestDevice({ requiredFeatures });
+  let device: GPUDevice;
+  try {
+    device = await withTimeout(deviceRequest, 20_000, "Storage comparison device request");
+  } catch (error) {
+    void deviceRequest.then((lateDevice) => lateDevice.destroy()).catch(() => undefined);
+    throw error;
+  }
+  const textureFormatsTier2Enabled = device.features.has(
+    "texture-formats-tier2" as GPUFeatureName,
+  );
+  await checkpoint("application-startup-phase", {
+    phase: "device-request",
+    label: "Creating a feature-neutral WebGPU device",
+    state: "completed",
+    totalElapsedMs: performance.now() - diagnosticStartedAt,
+    phaseElapsedMs: performance.now() - devicePhaseStartedAt,
+    detail: {
+      requiredFeatures,
+      enabledFeatures: [...device.features].map(String).sort(),
+      textureFormatsTier2Enabled,
+      limits: readSupportedLimits(device.limits),
+    },
+  }, "running", "beacon");
+  if (textureFormatsTier2Enabled) {
+    device.destroy();
+    throw new Error("The feature-neutral device unexpectedly enabled texture-formats-tier2.");
+  }
+
+  const uncapturedErrors: unknown[] = [];
+  let deviceLostInfo: Record<string, unknown> | null = null;
+  let intentionalDestroy = false;
+  device.addEventListener("uncapturederror", (event) => {
+    const detail = {
+      elapsedMs: performance.now() - diagnosticStartedAt,
+      error: describeError(event.error),
+    };
+    uncapturedErrors.push(detail);
+    if (uncapturedErrors.length > 12) uncapturedErrors.shift();
+    void checkpoint("storage-format-uncaptured-error", detail, "running", "beacon");
+  });
+  void device.lost.then((info) => {
+    if (intentionalDestroy) return;
+    deviceLostInfo = {
+      elapsedMs: performance.now() - diagnosticStartedAt,
+      reason: info.reason,
+      message: info.message,
+    };
+    void checkpoint("storage-format-device-lost", deviceLostInfo, "running", "beacon");
+  });
+
+  try {
+    const controlErrorStart = uncapturedErrors.length;
+    const control = await runStorageFormatCase(
+      device,
+      diagnosticStartedAt,
+      "rgba8unorm",
+      "rgba8",
+    );
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
+    if (deviceLostInfo) markStorageFormatAsyncFailure(control, "device-lost");
+    if (uncapturedErrors.length > controlErrorStart) {
+      markStorageFormatAsyncFailure(control, "uncaptured-error");
+    }
+    const controlTimedOut = storageFormatResultTimedOut(control);
+    const controlSummary = storageFormatResultSummary(control);
+    await checkpoint("storage-format-control-completed", controlSummary, "running", "beacon");
+
+    const targetErrorStart = uncapturedErrors.length;
+    const target: StorageFormatProbeResult = deviceLostInfo || controlTimedOut
+      ? {
+          format: "rgba16float" as const,
+          passed: false,
+          failedStage: deviceLostInfo ? "device-lost" : "control-timeout",
+          stages: {},
+        }
+      : await runStorageFormatCase(
+          device,
+          diagnosticStartedAt,
+          "rgba16float",
+          "rgba16",
+        );
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
+    if (deviceLostInfo) markStorageFormatAsyncFailure(target, "device-lost");
+    if (uncapturedErrors.length > targetErrorStart) {
+      markStorageFormatAsyncFailure(target, "uncaptured-error");
+    }
+    const targetSummary = storageFormatResultSummary(target);
+    await checkpoint("storage-format-target-completed", targetSummary, "running", "beacon");
+
+    let verdict: string;
+    let conclusion: string;
+    if (deviceLostInfo) {
+      verdict = "device-lost";
+      conclusion = "The WebGPU device was lost during the storage-format comparison.";
+    } else if (controlTimedOut) {
+      verdict = "control-timeout";
+      conclusion = "The RGBA8 control timed out; the device was not reused for the RGBA16F target.";
+    } else if (uncapturedErrors.length > 0) {
+      verdict = "uncaptured-error";
+      conclusion = "The storage-format comparison produced an uncaptured WebGPU error.";
+    } else if (control.passed && target.passed) {
+      verdict = "both-formats-passed";
+      conclusion = "Both RGBA8 and RGBA16F storage-write paths passed.";
+    } else if (control.passed) {
+      verdict = "rgba16float-specific-failure";
+      conclusion = `RGBA8 passed; RGBA16F failed at ${String(target.failedStage)}.`;
+    } else if (target.passed) {
+      verdict = "rgba8-control-anomaly";
+      conclusion = "RGBA8 failed while RGBA16F passed; the control result is anomalous.";
+    } else {
+      verdict = "shared-storage-path-failure";
+      conclusion = "Both RGBA8 and RGBA16F storage-write paths failed.";
+    }
+    await checkpoint("environment-captured-after-storage-format-ab", await captureHighEntropyEnvironment());
+    const diagnosticCompleted = control.passed
+      && deviceLostInfo === null
+      && uncapturedErrors.length === 0;
+    const compactUncapturedErrors = uncapturedErrors.slice(0, 3).map((entry) => {
+      if (!entry || typeof entry !== "object") {
+        return { elapsedMs: null, error: storageProbeErrorText(entry) };
+      }
+      return {
+        elapsedMs: "elapsedMs" in entry && Number.isFinite(entry.elapsedMs)
+          ? entry.elapsedMs
+          : null,
+        error: "error" in entry ? storageProbeErrorText(entry.error) : storageProbeErrorText(entry),
+      };
+    });
+    await bridge.finish(
+      diagnosticCompleted ? "completed" : "failed",
+      diagnosticCompleted ? "diagnostic-completed" : "diagnostic-failed",
+      {
+        conclusion,
+        verdict,
+        evidence: "format-acceptance-submit-fence-no-readback",
+        adapter: {
+          mode: adapterMode,
+          textureFormatsTier2Advertised,
+          info: readAdapterInfo(adapter),
+        },
+        device: {
+          requiredFeatures,
+          textureFormatsTier2Enabled,
+          uncapturedErrorCount: uncapturedErrors.length,
+          lost: deviceLostInfo,
+        },
+        control: controlSummary,
+        target: targetSummary,
+        uncapturedErrors: compactUncapturedErrors,
+        uncapturedErrorsTruncated: uncapturedErrors.length > compactUncapturedErrors.length,
+        totalElapsedMs: performance.now() - diagnosticStartedAt,
+      },
+    );
+  } finally {
+    intentionalDestroy = true;
+    device.destroy();
+  }
 }
 
 async function validationCheck(
@@ -968,6 +1751,13 @@ async function run(): Promise<void> {
     runCodeSuffix: bridge.runCode.slice(-8),
     ...comparisonPolicy(),
   }, "running", "beacon");
+  if (diagnosticTest && diagnosticTest !== STORAGE_FORMAT_AB_TEST) {
+    throw new Error(`Unsupported GPU diagnostic test: ${diagnosticTest}.`);
+  }
+  if (storageFormatAbEnabled) {
+    await runStorageFormatAbDiagnostic();
+    return;
+  }
   let applicationBoot: Record<string, unknown>;
   try {
     applicationBoot = await runFullApplicationBoot();

@@ -290,8 +290,11 @@ const LAYER_COMPRESSION_INDEX_SQL = "CREATE INDEX IF NOT EXISTS layer_compressio
 const VECTOR_ZOOM_C_STRATEGY = "ten-semantic-text-dual-gpu-fallback-auto-post-raster-window2-roi-aware-zoom8-to-0.3-v7";
 const VECTOR_ZOOM_RUNS_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS vector_zoom_runs (run_code TEXT PRIMARY KEY NOT NULL, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)";
 const VECTOR_ZOOM_RUN_CODE = /^[2-9A-HJ-NP-Z]{8}$/;
-const GPU_STARTUP_DIAGNOSTIC_BUILD = "gpu-startup-rgba16f-no-tier2-app-boot-v5";
-const GPU_STARTUP_DIAGNOSTIC_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
+const GPU_STARTUP_DIAGNOSTIC_BUILD = "gpu-diagnostics-storage-format-ab-v6";
+const GPU_STARTUP_DEFAULT_TEST_ID = "startup-no-tier2-v1";
+const GPU_STARTUP_STORAGE_FORMAT_TEST_ID = "storage-format-ab-v1";
+const GPU_STARTUP_DEFAULT_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
+const GPU_STARTUP_STORAGE_FORMAT_VARIANT = "storage-format-ab-rgba8unorm-control-rgba16float-target-write-only-1x1-no-tier2-v1";
 const GPU_STARTUP_DIAGNOSTIC_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS gpu_startup_diagnostic_runs (run_code TEXT PRIMARY KEY NOT NULL, write_token_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, expires_at TEXT NOT NULL, status TEXT NOT NULL, sequence INTEGER NOT NULL, latest_event TEXT NOT NULL DEFAULT 'html-requested', result_summary TEXT NOT NULL DEFAULT '', payload_bytes INTEGER NOT NULL DEFAULT 0, payload_json TEXT NOT NULL)";
 const GPU_STARTUP_DIAGNOSTIC_INDEX_SQL = "CREATE INDEX IF NOT EXISTS gpu_startup_diagnostic_runs_expires_at_idx ON gpu_startup_diagnostic_runs (expires_at)";
 const GPU_STARTUP_DIAGNOSTIC_RUN_CODE = /^diag-[a-f0-9]{32}$/;
@@ -300,6 +303,57 @@ const GPU_STARTUP_DIAGNOSTIC_STATUSES = new Set(["running", "completed", "failed
 const GPU_STARTUP_DIAGNOSTIC_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 const GPU_STARTUP_DIAGNOSTIC_PAGE_PATH = "/gpu-startup-lab";
 const GPU_STARTUP_APP_FRAME_PATH = "/gpu-startup-app-frame";
+
+function gpuStartupDiagnosticDefinition(testId) {
+  if (testId === GPU_STARTUP_DEFAULT_TEST_ID) {
+    return {
+      testId,
+      diagnosticVariant: GPU_STARTUP_DEFAULT_VARIANT,
+      comparison: {
+        layerFormat: "rgba16float",
+        canvasFormat: "rgba16float",
+        textureFormatsTier2Enabled: false,
+        inPlaceGlazeCommitEnabled: false,
+        inPlaceGlazeCommitPipelineCreated: false,
+      },
+    };
+  }
+  if (testId === GPU_STARTUP_STORAGE_FORMAT_TEST_ID) {
+    return {
+      testId,
+      diagnosticVariant: GPU_STARTUP_STORAGE_FORMAT_VARIANT,
+      comparison: {
+        kind: "storage-texture-format-ab",
+        controlFormat: "rgba8unorm",
+        targetFormat: "rgba16float",
+        width: 1,
+        height: 1,
+        depthOrArrayLayers: 1,
+        storageAccess: "write-only",
+        requiredFeatures: [],
+        textureFormatsTier2Requested: false,
+        deviceReuse: "single-device",
+        executionOrder: ["rgba8unorm", "rgba16float"],
+      },
+    };
+  }
+  return null;
+}
+
+function gpuStartupDiagnosticDefinitionFromUrl(url) {
+  const requestedTestId = url.searchParams.get("test") || GPU_STARTUP_DEFAULT_TEST_ID;
+  return gpuStartupDiagnosticDefinition(requestedTestId);
+}
+
+function validGpuStartupDiagnosticComparison(comparison, expected) {
+  if (!isRecord(comparison)) return false;
+  const actualKeys = Object.keys(comparison).sort();
+  const expectedKeys = Object.keys(expected).sort();
+  if (JSON.stringify(actualKeys) !== JSON.stringify(expectedKeys)) return false;
+  return expectedKeys.every((key) => (
+    JSON.stringify(comparison[key]) === JSON.stringify(expected[key])
+  ));
+}
 const VECTOR_ZOOM_CHECK_NAMES = [
   "exactlyTenDistributedTexts",
   "fixedFastZoomOutCompleted",
@@ -1064,6 +1118,9 @@ function normalizeGpuStartupDiagnosticPayload(payload) {
   const lastEvent = eventsValid ? payload.events[payload.events.length - 1] : null;
   const summaryJson = isRecord(payload.summary) ? JSON.stringify(payload.summary) : "";
   const comparison = isRecord(payload.summary?.comparison) ? payload.summary.comparison : null;
+  const definition = typeof payload.summary?.testId === "string"
+    ? gpuStartupDiagnosticDefinition(payload.summary.testId)
+    : null;
   const environmentJson = isRecord(payload.environment) ? JSON.stringify(payload.environment) : "";
   if (
     payload.version !== 1
@@ -1083,14 +1140,10 @@ function normalizeGpuStartupDiagnosticPayload(payload) {
     || new TextEncoder().encode(environmentJson).byteLength > 8 * 1024
     || !eventsValid
     || !isRecord(payload.summary)
-    || new TextEncoder().encode(summaryJson).byteLength > 8 * 1024
-    || payload.summary.diagnosticVariant !== GPU_STARTUP_DIAGNOSTIC_VARIANT
-    || !comparison
-    || comparison.layerFormat !== "rgba16float"
-    || comparison.canvasFormat !== "rgba16float"
-    || comparison.textureFormatsTier2Enabled !== false
-    || comparison.inPlaceGlazeCommitEnabled !== false
-    || comparison.inPlaceGlazeCommitPipelineCreated !== false
+    || new TextEncoder().encode(summaryJson).byteLength > 24 * 1024
+    || !definition
+    || payload.summary.diagnosticVariant !== definition.diagnosticVariant
+    || !validGpuStartupDiagnosticComparison(comparison, definition.comparison)
     || typeof payload.summary.latestEvent !== "string"
     || payload.summary.latestEvent !== lastEvent?.name
     || payload.sequence !== lastEvent?.sequence
@@ -1128,11 +1181,25 @@ async function deleteExpiredGpuStartupDiagnostics(db, now) {
 }
 
 async function recordGpuStartupDiagnosticPageRequest(request, env) {
-  if (!env.DB) return;
+  if (!env.DB) return true;
   const url = new URL(request.url);
+  const definition = gpuStartupDiagnosticDefinitionFromUrl(url);
+  if (!definition) return false;
   const runCode = url.searchParams.get("run") ?? "";
-  if (!GPU_STARTUP_DIAGNOSTIC_RUN_CODE.test(runCode)) return;
+  if (!GPU_STARTUP_DIAGNOSTIC_RUN_CODE.test(runCode)) return true;
   await ensureGpuStartupDiagnosticSchema(env.DB);
+  const existing = await env.DB
+    .prepare("SELECT result_summary FROM gpu_startup_diagnostic_runs WHERE run_code = ?1")
+    .bind(runCode)
+    .first();
+  if (existing?.result_summary) {
+    try {
+      const existingSummary = JSON.parse(existing.result_summary);
+      if (existingSummary?.testId !== definition.testId) return false;
+    } catch {
+      return false;
+    }
+  }
   const createdAt = new Date().toISOString();
   const expiresAt = new Date(Date.now() + GPU_STARTUP_DIAGNOSTIC_RETENTION_MS).toISOString();
   const payload = {
@@ -1143,7 +1210,7 @@ async function recordGpuStartupDiagnosticPageRequest(request, env) {
     createdAt,
     updatedAt: createdAt,
     status: "html-requested",
-    privacy: "Server request metadata only. No IP address, cookies, referrer, artwork, project data, or URL query is stored.",
+    privacy: "Server request metadata and normalized diagnostic test ID only. No IP address, cookies, referrer, artwork, project data, or raw URL query is stored.",
     environment: {
       serverRequest: {
         userAgent: request.headers.get("User-Agent"),
@@ -1155,14 +1222,10 @@ async function recordGpuStartupDiagnosticPageRequest(request, env) {
     },
     events: [{ sequence: 0, at: createdAt, name: "html-requested", detail: null }],
     summary: {
-      diagnosticVariant: GPU_STARTUP_DIAGNOSTIC_VARIANT,
-      comparison: {
-        layerFormat: "rgba16float",
-        canvasFormat: "rgba16float",
-        textureFormatsTier2Enabled: false,
-        inPlaceGlazeCommitEnabled: false,
-        inPlaceGlazeCommitPipelineCreated: false,
-      },
+      testId: definition.testId,
+      diagnosticVariant: definition.diagnosticVariant,
+      comparison: definition.comparison,
+      result: null,
       latestEvent: "html-requested",
       moduleLoaded: false,
       probeFinished: false,
@@ -1181,6 +1244,7 @@ async function recordGpuStartupDiagnosticPageRequest(request, env) {
     )
     .run();
   await deleteExpiredGpuStartupDiagnostics(env.DB, createdAt);
+  return true;
 }
 
 async function handleGpuStartupDiagnostics(request, env) {
@@ -1213,11 +1277,21 @@ async function handleGpuStartupDiagnostics(request, env) {
   await ensureGpuStartupDiagnosticSchema(env.DB);
   const tokenHash = await sha256Hex(payload.writeToken);
   const existing = await env.DB
-    .prepare("SELECT write_token_hash, created_at, sequence, status, latest_event, payload_bytes FROM gpu_startup_diagnostic_runs WHERE run_code = ?1")
+    .prepare("SELECT write_token_hash, created_at, sequence, status, latest_event, result_summary, payload_bytes FROM gpu_startup_diagnostic_runs WHERE run_code = ?1")
     .bind(payload.runCode)
     .first();
   if (existing?.write_token_hash && existing.write_token_hash !== tokenHash) {
     return jsonResponse({ error: "Diagnostic write capability is invalid." }, 403);
+  }
+  if (existing?.result_summary) {
+    try {
+      const existingSummary = JSON.parse(existing.result_summary);
+      if (existingSummary?.testId !== payload.summary.testId) {
+        return jsonResponse({ error: "Diagnostic test mode does not match this run." }, 409);
+      }
+    } catch {
+      return jsonResponse({ error: "Stored diagnostic metadata is invalid." }, 409);
+    }
   }
   if (existing && Number(existing.sequence) > payload.sequence) {
     return jsonResponse({
@@ -1333,14 +1407,13 @@ export default {
       (request.method === "GET" || request.method === "HEAD")
       && url.pathname === GPU_STARTUP_DIAGNOSTIC_PAGE_PATH
     ) {
+      if (!gpuStartupDiagnosticDefinitionFromUrl(url)) {
+        return jsonResponse({ error: "Unknown GPU diagnostic test." }, 400);
+      }
       if (request.method === "GET") {
-        const recording = recordGpuStartupDiagnosticPageRequest(request, env).catch((error) => {
-          console.error("GPU startup diagnostic navigation could not be recorded.", error);
-        });
-        if (context?.waitUntil) {
-          context.waitUntil(recording);
-        } else {
-          await recording;
+        const accepted = await recordGpuStartupDiagnosticPageRequest(request, env);
+        if (!accepted) {
+          return jsonResponse({ error: "Diagnostic run is already bound to another test." }, 409);
         }
       }
       return new Response(request.method === "HEAD" ? null : GPU_STARTUP_DIAGNOSTIC_HTML, {
