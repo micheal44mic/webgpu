@@ -18,6 +18,7 @@ interface StartupDiagnosticBridge {
     status?: DiagnosticStatus,
   ): PromiseLike<boolean> | boolean;
   display?(name: string, detail?: unknown): void;
+  displayBatch?(entries: readonly Record<string, unknown>[]): void;
   finish(
     status: Exclude<DiagnosticStatus, "running">,
     name: string,
@@ -116,6 +117,10 @@ const APPLICATION_4096_PIPELINE_BREAKDOWN_TEST =
   "application-4096-pipeline-breakdown-v1";
 const APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT =
   "application-startup-rgba16float-4096x4096-no-tier2-render-pipeline-breakdown-sync-v1";
+const APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST =
+  "application-4096-pipeline-attribution-async1-v1";
+const APPLICATION_4096_PIPELINE_ATTRIBUTION_VARIANT =
+  "application-startup-rgba16float-4096x4096-no-tier2-render-pipeline-attribution-async1-v1";
 const APPLICATION_4096_DOCUMENT_WIDTH = 4096;
 const APPLICATION_4096_DOCUMENT_HEIGHT = 4096;
 const APPLICATION_DEFERRED_OBSERVATION_MS = 5_000;
@@ -133,6 +138,10 @@ const application4096PipelinesFirstFrameEnabled =
   diagnosticTest === APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST;
 const application4096PipelineBreakdownEnabled =
   diagnosticTest === APPLICATION_4096_PIPELINE_BREAKDOWN_TEST;
+const application4096PipelineAttributionEnabled =
+  diagnosticTest === APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST;
+const application4096PipelineTimingEnabled =
+  application4096PipelineBreakdownEnabled || application4096PipelineAttributionEnabled;
 
 function comparisonPolicy(): Record<string, unknown> {
   if (storageFormatAbEnabled) {
@@ -246,6 +255,32 @@ function comparisonPolicy(): Record<string, unknown> {
       expectedRenderPipelines: EXPECTED_DOCUMENT_RENDER_PIPELINES,
       expectedErrorScopeDrains: EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS,
       capture: "all-native-call-durations",
+      deferredObservationMs: APPLICATION_DEFERRED_OBSERVATION_MS,
+    };
+  }
+  if (application4096PipelineAttributionEnabled) {
+    return {
+      testId: APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST,
+      diagnosticVariant: APPLICATION_4096_PIPELINE_ATTRIBUTION_VARIANT,
+      kind: "application-startup-render-pipeline-attribution",
+      documentWidth: APPLICATION_4096_DOCUMENT_WIDTH,
+      documentHeight: APPLICATION_4096_DOCUMENT_HEIGHT,
+      layerFormat: "rgba16float",
+      canvasFormat: "rgba16float",
+      requiredFeatures: [],
+      textureFormatsTier2Requested: false,
+      applicationFrame: "isolated-production-startup",
+      startupMode: "empty-document",
+      targetPhase: "document-pipelines",
+      instrumentation: "native-device-call-boundaries",
+      pipelineCompilationMethod: "createRenderPipelineAsync",
+      pipelineCompilationConcurrency: 1,
+      pipelineCompilationOrder: "async-sequential",
+      expectedPipelineLayouts: EXPECTED_DOCUMENT_PIPELINE_LAYOUTS,
+      expectedRenderPipelines: EXPECTED_DOCUMENT_RENDER_PIPELINES,
+      expectedErrorScopeDrains: EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS,
+      capture: "non-overlapping-async-pipeline-durations",
+      timingSemantics: "one-native-async-pipeline-at-a-time",
       deferredObservationMs: APPLICATION_DEFERRED_OBSERVATION_MS,
     };
   }
@@ -1494,6 +1529,7 @@ interface DocumentPipelineTraceState {
   devicePatchCount: number;
   pipelineLayoutPatched: boolean | null;
   renderPipelinePatched: boolean | null;
+  renderPipelineMethod: string | null;
   popErrorScopePatched: boolean | null;
   requiredFeatures: unknown[] | null;
   textureFormatsTier2Enabled: boolean | null;
@@ -1588,6 +1624,7 @@ function createDocumentPipelineTraceState(): DocumentPipelineTraceState {
     devicePatchCount: 0,
     pipelineLayoutPatched: null,
     renderPipelinePatched: null,
+    renderPipelineMethod: null,
     popErrorScopePatched: null,
     requiredFeatures: null,
     textureFormatsTier2Enabled: null,
@@ -1686,6 +1723,9 @@ function updateDocumentPipelineTrace(
       : trace.devicePatchCount + 1;
     trace.pipelineLayoutPatched = detail.pipelineLayoutPatched === true;
     trace.renderPipelinePatched = detail.renderPipelinePatched === true;
+    trace.renderPipelineMethod = typeof detail.renderPipelineMethod === "string"
+      ? detail.renderPipelineMethod
+      : null;
     trace.popErrorScopePatched = detail.popErrorScopePatched === true;
     trace.requiredFeatures = Array.isArray(detail.requiredFeatures)
       ? detail.requiredFeatures.slice(0, 16)
@@ -1732,7 +1772,8 @@ function updateDocumentPipelineTrace(
   const callIndex = typeof detail.callIndex === "number" ? detail.callIndex : null;
   const method = typeof detail.method === "string" ? detail.method : null;
   const pipelineLayout = method === "createPipelineLayout";
-  const renderPipeline = method === "createRenderPipeline";
+  const renderPipeline = method === "createRenderPipeline"
+    || method === "createRenderPipelineAsync";
   const errorScopeDrain = method === "popErrorScope";
   const callState = type === "document-gpu-call-started"
     ? "started"
@@ -1790,6 +1831,7 @@ function documentPipelineTraceSummary(
     devicePatchCount: trace.devicePatchCount,
     pipelineLayoutPatched: trace.pipelineLayoutPatched,
     renderPipelinePatched: trace.renderPipelinePatched,
+    renderPipelineMethod: trace.renderPipelineMethod,
     popErrorScopePatched: trace.popErrorScopePatched,
     requiredFeatures: trace.requiredFeatures,
     textureFormatsTier2Enabled: trace.textureFormatsTier2Enabled,
@@ -1865,7 +1907,10 @@ function documentPipelineBreakdownSummary(
     .filter((call) => call.method === "createPipelineLayout")
     .map((call) => compactTimedDocumentPipelineCall(call, "pipelineLayoutIndex"));
   const renderCalls = measuredCalls
-    .filter((call) => call.method === "createRenderPipeline")
+    .filter((call) => (
+      call.method === "createRenderPipeline"
+      || call.method === "createRenderPipelineAsync"
+    ))
     .map((call) => compactTimedDocumentPipelineCall(call, "renderPipelineIndex"));
   const errorScopeCalls = measuredCalls
     .filter((call) => call.method === "popErrorScope")
@@ -1917,6 +1962,12 @@ function documentPipelineBreakdownSummary(
       )),
     pipelineLayoutTotalMs: finiteDurationMilliseconds(layoutTotalMs),
     renderPipelineTotalMs: finiteDurationMilliseconds(renderPipelineTotalMs),
+    renderPipelineMethod: trace.renderPipelineMethod,
+    renderPipelineTimingsOverlap: trace.renderPipelineMethod === "createRenderPipelineAsync"
+      ? false
+      : null,
+    firstRenderPipelineMayIncludePriorQueuedGpuWork:
+      trace.renderPipelineMethod === "createRenderPipelineAsync" ? true : null,
     errorScopeDrainTotalMs: finiteDurationMilliseconds(errorScopeTotalMs),
     slowestRenderPipelineIndex: isRecord(slowestRenderPipeline)
       ? slowestRenderPipeline.index ?? null
@@ -2677,12 +2728,16 @@ function documentPipelineNativeCallsCompleted(trace: DocumentPipelineTraceState)
 }
 
 function documentPipelineTracePassed(trace: DocumentPipelineTraceState): boolean {
+  const expectedRenderPipelineMethod = application4096PipelineAttributionEnabled
+    ? "createRenderPipelineAsync"
+    : "createRenderPipeline";
   return trace.instrumentationInstalled === true
     && trace.adapterRequestDevicePatched === true
     && trace.adapterPatchCount === 1
     && trace.devicePatchCount === 1
     && trace.pipelineLayoutPatched === true
     && trace.renderPipelinePatched === true
+    && trace.renderPipelineMethod === expectedRenderPipelineMethod
     && trace.popErrorScopePatched === true
     && Array.isArray(trace.requiredFeatures)
     && trace.requiredFeatures.length === 0
@@ -2838,6 +2893,7 @@ function applicationStartupTraceSummary(
 
 function validateAsyncPipelineCompilation(
   trace: ApplicationStartupTraceState,
+  requestedConcurrency = 2,
 ): Record<string, unknown> {
   const phase = trace.phaseProgress["document-pipelines"] ?? null;
   const stats = isRecord(phase?.detail) ? phase.detail : null;
@@ -2850,7 +2906,10 @@ function validateAsyncPipelineCompilation(
   if (stats) {
     expect(stats.format === "rgba16float", "pipeline format was not rgba16float");
     expect(stats.strategy === "async-bounded", "strategy was not async-bounded");
-    expect(stats.requestedConcurrency === 2, "requested concurrency was not 2");
+    expect(
+      stats.requestedConcurrency === requestedConcurrency,
+      `requested concurrency was not ${requestedConcurrency}`,
+    );
     expect(stats.nativeAsyncSupported === true, "native createRenderPipelineAsync was unavailable");
     expect(
       stats.expectedRenderPipelineCount === EXPECTED_DOCUMENT_RENDER_PIPELINES,
@@ -2866,8 +2925,8 @@ function validateAsyncPipelineCompilation(
     expect(
       typeof peakActiveCount === "number"
         && Number.isInteger(peakActiveCount)
-        && peakActiveCount === 2,
-      "peak active render-pipeline work did not reach the requested concurrency of 2",
+        && peakActiveCount === requestedConcurrency,
+      `peak active render-pipeline work did not reach the requested concurrency of ${requestedConcurrency}`,
     );
   }
   return {
@@ -3127,6 +3186,7 @@ async function runApplication4096StartupDiagnostic(
 function documentPipelineBreakdownPassed(
   trace: DocumentPipelineTraceState,
   breakdown: Record<string, unknown>,
+  renderPipelineMethod: "createRenderPipeline" | "createRenderPipelineAsync",
 ): boolean {
   const completedCalls = trace.calls.filter((call) => call.state === "completed");
   const sequentialIndexes = (
@@ -3149,7 +3209,7 @@ function documentPipelineBreakdownPassed(
       EXPECTED_DOCUMENT_PIPELINE_LAYOUTS,
     )
     && sequentialIndexes(
-      "createRenderPipeline",
+      renderPipelineMethod,
       "renderPipelineIndex",
       EXPECTED_DOCUMENT_RENDER_PIPELINES,
     )
@@ -3169,13 +3229,29 @@ function documentPipelineBreakdownPassed(
 }
 
 async function runApplication4096PipelineBreakdownDiagnostic(): Promise<void> {
+  const attributionEnabled = application4096PipelineAttributionEnabled;
+  const diagnosticVariant = attributionEnabled
+    ? APPLICATION_4096_PIPELINE_ATTRIBUTION_VARIANT
+    : APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT;
+  const diagnosticTestId = attributionEnabled
+    ? APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST
+    : APPLICATION_4096_PIPELINE_BREAKDOWN_TEST;
+  const renderPipelineMethod = attributionEnabled
+    ? "createRenderPipelineAsync"
+    : "createRenderPipeline";
+  const verdictPrefix = attributionEnabled
+    ? "application-4096-pipeline-attribution"
+    : "application-4096-pipeline-breakdown";
   const documentPipelineTrace = createDocumentPipelineTraceState();
   const startupTrace = createApplicationStartupTraceState();
+  const displayAttributionTrace = (): void => {
+    if (attributionEnabled) bridge.displayBatch?.(documentPipelineTrace.calls);
+  };
   let applicationBoot: Record<string, unknown>;
   try {
     applicationBoot = await runFullApplicationBoot({
-      diagnosticVariant: APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT,
-      diagnosticTestId: APPLICATION_4096_PIPELINE_BREAKDOWN_TEST,
+      diagnosticVariant,
+      diagnosticTestId,
       documentPipelineTrace,
       documentWidth: APPLICATION_4096_DOCUMENT_WIDTH,
       documentHeight: APPLICATION_4096_DOCUMENT_HEIGHT,
@@ -3185,6 +3261,7 @@ async function runApplication4096PipelineBreakdownDiagnostic(): Promise<void> {
       startupTrace,
     });
   } catch (applicationError) {
+    displayAttributionTrace();
     const phase = startupTrace.phaseProgress["document-pipelines"] ?? null;
     const breakdown = documentPipelineBreakdownSummary(
       documentPipelineTrace,
@@ -3196,7 +3273,7 @@ async function runApplication4096PipelineBreakdownDiagnostic(): Promise<void> {
     );
     await bridge.finish("failed", "diagnostic-failed", {
       ...comparisonPolicy(),
-      verdict: "application-4096-pipeline-breakdown-failed",
+      verdict: `${verdictPrefix}-failed`,
       conclusion: "The 4096x4096 application did not complete the measured document-pipeline path.",
       applicationError: compactDocumentPipelineError(describeError(applicationError)),
       pipelineBreakdown: breakdown,
@@ -3206,21 +3283,31 @@ async function runApplication4096PipelineBreakdownDiagnostic(): Promise<void> {
     return;
   }
 
+  displayAttributionTrace();
   const phase = startupTrace.phaseProgress["document-pipelines"] ?? null;
   const breakdown = documentPipelineBreakdownSummary(
     documentPipelineTrace,
     phase?.phaseElapsedMs ?? null,
   );
-  if (!documentPipelineBreakdownPassed(documentPipelineTrace, breakdown)) {
+  const asyncPipelineCompilation = attributionEnabled
+    ? validateAsyncPipelineCompilation(startupTrace, 1)
+    : null;
+  if (
+    !documentPipelineBreakdownPassed(documentPipelineTrace, breakdown, renderPipelineMethod)
+    || (asyncPipelineCompilation !== null && asyncPipelineCompilation.passed !== true)
+  ) {
     await checkpoint(
       "environment-captured-after-application-4096-pipeline-breakdown-inconclusive",
       await captureHighEntropyEnvironment(),
     );
     await bridge.finish("failed", "diagnostic-failed", {
       ...comparisonPolicy(),
-      verdict: "application-4096-pipeline-breakdown-inconclusive",
-      conclusion: "The application opened, but the complete 71-call timing contract was not observed.",
+      verdict: `${verdictPrefix}-inconclusive`,
+      conclusion: attributionEnabled
+        ? "The application opened, but the complete non-overlapping 52-pipeline attribution contract was not observed."
+        : "The application opened, but the complete 71-call timing contract was not observed.",
       pipelineBreakdown: breakdown,
+      ...(asyncPipelineCompilation ? { asyncPipelineCompilation } : {}),
       documentPipelineTrace: documentPipelineTraceSummary(documentPipelineTrace),
       startupTrace: applicationStartupTraceSummary(startupTrace),
       applicationBoot: documentPipelineApplicationSummary(applicationBoot),
@@ -3234,9 +3321,12 @@ async function runApplication4096PipelineBreakdownDiagnostic(): Promise<void> {
   );
   await bridge.finish("completed", "diagnostic-completed", {
     ...comparisonPolicy(),
-    verdict: "application-4096-pipeline-breakdown-passed",
-    conclusion: "All 17 layouts, 52 synchronous render pipelines, and two error-scope drains were timed individually during the real 4096x4096 startup.",
+    verdict: `${verdictPrefix}-passed`,
+    conclusion: attributionEnabled
+      ? "All 52 native asynchronous render pipelines were compiled one at a time and timed without overlap during the isolated 4096x4096 startup."
+      : "All 17 layouts, 52 synchronous render pipelines, and two error-scope drains were timed individually during the real 4096x4096 startup.",
     pipelineBreakdown: breakdown,
+    ...(asyncPipelineCompilation ? { asyncPipelineCompilation } : {}),
     startupTrace: applicationStartupTraceSummary(startupTrace),
     applicationBoot: documentPipelineApplicationSummary(applicationBoot),
   });
@@ -3256,6 +3346,7 @@ async function run(): Promise<void> {
     && diagnosticTest !== APPLICATION_4096_PIPELINES_ASYNC2_TEST
     && diagnosticTest !== APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST
     && diagnosticTest !== APPLICATION_4096_PIPELINE_BREAKDOWN_TEST
+    && diagnosticTest !== APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST
   ) {
     throw new Error(`Unsupported GPU diagnostic test: ${diagnosticTest}.`);
   }
@@ -3279,7 +3370,7 @@ async function run(): Promise<void> {
     await runApplication4096StartupDiagnostic({ firstFramePipelineCompilation: true });
     return;
   }
-  if (application4096PipelineBreakdownEnabled) {
+  if (application4096PipelineTimingEnabled) {
     await runApplication4096PipelineBreakdownDiagnostic();
     return;
   }

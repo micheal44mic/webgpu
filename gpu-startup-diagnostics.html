@@ -12,7 +12,7 @@
       (function () {
         "use strict";
 
-        var BUILD = "gpu-diagnostics-application-4096-startup-v15";
+        var BUILD = "gpu-diagnostics-application-4096-startup-v16";
         var params = new URLSearchParams(window.location.search);
         var requestedTestId = params.get("test") || "";
         var DIAGNOSTIC_TEST_ID = requestedTestId || "startup-no-tier2-v1";
@@ -23,8 +23,11 @@
           DIAGNOSTIC_TEST_ID === "application-4096-pipelines-async2-v1";
         var APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST =
           DIAGNOSTIC_TEST_ID === "application-4096-pipelines-first-frame-v1";
+        var APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST =
+          DIAGNOSTIC_TEST_ID === "application-4096-pipeline-attribution-async1-v1";
         var APPLICATION_4096_PIPELINE_BREAKDOWN_TEST =
-          DIAGNOSTIC_TEST_ID === "application-4096-pipeline-breakdown-v1";
+          DIAGNOSTIC_TEST_ID === "application-4096-pipeline-breakdown-v1"
+          || APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST;
         var DOCUMENT_PIPELINE_TIMING_TEST =
           DOCUMENT_PIPELINE_TEST || APPLICATION_4096_PIPELINE_BREAKDOWN_TEST;
         var APPLICATION_4096_DOCUMENT_TEST =
@@ -38,6 +41,8 @@
             ? "document-pipeline-bisect-rgba16float-no-tier2-v1"
             : APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST
               ? "application-startup-rgba16float-4096x4096-no-tier2-render-pipelines-first-frame-1-v1"
+              : APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST
+                ? "application-startup-rgba16float-4096x4096-no-tier2-render-pipeline-attribution-async1-v1"
               : APPLICATION_4096_PIPELINE_BREAKDOWN_TEST
                 ? "application-startup-rgba16float-4096x4096-no-tier2-render-pipeline-breakdown-sync-v1"
               : APPLICATION_4096_PIPELINES_ASYNC2_TEST
@@ -89,6 +94,29 @@
                   excludedRenderPipelines: 51,
                   editorInteractionEnabled: false,
                 }
+              : APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST
+                ? {
+                    kind: "application-startup-render-pipeline-attribution",
+                    documentWidth: 4096,
+                    documentHeight: 4096,
+                    layerFormat: "rgba16float",
+                    canvasFormat: "rgba16float",
+                    requiredFeatures: [],
+                    textureFormatsTier2Requested: false,
+                    applicationFrame: "isolated-production-startup",
+                    startupMode: "empty-document",
+                    targetPhase: "document-pipelines",
+                    instrumentation: "native-device-call-boundaries",
+                    pipelineCompilationMethod: "createRenderPipelineAsync",
+                    pipelineCompilationConcurrency: 1,
+                    pipelineCompilationOrder: "async-sequential",
+                    expectedPipelineLayouts: 17,
+                    expectedRenderPipelines: 52,
+                    expectedErrorScopeDrains: 2,
+                    capture: "non-overlapping-async-pipeline-durations",
+                    timingSemantics: "one-native-async-pipeline-at-a-time",
+                    deferredObservationMs: 5000,
+                  }
               : APPLICATION_4096_PIPELINE_BREAKDOWN_TEST
                 ? {
                     kind: "application-startup-render-pipeline-breakdown",
@@ -246,6 +274,15 @@
         var documentPipelineProgress = null;
         var documentPipelineBreakdownOpen = true;
         var documentPipelineBreakdown = [];
+        var DOCUMENT_RENDER_PIPELINE_GROUPS = [
+          { label: "Erase stamps", first: 1, last: 6 },
+          { label: "Direct color stamps", first: 7, last: 18 },
+          { label: "Precision color accumulation", first: 19, last: 30 },
+          { label: "Coverage accumulation", first: 31, last: 36 },
+          { label: "Live accumulation resolve", first: 37, last: 40 },
+          { label: "Display and live mips", first: 41, last: 46 },
+          { label: "Document composition", first: 47, last: 52 },
+        ];
         var startupPhases = (STORAGE_FORMAT_AB_TEST ? [
           ["adapter-request", "Finding a WebGPU adapter"],
           ["device-request", "Creating a feature-neutral WebGPU device"],
@@ -672,7 +709,9 @@
 
         function documentPipelineBreakdownKind(method) {
           if (method === "createPipelineLayout") return "layout";
-          if (method === "createRenderPipeline") return "pipeline";
+          if (method === "createRenderPipeline" || method === "createRenderPipelineAsync") {
+            return "pipeline";
+          }
           if (method === "popErrorScope") return "validation";
           return null;
         }
@@ -743,12 +782,22 @@
           }, 0);
         }
 
-        function formatComponentDuration(entry) {
+        function formatComponentDuration(entry, pipelineTotalMs) {
           if (entry.state === "started") return "now";
-          if (entry.state === "failed") return entry.durationMs === null
+          var duration = entry.state === "failed" && entry.durationMs === null
             ? "failed"
-            : (entry.durationMs / 1000).toFixed(3) + " s";
-          return entry.durationMs === null ? "done" : (entry.durationMs / 1000).toFixed(3) + " s";
+            : entry.durationMs === null
+              ? "done"
+              : (entry.durationMs / 1000).toFixed(3) + " s";
+          if (
+            APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST
+            && entry.kind === "pipeline"
+            && entry.durationMs !== null
+            && pipelineTotalMs > 0
+          ) {
+            duration += " · " + (entry.durationMs / pipelineTotalMs * 100).toFixed(1) + "%";
+          }
+          return duration;
         }
 
         function setSurfacePhase(phaseName, state) {
@@ -954,7 +1003,13 @@
           }
         }
 
-        function appendDocumentPipelineBreakdownGroup(container, title, entries, expectedCount) {
+        function appendDocumentPipelineBreakdownGroup(
+          container,
+          title,
+          entries,
+          expectedCount,
+          pipelineTotalMs,
+        ) {
           var group = document.createElement("section");
           group.className = "pipeline-breakdown-group";
           var heading = document.createElement("div");
@@ -962,7 +1017,16 @@
           var headingLabel = document.createElement("strong");
           headingLabel.textContent = title + " (" + entries.length + "/" + expectedCount + ")";
           var headingDuration = document.createElement("span");
-          headingDuration.textContent = (sumDocumentPipelineDurations(entries) / 1000).toFixed(3) + " s";
+          var groupDurationMs = sumDocumentPipelineDurations(entries);
+          headingDuration.textContent = (groupDurationMs / 1000).toFixed(3) + " s";
+          if (
+            APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST
+            && pipelineTotalMs > 0
+            && entries.some(function (entry) { return entry.kind === "pipeline"; })
+          ) {
+            headingDuration.textContent += " · "
+              + (groupDurationMs / pipelineTotalMs * 100).toFixed(1) + "%";
+          }
           heading.appendChild(headingLabel);
           heading.appendChild(headingDuration);
           group.appendChild(heading);
@@ -982,7 +1046,7 @@
             label.textContent = displayDocumentPipelineLabel(entry.label);
             var duration = document.createElement("span");
             duration.className = "pipeline-breakdown-duration";
-            duration.textContent = formatComponentDuration(entry);
+            duration.textContent = formatComponentDuration(entry, pipelineTotalMs);
             row.appendChild(index);
             row.appendChild(label);
             row.appendChild(duration);
@@ -1013,6 +1077,10 @@
           });
           var measuredDurationMs = sumDocumentPipelineDurations(timedEntries);
           var instrumentationDurationMs = sumDocumentPipelineInstrumentation(timedEntries);
+          var renderPipelineEntries = documentPipelineBreakdown.filter(function (entry) {
+            return entry.kind === "pipeline";
+          });
+          var renderPipelineTotalMs = sumDocumentPipelineDurations(renderPipelineEntries);
           summary.textContent = timedEntries.length
             + "/71 timed calls · " + (measuredDurationMs / 1000).toFixed(3) + " s";
           details.appendChild(summary);
@@ -1020,25 +1088,34 @@
           body.className = "pipeline-breakdown-body";
           var note = document.createElement("p");
           note.className = "pipeline-breakdown-note";
-          note.textContent = "Native-call times exclude the checkpoints before each call. The phase total also includes engine work and diagnostic reporting outside those calls.";
+          note.textContent = APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST
+            ? "Each value is the incremental time needed to make that native asynchronous render pipeline ready in the real startup order. Concurrency is 1, so durations do not overlap. The first value can also include earlier GPU work queued before this phase. Percentages use the total time of all 52 render pipelines."
+            : "Native-call times exclude the checkpoints before each call. The phase total also includes engine work and diagnostic reporting outside those calls.";
           body.appendChild(note);
           appendDocumentPipelineBreakdownGroup(
             body,
             "Pipeline layouts",
             documentPipelineBreakdown.filter(function (entry) { return entry.kind === "layout"; }),
             17,
+            0,
           );
-          appendDocumentPipelineBreakdownGroup(
-            body,
-            "Render pipelines",
-            documentPipelineBreakdown.filter(function (entry) { return entry.kind === "pipeline"; }),
-            52,
-          );
+          DOCUMENT_RENDER_PIPELINE_GROUPS.forEach(function (group) {
+            appendDocumentPipelineBreakdownGroup(
+              body,
+              group.label,
+              renderPipelineEntries.filter(function (entry) {
+                return entry.itemIndex >= group.first && entry.itemIndex <= group.last;
+              }),
+              group.last - group.first + 1,
+              renderPipelineTotalMs,
+            );
+          });
           appendDocumentPipelineBreakdownGroup(
             body,
             "Error-scope drains",
             documentPipelineBreakdown.filter(function (entry) { return entry.kind === "validation"; }),
             2,
+            0,
           );
           if (phase.state === "completed" && phase.phaseElapsedMs !== null) {
             var instrumentation = document.createElement("div");
@@ -1608,6 +1685,26 @@
           updateSurface();
         }
 
+        function displayBatch(entries) {
+          if (!Array.isArray(entries)) return;
+          var latest = null;
+          entries.forEach(function (detail) {
+            if (!detail || typeof detail !== "object") return;
+            var name = detail.state === "failed"
+              ? "application-document-gpu-call-failed"
+              : detail.state === "started"
+                ? "application-document-gpu-call-started"
+                : "application-document-gpu-call-completed";
+            applyDocumentPipelineBreakdownEvent(name, detail);
+            latest = detail;
+          });
+          if (latest) {
+            documentPipelineProgress = latest;
+            lastStartupProgressAtMs = performance.now();
+          }
+          updateSurface();
+        }
+
         async function finish(status, name, detail) {
           probeFinished = true;
           surfaceFinishedAtMs = performance.now();
@@ -1653,6 +1750,7 @@
           record: record,
           recordBreadcrumb: recordBreadcrumb,
           display: display,
+          displayBatch: displayBatch,
           finish: finish,
           serializeError: serializeError,
           setModuleLoaded: setModuleLoaded,
@@ -1707,6 +1805,8 @@
               ? "1×1 · RGBA8 vs RGBA16F · storage write"
               : DOCUMENT_PIPELINE_TEST
                 ? "Real document pipelines · RGBA16F · Tier 2 off"
+                : APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST
+                  ? "Real 4096×4096 document · 52 sequential async pipeline timings · Tier 2 off"
                 : APPLICATION_4096_PIPELINE_BREAKDOWN_TEST
                   ? "Real 4096×4096 document · 71 timed GPU calls · Tier 2 off"
                 : APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST

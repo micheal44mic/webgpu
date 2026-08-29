@@ -23,7 +23,7 @@ const engineSource = read("src/brush-engine.ts");
 const layerRuntimeSource = read("src/engine-layer-runtime.ts");
 const featurePolicySource = read("src/gpu-startup-feature-policy.ts");
 
-const DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v15";
+const DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v16";
 const DEFAULT_TEST_ID = "startup-no-tier2-v1";
 const DEFAULT_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
 const STORAGE_FORMAT_TEST_ID = "storage-format-ab-v1";
@@ -44,6 +44,10 @@ const APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID =
   "application-4096-pipeline-breakdown-v1";
 const APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT =
   "application-startup-rgba16float-4096x4096-no-tier2-render-pipeline-breakdown-sync-v1";
+const APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID =
+  "application-4096-pipeline-attribution-async1-v1";
+const APPLICATION_4096_PIPELINE_ATTRIBUTION_VARIANT =
+  "application-startup-rgba16float-4096x4096-no-tier2-render-pipeline-attribution-async1-v1";
 const DEFAULT_COMPARISON = {
   layerFormat: "rgba16float",
   canvasFormat: "rgba16float",
@@ -138,6 +142,28 @@ const APPLICATION_4096_PIPELINE_BREAKDOWN_COMPARISON = {
   expectedRenderPipelines: 52,
   expectedErrorScopeDrains: 2,
   capture: "all-native-call-durations",
+  deferredObservationMs: 5000,
+};
+const APPLICATION_4096_PIPELINE_ATTRIBUTION_COMPARISON = {
+  kind: "application-startup-render-pipeline-attribution",
+  documentWidth: 4096,
+  documentHeight: 4096,
+  layerFormat: "rgba16float",
+  canvasFormat: "rgba16float",
+  requiredFeatures: [],
+  textureFormatsTier2Requested: false,
+  applicationFrame: "isolated-production-startup",
+  startupMode: "empty-document",
+  targetPhase: "document-pipelines",
+  instrumentation: "native-device-call-boundaries",
+  pipelineCompilationMethod: "createRenderPipelineAsync",
+  pipelineCompilationConcurrency: 1,
+  pipelineCompilationOrder: "async-sequential",
+  expectedPipelineLayouts: 17,
+  expectedRenderPipelines: 52,
+  expectedErrorScopeDrains: 2,
+  capture: "non-overlapping-async-pipeline-durations",
+  timingSemantics: "one-native-async-pipeline-at-a-time",
   deferredObservationMs: 5000,
 };
 const STORAGE_FORMAT_STAGES = [
@@ -272,6 +298,13 @@ function diagnosticDefinition(testId) {
       comparison: APPLICATION_4096_PIPELINE_BREAKDOWN_COMPARISON,
     };
   }
+  if (testId === APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID) {
+    return {
+      testId,
+      diagnosticVariant: APPLICATION_4096_PIPELINE_ATTRIBUTION_VARIANT,
+      comparison: APPLICATION_4096_PIPELINE_ATTRIBUTION_COMPARISON,
+    };
+  }
   throw new Error(`Unknown verification diagnostic test: ${testId}`);
 }
 
@@ -371,9 +404,14 @@ assert.match(html, /DIAGNOSTIC_TEST_ID === "application-4096-startup-v1"/);
 assert.match(html, /DIAGNOSTIC_TEST_ID === "application-4096-pipelines-async2-v1"/);
 assert.match(html, /DIAGNOSTIC_TEST_ID === "application-4096-pipelines-first-frame-v1"/);
 assert.match(html, /DIAGNOSTIC_TEST_ID === "application-4096-pipeline-breakdown-v1"/);
+assert.match(
+  html,
+  /DIAGNOSTIC_TEST_ID === "application-4096-pipeline-attribution-async1-v1"/,
+);
 assert.match(html, new RegExp(APPLICATION_4096_PIPELINES_ASYNC2_VARIANT));
 assert.match(html, new RegExp(APPLICATION_4096_PIPELINES_FIRST_FRAME_VARIANT));
 assert.match(html, new RegExp(APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT));
+assert.match(html, new RegExp(APPLICATION_4096_PIPELINE_ATTRIBUTION_VARIANT));
 assert.match(html, /documentWidth: 4096/);
 assert.match(html, /documentHeight: 4096/);
 assert.match(html, /startupMode: "cold-empty-document"/);
@@ -389,15 +427,36 @@ assert.match(html, /editorInteractionEnabled: false/);
 assert.match(html, /kind: "application-startup-render-pipeline-breakdown"/);
 assert.match(html, /pipelineCompilationOrder: "sync-sequential"/);
 assert.match(html, /capture: "all-native-call-durations"/);
+assert.match(html, /kind: "application-startup-render-pipeline-attribution"/);
+assert.match(html, /pipelineCompilationConcurrency: 1/);
+assert.match(html, /pipelineCompilationOrder: "async-sequential"/);
+assert.match(html, /capture: "non-overlapping-async-pipeline-durations"/);
+assert.match(html, /timingSemantics: "one-native-async-pipeline-at-a-time"/);
 assert.match(html, /function applyDocumentPipelineBreakdownEvent\(name, detail\)/);
 assert.match(html, /function createDocumentPipelineBreakdown\(phase\)/);
 assert.match(html, /"Pipeline layouts"/);
-assert.match(html, /"Render pipelines"/);
+for (const groupLabel of [
+  "Erase stamps",
+  "Direct color stamps",
+  "Precision color accumulation",
+  "Coverage accumulation",
+  "Live accumulation resolve",
+  "Display and live mips",
+  "Document composition",
+]) {
+  assert.match(html, new RegExp(`label: "${groupLabel}"`));
+}
 assert.match(html, /"Error-scope drains"/);
 assert.match(html, /"Pre-call diagnostic checkpoints"/);
 assert.match(html, /"Remaining phase work and reporting"/);
+assert.match(html, /incremental time needed to make that native asynchronous render pipeline ready/);
+assert.match(html, /Concurrency is 1, so durations do not overlap/);
+assert.match(html, /first value can also include earlier GPU work queued before this phase/);
+assert.match(html, /Percentages use the total time of all 52 render pipelines/);
 assert.match(html, /grid-column: 2 \/ -1/);
 assert.match(html, /display: display/);
+assert.match(html, /function displayBatch\(entries\)/);
+assert.match(html, /displayBatch: displayBatch/);
 assert.match(html, /expectedSynchronousPipelineLayouts: 17/);
 assert.match(html, /expectedSynchronousRenderPipelines: 52/);
 assert.match(html, /expectedErrorScopeDrains: 2/);
@@ -446,6 +505,11 @@ assert.match(
   /APPLICATION_4096_PIPELINE_BREAKDOWN_TEST =\s*"application-4096-pipeline-breakdown-v1"/,
 );
 assert.match(moduleSource, new RegExp(APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT));
+assert.match(
+  moduleSource,
+  /APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST =\s*"application-4096-pipeline-attribution-async1-v1"/,
+);
+assert.match(moduleSource, new RegExp(APPLICATION_4096_PIPELINE_ATTRIBUTION_VARIANT));
 assert.match(moduleSource, /APPLICATION_4096_DOCUMENT_WIDTH = 4096/);
 assert.match(moduleSource, /APPLICATION_4096_DOCUMENT_HEIGHT = 4096/);
 assert.doesNotMatch(moduleSource, /createNewProject|diagnostic-new-project/);
@@ -463,7 +527,15 @@ assert.match(
 );
 assert.match(
   moduleSource,
-  /if \(application4096PipelineBreakdownEnabled\) \{\s*await runApplication4096PipelineBreakdownDiagnostic\(\);\s*return;/,
+  /if \(application4096PipelineTimingEnabled\) \{\s*await runApplication4096PipelineBreakdownDiagnostic\(\);\s*return;/,
+);
+assert.match(
+  moduleSource,
+  /application4096PipelineBreakdownEnabled\s*&& \(type === "document-gpu-call-completed" \|\| type === "document-gpu-call-failed"\)/,
+);
+assert.match(
+  moduleSource,
+  /if \(attributionEnabled\) bridge\.displayBatch\?\.\(documentPipelineTrace\.calls\)/,
 );
 assert.match(moduleSource, /applicationBoot = await runFullApplicationBoot\(\)/);
 assert.match(moduleSource, /const requiredFeatures: GPUFeatureName\[\] = \[\]/);
@@ -525,7 +597,8 @@ assert.match(moduleSource, /verdict: "application-4096-pipelines-async2-inconclu
 assert.match(moduleSource, /"application-4096-pipelines-async2-passed"/);
 assert.match(moduleSource, /verdict = "application-4096-pipelines-async2-unsupported"/);
 assert.match(moduleSource, /native createrenderpipelineasync is required/);
-assert.match(moduleSource, /peakActiveCount === 2/);
+assert.match(moduleSource, /peakActiveCount === requestedConcurrency/);
+assert.match(moduleSource, /validateAsyncPipelineCompilation\(startupTrace\)/);
 assert.match(moduleSource, /stats\.scope === "first-frame-diagnostic"/);
 assert.match(moduleSource, /stats\.format === "rgba16float"/);
 assert.match(moduleSource, /stats\.requestedConcurrency === 1/);
@@ -541,6 +614,9 @@ assert.match(moduleSource, /slowestRenderPipelineIndex:/);
 assert.match(moduleSource, /slowestRenderPipelineDurationMs:/);
 assert.match(moduleSource, /pipelineLayouts: layoutCalls/);
 assert.match(moduleSource, /renderPipelineGroups: DOCUMENT_RENDER_PIPELINE_GROUPS\.map/);
+assert.match(moduleSource, /renderPipelineMethod: trace\.renderPipelineMethod/);
+assert.match(moduleSource, /trace\.renderPipelineMethod === "createRenderPipelineAsync"/);
+assert.match(moduleSource, /firstRenderPipelineMayIncludePriorQueuedGpuWork:/);
 assert.match(moduleSource, /errorScopeDrains: errorScopeCalls/);
 assert.match(moduleSource, /preCallDiagnosticTotalMs:/);
 assert.match(moduleSource, /phaseMinusPreCallDiagnosticMs:/);
@@ -553,8 +629,13 @@ assert.doesNotMatch(
 assert.match(moduleSource, /"erase-stamps"/);
 assert.match(moduleSource, /"document-composition"/);
 assert.match(moduleSource, /documentPipelineBreakdownPassed/);
-assert.match(moduleSource, /"application-4096-pipeline-breakdown-passed"/);
-assert.match(moduleSource, /verdict: "application-4096-pipeline-breakdown-inconclusive"/);
+assert.match(moduleSource, /const verdictPrefix = attributionEnabled/);
+assert.match(moduleSource, /\? "application-4096-pipeline-attribution"/);
+assert.match(moduleSource, /: "application-4096-pipeline-breakdown"/);
+assert.match(moduleSource, /verdict: `\$\{verdictPrefix\}-inconclusive`/);
+assert.match(moduleSource, /verdict: `\$\{verdictPrefix\}-passed`/);
+assert.match(moduleSource, /validateAsyncPipelineCompilation\(startupTrace, 1\)/);
+assert.match(moduleSource, /complete non-overlapping 52-pipeline attribution contract/);
 assert.match(moduleSource, /two error-scope drains were timed individually/);
 assert.match(moduleSource, /bridge\.display\?\./);
 assert.match(
@@ -690,7 +771,16 @@ assert.match(
 assert.match(workerBuilder, new RegExp(APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT));
 assert.match(
   workerBuilder,
-  /documentPipelineInstrumentationEnabled =\s*diagnosticTestId === DOCUMENT_PIPELINE_TEST_ID \|\| application4096PipelineBreakdownEnabled/,
+  /APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID =\s*"application-4096-pipeline-attribution-async1-v1"/,
+);
+assert.match(workerBuilder, new RegExp(APPLICATION_4096_PIPELINE_ATTRIBUTION_VARIANT));
+assert.match(
+  workerBuilder,
+  /documentPipelineInstrumentationEnabled =\s*diagnosticTestId === DOCUMENT_PIPELINE_TEST_ID\s*\|\| application4096PipelineBreakdownEnabled\s*\|\| application4096PipelineAttributionEnabled/,
+);
+assert.match(
+  workerBuilder,
+  /application4096PipelineAttributionEnabled[\s\S]*documentPipelineCompilationConcurrency: 1/,
 );
 assert.match(workerBuilder, /startupMode: "cold-empty-document"/);
 assert.match(workerBuilder, /document\.documentElement\.style\.pointerEvents = "none"/);
@@ -703,7 +793,18 @@ assert.match(workerBuilder, /Object\.keys\(value\)\.slice\(0, 24\)/);
 assert.match(workerBuilder, /if \(depth >= 3\) return clippedString/);
 assert.match(workerBuilder, /bridge\.recordBreadcrumb\(name, detail, status \|\| "running"\)/);
 assert.match(workerBuilder, /wrapDocumentGpuMethod\(device, "createPipelineLayout", false\)/);
-assert.match(workerBuilder, /wrapDocumentGpuMethod\(device, "createRenderPipeline", false\)/);
+assert.match(
+  workerBuilder,
+  /renderPipelineMethod = application4096PipelineAttributionEnabled[\s\S]*\? "createRenderPipelineAsync"[\s\S]*: "createRenderPipeline"/,
+);
+assert.match(
+  workerBuilder,
+  /wrapDocumentGpuMethod\(\s*device,\s*renderPipelineMethod,\s*application4096PipelineAttributionEnabled/,
+);
+assert.match(
+  workerBuilder,
+  /call\.method === "createRenderPipeline"\s*\|\| call\.method === "createRenderPipelineAsync"[\s\S]*completedDocumentRenderPipelines \+= 1/,
+);
 assert.match(workerBuilder, /wrapDocumentGpuMethod\(device, "popErrorScope", true\)/);
 assert.match(workerBuilder, /durableRecord\(\s*"application-document-gpu-call-started"/);
 assert.match(workerBuilder, /previousCompletedRenderPipeline: lastCompletedRenderPipeline/);
@@ -744,6 +845,18 @@ assert.match(workerBuilder, /sha256Hex\(payload\.writeToken\)/);
 assert.match(workerBuilder, /write_token_hash/);
 assert.match(workerBuilder, /latest_event/);
 assert.match(workerBuilder, /result_summary/);
+assert.match(workerBuilder, /function serializeGpuStartupDiagnosticResultSummary\(summary, status\)/);
+assert.match(workerBuilder, /schema: "pipeline-attribution-ms-v1"/);
+assert.match(workerBuilder, /GPU_STARTUP_PIPELINE_ATTRIBUTION_SUMMARY_MAX_BYTES = 1536/);
+assert.match(workerBuilder, /new TextEncoder\(\)\.encode\(serializedCompactSummary\)\.byteLength/);
+assert.match(workerBuilder, /schema: "pipeline-attribution-summary-overflow-v1"/);
+assert.match(workerBuilder, /const pipelineMs = indexedGpuStartupTimings\(pipelineCalls, 52\)/);
+assert.match(workerBuilder, /const layoutMs = indexedGpuStartupTimings\(breakdown\?\.pipelineLayouts, 17\)/);
+assert.match(workerBuilder, /const drainMs = indexedGpuStartupTimings\(breakdown\?\.errorScopeDrains, 2\)/);
+assert.match(
+  workerBuilder,
+  /const resultSummary = serializeGpuStartupDiagnosticResultSummary\(\s*payload\.summary,\s*payload\.status/,
+);
 assert.match(workerBuilder, /payload_bytes/);
 assert.match(workerBuilder, /acknowledged: true/);
 assert.match(workerBuilder, /storedStatus/);
@@ -806,6 +919,8 @@ for (const productionSource of [indexHtml, startup, engineSource, layerRuntimeSo
   );
   assert.doesNotMatch(productionSource, new RegExp(APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID));
   assert.doesNotMatch(productionSource, new RegExp(APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT));
+  assert.doesNotMatch(productionSource, new RegExp(APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID));
+  assert.doesNotMatch(productionSource, new RegExp(APPLICATION_4096_PIPELINE_ATTRIBUTION_VARIANT));
   assert.doesNotMatch(productionSource, new RegExp(DIAGNOSTIC_BUILD));
 }
 
@@ -1609,6 +1724,119 @@ function diagnosticBootstrapHarness({
   assert.ok(Buffer.byteLength(JSON.stringify(terminalPayload.summary), "utf8") <= 24 * 1024);
   assert.notEqual(terminalPayload.summary.result.truncated, true);
   assert.ok(Buffer.byteLength(JSON.stringify(terminalPayload), "utf8") <= 48 * 1024);
+}
+
+{
+  const harness = diagnosticBootstrapHarness({
+    testId: APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID,
+  });
+  assert.equal(
+    harness.elements.get("diagnosticVariantLabel").textContent,
+    "Real 4096×4096 document · 52 sequential async pipeline timings · Tier 2 off",
+  );
+  await harness.browser.__gpuStartupDiagnostics.record(
+    "application-startup-phase",
+    {
+      phase: "document-pipelines",
+      label: "Compiling 16-bit document pipelines",
+      state: "started",
+      totalElapsedMs: 400,
+      phaseElapsedMs: 0,
+    },
+    "running",
+  );
+  const attributionDisplayEntries = [];
+  for (let index = 1; index <= 17; index += 1) {
+    attributionDisplayEntries.push({
+      callIndex: index,
+      method: "createPipelineLayout",
+      pipelineLayoutIndex: index,
+      label: `Verification layout ${index} rgba16float`,
+      durationMs: 1,
+      instrumentationPreparationMs: 0.1,
+      state: "completed",
+    });
+  }
+  for (let index = 1; index <= 52; index += 1) {
+    attributionDisplayEntries.push({
+      callIndex: 17 + index,
+      method: "createRenderPipelineAsync",
+      renderPipelineIndex: index,
+      label: `Verification async pipeline ${index} rgba16float`,
+      durationMs: index * 10,
+      instrumentationPreparationMs: 0.2,
+      state: "completed",
+    });
+  }
+  for (let index = 1; index <= 2; index += 1) {
+    attributionDisplayEntries.push({
+      callIndex: 69 + index,
+      method: "popErrorScope",
+      errorScopeDrainIndex: index,
+      label: `Verification scope drain ${index}`,
+      durationMs: 1,
+      instrumentationPreparationMs: 0.1,
+      state: "completed",
+    });
+  }
+  harness.browser.__gpuStartupDiagnostics.displayBatch(attributionDisplayEntries);
+  await harness.browser.__gpuStartupDiagnostics.record(
+    "application-startup-phase",
+    {
+      phase: "document-pipelines",
+      label: "Compiling 16-bit document pipelines",
+      state: "completed",
+      totalElapsedMs: 14_500,
+      phaseElapsedMs: 14_000,
+    },
+    "running",
+  );
+  const breakdownPhase = harness.stepChildren.find(
+    (child) => child.className === "phase-with-breakdown",
+  );
+  const details = breakdownPhase?.children.find(
+    (child) => child.className === "pipeline-breakdown",
+  );
+  assert.ok(details);
+  assert.equal(details.children[0].textContent, "71/71 timed calls · 13.799 s");
+  const descendants = [];
+  const collectDescendants = (node) => {
+    descendants.push(node);
+    for (const child of node.children ?? []) collectDescendants(child);
+  };
+  collectDescendants(details);
+  assert.equal(
+    descendants.filter((node) => node.className === "pipeline-breakdown-row").length,
+    71,
+  );
+  const headingLabels = descendants
+    .filter((node) => node.className === "pipeline-breakdown-heading")
+    .map((node) => node.children[0]?.textContent);
+  assert.deepEqual(headingLabels, [
+    "Pipeline layouts (17/17)",
+    "Erase stamps (6/6)",
+    "Direct color stamps (12/12)",
+    "Precision color accumulation (12/12)",
+    "Coverage accumulation (6/6)",
+    "Live accumulation resolve (4/4)",
+    "Display and live mips (6/6)",
+    "Document composition (6/6)",
+    "Error-scope drains (2/2)",
+  ]);
+  const eraseHeading = descendants.find(
+    (node) => node.className === "pipeline-breakdown-heading"
+      && node.children[0]?.textContent === "Erase stamps (6/6)",
+  );
+  assert.equal(eraseHeading.children[1].textContent, "0.210 s · 1.5%");
+  const lastPipelineRow = descendants
+    .filter((node) => node.className === "pipeline-breakdown-row")
+    .find((node) => node.children[0]?.textContent === "52");
+  assert.equal(lastPipelineRow.children[2].textContent, "0.520 s · 3.8%");
+  assertDiagnosticSummary(
+    harness.browser.__gpuStartupDiagnostics.snapshot().summary,
+    APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID,
+    null,
+  );
 }
 
 {
@@ -2723,6 +2951,44 @@ if (existsSync(builtWorkerPath)) {
     null,
   );
 
+  const application4096AttributionRunCode = `diag-${"d".repeat(32)}`;
+  const application4096AttributionPageResponse = await worker.fetch(
+    new Request(
+      `https://example.test/gpu-startup-lab?run=${application4096AttributionRunCode}&test=${APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID}`,
+      { headers: { "User-Agent": "Pipeline Attribution Cold Test Browser" } },
+    ),
+    environment,
+  );
+  assert.equal(application4096AttributionPageResponse.status, 200);
+  assert.equal(
+    await application4096AttributionPageResponse.text(),
+    builtDiagnosticHtml.replace(/\r\n?/g, "\n"),
+  );
+  assertDiagnosticSummary(
+    JSON.parse(database.rows.get(application4096AttributionRunCode).result_summary),
+    APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID,
+    null,
+  );
+
+  const application4096AttributionWarmRunCode = `diag-${"e".repeat(32)}`;
+  const application4096AttributionWarmPageResponse = await worker.fetch(
+    new Request(
+      `https://example.test/gpu-startup-lab?run=${application4096AttributionWarmRunCode}&test=${APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID}`,
+      { headers: { "User-Agent": "Pipeline Attribution Warm Test Browser" } },
+    ),
+    environment,
+  );
+  assert.equal(application4096AttributionWarmPageResponse.status, 200);
+  assert.equal(
+    await application4096AttributionWarmPageResponse.text(),
+    builtDiagnosticHtml.replace(/\r\n?/g, "\n"),
+  );
+  assertDiagnosticSummary(
+    JSON.parse(database.rows.get(application4096AttributionWarmRunCode).result_summary),
+    APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID,
+    null,
+  );
+
   const mismatchedPageResponse = await worker.fetch(
     new Request(
       `https://example.test/gpu-startup-lab?run=${runCode}&test=${STORAGE_FORMAT_TEST_ID}`,
@@ -3361,6 +3627,143 @@ if (existsSync(builtWorkerPath)) {
     "Calls outside document-pipelines must not enter the diagnostic trace.",
   );
 
+  const asyncPipelineMessages = [];
+  const asyncPipelineBreadcrumbs = [];
+  let asyncPipelineClock = 100;
+  let settleAsyncPipeline = null;
+  let rejectAsyncPipeline = null;
+  let asyncPipelineNativeThis = null;
+  const asyncPipelineDevice = {
+    features: { has: () => false },
+    addEventListener() {},
+    lost: new Promise(() => {}),
+    createPipelineLayout(descriptor) { return { label: descriptor.label }; },
+    createRenderPipelineAsync(descriptor) {
+      asyncPipelineNativeThis = this;
+      return new Promise((resolve, reject) => {
+        settleAsyncPipeline = () => resolve({ label: descriptor.label });
+        rejectAsyncPipeline = reject;
+      });
+    },
+    popErrorScope: async () => null,
+  };
+  const asyncPipelineAdapter = { requestDevice: async () => asyncPipelineDevice };
+  const asyncPipelineGpu = { requestAdapter: async () => asyncPipelineAdapter };
+  const asyncPipelineFrameWindow = {
+    location: {
+      origin: "https://example.test",
+      pathname: "/gpu-startup-app-frame",
+      search: `?diagnosticBoot=1&test=${APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID}&documentWidth=4096&documentHeight=4096&documentSize=4096&diagnosticVariant=${APPLICATION_4096_PIPELINE_ATTRIBUTION_VARIANT}&forceGlazeCommitFallback=1`,
+    },
+    isSecureContext: true,
+    addEventListener() {},
+    parent: {
+      __gpuStartupDiagnostics: {
+        record() { return true; },
+        recordBreadcrumb(name, detail, status) {
+          asyncPipelineBreadcrumbs.push({ name, detail, status });
+          asyncPipelineClock += 100;
+          return true;
+        },
+      },
+      postMessage(message, targetOrigin) {
+        asyncPipelineMessages.push({ message, targetOrigin });
+      },
+    },
+  };
+  asyncPipelineFrameWindow.window = asyncPipelineFrameWindow;
+  runInNewContext(frameBootstrapSource, {
+    window: asyncPipelineFrameWindow,
+    document: { visibilityState: "visible" },
+    navigator: { gpu: asyncPipelineGpu },
+    performance: { now: () => (asyncPipelineClock += 5) },
+    console: { error() {} },
+    Reflect,
+    Array,
+    Object,
+    String,
+    Number,
+    Math,
+    Error,
+    Promise,
+    URLSearchParams,
+  });
+  assert.equal(
+    asyncPipelineFrameWindow.__editorExtensionBootstrap.engineOptions
+      .documentPipelineCompilationConcurrency,
+    1,
+  );
+  const observedAsyncPipelineAdapter = await asyncPipelineGpu.requestAdapter();
+  const observedAsyncPipelineDevice = await observedAsyncPipelineAdapter.requestDevice({
+    requiredFeatures: [],
+  });
+  assert.equal(observedAsyncPipelineDevice, asyncPipelineDevice);
+  const asyncPipelineExtension = asyncPipelineFrameWindow.__editorExtensionBootstrap.create({
+    engine: {},
+  });
+  asyncPipelineExtension.handleEngineStartupProgress({
+    phase: "document-pipelines",
+    label: "Compiling document pipelines",
+    state: "started",
+    totalElapsedMs: 10,
+    phaseElapsedMs: 0,
+    detail: { format: "rgba16float", strategy: "async-bounded" },
+  });
+  const acceptedAsyncPipelinePromise = asyncPipelineDevice.createRenderPipelineAsync({
+    label: "Accepted async pipeline",
+    vertex: { entryPoint: "vertexMain" },
+    fragment: { entryPoint: "fragmentMain", targets: [{ format: "rgba16float" }] },
+  });
+  assert.equal(asyncPipelineNativeThis, asyncPipelineDevice);
+  assert.equal(
+    asyncPipelineMessages.filter(
+      ({ message }) => message.type === "document-gpu-call-completed",
+    ).length,
+    0,
+    "An asynchronous pipeline must not complete before its native promise settles.",
+  );
+  asyncPipelineClock += 250;
+  settleAsyncPipeline();
+  const acceptedAsyncPipeline = await acceptedAsyncPipelinePromise;
+  assert.equal(acceptedAsyncPipeline.label, "Accepted async pipeline");
+  const acceptedAsyncCompletion = asyncPipelineMessages.find(
+    ({ message }) => message.type === "document-gpu-call-completed"
+      && message.detail.label === "Accepted async pipeline",
+  );
+  assert.ok(acceptedAsyncCompletion);
+  assert.equal(acceptedAsyncCompletion.message.detail.method, "createRenderPipelineAsync");
+  assert.ok(acceptedAsyncCompletion.message.detail.durationMs >= 250);
+  const rejectedAsyncPipelinePromise = asyncPipelineDevice.createRenderPipelineAsync({
+    label: "Rejected async pipeline",
+    vertex: { entryPoint: "vertexMain" },
+    fragment: { entryPoint: "fragmentMain", targets: [{ format: "rgba16float" }] },
+  });
+  const asyncPipelineError = new Error("Asynchronous pipeline rejected by verification device.");
+  asyncPipelineError.reason = "validation";
+  asyncPipelineClock += 125;
+  rejectAsyncPipeline(asyncPipelineError);
+  await assert.rejects(rejectedAsyncPipelinePromise, /Asynchronous pipeline rejected/);
+  const rejectedAsyncFailure = asyncPipelineMessages.find(
+    ({ message }) => message.type === "document-gpu-call-failed"
+      && message.detail.label === "Rejected async pipeline",
+  );
+  assert.ok(rejectedAsyncFailure);
+  assert.equal(rejectedAsyncFailure.message.detail.method, "createRenderPipelineAsync");
+  assert.equal(rejectedAsyncFailure.message.detail.pipelineReason, "validation");
+  assert.ok(rejectedAsyncFailure.message.detail.durationMs >= 125);
+  assert.equal(
+    asyncPipelineBreadcrumbs.filter(
+      ({ name }) => name === "application-document-gpu-call-started",
+    ).length,
+    2,
+  );
+  assert.ok(
+    asyncPipelineMessages.some(
+      ({ message }) => message.type === "document-pipeline-device-patched"
+        && message.detail.renderPipelineMethod === "createRenderPipelineAsync",
+    ),
+  );
+
   const contradictoryMessages = [];
   frameWindow.parent.postMessage = (message, targetOrigin) => {
     contradictoryMessages.push({ message, targetOrigin });
@@ -3825,6 +4228,101 @@ if (existsSync(builtWorkerPath)) {
   assert.deepEqual(
     database.rows.get(application4096BreakdownSecondRunCode),
     secondBreakdownRowBeforeCrossWrite,
+  );
+
+  const application4096AttributionWriteToken = "d".repeat(64);
+  const application4096AttributionSequence = sequence + 900;
+  const application4096AttributionBasePayload = createUploadPayload({
+    payloadRunCode: application4096AttributionRunCode,
+    payloadWriteToken: application4096AttributionWriteToken,
+    payloadSequence: application4096AttributionSequence,
+    testId: APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID,
+    latestEvent: "application-document-gpu-call-started",
+    eventDetail: {
+      callIndex: 18,
+      method: "createRenderPipelineAsync",
+      renderPipelineIndex: 1,
+      label: "Verification asynchronous pipeline 1",
+    },
+    moduleLoaded: true,
+  });
+  const invalidApplication4096AttributionComparisons = [
+    { ...APPLICATION_4096_PIPELINE_ATTRIBUTION_COMPARISON, kind: "application-startup" },
+    { ...APPLICATION_4096_PIPELINE_ATTRIBUTION_COMPARISON, documentWidth: 2048 },
+    { ...APPLICATION_4096_PIPELINE_ATTRIBUTION_COMPARISON, requiredFeatures: ["texture-formats-tier2"] },
+    { ...APPLICATION_4096_PIPELINE_ATTRIBUTION_COMPARISON, textureFormatsTier2Requested: true },
+    { ...APPLICATION_4096_PIPELINE_ATTRIBUTION_COMPARISON, pipelineCompilationMethod: "createRenderPipeline" },
+    { ...APPLICATION_4096_PIPELINE_ATTRIBUTION_COMPARISON, pipelineCompilationConcurrency: 2 },
+    { ...APPLICATION_4096_PIPELINE_ATTRIBUTION_COMPARISON, pipelineCompilationOrder: "async-bounded" },
+    { ...APPLICATION_4096_PIPELINE_ATTRIBUTION_COMPARISON, expectedPipelineLayouts: 16 },
+    { ...APPLICATION_4096_PIPELINE_ATTRIBUTION_COMPARISON, expectedRenderPipelines: 51 },
+    { ...APPLICATION_4096_PIPELINE_ATTRIBUTION_COMPARISON, expectedErrorScopeDrains: 1 },
+    { ...APPLICATION_4096_PIPELINE_ATTRIBUTION_COMPARISON, capture: "all-native-call-durations" },
+    { ...APPLICATION_4096_PIPELINE_ATTRIBUTION_COMPARISON, timingSemantics: "overlapping" },
+    { ...APPLICATION_4096_PIPELINE_ATTRIBUTION_COMPARISON, unexpected: true },
+  ];
+  for (const comparison of invalidApplication4096AttributionComparisons) {
+    const invalidProtocolResponse = await upload({
+      ...application4096AttributionBasePayload,
+      summary: { ...application4096AttributionBasePayload.summary, comparison },
+    });
+    assert.equal(invalidProtocolResponse.status, 400);
+  }
+  const application4096AttributionRunningResponse = await upload(
+    application4096AttributionBasePayload,
+  );
+  assert.equal(application4096AttributionRunningResponse.status, 201);
+  assertDiagnosticSummary(
+    JSON.parse(database.rows.get(application4096AttributionRunCode).result_summary),
+    APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID,
+    null,
+  );
+
+  const application4096AttributionWarmWriteToken = "e".repeat(64);
+  const application4096AttributionWarmSequence = sequence + 1000;
+  const application4096AttributionWarmBasePayload = createUploadPayload({
+    payloadRunCode: application4096AttributionWarmRunCode,
+    payloadWriteToken: application4096AttributionWarmWriteToken,
+    payloadSequence: application4096AttributionWarmSequence,
+    testId: APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID,
+    latestEvent: "application-document-gpu-call-started",
+    eventDetail: {
+      callIndex: 18,
+      method: "createRenderPipelineAsync",
+      renderPipelineIndex: 1,
+      label: "Warm verification asynchronous pipeline 1",
+    },
+    moduleLoaded: true,
+  });
+  const application4096AttributionWarmRunningResponse = await upload(
+    application4096AttributionWarmBasePayload,
+  );
+  assert.equal(application4096AttributionWarmRunningResponse.status, 201);
+  const coldAttributionRowBeforeCrossWrite = {
+    ...database.rows.get(application4096AttributionRunCode),
+  };
+  const warmAttributionRowBeforeCrossWrite = {
+    ...database.rows.get(application4096AttributionWarmRunCode),
+  };
+  assert.equal((await upload(createUploadPayload({
+    payloadRunCode: application4096AttributionWarmRunCode,
+    payloadWriteToken: application4096AttributionWriteToken,
+    payloadSequence: application4096AttributionWarmSequence + 1,
+    testId: APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID,
+  }))).status, 403);
+  assert.equal((await upload(createUploadPayload({
+    payloadRunCode: application4096AttributionRunCode,
+    payloadWriteToken: application4096AttributionWarmWriteToken,
+    payloadSequence: application4096AttributionSequence + 1,
+    testId: APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID,
+  }))).status, 403);
+  assert.deepEqual(
+    database.rows.get(application4096AttributionRunCode),
+    coldAttributionRowBeforeCrossWrite,
+  );
+  assert.deepEqual(
+    database.rows.get(application4096AttributionWarmRunCode),
+    warmAttributionRowBeforeCrossWrite,
   );
 
   const mismatchedPostResponse = await upload(createUploadPayload({
@@ -4353,6 +4851,280 @@ if (existsSync(builtWorkerPath)) {
     application4096BreakdownSecondSequence + 1,
   );
 
+  const roundTiming = (value) => Math.round(value * 1000) / 1000;
+  const attributionLayoutCalls = Array.from({ length: 17 }, (_, index) => ({
+    index: index + 1,
+    label: `Attribution layout ${index + 1}`,
+    durationMs: roundTiming(index + 1.111),
+  }));
+  const attributionRenderCalls = Array.from({ length: 52 }, (_, index) => ({
+    index: index + 1,
+    label: `Attribution render pipeline ${index + 1}`,
+    durationMs: roundTiming((index + 1) * 10 + 0.123),
+  }));
+  const attributionDrainCalls = [
+    { index: 1, label: "Validation error scope drain", durationMs: 1.234 },
+    { index: 2, label: "Out-of-memory error scope drain", durationMs: 2.345 },
+  ];
+  const attributionGroups = breakdownGroupDefinitions.map(([key, label, first, last]) => {
+    const calls = attributionRenderCalls.filter(
+      (call) => call.index >= first && call.index <= last,
+    );
+    return {
+      key,
+      label,
+      totalDurationMs: roundTiming(calls.reduce((sum, call) => sum + call.durationMs, 0)),
+      calls,
+    };
+  });
+  const attributionLayoutTotalMs = roundTiming(
+    attributionLayoutCalls.reduce((sum, call) => sum + call.durationMs, 0),
+  );
+  const attributionPipelineTotalMs = roundTiming(
+    attributionRenderCalls.reduce((sum, call) => sum + call.durationMs, 0),
+  );
+  const attributionDrainTotalMs = roundTiming(
+    attributionDrainCalls.reduce((sum, call) => sum + call.durationMs, 0),
+  );
+  const attributionNativeTotalMs = roundTiming(
+    attributionLayoutTotalMs + attributionPipelineTotalMs + attributionDrainTotalMs,
+  );
+  const attributionPreCallMs = 14.2;
+  const attributionResidualMs = 3.21;
+  const attributionPhaseMs = roundTiming(
+    attributionNativeTotalMs + attributionPreCallMs + attributionResidualMs,
+  );
+  const attributionAsyncStats = {
+    format: "rgba16float",
+    strategy: "async-bounded",
+    requestedConcurrency: 1,
+    nativeAsyncSupported: true,
+    expectedRenderPipelineCount: 52,
+    scheduledCount: 52,
+    startedCount: 52,
+    completedCount: 52,
+    failedCount: 0,
+    settledCount: 52,
+    activeCount: 0,
+    peakActiveCount: 1,
+    fallbackCount: 0,
+  };
+  const application4096AttributionResult = {
+    ...APPLICATION_4096_PIPELINE_ATTRIBUTION_COMPARISON,
+    testId: APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID,
+    diagnosticVariant: APPLICATION_4096_PIPELINE_ATTRIBUTION_VARIANT,
+    verdict: "application-4096-pipeline-attribution-passed",
+    conclusion: "All asynchronous render pipelines were timed in startup order.",
+    pipelineBreakdown: {
+      expectedMeasuredCallCount: 71,
+      measuredCallCount: 71,
+      phaseElapsedMs: attributionPhaseMs,
+      nativeCallTotalMs: attributionNativeTotalMs,
+      preCallDiagnosticTotalMs: attributionPreCallMs,
+      phaseMinusPreCallDiagnosticMs: roundTiming(
+        attributionPhaseMs - attributionPreCallMs,
+      ),
+      remainingPhaseWorkAndReportingMs: attributionResidualMs,
+      pipelineLayoutTotalMs: attributionLayoutTotalMs,
+      renderPipelineTotalMs: attributionPipelineTotalMs,
+      renderPipelineMethod: "createRenderPipelineAsync",
+      renderPipelineTimingsOverlap: false,
+      firstRenderPipelineMayIncludePriorQueuedGpuWork: true,
+      errorScopeDrainTotalMs: attributionDrainTotalMs,
+      slowestRenderPipelineIndex: 52,
+      slowestRenderPipelineDurationMs: attributionRenderCalls[51].durationMs,
+      pipelineLayouts: attributionLayoutCalls,
+      renderPipelineGroups: attributionGroups,
+      failedCallCount: 0,
+      errorScopeDrains: attributionDrainCalls,
+    },
+    asyncPipelineCompilation: {
+      passed: true,
+      issues: [],
+      stats: attributionAsyncStats,
+    },
+    startupTrace: {
+      documentPipelinesPhase: {
+        phase: "document-pipelines",
+        state: "completed",
+        phaseElapsedMs: attributionPhaseMs,
+        detail: attributionAsyncStats,
+      },
+      editorReadyPhase: { phase: "editor-ready", state: "completed", phaseElapsedMs: 20 },
+    },
+    applicationBoot: {
+      statusText: "WebGPU is ready",
+      projectSessionReady: true,
+      runtimeStatsStarted: true,
+    },
+  };
+  const application4096AttributionCompletedResponse = await upload(createUploadPayload({
+    payloadRunCode: application4096AttributionRunCode,
+    payloadWriteToken: application4096AttributionWriteToken,
+    payloadSequence: application4096AttributionSequence + 1,
+    testId: APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID,
+    status: "completed",
+    latestEvent: "diagnostic-completed",
+    result: application4096AttributionResult,
+    eventDetail: {
+      verdict: "application-4096-pipeline-attribution-passed",
+      measuredCallCount: 71,
+      slowestRenderPipelineIndex: 52,
+    },
+    moduleLoaded: true,
+    probeFinished: true,
+  }));
+  assert.equal(application4096AttributionCompletedResponse.status, 201);
+  const storedAttributionRow = database.rows.get(application4096AttributionRunCode);
+  const compactAttributionSummary = JSON.parse(storedAttributionRow.result_summary);
+  assert.equal(compactAttributionSummary.testId, APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID);
+  assert.equal(compactAttributionSummary.diagnosticVariant, APPLICATION_4096_PIPELINE_ATTRIBUTION_VARIANT);
+  assert.equal(compactAttributionSummary.schema, "pipeline-attribution-ms-v1");
+  assert.equal(compactAttributionSummary.pipelineIndexBase, 1);
+  assert.equal(compactAttributionSummary.pipelineMethod, "createRenderPipelineAsync");
+  assert.equal(compactAttributionSummary.firstMayIncludePriorQueuedWork, true);
+  assert.deepEqual(compactAttributionSummary.layoutMs, attributionLayoutCalls.map((call) => call.durationMs));
+  assert.deepEqual(compactAttributionSummary.pipelineMs, attributionRenderCalls.map((call) => call.durationMs));
+  assert.deepEqual(compactAttributionSummary.drainMs, attributionDrainCalls.map((call) => call.durationMs));
+  assert.equal(Object.keys(compactAttributionSummary.groupMs).length, 7);
+  for (const [key, _label, first, last] of breakdownGroupDefinitions) {
+    assert.deepEqual(compactAttributionSummary.groupMs[key], [
+      first,
+      last,
+      roundTiming(
+        attributionRenderCalls
+          .slice(first - 1, last)
+          .reduce((sum, call) => sum + call.durationMs, 0),
+      ),
+    ]);
+  }
+  assert.equal(compactAttributionSummary.phaseMs, attributionPhaseMs);
+  assert.equal(compactAttributionSummary.nativeMs, attributionNativeTotalMs);
+  assert.equal(compactAttributionSummary.residualMs, attributionResidualMs);
+  assert.equal(compactAttributionSummary.slowestIndex, 52);
+  assert.equal(compactAttributionSummary.slowestMs, attributionRenderCalls[51].durationMs);
+  assert.ok(Buffer.byteLength(storedAttributionRow.result_summary, "utf8") <= 1536);
+  const storedFullAttributionPayload = JSON.parse(storedAttributionRow.payload_json);
+  assertDiagnosticSummary(
+    storedFullAttributionPayload.summary,
+    APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID,
+    application4096AttributionResult,
+  );
+  assert.equal(
+    storedFullAttributionPayload.summary.result.pipelineBreakdown.renderPipelineGroups
+      .flatMap((group) => group.calls).length,
+    52,
+  );
+  assert.equal(
+    storedFullAttributionPayload.summary.result.pipelineBreakdown.renderPipelineGroups[0]
+      .calls[0].label,
+    "Attribution render pipeline 1",
+  );
+  const attributionMismatchedPageResponse = await worker.fetch(
+    new Request(
+      `https://example.test/gpu-startup-lab?run=${application4096AttributionRunCode}&test=${STORAGE_FORMAT_TEST_ID}`,
+    ),
+    environment,
+  );
+  assert.equal(attributionMismatchedPageResponse.status, 409);
+  assert.equal((await upload(createUploadPayload({
+    payloadRunCode: application4096AttributionRunCode,
+    payloadWriteToken: application4096AttributionWriteToken,
+    payloadSequence: application4096AttributionSequence + 2,
+    testId: STORAGE_FORMAT_TEST_ID,
+  }))).status, 409);
+
+  const incompleteAttributionResult = {
+    ...application4096AttributionResult,
+    verdict: "application-4096-pipeline-attribution-inconclusive",
+    pipelineBreakdown: {
+      ...application4096AttributionResult.pipelineBreakdown,
+      measuredCallCount: 65,
+      renderPipelineGroups: attributionGroups.slice(0, 6),
+    },
+  };
+  const incompleteAttributionResponse = await upload(createUploadPayload({
+    payloadRunCode: application4096AttributionWarmRunCode,
+    payloadWriteToken: application4096AttributionWarmWriteToken,
+    payloadSequence: application4096AttributionWarmSequence + 1,
+    testId: APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID,
+    status: "completed",
+    latestEvent: "diagnostic-completed",
+    result: incompleteAttributionResult,
+    moduleLoaded: true,
+    probeFinished: true,
+  }));
+  assert.equal(incompleteAttributionResponse.status, 201);
+  const incompleteStoredSummary = JSON.parse(
+    database.rows.get(application4096AttributionWarmRunCode).result_summary,
+  );
+  assert.equal(incompleteStoredSummary.schema, undefined);
+  assertDiagnosticSummary(
+    incompleteStoredSummary,
+    APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID,
+    incompleteAttributionResult,
+  );
+  const largeAttributionTimingMs = 8_450.123;
+  const largeAttributionResult = structuredClone(application4096AttributionResult);
+  const largeAttributionBreakdown = largeAttributionResult.pipelineBreakdown;
+  for (const call of largeAttributionBreakdown.pipelineLayouts) {
+    call.durationMs = largeAttributionTimingMs;
+  }
+  for (const call of largeAttributionBreakdown.renderPipelineGroups.flatMap((group) => group.calls)) {
+    call.durationMs = largeAttributionTimingMs;
+  }
+  for (const call of largeAttributionBreakdown.errorScopeDrains) {
+    call.durationMs = largeAttributionTimingMs;
+  }
+  largeAttributionBreakdown.phaseElapsedMs = 600_000;
+  largeAttributionBreakdown.nativeCallTotalMs = roundTiming(71 * largeAttributionTimingMs);
+  largeAttributionBreakdown.preCallDiagnosticTotalMs = 10;
+  largeAttributionBreakdown.remainingPhaseWorkAndReportingMs = roundTiming(
+    600_000 - 10 - largeAttributionBreakdown.nativeCallTotalMs,
+  );
+  largeAttributionBreakdown.pipelineLayoutTotalMs = roundTiming(
+    17 * largeAttributionTimingMs,
+  );
+  largeAttributionBreakdown.renderPipelineTotalMs = roundTiming(
+    52 * largeAttributionTimingMs,
+  );
+  largeAttributionBreakdown.errorScopeDrainTotalMs = roundTiming(
+    2 * largeAttributionTimingMs,
+  );
+  largeAttributionBreakdown.slowestRenderPipelineDurationMs = largeAttributionTimingMs;
+  const warmAttributionCompletedResponse = await upload(createUploadPayload({
+    payloadRunCode: application4096AttributionWarmRunCode,
+    payloadWriteToken: application4096AttributionWarmWriteToken,
+    payloadSequence: application4096AttributionWarmSequence + 2,
+    testId: APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID,
+    status: "completed",
+    latestEvent: "diagnostic-completed",
+    result: largeAttributionResult,
+    moduleLoaded: true,
+    probeFinished: true,
+  }));
+  assert.equal(warmAttributionCompletedResponse.status, 201);
+  const warmCompactAttributionSummary = JSON.parse(
+    database.rows.get(application4096AttributionWarmRunCode).result_summary,
+  );
+  assert.equal(warmCompactAttributionSummary.schema, "pipeline-attribution-ms-v1");
+  assert.equal(warmCompactAttributionSummary.compacted, "essential-timings");
+  assert.deepEqual(
+    warmCompactAttributionSummary.pipelineMs,
+    Array.from({ length: 52 }, () => largeAttributionTimingMs),
+  );
+  assert.equal(Object.keys(warmCompactAttributionSummary.groupMs).length, 7);
+  assert.ok(
+    Buffer.byteLength(
+      database.rows.get(application4096AttributionWarmRunCode).result_summary,
+      "utf8",
+    ) <= 1536,
+  );
+  assert.notEqual(
+    database.rows.get(application4096AttributionRunCode).write_token_hash,
+    database.rows.get(application4096AttributionWarmRunCode).write_token_hash,
+  );
+
   const staleResponse = await upload({
     ...payload,
     sequence: sequence - 1,
@@ -4366,7 +5138,7 @@ if (existsSync(builtWorkerPath)) {
   const invalidTokenResponse = await upload({ ...payload, writeToken: "c".repeat(64) });
   assert.equal(invalidTokenResponse.status, 403);
 
-  const raceRunCode = `diag-${"d".repeat(32)}`;
+  const raceRunCode = `diag-${"b".repeat(32)}`;
   await worker.fetch(
     new Request(`https://example.test/gpu-startup-lab?run=${raceRunCode}`),
     environment,

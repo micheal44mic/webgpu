@@ -91,6 +91,8 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
     "application-4096-pipelines-first-frame-v1";
   var APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID =
     "application-4096-pipeline-breakdown-v1";
+  var APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID =
+    "application-4096-pipeline-attribution-async1-v1";
   var DOCUMENT_PIPELINE_PHASE = "document-pipelines";
   var EXPECTED_DOCUMENT_PIPELINE_LAYOUTS = 17;
   var EXPECTED_DOCUMENT_RENDER_PIPELINES = 52;
@@ -98,8 +100,12 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
   var diagnosticTestId = new URLSearchParams(window.location.search).get("test") || "";
   var application4096PipelineBreakdownEnabled =
     diagnosticTestId === APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID;
+  var application4096PipelineAttributionEnabled =
+    diagnosticTestId === APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID;
   var documentPipelineInstrumentationEnabled =
-    diagnosticTestId === DOCUMENT_PIPELINE_TEST_ID || application4096PipelineBreakdownEnabled;
+    diagnosticTestId === DOCUMENT_PIPELINE_TEST_ID
+    || application4096PipelineBreakdownEnabled
+    || application4096PipelineAttributionEnabled;
   var application4096PipelinesAsync2Enabled =
     diagnosticTestId === APPLICATION_4096_PIPELINES_ASYNC2_TEST_ID;
   var application4096PipelinesFirstFrameEnabled =
@@ -108,7 +114,8 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
     diagnosticTestId === APPLICATION_4096_TEST_ID
     || application4096PipelinesAsync2Enabled
     || application4096PipelinesFirstFrameEnabled
-    || application4096PipelineBreakdownEnabled;
+    || application4096PipelineBreakdownEnabled
+    || application4096PipelineAttributionEnabled;
   if (application4096PipelinesFirstFrameEnabled) {
     if (document.documentElement && document.documentElement.style) {
       document.documentElement.style.pointerEvents = "none";
@@ -295,6 +302,9 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
       targetPhase: DOCUMENT_PIPELINE_PHASE,
       expectedSynchronousPipelineLayouts: EXPECTED_DOCUMENT_PIPELINE_LAYOUTS,
       expectedSynchronousRenderPipelines: EXPECTED_DOCUMENT_RENDER_PIPELINES,
+      renderPipelineMethod: application4096PipelineAttributionEnabled
+        ? "createRenderPipelineAsync"
+        : "createRenderPipeline",
       expectedErrorScopeDrains: EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS,
       activePhase: activeStartupPhase,
       phaseState: activeStartupPhaseState,
@@ -393,7 +403,8 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
   function beginDocumentGpuCall(method, descriptor) {
     documentGpuCallIndex += 1;
     var isPipelineLayout = method === "createPipelineLayout";
-    var isRenderPipeline = method === "createRenderPipeline";
+    var isRenderPipeline = method === "createRenderPipeline"
+      || method === "createRenderPipelineAsync";
     var isErrorScopeDrain = method === "popErrorScope";
     if (isPipelineLayout) documentPipelineLayoutIndex += 1;
     if (isRenderPipeline) documentRenderPipelineIndex += 1;
@@ -449,7 +460,12 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
   function completeDocumentGpuCall(call, result) {
     completedDocumentGpuCalls += 1;
     if (call.method === "createPipelineLayout") completedDocumentPipelineLayouts += 1;
-    if (call.method === "createRenderPipeline") completedDocumentRenderPipelines += 1;
+    if (
+      call.method === "createRenderPipeline"
+      || call.method === "createRenderPipelineAsync"
+    ) {
+      completedDocumentRenderPipelines += 1;
+    }
     if (call.method === "popErrorScope") completedDocumentErrorScopeDrains += 1;
     var durationMs = Math.max(0, performance.now() - Number(call.nativeStartedAtMs || 0));
     var detail = {
@@ -458,7 +474,10 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
       completedAtMs: finiteNumber(performance.now()),
       durableCheckpoint: false,
     };
-    if (call.method === "createRenderPipeline") {
+    if (
+      call.method === "createRenderPipeline"
+      || call.method === "createRenderPipelineAsync"
+    ) {
       lastCompletedRenderPipeline = {
         renderPipelineIndex: call.renderPipelineIndex,
         label: call.label,
@@ -564,7 +583,14 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
     if (!device || patchedDevices.indexOf(device) >= 0) return device;
     patchedDevices.push(device);
     var pipelineLayoutPatched = wrapDocumentGpuMethod(device, "createPipelineLayout", false);
-    var renderPipelinePatched = wrapDocumentGpuMethod(device, "createRenderPipeline", false);
+    var renderPipelineMethod = application4096PipelineAttributionEnabled
+      ? "createRenderPipelineAsync"
+      : "createRenderPipeline";
+    var renderPipelinePatched = wrapDocumentGpuMethod(
+      device,
+      renderPipelineMethod,
+      application4096PipelineAttributionEnabled,
+    );
     var popErrorScopePatched = wrapDocumentGpuMethod(device, "popErrorScope", true);
     var requiredFeatures = [];
     try {
@@ -576,6 +602,7 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
       devicePatchCount: patchedDevices.length,
       pipelineLayoutPatched: pipelineLayoutPatched,
       renderPipelinePatched: renderPipelinePatched,
+      renderPipelineMethod: renderPipelineMethod,
       popErrorScopePatched: popErrorScopePatched,
       requiredFeatures: requiredFeatures,
       textureFormatsTier2Enabled: device.features?.has("texture-formats-tier2") === true,
@@ -710,7 +737,13 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
       expectedSynchronousRenderPipelines: EXPECTED_DOCUMENT_RENDER_PIPELINES,
       expectedSynchronousPipelineLayouts: EXPECTED_DOCUMENT_PIPELINE_LAYOUTS,
       expectedErrorScopeDrains: EXPECTED_DOCUMENT_ERROR_SCOPE_DRAINS,
-      instrumentedMethods: ["createPipelineLayout", "createRenderPipeline", "popErrorScope"],
+      instrumentedMethods: [
+        "createPipelineLayout",
+        application4096PipelineAttributionEnabled
+          ? "createRenderPipelineAsync"
+          : "createRenderPipeline",
+        "popErrorScope",
+      ],
     };
     emit("document-pipeline-instrumentation", detail);
     if (!installed) {
@@ -892,6 +925,8 @@ const gpuStartupAppFrameBootstrap = String.raw`<script>
   window.__editorExtensionBootstrap = {
     engineOptions: application4096PipelinesFirstFrameEnabled
       ? { documentPipelineCompilationScope: "first-frame-diagnostic" }
+      : application4096PipelineAttributionEnabled
+        ? { documentPipelineCompilationConcurrency: 1 }
       : application4096PipelinesAsync2Enabled
         ? { documentPipelineCompilationConcurrency: 2 }
         : {},
@@ -995,7 +1030,7 @@ const LAYER_COMPRESSION_INDEX_SQL = "CREATE INDEX IF NOT EXISTS layer_compressio
 const VECTOR_ZOOM_C_STRATEGY = "ten-semantic-text-dual-gpu-fallback-auto-post-raster-window2-roi-aware-zoom8-to-0.3-v7";
 const VECTOR_ZOOM_RUNS_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS vector_zoom_runs (run_code TEXT PRIMARY KEY NOT NULL, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)";
 const VECTOR_ZOOM_RUN_CODE = /^[2-9A-HJ-NP-Z]{8}$/;
-const GPU_STARTUP_DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v15";
+const GPU_STARTUP_DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v16";
 const GPU_STARTUP_DEFAULT_TEST_ID = "startup-no-tier2-v1";
 const GPU_STARTUP_STORAGE_FORMAT_TEST_ID = "storage-format-ab-v1";
 const GPU_STARTUP_DOCUMENT_PIPELINE_TEST_ID = "document-pipeline-bisect-v1";
@@ -1003,6 +1038,7 @@ const GPU_STARTUP_APPLICATION_4096_TEST_ID = "application-4096-startup-v1";
 const GPU_STARTUP_APPLICATION_4096_PIPELINES_ASYNC2_TEST_ID = "application-4096-pipelines-async2-v1";
 const GPU_STARTUP_APPLICATION_4096_PIPELINES_FIRST_FRAME_TEST_ID = "application-4096-pipelines-first-frame-v1";
 const GPU_STARTUP_APPLICATION_4096_PIPELINE_BREAKDOWN_TEST_ID = "application-4096-pipeline-breakdown-v1";
+const GPU_STARTUP_APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID = "application-4096-pipeline-attribution-async1-v1";
 const GPU_STARTUP_DEFAULT_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
 const GPU_STARTUP_STORAGE_FORMAT_VARIANT = "storage-format-ab-rgba8unorm-control-rgba16float-target-write-only-1x1-no-tier2-v1";
 const GPU_STARTUP_DOCUMENT_PIPELINE_VARIANT = "document-pipeline-bisect-rgba16float-no-tier2-v1";
@@ -1010,6 +1046,7 @@ const GPU_STARTUP_APPLICATION_4096_VARIANT = "application-startup-rgba16float-40
 const GPU_STARTUP_APPLICATION_4096_PIPELINES_ASYNC2_VARIANT = "application-startup-rgba16float-4096x4096-no-tier2-render-pipelines-async2-v1";
 const GPU_STARTUP_APPLICATION_4096_PIPELINES_FIRST_FRAME_VARIANT = "application-startup-rgba16float-4096x4096-no-tier2-render-pipelines-first-frame-1-v1";
 const GPU_STARTUP_APPLICATION_4096_PIPELINE_BREAKDOWN_VARIANT = "application-startup-rgba16float-4096x4096-no-tier2-render-pipeline-breakdown-sync-v1";
+const GPU_STARTUP_APPLICATION_4096_PIPELINE_ATTRIBUTION_VARIANT = "application-startup-rgba16float-4096x4096-no-tier2-render-pipeline-attribution-async1-v1";
 const GPU_STARTUP_DIAGNOSTIC_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS gpu_startup_diagnostic_runs (run_code TEXT PRIMARY KEY NOT NULL, write_token_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, expires_at TEXT NOT NULL, status TEXT NOT NULL, sequence INTEGER NOT NULL, latest_event TEXT NOT NULL DEFAULT 'html-requested', result_summary TEXT NOT NULL DEFAULT '', payload_bytes INTEGER NOT NULL DEFAULT 0, payload_json TEXT NOT NULL)";
 const GPU_STARTUP_DIAGNOSTIC_INDEX_SQL = "CREATE INDEX IF NOT EXISTS gpu_startup_diagnostic_runs_expires_at_idx ON gpu_startup_diagnostic_runs (expires_at)";
 const GPU_STARTUP_DIAGNOSTIC_RUN_CODE = /^diag-[a-f0-9]{32}$/;
@@ -1158,6 +1195,34 @@ function gpuStartupDiagnosticDefinition(testId) {
       },
     };
   }
+  if (testId === GPU_STARTUP_APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID) {
+    return {
+      testId,
+      diagnosticVariant: GPU_STARTUP_APPLICATION_4096_PIPELINE_ATTRIBUTION_VARIANT,
+      comparison: {
+        kind: "application-startup-render-pipeline-attribution",
+        documentWidth: 4096,
+        documentHeight: 4096,
+        layerFormat: "rgba16float",
+        canvasFormat: "rgba16float",
+        requiredFeatures: [],
+        textureFormatsTier2Requested: false,
+        applicationFrame: "isolated-production-startup",
+        startupMode: "empty-document",
+        targetPhase: "document-pipelines",
+        instrumentation: "native-device-call-boundaries",
+        pipelineCompilationMethod: "createRenderPipelineAsync",
+        pipelineCompilationConcurrency: 1,
+        pipelineCompilationOrder: "async-sequential",
+        expectedPipelineLayouts: 17,
+        expectedRenderPipelines: 52,
+        expectedErrorScopeDrains: 2,
+        capture: "non-overlapping-async-pipeline-durations",
+        timingSemantics: "one-native-async-pipeline-at-a-time",
+        deferredObservationMs: 5000,
+      },
+    };
+  }
   return null;
 }
 
@@ -1174,6 +1239,154 @@ function validGpuStartupDiagnosticComparison(comparison, expected) {
   return expectedKeys.every((key) => (
     JSON.stringify(comparison[key]) === JSON.stringify(expected[key])
   ));
+}
+
+const GPU_STARTUP_PIPELINE_ATTRIBUTION_GROUPS = [
+  ["erase-stamps", 1, 6],
+  ["direct-color-stamps", 7, 18],
+  ["precision-color-accumulation", 19, 30],
+  ["coverage-accumulation", 31, 36],
+  ["live-accumulation-resolve", 37, 40],
+  ["display-and-live-mips", 41, 46],
+  ["document-composition", 47, 52],
+];
+const GPU_STARTUP_PIPELINE_ATTRIBUTION_VERDICT =
+  "application-4096-pipeline-attribution-passed";
+const GPU_STARTUP_PIPELINE_ATTRIBUTION_METHOD = "createRenderPipelineAsync";
+const GPU_STARTUP_PIPELINE_ATTRIBUTION_SUMMARY_MAX_BYTES = 1536;
+
+function finiteGpuStartupTiming(value) {
+  return typeof value === "number"
+    && Number.isFinite(value)
+    && value >= 0
+    && value <= 10 * 60 * 1000
+      ? Math.round(value * 1000) / 1000
+      : null;
+}
+
+function indexedGpuStartupTimings(calls, expectedCount) {
+  if (!Array.isArray(calls) || calls.length !== expectedCount) return null;
+  const sorted = [...calls].sort((left, right) => (
+    Number(left?.index ?? 0) - Number(right?.index ?? 0)
+  ));
+  const timings = [];
+  for (let index = 0; index < expectedCount; index += 1) {
+    const call = sorted[index];
+    const durationMs = isRecord(call) ? finiteGpuStartupTiming(call.durationMs) : null;
+    if (call?.index !== index + 1 || durationMs === null) return null;
+    timings.push(durationMs);
+  }
+  return timings;
+}
+
+function serializeGpuStartupDiagnosticResultSummary(summary, status) {
+  if (
+    status !== "completed"
+    || !isRecord(summary)
+    || summary.testId !== GPU_STARTUP_APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID
+  ) {
+    return JSON.stringify(summary);
+  }
+  const result = isRecord(summary.result) ? summary.result : null;
+  const breakdown = isRecord(result?.pipelineBreakdown) ? result.pipelineBreakdown : null;
+  const groups = Array.isArray(breakdown?.renderPipelineGroups)
+    ? breakdown.renderPipelineGroups
+    : null;
+  const layoutMs = indexedGpuStartupTimings(breakdown?.pipelineLayouts, 17);
+  const drainMs = indexedGpuStartupTimings(breakdown?.errorScopeDrains, 2);
+  if (
+    !result
+    || !breakdown
+    || !groups
+    || groups.length !== 7
+    || !layoutMs
+    || !drainMs
+    || summary.diagnosticVariant !== GPU_STARTUP_APPLICATION_4096_PIPELINE_ATTRIBUTION_VARIANT
+    || result.verdict !== GPU_STARTUP_PIPELINE_ATTRIBUTION_VERDICT
+    || breakdown.renderPipelineMethod !== GPU_STARTUP_PIPELINE_ATTRIBUTION_METHOD
+  ) {
+    return JSON.stringify(summary);
+  }
+  const pipelineCalls = groups.flatMap((group) => (
+    isRecord(group) && Array.isArray(group.calls) ? group.calls : []
+  ));
+  const pipelineMs = indexedGpuStartupTimings(pipelineCalls, 52);
+  if (!pipelineMs) return JSON.stringify(summary);
+  const groupMs = {};
+  for (let index = 0; index < GPU_STARTUP_PIPELINE_ATTRIBUTION_GROUPS.length; index += 1) {
+    const [key, first, last] = GPU_STARTUP_PIPELINE_ATTRIBUTION_GROUPS[index];
+    const group = groups[index];
+    if (!isRecord(group) || group.key !== key) return JSON.stringify(summary);
+    groupMs[key] = [
+      first,
+      last,
+      finiteGpuStartupTiming(
+        pipelineMs.slice(first - 1, last).reduce((sum, durationMs) => sum + durationMs, 0),
+      ),
+    ];
+  }
+  const slowestIndex = breakdown.slowestRenderPipelineIndex;
+  const slowestMs = finiteGpuStartupTiming(breakdown.slowestRenderPipelineDurationMs);
+  if (!Number.isInteger(slowestIndex) || slowestIndex < 1 || slowestIndex > 52 || slowestMs === null) {
+    return JSON.stringify(summary);
+  }
+  const compactSummary = {
+    testId: summary.testId,
+    diagnosticVariant: GPU_STARTUP_APPLICATION_4096_PIPELINE_ATTRIBUTION_VARIANT,
+    schema: "pipeline-attribution-ms-v1",
+    verdict: GPU_STARTUP_PIPELINE_ATTRIBUTION_VERDICT,
+    pipelineIndexBase: 1,
+    pipelineMethod: GPU_STARTUP_PIPELINE_ATTRIBUTION_METHOD,
+    firstMayIncludePriorQueuedWork:
+      breakdown.firstRenderPipelineMayIncludePriorQueuedGpuWork === true,
+    phaseMs: finiteGpuStartupTiming(breakdown.phaseElapsedMs),
+    nativeMs: finiteGpuStartupTiming(breakdown.nativeCallTotalMs),
+    preCallMs: finiteGpuStartupTiming(breakdown.preCallDiagnosticTotalMs),
+    residualMs: finiteGpuStartupTiming(breakdown.remainingPhaseWorkAndReportingMs),
+    layoutTotalMs: finiteGpuStartupTiming(breakdown.pipelineLayoutTotalMs),
+    pipelineTotalMs: finiteGpuStartupTiming(breakdown.renderPipelineTotalMs),
+    drainTotalMs: finiteGpuStartupTiming(breakdown.errorScopeDrainTotalMs),
+    layoutMs,
+    pipelineMs,
+    drainMs,
+    groupMs,
+    slowestIndex,
+    slowestMs,
+  };
+  const serializedCompactSummary = JSON.stringify(compactSummary);
+  if (
+    new TextEncoder().encode(serializedCompactSummary).byteLength
+    <= GPU_STARTUP_PIPELINE_ATTRIBUTION_SUMMARY_MAX_BYTES
+  ) {
+    return serializedCompactSummary;
+  }
+  const essentialTimingSummary = JSON.stringify({
+    testId: GPU_STARTUP_APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID,
+    schema: "pipeline-attribution-ms-v1",
+    verdict: GPU_STARTUP_PIPELINE_ATTRIBUTION_VERDICT,
+    pipelineIndexBase: 1,
+    pipelineMethod: GPU_STARTUP_PIPELINE_ATTRIBUTION_METHOD,
+    firstMayIncludePriorQueuedWork: true,
+    phaseMs: compactSummary.phaseMs,
+    preCallMs: compactSummary.preCallMs,
+    residualMs: compactSummary.residualMs,
+    layoutMs,
+    pipelineMs,
+    drainMs,
+    groupMs,
+    compacted: "essential-timings",
+  });
+  if (
+    new TextEncoder().encode(essentialTimingSummary).byteLength
+    <= GPU_STARTUP_PIPELINE_ATTRIBUTION_SUMMARY_MAX_BYTES
+  ) {
+    return essentialTimingSummary;
+  }
+  return JSON.stringify({
+    testId: GPU_STARTUP_APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID,
+    schema: "pipeline-attribution-summary-overflow-v1",
+    verdict: GPU_STARTUP_PIPELINE_ATTRIBUTION_VERDICT,
+  });
 }
 const VECTOR_ZOOM_CHECK_NAMES = [
   "exactlyTenDistributedTexts",
@@ -2149,7 +2362,10 @@ async function handleGpuStartupDiagnostics(request, env) {
     return jsonResponse({ error: "Diagnostic payload is too large." }, 413);
   }
   const latestEvent = payload.events[payload.events.length - 1].name;
-  const resultSummary = JSON.stringify(payload.summary);
+  const resultSummary = serializeGpuStartupDiagnosticResultSummary(
+    payload.summary,
+    payload.status,
+  );
 
   const writeResult = await env.DB
     .prepare("INSERT INTO gpu_startup_diagnostic_runs (run_code, write_token_hash, created_at, updated_at, expires_at, status, sequence, latest_event, result_summary, payload_bytes, payload_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) ON CONFLICT(run_code) DO UPDATE SET write_token_hash = CASE WHEN gpu_startup_diagnostic_runs.write_token_hash = '' THEN excluded.write_token_hash ELSE gpu_startup_diagnostic_runs.write_token_hash END, updated_at = excluded.updated_at, expires_at = excluded.expires_at, status = excluded.status, sequence = excluded.sequence, latest_event = excluded.latest_event, result_summary = excluded.result_summary, payload_bytes = excluded.payload_bytes, payload_json = excluded.payload_json WHERE (gpu_startup_diagnostic_runs.write_token_hash = '' OR gpu_startup_diagnostic_runs.write_token_hash = excluded.write_token_hash) AND excluded.sequence >= gpu_startup_diagnostic_runs.sequence AND (gpu_startup_diagnostic_runs.status NOT IN ('completed', 'failed') OR excluded.status IN ('completed', 'failed'))")
