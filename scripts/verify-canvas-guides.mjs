@@ -737,7 +737,7 @@ assert.equal(exactPixelGridCanvas.width, 100);
 assert.equal(exactPixelGridCanvas.height, 80);
 assert.equal(exactPixelGridContext.strokeCount, 1, "pixel lines must share one stroke");
 assert.equal(exactPixelGridContext.clipCount, 1);
-assert.equal(exactPixelGridContext.strokeStyle, "rgba(132, 136, 144, 0.46)");
+assert.equal(exactPixelGridContext.strokeStyle, "rgba(228, 232, 238, 0.52)");
 assert.equal(exactPixelGridContext.points.length, 36);
 assertPointClose(
   exactPixelGridContext.points[4],

@@ -166,7 +166,7 @@ function drawPixelGrid(
   context.save();
   documentPath(context, view, documentWidth, documentHeight);
   context.clip();
-  context.strokeStyle = "rgba(132, 136, 144, 0.46)";
+  context.strokeStyle = "rgba(228, 232, 238, 0.52)";
   context.lineWidth = Math.max(1, backing * 0.55);
   context.setLineDash([]);
   context.beginPath();
