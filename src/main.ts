@@ -652,7 +652,7 @@ const DOCUMENT_SWITCH_STAGE_LABELS: Readonly<Record<ProjectSessionSwitchStage, s
 function reportQueuedSceneImportFailure(kind: "SVG" | "image", error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
   statusElement.textContent = `${kind} import failed: ${message}`;
-  statusElement.className = "status error";
+  statusElement.className = "status app-status error";
   appDiagnosticsController?.recordOperation(
     "queued-scene-import",
     kind.toLocaleLowerCase("en-US"),
@@ -664,7 +664,10 @@ const sceneImportBridge = new SceneImportBridge({
   svgInput: vectorSvgFileInput,
   imageInput: rasterImageFileInput,
   currentController: () => mixedSceneController,
-  ensureController: initializeMixedSceneController,
+  ensureController: (kind) => initializeMixedSceneController(
+    kind === "image" ? "raster-import" : "semantic-scene",
+  ),
+  prewarmImageImport: () => engine.prewarmRasterImageImportResources(),
   beforeAccept: async () => {
     if (rasterAdjustmentsController?.needsAdjustmentSettlementForToolChange(historyState) !== true) {
       return true;
@@ -674,7 +677,17 @@ const sceneImportBridge = new SceneImportBridge({
   onQueued: (kind, file) => {
     const label = kind === "svg" ? "SVG" : "image";
     statusElement.textContent = `Preparing ${label} import for ${file.name}…`;
-    statusElement.className = "status";
+    statusElement.className = "status app-status";
+  },
+  onImporting: (kind, file) => {
+    const label = kind === "svg" ? "SVG" : "image";
+    statusElement.textContent = `Importing ${label} ${file.name}…`;
+    statusElement.className = "status app-status";
+  },
+  onComplete: (kind, file) => {
+    const label = kind === "svg" ? "SVG" : "Image";
+    statusElement.textContent = `${label} ${file.name} imported.`;
+    statusElement.className = "status app-status ok";
   },
   onFailure: (kind, error) => {
     reportQueuedSceneImportFailure(kind === "svg" ? "SVG" : "image", error);
@@ -866,7 +879,7 @@ const canvasStartupProgressObserved =
 const engine = new BrushEngine(canvas, {
   onStatus(message, kind) {
     statusElement.textContent = message;
-    statusElement.className = `status ${kind === "working" ? "" : kind}`;
+    statusElement.className = `status app-status ${kind === "working" ? "" : kind}`;
     if (kind === "error") {
       appDiagnosticsController?.recordStatusError(message);
     }
@@ -881,7 +894,7 @@ const engine = new BrushEngine(canvas, {
           ? detailMessage
           : `${progress.label} failed.`;
         statusElement.textContent = message;
-        statusElement.className = "status error";
+        statusElement.className = "status app-status error";
         appDiagnosticsController?.recordStatusError(message);
       }
       if (editorExtensionBootstrap?.startupProgressEnabled) {
@@ -1149,7 +1162,7 @@ const historyControlsController = new HistoryControlsController({
   },
   setStatus: (message, kind = "working") => {
     statusElement.textContent = message;
-    statusElement.className = `status ${kind === "working" ? "" : kind}`;
+    statusElement.className = `status app-status ${kind === "working" ? "" : kind}`;
   },
   recordDiagnostic: (name, detail, error) => {
     appDiagnosticsController?.recordOperation(name, detail, error);
@@ -1209,7 +1222,7 @@ if (editorExtensionBootstrap) {
     },
     setStatus(message, kind = "working") {
       statusElement.textContent = message;
-      statusElement.className = `status ${kind === "working" ? "" : kind}`;
+      statusElement.className = `status app-status ${kind === "working" ? "" : kind}`;
     },
   };
   editorExtension = editorExtensionBootstrap.create(host);
@@ -1335,7 +1348,7 @@ brushLibraryController = new BrushLibraryController({
   },
   onStatus: (message, kind) => {
     statusElement.textContent = message;
-    statusElement.className = `status ${kind === "working" ? "" : kind}`;
+    statusElement.className = `status app-status ${kind === "working" ? "" : kind}`;
   },
 });
 
@@ -1538,7 +1551,7 @@ function prepareActiveCloneSource(sampleMode: CloneSampleMode): void {
     if (token !== cloneSourcePreparationToken) return;
     const message = error instanceof Error ? error.message : String(error);
     statusElement.textContent = `Clone preparation failed: ${message}`;
-    statusElement.className = "status error";
+    statusElement.className = "status app-status error";
   }).finally(() => {
     if (token === cloneSourcePreparationToken) {
       cloneToolController?.setSourcePreparing(false);
@@ -2580,7 +2593,7 @@ layerPanelController = new LayerPanelController({
   },
   onStatus: (message, failed) => {
     statusElement.textContent = message;
-    statusElement.className = `status${failed ? " error" : ""}`;
+    statusElement.className = `status app-status${failed ? " error" : ""}`;
   },
   recordDiagnostic: (name, detail, error) => {
     appDiagnosticsController?.recordOperation(name, detail, error);
@@ -3100,14 +3113,17 @@ canvasToolController?.setSelectionCombineMode("replace");
 canvasToolController?.configure("pan", false);
 updateHistoryControls();
 
-type MixedSceneInitializationScope = "semantic-scene" | "raster-transform";
+type MixedSceneInitializationScope =
+  | "semantic-scene"
+  | "raster-import"
+  | "raster-transform";
 
 async function initializeMixedSceneController(
   scope: MixedSceneInitializationScope = "semantic-scene",
 ): Promise<MixedSceneController> {
-  // A native raster Transform/Warp only needs the reusable controller shell;
-  // its own GPU programs are prepared by beginRasterLayerTransform(). Semantic
-  // scene resources remain an explicit gate for Shapes, imports and text.
+  // Native raster import and Transform/Warp only need the reusable controller
+  // shell. Their dedicated GPU programs are prepared independently, while
+  // semantic scene resources remain an explicit gate for Shapes and text.
   if (scope === "semantic-scene") {
     await engine.ensureMixedSceneEditorResources();
   }
@@ -3193,6 +3209,6 @@ void engine.initialize()
       ? " WebGPU requires HTTPS or localhost; an HTTP address on your local network is not sufficient."
       : "";
     statusElement.textContent = `${message}${secureContextHint}`;
-    statusElement.className = "status error";
+    statusElement.className = "status app-status error";
     updateHistoryControls();
   });

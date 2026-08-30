@@ -177,6 +177,52 @@ const checkpointPlan = replayPlan.planRasterHistoryReplay({
 assert.equal(checkpointPlan.seedAction, checkpointAction);
 assert.equal(checkpointPlan.sessionBaseline, undefined);
 
+// Raster import owns an immutable RGBA16F master instead of a duplicate tiled
+// seed. Later paint must replay on top of that master, while a newer periodic
+// checkpoint still takes precedence.
+const importedRasterSource = {
+  document: { assetId: "import-master", width: 64, height: 32 },
+  x: 32,
+  y: 16,
+  scale: 1,
+  rotation: 0,
+};
+const importedCheckpoint = {
+  id: 10,
+  kind: "raster-import",
+  layerId: 3,
+  seed: null,
+  baseBounds: { x: 0, y: 0, width: 64, height: 32 },
+  baseTileMask: new Uint32Array(8),
+  rasterSource: importedRasterSource,
+};
+const importedStroke = { id: 11, kind: "stroke", layerId: 3 };
+const importedStrokeBatch = { actionId: 11, layerId: 3, kind: "paint" };
+const importReplay = replayPlan.planRasterHistoryReplay({
+  actions: [importedCheckpoint, importedStroke],
+  cursor: 2,
+  batches: [importedStrokeBatch],
+  layerId: 3,
+  periodicSelection: null,
+});
+assert.equal(importReplay.seedAction, importedCheckpoint);
+assert.equal(importReplay.immutableRasterSource, importedRasterSource);
+assert.deepEqual(importReplay.batches, [importedStrokeBatch]);
+const periodicImportSeed = { tag: "periodic-after-import" };
+const periodicImportReplay = replayPlan.planRasterHistoryReplay({
+  actions: [importedCheckpoint, importedStroke],
+  cursor: 2,
+  batches: [importedStrokeBatch],
+  layerId: 3,
+  periodicSelection: {
+    actionIndex: 1,
+    checkpoints: [{ seed: periodicImportSeed }],
+  },
+});
+assert.equal(periodicImportReplay.seedAction, undefined);
+assert.equal(periodicImportReplay.immutableRasterSource, undefined);
+assert.equal(periodicImportReplay.periodicChain[0].seed, periodicImportSeed);
+
 // A pre-Rasterize checkpoint is the authoritative baseline even when a loaded
 // project intentionally has no earlier journal entry.
 const beforeSeed = { tag: "before" };

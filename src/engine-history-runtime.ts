@@ -70,6 +70,7 @@ import {
 import {
   applyRasterImportHistory,
   destroyRasterImportHistorySeed,
+  rebuildRasterLayerFromImmutableSource,
 } from "./engine-raster-image-runtime";
 import { mergeDirtyRects } from "./engine-geometry";
 import { markLayerStorageRect } from "./layer-storage-study";
@@ -1093,6 +1094,7 @@ export async function rebuildActiveLayerFromHistory(
     ? {
       periodicChain: [],
       seedAction: checkpointOverride,
+      immutableRasterSource: undefined,
       sessionBaseline: undefined,
       replayCheckpointActionIndex: engine.historyCursor - 1,
       visibleActionIds: new Set<number>(),
@@ -1108,6 +1110,7 @@ export async function rebuildActiveLayerFromHistory(
     });
   const periodicChain = replayPlan.periodicChain;
   const seedAction = replayPlan.seedAction;
+  const immutableRasterSource = replayPlan.immutableRasterSource;
   const sessionBaseline = replayPlan.sessionBaseline;
   const visibleIds = replayPlan.visibleActionIds;
   const layerBatches = replayPlan.batches;
@@ -1204,6 +1207,14 @@ export async function rebuildActiveLayerFromHistory(
           encodeLayerColdHydration(encoder, replaySeed, hot);
         }
         engine.device.queue.submit([encoder.finish()]);
+        await yieldReplaySubmit();
+      } else if (immutableRasterSource) {
+        await rebuildRasterLayerFromImmutableSource(
+          engine,
+          record,
+          immutableRasterSource,
+        );
+        observeReplaySubmit();
         await yieldReplaySubmit();
       } else if (sessionBaseline?.compressed) {
         const hot = engine.requireLayerGpu(layerId).hot;

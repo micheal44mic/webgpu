@@ -148,9 +148,9 @@ export type RasterLayerMetadataHistoryAction = {
  *
  * The seed always describes the byte-exact pixels AFTER the action and carries
  * the authoritative layer format used to encode those bytes. A null seed is valid
- * only when the resulting layer is empty; bounds and tile metadata must then
- * be empty as well. Keeping this contract explicit prevents replay from
- * accidentally treating a transform as a geometric node layered over pixels.
+ * when the resulting layer is empty, or when another immutable authority is
+ * explicitly carried by the checkpoint action. Bounds and tile metadata must
+ * still describe the reconstructed pixels exactly.
  */
 export interface RasterHistoryCheckpoint {
   layerId: number;
@@ -188,7 +188,8 @@ export interface RasterImportHistoryAction extends RasterHistoryCheckpoint {
   sceneIndex: number;
   selectedKeyBefore: MixedSceneItem["key"];
   activeRasterLayerIdBefore: number;
-  seed: LayerColdStorageResources;
+  /** Rebuilt from `rasterSource`; no duplicate tiled copy is retained. */
+  seed: null;
   baseBounds: DirtyRect;
   source: RasterImportSourceMetadata;
   /** Immutable master provenance retained even while the layer is detached. */

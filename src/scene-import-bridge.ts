@@ -10,9 +10,14 @@ export interface SceneImportBridgeOptions {
   readonly svgInput: HTMLInputElement;
   readonly imageInput: HTMLInputElement;
   readonly currentController: () => SceneImportController | null;
-  readonly ensureController: () => Promise<SceneImportController>;
+  readonly ensureController: (
+    kind: "svg" | "image",
+  ) => Promise<SceneImportController>;
+  readonly prewarmImageImport?: () => Promise<void>;
   readonly beforeAccept?: () => Promise<boolean>;
   readonly onQueued?: (kind: "svg" | "image", file: File) => void;
+  readonly onImporting?: (kind: "svg" | "image", file: File) => void;
+  readonly onComplete?: (kind: "svg" | "image", file: File) => void;
   readonly onFailure?: (kind: "svg" | "image", error: unknown) => void;
 }
 
@@ -29,6 +34,13 @@ export class SceneImportBridge {
     svg: null,
     image: null,
   };
+  readonly #pickerReadiness: Record<
+    "svg" | "image",
+    Promise<SceneImportController> | null
+  > = {
+    svg: null,
+    image: null,
+  };
 
   constructor(options: SceneImportBridgeOptions) {
     this.#options = options;
@@ -42,6 +54,20 @@ export class SceneImportBridge {
     const input = kind === "svg" ? this.#options.svgInput : this.#options.imageInput;
     this.#pickerGeneration[kind] = this.#documentGeneration;
     input.click();
+    const current = this.#options.currentController();
+    const controller = kind === "image" && current
+      ? Promise.resolve(current)
+      : this.#options.ensureController(kind);
+    const readiness = kind === "image" && this.#options.prewarmImageImport
+      ? Promise.all([controller, this.#options.prewarmImageImport()]).then(
+        ([ready]) => ready,
+      )
+      : controller;
+    this.#pickerReadiness[kind] = readiness;
+    // A cancelled native picker has no change event. Mark the background
+    // preparation rejection handled; a selected file still observes the same
+    // Promise and reports the error through the normal import boundary.
+    void readiness.catch(() => undefined);
   }
 
   get activeDocumentGeneration(): number {
@@ -63,6 +89,8 @@ export class SceneImportBridge {
     this.#documentGeneration += 1;
     this.#options.svgInput.value = "";
     this.#options.imageInput.value = "";
+    this.#pickerReadiness.svg = null;
+    this.#pickerReadiness.image = null;
     const activeImports = [...this.#activeImports];
     if (activeImports.length > 0) {
       await Promise.allSettled(activeImports);
@@ -76,6 +104,8 @@ export class SceneImportBridge {
     this.#documentGeneration += 1;
     this.#options.svgInput.value = "";
     this.#options.imageInput.value = "";
+    this.#pickerReadiness.svg = null;
+    this.#pickerReadiness.image = null;
     this.#options.svgInput.removeEventListener("change", this.#onSvgChange);
     this.#options.imageInput.removeEventListener("change", this.#onImageChange);
   }
@@ -93,19 +123,34 @@ export class SceneImportBridge {
     const documentGeneration =
       this.#pickerGeneration[kind] ?? this.#documentGeneration;
     this.#pickerGeneration[kind] = null;
+    const readiness = this.#pickerReadiness[kind];
+    this.#pickerReadiness[kind] = null;
     const file = input.files?.[0];
     input.value = "";
     if (!file) return;
 
-    void this.#acceptFile(kind, file, documentGeneration);
+    const operation = this.#acceptFile(
+      kind,
+      file,
+      documentGeneration,
+      readiness,
+    );
+    this.#activeImports.add(operation);
+    const cleanup = () => {
+      this.#activeImports.delete(operation);
+    };
+    void operation.then(cleanup, cleanup);
   }
 
   async #acceptFile(
     kind: "svg" | "image",
     file: File,
     documentGeneration: number,
+    readiness: Promise<SceneImportController> | null,
   ): Promise<void> {
     try {
+      if (!this.#isCurrentDocument(documentGeneration)) return;
+      this.#options.onQueued?.(kind, file);
       const readyForImport = await (
         this.#options.beforeAccept?.() ?? Promise.resolve(true)
       );
@@ -114,19 +159,20 @@ export class SceneImportBridge {
         throw new Error("The active raster adjustment could not finish before import.");
       }
       const current = this.#options.currentController();
-      if (!current) this.#options.onQueued?.(kind, file);
-      const ready = current ?? await this.#options.ensureController();
+      const ready = readiness
+        ? await readiness
+        : kind === "image" && current
+          ? current
+          : await this.#options.ensureController(kind);
       if (!this.#isCurrentDocument(documentGeneration)) return;
 
+      this.#options.onImporting?.(kind, file);
       const operation = kind === "svg"
         ? ready.importSvgFile(file)
         : ready.importRasterImageFile(file);
-      this.#activeImports.add(operation);
-      try {
-        await operation;
-      } finally {
-        this.#activeImports.delete(operation);
-      }
+      await operation;
+      if (!this.#isCurrentDocument(documentGeneration)) return;
+      this.#options.onComplete?.(kind, file);
     } catch (error) {
       if (!this.#isCurrentDocument(documentGeneration)) return;
       this.#options.onFailure?.(kind, error);

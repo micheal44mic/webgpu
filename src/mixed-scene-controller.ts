@@ -1311,11 +1311,7 @@ export class MixedSceneController {
   }
 
   async importSvgFile(file: File): Promise<void> {
-    try {
-      await this.importSvgSource(await file.text(), file.name);
-    } catch (error) {
-      this.setSvgImportStatus(error instanceof Error ? error.message : String(error), true);
-    }
+    await this.importSvgSource(await file.text(), file.name);
   }
 
   async importRasterImageFile(file: File): Promise<void> {
@@ -1960,7 +1956,9 @@ export class MixedSceneController {
   }
 
   private async importSvgSource(source: string, sourceName: string): Promise<void> {
-    if (this.sceneOperationBusy) return;
+    if (this.sceneOperationBusy || this.transformSessionOpen) {
+      throw new Error("SVG import is unavailable while another scene operation is active.");
+    }
     this.setSvgImportStatus(`Safely analyzing ${sourceName}…`);
     let documentValue: ReturnType<typeof parseVectorSvg>;
     try {
@@ -1970,7 +1968,7 @@ export class MixedSceneController {
         error instanceof Error ? error.message : "Invalid SVG.",
         true,
       );
-      return;
+      throw error;
     }
     this.sceneOperationBusy = true;
     this.syncControlsFromSelection(this.selectedVectorNode());
@@ -1991,6 +1989,7 @@ export class MixedSceneController {
         error instanceof Error ? error.message : "SVG import failed.",
         true,
       );
+      throw error;
     } finally {
       this.sceneOperationBusy = false;
       this.syncControlsFromSelection(this.selectedVectorNode());
@@ -2008,16 +2007,14 @@ export class MixedSceneController {
   }
 
   private async importImageFile(file: File): Promise<void> {
-    if (this.sceneOperationBusy || this.transformSessionOpen) return;
+    if (this.sceneOperationBusy || this.transformSessionOpen) {
+      throw new Error("Image import is unavailable while another scene operation is active.");
+    }
     this.sceneOperationBusy = true;
     this.setImageImportStatus(`Decoding ${file.name}…`);
     this.syncControlsFromSelection(this.selectedVectorNode());
     try {
       const imported = await this.host.importRasterImageFile(file);
-      // Keep the import operation locked until uploads, mip generation and the
-      // first presentation are drained. Otherwise the first Pencil down can
-      // land behind that queued GPU work and look as if the stroke started late.
-      await this.host.waitForIdle();
       const sourceMiB = imported.sourceBytes / MEBIBYTE_BYTES;
       this.setImageImportStatus(
         `${imported.name} imported directly as a raster · `
@@ -2029,6 +2026,7 @@ export class MixedSceneController {
         error instanceof Error ? error.message : "Image import failed.",
         true,
       );
+      throw error;
     } finally {
       this.sceneOperationBusy = false;
       this.syncControlsFromSelection(this.selectedVectorNode());

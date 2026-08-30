@@ -11,6 +11,10 @@ const emptyImportGpuTestSource = readFileSync(
   "utf8",
 );
 const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const mixedSceneControllerSource = readFileSync(
+  new URL("../src/mixed-scene-controller.ts", import.meta.url),
+  "utf8",
+);
 
 assert.match(editorLabsSource, /\["empty-import-svg",/);
 assert.match(editorLabsSource, /\["empty-import-image",/);
@@ -24,6 +28,11 @@ assert.match(
   mainSource,
   /new SceneImportBridge\(\{[\s\S]{0,420}beforeAccept: async \(\) => \{[\s\S]{0,360}needsAdjustmentSettlementForToolChange[\s\S]{0,220}commitActiveAdjustmentForToolChange\(\)/,
   "the import bridge must settle a live adjustment only after the native picker returns",
+);
+assert.match(
+  mixedSceneControllerSource,
+  /private async importSvgSource[\s\S]{0,900}catch \(error\) \{[\s\S]{0,240}setSvgImportStatus[\s\S]{0,180}throw error;/,
+  "SVG import failures must propagate to the bridge instead of reporting success",
 );
 
 class FakeFileInput extends EventTarget {
@@ -56,10 +65,13 @@ const svgInput = new FakeFileInput();
 const imageInput = new FakeFileInput();
 const readiness = deferred();
 const queued = [];
+const importing = [];
+const completed = [];
 const failures = [];
 const imported = [];
 let currentController = null;
 let ensureCount = 0;
+let imagePrewarmCount = 0;
 let completeImport;
 const importCompleted = new Promise((resolve) => {
   completeImport = resolve;
@@ -83,26 +95,34 @@ const bridge = new SceneImportBridge({
     return readiness.promise;
   },
   onQueued: (kind, file) => queued.push([kind, file.name]),
+  onImporting: (kind, file) => importing.push([kind, file.name]),
+  onComplete: (kind, file) => completed.push([kind, file.name]),
+  prewarmImageImport: async () => {
+    imagePrewarmCount += 1;
+  },
   onFailure: (kind, error) => failures.push([kind, String(error)]),
 });
 
 // The native picker is opened synchronously even though controller readiness
-// is still pending. The selected File is retained and imported afterwards.
+// is prepared immediately afterwards. The selected File reuses that Promise.
 bridge.request("import-svg");
 assert.equal(svgInput.clickCount, 1);
-assert.equal(ensureCount, 0);
+assert.equal(ensureCount, 1);
+assert.equal(imagePrewarmCount, 0, "SVG must not compile native image programs");
 svgInput.choose({ name: "cold-start.svg" });
 assert.equal(svgInput.value, "");
-assert.equal(ensureCount, 0, "acceptance work must leave the picker change stack first");
-assert.deepEqual(queued, []);
+assert.equal(ensureCount, 1, "the selected file must reuse picker-time preparation");
+assert.deepEqual(queued, [["svg", "cold-start.svg"]]);
 await Promise.resolve();
 assert.equal(ensureCount, 1);
-assert.deepEqual(queued, [["svg", "cold-start.svg"]]);
 assert.deepEqual(imported, []);
 currentController = controller;
 readiness.resolve(controller);
 await importCompleted;
+await Promise.resolve();
 assert.deepEqual(imported, [["svg", "cold-start.svg"]]);
+assert.deepEqual(importing, [["svg", "cold-start.svg"]]);
+assert.deepEqual(completed, [["svg", "cold-start.svg"]]);
 assert.deepEqual(failures, []);
 
 // Once ready, image import stays synchronous at the picker boundary and does
@@ -117,10 +137,13 @@ controller.importRasterImageFile = async (file) => {
 };
 bridge.request("import-image");
 assert.equal(imageInput.clickCount, 1);
+assert.equal(imagePrewarmCount, 1, "image programs must warm while the picker is open");
 imageInput.choose({ name: "ready.png" });
 await imageCompleted;
+await Promise.resolve();
 assert.equal(ensureCount, 1);
 assert.deepEqual(imported.at(-1), ["image", "ready.png"]);
+assert.deepEqual(completed.at(-1), ["image", "ready.png"]);
 
 // The picker still opens under the original click activation. Settlement only
 // begins after a File is chosen, and the captured File survives the await.
@@ -231,6 +254,8 @@ failingBridge.dispose();
   const stalePickerInput = new FakeFileInput();
   const stalePickerImports = [];
   const stalePickerFailures = [];
+  const stalePickerQueued = [];
+  let stalePickerSettlementCount = 0;
   const stalePickerBridge = new SceneImportBridge({
     svgInput: stalePickerInput,
     imageInput: new FakeFileInput(),
@@ -241,6 +266,11 @@ failingBridge.dispose();
     ensureController: async () => {
       throw new Error("A stale picker must not initialize the controller.");
     },
+    beforeAccept: async () => {
+      stalePickerSettlementCount += 1;
+      return true;
+    },
+    onQueued: (_kind, file) => stalePickerQueued.push(file.name),
     onFailure: (_kind, error) => stalePickerFailures.push(String(error)),
   });
   stalePickerBridge.request("import-svg");
@@ -251,6 +281,8 @@ failingBridge.dispose();
   await Promise.resolve();
   assert.deepEqual(stalePickerImports, []);
   assert.deepEqual(stalePickerFailures, []);
+  assert.deepEqual(stalePickerQueued, []);
+  assert.equal(stalePickerSettlementCount, 0);
   stalePickerBridge.dispose();
 }
 
@@ -274,11 +306,22 @@ failingBridge.dispose();
   queuedInput.choose({ name: "queued-a.svg" });
   await Promise.resolve();
   assert.equal(queuedEnsureCount, 1);
-  assert.equal(await queuedBridge.resetForDocument(), 1);
+  let queuedResetSettled = false;
+  const queuedReset = queuedBridge.resetForDocument().then((generation) => {
+    queuedResetSettled = true;
+    return generation;
+  });
+  await Promise.resolve();
+  assert.equal(
+    queuedResetSettled,
+    false,
+    "document reset must include picker-time controller preparation once a file was selected",
+  );
   queuedReadiness.resolve({
     async importSvgFile(file) { queuedImports.push(file.name); },
     async importRasterImageFile(file) { queuedImports.push(file.name); },
   });
+  assert.equal(await queuedReset, 1);
   await Promise.resolve();
   await Promise.resolve();
   assert.deepEqual(queuedImports, []);
@@ -292,19 +335,18 @@ failingBridge.dispose();
   const activeInput = new FakeFileInput();
   const activeImport = deferred();
   const activeStarted = deferred();
+  const activeController = {
+    async importSvgFile() {
+      activeStarted.resolve();
+      await activeImport.promise;
+    },
+    async importRasterImageFile() {},
+  };
   const activeBridge = new SceneImportBridge({
     svgInput: activeInput,
     imageInput: new FakeFileInput(),
-    currentController: () => ({
-      async importSvgFile() {
-        activeStarted.resolve();
-        await activeImport.promise;
-      },
-      async importRasterImageFile() {},
-    }),
-    ensureController: async () => {
-      throw new Error("The active controller must not warm again.");
-    },
+    currentController: () => activeController,
+    ensureController: async () => activeController,
   });
   activeBridge.request("import-svg");
   activeInput.choose({ name: "active-a.svg" });

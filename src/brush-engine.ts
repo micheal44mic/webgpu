@@ -118,6 +118,7 @@ import {
   destroyRasterImportHistorySeed,
   importRasterImageFile as importRasterImageFileRuntime,
   moveRasterImageNode,
+  prewarmRasterImageImportResources as prewarmRasterImageImportResourcesRuntime,
   setRasterImageNodeOpacity,
   setRasterImageNodeVisibility,
   updateRasterImageNode,
@@ -10287,6 +10288,10 @@ export class BrushEngine {
       this.commitRasterImportHistory(history);
     });
     return imported;
+  }
+
+  prewarmRasterImageImportResources(): Promise<void> {
+    return prewarmRasterImageImportResourcesRuntime(this);
   }
 
   commitRasterImportHistory(history: NativeRasterImageHistorySeed): void {

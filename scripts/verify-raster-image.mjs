@@ -41,6 +41,15 @@ const displayShaderSource = readFileSync(
   "utf8",
 );
 const htmlSource = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const historyRuntimeSource = readFileSync(
+  new URL("../src/engine-history-runtime.ts", import.meta.url),
+  "utf8",
+);
+const replayPlanSource = readFileSync(
+  new URL("../src/history-replay-plan.ts", import.meta.url),
+  "utf8",
+);
+
 
 function u32be(value) {
   return [(value >>> 24) & 255, (value >>> 16) & 255, (value >>> 8) & 255, value & 255];
@@ -330,7 +339,11 @@ assert.match(runtimeSource, /upload\[6\] = Math\.fround\(engine\.documentWidth\)
 assert.match(runtimeSource, /upload\[7\] = Math\.fround\(engine\.documentHeight\)/);
 assert.match(runtimeSource, /GPUTextureUsage\.RENDER_ATTACHMENT/);
 assert.match(runtimeSource, /allocateLayerGpuResources\(/);
-assert.match(runtimeSource, /createLayerColdStorageCandidate\(/);
+assert.doesNotMatch(
+  runtimeSource,
+  /createLayerColdStorageCandidate\(/,
+  "native image import must not duplicate the master into a tiled history seed",
+);
 assert.match(runtimeSource, /scene\.addRasterAboveSelection\(record\.id\)/);
 assert.match(runtimeSource, /record\.storageTileMask\.fill\(0\)/);
 assert.match(runtimeSource, /markLayerStorageRect\(record\.storageTileMask, bounds\)/);
@@ -346,6 +359,9 @@ const redoImportEnd = runtimeSource.indexOf("export async function applyRasterIm
 assert.notEqual(redoImportStart, -1);
 assert.notEqual(redoImportEnd, -1);
 const redoImportSource = runtimeSource.slice(redoImportStart, redoImportEnd);
+assert.match(redoImportSource, /allocateLayerGpuResources\(/);
+assert.match(redoImportSource, /rebuildRasterLayerFromImmutableSource\(/);
+assert.doesNotMatch(redoImportSource, /hydrateLayerFromSeed\([^)]*action\.seed/);
 assert.match(
   redoImportSource,
   /prepareActiveLayerForSwitch\(\);[\s\S]{0,3000}if \(attached\)[\s\S]{0,1500}else \{[\s\S]{0,500}engine\.layerStack\.setActiveIndex\(originalIndex\);[\s\S]{0,120}await engine\.activateLayer\(previousIndex, "structural-history"\);/,
@@ -360,6 +376,11 @@ assert.match(runtimeSource, /runGpuAllocationTransaction\(/);
 assert.match(runtimeSource, /preflight: \(inspection\)/);
 assert.match(runtimeSource, /RASTER_IMAGE_MAXIMUM_TOTAL_GPU_BYTES/);
 assert.match(runtimeSource, /nativeRasterImportResidentBytes\(engine\)/);
+assert.match(
+  runtimeSource,
+  /discardedRasterImportHistoryActions[\s\S]{0,320}action\.kind === "raster-import"[\s\S]{0,100}importedLayerIds\.add\(action\.layerId\)/,
+  "the resident import budget must retain imported layer ownership after later pixel edits",
+);
 assert.doesNotMatch(runtimeSource, /RASTER_IMAGE_MAXIMUM_IMPORT_PEAK_BYTES/);
 assert.doesNotMatch(runtimeSource, /picco aggregato previsto|engine\.getStats\(\)\.gpuMemory\.countedTotalMiB/);
 assert.match(
@@ -378,9 +399,10 @@ assert.match(runtimeSource, /x: Math\.floor\(\(DOCUMENT_WIDTH - outputWidth\) \*
 assert.match(runtimeSource, /y: Math\.floor\(\(DOCUMENT_HEIGHT - outputHeight\) \* 0\.5\)/);
 assert.match(
   runtimeSource,
-  /DOCUMENT_WIDTH \* DOCUMENT_HEIGHT \* bytesPerPixel[\s\S]{0,180}LAYER_STORAGE_TILE_WIDTH[\s\S]{0,80}LAYER_STORAGE_TILE_HEIGHT/,
-  "Il budget import deve usare area documento e area tile rettangolari.",
+  /const newPersistentBytes = DOCUMENT_WIDTH \* DOCUMENT_HEIGHT \* bytesPerPixel[\s\S]{0,80}\+ immutableSourceBytes/,
+  "the resident budget must count one hot document layer plus the immutable master",
 );
+assert.doesNotMatch(runtimeSource, /historyColdSeedResidentBytes\(seed\)/);
 assert.doesNotMatch(
   runtimeSource,
   /engine\.layerSize|\bLAYER_SIZE\b|LAYER_STORAGE_TILE_SIZE \*\* 2/,
@@ -388,12 +410,12 @@ assert.doesNotMatch(
 );
 assert.match(
   runtimeSource,
-  /assertNativeRasterImportResidentBudget\(engine, bounds, (?:sourceMipBytes|decodedMipBytes) \+ 32\)/,
+  /assertNativeRasterImportResidentBudget\(engine, (?:sourceMipBytes|decodedMipBytes) \+ 32\)/,
 );
 assert.match(
   runtimeSource,
-  /transient = await encodeBitmapIntoLayer[\s\S]{0,600}releaseDecodedRasterImage\(decoded\);\s*decoded = null;[\s\S]{0,400}seed = await createLayerColdStorageCandidate/,
-  "la bitmap decodificata deve essere rilasciata prima del seed Undo/Redo",
+  /transient = await encodeBitmapIntoLayer[\s\S]{0,600}releaseDecodedRasterImage\(decoded\);\s*decoded = null;[\s\S]{0,900}createRasterImageGpuResource/,
+  "the decoded bitmap must be released before the immutable master is published",
 );
 assert.match(runtimeSource, /export function rasterImageGpuMemoryBytes/);
 assert.match(runtimeSource, /rasterImageImportsInFlight/);
@@ -441,7 +463,21 @@ assert.doesNotMatch(
   "generic layer presentation must not expand alpha after sampling",
 );
 assert.match(engineSource, /commitRasterImportHistory\(history/);
-assert.match(runtimeSource, /commitHistory\(historySeed\);[\s\S]{0,100}seed = null/);
+assert.match(runtimeSource, /seed: null,[\s\S]{0,1800}commitHistory\(historySeed\);/);
+assert.match(runtimeSource, /Map<LayerFormat, Promise<NativeImportPipelines>>/);
+assert.match(runtimeSource, /Promise\.allSettled\(\[[\s\S]{0,500}createRenderPipelineAsync/);
+assert.match(
+  runtimeSource,
+  /const prepared = await runGpuAllocationTransaction[\s\S]{0,6500}\);[\s\S]{0,300}Promise\.allSettled/,
+  "async pipeline compilation must run after device error scopes have drained",
+);
+assert.match(runtimeSource, /export async function prewarmRasterImageImportResources/);
+assert.match(replayPlanSource, /checkpointAction\?\.kind === "raster-import"[\s\S]{0,100}checkpointAction\.rasterSource/);
+assert.match(
+  historyRuntimeSource,
+  /else if \(immutableRasterSource\)[\s\S]{0,240}rebuildRasterLayerFromImmutableSource/,
+  "history replay must reconstruct Import → Paint → Undo from the immutable master",
+);
 assert.match(engineSource, /publishActiveLayerChange\(\): void \{[\s\S]{0,240}catch \(error\)/);
 assert.doesNotMatch(runtimeSource, /callbacks\.onActiveLayerChange/);
 const publicResultStart = runtimeSource.indexOf("export interface NativeRasterImageImportResult");
@@ -480,11 +516,19 @@ assert.match(controllerSource, /private enterTouchNavigation\(\)/);
 assert.match(controllerSource, /this\.host\.rotateViewBy\(/);
 assert.match(controllerSource, /kind: "raster-layer"/);
 assert.match(controllerSource, /imported directly as a raster/);
-assert.match(
-  controllerSource,
-  /const imported = await this\.host\.importRasterImageFile\(file\);[\s\S]{0,500}await this\.host\.waitForIdle\(\);[\s\S]{0,500}imported directly as a raster/,
-  "l'import deve restare bloccato finche upload, mip e prima presentazione sono conclusi",
+const controllerImportStart = controllerSource.indexOf("private async importImageFile(");
+const controllerImportEnd = controllerSource.indexOf(
+  "private selectedVectorNode(",
+  controllerImportStart,
 );
+const controllerImportSource = controllerSource.slice(controllerImportStart, controllerImportEnd);
+assert.match(controllerImportSource, /await this\.host\.importRasterImageFile\(file\)/);
+assert.doesNotMatch(
+  controllerImportSource,
+  /await this\.host\.waitForIdle\(\)/,
+  "the controller must release the UI after atomic publication without a second global fence",
+);
+assert.match(controllerImportSource, /catch \(error\)[\s\S]{0,220}throw error/);
 assert.match(htmlSource, /data-mobile-canvas-tool="transform"/);
 assert.match(htmlSource, /id="mobileTransformApply"/);
 assert.match(htmlSource, /id="mobileTransformCancel"/);

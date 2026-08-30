@@ -31,8 +31,6 @@ import {
 } from "./raster-image-layer-import-shader";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import {
-  createLayerColdStorageCandidate,
-  destroyLayerColdStorage,
   encodeLayerColdHydration,
 } from "./engine-cold-storage";
 import {
@@ -48,11 +46,10 @@ import type { LayerRecord } from "./layer-stack";
 import { LAYER_STACK_MAXIMUM } from "./layer-stack";
 import {
   countLayerStorageTiles,
-  LAYER_STORAGE_TILE_HEIGHT,
-  LAYER_STORAGE_TILE_WIDTH,
   markLayerStorageRect,
 } from "./layer-storage-study";
 import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH, MEBIBYTE_BYTES } from "./engine-limits";
+import { createRenderPipelineAsync } from "./engine-gpu-utils";
 import type { DirtyRect } from "./engine-stroke-types";
 import type { LayerFormat } from "./engine-types";
 import type {
@@ -64,7 +61,6 @@ import {
   publishMixedScene,
   requireMixedSceneStack,
 } from "./engine-vector-text-runtime";
-import { historyColdSeedResidentBytes } from "./history-cold-seed";
 import {
   cloneRasterLayerSource,
   rasterLayerSourceBounds,
@@ -83,8 +79,8 @@ const rasterImageImportsInFlight = new WeakSet<BrushEngine>();
 
 /**
  * Payload autorevole che il chiamante inserisce nell'azione strutturale di
- * Undo/Redo. Il cold seed è una seconda copia immutabile dei soli tile toccati;
- * non è un asset immagine semantico e non partecipa al compositing live.
+ * Undo/Redo. Il master RGBA16F già posseduto da `rasterSource` è anche la base
+ * autorevole della cronologia: non viene creata una seconda copia tiled.
  */
 export interface NativeRasterImageHistorySeed {
   readonly layerRecord: LayerRecord;
@@ -92,7 +88,7 @@ export interface NativeRasterImageHistorySeed {
   readonly sceneIndex: number;
   readonly selectedKeyBefore: MixedSceneItem["key"];
   readonly activeRasterLayerIdBefore: number;
-  readonly seed: LayerColdStorageResources;
+  readonly seed: null;
   readonly baseBounds: DirtyRect;
   readonly baseTileMask: Uint32Array;
   readonly source: RasterImportSourceMetadata;
@@ -150,7 +146,10 @@ interface TransientImageTextures {
   destroy(): void;
 }
 
-const pipelineCache = new WeakMap<GPUDevice, Map<LayerFormat, NativeImportPipelines>>();
+const pipelineCache = new WeakMap<
+  GPUDevice,
+  Map<LayerFormat, Promise<NativeImportPipelines>>
+>();
 
 function allocateRasterLayerAssetId(engine: BrushEngine): string {
   let assetId: string;
@@ -172,12 +171,6 @@ function outputBoundsForImage(width: number, height: number): DirtyRect {
   };
 }
 
-function tileCountForBounds(bounds: DirtyRect): number {
-  const mask = new Uint32Array(8);
-  markLayerStorageRect(mask, bounds);
-  return countLayerStorageTiles(mask);
-}
-
 function requiredImportMipLevelCount(
   width: number,
   height: number,
@@ -195,14 +188,13 @@ function nativeRasterImportResidentBytes(engine: BrushEngine): number {
     ...engine.discardedRasterImportHistoryActions,
   ]);
   const importedLayerIds = new Set<number>();
-  const seeds = new Set<LayerColdStorageResources>();
   let bytes = rasterImageGpuMemoryBytes(engine);
   for (const action of actions) {
-    if (action.kind !== "raster-import") continue;
-    importedLayerIds.add(action.layerId);
-    seeds.add(action.seed);
+    if (action.kind === "raster-import") importedLayerIds.add(action.layerId);
   }
-  for (const seed of seeds) bytes += historyColdSeedResidentBytes(seed);
+  for (const record of engine.layerStack.layers) {
+    if (record.rasterSource) importedLayerIds.add(record.id);
+  }
   const bytesPerPixel = engine.layerFormat === "rgba16float" ? 8 : 4;
   for (const layerId of importedLayerIds) {
     const gpu = engine.layerGpu.get(layerId);
@@ -215,15 +207,10 @@ function nativeRasterImportResidentBytes(engine: BrushEngine): number {
 
 function assertNativeRasterImportResidentBudget(
   engine: BrushEngine,
-  bounds: DirtyRect,
   immutableSourceBytes = 0,
 ): void {
   const bytesPerPixel = engine.layerFormat === "rgba16float" ? 8 : 4;
   const newPersistentBytes = DOCUMENT_WIDTH * DOCUMENT_HEIGHT * bytesPerPixel
-    + tileCountForBounds(bounds)
-      * LAYER_STORAGE_TILE_WIDTH
-      * LAYER_STORAGE_TILE_HEIGHT
-      * bytesPerPixel
     + immutableSourceBytes;
   const resultingImportResidentBytes = nativeRasterImportResidentBytes(engine)
     + newPersistentBytes;
@@ -240,13 +227,22 @@ async function ensureNativeImportPipelines(
   engine: BrushEngine,
 ): Promise<NativeImportPipelines> {
   let byFormat = pipelineCache.get(engine.device);
+  if (!byFormat) {
+    byFormat = new Map<LayerFormat, Promise<NativeImportPipelines>>();
+    pipelineCache.set(engine.device, byFormat);
+  }
   const cached = byFormat?.get(engine.layerFormat);
   if (cached) return cached;
 
-  const created = await runGpuAllocationTransaction(
-    engine.device,
-    `Native raster import pipeline ${engine.layerFormat}`,
-    () => {
+  const format = engine.layerFormat;
+  const created = (async () => {
+    // Keep device-wide error scopes around synchronous descriptor allocation
+    // only. Holding them open during async compilation would let unrelated GPU
+    // work interleave pushes and pops on the same scope stack.
+    const prepared = await runGpuAllocationTransaction(
+      engine.device,
+      `Native raster import pipeline descriptors ${format}`,
+      () => {
       const uploadModule = engine.device.createShaderModule({
         label: "Native raster import straight-sRGB upload WGSL",
         code: rasterImageLayerUploadShader,
@@ -314,7 +310,7 @@ async function ensureNativeImportPipelines(
         label: "Immutable raster master rebuild pipeline layout",
         bindGroupLayouts: [rebuildLayout],
       });
-      const premultiplyPipeline = engine.device.createRenderPipeline({
+      const premultiplyDescriptor: GPURenderPipelineDescriptor = {
         label: "Native raster import linear premultiply",
         layout: uploadPipelineLayout,
         vertex: { module: uploadModule, entryPoint: "vertexMain" },
@@ -324,8 +320,8 @@ async function ensureNativeImportPipelines(
           targets: [{ format: "rgba16float" }],
         },
         primitive: { topology: "triangle-list" },
-      });
-      const mipmapPipeline = engine.device.createRenderPipeline({
+      };
+      const mipmapDescriptor: GPURenderPipelineDescriptor = {
         label: "Native raster import exact NPOT mipmap",
         layout: uploadPipelineLayout,
         vertex: { module: uploadModule, entryPoint: "vertexMain" },
@@ -335,29 +331,29 @@ async function ensureNativeImportPipelines(
           targets: [{ format: "rgba16float" }],
         },
         primitive: { topology: "triangle-list" },
-      });
-      const blitPipeline = engine.device.createRenderPipeline({
-        label: `Native raster import into ${engine.layerFormat} layer`,
+      };
+      const blitDescriptor: GPURenderPipelineDescriptor = {
+        label: `Native raster import into ${format} layer`,
         layout: blitPipelineLayout,
         vertex: { module: blitModule, entryPoint: "vertexMain" },
         fragment: {
           module: blitModule,
           entryPoint: "fragmentMain",
-          targets: [{ format: engine.layerFormat }],
+          targets: [{ format }],
         },
         primitive: { topology: "triangle-strip", cullMode: "none" },
-      });
-      const rebuildPipeline = engine.device.createRenderPipeline({
-        label: `Immutable raster master rebuild into ${engine.layerFormat}`,
+      };
+      const rebuildDescriptor: GPURenderPipelineDescriptor = {
+        label: `Immutable raster master rebuild into ${format}`,
         layout: rebuildPipelineLayout,
         vertex: { module: rebuildModule, entryPoint: "vertexMain" },
         fragment: {
           module: rebuildModule,
           entryPoint: "fragmentMain",
-          targets: [{ format: engine.layerFormat }],
+          targets: [{ format }],
         },
         primitive: { topology: "triangle-strip", cullMode: "none" },
-      });
+      };
       const sampler = engine.device.createSampler({
         label: "Native raster import trilinear sampler",
         addressModeU: "clamp-to-edge",
@@ -371,18 +367,58 @@ async function ensureNativeImportPipelines(
         sourceLayout,
         blitLayout,
         rebuildLayout,
-        premultiplyPipeline,
-        mipmapPipeline,
-        blitPipeline,
-        rebuildPipeline,
         sampler,
+        premultiplyDescriptor,
+        mipmapDescriptor,
+        blitDescriptor,
+        rebuildDescriptor,
       };
-    },
-  );
-  byFormat ??= new Map<LayerFormat, NativeImportPipelines>();
-  byFormat.set(engine.layerFormat, created);
-  pipelineCache.set(engine.device, byFormat);
-  return created;
+      },
+    );
+    // Wait for every compiler job before exposing failure or evicting the
+    // Promise cache. A retry can therefore never overlap abandoned jobs.
+    const pipelineResults = await Promise.allSettled([
+      createRenderPipelineAsync(engine.device, prepared.premultiplyDescriptor),
+      createRenderPipelineAsync(engine.device, prepared.mipmapDescriptor),
+      createRenderPipelineAsync(engine.device, prepared.blitDescriptor),
+      createRenderPipelineAsync(engine.device, prepared.rebuildDescriptor),
+    ]);
+    const pipelines = pipelineResults.map((result) => {
+      if (result.status === "rejected") throw result.reason;
+      return result.value;
+    });
+    const [
+      premultiplyPipeline,
+      mipmapPipeline,
+      blitPipeline,
+      rebuildPipeline,
+    ] = pipelines;
+    if (!premultiplyPipeline || !mipmapPipeline || !blitPipeline || !rebuildPipeline) {
+      throw new Error("Native raster import pipeline compilation was incomplete.");
+    }
+    return {
+      sourceLayout: prepared.sourceLayout,
+      blitLayout: prepared.blitLayout,
+      rebuildLayout: prepared.rebuildLayout,
+      premultiplyPipeline,
+      mipmapPipeline,
+      blitPipeline,
+      rebuildPipeline,
+      sampler: prepared.sampler,
+    };
+  })();
+  byFormat.set(format, created);
+  try {
+    return await created;
+  } catch (error) {
+    if (byFormat.get(format) === created) byFormat.delete(format);
+    throw error;
+  }
+}
+
+/** Compiles the import-only programs without allocating document-owned pixels. */
+export async function prewarmRasterImageImportResources(engine: BrushEngine): Promise<void> {
+  await ensureNativeImportPipelines(engine);
 }
 
 async function createTransientImageTextures(
@@ -704,8 +740,9 @@ function writeRasterSourceUniform(
 export async function rebuildRasterLayerFromImmutableSource(
   engine: BrushEngine,
   record: LayerRecord,
+  sourceOverride?: Readonly<RasterLayerSource>,
 ): Promise<DirtyRect | null> {
-  const source = record.rasterSource;
+  const source = sourceOverride ?? record.rasterSource;
   if (!source) throw new Error(`Layer ${record.name} has no immutable raster master.`);
   if (engine.layerStack.active.id !== record.id) {
     throw new Error("The raster cache can only be rebuilt on the active layer.");
@@ -898,7 +935,7 @@ async function importRasterImageFileUnlocked(
             + `${(transientGpuBytes / 1024 / 1024).toFixed(1)} MiB.`,
           );
         }
-        assertNativeRasterImportResidentBudget(engine, bounds, sourceMipBytes + 32);
+        assertNativeRasterImportResidentBudget(engine, sourceMipBytes + 32);
       },
     });
 
@@ -917,7 +954,7 @@ async function importRasterImageFileUnlocked(
         + `${(decodedTransientGpuBytes / 1024 / 1024).toFixed(1)} MiB.`,
       );
     }
-    assertNativeRasterImportResidentBudget(engine, bounds, decodedMipBytes + 32);
+    assertNativeRasterImportResidentBudget(engine, decodedMipBytes + 32);
     const scene = requireMixedSceneStack(engine);
     const originalActiveId = engine.layerStack.active.id;
     const selectedKeyBefore = scene.selected.key;
@@ -936,7 +973,6 @@ async function importRasterImageFileUnlocked(
     const assetId = allocateRasterLayerAssetId(engine);
     let recordId: number | null = null;
     let gpu: LayerGpuResources | null = null;
-    let seed: LayerColdStorageResources | null = null;
     let transient: TransientImageTextures | null = null;
     let resource: RasterImageGpuResource | null = null;
     let sceneInserted = false;
@@ -968,14 +1004,6 @@ async function importRasterImageFileUnlocked(
       record.hasContent = true;
       record.storageTileMask.fill(0);
       markLayerStorageRect(record.storageTileMask, bounds);
-      seed = await createLayerColdStorageCandidate(
-        engine,
-        record,
-        hot,
-        record.storageTileMask.slice(),
-        1,
-        "history",
-      );
       const document: RasterImageDocument = {
         assetId,
         sourceName: metadata.sourceName,
@@ -1021,7 +1049,7 @@ async function importRasterImageFileUnlocked(
         sceneIndex,
         selectedKeyBefore,
         activeRasterLayerIdBefore: originalActiveId,
-        seed,
+        seed: null,
         baseBounds: { ...bounds },
         baseTileMask: record.storageTileMask.slice(),
         source: {
@@ -1045,10 +1073,10 @@ async function importRasterImageFileUnlocked(
         bounds: { ...bounds },
         tileCount: countLayerStorageTiles(record.storageTileMask),
       });
-      // Journal publication is the final transactional step. If it throws,
-      // the enclosing catch still owns `seed` and removes the live layer.
+      // Journal publication is the final transactional step. The immutable
+      // master is already retained by the action, so no second history copy is
+      // needed before this point.
       commitHistory(historySeed);
-      seed = null;
       return publicResult;
     } catch (error) {
       const rollbackErrors: unknown[] = [];
@@ -1102,7 +1130,6 @@ async function importRasterImageFileUnlocked(
           destroyLayerGpuResources(engine, candidateGpu);
         }
       }
-      destroyLayerColdStorage(seed);
       if (rollbackErrors.length > 0) {
         engine.latchDocumentStateInconsistent(
           "Raster import failed and rollback was incomplete. Reload the page.",
@@ -1316,15 +1343,25 @@ async function redoRasterImport(
   let gpu: LayerGpuResources | null = null;
   let attached = false;
   try {
-    gpu = await hydrateLayerFromSeed(engine, action.layerId, action.seed);
+    gpu = await allocateLayerGpuResources(
+      engine,
+      engine.layerFormat,
+      `Rebuild imported raster layer ${action.layerId}`,
+    );
     action.layerRecord.contentBounds = { ...action.baseBounds };
     action.layerRecord.hasContent = true;
     action.layerRecord.storageTileMask.set(action.baseTileMask);
+    action.layerRecord.rasterSource = cloneRasterLayerSource(action.rasterSource);
     const rasterInsertionIndex = Math.min(action.rasterLayerIndex, engine.layerStack.count);
     const sceneInsertionIndex = Math.min(action.sceneIndex, scene.items.length);
     engine.layerStack.attach(action.layerRecord, rasterInsertionIndex);
     attached = true;
     engine.layerGpu.set(action.layerId, gpu);
+    await rebuildRasterLayerFromImmutableSource(
+      engine,
+      action.layerRecord,
+      action.rasterSource,
+    );
     scene.insertRasterAt(action.layerId, sceneInsertionIndex, true);
     engine.vectorTextPreviewExcludedNodeId = null;
     clearVectorTextPresentationForTransaction(engine);
@@ -1399,7 +1436,9 @@ export async function applyRasterImportHistory(
 }
 
 export function destroyRasterImportHistorySeed(action: RasterImportHistoryAction): void {
-  destroyLayerColdStorage(action.seed);
+  // The action owns no duplicate pixel seed. Its immutable source is released
+  // centrally once no live layer or retained history action references it.
+  void action;
 }
 
 /*

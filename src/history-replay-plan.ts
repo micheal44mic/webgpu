@@ -6,6 +6,7 @@ import type {
 import { selectLayerReplayAfterCheckpoint } from "./history-journal";
 import type { PeriodicRasterHistoryCheckpoint } from "./history-checkpoint-types.ts";
 import type { RestoredProjectHistoryBaseline } from "./engine-layer-resources.ts";
+import type { RasterLayerSource } from "./raster-layer-source";
 
 export interface PeriodicHistoryReplaySelection {
   readonly checkpoints: readonly PeriodicRasterHistoryCheckpoint[];
@@ -15,6 +16,8 @@ export interface PeriodicHistoryReplaySelection {
 export interface RasterHistoryReplayPlan {
   readonly periodicChain: readonly PeriodicRasterHistoryCheckpoint[];
   readonly seedAction: RasterHistoryCheckpoint | undefined;
+  /** Immutable raster authority used when the selected checkpoint is an import. */
+  readonly immutableRasterSource: RasterLayerSource | undefined;
   readonly sessionBaseline: RestoredProjectHistoryBaseline | undefined;
   readonly replayCheckpointActionIndex: number;
   readonly visibleActionIds: ReadonlySet<number>;
@@ -52,6 +55,7 @@ export function planRasterHistoryReplay(options: {
         baseBounds: nextAction.beforeBounds,
         baseTileMask: nextAction.beforeTileMask,
       },
+      immutableRasterSource: undefined,
       sessionBaseline: undefined,
       // The seed already represents every action before Rasterize. No earlier
       // paint batch may be replayed on top of it.
@@ -87,6 +91,9 @@ export function planRasterHistoryReplay(options: {
     : checkpointAction?.kind === "group-transform"
       ? checkpointAction.rasters.find((entry) => entry.layerId === options.layerId)
     : checkpointAction;
+  const immutableRasterSource = checkpointAction?.kind === "raster-import"
+    ? checkpointAction.rasterSource
+    : undefined;
   // The saved project is the invisible cursor-zero base only while replay is
   // still in that original raster lineage. A visible Clear moves the first
   // replay index forward and must reveal a blank layer, not resurrect the file.
@@ -112,6 +119,7 @@ export function planRasterHistoryReplay(options: {
   return {
     periodicChain,
     seedAction,
+    immutableRasterSource,
     sessionBaseline,
     replayCheckpointActionIndex,
     visibleActionIds,
