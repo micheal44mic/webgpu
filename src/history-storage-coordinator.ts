@@ -316,7 +316,11 @@ export class HistoryStorageCoordinator {
     ) {
       return false;
     }
-    if (this.opfsGarbageCandidates.size > 0) {
+    const atJournalEnd = this.host.store.cursor === this.host.store.actions.length;
+    // Segment cleanup changes manifest topology and remains part of the
+    // journal-end maintenance pass. Intermediate cursors perform only durable
+    // payload publication and its token-guarded residence change.
+    if (atJournalEnd && this.opfsGarbageCandidates.size > 0) {
       this.storageBusy = "spilling";
       try {
         await this.cleanupOpfsGarbageCandidates();
@@ -324,7 +328,7 @@ export class HistoryStorageCoordinator {
         this.storageBusy = "idle";
       }
     }
-    if (this.garbageSegmentIds.size > 0) {
+    if (atJournalEnd && this.garbageSegmentIds.size > 0) {
       this.storageBusy = "spilling";
       try {
         await this.collectGarbageSegments(options.shouldContinue);
@@ -373,7 +377,7 @@ export class HistoryStorageCoordinator {
     return changed;
   }
 
-  shouldDeferJournalEviction(options: HistoryStorageSpillOptions): boolean {
+  hasPendingSpill(options: HistoryStorageSpillOptions): boolean {
     if (
       options.currentResidentBytes() <= options.highWaterBytes
       || this.destroyed
@@ -386,6 +390,10 @@ export class HistoryStorageCoordinator {
     if (this.storageBusy !== "idle") return false;
     this.wrapAllHistorySeeds();
     return this.residentPayloadSegmentPlan(options).plan.required;
+  }
+
+  shouldDeferJournalEviction(options: HistoryStorageSpillOptions): boolean {
+    return this.hasPendingSpill(options);
   }
 
   /** Hydrates target and rollback dependencies before moveHistoryCursor mutates the cursor. */

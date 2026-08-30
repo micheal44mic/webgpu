@@ -226,7 +226,7 @@ function stateFor(engine: EngineHistoryMaintenanceHost): HistoryMaintenanceState
   return engine.history.claimMaintenanceState(createHistoryMaintenanceState);
 }
 
-function historyMaintenanceEngineIdle(
+function historyStorageMaintenanceEngineIdle(
   engine: EngineHistoryMaintenanceHost,
   allowCurrentStorageOperation = false,
 ): boolean {
@@ -256,7 +256,14 @@ function historyMaintenanceEngineIdle(
     && !engine.rasterBevelBusy
     && !engine.rasterOuterShadowBusy
     && !engine.rasterInnerShadowBusy
-    && (allowCurrentStorageOperation ? storageBusy !== "hydrating" : storageBusy === "idle")
+    && (allowCurrentStorageOperation ? storageBusy !== "hydrating" : storageBusy === "idle");
+}
+
+function historyMaintenanceEngineIdle(
+  engine: EngineHistoryMaintenanceHost,
+  allowCurrentStorageOperation = false,
+): boolean {
+  return historyStorageMaintenanceEngineIdle(engine, allowCurrentStorageOperation)
     && engine.historyCursor === engine.historyActions.length;
 }
 
@@ -1421,14 +1428,14 @@ export function scheduleHistoryMaintenance(engine: EngineHistoryMaintenanceHost)
   if (state.timer !== null) window.clearTimeout(state.timer);
   state.timer = window.setTimeout(() => {
     state.timer = null;
-    if (!historyMaintenanceEngineIdle(engine)) {
+    if (!historyStorageMaintenanceEngineIdle(engine)) {
       return;
     }
     const expectedGeneration = state.generation;
     void engine.device.queue.onSubmittedWorkDone().then(async () => {
       if (
         expectedGeneration !== state.generation
-        || !historyMaintenanceEngineIdle(engine)
+        || !historyStorageMaintenanceEngineIdle(engine)
         || engine.deviceLostError
       ) {
         return;
@@ -1440,51 +1447,51 @@ export function scheduleHistoryMaintenance(engine: EngineHistoryMaintenanceHost)
       await engine.waitForIdle();
       if (
         expectedGeneration !== state.generation
-        || !historyMaintenanceEngineIdle(engine)
+        || !historyStorageMaintenanceEngineIdle(engine)
         || engine.deviceLostError
       ) {
         return;
       }
-      // Redo resources are not reused until this fence. Scan and destruction
-      // then advance by one bounded chunk per browser turn; a new gesture or
-      // transaction invalidates the gate before the next chunk.
-      if (engine.historyCompactionPending) {
-        const compaction = await engine.compactDiscardedHistoryIncrementally({
-          shouldContinue: () => (
-            expectedGeneration === state.generation
-            && historyMaintenanceEngineIdle(engine)
-            && !engine.deviceLostError
-          ),
-          yieldTurn: yieldHistoryMaintenanceTurn,
-        });
-        state.redoCompactionChunks += compaction.chunks;
-        state.redoCompactionYields += compaction.yields;
-        state.redoReleasedSlices += compaction.releasedSlices;
-        if (!compaction.completed) {
-          state.redoCompactionsAborted += 1;
-          return;
+      if (historyMaintenanceEngineIdle(engine)) {
+        // Redo resources are not reused until this fence. Scan and destruction
+        // then advance by one bounded chunk per browser turn; a new gesture or
+        // transaction invalidates the gate before the next chunk.
+        if (engine.historyCompactionPending) {
+          const compaction = await engine.compactDiscardedHistoryIncrementally({
+            shouldContinue: () => (
+              expectedGeneration === state.generation
+              && historyMaintenanceEngineIdle(engine)
+              && !engine.deviceLostError
+            ),
+            yieldTurn: yieldHistoryMaintenanceTurn,
+          });
+          state.redoCompactionChunks += compaction.chunks;
+          state.redoCompactionYields += compaction.yields;
+          state.redoReleasedSlices += compaction.releasedSlices;
+          if (!compaction.completed) {
+            state.redoCompactionsAborted += 1;
+            return;
+          }
+          state.redoCompactionsCompleted += 1;
         }
-        state.redoCompactionsCompleted += 1;
+        const accountingRebuilt = synchronizeHistoryAccounting(engine);
+        if (accountingRebuilt) discardStalePeriodicCheckpoints(engine);
+        if (expectedGeneration !== state.generation) return;
+        // Periodic checkpoints are reconstructible caches. Recover them before
+        // writing authoritative journal payloads to local storage.
+        enforceHistoryBudget(engine, false);
+        if (expectedGeneration !== state.generation) return;
+        await capturePeriodicCheckpoint(engine, expectedGeneration);
+        if (expectedGeneration !== state.generation) return;
+        // A required full checkpoint may cross the target during capture. Close
+        // the cache budget again before starting the storage pass.
+        enforceHistoryBudget(engine, false);
+        if (expectedGeneration !== state.generation) return;
       }
-      const accountingRebuilt = synchronizeHistoryAccounting(engine);
-      if (accountingRebuilt) discardStalePeriodicCheckpoints(engine);
-      if (expectedGeneration !== state.generation) return;
-      // I checkpoint periodici sono cache ricostruibile. Recuperarli prima
-      // evita di serializzare il journal verso OPFS mentre centinaia di MiB di
-      // cache gia' sacrificabile restano residenti.
-      enforceHistoryBudget(engine, false);
-      if (expectedGeneration !== state.generation) return;
-      await capturePeriodicCheckpoint(engine, expectedGeneration);
-      if (expectedGeneration !== state.generation) return;
-      // Un full necessario alla catena puo' oltrepassare il target durante la
-      // cattura. Richiudiamo subito il budget, prima dello spill, invece di
-      // lasciare il picco vivo fino alla fine della manutenzione asincrona.
-      enforceHistoryBudget(engine, false);
-      if (expectedGeneration !== state.generation) return;
-      // Local spill runs only at the journal end and publishes storage before
-      // releasing a resident payload. Residence changes rebuild the ledger in
-      // the same operation, with the cursor watermark included, so the old
-      // mid-cursor accounting corruption cannot reappear.
+      // Durable spill is safe at a stable intermediate cursor: its token covers
+      // cursor, journal identity and branch epoch, and residence changes rebuild
+      // the ledger with the cursor watermark. Cache and journal eviction remain
+      // inside the journal-end gates above and below.
       const spillHighWaterBytes = historySpillHighWaterBytes(engine);
       const spillOptions = {
         highWaterBytes: spillHighWaterBytes,
@@ -1496,18 +1503,21 @@ export function scheduleHistoryMaintenance(engine: EngineHistoryMaintenanceHost)
           // The current storage operation must not invalidate its own gate;
           // foreground/history state and the maintenance generation remain
           // the authorities that abort it.
-          && historyMaintenanceEngineIdle(engine, true)
+          && historyStorageMaintenanceEngineIdle(engine, true)
           && !engine.deviceLostError
         ),
         afterResidenceChange: () => refreshHistoryAccountingAfterStorageChange(engine),
       } as const;
       await engine.historyLocalStorage.spillIfNeeded(spillOptions);
       if (expectedGeneration !== state.generation) return;
-      const deferJournalEviction = engine.historyLocalStorage.shouldDeferJournalEviction(
-        spillOptions,
-      );
-      enforceHistoryBudget(engine, !deferJournalEviction);
-      if (deferJournalEviction) engine.resumeHistoryStorageMaintenance();
+      const pendingSpill = engine.historyLocalStorage.hasPendingSpill(spillOptions);
+      if (historyMaintenanceEngineIdle(engine)) {
+        const deferJournalEviction = engine.historyLocalStorage.shouldDeferJournalEviction(
+          spillOptions,
+        );
+        enforceHistoryBudget(engine, !deferJournalEviction);
+      }
+      if (pendingSpill) engine.resumeHistoryStorageMaintenance();
     }).catch(() => {
       // device.lost is surfaced by the engine-wide gate.
     });

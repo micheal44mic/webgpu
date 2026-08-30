@@ -310,7 +310,7 @@ assert.match(historyMaintenanceGuard, /activeRasterGlassSession === null/);
 assert.match(historyMaintenanceAdapter, /\| "activeRasterGlassSession"/);
 assert.match(
   historyMaintenance,
-  /historyMaintenanceEngineIdle[\s\S]{0,900}!engine\.activeRasterGlassSession/,
+  /historyStorageMaintenanceEngineIdle[\s\S]{0,900}!engine\.activeRasterGlassSession/,
   "Automatic checkpoints must stay paused for the entire Glass preview.",
 );
 assert.match(reports, /activeRasterGlassSession\?\.memoryBytes/);

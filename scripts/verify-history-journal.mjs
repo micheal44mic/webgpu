@@ -513,7 +513,13 @@ const layerMerge = (
     "../src/gpu-history-storage.ts"
   );
   const buffers = [];
+  const writes = [];
   const device = {
+    queue: {
+      writeBuffer(buffer, bufferOffset, data, dataOffset = 0, size = data.byteLength) {
+        writes.push({ buffer, bufferOffset, data, dataOffset, size });
+      },
+    },
     createBuffer(descriptor) {
       const buffer = {
         descriptor,
@@ -586,6 +592,11 @@ const layerMerge = (
     /was not rehydrated/,
     "un replay senza preflight hydrate deve fallire prima di leggere un buffer morto",
   );
+  const restoredBytes = Uint8Array.from({ length: 20 }, (_, index) => index + 1);
+  storage.hydrate(demoted, restoredBytes);
+  assert.equal(storage.isResident(demoted), true);
+  assert.equal(demoted.buffer.destroyed, false);
+  assert.equal(writes.at(-1).size, restoredBytes.byteLength);
   assert.equal(storage.release(demoted), true, "un handle stored-only resta ritirabile");
   assert.throws(
     () => storage.allocate(4, "bad-alignment", 24),
@@ -609,6 +620,45 @@ const layerMerge = (
   );
   assert.equal(oversizedStorage.release(oversized), true);
   oversizedStorage.destroy();
+}
+
+// Cold raster seeds use the same stored-only ownership contract as paged GPU
+// payloads: metadata stays reachable, pixels must be attached before replay.
+{
+  const {
+    createHistoryColdSeedHandle,
+    historyColdSeedResidentBytes,
+  } = await import("../src/history-cold-seed.ts");
+  const makeSeed = () => ({
+    texture: { destroyed: false, destroy() { this.destroyed = true; } },
+    tileIndices: [2, 5, 9],
+    memoryBytes: 3 * 512 * 1024,
+    generation: 7,
+    format: "rgba16float",
+  });
+  let retired = 0;
+  const handle = createHistoryColdSeedHandle({
+    payloadId: "cold-regression",
+    ownerActionId: 23,
+    layerId: 5,
+    seed: makeSeed(),
+    onRetire: () => { retired += 1; },
+  });
+  assert.equal(historyColdSeedResidentBytes(handle), handle.memoryBytes);
+  const detached = handle.demoteResidentNoThrow();
+  assert(detached);
+  assert.equal(historyColdSeedResidentBytes(handle), 0);
+  assert.throws(
+    () => handle.texture,
+    /was not rehydrated/,
+    "un seed stored-only non deve essere letto prima della hydration",
+  );
+  handle.attachResident(makeSeed());
+  assert.equal(handle.resident, true);
+  assert.equal(historyColdSeedResidentBytes(handle), handle.memoryBytes);
+  handle.retireNoThrow();
+  assert.equal(retired, 1);
+  assert.equal(handle.retired, true);
 }
 
 {

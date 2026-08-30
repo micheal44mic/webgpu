@@ -149,6 +149,43 @@ const checkpointBytesFor = (documentSize, format) =>
     16,
     "sotto pressione nulla resta valida la normale finestra calda di 16 azioni",
   );
+  const midCursorKeepHot = adaptiveHistoryStorageKeepHotActions({
+    currentResidentBytes: 474 * MiB,
+    highWaterBytes: 200 * MiB,
+    hotPayloadBudgetBytes: 50 * MiB,
+    journalLength: 20,
+    actions: [
+      { cursor: 13, payloadBytes: 112 * MiB },
+      { cursor: 14, payloadBytes: 112 * MiB },
+      { cursor: 16, payloadBytes: 112 * MiB },
+      { cursor: 18, payloadBytes: 112 * MiB },
+      { cursor: 19, payloadBytes: 64 * 1024 },
+    ],
+  });
+  assert.equal(
+    midCursorKeepHot,
+    1,
+    "con cursor 19/20 lo stroke Redo piccolo resta caldo senza bloccare i seed 4K",
+  );
+  assert.deepEqual(
+    planHistoryStorageSegment({
+      currentResidentBytes: 474 * MiB,
+      highWaterBytes: 200 * MiB,
+      targetSegmentBytes: 64 * MiB,
+      maximumSegmentBytes: 128 * MiB,
+      journalLength: 20,
+      keepHotActions: midCursorKeepHot,
+      actions: [
+        { actionId: 16, cursor: 13, payloadBytes: 112 * MiB, payloadCount: 224, alreadyStored: false, pinned: false },
+        { actionId: 17, cursor: 14, payloadBytes: 112 * MiB, payloadCount: 224, alreadyStored: false, pinned: false },
+        { actionId: 19, cursor: 16, payloadBytes: 112 * MiB, payloadCount: 224, alreadyStored: false, pinned: false },
+        { actionId: 23, cursor: 18, payloadBytes: 112 * MiB, payloadCount: 224, alreadyStored: false, pinned: false },
+        { actionId: 24, cursor: 19, payloadBytes: 64 * 1024, payloadCount: 1, alreadyStored: false, pinned: false },
+      ],
+    }).actionIds,
+    [16],
+    "un ramo Redo presente non deve rendere i seed precedenti non spillabili",
+  );
 
   const budget = historyDiskBudget({
     quota: 10 * 1024 * MiB,
@@ -701,6 +738,22 @@ for (const actionCount of [10, 100, 500, 1000]) {
   const scheduleEnd = runtime.indexOf("export function cancelHistoryMaintenance");
   assert.ok(scheduleStart >= 0 && scheduleEnd > scheduleStart);
   const scheduleBody = runtime.slice(scheduleStart, scheduleEnd);
+  const storageIdle = runtime.slice(
+    runtime.indexOf("function historyStorageMaintenanceEngineIdle"),
+    runtime.indexOf("function historyMaintenanceEngineIdle"),
+  );
+  const journalEndIdle = runtime.slice(
+    runtime.indexOf("function historyMaintenanceEngineIdle"),
+    runtime.indexOf("function yieldHistoryMaintenanceTurn"),
+  );
+  assert(
+    !storageIdle.includes("engine.historyCursor === engine.historyActions.length"),
+    "lo spill durevole deve poter partire anche con un ramo Redo presente",
+  );
+  assert(
+    journalEndIdle.includes("engine.historyCursor === engine.historyActions.length"),
+    "le operazioni distruttive devono conservare un gate journal-end separato",
+  );
   const recoveryBeforeCapture = scheduleBody.indexOf("enforceHistoryBudget(engine, false);");
   const capture = scheduleBody.indexOf("await capturePeriodicCheckpoint(engine, expectedGeneration);");
   const recoveryAfterCapture = scheduleBody.indexOf(
@@ -711,14 +764,39 @@ for (const actionCount of [10, 100, 500, 1000]) {
   const journalRecovery = scheduleBody.indexOf(
     "enforceHistoryBudget(engine, !deferJournalEviction);",
   );
+  const journalEndWork = scheduleBody.indexOf("if (historyMaintenanceEngineIdle(engine)) {");
+  const journalEndRecoveryGate = scheduleBody.indexOf(
+    "if (historyMaintenanceEngineIdle(engine)) {",
+    spill,
+  );
+  const pendingSpill = scheduleBody.indexOf(
+    "const pendingSpill = engine.historyLocalStorage.hasPendingSpill(spillOptions);",
+    spill,
+  );
+  const resumeSpill = scheduleBody.indexOf(
+    "if (pendingSpill) engine.resumeHistoryStorageMaintenance();",
+    spill,
+  );
   assert.ok(
-    recoveryBeforeCapture >= 0
+    journalEndWork >= 0
+      && journalEndWork < recoveryBeforeCapture
+      && recoveryBeforeCapture >= 0
       && recoveryBeforeCapture < capture
       && capture < recoveryAfterCapture
       && recoveryAfterCapture < spill
       && spill < journalRecovery,
     "la cache va recuperata prima e dopo la cattura, sempre prima dello spill; "
       + "il journal si valuta solo dopo",
+  );
+  assert.ok(
+    spill < pendingSpill
+      && pendingSpill < journalEndRecoveryGate
+      && journalEndRecoveryGate < journalRecovery,
+    "lo spill puo' lavorare a cursore intermedio, ma il pavimento del journal resta tail-only",
+  );
+  assert.ok(
+    journalRecovery < resumeSpill,
+    "oltre quattro segmenti il pass storage deve ripianificarsi anche a cursore intermedio",
   );
   assert.equal(
     scheduleBody.match(/enforceHistoryBudget\(engine, false\);/g)?.length,
@@ -1505,6 +1583,10 @@ console.log("History rapid-input queue and retention-floor feedback verified.");
 // mutazioni runtime, quindi una release spostata accidentalmente sopra il CAS
 // renderebbe verde il planner e perderebbe comunque l'unica copia dei pixel.
 {
+  const brushEngine = readFileSync(
+    new URL("../src/brush-engine.ts", import.meta.url),
+    "utf8",
+  );
   const coordinator = readFileSync(
     new URL("../src/history-storage-coordinator.ts", import.meta.url),
     "utf8",
@@ -1565,15 +1647,42 @@ console.log("History rapid-input queue and retention-floor feedback verified.");
         < postManifest.indexOf("gpuDemotion.commitNoThrow();"),
     "un gesto foreground durante il CAS deve lasciare residenti i payload prevalidati",
   );
-  assert.match(
-    maintenance,
-    /historyCursor === engine\.historyActions\.length;[\s\S]*?historyLocalStorage\.spillIfNeeded/,
-    "lo spill v1 deve partire soltanto al journal end",
-  );
   assert(
-    maintenance.includes("historyMaintenanceEngineIdle(engine, true)"),
+    maintenance.includes("historyStorageMaintenanceEngineIdle(engine, true)"),
     "lo spill non deve auto-annullarsi quando pubblica busy=spilling",
   );
+  const spillEntry = coordinator.slice(
+    coordinator.indexOf("async spillIfNeeded"),
+    coordinator.indexOf("hasPendingSpill"),
+  );
+  assert(
+    spillEntry.includes("const atJournalEnd = this.host.store.cursor === this.host.store.actions.length")
+      && spillEntry.includes("atJournalEnd && this.opfsGarbageCandidates.size > 0")
+      && spillEntry.includes("atJournalEnd && this.garbageSegmentIds.size > 0"),
+    "la raccolta dei segmenti obsoleti deve restare fuori dal pass mid-cursor",
+  );
+  const demoteStored = coordinator.slice(
+    coordinator.indexOf("private demoteStoredResidentCaches"),
+    coordinator.indexOf("private createPayloadRequirementCollector"),
+  );
+  assert(
+    demoteStored.includes("this.host.store.cursor !== this.host.store.actions.length"),
+    "il working set gia' idratato deve restare protetto a cursore intermedio",
+  );
+  const tokenGate = coordinator.slice(
+    coordinator.indexOf("private tokenIsCurrent"),
+    coordinator.indexOf("private sessionIsCurrent"),
+  );
+  for (const tokenField of [
+    "token.sessionId",
+    "token.branchId",
+    "token.operationEpoch",
+    "token.cursor",
+    "token.actionsLength",
+    "token.actionsTail",
+  ]) {
+    assert(tokenGate.includes(tokenField), `token spill incompleto: manca ${tokenField}`);
+  }
 
   const move = historyRuntime.slice(
     historyRuntime.indexOf("export async function moveHistoryCursor"),
@@ -1585,6 +1694,16 @@ console.log("History rapid-input queue and retention-floor feedback verified.");
     "target e rollback devono essere residenti prima che il cursore cambi",
   );
   assert(move.includes("cancelHistoryMaintenance(engine);"));
+  const moveFinally = move.slice(move.lastIndexOf("} finally {"));
+  const publishHistoryBody = brushEngine.slice(
+    brushEngine.indexOf("  publishHistoryState(): void"),
+    brushEngine.indexOf("  publishActiveLayerChange(): void"),
+  );
+  assert(
+    moveFinally.includes("engine.publishHistoryState();")
+      && publishHistoryBody.includes("scheduleHistoryMaintenance(this)"),
+    "un Undo/Redo concluso deve ripianificare il pass storage al nuovo cursore",
+  );
   assert(coordinator.includes("planRasterHistoryReplay({"));
   assert(coordinator.includes("this.host.periodicCheckpointChain("));
   assert(replayPlanner.includes("selectLayerReplayAfterCheckpoint("));
