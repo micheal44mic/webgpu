@@ -1,4 +1,5 @@
 export const verificationScripts = Object.freeze([
+  "verify-advanced-tool-capability-warmup.mjs",
   "verify-app-diagnostics.mjs",
   "verify-asset-source-cache.mjs",
   "verify-bevel-core.mjs",

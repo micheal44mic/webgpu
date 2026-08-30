@@ -369,7 +369,7 @@ assert.match(controller, /bezierHandles: nextBezierHandles/);
 assert.match(controller, /moveRasterWarpControlPoints\(/);
 assert.match(
   controller,
-  /beginRasterLayerTransform\(this\.rasterTransformToolMode\)/,
+  /beginRasterLayerTransform\(requestedMode\)/,
   "Perspective must begin atomically in the requested mode",
 );
 assert.match(
@@ -535,5 +535,176 @@ assert.equal(
   "Perspective corner drags must not send Warp-only Bézier handles",
 );
 assert.deepEqual(perspectiveUpdates[0].controlPoints[0], { x: 35, y: 52 });
+
+// A cold mode change in an already-open raster session remains pending until
+// asynchronous GPU preparation finishes. The synchronous update is only the
+// final publication step and never starts compilation itself.
+{
+  let releaseModePrograms;
+  const modeProgramsReady = new Promise((resolve) => {
+    releaseModePrograms = resolve;
+  });
+  const modeEvents = [];
+  const modeSwitchShell = Object.create(MixedSceneController.prototype);
+  Object.assign(modeSwitchShell, {
+    rasterTransformModeSwitchGeneration: 7,
+    rasterTransformPreparation: null,
+    rasterTransformToolMode: "warp",
+    transformToolActive: true,
+    transformSessionOpen: true,
+    transformSessionKind: "raster",
+    host: {
+      prewarmRasterTransformPrograms: async (mode) => {
+        modeEvents.push(["prepare", mode]);
+        await modeProgramsReady;
+      },
+      updateRasterLayerTransform: (update) => modeEvents.push(["publish", update.mode]),
+    },
+    status: { textContent: "" },
+    updateTransformUi() {},
+    scheduleRender: () => modeEvents.push(["render"]),
+  });
+  modeSwitchShell.prepareOpenRasterTransformMode("warp", "affine", "Raster layer", 7);
+  const modeSwitch = modeSwitchShell.rasterTransformPreparation;
+  await Promise.resolve();
+  assert.deepEqual(modeEvents, [["prepare", "warp"]]);
+  assert.match(modeSwitchShell.status.textContent, /Preparing Warp/);
+  releaseModePrograms();
+  await modeSwitch;
+  assert.deepEqual(modeEvents, [
+    ["prepare", "warp"],
+    ["publish", "warp"],
+    ["render"],
+  ]);
+}
+
+// Failure never exposes the old affine session through Warp controls. It
+// remains cancel-only until the user explicitly returns to the published mode.
+{
+  const failedShell = Object.create(MixedSceneController.prototype);
+  Object.assign(failedShell, {
+    activeInteraction: null,
+    groupTransformPreparation: null,
+    rasterTransformModeSwitchGeneration: 4,
+    rasterTransformPreparation: null,
+    rasterTransformRecoveryOnly: false,
+    rasterTransformToolMode: "warp",
+    transformCommitBusy: false,
+    transformToolActive: true,
+    transformSessionOpen: true,
+    transformSessionKind: "raster",
+    host: {
+      prewarmRasterTransformPrograms: async () => {
+        throw new Error("compile failed");
+      },
+      updateRasterLayerTransform: () => {
+        throw new Error("failed programs must not publish");
+      },
+    },
+    status: { textContent: "" },
+    updateTransformUi() {},
+    scheduleRender() {},
+  });
+  failedShell.prepareOpenRasterTransformMode("warp", "affine", "Raster layer", 4);
+  await failedShell.rasterTransformPreparation;
+  assert.equal(failedShell.rasterTransformRecoveryOnly, true);
+  assert.match(failedShell.status.textContent, /Transform remains unchanged/);
+  const action = failedShell.getTransformActionSnapshot();
+  assert.equal(action.canApply, false);
+  assert.equal(action.canCancel, true);
+
+  const retryEvents = [];
+  failedShell.host.prewarmRasterTransformPrograms = async (mode) => {
+    retryEvents.push(["prepare", mode]);
+  };
+  failedShell.host.updateRasterLayerTransform = (update) => {
+    retryEvents.push(["publish", update.mode]);
+  };
+  failedShell.prepareOpenRasterTransformMode("warp", "affine", "Raster layer", 4);
+  await failedShell.rasterTransformPreparation;
+  assert.deepEqual(retryEvents, [["prepare", "warp"], ["publish", "warp"]]);
+  assert.equal(
+    failedShell.rasterTransformRecoveryOnly,
+    false,
+    "a successful retry must restore Apply and pointer input",
+  );
+}
+
+// Returning to the already-published mode also exits recovery immediately,
+// even after the failed preparation promise has already settled.
+{
+  const fallbackNode = { ...perspectiveNode, mode: "affine", scope: "layer", name: "Raster layer" };
+  const fallbackShell = Object.create(MixedSceneController.prototype);
+  Object.assign(fallbackShell, {
+    rasterTransformModeSwitchGeneration: 8,
+    rasterTransformPreparation: null,
+    rasterTransformRecoveryOnly: true,
+    rasterTransformToolMode: "warp",
+    transformToolActive: true,
+    transformSessionOpen: true,
+    transformSessionKind: "raster",
+    transformToolDeactivationPending: false,
+    activeInteraction: null,
+    groupTransformPreparation: null,
+    transformCommitBusy: false,
+    host: { getMixedSceneSnapshot: () => null },
+    selectedTransformNode: () => fallbackNode,
+    interactionCanvas: {
+      hidden: false,
+      classList: { toggle() {} },
+      setAttribute() {},
+    },
+    status: { textContent: "" },
+    updateTransformUi() {},
+    scheduleRender() {},
+    canvasGuides: null,
+  });
+  assert.equal(fallbackShell.setTransformToolActive(true, "affine"), true);
+  assert.equal(fallbackShell.rasterTransformRecoveryOnly, false);
+  assert.match(fallbackShell.status.textContent, /ready: Apply or Cancel/);
+}
+
+// An initial session that finishes after the requested mode changed is rolled
+// back instead of publishing a stale tool/session pair.
+{
+  let releaseInitialMode;
+  const initialModeReady = new Promise((resolve) => {
+    releaseInitialMode = resolve;
+  });
+  const events = [];
+  const initialShell = Object.create(MixedSceneController.prototype);
+  const rasterNode = { ...perspectiveNode, mode: "affine", name: "Raster layer" };
+  Object.assign(initialShell, {
+    rasterTransformModeSwitchGeneration: 11,
+    rasterTransformRecoveryOnly: false,
+    rasterTransformToolMode: "affine",
+    transformToolActive: true,
+    transformSessionOpen: false,
+    transformSessionKind: null,
+    selectedTransformNode: () => rasterNode,
+    host: {
+      beginRasterLayerTransform: async (mode) => {
+        events.push(["begin", mode]);
+        await initialModeReady;
+        return { layerId: rasterNode.layerId };
+      },
+      cancelRasterLayerTransform: async () => {
+        events.push(["cancel"]);
+        return true;
+      },
+    },
+    status: { textContent: "" },
+    updateTransformUi() {},
+    scheduleRender: () => events.push(["render"]),
+  });
+  const preparation = initialShell.runRasterTransformPreparation("affine", 11);
+  initialShell.rasterTransformModeSwitchGeneration = 12;
+  initialShell.rasterTransformToolMode = "warp";
+  releaseInitialMode();
+  await preparation;
+  assert.deepEqual(events, [["begin", "affine"], ["cancel"]]);
+  assert.equal(initialShell.transformSessionOpen, false);
+  assert.doesNotMatch(initialShell.status.textContent, /GPU ready/);
+}
 
 console.log("Raster Warp/Perspective verification passed.");

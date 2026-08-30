@@ -21,8 +21,18 @@ assert.doesNotMatch(controllerSource, /getContext\(|CanvasRenderingContext2D|\.f
   "the live draft must not bypass layer order through a DOM canvas");
 assert.match(controllerSource, /updateShapePreview\(\{/,
   "pointer updates must feed the persistent GPU preview resource");
+assert.match(
+  controllerSource,
+  /if \(!this\.previewReady\) \{[\s\S]*?return false;/,
+  "shape creation must reject input until its ordered GPU preview is ready",
+);
 assert.match(engineSource, /shapePreviewAfterKey !== null[\s\S]*?visibleSemanticCount/,
   "a raster-only document must enter ordered presentation while the preview is prepared");
+assert.match(
+  engineSource,
+  /async prepareShapePreviewPresentation\(\): Promise<void> \{\s*\/\/[\s\S]*?await this\.ensureMixedSceneEditorResources\(\);/,
+  "the first shape preview must wait for its semantic-scene GPU capability",
+);
 assert.match(tileSource, /shapePreviewAfterKey === null/,
   "the raster-only tile path cannot bypass the inserted preview slot");
 assert.match(compositorSource, /segment\.kind === "shape-preview"[\s\S]*?mixedSceneShapePreviewPipeline/,
@@ -167,6 +177,7 @@ async function createHarness({ deferPreparation = false, awaitActivation = true 
     activation,
     additions,
     controller,
+    dock,
     ellipse,
     fillColor,
     get preparations() { return preparations; },
@@ -179,20 +190,33 @@ async function createHarness({ deferPreparation = false, awaitActivation = true 
   };
 }
 
-// Touch may begin and even finish before the ordered preview transaction is
-// ready. The zero-area pointerdown stays valid, movement is retained, and the
-// single SVG commit waits for preparation instead of losing the gesture.
+// A cold preview transaction must not accept an invisible gesture. Its status
+// is explicit, controls stay disabled, and creation becomes available as soon
+// as the ordered GPU preview is ready.
 {
   const harness = await createHarness({ deferPreparation: true, awaitActivation: false });
   assert.equal(harness.controller.isPresentationPreparing, true);
-  assert.equal(harness.controller.beginPointer(pointer(41, "touch", 20, 30)), true);
+  assert.equal(harness.status.value, "Preparing shape preview…");
+  assert.equal(harness.dock.getAttribute("aria-busy"), "true");
+  assert.equal(harness.rectangle.disabled, true);
+  assert.equal(harness.fillColor.disabled, true);
+  assert.equal(harness.controller.beginPointer(pointer(41, "touch", 20, 30)), false);
+  assert.equal(harness.controller.hasGesture, false);
   assert.equal(harness.previewUpdates.at(-1), null);
   harness.controller.updatePointer(pointer(41, "touch", 90, 70));
-  const completion = harness.controller.endPointer(pointer(41, "touch", 90, 70), true);
   assert.equal(harness.additions.length, 0);
   harness.releasePreparation();
   await harness.activation;
-  assert.equal(await completion, true);
+  assert.equal(harness.status.value, "Drag from the center. Shift or a second finger locks 1:1.");
+  assert.equal(harness.dock.getAttribute("aria-busy"), "false");
+  assert.equal(harness.rectangle.disabled, false);
+  assert.equal(harness.fillColor.disabled, false);
+  assert.equal(harness.controller.beginPointer(pointer(41, "touch", 20, 30)), true);
+  harness.controller.updatePointer(pointer(41, "touch", 90, 70));
+  assert.equal(
+    await harness.controller.endPointer(pointer(41, "touch", 90, 70), true),
+    true,
+  );
   assert.equal(harness.additions.length, 1);
   assert.equal(harness.additions[0].name, "Rectangle");
   assert.deepEqual(

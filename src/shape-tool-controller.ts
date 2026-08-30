@@ -16,6 +16,7 @@ import type { VectorTextViewState } from "./vector-text-types";
 import { brushColorCssHex } from "./brush-color.ts";
 
 const MINIMUM_SHAPE_CSS_PIXELS = 3;
+const SHAPE_PREVIEW_PREPARING_STATUS = "Preparing shape preview…";
 
 export interface ShapeToolPointerInput {
   readonly pointerId: number;
@@ -96,7 +97,7 @@ export class ShapeToolController {
     return this.busyCount > 0;
   }
 
-  /** The ordered preview is being prepared, but pointer input may already be retained. */
+  /** The ordered preview is being prepared, so creation input remains blocked. */
   get isPresentationPreparing(): boolean {
     return this.active
       && !this.previewReady
@@ -118,17 +119,23 @@ export class ShapeToolController {
       this.committingDraft = null;
     }
     this.syncUi();
+    if (active) this.options.elements.status.value = SHAPE_PREVIEW_PREPARING_STATUS;
     this.render();
     return this.queuePreviewPlacement(active);
   }
 
   beginPointer(input: Readonly<ShapeToolPointerInput>): boolean {
+    if (!this.active || this.disposed) return false;
+    if (!this.previewReady) {
+      if (this.isPresentationPreparing) {
+        this.options.elements.status.value = SHAPE_PREVIEW_PREPARING_STATUS;
+      }
+      return false;
+    }
     if (
-      !this.active
-      || this.committingDraft !== null
-      || (this.isBusy && !this.isPresentationPreparing)
+      this.committingDraft !== null
+      || this.isBusy
       || this.gesture
-      || this.disposed
     ) {
       return false;
     }
@@ -268,6 +275,7 @@ export class ShapeToolController {
     dock.hidden = !this.active;
     if (this.active) dock.removeAttribute("inert");
     else dock.setAttribute("inert", "");
+    dock.setAttribute("aria-busy", String(this.isPresentationPreparing));
     for (const button of kindButtons) {
       const selected = button.dataset.shapeKind === this.kind;
       button.setAttribute("aria-checked", String(selected));
@@ -301,9 +309,8 @@ export class ShapeToolController {
   private async commitDraft(draft: Readonly<ShapeCreationDraft>): Promise<boolean> {
     this.beginBusy();
     try {
-      // A fast touch can finish before the ordered WebGPU preview is ready on
-      // mobile hardware. Preserve that gesture and serialize its one commit
-      // behind the existing preparation transaction.
+      // Keep the one release-time commit serialized with the ordered preview
+      // lifecycle in case tool deactivation was requested in the same turn.
       await this.previewLifecycle;
       if (this.disposed || !this.active || !this.previewReady) return false;
       const color = normalizedColor(this.options.elements.fillColor.value);
@@ -378,6 +385,7 @@ export class ShapeToolController {
           await this.options.engine.prepareShapePreviewPresentation();
           if (request === this.previewRequest && this.active && !this.disposed) {
             this.previewReady = true;
+            this.options.elements.status.value = this.creationStatus();
             this.render();
           }
         } else {

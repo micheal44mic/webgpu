@@ -1328,6 +1328,14 @@ select {
   white-space: nowrap;
 }
 
+.shape-tool-dock[aria-busy="true"] {
+  cursor: wait;
+}
+
+.shape-tool-dock[aria-busy="true"] output {
+  color: #ff916f;
+}
+
 .color-adjust-surface[hidden],
 .color-adjust-menu[hidden] {
   display: none;

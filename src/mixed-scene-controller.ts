@@ -331,6 +331,10 @@ function emptyTextMetricsBox(): TextMetricsBox {
   };
 }
 
+function snapshotContainsText(snapshot: MixedSceneSnapshot): boolean {
+  return snapshot.items.some((item) => item.kind === "text");
+}
+
 export class MixedSceneController {
   private readonly host: MixedSceneHost;
   private readonly browser: Window;
@@ -356,6 +360,8 @@ export class MixedSceneController {
   private readonly effectCompiler: VectorTextEffectCompilerClient;
   private effectReadyIdleTimer: number | null = null;
   private effectReadyRenderPending = false;
+  private fontGeometryPreparation: Promise<void> | null = null;
+  private deferredTextSyncGeneration: number | null = null;
 
   private documentGeneration = 0;
   private snapshot: MixedSceneSnapshot | null = null;
@@ -416,6 +422,7 @@ export class MixedSceneController {
   private groupTransformSelection: GroupTransformSelection | null = null;
   private groupTransformPreparation: Promise<void> | null = null;
   private rasterTransformPreparation: Promise<void> | null = null;
+  private rasterTransformModeSwitchGeneration = 0;
   private rasterTransformRecoveryOnly = false;
   private transformCommitBusy = false;
   private pendingRasterPointerId: number | null = null;
@@ -477,15 +484,17 @@ export class MixedSceneController {
   }
 
   async initialize(): Promise<void> {
-    await this.fontGeometry.preload();
     this.presentationCanvas.width = 1;
     this.presentationCanvas.height = 1;
     this.presentationCanvas.hidden = true;
-    this.bindControls();
     const initialSnapshot = this.host.getMixedSceneSnapshot();
     if (!initialSnapshot) {
       throw new Error("The engine did not create the mixed scene.");
     }
+    if (snapshotContainsText(initialSnapshot)) {
+      await this.prepareFontGeometry();
+    }
+    this.bindControls();
     this.syncScene(initialSnapshot);
   }
 
@@ -570,6 +579,7 @@ export class MixedSceneController {
     this.distortEditingNodeId = null;
 
     this.snapshot = null;
+    this.deferredTextSyncGeneration = null;
     this.metrics = emptyTextMetricsBox();
     this.geometryByNodeId.clear();
     this.displayedDrawsByNodeKey.clear();
@@ -658,6 +668,7 @@ export class MixedSceneController {
     }
     this.transformToolDeactivationPending = false;
     this.rasterTransformToolMode = mode;
+    const modeSwitchGeneration = ++this.rasterTransformModeSwitchGeneration;
     if (active) {
       const latestSnapshot = this.host.getMixedSceneSnapshot();
       if (latestSnapshot) this.syncScene(latestSnapshot);
@@ -685,13 +696,34 @@ export class MixedSceneController {
       && node.scope === "layer"
       && node.mode !== mode
     ) {
-      try {
-        this.host.updateRasterLayerTransform({ mode });
-        this.scheduleRender();
-      } catch (error) {
-        this.status.textContent = error instanceof Error ? error.message : String(error);
-      }
+      this.prepareOpenRasterTransformMode(
+        mode,
+        node.mode,
+        node.name,
+        modeSwitchGeneration,
+      );
       return true;
+    }
+    if (
+      this.transformSessionOpen
+      && this.transformSessionKind === "raster"
+      && node
+      && isRasterLayerTransformNode(node)
+      && node.scope === "layer"
+      && node.mode === mode
+      && (
+        this.rasterTransformPreparation !== null
+        || this.rasterTransformRecoveryOnly
+      )
+    ) {
+      // The user returned to the already-published mode. Detach the obsolete
+      // compiler request immediately; its generation guard prevents a late
+      // publication when that request eventually settles.
+      this.rasterTransformPreparation = null;
+      this.rasterTransformRecoveryOnly = false;
+      this.status.textContent = `${node.name} is ready: Apply or Cancel.`;
+      this.updateTransformUi();
+      this.scheduleRender();
     }
     return true;
   }
@@ -729,6 +761,7 @@ export class MixedSceneController {
     const rasterControlsDisabled = !rasterControlsVisible
       || !this.transformSessionOpen
       || this.transformSessionKind !== "raster"
+      || this.rasterTransformPreparation !== null
       || this.transformCommitBusy
       || this.rasterTransformRecoveryOnly;
     for (const controls of this.rasterTransformGridControls) {
@@ -877,6 +910,10 @@ export class MixedSceneController {
   }
 
   syncScene(snapshot: MixedSceneSnapshot): void {
+    if (snapshotContainsText(snapshot) && !this.fontGeometry.isPreloaded) {
+      this.deferTextSceneSync();
+      return;
+    }
     const previousSnapshot = this.snapshot;
     const previousSelected = previousSnapshot?.items.find(
       (item) => item.key === previousSnapshot.selectedKey,
@@ -1304,6 +1341,7 @@ export class MixedSceneController {
   createText(color?: string): void {
     if (this.sceneOperationBusy || this.transformSessionOpen) return;
     void this.runSceneOperation(async () => {
+      await this.prepareFontGeometry();
       const textCount =
         this.snapshot?.items.filter((item) => item.kind === "text").length ?? 0;
       await this.host.addVectorTextNode(
@@ -1443,6 +1481,7 @@ export class MixedSceneController {
     ): Promise<VectorRasterHistoryGpuProbe> => {
       let vectorKey: `text:${number}` | `svg:${number}`;
       if (sourceKind === "text") {
+        await this.prepareFontGeometry();
         const seed = {
           ...this.defaultSeed(0, "#334455"),
           text: "RGBA16F",
@@ -1666,6 +1705,8 @@ export class MixedSceneController {
 
   getTransformActionSnapshot(): VectorTransformActionSnapshot {
     const active = this.transformSessionOpen;
+    const preparing = this.rasterTransformPreparation !== null
+      || this.groupTransformPreparation !== null;
     const selectionKeys = active
       ? this.transformSessionKind === "group"
         ? this.groupTransformSelection?.orderedKeys ?? []
@@ -1674,15 +1715,18 @@ export class MixedSceneController {
     return {
       toolActive: this.transformToolActive,
       active,
-      preparing: this.rasterTransformPreparation !== null
-        || this.groupTransformPreparation !== null,
+      preparing,
       sessionKind: this.transformSessionKind,
       selectionKeys: [...selectionKeys],
       canApply: active
+        && !preparing
         && !this.transformCommitBusy
         && !this.activeInteraction
         && !this.rasterTransformRecoveryOnly,
-      canCancel: active && !this.transformCommitBusy && !this.activeInteraction,
+      canCancel: active
+        && !preparing
+        && !this.transformCommitBusy
+        && !this.activeInteraction,
     };
   }
 
@@ -2225,7 +2269,9 @@ export class MixedSceneController {
     ) {
       return Promise.resolve();
     }
-    const preparation = this.runRasterTransformPreparation();
+    const requestedMode = this.rasterTransformToolMode;
+    const generation = this.rasterTransformModeSwitchGeneration;
+    const preparation = this.runRasterTransformPreparation(requestedMode, generation);
     this.rasterTransformPreparation = preparation;
     this.updateTransformUi();
     void preparation.finally(() => {
@@ -2234,6 +2280,55 @@ export class MixedSceneController {
       this.updateTransformUi();
     });
     return preparation;
+  }
+
+  private prepareOpenRasterTransformMode(
+    mode: RasterTransformMode,
+    fallbackMode: RasterTransformMode,
+    nodeName: string,
+    generation: number,
+  ): void {
+    const operation = mode === "warp"
+      ? "Warp"
+      : mode === "perspective"
+        ? "Perspective"
+        : "Transform";
+    const preparation = (async (): Promise<void> => {
+      this.status.textContent = `Preparing ${operation} on the GPU for ${nodeName}…`;
+      try {
+        await this.host.prewarmRasterTransformPrograms(mode);
+        if (
+          generation !== this.rasterTransformModeSwitchGeneration
+          || !this.transformToolActive
+          || this.rasterTransformToolMode !== mode
+          || !this.transformSessionOpen
+          || this.transformSessionKind !== "raster"
+        ) return;
+        this.host.updateRasterLayerTransform({ mode });
+        this.rasterTransformRecoveryOnly = false;
+        this.status.textContent = `${operation} GPU ready for ${nodeName}: Apply or Cancel.`;
+        this.scheduleRender();
+      } catch (error) {
+        if (generation !== this.rasterTransformModeSwitchGeneration) return;
+        // The old session remains valid, but it must not accept input while
+        // the selected tool describes a mode that failed to materialize.
+        this.rasterTransformRecoveryOnly = true;
+        const message = error instanceof Error ? error.message : String(error);
+        const fallback = fallbackMode === "warp"
+          ? "Warp"
+          : fallbackMode === "perspective"
+            ? "Perspective"
+            : "Transform";
+        this.status.textContent = `${message} ${fallback} remains unchanged; Cancel or select it again.`;
+      }
+    })();
+    this.rasterTransformPreparation = preparation;
+    this.updateTransformUi();
+    void preparation.finally(() => {
+      if (this.rasterTransformPreparation !== preparation) return;
+      this.rasterTransformPreparation = null;
+      this.updateTransformUi();
+    });
   }
 
   private prepareSelectedGroupTransform(): Promise<void> {
@@ -2284,7 +2379,10 @@ export class MixedSceneController {
     }
   }
 
-  private async runRasterTransformPreparation(): Promise<void> {
+  private async runRasterTransformPreparation(
+    requestedMode: RasterTransformMode,
+    generation: number,
+  ): Promise<void> {
     const node = this.selectedTransformNode();
     if (
       !this.transformToolActive
@@ -2292,18 +2390,20 @@ export class MixedSceneController {
       || !isRasterLayerTransformNode(node)
       || this.transformSessionOpen
     ) return;
-    const operation = this.rasterTransformToolMode === "warp"
+    const operation = requestedMode === "warp"
       ? "Warp"
-      : this.rasterTransformToolMode === "perspective"
+      : requestedMode === "perspective"
         ? "Perspective"
         : "Transform";
     this.status.textContent = `Preparing ${operation} on the GPU for ${node.name}…`;
     try {
-      const state = await this.host.beginRasterLayerTransform(this.rasterTransformToolMode);
+      const state = await this.host.beginRasterLayerTransform(requestedMode);
       if (!state) return;
       const current = this.selectedTransformNode();
       if (
-        !this.transformToolActive
+        generation !== this.rasterTransformModeSwitchGeneration
+        || this.rasterTransformToolMode !== requestedMode
+        || !this.transformToolActive
         || !current
         || !isRasterLayerTransformNode(current)
         || current.layerId !== state.layerId
@@ -2754,6 +2854,8 @@ export class MixedSceneController {
         && (rasterKeyboardMove || groupKeyboardMove)
         && !editable
         && !this.activeInteraction
+        && this.rasterTransformPreparation === null
+        && this.groupTransformPreparation === null
         && !this.transformCommitBusy
         && !this.rasterTransformRecoveryOnly
       ) {
@@ -2763,13 +2865,17 @@ export class MixedSceneController {
         return;
       }
       if (!this.transformSessionOpen) return;
+      if (
+        this.rasterTransformPreparation !== null
+        || this.groupTransformPreparation !== null
+      ) return;
       if (event.key === "Escape") {
         event.preventDefault();
         this.abortActiveTransformInteraction();
-        void this.cancelTransformSession();
+        void this.cancelTransform();
       } else if (event.key === "Enter" && !editable && !this.activeInteraction) {
         event.preventDefault();
-        void this.applyTransformSession();
+        void this.applyTransform();
       }
     });
     this.interactionCanvas.addEventListener("pointerdown", (event) => {
@@ -2958,7 +3064,59 @@ export class MixedSceneController {
     this.effectReadyIdleTimer = request;
   }
 
+  private prepareFontGeometry(): Promise<void> {
+    if (this.fontGeometry.isPreloaded) return Promise.resolve();
+    if (this.fontGeometryPreparation) return this.fontGeometryPreparation;
+    const pending = this.fontGeometry.preload();
+    this.fontGeometryPreparation = pending;
+    void pending.then(
+      () => {
+        if (this.fontGeometryPreparation === pending) {
+          this.fontGeometryPreparation = null;
+        }
+      },
+      () => {
+        if (this.fontGeometryPreparation === pending) {
+          this.fontGeometryPreparation = null;
+        }
+      },
+    );
+    return pending;
+  }
+
+  private deferTextSceneSync(): void {
+    const generation = this.documentGeneration;
+    if (this.deferredTextSyncGeneration === generation) return;
+    this.deferredTextSyncGeneration = generation;
+    void this.prepareFontGeometry().then(() => {
+      if (
+        this.documentGeneration !== generation
+        || this.deferredTextSyncGeneration !== generation
+      ) return;
+      this.deferredTextSyncGeneration = null;
+      const latestSnapshot = this.host.getMixedSceneSnapshot();
+      if (latestSnapshot) this.syncScene(latestSnapshot);
+    }).catch((error) => {
+      if (
+        this.documentGeneration !== generation
+        || this.deferredTextSyncGeneration !== generation
+      ) return;
+      this.deferredTextSyncGeneration = null;
+      this.status.textContent = error instanceof Error
+        ? `Text fonts are unavailable: ${error.message}`
+        : "Text fonts are unavailable.";
+    });
+  }
+
   private scheduleRender(): void {
+    if (
+      this.snapshot
+      && snapshotContainsText(this.snapshot)
+      && !this.fontGeometry.isPreloaded
+    ) {
+      this.deferTextSceneSync();
+      return;
+    }
     if (this.renderRequest !== null) {
       return;
     }
@@ -4621,7 +4779,11 @@ export class MixedSceneController {
   }
 
   private onPointerDown(event: PointerEvent, resumedAfterPreparation = false): void {
-    if (this.transformCommitBusy || this.rasterTransformRecoveryOnly) return;
+    if (
+      this.transformCommitBusy
+      || this.rasterTransformRecoveryOnly
+      || (!resumedAfterPreparation && this.rasterTransformPreparation !== null)
+    ) return;
     const node = this.selectedTransformNode();
     if (!this.transformToolActive || !node) return;
     if (event.pointerType === "touch") {

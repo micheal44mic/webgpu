@@ -1788,11 +1788,59 @@ const controllerInitializeSource = controllerSource.slice(
   controllerInitializeStart,
   controllerInitializeEnd,
 );
+assert.match(
+  controllerInitializeSource,
+  /const initialSnapshot = this\.host\.getMixedSceneSnapshot\(\);[\s\S]*if \(snapshotContainsText\(initialSnapshot\)\) \{\s*await this\.prepareFontGeometry\(\);\s*\}/,
+  "restored documents with text must prepare fonts before their first scene sync",
+);
+assert.doesNotMatch(
+  controllerInitializeSource.slice(
+    0,
+    controllerInitializeSource.indexOf("const initialSnapshot"),
+  ),
+  /fontGeometry\.preload|prepareFontGeometry/,
+  "raster-only controller startup must not load vector fonts",
+);
 assert.doesNotMatch(
   controllerInitializeSource,
   /addVectorTextNode|defaultSeed/,
   "l'avvio non deve creare automaticamente un livello testo",
 );
+const createTextSource = controllerSource.slice(
+  controllerSource.indexOf("  createText(color?: string): void"),
+  controllerSource.indexOf("  deleteSelectedText(): void"),
+);
+const createTextFontPreparationIndex = createTextSource.indexOf(
+  "await this.prepareFontGeometry()",
+);
+const createTextHostMutationIndex = createTextSource.indexOf(
+  "await this.host.addVectorTextNode(",
+);
+assert.ok(
+  createTextFontPreparationIndex >= 0
+    && createTextHostMutationIndex > createTextFontPreparationIndex,
+  "the first text command must prepare fonts before creating a text node",
+);
+const syncSceneSource = controllerSource.slice(
+  controllerSource.indexOf("  syncScene(snapshot: MixedSceneSnapshot): void"),
+  controllerSource.indexOf("  scheduleViewSync(): void"),
+);
+assert.match(
+  syncSceneSource,
+  /snapshotContainsText\(snapshot\) && !this\.fontGeometry\.isPreloaded[\s\S]{0,120}this\.deferTextSceneSync\(\);\s*return;/,
+  "a newly restored text scene must wait for fonts before geometry or rendering",
+);
+assert.match(controllerSource, /private deferTextSceneSync\(\): void/);
+assert.match(controllerSource, /const latestSnapshot = this\.host\.getMixedSceneSnapshot\(\)/);
+assert.match(controllerSource, /this\.documentGeneration !== generation/);
+assert.match(fontGeometrySource, /private preloadPromise: Promise<void> \| null = null/);
+assert.match(fontGeometrySource, /get isPreloaded\(\): boolean/);
+assert.match(
+  fontGeometrySource,
+  /async preload\(\): Promise<void> \{\s*if \(this\.isPreloaded\) return;\s*if \(this\.preloadPromise\) return this\.preloadPromise;/,
+  "font loading must be idempotent across concurrent text commands",
+);
+assert.match(fontGeometrySource, /if \(this\.records\.has\(entry\.family\)\) return;/);
 assert.match(
   mobileToolSettingsSource,
   /private bindVectorHistoryControl\(control: HTMLElement\)/,
@@ -2272,6 +2320,22 @@ assert.match(
   /if \(this\.sceneOperationRenderDeferred\) \{[\s\S]*this\.scheduleRender\(\)/,
 );
 assert.match(clientSource, /waitForResourceReady\(/);
+assert.match(clientSource, /private worker: Worker \| null = null/);
+assert.match(
+  clientSource,
+  /private ensureWorker\(\): Worker \{[\s\S]{0,220}const worker = new Worker\(/,
+  "the vector effect worker must start only when text geometry first requests it",
+);
+assert.match(clientSource, /this\.ensureWorker\(\)\.postMessage\(message/);
+assert.match(
+  clientSource,
+  /constructor\(private readonly onResourceReady: \(\) => void\) \{\}/,
+);
+assert.doesNotMatch(
+  clientSource,
+  /private readonly worker = new Worker/,
+  "constructing the reusable mixed-scene controller must not start the text worker",
+);
 assert.match(engineSource, /kind: "vector-rasterize"/);
 assert.match(engineSource, /seedFormat: converted\.history\.seed\.format/);
 assert.match(engineSource, /destroyVectorRasterHistorySeed\(/);

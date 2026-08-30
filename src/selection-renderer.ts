@@ -42,20 +42,27 @@ export interface SelectionSummary {
 
 interface SelectionGpuProgram {
   /** Keep modules/layouts strongly reachable with their device-resident pipelines. */
+  readonly device: GPUDevice;
   readonly computeModule: GPUShaderModule;
   readonly overlayModule: GPUShaderModule;
   readonly computeBindGroupLayout: GPUBindGroupLayout;
   readonly overlayBindGroupLayout: GPUBindGroupLayout;
   readonly computePipelineLayout: GPUPipelineLayout;
   readonly overlayPipelineLayout: GPUPipelineLayout;
-  readonly selectColorPipeline: GPUComputePipeline;
-  readonly lassoPipeline: GPUComputePipeline;
   readonly combinePipeline: GPUComputePipeline;
-  readonly invertPipeline: GPUComputePipeline;
-  readonly translatePipeline: GPUComputePipeline;
   readonly summarizePipeline: GPUComputePipeline;
   readonly overlayPipeline: GPURenderPipeline;
+  readonly optionalComputePipelines: Map<
+    SelectionOptionalComputeEntryPoint,
+    Promise<GPUComputePipeline>
+  >;
 }
+
+type SelectionOptionalComputeEntryPoint =
+  | "selectGlobalColor"
+  | "rasterizeLassoSpans"
+  | "invertSelection"
+  | "translateExternalMask";
 
 /**
  * Selection programs belong to the WebGPU device session, not to a document.
@@ -126,52 +133,60 @@ async function createSelectionGpuProgram(
     label: "Pixel Selection · session overlay pipeline layout",
     bindGroupLayouts: [overlayBindGroupLayout],
   });
-  const computePipelines = await Promise.all([
-    "selectGlobalColor",
-    "rasterizeLassoSpans",
-    "combineExternalMask",
-    "invertSelection",
-    "translateExternalMask",
-    "summarizeSelection",
-  ].map((entryPoint) => device.createComputePipelineAsync({
-    label: `Pixel Selection · session ${entryPoint}`,
-    layout: computePipelineLayout,
-    compute: { module: computeModule, entryPoint },
-  })));
-  const overlayPipeline = await device.createRenderPipelineAsync({
-    label: "Pixel Selection · session transparent overlay",
-    layout: overlayPipelineLayout,
-    vertex: { module: overlayModule, entryPoint: "vertexMain" },
-    fragment: {
-      module: overlayModule,
-      entryPoint: "fragmentMain",
-      targets: [{ format: overlayFormat }],
-    },
-    primitive: { topology: "triangle-list" },
-  });
-  const [
-    selectColorPipeline,
-    lassoPipeline,
-    combinePipeline,
-    invertPipeline,
-    translatePipeline,
-    summarizePipeline,
-  ] = computePipelines;
+  const [[combinePipeline, summarizePipeline], overlayPipeline] = await Promise.all([
+    Promise.all([
+      "combineExternalMask",
+      "summarizeSelection",
+    ].map((entryPoint) => device.createComputePipelineAsync({
+      label: `Pixel Selection · session ${entryPoint}`,
+      layout: computePipelineLayout,
+      compute: { module: computeModule, entryPoint },
+    }))),
+    device.createRenderPipelineAsync({
+      label: "Pixel Selection · session transparent overlay",
+      layout: overlayPipelineLayout,
+      vertex: { module: overlayModule, entryPoint: "vertexMain" },
+      fragment: {
+        module: overlayModule,
+        entryPoint: "fragmentMain",
+        targets: [{ format: overlayFormat }],
+      },
+      primitive: { topology: "triangle-list" },
+    }),
+  ]);
   return {
+    device,
     computeModule,
     overlayModule,
     computeBindGroupLayout,
     overlayBindGroupLayout,
     computePipelineLayout,
     overlayPipelineLayout,
-    selectColorPipeline,
-    lassoPipeline,
     combinePipeline,
-    invertPipeline,
-    translatePipeline,
     summarizePipeline,
     overlayPipeline,
+    optionalComputePipelines: new Map(),
   };
+}
+
+function getSelectionOptionalComputePipeline(
+  program: SelectionGpuProgram,
+  entryPoint: SelectionOptionalComputeEntryPoint,
+): Promise<GPUComputePipeline> {
+  const cached = program.optionalComputePipelines.get(entryPoint);
+  if (cached) return cached;
+  const pending = program.device.createComputePipelineAsync({
+    label: `Pixel Selection · session ${entryPoint}`,
+    layout: program.computePipelineLayout,
+    compute: { module: program.computeModule, entryPoint },
+  });
+  program.optionalComputePipelines.set(entryPoint, pending);
+  void pending.catch(() => {
+    if (program.optionalComputePipelines.get(entryPoint) === pending) {
+      program.optionalComputePipelines.delete(entryPoint);
+    }
+  });
+  return pending;
 }
 
 function getSelectionGpuProgram(
@@ -225,11 +240,8 @@ export class SelectionRenderer {
   private frontMask: GPUBuffer;
   private backMask: GPUBuffer;
   private colorPreviewBaseMask: GPUBuffer;
-  private selectColorPipeline!: GPUComputePipeline;
-  private lassoPipeline!: GPUComputePipeline;
+  private gpuProgram!: SelectionGpuProgram;
   private combinePipeline!: GPUComputePipeline;
-  private invertPipeline!: GPUComputePipeline;
-  private translatePipeline!: GPUComputePipeline;
   private summarizePipeline!: GPUComputePipeline;
   private overlayPipeline!: GPURenderPipeline;
   private overlayBindGroup!: GPUBindGroup;
@@ -323,13 +335,10 @@ export class SelectionRenderer {
 
   private async initialize(): Promise<void> {
     const program = await getSelectionGpuProgram(this.device, this.overlayFormat);
+    this.gpuProgram = program;
     this.computeBindGroupLayout = program.computeBindGroupLayout;
     this.overlayBindGroupLayout = program.overlayBindGroupLayout;
-    this.selectColorPipeline = program.selectColorPipeline;
-    this.lassoPipeline = program.lassoPipeline;
     this.combinePipeline = program.combinePipeline;
-    this.invertPipeline = program.invertPipeline;
-    this.translatePipeline = program.translatePipeline;
     this.summarizePipeline = program.summarizePipeline;
     this.overlayPipeline = program.overlayPipeline;
     this.overlayBindGroup = this.createOverlayBindGroup(this.frontMask);
@@ -452,6 +461,11 @@ export class SelectionRenderer {
     combineMode: SelectionCombineMode,
   ): Promise<SelectionSummary> {
     this.assertAlive();
+    const selectColorPipeline = await getSelectionOptionalComputePipeline(
+      this.gpuProgram,
+      "selectGlobalColor",
+    );
+    this.assertAlive();
     this.writeOperationUniforms(combineMode, 0, tolerance, targetColor);
     this.initializeMetadata();
     const bindGroup = this.createComputeBindGroup(this.backMask, this.placeholderBuffer);
@@ -464,7 +478,7 @@ export class SelectionRenderer {
     );
     const pass = encoder.beginComputePass({ label: "Pixel Selection · color comparison" });
     pass.setBindGroup(0, bindGroup);
-    pass.setPipeline(this.selectColorPipeline);
+    pass.setPipeline(selectColorPipeline);
     pass.dispatchWorkgroups(Math.ceil(this.metrics.maskWords / 256));
     pass.setPipeline(this.summarizePipeline);
     pass.dispatchWorkgroups(Math.ceil(this.metrics.maskWords / 256));
@@ -477,6 +491,13 @@ export class SelectionRenderer {
     raster: LassoSpanRaster,
     combineMode: SelectionCombineMode,
   ): Promise<SelectionSummary> {
+    this.assertAlive();
+    const lassoPipeline = raster.spanCount > 0
+      ? await getSelectionOptionalComputePipeline(
+        this.gpuProgram,
+        "rasterizeLassoSpans",
+      )
+      : null;
     this.assertAlive();
     this.finishColorRangePreview();
     if (raster.packedSpans.byteLength > SELECTION_LASSO_SPAN_BUFFER_BYTES) {
@@ -494,7 +515,7 @@ export class SelectionRenderer {
     const pass = encoder.beginComputePass({ label: "Pixel Selection · lasso spans" });
     pass.setBindGroup(0, bindGroup);
     if (raster.spanCount > 0) {
-      pass.setPipeline(this.lassoPipeline);
+      pass.setPipeline(lassoPipeline!);
       pass.dispatchWorkgroups(Math.ceil(raster.spanCount / 64));
     }
     pass.setPipeline(this.summarizePipeline);
@@ -529,6 +550,11 @@ export class SelectionRenderer {
 
   async invertSelection(): Promise<SelectionSummary> {
     this.assertAlive();
+    const invertPipeline = await getSelectionOptionalComputePipeline(
+      this.gpuProgram,
+      "invertSelection",
+    );
+    this.assertAlive();
     this.finishColorRangePreview();
     this.writeOperationUniforms("replace", 0, 0, [0, 0, 0, 0]);
     this.initializeMetadata();
@@ -537,7 +563,7 @@ export class SelectionRenderer {
     const encoder = this.device.createCommandEncoder({ label: "Pixel Selection · invert" });
     const pass = encoder.beginComputePass({ label: "Pixel Selection · inversion and summary" });
     pass.setBindGroup(0, bindGroup);
-    pass.setPipeline(this.invertPipeline);
+    pass.setPipeline(invertPipeline);
     pass.dispatchWorkgroups(Math.ceil(this.metrics.maskWords / 256));
     pass.setPipeline(this.summarizePipeline);
     pass.dispatchWorkgroups(Math.ceil(this.metrics.maskWords / 256));
@@ -547,6 +573,11 @@ export class SelectionRenderer {
   }
 
   async translateSelection(deltaX: number, deltaY: number): Promise<SelectionSummary> {
+    this.assertAlive();
+    const translatePipeline = await getSelectionOptionalComputePipeline(
+      this.gpuProgram,
+      "translateExternalMask",
+    );
     this.assertAlive();
     this.finishColorRangePreview();
     const x = Math.round(deltaX);
@@ -561,7 +592,7 @@ export class SelectionRenderer {
     encoder.clearBuffer(this.backMask);
     const pass = encoder.beginComputePass({ label: "Pixel Selection · translation and summary" });
     pass.setBindGroup(0, bindGroup);
-    pass.setPipeline(this.translatePipeline);
+    pass.setPipeline(translatePipeline);
     pass.dispatchWorkgroups(Math.ceil(this.metrics.maskWords / 256));
     pass.setPipeline(this.summarizePipeline);
     pass.dispatchWorkgroups(Math.ceil(this.metrics.maskWords / 256));

@@ -617,6 +617,7 @@ function touchShell(activeInteraction, options = {}) {
   Object.assign(shell, {
     transformCommitBusy: false,
     rasterTransformRecoveryOnly: false,
+    rasterTransformPreparation: null,
     transformToolActive: true,
     activeInteraction,
     pendingRasterPointerId: options.pendingPointerId ?? null,

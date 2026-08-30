@@ -693,9 +693,22 @@ function selectCanvasToolWithMixedScene(tool: CanvasInputTool): boolean {
       || tool === "warp"
       || tool === "perspective"
     )
-    && !mixedSceneController
   ) {
-    void initializeMixedSceneController().catch((error) => {
+    const initializationScope = tool === "shapes"
+      ? "semantic-scene"
+      : "raster-transform";
+    if (initializationScope === "raster-transform") {
+      const mode = tool === "warp"
+        ? "warp"
+        : tool === "perspective"
+          ? "perspective"
+          : "affine";
+      void engine.prewarmRasterTransformPrograms(mode).catch((error) => {
+        appDiagnosticsController?.recordOperation("prewarm-raster-transform", tool, error);
+        console.warn(`Could not prewarm the ${tool} GPU programs.`, error);
+      });
+    }
+    void initializeMixedSceneController(initializationScope).catch((error) => {
       appDiagnosticsController?.recordOperation("initialize-transform-editor", tool, error);
       console.error(`Could not initialize the ${tool} editor.`, error);
     });
@@ -3086,12 +3099,21 @@ canvasToolController?.setSelectionCombineMode("replace");
 canvasToolController?.configure("pan", false);
 updateHistoryControls();
 
-async function initializeMixedSceneController(): Promise<MixedSceneController> {
+type MixedSceneInitializationScope = "semantic-scene" | "raster-transform";
+
+async function initializeMixedSceneController(
+  scope: MixedSceneInitializationScope = "semantic-scene",
+): Promise<MixedSceneController> {
+  // A native raster Transform/Warp only needs the reusable controller shell;
+  // its own GPU programs are prepared by beginRasterLayerTransform(). Semantic
+  // scene resources remain an explicit gate for Shapes, imports and text.
+  if (scope === "semantic-scene") {
+    await engine.ensureMixedSceneEditorResources();
+  }
   if (mixedSceneController) return mixedSceneController;
   if (mixedSceneInitializationPromise) return mixedSceneInitializationPromise;
 
   const initialization = (async (): Promise<MixedSceneController> => {
-    await engine.ensureOptionalEditorResources();
     const { MixedSceneController } = await import("./mixed-scene-controller");
     const controller = new MixedSceneController(engine, {
       root: appElement,

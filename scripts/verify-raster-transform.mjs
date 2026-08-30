@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { SerialAsyncQueue } from "../src/serial-async-queue.ts";
 import {
   RASTER_TRANSFORM_DOCUMENT_HEIGHT,
   RASTER_TRANSFORM_DOCUMENT_SIZE,
@@ -572,7 +573,62 @@ assert.match(runtimeSource, /session\.terminal = true/);
 assert.match(runtimeSource, /if \(session\.terminal\)/);
 assert.match(runtimeSource, /retainSessionForRecovery = true/);
 assert.doesNotMatch(runtimeSource, /callbacks\.onStatus/);
-assert.match(runtimeSource, /runGpuAllocationTransaction\([\s\S]{0,180}Raster Transform pipeline/);
+assert.match(runtimeSource, /programCompilationQueue\(shared\.device\)\.run/);
+const programBundleSource = runtimeSource.slice(
+  runtimeSource.indexOf("async function createProgramBundle("),
+  runtimeSource.indexOf("async function ensureProgramBundle("),
+);
+assert.doesNotMatch(
+  programBundleSource,
+  /runGpuAllocationTransaction|pushErrorScope|popErrorScope/,
+  "long-running transform compilation must not hold device-global error scopes",
+);
+assert.match(runtimeSource, /const \[deformPipeline, clearPipeline\] = await Promise\.all/);
+assert.doesNotMatch(
+  runtimeSource,
+  /\.createRenderPipeline\(/,
+  "cold Transform mode changes must never compile a pipeline synchronously",
+);
+assert.match(
+  runtimeSource,
+  /await ensureProgramBundle\([\s\S]{0,160}requestedMode === "affine" \? "affine" : "deform"[\s\S]{0,160}updateRasterLayerTransform/,
+  "an open Transform session must await its cold mode bundle before publication",
+);
+assert.match(
+  controllerSource,
+  /await this\.host\.prewarmRasterTransformPrograms\(mode\)[\s\S]{0,500}this\.host\.updateRasterLayerTransform\(\{ mode \}\)/,
+  "the UI mode switch must await asynchronous preparation before changing the session",
+);
+assert.match(
+  controllerSource,
+  /const requestedMode = this\.rasterTransformToolMode;[\s\S]{0,160}const generation = this\.rasterTransformModeSwitchGeneration;[\s\S]{0,160}runRasterTransformPreparation\(requestedMode, generation\)/,
+  "initial raster preparation must capture both requested mode and generation",
+);
+assert.match(
+  controllerSource,
+  /generation !== this\.rasterTransformModeSwitchGeneration[\s\S]{0,120}this\.rasterTransformToolMode !== requestedMode[\s\S]{0,320}cancelRasterLayerTransform/,
+  "a stale initial mode must roll back instead of publishing",
+);
+assert.match(
+  controllerSource,
+  /node\.mode === mode[\s\S]{0,240}this\.rasterTransformPreparation !== null[\s\S]{0,100}this\.rasterTransformRecoveryOnly[\s\S]{0,280}this\.rasterTransformPreparation = null[\s\S]{0,100}this\.rasterTransformRecoveryOnly = false/,
+  "returning to the published mode must detach an obsolete cold request and leave recovery",
+);
+assert.match(
+  controllerSource,
+  /updateRasterLayerTransform\(\{ mode \}\);[\s\S]{0,100}this\.rasterTransformRecoveryOnly = false/,
+  "a successful cold-mode retry must restore normal interaction",
+);
+assert.match(
+  controllerSource,
+  /const preparing = this\.rasterTransformPreparation !== null[\s\S]{0,600}canApply: active[\s\S]{0,120}!preparing[\s\S]{0,360}canCancel: active[\s\S]{0,120}!preparing/,
+  "Apply and Cancel controls must remain disabled during mode preparation",
+);
+assert.match(
+  controllerSource,
+  /if \(event\.key === "Escape"\)[\s\S]{0,180}this\.cancelTransform\(\)[\s\S]{0,180}this\.applyTransform\(\)/,
+  "keyboard settlement must use the preparation-aware public actions",
+);
 assert.match(
   runtimeSource,
   /const action: RasterTransformHistoryAction[\s\S]{0,1200}commitHistoryActionAtomically\(engine, action\)/,
@@ -590,7 +646,11 @@ assert.match(runtimeSource, /rebuildRasterLayerFromImmutableSource\(engine, reco
 assert.match(runtimeSource, /composeRasterLayerSourceTransform/);
 assert.match(runtimeSource, /rasterSourceBefore/);
 assert.match(runtimeSource, /rasterSourceAfter/);
-assert.match(controllerSource, /if \(this\.transformCommitBusy \|\| this\.rasterTransformRecoveryOnly\) return/);
+assert.match(
+  controllerSource,
+  /this\.transformCommitBusy[\s\S]{0,120}this\.rasterTransformRecoveryOnly[\s\S]{0,160}!resumedAfterPreparation && this\.rasterTransformPreparation !== null/,
+  "pointer input must remain blocked while a cold raster mode is preparing",
+);
 assert.match(controllerSource, /rasterTransformRecoveryOnly/);
 assert.match(
   controllerSource,
@@ -626,6 +686,45 @@ assert.match(
 );
 
 console.log("Raster transform math/shader verification passed.");
+
+// Cold compiler jobs must run in strict FIFO order, and one rejected operation
+// must not poison a later retry.
+{
+  const queue = new SerialAsyncQueue();
+  const events = [];
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
+  const first = queue.run(async () => {
+    events.push("first:start");
+    await firstGate;
+    events.push("first:end");
+    return 1;
+  });
+  const second = queue.run(async () => {
+    events.push("second:start");
+    return 2;
+  });
+  await Promise.resolve();
+  assert.deepEqual(events, ["first:start"]);
+  releaseFirst();
+  assert.deepEqual(await Promise.all([first, second]), [1, 2]);
+  assert.deepEqual(events, ["first:start", "first:end", "second:start"]);
+
+  await assert.rejects(
+    queue.run(async () => {
+      events.push("failed");
+      throw new Error("expected queue failure");
+    }),
+    /expected queue failure/,
+  );
+  assert.equal(await queue.run(async () => {
+    events.push("recovered");
+    return 3;
+  }), 3);
+  assert.deepEqual(events.slice(-2), ["failed", "recovered"]);
+}
 
 // --- Invariante contenuto/tile ------------------------------------------------
 // Lo scratch si deriva dalla maschera di tile, e `packRasterTransformUniforms`

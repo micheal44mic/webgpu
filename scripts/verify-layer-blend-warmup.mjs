@@ -10,28 +10,37 @@ const strokeRendererSource = source("src/stroke-renderer.ts");
 const layerRuntimeSource = source("src/engine-layer-runtime.ts");
 const mainSource = source("src/main.ts");
 
-const optionalStart = engineSource.indexOf("async ensureOptionalEditorResources(): Promise<void>");
-const optionalEnd = engineSource.indexOf("allocateLayerTexture(", optionalStart);
-assert.ok(optionalStart >= 0 && optionalEnd > optionalStart);
-const optionalBody = engineSource.slice(optionalStart, optionalEnd);
-assert.match(optionalBody, /const layerBlendResourcesPending = this\.mixedSceneEnabled/);
-assert.match(optionalBody, /!this\.layerBlendTileWarmupAttempted/);
-assert.match(optionalBody, /await ensureLayerBlendTilePresentationResources\(this\)/);
+const blendStart = engineSource.indexOf("async ensureLayerBlendEditorResources(): Promise<void>");
+const blendEnd = engineSource.indexOf("async ensureSpatialBlurEditorResources()", blendStart);
+assert.ok(blendStart >= 0 && blendEnd > blendStart);
+const blendBody = engineSource.slice(blendStart, blendEnd);
+assert.match(blendBody, /this\.layerBlendTileWarmupAttempted/);
+assert.match(blendBody, /await ensureLayerBlendTilePresentationResources\(this\)/);
+assert.doesNotMatch(
+  blendBody,
+  /ensureMixedSceneEditorResources|finishStaticResourceCreation/,
+  "the raster-only layer-blend compositor must not compile semantic scene programs",
+);
 assert.match(
-  optionalBody,
+  blendBody,
   /layerBlendTileWarmupAttempted = true;[\s\S]*?try \{[\s\S]*?ensureLayerBlendTilePresentationResources\(this\)[\s\S]*?catch \(error\)/,
-  "an optional warm-up failure must not block unrelated editor resources",
-);
-assert.ok(
-  optionalBody.indexOf('finishStaticResourceCreation(this, "optional")')
-    < optionalBody.indexOf("ensureLayerBlendTilePresentationResources(this)"),
-  "the shared mixed-scene modules must exist before the blend compositor warm-up",
+  "a layer-blend warm-up failure must remain isolated from unrelated editor resources",
 );
 assert.match(
-  optionalBody,
-  /finally \{[\s\S]*?this\.optionalEditorResourcesPromise = null/,
+  blendBody,
+  /finally \{[\s\S]*?this\.layerBlendEditorResourcesPromise = null/,
   "a later resource retarget must be able to request another idle warm-up",
 );
+const compatibilityStart = engineSource.indexOf(
+  "async ensureOptionalEditorResources(): Promise<void>",
+);
+const compatibilityEnd = engineSource.indexOf(
+  "async prewarmRasterToneCurvesResources()",
+  compatibilityStart,
+);
+assert.ok(compatibilityStart >= 0 && compatibilityEnd > compatibilityStart);
+const compatibilityBody = engineSource.slice(compatibilityStart, compatibilityEnd);
+assert.match(compatibilityBody, /await this\.ensureLayerBlendEditorResources\(\)/);
 
 assert.match(tileRuntimeSource, /layerBlendTileResourcesPromise/);
 assert.match(tileRuntimeSource, /layerBlendTileResourcesRevision/);

@@ -364,9 +364,28 @@ assert.equal(
 );
 assert.equal(
   renderer.match(/createComputePipelineAsync\(/g)?.length,
-  1,
-  "Selection compute pipelines must be created only by the device-session program cache.",
+  2,
+  "Selection base and optional compute pipelines must be created only by the device-session caches.",
 );
+const selectionBaseProgramSource = renderer.slice(
+  renderer.indexOf("async function createSelectionGpuProgram("),
+  renderer.indexOf("function getSelectionOptionalComputePipeline("),
+);
+assert(selectionBaseProgramSource.includes('"combineExternalMask"'));
+assert(selectionBaseProgramSource.includes('"summarizeSelection"'));
+for (const deferredEntryPoint of [
+  "selectGlobalColor",
+  "rasterizeLassoSpans",
+  "invertSelection",
+  "translateExternalMask",
+]) {
+  assert(
+    !selectionBaseProgramSource.includes(`"${deferredEntryPoint}"`),
+    `${deferredEntryPoint} must remain outside the Magic Wand base program.`,
+  );
+}
+assert(renderer.includes("optionalComputePipelines.get(entryPoint)"));
+assert(renderer.includes("optionalComputePipelines.set(entryPoint, pending)"));
 const selectionDestroyStart = renderer.indexOf("  destroy(): void");
 const selectionDestroyEnd = renderer.indexOf("  private createComputeBindGroup", selectionDestroyStart);
 assert(selectionDestroyStart >= 0 && selectionDestroyEnd > selectionDestroyStart);

@@ -443,7 +443,7 @@ assert.match(
   "Cancel must keep the global edit gate until async rollback succeeds",
 );
 assert.match(controllerSource, /beginVectorHistoryEdit\("transform"\)/);
-assert.match(controllerSource, /beginRasterLayerTransform\(this\.rasterTransformToolMode\)/);
+assert.match(controllerSource, /beginRasterLayerTransform\(requestedMode\)/);
 assert.match(controllerSource, /commitRasterLayerTransform\(\)/);
 assert.match(controllerSource, /cancelRasterLayerTransform\(\)/);
 assert.match(controllerSource, /private async applyTransformSession/);

@@ -127,6 +127,7 @@ import {
   cancelRasterLayerTransform as cancelRasterLayerTransformRuntime,
   commitRasterLayerTransform as commitRasterLayerTransformRuntime,
   nudgeRasterLayerTransform as nudgeRasterLayerTransformRuntime,
+  prewarmRasterTransformPrograms as prewarmRasterTransformProgramsRuntime,
   updateRasterLayerTransform as updateRasterLayerTransformRuntime,
   type ActiveRasterTransformSession,
 } from "./engine-raster-transform-runtime";
@@ -1139,6 +1140,10 @@ export class BrushEngine {
   private adapter!: GPUAdapter;
   device!: GPUDevice;
   private optionalEditorResourcesPromise: Promise<void> | null = null;
+  private mixedSceneEditorResourcesPromise: Promise<void> | null = null;
+  private layerBlendEditorResourcesPromise: Promise<void> | null = null;
+  private spatialBlurEditorResourcesPromise: Promise<void> | null = null;
+  private pixelSelectionPaintResourcesPromise: Promise<void> | null = null;
   private blendRendererResourcesPromise: Promise<void> | null = null;
   optionalEditorResourcesReady = false;
   advancedCanvasPresentationPipelinesReady = false;
@@ -4774,7 +4779,7 @@ export class BrushEngine {
       return false;
     }
     if (this.pixelSelectionState.selectedPixels > 0 && !this.selectionPipelinesReady) {
-      void this.ensureOptionalEditorResources().catch((error) => {
+      void this.ensurePixelSelectionPaintResources().catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         this.callbacks.onStatus?.(
           `Could not prepare the pixel selection: ${message}`,
@@ -8644,7 +8649,7 @@ export class BrushEngine {
       }
       if (settings !== this.settings) continue;
       if (this.pixelSelectionState.selectedPixels > 0 && !this.selectionPipelinesReady) {
-        await this.ensureOptionalEditorResources();
+        await this.ensurePixelSelectionPaintResources();
       }
       if (settings !== this.settings) continue;
       if (
@@ -8717,67 +8722,150 @@ export class BrushEngine {
   }
 
   /**
-   * Completes GPU resources used by explicitly requested editor paths. The
-   * promise is shared so concurrent tool actions and tests can safely request
-   * the same initialization without compiling pipelines twice.
+   * Completes only the semantic mixed-scene layouts and pipelines. Raster-only
+   * Transform/Warp does not require this graph: keeping the gate separate
+   * prevents those tools from compiling text, image and shape presentation
+   * programs on first use.
+   */
+  async ensureMixedSceneEditorResources(): Promise<void> {
+    if (this.documentPipelineCompilationScope === "first-frame-diagnostic") {
+      throw new Error("Mixed-scene editor resources are disabled during first-frame diagnostics.");
+    }
+    if (!this.mixedSceneEnabled || this.optionalEditorResourcesReady) return;
+    if (this.mixedSceneEditorResourcesPromise) {
+      await this.mixedSceneEditorResourcesPromise;
+      return;
+    }
+    const initialization = (async (): Promise<void> => {
+      await finishStaticResourceCreation(this, "optional");
+      this.optionalEditorResourcesReady = true;
+      if (this.deviceLostError) throw this.deviceLostError;
+    })();
+    this.mixedSceneEditorResourcesPromise = initialization;
+    try {
+      await initialization;
+    } finally {
+      if (this.mixedSceneEditorResourcesPromise === initialization) {
+        this.mixedSceneEditorResourcesPromise = null;
+      }
+    }
+  }
+
+  /** Prepares only the compositor needed by advanced layer blend modes. */
+  async ensureLayerBlendEditorResources(): Promise<void> {
+    if (this.documentPipelineCompilationScope === "first-frame-diagnostic") {
+      throw new Error("Layer-blend editor resources are disabled during first-frame diagnostics.");
+    }
+    if (!this.mixedSceneEnabled) return;
+    const resourcesReady = this.layerBlendTileWarmupAttempted
+      && this.layerBlendTileCompositor?.format === this.layerFormat
+      && this.rasterStrokeRenderer !== null;
+    if (resourcesReady) return;
+    if (this.layerBlendEditorResourcesPromise) {
+      await this.layerBlendEditorResourcesPromise;
+      return;
+    }
+    const initialization = (async (): Promise<void> => {
+      this.layerBlendTileWarmupAttempted = true;
+      try {
+        await ensureLayerBlendTilePresentationResources(this);
+      } catch (error) {
+        if (this.deviceLostError) throw this.deviceLostError;
+        console.warn(
+          "Layer blend warm-up is unavailable; the first blend change will retry.",
+          error,
+        );
+      }
+    })();
+    this.layerBlendEditorResourcesPromise = initialization;
+    try {
+      await initialization;
+    } finally {
+      if (this.layerBlendEditorResourcesPromise === initialization) {
+        this.layerBlendEditorResourcesPromise = null;
+      }
+    }
+  }
+
+  /** Prepares only the pipelines used by the spatial blur editor. */
+  async ensureSpatialBlurEditorResources(): Promise<void> {
+    if (this.documentPipelineCompilationScope === "first-frame-diagnostic") {
+      throw new Error("Spatial-blur editor resources are disabled during first-frame diagnostics.");
+    }
+    if (this.spatialBlurPipelinesReady) return;
+    if (this.spatialBlurEditorResourcesPromise) {
+      await this.spatialBlurEditorResourcesPromise;
+      return;
+    }
+    const initialization = (async (): Promise<void> => {
+      await warmRasterSpatialBlurPipelines(this);
+      if (this.deviceLostError) throw this.deviceLostError;
+      this.spatialBlurPipelinesReady = true;
+    })();
+    this.spatialBlurEditorResourcesPromise = initialization;
+    try {
+      await initialization;
+    } finally {
+      if (this.spatialBlurEditorResourcesPromise === initialization) {
+        this.spatialBlurEditorResourcesPromise = null;
+      }
+    }
+  }
+
+  /** Prepares only the 36 paint/erase/glaze variants clipped by Pixel Selection. */
+  async ensurePixelSelectionPaintResources(): Promise<void> {
+    if (this.documentPipelineCompilationScope === "first-frame-diagnostic") {
+      throw new Error("Pixel-selection paint resources are disabled during first-frame diagnostics.");
+    }
+    if (this.selectionPipelinesReady || this.selectionPipelineWarmup === null) return;
+    if (this.pixelSelectionPaintResourcesPromise) {
+      await this.pixelSelectionPaintResourcesPromise;
+      if (!this.selectionPipelinesReady && this.selectionPipelineWarmup !== null) {
+        await this.ensurePixelSelectionPaintResources();
+      }
+      return;
+    }
+    const warmup = this.selectionPipelineWarmup;
+    const initialization = (async (): Promise<void> => {
+      await warmup();
+      if (this.deviceLostError) throw this.deviceLostError;
+      if (this.selectionPipelineWarmup === warmup) {
+        this.selectionPipelinesReady = true;
+        this.selectionPipelineWarmup = null;
+      }
+    })();
+    this.pixelSelectionPaintResourcesPromise = initialization;
+    try {
+      await initialization;
+    } finally {
+      if (this.pixelSelectionPaintResourcesPromise === initialization) {
+        this.pixelSelectionPaintResourcesPromise = null;
+      }
+    }
+  }
+
+  /**
+   * Compatibility gate for diagnostics and callers that intentionally request
+   * every optional family. Interactive tools use the capability-specific gates
+   * above so first use cannot pull unrelated compiler work into its critical
+   * path.
    */
   async ensureOptionalEditorResources(): Promise<void> {
     if (this.documentPipelineCompilationScope === "first-frame-diagnostic") {
       throw new Error("Optional editor resources are disabled during first-frame diagnostics.");
     }
-    const layerBlendResourcesPending = this.mixedSceneEnabled
-      && !this.layerBlendTileWarmupAttempted && (
-      this.layerBlendTileCompositor?.format !== this.layerFormat
-      || this.rasterStrokeRenderer === null
-    );
-    const vectorResourcesPending = this.mixedSceneEnabled
-      && !this.optionalEditorResourcesReady;
-    const selectionResourcesPending = !this.selectionPipelinesReady
-      && this.selectionPipelineWarmup !== null;
-    const spatialBlurResourcesPending = !this.spatialBlurPipelinesReady;
-    if (
-      !layerBlendResourcesPending
-      && !vectorResourcesPending
-      && !selectionResourcesPending
-      && !spatialBlurResourcesPending
-    ) return;
     if (this.optionalEditorResourcesPromise) {
       await this.optionalEditorResourcesPromise;
       return;
     }
-
     const initialization = (async (): Promise<void> => {
-      this.callbacks.onStatus?.(
-        "Preparing the selected advanced tool…",
-        "working",
-      );
-      // Keep the old mobile driver responsive: optional compilers run in
-      // bounded phases instead of all contending for the GPU at once.
-      if (vectorResourcesPending) {
-        await finishStaticResourceCreation(this, "optional");
-        this.optionalEditorResourcesReady = true;
-      }
-      if (layerBlendResourcesPending) {
-        this.layerBlendTileWarmupAttempted = true;
-        try {
-          await ensureLayerBlendTilePresentationResources(this);
-        } catch (error) {
-          if (this.deviceLostError) throw this.deviceLostError;
-          console.warn(
-            "Layer blend warm-up is unavailable; the first blend change will retry.",
-            error,
-          );
-        }
-      }
-      if (spatialBlurResourcesPending) {
-        await warmRasterSpatialBlurPipelines(this);
-        this.spatialBlurPipelinesReady = true;
-      }
-      if (selectionResourcesPending) {
-        await this.selectionPipelineWarmup!();
-        this.selectionPipelinesReady = true;
-        this.selectionPipelineWarmup = null;
-      }
+      this.callbacks.onStatus?.("Preparing the selected advanced tool…", "working");
+      // Keep old mobile drivers responsive by retaining bounded, sequential
+      // compiler phases even when a diagnostic explicitly requests all of them.
+      await this.ensureMixedSceneEditorResources();
+      await this.ensureLayerBlendEditorResources();
+      await this.ensureSpatialBlurEditorResources();
+      await this.ensurePixelSelectionPaintResources();
       if (this.deviceLostError) throw this.deviceLostError;
       this.callbacks.onStatus?.("WebGPU is ready. Draw on the canvas.", "ok");
     })();
@@ -9975,6 +10063,10 @@ export class BrushEngine {
   }
 
   async prepareShapePreviewPresentation(): Promise<void> {
+    // Tool selection and controller creation are intentionally asynchronous.
+    // Keep the ordered preview transaction behind its own semantic-scene gate
+    // so a fast first drag can never race an unmaterialized preview pipeline.
+    await this.ensureMixedSceneEditorResources();
     const scene = requireMixedSceneStack(this);
     const group = scene.clippingGroupKeys(scene.selected.key);
     const nextAfterKey = group[group.length - 1] ?? scene.selected.key;
@@ -10409,6 +10501,10 @@ export class BrushEngine {
 
   beginRasterLayerTransform(mode?: RasterTransformMode) {
     return beginRasterLayerTransformRuntime(this, mode);
+  }
+
+  prewarmRasterTransformPrograms(mode?: RasterTransformMode): Promise<void> {
+    return prewarmRasterTransformProgramsRuntime(this, mode);
   }
 
   updateRasterLayerTransform(

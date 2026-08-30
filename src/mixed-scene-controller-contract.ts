@@ -178,6 +178,7 @@ export interface MixedSceneHost {
   moveRasterImageNode(id: number, delta: -1 | 1): Promise<boolean>;
   deleteRasterImageNode(id: number): Promise<Readonly<RasterImageNode>>;
   beginRasterLayerTransform(mode?: RasterTransformMode): Promise<RasterTransformSnapshot | null>;
+  prewarmRasterTransformPrograms(mode?: RasterTransformMode): Promise<void>;
   updateRasterLayerTransform(
     update: Partial<Pick<
       RasterTransformSnapshot,

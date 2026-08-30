@@ -155,6 +155,241 @@ async function assertShaderModules(
   }
 }
 
+type FillOptionalComputeEntryPoint =
+  | "rebuildSelection"
+  | "expandResidualFringe1"
+  | "expandResidualFringe2"
+  | "expandResidualFringe3"
+  | "recordResidualFringeBlocks"
+  | "expandRenderMask";
+
+interface FillAnalysisGpuProgram {
+  readonly device: GPUDevice;
+  readonly computeModule: GPUShaderModule;
+  readonly computeBindGroupLayout: GPUBindGroupLayout;
+  readonly computePipelineLayout: GPUPipelineLayout;
+  readonly classifyPipeline: GPUComputePipeline;
+  readonly boundaryPipeline: GPUComputePipeline;
+  readonly compressPipeline: GPUComputePipeline;
+  readonly selectPipeline: GPUComputePipeline;
+  readonly optionalComputePipelines: Map<
+    FillOptionalComputeEntryPoint,
+    Promise<GPUComputePipeline>
+  >;
+}
+
+interface FillRenderGpuProgram {
+  readonly renderModule: GPUShaderModule;
+  readonly renderBindGroupLayout: GPUBindGroupLayout;
+  readonly renderPipelineLayout: GPUPipelineLayout;
+  readonly renderPipeline: GPURenderPipeline;
+}
+
+interface FillSelectionIntersectionGpuProgram {
+  readonly intersectionModule: GPUShaderModule;
+  readonly bindGroupLayout: GPUBindGroupLayout;
+  readonly pipelineLayout: GPUPipelineLayout;
+  readonly pipeline: GPUComputePipeline;
+}
+
+/** Device-session programs survive document-sized scratch release and resize. */
+const fillAnalysisGpuPrograms = new WeakMap<
+  GPUDevice,
+  Promise<FillAnalysisGpuProgram>
+>();
+const fillRenderGpuPrograms = new WeakMap<
+  GPUDevice,
+  Map<LayerFormat, Promise<FillRenderGpuProgram>>
+>();
+const fillSelectionIntersectionGpuPrograms = new WeakMap<
+  GPUDevice,
+  Promise<FillSelectionIntersectionGpuProgram>
+>();
+
+async function createFillAnalysisGpuProgram(
+  device: GPUDevice,
+): Promise<FillAnalysisGpuProgram> {
+  const computeModule = device.createShaderModule({
+    label: "Fill · session connected components",
+    code: fillComputeShader,
+  });
+  await assertShaderModules([{ label: "compute", module: computeModule }]);
+  const computeBindGroupLayout = device.createBindGroupLayout({
+    label: "Fill · session compute bind group layout",
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform", minBindingSize: FILL_UNIFORM_BYTES } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "unfilterable-float" } },
+      ...Array.from({ length: 7 }, (_, index): GPUBindGroupLayoutEntry => ({
+        binding: index + 2,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: "storage" },
+      })),
+    ],
+  });
+  const computePipelineLayout = device.createPipelineLayout({
+    label: "Fill · session compute pipeline layout",
+    bindGroupLayouts: [computeBindGroupLayout],
+  });
+  const [
+    classifyPipeline,
+    boundaryPipeline,
+    compressPipeline,
+    selectPipeline,
+  ] = await Promise.all([
+    "classifyLocal",
+    "unionBoundaries",
+    "compressComponents",
+    "selectSeedComponent",
+  ].map((entryPoint) => device.createComputePipelineAsync({
+    label: `Fill · session ${entryPoint}`,
+    layout: computePipelineLayout,
+    compute: { module: computeModule, entryPoint },
+  })));
+  return {
+    device,
+    computeModule,
+    computeBindGroupLayout,
+    computePipelineLayout,
+    classifyPipeline,
+    boundaryPipeline,
+    compressPipeline,
+    selectPipeline,
+    optionalComputePipelines: new Map(),
+  };
+}
+
+function getFillAnalysisGpuProgram(device: GPUDevice): Promise<FillAnalysisGpuProgram> {
+  const cached = fillAnalysisGpuPrograms.get(device);
+  if (cached) return cached;
+  const pending = createFillAnalysisGpuProgram(device);
+  fillAnalysisGpuPrograms.set(device, pending);
+  void pending.catch(() => {
+    if (fillAnalysisGpuPrograms.get(device) === pending) {
+      fillAnalysisGpuPrograms.delete(device);
+    }
+  });
+  return pending;
+}
+
+function getFillOptionalComputePipeline(
+  program: FillAnalysisGpuProgram,
+  entryPoint: FillOptionalComputeEntryPoint,
+): Promise<GPUComputePipeline> {
+  const cached = program.optionalComputePipelines.get(entryPoint);
+  if (cached) return cached;
+  const pending = program.device.createComputePipelineAsync({
+    label: `Fill · session ${entryPoint}`,
+    layout: program.computePipelineLayout,
+    compute: { module: program.computeModule, entryPoint },
+  });
+  program.optionalComputePipelines.set(entryPoint, pending);
+  void pending.catch(() => {
+    if (program.optionalComputePipelines.get(entryPoint) === pending) {
+      program.optionalComputePipelines.delete(entryPoint);
+    }
+  });
+  return pending;
+}
+
+async function createFillRenderGpuProgram(
+  device: GPUDevice,
+  layerFormat: LayerFormat,
+): Promise<FillRenderGpuProgram> {
+  const renderModule = device.createShaderModule({
+    label: "Fill · session mask commit",
+    code: fillRenderShader,
+  });
+  await assertShaderModules([{ label: "render", module: renderModule }]);
+  const renderBindGroupLayout = device.createBindGroupLayout({
+    label: "Fill · session render bind group layout",
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform", minBindingSize: FILL_UNIFORM_BYTES } },
+      { binding: 1, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
+      { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
+      { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "unfilterable-float" } },
+    ],
+  });
+  const renderPipelineLayout = device.createPipelineLayout({
+    label: "Fill · session render pipeline layout",
+    bindGroupLayouts: [renderBindGroupLayout],
+  });
+  const renderPipeline = await device.createRenderPipelineAsync({
+    label: `Fill · session composite selected color into ${layerFormat} target`,
+    layout: renderPipelineLayout,
+    vertex: { module: renderModule, entryPoint: "vertexMain" },
+    fragment: {
+      module: renderModule,
+      entryPoint: "fragmentMain",
+      targets: [{ format: layerFormat }],
+    },
+    primitive: { topology: "triangle-strip" },
+  });
+  return { renderModule, renderBindGroupLayout, renderPipelineLayout, renderPipeline };
+}
+
+function getFillRenderGpuProgram(
+  device: GPUDevice,
+  layerFormat: LayerFormat,
+): Promise<FillRenderGpuProgram> {
+  let programsByFormat = fillRenderGpuPrograms.get(device);
+  if (!programsByFormat) {
+    programsByFormat = new Map();
+    fillRenderGpuPrograms.set(device, programsByFormat);
+  }
+  const cached = programsByFormat.get(layerFormat);
+  if (cached) return cached;
+  const pending = createFillRenderGpuProgram(device, layerFormat);
+  programsByFormat.set(layerFormat, pending);
+  void pending.catch(() => {
+    if (programsByFormat?.get(layerFormat) === pending) {
+      programsByFormat.delete(layerFormat);
+    }
+  });
+  return pending;
+}
+
+async function createFillSelectionIntersectionGpuProgram(
+  device: GPUDevice,
+): Promise<FillSelectionIntersectionGpuProgram> {
+  const intersectionModule = device.createShaderModule({
+    label: "Fill · session intersection with Pixel Selection",
+    code: fillSelectionIntersectionShader,
+  });
+  await assertShaderModules([{ label: "selection intersection", module: intersectionModule }]);
+  const bindGroupLayout = device.createBindGroupLayout({
+    label: "Fill · session Pixel Selection intersection bind group layout",
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+    ],
+  });
+  const pipelineLayout = device.createPipelineLayout({
+    label: "Fill · session Pixel Selection intersection pipeline layout",
+    bindGroupLayouts: [bindGroupLayout],
+  });
+  const pipeline = await device.createComputePipelineAsync({
+    label: "Fill · session candidate intersection with Pixel Selection",
+    layout: pipelineLayout,
+    compute: { module: intersectionModule, entryPoint: "intersectFillWithSelection" },
+  });
+  return { intersectionModule, bindGroupLayout, pipelineLayout, pipeline };
+}
+
+function getFillSelectionIntersectionGpuProgram(
+  device: GPUDevice,
+): Promise<FillSelectionIntersectionGpuProgram> {
+  const cached = fillSelectionIntersectionGpuPrograms.get(device);
+  if (cached) return cached;
+  const pending = createFillSelectionIntersectionGpuProgram(device);
+  fillSelectionIntersectionGpuPrograms.set(device, pending);
+  void pending.catch(() => {
+    if (fillSelectionIntersectionGpuPrograms.get(device) === pending) {
+      fillSelectionIntersectionGpuPrograms.delete(device);
+    }
+  });
+  return pending;
+}
+
 export class FillRenderer {
   static async create(options: FillRendererOptions): Promise<FillRenderer> {
     const renderer = new FillRenderer(options);
@@ -168,12 +403,13 @@ export class FillRenderer {
   }
 
   readonly device: GPUDevice;
-  readonly computeBindGroupLayout: GPUBindGroupLayout;
-  readonly renderBindGroupLayout: GPUBindGroupLayout;
-  readonly selectionIntersectionBindGroupLayout: GPUBindGroupLayout;
+  computeBindGroupLayout!: GPUBindGroupLayout;
+  private renderBindGroupLayout!: GPUBindGroupLayout;
+  private selectionIntersectionBindGroupLayout!: GPUBindGroupLayout;
   private metrics: FillDocumentMetrics;
   private readonly layerFormat: LayerFormat;
   private configuredSourceSamplingView: GPUTextureView;
+  private analysisProgram!: FillAnalysisGpuProgram;
   private classifyPipeline!: GPUComputePipeline;
   private boundaryPipeline!: GPUComputePipeline;
   private compressPipeline!: GPUComputePipeline;
@@ -187,6 +423,8 @@ export class FillRenderer {
   private selectionIntersectionPipeline!: GPUComputePipeline;
   private renderPipeline!: GPURenderPipeline;
   private bitProbePipelinePromise: Promise<GPUComputePipeline> | null = null;
+  private compositeProgramPromise: Promise<void> | null = null;
+  private selectionIntersectionProgramPromise: Promise<void> | null = null;
   private scratch: FillScratchResources | null = null;
   private prewarmPromise: Promise<void> | null = null;
   private compositePrewarmPromise: Promise<void> | null = null;
@@ -215,34 +453,6 @@ export class FillRenderer {
     }
     this.layerFormat = options.layerFormat;
     this.configuredSourceSamplingView = options.sourceSamplingView;
-    this.computeBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Fill · compute bind group layout",
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform", minBindingSize: FILL_UNIFORM_BYTES } },
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "unfilterable-float" } },
-        ...Array.from({ length: 7 }, (_, index): GPUBindGroupLayoutEntry => ({
-          binding: index + 2,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "storage" },
-        })),
-      ],
-    });
-    this.renderBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Fill · render bind group layout",
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform", minBindingSize: FILL_UNIFORM_BYTES } },
-        { binding: 1, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
-        { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
-        { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "unfilterable-float" } },
-      ],
-    });
-    this.selectionIntersectionBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Fill · Pixel Selection intersection",
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-      ],
-    });
   }
 
   get resident(): boolean {
@@ -259,79 +469,71 @@ export class FillRenderer {
   }
 
   private async initialize(): Promise<void> {
-    const computeModule = this.device.createShaderModule({
-      label: "Fill · connected components",
-      code: fillComputeShader,
+    const program = await getFillAnalysisGpuProgram(this.device);
+    this.analysisProgram = program;
+    this.computeBindGroupLayout = program.computeBindGroupLayout;
+    this.classifyPipeline = program.classifyPipeline;
+    this.boundaryPipeline = program.boundaryPipeline;
+    this.compressPipeline = program.compressPipeline;
+    this.selectPipeline = program.selectPipeline;
+  }
+
+  private async ensureCompositePrograms(): Promise<void> {
+    this.assertAlive();
+    if (this.compositeProgramPromise) return this.compositeProgramPromise;
+    const pending = Promise.all([
+      getFillOptionalComputePipeline(this.analysisProgram, "rebuildSelection"),
+      getFillOptionalComputePipeline(this.analysisProgram, "expandResidualFringe1"),
+      getFillOptionalComputePipeline(this.analysisProgram, "expandResidualFringe2"),
+      getFillOptionalComputePipeline(this.analysisProgram, "expandResidualFringe3"),
+      getFillOptionalComputePipeline(this.analysisProgram, "recordResidualFringeBlocks"),
+      getFillOptionalComputePipeline(this.analysisProgram, "expandRenderMask"),
+      getFillRenderGpuProgram(this.device, this.layerFormat),
+    ] as const).then(([
+      rebuildPipeline,
+      residualFringePipeline1,
+      residualFringePipeline2,
+      residualFringePipeline3,
+      residualFringeBlockPipeline,
+      expandRenderMaskPipeline,
+      renderProgram,
+    ]) => {
+      this.assertAlive();
+      this.rebuildPipeline = rebuildPipeline;
+      this.residualFringePipeline1 = residualFringePipeline1;
+      this.residualFringePipeline2 = residualFringePipeline2;
+      this.residualFringePipeline3 = residualFringePipeline3;
+      this.residualFringeBlockPipeline = residualFringeBlockPipeline;
+      this.expandRenderMaskPipeline = expandRenderMaskPipeline;
+      this.renderBindGroupLayout = renderProgram.renderBindGroupLayout;
+      this.renderPipeline = renderProgram.renderPipeline;
     });
-    const renderModule = this.device.createShaderModule({
-      label: "Fill · mask commit",
-      code: fillRenderShader,
+    this.compositeProgramPromise = pending.catch((error) => {
+      this.compositeProgramPromise = null;
+      throw error;
     });
-    const intersectionModule = this.device.createShaderModule({
-      label: "Fill · intersection with Pixel Selection",
-      code: fillSelectionIntersectionShader,
+    return this.compositeProgramPromise;
+  }
+
+  private async ensureSelectionIntersectionPrograms(): Promise<void> {
+    this.assertAlive();
+    if (this.selectionIntersectionProgramPromise) {
+      return this.selectionIntersectionProgramPromise;
+    }
+    const pending = Promise.all([
+      getFillOptionalComputePipeline(this.analysisProgram, "rebuildSelection"),
+      getFillSelectionIntersectionGpuProgram(this.device),
+    ] as const).then(([rebuildPipeline, intersectionProgram]) => {
+      this.assertAlive();
+      this.rebuildPipeline = rebuildPipeline;
+      this.selectionIntersectionBindGroupLayout = intersectionProgram.bindGroupLayout;
+      this.selectionIntersectionPipeline = intersectionProgram.pipeline;
     });
-    await assertShaderModules([
-      { label: "compute", module: computeModule },
-      { label: "render", module: renderModule },
-      { label: "selection intersection", module: intersectionModule },
-    ]);
-    const computeLayout = this.device.createPipelineLayout({
-      label: "Fill · compute pipeline layout",
-      bindGroupLayouts: [this.computeBindGroupLayout],
+    this.selectionIntersectionProgramPromise = pending.catch((error) => {
+      this.selectionIntersectionProgramPromise = null;
+      throw error;
     });
-    const renderLayout = this.device.createPipelineLayout({
-      label: "Fill · render pipeline layout",
-      bindGroupLayouts: [this.renderBindGroupLayout],
-    });
-    const intersectionLayout = this.device.createPipelineLayout({
-      label: "Fill · Pixel Selection intersection pipeline layout",
-      bindGroupLayouts: [this.selectionIntersectionBindGroupLayout],
-    });
-    const computePipelines = await Promise.all([
-      "classifyLocal",
-      "unionBoundaries",
-      "compressComponents",
-      "selectSeedComponent",
-      "rebuildSelection",
-      "expandResidualFringe1",
-      "expandResidualFringe2",
-      "expandResidualFringe3",
-      "recordResidualFringeBlocks",
-      "expandRenderMask",
-    ].map((entryPoint) => this.device.createComputePipelineAsync({
-      label: `Fill · ${entryPoint}`,
-      layout: computeLayout,
-      compute: { module: computeModule, entryPoint },
-    })));
-    [
-      this.classifyPipeline,
-      this.boundaryPipeline,
-      this.compressPipeline,
-      this.selectPipeline,
-      this.rebuildPipeline,
-      this.residualFringePipeline1,
-      this.residualFringePipeline2,
-      this.residualFringePipeline3,
-      this.residualFringeBlockPipeline,
-      this.expandRenderMaskPipeline,
-    ] = computePipelines;
-    this.selectionIntersectionPipeline = await this.device.createComputePipelineAsync({
-      label: "Fill · candidate ∩ Pixel Selection",
-      layout: intersectionLayout,
-      compute: { module: intersectionModule, entryPoint: "intersectFillWithSelection" },
-    });
-    this.renderPipeline = await this.device.createRenderPipelineAsync({
-      label: `Fill · composite selected color into ${this.layerFormat} target`,
-      layout: renderLayout,
-      vertex: { module: renderModule, entryPoint: "vertexMain" },
-      fragment: {
-        module: renderModule,
-        entryPoint: "fragmentMain",
-        targets: [{ format: this.layerFormat }],
-      },
-      primitive: { topology: "triangle-strip" },
-    });
+    return this.selectionIntersectionProgramPromise;
   }
 
   async prewarm(): Promise<void> {
@@ -453,15 +655,27 @@ export class FillRenderer {
   /** Allocates the full RGBA snapshot only for Fill preview/replay, never for Magic Wand. */
   async prewarmComposite(): Promise<void> {
     this.assertAlive();
+    if (this.scratch?.composite) return;
+    if (this.compositePrewarmPromise) return this.compositePrewarmPromise;
+
+    // Publish one promise for the complete operation before its first await.
+    // Document reconfiguration can then wait for programs, base scratch and
+    // composite scratch as one indivisible readiness boundary.
+    const pending = this.prepareCompositeResources();
+    this.compositePrewarmPromise = pending.finally(() => {
+      this.compositePrewarmPromise = null;
+    });
+    return this.compositePrewarmPromise;
+  }
+
+  private async prepareCompositeResources(): Promise<void> {
+    // GPU error scopes are stack-based. Finish the scratch allocation
+    // transaction before pipeline compilation opens its own scopes.
     await this.prewarm();
+    await this.ensureCompositePrograms();
     const scratch = this.requireScratch();
     if (scratch.composite) return;
-    if (this.compositePrewarmPromise) {
-      await this.compositePrewarmPromise;
-      if (this.scratch === scratch && scratch.composite) return;
-      throw new Error("The Fill composite scratch changed during prewarming.");
-    }
-    const allocation = runGpuAllocationTransaction(
+    const composite = await runGpuAllocationTransaction(
       this.device,
       "WebGPU Fill destination snapshot",
       (transaction): FillCompositeScratchResources => {
@@ -505,22 +719,21 @@ export class FillRenderer {
         };
       },
     );
-    const pending = allocation.then((composite) => {
-      if (this.destroyed || this.scratch !== scratch) {
-        composite.destinationSnapshotTexture.destroy();
-        throw new Error("The Fill renderer changed during composite prewarming.");
-      }
-      scratch.composite = composite;
-    });
-    this.compositePrewarmPromise = pending.finally(() => {
-      this.compositePrewarmPromise = null;
-    });
-    return this.compositePrewarmPromise;
+    if (this.destroyed || this.scratch !== scratch) {
+      composite.destinationSnapshotTexture.destroy();
+      throw new Error("The Fill renderer changed during composite prewarming.");
+    }
+    scratch.composite = composite;
   }
 
   async waitForPrewarm(): Promise<void> {
-    if (this.prewarmPromise) await this.prewarmPromise;
-    if (this.compositePrewarmPromise) await this.compositePrewarmPromise;
+    while (true) {
+      // Composite readiness includes base scratch. Prefer it when present so a
+      // resize cannot observe the short gap between the two transactions.
+      const readiness = this.compositePrewarmPromise ?? this.prewarmPromise;
+      if (!readiness) return;
+      await readiness;
+    }
   }
 
   setSourceSamplingView(view: GPUTextureView): void {
@@ -594,7 +807,10 @@ export class FillRenderer {
     selectionMask: GPUBuffer | null = null,
     transparentSeedTolerancePercent: number | null = null,
   ): Promise<FillAnalysis> {
+    // Keep document-sized allocation scopes disjoint from lazy pipeline work.
+    // Error scopes belong to the device stack, not to an individual promise.
     await this.prewarm();
+    if (selectionMask) await this.ensureSelectionIntersectionPrograms();
     const scratch = this.requireScratch();
     const x = Math.floor(seedX);
     const y = Math.floor(seedY);

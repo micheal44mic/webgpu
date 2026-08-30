@@ -503,9 +503,24 @@ function buildOutlineGeometry(
 
 export class VectorTextFontGeometryRegistry {
   private readonly records = new Map<string, LoadedVectorTextFont>();
+  private preloadPromise: Promise<void> | null = null;
+
+  get isPreloaded(): boolean {
+    return VECTOR_TEXT_FONT_MANIFEST.every((entry) => this.records.has(entry.family));
+  }
 
   async preload(): Promise<void> {
-    await Promise.all(VECTOR_TEXT_FONT_MANIFEST.map((entry) => this.load(entry)));
+    if (this.isPreloaded) return;
+    if (this.preloadPromise) return this.preloadPromise;
+    const pending = Promise.all(
+      VECTOR_TEXT_FONT_MANIFEST.map((entry) => this.load(entry)),
+    ).then(() => undefined);
+    this.preloadPromise = pending;
+    try {
+      await pending;
+    } finally {
+      if (this.preloadPromise === pending) this.preloadPromise = null;
+    }
   }
 
   outline(
@@ -529,6 +544,7 @@ export class VectorTextFontGeometryRegistry {
   }
 
   private async load(entry: VectorTextFontEntry): Promise<void> {
+    if (this.records.has(entry.family)) return;
     const buffer = await loadCachedAssetSource(entry.fileUrl);
     const font = opentype.parse(buffer) as OpenTypeFont;
     if (

@@ -831,10 +831,99 @@ assert.equal(
   3,
   "Fill select, live preview e History replay devono richiedere la snapshot RGBA on demand",
 );
-assert.match(
-  selectionRuntime,
-  /if \(method === "magic-wand"\)[\s\S]{0,220}await fillRenderer\.prewarm\(\);/,
-  "Magic Wand deve allocare soltanto lo scratch CCL, non la snapshot RGBA Fill",
+const selectionActivationSource = selectionRuntime.slice(
+  selectionRuntime.indexOf("export async function setSelectionToolSelected("),
+  selectionRuntime.indexOf("function selectionOperationAllowed("),
+);
+assert(selectionActivationSource.includes('if (method === "magic-wand")'));
+assert(selectionActivationSource.includes("await ensureFillRenderer(engine)"));
+assert.doesNotMatch(
+  selectionActivationSource,
+  /fillRenderer\.prewarm\(/,
+  "Opening Magic Wand must warm only device-session programs, not document-sized Fill scratch.",
+);
+const magicWandOperationSource = selectionRuntime.slice(
+  selectionRuntime.indexOf("export async function selectConnectedAtClientPoint("),
+  selectionRuntime.indexOf("export async function selectPixelsByColor("),
+);
+assert(magicWandOperationSource.includes("await fillRenderer.analyze("));
+assert(renderer.includes("const fillAnalysisGpuPrograms = new WeakMap<"));
+assert(renderer.includes("const fillRenderGpuPrograms = new WeakMap<"));
+assert(renderer.includes("Map<LayerFormat, Promise<FillRenderGpuProgram>>"));
+const fillAnalysisProgramSource = renderer.slice(
+  renderer.indexOf("async function createFillAnalysisGpuProgram("),
+  renderer.indexOf("function getFillAnalysisGpuProgram("),
+);
+for (const baseEntryPoint of [
+  "classifyLocal",
+  "unionBoundaries",
+  "compressComponents",
+  "selectSeedComponent",
+]) {
+  assert(fillAnalysisProgramSource.includes(`"${baseEntryPoint}"`));
+}
+for (const deferredEntryPoint of [
+  "rebuildSelection",
+  "expandResidualFringe1",
+  "expandResidualFringe2",
+  "expandResidualFringe3",
+  "recordResidualFringeBlocks",
+  "expandRenderMask",
+]) {
+  assert(
+    !fillAnalysisProgramSource.includes(`"${deferredEntryPoint}"`),
+    `${deferredEntryPoint} must remain outside the connected-region analysis bundle.`,
+  );
+}
+assert(renderer.includes("getFillOptionalComputePipeline(this.analysisProgram"));
+const compositePrewarmSource = renderer.slice(
+  renderer.indexOf("  async prewarmComposite(): Promise<void>"),
+  renderer.indexOf("  private async prepareCompositeResources(): Promise<void>"),
+);
+assert(compositePrewarmSource.includes("if (this.compositePrewarmPromise)"));
+assert(
+  compositePrewarmSource.indexOf("this.compositePrewarmPromise = pending.finally")
+    < compositePrewarmSource.lastIndexOf("return this.compositePrewarmPromise"),
+  "Composite readiness must be published before the caller can observe the returned promise.",
+);
+assert(!compositePrewarmSource.includes("await "));
+assert(!compositePrewarmSource.includes("Promise.all"));
+const compositePreparationSource = renderer.slice(
+  renderer.indexOf("  private async prepareCompositeResources(): Promise<void>"),
+  renderer.indexOf("  async waitForPrewarm(): Promise<void>"),
+);
+assert(
+  compositePreparationSource.indexOf("await this.prewarm()")
+    < compositePreparationSource.indexOf("await this.ensureCompositePrograms()"),
+  "Fill scratch allocation scopes must drain before composite pipeline compilation begins.",
+);
+assert(
+  compositePreparationSource.indexOf("await this.ensureCompositePrograms()")
+    < compositePreparationSource.indexOf("await runGpuAllocationTransaction("),
+  "Composite pipeline scopes must drain before the destination snapshot allocation begins.",
+);
+assert(!compositePreparationSource.includes("Promise.all"));
+const analyzePreparationSource = renderer.slice(
+  renderer.indexOf("  async analyze("),
+  renderer.indexOf("    const scratch = this.requireScratch();", renderer.indexOf("  async analyze(")),
+);
+assert(analyzePreparationSource.includes("await this.prewarm();"));
+assert(analyzePreparationSource.includes("if (selectionMask) await this.ensureSelectionIntersectionPrograms();"));
+assert(!analyzePreparationSource.includes("Promise.all"));
+const waitForPrewarmSource = renderer.slice(
+  renderer.indexOf("  async waitForPrewarm(): Promise<void>"),
+  renderer.indexOf("  setSourceSamplingView("),
+);
+assert(waitForPrewarmSource.includes("this.compositePrewarmPromise ?? this.prewarmPromise"));
+assert(waitForPrewarmSource.includes("while (true)"));
+const reconfigureSource = renderer.slice(
+  renderer.indexOf("  async reconfigureDocument("),
+  renderer.indexOf("  /**\n   * Starts one snapshot-backed preview transaction."),
+);
+assert(
+  reconfigureSource.indexOf("await this.waitForPrewarm()")
+    < reconfigureSource.indexOf("this.releaseScratch()"),
+  "Document reconfiguration must await complete Fill readiness before releasing scratch.",
 );
 assert(runtime.includes("FILL_SCRATCH_IDLE_RELEASE_MS = 0"));
 assert(runtime.includes("FILL_SCRATCH_BUSY_RETRY_MS = 50"));

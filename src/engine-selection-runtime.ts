@@ -405,7 +405,6 @@ export async function setSelectionToolSelected(
     if (method === "magic-wand") {
       const fillRenderer = await ensureFillRenderer(engine);
       fillRenderer.setSourceSamplingView(engine.layerSamplingView);
-      await fillRenderer.prewarm();
     } else {
       scheduleFillScratchRelease(engine);
     }

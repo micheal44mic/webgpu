@@ -119,10 +119,7 @@ function requiresExactEffectLod(effect: VectorTextEffectDescription): boolean {
 }
 
 export class VectorTextEffectCompilerClient {
-  private readonly worker = new Worker(
-    new URL("./vector-text-effect-worker.ts", import.meta.url),
-    { type: "module", name: "vector-text-effect-compiler" },
-  );
+  private worker: Worker | null = null;
   private readonly registeredPaths = new Set<string>();
   private readonly pendingByRequest = new Map<number, PendingEffect>();
   private readonly pendingKeys = new Set<string>();
@@ -138,17 +135,26 @@ export class VectorTextEffectCompilerClient {
   private resourceRevision = 0;
   private readonly resourceWaiters = new Set<() => void>();
 
-  constructor(private readonly onResourceReady: () => void) {
-    this.worker.onmessage = (
+  constructor(private readonly onResourceReady: () => void) {}
+
+  private ensureWorker(): Worker {
+    if (this.worker) return this.worker;
+    const worker = new Worker(
+      new URL("./vector-text-effect-worker.ts", import.meta.url),
+      { type: "module", name: "vector-text-effect-compiler" },
+    );
+    worker.onmessage = (
       event: MessageEvent<VectorTextEffectWorkerResponse>,
     ): void => {
       this.acceptWorkerResponse(event.data);
     };
-    this.worker.onerror = (event): void => {
+    worker.onerror = (event): void => {
       this.failedJobs += 1;
       this.lastError = event.message || "Text geometry worker stopped.";
       this.notifyResourceReady();
     };
+    this.worker = worker;
+    return worker;
   }
 
   meshForSlot(
@@ -310,7 +316,7 @@ export class VectorTextEffectCompilerClient {
         contourOffsets,
       },
     };
-    this.worker.postMessage(message, [
+    this.ensureWorker().postMessage(message, [
       verbs.buffer,
       coords.buffer,
       contourOffsets.buffer,
@@ -339,7 +345,7 @@ export class VectorTextEffectCompilerClient {
         type: "release-path",
         revision,
       };
-      this.worker.postMessage(message);
+      this.worker?.postMessage(message);
       this.registeredPaths.delete(revision);
     }
   }
@@ -396,7 +402,7 @@ export class VectorTextEffectCompilerClient {
       lod: queued.lod,
       effect: queued.effect,
     };
-    this.worker.postMessage(message);
+    this.ensureWorker().postMessage(message);
   }
 
   private acceptWorkerResponse(
