@@ -33,6 +33,9 @@ let sceneQuantizeAbsoluteRotation;
 let sceneTransformedAxisAlignedBounds;
 let sceneWrappedAngleDelta;
 let adaptiveCanvasGridStep;
+let PIXEL_GRID_PERCENT_THRESHOLD;
+let PIXEL_GRID_ZOOM_THRESHOLD;
+let pixelGridVisibleAtZoom;
 let renderCanvasGuides;
 try {
   ({
@@ -49,6 +52,9 @@ try {
   } = await moduleServer.ssrLoadModule("/src/scene-transform-snap.ts"));
   ({
     adaptiveCanvasGridStep,
+    PIXEL_GRID_PERCENT_THRESHOLD,
+    PIXEL_GRID_ZOOM_THRESHOLD,
+    pixelGridVisibleAtZoom,
     renderCanvasGuides,
   } = await moduleServer.ssrLoadModule("/src/canvas-guides-renderer.ts"));
 } finally {
@@ -696,15 +702,35 @@ const pixelGridPreferences = {
   symmetryAngleDegrees: 90,
 };
 
-// The document-pixel grid shares the exact 581% raster pixel-view threshold.
+assert.equal(PIXEL_GRID_PERCENT_THRESHOLD, 1000);
+assert.equal(PIXEL_GRID_ZOOM_THRESHOLD, 10);
+assert.equal(pixelGridVisibleAtZoom(9.9999), false);
+assert.equal(pixelGridVisibleAtZoom(10), true);
+assert.equal(pixelGridVisibleAtZoom(Number.NaN), false);
+
+// Raster pixels are already nearest-sampled at 581%, but the visual grid waits
+// until 1000% so it does not crowd a large document while pixels are still small.
+const rasterThresholdGridCanvas = { width: 800, height: 600, hidden: false };
+const rasterThresholdGridContext = new RecordingCanvasContext();
+renderCanvasGuides({
+  canvas: rasterThresholdGridCanvas,
+  context: rasterThresholdGridContext,
+  view: view({ zoom: 5.81 }),
+  documentWidth: 4096,
+  documentHeight: 4096,
+  preferences: pixelGridPreferences,
+});
+assert.equal(rasterThresholdGridCanvas.hidden, true);
+assert.equal(rasterThresholdGridContext.strokeCount, 0);
+
 const belowPixelGridCanvas = { width: 800, height: 600, hidden: false };
 const belowPixelGridContext = new RecordingCanvasContext();
 renderCanvasGuides({
   canvas: belowPixelGridCanvas,
   context: belowPixelGridContext,
-  view: view({ zoom: 5.8099 }),
-  documentWidth: 8,
-  documentHeight: 6,
+  view: view({ zoom: 9.9999 }),
+  documentWidth: 4096,
+  documentHeight: 4096,
   preferences: pixelGridPreferences,
 });
 assert.equal(belowPixelGridCanvas.hidden, true);
@@ -719,7 +745,7 @@ const exactPixelGridView = view({
   cssHeight: 80,
   centerX: 4,
   centerY: 3,
-  zoom: 5.81,
+  zoom: 10,
   rotationRadians: Math.PI / 8,
 });
 const exactPixelGridCanvas = { width: 1, height: 1, hidden: true };
@@ -775,7 +801,7 @@ renderCanvasGuides({
     cssHeight: 1000,
     centerX: 500_000_000,
     centerY: 500_000_000,
-    zoom: 5.81,
+    zoom: 10,
   }),
   documentWidth: 1_000_000_000,
   documentHeight: 1_000_000_000,
@@ -783,7 +809,7 @@ renderCanvasGuides({
 });
 assert.equal(cappedPixelGridCanvas.hidden, false);
 assert.equal(cappedPixelGridContext.strokeCount, 0, "oversized pixel grids must be skipped");
-assert.match(rendererSource, /preferences\.pixelGrid\s*&&\s*rasterPixelViewEnabled\(view\.zoom\)/);
+assert.match(rendererSource, /preferences\.pixelGrid\s*&&\s*pixelGridVisibleAtZoom\(view\.zoom\)/);
 assert.match(rendererSource, /const MAX_PIXEL_GRID_LINES_PER_AXIS = 4096/);
 
 // Even an adversarial billion-CSS-pixel viewport is capped to 512 lines/axis.

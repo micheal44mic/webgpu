@@ -1,5 +1,4 @@
 import type { EditorGuidePreferences } from "./editor-settings-storage";
-import { rasterPixelViewEnabled } from "./raster-pixel-view";
 import {
   sceneLayerToCanvas,
   type ScenePoint,
@@ -9,9 +8,15 @@ import type { VectorTextViewState } from "./vector-text-types";
 
 const MAX_GRID_LINES_PER_AXIS = 512;
 const MAX_PIXEL_GRID_LINES_PER_AXIS = 4096;
+export const PIXEL_GRID_PERCENT_THRESHOLD = 1000 as const;
+export const PIXEL_GRID_ZOOM_THRESHOLD = PIXEL_GRID_PERCENT_THRESHOLD / 100;
 const GRID_TARGET_SPACING_CSS_PX = 56;
 const RULER_TARGET_SPACING_CSS_PX = 64;
 const RULER_SIZE_CSS_PX = 26;
+
+export function pixelGridVisibleAtZoom(zoom: number): boolean {
+  return Number.isFinite(zoom) && zoom >= PIXEL_GRID_ZOOM_THRESHOLD;
+}
 
 function niceStepAtLeast(value: number): number {
   if (!Number.isFinite(value) || value <= 0) return 1;
@@ -416,7 +421,7 @@ export function renderCanvasGuides(options: Readonly<RenderCanvasGuidesOptions>)
   const { canvas, context, view, preferences } = options;
   const smartGuides = options.smartGuides ?? [];
   const symmetryEnabled = preferences.symmetryEnabled;
-  const pixelGridVisible = preferences.pixelGrid && rasterPixelViewEnabled(view.zoom);
+  const pixelGridVisible = preferences.pixelGrid && pixelGridVisibleAtZoom(view.zoom);
   const visible = preferences.rulers
     || preferences.grid
     || pixelGridVisible

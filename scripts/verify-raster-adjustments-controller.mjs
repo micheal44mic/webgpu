@@ -703,7 +703,7 @@ const configuredTools = [];
 let beforeOpenCount = 0;
 let historyRefreshes = 0;
 let thumbnails = 0;
-const controllerOptions = {
+const controller = new RasterAdjustmentsController({
   engine,
   browser,
   elements,
@@ -747,8 +747,7 @@ const controllerOptions = {
   onSheetOpenChange: () => {},
   updateHistoryControls: () => { historyRefreshes += 1; },
   requestActiveThumbnail: () => { thumbnails += 1; },
-};
-const controller = new RasterAdjustmentsController(controllerOptions);
+});
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 const deferred = () => {
@@ -1566,36 +1565,6 @@ assert.equal(
   calls.filter(([name]) => name.startsWith("begin-")).length,
   beginCountAfterDispose,
 );
-
-const unsupportedController = new RasterAdjustmentsController({
-  ...controllerOptions,
-  isAdjustmentSupported: () => false,
-});
-unsupportedController.syncUi();
-for (const adjustment of [
-  elements.liquify,
-  elements.gaussianBlur,
-  elements.spatialBlur,
-  elements.motionBlur,
-  elements.noise,
-  elements.glass,
-  elements.curves,
-  elements.colorAdjust,
-  elements.colorBalance,
-  elements.gradientMap,
-]) {
-  assert.equal(adjustment.openButton.disabled, true);
-  assert.match(adjustment.openButton.title, /unavailable for this document format/);
-}
-const unsupportedBeginCount = calls.filter(([name]) => name.startsWith("begin-")).length;
-elements.gaussianBlur.openButton.dispatchEvent(event("click"));
-await settle();
-assert.equal(
-  calls.filter(([name]) => name.startsWith("begin-")).length,
-  unsupportedBeginCount,
-  "Unsupported adjustments must remain inert after a UI sync.",
-);
-unsupportedController.dispose();
 
 console.log(
   "Raster adjustments: mutual exclusion, preview, commit, cancel, recovery and disposal verified.",

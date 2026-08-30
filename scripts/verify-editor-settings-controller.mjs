@@ -126,6 +126,11 @@ assert.match(
   /pixelGridInput:\s*editorPixelGridEnabledInput/,
   "the persisted Pixel grid toggle must be wired into Settings",
 );
+assert.match(
+  html,
+  /id="editorPixelGridHint"[\s\S]{0,120}1000% zoom and above/,
+  "the Pixel grid hint must match its dedicated activation threshold",
+);
 
 const moduleServer = await createServer({
   appType: "custom",

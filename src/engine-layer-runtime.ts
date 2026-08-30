@@ -356,7 +356,6 @@ export async function recreateLayerResources(
   format: LayerFormat,
   options: RecreateLayerResourcesOptions = {},
 ): Promise<void> {
-  const formatDepthLabel = format === "rgba16float" ? "16-bit" : "8-bit";
   const documentPipelineCompilationScope =
     options.documentPipelineCompilationScope ?? "complete";
   if (
@@ -465,7 +464,7 @@ export async function recreateLayerResources(
     ? residentDocumentPrograms(engine)
     : await engine.runStartupPhase(
     "document-pipelines",
-    `Compiling ${formatDepthLabel} document pipelines`,
+    "Compiling 16-bit document pipelines",
     () => runGpuAllocationTransaction(
       engine.device,
       `Layer format pipeline ${format}`,
@@ -2001,7 +2000,7 @@ export async function recreateLayerResources(
     nextTransparentView = displayInfrastructure.transparentView;
     await engine.runStartupPhase(
       "document-layer-texture",
-      `Allocating the ${DOCUMENT_WIDTH}×${DOCUMENT_HEIGHT} ${formatDepthLabel} layer`,
+      `Allocating the ${DOCUMENT_WIDTH}×${DOCUMENT_HEIGHT} 16-bit layer`,
       async () => {
         for (const record of engine.layerStack.layers) {
           const gpu = record.id === engine.layerStack.active.id

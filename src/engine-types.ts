@@ -301,12 +301,6 @@ export interface EngineCallbacks {
 }
 
 export interface BrushEngineOptions {
-  /**
-   * Selects the authoritative document storage format before any GPU resource
-   * is created. Production omits this option and therefore remains RGBA16F;
-   * isolated comparison entries may explicitly request RGBA8.
-   */
-  initialLayerFormat?: LayerFormat;
   bevelBoundingFieldEnabled?: boolean;
   /**
    * Gives the browser a presentation turn after a startup phase is announced.
