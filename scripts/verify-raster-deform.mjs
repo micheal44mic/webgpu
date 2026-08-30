@@ -339,7 +339,7 @@ assert.deepEqual(
 
 assert.equal(
   RASTER_DEFORM_SHADER_STRATEGY,
-  "mesh-grid-perspective-correct-transparent-border-mip-v1",
+  "mesh-grid-perspective-correct-transparent-border-continuous-mip-v2",
 );
 assert.match(rasterDeformShader, /projectiveWeight/);
 assert.match(rasterDeformShader, /output\.position = vec4<f32>\(ndc \* safeWeight/);
@@ -347,6 +347,24 @@ assert.match(rasterDeformShader, /transform\.documentExtent/);
 assert.doesNotMatch(rasterDeformShader, /DOCUMENT_(?:WIDTH|HEIGHT)|engine-limits/);
 assert.match(rasterDeformShader, /dpdx\(input\.sourceUv\)/);
 assert.match(rasterDeformShader, /textureSampleLevel/);
+assert.match(rasterDeformShader, /transparentBorderWeight/);
+assert.match(rasterDeformShader, /let continuousLod = clamp\(/);
+assert.match(rasterDeformShader, /let lowerLevel = u32\(floor\(continuousLod\)\)/);
+assert.match(rasterDeformShader, /let upperLevel = min\(lowerLevel \+ 1u, maximumLevel\)/);
+assert.match(
+  rasterDeformShader,
+  /sampleTransparentLevel\(input\.sourceUv, lowerLevel\)/,
+);
+assert.match(
+  rasterDeformShader,
+  /sampleTransparentLevel\(input\.sourceUv, upperLevel\)/,
+);
+assert.match(rasterDeformShader, /let lodBlend = fract\(continuousLod\)/);
+assert.match(rasterDeformShader, /return mix\(lower, upper, lodBlend\)/);
+assert.doesNotMatch(
+  rasterDeformShader,
+  /preserveDarkCoverage|encodedCoverage|displayAlpha/,
+);
 assert.match(rasterDeformShader, /clearFragmentMain/);
 
 const runtime = readFileSync(

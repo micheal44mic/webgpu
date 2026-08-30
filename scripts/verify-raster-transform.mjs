@@ -47,7 +47,7 @@ assert.equal(
 );
 assert.equal(
   RASTER_TRANSFORM_SHADER_STRATEGY,
-  "gamma-box-mips-transparent-border-inverse-affine-discrete-oversampling-v4",
+  "gamma-box-mips-transparent-border-inverse-affine-continuous-lod-v5",
 );
 assert.equal(
   RASTER_SELECTION_TRANSLATE_SHADER_STRATEGY,
@@ -475,11 +475,35 @@ assert.match(rasterTransformShader, /transparentBorderWeight/);
 assert.match(rasterTransformShader, /textureNumLevels/);
 assert.doesNotMatch(rasterTransformShader, /if \(!insideContent/);
 assert.doesNotMatch(rasterTransformShader, /insideScratch/);
-assert.match(rasterTransformShader, /floor\(clamp\(/);
-assert.match(rasterTransformShader, /sampleTransparentLevel\(sourceUv, u32\(lod\)\)/);
-assert.doesNotMatch(rasterTransformShader, /lodBlend|upperLevel/);
-assert.match(rasterTransformShader, /encodedCoverage/);
+assert.match(rasterTransformShader, /let continuousLod = clamp\(/);
+assert.match(rasterTransformShader, /let lowerLevel = u32\(floor\(continuousLod\)\)/);
+assert.match(rasterTransformShader, /let upperLevel = min\(lowerLevel \+ 1u, maximumLevel\)/);
+assert.match(rasterTransformShader, /sampleTransparentLevel\(sourceUv, lowerLevel\)/);
+assert.match(rasterTransformShader, /sampleTransparentLevel\(sourceUv, upperLevel\)/);
+assert.match(rasterTransformShader, /let lodBlend = fract\(continuousLod\)/);
+assert.match(rasterTransformShader, /return mix\(lower, upper, lodBlend\)/);
+assert.doesNotMatch(
+  rasterTransformShader,
+  /preserveDarkCoverage|encodedCoverage|displayAlpha/,
+);
 assert.doesNotMatch(rasterTransformShader, /rgba8unorm|rgba16float/);
+
+const mipThresholdLevels = [0.42, 0.2, 0.09];
+const continuousAlphaAtScale = (scale) => {
+  const lod = Math.min(
+    mipThresholdLevels.length - 1,
+    Math.max(0, Math.log2(1 / scale)),
+  );
+  const lowerLevel = Math.floor(lod);
+  const upperLevel = Math.min(lowerLevel + 1, mipThresholdLevels.length - 1);
+  const blend = lod - lowerLevel;
+  return mipThresholdLevels[lowerLevel]
+    + (mipThresholdLevels[upperLevel] - mipThresholdLevels[lowerLevel]) * blend;
+};
+assert.ok(
+  Math.abs(continuousAlphaAtScale(0.5001) - continuousAlphaAtScale(0.5)) < 0.001,
+  "crossing the first mip threshold must not cause a discrete alpha jump",
+);
 
 assert.match(rasterTransformMipmapShader, /textureLoad\s*\(/);
 assert.match(rasterTransformMipmapShader, /accumulatedWeight/);

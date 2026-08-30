@@ -1,7 +1,7 @@
 /** Mesh shader shared by raster Warp and four-corner Perspective. */
 
 export const RASTER_DEFORM_SHADER_STRATEGY =
-  "mesh-grid-perspective-correct-transparent-border-mip-v1" as const;
+  "mesh-grid-perspective-correct-transparent-border-continuous-mip-v2" as const;
 
 export const rasterDeformShader = /* wgsl */ `
 struct RasterTransformUniforms {
@@ -29,32 +29,6 @@ struct FullscreenVertexOutput {
 @group(0) @binding(0) var<uniform> transform: RasterTransformUniforms;
 @group(0) @binding(1) var sourceTexture: texture_2d<f32>;
 @group(0) @binding(2) var sourceSampler: sampler;
-
-fn srgbToLinearChannel(value: f32) -> f32 {
-  if (value <= 0.04045) { return value / 12.92; }
-  return pow((value + 0.055) / 1.055, 2.4);
-}
-
-fn linearToSrgbChannel(value: f32) -> f32 {
-  let clamped = clamp(value, 0.0, 1.0);
-  if (clamped <= 0.0031308) { return clamped * 12.92; }
-  return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
-}
-
-fn preserveDarkCoverage(value: vec4<f32>, lod: f32) -> vec4<f32> {
-  let alpha = clamp(value.a, 0.0, 1.0);
-  if (alpha <= 0.000001 || alpha >= 0.999999 || lod < 1.0) { return value; }
-  let straightLinear = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
-  let straightSrgb = vec3<f32>(
-    linearToSrgbChannel(straightLinear.r),
-    linearToSrgbChannel(straightLinear.g),
-    linearToSrgbChannel(straightLinear.b)
-  );
-  let darkness = 1.0 - dot(straightSrgb, vec3<f32>(0.2126, 0.7152, 0.0722));
-  let encodedCoverage = 1.0 - srgbToLinearChannel(1.0 - alpha);
-  let displayAlpha = mix(alpha, encodedCoverage, clamp(darkness, 0.0, 1.0));
-  return vec4<f32>(straightLinear * displayAlpha, displayAlpha);
-}
 
 fn transparentBorderWeight(uv: vec2<f32>, mipLevel: u32) -> f32 {
   let dimensions = vec2<f32>(textureDimensions(sourceTexture, mipLevel));
@@ -97,11 +71,20 @@ fn deformFragmentMain(input: DeformVertexOutput) -> @location(0) vec4<f32> {
   let uvDy = dpdy(input.sourceUv);
   let footprint = max(length(uvDx * dimensions), length(uvDy * dimensions));
   let maximumLevel = textureNumLevels(sourceTexture) - 1u;
-  let lod = floor(clamp(log2(max(footprint, 1.0)), 0.0, f32(maximumLevel)));
-  return preserveDarkCoverage(
-    sampleTransparentLevel(input.sourceUv, u32(lod)),
-    lod
+  let continuousLod = clamp(
+    log2(max(footprint, 1.0)),
+    0.0,
+    f32(maximumLevel)
   );
+  let lowerLevel = u32(floor(continuousLod));
+  let upperLevel = min(lowerLevel + 1u, maximumLevel);
+  let lower = sampleTransparentLevel(input.sourceUv, lowerLevel);
+  if (upperLevel == lowerLevel) { return lower; }
+  let upper = sampleTransparentLevel(input.sourceUv, upperLevel);
+  let lodBlend = fract(continuousLod);
+  // Keep the complete linear-premultiplied sample continuous across mip
+  // boundaries. Coverage is geometry, not a function of source luminance.
+  return mix(lower, upper, lodBlend);
 }
 
 @vertex

@@ -237,8 +237,20 @@ controller.setSourcePreparing(true);
 assert.equal(status.textContent, "Preparing the raster source…");
 assert.equal(setSourceButton.disabled, false,
   "source controls must remain usable while the immutable raster source is prepared");
+assert.equal(currentBelowButton.disabled, false);
+assert.equal(alignedButton.disabled, false);
+assert.equal(angleInput.disabled, false);
 assert.equal(overlay.hidden, false, "the source marker must stay visible during preparation");
 assert.equal(previewCanvas.hidden, true, "an invalidated source preview must hide immediately");
+action = controller.beginPointer({
+  pointerId: 8,
+  pointerType: "pen",
+  clientX: 300,
+  clientY: 300,
+});
+assert.equal(action.kind, "preparing",
+  "preparation must block only Clone stroke creation without opening a gesture");
+assert.equal(controller.snapshot().gesture, null);
 controller.setSourcePreparing(false);
 assert.match(status.textContent, /Current & Below/);
 

@@ -4579,6 +4579,9 @@ export class BrushEngine {
     if (!this.initialized) return;
     await Promise.all([
       this.ensureCurrentBrushResources(),
+      // Clone always presents its live stroke through the deferred-tail surface,
+      // even when the selected brush has neutral thickness dynamics.
+      ensureThicknessTailPresentationPipeline(this),
       warmClonePipelines(this),
       warmCloneSamplePreview(this),
       prepareCloneSourceSnapshot(this, sampleMode),
@@ -4604,6 +4607,7 @@ export class BrushEngine {
     const settings = cloneSettingsForCurrentBrush(this.settings);
     return this.cloneRendererResources === null
       || this.cloneRendererPromise !== null
+      || !this.thicknessTailPresentationPipelineReady
       || !this.brushDependenciesReady(settings)
       || isPreparedCloneSourcePending(this, sampleMode);
   }
@@ -4614,6 +4618,7 @@ export class BrushEngine {
   ): boolean {
     if (
       !this.cloneRendererResources
+      || !this.thicknessTailPresentationPipelineReady
       || !this.brushDependenciesReady(cloneSettingsForCurrentBrush(this.settings))
       || !isPreparedCloneSourceReady(this, configuration.sampleMode)
     ) {
@@ -17175,6 +17180,19 @@ export class BrushEngine {
             );
           }
         } else {
+          const presentationPipeline =
+            rasterStrokeActive
+              ? this.rasterStrokeDisplayPipeline
+              : thicknessTailFrame
+                ? this.thicknessTailDisplayPipeline
+                : useVectorTextDisplay
+                  ? vectorTextDisplayPipeline!
+                  : useFinalRasterStackMip
+                    ? this.finalRasterStackDisplayPipeline
+                    : this.displayPipeline;
+          if (!presentationPipeline) {
+            throw new Error("The deferred stroke presentation pipeline is not ready.");
+          }
           const displayPass = encoder.beginRenderPass({
             label: requiresFullRebuild
               ? "Rebuild persistent presentation cache"
@@ -17188,17 +17206,7 @@ export class BrushEngine {
               },
             ],
           });
-          displayPass.setPipeline(
-            rasterStrokeActive
-              ? this.rasterStrokeDisplayPipeline
-              : thicknessTailFrame
-                ? this.thicknessTailDisplayPipeline
-                : useVectorTextDisplay
-                  ? vectorTextDisplayPipeline!
-                  : useFinalRasterStackMip
-                    ? this.finalRasterStackDisplayPipeline
-                    : this.displayPipeline,
-          );
+          displayPass.setPipeline(presentationPipeline);
           if (rasterStrokeActive) {
             displayPass.setBindGroup(0, this.rasterStrokeDisplayScreenBindGroup);
             displayPass.setBindGroup(

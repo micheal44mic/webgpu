@@ -531,6 +531,117 @@ export function sampleRasterWarpSurface(
   return rasterWarpSurfaceSampler(points, size, handles)(u, v);
 }
 
+export type RasterDeformTopologyOrientation = -1 | 0 | 1;
+
+function rasterDeformSignedDoubleArea(
+  first: Readonly<RasterTransformControlPoint>,
+  second: Readonly<RasterTransformControlPoint>,
+  third: Readonly<RasterTransformControlPoint>,
+): number {
+  return (second.x - first.x) * (third.y - first.y)
+    - (second.y - first.y) * (third.x - first.x);
+}
+
+function rasterDeformAreaTolerance(
+  points: readonly Readonly<RasterTransformControlPoint>[],
+): number {
+  let minimumX = Number.POSITIVE_INFINITY;
+  let minimumY = Number.POSITIVE_INFINITY;
+  let maximumX = Number.NEGATIVE_INFINITY;
+  let maximumY = Number.NEGATIVE_INFINITY;
+  for (const point of points) {
+    minimumX = Math.min(minimumX, point.x);
+    minimumY = Math.min(minimumY, point.y);
+    maximumX = Math.max(maximumX, point.x);
+    maximumY = Math.max(maximumY, point.y);
+  }
+  const extent = Math.max(1, maximumX - minimumX, maximumY - minimumY);
+  return extent * extent * Number.EPSILON * 64;
+}
+
+function rasterDeformTriangleOrientation(
+  first: Readonly<RasterTransformControlPoint>,
+  second: Readonly<RasterTransformControlPoint>,
+  third: Readonly<RasterTransformControlPoint>,
+  tolerance: number,
+): RasterDeformTopologyOrientation {
+  const area = rasterDeformSignedDoubleArea(first, second, third);
+  if (!Number.isFinite(area) || Math.abs(area) <= tolerance) return 0;
+  return area > 0 ? 1 : -1;
+}
+
+/**
+ * Returns one consistent winding for a renderable deformation, or zero when
+ * its rendered triangles collapse, fold over, or disagree in orientation.
+ */
+export function rasterDeformTopologyOrientation(
+  points: readonly Readonly<RasterTransformControlPoint>[],
+  mode: Exclude<RasterTransformMode, "affine">,
+  warpGridSize: RasterWarpGridSize,
+  bezierHandles?: readonly Readonly<RasterTransformControlPoint>[] | null,
+): RasterDeformTopologyOrientation {
+  const normalized = normalizeRasterDeformPoints(points, mode, warpGridSize);
+  if (mode === "perspective") {
+    const perimeter = [normalized[0], normalized[1], normalized[3], normalized[2]];
+    const tolerance = rasterDeformAreaTolerance(perimeter);
+    let orientation: RasterDeformTopologyOrientation = 0;
+    for (let index = 0; index < perimeter.length; index += 1) {
+      const next = (index + 1) % perimeter.length;
+      const afterNext = (index + 2) % perimeter.length;
+      const cornerOrientation = rasterDeformTriangleOrientation(
+        perimeter[index],
+        perimeter[next],
+        perimeter[afterNext],
+        tolerance,
+      );
+      if (cornerOrientation === 0) return 0;
+      if (orientation === 0) orientation = cornerOrientation;
+      else if (cornerOrientation !== orientation) return 0;
+    }
+    return orientation;
+  }
+
+  const size = rasterDeformGridSize(mode, warpGridSize);
+  const handles = normalizeRasterWarpBezierHandles(bezierHandles, normalized, size);
+  const tolerance = rasterDeformAreaTolerance([...normalized, ...handles]);
+  const cells = (size - 1) * RASTER_WARP_RENDER_SUBDIVISIONS;
+  const sample = rasterWarpSurfaceSampler(normalized, size, handles);
+  let previousRow = Array.from(
+    { length: cells + 1 },
+    (_, column) => sample(column / cells, 0),
+  );
+  let orientation: RasterDeformTopologyOrientation = 0;
+  for (let row = 1; row <= cells; row += 1) {
+    const currentRow = Array.from(
+      { length: cells + 1 },
+      (_, column) => sample(column / cells, row / cells),
+    );
+    for (let column = 0; column < cells; column += 1) {
+      const topLeft = previousRow[column];
+      const topRight = previousRow[column + 1];
+      const bottomLeft = currentRow[column];
+      const bottomRight = currentRow[column + 1];
+      const firstOrientation = rasterDeformTriangleOrientation(
+        topLeft,
+        topRight,
+        bottomRight,
+        tolerance,
+      );
+      const secondOrientation = rasterDeformTriangleOrientation(
+        topLeft,
+        bottomRight,
+        bottomLeft,
+        tolerance,
+      );
+      if (firstOrientation === 0 || secondOrientation === 0) return 0;
+      if (orientation === 0) orientation = firstOrientation;
+      if (firstOrientation !== orientation || secondOrientation !== orientation) return 0;
+    }
+    previousRow = currentRow;
+  }
+  return orientation;
+}
+
 /** Finds the surface coordinate beneath a layer-space gesture anchor. */
 export function rasterWarpClosestSurfaceParameter(
   points: readonly Readonly<RasterTransformControlPoint>[],
@@ -763,6 +874,11 @@ export function rasterPerspectiveWeights(
   points: readonly Readonly<RasterTransformControlPoint>[],
 ): readonly [number, number, number, number] {
   if (points.length !== 4) throw new Error("Perspective requires four corners.");
+  if (rasterDeformTopologyOrientation(points, "perspective", 3) === 0) {
+    throw new Error(
+      "Perspective corners must form a simple, non-degenerate quadrilateral.",
+    );
+  }
   const topLeft = finitePoint(points[0], "Top-left corner");
   const topRight = finitePoint(points[1], "Top-right corner");
   const bottomLeft = finitePoint(points[2], "Bottom-left corner");

@@ -94,7 +94,7 @@
     "mixed-scene-reset:verify": "node scripts/verify-mixed-scene-document-reset.mjs",
     "image:verify": "node scripts/verify-raster-image.mjs",
     "transform:verify": "node scripts/verify-raster-transform.mjs",
-    "deform:verify": "node scripts/verify-raster-deform.mjs",
+    "deform:verify": "node scripts/verify-raster-deform.mjs && node scripts/verify-raster-deform-topology.mjs",
     "gaussian-blur:verify": "node scripts/verify-gaussian-blur.mjs",
     "spatial-blur:verify": "node scripts/verify-spatial-blur.mjs",
     "glass:verify": "node scripts/verify-glass.mjs",

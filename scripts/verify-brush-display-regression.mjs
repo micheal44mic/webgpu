@@ -5,6 +5,8 @@ const readSource = (path) => readFileSync(new URL(path, import.meta.url), "utf8"
 const shaders = readSource("../src/shaders.ts");
 const merged = readSource("../src/merged-surface-shader.ts");
 const stroke = readSource("../src/stroke-renderer.ts");
+const rasterTransform = readSource("../src/raster-transform-shader.ts");
+const rasterDeform = readSource("../src/raster-deform-shader.ts");
 const engine = readSource("../src/brush-engine.ts");
 const resources = readSource("../src/engine-resource-setup.ts");
 const layerRuntime = readSource("../src/engine-layer-runtime.ts");
@@ -27,18 +29,35 @@ const permanentDisplay = shaders.slice(displayStart, tailStart);
 const liveTailDisplay = shaders.slice(tailStart, glazeStart);
 const mipDownsample = shaders.slice(mipStart, nextShader);
 const forbiddenCoverageRewrite =
-  /preserve(?:Minified|Merged|Styled)DarkCoverage|encodedCoverage|displayAlpha/;
+  /preserve(?:Minified|Merged|Styled)?DarkCoverage|encodedCoverage|displayAlpha/;
 
 for (const [label, source] of [
   ["permanent display", permanentDisplay],
   ["live thickness-tail display", liveTailDisplay],
   ["merged surfaces", merged],
   ["styled raster display", stroke],
+  ["raster Transform", rasterTransform],
+  ["raster Warp and Perspective", rasterDeform],
 ]) {
   assert.doesNotMatch(
     source,
     forbiddenCoverageRewrite,
     `${label} must not inflate low-alpha brush-shape texels after sampling`,
+  );
+}
+
+for (const [label, source] of [
+  ["raster Transform", rasterTransform],
+  ["raster Warp and Perspective", rasterDeform],
+]) {
+  assert.match(source, /transparentBorderWeight/);
+  assert.match(source, /let lowerLevel = u32\(floor\(continuousLod\)\)/);
+  assert.match(source, /let upperLevel = min\(lowerLevel \+ 1u, maximumLevel\)/);
+  assert.match(source, /let lodBlend = fract\(continuousLod\)/);
+  assert.match(
+    source,
+    /return mix\(lower, upper, lodBlend\)/,
+    `${label} must interpolate complete premultiplied RGBA across mip thresholds`,
   );
 }
 

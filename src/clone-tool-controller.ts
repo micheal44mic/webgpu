@@ -79,6 +79,7 @@ export interface CloneToolControllerOptions {
 export type CloneToolPointerAction =
   | { readonly kind: "ignored" }
   | { readonly kind: "needs-source" }
+  | { readonly kind: "preparing" }
   | {
       readonly kind: "source-pick-begin" | "source-drag-begin" | "source-preview";
       readonly sourcePoint: ClonePoint;
@@ -267,6 +268,10 @@ export class CloneToolController {
     if (!this.state.sourcePoint) {
       this.setStatus("Choose SET SOURCE, then tap the canvas.");
       return { kind: "needs-source" };
+    }
+    if (this.sourcePreparing) {
+      this.setStatus("Preparing the raster source…");
+      return { kind: "preparing" };
     }
 
     this.state = cloneBeginStroke(this.state, documentPoint);
@@ -491,6 +496,7 @@ export class CloneToolController {
     const gestureKind = this.state.gesture?.kind;
     if (gestureKind === "source-pick") return "Release to set the raster source point.";
     if (gestureKind === "source-drag") return "Release to move the raster source point.";
+    if (gestureKind === "clone-stroke") return "Cloning the raster source…";
     if (this.state.sourcePickArmed) return "Tap the canvas to choose a raster source point.";
     if (!this.state.sourcePoint) return "Choose SET SOURCE, then tap the canvas.";
     if (this.sourcePreparing) return "Preparing the raster source…";

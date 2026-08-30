@@ -9,7 +9,7 @@
  */
 
 export const RASTER_IMAGE_LAYER_IMPORT_STRATEGY =
-  "decoded-rgba8-srgb-to-gamma-premultiplied-rgba16float-exact-npot-mips-immutable-master-v4" as const;
+  "decoded-rgba8-srgb-to-gamma-premultiplied-rgba16float-exact-npot-mips-immutable-master-continuous-lod-v5" as const;
 
 export const rasterImageLayerUploadShader = /* wgsl */ `
 struct VertexOutput {
@@ -142,27 +142,14 @@ fn sourceLod(uvDx: vec2<f32>, uvDy: vec2<f32>) -> f32 {
   );
 }
 
-fn decodedSource(sampled: vec4<f32>, lod: f32) -> vec4<f32> {
+fn decodedSource(sampled: vec4<f32>) -> vec4<f32> {
   let alpha = clamp(sampled.a, 0.0, 1.0);
   if (alpha <= 0.000001) {
     return vec4<f32>(0.0);
   }
   let straightSrgb = clamp(sampled.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
   let straightLinear = srgbToLinear(straightSrgb);
-
-  // An sRGB compositor makes a 50/50 black/transparent footprint read as 127,
-  // while a linear compositor would make it read as 188 over white. Encode the
-  // equivalent display coverage only for dark, minified texels. Alpha 0 and 1
-  // are fixed points and mip 0 keeps the exact imported transparency.
-  let encodedCoverage = 1.0 - srgbToLinearChannel(1.0 - alpha);
-  let darkness = 1.0 - dot(straightSrgb, vec3<f32>(0.2126, 0.7152, 0.0722));
-  let minified = clamp(lod, 0.0, 1.0);
-  let displayAlpha = mix(
-    alpha,
-    encodedCoverage,
-    clamp(darkness, 0.0, 1.0) * minified
-  );
-  return vec4<f32>(straightLinear * displayAlpha, displayAlpha);
+  return vec4<f32>(straightLinear * alpha, alpha);
 }
 
 @vertex
@@ -190,20 +177,18 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-  // One discrete level keeps roughly 1–2 source texels per destination pixel.
-  // Every level was derived directly through exact 2× area steps in gamma
-  // space; there is no single-pass >2:1 drawImage-style loss of one-pixel ink.
+  // The sampler blends adjacent exact-area source levels at the fractional
+  // footprint, avoiding a visible density step at mip boundaries.
   let uvDx = dpdx(input.uv);
   let uvDy = dpdy(input.uv);
   let continuousLod = sourceLod(uvDx, uvDy);
-  let lod = floor(continuousLod);
   let sampled = textureSampleLevel(
     sourceTexture,
     sourceSampler,
     input.uv,
-    lod
+    continuousLod
   );
-  return decodedSource(sampled, continuousLod);
+  return decodedSource(sampled);
 }
 `;
 
@@ -288,25 +273,25 @@ fn sourceLod(uvDx: vec2<f32>, uvDy: vec2<f32>) -> f32 {
   );
 }
 
-@fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-  let continuousLod = sourceLod(dpdx(input.uv), dpdy(input.uv));
-  let lod = floor(continuousLod);
-  let sampled = textureSampleLevel(sourceTexture, sourceSampler, input.uv, lod);
+fn decodedSource(sampled: vec4<f32>) -> vec4<f32> {
   let alpha = clamp(sampled.a, 0.0, 1.0);
   if (alpha <= 0.000001) {
     return vec4<f32>(0.0);
   }
   let straightSrgb = clamp(sampled.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
   let straightLinear = srgbToLinear(straightSrgb);
-  let encodedCoverage = 1.0 - srgbToLinearChannel(1.0 - alpha);
-  let darkness = 1.0 - dot(straightSrgb, vec3<f32>(0.2126, 0.7152, 0.0722));
-  let minified = clamp(continuousLod, 0.0, 1.0);
-  let displayAlpha = mix(
-    alpha,
-    encodedCoverage,
-    clamp(darkness, 0.0, 1.0) * minified
+  return vec4<f32>(straightLinear * alpha, alpha);
+}
+
+@fragment
+fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  let continuousLod = sourceLod(dpdx(input.uv), dpdy(input.uv));
+  let sampled = textureSampleLevel(
+    sourceTexture,
+    sourceSampler,
+    input.uv,
+    continuousLod
   );
-  return vec4<f32>(straightLinear * displayAlpha, displayAlpha);
+  return decodedSource(sampled);
 }
 `;

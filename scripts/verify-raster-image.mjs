@@ -10,6 +10,7 @@ import {
 import {
   RASTER_IMAGE_LAYER_IMPORT_STRATEGY,
   rasterImageLayerBlitShader,
+  rasterImageLayerRebuildShader,
 } from "../src/raster-image-layer-import-shader.ts";
 import {
   planRasterImageMemory,
@@ -137,7 +138,7 @@ assert.equal(
 );
 assert.equal(
   RASTER_IMAGE_LAYER_IMPORT_STRATEGY,
-  "decoded-rgba8-srgb-to-gamma-premultiplied-rgba16float-exact-npot-mips-immutable-master-v4",
+  "decoded-rgba8-srgb-to-gamma-premultiplied-rgba16float-exact-npot-mips-immutable-master-continuous-lod-v5",
 );
 assert.equal(RASTER_IMAGE_DECODED_BYTES_PER_PIXEL, 4);
 assert.equal(RASTER_IMAGE_LINEAR_BYTES_PER_PIXEL, 8);
@@ -401,12 +402,26 @@ assert.match(engineSource, /sweepRasterImageGpuResources\(\): number/);
 assert.doesNotMatch(runtimeSource, /CanvasRenderingContext2D|getContext\("2d"\)|drawImage\(/);
 assert.doesNotMatch(runtimeSource, /addImageAboveSelection\(/);
 assert.match(shaderSource, /textureSampleLevel\(/);
-assert.match(shaderSource, /let continuousLod = sourceLod/);
-assert.match(shaderSource, /let lod = floor\(continuousLod\)/);
-assert.match(shaderSource, /let minified = clamp\(continuousLod, 0\.0, 1\.0\)/);
+for (const [label, samplingShader] of [
+  ["preview", rasterImageLayerBlitShader],
+  ["rebuild", rasterImageLayerRebuildShader],
+]) {
+  assert.match(samplingShader, /let continuousLod = sourceLod/);
+  assert.doesNotMatch(samplingShader, /let lod = floor\(continuousLod\)/);
+  assert.match(
+    samplingShader,
+    /textureSampleLevel\([\s\S]{0,160}continuousLod[\s\S]{0,80}return decodedSource\(sampled\)/,
+    `${label} must sample the same fractional mip footprint`,
+  );
+  assert.match(samplingShader, /return vec4<f32>\(straightLinear \* alpha, alpha\)/);
+  assert.doesNotMatch(
+    samplingShader,
+    /preserveDarkCoverage|encodedCoverage|displayAlpha/,
+    `${label} must preserve sampled premultiplied alpha`,
+  );
+}
 assert.match(shaderSource, /fragmentPremultiplyMain/);
 assert.match(shaderSource, /linearToSrgb\(straightLinear\.rgb\) \* straightLinear\.a/);
-assert.match(shaderSource, /encodedCoverage = 1\.0 - srgbToLinearChannel\(1\.0 - alpha\)/);
 assert.match(shaderSource, /alpha <= 0\.000001/);
 assert.match(shaderSource, /texelOverlap/);
 assert.match(shaderSource, /for \(var y = 0; y < 3/);
@@ -415,6 +430,11 @@ assert.match(runtimeSource, /record\.rasterSource = initialRasterLayerSource\(do
 assert.match(runtimeSource, /createRasterImageGpuResource\(/);
 assert.match(runtimeSource, /rebuildRasterLayerFromImmutableSource/);
 assert.match(runtimeSource, /rasterImageMipLevelCount\(width, height\)/);
+assert.match(
+  runtimeSource,
+  /mipmapFilter: "linear"/,
+  "fractional image-source LOD requires interpolation between mip levels",
+);
 assert.doesNotMatch(
   displayShaderSource,
   /preserveMinifiedDarkCoverage|preserveMergedDarkCoverage|preserveStyledDarkCoverage/,

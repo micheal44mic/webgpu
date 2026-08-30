@@ -159,12 +159,15 @@ const settings = cloneSettingsForCurrentBrush({
   size: 72,
   opacity: 0.45,
   flow: 0.61,
+  endThickness: 1,
 });
 assert.equal(settings.tool, "paint");
 assert.equal(settings.blendMode, "normal");
 assert.equal(settings.size, 72);
 assert.equal(settings.opacity, 0.45);
 assert.equal(settings.flow, 0.61);
+assert.equal(settings.endThickness, 1,
+  "Clone's neutral default thickness must remain covered by its mandatory deferred preview");
 
 const stampBytes = 32;
 const sourceByteOffset = cloneHistorySourceOffset(stampBytes);
@@ -266,6 +269,32 @@ assert.match(shaderSource, /sampleCloneSource\(documentPosition\) \* amount/);
 assert.match(engineSource, /beginCloneStroke\([\s\S]*?beginStrokeAtLayer\(point, true, configuration\)/);
 assert.match(engineSource, /await ensureCloneSourceForStamps/);
 assert.match(engineSource, /prepareCloneTool\([\s\S]*?warmCloneSamplePreview[\s\S]*?prepareCloneSourceSnapshot/);
+const clonePreparationGate = engineSource.slice(
+  engineSource.indexOf("async prepareCloneTool("),
+  engineSource.indexOf("renderCloneToolPreview("),
+);
+assert.match(
+  clonePreparationGate,
+  /ensureThicknessTailPresentationPipeline\(this\)/,
+  "Clone's first deferred frame must compile its display pipeline even at endThickness=1",
+);
+const clonePendingGate = engineSource.slice(
+  engineSource.indexOf("isCloneReadinessPending("),
+  engineSource.indexOf("beginCloneStroke("),
+);
+assert.match(clonePendingGate, /!this\.thicknessTailPresentationPipelineReady/,
+  "Clone readiness must remain pending until deferred presentation is resident");
+const cloneBeginGate = engineSource.slice(
+  engineSource.indexOf("beginCloneStroke("),
+  engineSource.indexOf("extendCloneStroke("),
+);
+assert.match(cloneBeginGate, /!this\.thicknessTailPresentationPipelineReady/,
+  "Clone must reject a first stroke before deferred presentation is resident");
+assert.match(
+  engineSource,
+  /if \(!presentationPipeline\) \{[\s\S]*?deferred stroke presentation pipeline is not ready/,
+  "rendering must diagnose a missing pipeline before passing it to WebGPU",
+);
 assert.match(engineSource, /cloneHistorySource: null|cloneSource,/);
 assert.match(engineSource, /clonePlan \? CLONE_HISTORY_BUFFER_ALIGNMENT_BYTES : undefined/);
 assert.match(historySource, /cloneSource: CloneHistorySourcePayload \| null/);
@@ -284,6 +313,29 @@ assert.doesNotMatch(
 assert.match(mainSource, /new CloneToolController/);
 assert.match(mainSource, /getCloneController: \(\) => cloneToolController/);
 assert.match(mainSource, /prepareActiveCloneSource/);
+assert.match(mainSource, /prepareCloneSource: \(sampleMode\) => prepareActiveCloneSource\(sampleMode\)/,
+  "the central input owner must be able to restore a consumed or canceled Clone source");
+const canceledCloneCalls = [...inputSource.matchAll(/engine\.cancelCloneStroke\(\);/g)];
+assert.ok(canceledCloneCalls.length >= 3);
+for (const call of canceledCloneCalls) {
+  assert.match(
+    inputSource.slice(call.index, call.index + 220),
+    /prepareCloneSourceAfterCanceledStroke/,
+    "every canceled Clone stroke must immediately restart source preparation",
+  );
+}
+const cloneInputRoute = inputSource.slice(
+  inputSource.indexOf("if (cloneInput)"),
+  inputSource.indexOf("if (shapeInput"),
+);
+assert.match(cloneInputRoute, /cloneController\?\.setSourcePreparing\(true\)/,
+  "a consumed Clone snapshot must close the next-stroke gate immediately");
+const cloneHistoryRefresh = mainSource.slice(
+  mainSource.indexOf("onHistoryChange(state)"),
+  mainSource.indexOf("onViewChange("),
+);
+assert.match(cloneHistoryRefresh, /prepareActiveCloneSource/,
+  "a committed Clone stroke must rebuild its consumed source after History publishes");
 const cloneViewCallback = mainSource.slice(
   mainSource.indexOf("onViewChange()"),
   mainSource.indexOf("onPixelSelectionChange()"),

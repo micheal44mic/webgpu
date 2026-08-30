@@ -21,6 +21,7 @@ import type {
   CloneToolController,
   CloneToolPointerInput,
 } from "./clone-tool-controller";
+import type { CloneSampleMode } from "./clone-interaction-core";
 import type {
   ShapeToolController,
   ShapeToolPointerInput,
@@ -132,6 +133,7 @@ export type CanvasInputClonePort = Pick<
   | "endPointer"
   | "cancelPointerForNavigation"
   | "handleHover"
+  | "setSourcePreparing"
 >;
 
 export type CanvasInputShapePort = Pick<
@@ -189,6 +191,7 @@ export interface CanvasInputControllerOptions {
   ) => boolean;
   readonly viewOperationLocked: () => boolean;
   readonly isPaintReadinessPending: () => boolean;
+  readonly prepareCloneSource: (sampleMode: CloneSampleMode) => void;
   readonly isLiquifyEditActive: () => boolean;
   readonly isDestructivePreviewNavigationActive: () => boolean;
   readonly getSpatialBlurController?: () => CanvasInputSpatialBlurPort | null;
@@ -440,6 +443,14 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
   const publishHistoryState = (): void => {
     options.onHistoryState(engine.getHistoryState());
     options.updateHistoryControls();
+  };
+
+  const prepareCloneSourceAfterCanceledStroke = (
+    controller: CanvasInputClonePort | null,
+    sampleMode: CloneSampleMode,
+  ): void => {
+    controller?.setSourcePreparing(true);
+    options.prepareCloneSource(sampleMode);
   };
 
   const normalizedPressure = (event: PointerEvent): number => {
@@ -1045,8 +1056,12 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
         }
         options.getEditorExtension()?.cancelPaintRecording?.();
       } else if (pointerMode === "clone") {
-        const action = options.getCloneController?.()?.cancelPointerForNavigation();
-        if (action?.kind === "stroke-end") engine.cancelCloneStroke();
+        const controller = options.getCloneController?.() ?? null;
+        const action = controller?.cancelPointerForNavigation();
+        if (action?.kind === "stroke-end") {
+          engine.cancelCloneStroke();
+          prepareCloneSourceAfterCanceledStroke(controller, action.sampleMode);
+        }
       } else if (pointerMode === "shape") {
         options.getShapeController?.()?.cancelGesture();
       } else if (pointerMode === "liquify") {
@@ -1224,7 +1239,11 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
         cloneInput,
         event.altKey && event.button === 0,
       ) ?? { kind: "ignored" as const };
-      if (action.kind === "ignored" || action.kind === "needs-source") {
+      if (
+        action.kind === "ignored"
+        || action.kind === "needs-source"
+        || action.kind === "preparing"
+      ) {
         publishHistoryState();
         return;
       }
@@ -1247,9 +1266,11 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
         );
         if (!began) {
           cloneController?.cancelPointerForNavigation();
+          prepareCloneSourceAfterCanceledStroke(cloneController, action.sampleMode);
           publishHistoryState();
           return;
         }
+        cloneController?.setSourcePreparing(true);
       }
     }
     if (shapeInput && !shapeController?.beginPointer(shapeInput)) {
@@ -1666,10 +1687,15 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
               timeMs: event.timeStamp,
             }]);
             cloneFinalizationInFlight = true;
-            void engine.endCloneStroke(event.timeStamp).catch((error) => {
+            void engine.endCloneStroke(event.timeStamp).then((ended) => {
+              if (!ended) {
+                prepareCloneSourceAfterCanceledStroke(controller, action.sampleMode);
+              }
+            }, (error) => {
               const message = error instanceof Error ? error.message : String(error);
               status.textContent = `Clone could not finish: ${message}`;
               status.className = "status error";
+              prepareCloneSourceAfterCanceledStroke(controller, action.sampleMode);
             }).finally(() => {
               cloneFinalizationInFlight = false;
               if (disposed) return;
@@ -1679,6 +1705,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
             });
           } else {
             engine.cancelCloneStroke();
+            prepareCloneSourceAfterCanceledStroke(controller, action.sampleMode);
           }
         }
       } else if (pointerMode === "shape") {
@@ -1985,8 +2012,12 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     } else if (mode === "liquify") {
       engine.endRasterLiquifyStroke(false);
     } else if (mode === "clone") {
-      const action = options.getCloneController?.()?.cancelPointerForNavigation();
-      if (action?.kind === "stroke-end") engine.cancelCloneStroke();
+      const controller = options.getCloneController?.() ?? null;
+      const action = controller?.cancelPointerForNavigation();
+      if (action?.kind === "stroke-end") {
+        engine.cancelCloneStroke();
+        prepareCloneSourceAfterCanceledStroke(controller, action.sampleMode);
+      }
     } else if (mode === "shape") {
       options.getShapeController?.()?.cancelGesture();
     } else if (mode === "rotate" || mode === "touch-navigation") {

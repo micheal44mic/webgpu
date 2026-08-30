@@ -2611,6 +2611,7 @@ canvasInputController = new CanvasInputController({
   operationLocked,
   viewOperationLocked: canvasViewOperationLocked,
   isPaintReadinessPending: () => engine.isPaintReadinessPending(),
+  prepareCloneSource: (sampleMode) => prepareActiveCloneSource(sampleMode),
   isLiquifyEditActive: () =>
     rasterAdjustmentsController?.isLiquifyEditActive(historyState) === true,
   isDestructivePreviewNavigationActive: () =>

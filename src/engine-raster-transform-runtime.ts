@@ -48,6 +48,7 @@ import {
   rasterDeformInitialPoints,
   rasterDeformIsIdentity,
   rasterDeformRenderedBounds,
+  rasterDeformTopologyOrientation,
   rasterWarpDefaultBezierHandles,
   remapRasterWarpBezierHandles,
   resampleRasterDeformGrid,
@@ -55,9 +56,9 @@ import {
   RASTER_DEFORM_MAX_VERTEX_BYTES,
   RASTER_DEFORM_MAX_VERTICES,
   RASTER_DEFORM_VERTEX_FLOATS,
+  type RasterDeformTopologyOrientation,
   type RasterTransformControlPoint,
   type RasterTransformMode,
-  type RasterWarpBezierHandles,
   type RasterWarpGridSize,
 } from "./raster-deform-math";
 import {
@@ -145,6 +146,7 @@ export interface ActiveRasterTransformSession {
   gridSize: RasterWarpGridSize;
   controlPoints: RasterTransformControlPoint[];
   bezierHandles: RasterTransformControlPoint[];
+  deformOrientation: RasterDeformTopologyOrientation;
   deformVertexCount: number;
   resultBounds: DirtyRect | null;
   samplingBounds: DirtyRect | null;
@@ -985,6 +987,7 @@ export async function beginRasterLayerTransform(
           gridSize: 3,
           controlPoints: [],
           bezierHandles: [],
+          deformOrientation: 0,
           deformVertexCount: 0,
           resultBounds: { ...sourceBounds },
           samplingBounds: selectionScope
@@ -1140,8 +1143,8 @@ function transitionRasterTransformMode(
   session: ActiveRasterTransformSession,
   nextMode: RasterTransformMode,
   nextGridSize: RasterWarpGridSize,
-): void {
-  if (session.mode === nextMode && session.gridSize === nextGridSize) return;
+): boolean {
+  if (session.mode === nextMode && session.gridSize === nextGridSize) return true;
   requireModeProgramBundle(
     session.shared,
     nextMode === "affine" ? "affine" : "deform",
@@ -1152,8 +1155,9 @@ function transitionRasterTransformMode(
     session.gridSize = nextGridSize;
     session.controlPoints = [];
     session.bezierHandles = [];
+    session.deformOrientation = 0;
     session.deformVertexCount = 0;
-    return;
+    return true;
   }
   const previousMode = session.mode;
   const previousSize = previousMode === "affine"
@@ -1174,8 +1178,7 @@ function transitionRasterTransformMode(
       previousSize,
       nextSize,
     );
-  session.controlPoints = nextPoints;
-  session.bezierHandles = nextMode === "warp"
+  const nextHandles = nextMode === "warp"
     ? previousMode === "warp"
       ? [...remapRasterWarpBezierHandles(
         previousPoints,
@@ -1186,14 +1189,34 @@ function transitionRasterTransformMode(
       )]
       : [...rasterWarpDefaultBezierHandles(nextPoints, nextSize)]
     : [];
+  const nextOrientation = rasterDeformTopologyOrientation(
+    nextPoints,
+    nextMode,
+    nextGridSize,
+    nextHandles,
+  );
+  if (
+    nextOrientation === 0
+    || (
+      previousMode !== "affine"
+      && session.deformOrientation !== 0
+      && nextOrientation !== session.deformOrientation
+    )
+  ) {
+    return false;
+  }
+  session.controlPoints = nextPoints;
+  session.bezierHandles = nextHandles;
   session.mode = nextMode;
   session.gridSize = nextGridSize;
+  session.deformOrientation = nextOrientation;
   session.transform = normalizeRasterTransform({
     translationX: 0,
     translationY: 0,
     scale: 1,
     rotation: 0,
   });
+  return true;
 }
 
 type RasterTransformUpdate = Partial<Pick<
@@ -1241,7 +1264,9 @@ export function updateRasterLayerTransform(
       "Pixel Selection can only be moved, not scaled, rotated, or distorted.",
     );
   }
-  transitionRasterTransformMode(session, requestedMode, requestedGridSize);
+  if (!transitionRasterTransformMode(session, requestedMode, requestedGridSize)) {
+    throw new Error("The requested deformation mode would fold the raster surface.");
+  }
 
   if (session.mode === "affine") {
     if (update.bezierHandles !== undefined) {
@@ -1290,6 +1315,8 @@ export function updateRasterLayerTransform(
       throw new Error("Warp and Perspective are edited by dragging the control points.");
     }
     const previousPoints = session.controlPoints;
+    const previousHandles = session.bezierHandles;
+    const previousOrientation = session.deformOrientation;
     let nextPoints = previousPoints;
     if (update.controlPoints !== undefined) {
       nextPoints = normalizeRasterDeformPoints(
@@ -1305,9 +1332,10 @@ export function updateRasterLayerTransform(
         (update.y ?? center.y) - center.y,
       );
     }
+    let nextHandles: readonly RasterTransformControlPoint[] = previousHandles;
     if (session.mode === "warp") {
       const nextSize = rasterDeformGridSize(session.mode, session.gridSize);
-      const nextHandles: RasterWarpBezierHandles = update.bezierHandles !== undefined
+      nextHandles = update.bezierHandles !== undefined
         ? normalizeRasterWarpBezierHandles(
           update.bezierHandles,
           nextPoints,
@@ -1320,11 +1348,32 @@ export function updateRasterLayerTransform(
           nextSize,
           session.bezierHandles,
         );
-      session.bezierHandles = [...nextHandles];
     } else if (update.bezierHandles !== undefined) {
       throw new Error("Bézier handles are available only in Warp.");
     }
+    const isRigidTranslation = update.controlPoints === undefined
+      && update.bezierHandles === undefined;
+    // A rigid translation preserves every signed triangle area. Reuse the
+    // cached winding so keyboard and whole-surface moves avoid mesh sampling.
+    const nextOrientation = isRigidTranslation
+      ? previousOrientation
+      : rasterDeformTopologyOrientation(
+        nextPoints,
+        session.mode,
+        session.gridSize,
+        nextHandles,
+      );
+    if (
+      nextOrientation === 0
+      || (previousOrientation !== 0 && nextOrientation !== previousOrientation)
+    ) {
+      return transformSnapshot(session);
+    }
     session.controlPoints = nextPoints;
+    session.bezierHandles = session.mode === "warp"
+      ? nextHandles.map((handle) => ({ ...handle }))
+      : [];
+    session.deformOrientation = nextOrientation;
     session.resultBounds = rasterDeformRenderedBounds(
       session.controlPoints,
       DOCUMENT_WIDTH,
