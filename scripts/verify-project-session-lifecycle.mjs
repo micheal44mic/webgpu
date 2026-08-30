@@ -22,14 +22,14 @@ const VERSION = PROJECT_DOCUMENT_SCHEMA_VERSION;
 const WIDTH = 64;
 const HEIGHT = 64;
 
-function blankCapture(name) {
+function blankCapture(name, width = WIDTH, height = HEIGHT) {
   return {
     snapshot: {
       schemaVersion: VERSION,
       document: {
         schemaVersion: VERSION,
-        width: WIDTH,
-        height: HEIGHT,
+        width,
+        height,
         layerFormat: "rgba16float",
         tileGridSize: PROJECT_STORAGE_TILE_GRID_SIZE,
         colorSpace: "linear-premultiplied",
@@ -73,8 +73,8 @@ function blankCapture(name) {
       },
       view: {
         schemaVersion: VERSION,
-        centerX: WIDTH / 2,
-        centerY: HEIGHT / 2,
+        centerX: width / 2,
+        centerY: height / 2,
         zoom: 1,
         rotationRadians: 0,
       },
@@ -322,7 +322,11 @@ const engine = {
   resetDocumentForSwitch: async (target) => {
     order.push(`reset:${target.kind}`);
     historyCursor = 0;
-    currentCapture = blankCapture(target.name);
+    currentCapture = blankCapture(
+      target.name,
+      target.documentWidth,
+      target.documentHeight,
+    );
     controller.noteHistoryState({ cursor: 999, actionCount: 999 });
   },
   waitForDocumentFirstFrame: async () => {
@@ -505,16 +509,24 @@ assert.notEqual(newResult.targetProjectId, summaryB.id);
 assert.equal(saveCount, 2, "new target receives a verified durable head");
 assert.equal((await backingStorage.loadProject(newResult.targetProjectId)).summary.name, "Fresh Canvas");
 
-const incompatible = await controller.switchProject({
+const resized = await controller.switchProject({
   kind: "new",
   name: "Different size",
   documentWidth: WIDTH * 2,
   documentHeight: HEIGHT,
 });
-assert.equal(incompatible.status, "failed");
-assert.equal(incompatible.stage, "preload-target");
-assert.equal(incompatible.destructive, false);
-assert.equal(incompatible.fallback.action, "stay-current");
+assert.equal(resized.status, "committed");
+assert.equal(resized.targetKind, "new");
+assert.equal(
+  currentCapture.snapshot.document.width,
+  WIDTH * 2,
+  "a custom-width target becomes the active document without reloading",
+);
+assert.equal(
+  new URL(browser.location.href).searchParams.get("documentWidth"),
+  String(WIDTH * 2),
+  "the published route follows the new active width",
+);
 
 order.length = 0;
 failNextPreReset = true;
@@ -531,7 +543,7 @@ assert.ok(order.includes("pre-reset:existing"), "pre-reset callback was reached"
 assert.equal(order.includes("reset:existing"), false, "failed pre-reset never mutates the engine");
 assert.equal(
   new URL(browser.location.href).searchParams.get("project"),
-  newResult.targetProjectId,
+  resized.targetProjectId,
   "failed pre-reset leaves the current project identity intact",
 );
 
@@ -589,10 +601,10 @@ assert.equal(changedAfterFrameResult.status, "failed");
 assert.equal(changedAfterFrameResult.stage, "publish-target");
 assert.equal(changedAfterFrameResult.destructive, true);
 assert.equal(changedAfterFrameResult.fallback.action, "reload-source");
-assert.equal(changedAfterFrameResult.fallback.projectId, newResult.targetProjectId);
+assert.equal(changedAfterFrameResult.fallback.projectId, resized.targetProjectId);
 assert.equal(
   new URL(changedAfterFrameResult.fallback.url).searchParams.get("project"),
-  newResult.targetProjectId,
+  resized.targetProjectId,
   "fallback points to the verified source head",
 );
 assert.equal(

@@ -79,8 +79,8 @@ assert.match(
 );
 assert.match(
   limits,
-  /export const DOCUMENT_WIDTH = DOCUMENT_DIMENSIONS\[0\];[\s\S]*?export const DOCUMENT_HEIGHT = DOCUMENT_DIMENSIONS\[1\];/,
-  "Il contratto pubblico del documento deve esporre entrambi gli assi.",
+  /export let DOCUMENT_WIDTH = DOCUMENT_DIMENSIONS\[0\];[\s\S]*?export let DOCUMENT_HEIGHT = DOCUMENT_DIMENSIONS\[1\];/,
+  "Il contratto pubblico del documento deve esporre entrambi gli assi come binding riconfigurabili.",
 );
 assert.doesNotMatch(
   limits,

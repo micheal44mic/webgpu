@@ -323,6 +323,10 @@ assert.ok(
   "premultiply target, mip target and linear mip texture must be RGBA16F",
 );
 assert.doesNotMatch(shaderSource, /pack4x8unorm|unpack4x8unorm/);
+assert.match(shaderSource, /sourceTransform\.documentExtent/);
+assert.doesNotMatch(shaderSource, /DOCUMENT_(?:WIDTH|HEIGHT)|engine-limits/);
+assert.match(runtimeSource, /upload\[6\] = Math\.fround\(engine\.documentWidth\)/);
+assert.match(runtimeSource, /upload\[7\] = Math\.fround\(engine\.documentHeight\)/);
 assert.match(runtimeSource, /GPUTextureUsage\.RENDER_ATTACHMENT/);
 assert.match(runtimeSource, /allocateLayerGpuResources\(/);
 assert.match(runtimeSource, /createLayerColdStorageCandidate\(/);

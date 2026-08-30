@@ -87,9 +87,13 @@ export class GpuMemoryPanelController {
   private statsDirty = false;
   private previousTotalMiB: number | null = null;
   private deltaTimer: number | null = null;
+  private documentWidth: number;
+  private documentHeight: number;
 
   constructor(options: GpuMemoryPanelControllerOptions) {
     this.options = options;
+    this.documentWidth = options.documentWidth;
+    this.documentHeight = options.documentHeight;
     this.abortController = new options.browser.AbortController();
     this.panel = this.element("gpuMemoryPanel");
     this.toggle = this.element("gpuMemoryToggle");
@@ -107,6 +111,11 @@ export class GpuMemoryPanelController {
 
   get isOpen(): boolean {
     return this.panelOpen;
+  }
+
+  setDocumentDimensions(width: number, height: number): void {
+    this.documentWidth = width;
+    this.documentHeight = height;
   }
 
   setOpen(open: boolean): void {
@@ -476,7 +485,7 @@ export class GpuMemoryPanelController {
     const allocation = stats.gpuMemory.rasterBevelFieldAllocationBounds;
     const valid = stats.gpuMemory.rasterBevelFieldValidBounds;
     let bevelHeightLabel =
-      `Bevel · R32F heightfield · document ${this.options.documentWidth}×${this.options.documentHeight}`;
+      `Bevel · R32F heightfield · document ${this.documentWidth}×${this.documentHeight}`;
     if (stats.gpuMemory.rasterBevelFieldBounded) {
       if (!valid) {
         bevelHeightLabel = allocation

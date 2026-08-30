@@ -96,8 +96,12 @@ export class SpatialBlurController {
   private busy = false;
   private recoveryOnly = false;
   private disposed = false;
+  private documentWidth: number;
+  private documentHeight: number;
 
   constructor(private readonly options: SpatialBlurControllerOptions) {
+    this.documentWidth = options.documentWidth;
+    this.documentHeight = options.documentHeight;
     this.abortController = new options.browser.AbortController();
     this.bindControls();
     this.syncSurface();
@@ -151,8 +155,8 @@ export class SpatialBlurController {
   replacePins(pins: readonly Readonly<SpatialBlurPin>[]): void {
     const normalized = normalizeSpatialBlurPins(
       pins,
-      this.options.documentWidth,
-      this.options.documentHeight,
+      this.documentWidth,
+      this.documentHeight,
     );
     const previousIds = this.pins.map((pin) => pin.id);
     this.pins = normalized.map((pin, index) => ({
@@ -163,6 +167,15 @@ export class SpatialBlurController {
       this.selectedPinId = this.pins[0]?.id ?? null;
     }
     if (this.openState) this.renderPins();
+  }
+
+  reconfigureDocument(width: number, height: number): void {
+    if (!Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0) {
+      throw new RangeError("Point Blur document dimensions must be positive whole pixels.");
+    }
+    this.documentWidth = width;
+    this.documentHeight = height;
+    if (this.pins.length > 0) this.replacePins(this.pins);
   }
 
   setStatus(message: string): void {
@@ -366,8 +379,8 @@ export class SpatialBlurController {
       timeMs: this.options.browser.performance.now(),
     });
     return {
-      x: Math.max(0, Math.min(this.options.documentWidth, point.x)),
-      y: Math.max(0, Math.min(this.options.documentHeight, point.y)),
+      x: Math.max(0, Math.min(this.documentWidth, point.x)),
+      y: Math.max(0, Math.min(this.documentHeight, point.y)),
     };
   }
 
@@ -464,8 +477,8 @@ export class SpatialBlurController {
       ? {
         ...pin,
         ...update,
-        x: Math.max(0, Math.min(this.options.documentWidth, update.x ?? pin.x)),
-        y: Math.max(0, Math.min(this.options.documentHeight, update.y ?? pin.y)),
+        x: Math.max(0, Math.min(this.documentWidth, update.x ?? pin.x)),
+        y: Math.max(0, Math.min(this.documentHeight, update.y ?? pin.y)),
         radius: Math.max(0, Math.min(SPATIAL_BLUR_MAX_RADIUS, update.radius ?? pin.radius)),
       }
       : pin);
@@ -484,8 +497,8 @@ export class SpatialBlurController {
         this.pins,
         point.x,
         point.y,
-        this.options.documentWidth,
-        this.options.documentHeight,
+        this.documentWidth,
+        this.documentHeight,
       )
       : SPATIAL_BLUR_DEFAULT_RADIUS;
     const pin: UiSpatialBlurPin = { id: this.nextPinId++, ...point, radius };

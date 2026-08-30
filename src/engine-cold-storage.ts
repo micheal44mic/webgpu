@@ -54,7 +54,11 @@ function coldCodecBytesPerRow(format: LayerFormat): number {
   return LAYER_STORAGE_TILE_WIDTH * layerFormatBytesPerPixel(format);
 }
 
-function tileDocumentCopyExtent(tileIndex: number): {
+function tileDocumentCopyExtent(
+  tileIndex: number,
+  documentWidth = DOCUMENT_WIDTH,
+  documentHeight = DOCUMENT_HEIGHT,
+): {
   originX: number;
   originY: number;
   width: number;
@@ -67,8 +71,8 @@ function tileDocumentCopyExtent(tileIndex: number): {
   return {
     originX,
     originY,
-    width: Math.max(0, Math.min(LAYER_STORAGE_TILE_WIDTH, DOCUMENT_WIDTH - originX)),
-    height: Math.max(0, Math.min(LAYER_STORAGE_TILE_HEIGHT, DOCUMENT_HEIGHT - originY)),
+    width: Math.max(0, Math.min(LAYER_STORAGE_TILE_WIDTH, documentWidth - originX)),
+    height: Math.max(0, Math.min(LAYER_STORAGE_TILE_HEIGHT, documentHeight - originY)),
   };
 }
 
@@ -152,7 +156,7 @@ export function encodeLayerColdHydration(
 ): void {
   assertColdMatchesHot(cold, hot);
   cold.tileIndices.forEach((tileIndex, arrayLayer) => {
-    const extent = tileDocumentCopyExtent(tileIndex);
+    const extent = tileDocumentCopyExtent(tileIndex, hot.texture.width, hot.texture.height);
     if (extent.width <= 0 || extent.height <= 0) return;
     encoder.copyTextureToTexture(
       { texture: cold.texture, origin: { x: 0, y: 0, z: arrayLayer } },
@@ -644,7 +648,7 @@ export async function createLayerColdStorageCandidate(engine: BrushEngine,
         label: `Pack${historyQualifier} cold storage for layer ${record.id} #${generation}`,
       });
       tileIndices.forEach((tileIndex, arrayLayer) => {
-        const extent = tileDocumentCopyExtent(tileIndex);
+        const extent = tileDocumentCopyExtent(tileIndex, hot.texture.width, hot.texture.height);
         if (extent.width <= 0 || extent.height <= 0) return;
         encoder.copyTextureToTexture(
           {
@@ -839,7 +843,7 @@ export async function createLayerColdStorageCandidateIncrementally(
         });
         for (let arrayLayer = firstTile; arrayLayer < endTile; arrayLayer += 1) {
           const tileIndex = tileIndices[arrayLayer];
-          const extent = tileDocumentCopyExtent(tileIndex);
+          const extent = tileDocumentCopyExtent(tileIndex, hot.texture.width, hot.texture.height);
           if (extent.width <= 0 || extent.height <= 0) continue;
           encoder.copyTextureToTexture(
             {
@@ -912,7 +916,7 @@ export async function uploadCompressedLayerIntoHot(engine: BrushEngine,
     }
     for (let chunkTile = 0; chunkTile < chunkTileCount; chunkTile += 1) {
       const tileIndex = compressed.tileIndices[firstTile + chunkTile];
-      const extent = tileDocumentCopyExtent(tileIndex);
+      const extent = tileDocumentCopyExtent(tileIndex, hot.texture.width, hot.texture.height);
       if (extent.width <= 0 || extent.height <= 0) {
         throw new Error(`Tile ${tileIndex} lies outside the document.`);
       }
@@ -985,7 +989,7 @@ export async function createHydratedLayerTexture(engine: BrushEngine,
   if (record.hasContent && !cold && !compressedSource) {
     throw new Error(`Layer ${record.id} hydration: cold storage is missing.`);
   }
-  const memoryBytes = DOCUMENT_WIDTH * DOCUMENT_HEIGHT
+  const memoryBytes = engine.documentWidth * engine.documentHeight
     * (engine.layerFormat === "rgba16float" ? 8 : 4);
   return runGpuAllocationTransaction(
     engine.device,

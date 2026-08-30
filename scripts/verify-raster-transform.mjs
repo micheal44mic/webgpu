@@ -425,7 +425,11 @@ assert.deepEqual([...uniforms.slice(0, 12)], [
   300, 540, 900, 940,
   600, 740, 610, 720,
 ]);
-assert.deepEqual([...uniforms.slice(12)], [0.5, 0, 0, 0.5]);
+assert.deepEqual([...uniforms.slice(12, 16)], [0.5, 0, 0, 0.5]);
+assert.deepEqual(
+  [...uniforms.slice(16)],
+  [RASTER_TRANSFORM_DOCUMENT_WIDTH, RASTER_TRANSFORM_DOCUMENT_HEIGHT, 0, 0],
+);
 const anisotropicUniforms = packRasterTransformUniforms({
   sourceScratchRect: { x: 256, y: 512, width: 768, height: 512 },
   sourceContentBounds: { x: 300, y: 540, width: 600, height: 400 },
@@ -439,10 +443,19 @@ const anisotropicUniforms = packRasterTransformUniforms({
   },
 });
 assert.deepEqual(
-  [...anisotropicUniforms.slice(12)],
+  [...anisotropicUniforms.slice(12, 16)],
   [0.5, 0, 0, 2],
-  "the unchanged 64-byte ABI must carry the anisotropic inverse matrix rows",
+  "the original 64-byte ABI prefix must carry the anisotropic inverse matrix rows",
 );
+const rectangularDocumentUniforms = packRasterTransformUniforms({
+  sourceScratchRect: { x: 0, y: 0, width: 100, height: 100 },
+  sourceContentBounds: { x: 0, y: 0, width: 100, height: 100 },
+  sourcePivot: { x: 50, y: 50 },
+  transform: identity,
+  documentWidth: 1080,
+  documentHeight: 1920,
+});
+assert.deepEqual([...rectangularDocumentUniforms.slice(16)], [1080, 1920, 0, 0]);
 assert.throws(
   () => packRasterTransformUniforms({
     sourceScratchRect: { x: 256, y: 512, width: 256, height: 256 },
@@ -501,10 +514,10 @@ const brushEngineSource = readFileSync(
 );
 assert.doesNotMatch(mathSource, /GPU(?:Device|Texture|Buffer|Queue)/);
 assert.doesNotMatch(mathSource, /CanvasRenderingContext|ImageBitmap/);
-assert.match(mathSource, /RASTER_TRANSFORM_DOCUMENT_WIDTH = DOCUMENT_WIDTH/);
-assert.match(mathSource, /RASTER_TRANSFORM_DOCUMENT_HEIGHT = DOCUMENT_HEIGHT/);
-assert.match(mathSource, /RASTER_TRANSFORM_TILE_WIDTH = DOCUMENT_TILE_WIDTH/);
-assert.match(mathSource, /RASTER_TRANSFORM_TILE_HEIGHT = DOCUMENT_TILE_HEIGHT/);
+assert.match(mathSource, /DOCUMENT_WIDTH as RASTER_TRANSFORM_DOCUMENT_WIDTH/);
+assert.match(mathSource, /DOCUMENT_HEIGHT as RASTER_TRANSFORM_DOCUMENT_HEIGHT/);
+assert.match(mathSource, /DOCUMENT_TILE_WIDTH as RASTER_TRANSFORM_TILE_WIDTH/);
+assert.match(mathSource, /DOCUMENT_TILE_HEIGHT as RASTER_TRANSFORM_TILE_HEIGHT/);
 assert.match(runtimeSource, /RASTER_TRANSFORM_TRANSPARENT_GUARD_PX = 2/);
 assert.doesNotMatch(
   runtimeSource,
@@ -773,6 +786,27 @@ console.log("Raster transform math/shader verification passed.");
     /const sourceTileMask = tileMaskCoveringRect\(\s*\n\s*record\.storageTileMask,\s*\n\s*sourceBounds,/,
     "anche in lettura, per riparare un livello gia' divergente",
   );
+}
+
+{
+  const limitsRuntime = await import("../src/engine-limits.ts");
+  const blendRuntime = await import("../src/blend-core.ts");
+  const originalWidth = RASTER_TRANSFORM_DOCUMENT_WIDTH;
+  const originalHeight = RASTER_TRANSFORM_DOCUMENT_HEIGHT;
+  try {
+    limitsRuntime.reconfigureDocumentDimensions(1080, 1920);
+    assert.equal(RASTER_TRANSFORM_DOCUMENT_WIDTH, 1080);
+    assert.equal(RASTER_TRANSFORM_DOCUMENT_HEIGHT, 1920);
+    assert.equal(RASTER_TRANSFORM_DOCUMENT_SIZE, 1920);
+    assert.equal(RASTER_TRANSFORM_TILE_WIDTH, 68);
+    assert.equal(RASTER_TRANSFORM_TILE_HEIGHT, 120);
+    assert.equal(RASTER_TRANSFORM_TILE_SIZE, 120);
+    assert.equal(blendRuntime.DRY_BLEND_DEFAULT_DOCUMENT_SIZE, 1920);
+  } finally {
+    limitsRuntime.reconfigureDocumentDimensions(originalWidth, originalHeight, {
+      allowLegacy4096: true,
+    });
+  }
 }
 
 console.log("Raster transform tile/bounds invariant verified.");

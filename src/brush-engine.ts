@@ -28,7 +28,11 @@ import {
 import type { FillRenderer } from "./fill-renderer";
 import { FILL_REFERENCE_LAYER_STRATEGY } from "./fill-core";
 import type { SelectionRenderer } from "./selection-renderer";
-import { LAYER_THUMBNAIL_HEIGHT, LAYER_THUMBNAIL_WIDTH, LayerThumbnailRenderer, type LayerThumbnailPixels } from "./layer-thumbnail-renderer";
+import {
+  LayerThumbnailRenderer,
+  layerThumbnailDimensions,
+  type LayerThumbnailPixels,
+} from "./layer-thumbnail-renderer";
 import {
   emptyPixelSelectionState,
   SELECTION_TILE_MASK_WORDS,
@@ -963,6 +967,7 @@ import {
 } from "./engine-runtime-misc";
 import {
   captureProjectDocument,
+  reconfigureEngineForDocumentSwitch,
   resetEngineToFreshProjectState,
   restoreProjectDocument,
   type CapturedProjectDocumentV1,
@@ -1101,10 +1106,18 @@ interface ReleaseGpuTimingCaptureResources {
  * deliberatamente qui: non va spostato per ridurre le righe.
  */
 export class BrushEngine {
-  readonly documentWidth = DOCUMENT_WIDTH;
-  readonly documentHeight = DOCUMENT_HEIGHT;
+  get documentWidth(): number {
+    return DOCUMENT_WIDTH;
+  }
+
+  get documentHeight(): number {
+    return DOCUMENT_HEIGHT;
+  }
+
   /** @deprecated Use documentWidth/documentHeight for document geometry. */
-  readonly layerSize = DOCUMENT_MAX_EDGE;
+  get layerSize(): number {
+    return DOCUMENT_MAX_EDGE;
+  }
 
   readonly canvas: HTMLCanvasElement;
   readonly callbacks: EngineCallbacks;
@@ -6663,6 +6676,16 @@ export class BrushEngine {
     return resetEngineToFreshProjectState(this);
   }
 
+  /** Rebinds the persistent GPU session to a fresh canvas of another extent. */
+  resetForDocumentSwitch(width: number, height: number): Promise<number> {
+    if (width !== this.documentWidth || height !== this.documentHeight) {
+      // The planner owns CPU tile arrays and clamps tied to one document. GPU
+      // Blend programs remain session-resident in BlendRenderer.
+      this.reusableBlendPlanner = null;
+    }
+    return reconfigureEngineForDocumentSwitch(this, width, height);
+  }
+
   getDocumentGeneration(): number {
     return this.documentGeneration;
   }
@@ -6778,11 +6801,15 @@ export class BrushEngine {
       ? this.layerHasContent
       : record.hasContent;
     if (!hasContent) {
+      const { width, height } = layerThumbnailDimensions(
+        this.documentWidth,
+        this.documentHeight,
+      );
       return {
         layerId,
-        width: LAYER_THUMBNAIL_WIDTH,
-        height: LAYER_THUMBNAIL_HEIGHT,
-        rgba: new Uint8ClampedArray(LAYER_THUMBNAIL_WIDTH * LAYER_THUMBNAIL_HEIGHT * 4),
+        width,
+        height,
+        rgba: new Uint8ClampedArray(width * height * 4),
       };
     }
 
@@ -6811,7 +6838,11 @@ export class BrushEngine {
       ) {
         throw new Error("Thumbnail deferred because the raster layer changed.");
       }
-      const pixels = await this.layerThumbnailRenderer.capture(sourceView);
+      const pixels = await this.layerThumbnailRenderer.capture(
+        sourceView,
+        this.documentWidth,
+        this.documentHeight,
+      );
       return { layerId, ...pixels };
     } finally {
       destroyTransientLayerHydration(this, transientHydration);
@@ -12306,6 +12337,8 @@ export class BrushEngine {
       0,
       symmetryMode,
       symmetryAngleRadians,
+      this.documentWidth,
+      this.documentHeight,
     );
     this.device.queue.writeBuffer(this.brushUniformBuffer, 0, this.brushUniformUpload);
   }
@@ -12328,6 +12361,8 @@ export class BrushEngine {
       targetOriginY,
       symmetryMode,
       symmetryAngleRadians,
+      this.documentWidth,
+      this.documentHeight,
     );
     this.device.queue.writeBuffer(
       this.thicknessTailBrushUniformBuffer,
@@ -12578,6 +12613,10 @@ export class BrushEngine {
     this.displayUniformUpload[25] = backgroundGreen;
     this.displayUniformUpload[26] = backgroundBlue;
     this.displayUniformUpload[27] = this.documentBackground.visible ? 1 : 0;
+    this.displayUniformUpload[28] = this.documentWidth;
+    this.displayUniformUpload[29] = this.documentHeight;
+    this.displayUniformUpload[30] = 0;
+    this.displayUniformUpload[31] = 0;
 
     this.device.queue.writeBuffer(this.displayUniformBuffer, 0, this.displayUniformUpload);
   }

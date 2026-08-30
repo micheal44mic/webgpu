@@ -88,7 +88,7 @@ expect(
 );
 expect(startup, "const suspended = explicitEditorDimensions(suspendedEditorUrl)",
   "canonical suspended dimensions");
-expect(startup, "sameSuspendedDimensions(url)", "same-size in-place switch gate");
+reject(startup, "sameSuspendedDimensions(url)", "same-size-only in-place switch gate");
 expect(startup, 'get("projectSwitch") !== "reload"', "document switch kill switch");
 expect(startup, "await lifecycle.switchProject(switchRequest)", "in-place project switch request");
 expect(startup, 'await lifecycle.returnHome("none")', "settled popstate return Home");
@@ -172,7 +172,11 @@ assert(
 );
 expect(main, "captureDocument: () => engine.captureProjectDocument()", "capture engine port");
 expect(main, "restoreDocument: (project) => engine.restoreProjectDocument(project)", "restore engine port");
-expect(main, "await engine.resetToFreshProjectState();", "same-runtime engine document reset");
+expect(
+  main,
+  "await engine.resetForDocumentSwitch(target.documentWidth, target.documentHeight);",
+  "cross-dimension engine document reset",
+);
 expect(main, "onDocumentSwitchPreReset", "pre-destructive composition boundary");
 expect(main, "await sceneImportBridge.resetForDocument();", "outgoing import generation drain");
 expect(main, "layerThumbnailController.resetForDocument();", "outgoing thumbnail invalidation");
@@ -239,6 +243,16 @@ expect(
 );
 expect(projectSession, "await this.captureThumbnailBlob()", "thumbnail capture remains available on save");
 expect(projectSession, "this.storageReady ?? this.storage.initialize()", "shared storage readiness");
+expect(
+  projectSession,
+  "validateDocumentDimensions(request.documentWidth, request.documentHeight)",
+  "custom target dimension validation",
+);
+reject(
+  projectSession,
+  "The requested canvas dimensions require a different GPU document runtime.",
+  "obsolete cross-dimension rejection",
+);
 expect(projectSession, "if (this.onReturnHome)", "warm return to project Home");
 expect(projectSession, 'event.key.toLowerCase() !== "s"', "save shortcut");
 expect(

@@ -2107,14 +2107,24 @@ assert.match(layerThumbnailSource, /copyTextureToBuffer\(/);
 assert.match(layerThumbnailSource, /GPUBufferUsage\.COPY_DST \| GPUBufferUsage\.MAP_READ/);
 assert.match(
   layerThumbnailSource,
-  /readonly residentBytes = LAYER_THUMBNAIL_BYTE_LENGTH \+ LAYER_THUMBNAIL_TEXTURE_BYTES/,
+  /get residentBytes\(\): number \{\s*return this\.byteLength \+ this\.textureBytes;/,
 );
 assert.match(
   layerThumbnailSource,
-  /Math\.ceil\(\s*LAYER_THUMBNAIL_TIGHT_BYTES_PER_ROW \/ 256,?\s*\) \* 256/,
+  /Math\.ceil\(tightBytesPerRow \/ 256\) \* 256/,
 );
 assert.match(layerThumbnailSource, /mappedBytes\.subarray\(/);
-assert.match(layerThumbnailSource, /rowsPerImage: LAYER_THUMBNAIL_HEIGHT/);
+assert.match(layerThumbnailSource, /rowsPerImage: height/);
+assert.match(
+  layerThumbnailSource,
+  /sourceSize \* \$\{LAYER_THUMBNAIL_SIZE \* 2\}[\s\S]*?longestSourceEdge \* 2/,
+  "the resident thumbnail pipeline must derive its output aspect from the source texture",
+);
+assert.match(
+  layerThumbnailSource,
+  /reconfigureDocument\(documentWidth: number, documentHeight: number\)[\s\S]*?layerThumbnailDimensions\(documentWidth, documentHeight\)[\s\S]*?previousReadback\?\.destroy\(\)[\s\S]*?previousTexture\?\.destroy\(\)/,
+  "thumbnail target and readback resources must be replaced without recompiling the program",
+);
 assert.match(
   layerThumbnailSource,
   /for \(var sampleY = 0; sampleY < \$\{LAYER_THUMBNAIL_SAMPLE_GRID\}/,
@@ -2145,10 +2155,20 @@ assert.match(
   layerThumbnailControllerSource,
   /new this\.options\.browser\.ImageData\([\s\S]*?capture\.width,[\s\S]*?capture\.height/,
 );
-assert.match(layerPanelSource, /thumbnailCanvas\.width = LAYER_THUMBNAIL_WIDTH/);
-assert.match(layerPanelSource, /thumbnailCanvas\.height = LAYER_THUMBNAIL_HEIGHT/);
+assert.match(layerPanelSource, /thumbnailCanvas\.width = thumbnailDimensions\.width/);
+assert.match(layerPanelSource, /thumbnailCanvas\.height = thumbnailDimensions\.height/);
 assert.match(layerPanelSource, /--mobile-layer-thumbnail-width/);
 assert.match(layerPanelSource, /--mobile-layer-thumbnail-height/);
+assert.match(
+  layerThumbnailControllerSource,
+  /cached\?\.revision \?\? 0,[\s\S]*?DOCUMENT_WIDTH,[\s\S]*?DOCUMENT_HEIGHT/,
+  "reused layer rows must invalidate their thumbnail aspect across document switches",
+);
+assert.match(
+  mainSource,
+  /waitForDocumentSwitchControllersIdle[\s\S]*?layerThumbnailController\.isCaptureInFlight/,
+  "a document switch must wait for thumbnail readback before releasing its source texture",
+);
 assert.equal(MOBILE_RASTER_THUMBNAIL_EDGE_PX, 64);
 assert.equal(MOBILE_RASTER_THUMBNAIL_RGBA_BYTES, 64 * 64 * 4);
 assert.equal(MOBILE_RASTER_THUMBNAIL_CACHE_GENERATIONS, 4);
@@ -3093,12 +3113,13 @@ assert.match(
 // Measurement setups reset the GLOBAL journal but clear only the active layer.
 assert.match(engineSource, /get documentWideResetBlockedByLayers\(\): boolean/);
 assert.match(engineSource, /if \(this\.documentWideResetBlockedByLayers\) \{/);
-// A format change allocates the one active full texture before destruction; the
-// inactive records are empty cold slots because the operation clears all layers.
+// Ordinary format recreation remains transactional. A verified cross-document
+// switch may explicitly choose the fail-closed, release-before-allocation path
+// to avoid doubling full-document memory on constrained devices.
 assert.ok(
   engineSource.indexOf("const replacement = new Map<number, LayerGpuResources>();")
-    < engineSource.indexOf("const supersededLayerGpu = [...engine.layerGpu.values()];"),
-  "il cambio formato deve allocare prima di distruggere",
+    < engineSource.indexOf("const supersededLayerGpu = releasedOutgoingResources"),
+  "il cambio formato ordinario deve pubblicare il candidato prima di distruggere",
 );
 const recreateStart = engineSource.indexOf("export async function recreateLayerResources(");
 const recreateEnd = engineSource.indexOf(
@@ -3108,6 +3129,11 @@ const recreateEnd = engineSource.indexOf(
 assert.ok(recreateStart >= 0 && recreateEnd > recreateStart,
   "il verifier deve isolare per intero recreateLayerResources");
 const recreateBody = engineSource.slice(recreateStart, recreateEnd);
+assert.match(
+  recreateBody,
+  /const releasedOutgoingResources =\s*options\.releaseDocumentResourcesBeforeAllocation === true;[\s\S]*?if \(releasedOutgoingResources\)/,
+  "solo il cambio documento verificato può liberare la sorgente prima dell'allocazione",
+);
 assert.match(recreateBody, /runGpuAllocationTransaction\(\s*engine\.device,\s*`Layer format pipeline/,
   "anche pipeline e layout devono chiudere validation/OOM scope");
 assert.match(
@@ -3285,10 +3311,15 @@ assert.match(
   layerStorageStudySource,
   /single-active-plus-optional-reference-full-inactive-256-array-tiles-direct-native-fold-fallback-rehydrate/,
 );
-assert.match(layerStorageStudySource, /LAYER_STORAGE_TILE_WIDTH = DOCUMENT_TILE_WIDTH/);
-assert.match(layerStorageStudySource, /LAYER_STORAGE_TILE_HEIGHT = DOCUMENT_TILE_HEIGHT/);
-assert.match(layerStorageStudySource, /LAYER_STORAGE_DOCUMENT_WIDTH = DOCUMENT_WIDTH/);
-assert.match(layerStorageStudySource, /LAYER_STORAGE_DOCUMENT_HEIGHT = DOCUMENT_HEIGHT/);
+assert.match(layerStorageStudySource, /DOCUMENT_TILE_WIDTH as LAYER_STORAGE_TILE_WIDTH/);
+assert.match(layerStorageStudySource, /DOCUMENT_TILE_HEIGHT as LAYER_STORAGE_TILE_HEIGHT/);
+assert.match(layerStorageStudySource, /DOCUMENT_WIDTH as LAYER_STORAGE_DOCUMENT_WIDTH/);
+assert.match(layerStorageStudySource, /DOCUMENT_HEIGHT as LAYER_STORAGE_DOCUMENT_HEIGHT/);
+assert.match(
+  layerStorageStudySource,
+  /ES module aliases remain[\s\S]*?live when `reconfigureDocumentDimensions`/,
+  "la geometria cold deve seguire il documento attivo senza rivalutare il modulo",
+);
 assert.match(
   layerStorageStudySource,
   /Math\.floor\(pixelLeft \/ LAYER_STORAGE_TILE_WIDTH\)[\s\S]*?Math\.floor\(pixelTop \/ LAYER_STORAGE_TILE_HEIGHT\)/,

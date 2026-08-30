@@ -155,15 +155,14 @@ assert.match(runtime, /previewInFlight/);
 assert.match(runtime, /session\.previewFault/);
 assert.match(runtime, /transparent-content-clamp-document-edge/);
 assert.match(runtime, /clampedDocumentPosition\s*=\s*clamp\(/);
-assert.match(runtime, /import \{ DOCUMENT_HEIGHT, DOCUMENT_WIDTH \} from "\.\/engine-limits"/);
+assert.doesNotMatch(runtime, /DOCUMENT_(?:WIDTH|HEIGHT)|DOCUMENT_EXTENT|engine-limits/);
+assert.match(runtime, /let packedDocumentExtent = parameters\.kernelAndIntermediate\.w/);
+assert.match(runtime, /packedDocumentExtent & 0xffffu/);
+assert.match(runtime, /packedDocumentExtent >> 16u/);
+assert.match(runtime, /\(documentHeight << 16\) \| documentWidth/);
 assert.match(
   runtime,
-  /const DOCUMENT_EXTENT = vec2<i32>\(\$\{DOCUMENT_WIDTH\}, \$\{DOCUMENT_HEIGHT\}\);/,
-);
-assert.match(runtime, /parameterUploadU32\[word \+ 15\]\s*=\s*0/);
-assert.match(
-  runtime,
-  /destructiveGaussianBlurBounds\([\s\S]{0,180}DOCUMENT_WIDTH,\s*DOCUMENT_HEIGHT,/,
+  /destructiveGaussianBlurBounds\([\s\S]{0,180}engine\.documentWidth,\s*engine\.documentHeight,/,
   "Gaussian Blur deve ritagliare il supporto con entrambi gli assi documento.",
 );
 assert.doesNotMatch(

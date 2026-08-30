@@ -49,12 +49,10 @@ function resolveMobileDeviceClass(): boolean {
 export const MOBILE_DEVICE_CLASS = resolveMobileDeviceClass();
 
 /**
- * Dimensioni del documento, decise prima che i moduli GPU vengano valutati.
- *
- * `engine-limits` non importa nulla: il suo body gira prima di ogni modulo che
- * lo consuma, quindi le stringhe WGSL e le costanti derivate a module-eval
- * leggono gia' larghezza e altezza corrette. Per questo i valori vengono passati
- * nella URL prima del dynamic import dell'editor, non dopo la sua costruzione.
+ * Dimensioni iniziali del documento, risolte prima che i moduli GPU vengano
+ * valutati. Dopo l'avvio il composition root puo' sostituirle attraverso
+ * `reconfigureDocumentDimensions`: i consumatori devono quindi leggere i live
+ * binding al momento dell'uso e non copiarli in costanti module-scoped.
  *
  * I telefoni usano 2048² in assenza di una scelta esplicita. I nuovi documenti
  * accettano bordi interi 64..4000; 4096² resta supportato esclusivamente per
@@ -91,14 +89,19 @@ function resolveDocumentDimensions(): readonly [number, number] {
 
 const DOCUMENT_DIMENSIONS = resolveDocumentDimensions();
 
-export const DOCUMENT_WIDTH = DOCUMENT_DIMENSIONS[0];
+/**
+ * The application owns one active GPU document at a time. These bindings are
+ * live so a verified project switch can replace document-scoped resources
+ * without replacing the adapter, device, or session-owned program cache.
+ */
+export let DOCUMENT_WIDTH = DOCUMENT_DIMENSIONS[0];
 
-export const DOCUMENT_HEIGHT = DOCUMENT_DIMENSIONS[1];
+export let DOCUMENT_HEIGHT = DOCUMENT_DIMENSIONS[1];
 
-export const DOCUMENT_MAX_EDGE = Math.max(DOCUMENT_WIDTH, DOCUMENT_HEIGHT);
+export let DOCUMENT_MAX_EDGE = Math.max(DOCUMENT_WIDTH, DOCUMENT_HEIGHT);
 
 /** @deprecated Prefer DOCUMENT_WIDTH / DOCUMENT_HEIGHT. Kept for report compatibility. */
-export const LAYER_SIZE = DOCUMENT_MAX_EDGE;
+export let LAYER_SIZE = DOCUMENT_MAX_EDGE;
 
 /**
  * Il documento e' sempre diviso in una griglia logica 16×16. I tile sono
@@ -107,19 +110,19 @@ export const LAYER_SIZE = DOCUMENT_MAX_EDGE;
  */
 export const DOCUMENT_TILE_GRID_SIZE = 16;
 
-export const DOCUMENT_TILE_WIDTH = Math.ceil(DOCUMENT_WIDTH / DOCUMENT_TILE_GRID_SIZE);
+export let DOCUMENT_TILE_WIDTH = Math.ceil(DOCUMENT_WIDTH / DOCUMENT_TILE_GRID_SIZE);
 
-export const DOCUMENT_TILE_HEIGHT = Math.ceil(DOCUMENT_HEIGHT / DOCUMENT_TILE_GRID_SIZE);
+export let DOCUMENT_TILE_HEIGHT = Math.ceil(DOCUMENT_HEIGHT / DOCUMENT_TILE_GRID_SIZE);
 
 /** @deprecated Square-only compatibility value. */
-export const DOCUMENT_TILE_SIZE = Math.max(DOCUMENT_TILE_WIDTH, DOCUMENT_TILE_HEIGHT);
+export let DOCUMENT_TILE_SIZE = Math.max(DOCUMENT_TILE_WIDTH, DOCUMENT_TILE_HEIGHT);
 
 export const DOCUMENT_TILE_MASK_WORDS =
   DOCUMENT_TILE_GRID_SIZE * DOCUMENT_TILE_GRID_SIZE / 32;
 
 export const MEBIBYTE_BYTES = 1024 * 1024;
 
-export const PAINT_DISPLAY_MIP_LEVEL_COUNT = Math.floor(Math.log2(DOCUMENT_MAX_EDGE)) + 1;
+export let PAINT_DISPLAY_MIP_LEVEL_COUNT = Math.floor(Math.log2(DOCUMENT_MAX_EDGE)) + 1;
 
 export const STAMP_STRIDE_BYTES = 32;
 
@@ -141,7 +144,7 @@ export const STAMP_VERTICES_PER_COPY = 4;
 
 export const THICKNESS_TAIL_TEXTURE_QUANTUM = 256;
 
-export const THICKNESS_TAIL_MAXIMUM_TEXTURE_DIMENSION = DOCUMENT_MAX_EDGE;
+export let THICKNESS_TAIL_MAXIMUM_TEXTURE_DIMENSION = DOCUMENT_MAX_EDGE;
 
 export const SHAPE_MASK_SIZE = 2048;
 
@@ -200,14 +203,17 @@ export const SHAPE_OCCUPANCY_MAX_COVERAGE_RATIO = 0.5;
 
 export const SHAPE_OCCUPANCY_MAP_BYTES = SHAPE_OCCUPANCY_WORDS_PER_MAP * 4;
 
-export const BRUSH_UNIFORM_BYTES = 96;
+// The final 16 bytes carry the document extent independently from a cropped
+// render target. This keeps symmetry dimension-neutral while preserving the
+// target-size/origin lanes used by deferred previews.
+export const BRUSH_UNIFORM_BYTES = 112;
 
 export const GRAIN_UNIFORM_BYTES = 32;
 
 // The first 64 bytes retain the historical display ABI. The next 32 bytes
-// describe the one live clipping group; the final 16 bytes carry the structural
-// document backdrop shared by every presentation shader.
-export const DISPLAY_UNIFORM_BYTES = 112;
+// describe the one live clipping group, followed by the structural backdrop
+// and the active document extent used by dimension-neutral presentation code.
+export const DISPLAY_UNIFORM_BYTES = 128;
 
 export const VECTOR_TEXT_CAPTURE_UNIFORM_BYTES = 32;
 
@@ -230,9 +236,10 @@ export const LIGHT_GLAZE_COMMIT_TILE_UNIFORM_STRIDE_BYTES = 256;
 
 export const LIGHT_GLAZE_COMMIT_TILE_EXTENT = 1024;
 
+// This buffer is tiny compared with document textures, so reserve the largest
+// supported legacy grid once and keep its binding valid across every canvas.
 export const LIGHT_GLAZE_COMMIT_TILE_SLOT_COUNT =
-  Math.ceil(DOCUMENT_WIDTH / LIGHT_GLAZE_COMMIT_TILE_EXTENT)
-  * Math.ceil(DOCUMENT_HEIGHT / LIGHT_GLAZE_COMMIT_TILE_EXTENT);
+  Math.ceil(LEGACY_DOCUMENT_EDGE / LIGHT_GLAZE_COMMIT_TILE_EXTENT) ** 2;
 
 export const LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BUFFER_BYTES =
   LIGHT_GLAZE_COMMIT_TILE_UNIFORM_STRIDE_BYTES * LIGHT_GLAZE_COMMIT_TILE_SLOT_COUNT;
@@ -250,3 +257,69 @@ export const STATIC_PAINT_BUFFER_BYTES =
   + LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BUFFER_BYTES
   + MAX_STAMPS_PER_BATCH * STAMP_STRIDE_BYTES * 2
   + SHAPE_OCCUPANCY_MAP_BYTES * SHAPE_OCCUPANCY_MAP_COUNT;
+
+export interface RuntimeDocumentDimensions {
+  readonly width: number;
+  readonly height: number;
+  readonly maxEdge: number;
+  readonly tileWidth: number;
+  readonly tileHeight: number;
+  readonly mipLevelCount: number;
+}
+
+export interface ReconfigureDocumentDimensionsOptions {
+  /** Existing 4096-square projects are the only supported legacy exception. */
+  readonly allowLegacy4096?: boolean;
+}
+
+export function validateDocumentDimensions(
+  width: number,
+  height: number,
+  options: ReconfigureDocumentDimensionsOptions = {},
+): void {
+  const standard = Number.isInteger(width)
+    && Number.isInteger(height)
+    && width >= DOCUMENT_MINIMUM_EDGE
+    && height >= DOCUMENT_MINIMUM_EDGE
+    && width <= DOCUMENT_MAXIMUM_EDGE
+    && height <= DOCUMENT_MAXIMUM_EDGE;
+  const legacy = options.allowLegacy4096 === true
+    && width === LEGACY_DOCUMENT_EDGE
+    && height === LEGACY_DOCUMENT_EDGE;
+  if (!standard && !legacy) {
+    throw new RangeError(
+      `Document dimensions must be whole pixels from ${DOCUMENT_MINIMUM_EDGE} to `
+      + `${DOCUMENT_MAXIMUM_EDGE}, or the exact legacy 4096-square extent.`,
+    );
+  }
+}
+
+export function currentDocumentDimensions(): RuntimeDocumentDimensions {
+  return Object.freeze({
+    width: DOCUMENT_WIDTH,
+    height: DOCUMENT_HEIGHT,
+    maxEdge: DOCUMENT_MAX_EDGE,
+    tileWidth: DOCUMENT_TILE_WIDTH,
+    tileHeight: DOCUMENT_TILE_HEIGHT,
+    mipLevelCount: PAINT_DISPLAY_MIP_LEVEL_COUNT,
+  });
+}
+
+export function reconfigureDocumentDimensions(
+  width: number,
+  height: number,
+  options: ReconfigureDocumentDimensionsOptions = {},
+): RuntimeDocumentDimensions {
+  validateDocumentDimensions(width, height, options);
+
+  DOCUMENT_WIDTH = width;
+  DOCUMENT_HEIGHT = height;
+  DOCUMENT_MAX_EDGE = Math.max(width, height);
+  LAYER_SIZE = DOCUMENT_MAX_EDGE;
+  DOCUMENT_TILE_WIDTH = Math.ceil(width / DOCUMENT_TILE_GRID_SIZE);
+  DOCUMENT_TILE_HEIGHT = Math.ceil(height / DOCUMENT_TILE_GRID_SIZE);
+  DOCUMENT_TILE_SIZE = Math.max(DOCUMENT_TILE_WIDTH, DOCUMENT_TILE_HEIGHT);
+  PAINT_DISPLAY_MIP_LEVEL_COUNT = Math.floor(Math.log2(DOCUMENT_MAX_EDGE)) + 1;
+  THICKNESS_TAIL_MAXIMUM_TEXTURE_DIMENSION = DOCUMENT_MAX_EDGE;
+  return currentDocumentDimensions();
+}

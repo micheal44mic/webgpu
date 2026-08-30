@@ -427,7 +427,29 @@ const goldenMipBaseline = JSON.parse(readFileSync(
 ));
 assert.match(
   rendererSource,
-  /style-stack-webgpu-v17-selectable-preserved-or-uniform-alpha-color-overlay-before-inner-shadow-bevel-stroke-lazy-stroke-geometry-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-nearest-raster-at-581pct/,
+  /style-stack-webgpu-v18-dimension-neutral-session-program-cache-selectable-preserved-or-uniform-alpha-color-overlay-before-inner-shadow-bevel-stroke-lazy-stroke-geometry-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-nearest-raster-at-581pct/,
+);
+assert.match(
+  rendererSource,
+  /const strokeProgramCache = new WeakMap<\s*GPUDevice,\s*Map<string, Promise<RasterStrokeProgramResources>>/,
+  "Stroke programs must remain resident for the lifetime of their GPU device",
+);
+const strokeProgramKeySource = rendererSource.slice(
+  rendererSource.indexOf("function strokeProgramCacheKey("),
+  rendererSource.indexOf("function acquireStrokeProgramResources("),
+);
+assert.match(strokeProgramKeySource, /options\.layerFormat/);
+assert.match(strokeProgramKeySource, /bevelBoundingFieldEnabled/);
+assert.match(strokeProgramKeySource, /bevelBoundingFieldTestMutation/);
+assert.doesNotMatch(
+  strokeProgramKeySource,
+  /documentWidth|documentHeight|readbackEnabled|scratchExtent|strokeGeometryEnabled/,
+  "document-only allocations must not fragment the session program cache",
+);
+assert.match(
+  rendererSource,
+  /const programs = await acquireStrokeProgramResources\([\s\S]*?\(\) => this\.createProgramResources\(\)/,
+  "renderer instances must reuse session programs before rebuilding document bind groups",
 );
 assert.match(rendererSource, /const PARAMETER_BYTES = 96/);
 assert.ok(
@@ -485,7 +507,7 @@ assert.match(rendererSource, /const COVERAGE_WORD_PIXELS = 2/);
 assert.match(rendererSource, /return clamp\(coverage, 0\.0, 1\.0\);/);
 assert.match(
   rendererSource,
-  /const coverageWordsPerRow = Math\.ceil\(documentWidth \/ COVERAGE_WORD_PIXELS\);[\s\S]*?let wordIndex = firstDocumentPosition\.y \* \$\{coverageWordsPerRow\}u\s*\+ \(firstDocumentPosition\.x >> 1u\);\s*coverageField\[wordIndex\] = pack2x16float\(coveragePair\)/,
+  /let coverageWordsPerRow = \(u32\(documentSize\(\)\.x\) \+ 1u\) \/ 2u;[\s\S]*?let wordIndex = firstDocumentPosition\.y \* coverageWordsPerRow\s*\+ \(firstDocumentPosition\.x >> 1u\);\s*coverageField\[wordIndex\] = pack2x16float\(coveragePair\)/,
   "packed Stroke coverage must use a per-row word stride for rectangular documents",
 );
 const packedCoverageWordIndex = (width, x, y) => y * Math.ceil(width / 2) + (x >> 1);
@@ -493,7 +515,7 @@ assert.equal(packedCoverageWordIndex(5, 0, 1), 3);
 assert.equal(packedCoverageWordIndex(5, 4, 1), 5);
 assert.match(
   rendererSource,
-  /unpack2x16float\(coverageField\[linearIndex >> 1u\]\)/,
+  /let coverageWordsPerRow = \(textureDimensions\(permanentTexture\)\.x \+ 1u\) \/ 2u;[\s\S]*?unpack2x16float\(coverageField\[wordIndex\]\)/,
 );
 assert.doesNotMatch(rendererSource, /resolveCoverageByte/);
 assert.doesNotMatch(rendererSource, /0\.75 \/ 255\.0/);

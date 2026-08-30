@@ -7,11 +7,11 @@ import type { BrushEngine } from "./brush-engine";
 import { ensureFillRenderer, scheduleFillScratchRelease } from "./engine-fill-runtime";
 import { clientToLayer } from "./engine-layer-runtime";
 import {
-  SELECTION_MASK_BYTES,
   SELECTION_TILE_GRID_SIZE,
   SELECTION_TILE_HEIGHT,
   SELECTION_TILE_WIDTH,
   buildLassoSpans,
+  currentSelectionDocumentMetrics,
   emptyPixelSelectionState,
   normalizeMagicWandTolerance,
   normalizeSelectionCombineMode,
@@ -138,7 +138,11 @@ export function bindPaintPipelineWithPixelSelection(
       layout: engine.selectionMaskBindGroupLayout,
       entries: [{
         binding: 0,
-        resource: { buffer, offset, size: SELECTION_MASK_BYTES },
+        resource: {
+          buffer,
+          offset,
+          size: currentSelectionDocumentMetrics().maskBytes,
+        },
       }],
     });
     if (!cached) {
@@ -158,7 +162,11 @@ export function bindPaintPipelineWithPixelSelection(
         layout: engine.selectionMaskBindGroupLayout,
         entries: [{
           binding: 0,
-          resource: { buffer, offset, size: SELECTION_MASK_BYTES },
+          resource: {
+            buffer,
+            offset,
+            size: currentSelectionDocumentMetrics().maskBytes,
+          },
         }],
       });
       engine.selectionLiveClipBindGroup = {
@@ -209,7 +217,7 @@ export function captureSelectionHistoryMask(
     throw new Error("An empty or non-resident Pixel Selection cannot be archived.");
   }
   const slice = engine.historyGpuStorage.allocate(
-    SELECTION_MASK_BYTES,
+    currentSelectionDocumentMetrics().maskBytes,
     label,
     engine.device.limits.minStorageBufferOffsetAlignment,
   );
@@ -220,7 +228,7 @@ export function captureSelectionHistoryMask(
       0,
       slice.buffer,
       slice.offsetBytes,
-      SELECTION_MASK_BYTES,
+      currentSelectionDocumentMetrics().maskBytes,
     );
     engine.device.queue.submit([encoder.finish()]);
     const state = engine.pixelSelectionState;

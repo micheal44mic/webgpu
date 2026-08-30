@@ -23,11 +23,21 @@ const resetEnd = projectRuntime.indexOf(
 );
 assert.ok(resetStart >= 0 && resetEnd > resetStart, "project reset runtime is present");
 const reset = projectRuntime.slice(resetStart, resetEnd);
+const reconfigureStart = projectRuntime.indexOf(
+  "export async function reconfigureEngineForDocumentSwitch",
+);
+assert.ok(reconfigureStart > resetStart, "cross-dimension runtime is present");
+const reconfigure = projectRuntime.slice(reconfigureStart, resetEnd);
 
 assert.match(
   engine,
   /documentGeneration = 1;[\s\S]*?resetToFreshProjectState\(\): Promise<number> \{\s*return resetEngineToFreshProjectState\(this\);/,
   "the long-lived engine owns the document generation and reset API",
+);
+assert.match(
+  engine,
+  /resetForDocumentSwitch\(width: number, height: number\): Promise<number> \{[\s\S]*?this\.reusableBlendPlanner = null;[\s\S]*?return reconfigureEngineForDocumentSwitch\(this, width, height\);/,
+  "the engine exposes a cross-dimension document boundary",
 );
 assert.match(
   engine,
@@ -37,7 +47,7 @@ assert.match(
 
 assert.match(
   reset,
-  /releaseShapePreviewPresentation\(\)[\s\S]*?clearMixedSceneRasterTransformPreview\(\)[\s\S]*?waitForDocumentScopedPreparation\(engine\)[\s\S]*?assertFreshProjectResetAllowed\(engine\)/,
+  /releaseShapePreviewPresentation\(\)[\s\S]*?clearMixedSceneRasterTransformPreview\(\)[\s\S]*?waitForDocumentScopedPreparation\(engine\)[\s\S]*?assertFreshProjectResetAllowed\(engine, options\)/,
   "structural previews and asynchronous preparation settle before the final gate",
 );
 assert.match(
@@ -85,6 +95,37 @@ assert.match(
   cloneRuntime,
   /export async function releasePreparedCloneSourceAndWait[\s\S]*?releasePreparedCloneSource\(engine\)[\s\S]*?const inFlight = state\.promise[\s\S]*?await inFlight[\s\S]*?destroyPreparedCloneSource\(engine, state\.ready\)/,
   "an in-flight Clone snapshot is invalidated and joined before layer destruction",
+);
+
+assert.match(
+  reconfigure,
+  /validateDocumentDimensions\(width, height, \{ allowLegacy4096: true \}\)[\s\S]*?width === engine\.documentWidth[\s\S]*?resetEngineToFreshProjectState\(engine\)/,
+  "cross-dimension reset validates the target and preserves the same-size fast path",
+);
+assert.match(
+  reconfigure,
+  /reconfigureDocumentDimensions\(width, height, \{ allowLegacy4096: true \}\)[\s\S]*?recreateLayerResources[\s\S]*?reuseResidentPrograms: true[\s\S]*?releaseDocumentResourcesBeforeAllocation: true/,
+  "cross-dimension reset keeps programs resident and releases verified source resources first",
+);
+assert.match(
+  reconfigure,
+  /beginPresentationTransaction\(\)[\s\S]*?resetEngineToFreshProjectState\(engine, \{\s*parentPresentationTransactionActive: true,\s*retainLayerSwitchBusyOnSuccess: true,[\s\S]*?recreateLayerResources[\s\S]*?completed = true[\s\S]*?if \(completed\) \{\s*engine\.layerSwitchBusy = false;[\s\S]*?engine\.endPresentationTransaction\(\)/,
+  "an outer presentation transaction must cover reset, resource destruction and dimensional rebuild",
+);
+assert.match(
+  projectRuntime,
+  /expectedPresentationDepth = options\.parentPresentationTransactionActive === true \? 1 : 0[\s\S]*?presentationTransactionDepth !== expectedPresentationDepth/,
+  "only the internal cross-size path may enter reset with one presentation owner",
+);
+assert.match(
+  projectRuntime,
+  /waitForDocumentScopedPreparation[\s\S]*?fillRenderer\?\.waitForPrewarm\(\)[\s\S]*?releasePreparedCloneSourceAndWait/,
+  "Fill prewarming must settle before its source view becomes document-stale",
+);
+assert.match(
+  reconfigure,
+  /latchDocumentStateInconsistent\([\s\S]*?Reload before continuing/,
+  "a failed destructive dimension replacement remains fail-closed",
 );
 
 console.log("Project switch engine runtime verification passed.");

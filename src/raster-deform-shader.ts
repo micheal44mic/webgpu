@@ -1,5 +1,4 @@
 /** Mesh shader shared by raster Warp and four-corner Perspective. */
-import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits.ts";
 
 export const RASTER_DEFORM_SHADER_STRATEGY =
   "mesh-grid-perspective-correct-transparent-border-mip-v1" as const;
@@ -14,6 +13,8 @@ struct RasterTransformUniforms {
   destinationPivot: vec2<f32>,
   inverseRow0: vec2<f32>,
   inverseRow1: vec2<f32>,
+  documentExtent: vec2<f32>,
+  _padding: vec2<f32>,
 };
 
 struct DeformVertexOutput {
@@ -77,9 +78,10 @@ fn deformVertexMain(
   @location(1) projectiveWeight: f32,
 ) -> DeformVertexOutput {
   let destination = packed.xy;
+  let documentExtent = max(transform.documentExtent, vec2<f32>(1.0));
   let ndc = vec2<f32>(
-    destination.x * (2.0 / ${DOCUMENT_WIDTH}.0) - 1.0,
-    1.0 - destination.y * (2.0 / ${DOCUMENT_HEIGHT}.0)
+    destination.x * (2.0 / documentExtent.x) - 1.0,
+    1.0 - destination.y * (2.0 / documentExtent.y)
   );
   let safeWeight = max(projectiveWeight, 0.0001);
   var output: DeformVertexOutput;

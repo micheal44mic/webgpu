@@ -43,6 +43,7 @@ import {
 } from "./engine-cold-storage";
 import {
   DOCUMENT_HEIGHT,
+  DOCUMENT_TILE_GRID_SIZE,
   DOCUMENT_WIDTH,
   LAYER_COMPOSITE_UNIFORM_BYTES,
   PAINT_DISPLAY_MIP_LEVEL_COUNT,
@@ -156,6 +157,13 @@ export interface RecreateLayerResourcesOptions {
   readonly documentPipelineCompilationConcurrency?: number;
   /** Isolated empty-first-frame diagnostic; excluded pipeline slots are sentinels. */
   readonly documentPipelineCompilationScope?: "complete" | "first-frame-diagnostic";
+  /** Rebind an already compiled, dimension-neutral document program bundle. */
+  readonly reuseResidentPrograms?: boolean;
+  /**
+   * Free the verified outgoing document before allocating the replacement.
+   * Failure after this boundary is intentionally fail-closed.
+   */
+  readonly releaseDocumentResourcesBeforeAllocation?: boolean;
 }
 
 const EXPECTED_DOCUMENT_RENDER_PIPELINE_COUNT = 52;
@@ -198,6 +206,74 @@ async function settleRenderPipelineBatch<
   return settlements.map((settlement) =>
     (settlement as PromiseFulfilledResult<GPURenderPipeline>).value
   ) as RenderPipelinePromiseTuple<Promises>;
+}
+
+function residentDocumentPrograms(engine: BrushEngine) {
+  if (!engine.normalPipeline || !engine.layerBlendFoldPipeline) {
+    throw new Error("The resident document program bundle is incomplete.");
+  }
+  const warmSelectionPipelines = engine.selectionPipelineWarmup
+    ?? (async (): Promise<void> => undefined);
+  return {
+    selectionPipelineByBase: engine.selectionPipelineByBase,
+    normalPipeline: engine.normalPipeline,
+    additivePipeline: engine.additivePipeline,
+    erasePipeline: engine.erasePipeline,
+    shapeNormalPipeline: engine.shapeNormalPipeline,
+    shapeAdditivePipeline: engine.shapeAdditivePipeline,
+    shapeErasePipeline: engine.shapeErasePipeline,
+    shapeOccupancyNormalPipeline: engine.shapeOccupancyNormalPipeline,
+    shapeOccupancyAdditivePipeline: engine.shapeOccupancyAdditivePipeline,
+    shapeOccupancyErasePipeline: engine.shapeOccupancyErasePipeline,
+    grainNormalPipeline: engine.grainNormalPipeline,
+    grainAdditivePipeline: engine.grainAdditivePipeline,
+    grainErasePipeline: engine.grainErasePipeline,
+    grainShapeNormalPipeline: engine.grainShapeNormalPipeline,
+    grainShapeAdditivePipeline: engine.grainShapeAdditivePipeline,
+    grainShapeErasePipeline: engine.grainShapeErasePipeline,
+    grainShapeOccupancyNormalPipeline: engine.grainShapeOccupancyNormalPipeline,
+    grainShapeOccupancyAdditivePipeline: engine.grainShapeOccupancyAdditivePipeline,
+    grainShapeOccupancyErasePipeline: engine.grainShapeOccupancyErasePipeline,
+    uniformedGlazePipeline: engine.uniformedGlazePipeline,
+    uniformedGlazeShapePipeline: engine.uniformedGlazeShapePipeline,
+    uniformedGlazeShapeOccupancyPipeline: engine.uniformedGlazeShapeOccupancyPipeline,
+    grainUniformedGlazePipeline: engine.grainUniformedGlazePipeline,
+    grainUniformedGlazeShapePipeline: engine.grainUniformedGlazeShapePipeline,
+    grainUniformedGlazeShapeOccupancyPipeline: engine.grainUniformedGlazeShapeOccupancyPipeline,
+    intenseBlendingPipeline: engine.intenseBlendingPipeline,
+    intenseBlendingShapePipeline: engine.intenseBlendingShapePipeline,
+    intenseBlendingShapeOccupancyPipeline: engine.intenseBlendingShapeOccupancyPipeline,
+    grainIntenseBlendingPipeline: engine.grainIntenseBlendingPipeline,
+    grainIntenseBlendingShapePipeline: engine.grainIntenseBlendingShapePipeline,
+    grainIntenseBlendingShapeOccupancyPipeline: engine.grainIntenseBlendingShapeOccupancyPipeline,
+    lightNoBuildUpPipeline: engine.lightNoBuildUpPipeline,
+    lightNoBuildUpShapePipeline: engine.lightNoBuildUpShapePipeline,
+    lightNoBuildUpShapeOccupancyPipeline: engine.lightNoBuildUpShapeOccupancyPipeline,
+    grainLightNoBuildUpPipeline: engine.grainLightNoBuildUpPipeline,
+    grainLightNoBuildUpShapePipeline: engine.grainLightNoBuildUpShapePipeline,
+    grainLightNoBuildUpShapeOccupancyPipeline: engine.grainLightNoBuildUpShapeOccupancyPipeline,
+    lightGlazeCompositeMipPipeline: engine.lightGlazeCompositeMipPipeline,
+    lightGlazeFinalRasterStackCompositeMipPipeline:
+      engine.lightGlazeFinalRasterStackCompositeMipPipeline,
+    lightGlazeCompositePipeline: engine.lightGlazeCompositePipeline,
+    lightGlazeCommitTilePipeline: engine.lightGlazeCommitTilePipeline,
+    lightGlazeInPlaceCommitBindGroupLayout: engine.lightGlazeInPlaceCommitBindGroupLayout,
+    lightGlazeInPlaceCommitPipeline: engine.lightGlazeInPlaceCommitPipeline,
+    paintMipDownsamplePipeline: engine.paintMipDownsamplePipeline,
+    paintStackCompositeMipPipeline: engine.paintStackCompositeMipPipeline,
+    activeClippingGroupMipPipeline: engine.activeClippingGroupMipPipeline,
+    thicknessTailActiveMipPipeline: engine.thicknessTailActiveMipPipeline,
+    thicknessTailActiveClippingGroupMipPipeline:
+      engine.thicknessTailActiveClippingGroupMipPipeline,
+    thicknessTailFinalStackMipPipeline: engine.thicknessTailFinalStackMipPipeline,
+    layerCompositePipeline: engine.layerCompositePipeline,
+    layerSourceAtopPipeline: engine.layerSourceAtopPipeline,
+    layerColdTileCompositePipeline: engine.layerColdTileCompositePipeline,
+    layerColdTileSourceAtopPipeline: engine.layerColdTileSourceAtopPipeline,
+    layerBlendFoldPipeline: engine.layerBlendFoldPipeline,
+    layerBlendDocumentMaskPipeline: engine.layerBlendDocumentMaskPipeline,
+    warmSelectionPipelines,
+  };
 }
 
 function createDocumentRenderPipelineCompiler(
@@ -323,6 +399,8 @@ export async function recreateLayerResources(
   };
   const oldBlendRenderer = engine.blendRenderer;
   const oldEffectsWorkbench = engine.effectsWorkbench;
+  const selectionPipelinesWereReady = engine.selectionPipelinesReady;
+  const residentSelectionWarmup = engine.selectionPipelineWarmup;
   const previousScratchPeakBytes = oldEffectsWorkbench?.scratchPool.peakBytes ?? 0;
   const {
     selectionPipelineByBase,
@@ -381,7 +459,9 @@ export async function recreateLayerResources(
     layerBlendFoldPipeline,
     layerBlendDocumentMaskPipeline,
     warmSelectionPipelines,
-  } = await engine.runStartupPhase(
+  } = options.reuseResidentPrograms
+    ? residentDocumentPrograms(engine)
+    : await engine.runStartupPhase(
     "document-pipelines",
     "Compiling 16-bit document pipelines",
     () => runGpuAllocationTransaction(
@@ -392,7 +472,7 @@ export async function recreateLayerResources(
     engine.device,
     requestedPipelineCompilationConcurrency,
     documentPipelineCompilationStats,
-  );
+    );
   const brushPipelineLayout = engine.device.createPipelineLayout({
     label: `Brush legacy pipeline layout ${format}`,
     bindGroupLayouts: [engine.brushBindGroupLayout],
@@ -1843,15 +1923,45 @@ export async function recreateLayerResources(
       },
     ),
     documentPipelineCompilationStats,
-  );
+    );
+
+  const releasedOutgoingResources =
+    options.releaseDocumentResourcesBeforeAllocation === true;
+  if (releasedOutgoingResources) {
+    destroyLightGlazeResources(engine);
+    destroyThicknessTailOverlayResources(engine);
+    releaseLayerBlendTilePresentationResources(engine);
+    releaseRasterStrokeRenderer(engine);
+    releaseRasterBevelRenderer(engine);
+    releaseRasterOuterShadowRenderer(engine);
+    releaseRasterInnerShadowRenderer(engine);
+    oldEffectsWorkbench?.destroy();
+    engine.effectsWorkbench = null;
+    engine.activeLayerDisplayPyramid.texture.destroy();
+    engine.transparentLayerTexture.destroy();
+    engine.destroyMergedSurface(engine.mergedBelow);
+    engine.destroyMergedSurface(engine.mergedAbove);
+    engine.mergedBelow = null;
+    engine.mergedAbove = null;
+    destroyActiveClippingGroupResources(engine, engine.activeClippingGroup);
+    engine.activeClippingGroup = null;
+    for (const segment of engine.mixedSceneRasterSegments) {
+      destroyMixedSceneRasterSegment(engine, segment);
+    }
+    engine.mixedSceneRasterSegments = [];
+    for (const gpu of engine.layerGpu.values()) {
+      destroyLayerGpuResources(engine, gpu);
+    }
+    engine.layerGpu.clear();
+  }
 
   // Recreating the document invalidates every layer's texture, not just the
   // active one. Allocate the complete replacement transactionally.
   //
-  // Allocate everything BEFORE destroying anything. Destroying first would mean
-  // an OOM partway through the remaining layers left the document with neither
-  // the old textures nor the new ones. Callers rely on the old resources still
-  // being valid if this transaction fails.
+  // The default path allocates everything before destroying anything so callers
+  // can retain the old document after an allocation failure. The explicit
+  // release-before-allocation path above is reserved for a durably saved project
+  // switch: it lowers peak memory and deliberately fails closed to a reload.
   const replacement = new Map<number, LayerGpuResources>();
   let blendRenderer: DryBlendRenderer | null = null;
   let nextEffectsWorkbench: EffectsWorkbench | null = null;
@@ -1915,7 +2025,16 @@ export async function recreateLayerResources(
       throw new Error("Candidate resources are missing for the active layer.");
     }
     if (!options.deferBlendRenderer) {
-      blendRenderer = await runGpuAllocationTransaction(
+      if (options.reuseResidentPrograms && oldBlendRenderer) {
+        oldBlendRenderer.reconfigureDocumentTarget({
+          documentWidth: DOCUMENT_WIDTH,
+          documentHeight: DOCUMENT_HEIGHT,
+          layerView: activeHot.view,
+          layerSamplingView: activeHot.samplingView,
+        });
+        blendRenderer = oldBlendRenderer;
+      } else {
+        blendRenderer = await runGpuAllocationTransaction(
         engine.device,
         `Blend renderer for format ${format}`,
         async (transaction) => {
@@ -1936,7 +2055,8 @@ export async function recreateLayerResources(
           transaction.deferRollback(() => candidate.destroy());
           return candidate;
         },
-      );
+        );
+      }
     }
     nextEffectsWorkbench = new EffectsWorkbench({
       device: engine.device,
@@ -1946,8 +2066,9 @@ export async function recreateLayerResources(
       initialScratchPeakBytes: previousScratchPeakBytes,
     });
   } catch (error) {
-    // Nothing has been swapped in yet: every candidate is disposable and all
-    // old textures/renderers still describe the intact document.
+    // Nothing has been swapped in yet, so every candidate is disposable. In the
+    // default path the old document remains intact; in the explicit low-peak
+    // path its source is durable and the caller recovers by reloading it.
     nextEffectsWorkbench?.destroy();
     blendRenderer?.destroy();
     nextDisplayPyramid?.texture.destroy();
@@ -1984,12 +2105,18 @@ export async function recreateLayerResources(
 
   destroyLightGlazeResources(engine);
   destroyThicknessTailOverlayResources(engine);
-  const supersededLayerGpu = [...engine.layerGpu.values()];
-  const supersededDisplayPyramid = engine.activeLayerDisplayPyramid;
-  const supersededTransparentTexture = engine.transparentLayerTexture;
-  const supersededMergedBelow = engine.mergedBelow;
-  const supersededMergedAbove = engine.mergedAbove;
-  const supersededMixedSceneRasterSegments = engine.mixedSceneRasterSegments;
+  const supersededLayerGpu = releasedOutgoingResources ? [] : [...engine.layerGpu.values()];
+  const supersededDisplayPyramid = releasedOutgoingResources
+    ? null
+    : engine.activeLayerDisplayPyramid;
+  const supersededTransparentTexture = releasedOutgoingResources
+    ? null
+    : engine.transparentLayerTexture;
+  const supersededMergedBelow = releasedOutgoingResources ? null : engine.mergedBelow;
+  const supersededMergedAbove = releasedOutgoingResources ? null : engine.mergedAbove;
+  const supersededMixedSceneRasterSegments = releasedOutgoingResources
+    ? []
+    : engine.mixedSceneRasterSegments;
   engine.layerGpu.clear();
   for (const [layerId, gpu] of replacement) {
     engine.layerGpu.set(layerId, gpu);
@@ -2069,10 +2196,14 @@ export async function recreateLayerResources(
     : [];
   engine.normalPipeline = normalPipeline;
   engine.selectionPipelineByBase = selectionPipelineByBase;
-  engine.selectionPipelinesReady = !options.deferSelectionPipelines;
-  engine.selectionPipelineWarmup = options.deferSelectionPipelines
-    ? warmSelectionPipelines
-    : null;
+  engine.selectionPipelinesReady = options.reuseResidentPrograms
+    ? selectionPipelinesWereReady
+    : !options.deferSelectionPipelines;
+  engine.selectionPipelineWarmup = options.reuseResidentPrograms
+    ? residentSelectionWarmup
+    : options.deferSelectionPipelines
+      ? warmSelectionPipelines
+      : null;
   engine.additivePipeline = additivePipeline;
   engine.erasePipeline = erasePipeline;
   engine.shapeNormalPipeline = shapeNormalPipeline;
@@ -2143,9 +2274,9 @@ export async function recreateLayerResources(
   releaseRasterBevelRenderer(engine);
   releaseRasterOuterShadowRenderer(engine);
   releaseRasterInnerShadowRenderer(engine);
-  oldEffectsWorkbench?.destroy();
+  if (!releasedOutgoingResources) oldEffectsWorkbench?.destroy();
   engine.effectsWorkbench = nextEffectsWorkbench;
-  oldBlendRenderer?.destroy();
+  if (oldBlendRenderer !== blendRenderer) oldBlendRenderer?.destroy();
   supersededDisplayPyramid?.texture.destroy();
   supersededTransparentTexture?.destroy();
   engine.destroyMergedSurface(supersededMergedBelow);
@@ -2664,6 +2795,8 @@ function writeColdTileCompositeUniforms(
   u32[2] = destination.textureWidth;
   u32[3] = destination.textureHeight;
   f32[4] = Math.min(1, Math.max(0, opacity));
+  u32[6] = Math.ceil(engine.documentWidth / DOCUMENT_TILE_GRID_SIZE);
+  u32[7] = Math.ceil(engine.documentHeight / DOCUMENT_TILE_GRID_SIZE);
   engine.device.queue.writeBuffer(engine.layerColdTileCompositeUniformBuffer, 0, upload);
 }
 
@@ -2875,7 +3008,7 @@ async function foldAuthoritativeColdTilesIntoMergedSurface(
     engine.layerColdTileCompositeCompressedFoldCount += source.compressed ? 1 : 0;
     engine.layerColdTileCompositeTileCount += foldedTileCount;
     engine.layerColdTileCompositeSubmissionCount += submissionCount;
-    engine.layerColdTileCompositeAvoidedHydrationBytes += DOCUMENT_WIDTH * DOCUMENT_HEIGHT
+    engine.layerColdTileCompositeAvoidedHydrationBytes += engine.documentWidth * engine.documentHeight
       * (engine.layerFormat === "rgba16float" ? 8 : 4);
   } finally {
     if (submitted && !completed) {

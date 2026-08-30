@@ -1545,6 +1545,16 @@ assert.match(
   /onMultiSelectionChange: \(\{ enabled, orderedKeys \}\) => \{\s*rasterAdjustmentsController\?\.syncUi\(\)/,
   "Changing layer multi-selection must refresh filter eligibility immediately.",
 );
+assert.match(
+  source,
+  /reconfigureDocument\(width: number, height: number\): void \{\s*this\.spatialBlurEditor\.reconfigureDocument\(width, height\);/,
+  "Point Blur must receive the active canvas extent after an in-place document switch.",
+);
+assert.match(
+  main,
+  /function rebaseEditorAfterDocumentSwitch\(\)[\s\S]*?rasterAdjustmentsController\?\.reconfigureDocument\(\s*engine\.documentWidth,\s*engine\.documentHeight,/,
+  "The editor rebase must publish the new canvas extent to dimension-aware adjustment controls.",
+);
 
 controller.dispose();
 controller.dispose();

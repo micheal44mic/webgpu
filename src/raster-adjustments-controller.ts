@@ -1013,6 +1013,10 @@ export class RasterAdjustmentsController {
     this.syncGradientMapUi();
   }
 
+  reconfigureDocument(width: number, height: number): void {
+    this.spatialBlurEditor.reconfigureDocument(width, height);
+  }
+
   handleResize(): void {
     this.liquifySheet.handleResize();
     this.gaussianBlurSheet.handleResize();

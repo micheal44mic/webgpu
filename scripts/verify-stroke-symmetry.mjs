@@ -25,7 +25,7 @@ function closeTo(actual, expected, epsilon = 1e-5, label = "value") {
 }
 
 assert.equal(STAMP_STRIDE_BYTES, 32, "symmetry must not expand the GPU stamp ABI");
-assert.equal(BRUSH_UNIFORM_BYTES, 96, "symmetry must retain the uniform ABI");
+assert.equal(BRUSH_UNIFORM_BYTES, 112, "symmetry must retain the dimension-neutral uniform ABI");
 assert.equal(encodeStrokeSymmetryOptions(3, "off"), 3);
 assert.equal(encodeStrokeSymmetryOptions(3, "vertical"), 3 | (1 << 8));
 assert.equal(encodeStrokeSymmetryOptions(3, "horizontal"), 3 | (2 << 8));
@@ -154,6 +154,8 @@ const uniformUnsigned = new Uint32Array(uniformUpload);
 assert.equal(uniformFloats[15], 0);
 assert.equal(uniformFloats[19], 1);
 assert.equal(uniformUnsigned[20], 3 | (3 << 8));
+assert.equal(uniformFloats[24], DOCUMENT_WIDTH);
+assert.equal(uniformFloats[25], DOCUMENT_HEIGHT);
 
 const packedUpload = new ArrayBuffer(STAMP_STRIDE_BYTES);
 const packed = packStampsIntoUpload(

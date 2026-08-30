@@ -1,7 +1,4 @@
 import {
-  SELECTION_LAYER_HEIGHT,
-  SELECTION_LAYER_WIDTH,
-  SELECTION_MASK_WORDS,
   SELECTION_META_MAX_X,
   SELECTION_META_MAX_Y,
   SELECTION_META_MIN_X,
@@ -9,17 +6,10 @@ import {
   SELECTION_META_SELECTED_PIXELS,
   SELECTION_META_TILE_MASK_START,
   SELECTION_TILE_GRID_SIZE,
-  SELECTION_TILE_HEIGHT,
-  SELECTION_TILE_WIDTH,
-  SELECTION_WORDS_PER_ROW,
 } from "./selection-core.ts";
 import { colorMatchShaderHelpers } from "./color-match-core.ts";
 
 export const selectionComputeShader = /* wgsl */ `
-const LAYER_EXTENT: vec2<u32> = vec2<u32>(${SELECTION_LAYER_WIDTH}u, ${SELECTION_LAYER_HEIGHT}u);
-const WORDS_PER_ROW: u32 = ${SELECTION_WORDS_PER_ROW}u;
-const MASK_WORDS: u32 = ${SELECTION_MASK_WORDS}u;
-
 struct SelectionUniforms {
   size: vec2<u32>,
   combineMode: u32,
@@ -44,6 +34,19 @@ struct LassoSpan {
 @group(0) @binding(3) var<storage, read> externalMask: array<u32>;
 @group(0) @binding(4) var<storage, read> lassoSpans: array<LassoSpan>;
 @group(0) @binding(5) var<storage, read_write> metadata: array<atomic<u32>>;
+
+fn wordsPerRow() -> u32 {
+  return (uniforms.size.x + 31u) / 32u;
+}
+
+fn maskWords() -> u32 {
+  return wordsPerRow() * uniforms.size.y;
+}
+
+fn tileExtent() -> vec2<u32> {
+  return (uniforms.size + vec2<u32>(${SELECTION_TILE_GRID_SIZE - 1}u))
+    / vec2<u32>(${SELECTION_TILE_GRID_SIZE}u);
+}
 
 fn linearToSrgb(channel: f32) -> f32 {
   let value = clamp(channel, 0.0, 1.0);
@@ -75,13 +78,14 @@ fn applyBit(wordIndex: u32, bit: u32) {
 @compute @workgroup_size(256, 1, 1)
 fn selectGlobalColor(@builtin(global_invocation_id) global: vec3<u32>) {
   let wordIndex = global.x;
-  if (wordIndex >= MASK_WORDS) { return; }
-  let y = wordIndex / WORDS_PER_ROW;
-  let baseX = (wordIndex % WORDS_PER_ROW) * 32u;
+  let rowWords = wordsPerRow();
+  if (wordIndex >= maskWords()) { return; }
+  let y = wordIndex / rowWords;
+  let baseX = (wordIndex % rowWords) * 32u;
   var candidate = 0u;
   for (var bit = 0u; bit < 32u; bit += 1u) {
     let pixel = vec2<u32>(baseX + bit, y);
-    if (pixel.x >= LAYER_EXTENT.x || pixel.y >= LAYER_EXTENT.y) { continue; }
+    if (pixel.x >= uniforms.size.x || pixel.y >= uniforms.size.y) { continue; }
     let source = straightSrgb(textureLoad(sourceLayer, vec2<i32>(pixel), 0));
     let matches = globalStraightSrgbColorsMatch(
       source,
@@ -113,14 +117,14 @@ fn spanWordMask(wordX: u32, startX: u32, endX: u32) -> u32 {
 fn rasterizeLassoSpans(@builtin(global_invocation_id) global: vec3<u32>) {
   if (global.x >= uniforms.spanCount) { return; }
   let span = lassoSpans[global.x];
-  if (span.y >= LAYER_EXTENT.y || span.endX <= span.startX) { return; }
+  if (span.y >= uniforms.size.y || span.endX <= span.startX) { return; }
   let firstWord = span.startX / 32u;
   let lastWord = (span.endX - 1u) / 32u;
   var wordX = firstWord;
   loop {
     let bits = spanWordMask(wordX, span.startX, span.endX);
     if (bits != 0u) {
-      applyBit(span.y * WORDS_PER_ROW + wordX, bits);
+      applyBit(span.y * wordsPerRow() + wordX, bits);
     }
     if (wordX == lastWord) { break; }
     wordX += 1u;
@@ -130,7 +134,7 @@ fn rasterizeLassoSpans(@builtin(global_invocation_id) global: vec3<u32>) {
 @compute @workgroup_size(256, 1, 1)
 fn combineExternalMask(@builtin(global_invocation_id) global: vec3<u32>) {
   let wordIndex = global.x;
-  if (wordIndex >= MASK_WORDS) { return; }
+  if (wordIndex >= maskWords()) { return; }
   let candidate = externalMask[wordIndex];
   if (uniforms.combineMode == 0u) {
     atomicStore(&selectionMask[wordIndex], candidate);
@@ -144,9 +148,9 @@ fn combineExternalMask(@builtin(global_invocation_id) global: vec3<u32>) {
 @compute @workgroup_size(256, 1, 1)
 fn invertSelection(@builtin(global_invocation_id) global: vec3<u32>) {
   let wordIndex = global.x;
-  if (wordIndex >= MASK_WORDS) { return; }
-  let wordX = wordIndex % WORDS_PER_ROW;
-  let validPixels = min(32u, LAYER_EXTENT.x - wordX * 32u);
+  if (wordIndex >= maskWords()) { return; }
+  let wordX = wordIndex % wordsPerRow();
+  let validPixels = min(32u, uniforms.size.x - wordX * 32u);
   var validMask = 0xffffffffu;
   if (validPixels < 32u) { validMask = (1u << validPixels) - 1u; }
   atomicStore(&selectionMask[wordIndex], ~externalMask[wordIndex] & validMask);
@@ -155,17 +159,18 @@ fn invertSelection(@builtin(global_invocation_id) global: vec3<u32>) {
 @compute @workgroup_size(256, 1, 1)
 fn translateExternalMask(@builtin(global_invocation_id) global: vec3<u32>) {
   let wordIndex = global.x;
-  if (wordIndex >= MASK_WORDS) { return; }
-  let destinationY = i32(wordIndex / WORDS_PER_ROW);
-  let destinationBaseX = i32((wordIndex % WORDS_PER_ROW) * 32u);
+  let rowWords = wordsPerRow();
+  if (wordIndex >= maskWords()) { return; }
+  let destinationY = i32(wordIndex / rowWords);
+  let destinationBaseX = i32((wordIndex % rowWords) * 32u);
   let delta = vec2<i32>(round(uniforms.targetColor.xy));
   var translated = 0u;
   for (var bit = 0u; bit < 32u; bit += 1u) {
-    if (destinationBaseX + i32(bit) >= i32(LAYER_EXTENT.x)) { continue; }
+    if (destinationBaseX + i32(bit) >= i32(uniforms.size.x)) { continue; }
     let source = vec2<i32>(destinationBaseX + i32(bit), destinationY) - delta;
-    if (all(source >= vec2<i32>(0)) && all(source < vec2<i32>(LAYER_EXTENT))) {
+    if (all(source >= vec2<i32>(0)) && all(source < vec2<i32>(uniforms.size))) {
       let sourcePixel = vec2<u32>(source);
-      let sourceWord = sourcePixel.y * WORDS_PER_ROW + sourcePixel.x / 32u;
+      let sourceWord = sourcePixel.y * rowWords + sourcePixel.x / 32u;
       if ((externalMask[sourceWord] & (1u << (sourcePixel.x & 31u))) != 0u) {
         translated |= 1u << bit;
       }
@@ -193,13 +198,14 @@ fn lastSetBit(word: u32) -> u32 {
 @compute @workgroup_size(256, 1, 1)
 fn summarizeSelection(@builtin(global_invocation_id) global: vec3<u32>) {
   let wordIndex = global.x;
-  if (wordIndex >= MASK_WORDS) { return; }
+  let rowWords = wordsPerRow();
+  if (wordIndex >= maskWords()) { return; }
   var word = atomicLoad(&selectionMask[wordIndex]);
-  let wordX = wordIndex % WORDS_PER_ROW;
-  let validPixels = min(32u, LAYER_EXTENT.x - wordX * 32u);
+  let wordX = wordIndex % rowWords;
+  let validPixels = min(32u, uniforms.size.x - wordX * 32u);
   if (validPixels < 32u) { word &= (1u << validPixels) - 1u; }
   if (word == 0u) { return; }
-  let y = wordIndex / WORDS_PER_ROW;
+  let y = wordIndex / rowWords;
   let minX = wordX * 32u + firstSetBit(word);
   let maxX = wordX * 32u + lastSetBit(word) + 1u;
   atomicAdd(&metadata[${SELECTION_META_SELECTED_PIXELS}u], countOneBits(word));
@@ -207,9 +213,10 @@ fn summarizeSelection(@builtin(global_invocation_id) global: vec3<u32>) {
   atomicMin(&metadata[${SELECTION_META_MIN_Y}u], y);
   atomicMax(&metadata[${SELECTION_META_MAX_X}u], maxX);
   atomicMax(&metadata[${SELECTION_META_MAX_Y}u], y + 1u);
-  let tileY = min(y / ${SELECTION_TILE_HEIGHT}u, ${SELECTION_TILE_GRID_SIZE - 1}u);
-  let firstTileX = min(minX / ${SELECTION_TILE_WIDTH}u, ${SELECTION_TILE_GRID_SIZE - 1}u);
-  let lastTileX = min((maxX - 1u) / ${SELECTION_TILE_WIDTH}u, ${SELECTION_TILE_GRID_SIZE - 1}u);
+  let tileSize = tileExtent();
+  let tileY = min(y / tileSize.y, ${SELECTION_TILE_GRID_SIZE - 1}u);
+  let firstTileX = min(minX / tileSize.x, ${SELECTION_TILE_GRID_SIZE - 1}u);
+  let lastTileX = min((maxX - 1u) / tileSize.x, ${SELECTION_TILE_GRID_SIZE - 1}u);
   var tileX = firstTileX;
   loop {
     let tile = tileY * ${SELECTION_TILE_GRID_SIZE}u + tileX;
@@ -224,23 +231,34 @@ fn summarizeSelection(@builtin(global_invocation_id) global: vec3<u32>) {
 `;
 
 export const selectionOverlayShader = /* wgsl */ `
-const LAYER_EXTENT: vec2<i32> = vec2<i32>(${SELECTION_LAYER_WIDTH}, ${SELECTION_LAYER_HEIGHT});
-const WORDS_PER_ROW: u32 = ${SELECTION_WORDS_PER_ROW}u;
-
 struct OverlayUniforms {
   canvasSize: vec2<f32>,
   viewCenter: vec2<f32>,
   viewRotation: vec2<f32>,
   zoom: f32,
-  layerSize: f32,
+  documentWidth: f32,
   selectedPixels: u32,
-  _padding0: u32,
+  documentHeight: u32,
   selectionOffset: vec2<f32>,
 };
 
 @group(0) @binding(0) var<uniform> overlay: OverlayUniforms;
 @group(0) @binding(1) var<storage, read> selectionMask: array<u32>;
 @group(0) @binding(2) var<storage, read> selectionMetadata: array<u32>;
+
+fn layerExtent() -> vec2<i32> {
+  return vec2<i32>(i32(overlay.documentWidth), i32(overlay.documentHeight));
+}
+
+fn wordsPerRow() -> u32 {
+  return (u32(overlay.documentWidth) + 31u) / 32u;
+}
+
+fn tileExtent() -> vec2<u32> {
+  return (vec2<u32>(u32(overlay.documentWidth), overlay.documentHeight)
+    + vec2<u32>(${SELECTION_TILE_GRID_SIZE - 1}u))
+    / vec2<u32>(${SELECTION_TILE_GRID_SIZE}u);
+}
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
@@ -277,8 +295,9 @@ fn selectionWordRangeMask(localStart: u32, localEnd: u32) -> u32 {
 }
 
 fn anySelectedInLayerBounds(rawMin: vec2<i32>, rawMax: vec2<i32>) -> bool {
-  let minimum = clamp(rawMin, vec2<i32>(0), LAYER_EXTENT);
-  let maximum = clamp(rawMax, vec2<i32>(0), LAYER_EXTENT);
+  let extent = layerExtent();
+  let minimum = clamp(rawMin, vec2<i32>(0), extent);
+  let maximum = clamp(rawMax, vec2<i32>(0), extent);
   if (any(maximum <= minimum)) {
     return false;
   }
@@ -297,14 +316,15 @@ fn anySelectedInLayerBounds(rawMin: vec2<i32>, rawMax: vec2<i32>) -> bool {
 
   let clippedMinimum = max(minimum, selectedMinimum);
   let clippedMaximum = min(maximum, selectedMaximum);
+  let tileSize = tileExtent();
   let firstTile = vec2<u32>(
-    u32(clippedMinimum.x) / ${SELECTION_TILE_WIDTH}u,
-    u32(clippedMinimum.y) / ${SELECTION_TILE_HEIGHT}u,
+    u32(clippedMinimum.x) / tileSize.x,
+    u32(clippedMinimum.y) / tileSize.y,
   );
   let lastTile = min(
     vec2<u32>(
-      u32(clippedMaximum.x - 1) / ${SELECTION_TILE_WIDTH}u,
-      u32(clippedMaximum.y - 1) / ${SELECTION_TILE_HEIGHT}u,
+      u32(clippedMaximum.x - 1) / tileSize.x,
+      u32(clippedMaximum.y - 1) / tileSize.y,
     ),
     vec2<u32>(${SELECTION_TILE_GRID_SIZE - 1}u),
   );
@@ -337,7 +357,7 @@ fn anySelectedInLayerBounds(rawMin: vec2<i32>, rawMax: vec2<i32>) -> bool {
       let localStart = min(32u, max(u32(clippedMinimum.x), wordStart) - wordStart);
       let localEnd = min(32u, max(u32(clippedMaximum.x), wordStart) - wordStart);
       let rangeMask = selectionWordRangeMask(localStart, localEnd);
-      if ((selectionMask[y * WORDS_PER_ROW + wordX] & rangeMask) != 0u) {
+      if ((selectionMask[y * wordsPerRow() + wordX] & rangeMask) != 0u) {
         return true;
       }
       if (wordX == lastWord) { break; }

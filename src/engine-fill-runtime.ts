@@ -4,10 +4,10 @@
  */
 import type { BrushEngine } from "./brush-engine";
 import {
-  FILL_HISTORY_MASK_BYTES,
   FILL_LAYER_HEIGHT,
   FILL_LAYER_WIDTH,
   FILL_RENDER_MASK_STRATEGY,
+  currentFillDocumentMetrics,
   hexToLinearFillColor,
   normalizeFillTolerance,
   resolveFillCompositeMode,
@@ -908,7 +908,7 @@ async function startNextFillClick(
     }
 
     orphanedSlice = engine.historyGpuStorage.allocate(
-      FILL_HISTORY_MASK_BYTES,
+      currentFillDocumentMetrics().historyMaskBytes,
       `Fill ${session.actionId} · staged mask ${session.stagedBatches.length + 1}`,
     );
     const captureEncoder = engine.device.createCommandEncoder({
@@ -1165,7 +1165,7 @@ async function finalizeFillPreview(
     }
     assertFillSessionLayer(engine, session);
     historySlice = engine.historyGpuStorage.allocate(
-      FILL_HISTORY_MASK_BYTES,
+      currentFillDocumentMetrics().historyMaskBytes,
       `Fill ${session.actionId} · final mask ${FILL_LAYER_WIDTH}×${FILL_LAYER_HEIGHT} 1-bit`,
     );
     const encoder = engine.device.createCommandEncoder({

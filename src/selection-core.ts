@@ -1,4 +1,6 @@
 import {
+  DOCUMENT_MAX_EDGE,
+  DOCUMENT_TILE_SIZE,
   DOCUMENT_TILE_GRID_SIZE,
   DOCUMENT_TILE_HEIGHT,
   DOCUMENT_TILE_MASK_WORDS,
@@ -55,18 +57,15 @@ export interface LassoSpanRaster {
 }
 
 /** @deprecated Compatibility maximum edge. */
-export const SELECTION_LAYER_SIZE = Math.max(DOCUMENT_WIDTH, DOCUMENT_HEIGHT);
-export const SELECTION_LAYER_WIDTH = DOCUMENT_WIDTH;
-export const SELECTION_LAYER_HEIGHT = DOCUMENT_HEIGHT;
-export const SELECTION_WORDS_PER_ROW = Math.ceil(SELECTION_LAYER_WIDTH / 32);
-export const SELECTION_MASK_WORDS = SELECTION_WORDS_PER_ROW * SELECTION_LAYER_HEIGHT;
-export const SELECTION_MASK_BYTES = SELECTION_MASK_WORDS * 4;
+export { DOCUMENT_MAX_EDGE as SELECTION_LAYER_SIZE };
+export { DOCUMENT_WIDTH as SELECTION_LAYER_WIDTH };
+export { DOCUMENT_HEIGHT as SELECTION_LAYER_HEIGHT };
 export const SELECTION_TILE_MASK_WORDS = DOCUMENT_TILE_MASK_WORDS;
 export const SELECTION_TILE_GRID_SIZE = DOCUMENT_TILE_GRID_SIZE;
 /** @deprecated Compatibility maximum tile edge. */
-export const SELECTION_TILE_SIZE = Math.max(DOCUMENT_TILE_WIDTH, DOCUMENT_TILE_HEIGHT);
-export const SELECTION_TILE_WIDTH = DOCUMENT_TILE_WIDTH;
-export const SELECTION_TILE_HEIGHT = DOCUMENT_TILE_HEIGHT;
+export { DOCUMENT_TILE_SIZE as SELECTION_TILE_SIZE };
+export { DOCUMENT_TILE_WIDTH as SELECTION_TILE_WIDTH };
+export { DOCUMENT_TILE_HEIGHT as SELECTION_TILE_HEIGHT };
 export const SELECTION_METADATA_WORDS = 16;
 export const SELECTION_METADATA_BYTES = SELECTION_METADATA_WORDS * 4;
 export const SELECTION_METADATA_BUFFER_BYTES = 256;
@@ -88,14 +87,53 @@ export const SELECTION_META_MAX_X = 3;
 export const SELECTION_META_MAX_Y = 4;
 export const SELECTION_META_TILE_MASK_START = 5;
 
-export const SELECTION_RESIDENT_BUFFER_BYTES =
-  SELECTION_MASK_BYTES * 3
-  + SELECTION_LASSO_SPAN_BUFFER_BYTES
-  + SELECTION_METADATA_BUFFER_BYTES
-  + SELECTION_METADATA_BUFFER_BYTES
-  + SELECTION_OPERATION_UNIFORM_BUFFER_BYTES
-  + SELECTION_OVERLAY_UNIFORM_BUFFER_BYTES
-  + SELECTION_LASSO_SPAN_BYTES;
+export interface SelectionDocumentMetrics {
+  readonly layerSize: number;
+  readonly layerWidth: number;
+  readonly layerHeight: number;
+  readonly wordsPerRow: number;
+  readonly maskWords: number;
+  readonly maskBytes: number;
+  readonly tileSize: number;
+  readonly tileWidth: number;
+  readonly tileHeight: number;
+  readonly residentBufferBytes: number;
+}
+
+/** Coherent document-owned sizes evaluated after each active-document switch. */
+export function currentSelectionDocumentMetrics(
+  layerWidth = DOCUMENT_WIDTH,
+  layerHeight = DOCUMENT_HEIGHT,
+): SelectionDocumentMetrics {
+  if (!Number.isSafeInteger(layerWidth) || layerWidth <= 0
+    || !Number.isSafeInteger(layerHeight) || layerHeight <= 0) {
+    throw new RangeError("Selection document dimensions must be positive integers.");
+  }
+  const wordsPerRow = Math.ceil(layerWidth / 32);
+  const maskWords = wordsPerRow * layerHeight;
+  const maskBytes = maskWords * 4;
+  return Object.freeze({
+    layerSize: Math.max(layerWidth, layerHeight),
+    layerWidth,
+    layerHeight,
+    wordsPerRow,
+    maskWords,
+    maskBytes,
+    tileSize: Math.max(
+      Math.ceil(layerWidth / DOCUMENT_TILE_GRID_SIZE),
+      Math.ceil(layerHeight / DOCUMENT_TILE_GRID_SIZE),
+    ),
+    tileWidth: Math.ceil(layerWidth / DOCUMENT_TILE_GRID_SIZE),
+    tileHeight: Math.ceil(layerHeight / DOCUMENT_TILE_GRID_SIZE),
+    residentBufferBytes: maskBytes * 3
+      + SELECTION_LASSO_SPAN_BUFFER_BYTES
+      + SELECTION_METADATA_BUFFER_BYTES
+      + SELECTION_METADATA_BUFFER_BYTES
+      + SELECTION_OPERATION_UNIFORM_BUFFER_BYTES
+      + SELECTION_OVERLAY_UNIFORM_BUFFER_BYTES
+      + SELECTION_LASSO_SPAN_BYTES,
+  });
+}
 
 export function emptyPixelSelectionState(revision = 0): PixelSelectionState {
   return {
@@ -217,8 +255,8 @@ function finiteLassoPoints(points: readonly SelectionPoint[]): SelectionPoint[] 
  */
 export function buildLassoSpans(
   sourcePoints: readonly SelectionPoint[],
-  layerWidth = SELECTION_LAYER_WIDTH,
-  layerHeight = SELECTION_LAYER_HEIGHT,
+  layerWidth = DOCUMENT_WIDTH,
+  layerHeight = DOCUMENT_HEIGHT,
 ): LassoSpanRaster {
   if (!Number.isInteger(layerWidth) || layerWidth <= 0
     || !Number.isInteger(layerHeight) || layerHeight <= 0) {

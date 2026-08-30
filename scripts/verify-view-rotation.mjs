@@ -152,16 +152,21 @@ assert.notEqual(magnet.display, 0, "il magnete non deve riagganciare fuori dalla
 applyMagnet(magnet, -2);
 assert.equal(magnet.display, 0, "entro 3° il magnete deve tornare a zero esatto");
 
-assert.match(engineSource, /const DISPLAY_UNIFORM_BYTES = 112;/,
-  "rotazione, origin merged, gruppo di ritaglio e sfondo condividono la ABI display da 112 byte");
+assert.match(engineSource, /const DISPLAY_UNIFORM_BYTES = 128;/,
+  "rotazione, composizione e dimensioni runtime condividono la ABI display da 128 byte");
 assert.match(engineSource, /displayUniformUpload\[2\] = this\.viewRotationCos/);
 assert.match(engineSource, /displayUniformUpload\[3\] = this\.viewRotationSin/);
 assert.match(engineSource, /displayUniformUpload\[4\] = this\.viewCenterX/);
 assert.match(engineSource, /displayUniformUpload\[5\] = this\.viewCenterY/);
 assert.match(engineSource, /displayUniformUpload\[24\] = backgroundRed/);
 assert.match(engineSource, /displayUniformUpload\[27\] = this\.documentBackground\.visible \? 1 : 0/);
+assert.match(engineSource, /displayUniformUpload\[28\] = this\.documentWidth/);
+assert.match(engineSource, /displayUniformUpload\[29\] = this\.documentHeight/);
 assert.match(shaderSource, /display\.backgroundColor\.rgb/);
 assert.match(mixedSceneCompositorSource, /backgroundFragmentMain/);
+assert.match(mixedSceneCompositorSource, /documentSize: vec2<f32>/);
+assert.match(mixedSceneCompositorSource, /layerPosition < display\.documentSize/);
+assert.doesNotMatch(mixedSceneCompositorSource, /\$\{DOCUMENT_(?:WIDTH|HEIGHT)\}/);
 assert.match(engineSource, /VIEW_ROTATION_SNAP_ENTER_RADIANS = 3 \* Math\.PI \/ 180/);
 assert.match(engineSource, /VIEW_ROTATION_SNAP_RELEASE_RADIANS = 7 \* Math\.PI \/ 180/);
 
@@ -299,7 +304,7 @@ assert.doesNotMatch(displayShaders, /display\.layerSize/,
   "la dimensione layer deve essere ricavata senza allargare l'uniform");
 assert.ok((displayShaders.match(/textureDimensions\(activeLayerBase, 0\)/g) ?? []).length >= 2);
 assert.match(displayShaders, /textureDimensions\(layerTexture, 0\)/);
-assert.match(displayShaders, /let layerSize = vec2<f32>\(DOCUMENT_SIZE\)/);
+assert.match(displayShaders, /let layerSize = vec2<f32>\(documentSize\(\)\)/);
 
 assert.match(canvasInputSource, /angle: Math\.atan2\(second\.clientY - first\.clientY/,
   "il gesto mobile deve misurare l'angolo delle due dita");

@@ -996,16 +996,17 @@ projectSessionController = new ProjectSessionController({
       engine.layerStack.active.name = name;
     },
     preflightDocumentSwitch: async (target) => {
+      const maximumTextureEdge = Number(engine.device.limits.maxTextureDimension2D);
       if (
-        target.documentWidth !== engine.documentWidth
-        || target.documentHeight !== engine.documentHeight
+        target.documentWidth > maximumTextureEdge
+        || target.documentHeight > maximumTextureEdge
       ) {
-        throw new Error("The selected canvas needs a different GPU document runtime.");
+        throw new Error("The selected canvas exceeds this GPU device's texture limit.");
       }
       await engine.waitForIdle();
     },
-    resetDocumentForSwitch: async () => {
-      await engine.resetToFreshProjectState();
+    resetDocumentForSwitch: async (target) => {
+      await engine.resetForDocumentSwitch(target.documentWidth, target.documentHeight);
     },
     waitForDocumentFirstFrame: async () => {
       engine.requestRender();
@@ -2691,6 +2692,7 @@ async function waitForDocumentSwitchControllersIdle(): Promise<void> {
       || shapeToolController?.isBusy === true
       || pixelSelectionController?.isBusy === true
       || rasterStyleController.isBusy
+      || layerThumbnailController.isCaptureInFlight
       || brushQuickControlsController?.isDragging === true
       || editorExtension?.isBusy() === true;
     if (!busy) return;
@@ -2739,6 +2741,19 @@ async function prepareEditorForDocumentReset(): Promise<void> {
 }
 
 function rebaseEditorAfterDocumentSwitch(): void {
+  appDiagnosticsController?.setDocumentDimensions(
+    engine.documentWidth,
+    engine.documentHeight,
+  );
+  gpuMemoryPanelController?.setDocumentDimensions(
+    engine.documentWidth,
+    engine.documentHeight,
+  );
+  rasterAdjustmentsController?.reconfigureDocument(
+    engine.documentWidth,
+    engine.documentHeight,
+  );
+  document.title = `M1M4.COM — ${engine.documentWidth}×${engine.documentHeight}`;
   historyState = engine.getHistoryState();
   historyControlsController.resetForDocument(historyState);
   const snapshot = engine.getMixedSceneSnapshot();

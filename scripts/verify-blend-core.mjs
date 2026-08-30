@@ -619,15 +619,22 @@ assert.doesNotMatch(
 class FakeBlendPipelineDevice {
   pipelineDescriptors = [];
   shaderModuleDescriptors = [];
+  buffers = [];
   errorScopes = [];
   limits = { minUniformBufferOffsetAlignment: 256 };
 
   createBuffer(descriptor) {
-    return {
+    const buffer = {
       descriptor,
       destroyed: false,
       destroy() { this.destroyed = true; },
     };
+    this.buffers.push(buffer);
+    return buffer;
+  }
+
+  createBindGroup(descriptor) {
+    return { descriptor };
   }
 
   createBindGroupLayout(descriptor) {
@@ -716,7 +723,7 @@ const createFakeBlendRenderer = async (DryBlendRenderer) => {
 
 const previousGpuBufferUsage = globalThis.GPUBufferUsage;
 const previousGpuShaderStage = globalThis.GPUShaderStage;
-globalThis.GPUBufferUsage = { UNIFORM: 1, COPY_SRC: 2, COPY_DST: 4 };
+globalThis.GPUBufferUsage = { UNIFORM: 1, COPY_SRC: 2, COPY_DST: 4, STORAGE: 8 };
 globalThis.GPUShaderStage = { COMPUTE: 1, FRAGMENT: 2 };
 
 const vite = await createViteServer({
@@ -806,6 +813,45 @@ try {
     "large Blur must compile only the reduced-grid four-pass bundle",
   );
   assert.equal(device.pipelineDescriptors.length, 13);
+
+  const programOnlyMemoryMiB = renderer.allocatedMemoryMiB();
+  renderer.prewarmScratch();
+  const firstDocumentScratch = device.buffers.slice(2);
+  assert.ok(firstDocumentScratch.length >= 3);
+  const compiledPipelineCount = device.pipelineDescriptors.length;
+  const nextLayerView = {};
+  const nextLayerSamplingView = {};
+  renderer.reconfigureDocumentTarget({
+    documentWidth: 1080,
+    documentHeight: 1920,
+    layerView: nextLayerView,
+    layerSamplingView: nextLayerSamplingView,
+  });
+  assert.ok(
+    firstDocumentScratch.every((buffer) => buffer.destroyed),
+    "changing Blend documents must destroy document-owned scratch buffers",
+  );
+  assert.equal(
+    device.pipelineDescriptors.length,
+    compiledPipelineCount,
+    "changing Blend documents must keep the compiled program bundle resident",
+  );
+  assert.equal(
+    renderer.allocatedMemoryMiB(),
+    programOnlyMemoryMiB,
+    "changing Blend documents must leave only program-owned uniform buffers allocated",
+  );
+  renderer.prewarmScratch();
+  assert.equal(device.pipelineDescriptors.length, compiledPipelineCount);
+  assert.throws(
+    () => renderer.reconfigureDocumentTarget({
+      documentWidth: 0,
+      documentHeight: 1920,
+      layerView: {},
+      layerSamplingView: {},
+    }),
+    /positive safe integers/,
+  );
   renderer.destroy();
 
   const concurrent = await createFakeBlendRenderer(DryBlendRenderer);

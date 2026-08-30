@@ -4,7 +4,7 @@
 // Its output is a deterministic stream of continuous sweep
 // segments plus the conservative ROI needed by the later GPU port.
 
-import { LAYER_SIZE } from "./engine-limits.ts";
+import { LAYER_SIZE as DRY_BLEND_DEFAULT_DOCUMENT_SIZE } from "./engine-limits.ts";
 
 export const DRY_BLEND_CORE_BUILD = "dry-blend-continuous-core-v1-pressure-inert";
 export const DRY_BLEND_REFERENCE_STEP_RATIO = 0.06;
@@ -13,7 +13,8 @@ export const DRY_BLEND_REFERENCE_MAX_STEP_PX = 48;
 export const DRY_BLEND_BLUR_MAX_SUPPORT_PX = 64;
 export const DRY_BLEND_BLUR_REDUCED_MAX_SUPPORT_PX = 12;
 export const DRY_BLEND_BLUR_DIAMETER_RATIO = 0.25;
-export const DRY_BLEND_DEFAULT_DOCUMENT_SIZE = LAYER_SIZE;
+// Compatibility default remains a live view of the active document edge.
+export { DRY_BLEND_DEFAULT_DOCUMENT_SIZE };
 export const DRY_BLEND_DEFAULT_SCRATCH_SIZE = 1664;
 export const DRY_BLEND_DEFAULT_TILE_SIZE = 256;
 export const DRY_BLEND_SCRATCH_LIFECYCLE_STRATEGY =

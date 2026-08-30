@@ -142,6 +142,10 @@ assert.match(runtimeSource, /spatialBlurGaussianKernel\(/);
 assert.match(runtimeSource, /table\[offset \* WEIGHT_RADIUS_COUNT \+ radiusIndex\]/);
 assert.match(runtimeSource, /texture_storage_2d<r32uint, write>/);
 assert.match(runtimeSource, /texture_storage_2d<rgba16float, write>/);
+assert.match(runtimeSource, /parameters\.fieldAndDocument\.yz/);
+assert.match(runtimeSource, /f32\[word \+ 17\] = documentWidth/);
+assert.match(runtimeSource, /f32\[word \+ 18\] = documentHeight/);
+assert.doesNotMatch(runtimeSource, /DOCUMENT_(?:WIDTH|HEIGHT)|DOCUMENT_EXTENT|engine-limits/);
 assert.match(runtimeSource, /atomicMax\(&groupSupport, supportRadius\(radiusIndex\)\)/);
 assert.match(runtimeSource, /if \(pins\.length > 1\)/,
   "one point must bypass the radius-field pass because its field is uniform");

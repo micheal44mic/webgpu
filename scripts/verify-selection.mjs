@@ -9,19 +9,16 @@ import {
   SELECTION_LAYER_HEIGHT,
   SELECTION_LAYER_SIZE,
   SELECTION_LAYER_WIDTH,
-  SELECTION_MASK_BYTES,
-  SELECTION_MASK_WORDS,
   SELECTION_MAX_LASSO_POINTS,
   SELECTION_MAX_LASSO_SPANS,
   SELECTION_OVERLAY_STRATEGY,
-  SELECTION_RESIDENT_BUFFER_BYTES,
   SELECTION_TILE_GRID_SIZE,
   SELECTION_TILE_HEIGHT,
   SELECTION_TILE_SIZE,
   SELECTION_TILE_WIDTH,
-  SELECTION_WORDS_PER_ROW,
   buildLassoSpans,
   countSelectionTiles,
+  currentSelectionDocumentMetrics,
   emptyPixelSelectionState,
   normalizeMagicWandTolerance,
   normalizeSelectionCombineMode,
@@ -60,20 +57,26 @@ assert.equal(SELECTION_LAYER_SIZE, LAYER_SIZE);
 assert.equal(SELECTION_LAYER_WIDTH, DOCUMENT_WIDTH);
 assert.equal(SELECTION_LAYER_HEIGHT, DOCUMENT_HEIGHT);
 assert.equal(SELECTION_LAYER_SIZE, Math.max(SELECTION_LAYER_WIDTH, SELECTION_LAYER_HEIGHT));
-assert.equal(SELECTION_WORDS_PER_ROW, Math.ceil(SELECTION_LAYER_WIDTH / 32));
-assert.equal(SELECTION_MASK_WORDS, SELECTION_WORDS_PER_ROW * SELECTION_LAYER_HEIGHT);
-assert.equal(SELECTION_MASK_BYTES, SELECTION_MASK_WORDS * 4);
+const selectionMetrics = currentSelectionDocumentMetrics();
+assert.equal(selectionMetrics.wordsPerRow, Math.ceil(SELECTION_LAYER_WIDTH / 32));
+assert.equal(selectionMetrics.maskWords, selectionMetrics.wordsPerRow * SELECTION_LAYER_HEIGHT);
+assert.equal(selectionMetrics.maskBytes, selectionMetrics.maskWords * 4);
 assert.equal(SELECTION_TILE_GRID_SIZE, 16);
 assert.equal(SELECTION_TILE_SIZE, 256);
 assert.equal(SELECTION_TILE_WIDTH, DOCUMENT_TILE_WIDTH);
 assert.equal(SELECTION_TILE_HEIGHT, DOCUMENT_TILE_HEIGHT);
 assert.equal(SELECTION_TILE_SIZE, Math.max(SELECTION_TILE_WIDTH, SELECTION_TILE_HEIGHT));
-assert.equal(SELECTION_MASK_BYTES, 2 * 1024 * 1024);
+assert.equal(selectionMetrics.maskBytes, 2 * 1024 * 1024);
 assert.equal(SELECTION_LASSO_SPAN_BUFFER_BYTES, 1024 * 1024);
 assert.equal(SELECTION_MAX_LASSO_POINTS, 8_192);
 assert.equal(SELECTION_MAX_LASSO_SPANS, 65_536);
-assert(SELECTION_RESIDENT_BUFFER_BYTES >= 7 * 1024 * 1024);
-assert(SELECTION_RESIDENT_BUFFER_BYTES < 7.01 * 1024 * 1024);
+assert(selectionMetrics.residentBufferBytes >= 7 * 1024 * 1024);
+assert(selectionMetrics.residentBufferBytes < 7.01 * 1024 * 1024);
+const portraitSelectionMetrics = currentSelectionDocumentMetrics(1080, 1920);
+assert.equal(portraitSelectionMetrics.wordsPerRow, 34);
+assert.equal(portraitSelectionMetrics.maskWords, 34 * 1920);
+assert.equal(portraitSelectionMetrics.tileWidth, 68);
+assert.equal(portraitSelectionMetrics.tileHeight, 120);
 
 assert.equal(normalizeSelectionTolerance(-1), 0);
 assert.equal(normalizeSelectionTolerance(0), 0);
@@ -245,9 +248,11 @@ assert(shader.includes("overlay.viewCenter + layerOffset - overlay.selectionOffs
 assert(shader.includes("activeTileFound"));
 assert(shader.includes("anySelectedInLayerBounds(minimum, maximum)"));
 assert(shader.includes("return vec4<f32>(vec3<f32>(0.16, 0.48, 1.0) * alpha, alpha)"));
-assert.match(shader, /const LAYER_EXTENT: vec2<u32> = vec2<u32>\(\$\{SELECTION_LAYER_WIDTH\}u, \$\{SELECTION_LAYER_HEIGHT\}u\);/);
-assert.match(shader, /y \/ \$\{SELECTION_TILE_HEIGHT\}u/);
-assert.match(shader, /minX \/ \$\{SELECTION_TILE_WIDTH\}u/);
+assert(shader.includes("fn wordsPerRow() -> u32"));
+assert(shader.includes("return (uniforms.size.x + 31u) / 32u;"));
+assert(shader.includes("fn tileExtent() -> vec2<u32>"));
+assert(shader.includes("let tileSize = tileExtent();"));
+assert(!shader.includes("const LAYER_EXTENT"));
 assert.doesNotMatch(shader, /\bSELECTION_LAYER_SIZE\b|\bSELECTION_TILE_SIZE\b/);
 
 assert(renderer.includes("this.colorPreviewBaseMask"));
@@ -318,8 +323,12 @@ assert(runtime.includes("Math.floor(top / SELECTION_TILE_HEIGHT)"));
 assert(runtime.includes("tileX * SELECTION_TILE_WIDTH"));
 assert(runtime.includes("tileY * SELECTION_TILE_HEIGHT"));
 assert.doesNotMatch(runtime, /engine\.layerSize|\bSELECTION_TILE_SIZE\b|\bSELECTION_LAYER_SIZE\b/);
-assert(renderer.includes("unsigned[0] = SELECTION_LAYER_WIDTH"));
-assert(renderer.includes("unsigned[1] = SELECTION_LAYER_HEIGHT"));
+assert(renderer.includes("unsigned[0] = this.metrics.layerWidth"));
+assert(renderer.includes("unsigned[1] = this.metrics.layerHeight"));
+assert(renderer.includes("async reconfigureDocument("));
+assert(renderer.includes("currentSelectionDocumentMetrics(width, height)"));
+assert(renderer.includes("this.metrics = nextMetrics"));
+assert(renderer.includes("previousFrontMask.destroy()"));
 assert.doesNotMatch(renderer, /\bSELECTION_LAYER_SIZE\b|\bSELECTION_TILE_SIZE\b/);
 
 assert(fillRenderer.includes("getAnalyzedSelectionMaskBuffer(): GPUBuffer"));
@@ -344,6 +353,31 @@ assert(runtime.includes("selectionBusy = true"));
 assert(runtime.includes("SELECTION_RENDERER_IDLE_RELEASE_MS = 1_500"));
 assert(runtime.includes("engine.selectionRenderer?.destroy()"));
 assert(runtime.includes("engine.device.queue.onSubmittedWorkDone()"));
+assert(renderer.includes("const selectionGpuPrograms = new WeakMap<"));
+assert(renderer.includes("Map<GPUTextureFormat, Promise<SelectionGpuProgram>>"));
+assert(renderer.includes("const cached = programsByFormat.get(overlayFormat)"));
+assert(renderer.includes("const program = await getSelectionGpuProgram(this.device, this.overlayFormat)"));
+assert.equal(
+  renderer.match(/createShaderModule\(/g)?.length,
+  2,
+  "Selection shader modules must be created only by the device-session program cache.",
+);
+assert.equal(
+  renderer.match(/createComputePipelineAsync\(/g)?.length,
+  1,
+  "Selection compute pipelines must be created only by the device-session program cache.",
+);
+const selectionDestroyStart = renderer.indexOf("  destroy(): void");
+const selectionDestroyEnd = renderer.indexOf("  private createComputeBindGroup", selectionDestroyStart);
+assert(selectionDestroyStart >= 0 && selectionDestroyEnd > selectionDestroyStart);
+const selectionDestroySection = renderer.slice(selectionDestroyStart, selectionDestroyEnd);
+assert(selectionDestroySection.includes("this.frontMask.destroy()"));
+assert(selectionDestroySection.includes("this.metadataReadback.destroy()"));
+assert.doesNotMatch(
+  selectionDestroySection,
+  /selectionGpuPrograms|Pipeline\s*=\s*null|Module\s*=\s*null/,
+  "Idle cleanup must release document buffers without evicting the session program.",
+);
 assert(runtime.includes("engine.selectionOverlayFrameRequest = requestAnimationFrame"));
 assert(runtime.includes("reportSelectionPresentationError"));
 assert(runtime.includes("notifyPixelSelectionChange(engine, state)"));

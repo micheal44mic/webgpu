@@ -8,7 +8,6 @@ import { assertShaderCompiled } from "./engine-gpu-utils";
 import { commitHistoryActionAtomically } from "./engine-history-runtime";
 import type { RasterFilterHistoryAction } from "./engine-history-types";
 import { invalidateActiveLayerBake } from "./engine-layer-runtime";
-import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits";
 import type { DirtyRect } from "./engine-stroke-types";
 import { publishMixedScene } from "./engine-vector-text-runtime";
 import {
@@ -36,7 +35,7 @@ import {
 } from "./spatial-blur-core";
 
 export const DESTRUCTIVE_SPATIAL_BLUR_RUNTIME_BUILD =
-  "destructive-spatial-blur-webgpu-v1-shared-gaussian-kernel-quarter-pixel-field-uniform-fast-path" as const;
+  "destructive-spatial-blur-webgpu-v2-uniform-document-shared-gaussian-kernel-quarter-pixel-field-fast-path" as const;
 export const DESTRUCTIVE_SPATIAL_BLUR_PRECISION =
   "rgba16float-f32-accumulation" as const;
 export const DESTRUCTIVE_SPATIAL_BLUR_FIELD_STRATEGY =
@@ -150,8 +149,6 @@ struct SpatialBlurParameters {
 
 function fieldShader(): string {
   return `${parameterShaderSource()}
-const DOCUMENT_EXTENT = vec2<i32>(${DOCUMENT_WIDTH}, ${DOCUMENT_HEIGHT});
-
 @group(0) @binding(1) var radiusField:
   texture_storage_2d<r32uint, write>;
 
@@ -183,10 +180,11 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   let buildSize = vec2<u32>(parameters.buildOriginAndSize.zw);
   if (any(globalId.xy >= buildSize)) { return; }
   let documentPixel = parameters.buildOriginAndSize.xy + vec2<i32>(globalId.xy);
+  let documentExtent = vec2<i32>(parameters.fieldAndDocument.yz);
   let documentPosition = vec2<f32>(clamp(
     documentPixel,
     vec2<i32>(0),
-    DOCUMENT_EXTENT - vec2<i32>(1)
+    documentExtent - vec2<i32>(1)
   )) + vec2<f32>(0.5);
   textureStore(radiusField, vec2<i32>(globalId.xy), vec4<u32>(
     radiusIndexAt(documentPosition), 0u, 0u, 0u
@@ -240,8 +238,6 @@ fn unpackFilterTexel(value: vec2<u32>) -> vec4<f32> {
 
 function horizontalShader(): string {
   return `${commonFilterShaderSource()}
-const DOCUMENT_EXTENT = vec2<i32>(${DOCUMENT_WIDTH}, ${DOCUMENT_HEIGHT});
-
 @group(0) @binding(1) var immutableSource: texture_2d<f32>;
 @group(0) @binding(2) var intermediateOutput:
   texture_storage_2d<rgba16float, write>;
@@ -250,7 +246,8 @@ var<workgroup> filterCache: array<vec2<u32>, ${FILTER_CACHE_LENGTH}>;
 var<workgroup> groupSupport: atomic<u32>;
 
 fn sourceTexel(documentPosition: vec2<i32>) -> vec4<f32> {
-  let documentMaximum = max(DOCUMENT_EXTENT - vec2<i32>(1), vec2<i32>(0));
+  let documentExtent = vec2<i32>(parameters.fieldAndDocument.yz);
+  let documentMaximum = max(documentExtent - vec2<i32>(1), vec2<i32>(0));
   let clampedDocumentPosition = clamp(
     documentPosition,
     vec2<i32>(0),
@@ -598,6 +595,8 @@ function writeJobParameters(
   job: SpatialBlurJob,
   pins: readonly SpatialBlurPin[],
   support: number,
+  documentWidth: number,
+  documentHeight: number,
 ): number {
   if (index >= PARAMETER_CAPACITY) throw new Error("Point Blur: strip capacity exceeded.");
   const byteOffset = index * session.parameterStride;
@@ -622,9 +621,9 @@ function writeJobParameters(
   u32[word + 13] = job.targetWidth;
   u32[word + 14] = job.buildHeight;
   u32[word + 15] = pins.length;
-  f32[word + 16] = spatialBlurInfluenceFloorSquared(DOCUMENT_WIDTH, DOCUMENT_HEIGHT);
-  f32[word + 17] = DOCUMENT_WIDTH;
-  f32[word + 18] = DOCUMENT_HEIGHT;
+  f32[word + 16] = spatialBlurInfluenceFloorSquared(documentWidth, documentHeight);
+  f32[word + 17] = documentWidth;
+  f32[word + 18] = documentHeight;
   f32[word + 19] = DESTRUCTIVE_SPATIAL_BLUR_RADIUS_QUANTIZATION;
   for (let pinIndex = 0; pinIndex < SPATIAL_BLUR_MAX_PIN_COUNT; pinIndex += 1) {
     const base = word + PARAMETER_HEADER_WORDS + pinIndex * 4;
@@ -673,8 +672,8 @@ function encodeRequestedPreview(
   const resultBounds = spatialBlurBounds(
     session.sourceBounds,
     maximumRadius,
-    DOCUMENT_WIDTH,
-    DOCUMENT_HEIGHT,
+    engine.documentWidth,
+    engine.documentHeight,
   ) as DirtyRect | null;
   if (!resultBounds) throw new Error("Point Blur: result bounds are missing.");
   const dirtyRect = unionSpatialBlurRects(session.presentedBounds, resultBounds) as DirtyRect;
@@ -688,6 +687,8 @@ function encodeRequestedPreview(
     job,
     pins,
     support,
+    engine.documentWidth,
+    engine.documentHeight,
   ));
   if (jobs.length > 0) {
     engine.device.queue.writeBuffer(
@@ -927,27 +928,30 @@ export async function beginRasterSpatialBlur(
     const scratchBounds = spatialBlurBounds(
       sourceBounds,
       DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS,
-      DOCUMENT_WIDTH,
-      DOCUMENT_HEIGHT,
+      engine.documentWidth,
+      engine.documentHeight,
     ) as DirtyRect | null;
     if (!scratchBounds) throw new Error("The raster contains no pixels that can be blurred.");
     const pins = normalizeSpatialBlurPins(
-      initialPins ?? [createInitialSpatialBlurPin(DOCUMENT_WIDTH, DOCUMENT_HEIGHT)],
-      DOCUMENT_WIDTH,
-      DOCUMENT_HEIGHT,
+      initialPins ?? [createInitialSpatialBlurPin(engine.documentWidth, engine.documentHeight)],
+      engine.documentWidth,
+      engine.documentHeight,
     );
     const maximumRadius = spatialBlurMaximumRadius(pins);
     const initialResultBounds = spatialBlurBounds(
       sourceBounds,
       maximumRadius,
-      DOCUMENT_WIDTH,
-      DOCUMENT_HEIGHT,
+      engine.documentWidth,
+      engine.documentHeight,
     ) as DirtyRect;
     const sourceTileMask = record.storageTileMask.slice();
     const shared = await requireSharedResources(engine.device);
     const uniformAlignment = Number(engine.device.limits.minUniformBufferOffsetAlignment) || 256;
     const parameterStride = Math.ceil(PARAMETER_BYTES / uniformAlignment) * uniformAlignment;
-    const workspaceHeight = Math.min(DESTRUCTIVE_GAUSSIAN_BLUR_STRIP_HEIGHT, DOCUMENT_HEIGHT)
+    const workspaceHeight = Math.min(
+      DESTRUCTIVE_GAUSSIAN_BLUR_STRIP_HEIGHT,
+      engine.documentHeight,
+    )
       + DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS * 2;
     const maximumJobs = Math.ceil(scratchBounds.height / DESTRUCTIVE_GAUSSIAN_BLUR_STRIP_HEIGHT);
     if (maximumJobs > PARAMETER_CAPACITY) {
@@ -1163,15 +1167,19 @@ export function updateRasterSpatialBlur(
     throw new Error(`Point Blur preview interrupted: ${session.previewFault.message}. Use Cancel.`);
   }
   if (session.terminal) throw new Error("Point Blur is already finishing.");
-  const pins = normalizeSpatialBlurPins(requestedPins, DOCUMENT_WIDTH, DOCUMENT_HEIGHT);
+  const pins = normalizeSpatialBlurPins(
+    requestedPins,
+    engine.documentWidth,
+    engine.documentHeight,
+  );
   if (spatialBlurPinsEqual(pins, session.pins)) return snapshot(session);
   session.pins = pins;
   const maximumRadius = spatialBlurMaximumRadius(pins);
   const resultBounds = spatialBlurBounds(
     session.sourceBounds,
     maximumRadius,
-    DOCUMENT_WIDTH,
-    DOCUMENT_HEIGHT,
+    engine.documentWidth,
+    engine.documentHeight,
   ) as DirtyRect;
   session.resultBounds = resultBounds;
   session.resultTileMask = tileMaskCoveringRect(session.sourceTileMask, resultBounds);

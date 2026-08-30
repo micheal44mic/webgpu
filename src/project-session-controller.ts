@@ -1,5 +1,6 @@
 import type { CapturedProjectDocumentV1 } from "./engine-project-runtime";
 import type { HistoryState } from "./engine-types";
+import { validateDocumentDimensions } from "./engine-limits";
 import {
   PROJECT_DOCUMENT_SCHEMA_VERSION,
   normalizeProjectTitle,
@@ -109,8 +110,8 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
   private readonly storage: ProjectStorage;
   private readonly browser: Window;
   private readonly document: Document;
-  private readonly documentWidth: number;
-  private readonly documentHeight: number;
+  private documentWidth: number;
+  private documentHeight: number;
   private readonly saveButton: HTMLButtonElement;
   private readonly homeButton: HTMLButtonElement;
   private readonly status: HTMLParagraphElement;
@@ -492,6 +493,8 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
         await this.reportSwitchStage(stage);
       }
       const targetSummary = targetHead.project.summary;
+      this.documentWidth = targetSummary.documentWidth;
+      this.documentHeight = targetSummary.documentHeight;
       this.currentProjectId = targetSummary.id;
       this.currentHeadGenerationId = targetSummary.headGenerationId;
       this.updateIdentity(targetSummary.name);
@@ -572,14 +575,7 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
     request: ProjectSessionSwitchRequest,
   ): Promise<ProjectSessionEngineSwitchTarget> {
     if (request.kind === "new") {
-      if (
-        !Number.isInteger(request.documentWidth)
-        || !Number.isInteger(request.documentHeight)
-        || request.documentWidth !== this.documentWidth
-        || request.documentHeight !== this.documentHeight
-      ) {
-        throw new Error("The requested canvas dimensions require a different GPU document runtime.");
-      }
+      validateDocumentDimensions(request.documentWidth, request.documentHeight);
       return {
         kind: "new",
         project: null,
@@ -599,12 +595,11 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
     if (project.summary.id !== projectId) {
       throw new Error("The preloaded project does not match the requested project identifier.");
     }
-    if (
-      project.summary.documentWidth !== this.documentWidth
-      || project.summary.documentHeight !== this.documentHeight
-    ) {
-      throw new Error("The requested canvas dimensions require a different GPU document runtime.");
-    }
+    validateDocumentDimensions(
+      project.summary.documentWidth,
+      project.summary.documentHeight,
+      { allowLegacy4096: true },
+    );
     return {
       kind: "existing",
       project,
@@ -616,14 +611,17 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
 
   private async verifyProjectHead(
     projectId: string,
-    expected?: Pick<ProjectSummaryV1, "headGenerationId">,
+    expected?: Pick<ProjectSummaryV1, "headGenerationId">
+      & Partial<Pick<ProjectSummaryV1, "documentWidth" | "documentHeight">>,
   ): Promise<VerifiedProjectHead> {
     const project = await this.storage.loadProject(projectId);
     if (!project) throw new Error("The saved project head could not be read back.");
     validateLoadedProject(project);
+    const expectedWidth = expected?.documentWidth ?? this.documentWidth;
+    const expectedHeight = expected?.documentHeight ?? this.documentHeight;
     if (
-      project.summary.documentWidth !== this.documentWidth
-      || project.summary.documentHeight !== this.documentHeight
+      project.summary.documentWidth !== expectedWidth
+      || project.summary.documentHeight !== expectedHeight
     ) {
       throw new Error("The saved project head has incompatible document dimensions.");
     }

@@ -691,8 +691,8 @@ function writeRasterSourceUniform(
   upload[3] = Math.fround(source.document.height * source.scale * 0.5);
   upload[4] = Math.fround(Math.cos(source.rotation));
   upload[5] = Math.fround(Math.sin(source.rotation));
-  upload[6] = 0;
-  upload[7] = 0;
+  upload[6] = Math.fround(engine.documentWidth);
+  upload[7] = Math.fround(engine.documentHeight);
   engine.device.queue.writeBuffer(resource.uniformBuffer, 0, upload);
   resource.uniformInitialized = true;
 }

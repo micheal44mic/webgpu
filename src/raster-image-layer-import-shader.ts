@@ -1,5 +1,3 @@
-import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits.ts";
-
 /**
  * Transient WebGPU shaders used while importing a decoded bitmap into an
  * authoritative paint layer.
@@ -215,7 +213,7 @@ struct RasterSourceUniforms {
   center: vec2<f32>,
   halfSize: vec2<f32>,
   rotation: vec2<f32>,
-  _padding: vec2<f32>,
+  documentExtent: vec2<f32>,
 };
 
 struct VertexOutput {
@@ -268,10 +266,11 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
     corners[vertexIndex] * sourceTransform.halfSize,
     sourceTransform.rotation
   );
+  let documentExtent = max(sourceTransform.documentExtent, vec2<f32>(1.0));
   var output: VertexOutput;
   output.position = vec4<f32>(
-    documentPosition.x / ${DOCUMENT_WIDTH}.0 * 2.0 - 1.0,
-    1.0 - documentPosition.y / ${DOCUMENT_HEIGHT}.0 * 2.0,
+    documentPosition.x / documentExtent.x * 2.0 - 1.0,
+    1.0 - documentPosition.y / documentExtent.y * 2.0,
     0.0,
     1.0
   );

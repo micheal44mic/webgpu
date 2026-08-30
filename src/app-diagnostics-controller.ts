@@ -76,9 +76,13 @@ export class AppDiagnosticsController {
   private historySignature = "";
   private sceneSignature = "";
   private copyBusy = false;
+  private documentWidth: number;
+  private documentHeight: number;
 
   constructor(options: AppDiagnosticsControllerOptions) {
     this.options = options;
+    this.documentWidth = options.documentWidth;
+    this.documentHeight = options.documentHeight;
     this.abortController = new options.browser.AbortController();
     const signal = this.abortController.signal;
     options.browser.addEventListener("error", (event) => {
@@ -101,6 +105,11 @@ export class AppDiagnosticsController {
     options.elements.copyButton.addEventListener("click", () => {
       void this.copyReport();
     }, { signal });
+  }
+
+  setDocumentDimensions(width: number, height: number): void {
+    this.documentWidth = width;
+    this.documentHeight = height;
   }
 
   recordStatusError(message: string): void {
@@ -195,9 +204,9 @@ export class AppDiagnosticsController {
         + "only Fill counters and five words around the seed.",
       app: {
         mode: this.options.appMode,
-        documentSize: this.options.documentSize,
-        documentWidth: this.options.documentWidth,
-        documentHeight: this.options.documentHeight,
+        documentSize: Math.max(this.documentWidth, this.documentHeight),
+        documentWidth: this.documentWidth,
+        documentHeight: this.documentHeight,
         path: `${browser.location.pathname}${browser.location.search}`,
         visibility: document.visibilityState,
         entryScripts: [...document.scripts]

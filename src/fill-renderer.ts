@@ -1,17 +1,7 @@
 import {
-  FILL_ACTIVE_BLOCK_BUFFER_BYTES,
-  FILL_ACTIVE_NODE_BUFFER_BYTES,
-  FILL_BLOCK_COUNT,
-  FILL_BLOCK_GRID_HEIGHT,
-  FILL_BLOCK_GRID_WIDTH,
   FILL_COMPOSITE_MODE_CODE,
-  FILL_HISTORY_MASK_BYTES,
-  FILL_HISTORY_MASK_WORDS,
   FILL_INDIRECT_BUFFER_BYTES,
   FILL_DIAGNOSTIC_SEED_TRANSPARENT_BIT,
-  FILL_LABEL_BUFFER_BYTES,
-  FILL_LAYER_HEIGHT,
-  FILL_LAYER_WIDTH,
   FILL_META_ACTIVE_BLOCKS,
   FILL_META_ACTIVE_COMPONENTS,
   FILL_META_DIAGNOSTIC,
@@ -25,20 +15,17 @@ import {
   FILL_METADATA_BUFFER_BYTES,
   FILL_METADATA_BYTES,
   FILL_METADATA_WORDS,
-  FILL_PARENT_BUFFER_BYTES,
-  FILL_RENDER_MASK_BYTES,
-  FILL_RESIDENT_SCRATCH_BYTES,
   FILL_TILE_GRID_SIZE,
-  FILL_TILE_HEIGHT,
   FILL_TILE_MASK_WORDS,
-  FILL_TILE_WIDTH,
   FILL_UNIFORM_BUFFER_BYTES,
   FILL_UNIFORM_BYTES,
   FILL_WORKGROUP_STORAGE_BYTES,
   countFillTiles,
+  currentFillDocumentMetrics,
   fillResidualFringeRadius,
   type FillAnalysis,
   type FillCompositeMode,
+  type FillDocumentMetrics,
 } from "./fill-core";
 import type { LayerFormat } from "./engine-types";
 import type { DirtyRect } from "./engine-stroke-types";
@@ -116,25 +103,30 @@ interface LastFillDiagnosticInput {
 function expandResidualFringeBounds(
   bounds: DirtyRect,
   radius: number,
+  metrics: FillDocumentMetrics,
 ): DirtyRect {
   if (radius <= 0) return { ...bounds };
   const x = Math.max(0, bounds.x - radius);
   const y = Math.max(0, bounds.y - radius);
-  const right = Math.min(FILL_LAYER_WIDTH, bounds.x + bounds.width + radius);
-  const bottom = Math.min(FILL_LAYER_HEIGHT, bounds.y + bounds.height + radius);
+  const right = Math.min(metrics.layerWidth, bounds.x + bounds.width + radius);
+  const bottom = Math.min(metrics.layerHeight, bounds.y + bounds.height + radius);
   return { x, y, width: right - x, height: bottom - y };
 }
 
-function markResidualFringeTiles(tileMask: Uint32Array, bounds: DirtyRect): void {
-  const firstTileX = Math.floor(bounds.x / FILL_TILE_WIDTH);
-  const firstTileY = Math.floor(bounds.y / FILL_TILE_HEIGHT);
+function markResidualFringeTiles(
+  tileMask: Uint32Array,
+  bounds: DirtyRect,
+  metrics: FillDocumentMetrics,
+): void {
+  const firstTileX = Math.floor(bounds.x / metrics.tileWidth);
+  const firstTileY = Math.floor(bounds.y / metrics.tileHeight);
   const lastTileX = Math.min(
     FILL_TILE_GRID_SIZE - 1,
-    Math.floor((bounds.x + bounds.width - 1) / FILL_TILE_WIDTH),
+    Math.floor((bounds.x + bounds.width - 1) / metrics.tileWidth),
   );
   const lastTileY = Math.min(
     FILL_TILE_GRID_SIZE - 1,
-    Math.floor((bounds.y + bounds.height - 1) / FILL_TILE_HEIGHT),
+    Math.floor((bounds.y + bounds.height - 1) / metrics.tileHeight),
   );
   for (let tileY = firstTileY; tileY <= lastTileY; tileY += 1) {
     for (let tileX = firstTileX; tileX <= lastTileX; tileX += 1) {
@@ -179,6 +171,7 @@ export class FillRenderer {
   readonly computeBindGroupLayout: GPUBindGroupLayout;
   readonly renderBindGroupLayout: GPUBindGroupLayout;
   readonly selectionIntersectionBindGroupLayout: GPUBindGroupLayout;
+  private metrics: FillDocumentMetrics;
   private readonly layerFormat: LayerFormat;
   private configuredSourceSamplingView: GPUTextureView;
   private classifyPipeline!: GPUComputePipeline;
@@ -205,6 +198,7 @@ export class FillRenderer {
 
   private constructor(options: FillRendererOptions) {
     this.device = options.device;
+    this.metrics = currentFillDocumentMetrics();
     const limits = this.device.limits;
     if (
       limits.maxComputeInvocationsPerWorkgroup < 256
@@ -212,11 +206,11 @@ export class FillRenderer {
       || limits.maxComputeWorkgroupSizeY < 16
       || limits.maxComputeWorkgroupStorageSize < FILL_WORKGROUP_STORAGE_BYTES
       || limits.maxStorageBuffersPerShaderStage < 7
-      || limits.maxStorageBufferBindingSize < FILL_PARENT_BUFFER_BYTES
+      || limits.maxStorageBufferBindingSize < this.metrics.parentBufferBytes
     ) {
       throw new Error(
         `The GPU compute limits do not support Fill at `
-        + `${FILL_LAYER_WIDTH}×${FILL_LAYER_HEIGHT}.`,
+        + `${this.metrics.layerWidth}×${this.metrics.layerHeight}.`,
       );
     }
     this.layerFormat = options.layerFormat;
@@ -258,9 +252,9 @@ export class FillRenderer {
   get residentBytes(): number {
     if (!this.resident) return 0;
     const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
-    return FILL_RESIDENT_SCRATCH_BYTES
+    return this.metrics.residentScratchBytes
       + (this.scratch?.composite
-        ? FILL_LAYER_WIDTH * FILL_LAYER_HEIGHT * bytesPerPixel
+        ? this.metrics.layerWidth * this.metrics.layerHeight * bytesPerPixel
         : 0);
   }
 
@@ -360,30 +354,30 @@ export class FillRenderer {
         );
         const packedLabels = create(
           "Fill · packed local u8 labels",
-          FILL_LABEL_BUFFER_BYTES,
+          this.metrics.labelBufferBytes,
           GPUBufferUsage.STORAGE,
         );
-        if (FILL_RENDER_MASK_BYTES > FILL_LABEL_BUFFER_BYTES) {
+        if (this.metrics.renderMaskBytes > this.metrics.labelBufferBytes) {
           throw new Error("The Fill render mask does not fit in the reused label scratch buffer.");
         }
         const globalParents = create(
           "Fill · global component parents",
-          FILL_PARENT_BUFFER_BYTES,
+          this.metrics.parentBufferBytes,
           GPUBufferUsage.STORAGE,
         );
         const activeParentNodes = create(
           "Fill · active components",
-          FILL_ACTIVE_NODE_BUFFER_BYTES,
+          this.metrics.activeNodeBufferBytes,
           GPUBufferUsage.STORAGE,
         );
         const selectedMask = create(
           "Fill · selected 1-bit mask",
-          FILL_HISTORY_MASK_BYTES,
+          this.metrics.historyMaskBytes,
           GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
         );
         const activeBlocks = create(
           "Fill · selected blocks",
-          FILL_ACTIVE_BLOCK_BUFFER_BYTES,
+          this.metrics.activeBlockBufferBytes,
           GPUBufferUsage.STORAGE,
         );
         const metadata = create(
@@ -474,8 +468,8 @@ export class FillRenderer {
         const destinationSnapshotTexture = this.device.createTexture({
           label: `Fill · ${this.layerFormat} destination snapshot`,
           size: {
-            width: FILL_LAYER_WIDTH,
-            height: FILL_LAYER_HEIGHT,
+            width: this.metrics.layerWidth,
+            height: this.metrics.layerHeight,
             depthOrArrayLayers: 1,
           },
           format: this.layerFormat,
@@ -498,7 +492,7 @@ export class FillRenderer {
             { binding: 0, resource: { buffer: scratch.uniformBuffer, size: FILL_UNIFORM_BYTES } },
             // Dopo la CCL, packedLabels viene riutilizzato come mask render a
             // word low-8-bit. selectedMask resta autorevole per History.
-            { binding: 1, resource: { buffer: scratch.packedLabels, size: FILL_RENDER_MASK_BYTES } },
+            { binding: 1, resource: { buffer: scratch.packedLabels, size: this.metrics.renderMaskBytes } },
             { binding: 2, resource: { buffer: scratch.activeBlocks } },
             { binding: 3, resource: destinationSnapshotView },
           ],
@@ -540,6 +534,25 @@ export class FillRenderer {
     if (this.scratch && this.liveSessionSourceIsTarget !== true) {
       this.rebuildComputeBindGroupForCurrentSource(this.scratch);
     }
+  }
+
+  /**
+   * Drops document-sized scratch while retaining the dimension-neutral
+   * pipelines. The next Fill use allocates buffers for the requested extent.
+   */
+  async reconfigureDocument(
+    width: number,
+    height: number,
+    sourceSamplingView: GPUTextureView,
+  ): Promise<void> {
+    this.assertAlive();
+    if (this.liveSessionSourceIsTarget !== null) {
+      throw new Error("Cannot reconfigure Fill during an active preview session.");
+    }
+    await this.waitForPrewarm();
+    this.releaseScratch();
+    this.metrics = currentFillDocumentMetrics(width, height);
+    this.configuredSourceSamplingView = sourceSamplingView;
   }
 
   /**
@@ -585,7 +598,7 @@ export class FillRenderer {
     const scratch = this.requireScratch();
     const x = Math.floor(seedX);
     const y = Math.floor(seedY);
-    if (x < 0 || y < 0 || x >= FILL_LAYER_WIDTH || y >= FILL_LAYER_HEIGHT) {
+    if (x < 0 || y < 0 || x >= this.metrics.layerWidth || y >= this.metrics.layerHeight) {
       throw new RangeError("The fill point is outside the layer.");
     }
     const upload = new ArrayBuffer(FILL_UNIFORM_BYTES);
@@ -593,8 +606,8 @@ export class FillRenderer {
     const floats = new Float32Array(upload);
     unsigned[0] = x;
     unsigned[1] = y;
-    unsigned[2] = FILL_LAYER_WIDTH;
-    unsigned[3] = FILL_LAYER_HEIGHT;
+    unsigned[2] = this.metrics.layerWidth;
+    unsigned[3] = this.metrics.layerHeight;
     floats[4] = tolerance;
     floats[5] = transparentSeedTolerancePercent === null
       ? -1
@@ -617,9 +630,9 @@ export class FillRenderer {
     });
     labelPass.setBindGroup(0, scratch.computeBindGroup);
     labelPass.setPipeline(this.classifyPipeline);
-    labelPass.dispatchWorkgroups(FILL_BLOCK_GRID_WIDTH, FILL_BLOCK_GRID_HEIGHT);
+    labelPass.dispatchWorkgroups(this.metrics.blockGridWidth, this.metrics.blockGridHeight);
     labelPass.setPipeline(this.boundaryPipeline);
-    labelPass.dispatchWorkgroups(FILL_BLOCK_GRID_WIDTH, FILL_BLOCK_GRID_HEIGHT);
+    labelPass.dispatchWorkgroups(this.metrics.blockGridWidth, this.metrics.blockGridHeight);
     labelPass.end();
 
     const selectionPass = encoder.beginComputePass({
@@ -627,9 +640,9 @@ export class FillRenderer {
     });
     selectionPass.setBindGroup(0, scratch.computeBindGroup);
     selectionPass.setPipeline(this.compressPipeline);
-    selectionPass.dispatchWorkgroups(Math.ceil(FILL_BLOCK_COUNT / 256));
+    selectionPass.dispatchWorkgroups(Math.ceil(this.metrics.blockCount / 256));
     selectionPass.setPipeline(this.selectPipeline);
-    selectionPass.dispatchWorkgroups(FILL_BLOCK_GRID_WIDTH, FILL_BLOCK_GRID_HEIGHT);
+    selectionPass.dispatchWorkgroups(this.metrics.blockGridWidth, this.metrics.blockGridHeight);
     selectionPass.end();
     if (!selectionMask) {
       encoder.copyBufferToBuffer(
@@ -676,10 +689,10 @@ export class FillRenderer {
       });
       clipPass.setPipeline(this.selectionIntersectionPipeline);
       clipPass.setBindGroup(0, clipBindGroup);
-      clipPass.dispatchWorkgroups(Math.ceil(FILL_HISTORY_MASK_WORDS / 256));
+      clipPass.dispatchWorkgroups(Math.ceil(this.metrics.historyMaskWords / 256));
       clipPass.setPipeline(this.rebuildPipeline);
       clipPass.setBindGroup(0, scratch.computeBindGroup);
-      clipPass.dispatchWorkgroups(FILL_BLOCK_GRID_WIDTH, FILL_BLOCK_GRID_HEIGHT);
+      clipPass.dispatchWorkgroups(this.metrics.blockGridWidth, this.metrics.blockGridHeight);
       clipPass.end();
       clipEncoder.copyBufferToBuffer(
         scratch.metadata,
@@ -731,8 +744,10 @@ export class FillRenderer {
       y: metadata[FILL_META_MIN_Y],
       width: metadata[FILL_META_MAX_X] - metadata[FILL_META_MIN_X],
       height: metadata[FILL_META_MAX_Y] - metadata[FILL_META_MIN_Y],
-    }, residualFringeRadius);
-    if (residualFringeRadius > 0) markResidualFringeTiles(tileMask, bounds);
+    }, residualFringeRadius, this.metrics);
+    if (residualFringeRadius > 0) {
+      markResidualFringeTiles(tileMask, bounds, this.metrics);
+    }
     const analysis: FillAnalysis = {
       selectedPixels,
       activeComponents: metadata[FILL_META_ACTIVE_COMPONENTS],
@@ -780,7 +795,7 @@ export class FillRenderer {
     if (!input) {
       throw new Error("No current Fill analysis is available for diagnostics.");
     }
-    const readbackBytes = FILL_HISTORY_MASK_BYTES + FILL_INDIRECT_BUFFER_BYTES;
+    const readbackBytes = this.metrics.historyMaskBytes + FILL_INDIRECT_BUFFER_BYTES;
     const readback = this.device.createBuffer({
       label: "Fill · mask and indirect draw diagnostics",
       size: readbackBytes,
@@ -797,13 +812,13 @@ export class FillRenderer {
         0,
         readback,
         0,
-        FILL_HISTORY_MASK_BYTES,
+        this.metrics.historyMaskBytes,
       );
       encoder.copyBufferToBuffer(
         scratch.drawIndirect,
         0,
         readback,
-        FILL_HISTORY_MASK_BYTES,
+        this.metrics.historyMaskBytes,
         FILL_INDIRECT_BUFFER_BYTES,
       );
       this.device.queue.submit([encoder.finish()]);
@@ -824,10 +839,10 @@ export class FillRenderer {
       mapped = true;
       const bytes = new Uint8Array(readback.getMappedRange());
       const maskWords = new Uint32Array(
-        bytes.slice(0, FILL_HISTORY_MASK_BYTES).buffer,
+        bytes.slice(0, this.metrics.historyMaskBytes).buffer,
       );
       const drawIndirect = [...new Uint32Array(
-        bytes.slice(FILL_HISTORY_MASK_BYTES, readbackBytes).buffer,
+        bytes.slice(this.metrics.historyMaskBytes, readbackBytes).buffer,
       )];
       const readbackMs = performance.now() - startedAt;
       const bitProbe = await this.captureBitProbe().catch((error): FillBitProbeDiagnostic => ({
@@ -1049,7 +1064,7 @@ export class FillRenderer {
       0,
       historySlice.buffer,
       historySlice.offsetBytes,
-      FILL_HISTORY_MASK_BYTES,
+      this.metrics.historyMaskBytes,
     );
   }
 
@@ -1072,8 +1087,8 @@ export class FillRenderer {
     this.encodeDestinationSnapshotCopy(encoder, targetTexture, scratch);
     const upload = new Float32Array(FILL_UNIFORM_BYTES / 4);
     const unsigned = new Uint32Array(upload.buffer);
-    unsigned[2] = FILL_LAYER_WIDTH;
-    unsigned[3] = FILL_LAYER_HEIGHT;
+    unsigned[2] = this.metrics.layerWidth;
+    unsigned[3] = this.metrics.layerHeight;
     unsigned[6] = FILL_COMPOSITE_MODE_CODE[compositeMode];
     unsigned[7] = 0;
     upload.set(fillColor, 8);
@@ -1086,13 +1101,13 @@ export class FillRenderer {
       historySlice.offsetBytes,
       scratch.selectedMask,
       0,
-      FILL_HISTORY_MASK_BYTES,
+      this.metrics.historyMaskBytes,
     );
     encoder.clearBuffer(scratch.metadata);
     const pass = encoder.beginComputePass({ label: "Fill · rebuild block list" });
     pass.setPipeline(this.rebuildPipeline);
     pass.setBindGroup(0, scratch.computeBindGroup);
-    pass.dispatchWorkgroups(FILL_BLOCK_GRID_WIDTH, FILL_BLOCK_GRID_HEIGHT);
+    pass.dispatchWorkgroups(this.metrics.blockGridWidth, this.metrics.blockGridHeight);
     pass.end();
     this.encodeResidualFringeRenderMask(encoder, scratch);
     this.encodeRender(encoder, targetView, scratch);
@@ -1190,7 +1205,7 @@ export class FillRenderer {
       label: "Fill · monotonic residual fringe and low-8-bit render mask",
     });
     pass.setBindGroup(0, composite.fringeBindGroup);
-    const wordWorkgroups = Math.ceil(FILL_HISTORY_MASK_WORDS / 256);
+    const wordWorkgroups = Math.ceil(this.metrics.historyMaskWords / 256);
     for (const pipeline of [
       this.residualFringePipeline1,
       this.residualFringePipeline2,
@@ -1200,7 +1215,7 @@ export class FillRenderer {
       pass.dispatchWorkgroups(wordWorkgroups);
     }
     pass.setPipeline(this.residualFringeBlockPipeline);
-    pass.dispatchWorkgroups(FILL_BLOCK_GRID_WIDTH, FILL_BLOCK_GRID_HEIGHT);
+    pass.dispatchWorkgroups(this.metrics.blockGridWidth, this.metrics.blockGridHeight);
     pass.setPipeline(this.expandRenderMaskPipeline);
     pass.dispatchWorkgroups(wordWorkgroups);
     pass.end();
@@ -1236,8 +1251,8 @@ export class FillRenderer {
       { texture: targetTexture },
       { texture: composite.destinationSnapshotTexture },
       {
-        width: FILL_LAYER_WIDTH,
-        height: FILL_LAYER_HEIGHT,
+        width: this.metrics.layerWidth,
+        height: this.metrics.layerHeight,
         depthOrArrayLayers: 1,
       },
     );
@@ -1253,8 +1268,8 @@ export class FillRenderer {
       || rect.y < 0
       || rect.width < 0
       || rect.height < 0
-      || rect.x + rect.width > FILL_LAYER_WIDTH
-      || rect.y + rect.height > FILL_LAYER_HEIGHT
+      || rect.x + rect.width > this.metrics.layerWidth
+      || rect.y + rect.height > this.metrics.layerHeight
     ) {
       throw new RangeError("The Fill snapshot restore rectangle is outside the layer.");
     }
@@ -1274,9 +1289,9 @@ export class FillRenderer {
   }
 
   private assertHistorySlice(slice: GpuHistorySlice): void {
-    if (slice.logicalBytes !== FILL_HISTORY_MASK_BYTES) {
+    if (slice.logicalBytes !== this.metrics.historyMaskBytes) {
       throw new Error(
-        `Fill history mask is ${slice.logicalBytes} B; expected ${FILL_HISTORY_MASK_BYTES} B.`,
+        `Fill history mask is ${slice.logicalBytes} B; expected ${this.metrics.historyMaskBytes} B.`,
       );
     }
   }

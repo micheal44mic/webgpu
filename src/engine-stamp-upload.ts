@@ -85,6 +85,8 @@ export function populateBrushUniformUpload(
   targetOriginY: number,
   symmetryMode: StrokeSymmetryMode = "off",
   symmetryAngleRadians?: number,
+  documentWidth = targetWidth,
+  documentHeight = targetHeight,
 ): void {
   const floats = new Float32Array(upload);
   const unsigned = new Uint32Array(upload);
@@ -130,6 +132,8 @@ export function populateBrushUniformUpload(
     | (settings.shapeMaskFormat === "r8unorm" ? 2 : 0);
   // Previously unused ABI lane: opt-in base rotation along the stamp direction.
   unsigned[23] = settings.shapeRotation === "follow-stroke" ? 1 : 0;
+  floats[24] = documentWidth;
+  floats[25] = documentHeight;
 }
 
 export function packStampsIntoUpload(

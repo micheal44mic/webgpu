@@ -1,8 +1,6 @@
 import { mergedSurfaceSamplingShader } from "./merged-surface-shader";
 import { activeClippingGroupTexelShader } from "./clipping-group-shader";
 import {
-  DOCUMENT_HEIGHT,
-  DOCUMENT_WIDTH,
   SHAPE_MASK_FILTER_CONTENT_SIZE,
   SHAPE_MASK_FILTER_GUARD_TEXELS,
   SHAPE_MASK_FILTER_UV_HALF_EXTENT,
@@ -13,8 +11,6 @@ const MAX_COUNT: u32 = 24u;
 const COPY_COUNT_MASK: u32 = 0xffu;
 const SYMMETRY_MODE_SHIFT: u32 = 8u;
 const DIAGNOSTIC_8_BIT_FLAG: u32 = 2u;
-const DOCUMENT_WIDTH: f32 = ${DOCUMENT_WIDTH};
-const DOCUMENT_HEIGHT: f32 = ${DOCUMENT_HEIGHT};
 const TAU: f32 = 6.283185307179586;
 const SHAPE_OCCUPANCY_GRID_SIZE: u32 = 256u;
 const SHAPE_MASK_UV_HALF_EXTENT: f32 = ${SHAPE_MASK_FILTER_UV_HALF_EXTENT};
@@ -27,6 +23,8 @@ struct BrushUniforms {
   controls: vec4<f32>,
   positionJitter: vec4<f32>,
   options: vec4<u32>,
+  documentSize: vec2<f32>,
+  _documentPadding: vec2<f32>,
 };
 
 struct Stamp {
@@ -164,7 +162,7 @@ fn reflectedLayerPosition(
   if (symmetryCopyIndex == 0u || symmetryMode == 0u) {
     return layerPosition;
   }
-  let documentCenter = vec2<f32>(DOCUMENT_WIDTH, DOCUMENT_HEIGHT) * 0.5;
+  let documentCenter = brush.documentSize * 0.5;
   let offset = layerPosition - documentCenter;
   let cosineDoubleAngle = brush.controls.w;
   let sineDoubleAngle = brush.positionJitter.w;
@@ -457,6 +455,8 @@ struct BrushUniforms {
   controls: vec4<f32>,
   positionJitter: vec4<f32>,
   options: vec4<u32>,
+  documentSize: vec2<f32>,
+  _documentPadding: vec2<f32>,
 };
 
 struct GrainUniforms {

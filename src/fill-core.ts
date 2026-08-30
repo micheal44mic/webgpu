@@ -4,6 +4,8 @@
  * `LAYER_SIZE² / 8` byte, cioe' 2 MiB a 4096² e 512 KiB a 2048².
  */
 import {
+  DOCUMENT_MAX_EDGE,
+  DOCUMENT_TILE_SIZE,
   DOCUMENT_TILE_GRID_SIZE,
   DOCUMENT_TILE_HEIGHT,
   DOCUMENT_TILE_MASK_WORDS,
@@ -31,26 +33,13 @@ export const FILL_REFERENCE_LAYER_STRATEGY =
   "single-raster-reference-full-resident-gpu-source-separate-active-target-no-fallback-v1" as const;
 
 /** @deprecated Compatibility maximum edge. */
-export const FILL_LAYER_SIZE = Math.max(DOCUMENT_WIDTH, DOCUMENT_HEIGHT);
-export const FILL_LAYER_WIDTH = DOCUMENT_WIDTH;
-export const FILL_LAYER_HEIGHT = DOCUMENT_HEIGHT;
+export { DOCUMENT_MAX_EDGE as FILL_LAYER_SIZE };
+export { DOCUMENT_WIDTH as FILL_LAYER_WIDTH };
+export { DOCUMENT_HEIGHT as FILL_LAYER_HEIGHT };
 export const FILL_BLOCK_SIZE = 16;
-export const FILL_BLOCK_GRID_WIDTH = Math.ceil(FILL_LAYER_WIDTH / FILL_BLOCK_SIZE);
-export const FILL_BLOCK_GRID_HEIGHT = Math.ceil(FILL_LAYER_HEIGHT / FILL_BLOCK_SIZE);
-/** @deprecated Compatibility maximum grid edge. */
-export const FILL_BLOCK_GRID_SIZE = Math.max(FILL_BLOCK_GRID_WIDTH, FILL_BLOCK_GRID_HEIGHT);
-export const FILL_BLOCK_COUNT = FILL_BLOCK_GRID_WIDTH * FILL_BLOCK_GRID_HEIGHT;
 export const FILL_PIXELS_PER_BLOCK = FILL_BLOCK_SIZE * FILL_BLOCK_SIZE;
 export const FILL_MAX_COMPONENTS_PER_BLOCK = FILL_PIXELS_PER_BLOCK / 2;
 export const FILL_LABEL_WORDS_PER_BLOCK = FILL_PIXELS_PER_BLOCK / 4;
-export const FILL_LABEL_BUFFER_BYTES = FILL_BLOCK_COUNT * FILL_LABEL_WORDS_PER_BLOCK * 4;
-export const FILL_PARENT_COUNT = FILL_BLOCK_COUNT * FILL_MAX_COMPONENTS_PER_BLOCK;
-export const FILL_PARENT_BUFFER_BYTES = FILL_PARENT_COUNT * 4;
-export const FILL_ACTIVE_NODE_BUFFER_BYTES = FILL_BLOCK_COUNT * 4;
-export const FILL_ACTIVE_BLOCK_BUFFER_BYTES = FILL_BLOCK_COUNT * 4;
-export const FILL_HISTORY_WORDS_PER_ROW = Math.ceil(FILL_LAYER_WIDTH / 32);
-export const FILL_HISTORY_MASK_WORDS = FILL_HISTORY_WORDS_PER_ROW * FILL_LAYER_HEIGHT;
-export const FILL_HISTORY_MASK_BYTES = FILL_HISTORY_MASK_WORDS * 4;
 /**
  * The authoritative/History mask remains 1 bit per pixel. For the render pass
  * it is expanded after CCL to four u32 words per source word. Bits 0–7 carry
@@ -59,12 +48,98 @@ export const FILL_HISTORY_MASK_BYTES = FILL_HISTORY_MASK_WORDS * 4;
  * classification data is dead after selection.
  */
 export const FILL_RENDER_MASK_PIXELS_PER_WORD = 8;
-export const FILL_RENDER_MASK_WORDS_PER_ROW = Math.ceil(
-  FILL_LAYER_WIDTH / FILL_RENDER_MASK_PIXELS_PER_WORD,
-);
-export const FILL_RENDER_MASK_WORDS =
-  FILL_RENDER_MASK_WORDS_PER_ROW * FILL_LAYER_HEIGHT;
-export const FILL_RENDER_MASK_BYTES = FILL_RENDER_MASK_WORDS * 4;
+
+export interface FillDocumentMetrics {
+  readonly layerSize: number;
+  readonly layerWidth: number;
+  readonly layerHeight: number;
+  readonly blockGridWidth: number;
+  readonly blockGridHeight: number;
+  readonly blockGridSize: number;
+  readonly blockCount: number;
+  readonly labelBufferBytes: number;
+  readonly parentCount: number;
+  readonly parentBufferBytes: number;
+  readonly activeNodeBufferBytes: number;
+  readonly activeBlockBufferBytes: number;
+  readonly historyWordsPerRow: number;
+  readonly historyMaskWords: number;
+  readonly historyMaskBytes: number;
+  readonly renderMaskWordsPerRow: number;
+  readonly renderMaskWords: number;
+  readonly renderMaskBytes: number;
+  readonly tileSize: number;
+  readonly tileWidth: number;
+  readonly tileHeight: number;
+  readonly residentScratchBytes: number;
+}
+
+/**
+ * Returns a coherent snapshot for the active document. Derived values must be
+ * evaluated when document-owned resources are created; keeping them as module
+ * constants would freeze the first canvas size for the lifetime of the page.
+ */
+export function currentFillDocumentMetrics(
+  layerWidth = DOCUMENT_WIDTH,
+  layerHeight = DOCUMENT_HEIGHT,
+): FillDocumentMetrics {
+  if (!Number.isSafeInteger(layerWidth) || layerWidth <= 0
+    || !Number.isSafeInteger(layerHeight) || layerHeight <= 0) {
+    throw new RangeError("Fill document dimensions must be positive integers.");
+  }
+  const blockGridWidth = Math.ceil(layerWidth / FILL_BLOCK_SIZE);
+  const blockGridHeight = Math.ceil(layerHeight / FILL_BLOCK_SIZE);
+  const blockCount = blockGridWidth * blockGridHeight;
+  const labelBufferBytes = blockCount * FILL_LABEL_WORDS_PER_BLOCK * 4;
+  const parentCount = blockCount * FILL_MAX_COMPONENTS_PER_BLOCK;
+  const parentBufferBytes = parentCount * 4;
+  const activeNodeBufferBytes = blockCount * 4;
+  const activeBlockBufferBytes = blockCount * 4;
+  const historyWordsPerRow = Math.ceil(layerWidth / 32);
+  const historyMaskWords = historyWordsPerRow * layerHeight;
+  const historyMaskBytes = historyMaskWords * 4;
+  const renderMaskWordsPerRow = Math.ceil(
+    layerWidth / FILL_RENDER_MASK_PIXELS_PER_WORD,
+  );
+  const renderMaskWords = renderMaskWordsPerRow * layerHeight;
+  const renderMaskBytes = renderMaskWords * 4;
+  const residentScratchBytes = labelBufferBytes
+    + parentBufferBytes
+    + activeNodeBufferBytes
+    + historyMaskBytes
+    + activeBlockBufferBytes
+    + FILL_METADATA_BUFFER_BYTES
+    + FILL_INDIRECT_BUFFER_BYTES
+    + FILL_UNIFORM_BUFFER_BYTES
+    + FILL_METADATA_BUFFER_BYTES;
+  return Object.freeze({
+    layerSize: Math.max(layerWidth, layerHeight),
+    layerWidth,
+    layerHeight,
+    blockGridWidth,
+    blockGridHeight,
+    blockGridSize: Math.max(blockGridWidth, blockGridHeight),
+    blockCount,
+    labelBufferBytes,
+    parentCount,
+    parentBufferBytes,
+    activeNodeBufferBytes,
+    activeBlockBufferBytes,
+    historyWordsPerRow,
+    historyMaskWords,
+    historyMaskBytes,
+    renderMaskWordsPerRow,
+    renderMaskWords,
+    renderMaskBytes,
+    tileSize: Math.max(
+      Math.ceil(layerWidth / DOCUMENT_TILE_GRID_SIZE),
+      Math.ceil(layerHeight / DOCUMENT_TILE_GRID_SIZE),
+    ),
+    tileWidth: Math.ceil(layerWidth / DOCUMENT_TILE_GRID_SIZE),
+    tileHeight: Math.ceil(layerHeight / DOCUMENT_TILE_GRID_SIZE),
+    residentScratchBytes,
+  });
+}
 
 /**
  * Maps one byte from the authoritative 32-pixel history word into the tightly
@@ -76,21 +151,22 @@ export function fillRenderMaskTargetWord(
   sourceWordIndex: number,
   byteIndex: number,
 ): number | null {
+  const metrics = currentFillDocumentMetrics();
   if (
     !Number.isSafeInteger(sourceWordIndex)
     || sourceWordIndex < 0
-    || sourceWordIndex >= FILL_HISTORY_MASK_WORDS
+    || sourceWordIndex >= metrics.historyMaskWords
     || !Number.isSafeInteger(byteIndex)
     || byteIndex < 0
     || byteIndex > 3
   ) {
     throw new RangeError("Invalid Fill mask expansion index.");
   }
-  const row = Math.floor(sourceWordIndex / FILL_HISTORY_WORDS_PER_ROW);
-  const sourceWordX = sourceWordIndex % FILL_HISTORY_WORDS_PER_ROW;
+  const row = Math.floor(sourceWordIndex / metrics.historyWordsPerRow);
+  const sourceWordX = sourceWordIndex % metrics.historyWordsPerRow;
   const targetWordX = sourceWordX * 4 + byteIndex;
-  if (targetWordX >= FILL_RENDER_MASK_WORDS_PER_ROW) return null;
-  return row * FILL_RENDER_MASK_WORDS_PER_ROW + targetWordX;
+  if (targetWordX >= metrics.renderMaskWordsPerRow) return null;
+  return row * metrics.renderMaskWordsPerRow + targetWordX;
 }
 export const FILL_UNIFORM_BYTES = 80;
 export const FILL_UNIFORM_BUFFER_BYTES = 256;
@@ -118,25 +194,14 @@ export const FILL_TILE_MASK_WORDS = DOCUMENT_TILE_MASK_WORDS;
 // storage e della Selezione: a 2048² il tile e' 128 px e vale 8 blocchi, non 16.
 export const FILL_TILE_GRID_SIZE = DOCUMENT_TILE_GRID_SIZE;
 /** @deprecated Compatibility maximum tile edge. */
-export const FILL_TILE_SIZE = Math.max(DOCUMENT_TILE_WIDTH, DOCUMENT_TILE_HEIGHT);
-export const FILL_TILE_WIDTH = DOCUMENT_TILE_WIDTH;
-export const FILL_TILE_HEIGHT = DOCUMENT_TILE_HEIGHT;
+export { DOCUMENT_TILE_SIZE as FILL_TILE_SIZE };
+export { DOCUMENT_TILE_WIDTH as FILL_TILE_WIDTH };
+export { DOCUMENT_TILE_HEIGHT as FILL_TILE_HEIGHT };
 
 export const FILL_MAX_TOLERANCE_PERCENT = 100;
 export const FILL_LINEAR_TOLERANCE_PERCENT = 10;
 export const FILL_MAX_COLOR_DISTANCE = CONNECTED_COLOR_MAX_DISTANCE;
 export const FILL_RESIDUAL_FRINGE_MAX_RADIUS = 3;
-
-export const FILL_RESIDENT_SCRATCH_BYTES =
-  FILL_LABEL_BUFFER_BYTES
-  + FILL_PARENT_BUFFER_BYTES
-  + FILL_ACTIVE_NODE_BUFFER_BYTES
-  + FILL_HISTORY_MASK_BYTES
-  + FILL_ACTIVE_BLOCK_BUFFER_BYTES
-  + FILL_METADATA_BUFFER_BYTES
-  + FILL_INDIRECT_BUFFER_BYTES
-  + FILL_UNIFORM_BUFFER_BYTES
-  + FILL_METADATA_BUFFER_BYTES;
 
 export interface FillAnalysis {
   readonly selectedPixels: number;

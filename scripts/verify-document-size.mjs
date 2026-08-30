@@ -38,43 +38,52 @@ const {
   DOCUMENT_TILE_WIDTH,
   DOCUMENT_WIDTH,
   LAYER_SIZE,
+  LEGACY_DOCUMENT_EDGE,
   LIGHT_GLAZE_COMMIT_TILE_EXTENT,
   LIGHT_GLAZE_COMMIT_TILE_SLOT_COUNT,
   PAINT_DISPLAY_MIP_LEVEL_COUNT,
   THICKNESS_TAIL_MAXIMUM_TEXTURE_DIMENSION,
 } = await import("../src/engine-limits.ts");
 const {
-  FILL_BLOCK_COUNT,
-  FILL_BLOCK_GRID_HEIGHT,
-  FILL_BLOCK_GRID_SIZE,
-  FILL_BLOCK_GRID_WIDTH,
   FILL_BLOCK_SIZE,
-  FILL_HISTORY_MASK_BYTES,
-  FILL_HISTORY_WORDS_PER_ROW,
-  FILL_LABEL_BUFFER_BYTES,
   FILL_LAYER_HEIGHT,
   FILL_LAYER_SIZE,
   FILL_LAYER_WIDTH,
-  FILL_RENDER_MASK_BYTES,
-  FILL_RENDER_MASK_WORDS_PER_ROW,
   FILL_TILE_GRID_SIZE,
   FILL_TILE_HEIGHT,
   FILL_TILE_MASK_WORDS,
   FILL_TILE_SIZE,
   FILL_TILE_WIDTH,
+  currentFillDocumentMetrics,
 } = await import("../src/fill-core.ts");
+const fillMetrics = currentFillDocumentMetrics();
+const {
+  blockCount: FILL_BLOCK_COUNT,
+  blockGridHeight: FILL_BLOCK_GRID_HEIGHT,
+  blockGridSize: FILL_BLOCK_GRID_SIZE,
+  blockGridWidth: FILL_BLOCK_GRID_WIDTH,
+  historyMaskBytes: FILL_HISTORY_MASK_BYTES,
+  historyWordsPerRow: FILL_HISTORY_WORDS_PER_ROW,
+  labelBufferBytes: FILL_LABEL_BUFFER_BYTES,
+  renderMaskBytes: FILL_RENDER_MASK_BYTES,
+  renderMaskWordsPerRow: FILL_RENDER_MASK_WORDS_PER_ROW,
+} = fillMetrics;
 const {
   SELECTION_LAYER_HEIGHT,
   SELECTION_LAYER_SIZE,
   SELECTION_LAYER_WIDTH,
-  SELECTION_MASK_BYTES,
   SELECTION_TILE_GRID_SIZE,
   SELECTION_TILE_HEIGHT,
   SELECTION_TILE_MASK_WORDS,
   SELECTION_TILE_SIZE,
   SELECTION_TILE_WIDTH,
-  SELECTION_WORDS_PER_ROW,
+  currentSelectionDocumentMetrics,
 } = await import("../src/selection-core.ts");
+const selectionMetrics = currentSelectionDocumentMetrics();
+const {
+  maskBytes: SELECTION_MASK_BYTES,
+  wordsPerRow: SELECTION_WORDS_PER_ROW,
+} = selectionMetrics;
 const {
   LAYER_STORAGE_DOCUMENT_HEIGHT,
   LAYER_STORAGE_DOCUMENT_SIZE,
@@ -240,9 +249,8 @@ assert.equal(
 );
 assert.equal(
   LIGHT_GLAZE_COMMIT_TILE_SLOT_COUNT,
-  Math.ceil(DOCUMENT_WIDTH / LIGHT_GLAZE_COMMIT_TILE_EXTENT)
-    * Math.ceil(DOCUMENT_HEIGHT / LIGHT_GLAZE_COMMIT_TILE_EXTENT),
-  at("Gli slot di commit Light Glaze devono coprire il documento"),
+  Math.ceil(LEGACY_DOCUMENT_EDGE / LIGHT_GLAZE_COMMIT_TILE_EXTENT) ** 2,
+  at("Gli slot di commit Light Glaze devono coprire ogni documento della sessione"),
 );
 
 // --- Griglia tile condivisa -------------------------------------------------
@@ -916,8 +924,8 @@ for (
   const [path, pattern, message] of [
     [
       "../src/mixed-scene-compositor-shader.ts",
-      /all\(layerPosition < vec2<f32>\(\$\{DOCUMENT_WIDTH\}\.0, \$\{DOCUMENT_HEIGHT\}\.0\)\)/,
-      "il compositore mixed-scene deve interpolare entrambi gli assi",
+      /documentSize: vec2<f32>[\s\S]*?all\(layerPosition < display\.documentSize\)/,
+      "il compositore mixed-scene deve leggere entrambi gli assi dall'uniforme runtime",
     ],
     [
       "../src/layer-blend-tile-compositor.ts",
@@ -926,7 +934,7 @@ for (
     ],
     [
       "../src/fill-shaders.ts",
-      /reduceMinX\[0\] \/ \$\{FILL_TILE_WIDTH\}u, reduceMinY\[0\] \/ \$\{FILL_TILE_HEIGHT\}u[\s\S]*?\(reduceMaxX\[0\] - 1u\) \/ \$\{FILL_TILE_WIDTH\}u,[\s\S]*?\(reduceMaxY\[0\] - 1u\) \/ \$\{FILL_TILE_HEIGHT\}u/,
+      /let tileSize = tileExtent\(\)[\s\S]*?reduceMinX\[0\] \/ tileSize\.x, reduceMinY\[0\] \/ tileSize\.y[\s\S]*?\(reduceMaxX\[0\] - 1u\) \/ tileSize\.x,[\s\S]*?\(reduceMaxY\[0\] - 1u\) \/ tileSize\.y/,
       "il Riempimento deve marcare ogni tile rettangolare toccata dai pixel selezionati",
     ],
   ]

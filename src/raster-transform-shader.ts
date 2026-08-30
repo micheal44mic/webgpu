@@ -2,18 +2,12 @@
  * Format-agnostic WGSL for transforming a premultiplied linear raster layer.
  * The render pipeline may target either `rgba8unorm` or `rgba16float`.
  */
-import {
-  SELECTION_LAYER_HEIGHT,
-  SELECTION_LAYER_WIDTH,
-  SELECTION_WORDS_PER_ROW,
-} from "./selection-core.ts";
-
 export const RASTER_TRANSFORM_SHADER_STRATEGY =
   "gamma-box-mips-transparent-border-inverse-affine-discrete-oversampling-v4" as const;
 
 /**
  * Bindings:
- *   0 - 64-byte `RasterTransformUniforms`
+ *   0 - 80-byte `RasterTransformUniforms`
  *   1 - immutable tile-bbox scratch with a complete mip chain
  *   2 - clamp-to-edge linear sampler; transparent border and trilinear LOD are
  *       reconstructed explicitly because WebGPU has no clamp-to-border mode
@@ -31,6 +25,8 @@ struct RasterTransformUniforms {
   destinationPivot: vec2<f32>,
   inverseRow0: vec2<f32>,
   inverseRow1: vec2<f32>,
+  documentExtent: vec2<f32>,
+  _documentPadding: vec2<f32>,
 };
 
 struct VertexOutput {
@@ -150,9 +146,6 @@ export const RASTER_SELECTION_TRANSLATE_SHADER_STRATEGY =
  * complete original layer, so overlapping moves never read pixels already
  * written by an earlier preview frame. */
 export const rasterSelectionTranslateShader = /* wgsl */ `
-const DOCUMENT_EXTENT: vec2<i32> = vec2<i32>(${SELECTION_LAYER_WIDTH}, ${SELECTION_LAYER_HEIGHT});
-const WORDS_PER_ROW: u32 = ${SELECTION_WORDS_PER_ROW}u;
-
 struct RasterTransformUniforms {
   sourceOrigin: vec2<f32>,
   sourceExtent: vec2<f32>,
@@ -162,6 +155,8 @@ struct RasterTransformUniforms {
   destinationPivot: vec2<f32>,
   inverseRow0: vec2<f32>,
   inverseRow1: vec2<f32>,
+  documentExtent: vec2<f32>,
+  _documentPadding: vec2<f32>,
 };
 
 struct VertexOutput {
@@ -186,11 +181,13 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 }
 
 fn selectedAt(pixel: vec2<i32>) -> bool {
-  if (any(pixel < vec2<i32>(0)) || any(pixel >= DOCUMENT_EXTENT)) {
+  let documentExtent = vec2<i32>(transform.documentExtent);
+  if (any(pixel < vec2<i32>(0)) || any(pixel >= documentExtent)) {
     return false;
   }
   let unsignedPixel = vec2<u32>(pixel);
-  let word = unsignedPixel.y * WORDS_PER_ROW + unsignedPixel.x / 32u;
+  let wordsPerRow = (u32(documentExtent.x) + 31u) / 32u;
+  let word = unsignedPixel.y * wordsPerRow + unsignedPixel.x / 32u;
   return (selectionMask[word] & (1u << (unsignedPixel.x & 31u))) != 0u;
 }
 

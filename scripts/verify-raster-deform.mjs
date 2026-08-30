@@ -343,6 +343,8 @@ assert.equal(
 );
 assert.match(rasterDeformShader, /projectiveWeight/);
 assert.match(rasterDeformShader, /output\.position = vec4<f32>\(ndc \* safeWeight/);
+assert.match(rasterDeformShader, /transform\.documentExtent/);
+assert.doesNotMatch(rasterDeformShader, /DOCUMENT_(?:WIDTH|HEIGHT)|engine-limits/);
 assert.match(rasterDeformShader, /dpdx\(input\.sourceUv\)/);
 assert.match(rasterDeformShader, /textureSampleLevel/);
 assert.match(rasterDeformShader, /clearFragmentMain/);

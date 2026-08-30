@@ -25,7 +25,7 @@ import {
 } from "./raster-color-overlay-core";
 
 export const RASTER_STROKE_RENDERER_BUILD =
-  "style-stack-webgpu-v17-selectable-preserved-or-uniform-alpha-color-overlay-before-inner-shadow-bevel-stroke-lazy-stroke-geometry-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-nearest-raster-at-581pct-native-unorm-round-even";
+  "style-stack-webgpu-v18-dimension-neutral-session-program-cache-selectable-preserved-or-uniform-alpha-color-overlay-before-inner-shadow-bevel-stroke-lazy-stroke-geometry-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-nearest-raster-at-581pct-native-unorm-round-even";
 export const RASTER_STROKE_COVERAGE_STRATEGY =
   "lazy-packed-f16-style-coverage-while-stroke-enabled" as const;
 export const RASTER_STROKE_GEOMETRY_STORAGE_STRATEGY =
@@ -266,8 +266,6 @@ function halfResolutionRect(
 }
 
 function shaderSourceCommon(
-  documentWidth: number,
-  documentHeight: number,
   bindGroup = 0,
 ): string {
   return /* wgsl */ `
@@ -303,7 +301,6 @@ struct ThicknessTailUniforms {
   _pad1: vec2<u32>,
 };
 
-const DOCUMENT_SIZE = vec2<i32>(${documentWidth}, ${documentHeight});
 const INVALID_SEED: u32 = ${INVALID_PACKED_SEED}u;
 
 @group(${bindGroup}) @binding(0) var<uniform> parameters: StrokeParameters;
@@ -312,8 +309,12 @@ const INVALID_SEED: u32 = ${INVALID_PACKED_SEED}u;
 @group(${bindGroup}) @binding(3) var<uniform> lightGlaze: LightGlazeUniforms;
 @group(${bindGroup}) @binding(4) var<uniform> thicknessTail: ThicknessTailUniforms;
 
+fn documentSize() -> vec2<i32> {
+  return vec2<i32>(textureDimensions(permanentTexture));
+}
+
 fn insideDocument(position: vec2<i32>) -> bool {
-  return all(position >= vec2<i32>(0)) && all(position < DOCUMENT_SIZE);
+  return all(position >= vec2<i32>(0)) && all(position < documentSize());
 }
 
 fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
@@ -462,11 +463,8 @@ fn unpackSeed(value: u32) -> vec2<u32> {
 `;
 }
 
-function seedShader(
-  documentWidth: number,
-  documentHeight: number,
-): string {
-  return `${shaderSourceCommon(documentWidth, documentHeight)}
+function seedShader(): string {
+  return `${shaderSourceCommon()}
 @group(0) @binding(5) var<storage, read_write> outputSeeds: array<vec2<u32>>;
 
 @compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
@@ -583,12 +581,8 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
 `;
 }
 
-function resolveShader(
-  documentWidth: number,
-  documentHeight: number,
-): string {
-  const coverageWordsPerRow = Math.ceil(documentWidth / COVERAGE_WORD_PIXELS);
-  return `${shaderSourceCommon(documentWidth, documentHeight)}
+function resolveShader(): string {
+  return `${shaderSourceCommon()}
 @group(0) @binding(5) var<storage, read> propagatedSeeds: array<vec2<u32>>;
 @group(0) @binding(6) var<storage, read_write> coverageField: array<u32>;
 
@@ -657,7 +651,8 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
       parameters.localTargetOrigin + offset
     );
   }
-  let wordIndex = firstDocumentPosition.y * ${coverageWordsPerRow}u
+  let coverageWordsPerRow = (u32(documentSize().x) + 1u) / 2u;
+  let wordIndex = firstDocumentPosition.y * coverageWordsPerRow
     + (firstDocumentPosition.x >> 1u);
   coverageField[wordIndex] = pack2x16float(coveragePair);
 }
@@ -666,7 +661,6 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
 
 
 function strokeCompositionShaderSource(
-  documentWidth: number,
   bindGroup = 0,
   coverageBinding = 5,
   heightBinding = 7,
@@ -680,7 +674,6 @@ function strokeCompositionShaderSource(
   boundingFieldEnabled = false,
   boundingFieldTestMutation: RasterBevelBoundingFieldTestMutation = "none",
 ): string {
-  const coverageWordsPerRow = Math.ceil(documentWidth / COVERAGE_WORD_PIXELS);
   const contourAA = derivativeMode === "fragment"
     ? /* wgsl */ `
     if (bevel.flags.z == 1u) {
@@ -726,7 +719,7 @@ function strokeCompositionShaderSource(
   let readableEnd = validEnd + select(
     vec2<i32>(0),
     apron,
-    validEnd == DOCUMENT_SIZE
+    validEnd == documentSize()
   );
   if (
     any(position < readableOrigin)
@@ -741,7 +734,7 @@ function strokeCompositionShaderSource(
   let apron = vec2<i32>(${RASTER_BEVEL_NORMAL_APRON});
   if (
     any(position < -apron)
-    || any(position >= DOCUMENT_SIZE + apron)
+    || any(position >= documentSize() + apron)
   ) {
     return 0.0;
   }
@@ -777,27 +770,31 @@ var<storage, read> innerShadowField: array<u32>;
 @group(${bindGroup}) @binding(${innerShadowUniformBinding})
 var<uniform> innerShadow: ShadowUniforms;
 
+fn coverageWordsPerRow() -> u32 {
+  return (u32(documentSize().x) + 1u) / 2u;
+}
+
 fn loadCoverage(position: vec2<i32>) -> f32 {
   let x = u32(position.x);
-  let pair = unpack2x16float(coverageField[u32(position.y) * ${coverageWordsPerRow}u + (x >> 1u)]);
+  let pair = unpack2x16float(coverageField[u32(position.y) * coverageWordsPerRow() + (x >> 1u)]);
   return select(pair.x, pair.y, (x & 1u) == 1u);
 }
 
 fn loadOuterShadow(position: vec2<i32>) -> f32 {
-  if (any(position < vec2<i32>(0)) || any(position >= DOCUMENT_SIZE)) {
+  if (any(position < vec2<i32>(0)) || any(position >= documentSize())) {
     return 0.0;
   }
   let x = u32(position.x);
-  let pair = unpack2x16float(outerShadowField[u32(position.y) * ${coverageWordsPerRow}u + (x >> 1u)]);
+  let pair = unpack2x16float(outerShadowField[u32(position.y) * coverageWordsPerRow() + (x >> 1u)]);
   return select(pair.x, pair.y, (x & 1u) == 1u);
 }
 
 fn loadInnerShadow(position: vec2<i32>) -> f32 {
-  if (any(position < vec2<i32>(0)) || any(position >= DOCUMENT_SIZE)) {
+  if (any(position < vec2<i32>(0)) || any(position >= documentSize())) {
     return 0.0;
   }
   let x = u32(position.x);
-  let pair = unpack2x16float(innerShadowField[u32(position.y) * ${coverageWordsPerRow}u + (x >> 1u)]);
+  let pair = unpack2x16float(innerShadowField[u32(position.y) * coverageWordsPerRow() + (x >> 1u)]);
   return select(pair.x, pair.y, (x & 1u) == 1u);
 }
 
@@ -1192,15 +1189,13 @@ fn styledTexel(position: vec2<i32>) -> vec4<f32> {
 }
 
 function readbackComposeShader(
-  documentWidth: number,
-  documentHeight: number,
   layerFormat: "rgba8unorm" | "rgba16float",
   bevelBoundingFieldEnabled = false,
   bevelBoundingFieldTestMutation: RasterBevelBoundingFieldTestMutation = "none",
 ): string {
-  return `${shaderSourceCommon(documentWidth, documentHeight)}
+  return `${shaderSourceCommon()}
 ${strokeCompositionShaderSource(
-  documentWidth, 0, 5, 7, 8, 9, 10, 11, 12, 13, "analytic", bevelBoundingFieldEnabled,
+  0, 5, 7, 8, 9, 10, 11, 12, 13, "analytic", bevelBoundingFieldEnabled,
   bevelBoundingFieldTestMutation,
 )}
 @group(0) @binding(6) var styledTexture: texture_storage_2d<${layerFormat}, write>;
@@ -1228,21 +1223,19 @@ fn authoredMatteMain(@builtin(global_invocation_id) globalId: vec3<u32>) {
 }
 
 function coarseComposeShader(
-  documentWidth: number,
-  documentHeight: number,
   layerFormat: "rgba8unorm" | "rgba16float",
   bevelBoundingFieldEnabled = false,
   bevelBoundingFieldTestMutation: RasterBevelBoundingFieldTestMutation = "none",
 ): string {
-  return `${shaderSourceCommon(documentWidth, documentHeight)}
+  return `${shaderSourceCommon()}
 ${strokeCompositionShaderSource(
-  documentWidth, 0, 5, 7, 8, 9, 10, 11, 12, 13, "analytic", bevelBoundingFieldEnabled,
+  0, 5, 7, 8, 9, 10, 11, 12, 13, "analytic", bevelBoundingFieldEnabled,
   bevelBoundingFieldTestMutation,
 )}
 @group(0) @binding(6) var coarseStyledTexture: texture_storage_2d<${layerFormat}, write>;
 
 fn quantizedStyledTexel(position: vec2<i32>) -> vec4<f32> {
-  return quantizeLayer(styledTexel(clamp(position, vec2<i32>(0), DOCUMENT_SIZE - 1)));
+  return quantizeLayer(styledTexel(clamp(position, vec2<i32>(0), documentSize() - 1)));
 }
 
 @compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
@@ -1272,8 +1265,8 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
 }
 
 export function rasterStrokeDisplayShader(
-  documentWidth: number,
-  documentHeight: number,
+  _documentWidth: number,
+  _documentHeight: number,
   bevelBoundingFieldEnabled = false,
 ): string {
   return /* wgsl */ `
@@ -1305,9 +1298,9 @@ struct VertexOutput {
 @group(0) @binding(0) var<uniform> display: DisplayUniforms;
 @group(0) @binding(1) var vectorTextBelowTexture: texture_2d<f32>;
 @group(0) @binding(2) var vectorTextAboveTexture: texture_2d<f32>;
-${shaderSourceCommon(documentWidth, documentHeight, 1)}
+${shaderSourceCommon(1)}
 ${strokeCompositionShaderSource(
-  documentWidth, 1, 5, 8, 9, 10, 11, 12, 13, 14, "fragment", bevelBoundingFieldEnabled,
+  1, 5, 8, 9, 10, 11, 12, 13, 14, "fragment", bevelBoundingFieldEnabled,
 )}
 @group(1) @binding(6) var coarseStyledTexture: texture_2d<f32>;
 @group(1) @binding(7) var layerSampler: sampler;
@@ -1366,7 +1359,7 @@ fn directStyledSample(layerPosition: vec2<f32>) -> vec4<f32> {
   let texelPosition = layerPosition - vec2<f32>(0.5);
   let origin = vec2<i32>(floor(texelPosition));
   let fraction = fract(texelPosition);
-  let maximumCoordinate = DOCUMENT_SIZE - vec2<i32>(1);
+  let maximumCoordinate = documentSize() - vec2<i32>(1);
   let p00 = quantizeLayer(styledTexel(clamp(origin, vec2<i32>(0), maximumCoordinate)));
   let p10 = quantizeLayer(styledTexel(clamp(
     origin + vec2<i32>(1, 0),
@@ -1387,7 +1380,7 @@ fn directStyledSample(layerPosition: vec2<f32>) -> vec4<f32> {
 }
 
 fn directStyledNearestSample(layerPosition: vec2<f32>) -> vec4<f32> {
-  let maximumCoordinate = DOCUMENT_SIZE - vec2<i32>(1);
+  let maximumCoordinate = documentSize() - vec2<i32>(1);
   let position = clamp(
     vec2<i32>(floor(layerPosition)),
     vec2<i32>(0),
@@ -1397,7 +1390,7 @@ fn directStyledNearestSample(layerPosition: vec2<f32>) -> vec4<f32> {
 }
 
 fn styledGroupTexel(position: vec2<i32>) -> vec4<f32> {
-  let maximumCoordinate = DOCUMENT_SIZE - vec2<i32>(1);
+  let maximumCoordinate = documentSize() - vec2<i32>(1);
   let pixel = clamp(position, vec2<i32>(0), maximumCoordinate);
   return composeActiveClippingGroupTexel(quantizeLayer(styledTexel(pixel)), pixel);
 }
@@ -1481,7 +1474,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     -display.viewRotation.y * displayOffset.x + display.viewRotation.x * displayOffset.y
   );
   let layerPosition = display.viewCenter + layerOffset;
-  let layerSize = vec2<f32>(DOCUMENT_SIZE);
+  let layerSize = vec2<f32>(documentSize());
   let insideLayer = all(layerPosition >= vec2<f32>(0.0))
     && all(layerPosition < layerSize);
 
@@ -1549,7 +1542,7 @@ fn activeFragmentMain(
     -display.viewRotation.y * displayOffset.x + display.viewRotation.x * displayOffset.y
   );
   let layerPosition = display.viewCenter + layerOffset;
-  let layerSize = vec2<f32>(DOCUMENT_SIZE);
+  let layerSize = vec2<f32>(documentSize());
   let insideLayer = all(layerPosition >= vec2<f32>(0.0))
     && all(layerPosition < layerSize);
 
@@ -1606,7 +1599,7 @@ fn activeSourceFragmentMain(
     -display.viewRotation.y * displayOffset.x + display.viewRotation.x * displayOffset.y
   );
   let layerPosition = display.viewCenter + layerOffset;
-  let layerSize = vec2<f32>(DOCUMENT_SIZE);
+  let layerSize = vec2<f32>(documentSize());
   let insideLayer = all(layerPosition >= vec2<f32>(0.0))
     && all(layerPosition < layerSize);
   var paint: vec4<f32>;
@@ -1641,7 +1634,7 @@ fn activeCutoutFragmentMain(
     -display.viewRotation.y * displayOffset.x + display.viewRotation.x * displayOffset.y
   );
   let layerPosition = display.viewCenter + layerOffset;
-  let layerSize = vec2<f32>(DOCUMENT_SIZE);
+  let layerSize = vec2<f32>(documentSize());
   let insideLayer = all(layerPosition >= vec2<f32>(0.0))
     && all(layerPosition < layerSize);
   if (!insideLayer) {
@@ -1657,27 +1650,27 @@ fn activeCutoutFragmentMain(
 }
 `;
 }
-function thresholdMaskShader(
-  documentWidth: number,
-  documentHeight: number,
-): string {
-  const wordsPerRow = Math.ceil(documentWidth / THRESHOLD_MASK_WORD_BITS);
-  return `${shaderSourceCommon(documentWidth, documentHeight)}
+function thresholdMaskShader(): string {
+  return `${shaderSourceCommon()}
 @group(0) @binding(5) var<storage, read_write> thresholdMask: array<u32>;
 @group(0) @binding(6) var<storage, read_write> changeState: array<atomic<u32>>;
 @group(0) @binding(7) var<storage, read> coverageField: array<u32>;
 
 const THRESHOLD_WORD_BITS = ${THRESHOLD_MASK_WORD_BITS}u;
-const THRESHOLD_WORDS_PER_ROW = ${wordsPerRow}u;
 
 fn loadCoverage(position: vec2<u32>) -> f32 {
-  let linearIndex = position.y * ${documentWidth}u + position.x;
-  let pair = unpack2x16float(coverageField[linearIndex >> 1u]);
-  return select(pair.x, pair.y, (linearIndex & 1u) == 1u);
+  let coverageWordsPerRow = (textureDimensions(permanentTexture).x + 1u) / 2u;
+  let wordIndex = position.y * coverageWordsPerRow + (position.x >> 1u);
+  let pair = unpack2x16float(coverageField[wordIndex]);
+  return select(pair.x, pair.y, (position.x & 1u) == 1u);
 }
 
 @compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
+  let documentExtent = textureDimensions(permanentTexture);
+  let thresholdWordsPerRow = (
+    documentExtent.x + THRESHOLD_WORD_BITS - 1u
+  ) / THRESHOLD_WORD_BITS;
   let firstWord = parameters.targetOrigin.x / THRESHOLD_WORD_BITS;
   let firstBit = parameters.targetOrigin.x % THRESHOLD_WORD_BITS;
   let wordCount = (
@@ -1698,7 +1691,7 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
     if (
       documentX < parameters.targetOrigin.x
       || documentX >= targetRight
-      || documentX >= ${documentWidth}u
+      || documentX >= documentExtent.x
     ) {
       continue;
     }
@@ -1713,7 +1706,7 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
     }
   }
 
-  let maskIndex = documentY * THRESHOLD_WORDS_PER_ROW + wordX;
+  let maskIndex = documentY * thresholdWordsPerRow + wordX;
   let previousBits = thresholdMask[maskIndex];
   let updatedBits = (previousBits & ~writeMask) | (nextBits & writeMask);
   if (updatedBits != previousBits) {
@@ -1782,6 +1775,60 @@ async function assertShaderModules(
   }
 }
 
+interface RasterStrokeProgramResources {
+  seedBindGroupLayout: GPUBindGroupLayout;
+  jfaBindGroupLayout: GPUBindGroupLayout;
+  resolveBindGroupLayout: GPUBindGroupLayout;
+  composeBindGroupLayout: GPUBindGroupLayout;
+  thresholdMaskBindGroupLayout: GPUBindGroupLayout;
+  indirectGateBindGroupLayout: GPUBindGroupLayout;
+  seedPipeline: GPUComputePipeline;
+  jfaPipeline: GPUComputePipeline;
+  resolvePipeline: GPUComputePipeline;
+  composePipeline: GPUComputePipeline;
+  readbackComposePipeline: GPUComputePipeline;
+  authoredMatteBakePipeline: GPUComputePipeline;
+  thresholdMaskPipeline: GPUComputePipeline;
+  indirectGatePipeline: GPUComputePipeline;
+}
+
+const strokeProgramCache = new WeakMap<
+  GPUDevice,
+  Map<string, Promise<RasterStrokeProgramResources>>
+>();
+
+function strokeProgramCacheKey(options: RasterStrokeRendererOptions): string {
+  return [
+    options.layerFormat,
+    `bbox:${options.bevelBoundingFieldEnabled === true ? 1 : 0}`,
+    `mutation:${options.bevelBoundingFieldTestMutation ?? "none"}`,
+  ].join("|");
+}
+
+function acquireStrokeProgramResources(
+  device: GPUDevice,
+  key: string,
+  factory: () => Promise<RasterStrokeProgramResources>,
+): Promise<RasterStrokeProgramResources> {
+  let deviceCache = strokeProgramCache.get(device);
+  if (!deviceCache) {
+    deviceCache = new Map();
+    strokeProgramCache.set(device, deviceCache);
+  }
+  const cached = deviceCache.get(key);
+  if (cached) {
+    return cached;
+  }
+  const pending = factory();
+  deviceCache.set(key, pending);
+  void pending.then(undefined, () => {
+    if (deviceCache?.get(key) === pending) {
+      deviceCache.delete(key);
+    }
+  });
+  return pending;
+}
+
 export class RasterStrokeRenderer {
   static async create(options: RasterStrokeRendererOptions): Promise<RasterStrokeRenderer> {
     const renderer = new RasterStrokeRenderer(options);
@@ -1804,6 +1851,7 @@ export class RasterStrokeRenderer {
   readonly styledMemoryBytes: number;
 
   private readonly device: GPUDevice;
+  private readonly programCacheKey: string;
   private readonly scratchPool: EffectsScratchPool;
   private readonly documentWidth: number;
   private readonly documentHeight: number;
@@ -1903,6 +1951,7 @@ export class RasterStrokeRenderer {
 
   private constructor(options: RasterStrokeRendererOptions) {
     this.device = options.device;
+    this.programCacheKey = strokeProgramCacheKey(options);
     this.scratchPool = options.scratchPool;
     this.documentWidth = options.documentWidth;
     this.documentHeight = options.documentHeight;
@@ -2778,7 +2827,7 @@ export class RasterStrokeRenderer {
     }
   }
 
-  private async initialize(): Promise<void> {
+  private async createProgramResources(): Promise<RasterStrokeProgramResources> {
     this.seedBindGroupLayout = this.device.createBindGroupLayout({
       label: "Stroke seed bind group layout",
       entries: [
@@ -2910,7 +2959,7 @@ export class RasterStrokeRenderer {
 
     const seedModule = this.device.createShaderModule({
       label: "Stroke dual seed WGSL",
-      code: seedShader(this.documentWidth, this.documentHeight),
+      code: seedShader(),
     });
     const jfaModule = this.device.createShaderModule({
       label: "Stroke packed dual JFA WGSL",
@@ -2918,13 +2967,11 @@ export class RasterStrokeRenderer {
     });
     const resolveModule = this.device.createShaderModule({
       label: "Stroke Q10.6 to packed f16 coverage WGSL",
-      code: resolveShader(this.documentWidth, this.documentHeight),
+      code: resolveShader(),
     });
     const composeModule = this.device.createShaderModule({
       label: "Stroke styled logical mip 1 compose WGSL",
       code: coarseComposeShader(
-        this.documentWidth,
-        this.documentHeight,
         this.layerFormat,
         this.bevelBoundingFieldEnabled,
         this.bevelBoundingFieldTestMutation,
@@ -2935,8 +2982,6 @@ export class RasterStrokeRenderer {
     const readbackComposeModule = this.device.createShaderModule({
       label: "Style stack analytic logical mip 0 bake WGSL",
       code: readbackComposeShader(
-        this.documentWidth,
-        this.documentHeight,
         this.layerFormat,
         this.bevelBoundingFieldEnabled,
         this.bevelBoundingFieldTestMutation,
@@ -2944,7 +2989,7 @@ export class RasterStrokeRenderer {
     });
     const thresholdMaskModule = this.device.createShaderModule({
       label: "Stroke alpha-threshold mask WGSL",
-      code: thresholdMaskShader(this.documentWidth, this.documentHeight),
+      code: thresholdMaskShader(),
     });
     const indirectGateModule = this.device.createShaderModule({
       label: "Stroke indirect dispatch gate WGSL",
@@ -3041,6 +3086,44 @@ export class RasterStrokeRenderer {
       this.indirectGatePipeline,
     ] = pipelines;
 
+    return {
+      seedBindGroupLayout: this.seedBindGroupLayout,
+      jfaBindGroupLayout: this.jfaBindGroupLayout,
+      resolveBindGroupLayout: this.resolveBindGroupLayout,
+      composeBindGroupLayout: this.composeBindGroupLayout,
+      thresholdMaskBindGroupLayout: this.thresholdMaskBindGroupLayout,
+      indirectGateBindGroupLayout: this.indirectGateBindGroupLayout,
+      seedPipeline: this.seedPipeline,
+      jfaPipeline: this.jfaPipeline,
+      resolvePipeline: this.resolvePipeline,
+      composePipeline: this.composePipeline,
+      readbackComposePipeline: this.readbackComposePipeline!,
+      authoredMatteBakePipeline: this.authoredMatteBakePipeline!,
+      thresholdMaskPipeline: this.thresholdMaskPipeline,
+      indirectGatePipeline: this.indirectGatePipeline,
+    };
+  }
+
+  private async initialize(): Promise<void> {
+    const programs = await acquireStrokeProgramResources(
+      this.device,
+      this.programCacheKey,
+      () => this.createProgramResources(),
+    );
+    this.seedBindGroupLayout = programs.seedBindGroupLayout;
+    this.jfaBindGroupLayout = programs.jfaBindGroupLayout;
+    this.resolveBindGroupLayout = programs.resolveBindGroupLayout;
+    this.composeBindGroupLayout = programs.composeBindGroupLayout;
+    this.thresholdMaskBindGroupLayout = programs.thresholdMaskBindGroupLayout;
+    this.indirectGateBindGroupLayout = programs.indirectGateBindGroupLayout;
+    this.seedPipeline = programs.seedPipeline;
+    this.jfaPipeline = programs.jfaPipeline;
+    this.resolvePipeline = programs.resolvePipeline;
+    this.composePipeline = programs.composePipeline;
+    this.readbackComposePipeline = programs.readbackComposePipeline;
+    this.authoredMatteBakePipeline = programs.authoredMatteBakePipeline;
+    this.thresholdMaskPipeline = programs.thresholdMaskPipeline;
+    this.indirectGatePipeline = programs.indirectGatePipeline;
     this.rebuildScratchBindGroups();
     this.rebuildIndirectGateBindGroup();
   }

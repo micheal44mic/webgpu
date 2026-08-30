@@ -54,16 +54,31 @@ assert.match(tileCreateBody, /createRenderPipelineAsync/);
 assert.match(tileCreateBody, /Promise\.allSettled/);
 assert.doesNotMatch(tileCreateBody, /device\.createRenderPipeline\(/);
 
-const strokeInitializeStart = strokeRendererSource.indexOf("private async initialize(");
-const strokeInitializeEnd = strokeRendererSource.indexOf("setLightGlazeView(", strokeInitializeStart);
-assert.ok(strokeInitializeStart >= 0 && strokeInitializeEnd > strokeInitializeStart);
+const strokeProgramCreateStart = strokeRendererSource.indexOf(
+  "private async createProgramResources(",
+);
+const strokeProgramCreateEnd = strokeRendererSource.indexOf(
+  "private async initialize(",
+  strokeProgramCreateStart,
+);
+assert.ok(strokeProgramCreateStart >= 0 && strokeProgramCreateEnd > strokeProgramCreateStart);
+const strokeProgramCreateBody = strokeRendererSource.slice(
+  strokeProgramCreateStart,
+  strokeProgramCreateEnd,
+);
+assert.match(strokeProgramCreateBody, /createComputePipelineAsync/);
+assert.match(strokeProgramCreateBody, /Promise\.allSettled/);
+assert.doesNotMatch(strokeProgramCreateBody, /this\.device\.createComputePipeline\(/);
+const strokeInitializeStart = strokeProgramCreateEnd;
+const strokeInitializeEnd = strokeRendererSource.indexOf(
+  "setLightGlazeView(",
+  strokeInitializeStart,
+);
 const strokeInitializeBody = strokeRendererSource.slice(
   strokeInitializeStart,
   strokeInitializeEnd,
 );
-assert.match(strokeInitializeBody, /createComputePipelineAsync/);
-assert.match(strokeInitializeBody, /Promise\.allSettled/);
-assert.doesNotMatch(strokeInitializeBody, /this\.device\.createComputePipeline\(/);
+assert.match(strokeInitializeBody, /acquireStrokeProgramResources/);
 
 const modeStart = layerRuntimeSource.indexOf("export async function setLayerBlendMode(");
 const modeCatch = layerRuntimeSource.indexOf("} catch (error) {", modeStart);

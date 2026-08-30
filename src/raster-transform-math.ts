@@ -6,11 +6,13 @@
  * dirty bounds, sparse tile projection and shader ABI independently testable.
  */
 import {
-  DOCUMENT_HEIGHT,
+  DOCUMENT_HEIGHT as RASTER_TRANSFORM_DOCUMENT_HEIGHT,
+  DOCUMENT_MAX_EDGE as RASTER_TRANSFORM_DOCUMENT_SIZE,
   DOCUMENT_TILE_GRID_SIZE,
-  DOCUMENT_TILE_HEIGHT,
-  DOCUMENT_TILE_WIDTH,
-  DOCUMENT_WIDTH,
+  DOCUMENT_TILE_HEIGHT as RASTER_TRANSFORM_TILE_HEIGHT,
+  DOCUMENT_TILE_SIZE as RASTER_TRANSFORM_TILE_SIZE,
+  DOCUMENT_TILE_WIDTH as RASTER_TRANSFORM_TILE_WIDTH,
+  DOCUMENT_WIDTH as RASTER_TRANSFORM_DOCUMENT_WIDTH,
 } from "./engine-limits.ts";
 
 export const RASTER_TRANSFORM_MATH_STRATEGY =
@@ -20,19 +22,23 @@ export const RASTER_TRANSFORM_MATH_STRATEGY =
 // storage: griglia 16×16 sul documento, quindi il lato del tile scala con la
 // taglia. Se questo restasse 256 fisso, a 2048² la maschera da 8 word verrebbe
 // rifiutata da `requireTileMask` come lunga il quadruplo del previsto.
-export const RASTER_TRANSFORM_DOCUMENT_WIDTH = DOCUMENT_WIDTH;
-export const RASTER_TRANSFORM_DOCUMENT_HEIGHT = DOCUMENT_HEIGHT;
-/** @deprecated Prefer the independent document width and height constants. */
-export const RASTER_TRANSFORM_DOCUMENT_SIZE = Math.max(DOCUMENT_WIDTH, DOCUMENT_HEIGHT);
+export {
+  RASTER_TRANSFORM_DOCUMENT_HEIGHT,
+  RASTER_TRANSFORM_DOCUMENT_SIZE,
+  RASTER_TRANSFORM_DOCUMENT_WIDTH,
+  RASTER_TRANSFORM_TILE_HEIGHT,
+  RASTER_TRANSFORM_TILE_SIZE,
+  RASTER_TRANSFORM_TILE_WIDTH,
+};
+/** @deprecated Prefer the independent document width and height bindings. */
 export const RASTER_TRANSFORM_TILE_GRID_SIZE = DOCUMENT_TILE_GRID_SIZE;
-export const RASTER_TRANSFORM_TILE_WIDTH = DOCUMENT_TILE_WIDTH;
-export const RASTER_TRANSFORM_TILE_HEIGHT = DOCUMENT_TILE_HEIGHT;
-/** @deprecated Prefer the independent tile width and height constants. */
-export const RASTER_TRANSFORM_TILE_SIZE = Math.max(DOCUMENT_TILE_WIDTH, DOCUMENT_TILE_HEIGHT);
 export const RASTER_TRANSFORM_FILTER_PADDING_PX = 2;
 export const RASTER_TRANSFORM_MINIMUM_ABS_SCALE = 0.01;
 export const RASTER_TRANSFORM_MAXIMUM_ABS_SCALE = 64;
-export const RASTER_TRANSFORM_UNIFORM_BYTES = 64;
+// The first 64 bytes retain the original transform ABI. The final 16-byte slot
+// carries the active document extent so cached deform pipelines are reusable
+// across documents with different dimensions.
+export const RASTER_TRANSFORM_UNIFORM_BYTES = 80;
 
 export interface RasterTransformPoint {
   x: number;
@@ -84,6 +90,8 @@ export interface RasterTransformUniformInput {
   sourceContentBounds: RasterTransformRect;
   sourcePivot: RasterTransformPoint;
   transform: RasterTransformAffine;
+  documentWidth?: number;
+  documentHeight?: number;
 }
 
 function requireFinite(value: number, label: string): number {
@@ -683,7 +691,7 @@ export function rasterTransformTileMask(
   return result;
 }
 
-/** Packs the exact 64-byte ABI consumed by `rasterTransformShader`. */
+/** Packs the stable 64-byte transform prefix plus the document-extent slot. */
 export function packRasterTransformUniforms(
   input: RasterTransformUniformInput,
   target: Float32Array = new Float32Array(RASTER_TRANSFORM_UNIFORM_BYTES / 4),
@@ -727,5 +735,15 @@ export function packRasterTransformUniforms(
   target[13] = inverse.row0[1];
   target[14] = inverse.row1[0];
   target[15] = inverse.row1[1];
+  target[16] = requirePositiveInteger(
+    input.documentWidth ?? RASTER_TRANSFORM_DOCUMENT_WIDTH,
+    "documentWidth",
+  );
+  target[17] = requirePositiveInteger(
+    input.documentHeight ?? RASTER_TRANSFORM_DOCUMENT_HEIGHT,
+    "documentHeight",
+  );
+  target[18] = 0;
+  target[19] = 0;
   return target;
 }

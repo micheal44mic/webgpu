@@ -6,12 +6,12 @@ import {
   type IconNode,
 } from "lucide";
 import type { EngineStats } from "./engine-stats";
+import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits";
 import { LAYER_STACK_MAXIMUM } from "./layer-stack";
 import {
-  LAYER_THUMBNAIL_HEIGHT,
   LAYER_THUMBNAIL_SIZE,
-  LAYER_THUMBNAIL_WIDTH,
-} from "./layer-thumbnail-renderer";
+  layerThumbnailDimensions,
+} from "./layer-thumbnail-geometry";
 import type { LayerThumbnailController } from "./layer-thumbnail-controller";
 import {
   buildMobileLayerMergeSelectionPlan,
@@ -536,6 +536,28 @@ export class LayerPanelController {
       if (clippingChild && clippingIndicator.childElementCount === 0) {
         clippingIndicator.append(this.createIconStack(CornerRightDown, 16));
       }
+      const liveThumbnailDimensions = layerThumbnailDimensions(
+        DOCUMENT_WIDTH,
+        DOCUMENT_HEIGHT,
+      );
+      thumbnail.style.setProperty(
+        "--mobile-layer-thumbnail-width",
+        `${52 * liveThumbnailDimensions.width / LAYER_THUMBNAIL_SIZE}px`,
+      );
+      thumbnail.style.setProperty(
+        "--mobile-layer-thumbnail-height",
+        `${52 * liveThumbnailDimensions.height / LAYER_THUMBNAIL_SIZE}px`,
+      );
+      const liveThumbnailCanvas = thumbnail.querySelector<HTMLCanvasElement>(
+        ".mobile-layer-thumbnail-canvas",
+      )!;
+      if (
+        liveThumbnailCanvas.width !== liveThumbnailDimensions.width
+        || liveThumbnailCanvas.height !== liveThumbnailDimensions.height
+      ) {
+        liveThumbnailCanvas.width = liveThumbnailDimensions.width;
+        liveThumbnailCanvas.height = liveThumbnailDimensions.height;
+      }
       if (background) {
         thumbnail.dataset.kind = "background";
         thumbnail.dataset.thumbnailSignature = `background:${view.thumbnailColor ?? ""}`;
@@ -543,7 +565,7 @@ export class LayerPanelController {
           "--mobile-layer-background-color",
           view.thumbnailColor ?? "#ffffff",
         );
-        thumbnail.querySelector<HTMLCanvasElement>(".mobile-layer-thumbnail-canvas")!.hidden = true;
+        liveThumbnailCanvas.hidden = true;
         thumbnail.querySelector<HTMLSpanElement>(".mobile-layer-thumbnail-content")!.hidden = true;
         thumbnail.querySelector<HTMLSpanElement>(".mobile-layer-thumbnail-glyph")!.hidden = true;
       } else {
@@ -1727,18 +1749,19 @@ export class LayerPanelController {
     const thumbnail = this.options.document.createElement("span");
     thumbnail.className = "mobile-layer-thumbnail";
     thumbnail.setAttribute("aria-hidden", "true");
+    const thumbnailDimensions = layerThumbnailDimensions(DOCUMENT_WIDTH, DOCUMENT_HEIGHT);
     thumbnail.style.setProperty(
       "--mobile-layer-thumbnail-width",
-      `${52 * LAYER_THUMBNAIL_WIDTH / LAYER_THUMBNAIL_SIZE}px`,
+      `${52 * thumbnailDimensions.width / LAYER_THUMBNAIL_SIZE}px`,
     );
     thumbnail.style.setProperty(
       "--mobile-layer-thumbnail-height",
-      `${52 * LAYER_THUMBNAIL_HEIGHT / LAYER_THUMBNAIL_SIZE}px`,
+      `${52 * thumbnailDimensions.height / LAYER_THUMBNAIL_SIZE}px`,
     );
     const thumbnailCanvas = this.options.document.createElement("canvas");
     thumbnailCanvas.className = "mobile-layer-thumbnail-canvas";
-    thumbnailCanvas.width = LAYER_THUMBNAIL_WIDTH;
-    thumbnailCanvas.height = LAYER_THUMBNAIL_HEIGHT;
+    thumbnailCanvas.width = thumbnailDimensions.width;
+    thumbnailCanvas.height = thumbnailDimensions.height;
     thumbnailCanvas.hidden = true;
     const thumbnailContent = this.options.document.createElement("span");
     thumbnailContent.className = "mobile-layer-thumbnail-content";

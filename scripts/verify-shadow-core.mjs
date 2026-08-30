@@ -215,6 +215,27 @@ const rendererSource = readFileSync(
   new URL("../src/shadow-renderer.ts", import.meta.url),
   "utf8",
 );
+assert.match(rendererSource, /raster-shadow-webgpu-v2-dimension-neutral-session-program-cache/);
+assert.match(
+  rendererSource,
+  /const shadowProgramCache = new WeakMap<\s*GPUDevice,\s*Map<string, Promise<RasterShadowProgramResources>>/,
+  "Shadow programs must remain resident for the lifetime of their GPU device",
+);
+const shadowProgramKeySource = rendererSource.slice(
+  rendererSource.indexOf("function shadowProgramCacheKey("),
+  rendererSource.indexOf("async function createShadowProgramResources("),
+);
+assert.match(shadowProgramKeySource, /kind/);
+assert.doesNotMatch(
+  shadowProgramKeySource,
+  /documentWidth|documentHeight/,
+  "Shadow programs must be reusable by custom document dimensions",
+);
+assert.match(
+  rendererSource,
+  /const programs = await acquireShadowProgramResources\(\s*this\.device,\s*this\.kind,\s*\)/,
+  "outer and inner Shadow instances must reuse cached programs",
+);
 assert.match(
   rendererSource,
   /prewarmWorkspace\(source: unknown\): void \{\s+this\.requireScratchLease\(this\.styleKernel\(source\)\);/,
@@ -224,7 +245,7 @@ assert.match(rendererSource, /persistent packed f16 matte/);
 assert.match(rendererSource, /const COVERAGE_WORD_PIXELS = 2/);
 assert.match(
   rendererSource,
-  /const coverageWordsPerRow = Math\.ceil\(documentWidth \/ COVERAGE_WORD_PIXELS\);[\s\S]*?let wordIndex = firstDocumentPosition\.y \* \$\{coverageWordsPerRow\}u\s*\+ \(firstDocumentPosition\.x >> 1u\);\s*shadowMatte\[wordIndex\] = pack2x16float\(matte\)/,
+  /let coverageWordsPerRow = \(u32\(documentSize\(\)\.x\) \+ 1u\) \/ 2u;[\s\S]*?let wordIndex = firstDocumentPosition\.y \* coverageWordsPerRow\s*\+ \(firstDocumentPosition\.x >> 1u\);\s*shadowMatte\[wordIndex\] = pack2x16float\(matte\)/,
   "packed Shadow matte must use a per-row word stride for rectangular documents",
 );
 const packedMatteWordIndex = (width, x, y) => y * Math.ceil(width / 2) + (x >> 1);
@@ -246,12 +267,12 @@ assert.match(compositorSource, /outerShadowField: array<u32>/);
 assert.match(compositorSource, /innerShadowField: array<u32>/);
 assert.match(
   compositorSource,
-  /unpack2x16float\(outerShadowField\[u32\(position\.y\) \* \$\{coverageWordsPerRow\}u \+ \(x >> 1u\)\]\)/,
+  /unpack2x16float\(outerShadowField\[u32\(position\.y\) \* coverageWordsPerRow\(\) \+ \(x >> 1u\)\]\)/,
   "outer Shadow sampling must use the rectangular-document row stride",
 );
 assert.match(
   compositorSource,
-  /unpack2x16float\(innerShadowField\[u32\(position\.y\) \* \$\{coverageWordsPerRow\}u \+ \(x >> 1u\)\]\)/,
+  /unpack2x16float\(innerShadowField\[u32\(position\.y\) \* coverageWordsPerRow\(\) \+ \(x >> 1u\)\]\)/,
   "inner Shadow sampling must use the rectangular-document row stride",
 );
 // A full-width 4096² matte is exactly two bytes per pixel. This guards both

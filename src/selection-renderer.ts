@@ -3,10 +3,6 @@ import { runGpuAllocationTransaction, type GpuAllocationTransaction } from "./gp
 import {
   SELECTION_LASSO_SPAN_BUFFER_BYTES,
   SELECTION_LASSO_SPAN_BYTES,
-  SELECTION_LAYER_HEIGHT,
-  SELECTION_LAYER_WIDTH,
-  SELECTION_MASK_BYTES,
-  SELECTION_MASK_WORDS,
   SELECTION_METADATA_BUFFER_BYTES,
   SELECTION_METADATA_BYTES,
   SELECTION_METADATA_WORDS,
@@ -20,13 +16,14 @@ import {
   SELECTION_OPERATION_UNIFORM_BYTES,
   SELECTION_OVERLAY_UNIFORM_BUFFER_BYTES,
   SELECTION_OVERLAY_UNIFORM_BYTES,
-  SELECTION_RESIDENT_BUFFER_BYTES,
   SELECTION_TILE_MASK_WORDS,
   countSelectionTiles,
+  currentSelectionDocumentMetrics,
   selectionCombineModeCode,
   type LassoSpanRaster,
   type PixelSelectionState,
   type SelectionCombineMode,
+  type SelectionDocumentMetrics,
 } from "./selection-core";
 import { selectionComputeShader, selectionOverlayShader } from "./selection-shaders";
 
@@ -43,6 +40,33 @@ export interface SelectionSummary {
   readonly queueCompletionMs: number;
 }
 
+interface SelectionGpuProgram {
+  /** Keep modules/layouts strongly reachable with their device-resident pipelines. */
+  readonly computeModule: GPUShaderModule;
+  readonly overlayModule: GPUShaderModule;
+  readonly computeBindGroupLayout: GPUBindGroupLayout;
+  readonly overlayBindGroupLayout: GPUBindGroupLayout;
+  readonly computePipelineLayout: GPUPipelineLayout;
+  readonly overlayPipelineLayout: GPUPipelineLayout;
+  readonly selectColorPipeline: GPUComputePipeline;
+  readonly lassoPipeline: GPUComputePipeline;
+  readonly combinePipeline: GPUComputePipeline;
+  readonly invertPipeline: GPUComputePipeline;
+  readonly translatePipeline: GPUComputePipeline;
+  readonly summarizePipeline: GPUComputePipeline;
+  readonly overlayPipeline: GPURenderPipeline;
+}
+
+/**
+ * Selection programs belong to the WebGPU device session, not to a document.
+ * Large masks and operation buffers remain renderer-owned and can therefore be
+ * released while this small program bundle stays warm for the next document.
+ */
+const selectionGpuPrograms = new WeakMap<
+  GPUDevice,
+  Map<GPUTextureFormat, Promise<SelectionGpuProgram>>
+>();
+
 async function assertShaderModules(
   modules: readonly { label: string; module: GPUShaderModule }[],
 ): Promise<void> {
@@ -56,6 +80,120 @@ async function assertShaderModules(
   if (errors.length > 0) {
     throw new Error(`Invalid Pixel Selection WGSL shader:\n${errors.join("\n")}`);
   }
+}
+
+async function createSelectionGpuProgram(
+  device: GPUDevice,
+  overlayFormat: GPUTextureFormat,
+): Promise<SelectionGpuProgram> {
+  const computeModule = device.createShaderModule({
+    label: "Pixel Selection · session compute",
+    code: selectionComputeShader,
+  });
+  const overlayModule = device.createShaderModule({
+    label: "Pixel Selection · session overlay",
+    code: selectionOverlayShader,
+  });
+  await assertShaderModules([
+    { label: "compute", module: computeModule },
+    { label: "overlay", module: overlayModule },
+  ]);
+
+  const computeBindGroupLayout = device.createBindGroupLayout({
+    label: "Pixel Selection · session compute bind group layout",
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform", minBindingSize: SELECTION_OPERATION_UNIFORM_BYTES } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "unfilterable-float" } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+    ],
+  });
+  const overlayBindGroupLayout = device.createBindGroupLayout({
+    label: "Pixel Selection · session overlay bind group layout",
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform", minBindingSize: SELECTION_OVERLAY_UNIFORM_BYTES } },
+      { binding: 1, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
+      { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage", minBindingSize: SELECTION_METADATA_BYTES } },
+    ],
+  });
+  const computePipelineLayout = device.createPipelineLayout({
+    label: "Pixel Selection · session compute pipeline layout",
+    bindGroupLayouts: [computeBindGroupLayout],
+  });
+  const overlayPipelineLayout = device.createPipelineLayout({
+    label: "Pixel Selection · session overlay pipeline layout",
+    bindGroupLayouts: [overlayBindGroupLayout],
+  });
+  const computePipelines = await Promise.all([
+    "selectGlobalColor",
+    "rasterizeLassoSpans",
+    "combineExternalMask",
+    "invertSelection",
+    "translateExternalMask",
+    "summarizeSelection",
+  ].map((entryPoint) => device.createComputePipelineAsync({
+    label: `Pixel Selection · session ${entryPoint}`,
+    layout: computePipelineLayout,
+    compute: { module: computeModule, entryPoint },
+  })));
+  const overlayPipeline = await device.createRenderPipelineAsync({
+    label: "Pixel Selection · session transparent overlay",
+    layout: overlayPipelineLayout,
+    vertex: { module: overlayModule, entryPoint: "vertexMain" },
+    fragment: {
+      module: overlayModule,
+      entryPoint: "fragmentMain",
+      targets: [{ format: overlayFormat }],
+    },
+    primitive: { topology: "triangle-list" },
+  });
+  const [
+    selectColorPipeline,
+    lassoPipeline,
+    combinePipeline,
+    invertPipeline,
+    translatePipeline,
+    summarizePipeline,
+  ] = computePipelines;
+  return {
+    computeModule,
+    overlayModule,
+    computeBindGroupLayout,
+    overlayBindGroupLayout,
+    computePipelineLayout,
+    overlayPipelineLayout,
+    selectColorPipeline,
+    lassoPipeline,
+    combinePipeline,
+    invertPipeline,
+    translatePipeline,
+    summarizePipeline,
+    overlayPipeline,
+  };
+}
+
+function getSelectionGpuProgram(
+  device: GPUDevice,
+  overlayFormat: GPUTextureFormat,
+): Promise<SelectionGpuProgram> {
+  let programsByFormat = selectionGpuPrograms.get(device);
+  if (!programsByFormat) {
+    programsByFormat = new Map();
+    selectionGpuPrograms.set(device, programsByFormat);
+  }
+  const cached = programsByFormat.get(overlayFormat);
+  if (cached) return cached;
+
+  const pending = createSelectionGpuProgram(device, overlayFormat);
+  programsByFormat.set(overlayFormat, pending);
+  void pending.catch(() => {
+    if (programsByFormat?.get(overlayFormat) === pending) {
+      programsByFormat.delete(overlayFormat);
+    }
+  });
+  return pending;
 }
 
 export class SelectionRenderer {
@@ -79,14 +217,14 @@ export class SelectionRenderer {
   readonly metadataBuffer: GPUBuffer;
   readonly metadataReadback: GPUBuffer;
   readonly placeholderBuffer: GPUBuffer;
-  readonly computeBindGroupLayout: GPUBindGroupLayout;
-  readonly overlayBindGroupLayout: GPUBindGroupLayout;
+  computeBindGroupLayout!: GPUBindGroupLayout;
+  overlayBindGroupLayout!: GPUBindGroupLayout;
   readonly overlayContext: GPUCanvasContext;
   readonly overlayFormat: GPUTextureFormat;
   private sourceSamplingView: GPUTextureView;
   private frontMask: GPUBuffer;
   private backMask: GPUBuffer;
-  private readonly colorPreviewBaseMask: GPUBuffer;
+  private colorPreviewBaseMask: GPUBuffer;
   private selectColorPipeline!: GPUComputePipeline;
   private lassoPipeline!: GPUComputePipeline;
   private combinePipeline!: GPUComputePipeline;
@@ -96,6 +234,7 @@ export class SelectionRenderer {
   private overlayPipeline!: GPURenderPipeline;
   private overlayBindGroup!: GPUBindGroup;
   private publishedTileMask = new Uint32Array(SELECTION_TILE_MASK_WORDS);
+  private metrics: SelectionDocumentMetrics;
   private colorPreviewActive = false;
   private destroyed = false;
 
@@ -104,6 +243,7 @@ export class SelectionRenderer {
     transaction: GpuAllocationTransaction,
   ) {
     this.device = options.device;
+    this.metrics = currentSelectionDocumentMetrics();
     this.overlayCanvas = options.overlayCanvas;
     this.sourceSamplingView = options.sourceSamplingView;
     const createBuffer = (
@@ -116,11 +256,11 @@ export class SelectionRenderer {
       return buffer;
     };
     const maskUsage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
-    this.frontMask = createBuffer("Pixel Selection · front 1-bit mask", SELECTION_MASK_BYTES, maskUsage);
-    this.backMask = createBuffer("Pixel Selection · back 1-bit mask", SELECTION_MASK_BYTES, maskUsage);
+    this.frontMask = createBuffer("Pixel Selection · front 1-bit mask", this.metrics.maskBytes, maskUsage);
+    this.backMask = createBuffer("Pixel Selection · back 1-bit mask", this.metrics.maskBytes, maskUsage);
     this.colorPreviewBaseMask = createBuffer(
       "Pixel Selection · 1-bit color preview base",
-      SELECTION_MASK_BYTES,
+      this.metrics.maskBytes,
       maskUsage,
     );
     this.operationUniformBuffer = createBuffer(
@@ -153,25 +293,6 @@ export class SelectionRenderer {
       SELECTION_LASSO_SPAN_BYTES,
       GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     );
-    this.computeBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Pixel Selection · compute bind group layout",
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform", minBindingSize: SELECTION_OPERATION_UNIFORM_BYTES } },
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "unfilterable-float" } },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-      ],
-    });
-    this.overlayBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Pixel Selection · overlay bind group layout",
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform", minBindingSize: SELECTION_OVERLAY_UNIFORM_BYTES } },
-        { binding: 1, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
-        { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage", minBindingSize: SELECTION_METADATA_BYTES } },
-      ],
-    });
     const context = this.overlayCanvas.getContext("webgpu") as GPUCanvasContext | null;
     if (!context) {
       throw new Error("Unable to obtain the WebGPU canvas for the selection overlay.");
@@ -189,7 +310,7 @@ export class SelectionRenderer {
   }
 
   get residentBytes(): number {
-    return SELECTION_RESIDENT_BUFFER_BYTES;
+    return this.metrics.residentBufferBytes;
   }
 
   get maskBuffer(): GPUBuffer {
@@ -201,57 +322,16 @@ export class SelectionRenderer {
   }
 
   private async initialize(): Promise<void> {
-    const computeModule = this.device.createShaderModule({
-      label: "Pixel Selection · compute",
-      code: selectionComputeShader,
-    });
-    const overlayModule = this.device.createShaderModule({
-      label: "Pixel Selection · overlay",
-      code: selectionOverlayShader,
-    });
-    await assertShaderModules([
-      { label: "compute", module: computeModule },
-      { label: "overlay", module: overlayModule },
-    ]);
-    const computeLayout = this.device.createPipelineLayout({
-      label: "Pixel Selection · compute pipeline layout",
-      bindGroupLayouts: [this.computeBindGroupLayout],
-    });
-    const computePipelines = await Promise.all([
-      "selectGlobalColor",
-      "rasterizeLassoSpans",
-      "combineExternalMask",
-      "invertSelection",
-      "translateExternalMask",
-      "summarizeSelection",
-    ].map((entryPoint) => this.device.createComputePipelineAsync({
-      label: `Pixel Selection · ${entryPoint}`,
-      layout: computeLayout,
-      compute: { module: computeModule, entryPoint },
-    })));
-    [
-      this.selectColorPipeline,
-      this.lassoPipeline,
-      this.combinePipeline,
-      this.invertPipeline,
-      this.translatePipeline,
-      this.summarizePipeline,
-    ] = computePipelines;
-    const overlayLayout = this.device.createPipelineLayout({
-      label: "Pixel Selection · overlay pipeline layout",
-      bindGroupLayouts: [this.overlayBindGroupLayout],
-    });
-    this.overlayPipeline = await this.device.createRenderPipelineAsync({
-      label: "Pixel Selection · transparent overlay",
-      layout: overlayLayout,
-      vertex: { module: overlayModule, entryPoint: "vertexMain" },
-      fragment: {
-        module: overlayModule,
-        entryPoint: "fragmentMain",
-        targets: [{ format: this.overlayFormat }],
-      },
-      primitive: { topology: "triangle-list" },
-    });
+    const program = await getSelectionGpuProgram(this.device, this.overlayFormat);
+    this.computeBindGroupLayout = program.computeBindGroupLayout;
+    this.overlayBindGroupLayout = program.overlayBindGroupLayout;
+    this.selectColorPipeline = program.selectColorPipeline;
+    this.lassoPipeline = program.lassoPipeline;
+    this.combinePipeline = program.combinePipeline;
+    this.invertPipeline = program.invertPipeline;
+    this.translatePipeline = program.translatePipeline;
+    this.summarizePipeline = program.summarizePipeline;
+    this.overlayPipeline = program.overlayPipeline;
     this.overlayBindGroup = this.createOverlayBindGroup(this.frontMask);
     const encoder = this.device.createCommandEncoder({ label: "Pixel Selection · initialization" });
     encoder.clearBuffer(this.frontMask);
@@ -262,6 +342,80 @@ export class SelectionRenderer {
   setSourceSamplingView(view: GPUTextureView): void {
     this.assertAlive();
     this.sourceSamplingView = view;
+  }
+
+  /**
+   * Replaces only document-sized masks. Device-owned shader modules, layouts
+   * and pipelines stay resident in the session cache.
+   */
+  async reconfigureDocument(
+    width: number,
+    height: number,
+    sourceSamplingView: GPUTextureView,
+  ): Promise<void> {
+    this.assertAlive();
+    const nextMetrics = currentSelectionDocumentMetrics(width, height);
+    if (
+      nextMetrics.layerWidth === this.metrics.layerWidth
+      && nextMetrics.layerHeight === this.metrics.layerHeight
+    ) {
+      this.sourceSamplingView = sourceSamplingView;
+      this.clearSelection();
+      this.initializeMetadata();
+      this.overlayCanvas.hidden = true;
+      return;
+    }
+
+    const replacement = await runGpuAllocationTransaction(
+      this.device,
+      `WebGPU Pixel Selection ${width}×${height}`,
+      async (transaction) => {
+        const usage = GPUBufferUsage.STORAGE
+          | GPUBufferUsage.COPY_SRC
+          | GPUBufferUsage.COPY_DST;
+        const create = (label: string): GPUBuffer => {
+          const buffer = this.device.createBuffer({
+            label,
+            size: nextMetrics.maskBytes,
+            usage,
+          });
+          transaction.deferRollback(() => buffer.destroy());
+          return buffer;
+        };
+        const frontMask = create("Pixel Selection · replacement front 1-bit mask");
+        const backMask = create("Pixel Selection · replacement back 1-bit mask");
+        const colorPreviewBaseMask = create(
+          "Pixel Selection · replacement color preview base",
+        );
+        const overlayBindGroup = this.createOverlayBindGroup(frontMask);
+        const encoder = this.device.createCommandEncoder({
+          label: "Pixel Selection · initialize replacement document masks",
+        });
+        encoder.clearBuffer(frontMask);
+        encoder.clearBuffer(backMask);
+        encoder.clearBuffer(colorPreviewBaseMask);
+        this.device.queue.submit([encoder.finish()]);
+        await this.device.queue.onSubmittedWorkDone();
+        return { frontMask, backMask, colorPreviewBaseMask, overlayBindGroup };
+      },
+    );
+
+    const previousFrontMask = this.frontMask;
+    const previousBackMask = this.backMask;
+    const previousColorPreviewBaseMask = this.colorPreviewBaseMask;
+    this.frontMask = replacement.frontMask;
+    this.backMask = replacement.backMask;
+    this.colorPreviewBaseMask = replacement.colorPreviewBaseMask;
+    this.overlayBindGroup = replacement.overlayBindGroup;
+    this.metrics = nextMetrics;
+    this.sourceSamplingView = sourceSamplingView;
+    this.colorPreviewActive = false;
+    this.publishedTileMask.fill(0);
+    this.initializeMetadata();
+    this.overlayCanvas.hidden = true;
+    previousFrontMask.destroy();
+    previousBackMask.destroy();
+    previousColorPreviewBaseMask.destroy();
   }
 
   resizeOverlay(width: number, height: number): void {
@@ -282,7 +436,7 @@ export class SelectionRenderer {
       0,
       this.colorPreviewBaseMask,
       0,
-      SELECTION_MASK_BYTES,
+      this.metrics.maskBytes,
     );
     this.device.queue.submit([encoder.finish()]);
     this.colorPreviewActive = true;
@@ -311,9 +465,9 @@ export class SelectionRenderer {
     const pass = encoder.beginComputePass({ label: "Pixel Selection · color comparison" });
     pass.setBindGroup(0, bindGroup);
     pass.setPipeline(this.selectColorPipeline);
-    pass.dispatchWorkgroups(Math.ceil(SELECTION_MASK_WORDS / 256));
+    pass.dispatchWorkgroups(Math.ceil(this.metrics.maskWords / 256));
     pass.setPipeline(this.summarizePipeline);
-    pass.dispatchWorkgroups(Math.ceil(SELECTION_MASK_WORDS / 256));
+    pass.dispatchWorkgroups(Math.ceil(this.metrics.maskWords / 256));
     pass.end();
     this.copyMetadataForReadback(encoder);
     return this.submitReadPublish(encoder, startedAt);
@@ -344,7 +498,7 @@ export class SelectionRenderer {
       pass.dispatchWorkgroups(Math.ceil(raster.spanCount / 64));
     }
     pass.setPipeline(this.summarizePipeline);
-    pass.dispatchWorkgroups(Math.ceil(SELECTION_MASK_WORDS / 256));
+    pass.dispatchWorkgroups(Math.ceil(this.metrics.maskWords / 256));
     pass.end();
     this.copyMetadataForReadback(encoder);
     return this.submitReadPublish(encoder, startedAt);
@@ -365,9 +519,9 @@ export class SelectionRenderer {
     const pass = encoder.beginComputePass({ label: "Pixel Selection · replace/add/subtract" });
     pass.setBindGroup(0, bindGroup);
     pass.setPipeline(this.combinePipeline);
-    pass.dispatchWorkgroups(Math.ceil(SELECTION_MASK_WORDS / 256));
+    pass.dispatchWorkgroups(Math.ceil(this.metrics.maskWords / 256));
     pass.setPipeline(this.summarizePipeline);
-    pass.dispatchWorkgroups(Math.ceil(SELECTION_MASK_WORDS / 256));
+    pass.dispatchWorkgroups(Math.ceil(this.metrics.maskWords / 256));
     pass.end();
     this.copyMetadataForReadback(encoder);
     return this.submitReadPublish(encoder, startedAt);
@@ -384,9 +538,9 @@ export class SelectionRenderer {
     const pass = encoder.beginComputePass({ label: "Pixel Selection · inversion and summary" });
     pass.setBindGroup(0, bindGroup);
     pass.setPipeline(this.invertPipeline);
-    pass.dispatchWorkgroups(Math.ceil(SELECTION_MASK_WORDS / 256));
+    pass.dispatchWorkgroups(Math.ceil(this.metrics.maskWords / 256));
     pass.setPipeline(this.summarizePipeline);
-    pass.dispatchWorkgroups(Math.ceil(SELECTION_MASK_WORDS / 256));
+    pass.dispatchWorkgroups(Math.ceil(this.metrics.maskWords / 256));
     pass.end();
     this.copyMetadataForReadback(encoder);
     return this.submitReadPublish(encoder, startedAt);
@@ -408,9 +562,9 @@ export class SelectionRenderer {
     const pass = encoder.beginComputePass({ label: "Pixel Selection · translation and summary" });
     pass.setBindGroup(0, bindGroup);
     pass.setPipeline(this.translatePipeline);
-    pass.dispatchWorkgroups(Math.ceil(SELECTION_MASK_WORDS / 256));
+    pass.dispatchWorkgroups(Math.ceil(this.metrics.maskWords / 256));
     pass.setPipeline(this.summarizePipeline);
-    pass.dispatchWorkgroups(Math.ceil(SELECTION_MASK_WORDS / 256));
+    pass.dispatchWorkgroups(Math.ceil(this.metrics.maskWords / 256));
     pass.end();
     this.copyMetadataForReadback(encoder);
     return this.submitReadPublish(encoder, startedAt);
@@ -448,7 +602,7 @@ export class SelectionRenderer {
       sourceOffset,
       this.backMask,
       0,
-      SELECTION_MASK_BYTES,
+      this.metrics.maskBytes,
     );
     this.device.queue.submit([encoder.finish()]);
     await this.device.queue.onSubmittedWorkDone();
@@ -491,8 +645,9 @@ export class SelectionRenderer {
     floats[4] = view.rotationCos;
     floats[5] = view.rotationSin;
     floats[6] = view.zoom;
-    floats[7] = 0;
+    floats[7] = this.metrics.layerWidth;
     unsigned[8] = state.selectedPixels;
+    unsigned[9] = this.metrics.layerHeight;
     floats[10] = offset.x;
     floats[11] = offset.y;
     this.device.queue.writeBuffer(this.overlayUniformBuffer, 0, upload);
@@ -527,6 +682,9 @@ export class SelectionRenderer {
     this.metadataReadback.destroy();
     this.placeholderBuffer.destroy();
     this.overlayContext.unconfigure();
+    // Shader modules, layouts and pipelines intentionally remain in the
+    // device-session cache. A later document allocates fresh masks and bind
+    // groups while reusing the already compiled Selection program.
   }
 
   private createComputeBindGroup(targetMask: GPUBuffer, externalMask: GPUBuffer): GPUBindGroup {
@@ -553,8 +711,8 @@ export class SelectionRenderer {
     const upload = new ArrayBuffer(SELECTION_OPERATION_UNIFORM_BYTES);
     const unsigned = new Uint32Array(upload);
     const floats = new Float32Array(upload);
-    unsigned[0] = SELECTION_LAYER_WIDTH;
-    unsigned[1] = SELECTION_LAYER_HEIGHT;
+    unsigned[0] = this.metrics.layerWidth;
+    unsigned[1] = this.metrics.layerHeight;
     unsigned[2] = selectionCombineModeCode(combineMode);
     unsigned[3] = spanCount;
     floats[4] = tolerance;
@@ -577,7 +735,7 @@ export class SelectionRenderer {
     if (combineMode === "replace") {
       encoder.clearBuffer(this.backMask);
     } else {
-      encoder.copyBufferToBuffer(sourceMask, 0, this.backMask, 0, SELECTION_MASK_BYTES);
+      encoder.copyBufferToBuffer(sourceMask, 0, this.backMask, 0, this.metrics.maskBytes);
     }
   }
 

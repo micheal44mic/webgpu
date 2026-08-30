@@ -1,5 +1,9 @@
 import type { EngineStats } from "./engine-stats";
 import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits";
+import {
+  LAYER_THUMBNAIL_SIZE,
+  layerThumbnailDimensions,
+} from "./layer-thumbnail-geometry";
 import { BoundedMobileRasterThumbnailCache } from "./mobile-raster-thumbnail-cache";
 import {
   renderMobileSemanticLayerThumbnail,
@@ -259,6 +263,8 @@ export class LayerThumbnailController {
       view.semanticThumbnailSignature,
       this.semanticFontRevision(view.kind),
       cached?.revision ?? 0,
+      DOCUMENT_WIDTH,
+      DOCUMENT_HEIGHT,
     ].join(":");
     if (thumbnail.dataset.thumbnailSignature === signature) return;
     thumbnail.dataset.thumbnailSignature = signature;
@@ -274,6 +280,24 @@ export class LayerThumbnailController {
       ".mobile-layer-thumbnail-glyph",
     );
     if (!content || !canvas || !glyph) return;
+    const thumbnailDimensions = cached
+      ? { width: cached.imageData.width, height: cached.imageData.height }
+      : layerThumbnailDimensions(DOCUMENT_WIDTH, DOCUMENT_HEIGHT);
+    if (
+      canvas.width !== thumbnailDimensions.width
+      || canvas.height !== thumbnailDimensions.height
+    ) {
+      canvas.width = thumbnailDimensions.width;
+      canvas.height = thumbnailDimensions.height;
+    }
+    thumbnail.style.setProperty(
+      "--mobile-layer-thumbnail-width",
+      `${52 * thumbnailDimensions.width / LAYER_THUMBNAIL_SIZE}px`,
+    );
+    thumbnail.style.setProperty(
+      "--mobile-layer-thumbnail-height",
+      `${52 * thumbnailDimensions.height / LAYER_THUMBNAIL_SIZE}px`,
+    );
     glyph.textContent = view.thumbnailGlyph;
     if (view.thumbnailColor) {
       thumbnail.style.setProperty("--mobile-layer-thumbnail-color", view.thumbnailColor);

@@ -1,10 +1,6 @@
 import {
-  FILL_BLOCK_GRID_HEIGHT,
-  FILL_BLOCK_GRID_WIDTH,
   FILL_BLOCK_SIZE,
   FILL_COMPOSITE_MODE_CODE,
-  FILL_HISTORY_MASK_WORDS,
-  FILL_HISTORY_WORDS_PER_ROW,
   FILL_LABEL_WORDS_PER_BLOCK,
   FILL_MAX_COMPONENTS_PER_BLOCK,
   FILL_DIAGNOSTIC_SEED_TRANSPARENT_BIT,
@@ -19,11 +15,6 @@ import {
   FILL_META_SOURCE_SEED_COLOR_START,
   FILL_META_TILE_MASK_START,
   FILL_TILE_GRID_SIZE,
-  FILL_TILE_HEIGHT,
-  FILL_TILE_WIDTH,
-  FILL_LAYER_HEIGHT,
-  FILL_LAYER_WIDTH,
-  FILL_RENDER_MASK_WORDS_PER_ROW,
 } from "./fill-core.ts";
 import { colorMatchShaderHelpers } from "./color-match-core.ts";
 
@@ -66,10 +57,7 @@ fn fillRenderMaskContains(word: u32, bitIndex: u32) -> bool {
 `;
 
 export const fillComputeShader = /* wgsl */ `
-const LAYER_EXTENT: vec2<u32> = vec2<u32>(${FILL_LAYER_WIDTH}u, ${FILL_LAYER_HEIGHT}u);
 const BLOCK_EXTENT: u32 = ${FILL_BLOCK_SIZE}u;
-const BLOCK_GRID: vec2<u32> = vec2<u32>(${FILL_BLOCK_GRID_WIDTH}u, ${FILL_BLOCK_GRID_HEIGHT}u);
-const ACTIVE_NODE_CAPACITY: u32 = ${FILL_BLOCK_GRID_WIDTH * FILL_BLOCK_GRID_HEIGHT}u;
 const COMPONENTS_PER_BLOCK: u32 = ${FILL_MAX_COMPONENTS_PER_BLOCK}u;
 const LABEL_WORDS_PER_BLOCK: u32 = ${FILL_LABEL_WORDS_PER_BLOCK}u;
 const INVALID_LABEL: u32 = 255u;
@@ -101,6 +89,33 @@ struct FillUniforms {
 @group(0) @binding(6) var<storage, read_write> activeBlocks: array<u32>;
 @group(0) @binding(7) var<storage, read_write> metadata: array<atomic<u32>>;
 @group(0) @binding(8) var<storage, read_write> drawIndirect: array<atomic<u32>>;
+
+fn blockGrid() -> vec2<u32> {
+  return (uniforms.size + vec2<u32>(BLOCK_EXTENT - 1u))
+    / vec2<u32>(BLOCK_EXTENT);
+}
+
+fn activeNodeCapacity() -> u32 {
+  let grid = blockGrid();
+  return grid.x * grid.y;
+}
+
+fn historyWordsPerRow() -> u32 {
+  return (uniforms.size.x + 31u) / 32u;
+}
+
+fn historyMaskWords() -> u32 {
+  return historyWordsPerRow() * uniforms.size.y;
+}
+
+fn renderMaskWordsPerRow() -> u32 {
+  return (uniforms.size.x + 7u) / 8u;
+}
+
+fn tileExtent() -> vec2<u32> {
+  return (uniforms.size + vec2<u32>(${FILL_TILE_GRID_SIZE - 1}u))
+    / vec2<u32>(${FILL_TILE_GRID_SIZE}u);
+}
 
 var<workgroup> localParents: array<atomic<u32>, 256>;
 var<workgroup> localComponents: array<u32, 256>;
@@ -212,7 +227,7 @@ fn unionGlobal(left: u32, right: u32) {
 }
 
 fn blockIndex(block: vec2<u32>) -> u32 {
-  return block.y * BLOCK_GRID.x + block.x;
+  return block.y * blockGrid().x + block.x;
 }
 
 fn labelAt(pixel: vec2<u32>) -> u32 {
@@ -302,7 +317,7 @@ fn classifyLocal(
       let node = blockIndex(workgroup.xy) * COMPONENTS_PER_BLOCK + component;
       atomicStore(&globalParents[node], node);
       let slot = atomicAdd(&metadata[${FILL_META_ACTIVE_COMPONENTS}u], 1u);
-      if (slot < ACTIVE_NODE_CAPACITY) { activeParentNodes[slot] = node; }
+      if (slot < activeNodeCapacity()) { activeParentNodes[slot] = node; }
     }
   }
   workgroupBarrier();
@@ -355,7 +370,10 @@ fn unionBoundaries(
 
 @compute @workgroup_size(256, 1, 1)
 fn compressComponents(@builtin(global_invocation_id) global: vec3<u32>) {
-  let count = min(atomicLoad(&metadata[${FILL_META_ACTIVE_COMPONENTS}u]), ACTIVE_NODE_CAPACITY);
+  let count = min(
+    atomicLoad(&metadata[${FILL_META_ACTIVE_COMPONENTS}u]),
+    activeNodeCapacity(),
+  );
   if (global.x >= count) { return; }
   let node = activeParentNodes[global.x];
   atomicStore(&globalParents[node], findGlobalRoot(node));
@@ -402,14 +420,15 @@ fn reduceAndRecord(
     // cold tiles; marking only the tile containing the block origin would lose
     // pixels after eviction/save. Use the reduced bounds of the pixels that
     // were actually selected in this block and mark every overlapping tile.
+    let tileSize = tileExtent();
     let firstTile = min(
-      vec2<u32>(reduceMinX[0] / ${FILL_TILE_WIDTH}u, reduceMinY[0] / ${FILL_TILE_HEIGHT}u),
+      vec2<u32>(reduceMinX[0] / tileSize.x, reduceMinY[0] / tileSize.y),
       vec2<u32>(${FILL_TILE_GRID_SIZE - 1}u),
     );
     let lastTile = min(
       vec2<u32>(
-        (reduceMaxX[0] - 1u) / ${FILL_TILE_WIDTH}u,
-        (reduceMaxY[0] - 1u) / ${FILL_TILE_HEIGHT}u,
+        (reduceMaxX[0] - 1u) / tileSize.x,
+        (reduceMaxY[0] - 1u) / tileSize.y,
       ),
       vec2<u32>(${FILL_TILE_GRID_SIZE - 1}u),
     );
@@ -446,7 +465,7 @@ fn selectSeedComponent(
   let selected = inside && label != INVALID_LABEL
     && findGlobalRoot(nodeForPixel(safePixel, label)) == seedRoot;
   if (selected) {
-    let word = pixel.y * ${FILL_HISTORY_WORDS_PER_ROW}u + pixel.x / 32u;
+    let word = pixel.y * historyWordsPerRow() + pixel.x / 32u;
     atomicOr(&selectedMask[word], fillBitMask(pixel.x));
   }
   reduceAndRecord(pixel, selected, workgroup.xy, localIndex);
@@ -461,7 +480,7 @@ fn rebuildSelection(
   let pixel = workgroup.xy * BLOCK_EXTENT + local.xy;
   let inside = all(pixel < uniforms.size);
   let safePixel = min(pixel, uniforms.size - vec2<u32>(1u));
-  let word = safePixel.y * ${FILL_HISTORY_WORDS_PER_ROW}u + safePixel.x / 32u;
+  let word = safePixel.y * historyWordsPerRow() + safePixel.x / 32u;
   let selected = inside
     && fillMaskContains(atomicLoad(&selectedMask[word]), safePixel.x);
   reduceAndRecord(pixel, selected, workgroup.xy, localIndex);
@@ -477,7 +496,7 @@ fn residualSourceWord(wordIndex: u32, sourceKind: u32) -> u32 {
 }
 
 fn residualSourceContains(pixel: vec2<u32>, sourceKind: u32) -> bool {
-  let word = pixel.y * ${FILL_HISTORY_WORDS_PER_ROW}u + pixel.x / 32u;
+  let word = pixel.y * historyWordsPerRow() + pixel.x / 32u;
   return fillMaskContains(residualSourceWord(word, sourceKind), pixel.x);
 }
 
@@ -546,8 +565,9 @@ fn expandResidualFringeWord(
     vec3<f32>(0.0),
     vec3<f32>(1.0),
   );
-  let row = wordIndex / ${FILL_HISTORY_WORDS_PER_ROW}u;
-  let firstX = (wordIndex % ${FILL_HISTORY_WORDS_PER_ROW}u) * 32u;
+  let rowWords = historyWordsPerRow();
+  let row = wordIndex / rowWords;
+  let firstX = (wordIndex % rowWords) * 32u;
   var expanded = source;
   for (var bit = 0u; bit < 32u; bit += 1u) {
     let x = firstX + bit;
@@ -562,7 +582,7 @@ fn expandResidualFringeWord(
 
 @compute @workgroup_size(256, 1, 1)
 fn expandResidualFringe1(@builtin(global_invocation_id) global: vec3<u32>) {
-  if (global.x >= ${FILL_HISTORY_MASK_WORDS}u) { return; }
+  if (global.x >= historyMaskWords()) { return; }
   atomicStore(
     &globalParents[global.x],
     expandResidualFringeWord(global.x, 0u, 1u),
@@ -571,13 +591,13 @@ fn expandResidualFringe1(@builtin(global_invocation_id) global: vec3<u32>) {
 
 @compute @workgroup_size(256, 1, 1)
 fn expandResidualFringe2(@builtin(global_invocation_id) global: vec3<u32>) {
-  if (global.x >= ${FILL_HISTORY_MASK_WORDS}u) { return; }
+  if (global.x >= historyMaskWords()) { return; }
   packedLabels[global.x] = expandResidualFringeWord(global.x, 1u, 2u);
 }
 
 @compute @workgroup_size(256, 1, 1)
 fn expandResidualFringe3(@builtin(global_invocation_id) global: vec3<u32>) {
-  if (global.x >= ${FILL_HISTORY_MASK_WORDS}u) { return; }
+  if (global.x >= historyMaskWords()) { return; }
   atomicStore(
     &globalParents[global.x],
     expandResidualFringeWord(global.x, 2u, 3u),
@@ -593,7 +613,7 @@ fn recordResidualFringeBlocks(
   let pixel = workgroup.xy * BLOCK_EXTENT + local.xy;
   let inside = all(pixel < uniforms.size);
   let safePixel = min(pixel, uniforms.size - vec2<u32>(1u));
-  let word = safePixel.y * ${FILL_HISTORY_WORDS_PER_ROW}u + safePixel.x / 32u;
+  let word = safePixel.y * historyWordsPerRow() + safePixel.x / 32u;
   let selected = inside
     && fillMaskContains(atomicLoad(&globalParents[word]), safePixel.x);
   reduceCount[localIndex] = select(0u, 1u, selected);
@@ -627,41 +647,39 @@ fn expandedRenderMaskByte(
 
 @compute @workgroup_size(256, 1, 1)
 fn expandRenderMask(@builtin(global_invocation_id) global: vec3<u32>) {
-  const SOURCE_WORDS: u32 = ${FILL_HISTORY_MASK_WORDS}u;
-  const SOURCE_WORDS_PER_ROW: u32 = ${FILL_HISTORY_WORDS_PER_ROW}u;
-  const TARGET_WORDS_PER_ROW: u32 = ${FILL_RENDER_MASK_WORDS_PER_ROW}u;
-  if (global.x >= SOURCE_WORDS) { return; }
+  let sourceWords = historyMaskWords();
+  let sourceWordsPerRow = historyWordsPerRow();
+  let targetWordsPerRow = renderMaskWordsPerRow();
+  if (global.x >= sourceWords) { return; }
   let source = atomicLoad(&globalParents[global.x]);
-  let sourceRow = global.x / SOURCE_WORDS_PER_ROW;
-  let sourceWordX = global.x % SOURCE_WORDS_PER_ROW;
+  let sourceRow = global.x / sourceWordsPerRow;
+  let sourceWordX = global.x % sourceWordsPerRow;
   let targetWordX = sourceWordX * 4u;
-  let targetWord = sourceRow * TARGET_WORDS_PER_ROW + targetWordX;
+  let targetWord = sourceRow * targetWordsPerRow + targetWordX;
   // packedLabels is no longer needed once selectedMask has been produced. Its
   // capacity is twice this expanded mask even at the maximum document size.
-  if (targetWordX < TARGET_WORDS_PER_ROW) {
+  if (targetWordX < targetWordsPerRow) {
     packedLabels[targetWord] = expandedRenderMaskByte(source, 0u);
   }
-  if (targetWordX + 1u < TARGET_WORDS_PER_ROW) {
+  if (targetWordX + 1u < targetWordsPerRow) {
     packedLabels[targetWord + 1u] = expandedRenderMaskByte(source, 1u);
   }
-  if (targetWordX + 2u < TARGET_WORDS_PER_ROW) {
+  if (targetWordX + 2u < targetWordsPerRow) {
     packedLabels[targetWord + 2u] = expandedRenderMaskByte(source, 2u);
   }
-  if (targetWordX + 3u < TARGET_WORDS_PER_ROW) {
+  if (targetWordX + 3u < targetWordsPerRow) {
     packedLabels[targetWord + 3u] = expandedRenderMaskByte(source, 3u);
   }
 }
 `;
 
 export const fillSelectionIntersectionShader = /* wgsl */ `
-const FILL_MASK_WORDS: u32 = ${FILL_HISTORY_MASK_WORDS}u;
-
 @group(0) @binding(0) var<storage, read_write> fillMask: array<u32>;
 @group(0) @binding(1) var<storage, read> selectionMask: array<u32>;
 
 @compute @workgroup_size(256, 1, 1)
 fn intersectFillWithSelection(@builtin(global_invocation_id) global: vec3<u32>) {
-  if (global.x >= FILL_MASK_WORDS) { return; }
+  if (global.x >= arrayLength(&fillMask)) { return; }
   fillMask[global.x] = fillMask[global.x] & selectionMask[global.x];
 }
 `;
@@ -698,9 +716,7 @@ fn probeBit31() {
 `;
 
 export const fillRenderShader = /* wgsl */ `
-const LAYER_EXTENT: vec2<f32> = vec2<f32>(${FILL_LAYER_WIDTH}.0, ${FILL_LAYER_HEIGHT}.0);
 const BLOCK_EXTENT: u32 = ${FILL_BLOCK_SIZE}u;
-const BLOCK_GRID: vec2<u32> = vec2<u32>(${FILL_BLOCK_GRID_WIDTH}u, ${FILL_BLOCK_GRID_HEIGHT}u);
 const COMPOSITE_SOLID_UNDERLAY: u32 = ${FILL_COMPOSITE_MODE_CODE["solid-underlay"]}u;
 const COMPOSITE_PRESERVE_COVERAGE_RECOLOR: u32 = ${FILL_COMPOSITE_MODE_CODE["preserve-coverage-recolor"]}u;
 const COMPOSITE_SOLID_REPLACE: u32 = ${FILL_COMPOSITE_MODE_CODE["solid-replace"]}u;
@@ -727,6 +743,15 @@ struct FillUniforms {
 @group(0) @binding(1) var<storage, read> renderMask: array<u32>;
 @group(0) @binding(2) var<storage, read> activeBlocks: array<u32>;
 @group(0) @binding(3) var destinationSnapshot: texture_2d<f32>;
+
+fn blockGrid() -> vec2<u32> {
+  return (uniforms.size + vec2<u32>(BLOCK_EXTENT - 1u))
+    / vec2<u32>(BLOCK_EXTENT);
+}
+
+fn renderMaskWordsPerRow() -> u32 {
+  return (uniforms.size.x + 7u) / 8u;
+}
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
@@ -767,12 +792,14 @@ fn vertexMain(
     vec2<u32>(1u, 1u),
   );
   let blockIndex = activeBlocks[instanceIndex];
-  let block = vec2<u32>(blockIndex % BLOCK_GRID.x, blockIndex / BLOCK_GRID.x);
+  let grid = blockGrid();
+  let block = vec2<u32>(blockIndex % grid.x, blockIndex / grid.x);
   let pixel = vec2<f32>((block + corners[vertexIndex]) * BLOCK_EXTENT);
+  let layerExtent = vec2<f32>(uniforms.size);
   var output: VertexOutput;
   output.position = vec4<f32>(
-    pixel.x / LAYER_EXTENT.x * 2.0 - 1.0,
-    1.0 - pixel.y / LAYER_EXTENT.y * 2.0,
+    pixel.x / layerExtent.x * 2.0 - 1.0,
+    1.0 - pixel.y / layerExtent.y * 2.0,
     0.0,
     1.0,
   );
@@ -784,8 +811,8 @@ fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
   // Framebuffer position is the authoritative target texel. Destination is
   // sampled from another texture, never from this render attachment.
   let pixel = vec2<u32>(position.xy);
-  if (pixel.x >= ${FILL_LAYER_WIDTH}u || pixel.y >= ${FILL_LAYER_HEIGHT}u) { discard; }
-  let word = pixel.y * ${FILL_RENDER_MASK_WORDS_PER_ROW}u + pixel.x / 8u;
+  if (pixel.x >= uniforms.size.x || pixel.y >= uniforms.size.y) { discard; }
+  let word = pixel.y * renderMaskWordsPerRow() + pixel.x / 8u;
   if (!fillRenderMaskContains(renderMask[word], pixel.x)) { discard; }
 
   if (uniforms.compositeMode == COMPOSITE_SOLID_REPLACE) {

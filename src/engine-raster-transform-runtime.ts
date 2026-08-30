@@ -244,7 +244,7 @@ async function createSharedResources(
         entries: [
           {
             binding: 0,
-            visibility: GPUShaderStage.FRAGMENT,
+            visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
             buffer: { type: "uniform", minBindingSize: RASTER_TRANSFORM_UNIFORM_BYTES },
           },
           {
@@ -416,6 +416,8 @@ function writeSessionUniforms(
     sourceContentBounds: session.sourceRasterBounds,
     sourcePivot: session.sourcePivot,
     transform,
+    documentWidth: engine.documentWidth,
+    documentHeight: engine.documentHeight,
   }, session.uniformUpload);
   engine.device.queue.writeBuffer(session.uniformBuffer, 0, session.uniformUpload);
 }

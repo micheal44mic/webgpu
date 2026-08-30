@@ -1,7 +1,5 @@
 import {
   DOCUMENT_TILE_GRID_SIZE,
-  DOCUMENT_TILE_HEIGHT,
-  DOCUMENT_TILE_WIDTH,
 } from "./engine-limits.ts";
 
 /**
@@ -10,13 +8,14 @@ import {
  * The source and destination stay in the document's native format. A tile is
  * addressed with integer coordinates and `textureLoad`, so this path performs
  * neither filtering nor RGBA8 conversion. It is intentionally restricted by
- * the runtime to resolutionScale=1 and Normal fixed-function compositing.
+ * the runtime to resolutionScale=1 and Normal fixed-function compositing. Tile
+ * dimensions arrive through the uniform so this program stays resident across
+ * rectangular document switches.
  */
 export const LAYER_COLD_TILE_COMPOSITE_UNIFORM_BYTES = 32 as const;
 export const LAYER_COLD_TILE_COMPOSITE_BATCH_TILES = 16 as const;
 
 export const LAYER_COLD_TILE_COMPOSITE_WGSL = /* wgsl */ `
-const TILE_SIZE: vec2<i32> = vec2<i32>(${DOCUMENT_TILE_WIDTH}, ${DOCUMENT_TILE_HEIGHT});
 const TILE_GRID_SIZE: u32 = ${DOCUMENT_TILE_GRID_SIZE}u;
 
 struct ColdTileCompositeUniforms {
@@ -24,8 +23,7 @@ struct ColdTileCompositeUniforms {
   destinationDimensions: vec2<u32>,
   opacity: f32,
   _pad0: u32,
-  _pad1: u32,
-  _pad2: u32,
+  tileDimensions: vec2<u32>,
 };
 
 struct ColdTileIndices {
@@ -56,11 +54,12 @@ fn vertexMain(
     vec2<u32>(1u, 1u)
   );
   let tileIndex = tileIndices.values[instanceIndex];
+  let tileSize = vec2<i32>(fold.tileDimensions);
   let tileOrigin = vec2<i32>(
-    i32(tileIndex % TILE_GRID_SIZE) * TILE_SIZE.x,
-    i32(tileIndex / TILE_GRID_SIZE) * TILE_SIZE.y
+    i32(tileIndex % TILE_GRID_SIZE) * tileSize.x,
+    i32(tileIndex / TILE_GRID_SIZE) * tileSize.y
   );
-  let tileEnd = tileOrigin + TILE_SIZE;
+  let tileEnd = tileOrigin + tileSize;
   let destinationEnd = fold.destinationOrigin + vec2<i32>(fold.destinationDimensions);
   let clippedOrigin = max(tileOrigin, fold.destinationOrigin);
   let clippedEnd = min(tileEnd, destinationEnd);

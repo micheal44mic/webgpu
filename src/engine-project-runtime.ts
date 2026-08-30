@@ -18,6 +18,7 @@ import type {
 import {
   allocateLayerGpuResources,
   destroyLayerGpuResources,
+  recreateLayerResources,
 } from "./engine-layer-runtime";
 import {
   destroyActiveCloneStrokeSession,
@@ -30,6 +31,8 @@ import {
   DOCUMENT_TILE_HEIGHT,
   DOCUMENT_TILE_WIDTH,
   DOCUMENT_WIDTH,
+  reconfigureDocumentDimensions,
+  validateDocumentDimensions,
 } from "./engine-limits";
 import { combineCompressionHashes, hashBytes } from "./engine-math";
 import { rgba8UnormToRgba16FloatBytes } from "./float16";
@@ -70,7 +73,17 @@ export interface CapturedProjectDocumentV1 {
 
 const DOCUMENT_RESET_WAIT_TIMEOUT_MS = 65_000;
 
-function assertFreshProjectResetAllowed(engine: BrushEngine): void {
+interface FreshProjectResetOptions {
+  /** The cross-size owner already holds exactly one presentation freeze. */
+  readonly parentPresentationTransactionActive?: boolean;
+  /** Keep idle-release workers gated until a cross-size rebuild has published. */
+  readonly retainLayerSwitchBusyOnSuccess?: boolean;
+}
+
+function assertFreshProjectResetAllowed(
+  engine: BrushEngine,
+  options: FreshProjectResetOptions,
+): void {
   if (!engine.initialized) {
     throw new Error("The editor is not ready yet.");
   }
@@ -80,7 +93,8 @@ function assertFreshProjectResetAllowed(engine: BrushEngine): void {
   if (engine.historyStateInconsistent) {
     throw new Error("The current document is inconsistent and must be reloaded.");
   }
-  if (engine.presentationTransactionDepth !== 0) {
+  const expectedPresentationDepth = options.parentPresentationTransactionActive === true ? 1 : 0;
+  if (engine.presentationTransactionDepth !== expectedPresentationDepth) {
     throw new Error("Another document presentation transaction is already active.");
   }
   engine.assertLayerSwitchAllowed();
@@ -96,6 +110,7 @@ async function waitForDocumentScopedPreparation(engine: BrushEngine): Promise<vo
   while (engine.layerBlendTileResourcesPromise) {
     await engine.layerBlendTileResourcesPromise;
   }
+  await engine.fillRenderer?.waitForPrewarm();
   await releasePreparedCloneSourceAndWait(engine);
 }
 
@@ -640,15 +655,16 @@ async function promotePersistedLayer(
  */
 export async function resetEngineToFreshProjectState(
   engine: BrushEngine,
+  options: FreshProjectResetOptions = {},
 ): Promise<number> {
-  assertFreshProjectResetAllowed(engine);
+  assertFreshProjectResetAllowed(engine, options);
 
   // These two previews own structural composition state that is stored outside
   // the layer stack. Withdraw them while the outgoing document is still valid.
   await engine.releaseShapePreviewPresentation();
   await engine.clearMixedSceneRasterTransformPreview();
   await waitForDocumentScopedPreparation(engine);
-  assertFreshProjectResetAllowed(engine);
+  assertFreshProjectResetAllowed(engine, options);
 
   engine.persistActiveLayerState();
   const oldGpu = [...engine.layerGpu.values()];
@@ -749,17 +765,89 @@ export async function resetEngineToFreshProjectState(
     }
     throw error;
   } finally {
-    engine.layerSwitchBusy = false;
+    if (!completed || options.retainLayerSwitchBusyOnSuccess !== true) {
+      engine.layerSwitchBusy = false;
+    }
     if (
       presentationTransactionStarted
       && (completed || !destructiveCommitStarted)
     ) {
       engine.endPresentationTransaction();
     }
-    if (completed) {
+    if (completed && options.retainLayerSwitchBusyOnSuccess !== true) {
       engine.scheduleEffectsScratchShrink();
       engine.scheduleBevelFieldShrink();
       engine.scheduleLayerColdCompression();
+    }
+  }
+}
+
+/**
+ * Replaces the active document extent without replacing the WebGPU session.
+ * The outgoing project must already have a verified durable head. Program
+ * objects stay resident; only document-sized textures, views and bind groups
+ * are rebuilt before the target project is restored.
+ */
+export async function reconfigureEngineForDocumentSwitch(
+  engine: BrushEngine,
+  width: number,
+  height: number,
+): Promise<number> {
+  validateDocumentDimensions(width, height, { allowLegacy4096: true });
+  if (width === engine.documentWidth && height === engine.documentHeight) {
+    return resetEngineToFreshProjectState(engine);
+  }
+
+  // Own presentation across the nested fresh-project reset and the complete
+  // dimensional rebuild. The inner transaction may finish after clearing the
+  // old layer, but this outer depth prevents its scheduled frame from observing
+  // new live dimensions alongside resources that are about to be destroyed.
+  await engine.beginPresentationTransaction();
+  let completed = false;
+  try {
+    const nextGeneration = await resetEngineToFreshProjectState(engine, {
+      parentPresentationTransactionActive: true,
+      retainLayerSwitchBusyOnSuccess: true,
+    });
+    reconfigureDocumentDimensions(width, height, { allowLegacy4096: true });
+    await recreateLayerResources(engine, engine.layerFormat, {
+      deferBlendRenderer: engine.blendRenderer === null,
+      deferSelectionPipelines: !engine.selectionPipelinesReady,
+      reuseResidentPrograms: true,
+      releaseDocumentResourcesBeforeAllocation: true,
+    });
+    await engine.fillRenderer?.reconfigureDocument(
+      width,
+      height,
+      engine.layerSamplingView,
+    );
+    await engine.selectionRenderer?.reconfigureDocument(
+      width,
+      height,
+      engine.layerSamplingView,
+    );
+    engine.hasFittedView = false;
+    engine.fitView();
+    engine.writeBrushUniforms();
+    engine.publishStats();
+    completed = true;
+    return nextGeneration;
+  } catch (error) {
+    engine.latchDocumentStateInconsistent(
+      "The canvas size changed, but its document resources could not be rebuilt. Reload before continuing.",
+      error,
+    );
+    throw error;
+  } finally {
+    // Every failure after this boundary is fail-closed and immediately falls
+    // back to a reload. Keeping the cache frozen avoids presenting mixed or
+    // destroyed resources while that recovery is underway.
+    if (completed) {
+      engine.layerSwitchBusy = false;
+      engine.scheduleEffectsScratchShrink();
+      engine.scheduleBevelFieldShrink();
+      engine.scheduleLayerColdCompression();
+      engine.endPresentationTransaction();
     }
   }
 }

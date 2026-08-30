@@ -342,7 +342,27 @@ const bboxGoldenSource = readFileSync(
   new URL("../src/labs/goldens/bevel-bbox-golden.ts", import.meta.url),
   "utf8",
 );
-assert(rendererSource.includes("raster-bevel-webgpu-v5-bbox-field-shared-effects-scratch-retargetable-layer"));
+assert(rendererSource.includes("raster-bevel-webgpu-v6-dimension-neutral-session-program-cache-bbox-field-shared-effects-scratch-retargetable-layer"));
+assert.match(
+  rendererSource,
+  /const bevelProgramCache = new WeakMap<\s*GPUDevice,\s*Map<string, Promise<RasterBevelProgramResources>>/,
+  "Bevel programs must remain resident for the lifetime of their GPU device",
+);
+const bevelProgramKeySource = rendererSource.slice(
+  rendererSource.indexOf("function bevelProgramCacheKey("),
+  rendererSource.indexOf("async function createBevelProgramResources("),
+);
+assert.match(bevelProgramKeySource, /boundingFieldEnabled/);
+assert.doesNotMatch(
+  bevelProgramKeySource,
+  /documentWidth|documentHeight/,
+  "Bevel programs must be reusable by custom document dimensions",
+);
+assert.match(
+  rendererSource,
+  /const programs = await acquireBevelProgramResources\([\s\S]*?this\.boundingFieldEnabled/,
+  "document instances must reuse cached Bevel programs",
+);
 assert(rendererSource.includes("shared-effects-pool-roi-split-common-segment-arenas-grow-until-idle-shrink"));
 const engineSource = readEngineSource();
 assert(rendererSource.includes("texture_storage_2d<r32float, write>"));

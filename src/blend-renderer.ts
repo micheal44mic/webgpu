@@ -119,6 +119,13 @@ interface DryBlendRendererOptions {
   scratchSize?: number;
 }
 
+export interface DryBlendDocumentTarget {
+  documentWidth: number;
+  documentHeight: number;
+  layerView: GPUTextureView;
+  layerSamplingView: GPUTextureView;
+}
+
 interface ScratchResources {
   stateBuffer: GPUBuffer;
   coverageBuffer: GPUBuffer;
@@ -247,8 +254,8 @@ export class DryBlendRenderer {
   readonly maximumBatchesPerSubmit = BLEND_MAX_BATCHES_PER_SUBMIT;
 
   private readonly device: GPUDevice;
-  private readonly documentWidth: number;
-  private readonly documentHeight: number;
+  private documentWidth: number;
+  private documentHeight: number;
   private readonly layerFormat: GPUTextureFormat;
   private layerView: GPUTextureView;
   private layerSamplingView: GPUTextureView;
@@ -1512,6 +1519,41 @@ export class DryBlendRenderer {
         ],
       });
     }
+    this.carrierValid = false;
+  }
+
+  /**
+   * Rebinds the reusable Blend program bundle to a different document.
+   *
+   * Unlike retarget(), which only switches the active layer inside one
+   * document, this boundary invalidates all document-owned state. Shader
+   * modules, bind-group layouts and pipelines remain resident; scratch and its
+   * view-dependent bind groups are recreated lazily on the next use.
+   *
+   * The caller must ensure that no Blend stroke or GPU submission is active.
+   */
+  reconfigureDocumentTarget(target: DryBlendDocumentTarget): void {
+    this.assertAlive();
+    const { documentWidth, documentHeight, layerView, layerSamplingView } = target;
+    if (
+      !Number.isSafeInteger(documentWidth)
+      || !Number.isSafeInteger(documentHeight)
+      || documentWidth <= 0
+      || documentHeight <= 0
+    ) {
+      throw new RangeError("Blend document dimensions must be positive safe integers.");
+    }
+
+    // Validate first so a rejected target cannot partially detach the current
+    // document. releaseScratch() also clears all bind groups that capture the
+    // outgoing sampling view.
+    this.releaseScratch();
+    this.documentWidth = documentWidth;
+    this.documentHeight = documentHeight;
+    this.layerView = layerView;
+    this.layerSamplingView = layerSamplingView;
+    this.activeHistoryActionId = null;
+    this.carrierCursor = 0;
     this.carrierValid = false;
   }
 

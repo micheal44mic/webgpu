@@ -108,7 +108,15 @@ assert.match(LAYER_COLD_TILE_COMPOSITE_WGSL, /texture_2d_array<f32>/);
 assert.match(LAYER_COLD_TILE_COMPOSITE_WGSL, /textureLoad\(/);
 assert.match(LAYER_COLD_TILE_COMPOSITE_WGSL, /@builtin\(instance_index\)/);
 assert.doesNotMatch(LAYER_COLD_TILE_COMPOSITE_WGSL, /textureSample/);
+assert.match(LAYER_COLD_TILE_COMPOSITE_WGSL, /tileDimensions: vec2<u32>/);
+assert.match(LAYER_COLD_TILE_COMPOSITE_WGSL, /let tileSize = vec2<i32>\(fold\.tileDimensions\)/);
+assert.doesNotMatch(LAYER_COLD_TILE_COMPOSITE_WGSL, /const TILE_SIZE/);
 assert.match(layerRuntimeSource, /pass\.draw\(6, tileIndices\.length, 0, 0\)/);
+assert.match(
+  layerRuntimeSource,
+  /u32\[6\] = Math\.ceil\(engine\.documentWidth \/ DOCUMENT_TILE_GRID_SIZE\);[\s\S]*?u32\[7\] = Math\.ceil\(engine\.documentHeight \/ DOCUMENT_TILE_GRID_SIZE\);/,
+  "la pipeline cold residente deve ricevere l'estensione tile del documento corrente",
+);
 assert.match(layerRuntimeSource, /await engine\.waitForGpuCapped\(label\)/);
 assert.match(layerRuntimeSource, /destination\.resolutionScale !== 1/);
 assert.match(layerRuntimeSource, /requirements\.needsStrokeRenderer/);

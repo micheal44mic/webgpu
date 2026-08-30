@@ -663,16 +663,6 @@ async function boot(): Promise<void> {
       && suspended[1] === requested[1];
   };
 
-  const sameSuspendedDimensions = (url: URL): boolean => {
-    if (!suspendedEditorUrl) return false;
-    const suspended = explicitEditorDimensions(suspendedEditorUrl);
-    const requested = explicitEditorDimensions(url);
-    return suspended !== null
-      && requested !== null
-      && suspended[0] === requested[0]
-      && suspended[1] === requested[1];
-  };
-
   const openEditor: OpenEditor = async (url, preloadedProjectId, preloadedProject) => {
     if (editorLoaded) {
       const lifecycle = window.__projectEditorSessionLifecycle;
@@ -712,7 +702,6 @@ async function boot(): Promise<void> {
       );
       if (
         inPlaceProjectSwitchEnabled
-        && sameSuspendedDimensions(url)
         && lifecycle
         && switchRequest
       ) {
@@ -753,8 +742,7 @@ async function boot(): Promise<void> {
         throw new Error(result.message);
       }
 
-      // A different size needs module-evaluated document constants and gets a
-      // fresh engine. The query kill switch also retains this recovery path.
+      // The query kill switch and missing lifecycle retain the reload recovery path.
       window.location.assign(url);
       return;
     }

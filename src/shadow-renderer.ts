@@ -15,7 +15,7 @@ import type { RasterStrokeSourceMode } from "./stroke-renderer";
 import type { EffectsScratchLease, EffectsScratchPool } from "./effects-scratch-pool";
 
 export const RASTER_SHADOW_RENDERER_BUILD =
-  "raster-shadow-webgpu-v1-independent-packed-f16-morphology-gaussian";
+  "raster-shadow-webgpu-v2-dimension-neutral-session-program-cache-independent-packed-f16-morphology-gaussian";
 export const RASTER_SHADOW_STORAGE_STRATEGY =
   "persistent-packed-f16-matte-per-enabled-shadow" as const;
 export const RASTER_SHADOW_WORKSPACE_STRATEGY =
@@ -142,10 +142,7 @@ function wordAlignedRect(
   };
 }
 
-function sourceShaderCommon(
-  documentWidth: number,
-  documentHeight: number,
-): string {
+function sourceShaderCommon(): string {
   return /* wgsl */ `
 struct ShadowParameters {
   buildOrigin: vec2<i32>,
@@ -179,8 +176,6 @@ struct ThicknessTailUniforms {
   _pad1: vec2<u32>,
 };
 
-const DOCUMENT_SIZE = vec2<i32>(${documentWidth}, ${documentHeight});
-
 @group(0) @binding(0) var<uniform> parameters: ShadowParameters;
 @group(0) @binding(1) var permanentTexture: texture_2d<f32>;
 @group(0) @binding(2) var transientTexture: texture_2d<f32>;
@@ -189,8 +184,12 @@ const DOCUMENT_SIZE = vec2<i32>(${documentWidth}, ${documentHeight});
 @group(0) @binding(5) var<storage, read_write> arena: array<u32>;
 @group(0) @binding(6) var<storage, read_write> shadowMatte: array<u32>;
 
+fn documentSize() -> vec2<i32> {
+  return vec2<i32>(textureDimensions(permanentTexture));
+}
+
 fn insideDocument(position: vec2<i32>) -> bool {
-  return all(position >= vec2<i32>(0)) && all(position < DOCUMENT_SIZE);
+  return all(position >= vec2<i32>(0)) && all(position < documentSize());
 }
 
 fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
@@ -353,11 +352,8 @@ fn sampleFloat(offsetWords: u32, position: vec2<i32>, outside: f32) -> f32 {
 `;
 }
 
-function sourceAlphaShader(
-  documentWidth: number,
-  documentHeight: number,
-): string {
-  return `${sourceShaderCommon(documentWidth, documentHeight)}
+function sourceAlphaShader(): string {
+  return `${sourceShaderCommon()}
 @compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   if (any(globalId.xy >= parameters.buildSize)) {
@@ -374,8 +370,6 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
 }
 
 function filterShader(
-  documentWidth: number,
-  documentHeight: number,
   kind: RasterShadowKind,
   operation: "morphology" | "gaussian",
 ): string {
@@ -412,7 +406,7 @@ function filterShader(
     }
     value = sum / weightSum;
   }`;
-  return `${sourceShaderCommon(documentWidth, documentHeight)}
+  return `${sourceShaderCommon()}
 var<workgroup> filterCache: array<f32, ${FILTER_CACHE_LENGTH}>;
 
 fn outputPosition(groupId: vec3<u32>, lane: u32) -> vec2<u32> {
@@ -465,12 +459,8 @@ ${body}
 `;
 }
 
-function resolveShader(
-  documentWidth: number,
-  documentHeight: number,
-): string {
-  const coverageWordsPerRow = Math.ceil(documentWidth / COVERAGE_WORD_PIXELS);
-  return `${sourceShaderCommon(documentWidth, documentHeight)}
+function resolveShader(): string {
+  return `${sourceShaderCommon()}
 @compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   if (globalId.y >= parameters.targetSize.y) {
@@ -492,7 +482,8 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
     let value = clamp(loadFloat(parameters.inputOffsetWords, local), 0.0, 1.0);
     matte[lane] = value;
   }
-  let wordIndex = firstDocumentPosition.y * ${coverageWordsPerRow}u
+  let coverageWordsPerRow = (u32(documentSize().x) + 1u) / 2u;
+  let wordIndex = firstDocumentPosition.y * coverageWordsPerRow
     + (firstDocumentPosition.x >> 1u);
   shadowMatte[wordIndex] = pack2x16float(matte);
 }
@@ -516,6 +507,149 @@ async function assertShadersCompiled(
   if (failures.length > 0) {
     throw new Error(`Invalid Shadow WGSL:\n${failures.join("\n")}`);
   }
+}
+
+interface RasterShadowProgramResources {
+  bindGroupLayout: GPUBindGroupLayout;
+  sourcePipeline: GPUComputePipeline;
+  morphologyPipeline: GPUComputePipeline;
+  gaussianPipeline: GPUComputePipeline;
+  resolvePipeline: GPUComputePipeline;
+}
+
+const shadowProgramCache = new WeakMap<
+  GPUDevice,
+  Map<string, Promise<RasterShadowProgramResources>>
+>();
+
+function shadowProgramCacheKey(
+  kind: RasterShadowKind,
+): string {
+  return kind;
+}
+
+async function createShadowProgramResources(
+  device: GPUDevice,
+  kind: RasterShadowKind,
+): Promise<RasterShadowProgramResources> {
+  const label = kind === "outer" ? "Outer Shadow" : "Inner Shadow";
+  const bindGroupLayout = device.createBindGroupLayout({
+    label: `${label} compute bind group layout`,
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: "uniform", hasDynamicOffset: true },
+      },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: {} },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: {} },
+      {
+        binding: 3,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: "uniform" },
+      },
+      {
+        binding: 4,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: "uniform" },
+      },
+      {
+        binding: 5,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: "storage" },
+      },
+      {
+        binding: 6,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: "storage" },
+      },
+    ],
+  });
+  const modules = [
+    {
+      label: "source",
+      module: device.createShaderModule({
+        label: `${label} source alpha WGSL`,
+        code: sourceAlphaShader(),
+      }),
+    },
+    {
+      label: "morphology",
+      module: device.createShaderModule({
+        label: `${label} morphology WGSL`,
+        code: filterShader(kind, "morphology"),
+      }),
+    },
+    {
+      label: "gaussian",
+      module: device.createShaderModule({
+        label: `${label} gaussian WGSL`,
+        code: filterShader(kind, "gaussian"),
+      }),
+    },
+    {
+      label: "resolve",
+      module: device.createShaderModule({
+        label: `${label} resolve packed f16 WGSL`,
+        code: resolveShader(),
+      }),
+    },
+  ] as const;
+  await assertShadersCompiled(modules);
+  const pipelineLayout = device.createPipelineLayout({
+    label: `${label} compute pipeline layout`,
+    bindGroupLayouts: [bindGroupLayout],
+  });
+  return {
+    bindGroupLayout,
+    sourcePipeline: device.createComputePipeline({
+      label: `${label} source alpha pipeline`,
+      layout: pipelineLayout,
+      compute: { module: modules[0].module, entryPoint: "main" },
+    }),
+    morphologyPipeline: device.createComputePipeline({
+      label: `${label} morphology pipeline`,
+      layout: pipelineLayout,
+      compute: { module: modules[1].module, entryPoint: "main" },
+    }),
+    gaussianPipeline: device.createComputePipeline({
+      label: `${label} gaussian pipeline`,
+      layout: pipelineLayout,
+      compute: { module: modules[2].module, entryPoint: "main" },
+    }),
+    resolvePipeline: device.createComputePipeline({
+      label: `${label} resolve packed f16 pipeline`,
+      layout: pipelineLayout,
+      compute: { module: modules[3].module, entryPoint: "main" },
+    }),
+  };
+}
+
+function acquireShadowProgramResources(
+  device: GPUDevice,
+  kind: RasterShadowKind,
+): Promise<RasterShadowProgramResources> {
+  let deviceCache = shadowProgramCache.get(device);
+  if (!deviceCache) {
+    deviceCache = new Map();
+    shadowProgramCache.set(device, deviceCache);
+  }
+  const key = shadowProgramCacheKey(kind);
+  const cached = deviceCache.get(key);
+  if (cached) {
+    return cached;
+  }
+  const pending = createShadowProgramResources(
+    device,
+    kind,
+  );
+  deviceCache.set(key, pending);
+  void pending.then(undefined, () => {
+    if (deviceCache?.get(key) === pending) {
+      deviceCache.delete(key);
+    }
+  });
+  return pending;
 }
 
 export class RasterShadowRenderer {
@@ -649,103 +783,15 @@ export class RasterShadowRenderer {
   }
 
   private async initialize(): Promise<void> {
-    this.bindGroupLayout = this.device.createBindGroupLayout({
-      label: `${this.label} compute bind group layout`,
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "uniform", hasDynamicOffset: true },
-        },
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: {} },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: {} },
-        {
-          binding: 3,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "uniform" },
-        },
-        {
-          binding: 4,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "uniform" },
-        },
-        {
-          binding: 5,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "storage" },
-        },
-        {
-          binding: 6,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "storage" },
-        },
-      ],
-    });
-    const modules = [
-      {
-        label: "source",
-        module: this.device.createShaderModule({
-          label: `${this.label} source alpha WGSL`,
-          code: sourceAlphaShader(this.documentWidth, this.documentHeight),
-        }),
-      },
-      {
-        label: "morphology",
-        module: this.device.createShaderModule({
-          label: `${this.label} morphology WGSL`,
-          code: filterShader(
-            this.documentWidth,
-            this.documentHeight,
-            this.kind,
-            "morphology",
-          ),
-        }),
-      },
-      {
-        label: "gaussian",
-        module: this.device.createShaderModule({
-          label: `${this.label} gaussian WGSL`,
-          code: filterShader(
-            this.documentWidth,
-            this.documentHeight,
-            this.kind,
-            "gaussian",
-          ),
-        }),
-      },
-      {
-        label: "resolve",
-        module: this.device.createShaderModule({
-          label: `${this.label} resolve packed f16 WGSL`,
-          code: resolveShader(this.documentWidth, this.documentHeight),
-        }),
-      },
-    ] as const;
-    await assertShadersCompiled(modules);
-    const pipelineLayout = this.device.createPipelineLayout({
-      label: `${this.label} compute pipeline layout`,
-      bindGroupLayouts: [this.bindGroupLayout],
-    });
-    this.sourcePipeline = this.device.createComputePipeline({
-      label: `${this.label} source alpha pipeline`,
-      layout: pipelineLayout,
-      compute: { module: modules[0].module, entryPoint: "main" },
-    });
-    this.morphologyPipeline = this.device.createComputePipeline({
-      label: `${this.label} morphology pipeline`,
-      layout: pipelineLayout,
-      compute: { module: modules[1].module, entryPoint: "main" },
-    });
-    this.gaussianPipeline = this.device.createComputePipeline({
-      label: `${this.label} gaussian pipeline`,
-      layout: pipelineLayout,
-      compute: { module: modules[2].module, entryPoint: "main" },
-    });
-    this.resolvePipeline = this.device.createComputePipeline({
-      label: `${this.label} resolve packed f16 pipeline`,
-      layout: pipelineLayout,
-      compute: { module: modules[3].module, entryPoint: "main" },
-    });
+    const programs = await acquireShadowProgramResources(
+      this.device,
+      this.kind,
+    );
+    this.bindGroupLayout = programs.bindGroupLayout;
+    this.sourcePipeline = programs.sourcePipeline;
+    this.morphologyPipeline = programs.morphologyPipeline;
+    this.gaussianPipeline = programs.gaussianPipeline;
+    this.resolvePipeline = programs.resolvePipeline;
     this.updateStyle(this.normalizedStyle({}));
   }
 

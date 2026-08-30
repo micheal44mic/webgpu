@@ -1,4 +1,3 @@
-import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits.ts";
 import { rasterPixelViewShaderHelpers } from "./raster-pixel-view.ts";
 
 export const MIXED_SCENE_COMPOSITOR_STRATEGY =
@@ -44,6 +43,8 @@ struct DisplayUniforms {
   clippingPrefixOrigin: vec2<f32>,
   clippingSuffixOrigin: vec2<f32>,
   backgroundColor: vec4<f32>,
+  documentSize: vec2<f32>,
+  _documentPadding: vec2<f32>,
 };
 
 fn layerPositionAt(fragmentPosition: vec2<f32>) -> vec2<f32> {
@@ -385,7 +386,7 @@ fn sourceFragmentMain(
 fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
   let layerPosition = layerPositionAt(fragmentPosition.xy);
   let insideLayer = all(layerPosition >= vec2<f32>(0.0))
-    && all(layerPosition < vec2<f32>(${DOCUMENT_WIDTH}.0, ${DOCUMENT_HEIGHT}.0));
+    && all(layerPosition < display.documentSize);
   if (!insideLayer) {
     return vec4<f32>(vec3<f32>(0.055), 1.0);
   }

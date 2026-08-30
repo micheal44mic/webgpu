@@ -1,10 +1,25 @@
 import {
-  DOCUMENT_HEIGHT,
-  DOCUMENT_TILE_GRID_SIZE,
-  DOCUMENT_TILE_HEIGHT,
-  DOCUMENT_TILE_WIDTH,
-  DOCUMENT_WIDTH,
+  DOCUMENT_HEIGHT as LAYER_STORAGE_DOCUMENT_HEIGHT,
+  DOCUMENT_MAX_EDGE as LAYER_STORAGE_DOCUMENT_SIZE,
+  DOCUMENT_TILE_GRID_SIZE as LAYER_STORAGE_GRID_SIZE,
+  DOCUMENT_TILE_HEIGHT as LAYER_STORAGE_TILE_HEIGHT,
+  DOCUMENT_TILE_SIZE as LAYER_STORAGE_TILE_SIZE,
+  DOCUMENT_TILE_WIDTH as LAYER_STORAGE_TILE_WIDTH,
+  DOCUMENT_WIDTH as LAYER_STORAGE_DOCUMENT_WIDTH,
 } from "./engine-limits.ts";
+
+// Re-export the active-document bindings directly. ES module aliases remain
+// live when `reconfigureDocumentDimensions` updates the owning bindings, while
+// a derived top-level `const` would silently retain the first document size.
+export {
+  LAYER_STORAGE_DOCUMENT_HEIGHT,
+  LAYER_STORAGE_DOCUMENT_SIZE,
+  LAYER_STORAGE_DOCUMENT_WIDTH,
+  LAYER_STORAGE_GRID_SIZE,
+  LAYER_STORAGE_TILE_HEIGHT,
+  LAYER_STORAGE_TILE_SIZE,
+  LAYER_STORAGE_TILE_WIDTH,
+};
 
 export const LAYER_STORAGE_STRATEGY =
   "single-active-plus-optional-reference-full-inactive-256-array-tiles-direct-native-fold-fallback-rehydrate" as const;
@@ -12,21 +27,9 @@ export const LAYER_STORAGE_STRATEGY =
 // I tile restano 256 per documento. Su documenti rettangolari ogni slot usa
 // ceil(width/16) × ceil(height/16); l'ultima riga/colonna viene ritagliata
 // durante le copie GPU e il padding del cold storage resta zero.
-export const LAYER_STORAGE_TILE_WIDTH = DOCUMENT_TILE_WIDTH;
-export const LAYER_STORAGE_TILE_HEIGHT = DOCUMENT_TILE_HEIGHT;
-/** @deprecated Prefer the independent width / height constants. */
-export const LAYER_STORAGE_TILE_SIZE = Math.max(
-  LAYER_STORAGE_TILE_WIDTH,
-  LAYER_STORAGE_TILE_HEIGHT,
-);
-export const LAYER_STORAGE_GRID_SIZE = DOCUMENT_TILE_GRID_SIZE;
 export const LAYER_STORAGE_TILE_COUNT =
   LAYER_STORAGE_GRID_SIZE * LAYER_STORAGE_GRID_SIZE;
 export const LAYER_STORAGE_MASK_WORD_COUNT = LAYER_STORAGE_TILE_COUNT / 32;
-export const LAYER_STORAGE_DOCUMENT_WIDTH = DOCUMENT_WIDTH;
-export const LAYER_STORAGE_DOCUMENT_HEIGHT = DOCUMENT_HEIGHT;
-/** @deprecated Compatibility maximum, not the document's two-dimensional extent. */
-export const LAYER_STORAGE_DOCUMENT_SIZE = Math.max(DOCUMENT_WIDTH, DOCUMENT_HEIGHT);
 
 const MEBIBYTE_BYTES = 1024 * 1024;
 

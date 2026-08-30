@@ -1,5 +1,5 @@
-import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits.ts";
 import {
+  LAYER_THUMBNAIL_SIZE,
   layerThumbnailDimensions,
 } from "./layer-thumbnail-geometry";
 
@@ -13,21 +13,7 @@ export const LAYER_THUMBNAIL_SAMPLE_GRID = 8 as const;
 export const LAYER_THUMBNAIL_STRATEGY =
   "lazy-idle-gpu-area-sample-document-aspect-64-readback-cache-v2" as const;
 
-export const {
-  width: LAYER_THUMBNAIL_WIDTH,
-  height: LAYER_THUMBNAIL_HEIGHT,
-} = layerThumbnailDimensions(DOCUMENT_WIDTH, DOCUMENT_HEIGHT);
-
 const LAYER_THUMBNAIL_BYTES_PER_PIXEL = 4;
-const LAYER_THUMBNAIL_TIGHT_BYTES_PER_ROW =
-  LAYER_THUMBNAIL_WIDTH * LAYER_THUMBNAIL_BYTES_PER_PIXEL;
-const LAYER_THUMBNAIL_BYTES_PER_ROW = Math.ceil(
-  LAYER_THUMBNAIL_TIGHT_BYTES_PER_ROW / 256,
-) * 256;
-const LAYER_THUMBNAIL_BYTE_LENGTH =
-  LAYER_THUMBNAIL_BYTES_PER_ROW * LAYER_THUMBNAIL_HEIGHT;
-const LAYER_THUMBNAIL_TEXTURE_BYTES =
-  LAYER_THUMBNAIL_TIGHT_BYTES_PER_ROW * LAYER_THUMBNAIL_HEIGHT;
 
 export interface LayerThumbnailPixels {
   readonly width: number;
@@ -76,9 +62,13 @@ fn fragmentMain(
   @builtin(position) fragmentPosition: vec4<f32>
 ) -> @location(0) vec4<f32> {
   let sourceSize = vec2<i32>(textureDimensions(sourceTexture));
-  let destinationSize = vec2<i32>(
-    ${LAYER_THUMBNAIL_WIDTH},
-    ${LAYER_THUMBNAIL_HEIGHT},
+  let longestSourceEdge = max(sourceSize.x, sourceSize.y);
+  let destinationSize = max(
+    vec2<i32>(1),
+    (
+      sourceSize * ${LAYER_THUMBNAIL_SIZE * 2}
+      + vec2<i32>(longestSourceEdge)
+    ) / vec2<i32>(longestSourceEdge * 2),
   );
   let destination = min(
     vec2<i32>(fragmentPosition.xy),
@@ -125,7 +115,7 @@ export class LayerThumbnailRenderer {
       }],
     });
     const shaderModule = device.createShaderModule({
-      label: `Layer thumbnail ${LAYER_THUMBNAIL_WIDTH}x${LAYER_THUMBNAIL_HEIGHT} area sampler WGSL`,
+      label: "Layer thumbnail dimension-neutral area sampler WGSL",
       code: layerThumbnailShader,
     });
     const compilation = await shaderModule.getCompilationInfo();
@@ -139,7 +129,7 @@ export class LayerThumbnailRenderer {
       );
     }
     const pipeline = await device.createRenderPipelineAsync({
-      label: `Layer thumbnail ${LAYER_THUMBNAIL_WIDTH}x${LAYER_THUMBNAIL_HEIGHT} area sampler`,
+      label: "Layer thumbnail dimension-neutral area sampler",
       layout: device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] }),
       vertex: { module: shaderModule, entryPoint: "vertexMain" },
       fragment: {
@@ -152,42 +142,93 @@ export class LayerThumbnailRenderer {
     return new LayerThumbnailRenderer(device, bindGroupLayout, pipeline);
   }
 
-  readonly residentBytes = LAYER_THUMBNAIL_BYTE_LENGTH + LAYER_THUMBNAIL_TEXTURE_BYTES;
-
-  private readonly targetTexture: GPUTexture;
-  private readonly targetView: GPUTextureView;
-  private readonly readbackBuffer: GPUBuffer;
+  private targetTexture: GPUTexture | null = null;
+  private targetView: GPUTextureView | null = null;
+  private readbackBuffer: GPUBuffer | null = null;
+  private width = 0;
+  private height = 0;
+  private tightBytesPerRow = 0;
+  private bytesPerRow = 0;
+  private byteLength = 0;
+  private textureBytes = 0;
   private captureInFlight = false;
+
+  get residentBytes(): number {
+    return this.byteLength + this.textureBytes;
+  }
 
   private constructor(
     private readonly device: GPUDevice,
     private readonly bindGroupLayout: GPUBindGroupLayout,
     private readonly pipeline: GPURenderPipeline,
-  ) {
-    this.targetTexture = device.createTexture({
-      label: `Layer thumbnail ${LAYER_THUMBNAIL_WIDTH}x${LAYER_THUMBNAIL_HEIGHT} target`,
+  ) {}
+
+  private reconfigureDocument(documentWidth: number, documentHeight: number): void {
+    const { width, height } = layerThumbnailDimensions(documentWidth, documentHeight);
+    if (this.targetTexture && width === this.width && height === this.height) return;
+    if (this.captureInFlight) {
+      throw new Error("A layer thumbnail capture must finish before changing its document.");
+    }
+    const tightBytesPerRow = width * LAYER_THUMBNAIL_BYTES_PER_PIXEL;
+    const bytesPerRow = Math.ceil(tightBytesPerRow / 256) * 256;
+    const byteLength = bytesPerRow * height;
+    const textureBytes = tightBytesPerRow * height;
+    const targetTexture = this.device.createTexture({
+      label: `Layer thumbnail ${width}x${height} target`,
       size: {
-        width: LAYER_THUMBNAIL_WIDTH,
-        height: LAYER_THUMBNAIL_HEIGHT,
+        width,
+        height,
         depthOrArrayLayers: 1,
       },
       format: "rgba8unorm",
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
     });
-    this.targetView = this.targetTexture.createView({
-      label: `Layer thumbnail ${LAYER_THUMBNAIL_WIDTH}x${LAYER_THUMBNAIL_HEIGHT} target view`,
+    const targetView = targetTexture.createView({
+      label: `Layer thumbnail ${width}x${height} target view`,
     });
-    this.readbackBuffer = device.createBuffer({
-      label: `Layer thumbnail ${LAYER_THUMBNAIL_BYTE_LENGTH} B aligned readback`,
-      size: LAYER_THUMBNAIL_BYTE_LENGTH,
-      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-    });
+    let readbackBuffer: GPUBuffer;
+    try {
+      readbackBuffer = this.device.createBuffer({
+        label: `Layer thumbnail ${byteLength} B aligned readback`,
+        size: byteLength,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+    } catch (error) {
+      targetTexture.destroy();
+      throw error;
+    }
+    const previousTexture = this.targetTexture;
+    const previousReadback = this.readbackBuffer;
+    this.targetTexture = targetTexture;
+    this.targetView = targetView;
+    this.readbackBuffer = readbackBuffer;
+    this.width = width;
+    this.height = height;
+    this.tightBytesPerRow = tightBytesPerRow;
+    this.bytesPerRow = bytesPerRow;
+    this.byteLength = byteLength;
+    this.textureBytes = textureBytes;
+    previousReadback?.destroy();
+    previousTexture?.destroy();
   }
 
-  async capture(sourceView: GPUTextureView): Promise<LayerThumbnailPixels> {
+  async capture(
+    sourceView: GPUTextureView,
+    documentWidth: number,
+    documentHeight: number,
+  ): Promise<LayerThumbnailPixels> {
     if (this.captureInFlight) {
       throw new Error("A layer thumbnail is already being captured.");
     }
+    this.reconfigureDocument(documentWidth, documentHeight);
+    const targetTexture = this.targetTexture!;
+    const targetView = this.targetView!;
+    const readbackBuffer = this.readbackBuffer!;
+    const width = this.width;
+    const height = this.height;
+    const tightBytesPerRow = this.tightBytesPerRow;
+    const bytesPerRow = this.bytesPerRow;
+    const textureBytes = this.textureBytes;
     this.captureInFlight = true;
     let mapped = false;
     try {
@@ -202,7 +243,7 @@ export class LayerThumbnailRenderer {
       const pass = encoder.beginRenderPass({
         label: "Render active layer thumbnail",
         colorAttachments: [{
-          view: this.targetView,
+          view: targetView,
           loadOp: "clear",
           storeOp: "store",
           clearValue: { r: 0, g: 0, b: 0, a: 0 },
@@ -213,47 +254,52 @@ export class LayerThumbnailRenderer {
       pass.draw(3, 1, 0, 0);
       pass.end();
       encoder.copyTextureToBuffer(
-        { texture: this.targetTexture },
+        { texture: targetTexture },
         {
-          buffer: this.readbackBuffer,
-          bytesPerRow: LAYER_THUMBNAIL_BYTES_PER_ROW,
-          rowsPerImage: LAYER_THUMBNAIL_HEIGHT,
+          buffer: readbackBuffer,
+          bytesPerRow,
+          rowsPerImage: height,
         },
         {
-          width: LAYER_THUMBNAIL_WIDTH,
-          height: LAYER_THUMBNAIL_HEIGHT,
+          width,
+          height,
           depthOrArrayLayers: 1,
         },
       );
       this.device.queue.submit([encoder.finish()]);
-      await this.readbackBuffer.mapAsync(GPUMapMode.READ);
+      await readbackBuffer.mapAsync(GPUMapMode.READ);
       mapped = true;
-      const mappedBytes = new Uint8Array(this.readbackBuffer.getMappedRange());
-      const rgba = new Uint8ClampedArray(LAYER_THUMBNAIL_TEXTURE_BYTES);
-      for (let row = 0; row < LAYER_THUMBNAIL_HEIGHT; row += 1) {
+      const mappedBytes = new Uint8Array(readbackBuffer.getMappedRange());
+      const rgba = new Uint8ClampedArray(textureBytes);
+      for (let row = 0; row < height; row += 1) {
         rgba.set(
           mappedBytes.subarray(
-            row * LAYER_THUMBNAIL_BYTES_PER_ROW,
-            row * LAYER_THUMBNAIL_BYTES_PER_ROW + LAYER_THUMBNAIL_TIGHT_BYTES_PER_ROW,
+            row * bytesPerRow,
+            row * bytesPerRow + tightBytesPerRow,
           ),
-          row * LAYER_THUMBNAIL_TIGHT_BYTES_PER_ROW,
+          row * tightBytesPerRow,
         );
       }
       return {
-        width: LAYER_THUMBNAIL_WIDTH,
-        height: LAYER_THUMBNAIL_HEIGHT,
+        width,
+        height,
         rgba,
       };
     } finally {
       if (mapped) {
-        this.readbackBuffer.unmap();
+        readbackBuffer.unmap();
       }
       this.captureInFlight = false;
     }
   }
 
   destroy(): void {
-    this.readbackBuffer.destroy();
-    this.targetTexture.destroy();
+    this.readbackBuffer?.destroy();
+    this.targetTexture?.destroy();
+    this.readbackBuffer = null;
+    this.targetTexture = null;
+    this.targetView = null;
+    this.byteLength = 0;
+    this.textureBytes = 0;
   }
 }

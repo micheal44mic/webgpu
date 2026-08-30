@@ -36,7 +36,8 @@ import {
 } from "./engine-vector-text-runtime";
 import { vectorTextGpuRunBounds } from "./engine-geometry";
 import {
-  LAYER_STORAGE_TILE_SIZE,
+  LAYER_STORAGE_TILE_HEIGHT,
+  LAYER_STORAGE_TILE_WIDTH,
   countLayerStorageTiles,
 } from "./layer-storage-study";
 import {
@@ -53,8 +54,13 @@ import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import { analyzeRasterTextureOccupancy } from "./raster-occupancy-analysis";
 
 export const VECTOR_RASTERIZATION_STRATEGY =
-  "semantic-vector-slug-mesh-webgpu-linear-layer-format-msaa4-512-tile-chunks-history-seed-v3" as const;
-export const VECTOR_RASTER_CHUNK_SIZE = LAYER_STORAGE_TILE_SIZE * 2;
+  "semantic-vector-slug-mesh-webgpu-linear-layer-format-msaa4-tile-paired-chunks-history-seed-v4" as const;
+export function vectorRasterChunkDimensions(): { width: number; height: number } {
+  return {
+    width: LAYER_STORAGE_TILE_WIDTH * 2,
+    height: LAYER_STORAGE_TILE_HEIGHT * 2,
+  };
+}
 /** Permanent authoritative default; runtime resources still follow engine.layerFormat. */
 export const VECTOR_RASTER_FORMAT = "rgba16float" as const;
 
@@ -277,6 +283,8 @@ async function ensureVectorRasterPipelines(
 async function createVectorRasterScratch(
   engine: BrushEngine,
   format: LayerFormat,
+  chunkWidth: number,
+  chunkHeight: number,
 ): Promise<VectorRasterScratch> {
   try {
     return await runGpuAllocationTransaction(
@@ -284,10 +292,10 @@ async function createVectorRasterScratch(
       `Vector raster scratch ${format} MSAA${VECTOR_TEXT_GPU_SAMPLE_COUNT}`,
       (transaction) => {
         const msaaTexture = engine.device.createTexture({
-          label: `Vector raster ${format} MSAA4 512 tile-aligned scratch`,
+          label: `Vector raster ${format} MSAA4 ${chunkWidth}x${chunkHeight} tile-aligned scratch`,
           size: {
-            width: VECTOR_RASTER_CHUNK_SIZE,
-            height: VECTOR_RASTER_CHUNK_SIZE,
+            width: chunkWidth,
+            height: chunkHeight,
             depthOrArrayLayers: 1,
           },
           sampleCount: VECTOR_TEXT_GPU_SAMPLE_COUNT,
@@ -296,10 +304,10 @@ async function createVectorRasterScratch(
         });
         transaction.deferRollback(() => msaaTexture.destroy());
         const resolvedTexture = engine.device.createTexture({
-          label: `Vector raster ${format} resolved 512 tile-aligned scratch`,
+          label: `Vector raster ${format} resolved ${chunkWidth}x${chunkHeight} tile-aligned scratch`,
           size: {
-            width: VECTOR_RASTER_CHUNK_SIZE,
-            height: VECTOR_RASTER_CHUNK_SIZE,
+            width: chunkWidth,
+            height: chunkHeight,
             depthOrArrayLayers: 1,
           },
           format,
@@ -527,22 +535,19 @@ export async function renderVectorDrawsToTexture(
   encodeMissingBlurCaches(engine, draws, drawResources, blurResources);
 
   const bounds = vectorTextGpuRunBounds(draws, view);
-  const firstChunkX = Math.floor(bounds.x / VECTOR_RASTER_CHUNK_SIZE)
-    * VECTOR_RASTER_CHUNK_SIZE;
-  const firstChunkY = Math.floor(bounds.y / VECTOR_RASTER_CHUNK_SIZE)
-    * VECTOR_RASTER_CHUNK_SIZE;
-  const lastChunkX = Math.ceil((bounds.x + bounds.width) / VECTOR_RASTER_CHUNK_SIZE)
-    * VECTOR_RASTER_CHUNK_SIZE;
-  const lastChunkY = Math.ceil((bounds.y + bounds.height) / VECTOR_RASTER_CHUNK_SIZE)
-    * VECTOR_RASTER_CHUNK_SIZE;
+  const { width: chunkWidth, height: chunkHeight } = vectorRasterChunkDimensions();
+  const firstChunkX = Math.floor(bounds.x / chunkWidth) * chunkWidth;
+  const firstChunkY = Math.floor(bounds.y / chunkHeight) * chunkHeight;
+  const lastChunkX = Math.ceil((bounds.x + bounds.width) / chunkWidth) * chunkWidth;
+  const lastChunkY = Math.ceil((bounds.y + bounds.height) / chunkHeight) * chunkHeight;
   const { msaaTexture, resolvedTexture, msaaView, resolvedView } =
-    await createVectorRasterScratch(engine, format);
+    await createVectorRasterScratch(engine, format, chunkWidth, chunkHeight);
   let chunkCount = 0;
   try {
-    for (let y = firstChunkY; y < lastChunkY; y += VECTOR_RASTER_CHUNK_SIZE) {
-      for (let x = firstChunkX; x < lastChunkX; x += VECTOR_RASTER_CHUNK_SIZE) {
-        const width = Math.min(VECTOR_RASTER_CHUNK_SIZE, view.canvasWidth - x);
-        const height = Math.min(VECTOR_RASTER_CHUNK_SIZE, view.canvasHeight - y);
+    for (let y = firstChunkY; y < lastChunkY; y += chunkHeight) {
+      for (let x = firstChunkX; x < lastChunkX; x += chunkWidth) {
+        const width = Math.min(chunkWidth, view.canvasWidth - x);
+        const height = Math.min(chunkHeight, view.canvasHeight - y);
         if (width <= 0 || height <= 0) continue;
         const chunk = { x, y, width, height };
         draws.forEach((draw, index) => {

@@ -2183,13 +2183,21 @@ assert.match(gpuShaderSource, /fn blurMaskVertexMain/);
 assert.match(gpuShaderSource, /fn meshInnerShadowFragmentMain/);
 
 // Rasterizzazione vettoriale autorevole: SVG mesh e testo Slug usano target
-// RGBA16F lineare, MSAA 4x, blocchi allineati ai tile e seed tiled Undo/Redo.
+// RGBA16F lineare, MSAA 4x, blocchi derivati dai tile e seed tiled Undo/Redo.
 assert.match(
   vectorRasterSource,
-  /semantic-vector-slug-mesh-webgpu-linear-layer-format-msaa4-512-tile-chunks-history-seed-v3/,
+  /semantic-vector-slug-mesh-webgpu-linear-layer-format-msaa4-tile-paired-chunks-history-seed-v4/,
 );
 assert.match(vectorRasterSource, /VECTOR_RASTER_FORMAT = "rgba16float"/);
-assert.match(vectorRasterSource, /VECTOR_RASTER_CHUNK_SIZE = LAYER_STORAGE_TILE_SIZE \* 2/);
+assert.match(
+  vectorRasterSource,
+  /function vectorRasterChunkDimensions\(\): \{ width: number; height: number \}[\s\S]*?width: LAYER_STORAGE_TILE_WIDTH \* 2,[\s\S]*?height: LAYER_STORAGE_TILE_HEIGHT \* 2/,
+);
+assert.match(
+  vectorRasterSource,
+  /\{ width: chunkWidth, height: chunkHeight \} = vectorRasterChunkDimensions\(\)/,
+);
+assert.doesNotMatch(vectorRasterSource, /const VECTOR_RASTER_CHUNK_SIZE/);
 assert.match(
   vectorRasterSource,
   /WeakMap<[\s\S]{0,120}Map<LayerFormat, Promise<VectorRasterPipelines>>/,
@@ -2198,7 +2206,10 @@ assert.match(
 assert.match(vectorRasterSource, /targets: \[\{ format, blend \}\]/);
 assert.match(vectorRasterSource, /const format = destination\.format/);
 assert.match(vectorRasterSource, /destination\.format !== engine\.layerFormat/);
-assert.match(vectorRasterSource, /createVectorRasterScratch\(engine, format\)/);
+assert.match(
+  vectorRasterSource,
+  /createVectorRasterScratch\(engine, format, chunkWidth, chunkHeight\)/,
+);
 assert.match(vectorRasterSource, /format,\s*usage: GPUTextureUsage\.RENDER_ATTACHMENT/);
 assert.match(vectorRasterSource, /sampleCount: VECTOR_TEXT_GPU_SAMPLE_COUNT/);
 assert.match(vectorRasterSource, /entryPoint: "fragmentMain"/);

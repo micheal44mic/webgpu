@@ -119,19 +119,20 @@ async function verifyEngineDimensionProbe() {
 
   assert.equal(fill.FILL_LAYER_WIDTH, expectedWidth);
   assert.equal(fill.FILL_LAYER_HEIGHT, expectedHeight);
-  assert.equal(fill.FILL_BLOCK_GRID_WIDTH, Math.ceil(expectedWidth / fill.FILL_BLOCK_SIZE));
-  assert.equal(fill.FILL_BLOCK_GRID_HEIGHT, Math.ceil(expectedHeight / fill.FILL_BLOCK_SIZE));
-  assert.equal(fill.FILL_HISTORY_WORDS_PER_ROW, Math.ceil(expectedWidth / 32));
+  const fillMetrics = fill.currentFillDocumentMetrics();
+  assert.equal(fillMetrics.blockGridWidth, Math.ceil(expectedWidth / fill.FILL_BLOCK_SIZE));
+  assert.equal(fillMetrics.blockGridHeight, Math.ceil(expectedHeight / fill.FILL_BLOCK_SIZE));
+  assert.equal(fillMetrics.historyWordsPerRow, Math.ceil(expectedWidth / 32));
   assert.equal(
-    fill.FILL_HISTORY_MASK_BYTES,
+    fillMetrics.historyMaskBytes,
     Math.ceil(expectedWidth / 32) * expectedHeight * 4,
   );
-  assert.equal(fill.FILL_RENDER_MASK_WORDS_PER_ROW, Math.ceil(expectedWidth / 8));
+  assert.equal(fillMetrics.renderMaskWordsPerRow, Math.ceil(expectedWidth / 8));
   assert.equal(fill.FILL_TILE_WIDTH, tileWidth);
   assert.equal(fill.FILL_TILE_HEIGHT, tileHeight);
 
-  const lastHistoryWordInFirstRow = fill.FILL_HISTORY_WORDS_PER_ROW - 1;
-  const validFinalRenderWords = fill.FILL_RENDER_MASK_WORDS_PER_ROW
+  const lastHistoryWordInFirstRow = fillMetrics.historyWordsPerRow - 1;
+  const validFinalRenderWords = fillMetrics.renderMaskWordsPerRow
     - lastHistoryWordInFirstRow * 4;
   for (let byteIndex = 0; byteIndex < 4; byteIndex += 1) {
     assert.equal(
@@ -143,14 +144,14 @@ async function verifyEngineDimensionProbe() {
     );
   }
   assert.equal(
-    fill.fillRenderMaskTargetWord(fill.FILL_HISTORY_WORDS_PER_ROW, 0),
-    fill.FILL_RENDER_MASK_WORDS_PER_ROW,
+    fill.fillRenderMaskTargetWord(fillMetrics.historyWordsPerRow, 0),
+    fillMetrics.renderMaskWordsPerRow,
     `${label}: render-mask row two must begin at its exact packed stride`,
   );
 
-  const sourceWords = new Uint32Array(fill.FILL_HISTORY_WORDS_PER_ROW * 2);
+  const sourceWords = new Uint32Array(fillMetrics.historyWordsPerRow * 2);
   sourceWords.fill(0xffff_ffff);
-  const expandedWords = new Uint32Array(fill.FILL_RENDER_MASK_WORDS_PER_ROW * 2);
+  const expandedWords = new Uint32Array(fillMetrics.renderMaskWordsPerRow * 2);
   for (let sourceWord = 0; sourceWord < sourceWords.length; sourceWord += 1) {
     for (let byteIndex = 0; byteIndex < 4; byteIndex += 1) {
       const targetWord = fill.fillRenderMaskTargetWord(sourceWord, byteIndex);
@@ -176,9 +177,10 @@ async function verifyEngineDimensionProbe() {
 
   assert.equal(selection.SELECTION_LAYER_WIDTH, expectedWidth);
   assert.equal(selection.SELECTION_LAYER_HEIGHT, expectedHeight);
-  assert.equal(selection.SELECTION_WORDS_PER_ROW, Math.ceil(expectedWidth / 32));
+  const selectionMetrics = selection.currentSelectionDocumentMetrics();
+  assert.equal(selectionMetrics.wordsPerRow, Math.ceil(expectedWidth / 32));
   assert.equal(
-    selection.SELECTION_MASK_BYTES,
+    selectionMetrics.maskBytes,
     Math.ceil(expectedWidth / 32) * expectedHeight * 4,
   );
   assert.equal(selection.SELECTION_TILE_WIDTH, tileWidth);
@@ -196,6 +198,49 @@ async function verifyEngineDimensionProbe() {
       `${label}: codec payload remains tightly packed`,
     );
   }
+
+  // A session-level document switch must update the storage geometry without
+  // evaluating this module again. These are direct ESM aliases, so the same
+  // imported namespace observes the new rectangular extent immediately.
+  const switchedWidth = expectedWidth === 1080 ? 1920 : 1080;
+  const switchedHeight = expectedHeight === 1920 ? 1080 : 1920;
+  limits.reconfigureDocumentDimensions(switchedWidth, switchedHeight);
+  assert.equal(storageTiles.LAYER_STORAGE_DOCUMENT_WIDTH, switchedWidth);
+  assert.equal(storageTiles.LAYER_STORAGE_DOCUMENT_HEIGHT, switchedHeight);
+  assert.equal(
+    storageTiles.LAYER_STORAGE_TILE_WIDTH,
+    Math.ceil(switchedWidth / limits.DOCUMENT_TILE_GRID_SIZE),
+  );
+  assert.equal(
+    storageTiles.LAYER_STORAGE_TILE_HEIGHT,
+    Math.ceil(switchedHeight / limits.DOCUMENT_TILE_GRID_SIZE),
+  );
+  assert.equal(
+    storageTiles.LAYER_STORAGE_DOCUMENT_SIZE,
+    Math.max(switchedWidth, switchedHeight),
+  );
+  assert.equal(
+    storageTiles.LAYER_STORAGE_TILE_SIZE,
+    Math.max(
+      Math.ceil(switchedWidth / limits.DOCUMENT_TILE_GRID_SIZE),
+      Math.ceil(switchedHeight / limits.DOCUMENT_TILE_GRID_SIZE),
+    ),
+  );
+  assert.equal(fill.currentFillDocumentMetrics().layerWidth, switchedWidth);
+  assert.equal(fill.currentFillDocumentMetrics().layerHeight, switchedHeight);
+  assert.equal(selection.currentSelectionDocumentMetrics().layerWidth, switchedWidth);
+  assert.equal(selection.currentSelectionDocumentMetrics().layerHeight, switchedHeight);
+  const switchedMask = storageTiles.createLayerStorageTileMask();
+  storageTiles.markLayerStorageRect(switchedMask, {
+    x: switchedWidth - 1,
+    y: switchedHeight - 1,
+    width: 1,
+    height: 1,
+  });
+  assert.deepEqual(storageTiles.layerStorageTileIndices(switchedMask), [255]);
+  limits.reconfigureDocumentDimensions(expectedWidth, expectedHeight, {
+    allowLegacy4096: expectedWidth === 4096 && expectedHeight === 4096,
+  });
 }
 
 if (process.argv.includes(PROBE_ARGUMENT)) {
@@ -493,8 +538,14 @@ assert.match(coldStorageSource,
   /queue\.writeTexture\([\s\S]*?bytesPerRow: coldCodecBytesPerRow\(compressed\.format\)/,
   "GPUQueue.writeTexture must consume the tight codec row stride.");
 assert.match(coldStorageSource,
-  /width: Math\.max\(0, Math\.min\(LAYER_STORAGE_TILE_WIDTH, DOCUMENT_WIDTH - originX\)\)/);
+  /documentWidth = DOCUMENT_WIDTH,[\s\S]*?documentHeight = DOCUMENT_HEIGHT/);
 assert.match(coldStorageSource,
-  /height: Math\.max\(0, Math\.min\(LAYER_STORAGE_TILE_HEIGHT, DOCUMENT_HEIGHT - originY\)\)/);
+  /width: Math\.max\(0, Math\.min\(LAYER_STORAGE_TILE_WIDTH, documentWidth - originX\)\)/);
+assert.match(coldStorageSource,
+  /height: Math\.max\(0, Math\.min\(LAYER_STORAGE_TILE_HEIGHT, documentHeight - originY\)\)/);
+assert.match(coldStorageSource,
+  /tileDocumentCopyExtent\(tileIndex, hot\.texture\.width, hot\.texture\.height\)/);
+assert.match(coldStorageSource,
+  /const memoryBytes = engine\.documentWidth \* engine\.documentHeight/);
 
 console.log("Custom document dimension verification passed.");

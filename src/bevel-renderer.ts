@@ -16,7 +16,7 @@ import type { RasterStrokeSourceMode } from "./stroke-renderer";
 import type { EffectsScratchLease, EffectsScratchPool } from "./effects-scratch-pool";
 
 export const RASTER_BEVEL_RENDERER_BUILD =
-  "raster-bevel-webgpu-v5-bbox-field-shared-effects-scratch-retargetable-layer-heightfield-v2-r32f-segment-jfa-workgroup-gaussian-gpu-gate";
+  "raster-bevel-webgpu-v6-dimension-neutral-session-program-cache-bbox-field-shared-effects-scratch-retargetable-layer-heightfield-v2-r32f-segment-jfa-workgroup-gaussian-gpu-gate";
 export const RASTER_BEVEL_FIELD_STRATEGY =
   "persistent-document-plus-one-pixel-apron-r32float-heightfield" as const;
 export const RASTER_BEVEL_BOUNDING_FIELD_STRATEGY =
@@ -216,7 +216,7 @@ function workspaceLayout(extent: number, segments: boolean): WorkspaceLayout {
   };
 }
 
-function sourceShaderCommon(documentWidth: number, documentHeight: number): string {
+function sourceShaderCommon(): string {
   return /* wgsl */ `
 struct BevelParameters {
   buildOrigin: vec2<i32>,
@@ -260,7 +260,6 @@ struct ThicknessTailUniforms {
   _pad1: vec2<u32>,
 };
 
-const DOCUMENT_SIZE = vec2<i32>(${documentWidth}, ${documentHeight});
 const EMPTY_SEGMENT = ${EMPTY_SEGMENT};
 const PROFILE_MAX_INDEX = ${RASTER_BEVEL_PROFILE_SIZE - 1}u;
 
@@ -276,8 +275,12 @@ const PROFILE_MAX_INDEX = ${RASTER_BEVEL_PROFILE_SIZE - 1}u;
 @group(0) @binding(6) var heightOutput: texture_storage_2d<r32float, write>;
 @group(0) @binding(7) var bevelProfile: texture_2d<f32>;
 
+fn documentSize() -> vec2<i32> {
+  return vec2<i32>(textureDimensions(permanentTexture));
+}
+
 fn insideDocument(position: vec2<i32>) -> bool {
-  return all(position >= vec2<i32>(0)) && all(position < DOCUMENT_SIZE);
+  return all(position >= vec2<i32>(0)) && all(position < documentSize());
 }
 
 fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
@@ -468,8 +471,8 @@ fn profileValue(value: f32) -> f32 {
 `;
 }
 
-function coverageShader(documentWidth: number, documentHeight: number): string {
-  return `${sourceShaderCommon(documentWidth, documentHeight)}
+function coverageShader(): string {
+  return `${sourceShaderCommon()}
 @compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   if (globalId.y >= parameters.buildSize.y) {
@@ -492,8 +495,8 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
 `;
 }
 
-function segmentShader(documentWidth: number, documentHeight: number): string {
-  return `${sourceShaderCommon(documentWidth, documentHeight)}
+function segmentShader(): string {
+  return `${sourceShaderCommon()}
 fn differentSides(left: f32, right: f32) -> bool {
   return (left >= 0.5) != (right >= 0.5);
 }
@@ -555,8 +558,8 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
 `;
 }
 
-function jfaShader(documentWidth: number, documentHeight: number): string {
-  return `${sourceShaderCommon(documentWidth, documentHeight)}
+function jfaShader(): string {
+  return `${sourceShaderCommon()}
 fn segmentDistance(point: vec2<f32>, segment: vec4<f32>) -> f32 {
   let ab = segment.zw - segment.xy;
   let t = clamp(
@@ -618,8 +621,8 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
 `;
 }
 
-function distanceShader(documentWidth: number, documentHeight: number): string {
-  return `${sourceShaderCommon(documentWidth, documentHeight)}
+function distanceShader(): string {
+  return `${sourceShaderCommon()}
 fn segmentDistance(point: vec2<f32>, segment: vec4<f32>) -> f32 {
   let ab = segment.zw - segment.xy;
   let t = clamp(
@@ -651,8 +654,8 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
 `;
 }
 
-function gaussianShader(documentWidth: number, documentHeight: number): string {
-  return `${sourceShaderCommon(documentWidth, documentHeight)}
+function gaussianShader(): string {
+  return `${sourceShaderCommon()}
 fn sampleInput(position: vec2<i32>) -> f32 {
   let clamped = clamp(
     position,
@@ -728,8 +731,8 @@ fn main(
 `;
 }
 
-function heightShader(documentWidth: number, documentHeight: number): string {
-  return `${sourceShaderCommon(documentWidth, documentHeight)}
+function heightShader(): string {
+  return `${sourceShaderCommon()}
 @compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   if (any(globalId.xy >= parameters.buildSize)) {
@@ -768,14 +771,12 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
 }
 
 function resolveHeightShader(
-  documentWidth: number,
-  documentHeight: number,
   boundingFieldEnabled = false,
 ): string {
   const fieldTranslation = boundingFieldEnabled
     ? "\n    - vec2<i32>(parameters._pad0)"
     : "";
-  return `${sourceShaderCommon(documentWidth, documentHeight)}
+  return `${sourceShaderCommon()}
 fn sampleInput(position: vec2<i32>) -> f32 {
   let clamped = clamp(
     position,
@@ -852,16 +853,16 @@ fn main(
 `;
 }
 
-function alphaClassMaskShader(documentWidth: number, documentHeight: number): string {
-  const wordsPerRow = Math.ceil(documentWidth / ALPHA_CLASS_WORD_BITS);
-  const wordCount = wordsPerRow * documentHeight;
-  return `${sourceShaderCommon(documentWidth, documentHeight)}
+function alphaClassMaskShader(): string {
+  return `${sourceShaderCommon()}
 const ALPHA_WORD_BITS = ${ALPHA_CLASS_WORD_BITS}u;
-const ALPHA_WORDS_PER_ROW = ${wordsPerRow}u;
-const ALPHA_WORD_COUNT = ${wordCount}u;
 
 @compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
+  let documentExtent = textureDimensions(permanentTexture);
+  let alphaWordsPerRow = (documentExtent.x + ALPHA_WORD_BITS - 1u)
+    / ALPHA_WORD_BITS;
+  let alphaWordCount = alphaWordsPerRow * documentExtent.y;
   let firstWord = parameters.targetOrigin.x / ALPHA_WORD_BITS;
   let firstBit = parameters.targetOrigin.x % ALPHA_WORD_BITS;
   let targetWordCount = (
@@ -882,7 +883,7 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
     if (
       documentX < parameters.targetOrigin.x
       || documentX >= targetRight
-      || documentX >= ${documentWidth}u
+      || documentX >= documentExtent.x
     ) {
       continue;
     }
@@ -900,9 +901,9 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
       fractionalBits |= bit;
     }
   }
-  let maskIndex = documentY * ALPHA_WORDS_PER_ROW + wordX;
+  let maskIndex = documentY * alphaWordsPerRow + wordX;
   let previousThreshold = alphaClassMask[maskIndex];
-  let previousFractional = alphaClassMask[ALPHA_WORD_COUNT + maskIndex];
+  let previousFractional = alphaClassMask[alphaWordCount + maskIndex];
   let nextThreshold = (previousThreshold & ~writeMask) | (thresholdBits & writeMask);
   let nextFractional = (previousFractional & ~writeMask) | (fractionalBits & writeMask);
   if (
@@ -913,7 +914,7 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
     atomicOr(&bevelGateState[0], 1u);
   }
   alphaClassMask[maskIndex] = nextThreshold;
-  alphaClassMask[ALPHA_WORD_COUNT + maskIndex] = nextFractional;
+  alphaClassMask[alphaWordCount + maskIndex] = nextFractional;
 }
 `;
 }
@@ -954,6 +955,214 @@ async function assertShaderModules(
   if (failures.length > 0) {
     throw new Error(`Invalid Bevel WGSL:\n${failures.join("\n")}`);
   }
+}
+
+interface RasterBevelProgramResources {
+  bindGroupLayout: GPUBindGroupLayout;
+  indirectGateBindGroupLayout: GPUBindGroupLayout;
+  coveragePipeline: GPUComputePipeline;
+  segmentPipeline: GPUComputePipeline;
+  jfaPipeline: GPUComputePipeline;
+  distancePipeline: GPUComputePipeline;
+  gaussianPipeline: GPUComputePipeline;
+  heightPipeline: GPUComputePipeline;
+  resolveHeightPipeline: GPUComputePipeline;
+  alphaClassMaskPipeline: GPUComputePipeline;
+  indirectGatePipeline: GPUComputePipeline;
+}
+
+const bevelProgramCache = new WeakMap<
+  GPUDevice,
+  Map<string, Promise<RasterBevelProgramResources>>
+>();
+
+function bevelProgramCacheKey(
+  boundingFieldEnabled: boolean,
+): string {
+  return `bbox:${boundingFieldEnabled ? 1 : 0}`;
+}
+
+async function createBevelProgramResources(
+  device: GPUDevice,
+  boundingFieldEnabled: boolean,
+): Promise<RasterBevelProgramResources> {
+  const bindGroupLayout = device.createBindGroupLayout({
+    label: "Bevel Heightfield V2 universal compute layout",
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: {
+          type: "uniform",
+          hasDynamicOffset: true,
+          minBindingSize: PARAMETER_BYTES,
+        },
+      },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float" } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float" } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+      { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      {
+        binding: 6,
+        visibility: GPUShaderStage.COMPUTE,
+        storageTexture: { access: "write-only", format: "r32float" },
+      },
+      {
+        binding: 7,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: "unfilterable-float" },
+      },
+      { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+    ],
+  });
+  const indirectGateBindGroupLayout = device.createBindGroupLayout({
+    label: "Bevel indirect dispatch gate layout",
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: "storage" },
+      },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: "storage" },
+      },
+    ],
+  });
+  const modules = {
+    coverage: device.createShaderModule({
+      label: "Bevel continuous F32 coverage WGSL",
+      code: coverageShader(),
+    }),
+    segment: device.createShaderModule({
+      label: "Bevel marching squares segments WGSL",
+      code: segmentShader(),
+    }),
+    jfa: device.createShaderModule({
+      label: "Bevel subpixel segment JFA WGSL",
+      code: jfaShader(),
+    }),
+    distance: device.createShaderModule({
+      label: "Bevel signed R32F distance WGSL",
+      code: distanceShader(),
+    }),
+    gaussian: device.createShaderModule({
+      label: "Bevel separable Gaussian WGSL",
+      code: gaussianShader(),
+    }),
+    height: device.createShaderModule({
+      label: "Bevel Heightfield V2 profile WGSL",
+      code: heightShader(),
+    }),
+    resolve: device.createShaderModule({
+      label: "Bevel final R32F height resolve WGSL",
+      code: resolveHeightShader(boundingFieldEnabled),
+    }),
+    alphaClass: device.createShaderModule({
+      label: "Bevel alpha class change gate WGSL",
+      code: alphaClassMaskShader(),
+    }),
+    indirectGate: device.createShaderModule({
+      label: "Bevel indirect dispatch gate WGSL",
+      code: indirectGateShader(),
+    }),
+  };
+  await assertShaderModules(Object.entries(modules).map(([label, module]) => ({
+    label,
+    module,
+  })));
+  const layout = device.createPipelineLayout({
+    label: "Bevel Heightfield V2 compute pipeline layout",
+    bindGroupLayouts: [bindGroupLayout],
+  });
+  device.pushErrorScope("validation");
+  const resources: RasterBevelProgramResources = {
+    bindGroupLayout,
+    indirectGateBindGroupLayout,
+    coveragePipeline: device.createComputePipeline({
+      label: "Bevel alpha to F32 coverage",
+      layout,
+      compute: { module: modules.coverage, entryPoint: "main" },
+    }),
+    segmentPipeline: device.createComputePipeline({
+      label: "Bevel marching squares subpixel",
+      layout,
+      compute: { module: modules.segment, entryPoint: "main" },
+    }),
+    jfaPipeline: device.createComputePipeline({
+      label: "Bevel JFA on subpixel segments",
+      layout,
+      compute: { module: modules.jfa, entryPoint: "main" },
+    }),
+    distancePipeline: device.createComputePipeline({
+      label: "Bevel signed R32F distance",
+      layout,
+      compute: { module: modules.distance, entryPoint: "main" },
+    }),
+    gaussianPipeline: device.createComputePipeline({
+      label: "Bevel separable Gaussian",
+      layout,
+      compute: { module: modules.gaussian, entryPoint: "main" },
+    }),
+    heightPipeline: device.createComputePipeline({
+      label: "Bevel Heightfield V2 profile",
+      layout,
+      compute: { module: modules.height, entryPoint: "main" },
+    }),
+    resolveHeightPipeline: device.createComputePipeline({
+      label: "Bevel final R32F height resolve",
+      layout,
+      compute: { module: modules.resolve, entryPoint: "main" },
+    }),
+    alphaClassMaskPipeline: device.createComputePipeline({
+      label: "Bevel alpha threshold/fractional class gate",
+      layout,
+      compute: { module: modules.alphaClass, entryPoint: "main" },
+    }),
+    indirectGatePipeline: device.createComputePipeline({
+      label: "Bevel indirect dispatch gate",
+      layout: device.createPipelineLayout({
+        bindGroupLayouts: [indirectGateBindGroupLayout],
+      }),
+      compute: { module: modules.indirectGate, entryPoint: "main" },
+    }),
+  };
+  const validationError = await device.popErrorScope();
+  if (validationError) {
+    throw new Error(validationError.message);
+  }
+  return resources;
+}
+
+function acquireBevelProgramResources(
+  device: GPUDevice,
+  boundingFieldEnabled: boolean,
+): Promise<RasterBevelProgramResources> {
+  let deviceCache = bevelProgramCache.get(device);
+  if (!deviceCache) {
+    deviceCache = new Map();
+    bevelProgramCache.set(device, deviceCache);
+  }
+  const key = bevelProgramCacheKey(boundingFieldEnabled);
+  const cached = deviceCache.get(key);
+  if (cached) {
+    return cached;
+  }
+  const pending = createBevelProgramResources(
+    device,
+    boundingFieldEnabled,
+  );
+  deviceCache.set(key, pending);
+  void pending.then(undefined, () => {
+    if (deviceCache?.get(key) === pending) {
+      deviceCache.delete(key);
+    }
+  });
+  return pending;
 }
 
 export class RasterBevelRenderer {
@@ -1309,155 +1518,21 @@ export class RasterBevelRenderer {
   }
 
   private async initialize(): Promise<void> {
-    this.bindGroupLayout = this.device.createBindGroupLayout({
-      label: "Bevel Heightfield V2 universal compute layout",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: {
-            type: "uniform",
-            hasDynamicOffset: true,
-            minBindingSize: PARAMETER_BYTES,
-          },
-        },
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float" } },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float" } },
-        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        {
-          binding: 6,
-          visibility: GPUShaderStage.COMPUTE,
-          storageTexture: { access: "write-only", format: "r32float" },
-        },
-        {
-          binding: 7,
-          visibility: GPUShaderStage.COMPUTE,
-          texture: { sampleType: "unfilterable-float" },
-        },
-        { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-      ],
-    });
-    this.indirectGateBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Bevel indirect dispatch gate layout",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "storage" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "storage" },
-        },
-      ],
-    });
-    const modules = {
-      coverage: this.device.createShaderModule({
-        label: "Bevel continuous F32 coverage WGSL",
-        code: coverageShader(this.documentWidth, this.documentHeight),
-      }),
-      segment: this.device.createShaderModule({
-        label: "Bevel marching squares segments WGSL",
-        code: segmentShader(this.documentWidth, this.documentHeight),
-      }),
-      jfa: this.device.createShaderModule({
-        label: "Bevel subpixel segment JFA WGSL",
-        code: jfaShader(this.documentWidth, this.documentHeight),
-      }),
-      distance: this.device.createShaderModule({
-        label: "Bevel signed R32F distance WGSL",
-        code: distanceShader(this.documentWidth, this.documentHeight),
-      }),
-      gaussian: this.device.createShaderModule({
-        label: "Bevel separable Gaussian WGSL",
-        code: gaussianShader(this.documentWidth, this.documentHeight),
-      }),
-      height: this.device.createShaderModule({
-        label: "Bevel Heightfield V2 profile WGSL",
-        code: heightShader(this.documentWidth, this.documentHeight),
-      }),
-      resolve: this.device.createShaderModule({
-        label: "Bevel final R32F height resolve WGSL",
-        code: resolveHeightShader(
-          this.documentWidth,
-          this.documentHeight,
-          this.boundingFieldEnabled,
-        ),
-      }),
-      alphaClass: this.device.createShaderModule({
-        label: "Bevel alpha class change gate WGSL",
-        code: alphaClassMaskShader(this.documentWidth, this.documentHeight),
-      }),
-      indirectGate: this.device.createShaderModule({
-        label: "Bevel indirect dispatch gate WGSL",
-        code: indirectGateShader(),
-      }),
-    };
-    await assertShaderModules(Object.entries(modules).map(([label, module]) => ({
-      label,
-      module,
-    })));
-    const layout = this.device.createPipelineLayout({
-      label: "Bevel Heightfield V2 compute pipeline layout",
-      bindGroupLayouts: [this.bindGroupLayout],
-    });
-    this.device.pushErrorScope("validation");
-    this.coveragePipeline = this.device.createComputePipeline({
-      label: "Bevel alpha to F32 coverage",
-      layout,
-      compute: { module: modules.coverage, entryPoint: "main" },
-    });
-    this.segmentPipeline = this.device.createComputePipeline({
-      label: "Bevel marching squares subpixel",
-      layout,
-      compute: { module: modules.segment, entryPoint: "main" },
-    });
-    this.jfaPipeline = this.device.createComputePipeline({
-      label: "Bevel JFA on subpixel segments",
-      layout,
-      compute: { module: modules.jfa, entryPoint: "main" },
-    });
-    this.distancePipeline = this.device.createComputePipeline({
-      label: "Bevel signed R32F distance",
-      layout,
-      compute: { module: modules.distance, entryPoint: "main" },
-    });
-    this.gaussianPipeline = this.device.createComputePipeline({
-      label: "Bevel separable Gaussian",
-      layout,
-      compute: { module: modules.gaussian, entryPoint: "main" },
-    });
-    this.heightPipeline = this.device.createComputePipeline({
-      label: "Bevel Heightfield V2 profile",
-      layout,
-      compute: { module: modules.height, entryPoint: "main" },
-    });
-    this.resolveHeightPipeline = this.device.createComputePipeline({
-      label: "Bevel final R32F height resolve",
-      layout,
-      compute: { module: modules.resolve, entryPoint: "main" },
-    });
-    this.alphaClassMaskPipeline = this.device.createComputePipeline({
-      label: "Bevel alpha threshold/fractional class gate",
-      layout,
-      compute: { module: modules.alphaClass, entryPoint: "main" },
-    });
-    this.indirectGatePipeline = this.device.createComputePipeline({
-      label: "Bevel indirect dispatch gate",
-      layout: this.device.createPipelineLayout({
-        bindGroupLayouts: [this.indirectGateBindGroupLayout],
-      }),
-      compute: { module: modules.indirectGate, entryPoint: "main" },
-    });
-    const validationError = await this.device.popErrorScope();
-    if (validationError) {
-      throw new Error(validationError.message);
-    }
+    const programs = await acquireBevelProgramResources(
+      this.device,
+      this.boundingFieldEnabled,
+    );
+    this.bindGroupLayout = programs.bindGroupLayout;
+    this.indirectGateBindGroupLayout = programs.indirectGateBindGroupLayout;
+    this.coveragePipeline = programs.coveragePipeline;
+    this.segmentPipeline = programs.segmentPipeline;
+    this.jfaPipeline = programs.jfaPipeline;
+    this.distancePipeline = programs.distancePipeline;
+    this.gaussianPipeline = programs.gaussianPipeline;
+    this.heightPipeline = programs.heightPipeline;
+    this.resolveHeightPipeline = programs.resolveHeightPipeline;
+    this.alphaClassMaskPipeline = programs.alphaClassMaskPipeline;
+    this.indirectGatePipeline = programs.indirectGatePipeline;
     this.indirectGateBindGroup = this.device.createBindGroup({
       label: "Bevel indirect dispatch gate bind group",
       layout: this.indirectGateBindGroupLayout,
