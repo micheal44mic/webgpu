@@ -101,21 +101,28 @@ export class BrushQuickControlsController {
     const tool = this.options.getActiveTool();
     const brushContext = tool === "paint" || tool === "erase" || tool === "blend"
       || tool === "clone";
-    const colorDisabled = locked || !brushContext || tool === "erase" || tool === "clone";
+    const colorUnavailable = !brushContext || tool === "erase" || tool === "clone";
+    const colorDisabled = locked || colorUnavailable;
     this.options.elements.colorInput.disabled = colorDisabled;
     this.options.elements.colorLabel.classList.toggle("is-disabled", colorDisabled);
-    const disabledByKind: Readonly<Record<BrushQuickControlKind, boolean>> = {
-      size: locked || !brushContext,
-      opacity: locked || !brushContext,
-      stretch: locked || tool !== "blend",
-      paint: locked || tool !== "blend",
-      blur: locked || tool !== "blend",
+    this.options.elements.colorLabel.classList.toggle(
+      "is-transiently-locked",
+      locked && !colorUnavailable,
+    );
+    const unavailableByKind: Readonly<Record<BrushQuickControlKind, boolean>> = {
+      size: !brushContext,
+      opacity: !brushContext,
+      stretch: tool !== "blend",
+      paint: tool !== "blend",
+      blur: tool !== "blend",
     };
     for (const kind of this.kinds()) {
       const control = this.control(kind);
-      const disabled = disabledByKind[kind];
+      const unavailable = unavailableByKind[kind];
+      const disabled = locked || unavailable;
       control.setAttribute("aria-disabled", String(disabled));
       control.tabIndex = disabled ? -1 : 0;
+      control.classList.toggle("is-transiently-locked", locked && !unavailable);
     }
   }
 

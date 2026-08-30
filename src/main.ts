@@ -1145,10 +1145,15 @@ const historyControlsController = new HistoryControlsController({
     brushQuickControlsController?.setLocked(locked);
     cloneToolController?.notifyInteractionState();
     const toolSelectionLocked = canvasToolSelectionLocked();
-    mobilePaintButton.disabled = toolSelectionLocked;
-    mobileEraserButton.disabled = toolSelectionLocked;
-    mobileBlendButton.disabled = toolSelectionLocked;
-    mobilePanButton.disabled = toolSelectionLocked;
+    for (const button of [
+      mobilePaintButton,
+      mobileEraserButton,
+      mobileBlendButton,
+      mobilePanButton,
+    ]) {
+      button.disabled = toolSelectionLocked;
+      button.classList.toggle("is-transiently-locked", toolSelectionLocked);
+    }
     mobileToolSettingsSheet?.syncOpenState();
     syncMobileToolsMenuState();
     brushQuickControlsController?.syncVisibility();

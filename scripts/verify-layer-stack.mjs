@@ -2528,7 +2528,7 @@ assert.match(
 assert.match(
   indexSource,
   /id="layerLoadingOverlay"[\s\S]*?role="status"[\s\S]*?aria-live="polite"[\s\S]*?hidden/,
-  "il cambio livello deve avere un indicatore fullscreen annunciato e inizialmente nascosto",
+  "il cambio livello deve avere un indicatore annunciato e inizialmente nascosto",
 );
 assert.match(stylesSource, /\.layer-loading-overlay \{[\s\S]*?position: fixed;[\s\S]*?inset: 0;/);
 assert.match(stylesSource, /\.layer-loading-overlay\[hidden\] \{\s*display: none;/);
@@ -2536,13 +2536,14 @@ const loadingStyles = stylesSource.slice(
   stylesSource.indexOf(".layer-loading-overlay {"),
   stylesSource.indexOf(".layer-loading-overlay[hidden]"),
 );
-assert.match(loadingStyles, /background: rgba\(9, 11, 15, 0\.38\);/);
-assert.match(loadingStyles, /-webkit-backdrop-filter: blur\(3px\);/);
-assert.match(loadingStyles, /backdrop-filter: blur\(3px\);/);
+assert.match(loadingStyles, /background: transparent;/);
+assert.match(loadingStyles, /touch-action: none;/);
+assert.match(loadingStyles, /-webkit-backdrop-filter: none;/);
+assert.match(loadingStyles, /backdrop-filter: none;/);
 assert.doesNotMatch(
   loadingStyles,
-  /background: #0d0f13;/,
-  "il loader non deve più sembrare un ricaricamento opaco dell'intera app",
+  /background: rgba\(|blur\(/,
+  "il loader operativo non deve oscurare o sfocare l'editor",
 );
 assert.match(
   stylesSource,

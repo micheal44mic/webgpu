@@ -82,6 +82,21 @@ assert.doesNotMatch(
 );
 assert.match(
   main,
+  /button\.classList\.toggle\("is-transiently-locked", toolSelectionLocked\)/,
+  "I tool bloccati durante un'operazione devono conservare una presentazione stabile.",
+);
+assert.match(
+  css,
+  /\.mobile-tool-action\.is-transiently-locked,[\s\S]*?opacity:\s*1;/,
+  "Un lock transitorio non deve attenuare la barra degli strumenti.",
+);
+assert.match(
+  css,
+  /\.mobile-brush-control\.is-transiently-locked\[aria-disabled="true"\][\s\S]*?border-color:\s*var\(--mobile-icon-face\);[\s\S]*?background:\s*var\(--mobile-icon-face\);/,
+  "Un lock transitorio non deve scolorire i controlli rapidi del pennello.",
+);
+assert.match(
+  main,
   /runStartupPhase\(\s*"restore-active-brush"[\s\S]*?if \(\s*mobileBrushStudio\s*&& \(editorExtensionBootstrap\?\.restorePersistedBrushOnStartup \?\? true\)\s*\) \{\s*await brushLibraryController\.restoreActiveBrush\(\{ prepareResources: false \}\);\s*\}[\s\S]*?runStartupPhase\(\s*"project-session"[\s\S]*?projectSessionController\.initialize\(\)/,
   "Telefono e desktop devono preparare lo stesso pennello attivo prima del progetto.",
 );

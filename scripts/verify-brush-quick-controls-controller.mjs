@@ -210,9 +210,19 @@ assert.equal(elements.controlsByKind.stretch.getAttribute("aria-disabled"), "fal
 controller.setLocked(true);
 assert.equal(elements.colorInput.disabled, true);
 assert.equal(elements.colorLabel.classList.contains("is-disabled"), true);
+assert.equal(elements.colorLabel.classList.contains("is-transiently-locked"), true);
 assert.equal(elements.controlsByKind.size.tabIndex, -1);
+assert.equal(
+  elements.controlsByKind.size.classList.contains("is-transiently-locked"),
+  true,
+);
 locked = false;
 controller.setLocked(false);
+assert.equal(elements.colorLabel.classList.contains("is-transiently-locked"), false);
+assert.equal(
+  elements.controlsByKind.size.classList.contains("is-transiently-locked"),
+  false,
+);
 
 activeTool = "erase";
 controller.syncAvailability(false);
@@ -220,6 +230,10 @@ assert.equal(elements.colorInput.disabled, true);
 assert.equal(elements.controlsByKind.size.getAttribute("aria-disabled"), "false");
 assert.equal(elements.controlsByKind.opacity.getAttribute("aria-disabled"), "false");
 assert.equal(elements.controlsByKind.stretch.getAttribute("aria-disabled"), "true");
+assert.equal(
+  elements.controlsByKind.stretch.classList.contains("is-transiently-locked"),
+  false,
+);
 
 // Keyboard commits immediately through the settings port.
 activeTool = "paint";

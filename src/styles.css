@@ -3267,12 +3267,14 @@ select {
     max(24px, env(safe-area-inset-right))
     max(24px, env(safe-area-inset-bottom))
     max(24px, env(safe-area-inset-left));
-  background: rgba(9, 11, 15, 0.38);
+  /* The interaction gate remains fullscreen, but ordinary editor operations
+     must not dim or blur the interface underneath it. */
+  background: transparent;
   color: #f4f5f7;
   cursor: progress;
   touch-action: none;
-  -webkit-backdrop-filter: blur(3px);
-  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .layer-loading-overlay[hidden] {
@@ -3528,6 +3530,17 @@ select {
     opacity: 0.42;
   }
 
+  /* A transient engine lock still blocks input, but it must not make stable
+     editor chrome flash between enabled and disabled presentation. */
+  .mobile-tool-action.is-transiently-locked,
+  .mobile-tool-action.is-transiently-locked:hover {
+    opacity: 1;
+  }
+
+  .mobile-tool-action.is-transiently-locked[aria-pressed="true"] .mobile-icon-face {
+    stroke: var(--mobile-icon-face);
+  }
+
   .mobile-color-action,
   .mobile-color-action:hover {
     padding: 9px;
@@ -3663,6 +3676,16 @@ select {
 
   .mobile-brush-control[aria-disabled="true"] .mobile-brush-control-value {
     background: var(--mobile-icon-inactive);
+  }
+
+  .mobile-brush-control.is-transiently-locked[aria-disabled="true"]
+    .mobile-brush-control-disc {
+    border-color: var(--mobile-icon-face);
+  }
+
+  .mobile-brush-control.is-transiently-locked[aria-disabled="true"]
+    .mobile-brush-control-value {
+    background: var(--mobile-icon-face);
   }
 
   .mobile-brush-control-disc {
