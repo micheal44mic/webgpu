@@ -1,4 +1,5 @@
 import type { EditorGuidePreferences } from "./editor-settings-storage";
+import { rasterPixelViewEnabled } from "./raster-pixel-view";
 import {
   sceneLayerToCanvas,
   type ScenePoint,
@@ -7,6 +8,7 @@ import type { SceneSnapMatch } from "./scene-transform-snap";
 import type { VectorTextViewState } from "./vector-text-types";
 
 const MAX_GRID_LINES_PER_AXIS = 512;
+const MAX_PIXEL_GRID_LINES_PER_AXIS = 4096;
 const GRID_TARGET_SPACING_CSS_PX = 56;
 const RULER_TARGET_SPACING_CSS_PX = 64;
 const RULER_SIZE_CSS_PX = 26;
@@ -135,6 +137,52 @@ function drawGrid(
   };
   drawAxis("x", range.minX, range.maxX);
   drawAxis("y", range.minY, range.maxY);
+  context.restore();
+}
+
+function drawPixelGrid(
+  context: CanvasRenderingContext2D,
+  view: Readonly<VectorTextViewState>,
+  documentWidth: number,
+  documentHeight: number,
+): void {
+  const range = visibleDocumentRange(view, documentWidth, documentHeight);
+  if (range.maxX < range.minX || range.maxY < range.minY) return;
+  const firstX = Math.ceil(range.minX);
+  const lastX = Math.floor(range.maxX);
+  const firstY = Math.ceil(range.minY);
+  const lastY = Math.floor(range.maxY);
+  const lineCountX = Math.max(0, lastX - firstX + 1);
+  const lineCountY = Math.max(0, lastY - firstY + 1);
+  if (lineCountX === 0 && lineCountY === 0) return;
+  if (
+    lineCountX > MAX_PIXEL_GRID_LINES_PER_AXIS
+    || lineCountY > MAX_PIXEL_GRID_LINES_PER_AXIS
+  ) return;
+  const backing = Math.max(1, Math.min(
+    view.canvasWidth / Math.max(1, view.cssWidth),
+    view.canvasHeight / Math.max(1, view.cssHeight),
+  ));
+  context.save();
+  documentPath(context, view, documentWidth, documentHeight);
+  context.clip();
+  context.strokeStyle = "rgba(132, 136, 144, 0.46)";
+  context.lineWidth = Math.max(1, backing * 0.55);
+  context.setLineDash([]);
+  context.beginPath();
+  for (let x = firstX; x <= lastX; x += 1) {
+    const start = sceneLayerToCanvas({ x, y: 0 }, view);
+    const end = sceneLayerToCanvas({ x, y: documentHeight }, view);
+    context.moveTo(start.x, start.y);
+    context.lineTo(end.x, end.y);
+  }
+  for (let y = firstY; y <= lastY; y += 1) {
+    const start = sceneLayerToCanvas({ x: 0, y }, view);
+    const end = sceneLayerToCanvas({ x: documentWidth, y }, view);
+    context.moveTo(start.x, start.y);
+    context.lineTo(end.x, end.y);
+  }
+  context.stroke();
   context.restore();
 }
 
@@ -368,8 +416,10 @@ export function renderCanvasGuides(options: Readonly<RenderCanvasGuidesOptions>)
   const { canvas, context, view, preferences } = options;
   const smartGuides = options.smartGuides ?? [];
   const symmetryEnabled = preferences.symmetryEnabled;
+  const pixelGridVisible = preferences.pixelGrid && rasterPixelViewEnabled(view.zoom);
   const visible = preferences.rulers
     || preferences.grid
+    || pixelGridVisible
     || symmetryEnabled
     || smartGuides.length > 0;
   canvas.hidden = !visible;
@@ -399,14 +449,25 @@ export function renderCanvasGuides(options: Readonly<RenderCanvasGuidesOptions>)
     0,
     0,
   );
-  if (preferences.grid) {
-    drawGrid(
+  if (pixelGridVisible) {
+    drawPixelGrid(
       context,
       view,
       options.documentWidth,
       options.documentHeight,
-      adaptiveCanvasGridStep(view),
     );
+  }
+  if (preferences.grid) {
+    const step = adaptiveCanvasGridStep(view);
+    if (!pixelGridVisible || step !== 1) {
+      drawGrid(
+        context,
+        view,
+        options.documentWidth,
+        options.documentHeight,
+        step,
+      );
+    }
   }
   if (symmetryEnabled) {
     drawSymmetryAxis(

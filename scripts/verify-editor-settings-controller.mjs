@@ -45,6 +45,7 @@ assert.doesNotMatch(
 for (const [id, hint] of [
   ["editorRulersEnabled", "editorRulersHint"],
   ["editorGridEnabled", "editorGridHint"],
+  ["editorPixelGridEnabled", "editorPixelGridHint"],
   ["editorSnappingEnabled", "editorSnappingHint"],
   ["editorSymmetryEnabled", "editorSymmetryHint"],
 ]) {
@@ -120,6 +121,11 @@ assert.match(
   /new EditorSettingsController\(\{[\s\S]*?canOpen:\s*\(\)\s*=>\s*!interactionLocked\(\)[\s\S]*?mobileBrushStudio\?\.isBusy !== true/,
   "Settings must remain closed while editor interaction is locked",
 );
+assert.match(
+  mainSource,
+  /pixelGridInput:\s*editorPixelGridEnabledInput/,
+  "the persisted Pixel grid toggle must be wired into Settings",
+);
 
 const moduleServer = await createServer({
   appType: "custom",
@@ -155,6 +161,7 @@ try {
 const defaults = {
   rulers: false,
   grid: false,
+  pixelGrid: true,
   snapping: true,
   symmetryEnabled: false,
   symmetryAngleDegrees: 90,
@@ -227,6 +234,7 @@ for (const brushPrecision of [undefined, null, "rgba8unorm", "R16F", 8, {}]) {
   const preferences = {
     rulers: true,
     grid: true,
+    pixelGrid: false,
     snapping: false,
     symmetryEnabled: true,
     symmetryAngleDegrees: 23,
@@ -263,6 +271,7 @@ for (const [legacyAxis, expectedAngle] of [
     {
       rulers: true,
       grid: false,
+      pixelGrid: true,
       snapping: true,
       symmetryEnabled: false,
       symmetryAngleDegrees: expectedAngle,
@@ -276,6 +285,7 @@ const roundTripStorage = new FakeStorage();
 const customPreferences = {
   rulers: false,
   grid: true,
+  pixelGrid: false,
   snapping: false,
   symmetryEnabled: true,
   symmetryAngleDegrees: 37,
@@ -309,6 +319,7 @@ saveEditorGuidePreferences(normalizedSaveStorage, {
 assert.deepEqual(JSON.parse(normalizedSaveStorage.serialized).preferences, {
   rulers: false,
   grid: true,
+  pixelGrid: true,
   snapping: true,
   symmetryEnabled: false,
   symmetryAngleDegrees: 1,
@@ -382,6 +393,7 @@ function createHarness({
   });
   const rulersInput = new FakeElement(document);
   const gridInput = new FakeElement(document);
+  const pixelGridInput = new FakeElement(document);
   const snappingInput = new FakeElement(document);
   const symmetryEnabledInput = new FakeElement(document);
   const symmetryOptionsButton = new FakeElement(document);
@@ -398,6 +410,7 @@ function createHarness({
     ...brushPrecisionButtons,
     rulersInput,
     gridInput,
+    pixelGridInput,
     snappingInput,
     symmetryEnabledInput,
     symmetryOptionsButton,
@@ -413,6 +426,7 @@ function createHarness({
     brushPrecisionButtons,
     rulersInput,
     gridInput,
+    pixelGridInput,
     snappingInput,
     symmetryEnabledInput,
     symmetryOptionsButton,
@@ -472,6 +486,7 @@ for (const brushPrecisionValues of [
   const harness = createHarness({ storage });
   assert.deepEqual(harness.controller.preferences, customPreferences);
   assert.equal(harness.elements.gridInput.checked, true);
+  assert.equal(harness.elements.pixelGridInput.checked, false);
   assert.equal(harness.elements.snappingInput.checked, false);
   assert.equal(harness.elements.symmetryEnabledInput.checked, true);
   assert.equal(harness.elements.symmetryAngleInput.value, "37");
@@ -488,6 +503,22 @@ for (const brushPrecisionValues of [
   const snapshot = harness.controller.preferences;
   snapshot.grid = false;
   assert.equal(harness.controller.preferences.grid, true);
+  harness.controller.dispose();
+}
+
+// Pixel grid is a persisted visual preference independent from adaptive-grid snapping.
+{
+  const storage = new FakeStorage();
+  const harness = createHarness({ storage });
+  harness.elements.pixelGridInput.checked = false;
+  harness.elements.pixelGridInput.dispatchEvent(new Event("change"));
+  assert.equal(harness.controller.preferences.pixelGrid, false);
+  assert.equal(harness.controller.preferences.grid, false);
+  assert.equal(harness.controller.preferences.snapping, true);
+  assert.equal(
+    JSON.parse(storage.writes.at(-1)[1]).preferences.pixelGrid,
+    false,
+  );
   harness.controller.dispose();
 }
 

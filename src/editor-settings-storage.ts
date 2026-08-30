@@ -5,6 +5,7 @@ export type BrushPrecision = BrushShapeMaskFormat;
 export interface EditorGuidePreferences {
   readonly rulers: boolean;
   readonly grid: boolean;
+  readonly pixelGrid: boolean;
   readonly snapping: boolean;
   readonly symmetryEnabled: boolean;
   readonly symmetryAngleDegrees: number;
@@ -27,6 +28,7 @@ export const DEFAULT_EDITOR_GUIDE_PREFERENCES: Readonly<EditorGuidePreferences> 
   Object.freeze({
     rulers: false,
     grid: false,
+    pixelGrid: true,
     snapping: true,
     symmetryEnabled: false,
     symmetryAngleDegrees: 90,
@@ -64,6 +66,9 @@ function normalizedPreferences(value: unknown): EditorGuidePreferences {
     grid: typeof candidate.grid === "boolean"
       ? candidate.grid
       : DEFAULT_EDITOR_GUIDE_PREFERENCES.grid,
+    pixelGrid: typeof candidate.pixelGrid === "boolean"
+      ? candidate.pixelGrid
+      : DEFAULT_EDITOR_GUIDE_PREFERENCES.pixelGrid,
     snapping: typeof candidate.snapping === "boolean"
       ? candidate.snapping
       : DEFAULT_EDITOR_GUIDE_PREFERENCES.snapping,

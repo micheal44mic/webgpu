@@ -687,6 +687,105 @@ class RecordingCanvasContext {
   clearRect() { this.clearCount += 1; }
 }
 
+const pixelGridPreferences = {
+  rulers: false,
+  grid: false,
+  pixelGrid: true,
+  snapping: true,
+  symmetryEnabled: false,
+  symmetryAngleDegrees: 90,
+};
+
+// The document-pixel grid shares the exact 581% raster pixel-view threshold.
+const belowPixelGridCanvas = { width: 800, height: 600, hidden: false };
+const belowPixelGridContext = new RecordingCanvasContext();
+renderCanvasGuides({
+  canvas: belowPixelGridCanvas,
+  context: belowPixelGridContext,
+  view: view({ zoom: 5.8099 }),
+  documentWidth: 8,
+  documentHeight: 6,
+  preferences: pixelGridPreferences,
+});
+assert.equal(belowPixelGridCanvas.hidden, true);
+assert.equal(belowPixelGridCanvas.width, 1);
+assert.equal(belowPixelGridCanvas.height, 1);
+assert.equal(belowPixelGridContext.strokeCount, 0);
+
+const exactPixelGridView = view({
+  canvasWidth: 100,
+  canvasHeight: 80,
+  cssWidth: 100,
+  cssHeight: 80,
+  centerX: 4,
+  centerY: 3,
+  zoom: 5.81,
+  rotationRadians: Math.PI / 8,
+});
+const exactPixelGridCanvas = { width: 1, height: 1, hidden: true };
+const exactPixelGridContext = new RecordingCanvasContext();
+renderCanvasGuides({
+  canvas: exactPixelGridCanvas,
+  context: exactPixelGridContext,
+  view: exactPixelGridView,
+  documentWidth: 8,
+  documentHeight: 6,
+  preferences: pixelGridPreferences,
+});
+assert.equal(exactPixelGridCanvas.hidden, false);
+assert.equal(exactPixelGridCanvas.width, 100);
+assert.equal(exactPixelGridCanvas.height, 80);
+assert.equal(exactPixelGridContext.strokeCount, 1, "pixel lines must share one stroke");
+assert.equal(exactPixelGridContext.clipCount, 1);
+assert.equal(exactPixelGridContext.strokeStyle, "rgba(132, 136, 144, 0.46)");
+assert.equal(exactPixelGridContext.points.length, 36);
+assertPointClose(
+  exactPixelGridContext.points[4],
+  projectedDocumentPoint({ x: 0, y: 0 }, exactPixelGridView),
+  "rotated pixel grid first line start",
+);
+assertPointClose(
+  exactPixelGridContext.points[5],
+  projectedDocumentPoint({ x: 0, y: 6 }, exactPixelGridView),
+  "rotated pixel grid first line end",
+);
+
+const disabledPixelGridCanvas = { width: 800, height: 600, hidden: false };
+const disabledPixelGridContext = new RecordingCanvasContext();
+renderCanvasGuides({
+  canvas: disabledPixelGridCanvas,
+  context: disabledPixelGridContext,
+  view: exactPixelGridView,
+  documentWidth: 8,
+  documentHeight: 6,
+  preferences: { ...pixelGridPreferences, pixelGrid: false },
+});
+assert.equal(disabledPixelGridCanvas.hidden, true);
+assert.equal(disabledPixelGridContext.strokeCount, 0);
+
+const cappedPixelGridCanvas = { width: 1, height: 1, hidden: true };
+const cappedPixelGridContext = new RecordingCanvasContext();
+renderCanvasGuides({
+  canvas: cappedPixelGridCanvas,
+  context: cappedPixelGridContext,
+  view: view({
+    canvasWidth: 1_000_000_000,
+    canvasHeight: 1_000_000_000,
+    cssWidth: 1000,
+    cssHeight: 1000,
+    centerX: 500_000_000,
+    centerY: 500_000_000,
+    zoom: 5.81,
+  }),
+  documentWidth: 1_000_000_000,
+  documentHeight: 1_000_000_000,
+  preferences: pixelGridPreferences,
+});
+assert.equal(cappedPixelGridCanvas.hidden, false);
+assert.equal(cappedPixelGridContext.strokeCount, 0, "oversized pixel grids must be skipped");
+assert.match(rendererSource, /preferences\.pixelGrid\s*&&\s*rasterPixelViewEnabled\(view\.zoom\)/);
+assert.match(rendererSource, /const MAX_PIXEL_GRID_LINES_PER_AXIS = 4096/);
+
 // Even an adversarial billion-CSS-pixel viewport is capped to 512 lines/axis.
 const hugeCanvas = { width: 1_000_000_000, height: 1_000_000_000, hidden: true };
 const hugeContext = new RecordingCanvasContext();
@@ -703,7 +802,7 @@ renderCanvasGuides({
   }),
   documentWidth: 1_000_000_000,
   documentHeight: 1_000_000_000,
-  preferences: { rulers: false, grid: true, snapping: true },
+  preferences: { rulers: false, grid: true, pixelGrid: false, snapping: true },
 });
 assert.equal(hugeCanvas.hidden, false);
 assert.equal(hugeContext.strokeCount, 1024, "grid must draw at most 512 lines per axis");
@@ -717,7 +816,7 @@ renderCanvasGuides({
   view: identityView,
   documentWidth: 100,
   documentHeight: 80,
-  preferences: { rulers: false, grid: false, snapping: true },
+  preferences: { rulers: false, grid: false, pixelGrid: false, snapping: true },
   smartGuides: [{
     axis: "x",
     position: 13.375,
@@ -771,6 +870,7 @@ renderCanvasGuides({
   preferences: {
     rulers: false,
     grid: false,
+    pixelGrid: false,
     snapping: false,
     symmetryEnabled: true,
     symmetryAngleDegrees: 90,
@@ -814,6 +914,7 @@ renderCanvasGuides({
   preferences: {
     rulers: false,
     grid: false,
+    pixelGrid: false,
     snapping: false,
     symmetryEnabled: true,
     symmetryAngleDegrees: 0,
@@ -844,6 +945,7 @@ renderCanvasGuides({
   preferences: {
     rulers: false,
     grid: false,
+    pixelGrid: false,
     snapping: false,
     symmetryEnabled: true,
     symmetryAngleDegrees: 45,
@@ -873,6 +975,7 @@ renderCanvasGuides({
   preferences: {
     rulers: false,
     grid: false,
+    pixelGrid: false,
     snapping: false,
     symmetryEnabled: false,
     symmetryAngleDegrees: 90,
@@ -898,7 +1001,7 @@ renderCanvasGuides({
   }),
   documentWidth: 100,
   documentHeight: 80,
-  preferences: { rulers: true, grid: false, snapping: true },
+  preferences: { rulers: true, grid: false, pixelGrid: false, snapping: true },
   viewportInsetsCss: { top: 52, left: 64 },
 });
 assert.equal(retinaCanvas.width, 1000);

@@ -280,6 +280,7 @@ const editorBrushPrecisionButtons = Array.from(
 );
 const editorRulersEnabledInput = element<HTMLInputElement>("editorRulersEnabled");
 const editorGridEnabledInput = element<HTMLInputElement>("editorGridEnabled");
+const editorPixelGridEnabledInput = element<HTMLInputElement>("editorPixelGridEnabled");
 const editorSnappingEnabledInput = element<HTMLInputElement>("editorSnappingEnabled");
 const editorSymmetryEnabledInput = element<HTMLInputElement>("editorSymmetryEnabled");
 const editorSymmetryOptionsButton = element<HTMLButtonElement>("editorSymmetryOptionsButton");
@@ -1374,6 +1375,7 @@ editorSettingsController = new EditorSettingsController({
     brushPrecisionButtons: editorBrushPrecisionButtons,
     rulersInput: editorRulersEnabledInput,
     gridInput: editorGridEnabledInput,
+    pixelGridInput: editorPixelGridEnabledInput,
     snappingInput: editorSnappingEnabledInput,
     symmetryEnabledInput: editorSymmetryEnabledInput,
     symmetryOptionsButton: editorSymmetryOptionsButton,

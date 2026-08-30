@@ -15,6 +15,7 @@ export interface EditorSettingsElements {
   readonly brushPrecisionButtons: readonly HTMLButtonElement[];
   readonly rulersInput: HTMLInputElement;
   readonly gridInput: HTMLInputElement;
+  readonly pixelGridInput: HTMLInputElement;
   readonly snappingInput: HTMLInputElement;
   readonly symmetryEnabledInput: HTMLInputElement;
   readonly symmetryOptionsButton: HTMLButtonElement;
@@ -178,6 +179,7 @@ export class EditorSettingsController {
     for (const input of [
       elements.rulersInput,
       elements.gridInput,
+      elements.pixelGridInput,
       elements.snappingInput,
       this.symmetryEnabledInput,
     ]) {
@@ -226,6 +228,7 @@ export class EditorSettingsController {
     this.preferencesState = {
       rulers: elements.rulersInput.checked,
       grid: elements.gridInput.checked,
+      pixelGrid: elements.pixelGridInput.checked,
       snapping: elements.snappingInput.checked,
       symmetryEnabled: this.symmetryEnabledInput.checked,
       symmetryAngleDegrees: this.preferencesState.symmetryAngleDegrees,
@@ -240,6 +243,7 @@ export class EditorSettingsController {
     const { elements } = this.options;
     elements.rulersInput.checked = this.preferencesState.rulers;
     elements.gridInput.checked = this.preferencesState.grid;
+    elements.pixelGridInput.checked = this.preferencesState.pixelGrid;
     elements.snappingInput.checked = this.preferencesState.snapping;
     this.symmetryEnabledInput.checked = this.preferencesState.symmetryEnabled;
     this.syncBrushPrecisionButtons();
