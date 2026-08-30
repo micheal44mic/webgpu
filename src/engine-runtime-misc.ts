@@ -390,7 +390,7 @@ export async function finishStaticResourceCreation(
         { binding: 9, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
       ],
     });
-    engine.mixedSceneRasterSegmentBindGroupLayout = engine.device.createBindGroupLayout({
+    engine.mixedSceneRasterSegmentBindGroupLayout ??= engine.device.createBindGroupLayout({
       label: "Mixed scene raster segment bind group layout",
       entries: [
         { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },

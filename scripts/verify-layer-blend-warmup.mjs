@@ -12,6 +12,7 @@ const layerRuntimeSource = source("src/engine-layer-runtime.ts");
 const mainSource = source("src/main.ts");
 const staticResourcesSource = source("src/engine-runtime-misc.ts");
 const presentationResourcesSource = source("src/mixed-scene-presentation-resources.ts");
+const vectorRuntimeSource = source("src/engine-vector-text-runtime.ts");
 
 const blendStart = engineSource.indexOf("async ensureLayerBlendEditorResources(): Promise<void>");
 const blendEnd = engineSource.indexOf("async ensureSpatialBlurEditorResources()", blendStart);
@@ -25,6 +26,7 @@ for (const resource of [
   "mixedScenePresentBindGroupLayout",
   "mixedSceneBackgroundBindGroupLayout",
   "mixedSceneBackgroundBindGroup",
+  "mixedSceneRasterSegmentBindGroupLayout",
   "mixedScenePresentPipeline",
 ]) {
   assert.match(
@@ -135,7 +137,7 @@ assert.match(presentationResourcesSource, /createRenderPipelineAsync\(engine\.de
 assert.match(presentationResourcesSource, /const creationPromises = new WeakMap/);
 assert.doesNotMatch(
   presentationResourcesSource,
-  /vectorText|rasterImage|mixedSceneRasterSegment|mixedSceneTextSegment/,
+  /vectorText|rasterImage|mixedSceneRasterSegmentShader|mixedSceneTextSegment/,
   "the shared checker gate must not compile semantic-scene programs",
 );
 assert.match(
@@ -143,16 +145,32 @@ assert.match(
   /if \(createOptional\) \{\s*await ensureMixedScenePresentationResources\(engine\)/,
   "the full optional graph must reuse the minimal checker program",
 );
+const rasterSegmentStart = vectorRuntimeSource.indexOf(
+  "export function createMixedSceneRasterSegmentResources(",
+);
+const rasterSegmentEnd = vectorRuntimeSource.indexOf(
+  "export function ensureVectorTextGpuScratch(",
+  rasterSegmentStart,
+);
+assert.ok(rasterSegmentStart >= 0 && rasterSegmentEnd > rasterSegmentStart);
+const rasterSegmentBody = vectorRuntimeSource.slice(rasterSegmentStart, rasterSegmentEnd);
+assert.match(
+  rasterSegmentBody,
+  /const layout = engine\.mixedSceneRasterSegmentBindGroupLayout;[\s\S]*?createBindGroup\(\{[\s\S]*?layout,/,
+  "raster-run rebuilds must consume the exact layout published by the shared blend gate",
+);
 assert.match(staticResourcesSource, /engine\.mixedScenePresentShaderModule \?\?=/);
 assert.match(staticResourcesSource, /engine\.mixedScenePresentBindGroupLayout \?\?=/);
 assert.match(staticResourcesSource, /engine\.mixedScenePresentPipeline \?\?=/);
 assert.match(staticResourcesSource, /engine\.mixedSceneClearShaderModule \?\?=/);
 assert.match(staticResourcesSource, /engine\.mixedSceneBackgroundBindGroupLayout \?\?=/);
 assert.match(staticResourcesSource, /engine\.mixedSceneBackgroundBindGroup \?\?=/);
+assert.match(staticResourcesSource, /engine\.mixedSceneRasterSegmentBindGroupLayout \?\?=/);
 for (const resource of [
   "mixedSceneClearShaderModule",
   "mixedSceneBackgroundBindGroupLayout",
   "mixedSceneBackgroundBindGroup",
+  "mixedSceneRasterSegmentBindGroupLayout",
 ]) {
   assert.match(
     presentationResourcesSource,
@@ -236,6 +254,7 @@ function presentationHarness(failFirstPipeline = false) {
       mixedScenePresentBindGroupLayout: null,
       mixedSceneBackgroundBindGroupLayout: null,
       mixedSceneBackgroundBindGroup: null,
+      mixedSceneRasterSegmentBindGroupLayout: null,
       mixedScenePresentPipeline: null,
     },
   };
@@ -249,7 +268,7 @@ try {
   ]);
   assert.deepEqual(concurrent.calls, {
     shaderModules: 2,
-    bindGroupLayouts: 2,
+    bindGroupLayouts: 3,
     bindGroups: 1,
     pipelines: 1,
   });
@@ -259,16 +278,17 @@ try {
     concurrent.engine.mixedScenePresentBindGroupLayout,
     concurrent.engine.mixedSceneBackgroundBindGroupLayout,
     concurrent.engine.mixedSceneBackgroundBindGroup,
+    concurrent.engine.mixedSceneRasterSegmentBindGroupLayout,
     concurrent.engine.mixedScenePresentPipeline,
   ];
   assert(published.every(Boolean));
   await ensureMixedScenePresentationResources(concurrent.engine);
   assert.deepEqual(concurrent.calls, {
     shaderModules: 2,
-    bindGroupLayouts: 2,
+    bindGroupLayouts: 3,
     bindGroups: 1,
     pipelines: 1,
-  }, "a warm device must reuse the exact six-resource set");
+  }, "a warm device must reuse the exact seven-resource set");
 
   const retry = presentationHarness(true);
   await assert.rejects(
@@ -281,6 +301,7 @@ try {
     retry.engine.mixedScenePresentBindGroupLayout,
     retry.engine.mixedSceneBackgroundBindGroupLayout,
     retry.engine.mixedSceneBackgroundBindGroup,
+    retry.engine.mixedSceneRasterSegmentBindGroupLayout,
     retry.engine.mixedScenePresentPipeline,
   ].every((resource) => resource === null), "a failed gate must publish no partial set");
   await ensureMixedScenePresentationResources(retry.engine);

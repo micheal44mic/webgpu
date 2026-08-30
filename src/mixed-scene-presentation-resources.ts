@@ -4,6 +4,7 @@ import {
   mixedSceneClearShader,
   mixedScenePresentShader,
 } from "./mixed-scene-compositor-shader";
+import { MIXED_SCENE_RASTER_SEGMENT_UNIFORM_BYTES } from "./mixed-scene-raster-transform-preview";
 
 const creationPromises = new WeakMap<BrushEngine, Promise<void>>();
 
@@ -14,7 +15,8 @@ function resourcesReady(engine: BrushEngine): boolean {
       && engine.mixedScenePresentPipeline
       && engine.mixedSceneClearShaderModule
       && engine.mixedSceneBackgroundBindGroupLayout
-      && engine.mixedSceneBackgroundBindGroup,
+      && engine.mixedSceneBackgroundBindGroup
+      && engine.mixedSceneRasterSegmentBindGroupLayout,
   );
 }
 
@@ -73,6 +75,23 @@ export async function ensureMixedScenePresentationResources(
           { binding: 0, resource: { buffer: engine.displayUniformBuffer } },
         ],
       });
+    const rasterSegmentBindGroupLayout = engine.mixedSceneRasterSegmentBindGroupLayout
+      ?? engine.device.createBindGroupLayout({
+        label: "Mixed scene raster segment bind group layout",
+        entries: [
+          { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+          {
+            binding: 1,
+            visibility: GPUShaderStage.FRAGMENT,
+            buffer: {
+              type: "uniform",
+              minBindingSize: MIXED_SCENE_RASTER_SEGMENT_UNIFORM_BYTES,
+            },
+          },
+          { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+          { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+        ],
+      });
     const pipeline = engine.mixedScenePresentPipeline
       ?? await createRenderPipelineAsync(engine.device, {
         label: "Mixed scene checker presentation pipeline",
@@ -96,6 +115,7 @@ export async function ensureMixedScenePresentationResources(
     engine.mixedScenePresentPipeline = pipeline;
     engine.mixedSceneBackgroundBindGroupLayout = backgroundBindGroupLayout;
     engine.mixedSceneBackgroundBindGroup = backgroundBindGroup;
+    engine.mixedSceneRasterSegmentBindGroupLayout = rasterSegmentBindGroupLayout;
   })();
   creationPromises.set(engine, initialization);
   try {

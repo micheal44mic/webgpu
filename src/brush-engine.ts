@@ -8783,7 +8783,8 @@ export class BrushEngine {
       && this.mixedScenePresentPipeline !== null
       && this.mixedSceneClearShaderModule !== null
       && this.mixedSceneBackgroundBindGroupLayout !== null
-      && this.mixedSceneBackgroundBindGroup !== null;
+      && this.mixedSceneBackgroundBindGroup !== null
+      && this.mixedSceneRasterSegmentBindGroupLayout !== null;
     if (resourcesReady) return;
     if (this.layerBlendEditorResourcesPromise) {
       await this.layerBlendEditorResourcesPromise;
