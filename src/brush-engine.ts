@@ -1202,7 +1202,7 @@ export class BrushEngine {
   releaseGpuTimingPromise: Promise<ReleaseGpuPhaseTiming | null> | null = null;
   lastReleaseGpuTiming: ReleaseGpuPhaseTiming | null = null;
 
-  /** Authoritative document pixels are always initialized in linear RGBA16F. */
+  /** Authoritative document pixels use one immutable format per engine session. */
   layerFormat: LayerFormat = "rgba16float";
   layerTexture!: GPUTexture;
   layerView!: GPUTextureView;
@@ -2096,6 +2096,11 @@ export class BrushEngine {
   ) {
     this.canvas = canvas;
     this.callbacks = callbacks;
+    const initialLayerFormat = options.initialLayerFormat ?? "rgba16float";
+    if (initialLayerFormat !== "rgba16float" && initialLayerFormat !== "rgba8unorm") {
+      throw new RangeError("Unsupported initial document layer format.");
+    }
+    this.layerFormat = initialLayerFormat;
     this.bevelBoundingFieldEnabled = options.bevelBoundingFieldEnabled === true;
     this.startupProgressPresentationYieldEnabled =
       options.startupProgressPresentationYieldEnabled === true;

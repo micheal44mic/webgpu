@@ -2137,6 +2137,7 @@ const GPU_STARTUP_DIAGNOSTIC_STATUSES = new Set(["running", "completed", "failed
 const GPU_STARTUP_DIAGNOSTIC_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 const GPU_STARTUP_DIAGNOSTIC_PAGE_PATH = "/gpu-startup-lab";
 const GPU_STARTUP_APP_FRAME_PATH = "/gpu-startup-app-frame";
+const RGBA8_APPLICATION_LAB_PATH = "/rgba8-app-lab";
 
 function gpuStartupDiagnosticDefinition(testId) {
   if (testId === GPU_STARTUP_DEFAULT_TEST_ID) {
@@ -3990,6 +3991,31 @@ export default {
         headers: {
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "public, max-age=0, must-revalidate",
+        },
+      });
+    }
+
+    if (
+      (request.method === "GET" || request.method === "HEAD")
+      && url.pathname === RGBA8_APPLICATION_LAB_PATH + "/"
+    ) {
+      url.pathname = RGBA8_APPLICATION_LAB_PATH;
+      return Response.redirect(url.toString(), 308);
+    }
+
+    if (
+      (request.method === "GET" || request.method === "HEAD")
+      && url.pathname === RGBA8_APPLICATION_LAB_PATH
+    ) {
+      return new Response(request.method === "HEAD" ? null : INDEX_HTML, {
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "private, no-store, max-age=0",
+          "CDN-Cache-Control": "no-store",
+          "Cloudflare-CDN-Cache-Control": "no-store",
+          "Referrer-Policy": "no-referrer",
+          "X-Content-Type-Options": "nosniff",
+          "X-Robots-Tag": "noindex, noarchive",
         },
       });
     }

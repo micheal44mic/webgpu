@@ -643,8 +643,8 @@ assert.equal(lightGlazeAdditionalMemoryMiB("rgba8unorm", "none", { width: 4096, 
   assert.deepEqual(
     GPU_MEMORY_CATEGORY_ORDER.slice(0, 9),
     [
-      "Layer RGBA16F",
-      "RGBA16F mip pyramids",
+      "Layer surfaces",
+      "Document mip pyramids",
       "Continuous R16F masks",
       "Heightfield R32F",
       "Vector caches",
@@ -739,20 +739,20 @@ assert.equal(lightGlazeAdditionalMemoryMiB("rgba8unorm", "none", { width: 4096, 
   // e cio' che non combacia deve restare visibile invece di sparire.
   // Etichette reali osservate nel motore in esecuzione, non inventate.
   for (const [label, categoria] of [
-    ["2048² authoritative paint layer rgba16float", "Layer RGBA16F"],
+    ["2048² authoritative paint layer rgba16float", "Layer surfaces"],
     ["Lazy Light Glaze stroke accumulator r16float", "Continuous R16F masks"],
-    ["Lazy Light Glaze composited logical mip 1+ rgba16float", "RGBA16F mip pyramids"],
+    ["Lazy Light Glaze composited logical mip 1+ rgba16float", "Document mip pyramids"],
     ["Smusso Heightfield V2 persistent R32F", "Heightfield R32F"],
     ["Bevel alpha threshold/fractional class mask", "Raster effects"],
     ["Stroke persistent packed f16 coverage", "Continuous R16F masks"],
     ["Outer Shadow persistent packed f16 matte", "Continuous R16F masks"],
-    ["Stroke styled derived mip 1+ rgba16float", "RGBA16F mip pyramids"],
+    ["Stroke styled derived mip 1+ rgba16float", "Document mip pyramids"],
     ["Shared effects scratch pool 16777216 bytes", "Temporary scratch"],
     ["Vector text GPU blur scratch A 512×512", "Temporary scratch"],
     ["Vector text viewport cache 1024×1024", "Vector caches"],
     ["GPU raster history · page 1 · 2097152 B", "History · Undo"],
     ["Persistent presentation cache 786×1704", "Presentation"],
-    ["Single active-layer display pyramid rgba16float", "RGBA16F mip pyramids"],
+    ["Single active-layer display pyramid rgba16float", "Document mip pyramids"],
     ["Cold tile History layer 1 #3", "History · Undo"],
     // Il seed riportato sulla GPU dall'Undo: senza "Cronologia" nell'etichetta
     // finiva in "Non categorizzato", cioe' memoria reale senza una provenienza.
@@ -820,14 +820,14 @@ assert.equal(lightGlazeAdditionalMemoryMiB("rgba8unorm", "none", { width: 4096, 
   assert.equal(istantanea.liveCount, 2);
   assert.equal(istantanea.createdCount, 2);
   assert.equal(istantanea.destroyedCount, 0);
-  assert.equal(istantanea.categories[0].category, "Layer RGBA16F");
+  assert.equal(istantanea.categories[0].category, "Layer surfaces");
 
   registro.release(idA, risorsaA);
   istantanea = registro.snapshot();
   assert.equal(istantanea.totalBytes, 4 * MEBIBYTE, at("La distruzione deve togliere i byte"));
   assert.equal(istantanea.peakBytes, 36 * MEBIBYTE, at("La distruzione non deve abbassare il picco"));
   const layerCategoryAfterRelease = istantanea.categories.find(
-    (entry) => entry.category === "Layer RGBA16F",
+    (entry) => entry.category === "Layer surfaces",
   );
   assert.equal(layerCategoryAfterRelease?.bytes, 0);
   assert.equal(layerCategoryAfterRelease?.peakBytes, 32 * MEBIBYTE,

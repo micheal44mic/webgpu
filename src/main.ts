@@ -125,6 +125,7 @@ import type {
 } from "./project-shell-contract";
 import { ProjectSessionController } from "./project-session-controller";
 import { resolveMixedSceneEnabled } from "./compat/mixed-scene-options";
+import { resolveApplicationProfile } from "./application-profile";
 
 const pointBlurIcon: IconNode = [
   ["circle", { cx: "12", cy: "12", r: "2", fill: "currentColor", stroke: "none" }],
@@ -576,6 +577,7 @@ let historyState: HistoryState = {
 };
 
 const pageSearchParams = new URLSearchParams(window.location.search);
+const applicationProfile = resolveApplicationProfile(window.location.pathname);
 const touchPaintIntentHoldEnabled = pageSearchParams.get("touchPaintIntentHold") !== "0";
 
 const bevelBoundingFieldEnabled = pageSearchParams.get("bevelField") === "bbox";
@@ -986,6 +988,7 @@ const engine = new BrushEngine(canvas, {
     }
   },
 }, tipPreviewCanvas, {
+  initialLayerFormat: applicationProfile.documentLayerFormat,
   bevelBoundingFieldEnabled:
     editorExtensionEngineOptions.bevelBoundingFieldEnabled ?? bevelBoundingFieldEnabled,
   startupProgressPresentationYieldEnabled: canvasStartupProgressObserved,
@@ -2059,6 +2062,7 @@ rasterAdjustmentsController = new RasterAdjustmentsController({
   isInteractionLocked: interactionLocked,
   isSceneBusy: () => sceneEditorController?.isBusy === true,
   isMultiSelectionActive: () => layerPanelController?.isMultiSelect === true,
+  isAdjustmentSupported: () => applicationProfile.documentLayerFormat === "rgba16float",
   getActiveCanvasTool: () => canvasToolController?.activeTool ?? "pan",
   getActiveBrushTool: () => canvasToolController?.activeBrush ?? "paint",
   configureCanvasTool: (tool, restoreSnapshot) => {

@@ -107,9 +107,38 @@ function labsHtmlShell(): Plugin {
   };
 }
 
+function applicationLabRoutes(): Plugin {
+  const mount = (server: { middlewares: { use: (handler: (
+    request: { url?: string },
+    response: { statusCode: number; setHeader(name: string, value: string): void; end(): void },
+    next: () => void,
+  ) => void) => void } }) => {
+    server.middlewares.use((request, response, next) => {
+      if (!request.url) return next();
+      const url = new URL(request.url, "http://local.invalid");
+      if (url.pathname === "/rgba8-app-lab/") {
+        response.statusCode = 308;
+        response.setHeader("Location", `/rgba8-app-lab${url.search}`);
+        response.end();
+        return;
+      }
+      if (url.pathname === "/rgba8-app-lab") {
+        request.url = `/${url.search}`;
+      }
+      next();
+    });
+  };
+  return {
+    name: "application-lab-routes",
+    configureServer: mount,
+    configurePreviewServer: mount,
+  };
+}
+
 export default defineConfig(({ mode }) => ({
   base: "./",
   plugins: [
+    applicationLabRoutes(),
     labsHtmlShell(),
     ...(mode === "labs" ? [devHumanStrokeApi()] : []),
   ],

@@ -394,6 +394,7 @@ export interface RasterAdjustmentsControllerOptions {
   readonly isInteractionLocked: () => boolean;
   readonly isSceneBusy: () => boolean;
   readonly isMultiSelectionActive: () => boolean;
+  readonly isAdjustmentSupported?: (kind: DestructiveRasterAdjustmentKind) => boolean;
   readonly getActiveCanvasTool: () => CanvasInputTool;
   readonly getActiveBrushTool: () => BrushTool;
   readonly configureCanvasTool: (
@@ -1374,6 +1375,9 @@ export class RasterAdjustmentsController {
                   : kind === "gradient-map"
                     ? "Gradient Map"
                   : "Liquify";
+    if (this.options.isAdjustmentSupported?.(kind) === false) {
+      return `${label} is unavailable for this document format.`;
+    }
     if (!this.options.isEngineReady()) {
       return `${label} will be available after initialization.`;
     }

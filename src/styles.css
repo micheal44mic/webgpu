@@ -8110,3 +8110,47 @@ select {
     flex: 1 1 auto;
   }
 }
+.document-format-test-badge {
+  position: fixed;
+  z-index: 140;
+  top: calc(env(safe-area-inset-top, 0px) + 8px);
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(78vw, 620px);
+  padding: 6px 10px;
+  border: 1px solid rgb(255 123 22 / 58%);
+  border-radius: 6px;
+  color: #f5f7fa;
+  background: rgb(18 20 25 / 92%);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 34%);
+  font-size: 10px;
+  line-height: 1.25;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  transform: translateX(-50%);
+  backdrop-filter: blur(12px);
+}
+
+.document-format-test-badge[hidden] {
+  display: none;
+}
+
+.document-format-test-badge strong {
+  flex: 0 0 auto;
+  color: #ff7b16;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+
+.document-format-test-badge span {
+  overflow: hidden;
+  color: #c7cbd3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+html[data-application-profile="rgba8-document-lab"] button:disabled {
+  cursor: not-allowed;
+}

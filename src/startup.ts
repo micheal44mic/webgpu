@@ -26,6 +26,7 @@ import type {
   ProjectSessionSwitchResult,
 } from "./project-shell-contract";
 import { getCanvasStartupOverlayController } from "./canvas-startup-overlay-controller";
+import { resolveApplicationProfile } from "./application-profile";
 
 const HOME_ICONS: Readonly<Record<string, IconNode>> = {
   "arrow-up-right": ArrowUpRight,
@@ -577,7 +578,23 @@ class ProjectHomeController {
 async function boot(): Promise<void> {
   const home = element<HTMLElement>(document, "projectHome");
   hydrateHomeIcons(home);
-  const storage = createProjectStorage();
+  const applicationProfile = resolveApplicationProfile(window.location.pathname);
+  document.documentElement.dataset.applicationProfile = applicationProfile.id;
+  if (applicationProfile.id === "rgba8-document-lab") {
+    const badge = element<HTMLElement>(document, "documentFormatTestBadge");
+    badge.hidden = false;
+    for (const id of applicationProfile.unsupportedControlIds) {
+      const control = element<HTMLButtonElement>(document, id);
+      control.disabled = true;
+      control.title = "Unavailable in the 8-bit document comparison";
+      control.setAttribute("aria-describedby", badge.id);
+    }
+  }
+  const storage = createProjectStorage(
+    applicationProfile.projectDatabaseName
+      ? { databaseName: applicationProfile.projectDatabaseName }
+      : {},
+  );
   const storageReady = storage.initialize();
   void storageReady.catch(() => undefined);
   let homeController: ProjectHomeController | null = null;

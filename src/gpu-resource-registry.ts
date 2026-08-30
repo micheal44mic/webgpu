@@ -79,8 +79,8 @@ export interface GpuRegistrySnapshot {
  * puo' sparire dal conto, al massimo sta in una riga che chiede un nome.
  */
 export const GPU_MEMORY_CATEGORY_ORDER = Object.freeze([
-  "Layer RGBA16F",
-  "RGBA16F mip pyramids",
+  "Layer surfaces",
+  "Document mip pyramids",
   "Continuous R16F masks",
   "Heightfield R32F",
   "Vector caches",
@@ -102,7 +102,7 @@ export const GPU_MEMORY_CATEGORY_ORDER = Object.freeze([
 ] as const);
 
 const CATEGORY_RULES: ReadonlyArray<readonly [RegExp, string]> = Object.freeze([
-  [/authoritative paint layer|Transparent layer placeholder/i, "Layer RGBA16F"],
+  [/authoritative paint layer|Transparent layer placeholder/i, "Layer surfaces"],
   // Scratch/readback precede ogni proprietario semantico: una cache vettoriale
   // persistente e il suo scratch temporaneo devono restare righe disgiunte.
   [/scratch|shared arena|segment arena|readback|rect probe|pixel probe|witness/i,
@@ -126,7 +126,7 @@ const CATEGORY_RULES: ReadonlyArray<readonly [RegExp, string]> = Object.freeze([
   [/vector text|vector svg|semantic vector|mixed scene|linear scene|ordered layer blend|ordered clipping-group/i,
     "Vector caches"],
   [/display pyramid|derived mip|logical mip|sampling chain|\bmip(?:map)?\b/i,
-    "RGBA16F mip pyramids"],
+    "Document mip pyramids"],
   [/raster import|raster Transform|Native raster/i,
     "Raster import and transforms"],
   [/presentation|swap|thumbnail/i, "Presentation"],
