@@ -14,6 +14,7 @@ import {
 import { createVectorShapeDraft } from "./vector-shape-core";
 import type { VectorTextViewState } from "./vector-text-types";
 import { brushColorCssHex } from "./brush-color.ts";
+import { sceneDocumentPixelCenteredFrame } from "./scene-document-pixel-alignment.ts";
 
 const MINIMUM_SHAPE_CSS_PIXELS = 3;
 const SHAPE_PREVIEW_PREPARING_STATUS = "Preparing shape preview…";
@@ -289,7 +290,8 @@ export class ShapeToolController {
     const gesture = this.gesture;
     if (!gesture) return "Drag from the center. Shift or a second finger locks 1:1.";
     const draft = currentShapeCreationDraft(gesture);
-    const size = `${Math.round(draft.frame.width)} × ${Math.round(draft.frame.height)}`;
+    const frame = this.documentPixelFrame(draft);
+    const size = `${frame.width} × ${frame.height}`;
     if (draft.constraintSource === "multi-touch") {
       return `${size} · centered · 1:1 by second finger`;
     }
@@ -303,7 +305,17 @@ export class ShapeToolController {
     const minimumLayerPixels = MINIMUM_SHAPE_CSS_PIXELS
       * view.canvasWidth / Math.max(1, view.cssWidth)
       / Math.max(Number.EPSILON, view.zoom);
-    return draft.frame.width >= minimumLayerPixels && draft.frame.height >= minimumLayerPixels;
+    const frame = this.documentPixelFrame(draft);
+    return frame.width >= minimumLayerPixels && frame.height >= minimumLayerPixels;
+  }
+
+  private documentPixelFrame(
+    draft: Readonly<ShapeCreationDraft>,
+  ): ReturnType<typeof sceneDocumentPixelCenteredFrame> {
+    return sceneDocumentPixelCenteredFrame(
+      draft.frame,
+      draft.aspectConstrained,
+    );
   }
 
   private async commitDraft(draft: Readonly<ShapeCreationDraft>): Promise<boolean> {
@@ -314,13 +326,14 @@ export class ShapeToolController {
       await this.previewLifecycle;
       if (this.disposed || !this.active || !this.previewReady) return false;
       const color = normalizedColor(this.options.elements.fillColor.value);
+      const frame = this.documentPixelFrame(draft);
       const created = createVectorShapeDraft(
         draft.kind,
         {
-          left: draft.frame.x,
-          top: draft.frame.y,
-          right: draft.frame.x + draft.frame.width,
-          bottom: draft.frame.y + draft.frame.height,
+          left: frame.x,
+          top: frame.y,
+          right: frame.x + frame.width,
+          bottom: frame.y + frame.height,
         },
         { fillColor: color, name: shapeName(draft) },
       );
@@ -355,22 +368,24 @@ export class ShapeToolController {
   private render(): void {
     const draft = this.committingDraft
       ?? (this.gesture ? currentShapeCreationDraft(this.gesture) : null);
+    const frame = draft ? this.documentPixelFrame(draft) : null;
     if (
       !this.active
       || !this.previewReady
       || !draft
-      || draft.frame.width <= 0
-      || draft.frame.height <= 0
+      || !frame
+      || frame.width <= 0
+      || frame.height <= 0
     ) {
       this.options.engine.updateShapePreview(null);
       return;
     }
     this.options.engine.updateShapePreview({
       kind: draft.kind,
-      x: draft.frame.x,
-      y: draft.frame.y,
-      width: draft.frame.width,
-      height: draft.frame.height,
+      x: frame.x,
+      y: frame.y,
+      width: frame.width,
+      height: frame.height,
       color: normalizedColor(this.options.elements.fillColor.value),
     });
   }

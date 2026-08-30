@@ -326,6 +326,39 @@ async function createHarness({ deferPreparation = false, awaitActivation = true 
   harness.controller.dispose();
 }
 
+// Fractional pointer coordinates produce identical whole-document-pixel bounds
+// in the live GPU preview and in the committed vector shape.
+{
+  const harness = await createHarness();
+  harness.controller.beginPointer(pointer(21, "pen", 10.2, 20.3));
+  harness.controller.updatePointer(pointer(21, "pen", 15, 23.95));
+  assert.equal(await harness.controller.endPointer(
+    pointer(21, "pen", 15, 23.95),
+    true,
+  ), true);
+  assert.deepEqual(
+    [
+      harness.additions[0].seed.shapeDefinition.width,
+      harness.additions[0].seed.shapeDefinition.height,
+    ],
+    [10, 7],
+  );
+  assert.deepEqual(
+    [harness.additions[0].seed.x, harness.additions[0].seed.y],
+    [10, 20.5],
+  );
+  assert.deepEqual(harness.previewUpdates.findLast((preview) => preview !== null), {
+    kind: "rectangle",
+    x: 5,
+    y: 17,
+    width: 10,
+    height: 7,
+    color: "#345678",
+  });
+  await harness.controller.setActive(false);
+  harness.controller.dispose();
+}
+
 console.log(
   "Shape tool controller: ordered GPU preview lifecycle, fixed-center drag, two-touch modifier and one release-time commit verified.",
 );

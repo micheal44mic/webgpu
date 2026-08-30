@@ -387,7 +387,7 @@ assert.match(
 );
 assert.match(
   controller,
-  /private sideScaleUpdate\([\s\S]*?centered: boolean[\s\S]*?sceneSideScaleUpdate\([\s\S]*?centered,/,
+  /private sideScaleUpdate\([\s\S]*?centered: boolean[\s\S]*?const input = \{[\s\S]*?centered,[\s\S]*?sceneSideScaleUpdate\(input\)[\s\S]*?sceneDocumentPixelAlignedSideScaleUpdate\(input\)/,
   "Side resizing must forward the desktop or touch center constraint to geometry.",
 );
 assert.match(

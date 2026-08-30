@@ -16,6 +16,7 @@ import {
   VECTOR_TEXT_SINGLE_SHADOW_STRATEGY,
   vectorTextBlockShadowLocalVector,
   vectorTextInnerShadowLocalVector,
+  vectorTextOutlineLocalReach,
   vectorTextSingleShadowLocalVector,
   type VectorTextOutlineJoin,
 } from "./scene-vector-effects";
@@ -35,6 +36,14 @@ import {
   sceneSideScaleUpdate,
   transformSceneGroupMember,
 } from "./scene-group-transform";
+import {
+  sceneDocumentPixelAlignedPosition,
+  sceneDocumentPixelAlignedSideScaleUpdate,
+  sceneDocumentPixelAlignedTranslation,
+  sceneDocumentPixelAlignedUniformScale,
+  sceneDocumentPixelExpandedBounds,
+  sceneDocumentPixelIsCardinalRotation,
+} from "./scene-document-pixel-alignment.ts";
 
 import {
   VECTOR_TEXT_PRESENTATION_STRATEGY,
@@ -1340,8 +1349,9 @@ export class MixedSceneController {
       await this.prepareFontGeometry();
       const textCount =
         this.snapshot?.items.filter((item) => item.kind === "text").length ?? 0;
+      const seed = this.defaultSeed(textCount, color);
       await this.host.addVectorTextNode(
-        this.defaultSeed(textCount, color),
+        { ...seed, ...this.documentPixelTransformForTextSeed(seed) },
         `Text ${textCount + 1}`,
       );
     });
@@ -1358,7 +1368,17 @@ export class MixedSceneController {
   resetSelectedText(): void {
     const node = this.selectedTextNode();
     if (!node || this.sceneOperationBusy || this.transformSessionOpen) return;
-    this.updateSelectedNode(this.defaultSeed(Math.max(0, node.id - 1), node.color));
+    const defaults = this.defaultSeed(Math.max(0, node.id - 1), node.color);
+    const next = {
+      ...node,
+      ...defaults,
+      scaleX: defaults.scaleX ?? defaults.scale,
+      scaleY: defaults.scaleY ?? defaults.scale,
+    };
+    this.updateSelectedNode({
+      ...defaults,
+      ...this.documentPixelTransformForNode(next),
+    });
   }
 
   setSelectedSvgPaintColor(index: number, color: string): void {
@@ -1732,7 +1752,9 @@ export class MixedSceneController {
     const normalized = patch.text === undefined
       ? patch
       : { ...patch, text: patch.text || " " };
-    this.host.updateVectorTextNode(node.id, normalized);
+    const affectsGeometry = Object.keys(normalized).some((key) => key !== "color");
+    if (affectsGeometry) this.updateTextGeometryNode(node, normalized);
+    else this.host.updateVectorTextNode(node.id, normalized);
     return true;
   }
 
@@ -1744,7 +1766,13 @@ export class MixedSceneController {
       || this.sceneOperationBusy
       || this.transformSessionOpen
     ) return false;
-    this.updateSelectedNode(patch as VectorSceneNodeUpdate);
+    const affectsOutlineBounds = patch.outlineWidth !== undefined
+      || patch.outlineJoin !== undefined;
+    const next = { ...node, ...patch };
+    this.updateSelectedNode({
+      ...patch,
+      ...(affectsOutlineBounds ? this.documentPixelTransformForNode(next) : {}),
+    } as VectorSceneNodeUpdate);
     return true;
   }
 
@@ -1918,7 +1946,7 @@ export class MixedSceneController {
 
   private defaultSvgSeed(documentValue: ReturnType<typeof parseVectorSvg>): VectorSvgNodeSeed {
     const longestSide = Math.max(1, documentValue.width, documentValue.height);
-    return {
+    const seed: VectorSvgNodeSeed = {
       document: documentValue,
       paintColors: documentValue.paints.map((paint) => paint.color),
       outlineWidth: 0,
@@ -1946,6 +1974,10 @@ export class MixedSceneController {
       y: this.host.documentHeight * 0.5,
       scale: Math.min(2, 1200 / longestSide),
       rotation: 0,
+    };
+    return {
+      ...seed,
+      ...sceneDocumentPixelAlignedPosition(documentValue.bounds, seed),
     };
   }
 
@@ -2708,14 +2740,14 @@ export class MixedSceneController {
         return;
       }
       this.distortEditingNodeId = null;
-      this.updateSelectedNode({
+      this.updateTextGeometryNode(node, {
         transformType,
         distortPoints: this.defaultDistortPointsForNode(node),
       });
       return;
     }
     this.distortEditingNodeId = null;
-    this.updateSelectedNode({ transformType, distortPoints: null });
+    this.updateTextGeometryNode(node, { transformType, distortPoints: null });
   }
 
   private resetDistort(): void {
@@ -2723,7 +2755,7 @@ export class MixedSceneController {
     if (!node || node.transformType !== "distort") {
       return;
     }
-    this.updateSelectedNode({
+    this.updateTextGeometryNode(node, {
       distortPoints: this.defaultDistortPointsForNode(node),
     });
   }
@@ -2956,6 +2988,17 @@ export class MixedSceneController {
         >,
       );
     }
+  }
+
+  private updateTextGeometryNode(
+    node: Readonly<VectorTextNode>,
+    update: Partial<Omit<VectorTextNode, "id" | "visible" | "opacity">>,
+  ): void {
+    const next = { ...node, ...update };
+    this.host.updateVectorTextNode(node.id, {
+      ...update,
+      ...this.documentPixelTransformForNode(next),
+    });
   }
 
   private updateTransformNode(
@@ -4320,22 +4363,85 @@ export class MixedSceneController {
         bottom: source.y + source.height - pivot.y,
       };
     }
+    let bounds: SceneAxisAlignedBounds;
     if (isTextNode(node)) {
-      const outline = this.measureText(node);
+      const outline = this.geometryForNode(node).outline;
+      const hasInk = outline.inkRight - outline.inkLeft > Number.EPSILON
+        && outline.inkBottom - outline.inkTop > Number.EPSILON;
+      bounds = hasInk
+        ? {
+          left: outline.inkLeft,
+          top: outline.inkTop,
+          right: outline.inkRight,
+          bottom: outline.inkBottom,
+        }
+        : {
+          left: outline.left,
+          top: outline.top,
+          right: outline.right,
+          bottom: outline.bottom,
+        };
+    } else if (isSvgNode(node)) {
+      bounds = { ...node.document.bounds };
+    } else {
       return {
+        left: -node.document.width * 0.5,
+        top: -node.document.height * 0.5,
+        right: node.document.width * 0.5,
+        bottom: node.document.height * 0.5,
+      };
+    }
+    const outlineReach = vectorTextOutlineLocalReach(
+      node.outlineWidth,
+      node.outlineJoin,
+    );
+    return outlineReach > 0
+      ? sceneDocumentPixelExpandedBounds(bounds, outlineReach)
+      : bounds;
+  }
+
+  private documentPixelTransformForNode(
+    node: Readonly<VectorTextNode | VectorSvgNode>,
+  ): Partial<Pick<VectorTextNode, "x" | "y" | "scale" | "scaleX" | "scaleY" | "rotation">> {
+    const bounds = this.localBoundsForTransformNode(node);
+    return sceneDocumentPixelAlignedPosition(bounds, node);
+  }
+
+  private documentPixelTransformForTextSeed(
+    seed: Readonly<VectorTextNodeSeed>,
+  ): Partial<Pick<VectorTextNode, "x" | "y" | "scale" | "scaleX" | "scaleY" | "rotation">> {
+    const outline = this.fontGeometry.outline(
+      seed.fontFamily,
+      seed.text,
+      seed.fontSize,
+      {
+        type: seed.transformType ?? "none",
+        curve: seed.transformCurve ?? 0,
+        circleRadiusPercent: seed.circleRadiusPercent ?? 100,
+        circleInverted: seed.circleInverted ?? false,
+        distortPoints: seed.distortPoints ?? null,
+      },
+    );
+    const hasInk = outline.inkRight - outline.inkLeft > Number.EPSILON
+      && outline.inkBottom - outline.inkTop > Number.EPSILON;
+    const baseBounds = hasInk
+      ? {
+        left: outline.inkLeft,
+        top: outline.inkTop,
+        right: outline.inkRight,
+        bottom: outline.inkBottom,
+      }
+      : {
         left: outline.left,
         top: outline.top,
         right: outline.right,
         bottom: outline.bottom,
       };
-    }
-    if (isSvgNode(node)) return { ...node.document.bounds };
-    return {
-      left: -node.document.width * 0.5,
-      top: -node.document.height * 0.5,
-      right: node.document.width * 0.5,
-      bottom: node.document.height * 0.5,
-    };
+    const bounds = sceneDocumentPixelExpandedBounds(
+      baseBounds,
+      vectorTextOutlineLocalReach(seed.outlineWidth, seed.outlineJoin),
+    );
+    return sceneDocumentPixelAlignedPosition(bounds, seed);
   }
 
   private transformNodeBounds(
@@ -4456,8 +4562,7 @@ export class MixedSceneController {
     handle: SceneTransformHandle | "rotate" | null,
   ): ActiveSnapContext | null {
     if (
-      !this.canvasGuides
-      || (mode !== "move" && mode !== "scale" && mode !== "rotate")
+      (mode !== "move" && mode !== "scale" && mode !== "rotate")
       || (mode === "scale" && (handle === null || handle === "rotate"))
     ) return null;
     const localBounds = this.localBoundsForTransformNode(node);
@@ -5175,7 +5280,7 @@ export class MixedSceneController {
       return null;
     }
     const start = interaction.startModel;
-    return sceneSideScaleUpdate({
+    const input = {
       start: {
         ...start,
         scaleX: start.scaleX ?? start.scale,
@@ -5187,7 +5292,10 @@ export class MixedSceneController {
       minimumScale: MINIMUM_SCALE,
       maximumScale: MAXIMUM_SCALE,
       centered,
-    });
+    } as const;
+    return isRasterLayerTransformNode(start)
+      ? sceneSideScaleUpdate(input)
+      : sceneDocumentPixelAlignedSideScaleUpdate(input);
   }
 
   private onPointerMove(event: PointerEvent): void {
@@ -5333,11 +5441,25 @@ export class MixedSceneController {
           matches: [],
           latch: { x: null, y: null },
         };
-      if (interaction.snap) interaction.snap.translationLatch = snapped.latch;
-      this.canvasGuides?.setSmartGuides(snapped.matches);
+      const delta = interaction.snap && !isRasterLayerTransformNode(interaction.startModel)
+        ? sceneDocumentPixelAlignedTranslation(
+          interaction.snap.startBounds,
+          snapped.delta,
+        )
+        : snapped.delta;
+      const xUnchanged = Math.abs(delta.x - snapped.delta.x) <= 1e-7;
+      const yUnchanged = Math.abs(delta.y - snapped.delta.y) <= 1e-7;
+      if (interaction.snap) {
+        interaction.snap.translationLatch = {
+          x: xUnchanged ? snapped.latch.x : null,
+          y: yUnchanged ? snapped.latch.y : null,
+        };
+      }
+      this.canvasGuides?.setSmartGuides(snapped.matches.filter((match) =>
+        match.axis === "x" ? xUnchanged : yUnchanged));
       this.updateTransformNode(interaction.startModel, {
-        x: interaction.startModel.x + snapped.delta.x,
-        y: interaction.startModel.y + snapped.delta.y,
+        x: interaction.startModel.x + delta.x,
+        y: interaction.startModel.y + delta.y,
       });
     } else if (interaction.mode === "scale") {
       const constrained = event.shiftKey || this.touchConstraintApplies(interaction);
@@ -5374,16 +5496,38 @@ export class MixedSceneController {
           disabled: preferences?.snapping !== true || event.altKey,
         })
         : { scale: rawScale, matches: [], latch: null };
-      if (interaction.snap) interaction.snap.scaleLatch = snapped.latch;
-      this.canvasGuides?.setSmartGuides(snapped.matches);
+      const alignedScale = interaction.snap?.handle
+        && !isRasterLayerTransformNode(interaction.startModel)
+        ? sceneDocumentPixelAlignedUniformScale({
+          transform: interaction.startModel,
+          localBounds: interaction.snap.localBounds,
+          handle: interaction.snap.handle,
+          rawScale: snapped.scale,
+          minimumScale: MINIMUM_SCALE,
+          maximumScale: MAXIMUM_SCALE,
+        })
+        : snapped.scale;
       const startScaleX = interaction.startModel.scaleX ?? interaction.startModel.scale;
       const startScaleY = interaction.startModel.scaleY ?? interaction.startModel.scale;
-      const scaleRatio = snapped.scale / Math.max(Number.EPSILON, interaction.startModel.scale);
-      this.updateTransformNode(interaction.startModel, {
-        scale: snapped.scale,
+      const scaleRatio = alignedScale / Math.max(Number.EPSILON, interaction.startModel.scale);
+      const uniformUpdate = {
+        x: interaction.startModel.x,
+        y: interaction.startModel.y,
+        scale: alignedScale,
         scaleX: startScaleX * scaleRatio,
         scaleY: startScaleY * scaleRatio,
-      });
+        rotation: interaction.startModel.rotation,
+      };
+      const snappedRatio = snapped.scale
+        / Math.max(Number.EPSILON, interaction.startModel.scale);
+      const scaleUnchanged = Math.abs(uniformUpdate.scale - snapped.scale) <= 1e-7
+        && Math.abs(uniformUpdate.scaleX - startScaleX * snappedRatio) <= 1e-7
+        && Math.abs(uniformUpdate.scaleY - startScaleY * snappedRatio) <= 1e-7;
+      if (interaction.snap) {
+        interaction.snap.scaleLatch = scaleUnchanged ? snapped.latch : null;
+      }
+      this.canvasGuides?.setSmartGuides(scaleUnchanged ? snapped.matches : []);
+      this.updateTransformNode(interaction.startModel, uniformUpdate);
     } else if (interaction.mode === "rotate") {
       const angle = Math.atan2(
         layerPoint.y - interaction.startModel.y,
@@ -5417,10 +5561,29 @@ export class MixedSceneController {
         })
         : { rotation: rawRotation, matches: [], latch: null };
       if (interaction.snap) interaction.snap.rotationLatch = snapped.latch;
-      this.canvasGuides?.setSmartGuides(snapped.matches);
-      this.updateTransformNode(interaction.startModel, {
+      const rawTransform = {
+        x: interaction.startModel.x,
+        y: interaction.startModel.y,
+        scale: interaction.startModel.scale,
+        scaleX: interaction.startModel.scaleX,
+        scaleY: interaction.startModel.scaleY,
         rotation: snapped.rotation,
-      });
+      };
+      const alignedPosition = interaction.snap
+        && !isRasterLayerTransformNode(interaction.startModel)
+        && sceneDocumentPixelIsCardinalRotation(snapped.rotation)
+        ? sceneDocumentPixelAlignedPosition(interaction.snap.localBounds, rawTransform)
+        : { x: interaction.startModel.x, y: interaction.startModel.y };
+      const update = {
+        rotation: snapped.rotation,
+        ...(alignedPosition.x !== interaction.startModel.x ? { x: alignedPosition.x } : {}),
+        ...(alignedPosition.y !== interaction.startModel.y ? { y: alignedPosition.y } : {}),
+      };
+      const rotationSnapUnchanged = Math.abs(alignedPosition.x - interaction.startModel.x) <= 1e-7
+        && Math.abs(alignedPosition.y - interaction.startModel.y) <= 1e-7;
+      if (interaction.snap && !rotationSnapUnchanged) interaction.snap.rotationLatch = null;
+      this.canvasGuides?.setSmartGuides(rotationSnapUnchanged ? snapped.matches : []);
+      this.updateTransformNode(interaction.startModel, update);
     }
   }
 

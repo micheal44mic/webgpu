@@ -90,6 +90,7 @@
     "vector-text:verify": "node scripts/verify-vector-text.mjs",
     "vector-shadow:verify": "node scripts/verify-vector-shadow-3d.mjs",
     "vector-shapes:verify": "node scripts/verify-vector-shapes.mjs",
+    "vector-pixel-alignment:verify": "node scripts/verify-vector-pixel-alignment.mjs",
     "mixed-scene:verify": "node scripts/verify-mixed-scene-stack.mjs && node scripts/verify-mixed-scene-raster-preview.mjs",
     "mixed-scene-reset:verify": "node scripts/verify-mixed-scene-document-reset.mjs",
     "image:verify": "node scripts/verify-raster-image.mjs",

@@ -404,17 +404,43 @@ function localPointForHandle(
   };
 }
 
+function uniformScaleRatios(
+  transform: Readonly<SceneTransform>,
+): Readonly<{ x: number; y: number }> | null {
+  if (!finite(transform.scale) || Math.abs(transform.scale) <= Number.EPSILON) {
+    return null;
+  }
+  return {
+    x: (transform.scaleX ?? transform.scale) / transform.scale,
+    y: (transform.scaleY ?? transform.scale) / transform.scale,
+  };
+}
+
+function uniformScaleUnit(
+  point: Readonly<{ x: number; y: number }>,
+  transform: Readonly<SceneTransform>,
+): Readonly<{ x: number; y: number }> | null {
+  const ratios = uniformScaleRatios(transform);
+  if (!ratios) return null;
+  const scaledX = point.x * ratios.x;
+  const scaledY = point.y * ratios.y;
+  const cosine = Math.cos(transform.rotation);
+  const sine = Math.sin(transform.rotation);
+  return {
+    x: cosine * scaledX - sine * scaledY,
+    y: sine * scaledX + cosine * scaledY,
+  };
+}
+
 function scaleSupportAnchor(
   input: Readonly<SceneScaleSnapInput>,
   localPoint: Readonly<{ x: number; y: number }>,
   axis: SceneSnapAxis,
 ): SceneSnapAnchor | null {
-  const cosine = Math.cos(input.transform.rotation);
-  const sine = Math.sin(input.transform.rotation);
-  const coordinate = (point: Readonly<{ x: number; y: number }>): number =>
-    axis === "x"
-      ? cosine * point.x - sine * point.y
-      : sine * point.x + cosine * point.y;
+  const coordinate = (point: Readonly<{ x: number; y: number }>): number => {
+    const unit = uniformScaleUnit(point, input.transform);
+    return axis === "x" ? unit?.x ?? 0 : unit?.y ?? 0;
+  };
   const coordinates = localCorners(input.localBounds).map(coordinate);
   const handleCoordinate = coordinate(localPoint);
   const minimum = Math.min(...coordinates);
@@ -486,12 +512,8 @@ export function resolveSceneScaleSnap(
     return { scale: input.rawScale, matches: [], latch: null };
   }
   const localPoint = localPointForHandle(input.localBounds, input.handle);
-  const cosine = Math.cos(input.transform.rotation);
-  const sine = Math.sin(input.transform.rotation);
-  const unit = {
-    x: cosine * localPoint.x - sine * localPoint.y,
-    y: sine * localPoint.x + cosine * localPoint.y,
-  };
+  const unit = uniformScaleUnit(localPoint, input.transform);
+  if (!unit) return { scale: input.rawScale, matches: [], latch: null };
   const rawPoint = {
     x: input.transform.x + unit.x * input.rawScale,
     y: input.transform.y + unit.y * input.rawScale,
@@ -506,9 +528,12 @@ export function resolveSceneScaleSnap(
   const gridEnabled = gridStep !== null && finite(gridStep) && gridStep > 0;
   const previous = input.previous ?? null;
   if (previous && (previous.match.kind !== "grid" || gridEnabled)) {
+    const ratio = previous.scale / input.transform.scale;
     const heldPoint = sceneLocalToLayer(localPoint, {
       ...input.transform,
       scale: previous.scale,
+      scaleX: (input.transform.scaleX ?? input.transform.scale) * ratio,
+      scaleY: (input.transform.scaleY ?? input.transform.scale) * ratio,
     });
     const heldDistance = layerDeltaCssPixels({
       x: heldPoint.x - rawPoint.x,

@@ -1643,6 +1643,8 @@ export function assertVectorUpdateAllowed(
       "x",
       "y",
       "scale",
+      "scaleX",
+      "scaleY",
       "rotation",
       "distortPoints",
     ].includes(updatedKey))
