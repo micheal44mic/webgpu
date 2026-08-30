@@ -57,6 +57,24 @@ assert.match(
   /<nav class="mobile-header" aria-label="Editor navigation">/,
   "La navigazione condivisa non deve dichiararsi esclusiva del mobile.",
 );
+const appStatusStart = css.indexOf("#status {");
+const appStatusEnd = css.indexOf("}", appStatusStart);
+assert(appStatusStart >= 0 && appStatusEnd > appStatusStart);
+const appStatusCss = css.slice(appStatusStart, appStatusEnd + 1);
+const appStatusMarkup = html.match(/<p id="status"[\s\S]*?<\/p>/)?.[0] ?? "";
+assert.match(appStatusMarkup, /role="status"/);
+assert.match(appStatusMarkup, /aria-live="polite"/);
+assert.doesNotMatch(appStatusMarkup, /\shidden(?:\s|=)|aria-hidden="true"/);
+assert.match(
+  appStatusCss,
+  /width:\s*1px !important;[\s\S]*clip:\s*rect\(0 0 0 0\) !important;/,
+  "Lo stato operativo globale deve restare una live region non visibile.",
+);
+assert.doesNotMatch(
+  appStatusCss,
+  /bottom:|border-radius:|backdrop-filter:|translateX|display:\s*none|visibility:\s*hidden/,
+  "Lo stato operativo globale non deve tornare a essere una pillola sul canvas.",
+);
 assert.doesNotMatch(
   html + "\n" + css + "\n" + main,
   /controlsPanel|toggleControls|setControlsPanelOpen/,

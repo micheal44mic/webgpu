@@ -135,8 +135,13 @@ assert.doesNotMatch(
 );
 assert.match(
   controllerSource,
-  /this\.setOpenState\(false, false\);\s*this\.options\.openFilter\(kind, button, elements\.trigger\);/,
+  /this\.setOpenState\(false\);\s*this\.options\.openFilter\(kind, button, elements\.trigger\);/,
   "the catalog must close before routing and provide its top-level trigger as final focus",
+);
+assert.match(
+  controllerSource,
+  /if \(!open && focusWasInside && trigger\.isConnected\) \{\s*trigger\.focus\([\s\S]*?\);\s*\}\s*panel\.setAttribute\("aria-hidden"/,
+  "focus must leave the catalog before it becomes hidden from assistive technology",
 );
 
 const moduleServer = await createServer({
@@ -383,8 +388,8 @@ function createHarness(initiallyCanOpen = true) {
   harness.controller.dispose();
 }
 
-// A typed card closes first, does not steal intermediate focus, and forwards
-// the still-visible Filters trigger for the adjustment's eventual close path.
+// A typed card closes first, moves focus outside the hidden catalog, and
+// forwards the still-visible Filters trigger for the adjustment's close path.
 {
   const harness = createHarness();
   harness.controller.setOpen(true);
@@ -402,7 +407,7 @@ function createHarness(initiallyCanOpen = true) {
   assert.equal(harness.routed[0].opener, harness.glassButton);
   assert.equal(harness.routed[0].returnFocus, harness.trigger);
   assert.equal(harness.routed[0].catalogOpenDuringRoute, false);
-  assert.equal(harness.trigger.focusCount, 0);
+  assert.equal(harness.trigger.focusCount, 1);
   assert.equal(harness.panel.getAttribute("inert"), "");
 
   harness.controller.setOpen(true);
@@ -427,14 +432,14 @@ function createHarness(initiallyCanOpen = true) {
   harness.controller.dispose();
 }
 
-// Disposal closes without an intermediate focus jump and removes all routes.
+// Disposal closes accessibly and removes all routes.
 {
   const harness = createHarness();
   harness.controller.setOpen(true);
   harness.document.activeElement = harness.glassButton;
   harness.controller.dispose();
   assert.equal(harness.controller.isOpen, false);
-  assert.equal(harness.trigger.focusCount, 0);
+  assert.equal(harness.trigger.focusCount, 1);
   assert.deepEqual(harness.lifecycle, ["before-open", "opened", "closed"]);
   harness.trigger.click();
   harness.glassButton.click();

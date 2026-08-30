@@ -3041,22 +3041,16 @@ select {
   color: #ff9ca7;
 }
 
-.app-status {
-  position: absolute;
-  z-index: 16;
-  left: 50%;
-  bottom: 18px;
-  max-width: min(680px, calc(100% - 32px));
-  margin: 0;
-  padding: 7px 11px;
-  border: 1px solid rgb(255 255 255 / 10%);
-  border-radius: 999px;
-  background: rgb(18 20 24 / 78%);
-  box-shadow: 0 6px 24px rgb(0 0 0 / 22%);
-  backdrop-filter: blur(10px);
-  transform: translateX(-50%);
-  pointer-events: none;
-  text-align: center;
+#status {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0 0 0 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
 }
 
 .canvas-startup-overlay {

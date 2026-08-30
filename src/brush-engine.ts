@@ -967,6 +967,7 @@ import {
   throwIfRenderUnavailable,
   waitForRenderPump,
 } from "./engine-runtime-misc";
+import { ensureMixedScenePresentationResources } from "./mixed-scene-presentation-resources";
 import {
   captureProjectDocument,
   reconfigureEngineForDocumentSwitch,
@@ -8301,6 +8302,14 @@ export class BrushEngine {
       )
       : accumulatorTexture;
     const layerScratchView = glaze ? layerScratchTexture.createView() : accumulatorView;
+    const tileCommitScratchTexture = glaze && !inPlaceCommit
+      ? createTexture(
+        "Selected brush warm-up tile commit target",
+        this.layerFormat,
+        GPUTextureUsage.RENDER_ATTACHMENT,
+      )
+      : null;
+    const tileCommitScratchView = tileCommitScratchTexture?.createView() ?? null;
     const canvasScratchTexture = createTexture(
       "Selected brush warm-up presentation target",
       this.canvasFormat,
@@ -8456,6 +8465,9 @@ export class BrushEngine {
             pass.dispatchWorkgroups(1, 1, 1);
             pass.end();
           } else {
+            if (!tileCommitScratchView) {
+              throw new Error("The selected brush warm-up tile target is unavailable.");
+            }
             const bindGroup = this.device.createBindGroup({
               label: "Selected brush warm-up tile commit bind group",
               layout: this.lightGlazeCommitTileBindGroupLayout,
@@ -8475,7 +8487,7 @@ export class BrushEngine {
             });
             drawFullscreen(
               "Warm selected high-precision glaze tile release",
-              layerScratchView,
+              tileCommitScratchView,
               this.lightGlazeCommitTilePipeline,
               bindGroup,
               [0],
@@ -8765,7 +8777,13 @@ export class BrushEngine {
     if (!this.mixedSceneEnabled) return;
     const resourcesReady = this.layerBlendTileWarmupAttempted
       && this.layerBlendTileCompositor?.format === this.layerFormat
-      && this.rasterStrokeRenderer !== null;
+      && this.rasterStrokeRenderer !== null
+      && this.mixedScenePresentShaderModule !== null
+      && this.mixedScenePresentBindGroupLayout !== null
+      && this.mixedScenePresentPipeline !== null
+      && this.mixedSceneClearShaderModule !== null
+      && this.mixedSceneBackgroundBindGroupLayout !== null
+      && this.mixedSceneBackgroundBindGroup !== null;
     if (resourcesReady) return;
     if (this.layerBlendEditorResourcesPromise) {
       await this.layerBlendEditorResourcesPromise;
@@ -8774,6 +8792,7 @@ export class BrushEngine {
     const initialization = (async (): Promise<void> => {
       this.layerBlendTileWarmupAttempted = true;
       try {
+        await ensureMixedScenePresentationResources(this);
         await ensureLayerBlendTilePresentationResources(this);
       } catch (error) {
         if (this.deviceLostError) throw this.deviceLostError;

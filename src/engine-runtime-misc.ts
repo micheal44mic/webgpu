@@ -51,6 +51,7 @@ import { clamp } from "./color";
 import { startThicknessFactor } from "./thickness-dynamics";
 import { flushClosingLightGlazeSessionBeforeNewStroke } from "./engine-glaze-runtime";
 import { normalizeViewRotation } from "./engine-math";
+import { ensureMixedScenePresentationResources } from "./mixed-scene-presentation-resources";
 import { strokeSymmetryCopiesIntersectDocument } from "./stroke-symmetry-core";
 import {
   canvasOffsetToLayerOffset,
@@ -301,6 +302,7 @@ export async function finishStaticResourceCreation(
   }
 
   if (createOptional) {
+    await ensureMixedScenePresentationResources(engine);
     engine.vectorTextDisplayShaderModule = engine.device.createShaderModule({
       label: "Dual viewport vector text mixed-layer display WGSL",
       code: vectorTextDisplayShader,
@@ -317,11 +319,11 @@ export async function finishStaticResourceCreation(
       label: "Mixed scene live shape preview WGSL",
       code: mixedSceneShapePreviewShader,
     });
-    engine.mixedSceneClearShaderModule = engine.device.createShaderModule({
+    engine.mixedSceneClearShaderModule ??= engine.device.createShaderModule({
       label: "Mixed scene partial clear WGSL",
       code: mixedSceneClearShader,
     });
-    engine.mixedScenePresentShaderModule = engine.device.createShaderModule({
+    engine.mixedScenePresentShaderModule ??= engine.device.createShaderModule({
       label: "Mixed scene checker presentation WGSL",
       code: mixedScenePresentShader,
     });
@@ -436,20 +438,20 @@ export async function finishStaticResourceCreation(
         { binding: 1, resource: { buffer: engine.mixedSceneShapePreviewUniformBuffer } },
       ],
     });
-    engine.mixedScenePresentBindGroupLayout = engine.device.createBindGroupLayout({
+    engine.mixedScenePresentBindGroupLayout ??= engine.device.createBindGroupLayout({
       label: "Mixed scene presentation bind group layout",
       entries: [
         { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
       ],
     });
-    engine.mixedSceneBackgroundBindGroupLayout = engine.device.createBindGroupLayout({
+    engine.mixedSceneBackgroundBindGroupLayout ??= engine.device.createBindGroupLayout({
       label: "Mixed scene document background bind group layout",
       entries: [
         { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
       ],
     });
-    engine.mixedSceneBackgroundBindGroup = engine.device.createBindGroup({
+    engine.mixedSceneBackgroundBindGroup ??= engine.device.createBindGroup({
       label: "Mixed scene document background bind group",
       layout: engine.mixedSceneBackgroundBindGroupLayout,
       entries: [
@@ -731,7 +733,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedScenePresentPipeline = engine.device.createRenderPipeline({
+    engine.mixedScenePresentPipeline ??= engine.device.createRenderPipeline({
       label: "Mixed scene checker presentation pipeline",
       layout: engine.device.createPipelineLayout({
         label: "Mixed scene checker presentation pipeline layout",

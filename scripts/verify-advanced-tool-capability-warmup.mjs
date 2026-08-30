@@ -75,6 +75,32 @@ for (const method of [
   assert.match(compatibilityGate, new RegExp(`await this\\.${method}\\(\\)`));
 }
 
+const selectedBrushWarmup = section(
+  engine,
+  "private async prewarmSelectedRasterBrushGpu(settings: BrushSettings): Promise<void>",
+  "private rememberCompletedBrushGpuWarmup(key: string): void",
+);
+assert.match(
+  selectedBrushWarmup,
+  /"Selected brush warm-up tile commit target"[\s\S]*?GPUTextureUsage\.RENDER_ATTACHMENT/,
+  "The render fallback needs a private tile target distinct from its sampled release texture",
+);
+assert.match(
+  selectedBrushWarmup,
+  /binding: 0, resource: layerScratchView/,
+  "The release texture must remain the sampled tile-commit input",
+);
+assert.match(
+  selectedBrushWarmup,
+  /"Warm selected high-precision glaze tile release",\s*tileCommitScratchView/,
+  "The tile-commit warm-up must render into its distinct target",
+);
+assert.doesNotMatch(
+  selectedBrushWarmup,
+  /"Warm selected high-precision glaze tile release",\s*layerScratchView/,
+  "A warm-up pass must not sample and render to the release texture in one synchronization scope",
+);
+
 assert.match(
   projectRuntime,
   /snapshot\.mixedScene\.items\.some[\s\S]{0,160}await engine\.ensureMixedSceneEditorResources\(\)/,

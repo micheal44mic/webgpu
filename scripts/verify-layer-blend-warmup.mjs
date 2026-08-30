@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createServer } from "vite";
 
 const source = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
@@ -9,6 +10,8 @@ const tileCompositorSource = source("src/layer-blend-tile-compositor.ts");
 const strokeRendererSource = source("src/stroke-renderer.ts");
 const layerRuntimeSource = source("src/engine-layer-runtime.ts");
 const mainSource = source("src/main.ts");
+const staticResourcesSource = source("src/engine-runtime-misc.ts");
+const presentationResourcesSource = source("src/mixed-scene-presentation-resources.ts");
 
 const blendStart = engineSource.indexOf("async ensureLayerBlendEditorResources(): Promise<void>");
 const blendEnd = engineSource.indexOf("async ensureSpatialBlurEditorResources()", blendStart);
@@ -16,6 +19,25 @@ assert.ok(blendStart >= 0 && blendEnd > blendStart);
 const blendBody = engineSource.slice(blendStart, blendEnd);
 assert.match(blendBody, /this\.layerBlendTileWarmupAttempted/);
 assert.match(blendBody, /await ensureLayerBlendTilePresentationResources\(this\)/);
+for (const resource of [
+  "mixedScenePresentShaderModule",
+  "mixedSceneClearShaderModule",
+  "mixedScenePresentBindGroupLayout",
+  "mixedSceneBackgroundBindGroupLayout",
+  "mixedSceneBackgroundBindGroup",
+  "mixedScenePresentPipeline",
+]) {
+  assert.match(
+    blendBody,
+    new RegExp(`this\\.${resource} !== null`),
+    `the layer-blend readiness gate must include ${resource}`,
+  );
+}
+assert.match(
+  blendBody,
+  /await ensureMixedScenePresentationResources\(this\)[\s\S]*?await ensureLayerBlendTilePresentationResources\(this\)/,
+  "layer-blend warm-up must prepare the shared checker program before its tile compositor",
+);
 assert.doesNotMatch(
   blendBody,
   /ensureMixedSceneEditorResources|finishStaticResourceCreation/,
@@ -93,6 +115,11 @@ const modeStart = layerRuntimeSource.indexOf("export async function setLayerBlen
 const modeCatch = layerRuntimeSource.indexOf("} catch (error) {", modeStart);
 assert.ok(modeStart >= 0 && modeCatch > modeStart);
 const successfulModePath = layerRuntimeSource.slice(modeStart, modeCatch);
+assert.match(
+  successfulModePath,
+  /candidateAdvanced[\s\S]*?await ensureMixedScenePresentationResources\(engine\)[\s\S]*?await prewarmMixedSceneLinearTextureForLayerBlend/,
+  "a direct first blend change must own its minimal presentation-resource gate",
+);
 assert.doesNotMatch(
   successfulModePath,
   /releaseLayerBlendTilePresentationResources\(engine\)/,
@@ -104,6 +131,35 @@ assert.doesNotMatch(
   /scheduleDeferredStartupTask|deferred-gpu-pipelines/,
   "the optional blend compositor must not be allocated during startup",
 );
+assert.match(presentationResourcesSource, /createRenderPipelineAsync\(engine\.device/);
+assert.match(presentationResourcesSource, /const creationPromises = new WeakMap/);
+assert.doesNotMatch(
+  presentationResourcesSource,
+  /vectorText|rasterImage|mixedSceneRasterSegment|mixedSceneTextSegment/,
+  "the shared checker gate must not compile semantic-scene programs",
+);
+assert.match(
+  staticResourcesSource,
+  /if \(createOptional\) \{\s*await ensureMixedScenePresentationResources\(engine\)/,
+  "the full optional graph must reuse the minimal checker program",
+);
+assert.match(staticResourcesSource, /engine\.mixedScenePresentShaderModule \?\?=/);
+assert.match(staticResourcesSource, /engine\.mixedScenePresentBindGroupLayout \?\?=/);
+assert.match(staticResourcesSource, /engine\.mixedScenePresentPipeline \?\?=/);
+assert.match(staticResourcesSource, /engine\.mixedSceneClearShaderModule \?\?=/);
+assert.match(staticResourcesSource, /engine\.mixedSceneBackgroundBindGroupLayout \?\?=/);
+assert.match(staticResourcesSource, /engine\.mixedSceneBackgroundBindGroup \?\?=/);
+for (const resource of [
+  "mixedSceneClearShaderModule",
+  "mixedSceneBackgroundBindGroupLayout",
+  "mixedSceneBackgroundBindGroup",
+]) {
+  assert.match(
+    presentationResourcesSource,
+    new RegExp(`engine\\.${resource}`),
+    `the raster-only tile compositor requires ${resource}`,
+  );
+}
 assert.match(
   engineSource,
   /settings\.tool === "blend"[\s\S]{0,180}!this\.blendRenderer\?\.selectedVariantPipelinesReady\(settings\)[\s\S]{0,180}await this\.ensureBlendRendererResources\(settings\)/,
@@ -114,5 +170,124 @@ assert.doesNotMatch(
   /settings\.tool === "blend"[\s\S]{0,180}await this\.ensureOptionalEditorResources\(\)/,
   "Blend must not pull unrelated optional editor pipelines into its first-use path",
 );
+
+const previousGpuShaderStage = globalThis.GPUShaderStage;
+globalThis.GPUShaderStage = { FRAGMENT: 2 };
+const moduleServer = await createServer({
+  appType: "custom",
+  configFile: false,
+  logLevel: "silent",
+  root: process.cwd(),
+  server: { middlewareMode: true },
+});
+let ensureMixedScenePresentationResources;
+try {
+  ({ ensureMixedScenePresentationResources } = await moduleServer.ssrLoadModule(
+    "/src/mixed-scene-presentation-resources.ts",
+  ));
+} finally {
+  await moduleServer.close();
+}
+
+function presentationHarness(failFirstPipeline = false) {
+  const calls = {
+    shaderModules: 0,
+    bindGroupLayouts: 0,
+    bindGroups: 0,
+    pipelines: 0,
+  };
+  let shouldFail = failFirstPipeline;
+  const device = {
+    createShaderModule(descriptor) {
+      calls.shaderModules += 1;
+      return {
+        descriptor,
+        getCompilationInfo: async () => ({ messages: [] }),
+      };
+    },
+    createBindGroupLayout(descriptor) {
+      calls.bindGroupLayouts += 1;
+      return { descriptor };
+    },
+    createBindGroup(descriptor) {
+      calls.bindGroups += 1;
+      return { descriptor };
+    },
+    createPipelineLayout(descriptor) {
+      return { descriptor };
+    },
+    async createRenderPipelineAsync(descriptor) {
+      calls.pipelines += 1;
+      if (shouldFail) {
+        shouldFail = false;
+        throw new Error("Injected checker pipeline failure.");
+      }
+      return { descriptor };
+    },
+  };
+  return {
+    calls,
+    engine: {
+      device,
+      canvasFormat: "bgra8unorm",
+      displayUniformBuffer: {},
+      mixedScenePresentShaderModule: null,
+      mixedSceneClearShaderModule: null,
+      mixedScenePresentBindGroupLayout: null,
+      mixedSceneBackgroundBindGroupLayout: null,
+      mixedSceneBackgroundBindGroup: null,
+      mixedScenePresentPipeline: null,
+    },
+  };
+}
+
+try {
+  const concurrent = presentationHarness();
+  await Promise.all([
+    ensureMixedScenePresentationResources(concurrent.engine),
+    ensureMixedScenePresentationResources(concurrent.engine),
+  ]);
+  assert.deepEqual(concurrent.calls, {
+    shaderModules: 2,
+    bindGroupLayouts: 2,
+    bindGroups: 1,
+    pipelines: 1,
+  });
+  const published = [
+    concurrent.engine.mixedScenePresentShaderModule,
+    concurrent.engine.mixedSceneClearShaderModule,
+    concurrent.engine.mixedScenePresentBindGroupLayout,
+    concurrent.engine.mixedSceneBackgroundBindGroupLayout,
+    concurrent.engine.mixedSceneBackgroundBindGroup,
+    concurrent.engine.mixedScenePresentPipeline,
+  ];
+  assert(published.every(Boolean));
+  await ensureMixedScenePresentationResources(concurrent.engine);
+  assert.deepEqual(concurrent.calls, {
+    shaderModules: 2,
+    bindGroupLayouts: 2,
+    bindGroups: 1,
+    pipelines: 1,
+  }, "a warm device must reuse the exact six-resource set");
+
+  const retry = presentationHarness(true);
+  await assert.rejects(
+    ensureMixedScenePresentationResources(retry.engine),
+    /Injected checker pipeline failure/,
+  );
+  assert([
+    retry.engine.mixedScenePresentShaderModule,
+    retry.engine.mixedSceneClearShaderModule,
+    retry.engine.mixedScenePresentBindGroupLayout,
+    retry.engine.mixedSceneBackgroundBindGroupLayout,
+    retry.engine.mixedSceneBackgroundBindGroup,
+    retry.engine.mixedScenePresentPipeline,
+  ].every((resource) => resource === null), "a failed gate must publish no partial set");
+  await ensureMixedScenePresentationResources(retry.engine);
+  assert.equal(retry.calls.pipelines, 2, "a failed first compilation must remain retryable");
+} finally {
+  if (previousGpuShaderStage === undefined) delete globalThis.GPUShaderStage;
+  else globalThis.GPUShaderStage = previousGpuShaderStage;
+}
 
 console.log("Layer blend on-demand warm-up and asynchronous pipeline verification passed.");

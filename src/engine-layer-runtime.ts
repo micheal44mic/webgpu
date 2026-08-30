@@ -134,6 +134,7 @@ import {
   rasterOuterShadowEffectRect,
   rasterStrokeEffectRect,
 } from "./engine-runtime-misc";
+import { ensureMixedScenePresentationResources } from "./mixed-scene-presentation-resources";
 import { combineCompressionHashes } from "./engine-math";
 import { LAYER_COLD_TILE_COMPOSITE_BATCH_TILES } from "./layer-cold-tile-composite-shader";
 import {
@@ -5274,6 +5275,7 @@ async function setLayerCompositionField(
     const candidateAdvanced = orderedLayerBlendPresentationRequired(engine);
     const usesViewportComposition = engine.usesOrderedScenePresentation();
     if (candidateAdvanced) {
+      await ensureMixedScenePresentationResources(engine);
       await prewarmMixedSceneLinearTextureForLayerBlend(
         engine,
         Math.max(1, engine.canvas.width),
@@ -5549,6 +5551,7 @@ export async function setLayerBlendMode(
       // The screen-linear cache is also the destination of the exact tile
       // path. With semantic nodes, validate its two RGBA16F ping-pong peers as
       // well. No mode/history metadata is visible until every scope succeeds.
+      await ensureMixedScenePresentationResources(engine);
       await prewarmMixedSceneLinearTextureForLayerBlend(
         engine,
         Math.max(1, engine.canvas.width),

@@ -54,18 +54,18 @@ export class EditorFiltersController {
   }
 
   setOpen(open: boolean): void {
-    this.setOpenState(open, true);
+    this.setOpenState(open);
   }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     this.abortController.abort();
-    if (this.openState) this.setOpenState(false, false);
+    if (this.openState) this.setOpenState(false);
     else this.syncClosedAccessibility();
   }
 
-  private setOpenState(open: boolean, restoreFocus: boolean): void {
+  private setOpenState(open: boolean): void {
     if ((this.disposed && open) || open === this.openState) return;
     if (open && !this.options.canOpen()) return;
     if (open) this.options.beforeOpen();
@@ -75,6 +75,13 @@ export class EditorFiltersController {
     this.openState = open;
     trigger.setAttribute("aria-expanded", String(open));
     trigger.setAttribute("aria-label", open ? "Close filters" : "Open filters");
+
+    // Move focus outside before making the catalog inaccessible. This also
+    // covers typed filter routing, whose destination surface opens immediately
+    // after this method returns.
+    if (!open && focusWasInside && trigger.isConnected) {
+      trigger.focus({ preventScroll: true });
+    }
     panel.setAttribute("aria-hidden", String(!open));
     panel.toggleAttribute("inert", !open);
 
@@ -85,9 +92,6 @@ export class EditorFiltersController {
       this.options.elements.closeButton.focus({ preventScroll: true });
     } else {
       panel.classList.remove("is-open");
-      if (restoreFocus && focusWasInside && trigger.isConnected) {
-        trigger.focus({ preventScroll: true });
-      }
     }
     this.options.onOpenChange(open);
   }
@@ -106,7 +110,7 @@ export class EditorFiltersController {
       }
       button.addEventListener("click", () => {
         if (button.disabled || !this.openState) return;
-        this.setOpenState(false, false);
+        this.setOpenState(false);
         this.options.openFilter(kind, button, elements.trigger);
       }, { signal });
     }
