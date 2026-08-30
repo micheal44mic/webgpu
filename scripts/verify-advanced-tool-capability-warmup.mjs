@@ -21,7 +21,7 @@ const toolSelection = section(
 );
 assert.match(
   toolSelection,
-  /tool === "shapes"\s*\? "semantic-scene"\s*:\s*"raster-transform"/,
+  /tool === "shapes"\s*\? "shape-preview"\s*:\s*"raster-transform"/,
   "Shapes and native raster transforms must request different preparation scopes",
 );
 assert.match(toolSelection, /initializeMixedSceneController\(initializationScope\)/);
@@ -44,7 +44,17 @@ const controllerInitialization = section(
 );
 assert.match(
   controllerInitialization,
-  /scope === "semantic-scene"[\s\S]*?await engine\.ensureMixedSceneEditorResources\(\)/,
+  /scope === "semantic-scene"[\s\S]*?engine\.ensureMixedSceneEditorResources\(\)/,
+);
+assert.match(
+  controllerInitialization,
+  /scope === "shape-preview"[\s\S]*?engine\.ensureShapePreviewEditorResources\(\)/,
+  "Shapes must await only their small ordered-preview capability",
+);
+assert.match(
+  controllerInitialization,
+  /scope === "vector-shape"[\s\S]*?engine\.ensureVectorShapeEditorResources\(\)/,
+  "plain SVG import must request only preview and indexed mesh fill",
 );
 assert.doesNotMatch(
   controllerInitialization,
@@ -53,6 +63,8 @@ assert.doesNotMatch(
 );
 
 for (const method of [
+  "ensureShapePreviewEditorResources",
+  "ensureVectorShapeEditorResources",
   "ensureMixedSceneEditorResources",
   "ensureLayerBlendEditorResources",
   "ensureSpatialBlurEditorResources",

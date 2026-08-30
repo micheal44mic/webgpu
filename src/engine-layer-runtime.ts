@@ -5527,6 +5527,28 @@ export async function setLayerBlendMode(
       ),
     );
     if (liveActiveComposition) {
+      const candidateAdvanced = blendMode !== "normal"
+        || engine.layerStack.layers.some(
+          (candidate) => candidate.id !== record.id && candidate.blendMode !== "normal",
+        );
+      const usesViewportComposition = engine.usesOrderedScenePresentation();
+      const candidateNeedsViewportBlend = candidateAdvanced && usesViewportComposition;
+      if (candidateAdvanced) {
+        if (candidateNeedsViewportBlend) {
+          await engine.ensureMixedSceneEditorResources();
+        } else {
+          await ensureMixedScenePresentationResources(engine);
+        }
+        await prewarmMixedSceneLinearTextureForLayerBlend(
+          engine,
+          Math.max(1, engine.canvas.width),
+          Math.max(1, engine.canvas.height),
+          candidateNeedsViewportBlend,
+        );
+        if (!usesViewportComposition) {
+          await ensureLayerBlendTilePresentationResources(engine);
+        }
+      }
       // The active raster is never baked into mergedBelow/Above or a static
       // mixed-scene raster run. Both the tile compositor and viewport
       // compositor read its current mode while encoding the next frame. The
@@ -5551,7 +5573,11 @@ export async function setLayerBlendMode(
       // The screen-linear cache is also the destination of the exact tile
       // path. With semantic nodes, validate its two RGBA16F ping-pong peers as
       // well. No mode/history metadata is visible until every scope succeeds.
-      await ensureMixedScenePresentationResources(engine);
+      if (candidateNeedsViewportBlend) {
+        await engine.ensureMixedSceneEditorResources();
+      } else {
+        await ensureMixedScenePresentationResources(engine);
+      }
       await prewarmMixedSceneLinearTextureForLayerBlend(
         engine,
         Math.max(1, engine.canvas.width),

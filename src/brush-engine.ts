@@ -969,6 +969,10 @@ import {
 } from "./engine-runtime-misc";
 import { ensureMixedScenePresentationResources } from "./mixed-scene-presentation-resources";
 import {
+  ensureMixedSceneShapePreviewResources,
+  ensureMixedSceneVectorShapeResources,
+} from "./mixed-scene-shape-resources";
+import {
   captureProjectDocument,
   reconfigureEngineForDocumentSwitch,
   resetEngineToFreshProjectState,
@@ -8740,6 +8744,68 @@ export class BrushEngine {
   }
 
   /**
+   * Returns true only when the current document already uses a semantic or
+   * active-paint capability that cannot be represented by the basic shape
+   * preview and mesh-fill bundles.
+   */
+  private mixedSceneShapeRequiresFullResources(): boolean {
+    const scene = this.mixedSceneStack;
+    if (!scene) return false;
+    if (
+      scene.textCount > 0
+      || scene.imageCount > 0
+      || scene.hasHeterogeneousClipping
+      || this.styleStackActive()
+      || this.usesLayerBlendTilePresentation()
+    ) {
+      return true;
+    }
+    return scene.items.some((item) => {
+      if (item.kind !== "svg") return false;
+      const node = scene.svgById(item.svgNodeId);
+      return this.vectorSvgUsesAdvancedGpuEffects(node);
+    });
+  }
+
+  private vectorSvgUsesAdvancedGpuEffects(node: Readonly<VectorSvgNode>): boolean {
+    return (
+      node.innerShadowEnabled && node.innerShadowOpacity > 0
+    ) || (
+      node.singleShadowEnabled
+      && node.singleShadowOpacity > 0
+      && node.singleShadowBlur > 0
+    );
+  }
+
+  /** Prepares only the ordered preview path needed when Shapes is selected. */
+  async ensureShapePreviewEditorResources(): Promise<void> {
+    if (this.documentPipelineCompilationScope === "first-frame-diagnostic") {
+      throw new Error("Shape preview resources are disabled during first-frame diagnostics.");
+    }
+    if (!this.mixedSceneEnabled) return;
+    if (this.mixedSceneShapeRequiresFullResources()) {
+      await this.ensureMixedSceneEditorResources();
+      return;
+    }
+    await ensureMixedSceneShapePreviewResources(this);
+    if (this.deviceLostError) throw this.deviceLostError;
+  }
+
+  /** Adds the indexed mesh-fill path used by plain SVG and built-in shapes. */
+  async ensureVectorShapeEditorResources(): Promise<void> {
+    if (this.documentPipelineCompilationScope === "first-frame-diagnostic") {
+      throw new Error("Vector shape resources are disabled during first-frame diagnostics.");
+    }
+    if (!this.mixedSceneEnabled) return;
+    if (this.mixedSceneShapeRequiresFullResources()) {
+      await this.ensureMixedSceneEditorResources();
+      return;
+    }
+    await ensureMixedSceneVectorShapeResources(this);
+    if (this.deviceLostError) throw this.deviceLostError;
+  }
+
+  /**
    * Completes only the semantic mixed-scene layouts and pipelines. Raster-only
    * Transform/Warp does not require this graph: keeping the gate separate
    * prevents those tools from compiling text, image and shape presentation
@@ -9953,6 +10019,7 @@ export class BrushEngine {
     seed: VectorTextNodeSeed,
     name?: string,
   ): Promise<Readonly<VectorTextNode>> {
+    await this.ensureMixedSceneEditorResources();
     const node = await mutateMixedScenePresentation(this, 
       (scene) => scene.addTextAboveSelection(seed, name),
       {
@@ -9980,6 +10047,7 @@ export class BrushEngine {
     if (entries.length === 0) {
       return [];
     }
+    await this.ensureMixedSceneEditorResources();
     const nodes = await mutateMixedScenePresentation(this, (scene) =>
       entries.map((entry) => scene.addTextAboveSelection(entry.seed, entry.name))
     );
@@ -10079,6 +10147,19 @@ export class BrushEngine {
     seed: VectorSvgNodeSeed,
     name?: string,
   ): Promise<Readonly<VectorSvgNode>> {
+    const requiresAdvancedVectorEffects = (
+      seed.innerShadowEnabled === true
+      && (seed.innerShadowOpacity ?? 0.55) > 0
+    ) || (
+      seed.singleShadowEnabled === true
+      && (seed.singleShadowOpacity ?? 0.55) > 0
+      && (seed.singleShadowBlur ?? 12) > 0
+    );
+    if (requiresAdvancedVectorEffects) {
+      await this.ensureMixedSceneEditorResources();
+    } else {
+      await this.ensureVectorShapeEditorResources();
+    }
     const node = await mutateMixedScenePresentation(this, 
       (scene) => scene.addSvgAboveSelection(seed, name),
       {
@@ -10092,7 +10173,7 @@ export class BrushEngine {
     // Tool selection and controller creation are intentionally asynchronous.
     // Keep the ordered preview transaction behind its own semantic-scene gate
     // so a fast first drag can never race an unmaterialized preview pipeline.
-    await this.ensureMixedSceneEditorResources();
+    await this.ensureShapePreviewEditorResources();
     const scene = requireMixedSceneStack(this);
     const group = scene.clippingGroupKeys(scene.selected.key);
     const nextAfterKey = group[group.length - 1] ?? scene.selected.key;
@@ -10256,6 +10337,15 @@ export class BrushEngine {
     const selected = scene.selected;
     if (selected.kind !== "svg" || selected.svgNodeId !== id) {
       throw new Error("Only the selected SVG node can be edited.");
+    }
+    const current = scene.svgById(id);
+    if (
+      this.vectorSvgUsesAdvancedGpuEffects({ ...current, ...update })
+      && !this.optionalEditorResourcesReady
+    ) {
+      throw new Error(
+        "Advanced vector effect resources must be prepared before enabling blur or inner shadow.",
+      );
     }
     const before = this.activeVectorHistoryEdit
       ? null

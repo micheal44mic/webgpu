@@ -666,7 +666,7 @@ const sceneImportBridge = new SceneImportBridge({
   imageInput: rasterImageFileInput,
   currentController: () => mixedSceneController,
   ensureController: (kind) => initializeMixedSceneController(
-    kind === "image" ? "raster-import" : "semantic-scene",
+    kind === "image" ? "raster-import" : "vector-shape",
   ),
   prewarmImageImport: () => engine.prewarmRasterImageImportResources(),
   beforeAccept: async () => {
@@ -709,7 +709,7 @@ function selectCanvasToolWithMixedScene(tool: CanvasInputTool): boolean {
     )
   ) {
     const initializationScope = tool === "shapes"
-      ? "semantic-scene"
+      ? "shape-preview"
       : "raster-transform";
     if (initializationScope === "raster-transform") {
       const mode = tool === "warp"
@@ -3122,62 +3122,78 @@ updateHistoryControls();
 
 type MixedSceneInitializationScope =
   | "semantic-scene"
+  | "shape-preview"
+  | "vector-shape"
   | "raster-import"
   | "raster-transform";
 
 async function initializeMixedSceneController(
   scope: MixedSceneInitializationScope = "semantic-scene",
 ): Promise<MixedSceneController> {
-  // Native raster import and Transform/Warp only need the reusable controller
-  // shell. Their dedicated GPU programs are prepared independently, while
-  // semantic scene resources remain an explicit gate for Shapes and text.
-  if (scope === "semantic-scene") {
-    await engine.ensureMixedSceneEditorResources();
-  }
-  if (mixedSceneController) return mixedSceneController;
-  if (mixedSceneInitializationPromise) return mixedSceneInitializationPromise;
-
-  const initialization = (async (): Promise<MixedSceneController> => {
-    const { MixedSceneController } = await import("./mixed-scene-controller");
-    const controller = new MixedSceneController(engine, {
-      root: appElement,
-      browser: window,
-      clippedRefreshPolicy:
-        editorExtensionBootstrap?.vectorTextClippedRefreshPolicy ?? "during-gesture",
-      onEditorStateChange: () => {
-        mobileToolSettingsSheet?.syncOpenState();
-        updateHistoryControls();
-      },
-      canvasGuides: {
-        getPreferences: () => editorSettingsController?.preferences
-          ?? DEFAULT_EDITOR_GUIDE_PREFERENCES,
-        setSmartGuides: (guides) => canvasGuidesController?.setSmartGuides(guides),
-      },
+  // Start code loading beside the capability-specific GPU gate. This keeps the
+  // controller chunk out of the critical path without resolving the caller
+  // before the requested resources are ready.
+  if (!mixedSceneController && !mixedSceneInitializationPromise) {
+    const initialization = (async (): Promise<MixedSceneController> => {
+      const { MixedSceneController } = await import("./mixed-scene-controller");
+      const controller = new MixedSceneController(engine, {
+        root: appElement,
+        browser: window,
+        clippedRefreshPolicy:
+          editorExtensionBootstrap?.vectorTextClippedRefreshPolicy ?? "during-gesture",
+        onEditorStateChange: () => {
+          mobileToolSettingsSheet?.syncOpenState();
+          updateHistoryControls();
+        },
+        canvasGuides: {
+          getPreferences: () => editorSettingsController?.preferences
+            ?? DEFAULT_EDITOR_GUIDE_PREFERENCES,
+          setSmartGuides: (guides) => canvasGuidesController?.setSmartGuides(guides),
+        },
+      });
+      await controller.initialize();
+      mixedSceneController = controller;
+      canvasToolController?.syncVectorControllerState();
+      const snapshot = engine.getMixedSceneSnapshot();
+      if (snapshot) controller.syncScene(snapshot);
+      syncMobileToolsMenuState(snapshot);
+      requestMobileLayersRefresh();
+      mobileToolSettingsSheet?.syncOpenState();
+      if (import.meta.env.DEV) {
+        (window as Window & {
+          __mixedSceneController?: MixedSceneController;
+        }).__mixedSceneController = mixedSceneController;
+      }
+      return controller;
+    })();
+    mixedSceneInitializationPromise = initialization;
+    void initialization.catch(() => {
+      if (!mixedSceneController && mixedSceneInitializationPromise === initialization) {
+        mixedSceneInitializationPromise = null;
+      }
     });
-    await controller.initialize();
-    mixedSceneController = controller;
-    canvasToolController?.syncVectorControllerState();
-    const snapshot = engine.getMixedSceneSnapshot();
-    if (snapshot) controller.syncScene(snapshot);
-    syncMobileToolsMenuState(snapshot);
-    requestMobileLayersRefresh();
-    mobileToolSettingsSheet?.syncOpenState();
-    if (import.meta.env.DEV) {
-      (window as Window & {
-        __mixedSceneController?: MixedSceneController;
-      }).__mixedSceneController = mixedSceneController;
-    }
-    return controller;
-  })();
-  mixedSceneInitializationPromise = initialization;
-  try {
-    return await initialization;
-  } catch (error) {
-    if (mixedSceneInitializationPromise === initialization) {
-      mixedSceneInitializationPromise = null;
-    }
-    throw error;
   }
+
+  const resourcePreparation = scope === "semantic-scene"
+    ? engine.ensureMixedSceneEditorResources()
+    : scope === "shape-preview"
+      ? engine.ensureShapePreviewEditorResources()
+      : scope === "vector-shape"
+        ? engine.ensureVectorShapeEditorResources()
+        : Promise.resolve();
+  const initialization = mixedSceneController
+    ? Promise.resolve(mixedSceneController)
+    : mixedSceneInitializationPromise!;
+  const [controller] = await Promise.all([initialization, resourcePreparation]);
+  if (scope === "shape-preview") {
+    // The drag preview is already usable. Prepare permanent mesh fill without
+    // holding the tool-selection promise open.
+    void engine.ensureVectorShapeEditorResources().catch((error) => {
+      appDiagnosticsController?.recordOperation("prewarm-vector-shape", "shapes", error);
+      console.warn("Could not prewarm vector shape GPU programs.", error);
+    });
+  }
+  return controller;
 }
 
 void engine.initialize()

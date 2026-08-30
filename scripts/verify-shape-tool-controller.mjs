@@ -30,8 +30,16 @@ assert.match(engineSource, /shapePreviewAfterKey !== null[\s\S]*?visibleSemantic
   "a raster-only document must enter ordered presentation while the preview is prepared");
 assert.match(
   engineSource,
-  /async prepareShapePreviewPresentation\(\): Promise<void> \{\s*\/\/[\s\S]*?await this\.ensureMixedSceneEditorResources\(\);/,
-  "the first shape preview must wait for its semantic-scene GPU capability",
+  /async prepareShapePreviewPresentation\(\): Promise<void> \{\s*\/\/[\s\S]*?await this\.ensureShapePreviewEditorResources\(\);/,
+  "the first shape preview must wait only for its small ordered-preview capability",
+);
+const shapePreviewPreparation = engineSource.match(
+  /async prepareShapePreviewPresentation\(\): Promise<void> \{[\s\S]*?\n  \}/,
+)?.[0] ?? "";
+assert.doesNotMatch(
+  shapePreviewPreparation,
+  /ensureMixedSceneEditorResources|ensureOptionalEditorResources|finishStaticResourceCreation/,
+  "the first shape drag must not compile the complete semantic program graph",
 );
 assert.match(tileSource, /shapePreviewAfterKey === null/,
   "the raster-only tile path cannot bypass the inserted preview slot");

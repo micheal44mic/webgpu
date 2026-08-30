@@ -3373,18 +3373,26 @@ export class MixedSceneController {
     const effectIsReady = (result: VectorTextEffectMeshResult): boolean =>
       result.matchesRequestedIdentity
       && (!requireRequestedLod || result.matchesRequestedLod);
-    const silhouetteResult = this.effectMeshForSvgPath(
-      node,
-      node.document.silhouetteRevision,
-      node.document.silhouettePath,
-      view,
-      "silhouette-fill",
-      { kind: "source-fill" },
-      liveSlots,
-      requireRequestedLod,
+    const needsSilhouetteMesh = (
+      node.singleShadowEnabled && node.singleShadowOpacity > 0
+    ) || (
+      node.innerShadowEnabled && node.innerShadowOpacity > 0
     );
-    allEffectsReady = allEffectsReady && effectIsReady(silhouetteResult);
-    const silhouetteMesh = silhouetteResult.mesh;
+    let silhouetteMesh: VectorTextGpuMeshData | null = null;
+    if (needsSilhouetteMesh) {
+      const silhouetteResult = this.effectMeshForSvgPath(
+        node,
+        node.document.silhouetteRevision,
+        node.document.silhouettePath,
+        view,
+        "silhouette-fill",
+        { kind: "source-fill" },
+        liveSlots,
+        requireRequestedLod,
+      );
+      allEffectsReady = allEffectsReady && effectIsReady(silhouetteResult);
+      silhouetteMesh = silhouetteResult.mesh;
+    }
 
     if (node.singleShadowEnabled && node.singleShadowOpacity > 0 && silhouetteMesh) {
       if (node.singleShadowBlur > 0) {

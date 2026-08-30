@@ -52,6 +52,7 @@ import { startThicknessFactor } from "./thickness-dynamics";
 import { flushClosingLightGlazeSessionBeforeNewStroke } from "./engine-glaze-runtime";
 import { normalizeViewRotation } from "./engine-math";
 import { ensureMixedScenePresentationResources } from "./mixed-scene-presentation-resources";
+import { ensureMixedSceneVectorShapeResources } from "./mixed-scene-shape-resources";
 import { strokeSymmetryCopiesIntersectDocument } from "./stroke-symmetry-core";
 import {
   canvasOffsetToLayerOffset,
@@ -302,20 +303,21 @@ export async function finishStaticResourceCreation(
   }
 
   if (createOptional) {
+    await ensureMixedSceneVectorShapeResources(engine);
     await ensureMixedScenePresentationResources(engine);
     engine.vectorTextDisplayShaderModule = engine.device.createShaderModule({
       label: "Dual viewport vector text mixed-layer display WGSL",
       code: vectorTextDisplayShader,
     });
-    engine.mixedSceneRasterSegmentShaderModule = engine.device.createShaderModule({
+    engine.mixedSceneRasterSegmentShaderModule ??= engine.device.createShaderModule({
       label: "Mixed scene raster segment WGSL",
       code: mixedSceneRasterSegmentShader,
     });
-    engine.mixedSceneTextSegmentShaderModule = engine.device.createShaderModule({
+    engine.mixedSceneTextSegmentShaderModule ??= engine.device.createShaderModule({
       label: "Mixed scene text segment WGSL",
       code: mixedSceneTextSegmentShader,
     });
-    engine.mixedSceneShapePreviewShaderModule = engine.device.createShaderModule({
+    engine.mixedSceneShapePreviewShaderModule ??= engine.device.createShaderModule({
       label: "Mixed scene live shape preview WGSL",
       code: mixedSceneShapePreviewShader,
     });
@@ -406,7 +408,7 @@ export async function finishStaticResourceCreation(
         { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
       ],
     });
-    engine.mixedSceneTextSegmentBindGroupLayout = engine.device.createBindGroupLayout({
+    engine.mixedSceneTextSegmentBindGroupLayout ??= engine.device.createBindGroupLayout({
       label: "Mixed scene text segment bind group layout",
       entries: [
         { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
@@ -418,19 +420,19 @@ export async function finishStaticResourceCreation(
         { binding: 6, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
       ],
     });
-    engine.mixedSceneShapePreviewBindGroupLayout = engine.device.createBindGroupLayout({
+    engine.mixedSceneShapePreviewBindGroupLayout ??= engine.device.createBindGroupLayout({
       label: "Mixed scene live shape preview bind group layout",
       entries: [
         { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
       ],
     });
-    engine.mixedSceneShapePreviewUniformBuffer = engine.device.createBuffer({
+    engine.mixedSceneShapePreviewUniformBuffer ??= engine.device.createBuffer({
       label: "Mixed scene live shape preview uniforms",
       size: engine.mixedSceneShapePreviewUniformUpload.byteLength,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    engine.mixedSceneShapePreviewBindGroup = engine.device.createBindGroup({
+    engine.mixedSceneShapePreviewBindGroup ??= engine.device.createBindGroup({
       label: "Mixed scene live shape preview bind group",
       layout: engine.mixedSceneShapePreviewBindGroupLayout,
       entries: [
@@ -587,23 +589,23 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.vectorTextGpuBlurFilterUniformBuffer = engine.device.createBuffer({
-    label: `Vector text GPU blur filter uniforms ${VECTOR_TEXT_GPU_MAXIMUM_DRAWS}`,
-    size: VECTOR_TEXT_GPU_MAXIMUM_DRAWS * VECTOR_TEXT_GPU_UNIFORM_STRIDE,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
-  engine.vectorTextGpuBlurSampler = engine.device.createSampler({
-    label: "Vector text GPU blur linear clamp sampler",
-    addressModeU: "clamp-to-edge",
-    addressModeV: "clamp-to-edge",
-    magFilter: "linear",
-    minFilter: "linear",
-  });
+    engine.vectorTextGpuBlurFilterUniformBuffer ??= engine.device.createBuffer({
+      label: `Vector text GPU blur filter uniforms ${VECTOR_TEXT_GPU_MAXIMUM_DRAWS}`,
+      size: VECTOR_TEXT_GPU_MAXIMUM_DRAWS * VECTOR_TEXT_GPU_UNIFORM_STRIDE,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    engine.vectorTextGpuBlurSampler ??= engine.device.createSampler({
+      label: "Vector text GPU blur linear clamp sampler",
+      addressModeU: "clamp-to-edge",
+      addressModeV: "clamp-to-edge",
+      magFilter: "linear",
+      minFilter: "linear",
+    });
     const mixedRasterPipelineLayout = engine.device.createPipelineLayout({
       label: "Mixed scene raster segment pipeline layout",
       bindGroupLayouts: [engine.mixedSceneRasterSegmentBindGroupLayout],
     });
-    engine.mixedSceneRasterSegmentPipeline = engine.device.createRenderPipeline({
+    engine.mixedSceneRasterSegmentPipeline ??= engine.device.createRenderPipeline({
       label: "Mixed scene raster segment source-over pipeline",
       layout: mixedRasterPipelineLayout,
       vertex: { module: engine.mixedSceneRasterSegmentShaderModule, entryPoint: "vertexMain" },
@@ -629,7 +631,7 @@ export async function finishStaticResourceCreation(
       label: "Mixed scene text segment pipeline layout",
       bindGroupLayouts: [engine.mixedSceneTextSegmentBindGroupLayout],
     });
-    engine.mixedSceneTextSegmentPipeline = engine.device.createRenderPipeline({
+    engine.mixedSceneTextSegmentPipeline ??= engine.device.createRenderPipeline({
       label: "Mixed scene text segment source-over pipeline",
       layout: mixedTextPipelineLayout,
       vertex: { module: engine.mixedSceneTextSegmentShaderModule, entryPoint: "vertexMain" },
@@ -651,7 +653,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedSceneShapePreviewPipeline = engine.device.createRenderPipeline({
+    engine.mixedSceneShapePreviewPipeline ??= engine.device.createRenderPipeline({
       label: "Mixed scene live shape preview source-over pipeline",
       layout: engine.device.createPipelineLayout({
         label: "Mixed scene live shape preview pipeline layout",
@@ -719,7 +721,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-strip", cullMode: "none" },
     });
-    engine.mixedSceneClearPipeline = engine.device.createRenderPipeline({
+    engine.mixedSceneClearPipeline ??= engine.device.createRenderPipeline({
       label: "Mixed scene partial transparent clear pipeline",
       layout: engine.device.createPipelineLayout({
         label: "Mixed scene partial transparent clear pipeline layout",
@@ -747,7 +749,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedSceneBackgroundPipeline = engine.device.createRenderPipeline({
+    engine.mixedSceneBackgroundPipeline ??= engine.device.createRenderPipeline({
       label: "Mixed scene document background pipeline",
       layout: engine.device.createPipelineLayout({
         label: "Mixed scene document background pipeline layout",
@@ -809,7 +811,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedSceneActiveDisplayPipeline = engine.device.createRenderPipeline({
+    engine.mixedSceneActiveDisplayPipeline ??= engine.device.createRenderPipeline({
       label: "Mixed scene active base layer source-over pipeline",
       layout: displayPipelineLayout,
       vertex: { module: engine.displayShaderModule, entryPoint: "vertexMain" },

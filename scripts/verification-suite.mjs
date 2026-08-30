@@ -132,5 +132,6 @@ export const verificationScripts = Object.freeze([
   "verify-vector-shadow-3d.mjs",
   "verify-vector-shapes.mjs",
   "verify-vector-pixel-alignment.mjs",
+  "verify-vector-shape-cold-start.mjs",
   "verify-view-rotation.mjs",
 ]);

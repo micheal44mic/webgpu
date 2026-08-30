@@ -142,8 +142,8 @@ assert.doesNotMatch(
 );
 assert.match(
   staticResourcesSource,
-  /if \(createOptional\) \{\s*await ensureMixedScenePresentationResources\(engine\)/,
-  "the full optional graph must reuse the minimal checker program",
+  /if \(createOptional\) \{\s*await ensureMixedSceneVectorShapeResources\(engine\);\s*await ensureMixedScenePresentationResources\(engine\)/,
+  "the full optional graph must reuse the small shape and checker programs",
 );
 const rasterSegmentStart = vectorRuntimeSource.indexOf(
   "export function createMixedSceneRasterSegmentResources(",
