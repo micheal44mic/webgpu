@@ -120,6 +120,7 @@ export interface LayerPanelControllerOptions {
   readonly thumbnails: LayerThumbnailController;
   readonly getStats: () => EngineStats | null;
   readonly isInteractionLocked: () => boolean;
+  readonly getInteractionLockMessage?: () => string | null;
   readonly isRenderDeferred: () => boolean;
   readonly canOpen: () => boolean;
   readonly beforeOpen: () => void;
@@ -218,6 +219,7 @@ interface LayerPanelReorderGesture {
   readonly startScrollTop: number;
   readonly restoreFocus: boolean;
   readonly sceneOrderSignature: string;
+  readonly immediateMouseDrag: boolean;
   holdTimer: number | null;
   phase: "pending" | "armed" | "dragging";
   plan: MobileLayerReorderPlan | null;
@@ -257,6 +259,7 @@ export class LayerPanelController {
   private suppressClickKey: string | null = null;
   private suppressClickUntil = 0;
   private announcementFrame: number | null = null;
+  private interactionLockStatus: string | null = null;
   private disposed = false;
 
   constructor(private readonly options: LayerPanelControllerOptions) {
@@ -391,6 +394,7 @@ export class LayerPanelController {
       list.removeAttribute("inert");
     }
     list.setAttribute("aria-disabled", String(listLocked));
+    this.syncInteractionLockStatus(listLocked);
     const stats = this.options.getStats();
     if (stats) this.syncToolbar(stats, locked);
     this.requestRefresh();
@@ -406,6 +410,7 @@ export class LayerPanelController {
     if (listLocked) list.setAttribute("inert", "");
     else list.removeAttribute("inert");
     list.setAttribute("aria-disabled", String(listLocked));
+    this.syncInteractionLockStatus(listLocked);
     this.reconcileMultiSelection(stats);
     const liveKeys = new Set(this.selectionItems(stats).map((item) => item.key));
     const contextStillSelected = this.contextKey === null
@@ -445,7 +450,13 @@ export class LayerPanelController {
       mergeSelectionButton.disabled = true;
       mergeSelectionButton.title = "";
     }
-    const signature = this.listSignature(views, locked, multiSelectionAvailable);
+    const lockMessage = listLocked ? this.interactionLockStatus : null;
+    const signature = this.listSignature(
+      views,
+      locked,
+      multiSelectionAvailable,
+      lockMessage,
+    );
     if (signature === this.renderSignature) {
       this.refreshRequested = false;
       return;
@@ -511,6 +522,8 @@ export class LayerPanelController {
         "aria-label",
         background
           ? `${view.name}, locked layer that always stays at the bottom`
+          : listLocked
+          ? `${view.name}. ${lockMessage ?? "Finish the current operation before moving layers."}`
           : this.multiSelectEnabled
           ? selected
             ? `${view.name}${clippingLabel}, selected. `
@@ -519,18 +532,21 @@ export class LayerPanelController {
             : `Add ${view.name}${clippingLabel} to the multiple selection`
           : view.selected
             ? `${view.name}${clippingLabel}. `
-              + "Hold for layer options, then drag to reorder; "
+              + "Drag with the left mouse button to reorder; "
+              + "touch or pen: hold for layer options, then drag; "
               + "Alt plus Arrow Up or Down also moves it."
-            : `Select ${view.name}${clippingLabel}`,
+            : `Select ${view.name}${clippingLabel}, or drag it with the left mouse button to reorder.`,
       );
       if (!background && view.selected && !this.multiSelectEnabled) {
         select.setAttribute("aria-keyshortcuts", "Alt+ArrowUp Alt+ArrowDown");
       } else {
         select.removeAttribute("aria-keyshortcuts");
       }
-      select.title = view.clippingParent
-        ? `${view.name} · Clipped to ${view.clippingParent.name}`
-        : view.name;
+      select.title = listLocked
+        ? lockMessage ?? "Finish the current operation before moving layers."
+        : view.clippingParent
+          ? `${view.name} · Clipped to ${view.clippingParent.name}`
+          : view.name;
       name.textContent = view.name;
       clippingIndicator.hidden = !clippingChild;
       if (clippingChild && clippingIndicator.childElementCount === 0) {
@@ -1636,11 +1652,12 @@ export class LayerPanelController {
     views: readonly LayerPanelView[],
     locked: boolean,
     multiSelectionAvailable: boolean,
+    lockMessage: string | null,
   ): string {
     const selectionSignature = this.multiSelectEnabled
       ? [...this.selectedKeys].sort().join(",")
       : "";
-    return `${locked ? 1 : 0}|${multiSelectionAvailable ? 1 : 0}|`
+    return `${locked ? 1 : 0}|${multiSelectionAvailable ? 1 : 0}|${lockMessage ?? ""}|`
       + `${this.multiSelectEnabled ? 1 : 0}|${selectionSignature}|`
       + views.map((view) => {
         const bounds = view.contentBounds;
@@ -1954,7 +1971,21 @@ export class LayerPanelController {
 
   private activateReorder(): void {
     const gesture = this.reorderGesture;
-    if (!gesture || gesture.phase !== "armed") return;
+    if (!gesture) return;
+    const directMouseDrag = gesture.phase === "pending" && gesture.immediateMouseDrag;
+    if (gesture.phase !== "armed" && !directMouseDrag) return;
+    if (directMouseDrag) {
+      const stats = this.options.getStats();
+      if (
+        !this.openState
+        || this.options.isInteractionLocked()
+        || !stats
+        || gesture.sceneOrderSignature !== this.orderSignature(stats)
+      ) {
+        this.cancelReorder(false);
+        return;
+      }
+    }
     if (this.multiSelectEnabled) {
       this.announce("Layer options open for the current selection.");
       return;
@@ -2075,11 +2106,12 @@ export class LayerPanelController {
     ) return;
     const target = event.target instanceof this.options.browser.Element ? event.target : null;
     const select = target?.closest<HTMLButtonElement>(".mobile-layer-select");
-    const row = select?.closest<HTMLElement>(
-      ".mobile-layer-row.is-selected, .mobile-layer-row.is-multi-selected",
-    );
+    const row = select?.closest<HTMLElement>(".mobile-layer-row");
     const key = row?.dataset.layerKey;
     if (!select || select.disabled || !row || !key || !isLayerPanelKey(key)) return;
+    const selected = row.matches(".is-selected, .is-multi-selected");
+    const immediateMouseDrag = event.pointerType === "mouse" && !this.multiSelectEnabled;
+    if (!selected && !immediateMouseDrag) return;
     const stats = this.options.getStats();
     if (!stats) return;
     const name = row.querySelector<HTMLElement>(".mobile-layer-name")?.textContent?.trim()
@@ -2098,6 +2130,7 @@ export class LayerPanelController {
       startScrollTop: this.options.elements.list.scrollTop,
       restoreFocus: this.options.document.activeElement === select,
       sceneOrderSignature: this.orderSignature(stats),
+      immediateMouseDrag,
       holdTimer: null,
       phase: "pending",
       plan: null,
@@ -2106,10 +2139,12 @@ export class LayerPanelController {
       frame: null,
       lastFrameTime: now,
     };
-    gesture.holdTimer = this.options.browser.setTimeout(
-      () => this.armContextGesture(),
-      MOBILE_LAYER_REORDER_HOLD_MS,
-    );
+    if (selected) {
+      gesture.holdTimer = this.options.browser.setTimeout(
+        () => this.armContextGesture(),
+        MOBILE_LAYER_REORDER_HOLD_MS,
+      );
+    }
     this.reorderGesture = gesture;
   }
 
@@ -2117,6 +2152,22 @@ export class LayerPanelController {
     const gesture = this.reorderGesture;
     if (!gesture || event.pointerId !== gesture.pointerId) return;
     if (gesture.phase === "pending") {
+      if (
+        gesture.immediateMouseDrag
+        && mobileLayerReorderMovementExceeded(
+          gesture.startClientX,
+          gesture.startClientY,
+          event.clientX,
+          event.clientY,
+        )
+      ) {
+        if (gesture.holdTimer !== null) this.options.browser.clearTimeout(gesture.holdTimer);
+        gesture.holdTimer = null;
+        event.preventDefault();
+        gesture.clientY = event.clientY;
+        this.activateReorder();
+        return;
+      }
       const holdReached = mobileLayerReorderHoldReached(
         gesture.startTime,
         this.options.browser.performance.now(),
@@ -2130,7 +2181,7 @@ export class LayerPanelController {
         )) this.cancelReorder(false);
         return;
       }
-      // A busy frame may delay the hold timer until after the first mouse move.
+      // A busy frame may delay the hold timer until after the first pointer move.
       // Arm from the elapsed pointer time so that holding and then dragging is
       // reliable on desktop as well as touch input.
       if (gesture.holdTimer !== null) this.options.browser.clearTimeout(gesture.holdTimer);
@@ -2163,6 +2214,7 @@ export class LayerPanelController {
     if (!gesture || event.pointerId !== gesture.pointerId) return;
     if (
       gesture.phase === "pending"
+      && gesture.holdTimer !== null
       && mobileLayerReorderHoldReached(
         gesture.startTime,
         this.options.browser.performance.now(),
@@ -2281,14 +2333,36 @@ export class LayerPanelController {
   }
 
   private announce(message: string): void {
+    if (this.interactionLockStatus !== null) return;
     const status = this.options.elements.reorderStatus;
+    status.classList.remove("is-blocked");
     status.textContent = "";
     if (this.announcementFrame !== null) {
       this.options.browser.cancelAnimationFrame(this.announcementFrame);
     }
     this.announcementFrame = this.options.browser.requestAnimationFrame(() => {
       this.announcementFrame = null;
-      if (!this.disposed) status.textContent = message;
+      if (!this.disposed && this.interactionLockStatus === null) status.textContent = message;
     });
+  }
+
+  private syncInteractionLockStatus(locked: boolean): void {
+    const next = locked
+      ? this.options.getInteractionLockMessage?.()
+        ?? "Finish the current operation before moving layers."
+      : null;
+    if (next === this.interactionLockStatus) return;
+    const previous = this.interactionLockStatus;
+    this.interactionLockStatus = next;
+    const status = this.options.elements.reorderStatus;
+    status.classList.toggle("is-blocked", next !== null);
+    if (next !== null) {
+      if (this.announcementFrame !== null) {
+        this.options.browser.cancelAnimationFrame(this.announcementFrame);
+        this.announcementFrame = null;
+      }
+      status.textContent = next;
+    }
+    else if (status.textContent === previous) status.textContent = "";
   }
 }

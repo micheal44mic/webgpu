@@ -2506,6 +2506,7 @@ layerPanelController = new LayerPanelController({
   thumbnails: layerThumbnailController,
   getStats: () => engineInitialized ? engine.getStats() : null,
   isInteractionLocked: () => interactionLocked() || sceneEditorController?.isBusy === true,
+  getInteractionLockMessage: () => layerPanelInteractionLockMessage(),
   isRenderDeferred: () => canvasInputController?.isPointerActive === true
     || sceneEditorController?.isBusy === true
     || historyState.openEdit !== null
@@ -2946,6 +2947,36 @@ function fillPreviewAllowsCanvasNavigation(): boolean {
   if (!engineInitialized || historyState.openEdit !== "fill") return false;
   const previewState = engine.getFillPreviewState();
   return previewState.active && !previewState.terminal;
+}
+
+function layerPanelInteractionLockMessage(): string | null {
+  switch (historyState.openEdit) {
+    case "fill":
+      return "Apply or cancel Fill before moving layers.";
+    case "transform":
+      return "Apply or cancel Transform before moving layers.";
+    case "property":
+      return "Finish the current vector edit before moving layers.";
+    case "raster-property":
+      return "Finish the current layer edit before moving layers.";
+    case "layer-options":
+      return "Close Layer Options before moving layers.";
+    case "gaussian-blur":
+    case "spatial-blur":
+    case "motion-blur":
+    case "noise":
+    case "glass":
+    case "curves":
+    case "color-adjust":
+    case "color-balance":
+    case "gradient-map":
+    case "liquify":
+      return "Apply or cancel the open effect before moving layers.";
+    case null:
+      return interactionLocked() || sceneEditorController?.isBusy === true
+        ? "Finish the current operation before moving layers."
+        : null;
+  }
 }
 
 function nonHistoryOperationLocked(

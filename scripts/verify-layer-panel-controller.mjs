@@ -30,6 +30,11 @@ assert.doesNotMatch(
 assert.match(controllerSource, /private readonly abortController: AbortController/);
 assert.match(controllerSource, /this\.abortController\.abort\(\)/);
 assert.match(controllerSource, /list\.setAttribute\("inert", ""\)/);
+assert.match(controllerSource, /private syncInteractionLockStatus\(locked: boolean\)/);
+assert.match(
+  mainSource,
+  /getInteractionLockMessage: \(\) => layerPanelInteractionLockMessage\(\)[\s\S]*?Apply or cancel Fill before moving layers\./,
+);
 assert.match(controllerSource, /contextOrderSignature/);
 assert.match(controllerSource, /sceneOrderSignature/);
 assert.match(controllerSource, /this\.options\.deleteLayer\(key\)/);
@@ -160,6 +165,7 @@ class FakeElement extends EventTarget {
   scrollTop = 0;
   focusCount = 0;
   children = [];
+  captures = new Set();
 
   setAttribute(name, value) {
     this.attributes.set(name, String(value));
@@ -182,6 +188,9 @@ class FakeElement extends EventTarget {
   }
 
   blur() {}
+  setPointerCapture(pointerId) { this.captures.add(pointerId); }
+  hasPointerCapture(pointerId) { return this.captures.has(pointerId); }
+  releasePointerCapture(pointerId) { this.captures.delete(pointerId); }
   append(...children) {
     this.children.push(...children);
   }
@@ -267,11 +276,13 @@ const elements = createElements();
 const thumbnailOpenStates = [];
 let stats = null;
 let interactionLocked = false;
+let interactionLockMessage = null;
 const referenceCalls = [];
 const clippingCalls = [];
 const rasterizeCalls = [];
 const mergeCalls = [];
 const layerResults = [];
+const selectionCalls = [];
 const multiSelectionUpdates = [];
 const thumbnailInvalidations = [];
 const thumbnailEnsures = [];
@@ -303,6 +314,7 @@ const controller = new LayerPanelController({
   },
   getStats: () => stats,
   isInteractionLocked: () => interactionLocked,
+  getInteractionLockMessage: () => interactionLockMessage,
   isRenderDeferred: () => false,
   canOpen: () => true,
   beforeOpen() {},
@@ -353,7 +365,7 @@ const controller = new LayerPanelController({
     throw new Error("not used");
   },
   addClippingMaskLayer() {},
-  selectLayer() {},
+  selectLayer: (key) => selectionCalls.push(key),
   setLayerVisibility() {},
   setRasterReference: (key, enabled) => referenceCalls.push({ key, enabled }),
   setDocumentBackgroundVisibility: () => true,
@@ -746,21 +758,221 @@ assert.equal(elements.contextMenu.getAttribute("inert"), "");
 assert.equal(controller.contextKey, null);
 assert.equal(controller.openContextMenu("raster:8", contextRow), true);
 interactionLocked = true;
+interactionLockMessage = "Apply or cancel Fill before moving layers.";
 controller.syncInteractionState();
 assert.equal(elements.contextMenu.hidden, true);
 assert.equal(elements.contextMenu.getAttribute("inert"), "");
 assert.equal(controller.contextKey, null);
 assert.equal(elements.list.getAttribute("inert"), "");
 assert.equal(elements.list.getAttribute("aria-disabled"), "true");
+assert.equal(elements.reorderStatus.textContent, interactionLockMessage);
+assert.equal(elements.reorderStatus.classList.contains("is-blocked"), true);
 interactionLocked = false;
+interactionLockMessage = null;
 controller.syncInteractionState();
 assert.equal(elements.list.getAttribute("inert"), null);
+assert.equal(elements.reorderStatus.textContent, "");
+assert.equal(elements.reorderStatus.classList.contains("is-blocked"), false);
+
+// A queued live-region announcement must never overwrite a lock explanation.
+let queuedAnnouncement = null;
+let canceledAnnouncement = null;
+const originalRequestAnimationFrame = browser.requestAnimationFrame;
+const originalCancelAnimationFrame = browser.cancelAnimationFrame;
+browser.requestAnimationFrame = (callback) => {
+  queuedAnnouncement = callback;
+  return 91;
+};
+browser.cancelAnimationFrame = (frame) => { canceledAnnouncement = frame; };
+controller.announce("Move before Layer 1.");
+interactionLocked = true;
+interactionLockMessage = "Apply or cancel Fill before moving layers.";
+controller.syncInteractionState();
+assert.equal(canceledAnnouncement, 91);
+queuedAnnouncement?.(0);
+assert.equal(elements.reorderStatus.textContent, interactionLockMessage);
+assert.equal(elements.reorderStatus.classList.contains("is-blocked"), true);
+interactionLocked = false;
+interactionLockMessage = null;
+controller.syncInteractionState();
+browser.requestAnimationFrame = originalRequestAnimationFrame;
+browser.cancelAnimationFrame = originalCancelAnimationFrame;
 controller.setOpen(false);
 
-// A busy desktop frame may postpone the hold timer. The first mouse movement
-// after the real hold deadline must arm and enter reorder instead of being
-// rejected by the pre-hold movement tolerance.
-const delayedMouseGesture = {
+function reorderPointerTarget(key, selected) {
+  const row = new FakeElement();
+  row.dataset.layerKey = key;
+  row.matches = (selector) => selected
+    && (selector.includes("is-selected") || selector.includes("is-multi-selected"));
+  const name = new FakeElement();
+  name.textContent = key;
+  const select = new FakeElement();
+  select.className = "mobile-layer-select";
+  select.dataset.mobileLayerAction = "select";
+  select.closest = (selector) => (
+    selector.includes("mobile-layer-row") || selector.includes("data-layer-key")
+      ? row
+      : null
+  );
+  row.querySelector = (selector) => {
+    if (selector.includes("mobile-layer-name")) return name;
+    if (selector.includes("mobile-layer-select")) return select;
+    return null;
+  };
+  const target = new FakeElement();
+  target.closest = (selector) => (
+    selector.includes("mobile-layer-select") || selector.includes("data-mobile-layer-action")
+      ? select
+      : null
+  );
+  return { row, select, target };
+}
+
+controller.setOpen(true);
+const originalNow = browser.performance.now;
+const originalClearTimeout = browser.clearTimeout;
+const originalActivateReorder = controller.activateReorder;
+let now = 0;
+let clearedHoldTimer = null;
+let activatedMouseReorder = 0;
+browser.performance.now = () => now;
+browser.clearTimeout = (timer) => { clearedHoldTimer = timer; };
+controller.activateReorder = () => {
+  activatedMouseReorder += 1;
+  controller.reorderGesture.phase = "dragging";
+};
+
+// A left-mouse drag can start from an unselected row immediately. A plain
+// click still falls through to the existing selection action on pointer-up.
+const unselectedMouse = reorderPointerTarget("raster:8", false);
+controller.handleReorderPointerDown({
+  target: unselectedMouse.target,
+  pointerId: 51,
+  pointerType: "mouse",
+  button: 0,
+  isPrimary: true,
+  clientX: 10,
+  clientY: 10,
+});
+assert.equal(controller.reorderGesture?.immediateMouseDrag, true);
+assert.equal(controller.reorderGesture?.holdTimer, null);
+assert.equal(unselectedMouse.select.hasPointerCapture(51), true);
+let preventedMouseMove = 0;
+now = 10;
+controller.handleReorderPointerMove({
+  pointerId: 51,
+  clientX: 10,
+  clientY: 30,
+  preventDefault: () => { preventedMouseMove += 1; },
+});
+assert.equal(activatedMouseReorder, 1);
+assert.equal(preventedMouseMove, 1);
+controller.cancelReorder(false);
+
+const clickOnlyMouse = reorderPointerTarget("raster:8", false);
+now = 0;
+controller.handleReorderPointerDown({
+  target: clickOnlyMouse.target,
+  pointerId: 52,
+  pointerType: "mouse",
+  button: 0,
+  isPrimary: true,
+  clientX: 10,
+  clientY: 10,
+});
+now = 100;
+controller.handleReorderPointerUp({
+  pointerId: 52,
+  clientX: 10,
+  clientY: 10,
+  preventDefault() {},
+});
+assert.equal(controller.reorderGesture, null);
+const selectionsBeforeClick = selectionCalls.length;
+controller.handleListClick({ target: clickOnlyMouse.target, preventDefault() {} });
+assert.deepEqual(selectionCalls.slice(selectionsBeforeClick), ["raster:8"]);
+
+// A selected mouse row may still expose its hold menu, but moving beyond the
+// slop before 320 ms cancels that timer and starts dragging immediately.
+const selectedMouse = reorderPointerTarget("raster:8", true);
+now = 0;
+clearedHoldTimer = null;
+controller.handleReorderPointerDown({
+  target: selectedMouse.target,
+  pointerId: 53,
+  pointerType: "mouse",
+  button: 0,
+  isPrimary: true,
+  clientX: 10,
+  clientY: 10,
+});
+assert.equal(controller.reorderGesture?.holdTimer, 1);
+now = 10;
+controller.handleReorderPointerMove({
+  pointerId: 53,
+  clientX: 10,
+  clientY: 30,
+  preventDefault: () => { preventedMouseMove += 1; },
+});
+assert.equal(activatedMouseReorder, 2);
+assert.equal(clearedHoldTimer, 1);
+controller.cancelReorder(false);
+
+const rightMouse = reorderPointerTarget("raster:8", true);
+controller.handleReorderPointerDown({
+  target: rightMouse.target,
+  pointerId: 54,
+  pointerType: "mouse",
+  button: 2,
+  isPrimary: true,
+  clientX: 10,
+  clientY: 10,
+});
+assert.equal(controller.reorderGesture, null);
+assert.equal(rightMouse.select.captures.size, 0);
+
+controller.activateReorder = originalActivateReorder;
+
+// The production activation path must accept the pending immediate-mouse
+// phase; otherwise the move handler would call it but never enter dragging.
+const directActivationTarget = reorderPointerTarget("raster:8", false);
+const originalReorderPlan = controller.reorderPlan;
+controller.reorderPlan = () => ({
+  selectedKey: "raster:8",
+  draggedKeys: ["raster:8"],
+  remainingKeys: ["text:5"],
+  validSlots: [0, 1],
+  originalSlot: 1,
+});
+controller.reorderGesture = {
+  pointerId: 55,
+  key: "raster:8",
+  name: "Layer 2",
+  row: directActivationTarget.row,
+  select: directActivationTarget.select,
+  startClientX: 10,
+  startClientY: 10,
+  startTime: 0,
+  startScrollTop: 0,
+  restoreFocus: false,
+  sceneOrderSignature: controller.orderSignature(stats),
+  immediateMouseDrag: true,
+  holdTimer: null,
+  phase: "pending",
+  plan: null,
+  currentSlot: 0,
+  clientY: 30,
+  frame: null,
+  lastFrameTime: 0,
+};
+controller.activateReorder();
+assert.equal(controller.reorderGesture?.phase, "dragging");
+controller.cancelReorder(false);
+controller.reorderPlan = originalReorderPlan;
+
+// Touch and pen keep the deliberate hold contract. A delayed timer may be
+// recovered from elapsed pointer time without weakening the movement slop.
+const delayedTouchGesture = {
   pointerId: 41,
   key: "raster:8",
   name: "Layer 2",
@@ -772,6 +984,7 @@ const delayedMouseGesture = {
   startScrollTop: 0,
   restoreFocus: false,
   sceneOrderSignature: "test-order",
+  immediateMouseDrag: false,
   holdTimer: 73,
   phase: "pending",
   plan: null,
@@ -780,41 +993,38 @@ const delayedMouseGesture = {
   frame: null,
   lastFrameTime: 0,
 };
-const originalNow = browser.performance.now;
-const originalClearTimeout = browser.clearTimeout;
 const originalArmContextGesture = controller.armContextGesture;
-const originalActivateReorder = controller.activateReorder;
-let clearedHoldTimer = null;
-let armedMouseReorder = 0;
-let activatedMouseReorder = 0;
-let preventedMouseMove = 0;
+let armedTouchReorder = 0;
+let activatedTouchReorder = 0;
+let preventedTouchMove = 0;
 browser.performance.now = () => 321;
 browser.clearTimeout = (timer) => { clearedHoldTimer = timer; };
-controller.reorderGesture = delayedMouseGesture;
+controller.reorderGesture = delayedTouchGesture;
 controller.armContextGesture = () => {
-  armedMouseReorder += 1;
-  delayedMouseGesture.phase = "armed";
+  armedTouchReorder += 1;
+  delayedTouchGesture.phase = "armed";
 };
 controller.activateReorder = () => {
-  activatedMouseReorder += 1;
-  delayedMouseGesture.phase = "dragging";
+  activatedTouchReorder += 1;
+  delayedTouchGesture.phase = "dragging";
 };
 controller.handleReorderPointerMove({
   pointerId: 41,
   clientX: 10,
   clientY: 30,
-  preventDefault: () => { preventedMouseMove += 1; },
+  preventDefault: () => { preventedTouchMove += 1; },
 });
 assert.equal(clearedHoldTimer, 73);
-assert.equal(armedMouseReorder, 1);
-assert.equal(activatedMouseReorder, 1);
-assert.equal(preventedMouseMove, 1);
-assert.equal(delayedMouseGesture.phase, "dragging");
+assert.equal(armedTouchReorder, 1);
+assert.equal(activatedTouchReorder, 1);
+assert.equal(preventedTouchMove, 1);
+assert.equal(delayedTouchGesture.phase, "dragging");
 controller.reorderGesture = null;
 browser.performance.now = originalNow;
 browser.clearTimeout = originalClearTimeout;
 controller.armContextGesture = originalArmContextGesture;
 controller.activateReorder = originalActivateReorder;
+controller.setOpen(false);
 
 stats = null;
 controller.setOpen(true);

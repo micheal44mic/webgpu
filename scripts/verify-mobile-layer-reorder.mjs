@@ -72,6 +72,12 @@ assert.equal(mobileLayerReorderAutoScrollVelocity(300, 100, 500), 0);
 assert.equal(mobileLayerReorderAutoScrollVelocity(500, 100, 500), 520);
 
 assert.match(html, /id="mobileLayerReorderStatus"[\s\S]*?aria-live="polite"/);
+assert.match(html, /id="mobileLayerReorderStatus"[\s\S]*?class="mobile-layer-reorder-status"/);
+assert.doesNotMatch(
+  html,
+  /id="mobileLayerReorderStatus"[\s\S]{0,120}?class="visually-hidden"/,
+  "layer interaction locks must be explained visibly inside the panel",
+);
 assert.match(
   html,
   /id="mobileLayerContextMenu"[\s\S]*?role="menu"[\s\S]*?id="mobileLayerClipping"[\s\S]*?id="mobileLayerOptions"[\s\S]*?id="mobileLayerRasterize"/,
@@ -84,6 +90,7 @@ assert.match(
 );
 assert.match(css, /\.mobile-layer-row\.is-reordering/);
 assert.match(css, /\.mobile-layer-row\.is-drop-before::before/);
+assert.match(css, /\.mobile-layer-reorder-status\.is-blocked/);
 assert.match(
   css,
   /\.mobile-layer-context-menu\s*\{[\s\S]*?position:\s*absolute;[\s\S]*?background:\s*var\(--app-background\);/,
@@ -91,6 +98,16 @@ assert.match(
 assert.match(css, /touch-action: none/);
 assert.match(controller, /setPointerCapture\(event\.pointerId\)/);
 assert.match(controller, /MOBILE_LAYER_REORDER_HOLD_MS/);
+assert.match(
+  controller,
+  /immediateMouseDrag = event\.pointerType === "mouse"[\s\S]*?gesture\.immediateMouseDrag[\s\S]*?mobileLayerReorderMovementExceeded[\s\S]*?this\.activateReorder\(\)/,
+  "left-mouse movement beyond the slop must start reorder without waiting for hold",
+);
+assert.match(
+  controller,
+  /directMouseDrag = gesture\.phase === "pending" && gesture\.immediateMouseDrag[\s\S]*?gesture\.phase !== "armed" && !directMouseDrag[\s\S]*?gesture\.phase = "dragging"/,
+  "the activation path must accept a pending immediate left-mouse drag",
+);
 assert.match(
   controller,
   /private armContextGesture\(\)[\s\S]*?this\.openContextMenu\(gesture\.key, gesture\.row\)[\s\S]*?gesture\.phase = "armed"/,
@@ -146,18 +163,21 @@ const pointerMoveStart = controller.indexOf("private handleReorderPointerMove");
 const pointerMoveEnd = controller.indexOf("private handleReorderPointerUp", pointerMoveStart);
 assert.ok(pointerMoveStart >= 0 && pointerMoveEnd > pointerMoveStart);
 const pointerMoveSource = controller.slice(pointerMoveStart, pointerMoveEnd);
+const immediateMouseActivation = pointerMoveSource.indexOf("gesture.immediateMouseDrag");
 const pendingHoldFallback = pointerMoveSource.indexOf("mobileLayerReorderHoldReached");
-const pendingMovementCancel = pointerMoveSource.indexOf("mobileLayerReorderMovementExceeded");
+const pendingMovementCancel = pointerMoveSource.lastIndexOf("mobileLayerReorderMovementExceeded");
 assert.ok(
-  pendingHoldFallback >= 0
+  immediateMouseActivation >= 0
+    && pendingHoldFallback >= 0
     && pendingMovementCancel >= 0
+    && immediateMouseActivation < pendingHoldFallback
     && pendingHoldFallback < pendingMovementCancel,
-  "pointer movement after a completed hold must arm reorder before applying movement slop",
+  "mouse drag must be immediate while touch/pen still arm before applying movement slop",
 );
 assert.match(
   pointerMoveSource,
   /mobileLayerReorderHoldReached[\s\S]*?clearTimeout\(gesture\.holdTimer\)[\s\S]*?this\.armContextGesture\(\)[\s\S]*?gesture\.phase === "armed"[\s\S]*?this\.activateReorder\(\)/,
-  "a delayed hold timer must still transition the same mouse move into reorder",
+  "a delayed touch/pen hold timer must still transition the same move into reorder",
 );
 assert.doesNotMatch(
   pointerMoveSource,
