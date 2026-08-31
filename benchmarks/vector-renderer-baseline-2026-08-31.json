@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "commit": "a7fa869",
+  "rendererVariant": "resource-sharing-disabled",
+  "environment": {
+    "viewportCssWidth": 1280,
+    "viewportCssHeight": 720,
+    "canvasWidth": 1280,
+    "canvasHeight": 720,
+    "devicePixelRatio": 1,
+    "documentWidth": 4096,
+    "documentHeight": 4096
+  },
+  "shared": {
+    "passed": true,
+    "svgCount": 64,
+    "textCount": 64,
+    "svgSourceRevisionCount": 1,
+    "textGeometrySignatureCount": 1,
+    "svgCommandCount": 1152,
+    "textCharacterCount": 1280,
+    "sceneMutationMs": 18124.8,
+    "firstStableSceneMs": 18512.7,
+    "cold": {
+      "endToEndMs": 48.6,
+      "rendererMs": 2,
+      "frameP95Ms": 6.9
+    },
+    "warm": {
+      "endToEndMs": 27.1,
+      "rendererMs": 1.7,
+      "frameP95Ms": 7.2
+    },
+    "pan": {
+      "gestureDurationMs": 426.6,
+      "recoveryMs": 33.1,
+      "frameP95Ms": 7.2,
+      "eventToNextFrameP95Ms": 9.7
+    },
+    "zoom": {
+      "gestureDurationMs": 334.3,
+      "recoveryMs": 31.7,
+      "frameP95Ms": 7.3,
+      "eventToNextFrameP95Ms": 9.3
+    },
+    "memoryDeltaAfterSetup": {
+      "registeredCurrentMiB": 37.41725158691406,
+      "registeredBufferCount": 129,
+      "registeredTextureCount": 133,
+      "liveVectorGpuMiB": 27.417236328125,
+      "vectorPresentationMiB": 37.41725158691406,
+      "usedJsHeapMiB": 41.42793369293213
+    }
+  },
+  "unique": {
+    "passed": false,
+    "plannedSvgCount": 64,
+    "plannedTextCount": 64,
+    "lastObservedSvgCount": 49,
+    "readyGeometryCount": 48,
+    "pendingGeometryCount": 1,
+    "failure": "The forty-ninth distinct ready geometry was repeatedly evicted before its active slot could adopt it. The maximum-size scene did not settle."
+  },
+  "notes": [
+    "The shared profile completed with no worker failures and a precise final presentation.",
+    "Frame timing is display-refresh bounded; resource counts and memory are the primary phase-one gates.",
+    "The unique-profile failure is a renderer cache-lifetime defect discovered by this benchmark, not a fixture timeout."
+  ]
+}
