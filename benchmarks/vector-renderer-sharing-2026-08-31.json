@@ -1,0 +1,267 @@
+{
+  "version": 1,
+  "implementationCommit": "d3f008d",
+  "branch": "codex/vector-renderer-experiment",
+  "checkpoint": {
+    "commit": "e46d495",
+    "tag": "checkpoint/vector-renderer-before-2026-08-31"
+  },
+  "feature": {
+    "name": "immutable-vector-gpu-resource-sharing",
+    "defaultEnabled": false,
+    "queryParameter": "vectorGpuResourceSharing=1",
+    "scope": [
+      "Share immutable mesh buffers by compiled geometry revision.",
+      "Share immutable analytic-geometry textures by compiled geometry revision.",
+      "Keep blur caches node-scoped.",
+      "Protect all active compiled geometries from ready-cache eviction."
+    ]
+  },
+  "environment": {
+    "viewportCssWidth": 1280,
+    "viewportCssHeight": 720,
+    "canvasWidth": 1280,
+    "canvasHeight": 720,
+    "devicePixelRatio": 1,
+    "documentWidth": 4096,
+    "documentHeight": 4096,
+    "benchmarkReportVersion": 2,
+    "runtimePeakSampleIntervalMs": 50
+  },
+  "sharedWorkload": {
+    "svgCount": 64,
+    "textCount": 64,
+    "svgSourceRevisionCount": 1,
+    "textGeometrySignatureCount": 1,
+    "svgCommandCount": 1152,
+    "textCharacterCount": 1280,
+    "runsPerVariant": 3,
+    "resourceComparison": {
+      "geometryCacheEntries": {
+        "disabled": 128,
+        "enabled": 2,
+        "reductionPercent": 98.4375
+      },
+      "liveGeometryAllocatedBytes": {
+        "disabled": 15478016,
+        "enabled": 241844,
+        "reductionPercent": 98.4375
+      },
+      "setupUploadBytes": {
+        "disabled": 24372096,
+        "enabled": 506956,
+        "reductionPercent": 97.919933
+      },
+      "setupCreatedBufferCount": {
+        "disabled": 4288,
+        "enabled": 126,
+        "reductionPercent": 97.061567
+      },
+      "setupCreatedTextureCount": {
+        "disabled": 128,
+        "enabled": 2,
+        "reductionPercent": 98.4375
+      },
+      "registeredBufferCountAfterSetup": {
+        "disabled": 129,
+        "enabled": 3,
+        "reductionPercent": 97.674419
+      },
+      "registeredTextureCountAfterSetup": {
+        "disabled": 133,
+        "enabled": 7,
+        "reductionPercent": 94.736842
+      },
+      "liveVectorGpuMiBAfterSetup": {
+        "disabled": 27.417236328125,
+        "enabled": 12.886890411376951,
+        "reductionPercent": 52.997121
+      },
+      "registeredCurrentMiBAfterSetup": {
+        "disabled": 37.41725158691406,
+        "enabled": 22.886905670166016,
+        "reductionPercent": 38.83328
+      },
+      "traceGeometryMissCount": {
+        "disabled": 64,
+        "enabled": 1
+      },
+      "traceCreatedBufferCount": {
+        "disabled": 128,
+        "enabled": 2
+      },
+      "traceUploadBytes": {
+        "disabled": 273664,
+        "enabled": 4276
+      }
+    },
+    "timingMediansMs": {
+      "allVisibleFitEndToEnd": {
+        "disabled": 30.4,
+        "enabled": 36.3,
+        "changePercent": 19.41
+      },
+      "coldEndToEnd": {
+        "disabled": 52.6,
+        "enabled": 46.7,
+        "changePercent": -11.22
+      },
+      "coldRendererCpu": {
+        "disabled": 3.7,
+        "enabled": 2.4,
+        "changePercent": -35.14
+      },
+      "warmEndToEnd": {
+        "disabled": 32.1,
+        "enabled": 27.9,
+        "changePercent": -13.08
+      },
+      "warmRendererCpu": {
+        "disabled": 2.2,
+        "enabled": 2.1,
+        "changePercent": -4.55
+      },
+      "panGestureDuration": {
+        "disabled": 417.2,
+        "enabled": 425.1,
+        "changePercent": 1.89
+      },
+      "panRecovery": {
+        "disabled": 27.2,
+        "enabled": 34.5,
+        "changePercent": 26.84
+      },
+      "zoomGestureDuration": {
+        "disabled": 335.5,
+        "enabled": 342,
+        "changePercent": 1.94
+      },
+      "zoomRecovery": {
+        "disabled": 26.7,
+        "enabled": 30.6,
+        "changePercent": 14.61
+      }
+    },
+    "rawRuns": {
+      "disabled": [
+        {
+          "allVisibleFit": { "endToEndMs": 40.3, "rendererCpuMs": 3.3 },
+          "cold": { "endToEndMs": 58.5, "rendererCpuMs": 4 },
+          "warm": { "endToEndMs": 32.1, "rendererCpuMs": 1.7 },
+          "pan": { "gestureDurationMs": 415.2, "recoveryMs": 25 },
+          "zoom": { "gestureDurationMs": 336.4, "recoveryMs": 25.3 }
+        },
+        {
+          "allVisibleFit": { "endToEndMs": 29.2, "rendererCpuMs": 2.6 },
+          "cold": { "endToEndMs": 45.2, "rendererCpuMs": 2.9 },
+          "warm": { "endToEndMs": 25.3, "rendererCpuMs": 2.3 },
+          "pan": { "gestureDurationMs": 418.9, "recoveryMs": 27.2 },
+          "zoom": { "gestureDurationMs": 335.5, "recoveryMs": 26.7 }
+        },
+        {
+          "allVisibleFit": { "endToEndMs": 30.4, "rendererCpuMs": 2.1 },
+          "cold": { "endToEndMs": 52.6, "rendererCpuMs": 3.7 },
+          "warm": { "endToEndMs": 36.2, "rendererCpuMs": 2.2 },
+          "pan": { "gestureDurationMs": 417.2, "recoveryMs": 29.2 },
+          "zoom": { "gestureDurationMs": 333.8, "recoveryMs": 28.5 }
+        }
+      ],
+      "enabled": [
+        {
+          "allVisibleFit": { "endToEndMs": 36.3, "rendererCpuMs": 3.6 },
+          "cold": { "endToEndMs": 54, "rendererCpuMs": 2.4 },
+          "warm": { "endToEndMs": 27.9, "rendererCpuMs": 2.3 },
+          "pan": { "gestureDurationMs": 423.9, "recoveryMs": 39.5 },
+          "zoom": { "gestureDurationMs": 342, "recoveryMs": 30.7 }
+        },
+        {
+          "allVisibleFit": { "endToEndMs": 32.1, "rendererCpuMs": 3.3 },
+          "cold": { "endToEndMs": 43.9, "rendererCpuMs": 2.5 },
+          "warm": { "endToEndMs": 26.9, "rendererCpuMs": 2.1 },
+          "pan": { "gestureDurationMs": 426.2, "recoveryMs": 34.5 },
+          "zoom": { "gestureDurationMs": 343.5, "recoveryMs": 25 }
+        },
+        {
+          "allVisibleFit": { "endToEndMs": 36.4, "rendererCpuMs": 2.2 },
+          "cold": { "endToEndMs": 46.7, "rendererCpuMs": 2.2 },
+          "warm": { "endToEndMs": 31, "rendererCpuMs": 1.3 },
+          "pan": { "gestureDurationMs": 425.1, "recoveryMs": 28.1 },
+          "zoom": { "gestureDurationMs": 337.4, "recoveryMs": 30.6 }
+        }
+      ]
+    },
+    "frameP95Observation": "Both variants remained display-refresh bounded near 7.1-7.2 ms. No reliable pan or zoom frame-rate improvement was measured."
+  },
+  "uniqueWorkloadControl": {
+    "svgCount": 64,
+    "textCount": 64,
+    "svgSourceRevisionCount": 64,
+    "textGeometrySignatureCount": 64,
+    "runsPerVariant": 1,
+    "disabled": {
+      "passed": true,
+      "readyGeometryCount": 64,
+      "geometryCacheEntries": 128,
+      "liveGeometryAllocatedBytes": 15525120,
+      "registeredCurrentMiB": 37.462173,
+      "registeredBufferCount": 129,
+      "registeredTextureCount": 133,
+      "liveVectorGpuMiB": 27.462158,
+      "allVisibleFitEndToEndMs": 29.6,
+      "coldEndToEndMs": 205.4,
+      "coldFrameP95Ms": 21,
+      "warmEndToEndMs": 34.5
+    },
+    "enabled": {
+      "passed": true,
+      "readyGeometryCount": 64,
+      "geometryCacheEntries": 128,
+      "liveGeometryAllocatedBytes": 15525120,
+      "registeredCurrentMiB": 37.462173,
+      "registeredBufferCount": 129,
+      "registeredTextureCount": 133,
+      "liveVectorGpuMiB": 27.462158,
+      "allVisibleFitEndToEndMs": 33.7,
+      "coldEndToEndMs": 236.2,
+      "coldFrameP95Ms": 20.9,
+      "warmEndToEndMs": 27.2
+    },
+    "interpretation": "The enabled path has no live-resource or memory regression when all geometry is distinct. Timing is a single noisy control run and is not used as a performance claim."
+  },
+  "historicalDefect": {
+    "baselineCommit": "a7fa869",
+    "lastObservedSvgCount": 49,
+    "readyGeometryCount": 48,
+    "pendingGeometryCount": 1,
+    "afterFix": "Both same-build variants complete 64 SVG and 64 text nodes without worker errors."
+  },
+  "visualParity": {
+    "comparedWidth": 870,
+    "comparedHeight": 720,
+    "comparedPixels": 626400,
+    "meanAbsoluteChannelError": 0,
+    "maximumChannelError": 0,
+    "changedPixelCount": 0,
+    "changedPixelCountOver2": 0
+  },
+  "verification": {
+    "typecheck": "passed",
+    "focusedVectorVerification": "passed",
+    "mixedSceneVerification": "passed",
+    "mixedSceneResetVerification": "passed",
+    "labsBuild": "passed",
+    "productionBundle": "passed",
+    "fullVerificationSuites": { "passed": 137, "total": 137 }
+  },
+  "decision": {
+    "status": "keep-experimental",
+    "reason": "Resource and memory gates pass strongly, visual parity is exact, and the distinct-geometry control is stable. Frame pacing does not show a broad improvement because this phase does not reduce draw count. The revision identity must be strengthened before enabling sharing by default."
+  },
+  "measurementNotes": [
+    "End-to-end measurements wait for a stable presentation.",
+    "Renderer CPU measurements cover command preparation and submission, not GPU completion timestamps.",
+    "Runtime maxima are sampled every 50 ms and may not include shorter transient peaks.",
+    "One invalid run with a viewport resize was rejected by the benchmark environment latch.",
+    "This phase implements resource sharing and cache-lifetime correctness; it is not a general analytic curve or stencil-and-cover renderer."
+  ]
+}
