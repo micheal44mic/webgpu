@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "implementationCommit": "c7da792",
+  "branch": "codex/vector-renderer-experiment",
+  "rollbackCheckpoint": {
+    "commit": "f8e6376",
+    "tag": "checkpoint/vector-resource-sharing-2026-08-31"
+  },
+  "feature": {
+    "name": "collision-safe-shared-vector-geometry",
+    "defaultEnabled": true,
+    "sameBuildEscapeHatch": "vectorGpuResourceSharing=0",
+    "identity": {
+      "fingerprintBits": 128,
+      "collisionHandling": "Exact verb, coordinate, contour-offset, and fill-rule comparison before sharing.",
+      "sameObjectLookup": "Weak object identity cache for constant-time reuse of published immutable paths.",
+      "crossObjectSnapshotLimit": {
+        "entries": 256,
+        "bytes": 33554432
+      }
+    },
+    "lifecycle": [
+      "Shared GPU resources remain live until their last owner is pruned.",
+      "The compiler never releases a queued path before its build request completes.",
+      "Document reset terminates the old worker, clears document-owned state, and resolves resource waiters.",
+      "Trusted runtime snapshots share immutable vector documents; public observers receive defensive copies."
+    ]
+  },
+  "environment": {
+    "viewportCssWidth": 1280,
+    "viewportCssHeight": 720,
+    "canvasWidth": 1280,
+    "canvasHeight": 720,
+    "devicePixelRatio": 1,
+    "documentWidth": 4096,
+    "documentHeight": 4096,
+    "benchmarkReportVersion": 3,
+    "runtimePeakSampleIntervalMs": 50
+  },
+  "sharedWorkload": {
+    "svgCount": 64,
+    "textCount": 64,
+    "svgGeometryIdentityCount": 1,
+    "textGeometrySignatureCount": 1,
+    "svgCommandCount": 1152,
+    "textCharacterCount": 1280,
+    "finalPairedRun": {
+      "disabled": {
+        "passed": true,
+        "geometryCacheEntries": 128,
+        "meshCacheEntries": 64,
+        "analyticCacheEntries": 64,
+        "geometryUploadBytes": 24641484,
+        "liveGeometryAllocatedBytes": 15478016,
+        "liveVectorGpuMiB": 31.635986328125,
+        "coldEndToEndMs": 56.3,
+        "warmEndToEndMs": 27.2,
+        "failedCompilerJobs": 0
+      },
+      "enabled": {
+        "passed": true,
+        "geometryCacheEntries": 2,
+        "meshCacheEntries": 1,
+        "analyticCacheEntries": 1,
+        "geometryUploadBytes": 515508,
+        "liveGeometryAllocatedBytes": 241844,
+        "liveVectorGpuMiB": 17.105640411376953,
+        "coldEndToEndMs": 48.2,
+        "warmEndToEndMs": 24.2,
+        "failedCompilerJobs": 0
+      },
+      "improvementPercent": {
+        "geometryCacheEntries": 98.4375,
+        "geometryUploadBytes": 97.907967,
+        "liveGeometryAllocatedBytes": 98.4375,
+        "liveVectorGpuMiB": 45.929802,
+        "coldEndToEndMs": 14.387211,
+        "warmEndToEndMs": 11.029412
+      }
+    },
+    "priorThreeRunMedianConfirmation": {
+      "coldEndToEndImprovementPercent": 11.22,
+      "warmEndToEndImprovementPercent": 13.08,
+      "sourceReport": "vector-renderer-sharing-2026-08-31.json"
+    }
+  },
+  "uniqueGeometryControl": {
+    "svgCount": 64,
+    "textCount": 64,
+    "svgGeometryIdentityCount": 64,
+    "textGeometrySignatureCount": 64,
+    "disabled": {
+      "passed": true,
+      "geometryCacheEntries": 128,
+      "geometryUploadBytes": 24768448,
+      "liveGeometryAllocatedBytes": 15526540,
+      "coldEndToEndMs": 192.9,
+      "warmEndToEndMs": 31.1
+    },
+    "enabled": {
+      "passed": true,
+      "geometryCacheEntries": 128,
+      "geometryUploadBytes": 24768448,
+      "liveGeometryAllocatedBytes": 15526540,
+      "coldEndToEndMs": 204.1,
+      "warmEndToEndMs": 33.0
+    },
+    "interpretation": "Resource counts and bytes are identical when every geometry is unique. The single timing pair is noisy and is not used as a performance claim."
+  },
+  "visualParity": {
+    "comparedWidth": 870,
+    "comparedHeight": 720,
+    "comparedPixels": 626400,
+    "encodedPngBytesDisabled": 39422,
+    "encodedPngBytesEnabled": 39422,
+    "encodedByteDifferenceCount": 0,
+    "exactMatch": true,
+    "postHardeningByteExactSvgAndTextVerification": "passed"
+  },
+  "regressionCoverage": {
+    "forcedFingerprintCollision": "passed",
+    "fillRuleVerbCoordinateAndContourIdentity": "passed",
+    "sameObjectConstantTimeReuse": "passed",
+    "boundedSnapshotEntriesAndBytes": "passed",
+    "oversizedPathRetention": "passed",
+    "threeHundredPaintRuntimeSnapshotIdentity": "passed",
+    "oneHundredTwentyNineQueuedPaths": "passed",
+    "documentResetWorkerAndWaiterLifecycle": "passed",
+    "sharedGpuResourceLastOwnerDestruction": "passed",
+    "publicSnapshotDefensiveBoundary": "passed"
+  },
+  "verification": {
+    "typecheck": "passed",
+    "focusedVectorVerification": "passed",
+    "mixedSceneResetVerification": "passed",
+    "vectorShapeVerification": "passed",
+    "productionBundle": "passed",
+    "labsBuild": "passed",
+    "fullVerificationSuites": {
+      "passed": 138,
+      "total": 138
+    },
+    "independentReview": "green"
+  },
+  "decision": {
+    "status": "enabled-by-default",
+    "reason": "The duplicated-geometry workload clears the resource and memory gates by a wide margin, exact visual parity passes, unique geometry has no resource regression, lifecycle edge cases are covered, and the full verification suite is green."
+  },
+  "measurementNotes": [
+    "End-to-end measurements wait for stable presentation.",
+    "Renderer CPU timing covers command preparation and submission, not GPU completion timestamps.",
+    "Runtime maxima are sampled every 50 ms and may miss shorter transient peaks.",
+    "Resource counts, allocated bytes, and upload bytes are deterministic for the fixture; wall-clock timing is noisier.",
+    "This checkpoint hardens identity, sharing, and ownership. General analytic primitive rendering is a separate subsequent experiment."
+  ]
+}
