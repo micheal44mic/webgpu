@@ -83,6 +83,7 @@ import {
   VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY,
   planVectorTextSingleShadowBlur,
 } from "./vector-text-single-shadow";
+import { vectorGpuBlurCacheKey } from "./vector-gpu-blur-cache-key.ts";
 import {
   VECTOR_TEXT_ADAPTIVE_ZOOM_SETTLE_MS,
   VECTOR_TEXT_ADAPTIVE_ZOOM_STRATEGY,
@@ -195,6 +196,7 @@ import type {
   MixedSceneDiagnostics,
   MixedSceneGroupTransformUpdate,
   MixedSceneHost,
+  MixedSceneLoadingOptions,
   VectorRasterHistoryGpuProbe,
   VectorRasterHistoryGpuTestReport,
   VectorRasterizationResult,
@@ -206,6 +208,7 @@ export type {
   MixedSceneDiagnostics,
   MixedSceneGroupTransformUpdate,
   MixedSceneHost,
+  MixedSceneLoadingOptions,
   VectorRasterHistoryGpuProbe,
   VectorRasterHistoryGpuTestReport,
   VectorRasterizationResult,
@@ -363,6 +366,12 @@ function snapshotContainsText(snapshot: MixedSceneSnapshot): boolean {
   return snapshot.items.some((item) => item.kind === "text");
 }
 
+function snapshotTextFontFamilies(snapshot: MixedSceneSnapshot): readonly string[] {
+  return [...new Set(snapshot.items.flatMap((item) =>
+    item.kind === "text" ? [item.textNode.fontFamily] : []
+  ))];
+}
+
 export class MixedSceneController {
   private readonly host: MixedSceneHost;
   private readonly browser: Window;
@@ -402,8 +411,8 @@ export class MixedSceneController {
   private readonly effectCompiler: VectorTextEffectCompilerClient;
   private effectReadyIdleTimer: number | null = null;
   private effectReadyRenderPending = false;
-  private fontGeometryPreparation: Promise<void> | null = null;
   private deferredTextSyncGeneration: number | null = null;
+  private readonly textCreationResourcePreparations = new Map<string, Promise<void>>();
 
   private documentGeneration = 0;
   private snapshot: MixedSceneSnapshot | null = null;
@@ -539,9 +548,6 @@ export class MixedSceneController {
     const initialSnapshot = this.runtimeSceneSnapshot();
     if (!initialSnapshot) {
       throw new Error("The engine did not create the mixed scene.");
-    }
-    if (snapshotContainsText(initialSnapshot)) {
-      await this.prepareFontGeometry();
     }
     this.bindControls();
     this.syncScene(initialSnapshot);
@@ -967,7 +973,7 @@ export class MixedSceneController {
   }
 
   syncScene(snapshot: MixedSceneSnapshot): void {
-    if (snapshotContainsText(snapshot) && !this.fontGeometry.isPreloaded) {
+    if (!this.fontGeometry.hasFamilies(snapshotTextFontFamilies(snapshot))) {
       this.deferTextSceneSync();
       return;
     }
@@ -1402,15 +1408,38 @@ export class MixedSceneController {
   createText(color?: string): void {
     if (this.sceneOperationBusy || this.transformSessionOpen) return;
     void this.runSceneOperation("Creating Text", async () => {
-      await this.prepareFontGeometry();
       const textCount =
         this.snapshot?.items.filter((item) => item.kind === "text").length ?? 0;
       const seed = this.defaultSeed(textCount, color);
+      await this.prepareTextCreationResources(seed.fontFamily);
       await this.host.addVectorTextNode(
         { ...seed, ...this.documentPixelTransformForTextSeed(seed) },
         `Text ${textCount + 1}`,
       );
+    }, false, { revealImmediately: true, waitForPaint: true });
+  }
+
+  /**
+   * Warms the resources shared by the first text insertion. Callers may start
+   * this after their controls are painted; an immediate insertion joins the
+   * same in-flight work and keeps its loading lifecycle visible.
+   */
+  prepareTextCreationResources(
+    fontFamily = this.defaultSeed(0).fontFamily,
+  ): Promise<void> {
+    const existing = this.textCreationResourcePreparations.get(fontFamily);
+    if (existing) return existing;
+    const preparation = Promise.all([
+      this.prepareFontGeometry([fontFamily]),
+      this.host.ensureMixedSceneEditorResources(),
+    ]).then(() => undefined);
+    this.textCreationResourcePreparations.set(fontFamily, preparation);
+    void preparation.catch(() => {
+      if (this.textCreationResourcePreparations.get(fontFamily) === preparation) {
+        this.textCreationResourcePreparations.delete(fontFamily);
+      }
     });
+    return preparation;
   }
 
   deleteSelectedText(): void {
@@ -1553,7 +1582,6 @@ export class MixedSceneController {
     ): Promise<VectorRasterHistoryGpuProbe> => {
       let vectorKey: `text:${number}` | `svg:${number}`;
       if (sourceKind === "text") {
-        await this.prepareFontGeometry();
         const seed = {
           ...this.defaultSeed(0, "#334455"),
           text: "RGBA16F",
@@ -1561,6 +1589,7 @@ export class MixedSceneController {
           x: this.host.documentWidth * 0.5,
           y: this.host.documentHeight * 0.5,
         };
+        await this.prepareFontGeometry([seed.fontFamily]);
         const node = await this.host.addVectorTextNode(seed, "RGBA16F text test");
         vectorKey = `text:${node.id}`;
       } else {
@@ -1808,6 +1837,21 @@ export class MixedSceneController {
     const normalized = patch.text === undefined
       ? patch
       : { ...patch, text: patch.text || " " };
+    if (
+      normalized.fontFamily !== undefined
+      && normalized.fontFamily !== node.fontFamily
+      && !this.fontGeometry.hasFamily(normalized.fontFamily)
+    ) {
+      const nodeId = node.id;
+      const fontFamily = normalized.fontFamily;
+      void this.runSceneOperation("Preparing Font", async () => {
+        await this.prepareFontGeometry([fontFamily]);
+        const current = this.selectedTextNode();
+        if (!current || current.id !== nodeId) return;
+        this.updateTextGeometryNode(current, normalized);
+      }, false, { revealImmediately: true, waitForPaint: true });
+      return true;
+    }
     const affectsGeometry = Object.keys(normalized).some((key) => key !== "color");
     if (affectsGeometry) this.updateTextGeometryNode(node, normalized);
     else this.host.updateVectorTextNode(node.id, normalized);
@@ -3019,14 +3063,16 @@ export class MixedSceneController {
   private runWithLoading<Result>(
     label: string,
     operation: () => Promise<Result>,
+    options?: MixedSceneLoadingOptions,
   ): Promise<Result> {
-    return this.runLoadingOperation?.(label, operation) ?? operation();
+    return this.runLoadingOperation?.(label, operation, options) ?? operation();
   }
 
   private async runSceneOperation<Result>(
     label: string,
     operation: () => Promise<Result>,
     propagateError = false,
+    loadingOptions?: MixedSceneLoadingOptions,
   ): Promise<Result | undefined> {
     if (this.sceneOperationBusy) {
       return undefined;
@@ -3047,7 +3093,7 @@ export class MixedSceneController {
         }
         await this.host.waitForIdle();
         return result;
-      });
+      }, loadingOptions);
     } catch (error) {
       this.status.textContent = error instanceof Error
         ? error.message
@@ -3202,31 +3248,20 @@ export class MixedSceneController {
     this.effectReadyIdleTimer = request;
   }
 
-  private prepareFontGeometry(): Promise<void> {
-    if (this.fontGeometry.isPreloaded) return Promise.resolve();
-    if (this.fontGeometryPreparation) return this.fontGeometryPreparation;
-    const pending = this.fontGeometry.preload();
-    this.fontGeometryPreparation = pending;
-    void pending.then(
-      () => {
-        if (this.fontGeometryPreparation === pending) {
-          this.fontGeometryPreparation = null;
-        }
-      },
-      () => {
-        if (this.fontGeometryPreparation === pending) {
-          this.fontGeometryPreparation = null;
-        }
-      },
-    );
-    return pending;
+  private prepareFontGeometry(families?: Iterable<string>): Promise<void> {
+    const requiredFamilies = families
+      ?? (this.snapshot ? snapshotTextFontFamilies(this.snapshot) : []);
+    if (this.fontGeometry.hasFamilies(requiredFamilies)) return Promise.resolve();
+    return this.fontGeometry.ensureFamilies(requiredFamilies);
   }
 
   private deferTextSceneSync(): void {
     const generation = this.documentGeneration;
     if (this.deferredTextSyncGeneration === generation) return;
     this.deferredTextSyncGeneration = generation;
-    void this.prepareFontGeometry().then(() => {
+    const snapshot = this.runtimeSceneSnapshot();
+    const families = snapshot ? snapshotTextFontFamilies(snapshot) : [];
+    void this.prepareFontGeometry(families).then(() => {
       if (
         this.documentGeneration !== generation
         || this.deferredTextSyncGeneration !== generation
@@ -3250,7 +3285,7 @@ export class MixedSceneController {
     if (
       this.snapshot
       && snapshotContainsText(this.snapshot)
-      && !this.fontGeometry.isPreloaded
+      && !this.fontGeometry.hasFamilies(snapshotTextFontFamilies(this.snapshot))
     ) {
       this.deferTextSceneSync();
       return;
@@ -3684,6 +3719,12 @@ export class MixedSceneController {
     );
   }
 
+  private gpuBlurSourceRevision(nodeId: number, contentRevision: string): string {
+    return this.host.vectorGpuResourceSharingEnabled
+      ? contentRevision
+      : `node:${nodeId}:${contentRevision}`;
+  }
+
   private svgBlurDraw(
     node: Readonly<VectorSvgNode>,
     sourceMesh: VectorTextGpuMeshData,
@@ -3703,27 +3744,24 @@ export class MixedSceneController {
     const vector = kind === "outer"
       ? vectorTextSingleShadowLocalVector(node.singleShadowOffset, node.singleShadowAngle)
       : vectorTextInnerShadowLocalVector(node.innerShadowOffset, node.innerShadowAngle);
-    const blurKey = [
-      "vector-svg-gpu-blur-v1",
-      node.id,
-      sourceMesh.revision,
-      blur.toFixed(4),
-      plan.width,
-      plan.height,
-      plan.scale.toFixed(8),
-      plan.sigmaPixels.toFixed(8),
-      plan.radius,
-    ].join(":");
+    const blurBounds = [
+      plan.bounds[0],
+      plan.bounds[1],
+      plan.bounds[2],
+      plan.bounds[3],
+    ] as const;
+    const blurKey = vectorGpuBlurCacheKey(
+      {
+        kind: "mesh",
+        revision: this.gpuBlurSourceRevision(node.id, sourceMesh.revision),
+      },
+      { ...plan, bounds: blurBounds },
+    );
     const common = {
       meshKey: `svg:${node.id}:silhouette-fill`,
       mesh: sourceMesh,
       blurKey,
-      blurBounds: [
-        plan.bounds[0],
-        plan.bounds[1],
-        plan.bounds[2],
-        plan.bounds[3],
-      ] as const,
+      blurBounds,
       blurWidth: plan.width,
       blurHeight: plan.height,
       blurScale: plan.scale,
@@ -4018,28 +4056,25 @@ export class MixedSceneController {
       node.singleShadowOffset,
       node.singleShadowAngle,
     );
-    const blurKey = [
-      "vector-text-gpu-blur-v1",
-      node.id,
-      geometry.geometryIdentity,
-      node.singleShadowBlur.toFixed(4),
-      plan.width,
-      plan.height,
-      plan.scale.toFixed(8),
-      plan.sigmaPixels.toFixed(8),
-      plan.radius,
-    ].join(":");
+    const blurBounds = [
+      plan.bounds[0],
+      plan.bounds[1],
+      plan.bounds[2],
+      plan.bounds[3],
+    ] as const;
+    const blurKey = vectorGpuBlurCacheKey(
+      {
+        kind: "slug",
+        revision: this.gpuBlurSourceRevision(node.id, geometry.slug.revision),
+      },
+      { ...plan, bounds: blurBounds },
+    );
     return {
       mode: "slug-blur",
       meshKey: `text:${node.id}:slug`,
       slug: geometry.slug,
       blurKey,
-      blurBounds: [
-        plan.bounds[0],
-        plan.bounds[1],
-        plan.bounds[2],
-        plan.bounds[3],
-      ],
+      blurBounds,
       blurWidth: plan.width,
       blurHeight: plan.height,
       blurScale: plan.scale,
@@ -4118,27 +4153,24 @@ export class MixedSceneController {
     // The cache contains only G(fill). It is deliberately shareable with an
     // outer shadow using the same source, sigma and LOD; color and direction
     // are applied later and never duplicate the R16F matte.
-    const blurKey = [
-      "vector-text-gpu-blur-v1",
-      node.id,
-      geometry.geometryIdentity,
-      node.innerShadowBlur.toFixed(4),
-      plan.width,
-      plan.height,
-      plan.scale.toFixed(8),
-      plan.sigmaPixels.toFixed(8),
-      plan.radius,
-    ].join(":");
+    const blurBounds = [
+      plan.bounds[0],
+      plan.bounds[1],
+      plan.bounds[2],
+      plan.bounds[3],
+    ] as const;
+    const blurKey = vectorGpuBlurCacheKey(
+      {
+        kind: "slug",
+        revision: this.gpuBlurSourceRevision(node.id, geometry.slug.revision),
+      },
+      { ...plan, bounds: blurBounds },
+    );
     return {
       mode: "slug-inner-shadow-blur",
       ...common,
       blurKey,
-      blurBounds: [
-        plan.bounds[0],
-        plan.bounds[1],
-        plan.bounds[2],
-        plan.bounds[3],
-      ],
+      blurBounds,
       blurWidth: plan.width,
       blurHeight: plan.height,
       blurScale: plan.scale,

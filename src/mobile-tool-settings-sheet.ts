@@ -209,6 +209,13 @@ function colorInputValue(value: string): string {
   }
 }
 
+export function mergeVectorEffectEditorPatches(
+  pending: VectorEffectEditorPatch | null,
+  next: VectorEffectEditorPatch,
+): VectorEffectEditorPatch {
+  return pending === null ? { ...next } : { ...pending, ...next };
+}
+
 function mobileBlendModeLabel(mode: LayerBlendMode): string {
   return LAYER_BLEND_MODE_LABELS[mode];
 }
@@ -430,6 +437,8 @@ export class MobileToolSettingsSheetController {
     { readonly key: SceneLayerKey; readonly value: number }
   >();
   private layerRangeUpdateFrame: number | null = null;
+  private pendingVectorEffectPatch: VectorEffectEditorPatch | null = null;
+  private vectorEffectUpdateFrame: number | null = null;
   private layerOptionsSyncFrame: number | null = null;
   private openRequestGeneration = 0;
   private layerOptionsClosePromise: Promise<boolean> | null = null;
@@ -887,8 +896,7 @@ export class MobileToolSettingsSheetController {
       [this.textBlockShadowOutlineWidth, () => ({ blockShadowOutlineWidth: Number(this.textBlockShadowOutlineWidth.value) })],
     ] as const) {
       control.addEventListener("input", () => {
-        this.updateVectorEffectProperties(patch());
-        this.syncOpenState();
+        this.stageVectorEffectProperties(patch());
       });
     }
     this.selectionMethod.addEventListener("change", () => {
@@ -1179,6 +1187,7 @@ export class MobileToolSettingsSheetController {
   }
 
   private finishVectorPropertyEdit(): void {
+    this.flushVectorEffectUpdates();
     if (!this.vectorPropertyEditOpen) return;
     this.vectorPropertyEditOpen = false;
     this.options.commitSelectedVectorPropertyEdit();
@@ -1190,8 +1199,34 @@ export class MobileToolSettingsSheetController {
   }
 
   private updateVectorEffectProperties(patch: VectorEffectEditorPatch): void {
+    this.flushVectorEffectUpdates();
     if (!this.startVectorPropertyEdit()) return;
     this.options.updateSelectedVectorEffectProperties(patch);
+  }
+
+  private stageVectorEffectProperties(patch: VectorEffectEditorPatch): void {
+    if (!this.startVectorPropertyEdit()) return;
+    this.pendingVectorEffectPatch = mergeVectorEffectEditorPatches(
+      this.pendingVectorEffectPatch,
+      patch,
+    );
+    if (this.vectorEffectUpdateFrame !== null) return;
+    this.vectorEffectUpdateFrame = this.options.browser.requestAnimationFrame(() => {
+      this.vectorEffectUpdateFrame = null;
+      this.flushVectorEffectUpdates();
+    });
+  }
+
+  private flushVectorEffectUpdates(): void {
+    if (this.vectorEffectUpdateFrame !== null) {
+      this.options.browser.cancelAnimationFrame(this.vectorEffectUpdateFrame);
+      this.vectorEffectUpdateFrame = null;
+    }
+    const patch = this.pendingVectorEffectPatch;
+    this.pendingVectorEffectPatch = null;
+    if (patch === null) return;
+    this.options.updateSelectedVectorEffectProperties(patch);
+    this.syncOpenState();
   }
 
   private bindVectorHistoryControl(control: HTMLElement): void {

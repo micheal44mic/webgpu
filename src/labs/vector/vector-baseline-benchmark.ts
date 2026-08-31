@@ -16,11 +16,15 @@ import {
 import { VectorPathIdentityPool } from "../../vector-path-identity.ts";
 import complexCurvedStrokesSvg from "./fixtures/complex-curved-strokes.svg?raw";
 
-export type VectorBaselineProfile = "shared" | "unique" | "curved-strokes";
+export type VectorBaselineProfile =
+  | "shared"
+  | "unique"
+  | "curved-strokes"
+  | "effects-shared";
 
-const VECTOR_BASELINE_REPORT_VERSION = 6;
+const VECTOR_BASELINE_REPORT_VERSION = 7;
 const VECTOR_BASELINE_STRATEGY =
-  "vector-baseline-svg-text-runtime-geometry-identity-v6" as const;
+  "vector-baseline-svg-text-runtime-geometry-identity-v7-effects" as const;
 const IDLE_FRAME_COUNT = 30;
 const PAN_FRAME_COUNT = 60;
 const ZOOM_FRAME_COUNT = 48;
@@ -29,6 +33,8 @@ const STABLE_CONSECUTIVE_FRAME_COUNT = 3;
 const RUNTIME_SAMPLE_INTERVAL_MS = 50;
 const VECTOR_BASELINE_TEXT = "VECTOR SHARED CURVES";
 const CURVED_STROKE_SVG_COUNT = 32;
+const EFFECTS_SHARED_SVG_COUNT = 32;
+const EFFECTS_SHARED_TEXT_COUNT = 32;
 const CURVED_STROKE_FIXTURE_ID = "complex-curved-strokes-v1";
 const CURVED_STROKE_FIXTURE_SHA256 =
   "8c169ce7e7570492b08bfd26279e1698b0e0abd3ad2b3021e05a1e0c70e8fe9e";
@@ -61,6 +67,8 @@ interface VectorMemorySnapshot {
   readonly svgStrokeLodCacheEntries: number;
   readonly svgStrokeLodFallbackCount: number;
   readonly blockShadowPathLogicalMiB: number;
+  readonly blurGpuLogicalMiB: number;
+  readonly blurGpuCacheEntries: number;
   readonly registeredCategories: readonly {
     readonly category: string;
     readonly currentMiB: number;
@@ -214,6 +222,10 @@ export interface VectorBaselineReport {
     readonly svgLogicalVectorMiB: number;
     readonly uniqueSvgLogicalVectorMiB: number;
     readonly textCharacterCount: number;
+    readonly outlineNodeCount: number;
+    readonly blurredOuterShadowNodeCount: number;
+    readonly blockShadowNodeCount: number;
+    readonly innerShadowNodeCount: number;
     readonly sourceGenerationMs: number;
     readonly svgParseMs: number;
     readonly sceneMutationMs: number;
@@ -261,6 +273,8 @@ export interface VectorBaselineReport {
     readonly maximumScenePopulated: boolean;
     readonly profileIdentityValidated: boolean;
     readonly profileWorkloadBudgetValidated: boolean;
+    readonly effectWorkloadValidated: boolean;
+    readonly blurCacheSharedWhenEnabled: boolean;
     readonly allVisibleFitRendered: boolean;
     readonly coldAndWarmRendered: boolean;
     readonly panTraceCompleted: boolean;
@@ -396,6 +410,8 @@ function memorySnapshot(
     svgStrokeLodCacheEntries: diagnostics.svgStrokeLodCacheEntries,
     svgStrokeLodFallbackCount: diagnostics.svgStrokeLodFallbackCount,
     blockShadowPathLogicalMiB: diagnostics.blockShadowPathLogicalMiB,
+    blurGpuLogicalMiB: diagnostics.singleShadowGpuLogicalMiB,
+    blurGpuCacheEntries: diagnostics.singleShadowCacheEntries,
     registeredCategories: gpuMemory.registeredCategories.map((category) => ({
       ...category,
     })),
@@ -435,6 +451,8 @@ function subtractMemory(
       right.svgStrokeLodFallbackCount - left.svgStrokeLodFallbackCount,
     blockShadowPathLogicalMiB:
       right.blockShadowPathLogicalMiB - left.blockShadowPathLogicalMiB,
+    blurGpuLogicalMiB: right.blurGpuLogicalMiB - left.blurGpuLogicalMiB,
+    blurGpuCacheEntries: right.blurGpuCacheEntries - left.blurGpuCacheEntries,
     registeredCategories: right.registeredCategories.map((entry) => {
       const before = categories.get(entry.category);
       return {
@@ -559,29 +577,47 @@ async function waitForStableScene(
   minimumRenderCount: number,
   initialFrameTimestamp?: number,
 ): Promise<StableResult> {
+  let uncaughtFrameFailure: Error | null = null;
+  const recordFrameFailure = (event: ErrorEvent): void => {
+    if (uncaughtFrameFailure) return;
+    uncaughtFrameFailure = event.error instanceof Error
+      ? event.error
+      : new Error(event.message || "Vector rendering failed in an animation frame.");
+  };
+  const throwFrameFailure = (): void => {
+    if (uncaughtFrameFailure) throw uncaughtFrameFailure;
+  };
+  window.addEventListener("error", recordFrameFailure);
   let consecutiveStableFrames = 0;
   const intervalsMs: number[] = [];
-  let previous = initialFrameTimestamp;
-  if (previous === undefined) previous = await nextFrame();
-  for (let frame = 0; frame < STABLE_FRAME_LIMIT; frame += 1) {
-    const timestamp = await nextFrame();
-    intervalsMs.push(Math.max(0, timestamp - previous));
-    previous = timestamp;
-    const diagnostics = controller.getDiagnostics();
-    const isStable = diagnostics.renderCount >= minimumRenderCount
-      && stable(diagnostics);
-    consecutiveStableFrames = isStable ? consecutiveStableFrames + 1 : 0;
-    if (consecutiveStableFrames >= STABLE_CONSECUTIVE_FRAME_COUNT) {
-      await engine.waitForIdle();
-      await engine.waitForVectorTextPresentationCompletion();
-      const settled = controller.getDiagnostics();
-      if (settled.renderCount >= minimumRenderCount && stable(settled)) {
-        return { diagnostics: settled, intervalsMs };
+  try {
+    let previous = initialFrameTimestamp;
+    if (previous === undefined) previous = await nextFrame();
+    throwFrameFailure();
+    for (let frame = 0; frame < STABLE_FRAME_LIMIT; frame += 1) {
+      const timestamp = await nextFrame();
+      throwFrameFailure();
+      intervalsMs.push(Math.max(0, timestamp - previous));
+      previous = timestamp;
+      const diagnostics = controller.getDiagnostics();
+      const isStable = diagnostics.renderCount >= minimumRenderCount
+        && stable(diagnostics);
+      consecutiveStableFrames = isStable ? consecutiveStableFrames + 1 : 0;
+      if (consecutiveStableFrames >= STABLE_CONSECUTIVE_FRAME_COUNT) {
+        await engine.waitForIdle();
+        await engine.waitForVectorTextPresentationCompletion();
+        throwFrameFailure();
+        const settled = controller.getDiagnostics();
+        if (settled.renderCount >= minimumRenderCount && stable(settled)) {
+          return { diagnostics: settled, intervalsMs };
+        }
+        consecutiveStableFrames = 0;
       }
-      consecutiveStableFrames = 0;
     }
+    throw new Error("Vector scene did not settle within 720 visible frames.");
+  } finally {
+    window.removeEventListener("error", recordFrameFailure);
   }
-  throw new Error("Vector scene did not settle within 720 visible frames.");
 }
 
 async function measureIdleFrames(): Promise<FrameDistribution> {
@@ -701,6 +737,8 @@ function textSeed(
   height: number,
 ): VectorTextNodeSeed {
   const placement = gridPlacement(index, width, height);
+  const effectsProfile = profile === "effects-shared";
+  const blurredOuterShadow = effectsProfile && index % 2 === 0;
   return {
     text: profile === "unique" ? uniqueText(index) : VECTOR_BASELINE_TEXT,
     fontFamily: "Anton",
@@ -711,27 +749,27 @@ function textSeed(
     circleRadiusPercent: 50,
     circleInverted: false,
     distortPoints: null,
-    outlineWidth: 0,
+    outlineWidth: effectsProfile ? 4 : 0,
     outlineColor: "#111111",
     outlineJoin: "round",
-    blockShadowEnabled: false,
+    blockShadowEnabled: effectsProfile && !blurredOuterShadow,
     blockShadowColor: "#000000",
-    blockShadowOpacity: 0,
-    blockShadowOffset: 0,
-    blockShadowAngle: 0,
-    blockShadowOutlineWidth: 0,
-    singleShadowEnabled: false,
+    blockShadowOpacity: effectsProfile ? 0.72 : 0,
+    blockShadowOffset: effectsProfile ? 14 : 0,
+    blockShadowAngle: effectsProfile ? -132 : 0,
+    blockShadowOutlineWidth: effectsProfile ? 2 : 0,
+    singleShadowEnabled: blurredOuterShadow,
     singleShadowColor: "#000000",
-    singleShadowOpacity: 0,
-    singleShadowOffset: 0,
-    singleShadowAngle: 0,
-    singleShadowBlur: 0,
-    innerShadowEnabled: false,
+    singleShadowOpacity: effectsProfile ? 0.68 : 0,
+    singleShadowOffset: effectsProfile ? 12 : 0,
+    singleShadowAngle: effectsProfile ? -132 : 0,
+    singleShadowBlur: effectsProfile ? 10 : 0,
+    innerShadowEnabled: effectsProfile,
     innerShadowColor: "#000000",
-    innerShadowOpacity: 0,
-    innerShadowOffset: 0,
-    innerShadowAngle: 0,
-    innerShadowBlur: 0,
+    innerShadowOpacity: effectsProfile ? 0.58 : 0,
+    innerShadowOffset: effectsProfile ? 8 : 0,
+    innerShadowAngle: effectsProfile ? 48 : 0,
+    innerShadowBlur: effectsProfile ? 10 : 0,
     x: placement.x,
     y: placement.y + height * 0.021,
     scale: 0.34,
@@ -748,25 +786,39 @@ function svgSeed(
   visualInspectionMode: boolean,
   visualInspectionScale: number,
 ): VectorSvgNodeSeed {
+  const effectsProfile = profile === "effects-shared";
+  const blurredOuterShadow = effectsProfile && index % 2 === 0;
   const placement = visualInspectionMode
     ? { x: width * 0.42, y: height * 0.5 }
     : gridPlacement(index, width, height);
   return {
     document: documentValue,
     paintColors: documentValue.paints.map((paint, paintIndex) => (
-      profile === "curved-strokes"
+      profile === "curved-strokes" || profile === "effects-shared"
         ? paint.color
         : paletteColor(index, paintIndex * 3)
     )),
-    outlineWidth: 0,
+    outlineWidth: effectsProfile ? 4 : 0,
     outlineColor: "#111111",
     outlineJoin: "round",
-    blockShadowEnabled: false,
-    blockShadowOpacity: 0,
-    singleShadowEnabled: false,
-    singleShadowOpacity: 0,
-    innerShadowEnabled: false,
-    innerShadowOpacity: 0,
+    blockShadowEnabled: effectsProfile && !blurredOuterShadow,
+    blockShadowColor: "#000000",
+    blockShadowOpacity: effectsProfile ? 0.72 : 0,
+    blockShadowOffset: effectsProfile ? 14 : 0,
+    blockShadowAngle: effectsProfile ? -132 : 0,
+    blockShadowOutlineWidth: effectsProfile ? 2 : 0,
+    singleShadowEnabled: blurredOuterShadow,
+    singleShadowColor: "#000000",
+    singleShadowOpacity: effectsProfile ? 0.68 : 0,
+    singleShadowOffset: effectsProfile ? 12 : 0,
+    singleShadowAngle: effectsProfile ? -132 : 0,
+    singleShadowBlur: effectsProfile ? 10 : 0,
+    innerShadowEnabled: effectsProfile,
+    innerShadowColor: "#000000",
+    innerShadowOpacity: effectsProfile ? 0.58 : 0,
+    innerShadowOffset: effectsProfile ? 8 : 0,
+    innerShadowAngle: effectsProfile ? 48 : 0,
+    innerShadowBlur: effectsProfile ? 10 : 0,
     x: placement.x,
     y: placement.y - height * 0.025,
     scale: visualInspectionMode ? visualInspectionScale : 0.31,
@@ -944,7 +996,7 @@ export async function runVectorBaselineBenchmark(
       searchParameters.get("vectorBaselineTextCount") ?? "",
       10,
     );
-    const targetSvgCount = profile === "curved-strokes"
+    const targetSvgCount = profile === "curved-strokes" || profile === "effects-shared"
       ? Number.isInteger(requestedCurvedStrokeCount)
         ? Math.min(
             VECTOR_SVG_NODE_MAXIMUM,
@@ -952,24 +1004,31 @@ export async function runVectorBaselineBenchmark(
           )
         : visualInspectionMode
           ? 1
-          : CURVED_STROKE_SVG_COUNT
+          : profile === "effects-shared"
+            ? EFFECTS_SHARED_SVG_COUNT
+            : CURVED_STROKE_SVG_COUNT
       : VECTOR_SVG_NODE_MAXIMUM;
-    const targetTextCount = profile === "curved-strokes"
-      && Number.isInteger(requestedCurvedStrokeTextCount)
+    const targetTextCount = (
+      profile === "curved-strokes" || profile === "effects-shared"
+    ) && Number.isInteger(requestedCurvedStrokeTextCount)
       ? Math.min(
-          VECTOR_TEXT_NODE_MAXIMUM,
-          Math.max(0, requestedCurvedStrokeTextCount),
-        )
+        VECTOR_TEXT_NODE_MAXIMUM,
+        Math.max(0, requestedCurvedStrokeTextCount),
+      )
       : visualInspectionMode
         ? 0
-        : VECTOR_TEXT_NODE_MAXIMUM;
+        : profile === "effects-shared"
+          ? EFFECTS_SHARED_TEXT_COUNT
+          : VECTOR_TEXT_NODE_MAXIMUM;
     const sourceStartedAt = performance.now();
     const svgSources = profile === "unique"
       ? Array.from(
           { length: VECTOR_SVG_NODE_MAXIMUM },
           (_, index) => vectorSvgSource(index + 1),
         )
-      : [profile === "curved-strokes" ? complexCurvedStrokesSvg : vectorSvgSource(0)];
+      : [profile === "curved-strokes" || profile === "effects-shared"
+        ? complexCurvedStrokesSvg
+        : vectorSvgSource(0)];
     const textEntries = Array.from({ length: targetTextCount }, (_, index) => ({
       seed: textSeed(profile, index, engine.documentWidth, engine.documentHeight),
       name: `Vector baseline text ${String(index + 1).padStart(2, "0")}`,
@@ -980,7 +1039,7 @@ export async function runVectorBaselineBenchmark(
       source,
       profile === "unique"
         ? `vector-baseline-unique-${String(index + 1).padStart(2, "0")}.svg`
-        : profile === "curved-strokes"
+        : profile === "curved-strokes" || profile === "effects-shared"
           ? "complex-curved-strokes.svg"
           : "vector-baseline-shared.svg",
     ));
@@ -1072,6 +1131,21 @@ export async function runVectorBaselineBenchmark(
       (total, node) => total + node.text.length,
       0,
     );
+    const vectorNodes = [...svgNodes, ...textNodes];
+    const outlineNodeCount = vectorNodes.filter((node) => node.outlineWidth > 0).length;
+    const blurredOuterShadowNodeCount = vectorNodes.filter((node) => (
+      node.singleShadowEnabled
+      && node.singleShadowOpacity > 0
+      && node.singleShadowBlur > 0
+    )).length;
+    const blockShadowNodeCount = vectorNodes.filter((node) => (
+      node.blockShadowEnabled && node.blockShadowOpacity > 0
+    )).length;
+    const innerShadowNodeCount = vectorNodes.filter((node) => (
+      node.innerShadowEnabled
+      && node.innerShadowOpacity > 0
+      && node.innerShadowBlur > 0
+    )).length;
     const uniqueSvgLogicalVectorBytes = [...uniqueSvgDocuments.values()].reduce(
       (total, documentValue) => total + documentValue.logicalVectorBytes,
       0,
@@ -1102,6 +1176,15 @@ export async function runVectorBaselineBenchmark(
           === referenceSvgDocument.logicalVectorBytes
       ))
       && textNodes.every((node) => node.text.length === VECTOR_BASELINE_TEXT.length);
+    const totalVectorNodeCount = svgNodes.length + textNodes.length;
+    const effectWorkloadValidated = profile !== "effects-shared" || (
+      outlineNodeCount === totalVectorNodeCount
+      && blurredOuterShadowNodeCount
+        === Math.ceil(svgNodes.length / 2) + Math.ceil(textNodes.length / 2)
+      && blockShadowNodeCount
+        === Math.floor(svgNodes.length / 2) + Math.floor(textNodes.length / 2)
+      && innerShadowNodeCount === totalVectorNodeCount
+    );
 
     const diagnosticsAfterSetup = setupStable.diagnostics;
     const geometryGpuAfterSetup = engine.getVectorGeometryGpuDiagnostics();
@@ -1220,6 +1303,9 @@ export async function runVectorBaselineBenchmark(
     const strokeLodCompletedWithoutFallback =
       diagnosticsAfterTrace.svgStrokeLodFallbackCount
       === diagnosticsBefore.svgStrokeLodFallbackCount;
+    const blurCacheSharedWhenEnabled = profile !== "effects-shared"
+      || !engine.vectorGpuResourceSharingEnabled
+      || diagnosticsAfterTrace.singleShadowCacheEntries <= 2;
     const environmentStayedStable = visibilityAtStart === "visible"
       && environmentEnd.visibility === "visible"
       && !visibilityChangeObserved
@@ -1234,6 +1320,8 @@ export async function runVectorBaselineBenchmark(
       maximumScenePopulated,
       profileIdentityValidated,
       profileWorkloadBudgetValidated,
+      effectWorkloadValidated,
+      blurCacheSharedWhenEnabled,
       allVisibleFitRendered: allVisibleFit.renderCountDelta > 0,
       coldAndWarmRendered: cold.renderCountDelta > 0 && warm.renderCountDelta > 0,
       panTraceCompleted:
@@ -1278,6 +1366,8 @@ export async function runVectorBaselineBenchmark(
       fixture: {
         id: profile === "curved-strokes"
           ? CURVED_STROKE_FIXTURE_ID
+          : profile === "effects-shared"
+            ? "complex-vector-effects-shared-v1"
           : profile === "shared"
             ? "generated-shared-curves-v1"
             : "generated-unique-curves-v1",
@@ -1285,21 +1375,21 @@ export async function runVectorBaselineBenchmark(
         visualInspectionScale: visualInspectionMode
           ? visualInspectionScale
           : null,
-        sourceSha256: profile === "curved-strokes"
+        sourceSha256: profile === "curved-strokes" || profile === "effects-shared"
           ? CURVED_STROKE_FIXTURE_SHA256
           : null,
         targetSvgCount,
         targetTextCount,
-        sourcePathOperationCount: profile === "curved-strokes"
+        sourcePathOperationCount: profile === "curved-strokes" || profile === "effects-shared"
           ? CURVED_STROKE_SOURCE_PATH_OPERATION_COUNT
           : null,
-        sourceDrawableSegmentCount: profile === "curved-strokes"
+        sourceDrawableSegmentCount: profile === "curved-strokes" || profile === "effects-shared"
           ? CURVED_STROKE_SOURCE_DRAWABLE_SEGMENT_COUNT
           : null,
-        sourceElementCount: profile === "curved-strokes"
+        sourceElementCount: profile === "curved-strokes" || profile === "effects-shared"
           ? CURVED_STROKE_SOURCE_ELEMENT_COUNT
           : null,
-        sourceRetainedStrokeCount: profile === "curved-strokes"
+        sourceRetainedStrokeCount: profile === "curved-strokes" || profile === "effects-shared"
           ? CURVED_STROKE_SOURCE_RETAINED_STROKE_COUNT
           : null,
         svgCount: svgNodes.length,
@@ -1318,6 +1408,10 @@ export async function runVectorBaselineBenchmark(
         svgLogicalVectorMiB: svgLogicalVectorBytes / MEBIBYTE_BYTES,
         uniqueSvgLogicalVectorMiB: uniqueSvgLogicalVectorBytes / MEBIBYTE_BYTES,
         textCharacterCount,
+        outlineNodeCount,
+        blurredOuterShadowNodeCount,
+        blockShadowNodeCount,
+        innerShadowNodeCount,
         sourceGenerationMs,
         svgParseMs,
         sceneMutationMs,

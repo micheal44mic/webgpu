@@ -97,8 +97,8 @@ assert.match(
 );
 assert.match(
   main,
-  /runStartupPhase\(\s*"restore-active-brush"[\s\S]*?if \(\s*mobileBrushStudio\s*&& \(editorExtensionBootstrap\?\.restorePersistedBrushOnStartup \?\? true\)\s*\) \{\s*await brushLibraryController\.restoreActiveBrush\(\{ prepareResources: false \}\);\s*\}[\s\S]*?runStartupPhase\(\s*"project-session"[\s\S]*?projectSessionController\.initialize\(\)/,
-  "Telefono e desktop devono preparare lo stesso pennello attivo prima del progetto.",
+  /runStartupPhase\(\s*"restore-active-brush"[\s\S]*?if \(\s*mobileBrushStudio\s*&& \(editorExtensionBootstrap\?\.restorePersistedBrushOnStartup \?\? true\)\s*\) \{\s*selectedBrushPreparationRequestSuppressed = true;\s*try \{\s*await brushLibraryController\.restoreActiveBrush\(\{ prepareResources: false \}\);\s*\} finally \{\s*selectedBrushPreparationRequestSuppressed = false;\s*\}\s*\}[\s\S]*?runStartupPhase\(\s*"project-session"[\s\S]*?projectSessionController\.initialize\(\)/,
+  "Telefono e desktop devono ripristinare lo stesso pennello prima del progetto senza anticiparne la preparazione GPU.",
 );
 assert.match(
   limits,

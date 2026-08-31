@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { VECTOR_TEXT_GPU_MAXIMUM_DRAWS } from "../src/engine-limits.ts";
 
 const fixtureUrl = new URL(
   "../src/labs/vector/fixtures/complex-curved-strokes.svg",
@@ -42,20 +43,22 @@ assert.match(
 );
 assert.match(
   benchmarkSource,
-  /export type VectorBaselineProfile = "shared" \| "unique" \| "curved-strokes"/,
+  /export type VectorBaselineProfile =[\s\S]{0,120}\| "effects-shared"/,
 );
 assert.match(benchmarkSource, /const CURVED_STROKE_SVG_COUNT = 32/);
+assert.match(benchmarkSource, /const EFFECTS_SHARED_SVG_COUNT = 32/);
+assert.match(benchmarkSource, /const EFFECTS_SHARED_TEXT_COUNT = 32/);
 assert.match(benchmarkSource, /vectorBaselineSvgCount/);
 assert.match(benchmarkSource, /vectorBaselineTextCount/);
-assert.match(benchmarkSource, /VECTOR_BASELINE_REPORT_VERSION = 6/);
+assert.match(benchmarkSource, /VECTOR_BASELINE_REPORT_VERSION = 7/);
 assert.match(benchmarkSource, /strokeLodCompletedWithoutFallback/);
 assert.match(
   benchmarkSource,
-  /visualInspectionMode\s*\? 1\s*:\s*CURVED_STROKE_SVG_COUNT/,
+  /visualInspectionMode\s*\? 1\s*:\s*profile === "effects-shared"[\s\S]{0,100}EFFECTS_SHARED_SVG_COUNT[\s\S]{0,100}CURVED_STROKE_SVG_COUNT/,
 );
 assert.match(
   benchmarkSource,
-  /visualInspectionMode\s*\? 0\s*:\s*VECTOR_TEXT_NODE_MAXIMUM/,
+  /visualInspectionMode\s*\? 0\s*:\s*profile === "effects-shared"[\s\S]{0,100}EFFECTS_SHARED_TEXT_COUNT[\s\S]{0,100}VECTOR_TEXT_NODE_MAXIMUM/,
 );
 assert.match(benchmarkSource, /CURVED_STROKE_SOURCE_PATH_OPERATION_COUNT = 177/);
 assert.match(benchmarkSource, /CURVED_STROKE_SOURCE_DRAWABLE_SEGMENT_COUNT = 159/);
@@ -68,6 +71,26 @@ assert.match(
 assert.match(
   labsSource,
   /\["vector-baseline-curved-strokes", "Baseline vettori · curve e tratteggi"\]/,
+);
+assert.match(
+  labsSource,
+  /\["vector-baseline-effects", "Baseline vettori · effetti condivisi"\]/,
+);
+assert.match(benchmarkSource, /blurCacheSharedWhenEnabled/);
+assert.match(benchmarkSource, /profile !== "effects-shared"/);
+assert.match(benchmarkSource, /window\.addEventListener\("error", recordFrameFailure\)/);
+assert.match(benchmarkSource, /window\.removeEventListener\("error", recordFrameFailure\)/);
+
+// The full shared-effects fixture renders 464 SVG passes and 144 text passes
+// in one segmented vector run. Keep the static uniform budget above that
+// measured workload so the benchmark exercises the renderer instead of its
+// capacity guard.
+const effectsSharedRequiredDrawCapacity = 464 + 144;
+assert.equal(effectsSharedRequiredDrawCapacity, 608);
+assert.ok(
+  VECTOR_TEXT_GPU_MAXIMUM_DRAWS >= effectsSharedRequiredDrawCapacity,
+  `Vector draw capacity ${VECTOR_TEXT_GPU_MAXIMUM_DRAWS} is below `
+    + `${effectsSharedRequiredDrawCapacity}.`,
 );
 
 console.log(

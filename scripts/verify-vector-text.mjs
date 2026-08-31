@@ -2025,19 +2025,12 @@ const controllerInitializeSource = controllerSource.slice(
   controllerInitializeStart,
   controllerInitializeEnd,
 );
-assert.match(
-  controllerInitializeSource,
-  /const initialSnapshot = this\.runtimeSceneSnapshot\(\);[\s\S]*if \(snapshotContainsText\(initialSnapshot\)\) \{\s*await this\.prepareFontGeometry\(\);\s*\}/,
-  "restored documents with text must prepare fonts before their first scene sync",
-);
 assert.doesNotMatch(
-  controllerInitializeSource.slice(
-    0,
-    controllerInitializeSource.indexOf("const initialSnapshot"),
-  ),
-  /fontGeometry\.preload|prepareFontGeometry/,
-  "raster-only controller startup must not load vector fonts",
+  controllerInitializeSource,
+  /await this\.prepareFontGeometry|fontGeometry\.preload/,
+  "controller startup must remain interactive while restored text fonts load through scene sync",
 );
+assert.match(controllerInitializeSource, /this\.syncScene\(initialSnapshot\)/);
 assert.doesNotMatch(
   controllerInitializeSource,
   /addVectorTextNode|defaultSeed/,
@@ -2047,16 +2040,45 @@ const createTextSource = controllerSource.slice(
   controllerSource.indexOf("  createText(color?: string): void"),
   controllerSource.indexOf("  deleteSelectedText(): void"),
 );
-const createTextFontPreparationIndex = createTextSource.indexOf(
-  "await this.prepareFontGeometry()",
+const createTextResourcePreparationIndex = createTextSource.indexOf(
+  "await this.prepareTextCreationResources(seed.fontFamily)",
 );
 const createTextHostMutationIndex = createTextSource.indexOf(
   "await this.host.addVectorTextNode(",
 );
 assert.ok(
-  createTextFontPreparationIndex >= 0
-    && createTextHostMutationIndex > createTextFontPreparationIndex,
-  "the first text command must prepare fonts before creating a text node",
+  createTextResourcePreparationIndex >= 0
+    && createTextHostMutationIndex > createTextResourcePreparationIndex,
+  "the first text command must prepare its shared font/GPU gate before creating a text node",
+);
+assert.match(
+  createTextSource,
+  /revealImmediately: true, waitForPaint: true/,
+  "cold text creation must paint loading feedback before font and GPU preparation",
+);
+const textCreationPreparationSource = controllerSource.slice(
+  controllerSource.indexOf("  prepareTextCreationResources("),
+  controllerSource.indexOf("  deleteSelectedText(): void"),
+);
+assert.match(
+  textCreationPreparationSource,
+  /const existing = this\.textCreationResourcePreparations\.get\(fontFamily\);\s*if \(existing\) return existing;/,
+  "panel warm-up and an immediate Add Text command must join one preparation promise",
+);
+assert.match(
+  textCreationPreparationSource,
+  /Promise\.all\(\[[\s\S]*?this\.prepareFontGeometry\(\[fontFamily\]\)[\s\S]*?this\.host\.ensureMixedSceneEditorResources\(\)/,
+  "the selected font and mixed-scene GPU programs must prepare concurrently",
+);
+assert.match(
+  textCreationPreparationSource,
+  /void preparation\.catch\(\(\) => \{[\s\S]*?this\.textCreationResourcePreparations\.delete\(fontFamily\)/,
+  "a failed cold preparation must be observed and remain retryable",
+);
+assert.match(
+  controllerContractSource,
+  /ensureMixedSceneEditorResources\(\): Promise<void>/,
+  "the mixed-scene host must expose its deduplicated resource gate to Text creation",
 );
 const syncSceneSource = controllerSource.slice(
   controllerSource.indexOf("  syncScene(snapshot: MixedSceneSnapshot): void"),
@@ -2064,8 +2086,8 @@ const syncSceneSource = controllerSource.slice(
 );
 assert.match(
   syncSceneSource,
-  /snapshotContainsText\(snapshot\) && !this\.fontGeometry\.isPreloaded[\s\S]{0,120}this\.deferTextSceneSync\(\);\s*return;/,
-  "a newly restored text scene must wait for fonts before geometry or rendering",
+  /!this\.fontGeometry\.hasFamilies\(snapshotTextFontFamilies\(snapshot\)\)[\s\S]{0,120}this\.deferTextSceneSync\(\);\s*return;/,
+  "a newly restored text scene must wait only for the font families it actually uses",
 );
 assert.match(controllerSource, /private deferTextSceneSync\(\): void/);
 assert.match(
@@ -2094,13 +2116,15 @@ assert.match(mainSource, /onMixedSceneRuntimeChange\(snapshot\) \{/);
 assert.doesNotMatch(mainSource, /onMixedSceneChange\(snapshot\) \{/);
 assert.match(controllerSource, /const latestSnapshot = this\.runtimeSceneSnapshot\(\)/);
 assert.match(controllerSource, /this\.documentGeneration !== generation/);
-assert.match(fontGeometrySource, /private preloadPromise: Promise<void> \| null = null/);
+assert.match(fontGeometrySource, /private readonly loadPromises = new Map<string, Promise<void>>\(\)/);
 assert.match(fontGeometrySource, /get isPreloaded\(\): boolean/);
 assert.match(
   fontGeometrySource,
-  /async preload\(\): Promise<void> \{\s*if \(this\.isPreloaded\) return;\s*if \(this\.preloadPromise\) return this\.preloadPromise;/,
-  "font loading must be idempotent across concurrent text commands",
+  /async ensureFamily\(family: string\): Promise<void> \{[\s\S]*const existing = this\.loadPromises\.get\(family\);[\s\S]*if \(existing\) return existing;/,
+  "font loading must be deduplicated per family across concurrent text commands",
 );
+assert.match(fontGeometrySource, /import\("opentype\.js"\)/);
+assert.doesNotMatch(fontGeometrySource, /^import opentype from "opentype\.js";/m);
 assert.match(fontGeometrySource, /if \(this\.records\.has\(entry\.family\)\) return;/);
 assert.match(
   mobileToolSettingsSource,
@@ -2382,9 +2406,14 @@ assert.doesNotMatch(
 assert.match(controllerSource, /node\.singleShadowBlur > 0[\s\S]*this\.slugBlurDraw/);
 assert.match(controllerSource, /else \{[\s\S]*this\.slugDraw\(/);
 assert.doesNotMatch(fontGeometrySource, /Path2D|canvasPath|buildShadow3dPath/);
-assert.match(clientSource, /private activeRequestId: number \| null = null/);
+assert.match(clientSource, /MAXIMUM_IN_FLIGHT_EFFECT_JOBS = 4/);
 assert.match(clientSource, /private readonly queuedBySlot = new Map/);
 assert.match(clientSource, /this\.queuedBySlot\.set\(slotKey, queued\)/);
+assert.match(
+  clientSource,
+  /pendingByRequest\.size < MAXIMUM_IN_FLIGHT_EFFECT_JOBS/,
+);
+assert.match(clientSource, /inFlightSlots\.has\(slotKey\)/);
 assert.match(clientSource, /desiredKeyBySlot\.values\(\)[\s\S]*desiredKey === response\.cacheKey/);
 assert.match(clientSource, /requiresExactEffectLod[\s\S]*effect\.kind === "block"[\s\S]*effect\.kind === "block-outline"/);
 assert.match(clientSource, /currentAlreadySuitable[\s\S]*current\.lodBucket === lod\.bucket[\s\S]*current\.lodBucket >= lod\.bucket/);
@@ -2535,7 +2564,7 @@ assert.equal(lodReadyCacheClient.readyByKey.has("lod-ready-4"), true);
 // Worker path ownership: a newly registered path must become pending or queued
 // before bounded pruning can consider it for release. The fake worker processes
 // registration state in message order and drains the production latest-only
-// queue one response at a time.
+// queue through a small in-flight window.
 class VectorEffectQueueTestWorker {
   static instances = [];
 
@@ -2570,7 +2599,7 @@ class VectorEffectQueueTestWorker {
 
   respondToNextBuild() {
     const pending = this.pendingBuilds.shift();
-    assert.ok(pending, "the serialized worker queue must expose its next build");
+    assert.ok(pending, "the bounded worker queue must expose its next build");
     assert.ok(this.onmessage, "the client must install the worker response handler");
     this.onmessage({
       data: pending.pathIsRegistered
@@ -2640,8 +2669,8 @@ try {
   for (let completed = 0; completed < queuedPathCount; completed += 1) {
     assert.equal(
       queueWorker.pendingBuilds.length,
-      1,
-      "the compiler client must keep exactly one worker build in flight",
+      Math.min(4, queuedPathCount - completed),
+      "the compiler client must keep its bounded worker window full",
     );
     queueWorker.respondToNextBuild();
   }
@@ -2659,6 +2688,60 @@ try {
   assert.equal(queueClient.diagnostics().readyJobs, queuedPathCount);
   queueClient.resetForDocument();
   assert.equal(queueWorker.terminated, true);
+
+  const latestClient = new VectorTextEffectCompilerClient(() => {});
+  latestClient.meshForSlot(
+    "latest-slot",
+    sourceRectangle,
+    lod,
+    { kind: "source-fill" },
+    true,
+  );
+  latestClient.meshForSlot(
+    "latest-slot",
+    sourceRectangle,
+    lod,
+    { kind: "block", vectorX: 2, vectorY: 0 },
+    true,
+  );
+  latestClient.meshForSlot(
+    "latest-slot",
+    sourceRectangle,
+    lod,
+    { kind: "block", vectorX: 4, vectorY: 0 },
+    true,
+  );
+  const latestWorker = VectorEffectQueueTestWorker.instances.at(-1);
+  assert.ok(latestWorker);
+  assert.equal(
+    latestWorker.pendingBuilds.length,
+    1,
+    "one slot must never occupy more than one in-flight position",
+  );
+  assert.equal(latestClient.diagnostics().pendingJobs, 2);
+  latestWorker.respondToNextBuild();
+  assert.equal(
+    latestClient.readyByKey.size,
+    0,
+    "a completed build that is no longer desired must not enter the ready cache",
+  );
+  assert.equal(latestWorker.pendingBuilds.length, 1);
+  assert.equal(latestWorker.pendingBuilds[0].message.effect.kind, "block");
+  assert.equal(latestWorker.pendingBuilds[0].message.effect.vectorX, 4);
+  assert.equal(
+    latestWorker.messages.filter((message) => (
+      message.type === "build-effect"
+      && message.effect.kind === "block"
+      && message.effect.vectorX === 2
+    )).length,
+    0,
+    "an intermediate queued update must be replaced before reaching the worker",
+  );
+  latestWorker.respondToNextBuild();
+  assert.equal(latestClient.diagnostics().pendingJobs, 0);
+  assert.equal(latestClient.diagnostics().readyJobs, 1);
+  latestClient.resetForDocument();
+  assert.equal(latestWorker.terminated, true);
 
   const resetClient = new VectorTextEffectCompilerClient(() => {});
   for (let index = 0; index < 2; index += 1) {
@@ -3152,8 +3235,8 @@ assert.match(
 );
 assert.match(
   mainSource,
-  /toolSettingsRequireMixedScene\(requestedKind\)[\s\S]{0,120}await initializeMixedSceneController\(\)[\s\S]{0,160}mobileToolSettingsSheet\?\.open\(requestedKind, trigger\)/,
-  "Text must initialize the mixed-scene editor only after the user requests it",
+  /toolSettingsRequireMixedScene\(requestedKind\)[\s\S]{0,420}initializeMixedSceneController\(scope\)[\s\S]{0,520}mobileToolSettingsSheet\?\.open\(requestedKind, trigger\)/,
+  "Text must initialize the lightweight mixed-scene controller only after the user requests it",
 );
 assert.match(
   editorToolsSource,

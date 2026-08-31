@@ -53,6 +53,9 @@ export interface VectorTextEffectMeshResult {
 const MAXIMUM_READY_EFFECT_CACHE_ENTRIES = 48;
 const MAXIMUM_READY_EFFECT_LODS_PER_IDENTITY = 3;
 const MAXIMUM_REGISTERED_PATHS = 128;
+// Keep the worker busy while earlier responses cross back to the main thread.
+// A per-slot guard below keeps newer edits replaceable until the prior job ends.
+const MAXIMUM_IN_FLIGHT_EFFECT_JOBS = 4;
 
 function effectIdentity(
   geometryIdentity: string,
@@ -130,7 +133,6 @@ export class VectorTextEffectCompilerClient {
   private readonly displayedBySlot = new Map<string, DisplayedEffect>();
   private readonly desiredKeyBySlot = new Map<string, string>();
   private readonly pinnedSlots = new Set<string>();
-  private activeRequestId: number | null = null;
   private nextRequestId = 1;
   private failedJobs = 0;
   private lastError: string | null = null;
@@ -283,7 +285,6 @@ export class VectorTextEffectCompilerClient {
     this.displayedBySlot.clear();
     this.desiredKeyBySlot.clear();
     this.pinnedSlots.clear();
-    this.activeRequestId = null;
     this.nextRequestId = 1;
     this.failedJobs = 0;
     this.lastError = null;
@@ -426,28 +427,42 @@ export class VectorTextEffectCompilerClient {
   }
 
   private pumpQueue(): void {
-    if (this.activeRequestId !== null) {
-      return;
+    const inFlightSlots = new Set(
+      [...this.pendingByRequest.values()].map((pending) => pending.slotKey),
+    );
+    while (this.pendingByRequest.size < MAXIMUM_IN_FLIGHT_EFFECT_JOBS) {
+      let next: [string, QueuedEffect] | null = null;
+      for (const entry of this.queuedBySlot) {
+        const [slotKey, queued] = entry;
+        if (this.desiredKeyBySlot.get(slotKey) !== queued.cacheKey) {
+          this.queuedBySlot.delete(slotKey);
+          this.pendingKeys.delete(queued.cacheKey);
+          continue;
+        }
+        if (!inFlightSlots.has(slotKey)) {
+          next = entry;
+          break;
+        }
+      }
+      if (!next) {
+        return;
+      }
+      const [slotKey, queued] = next;
+      this.queuedBySlot.delete(slotKey);
+      const requestId = this.nextRequestId;
+      this.nextRequestId += 1;
+      this.pendingByRequest.set(requestId, queued);
+      inFlightSlots.add(slotKey);
+      const message: VectorTextEffectWorkerRequest = {
+        type: "build-effect",
+        requestId,
+        revision: queued.geometryIdentity,
+        cacheKey: queued.cacheKey,
+        lod: queued.lod,
+        effect: queued.effect,
+      };
+      this.ensureWorker().postMessage(message);
     }
-    const next = this.queuedBySlot.entries().next();
-    if (next.done) {
-      return;
-    }
-    const [slotKey, queued] = next.value;
-    this.queuedBySlot.delete(slotKey);
-    const requestId = this.nextRequestId;
-    this.nextRequestId += 1;
-    this.activeRequestId = requestId;
-    this.pendingByRequest.set(requestId, queued);
-    const message: VectorTextEffectWorkerRequest = {
-      type: "build-effect",
-      requestId,
-      revision: queued.geometryIdentity,
-      cacheKey: queued.cacheKey,
-      lod: queued.lod,
-      effect: queued.effect,
-    };
-    this.ensureWorker().postMessage(message);
   }
 
   private acceptWorkerResponse(
@@ -459,9 +474,6 @@ export class VectorTextEffectCompilerClient {
     }
     this.pendingByRequest.delete(response.requestId);
     this.pendingKeys.delete(response.cacheKey);
-    if (this.activeRequestId === response.requestId) {
-      this.activeRequestId = null;
-    }
     if (response.type === "effect-failed") {
       this.failedJobs += 1;
       this.lastError = response.message;

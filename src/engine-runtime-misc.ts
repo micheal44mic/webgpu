@@ -578,7 +578,7 @@ export async function finishStaticResourceCreation(
       label: "Dual viewport vector text mixed-layer display pipeline layout",
       bindGroupLayouts: [engine.vectorTextDisplayBindGroupLayout],
     });
-    engine.vectorTextDisplayPipeline = engine.device.createRenderPipeline({
+    engine.vectorTextDisplayPipeline = await createRenderPipelineAsync(engine.device, {
       label: "Dual viewport vector text mixed-layer display pipeline",
       layout: vectorTextPipelineLayout,
       vertex: {
@@ -608,7 +608,7 @@ export async function finishStaticResourceCreation(
       label: "Mixed scene raster segment pipeline layout",
       bindGroupLayouts: [engine.mixedSceneRasterSegmentBindGroupLayout],
     });
-    engine.mixedSceneRasterSegmentPipeline ??= engine.device.createRenderPipeline({
+    engine.mixedSceneRasterSegmentPipeline ??= await createRenderPipelineAsync(engine.device, {
       label: "Mixed scene raster segment source-over pipeline",
       layout: mixedRasterPipelineLayout,
       vertex: { module: engine.mixedSceneRasterSegmentShaderModule, entryPoint: "vertexMain" },
@@ -619,7 +619,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedSceneRasterSegmentSourceAtopPipeline = engine.device.createRenderPipeline({
+    engine.mixedSceneRasterSegmentSourceAtopPipeline = await createRenderPipelineAsync(engine.device, {
       label: "Mixed scene raster segment source-atop pipeline",
       layout: mixedRasterPipelineLayout,
       vertex: { module: engine.mixedSceneRasterSegmentShaderModule, entryPoint: "vertexMain" },
@@ -634,7 +634,7 @@ export async function finishStaticResourceCreation(
       label: "Mixed scene text segment pipeline layout",
       bindGroupLayouts: [engine.mixedSceneTextSegmentBindGroupLayout],
     });
-    engine.mixedSceneTextSegmentPipeline ??= engine.device.createRenderPipeline({
+    engine.mixedSceneTextSegmentPipeline ??= await createRenderPipelineAsync(engine.device, {
       label: "Mixed scene text segment source-over pipeline",
       layout: mixedTextPipelineLayout,
       vertex: { module: engine.mixedSceneTextSegmentShaderModule, entryPoint: "vertexMain" },
@@ -645,7 +645,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedSceneTextSegmentSourceAtopPipeline = engine.device.createRenderPipeline({
+    engine.mixedSceneTextSegmentSourceAtopPipeline = await createRenderPipelineAsync(engine.device, {
       label: "Mixed scene vector segment source-atop pipeline",
       layout: mixedTextPipelineLayout,
       vertex: { module: engine.mixedSceneTextSegmentShaderModule, entryPoint: "vertexMain" },
@@ -656,7 +656,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedSceneShapePreviewPipeline ??= engine.device.createRenderPipeline({
+    engine.mixedSceneShapePreviewPipeline ??= await createRenderPipelineAsync(engine.device, {
       label: "Mixed scene live shape preview source-over pipeline",
       layout: engine.device.createPipelineLayout({
         label: "Mixed scene live shape preview pipeline layout",
@@ -673,7 +673,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.rasterImageMipmapPipeline = engine.device.createRenderPipeline({
+    engine.rasterImageMipmapPipeline = await createRenderPipelineAsync(engine.device, {
       label: "Raster image premultiplied sRGB mipmap pipeline",
       layout: engine.device.createPipelineLayout({
         label: "Raster image mipmap pipeline layout",
@@ -690,7 +690,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.rasterImagePremultiplyPipeline = engine.device.createRenderPipeline({
+    engine.rasterImagePremultiplyPipeline = await createRenderPipelineAsync(engine.device, {
       label: "Raster image straight-sRGB to linear-premultiplied pipeline",
       layout: engine.device.createPipelineLayout({
         label: "Raster image premultiply pipeline layout",
@@ -707,7 +707,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.rasterImageMixedScenePipeline = engine.device.createRenderPipeline({
+    engine.rasterImageMixedScenePipeline = await createRenderPipelineAsync(engine.device, {
       label: "Raster image mixed-scene trilinear source-over pipeline",
       layout: engine.device.createPipelineLayout({
         label: "Raster image mixed-scene pipeline layout",
@@ -724,7 +724,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-strip", cullMode: "none" },
     });
-    engine.mixedSceneClearPipeline ??= engine.device.createRenderPipeline({
+    engine.mixedSceneClearPipeline ??= await createRenderPipelineAsync(engine.device, {
       label: "Mixed scene partial transparent clear pipeline",
       layout: engine.device.createPipelineLayout({
         label: "Mixed scene partial transparent clear pipeline layout",
@@ -738,7 +738,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedScenePresentPipeline ??= engine.device.createRenderPipeline({
+    engine.mixedScenePresentPipeline ??= await createRenderPipelineAsync(engine.device, {
       label: "Mixed scene checker presentation pipeline",
       layout: engine.device.createPipelineLayout({
         label: "Mixed scene checker presentation pipeline layout",
@@ -752,7 +752,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedSceneBackgroundPipeline ??= engine.device.createRenderPipeline({
+    engine.mixedSceneBackgroundPipeline ??= await createRenderPipelineAsync(engine.device, {
       label: "Mixed scene document background pipeline",
       layout: engine.device.createPipelineLayout({
         label: "Mixed scene document background pipeline layout",
@@ -766,7 +766,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedSceneClippingScratchCompositePipeline = engine.device.createRenderPipeline({
+    engine.mixedSceneClippingScratchCompositePipeline = await createRenderPipelineAsync(engine.device, {
       label: "Mixed scene clipping scratch source-over pipeline",
       layout: engine.device.createPipelineLayout({
         label: "Mixed scene clipping scratch pipeline layout",
@@ -780,7 +780,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.layerBlendCompositorPipeline = engine.device.createRenderPipeline({
+    engine.layerBlendCompositorPipeline = await createRenderPipelineAsync(engine.device, {
       label: "Ordered layer blend ping-pong pipeline",
       layout: engine.device.createPipelineLayout({
         label: "Ordered layer blend ping-pong pipeline layout",
@@ -797,7 +797,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.layerBlendViewportDocumentMaskPipeline = engine.device.createRenderPipeline({
+    engine.layerBlendViewportDocumentMaskPipeline = await createRenderPipelineAsync(engine.device, {
       label: "Ordered clipping document-mask accumulator",
       layout: engine.device.createPipelineLayout({
         label: "Ordered clipping document-mask pipeline layout",
@@ -814,7 +814,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedSceneActiveDisplayPipeline ??= engine.device.createRenderPipeline({
+    engine.mixedSceneActiveDisplayPipeline ??= await createRenderPipelineAsync(engine.device, {
       label: "Mixed scene active base layer source-over pipeline",
       layout: displayPipelineLayout,
       vertex: { module: engine.displayShaderModule, entryPoint: "vertexMain" },
@@ -825,7 +825,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedSceneActiveSourceDisplayPipeline = engine.device.createRenderPipeline({
+    engine.mixedSceneActiveSourceDisplayPipeline = await createRenderPipelineAsync(engine.device, {
       label: "Mixed scene active base source-only pipeline",
       layout: displayPipelineLayout,
       vertex: { module: engine.displayShaderModule, entryPoint: "vertexMain" },
@@ -836,7 +836,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedSceneActiveSourceAtopDisplayPipeline = engine.device.createRenderPipeline({
+    engine.mixedSceneActiveSourceAtopDisplayPipeline = await createRenderPipelineAsync(engine.device, {
       label: "Mixed scene active source-atop pipeline",
       layout: displayPipelineLayout,
       vertex: { module: engine.displayShaderModule, entryPoint: "vertexMain" },
@@ -847,7 +847,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedSceneActiveCutoutDisplayPipeline = engine.device.createRenderPipeline({
+    engine.mixedSceneActiveCutoutDisplayPipeline = await createRenderPipelineAsync(engine.device, {
       label: "Mixed scene active authored matte pipeline",
       layout: displayPipelineLayout,
       vertex: { module: engine.displayShaderModule, entryPoint: "vertexMain" },
@@ -872,7 +872,7 @@ export async function finishStaticResourceCreation(
     // large, unreachable shader graph for an empty single-raster document.
   }
   if (createOptional) {
-    engine.mixedSceneActiveRasterStrokeDisplayPipeline = engine.device.createRenderPipeline({
+    engine.mixedSceneActiveRasterStrokeDisplayPipeline = await createRenderPipelineAsync(engine.device, {
       label: "Mixed scene active Stroke/effects source-over pipeline",
       layout: rasterStrokeDisplayPipelineLayout,
       vertex: { module: engine.rasterStrokeDisplayShaderModule, entryPoint: "vertexMain" },
@@ -897,7 +897,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedSceneActiveRasterStrokeSourcePipeline = engine.device.createRenderPipeline({
+    engine.mixedSceneActiveRasterStrokeSourcePipeline = await createRenderPipelineAsync(engine.device, {
       label: "Mixed scene active Stroke/effects source-only pipeline",
       layout: rasterStrokeDisplayPipelineLayout,
       vertex: { module: engine.rasterStrokeDisplayShaderModule, entryPoint: "vertexMain" },
@@ -908,7 +908,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedSceneActiveRasterStrokeSourceAtopPipeline = engine.device.createRenderPipeline({
+    engine.mixedSceneActiveRasterStrokeSourceAtopPipeline = await createRenderPipelineAsync(engine.device, {
       label: "Mixed scene active Stroke/effects source-atop pipeline",
       layout: rasterStrokeDisplayPipelineLayout,
       vertex: { module: engine.rasterStrokeDisplayShaderModule, entryPoint: "vertexMain" },
@@ -919,7 +919,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedSceneActiveRasterStrokeCutoutPipeline = engine.device.createRenderPipeline({
+    engine.mixedSceneActiveRasterStrokeCutoutPipeline = await createRenderPipelineAsync(engine.device, {
       label: "Mixed scene active Stroke authored-matte pipeline",
       layout: rasterStrokeDisplayPipelineLayout,
       vertex: { module: engine.rasterStrokeDisplayShaderModule, entryPoint: "vertexMain" },
@@ -941,7 +941,7 @@ export async function finishStaticResourceCreation(
     // the brush readiness gate when non-neutral thickness is requested.
   }
   if (createOptional) {
-    engine.mixedSceneActiveThicknessTailDisplayPipeline = engine.device.createRenderPipeline({
+    engine.mixedSceneActiveThicknessTailDisplayPipeline = await createRenderPipelineAsync(engine.device, {
       label: "Mixed scene active thickness tail source-over pipeline",
       layout: thicknessTailDisplayPipelineLayout,
       vertex: { module: engine.thicknessTailDisplayShaderModule, entryPoint: "vertexMain" },
@@ -966,7 +966,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedSceneActiveThicknessTailSourcePipeline = engine.device.createRenderPipeline({
+    engine.mixedSceneActiveThicknessTailSourcePipeline = await createRenderPipelineAsync(engine.device, {
       label: "Mixed scene active thickness tail source-only pipeline",
       layout: thicknessTailDisplayPipelineLayout,
       vertex: { module: engine.thicknessTailDisplayShaderModule, entryPoint: "vertexMain" },
@@ -977,7 +977,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedSceneActiveThicknessTailSourceAtopPipeline = engine.device.createRenderPipeline({
+    engine.mixedSceneActiveThicknessTailSourceAtopPipeline = await createRenderPipelineAsync(engine.device, {
       label: "Mixed scene active thickness tail source-atop pipeline",
       layout: thicknessTailDisplayPipelineLayout,
       vertex: { module: engine.thicknessTailDisplayShaderModule, entryPoint: "vertexMain" },
@@ -1000,7 +1000,7 @@ export async function finishStaticResourceCreation(
     // is small and also validates both storage formats up front.
   }
   if (createOptional) {
-    engine.mixedSceneActiveLightGlazeDisplayPipeline = engine.device.createRenderPipeline({
+    engine.mixedSceneActiveLightGlazeDisplayPipeline = await createRenderPipelineAsync(engine.device, {
       label: "Mixed scene active Light Glaze source-over pipeline",
       layout: lightGlazeDisplayPipelineLayout,
       vertex: { module: engine.lightGlazeDisplayShaderModule, entryPoint: "vertexMain" },
@@ -1025,7 +1025,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedSceneActiveLightGlazeSourcePipeline = engine.device.createRenderPipeline({
+    engine.mixedSceneActiveLightGlazeSourcePipeline = await createRenderPipelineAsync(engine.device, {
       label: "Mixed scene active Light Glaze source-only pipeline",
       layout: lightGlazeDisplayPipelineLayout,
       vertex: { module: engine.lightGlazeDisplayShaderModule, entryPoint: "vertexMain" },
@@ -1036,7 +1036,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedSceneActiveLightGlazeSourceAtopPipeline = engine.device.createRenderPipeline({
+    engine.mixedSceneActiveLightGlazeSourceAtopPipeline = await createRenderPipelineAsync(engine.device, {
       label: "Mixed scene active Light Glaze source-atop pipeline",
       layout: lightGlazeDisplayPipelineLayout,
       vertex: { module: engine.lightGlazeDisplayShaderModule, entryPoint: "vertexMain" },

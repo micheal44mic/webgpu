@@ -142,7 +142,8 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
   private saveBusy = false;
   private savePromise: Promise<void> | null = null;
   private historyMutationSignature = "";
-  private sceneMutationSignature = "";
+  private sceneNotificationRevision = 0;
+  private acknowledgedSceneNotificationRevision = 0;
   private mutationRevision = 0;
   private lastMutationReason = "document state";
   private currentHeadGenerationId: string | null = null;
@@ -268,17 +269,17 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
     this.historyMutationSignature = signature;
   }
 
-  noteSceneSnapshot(snapshot: unknown): void {
+  /** The callback is the mutation signal; the snapshot stays opaque on this hot path. */
+  noteSceneSnapshot(_snapshot: unknown): void {
     if (this.trackingSuspended || this.disposed || this.recoveryRequired) return;
-    const signature = JSON.stringify(snapshot) ?? "undefined";
-    if (
-      this.trackingReady
-      && this.sceneMutationSignature !== ""
-      && signature !== this.sceneMutationSignature
-    ) {
+    this.sceneNotificationRevision += 1;
+    if (!this.trackingReady) {
+      this.acknowledgedSceneNotificationRevision = this.sceneNotificationRevision;
+      return;
+    }
+    if (this.sceneNotificationRevision !== this.acknowledgedSceneNotificationRevision) {
       this.markDirty("scene state");
     }
-    this.sceneMutationSignature = signature;
   }
 
   async initialize(): Promise<void> {
@@ -511,7 +512,7 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
       this.dirty = false;
       this.mutationRevision += 1;
       this.historyMutationSignature = this.historySignature();
-      this.sceneMutationSignature = this.sceneSignature();
+      this.acknowledgedSceneNotificationRevision = this.sceneNotificationRevision;
       this.trackingReady = true;
       this.trackingSuspended = false;
       this.recoveryRequired = false;
@@ -676,10 +677,6 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
     return `${state.cursor}|${state.actionCount}`;
   }
 
-  private sceneSignature(): string {
-    return JSON.stringify(this.engine.sceneSnapshot()) ?? "undefined";
-  }
-
   private async reportSwitchStage(stage: ProjectSessionSwitchStage): Promise<void> {
     try {
       await this.onDocumentSwitchStage?.(stage);
@@ -716,6 +713,7 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
       // Capture a mutation boundary so a successful save never clears a newer
       // edit that landed during GPU readback or IndexedDB work.
       const capturedMutationRevision = this.mutationRevision;
+      const capturedSceneNotificationRevision = this.sceneNotificationRevision;
       const captured = await this.engine.captureDocument();
       let thumbnail: Blob | null = null;
       if (
@@ -744,9 +742,9 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
       this.currentHeadGenerationId = summary.headGenerationId;
       this.updateIdentity(summary.name);
       if (options.updateRoute !== false) this.updateUrl(summary.id);
+      this.acknowledgedSceneNotificationRevision = capturedSceneNotificationRevision;
       this.dirty = this.mutationRevision !== capturedMutationRevision;
       this.noteHistoryState(this.engine.historyState());
-      this.noteSceneSnapshot(this.engine.sceneSnapshot());
       const savedTime = new Intl.DateTimeFormat("en", {
         hour: "2-digit",
         minute: "2-digit",

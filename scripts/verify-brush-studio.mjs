@@ -290,7 +290,7 @@ assert.match(library, /rollbackImport[\s\S]*?forgetSettings\(brushId\)/);
 assert.match(library, /this\.elements\.list\.inert = busy/);
 assert.match(
   main,
-  /runStartupPhase\(\s*"restore-active-brush"[\s\S]*?if \(\s*mobileBrushStudio\s*&& \(editorExtensionBootstrap\?\.restorePersistedBrushOnStartup \?\? true\)\s*\) \{\s*await brushLibraryController\.restoreActiveBrush\(\{ prepareResources: false \}\);\s*\}[\s\S]*?runStartupPhase\(\s*"project-session"[\s\S]*?projectSessionController\.initialize\(\)/,
+  /runStartupPhase\(\s*"restore-active-brush"[\s\S]*?if \(\s*mobileBrushStudio\s*&& \(editorExtensionBootstrap\?\.restorePersistedBrushOnStartup \?\? true\)\s*\) \{[\s\S]*?selectedBrushPreparationRequestSuppressed = true;[\s\S]*?await brushLibraryController\.restoreActiveBrush\(\{ prepareResources: false \}\);[\s\S]*?finally \{[\s\S]*?selectedBrushPreparationRequestSuppressed = false;[\s\S]*?\}[\s\S]*?runStartupPhase\(\s*"project-session"[\s\S]*?projectSessionController\.initialize\(\)/,
   "startup must restore the active brush definition without warming its GPU resources",
 );
 assert.doesNotMatch(main, /deferred-brush-restore/);

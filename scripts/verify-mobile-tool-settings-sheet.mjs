@@ -38,13 +38,37 @@ const {
   nextMobileBottomSheetTapSnap,
   resolveMobileBottomSheetDrag,
 } = await import(new URL("src/mobile-bottom-sheet-gesture.ts", root));
-const { mobileToolSettingsPeekHeight } = await import(
+const {
+  mergeVectorEffectEditorPatches,
+  mobileToolSettingsPeekHeight,
+} = await import(
   new URL("src/mobile-tool-settings-sheet.ts", root)
 );
 
 assert.equal(mobileToolSettingsPeekHeight(300), 160);
 assert.equal(mobileToolSettingsPeekHeight(800), 208);
 assert.equal(mobileToolSettingsPeekHeight(2_000), 240);
+
+const firstVectorEffectPatch = mergeVectorEffectEditorPatches(null, {
+  outlineWidth: 3,
+  singleShadowBlur: 4,
+});
+assert.deepEqual(firstVectorEffectPatch, {
+  outlineWidth: 3,
+  singleShadowBlur: 4,
+});
+assert.deepEqual(
+  mergeVectorEffectEditorPatches(firstVectorEffectPatch, {
+    outlineWidth: 9,
+    innerShadowOpacity: 0.75,
+  }),
+  {
+    outlineWidth: 9,
+    singleShadowBlur: 4,
+    innerShadowOpacity: 0.75,
+  },
+  "a coalesced vector-effect frame must retain distinct controls and keep the latest repeated value",
+);
 
 const baseDrag = {
   releaseVelocityY: 0,
@@ -246,8 +270,8 @@ assert.match(
 );
 assert.match(
   main,
-  /toolSettingsRequireMixedScene\(requestedKind\)[\s\S]{0,120}await initializeMixedSceneController\(\)/,
-  "vector settings must initialize their optional GPU resources only after the user requests them",
+  /toolSettingsRequireMixedScene\(requestedKind\)[\s\S]*?const scope:[\s\S]*?requestedKind === "text"[\s\S]*?"controller-only"[\s\S]*?initializeMixedSceneController\(scope\)/,
+  "vector settings must initialize only their requested capability after the user opens them",
 );
 assert.match(
   main,
@@ -459,6 +483,31 @@ assert.match(
   controller,
   /commitOpenHistoryEdits\(\): void \{[\s\S]*?finishSvgPaintEdit\(\)[\s\S]*?finishVectorPropertyEdit\(\)/,
   "closing or suspending the sheet must commit every open property edit",
+);
+assert.match(
+  controller,
+  /control\.addEventListener\("input", \(\) => \{\s*this\.stageVectorEffectProperties\(patch\(\)\);/,
+  "vector effect range and color controls must stage their live values",
+);
+assert.match(
+  controller,
+  /private stageVectorEffectProperties\([\s\S]*?mergeVectorEffectEditorPatches\([\s\S]*?if \(this\.vectorEffectUpdateFrame !== null\) return;[\s\S]*?requestAnimationFrame\([\s\S]*?flushVectorEffectUpdates\(\)/,
+  "a burst of vector effect inputs must merge into at most one update per animation frame",
+);
+assert.match(
+  controller,
+  /private flushVectorEffectUpdates\(\): void \{[\s\S]*?cancelAnimationFrame\(this\.vectorEffectUpdateFrame\)[\s\S]*?this\.pendingVectorEffectPatch = null;[\s\S]*?updateSelectedVectorEffectProperties\(patch\);[\s\S]*?this\.syncOpenState\(\);/,
+  "one coalesced vector effect patch must drive one engine update and one panel sync",
+);
+assert.match(
+  controller,
+  /private finishVectorPropertyEdit\(\): void \{\s*this\.flushVectorEffectUpdates\(\);[\s\S]*?commitSelectedVectorPropertyEdit\(\)/,
+  "history commit, close, blur and page suspension must flush the final staged vector effect value first",
+);
+assert.match(
+  controller,
+  /setSelectedVectorShadowEnabled\(kind, mobile\.checked\);[\s\S]*?requestAnimationFrame\(\(\) => this\.syncOpenState\(\)\)/,
+  "vector effect toggles must remain immediate",
 );
 assert.match(
   mixedController,

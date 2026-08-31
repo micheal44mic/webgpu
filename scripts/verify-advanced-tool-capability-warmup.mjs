@@ -8,11 +8,58 @@ const section = (contents, startMarker, endMarker) => {
   assert.ok(start >= 0 && end > start, `Missing section ${startMarker}`);
   return contents.slice(start, end);
 };
+const conditionalBlocks = (contents, condition) => {
+  const marker = `if (${condition}) {`;
+  const blocks = [];
+  let cursor = 0;
+  while (cursor < contents.length) {
+    const start = contents.indexOf(marker, cursor);
+    if (start < 0) break;
+    const open = contents.indexOf("{", start + marker.length - 1);
+    let depth = 0;
+    let end = open;
+    for (; end < contents.length; end += 1) {
+      if (contents[end] === "{") depth += 1;
+      if (contents[end] === "}") depth -= 1;
+      if (depth === 0) break;
+    }
+    assert.ok(end < contents.length, `Unclosed conditional block ${marker}`);
+    blocks.push(contents.slice(start, end + 1));
+    cursor = end + 1;
+  }
+  return blocks;
+};
 
 const main = source("src/main.ts");
 const engine = source("src/brush-engine.ts");
 const projectRuntime = source("src/engine-project-runtime.ts");
 const transformRuntime = source("src/engine-raster-transform-runtime.ts");
+const engineRuntimeMisc = source("src/engine-runtime-misc.ts");
+
+const staticResourceCreation = section(
+  engineRuntimeMisc,
+  "export async function finishStaticResourceCreation(",
+  "export async function ensureAdvancedCanvasPresentationPipelines(",
+);
+const optionalCreationBlocks = conditionalBlocks(staticResourceCreation, "createOptional");
+assert.equal(optionalCreationBlocks.length, 4, "Every optional resource branch must be inspected");
+for (const optionalBlock of optionalCreationBlocks) {
+  assert.doesNotMatch(
+    optionalBlock,
+    /engine\.device\.createRenderPipeline\(/,
+    "Optional editor resources must never synchronously compile a render pipeline",
+  );
+  assert.match(
+    optionalBlock,
+    /await createRenderPipelineAsync\(engine\.device,/,
+    "Optional render pipelines must compile asynchronously and sequentially",
+  );
+}
+assert.equal(
+  [...staticResourceCreation.matchAll(/engine\.device\.createRenderPipeline\(/g)].length,
+  2,
+  "Only the two intentionally synchronous core render-pipeline sites may remain",
+);
 
 const toolSelection = section(
   main,
@@ -49,6 +96,11 @@ const controllerInitialization = section(
 );
 assert.match(
   controllerInitialization,
+  /scope === "controller-only"\s*\? Promise\.resolve\(\)/,
+  "opening a lightweight editor panel must not compile GPU resources",
+);
+assert.match(
+  controllerInitialization,
   /scope === "semantic-scene"[\s\S]*?engine\.ensureMixedSceneEditorResources\(\)/,
 );
 assert.match(
@@ -65,6 +117,63 @@ assert.doesNotMatch(
   controllerInitialization,
   /ensureOptionalEditorResources/,
   "The controller shell must not implicitly compile every optional capability",
+);
+
+const toolSettingsOpening = section(
+  main,
+  "  openToolSettings: (kind, trigger) => {",
+  "  runVectorCommand: (command) => {",
+);
+assert.match(
+  toolSettingsOpening,
+  /requestedKind === "text"\s*\? "controller-only"\s*:\s*"semantic-scene"/,
+  "the base Text panel must load the controller shell without the optional GPU graph",
+);
+assert.match(
+  toolSettingsOpening,
+  /"Preparing Text"[\s\S]*?revealImmediately: true, waitForPaint: true/,
+  "the first Text panel load must paint feedback before loading its controller chunk",
+);
+assert.match(
+  toolSettingsOpening,
+  /requestSequence === toolSettingsOpenRequestSequence/,
+  "a stale panel request must not reopen after a newer tap",
+);
+const textPanelOpenIndex = toolSettingsOpening.indexOf(
+  "mobileToolSettingsSheet?.open(requestedKind, trigger)",
+);
+const textWarmupScheduleIndex = toolSettingsOpening.indexOf(
+  "scheduleTextCreationWarmupAfterPanelPaint(requestedController, requestIsCurrent)",
+);
+assert.ok(
+  textPanelOpenIndex >= 0 && textWarmupScheduleIndex > textPanelOpenIndex,
+  "Text resource warm-up must be scheduled only after the settings panel opens",
+);
+
+const textCreationWarmup = section(
+  main,
+  "function scheduleTextCreationWarmupAfterPanelPaint(",
+  "async function initializeMixedSceneController(",
+);
+assert.match(
+  textCreationWarmup,
+  /requestAnimationFrame\(\(\) => \{[\s\S]*?requestAnimationFrame\(\(\) => \{/,
+  "Text warm-up needs a paint checkpoint before it starts expensive work",
+);
+assert.match(
+  textCreationWarmup,
+  /mobileToolSettingsSheet\?\.isOpen !== true[\s\S]*?mobileToolSettingsSheet\.toolKind !== "text"/,
+  "stale or closed Text panels must not start background warm-up",
+);
+assert.match(
+  textCreationWarmup,
+  /void controller\.prepareTextCreationResources\(\)\.catch\(\(error\) => \{/,
+  "background Text warm-up failures must be handled without an unhandled rejection",
+);
+assert.match(
+  textCreationWarmup,
+  /recordOperation\([\s\S]*?"prepare-text-creation"[\s\S]*?statusElement\.textContent/,
+  "background Text warm-up failures must reach diagnostics and visible status",
 );
 
 for (const method of [
@@ -132,6 +241,16 @@ assert.match(
   main,
   /new BrushSettingsController\(\{[\s\S]*?setBrushSettings: \(next\) => \{[\s\S]*?requestSelectedBrushColdStartLoading\(\)/,
   "resource-affecting Brush setting changes must request the same cold-start loading lifecycle",
+);
+assert.match(
+  main,
+  /selectedBrushPreparationRequestSuppressed = true;[\s\S]*?restoreActiveBrush\(\{ prepareResources: false \}\)[\s\S]*?finally \{[\s\S]*?selectedBrushPreparationRequestSuppressed = false;/,
+  "startup brush restore must preserve the one-shot deferred GPU preparation",
+);
+assert.match(
+  main,
+  /setBrushSettings: \(next\) => \{[\s\S]*?if \(!selectedBrushPreparationRequestSuppressed\) \{[\s\S]*?requestSelectedBrushColdStartLoading\(\)/,
+  "ordinary Brush changes must still prepare resources while startup restore stays cold",
 );
 assert.match(
   main,

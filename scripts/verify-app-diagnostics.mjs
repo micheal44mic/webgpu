@@ -190,7 +190,12 @@ assert.doesNotMatch(
 );
 assert.match(
   mainSource,
-  /toolSettingsRequireMixedScene\(requestedKind\)[\s\S]{0,120}await initializeMixedSceneController\(\)[\s\S]{0,160}mobileToolSettingsSheet\?\.open\(requestedKind, trigger\)/,
+  /toolSettingsRequireMixedScene\(requestedKind\)[\s\S]*?initializeMixedSceneController\(scope\)[\s\S]*?mobileToolSettingsSheet\?\.open\(requestedKind, trigger\)/,
+);
+assert.match(
+  mainSource,
+  /recordOperation\(\s*"initialize-tool-settings"[\s\S]*?statusElement\.className = "status app-status error"/,
+  "a failed cold panel load must leave visible diagnostic feedback",
 );
 assert.match(mainSource, /runtimeStatsController\?\.start\(\)/);
 assert.match(runtimeStatsSource, /this\.options\.browser\.setInterval\(\(\) => this\.refresh\(\), 1_000\)/);

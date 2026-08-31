@@ -65,6 +65,7 @@ const LABS = [
   ["vector-baseline-shared", "Baseline vettori · geometria condivisa"],
   ["vector-baseline-unique", "Baseline vettori · revisioni uniche"],
   ["vector-baseline-curved-strokes", "Baseline vettori · curve e tratteggi"],
+  ["vector-baseline-effects", "Baseline vettori · effetti condivisi"],
   ["human-record", "Registra · Custom 16 Intense"],
   ["human-replay", "Replay tratto umano canonico"],
   ["human-shape-sequence", "Confronto Shape ordinata/casuale · Count 1"],
@@ -589,7 +590,8 @@ class EditorLabController implements EditorExtension {
       }
       case "vector-baseline-shared":
       case "vector-baseline-unique":
-      case "vector-baseline-curved-strokes": {
+      case "vector-baseline-curved-strokes":
+      case "vector-baseline-effects": {
         const controller = await this.#host.ensureMixedSceneController();
         const { runVectorBaselineBenchmark } = await import(
           "./vector/vector-baseline-benchmark"
@@ -602,7 +604,9 @@ class EditorLabController implements EditorExtension {
             ? "shared"
             : id === "vector-baseline-unique"
               ? "unique"
-              : "curved-strokes",
+              : id === "vector-baseline-curved-strokes"
+                ? "curved-strokes"
+                : "effects-shared",
         );
       }
       case "human-record":

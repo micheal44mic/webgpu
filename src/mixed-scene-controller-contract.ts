@@ -87,11 +87,17 @@ export interface MixedSceneControllerOptions {
   readonly runWithLoading?: <Result>(
     label: string,
     operation: () => Promise<Result>,
+    options?: MixedSceneLoadingOptions,
   ) => Promise<Result>;
   readonly canvasGuides?: {
     readonly getPreferences: () => Readonly<EditorGuidePreferences>;
     readonly setSmartGuides: (guides: readonly SceneSnapMatch[]) => void;
   };
+}
+
+export interface MixedSceneLoadingOptions {
+  readonly revealImmediately?: boolean;
+  readonly waitForPaint?: boolean;
 }
 
 /** Narrow engine-facing port required by the mixed-scene editor. */
@@ -106,6 +112,7 @@ export interface MixedSceneHost {
   /** Trusted runtime view that may share immutable vector documents. */
   getMixedSceneRuntimeSnapshot?(): MixedSceneSnapshot | null;
   getHistoryState(): { actionCount: number; cursor: number };
+  ensureMixedSceneEditorResources(): Promise<void>;
   readLayerPixels(
     rect?: { x: number; y: number; width: number; height: number },
     layerIndex?: number,

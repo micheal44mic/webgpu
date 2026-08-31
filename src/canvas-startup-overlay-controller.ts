@@ -61,6 +61,13 @@ export interface CanvasRuntimeLoadingOperation {
   fail(): void;
 }
 
+export interface CanvasRuntimeLoadingOptions {
+  /** Skips the short-operation delay and presents loading feedback immediately. */
+  readonly revealImmediately?: boolean;
+  /** Waits for the immediate overlay to reach the screen before starting the operation. */
+  readonly waitForPaint?: boolean;
+}
+
 export function createCanvasStartupOverlayState(): CanvasStartupOverlayState {
   return {
     percent: INITIAL_PROGRESS_PERCENT,
@@ -162,17 +169,28 @@ export class CanvasStartupOverlayController {
     }, COMPLETION_HOLD_MS);
   }
 
-  beginRuntimeOperation(label: string): CanvasRuntimeLoadingOperation {
+  beginRuntimeOperation(label: string): CanvasRuntimeLoadingOperation;
+  beginRuntimeOperation(
+    label: string,
+    options: CanvasRuntimeLoadingOptions,
+  ): CanvasRuntimeLoadingOperation;
+  beginRuntimeOperation(
+    label: string,
+    options: CanvasRuntimeLoadingOptions = {},
+  ): CanvasRuntimeLoadingOperation {
     const operationId = ++this.runtimeOperationSequence;
     if (this.runtimeOperations.size === 0) this.runtimeFailureObserved = false;
     this.runtimeOperations.set(operationId, label.trim() || "Loading");
     this.setEditorInteractionBlocked(true);
+    const revealImmediately = options.revealImmediately === true
+      || options.waitForPaint === true;
     if (this.presentationMode === "runtime") {
       this.clearHideTimer();
       this.showRuntimeOverlay();
     } else if (this.presentationMode === "idle") {
       this.clearHideTimer();
-      this.scheduleRuntimeReveal();
+      if (revealImmediately) this.showRuntimeOverlay();
+      else this.scheduleRuntimeReveal();
     }
 
     let settled = false;
@@ -195,9 +213,11 @@ export class CanvasStartupOverlayController {
   async runRuntimeOperation<Result>(
     label: string,
     operation: () => Promise<Result>,
+    options: CanvasRuntimeLoadingOptions = {},
   ): Promise<Result> {
-    const loading = this.beginRuntimeOperation(label);
+    const loading = this.beginRuntimeOperation(label, options);
     try {
+      if (options.waitForPaint === true) await this.waitForRuntimeOverlayPaint();
       const result = await operation();
       loading.complete();
       return result;
@@ -283,6 +303,14 @@ export class CanvasStartupOverlayController {
     overlay.setAttribute("aria-busy", "true");
     this.setEditorInteractionBlocked(true);
     this.renderRuntimeOperation();
+  }
+
+  private waitForRuntimeOverlayPaint(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      this.browser.requestAnimationFrame(() => {
+        this.browser.requestAnimationFrame(() => resolve());
+      });
+    });
   }
 
   private renderRuntimeOperation(): void {

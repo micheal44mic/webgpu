@@ -641,6 +641,7 @@ let documentSwitchInProgress = false;
 let documentSwitchSourcesInvalidated = false;
 let documentSwitchStartedAt = 0;
 let documentSwitchGeneration = 0;
+let toolSettingsOpenRequestSequence = 0;
 
 const DOCUMENT_SWITCH_STAGE_LABELS: Readonly<Record<ProjectSessionSwitchStage, string>> = {
   availability: "Checking the current editor session",
@@ -1040,11 +1041,14 @@ const engine = new BrushEngine(canvas, {
   layerColdAdjacentPrefetchEnabled,
 }, rasterSelectionOverlayCanvas);
 let selectedBrushColdStartLoadingPromise: Promise<void> | null = null;
+let selectedBrushPreparationRequestSuppressed = false;
 const brushSettingsController = new BrushSettingsController({
   getSettings: () => engine.getSettings(),
   setBrushSettings: (next) => {
     engine.setBrushSettings(next);
-    requestSelectedBrushColdStartLoading();
+    if (!selectedBrushPreparationRequestSuppressed) {
+      requestSelectedBrushColdStartLoading();
+    }
   },
 });
 const canvasToolSettingsController = new CanvasToolSettingsController();
@@ -2647,25 +2651,48 @@ editorToolsController = new EditorToolsController({
   syncMenuState: syncMobileToolsMenuState,
   selectCanvasTool: selectCanvasToolWithMixedScene,
   openToolSettings: (kind, trigger) => {
+    const requestSequence = ++toolSettingsOpenRequestSequence;
     const requestedDocumentSwitchGeneration = documentSwitchGeneration;
     const requestIsCurrent = (): boolean => (
       !documentSwitchInProgress
+      && requestSequence === toolSettingsOpenRequestSequence
       && requestedDocumentSwitchGeneration === documentSwitchGeneration
     );
     const openRequestedSettings = (requestedKind: EditorToolSettingsKind): void => {
       void (async () => {
         if (!requestIsCurrent()) return;
+        let requestedController: MixedSceneController | null = null;
         if (toolSettingsRequireMixedScene(requestedKind)) {
-          await initializeMixedSceneController();
+          const scope: MixedSceneInitializationScope = requestedKind === "text"
+            ? "controller-only"
+            : "semantic-scene";
+          const initialize = () => initializeMixedSceneController(scope);
+          if (requestedKind === "text" && mixedSceneController === null) {
+            requestedController = await canvasStartupOverlay.runRuntimeOperation(
+              "Preparing Text",
+              initialize,
+              { revealImmediately: true, waitForPaint: true },
+            );
+          } else {
+            requestedController = await initialize();
+          }
         }
         if (!requestIsCurrent()) return;
         mobileToolSettingsSheet?.open(requestedKind, trigger);
+        if (requestedKind === "text" && requestedController) {
+          scheduleTextCreationWarmupAfterPanelPaint(requestedController, requestIsCurrent);
+        }
       })().catch((error) => {
         appDiagnosticsController?.recordOperation(
           "initialize-tool-settings",
           requestedKind,
           error,
         );
+        const message = error instanceof Error ? error.message : String(error);
+        statusElement.textContent = requestedKind === "text"
+          ? `Could not open Text: ${message}`
+          : `Could not open ${requestedKind}: ${message}`;
+        statusElement.className = "status app-status error";
         console.error(`Could not initialize the ${requestedKind} settings.`, error);
       });
     };
@@ -3391,11 +3418,38 @@ canvasToolController?.configure("pan", false);
 updateHistoryControls();
 
 type MixedSceneInitializationScope =
+  | "controller-only"
   | "semantic-scene"
   | "shape-preview"
   | "vector-shape"
   | "raster-import"
   | "raster-transform";
+
+function scheduleTextCreationWarmupAfterPanelPaint(
+  controller: MixedSceneController,
+  requestIsCurrent: () => boolean,
+): void {
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      if (
+        !requestIsCurrent()
+        || mobileToolSettingsSheet?.isOpen !== true
+        || mobileToolSettingsSheet.toolKind !== "text"
+      ) return;
+      void controller.prepareTextCreationResources().catch((error) => {
+        appDiagnosticsController?.recordOperation(
+          "prepare-text-creation",
+          "background-warmup",
+          error,
+        );
+        const message = error instanceof Error ? error.message : String(error);
+        statusElement.textContent = `Could not prepare Text: ${message}`;
+        statusElement.className = "status app-status error";
+        console.error("Could not prepare Text creation resources.", error);
+      });
+    });
+  });
+}
 
 async function initializeMixedSceneController(
   scope: MixedSceneInitializationScope = "semantic-scene",
@@ -3415,8 +3469,8 @@ async function initializeMixedSceneController(
           mobileToolSettingsSheet?.syncOpenState();
           updateHistoryControls();
         },
-        runWithLoading: (label, operation) =>
-          canvasStartupOverlay.runRuntimeOperation(label, operation),
+        runWithLoading: (label, operation, options) =>
+          canvasStartupOverlay.runRuntimeOperation(label, operation, options),
         canvasGuides: {
           getPreferences: () => editorSettingsController?.preferences
             ?? DEFAULT_EDITOR_GUIDE_PREFERENCES,
@@ -3446,16 +3500,18 @@ async function initializeMixedSceneController(
     });
   }
 
-  const resourcePreparation = scope === "semantic-scene"
-    ? engine.ensureMixedSceneEditorResources()
-    : scope === "shape-preview"
-      ? Promise.all([
-        engine.ensureShapePreviewEditorResources(),
-        engine.ensureVectorShapeEditorResources(),
-      ]).then(() => undefined)
-      : scope === "vector-shape"
-        ? engine.ensureVectorShapeEditorResources()
-        : Promise.resolve();
+  const resourcePreparation = scope === "controller-only"
+    ? Promise.resolve()
+    : scope === "semantic-scene"
+      ? engine.ensureMixedSceneEditorResources()
+      : scope === "shape-preview"
+        ? Promise.all([
+          engine.ensureShapePreviewEditorResources(),
+          engine.ensureVectorShapeEditorResources(),
+        ]).then(() => undefined)
+        : scope === "vector-shape"
+          ? engine.ensureVectorShapeEditorResources()
+          : Promise.resolve();
   const initialization = mixedSceneController
     ? Promise.resolve(mixedSceneController)
     : mixedSceneInitializationPromise!;
@@ -3474,7 +3530,12 @@ void engine.initialize()
         mobileBrushStudio
         && (editorExtensionBootstrap?.restorePersistedBrushOnStartup ?? true)
       ) {
-        await brushLibraryController.restoreActiveBrush({ prepareResources: false });
+        selectedBrushPreparationRequestSuppressed = true;
+        try {
+          await brushLibraryController.restoreActiveBrush({ prepareResources: false });
+        } finally {
+          selectedBrushPreparationRequestSuppressed = false;
+        }
       }
     });
     await engine.runStartupPhase(

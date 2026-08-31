@@ -1,4 +1,7 @@
-import { compileVectorTextEffect } from "./vector-text-effect-geometry";
+import {
+  compileVectorTextEffect,
+  VectorTextCanonicalFillCache,
+} from "./vector-text-effect-geometry";
 import type {
   VectorTextEffectWorkerRequest,
   VectorTextEffectWorkerResponse,
@@ -6,6 +9,7 @@ import type {
 } from "./vector-text-effect-worker-protocol";
 
 const paths = new Map<string, VectorTextWorkerPathData>();
+const canonicalFills = new VectorTextCanonicalFillCache();
 
 function respond(
   message: VectorTextEffectWorkerResponse,
@@ -19,11 +23,15 @@ self.onmessage = (
 ): void => {
   const message = event.data;
   if (message.type === "register-path") {
+    if (paths.has(message.revision)) {
+      canonicalFills.releasePath(message.revision);
+    }
     paths.set(message.revision, message.path);
     return;
   }
   if (message.type === "release-path") {
     paths.delete(message.revision);
+    canonicalFills.releasePath(message.revision);
     return;
   }
 
@@ -38,11 +46,22 @@ self.onmessage = (
     return;
   }
   try {
+    const isOutline = message.effect.kind === "source-outline"
+      || message.effect.kind === "block-outline";
+    const canonicalFill = !isOutline || message.effect.width > 0
+      ? canonicalFills.getOrCreate(
+          message.revision,
+          path,
+          message.lod,
+          isOutline ? message.effect.width : 0,
+        )
+      : undefined;
     const mesh = compileVectorTextEffect(
       path,
       message.lod,
       message.effect,
       message.cacheKey,
+      canonicalFill,
     );
     const transfer: Transferable[] = [];
     if (mesh) {

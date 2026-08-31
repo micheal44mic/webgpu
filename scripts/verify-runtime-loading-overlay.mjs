@@ -64,6 +64,8 @@ class FakeWindow {
   now = 0;
   nextTimer = 1;
   timers = new Map();
+  nextAnimationFrame = 1;
+  animationFrames = new Map();
 
   setTimeout(callback, delay = 0) {
     const id = this.nextTimer;
@@ -74,6 +76,20 @@ class FakeWindow {
 
   clearTimeout(id) {
     this.timers.delete(id);
+  }
+
+  requestAnimationFrame(callback) {
+    const id = this.nextAnimationFrame;
+    this.nextAnimationFrame += 1;
+    this.animationFrames.set(id, callback);
+    return id;
+  }
+
+  flushAnimationFrame() {
+    this.now += 1000 / 60;
+    const callbacks = [...this.animationFrames.values()];
+    this.animationFrames.clear();
+    for (const callback of callbacks) callback(this.now);
   }
 
   advance(milliseconds) {
@@ -228,6 +244,53 @@ const fixture = () => {
 
 {
   const view = fixture();
+  let operationStarted = false;
+  const operation = view.controller.runRuntimeOperation(
+    "Preparing text",
+    async () => {
+      operationStarted = true;
+      assert.equal(
+        view.overlay.hidden,
+        false,
+        "paint-gated work must start with visible loading feedback",
+      );
+      return "prepared";
+    },
+    { revealImmediately: true, waitForPaint: true },
+  );
+
+  assert.equal(view.overlay.hidden, false, "cold work must reveal feedback synchronously");
+  assert.equal(view.overlay.dataset.mode, "runtime");
+  assert.equal(view.label.textContent, "Preparing text");
+  assert.equal(operationStarted, false, "cold work must wait for the first paint checkpoint");
+
+  view.browser.flushAnimationFrame();
+  await Promise.resolve();
+  assert.equal(operationStarted, false, "one animation frame is not a paint guarantee");
+
+  view.browser.flushAnimationFrame();
+  await Promise.resolve();
+  assert.equal(operationStarted, true, "work starts after the second animation frame");
+  assert.equal(await operation, "prepared");
+  assert.equal(view.overlay.dataset.state, "finishing");
+  view.browser.advance(420);
+  assert.equal(view.overlay.hidden, true);
+  assert.equal(view.application.inert, false);
+}
+
+{
+  const view = fixture();
+  const loading = view.controller.beginRuntimeOperation(
+    "Preparing resources",
+    { revealImmediately: true },
+  );
+  assert.equal(view.overlay.hidden, false, "manual cold work can also skip the reveal delay");
+  assert.equal(view.label.textContent, "Preparing resources");
+  loading.complete();
+}
+
+{
+  const view = fixture();
   const loading = view.controller.beginRuntimeOperation("Saving project");
   view.browser.advance(120);
   view.controller.reset();
@@ -245,4 +308,4 @@ const fixture = () => {
 if (originalHTMLElement === undefined) delete globalThis.HTMLElement;
 else globalThis.HTMLElement = originalHTMLElement;
 
-console.log("Shared runtime loading overlay: delayed reveal, nesting, failure, timer replacement and startup handoff verified.");
+console.log("Shared runtime loading overlay: delayed and paint-gated reveal, nesting, failure, timer replacement and startup handoff verified.");

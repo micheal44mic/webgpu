@@ -24,6 +24,7 @@ import {
 } from "./vector-text-curve-utils.ts";
 import {
   VECTOR_TEXT_GEOMETRY_COMPILER_VERSION,
+  vectorTextFloat64Key,
   type VectorTextLod,
 } from "./vector-text-lod.ts";
 
@@ -31,6 +32,8 @@ export const VECTOR_TEXT_GPU_GEOMETRY_STRATEGY =
   "clipper64-nonzero-worker-native-round-bevel-exact-miter-aa-overlap-same-color-union-visible-block-separate-clipped-overlap2px-earcut-v10" as const;
 export const VECTOR_TEXT_OUTLINE_INNER_OVERLAP_PIXELS = 1;
 export const VECTOR_TEXT_BLOCK_INNER_OVERLAP_PIXELS = 2;
+export const VECTOR_TEXT_CANONICAL_FILL_CACHE_MAXIMUM_ENTRIES = 32;
+export const VECTOR_TEXT_CANONICAL_FILL_CACHE_MAXIMUM_BYTES = 32 * 1024 * 1024;
 
 export interface VectorTextGpuMeshData {
   readonly revision: string;
@@ -81,6 +84,21 @@ export interface CanonicalPolygonSet {
   readonly top: number;
   readonly right: number;
   readonly bottom: number;
+}
+
+export interface VectorTextCanonicalFillCacheDiagnostics {
+  readonly entries: number;
+  readonly retainedBytes: number;
+  readonly hits: number;
+  readonly misses: number;
+  readonly evictions: number;
+}
+
+interface VectorTextCanonicalFillCacheEntry {
+  readonly key: string;
+  readonly pathRevision: string;
+  readonly value: CanonicalPolygonSet;
+  readonly retainedBytes: number;
 }
 
 const MAXIMUM_SUBDIVISION_DEPTH = 24;
@@ -450,6 +468,133 @@ export function canonicalizeVectorTextPath(
     ? FillRule.EvenOdd
     : FillRule.NonZero;
   return canonicalSetFromPaths(paths, fillRule);
+}
+
+function canonicalFillCacheKey(
+  pathRevision: string,
+  lod: VectorTextLod,
+  outlineRadius: number,
+): string {
+  return JSON.stringify([
+    VECTOR_TEXT_GEOMETRY_COMPILER_VERSION,
+    pathRevision,
+    vectorTextFloat64Key(lod.bucket),
+    vectorTextFloat64Key(lod.bucketScale),
+    vectorTextFloat64Key(lod.cubicToQuadraticTolerance),
+    vectorTextFloat64Key(lod.polygonFlattenTolerance),
+    vectorTextFloat64Key(lod.roundArcSagittaTolerance),
+    vectorTextFloat64Key(lod.integerScale),
+    vectorTextFloat64Key(outlineRadius),
+  ]);
+}
+
+function canonicalFillRetainedBytes(value: CanonicalPolygonSet): number {
+  let pointCount = 0;
+  for (const path of value.paths) {
+    pointCount += path.length;
+  }
+  return pointCount * 32
+    + value.paths.length * 64
+    + value.groups.length * 64;
+}
+
+/**
+ * Retains the topology-normalized source fill shared by effect variants.
+ * The path revision is a content identity supplied by VectorPathIdentityPool.
+ */
+export class VectorTextCanonicalFillCache {
+  private readonly maximumEntries: number;
+  private readonly maximumBytes: number;
+  private readonly entries = new Map<string, VectorTextCanonicalFillCacheEntry>();
+  private retainedBytes = 0;
+  private hits = 0;
+  private misses = 0;
+  private evictions = 0;
+
+  constructor(
+    maximumEntries = VECTOR_TEXT_CANONICAL_FILL_CACHE_MAXIMUM_ENTRIES,
+    maximumBytes = VECTOR_TEXT_CANONICAL_FILL_CACHE_MAXIMUM_BYTES,
+  ) {
+    if (!Number.isSafeInteger(maximumEntries) || maximumEntries < 1) {
+      throw new Error("The canonical fill cache entry limit must be a positive integer.");
+    }
+    if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) {
+      throw new Error("The canonical fill cache byte limit must be a positive integer.");
+    }
+    this.maximumEntries = maximumEntries;
+    this.maximumBytes = maximumBytes;
+  }
+
+  getOrCreate(
+    pathRevision: string,
+    path: Shadow3dPathData,
+    lod: VectorTextLod,
+    outlineRadius = 0,
+  ): CanonicalPolygonSet {
+    const key = canonicalFillCacheKey(pathRevision, lod, outlineRadius);
+    const retained = this.entries.get(key);
+    if (retained) {
+      this.entries.delete(key);
+      this.entries.set(key, retained);
+      this.hits += 1;
+      return retained.value;
+    }
+
+    this.misses += 1;
+    const value = canonicalizeVectorTextPath(path, lod, outlineRadius);
+    const retainedBytes = canonicalFillRetainedBytes(value);
+    if (retainedBytes > this.maximumBytes) {
+      return value;
+    }
+    while (
+      this.entries.size >= this.maximumEntries
+      || this.retainedBytes + retainedBytes > this.maximumBytes
+    ) {
+      const oldest = this.entries.entries().next();
+      if (oldest.done) break;
+      this.entries.delete(oldest.value[0]);
+      this.retainedBytes -= oldest.value[1].retainedBytes;
+      this.evictions += 1;
+    }
+    const entry: VectorTextCanonicalFillCacheEntry = {
+      key,
+      pathRevision,
+      value,
+      retainedBytes,
+    };
+    this.entries.set(key, entry);
+    this.retainedBytes += retainedBytes;
+    return value;
+  }
+
+  releasePath(pathRevision: string): number {
+    let released = 0;
+    for (const [key, entry] of this.entries) {
+      if (entry.pathRevision !== pathRevision) continue;
+      this.entries.delete(key);
+      this.retainedBytes -= entry.retainedBytes;
+      released += 1;
+    }
+    return released;
+  }
+
+  reset(): void {
+    this.entries.clear();
+    this.retainedBytes = 0;
+    this.hits = 0;
+    this.misses = 0;
+    this.evictions = 0;
+  }
+
+  diagnostics(): VectorTextCanonicalFillCacheDiagnostics {
+    return {
+      entries: this.entries.size,
+      retainedBytes: this.retainedBytes,
+      hits: this.hits,
+      misses: this.misses,
+      evictions: this.evictions,
+    };
+  }
 }
 
 function pushPositivePiece(pieces: Paths64, piece: Path64): void {
@@ -873,6 +1018,7 @@ export function compileVectorTextEffect(
   lod: VectorTextLod,
   effect: VectorTextEffectDescription,
   revision: string,
+  preparedCanonicalFill?: CanonicalPolygonSet,
 ): VectorTextGpuMeshData | null {
   if (
     (effect.kind === "source-outline" || effect.kind === "block-outline")
@@ -884,7 +1030,7 @@ export function compileVectorTextEffect(
     || effect.kind === "block-outline"
     ? effect.width
     : 0;
-  const canonicalFill = canonicalizeVectorTextPath(
+  const canonicalFill = preparedCanonicalFill ?? canonicalizeVectorTextPath(
     path,
     lod,
     outlineRadius,

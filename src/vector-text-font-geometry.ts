@@ -1,4 +1,3 @@
-import opentype from "opentype.js";
 import { loadCachedAssetSource } from "./asset-source-cache.ts";
 import type { Shadow3dPathData } from "./vector-shadow-3d.ts";
 import {
@@ -71,6 +70,30 @@ interface LoadedVectorTextFont {
   font: OpenTypeFont;
   byteLength: number;
   face: FontFace | null;
+}
+
+interface OpenTypeParser {
+  parse(buffer: ArrayBuffer): OpenTypeFont;
+}
+
+let openTypeParserPromise: Promise<OpenTypeParser> | null = null;
+
+async function loadOpenTypeParser(): Promise<OpenTypeParser> {
+  if (openTypeParserPromise) return openTypeParserPromise;
+  const pending = import("opentype.js").then((module) => {
+    const parser = module.default as OpenTypeParser;
+    if (!parser || typeof parser.parse !== "function") {
+      throw new Error("The vector font parser is unavailable.");
+    }
+    return parser;
+  });
+  openTypeParserPromise = pending;
+  try {
+    return await pending;
+  } catch (error) {
+    if (openTypeParserPromise === pending) openTypeParserPromise = null;
+    throw error;
+  }
 }
 
 export type VectorTextTransformGuide =
@@ -503,23 +526,45 @@ function buildOutlineGeometry(
 
 export class VectorTextFontGeometryRegistry {
   private readonly records = new Map<string, LoadedVectorTextFont>();
-  private preloadPromise: Promise<void> | null = null;
+  private readonly loadPromises = new Map<string, Promise<void>>();
 
   get isPreloaded(): boolean {
     return VECTOR_TEXT_FONT_MANIFEST.every((entry) => this.records.has(entry.family));
   }
 
+  hasFamily(family: string): boolean {
+    return this.records.has(family);
+  }
+
+  hasFamilies(families: Iterable<string>): boolean {
+    for (const family of families) {
+      if (!this.hasFamily(family)) return false;
+    }
+    return true;
+  }
+
   async preload(): Promise<void> {
-    if (this.isPreloaded) return;
-    if (this.preloadPromise) return this.preloadPromise;
-    const pending = Promise.all(
-      VECTOR_TEXT_FONT_MANIFEST.map((entry) => this.load(entry)),
-    ).then(() => undefined);
-    this.preloadPromise = pending;
+    await this.ensureFamilies(VECTOR_TEXT_FONT_MANIFEST.map((entry) => entry.family));
+  }
+
+  async ensureFamilies(families: Iterable<string>): Promise<void> {
+    await Promise.all([...new Set(families)].map((family) => this.ensureFamily(family)));
+  }
+
+  async ensureFamily(family: string): Promise<void> {
+    if (this.records.has(family)) return;
+    const existing = this.loadPromises.get(family);
+    if (existing) return existing;
+    const entry = VECTOR_TEXT_FONT_MANIFEST.find((candidate) => candidate.family === family);
+    if (!entry) throw new Error("Unknown vector font: " + family);
+    const pending = this.load(entry);
+    this.loadPromises.set(family, pending);
     try {
       await pending;
     } finally {
-      if (this.preloadPromise === pending) this.preloadPromise = null;
+      if (this.loadPromises.get(family) === pending) {
+        this.loadPromises.delete(family);
+      }
     }
   }
 
@@ -545,8 +590,11 @@ export class VectorTextFontGeometryRegistry {
 
   private async load(entry: VectorTextFontEntry): Promise<void> {
     if (this.records.has(entry.family)) return;
-    const buffer = await loadCachedAssetSource(entry.fileUrl);
-    const font = opentype.parse(buffer) as OpenTypeFont;
+    const [buffer, parser] = await Promise.all([
+      loadCachedAssetSource(entry.fileUrl),
+      loadOpenTypeParser(),
+    ]);
+    const font = parser.parse(buffer);
     if (
       !font
       || !Number.isFinite(font.unitsPerEm)
@@ -563,8 +611,9 @@ export class VectorTextFontGeometryRegistry {
           style: "normal",
           weight: entry.weight,
         });
-        await face.load();
-        document.fonts.add(face);
+        void face.load().then((loadedFace) => {
+          document.fonts.add(loadedFace);
+        }).catch(() => undefined);
       } catch {
         face = null;
       }

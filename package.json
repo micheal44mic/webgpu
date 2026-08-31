@@ -89,6 +89,7 @@
     "view:verify": "node scripts/verify-view-rotation.mjs",
     "compression:verify": "node scripts/verify-layer-compression.mjs",
     "vector-text:verify": "node scripts/verify-vector-text.mjs",
+    "vector-effect-cache:verify": "node scripts/verify-vector-effect-canonical-fill-cache.mjs",
     "vector-shadow:verify": "node scripts/verify-vector-shadow-3d.mjs",
     "vector-shapes:verify": "node scripts/verify-vector-shapes.mjs",
     "vector-pixel-alignment:verify": "node scripts/verify-vector-pixel-alignment.mjs",
