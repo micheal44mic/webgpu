@@ -99,6 +99,12 @@ const DIAGNOSTIC_DOCUMENT_HEIGHT = 2048;
 const RGBA16FLOAT_BYTES_PER_PIXEL = 8;
 const APPLICATION_BOOT_TEST = "startup-no-tier2-v1";
 const APPLICATION_BOOT_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
+const SHAPE_ARRAY_R16F_TEST = "shape-array-r16f-4layer-v1";
+const SHAPE_ARRAY_R16F_VARIANT =
+  "shape-array-r16float-2048x2048-4layer-full-mips-impulse-readback-no-tier2-v1";
+const SHAPE_ARRAY_SIZE = 2048;
+const SHAPE_ARRAY_LAYER_COUNT = 4;
+const SHAPE_ARRAY_MIP_LEVEL_COUNT = 12;
 const STORAGE_FORMAT_AB_TEST = "storage-format-ab-v1";
 const STORAGE_FORMAT_AB_VARIANT =
   "storage-format-ab-rgba8unorm-control-rgba16float-target-write-only-1x1-no-tier2-v1";
@@ -148,6 +154,7 @@ const EXPECTED_CORE_PIPELINE_TARGET_FORMATS = [
   "rgba16float",
 ] as const;
 const diagnosticTest = new URLSearchParams(window.location.search).get("test");
+const shapeArrayR16fEnabled = diagnosticTest === SHAPE_ARRAY_R16F_TEST;
 const storageFormatAbEnabled = diagnosticTest === STORAGE_FORMAT_AB_TEST;
 const documentPipelineBisectEnabled = diagnosticTest === DOCUMENT_PIPELINE_TEST;
 const application4096StartupEnabled = diagnosticTest === APPLICATION_4096_TEST;
@@ -170,6 +177,24 @@ const application4096PipelineTimingEnabled =
   || application4096CleanQueueCoreEnabled;
 
 function comparisonPolicy(): Record<string, unknown> {
+  if (shapeArrayR16fEnabled) {
+    return {
+      testId: SHAPE_ARRAY_R16F_TEST,
+      diagnosticVariant: SHAPE_ARRAY_R16F_VARIANT,
+      kind: "shape-texture-array-r16float",
+      width: SHAPE_ARRAY_SIZE,
+      height: SHAPE_ARRAY_SIZE,
+      depthOrArrayLayers: SHAPE_ARRAY_LAYER_COUNT,
+      mipLevelCount: SHAPE_ARRAY_MIP_LEVEL_COUNT,
+      targetFormat: "r16float",
+      stagingFormat: "r16uint",
+      sampleViewDimension: "2d-array",
+      requiredFeatures: [],
+      textureFormatsTier2Requested: false,
+      buildOrder: "sequential-layers",
+      validation: "all-layers-all-mips-readback",
+    };
+  }
   if (storageFormatAbEnabled) {
     return {
       testId: STORAGE_FORMAT_AB_TEST,
@@ -388,6 +413,7 @@ function comparisonPolicy(): Record<string, unknown> {
 function readSupportedLimits(limits: GPUSupportedLimits): Record<string, number> {
   const names = [
     "maxTextureDimension2D",
+    "maxTextureArrayLayers",
     "maxBindGroups",
     "maxStorageBuffersPerShaderStage",
     "maxStorageTexturesPerShaderStage",
@@ -1242,6 +1268,926 @@ async function runStorageFormatAbDiagnostic(): Promise<void> {
       },
     );
   } finally {
+    intentionalDestroy = true;
+    device.destroy();
+  }
+}
+
+interface ShapeArrayStageSummary {
+  ok: boolean;
+  operationElapsedMs: number;
+  scopeDrainElapsedMs: number;
+  totalElapsedMs: number;
+  thrown: string | null;
+  semanticError: string | null;
+  scopeErrors: Partial<Record<StorageProbeErrorFilter, string | null>>;
+}
+
+function compactShapeArrayStage(
+  report: StorageProbeStageReport,
+): ShapeArrayStageSummary {
+  return {
+    ok: report.ok,
+    operationElapsedMs: Math.round(report.operationElapsedMs * 10) / 10,
+    scopeDrainElapsedMs: Math.round(report.scopeDrainElapsedMs * 10) / 10,
+    totalElapsedMs: Math.round(report.totalElapsedMs * 10) / 10,
+    thrown: storageProbeErrorText(report.thrown),
+    semanticError: report.semanticError,
+    scopeErrors: Object.fromEntries(
+      Object.entries(report.scopeErrors).map(([filter, error]) => [
+        filter,
+        storageProbeErrorText(error),
+      ]),
+    ),
+  };
+}
+
+function shapeArrayMemoryBytes(): number {
+  let pixelsPerLayer = 0;
+  for (let mipLevel = 0; mipLevel < SHAPE_ARRAY_MIP_LEVEL_COUNT; mipLevel += 1) {
+    pixelsPerLayer += Math.max(1, SHAPE_ARRAY_SIZE >> mipLevel) ** 2;
+  }
+  return pixelsPerLayer * SHAPE_ARRAY_LAYER_COUNT * 2;
+}
+
+async function runShapeArrayR16fDiagnostic(): Promise<void> {
+  const diagnosticStartedAt = performance.now();
+  const stages: Record<string, StorageProbeStageReport> = {};
+  let failedStage: string | null = null;
+  await checkpoint("shape-array-r16f-started", {
+    ...comparisonPolicy(),
+    navigatorGpuPresent: Boolean(navigator.gpu),
+    secureContext: window.isSecureContext,
+    targetMemoryBytes: shapeArrayMemoryBytes(),
+  }, "running", "beacon");
+  if (!navigator.gpu) throw new Error("navigator.gpu is not available.");
+
+  const runStage = async <Value>(
+    key: string,
+    label: string,
+    device: GPUDevice,
+    operation: () => Value | Promise<Value>,
+    summarize: (value: Value) => unknown,
+    semanticValidation?: (value: Value) => string | null,
+  ): Promise<Value | null> => {
+    const phaseStartedAt = performance.now();
+    await checkpoint("application-startup-phase", {
+      phase: key,
+      label,
+      state: "started",
+      totalElapsedMs: phaseStartedAt - diagnosticStartedAt,
+      phaseElapsedMs: 0,
+      detail: {
+        format: "r16float",
+        depthOrArrayLayers: SHAPE_ARRAY_LAYER_COUNT,
+      },
+    }, "running", "beacon");
+    const outcome = await runScopedStorageOperation(
+      device,
+      label,
+      operation,
+      summarize,
+      semanticValidation,
+    );
+    stages[key] = outcome.report;
+    if (!outcome.report.ok && failedStage === null) failedStage = key;
+    await checkpoint("application-startup-phase", {
+      phase: key,
+      label,
+      state: outcome.report.ok ? "completed" : "failed",
+      totalElapsedMs: performance.now() - diagnosticStartedAt,
+      phaseElapsedMs: performance.now() - phaseStartedAt,
+      detail: {
+        format: "r16float",
+        depthOrArrayLayers: SHAPE_ARRAY_LAYER_COUNT,
+        ...outcome.report,
+      },
+    }, "running", "beacon");
+    return outcome.value;
+  };
+
+  const adapterPhaseStartedAt = performance.now();
+  await checkpoint("application-startup-phase", {
+    phase: "adapter-request",
+    label: "Finding a WebGPU adapter",
+    state: "started",
+    totalElapsedMs: adapterPhaseStartedAt - diagnosticStartedAt,
+    phaseElapsedMs: 0,
+  }, "running", "beacon");
+  const android = /\bAndroid\b/i.test(navigator.userAgent);
+  const adapterOptions: GPURequestAdapterOptions | undefined =
+    /\bWindows\b/i.test(navigator.userAgent) || android
+      ? undefined
+      : { powerPreference: "high-performance" };
+  let adapter: GPUAdapter | null = null;
+  let primaryAdapterError: unknown = null;
+  try {
+    adapter = await withTimeout(
+      navigator.gpu.requestAdapter(adapterOptions),
+      20_000,
+      "Shape array adapter request",
+    );
+  } catch (error) {
+    primaryAdapterError = error;
+    await checkpoint("shape-array-adapter-primary-error", {
+      error: describeError(error),
+    }, "running", "beacon");
+  }
+  let adapterMode = adapter ? (adapterOptions ? "high-performance" : "neutral") : "none";
+  if (!adapter && adapterOptions !== undefined) {
+    try {
+      adapter = await withTimeout(
+        navigator.gpu.requestAdapter(),
+        20_000,
+        "Shape array neutral adapter request",
+      );
+      if (adapter) adapterMode = "neutral";
+    } catch (error) {
+      await checkpoint("shape-array-adapter-neutral-error", {
+        error: describeError(error),
+      }, "running", "beacon");
+    }
+  }
+  if (!adapter && android) {
+    try {
+      adapter = await withTimeout(
+        navigator.gpu.requestAdapter({
+          featureLevel: "compatibility",
+        } as GPURequestAdapterOptions & { featureLevel: "compatibility" }),
+        20_000,
+        "Shape array compatibility adapter request",
+      );
+      if (adapter) adapterMode = "compatibility";
+    } catch (error) {
+      await checkpoint("shape-array-adapter-compatibility-error", {
+        error: describeError(error),
+      }, "running", "beacon");
+    }
+  }
+  if (!adapter) {
+    throw new Error(
+      primaryAdapterError
+        ? `No compatible WebGPU adapter was found. Primary error: ${String((primaryAdapterError as Error).message ?? primaryAdapterError)}`
+        : "No compatible WebGPU adapter was found.",
+    );
+  }
+  const textureFormatsTier2Advertised = adapter.features.has(
+    "texture-formats-tier2" as GPUFeatureName,
+  );
+  await checkpoint("application-startup-phase", {
+    phase: "adapter-request",
+    label: "Finding a WebGPU adapter",
+    state: "completed",
+    totalElapsedMs: performance.now() - diagnosticStartedAt,
+    phaseElapsedMs: performance.now() - adapterPhaseStartedAt,
+    detail: {
+      mode: adapterMode,
+      info: readAdapterInfo(adapter),
+      features: [...adapter.features].map(String).sort().slice(0, 32),
+      limits: readSupportedLimits(adapter.limits),
+      textureFormatsTier2Advertised,
+    },
+  }, "running", "beacon");
+
+  const requiredFeatures: GPUFeatureName[] = [];
+  const devicePhaseStartedAt = performance.now();
+  await checkpoint("application-startup-phase", {
+    phase: "device-request",
+    label: "Creating a feature-neutral WebGPU device",
+    state: "started",
+    totalElapsedMs: devicePhaseStartedAt - diagnosticStartedAt,
+    phaseElapsedMs: 0,
+    detail: { requiredFeatures },
+  }, "running", "beacon");
+  const deviceRequest = adapter.requestDevice({ requiredFeatures });
+  let device: GPUDevice;
+  try {
+    device = await withTimeout(deviceRequest, 20_000, "Shape array device request");
+  } catch (error) {
+    void deviceRequest.then((lateDevice) => lateDevice.destroy()).catch(() => undefined);
+    throw error;
+  }
+  const textureFormatsTier2Enabled = device.features.has(
+    "texture-formats-tier2" as GPUFeatureName,
+  );
+  await checkpoint("application-startup-phase", {
+    phase: "device-request",
+    label: "Creating a feature-neutral WebGPU device",
+    state: "completed",
+    totalElapsedMs: performance.now() - diagnosticStartedAt,
+    phaseElapsedMs: performance.now() - devicePhaseStartedAt,
+    detail: {
+      requiredFeatures,
+      enabledFeatures: [...device.features].map(String).sort(),
+      textureFormatsTier2Enabled,
+      limits: readSupportedLimits(device.limits),
+    },
+  }, "running", "beacon");
+
+  const uncapturedErrors: unknown[] = [];
+  let deviceLostInfo: Record<string, unknown> | null = null;
+  let intentionalDestroy = false;
+  let targetTexture: GPUTexture | null = null;
+  let stagingTexture: GPUTexture | null = null;
+  let sampleBuffer: GPUBuffer | null = null;
+  let readbackBuffer: GPUBuffer | null = null;
+  device.addEventListener("uncapturederror", (event) => {
+    const detail = {
+      elapsedMs: performance.now() - diagnosticStartedAt,
+      error: describeError(event.error),
+    };
+    uncapturedErrors.push(detail);
+    if (uncapturedErrors.length > 12) uncapturedErrors.shift();
+    void checkpoint("shape-array-uncaptured-error", detail, "running", "beacon");
+  });
+  void device.lost.then((info) => {
+    if (intentionalDestroy) return;
+    deviceLostInfo = {
+      elapsedMs: performance.now() - diagnosticStartedAt,
+      reason: info.reason,
+      message: info.message,
+    };
+    void checkpoint("shape-array-device-lost", deviceLostInfo, "running", "beacon");
+  });
+
+  const baseShader = `
+    @group(0) @binding(0) var sourceTexture: texture_2d<u32>;
+
+    @vertex
+    fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> @builtin(position) vec4<f32> {
+      let positions = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(3.0, -1.0),
+        vec2<f32>(-1.0, 3.0)
+      );
+      return vec4<f32>(positions[vertexIndex], 0.0, 1.0);
+    }
+
+    @fragment
+    fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) f32 {
+      let dimensions = textureDimensions(sourceTexture);
+      let coordinate = clamp(
+        vec2<i32>(position.xy),
+        vec2<i32>(0, 0),
+        vec2<i32>(dimensions) - vec2<i32>(1, 1)
+      );
+      return f32(textureLoad(sourceTexture, coordinate, 0).r) / 65536.0 * 32768.0;
+    }
+  `;
+  const mipShader = `
+    @group(0) @binding(0) var sourceTexture: texture_2d<f32>;
+    @group(0) @binding(1) var sourceSampler: sampler;
+
+    struct VertexOutput {
+      @builtin(position) position: vec4<f32>,
+      @location(0) uv: vec2<f32>,
+    };
+
+    @vertex
+    fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+      let positions = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(3.0, -1.0),
+        vec2<f32>(-1.0, 3.0)
+      );
+      var output: VertexOutput;
+      output.position = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
+      output.uv = positions[vertexIndex] * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
+      return output;
+    }
+
+    @fragment
+    fn fragmentMain(input: VertexOutput) -> @location(0) f32 {
+      return textureSample(sourceTexture, sourceSampler, input.uv).r;
+    }
+  `;
+  const sampleShader = `
+    struct SampleResults {
+      values: array<f32>,
+    };
+
+    @group(0) @binding(0) var shapeTextures: texture_2d_array<f32>;
+    @group(0) @binding(1) var shapeSampler: sampler;
+    @group(0) @binding(2) var<storage, read_write> sampleResults: SampleResults;
+
+    @compute @workgroup_size(64)
+    fn main(@builtin(global_invocation_id) invocationId: vec3<u32>) {
+      let sampleIndex = invocationId.x;
+      let sampleCount = ${SHAPE_ARRAY_LAYER_COUNT * SHAPE_ARRAY_MIP_LEVEL_COUNT}u;
+      if (sampleIndex >= sampleCount) {
+        return;
+      }
+      let layerIndex = sampleIndex / ${SHAPE_ARRAY_MIP_LEVEL_COUNT}u;
+      let mipLevel = sampleIndex - layerIndex * ${SHAPE_ARRAY_MIP_LEVEL_COUNT}u;
+      let mipDimensions = textureDimensions(shapeTextures, i32(mipLevel));
+      let sampleUv = vec2<f32>(0.5, 0.5) / vec2<f32>(mipDimensions);
+      sampleResults.values[sampleIndex] = textureSampleLevel(
+        shapeTextures,
+        shapeSampler,
+        sampleUv,
+        i32(layerIndex),
+        f32(mipLevel)
+      ).r;
+    }
+  `;
+
+  try {
+    if (textureFormatsTier2Enabled) {
+      throw new Error("The feature-neutral device unexpectedly enabled texture-formats-tier2.");
+    }
+    if (
+      device.limits.maxTextureDimension2D < SHAPE_ARRAY_SIZE
+      || device.limits.maxTextureArrayLayers < SHAPE_ARRAY_LAYER_COUNT
+    ) {
+      throw new Error("The device limits cannot represent the planned four-layer Shape texture.");
+    }
+
+    const modules = await runStage(
+      "shader-modules",
+      "Creating the four-layer Shape shaders",
+      device,
+      () => ({
+        base: device.createShaderModule({
+          label: "Diagnostic Shape array scalar16 base shader",
+          code: baseShader,
+        }),
+        mip: device.createShaderModule({
+          label: "Diagnostic Shape array mip shader",
+          code: mipShader,
+        }),
+        sample: device.createShaderModule({
+          label: "Diagnostic Shape array sample shader",
+          code: sampleShader,
+        }),
+      }),
+      () => ({ created: true, shaderModuleCount: 3 }),
+    );
+    if (!modules || failedStage) throw new Error("Shape array shader creation failed.");
+
+    const compilation = await runStage(
+      "compilation-info",
+      "Reading the four-layer Shape shader diagnostics",
+      device,
+      async () => {
+        const readInfo = async (module: GPUShaderModule) => (
+          typeof module.getCompilationInfo === "function"
+            ? { available: true, ...storageCompilationSummary(await module.getCompilationInfo()) }
+            : {
+                available: false,
+                errorCount: 0,
+                warningCount: 0,
+                messageCount: 0,
+                messages: [],
+              }
+        );
+        return {
+          base: await readInfo(modules.base),
+          mip: await readInfo(modules.mip),
+          sample: await readInfo(modules.sample),
+        };
+      },
+      (value) => value,
+      (value) => Object.values(value).some((summary) => Number(summary.errorCount ?? 0) > 0)
+        ? "One or more Shape array shaders reported compilation errors."
+        : null,
+    );
+    if (!compilation || failedStage) throw new Error("Shape array shader compilation failed.");
+
+    const layouts = await runStage(
+      "layouts",
+      "Creating the four-layer Shape layouts",
+      device,
+      () => {
+        const baseBindGroupLayout = device.createBindGroupLayout({
+          label: "Diagnostic Shape array base bind group layout",
+          entries: [{
+            binding: 0,
+            visibility: GPUShaderStage.FRAGMENT,
+            texture: { sampleType: "uint", viewDimension: "2d" },
+          }],
+        });
+        const mipBindGroupLayout = device.createBindGroupLayout({
+          label: "Diagnostic Shape array mip bind group layout",
+          entries: [
+            {
+              binding: 0,
+              visibility: GPUShaderStage.FRAGMENT,
+              texture: { sampleType: "float", viewDimension: "2d" },
+            },
+            {
+              binding: 1,
+              visibility: GPUShaderStage.FRAGMENT,
+              sampler: { type: "filtering" },
+            },
+          ],
+        });
+        const sampleBindGroupLayout = device.createBindGroupLayout({
+          label: "Diagnostic Shape array sample bind group layout",
+          entries: [
+            {
+              binding: 0,
+              visibility: GPUShaderStage.COMPUTE,
+              texture: { sampleType: "float", viewDimension: "2d-array" },
+            },
+            {
+              binding: 1,
+              visibility: GPUShaderStage.COMPUTE,
+              sampler: { type: "filtering" },
+            },
+            {
+              binding: 2,
+              visibility: GPUShaderStage.COMPUTE,
+              buffer: { type: "storage" },
+            },
+          ],
+        });
+        return {
+          baseBindGroupLayout,
+          mipBindGroupLayout,
+          sampleBindGroupLayout,
+          basePipelineLayout: device.createPipelineLayout({
+            label: "Diagnostic Shape array base pipeline layout",
+            bindGroupLayouts: [baseBindGroupLayout],
+          }),
+          mipPipelineLayout: device.createPipelineLayout({
+            label: "Diagnostic Shape array mip pipeline layout",
+            bindGroupLayouts: [mipBindGroupLayout],
+          }),
+          samplePipelineLayout: device.createPipelineLayout({
+            label: "Diagnostic Shape array sample pipeline layout",
+            bindGroupLayouts: [sampleBindGroupLayout],
+          }),
+        };
+      },
+      () => ({ created: true, bindGroupLayoutCount: 3, pipelineLayoutCount: 3 }),
+    );
+    if (!layouts || failedStage) throw new Error("Shape array layout creation failed.");
+
+    const basePipeline = await runStage(
+      "base-pipeline",
+      "Compiling the scalar16 Shape reconstruction pipeline",
+      device,
+      () => device.createRenderPipelineAsync({
+        label: "Diagnostic Shape array scalar16 base pipeline",
+        layout: layouts.basePipelineLayout,
+        vertex: { module: modules.base, entryPoint: "vertexMain" },
+        fragment: {
+          module: modules.base,
+          entryPoint: "fragmentMain",
+          targets: [{ format: "r16float" }],
+        },
+        primitive: { topology: "triangle-list" },
+      }),
+      () => ({ created: true, targetFormat: "r16float" }),
+    );
+    if (!basePipeline || failedStage) throw new Error("Shape array base pipeline failed.");
+
+    const mipPipeline = await runStage(
+      "mip-pipeline",
+      "Compiling the Shape mip pipeline",
+      device,
+      () => device.createRenderPipelineAsync({
+        label: "Diagnostic Shape array mip pipeline",
+        layout: layouts.mipPipelineLayout,
+        vertex: { module: modules.mip, entryPoint: "vertexMain" },
+        fragment: {
+          module: modules.mip,
+          entryPoint: "fragmentMain",
+          targets: [{ format: "r16float" }],
+        },
+        primitive: { topology: "triangle-list" },
+      }),
+      () => ({ created: true, targetFormat: "r16float" }),
+    );
+    if (!mipPipeline || failedStage) throw new Error("Shape array mip pipeline failed.");
+
+    const samplePipeline = await runStage(
+      "sample-pipeline",
+      "Compiling the Shape array sampling pipeline",
+      device,
+      () => device.createComputePipelineAsync({
+        label: "Diagnostic Shape array sample pipeline",
+        layout: layouts.samplePipelineLayout,
+        compute: { module: modules.sample, entryPoint: "main" },
+      }),
+      () => ({ created: true, viewDimension: "2d-array" }),
+    );
+    if (!samplePipeline || failedStage) throw new Error("Shape array sample pipeline failed.");
+
+    const textures = await runStage(
+      "texture-allocation",
+      "Allocating the 2048×2048 four-layer R16F Shape texture",
+      device,
+      () => {
+        targetTexture = device.createTexture({
+          label: "Diagnostic four-layer R16F Shape texture",
+          size: {
+            width: SHAPE_ARRAY_SIZE,
+            height: SHAPE_ARRAY_SIZE,
+            depthOrArrayLayers: SHAPE_ARRAY_LAYER_COUNT,
+          },
+          mipLevelCount: SHAPE_ARRAY_MIP_LEVEL_COUNT,
+          format: "r16float",
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
+        });
+        stagingTexture = device.createTexture({
+          label: "Diagnostic reusable scalar16 Shape staging texture",
+          size: {
+            width: SHAPE_ARRAY_SIZE,
+            height: SHAPE_ARRAY_SIZE,
+            depthOrArrayLayers: 1,
+          },
+          format: "r16uint",
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+        });
+        const sampleByteLength = SHAPE_ARRAY_LAYER_COUNT * SHAPE_ARRAY_MIP_LEVEL_COUNT * 4;
+        sampleBuffer = device.createBuffer({
+          label: "Diagnostic Shape array sample results",
+          size: sampleByteLength,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+        });
+        readbackBuffer = device.createBuffer({
+          label: "Diagnostic Shape array sample readback",
+          size: sampleByteLength,
+          usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+        });
+        return { targetTexture, stagingTexture, sampleBuffer, readbackBuffer };
+      },
+      () => ({
+        created: true,
+        width: SHAPE_ARRAY_SIZE,
+        height: SHAPE_ARRAY_SIZE,
+        depthOrArrayLayers: SHAPE_ARRAY_LAYER_COUNT,
+        mipLevelCount: SHAPE_ARRAY_MIP_LEVEL_COUNT,
+        targetMemoryBytes: shapeArrayMemoryBytes(),
+        stagingMemoryBytes: SHAPE_ARRAY_SIZE * SHAPE_ARRAY_SIZE * 2,
+      }),
+    );
+    if (!textures || !targetTexture || !stagingTexture || !sampleBuffer || !readbackBuffer || failedStage) {
+      throw new Error("Shape array texture allocation failed.");
+    }
+
+    const sampler = device.createSampler({
+      label: "Diagnostic Shape array linear sampler",
+      magFilter: "linear",
+      minFilter: "linear",
+      mipmapFilter: "nearest",
+      addressModeU: "clamp-to-edge",
+      addressModeV: "clamp-to-edge",
+    });
+    const upload = new Uint16Array(SHAPE_ARRAY_SIZE * SHAPE_ARRAY_SIZE);
+    const sourceValues = [8192, 24576, 40960, 57344] as const;
+    const bytesPerRow = SHAPE_ARRAY_SIZE * 2;
+
+    for (let layerIndex = 0; layerIndex < SHAPE_ARRAY_LAYER_COUNT; layerIndex += 1) {
+      const layer = layerIndex;
+      const uploaded = await runStage(
+        `layer-${layer}-upload`,
+        `Uploading Shape layer ${layer + 1} of ${SHAPE_ARRAY_LAYER_COUNT}`,
+        device,
+        () => {
+          upload.fill(0);
+          upload[0] = sourceValues[layer];
+          device.queue.writeTexture(
+            { texture: stagingTexture! },
+            upload,
+            { bytesPerRow, rowsPerImage: SHAPE_ARRAY_SIZE },
+            {
+              width: SHAPE_ARRAY_SIZE,
+              height: SHAPE_ARRAY_SIZE,
+              depthOrArrayLayers: 1,
+            },
+          );
+          return true;
+        },
+        () => ({
+          uploaded: true,
+          layer,
+          sourceValue: sourceValues[layer],
+          byteLength: upload.byteLength,
+        }),
+      );
+      if (!uploaded || failedStage) {
+        throw new Error(`Shape array layer ${layer + 1} upload failed.`);
+      }
+
+      const baseBuilt = await runStage(
+        `layer-${layer}-base`,
+        `Building Shape layer ${layer + 1} base level`,
+        device,
+        async () => {
+          const encoder = device.createCommandEncoder({
+            label: `Diagnostic Shape array layer ${layer + 1} base encoder`,
+          });
+          const basePass = encoder.beginRenderPass({
+            label: `Diagnostic Shape array layer ${layer + 1} base pass`,
+            colorAttachments: [{
+              view: targetTexture!.createView({
+                dimension: "2d",
+                baseMipLevel: 0,
+                mipLevelCount: 1,
+                baseArrayLayer: layer,
+                arrayLayerCount: 1,
+              }),
+              loadOp: "clear",
+              storeOp: "store",
+              clearValue: { r: 0, g: 0, b: 0, a: 1 },
+            }],
+          });
+          basePass.setPipeline(basePipeline);
+          basePass.setBindGroup(0, device.createBindGroup({
+            label: `Diagnostic Shape array layer ${layer + 1} base bind group`,
+            layout: layouts.baseBindGroupLayout,
+            entries: [{ binding: 0, resource: stagingTexture!.createView() }],
+          }));
+          basePass.draw(3, 1, 0, 0);
+          basePass.end();
+          device.queue.submit([encoder.finish()]);
+          await withTimeout(
+            device.queue.onSubmittedWorkDone(),
+            60_000,
+            `Shape array layer ${layer + 1} base fence`,
+          );
+          return true;
+        },
+        () => ({ submitted: true, layer, mipLevel: 0 }),
+      );
+      if (!baseBuilt || failedStage) {
+        throw new Error(`Shape array layer ${layer + 1} base build failed.`);
+      }
+
+      const mipsBuilt = await runStage(
+        `layer-${layer}-mips`,
+        `Building Shape layer ${layer + 1} mip chain`,
+        device,
+        async () => {
+          const encoder = device.createCommandEncoder({
+            label: `Diagnostic Shape array layer ${layer + 1} mip encoder`,
+          });
+          for (let mipLevel = 1; mipLevel < SHAPE_ARRAY_MIP_LEVEL_COUNT; mipLevel += 1) {
+            const pass = encoder.beginRenderPass({
+              label: `Diagnostic Shape array layer ${layer + 1} mip ${mipLevel}`,
+              colorAttachments: [{
+                view: targetTexture!.createView({
+                  dimension: "2d",
+                  baseMipLevel: mipLevel,
+                  mipLevelCount: 1,
+                  baseArrayLayer: layer,
+                  arrayLayerCount: 1,
+                }),
+                loadOp: "clear",
+                storeOp: "store",
+                clearValue: { r: 0, g: 0, b: 0, a: 1 },
+              }],
+            });
+            pass.setPipeline(mipPipeline);
+            pass.setBindGroup(0, device.createBindGroup({
+              label: `Diagnostic Shape array layer ${layer + 1} mip ${mipLevel} bind group`,
+              layout: layouts.mipBindGroupLayout,
+              entries: [
+                {
+                  binding: 0,
+                  resource: targetTexture!.createView({
+                    dimension: "2d",
+                    baseMipLevel: mipLevel - 1,
+                    mipLevelCount: 1,
+                    baseArrayLayer: layer,
+                    arrayLayerCount: 1,
+                  }),
+                },
+                { binding: 1, resource: sampler },
+              ],
+            }));
+            pass.draw(3, 1, 0, 0);
+            pass.end();
+          }
+          device.queue.submit([encoder.finish()]);
+          await withTimeout(
+            device.queue.onSubmittedWorkDone(),
+            60_000,
+            `Shape array layer ${layer + 1} fence`,
+          );
+          return true;
+        },
+        () => ({
+          submitted: true,
+          layer,
+          firstMipLevel: 1,
+          mipLevelCount: SHAPE_ARRAY_MIP_LEVEL_COUNT - 1,
+        }),
+      );
+      if (!mipsBuilt || failedStage) {
+        throw new Error(`Shape array layer ${layer + 1} mip build failed.`);
+      }
+    }
+
+    const sampleBindGroup = await runStage(
+      "sample-binding",
+      "Binding all four Shape layers for sampling",
+      device,
+      () => device.createBindGroup({
+        label: "Diagnostic Shape array sample bind group",
+        layout: layouts.sampleBindGroupLayout,
+        entries: [
+          {
+            binding: 0,
+            resource: targetTexture!.createView({
+              dimension: "2d-array",
+              baseMipLevel: 0,
+              mipLevelCount: SHAPE_ARRAY_MIP_LEVEL_COUNT,
+              baseArrayLayer: 0,
+              arrayLayerCount: SHAPE_ARRAY_LAYER_COUNT,
+            }),
+          },
+          { binding: 1, resource: sampler },
+          { binding: 2, resource: { buffer: sampleBuffer! } },
+        ],
+      }),
+      () => ({ created: true, viewDimension: "2d-array", layerCount: 4 }),
+    );
+    if (!sampleBindGroup || failedStage) throw new Error("Shape array sample binding failed.");
+
+    const dispatched = await runStage(
+      "sample-dispatch",
+      "Sampling every Shape layer and mip",
+      device,
+      () => {
+        const encoder = device.createCommandEncoder({
+          label: "Diagnostic Shape array sample encoder",
+        });
+        const pass = encoder.beginComputePass({
+          label: "Diagnostic Shape array sample pass",
+        });
+        pass.setPipeline(samplePipeline);
+        pass.setBindGroup(0, sampleBindGroup);
+        pass.dispatchWorkgroups(1, 1, 1);
+        pass.end();
+        encoder.copyBufferToBuffer(
+          sampleBuffer!,
+          0,
+          readbackBuffer!,
+          0,
+          SHAPE_ARRAY_LAYER_COUNT * SHAPE_ARRAY_MIP_LEVEL_COUNT * 4,
+        );
+        device.queue.submit([encoder.finish()]);
+        return true;
+      },
+      () => ({
+        submitted: true,
+        sampledLayers: SHAPE_ARRAY_LAYER_COUNT,
+        sampledMipLevels: SHAPE_ARRAY_MIP_LEVEL_COUNT,
+      }),
+    );
+    if (!dispatched || failedStage) throw new Error("Shape array sample dispatch failed.");
+
+    const fence = await runStage(
+      "sample-fence",
+      "Waiting for the Shape array sample fence",
+      device,
+      () => withTimeout(
+        device.queue.onSubmittedWorkDone(),
+        60_000,
+        "Shape array sample queue fence",
+      ),
+      () => ({ completed: true }),
+    );
+    if (fence === null || failedStage) throw new Error("Shape array sample fence failed.");
+
+    const readback = await runStage(
+      "readback-validation",
+      "Validating all Shape layers and mips",
+      device,
+      async () => {
+        await withTimeout(
+          readbackBuffer!.mapAsync(GPUMapMode.READ),
+          30_000,
+          "Shape array readback map",
+        );
+        const values = [...new Float32Array(readbackBuffer!.getMappedRange())];
+        readbackBuffer!.unmap();
+        const perLayer = sourceValues.map((sourceValue, layer) => {
+          const baseExpected = sourceValue / 2;
+          const samples = values.slice(
+            layer * SHAPE_ARRAY_MIP_LEVEL_COUNT,
+            (layer + 1) * SHAPE_ARRAY_MIP_LEVEL_COUNT,
+          );
+          const expectedSamples = samples.map((_value, mipLevel) => (
+            baseExpected / (4 ** mipLevel)
+          ));
+          const absoluteErrors = samples.map((value, mipLevel) => (
+            Math.abs(value - expectedSamples[mipLevel])
+          ));
+          const relativeErrors = absoluteErrors.map((error, mipLevel) => (
+            error / Math.max(0.000_01, Math.abs(expectedSamples[mipLevel]))
+          ));
+          return {
+            layer,
+            baseExpected,
+            minimum: Math.min(...samples),
+            maximum: Math.max(...samples),
+            maximumAbsoluteError: Math.max(...absoluteErrors),
+            maximumRelativeError: Math.max(...relativeErrors),
+            expectedSamples,
+            samples,
+          };
+        });
+        const maximumAbsoluteError = Math.max(
+          ...perLayer.map((entry) => entry.maximumAbsoluteError),
+        );
+        const maximumRelativeError = Math.max(
+          ...perLayer.map((entry) => entry.maximumRelativeError),
+        );
+        return {
+          sampleCount: values.length,
+          expectedSampleCount: SHAPE_ARRAY_LAYER_COUNT * SHAPE_ARRAY_MIP_LEVEL_COUNT,
+          maximumAbsoluteError,
+          maximumRelativeError,
+          relativeTolerance: 0.002,
+          perLayer,
+        };
+      },
+      (value) => value,
+      (value) => {
+        if (value.sampleCount !== value.expectedSampleCount) {
+          return "Shape array readback returned an unexpected sample count.";
+        }
+        return value.maximumRelativeError <= value.relativeTolerance
+          ? null
+          : "Shape array readback exceeded the numeric tolerance.";
+      },
+    );
+    if (!readback || failedStage) throw new Error("Shape array readback validation failed.");
+
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
+    if (deviceLostInfo) throw new Error("The WebGPU device was lost during the Shape array test.");
+    if (uncapturedErrors.length > 0) {
+      throw new Error("The Shape array test produced an uncaptured WebGPU error.");
+    }
+    await checkpoint("environment-captured-after-shape-array", await captureHighEntropyEnvironment());
+    await bridge.finish("completed", "diagnostic-completed", {
+      verdict: "shape-array-r16f-passed",
+      conclusion: "The four-layer 2048×2048 R16F Shape texture, full mip chains, array binding, sampling, fence, and readback all passed.",
+      adapter: {
+        mode: adapterMode,
+        textureFormatsTier2Advertised,
+        info: readAdapterInfo(adapter),
+      },
+      device: {
+        requiredFeatures,
+        textureFormatsTier2Enabled,
+        uncapturedErrorCount: 0,
+        lost: null,
+      },
+      targetMemoryBytes: shapeArrayMemoryBytes(),
+      targetMemoryMiB: shapeArrayMemoryBytes() / (1024 * 1024),
+      readback,
+      stages: Object.fromEntries(
+        Object.entries(stages).map(([name, report]) => [name, compactShapeArrayStage(report)]),
+      ),
+      totalElapsedMs: performance.now() - diagnosticStartedAt,
+    });
+  } catch (error) {
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
+    await checkpoint("environment-captured-after-shape-array-failure", await captureHighEntropyEnvironment());
+    await bridge.finish("failed", "diagnostic-failed", {
+      verdict: deviceLostInfo
+        ? "shape-array-device-lost"
+        : uncapturedErrors.length > 0
+          ? "shape-array-uncaptured-error"
+          : "shape-array-r16f-failed",
+      conclusion: failedStage
+        ? `The four-layer R16F Shape texture test failed at ${failedStage}.`
+        : "The four-layer R16F Shape texture test failed before a measured stage completed.",
+      failedStage,
+      error: describeError(error),
+      adapter: {
+        mode: adapterMode,
+        textureFormatsTier2Advertised,
+        info: readAdapterInfo(adapter),
+      },
+      device: {
+        requiredFeatures,
+        textureFormatsTier2Enabled,
+        uncapturedErrorCount: uncapturedErrors.length,
+        lost: deviceLostInfo,
+      },
+      targetMemoryBytes: shapeArrayMemoryBytes(),
+      stages: Object.fromEntries(
+        Object.entries(stages).map(([name, report]) => [name, compactShapeArrayStage(report)]),
+      ),
+      uncapturedErrors: uncapturedErrors.slice(0, 3),
+      totalElapsedMs: performance.now() - diagnosticStartedAt,
+    });
+  } finally {
+    const finalReadbackBuffer = readbackBuffer as GPUBuffer | null;
+    const finalSampleBuffer = sampleBuffer as GPUBuffer | null;
+    const finalStagingTexture = stagingTexture as GPUTexture | null;
+    const finalTargetTexture = targetTexture as GPUTexture | null;
+    if (finalReadbackBuffer?.mapState === "mapped") finalReadbackBuffer.unmap();
+    finalReadbackBuffer?.destroy();
+    finalSampleBuffer?.destroy();
+    finalStagingTexture?.destroy();
+    finalTargetTexture?.destroy();
     intentionalDestroy = true;
     device.destroy();
   }
@@ -3979,6 +4925,7 @@ async function run(): Promise<void> {
   }, "running", "beacon");
   if (
     diagnosticTest
+    && diagnosticTest !== SHAPE_ARRAY_R16F_TEST
     && diagnosticTest !== STORAGE_FORMAT_AB_TEST
     && diagnosticTest !== DOCUMENT_PIPELINE_TEST
     && diagnosticTest !== APPLICATION_4096_TEST
@@ -3990,6 +4937,10 @@ async function run(): Promise<void> {
     && diagnosticTest !== APPLICATION_4096_CLEAN_QUEUE_CORE_TEST
   ) {
     throw new Error(`Unsupported GPU diagnostic test: ${diagnosticTest}.`);
+  }
+  if (shapeArrayR16fEnabled) {
+    await runShapeArrayR16fDiagnostic();
+    return;
   }
   if (storageFormatAbEnabled) {
     await runStorageFormatAbDiagnostic();

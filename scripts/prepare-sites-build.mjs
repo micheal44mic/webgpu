@@ -2108,8 +2108,9 @@ const LAYER_COMPRESSION_INDEX_SQL = "CREATE INDEX IF NOT EXISTS layer_compressio
 const VECTOR_ZOOM_C_STRATEGY = "ten-semantic-text-dual-gpu-fallback-auto-post-raster-window2-roi-aware-zoom8-to-0.3-v7";
 const VECTOR_ZOOM_RUNS_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS vector_zoom_runs (run_code TEXT PRIMARY KEY NOT NULL, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)";
 const VECTOR_ZOOM_RUN_CODE = /^[2-9A-HJ-NP-Z]{8}$/;
-const GPU_STARTUP_DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v19";
+const GPU_STARTUP_DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v20";
 const GPU_STARTUP_DEFAULT_TEST_ID = "startup-no-tier2-v1";
+const GPU_STARTUP_SHAPE_ARRAY_R16F_TEST_ID = "shape-array-r16f-4layer-v1";
 const GPU_STARTUP_STORAGE_FORMAT_TEST_ID = "storage-format-ab-v1";
 const GPU_STARTUP_DOCUMENT_PIPELINE_TEST_ID = "document-pipeline-bisect-v1";
 const GPU_STARTUP_APPLICATION_4096_TEST_ID = "application-4096-startup-v1";
@@ -2120,6 +2121,7 @@ const GPU_STARTUP_APPLICATION_4096_PIPELINE_ATTRIBUTION_TEST_ID = "application-4
 const GPU_STARTUP_APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID = "application-4096-pipeline-first-use-controls-v1";
 const GPU_STARTUP_APPLICATION_4096_CLEAN_QUEUE_CORE_TEST_ID = "application-4096-progressive-core-startup-v1";
 const GPU_STARTUP_DEFAULT_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
+const GPU_STARTUP_SHAPE_ARRAY_R16F_VARIANT = "shape-array-r16float-2048x2048-4layer-full-mips-impulse-readback-no-tier2-v1";
 const GPU_STARTUP_STORAGE_FORMAT_VARIANT = "storage-format-ab-rgba8unorm-control-rgba16float-target-write-only-1x1-no-tier2-v1";
 const GPU_STARTUP_DOCUMENT_PIPELINE_VARIANT = "document-pipeline-bisect-rgba16float-no-tier2-v1";
 const GPU_STARTUP_APPLICATION_4096_VARIANT = "application-startup-rgba16float-4096x4096-no-tier2-v1";
@@ -2149,6 +2151,26 @@ function gpuStartupDiagnosticDefinition(testId) {
         textureFormatsTier2Enabled: false,
         inPlaceGlazeCommitEnabled: false,
         inPlaceGlazeCommitPipelineCreated: false,
+      },
+    };
+  }
+  if (testId === GPU_STARTUP_SHAPE_ARRAY_R16F_TEST_ID) {
+    return {
+      testId,
+      diagnosticVariant: GPU_STARTUP_SHAPE_ARRAY_R16F_VARIANT,
+      comparison: {
+        kind: "shape-texture-array-r16float",
+        width: 2048,
+        height: 2048,
+        depthOrArrayLayers: 4,
+        mipLevelCount: 12,
+        targetFormat: "r16float",
+        stagingFormat: "r16uint",
+        sampleViewDimension: "2d-array",
+        requiredFeatures: [],
+        textureFormatsTier2Requested: false,
+        buildOrder: "sequential-layers",
+        validation: "all-layers-all-mips-readback",
       },
     };
   }

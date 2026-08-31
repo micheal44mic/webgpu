@@ -24,9 +24,12 @@ const layerRuntimeSource = read("src/engine-layer-runtime.ts");
 const featurePolicySource = read("src/gpu-startup-feature-policy.ts");
 const productionBundleCheckSource = read("scripts/check-production-bundle.mjs");
 
-const DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v19";
+const DIAGNOSTIC_BUILD = "gpu-diagnostics-application-4096-startup-v20";
 const DEFAULT_TEST_ID = "startup-no-tier2-v1";
 const DEFAULT_VARIANT = "rgba16float-no-texture-formats-tier2-v1";
+const SHAPE_ARRAY_R16F_TEST_ID = "shape-array-r16f-4layer-v1";
+const SHAPE_ARRAY_R16F_VARIANT =
+  "shape-array-r16float-2048x2048-4layer-full-mips-impulse-readback-no-tier2-v1";
 const STORAGE_FORMAT_TEST_ID = "storage-format-ab-v1";
 const STORAGE_FORMAT_VARIANT =
   "storage-format-ab-rgba8unorm-control-rgba16float-target-write-only-1x1-no-tier2-v1";
@@ -63,6 +66,20 @@ const DEFAULT_COMPARISON = {
   textureFormatsTier2Enabled: false,
   inPlaceGlazeCommitEnabled: false,
   inPlaceGlazeCommitPipelineCreated: false,
+};
+const SHAPE_ARRAY_R16F_COMPARISON = {
+  kind: "shape-texture-array-r16float",
+  width: 2048,
+  height: 2048,
+  depthOrArrayLayers: 4,
+  mipLevelCount: 12,
+  targetFormat: "r16float",
+  stagingFormat: "r16uint",
+  sampleViewDimension: "2d-array",
+  requiredFeatures: [],
+  textureFormatsTier2Requested: false,
+  buildOrder: "sequential-layers",
+  validation: "all-layers-all-mips-readback",
 };
 const STORAGE_FORMAT_COMPARISON = {
   kind: "storage-texture-format-ab",
@@ -325,6 +342,13 @@ function diagnosticDefinition(testId) {
       comparison: DEFAULT_COMPARISON,
     };
   }
+  if (testId === SHAPE_ARRAY_R16F_TEST_ID) {
+    return {
+      testId,
+      diagnosticVariant: SHAPE_ARRAY_R16F_VARIANT,
+      comparison: SHAPE_ARRAY_R16F_COMPARISON,
+    };
+  }
   if (testId === STORAGE_FORMAT_TEST_ID) {
     return {
       testId,
@@ -449,7 +473,7 @@ assert.match(html, /return postSnapshot\(\s*body,\s*false,/);
 assert.match(html, /MAX_SNAPSHOT_BYTES = 48 \* 1024/);
 assert.match(
   html,
-  /MAX_DIAGNOSTIC_RESULT_BYTES = APPLICATION_4096_CLEAN_QUEUE_CORE_TEST[\s\S]*28 \* 1024[\s\S]*APPLICATION_4096_PIPELINE_BREAKDOWN_TEST[\s\S]*18 \* 1024[\s\S]*12 \* 1024/,
+  /MAX_DIAGNOSTIC_RESULT_BYTES = APPLICATION_4096_CLEAN_QUEUE_CORE_TEST[\s\S]*28 \* 1024[\s\S]*SHAPE_ARRAY_R16F_TEST[\s\S]*18 \* 1024[\s\S]*APPLICATION_4096_PIPELINE_BREAKDOWN_TEST[\s\S]*18 \* 1024[\s\S]*12 \* 1024/,
 );
 assert.match(html, /truncateUtf8/);
 assert.match(html, /terminalUploadPromise/);
@@ -477,11 +501,20 @@ assert.match(html, /diagnosticElapsed/);
 assert.match(html, /Very slow or stopped here/);
 assert.match(html, /App boot · RGBA16F · Tier 2 off/);
 assert.match(html, /1×1 · RGBA8 vs RGBA16F · storage write/);
+assert.match(html, /2048×2048 · four-layer R16F Shape array · full mips/);
 assert.match(html, /Real document pipelines · RGBA16F · Tier 2 off/);
 assert.match(html, /Real 4096×4096 document · RGBA16F · Tier 2 off/);
 assert.match(html, /Real 4096×4096 document · 71 timed GPU calls · Tier 2 off/);
 assert.match(html, /requestedTestId \|\| "startup-no-tier2-v1"/);
+assert.match(html, /DIAGNOSTIC_TEST_ID === "shape-array-r16f-4layer-v1"/);
 assert.match(html, /DIAGNOSTIC_TEST_ID === "storage-format-ab-v1"/);
+assert.match(html, new RegExp(SHAPE_ARRAY_R16F_VARIANT));
+assert.match(html, /kind: "shape-texture-array-r16float"/);
+assert.match(html, /depthOrArrayLayers: 4/);
+assert.match(html, /mipLevelCount: 12/);
+assert.match(html, /sampleViewDimension: "2d-array"/);
+assert.match(html, /buildOrder: "sequential-layers"/);
+assert.match(html, /validation: "all-layers-all-mips-readback"/);
 assert.match(html, /DIAGNOSTIC_TEST_ID === "document-pipeline-bisect-v1"/);
 assert.match(html, /DIAGNOSTIC_TEST_ID === "application-4096-startup-v1"/);
 assert.match(html, /DIAGNOSTIC_TEST_ID === "application-4096-pipelines-async2-v1"/);
@@ -612,6 +645,8 @@ assert.match(moduleSource, /projectSessionReady/);
 assert.match(moduleSource, /runFullApplicationBoot\(\)/);
 assert.match(moduleSource, /APP_FRAME_DIAGNOSTIC_CHANNEL = "gpu-startup-app-frame-v3"/);
 assert.match(moduleSource, /APPLICATION_BOOT_VARIANT = "rgba16float-no-texture-formats-tier2-v1"/);
+assert.match(moduleSource, /SHAPE_ARRAY_R16F_TEST = "shape-array-r16f-4layer-v1"/);
+assert.match(moduleSource, new RegExp(SHAPE_ARRAY_R16F_VARIANT));
 assert.match(moduleSource, /STORAGE_FORMAT_AB_TEST = "storage-format-ab-v1"/);
 assert.match(moduleSource, new RegExp(STORAGE_FORMAT_VARIANT));
 assert.match(moduleSource, /DOCUMENT_PIPELINE_TEST = "document-pipeline-bisect-v1"/);
@@ -684,6 +719,7 @@ assert.match(moduleSource, /APPLICATION_4096_DOCUMENT_WIDTH = 4096/);
 assert.match(moduleSource, /APPLICATION_4096_DOCUMENT_HEIGHT = 4096/);
 assert.doesNotMatch(moduleSource, /createNewProject|diagnostic-new-project/);
 assert.match(moduleSource, /diagnosticTest !== DOCUMENT_PIPELINE_TEST[\s\S]*Unsupported GPU diagnostic test/);
+assert.match(moduleSource, /if \(shapeArrayR16fEnabled\) \{\s*await runShapeArrayR16fDiagnostic\(\);\s*return;/);
 assert.match(moduleSource, /if \(storageFormatAbEnabled\) \{\s*await runStorageFormatAbDiagnostic\(\);\s*return;/);
 assert.match(moduleSource, /if \(documentPipelineBisectEnabled\) \{\s*await runDocumentPipelineBisectDiagnostic\(\);\s*return;/);
 assert.match(moduleSource, /if \(application4096StartupEnabled\) \{\s*await runApplication4096StartupDiagnostic\(\);\s*return;/);
@@ -732,6 +768,13 @@ assert.match(moduleSource, /storageTexture:\s*\{\s*access: "write-only",\s*forma
 assert.match(moduleSource, /size: \[1, 1, 1\]/);
 assert.match(moduleSource, /usage: GPUTextureUsage\.STORAGE_BINDING/);
 assert.match(moduleSource, /device\.queue\.onSubmittedWorkDone\(\)/);
+assert.match(moduleSource, /texture_2d_array<f32>/);
+assert.match(moduleSource, /depthOrArrayLayers: SHAPE_ARRAY_LAYER_COUNT/);
+assert.match(moduleSource, /dimension: "2d-array"/);
+assert.match(moduleSource, /baseArrayLayer: layer/);
+assert.match(moduleSource, /upload\[0\] = sourceValues\[layer\]/);
+assert.match(moduleSource, /baseExpected \/ \(4 \*\* mipLevel\)/);
+assert.match(moduleSource, /verdict: "shape-array-r16f-passed"/);
 assert.match(moduleSource, /runStorageFormatCase\(\s*device,\s*diagnosticStartedAt,\s*"rgba8unorm",\s*"rgba8"/);
 assert.match(moduleSource, /runStorageFormatCase\(\s*device,\s*diagnosticStartedAt,\s*"rgba16float",\s*"rgba16"/);
 assert.match(moduleSource, /if \(control\.passed && target\.passed\)[\s\S]*verdict = "both-formats-passed"/);
@@ -927,6 +970,9 @@ assert.match(workerBuilder, /GPU_STARTUP_APP_FRAME_PATH = "\/gpu-startup-app-fra
 assert.match(workerBuilder, /restorePersistedBrushOnStartup: true/);
 assert.match(workerBuilder, /startupProgressEnabled: true/);
 assert.match(workerBuilder, /handleEngineStartupProgress/);
+assert.match(workerBuilder, /GPU_STARTUP_SHAPE_ARRAY_R16F_TEST_ID = "shape-array-r16f-4layer-v1"/);
+assert.match(workerBuilder, new RegExp(SHAPE_ARRAY_R16F_VARIANT));
+assert.match(workerBuilder, /kind: "shape-texture-array-r16float"/);
 assert.match(workerBuilder, /DOCUMENT_PIPELINE_TEST_ID = "document-pipeline-bisect-v1"/);
 assert.match(workerBuilder, /APPLICATION_4096_TEST_ID = "application-4096-startup-v1"/);
 assert.match(workerBuilder, new RegExp(APPLICATION_4096_VARIANT));
@@ -1156,6 +1202,8 @@ assert.match(vite, /outDir: "dist-gpu-diagnostics"/);
 assert.match(attach, /copyAssetsCollisionSafe/);
 assert.doesNotMatch(attach, /siteGpuDiagnosticsHtmlFile/);
 assert.match(productionBundleCheckSource, new RegExp(DIAGNOSTIC_BUILD));
+assert.match(productionBundleCheckSource, new RegExp(SHAPE_ARRAY_R16F_TEST_ID));
+assert.match(productionBundleCheckSource, new RegExp(SHAPE_ARRAY_R16F_VARIANT));
 assert.match(
   productionBundleCheckSource,
   new RegExp(APPLICATION_4096_PIPELINE_FIRST_USE_CONTROLS_TEST_ID),
@@ -1175,6 +1223,8 @@ assert.match(
 assert.doesNotMatch(indexHtml, /gpu-startup-diagnostics/);
 assert.doesNotMatch(startup, /gpu-startup-diagnostics/);
 for (const productionSource of [indexHtml, startup, engineSource, layerRuntimeSource]) {
+  assert.doesNotMatch(productionSource, new RegExp(SHAPE_ARRAY_R16F_TEST_ID));
+  assert.doesNotMatch(productionSource, new RegExp(SHAPE_ARRAY_R16F_VARIANT));
   assert.doesNotMatch(productionSource, new RegExp(APPLICATION_4096_TEST_ID));
   assert.doesNotMatch(productionSource, new RegExp(APPLICATION_4096_VARIANT));
   assert.doesNotMatch(productionSource, new RegExp(APPLICATION_4096_PIPELINES_ASYNC2_TEST_ID));
@@ -3293,6 +3343,26 @@ if (existsSync(builtWorkerPath)) {
   assert.ok(!Object.hasOwn(requestedDefaultSummary, "reportStored"));
   assertDiagnosticSummary(requestedDefaultSummary, DEFAULT_TEST_ID, null);
 
+  const shapeArrayRunCode = `diag-${"ab".repeat(16)}`;
+  const shapeArrayPageResponse = await worker.fetch(
+    new Request(
+      `https://example.test/gpu-startup-lab?run=${shapeArrayRunCode}&test=${SHAPE_ARRAY_R16F_TEST_ID}`,
+      { headers: { "User-Agent": "Shape Array Diagnostic Test Browser" } },
+    ),
+    environment,
+  );
+  assert.equal(shapeArrayPageResponse.status, 200);
+  assert.equal(
+    await shapeArrayPageResponse.text(),
+    builtDiagnosticHtml.replace(/\r\n?/g, "\n"),
+  );
+  assert.equal(database.rows.get(shapeArrayRunCode)?.status, "html-requested");
+  assertDiagnosticSummary(
+    JSON.parse(database.rows.get(shapeArrayRunCode).result_summary),
+    SHAPE_ARRAY_R16F_TEST_ID,
+    null,
+  );
+
   const storageRunCode = `diag-${"c".repeat(32)}`;
   const storagePageResponse = await worker.fetch(
     new Request(
@@ -5083,6 +5153,44 @@ if (existsSync(builtWorkerPath)) {
   });
   assert.equal(unknownTestResponse.status, 400);
 
+  const shapeArrayWriteToken = "ab".repeat(32);
+  const shapeArrayBasePayload = createUploadPayload({
+    payloadRunCode: shapeArrayRunCode,
+    payloadWriteToken: shapeArrayWriteToken,
+    payloadSequence: sequence + 100,
+    testId: SHAPE_ARRAY_R16F_TEST_ID,
+    latestEvent: "shape-array-r16f-started",
+    moduleLoaded: true,
+  });
+  const invalidShapeArrayComparisons = [
+    { ...SHAPE_ARRAY_R16F_COMPARISON, width: 1024 },
+    { ...SHAPE_ARRAY_R16F_COMPARISON, height: 1024 },
+    { ...SHAPE_ARRAY_R16F_COMPARISON, depthOrArrayLayers: 3 },
+    { ...SHAPE_ARRAY_R16F_COMPARISON, mipLevelCount: 11 },
+    { ...SHAPE_ARRAY_R16F_COMPARISON, targetFormat: "rgba16float" },
+    { ...SHAPE_ARRAY_R16F_COMPARISON, stagingFormat: "r8uint" },
+    { ...SHAPE_ARRAY_R16F_COMPARISON, sampleViewDimension: "2d" },
+    { ...SHAPE_ARRAY_R16F_COMPARISON, requiredFeatures: ["texture-formats-tier2"] },
+    { ...SHAPE_ARRAY_R16F_COMPARISON, textureFormatsTier2Requested: true },
+    { ...SHAPE_ARRAY_R16F_COMPARISON, buildOrder: "parallel-layers" },
+    { ...SHAPE_ARRAY_R16F_COMPARISON, validation: "submit-only" },
+    { ...SHAPE_ARRAY_R16F_COMPARISON, unexpected: true },
+  ];
+  for (const comparison of invalidShapeArrayComparisons) {
+    const invalidProtocolResponse = await upload({
+      ...shapeArrayBasePayload,
+      summary: { ...shapeArrayBasePayload.summary, comparison },
+    });
+    assert.equal(invalidProtocolResponse.status, 400);
+  }
+  const shapeArrayRunningResponse = await upload(shapeArrayBasePayload);
+  assert.equal(shapeArrayRunningResponse.status, 201);
+  assertDiagnosticSummary(
+    JSON.parse(database.rows.get(shapeArrayRunCode).result_summary),
+    SHAPE_ARRAY_R16F_TEST_ID,
+    null,
+  );
+
   const storageWriteToken = "6".repeat(64);
   const storageBasePayload = createUploadPayload({
     payloadRunCode: storageRunCode,
@@ -5571,6 +5679,41 @@ if (existsSync(builtWorkerPath)) {
     JSON.parse(database.rows.get(runCode).result_summary),
     DEFAULT_TEST_ID,
     null,
+  );
+
+  const shapeArrayResult = {
+    verdict: "shape-array-r16f-passed",
+    conclusion: "The four-layer Shape array passed.",
+    targetMemoryBytes: 44_739_240,
+    readback: {
+      sampleCount: 48,
+      expectedSampleCount: 48,
+      maximumRelativeError: 0,
+      relativeTolerance: 0.002,
+    },
+    totalElapsedMs: 123.4,
+  };
+  const shapeArrayCompletedSequence = sequence + 101;
+  const shapeArrayCompletedResponse = await upload(createUploadPayload({
+    payloadRunCode: shapeArrayRunCode,
+    payloadWriteToken: shapeArrayWriteToken,
+    payloadSequence: shapeArrayCompletedSequence,
+    testId: SHAPE_ARRAY_R16F_TEST_ID,
+    status: "completed",
+    latestEvent: "diagnostic-completed",
+    result: shapeArrayResult,
+    eventDetail: { verdict: shapeArrayResult.verdict },
+    moduleLoaded: true,
+    probeFinished: true,
+  }));
+  assert.equal(shapeArrayCompletedResponse.status, 201);
+  const storedShapeArrayRun = database.rows.get(shapeArrayRunCode);
+  assert.equal(storedShapeArrayRun.status, "completed");
+  assert.equal(storedShapeArrayRun.sequence, shapeArrayCompletedSequence);
+  assertDiagnosticSummary(
+    JSON.parse(storedShapeArrayRun.result_summary),
+    SHAPE_ARRAY_R16F_TEST_ID,
+    shapeArrayResult,
   );
 
   const storageResult = storageTargetFailureResult();
