@@ -39,6 +39,10 @@ export interface VectorTextGpuMeshResources {
   indexBuffer: GPUBuffer;
   indexCount: number;
   memoryBytes: number;
+  /** Meaningful vertex and index bytes uploaded into the allocation. */
+  payloadBytes: number;
+  /** Descriptor bytes, including the minimum allocation for empty buffers. */
+  allocatedBytes: number;
 }
 
 export interface VectorTextGpuSlugResources {
@@ -49,6 +53,10 @@ export interface VectorTextGpuSlugResources {
   bindGroup: GPUBindGroup;
   curveCount: number;
   memoryBytes: number;
+  /** Meaningful curve and band texel bytes uploaded into the allocation. */
+  payloadBytes: number;
+  /** Texture descriptor bytes owned by this cache entry. */
+  allocatedBytes: number;
 }
 
 export type VectorTextGpuDrawResources =
@@ -66,6 +74,52 @@ export function vectorTextGpuDrawUsesMesh(
   return draw.mode === "mesh-direct"
     || draw.mode === "mesh-blur"
     || draw.mode === "mesh-inner-shadow-blur";
+}
+
+/**
+ * Returns the sole cache key used by resource lookup and authoritative prune.
+ * The legacy path intentionally preserves its node-scoped key verbatim.
+ */
+export function vectorTextGpuResourceKey(
+  draw: VectorTextGpuDraw,
+  sharingEnabled: boolean,
+): string {
+  if (!sharingEnabled) return draw.meshKey;
+  return vectorTextGpuDrawUsesMesh(draw)
+    ? `mesh:${draw.mesh.revision}`
+    : `slug:${draw.slug.revision}`;
+}
+
+export interface VectorGeometryGpuDiagnostics {
+  readonly resourceSharingEnabled: boolean;
+  readonly cacheEntries: number;
+  readonly meshCacheEntries: number;
+  readonly slugCacheEntries: number;
+  /** Monotonic cache lookup counters for this engine instance. */
+  readonly cacheLookupCount: number;
+  readonly cacheHitCount: number;
+  readonly cacheMissCount: number;
+  /** Monotonic successful resource creation counters. */
+  readonly createdBufferCount: number;
+  readonly createdTextureCount: number;
+  /** Monotonic meaningful bytes uploaded for successful cache misses. */
+  readonly uploadBytes: number;
+  /** Current meaningful bytes retained by live geometry cache entries. */
+  readonly payloadBytes: number;
+  /** Current descriptor bytes allocated by live geometry cache entries. */
+  readonly liveAllocatedBytes: number;
+}
+
+export function pruneVectorTextGpuResourceCache(
+  resourcesByKey: Map<string, VectorTextGpuDrawResources>,
+  activeResourceKeys: ReadonlySet<string>,
+  destroyResource: (resources: VectorTextGpuDrawResources) => void,
+): void {
+  for (const [key, resources] of resourcesByKey) {
+    if (activeResourceKeys.has(key)) continue;
+    destroyResource(resources);
+    resourcesByKey.delete(key);
+  }
 }
 
 export function vectorTextGpuDrawUsesBlur(

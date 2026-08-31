@@ -1,5 +1,6 @@
 import type { BrushEngine } from "../../brush-engine";
 import type { EngineGpuMemoryStats } from "../../engine-stats";
+import type { VectorGeometryGpuDiagnostics } from "../../engine-vector-text-resources";
 import type { MixedSceneController } from "../../mixed-scene-controller";
 import type { MixedSceneDiagnostics } from "../../mixed-scene-controller-contract";
 import {
@@ -15,15 +16,16 @@ import {
 
 export type VectorBaselineProfile = "shared" | "unique";
 
-const VECTOR_BASELINE_REPORT_VERSION = 1;
+const VECTOR_BASELINE_REPORT_VERSION = 2;
 const VECTOR_BASELINE_STRATEGY =
-  "vector-baseline-64-svg-64-text-cold-warm-pan-zoom-v1" as const;
+  "vector-baseline-64-svg-64-text-fit-cold-forced-warm-pan-zoom-v2" as const;
 const IDLE_FRAME_COUNT = 30;
 const PAN_FRAME_COUNT = 60;
 const ZOOM_FRAME_COUNT = 48;
 const STABLE_FRAME_LIMIT = 720;
 const STABLE_CONSECUTIVE_FRAME_COUNT = 3;
 const RUNTIME_SAMPLE_INTERVAL_MS = 50;
+const VECTOR_BASELINE_TEXT = "VECTOR SHARED CURVES";
 
 interface BrowserMemorySnapshot {
   readonly supported: boolean;
@@ -93,6 +95,10 @@ interface FrameDistribution {
 }
 
 interface ViewRenderMeasurement {
+  readonly trigger:
+    | "fit-all-visible"
+    | "cold-zoom"
+    | "forced-warm-redraw-zero-delta-pan";
   readonly endToEndMs: number;
   readonly renderCountDelta: number;
   readonly rendererMs: number;
@@ -137,6 +143,15 @@ interface RuntimePeaks {
   readonly atomicPendingNodes: number;
 }
 
+interface VectorGeometryGpuCounterDelta {
+  readonly cacheLookupCount: number;
+  readonly cacheHitCount: number;
+  readonly cacheMissCount: number;
+  readonly createdBufferCount: number;
+  readonly createdTextureCount: number;
+  readonly uploadBytes: number;
+}
+
 export interface VectorBaselineReport {
   readonly version: typeof VECTOR_BASELINE_REPORT_VERSION;
   readonly strategy: typeof VECTOR_BASELINE_STRATEGY;
@@ -157,6 +172,8 @@ export interface VectorBaselineReport {
     readonly canvasHeightAtStart: number;
     readonly canvasWidthAtEnd: number;
     readonly canvasHeightAtEnd: number;
+    readonly visibilityChangeObserved: boolean;
+    readonly resizeObserved: boolean;
     readonly documentWidth: number;
     readonly documentHeight: number;
   };
@@ -179,6 +196,7 @@ export interface VectorBaselineReport {
   readonly idle: FrameDistribution;
   readonly fittedZoom: number;
   readonly coldTargetZoom: number;
+  readonly allVisibleFit: ViewRenderMeasurement;
   readonly cold: ViewRenderMeasurement;
   readonly warm: ViewRenderMeasurement;
   readonly pan: GestureMeasurement;
@@ -189,7 +207,15 @@ export interface VectorBaselineReport {
     readonly afterTrace: VectorMemorySnapshot;
     readonly deltaAfterSetup: VectorMemorySnapshot;
     readonly deltaAfterTrace: VectorMemorySnapshot;
-    readonly peaks: RuntimePeaks;
+    readonly sampleIntervalMs: typeof RUNTIME_SAMPLE_INTERVAL_MS;
+    readonly sampledPeaks: RuntimePeaks;
+  };
+  readonly geometryGpu: {
+    readonly before: VectorGeometryGpuDiagnostics;
+    readonly afterSetup: VectorGeometryGpuDiagnostics;
+    readonly afterTrace: VectorGeometryGpuDiagnostics;
+    readonly setupDelta: VectorGeometryGpuCounterDelta;
+    readonly traceDelta: VectorGeometryGpuCounterDelta;
   };
   readonly compiler: {
     readonly before: VectorCompilerSnapshot;
@@ -208,6 +234,8 @@ export interface VectorBaselineReport {
     readonly freshDocumentAccepted: boolean;
     readonly maximumScenePopulated: boolean;
     readonly profileIdentityValidated: boolean;
+    readonly profileWorkloadBudgetValidated: boolean;
+    readonly allVisibleFitRendered: boolean;
     readonly coldAndWarmRendered: boolean;
     readonly panTraceCompleted: boolean;
     readonly zoomTraceCompleted: boolean;
@@ -223,7 +251,6 @@ interface StableResult {
 }
 
 interface RuntimeSampler {
-  readonly observe: () => void;
   readonly stop: () => RuntimePeaks;
 }
 
@@ -399,6 +426,20 @@ function subtractMemory(
   };
 }
 
+function subtractGeometryGpuCounters(
+  right: VectorGeometryGpuDiagnostics,
+  left: VectorGeometryGpuDiagnostics,
+): VectorGeometryGpuCounterDelta {
+  return {
+    cacheLookupCount: right.cacheLookupCount - left.cacheLookupCount,
+    cacheHitCount: right.cacheHitCount - left.cacheHitCount,
+    cacheMissCount: right.cacheMissCount - left.cacheMissCount,
+    createdBufferCount: right.createdBufferCount - left.createdBufferCount,
+    createdTextureCount: right.createdTextureCount - left.createdTextureCount,
+    uploadBytes: right.uploadBytes - left.uploadBytes,
+  };
+}
+
 function beginRuntimeSampling(
   engine: BrushEngine,
   controller: MixedSceneController,
@@ -447,7 +488,6 @@ function beginRuntimeSampling(
   const interval = window.setInterval(observe, RUNTIME_SAMPLE_INTERVAL_MS);
   observe();
   return {
-    observe,
     stop: () => {
       window.clearInterval(interval);
       observe();
@@ -481,16 +521,16 @@ async function waitForStableScene(
   engine: BrushEngine,
   controller: MixedSceneController,
   minimumRenderCount: number,
-  sampler: RuntimeSampler,
+  initialFrameTimestamp?: number,
 ): Promise<StableResult> {
   let consecutiveStableFrames = 0;
   const intervalsMs: number[] = [];
-  let previous = await nextFrame();
+  let previous = initialFrameTimestamp;
+  if (previous === undefined) previous = await nextFrame();
   for (let frame = 0; frame < STABLE_FRAME_LIMIT; frame += 1) {
     const timestamp = await nextFrame();
     intervalsMs.push(Math.max(0, timestamp - previous));
     previous = timestamp;
-    sampler.observe();
     const diagnostics = controller.getDiagnostics();
     const isStable = diagnostics.renderCount >= minimumRenderCount
       && stable(diagnostics);
@@ -500,7 +540,6 @@ async function waitForStableScene(
       await engine.waitForVectorTextPresentationCompletion();
       const settled = controller.getDiagnostics();
       if (settled.renderCount >= minimumRenderCount && stable(settled)) {
-        sampler.observe();
         return { diagnostics: settled, intervalsMs };
       }
       consecutiveStableFrames = 0;
@@ -607,7 +646,7 @@ function vectorSvgSource(seed: number): string {
 }
 
 function uniqueText(index: number): string {
-  const characters = [..."VECTOR SHARED CURVES"];
+  const characters = [...VECTOR_BASELINE_TEXT];
   let state = (index + 1) * 0x9e3779b1;
   for (let cursor = characters.length - 1; cursor > 0; cursor -= 1) {
     state ^= state << 13;
@@ -627,7 +666,7 @@ function textSeed(
 ): VectorTextNodeSeed {
   const placement = gridPlacement(index, width, height);
   return {
-    text: profile === "shared" ? "VECTOR SHARED CURVES" : uniqueText(index),
+    text: profile === "shared" ? VECTOR_BASELINE_TEXT : uniqueText(index),
     fontFamily: "Anton",
     fontSize: 108,
     color: paletteColor(index, 2),
@@ -695,10 +734,11 @@ function svgSeed(
 async function measureViewRender(
   engine: BrushEngine,
   controller: MixedSceneController,
-  sampler: RuntimeSampler,
   idleMedianMs: number,
+  trigger: ViewRenderMeasurement["trigger"],
   mutation: () => void,
 ): Promise<ViewRenderMeasurement> {
+  const frameTimestampBeforeMutation = await nextFrame();
   const beforeDiagnostics = controller.getDiagnostics();
   const startedAt = performance.now();
   mutation();
@@ -706,10 +746,11 @@ async function measureViewRender(
     engine,
     controller,
     beforeDiagnostics.renderCount + 1,
-    sampler,
+    frameTimestampBeforeMutation,
   );
   const afterDiagnostics = stableResult.diagnostics;
   return {
+    trigger,
     endToEndMs: performance.now() - startedAt,
     renderCountDelta: afterDiagnostics.renderCount - beforeDiagnostics.renderCount,
     rendererMs: afterDiagnostics.lastRenderMs,
@@ -723,7 +764,6 @@ async function measureViewRender(
 async function measureGesture(
   engine: BrushEngine,
   controller: MixedSceneController,
-  sampler: RuntimeSampler,
   idleMedianMs: number,
   eventCount: number,
   applyEvent: (index: number) => void,
@@ -742,7 +782,6 @@ async function measureGesture(
       intervalsMs.push(Math.max(0, timestamp - previous));
       eventToNextFrameMs.push(Math.max(0, performance.now() - eventStartedAt));
       previous = timestamp;
-      sampler.observe();
     }
   } catch (error) {
     controller.endViewGesture();
@@ -756,7 +795,6 @@ async function measureGesture(
     engine,
     controller,
     during.renderCount,
-    sampler,
   );
   const after = stableResult.diagnostics;
   return {
@@ -823,9 +861,20 @@ export async function runVectorBaselineBenchmark(
     canvasHeight: canvas.height,
   };
   const diagnosticsBefore = controller.getDiagnostics();
+  const geometryGpuBefore = engine.getVectorGeometryGpuDiagnostics();
   const memoryBefore = memorySnapshot(engine.getStats().gpuMemory, diagnosticsBefore);
   const compilerBefore = compilerSnapshot(diagnosticsBefore);
   const sampler = beginRuntimeSampling(engine, controller);
+  let visibilityChangeObserved = false;
+  let resizeObserved = false;
+  const latchVisibilityChange = () => {
+    visibilityChangeObserved = true;
+  };
+  const latchResize = () => {
+    resizeObserved = true;
+  };
+  document.addEventListener("visibilitychange", latchVisibilityChange);
+  window.addEventListener("resize", latchResize);
 
   let sourceGenerationMs = 0;
   let svgParseMs = 0;
@@ -863,10 +912,8 @@ export async function runVectorBaselineBenchmark(
         svgSeed(documentValue, index, engine.documentWidth, engine.documentHeight),
         `Vector baseline SVG ${String(index + 1).padStart(2, "0")}`,
       );
-      sampler.observe();
     }
     await engine.addVectorTextNodesBatch(textEntries);
-    sampler.observe();
     sceneMutationMs = performance.now() - sceneStartedAt;
 
     const settleStartedAt = performance.now();
@@ -874,7 +921,6 @@ export async function runVectorBaselineBenchmark(
       engine,
       controller,
       diagnosticsBefore.renderCount + 1,
-      sampler,
     );
     firstStableSceneMs = performance.now() - sceneStartedAt;
     const settleTailMs = performance.now() - settleStartedAt;
@@ -908,12 +954,44 @@ export async function runVectorBaselineBenchmark(
       (total, node) => total + node.document.logicalVectorBytes,
       0,
     );
+    const svgCommandCount = svgNodes.reduce(
+      (total, node) => total + node.document.commandCount,
+      0,
+    );
+    const svgContourCount = svgNodes.reduce(
+      (total, node) => total + node.document.contourCount,
+      0,
+    );
+    const textCharacterCount = textNodes.reduce(
+      (total, node) => total + node.text.length,
+      0,
+    );
     const uniqueSvgLogicalVectorBytes = [...uniqueSvgDocuments.values()].reduce(
       (total, documentValue) => total + documentValue.logicalVectorBytes,
       0,
     );
+    const referenceSvgDocument = parsedDocuments[0];
+    const profileWorkloadBudgetValidated = svgNodes.length
+        === VECTOR_SVG_NODE_MAXIMUM
+      && textNodes.length === VECTOR_TEXT_NODE_MAXIMUM
+      && svgCommandCount
+        === referenceSvgDocument.commandCount * VECTOR_SVG_NODE_MAXIMUM
+      && svgContourCount
+        === referenceSvgDocument.contourCount * VECTOR_SVG_NODE_MAXIMUM
+      && svgLogicalVectorBytes
+        === referenceSvgDocument.logicalVectorBytes * VECTOR_SVG_NODE_MAXIMUM
+      && textCharacterCount
+        === VECTOR_BASELINE_TEXT.length * VECTOR_TEXT_NODE_MAXIMUM
+      && svgNodes.every((node) => (
+        node.document.commandCount === referenceSvgDocument.commandCount
+        && node.document.contourCount === referenceSvgDocument.contourCount
+        && node.document.logicalVectorBytes
+          === referenceSvgDocument.logicalVectorBytes
+      ))
+      && textNodes.every((node) => node.text.length === VECTOR_BASELINE_TEXT.length);
 
     const diagnosticsAfterSetup = setupStable.diagnostics;
+    const geometryGpuAfterSetup = engine.getVectorGeometryGpuDiagnostics();
     const memoryAfterSetup = memorySnapshot(
       engine.getStats().gpuMemory,
       diagnosticsAfterSetup,
@@ -925,14 +1003,15 @@ export async function runVectorBaselineBenchmark(
     controller.setAdaptiveZoomEnabled(false);
     let fittedZoom = 0;
     let coldTargetZoom = 0;
+    let allVisibleFit: ViewRenderMeasurement;
     let cold: ViewRenderMeasurement;
     let warm: ViewRenderMeasurement;
     try {
-      await measureViewRender(
+      allVisibleFit = await measureViewRender(
         engine,
         controller,
-        sampler,
         idleMedianMs,
+        "fit-all-visible",
         () => engine.fitView(),
       );
       fittedZoom = engine.getVectorTextViewState().zoom;
@@ -943,8 +1022,8 @@ export async function runVectorBaselineBenchmark(
       cold = await measureViewRender(
         engine,
         controller,
-        sampler,
         idleMedianMs,
+        "cold-zoom",
         () => engine.zoomBy(
           coldTargetZoom / engine.getVectorTextViewState().zoom,
           anchorX,
@@ -954,8 +1033,8 @@ export async function runVectorBaselineBenchmark(
       warm = await measureViewRender(
         engine,
         controller,
-        sampler,
         idleMedianMs,
+        "forced-warm-redraw-zero-delta-pan",
         () => engine.panByClientDelta(0, 0),
       );
     } finally {
@@ -965,7 +1044,6 @@ export async function runVectorBaselineBenchmark(
     const pan = await measureGesture(
       engine,
       controller,
-      sampler,
       idleMedianMs,
       PAN_FRAME_COUNT,
       (index) => {
@@ -978,7 +1056,6 @@ export async function runVectorBaselineBenchmark(
     const zoom = await measureGesture(
       engine,
       controller,
-      sampler,
       idleMedianMs,
       ZOOM_FRAME_COUNT,
       (index) => {
@@ -997,9 +1074,9 @@ export async function runVectorBaselineBenchmark(
       engine,
       controller,
       controller.getDiagnostics().renderCount,
-      sampler,
     );
     const diagnosticsAfterTrace = afterTrace.diagnostics;
+    const geometryGpuAfterTrace = engine.getVectorGeometryGpuDiagnostics();
     const memoryAfterTrace = memorySnapshot(
       engine.getStats().gpuMemory,
       diagnosticsAfterTrace,
@@ -1026,6 +1103,8 @@ export async function runVectorBaselineBenchmark(
       && compilerAfterTrace.failedJobs === compilerBefore.failedJobs;
     const environmentStayedStable = visibilityAtStart === "visible"
       && environmentEnd.visibility === "visible"
+      && !visibilityChangeObserved
+      && !resizeObserved
       && environmentStart.devicePixelRatio === environmentEnd.devicePixelRatio
       && environmentStart.viewportWidth === environmentEnd.viewportWidth
       && environmentStart.viewportHeight === environmentEnd.viewportHeight
@@ -1035,6 +1114,8 @@ export async function runVectorBaselineBenchmark(
       freshDocumentAccepted,
       maximumScenePopulated,
       profileIdentityValidated,
+      profileWorkloadBudgetValidated,
+      allVisibleFitRendered: allVisibleFit.renderCountDelta > 0,
       coldAndWarmRendered: cold.renderCountDelta > 0 && warm.renderCountDelta > 0,
       panTraceCompleted:
         pan.frames.intervalsMs.length === PAN_FRAME_COUNT
@@ -1069,6 +1150,8 @@ export async function runVectorBaselineBenchmark(
         canvasHeightAtStart: environmentStart.canvasHeight,
         canvasWidthAtEnd: environmentEnd.canvasWidth,
         canvasHeightAtEnd: environmentEnd.canvasHeight,
+        visibilityChangeObserved,
+        resizeObserved,
         documentWidth: engine.documentWidth,
         documentHeight: engine.documentHeight,
       },
@@ -1081,20 +1164,11 @@ export async function runVectorBaselineBenchmark(
           (total, node) => total + node.document.paints.length,
           0,
         ),
-        svgCommandCount: svgNodes.reduce(
-          (total, node) => total + node.document.commandCount,
-          0,
-        ),
-        svgContourCount: svgNodes.reduce(
-          (total, node) => total + node.document.contourCount,
-          0,
-        ),
+        svgCommandCount,
+        svgContourCount,
         svgLogicalVectorMiB: svgLogicalVectorBytes / MEBIBYTE_BYTES,
         uniqueSvgLogicalVectorMiB: uniqueSvgLogicalVectorBytes / MEBIBYTE_BYTES,
-        textCharacterCount: textNodes.reduce(
-          (total, node) => total + node.text.length,
-          0,
-        ),
+        textCharacterCount,
         sourceGenerationMs,
         svgParseMs,
         sceneMutationMs,
@@ -1103,6 +1177,7 @@ export async function runVectorBaselineBenchmark(
       idle,
       fittedZoom,
       coldTargetZoom,
+      allVisibleFit,
       cold,
       warm,
       pan,
@@ -1113,7 +1188,21 @@ export async function runVectorBaselineBenchmark(
         afterTrace: memoryAfterTrace,
         deltaAfterSetup: subtractMemory(memoryAfterSetup, memoryBefore),
         deltaAfterTrace: subtractMemory(memoryAfterTrace, memoryBefore),
-        peaks,
+        sampleIntervalMs: RUNTIME_SAMPLE_INTERVAL_MS,
+        sampledPeaks: peaks,
+      },
+      geometryGpu: {
+        before: geometryGpuBefore,
+        afterSetup: geometryGpuAfterSetup,
+        afterTrace: geometryGpuAfterTrace,
+        setupDelta: subtractGeometryGpuCounters(
+          geometryGpuAfterSetup,
+          geometryGpuBefore,
+        ),
+        traceDelta: subtractGeometryGpuCounters(
+          geometryGpuAfterTrace,
+          geometryGpuAfterSetup,
+        ),
       },
       compiler: {
         before: compilerBefore,
@@ -1131,6 +1220,8 @@ export async function runVectorBaselineBenchmark(
       checks,
     };
   } finally {
+    document.removeEventListener("visibilitychange", latchVisibilityChange);
+    window.removeEventListener("resize", latchResize);
     if (!peaks) sampler.stop();
   }
 }

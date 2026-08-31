@@ -381,6 +381,12 @@ export interface BrushEngineOptions {
    */
   vectorTextRoiCacheEnabled?: boolean;
   /**
+   * Shares immutable vector geometry GPU resources across draws with the same
+   * compiled revision. Keep disabled for the legacy per-node cache and for
+   * same-build performance comparisons.
+   */
+  vectorGpuResourceSharingEnabled?: boolean;
+  /**
    * @deprecated Compatibility-only alias for integrations created before the
    * mixed scene graduated from its prototype name. Use `mixedSceneEnabled`.
    */

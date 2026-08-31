@@ -147,6 +147,13 @@ import {
   vectorTextGpuRunCacheAllocationBounds,
   vectorTextGpuRunCacheContains,
 } from "../src/vector-text-cache-roi.ts";
+import {
+  VectorTextEffectCompilerClient,
+} from "../src/vector-text-effect-client.ts";
+import {
+  pruneVectorTextGpuResourceCache,
+  vectorTextGpuResourceKey,
+} from "../src/engine-vector-text-resources.ts";
 
 const read = (relativePath) =>
   fs.readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
@@ -2139,6 +2146,119 @@ assert.match(controllerSource, /this\.effectCompiler\.pinSlot\(slotKey\)/);
 assert.match(controllerSource, /finally \{[\s\S]*releasePinnedSlot\(slot\)/);
 assert.doesNotMatch(clientSource, /displayed\.sourceRevision !== sourceRevision/);
 assert.match(clientSource, /MAXIMUM_READY_EFFECT_CACHE_ENTRIES = 48/);
+const sharedMeshRevision = { revision: "mesh-revision" };
+const sharedSlugRevision = { revision: "slug-revision" };
+assert.equal(vectorTextGpuResourceKey({
+  mode: "mesh-direct",
+  meshKey: "node-a",
+  mesh: sharedMeshRevision,
+}, false), "node-a");
+assert.equal(vectorTextGpuResourceKey({
+  mode: "mesh-direct",
+  meshKey: "node-a",
+  mesh: sharedMeshRevision,
+}, true), "mesh:mesh-revision");
+assert.equal(vectorTextGpuResourceKey({
+  mode: "mesh-direct",
+  meshKey: "node-b",
+  mesh: sharedMeshRevision,
+}, true), "mesh:mesh-revision");
+assert.equal(vectorTextGpuResourceKey({
+  mode: "slug-direct",
+  meshKey: "node-c",
+  slug: sharedSlugRevision,
+}, true), "slug:slug-revision");
+const sharedResourceKey = vectorTextGpuResourceKey({
+  mode: "mesh-direct",
+  meshKey: "node-a",
+  mesh: sharedMeshRevision,
+}, true);
+const sharedResource = {
+  kind: "mesh",
+  revision: sharedMeshRevision.revision,
+};
+const sharedResourceCache = new Map([[sharedResourceKey, sharedResource]]);
+let sharedResourceDestroyCount = 0;
+pruneVectorTextGpuResourceCache(
+  sharedResourceCache,
+  new Set([sharedResourceKey]),
+  (resource) => {
+    assert.equal(resource, sharedResource);
+    sharedResourceDestroyCount += 1;
+  },
+);
+assert.equal(sharedResourceCache.size, 1);
+assert.equal(sharedResourceDestroyCount, 0);
+pruneVectorTextGpuResourceCache(
+  sharedResourceCache,
+  new Set(),
+  () => {
+    sharedResourceDestroyCount += 1;
+  },
+);
+assert.equal(sharedResourceCache.size, 0);
+assert.equal(sharedResourceDestroyCount, 1);
+pruneVectorTextGpuResourceCache(
+  sharedResourceCache,
+  new Set(),
+  () => {
+    sharedResourceDestroyCount += 1;
+  },
+);
+assert.equal(sharedResourceDestroyCount, 1);
+assert.match(
+  clientSource,
+  /private requiredReadyKeys[\s\S]*displayedBySlot\.values\(\)[\s\S]*desiredKeyBySlot\.values\(\)/,
+);
+assert.match(
+  clientSource,
+  /private pruneReadyCache[\s\S]*!requiredKeys\.has\(key\)[\s\S]*readyByKey\.delete\(key\)/,
+);
+const activeReadyCacheClient = new VectorTextEffectCompilerClient(() => {});
+for (let index = 0; index < 64; index += 1) {
+  const key = `active-ready-${index}`;
+  activeReadyCacheClient.desiredKeyBySlot.set(`slot-${index}`, key);
+  activeReadyCacheClient.readyByKey.set(key, {
+    slotKey: `slot-${index}`,
+    cacheKey: key,
+    effectIdentity: `identity-${index}`,
+    sourceRevision: `revision-${index}`,
+    lodBucket: 0,
+    mesh: null,
+  });
+}
+activeReadyCacheClient.pruneReadyCache();
+assert.equal(activeReadyCacheClient.readyByKey.size, 64);
+for (let index = 0; index < 64; index += 1) {
+  assert.equal(activeReadyCacheClient.readyByKey.has(`active-ready-${index}`), true);
+}
+for (let index = 48; index < 64; index += 1) {
+  activeReadyCacheClient.desiredKeyBySlot.delete(`slot-${index}`);
+}
+activeReadyCacheClient.pruneReadyCache();
+assert.equal(activeReadyCacheClient.readyByKey.size, 48);
+
+const lodReadyCacheClient = new VectorTextEffectCompilerClient(() => {});
+for (let index = 0; index < 5; index += 1) {
+  const key = `lod-ready-${index}`;
+  lodReadyCacheClient.readyByKey.set(key, {
+    slotKey: `lod-slot-${index}`,
+    cacheKey: key,
+    effectIdentity: "shared-identity",
+    sourceRevision: "shared-revision",
+    lodBucket: index,
+    mesh: null,
+  });
+}
+lodReadyCacheClient.desiredKeyBySlot.set("desired-slot", "lod-ready-4");
+lodReadyCacheClient.displayedBySlot.set("displayed-slot", {
+  ...lodReadyCacheClient.readyByKey.get("lod-ready-0"),
+  slotKey: "displayed-slot",
+});
+lodReadyCacheClient.pruneReadyLods("shared-identity", 0);
+assert.equal(lodReadyCacheClient.readyByKey.size, 3);
+assert.equal(lodReadyCacheClient.readyByKey.has("lod-ready-0"), true);
+assert.equal(lodReadyCacheClient.readyByKey.has("lod-ready-4"), true);
 assert.match(clientSource, /MAXIMUM_REGISTERED_PATHS = 128/);
 assert.match(clientSource, /protectedRevisions/);
 assert.match(clientSource, /type: "release-path"/);
@@ -2334,7 +2454,7 @@ assert.match(
 assert.match(clientSource, /this\.ensureWorker\(\)\.postMessage\(message/);
 assert.match(
   clientSource,
-  /constructor\(private readonly onResourceReady: \(\) => void\) \{\}/,
+  /private readonly onResourceReady: \(\) => void;[\s\S]*constructor\(onResourceReady: \(\) => void\) \{[\s\S]*this\.onResourceReady = onResourceReady/,
 );
 assert.doesNotMatch(
   clientSource,

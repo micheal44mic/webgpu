@@ -29,6 +29,7 @@ import {
   VECTOR_TEXT_RUN_CACHE_UNIFORM_BYTES,
   vectorTextGpuDrawUsesBlur,
   vectorTextGpuDrawUsesMesh,
+  vectorTextGpuResourceKey,
   type MixedSceneActivePresentation,
   type VectorTextGpuBlurCacheResources,
   type VectorTextGpuDrawResources,
@@ -4644,32 +4645,60 @@ export function ensureVectorTextGpuResource(engine: BrushEngine,
 ): VectorTextGpuDrawResources {
   const usesMesh = vectorTextGpuDrawUsesMesh(draw);
   const revision = usesMesh ? draw.mesh.revision : draw.slug.revision;
-  const existing = engine.vectorTextGpuMeshes.get(draw.meshKey);
+  const resourceKey = vectorTextGpuResourceKey(
+    draw,
+    engine.vectorGpuResourceSharingEnabled,
+  );
+  engine.vectorGeometryGpuCacheLookupCount += 1;
+  const existing = engine.vectorTextGpuMeshes.get(resourceKey);
   if (
     existing
     && existing.revision === revision
     && existing.kind === (usesMesh ? "mesh" : "slug")
   ) {
+    engine.vectorGeometryGpuCacheHitCount += 1;
     return existing;
   }
+  engine.vectorGeometryGpuCacheMissCount += 1;
   let created: VectorTextGpuDrawResources;
   if (usesMesh) {
-    created = createVectorTextGpuMeshResources(engine.device, draw);
+    const payloadBytes = draw.mesh.vertices.byteLength + draw.mesh.indices.byteLength;
+    const allocatedBytes = Math.max(4, draw.mesh.vertices.byteLength)
+      + Math.max(4, draw.mesh.indices.byteLength);
+    created = {
+      ...createVectorTextGpuMeshResources(engine.device, draw),
+      payloadBytes,
+      allocatedBytes,
+    };
+    engine.vectorGeometryGpuCreatedBufferCount += 2;
+    engine.vectorGeometryGpuUploadBytes += payloadBytes;
   } else {
     const uniformBuffer = engine.vectorTextGpuUniformBuffer;
     const layout = engine.vectorTextGpuSlugBindGroupLayout;
     if (!uniformBuffer || !layout) {
       throw new Error("The vector-text Slug layout is not initialized.");
     }
-    created = createVectorTextGpuSlugResources(
-      engine.device,
-      draw,
-      uniformBuffer,
-      layout,
-      VECTOR_TEXT_SLUG_UNIFORM_BYTES,
-    );
+    const payloadBytes = draw.slug.curveTexture.data.byteLength
+      + draw.slug.bandTexture.data.byteLength;
+    const allocatedBytes = (
+      draw.slug.curveTexture.width * draw.slug.curveTexture.height
+      + draw.slug.bandTexture.width * draw.slug.bandTexture.height
+    ) * 16;
+    created = {
+      ...createVectorTextGpuSlugResources(
+        engine.device,
+        draw,
+        uniformBuffer,
+        layout,
+        VECTOR_TEXT_SLUG_UNIFORM_BYTES,
+      ),
+      payloadBytes,
+      allocatedBytes,
+    };
+    engine.vectorGeometryGpuCreatedTextureCount += 2;
+    engine.vectorGeometryGpuUploadBytes += payloadBytes;
   }
-  engine.vectorTextGpuMeshes.set(draw.meshKey, created);
+  engine.vectorTextGpuMeshes.set(resourceKey, created);
   if (existing) {
     destroyVectorTextGpuResources(existing);
   }

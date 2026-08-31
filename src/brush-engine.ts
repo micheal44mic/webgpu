@@ -661,8 +661,10 @@ import {
 } from "./engine-brush-assets";
 import { shapeLayerForStamp } from "./brush-shape-sequence-core.ts";
 import {
+  pruneVectorTextGpuResourceCache,
   vectorTextGpuDrawUsesBlur,
   type MixedSceneActivePresentation,
+  type VectorGeometryGpuDiagnostics,
   type VectorTextGpuBlurCacheResources,
   type VectorTextGpuDrawResources,
   type VectorTextGpuPendingRun,
@@ -1145,6 +1147,7 @@ export class BrushEngine {
   readonly layerColdAdjacentPrefetchEnabled: boolean;
   readonly mixedSceneEnabled: boolean;
   readonly vectorTextRoiCacheEnabled: boolean;
+  readonly vectorGpuResourceSharingEnabled: boolean;
   readonly selectionOverlayCanvas: HTMLCanvasElement | null;
 
   private adapter!: GPUAdapter;
@@ -1493,6 +1496,12 @@ export class BrushEngine {
   >();
   readonly vectorTextGpuMeshes =
     new Map<string, VectorTextGpuDrawResources>();
+  vectorGeometryGpuCacheLookupCount = 0;
+  vectorGeometryGpuCacheHitCount = 0;
+  vectorGeometryGpuCacheMissCount = 0;
+  vectorGeometryGpuCreatedBufferCount = 0;
+  vectorGeometryGpuCreatedTextureCount = 0;
+  vectorGeometryGpuUploadBytes = 0;
   readonly vectorTextGpuBlurCaches =
     new Map<string, VectorTextGpuBlurCacheResources>();
   readonly vectorTextGpuPendingRuns: VectorTextGpuPendingRun[] = [];
@@ -2156,6 +2165,8 @@ export class BrushEngine {
       options.layerColdAdjacentPrefetchEnabled !== false;
     this.mixedSceneEnabled = resolveMixedSceneEnabled(options);
     this.vectorTextRoiCacheEnabled = options.vectorTextRoiCacheEnabled !== false;
+    this.vectorGpuResourceSharingEnabled =
+      options.vectorGpuResourceSharingEnabled === true;
     this.selectionOverlayCanvas = selectionOverlayCanvas;
     this.mixedSceneStack = this.mixedSceneEnabled
       ? new MixedSceneStack(this.layerStack.layers.map((record) => record.id))
@@ -4277,6 +4288,33 @@ export class BrushEngine {
     return cacheBytes + scratchBytes;
   }
 
+  getVectorGeometryGpuDiagnostics(): VectorGeometryGpuDiagnostics {
+    let meshCacheEntries = 0;
+    let slugCacheEntries = 0;
+    let payloadBytes = 0;
+    let liveAllocatedBytes = 0;
+    for (const resources of this.vectorTextGpuMeshes.values()) {
+      if (resources.kind === "mesh") meshCacheEntries += 1;
+      else slugCacheEntries += 1;
+      payloadBytes += resources.payloadBytes;
+      liveAllocatedBytes += resources.allocatedBytes;
+    }
+    return {
+      resourceSharingEnabled: this.vectorGpuResourceSharingEnabled,
+      cacheEntries: this.vectorTextGpuMeshes.size,
+      meshCacheEntries,
+      slugCacheEntries,
+      cacheLookupCount: this.vectorGeometryGpuCacheLookupCount,
+      cacheHitCount: this.vectorGeometryGpuCacheHitCount,
+      cacheMissCount: this.vectorGeometryGpuCacheMissCount,
+      createdBufferCount: this.vectorGeometryGpuCreatedBufferCount,
+      createdTextureCount: this.vectorGeometryGpuCreatedTextureCount,
+      uploadBytes: this.vectorGeometryGpuUploadBytes,
+      payloadBytes,
+      liveAllocatedBytes,
+    };
+  }
+
   updateVectorTextGpuPresentation(
     placement: VectorTextPlacement,
     draws: readonly VectorTextGpuDraw[],
@@ -4370,18 +4408,16 @@ export class BrushEngine {
     return getVectorTextFallbackPresentationStats(this);
   }
 
-  pruneVectorTextGpuMeshes(activeMeshKeys: ReadonlySet<string>): void {
+  pruneVectorTextGpuMeshes(activeResourceKeys: ReadonlySet<string>): void {
     flushVectorTextGpuPresentations(this);
-    for (const [key, resources] of this.vectorTextGpuMeshes) {
-      if (activeMeshKeys.has(key)) {
-        continue;
-      }
-      destroyVectorTextGpuResources(resources);
-      this.vectorTextGpuMeshes.delete(key);
-    }
+    pruneVectorTextGpuResourceCache(
+      this.vectorTextGpuMeshes,
+      activeResourceKeys,
+      destroyVectorTextGpuResources,
+    );
     let activeBlurCacheCount = 0;
     for (const [key, resources] of this.vectorTextGpuBlurCaches) {
-      if (activeMeshKeys.has(key)) {
+      if (activeResourceKeys.has(key)) {
         activeBlurCacheCount += 1;
         continue;
       }
@@ -4391,7 +4427,7 @@ export class BrushEngine {
     if (activeBlurCacheCount === 0) {
       releaseVectorTextGpuBlurScratch(this);
     }
-    if (activeMeshKeys.size === 0) {
+    if (activeResourceKeys.size === 0) {
       releaseVectorTextGpuScratch(this);
     }
   }

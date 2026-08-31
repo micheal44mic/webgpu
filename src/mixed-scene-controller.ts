@@ -54,6 +54,7 @@ import type {
   VectorTextPlacement,
   VectorTextViewState,
 } from "./vector-text-types";
+import { vectorTextGpuResourceKey } from "./engine-vector-text-resources";
 import {
   VectorTextFontGeometryRegistry,
   type VectorTextOutlineGeometry,
@@ -1848,6 +1849,7 @@ export class MixedSceneController {
     const view = this.host.getVectorTextViewState();
     const effectDiagnostics = this.effectCompiler.diagnostics();
     const backpressure = this.host.getVectorTextFastPresentationBackpressureStats();
+    const vectorGeometryGpu = this.host.getVectorGeometryGpuDiagnostics();
     return {
       sceneStrategy: MIXED_SCENE_STACK_STRATEGY,
       livePresentationStrategy: VECTOR_TEXT_PRESENTATION_STRATEGY,
@@ -1902,6 +1904,8 @@ export class MixedSceneController {
       singleShadowCacheEntries: this.singleShadowGpuCacheEntries,
       gpuGeometryStrategy: VECTOR_TEXT_GPU_GEOMETRY_STRATEGY,
       gpuRenderStrategy: VECTOR_TEXT_SLUG_GPU_RENDER_STRATEGY,
+      vectorGpuResourceSharingEnabled: vectorGeometryGpu.resourceSharingEnabled,
+      vectorGeometryGpu,
       effectWorkerPendingJobs: effectDiagnostics.pendingJobs,
       effectWorkerFailedJobs: effectDiagnostics.failedJobs,
       effectWorkerLastError: effectDiagnostics.lastError,
@@ -4023,7 +4027,7 @@ export class MixedSceneController {
     let blurGpuMemoryMiB = 0;
     let blurGpuCacheEntries = 0;
     let textureCount = 0;
-    const activeMeshKeys = new Set<string>();
+    const activeGpuResourceKeys = new Set<string>();
     const liveEffectSlots = new Set<string>();
     const fallbackRuns: {
       placement: VectorTextPlacement;
@@ -4175,13 +4179,16 @@ export class MixedSceneController {
         }
 
         for (const draw of draws) {
-          activeMeshKeys.add(draw.meshKey);
+          activeGpuResourceKeys.add(vectorTextGpuResourceKey(
+            draw,
+            this.host.vectorGpuResourceSharingEnabled,
+          ));
           if (
             draw.mode === "slug-blur"
             || draw.mode === "slug-inner-shadow-blur"
             || draw.mode === "mesh-blur"
             || draw.mode === "mesh-inner-shadow-blur"
-          ) activeMeshKeys.add(draw.blurKey);
+          ) activeGpuResourceKeys.add(draw.blurKey);
         }
         const stats = this.host.updateVectorTextGpuPresentation(group.placement, draws);
         fallbackRuns.push({ placement: group.placement, draws });
@@ -4195,7 +4202,7 @@ export class MixedSceneController {
     this.status.dataset.atomicEffectPendingNodes = String(atomicEffectPendingNodes);
     this.status.dataset.atomicEffectHoldCount = String(this.atomicEffectHoldCount);
     this.effectCompiler.retainSlots(liveEffectSlots);
-    this.host.pruneVectorTextGpuMeshes(activeMeshKeys);
+    this.host.pruneVectorTextGpuMeshes(activeGpuResourceKeys);
     if (
       this.fallbackPresentationDirty
       && atomicEffectPendingNodes === 0

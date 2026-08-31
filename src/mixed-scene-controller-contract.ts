@@ -24,6 +24,7 @@ import type {
   VectorTextPlacement,
   VectorTextViewState,
 } from "./vector-text-types";
+import type { VectorGeometryGpuDiagnostics } from "./engine-vector-text-resources";
 import { VECTOR_TEXT_GPU_GEOMETRY_STRATEGY } from "./vector-text-effect-geometry";
 import { VECTOR_TEXT_SLUG_GPU_RENDER_STRATEGY } from "./vector-text-slug-gpu-shader";
 import { VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY } from "./vector-text-single-shadow";
@@ -97,6 +98,7 @@ export interface MixedSceneControllerOptions {
 export interface MixedSceneHost {
   readonly documentWidth: number;
   readonly documentHeight: number;
+  readonly vectorGpuResourceSharingEnabled: boolean;
   /** Compatibility maximum edge for legacy callers and scalar stress limits. */
   readonly layerSize: number;
   getVectorTextViewState(): VectorTextViewState;
@@ -132,7 +134,8 @@ export interface MixedSceneHost {
     coalescedRequestCount: number;
   };
   waitForVectorTextPresentationCompletion(): Promise<void>;
-  pruneVectorTextGpuMeshes(activeMeshKeys: ReadonlySet<string>): void;
+  getVectorGeometryGpuDiagnostics(): VectorGeometryGpuDiagnostics;
+  pruneVectorTextGpuMeshes(activeResourceKeys: ReadonlySet<string>): void;
   beginVectorHistoryEdit(scope?: "property" | "transform"): boolean;
   commitVectorHistoryEdit(): boolean;
   cancelVectorHistoryEdit(): Promise<boolean>;
@@ -275,6 +278,8 @@ export interface MixedSceneDiagnostics {
   readonly singleShadowCacheEntries: number;
   readonly gpuGeometryStrategy: typeof VECTOR_TEXT_GPU_GEOMETRY_STRATEGY;
   readonly gpuRenderStrategy: typeof VECTOR_TEXT_SLUG_GPU_RENDER_STRATEGY;
+  readonly vectorGpuResourceSharingEnabled: boolean;
+  readonly vectorGeometryGpu: VectorGeometryGpuDiagnostics;
   readonly effectWorkerPendingJobs: number;
   readonly effectWorkerFailedJobs: number;
   readonly effectWorkerLastError: string | null;

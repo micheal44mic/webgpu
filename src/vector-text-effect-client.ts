@@ -11,7 +11,7 @@ import {
   VECTOR_TEXT_GEOMETRY_COMPILER_VERSION,
   vectorTextFloat64Key,
   type VectorTextLod,
-} from "./vector-text-lod";
+} from "./vector-text-lod.ts";
 
 interface PendingEffect {
   readonly slotKey: string;
@@ -50,6 +50,7 @@ export interface VectorTextEffectMeshResult {
 }
 
 const MAXIMUM_READY_EFFECT_CACHE_ENTRIES = 48;
+const MAXIMUM_READY_EFFECT_LODS_PER_IDENTITY = 3;
 const MAXIMUM_REGISTERED_PATHS = 128;
 
 function effectIdentity(
@@ -134,8 +135,11 @@ export class VectorTextEffectCompilerClient {
   private lastError: string | null = null;
   private resourceRevision = 0;
   private readonly resourceWaiters = new Set<() => void>();
+  private readonly onResourceReady: () => void;
 
-  constructor(private readonly onResourceReady: () => void) {}
+  constructor(onResourceReady: () => void) {
+    this.onResourceReady = onResourceReady;
+  }
 
   private ensureWorker(): Worker {
     if (this.worker) return this.worker;
@@ -238,6 +242,7 @@ export class VectorTextEffectCompilerClient {
       this.pendingKeys.delete(queued.cacheKey);
       this.queuedBySlot.delete(slotKey);
     }
+    this.pruneReadyCache();
     this.pruneRegisteredPaths();
   }
 
@@ -430,9 +435,33 @@ export class VectorTextEffectCompilerClient {
         mesh: response.mesh,
       });
     }
+    this.pruneReadyCache();
     this.pruneRegisteredPaths();
     this.notifyResourceReady();
     this.pumpQueue();
+  }
+
+  private requiredReadyKeys(): Set<string> {
+    return new Set([
+      ...[...this.displayedBySlot.values()].map((value) => value.cacheKey),
+      ...this.desiredKeyBySlot.values(),
+    ]);
+  }
+
+  private pruneReadyCache(
+    requiredKeys = this.requiredReadyKeys(),
+  ): void {
+    if (this.readyByKey.size <= MAXIMUM_READY_EFFECT_CACHE_ENTRIES) {
+      return;
+    }
+    for (const key of this.readyByKey.keys()) {
+      if (this.readyByKey.size <= MAXIMUM_READY_EFFECT_CACHE_ENTRIES) {
+        break;
+      }
+      if (!requiredKeys.has(key)) {
+        this.readyByKey.delete(key);
+      }
+    }
   }
 
   private pruneReadyLods(
@@ -445,22 +474,25 @@ export class VectorTextEffectCompilerClient {
         Math.abs(first[1].lodBucket - displayedBucket)
         - Math.abs(second[1].lodBucket - displayedBucket)
       ));
-    for (const [key] of entries.slice(3)) {
+    const requiredKeys = this.requiredReadyKeys();
+    const requiredEntryCount = entries.reduce(
+      (count, [key]) => count + (requiredKeys.has(key) ? 1 : 0),
+      0,
+    );
+    let remainingUnrequiredLods = Math.max(
+      0,
+      MAXIMUM_READY_EFFECT_LODS_PER_IDENTITY - requiredEntryCount,
+    );
+    for (const [key] of entries) {
+      if (requiredKeys.has(key)) {
+        continue;
+      }
+      if (remainingUnrequiredLods > 0) {
+        remainingUnrequiredLods -= 1;
+        continue;
+      }
       this.readyByKey.delete(key);
     }
-    if (this.readyByKey.size <= MAXIMUM_READY_EFFECT_CACHE_ENTRIES) {
-      return;
-    }
-    const displayedKeys = new Set(
-      [...this.displayedBySlot.values()].map((value) => value.cacheKey),
-    );
-    for (const key of this.readyByKey.keys()) {
-      if (this.readyByKey.size <= MAXIMUM_READY_EFFECT_CACHE_ENTRIES) {
-        break;
-      }
-      if (!displayedKeys.has(key)) {
-        this.readyByKey.delete(key);
-      }
-    }
+    this.pruneReadyCache(requiredKeys);
   }
 }

@@ -586,6 +586,8 @@ const bevelBoundingFieldEnabled = pageSearchParams.get("bevelField") === "bbox";
 // Same-build A/B escape hatch: ROI is production-default, `vectorTextRoi=0`
 // restores the previous full-viewport run textures for local measurements.
 const vectorTextRoiCacheEnabled = pageSearchParams.get("vectorTextRoi") !== "0";
+const vectorGpuResourceSharingEnabled =
+  pageSearchParams.get("vectorGpuResourceSharing") === "1";
 const layerColdCompressionMode = pageSearchParams.get("layerCompressionRuntime");
 // Compression trades interaction latency for a smaller inactive working set.
 // Keep the speed-first path as the default and expose compression for explicit
@@ -1023,6 +1025,9 @@ const engine = new BrushEngine(canvas, {
   mixedSceneEnabled: resolveMixedSceneEnabled(editorExtensionEngineOptions, true),
   vectorTextRoiCacheEnabled:
     editorExtensionEngineOptions.vectorTextRoiCacheEnabled ?? vectorTextRoiCacheEnabled,
+  vectorGpuResourceSharingEnabled:
+    editorExtensionEngineOptions.vectorGpuResourceSharingEnabled
+    ?? vectorGpuResourceSharingEnabled,
   layerColdCompressionEnabled: layerColdCompressionRequested,
   // Le notifiche restano su richiesta esplicita: ora che la compressione gira
   // sempre, annunciare ogni livello compresso sarebbe rumore, non informazione.
