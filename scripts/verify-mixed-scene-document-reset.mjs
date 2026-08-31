@@ -29,7 +29,7 @@ assert.match(resetSource, /geometryByNodeId\.clear\(\)/);
 assert.match(resetSource, /displayedDrawsByNodeKey\.clear\(\)/);
 assert.match(resetSource, /displayedMetricsByNodeKey\.clear\(\)/);
 assert.match(resetSource, /renderedTextRunKeys\.clear\(\)/);
-assert.match(resetSource, /effectCompiler\.retainSlots\(new Set<string>\(\)\)/);
+assert.match(resetSource, /effectCompiler\.resetForDocument\(\)/);
 assert.match(resetSource, /clearVectorTextFallbackPresentation\(\)/);
 assert.match(resetSource, /clearVectorTextPresentation\(\)/);
 assert.match(resetSource, /pruneVectorTextGpuMeshes\(new Set<string>\(\)\)/);
@@ -202,8 +202,8 @@ function createHarness(options = {}) {
   };
   const fontGeometry = { global: "font-registry" };
   const effectCompiler = {
-    retainSlots(slots) {
-      calls.retainedSlots.push([...slots]);
+    resetForDocument() {
+      calls.retainedSlots.push([]);
     },
   };
   const effectReadyIdleTimer = browserState.browser.setTimeout(() => {});

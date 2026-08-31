@@ -34,6 +34,10 @@ import {
   VECTOR_TEXT_FONT_MANIFEST,
 } from "../src/vector-text-font-geometry.ts";
 import {
+  cloneVectorSvgNode,
+  cloneVectorSvgNodeWithSharedDocument,
+} from "../src/scene-svg-model.ts";
+import {
   vectorPathToQuadraticContours,
 } from "../src/vector-text-curve-utils.ts";
 import {
@@ -56,8 +60,12 @@ import {
 import {
   VECTOR_TEXT_SLUG_COMPILER_VERSION,
   buildVectorTextSlugData,
-  vectorTextPathRevision,
 } from "../src/vector-text-slug.ts";
+import {
+  VectorPathIdentityPool,
+  fingerprintVectorPath,
+  vectorPathsEqualBitwise,
+} from "../src/vector-path-identity.ts";
 import {
   VECTOR_TEXT_SINGLE_SHADOW_BLUR_MAXIMUM,
   VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY,
@@ -157,6 +165,7 @@ import {
 
 const read = (relativePath) =>
   fs.readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
+const vectorPathIdentityPool = new VectorPathIdentityPool();
 
 const engineSource = readEngineSource();
 const controllerSource = read("src/mixed-scene-controller.ts");
@@ -1055,7 +1064,10 @@ const loweredDistortBlurPath = warpVectorTextPathFreeForm(
   distortSourceBounds,
   loweredBottomMiddle,
 );
-const loweredDistortBlurSlug = buildVectorTextSlugData(loweredDistortBlurPath);
+const loweredDistortBlurSlug = buildVectorTextSlugData(
+  loweredDistortBlurPath,
+  vectorPathIdentityPool.intern(loweredDistortBlurPath),
+);
 const loweredDistortBlurAbsoluteBounds = {
   left: loweredDistortBlurSlug.left + loweredDistortBlurSlug.originX,
   top: loweredDistortBlurSlug.top + loweredDistortBlurSlug.originY,
@@ -1593,8 +1605,218 @@ assert.ok(meshTriangleArea(blockOutlineMesh) > 0);
 
 // Slug: un'intera shape, texture compatte/allineate e winding analitico.
 const slugPath = polygonPath([outer, reverseRing(inner)]);
-const slug = buildVectorTextSlugData(slugPath);
-assert.equal(slug.revision, vectorTextPathRevision(slugPath));
+const slugGeometryIdentity = vectorPathIdentityPool.intern(slugPath);
+const slug = buildVectorTextSlugData(slugPath, slugGeometryIdentity);
+assert.equal(
+  slug.revision,
+  `${VECTOR_TEXT_SLUG_COMPILER_VERSION}:${slugGeometryIdentity}`,
+);
+const clonedSlugPath = {
+  verbs: slugPath.verbs.slice(),
+  coords: slugPath.coords.slice(),
+  contourOffsets: slugPath.contourOffsets.slice(),
+  fillRule: slugPath.fillRule,
+};
+assert.equal(vectorPathsEqualBitwise(slugPath, clonedSlugPath), true);
+assert.equal(
+  vectorPathIdentityPool.intern(clonedSlugPath),
+  slugGeometryIdentity,
+);
+assert.equal(fingerprintVectorPath(slugPath).length, 32);
+let unchangedFingerprintCalls = 0;
+const objectIdentityPool = new VectorPathIdentityPool((path) => {
+  unchangedFingerprintCalls += 1;
+  return fingerprintVectorPath(path);
+});
+const objectIdentity = objectIdentityPool.intern(slugPath);
+for (let index = 0; index < 64; index += 1) {
+  assert.equal(objectIdentityPool.intern(slugPath), objectIdentity);
+}
+assert.equal(
+  unchangedFingerprintCalls,
+  1,
+  "an unchanged published path must use the constant-time object fast path",
+);
+const forcedCollisionPool = new VectorPathIdentityPool(() => "forced");
+const forcedOriginalIdentity = forcedCollisionPool.intern(slugPath);
+assert.equal(
+  forcedCollisionPool.intern(clonedSlugPath),
+  forcedOriginalIdentity,
+);
+const changedCoordinatePath = {
+  ...clonedSlugPath,
+  coords: clonedSlugPath.coords.slice(),
+};
+changedCoordinatePath.coords[0] += 0.000001;
+const changedCoordinateIdentity = forcedCollisionPool.intern(changedCoordinatePath);
+assert.notEqual(changedCoordinateIdentity, forcedOriginalIdentity);
+assert.match(changedCoordinateIdentity, /:entry-1$/);
+const changedContourPath = {
+  ...clonedSlugPath,
+  contourOffsets: new Uint32Array([
+    clonedSlugPath.contourOffsets[0] + 1,
+  ]),
+};
+assert.notEqual(
+  forcedCollisionPool.intern(changedContourPath),
+  forcedOriginalIdentity,
+);
+const changedVerbPath = {
+  ...clonedSlugPath,
+  verbs: clonedSlugPath.verbs.slice(),
+};
+changedVerbPath.verbs[0] ^= 1;
+assert.notEqual(
+  forcedCollisionPool.intern(changedVerbPath),
+  forcedOriginalIdentity,
+);
+const changedFillRulePath = { ...clonedSlugPath, fillRule: 1 };
+assert.notEqual(
+  forcedCollisionPool.intern(changedFillRulePath),
+  forcedOriginalIdentity,
+);
+const mutablePath = {
+  ...clonedSlugPath,
+  coords: clonedSlugPath.coords.slice(),
+};
+const mutablePathIdentity = forcedCollisionPool.intern(mutablePath);
+mutablePath.coords[0] += 0.25;
+forcedCollisionPool.invalidate(mutablePath);
+assert.notEqual(
+  forcedCollisionPool.intern(mutablePath),
+  mutablePathIdentity,
+  "an invalidated in-place coordinate mutation must receive a new identity",
+);
+mutablePath.coords[0] -= 0.25;
+forcedCollisionPool.invalidate(mutablePath);
+assert.equal(
+  forcedCollisionPool.intern(mutablePath),
+  mutablePathIdentity,
+  "restoring the exact bytes must recover the retained identity",
+);
+
+const boundedIdentityPool = new VectorPathIdentityPool(
+  () => "bounded",
+  2,
+  Number.MAX_SAFE_INTEGER,
+);
+const boundedFirstPath = {
+  ...clonedSlugPath,
+  coords: clonedSlugPath.coords.slice(),
+};
+const boundedSecondPath = {
+  ...clonedSlugPath,
+  coords: clonedSlugPath.coords.slice(),
+};
+boundedSecondPath.coords[0] += 1;
+const boundedThirdPath = {
+  ...clonedSlugPath,
+  coords: clonedSlugPath.coords.slice(),
+};
+boundedThirdPath.coords[0] += 2;
+const boundedFirstIdentity = boundedIdentityPool.intern(boundedFirstPath);
+const boundedSecondIdentity = boundedIdentityPool.intern(boundedSecondPath);
+assert.equal(boundedIdentityPool.intern(boundedFirstPath), boundedFirstIdentity);
+boundedIdentityPool.intern(boundedThirdPath);
+assert.equal(boundedIdentityPool.retainedEntryCount(), 2);
+assert.equal(
+  boundedIdentityPool.intern(boundedSecondPath),
+  boundedSecondIdentity,
+  "an existing path object must keep its identity after snapshot eviction",
+);
+assert.equal(boundedIdentityPool.retainedEntryCount(), 2);
+const boundedSecondClone = {
+  ...boundedSecondPath,
+  coords: boundedSecondPath.coords.slice(),
+};
+assert.notEqual(
+  boundedIdentityPool.intern(boundedSecondClone),
+  boundedSecondIdentity,
+  "a new clone must not reuse an evicted, unverifiable identity",
+);
+assert.equal(boundedIdentityPool.retainedEntryCount(), 2);
+
+const retainedPathBytes = clonedSlugPath.verbs.byteLength
+  + clonedSlugPath.coords.byteLength
+  + clonedSlugPath.contourOffsets.byteLength;
+const byteBoundedIdentityPool = new VectorPathIdentityPool(
+  () => "byte-bounded",
+  8,
+  retainedPathBytes,
+);
+byteBoundedIdentityPool.intern(boundedFirstPath);
+byteBoundedIdentityPool.intern(boundedSecondPath);
+assert.equal(byteBoundedIdentityPool.retainedEntryCount(), 1);
+assert.ok(byteBoundedIdentityPool.retainedByteLength() <= retainedPathBytes);
+const oversizedIdentityPool = new VectorPathIdentityPool(
+  () => "oversized",
+  8,
+  retainedPathBytes - 1,
+);
+const oversizedIdentity = oversizedIdentityPool.intern(boundedFirstPath);
+assert.equal(oversizedIdentityPool.intern(boundedFirstPath), oversizedIdentity);
+assert.equal(oversizedIdentityPool.retainedEntryCount(), 0);
+assert.equal(oversizedIdentityPool.retainedByteLength(), 0);
+
+const manyPaintPaths = Array.from({ length: 300 }, (_, index) => ({
+  ...clonedSlugPath,
+  coords: (() => {
+    const coords = clonedSlugPath.coords.slice();
+    coords[0] += index;
+    return coords;
+  })(),
+}));
+const manyPaintDocument = {
+  viewBox: null,
+  bounds: { left: 0, top: 0, right: 1, bottom: 1 },
+  paints: manyPaintPaths.map((path, index) => ({
+    id: index,
+    color: "#000000",
+    opacity: 1,
+    fillRule: 0,
+    path,
+    revision: `paint-${index}`,
+  })),
+  silhouettePath: manyPaintPaths[0],
+};
+const manyPaintNode = {
+  id: 1,
+  kind: "svg",
+  document: manyPaintDocument,
+  paintColors: [],
+  scale: 1,
+  scaleX: 1,
+  scaleY: 1,
+};
+const manyPaintIdentityPool = new VectorPathIdentityPool(
+  fingerprintVectorPath,
+  256,
+  Number.MAX_SAFE_INTEGER,
+);
+const firstManyPaintIdentities = manyPaintPaths.map(
+  (path) => manyPaintIdentityPool.intern(path),
+);
+const runtimeNodeClone = cloneVectorSvgNodeWithSharedDocument(manyPaintNode);
+assert.equal(runtimeNodeClone.document, manyPaintDocument);
+assert.deepEqual(
+  runtimeNodeClone.document.paints.map((paint) => (
+    manyPaintIdentityPool.intern(paint.path)
+  )),
+  firstManyPaintIdentities,
+  "trusted runtime snapshots must preserve more identities than the snapshot cache",
+);
+assert.equal(manyPaintIdentityPool.retainedEntryCount(), 256);
+const defensiveNodeClone = cloneVectorSvgNode(manyPaintNode);
+assert.notEqual(defensiveNodeClone.document, manyPaintDocument);
+assert.notEqual(
+  defensiveNodeClone.document.paints[0].path,
+  manyPaintDocument.paints[0].path,
+);
+forcedCollisionPool.clear();
+assert.notEqual(
+  forcedCollisionPool.intern(slugPath),
+  forcedOriginalIdentity,
+);
 assert.equal(slug.curveCount, 8);
 for (const texture of [slug.curveTexture, slug.bandTexture]) {
   assert.ok(texture.width >= 16);
@@ -1607,7 +1829,13 @@ assert.ok(slug.verticalBandCount >= 16 && slug.verticalBandCount <= 255);
 assert.ok(slug.maximumHorizontalCandidates <= 64);
 assert.ok(slug.maximumVerticalCandidates <= 64);
 assert.throws(
-  () => buildVectorTextSlugData({ ...slugPath, fillRule: 1 }),
+  () => {
+    const evenOddPath = { ...slugPath, fillRule: 1 };
+    return buildVectorTextSlugData(
+      evenOddPath,
+      vectorPathIdentityPool.intern(evenOddPath),
+    );
+  },
   /EvenOdd/,
 );
 assert.match(slugSource, /const sourceCurves = contours\.flatMap/);
@@ -1797,7 +2025,7 @@ const controllerInitializeSource = controllerSource.slice(
 );
 assert.match(
   controllerInitializeSource,
-  /const initialSnapshot = this\.host\.getMixedSceneSnapshot\(\);[\s\S]*if \(snapshotContainsText\(initialSnapshot\)\) \{\s*await this\.prepareFontGeometry\(\);\s*\}/,
+  /const initialSnapshot = this\.runtimeSceneSnapshot\(\);[\s\S]*if \(snapshotContainsText\(initialSnapshot\)\) \{\s*await this\.prepareFontGeometry\(\);\s*\}/,
   "restored documents with text must prepare fonts before their first scene sync",
 );
 assert.doesNotMatch(
@@ -1838,7 +2066,31 @@ assert.match(
   "a newly restored text scene must wait for fonts before geometry or rendering",
 );
 assert.match(controllerSource, /private deferTextSceneSync\(\): void/);
-assert.match(controllerSource, /const latestSnapshot = this\.host\.getMixedSceneSnapshot\(\)/);
+assert.match(
+  controllerSource,
+  /private runtimeSceneSnapshot\(\): MixedSceneSnapshot \| null \{[\s\S]{0,160}getMixedSceneRuntimeSnapshot\?\.\(\)[\s\S]{0,80}getMixedSceneSnapshot\(\)/,
+);
+assert.match(
+  controllerContractSource,
+  /getMixedSceneRuntimeSnapshot\?\(\): MixedSceneSnapshot \| null/,
+);
+assert.match(
+  engineSource,
+  /getMixedSceneRuntimeSnapshot\(\): MixedSceneSnapshot \| null \{\s*return this\.createMixedSceneSnapshot\(true\);/,
+);
+assert.match(
+  engineSource,
+  /const runtimeObserver = engine\.callbacks\.onMixedSceneRuntimeChange;[\s\S]{0,240}engine\.getMixedSceneRuntimeSnapshot\(\)[\s\S]{0,260}runtimeObserver\(runtimeSnapshot\)/,
+  "the trusted runtime observer must receive the immutable shared snapshot",
+);
+assert.match(
+  engineSource,
+  /const publicObserver = engine\.callbacks\.onMixedSceneChange;[\s\S]{0,240}engine\.getMixedSceneSnapshot\(\)[\s\S]{0,260}publicObserver\(defensiveSnapshot\)/,
+  "the public observer must receive a defensive snapshot",
+);
+assert.match(mainSource, /onMixedSceneRuntimeChange\(snapshot\) \{/);
+assert.doesNotMatch(mainSource, /onMixedSceneChange\(snapshot\) \{/);
+assert.match(controllerSource, /const latestSnapshot = this\.runtimeSceneSnapshot\(\)/);
 assert.match(controllerSource, /this\.documentGeneration !== generation/);
 assert.match(fontGeometrySource, /private preloadPromise: Promise<void> \| null = null/);
 assert.match(fontGeometrySource, /get isPreloaded\(\): boolean/);
@@ -2141,11 +2393,29 @@ assert.match(clientSource, /matchesRequestedLod: currentAlreadySuitable/);
 assert.match(controllerSource, /!requireRequestedLod \|\| result\.matchesRequestedLod/);
 assert.match(clientSource, /private readonly pinnedSlots = new Set<string>\(\)/);
 assert.match(clientSource, /!liveSlots\.has\(slot\) && !this\.pinnedSlots\.has\(slot\)/);
+assert.match(
+  clientSource,
+  /resetForDocument\(\): void \{[\s\S]*pinnedSlots\.clear\(\)[\s\S]*pathIdentities\.clear\(\)/,
+);
 assert.match(controllerSource, /slotNamespace = pinForRasterization \? "svg-raster" : "svg"/);
 assert.match(controllerSource, /this\.effectCompiler\.pinSlot\(slotKey\)/);
 assert.match(controllerSource, /finally \{[\s\S]*releasePinnedSlot\(slot\)/);
-assert.doesNotMatch(clientSource, /displayed\.sourceRevision !== sourceRevision/);
+assert.match(clientSource, /const geometryIdentity = this\.geometryIdentity\(path\)/);
+assert.doesNotMatch(
+  clientSource,
+  /meshForSlot\([\s\S]{0,180}sourceRevision/,
+);
+assert.doesNotMatch(controllerSource, /node\.document\.silhouetteRevision/);
+assert.doesNotMatch(controllerSource, /paint\.revision/);
 assert.match(clientSource, /MAXIMUM_READY_EFFECT_CACHE_ENTRIES = 48/);
+assert.match(
+  engineSource,
+  /vectorGpuResourceSharingEnabled\s*=\s*options\.vectorGpuResourceSharingEnabled !== false/,
+);
+assert.match(
+  mainSource,
+  /pageSearchParams\.get\("vectorGpuResourceSharing"\) !== "0"/,
+);
 const sharedMeshRevision = { revision: "mesh-revision" };
 const sharedSlugRevision = { revision: "slug-revision" };
 assert.equal(vectorTextGpuResourceKey({
@@ -2222,7 +2492,7 @@ for (let index = 0; index < 64; index += 1) {
     slotKey: `slot-${index}`,
     cacheKey: key,
     effectIdentity: `identity-${index}`,
-    sourceRevision: `revision-${index}`,
+    geometryIdentity: `identity-${index}`,
     lodBucket: 0,
     mesh: null,
   });
@@ -2245,7 +2515,7 @@ for (let index = 0; index < 5; index += 1) {
     slotKey: `lod-slot-${index}`,
     cacheKey: key,
     effectIdentity: "shared-identity",
-    sourceRevision: "shared-revision",
+    geometryIdentity: "shared-identity",
     lodBucket: index,
     mesh: null,
   });
@@ -2259,6 +2529,188 @@ lodReadyCacheClient.pruneReadyLods("shared-identity", 0);
 assert.equal(lodReadyCacheClient.readyByKey.size, 3);
 assert.equal(lodReadyCacheClient.readyByKey.has("lod-ready-0"), true);
 assert.equal(lodReadyCacheClient.readyByKey.has("lod-ready-4"), true);
+
+// Worker path ownership: a newly registered path must become pending or queued
+// before bounded pruning can consider it for release. The fake worker processes
+// registration state in message order and drains the production latest-only
+// queue one response at a time.
+class VectorEffectQueueTestWorker {
+  static instances = [];
+
+  constructor() {
+    this.messages = [];
+    this.registeredRevisions = new Set();
+    this.pendingBuilds = [];
+    this.missingBuildRevisions = [];
+    this.onmessage = null;
+    this.onerror = null;
+    this.terminated = false;
+    VectorEffectQueueTestWorker.instances.push(this);
+  }
+
+  postMessage(message) {
+    assert.equal(this.terminated, false, "a terminated worker must not receive messages");
+    this.messages.push(message);
+    if (message.type === "register-path") {
+      this.registeredRevisions.add(message.revision);
+      return;
+    }
+    if (message.type === "release-path") {
+      this.registeredRevisions.delete(message.revision);
+      return;
+    }
+    const pathIsRegistered = this.registeredRevisions.has(message.revision);
+    if (!pathIsRegistered) {
+      this.missingBuildRevisions.push(message.revision);
+    }
+    this.pendingBuilds.push({ message, pathIsRegistered });
+  }
+
+  respondToNextBuild() {
+    const pending = this.pendingBuilds.shift();
+    assert.ok(pending, "the serialized worker queue must expose its next build");
+    assert.ok(this.onmessage, "the client must install the worker response handler");
+    this.onmessage({
+      data: pending.pathIsRegistered
+        ? {
+          type: "effect-ready",
+          requestId: pending.message.requestId,
+          cacheKey: pending.message.cacheKey,
+          mesh: null,
+        }
+        : {
+          type: "effect-failed",
+          requestId: pending.message.requestId,
+          cacheKey: pending.message.cacheKey,
+          message: `Path ${pending.message.revision} was released before its build.`,
+        },
+    });
+  }
+
+  terminate() {
+    this.terminated = true;
+    this.registeredRevisions.clear();
+    this.pendingBuilds.length = 0;
+  }
+}
+
+const queueTestWorkerDescriptor = Object.getOwnPropertyDescriptor(globalThis, "Worker");
+const queueTestWindowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+Object.defineProperty(globalThis, "Worker", {
+  configurable: true,
+  writable: true,
+  value: VectorEffectQueueTestWorker,
+});
+Object.defineProperty(globalThis, "window", {
+  configurable: true,
+  writable: true,
+  value: {
+    setTimeout: (...args) => globalThis.setTimeout(...args),
+    clearTimeout: (timer) => globalThis.clearTimeout(timer),
+  },
+});
+try {
+  const queuedPathCount = 129;
+  const queueClient = new VectorTextEffectCompilerClient(() => {});
+  for (let index = 0; index < queuedPathCount; index += 1) {
+    const coords = sourceRectangle.coords.slice();
+    coords[0] += index / 1024;
+    queueClient.meshForSlot(
+      `queue-slot-${index}`,
+      {
+        ...sourceRectangle,
+        coords,
+        verbs: sourceRectangle.verbs.slice(),
+        contourOffsets: sourceRectangle.contourOffsets.slice(),
+      },
+      lod,
+      { kind: "source-fill" },
+      true,
+    );
+  }
+  const queueWorker = VectorEffectQueueTestWorker.instances.at(-1);
+  assert.ok(queueWorker);
+  assert.equal(
+    queueWorker.registeredRevisions.size,
+    queuedPathCount,
+    "all protected queued paths must remain registered before the first build completes",
+  );
+  for (let completed = 0; completed < queuedPathCount; completed += 1) {
+    assert.equal(
+      queueWorker.pendingBuilds.length,
+      1,
+      "the compiler client must keep exactly one worker build in flight",
+    );
+    queueWorker.respondToNextBuild();
+  }
+  assert.deepEqual(queueWorker.missingBuildRevisions, []);
+  assert.equal(
+    queueWorker.messages.filter((message) => message.type === "register-path").length,
+    queuedPathCount,
+  );
+  assert.equal(
+    queueWorker.messages.filter((message) => message.type === "build-effect").length,
+    queuedPathCount,
+  );
+  assert.equal(queueClient.diagnostics().pendingJobs, 0);
+  assert.equal(queueClient.diagnostics().failedJobs, 0);
+  assert.equal(queueClient.diagnostics().readyJobs, queuedPathCount);
+  queueClient.resetForDocument();
+  assert.equal(queueWorker.terminated, true);
+
+  const resetClient = new VectorTextEffectCompilerClient(() => {});
+  for (let index = 0; index < 2; index += 1) {
+    const coords = sourceRectangle.coords.slice();
+    coords[0] += 10 + index;
+    resetClient.meshForSlot(
+      `reset-slot-${index}`,
+      {
+        ...sourceRectangle,
+        coords,
+        verbs: sourceRectangle.verbs.slice(),
+        contourOffsets: sourceRectangle.contourOffsets.slice(),
+      },
+      lod,
+      { kind: "source-fill" },
+      true,
+    );
+  }
+  const resetWorker = VectorEffectQueueTestWorker.instances.at(-1);
+  assert.ok(resetWorker);
+  assert.notEqual(resetWorker, queueWorker);
+  assert.equal(resetClient.diagnostics().registeredPaths, 2);
+  assert.equal(resetClient.diagnostics().pendingJobs, 2);
+  const revisionBeforeReset = resetClient.resourceRevisionValue();
+  const resetWaiter = resetClient.waitForResourceReady(revisionBeforeReset, 1_000);
+  resetClient.resetForDocument();
+  const revisionAfterReset = await resetWaiter;
+  assert.ok(revisionAfterReset > revisionBeforeReset);
+  assert.equal(resetWorker.terminated, true);
+  assert.equal(resetWorker.onmessage, null);
+  assert.equal(resetWorker.onerror, null);
+  assert.equal(resetWorker.registeredRevisions.size, 0);
+  assert.equal(resetClient.worker, null);
+  assert.equal(resetClient.resourceWaiters.size, 0);
+  assert.deepEqual(resetClient.diagnostics(), {
+    registeredPaths: 0,
+    pendingJobs: 0,
+    readyJobs: 0,
+    displayedSlots: 0,
+    failedJobs: 0,
+    lastError: null,
+  });
+} finally {
+  if (queueTestWorkerDescriptor) {
+    Object.defineProperty(globalThis, "Worker", queueTestWorkerDescriptor);
+  } else {
+    delete globalThis.Worker;
+  }
+  if (queueTestWindowDescriptor) {
+    Object.defineProperty(globalThis, "window", queueTestWindowDescriptor);
+  } else {
+    delete globalThis.window;
+  }
+}
 assert.match(clientSource, /MAXIMUM_REGISTERED_PATHS = 128/);
 assert.match(clientSource, /protectedRevisions/);
 assert.match(clientSource, /type: "release-path"/);

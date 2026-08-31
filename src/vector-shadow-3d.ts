@@ -3,10 +3,14 @@ export const SHADOW_MODE_3D = '3d';
 export const SHADOW_MODE_SINGLE = 'single';
 
 export interface Shadow3dPathData {
-  verbs: Uint8Array;
-  coords: Float64Array;
-  contourOffsets: Uint32Array;
-  fillRule: number;
+  /**
+   * Path storage is copy-on-write after publication to scene/runtime caches.
+   * Geometry edits create a new path object instead of mutating these arrays.
+   */
+  readonly verbs: Uint8Array;
+  readonly coords: Float64Array;
+  readonly contourOffsets: Uint32Array;
+  readonly fillRule: number;
 }
 
 export interface Shadow3dValue {

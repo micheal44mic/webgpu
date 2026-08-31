@@ -1228,7 +1228,11 @@ export function parseVectorSvg(source: string, sourceName = "import.svg"): Vecto
   if (rawPaints.length === 0) throw new Error("The SVG contains no visible vector fills.");
   const fillRules = new Set(rawPaints.map((paint) => paint.fillRule));
   if (fillRules.size > 1) throw new Error("Mixed SVG fill rules are not yet supported within one object.");
-  const rawSilhouette = mergeVectorTextPaths(rawPaints.map((paint) => paint.path)); rawSilhouette.fillRule = rawPaints[0].fillRule;
+  const mergedSilhouette = mergeVectorTextPaths(rawPaints.map((paint) => paint.path));
+  const rawSilhouette = {
+    ...mergedSilhouette,
+    fillRule: rawPaints[0].fillRule,
+  };
   const rawBounds = vectorTextPathBounds(rawSilhouette); const centerX = (rawBounds.left + rawBounds.right) * 0.5; const centerY = (rawBounds.top + rawBounds.bottom) * 0.5;
   const centeredRawPaints = rawPaints.map((paint) => ({
     ...paint,

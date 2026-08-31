@@ -69,7 +69,6 @@ import {
 } from "./vector-text-effect-client";
 import {
   buildVectorTextSlugData,
-  vectorTextPathRevision,
   type VectorTextSlugData,
 } from "./vector-text-slug";
 import {
@@ -216,7 +215,7 @@ interface TextMetricsBox {
 interface CachedTextGeometry {
   outlineKey: string;
   outline: VectorTextOutlineGeometry;
-  sourceRevision: string;
+  geometryIdentity: string;
   slug: VectorTextSlugData;
 }
 
@@ -495,11 +494,16 @@ export class MixedSceneController {
     return this.sceneOperationBusy;
   }
 
+  private runtimeSceneSnapshot(): MixedSceneSnapshot | null {
+    return this.host.getMixedSceneRuntimeSnapshot?.()
+      ?? this.host.getMixedSceneSnapshot();
+  }
+
   async initialize(): Promise<void> {
     this.presentationCanvas.width = 1;
     this.presentationCanvas.height = 1;
     this.presentationCanvas.hidden = true;
-    const initialSnapshot = this.host.getMixedSceneSnapshot();
+    const initialSnapshot = this.runtimeSceneSnapshot();
     if (!initialSnapshot) {
       throw new Error("The engine did not create the mixed scene.");
     }
@@ -597,7 +601,7 @@ export class MixedSceneController {
     this.displayedDrawsByNodeKey.clear();
     this.displayedMetricsByNodeKey.clear();
     this.renderedTextRunKeys.clear();
-    this.effectCompiler.retainSlots(new Set<string>());
+    this.effectCompiler.resetForDocument();
 
     this.effectReadyRenderPending = false;
     this.sceneOperationRenderDeferred = false;
@@ -682,7 +686,7 @@ export class MixedSceneController {
     this.rasterTransformToolMode = mode;
     const modeSwitchGeneration = ++this.rasterTransformModeSwitchGeneration;
     if (active) {
-      const latestSnapshot = this.host.getMixedSceneSnapshot();
+      const latestSnapshot = this.runtimeSceneSnapshot();
       if (latestSnapshot) this.syncScene(latestSnapshot);
     }
     this.transformToolActive = active;
@@ -790,7 +794,7 @@ export class MixedSceneController {
   }
 
   private rasterTransformSessionStillOpen(): boolean {
-    const snapshot = this.host.getMixedSceneSnapshot();
+    const snapshot = this.runtimeSceneSnapshot();
     if (!snapshot) return false;
     const selected = snapshot.items.find((item) => item.key === snapshot.selectedKey);
     return selected?.kind === "raster" && selected.rasterTransform !== null;
@@ -1460,7 +1464,7 @@ export class MixedSceneController {
     if (this.sceneOperationBusy || this.transformSessionOpen) {
       throw new Error("Finish the current vector operation first.");
     }
-    const initialScene = this.host.getMixedSceneSnapshot();
+    const initialScene = this.runtimeSceneSnapshot();
     const initialHistory = this.host.getHistoryState();
     const initialRasters = initialScene?.items.filter((item) => item.kind === "raster") ?? [];
     if (
@@ -1484,7 +1488,7 @@ export class MixedSceneController {
       height: auditHeight,
     };
     const refreshScene = (): MixedSceneSnapshot => {
-      const snapshot = this.host.getMixedSceneSnapshot();
+      const snapshot = this.runtimeSceneSnapshot();
       if (!snapshot) throw new Error("The mixed scene is unavailable during the test.");
       this.syncScene(snapshot);
       return snapshot;
@@ -2537,7 +2541,7 @@ export class MixedSceneController {
       const view = this.vectorRasterView();
       for (;;) {
         const revision = this.effectCompiler.resourceRevisionValue();
-        const snapshot = this.host.getMixedSceneSnapshot();
+        const snapshot = this.runtimeSceneSnapshot();
         if (!snapshot) throw new Error("The mixed scene is unavailable.");
         const firstIndex = snapshot.items.findIndex((item) => item.key === keys[0]);
         const liveKeys = firstIndex >= 0
@@ -3183,7 +3187,7 @@ export class MixedSceneController {
         || this.deferredTextSyncGeneration !== generation
       ) return;
       this.deferredTextSyncGeneration = null;
-      const latestSnapshot = this.host.getMixedSceneSnapshot();
+      const latestSnapshot = this.runtimeSceneSnapshot();
       if (latestSnapshot) this.syncScene(latestSnapshot);
     }).catch((error) => {
       if (
@@ -3269,12 +3273,12 @@ export class MixedSceneController {
         distortPoints: node.distortPoints,
       },
     );
-    const sourceRevision = vectorTextPathRevision(outline.pathData);
+    const geometryIdentity = this.effectCompiler.geometryIdentity(outline.pathData);
     const created: CachedTextGeometry = {
       outlineKey,
       outline,
-      sourceRevision,
-      slug: buildVectorTextSlugData(outline.pathData, sourceRevision),
+      geometryIdentity,
+      slug: buildVectorTextSlugData(outline.pathData, geometryIdentity),
     };
     this.geometryByNodeId.set(node.id, created);
     return created;
@@ -3294,7 +3298,7 @@ export class MixedSceneController {
     geometry: CachedTextGeometry,
     view: VectorTextViewState,
     slotName: string,
-    effect: Parameters<VectorTextEffectCompilerClient["meshForSlot"]>[4],
+    effect: Parameters<VectorTextEffectCompilerClient["meshForSlot"]>[3],
     liveSlots: Set<string>,
     pinForRasterization = false,
   ): VectorTextEffectMeshResult {
@@ -3304,7 +3308,6 @@ export class MixedSceneController {
     if (pinForRasterization) this.effectCompiler.pinSlot(slotKey);
     return this.effectCompiler.meshForSlot(
       slotKey,
-      geometry.sourceRevision,
       geometry.outline.pathData,
       this.effectLodForNode(node, view),
       effect,
@@ -3314,11 +3317,10 @@ export class MixedSceneController {
 
   private effectMeshForSvgPath(
     node: Readonly<VectorSvgNode>,
-    sourceRevision: string,
     path: VectorSvgNode["document"]["silhouettePath"],
     view: VectorTextViewState,
     slotName: string,
-    effect: Parameters<VectorTextEffectCompilerClient["meshForSlot"]>[4],
+    effect: Parameters<VectorTextEffectCompilerClient["meshForSlot"]>[3],
     liveSlots: Set<string>,
     pinForRasterization = false,
   ): VectorTextEffectMeshResult {
@@ -3328,7 +3330,6 @@ export class MixedSceneController {
     if (pinForRasterization) this.effectCompiler.pinSlot(slotKey);
     return this.effectCompiler.meshForSlot(
       slotKey,
-      sourceRevision,
       path,
       this.effectLodForNode(node, view),
       effect,
@@ -3430,7 +3431,6 @@ export class MixedSceneController {
     if (needsSilhouetteMesh) {
       const silhouetteResult = this.effectMeshForSvgPath(
         node,
-        node.document.silhouetteRevision,
         node.document.silhouettePath,
         view,
         "silhouette-fill",
@@ -3471,7 +3471,6 @@ export class MixedSceneController {
       if (node.blockShadowOutlineWidth > 0) {
         const result = this.effectMeshForSvgPath(
           node,
-          node.document.silhouetteRevision,
           node.document.silhouettePath,
           view,
           "block-outline",
@@ -3499,7 +3498,6 @@ export class MixedSceneController {
       if (Math.hypot(vector.x, vector.y) > Number.EPSILON) {
         const result = this.effectMeshForSvgPath(
           node,
-          node.document.silhouetteRevision,
           node.document.silhouettePath,
           view,
           "block",
@@ -3535,7 +3533,6 @@ export class MixedSceneController {
       const slot = fuseOutlineAndFill ? "outline-fill" : "outline";
       const result = this.effectMeshForSvgPath(
         node,
-        node.document.silhouetteRevision,
         node.document.silhouettePath,
         view,
         slot,
@@ -3565,7 +3562,6 @@ export class MixedSceneController {
         const paint = node.document.paints[index];
         const result = this.effectMeshForSvgPath(
           node,
-          paint.revision,
           paint.path,
           view,
           `paint:${index}:fill`,
@@ -3682,7 +3678,7 @@ export class MixedSceneController {
     const blurKey = [
       "vector-text-gpu-blur-v1",
       node.id,
-      geometry.sourceRevision,
+      geometry.geometryIdentity,
       node.singleShadowBlur.toFixed(4),
       plan.width,
       plan.height,
@@ -3782,7 +3778,7 @@ export class MixedSceneController {
     const blurKey = [
       "vector-text-gpu-blur-v1",
       node.id,
-      geometry.sourceRevision,
+      geometry.geometryIdentity,
       node.innerShadowBlur.toFixed(4),
       plan.width,
       plan.height,

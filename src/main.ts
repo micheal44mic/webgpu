@@ -586,8 +586,10 @@ const bevelBoundingFieldEnabled = pageSearchParams.get("bevelField") === "bbox";
 // Same-build A/B escape hatch: ROI is production-default, `vectorTextRoi=0`
 // restores the previous full-viewport run textures for local measurements.
 const vectorTextRoiCacheEnabled = pageSearchParams.get("vectorTextRoi") !== "0";
+// Same-build A/B escape hatch: immutable geometry sharing is production-default;
+// `vectorGpuResourceSharing=0` restores the legacy per-node GPU resources.
 const vectorGpuResourceSharingEnabled =
-  pageSearchParams.get("vectorGpuResourceSharing") === "1";
+  pageSearchParams.get("vectorGpuResourceSharing") !== "0";
 const layerColdCompressionMode = pageSearchParams.get("layerCompressionRuntime");
 // Compression trades interaction latency for a smaller inactive working set.
 // Keep the speed-first path as the default and expose compression for explicit
@@ -972,7 +974,7 @@ const engine = new BrushEngine(canvas, {
     mobileToolSettingsSheet?.syncOpenState();
     syncMobileToolsMenuState();
   },
-  onMixedSceneChange(snapshot) {
+  onMixedSceneRuntimeChange(snapshot) {
     projectSessionController?.noteSceneSnapshot(snapshot);
     appDiagnosticsController?.recordSceneSnapshot(snapshot);
     requestMobileLayersRefresh();
@@ -998,7 +1000,7 @@ const engine = new BrushEngine(canvas, {
     syncActiveLayerControls();
     requestMobileLayersRefresh();
     layerPanelController?.ensureActiveThumbnail();
-    const mixedSnapshot = engine.getMixedSceneSnapshot();
+    const mixedSnapshot = engine.getMixedSceneRuntimeSnapshot();
     if (mixedSnapshot) {
       mixedSceneController?.syncScene(mixedSnapshot);
     }
@@ -3028,7 +3030,7 @@ function rebaseEditorAfterDocumentSwitch(): void {
   document.title = `M1M4.COM — ${engine.documentWidth}×${engine.documentHeight}`;
   historyState = engine.getHistoryState();
   historyControlsController.resetForDocument(historyState);
-  const snapshot = engine.getMixedSceneSnapshot();
+  const snapshot = engine.getMixedSceneRuntimeSnapshot();
   if (snapshot) mixedSceneController?.syncScene(snapshot);
   layerPanelController?.cancelTransientInteractions();
   requestMobileLayersRefresh();
@@ -3424,7 +3426,7 @@ async function initializeMixedSceneController(
       await controller.initialize();
       mixedSceneController = controller;
       canvasToolController?.syncVectorControllerState();
-      const snapshot = engine.getMixedSceneSnapshot();
+      const snapshot = engine.getMixedSceneRuntimeSnapshot();
       if (snapshot) controller.syncScene(snapshot);
       syncMobileToolsMenuState(snapshot);
       requestMobileLayersRefresh();

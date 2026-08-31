@@ -4888,10 +4888,27 @@ export function mixedSceneItemIsVisible(engine: BrushEngine, item: MixedSceneIte
 }
 
 export function publishMixedScene(engine: BrushEngine): void {
-  const snapshot = engine.createMixedSceneSnapshot();
-  if (snapshot) {
+  const runtimeObserver = engine.callbacks.onMixedSceneRuntimeChange;
+  if (runtimeObserver) {
+    const runtimeSnapshot = engine.getMixedSceneRuntimeSnapshot();
+    if (runtimeSnapshot) {
+      try {
+        runtimeObserver(runtimeSnapshot);
+      } catch (error) {
+        console.error(
+          "Internal mixed-scene observer ignored to preserve the transaction:",
+          error,
+        );
+      }
+    }
+  }
+
+  const publicObserver = engine.callbacks.onMixedSceneChange;
+  if (publicObserver) {
+    const defensiveSnapshot = engine.getMixedSceneSnapshot();
+    if (!defensiveSnapshot) return;
     try {
-      engine.callbacks.onMixedSceneChange?.(snapshot);
+      publicObserver(defensiveSnapshot);
     } catch (error) {
       console.error("Mixed-scene observer ignored to preserve the transaction:", error);
     }

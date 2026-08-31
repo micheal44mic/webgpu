@@ -87,6 +87,7 @@ import {
 } from "./scene-text-model";
 import {
   cloneVectorSvgNode,
+  cloneVectorSvgNodeWithSharedDocument,
   type VectorSvgNode,
   type VectorSvgNodeSeed,
 } from "./scene-svg-model";
@@ -1118,6 +1119,14 @@ interface ReleaseGpuTimingCaptureResources {
  * `encodeRasterStrokeUpdate`, `renderFrame` e i loro aiutanti per stamp) resta
  * deliberatamente qui: non va spostato per ridurre le righe.
  */
+interface BrushEngineRuntimeCallbacks extends EngineCallbacks {
+  /**
+   * Package-internal observer. The snapshot may share immutable document data
+   * with the engine and must never be exposed to an untrusted callback.
+   */
+  onMixedSceneRuntimeChange?: (snapshot: MixedSceneSnapshot) => void;
+}
+
 export class BrushEngine {
   get documentWidth(): number {
     return DOCUMENT_WIDTH;
@@ -1133,7 +1142,7 @@ export class BrushEngine {
   }
 
   readonly canvas: HTMLCanvasElement;
-  readonly callbacks: EngineCallbacks;
+  readonly callbacks: BrushEngineRuntimeCallbacks;
   readonly bevelBoundingFieldEnabled: boolean;
   readonly startupProgressPresentationYieldEnabled: boolean;
   readonly documentPipelineCompilationConcurrency: number | null;
@@ -2105,7 +2114,7 @@ export class BrushEngine {
 
   constructor(
     canvas: HTMLCanvasElement,
-    callbacks: EngineCallbacks = {},
+    callbacks: BrushEngineRuntimeCallbacks = {},
     adaptivePreviewCanvas: HTMLCanvasElement | null = null,
     options: BrushEngineOptions = {},
     selectionOverlayCanvas: HTMLCanvasElement | null = null,
@@ -2166,7 +2175,7 @@ export class BrushEngine {
     this.mixedSceneEnabled = resolveMixedSceneEnabled(options);
     this.vectorTextRoiCacheEnabled = options.vectorTextRoiCacheEnabled !== false;
     this.vectorGpuResourceSharingEnabled =
-      options.vectorGpuResourceSharingEnabled === true;
+      options.vectorGpuResourceSharingEnabled !== false;
     this.selectionOverlayCanvas = selectionOverlayCanvas;
     this.mixedSceneStack = this.mixedSceneEnabled
       ? new MixedSceneStack(this.layerStack.layers.map((record) => record.id))
@@ -3872,7 +3881,9 @@ export class BrushEngine {
     return this.activeStroke !== null || this.straightLineAdjustment !== null;
   }
 
-  createMixedSceneSnapshot(): MixedSceneSnapshot | null {
+  createMixedSceneSnapshot(
+    shareImmutableVectorDocuments = false,
+  ): MixedSceneSnapshot | null {
     const scene = this.mixedSceneStack;
     if (!scene) {
       return null;
@@ -3963,7 +3974,9 @@ export class BrushEngine {
           return {
             key: item.key,
             kind: item.kind,
-            svgNode: cloneVectorSvgNode(scene.svgById(item.svgNodeId)),
+            svgNode: shareImmutableVectorDocuments
+              ? cloneVectorSvgNodeWithSharedDocument(scene.svgById(item.svgNodeId))
+              : cloneVectorSvgNode(scene.svgById(item.svgNodeId)),
             clippingParentKey: scene.clippingParentKey(item.key),
           };
         }
@@ -3979,6 +3992,10 @@ export class BrushEngine {
 
   getMixedSceneSnapshot(): MixedSceneSnapshot | null {
     return this.createMixedSceneSnapshot();
+  }
+
+  getMixedSceneRuntimeSnapshot(): MixedSceneSnapshot | null {
+    return this.createMixedSceneSnapshot(true);
   }
 
   canPaintSelectedSceneItem(): boolean {

@@ -206,34 +206,18 @@ function buildBandLists(
   };
 }
 
-function stablePathRevision(path: Shadow3dPathData): string {
-  let hash = 2166136261;
-  const update = (value: number): void => {
-    hash = Math.imul(hash ^ value, 16777619);
-  };
-  for (const value of path.verbs) {
-    update(value);
-  }
-  const words = new Uint32Array(
-    path.coords.buffer,
-    path.coords.byteOffset,
-    path.coords.byteLength / 4,
-  );
-  for (const value of words) {
-    update(value);
-  }
-  update(Number(path.fillRule) | 0);
-  return `${hash >>> 0}`;
-}
-
-export function vectorTextPathRevision(path: Shadow3dPathData): string {
-  return `${VECTOR_TEXT_SLUG_COMPILER_VERSION}:${stablePathRevision(path)}`;
-}
-
 export function buildVectorTextSlugData(
   path: Shadow3dPathData,
-  revision = vectorTextPathRevision(path),
+  geometryIdentity: string,
 ): VectorTextSlugData {
+  const normalizedGeometryIdentity = geometryIdentity.trim();
+  if (!normalizedGeometryIdentity) {
+    throw new Error("The Slug source requires a runtime geometry identity.");
+  }
+  const revision = [
+    VECTOR_TEXT_SLUG_COMPILER_VERSION,
+    normalizedGeometryIdentity,
+  ].join(":");
   if (Number(path.fillRule) === 1) {
     throw new Error(
       "The Slug source accepts an OpenType NonZero path; EvenOdd must be canonicalized first.",

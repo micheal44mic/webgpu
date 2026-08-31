@@ -303,7 +303,10 @@ assert.doesNotMatch(
   "rotation updates must not leak non-transform node fields into transform history",
 );
 assert.match(shapeControllerSource, /sceneDocumentPixelCenteredFrame\(/);
-assert.match(svgImportSource, /rawSilhouette = mergeVectorTextPaths\(rawPaints\.map\(\(paint\) => paint\.path\)\)/);
+assert.match(
+  svgImportSource,
+  /mergedSilhouette = mergeVectorTextPaths\(rawPaints\.map\(\(paint\) => paint\.path\)\)[\s\S]{0,160}rawSilhouette = \{[\s\S]{0,100}\.\.\.mergedSilhouette/,
+);
 assert.doesNotMatch(rasterRuntimeSource, /scene-document-pixel-alignment/,
   "raster conversion must receive aligned scene geometry without shader-time snapping");
 assert.match(

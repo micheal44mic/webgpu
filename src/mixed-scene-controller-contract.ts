@@ -103,6 +103,8 @@ export interface MixedSceneHost {
   readonly layerSize: number;
   getVectorTextViewState(): VectorTextViewState;
   getMixedSceneSnapshot(): MixedSceneSnapshot | null;
+  /** Trusted runtime view that may share immutable vector documents. */
+  getMixedSceneRuntimeSnapshot?(): MixedSceneSnapshot | null;
   getHistoryState(): { actionCount: number; cursor: number };
   readLayerPixels(
     rect?: { x: number; y: number; width: number; height: number },

@@ -13,12 +13,13 @@ import {
   parseVectorSvg,
   type VectorSvgDocument,
 } from "../../vector-svg-import";
+import { VectorPathIdentityPool } from "../../vector-path-identity.ts";
 
 export type VectorBaselineProfile = "shared" | "unique";
 
-const VECTOR_BASELINE_REPORT_VERSION = 2;
+const VECTOR_BASELINE_REPORT_VERSION = 3;
 const VECTOR_BASELINE_STRATEGY =
-  "vector-baseline-64-svg-64-text-fit-cold-forced-warm-pan-zoom-v2" as const;
+  "vector-baseline-64-svg-64-text-runtime-geometry-identity-v3" as const;
 const IDLE_FRAME_COUNT = 30;
 const PAN_FRAME_COUNT = 60;
 const ZOOM_FRAME_COUNT = 48;
@@ -181,6 +182,7 @@ export interface VectorBaselineReport {
     readonly svgCount: number;
     readonly textCount: number;
     readonly svgSourceRevisionCount: number;
+    readonly svgGeometryIdentityCount: number;
     readonly textGeometrySignatureCount: number;
     readonly svgPaintCount: number;
     readonly svgCommandCount: number;
@@ -640,7 +642,7 @@ function vectorSvgSource(seed: number): string {
   return [
     '<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">',
     `<metadata>revision-${seed}</metadata>`,
-    `<path d="${complexClosedPath(0)}" fill="${paletteColor(0)}"/>`,
+    `<path d="${complexClosedPath(seed)}" fill="${paletteColor(0)}"/>`,
     "</svg>",
   ].join("");
 }
@@ -940,6 +942,10 @@ export async function runVectorBaselineBenchmark(
     for (const node of svgNodes) {
       uniqueSvgDocuments.set(node.document.sourceRevision, node.document);
     }
+    const svgGeometryIdentityPool = new VectorPathIdentityPool();
+    const svgGeometryIdentities = new Set(svgNodes.map((node) => (
+      svgGeometryIdentityPool.intern(node.document.silhouettePath)
+    )));
     const textGeometrySignatures = new Set(textNodes.map((node) => JSON.stringify({
       text: node.text,
       fontFamily: node.fontFamily,
@@ -1095,8 +1101,11 @@ export async function runVectorBaselineBenchmark(
     const maximumScenePopulated = svgNodes.length === VECTOR_SVG_NODE_MAXIMUM
       && textNodes.length === VECTOR_TEXT_NODE_MAXIMUM;
     const profileIdentityValidated = profile === "shared"
-      ? uniqueSvgDocuments.size === 1 && textGeometrySignatures.size === 1
+      ? uniqueSvgDocuments.size === 1
+        && svgGeometryIdentities.size === 1
+        && textGeometrySignatures.size === 1
       : uniqueSvgDocuments.size === VECTOR_SVG_NODE_MAXIMUM
+        && svgGeometryIdentities.size === VECTOR_SVG_NODE_MAXIMUM
         && textGeometrySignatures.size === VECTOR_TEXT_NODE_MAXIMUM;
     const compilerSettledWithoutNewFailure = compilerAfterTrace.pendingJobs === 0
       && compilerAfterTrace.atomicPendingNodes === 0
@@ -1159,6 +1168,7 @@ export async function runVectorBaselineBenchmark(
         svgCount: svgNodes.length,
         textCount: textNodes.length,
         svgSourceRevisionCount: uniqueSvgDocuments.size,
+        svgGeometryIdentityCount: svgGeometryIdentities.size,
         textGeometrySignatureCount: textGeometrySignatures.size,
         svgPaintCount: svgNodes.reduce(
           (total, node) => total + node.document.paints.length,

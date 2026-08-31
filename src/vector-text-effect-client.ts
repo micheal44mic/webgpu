@@ -12,12 +12,13 @@ import {
   vectorTextFloat64Key,
   type VectorTextLod,
 } from "./vector-text-lod.ts";
+import { VectorPathIdentityPool } from "./vector-path-identity.ts";
 
 interface PendingEffect {
   readonly slotKey: string;
   readonly cacheKey: string;
   readonly effectIdentity: string;
-  readonly sourceRevision: string;
+  readonly geometryIdentity: string;
   readonly lodBucket: number;
 }
 
@@ -54,13 +55,13 @@ const MAXIMUM_READY_EFFECT_LODS_PER_IDENTITY = 3;
 const MAXIMUM_REGISTERED_PATHS = 128;
 
 function effectIdentity(
-  sourceRevision: string,
+  geometryIdentity: string,
   effect: VectorTextEffectDescription,
 ): string {
   if (effect.kind === "source-fill") {
     return [
       VECTOR_TEXT_GEOMETRY_COMPILER_VERSION,
-      sourceRevision,
+      geometryIdentity,
       effect.kind,
     ].join(":");
   }
@@ -68,7 +69,7 @@ function effectIdentity(
   if (effect.kind === "source-outline") {
     return [
       VECTOR_TEXT_GEOMETRY_COMPILER_VERSION,
-      sourceRevision,
+      geometryIdentity,
       effect.kind,
       vectorTextFloat64Key(effect.width),
       effect.join,
@@ -81,7 +82,7 @@ function effectIdentity(
   if (effect.kind === "block") {
     return [
       VECTOR_TEXT_GEOMETRY_COMPILER_VERSION,
-      sourceRevision,
+      geometryIdentity,
       effect.kind,
       vectorX,
       vectorY,
@@ -89,7 +90,7 @@ function effectIdentity(
   }
   return [
     VECTOR_TEXT_GEOMETRY_COMPILER_VERSION,
-    sourceRevision,
+    geometryIdentity,
     effect.kind,
     vectorX,
     vectorY,
@@ -136,6 +137,7 @@ export class VectorTextEffectCompilerClient {
   private resourceRevision = 0;
   private readonly resourceWaiters = new Set<() => void>();
   private readonly onResourceReady: () => void;
+  private readonly pathIdentities = new VectorPathIdentityPool();
 
   constructor(onResourceReady: () => void) {
     this.onResourceReady = onResourceReady;
@@ -163,66 +165,69 @@ export class VectorTextEffectCompilerClient {
 
   meshForSlot(
     slotKey: string,
-    sourceRevision: string,
     path: Shadow3dPathData,
     lod: VectorTextLod,
     effect: VectorTextEffectDescription,
     allowAtomicSwap: boolean,
   ): VectorTextEffectMeshResult {
-    const identity = effectIdentity(sourceRevision, effect);
+    const geometryIdentity = this.geometryIdentity(path);
+    const identity = effectIdentity(geometryIdentity, effect);
     const key = cacheKey(identity, lod);
     this.desiredKeyBySlot.set(slotKey, key);
-    this.registerPath(sourceRevision, path);
+    this.registerPath(geometryIdentity, path);
+    try {
+      const current = this.displayedBySlot.get(slotKey);
+      const exactLod = requiresExactEffectLod(effect);
+      const currentAlreadySuitable =
+        current !== undefined
+        && current.effectIdentity === identity
+        && (exactLod
+          ? current.lodBucket === lod.bucket
+          : current.lodBucket >= lod.bucket);
+      if (!currentAlreadySuitable) {
+        this.requestEffect(
+          slotKey,
+          key,
+          identity,
+          geometryIdentity,
+          lod,
+          effect,
+        );
+      }
+      if (!allowAtomicSwap) {
+        return {
+          mesh: current?.mesh ?? null,
+          matchesRequestedIdentity: current?.effectIdentity === identity,
+          matchesRequestedLod: currentAlreadySuitable,
+        };
+      }
 
-    const current = this.displayedBySlot.get(slotKey);
-    const exactLod = requiresExactEffectLod(effect);
-    const currentAlreadySuitable =
-      current !== undefined
-      && current.effectIdentity === identity
-      && (exactLod
-        ? current.lodBucket === lod.bucket
-        : current.lodBucket >= lod.bucket);
-    if (!currentAlreadySuitable) {
-      this.requestEffect(
-        slotKey,
-        key,
-        identity,
-        sourceRevision,
-        lod,
-        effect,
-      );
-    }
-    if (!allowAtomicSwap) {
+      const ready = this.readyByKey.get(key);
+      if (
+        ready
+        && (
+          !current
+          || current.effectIdentity !== identity
+          || exactLod
+          || ready.lodBucket >= current.lodBucket
+        )
+      ) {
+        this.displayedBySlot.set(slotKey, { ...ready, slotKey });
+        this.pruneReadyLods(identity, ready.lodBucket);
+        return {
+          mesh: ready.mesh,
+          matchesRequestedIdentity: true,
+          matchesRequestedLod: true,
+        };
+      }
       return {
         mesh: current?.mesh ?? null,
         matchesRequestedIdentity: current?.effectIdentity === identity,
         matchesRequestedLod: currentAlreadySuitable,
       };
+    } finally {
+      this.pruneRegisteredPaths(new Set([geometryIdentity]));
     }
-
-    const ready = this.readyByKey.get(key);
-    if (
-      ready
-      && (
-        !current
-        || current.effectIdentity !== identity
-        || exactLod
-        || ready.lodBucket >= current.lodBucket
-      )
-    ) {
-      this.displayedBySlot.set(slotKey, { ...ready, slotKey });
-      this.pruneReadyLods(identity, ready.lodBucket);
-      return {
-        mesh: ready.mesh,
-        matchesRequestedIdentity: true,
-        matchesRequestedLod: true,
-      };
-    }
-    return {
-      mesh: current?.mesh ?? null,
-      matchesRequestedIdentity: current?.effectIdentity === identity,
-      matchesRequestedLod: currentAlreadySuitable,
-    };
   }
 
   pinSlot(slotKey: string): void {
@@ -259,6 +264,33 @@ export class VectorTextEffectCompilerClient {
     }
   }
 
+  geometryIdentity(path: Readonly<Shadow3dPathData>): string {
+    return this.pathIdentities.intern(path);
+  }
+
+  resetForDocument(): void {
+    if (this.worker) {
+      this.worker.onmessage = null;
+      this.worker.onerror = null;
+      this.worker.terminate();
+      this.worker = null;
+    }
+    this.registeredPaths.clear();
+    this.pendingByRequest.clear();
+    this.pendingKeys.clear();
+    this.queuedBySlot.clear();
+    this.readyByKey.clear();
+    this.displayedBySlot.clear();
+    this.desiredKeyBySlot.clear();
+    this.pinnedSlots.clear();
+    this.activeRequestId = null;
+    this.nextRequestId = 1;
+    this.failedJobs = 0;
+    this.lastError = null;
+    this.pathIdentities.clear();
+    this.advanceResourceRevision(false);
+  }
+
   diagnostics(): VectorTextEffectClientDiagnostics {
     return {
       registeredPaths: this.registeredPaths.size,
@@ -293,19 +325,25 @@ export class VectorTextEffectCompilerClient {
   }
 
   private notifyResourceReady(): void {
+    this.advanceResourceRevision(true);
+  }
+
+  private advanceResourceRevision(notifyObserver: boolean): void {
     this.resourceRevision += 1;
-    this.onResourceReady();
+    if (notifyObserver) {
+      this.onResourceReady();
+    }
     const waiters = [...this.resourceWaiters];
     this.resourceWaiters.clear();
     waiters.forEach((resolve) => resolve());
   }
   private registerPath(
-    revision: string,
+    geometryIdentity: string,
     path: Shadow3dPathData,
   ): void {
-    if (this.registeredPaths.has(revision)) {
-      this.registeredPaths.delete(revision);
-      this.registeredPaths.add(revision);
+    if (this.registeredPaths.has(geometryIdentity)) {
+      this.registeredPaths.delete(geometryIdentity);
+      this.registeredPaths.add(geometryIdentity);
       return;
     }
     const verbs = new Uint8Array(path.verbs);
@@ -313,7 +351,7 @@ export class VectorTextEffectCompilerClient {
     const contourOffsets = new Uint32Array(path.contourOffsets);
     const message: VectorTextEffectWorkerRequest = {
       type: "register-path",
-      revision,
+      revision: geometryIdentity,
       path: {
         fillRule: Number(path.fillRule),
         verbs,
@@ -326,18 +364,20 @@ export class VectorTextEffectCompilerClient {
       coords.buffer,
       contourOffsets.buffer,
     ]);
-    this.registeredPaths.add(revision);
-    this.pruneRegisteredPaths();
+    this.registeredPaths.add(geometryIdentity);
   }
 
-  private pruneRegisteredPaths(): void {
+  private pruneRegisteredPaths(
+    additionalProtectedRevisions: ReadonlySet<string> = new Set(),
+  ): void {
     if (this.registeredPaths.size <= MAXIMUM_REGISTERED_PATHS) {
       return;
     }
     const protectedRevisions = new Set([
-      ...[...this.pendingByRequest.values()].map((value) => value.sourceRevision),
-      ...[...this.queuedBySlot.values()].map((value) => value.sourceRevision),
-      ...[...this.displayedBySlot.values()].map((value) => value.sourceRevision),
+      ...[...this.pendingByRequest.values()].map((value) => value.geometryIdentity),
+      ...[...this.queuedBySlot.values()].map((value) => value.geometryIdentity),
+      ...[...this.displayedBySlot.values()].map((value) => value.geometryIdentity),
+      ...additionalProtectedRevisions,
     ]);
     for (const revision of this.registeredPaths) {
       if (this.registeredPaths.size <= MAXIMUM_REGISTERED_PATHS) {
@@ -359,7 +399,7 @@ export class VectorTextEffectCompilerClient {
     slotKey: string,
     key: string,
     identity: string,
-    sourceRevision: string,
+    geometryIdentity: string,
     lod: VectorTextLod,
     effect: VectorTextEffectDescription,
   ): void {
@@ -375,7 +415,7 @@ export class VectorTextEffectCompilerClient {
       slotKey,
       cacheKey: key,
       effectIdentity: identity,
-      sourceRevision,
+      geometryIdentity,
       lodBucket: lod.bucket,
       lod,
       effect,
@@ -402,7 +442,7 @@ export class VectorTextEffectCompilerClient {
     const message: VectorTextEffectWorkerRequest = {
       type: "build-effect",
       requestId,
-      revision: queued.sourceRevision,
+      revision: queued.geometryIdentity,
       cacheKey: queued.cacheKey,
       lod: queued.lod,
       effect: queued.effect,

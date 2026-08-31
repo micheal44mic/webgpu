@@ -15,7 +15,7 @@ export interface VectorSvgNode {
   name: string;
   visible: boolean;
   opacity: number;
-  document: VectorSvgDocument;
+  readonly document: VectorSvgDocument;
   /** Present for internally generated geometry that remains parametrically editable. */
   readonly shapeDefinition?: VectorShapeDefinition;
   paintColors: string[];
@@ -50,7 +50,7 @@ export interface VectorSvgNode {
 }
 
 export interface VectorSvgNodeSeed {
-  document: VectorSvgDocument;
+  readonly document: VectorSvgDocument;
   readonly shapeDefinition?: VectorShapeDefinition;
   paintColors?: readonly string[];
   outlineWidth?: number;
@@ -92,8 +92,8 @@ export function cloneVectorSvgNode(node: Readonly<VectorSvgNode>): VectorSvgNode
   };
 }
 
-/** History snapshots share the immutable parsed SVG document by design. */
-export function cloneVectorSvgNodeForHistory(
+/** Trusted runtime/history snapshots share the immutable parsed document. */
+export function cloneVectorSvgNodeWithSharedDocument(
   node: Readonly<VectorSvgNode>,
 ): VectorSvgNode {
   return {
@@ -103,4 +103,10 @@ export function cloneVectorSvgNodeForHistory(
     shapeDefinition: cloneVectorShapeDefinition(node.shapeDefinition),
     paintColors: [...node.paintColors],
   };
+}
+
+export function cloneVectorSvgNodeForHistory(
+  node: Readonly<VectorSvgNode>,
+): VectorSvgNode {
+  return cloneVectorSvgNodeWithSharedDocument(node);
 }
