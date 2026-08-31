@@ -1,6 +1,9 @@
 import "./styles.css";
 import { canonicalBrushColorForFormat } from "./brush-color.ts";
-import { getCanvasStartupOverlayController } from "./canvas-startup-overlay-controller";
+import {
+  getCanvasStartupOverlayController,
+  type CanvasRuntimeLoadingOperation,
+} from "./canvas-startup-overlay-controller";
 import { EditorToolsController } from "./editor-tools-controller";
 import type {
   EditorRasterEffectKind,
@@ -29,7 +32,10 @@ import { GpuMemoryPanelController } from "./gpu-memory-panel-controller";
 import { RuntimeStatsController } from "./runtime-stats-controller";
 import { HistoryControlsController } from "./history-controls-controller";
 import { MobileStrokeSheetController } from "./mobile-stroke-sheet";
-import { RasterAdjustmentsController } from "./raster-adjustments-controller";
+import {
+  RasterAdjustmentsController,
+  type RasterAdjustmentsEnginePort,
+} from "./raster-adjustments-controller";
 import { RasterStyleController } from "./raster-style-controller";
 import { MobileToolSettingsSheetController } from "./mobile-tool-settings-sheet";
 import {
@@ -243,8 +249,6 @@ const statusElement = element<HTMLParagraphElement>("status");
 const vectorSvgFileInput = element<HTMLInputElement>("vectorSvgFileInput");
 const rasterImageFileInput = element<HTMLInputElement>("rasterImageFileInput");
 const layerSwitchResult = element<HTMLParagraphElement>("layerSwitchResult");
-const layerLoadingOverlay = element<HTMLElement>("layerLoadingOverlay");
-const layerLoadingLabel = element<HTMLParagraphElement>("layerLoadingLabel");
 // Questa riga descrive la memoria dei tre renderer nell'editor normale.
 // Non appartiene ai laboratori anche se condivideva la vecchia sezione benchmark.
 const renderingModeMemoryHint = element<HTMLParagraphElement>("renderingModeMemoryHint");
@@ -693,6 +697,8 @@ const sceneImportBridge = new SceneImportBridge({
   onFailure: (kind, error) => {
     reportQueuedSceneImportFailure(kind === "svg" ? "SVG" : "image", error);
   },
+  runWithLoading: (label, operation) =>
+    canvasStartupOverlay.runRuntimeOperation(label, operation),
 });
 
 function selectCanvasToolWithMixedScene(tool: CanvasInputTool): boolean {
@@ -711,21 +717,37 @@ function selectCanvasToolWithMixedScene(tool: CanvasInputTool): boolean {
     const initializationScope = tool === "shapes"
       ? "shape-preview"
       : "raster-transform";
-    if (initializationScope === "raster-transform") {
-      const mode = tool === "warp"
-        ? "warp"
+    const label = tool === "shapes"
+      ? "Preparing Shapes"
+      : tool === "warp"
+        ? "Preparing Warp"
         : tool === "perspective"
-          ? "perspective"
-          : "affine";
-      void engine.prewarmRasterTransformPrograms(mode).catch((error) => {
-        appDiagnosticsController?.recordOperation("prewarm-raster-transform", tool, error);
-        console.warn(`Could not prewarm the ${tool} GPU programs.`, error);
-      });
-    }
-    void initializeMixedSceneController(initializationScope).catch((error) => {
-      appDiagnosticsController?.recordOperation("initialize-transform-editor", tool, error);
-      console.error(`Could not initialize the ${tool} editor.`, error);
-    });
+          ? "Preparing Perspective"
+          : "Preparing Transform";
+    void canvasStartupOverlay.runRuntimeOperation(
+      label,
+      async () => {
+        const preparations: Promise<unknown>[] = [];
+        if (initializationScope === "raster-transform") {
+          const mode = tool === "warp"
+            ? "warp"
+            : tool === "perspective"
+              ? "perspective"
+              : "affine";
+          preparations.push(engine.prewarmRasterTransformPrograms(mode).catch((error) => {
+            appDiagnosticsController?.recordOperation("prewarm-raster-transform", tool, error);
+            console.warn(`Could not prewarm the ${tool} GPU programs.`, error);
+            throw error;
+          }));
+        }
+        preparations.push(initializeMixedSceneController(initializationScope).catch((error) => {
+          appDiagnosticsController?.recordOperation("initialize-transform-editor", tool, error);
+          console.error(`Could not initialize the ${tool} editor.`, error);
+          throw error;
+        }));
+        await Promise.all(preparations);
+      },
+    ).catch(() => undefined);
   }
   return selected;
 }
@@ -1045,6 +1067,8 @@ projectSessionController = new ProjectSessionController({
   preloadedProjectId: projectEditorBootstrap?.preloadedProjectId,
   preloadedProject: projectEditorBootstrap?.preloadedProject,
   settleTransientEdits: settleTransientProjectEdits,
+  runWithLoading: (label, operation) =>
+    canvasStartupOverlay.runRuntimeOperation(label, operation),
   onReturnHome: projectEditorBootstrap?.returnHome,
   onDocumentSwitchStart: async () => {
     if (!canvasStartupOverlay.isVisible()) canvasStartupOverlay.reset();
@@ -1272,13 +1296,12 @@ const layerThumbnailController = new LayerThumbnailController({
   },
   onWarning: (message, error) => console.warn(message, error),
 });
+let sceneEditorLoadingOperation: CanvasRuntimeLoadingOperation | null = null;
 sceneEditorController = new SceneEditorController({
   engine,
   browser: window,
   elements: {
     app: appElement,
-    loadingOverlay: layerLoadingOverlay,
-    loadingLabel: layerLoadingLabel,
     result: layerSwitchResult,
   },
   getVectorController: () => mixedSceneController,
@@ -1287,6 +1310,15 @@ sceneEditorController = new SceneEditorController({
   onBusyChange: () => {
     updateHistoryControls();
     layerPanelController?.syncInteractionState();
+  },
+  onLoadingChange: (loading, message) => {
+    if (loading) {
+      sceneEditorLoadingOperation?.complete();
+      sceneEditorLoadingOperation = canvasStartupOverlay.beginRuntimeOperation(message);
+      return;
+    }
+    sceneEditorLoadingOperation?.complete();
+    sceneEditorLoadingOperation = null;
   },
   onHistoryState: (state) => {
     historyState = state;
@@ -1306,7 +1338,10 @@ sceneEditorController = new SceneEditorController({
 brushLibraryController = new BrushLibraryController({
   engine: {
     getSettings: () => engine.getSettings(),
-    ensureCurrentBrushResources: () => engine.ensureCurrentBrushResources(),
+    ensureCurrentBrushResources: () => canvasStartupOverlay.runRuntimeOperation(
+      "Preparing brush resources",
+      () => engine.ensureCurrentBrushResources(),
+    ),
   },
   browser: window,
   document,
@@ -1347,6 +1382,8 @@ brushLibraryController = new BrushLibraryController({
     if (editorSettingsController?.isOpen) editorSettingsController.setOpen(false);
   },
   isPaintSelected: () => (canvasToolController?.activeTool ?? "pan") === "paint",
+  runWithLoading: (label, operation) =>
+    canvasStartupOverlay.runRuntimeOperation(label, operation),
   onVisibilityChange: () => {
     brushQuickControlsController?.syncVisibility();
     syncMobileToolsMenuState();
@@ -1526,6 +1563,7 @@ cloneToolController = new CloneToolController({
   },
 });
 
+let shapeLoadingOperation: CanvasRuntimeLoadingOperation | null = null;
 shapeToolController = new ShapeToolController({
   browser: window,
   engine,
@@ -1536,7 +1574,13 @@ shapeToolController = new ShapeToolController({
     status: shapeToolStatus,
   },
   initialColor: brushSettingsController.snapshot().color,
-  onBusyChange: () => {
+  onBusyChange: (busy) => {
+    if (busy) {
+      shapeLoadingOperation ??= canvasStartupOverlay.beginRuntimeOperation("Creating shape");
+    } else {
+      shapeLoadingOperation?.complete();
+      shapeLoadingOperation = null;
+    }
     updateHistoryControls();
     layerPanelController?.syncInteractionState();
   },
@@ -1554,7 +1598,10 @@ function prepareActiveCloneSource(sampleMode: CloneSampleMode): void {
   if (!engineInitialized || !cloneToolController?.isActive) return;
   const token = ++cloneSourcePreparationToken;
   cloneToolController.setSourcePreparing(true);
-  void engine.prepareCloneTool(sampleMode).catch((error) => {
+  void canvasStartupOverlay.runRuntimeOperation(
+    "Preparing Clone",
+    () => engine.prepareCloneTool(sampleMode),
+  ).catch((error) => {
     if (token !== cloneSourcePreparationToken) return;
     const message = error instanceof Error ? error.message : String(error);
     statusElement.textContent = `Clone preparation failed: ${message}`;
@@ -1566,8 +1613,33 @@ function prepareActiveCloneSource(sampleMode: CloneSampleMode): void {
   });
 }
 
+function selectedBrushLoadingLabel(): string {
+  const tool = brushSettingsController.snapshot().tool;
+  return tool === "erase"
+    ? "Preparing Eraser"
+    : tool === "blend"
+      ? "Preparing Blend"
+      : "Preparing Brush";
+}
+
 canvasToolController = new CanvasToolController({
-  engine,
+  engine: {
+    get fillToolSelected() {
+      return engine.fillToolSelected;
+    },
+    prepareSelectedBrushForInteraction: () => canvasStartupOverlay.runRuntimeOperation(
+      selectedBrushLoadingLabel(),
+      () => engine.prepareSelectedBrushForInteraction(),
+    ),
+    setFillToolSelected: (selected) => canvasStartupOverlay.runRuntimeOperation(
+      selected ? "Preparing Fill" : "Finishing Fill",
+      () => engine.setFillToolSelected(selected),
+    ),
+    setSelectionToolSelected: (selected, method) => canvasStartupOverlay.runRuntimeOperation(
+      selected ? "Preparing Selection" : "Finishing Selection",
+      () => engine.setSelectionToolSelected(selected, method),
+    ),
+  },
   browser: window,
   elements: {
     canvas,
@@ -1638,6 +1710,7 @@ canvasToolController = new CanvasToolController({
   },
 });
 
+let selectionLoadingOperation: CanvasRuntimeLoadingOperation | null = null;
 pixelSelectionController = new PixelSelectionController({
   engine: {
     selectPixelsByColor: (color, tolerance, combineMode) =>
@@ -1651,7 +1724,16 @@ pixelSelectionController = new PixelSelectionController({
   isEngineReady: () => engineInitialized,
   getActiveTool: () => canvasToolController?.activeTool ?? "pan",
   getSelectionSettings: () => canvasToolSettingsController.selectionSnapshot(),
-  onBusyChange: updateHistoryControls,
+  onBusyChange: () => {
+    if (pixelSelectionController?.isBusy === true) {
+      selectionLoadingOperation ??=
+        canvasStartupOverlay.beginRuntimeOperation("Updating selection");
+    } else {
+      selectionLoadingOperation?.complete();
+      selectionLoadingOperation = null;
+    }
+    updateHistoryControls();
+  },
   onSettled: () => mobileToolSettingsSheet?.syncOpenState(),
   onError: (error) => console.error("WebGPU pixel selection failed", error),
 });
@@ -1810,6 +1892,8 @@ mobileBrushStudio = new MobileBrushStudioController({
   browser: window,
   getBrushPrecision: () => editorSettingsController?.preferences.brushPrecision
     ?? DEFAULT_EDITOR_GUIDE_PREFERENCES.brushPrecision,
+  runWithLoading: (label, operation) =>
+    canvasStartupOverlay.runRuntimeOperation(label, operation),
   applySettings: applyBrushSettings,
   ...brushStudioIntegration,
 });
@@ -1873,8 +1957,63 @@ mobileRasterEffectsSheet = new MobileRasterEffectsSheetController({
   },
 });
 
+const rasterAdjustmentLoadingLabels = Object.freeze({
+  beginRasterGaussianBlur: "Preparing Gaussian Blur",
+  beginRasterSpatialBlur: "Preparing Spatial Blur",
+  beginRasterLiquify: "Preparing Liquify",
+  beginRasterMotionBlur: "Preparing Motion Blur",
+  beginRasterNoise: "Preparing Noise",
+  beginRasterGlass: "Preparing Glass",
+  beginRasterToneCurves: "Preparing Curves",
+  beginRasterColorAdjust: "Preparing Color Adjustment",
+  beginRasterColorBalance: "Preparing Color Balance",
+  beginRasterGradientMap: "Preparing Gradient Map",
+  prewarmRasterGradientMapResources: "Preparing Gradient Map",
+  cancelRasterGaussianBlur: "Cancelling Gaussian Blur",
+  cancelRasterSpatialBlur: "Cancelling Spatial Blur",
+  cancelRasterLiquify: "Cancelling Liquify",
+  cancelRasterMotionBlur: "Cancelling Motion Blur",
+  cancelRasterNoise: "Cancelling Noise",
+  cancelRasterGlass: "Cancelling Glass",
+  cancelRasterToneCurves: "Cancelling Curves",
+  cancelRasterColorAdjust: "Cancelling Color Adjustment",
+  cancelRasterColorBalance: "Cancelling Color Balance",
+  cancelRasterGradientMap: "Cancelling Gradient Map",
+  commitRasterGaussianBlur: "Applying Gaussian Blur",
+  commitRasterSpatialBlur: "Applying Spatial Blur",
+  commitRasterLiquify: "Applying Liquify",
+  commitRasterMotionBlur: "Applying Motion Blur",
+  commitRasterNoise: "Applying Noise",
+  commitRasterGlass: "Applying Glass",
+  commitRasterToneCurves: "Applying Curves",
+  commitRasterColorAdjust: "Applying Color Adjustment",
+  commitRasterColorBalance: "Applying Color Balance",
+  commitRasterGradientMap: "Applying Gradient Map",
+} satisfies Partial<Record<keyof RasterAdjustmentsEnginePort, string>>);
+
+function createRasterAdjustmentsLoadingPort(
+  source: RasterAdjustmentsEnginePort,
+): RasterAdjustmentsEnginePort {
+  return new Proxy(source, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target) as unknown;
+      if (typeof value !== "function") return value;
+      const label = typeof property === "string"
+        ? rasterAdjustmentLoadingLabels[
+          property as keyof typeof rasterAdjustmentLoadingLabels
+        ]
+        : undefined;
+      if (!label) return value.bind(target) as unknown;
+      return ((...args: unknown[]) => canvasStartupOverlay.runRuntimeOperation(
+        label,
+        async () => await Reflect.apply(value, target, args) as unknown,
+      )) as unknown;
+    },
+  });
+}
+
 rasterAdjustmentsController = new RasterAdjustmentsController({
-  engine,
+  engine: createRasterAdjustmentsLoadingPort(engine),
   browser: window,
   elements: {
     canvas,
@@ -3176,6 +3315,8 @@ async function initializeMixedSceneController(
           mobileToolSettingsSheet?.syncOpenState();
           updateHistoryControls();
         },
+        runWithLoading: (label, operation) =>
+          canvasStartupOverlay.runRuntimeOperation(label, operation),
         canvasGuides: {
           getPreferences: () => editorSettingsController?.preferences
             ?? DEFAULT_EDITOR_GUIDE_PREFERENCES,
@@ -3208,7 +3349,10 @@ async function initializeMixedSceneController(
   const resourcePreparation = scope === "semantic-scene"
     ? engine.ensureMixedSceneEditorResources()
     : scope === "shape-preview"
-      ? engine.ensureShapePreviewEditorResources()
+      ? Promise.all([
+        engine.ensureShapePreviewEditorResources(),
+        engine.ensureVectorShapeEditorResources(),
+      ]).then(() => undefined)
       : scope === "vector-shape"
         ? engine.ensureVectorShapeEditorResources()
         : Promise.resolve();
@@ -3216,14 +3360,6 @@ async function initializeMixedSceneController(
     ? Promise.resolve(mixedSceneController)
     : mixedSceneInitializationPromise!;
   const [controller] = await Promise.all([initialization, resourcePreparation]);
-  if (scope === "shape-preview") {
-    // The drag preview is already usable. Prepare permanent mesh fill without
-    // holding the tool-selection promise open.
-    void engine.ensureVectorShapeEditorResources().catch((error) => {
-      appDiagnosticsController?.recordOperation("prewarm-vector-shape", "shapes", error);
-      console.warn("Could not prewarm vector shape GPU programs.", error);
-    });
-  }
   return controller;
 }
 

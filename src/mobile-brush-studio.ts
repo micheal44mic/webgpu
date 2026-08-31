@@ -78,6 +78,10 @@ export interface MobileBrushStudioOptions {
     settings: BrushSettings,
   ) => void;
   readonly onStatus: (message: string, kind: "ok" | "error" | "working") => void;
+  readonly runWithLoading?: <Result>(
+    label: string,
+    operation: () => Promise<Result>,
+  ) => Promise<Result>;
 }
 
 export interface MobileBrushStudioBrowser extends Window {
@@ -489,6 +493,14 @@ export class MobileBrushStudioController {
   }
 
   async resolveBrushSettings(
+    brushId: string,
+    fallback: Readonly<BrushSettings>,
+  ): Promise<BrushSettings> {
+    const operation = () => this.resolveBrushSettingsInternal(brushId, fallback);
+    return this.options.runWithLoading?.("Loading Brush", operation) ?? operation();
+  }
+
+  private async resolveBrushSettingsInternal(
     brushId: string,
     fallback: Readonly<BrushSettings>,
   ): Promise<BrushSettings> {
@@ -912,11 +924,17 @@ export class MobileBrushStudioController {
   ): Promise<void> {
     if (this.disposed || this.importPromise || this.busy) return Promise.resolve();
     const selectedShapeIndex = this.selectedShapeIndex;
-    const operation = this.importSource(
+    const importOperation = () => this.importSource(
       kind,
       file,
       shapeImportMode,
       selectedShapeIndex,
+    );
+    const operation = (
+      this.options.runWithLoading?.(
+        kind === "shape" ? "Loading Brush Shape" : "Loading Brush Grain",
+        importOperation,
+      ) ?? importOperation()
     ).finally(() => {
       if (this.importPromise === operation) this.importPromise = null;
     });
@@ -1509,7 +1527,11 @@ export class MobileBrushStudioController {
     if (this.disposed || this.commitPromise || this.busy || !this.openState) {
       return this.commitPromise ?? Promise.resolve();
     }
-    const operation = this.commit().finally(() => {
+    const commitOperation = () => this.commit();
+    const operation = (
+      this.options.runWithLoading?.("Saving Brush", commitOperation)
+        ?? commitOperation()
+    ).finally(() => {
       if (this.commitPromise === operation) this.commitPromise = null;
     });
     this.commitPromise = operation;

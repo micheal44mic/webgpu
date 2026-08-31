@@ -60,6 +60,10 @@ export interface ProjectSessionControllerOptions {
   readonly preloadedProject?: Promise<ProjectLoadResultV1 | null> | null;
   /** Flushes preview transactions before project capture or navigation. */
   readonly settleTransientEdits?: (() => Promise<void>) | null;
+  readonly runWithLoading?: <Result>(
+    label: string,
+    operation: () => Promise<Result>,
+  ) => Promise<Result>;
   readonly onReturnHome?: ((pushHistory: boolean) => Promise<void>) | null;
   /** Acquires the composition-root input/overlay lock before source settlement. */
   readonly onDocumentSwitchStart?: (
@@ -119,6 +123,7 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
   private readonly preloadedProjectId: string | null;
   private readonly preloadedProject: Promise<ProjectLoadResultV1 | null> | null;
   private readonly settleTransientEdits: (() => Promise<void>) | null;
+  private readonly runWithLoading: ProjectSessionControllerOptions["runWithLoading"];
   private readonly onReturnHome: ((pushHistory: boolean) => Promise<void>) | null;
   private readonly onDocumentSwitchStart: ProjectSessionControllerOptions["onDocumentSwitchStart"];
   private readonly onDocumentSwitchStage: ProjectSessionControllerOptions["onDocumentSwitchStage"];
@@ -187,6 +192,7 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
     this.preloadedProjectId = options.preloadedProjectId ?? null;
     this.preloadedProject = options.preloadedProject ?? null;
     this.settleTransientEdits = options.settleTransientEdits ?? null;
+    this.runWithLoading = options.runWithLoading;
     this.onReturnHome = options.onReturnHome ?? null;
     this.onDocumentSwitchStart = options.onDocumentSwitchStart;
     this.onDocumentSwitchStage = options.onDocumentSwitchStage;
@@ -355,7 +361,10 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
       throw new Error("The project session requires recovery before it can be saved.");
     }
     if (this.savePromise) return this.savePromise;
-    const operation = this.performSave(options);
+    const operation = this.runWithLoading?.(
+      "Saving Project",
+      () => this.performSave(options),
+    ) ?? this.performSave(options);
     this.savePromise = operation;
     try {
       await operation;

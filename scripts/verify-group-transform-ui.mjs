@@ -692,6 +692,8 @@ const groupPreparationGate = new Promise((resolve) => {
 let preparedApplyCalls = 0;
 const preparedApplyShell = Object.create(MixedSceneController.prototype);
 Object.assign(preparedApplyShell, {
+  host: { waitForIdle: async () => {} },
+  runLoadingOperation: undefined,
   groupTransformPreparation: groupPreparationGate,
   rasterTransformPreparation: null,
   transformSessionOpen: false,
@@ -719,6 +721,8 @@ const cancelPreparationGate = new Promise((resolve) => {
 let preparedCancelCalls = 0;
 const preparedCancelShell = Object.create(MixedSceneController.prototype);
 Object.assign(preparedCancelShell, {
+  host: { waitForIdle: async () => {} },
+  runLoadingOperation: undefined,
   groupTransformPreparation: cancelPreparationGate,
   rasterTransformPreparation: null,
   transformSessionOpen: false,

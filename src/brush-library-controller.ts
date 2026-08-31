@@ -152,6 +152,10 @@ export interface BrushLibraryControllerOptions {
   readonly isPaintSelected: () => boolean;
   readonly onVisibilityChange: () => void;
   readonly onStatus: (message: string, kind: "ok" | "error" | "working") => void;
+  readonly runWithLoading?: <Result>(
+    label: string,
+    operation: () => Promise<Result>,
+  ) => Promise<Result>;
 }
 
 type TransferStatusKind = "ok" | "error" | "working" | "export-unavailable";
@@ -184,6 +188,7 @@ export class BrushLibraryController {
   private readonly isPaintSelected: () => boolean;
   private readonly onVisibilityChange: () => void;
   private readonly onStatus: BrushLibraryControllerOptions["onStatus"];
+  private readonly runWithLoading: BrushLibraryControllerOptions["runWithLoading"];
 
   private studio: BrushStudioPort | null = null;
   private customBrushes: BrushStudioCustomBrush[];
@@ -220,7 +225,9 @@ export class BrushLibraryController {
   private readonly handleImportChange = (): void => {
     const file = this.elements.importFile.files?.[0];
     this.elements.importFile.value = "";
-    if (file) void this.importBrush(file);
+    if (!file) return;
+    const operation = () => this.importBrush(file);
+    void (this.runWithLoading?.("Importing Brush", operation) ?? operation());
   };
   private readonly handleListClick = (event: MouseEvent): void => {
     if (this.transferBusy || !(event.target instanceof Element)) return;
@@ -285,6 +292,7 @@ export class BrushLibraryController {
     this.isPaintSelected = options.isPaintSelected;
     this.onVisibilityChange = options.onVisibilityChange;
     this.onStatus = options.onStatus;
+    this.runWithLoading = options.runWithLoading;
 
     const restored = loadBrushStudioLibraryState();
     this.customBrushes = [...(restored?.customBrushes ?? [])];

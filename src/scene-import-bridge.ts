@@ -19,6 +19,10 @@ export interface SceneImportBridgeOptions {
   readonly onImporting?: (kind: "svg" | "image", file: File) => void;
   readonly onComplete?: (kind: "svg" | "image", file: File) => void;
   readonly onFailure?: (kind: "svg" | "image", error: unknown) => void;
+  readonly runWithLoading?: <Result>(
+    label: string,
+    operation: () => Promise<Result>,
+  ) => Promise<Result>;
 }
 
 /**
@@ -148,35 +152,44 @@ export class SceneImportBridge {
     documentGeneration: number,
     readiness: Promise<SceneImportController> | null,
   ): Promise<void> {
-    try {
-      if (!this.#isCurrentDocument(documentGeneration)) return;
-      this.#options.onQueued?.(kind, file);
-      const readyForImport = await (
-        this.#options.beforeAccept?.() ?? Promise.resolve(true)
-      );
-      if (!this.#isCurrentDocument(documentGeneration)) return;
-      if (!readyForImport) {
-        throw new Error("The active raster adjustment could not finish before import.");
-      }
-      const current = this.#options.currentController();
-      const ready = readiness
-        ? await readiness
-        : kind === "image" && current
-          ? current
-          : await this.#options.ensureController(kind);
-      if (!this.#isCurrentDocument(documentGeneration)) return;
+    const performImport = async (): Promise<void> => {
+      try {
+        if (!this.#isCurrentDocument(documentGeneration)) return;
+        this.#options.onQueued?.(kind, file);
+        const readyForImport = await (
+          this.#options.beforeAccept?.() ?? Promise.resolve(true)
+        );
+        if (!this.#isCurrentDocument(documentGeneration)) return;
+        if (!readyForImport) {
+          throw new Error("The active raster adjustment could not finish before import.");
+        }
+        const current = this.#options.currentController();
+        const ready = readiness
+          ? await readiness
+          : kind === "image" && current
+            ? current
+            : await this.#options.ensureController(kind);
+        if (!this.#isCurrentDocument(documentGeneration)) return;
 
-      this.#options.onImporting?.(kind, file);
-      const operation = kind === "svg"
-        ? ready.importSvgFile(file)
-        : ready.importRasterImageFile(file);
-      await operation;
-      if (!this.#isCurrentDocument(documentGeneration)) return;
-      this.#options.onComplete?.(kind, file);
-    } catch (error) {
-      if (!this.#isCurrentDocument(documentGeneration)) return;
-      this.#options.onFailure?.(kind, error);
+        this.#options.onImporting?.(kind, file);
+        const operation = kind === "svg"
+          ? ready.importSvgFile(file)
+          : ready.importRasterImageFile(file);
+        await operation;
+        if (!this.#isCurrentDocument(documentGeneration)) return;
+        this.#options.onComplete?.(kind, file);
+      } catch (error) {
+        if (!this.#isCurrentDocument(documentGeneration)) return;
+        this.#options.onFailure?.(kind, error);
+        throw error;
+      }
+    };
+    const label = kind === "svg" ? "Importing SVG" : "Importing image";
+    if (this.#options.runWithLoading) {
+      await this.#options.runWithLoading(label, performImport);
+      return;
     }
+    await performImport();
   }
 
   #isCurrentDocument(documentGeneration: number): boolean {

@@ -83,6 +83,10 @@ export interface MixedSceneControllerOptions {
   readonly browser: Window;
   readonly clippedRefreshPolicy?: VectorTextClippedRefreshPolicy;
   readonly onEditorStateChange?: () => void;
+  readonly runWithLoading?: <Result>(
+    label: string,
+    operation: () => Promise<Result>,
+  ) => Promise<Result>;
   readonly canvasGuides?: {
     readonly getPreferences: () => Readonly<EditorGuidePreferences>;
     readonly setSmartGuides: (guides: readonly SceneSnapMatch[]) => void;

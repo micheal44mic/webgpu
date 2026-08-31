@@ -88,8 +88,6 @@ export interface SceneEditorBrowser {
 
 export interface SceneEditorElements {
   readonly app: HTMLElement;
-  readonly loadingOverlay: HTMLElement;
-  readonly loadingLabel: HTMLParagraphElement;
   readonly result: HTMLParagraphElement;
 }
 
@@ -101,6 +99,7 @@ export interface SceneEditorControllerOptions {
   readonly isInteractionLocked: () => boolean;
   readonly isAdjustmentRasterizationLocked?: () => boolean;
   readonly onBusyChange: (busy: boolean) => void;
+  readonly onLoadingChange?: (loading: boolean, message: string) => void;
   readonly onHistoryState: (state: HistoryState) => void;
   readonly requestLayersRefresh: () => void;
   readonly renderLayers: (stats: EngineStats) => void;
@@ -188,9 +187,12 @@ export class SceneEditorController {
   async moveLayer(key: SceneLayerKey, targetTopFirstSlot: number): Promise<boolean> {
     this.beginOrThrow("Layer move canceled.");
     try {
-      return await this.options.engine.moveMixedSceneItem(key, targetTopFirstSlot);
+      if (!(await this.showLoading("Moving layer…"))) return false;
+      const moved = await this.options.engine.moveMixedSceneItem(key, targetTopFirstSlot);
+      await this.options.engine.waitForIdle();
+      return moved;
     } finally {
-      this.finish();
+      this.finish({ loading: true });
     }
   }
 
@@ -209,6 +211,7 @@ export class SceneEditorController {
         throw new Error("Scene editor disposed.");
       }
       const result = await vector.mergeSceneItems(orderedKeys);
+      await this.options.engine.waitForIdle();
       const mergedSnapshot = this.options.engine.getMixedSceneSnapshot();
       const outputKey = `raster:${result.layerId}` as SceneLayerKey;
       if (
@@ -755,17 +758,16 @@ export class SceneEditorController {
 
   private async showLoading(message: string): Promise<boolean> {
     if (this.disposed) return false;
-    const { app, loadingLabel, loadingOverlay } = this.options.elements;
-    loadingLabel.textContent = message;
-    loadingOverlay.hidden = false;
+    const { app } = this.options.elements;
+    this.options.onLoadingChange?.(true, message);
     app.setAttribute("aria-busy", "true");
     await Promise.resolve();
     return !this.disposed;
   }
 
   private hideLoading(): void {
-    const { app, loadingOverlay } = this.options.elements;
-    loadingOverlay.hidden = true;
+    const { app } = this.options.elements;
+    this.options.onLoadingChange?.(false, "");
     app.removeAttribute("aria-busy");
   }
 
@@ -786,6 +788,7 @@ export class SceneEditorController {
       try {
         if (!(await this.showLoading("Loading layer…"))) return;
         const result = await this.options.engine.setActiveLayer(target.rasterIndex);
+        await this.options.engine.waitForIdle();
         this.options.syncActiveRasterControls();
         this.options.elements.result.textContent = result
           ? `Layer ${result.toIndex + 1} active in ${result.totalMs.toFixed(0)} ms`
@@ -823,6 +826,7 @@ export class SceneEditorController {
         ))
       ) return;
       const result = await this.options.engine.setActiveMixedSceneItem(key);
+      await this.options.engine.waitForIdle();
       if (item.kind === "raster") this.options.syncActiveRasterControls();
       const snapshot = this.options.engine.getMixedSceneSnapshot();
       if (snapshot) this.options.getVectorController()?.syncScene(snapshot);
@@ -1060,6 +1064,7 @@ export class SceneEditorController {
         ))
       ) return;
       const changed = await this.options.engine.setSceneLayerClipping(key, enabled);
+      await this.options.engine.waitForIdle();
       const stats = this.options.engine.getStats();
       const live = selectedSceneLayerProperties(stats, false, key);
       const parent = live?.clippingParentKey
@@ -1104,6 +1109,7 @@ export class SceneEditorController {
         target.rasterIndex,
         enabled,
       );
+      await this.options.engine.waitForIdle();
       const layer = this.options.engine.getStats().layers[target.rasterIndex];
       this.options.elements.result.textContent = changed
         ? enabled

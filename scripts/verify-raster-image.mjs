@@ -514,10 +514,10 @@ const controllerImportEnd = controllerSource.indexOf(
 );
 const controllerImportSource = controllerSource.slice(controllerImportStart, controllerImportEnd);
 assert.match(controllerImportSource, /await this\.host\.importRasterImageFile\(file\)/);
-assert.doesNotMatch(
+assert.match(
   controllerImportSource,
   /await this\.host\.waitForIdle\(\)/,
-  "the controller must release the UI after atomic publication without a second global fence",
+  "the import loader must remain active until queued GPU presentation work is idle",
 );
 assert.match(controllerImportSource, /catch \(error\)[\s\S]{0,220}throw error/);
 assert.match(htmlSource, /data-mobile-canvas-tool="transform"/);

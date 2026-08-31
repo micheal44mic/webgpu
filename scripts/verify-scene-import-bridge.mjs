@@ -30,6 +30,11 @@ assert.match(
   "the import bridge must settle a live adjustment only after the native picker returns",
 );
 assert.match(
+  mainSource,
+  /new SceneImportBridge\(\{[\s\S]*?runWithLoading: \(label, operation\) =>[\s\S]*?canvasStartupOverlay\.runRuntimeOperation\(label, operation\)/,
+  "accepted scene imports must use the shared loading overlay",
+);
+assert.match(
   mixedSceneControllerSource,
   /private async importSvgSource[\s\S]{0,900}catch \(error\) \{[\s\S]{0,240}setSvgImportStatus[\s\S]{0,180}throw error;/,
   "SVG import failures must propagate to the bridge instead of reporting success",
@@ -69,6 +74,7 @@ const importing = [];
 const completed = [];
 const failures = [];
 const imported = [];
+const loadingEvents = [];
 let currentController = null;
 let ensureCount = 0;
 let imagePrewarmCount = 0;
@@ -101,6 +107,14 @@ const bridge = new SceneImportBridge({
     imagePrewarmCount += 1;
   },
   onFailure: (kind, error) => failures.push([kind, String(error)]),
+  runWithLoading: async (label, operation) => {
+    loadingEvents.push(["start", label]);
+    try {
+      return await operation();
+    } finally {
+      loadingEvents.push(["finish", label]);
+    }
+  },
 });
 
 // The native picker is opened synchronously even though controller readiness
@@ -119,11 +133,15 @@ assert.deepEqual(imported, []);
 currentController = controller;
 readiness.resolve(controller);
 await importCompleted;
-await Promise.resolve();
+await new Promise((resolve) => setImmediate(resolve));
 assert.deepEqual(imported, [["svg", "cold-start.svg"]]);
 assert.deepEqual(importing, [["svg", "cold-start.svg"]]);
 assert.deepEqual(completed, [["svg", "cold-start.svg"]]);
 assert.deepEqual(failures, []);
+assert.deepEqual(loadingEvents, [
+  ["start", "Importing SVG"],
+  ["finish", "Importing SVG"],
+]);
 
 // Once ready, image import stays synchronous at the picker boundary and does
 // not repeat controller initialization.
@@ -140,10 +158,14 @@ assert.equal(imageInput.clickCount, 1);
 assert.equal(imagePrewarmCount, 1, "image programs must warm while the picker is open");
 imageInput.choose({ name: "ready.png" });
 await imageCompleted;
-await Promise.resolve();
+await new Promise((resolve) => setImmediate(resolve));
 assert.equal(ensureCount, 1);
 assert.deepEqual(imported.at(-1), ["image", "ready.png"]);
 assert.deepEqual(completed.at(-1), ["image", "ready.png"]);
+assert.deepEqual(loadingEvents.slice(-2), [
+  ["start", "Importing image"],
+  ["finish", "Importing image"],
+]);
 
 // The picker still opens under the original click activation. Settlement only
 // begins after a File is chosen, and the captured File survives the await.

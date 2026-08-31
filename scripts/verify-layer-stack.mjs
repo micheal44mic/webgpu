@@ -2059,6 +2059,10 @@ const sceneEditorSource = readFileSync(
   new URL("../src/scene-editor-controller.ts", import.meta.url),
   "utf8",
 );
+const startupOverlaySource = readFileSync(
+  new URL("../src/canvas-startup-overlay-controller.ts", import.meta.url),
+  "utf8",
+);
 const brushLibrarySource = readFileSync(
   new URL("../src/brush-library-controller.ts", import.meta.url),
   "utf8",
@@ -2507,7 +2511,7 @@ const selectStart = sceneEditorSource.indexOf("private async selectLayerTransact
 assert.notEqual(selectStart, -1, "selectLayer deve esistere");
 assert.match(
   sceneEditorSource.slice(selectStart, selectStart + 5_500),
-  /await this\.options\.engine\.setActiveLayer\(target\.rasterIndex\);\s*this\.options\.syncActiveRasterControls\(\);/,
+  /await this\.options\.engine\.setActiveLayer\(target\.rasterIndex\);\s*await this\.options\.engine\.waitForIdle\(\);\s*this\.options\.syncActiveRasterControls\(\);/,
   "il cambio livello deve risincronizzare i controlli degli effetti",
 );
 assert.match(
@@ -2525,50 +2529,44 @@ assert.match(
   /requiresSelectedTarget && !this\.colorOverlayTargetIsSelected\(\)/,
   "il commit UI non può ricadere sul raster di lavoro sotto un nodo vettoriale",
 );
+assert.equal(
+  (indexSource.match(/id="canvasStartupOverlay"/g) ?? []).length,
+  1,
+  "startup e operazioni runtime devono condividere un solo overlay",
+);
+assert.doesNotMatch(indexSource, /id="layerLoadingOverlay"/);
 assert.match(
   indexSource,
-  /id="layerLoadingOverlay"[\s\S]*?role="status"[\s\S]*?aria-live="polite"[\s\S]*?hidden/,
-  "il cambio livello deve avere un indicatore annunciato e inizialmente nascosto",
+  /id="canvasStartupOverlay"[\s\S]*?aria-label="M1M4\.COM"[\s\S]*?id="canvasStartupProgress"[\s\S]*?role="progressbar"/,
+  "il loader condiviso deve conservare wordmark animato e barra accessibile",
 );
-assert.match(stylesSource, /\.layer-loading-overlay \{[\s\S]*?position: fixed;[\s\S]*?inset: 0;/);
-assert.match(stylesSource, /\.layer-loading-overlay\[hidden\] \{\s*display: none;/);
-const loadingStyles = stylesSource.slice(
-  stylesSource.indexOf(".layer-loading-overlay {"),
-  stylesSource.indexOf(".layer-loading-overlay[hidden]"),
-);
-assert.match(loadingStyles, /background: transparent;/);
-assert.match(loadingStyles, /touch-action: none;/);
-assert.match(loadingStyles, /-webkit-backdrop-filter: none;/);
-assert.match(loadingStyles, /backdrop-filter: none;/);
-assert.doesNotMatch(
-  loadingStyles,
-  /background: rgba\(|blur\(/,
-  "il loader operativo non deve oscurare o sfocare l'editor",
-);
+assert.match(stylesSource, /\.canvas-startup-overlay \{[\s\S]*?backdrop-filter: blur\(6px\);/);
 assert.match(
   stylesSource,
-  /\.layer-loading-content \{[\s\S]*?background: rgba\(20, 23, 31, 0\.84\);/,
-  "spinner e testo devono restare in una piccola scheda semitrasparente",
+  /\.canvas-startup-overlay\[data-mode="runtime"\]\[data-state="loading"\][\s\S]*?animation: canvas-runtime-progress/,
+  "le operazioni runtime devono riusare la barra con avanzamento indeterminato",
 );
+assert.match(startupOverlaySource, /beginRuntimeOperation\(label: string\)/);
+assert.match(startupOverlaySource, /runRuntimeOperation<Result>\(/);
 const loadingStart = sceneEditorSource.indexOf("private async showLoading(");
 const loadingBody = sceneEditorSource.slice(loadingStart, loadingStart + 1_300);
-assert.match(loadingBody, /loadingOverlay\.hidden = false;/);
+assert.match(loadingBody, /this\.options\.onLoadingChange\?\.\(true, message\)/);
 assert.doesNotMatch(
   loadingBody,
   /nextAnimationFrame|requestAnimationFrame/,
   "il loader non deve aggiungere frame di latenza prima dell'operazione",
 );
-assert.match(loadingBody, /loadingOverlay\.hidden = true;/);
+assert.match(loadingBody, /this\.options\.onLoadingChange\?\.\(false, ""\)/);
 const selectUiBody = sceneEditorSource.slice(selectStart, selectStart + 5_500);
 assert.match(
   selectUiBody,
   /await this\.showLoading\("Loading layer…"\)[\s\S]*?await this\.options\.engine\.setActiveLayer\(target\.rasterIndex\);/,
   "il loader dello switch deve avvolgere l'operazione del motore",
 );
-assert.doesNotMatch(
+assert.match(
   selectUiBody,
   /setActiveLayer\(target\.rasterIndex\);[\s\S]{0,300}?waitForIdle\(\)/,
-  "il controller non deve duplicare il fence già posseduto dal cambio livello",
+  "il loader non deve chiudersi prima del frame GPU del nuovo livello",
 );
 assert.match(selectUiBody, /finally \{[\s\S]*?this\.finish\(\{ loading: true \}\);/);
 const addUiStart = sceneEditorSource.indexOf("private async addRasterLayerTransaction(");

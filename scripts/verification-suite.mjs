@@ -110,6 +110,7 @@ export const verificationScripts = Object.freeze([
   "verify-raster-gradient-map-surface-controller.mjs",
   "verify-raster-style-controller.mjs",
   "verify-restored-layer-thumbnails.mjs",
+  "verify-runtime-loading-overlay.mjs",
   "verify-runtime-stats-controller.mjs",
   "verify-scene-import-bridge.mjs",
   "verify-scene-editor-controller.mjs",

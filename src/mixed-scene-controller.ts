@@ -393,6 +393,7 @@ export class MixedSceneController {
   private adaptiveZoomEnabled = true;
   private readonly clippedRefreshPolicy: VectorTextClippedRefreshPolicy;
   private readonly onEditorStateChange: (() => void) | undefined;
+  private readonly runLoadingOperation: MixedSceneControllerOptions["runWithLoading"];
   private readonly canvasGuides: MixedSceneControllerOptions["canvasGuides"];
   private zoomRenderMode: "precise" | "fast" = "precise";
   private viewGestureActive = false;
@@ -474,6 +475,7 @@ export class MixedSceneController {
     this.status = requiredElement<HTMLElement>(options.root, "vectorTextStatus");
     this.clippedRefreshPolicy = options.clippedRefreshPolicy ?? "during-gesture";
     this.onEditorStateChange = options.onEditorStateChange;
+    this.runLoadingOperation = options.runWithLoading;
     this.canvasGuides = options.canvasGuides;
     const interactionContext = this.interactionCanvas.getContext("2d", {
       alpha: true,
@@ -1328,24 +1330,32 @@ export class MixedSceneController {
   }
 
   async applyTransform(): Promise<boolean> {
-    const preparation = this.groupTransformPreparation
-      ?? this.rasterTransformPreparation;
-    if (preparation) await preparation;
-    if (!this.transformSessionOpen) return Promise.resolve(true);
-    return this.applyTransformSession();
+    return this.runWithLoading("Applying Transform", async () => {
+      const preparation = this.groupTransformPreparation
+        ?? this.rasterTransformPreparation;
+      if (preparation) await preparation;
+      if (!this.transformSessionOpen) return true;
+      const applied = await this.applyTransformSession();
+      await this.host.waitForIdle();
+      return applied;
+    });
   }
 
   async cancelTransform(): Promise<boolean> {
-    const preparation = this.groupTransformPreparation
-      ?? this.rasterTransformPreparation;
-    if (preparation) await preparation;
-    if (!this.transformSessionOpen) return true;
-    return this.cancelTransformSession();
+    return this.runWithLoading("Cancelling Transform", async () => {
+      const preparation = this.groupTransformPreparation
+        ?? this.rasterTransformPreparation;
+      if (preparation) await preparation;
+      if (!this.transformSessionOpen) return true;
+      const cancelled = await this.cancelTransformSession();
+      await this.host.waitForIdle();
+      return cancelled;
+    });
   }
 
   createText(color?: string): void {
     if (this.sceneOperationBusy || this.transformSessionOpen) return;
-    void this.runSceneOperation(async () => {
+    void this.runSceneOperation("Creating Text", async () => {
       await this.prepareFontGeometry();
       const textCount =
         this.snapshot?.items.filter((item) => item.kind === "text").length ?? 0;
@@ -1360,7 +1370,7 @@ export class MixedSceneController {
   deleteSelectedText(): void {
     const node = this.selectedTextNode();
     if (!node || this.sceneOperationBusy || this.transformSessionOpen) return;
-    void this.runSceneOperation(async () => {
+    void this.runSceneOperation("Deleting Layer", async () => {
       await this.host.deleteVectorTextNode(node.id);
     });
   }
@@ -2009,6 +2019,7 @@ export class MixedSceneController {
         this.defaultSvgSeed(documentValue),
         documentValue.sourceName,
       );
+      await this.host.waitForIdle();
       const sourceMiB = documentValue.sourceBytes / MEBIBYTE_BYTES;
       const vectorMiB = documentValue.logicalVectorBytes / MEBIBYTE_BYTES;
       this.setSvgImportStatus(
@@ -2047,6 +2058,7 @@ export class MixedSceneController {
     this.syncControlsFromSelection(this.selectedVectorNode());
     try {
       const imported = await this.host.importRasterImageFile(file);
+      await this.host.waitForIdle();
       const sourceMiB = imported.sourceBytes / MEBIBYTE_BYTES;
       this.setImageImportStatus(
         `${imported.name} imported directly as a raster · `
@@ -2301,7 +2313,15 @@ export class MixedSceneController {
     }
     const requestedMode = this.rasterTransformToolMode;
     const generation = this.rasterTransformModeSwitchGeneration;
-    const preparation = this.runRasterTransformPreparation(requestedMode, generation);
+    const operation = requestedMode === "warp"
+      ? "Warp"
+      : requestedMode === "perspective"
+        ? "Perspective"
+        : "Transform";
+    const preparation = this.runWithLoading(
+      `Preparing ${operation}`,
+      () => this.runRasterTransformPreparation(requestedMode, generation),
+    );
     this.rasterTransformPreparation = preparation;
     this.updateTransformUi();
     void preparation.finally(() => {
@@ -2323,7 +2343,7 @@ export class MixedSceneController {
       : mode === "perspective"
         ? "Perspective"
         : "Transform";
-    const preparation = (async (): Promise<void> => {
+    const preparation = this.runWithLoading(`Preparing ${operation}`, async (): Promise<void> => {
       this.status.textContent = `Preparing ${operation} on the GPU for ${nodeName}…`;
       try {
         await this.host.prewarmRasterTransformPrograms(mode);
@@ -2351,7 +2371,7 @@ export class MixedSceneController {
             : "Transform";
         this.status.textContent = `${message} ${fallback} remains unchanged; Cancel or select it again.`;
       }
-    })();
+    });
     this.rasterTransformPreparation = preparation;
     this.updateTransformUi();
     void preparation.finally(() => {
@@ -2369,7 +2389,10 @@ export class MixedSceneController {
       || !selection
       || this.transformSessionOpen
     ) return Promise.resolve();
-    const preparation = this.runGroupTransformPreparation(selection.orderedKeys);
+    const preparation = this.runWithLoading(
+      "Preparing Transform",
+      () => this.runGroupTransformPreparation(selection.orderedKeys),
+    );
     this.groupTransformPreparation = preparation;
     this.updateTransformUi();
     void preparation.finally(() => {
@@ -2588,7 +2611,7 @@ export class MixedSceneController {
     const selected = this.selectedTextNode();
     if (!selected || selected.text.length === 0) return null;
     const textId = selected.id;
-    const rasterized = await this.runSceneOperation(async () => {
+    const rasterized = await this.runSceneOperation("Rasterizing Text", async () => {
       this.setTextRasterStatus(
         "Preparing text at document resolution…",
       );
@@ -2663,7 +2686,7 @@ export class MixedSceneController {
     const selected = this.selectedSvgNode();
     if (!selected) return null;
     const svgId = selected.id;
-    const rasterized = await this.runSceneOperation(async () => {
+    const rasterized = await this.runSceneOperation("Rasterizing SVG", async () => {
       this.setSvgImportStatus("Preparing SVG meshes at document resolution…");
       const view = this.vectorRasterView();
       const rasterSlots = new Set<string>();
@@ -2940,7 +2963,15 @@ export class MixedSceneController {
       { passive: false },
     );
   }
+  private runWithLoading<Result>(
+    label: string,
+    operation: () => Promise<Result>,
+  ): Promise<Result> {
+    return this.runLoadingOperation?.(label, operation) ?? operation();
+  }
+
   private async runSceneOperation<Result>(
+    label: string,
     operation: () => Promise<Result>,
     propagateError = false,
   ): Promise<Result | undefined> {
@@ -2950,7 +2981,11 @@ export class MixedSceneController {
     this.sceneOperationBusy = true;
     this.syncControlsFromSelection(this.selectedVectorNode());
     try {
-      return await operation();
+      return await this.runWithLoading(label, async () => {
+        const result = await operation();
+        await this.host.waitForIdle();
+        return result;
+      });
     } catch (error) {
       this.status.textContent = error instanceof Error
         ? error.message

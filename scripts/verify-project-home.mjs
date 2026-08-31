@@ -51,6 +51,11 @@ expect(html, 'id="saveProjectButton"', "editor save control");
 expect(html, 'id="projectHomeButton"', "editor home control");
 expect(html, 'src="/src/startup.ts"', "deferred editor entrypoint");
 expect(html, 'id="canvasStartupOverlay"', "canvas startup overlay");
+assert(
+  (html.match(/id="canvasStartupOverlay"/g) ?? []).length === 1,
+  "one shared startup/runtime loading overlay",
+);
+reject(html, 'id="layerLoadingOverlay"', "obsolete secondary loading overlay");
 expect(html, 'aria-label="M1M4.COM"', "stable startup wordmark label");
 expect(
   html,
@@ -287,6 +292,12 @@ expect(startupStyles, "border-radius: 0", "square canvas startup progress track"
 expect(startupStyles, "@keyframes canvas-startup-character-eighth", "complete wordmark reveal loop");
 expect(
   startupStyles,
+  '.canvas-startup-overlay[data-mode="runtime"][data-state="loading"]',
+  "runtime loading mode on the same overlay",
+);
+expect(startupStyles, "@keyframes canvas-runtime-progress", "runtime progress animation");
+expect(
+  startupStyles,
   ".canvas-startup-wordmark-characters > span {\n    animation: none;\n    opacity: 1;",
   "static reduced-motion wordmark",
 );
@@ -309,6 +320,21 @@ expect(canvasStartupOverlay, "child.inert = true", "blocked editor interaction d
 expect(canvasStartupOverlay, "element.inert = false", "restored editor interaction after startup");
 expect(canvasStartupOverlay, "isVisible(): boolean", "visible startup overlay presentation gate");
 expect(canvasStartupOverlay, "dismiss(): void", "unchanged project overlay dismissal");
+expect(canvasStartupOverlay, "beginRuntimeOperation(label: string)", "reference-counted runtime loading entry");
+expect(canvasStartupOverlay, "runRuntimeOperation<Result>", "promise-scoped runtime loading helper");
+expect(canvasStartupOverlay, "this.runtimeOperations.delete(operationId)", "idempotent runtime settlement");
+expect(
+  canvasStartupOverlay,
+  'progressBar.removeAttribute("aria-valuenow")',
+  "indeterminate runtime progress semantics",
+);
+expect(main, "canvasStartupOverlay.runRuntimeOperation", "runtime loading composition");
+expect(main, 'beginRasterGaussianBlur: "Preparing Gaussian Blur"', "filter preparation loading label");
+expect(main, 'commitRasterGradientMap: "Applying Gradient Map"', "filter apply loading label");
+expect(main, 'cancelRasterLiquify: "Cancelling Liquify"', "filter cancel loading label");
+expect(main, '"Preparing Clone"', "Clone preparation loading label");
+expect(main, '"Updating selection"', "selection loading label");
+expect(projectSession, '"Saving Project"', "project save loading label");
 expect(main, "documentSwitchGeneration += 1", "document switch continuation generation");
 expect(main, '|| (result.status === "failed" && !result.destructive)',
   "post-switch control unlock gate");

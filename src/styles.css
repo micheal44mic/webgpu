@@ -3167,6 +3167,16 @@ select {
   transition: transform 220ms ease-out;
 }
 
+.canvas-startup-overlay[data-mode="runtime"][data-state="loading"]
+  .canvas-startup-progress-fill {
+  animation: canvas-runtime-progress 12s cubic-bezier(0.12, 0.6, 0.2, 1) forwards;
+}
+
+@keyframes canvas-runtime-progress {
+  from { transform: scaleX(0.12); }
+  to { transform: scaleX(0.9); }
+}
+
 @keyframes canvas-startup-character-first {
   0%, 99.99% { opacity: 1; }
   100% { opacity: 1; }
@@ -3224,6 +3234,11 @@ select {
     animation: none;
     opacity: 1;
   }
+
+  .canvas-startup-overlay[data-mode="runtime"][data-state="loading"]
+    .canvas-startup-progress-fill {
+    animation: none;
+  }
 }
 
 .stats {
@@ -3254,71 +3269,6 @@ select {
   text-align: right;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.layer-loading-overlay {
-  position: fixed;
-  z-index: 100;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  padding:
-    max(24px, env(safe-area-inset-top))
-    max(24px, env(safe-area-inset-right))
-    max(24px, env(safe-area-inset-bottom))
-    max(24px, env(safe-area-inset-left));
-  /* The interaction gate remains fullscreen, but ordinary editor operations
-     must not dim or blur the interface underneath it. */
-  background: transparent;
-  color: #f4f5f7;
-  cursor: progress;
-  touch-action: none;
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-}
-
-.layer-loading-overlay[hidden] {
-  display: none;
-}
-
-.layer-loading-content {
-  display: grid;
-  justify-items: center;
-  gap: 14px;
-  min-width: 178px;
-  padding: 18px 20px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 16px;
-  background: rgba(20, 23, 31, 0.84);
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
-}
-
-.layer-loading-content p {
-  margin: 0;
-  font-size: 0.95rem;
-  font-weight: 650;
-  letter-spacing: 0.01em;
-}
-
-.layer-loading-spinner {
-  width: 30px;
-  height: 30px;
-  border: 3px solid #343945;
-  border-top-color: #7d8aff;
-  border-radius: 50%;
-  animation: layer-loading-spin 0.75s linear infinite;
-}
-
-@keyframes layer-loading-spin {
-  to {
-    transform: rotate(1turn);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .layer-loading-spinner {
-    animation-duration: 1.5s;
-  }
 }
 
 @media (max-width: 820px) {

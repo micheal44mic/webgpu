@@ -27,10 +27,15 @@ assert.match(
 assert.match(toolSelection, /initializeMixedSceneController\(initializationScope\)/);
 assert.match(
   toolSelection,
-  /initializationScope === "raster-transform"[\s\S]*?void engine\.prewarmRasterTransformPrograms\(mode\)/,
-  "Transform/Warp selection should start the small mode bundle without blocking the click",
+  /initializationScope === "raster-transform"[\s\S]*?preparations\.push\(engine\.prewarmRasterTransformPrograms\(mode\)/,
+  "Transform/Warp selection should register the small mode bundle without blocking the click",
 );
 assert.doesNotMatch(toolSelection, /await engine\.prewarmRasterTransformPrograms/);
+assert.match(
+  toolSelection,
+  /canvasStartupOverlay\.runRuntimeOperation\([\s\S]*?Promise\.all\(preparations\)/,
+  "cold tool preparation must stay inside the shared loading lifecycle",
+);
 assert.doesNotMatch(
   toolSelection,
   /ensureOptionalEditorResources/,
@@ -48,8 +53,8 @@ assert.match(
 );
 assert.match(
   controllerInitialization,
-  /scope === "shape-preview"[\s\S]*?engine\.ensureShapePreviewEditorResources\(\)/,
-  "Shapes must await only their small ordered-preview capability",
+  /scope === "shape-preview"[\s\S]*?engine\.ensureShapePreviewEditorResources\(\)[\s\S]*?engine\.ensureVectorShapeEditorResources\(\)/,
+  "Shapes must await preview and permanent vector resources before reporting readiness",
 );
 assert.match(
   controllerInitialization,

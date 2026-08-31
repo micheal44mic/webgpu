@@ -625,7 +625,7 @@ assert.match(
 );
 assert.match(
   controllerSource,
-  /const requestedMode = this\.rasterTransformToolMode;[\s\S]{0,160}const generation = this\.rasterTransformModeSwitchGeneration;[\s\S]{0,160}runRasterTransformPreparation\(requestedMode, generation\)/,
+  /const requestedMode = this\.rasterTransformToolMode;[\s\S]{0,160}const generation = this\.rasterTransformModeSwitchGeneration;[\s\S]{0,420}runRasterTransformPreparation\(requestedMode, generation\)/,
   "initial raster preparation must capture both requested mode and generation",
 );
 assert.match(

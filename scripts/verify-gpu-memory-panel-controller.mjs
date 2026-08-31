@@ -215,8 +215,8 @@ assert.match(
 );
 assert.match(
   styles,
-  /\.layer-loading-overlay\s*\{[\s\S]*?z-index:\s*100;/,
-  "the critical loading overlay must remain above the collapsed monitor",
+  /\.canvas-startup-overlay\s*\{[\s\S]*?z-index:\s*120;/,
+  "the shared loading overlay must remain above the collapsed monitor",
 );
 
 console.log("GPU memory panel: live collapsed totals/deltas, deferred details, telemetry, focus and disposal verified.");

@@ -260,11 +260,10 @@ const engine = {
 };
 const elements = {
   app: new FakeElement(),
-  loadingOverlay: new FakeElement(),
-  loadingLabel: new FakeElement(),
   result: new FakeElement(),
 };
 const busyChanges = [];
+const loadingChanges = [];
 const historyStates = [];
 const layerOptionErrors = [];
 let interactionLocked = false;
@@ -280,6 +279,7 @@ const controller = new SceneEditorController({
   getVectorController: () => null,
   isInteractionLocked: () => interactionLocked,
   onBusyChange: (busy) => busyChanges.push(busy),
+  onLoadingChange: (loading, message) => loadingChanges.push({ loading, message }),
   onHistoryState: (state) => historyStates.push(state),
   requestLayersRefresh() {},
   renderLayers() {},
@@ -293,12 +293,15 @@ const controller = new SceneEditorController({
 // The key is resolved against the latest scene immediately before mutation.
 controller.setRasterReference("raster:7", true);
 assert.equal(controller.isBusy, true);
-assert.equal(elements.loadingOverlay.hidden, false);
+assert.deepEqual(loadingChanges.at(-1), {
+  loading: true,
+  message: "Preparing the GPU Reference…",
+});
 assert.equal(elements.app.getAttribute("aria-busy"), "true");
 await settle();
 assert.deepEqual(calls.at(-1), ["reference", 1, true]);
 assert.equal(controller.isBusy, false);
-assert.equal(elements.loadingOverlay.hidden, true);
+assert.deepEqual(loadingChanges.at(-1), { loading: false, message: "" });
 assert.equal(elements.app.getAttribute("aria-busy"), null);
 
 controller.setLayerOpacity("text:5", 0.4);
@@ -447,7 +450,7 @@ assert.deepEqual(
 
 controller.dispose();
 assert.equal(controller.isBusy, false);
-assert.equal(elements.loadingOverlay.hidden, true);
+assert.deepEqual(loadingChanges.at(-1), { loading: false, message: "" });
 
 // The loader yields only to the promise microtask: it adds no animation-frame
 // latency, while disposal can still stop the mutation before it starts.
@@ -456,10 +459,9 @@ assert.equal(elements.loadingOverlay.hidden, true);
   let addCalls = 0;
   const lifecycleElements = {
     app: new FakeElement(),
-    loadingOverlay: new FakeElement(),
-    loadingLabel: new FakeElement(),
     result: new FakeElement(),
   };
+  const lifecycleLoadingChanges = [];
   const lifecycleController = new SceneEditorController({
     engine: {
       ...engine,
@@ -478,6 +480,9 @@ assert.equal(elements.loadingOverlay.hidden, true);
     getVectorController: () => null,
     isInteractionLocked: () => false,
     onBusyChange() {},
+    onLoadingChange: (loading, message) => {
+      lifecycleLoadingChanges.push({ loading, message });
+    },
     onHistoryState() {},
     requestLayersRefresh() {},
     renderLayers() {},
@@ -494,7 +499,7 @@ assert.equal(elements.loadingOverlay.hidden, true);
   await settle();
   assert.equal(addCalls, 0);
   assert.equal(lifecycleController.isBusy, false);
-  assert.equal(lifecycleElements.loadingOverlay.hidden, true);
+  assert.deepEqual(lifecycleLoadingChanges.at(-1), { loading: false, message: "" });
 }
 
 // Curves preparation rasterizes every editable vector in stable order, then
@@ -597,8 +602,6 @@ assert.equal(elements.loadingOverlay.hidden, true);
   };
   const batchElements = {
     app: new FakeElement(),
-    loadingOverlay: new FakeElement(),
-    loadingLabel: new FakeElement(),
     result: new FakeElement(),
   };
   const batchController = new SceneEditorController({
