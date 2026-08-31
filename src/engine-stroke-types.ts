@@ -19,6 +19,8 @@ export interface Stamp {
   radius: number;
   pressure: number;
   seed: number;
+  /** Ordered Shape texture-array layer selected for this base stamp. */
+  shapeLayer: number;
   directionX: number;
   directionY: number;
   historyActionId: number;

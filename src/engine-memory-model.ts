@@ -15,6 +15,7 @@ import {
   LIGHT_GLAZE_COMMIT_TILE_EXTENT,
   MEBIBYTE_BYTES,
   SHAPE_MASK_PIXEL_COUNT,
+  SHAPE_MASK_SIZE,
   STATIC_PAINT_BUFFER_BYTES,
 } from "./engine-limits.ts";
 import type { LightGlazeStorageMode } from "./engine-strategies";
@@ -104,10 +105,47 @@ export function lightGlazeAdditionalMemoryMiB(
     + commitTileMiB;
 }
 
-export function shapeTextureMemoryMiB(_format: BrushShapeMaskFormat = "r16float"): number {
+export function shapeTextureMemoryMiB(
+  _format: BrushShapeMaskFormat = "r16float",
+  layerCount = 1,
+): number {
   // Both comparison modes use the same guarded R16F allocation. The 8-bit
   // mode quantizes source samples in the reconstruction shader only.
-  return SHAPE_MASK_PIXEL_COUNT * 2 / MEBIBYTE_BYTES;
+  const normalizedLayerCount = Math.max(1, Math.min(4, Math.trunc(layerCount)));
+  return SHAPE_MASK_PIXEL_COUNT * 2 * normalizedLayerCount / MEBIBYTE_BYTES;
+}
+
+/** One native scalar16 upload texture; it has no mip chain. */
+export function shapeTextureUploadStagingMemoryMiB(
+  width = SHAPE_MASK_SIZE,
+  height = SHAPE_MASK_SIZE,
+): number {
+  const normalizedWidth = Math.max(1, Math.trunc(width));
+  const normalizedHeight = Math.max(1, Math.trunc(height));
+  if (!Number.isFinite(normalizedWidth) || !Number.isFinite(normalizedHeight)) {
+    throw new RangeError("Shape source dimensions must be finite.");
+  }
+  return normalizedWidth * normalizedHeight * 2 / MEBIBYTE_BYTES;
+}
+
+/**
+ * Peak GPU residency while replacing one Shape array with another through the
+ * sequential loader. The old and candidate arrays overlap until publication,
+ * while only one source staging texture is live at any time.
+ */
+export function shapeTextureSequentialTransitionPeakMemoryMiB(
+  previousLayerCount: number,
+  nextLayerCount: number,
+  largestSourceWidth = SHAPE_MASK_SIZE,
+  largestSourceHeight = SHAPE_MASK_SIZE,
+): number {
+  const previous = previousLayerCount > 0
+    ? shapeTextureMemoryMiB("r16float", previousLayerCount)
+    : 0;
+  const next = shapeTextureMemoryMiB("r16float", nextLayerCount);
+  return previous
+    + next
+    + shapeTextureUploadStagingMemoryMiB(largestSourceWidth, largestSourceHeight);
 }
 
 export function staticPaintBufferMemoryMiB(): number {

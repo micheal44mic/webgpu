@@ -33,6 +33,12 @@ for (const id of [
   "mobileBrushStudioGrainTab",
   "mobileBrushStudioDynamicsTab",
   "mobileBrushStudioShapeFile",
+  "mobileBrushStudioShapeSequenceList",
+  "mobileBrushStudioShapeSequenceCount",
+  "mobileBrushStudioShapeAdd",
+  "mobileBrushStudioShapeMoveEarlier",
+  "mobileBrushStudioShapeMoveLater",
+  "mobileBrushStudioShapeSequenceMode",
   "mobileBrushStudioGrainFile",
   "mobileBrushLibraryAdd",
   "mobileBrushLibraryImport",
@@ -94,6 +100,16 @@ assert.match(
   studio,
   /private withBrushPrecision\(settings: Readonly<BrushSettings>\): BrushSettings \{[\s\S]*?shapeMaskFormat: this\.options\.getBrushPrecision\(\),[\s\S]*?\}/,
   "Brush Studio must centralize the global precision override",
+);
+assert.match(
+  studio,
+  /private withBrushPrecision[\s\S]*?const shapeAssetIds = shapeAssetIdsForSettings\(settings\)[\s\S]*?shapeAssetIds,/,
+  "Studio snapshots must clone the Shape sequence instead of aliasing editable arrays",
+);
+assert.match(
+  studio,
+  /shapeSequenceMode: settings\.shapeSequenceMode === "random" \? "random" : "ordered"/,
+  "Studio must migrate invalid or absent sequence modes to ordered",
 );
 assert.match(
   studio,
@@ -196,7 +212,7 @@ assert.match(html, /id="mobileBrushLibraryImportFile"[\s\S]*?\.m1m4brush/);
 assert.match(html, /id="mobileBrushLibraryImportFile"[\s\S]*?application\/octet-stream/);
 assert.match(
   library,
-  /const candidate = restored\?\.activeBrushId;[\s\S]*?this\.activeBrushId = candidate[\s\S]*?candidate as BrushLibraryBrushId/,
+  /const candidate = restored\?\.activeBrushId;[\s\S]*?builtinBrushPreset\(candidate\)[\s\S]*?candidate as BrushLibraryBrushId/,
   "the last active saved brush must remain selected after refresh",
 );
 const studioCommitStart = library.indexOf("private async commitStudioBrush(");
@@ -257,8 +273,8 @@ const portableImport = library.slice(portableImportStart, portableImportEnd);
 assert.match(portableImport, /parseBrushStudioTransferBlob\(file\)/);
 assert.match(
   portableImport,
-  /saveBrushStudioAsset\([\s\S]*?"shape",\s*imported\.shapeAsset\.blob,/,
-  "portable import must store the validated Shape PNG byte-exactly",
+  /for \(const \[index, importedShapeAsset\] of imported\.shapeAssets\.entries\(\)\)[\s\S]*?saveBrushStudioAsset\([\s\S]*?"shape",\s*importedShapeAsset\.blob,/,
+  "portable import must store every validated Shape PNG byte-exactly",
 );
 assert.match(
   portableImport,
@@ -328,6 +344,51 @@ assert.match(
   studio,
   /normalizedBrushSourceBlob\(this\.document, decoded, file\)[\s\S]*?blob: normalizedBlob/,
   "Shape and Grain must persist the precision-preserving source selected during decode",
+);
+assert.match(
+  studio,
+  /private renderShapeSequenceControls[\s\S]*?aria-pressed[\s\S]*?String\.fromCharCode\(65 \+ index\)/,
+  "Shape slots must expose their A-D order and selected state",
+);
+assert.match(
+  studio,
+  /mobileBrushStudioShapeSequenceList[\s\S]*?data-mobile-brush-shape-slot[\s\S]*?this\.selectedShapeIndex = index/,
+  "dynamic Shape slots must use the controller's abortable event delegation",
+);
+assert.match(
+  studio,
+  /private handleRadioButtonKeydown[\s\S]*?ArrowLeft[\s\S]*?ArrowRight[\s\S]*?next\.click\(\)/,
+  "segmented radio groups must support standard arrow-key navigation",
+);
+assert.match(
+  studio,
+  /shapeImportMode === "append"[\s\S]*?ids\.push\(id\)[\s\S]*?ids\[this\.selectedShapeIndex\] = id/,
+  "Shape import must support both adding a slot and replacing the selected slot",
+);
+assert.match(
+  studio,
+  /private moveSelectedShape[\s\S]*?\[ids\[this\.selectedShapeIndex\], ids\[targetIndex\]\]/,
+  "Shape order must be editable without changing Count",
+);
+assert.match(
+  studio,
+  /for \(const assetId of this\.customShapeAssetIds\(settings\)\)[\s\S]*?shapeAssetRefs\.push\(\{ assetId, storageKey \}\)[\s\S]*?shapeAssetRefs,/,
+  "Done must persist every unique custom Shape source and its storage reference",
+);
+assert.match(
+  studio,
+  /const shapeRefs = new Map\([\s\S]*?for \(const assetId of this\.customShapeAssetIds\(resolved\)\)[\s\S]*?restoreSavedAsset/,
+  "saved multi-Shape brushes must hydrate every custom source",
+);
+assert.match(
+  studio,
+  /private async releaseTransientAssets[\s\S]*?this\.openState && this\.draftSettings[\s\S]*?customShapeAssetIds\(this\.draftSettings\)/,
+  "an asynchronous release must never remove a custom Shape still owned by the open draft",
+);
+assert.match(
+  studio,
+  /shapeImportMode === "append" && this\.shapeIdsForStudio\(\)\.length >= 4[\s\S]*?up to four Shape sources/,
+  "a completed Add request must not silently replace a slot when the sequence is already full",
 );
 assert.match(
   studio,

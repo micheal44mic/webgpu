@@ -259,6 +259,9 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
   );
   engine.shapeMaskPlaceholderView = engine.shapeMaskPlaceholderTexture.createView({
     label: "Shape placeholder view",
+    dimension: "2d-array",
+    baseArrayLayer: 0,
+    arrayLayerCount: 1,
   });
   engine.shapeMaskView = engine.shapeMaskPlaceholderView;
   engine.shapeOccupancyUniformBuffers = Array.from(
@@ -284,7 +287,7 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
     {
       binding: 2,
       visibility: GPUShaderStage.FRAGMENT,
-      texture: { sampleType: "float", viewDimension: "2d" },
+      texture: { sampleType: "float", viewDimension: "2d-array" },
     },
     {
       binding: 3,
@@ -1098,25 +1101,40 @@ function shapeR16FloatPipelineResources(
   return created;
 }
 
+interface ShapeTextureSource {
+  readonly scalar16: Uint16Array;
+  readonly sourceWidth: number;
+  readonly sourceHeight: number;
+  readonly sourceLabel: string;
+}
+
+interface ShapeTextureSourceBatch {
+  readonly source: ShapeTextureSource;
+  readonly layers: readonly number[];
+}
+
+interface ShapeTextureSourceStream {
+  readonly length: number;
+  readonly decodedLayers: Array<DecodedShapeMaskMetadata | undefined>;
+  readonly batches: AsyncIterable<ShapeTextureSourceBatch>;
+}
+
 async function createR16FloatShapeTexture(
   engine: BrushEngine,
-  scalar16: Uint16Array,
-  sourceWidth: number,
-  sourceHeight: number,
-  sourceLabel: string,
+  sources: ShapeTextureSourceStream,
   sourceFormat: BrushShapeMaskFormat,
 ): Promise<GPUTexture> {
+  if (sources.length < 1) throw new Error("A Shape texture needs at least one layer.");
   const mipLevelCount = Math.log2(SHAPE_MASK_SIZE) + 1;
   let texture: GPUTexture | null = null;
-  let stagingTexture: GPUTexture | null = null;
 
   try {
     texture = engine.device.createTexture({
-      label: `${sourceLabel} guarded R16F Shape mask`,
+      label: `${sources.length}-layer guarded R16F Shape mask`,
       size: {
         width: SHAPE_MASK_SIZE,
         height: SHAPE_MASK_SIZE,
-        depthOrArrayLayers: 1,
+        depthOrArrayLayers: sources.length,
       },
       mipLevelCount,
       format: "r16float",
@@ -1124,40 +1142,6 @@ async function createR16FloatShapeTexture(
         GPUTextureUsage.TEXTURE_BINDING
         | GPUTextureUsage.RENDER_ATTACHMENT,
     });
-    stagingTexture = engine.device.createTexture({
-      label: `${sourceLabel} native scalar16 Shape staging`,
-      size: {
-        width: sourceWidth,
-        height: sourceHeight,
-        depthOrArrayLayers: 1,
-      },
-      mipLevelCount: 1,
-      format: "r16uint",
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
-    const bytesPerRow = Math.ceil((sourceWidth * 2) / 256) * 256;
-    let upload = scalar16;
-    if (bytesPerRow !== sourceWidth * 2) {
-      const samplesPerRow = bytesPerRow / 2;
-      upload = new Uint16Array(samplesPerRow * sourceHeight);
-      for (let row = 0; row < sourceHeight; row += 1) {
-        upload.set(
-          scalar16.subarray(row * sourceWidth, (row + 1) * sourceWidth),
-          row * samplesPerRow,
-        );
-      }
-    }
-    engine.device.queue.writeTexture(
-      { texture: stagingTexture },
-      upload,
-      { bytesPerRow, rowsPerImage: sourceHeight },
-      {
-        width: sourceWidth,
-        height: sourceHeight,
-        depthOrArrayLayers: 1,
-      },
-    );
-
     const {
       baseBindGroupLayout,
       basePipelines,
@@ -1165,95 +1149,153 @@ async function createR16FloatShapeTexture(
       mipPipeline,
       sampler,
     } = await shapeR16FloatPipelineResources(engine.device);
-    const encoder = engine.device.createCommandEncoder({
-      label: "Shape guarded R16F full mip chain encoder",
-    });
 
-    const basePass = encoder.beginRenderPass({
-      label: "Shape build guarded R16F mip 0",
-      colorAttachments: [
-        {
-          view: texture.createView({
-            label: "Shape guarded R16F mip 0 target",
-            baseMipLevel: 0,
-            mipLevelCount: 1,
-          }),
-          loadOp: "clear",
-          storeOp: "store",
-          clearValue: { r: 0, g: 0, b: 0, a: 1 },
-        },
-      ],
-    });
-    basePass.setPipeline(basePipelines[sourceFormat]);
-    basePass.setBindGroup(
-      0,
-      engine.device.createBindGroup({
-        label: "Shape native scalar16 to guarded R16F bind group",
-        layout: baseBindGroupLayout,
-        entries: [
-          { binding: 0, resource: stagingTexture.createView() },
-        ],
-      }),
-    );
-    basePass.draw(3, 1, 0, 0);
-    basePass.end();
-
-    for (let mipLevel = 1; mipLevel < mipLevelCount; mipLevel += 1) {
-      const pass = encoder.beginRenderPass({
-        label: `Shape build R16F mip ${mipLevel}`,
-        colorAttachments: [
-          {
-            view: texture.createView({
-              label: `Shape R16F mip ${mipLevel} target`,
-              baseMipLevel: mipLevel,
-              mipLevelCount: 1,
-            }),
-            loadOp: "clear",
-            storeOp: "store",
-            clearValue: { r: 0, g: 0, b: 0, a: 1 },
+    // Decode and upload one unique authored source at a time. A queue fence
+    // bounds the transient allocation to one native staging texture even when
+    // all four array layers use different Shapes. Repeated sources still fill
+    // every requested layer in the same submission without another decode.
+    for await (const batch of sources.batches) {
+      const { source } = batch;
+      let stagingTexture: GPUTexture | null = null;
+      try {
+        stagingTexture = engine.device.createTexture({
+          label: `${source.sourceLabel} native scalar16 Shape staging`,
+          size: {
+            width: source.sourceWidth,
+            height: source.sourceHeight,
+            depthOrArrayLayers: 1,
           },
-        ],
-      });
-      pass.setPipeline(mipPipeline);
-      pass.setBindGroup(
-        0,
-        engine.device.createBindGroup({
-          label: `Shape R16F mip ${mipLevel} bind group`,
-          layout: mipBindGroupLayout,
-          entries: [
-            {
-              binding: 0,
-              resource: texture.createView({
-                label: `Shape R16F mip ${mipLevel - 1} source`,
-                baseMipLevel: mipLevel - 1,
-                mipLevelCount: 1,
-              }),
-            },
-            { binding: 1, resource: sampler },
-          ],
-        }),
-      );
-      pass.draw(3, 1, 0, 0);
-      pass.end();
-    }
+          mipLevelCount: 1,
+          format: "r16uint",
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+        });
+        const bytesPerRow = Math.ceil((source.sourceWidth * 2) / 256) * 256;
+        let upload = source.scalar16;
+        if (bytesPerRow !== source.sourceWidth * 2) {
+          const samplesPerRow = bytesPerRow / 2;
+          upload = new Uint16Array(samplesPerRow * source.sourceHeight);
+          for (let row = 0; row < source.sourceHeight; row += 1) {
+            upload.set(
+              source.scalar16.subarray(
+                row * source.sourceWidth,
+                (row + 1) * source.sourceWidth,
+              ),
+              row * samplesPerRow,
+            );
+          }
+        }
+        engine.device.queue.writeTexture(
+          { texture: stagingTexture },
+          upload,
+          { bytesPerRow, rowsPerImage: source.sourceHeight },
+          {
+            width: source.sourceWidth,
+            height: source.sourceHeight,
+            depthOrArrayLayers: 1,
+          },
+        );
 
-    engine.device.queue.submit([encoder.finish()]);
-    await engine.device.queue.onSubmittedWorkDone();
+        const encoder = engine.device.createCommandEncoder({
+          label: "Shape array guarded R16F source upload encoder",
+        });
+        for (const layer of batch.layers) {
+          const layerView = (mipLevel: number, label: string): GPUTextureView => texture!.createView({
+            label,
+            dimension: "2d",
+            baseArrayLayer: layer,
+            arrayLayerCount: 1,
+            baseMipLevel: mipLevel,
+            mipLevelCount: 1,
+          });
+          const basePass = encoder.beginRenderPass({
+            label: `Shape layer ${layer} build guarded R16F mip 0`,
+            colorAttachments: [{
+              view: layerView(0, `Shape layer ${layer} guarded R16F mip 0 target`),
+              loadOp: "clear",
+              storeOp: "store",
+              clearValue: { r: 0, g: 0, b: 0, a: 1 },
+            }],
+          });
+          basePass.setPipeline(basePipelines[sourceFormat]);
+          basePass.setBindGroup(0, engine.device.createBindGroup({
+            label: `Shape layer ${layer} native scalar16 reconstruction bind group`,
+            layout: baseBindGroupLayout,
+            entries: [{ binding: 0, resource: stagingTexture.createView() }],
+          }));
+          basePass.draw(3, 1, 0, 0);
+          basePass.end();
+
+          for (let mipLevel = 1; mipLevel < mipLevelCount; mipLevel += 1) {
+            const pass = encoder.beginRenderPass({
+              label: `Shape layer ${layer} build R16F mip ${mipLevel}`,
+              colorAttachments: [{
+                view: layerView(mipLevel, `Shape layer ${layer} R16F mip ${mipLevel} target`),
+                loadOp: "clear",
+                storeOp: "store",
+                clearValue: { r: 0, g: 0, b: 0, a: 1 },
+              }],
+            });
+            pass.setPipeline(mipPipeline);
+            pass.setBindGroup(0, engine.device.createBindGroup({
+              label: `Shape layer ${layer} R16F mip ${mipLevel} bind group`,
+              layout: mipBindGroupLayout,
+              entries: [
+                {
+                  binding: 0,
+                  resource: layerView(
+                    mipLevel - 1,
+                    `Shape layer ${layer} R16F mip ${mipLevel - 1} source`,
+                  ),
+                },
+                { binding: 1, resource: sampler },
+              ],
+            }));
+            pass.draw(3, 1, 0, 0);
+            pass.end();
+          }
+        }
+
+        engine.device.queue.submit([encoder.finish()]);
+        await engine.device.queue.onSubmittedWorkDone();
+      } finally {
+        stagingTexture?.destroy();
+      }
+    }
     return texture;
   } catch (error) {
     texture?.destroy();
     throw error;
-  } finally {
-    stagingTexture?.destroy();
   }
 }
 
-export async function createShapeMaskResources(
+interface DecodedShapeMaskResource extends ShapeTextureSource {
+  readonly assetId: BrushShapeAssetId;
+  readonly decodeStrategy: ShapeMaskDecodeStrategy;
+  readonly identity: number;
+  readonly occupancyWords: Uint32Array;
+  readonly occupancyActiveCells: number[];
+  readonly occupancyCoverageRatios: number[];
+  readonly outline: ShapeMaskResources["outline"];
+  readonly previewSprite: HTMLCanvasElement;
+}
+
+interface DecodedShapeMaskMetadata {
+  readonly assetId: BrushShapeAssetId;
+  readonly decodeStrategy: ShapeMaskDecodeStrategy;
+  readonly identity: number;
+  readonly occupancyWords: Uint32Array;
+  readonly occupancyActiveCells: number[];
+  readonly occupancyCoverageRatios: number[];
+  readonly outline: ShapeMaskResources["outline"];
+  readonly previewSprite: HTMLCanvasElement;
+}
+
+async function decodeShapeMaskResource(
   engine: BrushEngine,
   assetId: BrushShapeAssetId,
   shapeInvert: boolean,
   shapeMaskFormat: BrushShapeMaskFormat,
-): Promise<ShapeMaskResources> {
+): Promise<DecodedShapeMaskResource> {
   let scalar16: Uint16Array;
   let sourceWidth: number;
   let sourceHeight: number;
@@ -1391,14 +1433,6 @@ export async function createShapeMaskResources(
     previewContext.putImageData(image, 0, 0);
   }
 
-  const texture = await createR16FloatShapeTexture(
-    engine,
-    scalar16,
-    sourceWidth,
-    sourceHeight,
-    sourceLabel,
-    shapeMaskFormat,
-  );
   const sourceIdentity = hashBytes(new Uint8Array(
     scalar16.buffer,
     scalar16.byteOffset,
@@ -1409,10 +1443,10 @@ export async function createShapeMaskResources(
     : sourceIdentity;
   return {
     assetId,
-    invert: shapeInvert,
-    format: shapeMaskFormat,
-    texture,
-    memoryBytes: mipChainPixelCount(SHAPE_MASK_SIZE, SHAPE_MASK_SIZE) * 2,
+    scalar16,
+    sourceWidth,
+    sourceHeight,
+    sourceLabel,
     decodeStrategy,
     identity,
     occupancyWords: occupancy.words,
@@ -1420,6 +1454,123 @@ export async function createShapeMaskResources(
     occupancyCoverageRatios: occupancy.coverageRatios,
     outline,
     previewSprite,
+  };
+}
+
+function createShapeTextureSourceStream(
+  engine: BrushEngine,
+  assetIds: readonly BrushShapeAssetId[],
+  shapeInvert: boolean,
+  shapeMaskFormat: BrushShapeMaskFormat,
+): ShapeTextureSourceStream {
+  const layersByAsset = new Map<BrushShapeAssetId, number[]>();
+  assetIds.forEach((assetId, layer) => {
+    const layers = layersByAsset.get(assetId);
+    if (layers) layers.push(layer);
+    else layersByAsset.set(assetId, [layer]);
+  });
+  const decodedLayers: Array<DecodedShapeMaskMetadata | undefined> = new Array(
+    assetIds.length,
+  );
+  const batches = (async function* (): AsyncGenerator<ShapeTextureSourceBatch> {
+    for (const [assetId, layers] of layersByAsset) {
+      const decoded = await decodeShapeMaskResource(
+        engine,
+        assetId,
+        shapeInvert,
+        shapeMaskFormat,
+      );
+      const metadata: DecodedShapeMaskMetadata = {
+        assetId: decoded.assetId,
+        decodeStrategy: decoded.decodeStrategy,
+        identity: decoded.identity,
+        occupancyWords: decoded.occupancyWords,
+        occupancyActiveCells: decoded.occupancyActiveCells,
+        occupancyCoverageRatios: decoded.occupancyCoverageRatios,
+        outline: decoded.outline,
+        previewSprite: decoded.previewSprite,
+      };
+      for (const layer of layers) decodedLayers[layer] = metadata;
+      yield { source: decoded, layers };
+    }
+  })();
+  return { length: assetIds.length, decodedLayers, batches };
+}
+
+function popcount32(value: number): number {
+  let bits = value >>> 0;
+  bits -= (bits >>> 1) & 0x55555555;
+  bits = (bits & 0x33333333) + ((bits >>> 2) & 0x33333333);
+  return (((bits + (bits >>> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24;
+}
+
+export async function createShapeMaskResources(
+  engine: BrushEngine,
+  requestedAssetIds: BrushShapeAssetId | readonly BrushShapeAssetId[],
+  shapeInvert: boolean,
+  shapeMaskFormat: BrushShapeMaskFormat,
+): Promise<ShapeMaskResources> {
+  const assetIds = (Array.isArray(requestedAssetIds)
+    ? requestedAssetIds
+    : [requestedAssetIds]
+  ).slice(0, 4) as BrushShapeAssetId[];
+  if (assetIds.length === 0) throw new Error("A Shape sequence needs at least one source.");
+  const decoded = createShapeTextureSourceStream(
+    engine,
+    assetIds,
+    shapeInvert,
+    shapeMaskFormat,
+  );
+  const texture = await createR16FloatShapeTexture(engine, decoded, shapeMaskFormat);
+  const decodedLayers = decoded.decodedLayers.map((source) => {
+    if (!source) throw new Error("A Shape layer finished without decoded metadata.");
+    return source;
+  });
+  const occupancyWords = decodedLayers[0].occupancyWords.slice();
+  for (let layer = 1; layer < decodedLayers.length; layer += 1) {
+    const sourceWords = decodedLayers[layer].occupancyWords;
+    for (let index = 0; index < occupancyWords.length; index += 1) {
+      occupancyWords[index] |= sourceWords[index];
+    }
+  }
+  const occupancyActiveCells = new Array<number>(SHAPE_OCCUPANCY_MAP_COUNT).fill(0);
+  for (let mipLevel = 0; mipLevel < SHAPE_OCCUPANCY_MAP_COUNT; mipLevel += 1) {
+    const offset = mipLevel * SHAPE_OCCUPANCY_WORDS_PER_MAP;
+    let active = 0;
+    for (let word = 0; word < SHAPE_OCCUPANCY_WORDS_PER_MAP; word += 1) {
+      active += popcount32(occupancyWords[offset + word]);
+    }
+    occupancyActiveCells[mipLevel] = active;
+  }
+  const occupancyCellCount = SHAPE_OCCUPANCY_WORDS_PER_MAP * 32;
+  const occupancyCoverageRatios = occupancyActiveCells.map(
+    (active) => active / occupancyCellCount,
+  );
+  let identity = decodedLayers[0].identity;
+  if (decodedLayers.length > 1) {
+    identity = 0x811c9dc5;
+    for (const source of decodedLayers) {
+      identity = Math.imul(identity ^ source.identity, 0x01000193) >>> 0;
+    }
+    identity = Math.imul(identity ^ decodedLayers.length, 0x01000193) >>> 0;
+  }
+  const primary = decodedLayers[0];
+  return {
+    assetId: primary.assetId,
+    assetIds,
+    invert: shapeInvert,
+    format: shapeMaskFormat,
+    texture,
+    memoryBytes: mipChainPixelCount(SHAPE_MASK_SIZE, SHAPE_MASK_SIZE) * 2 * decodedLayers.length,
+    decodeStrategy: decodedLayers.some(
+      (source) => source.decodeStrategy === SHAPE_CANVAS_DECODE_STRATEGY,
+    ) ? SHAPE_CANVAS_DECODE_STRATEGY : SHAPE_DIRECT_DECODE_STRATEGY,
+    identity,
+    occupancyWords,
+    occupancyActiveCells,
+    occupancyCoverageRatios,
+    outline: primary.outline,
+    previewSprite: primary.previewSprite,
   };
 }
 
@@ -1439,10 +1590,16 @@ export function applyShapeMaskResources(
   engine.shapeResourceSet = resources;
   engine.shapeMaskTexture = resources?.texture ?? null;
   engine.shapeMaskView = resources
-    ? resources.texture.createView({ label: `${resources.assetId} mask view` })
+    ? resources.texture.createView({
+      label: `${resources.assetIds.length}-layer Shape mask view`,
+      dimension: "2d-array",
+      baseArrayLayer: 0,
+      arrayLayerCount: resources.assetIds.length,
+    })
     : engine.shapeMaskPlaceholderView;
   engine.shapeResident = resources !== null;
   engine.shapeLoadedAssetId = resources?.assetId ?? null;
+  engine.shapeLoadedAssetIds = resources ? [...resources.assetIds] : [];
   engine.shapeLoadedInvert = resources?.invert ?? null;
   engine.shapeLoadedFormat = resources?.format ?? null;
   engine.shapeTextureMemoryBytes = resources?.memoryBytes ?? 0;

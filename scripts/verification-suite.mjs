@@ -18,6 +18,7 @@ export const verificationScripts = Object.freeze([
   "verify-brush-studio.mjs",
   "verify-brush-transfer.mjs",
   "verify-shape-mask-filtering.mjs",
+  "verify-shape-sequence.mjs",
   "verify-canvas-input-controller.mjs",
   "verify-canvas-guides.mjs",
   "verify-canvas-tool-controller.mjs",

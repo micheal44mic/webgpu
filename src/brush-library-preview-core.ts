@@ -21,11 +21,15 @@ export function brushLibraryPreviewFingerprint(
 ): string {
   // Color is intentionally absent: library strokes always use neutral ivory.
   // Every other field that reaches the authoritative paint path participates.
+  const shapeSequence = settings.shapeAssetIds?.length
+    ? settings.shapeAssetIds
+    : [settings.shapeAssetId];
   const identity = [
     BRUSH_LIBRARY_PREVIEW_RENDERER_VERSION,
     brushId,
     settings.shape,
-    settings.shapeAssetId,
+    shapeSequence.join(">"),
+    settings.shapeSequenceMode,
     settings.shapeInvert ? "1" : "0",
     settings.shapeMaskFormat === "r8unorm" ? "r8unorm" : "r16float",
     settings.shapeRotation,

@@ -742,6 +742,28 @@
                     aria-hidden="true"
                   ></canvas>
                 </button>
+                <button
+                  id="mobileShapeSequenceBrushCard"
+                  class="mobile-brush-card"
+                  type="button"
+                  data-mobile-brush-id="shape-sequence-v1"
+                  data-mobile-brush-category-card="painting"
+                  aria-label="Shape Sequence"
+                  aria-pressed="false"
+                  hidden
+                >
+                  <span class="mobile-brush-card-selected" aria-hidden="true">
+                    <i data-lucide="check"></i>
+                  </span>
+                  <span class="mobile-brush-card-name">Shape Sequence</span>
+                  <canvas
+                    id="mobileShapeSequenceBrushPreviewCanvas"
+                    class="mobile-brush-card-preview"
+                    width="480"
+                    height="112"
+                    aria-hidden="true"
+                  ></canvas>
+                </button>
               </div>
               <p id="mobileBrushLibraryEmpty" class="mobile-brush-library-empty" hidden>
                 Brushes coming soon
@@ -880,6 +902,22 @@
                   <span>Invert</span>
                 </label>
               </div>
+              <div class="mobile-brush-studio-shape-sequence">
+                <div class="mobile-brush-studio-shape-sequence-heading">
+                  <span id="mobileBrushStudioShapeSequenceLabel">Shape slots</span>
+                  <output id="mobileBrushStudioShapeSequenceCount" aria-live="polite">0 / 4</output>
+                </div>
+                <ol
+                  id="mobileBrushStudioShapeSequenceList"
+                  class="mobile-brush-studio-shape-sequence-list"
+                  aria-labelledby="mobileBrushStudioShapeSequenceLabel"
+                ></ol>
+                <div class="mobile-brush-studio-shape-sequence-actions">
+                  <button id="mobileBrushStudioShapeAdd" type="button">Add Shape</button>
+                  <button id="mobileBrushStudioShapeMoveEarlier" type="button" aria-label="Move selected Shape earlier">Move left</button>
+                  <button id="mobileBrushStudioShapeMoveLater" type="button" aria-label="Move selected Shape later">Move right</button>
+                </div>
+              </div>
               <div class="mobile-brush-studio-source">
                 <button
                   id="mobileBrushStudioShapeSource"
@@ -919,6 +957,19 @@
                   </button>
                 </div>
               </div>
+
+              <fieldset class="mobile-brush-studio-fieldset">
+                <legend>Shape selection</legend>
+                <div
+                  id="mobileBrushStudioShapeSequenceMode"
+                  class="mobile-brush-studio-segments"
+                  role="radiogroup"
+                  aria-label="Shape selection mode"
+                >
+                  <button type="button" role="radio" aria-checked="true" data-mobile-brush-shape-sequence-mode="ordered">In order</button>
+                  <button type="button" role="radio" aria-checked="false" data-mobile-brush-shape-sequence-mode="random">Random</button>
+                </div>
+              </fieldset>
 
               <fieldset class="mobile-brush-studio-fieldset">
                 <legend>Rotation</legend>

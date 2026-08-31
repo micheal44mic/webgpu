@@ -562,7 +562,7 @@ assert.ok(device.buffers.every((buffer) => buffer.destroyed),
 assert.equal(context.unconfigureCalls, 1);
 
 const shapeResourcesStart = resourcesSource.indexOf(
-  "export async function createShapeMaskResources(",
+  "async function decodeShapeMaskResource(",
 );
 const shapeResourcesEnd = resourcesSource.indexOf(
   "export function destroyShapeMaskResources(",
@@ -600,12 +600,12 @@ assert.match(
 );
 assert.match(
   shapeResourcesSource,
-  /const texture = await createR16FloatShapeTexture\(\s*engine,\s*scalar16,\s*sourceWidth,\s*sourceHeight,\s*sourceLabel,\s*shapeMaskFormat,\s*\)/,
+  /const texture = await createR16FloatShapeTexture\(engine, decoded, shapeMaskFormat\)/,
   "la texture R16F deve ricevere lo stesso campo scalar16 post-polarita dell'outline",
 );
 assert.match(engineSource, /getBrushOutlineSnapshot\(\): BrushOutlineSnapshot/);
 assert.match(engineSource, /getBrushOutlineGpuTarget\(\): BrushOutlineGpuTarget \| null/);
-assert.match(engineSource, /this\.shapeLoadedAssetId === shapeAssetIdForSettings\(this\.settings\)/);
+assert.match(engineSource, /shapeAssetSequenceMatches\([\s\S]*?this\.shapeLoadedAssetIds,[\s\S]*?shapeAssetIdsForSettings\(this\.settings\)/);
 assert.match(engineSource, /this\.shapeLoadedInvert === shapeInvertForSettings\(this\.settings\)/);
 assert.doesNotMatch(coreSource, /maxPool|FALLBACK_MAX|MAX_PRECISE/,
   "the boundary must not have a separate lossy path");

@@ -20,6 +20,7 @@ import type {
   BrushShapeAssetId,
   BrushShapeMaskFormat,
 } from "./engine-types";
+import { MAX_BRUSH_SHAPE_SEQUENCE_LENGTH } from "./brush-shape-sequence-core.ts";
 export {
   CustomBrushAssetRegistry,
   isCustomGrainAssetId,
@@ -64,7 +65,49 @@ export function shapeMaskFormatForSettings(
 export function shapeAssetIdForSettings(
   settings: Readonly<BrushSettings> | Partial<BrushSettings>,
 ): BrushShapeAssetId {
-  return normalizeShapeAssetId(settings.shapeAssetId);
+  return shapeAssetIdsForSettings(settings)[0];
+}
+
+export function normalizeShapeAssetIds(
+  value: unknown,
+  fallback: BrushShapeAssetId = LEGACY_SHAPE_ASSET_ID,
+): BrushShapeAssetId[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    return [normalizeShapeAssetId(fallback)];
+  }
+  return value
+    .slice(0, MAX_BRUSH_SHAPE_SEQUENCE_LENGTH)
+    .map((assetId) => normalizeShapeAssetId(assetId));
+}
+
+export function shapeAssetIdsForSettings(
+  settings: Readonly<BrushSettings> | Partial<BrushSettings>,
+): BrushShapeAssetId[] {
+  return normalizeShapeAssetIds(
+    settings.shapeAssetIds,
+    normalizeShapeAssetId(settings.shapeAssetId),
+  );
+}
+
+export function shapeAssetSequenceLengthForSettings(
+  settings: Readonly<BrushSettings> | Partial<BrushSettings>,
+): number {
+  const assetIds = settings.shapeAssetIds;
+  return Array.isArray(assetIds) && assetIds.length > 0
+    ? Math.min(assetIds.length, MAX_BRUSH_SHAPE_SEQUENCE_LENGTH)
+    : 1;
+}
+
+export function shapeAssetSequenceKey(assetIds: readonly BrushShapeAssetId[]): string {
+  return normalizeShapeAssetIds(assetIds).join("\u001f");
+}
+
+export function shapeAssetSequenceMatches(
+  left: readonly BrushShapeAssetId[],
+  right: readonly BrushShapeAssetId[],
+): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((assetId, index) => assetId === right[index]);
 }
 
 export function grainAssetIdForSettings(

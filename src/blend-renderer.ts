@@ -22,6 +22,7 @@ import {
   type DryBlendBatch,
   type DryBlendStep,
 } from "./blend-core";
+import { shapeLayerForStamp } from "./brush-shape-sequence-core.ts";
 import { destructiveGaussianBlurKernel } from "./gaussian-blur-core";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import { brushColorLinearRgb } from "./brush-color.ts";
@@ -48,6 +49,8 @@ export const DRY_BLEND_RENDERER_BUILD =
 export interface DryBlendRenderSettings {
   size: number;
   shape: "circle" | "shape";
+  shapeAssetIds?: readonly string[];
+  shapeSequenceMode: "ordered" | "random";
   grainMode: "off" | "texturized" | "moving";
   grainScale: number;
   grainMovement: number;
@@ -307,6 +310,7 @@ export class DryBlendRenderer {
   private blurScratchMaterialized = false;
   private activeHistoryActionId: number | null = null;
   private carrierCursor = 0;
+  private shapeSequenceCursor = 0;
   private carrierValid = false;
   private destroyed = false;
 
@@ -382,12 +386,15 @@ export class DryBlendRenderer {
       visibility,
       buffer: { type: readOnly ? "read-only-storage" : "storage" },
     });
-    const computeTexture = (binding: number): GPUBindGroupLayoutEntry => ({
+    const computeTexture = (
+      binding: number,
+      viewDimension: GPUTextureViewDimension = "2d",
+    ): GPUBindGroupLayoutEntry => ({
       binding,
       visibility: GPUShaderStage.COMPUTE,
       texture: {
         sampleType: "float",
-        viewDimension: "2d",
+        viewDimension,
         multisampled: false,
       },
     });
@@ -444,7 +451,7 @@ export class DryBlendRenderer {
         storageEntry(1, GPUShaderStage.COMPUTE, false),
         storageEntry(2, GPUShaderStage.COMPUTE, false),
         storageEntry(3, GPUShaderStage.COMPUTE, true),
-        computeTexture(4),
+        computeTexture(4, "2d-array"),
         computeSampler(5),
         computeTexture(6),
         computeSampler(7),
@@ -739,6 +746,7 @@ export class DryBlendRenderer {
     this.assertAlive();
     this.activeHistoryActionId = historyActionId;
     this.carrierCursor = 0;
+    this.shapeSequenceCursor = 0;
     this.carrierValid = false;
   }
 
@@ -1111,13 +1119,16 @@ export class DryBlendRenderer {
     };
     const previousCarrierCursor = this.carrierCursor;
     const previousCarrierValid = this.carrierValid;
+    const previousShapeSequenceCursor = this.shapeSequenceCursor;
     this.carrierCursor = 0;
+    this.shapeSequenceCursor = 0;
     this.carrierValid = false;
     try {
       this.populateUniforms([batch], [group], settings);
     } finally {
       this.carrierCursor = previousCarrierCursor;
       this.carrierValid = previousCarrierValid;
+      this.shapeSequenceCursor = previousShapeSequenceCursor;
     }
     this.device.queue.writeBuffer(
       this.uniformBuffer,
@@ -1348,6 +1359,7 @@ export class DryBlendRenderer {
     const filtering = settings.grainFiltering === "no"
       ? 0
       : settings.grainFiltering === "classic" ? 1 : 2;
+    const shapeLayerCount = Math.max(1, Math.min(4, settings.shapeAssetIds?.length ?? 1));
 
     for (const group of groups) {
       for (let member = 0; member < group.count; member += 1) {
@@ -1409,7 +1421,19 @@ export class DryBlendRenderer {
         unsigned[44] = carrierReadSlot;
         unsigned[45] = carrierWriteSlot;
         unsigned[46] = this.scratchSize;
-        unsigned[47] = 0;
+        const shapeSequenceSeed = (
+          Math.imul(
+            ((this.activeHistoryActionId ?? 0) + this.shapeSequenceCursor + 1) >>> 0,
+            0x9e3779b1,
+          ) ^ 0xa511e9b3
+        ) >>> 0;
+        unsigned[47] = shapeLayerForStamp(
+          settings.shapeSequenceMode,
+          this.shapeSequenceCursor,
+          shapeSequenceSeed,
+          shapeLayerCount,
+        );
+        this.shapeSequenceCursor += 1;
       }
     }
   }

@@ -38,7 +38,8 @@ import type {
 } from "./engine-types";
 import type { GrainTextureResources, ShapeMaskResources } from "./engine-paint-resources";
 import {
-  shapeAssetIdForSettings,
+  shapeAssetIdsForSettings,
+  shapeAssetSequenceMatches,
   shapeInvertForSettings,
   shapeMaskFormatForSettings,
 } from "./engine-brush-assets";
@@ -47,6 +48,7 @@ import {
   nextPaintStampSeed,
   resamplePaintCurveSegment,
 } from "./paint-stamp-generation-core";
+import { shapeLayerForStamp } from "./brush-shape-sequence-core.ts";
 import { CausalStrokeCurvePlanner } from "./stroke-curve-core";
 import { CausalFadedStrokeStabilizer } from "./stroke-stabilization-core";
 import {
@@ -284,12 +286,20 @@ function generateProjectedPreviewStroke(
         settings.startThickness,
         Math.max(0, point.timeMs - startedAtMs),
       );
+    const stampOrdinal = candidates.length;
+    const seed = nextPaintStampSeed(seedSequence++);
     const stamp: Stamp = {
       x: point.x,
       y: point.y,
       radius: baseRadius * liveThicknessFactor,
       pressure: clamp(point.pressure, 0.01, 1),
-      seed: nextPaintStampSeed(seedSequence++),
+      seed,
+      shapeLayer: shapeLayerForStamp(
+        settings.shapeSequenceMode,
+        stampOrdinal,
+        seed,
+        shapeAssetIdsForSettings(settings).length,
+      ),
       directionX,
       directionY,
       historyActionId: 0,
@@ -707,14 +717,14 @@ export class AuthoritativeBrushStrokePreviewRenderer {
     try {
       const shapeRequired = settings.shape === "shape";
       const grainRequired = isTexturizedGrainActive(settings);
-      const shapeAssetId = shapeAssetIdForSettings(settings);
+      const shapeAssetIds = shapeAssetIdsForSettings(settings);
       const shapeInvert = shapeInvertForSettings(settings);
       const shapeMaskFormat = shapeMaskFormatForSettings(settings);
       const activeLoads: Promise<unknown>[] = [];
       if (
         shapeRequired
         && this.engine.shapeLoadingPromise
-        && this.engine.shapeDesiredAssetId === shapeAssetId
+        && shapeAssetSequenceMatches(this.engine.shapeDesiredAssetIds, shapeAssetIds)
         && this.engine.shapeDesiredInvert === shapeInvert
         && this.engine.shapeDesiredFormat === shapeMaskFormat
       ) {
@@ -732,7 +742,7 @@ export class AuthoritativeBrushStrokePreviewRenderer {
 
       const activeShapeMatches = !shapeRequired || (
         this.engine.shapeResourceSet
-        && this.engine.shapeLoadedAssetId === shapeAssetId
+        && shapeAssetSequenceMatches(this.engine.shapeLoadedAssetIds, shapeAssetIds)
         && this.engine.shapeLoadedInvert === shapeInvert
         && this.engine.shapeLoadedFormat === shapeMaskFormat
       );
@@ -755,7 +765,7 @@ export class AuthoritativeBrushStrokePreviewRenderer {
           shapeRequired
             ? createShapeMaskResources(
               this.engine,
-              shapeAssetId,
+              shapeAssetIds,
               shapeInvert,
               shapeMaskFormat,
             )
@@ -771,6 +781,9 @@ export class AuthoritativeBrushStrokePreviewRenderer {
         : ownedShape
           ? ownedShape.texture.createView({
             label: "Authoritative brush preview owned shape view",
+            dimension: "2d-array",
+            baseArrayLayer: 0,
+            arrayLayerCount: ownedShape.assetIds.length,
           })
           : this.engine.shapeMaskView;
       const grainView = !grainRequired

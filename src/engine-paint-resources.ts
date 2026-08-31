@@ -48,7 +48,10 @@ export interface LightGlazeResourceSet {
 }
 
 export interface ShapeMaskResources {
+  /** First layer retained as the legacy outline/preview source. */
   assetId: BrushShapeAssetId;
+  /** Ordered resident layers selected cyclically by successive base stamps. */
+  assetIds: readonly BrushShapeAssetId[];
   invert: boolean;
   format: BrushShapeMaskFormat;
   texture: GPUTexture;

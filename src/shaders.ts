@@ -32,7 +32,7 @@ struct Stamp {
   radius: f32,
   pressure: f32,
   seed: u32,
-  _pad0: u32,
+  shapeLayer: u32,
   direction: vec2<f32>,
 };
 
@@ -41,6 +41,7 @@ struct VertexOutput {
   @location(0) localPosition: vec2<f32>,
   @location(1) @interpolate(flat) pointColor: vec3<f32>,
   @location(2) localBrushPixels: vec2<f32>,
+  @location(3) @interpolate(flat) shapeLayer: u32,
 };
 
 struct ShapeOccupancy {
@@ -49,7 +50,7 @@ struct ShapeOccupancy {
 
 @group(0) @binding(0) var<uniform> brush: BrushUniforms;
 @group(0) @binding(1) var<storage, read> stamps: array<Stamp>;
-@group(0) @binding(2) var shapeMaskTexture: texture_2d<f32>;
+@group(0) @binding(2) var shapeMaskTexture: texture_2d_array<f32>;
 @group(0) @binding(3) var shapeMaskSampler: sampler;
 @group(0) @binding(4) var<uniform> shapeOccupancy: ShapeOccupancy;
 
@@ -217,6 +218,7 @@ fn vertexMain(
   output.position = vec4<f32>(clipPosition, 0.0, 1.0);
   output.localPosition = localPosition;
   output.localBrushPixels = localPosition * stamp.radius;
+  output.shapeLayer = 0u;
   var colorCopySeed = copySeed;
   if (brush.options.y == 0u) {
     colorCopySeed = hash32(stamp.seed);
@@ -284,6 +286,7 @@ fn shapeVertexMain(
   output.position = vec4<f32>(clipPosition, 0.0, 1.0);
   output.localPosition = localPosition;
   output.localBrushPixels = localPosition * stamp.radius;
+  output.shapeLayer = stamp.shapeLayer;
   var colorCopySeed = copySeed;
   if (brush.options.y == 0u) {
     colorCopySeed = hash32(stamp.seed);
@@ -341,7 +344,7 @@ fn circleCoverage(input: VertexOutput) -> f32 {
 fn shapeCoverage(input: VertexOutput) -> f32 {
   let uv = input.localPosition * SHAPE_MASK_UV_HALF_EXTENT + vec2<f32>(0.5);
   let sourceCoverage = sourcePrecisionCoverage(
-    textureSample(shapeMaskTexture, shapeMaskSampler, uv).r
+    textureSample(shapeMaskTexture, shapeMaskSampler, uv, i32(input.shapeLayer)).r
   );
   let hardness = clamp(brush.controls.y, 0.0, 1.0);
   let coverage = mix(sourceCoverage * sourceCoverage, sourceCoverage, hardness);
@@ -409,6 +412,7 @@ fn occupiedShapeCoverage(input: VertexOutput) -> f32 {
     shapeMaskTexture,
     shapeMaskSampler,
     samplingUv,
+    i32(input.shapeLayer),
     uvDx,
     uvDy
   ).r);
@@ -475,6 +479,7 @@ struct FragmentInput {
   @location(0) localPosition: vec2<f32>,
   @location(1) @interpolate(flat) pointColor: vec3<f32>,
   @location(2) localBrushPixels: vec2<f32>,
+  @location(3) @interpolate(flat) shapeLayer: u32,
 };
 
 struct ShapeOccupancy {
@@ -482,7 +487,7 @@ struct ShapeOccupancy {
 };
 
 @group(0) @binding(0) var<uniform> brush: BrushUniforms;
-@group(0) @binding(2) var shapeMaskTexture: texture_2d<f32>;
+@group(0) @binding(2) var shapeMaskTexture: texture_2d_array<f32>;
 @group(0) @binding(3) var shapeMaskSampler: sampler;
 @group(0) @binding(4) var<uniform> shapeOccupancy: ShapeOccupancy;
 @group(0) @binding(5) var grainTexture: texture_2d<f32>;
@@ -663,7 +668,7 @@ fn shapeGrainCoverage(input: FragmentInput) -> f32 {
   let grainUvDy = dpdy(grainUv);
   let uv = input.localPosition * SHAPE_MASK_UV_HALF_EXTENT + vec2<f32>(0.5);
   let sourceCoverage = sourcePrecisionCoverage(
-    textureSample(shapeMaskTexture, shapeMaskSampler, uv).r
+    textureSample(shapeMaskTexture, shapeMaskSampler, uv, i32(input.shapeLayer)).r
   );
   let hardness = clamp(brush.controls.y, 0.0, 1.0);
   var coverage = mix(sourceCoverage * sourceCoverage, sourceCoverage, hardness);
@@ -711,6 +716,7 @@ fn occupiedShapeGrainCoverage(input: FragmentInput) -> f32 {
     shapeMaskTexture,
     shapeMaskSampler,
     samplingUv,
+    i32(input.shapeLayer),
     uvDx,
     uvDy
   ).r);

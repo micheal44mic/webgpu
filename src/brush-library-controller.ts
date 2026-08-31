@@ -1,20 +1,22 @@
 import {
+  BUILTIN_BRUSH_CATALOG,
   BRUSH_STUDIO_MAX_CUSTOM_BRUSHES,
   createBrushStudioBaseSettings,
   createBrushStudioCustomBrushId,
   isBrushStudioCustomBrushId,
   nextBrushStudioCustomBrushName,
-  PENCIL_BRUSH_PRESET,
   resolveBrushPresetSettings,
   uniqueBrushStudioCustomBrushName,
   type BrushStudioCustomBrush,
   type BrushStudioCustomBrushId,
+  type BuiltinBrushCatalogEntry,
 } from "./brush-catalog.ts";
 import {
   Check,
   createElement as createLucideElement,
 } from "lucide";
 import type { BrushLibraryPreviewResult } from "./brush-library-preview";
+import type { BrushDefinitionShapeAssetRef } from "./brush-definition.ts";
 import {
   brushStudioAssetStorageKey,
   deleteBrushStudioAsset,
@@ -34,14 +36,26 @@ import {
   createBrushStudioTransferBlob,
   parseBrushStudioTransferBlob,
 } from "./brush-studio-transfer";
-import { defaultBrushSettings, type BrushSettings } from "./engine-types";
+import { isCustomShapeAssetId } from "./brush-asset-registry.ts";
+import {
+  defaultBrushSettings,
+  type BrushSettings,
+  type CustomBrushShapeAssetId,
+} from "./engine-types";
 import { shouldCloseMobileToolsSheetDrag } from "./mobile-tools-sheet-gesture";
 
 export type BrushLibraryCategory = "pencil" | "painting" | "spray-paint";
+type BuiltinBrushId = Extract<keyof typeof BUILTIN_BRUSH_CATALOG, string>;
 export type BrushLibraryBrushId =
-  | typeof PENCIL_BRUSH_PRESET.id
+  | BuiltinBrushId
   | "current"
   | BrushStudioCustomBrushId;
+
+function builtinBrushPreset(value: string): BuiltinBrushCatalogEntry | null {
+  return Object.prototype.hasOwnProperty.call(BUILTIN_BRUSH_CATALOG, value)
+    ? BUILTIN_BRUSH_CATALOG[value as BuiltinBrushId]
+    : null;
+}
 
 export interface BrushLibraryEnginePort {
   getSettings(): BrushSettings;
@@ -275,14 +289,12 @@ export class BrushLibraryController {
     const restored = loadBrushStudioLibraryState();
     this.customBrushes = [...(restored?.customBrushes ?? [])];
     const candidate = restored?.activeBrushId;
-    this.activeBrushId = candidate === PENCIL_BRUSH_PRESET.id
+    this.activeBrushId = (typeof candidate === "string" && builtinBrushPreset(candidate) !== null)
       || candidate === "current"
       || this.customBrushes.some((brush) => brush.id === candidate)
       ? candidate as BrushLibraryBrushId
       : "current";
-    this.category = this.activeBrushId === PENCIL_BRUSH_PRESET.id
-      ? "pencil"
-      : "painting";
+    this.category = this.categoryFor(this.activeBrushId);
 
     for (const brush of this.customBrushes) this.ensureCustomBrushCard(brush);
     this.bindControls();
@@ -492,20 +504,19 @@ export class BrushLibraryController {
     brushId: BrushLibraryBrushId,
     current: Readonly<BrushSettings>,
   ): BrushSettings {
-    return brushId === PENCIL_BRUSH_PRESET.id
-      ? resolveBrushPresetSettings(PENCIL_BRUSH_PRESET, current)
-      : currentBrushFallback(current);
+    const preset = builtinBrushPreset(brushId);
+    return preset ? resolveBrushPresetSettings(preset, current) : currentBrushFallback(current);
   }
 
   private isBrushId(value: string): value is BrushLibraryBrushId {
-    return value === PENCIL_BRUSH_PRESET.id
+    return builtinBrushPreset(value) !== null
       || value === "current"
       || (isBrushStudioCustomBrushId(value)
         && this.customBrushes.some((brush) => brush.id === value));
   }
 
   private categoryFor(brushId: BrushLibraryBrushId): BrushLibraryCategory {
-    return brushId === PENCIL_BRUSH_PRESET.id ? "pencil" : "painting";
+    return builtinBrushPreset(brushId)?.categoryId ?? "painting";
   }
 
   private brushName(brushId: BrushLibraryBrushId): string {
@@ -515,7 +526,8 @@ export class BrushLibraryController {
       (candidate) => candidate.dataset.mobileBrushId === brushId,
     );
     return card?.querySelector<HTMLElement>(".mobile-brush-card-name")?.textContent?.trim()
-      || (brushId === PENCIL_BRUSH_PRESET.id ? PENCIL_BRUSH_PRESET.name : "Default Brush");
+      || builtinBrushPreset(brushId)?.name
+      || "Default Brush";
   }
 
   private ensureCustomBrushCard(brush: BrushStudioCustomBrush): HTMLButtonElement {
@@ -911,14 +923,33 @@ export class BrushLibraryController {
     this.syncAddState();
     this.reportStatus(`Preparing ${descriptor.name}…`, "working");
     try {
-      const [shapeAsset, grainAsset] = await Promise.all([
-        this.storedTransferAsset(savedBrush.shapeAssetKey, "shape"),
+      const shapeAssetIds = [...new Set(
+        (savedBrush.settings.shapeAssetIds ?? [savedBrush.settings.shapeAssetId])
+          .filter(isCustomShapeAssetId),
+      )];
+      const shapeAssetKeys = new Map(
+        (savedBrush.shapeAssetRefs ?? []).map(
+          (ref) => [ref.assetId, ref.storageKey] as const,
+        ),
+      );
+      const [shapeAssets, grainAsset] = await Promise.all([
+        Promise.all(shapeAssetIds.map(async (assetId) => {
+          const key = shapeAssetKeys.get(assetId)
+            ?? (assetId === savedBrush.settings.shapeAssetId && savedBrush.shapeAssetKey
+              ? savedBrush.shapeAssetKey
+              : brushStudioAssetStorageKey(brushId, "shape", assetId));
+          const asset = await this.storedTransferAsset(key, "shape");
+          if (!asset) {
+            throw new Error("The saved shape source is unavailable. Nothing was exported.");
+          }
+          return { assetId, asset };
+        })),
         this.storedTransferAsset(savedBrush.grainAssetKey, "grain"),
       ]);
       const blob = await createBrushStudioTransferBlob({
         name: descriptor.name,
         savedBrush,
-        shapeAsset,
+        shapeAssets,
         grainAsset,
       });
       const outcome = await this.presentTransfer(blob, descriptor.name);
@@ -999,21 +1030,41 @@ export class BrushLibraryController {
       }
 
       brushId = createBrushStudioCustomBrushId();
-      const settings = { ...imported.settings };
+      const originalShapeAssetIds = imported.settings.shapeAssetIds
+        ?? [imported.settings.shapeAssetId];
+      const settings = {
+        ...imported.settings,
+        shapeAssetIds: [...originalShapeAssetIds],
+      };
       let shapeAssetKey: string | null = null;
+      const shapeAssetRefs: BrushDefinitionShapeAssetRef[] = [];
       let grainAssetKey: string | null = null;
-      if (imported.shapeAsset) {
-        const shapeAssetId = createBrushStudioImportedAssetId(brushId, "shape");
-        settings.shapeAssetId = shapeAssetId;
-        shapeAssetKey = brushStudioAssetStorageKey(brushId, "shape", shapeAssetId);
-        assetKeys.push(shapeAssetKey);
+      const importedShapeIds = new Map<CustomBrushShapeAssetId, CustomBrushShapeAssetId>();
+      const importedShapeKeys = new Map<CustomBrushShapeAssetId, string>();
+      for (const [index, importedShapeAsset] of imported.shapeAssets.entries()) {
+        const shapeAssetId = createBrushStudioImportedAssetId(brushId, "shape", index);
+        importedShapeIds.set(importedShapeAsset.assetId, shapeAssetId);
+        const storageKey = brushStudioAssetStorageKey(brushId, "shape", shapeAssetId);
+        assetKeys.push(storageKey);
         await saveBrushStudioAsset(
-          shapeAssetKey,
+          storageKey,
           "shape",
-          imported.shapeAsset.blob,
-          imported.shapeAsset.name,
+          importedShapeAsset.blob,
+          importedShapeAsset.name,
         );
+        importedShapeKeys.set(importedShapeAsset.assetId, storageKey);
+        shapeAssetRefs.push({ assetId: shapeAssetId, storageKey });
       }
+      settings.shapeAssetIds = originalShapeAssetIds.map(
+        (assetId) => isCustomShapeAssetId(assetId)
+          ? importedShapeIds.get(assetId) ?? assetId
+          : assetId,
+      );
+      settings.shapeAssetId = settings.shapeAssetIds[0];
+      const firstOriginalShapeAssetId = originalShapeAssetIds[0];
+      shapeAssetKey = isCustomShapeAssetId(firstOriginalShapeAssetId)
+        ? importedShapeKeys.get(firstOriginalShapeAssetId) ?? null
+        : null;
       if (imported.grainAsset) {
         const grainAssetId = createBrushStudioImportedAssetId(brushId, "grain");
         settings.grainAssetId = grainAssetId;
@@ -1030,6 +1081,7 @@ export class BrushLibraryController {
         version: 1,
         settings,
         shapeAssetKey,
+        shapeAssetRefs,
         grainAssetKey,
       });
 
@@ -1167,7 +1219,7 @@ export class BrushLibraryController {
   }
 
   private normalizedBrushId(brushId: string): BrushLibraryBrushId {
-    return brushId === PENCIL_BRUSH_PRESET.id
+    return builtinBrushPreset(brushId) !== null
       || brushId === "current"
       || isBrushStudioCustomBrushId(brushId)
       ? brushId

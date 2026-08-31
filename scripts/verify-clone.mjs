@@ -256,6 +256,17 @@ assert.match(previewRuntimeSource, /GPUTextureUsage\.RENDER_ATTACHMENT/);
 assert.match(previewRuntimeSource, /CLONE_PREVIEW_MAX_BACKING_PIXELS = 256/);
 assert.match(previewRuntimeSource, /renderCloneSamplePreview/);
 assert.match(previewRuntimeSource, /clonePreviewTextureSource/);
+assert.match(previewRuntimeSource, /shapeControls: vec4<f32>/);
+assert.match(
+  previewRuntimeSource,
+  /textureSample\(\s*shapeTexture,\s*shapeSampler,\s*shapeUv,\s*i32\(preview\.shapeControls\.x\)/,
+  "the first-sample preview must sample the deterministically selected Shape layer",
+);
+assert.match(
+  previewRuntimeSource,
+  /shapeLayerForStamp\(\s*engine\.settings\.shapeSequenceMode,\s*0,\s*nextPaintStampSeed\(engine\.seedSequence\),\s*shapeAssetSequenceLengthForSettings\(engine\.settings\)/,
+  "the first-sample preview must predict the next authoritative Paint/Clone Shape selection",
+);
 assert.doesNotMatch(previewRuntimeSource, /mapAsync|getImageData|putImageData|beginCloneStroke/,
   "the first-sample preview must remain GPU-only and outside stroke History");
 assert.match(shaderSource, /texture_2d_array<f32>/);

@@ -21,7 +21,7 @@ assert.equal(presets.BRUSH_CATALOG_VERSION, 1);
 assert.equal(brushDefinition.BRUSH_DEFINITION_VERSION, 1);
 assert.equal(Object.keys(builtinAssets.BUILTIN_BRUSH_ASSETS).length, 3);
 assert.equal("legacy-grain" in builtinAssets.BUILTIN_BRUSH_ASSETS, false);
-assert.equal(Object.keys(presets.BUILTIN_BRUSH_CATALOG).length, 1);
+assert.equal(Object.keys(presets.BUILTIN_BRUSH_CATALOG).length, 2);
 
 function pngDimensions(bytes) {
   assert.deepEqual(
@@ -80,6 +80,18 @@ assert.deepEqual(
     pencilSettings.darknessJitter,
   ],
   [0, 0, 0, 0],
+);
+
+const shapeSequence = presets.SHAPE_SEQUENCE_BRUSH_PRESET;
+assert.equal(shapeSequence.id, "shape-sequence-v1");
+assert.equal(shapeSequence.categoryId, "painting");
+assert.equal(shapeSequence.definition.settings.count, 1);
+assert.equal(shapeSequence.definition.settings.shapeMaskFormat, "r16float");
+assert.equal(shapeSequence.definition.settings.grainMode, "off");
+assert.equal(shapeSequence.definition.settings.shapeSequenceMode, "ordered");
+assert.deepEqual(
+  shapeSequence.definition.settings.shapeAssetIds,
+  ["legacy-shape", "pencil-shape", "legacy-shape", "pencil-shape"],
 );
 
 const current = {
@@ -223,7 +235,7 @@ assert(engine.includes("grainMovement: clamp(next.grainMovement ?? this.settings
   && engine.includes('settings.shapeRotation === "follow-stroke" ? 1 : 0'),
   "Movement e Follow Stroke non sono parametri runtime generici normalizzati.");
 
-const shapeLoaderStart = engine.indexOf("export async function createShapeMaskResources(");
+const shapeLoaderStart = engine.indexOf("async function decodeShapeMaskResource(");
 const shapeLoaderEnd = engine.indexOf("export function destroyShapeMaskResources", shapeLoaderStart);
 assert(shapeLoaderStart >= 0 && shapeLoaderEnd > shapeLoaderStart, "Loader Shape non trovato.");
 const shapeLoader = engine.slice(shapeLoaderStart, shapeLoaderEnd);
@@ -232,7 +244,7 @@ assert(shapeLoader.indexOf("authoredInvert !== shapeInvert") >= 0
     < shapeLoader.indexOf("buildShapeOccupancyMaps"),
   "Shape Invert deve essere risolto prima di mip, occupancy e preview.");
 assert(engine.includes("ensureReplayBrushAssets(batch.settings)")
-  && engine.includes("shapeAssetIdForSettings(settings)")
+  && engine.includes("shapeAssetIdsForSettings(settings)")
   && engine.includes("shapeInvertForSettings(settings)")
   && engine.includes("grainAssetIdForSettings(settings)"),
   "Undo/Redo non ripristina gli asset registrati da ogni brush batch.");
@@ -243,7 +255,7 @@ assert(engine.includes("shapeDesiredInvert")
   && engine.includes("shapeLoadingFormat")
   && engine.includes("shapeLoadedFormat")
   && engine.includes("runGpuAllocationTransaction")
-  && engine.includes("createShapeMaskResources(this, assetId, invert, format)"),
+  && engine.includes("createShapeMaskResources(this, assetIds, invert, format)"),
   "Il retarget Shape asset+invert+format non conserva latest-only e transazione GPU.");
 assert(engine.includes('hardness: tool === "blend"')
   && engine.includes(': 1,')
@@ -256,7 +268,7 @@ assert(shaders.includes("let followAngle = select(0.0, atan2(direction.y, direct
   && shaders.includes("return mix(movingUv, fixedUv, movement)")
   && !shaders.includes("if (movement <= 0.00001)"),
   "Shader generici Follow Stroke/Moving scalato mancanti.");
-assert(brushLibraryController.includes("resolveBrushPresetSettings(PENCIL_BRUSH_PRESET")
+assert(brushLibraryController.includes("resolveBrushPresetSettings(preset, current)")
   && main.includes("new BrushLibraryController({")
   && libraryPreview.includes("AuthoritativeBrushStrokePreviewRenderer")
   && libraryPreview.includes("await this.renderer.render(canvas, settings")
@@ -268,7 +280,9 @@ assert(!strokePreviewRenderer.includes('"m1m4-pencil-v1"')
   && !strokePreviewRenderer.includes("Grainpencil.png"),
   "Il renderer preview deve restare generico e risolvere Pencil dal registry autorevole.");
 assert(html.includes('data-mobile-brush-id="m1m4-pencil-v1"')
-  && html.includes('data-mobile-brush-category-card="pencil"'),
+  && html.includes('data-mobile-brush-category-card="pencil"')
+  && html.includes('data-mobile-brush-id="shape-sequence-v1"')
+  && html.includes('data-mobile-brush-category-card="painting"'),
   "Card Pencil mobile non registrata.");
 
 console.log("Brush preset contract, asset registry e Pencil preset verificati.");

@@ -36,6 +36,8 @@ export const PENCIL_BRUSH_PRESET: BuiltinBrushCatalogEntry = {
   definition: createBrushDefinition({
     shape: "shape",
     shapeAssetId: "pencil-shape",
+    shapeAssetIds: ["pencil-shape"],
+    shapeSequenceMode: "ordered",
     shapeInvert: false,
     shapeMaskFormat: "r16float",
     shapeRotation: "follow-stroke",
@@ -79,8 +81,68 @@ export const PENCIL_BRUSH_PRESET: BuiltinBrushCatalogEntry = {
   },
 };
 
+/** Four resident Shape layers selected cyclically by successive base stamps. */
+export const SHAPE_SEQUENCE_BRUSH_PRESET: BuiltinBrushCatalogEntry = {
+  catalogVersion: BRUSH_CATALOG_VERSION,
+  id: "shape-sequence-v1",
+  name: "Shape Sequence",
+  categoryId: "painting",
+  definition: createBrushDefinition({
+    shape: "shape",
+    shapeAssetId: "legacy-shape",
+    shapeAssetIds: [
+      "legacy-shape",
+      "pencil-shape",
+      "legacy-shape",
+      "pencil-shape",
+    ],
+    shapeSequenceMode: "ordered",
+    shapeInvert: false,
+    shapeMaskFormat: "r16float",
+    shapeRotation: "follow-stroke",
+    shapeScatter: 0,
+    grainMode: "off",
+    grainAssetId: "pencil-grain",
+    grainScale: 1.4,
+    grainMovement: 0,
+    grainDepth: 1,
+    grainBrightness: 0,
+    grainContrast: 0,
+    grainInvert: false,
+    grainFiltering: "improved",
+    grainBlendMode: "multiply",
+    size: 70,
+    spacingPercent: 6,
+    stabilization: 0,
+    startThickness: 1,
+    endThickness: 1,
+    count: 1,
+    flow: 1,
+    opacity: 1,
+    hardness: 1,
+    blendIntensity: 1,
+    blendMode: "intense-blending",
+    blendStretch: 0.18,
+    blendPaint: 0.14,
+    blendBlur: 0,
+    jitterMaster: 1,
+    hueJitterDegrees: 0,
+    saturationJitter: 0,
+    lightnessJitter: 0,
+    darknessJitter: 0,
+    jitterPerCopy: false,
+    positionJitterLateral: 0,
+    positionJitterLinear: 0,
+  }),
+  compatibility: {
+    fallbackPolicy: "apply-supported-settings",
+    legacyAbiFields: ["blendIntensity", "jitterMaster"],
+  },
+};
+
 export const BUILTIN_BRUSH_CATALOG = {
   [PENCIL_BRUSH_PRESET.id]: PENCIL_BRUSH_PRESET,
+  [SHAPE_SEQUENCE_BRUSH_PRESET.id]: SHAPE_SEQUENCE_BRUSH_PRESET,
 } as const satisfies Readonly<Record<string, BuiltinBrushCatalogEntry>>;
 
 /** Catalog selection preserves session-owned tool and color. */
@@ -209,6 +271,8 @@ export function createBrushStudioBaseSettings(
     tool: "paint",
     shape: "circle",
     shapeAssetId: "legacy-shape",
+    shapeAssetIds: ["legacy-shape"],
+    shapeSequenceMode: "ordered",
     shapeInvert: false,
     shapeRotation: "fixed",
     shapeScatter: 0,
@@ -249,9 +313,11 @@ export function createBrushStudioBaseSettings(
 
 // Catalog metadata may reference only assets owned by the built-in registry.
 for (const preset of Object.values(BUILTIN_BRUSH_CATALOG)) {
-  const { shapeAssetId, grainAssetId } = preset.definition.settings;
-  if (shapeAssetId !== "legacy-shape" && !(shapeAssetId in BUILTIN_BRUSH_ASSETS)) {
-    throw new Error(`Unknown built-in Shape asset: ${shapeAssetId}.`);
+  const { shapeAssetId, shapeAssetIds, grainAssetId } = preset.definition.settings;
+  for (const assetId of shapeAssetIds ?? [shapeAssetId]) {
+    if (assetId !== "legacy-shape" && !(assetId in BUILTIN_BRUSH_ASSETS)) {
+      throw new Error(`Unknown built-in Shape asset: ${assetId}.`);
+    }
   }
   if (grainAssetId !== "pencil-grain" || !(grainAssetId in BUILTIN_BRUSH_ASSETS)) {
     throw new Error(`Unknown built-in Grain asset: ${grainAssetId}.`);

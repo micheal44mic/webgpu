@@ -246,6 +246,7 @@ assert(historySource.includes("symmetryAngleRadians: number"));
 assert(strokeTypesSource.includes("readonly symmetryAngleRadians: number"));
 assert(stampUploadSource.includes("strokeSymmetryReflectionCoefficients("));
 assert(stampUploadSource.includes("reflectedStrokeSymmetryExtent("));
-assert(stampUploadSource.includes("uploadU32[base + 5] = 0"));
+assert(stampUploadSource.includes("uploadU32[base + 5] = Math.max(0, Math.min(3"));
+assert(stampUploadSource.includes("Math.trunc(stamp.shapeLayer ?? 0)"));
 
 console.log("Stroke symmetry angle verification passed.");

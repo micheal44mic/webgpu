@@ -33,7 +33,7 @@ struct BlendUniforms {
   paintColor: vec4<f32>,
   depositRect: vec4<f32>,         // step write rect in group-local pixels X,Y,W,H
   options: vec4<u32>,             // shape custom, grain mode, filtering + precision, has previous
-  slots: vec4<u32>,               // carrier read slot, carrier write slot, scratch row stride, 0
+  slots: vec4<u32>,               // carrier read/write, scratch row stride, Shape layer
 };
 
 @group(0) @binding(0) var<uniform> blend: BlendUniforms;
@@ -587,7 +587,7 @@ ${blendUniformsWgsl}
 @group(0) @binding(1) var<storage, read_write> stateBuffer: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read_write> coverageBuffer: array<f32>;
 @group(0) @binding(3) var<storage, read> carrierBuffer: array<vec4<f32>>;
-@group(0) @binding(4) var shapeTexture: texture_2d<f32>;
+@group(0) @binding(4) var shapeTexture: texture_2d_array<f32>;
 @group(0) @binding(5) var shapeSampler: sampler;
 @group(0) @binding(6) var grainTexture: texture_2d<f32>;
 @group(0) @binding(7) var grainSampler: sampler;
@@ -667,7 +667,7 @@ fn customAt(
   }
   let samplingUv = local.uv * SHAPE_MASK_UV_SCALE + vec2<f32>(SHAPE_MASK_UV_OFFSET);
   result.coverage = sourcePrecisionCoverage(
-    textureSampleLevel(shapeTexture, shapeSampler, samplingUv, 0.0).r
+    textureSampleLevel(shapeTexture, shapeSampler, samplingUv, i32(blend.slots.w), 0.0).r
   );
   return result;
 }

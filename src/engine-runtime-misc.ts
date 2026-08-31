@@ -74,9 +74,12 @@ import {
 } from "./layer-blend-modes";
 import { LAYER_BLEND_FOLD_WGSL } from "./layer-blend-fold-shader";
 import { packStampsIntoUpload } from "./engine-stamp-upload";
+import { shapeLayerForStamp } from "./brush-shape-sequence-core.ts";
 import {
   grainAssetIdForSettings,
-  shapeAssetIdForSettings,
+  shapeAssetIdsForSettings,
+  shapeAssetSequenceLengthForSettings,
+  shapeAssetSequenceMatches,
   shapeInvertForSettings,
   shapeMaskFormatForSettings,
 } from "./engine-brush-assets";
@@ -1315,13 +1318,21 @@ export function emitStamp(engine: BrushEngine, point: LayerPoint, directionX: nu
   const radius = stroke.thicknessDynamicsNeutral
     ? baseRadius
     : baseRadius * liveThicknessFactor;
+  const stampOrdinal = Math.max(0, engine.seedSequence - stroke.seedSequenceBeforeStroke);
   const seed = nextPaintStampSeed(engine.seedSequence++);
+  const shapeLayerCount = shapeAssetSequenceLengthForSettings(generationSettings);
   const stamp: Stamp = {
     x: point.x,
     y: point.y,
     radius,
     pressure,
     seed,
+    shapeLayer: shapeLayerForStamp(
+      generationSettings.shapeSequenceMode,
+      stampOrdinal,
+      seed,
+      shapeLayerCount,
+    ),
     directionX,
     directionY,
     historyActionId: stroke.historyActionId,
@@ -1723,29 +1734,31 @@ export function requestGrainLoad(engine: BrushEngine): void {
 }
 
 export function requestShapeLoad(engine: BrushEngine): void {
-  const assetId = shapeAssetIdForSettings(engine.settings);
+  const assetIds = shapeAssetIdsForSettings(engine.settings);
+  const assetId = assetIds[0];
   const invert = shapeInvertForSettings(engine.settings);
   const format = shapeMaskFormatForSettings(engine.settings);
   engine.shapeDesiredAssetId = assetId;
+  engine.shapeDesiredAssetIds = [...assetIds];
   engine.shapeDesiredInvert = invert;
   engine.shapeDesiredFormat = format;
   if (
     (
       engine.shapeResident
-      && engine.shapeLoadedAssetId === assetId
+      && shapeAssetSequenceMatches(engine.shapeLoadedAssetIds, assetIds)
       && engine.shapeLoadedInvert === invert
       && engine.shapeLoadedFormat === format
     )
     || (
       engine.shapeLoadingPromise
-      && engine.shapeLoadingAssetId === assetId
+      && shapeAssetSequenceMatches(engine.shapeLoadingAssetIds, assetIds)
       && engine.shapeLoadingInvert === invert
       && engine.shapeLoadingFormat === format
     )
   ) {
     return;
   }
-  void engine.ensureShapeResources(assetId, invert, format).catch((error) => {
+  void engine.ensureShapeResources(assetIds, invert, format).catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
     engine.callbacks.onStatus?.(`Shape 2K is unavailable: ${message}`, "error");
   });

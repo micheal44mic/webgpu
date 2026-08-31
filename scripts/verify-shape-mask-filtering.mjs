@@ -85,7 +85,11 @@ registerHooks({
   },
 });
 const [
-  { shapeTextureMemoryMiB },
+  {
+    shapeTextureMemoryMiB,
+    shapeTextureSequentialTransitionPeakMemoryMiB,
+    shapeTextureUploadStagingMemoryMiB,
+  },
   { buildShapeOccupancyMaps },
 ] = await Promise.all([
   import("../src/engine-memory-model.ts"),
@@ -344,6 +348,24 @@ assert.equal(shapeTextureMemoryMiB(), r16ShapeMemoryMiB, "R16F is the resident m
 assert.equal(r8ShapeMemoryMiB, expectedMipPixels * 2 / mebibyteBytes);
 assert.equal(r16ShapeMemoryMiB, expectedMipPixels * 2 / mebibyteBytes);
 assert.equal(r16ShapeMemoryMiB, r8ShapeMemoryMiB, "both comparisons retain identical R16F storage");
+assert.equal(
+  shapeTextureMemoryMiB("r16float", 4),
+  r16ShapeMemoryMiB * 4,
+  "four Shape layers must account for four complete guarded mip chains",
+);
+const scalar16StagingMiB = shapeTextureUploadStagingMemoryMiB();
+assert.equal(scalar16StagingMiB, 8, "one 2048-square scalar16 staging texture is 8 MiB");
+const sequentialFourToFourPeakMiB = shapeTextureSequentialTransitionPeakMemoryMiB(4, 4);
+assert.equal(
+  sequentialFourToFourPeakMiB,
+  r16ShapeMemoryMiB * 8 + scalar16StagingMiB,
+  "a four-to-four retarget must overlap two resident arrays and only one staging texture",
+);
+assert.ok(
+  sequentialFourToFourPeakMiB
+    < r16ShapeMemoryMiB * 8 + scalar16StagingMiB * 4,
+  "the sequential loader must stay below the former four-staging GPU peak",
+);
 
 const pencilPng = readFileSync(new URL("Shapepencil.png", root));
 const pencilSource = pencilPng.buffer.slice(
@@ -383,6 +405,21 @@ assert.match(
 assert.doesNotMatch(resourceSource, /format: "r8unorm"/);
 assert.match(resourceSource, /format: "r16uint"/);
 assert.match(resourceSource, /basePipelines\[sourceFormat\]/);
+assert.match(
+  resourceSource,
+  /for await \(const batch of sources\.batches\)[\s\S]*?queue\.submit[\s\S]*?await engine\.device\.queue\.onSubmittedWorkDone\(\)[\s\S]*?stagingTexture\?\.destroy\(\)/,
+  "each unique Shape source must finish on the GPU before its sole staging texture is destroyed",
+);
+assert.match(
+  resourceSource,
+  /for \(const \[assetId, layers\] of layersByAsset\)[\s\S]*?await decodeShapeMaskResource[\s\S]*?yield \{ source: decoded, layers \}/,
+  "unique Shape sources must decode lazily instead of accumulating every scalar16 source",
+);
+assert.doesNotMatch(
+  resourceSource,
+  /const stagingTextures: GPUTexture\[\]/,
+  "the Shape array loader must not retain one staging texture per unique source",
+);
 assert.match(shadersSource, /f32\(textureLoad\(sourceTexture,[\s\S]*?\/ 65535\.0/);
 assert.match(shadersSource, /round\(normalized \* 255\.0\) \/ 255\.0/);
 

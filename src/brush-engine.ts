@@ -652,10 +652,14 @@ import {
   isCustomShapeAssetId,
   normalizeGrainAssetId,
   normalizeShapeAssetId,
-  shapeAssetIdForSettings,
+  shapeAssetIdsForSettings,
+  shapeAssetSequenceKey,
+  shapeAssetSequenceLengthForSettings,
+  shapeAssetSequenceMatches,
   shapeInvertForSettings,
   shapeMaskFormatForSettings,
 } from "./engine-brush-assets";
+import { shapeLayerForStamp } from "./brush-shape-sequence-core.ts";
 import {
   vectorTextGpuDrawUsesBlur,
   type MixedSceneActivePresentation,
@@ -1621,12 +1625,15 @@ export class BrushEngine {
   shapeResident = false;
   shapeLoadingPromise: Promise<void> | null = null;
   shapeDesiredAssetId: BrushShapeAssetId = "legacy-shape";
+  shapeDesiredAssetIds: BrushShapeAssetId[] = ["legacy-shape"];
   shapeDesiredInvert = false;
   shapeDesiredFormat: BrushShapeMaskFormat = "r16float";
   shapeLoadingAssetId: BrushShapeAssetId | null = null;
+  shapeLoadingAssetIds: BrushShapeAssetId[] = [];
   shapeLoadingInvert: boolean | null = null;
   shapeLoadingFormat: BrushShapeMaskFormat | null = null;
   shapeLoadedAssetId: BrushShapeAssetId | null = null;
+  shapeLoadedAssetIds: BrushShapeAssetId[] = [];
   shapeLoadedInvert: boolean | null = null;
   shapeLoadedFormat: BrushShapeMaskFormat | null = null;
   shapeTextureMemoryBytes = 0;
@@ -2552,7 +2559,10 @@ export class BrushEngine {
   }
 
   getSettings(): BrushSettings {
-    return { ...this.settings };
+    return {
+      ...this.settings,
+      shapeAssetIds: shapeAssetIdsForSettings(this.settings),
+    };
   }
 
   registerCustomShapeAsset(
@@ -2583,17 +2593,22 @@ export class BrushEngine {
     if (!isCustomShapeAssetId(id) && !isCustomGrainAssetId(id)) {
       throw new TypeError("Only custom assets can be removed.");
     }
-    const referencedBySettings = this.settings.shapeAssetId === id
+    const referencedBySettings = shapeAssetIdsForSettings(this.settings).includes(
+      id as BrushShapeAssetId,
+    )
       || this.settings.grainAssetId === id;
-    const referencedByResources = this.shapeLoadedAssetId === id
-      || this.shapeLoadingAssetId === id
-      || this.shapeDesiredAssetId === id
+    const referencedByResources = this.shapeLoadedAssetIds.includes(id as BrushShapeAssetId)
+      || this.shapeLoadingAssetIds.includes(id as BrushShapeAssetId)
+      || this.shapeDesiredAssetIds.includes(id as BrushShapeAssetId)
       || this.grainLoadedAssetId === id
       || this.grainLoadingAssetId === id
       || this.grainDesiredAssetId === id;
     const referencedByHistory = this.historyBatches.some((batch) => (
       batch.kind !== "fill"
-      && (batch.settings.shapeAssetId === id || batch.settings.grainAssetId === id)
+      && (
+        shapeAssetIdsForSettings(batch.settings).includes(id as BrushShapeAssetId)
+        || batch.settings.grainAssetId === id
+      )
     ));
     if (referencedBySettings || referencedByResources || referencedByHistory) {
       throw new Error("The custom asset is still active or required by history.");
@@ -2623,7 +2638,10 @@ export class BrushEngine {
     const resources = this.shapeResourceSet;
     const ready = resources !== null
       && this.shapeResident
-      && this.shapeLoadedAssetId === shapeAssetIdForSettings(this.settings)
+      && shapeAssetSequenceMatches(
+        this.shapeLoadedAssetIds,
+        shapeAssetIdsForSettings(this.settings),
+      )
       && this.shapeLoadedInvert === shapeInvertForSettings(this.settings)
       && this.shapeLoadedFormat === shapeMaskFormatForSettings(this.settings);
     return {
@@ -2727,12 +2745,26 @@ export class BrushEngine {
       || next.blendMode === "m1-glaze"
       ? next.blendMode
       : this.settings.blendMode;
+    const shapeAssetIds = next.shapeAssetIds !== undefined
+      ? shapeAssetIdsForSettings({
+        shapeAssetIds: next.shapeAssetIds,
+        shapeAssetId: next.shapeAssetId ?? this.settings.shapeAssetId,
+      })
+      : next.shapeAssetId !== undefined
+        ? [normalizeShapeAssetId(next.shapeAssetId)]
+        : shapeAssetIdsForSettings(this.settings);
     this.settings = {
       ...this.settings,
       ...next,
       tool,
       shape: next.shape === "shape" || next.shape === "circle" ? next.shape : this.settings.shape,
-      shapeAssetId: normalizeShapeAssetId(next.shapeAssetId ?? this.settings.shapeAssetId),
+      shapeAssetId: shapeAssetIds[0],
+      shapeAssetIds,
+      shapeSequenceMode: next.shapeSequenceMode === "random"
+        ? "random"
+        : next.shapeSequenceMode === "ordered"
+          ? "ordered"
+          : this.settings.shapeSequenceMode,
       shapeInvert: typeof next.shapeInvert === "boolean"
         ? next.shapeInvert
         : this.settings.shapeInvert,
@@ -4823,7 +4855,10 @@ export class BrushEngine {
       renderSettings.shape === "shape"
       && (
         !this.shapeResident
-        || this.shapeLoadedAssetId !== shapeAssetIdForSettings(renderSettings)
+        || !shapeAssetSequenceMatches(
+          this.shapeLoadedAssetIds,
+          shapeAssetIdsForSettings(renderSettings),
+        )
         || this.shapeLoadedInvert !== shapeInvertForSettings(renderSettings)
         || this.shapeLoadedFormat !== shapeMaskFormatForSettings(renderSettings)
       )
@@ -4925,6 +4960,7 @@ export class BrushEngine {
       && ADAPTIVE_PREVIEW_FORCE
       && !lightGlazeSettings
       && !deferredPreview
+      && shapeAssetIdsForSettings(renderSettings).length === 1
       && this.pixelSelectionState.selectedPixels === 0;
     const historyActionId = this.nextHistoryActionId;
     if (tool !== "blend") {
@@ -6189,54 +6225,65 @@ export class BrushEngine {
   }
 
   ensureShapeResources(
-    requestedAssetId: BrushShapeAssetId = shapeAssetIdForSettings(this.settings),
+    requestedAssetIds: BrushShapeAssetId | readonly BrushShapeAssetId[] = shapeAssetIdsForSettings(
+      this.settings,
+    ),
     requestedInvert: boolean = shapeInvertForSettings(this.settings),
     requestedFormat: BrushShapeMaskFormat = shapeMaskFormatForSettings(this.settings),
   ): Promise<void> {
-    const assetId = normalizeShapeAssetId(requestedAssetId);
+    const assetIds = Array.isArray(requestedAssetIds)
+      ? shapeAssetIdsForSettings({
+        shapeAssetIds: requestedAssetIds,
+        shapeAssetId: requestedAssetIds[0],
+      })
+      : [normalizeShapeAssetId(requestedAssetIds)];
+    const assetId = assetIds[0];
     const invert = requestedInvert === true;
     const format = requestedFormat === "r16float" ? "r16float" : "r8unorm";
     this.shapeDesiredAssetId = assetId;
+    this.shapeDesiredAssetIds = [...assetIds];
     this.shapeDesiredInvert = invert;
     this.shapeDesiredFormat = format;
     const inFlight = this.shapeLoadingPromise;
     if (inFlight) {
       const inFlightAssetId = this.shapeLoadingAssetId;
+      const inFlightAssetIds = this.shapeLoadingAssetIds;
       const inFlightInvert = this.shapeLoadingInvert;
       const inFlightFormat = this.shapeLoadingFormat;
       return inFlight.then(
         () => {
           if (
-            this.shapeDesiredAssetId !== assetId
+            !shapeAssetSequenceMatches(this.shapeDesiredAssetIds, assetIds)
             || this.shapeDesiredInvert !== invert
             || this.shapeDesiredFormat !== format
           ) return;
-          return this.ensureShapeResources(assetId, invert, format);
+          return this.ensureShapeResources(assetIds, invert, format);
         },
         (error: unknown) => {
           if (
-            this.shapeDesiredAssetId === assetId
+            shapeAssetSequenceMatches(this.shapeDesiredAssetIds, assetIds)
             && this.shapeDesiredInvert === invert
             && this.shapeDesiredFormat === format
             && inFlightAssetId === assetId
+            && shapeAssetSequenceMatches(inFlightAssetIds, assetIds)
             && inFlightInvert === invert
             && inFlightFormat === format
           ) {
             throw error;
           }
           if (
-            this.shapeDesiredAssetId === assetId
+            shapeAssetSequenceMatches(this.shapeDesiredAssetIds, assetIds)
             && this.shapeDesiredInvert === invert
             && this.shapeDesiredFormat === format
           ) {
-            return this.ensureShapeResources(assetId, invert, format);
+            return this.ensureShapeResources(assetIds, invert, format);
           }
         },
       );
     }
     if (
       this.shapeResident
-      && this.shapeLoadedAssetId === assetId
+      && shapeAssetSequenceMatches(this.shapeLoadedAssetIds, assetIds)
       && this.shapeLoadedInvert === invert
       && this.shapeLoadedFormat === format
     ) {
@@ -6244,7 +6291,9 @@ export class BrushEngine {
     }
 
     const precisionLabel = format === "r16float" ? "16F" : "8-bit";
-    const label = `${assetId === "pencil-shape" ? "Shape Pencil" : "Shape 2K"} ${precisionLabel}`;
+    const label = assetIds.length === 1
+      ? `${assetId === "pencil-shape" ? "Shape Pencil" : "Shape 2K"} ${precisionLabel}`
+      : `${assetIds.length}-Shape sequence ${precisionLabel}`;
     this.callbacks.onStatus?.(`Loading ${label}…`, "working");
     const loading = (async () => {
       let resources: ShapeMaskResources;
@@ -6253,14 +6302,14 @@ export class BrushEngine {
           this.device,
           `${label} allocation`,
           async (transaction) => {
-            const candidate = await createShapeMaskResources(this, assetId, invert, format);
+            const candidate = await createShapeMaskResources(this, assetIds, invert, format);
             transaction.deferRollback(() => destroyShapeMaskResources(candidate));
             return candidate;
           },
         );
       } catch (error) {
         if (
-          this.shapeDesiredAssetId !== assetId
+          !shapeAssetSequenceMatches(this.shapeDesiredAssetIds, assetIds)
           || this.shapeDesiredInvert !== invert
           || this.shapeDesiredFormat !== format
         ) return;
@@ -6268,7 +6317,7 @@ export class BrushEngine {
       }
 
       if (
-        this.shapeDesiredAssetId !== assetId
+        !shapeAssetSequenceMatches(this.shapeDesiredAssetIds, assetIds)
         || this.shapeDesiredInvert !== invert
         || this.shapeDesiredFormat !== format
       ) {
@@ -6281,7 +6330,7 @@ export class BrushEngine {
         await this.waitForGpuCapped("Shape asset change", 60_000);
       }
       if (
-        this.shapeDesiredAssetId !== assetId
+        !shapeAssetSequenceMatches(this.shapeDesiredAssetIds, assetIds)
         || this.shapeDesiredInvert !== invert
         || this.shapeDesiredFormat !== format
       ) {
@@ -6299,7 +6348,7 @@ export class BrushEngine {
       );
 
       if (
-        this.shapeDesiredAssetId !== assetId
+        !shapeAssetSequenceMatches(this.shapeDesiredAssetIds, assetIds)
         || this.shapeDesiredInvert !== invert
         || this.shapeDesiredFormat !== format
       ) {
@@ -6323,7 +6372,7 @@ export class BrushEngine {
 
       destroyShapeMaskResources(previous);
       if (
-        this.shapeDesiredAssetId === assetId
+        shapeAssetSequenceMatches(this.shapeDesiredAssetIds, assetIds)
         && this.shapeDesiredInvert === invert
         && this.shapeDesiredFormat === format
       ) {
@@ -6338,9 +6387,10 @@ export class BrushEngine {
       if (this.shapeLoadingPromise !== tracked) return;
       this.shapeLoadingPromise = null;
       this.shapeLoadingAssetId = null;
+      this.shapeLoadingAssetIds = [];
       this.shapeLoadingInvert = null;
       this.shapeLoadingFormat = null;
-      const selectedAssetId = shapeAssetIdForSettings(this.settings);
+      const selectedAssetIds = shapeAssetIdsForSettings(this.settings);
       const selectedInvert = shapeInvertForSettings(this.settings);
       const selectedFormat = shapeMaskFormatForSettings(this.settings);
       if (
@@ -6348,7 +6398,7 @@ export class BrushEngine {
         && !this.historyBusy
         && this.settings.shape === "shape"
         && (
-          this.shapeLoadedAssetId !== selectedAssetId
+          !shapeAssetSequenceMatches(this.shapeLoadedAssetIds, selectedAssetIds)
           || this.shapeLoadedInvert !== selectedInvert
           || this.shapeLoadedFormat !== selectedFormat
           || !this.shapeResident
@@ -6361,6 +6411,7 @@ export class BrushEngine {
     });
     this.shapeLoadingPromise = tracked;
     this.shapeLoadingAssetId = assetId;
+    this.shapeLoadingAssetIds = [...assetIds];
     this.shapeLoadingInvert = invert;
     this.shapeLoadingFormat = format;
     return tracked;
@@ -7986,7 +8037,10 @@ export class BrushEngine {
     const shapeReady = settings.shape !== "shape" || (
       this.shapeLoadingPromise === null
       && this.shapeResident
-      && this.shapeLoadedAssetId === shapeAssetIdForSettings(settings)
+      && shapeAssetSequenceMatches(
+        this.shapeLoadedAssetIds,
+        shapeAssetIdsForSettings(settings),
+      )
       && this.shapeLoadedInvert === shapeInvertForSettings(settings)
       && this.shapeLoadedFormat === shapeMaskFormatForSettings(settings)
     );
@@ -8023,7 +8077,7 @@ export class BrushEngine {
     const shape = settings.shape === "shape"
       ? [
         "shape",
-        this.shapeLoadedAssetId,
+        shapeAssetSequenceKey(this.shapeLoadedAssetIds),
         this.shapeLoadedInvert ? 1 : 0,
         this.shapeLoadedFormat,
         this.shapeMaskIdentity,
@@ -8656,7 +8710,7 @@ export class BrushEngine {
       if (settings !== this.settings) continue;
       if (settings.shape === "shape") {
         await this.ensureShapeResources(
-          shapeAssetIdForSettings(settings),
+          shapeAssetIdsForSettings(settings),
           shapeInvertForSettings(settings),
           shapeMaskFormatForSettings(settings),
         );
@@ -13118,6 +13172,7 @@ export class BrushEngine {
         radius: 0,
         pressure: 1,
         seed: 0,
+        shapeLayer: 0,
         directionX: 1,
         directionY: 0,
         historyActionId: 0,
@@ -13174,6 +13229,7 @@ export class BrushEngine {
       target.radius = radius;
       target.pressure = candidate.stamp.pressure;
       target.seed = candidate.stamp.seed;
+      target.shapeLayer = candidate.stamp.shapeLayer;
       target.directionX = candidate.stamp.directionX;
       target.directionY = candidate.stamp.directionY;
       target.historyActionId = candidate.stamp.historyActionId;
@@ -13189,6 +13245,7 @@ export class BrushEngine {
     planner.copyStateFrom(stroke.curvePlanner);
     let distanceSinceStamp = stroke.distanceSinceStamp;
     let seedSequence = this.seedSequence;
+    const shapeLayerCount = shapeAssetSequenceLengthForSettings(settings);
     const spacing = Math.max(
       0.1,
       settings.size * (stroke.adaptiveSpacingPercent / 100),
@@ -13222,6 +13279,7 @@ export class BrushEngine {
           Math.max(0, referenceTimeMs - pointTimeMs),
         )
         : baseRadius * liveThicknessFactor;
+      const stampOrdinal = Math.max(0, seedSequence - stroke.seedSequenceBeforeStroke);
       const seed = (Math.imul(seedSequence++, 0x9e3779b1) ^ 0xa511e9b3) >>> 0;
       if (!Number.isFinite(radius) || radius <= 0) {
         return;
@@ -13251,6 +13309,12 @@ export class BrushEngine {
       stamp.radius = radius;
       stamp.pressure = pressure;
       stamp.seed = seed;
+      stamp.shapeLayer = shapeLayerForStamp(
+        settings.shapeSequenceMode,
+        stampOrdinal,
+        seed,
+        shapeLayerCount,
+      );
       stamp.directionX = directionX;
       stamp.directionY = directionY;
       stamp.historyActionId = stroke.historyActionId;
@@ -15062,6 +15126,15 @@ export class BrushEngine {
       this.startAdaptivePreviewProbe(false);
       return;
     }
+    if (shapeAssetIdsForSettings(settings).length > 1) {
+      this.adaptivePreviewCandidates.length = 0;
+      clearAdaptivePreviewCanvas(this);
+      // The compact Canvas2D tip owns one Shape sprite only. Keep queue
+      // probes active for spacing control, while the exact GPU result remains
+      // the sole visual representation of a multi-Shape stroke.
+      this.startAdaptivePreviewProbe(false);
+      return;
+    }
     if (settings.blendMode !== "normal") {
       if (profile) {
         profile.adaptivePreviewUnsupportedBlendSkips += 1;
@@ -15137,6 +15210,10 @@ export class BrushEngine {
     }
 
     const settings = candidates[candidates.length - 1].settings;
+    if (shapeAssetIdsForSettings(settings).length > 1) {
+      finishIncompleteAdaptivePreviewFrame(this, startedAt, false, candidates, false);
+      return;
+    }
     if (isTexturizedGrainActive(settings)) {
       if (this.activeStrokeProfile) {
         this.activeStrokeProfile.grainAdaptivePreviewSkips += 1;

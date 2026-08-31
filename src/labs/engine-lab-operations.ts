@@ -33,6 +33,8 @@ import {
 } from "./memory/layer-compression-study-contract";
 import { decodeFloat16, encodeFloat16 } from "../float16";
 import { documentBackgroundSrgb } from "../document-background";
+import { shapeAssetSequenceLengthForSettings } from "../engine-brush-assets";
+import { shapeLayerForStamp } from "../brush-shape-sequence-core.ts";
 
 export async function runBenchmark(engine: BrushEngine, baseStampCount: number): Promise<BenchmarkResult> {
   if (!engine.initialized) {
@@ -163,6 +165,7 @@ export async function runBenchmark(engine: BrushEngine, baseStampCount: number):
 
 export function generateBenchmarkStamps(engine: BrushEngine, count: number, settings: BrushSettings): Stamp[] {
   const stamps = new Array<Stamp>(count);
+  const shapeLayerCount = shapeAssetSequenceLengthForSettings(settings);
   const centerX = DOCUMENT_WIDTH * 0.5;
   const centerY = DOCUMENT_HEIGHT * 0.5;
   const maximumPathRadius = Math.min(DOCUMENT_WIDTH, DOCUMENT_HEIGHT) * 0.39;
@@ -173,13 +176,20 @@ export function generateBenchmarkStamps(engine: BrushEngine, count: number, sett
     const pathRadius = maximumPathRadius * (0.12 + progress * 0.88);
     const pressure = clamp(0.58 + Math.sin(progress * Math.PI * 15) * 0.28, 0.1, 1);
     const radius = Math.max(0.5, settings.size * 0.5);
+    const seed = (Math.imul(engine.seedSequence++, 0x9e3779b1) ^ 0xa511e9b3) >>> 0;
 
     stamps[index] = {
       x: centerX + Math.cos(angle) * pathRadius,
       y: centerY + Math.sin(angle * 1.037) * pathRadius,
       radius,
       pressure,
-      seed: (Math.imul(engine.seedSequence++, 0x9e3779b1) ^ 0xa511e9b3) >>> 0,
+      seed,
+      shapeLayer: shapeLayerForStamp(
+        settings.shapeSequenceMode,
+        index,
+        seed,
+        shapeLayerCount,
+      ),
       directionX: -Math.sin(angle),
       directionY: Math.cos(angle * 1.037),
       historyActionId: 0,

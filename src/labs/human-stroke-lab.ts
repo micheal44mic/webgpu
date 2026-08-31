@@ -26,6 +26,7 @@ const TIMELINE_RELEASE_COMPLETION_TIMEOUT_MS = 3_000;
 export const CANONICAL_HUMAN_STROKE_FINGERPRINT = "18982412";
 export const CANONICAL_HUMAN_STROKE_POINT_COUNT = 1_583;
 export const HUMAN_RENDERING_SUITE_REVISION = 4 as const;
+export const HUMAN_SHAPE_SEQUENCE_SUITE_REVISION = 2 as const;
 export const HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 67 as const;
 export const HUMAN_STROKE_TIMELINE_TELEMETRY_REVISION = 2 as const;
 
@@ -49,6 +50,13 @@ interface RenderingMemorySnapshot {
   grainTextureMiB: number;
   shapeTextureMiB: number;
   layerFormat: string;
+}
+
+interface HumanStrokeOutputWitness {
+  width: number;
+  height: number;
+  pixelHash: string;
+  nonTransparentPixels: number;
 }
 
 interface PlaybackMetrics {
@@ -244,6 +252,12 @@ export interface HumanStrokeBenchmarkRun {
     renderingSuiteRevision: typeof HUMAN_RENDERING_SUITE_REVISION | null;
     renderingSuiteCaseId: string | null;
     renderingSuiteCaseLabel: string | null;
+    benchmarkSuiteId: string | null;
+    benchmarkSuiteRevision: number | null;
+    benchmarkSuiteCaseId: string | null;
+    benchmarkSuiteCaseLabel: string | null;
+    preReplayPreparationMs: number;
+    outputWitness: HumanStrokeOutputWitness | null;
     renderingMemoryBeforeReplay: RenderingMemorySnapshot;
     renderingMemoryAfterReplay: RenderingMemorySnapshot;
     backgroundStrategy: "transparent" | "multicolor-horizontal-stripes-v1";
@@ -276,6 +290,11 @@ interface ReplayOptions {
   suiteCaseId?: string;
   suiteCaseLabel?: string;
   suiteRevision?: typeof HUMAN_RENDERING_SUITE_REVISION;
+  benchmarkSuiteId?: string;
+  benchmarkSuiteRevision?: number;
+  benchmarkSuiteCaseId?: string;
+  benchmarkSuiteCaseLabel?: string;
+  captureOutputWitness?: boolean;
 }
 
 function parseFixture(value: unknown): HumanStrokeFixture | null {
@@ -408,6 +427,25 @@ export function fingerprintHumanStroke(points: readonly HumanStrokePoint[]): str
   return hash.toString(16).padStart(8, "0");
 }
 
+function fingerprintOutputPixels(
+  width: number,
+  height: number,
+  rgba: Uint8ClampedArray,
+): HumanStrokeOutputWitness {
+  let hash = 0x811c9dc5;
+  let nonTransparentPixels = 0;
+  for (let index = 0; index < rgba.length; index += 1) {
+    hash = Math.imul(hash ^ rgba[index], 0x01000193) >>> 0;
+    if ((index & 3) === 3 && rgba[index] !== 0) nonTransparentPixels += 1;
+  }
+  return {
+    width,
+    height,
+    pixelHash: hash.toString(16).padStart(8, "0"),
+    nonTransparentPixels,
+  };
+}
+
 function summarizeMotion(points: readonly HumanStrokePoint[]): {
   pathLengthPx: number;
   averageSpeedPxPerSecond: number;
@@ -447,6 +485,7 @@ function canonicalSettings(base: BrushSettings): BrushSettings {
     tool: "paint",
     shape: "circle",
     shapeAssetId: "legacy-shape",
+    shapeAssetIds: ["legacy-shape"],
     shapeInvert: false,
     shapeRotation: "fixed",
     shapeScatter: 0,
@@ -1288,6 +1327,249 @@ export class HumanStrokeLab {
     });
   }
 
+  async runShapeSequenceComparison(): Promise<{
+    version: typeof HUMAN_SHAPE_SEQUENCE_SUITE_REVISION;
+    passed: boolean;
+    strategy: "canonical-human-stroke-r16f-count-one-shape-sequence-v2";
+    trace: {
+      fingerprint: string;
+      expectedFingerprint: typeof CANONICAL_HUMAN_STROKE_FINGERPRINT;
+      pointCount: number;
+      expectedPointCount: typeof CANONICAL_HUMAN_STROKE_POINT_COUNT;
+      matchesCanonical: boolean;
+    };
+    durationMs: number;
+    allRunsSaved: boolean;
+    cases: Array<{
+      id: string;
+      label: string;
+      shapeSequenceMode: BrushSettings["shapeSequenceMode"];
+      shapeLayerCount: number;
+      uniqueShapeCount: number;
+      runId: number;
+      saved: boolean;
+      preReplayPreparationMs: number;
+      outputPixelHash: string;
+      outputNonTransparentPixels: number;
+      shapeTextureMiB: number;
+      baseStamps: number;
+      physicalCopies: number;
+      renderFrames: number;
+      delayedRenderFrames: number;
+      renderFrameTotalP95Ms: number;
+      renderFrameOverheadP95Ms: number;
+      inputToGpuCompletionMs: number;
+      releaseToGpuIdleMs: number;
+      releaseToPresentedMs: number;
+      adaptiveSpacingFinalPercent: number;
+      adaptiveSpacingIncreaseCount: number;
+      adaptivePreviewFrames: number;
+    }>;
+    runs: HumanStrokeReplayReport[];
+  }> {
+    return this.#withBusy(async () => {
+      const fixture = await this.#requireFixture();
+      const fingerprint = fingerprintHumanStroke(fixture.points);
+      const matchesCanonical = fingerprint === CANONICAL_HUMAN_STROKE_FINGERPRINT
+        && fixture.points.length === CANONICAL_HUMAN_STROKE_POINT_COUNT;
+      if (!matchesCanonical) {
+        throw new Error(
+          `Traccia non canonica: attesa ${CANONICAL_HUMAN_STROKE_FINGERPRINT}`
+            + `/${CANONICAL_HUMAN_STROKE_POINT_COUNT}, ricevuta `
+            + `${fingerprint}/${fixture.points.length}.`,
+        );
+      }
+
+      const cases = [
+        {
+          id: "single-layer",
+          label: "Shape singola · Count 1",
+          shapeAssetIds: ["legacy-shape"] as const,
+          shapeSequenceMode: "ordered" as const,
+        },
+        {
+          id: "four-layer-control",
+          label: "Quattro livelli identici · Count 1",
+          shapeAssetIds: [
+            "legacy-shape",
+            "legacy-shape",
+            "legacy-shape",
+            "legacy-shape",
+          ] as const,
+          shapeSequenceMode: "ordered" as const,
+        },
+        {
+          id: "four-layer-sequence",
+          label: "Sequenza Shape A-B-A-B ordinata · Count 1",
+          shapeAssetIds: [
+            "legacy-shape",
+            "pencil-shape",
+            "legacy-shape",
+            "pencil-shape",
+          ] as const,
+          shapeSequenceMode: "ordered" as const,
+        },
+        {
+          id: "four-layer-random",
+          label: "Sequenza Shape A-B-A-B casuale deterministica · Count 1",
+          shapeAssetIds: [
+            "legacy-shape",
+            "pencil-shape",
+            "legacy-shape",
+            "pencil-shape",
+          ] as const,
+          shapeSequenceMode: "random" as const,
+        },
+      ];
+      const startedAt = performance.now();
+      const runs: HumanStrokeReplayReport[] = [];
+      for (const testCase of cases) {
+        this.#onStatus(`Confronto Shape: ${testCase.label}…`, "working");
+        const settings: BrushSettings = {
+          ...canonicalSettings(fixture.settings),
+          shape: "shape",
+          shapeAssetId: testCase.shapeAssetIds[0],
+          shapeAssetIds: [...testCase.shapeAssetIds],
+          shapeSequenceMode: testCase.shapeSequenceMode,
+          shapeInvert: false,
+          shapeMaskFormat: "r16float",
+          shapeRotation: "fixed",
+          shapeScatter: 0,
+          grainMode: "off",
+          size: 750,
+          spacingPercent: 1,
+          count: 1,
+          blendMode: "intense-blending",
+          hueJitterDegrees: 0,
+          saturationJitter: 0,
+          lightnessJitter: 0,
+          darknessJitter: 0,
+          jitterPerCopy: false,
+          positionJitterLateral: 0,
+          positionJitterLinear: 0,
+        };
+        const result = await this.#runReplay(fixture, testCase.label, settings, {
+          benchmarkSuiteId: "shape-sequence-count-one",
+          benchmarkSuiteRevision: HUMAN_SHAPE_SEQUENCE_SUITE_REVISION,
+          benchmarkSuiteCaseId: testCase.id,
+          benchmarkSuiteCaseLabel: testCase.label,
+          captureOutputWitness: true,
+        });
+        if (result.run.performance.physicalCopies !== result.run.performance.baseStamps) {
+          throw new Error(
+            `${testCase.id}: Count 1 ha prodotto ${result.run.performance.physicalCopies}`
+              + ` copie per ${result.run.performance.baseStamps} stamp base.`,
+          );
+        }
+        if (result.run.performance.adaptivePreviewFrames !== 0) {
+          throw new Error(
+            `${testCase.id}: il fallback visivo non deve intervenire nel confronto Shape.`,
+          );
+        }
+        const expectedShapeTextureMiB = testCase.shapeAssetIds.length === 1
+          ? 10.666666030883789
+          : 42.666664123535156;
+        if (Math.abs(result.memoryAfter.shapeTextureMiB - expectedShapeTextureMiB) > 0.001) {
+          throw new Error(
+            `${testCase.id}: memoria Shape ${result.memoryAfter.shapeTextureMiB.toFixed(6)} MiB, `
+              + `attesa ${expectedShapeTextureMiB.toFixed(6)} MiB.`,
+          );
+        }
+        runs.push(result);
+      }
+
+      const witnesses = runs.map((result) => result.run.benchmark.outputWitness);
+      if (witnesses.some((witness) => witness === null)) {
+        throw new Error("Il confronto Shape non ha prodotto il testimone pixel richiesto.");
+      }
+      const completeWitnesses = witnesses as HumanStrokeOutputWitness[];
+      const [singleWitness, controlWitness, orderedWitness, randomWitness] = completeWitnesses as [
+        HumanStrokeOutputWitness,
+        HumanStrokeOutputWitness,
+        HumanStrokeOutputWitness,
+        HumanStrokeOutputWitness,
+      ];
+      const referenceDimensions = `${singleWitness.width}x${singleWitness.height}`;
+      for (const [index, witness] of completeWitnesses.entries()) {
+        if (witness.nonTransparentPixels === 0) {
+          throw new Error(`${cases[index].id}: il testimone pixel è vuoto.`);
+        }
+        if (`${witness.width}x${witness.height}` !== referenceDimensions) {
+          throw new Error(`${cases[index].id}: dimensioni del testimone pixel incoerenti.`);
+        }
+      }
+      if (singleWitness.pixelHash !== controlWitness.pixelHash) {
+        throw new Error(
+          "Il controllo a quattro livelli identici non coincide con la Shape singola.",
+        );
+      }
+      if (controlWitness.pixelHash === orderedWitness.pixelHash) {
+        throw new Error(
+          "La sequenza A-B-A-B coincide con il controllo A-A-A-A: alternanza non dimostrata.",
+        );
+      }
+      if (controlWitness.pixelHash === randomWitness.pixelHash) {
+        throw new Error(
+          "La sequenza casuale coincide con il controllo A-A-A-A: selezione multilivello non dimostrata.",
+        );
+      }
+      if (orderedWitness.pixelHash === randomWitness.pixelHash) {
+        throw new Error(
+          "Le modalità ordinata e casuale producono lo stesso testimone: modalità non discriminata.",
+        );
+      }
+      const allRunsSaved = runs.every((run) => run.saveError === null);
+
+      return {
+        version: HUMAN_SHAPE_SEQUENCE_SUITE_REVISION,
+        passed: runs.length === cases.length && allRunsSaved,
+        strategy: "canonical-human-stroke-r16f-count-one-shape-sequence-v2",
+        trace: {
+          fingerprint,
+          expectedFingerprint: CANONICAL_HUMAN_STROKE_FINGERPRINT,
+          pointCount: fixture.points.length,
+          expectedPointCount: CANONICAL_HUMAN_STROKE_POINT_COUNT,
+          matchesCanonical,
+        },
+        durationMs: performance.now() - startedAt,
+        allRunsSaved,
+        cases: runs.map((result, index) => {
+          const profile = result.run.performance;
+          const release = result.run.playback.releasePhases;
+          const assetIds = result.run.benchmark.settings.shapeAssetIds
+            ?? [result.run.benchmark.settings.shapeAssetId];
+          return {
+            id: cases[index].id,
+            label: cases[index].label,
+            shapeSequenceMode: cases[index].shapeSequenceMode,
+            shapeLayerCount: assetIds.length,
+            uniqueShapeCount: new Set(assetIds).size,
+            runId: result.runId,
+            saved: result.saveError === null,
+            preReplayPreparationMs: result.run.benchmark.preReplayPreparationMs,
+            outputPixelHash: result.run.benchmark.outputWitness?.pixelHash ?? "",
+            outputNonTransparentPixels:
+              result.run.benchmark.outputWitness?.nonTransparentPixels ?? 0,
+            shapeTextureMiB: result.memoryAfter.shapeTextureMiB,
+            baseStamps: profile.baseStamps,
+            physicalCopies: profile.physicalCopies,
+            renderFrames: profile.renderFrames,
+            delayedRenderFrames: profile.delayedRenderFrames,
+            renderFrameTotalP95Ms: profile.renderFrameTotalP95Ms,
+            renderFrameOverheadP95Ms: profile.renderFrameOverheadP95Ms,
+            inputToGpuCompletionMs: result.run.playback.inputToGpuCompletionMs,
+            releaseToGpuIdleMs: release.releaseToGpuIdleMs,
+            releaseToPresentedMs: release.releaseToPresentedMs,
+            adaptiveSpacingFinalPercent: profile.adaptiveSpacingFinalPercent,
+            adaptiveSpacingIncreaseCount: profile.adaptiveSpacingIncreaseCount,
+            adaptivePreviewFrames: profile.adaptivePreviewFrames,
+          };
+        }),
+        runs,
+      };
+    });
+  }
+
   async #withBusy<T>(operation: () => Promise<T>): Promise<T> {
     if (this.#busy || this.#armed || this.#recording) {
       throw new Error("Il laboratorio tratto umano è già occupato.");
@@ -1373,6 +1655,7 @@ export class HumanStrokeLab {
     settings: BrushSettings,
     options: ReplayOptions,
   ): Promise<HumanStrokeReplayReport> {
+    const preparationStartedAt = performance.now();
     if (this.#engine.getPixelSelectionState().selectedPixels > 0) {
       throw new Error("Deseleziona i pixel prima di riprodurre il tratto canonico.");
     }
@@ -1391,6 +1674,7 @@ export class HumanStrokeLab {
       await this.#prepareBlendBackground(settings);
       this.#engine.resetStrokeRandomSeed();
     }
+    const preReplayPreparationMs = performance.now() - preparationStartedAt;
 
     const memoryBefore = this.#captureMemory(settings.blendMode);
     const before = this.#engine.getStats();
@@ -1482,6 +1766,11 @@ export class HumanStrokeLab {
     if (!profile) throw new Error("Profilo del tratto non disponibile.");
     const after = this.#engine.getStats();
     const memoryAfter = this.#captureMemory(settings.blendMode);
+    const outputWitness = options.captureOutputWitness
+      ? await this.#engine.captureActiveLayerThumbnail().then((capture) => (
+        fingerprintOutputPixels(capture.width, capture.height, capture.rgba)
+      ))
+      : null;
     const playback: PlaybackMetrics = {
       inputDeliveryMs: inputFinishedAt - replayStart,
       inputDelayP50Ms: percentile(inputDelays, 0.5),
@@ -1550,6 +1839,12 @@ export class HumanStrokeLab {
         renderingSuiteRevision: options.suiteRevision ?? null,
         renderingSuiteCaseId: options.suiteCaseId ?? null,
         renderingSuiteCaseLabel: options.suiteCaseLabel ?? null,
+        benchmarkSuiteId: options.benchmarkSuiteId ?? null,
+        benchmarkSuiteRevision: options.benchmarkSuiteRevision ?? null,
+        benchmarkSuiteCaseId: options.benchmarkSuiteCaseId ?? null,
+        benchmarkSuiteCaseLabel: options.benchmarkSuiteCaseLabel ?? null,
+        preReplayPreparationMs,
+        outputWitness,
         renderingMemoryBeforeReplay: memoryBefore,
         renderingMemoryAfterReplay: memoryAfter,
         backgroundStrategy,

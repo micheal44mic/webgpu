@@ -189,7 +189,7 @@ assert.match(previewSource, /this\.engine\.shapeDesiredFormat === shapeMaskForma
 assert.match(previewSource, /this\.engine\.shapeLoadedFormat === shapeMaskFormat/);
 assert.match(
   previewSource,
-  /createShapeMaskResources\([\s\S]*?shapeAssetId,[\s\S]*?shapeInvert,[\s\S]*?shapeMaskFormat,/,
+  /createShapeMaskResources\([\s\S]*?shapeAssetIds,[\s\S]*?shapeInvert,[\s\S]*?shapeMaskFormat,/,
   "la preview deve acquisire una shape con la stessa precisione del tratto autorevole",
 );
 assert.match(librarySource, /color: BRUSH_LIBRARY_PREVIEW_NEUTRAL_COLOR/);

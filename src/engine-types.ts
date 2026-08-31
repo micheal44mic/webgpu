@@ -18,6 +18,7 @@ import type { RasterStrokeEncodeResult } from "./stroke-renderer";
 import type { PixelSelectionState } from "./selection-core";
 import type { VectorTextViewState } from "./vector-text-types";
 import { DEFAULT_BRUSH_DEFINITION_SETTINGS } from "./brush-definition.ts";
+import type { BrushShapeSequenceMode } from "./brush-shape-sequence-core.ts";
 import type {
   RasterTransformControlPoint,
   RasterTransformMode,
@@ -50,6 +51,8 @@ export type BrushShapeAssetId = "legacy-shape" | "pencil-shape" | CustomBrushSha
 
 export type BrushShapeRotation = "fixed" | "follow-stroke";
 
+export type { BrushShapeSequenceMode };
+
 /** Runtime brush-signal precision; both modes stay resident in R16F on the GPU. */
 export type BrushShapeMaskFormat = "r8unorm" | "r16float";
 
@@ -70,6 +73,13 @@ export interface BrushSettings {
   shape: BrushShape;
   /** Stable source identity; old settings without it normalize to legacy-shape. */
   shapeAssetId: BrushShapeAssetId;
+  /**
+   * Ordered Shape sources. Successive base stamps select these layers
+   * cyclically; legacy settings omit the field and use `shapeAssetId` only.
+   */
+  shapeAssetIds?: readonly BrushShapeAssetId[];
+  /** Selects Shape layers in authored order or with deterministic randomization. */
+  shapeSequenceMode: BrushShapeSequenceMode;
   /** User polarity applied after the source asset's authored polarity. */
   shapeInvert: boolean;
   /** Diagnostic 8-bit quantization or the unmodified high-precision source. */

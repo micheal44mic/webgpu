@@ -1,9 +1,12 @@
 import type { BrushEngine } from "./brush-engine";
+import { shapeLayerForStamp } from "./brush-shape-sequence-core.ts";
 import type { CloneSampleMode } from "./clone-interaction-core";
 import { createCloneSourceTransform } from "./clone-gpu-core";
+import { shapeAssetSequenceLengthForSettings } from "./engine-brush-assets";
 import { clonePreviewTextureSource } from "./engine-clone-runtime";
 import { assertShaderCompiled } from "./engine-gpu-utils";
 import { SHAPE_MASK_FILTER_UV_HALF_EXTENT } from "./engine-limits";
+import { nextPaintStampSeed } from "./paint-stamp-generation-core";
 
 const CLONE_PREVIEW_UNIFORM_BYTES = 256;
 const CLONE_PREVIEW_MAX_BACKING_PIXELS = 256;
@@ -39,6 +42,7 @@ struct PreviewUniforms {
   sourceAndBounds: vec4<f32>,
   rotationAndBrush: vec4<f32>,
   canvasAndControls: vec4<f32>,
+  shapeControls: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -47,7 +51,7 @@ struct VertexOutput {
 
 @group(0) @binding(0) var<uniform> preview: PreviewUniforms;
 @group(0) @binding(1) var sourceTexture: texture_2d<f32>;
-@group(0) @binding(2) var shapeTexture: texture_2d<f32>;
+@group(0) @binding(2) var shapeTexture: texture_2d_array<f32>;
 @group(0) @binding(3) var shapeSampler: sampler;
 
 fn sourceTexel(pixel: vec2<i32>) -> vec4<f32> {
@@ -119,7 +123,12 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   var coverage: f32;
   if (shapeMode) {
     let shapeUv = local * ${SHAPE_MASK_FILTER_UV_HALF_EXTENT} + vec2<f32>(0.5);
-    let sourceCoverage = textureSample(shapeTexture, shapeSampler, shapeUv).r;
+    let sourceCoverage = textureSample(
+      shapeTexture,
+      shapeSampler,
+      shapeUv,
+      i32(preview.shapeControls.x)
+    ).r;
     coverage = mix(sourceCoverage * sourceCoverage, sourceCoverage, hardness);
   } else {
     let antialiasWidth = max(2.0 / min(canvasSize.x, canvasSize.y), 0.001);
@@ -173,7 +182,7 @@ async function createPreviewResources(engine: BrushEngine): Promise<ClonePreview
       {
         binding: 2,
         visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float" },
+        texture: { sampleType: "float", viewDimension: "2d-array" },
       },
       {
         binding: 3,
@@ -302,6 +311,12 @@ export function renderCloneSamplePreview(
     upload[9] = backingSize;
     upload[10] = engine.settings.hardness;
     upload[11] = engine.settings.shape === "shape" ? 1 : 0;
+    upload[12] = shapeLayerForStamp(
+      engine.settings.shapeSequenceMode,
+      0,
+      nextPaintStampSeed(engine.seedSequence),
+      shapeAssetSequenceLengthForSettings(engine.settings),
+    );
     engine.device.queue.writeBuffer(resources.uniformBuffer, 0, upload);
     if (
       resources.bindGroup === null
@@ -329,4 +344,3 @@ export function renderCloneSamplePreview(
   engine.device.queue.submit([encoder.finish()]);
   return true;
 }
-

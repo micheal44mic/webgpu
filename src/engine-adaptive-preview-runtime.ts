@@ -12,6 +12,7 @@ import { type BrushSettings } from "./engine-types";
 import { brushColorHsl } from "./brush-color.ts";
 import { clamp } from "./color";
 import { previewHash32 } from "./engine-math";
+import { shapeAssetIdsForSettings } from "./engine-brush-assets";
 
 export function freezeAdaptivePreviewAtLift(engine: BrushEngine): void {
   if (!engine.adaptivePreviewActive) {
@@ -84,6 +85,11 @@ export function freezeAdaptivePreviewAtLift(engine: BrushEngine): void {
 }
 
 export function prepareAdaptivePreviewShapePalette(engine: BrushEngine, settings: BrushSettings): void {
+  if (shapeAssetIdsForSettings(settings).length > 1) {
+    engine.adaptivePreviewShapePalette = [];
+    engine.adaptivePreviewShapePaletteKey = "";
+    return;
+  }
   const source = engine.adaptivePreviewShapeSprite;
   if (settings.shape !== "shape" || !source || !engine.adaptivePreviewContext) {
     return;
@@ -161,6 +167,9 @@ export function activateAdaptivePreview(engine: BrushEngine,
     return;
   }
   const settings = engine.adaptivePreviewCandidates[engine.adaptivePreviewCandidates.length - 1].settings;
+  if (shapeAssetIdsForSettings(settings).length > 1) {
+    return;
+  }
   if (settings.blendMode !== "normal") {
     if (engine.activeStrokeProfile) {
       engine.activeStrokeProfile.adaptivePreviewUnsupportedBlendSkips += 1;

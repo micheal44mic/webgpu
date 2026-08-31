@@ -39,9 +39,11 @@ assert.equal(decodedNative16Mask.sourceBitDepth, 16);
 assert.deepEqual([...decodedNative16Mask.pixels], [0, 257, 32768]);
 
 function persistedSettings(overrides = {}) {
-  return {
+  const settings = {
     shape: "circle",
     shapeAssetId: "legacy-shape",
+    shapeAssetIds: ["legacy-shape"],
+    shapeSequenceMode: "ordered",
     shapeInvert: false,
     shapeMaskFormat: "r8unorm",
     shapeRotation: "fixed",
@@ -80,11 +82,15 @@ function persistedSettings(overrides = {}) {
     positionJitterLinear: 0,
     ...overrides,
   };
+  if ("shapeAssetId" in overrides && !("shapeAssetIds" in overrides)) {
+    settings.shapeAssetIds = [overrides.shapeAssetId];
+  }
+  return settings;
 }
 
-function storedAsset(kind, name, bytes = onePixelPng) {
+function storedAsset(kind, name, bytes = onePixelPng, key = `fixture:${kind}`) {
   return {
-    key: `fixture:${kind}`,
+    key,
     kind,
     name,
     mimeType: "image/png",
@@ -104,17 +110,28 @@ async function unpackTransfer(blob) {
   const manifestEnd = fixedHeaderBytes + manifestBytes;
   const manifest = JSON.parse(decoder.decode(bytes.slice(fixedHeaderBytes, manifestEnd)));
   let offset = manifestEnd;
-  const shapeBytes = manifest.assets.shape
-    ? bytes.slice(offset, offset += manifest.assets.shape.bytes)
-    : null;
+  const shapeManifests = manifest.version === 1
+    ? (manifest.assets.shape ? [manifest.assets.shape] : [])
+    : manifest.assets.shapes;
+  const shapePayloads = shapeManifests.map(
+    (shapeManifest) => bytes.slice(offset, offset += shapeManifest.bytes),
+  );
   const grainBytes = manifest.assets.grain
     ? bytes.slice(offset, offset += manifest.assets.grain.bytes)
     : null;
   assert.equal(offset, bytes.byteLength, "portable payload layout mismatch");
-  return { manifest, shapeBytes, grainBytes };
+  return {
+    manifest,
+    shapeBytes: shapePayloads[0] ?? null,
+    shapePayloads,
+    grainBytes,
+  };
 }
 
 function packTransfer(manifest, shapeBytes, grainBytes) {
+  const shapePayloads = Array.isArray(shapeBytes)
+    ? shapeBytes
+    : (shapeBytes ? [shapeBytes] : []);
   const encodedManifest = encoder.encode(JSON.stringify(manifest));
   const header = new Uint8Array(fixedHeaderBytes);
   header.set(magic, 0);
@@ -122,7 +139,7 @@ function packTransfer(manifest, shapeBytes, grainBytes) {
   return new Blob([
     header,
     encodedManifest,
-    ...(shapeBytes ? [shapeBytes] : []),
+    ...shapePayloads,
     ...(grainBytes ? [grainBytes] : []),
   ], { type: transfer.BRUSH_STUDIO_TRANSFER_MIME_TYPE });
 }
@@ -141,8 +158,12 @@ const plainBlob = await transfer.createBrushStudioTransferBlob({
 const plain = await transfer.parseBrushStudioTransferBlob(plainBlob);
 assert.equal(plain.name, "Base Brush");
 assert.deepEqual(plain.settings, persistedSettings());
+assert.deepEqual(plain.shapeAssets, []);
 assert.equal(plain.shapeAsset, null);
 assert.equal(plain.grainAsset, null);
+const plainParts = await unpackTransfer(plainBlob);
+assert.equal(plainParts.manifest.version, 2);
+assert.deepEqual(plainParts.manifest.assets.shapes, []);
 
 const maximumSpacingBlob = await transfer.createBrushStudioTransferBlob({
   name: "Maximum Spacing",
@@ -159,8 +180,15 @@ const maximumSpacing = await transfer.parseBrushStudioTransferBlob(maximumSpacin
 assert.equal(maximumSpacing.settings.spacingPercent, 99);
 
 const legacyPlainParts = await unpackTransfer(plainBlob);
+legacyPlainParts.manifest.version = 1;
+legacyPlainParts.manifest.assets = {
+  shape: null,
+  grain: legacyPlainParts.manifest.assets.grain,
+};
 delete legacyPlainParts.manifest.settings.blendBlur;
 delete legacyPlainParts.manifest.settings.shapeMaskFormat;
+delete legacyPlainParts.manifest.settings.shapeAssetIds;
+delete legacyPlainParts.manifest.settings.shapeSequenceMode;
 legacyPlainParts.manifest.settings.grainAssetId = "legacy-grain";
 const legacyPlain = await transfer.parseBrushStudioTransferBlob(packTransfer(
   legacyPlainParts.manifest,
@@ -212,6 +240,8 @@ assert.equal(
   "16-bit Float precision must survive a portable brush round trip",
 );
 assert.equal(custom.shapeAsset?.name, "cloud shape.png");
+assert.equal(custom.shapeAssets.length, 1);
+assert.equal(custom.shapeAssets[0].assetId, "custom-shape:roundtrip");
 assert.equal(custom.grainAsset?.name, "paper grain.png");
 assert.deepEqual(
   new Uint8Array(await custom.shapeAsset.blob.arrayBuffer()),
@@ -222,6 +252,72 @@ assert.deepEqual(
   new Uint8Array(await custom.grainAsset.blob.arrayBuffer()),
   threeToneMaskPng,
   "dormant Grain samples 0/128/255 must remain embedded and byte-exact",
+);
+
+const firstSequenceShapeId = "custom-shape:sequence-first";
+const secondSequenceShapeId = "custom-shape:sequence-second";
+const firstSequenceShape = storedAsset(
+  "shape",
+  "sequence first.png",
+  threeToneMaskPng,
+  "fixture:shape:sequence-first",
+);
+const secondSequenceShape = storedAsset(
+  "shape",
+  "sequence second.png",
+  onePixelPng,
+  "fixture:shape:sequence-second",
+);
+const sequenceSettings = persistedSettings({
+  shape: "shape",
+  shapeAssetId: firstSequenceShapeId,
+  shapeAssetIds: [
+    firstSequenceShapeId,
+    "pencil-shape",
+    secondSequenceShapeId,
+    firstSequenceShapeId,
+  ],
+  shapeSequenceMode: "random",
+});
+const sequenceBlob = await transfer.createBrushStudioTransferBlob({
+  name: "Shape Sequence",
+  savedBrush: {
+    version: 1,
+    settings: sequenceSettings,
+    shapeAssetKey: firstSequenceShape.key,
+    shapeAssetRefs: [
+      { assetId: firstSequenceShapeId, storageKey: firstSequenceShape.key },
+      { assetId: secondSequenceShapeId, storageKey: secondSequenceShape.key },
+    ],
+    grainAssetKey: null,
+  },
+  shapeAssets: [
+    { assetId: secondSequenceShapeId, asset: secondSequenceShape },
+    { assetId: firstSequenceShapeId, asset: firstSequenceShape },
+  ],
+  grainAsset: null,
+});
+const sequenceParts = await unpackTransfer(sequenceBlob);
+assert.deepEqual(
+  sequenceParts.manifest.assets.shapes.map((asset) => asset.assetId),
+  [firstSequenceShapeId, secondSequenceShapeId],
+  "v2 must encode each unique custom Shape in first-use order",
+);
+const sequenceRoundTrip = await transfer.parseBrushStudioTransferBlob(sequenceBlob);
+assert.deepEqual(sequenceRoundTrip.settings, sequenceSettings);
+assert.equal(sequenceRoundTrip.settings.shapeSequenceMode, "random");
+assert.equal(sequenceRoundTrip.shapeAsset, null);
+assert.deepEqual(
+  sequenceRoundTrip.shapeAssets.map((asset) => asset.assetId),
+  [firstSequenceShapeId, secondSequenceShapeId],
+);
+assert.deepEqual(
+  new Uint8Array(await sequenceRoundTrip.shapeAssets[0].blob.arrayBuffer()),
+  threeToneMaskPng,
+);
+assert.deepEqual(
+  new Uint8Array(await sequenceRoundTrip.shapeAssets[1].blob.arrayBuffer()),
+  onePixelPng,
 );
 
 const native16Settings = persistedSettings({
@@ -262,8 +358,31 @@ assert.equal(
 );
 
 const customParts = await unpackTransfer(customBlob);
+const legacyCustomManifest = structuredClone(customParts.manifest);
+legacyCustomManifest.version = 1;
+delete legacyCustomManifest.settings.shapeAssetIds;
+delete legacyCustomManifest.settings.shapeSequenceMode;
+const legacyCustomShapeManifest = { ...legacyCustomManifest.assets.shapes[0] };
+delete legacyCustomShapeManifest.assetId;
+legacyCustomManifest.assets = {
+  shape: legacyCustomShapeManifest,
+  grain: legacyCustomManifest.assets.grain,
+};
+const legacyCustom = await transfer.parseBrushStudioTransferBlob(packTransfer(
+  legacyCustomManifest,
+  customParts.shapeBytes,
+  customParts.grainBytes,
+));
+assert.deepEqual(legacyCustom.settings, customSettings);
+assert.equal(legacyCustom.shapeAssets[0].assetId, customSettings.shapeAssetId);
+assert.deepEqual(
+  new Uint8Array(await legacyCustom.shapeAssets[0].blob.arrayBuffer()),
+  threeToneMaskPng,
+  "v1 single-Shape files must remain readable byte-exactly",
+);
+
 const wrongVersion = structuredClone(customParts.manifest);
-wrongVersion.version = 2;
+wrongVersion.version = 99;
 await assert.rejects(
   transfer.parseBrushStudioTransferBlob(packTransfer(
     wrongVersion,
@@ -274,7 +393,7 @@ await assert.rejects(
 );
 
 const missingShape = structuredClone(customParts.manifest);
-missingShape.assets.shape = null;
+missingShape.assets.shapes = [];
 await assert.rejects(
   transfer.parseBrushStudioTransferBlob(packTransfer(
     missingShape,
@@ -286,6 +405,7 @@ await assert.rejects(
 
 const unexpectedShape = structuredClone(customParts.manifest);
 unexpectedShape.settings.shapeAssetId = "legacy-shape";
+unexpectedShape.settings.shapeAssetIds = ["legacy-shape"];
 await assert.rejects(
   transfer.parseBrushStudioTransferBlob(packTransfer(
     unexpectedShape,
@@ -293,6 +413,57 @@ await assert.rejects(
     customParts.grainBytes,
   )),
   /Shape asset is missing or unexpected/,
+);
+
+const missingSequenceShape = structuredClone(sequenceParts.manifest);
+missingSequenceShape.assets.shapes = missingSequenceShape.assets.shapes.slice(0, 1);
+await assert.rejects(
+  transfer.parseBrushStudioTransferBlob(packTransfer(
+    missingSequenceShape,
+    sequenceParts.shapePayloads.slice(0, 1),
+    null,
+  )),
+  /Shape asset is missing or unexpected/,
+  "v2 must reject an omitted custom Shape payload",
+);
+
+const duplicateSequenceShape = structuredClone(sequenceParts.manifest);
+duplicateSequenceShape.assets.shapes[1].assetId = firstSequenceShapeId;
+await assert.rejects(
+  transfer.parseBrushStudioTransferBlob(packTransfer(
+    duplicateSequenceShape,
+    sequenceParts.shapePayloads,
+    null,
+  )),
+  /Shape asset is missing or unexpected/,
+  "v2 must reject duplicate custom Shape asset IDs",
+);
+
+const unexpectedSequenceShape = structuredClone(sequenceParts.manifest);
+unexpectedSequenceShape.assets.shapes[1].assetId = "custom-shape:unexpected";
+await assert.rejects(
+  transfer.parseBrushStudioTransferBlob(packTransfer(
+    unexpectedSequenceShape,
+    sequenceParts.shapePayloads,
+    null,
+  )),
+  /Shape asset is missing or unexpected/,
+  "v2 must reject a payload that does not match the authored Shape sequence",
+);
+
+const unsupportedLegacySequence = structuredClone(sequenceParts.manifest);
+unsupportedLegacySequence.version = 1;
+const unsupportedLegacyShape = { ...unsupportedLegacySequence.assets.shapes[0] };
+delete unsupportedLegacyShape.assetId;
+unsupportedLegacySequence.assets = { shape: unsupportedLegacyShape, grain: null };
+await assert.rejects(
+  transfer.parseBrushStudioTransferBlob(packTransfer(
+    unsupportedLegacySequence,
+    sequenceParts.shapePayloads[0],
+    null,
+  )),
+  /version 1 supports one custom Shape source/,
+  "v1 cannot represent a multi-Shape custom source set",
 );
 
 const invalidCount = structuredClone(customParts.manifest);
@@ -339,8 +510,19 @@ await assert.rejects(
   /settings\.shapeMaskFormat/,
 );
 
+const invalidShapeSequenceMode = structuredClone(customParts.manifest);
+invalidShapeSequenceMode.settings.shapeSequenceMode = "shuffle";
+await assert.rejects(
+  transfer.parseBrushStudioTransferBlob(packTransfer(
+    invalidShapeSequenceMode,
+    customParts.shapeBytes,
+    customParts.grainBytes,
+  )),
+  /settings\.shapeSequenceMode/,
+);
+
 const invalidLayout = structuredClone(customParts.manifest);
-invalidLayout.assets.shape.bytes += 1;
+invalidLayout.assets.shapes[0].bytes += 1;
 await assert.rejects(
   transfer.parseBrushStudioTransferBlob(packTransfer(
     invalidLayout,
@@ -352,7 +534,7 @@ await assert.rejects(
 
 const notPng = Uint8Array.from(Buffer.from("not a png", "utf8"));
 const invalidPng = structuredClone(customParts.manifest);
-invalidPng.assets.shape.bytes = notPng.byteLength;
+invalidPng.assets.shapes[0].bytes = notPng.byteLength;
 await assert.rejects(
   transfer.parseBrushStudioTransferBlob(packTransfer(
     invalidPng,
@@ -408,6 +590,11 @@ assert.notEqual(
   transfer.createBrushStudioImportedAssetId(firstImportId, "shape"),
   transfer.createBrushStudioImportedAssetId(secondImportId, "shape"),
   "reimporting the same file must allocate a fresh Shape identity",
+);
+assert.notEqual(
+  transfer.createBrushStudioImportedAssetId(firstImportId, "shape", 0),
+  transfer.createBrushStudioImportedAssetId(firstImportId, "shape", 1),
+  "each custom Shape in one import must receive a distinct identity",
 );
 assert.notEqual(
   transfer.createBrushStudioImportedAssetId(firstImportId, "grain"),

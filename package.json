@@ -45,6 +45,7 @@
     "brush-library-preview:verify": "node scripts/verify-brush-library-preview.mjs",
     "brush-outline:verify": "node scripts/verify-brush-outline.mjs",
     "shape-filter:verify": "node scripts/verify-shape-mask-filtering.mjs",
+    "shape-sequence:verify": "node scripts/verify-shape-sequence.mjs",
     "shape-creation:verify": "node scripts/verify-shape-creation-interaction.mjs && node scripts/verify-shape-tool-controller.mjs",
     "brush-preview-parity:verify": "node scripts/verify-brush-preview-parity.mjs",
     "brush-quick-controls:verify": "node scripts/verify-brush-quick-controls-controller.mjs",

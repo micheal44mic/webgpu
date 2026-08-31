@@ -9,12 +9,19 @@ import {
   PENCIL_SHAPE_ASSET_ID,
 } from "./compat/brush-persistence.ts";
 import type { BrushSettings } from "./engine-types.ts";
+import type { CustomBrushShapeAssetId } from "./engine-types.ts";
+import { MAX_BRUSH_SHAPE_SEQUENCE_LENGTH } from "./brush-shape-sequence-core.ts";
 
 /** Current durable ABI for built-in, saved and transferred brush definitions. */
 export const BRUSH_DEFINITION_VERSION = 1 as const;
 
 export type BrushDefinitionVersion = typeof BRUSH_DEFINITION_VERSION;
 export type BrushDefinitionSettings = Omit<BrushSettings, "color" | "tool">;
+
+export interface BrushDefinitionShapeAssetRef {
+  readonly assetId: CustomBrushShapeAssetId;
+  readonly storageKey: string;
+}
 
 /**
  * A brush owns rendering behavior and optional persisted source references.
@@ -24,6 +31,8 @@ export interface BrushDefinition {
   readonly version: BrushDefinitionVersion;
   readonly settings: BrushDefinitionSettings;
   readonly shapeAssetKey: string | null;
+  /** Complete persisted source set. `shapeAssetKey` remains the legacy primary alias. */
+  readonly shapeAssetRefs?: readonly BrushDefinitionShapeAssetRef[];
   readonly grainAssetKey: string | null;
 }
 
@@ -111,12 +120,19 @@ export function brushDefinitionSettingsFromRuntime(
   settings: Readonly<BrushSettings>,
 ): BrushDefinitionSettings {
   const { color: _activeColor, tool: _activeTool, ...definitionSettings } = settings;
-  return definitionSettings;
+  return {
+    ...definitionSettings,
+    shapeAssetIds: definitionSettings.shapeAssetIds
+      ? [...definitionSettings.shapeAssetIds]
+      : undefined,
+  };
 }
 
 export const DEFAULT_BRUSH_DEFINITION_SETTINGS: Readonly<BrushDefinitionSettings> = Object.freeze({
   shape: "circle",
   shapeAssetId: "legacy-shape",
+  shapeAssetIds: ["legacy-shape"] as const,
+  shapeSequenceMode: "ordered",
   shapeInvert: false,
   shapeMaskFormat: "r16float",
   shapeRotation: "fixed",
@@ -171,7 +187,7 @@ export function normalizeBrushDefinitionSettings(
   }
 
   const rawShapeAssetId = record.shapeAssetId;
-  const shapeAssetId = rawShapeAssetId === LEGACY_SHAPE_ASSET_ID
+  let shapeAssetId = rawShapeAssetId === LEGACY_SHAPE_ASSET_ID
     || rawShapeAssetId === PENCIL_SHAPE_ASSET_ID
     || isCustomShapeAssetId(rawShapeAssetId)
     ? rawShapeAssetId
@@ -179,6 +195,29 @@ export function normalizeBrushDefinitionSettings(
       if (strict) throw new BrushDefinitionValidationError("settings.shapeAssetId");
       return fallback.shapeAssetId;
     })();
+  const rawShapeAssetIds = record.shapeAssetIds;
+  let shapeAssetIds: BrushDefinitionSettings["shapeAssetIds"];
+  if (rawShapeAssetIds === undefined) {
+    shapeAssetIds = [shapeAssetId];
+  } else if (
+    Array.isArray(rawShapeAssetIds)
+    && rawShapeAssetIds.length >= 1
+    && rawShapeAssetIds.length <= MAX_BRUSH_SHAPE_SEQUENCE_LENGTH
+    && rawShapeAssetIds.every((assetId) => (
+      assetId === LEGACY_SHAPE_ASSET_ID
+      || assetId === PENCIL_SHAPE_ASSET_ID
+      || isCustomShapeAssetId(assetId)
+    ))
+  ) {
+    shapeAssetIds = [...rawShapeAssetIds];
+    shapeAssetId = shapeAssetIds[0];
+  } else {
+    if (strict) throw new BrushDefinitionValidationError("settings.shapeAssetIds");
+    shapeAssetIds = fallback.shapeAssetIds?.length
+      ? [...fallback.shapeAssetIds]
+      : [shapeAssetId];
+    shapeAssetId = shapeAssetIds[0];
+  }
 
   const migratedGrainAssetId = migratePersistedGrainAssetId(record.grainAssetId);
   const grainAssetId = migratedGrainAssetId === PENCIL_GRAIN_ASSET_ID
@@ -192,6 +231,15 @@ export function normalizeBrushDefinitionSettings(
   return {
     shape: enumValue(record, "shape", ["circle", "shape"] as const, fallback.shape, strict),
     shapeAssetId,
+    shapeAssetIds,
+    shapeSequenceMode: enumValue(
+      record,
+      "shapeSequenceMode",
+      ["ordered", "random"] as const,
+      fallback.shapeSequenceMode,
+      strict,
+      true,
+    ),
     shapeInvert: booleanValue(record, "shapeInvert", fallback.shapeInvert, strict),
     shapeMaskFormat: enumValue(
       record,
@@ -353,6 +401,35 @@ function assetStorageKey(value: unknown, field: string, strict: boolean): string
   return null;
 }
 
+function shapeAssetRefs(
+  value: unknown,
+  strict: boolean,
+): readonly BrushDefinitionShapeAssetRef[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > MAX_BRUSH_SHAPE_SEQUENCE_LENGTH) {
+    if (strict) throw new BrushDefinitionValidationError("shapeAssetRefs");
+    return undefined;
+  }
+  const result: BrushDefinitionShapeAssetRef[] = [];
+  const seen = new Set<string>();
+  for (let index = 0; index < value.length; index += 1) {
+    const record = asRecord(value[index], `shapeAssetRefs[${index}]`, strict);
+    const assetId = record.assetId;
+    const storageKey = assetStorageKey(
+      record.storageKey,
+      `shapeAssetRefs[${index}].storageKey`,
+      strict,
+    );
+    if (!isCustomShapeAssetId(assetId) || !storageKey || seen.has(assetId)) {
+      if (strict) throw new BrushDefinitionValidationError(`shapeAssetRefs[${index}]`);
+      return undefined;
+    }
+    seen.add(assetId);
+    result.push({ assetId, storageKey });
+  }
+  return result;
+}
+
 export function normalizeBrushDefinition(
   value: unknown,
   options: BrushDefinitionNormalizationOptions = {},
@@ -363,10 +440,12 @@ export function normalizeBrushDefinition(
   if (version !== BRUSH_DEFINITION_VERSION) {
     throw new BrushDefinitionValidationError("version");
   }
+  const refs = shapeAssetRefs(record.shapeAssetRefs, strict);
   return {
     version: BRUSH_DEFINITION_VERSION,
     settings: normalizeBrushDefinitionSettings(record.settings, options),
     shapeAssetKey: assetStorageKey(record.shapeAssetKey, "shapeAssetKey", strict),
+    ...(refs ? { shapeAssetRefs: refs } : {}),
     grainAssetKey: assetStorageKey(record.grainAssetKey, "grainAssetKey", strict),
   };
 }
@@ -375,16 +454,21 @@ export function createBrushDefinition(
   settings: Readonly<BrushSettings> | Readonly<BrushDefinitionSettings>,
   assets: {
     readonly shapeAssetKey?: string | null;
+    readonly shapeAssetRefs?: readonly BrushDefinitionShapeAssetRef[];
     readonly grainAssetKey?: string | null;
   } = {},
 ): BrushDefinition {
   const definitionSettings = "color" in settings || "tool" in settings
     ? brushDefinitionSettingsFromRuntime(settings as Readonly<BrushSettings>)
-    : { ...settings } as BrushDefinitionSettings;
+    : {
+      ...settings,
+      shapeAssetIds: settings.shapeAssetIds ? [...settings.shapeAssetIds] : undefined,
+    } as BrushDefinitionSettings;
   return {
     version: BRUSH_DEFINITION_VERSION,
     settings: definitionSettings,
     shapeAssetKey: assets.shapeAssetKey ?? null,
+    ...(assets.shapeAssetRefs ? { shapeAssetRefs: [...assets.shapeAssetRefs] } : {}),
     grainAssetKey: assets.grainAssetKey ?? null,
   };
 }
@@ -397,6 +481,9 @@ export function applyBrushDefinition(
   return {
     ...current,
     ...definition.settings,
+    shapeAssetIds: definition.settings.shapeAssetIds
+      ? [...definition.settings.shapeAssetIds]
+      : [definition.settings.shapeAssetId],
     color: current.color,
     tool: current.tool,
   };

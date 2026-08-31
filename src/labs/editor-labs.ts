@@ -64,6 +64,7 @@ const LABS = [
   ["vector-zoom-coverage", "Zoom-out vettoriale · copertura C"],
   ["human-record", "Registra · Custom 16 Intense"],
   ["human-replay", "Replay tratto umano canonico"],
+  ["human-shape-sequence", "Confronto Shape ordinata/casuale · Count 1"],
   ["human-blend", "Replay Blend su sfondo multicolore"],
   ["human-suite", "Suite tratto umano · 3 rendering"],
 ] as const;
@@ -76,6 +77,10 @@ function isLabId(value: string | null): value is LabId {
   return LABS.some(([id]) => id === value);
 }
 
+function hostedLabId(value: string | null): LabId {
+  return value === "human-shape-sequence" ? value : "human-replay";
+}
+
 function serialize(value: unknown): string {
   return JSON.stringify(value, (_key, item) => {
     if (item instanceof Uint8Array || item instanceof Uint16Array) {
@@ -83,6 +88,13 @@ function serialize(value: unknown): string {
     }
     return item;
   }, 2);
+}
+
+function reportSucceeded(value: unknown): boolean {
+  if (!value || typeof value !== "object") return true;
+  const report = value as Record<string, unknown>;
+  if (report.passed === false || report.saved === false) return false;
+  return report.allRunsSaved !== false;
 }
 
 async function saveLabReport(endpoint: string, report: unknown): Promise<number> {
@@ -156,12 +168,12 @@ class EditorLabController implements EditorExtension {
       () => host.refreshControls(),
     );
     for (const [id, label] of LABS) {
-      if (HOSTED_REPLAY_ONLY && id !== "human-replay") continue;
+      if (HOSTED_REPLAY_ONLY && id !== "human-replay" && id !== "human-shape-sequence") continue;
       this.#select.add(new Option(label, id));
     }
     const requested = new URLSearchParams(window.location.search).get("lab");
     if (HOSTED_REPLAY_ONLY) {
-      this.#select.value = "human-replay";
+      this.#select.value = hostedLabId(requested);
     } else if (isLabId(requested)) {
       this.#select.value = requested;
     }
@@ -201,7 +213,9 @@ class EditorLabController implements EditorExtension {
 
   async afterEngineInitialized(): Promise<void> {
     const search = new URLSearchParams(window.location.search);
-    const requested = HOSTED_REPLAY_ONLY ? "human-replay" : search.get("lab");
+    const requested = HOSTED_REPLAY_ONLY
+      ? hostedLabId(search.get("lab"))
+      : search.get("lab");
     this.#result.textContent = requested === "human-record"
       ? `Preset pronto: ${HUMAN_RECORDING_PRESET_LABEL}.`
       : "Pronto. I test distruttivi richiedono una pagina nuova.";
@@ -331,8 +345,14 @@ class EditorLabController implements EditorExtension {
       window.__editorLabReport = report;
       this.#report.textContent = serialize(report);
       this.#report.hidden = false;
-      this.#result.textContent = `Completato: ${id}`;
-      this.#host.setStatus(`Laboratorio ${id} completato.`, "ok");
+      if (reportSucceeded(report)) {
+        this.#result.textContent = `Completato: ${id}`;
+        this.#host.setStatus(`Laboratorio ${id} completato.`, "ok");
+      } else {
+        this.#result.textContent = `Completato con errori: ${id}`;
+        this.#result.classList.add("error");
+        this.#host.setStatus(`Laboratorio ${id} completato con errori.`, "error");
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const failure = {
@@ -586,6 +606,8 @@ class EditorLabController implements EditorExtension {
           ...(texturized ? { grainMode: "texturized" as const } : {}),
         });
       }
+      case "human-shape-sequence":
+        return this.#humanStroke.runShapeSequenceComparison();
       case "human-blend":
         return this.#humanStroke.replayBlendCarrier();
       case "human-suite":

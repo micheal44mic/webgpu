@@ -157,7 +157,11 @@ function layoutEntries(grain: boolean, occupancy: boolean): GPUBindGroupLayoutEn
       buffer: { type: "uniform" },
     },
     { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
-    { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+    {
+      binding: 2,
+      visibility: GPUShaderStage.FRAGMENT,
+      texture: { sampleType: "float", viewDimension: "2d-array" },
+    },
     { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
   ];
   if (occupancy) {

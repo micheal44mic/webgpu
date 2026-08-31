@@ -94,6 +94,7 @@ import { restorePixelSelectionHistoryMask } from "./engine-selection-runtime";
 import {
   grainAssetIdForSettings,
   shapeAssetIdForSettings,
+  shapeAssetIdsForSettings,
   shapeInvertForSettings,
   shapeMaskFormatForSettings,
 } from "./engine-brush-assets";
@@ -1135,7 +1136,7 @@ export async function rebuildActiveLayerFromHistory(
   ): Promise<void> => {
     if (settings.shape === "shape") {
       await engine.ensureShapeResources(
-        shapeAssetIdForSettings(settings),
+        shapeAssetIdsForSettings(settings),
         shapeInvertForSettings(settings),
         shapeMaskFormatForSettings(settings),
       );
@@ -1362,12 +1363,13 @@ export async function rebuildActiveLayerFromHistory(
     }
     if (engine.settings.shape === "shape") {
       await engine.ensureShapeResources(
-        shapeAssetIdForSettings(engine.settings),
+        shapeAssetIdsForSettings(engine.settings),
         shapeInvertForSettings(engine.settings),
         shapeMaskFormatForSettings(engine.settings),
       );
     } else {
       engine.shapeDesiredAssetId = shapeAssetIdForSettings(engine.settings);
+      engine.shapeDesiredAssetIds = shapeAssetIdsForSettings(engine.settings);
       engine.shapeDesiredInvert = shapeInvertForSettings(engine.settings);
       engine.shapeDesiredFormat = shapeMaskFormatForSettings(engine.settings);
     }

@@ -31,6 +31,36 @@ assert.equal(
 );
 assert.equal(Object.keys(migrated.settings).length, Object.keys(defaults).length);
 
+const multiShapeDefinition = definitions.normalizeBrushDefinition({
+  version: 1,
+  settings: {
+    ...defaults,
+    shape: "shape",
+    shapeAssetId: "custom-shape:a",
+    shapeAssetIds: ["custom-shape:a", "custom-shape:b", "custom-shape:a"],
+  },
+  shapeAssetKey: "brush:shape:custom-shape:a",
+  shapeAssetRefs: [
+    { assetId: "custom-shape:a", storageKey: "brush:shape:custom-shape:a" },
+    { assetId: "custom-shape:b", storageKey: "brush:shape:custom-shape:b" },
+  ],
+  grainAssetKey: null,
+}, { strict: true });
+assert.deepEqual(multiShapeDefinition.shapeAssetRefs, [
+  { assetId: "custom-shape:a", storageKey: "brush:shape:custom-shape:a" },
+  { assetId: "custom-shape:b", storageKey: "brush:shape:custom-shape:b" },
+]);
+assert.throws(
+  () => definitions.normalizeBrushDefinition({
+    ...multiShapeDefinition,
+    shapeAssetRefs: [
+      { assetId: "custom-shape:a", storageKey: "one" },
+      { assetId: "custom-shape:a", storageKey: "two" },
+    ],
+  }, { strict: true }),
+  /shapeAssetRefs/,
+);
+
 const { shapeMaskFormat: _legacyShapeMaskFormat, ...legacyStrictSettings } = defaults;
 assert.equal(
   definitions.normalizeBrushDefinitionSettings(legacyStrictSettings, { strict: true })

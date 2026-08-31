@@ -163,7 +163,7 @@ export function packStampsIntoUpload(
     uploadF32[base + 2] = stamp.radius;
     uploadF32[base + 3] = stamp.pressure;
     uploadU32[base + 4] = stamp.seed;
-    uploadU32[base + 5] = 0;
+    uploadU32[base + 5] = Math.max(0, Math.min(3, Math.trunc(stamp.shapeLayer ?? 0))) >>> 0;
     uploadF32[base + 6] = stamp.directionX;
     uploadF32[base + 7] = stamp.directionY;
 
