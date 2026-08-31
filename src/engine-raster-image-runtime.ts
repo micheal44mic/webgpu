@@ -48,7 +48,7 @@ import {
   countLayerStorageTiles,
   markLayerStorageRect,
 } from "./layer-storage-study";
-import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH, MEBIBYTE_BYTES } from "./engine-limits";
+import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits";
 import { createRenderPipelineAsync } from "./engine-gpu-utils";
 import type { DirtyRect } from "./engine-stroke-types";
 import type { LayerFormat } from "./engine-types";
@@ -73,7 +73,6 @@ export const RASTER_IMAGE_GPU_STORAGE_STRATEGY =
 export { RASTER_IMAGE_UNIFORM_BYTES } from "./raster-image-budget";
 export const RASTER_IMAGE_MAXIMUM_ENCODED_BYTES = 64 * 1024 * 1024;
 export const RASTER_IMAGE_MAXIMUM_GPU_BYTES = 256 * 1024 * 1024;
-export const RASTER_IMAGE_MAXIMUM_TOTAL_GPU_BYTES = 256 * 1024 * 1024;
 
 const rasterImageImportsInFlight = new WeakSet<BrushEngine>();
 
@@ -180,47 +179,6 @@ function requiredImportMipLevelCount(
   // the element much smaller than its initial placement and must never derive
   // a missing tier from the already-resampled document cache.
   return rasterImageMipLevelCount(width, height);
-}
-
-function nativeRasterImportResidentBytes(engine: BrushEngine): number {
-  const actions = new Set([
-    ...engine.historyActions,
-    ...engine.discardedRasterImportHistoryActions,
-  ]);
-  const importedLayerIds = new Set<number>();
-  let bytes = rasterImageGpuMemoryBytes(engine);
-  for (const action of actions) {
-    if (action.kind === "raster-import") importedLayerIds.add(action.layerId);
-  }
-  for (const record of engine.layerStack.layers) {
-    if (record.rasterSource) importedLayerIds.add(record.id);
-  }
-  const bytesPerPixel = engine.layerFormat === "rgba16float" ? 8 : 4;
-  for (const layerId of importedLayerIds) {
-    const gpu = engine.layerGpu.get(layerId);
-    if (!gpu) continue;
-    if (gpu.hot) bytes += DOCUMENT_WIDTH * DOCUMENT_HEIGHT * bytesPerPixel;
-    bytes += gpu.cold?.memoryBytes ?? 0;
-  }
-  return bytes;
-}
-
-function assertNativeRasterImportResidentBudget(
-  engine: BrushEngine,
-  immutableSourceBytes = 0,
-): void {
-  const bytesPerPixel = engine.layerFormat === "rgba16float" ? 8 : 4;
-  const newPersistentBytes = DOCUMENT_WIDTH * DOCUMENT_HEIGHT * bytesPerPixel
-    + immutableSourceBytes;
-  const resultingImportResidentBytes = nativeRasterImportResidentBytes(engine)
-    + newPersistentBytes;
-  if (resultingImportResidentBytes > RASTER_IMAGE_MAXIMUM_TOTAL_GPU_BYTES) {
-    throw new Error(
-      `Raster imports exceed the resident limit of `
-      + `${RASTER_IMAGE_MAXIMUM_TOTAL_GPU_BYTES / MEBIBYTE_BYTES} MiB `
-      + `(projected ${(resultingImportResidentBytes / MEBIBYTE_BYTES).toFixed(1)} MiB).`,
-    );
-  }
 }
 
 async function ensureNativeImportPipelines(
@@ -935,7 +893,6 @@ async function importRasterImageFileUnlocked(
             + `${(transientGpuBytes / 1024 / 1024).toFixed(1)} MiB.`,
           );
         }
-        assertNativeRasterImportResidentBudget(engine, sourceMipBytes + 32);
       },
     });
 
@@ -954,7 +911,6 @@ async function importRasterImageFileUnlocked(
         + `${(decodedTransientGpuBytes / 1024 / 1024).toFixed(1)} MiB.`,
       );
     }
-    assertNativeRasterImportResidentBudget(engine, decodedMipBytes + 32);
     const scene = requireMixedSceneStack(engine);
     const originalActiveId = engine.layerStack.active.id;
     const selectedKeyBefore = scene.selected.key;

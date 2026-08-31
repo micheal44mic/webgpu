@@ -1837,10 +1837,10 @@ console.log("History rapid-input queue and retention-floor feedback verified.");
     "l'estimatore strutturale deve trattare gli handle stored-only come opachi",
   );
   assert(
-    rasterImageRuntime.includes("for (const record of engine.layerStack.layers)")
-      && rasterImageRuntime.includes("if (record.rasterSource) importedLayerIds.add(record.id)")
-      && !rasterImageRuntime.includes("historyColdSeedResidentBytes(seed)"),
-    "il budget import deve contare hot layer e master senza un seed History duplicato",
+    !rasterImageRuntime.includes("historyColdSeedResidentBytes(seed)")
+      && !rasterImageRuntime.includes("RASTER_IMAGE_MAXIMUM_TOTAL_GPU_BYTES")
+      && !rasterImageRuntime.includes("assertNativeRasterImportResidentBudget"),
+    "l'import non deve duplicare il seed History né applicare un tetto residente cumulativo",
   );
   assert(
     gpuStorage.includes("sliceById(id: number)")

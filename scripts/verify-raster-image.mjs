@@ -374,12 +374,10 @@ assert.doesNotMatch(
 );
 assert.match(runtimeSource, /runGpuAllocationTransaction\(/);
 assert.match(runtimeSource, /preflight: \(inspection\)/);
-assert.match(runtimeSource, /RASTER_IMAGE_MAXIMUM_TOTAL_GPU_BYTES/);
-assert.match(runtimeSource, /nativeRasterImportResidentBytes\(engine\)/);
-assert.match(
+assert.doesNotMatch(
   runtimeSource,
-  /discardedRasterImportHistoryActions[\s\S]{0,320}action\.kind === "raster-import"[\s\S]{0,100}importedLayerIds\.add\(action\.layerId\)/,
-  "the resident import budget must retain imported layer ownership after later pixel edits",
+  /RASTER_IMAGE_MAXIMUM_TOTAL_GPU_BYTES|nativeRasterImportResidentBytes|assertNativeRasterImportResidentBudget/,
+  "image import must not be rejected by an artificial aggregate resident-memory ceiling",
 );
 assert.doesNotMatch(runtimeSource, /RASTER_IMAGE_MAXIMUM_IMPORT_PEAK_BYTES/);
 assert.doesNotMatch(runtimeSource, /picco aggregato previsto|engine\.getStats\(\)\.gpuMemory\.countedTotalMiB/);
@@ -397,21 +395,14 @@ assert.match(
 );
 assert.match(runtimeSource, /x: Math\.floor\(\(DOCUMENT_WIDTH - outputWidth\) \* 0\.5\)/);
 assert.match(runtimeSource, /y: Math\.floor\(\(DOCUMENT_HEIGHT - outputHeight\) \* 0\.5\)/);
-assert.match(
-  runtimeSource,
-  /const newPersistentBytes = DOCUMENT_WIDTH \* DOCUMENT_HEIGHT \* bytesPerPixel[\s\S]{0,80}\+ immutableSourceBytes/,
-  "the resident budget must count one hot document layer plus the immutable master",
-);
 assert.doesNotMatch(runtimeSource, /historyColdSeedResidentBytes\(seed\)/);
 assert.doesNotMatch(
   runtimeSource,
   /engine\.layerSize|\bLAYER_SIZE\b|LAYER_STORAGE_TILE_SIZE \*\* 2/,
   "L'import raster non deve ridurre il documento a un lato quadrato.",
 );
-assert.match(
-  runtimeSource,
-  /assertNativeRasterImportResidentBudget\(engine, (?:sourceMipBytes|decodedMipBytes) \+ 32\)/,
-);
+assert.match(runtimeSource, /transientGpuBytes > RASTER_IMAGE_MAXIMUM_GPU_BYTES/);
+assert.match(runtimeSource, /decodedTransientGpuBytes > RASTER_IMAGE_MAXIMUM_GPU_BYTES/);
 assert.match(
   runtimeSource,
   /transient = await encodeBitmapIntoLayer[\s\S]{0,600}releaseDecodedRasterImage\(decoded\);\s*decoded = null;[\s\S]{0,900}createRasterImageGpuResource/,
