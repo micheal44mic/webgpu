@@ -1032,7 +1032,14 @@ const engine = new BrushEngine(canvas, {
   layerColdTileCompositeEnabled,
   layerColdAdjacentPrefetchEnabled,
 }, rasterSelectionOverlayCanvas);
-const brushSettingsController = new BrushSettingsController(engine);
+let selectedBrushColdStartLoadingPromise: Promise<void> | null = null;
+const brushSettingsController = new BrushSettingsController({
+  getSettings: () => engine.getSettings(),
+  setBrushSettings: (next) => {
+    engine.setBrushSettings(next);
+    requestSelectedBrushColdStartLoading();
+  },
+});
 const canvasToolSettingsController = new CanvasToolSettingsController();
 projectSessionController = new ProjectSessionController({
   engine: {
@@ -1273,6 +1280,8 @@ const rasterStyleController = new RasterStyleController({
   isEngineReady: () => engineInitialized,
   isPointerActive: () => canvasInputController?.isPointerActive === true,
   onBusyChange: updateHistoryControls,
+  runWithLoading: (label, operation) =>
+    canvasStartupOverlay.runRuntimeOperation(label, operation),
 });
 let brushLibraryController: BrushLibraryController;
 if (import.meta.env.DEV) {
@@ -1338,10 +1347,7 @@ sceneEditorController = new SceneEditorController({
 brushLibraryController = new BrushLibraryController({
   engine: {
     getSettings: () => engine.getSettings(),
-    ensureCurrentBrushResources: () => canvasStartupOverlay.runRuntimeOperation(
-      "Preparing brush resources",
-      () => engine.ensureCurrentBrushResources(),
-    ),
+    ensureCurrentBrushResources: () => ensureSelectedBrushColdStartWithLoading(),
   },
   browser: window,
   document,
@@ -1614,7 +1620,7 @@ function prepareActiveCloneSource(sampleMode: CloneSampleMode): void {
 }
 
 function selectedBrushLoadingLabel(): string {
-  const tool = brushSettingsController.snapshot().tool;
+  const tool = engine.getSettings().tool;
   return tool === "erase"
     ? "Preparing Eraser"
     : tool === "blend"
@@ -1622,15 +1628,61 @@ function selectedBrushLoadingLabel(): string {
       : "Preparing Brush";
 }
 
+function ensureSelectedBrushColdStartWithLoading(): Promise<void> {
+  if (!engine.initialized || engine.currentBrushResourcesReady()) {
+    return Promise.resolve();
+  }
+  if (selectedBrushColdStartLoadingPromise) {
+    return selectedBrushColdStartLoadingPromise;
+  }
+  const operation = canvasStartupOverlay.runRuntimeOperation(
+    selectedBrushLoadingLabel(),
+    async () => {
+      await engine.ensureCurrentBrushResources();
+      await engine.waitForIdle();
+      if (!engine.currentBrushResourcesReady()) {
+        throw new Error("The selected brush did not finish its GPU preparation.");
+      }
+    },
+  );
+  selectedBrushColdStartLoadingPromise = operation;
+  void operation.then(
+    () => {
+      if (selectedBrushColdStartLoadingPromise === operation) {
+        selectedBrushColdStartLoadingPromise = null;
+      }
+    },
+    () => {
+      if (selectedBrushColdStartLoadingPromise === operation) {
+        selectedBrushColdStartLoadingPromise = null;
+      }
+    },
+  );
+  return operation;
+}
+
+function requestSelectedBrushColdStartLoading(): void {
+  void ensureSelectedBrushColdStartWithLoading().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    appDiagnosticsController?.recordOperation("prepare-selected-brush", "settings", error);
+    statusElement.textContent = `Selected brush preparation failed: ${message}`;
+    statusElement.className = "status app-status error";
+  });
+}
+
 canvasToolController = new CanvasToolController({
   engine: {
     get fillToolSelected() {
       return engine.fillToolSelected;
     },
-    prepareSelectedBrushForInteraction: () => canvasStartupOverlay.runRuntimeOperation(
-      selectedBrushLoadingLabel(),
-      () => engine.prepareSelectedBrushForInteraction(),
-    ),
+    prepareSelectedBrushForInteraction: async () => {
+      try {
+        await ensureSelectedBrushColdStartWithLoading();
+        return true;
+      } catch {
+        return false;
+      }
+    },
     setFillToolSelected: (selected) => canvasStartupOverlay.runRuntimeOperation(
       selected ? "Preparing Fill" : "Finishing Fill",
       () => engine.setFillToolSelected(selected),
@@ -2363,8 +2415,14 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
       && !properties.locked
       && sceneEditorController?.beginLayerOptionsEdit(properties.key) === true;
   },
-  finishSelectedLayerOptionsEdit: () =>
-    sceneEditorController?.finishLayerOptionsEdit() ?? false,
+  finishSelectedLayerOptionsEdit: () => canvasStartupOverlay.runRuntimeOperation(
+    "Finishing Layer Options",
+    async () => {
+      const committed = await (sceneEditorController?.finishLayerOptionsEdit() ?? false);
+      await engine.waitForIdle();
+      return committed;
+    },
+  ),
   setSelectedLayerOpacity: (key, opacity) => {
     return sceneEditorController?.setLayerOpacity(key, opacity);
   },
@@ -2377,7 +2435,13 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
     ) {
       return;
     }
-    return sceneEditorController?.setRasterBlendMode(properties.key, blendMode);
+    return canvasStartupOverlay.runRuntimeOperation(
+      "Applying layer blend mode",
+      async () => {
+        await sceneEditorController?.setRasterBlendMode(properties.key, blendMode);
+        await engine.waitForIdle();
+      },
+    );
   },
   setSelectedLayerContentOpacity: (key, contentOpacity) => {
     return sceneEditorController?.setRasterContentOpacity(key, contentOpacity);
@@ -2391,7 +2455,13 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
     ) {
       return;
     }
-    return sceneEditorController?.setRasterCutoutMode(properties.key, cutoutMode);
+    return canvasStartupOverlay.runRuntimeOperation(
+      "Applying layer knockout",
+      async () => {
+        await sceneEditorController?.setRasterCutoutMode(properties.key, cutoutMode);
+        await engine.waitForIdle();
+      },
+    );
   },
   setSelectedLayerTonalBlend: (tonalBlend) => {
     const properties = selectedMobileLayerProperties();
@@ -2402,7 +2472,13 @@ mobileToolSettingsSheet = new MobileToolSettingsSheetController({
     ) {
       return;
     }
-    return sceneEditorController?.setRasterTonalBlend(properties.key, tonalBlend);
+    return canvasStartupOverlay.runRuntimeOperation(
+      "Applying tonal blend",
+      async () => {
+        await sceneEditorController?.setRasterTonalBlend(properties.key, tonalBlend);
+        await engine.waitForIdle();
+      },
+    );
   },
   getSelectedSvgStyle: () => {
     const node = selectedMobileSvgNode();
@@ -2683,7 +2759,10 @@ layerPanelController = new LayerPanelController({
       if (wasLayerGroupTool) leaveLayerMultiSelectionTransformTool();
       return;
     }
-    void initializeMixedSceneController().then((controller) => {
+    void canvasStartupOverlay.runRuntimeOperation(
+      "Preparing layer selection",
+      () => initializeMixedSceneController(),
+    ).then((controller) => {
       if (revision !== layerMultiTransformSelectionRevision) return;
       controller.setTransformSelection(transformKeys);
       if (!selectCanvasToolWithMixedScene("transform")) {
@@ -2733,7 +2812,21 @@ layerPanelController = new LayerPanelController({
     sceneEditorController?.setLayerClipping(key, enabled),
   deleteLayer: (key) => sceneEditorController!.deleteLayer(key),
   openLayerOptions: (trigger) => {
-    mobileToolSettingsSheet?.open("layer-options", trigger);
+    void canvasStartupOverlay.runRuntimeOperation(
+      "Preparing Layer Options",
+      async () => {
+        await engine.ensureLayerBlendEditorResources();
+        await engine.waitForIdle();
+      },
+    ).then(
+      () => mobileToolSettingsSheet?.open("layer-options", trigger),
+      (error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        appDiagnosticsController?.recordOperation("prepare-layer-options", null, error);
+        statusElement.textContent = `Layer Options preparation failed: ${message}`;
+        statusElement.className = "status app-status error";
+      },
+    );
   },
   onLayerResult: (message) => {
     layerSwitchResult.textContent = message;

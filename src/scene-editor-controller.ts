@@ -864,6 +864,7 @@ export class SceneEditorController {
     );
     if (!target || !this.begin()) return;
     try {
+      if (!(await this.showLoading(visible ? "Showing layer…" : "Hiding layer…"))) return;
       if (target.kind === "raster" && target.rasterIndex !== null) {
         await this.options.engine.setLayerVisibility(target.rasterIndex, visible);
         this.options.elements.result.textContent = visible
@@ -881,12 +882,13 @@ export class SceneEditorController {
           ? "Image shown."
           : "Image hidden.";
       }
+      await this.options.engine.waitForIdle();
     } catch (error) {
       this.options.elements.result.textContent = error instanceof Error
         ? error.message
         : `Could not update ${target.name} visibility.`;
     } finally {
-      this.finish();
+      this.finish({ loading: true });
     }
   }
 
@@ -901,6 +903,7 @@ export class SceneEditorController {
     );
     if (!target || !this.begin()) return;
     try {
+      if (!(await this.showLoading("Updating layer opacity…"))) return;
       if (target.kind === "raster" && target.rasterIndex !== null) {
         await this.options.engine.setLayerOpacity(target.rasterIndex, opacity);
       } else if (target.kind === "text" && target.semanticId !== null) {
@@ -919,12 +922,13 @@ export class SceneEditorController {
             : "Image";
       this.options.elements.result.textContent =
         `${label} opacity ${Math.round(opacity * 100)}%.`;
+      await this.options.engine.waitForIdle();
     } catch (error) {
       this.options.elements.result.textContent = error instanceof Error
         ? error.message
         : `Could not update ${target.name} opacity.`;
     } finally {
-      this.finish();
+      this.finish({ loading: true });
     }
   }
 

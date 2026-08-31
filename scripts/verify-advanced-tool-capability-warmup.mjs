@@ -118,6 +118,27 @@ assert.doesNotMatch(
   "A warm-up pass must not sample and render to the release texture in one synchronization scope",
 );
 
+const selectedBrushLoading = section(
+  main,
+  "function ensureSelectedBrushColdStartWithLoading(): Promise<void>",
+  "canvasToolController = new CanvasToolController",
+);
+assert.match(
+  selectedBrushLoading,
+  /currentBrushResourcesReady\(\)[\s\S]*?canvasStartupOverlay\.runRuntimeOperation\([\s\S]*?ensureCurrentBrushResources\(\)[\s\S]*?waitForIdle\(\)/,
+  "a cold Brush variant must keep the shared loading overlay active through its GPU fence",
+);
+assert.match(
+  main,
+  /new BrushSettingsController\(\{[\s\S]*?setBrushSettings: \(next\) => \{[\s\S]*?requestSelectedBrushColdStartLoading\(\)/,
+  "resource-affecting Brush setting changes must request the same cold-start loading lifecycle",
+);
+assert.match(
+  main,
+  /prepareSelectedBrushForInteraction: async \(\) => \{[\s\S]*?ensureSelectedBrushColdStartWithLoading\(\)/,
+  "Paint, Eraser and Blend selection must share the coalesced cold-start preparation",
+);
+
 assert.match(
   projectRuntime,
   /snapshot\.mixedScene\.items\.some[\s\S]{0,160}await engine\.ensureMixedSceneEditorResources\(\)/,

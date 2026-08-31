@@ -2319,6 +2319,11 @@ assert.match(
   controllerSource,
   /if \(this\.sceneOperationRenderDeferred\) \{[\s\S]*this\.scheduleRender\(\)/,
 );
+assert.match(
+  controllerSource,
+  /runWithLoading\(label,[\s\S]*?sceneOperationBusy = false;[\s\S]*?sceneOperationRenderDeferred = false;[\s\S]*?this\.renderNow\(\);[\s\S]*?await this\.host\.waitForIdle\(\)/,
+  "a semantic mutation must submit its deferred visible frame before the loading overlay reaches the GPU fence",
+);
 assert.match(clientSource, /waitForResourceReady\(/);
 assert.match(clientSource, /private worker: Worker \| null = null/);
 assert.match(

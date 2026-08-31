@@ -133,6 +133,16 @@ assert.doesNotMatch(
   /scheduleDeferredStartupTask|deferred-gpu-pipelines/,
   "the optional blend compositor must not be allocated during startup",
 );
+assert.match(
+  mainSource,
+  /openLayerOptions: \(trigger\) => \{[\s\S]*?runRuntimeOperation\([\s\S]*?"Preparing Layer Options"[\s\S]*?ensureLayerBlendEditorResources\(\)[\s\S]*?waitForIdle\(\)[\s\S]*?open\("layer-options", trigger\)/,
+  "opening Layer Options must expose the one-time blend-compositor preparation through the shared overlay",
+);
+assert.match(
+  mainSource,
+  /setSelectedLayerBlendMode: \(blendMode\) => \{[\s\S]*?runRuntimeOperation\([\s\S]*?"Applying layer blend mode"[\s\S]*?setRasterBlendMode\(properties\.key, blendMode\)[\s\S]*?waitForIdle\(\)/,
+  "a first layer blend change must remain visibly loading until its composition work reaches the GPU fence",
+);
 assert.match(presentationResourcesSource, /createRenderPipelineAsync\(engine\.device/);
 assert.match(presentationResourcesSource, /const creationPromises = new WeakMap/);
 assert.doesNotMatch(

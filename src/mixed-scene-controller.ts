@@ -2983,6 +2983,15 @@ export class MixedSceneController {
     try {
       return await this.runWithLoading(label, async () => {
         const result = await operation();
+        // Scene mutations request a render while the mutation gate is held.
+        // Release that gate and enqueue the deferred frame before the loading
+        // lifecycle waits on the GPU; otherwise the overlay could complete
+        // before the first visible frame had even been submitted.
+        this.sceneOperationBusy = false;
+        if (this.sceneOperationRenderDeferred) {
+          this.sceneOperationRenderDeferred = false;
+          this.renderNow();
+        }
         await this.host.waitForIdle();
         return result;
       });

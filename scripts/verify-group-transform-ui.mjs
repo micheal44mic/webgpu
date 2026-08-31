@@ -55,8 +55,8 @@ assert.match(
 );
 assert.match(
   panelCallback,
-  /initializeMixedSceneController\(\)\.then\(\(controller\) => \{[\s\S]*?controller\.setTransformSelection\(transformKeys\)[\s\S]*?selectCanvasToolWithMixedScene\("transform"\)/,
-  "The group selection must reach the controller before Transform can prepare a raster session.",
+  /canvasStartupOverlay\.runRuntimeOperation\([\s\S]*?"Preparing layer selection"[\s\S]*?\(\) => initializeMixedSceneController\(\)[\s\S]*?\.then\(\(controller\) => \{[\s\S]*?controller\.setTransformSelection\(transformKeys\)[\s\S]*?selectCanvasToolWithMixedScene\("transform"\)/,
+  "The cold group controller must load visibly before Transform or Merge can use the selection.",
 );
 assert.match(
   panelCallback,

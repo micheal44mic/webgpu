@@ -15,6 +15,11 @@ assert.match(
   source,
   /private readonly busyKinds = new Set<NonDestructiveRasterEffectKind>\(\)/,
 );
+assert.match(
+  main,
+  /new RasterStyleController\(\{[\s\S]*?runWithLoading: \(label, operation\) =>[\s\S]*?canvasStartupOverlay\.runRuntimeOperation\(label, operation\)/,
+  "cold raster style activation must use the shared runtime overlay",
+);
 
 const styles = {
   colorOverlay: { enabled: true, color: "#ff0000", opacity: 1 },
@@ -29,6 +34,7 @@ let mixedScene = null;
 let rasterSelected = true;
 let busyChanges = 0;
 const calls = [];
+const loadingCalls = [];
 let pendingStrokeResolve = null;
 const engine = {
   getMixedSceneSnapshot: () => mixedScene,
@@ -60,6 +66,9 @@ const engine = {
     calls.push(["bevel", style]);
     return false;
   },
+  waitForIdle: async () => {
+    calls.push(["gpu-idle"]);
+  },
 };
 
 const controller = new RasterStyleController({
@@ -68,6 +77,10 @@ const controller = new RasterStyleController({
   isPointerActive: () => pointerActive,
   onBusyChange: () => {
     busyChanges += 1;
+  },
+  runWithLoading: async (label, operation) => {
+    loadingCalls.push(label);
+    return operation();
   },
 });
 
@@ -106,8 +119,11 @@ assert.equal(
 pendingStrokeResolve(true);
 assert.equal(await strokePromise, true);
 assert.equal(controller.isBusy, false);
+assert.equal(loadingCalls.includes("Preparing Stroke"), true);
+assert.deepEqual(calls.at(-1), ["gpu-idle"]);
 
 assert.equal(await controller.applyInnerShadowStyle({ enabled: true }), false);
+assert.equal(loadingCalls.includes("Preparing Inner Shadow"), true);
 assert.equal(controller.isBusy, false, "failed mutations must always release their lock");
 assert.equal(await controller.applyBevelStyle({ enabled: true }), false);
 assert.equal(controller.isBusy, false);

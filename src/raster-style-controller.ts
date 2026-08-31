@@ -22,6 +22,7 @@ export type RasterStyleEnginePort = Pick<
   | "setRasterOuterShadowStyle"
   | "setRasterInnerShadowStyle"
   | "setRasterBevelStyle"
+  | "waitForIdle"
 >;
 
 export interface RasterStyleControllerOptions {
@@ -29,6 +30,10 @@ export interface RasterStyleControllerOptions {
   readonly isEngineReady: () => boolean;
   readonly isPointerActive: () => boolean;
   readonly onBusyChange: () => void;
+  readonly runWithLoading?: <Result>(
+    label: string,
+    operation: () => Promise<Result>,
+  ) => Promise<Result>;
 }
 
 /** Owns guarded, asynchronous mutations of non-destructive raster metadata. */
@@ -82,17 +87,29 @@ export class RasterStyleController {
       "color-overlay",
       () => this.options.engine.setRasterColorOverlayStyle(style),
       true,
+      style.enabled && !this.getColorOverlayStyle().enabled
+        ? "Preparing Color Overlay"
+        : null,
     );
   }
 
   applyStrokeStyle(style: RasterStrokeStyle): Promise<boolean> {
-    return this.apply("stroke", () => this.options.engine.setRasterStrokeStyle(style));
+    return this.apply(
+      "stroke",
+      () => this.options.engine.setRasterStrokeStyle(style),
+      false,
+      style.enabled && !this.getStrokeStyle().enabled ? "Preparing Stroke" : null,
+    );
   }
 
   applyOuterShadowStyle(style: RasterOuterShadowStyle): Promise<boolean> {
     return this.apply(
       "outer-shadow",
       () => this.options.engine.setRasterOuterShadowStyle(style),
+      false,
+      style.enabled && !this.getOuterShadowStyle().enabled
+        ? "Preparing Outer Shadow"
+        : null,
     );
   }
 
@@ -100,17 +117,27 @@ export class RasterStyleController {
     return this.apply(
       "inner-shadow",
       () => this.options.engine.setRasterInnerShadowStyle(style),
+      false,
+      style.enabled && !this.getInnerShadowStyle().enabled
+        ? "Preparing Inner Shadow"
+        : null,
     );
   }
 
   applyBevelStyle(style: RasterBevelStyle): Promise<boolean> {
-    return this.apply("bevel", () => this.options.engine.setRasterBevelStyle(style));
+    return this.apply(
+      "bevel",
+      () => this.options.engine.setRasterBevelStyle(style),
+      false,
+      style.enabled && !this.getBevelStyle().enabled ? "Preparing Bevel" : null,
+    );
   }
 
   private async apply(
     kind: NonDestructiveRasterEffectKind,
     mutation: () => Promise<boolean>,
     requiresSelectedTarget = false,
+    loadingLabel: string | null = null,
   ): Promise<boolean> {
     if (
       !this.options.isEngineReady()
@@ -123,7 +150,16 @@ export class RasterStyleController {
     this.busyKinds.add(kind);
     this.options.onBusyChange();
     try {
-      return await mutation();
+      const operation = async (): Promise<boolean> => {
+        const changed = await mutation();
+        if (loadingLabel) await this.options.engine.waitForIdle();
+        return changed;
+      };
+      return await (
+        loadingLabel && this.options.runWithLoading
+          ? this.options.runWithLoading(loadingLabel, operation)
+          : operation()
+      );
     } catch {
       return false;
     } finally {
