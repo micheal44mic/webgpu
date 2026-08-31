@@ -17,6 +17,7 @@ export const VECTOR_SVG_IMPORT_STRATEGY =
 export const VECTOR_SVG_MAXIMUM_SOURCE_BYTES = 5 * 1024 * 1024;
 export const VECTOR_SVG_MAXIMUM_COMMANDS = 500_000;
 export const VECTOR_SVG_MAXIMUM_GRADIENT_STOPS = 4;
+export const VECTOR_SVG_STATIC_STROKE_TOLERANCE = 0.025;
 
 export interface VectorSvgGradientStop {
   readonly offset: number;
@@ -47,6 +48,13 @@ export interface VectorSvgStroke {
   readonly miterLimit: number;
   readonly dashArray: readonly number[];
   readonly dashOffset: number;
+}
+
+export interface VectorSvgStrokeExpansionQuality {
+  /** Maximum centerline deviation in transformed document coordinates. */
+  readonly centerlineTolerance: number;
+  /** Maximum round cap/join sagitta in transformed document coordinates. */
+  readonly roundArcSagittaTolerance: number;
 }
 
 export interface VectorSvgPaint {
@@ -127,6 +135,7 @@ interface GradientRegistry {
 interface FlatStrokeSubpath {
   readonly points: readonly Point[];
   readonly closed: boolean;
+  readonly zeroLengthTangent?: Point;
 }
 
 const IDENTITY_MATRIX: Matrix = [1, 0, 0, 1, 0, 0];
@@ -181,6 +190,18 @@ function boxMatrix(bounds: VectorTextBounds): Matrix {
 }
 function transformPoint(matrix: Matrix, x: number, y: number): Point {
   return { x: matrix[0] * x + matrix[2] * y + matrix[4], y: matrix[1] * x + matrix[3] * y + matrix[5] };
+}
+function matrixMaximumScale(matrix: Matrix): number {
+  const squaredTrace = matrix[0] ** 2
+    + matrix[1] ** 2
+    + matrix[2] ** 2
+    + matrix[3] ** 2;
+  const determinant = matrix[0] * matrix[3] - matrix[1] * matrix[2];
+  const discriminant = Math.max(
+    0,
+    squaredTrace ** 2 - 4 * determinant ** 2,
+  );
+  return Math.sqrt(Math.max(0, (squaredTrace + Math.sqrt(discriminant)) * 0.5));
 }
 function finiteLength(value: string | null | undefined, fallback = 0): number {
   if (value === null || value === undefined || value.trim() === "") return fallback;
@@ -432,6 +453,23 @@ function pointLineDistance(point: Point, start: Point, end: Point): number {
   return Math.abs(dy * point.x - dx * point.y + end.x * start.y - end.y * start.x) / denominator;
 }
 
+function pointProjectsOntoChord(
+  point: Point,
+  start: Point,
+  end: Point,
+  tolerance: number,
+): boolean {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const squaredLength = dx * dx + dy * dy;
+  if (!(squaredLength > 0)) return samePoint(point, start);
+  const projection = (
+    (point.x - start.x) * dx + (point.y - start.y) * dy
+  ) / squaredLength;
+  const allowance = tolerance / Math.max(Math.sqrt(squaredLength), tolerance);
+  return projection >= -allowance && projection <= 1 + allowance;
+}
+
 function flattenQuadraticStroke(
   start: Point,
   control: Point,
@@ -440,7 +478,13 @@ function flattenQuadraticStroke(
   output: Point[],
   depth = 0,
 ): void {
-  if (depth >= 20 || pointLineDistance(control, start, end) <= tolerance) {
+  if (
+    depth >= 20
+    || (
+      pointLineDistance(control, start, end) <= tolerance
+      && pointProjectsOntoChord(control, start, end, tolerance)
+    )
+  ) {
     output.push(end);
     return;
   }
@@ -462,10 +506,14 @@ function flattenCubicStroke(
 ): void {
   if (
     depth >= 20
-    || Math.max(
-      pointLineDistance(first, start, end),
-      pointLineDistance(second, start, end),
-    ) <= tolerance
+    || (
+      Math.max(
+        pointLineDistance(first, start, end),
+        pointLineDistance(second, start, end),
+      ) <= tolerance
+      && pointProjectsOntoChord(first, start, end, tolerance)
+      && pointProjectsOntoChord(second, start, end, tolerance)
+    )
   ) {
     output.push(end);
     return;
@@ -549,6 +597,7 @@ function dashedStrokeSubpaths(
   subpath: FlatStrokeSubpath,
   dashArray: readonly number[],
   dashOffset: number,
+  preserveZeroLengthDashes: boolean,
 ): FlatStrokeSubpath[] {
   if (dashArray.length === 0) return [subpath];
   const total = dashArray.reduce((sum, value) => sum + value, 0);
@@ -574,25 +623,49 @@ function dashedStrokeSubpaths(
     if (currentDash.length >= 2) result.push({ points: currentDash, closed: false });
     currentDash = [];
   };
-  const advanceZeroSegments = (): void => {
+  const advanceZeroSegments = (point: Point, tangent: Point): void => {
     let zeroGuard = 0;
     while (remaining <= Number.EPSILON && zeroGuard <= dashArray.length) {
-      if (drawing) flush();
+      if (drawing) {
+        if (currentDash.length >= 2) flush();
+        else if (preserveZeroLengthDashes) {
+          currentDash = [];
+          result.push({
+            points: [point],
+            closed: false,
+            zeroLengthTangent: tangent,
+          });
+        }
+      }
       patternIndex = (patternIndex + 1) % dashArray.length;
       drawing = patternIndex % 2 === 0;
       remaining = dashArray[patternIndex];
       zeroGuard += 1;
     }
   };
-  advanceZeroSegments();
+  const firstTangent = source.length > 1
+    ? {
+        x: source[1].x - source[0].x,
+        y: source[1].y - source[0].y,
+      }
+    : { x: 1, y: 0 };
+  advanceZeroSegments(source[0], firstTangent);
   for (let segmentIndex = 1; segmentIndex < source.length; segmentIndex += 1) {
     const start = source[segmentIndex - 1];
     const end = source[segmentIndex];
     const length = Math.hypot(end.x - start.x, end.y - start.y);
     if (!(length > 0)) continue;
+    const tangent = {
+      x: (end.x - start.x) / length,
+      y: (end.y - start.y) / length,
+    };
     let consumed = 0;
     while (consumed < length - Number.EPSILON) {
-      advanceZeroSegments();
+      const currentPoint = {
+        x: start.x + (end.x - start.x) * consumed / length,
+        y: start.y + (end.y - start.y) * consumed / length,
+      };
+      advanceZeroSegments(currentPoint, tangent);
       const step = Math.min(remaining, length - consumed);
       const firstT = consumed / length;
       const lastT = (consumed + step) / length;
@@ -612,64 +685,166 @@ function dashedStrokeSubpaths(
       }
     }
   }
+  const lastTangent = source.length > 1
+    ? {
+        x: source[source.length - 1].x - source[source.length - 2].x,
+        y: source[source.length - 1].y - source[source.length - 2].y,
+      }
+    : firstTangent;
+  advanceZeroSegments(source[source.length - 1], lastTangent);
   flush();
   return result;
 }
 
+function appendPointStrokeCap(
+  builder: PathBuilder,
+  point: Point,
+  radius: number,
+  linecap: VectorSvgStroke["linecap"],
+  tangent: Point = { x: 1, y: 0 },
+): void {
+  if (linecap === "butt") return;
+  if (linecap === "square") {
+    const length = Math.max(Number.EPSILON, Math.hypot(tangent.x, tangent.y));
+    const unitX = tangent.x / length;
+    const unitY = tangent.y / length;
+    const normalX = -unitY;
+    const normalY = unitX;
+    builder.move(
+      point.x - unitX * radius - normalX * radius,
+      point.y - unitY * radius - normalY * radius,
+    );
+    builder.line(
+      point.x + unitX * radius - normalX * radius,
+      point.y + unitY * radius - normalY * radius,
+    );
+    builder.line(
+      point.x + unitX * radius + normalX * radius,
+      point.y + unitY * radius + normalY * radius,
+    );
+    builder.line(
+      point.x - unitX * radius + normalX * radius,
+      point.y - unitY * radius + normalY * radius,
+    );
+    builder.close();
+    return;
+  }
+  builder.move(point.x + radius, point.y);
+  builder.cubic(point.x + radius, point.y + radius * KAPPA, point.x + radius * KAPPA, point.y + radius, point.x, point.y + radius);
+  builder.cubic(point.x - radius * KAPPA, point.y + radius, point.x - radius, point.y + radius * KAPPA, point.x - radius, point.y);
+  builder.cubic(point.x - radius, point.y - radius * KAPPA, point.x - radius * KAPPA, point.y - radius, point.x, point.y - radius);
+  builder.cubic(point.x + radius * KAPPA, point.y - radius, point.x + radius, point.y - radius * KAPPA, point.x + radius, point.y);
+  builder.close();
+}
+
+function strokeInflationPrecision(
+  points: readonly Point[],
+  radius: number,
+  localTolerance: number,
+): number {
+  let maximumCoordinate = 0;
+  for (const point of points) {
+    maximumCoordinate = Math.max(
+      maximumCoordinate,
+      Math.abs(point.x),
+      Math.abs(point.y),
+    );
+  }
+  const maximumMagnitude = maximumCoordinate + Math.abs(radius);
+  const desiredStep = Math.max(Number.EPSILON, localTolerance * 0.25);
+  const desiredPrecision = Math.max(
+    4,
+    Math.ceil(-Math.log10(desiredStep)),
+  );
+  const safePrecision = maximumMagnitude > 0
+    ? Math.floor(Math.log10(Number.MAX_SAFE_INTEGER / maximumMagnitude))
+    : 8;
+  return Math.max(-8, Math.min(8, desiredPrecision, safePrecision));
+}
+
 function expandedStrokePath(
-  localPath: Shadow3dPathData,
-  matrix: Matrix,
-  style: StyleState,
-  percentageReference: number,
+  stroke: VectorSvgStroke,
+  quality: VectorSvgStrokeExpansionQuality,
 ): Shadow3dPathData {
-  const width = finiteStrokeLength(style.strokeWidth, percentageReference, 1);
-  const builder = new PathBuilder(matrix);
+  const width = stroke.width;
+  const builder = new PathBuilder(stroke.transform);
   if (!(width > 0)) return builder.finish(0);
-  const tolerance = Math.max(0.025, Math.min(0.5, width / 8));
-  const dashArray = parseDashArray(style.strokeDasharray, percentageReference);
-  const dashOffset = finiteStrokeLength(style.strokeDashoffset, percentageReference, 0);
-  const join = style.strokeLinejoin === "round"
+  const transformScale = Math.max(
+    Number.EPSILON,
+    matrixMaximumScale(stroke.transform),
+  );
+  const transformedCenterlineTolerance = Number.isFinite(
+      quality.centerlineTolerance,
+    ) && quality.centerlineTolerance > 0
+    ? quality.centerlineTolerance
+    : VECTOR_SVG_STATIC_STROKE_TOLERANCE;
+  const tolerance = transformedCenterlineTolerance / transformScale;
+  const transformedArcTolerance = Number.isFinite(
+      quality.roundArcSagittaTolerance,
+    ) && quality.roundArcSagittaTolerance > 0
+    ? quality.roundArcSagittaTolerance
+    : VECTOR_SVG_STATIC_STROKE_TOLERANCE;
+  const arcTolerance = transformedArcTolerance / transformScale;
+  const localInflationTolerance = Math.min(tolerance, arcTolerance);
+  const join = stroke.linejoin === "round"
     ? JoinType.Round
-    : style.strokeLinejoin === "bevel"
+    : stroke.linejoin === "bevel"
       ? JoinType.Bevel
       : JoinType.Miter;
-  const cap = style.strokeLinecap === "round"
+  const cap = stroke.linecap === "round"
     ? EndType.Round
-    : style.strokeLinecap === "square"
+    : stroke.linecap === "square"
       ? EndType.Square
       : EndType.Butt;
-  for (const sourceSubpath of flattenStrokeSubpaths(localPath, tolerance)) {
+  for (const sourceSubpath of flattenStrokeSubpaths(
+    stroke.sourcePath,
+    tolerance,
+  )) {
     if (sourceSubpath.points.length === 1) {
-      if (style.strokeLinecap === "butt") continue;
-      const point = sourceSubpath.points[0];
-      const radius = width * 0.5;
-      if (style.strokeLinecap === "square") {
-        builder.move(point.x - radius, point.y - radius);
-        builder.line(point.x + radius, point.y - radius);
-        builder.line(point.x + radius, point.y + radius);
-        builder.line(point.x - radius, point.y + radius);
-        builder.close();
-      } else {
-        builder.move(point.x + radius, point.y);
-        builder.cubic(point.x + radius, point.y + radius * KAPPA, point.x + radius * KAPPA, point.y + radius, point.x, point.y + radius);
-        builder.cubic(point.x - radius * KAPPA, point.y + radius, point.x - radius, point.y + radius * KAPPA, point.x - radius, point.y);
-        builder.cubic(point.x - radius, point.y - radius * KAPPA, point.x - radius * KAPPA, point.y - radius, point.x, point.y - radius);
-        builder.cubic(point.x + radius * KAPPA, point.y - radius, point.x + radius, point.y - radius * KAPPA, point.x + radius, point.y);
-        builder.close();
-      }
+      appendPointStrokeCap(
+        builder,
+        sourceSubpath.points[0],
+        width * 0.5,
+        stroke.linecap,
+        sourceSubpath.zeroLengthTangent,
+      );
       continue;
     }
-    for (const subpath of dashedStrokeSubpaths(sourceSubpath, dashArray, dashOffset)) {
-      const points: PathD = subpath.points.map((point) => ({ x: point.x, y: point.y }));
-      const endType = subpath.closed && dashArray.length === 0 ? EndType.Joined : cap;
+    for (const subpath of dashedStrokeSubpaths(
+      sourceSubpath,
+      stroke.dashArray,
+      stroke.dashOffset,
+      stroke.linecap !== "butt",
+    )) {
+      if (subpath.points.length === 1) {
+        appendPointStrokeCap(
+          builder,
+          subpath.points[0],
+          width * 0.5,
+          stroke.linecap,
+          subpath.zeroLengthTangent,
+        );
+        continue;
+      }
+      const points: PathD = subpath.points.map((point) => ({
+        x: point.x,
+        y: point.y,
+      }));
+      const endType = subpath.closed && stroke.dashArray.length === 0
+        ? EndType.Joined
+        : cap;
       const outlines = inflatePathsD(
         [points],
         width * 0.5,
         join,
         endType,
-        style.strokeMiterlimit,
-        4,
-        tolerance,
+        stroke.miterLimit,
+        strokeInflationPrecision(
+          subpath.points,
+          width * 0.5,
+          localInflationTolerance,
+        ),
+        arcTolerance,
       );
       for (const outline of outlines) {
         if (outline.length < 3) continue;
@@ -680,6 +855,21 @@ function expandedStrokePath(
     }
   }
   return builder.finish(0);
+}
+
+export function expandVectorSvgStrokePaint(
+  strokes: readonly VectorSvgStroke[],
+  quality: VectorSvgStrokeExpansionQuality,
+): Shadow3dPathData {
+  const paths = strokes.map((stroke) => expandedStrokePath(stroke, quality));
+  if (paths.length === 0) {
+    return new PathBuilder(IDENTITY_MATRIX).finish(0);
+  }
+  const merged = mergeVectorTextPaths(paths);
+  if (merged.verbs.length > VECTOR_SVG_MAXIMUM_COMMANDS) {
+    throw new Error(`SVG exceeds ${VECTOR_SVG_MAXIMUM_COMMANDS} vector commands.`);
+  }
+  return merged;
 }
 
 function parseDeclarations(source: string): Map<string, string> {
@@ -1210,12 +1400,13 @@ export function parseVectorSvg(source: string, sourceName = "import.svg"): Vecto
         color: stroke.color,
         opacity: strokeOpacity,
         fillRule: 0,
-        path: expandedStrokePath(
-          localPath,
-          localMatrix,
-          resolved.style,
-          strokePercentageReference,
-        ),
+        path: expandVectorSvgStrokePaint([strokeSemantics], {
+          centerlineTolerance: Math.max(
+            1e-5,
+            Math.min(VECTOR_SVG_STATIC_STROKE_TOLERANCE, width / 8),
+          ),
+          roundArcSagittaTolerance: VECTOR_SVG_STATIC_STROKE_TOLERANCE,
+        }),
         gradient: stroke.gradient,
         gradientKey: stroke.gradientKey,
         strokes: [strokeSemantics],

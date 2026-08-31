@@ -246,6 +246,11 @@ function createHarness(options = {}) {
     },
     metrics: { left: 40, top: 50, right: 60, bottom: 70, baseline: 55 },
     geometryByNodeId: new Map([[7, { owner: "outgoing" }]]),
+    svgStrokePathsBySemantic: new Map([["outgoing", [{ logicalBytes: 64 }]]]),
+    svgStrokeFailedLodsBySemantic: new Map([["outgoing", new Set([2])]]),
+    svgStrokePathCacheLogicalBytes: 64,
+    svgStrokePathCacheAccessSequence: 3,
+    svgStrokePathFallbackCount: 1,
     displayedDrawsByNodeKey: new Map([["text:7", [{ owner: "outgoing" }]]]),
     displayedMetricsByNodeKey: new Map([["text:7", { owner: "outgoing" }]]),
     renderedTextRunKeys: new Set(["text-run:raster:1|text:7"]),
@@ -352,6 +357,14 @@ assert.deepEqual(harness.shell.metrics, {
   baseline: 0,
 });
 assert.equal(harness.shell.geometryByNodeId.size, 0);
+assert.equal(harness.shell.svgStrokePathsBySemantic.size, 0);
+assert.equal(harness.shell.svgStrokeFailedLodsBySemantic.size, 0);
+assert.equal(harness.shell.svgStrokePathCacheLogicalBytes, 0);
+assert.equal(harness.shell.svgStrokePathCacheAccessSequence, 0);
+assert.equal(harness.shell.svgStrokePathFallbackCount, 0);
+assert.ok(harness.shell.svgStrokeSemanticKeysByPaint instanceof WeakMap);
+assert.ok(harness.shell.svgSilhouetteSemanticKeysByDocument instanceof WeakMap);
+assert.ok(harness.shell.svgStrokeFailedLodsByPaint instanceof WeakMap);
 assert.equal(harness.shell.displayedDrawsByNodeKey.size, 0);
 assert.equal(harness.shell.displayedMetricsByNodeKey.size, 0);
 assert.equal(harness.shell.renderedTextRunKeys.size, 0);

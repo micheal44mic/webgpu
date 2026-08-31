@@ -125,6 +125,8 @@ import {
   VECTOR_SVG_MAXIMUM_COMMANDS,
   VECTOR_SVG_MAXIMUM_GRADIENT_STOPS,
   VECTOR_SVG_MAXIMUM_SOURCE_BYTES,
+  VECTOR_SVG_STATIC_STROKE_TOLERANCE,
+  expandVectorSvgStrokePaint,
 } from "../src/vector-svg-import.ts";
 import {
   VECTOR_TEXT_TRANSFORM_STRATEGY,
@@ -2765,6 +2767,139 @@ assert.equal(VECTOR_SVG_IMPORT_STRATEGY, "sanitized-semantic-svg-gradients-retai
 assert.equal(VECTOR_SVG_MAXIMUM_SOURCE_BYTES, 5 * 1024 * 1024);
 assert.equal(VECTOR_SVG_MAXIMUM_COMMANDS, 500_000);
 assert.equal(VECTOR_SVG_MAXIMUM_GRADIENT_STOPS, 4);
+assert.equal(VECTOR_SVG_STATIC_STROKE_TOLERANCE, 0.025);
+const straightStrokeSource = {
+  verbs: new Uint8Array([0, 1]),
+  coords: new Float64Array([0, 0, 40, 0]),
+  contourOffsets: new Uint32Array([0]),
+  fillRule: 0,
+};
+const roundDashedStroke = {
+  sourcePath: straightStrokeSource,
+  transform: [1, 0, 0, 1, 0, 0],
+  width: 0.87,
+  linecap: "round",
+  linejoin: "round",
+  miterLimit: 4,
+  dashArray: [3.48, 1.74, 0, 0],
+  dashOffset: 0,
+};
+const coarseExpandedStroke = expandVectorSvgStrokePaint(
+  [roundDashedStroke],
+  { centerlineTolerance: 0.05, roundArcSagittaTolerance: 0.05 },
+);
+const preciseExpandedStroke = expandVectorSvgStrokePaint(
+  [roundDashedStroke],
+  { centerlineTolerance: 0.0005, roundArcSagittaTolerance: 0.0005 },
+);
+assert.ok(preciseExpandedStroke.verbs.length > coarseExpandedStroke.verbs.length * 3);
+assert.ok(
+  preciseExpandedStroke.contourOffsets.length > Math.ceil(40 / 5.22),
+  "zero-length visible dashes must remain explicit point contours",
+);
+const firstExpandedContourPoints = [];
+let expandedCoordinateOffset = 0;
+for (const verb of preciseExpandedStroke.verbs) {
+  if (verb === 0 || verb === 1) {
+    firstExpandedContourPoints.push({
+      x: preciseExpandedStroke.coords[expandedCoordinateOffset],
+      y: preciseExpandedStroke.coords[expandedCoordinateOffset + 1],
+    });
+    expandedCoordinateOffset += 2;
+  } else if (verb === 2) {
+    expandedCoordinateOffset += 4;
+  } else if (verb === 3) {
+    expandedCoordinateOffset += 6;
+  } else if (verb === 4) {
+    break;
+  }
+}
+const strokeRadius = roundDashedStroke.width * 0.5;
+let maximumRoundCapSagitta = 0;
+for (let index = 0; index < firstExpandedContourPoints.length; index += 1) {
+  const first = firstExpandedContourPoints[index];
+  const second = firstExpandedContourPoints[
+    (index + 1) % firstExpandedContourPoints.length
+  ];
+  for (const centerX of [0, 3.48]) {
+    const onCap = centerX === 0
+      ? first.x <= 1e-6 && second.x <= 1e-6
+      : first.x >= centerX - 1e-6 && second.x >= centerX - 1e-6;
+    if (!onCap) continue;
+    const firstRadius = Math.hypot(first.x - centerX, first.y);
+    const secondRadius = Math.hypot(second.x - centerX, second.y);
+    if (
+      Math.abs(firstRadius - strokeRadius) >= 0.001
+      || Math.abs(secondRadius - strokeRadius) >= 0.001
+    ) continue;
+    const chord = Math.hypot(first.x - second.x, first.y - second.y);
+    const sagitta = strokeRadius - Math.sqrt(Math.max(
+      0,
+      strokeRadius ** 2 - chord ** 2 * 0.25,
+    ));
+    maximumRoundCapSagitta = Math.max(maximumRoundCapSagitta, sagitta);
+  }
+}
+assert.ok(maximumRoundCapSagitta > 0);
+assert.ok(maximumRoundCapSagitta <= 0.00055);
+const transformedRoundStroke = expandVectorSvgStrokePaint([{
+  ...roundDashedStroke,
+  sourcePath: {
+    verbs: new Uint8Array([0, 1]),
+    coords: new Float64Array([0, 0, 0.01, 0]),
+    contourOffsets: new Uint32Array([0]),
+    fillRule: 0,
+  },
+  transform: [1000, 0, 0, 1000, 0, 0],
+  width: 0.001,
+  dashArray: [],
+}], {
+  centerlineTolerance: 0.0005,
+  roundArcSagittaTolerance: 0.0005,
+});
+assert.ok(
+  transformedRoundStroke.verbs.length > 60,
+  "transformed round strokes must retain subpixel arc precision",
+);
+const diagonalSquareDots = expandVectorSvgStrokePaint([{
+  ...roundDashedStroke,
+  sourcePath: {
+    verbs: new Uint8Array([0, 1]),
+    coords: new Float64Array([0, 0, 10, 10]),
+    contourOffsets: new Uint32Array([0]),
+    fillRule: 0,
+  },
+  width: 2,
+  linecap: "square",
+  dashArray: [0, 4],
+}], {
+  centerlineTolerance: 0.01,
+  roundArcSagittaTolerance: 0.01,
+});
+assert.ok(diagonalSquareDots.contourOffsets.length >= 1);
+assert.ok(Math.abs(diagonalSquareDots.coords[0]) < 1e-9);
+assert.ok(Math.abs(diagonalSquareDots.coords[1] + Math.SQRT2) < 1e-9);
+const collinearOvershootStroke = expandVectorSvgStrokePaint([{
+  ...roundDashedStroke,
+  sourcePath: {
+    verbs: new Uint8Array([0, 3]),
+    coords: new Float64Array([0, 0, 40, 0, -30, 0, 10, 0]),
+    contourOffsets: new Uint32Array([0]),
+    fillRule: 0,
+  },
+  width: 1,
+  linecap: "butt",
+  dashArray: [],
+}], {
+  centerlineTolerance: 0.01,
+  roundArcSagittaTolerance: 0.01,
+});
+const overshootXs = [];
+for (let index = 0; index < collinearOvershootStroke.coords.length; index += 2) {
+  overshootXs.push(collinearOvershootStroke.coords[index]);
+}
+assert.ok(Math.min(...overshootXs) < -2);
+assert.ok(Math.max(...overshootXs) > 12);
 assert.match(svgSource, /const SAFE_ELEMENTS = new Set/);
 assert.match(svgSource, /"path", "rect", "circle", "ellipse", "line", "polyline", "polygon"/);
 assert.match(svgSource, /Unsupported or unsafe SVG element/);
@@ -2773,6 +2908,18 @@ assert.match(svgSource, /local href references between SVG gradients/);
 assert.match(svgSource, /hasOnlyLocalPaintUrls/);
 assert.match(svgSource, /parseGradientDefinitions/);
 assert.match(svgSource, /expandedStrokePath/);
+assert.match(controllerSource, /svgPaintPathForLod/);
+assert.match(controllerSource, /expandVectorSvgStrokePaint/);
+assert.match(controllerSource, /SVG_STROKE_PATH_LODS_PER_PAINT = 3/);
+assert.match(controllerSource, /svgStrokeSemanticKey/);
+assert.match(controllerSource, /svgStrokePathsBySemantic/);
+assert.match(controllerSource, /svgStrokeSemanticKeysByPaint/);
+assert.match(controllerSource, /svgStrokeFailedLodsByPaint/);
+assert.doesNotMatch(controllerSource, /svgStrokePathsByDocument/);
+assert.match(controllerSource, /SVG_STROKE_PATH_CACHE_MAXIMUM_BYTES = 32 \* 1024 \* 1024/);
+assert.match(controllerSource, /rememberSvgStrokeLodFailure/);
+assert.match(controllerSource, /svgStrokeLodCacheLogicalMiB/);
+assert.match(svgSource, /strokeInflationPrecision/);
 assert.match(svgSource, /sourcePath: clonePath\(localPath\)/);
 assert.match(svgSource, /strokePercentageReference/);
 assert.match(svgSource, /normalized\.endsWith\("%"\)\) return fallback/);

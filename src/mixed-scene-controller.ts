@@ -73,6 +73,8 @@ import {
 } from "./vector-text-slug";
 import {
   vectorTextLodForSigma,
+  vectorTextFloat64Key,
+  type VectorTextLod,
 } from "./vector-text-lod";
 import {
   VECTOR_TEXT_SLUG_GPU_RENDER_STRATEGY,
@@ -88,12 +90,18 @@ import {
   vectorTextWideFallbackView,
 } from "./vector-text-adaptive-zoom";
 import {
+  VECTOR_SVG_MAXIMUM_COMMANDS,
+  VECTOR_SVG_STATIC_STROKE_TOLERANCE,
   VECTOR_SVG_IMPORT_STRATEGY,
+  expandVectorSvgStrokePaint,
   parseVectorSvg,
+  type VectorSvgDocument,
+  type VectorSvgPaint,
 } from "./vector-svg-import.ts";
 import {
   VECTOR_TEXT_TRANSFORM_STRATEGY,
   defaultVectorTextDistortPoints,
+  mergeVectorTextPaths,
   moveVectorTextDistortPoint,
   type VectorTextDistortPoints,
   type VectorTextTransformType,
@@ -219,6 +227,13 @@ interface CachedTextGeometry {
   slug: VectorTextSlugData;
 }
 
+interface CachedSvgStrokePath {
+  readonly lodBucket: number;
+  readonly path: VectorSvgDocument["silhouettePath"];
+  readonly logicalBytes: number;
+  lastUsed: number;
+}
+
 type InteractionMode =
   | "move"
   | "scale"
@@ -280,6 +295,10 @@ const MEBIBYTE_BYTES = 1024 * 1024;
 const MINIMUM_SCALE = 0.05;
 const MAXIMUM_SCALE = 20;
 const FRAME_SAMPLE_LIMIT = 180;
+const SVG_STROKE_PATH_LODS_PER_PAINT = 3;
+const SVG_STROKE_PATH_CACHE_MAXIMUM_ENTRIES = 96;
+const SVG_STROKE_PATH_CACHE_MAXIMUM_BYTES = 32 * 1024 * 1024;
+const SVG_STROKE_FAILURE_CACHE_MAXIMUM_IDENTITIES = 96;
 const OUTLINE_JOIN_LABELS: Readonly<Record<VectorTextOutlineJoin, string>> = {
   bevel: "bevel",
   miter: "miter",
@@ -361,6 +380,20 @@ export class MixedSceneController {
   private readonly interactionContext: CanvasRenderingContext2D;
   private readonly fontGeometry = new VectorTextFontGeometryRegistry();
   private readonly geometryByNodeId = new Map<number, CachedTextGeometry>();
+  private readonly svgStrokePathsBySemantic = new Map<
+    string,
+    CachedSvgStrokePath[]
+  >();
+  private readonly svgStrokeFailedLodsBySemantic = new Map<string, Set<number>>();
+  private svgStrokeSemanticKeysByPaint = new WeakMap<VectorSvgPaint, string>();
+  private svgSilhouetteSemanticKeysByDocument = new WeakMap<
+    VectorSvgDocument,
+    string
+  >();
+  private svgStrokeFailedLodsByPaint = new WeakMap<VectorSvgPaint, Set<number>>();
+  private svgStrokePathCacheLogicalBytes = 0;
+  private svgStrokePathCacheAccessSequence = 0;
+  private svgStrokePathFallbackCount = 0;
   private readonly displayedDrawsByNodeKey = new Map<
     string,
     readonly VectorTextGpuDraw[]
@@ -598,6 +631,14 @@ export class MixedSceneController {
     this.deferredTextSyncGeneration = null;
     this.metrics = emptyTextMetricsBox();
     this.geometryByNodeId.clear();
+    this.svgStrokePathsBySemantic.clear();
+    this.svgStrokeFailedLodsBySemantic.clear();
+    this.svgStrokeSemanticKeysByPaint = new WeakMap();
+    this.svgSilhouetteSemanticKeysByDocument = new WeakMap();
+    this.svgStrokeFailedLodsByPaint = new WeakMap();
+    this.svgStrokePathCacheLogicalBytes = 0;
+    this.svgStrokePathCacheAccessSequence = 0;
+    this.svgStrokePathFallbackCount = 0;
     this.displayedDrawsByNodeKey.clear();
     this.displayedMetricsByNodeKey.clear();
     this.renderedTextRunKeys.clear();
@@ -1900,6 +1941,10 @@ export class MixedSceneController {
       viewportCanvasLogicalMiB:
         view.canvasWidth * view.canvasHeight * 4 / MEBIBYTE_BYTES,
       vectorFontLogicalMiB: this.fontGeometry.logicalFontBytes / MEBIBYTE_BYTES,
+      svgStrokeLodCacheLogicalMiB:
+        this.svgStrokePathCacheLogicalBytes / MEBIBYTE_BYTES,
+      svgStrokeLodCacheEntries: this.svgStrokePathCacheEntryCount(),
+      svgStrokeLodFallbackCount: this.svgStrokePathFallbackCount,
       blockShadowPathLogicalMiB: this.blockShadowPathLogicalMiB(),
       singleShadowBrowserLogicalMiB: 0,
       singleShadowCacheLogicalMiB: 0,
@@ -3287,10 +3332,269 @@ export class MixedSceneController {
   private effectLodForNode(
     node: Readonly<VectorSceneNode>,
     view: VectorTextViewState,
-  ) {
+  ): VectorTextLod {
     return vectorTextLodForSigma(
       Math.max(Math.abs(sceneScaleX(node)), Math.abs(sceneScaleY(node))) * Math.abs(view.zoom),
     );
+  }
+
+  private svgStrokeSemanticKey(paint: VectorSvgPaint): string {
+    const cached = this.svgStrokeSemanticKeysByPaint.get(paint);
+    if (cached) return cached;
+    const semanticKey = JSON.stringify((paint.strokes ?? []).map((stroke) => [
+      this.effectCompiler.geometryIdentity(stroke.sourcePath),
+      stroke.transform.map(vectorTextFloat64Key),
+      vectorTextFloat64Key(stroke.width),
+      stroke.linecap,
+      stroke.linejoin,
+      vectorTextFloat64Key(stroke.miterLimit),
+      stroke.dashArray.map(vectorTextFloat64Key),
+      vectorTextFloat64Key(stroke.dashOffset),
+    ]));
+    this.svgStrokeSemanticKeysByPaint.set(paint, semanticKey);
+    return semanticKey;
+  }
+
+  private svgSilhouetteSemanticKey(documentValue: VectorSvgDocument): string {
+    const cached = this.svgSilhouetteSemanticKeysByDocument.get(documentValue);
+    if (cached) return cached;
+    const semanticKey = JSON.stringify(documentValue.paints.map((paint) => (
+      paint.strokes?.length
+        ? ["stroke", this.svgStrokeSemanticKey(paint)]
+        : ["fill", this.effectCompiler.geometryIdentity(paint.path)]
+    )));
+    this.svgSilhouetteSemanticKeysByDocument.set(documentValue, semanticKey);
+    return semanticKey;
+  }
+
+  private staticSvgStrokePathMeetsLod(lod: VectorTextLod): boolean {
+    return lod.polygonFlattenTolerance >= VECTOR_SVG_STATIC_STROKE_TOLERANCE
+      && lod.roundArcSagittaTolerance >= VECTOR_SVG_STATIC_STROKE_TOLERANCE;
+  }
+
+  private svgStrokePathLogicalBytes(
+    path: VectorSvgDocument["silhouettePath"],
+  ): number {
+    return path.verbs.byteLength
+      + path.coords.byteLength
+      + path.contourOffsets.byteLength;
+  }
+
+  private nextSvgStrokePathCacheAccess(): number {
+    this.svgStrokePathCacheAccessSequence += 1;
+    return this.svgStrokePathCacheAccessSequence;
+  }
+
+  private cachedSvgStrokePath(
+    semanticKey: string,
+    lodBucket: number,
+    allowLowerQuality: boolean,
+  ): VectorSvgDocument["silhouettePath"] | null {
+    const cachedPaths = this.svgStrokePathsBySemantic.get(semanticKey);
+    if (!cachedPaths) return null;
+    let cached: CachedSvgStrokePath | null = null;
+    for (const candidate of cachedPaths) {
+      if (candidate.lodBucket === lodBucket) {
+        cached = candidate;
+        break;
+      }
+      if (
+        candidate.lodBucket > lodBucket
+        && (!cached || candidate.lodBucket < cached.lodBucket)
+      ) {
+        cached = candidate;
+      }
+    }
+    if (!cached && allowLowerQuality) {
+      for (const candidate of cachedPaths) {
+        if (!cached || candidate.lodBucket > cached.lodBucket) {
+          cached = candidate;
+        }
+      }
+    }
+    if (!cached) return null;
+    cached.lastUsed = this.nextSvgStrokePathCacheAccess();
+    return cached.path;
+  }
+
+  private svgStrokePathCacheEntryCount(): number {
+    let count = 0;
+    for (const paths of this.svgStrokePathsBySemantic.values()) {
+      count += paths.length;
+    }
+    return count;
+  }
+
+  private pruneSvgStrokePathCache(): void {
+    while (
+      this.svgStrokePathCacheEntryCount() > SVG_STROKE_PATH_CACHE_MAXIMUM_ENTRIES
+      || this.svgStrokePathCacheLogicalBytes > SVG_STROKE_PATH_CACHE_MAXIMUM_BYTES
+    ) {
+      let oldestKey: string | null = null;
+      let oldestIndex = -1;
+      let oldestAccess = Number.POSITIVE_INFINITY;
+      for (const [key, paths] of this.svgStrokePathsBySemantic) {
+        for (let index = 0; index < paths.length; index += 1) {
+          if (paths[index].lastUsed < oldestAccess) {
+            oldestKey = key;
+            oldestIndex = index;
+            oldestAccess = paths[index].lastUsed;
+          }
+        }
+      }
+      if (oldestKey === null || oldestIndex < 0) return;
+      const paths = this.svgStrokePathsBySemantic.get(oldestKey);
+      if (!paths) return;
+      const [removed] = paths.splice(oldestIndex, 1);
+      this.svgStrokePathCacheLogicalBytes -= removed.logicalBytes;
+      if (paths.length === 0) this.svgStrokePathsBySemantic.delete(oldestKey);
+    }
+  }
+
+  private rememberSvgStrokePath(
+    semanticKey: string,
+    lodBucket: number,
+    path: VectorSvgDocument["silhouettePath"],
+  ): void {
+    const logicalBytes = this.svgStrokePathLogicalBytes(path);
+    if (logicalBytes > SVG_STROKE_PATH_CACHE_MAXIMUM_BYTES) return;
+    const cachedPaths = this.svgStrokePathsBySemantic.get(semanticKey) ?? [];
+    const existingIndex = cachedPaths.findIndex(
+      (entry) => entry.lodBucket === lodBucket,
+    );
+    if (existingIndex >= 0) {
+      this.svgStrokePathCacheLogicalBytes -= cachedPaths[existingIndex].logicalBytes;
+      cachedPaths.splice(existingIndex, 1);
+    }
+    cachedPaths.push({
+      lodBucket,
+      path,
+      logicalBytes,
+      lastUsed: this.nextSvgStrokePathCacheAccess(),
+    });
+    this.svgStrokePathCacheLogicalBytes += logicalBytes;
+    while (cachedPaths.length > SVG_STROKE_PATH_LODS_PER_PAINT) {
+      let oldestIndex = 0;
+      for (let index = 1; index < cachedPaths.length; index += 1) {
+        if (cachedPaths[index].lastUsed < cachedPaths[oldestIndex].lastUsed) {
+          oldestIndex = index;
+        }
+      }
+      const [removed] = cachedPaths.splice(oldestIndex, 1);
+      this.svgStrokePathCacheLogicalBytes -= removed.logicalBytes;
+    }
+    this.svgStrokePathsBySemantic.set(semanticKey, cachedPaths);
+    this.pruneSvgStrokePathCache();
+  }
+
+  private svgStrokeLodFailed(semanticKey: string, lodBucket: number): boolean {
+    const failedLods = this.svgStrokeFailedLodsBySemantic.get(semanticKey);
+    if (!failedLods?.has(lodBucket)) return false;
+    this.svgStrokeFailedLodsBySemantic.delete(semanticKey);
+    this.svgStrokeFailedLodsBySemantic.set(semanticKey, failedLods);
+    return true;
+  }
+
+  private rememberSvgStrokeLodFailure(
+    semanticKey: string,
+    lodBucket: number,
+  ): void {
+    const failedLods = this.svgStrokeFailedLodsBySemantic.get(semanticKey)
+      ?? new Set<number>();
+    if (!failedLods.has(lodBucket)) {
+      failedLods.add(lodBucket);
+      this.svgStrokePathFallbackCount += 1;
+    }
+    this.svgStrokeFailedLodsBySemantic.delete(semanticKey);
+    this.svgStrokeFailedLodsBySemantic.set(semanticKey, failedLods);
+    while (
+      this.svgStrokeFailedLodsBySemantic.size
+      > SVG_STROKE_FAILURE_CACHE_MAXIMUM_IDENTITIES
+    ) {
+      const oldestKey = this.svgStrokeFailedLodsBySemantic.keys().next().value;
+      if (typeof oldestKey !== "string") break;
+      this.svgStrokeFailedLodsBySemantic.delete(oldestKey);
+    }
+  }
+
+  private svgPaintPathForLod(
+    paint: VectorSvgPaint,
+    lod: VectorTextLod,
+  ): VectorSvgDocument["silhouettePath"] {
+    if (!paint.strokes || paint.strokes.length === 0) return paint.path;
+    if (this.staticSvgStrokePathMeetsLod(lod)) return paint.path;
+    const semanticKey = `stroke:${this.svgStrokeSemanticKey(paint)}`;
+    const cached = this.cachedSvgStrokePath(semanticKey, lod.bucket, false);
+    if (cached) return cached;
+    if (
+      this.svgStrokeFailedLodsByPaint.get(paint)?.has(lod.bucket)
+      || this.svgStrokeLodFailed(semanticKey, lod.bucket)
+    ) {
+      return this.cachedSvgStrokePath(semanticKey, lod.bucket, true) ?? paint.path;
+    }
+    try {
+      const path = expandVectorSvgStrokePaint(paint.strokes, {
+        centerlineTolerance: lod.polygonFlattenTolerance,
+        roundArcSagittaTolerance: lod.roundArcSagittaTolerance,
+      });
+      this.rememberSvgStrokePath(semanticKey, lod.bucket, path);
+      return path;
+    } catch {
+      const failedLods = this.svgStrokeFailedLodsByPaint.get(paint)
+        ?? new Set<number>();
+      failedLods.add(lod.bucket);
+      this.svgStrokeFailedLodsByPaint.set(paint, failedLods);
+      this.rememberSvgStrokeLodFailure(semanticKey, lod.bucket);
+      return this.cachedSvgStrokePath(semanticKey, lod.bucket, true) ?? paint.path;
+    }
+  }
+
+  private svgSilhouettePathForLod(
+    documentValue: VectorSvgDocument,
+    lod: VectorTextLod,
+  ): VectorSvgDocument["silhouettePath"] {
+    const strokePaints = documentValue.paints.filter(
+      (paint) => paint.strokes?.length,
+    );
+    if (strokePaints.length === 0 || this.staticSvgStrokePathMeetsLod(lod)) {
+      return documentValue.silhouettePath;
+    }
+    const semanticKey = `silhouette:${this.svgSilhouetteSemanticKey(documentValue)}`;
+    const cached = this.cachedSvgStrokePath(semanticKey, lod.bucket, false);
+    if (cached) return cached;
+    if (this.svgStrokeLodFailed(semanticKey, lod.bucket)) {
+      return this.cachedSvgStrokePath(semanticKey, lod.bucket, true)
+        ?? documentValue.silhouettePath;
+    }
+    try {
+      const paintPaths = documentValue.paints.map((paint) => (
+        this.svgPaintPathForLod(paint, lod)
+      ));
+      const anyDegradedPaint = strokePaints.some((paint) => {
+        const paintKey = `stroke:${this.svgStrokeSemanticKey(paint)}`;
+        return this.svgStrokeFailedLodsByPaint.get(paint)?.has(lod.bucket)
+          || this.svgStrokeLodFailed(paintKey, lod.bucket);
+      });
+      if (anyDegradedPaint) {
+        this.rememberSvgStrokeLodFailure(semanticKey, lod.bucket);
+        return this.cachedSvgStrokePath(semanticKey, lod.bucket, true)
+          ?? documentValue.silhouettePath;
+      }
+      const commandCount = paintPaths.reduce(
+        (total, path) => total + path.verbs.length,
+        0,
+      );
+      if (commandCount > VECTOR_SVG_MAXIMUM_COMMANDS) {
+        throw new Error("The SVG stroke silhouette exceeds the vector command budget.");
+      }
+      const path = mergeVectorTextPaths(paintPaths);
+      this.rememberSvgStrokePath(semanticKey, lod.bucket, path);
+      return path;
+    } catch {
+      this.rememberSvgStrokeLodFailure(semanticKey, lod.bucket);
+      return this.cachedSvgStrokePath(semanticKey, lod.bucket, true)
+        ?? documentValue.silhouettePath;
+    }
   }
 
   private effectMeshForNode(
@@ -3332,6 +3636,49 @@ export class MixedSceneController {
       slotKey,
       path,
       this.effectLodForNode(node, view),
+      effect,
+      !this.host.isPaintStrokeActive(),
+    );
+  }
+
+  private effectMeshForSvgSilhouette(
+    node: Readonly<VectorSvgNode>,
+    view: VectorTextViewState,
+    slotName: string,
+    effect: Parameters<VectorTextEffectCompilerClient["meshForSlot"]>[3],
+    liveSlots: Set<string>,
+    pinForRasterization = false,
+  ): VectorTextEffectMeshResult {
+    const lod = this.effectLodForNode(node, view);
+    return this.effectMeshForSvgPath(
+      node,
+      this.svgSilhouettePathForLod(node.document, lod),
+      view,
+      slotName,
+      effect,
+      liveSlots,
+      pinForRasterization,
+    );
+  }
+
+  private effectMeshForSvgPaint(
+    node: Readonly<VectorSvgNode>,
+    paint: VectorSvgPaint,
+    view: VectorTextViewState,
+    slotName: string,
+    effect: Parameters<VectorTextEffectCompilerClient["meshForSlot"]>[3],
+    liveSlots: Set<string>,
+    pinForRasterization = false,
+  ): VectorTextEffectMeshResult {
+    const slotNamespace = pinForRasterization ? "svg-raster" : "svg";
+    const slotKey = `${slotNamespace}:${node.id}:${slotName}`;
+    liveSlots.add(slotKey);
+    if (pinForRasterization) this.effectCompiler.pinSlot(slotKey);
+    const lod = this.effectLodForNode(node, view);
+    return this.effectCompiler.meshForSlot(
+      slotKey,
+      this.svgPaintPathForLod(paint, lod),
+      lod,
       effect,
       !this.host.isPaintStrokeActive(),
     );
@@ -3429,9 +3776,8 @@ export class MixedSceneController {
     );
     let silhouetteMesh: VectorTextGpuMeshData | null = null;
     if (needsSilhouetteMesh) {
-      const silhouetteResult = this.effectMeshForSvgPath(
+      const silhouetteResult = this.effectMeshForSvgSilhouette(
         node,
-        node.document.silhouettePath,
         view,
         "silhouette-fill",
         { kind: "source-fill" },
@@ -3469,9 +3815,8 @@ export class MixedSceneController {
         node.blockShadowAngle,
       );
       if (node.blockShadowOutlineWidth > 0) {
-        const result = this.effectMeshForSvgPath(
+        const result = this.effectMeshForSvgSilhouette(
           node,
-          node.document.silhouettePath,
           view,
           "block-outline",
           {
@@ -3496,9 +3841,8 @@ export class MixedSceneController {
         }
       }
       if (Math.hypot(vector.x, vector.y) > Number.EPSILON) {
-        const result = this.effectMeshForSvgPath(
+        const result = this.effectMeshForSvgSilhouette(
           node,
-          node.document.silhouettePath,
           view,
           "block",
           { kind: "block", vectorX: vector.x, vectorY: vector.y },
@@ -3531,9 +3875,8 @@ export class MixedSceneController {
       && sameGpuLinearColor(node.paintColors[0], node.outlineColor);
     if (node.outlineWidth > 0) {
       const slot = fuseOutlineAndFill ? "outline-fill" : "outline";
-      const result = this.effectMeshForSvgPath(
+      const result = this.effectMeshForSvgSilhouette(
         node,
-        node.document.silhouettePath,
         view,
         slot,
         {
@@ -3560,9 +3903,9 @@ export class MixedSceneController {
     if (!fuseOutlineAndFill) {
       for (let index = 0; index < node.document.paints.length; index += 1) {
         const paint = node.document.paints[index];
-        const result = this.effectMeshForSvgPath(
+        const result = this.effectMeshForSvgPaint(
           node,
-          paint.path,
+          paint,
           view,
           `paint:${index}:fill`,
           { kind: "source-fill" },

@@ -64,6 +64,7 @@ const LABS = [
   ["vector-zoom-coverage", "Zoom-out vettoriale · copertura C"],
   ["vector-baseline-shared", "Baseline vettori · geometria condivisa"],
   ["vector-baseline-unique", "Baseline vettori · revisioni uniche"],
+  ["vector-baseline-curved-strokes", "Baseline vettori · curve e tratteggi"],
   ["human-record", "Registra · Custom 16 Intense"],
   ["human-replay", "Replay tratto umano canonico"],
   ["human-shape-sequence", "Confronto Shape ordinata/casuale · Count 1"],
@@ -587,7 +588,8 @@ class EditorLabController implements EditorExtension {
         return runVectorZoomLab(engine, controller, this.#host.canvas, kind);
       }
       case "vector-baseline-shared":
-      case "vector-baseline-unique": {
+      case "vector-baseline-unique":
+      case "vector-baseline-curved-strokes": {
         const controller = await this.#host.ensureMixedSceneController();
         const { runVectorBaselineBenchmark } = await import(
           "./vector/vector-baseline-benchmark"
@@ -596,7 +598,11 @@ class EditorLabController implements EditorExtension {
           engine,
           controller,
           this.#host.canvas,
-          id === "vector-baseline-shared" ? "shared" : "unique",
+          id === "vector-baseline-shared"
+            ? "shared"
+            : id === "vector-baseline-unique"
+              ? "unique"
+              : "curved-strokes",
         );
       }
       case "human-record":

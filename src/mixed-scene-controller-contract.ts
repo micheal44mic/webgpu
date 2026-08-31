@@ -272,6 +272,9 @@ export interface MixedSceneDiagnostics {
   readonly viewportTextureCount: number;
   readonly viewportCanvasLogicalMiB: number;
   readonly vectorFontLogicalMiB: number;
+  readonly svgStrokeLodCacheLogicalMiB: number;
+  readonly svgStrokeLodCacheEntries: number;
+  readonly svgStrokeLodFallbackCount: number;
   readonly blockShadowPathLogicalMiB: number;
   readonly singleShadowBrowserLogicalMiB: number;
   readonly singleShadowCacheLogicalMiB: number;

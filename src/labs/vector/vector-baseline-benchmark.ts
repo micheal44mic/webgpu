@@ -14,12 +14,13 @@ import {
   type VectorSvgDocument,
 } from "../../vector-svg-import";
 import { VectorPathIdentityPool } from "../../vector-path-identity.ts";
+import complexCurvedStrokesSvg from "./fixtures/complex-curved-strokes.svg?raw";
 
-export type VectorBaselineProfile = "shared" | "unique";
+export type VectorBaselineProfile = "shared" | "unique" | "curved-strokes";
 
-const VECTOR_BASELINE_REPORT_VERSION = 3;
+const VECTOR_BASELINE_REPORT_VERSION = 6;
 const VECTOR_BASELINE_STRATEGY =
-  "vector-baseline-64-svg-64-text-runtime-geometry-identity-v3" as const;
+  "vector-baseline-svg-text-runtime-geometry-identity-v6" as const;
 const IDLE_FRAME_COUNT = 30;
 const PAN_FRAME_COUNT = 60;
 const ZOOM_FRAME_COUNT = 48;
@@ -27,6 +28,14 @@ const STABLE_FRAME_LIMIT = 720;
 const STABLE_CONSECUTIVE_FRAME_COUNT = 3;
 const RUNTIME_SAMPLE_INTERVAL_MS = 50;
 const VECTOR_BASELINE_TEXT = "VECTOR SHARED CURVES";
+const CURVED_STROKE_SVG_COUNT = 32;
+const CURVED_STROKE_FIXTURE_ID = "complex-curved-strokes-v1";
+const CURVED_STROKE_FIXTURE_SHA256 =
+  "8c169ce7e7570492b08bfd26279e1698b0e0abd3ad2b3021e05a1e0c70e8fe9e";
+const CURVED_STROKE_SOURCE_PATH_OPERATION_COUNT = 177;
+const CURVED_STROKE_SOURCE_DRAWABLE_SEGMENT_COUNT = 159;
+const CURVED_STROKE_SOURCE_ELEMENT_COUNT = 19;
+const CURVED_STROKE_SOURCE_RETAINED_STROKE_COUNT = 14;
 
 interface BrowserMemorySnapshot {
   readonly supported: boolean;
@@ -48,6 +57,9 @@ interface VectorMemorySnapshot {
   readonly liveVectorGpuMiB: number;
   readonly viewportTextureCount: number;
   readonly vectorFontLogicalMiB: number;
+  readonly svgStrokeLodCacheLogicalMiB: number;
+  readonly svgStrokeLodCacheEntries: number;
+  readonly svgStrokeLodFallbackCount: number;
   readonly blockShadowPathLogicalMiB: number;
   readonly registeredCategories: readonly {
     readonly category: string;
@@ -179,12 +191,24 @@ export interface VectorBaselineReport {
     readonly documentHeight: number;
   };
   readonly fixture: {
+    readonly id: string;
+    readonly visualInspectionMode: boolean;
+    readonly visualInspectionScale: number | null;
+    readonly sourceSha256: string | null;
+    readonly targetSvgCount: number;
+    readonly targetTextCount: number;
+    readonly sourcePathOperationCount: number | null;
+    readonly sourceDrawableSegmentCount: number | null;
+    readonly sourceElementCount: number | null;
+    readonly sourceRetainedStrokeCount: number | null;
     readonly svgCount: number;
     readonly textCount: number;
     readonly svgSourceRevisionCount: number;
     readonly svgGeometryIdentityCount: number;
     readonly textGeometrySignatureCount: number;
     readonly svgPaintCount: number;
+    readonly svgElementCount: number;
+    readonly svgRetainedStrokeCount: number;
     readonly svgCommandCount: number;
     readonly svgContourCount: number;
     readonly svgLogicalVectorMiB: number;
@@ -242,6 +266,7 @@ export interface VectorBaselineReport {
     readonly panTraceCompleted: boolean;
     readonly zoomTraceCompleted: boolean;
     readonly compilerSettledWithoutNewFailure: boolean;
+    readonly strokeLodCompletedWithoutFallback: boolean;
     readonly finalPresentationPrecise: boolean;
     readonly environmentStayedStable: boolean;
   };
@@ -367,6 +392,9 @@ function memorySnapshot(
     liveVectorGpuMiB: diagnostics.liveGpuMemoryMiB,
     viewportTextureCount: diagnostics.viewportTextureCount,
     vectorFontLogicalMiB: diagnostics.vectorFontLogicalMiB,
+    svgStrokeLodCacheLogicalMiB: diagnostics.svgStrokeLodCacheLogicalMiB,
+    svgStrokeLodCacheEntries: diagnostics.svgStrokeLodCacheEntries,
+    svgStrokeLodFallbackCount: diagnostics.svgStrokeLodFallbackCount,
     blockShadowPathLogicalMiB: diagnostics.blockShadowPathLogicalMiB,
     registeredCategories: gpuMemory.registeredCategories.map((category) => ({
       ...category,
@@ -399,6 +427,12 @@ function subtractMemory(
     liveVectorGpuMiB: right.liveVectorGpuMiB - left.liveVectorGpuMiB,
     viewportTextureCount: right.viewportTextureCount - left.viewportTextureCount,
     vectorFontLogicalMiB: right.vectorFontLogicalMiB - left.vectorFontLogicalMiB,
+    svgStrokeLodCacheLogicalMiB:
+      right.svgStrokeLodCacheLogicalMiB - left.svgStrokeLodCacheLogicalMiB,
+    svgStrokeLodCacheEntries:
+      right.svgStrokeLodCacheEntries - left.svgStrokeLodCacheEntries,
+    svgStrokeLodFallbackCount:
+      right.svgStrokeLodFallbackCount - left.svgStrokeLodFallbackCount,
     blockShadowPathLogicalMiB:
       right.blockShadowPathLogicalMiB - left.blockShadowPathLogicalMiB,
     registeredCategories: right.registeredCategories.map((entry) => {
@@ -668,7 +702,7 @@ function textSeed(
 ): VectorTextNodeSeed {
   const placement = gridPlacement(index, width, height);
   return {
-    text: profile === "shared" ? VECTOR_BASELINE_TEXT : uniqueText(index),
+    text: profile === "unique" ? uniqueText(index) : VECTOR_BASELINE_TEXT,
     fontFamily: "Anton",
     fontSize: 108,
     color: paletteColor(index, 2),
@@ -706,16 +740,23 @@ function textSeed(
 }
 
 function svgSeed(
+  profile: VectorBaselineProfile,
   documentValue: VectorSvgDocument,
   index: number,
   width: number,
   height: number,
+  visualInspectionMode: boolean,
+  visualInspectionScale: number,
 ): VectorSvgNodeSeed {
-  const placement = gridPlacement(index, width, height);
+  const placement = visualInspectionMode
+    ? { x: width * 0.42, y: height * 0.5 }
+    : gridPlacement(index, width, height);
   return {
     document: documentValue,
-    paintColors: documentValue.paints.map((_paint, paintIndex) => (
-      paletteColor(index, paintIndex * 3)
+    paintColors: documentValue.paints.map((paint, paintIndex) => (
+      profile === "curved-strokes"
+        ? paint.color
+        : paletteColor(index, paintIndex * 3)
     )),
     outlineWidth: 0,
     outlineColor: "#111111",
@@ -728,8 +769,8 @@ function svgSeed(
     innerShadowOpacity: 0,
     x: placement.x,
     y: placement.y - height * 0.025,
-    scale: 0.31,
-    rotation: ((index % 9) - 4) * Math.PI / 180,
+    scale: visualInspectionMode ? visualInspectionScale : 0.31,
+    rotation: visualInspectionMode ? 0 : ((index % 9) - 4) * Math.PI / 180,
   };
 }
 
@@ -884,14 +925,52 @@ export async function runVectorBaselineBenchmark(
   let firstStableSceneMs = 0;
   let peaks: RuntimePeaks | null = null;
   try {
+    const searchParameters = new URLSearchParams(window.location.search);
+    const visualInspectionMode = profile === "curved-strokes"
+      && searchParameters.get("vectorBaselineVisualInspect") === "1";
+    const requestedVisualInspectionScale = Number.parseFloat(
+      searchParameters.get("vectorBaselineVisualScale") ?? "",
+    );
+    const visualInspectionScale = visualInspectionMode
+      ? Number.isFinite(requestedVisualInspectionScale)
+        ? Math.min(20, Math.max(0.05, requestedVisualInspectionScale))
+        : 2
+      : 0.31;
+    const requestedCurvedStrokeCount = Number.parseInt(
+      searchParameters.get("vectorBaselineSvgCount") ?? "",
+      10,
+    );
+    const requestedCurvedStrokeTextCount = Number.parseInt(
+      searchParameters.get("vectorBaselineTextCount") ?? "",
+      10,
+    );
+    const targetSvgCount = profile === "curved-strokes"
+      ? Number.isInteger(requestedCurvedStrokeCount)
+        ? Math.min(
+            VECTOR_SVG_NODE_MAXIMUM,
+            Math.max(1, requestedCurvedStrokeCount),
+          )
+        : visualInspectionMode
+          ? 1
+          : CURVED_STROKE_SVG_COUNT
+      : VECTOR_SVG_NODE_MAXIMUM;
+    const targetTextCount = profile === "curved-strokes"
+      && Number.isInteger(requestedCurvedStrokeTextCount)
+      ? Math.min(
+          VECTOR_TEXT_NODE_MAXIMUM,
+          Math.max(0, requestedCurvedStrokeTextCount),
+        )
+      : visualInspectionMode
+        ? 0
+        : VECTOR_TEXT_NODE_MAXIMUM;
     const sourceStartedAt = performance.now();
-    const svgSources = profile === "shared"
-      ? [vectorSvgSource(0)]
-      : Array.from(
+    const svgSources = profile === "unique"
+      ? Array.from(
           { length: VECTOR_SVG_NODE_MAXIMUM },
           (_, index) => vectorSvgSource(index + 1),
-        );
-    const textEntries = Array.from({ length: VECTOR_TEXT_NODE_MAXIMUM }, (_, index) => ({
+        )
+      : [profile === "curved-strokes" ? complexCurvedStrokesSvg : vectorSvgSource(0)];
+    const textEntries = Array.from({ length: targetTextCount }, (_, index) => ({
       seed: textSeed(profile, index, engine.documentWidth, engine.documentHeight),
       name: `Vector baseline text ${String(index + 1).padStart(2, "0")}`,
     }));
@@ -899,23 +978,33 @@ export async function runVectorBaselineBenchmark(
     const parseStartedAt = performance.now();
     const parsedDocuments = svgSources.map((source, index) => parseVectorSvg(
       source,
-      profile === "shared"
-        ? "vector-baseline-shared.svg"
-        : `vector-baseline-unique-${String(index + 1).padStart(2, "0")}.svg`,
+      profile === "unique"
+        ? `vector-baseline-unique-${String(index + 1).padStart(2, "0")}.svg`
+        : profile === "curved-strokes"
+          ? "complex-curved-strokes.svg"
+          : "vector-baseline-shared.svg",
     ));
     svgParseMs = performance.now() - parseStartedAt;
 
     const sceneStartedAt = performance.now();
-    for (let index = 0; index < VECTOR_SVG_NODE_MAXIMUM; index += 1) {
-      const documentValue = profile === "shared"
-        ? parsedDocuments[0]
-        : parsedDocuments[index];
+    for (let index = 0; index < targetSvgCount; index += 1) {
+      const documentValue = profile === "unique"
+        ? parsedDocuments[index]
+        : parsedDocuments[0];
       await engine.addVectorSvgNode(
-        svgSeed(documentValue, index, engine.documentWidth, engine.documentHeight),
+        svgSeed(
+          profile,
+          documentValue,
+          index,
+          engine.documentWidth,
+          engine.documentHeight,
+          visualInspectionMode,
+          visualInspectionScale,
+        ),
         `Vector baseline SVG ${String(index + 1).padStart(2, "0")}`,
       );
     }
-    await engine.addVectorTextNodesBatch(textEntries);
+    if (textEntries.length > 0) await engine.addVectorTextNodesBatch(textEntries);
     sceneMutationMs = performance.now() - sceneStartedAt;
 
     const settleStartedAt = performance.now();
@@ -968,6 +1057,17 @@ export async function runVectorBaselineBenchmark(
       (total, node) => total + node.document.contourCount,
       0,
     );
+    const svgElementCount = svgNodes.reduce(
+      (total, node) => total + node.document.elementCount,
+      0,
+    );
+    const svgRetainedStrokeCount = svgNodes.reduce(
+      (total, node) => total + node.document.paints.reduce(
+        (paintTotal, paint) => paintTotal + (paint.strokes?.length ?? 0),
+        0,
+      ),
+      0,
+    );
     const textCharacterCount = textNodes.reduce(
       (total, node) => total + node.text.length,
       0,
@@ -978,16 +1078,23 @@ export async function runVectorBaselineBenchmark(
     );
     const referenceSvgDocument = parsedDocuments[0];
     const profileWorkloadBudgetValidated = svgNodes.length
-        === VECTOR_SVG_NODE_MAXIMUM
-      && textNodes.length === VECTOR_TEXT_NODE_MAXIMUM
+        === targetSvgCount
+      && textNodes.length === targetTextCount
       && svgCommandCount
-        === referenceSvgDocument.commandCount * VECTOR_SVG_NODE_MAXIMUM
+        === referenceSvgDocument.commandCount * targetSvgCount
       && svgContourCount
-        === referenceSvgDocument.contourCount * VECTOR_SVG_NODE_MAXIMUM
+        === referenceSvgDocument.contourCount * targetSvgCount
+      && svgElementCount
+        === referenceSvgDocument.elementCount * targetSvgCount
+      && svgRetainedStrokeCount
+        === referenceSvgDocument.paints.reduce(
+          (total, paint) => total + (paint.strokes?.length ?? 0),
+          0,
+        ) * targetSvgCount
       && svgLogicalVectorBytes
-        === referenceSvgDocument.logicalVectorBytes * VECTOR_SVG_NODE_MAXIMUM
+        === referenceSvgDocument.logicalVectorBytes * targetSvgCount
       && textCharacterCount
-        === VECTOR_BASELINE_TEXT.length * VECTOR_TEXT_NODE_MAXIMUM
+        === VECTOR_BASELINE_TEXT.length * targetTextCount
       && svgNodes.every((node) => (
         node.document.commandCount === referenceSvgDocument.commandCount
         && node.document.contourCount === referenceSvgDocument.contourCount
@@ -1098,18 +1205,21 @@ export async function runVectorBaselineBenchmark(
       canvasWidth: canvas.width,
       canvasHeight: canvas.height,
     };
-    const maximumScenePopulated = svgNodes.length === VECTOR_SVG_NODE_MAXIMUM
-      && textNodes.length === VECTOR_TEXT_NODE_MAXIMUM;
-    const profileIdentityValidated = profile === "shared"
+    const maximumScenePopulated = svgNodes.length === targetSvgCount
+      && textNodes.length === targetTextCount;
+    const profileIdentityValidated = profile !== "unique"
       ? uniqueSvgDocuments.size === 1
         && svgGeometryIdentities.size === 1
-        && textGeometrySignatures.size === 1
+        && textGeometrySignatures.size === (targetTextCount > 0 ? 1 : 0)
       : uniqueSvgDocuments.size === VECTOR_SVG_NODE_MAXIMUM
         && svgGeometryIdentities.size === VECTOR_SVG_NODE_MAXIMUM
         && textGeometrySignatures.size === VECTOR_TEXT_NODE_MAXIMUM;
     const compilerSettledWithoutNewFailure = compilerAfterTrace.pendingJobs === 0
       && compilerAfterTrace.atomicPendingNodes === 0
       && compilerAfterTrace.failedJobs === compilerBefore.failedJobs;
+    const strokeLodCompletedWithoutFallback =
+      diagnosticsAfterTrace.svgStrokeLodFallbackCount
+      === diagnosticsBefore.svgStrokeLodFallbackCount;
     const environmentStayedStable = visibilityAtStart === "visible"
       && environmentEnd.visibility === "visible"
       && !visibilityChangeObserved
@@ -1133,6 +1243,7 @@ export async function runVectorBaselineBenchmark(
         zoom.frames.intervalsMs.length === ZOOM_FRAME_COUNT
         && zoom.eventToNextFrameMs.length === ZOOM_FRAME_COUNT,
       compilerSettledWithoutNewFailure,
+      strokeLodCompletedWithoutFallback,
       finalPresentationPrecise:
         diagnosticsAfterTrace.zoomRenderMode === "precise"
         && diagnosticsAfterTrace.zoomFastPresentationMode === "precise",
@@ -1165,6 +1276,32 @@ export async function runVectorBaselineBenchmark(
         documentHeight: engine.documentHeight,
       },
       fixture: {
+        id: profile === "curved-strokes"
+          ? CURVED_STROKE_FIXTURE_ID
+          : profile === "shared"
+            ? "generated-shared-curves-v1"
+            : "generated-unique-curves-v1",
+        visualInspectionMode,
+        visualInspectionScale: visualInspectionMode
+          ? visualInspectionScale
+          : null,
+        sourceSha256: profile === "curved-strokes"
+          ? CURVED_STROKE_FIXTURE_SHA256
+          : null,
+        targetSvgCount,
+        targetTextCount,
+        sourcePathOperationCount: profile === "curved-strokes"
+          ? CURVED_STROKE_SOURCE_PATH_OPERATION_COUNT
+          : null,
+        sourceDrawableSegmentCount: profile === "curved-strokes"
+          ? CURVED_STROKE_SOURCE_DRAWABLE_SEGMENT_COUNT
+          : null,
+        sourceElementCount: profile === "curved-strokes"
+          ? CURVED_STROKE_SOURCE_ELEMENT_COUNT
+          : null,
+        sourceRetainedStrokeCount: profile === "curved-strokes"
+          ? CURVED_STROKE_SOURCE_RETAINED_STROKE_COUNT
+          : null,
         svgCount: svgNodes.length,
         textCount: textNodes.length,
         svgSourceRevisionCount: uniqueSvgDocuments.size,
@@ -1174,6 +1311,8 @@ export async function runVectorBaselineBenchmark(
           (total, node) => total + node.document.paints.length,
           0,
         ),
+        svgElementCount,
+        svgRetainedStrokeCount,
         svgCommandCount,
         svgContourCount,
         svgLogicalVectorMiB: svgLogicalVectorBytes / MEBIBYTE_BYTES,

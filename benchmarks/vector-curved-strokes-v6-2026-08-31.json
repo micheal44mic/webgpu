@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "date": "2026-08-31",
+  "strategy": "vector-baseline-svg-text-runtime-geometry-identity-v6",
+  "fixture": {
+    "id": "complex-curved-strokes-v1",
+    "sha256": "8c169ce7e7570492b08bfd26279e1698b0e0abd3ad2b3021e05a1e0c70e8fe9e",
+    "heavyScene": {
+      "svgCount": 32,
+      "textCount": 64,
+      "svgPaintCount": 352,
+      "svgElementCount": 608,
+      "retainedStrokeCount": 448,
+      "staticCommandCount": 276032,
+      "staticContourCount": 17344
+    }
+  },
+  "resourceSharingOff": {
+    "passed": true,
+    "sceneMutationMs": 29905.9,
+    "coldEndToEndMs": 271.4,
+    "warmEndToEndMs": 46.0,
+    "geometryUploadBytes": 194521152,
+    "liveGeometryBytes": 24897152,
+    "vectorPresentationDeltaMiB": 75.77503967285156,
+    "liveVectorGpuDeltaMiB": 40.6187744140625,
+    "fallbackCount": 0
+  },
+  "resourceSharingOn": {
+    "passed": true,
+    "sceneMutationMs": 29446.1,
+    "coldEndToEndMs": 415.6,
+    "warmEndToEndMs": 42.9,
+    "geometryUploadBytes": 9021668,
+    "liveGeometryBytes": 540468,
+    "vectorPresentationDeltaMiB": 52.546695709228516,
+    "liveVectorGpuDeltaMiB": 17.390430450439453,
+    "fallbackCount": 0
+  },
+  "sharingOnDeltaPercent": {
+    "sceneMutationMs": -1.5374892580120592,
+    "coldEndToEndMs": 53.131908616400935,
+    "warmEndToEndMs": -6.739130421825079,
+    "geometryUploadBytes": -95.36211465578818,
+    "liveGeometryBytes": -97.82919749214689,
+    "vectorPresentationDeltaMiB": -30.65434747894329,
+    "liveVectorGpuDeltaMiB": -57.186225578439
+  },
+  "highZoomSemanticCache": {
+    "visualScale": 20,
+    "oneCopy": {
+      "entriesAfterSetup": 7,
+      "entriesAfterTrace": 14,
+      "logicalMiBAfterTrace": 0.666325569152832,
+      "fallbackCount": 0
+    },
+    "thirtyTwoCopies": {
+      "retainedStrokeCount": 448,
+      "entriesAfterSetup": 7,
+      "entriesAfterTrace": 14,
+      "logicalMiBAfterTrace": 0.666325569152832,
+      "fallbackCount": 0
+    }
+  },
+  "pixelParity": {
+    "resourceSharingOffPngBytes": 36660,
+    "resourceSharingOnPngBytes": 36660,
+    "differentEncodedBytes": 0,
+    "exact": true
+  },
+  "interpretation": {
+    "resourceMetrics": "Deterministic counters from the same fixture and trace.",
+    "timings": "Single paired browser runs; cold and warm timings are reported but are not treated as statistically significant.",
+    "quality": "Round caps and joins use zoom-aware sagitta tolerance; no runtime quality fallback occurred in any recorded run."
+  }
+}

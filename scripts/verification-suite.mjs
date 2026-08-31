@@ -131,6 +131,7 @@ export const verificationScripts = Object.freeze([
   "verify-touch-paint-intent.mjs",
   "verify-unified-editor-ui.mjs",
   "verify-vector-gpu-resource-lifecycle.mjs",
+  "verify-vector-complex-fixture.mjs",
   "verify-vector-text.mjs",
   "verify-vector-shadow-3d.mjs",
   "verify-vector-shapes.mjs",
