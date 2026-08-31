@@ -62,6 +62,8 @@ const LABS = [
   ["vector-zoom-during", "A/B zoom · refresh durante il gesto"],
   ["vector-zoom-release", "A/B zoom · refresh al rilascio"],
   ["vector-zoom-coverage", "Zoom-out vettoriale · copertura C"],
+  ["vector-baseline-shared", "Baseline vettori · geometria condivisa"],
+  ["vector-baseline-unique", "Baseline vettori · revisioni uniche"],
   ["human-record", "Registra · Custom 16 Intense"],
   ["human-replay", "Replay tratto umano canonico"],
   ["human-shape-sequence", "Confronto Shape ordinata/casuale · Count 1"],
@@ -583,6 +585,19 @@ class EditorLabController implements EditorExtension {
         const kind = id.slice("vector-zoom-".length) as
           | "stress" | "during" | "release" | "coverage";
         return runVectorZoomLab(engine, controller, this.#host.canvas, kind);
+      }
+      case "vector-baseline-shared":
+      case "vector-baseline-unique": {
+        const controller = await this.#host.ensureMixedSceneController();
+        const { runVectorBaselineBenchmark } = await import(
+          "./vector/vector-baseline-benchmark"
+        );
+        return runVectorBaselineBenchmark(
+          engine,
+          controller,
+          this.#host.canvas,
+          id === "vector-baseline-shared" ? "shared" : "unique",
+        );
       }
       case "human-record":
         return this.#humanStroke.startRecordingSession();
