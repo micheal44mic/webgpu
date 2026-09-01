@@ -35,6 +35,7 @@ const engine = source("src/brush-engine.ts");
 const projectRuntime = source("src/engine-project-runtime.ts");
 const transformRuntime = source("src/engine-raster-transform-runtime.ts");
 const engineRuntimeMisc = source("src/engine-runtime-misc.ts");
+const activePaintResources = source("src/mixed-scene-active-paint-resources.ts");
 
 const staticResourceCreation = section(
   engineRuntimeMisc,
@@ -51,10 +52,20 @@ for (const optionalBlock of optionalCreationBlocks) {
   );
   assert.match(
     optionalBlock,
-    /await createRenderPipelineAsync\(engine\.device,/,
-    "Optional render pipelines must compile asynchronously and sequentially",
+    /await (?:createRenderPipelineAsync\(engine\.device,|ensureMixedSceneActive(?:Base|RasterStroke|ThicknessTail|LightGlaze)Pipelines\(engine\))/,
+    "Optional render pipelines must use an asynchronous capability gate",
   );
 }
+assert.doesNotMatch(
+  activePaintResources,
+  /engine\.device\.createRenderPipeline\(/,
+  "Active-paint capabilities must not synchronously compile render pipelines",
+);
+assert.match(
+  activePaintResources,
+  /await Promise\.all\(/,
+  "Active-paint pipeline families should resolve atomically in parallel",
+);
 assert.equal(
   [...staticResourceCreation.matchAll(/engine\.device\.createRenderPipeline\(/g)].length,
   2,

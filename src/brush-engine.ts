@@ -65,6 +65,7 @@ import {
 import {
   clearMixedSceneRasterTransformPreview as clearMixedSceneRasterTransformPreviewRuntime,
   mixedSceneRasterTransformPreviewCompositionLayerIds,
+  mixedSceneRasterTransformPreviewHasSegmentedClipping,
   mixedSceneRasterTransformPreviewUsesSegmentedClipping,
   setMixedSceneRasterTransformPreview as setMixedSceneRasterTransformPreviewRuntime,
   updateMixedSceneRasterTransformPreview as updateMixedSceneRasterTransformPreviewRuntime,
@@ -979,6 +980,16 @@ import {
   ensureMixedSceneShapePreviewResources,
   ensureMixedSceneVectorShapeResources,
 } from "./mixed-scene-shape-resources";
+import {
+  ensureMixedSceneActiveBasePipelines,
+  ensureMixedSceneActiveLightGlazePipelines,
+  ensureMixedSceneActiveRasterStrokePipelines,
+  ensureMixedSceneActiveThicknessTailPipelines,
+  mixedSceneActiveBasePipelinesReady,
+  mixedSceneActiveLightGlazePipelinesReady,
+  mixedSceneActiveRasterStrokePipelinesReady,
+  mixedSceneActiveThicknessTailPipelinesReady,
+} from "./mixed-scene-active-paint-resources";
 import {
   captureProjectDocument,
   reconfigureEngineForDocumentSwitch,
@@ -8049,6 +8060,7 @@ export class BrushEngine {
   }
 
   private selectedBrushPresentationPipelinesReady(settings: BrushSettings): boolean {
+    const mixedSceneReady = this.selectedMixedScenePaintPipelinesReady(settings);
     const tailReady = settings.tool !== "paint"
       || !thicknessDynamicsNeedsTailHoldback(settings.endThickness)
       || this.thicknessTailPresentationPipelineReady;
@@ -8056,24 +8068,119 @@ export class BrushEngine {
       || this.lightGlazePresentationPipelinesReady;
     const styledReady = !this.styleStackNeedsCompositor()
       || this.rasterStrokePresentationPipelineReady;
-    return tailReady && glazeReady && styledReady;
+    return mixedSceneReady && tailReady && glazeReady && styledReady;
   }
 
   private async ensureSelectedBrushPresentationPipelines(
     settings: BrushSettings,
   ): Promise<void> {
+    const preparations: Promise<void>[] = [
+      this.ensureSelectedMixedScenePaintPipelines(settings),
+    ];
     if (this.styleStackNeedsCompositor()) {
-      await ensureRasterStrokePresentationPipeline(this);
+      preparations.push(ensureRasterStrokePresentationPipeline(this));
     }
     if (
       settings.tool === "paint"
       && thicknessDynamicsNeedsTailHoldback(settings.endThickness)
     ) {
-      await ensureThicknessTailPresentationPipeline(this);
+      preparations.push(ensureThicknessTailPresentationPipeline(this));
     }
     if (usesStrokeGlazeRenderer(settings)) {
-      await ensureLightGlazePresentationPipelines(this);
+      preparations.push(ensureLightGlazePresentationPipelines(this));
     }
+    await Promise.all(preparations);
+  }
+
+  private selectedRasterUsesSegmentedScenePresentation(): boolean {
+    const scene = this.mixedSceneStack;
+    return Boolean(
+      scene
+      && scene.selected.kind === "raster"
+      && this.usesOrderedScenePresentation()
+      && !this.usesLayerBlendTilePresentation(),
+    );
+  }
+
+  private mixedScenePaintPipelineFamily(
+    settings: BrushSettings,
+  ): "base" | "raster-stroke" | "thickness-tail" | "light-glaze" {
+    if (this.styleStackNeedsCompositor()) return "raster-stroke";
+    if (usesStrokeGlazeRenderer(settings)) return "light-glaze";
+    if (
+      settings.tool === "paint"
+      && thicknessDynamicsNeedsTailHoldback(settings.endThickness)
+    ) {
+      return "thickness-tail";
+    }
+    return "base";
+  }
+
+  private selectedMixedScenePaintPipelinesReady(settings: BrushSettings): boolean {
+    if (!this.selectedRasterUsesSegmentedScenePresentation()) return true;
+    if (this.mixedScenePaintNeedsFullCompositor()) {
+      return this.optionalEditorResourcesReady;
+    }
+    const family = this.mixedScenePaintPipelineFamily(settings);
+    const needsBaseFamily = this.mixedScenePaintNeedsBaseFamily(family);
+    if (needsBaseFamily && !mixedSceneActiveBasePipelinesReady(this)) return false;
+    if (family === "raster-stroke") {
+      return mixedSceneActiveRasterStrokePipelinesReady(this);
+    }
+    if (family === "light-glaze") {
+      return mixedSceneActiveLightGlazePipelinesReady(this);
+    }
+    if (family === "thickness-tail") {
+      return mixedSceneActiveThicknessTailPipelinesReady(this);
+    }
+    return true;
+  }
+
+  private async ensureMixedScenePaintPipelines(settings: BrushSettings): Promise<void> {
+    if (!this.usesOrderedScenePresentation() || this.usesLayerBlendTilePresentation()) {
+      return;
+    }
+    if (this.mixedScenePaintNeedsFullCompositor()) {
+      await this.ensureMixedSceneEditorResources();
+      return;
+    }
+    const family = this.mixedScenePaintPipelineFamily(settings);
+    const needsBaseFamily = this.mixedScenePaintNeedsBaseFamily(family);
+    const basePromise = needsBaseFamily
+      ? ensureMixedSceneActiveBasePipelines(this)
+      : Promise.resolve();
+    if (family === "raster-stroke") {
+      await Promise.all([basePromise, ensureMixedSceneActiveRasterStrokePipelines(this)]);
+    } else if (family === "light-glaze") {
+      await Promise.all([basePromise, ensureMixedSceneActiveLightGlazePipelines(this)]);
+    } else if (family === "thickness-tail") {
+      await Promise.all([basePromise, ensureMixedSceneActiveThicknessTailPipelines(this)]);
+    } else {
+      await basePromise;
+    }
+  }
+
+  private mixedScenePaintNeedsBaseFamily(
+    family: "base" | "raster-stroke" | "thickness-tail" | "light-glaze",
+  ): boolean {
+    if (family === "base") return true;
+    if (family === "raster-stroke") return false;
+    return this.layerStack.active.cutoutMode !== "off"
+      || this.layerStack.layers.some((record) => record.cutoutMode === "document");
+  }
+
+  private mixedScenePaintNeedsFullCompositor(): boolean {
+    return Boolean(
+      this.mixedSceneStack?.hasHeterogeneousClipping
+      || mixedSceneRasterTransformPreviewHasSegmentedClipping(this),
+    );
+  }
+
+  private async ensureSelectedMixedScenePaintPipelines(
+    settings: BrushSettings,
+  ): Promise<void> {
+    if (!this.mixedSceneStack || this.mixedSceneStack.selected.kind !== "raster") return;
+    await this.ensureMixedScenePaintPipelines(settings);
   }
 
   /**
@@ -10174,14 +10281,17 @@ export class BrushEngine {
       if (scene.selected.key === key && index === this.layerStack.activeIndex) {
         return null;
       }
+      this.assertLayerSwitchAllowed();
       if (index === this.layerStack.activeIndex) {
+        // The GPU layer is already current, so its style is authoritative.
+        // Complete the exact live-paint family before publishing selection.
+        await this.ensureMixedScenePaintPipelines(this.settings);
         await mutateMixedScenePresentation(this, (mutableScene) => {
           mutableScene.select(key);
         });
         return null;
       }
 
-      this.assertLayerSwitchAllowed();
       const previousState = scene.captureState();
       const previousExcludedNodeId = this.vectorTextPreviewExcludedNodeId;
       scene.select(key);
@@ -12027,6 +12137,9 @@ export class BrushEngine {
     }
     destroyThicknessTailOverlayResources(this);
     await ensureEffectRenderersForRecord(this, record);
+    // The incoming record now owns the live style state. Prepare its exact
+    // segmented-presentation capability before any rebuild can expose it.
+    await this.ensureSelectedMixedScenePaintPipelines(this.settings);
 
     const effectsStartedAt = performance.now();
     const effects = await retargetEffectsWorkingSetInternal(this, 

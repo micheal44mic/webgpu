@@ -53,6 +53,12 @@ import { flushClosingLightGlazeSessionBeforeNewStroke } from "./engine-glaze-run
 import { normalizeViewRotation } from "./engine-math";
 import { ensureMixedScenePresentationResources } from "./mixed-scene-presentation-resources";
 import { ensureMixedSceneVectorShapeResources } from "./mixed-scene-shape-resources";
+import {
+  ensureMixedSceneActiveBasePipelines,
+  ensureMixedSceneActiveLightGlazePipelines,
+  ensureMixedSceneActiveRasterStrokePipelines,
+  ensureMixedSceneActiveThicknessTailPipelines,
+} from "./mixed-scene-active-paint-resources";
 import { strokeSymmetryCopiesIntersectDocument } from "./stroke-symmetry-core";
 import {
   canvasOffsetToLayerOffset,
@@ -814,239 +820,32 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedSceneActiveDisplayPipeline ??= await createRenderPipelineAsync(engine.device, {
-      label: "Mixed scene active base layer source-over pipeline",
-      layout: displayPipelineLayout,
-      vertex: { module: engine.displayShaderModule, entryPoint: "vertexMain" },
-      fragment: {
-        module: engine.displayShaderModule,
-        entryPoint: "activeFragmentMain",
-        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: mixedSceneSourceOverBlend }],
-      },
-      primitive: { topology: "triangle-list" },
-    });
-    engine.mixedSceneActiveSourceDisplayPipeline = await createRenderPipelineAsync(engine.device, {
-      label: "Mixed scene active base source-only pipeline",
-      layout: displayPipelineLayout,
-      vertex: { module: engine.displayShaderModule, entryPoint: "vertexMain" },
-      fragment: {
-        module: engine.displayShaderModule,
-        entryPoint: "activeSourceFragmentMain",
-        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: mixedSceneSourceOverBlend }],
-      },
-      primitive: { topology: "triangle-list" },
-    });
-    engine.mixedSceneActiveSourceAtopDisplayPipeline = await createRenderPipelineAsync(engine.device, {
-      label: "Mixed scene active source-atop pipeline",
-      layout: displayPipelineLayout,
-      vertex: { module: engine.displayShaderModule, entryPoint: "vertexMain" },
-      fragment: {
-        module: engine.displayShaderModule,
-        entryPoint: "activeSourceFragmentMain",
-        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: mixedSceneSourceAtopBlend }],
-      },
-      primitive: { topology: "triangle-list" },
-    });
-    engine.mixedSceneActiveCutoutDisplayPipeline = await createRenderPipelineAsync(engine.device, {
-      label: "Mixed scene active authored matte pipeline",
-      layout: displayPipelineLayout,
-      vertex: { module: engine.displayShaderModule, entryPoint: "vertexMain" },
-      fragment: {
-        module: engine.displayShaderModule,
-        entryPoint: "activeCutoutFragmentMain",
-        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: mixedSceneSourceOverBlend }],
-      },
-      primitive: { topology: "triangle-list" },
-    });
+    await ensureMixedSceneActiveBasePipelines(engine);
   }
-  const rasterStrokeDisplayPipelineLayout = engine.device.createPipelineLayout({
-    label: "Stroke display pipeline layout",
-    bindGroupLayouts: [
-      engine.rasterStrokeDisplayScreenBindGroupLayout,
-      engine.rasterStrokeDisplaySourceBindGroupLayout,
-    ],
-  });
   if (createCore) {
     // The styled presenter is prepared only when an active layer actually uses
     // raster effects. Keeping it out of the first frame avoids compiling a
     // large, unreachable shader graph for an empty single-raster document.
   }
   if (createOptional) {
-    engine.mixedSceneActiveRasterStrokeDisplayPipeline = await createRenderPipelineAsync(engine.device, {
-      label: "Mixed scene active Stroke/effects source-over pipeline",
-      layout: rasterStrokeDisplayPipelineLayout,
-      vertex: { module: engine.rasterStrokeDisplayShaderModule, entryPoint: "vertexMain" },
-      fragment: {
-        module: engine.rasterStrokeDisplayShaderModule,
-        entryPoint: "activeFragmentMain",
-        targets: [{
-          format: MIXED_SCENE_LINEAR_FORMAT,
-          blend: {
-            color: {
-              srcFactor: "one",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-            alpha: {
-              srcFactor: "one",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-          },
-        }],
-      },
-      primitive: { topology: "triangle-list" },
-    });
-    engine.mixedSceneActiveRasterStrokeSourcePipeline = await createRenderPipelineAsync(engine.device, {
-      label: "Mixed scene active Stroke/effects source-only pipeline",
-      layout: rasterStrokeDisplayPipelineLayout,
-      vertex: { module: engine.rasterStrokeDisplayShaderModule, entryPoint: "vertexMain" },
-      fragment: {
-        module: engine.rasterStrokeDisplayShaderModule,
-        entryPoint: "activeSourceFragmentMain",
-        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: mixedSceneSourceOverBlend }],
-      },
-      primitive: { topology: "triangle-list" },
-    });
-    engine.mixedSceneActiveRasterStrokeSourceAtopPipeline = await createRenderPipelineAsync(engine.device, {
-      label: "Mixed scene active Stroke/effects source-atop pipeline",
-      layout: rasterStrokeDisplayPipelineLayout,
-      vertex: { module: engine.rasterStrokeDisplayShaderModule, entryPoint: "vertexMain" },
-      fragment: {
-        module: engine.rasterStrokeDisplayShaderModule,
-        entryPoint: "activeSourceFragmentMain",
-        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: mixedSceneSourceAtopBlend }],
-      },
-      primitive: { topology: "triangle-list" },
-    });
-    engine.mixedSceneActiveRasterStrokeCutoutPipeline = await createRenderPipelineAsync(engine.device, {
-      label: "Mixed scene active Stroke authored-matte pipeline",
-      layout: rasterStrokeDisplayPipelineLayout,
-      vertex: { module: engine.rasterStrokeDisplayShaderModule, entryPoint: "vertexMain" },
-      fragment: {
-        module: engine.rasterStrokeDisplayShaderModule,
-        entryPoint: "activeCutoutFragmentMain",
-        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: mixedSceneSourceOverBlend }],
-      },
-      primitive: { topology: "triangle-list" },
-    });
+    await ensureMixedSceneActiveRasterStrokePipelines(engine);
   }
 
-  const thicknessTailDisplayPipelineLayout = engine.device.createPipelineLayout({
-    label: "Predictive thickness tail display pipeline layout",
-    bindGroupLayouts: [engine.thicknessTailDisplayBindGroupLayout],
-  });
   if (createCore) {
     // Predictive-tail presentation is selected-brush work and is compiled by
     // the brush readiness gate when non-neutral thickness is requested.
   }
   if (createOptional) {
-    engine.mixedSceneActiveThicknessTailDisplayPipeline = await createRenderPipelineAsync(engine.device, {
-      label: "Mixed scene active thickness tail source-over pipeline",
-      layout: thicknessTailDisplayPipelineLayout,
-      vertex: { module: engine.thicknessTailDisplayShaderModule, entryPoint: "vertexMain" },
-      fragment: {
-        module: engine.thicknessTailDisplayShaderModule,
-        entryPoint: "activeFragmentMain",
-        targets: [{
-          format: MIXED_SCENE_LINEAR_FORMAT,
-          blend: {
-            color: {
-              srcFactor: "one",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-            alpha: {
-              srcFactor: "one",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-          },
-        }],
-      },
-      primitive: { topology: "triangle-list" },
-    });
-    engine.mixedSceneActiveThicknessTailSourcePipeline = await createRenderPipelineAsync(engine.device, {
-      label: "Mixed scene active thickness tail source-only pipeline",
-      layout: thicknessTailDisplayPipelineLayout,
-      vertex: { module: engine.thicknessTailDisplayShaderModule, entryPoint: "vertexMain" },
-      fragment: {
-        module: engine.thicknessTailDisplayShaderModule,
-        entryPoint: "activeSourceFragmentMain",
-        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: mixedSceneSourceOverBlend }],
-      },
-      primitive: { topology: "triangle-list" },
-    });
-    engine.mixedSceneActiveThicknessTailSourceAtopPipeline = await createRenderPipelineAsync(engine.device, {
-      label: "Mixed scene active thickness tail source-atop pipeline",
-      layout: thicknessTailDisplayPipelineLayout,
-      vertex: { module: engine.thicknessTailDisplayShaderModule, entryPoint: "vertexMain" },
-      fragment: {
-        module: engine.thicknessTailDisplayShaderModule,
-        entryPoint: "activeSourceFragmentMain",
-        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: mixedSceneSourceAtopBlend }],
-      },
-      primitive: { topology: "triangle-list" },
-    });
+    await ensureMixedSceneActiveThicknessTailPipelines(engine);
   }
 
-  const lightGlazeDisplayPipelineLayout = engine.device.createPipelineLayout({
-    label: "Light Glaze live display pipeline layout",
-    bindGroupLayouts: [engine.lightGlazeDisplayBindGroupLayout],
-  });
   if (createCore) {
     // Glaze presentation is compiled when a glaze brush is selected. The two
     // clear pipelines above remain core because their 16-bit allocation path
     // is small and also validates both storage formats up front.
   }
   if (createOptional) {
-    engine.mixedSceneActiveLightGlazeDisplayPipeline = await createRenderPipelineAsync(engine.device, {
-      label: "Mixed scene active Light Glaze source-over pipeline",
-      layout: lightGlazeDisplayPipelineLayout,
-      vertex: { module: engine.lightGlazeDisplayShaderModule, entryPoint: "vertexMain" },
-      fragment: {
-        module: engine.lightGlazeDisplayShaderModule,
-        entryPoint: "activeFragmentMain",
-        targets: [{
-          format: MIXED_SCENE_LINEAR_FORMAT,
-          blend: {
-            color: {
-              srcFactor: "one",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-            alpha: {
-              srcFactor: "one",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-          },
-        }],
-      },
-      primitive: { topology: "triangle-list" },
-    });
-    engine.mixedSceneActiveLightGlazeSourcePipeline = await createRenderPipelineAsync(engine.device, {
-      label: "Mixed scene active Light Glaze source-only pipeline",
-      layout: lightGlazeDisplayPipelineLayout,
-      vertex: { module: engine.lightGlazeDisplayShaderModule, entryPoint: "vertexMain" },
-      fragment: {
-        module: engine.lightGlazeDisplayShaderModule,
-        entryPoint: "activeSourceFragmentMain",
-        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: mixedSceneSourceOverBlend }],
-      },
-      primitive: { topology: "triangle-list" },
-    });
-    engine.mixedSceneActiveLightGlazeSourceAtopPipeline = await createRenderPipelineAsync(engine.device, {
-      label: "Mixed scene active Light Glaze source-atop pipeline",
-      layout: lightGlazeDisplayPipelineLayout,
-      vertex: { module: engine.lightGlazeDisplayShaderModule, entryPoint: "vertexMain" },
-      fragment: {
-        module: engine.lightGlazeDisplayShaderModule,
-        entryPoint: "activeSourceFragmentMain",
-        targets: [{ format: MIXED_SCENE_LINEAR_FORMAT, blend: mixedSceneSourceAtopBlend }],
-      },
-      primitive: { topology: "triangle-list" },
-    });
+    await ensureMixedSceneActiveLightGlazePipelines(engine);
   }
 }
 

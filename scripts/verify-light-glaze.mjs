@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createServer } from "vite";
 import { readEngineSource } from "./engine-source.mjs";
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const engine = readEngineSource();
 const shaders = read("../src/shaders.ts");
 const html = read("../index.html");
+const mixedSceneActivePaint = read("../src/mixed-scene-active-paint-resources.ts");
 
 const section = (source, start, end) => {
   const startIndex = source.indexOf(start);
@@ -215,6 +217,108 @@ for (const requirement of [
   );
 }
 
+// A plain SVG enters through the small vector-shape gate and does not prepare
+// the active-raster Glaze family. The brush readiness barrier must select and
+// await the exact mixed-scene family before any stamp can reach the renderer.
+const mixedSceneBrushReadiness = section(
+  engine,
+  "  private selectedBrushPresentationPipelinesReady(settings: BrushSettings): boolean",
+  "  /**\n   * Dependencies are separate from the GPU fence",
+);
+assert.match(
+  mixedSceneBrushReadiness,
+  /const mixedSceneReady = this\.selectedMixedScenePaintPipelinesReady\(settings\)/,
+  "La readiness del pennello deve includere la famiglia active-raster del compositor semantico.",
+);
+assert.match(
+  mixedSceneBrushReadiness,
+  /this\.ensureSelectedMixedScenePaintPipelines\(settings\)[\s\S]*await Promise\.all\(preparations\)/,
+  "Il warm-up del pennello deve attendere la famiglia active-raster selezionata.",
+);
+assert.match(
+  mixedSceneBrushReadiness,
+  /scene\.selected\.kind === "raster"[\s\S]*this\.usesOrderedScenePresentation\(\)[\s\S]*!this\.usesLayerBlendTilePresentation\(\)/,
+  "Il gate misto deve seguire lo stesso percorso segmented usato dal renderer.",
+);
+assert.match(
+  mixedSceneBrushReadiness,
+  /if \(this\.styleStackNeedsCompositor\(\)\) return "raster-stroke";[\s\S]*if \(usesStrokeGlazeRenderer\(settings\)\) return "light-glaze";[\s\S]*return "thickness-tail";/,
+  "La selezione capability deve rispettare la precedenza effettiva del renderer.",
+);
+assert.match(
+  mixedSceneBrushReadiness,
+  /if \(family === "light-glaze"\) \{\s*return mixedSceneActiveLightGlazePipelinesReady\(this\);\s*\}/,
+  "La readiness Glaze deve leggere la famiglia active-raster, non quella canvas.",
+);
+assert.match(
+  mixedSceneBrushReadiness,
+  /if \(this\.mixedScenePaintNeedsFullCompositor\(\)\) \{\s*await this\.ensureMixedSceneEditorResources\(\);\s*return;\s*\}/,
+  "Il clipping segmented deve conservare il gate completo richiesto dal preflight.",
+);
+assert.match(
+  mixedSceneBrushReadiness,
+  /this\.layerStack\.active\.cutoutMode !== "off"[\s\S]*record\.cutoutMode === "document"/,
+  "Glaze e thickness-tail devono includere il matte base per cutout attivo e Deep cutout.",
+);
+
+const mixedSceneSelection = section(
+  engine,
+  "  async setActiveMixedSceneItem(",
+  "  updateVectorTextNode(",
+);
+const selectionPreparation = mixedSceneSelection.indexOf(
+  "await this.ensureMixedScenePaintPipelines(this.settings);",
+);
+const selectionMutation = mixedSceneSelection.indexOf("mutableScene.select(key);");
+assert.ok(
+  selectionPreparation >= 0 && selectionMutation > selectionPreparation,
+  "La selezione del raster gia' residente deve completare la capability prima di pubblicarla.",
+);
+
+const addLayer = section(
+  engine,
+  "  async addLayer(",
+  "  private layerColdBytesForMemoryAdmission(",
+);
+assert(
+  addLayer.includes("const result = await this.activateLayer(outgoingIndexAfterInsertion);"),
+  "L'inserimento raster deve passare dall'attivazione che prepara la capability incoming.",
+);
+assert.match(
+  activateLayer,
+  /await ensureEffectRenderersForRecord\(this, record\);\s*[\s\S]*await this\.ensureSelectedMixedScenePaintPipelines\(this\.settings\);\s*[\s\S]*await this\.rebuildMergedLayerSurfaces\(caller\);/,
+  "L'attivazione deve scegliere la capability dopo aver caricato gli effetti del raster incoming.",
+);
+
+const lightGlazeFamily = section(
+  mixedSceneActivePaint,
+  "export async function ensureMixedSceneActiveLightGlazePipelines(",
+  "\n}",
+);
+assert.match(
+  lightGlazeFamily,
+  /const \[display, source, sourceAtop\] = await Promise\.all\(/,
+  "Le tre pipeline mixed Glaze devono essere compilate come una sola capability.",
+);
+const familyAwait = lightGlazeFamily.indexOf(
+  "const [display, source, sourceAtop] = await Promise.all(",
+);
+for (const publication of [
+  "engine.mixedSceneActiveLightGlazeDisplayPipeline = display;",
+  "engine.mixedSceneActiveLightGlazeSourcePipeline = source;",
+  "engine.mixedSceneActiveLightGlazeSourceAtopPipeline = sourceAtop;",
+]) {
+  assert.ok(
+    lightGlazeFamily.indexOf(publication) > familyAwait,
+    `La famiglia Glaze non deve essere pubblicata parzialmente: ${publication}`,
+  );
+}
+assert.match(
+  mixedSceneActivePaint,
+  /const lightGlazeCreationPromises = new WeakMap<BrushEngine, Promise<void>>\(\)/,
+  "Le richieste concorrenti Glaze devono condividere una sola compilazione.",
+);
+
 const glazeMaterialization = section(
   engine,
   "export async function initializeLightGlazeResourceSet",
@@ -381,5 +485,93 @@ assert.match(
 
 assert.match(html, /data-mobile-brush-rendering="light-glaze"[\s\S]{0,80}Light Glaze/);
 assert.doesNotMatch(html, /data-mobile-brush-rendering="m1-glaze"/);
+
+const moduleServer = await createServer({
+  appType: "custom",
+  configFile: false,
+  logLevel: "silent",
+  root: process.cwd(),
+  server: { middlewareMode: true },
+});
+let ensureMixedSceneActiveLightGlazePipelines;
+try {
+  ({ ensureMixedSceneActiveLightGlazePipelines } = await moduleServer.ssrLoadModule(
+    "/src/mixed-scene-active-paint-resources.ts",
+  ));
+} finally {
+  await moduleServer.close();
+}
+
+function mixedGlazeHarness({ delayed = false, failOnce = false } = {}) {
+  const calls = [];
+  const pending = [];
+  let failurePending = failOnce;
+  const device = {
+    createPipelineLayout: (descriptor) => ({ descriptor }),
+    createRenderPipeline: (descriptor) => ({ descriptor }),
+    createRenderPipelineAsync(descriptor) {
+      calls.push(descriptor.label);
+      if (failurePending) {
+        failurePending = false;
+        return Promise.reject(new Error("Injected mixed Glaze pipeline failure."));
+      }
+      if (!delayed) return Promise.resolve({ descriptor });
+      return new Promise((resolve) => pending.push(() => resolve({ descriptor })));
+    },
+  };
+  return {
+    calls,
+    pending,
+    engine: {
+      device,
+      deviceLostError: null,
+      lightGlazeDisplayBindGroupLayout: {},
+      lightGlazeDisplayShaderModule: {},
+      mixedSceneActiveLightGlazeDisplayPipeline: null,
+      mixedSceneActiveLightGlazeSourcePipeline: null,
+      mixedSceneActiveLightGlazeSourceAtopPipeline: null,
+    },
+  };
+}
+
+const delayedFamily = mixedGlazeHarness({ delayed: true });
+const delayedFirst = ensureMixedSceneActiveLightGlazePipelines(delayedFamily.engine);
+const delayedSecond = ensureMixedSceneActiveLightGlazePipelines(delayedFamily.engine);
+await Promise.resolve();
+assert.equal(delayedFamily.calls.length, 3, "le richieste concorrenti devono compilare tre pipeline");
+assert([
+  delayedFamily.engine.mixedSceneActiveLightGlazeDisplayPipeline,
+  delayedFamily.engine.mixedSceneActiveLightGlazeSourcePipeline,
+  delayedFamily.engine.mixedSceneActiveLightGlazeSourceAtopPipeline,
+].every((pipeline) => pipeline === null), "nessuna pipeline deve apparire durante la compilazione");
+delayedFamily.pending.shift()();
+await Promise.resolve();
+assert([
+  delayedFamily.engine.mixedSceneActiveLightGlazeDisplayPipeline,
+  delayedFamily.engine.mixedSceneActiveLightGlazeSourcePipeline,
+  delayedFamily.engine.mixedSceneActiveLightGlazeSourceAtopPipeline,
+].every((pipeline) => pipeline === null), "una famiglia parziale non deve essere osservabile");
+for (const resolve of delayedFamily.pending.splice(0)) resolve();
+await Promise.all([delayedFirst, delayedSecond]);
+assert([
+  delayedFamily.engine.mixedSceneActiveLightGlazeDisplayPipeline,
+  delayedFamily.engine.mixedSceneActiveLightGlazeSourcePipeline,
+  delayedFamily.engine.mixedSceneActiveLightGlazeSourceAtopPipeline,
+].every(Boolean), "la famiglia completa deve essere pubblicata insieme");
+await ensureMixedSceneActiveLightGlazePipelines(delayedFamily.engine);
+assert.equal(delayedFamily.calls.length, 3, "una famiglia pronta deve essere riusata");
+
+const retryFamily = mixedGlazeHarness({ failOnce: true });
+await assert.rejects(
+  ensureMixedSceneActiveLightGlazePipelines(retryFamily.engine),
+  /Injected mixed Glaze pipeline failure/,
+);
+assert([
+  retryFamily.engine.mixedSceneActiveLightGlazeDisplayPipeline,
+  retryFamily.engine.mixedSceneActiveLightGlazeSourcePipeline,
+  retryFamily.engine.mixedSceneActiveLightGlazeSourceAtopPipeline,
+].every((pipeline) => pipeline === null), "un errore non deve pubblicare una famiglia parziale");
+await ensureMixedSceneActiveLightGlazePipelines(retryFamily.engine);
+assert.equal(retryFamily.calls.length, 6, "la capability fallita deve essere ritentabile");
 
 console.log("Light Glaze contract verification passed.");
