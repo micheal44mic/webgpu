@@ -122,12 +122,16 @@ const sourceForRasterSegment = (
   return source;
 };
 
-export function layerBlendTilePresentationRequired(engine: BrushEngine): boolean {
+export function layerBlendTilePresentationEligible(engine: BrushEngine): boolean {
   return Boolean(engine.mixedSceneStack)
     && engine.shapePreviewAfterKey === null
     && mixedSceneRasterTransformPreviewCompositionLayerIds(engine).size === 0
     && !engine.mixedSceneStack!.visibleSemanticCount
-    && !engine.mixedSceneStack!.hasHeterogeneousClipping
+    && !engine.mixedSceneStack!.hasHeterogeneousClipping;
+}
+
+export function layerBlendTilePresentationRequired(engine: BrushEngine): boolean {
+  return layerBlendTilePresentationEligible(engine)
     && engine.layerStack.layers.some(layerNeedsBackdropComposition);
 }
 

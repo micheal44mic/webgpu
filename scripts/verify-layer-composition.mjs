@@ -352,8 +352,13 @@ assert.match(
 );
 assert.match(
   mixedPresentationSource,
-  /const needsScratch = engine\.mixedSceneStack\?\.hasHeterogeneousClipping === true/,
-  "the extra full-size clipping surface must exist only while a heterogeneous group needs it",
+  /function mixedSceneClippingScratchNeeded[\s\S]*?return forceNeeded\s*\|\|\s*engine\.mixedSceneStack\?\.hasHeterogeneousClipping === true/,
+  "the extra full-size clipping surface must exist only for heterogeneous or prospective segmented clipping",
+);
+assert.match(
+  mixedPresentationSource,
+  /prewarmMixedSceneClippingScratch[\s\S]*?runGpuAllocationTransaction/,
+  "structural clipping scratch must be validated under WebGPU allocation error scopes",
 );
 assert.match(
   runtimeSetupSource,

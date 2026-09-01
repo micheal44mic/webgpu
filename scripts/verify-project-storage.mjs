@@ -241,6 +241,41 @@ Object.assign(mixedRasterBaseProject.snapshot.mixedScene, {
 });
 validateProjectSaveRequest(mixedRasterBaseProject);
 
+// Raster-only restore has a separate cold-start boundary from semantic scenes.
+// When the saved active raster is a clipping child, rebuilding its live group
+// immediately needs the shared viewport-segment layout even though every layer
+// composition field remains at its default value.
+const rasterOnlyActiveClippingChildProject = structuredClone(request);
+addBlankRaster(rasterOnlyActiveClippingChildProject, 2, 1);
+Object.assign(rasterOnlyActiveClippingChildProject.snapshot, {
+  activeRasterLayerId: 2,
+});
+Object.assign(rasterOnlyActiveClippingChildProject.snapshot.mixedScene, {
+  items: [
+    { key: "raster:1", kind: "raster", rasterLayerId: 1 },
+    { key: "raster:2", kind: "raster", rasterLayerId: 2 },
+  ],
+  textNodes: [],
+  svgNodes: [],
+  imageNodes: [],
+  clippingRelations: [{ childKey: "raster:2", parentKey: "raster:1" }],
+  selectedKey: "raster:2",
+});
+validateProjectSaveRequest(rasterOnlyActiveClippingChildProject);
+assert.deepEqual(
+  rasterOnlyActiveClippingChildProject.snapshot.layers.map((layer) => ({
+    id: layer.id,
+    blendMode: layer.blendMode,
+    cutoutMode: layer.cutoutMode ?? "off",
+    clippingParentId: layer.clippingParentId,
+  })),
+  [
+    { id: 1, blendMode: "normal", cutoutMode: "off", clippingParentId: null },
+    { id: 2, blendMode: "normal", cutoutMode: "off", clippingParentId: 1 },
+  ],
+  "the active-child restore fixture must not rely on advanced layer composition",
+);
+
 const mixedRasterBaseWithGap = structuredClone(mixedRasterBaseProject);
 mixedRasterBaseWithGap.snapshot.mixedScene.clippingRelations = [{
   childKey: "raster:2",
@@ -633,6 +668,26 @@ assert.deepEqual(
 );
 assert.equal(await storage.deleteProject(mixedClippingSummary.id), true);
 
+const rasterClippingSummary = await storage.saveProject({
+  ...rasterOnlyActiveClippingChildProject,
+  name: "Raster Clipping Active Child",
+});
+const loadedRasterClipping = await storage.loadProject(rasterClippingSummary.id);
+assert.ok(loadedRasterClipping);
+validateLoadedProject(loadedRasterClipping);
+assert.equal(loadedRasterClipping.manifest.snapshot.activeRasterLayerId, 2);
+assert.deepEqual(
+  loadedRasterClipping.manifest.snapshot.layers.map((layer) => layer.clippingParentId),
+  [null, 1],
+  "save/load must retain the active raster child's clipping projection",
+);
+assert.deepEqual(
+  loadedRasterClipping.manifest.snapshot.mixedScene.clippingRelations,
+  [{ childKey: "raster:2", parentKey: "raster:1" }],
+  "save/load must retain the raster-only active clipping relation",
+);
+assert.equal(await storage.deleteProject(rasterClippingSummary.id), true);
+
 const source = readFileSync(new URL("../src/project-storage.ts", import.meta.url), "utf8");
 const runtimeSource = readFileSync(
   new URL("../src/engine-project-runtime.ts", import.meta.url),
@@ -711,6 +766,63 @@ assert.match(
 const restoreStart = runtimeSource.indexOf("export async function restoreProjectDocument(");
 assert.notEqual(restoreStart, -1);
 const restoreBody = runtimeSource.slice(restoreStart);
+assert.match(
+  restoreBody,
+  /const restoredScenePlan = new MixedSceneStack\(records\.map\([\s\S]*?restoredScenePlan\.restoreState\(snapshot\.mixedScene, true\)[\s\S]*?advancedLayerCompositionRequired = Boolean\(engine\.mixedSceneStack\)[\s\S]*?records\.some\(layerNeedsBackdropComposition\)[\s\S]*?rasterOnlyLayerBlendPresentationRequired = advancedLayerCompositionRequired[\s\S]*?restoredScenePlan\.visibleSemanticCount === 0[\s\S]*?!restoredScenePlan\.hasHeterogeneousClipping/,
+  "restore must detect the raster-only ordered-composition path from saved state",
+);
+assert.match(
+  restoreBody,
+  /const rasterClippingSegmentLayoutRequired = Boolean\(engine\.mixedSceneStack\)[\s\S]*?records\.some\(\(record\) => record\.clippingParentId !== null\);/,
+  "restore must detect saved raster clipping independently of advanced composition",
+);
+assert.match(
+  restoreBody,
+  /orderedScenePresentationRequired = advancedLayerCompositionRequired[\s\S]*?restoredScenePlan\.visibleSemanticCount > 0[\s\S]*?restoredScenePlan\.hasHeterogeneousClipping/,
+  "restore must prewarm the linear target for every visible ordered scene, not only advanced blend modes",
+);
+assert.match(
+  restoreBody,
+  /if \([\s\S]*?rasterOnlyLayerBlendPresentationRequired[\s\S]*?\|\| rasterClippingSegmentLayoutRequired[\s\S]*?\) \{\s*await ensureMixedScenePresentationResources\(engine\);/,
+  "restore must prepare the shared segment layout before activating a saved clipping child",
+);
+const rasterPresentationGatePosition = restoreBody.indexOf(
+  "await ensureMixedScenePresentationResources(engine)",
+);
+const rasterLinearPrewarmPosition = restoreBody.indexOf(
+  "await prewarmMixedSceneLinearTextureForLayerBlend(",
+);
+const rasterTileGatePosition = restoreBody.indexOf(
+  "await ensureLayerBlendTilePresentationResources(engine)",
+);
+const liveStackRestorePosition = restoreBody.indexOf("engine.layerStack.restoreState(stackState)");
+assert.ok(
+  rasterPresentationGatePosition >= 0
+    && rasterLinearPrewarmPosition > rasterPresentationGatePosition
+    && rasterTileGatePosition > rasterLinearPrewarmPosition
+    && liveStackRestorePosition > rasterTileGatePosition,
+  "saved raster composition must prepare its layout, linear target and tile compositor before publishing state",
+);
+assert.match(
+  restoreBody,
+  /if \(orderedScenePresentationRequired\) \{[\s\S]*?prewarmMixedSceneLinearTextureForLayerBlend\([\s\S]*?advancedLayerCompositionRequired && !rasterOnlyLayerBlendPresentationRequired[\s\S]*?if \(rasterOnlyLayerBlendPresentationRequired\) \{[\s\S]*?ensureLayerBlendTilePresentationResources\(engine\)/,
+  "restore must prewarm the current ordered family and allocate tile resources only for raster-only advanced composition",
+);
+assert.match(
+  restoreBody,
+  /advancedLayerCompositionRequired && !rasterOnlyLayerBlendPresentationRequired,\s*records\.some\(\(record\) => record\.cutoutMode === "document"\),/,
+  "restore prewarm must derive the Deep-floor requirement from saved records before they become live",
+);
+assert.match(
+  restoreBody,
+  /await engine\.beginPresentationTransaction\(\);\s*presentationTransactionStarted = true;\s*await promotePersistedLayer[\s\S]*?restoreCompleted = true;[\s\S]*?presentationTransactionStarted && restoreCompleted[\s\S]*?engine\.endPresentationTransaction\(\)/,
+  "destructive saved-pixel upload and active-effect retarget must stay behind one presentation transaction",
+);
+assert.match(
+  restoreBody,
+  /latchDocumentStateInconsistent\(\s*"The project could not be restored safely\. Reload before continuing\.",\s*error,\s*\)/,
+  "a failed destructive restore must retain the originating error in diagnostics",
+);
 assert.doesNotMatch(
   restoreBody,
   /engine\.setBrushSettings\(snapshot\.brushSettings\)|engine\.ensureCurrentBrushResources\(\)/,

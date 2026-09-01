@@ -319,10 +319,15 @@ assert.match(
   "Paint, Eraser and Blend selection must share the coalesced cold-start preparation",
 );
 
-assert.match(
+const projectRestoreCapabilityPlan = section(
   projectRuntime,
-  /snapshot\.mixedScene\.items\.some[\s\S]{0,160}await engine\.ensureMixedSceneEditorResources\(\)/,
-  "Semantic project restore needs only the mixed-scene presentation capability",
+  "  const records = snapshot.layers.map(layerRecordFromProject);",
+  "  engine.persistActiveLayerState();",
+);
+assert.match(
+  projectRestoreCapabilityPlan,
+  /const containsSemanticItems = snapshot\.mixedScene\.items\.some[\s\S]*?if \(containsSemanticItems\) \{\s*await engine\.ensureMixedSceneEditorResources\(\);\s*\}/,
+  "Semantic project restore must prepare the mixed-scene presentation capability before publishing saved state",
 );
 assert.doesNotMatch(
   projectRuntime,

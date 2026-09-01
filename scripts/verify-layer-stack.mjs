@@ -1337,8 +1337,8 @@ assert.match(liveContentOpacityBody, /layerCompositeVisualBounds\(engine, record
 assert.match(liveContentOpacityBody, /engine\.requestRender\(\)/);
 assert.doesNotMatch(
   liveContentOpacityBody,
-  /waitForIdle|restoreEffectsWorkbenchToActiveLayer|rebuildMergedLayerSurfaces|publishMixedScene/,
-  "il Fill attivo deve ricomporre soltanto il suo output live senza bloccare o invalidare SVG e testo",
+  /restoreEffectsWorkbenchToActiveLayer|rebuildMergedLayerSurfaces|publishMixedScene/,
+  "il Fill attivo deve ricomporre soltanto il suo output live senza ricostruire o invalidare SVG e testo",
 );
 const layerBlendStart = engineSource.indexOf("export async function setLayerBlendMode(");
 const layerBlendEnd = engineSource.indexOf(
@@ -1400,8 +1400,8 @@ assert.ok(
 );
 assert.match(
   layerBlendBody,
-  /const usesViewportComposition = engine\.usesOrderedScenePresentation\(\)[\s\S]*?candidateNeedsTile = candidateAdvanced && !usesViewportComposition[\s\S]*?candidateNeedsViewportBlend = candidateAdvanced && usesViewportComposition/,
-  "il prewarm deve allocare soltanto la famiglia realmente usata dalla scena candidata",
+  /candidateUsesTileComposition = candidateAdvanced[\s\S]*?layerBlendTilePresentationEligible\(engine\)[\s\S]*?candidateNeedsViewportBlend = candidateAdvanced[\s\S]*?!candidateUsesTileComposition[\s\S]*?candidateNeedsTile = candidateAdvanced[\s\S]*?layerBlendTilePresentationEligible\(engine\)[\s\S]*?candidateNeedsViewportBlend = candidateAdvanced && !candidateNeedsTile/,
+  "il prewarm deve scegliere la famiglia viewport soltanto quando la scena candidata la usa",
 );
 assert.match(
   layerBlendBody,
@@ -2024,6 +2024,385 @@ assert.match(
   "un cambio colore caldo non deve ricostruire tutta la cache di presentazione",
 );
 
+// A plain semantic shape intentionally compiles only the compact source-over
+// graph. Every raster style that can switch the active presentation to the
+// shared effects compositor must therefore gate its prospective family before
+// publishing the style. Keep hidden and empty semantic nodes in that decision:
+// making one visible can be synchronous and cannot compile pipelines itself.
+const activeStyleGateStart = engineSource.indexOf(
+  "async ensureActiveRasterStylePresentationResources(",
+);
+const activeStyleGateEnd = engineSource.indexOf(
+  "private async ensureSelectedMixedScenePaintPipelines(",
+  activeStyleGateStart,
+);
+assertSection("active raster style presentation gate", activeStyleGateStart, activeStyleGateEnd);
+const activeStyleGateBody = engineSource.slice(activeStyleGateStart, activeStyleGateEnd);
+assert.match(
+  activeStyleGateBody,
+  /mixedSceneStack\.semanticCount/,
+  "hidden or empty semantic nodes must retain the prospective raster-effects family",
+);
+assert.doesNotMatch(
+  activeStyleGateBody,
+  /\|\| !this\.usesOrderedScenePresentation\(\)/,
+  "current semantic visibility alone cannot reject the prospective style preflight",
+);
+assert.match(
+  activeStyleGateBody,
+  /mixedSceneStack\.semanticCount === 0[\s\S]*?!this\.usesOrderedScenePresentation\(\)[\s\S]*?\|\| this\.usesLayerBlendTilePresentation\(\)/,
+  "only semantic-free tile frames may reject the prospective viewport fallback",
+);
+assert.match(
+  activeStyleGateBody,
+  /mixedScenePaintNeedsFullCompositor\(\)[\s\S]*?await this\.ensureMixedSceneEditorResources\(\)[\s\S]*?await ensureMixedSceneActiveRasterStrokePipelines\(this\)/,
+  "segmented clipping must use the full gate and plain semantic scenes the exact raster-effects family",
+);
+
+const rasterStyleSetterContracts = [
+  {
+    label: "Color Overlay",
+    start: "async setRasterColorOverlayStyle(",
+    end: "async setRasterStrokeStyle(",
+    mutation: "this.rasterColorOverlayStyle = normalized",
+  },
+  {
+    label: "Stroke",
+    start: "async setRasterStrokeStyle(",
+    end: "async setRasterBevelStyle(",
+    mutation: "this.rasterStrokeStyle = normalized",
+  },
+  {
+    label: "Bevel",
+    start: "async setRasterBevelStyle(",
+    end: "async setRasterOuterShadowStyle(",
+    mutation: "this.rasterBevelStyle = normalized",
+  },
+  {
+    label: "Outer Shadow",
+    start: "async setRasterOuterShadowStyle(",
+    end: "async setRasterInnerShadowStyle(",
+    mutation: "this.rasterOuterShadowStyle = normalized",
+  },
+  {
+    label: "Inner Shadow",
+    start: "async setRasterInnerShadowStyle(",
+    end: "resizeCanvas(): void",
+    mutation: "this.rasterInnerShadowStyle = normalized",
+  },
+];
+for (const contract of rasterStyleSetterContracts) {
+  const start = engineSource.indexOf(contract.start);
+  const end = engineSource.indexOf(contract.end, start);
+  assertSection(`${contract.label} prospective presentation`, start, end);
+  const body = engineSource.slice(start, end);
+  const candidate = body.indexOf(
+    "const nextStackNeedsCompositor = layerEffectRendererRequirements(",
+  );
+  const preflight = body.indexOf(
+    "await this.ensureActiveRasterStylePresentationResources(",
+  );
+  // Each setter also has a pre-initialization assignment that cannot render.
+  // Inspect the live publication following the awaited candidate gate.
+  const mutation = body.indexOf(contract.mutation, preflight);
+  assert.ok(
+    candidate >= 0 && preflight > candidate && mutation > preflight,
+    `${contract.label} must classify and preflight candidate presentation before style publication`,
+  );
+  assert.match(
+    body.slice(candidate, preflight),
+    /normalized[\s\S]*?\.needsStrokeRenderer/,
+    `${contract.label} must derive the gate from its normalized candidate style`,
+  );
+  assert.match(
+    body.slice(preflight, mutation),
+    /nextStackNeedsCompositor/,
+    `${contract.label} must pass the prospective compositor requirement to the gate`,
+  );
+}
+
+// Specialized effects publish their live style only after both the effect
+// renderer and shared compositor are resident. Publishing inside the enabled
+// branch before either await would let a frame observe a style whose encoder
+// dependencies are still cold.
+const rendererBeforeStylePublicationContracts = [
+  {
+    label: "Bevel",
+    start: "async setRasterBevelStyle(",
+    end: "async setRasterOuterShadowStyle(",
+    specialized: "await ensureRasterBevelRenderer(this)",
+    mutation: "this.rasterBevelStyle = normalized",
+  },
+  {
+    label: "Outer Shadow",
+    start: "async setRasterOuterShadowStyle(",
+    end: "async setRasterInnerShadowStyle(",
+    specialized: "await ensureRasterOuterShadowRenderer(this)",
+    mutation: "this.rasterOuterShadowStyle = normalized",
+  },
+  {
+    label: "Inner Shadow",
+    start: "async setRasterInnerShadowStyle(",
+    end: "resizeCanvas(): void",
+    specialized: "await ensureRasterInnerShadowRenderer(this)",
+    mutation: "this.rasterInnerShadowStyle = normalized",
+  },
+];
+for (const contract of rendererBeforeStylePublicationContracts) {
+  const start = engineSource.indexOf(contract.start);
+  const end = engineSource.indexOf(contract.end, start);
+  assertSection(`${contract.label} renderer-first publication`, start, end);
+  const body = engineSource.slice(start, end);
+  const presentationGate = body.indexOf(
+    "await this.ensureActiveRasterStylePresentationResources(",
+  );
+  const specializedGate = body.indexOf(contract.specialized, presentationGate);
+  const sharedGate = body.indexOf(
+    "await ensureRasterStrokeRenderer(this)",
+    presentationGate,
+  );
+  const mutation = body.indexOf(
+    contract.mutation,
+    Math.max(specializedGate, sharedGate),
+  );
+  assert.ok(
+    presentationGate >= 0
+      && specializedGate > presentationGate
+      && sharedGate > presentationGate
+      && mutation > specializedGate
+      && mutation > sharedGate,
+    `${contract.label} must await specialized and shared renderers before publishing its style`,
+  );
+}
+
+// Color Overlay and Stroke can destroy or shrink their shared renderer on a
+// disable transition. The history entry must become authoritative before that
+// cleanup or any success frame is requested.
+const historyBeforeCleanupContracts = [
+  {
+    label: "Color Overlay",
+    start: "async setRasterColorOverlayStyle(",
+    end: "async setRasterStrokeStyle(",
+    mutation: "this.rasterColorOverlayStyle = normalized",
+    history: 'this.recordRasterLayerMetadataMutation("color-overlay", historyBefore)',
+    cleanup: [
+      "scratchPool.releaseRequirement(",
+      "releaseRasterStrokeRenderer(this)",
+    ],
+  },
+  {
+    label: "Stroke",
+    start: "async setRasterStrokeStyle(",
+    end: "async setRasterBevelStyle(",
+    mutation: "this.rasterStrokeStyle = normalized",
+    history: 'this.recordRasterLayerMetadataMutation("stroke", historyBefore)',
+    cleanup: [
+      "await setRasterStrokeGeometryEnabled(this, false)",
+      "releaseRasterStrokeRenderer(this)",
+    ],
+  },
+];
+for (const contract of historyBeforeCleanupContracts) {
+  const start = engineSource.indexOf(contract.start);
+  const end = engineSource.indexOf(contract.end, start);
+  assertSection(`${contract.label} commit-before-cleanup`, start, end);
+  const body = engineSource.slice(start, end);
+  const liveMutation = body.indexOf(contract.mutation, body.indexOf("try {"));
+  const history = body.indexOf(contract.history, liveMutation);
+  const historyAccepted = body.indexOf("historyAccepted = true", history);
+  const render = body.indexOf("this.requestRender()", liveMutation);
+  const cleanupPositions = contract.cleanup.map((marker) => body.indexOf(marker, liveMutation));
+  assert.ok(
+    liveMutation >= 0
+      && history > liveMutation
+      && historyAccepted > history
+      && render > historyAccepted
+      && cleanupPositions.every((position) => position > historyAccepted),
+    `${contract.label} must commit history before destructive cleanup or requesting a success frame`,
+  );
+}
+
+// Bevel and both shadow renderers are optional. When an enabled effect is
+// disabled, keep its specialized renderer (and the shared compositor) alive
+// until the synchronous history publication succeeds. A publication fault can
+// then restore the previous enabled style without trying to recreate GPU state
+// from inside the rollback path.
+const deferredEffectReleaseContracts = [
+  {
+    label: "Bevel",
+    start: "async setRasterBevelStyle(",
+    end: "async setRasterOuterShadowStyle(",
+    history: 'this.recordRasterLayerMetadataMutation("bevel", historyBefore)',
+    release: "releaseRasterBevelRenderer(this)",
+  },
+  {
+    label: "Outer Shadow",
+    start: "async setRasterOuterShadowStyle(",
+    end: "async setRasterInnerShadowStyle(",
+    history: 'this.recordRasterLayerMetadataMutation("outer-shadow", historyBefore)',
+    release: "releaseRasterOuterShadowRenderer(this)",
+  },
+  {
+    label: "Inner Shadow",
+    start: "async setRasterInnerShadowStyle(",
+    end: "resizeCanvas(): void",
+    history: 'this.recordRasterLayerMetadataMutation("inner-shadow", historyBefore)',
+    release: "releaseRasterInnerShadowRenderer(this)",
+  },
+];
+for (const contract of deferredEffectReleaseContracts) {
+  const start = engineSource.indexOf(contract.start);
+  const end = engineSource.indexOf(contract.end, start);
+  assertSection(`${contract.label} history publication rollback`, start, end);
+  const body = engineSource.slice(start, end);
+  const liveMutation = body.indexOf("invalidateActiveLayerBake(this)");
+  const history = body.indexOf(contract.history, liveMutation);
+  const historyAccepted = body.indexOf("historyAccepted = true", history);
+  const specializedRelease = body.indexOf(contract.release, liveMutation);
+  const sharedRelease = body.indexOf("releaseRasterStrokeRenderer(this)", liveMutation);
+  const render = body.indexOf("this.requestRender()", liveMutation);
+  const publishStats = body.indexOf("this.publishStats()", liveMutation);
+  const catchStart = body.indexOf("} catch (error)", history);
+  const committedGuard = body.indexOf("if (historyAccepted) throw error", catchStart);
+  assert.ok(
+    liveMutation >= 0
+      && history > liveMutation
+      && historyAccepted > history
+      && specializedRelease > historyAccepted
+      && sharedRelease > historyAccepted,
+    `${contract.label} must defer specialized and shared renderer release until history publication succeeds`,
+  );
+  assert.ok(
+    render > historyAccepted && publishStats > historyAccepted,
+    `${contract.label} must not publish a rendered success state before history accepts the mutation`,
+  );
+  assert.ok(
+    catchStart > historyAccepted && committedGuard > catchStart,
+    `${contract.label} must distinguish pre-publication rollback from post-commit failures`,
+  );
+}
+
+const contentOpacitySetterStart = engineSource.indexOf(
+  "export async function setLayerContentOpacity(",
+);
+const contentOpacitySetterEnd = engineSource.indexOf(
+  "export async function setLayerCutoutMode(",
+  contentOpacitySetterStart,
+);
+assertSection(
+  "active content opacity prospective presentation",
+  contentOpacitySetterStart,
+  contentOpacitySetterEnd,
+);
+const contentOpacitySetterBody = engineSource.slice(
+  contentOpacitySetterStart,
+  contentOpacitySetterEnd,
+);
+const contentOpacityCandidate = contentOpacitySetterBody.indexOf(
+  "const candidateNeedsCompositor = layerEffectRendererRequirements(",
+);
+const contentOpacityPreflight = contentOpacitySetterBody.indexOf(
+  "await engine.ensureActiveRasterStylePresentationResources(",
+);
+const contentOpacityMutation = contentOpacitySetterBody.indexOf(
+  "record.contentOpacity = next",
+  contentOpacityPreflight,
+);
+const contentOpacityCandidateRecord = contentOpacitySetterBody.indexOf(
+  "const candidateRecord: LayerRecord =",
+  contentOpacityCandidate,
+);
+const contentOpacityRendererGate = contentOpacitySetterBody.indexOf(
+  "await ensureEffectRenderersForRecord(engine, candidateRecord)",
+  contentOpacityPreflight,
+);
+const contentOpacityRendererReleaseIntent = contentOpacitySetterBody.indexOf(
+  "const rendererWillBeReleased = Boolean(",
+  contentOpacityCandidate,
+);
+const contentOpacityRendererReleaseFence = contentOpacitySetterBody.indexOf(
+  "await engine.waitForIdle()",
+  contentOpacityRendererReleaseIntent,
+);
+assert.ok(
+  contentOpacityCandidate >= 0
+    && contentOpacityCandidateRecord > contentOpacityCandidate
+    && contentOpacityRendererReleaseIntent > contentOpacityCandidateRecord
+    && contentOpacityRendererReleaseFence > contentOpacityRendererReleaseIntent
+    && contentOpacityPreflight > contentOpacityCandidate
+    && contentOpacityPreflight > contentOpacityRendererReleaseFence
+    && contentOpacityRendererGate > contentOpacityPreflight
+    && contentOpacityMutation > contentOpacityRendererGate,
+  "active content opacity must preflight its candidate presentation and renderer set before publication",
+);
+assert.match(
+  contentOpacitySetterBody.slice(
+    contentOpacityRendererReleaseIntent,
+    contentOpacityPreflight,
+  ),
+  /engine\.rasterStrokeRenderer[\s\S]*?!candidateNeedsCompositor[\s\S]*?!engine\.layerBlendTileCompositor[\s\S]*?rendererWillBeReleased[\s\S]*?await engine\.waitForIdle\(\)/,
+  "active content opacity must fence the GPU before its last unowned Stroke renderer can be released",
+);
+assert.match(
+  contentOpacitySetterBody.slice(contentOpacityCandidateRecord, contentOpacityMutation),
+  /\.\.\.record,[\s\S]*?contentOpacity: next,[\s\S]*?ensureEffectRenderersForRecord\(engine, candidateRecord\)/,
+  "content opacity must validate a prospective record instead of mutating the live one for renderer discovery",
+);
+assert.match(
+  contentOpacitySetterBody.slice(contentOpacityCandidate, contentOpacityPreflight),
+  /record\.colorOverlayStyle,[\s\S]*?next,[\s\S]*?\.needsStrokeRenderer/,
+  "content opacity must classify the complete candidate style stack",
+);
+assert.match(
+  contentOpacitySetterBody.slice(contentOpacityPreflight, contentOpacityMutation),
+  /candidateNeedsCompositor/,
+  "content opacity must pass its prospective compositor requirement to the gate",
+);
+
+const publicContentOpacitySetterStart = engineSource.indexOf(
+  "async setLayerContentOpacity(index: number, opacity: number)",
+);
+const publicContentOpacitySetterEnd = engineSource.indexOf(
+  "async setLayerCutoutMode(",
+  publicContentOpacitySetterStart,
+);
+assertSection(
+  "active content opacity history-owned renderer release",
+  publicContentOpacitySetterStart,
+  publicContentOpacitySetterEnd,
+);
+const publicContentOpacitySetterBody = engineSource.slice(
+  publicContentOpacitySetterStart,
+  publicContentOpacitySetterEnd,
+);
+const publicContentOpacityRuntimeMutation = publicContentOpacitySetterBody.indexOf(
+  "await setLayerContentOpacity(this, index, opacity)",
+);
+const publicContentOpacityHistory = publicContentOpacitySetterBody.indexOf(
+  'this.recordRasterLayerMetadataMutation("content-opacity", before)',
+  publicContentOpacityRuntimeMutation,
+);
+const publicContentOpacityReleaseGuard = publicContentOpacitySetterBody.indexOf(
+  "!this.styleStackNeedsCompositor()",
+  publicContentOpacityHistory,
+);
+const publicContentOpacityRelease = publicContentOpacitySetterBody.indexOf(
+  "releaseRasterStrokeRenderer(this)",
+  publicContentOpacityReleaseGuard,
+);
+assert.ok(
+  publicContentOpacityRuntimeMutation >= 0
+    && publicContentOpacityHistory > publicContentOpacityRuntimeMutation
+    && publicContentOpacityReleaseGuard > publicContentOpacityHistory
+    && publicContentOpacityRelease > publicContentOpacityReleaseGuard,
+  "active content opacity must publish history before releasing its now-unused Stroke renderer",
+);
+assert.doesNotMatch(
+  publicContentOpacitySetterBody,
+  /releaseRasterStrokeRenderer\(this,\s*true\)|effectsWorkbench\??\.releaseStrokeRenderer\(/,
+  "active content opacity must use the ownership-aware engine cleanup without forcing a tile-owned release",
+);
+
 // After a switch the effect controls must be re-read from the engine, or the
 // panel would show the outgoing layer's Traccia and Smusso while the brush
 // paints on the incoming one — wrong in a way that looks like a rendering bug.
@@ -2486,6 +2865,36 @@ assert.match(
   sceneEditorSource,
   /const changed = await this\.options\.engine\.setSceneLayerClipping\(key, enabled\)/,
   "il controllo per riga deve usare l'identità stabile di raster o SVG",
+);
+const sceneClippingStart = engineSource.indexOf("async setSceneLayerClipping(");
+const sceneClippingEnd = engineSource.indexOf("async addClippingMaskLayer(", sceneClippingStart);
+assertSection("scene clipping transaction", sceneClippingStart, sceneClippingEnd);
+const sceneClippingBody = engineSource.slice(sceneClippingStart, sceneClippingEnd);
+assert.match(
+  sceneClippingBody,
+  /const candidateNeedsHeterogeneousClipping = scene\.hasHeterogeneousClipping[\s\S]*?\|\| item\.kind !== "raster"[\s\S]*?\|\| \(candidateBase !== null && candidateBase\.kind !== "raster"\)/,
+  "il clipping deve riconoscere una relazione eterogenea dal figlio o dalla base semantica",
+);
+const clippingFullEditorGate = sceneClippingBody.indexOf(
+  "await this.ensureMixedSceneEditorResources()",
+);
+const clippingPresentationGate = sceneClippingBody.indexOf(
+  "await ensureMixedScenePresentationResources(this)",
+);
+const clippingRelationMutation = sceneClippingBody.indexOf(
+  "changed = scene.setClippingEnabled(key, Boolean(enabled))",
+);
+assert.ok(
+  clippingFullEditorGate >= 0
+    && clippingPresentationGate >= 0
+    && clippingRelationMutation > clippingFullEditorGate
+    && clippingRelationMutation > clippingPresentationGate,
+  "ogni famiglia clipping deve essere pronta prima di mutare la relazione",
+);
+assert.match(
+  sceneClippingBody,
+  /if \(candidateNeedsHeterogeneousClipping\) \{\s*await this\.ensureMixedSceneEditorResources\(\);\s*\} else \{[\s\S]*?await ensureMixedScenePresentationResources\(this\);\s*\}/,
+  "il clipping semantico deve preparare il compositore completo e quello raster solo il layout condiviso",
 );
 assert.match(sceneEditorSource, /Additional consecutive masks will use the same base/);
 assert.doesNotMatch(indexSource, /id="addClippingMask"/,
@@ -3048,6 +3457,24 @@ const addRecord = addMethodBody.indexOf("this.layerStack.insertAt(layerInsertInd
 assert.ok(
   addPrepare >= 0 && addRecord > addPrepare,
   "addLayer deve congelare e impacchettare l'uscente prima del nuovo record",
+);
+assert.match(
+  addMethodBody,
+  /if \(requestedSceneClippingParentKey !== null\) \{[\s\S]*?const clippingBase = scene!\.itemByKey\(requestedSceneClippingParentKey\);[\s\S]*?if \(clippingBase\.kind === "raster"\) \{[\s\S]*?await ensureMixedScenePresentationResources\(this\);[\s\S]*?\} else \{[\s\S]*?await this\.ensureMixedSceneEditorResources\(\);[\s\S]*?\}/,
+  "Add mask deve scegliere il gate GPU dalla natura raster o semantica della base",
+);
+const addMaskRasterGate = addMethodBody.indexOf(
+  "await ensureMixedScenePresentationResources(this)",
+);
+const addMaskSemanticGate = addMethodBody.indexOf(
+  "await this.ensureMixedSceneEditorResources()",
+);
+assert.ok(
+  addMaskRasterGate >= 0
+    && addMaskSemanticGate >= 0
+    && addRecord > addMaskRasterGate
+    && addRecord > addMaskSemanticGate,
+  "Add mask deve preparare entrambe le famiglie possibili prima di inserire il record",
 );
 assert.match(
   addMethodBody,

@@ -396,6 +396,7 @@ import {
   encodeLayerBlendTilePresentation,
   ensureLayerBlendTilePresentationResources,
   layerBlendTilePresentationRequired,
+  releaseLayerBlendTilePresentationResources,
 } from "./engine-layer-blend-tile-runtime";
 import {
   layersWithVisibleContent,
@@ -744,10 +745,15 @@ import {
   getVectorTextFallbackPresentationStats,
   mutateMixedScenePresentation,
   publishMixedScene,
+  prewarmMixedSceneClippingScratch,
+  prewarmMixedSceneLinearTextureForLayerBlend,
+  prewarmMixedSceneRasterTransformPreviewLinearResources,
   probeVectorTextFastCompositeAlpha,
   probeVectorTextFallbackAlpha,
   rebuildVectorTextGpuFallbackPresentation,
   rebuildVectorTextDisplayBindGroup,
+  releaseUnusedMixedSceneBlendScratch,
+  releaseUnusedMixedSceneClippingScratch,
   releaseVectorTextGpuBlurScratch,
   releaseVectorTextGpuScratch,
   requireMixedSceneStack,
@@ -883,6 +889,7 @@ import {
   encodeMergedSurfacePyramid,
   freezeActiveLayerToCold,
   invalidateActiveLayerBake,
+  layerNeedsBackdropComposition,
   layerCompositeVisualBounds,
   layerDirtyRectToPresentationRect,
   layerToCanvasPixels,
@@ -1504,6 +1511,8 @@ export class BrushEngine {
   mixedSceneClippingScratchTexture: GPUTexture | null = null;
   mixedSceneClippingScratchView: GPUTextureView | null = null;
   mixedSceneClippingScratchBindGroup: GPUBindGroup | null = null;
+  mixedSceneClippingScratchWidth = 0;
+  mixedSceneClippingScratchHeight = 0;
   layerBlendTileCompositor: LayerBlendTileCompositor | null = null;
   layerBlendTileResourcesPromise: Promise<void> | null = null;
   layerBlendTileResourcesRevision = 0;
@@ -3029,9 +3038,48 @@ export class BrushEngine {
     return mixedSceneSegmentLayerBlendMode(this, segment);
   }
 
+  private async ensureMixedSceneRasterTransformPreviewResources(
+    transforms: readonly MixedSceneRasterTransformPreview[],
+  ): Promise<void> {
+    if (!this.mixedSceneEnabled || transforms.length === 0) return;
+    const scene = this.mixedSceneStack;
+    if (!scene) {
+      throw new Error("The mixed scene is required for a raster Transform preview.");
+    }
+    const needsSegmentedClipping = transforms.some(
+      (transform) => scene.clippingGroupKeys(transform.key).length > 1,
+    );
+    const needsAdvancedBlend = this.layerStack.layers.some(layerNeedsBackdropComposition);
+    const needsFullCompositor = scene.items.some((item) => item.kind !== "raster")
+      || scene.hasHeterogeneousClipping
+      || needsSegmentedClipping
+      || needsAdvancedBlend;
+
+    if (needsFullCompositor) {
+      await this.ensureMixedSceneEditorResources();
+    } else {
+      // This existing compact capability owns the same source-over raster,
+      // clear, background and active pipelines. Its one small shape program is
+      // preferable to a second overlapping creation graph and concurrency map.
+      await ensureMixedSceneShapePreviewResources(this);
+      if (this.styleStackActive()) {
+        await ensureMixedSceneActiveRasterStrokePipelines(this);
+      }
+    }
+    await prewarmMixedSceneRasterTransformPreviewLinearResources(
+      this,
+      Math.max(1, this.canvas.width),
+      Math.max(1, this.canvas.height),
+      needsAdvancedBlend,
+      needsSegmentedClipping,
+    );
+    if (this.deviceLostError) throw this.deviceLostError;
+  }
+
   async setMixedSceneRasterTransformPreview(
     transforms: readonly MixedSceneRasterTransformPreview[],
   ): Promise<void> {
+    await this.ensureMixedSceneRasterTransformPreviewResources(transforms);
     await setMixedSceneRasterTransformPreviewRuntime(this, transforms);
     await prewarmMixedSceneRasterTransformPreviewPyramids(this);
     ensureMixedSceneLinearTexture(
@@ -3214,6 +3262,7 @@ export class BrushEngine {
           : null)
       : null;
     this.rasterStrokeBusy = true;
+    let historyAccepted = false;
     try {
       // Destroying a renderer must wait for every older submission. Hot color
       // and opacity edits only enqueue new uniform data after older queue work,
@@ -3221,6 +3270,9 @@ export class BrushEngine {
       if (rendererWillBeReleased) {
         await this.waitForIdle();
       }
+      await this.ensureActiveRasterStylePresentationResources(
+        nextStackNeedsCompositor,
+      );
       if (normalizedActive) {
         if (rendererNeedsCreation) {
           this.callbacks.onStatus?.(
@@ -3245,7 +3297,8 @@ export class BrushEngine {
         this.rasterStrokePendingComposeRect,
         styleDirtyRect,
       );
-
+      this.recordRasterLayerMetadataMutation("color-overlay", historyBefore);
+      historyAccepted = true;
       if (!normalizedActive) {
         this.requireEffectsWorkbench().scratchPool.releaseRequirement(
           RASTER_COLOR_OVERLAY_EFFECT_ID,
@@ -3273,9 +3326,9 @@ export class BrushEngine {
         "ok",
       );
       this.publishStats();
-      this.recordRasterLayerMetadataMutation("color-overlay", historyBefore);
       return true;
     } catch (error) {
+      if (historyAccepted) throw error;
       this.rasterColorOverlayStyle = previous;
       try {
         if (previousActive) {
@@ -3355,8 +3408,20 @@ export class BrushEngine {
     const previous = copyRasterStrokeStyle(this.rasterStrokeStyle);
     const previousActive = previous.enabled && previous.width > 0;
     const nextActive = normalized.enabled && normalized.width > 0;
+    const nextStackNeedsCompositor = layerEffectRendererRequirements(
+      normalized,
+      this.rasterBevelStyle,
+      this.rasterOuterShadowStyle,
+      this.rasterInnerShadowStyle,
+      this.rasterColorOverlayStyle,
+      this.layerStack.active.contentOpacity,
+    ).needsStrokeRenderer;
     this.rasterStrokeBusy = true;
+    let historyAccepted = false;
     try {
+      await this.ensureActiveRasterStylePresentationResources(
+        nextStackNeedsCompositor,
+      );
       if (nextActive) {
         const scratchExtent = rasterStrokeScratchExtentForWidth(normalized.width);
         const rendererNeedsCreation = !this.rasterStrokeRenderer;
@@ -3381,8 +3446,14 @@ export class BrushEngine {
         }
       }
 
+      if (!nextActive) {
+        await this.waitForIdle();
+      }
+
       this.rasterStrokeStyle = normalized;
       invalidateActiveLayerBake(this);
+      this.recordRasterLayerMetadataMutation("stroke", historyBefore);
+      historyAccepted = true;
       if (nextActive) {
         const coverageStyleChanged = normalized.width !== previous.width
           || normalized.position !== previous.position;
@@ -3398,7 +3469,6 @@ export class BrushEngine {
         this.requestRender();
         this.callbacks.onStatus?.("WebGPU Stroke enabled.", "ok");
       } else {
-        await this.waitForIdle();
         if (this.styleStackNeedsCompositor()) {
           await setRasterStrokeGeometryEnabled(this, false);
           this.rasterStrokePendingComposeRect = rasterStrokeEffectRect(this, 
@@ -3432,9 +3502,15 @@ export class BrushEngine {
         }
       }
       this.publishStats();
-      this.recordRasterLayerMetadataMutation("stroke", historyBefore);
       return true;
     } catch (error) {
+      if (historyAccepted) {
+        this.paintDisplayMipValidThroughLevel = 0;
+        this.presentationCacheNeedsFullRebuild = true;
+        this.displayDirty = true;
+        this.requestRender();
+        throw error;
+      }
       this.rasterStrokeStyle = previous;
       try {
         if (previousActive && !this.rasterStrokeRenderer) {
@@ -3513,11 +3589,21 @@ export class BrushEngine {
       DOCUMENT_WIDTH,
       DOCUMENT_HEIGHT,
     );
+    const nextStackNeedsCompositor = layerEffectRendererRequirements(
+      this.rasterStrokeStyle,
+      normalized,
+      this.rasterOuterShadowStyle,
+      this.rasterInnerShadowStyle,
+      this.rasterColorOverlayStyle,
+      this.layerStack.active.contentOpacity,
+    ).needsStrokeRenderer;
     this.rasterBevelBusy = true;
+    let historyAccepted = false;
     try {
       await this.waitForIdle();
-      this.rasterBevelStyle = normalized;
-      invalidateActiveLayerBake(this);
+      await this.ensureActiveRasterStylePresentationResources(
+        nextStackNeedsCompositor,
+      );
       if (normalized.enabled) {
         if (!this.rasterBevelRenderer) {
           this.callbacks.onStatus?.("Preparing Bevel/Emboss Heightfield V2…", "working");
@@ -3553,28 +3639,35 @@ export class BrushEngine {
           previousRect,
           nextRect,
         );
-        this.callbacks.onStatus?.("Bevel/Emboss Heightfield V2 enabled.", "ok");
       } else {
         this.rasterBevelPendingComposeRect = previousRect;
+      }
+      this.rasterBevelStyle = normalized;
+      invalidateActiveLayerBake(this);
+      this.recordRasterLayerMetadataMutation("bevel", historyBefore);
+      historyAccepted = true;
+      if (!normalized.enabled) {
         releaseRasterBevelRenderer(this);
         if (!this.styleStackNeedsCompositor()) {
           releaseRasterStrokeRenderer(this);
-        }
-        if (previousActive) {
-          this.callbacks.onStatus?.(
-            "Bevel/Emboss disabled; heightfield memory released.",
-            "ok",
-          );
         }
       }
       this.paintDisplayMipValidThroughLevel = 0;
       this.presentationCacheNeedsFullRebuild = true;
       this.displayDirty = true;
       this.requestRender();
+      if (normalized.enabled) {
+        this.callbacks.onStatus?.("Bevel/Emboss Heightfield V2 enabled.", "ok");
+      } else if (previousActive) {
+        this.callbacks.onStatus?.(
+          "Bevel/Emboss disabled; heightfield memory released.",
+          "ok",
+        );
+      }
       this.publishStats();
-      this.recordRasterLayerMetadataMutation("bevel", historyBefore);
       return true;
     } catch (error) {
+      if (historyAccepted) throw error;
       this.rasterBevelStyle = previous;
       if (!previousActive) {
         releaseRasterBevelRenderer(this);
@@ -3651,11 +3744,21 @@ export class BrushEngine {
       DOCUMENT_WIDTH,
       DOCUMENT_HEIGHT,
     );
+    const nextStackNeedsCompositor = layerEffectRendererRequirements(
+      this.rasterStrokeStyle,
+      this.rasterBevelStyle,
+      normalized,
+      this.rasterInnerShadowStyle,
+      this.rasterColorOverlayStyle,
+      this.layerStack.active.contentOpacity,
+    ).needsStrokeRenderer;
     this.rasterOuterShadowBusy = true;
+    let historyAccepted = false;
     try {
       await this.waitForIdle();
-      this.rasterOuterShadowStyle = normalized;
-      invalidateActiveLayerBake(this);
+      await this.ensureActiveRasterStylePresentationResources(
+        nextStackNeedsCompositor,
+      );
       if (normalized.enabled) {
         if (!this.rasterOuterShadowRenderer) {
           this.callbacks.onStatus?.("Preparing WebGPU Outer Shadow…", "working");
@@ -3684,26 +3787,35 @@ export class BrushEngine {
           previousRect,
           nextRect,
         );
-        this.callbacks.onStatus?.("WebGPU Outer Shadow enabled.", "ok");
       } else {
         this.rasterOuterShadowPendingComposeRect = previousRect;
+      }
+      this.rasterOuterShadowStyle = normalized;
+      invalidateActiveLayerBake(this);
+      this.recordRasterLayerMetadataMutation("outer-shadow", historyBefore);
+      historyAccepted = true;
+      if (!normalized.enabled) {
         releaseRasterOuterShadowRenderer(this);
         if (!this.styleStackNeedsCompositor()) {
           releaseRasterStrokeRenderer(this);
         }
-        this.callbacks.onStatus?.(
-          "Outer Shadow disabled; R16F matte released.",
-          "ok",
-        );
       }
       this.paintDisplayMipValidThroughLevel = 0;
       this.presentationCacheNeedsFullRebuild = true;
       this.displayDirty = true;
       this.requestRender();
+      if (normalized.enabled) {
+        this.callbacks.onStatus?.("WebGPU Outer Shadow enabled.", "ok");
+      } else {
+        this.callbacks.onStatus?.(
+          "Outer Shadow disabled; R16F matte released.",
+          "ok",
+        );
+      }
       this.publishStats();
-      this.recordRasterLayerMetadataMutation("outer-shadow", historyBefore);
       return true;
     } catch (error) {
+      if (historyAccepted) throw error;
       this.rasterOuterShadowStyle = previous;
       if (!previous.enabled) {
         releaseRasterOuterShadowRenderer(this);
@@ -3770,11 +3882,21 @@ export class BrushEngine {
       DOCUMENT_WIDTH,
       DOCUMENT_HEIGHT,
     );
+    const nextStackNeedsCompositor = layerEffectRendererRequirements(
+      this.rasterStrokeStyle,
+      this.rasterBevelStyle,
+      this.rasterOuterShadowStyle,
+      normalized,
+      this.rasterColorOverlayStyle,
+      this.layerStack.active.contentOpacity,
+    ).needsStrokeRenderer;
     this.rasterInnerShadowBusy = true;
+    let historyAccepted = false;
     try {
       await this.waitForIdle();
-      this.rasterInnerShadowStyle = normalized;
-      invalidateActiveLayerBake(this);
+      await this.ensureActiveRasterStylePresentationResources(
+        nextStackNeedsCompositor,
+      );
       if (normalized.enabled) {
         if (!this.rasterInnerShadowRenderer) {
           this.callbacks.onStatus?.("Preparing WebGPU Inner Shadow…", "working");
@@ -3803,26 +3925,35 @@ export class BrushEngine {
           previousRect,
           nextRect,
         );
-        this.callbacks.onStatus?.("WebGPU Inner Shadow enabled.", "ok");
       } else {
         this.rasterInnerShadowPendingComposeRect = previousRect;
+      }
+      this.rasterInnerShadowStyle = normalized;
+      invalidateActiveLayerBake(this);
+      this.recordRasterLayerMetadataMutation("inner-shadow", historyBefore);
+      historyAccepted = true;
+      if (!normalized.enabled) {
         releaseRasterInnerShadowRenderer(this);
         if (!this.styleStackNeedsCompositor()) {
           releaseRasterStrokeRenderer(this);
         }
-        this.callbacks.onStatus?.(
-          "Inner Shadow disabled; R16F matte released.",
-          "ok",
-        );
       }
       this.paintDisplayMipValidThroughLevel = 0;
       this.presentationCacheNeedsFullRebuild = true;
       this.displayDirty = true;
       this.requestRender();
+      if (normalized.enabled) {
+        this.callbacks.onStatus?.("WebGPU Inner Shadow enabled.", "ok");
+      } else {
+        this.callbacks.onStatus?.(
+          "Inner Shadow disabled; R16F matte released.",
+          "ok",
+        );
+      }
       this.publishStats();
-      this.recordRasterLayerMetadataMutation("inner-shadow", historyBefore);
       return true;
     } catch (error) {
+      if (historyAccepted) throw error;
       this.rasterInnerShadowStyle = previous;
       if (!previous.enabled) {
         releaseRasterInnerShadowRenderer(this);
@@ -8176,6 +8307,37 @@ export class BrushEngine {
     );
   }
 
+  /**
+   * Preflights the ordered active-raster family for a prospective style stack.
+   * The caller supplies the candidate requirement because false→true effect
+   * transitions must finish compilation before the live style is assigned.
+   */
+  async ensureActiveRasterStylePresentationResources(
+    candidateNeedsCompositor: boolean,
+  ): Promise<void> {
+    if (
+      !candidateNeedsCompositor
+      || !this.mixedSceneStack
+    ) {
+      return;
+    }
+    if (
+      this.mixedSceneStack.semanticCount === 0
+      && (
+        !this.usesOrderedScenePresentation()
+        || this.usesLayerBlendTilePresentation()
+      )
+    ) {
+      return;
+    }
+    if (this.mixedScenePaintNeedsFullCompositor()) {
+      await this.ensureMixedSceneEditorResources();
+      return;
+    }
+    await ensureMixedSceneActiveRasterStrokePipelines(this);
+    if (this.deviceLostError) throw this.deviceLostError;
+  }
+
   private async ensureSelectedMixedScenePaintPipelines(
     settings: BrushSettings,
   ): Promise<void> {
@@ -9746,6 +9908,46 @@ export class BrushEngine {
         ),
       );
     }
+    // Freeze before the first candidate-resource await. A controller or view
+    // frame must keep presenting the previous derived state until every cold
+    // capability and replacement surface has succeeded.
+    this.layerPresentationFrozen = true;
+    const advancedLayerCompositionRequired = orderedLayerBlendPresentationRequired(this);
+    const clippingScratchRequired = Boolean(
+      this.mixedSceneStack?.hasHeterogeneousClipping
+      || mixedSceneRasterTransformPreviewHasSegmentedClipping(this),
+    );
+    const orderedPresentationRequired = this.usesOrderedScenePresentation();
+    if (orderedPresentationRequired) {
+      // A semantic edit, rasterization, merge or history replay can expose the
+      // other presentation family without going through a layer metadata
+      // setter. Validate the family selected by the candidate scene while the
+      // previous complete presentation remains frozen for rollback.
+      const needsViewportBlend = advancedLayerCompositionRequired
+        && !this.usesLayerBlendTilePresentation();
+      if (needsViewportBlend || clippingScratchRequired) {
+        await this.ensureMixedSceneEditorResources();
+      } else {
+        await ensureMixedScenePresentationResources(this);
+      }
+      await prewarmMixedSceneLinearTextureForLayerBlend(
+        this,
+        Math.max(1, this.canvas.width),
+        Math.max(1, this.canvas.height),
+        needsViewportBlend,
+      );
+      if (clippingScratchRequired) {
+        await prewarmMixedSceneClippingScratch(
+          this,
+          Math.max(1, this.canvas.width),
+          Math.max(1, this.canvas.height),
+          true,
+        );
+      }
+      if (advancedLayerCompositionRequired && this.usesLayerBlendTilePresentation()) {
+        await ensureLayerBlendTilePresentationResources(this);
+      }
+    }
     const reusableKeys = options.reuseUnchangedRasterRuns
       ? reusableMixedSceneRasterRunKeys(
         previousCompositionSegments,
@@ -9758,7 +9960,6 @@ export class BrushEngine {
     >();
     const survivingPreviousSegments: MixedSceneRasterSegmentResources[] = [];
 
-    this.layerPresentationFrozen = true;
     this.mergedBelow = null;
     this.mergedAbove = null;
     this.mixedSceneRasterSegments = [];
@@ -9910,8 +10111,13 @@ export class BrushEngine {
       retargetLightGlazeBindGroups(this);
       releaseFusedLayerBakes(this);
       this.presentationCacheNeedsFullRebuild = true;
-      this.layerPresentationFrozen = false;
       candidatePublished = true;
+      if (!this.usesLayerBlendTilePresentation()) {
+        releaseLayerBlendTilePresentationResources(this);
+      }
+      releaseUnusedMixedSceneBlendScratch(this);
+      releaseUnusedMixedSceneClippingScratch(this);
+      this.layerPresentationFrozen = false;
     } catch (error) {
       if (!candidatePublished) {
         this.mergedBelow = null;
@@ -10031,6 +10237,11 @@ export class BrushEngine {
         after,
       );
     } catch (error) {
+      // History publication is the commit boundary for an open metadata edit.
+      // Its callers may already have replaced or released derived GPU state, so
+      // a synchronous CPU snapshot restore cannot safely be presented. Keep the
+      // last complete frame frozen and fail closed until the document reloads.
+      this.layerPresentationFrozen = true;
       try {
         restoreRasterLayerMetadataHistorySnapshot(this, edit);
       } catch (rollbackError) {
@@ -11310,6 +11521,18 @@ export class BrushEngine {
       if (!scene && requestedSceneClippingParentKey !== null) {
         throw new Error("The mixed scene is required to create a clipping layer.");
       }
+      if (requestedSceneClippingParentKey !== null) {
+        const clippingBase = scene!.itemByKey(requestedSceneClippingParentKey);
+        if (clippingBase.kind === "raster") {
+          // Active clipping resources retain viewport-ready raster segments so
+          // a later live composition change does not rebuild the group.
+          await ensureMixedScenePresentationResources(this);
+        } else {
+          // A raster mask attached to a semantic base needs the heterogeneous
+          // clipping pipelines, not only the shared raster-segment layout.
+          await this.ensureMixedSceneEditorResources();
+        }
+      }
       // This transaction never mutates semantic vector documents. Sharing them
       // keeps rollback preparation proportional to node count, not path bytes.
       const mixedSceneState = scene?.captureState(true) ?? null;
@@ -11757,7 +11980,12 @@ export class BrushEngine {
       "content-opacity",
     );
     const changed = await setLayerContentOpacity(this, index, opacity);
-    if (changed) this.recordRasterLayerMetadataMutation("content-opacity", before);
+    if (changed) {
+      this.recordRasterLayerMetadataMutation("content-opacity", before);
+      if (!this.styleStackNeedsCompositor()) {
+        releaseRasterStrokeRenderer(this);
+      }
+    }
     return changed;
   }
 
@@ -11876,6 +12104,23 @@ export class BrushEngine {
     let changed = false;
     try {
       await this.waitForIdle();
+      const itemIndex = scene.indexOfKey(key);
+      const itemBelow = enabled && itemIndex > 0
+        ? scene.items[itemIndex - 1]
+        : null;
+      const candidateBase = itemBelow
+        ? scene.itemByKey(scene.clippingBaseKey(itemBelow.key))
+        : null;
+      const candidateNeedsHeterogeneousClipping = scene.hasHeterogeneousClipping
+        || item.kind !== "raster"
+        || (candidateBase !== null && candidateBase.kind !== "raster");
+      if (candidateNeedsHeterogeneousClipping) {
+        await this.ensureMixedSceneEditorResources();
+      } else {
+        // A raster-only document normally keeps this optional layout cold.
+        // Active clipping groups still create viewport-ready segment bindings.
+        await ensureMixedScenePresentationResources(this);
+      }
       this.persistActiveLayerState();
       changed = scene.setClippingEnabled(key, Boolean(enabled));
       this.layerStack.restoreClippingHistoryState(

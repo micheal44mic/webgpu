@@ -409,10 +409,37 @@ assert.match(
   /async deleteLayer\([\s\S]*?catch \(error\) \{\s*for \(const entry of entries\) destroyLayerColdStorage\(entry\.seed\)/,
   "Delete deve liberare anche i seed catturati prima di un fault intermedio",
 );
-assert.match(
-  brushEngineSource,
-  /commitRasterLayerMetadataHistoryEdit\([\s\S]*?catch \(error\)[\s\S]*?restoreRasterLayerMetadataHistorySnapshot\(this, edit\)[\s\S]*?latchDocumentStateInconsistent/,
-  "il commit metadata deve ripristinare lo snapshot prima di bloccare uno stato non pubblicato",
+const metadataCommitStart = brushEngineSource.indexOf(
+  "  commitRasterLayerMetadataHistoryEdit(token: number): boolean {",
+);
+const metadataCommitEnd = brushEngineSource.indexOf(
+  "  cancelRasterLayerMetadataHistoryEdit(token: number): boolean {",
+  metadataCommitStart,
+);
+assert(
+  metadataCommitStart >= 0 && metadataCommitEnd > metadataCommitStart,
+  "Il verifier deve isolare il commit dei metadati raster.",
+);
+const metadataCommit = brushEngineSource.slice(metadataCommitStart, metadataCommitEnd);
+const metadataCommitFailure = metadataCommit.indexOf("    } catch (error) {");
+const freezeMetadataPresentation = metadataCommit.indexOf(
+  "this.layerPresentationFrozen = true;",
+  metadataCommitFailure,
+);
+const restoreMetadataSnapshot = metadataCommit.indexOf(
+  "restoreRasterLayerMetadataHistorySnapshot(this, edit);",
+  metadataCommitFailure,
+);
+const latchMetadataInconsistency = metadataCommit.indexOf(
+  "this.latchDocumentStateInconsistent(",
+  metadataCommitFailure,
+);
+assert(
+  metadataCommitFailure >= 0
+    && freezeMetadataPresentation > metadataCommitFailure
+    && restoreMetadataSnapshot > freezeMetadataPresentation
+    && latchMetadataInconsistency > restoreMetadataSnapshot,
+  "Un commit metadata rifiutato deve congelare la presentazione prima del rollback CPU e del latch fail-closed.",
 );
 assert.match(
   brushEngineSource,

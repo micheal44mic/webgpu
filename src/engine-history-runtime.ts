@@ -391,13 +391,20 @@ export async function applyRasterLayerMetadataHistoryState(
     action.property,
   );
   engine.layerSwitchBusy = true;
+  let presentationTransactionStarted = false;
+  let presentationSafe = false;
   try {
+    await engine.beginPresentationTransaction();
+    presentationTransactionStarted = true;
     assignRasterLayerMetadataHistoryValue(engine, action, target);
     await refreshRasterLayerMetadataPresentation(engine, action);
+    presentationSafe = true;
   } catch (error) {
+    if (!presentationTransactionStarted) throw error;
     try {
       assignRasterLayerMetadataHistoryValue(engine, action, previous.value);
       await refreshRasterLayerMetadataPresentation(engine, action);
+      presentationSafe = true;
     } catch (restoreError) {
       engine.latchDocumentStateInconsistent(
         "State is inconsistent after raster property Undo/Redo. Reload the page.",
@@ -413,6 +420,9 @@ export async function applyRasterLayerMetadataHistoryState(
     }
     throw error;
   } finally {
+    if (presentationTransactionStarted && presentationSafe) {
+      engine.endPresentationTransaction();
+    }
     engine.layerSwitchBusy = false;
     engine.scheduleLayerColdCompression();
     publishMixedScene(engine);

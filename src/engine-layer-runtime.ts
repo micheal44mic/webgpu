@@ -60,9 +60,12 @@ import {
   destroyMixedSceneRasterSegment,
   ensureMixedSceneLinearTexture,
   mixedSceneItemIsVisible,
+  prewarmMixedSceneClippingScratch,
   prewarmMixedSceneLinearTextureForLayerBlend,
   publishMixedScene,
   rebuildVectorTextDisplayBindGroup,
+  releaseUnusedMixedSceneBlendScratch,
+  releaseUnusedMixedSceneClippingScratch,
 } from "./engine-vector-text-runtime";
 import { type DirtyRect } from "./engine-stroke-types";
 import { layerEffectRendererRequirements, type LayerRecord } from "./layer-stack";
@@ -97,6 +100,7 @@ import {
 import { type VectorTextViewState } from "./vector-text-types";
 import {
   mixedSceneRasterTransformPreviewCompositionLayerIds,
+  mixedSceneRasterTransformPreviewHasSegmentedClipping,
   mixedSceneRasterTransformPreviewUsesSegmentedClipping,
 } from "./engine-mixed-scene-raster-preview-runtime";
 import { normalizeRasterBevelStyle } from "./bevel-core";
@@ -122,7 +126,7 @@ import {
 } from "./engine-resource-setup";
 import {
   ensureLayerBlendTilePresentationResources,
-  layerBlendTilePresentationRequired,
+  layerBlendTilePresentationEligible,
   releaseLayerBlendTilePresentationResources,
 } from "./engine-layer-blend-tile-runtime";
 import {
@@ -2288,9 +2292,41 @@ export async function recreateLayerResources(
   for (const gpu of supersededLayerGpu) {
     destroyLayerGpuResources(engine, gpu);
   }
-  if (layerBlendTilePresentationRequired(engine)) {
-    await ensureLayerBlendTilePresentationResources(engine);
+  if (engine.usesOrderedScenePresentation()) {
+    // Document recreation can invalidate the linear target as well as optional
+    // blend and clipping peers. Rebuild only the family selected by live state.
+    const advancedLayerCompositionRequired = orderedLayerBlendPresentationRequired(engine);
+    const clippingScratchRequired = Boolean(
+      engine.mixedSceneStack?.hasHeterogeneousClipping
+      || mixedSceneRasterTransformPreviewHasSegmentedClipping(engine),
+    );
+    const needsViewportBlend = advancedLayerCompositionRequired
+      && !engine.usesLayerBlendTilePresentation();
+    if (needsViewportBlend || clippingScratchRequired) {
+      await engine.ensureMixedSceneEditorResources();
+    } else {
+      await ensureMixedScenePresentationResources(engine);
+    }
+    await prewarmMixedSceneLinearTextureForLayerBlend(
+      engine,
+      Math.max(1, engine.canvas.width),
+      Math.max(1, engine.canvas.height),
+      needsViewportBlend,
+    );
+    if (clippingScratchRequired) {
+      await prewarmMixedSceneClippingScratch(
+        engine,
+        Math.max(1, engine.canvas.width),
+        Math.max(1, engine.canvas.height),
+        true,
+      );
+    }
+    if (advancedLayerCompositionRequired && engine.usesLayerBlendTilePresentation()) {
+      await ensureLayerBlendTilePresentationResources(engine);
+    }
   }
+  releaseUnusedMixedSceneBlendScratch(engine);
+  releaseUnusedMixedSceneClippingScratch(engine);
   engine.completeStartupPhase("document-bindings", "Publishing document GPU resources", {
     format,
   });
@@ -5271,18 +5307,29 @@ async function setLayerCompositionField(
   const hadTileCompositor = engine.layerBlendTileCompositor !== null;
   try {
     await engine.waitForIdle();
+    // The candidate metadata changes presentation selection immediately. Keep
+    // every view frame on the previous derived state until preflight and the
+    // candidate rebuild either publish together or rollback together.
+    engine.layerPresentationFrozen = true;
     apply(record);
     const candidateAdvanced = orderedLayerBlendPresentationRequired(engine);
-    const usesViewportComposition = engine.usesOrderedScenePresentation();
+    const candidateUsesTileComposition = candidateAdvanced
+      && layerBlendTilePresentationEligible(engine);
+    const candidateNeedsViewportBlend = candidateAdvanced
+      && !candidateUsesTileComposition;
     if (candidateAdvanced) {
-      await ensureMixedScenePresentationResources(engine);
+      if (candidateNeedsViewportBlend) {
+        await engine.ensureMixedSceneEditorResources();
+      } else {
+        await ensureMixedScenePresentationResources(engine);
+      }
       await prewarmMixedSceneLinearTextureForLayerBlend(
         engine,
         Math.max(1, engine.canvas.width),
         Math.max(1, engine.canvas.height),
-        usesViewportComposition,
+        candidateNeedsViewportBlend,
       );
-      if (!usesViewportComposition) {
+      if (candidateUsesTileComposition) {
         await ensureLayerBlendTilePresentationResources(engine);
       }
     }
@@ -5386,6 +5433,23 @@ export async function setLayerContentOpacity(
     engine.layerSwitchBusy = true;
     const gpu = engine.requireLayerGpu(record.id);
     const previousBakeValid = gpu.bakeValid;
+    const candidateNeedsCompositor = layerEffectRendererRequirements(
+      record.strokeStyle,
+      record.bevelStyle,
+      record.outerShadowStyle,
+      record.innerShadowStyle,
+      record.colorOverlayStyle,
+      next,
+    ).needsStrokeRenderer;
+    const candidateRecord: LayerRecord = {
+      ...record,
+      contentOpacity: next,
+    };
+    const rendererWillBeReleased = Boolean(
+      engine.rasterStrokeRenderer
+      && !candidateNeedsCompositor
+      && !engine.layerBlendTileCompositor
+    );
     const queuePreview = (): void => {
       if (engine.styleStackActive() && record.hasContent) {
         engine.rasterStrokePendingComposeRect = mergeDirtyRects(
@@ -5399,8 +5463,14 @@ export async function setLayerContentOpacity(
       engine.requestRender();
     };
     try {
+      if (rendererWillBeReleased) {
+        await engine.waitForIdle();
+      }
+      await engine.ensureActiveRasterStylePresentationResources(
+        candidateNeedsCompositor,
+      );
+      await ensureEffectRenderersForRecord(engine, candidateRecord);
       record.contentOpacity = next;
-      await ensureEffectRenderersForRecord(engine, record);
       gpu.bakeValid = false;
       invalidateActiveLayerBake(engine);
       queuePreview();
@@ -5531,8 +5601,10 @@ export async function setLayerBlendMode(
         || engine.layerStack.layers.some(
           (candidate) => candidate.id !== record.id && candidate.blendMode !== "normal",
         );
-      const usesViewportComposition = engine.usesOrderedScenePresentation();
-      const candidateNeedsViewportBlend = candidateAdvanced && usesViewportComposition;
+      const candidateUsesTileComposition = candidateAdvanced
+        && layerBlendTilePresentationEligible(engine);
+      const candidateNeedsViewportBlend = candidateAdvanced
+        && !candidateUsesTileComposition;
       if (candidateAdvanced) {
         if (candidateNeedsViewportBlend) {
           await engine.ensureMixedSceneEditorResources();
@@ -5545,7 +5617,7 @@ export async function setLayerBlendMode(
           Math.max(1, engine.canvas.height),
           candidateNeedsViewportBlend,
         );
-        if (!usesViewportComposition) {
+        if (candidateUsesTileComposition) {
           await ensureLayerBlendTilePresentationResources(engine);
         }
       }
@@ -5555,6 +5627,9 @@ export async function setLayerBlendMode(
       // active clipping-child mode is likewise packed by writeDisplayUniforms;
       // suffixSteps contain only the other children and remain valid.
       record.blendMode = blendMode;
+      if (!candidateUsesTileComposition) {
+        releaseLayerBlendTilePresentationResources(engine);
+      }
       engine.paintDisplayMipValidThroughLevel = 0;
       engine.presentationCacheNeedsFullRebuild = true;
       engine.displayDirty = true;
@@ -5566,9 +5641,9 @@ export async function setLayerBlendMode(
       || engine.layerStack.layers.some(
         (candidate) => candidate.id !== record.id && candidate.blendMode !== "normal",
       );
-    const usesViewportComposition = engine.usesOrderedScenePresentation();
-    const candidateNeedsTile = candidateAdvanced && !usesViewportComposition;
-    const candidateNeedsViewportBlend = candidateAdvanced && usesViewportComposition;
+    const candidateNeedsTile = candidateAdvanced
+      && layerBlendTilePresentationEligible(engine);
+    const candidateNeedsViewportBlend = candidateAdvanced && !candidateNeedsTile;
     if (candidateAdvanced) {
       // The screen-linear cache is also the destination of the exact tile
       // path. With semantic nodes, validate its two RGBA16F ping-pong peers as
@@ -5587,7 +5662,7 @@ export async function setLayerBlendMode(
     }
     if (candidateNeedsTile) {
       // Allocate and validate the bounded live working set before metadata is
-      // published. An OOM therefore leaves both the mode and history untouched.
+      // published. An OOM therefore leaves both mode and history untouched.
       await ensureLayerBlendTilePresentationResources(engine);
     }
     record.blendMode = blendMode;

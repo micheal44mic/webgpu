@@ -478,6 +478,20 @@ assert.equal(
 }
 
 {
+  const stack = new MixedSceneStack([1]);
+  const text = stack.addTextAboveSelection(seed(""));
+  assert.equal(
+    stack.visibleSemanticCount,
+    1,
+    "empty visible text must retain ordered presentation across synchronous content edits",
+  );
+  stack.updateText(text.id, { text: "restored" });
+  assert.equal(stack.visibleSemanticCount, 1);
+  stack.setTextVisibility(text.id, false);
+  assert.equal(stack.visibleSemanticCount, 0);
+}
+
+{
   const stack = new MixedSceneStack([1, 2]);
   const image = stack.addImageAboveSelection(imageSeed(), "Foto");
   assert.equal(image.kind, "image");

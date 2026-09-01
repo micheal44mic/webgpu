@@ -348,7 +348,10 @@ export class MixedSceneStack {
   get visibleSemanticCount(): number {
     let count = 0;
     for (const node of this.textNodes.values()) {
-      if (node.visible && node.opacity > 0 && node.text.length > 0) count += 1;
+      // Keep an empty but visible text node in the ordered presentation family.
+      // Text content edits are synchronous, so letting an empty string switch to
+      // the raster-only compositor could expose cold viewport resources mid-frame.
+      if (node.visible && node.opacity > 0) count += 1;
     }
     for (const node of this.svgNodes.values()) {
       if (node.visible && node.opacity > 0) count += 1;

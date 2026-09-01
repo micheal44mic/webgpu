@@ -14,9 +14,11 @@ const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
 const runtimeSource = read("src/engine-mixed-scene-raster-preview-runtime.ts");
 const layerRuntimeSource = read("src/engine-layer-runtime.ts");
+const vectorRuntimeSource = read("src/engine-vector-text-runtime.ts");
 const compositorSource = read("src/mixed-scene-compositor-shader.ts");
 const engineSource = read("src/brush-engine.ts");
 const resourceSetupSource = read("src/engine-runtime-misc.ts");
+const shapeResourceSource = read("src/mixed-scene-shape-resources.ts");
 
 const transform = normalizeMixedSceneRasterTransformPreview({
   key: "raster:7",
@@ -141,10 +143,56 @@ assert.match(prewarmSource, /new Set<MergedSurfaceResources>\(\)/);
 assert.match(prewarmSource, /mixedSceneRasterSegmentSurfaces\(segment\)/);
 assert.match(prewarmSource, /surface\.mipViews\.length - 1/);
 assert.match(prewarmSource, /device\.queue\.submit[\s\S]*?await engine\.waitForGpuCapped/);
+const previewResourceGateStart = engineSource.indexOf(
+  "private async ensureMixedSceneRasterTransformPreviewResources",
+);
+const previewSetterStart = engineSource.indexOf(
+  "async setMixedSceneRasterTransformPreview",
+  previewResourceGateStart,
+);
+const previewSetterEnd = engineSource.indexOf(
+  "async clearMixedSceneRasterTransformPreview",
+  previewSetterStart,
+);
+assert.ok(previewResourceGateStart >= 0 && previewSetterStart > previewResourceGateStart);
+const previewResourceGate = engineSource.slice(previewResourceGateStart, previewSetterStart);
+const previewSetter = engineSource.slice(previewSetterStart, previewSetterEnd);
 assert.match(
-  engineSource,
-  /await setMixedSceneRasterTransformPreviewRuntime\(this, transforms\);[\s\S]*?await prewarmMixedSceneRasterTransformPreviewPyramids\(this\);[\s\S]*?ensureMixedSceneLinearTexture/,
-  "group Transform must finish sampling preparation before the tool becomes ready",
+  previewResourceGate,
+  /needsSegmentedClipping[\s\S]*?clippingGroupKeys\(transform\.key\)/,
+  "the preflight must inspect prospective clipping groups before preview publication",
+);
+assert.match(
+  previewResourceGate,
+  /needsFullCompositor[\s\S]*?ensureMixedSceneEditorResources[\s\S]*?ensureMixedSceneShapePreviewResources/,
+  "advanced or clipped previews need the full graph while plain raster previews reuse the compact source-over graph",
+);
+assert.match(
+  previewResourceGate,
+  /prewarmMixedSceneRasterTransformPreviewLinearResources\([\s\S]*?needsAdvancedBlend,[\s\S]*?needsSegmentedClipping/,
+  "the prospective ordered viewport must exist before preview state is mutated",
+);
+const gateIndex = previewSetter.indexOf("ensureMixedSceneRasterTransformPreviewResources");
+const mutationIndex = previewSetter.indexOf("setMixedSceneRasterTransformPreviewRuntime");
+const pyramidIndex = previewSetter.indexOf("prewarmMixedSceneRasterTransformPreviewPyramids");
+assert.ok(
+  gateIndex >= 0 && gateIndex < mutationIndex && mutationIndex < pyramidIndex,
+  "group Transform must gate GPU resources before publishing preview state and then prewarm sampling",
+);
+assert.match(
+  shapeResourceSource,
+  /export async function ensureMixedSceneShapePreviewResources[\s\S]*?Mixed scene raster segment source-over pipeline[\s\S]*?Mixed scene active base layer source-over pipeline/,
+  "the reused compact gate must own the segment and active source-over pipelines",
+);
+assert.match(
+  vectorRuntimeSource,
+  /prewarmMixedSceneRasterTransformPreviewLinearResources[\s\S]*?prewarmMixedSceneLinearTextureForLayerBlend[\s\S]*?await prewarmMixedSceneClippingScratch\([\s\S]*?needsSegmentedClipping/,
+  "linear and prospective clipping targets must be validated without relying on published preview IDs",
+);
+assert.match(
+  vectorRuntimeSource,
+  /export async function prewarmMixedSceneClippingScratch[\s\S]*?runGpuAllocationTransaction\([\s\S]*?publishMixedSceneClippingScratchCandidate/,
+  "prospective clipping scratch must publish only after WebGPU validation and out-of-memory scopes succeed",
 );
 assert.match(compositorSource, /sourceLayerPosition[\s\S]*?inverseRowX[\s\S]*?inverseRowY/);
 assert.match(resourceSetupSource, /minBindingSize: MIXED_SCENE_RASTER_SEGMENT_UNIFORM_BYTES/);
@@ -161,6 +209,60 @@ try {
     "/src/engine-mixed-scene-raster-preview-runtime.ts",
   );
   const layerRuntime = await vite.ssrLoadModule("/src/engine-layer-runtime.ts");
+  const vectorRuntime = await vite.ssrLoadModule("/src/engine-vector-text-runtime.ts");
+  const previousGpuTextureUsage = globalThis.GPUTextureUsage;
+  globalThis.GPUTextureUsage = { RENDER_ATTACHMENT: 1, TEXTURE_BINDING: 2 };
+  try {
+    const prospectiveClippingEngine = {
+      deviceLostError: null,
+      layerStack: { layers: [] },
+      displayUniformBuffer: {},
+      mixedScenePresentBindGroupLayout: {},
+      mixedSceneLinearTexture: {},
+      mixedSceneLinearView: {},
+      mixedSceneLinearWidth: 64,
+      mixedSceneLinearHeight: 64,
+      mixedSceneClippingScratchTexture: null,
+      mixedSceneClippingScratchView: null,
+      mixedSceneClippingScratchBindGroup: null,
+      mixedSceneClippingScratchWidth: 0,
+      mixedSceneClippingScratchHeight: 0,
+      mixedSceneClippingScratchCompositePipeline: {},
+      presentationCacheNeedsFullRebuild: false,
+      device: {
+        pushErrorScope() {},
+        async popErrorScope() {
+          return null;
+        },
+        createTexture() {
+          return {
+            createView() {
+              return { kind: "prospective clipping view" };
+            },
+            destroy() {},
+          };
+        },
+        createBindGroup() {
+          return { kind: "prospective clipping bind group" };
+        },
+      },
+    };
+    await vectorRuntime.prewarmMixedSceneRasterTransformPreviewLinearResources(
+      prospectiveClippingEngine,
+      64,
+      64,
+      false,
+      true,
+    );
+    assert.ok(
+      prospectiveClippingEngine.mixedSceneClippingScratchTexture,
+      "prospective clipping must allocate scratch before preview IDs are published",
+    );
+    assert.equal(prospectiveClippingEngine.presentationCacheNeedsFullRebuild, true);
+  } finally {
+    if (previousGpuTextureUsage === undefined) delete globalThis.GPUTextureUsage;
+    else globalThis.GPUTextureUsage = previousGpuTextureUsage;
+  }
   const events = [];
   const makeSurface = (name, levels) => ({
     name,

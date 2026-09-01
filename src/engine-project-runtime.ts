@@ -18,8 +18,10 @@ import type {
 import {
   allocateLayerGpuResources,
   destroyLayerGpuResources,
+  layerNeedsBackdropComposition,
   recreateLayerResources,
 } from "./engine-layer-runtime";
+import { ensureLayerBlendTilePresentationResources } from "./engine-layer-blend-tile-runtime";
 import {
   destroyActiveCloneStrokeSession,
   releasePreparedCloneSourceAndWait,
@@ -56,6 +58,11 @@ import {
 import { cloneRasterLayerSource } from "./raster-layer-source";
 import { normalizeRasterColorOverlayStyle } from "./raster-color-overlay-core";
 import { normalizeDocumentBackground } from "./document-background";
+import { ensureMixedScenePresentationResources } from "./mixed-scene-presentation-resources";
+import {
+  prewarmMixedSceneClippingScratch,
+  prewarmMixedSceneLinearTextureForLayerBlend,
+} from "./engine-vector-text-runtime";
 import {
   cloneLayerTonalBlend,
   DEFAULT_LAYER_CONTENT_OPACITY,
@@ -881,13 +888,54 @@ export async function restoreProjectDocument(
     );
   }
   if (!engine.initialized) throw new Error("The editor is not ready yet.");
-  // A restored semantic item can schedule a presentation frame as soon as the
-  // mixed-scene state is published below. Its layouts/pipelines must therefore
-  // exist before restoreState/activateLayer make that scene visible; deferring
-  // them until the controller starts would let the first frame latch the
-  // document inconsistent with an uninitialized mixed-scene layout.
-  if (snapshot.mixedScene.items.some((item) => item.kind !== "raster")) {
+  const records = snapshot.layers.map(layerRecordFromProject);
+  const restoredScenePlan = new MixedSceneStack(records.map((record) => record.id));
+  restoredScenePlan.restoreState(snapshot.mixedScene, true);
+  const containsSemanticItems = snapshot.mixedScene.items.some(
+    (item) => item.kind !== "raster",
+  );
+  const advancedLayerCompositionRequired = Boolean(engine.mixedSceneStack)
+    && records.some(layerNeedsBackdropComposition);
+  const rasterOnlyLayerBlendPresentationRequired = advancedLayerCompositionRequired
+    && restoredScenePlan.visibleSemanticCount === 0
+    && !restoredScenePlan.hasHeterogeneousClipping;
+  const orderedScenePresentationRequired = advancedLayerCompositionRequired
+    || restoredScenePlan.visibleSemanticCount > 0
+    || restoredScenePlan.hasHeterogeneousClipping;
+  const rasterClippingSegmentLayoutRequired = Boolean(engine.mixedSceneStack)
+    && records.some((record) => record.clippingParentId !== null);
+  // A restored scene can schedule a presentation frame or rebuild an active
+  // clipping child as soon as its CPU state is published below. Prepare the
+  // exact capability before crossing that destructive boundary; the session
+  // controller's overlapping warm-up is deliberately not an ordering guarantee.
+  if (containsSemanticItems) {
     await engine.ensureMixedSceneEditorResources();
+  }
+  if (
+    rasterOnlyLayerBlendPresentationRequired
+    || rasterClippingSegmentLayoutRequired
+  ) {
+    await ensureMixedScenePresentationResources(engine);
+  }
+  if (orderedScenePresentationRequired) {
+    await prewarmMixedSceneLinearTextureForLayerBlend(
+      engine,
+      Math.max(1, engine.canvas.width),
+      Math.max(1, engine.canvas.height),
+      advancedLayerCompositionRequired && !rasterOnlyLayerBlendPresentationRequired,
+      records.some((record) => record.cutoutMode === "document"),
+    );
+  }
+  if (rasterOnlyLayerBlendPresentationRequired) {
+    await ensureLayerBlendTilePresentationResources(engine);
+  }
+  if (restoredScenePlan.hasHeterogeneousClipping) {
+    await prewarmMixedSceneClippingScratch(
+      engine,
+      Math.max(1, engine.canvas.width),
+      Math.max(1, engine.canvas.height),
+      true,
+    );
   }
   engine.persistActiveLayerState();
   if (
@@ -907,7 +955,6 @@ export async function restoreProjectDocument(
   const reusableBlankHot = oldActiveGpu.hot;
   if (!reusableBlankHot) throw new Error("The fresh editor has no reusable layer texture.");
 
-  const records = snapshot.layers.map(layerRecordFromProject);
   const recordById = new Map(records.map((record) => [record.id, record]));
   const storedChunksByLayer = new Map<
     number,
@@ -942,6 +989,8 @@ export async function restoreProjectDocument(
   }
 
   let reusedHotCommitted = false;
+  let presentationTransactionStarted = false;
+  let restoreCompleted = false;
   const installedRasterSources: RasterImageGpuResource[] = [];
   try {
     const installedAssetIds = new Set<string>();
@@ -963,6 +1012,8 @@ export async function restoreProjectDocument(
     const activeRecord = recordById.get(snapshot.activeRasterLayerId);
     if (!activeRecord) throw new Error("The saved active layer is missing.");
     const activeGpu = nextGpu.get(activeRecord.id)!;
+    await engine.beginPresentationTransaction();
+    presentationTransactionStarted = true;
     await promotePersistedLayer(engine, activeRecord, activeGpu, reusableBlankHot);
     reusedHotCommitted = true;
     oldActiveGpu.hot = null;
@@ -1016,6 +1067,7 @@ export async function restoreProjectDocument(
       engine.viewRotationSnappedToZero,
     );
     engine.callbacks.onViewChange?.(engine.getVectorTextViewState(), false);
+    restoreCompleted = true;
   } catch (error) {
     engine.restoredProjectHistoryBaselines.clear();
     for (const resource of installedRasterSources) {
@@ -1029,9 +1081,13 @@ export async function restoreProjectDocument(
     }
     engine.latchDocumentStateInconsistent(
       "The project could not be restored safely. Reload before continuing.",
+      error,
     );
     throw error;
   } finally {
+    if (presentationTransactionStarted && restoreCompleted) {
+      engine.endPresentationTransaction();
+    }
     engine.layerSwitchBusy = false;
     engine.scheduleLayerColdCompression();
   }

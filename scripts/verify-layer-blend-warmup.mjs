@@ -122,10 +122,151 @@ assert.match(
   /candidateAdvanced[\s\S]*?await ensureMixedScenePresentationResources\(engine\)[\s\S]*?await prewarmMixedSceneLinearTextureForLayerBlend/,
   "a direct first blend change must own its minimal presentation-resource gate",
 );
+assert.match(
+  successfulModePath,
+  /candidateUsesTileComposition = candidateAdvanced[\s\S]*?layerBlendTilePresentationEligible\(engine\)[\s\S]*?candidateNeedsTile = candidateAdvanced[\s\S]*?layerBlendTilePresentationEligible\(engine\)/,
+  "blend changes must classify both first-use and already-advanced raster documents without viewport over-allocation",
+);
+assert.equal(
+  (successfulModePath.match(/await ensureLayerBlendTilePresentationResources\(engine\);/g) ?? []).length,
+  2,
+  "both live and rebuilt blend paths must gate their raster-only tile candidate",
+);
+assert.match(
+  successfulModePath,
+  /record\.blendMode = blendMode;[\s\S]*?if \(!candidateUsesTileComposition\) \{[\s\S]*?releaseLayerBlendTilePresentationResources\(engine\)/,
+  "a live transition away from tile composition must release its document-sized working set",
+);
 assert.doesNotMatch(
   successfulModePath,
-  /releaseLayerBlendTilePresentationResources\(engine\)/,
-  "returning to Normal must retain the warmed compositor for the next blend choice",
+  /semanticCount/,
+  "hidden semantic nodes must not force full-size viewport blend scratch during a layer-mode edit",
+);
+
+const compositionFieldStart = layerRuntimeSource.indexOf(
+  "async function setLayerCompositionField(",
+);
+const compositionFieldEnd = layerRuntimeSource.indexOf(
+  "export async function setLayerContentOpacity(",
+  compositionFieldStart,
+);
+assert.ok(compositionFieldStart >= 0 && compositionFieldEnd > compositionFieldStart);
+const compositionFieldBody = layerRuntimeSource.slice(
+  compositionFieldStart,
+  compositionFieldEnd,
+);
+assert.match(
+  compositionFieldBody,
+  /await engine\.waitForIdle\(\);[\s\S]*?engine\.layerPresentationFrozen = true;[\s\S]*?apply\(record\);[\s\S]*?candidateUsesTileComposition = candidateAdvanced[\s\S]*?layerBlendTilePresentationEligible\(engine\)/,
+  "a direct cutout or tonal-blend change must freeze before publishing and classifying its candidate path",
+);
+assert.match(
+  compositionFieldBody,
+  /if \(candidateNeedsViewportBlend\) \{[\s\S]*?await engine\.ensureMixedSceneEditorResources\(\);[\s\S]*?\} else \{[\s\S]*?await ensureMixedScenePresentationResources\(engine\);/,
+  "semantic viewport composition must own the full gate while raster-only composition uses the minimal gate",
+);
+assert.match(
+  compositionFieldBody,
+  /prewarmMixedSceneLinearTextureForLayerBlend\([\s\S]*?candidateNeedsViewportBlend,[\s\S]*?if \(candidateUsesTileComposition\) \{[\s\S]*?await ensureLayerBlendTilePresentationResources\(engine\);/,
+  "advanced composition must allocate the tile compositor only for its current raster-only candidate",
+);
+assert.doesNotMatch(
+  compositionFieldBody,
+  /usesOrderedScenePresentation\(\)/,
+  "candidate composition fields must not mistake raster-only ordered presentation for viewport composition",
+);
+assert.doesNotMatch(
+  compositionFieldBody,
+  /semanticCount/,
+  "cutout and tonal edits must allocate viewport scratch only for the currently selected family",
+);
+
+const rebuildStart = engineSource.indexOf("async rebuildMergedLayerSurfaces(");
+const rebuildEviction = engineSource.indexOf(
+  "this.mergedBelow = null",
+  rebuildStart,
+);
+assert.ok(rebuildStart >= 0 && rebuildEviction > rebuildStart);
+const rebuildPreflight = engineSource.slice(rebuildStart, rebuildEviction);
+assert.match(
+  rebuildPreflight,
+  /this\.layerPresentationFrozen = true;[\s\S]*?advancedLayerCompositionRequired = orderedLayerBlendPresentationRequired\(this\)/,
+  "every structural or history transition must freeze before classifying optional presentation resources",
+);
+assert.match(
+  rebuildPreflight,
+  /needsViewportBlend = advancedLayerCompositionRequired[\s\S]*?&& !this\.usesLayerBlendTilePresentation\(\)[\s\S]*?if \(needsViewportBlend \|\| clippingScratchRequired\) \{[\s\S]*?ensureMixedSceneEditorResources\(\)[\s\S]*?else \{[\s\S]*?ensureMixedScenePresentationResources\(this\)/,
+  "the central transition gate must preflight the currently selected viewport or compact family",
+);
+assert.match(
+  rebuildPreflight,
+  /orderedPresentationRequired = this\.usesOrderedScenePresentation\(\)[\s\S]*?prewarmMixedSceneLinearTextureForLayerBlend\([\s\S]*?needsViewportBlend,[\s\S]*?if \(advancedLayerCompositionRequired && this\.usesLayerBlendTilePresentation\(\)\) \{[\s\S]*?ensureLayerBlendTilePresentationResources\(this\)/,
+  "central rebuilds must prewarm every ordered linear target and allocate tile resources only for the current tile family",
+);
+assert.doesNotMatch(
+  rebuildPreflight,
+  /semanticCount/,
+  "the central transition gate must not retain full-size viewport scratch for hidden semantic nodes",
+);
+assert.match(
+  engineSource,
+  /candidatePublished = true;[\s\S]*?!this\.usesLayerBlendTilePresentation\(\)[\s\S]*?releaseLayerBlendTilePresentationResources\(this\)[\s\S]*?releaseUnusedMixedSceneBlendScratch\(this\);\s*releaseUnusedMixedSceneClippingScratch\(this\);\s*this\.layerPresentationFrozen = false;/,
+  "a successful family transition must release obsolete tile and viewport working sets before presentation resumes",
+);
+
+const recreateStart = layerRuntimeSource.indexOf(
+  "export async function recreateLayerResources(",
+);
+const recreateEnd = layerRuntimeSource.indexOf(
+  "export async function retargetEffectsWorkingSetInternal(",
+  recreateStart,
+);
+assert.ok(recreateStart >= 0 && recreateEnd > recreateStart);
+const recreateBody = layerRuntimeSource.slice(recreateStart, recreateEnd);
+const recreateOrderedPreflightStart = recreateBody.lastIndexOf(
+  "if (engine.usesOrderedScenePresentation())",
+);
+assert.ok(recreateOrderedPreflightStart >= 0);
+const recreateOrderedPreflight = recreateBody.slice(recreateOrderedPreflightStart);
+assert.match(
+  recreateOrderedPreflight,
+  /if \(engine\.usesOrderedScenePresentation\(\)\) \{[\s\S]*?advancedLayerCompositionRequired = orderedLayerBlendPresentationRequired\(engine\)[\s\S]*?needsViewportBlend = advancedLayerCompositionRequired[\s\S]*?&& !engine\.usesLayerBlendTilePresentation\(\)[\s\S]*?prewarmMixedSceneLinearTextureForLayerBlend\([\s\S]*?needsViewportBlend,/,
+  "document recreation must rebuild the linear target for simple ordered scenes as well as advanced ones",
+);
+assert.match(
+  recreateOrderedPreflight,
+  /if \(advancedLayerCompositionRequired && engine\.usesLayerBlendTilePresentation\(\)\) \{\s*await ensureLayerBlendTilePresentationResources\(engine\);/,
+  "document recreation must allocate tile resources only when the recreated scene currently selects the tile family",
+);
+assert.equal(
+  (recreateOrderedPreflight.match(/ensureLayerBlendTilePresentationResources\(engine\)/g) ?? []).length,
+  1,
+  "document recreation must not retain an off-family tile fallback",
+);
+assert.doesNotMatch(
+  recreateOrderedPreflight,
+  /semanticCount/,
+  "document recreation must not infer viewport scratch retention from hidden semantic nodes",
+);
+
+const linearTextureStart = vectorRuntimeSource.indexOf(
+  "export function ensureMixedSceneLinearTexture(",
+);
+const linearTextureEnd = vectorRuntimeSource.indexOf(
+  "export function rebuildVectorTextDependentDisplayBindGroups(",
+  linearTextureStart,
+);
+assert.ok(linearTextureStart >= 0 && linearTextureEnd > linearTextureStart);
+const linearTextureBody = vectorRuntimeSource.slice(linearTextureStart, linearTextureEnd);
+assert.match(
+  linearTextureBody,
+  /needsAdvancedBlend = !engine\.usesLayerBlendTilePresentation\(\)[\s\S]*?rasterLayerNeedsBackdropComposition/,
+  "steady-state viewport scratch must follow the current presentation family",
+);
+assert.doesNotMatch(
+  linearTextureBody,
+  /semanticCount/,
+  "a normal tile frame must release viewport-sized blend scratch even when hidden semantic nodes exist",
 );
 
 assert.doesNotMatch(

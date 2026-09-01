@@ -3714,6 +3714,16 @@ type MixedSceneBlendScratchCandidate = {
   fromGroup: GPUBindGroup;
 };
 
+type MixedSceneClippingScratchCandidate = {
+  texture: GPUTexture;
+  view: GPUTextureView;
+  bindGroup: GPUBindGroup;
+  width: number;
+  height: number;
+};
+
+const mixedSceneClippingScratchPrewarms = new WeakMap<BrushEngine, Promise<void>>();
+
 function createMixedSceneBlendScratchCandidate(
   engine: BrushEngine,
   width: number,
@@ -3893,22 +3903,52 @@ function publishMixedSceneBlendScratchCandidate(
   engine.mixedSceneBlendFromGroupBindGroup = candidate?.fromGroup ?? null;
 }
 
+function releaseMixedSceneBlendScratchResources(engine: BrushEngine): void {
+  const texture = engine.mixedSceneBlendScratchTexture;
+  const operand = engine.mixedSceneBlendOperandTexture;
+  const cutout = engine.mixedSceneBlendCutoutTexture;
+  const group = engine.mixedSceneBlendGroupTexture;
+  const clippingBase = engine.mixedSceneBlendClippingBaseTexture;
+  const documentMask = engine.mixedSceneBlendDocumentMaskTexture;
+  const deepFloor = engine.mixedSceneBlendDeepFloorTexture;
+  publishMixedSceneBlendScratchCandidate(engine, null);
+  texture?.destroy();
+  operand?.destroy();
+  cutout?.destroy();
+  group?.destroy();
+  clippingBase?.destroy();
+  documentMask?.destroy();
+  deepFloor?.destroy();
+}
+
+/** Releases viewport blend targets after a successful transition off that path. */
+export function releaseUnusedMixedSceneBlendScratch(engine: BrushEngine): void {
+  const stillRequired = !engine.usesLayerBlendTilePresentation()
+    && engine.layerStack.layers.some(rasterLayerNeedsBackdropComposition);
+  if (!stillRequired) {
+    releaseMixedSceneBlendScratchResources(engine);
+  }
+}
+
 /**
  * Validates every viewport-sized resource needed by a candidate blend mode
- * before its metadata/history entry is published. Existing resources stay
- * authoritative until both WebGPU error scopes confirm the replacement.
+ * before its metadata/history entry is published. Restore can supply the
+ * candidate Deep-floor requirement before saved records become live. Existing
+ * resources stay authoritative until both WebGPU error scopes confirm the
+ * replacement.
  */
 export async function prewarmMixedSceneLinearTextureForLayerBlend(
   engine: BrushEngine,
   width: number,
   height: number,
   needsAdvancedBlend: boolean,
+  candidateNeedsDeepFloor?: boolean,
 ): Promise<void> {
   const layout = engine.mixedScenePresentBindGroupLayout;
   if (!layout) {
     throw new Error("The mixed-scene presentation layout is not initialized.");
   }
-  const needsDeepFloor = engine.layerStack.layers.some(
+  const needsDeepFloor = candidateNeedsDeepFloor ?? engine.layerStack.layers.some(
     (record) => record.cutoutMode === "document",
   );
   const sameLinearTexture = Boolean(
@@ -4060,28 +4100,45 @@ function releaseMixedSceneClippingScratch(engine: BrushEngine): void {
   engine.mixedSceneClippingScratchTexture = null;
   engine.mixedSceneClippingScratchView = null;
   engine.mixedSceneClippingScratchBindGroup = null;
+  engine.mixedSceneClippingScratchWidth = 0;
+  engine.mixedSceneClippingScratchHeight = 0;
 }
 
-function ensureMixedSceneClippingScratch(
+function mixedSceneClippingScratchNeeded(
+  engine: BrushEngine,
+  forceNeeded: boolean,
+): boolean {
+  return forceNeeded
+    || engine.mixedSceneStack?.hasHeterogeneousClipping === true
+    || mixedSceneRasterTransformPreviewHasSegmentedClipping(engine);
+}
+
+/** Releases the viewport clipping target after its last structural user commits. */
+export function releaseUnusedMixedSceneClippingScratch(engine: BrushEngine): void {
+  if (!mixedSceneClippingScratchNeeded(engine, false)) {
+    releaseMixedSceneClippingScratch(engine);
+  }
+}
+
+function mixedSceneClippingScratchReady(
   engine: BrushEngine,
   width: number,
   height: number,
-): void {
-  const needsScratch = engine.mixedSceneStack?.hasHeterogeneousClipping === true
-    || mixedSceneRasterTransformPreviewHasSegmentedClipping(engine);
-  if (!needsScratch) {
-    releaseMixedSceneClippingScratch(engine);
-    return;
-  }
-  if (
+): boolean {
+  return Boolean(
     engine.mixedSceneClippingScratchTexture
-    && engine.mixedSceneClippingScratchView
-    && engine.mixedSceneClippingScratchBindGroup
-    && engine.mixedSceneLinearWidth === width
-    && engine.mixedSceneLinearHeight === height
-  ) {
-    return;
-  }
+      && engine.mixedSceneClippingScratchView
+      && engine.mixedSceneClippingScratchBindGroup
+      && engine.mixedSceneClippingScratchWidth === width
+      && engine.mixedSceneClippingScratchHeight === height,
+  );
+}
+
+function createMixedSceneClippingScratchCandidate(
+  engine: BrushEngine,
+  width: number,
+  height: number,
+): MixedSceneClippingScratchCandidate {
   const layout = engine.mixedScenePresentBindGroupLayout;
   if (!layout || !engine.mixedSceneClippingScratchCompositePipeline) {
     throw new Error("The mixed-scene clipping compositor is not initialized.");
@@ -4102,48 +4159,119 @@ function ensureMixedSceneClippingScratch(
         { binding: 1, resource: view },
       ],
     });
-    const previousTexture = engine.mixedSceneClippingScratchTexture;
-    engine.mixedSceneClippingScratchTexture = texture;
-    engine.mixedSceneClippingScratchView = view;
-    engine.mixedSceneClippingScratchBindGroup = bindGroup;
-    previousTexture?.destroy();
-    engine.presentationCacheNeedsFullRebuild = true;
+    return { texture, view, bindGroup, width, height };
   } catch (error) {
     texture.destroy();
     throw error;
   }
 }
 
+function publishMixedSceneClippingScratchCandidate(
+  engine: BrushEngine,
+  candidate: MixedSceneClippingScratchCandidate,
+): void {
+  const previousTexture = engine.mixedSceneClippingScratchTexture;
+  engine.mixedSceneClippingScratchTexture = candidate.texture;
+  engine.mixedSceneClippingScratchView = candidate.view;
+  engine.mixedSceneClippingScratchBindGroup = candidate.bindGroup;
+  engine.mixedSceneClippingScratchWidth = candidate.width;
+  engine.mixedSceneClippingScratchHeight = candidate.height;
+  previousTexture?.destroy();
+  engine.presentationCacheNeedsFullRebuild = true;
+}
+
+function ensureMixedSceneClippingScratch(
+  engine: BrushEngine,
+  width: number,
+  height: number,
+  forceNeeded = false,
+): void {
+  if (!mixedSceneClippingScratchNeeded(engine, forceNeeded)) {
+    releaseMixedSceneClippingScratch(engine);
+    return;
+  }
+  if (mixedSceneClippingScratchReady(engine, width, height)) {
+    return;
+  }
+  publishMixedSceneClippingScratchCandidate(
+    engine,
+    createMixedSceneClippingScratchCandidate(engine, width, height),
+  );
+}
+
+/**
+ * Validates a prospective clipping target under WebGPU error scopes before it
+ * can become reachable from preview, restore, or structural scene state.
+ */
+export async function prewarmMixedSceneClippingScratch(
+  engine: BrushEngine,
+  width: number,
+  height: number,
+  forceNeeded = false,
+): Promise<void> {
+  if (!mixedSceneClippingScratchNeeded(engine, forceNeeded)) {
+    return;
+  }
+  if (mixedSceneClippingScratchReady(engine, width, height)) {
+    return;
+  }
+  const existing = mixedSceneClippingScratchPrewarms.get(engine);
+  if (existing) {
+    await existing;
+    await prewarmMixedSceneClippingScratch(engine, width, height, forceNeeded);
+    return;
+  }
+  const initialization = (async (): Promise<void> => {
+    const candidate = await runGpuAllocationTransaction(
+      engine.device,
+      `Mixed-scene clipping prewarm ${width}×${height}`,
+      (transaction) => {
+        const created = createMixedSceneClippingScratchCandidate(engine, width, height);
+        transaction.deferRollback(() => created.texture.destroy());
+        return created;
+      },
+    );
+    publishMixedSceneClippingScratchCandidate(engine, candidate);
+  })();
+  mixedSceneClippingScratchPrewarms.set(engine, initialization);
+  try {
+    await initialization;
+  } finally {
+    if (mixedSceneClippingScratchPrewarms.get(engine) === initialization) {
+      mixedSceneClippingScratchPrewarms.delete(engine);
+    }
+  }
+}
+
+/**
+ * Allocates the viewport-sized targets for a prospective raster Transform
+ * preview without depending on preview state already being published.
+ */
+export async function prewarmMixedSceneRasterTransformPreviewLinearResources(
+  engine: BrushEngine,
+  width: number,
+  height: number,
+  needsAdvancedBlend: boolean,
+  needsSegmentedClipping: boolean,
+): Promise<void> {
+  await prewarmMixedSceneLinearTextureForLayerBlend(
+    engine,
+    width,
+    height,
+    needsAdvancedBlend,
+  );
+  await prewarmMixedSceneClippingScratch(
+    engine,
+    width,
+    height,
+    needsSegmentedClipping,
+  );
+}
+
 export function ensureMixedSceneLinearTexture(engine: BrushEngine, width: number, height: number): void {
-  const releaseBlendScratch = () => {
-    engine.mixedSceneBlendScratchTexture?.destroy();
-    engine.mixedSceneBlendOperandTexture?.destroy();
-    engine.mixedSceneBlendCutoutTexture?.destroy();
-    engine.mixedSceneBlendGroupTexture?.destroy();
-    engine.mixedSceneBlendClippingBaseTexture?.destroy();
-    engine.mixedSceneBlendDocumentMaskTexture?.destroy();
-    engine.mixedSceneBlendDeepFloorTexture?.destroy();
-    engine.mixedSceneBlendScratchTexture = null;
-    engine.mixedSceneBlendScratchView = null;
-    engine.mixedSceneBlendOperandTexture = null;
-    engine.mixedSceneBlendOperandView = null;
-    engine.mixedSceneBlendCutoutTexture = null;
-    engine.mixedSceneBlendCutoutView = null;
-    engine.mixedSceneBlendGroupTexture = null;
-    engine.mixedSceneBlendGroupView = null;
-    engine.mixedSceneBlendClippingBaseTexture = null;
-    engine.mixedSceneBlendClippingBaseView = null;
-    engine.mixedSceneBlendDocumentMaskTexture = null;
-    engine.mixedSceneBlendDocumentMaskView = null;
-    engine.mixedSceneBlendDeepFloorTexture = null;
-    engine.mixedSceneBlendDeepFloorView = null;
-    engine.mixedSceneBlendFromLinearBindGroup = null;
-    engine.mixedSceneBlendFromScratchBindGroup = null;
-    engine.mixedSceneBlendFromGroupBindGroup = null;
-  };
   if (!engine.usesOrderedScenePresentation()) {
     engine.mixedSceneLinearTexture?.destroy();
-    releaseBlendScratch();
+    releaseMixedSceneBlendScratchResources(engine);
     releaseMixedSceneClippingScratch(engine);
     engine.mixedSceneLinearTexture = null;
     engine.mixedSceneLinearView = null;
@@ -4187,7 +4315,7 @@ export function ensureMixedSceneLinearTexture(engine: BrushEngine, width: number
     && blendScratchReady
   ) {
     if (!needsAdvancedBlend) {
-      releaseBlendScratch();
+      releaseMixedSceneBlendScratchResources(engine);
     }
     return;
   }

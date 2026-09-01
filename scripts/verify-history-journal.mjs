@@ -790,6 +790,85 @@ const layerMerge = (
     /cancelRasterLayerMetadataHistoryEdit\(token: number\)[\s\S]*?rasterLayerMetadataHistoryStatesEqual\(edit, current\)/,
     "Cancel può abbandonare soltanto un handshake ancora immutato, mai perdere un effetto già visibile.",
   );
+  const metadataReplayStart = historyRuntime.indexOf(
+    "export async function applyRasterLayerMetadataHistoryState(",
+  );
+  const metadataReplayEnd = historyRuntime.indexOf(
+    "interface RasterSourceHistoryTransition",
+    metadataReplayStart,
+  );
+  assert(
+    metadataReplayStart >= 0 && metadataReplayEnd > metadataReplayStart,
+    "Il verifier deve isolare il replay dei metadati raster.",
+  );
+  const metadataReplay = historyRuntime.slice(metadataReplayStart, metadataReplayEnd);
+  const beginPresentation = metadataReplay.indexOf(
+    "await engine.beginPresentationTransaction()",
+  );
+  const transactionStarted = metadataReplay.indexOf(
+    "presentationTransactionStarted = true",
+    beginPresentation,
+  );
+  const presentationSafeDeclaration = metadataReplay.indexOf(
+    "let presentationSafe = false",
+  );
+  const targetAssignment = metadataReplay.indexOf(
+    "assignRasterLayerMetadataHistoryValue(engine, action, target)",
+    transactionStarted,
+  );
+  const refreshTarget = metadataReplay.indexOf(
+    "await refreshRasterLayerMetadataPresentation(engine, action)",
+    targetAssignment,
+  );
+  const targetPresentationSafe = metadataReplay.indexOf(
+    "presentationSafe = true",
+    refreshTarget,
+  );
+  const rollbackAssignment = metadataReplay.indexOf(
+    "assignRasterLayerMetadataHistoryValue(engine, action, previous.value)",
+    targetPresentationSafe,
+  );
+  const refreshRollback = metadataReplay.indexOf(
+    "await refreshRasterLayerMetadataPresentation(engine, action)",
+    rollbackAssignment,
+  );
+  const rollbackPresentationSafe = metadataReplay.indexOf(
+    "presentationSafe = true",
+    refreshRollback,
+  );
+  const safeEndGuard = metadataReplay.indexOf(
+    "if (presentationTransactionStarted && presentationSafe)",
+    rollbackPresentationSafe,
+  );
+  const endPresentation = metadataReplay.indexOf(
+    "engine.endPresentationTransaction()",
+    safeEndGuard,
+  );
+  const unlock = metadataReplay.indexOf(
+    "engine.layerSwitchBusy = false",
+    endPresentation,
+  );
+  assert(
+    beginPresentation >= 0
+      && presentationSafeDeclaration >= 0
+      && presentationSafeDeclaration < beginPresentation
+      && transactionStarted > beginPresentation
+      && targetAssignment > transactionStarted
+      && refreshTarget > targetAssignment
+      && targetPresentationSafe > refreshTarget
+      && rollbackAssignment > targetPresentationSafe
+      && refreshRollback > rollbackAssignment
+      && rollbackPresentationSafe > refreshRollback
+      && safeEndGuard > rollbackPresentationSafe
+      && endPresentation > safeEndGuard
+      && unlock > endPresentation,
+    "Undo/Redo dei metadati deve riaprire la presentazione solo dopo un refresh target o rollback riuscito.",
+  );
+  assert.match(
+    metadataReplay,
+    /finally \{\s*if \(presentationTransactionStarted && presentationSafe\) \{\s*engine\.endPresentationTransaction\(\);/,
+    "Un replay non sicuro deve lasciare la presentazione congelata nel finally.",
+  );
   for (const [method, property] of [
     ["setRasterColorOverlayStyle", "color-overlay"],
     ["setRasterStrokeStyle", "stroke"],
