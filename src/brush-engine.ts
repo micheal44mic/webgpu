@@ -791,8 +791,13 @@ import {
 } from "./gpu-memory-audit";
 import {
   GpuResourceRegistry,
-  instrumentGpuDevice,
 } from "./gpu-resource-registry";
+import {
+  gpuDeviceSessionIsUsable,
+  requestGpuAdapterForDeviceSession,
+  requestGpuDeviceSessionFromAdapter,
+  type GpuDeviceSession,
+} from "./gpu-device-session";
 import {
   MemoryReservationLedger,
   memoryZoneFor,
@@ -1169,6 +1174,8 @@ export class BrushEngine {
   readonly vectorTextRoiCacheEnabled: boolean;
   readonly vectorGpuResourceSharingEnabled: boolean;
   readonly selectionOverlayCanvas: HTMLCanvasElement | null;
+  private readonly prewarmedGpuSession:
+    BrushEngineOptions["prewarmedGpuSession"];
 
   private adapter!: GPUAdapter;
   device!: GPUDevice;
@@ -2132,6 +2139,7 @@ export class BrushEngine {
   ) {
     this.canvas = canvas;
     this.callbacks = callbacks;
+    this.prewarmedGpuSession = options.prewarmedGpuSession;
     this.bevelBoundingFieldEnabled = options.bevelBoundingFieldEnabled === true;
     this.startupProgressPresentationYieldEnabled =
       options.startupProgressPresentationYieldEnabled === true;
@@ -2325,64 +2333,42 @@ export class BrushEngine {
     this.beginStartupPhase("adapter-request", "Finding a WebGPU adapter");
     await this.yieldStartupProgress();
 
-    let adapter: GPUAdapter;
-    try {
-      if (!navigator.gpu) {
-        throw new Error("WebGPU is not available in this browser or context.");
-      }
-
-      const android = /\bAndroid\b/i.test(navigator.userAgent);
-      // On Android there is commonly a single usable adapter. Requesting the
-      // high-performance profile can make Chrome discard it, so mobile starts
-      // from the neutral choice and only desktop keeps the preference.
-      const adapterOptions: GPURequestAdapterOptions | undefined =
-        /\bWindows\b/i.test(navigator.userAgent) || android
-          ? undefined
-          : { powerPreference: "high-performance" };
-      const adapterWaitTimer = window.setTimeout(() => {
+    let preparedSession: GpuDeviceSession | null = null;
+    if (this.prewarmedGpuSession) {
+      try {
+        const candidate = await this.prewarmedGpuSession;
+        if (
+          candidate
+          && gpuDeviceSessionIsUsable(candidate)
+          && candidate.adapter.limits.maxTextureDimension2D >= DOCUMENT_MAX_EDGE
+        ) {
+          preparedSession = candidate;
+        } else {
+          this.callbacks.onStatus?.(
+            "The prepared GPU session is unavailable; continuing with normal startup…",
+            "working",
+          );
+        }
+      } catch {
+        // Shell warm-up is opportunistic. Its failure must never become an
+        // editor boot dependency, so the established cold request path wins.
         this.callbacks.onStatus?.(
-          "GPU discovery is still in progress… Chrome may take a few seconds.",
+          "GPU preparation could not be reused; continuing with normal startup…",
           "working",
         );
-      }, 6_000);
-      let selectedAdapter: GPUAdapter | null = null;
-      let primaryAdapterError: unknown = null;
-      try {
-        try {
-          selectedAdapter = await navigator.gpu.requestAdapter(adapterOptions);
-        } catch (error) {
-          primaryAdapterError = error;
-        }
-        if (!selectedAdapter && adapterOptions !== undefined) {
-          this.callbacks.onStatus?.(
-            "Retrying WebGPU selection without a power preference…",
-            "working",
-          );
-          selectedAdapter = await navigator.gpu.requestAdapter();
-        }
-        if (!selectedAdapter && android) {
-          this.callbacks.onStatus?.(
-            "Trying WebGPU compatibility mode for Android…",
-            "working",
-          );
-          try {
-            selectedAdapter = await navigator.gpu.requestAdapter({
-              featureLevel: "compatibility",
-            } as GPURequestAdapterOptions & { featureLevel: "compatibility" });
-          } catch {
-            // Older implementations reject this option instead of ignoring it.
-          }
-        }
-      } finally {
-        window.clearTimeout(adapterWaitTimer);
       }
-      if (!selectedAdapter) {
-        if (primaryAdapterError && adapterOptions === undefined) {
-          throw primaryAdapterError;
-        }
-        throw new Error("No compatible WebGPU adapter was found.");
-      }
-      adapter = selectedAdapter;
+    }
+
+    let adapter: GPUAdapter;
+    try {
+      const android = /\bAndroid\b/i.test(navigator.userAgent);
+      adapter = preparedSession?.adapter ?? (
+        await requestGpuAdapterForDeviceSession({
+          gpu: navigator.gpu,
+          userAgent: navigator.userAgent,
+          onStatus: (message) => this.callbacks.onStatus?.(message, "working"),
+        })
+      ).adapter;
       this.adapter = adapter;
 
       if (adapter.limits.maxTextureDimension2D < DOCUMENT_MAX_EDGE) {
@@ -2394,64 +2380,55 @@ export class BrushEngine {
       this.completeStartupPhase("adapter-request", "Finding a WebGPU adapter", {
         android,
         maxTextureDimension2D: adapter.limits.maxTextureDimension2D,
+        preparedSession: preparedSession !== null,
       });
     } catch (error) {
       this.failStartupPhase("adapter-request", "Finding a WebGPU adapter", error);
       throw error;
     }
 
-    // Unico punto da cui il motore ottiene il device: strumentarlo qui rende
-    // contabilizzata ogni allocazione, presente e futura, senza toccare i 125
-    // siti che creano texture e buffer.
+    // Both a prepared handoff and the cold path yield one instrumented session.
+    // Adopting its device and registry together prevents wrapper stacking and
+    // keeps device-keyed program caches on the exact same object identity.
     this.callbacks.onStatus?.("Adapter found. Creating WebGPU device…", "working");
     this.beginStartupPhase("device-request", "Creating the WebGPU device");
     await this.yieldStartupProgress();
-    const deviceWaitTimer = window.setTimeout(() => {
-      this.callbacks.onStatus?.("WebGPU device creation is still in progress…", "working");
-    }, 6_000);
-    let rawDevice: GPUDevice;
+    let deviceSession: GpuDeviceSession;
     // Production startup stays on the feature-neutral device path. High
     // precision glaze commits retain their exact tile fallback, while an
     // optional read-write storage feature can never become a boot dependency.
-    const requiredFeatures: GPUFeatureName[] = [];
     // Timestamp counters are diagnostic-only. The production editor never
     // requests them; Labs opts in when the adapter advertises support and the
     // runtime still falls back to queue-fence timings when they are absent.
-    const requestReleaseGpuTimestamps = location.pathname.endsWith("/labs.html")
-      && adapter.features.has("timestamp-query");
-    if (requestReleaseGpuTimestamps) {
-      requiredFeatures.push("timestamp-query");
-    }
+    const requestReleaseGpuTimestamps = location.pathname.endsWith("/labs.html");
     try {
-      try {
-        rawDevice = await adapter.requestDevice({ requiredFeatures });
-      } catch (error) {
-        if (!requestReleaseGpuTimestamps) throw error;
-        // A diagnostic counter must never prevent Labs from starting on a
-        // driver that advertises it incorrectly. Retry with the production
-        // feature set and keep the queue-fence attribution available.
-        this.callbacks.onStatus?.(
-          "GPU timestamp counters unavailable; continuing with queue timing…",
-          "working",
-        );
-        rawDevice = await adapter.requestDevice({
-          requiredFeatures: requiredFeatures.filter(
-            (feature) => feature !== "timestamp-query",
-          ),
+      if (preparedSession && gpuDeviceSessionIsUsable(preparedSession)) {
+        deviceSession = preparedSession;
+      } else {
+        if (preparedSession) {
+          preparedSession = null;
+          // Loss can race the presentation yield above. Fall back before any
+          // document resource is created on the unusable device.
+          this.callbacks.onStatus?.(
+            "The prepared GPU device was lost; creating a new device…",
+            "working",
+          );
+        }
+        deviceSession = await requestGpuDeviceSessionFromAdapter(adapter, {
+          diagnosticTimestampQueryEnabled: requestReleaseGpuTimestamps,
+          onStatus: (message) => this.callbacks.onStatus?.(message, "working"),
         });
       }
     } catch (error) {
       this.failStartupPhase("device-request", "Creating the WebGPU device", error);
       throw error;
-    } finally {
-      window.clearTimeout(deviceWaitTimer);
     }
     this.lightGlazeInPlaceCommitSupported = false;
-    const instrumented = instrumentGpuDevice(rawDevice);
-    this.device = instrumented.device;
-    this.gpuResourceRegistry = instrumented.registry;
+    this.device = deviceSession.device;
+    this.gpuResourceRegistry = deviceSession.registry;
     this.completeStartupPhase("device-request", "Creating the WebGPU device", {
-      requiredFeatures: [...requiredFeatures],
+      requiredFeatures: [...deviceSession.requiredFeatures],
+      preparedSession: preparedSession === deviceSession,
     });
     this.device.addEventListener("uncapturederror", (event) => {
       const error = event.error;

@@ -66,6 +66,11 @@ export interface CanvasRuntimeLoadingOptions {
   readonly revealImmediately?: boolean;
   /** Waits for the immediate overlay to reach the screen before starting the operation. */
   readonly waitForPaint?: boolean;
+  /**
+   * Releases the blocking runtime overlay as soon as the guarded operation has
+   * settled. The standard Ready hold remains the default for long-form work.
+   */
+  readonly completionPresentation?: "standard" | "immediate";
 }
 
 export function createCanvasStartupOverlayState(): CanvasStartupOverlayState {
@@ -111,6 +116,7 @@ export class CanvasStartupOverlayController {
   private runtimeOperationSequence = 0;
   private readonly runtimeOperations = new Map<number, string>();
   private runtimeFailureObserved = false;
+  private runtimeCompletionPresentation: "standard" | "immediate" = "standard";
   private presentationMode: "idle" | "startup" | "runtime" = "idle";
   private readonly interactionBlockedElements = new Set<HTMLElement>();
   private readonly root: Document;
@@ -179,7 +185,16 @@ export class CanvasStartupOverlayController {
     options: CanvasRuntimeLoadingOptions = {},
   ): CanvasRuntimeLoadingOperation {
     const operationId = ++this.runtimeOperationSequence;
-    if (this.runtimeOperations.size === 0) this.runtimeFailureObserved = false;
+    if (this.runtimeOperations.size === 0) {
+      this.runtimeFailureObserved = false;
+      this.runtimeCompletionPresentation = options.completionPresentation === "immediate"
+        ? "immediate"
+        : "standard";
+    } else if (options.completionPresentation !== "immediate") {
+      // A standard operation sharing the overlay keeps the batch's completion
+      // feedback. One short mutation must never hide another operation's state.
+      this.runtimeCompletionPresentation = "standard";
+    }
     this.runtimeOperations.set(operationId, label.trim() || "Loading");
     this.setEditorInteractionBlocked(true);
     const revealImmediately = options.revealImmediately === true
@@ -232,6 +247,7 @@ export class CanvasStartupOverlayController {
     this.clearRuntimeRevealTimer();
     this.runtimeOperations.clear();
     this.runtimeFailureObserved = false;
+    this.runtimeCompletionPresentation = "standard";
     this.state = {
       ...this.state,
       complete: false,
@@ -338,7 +354,10 @@ export class CanvasStartupOverlayController {
     }
     this.clearRuntimeRevealTimer();
     if (this.presentationMode !== "runtime") {
-      if (this.presentationMode === "idle") this.setEditorInteractionBlocked(false);
+      if (this.presentationMode === "idle") {
+        this.runtimeCompletionPresentation = "standard";
+        this.setEditorInteractionBlocked(false);
+      }
       return;
     }
 
@@ -347,6 +366,18 @@ export class CanvasStartupOverlayController {
     const progressLabel = this.root.getElementById("canvasStartupLabel");
     if (!overlay || !progressBar || !progressLabel) {
       this.presentationMode = "idle";
+      this.runtimeCompletionPresentation = "standard";
+      this.setEditorInteractionBlocked(false);
+      return;
+    }
+    if (this.runtimeCompletionPresentation === "immediate") {
+      overlay.hidden = true;
+      overlay.dataset.state = "idle";
+      overlay.dataset.mode = "idle";
+      overlay.setAttribute("aria-busy", "false");
+      this.presentationMode = "idle";
+      this.runtimeFailureObserved = false;
+      this.runtimeCompletionPresentation = "standard";
       this.setEditorInteractionBlocked(false);
       return;
     }
@@ -370,6 +401,7 @@ export class CanvasStartupOverlayController {
         overlay.dataset.mode = "idle";
         this.presentationMode = "idle";
         this.runtimeFailureObserved = false;
+        this.runtimeCompletionPresentation = "standard";
         this.setEditorInteractionBlocked(false);
       }, COMPLETION_FADE_MS);
     }, COMPLETION_HOLD_MS);

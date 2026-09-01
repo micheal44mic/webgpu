@@ -2,24 +2,37 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createServer } from "vite";
 
-const source = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+const source = (path) =>
+  readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
 const engineSource = source("src/brush-engine.ts");
 const tileRuntimeSource = source("src/engine-layer-blend-tile-runtime.ts");
 const tileCompositorSource = source("src/layer-blend-tile-compositor.ts");
+const tileProgramsSource = source("src/layer-blend-tile-programs.ts");
 const strokeRendererSource = source("src/stroke-renderer.ts");
+const strokeProgramsSource = source("src/stroke-programs.ts");
 const layerRuntimeSource = source("src/engine-layer-runtime.ts");
 const mainSource = source("src/main.ts");
 const staticResourcesSource = source("src/engine-runtime-misc.ts");
-const presentationResourcesSource = source("src/mixed-scene-presentation-resources.ts");
+const presentationResourcesSource = source(
+  "src/mixed-scene-presentation-resources.ts",
+);
 const vectorRuntimeSource = source("src/engine-vector-text-runtime.ts");
 
-const blendStart = engineSource.indexOf("async ensureLayerBlendEditorResources(): Promise<void>");
-const blendEnd = engineSource.indexOf("async ensureSpatialBlurEditorResources()", blendStart);
+const blendStart = engineSource.indexOf(
+  "async ensureLayerBlendEditorResources(): Promise<void>",
+);
+const blendEnd = engineSource.indexOf(
+  "async ensureSpatialBlurEditorResources()",
+  blendStart,
+);
 assert.ok(blendStart >= 0 && blendEnd > blendStart);
 const blendBody = engineSource.slice(blendStart, blendEnd);
 assert.match(blendBody, /this\.layerBlendTileWarmupAttempted/);
-assert.match(blendBody, /await ensureLayerBlendTilePresentationResources\(this\)/);
+assert.match(
+  blendBody,
+  /await ensureLayerBlendTilePresentationResources\(this\)/,
+);
 for (const resource of [
   "mixedScenePresentShaderModule",
   "mixedSceneClearShaderModule",
@@ -63,12 +76,21 @@ const compatibilityEnd = engineSource.indexOf(
   compatibilityStart,
 );
 assert.ok(compatibilityStart >= 0 && compatibilityEnd > compatibilityStart);
-const compatibilityBody = engineSource.slice(compatibilityStart, compatibilityEnd);
-assert.match(compatibilityBody, /await this\.ensureLayerBlendEditorResources\(\)/);
+const compatibilityBody = engineSource.slice(
+  compatibilityStart,
+  compatibilityEnd,
+);
+assert.match(
+  compatibilityBody,
+  /await this\.ensureLayerBlendEditorResources\(\)/,
+);
 
 assert.match(tileRuntimeSource, /layerBlendTileResourcesPromise/);
 assert.match(tileRuntimeSource, /layerBlendTileResourcesRevision/);
-assert.match(tileRuntimeSource, /if \(engine\.layerBlendTileResourcesPromise\)/);
+assert.match(
+  tileRuntimeSource,
+  /if \(engine\.layerBlendTileResourcesPromise\)/,
+);
 assert.match(
   tileRuntimeSource,
   /revision !== engine\.layerBlendTileResourcesRevision[\s\S]*?compositor\.destroy\(\)/,
@@ -80,29 +102,54 @@ assert.match(
 );
 
 const tileCreateStart = tileCompositorSource.indexOf("static async create(");
-const tileCreateEnd = tileCompositorSource.indexOf("beginFrame(): void", tileCreateStart);
-assert.ok(tileCreateStart >= 0 && tileCreateEnd > tileCreateStart);
-const tileCreateBody = tileCompositorSource.slice(tileCreateStart, tileCreateEnd);
-assert.match(tileCreateBody, /createRenderPipelineAsync/);
-assert.match(tileCreateBody, /Promise\.allSettled/);
-assert.doesNotMatch(tileCreateBody, /device\.createRenderPipeline\(/);
-
-const strokeProgramCreateStart = strokeRendererSource.indexOf(
-  "private async createProgramResources(",
+const tileCreateEnd = tileCompositorSource.indexOf(
+  "beginFrame(): void",
+  tileCreateStart,
 );
-const strokeProgramCreateEnd = strokeRendererSource.indexOf(
-  "private async initialize(",
+assert.ok(tileCreateStart >= 0 && tileCreateEnd > tileCreateStart);
+const tileCreateBody = tileCompositorSource.slice(
+  tileCreateStart,
+  tileCreateEnd,
+);
+assert.match(tileCreateBody, /await prewarmLayerBlendTilePrograms\(/);
+assert.match(tileCreateBody, /runGpuAllocationTransaction\(/);
+assert.doesNotMatch(tileCreateBody, /createRenderPipeline(?:Async)?\(/);
+assert.match(tileProgramsSource, /createRenderPipelineAsync/);
+assert.match(tileProgramsSource, /Promise\.allSettled/);
+assert.match(tileProgramsSource, /new WeakMap<[\s\S]*?GPUDevice/);
+assert.match(
+  tileProgramsSource,
+  /Map<LayerBlendTileProgramFormat, Promise<LayerBlendTilePrograms>>/,
+);
+assert.doesNotMatch(
+  tileProgramsSource,
+  /\.createTexture\(|\.createBuffer\(|\.createBindGroup\(/,
+);
+
+const strokeProgramCreateStart = strokeProgramsSource.indexOf(
+  "async function createStrokeProgramResources(",
+);
+const strokeProgramCreateEnd = strokeProgramsSource.indexOf(
+  "export function acquireRasterStrokeProgramResources(",
   strokeProgramCreateStart,
 );
-assert.ok(strokeProgramCreateStart >= 0 && strokeProgramCreateEnd > strokeProgramCreateStart);
-const strokeProgramCreateBody = strokeRendererSource.slice(
+assert.ok(
+  strokeProgramCreateStart >= 0 &&
+    strokeProgramCreateEnd > strokeProgramCreateStart,
+);
+const strokeProgramCreateBody = strokeProgramsSource.slice(
   strokeProgramCreateStart,
   strokeProgramCreateEnd,
 );
 assert.match(strokeProgramCreateBody, /createComputePipelineAsync/);
 assert.match(strokeProgramCreateBody, /Promise\.allSettled/);
-assert.doesNotMatch(strokeProgramCreateBody, /this\.device\.createComputePipeline\(/);
-const strokeInitializeStart = strokeProgramCreateEnd;
+assert.doesNotMatch(
+  strokeProgramCreateBody,
+  /this\.device\.createComputePipeline\(/,
+);
+const strokeInitializeStart = strokeRendererSource.indexOf(
+  "private async initialize(",
+);
 const strokeInitializeEnd = strokeRendererSource.indexOf(
   "setLightGlazeView(",
   strokeInitializeStart,
@@ -111,9 +158,11 @@ const strokeInitializeBody = strokeRendererSource.slice(
   strokeInitializeStart,
   strokeInitializeEnd,
 );
-assert.match(strokeInitializeBody, /acquireStrokeProgramResources/);
+assert.match(strokeInitializeBody, /acquireRasterStrokeProgramResources/);
 
-const modeStart = layerRuntimeSource.indexOf("export async function setLayerBlendMode(");
+const modeStart = layerRuntimeSource.indexOf(
+  "export async function setLayerBlendMode(",
+);
 const modeCatch = layerRuntimeSource.indexOf("} catch (error) {", modeStart);
 assert.ok(modeStart >= 0 && modeCatch > modeStart);
 const successfulModePath = layerRuntimeSource.slice(modeStart, modeCatch);
@@ -143,8 +192,14 @@ assert.match(
   /setSelectedLayerBlendMode: \(blendMode\) => \{[\s\S]*?runRuntimeOperation\([\s\S]*?"Applying layer blend mode"[\s\S]*?setRasterBlendMode\(properties\.key, blendMode\)[\s\S]*?waitForIdle\(\)/,
   "a first layer blend change must remain visibly loading until its composition work reaches the GPU fence",
 );
-assert.match(presentationResourcesSource, /createRenderPipelineAsync\(engine\.device/);
-assert.match(presentationResourcesSource, /const creationPromises = new WeakMap/);
+assert.match(
+  presentationResourcesSource,
+  /createRenderPipelineAsync\(engine\.device/,
+);
+assert.match(
+  presentationResourcesSource,
+  /const creationPromises = new WeakMap/,
+);
 assert.doesNotMatch(
   presentationResourcesSource,
   /vectorText|rasterImage|mixedSceneRasterSegmentShader|mixedSceneTextSegment/,
@@ -163,22 +218,43 @@ const rasterSegmentEnd = vectorRuntimeSource.indexOf(
   rasterSegmentStart,
 );
 assert.ok(rasterSegmentStart >= 0 && rasterSegmentEnd > rasterSegmentStart);
-const rasterSegmentBody = vectorRuntimeSource.slice(rasterSegmentStart, rasterSegmentEnd);
+const rasterSegmentBody = vectorRuntimeSource.slice(
+  rasterSegmentStart,
+  rasterSegmentEnd,
+);
 assert.match(
   rasterSegmentBody,
   /const layout = engine\.mixedSceneRasterSegmentBindGroupLayout;[\s\S]*?createBindGroup\(\{[\s\S]*?layout,/,
   "raster-run rebuilds must consume the exact layout published by the shared blend gate",
 );
-assert.match(staticResourcesSource, /engine\.mixedScenePresentShaderModule \?\?=/);
-assert.match(staticResourcesSource, /engine\.mixedScenePresentBindGroupLayout \?\?=/);
+assert.match(
+  staticResourcesSource,
+  /engine\.mixedScenePresentShaderModule \?\?=/,
+);
+assert.match(
+  staticResourcesSource,
+  /engine\.mixedScenePresentBindGroupLayout \?\?=/,
+);
 assert.match(
   staticResourcesSource,
   /const mixedScenePresentPipelinePromise = engine\.mixedScenePresentPipeline/,
 );
-assert.match(staticResourcesSource, /engine\.mixedSceneClearShaderModule \?\?=/);
-assert.match(staticResourcesSource, /engine\.mixedSceneBackgroundBindGroupLayout \?\?=/);
-assert.match(staticResourcesSource, /engine\.mixedSceneBackgroundBindGroup \?\?=/);
-assert.match(staticResourcesSource, /engine\.mixedSceneRasterSegmentBindGroupLayout \?\?=/);
+assert.match(
+  staticResourcesSource,
+  /engine\.mixedSceneClearShaderModule \?\?=/,
+);
+assert.match(
+  staticResourcesSource,
+  /engine\.mixedSceneBackgroundBindGroupLayout \?\?=/,
+);
+assert.match(
+  staticResourcesSource,
+  /engine\.mixedSceneBackgroundBindGroup \?\?=/,
+);
+assert.match(
+  staticResourcesSource,
+  /engine\.mixedSceneRasterSegmentBindGroupLayout \?\?=/,
+);
 for (const resource of [
   "mixedSceneClearShaderModule",
   "mixedSceneBackgroundBindGroupLayout",
@@ -296,32 +372,45 @@ try {
   ];
   assert(published.every(Boolean));
   await ensureMixedScenePresentationResources(concurrent.engine);
-  assert.deepEqual(concurrent.calls, {
-    shaderModules: 2,
-    bindGroupLayouts: 3,
-    bindGroups: 1,
-    pipelines: 1,
-  }, "a warm device must reuse the exact seven-resource set");
+  assert.deepEqual(
+    concurrent.calls,
+    {
+      shaderModules: 2,
+      bindGroupLayouts: 3,
+      bindGroups: 1,
+      pipelines: 1,
+    },
+    "a warm device must reuse the exact seven-resource set",
+  );
 
   const retry = presentationHarness(true);
   await assert.rejects(
     ensureMixedScenePresentationResources(retry.engine),
     /Injected checker pipeline failure/,
   );
-  assert([
-    retry.engine.mixedScenePresentShaderModule,
-    retry.engine.mixedSceneClearShaderModule,
-    retry.engine.mixedScenePresentBindGroupLayout,
-    retry.engine.mixedSceneBackgroundBindGroupLayout,
-    retry.engine.mixedSceneBackgroundBindGroup,
-    retry.engine.mixedSceneRasterSegmentBindGroupLayout,
-    retry.engine.mixedScenePresentPipeline,
-  ].every((resource) => resource === null), "a failed gate must publish no partial set");
+  assert(
+    [
+      retry.engine.mixedScenePresentShaderModule,
+      retry.engine.mixedSceneClearShaderModule,
+      retry.engine.mixedScenePresentBindGroupLayout,
+      retry.engine.mixedSceneBackgroundBindGroupLayout,
+      retry.engine.mixedSceneBackgroundBindGroup,
+      retry.engine.mixedSceneRasterSegmentBindGroupLayout,
+      retry.engine.mixedScenePresentPipeline,
+    ].every((resource) => resource === null),
+    "a failed gate must publish no partial set",
+  );
   await ensureMixedScenePresentationResources(retry.engine);
-  assert.equal(retry.calls.pipelines, 2, "a failed first compilation must remain retryable");
+  assert.equal(
+    retry.calls.pipelines,
+    2,
+    "a failed first compilation must remain retryable",
+  );
 } finally {
   if (previousGpuShaderStage === undefined) delete globalThis.GPUShaderStage;
   else globalThis.GPUShaderStage = previousGpuShaderStage;
 }
 
-console.log("Layer blend on-demand warm-up and asynchronous pipeline verification passed.");
+console.log(
+  "Layer blend on-demand warm-up and asynchronous pipeline verification passed.",
+);

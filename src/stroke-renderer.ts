@@ -7,7 +7,6 @@ import {
 } from "./stroke-core";
 import {
   DEFAULT_RASTER_BEVEL_STYLE,
-  RASTER_BEVEL_NORMAL_APRON,
   deriveRasterBevelHeightfield,
   normalizeRasterBevelStyle,
   rasterBevelLightVector,
@@ -16,8 +15,22 @@ import {
   type RasterBevelStyle,
 } from "./bevel-core";
 import type { RasterBevelFieldState } from "./bevel-renderer";
-import type { EffectsScratchLease, EffectsScratchPool } from "./effects-scratch-pool";
-import { createComputePipelineAsync } from "./engine-gpu-utils";
+import type {
+  EffectsScratchLease,
+  EffectsScratchPool,
+} from "./effects-scratch-pool";
+import {
+  acquireRasterStrokeProgramResources,
+  shaderSourceCommon,
+  strokeCompositionShaderSource,
+  type RasterBevelBoundingFieldTestMutation,
+  type RasterStrokeProgramWarmupOptions,
+} from "./stroke-programs";
+export { prewarmRasterStrokePrograms } from "./stroke-programs";
+export type {
+  RasterBevelBoundingFieldTestMutation,
+  RasterStrokeProgramWarmupOptions,
+} from "./stroke-programs";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import {
   DEFAULT_RASTER_COLOR_OVERLAY_STYLE,
@@ -37,27 +50,20 @@ export const RASTER_STROKE_MUTATION_GATE_STRATEGY =
 export const RASTER_STROKE_STYLED_STORAGE_STRATEGY =
   "direct-lod0-plus-derived-mips-1-through-12" as const;
 
-export type RasterStrokeSourceMode = "permanent" | "light-glaze" | "thickness-tail";
-export type RasterBevelBoundingFieldTestMutation =
-  | "none"
-  | "zero-outside"
-  | "omit-origin";
-
-export interface RasterStrokeRendererOptions {
-  device: GPUDevice;
+export type RasterStrokeSourceMode =
+  | "permanent"
+  | "light-glaze"
+  | "thickness-tail";
+export interface RasterStrokeRendererOptions extends RasterStrokeProgramWarmupOptions {
   scratchPool: EffectsScratchPool;
   documentWidth: number;
   documentHeight: number;
-  layerFormat: "rgba8unorm" | "rgba16float";
   layerView: GPUTextureView;
   lightGlazeUniformBuffer: GPUBuffer;
   thicknessTailUniformBuffer: GPUBuffer;
   scratchExtent?: number;
   strokeGeometryEnabled?: boolean;
   readbackEnabled?: boolean;
-  bevelBoundingFieldEnabled?: boolean;
-  /** Golden-only compile mutation; never set by the application renderer. */
-  bevelBoundingFieldTestMutation?: RasterBevelBoundingFieldTestMutation;
 }
 
 export interface RasterStrokeEncodeOptions {
@@ -121,8 +127,6 @@ export interface RasterStrokeBakeResult {
   pixels: number;
   dispatches: number;
 }
-
-
 interface BuildJob {
   buildOriginX: number;
   buildOriginY: number;
@@ -148,7 +152,6 @@ const BEVEL_BOUNDING_FIELD_UNIFORM_BYTES = 112;
 const PARAMETER_STRIDE = 256;
 const PARAMETER_CAPACITY = 2048;
 const BAKE_PARAMETER_CAPACITY = 32;
-const INVALID_PACKED_SEED = 0xffff_ffff;
 const THRESHOLD_MASK_WORD_BITS = 32;
 const COVERAGE_WORD_PIXELS = 2;
 const COVERAGE_DETECTION_HALO = 1;
@@ -217,11 +220,12 @@ function wordAlignedCoverageRect(
   if (!normalized) {
     return null;
   }
-  const x = Math.floor(normalized.x / COVERAGE_WORD_PIXELS) * COVERAGE_WORD_PIXELS;
+  const x =
+    Math.floor(normalized.x / COVERAGE_WORD_PIXELS) * COVERAGE_WORD_PIXELS;
   const right = Math.min(
     width,
-    Math.ceil((normalized.x + normalized.width) / COVERAGE_WORD_PIXELS)
-      * COVERAGE_WORD_PIXELS,
+    Math.ceil((normalized.x + normalized.width) / COVERAGE_WORD_PIXELS) *
+      COVERAGE_WORD_PIXELS,
   );
   return {
     x,
@@ -238,12 +242,16 @@ function expandedCoverageDetectionRect(
 ): RasterStrokeRect | null {
   const normalized = normalizedRect(rect, width, height);
   return normalized
-    ? normalizedRect({
-      x: normalized.x - COVERAGE_DETECTION_HALO,
-      y: normalized.y - COVERAGE_DETECTION_HALO,
-      width: normalized.width + COVERAGE_DETECTION_HALO * 2,
-      height: normalized.height + COVERAGE_DETECTION_HALO * 2,
-    }, width, height)
+    ? normalizedRect(
+        {
+          x: normalized.x - COVERAGE_DETECTION_HALO,
+          y: normalized.y - COVERAGE_DETECTION_HALO,
+          width: normalized.width + COVERAGE_DETECTION_HALO * 2,
+          height: normalized.height + COVERAGE_DETECTION_HALO * 2,
+        },
+        width,
+        height,
+      )
     : null;
 }
 
@@ -258,1010 +266,17 @@ function halfResolutionRect(
   }
   const x = Math.floor(normalized.x / 2);
   const y = Math.floor(normalized.y / 2);
-  const right = Math.min(width, Math.ceil((normalized.x + normalized.width) / 2));
-  const bottom = Math.min(height, Math.ceil((normalized.y + normalized.height) / 2));
+  const right = Math.min(
+    width,
+    Math.ceil((normalized.x + normalized.width) / 2),
+  );
+  const bottom = Math.min(
+    height,
+    Math.ceil((normalized.y + normalized.height) / 2),
+  );
   return right > x && bottom > y
     ? { x, y, width: right - x, height: bottom - y }
     : null;
-}
-
-function shaderSourceCommon(
-  bindGroup = 0,
-): string {
-  return /* wgsl */ `
-struct StrokeParameters {
-  buildOrigin: vec2<i32>,
-  buildSize: vec2<u32>,
-  targetOrigin: vec2<u32>,
-  targetSize: vec2<u32>,
-  localTargetOrigin: vec2<u32>,
-  step: u32,
-  sourceMode: u32,
-  styleWidth: f32,
-  stylePosition: u32,
-  scratchExtent: u32,
-  strokeEnabled: u32,
-  styleColor: vec4<f32>,
-  colorOverlay: vec4<f32>,
-};
-
-struct LightGlazeUniforms {
-  opacity: f32,
-  formatCode: u32,
-  accumulationMode: u32,
-  _pad1: u32,
-  tintLinear: vec4<f32>,
-};
-
-struct ThicknessTailUniforms {
-  origin: vec2<f32>,
-  textureSize: vec2<f32>,
-  compositionMode: u32,
-  _pad0: u32,
-  _pad1: vec2<u32>,
-};
-
-const INVALID_SEED: u32 = ${INVALID_PACKED_SEED}u;
-
-@group(${bindGroup}) @binding(0) var<uniform> parameters: StrokeParameters;
-@group(${bindGroup}) @binding(1) var permanentTexture: texture_2d<f32>;
-@group(${bindGroup}) @binding(2) var transientTexture: texture_2d<f32>;
-@group(${bindGroup}) @binding(3) var<uniform> lightGlaze: LightGlazeUniforms;
-@group(${bindGroup}) @binding(4) var<uniform> thicknessTail: ThicknessTailUniforms;
-
-fn documentSize() -> vec2<i32> {
-  return vec2<i32>(textureDimensions(permanentTexture));
-}
-
-fn insideDocument(position: vec2<i32>) -> bool {
-  return all(position >= vec2<i32>(0)) && all(position < documentSize());
-}
-
-fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
-  let redGreen = unpack2x16float(pack2x16float(value.rg));
-  let blueAlpha = unpack2x16float(pack2x16float(value.ba));
-  return vec4<f32>(redGreen, blueAlpha);
-}
-
-fn storedLightCoverage(value: f32) -> f32 {
-  return clamp(value, 0.0, 1.0);
-}
-
-fn srgbToLinearChannel(value: f32) -> f32 {
-  if (value <= 0.04045) {
-    return value / 12.92;
-  }
-  return pow((value + 0.055) / 1.055, 2.4);
-}
-
-fn srgbToLinear(value: vec3<f32>) -> vec3<f32> {
-  return vec3<f32>(
-    srgbToLinearChannel(value.r),
-    srgbToLinearChannel(value.g),
-    srgbToLinearChannel(value.b)
-  );
-}
-
-fn linearToSrgbChannel(value: f32) -> f32 {
-  let clamped = clamp(value, 0.0, 1.0);
-  if (clamped <= 0.0031308) {
-    return clamped * 12.92;
-  }
-  return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
-}
-
-fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
-  return vec3<f32>(
-    linearToSrgbChannel(value.r),
-    linearToSrgbChannel(value.g),
-    linearToSrgbChannel(value.b)
-  );
-}
-
-fn linearPremultipliedToEncodedSrgb(value: vec4<f32>) -> vec4<f32> {
-  let alpha = clamp(value.a, 0.0, 1.0);
-  if (alpha <= 0.0) {
-    return vec4<f32>(0.0);
-  }
-  let straightLinear = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
-  return vec4<f32>(linearToSrgb(straightLinear) * alpha, alpha);
-}
-
-fn encodedSrgbPremultipliedToLinear(value: vec4<f32>) -> vec4<f32> {
-  let alpha = clamp(value.a, 0.0, 1.0);
-  if (alpha <= 0.0) {
-    return vec4<f32>(0.0);
-  }
-  let straightSrgb = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
-  return vec4<f32>(srgbToLinear(straightSrgb) * alpha, alpha);
-}
-
-fn resolvedLightGlaze(accumulatedStroke: vec4<f32>) -> vec4<f32> {
-  let opacity = clamp(lightGlaze.opacity, 0.0, 1.0);
-  if (lightGlaze.accumulationMode == 1u) {
-    let coverage = storedLightCoverage(accumulatedStroke.r);
-    return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
-  }
-  return accumulatedStroke * opacity;
-}
-
-fn compositeLightGlazeOverPermanent(
-  permanentPaint: vec4<f32>,
-  accumulatedStroke: vec4<f32>
-) -> vec4<f32> {
-  let strokePaint = resolvedLightGlaze(accumulatedStroke);
-  if (lightGlaze.accumulationMode == 2u) {
-    if (strokePaint.a <= 0.0) {
-      return permanentPaint;
-    }
-    let permanentAlpha = clamp(permanentPaint.a, 0.0, 1.0);
-    var boundedPermanentRgb = vec3<f32>(0.0);
-    if (permanentAlpha > 0.0) {
-      boundedPermanentRgb = clamp(
-        permanentPaint.rgb / permanentAlpha,
-        vec3<f32>(0.0),
-        vec3<f32>(1.0)
-      ) * permanentAlpha;
-    }
-    let extendedResidual = permanentPaint.rgb - boundedPermanentRgb;
-    let permanentEncoded = linearPremultipliedToEncodedSrgb(
-      vec4<f32>(boundedPermanentRgb, permanentAlpha)
-    );
-    let compositedEncoded = strokePaint + permanentEncoded * (1.0 - strokePaint.a);
-    let boundedResult = encodedSrgbPremultipliedToLinear(compositedEncoded);
-    return quantizeLayer(vec4<f32>(
-      clamp(
-        boundedResult.rgb + extendedResidual * (1.0 - strokePaint.a),
-        vec3<f32>(-65504.0),
-        vec3<f32>(65504.0)
-      ),
-      boundedResult.a
-    ));
-  }
-  return quantizeLayer(strokePaint + permanentPaint * (1.0 - strokePaint.a));
-}
-
-fn sourceTexel(position: vec2<i32>) -> vec4<f32> {
-  if (!insideDocument(position)) {
-    return vec4<f32>(0.0);
-  }
-  let permanentPaint = textureLoad(permanentTexture, position, 0);
-  if (parameters.sourceMode == 1u) {
-    return compositeLightGlazeOverPermanent(
-      permanentPaint,
-      textureLoad(transientTexture, position, 0)
-    );
-  }
-  if (parameters.sourceMode == 2u) {
-    let tailOrigin = vec2<i32>(thicknessTail.origin);
-    let tailPosition = position - tailOrigin;
-    let tailSize = vec2<i32>(thicknessTail.textureSize);
-    if (all(tailPosition >= vec2<i32>(0)) && all(tailPosition < tailSize)) {
-      let transientPaint = textureLoad(transientTexture, tailPosition, 0);
-      if (thicknessTail.compositionMode == 2u) {
-        return transientPaint;
-      }
-      if (thicknessTail.compositionMode == 1u) {
-        return vec4<f32>(
-          permanentPaint.rgb + transientPaint.rgb,
-          transientPaint.a + permanentPaint.a * (1.0 - transientPaint.a)
-        );
-      }
-      return transientPaint + permanentPaint * (1.0 - transientPaint.a);
-    }
-  }
-  return permanentPaint;
-}
-
-fn packSeed(position: vec2<u32>) -> u32 {
-  return (position.x & 65535u) | ((position.y & 65535u) << 16u);
-}
-
-fn unpackSeed(value: u32) -> vec2<u32> {
-  return vec2<u32>(value & 65535u, value >> 16u);
-}
-`;
-}
-
-function seedShader(): string {
-  return `${shaderSourceCommon()}
-@group(0) @binding(5) var<storage, read_write> outputSeeds: array<vec2<u32>>;
-
-@compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
-  if (any(globalId.xy >= parameters.buildSize)) {
-    return;
-  }
-  let localPosition = globalId.xy;
-  let documentPosition = parameters.buildOrigin + vec2<i32>(localPosition);
-  let inside = sourceTexel(documentPosition).a >= 0.5;
-  let packed = packSeed(localPosition);
-  let value = select(
-    vec2<u32>(INVALID_SEED, packed),
-    vec2<u32>(packed, INVALID_SEED),
-    inside
-  );
-  outputSeeds[localPosition.y * parameters.scratchExtent + localPosition.x] = value;
-}
-`;
-}
-
-function jfaShader(): string {
-  return /* wgsl */ `
-struct StrokeParameters {
-  buildOrigin: vec2<i32>,
-  buildSize: vec2<u32>,
-  targetOrigin: vec2<u32>,
-  targetSize: vec2<u32>,
-  localTargetOrigin: vec2<u32>,
-  step: u32,
-  sourceMode: u32,
-  styleWidth: f32,
-  stylePosition: u32,
-  scratchExtent: u32,
-  strokeEnabled: u32,
-  styleColor: vec4<f32>,
-  colorOverlay: vec4<f32>,
-};
-
-const INVALID_SEED: u32 = ${INVALID_PACKED_SEED}u;
-
-@group(0) @binding(0) var<uniform> parameters: StrokeParameters;
-// Both disjoint subranges live in one physical buffer. A buffer is a single
-// subresource, and each dispatch is its own usage scope, so the usage list must be
-// homogeneous: storage + read-only-storage on the same buffer is rejected even when
-// the ranges do not intersect. Both bindings are therefore storage — the spec's
-// "usage scope storage exception" permits it, and disjoint ranges keep the separate
-// per-dispatch aliasing check from firing. This shader never writes inputSeeds.
-@group(0) @binding(1) var<storage, read_write> inputSeeds: array<vec2<u32>>;
-@group(0) @binding(2) var<storage, read_write> outputSeeds: array<vec2<u32>>;
-
-fn unpackSeed(value: u32) -> vec2<u32> {
-  return vec2<u32>(value & 65535u, value >> 16u);
-}
-
-fn tieLess(left: vec2<u32>, right: vec2<u32>) -> bool {
-  return left.y < right.y || (left.y == right.y && left.x < right.x);
-}
-
-fn bestCandidate(position: vec2<u32>, candidateIndex: u32) -> u32 {
-  var found = false;
-  var bestDistance = 3.402823e38;
-  var bestPosition = vec2<u32>(65535u);
-  var best = INVALID_SEED;
-  let signedPosition = vec2<i32>(position);
-  let step = i32(parameters.step);
-
-  for (var offsetY = -1; offsetY <= 1; offsetY += 1) {
-    for (var offsetX = -1; offsetX <= 1; offsetX += 1) {
-      let samplePosition = signedPosition + vec2<i32>(offsetX, offsetY) * step;
-      if (
-        any(samplePosition < vec2<i32>(0))
-        || any(samplePosition >= vec2<i32>(parameters.buildSize))
-      ) {
-        continue;
-      }
-      let pair = inputSeeds[
-        u32(samplePosition.y) * parameters.scratchExtent + u32(samplePosition.x)
-      ];
-      let candidate = select(pair.x, pair.y, candidateIndex == 1u);
-      if (candidate == INVALID_SEED) {
-        continue;
-      }
-      let candidatePosition = unpackSeed(candidate);
-      let delta = vec2<f32>(position) - vec2<f32>(candidatePosition);
-      let distance = dot(delta, delta);
-      if (
-        !found
-        || distance < bestDistance - 1e-5
-        || (abs(distance - bestDistance) <= 1e-5
-          && tieLess(candidatePosition, bestPosition))
-      ) {
-        found = true;
-        bestDistance = distance;
-        bestPosition = candidatePosition;
-        best = candidate;
-      }
-    }
-  }
-  return best;
-}
-
-@compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
-  if (any(globalId.xy >= parameters.buildSize)) {
-    return;
-  }
-  let position = globalId.xy;
-  outputSeeds[position.y * parameters.scratchExtent + position.x] = vec2<u32>(
-    bestCandidate(position, 0u),
-    bestCandidate(position, 1u)
-  );
-}
-`;
-}
-
-function resolveShader(): string {
-  return `${shaderSourceCommon()}
-@group(0) @binding(5) var<storage, read> propagatedSeeds: array<vec2<u32>>;
-@group(0) @binding(6) var<storage, read_write> coverageField: array<u32>;
-
-fn rampAt(offset: f32, signedDistance: f32) -> f32 {
-  return clamp(offset + 0.5 - signedDistance, 0.0, 1.0);
-}
-
-fn resolveCoverage(
-  documentPosition: vec2<u32>,
-  localPosition: vec2<u32>
-) -> f32 {
-  let pair = propagatedSeeds[
-    localPosition.y * parameters.scratchExtent + localPosition.x
-  ];
-  let alpha = sourceTexel(vec2<i32>(documentPosition)).a;
-  let inside = alpha >= 0.5;
-  let candidate = select(pair.x, pair.y, inside);
-  if (candidate == INVALID_SEED) {
-    return 0.0;
-  }
-  let seedPosition = unpackSeed(candidate);
-  let delta = vec2<f32>(seedPosition) - vec2<f32>(localPosition);
-  let distance = sqrt(dot(delta, delta));
-  let fixedDistance = u32(floor(min(distance, 1023.0) * 64.0 + 0.5));
-  if (fixedDistance < 1u) {
-    return 0.0;
-  }
-  let quantizedDistance = f32(fixedDistance) / 64.0;
-  let signedDistance = select(
-    quantizedDistance - 0.5 - alpha,
-    1.5 - alpha - quantizedDistance,
-    inside
-  );
-  let f0 = rampAt(0.0, signedDistance);
-  var coverage = 0.0;
-  if (parameters.stylePosition == 2u) {
-    coverage = rampAt(parameters.styleWidth, signedDistance) - f0;
-  } else if (parameters.stylePosition == 0u) {
-    coverage = f0 - rampAt(-parameters.styleWidth, signedDistance);
-  } else {
-    let radius = parameters.styleWidth * 0.5;
-    coverage = rampAt(radius, signedDistance) - rampAt(-radius, signedDistance);
-  }
-  return clamp(coverage, 0.0, 1.0);
-}
-
-@compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
-  if (globalId.y >= parameters.targetSize.y) {
-    return;
-  }
-  let firstX = globalId.x * 2u;
-  if (firstX >= parameters.targetSize.x) {
-    return;
-  }
-  let firstOffset = vec2<u32>(firstX, globalId.y);
-  let firstDocumentPosition = parameters.targetOrigin + firstOffset;
-  var coveragePair = vec2<f32>(0.0);
-  for (var lane = 0u; lane < 2u; lane += 1u) {
-    if (firstX + lane >= parameters.targetSize.x) {
-      continue;
-    }
-    let offset = firstOffset + vec2<u32>(lane, 0u);
-    coveragePair[lane] = resolveCoverage(
-      parameters.targetOrigin + offset,
-      parameters.localTargetOrigin + offset
-    );
-  }
-  let coverageWordsPerRow = (u32(documentSize().x) + 1u) / 2u;
-  let wordIndex = firstDocumentPosition.y * coverageWordsPerRow
-    + (firstDocumentPosition.x >> 1u);
-  coverageField[wordIndex] = pack2x16float(coveragePair);
-}
-`;
-}
-
-
-function strokeCompositionShaderSource(
-  bindGroup = 0,
-  coverageBinding = 5,
-  heightBinding = 7,
-  glossBinding = 8,
-  bevelUniformBinding = 9,
-  outerShadowCoverageBinding = 10,
-  outerShadowUniformBinding = 11,
-  innerShadowCoverageBinding = 12,
-  innerShadowUniformBinding = 13,
-  derivativeMode: "analytic" | "fragment" = "analytic",
-  boundingFieldEnabled = false,
-  boundingFieldTestMutation: RasterBevelBoundingFieldTestMutation = "none",
-): string {
-  const contourAA = derivativeMode === "fragment"
-    ? /* wgsl */ `
-    if (bevel.flags.z == 1u) {
-      let dt = 0.5 * fwidth(t);
-      contour = (
-        lightContour(t - dt) + lightContour(t) + lightContour(t + dt)
-      ) / 3.0;
-    }`
-    : /* wgsl */ `
-    if (bevel.flags.z == 1u) {
-      let quadOrigin = position - (position & vec2<i32>(1));
-      let leftT = bevelResponseAt(vec2<i32>(quadOrigin.x, position.y)).x;
-      let rightT = bevelResponseAt(vec2<i32>(quadOrigin.x + 1, position.y)).x;
-      let topT = bevelResponseAt(vec2<i32>(position.x, quadOrigin.y)).x;
-      let bottomT = bevelResponseAt(vec2<i32>(position.x, quadOrigin.y + 1)).x;
-      let dt = 0.5 * (abs(rightT - leftT) + abs(bottomT - topT));
-      contour = (
-        lightContour(t - dt) + lightContour(t) + lightContour(t + dt)
-      ) / 3.0;
-    }`;
-  const fieldUniformMembers = boundingFieldEnabled
-    ? `
-  fieldStorage: vec4<i32>,
-  fieldValid: vec4<i32>,`
-    : "";
-  const fieldPositionExpression = boundingFieldTestMutation === "omit-origin"
-    ? "position + apron"
-    : "position - bevel.fieldStorage.xy + apron";
-  const heightLookup = boundingFieldEnabled
-    ? /* wgsl */ `fn bevelHeightAt(position: vec2<i32>) -> f32 {
-  let validOrigin = bevel.fieldValid.xy;
-  let validSize = bevel.fieldValid.zw;
-  if (any(validSize <= vec2<i32>(0))) {
-    return bevel.scalars.w;
-  }
-  let validEnd = validOrigin + validSize;
-  let apron = vec2<i32>(${RASTER_BEVEL_NORMAL_APRON});
-  let readableOrigin = validOrigin - select(
-    vec2<i32>(0),
-    apron,
-    validOrigin == vec2<i32>(0)
-  );
-  let readableEnd = validEnd + select(
-    vec2<i32>(0),
-    apron,
-    validEnd == documentSize()
-  );
-  if (
-    any(position < readableOrigin)
-    || any(position >= readableEnd)
-  ) {
-    return bevel.scalars.w;
-  }
-  let fieldPosition = ${fieldPositionExpression};
-  return textureLoad(bevelHeight, fieldPosition, 0).r;
-}`
-    : /* wgsl */ `fn bevelHeightAt(position: vec2<i32>) -> f32 {
-  let apron = vec2<i32>(${RASTER_BEVEL_NORMAL_APRON});
-  if (
-    any(position < -apron)
-    || any(position >= documentSize() + apron)
-  ) {
-    return 0.0;
-  }
-  return textureLoad(bevelHeight, position + apron, 0).r;
-}`;
-  return /* wgsl */ `
-struct BevelUniforms {
-  flags: vec4<u32>,
-  scalars: vec4<f32>,
-  light: vec4<f32>,
-  highlight: vec4<f32>,
-  shadow: vec4<f32>,${fieldUniformMembers}
-};
-
-struct ShadowUniforms {
-  flags: vec4<u32>,
-  colorOpacity: vec4<f32>,
-  geometry: vec4<f32>,
-  metadata: vec4<u32>,
-};
-
-@group(${bindGroup}) @binding(${coverageBinding})
-var<storage, read> coverageField: array<u32>;
-@group(${bindGroup}) @binding(${heightBinding}) var bevelHeight: texture_2d<f32>;
-@group(${bindGroup}) @binding(${glossBinding}) var bevelGloss: texture_2d<f32>;
-@group(${bindGroup}) @binding(${bevelUniformBinding}) var<uniform> bevel: BevelUniforms;
-@group(${bindGroup}) @binding(${outerShadowCoverageBinding})
-var<storage, read> outerShadowField: array<u32>;
-@group(${bindGroup}) @binding(${outerShadowUniformBinding})
-var<uniform> outerShadow: ShadowUniforms;
-@group(${bindGroup}) @binding(${innerShadowCoverageBinding})
-var<storage, read> innerShadowField: array<u32>;
-@group(${bindGroup}) @binding(${innerShadowUniformBinding})
-var<uniform> innerShadow: ShadowUniforms;
-
-fn coverageWordsPerRow() -> u32 {
-  return (u32(documentSize().x) + 1u) / 2u;
-}
-
-fn loadCoverage(position: vec2<i32>) -> f32 {
-  let x = u32(position.x);
-  let pair = unpack2x16float(coverageField[u32(position.y) * coverageWordsPerRow() + (x >> 1u)]);
-  return select(pair.x, pair.y, (x & 1u) == 1u);
-}
-
-fn loadOuterShadow(position: vec2<i32>) -> f32 {
-  if (any(position < vec2<i32>(0)) || any(position >= documentSize())) {
-    return 0.0;
-  }
-  let x = u32(position.x);
-  let pair = unpack2x16float(outerShadowField[u32(position.y) * coverageWordsPerRow() + (x >> 1u)]);
-  return select(pair.x, pair.y, (x & 1u) == 1u);
-}
-
-fn loadInnerShadow(position: vec2<i32>) -> f32 {
-  if (any(position < vec2<i32>(0)) || any(position >= documentSize())) {
-    return 0.0;
-  }
-  let x = u32(position.x);
-  let pair = unpack2x16float(innerShadowField[u32(position.y) * coverageWordsPerRow() + (x >> 1u)]);
-  return select(pair.x, pair.y, (x & 1u) == 1u);
-}
-
-fn sampleOuterShadow(position: vec2<f32>) -> f32 {
-  let origin = vec2<i32>(floor(position));
-  let fraction = fract(position);
-  let p00 = loadOuterShadow(origin);
-  let p10 = loadOuterShadow(origin + vec2<i32>(1, 0));
-  let p01 = loadOuterShadow(origin + vec2<i32>(0, 1));
-  let p11 = loadOuterShadow(origin + vec2<i32>(1, 1));
-  return mix(mix(p00, p10, fraction.x), mix(p01, p11, fraction.x), fraction.y);
-}
-
-fn sampleInnerShadow(position: vec2<f32>) -> f32 {
-  let origin = vec2<i32>(floor(position));
-  let fraction = fract(position);
-  let p00 = loadInnerShadow(origin);
-  let p10 = loadInnerShadow(origin + vec2<i32>(1, 0));
-  let p01 = loadInnerShadow(origin + vec2<i32>(0, 1));
-  let p11 = loadInnerShadow(origin + vec2<i32>(1, 1));
-  return mix(mix(p00, p10, fraction.x), mix(p01, p11, fraction.x), fraction.y);
-}
-
-fn shadowContourRaw(value: f32, contourCode: u32) -> f32 {
-  let x = clamp(value, 0.0, 1.0);
-  if (contourCode == 1u) {
-    return 1.0 - abs(2.0 * x - 1.0);
-  }
-  if (contourCode == 2u) {
-    let normalized = (1.0 - x) / 0.35;
-    let zeroPoint = exp(-0.5 / (0.35 * 0.35));
-    let gaussian = exp(-0.5 * normalized * normalized);
-    return clamp((gaussian - zeroPoint) / (1.0 - zeroPoint), 0.0, 1.0);
-  }
-  if (contourCode == 3u) {
-    return clamp(0.5 - 0.5 * cos(2.0 * 3.14159265359 * x), 0.0, 1.0);
-  }
-  return x;
-}
-
-fn shadowContourValue(value: f32, contourCode: u32, antialias: u32) -> f32 {
-  let x = clamp(value, 0.0, 1.0);
-  if (x <= 0.0) {
-    return 0.0;
-  }
-  var result = shadowContourRaw(x, contourCode);
-  if (antialias == 1u && contourCode != 0u) {
-    let lower = clamp(x - 0.5 / 1024.0, 0.0, 1.0);
-    let upper = clamp(x + 0.5 / 1024.0, 0.0, 1.0);
-    result = (
-      shadowContourRaw(lower, contourCode)
-      + result
-      + shadowContourRaw(upper, contourCode)
-    ) / 3.0;
-  }
-  return clamp(result, 0.0, 1.0);
-}
-
-${heightLookup}
-
-fn reliefResponse(normal: vec3<f32>, light: vec3<f32>) -> f32 {
-  let value = clamp(dot(normal, light), -1.0, 1.0);
-  let baseline = light.z;
-  if (value >= baseline) {
-    return clamp((value - baseline) / max(1e-5, 1.0 - baseline), -1.0, 1.0);
-  }
-  return clamp((value - baseline) / max(1e-5, 1.0 + baseline), -1.0, 1.0);
-}
-
-fn lightContour(value: f32) -> f32 {
-  let size = textureDimensions(bevelGloss).x;
-  let q = clamp(value, 0.0, 1.0) * f32(size - 1u);
-  let first = u32(floor(q));
-  let second = min(size - 1u, first + 1u);
-  return mix(
-    textureLoad(bevelGloss, vec2<i32>(i32(first), 0), 0).r,
-    textureLoad(bevelGloss, vec2<i32>(i32(second), 0), 0).r,
-    fract(q)
-  );
-}
-
-fn bevelResponseAt(position: vec2<i32>) -> vec2<f32> {
-  let nw = bevelHeightAt(position + vec2<i32>(-1, 1));
-  let n = bevelHeightAt(position + vec2<i32>(0, 1));
-  let ne = bevelHeightAt(position + vec2<i32>(1, 1));
-  let w = bevelHeightAt(position + vec2<i32>(-1, 0));
-  let e = bevelHeightAt(position + vec2<i32>(1, 0));
-  let sw = bevelHeightAt(position + vec2<i32>(-1, -1));
-  let s = bevelHeightAt(position + vec2<i32>(0, -1));
-  let se = bevelHeightAt(position + vec2<i32>(1, -1));
-  let gradient = vec2<f32>(
-    (3.0 * (ne - nw) + 10.0 * (e - w) + 3.0 * (se - sw)) / 32.0,
-    (3.0 * (nw - sw) + 10.0 * (n - s) + 3.0 * (ne - se)) / 32.0
-  );
-  let effectMask = smoothstep(1e-6, 2e-4, length(gradient));
-  let normal = normalize(vec3<f32>(-bevel.scalars.x * gradient, 1.0));
-  let response = reliefResponse(normal, normalize(bevel.light.xyz));
-  return vec2<f32>(response * 0.5 + 0.5, effectMask);
-}
-
-fn overPlane(dst: vec4<f32>, color: vec3<f32>, sourceAlpha: f32) -> vec4<f32> {
-  let alpha = clamp(sourceAlpha, 0.0, 1.0);
-  return vec4<f32>(
-    color * alpha + dst.rgb * (1.0 - alpha),
-    alpha + dst.a * (1.0 - alpha)
-  );
-}
-
-fn blendEffect(
-  dst: vec4<f32>,
-  color: vec3<f32>,
-  sourceAlpha: f32,
-  screenMode: bool,
-) -> vec4<f32> {
-  let alpha = clamp(sourceAlpha, 0.0, 1.0);
-  if (alpha <= 0.0) {
-    return dst;
-  }
-  if (dst.a <= 1e-6) {
-    return overPlane(dst, color, alpha);
-  }
-  let base = dst.rgb / dst.a;
-  let blended = select(base * color, base + color - base * color, screenMode);
-  let outputAlpha = max(dst.a, alpha);
-  return vec4<f32>(mix(base, blended, alpha) * outputAlpha, outputAlpha);
-}
-
-fn bevelNode(base: vec4<f32>, shapeAlpha: f32, position: vec2<i32>) -> vec4<f32> {
-  var node = vec4<f32>(base.rgb * bevel.scalars.y, base.a * bevel.scalars.y);
-  let response = bevelResponseAt(position);
-  let t = response.x;
-  var contour = lightContour(t);
-${contourAA}
-  let signedLight = 2.0 * contour - 1.0;
-  let highlightWeight = max(signedLight, 0.0) * bevel.highlight.a * response.y;
-  let shadowWeight = max(-signedLight, 0.0) * bevel.shadow.a * response.y;
-  let effectAlpha = select(base.a, shapeAlpha, bevel.scalars.z < 0.999999);
-  let insideWeight = select(effectAlpha, 0.0, bevel.flags.y == 1u);
-  let outsideWeight = select(1.0 - effectAlpha, 0.0, bevel.flags.y == 0u);
-  let innerHighlight = highlightWeight * insideWeight;
-  let innerShadow = shadowWeight * insideWeight;
-  let outerHighlight = highlightWeight * outsideWeight;
-  let outerShadow = shadowWeight * outsideWeight;
-  var straight = vec3<f32>(0.0);
-  if (base.a > 1e-6) {
-    straight = base.rgb / base.a;
-  }
-  var group = vec4<f32>(0.0);
-  group = overPlane(group, bevel.shadow.rgb, outerShadow);
-  group = overPlane(group, bevel.highlight.rgb, outerHighlight);
-  group = overPlane(group, straight, base.a * bevel.scalars.y);
-  group = blendEffect(group, bevel.shadow.rgb, innerShadow, false);
-  group = blendEffect(group, bevel.highlight.rgb, innerHighlight, true);
-  node = group;
-  return node;
-}
-
-fn traceOnlyNode(base: vec4<f32>, shapeAlpha: f32, coverage: f32) -> vec4<f32> {
-  let alpha = base.a;
-  var strokeWeight = coverage * parameters.styleColor.a;
-  if (parameters.stylePosition == 2u) {
-    let boundaryAlpha = select(alpha, shapeAlpha, bevel.scalars.z < 0.999999);
-    strokeWeight = min(strokeWeight, 1.0 - boundaryAlpha);
-  }
-  let baseWeight = select(
-    max(0.0, alpha - strokeWeight),
-    alpha,
-    parameters.stylePosition == 2u
-  );
-  let finalAlpha = select(
-    max(alpha, strokeWeight),
-    min(1.0, alpha + strokeWeight),
-    parameters.stylePosition == 2u
-  );
-  var baseStraight = vec3<f32>(0.0);
-  if (alpha > 0.0) {
-    baseStraight = base.rgb / alpha;
-  }
-  let result = vec4<f32>(
-    parameters.styleColor.rgb * strokeWeight + baseStraight * baseWeight,
-    clamp(finalAlpha, 0.0, 1.0)
-  );
-  return vec4<f32>(
-    clamp(result.rgb, vec3<f32>(0.0), vec3<f32>(result.a)),
-    result.a
-  );
-}
-
-fn combinedStrokeNode(sourceAlpha: f32, inputNode: vec4<f32>, coverage: f32) -> vec4<f32> {
-  var node = inputNode;
-  var strokeWeight = coverage * parameters.styleColor.a;
-  if (parameters.stylePosition == 2u) {
-    let boundaryAlpha = select(node.a, sourceAlpha, bevel.scalars.z < 0.999999);
-    strokeWeight = min(strokeWeight, 1.0 - boundaryAlpha);
-  }
-  if (strokeWeight > 0.0) {
-    if (parameters.stylePosition == 2u) {
-      let remainingAlpha = 1.0 - node.a;
-      node = vec4<f32>(
-        node.rgb + parameters.styleColor.rgb * strokeWeight * remainingAlpha,
-        node.a + strokeWeight * remainingAlpha
-      );
-    } else {
-      let alpha = node.a;
-      let baseWeight = max(0.0, alpha - strokeWeight);
-      var straight = vec3<f32>(0.0);
-      if (alpha > 1e-6) {
-        straight = node.rgb / alpha;
-      }
-      node = vec4<f32>(
-        parameters.styleColor.rgb * strokeWeight + straight * baseWeight,
-        max(alpha, strokeWeight)
-      );
-    }
-  }
-  return node;
-}
-
-fn hash32(input: u32) -> u32 {
-  var value = input;
-  value ^= value >> 16u;
-  value *= 2146121005u;
-  value ^= value >> 15u;
-  value *= 2221713035u;
-  value ^= value >> 16u;
-  return value;
-}
-
-fn random24(position: vec2<u32>, seed: u32) -> f32 {
-  let value = hash32(
-    (position.x * 2654435769u) ^ (position.y * 2246822507u) ^ seed
-  );
-  return f32(value & 16777215u) / 16777215.0;
-}
-
-fn shadowNoise(
-  coverage: f32,
-  position: vec2<i32>,
-  amount: f32,
-  seed: u32
-) -> f32 {
-  if (amount <= 0.0) {
-    return coverage;
-  }
-  let grain = select(0.0, 1.0, random24(vec2<u32>(position), seed) < coverage);
-  return mix(coverage, grain, clamp(amount, 0.0, 1.0));
-}
-
-fn outerShadowPlane(shape: vec4<f32>, position: vec2<i32>) -> vec4<f32> {
-  if (outerShadow.flags.x == 0u) {
-    return vec4<f32>(0.0);
-  }
-  let samplePosition = vec2<f32>(position) - outerShadow.geometry.xy;
-  var coverage = sampleOuterShadow(samplePosition);
-  coverage = shadowContourValue(
-    coverage,
-    outerShadow.flags.z,
-    outerShadow.flags.w
-  );
-  coverage = shadowNoise(
-    coverage,
-    position,
-    outerShadow.geometry.z,
-    outerShadow.metadata.x
-  );
-  coverage *= outerShadow.colorOpacity.a;
-  if (outerShadow.geometry.w > 0.5) {
-    coverage *= 1.0 - shape.a;
-  }
-  coverage = clamp(coverage, 0.0, 1.0);
-  return vec4<f32>(outerShadow.colorOpacity.rgb * coverage, coverage);
-}
-
-fn innerShadowNode(base: vec4<f32>, shape: vec4<f32>, position: vec2<i32>) -> vec4<f32> {
-  if (innerShadow.flags.x == 0u || shape.a <= 1e-6) {
-    return base;
-  }
-  let samplePosition = vec2<f32>(position) - innerShadow.geometry.xy;
-  var coverage = 1.0 - sampleInnerShadow(samplePosition);
-  coverage = shadowContourValue(
-    coverage,
-    innerShadow.flags.z,
-    innerShadow.flags.w
-  );
-  coverage = shadowNoise(
-    coverage,
-    position,
-    innerShadow.geometry.z,
-    innerShadow.metadata.x
-  );
-  let shapeWeight = clamp(coverage * innerShadow.colorOpacity.a * shape.a, 0.0, 1.0);
-  if (bevel.scalars.z < 0.999999) {
-    let effect = vec4<f32>(innerShadow.colorOpacity.rgb * shapeWeight, shapeWeight);
-    return effect + base * (1.0 - effect.a);
-  }
-  let weight = shapeWeight;
-  let straight = base.rgb / base.a;
-  let effectColor = select(
-    innerShadow.colorOpacity.rgb,
-    straight * innerShadow.colorOpacity.rgb,
-    innerShadow.flags.y == 1u
-  );
-  return vec4<f32>(mix(straight, effectColor, weight) * base.a, base.a);
-}
-
-fn colorOverlayNode(base: vec4<f32>, shape: vec4<f32>) -> vec4<f32> {
-  let encodedMode = parameters.colorOverlay.a;
-  let uniformAlpha = encodedMode < 0.0;
-  let opacity = select(
-    clamp(encodedMode, 0.0, 1.0),
-    clamp(-encodedMode - 1.0, 0.0, 1.0),
-    uniformAlpha
-  );
-  if (uniformAlpha) {
-    if (shape.a <= 0.0) {
-      return vec4<f32>(0.0);
-    }
-    return vec4<f32>(parameters.colorOverlay.rgb * opacity, opacity);
-  }
-  // The condition depends only on a uniform, so every invocation takes the
-  // same branch. Disabled and zero-strength preserve-alpha Color Overlay add
-  // no RGB multiply/mix to the hot style-stack pixel path.
-  if (opacity <= 0.0) {
-    return base;
-  }
-  if (bevel.scalars.z < 0.999999) {
-    return vec4<f32>(
-      mix(base.rgb, parameters.colorOverlay.rgb * shape.a, opacity),
-      mix(base.a, shape.a, opacity)
-    );
-  }
-  return vec4<f32>(
-    mix(base.rgb, parameters.colorOverlay.rgb * base.a, opacity),
-    base.a
-  );
-}
-
-fn styledTexel(position: vec2<i32>) -> vec4<f32> {
-  // Applying Color Overlay to the virtual base makes Inner Shadow, Bevel and
-  // Stroke consume the recolored node without allocating another surface.
-  // The default mode preserves alpha; the optional uniform mode replaces only
-  // positive source alpha while alpha zero remains unoccupied.
-  let shape = sourceTexel(position);
-  let base = colorOverlayNode(shape * bevel.scalars.z, shape);
-  var coverage = 0.0;
-  if (parameters.strokeEnabled == 1u) {
-    coverage = loadCoverage(position);
-  }
-  let shadowsDisabled = outerShadow.flags.x == 0u && innerShadow.flags.x == 0u;
-  if (shadowsDisabled) {
-    if (bevel.flags.x == 0u) {
-      if (parameters.strokeEnabled == 0u) {
-        return base;
-      }
-      return traceOnlyNode(base, shape.a, coverage);
-    }
-    var legacyNode = bevelNode(base, shape.a, position);
-    if (parameters.strokeEnabled == 1u) {
-      legacyNode = combinedStrokeNode(shape.a, legacyNode, coverage);
-    }
-    let legacyAlpha = clamp(legacyNode.a, 0.0, 1.0);
-    legacyNode = vec4<f32>(
-      clamp(legacyNode.rgb, vec3<f32>(0.0), vec3<f32>(legacyAlpha)),
-      legacyAlpha
-    );
-    return legacyNode;
-  }
-
-  let shadowedBase = innerShadowNode(base, shape, position);
-  var node = select(
-    shadowedBase,
-    bevelNode(shadowedBase, shape.a, position),
-    bevel.flags.x == 1u
-  );
-  if (parameters.strokeEnabled == 1u) {
-    node = select(
-      traceOnlyNode(shadowedBase, shape.a, coverage),
-      combinedStrokeNode(shape.a, node, coverage),
-      bevel.flags.x == 1u
-    );
-  }
-  let outerPlane = outerShadowPlane(shape, position);
-  node = node + outerPlane * (1.0 - node.a);
-  let clampedAlpha = clamp(node.a, 0.0, 1.0);
-  node = vec4<f32>(
-    clamp(node.rgb, vec3<f32>(0.0), vec3<f32>(clampedAlpha)),
-    clampedAlpha
-  );
-  return node;
-}
-`;
-}
-
-function readbackComposeShader(
-  layerFormat: "rgba8unorm" | "rgba16float",
-  bevelBoundingFieldEnabled = false,
-  bevelBoundingFieldTestMutation: RasterBevelBoundingFieldTestMutation = "none",
-): string {
-  return `${shaderSourceCommon()}
-${strokeCompositionShaderSource(
-  0, 5, 7, 8, 9, 10, 11, 12, 13, "analytic", bevelBoundingFieldEnabled,
-  bevelBoundingFieldTestMutation,
-)}
-@group(0) @binding(6) var styledTexture: texture_storage_2d<${layerFormat}, write>;
-
-@compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
-  if (any(globalId.xy >= parameters.targetSize)) {
-    return;
-  }
-  let position = vec2<i32>(parameters.targetOrigin + globalId.xy);
-  let storagePosition = vec2<i32>(parameters.localTargetOrigin + globalId.xy);
-  textureStore(styledTexture, storagePosition, styledTexel(position));
-}
-
-@compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
-fn authoredMatteMain(@builtin(global_invocation_id) globalId: vec3<u32>) {
-  if (any(globalId.xy >= parameters.targetSize)) {
-    return;
-  }
-  let position = vec2<i32>(parameters.targetOrigin + globalId.xy);
-  let storagePosition = vec2<i32>(parameters.localTargetOrigin + globalId.xy);
-  textureStore(styledTexture, storagePosition, sourceTexel(position));
-}
-`;
-}
-
-function coarseComposeShader(
-  layerFormat: "rgba8unorm" | "rgba16float",
-  bevelBoundingFieldEnabled = false,
-  bevelBoundingFieldTestMutation: RasterBevelBoundingFieldTestMutation = "none",
-): string {
-  return `${shaderSourceCommon()}
-${strokeCompositionShaderSource(
-  0, 5, 7, 8, 9, 10, 11, 12, 13, "analytic", bevelBoundingFieldEnabled,
-  bevelBoundingFieldTestMutation,
-)}
-@group(0) @binding(6) var coarseStyledTexture: texture_storage_2d<${layerFormat}, write>;
-
-fn quantizedStyledTexel(position: vec2<i32>) -> vec4<f32> {
-  return quantizeLayer(styledTexel(clamp(position, vec2<i32>(0), documentSize() - 1)));
-}
-
-@compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
-  if (any(globalId.xy >= parameters.targetSize)) {
-    return;
-  }
-  let coarsePosition = vec2<i32>(parameters.targetOrigin + globalId.xy);
-  let sourceOrigin = coarsePosition * 2;
-  let p00 = quantizedStyledTexel(sourceOrigin);
-  let p10 = quantizedStyledTexel(sourceOrigin + vec2<i32>(1, 0));
-  let p01 = quantizedStyledTexel(sourceOrigin + vec2<i32>(0, 1));
-  let p11 = quantizedStyledTexel(sourceOrigin + vec2<i32>(1, 1));
-  let gammaAverage = (
-    linearPremultipliedToEncodedSrgb(p00)
-    + linearPremultipliedToEncodedSrgb(p10)
-    + linearPremultipliedToEncodedSrgb(p01)
-    + linearPremultipliedToEncodedSrgb(p11)
-  ) * 0.25;
-  textureStore(
-    coarseStyledTexture,
-    coarsePosition,
-    encodedSrgbPremultipliedToLinear(gammaAverage)
-  );
-}
-`;
 }
 
 export function rasterStrokeDisplayShader(
@@ -1300,7 +315,17 @@ struct VertexOutput {
 @group(0) @binding(2) var vectorTextAboveTexture: texture_2d<f32>;
 ${shaderSourceCommon(1)}
 ${strokeCompositionShaderSource(
-  1, 5, 8, 9, 10, 11, 12, 13, 14, "fragment", bevelBoundingFieldEnabled,
+  1,
+  5,
+  8,
+  9,
+  10,
+  11,
+  12,
+  13,
+  14,
+  "fragment",
+  bevelBoundingFieldEnabled,
 )}
 @group(1) @binding(6) var coarseStyledTexture: texture_2d<f32>;
 @group(1) @binding(7) var layerSampler: sampler;
@@ -1650,187 +675,10 @@ fn activeCutoutFragmentMain(
 }
 `;
 }
-function thresholdMaskShader(): string {
-  return `${shaderSourceCommon()}
-@group(0) @binding(5) var<storage, read_write> thresholdMask: array<u32>;
-@group(0) @binding(6) var<storage, read_write> changeState: array<atomic<u32>>;
-@group(0) @binding(7) var<storage, read> coverageField: array<u32>;
-
-const THRESHOLD_WORD_BITS = ${THRESHOLD_MASK_WORD_BITS}u;
-
-fn loadCoverage(position: vec2<u32>) -> f32 {
-  let coverageWordsPerRow = (textureDimensions(permanentTexture).x + 1u) / 2u;
-  let wordIndex = position.y * coverageWordsPerRow + (position.x >> 1u);
-  let pair = unpack2x16float(coverageField[wordIndex]);
-  return select(pair.x, pair.y, (position.x & 1u) == 1u);
-}
-
-@compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
-  let documentExtent = textureDimensions(permanentTexture);
-  let thresholdWordsPerRow = (
-    documentExtent.x + THRESHOLD_WORD_BITS - 1u
-  ) / THRESHOLD_WORD_BITS;
-  let firstWord = parameters.targetOrigin.x / THRESHOLD_WORD_BITS;
-  let firstBit = parameters.targetOrigin.x % THRESHOLD_WORD_BITS;
-  let wordCount = (
-    firstBit + parameters.targetSize.x + THRESHOLD_WORD_BITS - 1u
-  ) / THRESHOLD_WORD_BITS;
-  if (globalId.x >= wordCount || globalId.y >= parameters.targetSize.y) {
-    return;
-  }
-
-  let wordX = firstWord + globalId.x;
-  let documentY = parameters.targetOrigin.y + globalId.y;
-  let wordOriginX = wordX * THRESHOLD_WORD_BITS;
-  let targetRight = parameters.targetOrigin.x + parameters.targetSize.x;
-  var writeMask = 0u;
-  var nextBits = 0u;
-  for (var lane = 0u; lane < THRESHOLD_WORD_BITS; lane += 1u) {
-    let documentX = wordOriginX + lane;
-    if (
-      documentX < parameters.targetOrigin.x
-      || documentX >= targetRight
-      || documentX >= documentExtent.x
-    ) {
-      continue;
-    }
-    let bit = 1u << lane;
-    writeMask |= bit;
-    let documentPosition = vec2<u32>(documentX, documentY);
-    if (sourceTexel(vec2<i32>(documentPosition)).a >= 0.5) {
-      nextBits |= bit;
-    }
-    if (loadCoverage(documentPosition) > 0.0) {
-      atomicOr(&changeState[0], 2u);
-    }
-  }
-
-  let maskIndex = documentY * thresholdWordsPerRow + wordX;
-  let previousBits = thresholdMask[maskIndex];
-  let updatedBits = (previousBits & ~writeMask) | (nextBits & writeMask);
-  if (updatedBits != previousBits) {
-    atomicOr(&changeState[0], 1u);
-  }
-  thresholdMask[maskIndex] = updatedBits;
-}
-`;
-}
-
-function indirectGateShader(): string {
-  return /* wgsl */ `
-struct StrokeParameters {
-  buildOrigin: vec2<i32>,
-  buildSize: vec2<u32>,
-  targetOrigin: vec2<u32>,
-  targetSize: vec2<u32>,
-  localTargetOrigin: vec2<u32>,
-  step: u32,
-  sourceMode: u32,
-  styleWidth: f32,
-  stylePosition: u32,
-  scratchExtent: u32,
-  strokeEnabled: u32,
-  styleColor: vec4<f32>,
-  colorOverlay: vec4<f32>,
-};
-
-@group(0) @binding(0) var<uniform> parameters: StrokeParameters;
-@group(0) @binding(1) var<storage, read_write> changeState: array<atomic<u32>>;
-@group(0) @binding(2) var<storage, read_write> indirectArguments: array<u32>;
-
-@compute @workgroup_size(${INDIRECT_GATE_WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
-  let argumentIndex = globalId.x;
-  if (argumentIndex >= parameters.targetSize.x) {
-    return;
-  }
-  if (atomicLoad(&changeState[0]) != 0u) {
-    return;
-  }
-  let word = argumentIndex * ${INDIRECT_ARGUMENT_WORDS}u;
-  indirectArguments[word] = 0u;
-  indirectArguments[word + 1u] = 0u;
-  indirectArguments[word + 2u] = 0u;
-}
-`;
-}
-
-async function assertShaderModules(
-  modules: readonly { label: string; module: GPUShaderModule }[],
-): Promise<void> {
-  const compilation = await Promise.all(
-    modules.map(async ({ label, module }) => ({
-      label,
-      messages: (await module.getCompilationInfo()).messages,
-    })),
-  );
-  const errors = compilation.flatMap(({ label, messages }) =>
-    [...messages]
-      .filter((message) => message.type === "error")
-      .map((message) => `${label}:${message.lineNum}:${message.linePos} ${message.message}`),
-  );
-  if (errors.length > 0) {
-    throw new Error(`Invalid Stroke WGSL shader:\n${errors.join("\n")}`);
-  }
-}
-
-interface RasterStrokeProgramResources {
-  seedBindGroupLayout: GPUBindGroupLayout;
-  jfaBindGroupLayout: GPUBindGroupLayout;
-  resolveBindGroupLayout: GPUBindGroupLayout;
-  composeBindGroupLayout: GPUBindGroupLayout;
-  thresholdMaskBindGroupLayout: GPUBindGroupLayout;
-  indirectGateBindGroupLayout: GPUBindGroupLayout;
-  seedPipeline: GPUComputePipeline;
-  jfaPipeline: GPUComputePipeline;
-  resolvePipeline: GPUComputePipeline;
-  composePipeline: GPUComputePipeline;
-  readbackComposePipeline: GPUComputePipeline;
-  authoredMatteBakePipeline: GPUComputePipeline;
-  thresholdMaskPipeline: GPUComputePipeline;
-  indirectGatePipeline: GPUComputePipeline;
-}
-
-const strokeProgramCache = new WeakMap<
-  GPUDevice,
-  Map<string, Promise<RasterStrokeProgramResources>>
->();
-
-function strokeProgramCacheKey(options: RasterStrokeRendererOptions): string {
-  return [
-    options.layerFormat,
-    `bbox:${options.bevelBoundingFieldEnabled === true ? 1 : 0}`,
-    `mutation:${options.bevelBoundingFieldTestMutation ?? "none"}`,
-  ].join("|");
-}
-
-function acquireStrokeProgramResources(
-  device: GPUDevice,
-  key: string,
-  factory: () => Promise<RasterStrokeProgramResources>,
-): Promise<RasterStrokeProgramResources> {
-  let deviceCache = strokeProgramCache.get(device);
-  if (!deviceCache) {
-    deviceCache = new Map();
-    strokeProgramCache.set(device, deviceCache);
-  }
-  const cached = deviceCache.get(key);
-  if (cached) {
-    return cached;
-  }
-  const pending = factory();
-  deviceCache.set(key, pending);
-  void pending.then(undefined, () => {
-    if (deviceCache?.get(key) === pending) {
-      deviceCache.delete(key);
-    }
-  });
-  return pending;
-}
-
 export class RasterStrokeRenderer {
-  static async create(options: RasterStrokeRendererOptions): Promise<RasterStrokeRenderer> {
+  static async create(
+    options: RasterStrokeRendererOptions,
+  ): Promise<RasterStrokeRenderer> {
     const renderer = new RasterStrokeRenderer(options);
     try {
       await renderer.initialize();
@@ -1851,7 +699,6 @@ export class RasterStrokeRenderer {
   readonly styledMemoryBytes: number;
 
   private readonly device: GPUDevice;
-  private readonly programCacheKey: string;
   private readonly scratchPool: EffectsScratchPool;
   private readonly documentWidth: number;
   private readonly documentHeight: number;
@@ -1871,10 +718,18 @@ export class RasterStrokeRenderer {
   private readonly parameterBuffer: GPUBuffer;
   private readonly bakeParameterBuffer: GPUBuffer;
   private readonly displayParameterBuffers: Record<SourceModeCode, GPUBuffer>;
-  private readonly displayParameterUpload = new ArrayBuffer(DISPLAY_PARAMETER_BYTES);
-  private readonly displayParameterUploadU32 = new Uint32Array(this.displayParameterUpload);
-  private readonly displayParameterUploadF32 = new Float32Array(this.displayParameterUpload);
-  private readonly parameterUpload = new ArrayBuffer(PARAMETER_CAPACITY * PARAMETER_STRIDE);
+  private readonly displayParameterUpload = new ArrayBuffer(
+    DISPLAY_PARAMETER_BYTES,
+  );
+  private readonly displayParameterUploadU32 = new Uint32Array(
+    this.displayParameterUpload,
+  );
+  private readonly displayParameterUploadF32 = new Float32Array(
+    this.displayParameterUpload,
+  );
+  private readonly parameterUpload = new ArrayBuffer(
+    PARAMETER_CAPACITY * PARAMETER_STRIDE,
+  );
   private readonly bakeParameterUpload = new ArrayBuffer(
     BAKE_PARAMETER_CAPACITY * PARAMETER_STRIDE,
   );
@@ -1946,12 +801,14 @@ export class RasterStrokeRenderer {
   private composeBindGroups = new Map<SourceModeCode, GPUBindGroup>();
   private readbackComposeBindGroups = new Map<SourceModeCode, GPUBindGroup>();
   private thresholdMaskBindGroups = new Map<SourceModeCode, GPUBindGroup>();
-  private bakeBindGroups = new WeakMap<GPUTextureView, Map<SourceModeCode, GPUBindGroup>>();
+  private bakeBindGroups = new WeakMap<
+    GPUTextureView,
+    Map<SourceModeCode, GPUBindGroup>
+  >();
   private destroyed = false;
 
   private constructor(options: RasterStrokeRendererOptions) {
     this.device = options.device;
-    this.programCacheKey = strokeProgramCacheKey(options);
     this.scratchPool = options.scratchPool;
     this.documentWidth = options.documentWidth;
     this.documentHeight = options.documentHeight;
@@ -1964,8 +821,8 @@ export class RasterStrokeRenderer {
     this.bevelBoundingFieldTestMutation =
       options.bevelBoundingFieldTestMutation ?? "none";
     if (
-      this.bevelBoundingFieldTestMutation !== "none"
-      && !this.bevelBoundingFieldEnabled
+      this.bevelBoundingFieldTestMutation !== "none" &&
+      !this.bevelBoundingFieldEnabled
     ) {
       throw new Error("Golden Bevel field mutations require the bbox path.");
     }
@@ -1977,15 +834,17 @@ export class RasterStrokeRenderer {
     this.bevelUniformUploadU32 = new Uint32Array(this.bevelUniformUpload);
     this.bevelUniformUploadF32 = new Float32Array(this.bevelUniformUpload);
 
-    const maximumScratchFromBinding = Math.floor(Math.sqrt(
-      Number(this.device.limits.maxStorageBufferBindingSize) / 8,
-    ));
-    const maximumScratchFromBuffer = Math.floor(Math.sqrt(
-      Number(this.device.limits.maxBufferSize) / 16,
-    ));
-    this.maximumScratchExtent = Math.floor(
-      Math.min(maximumScratchFromBinding, maximumScratchFromBuffer) / WORKGROUP_SIZE,
-    ) * WORKGROUP_SIZE;
+    const maximumScratchFromBinding = Math.floor(
+      Math.sqrt(Number(this.device.limits.maxStorageBufferBindingSize) / 8),
+    );
+    const maximumScratchFromBuffer = Math.floor(
+      Math.sqrt(Number(this.device.limits.maxBufferSize) / 16),
+    );
+    this.maximumScratchExtent =
+      Math.floor(
+        Math.min(maximumScratchFromBinding, maximumScratchFromBuffer) /
+          WORKGROUP_SIZE,
+      ) * WORKGROUP_SIZE;
     this._scratchExtent = this.normalizeScratchExtent(
       options.scratchExtent ?? DEFAULT_SCRATCH_EXTENT,
     );
@@ -2025,12 +884,12 @@ export class RasterStrokeRenderer {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     this.updateBevelParameters(DEFAULT_RASTER_BEVEL_STYLE);
-    const coverageWordCount = Math.ceil(
-      this.documentWidth / COVERAGE_WORD_PIXELS,
-    ) * this.documentHeight;
-    const thresholdMaskWordCount = Math.ceil(
-      this.documentWidth / THRESHOLD_MASK_WORD_BITS,
-    ) * this.documentHeight;
+    const coverageWordCount =
+      Math.ceil(this.documentWidth / COVERAGE_WORD_PIXELS) *
+      this.documentHeight;
+    const thresholdMaskWordCount =
+      Math.ceil(this.documentWidth / THRESHOLD_MASK_WORD_BITS) *
+      this.documentHeight;
     const thresholdMaskBytes = thresholdMaskWordCount * 4;
     const changeStateBytes = 4;
     const indirectArgumentsBytes = PARAMETER_CAPACITY * INDIRECT_ARGUMENT_BYTES;
@@ -2052,21 +911,21 @@ export class RasterStrokeRenderer {
       label: "Stroke disabled change-state placeholder",
       size: 4,
       usage:
-        GPUBufferUsage.STORAGE
-        | GPUBufferUsage.COPY_DST
-        | (this.readbackEnabled ? GPUBufferUsage.COPY_SRC : 0),
+        GPUBufferUsage.STORAGE |
+        GPUBufferUsage.COPY_DST |
+        (this.readbackEnabled ? GPUBufferUsage.COPY_SRC : 0),
     });
     this.indirectArgumentsPlaceholderBuffer = this.device.createBuffer({
       label: "Stroke disabled indirect-arguments placeholder",
       size: INDIRECT_ARGUMENT_BYTES,
       usage:
-        GPUBufferUsage.STORAGE
-        | GPUBufferUsage.INDIRECT
-        | GPUBufferUsage.COPY_DST,
+        GPUBufferUsage.STORAGE |
+        GPUBufferUsage.INDIRECT |
+        GPUBufferUsage.COPY_DST,
     });
-    const mipLevelCount = Math.floor(
-      Math.log2(Math.max(this.documentWidth, this.documentHeight)),
-    ) + 1;
+    const mipLevelCount =
+      Math.floor(Math.log2(Math.max(this.documentWidth, this.documentHeight))) +
+      1;
     this.styledMipLevelCount = mipLevelCount;
     const coarseWidth = Math.max(1, this.documentWidth >> 1);
     const coarseHeight = Math.max(1, this.documentHeight >> 1);
@@ -2081,10 +940,10 @@ export class RasterStrokeRenderer {
       mipLevelCount: coarseMipLevelCount,
       format: this.layerFormat,
       usage:
-        GPUTextureUsage.STORAGE_BINDING
-        | GPUTextureUsage.TEXTURE_BINDING
-        | GPUTextureUsage.RENDER_ATTACHMENT
-        | (this.readbackEnabled ? GPUTextureUsage.COPY_SRC : 0),
+        GPUTextureUsage.STORAGE_BINDING |
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.RENDER_ATTACHMENT |
+        (this.readbackEnabled ? GPUTextureUsage.COPY_SRC : 0),
     });
     this.coarseStyledStorageView = this.coarseStyledTexture.createView({
       label: "Stroke styled derived logical mip 1 storage view",
@@ -2101,29 +960,32 @@ export class RasterStrokeRenderer {
         label: `Stroke styled logical mip ${mipLevel + 1}`,
         baseMipLevel: mipLevel,
         mipLevelCount: 1,
-      }));
+      }),
+    );
     this.readbackStyledTexture = this.readbackEnabled
       ? this.device.createTexture({
-        label: `Stroke golden logical mip 0 ${this.layerFormat}`,
-        size: {
-          width: this.documentWidth,
-          height: this.documentHeight,
-          depthOrArrayLayers: 1,
-        },
-        format: this.layerFormat,
-        usage:
-          GPUTextureUsage.STORAGE_BINDING
-          | GPUTextureUsage.RENDER_ATTACHMENT
-          | GPUTextureUsage.COPY_SRC
-          | GPUTextureUsage.TEXTURE_BINDING,
-      })
+          label: `Stroke golden logical mip 0 ${this.layerFormat}`,
+          size: {
+            width: this.documentWidth,
+            height: this.documentHeight,
+            depthOrArrayLayers: 1,
+          },
+          format: this.layerFormat,
+          usage:
+            GPUTextureUsage.STORAGE_BINDING |
+            GPUTextureUsage.RENDER_ATTACHMENT |
+            GPUTextureUsage.COPY_SRC |
+            GPUTextureUsage.TEXTURE_BINDING,
+        })
       : null;
-    this.readbackStyledStorageView = this.readbackStyledTexture?.createView({
-      label: "Stroke golden logical mip 0 storage view",
-    }) ?? null;
-    this.goldenMip0SamplingView = this.readbackStyledTexture?.createView({
-      label: "Stroke golden logical mip 0 sampling view",
-    }) ?? null;
+    this.readbackStyledStorageView =
+      this.readbackStyledTexture?.createView({
+        label: "Stroke golden logical mip 0 storage view",
+      }) ?? null;
+    this.goldenMip0SamplingView =
+      this.readbackStyledTexture?.createView({
+        label: "Stroke golden logical mip 0 sampling view",
+      }) ?? null;
     const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
     this.dummyTexture = this.device.createTexture({
       label: "Stroke transparent transient placeholder",
@@ -2133,7 +995,9 @@ export class RasterStrokeRenderer {
     });
     this.device.queue.writeTexture(
       { texture: this.dummyTexture },
-      this.layerFormat === "rgba16float" ? new Uint16Array(128) : new Uint8Array(256),
+      this.layerFormat === "rgba16float"
+        ? new Uint16Array(128)
+        : new Uint8Array(256),
       { bytesPerRow: 256, rowsPerImage: 1 },
       { width: 1, height: 1, depthOrArrayLayers: 1 },
     );
@@ -2185,38 +1049,52 @@ export class RasterStrokeRenderer {
     this.innerShadowUniformBuffer = this.dummyShadowUniformBuffer;
     let styledPixels = 0;
     for (let mipLevel = 1; mipLevel < mipLevelCount; mipLevel += 1) {
-      styledPixels += Math.max(1, this.documentWidth >> mipLevel)
-        * Math.max(1, this.documentHeight >> mipLevel);
+      styledPixels +=
+        Math.max(1, this.documentWidth >> mipLevel) *
+        Math.max(1, this.documentHeight >> mipLevel);
     }
     this.styledMemoryBytes = styledPixels * bytesPerPixel;
-    this.baseControlMemoryBytes = parameterBufferBytes
-      + bakeParameterBufferBytes
-      + DISPLAY_PARAMETER_BYTES * 3
-      + this.bevelUniformBytes
-      + 4 + 68
-      + 4 + 4 + 4 + INDIRECT_ARGUMENT_BYTES;
+    this.baseControlMemoryBytes =
+      parameterBufferBytes +
+      bakeParameterBufferBytes +
+      DISPLAY_PARAMETER_BYTES * 3 +
+      this.bevelUniformBytes +
+      4 +
+      68 +
+      4 +
+      4 +
+      4 +
+      INDIRECT_ARGUMENT_BYTES;
   }
 
   get persistentMemoryBytes(): number {
-    return this.coverageMemoryBytes
-      + this.styledMemoryBytes
-      + this.thresholdMaskMemoryBytes
-      + this.controlMemoryBytes;
+    return (
+      this.coverageMemoryBytes +
+      this.styledMemoryBytes +
+      this.thresholdMaskMemoryBytes +
+      this.controlMemoryBytes
+    );
   }
 
   get coverageMemoryBytes(): number {
-    return this.strokeGeometryResourcesAllocated ? this.fullCoverageMemoryBytes : 0;
+    return this.strokeGeometryResourcesAllocated
+      ? this.fullCoverageMemoryBytes
+      : 0;
   }
 
   get thresholdMaskMemoryBytes(): number {
-    return this.strokeGeometryResourcesAllocated ? this.fullThresholdMaskMemoryBytes : 0;
+    return this.strokeGeometryResourcesAllocated
+      ? this.fullThresholdMaskMemoryBytes
+      : 0;
   }
 
   get controlMemoryBytes(): number {
-    return this.baseControlMemoryBytes + (
-      this.strokeGeometryResourcesAllocated
-        ? this.fullChangeStateMemoryBytes + this.fullIndirectArgumentsMemoryBytes
-        : 0
+    return (
+      this.baseControlMemoryBytes +
+      (this.strokeGeometryResourcesAllocated
+        ? this.fullChangeStateMemoryBytes +
+          this.fullIndirectArgumentsMemoryBytes
+        : 0)
     );
   }
 
@@ -2237,7 +1115,9 @@ export class RasterStrokeRenderer {
   }
 
   private get thresholdMaskBuffer(): GPUBuffer {
-    return this.strokeThresholdMaskBuffer ?? this.thresholdMaskPlaceholderBuffer;
+    return (
+      this.strokeThresholdMaskBuffer ?? this.thresholdMaskPlaceholderBuffer
+    );
   }
 
   private get changeStateBuffer(): GPUBuffer {
@@ -2245,7 +1125,10 @@ export class RasterStrokeRenderer {
   }
 
   private get indirectArgumentsBuffer(): GPUBuffer {
-    return this.strokeIndirectArgumentsBuffer ?? this.indirectArgumentsPlaceholderBuffer;
+    return (
+      this.strokeIndirectArgumentsBuffer ??
+      this.indirectArgumentsPlaceholderBuffer
+    );
   }
 
   private allocateStrokeGeometryResourcesUnchecked(): boolean {
@@ -2271,17 +1154,17 @@ export class RasterStrokeRenderer {
         label: "Stroke threshold-or-coverage-overlap change flags",
         size: this.fullChangeStateMemoryBytes,
         usage:
-          GPUBufferUsage.STORAGE
-          | GPUBufferUsage.COPY_DST
-          | (this.readbackEnabled ? GPUBufferUsage.COPY_SRC : 0),
+          GPUBufferUsage.STORAGE |
+          GPUBufferUsage.COPY_DST |
+          (this.readbackEnabled ? GPUBufferUsage.COPY_SRC : 0),
       });
       indirectArguments = this.device.createBuffer({
         label: "Stroke threshold-or-coverage-gated indirect dispatch arguments",
         size: this.fullIndirectArgumentsMemoryBytes,
         usage:
-          GPUBufferUsage.STORAGE
-          | GPUBufferUsage.INDIRECT
-          | GPUBufferUsage.COPY_DST,
+          GPUBufferUsage.STORAGE |
+          GPUBufferUsage.INDIRECT |
+          GPUBufferUsage.COPY_DST,
       });
     } catch (error) {
       coverage?.destroy();
@@ -2330,7 +1213,6 @@ export class RasterStrokeRenderer {
       },
     );
   }
-
 
   private releaseStrokeGeometryResources(): boolean {
     if (!this.strokeGeometryResourcesAllocated) {
@@ -2414,8 +1296,8 @@ export class RasterStrokeRenderer {
     }
     if (layerFormat !== this.layerFormat) {
       throw new Error(
-        `Stroke format ${this.layerFormat} is incompatible with ${layerFormat}; `
-        + "the renderer must be fully recreated.",
+        `Stroke format ${this.layerFormat} is incompatible with ${layerFormat}; ` +
+          "the renderer must be fully recreated.",
       );
     }
     this.layerView = layerView;
@@ -2442,7 +1324,9 @@ export class RasterStrokeRenderer {
    * stroke, into a caller-owned texture. Layer Fill and visual effects are
    * intentionally excluded so cutout composition can use the true live matte.
    */
-  encodeAuthoredMatteBake(options: RasterStrokeBakeOptions): RasterStrokeBakeResult {
+  encodeAuthoredMatteBake(
+    options: RasterStrokeBakeOptions,
+  ): RasterStrokeBakeResult {
     return this.encodeBakePass(options, "authored-matte");
   }
 
@@ -2454,18 +1338,19 @@ export class RasterStrokeRenderer {
       throw new Error("The Stroke renderer has already been destroyed.");
     }
     if (
-      output === "styled"
-      && options.style.enabled
-      && options.style.width > 0
-      && !this.strokeGeometryEnabled
+      output === "styled" &&
+      options.style.enabled &&
+      options.style.width > 0 &&
+      !this.strokeGeometryEnabled
     ) {
       throw new Error(
         "Stroke bake rejected: geometry resources are not allocated.",
       );
     }
-    const pipeline = output === "authored-matte"
-      ? this.authoredMatteBakePipeline
-      : this.readbackComposePipeline;
+    const pipeline =
+      output === "authored-matte"
+        ? this.authoredMatteBakePipeline
+        : this.readbackComposePipeline;
     if (!pipeline) {
       throw new Error("The Stroke mip 0 bake pipeline is not initialized.");
     }
@@ -2487,9 +1372,9 @@ export class RasterStrokeRenderer {
     const mode = sourceModeCode(sourceMode);
     const parameterSlot = options.parameterSlot ?? 0;
     if (
-      !Number.isSafeInteger(parameterSlot)
-      || parameterSlot < 0
-      || parameterSlot >= BAKE_PARAMETER_CAPACITY
+      !Number.isSafeInteger(parameterSlot) ||
+      parameterSlot < 0 ||
+      parameterSlot >= BAKE_PARAMETER_CAPACITY
     ) {
       throw new RangeError("Invalid Stroke bake uniform slot.");
     }
@@ -2498,36 +1383,45 @@ export class RasterStrokeRenderer {
       y: rect.y,
     };
     if (
-      !Number.isInteger(targetStorageOrigin.x)
-      || !Number.isInteger(targetStorageOrigin.y)
-      || targetStorageOrigin.x < 0
-      || targetStorageOrigin.y < 0
+      !Number.isInteger(targetStorageOrigin.x) ||
+      !Number.isInteger(targetStorageOrigin.y) ||
+      targetStorageOrigin.x < 0 ||
+      targetStorageOrigin.y < 0
     ) {
       throw new RangeError("Invalid Stroke bake storage origin.");
     }
     const bevelStyle = options.bevelStyle ?? DEFAULT_RASTER_BEVEL_STYLE;
-    const colorOverlayStyle = options.colorOverlayStyle
-      ?? DEFAULT_RASTER_COLOR_OVERLAY_STYLE;
+    const colorOverlayStyle =
+      options.colorOverlayStyle ?? DEFAULT_RASTER_COLOR_OVERLAY_STYLE;
     if (output === "styled" && !options.sharedStylePrepared) {
       this.updateBevelParameters(bevelStyle, options.contentOpacity);
     }
-    this.writeParameters(parameterSlot, {
-      targetX: rect.x,
-      targetY: rect.y,
-      targetWidth: rect.width,
-      targetHeight: rect.height,
-      localTargetX: targetStorageOrigin.x,
-      localTargetY: targetStorageOrigin.y,
-    }, 0, mode, options.style, colorOverlayStyle);
+    this.writeParameters(
+      parameterSlot,
+      {
+        targetX: rect.x,
+        targetY: rect.y,
+        targetWidth: rect.width,
+        targetHeight: rect.height,
+        localTargetX: targetStorageOrigin.x,
+        localTargetY: targetStorageOrigin.y,
+      },
+      0,
+      mode,
+      options.style,
+      colorOverlayStyle,
+    );
     new Uint8Array(
       this.bakeParameterUpload,
       parameterSlot * PARAMETER_STRIDE,
       PARAMETER_STRIDE,
-    ).set(new Uint8Array(
-      this.parameterUpload,
-      parameterSlot * PARAMETER_STRIDE,
-      PARAMETER_STRIDE,
-    ));
+    ).set(
+      new Uint8Array(
+        this.parameterUpload,
+        parameterSlot * PARAMETER_STRIDE,
+        PARAMETER_STRIDE,
+      ),
+    );
     if (!options.deferParameterUpload) {
       this.device.queue.writeBuffer(
         this.bakeParameterBuffer,
@@ -2540,9 +1434,10 @@ export class RasterStrokeRenderer {
 
     const bindGroup = this.bakeBindGroup(options.targetView, mode, sourceMode);
     const pass = options.encoder.beginComputePass({
-      label: output === "authored-matte"
-        ? "Authored matte live bake analytic mip 0"
-        : "Style stack layer bake analytic mip 0",
+      label:
+        output === "authored-matte"
+          ? "Authored matte live bake analytic mip 0"
+          : "Style stack layer bake analytic mip 0",
     });
     pass.setPipeline(pipeline);
     pass.setBindGroup(0, bindGroup, this.dynamicOffset(parameterSlot));
@@ -2567,9 +1462,9 @@ export class RasterStrokeRenderer {
 
   flushBakeParameters(parameterCount: number): void {
     if (
-      !Number.isSafeInteger(parameterCount)
-      || parameterCount < 0
-      || parameterCount > BAKE_PARAMETER_CAPACITY
+      !Number.isSafeInteger(parameterCount) ||
+      parameterCount < 0 ||
+      parameterCount > BAKE_PARAMETER_CAPACITY
     ) {
       throw new RangeError("Invalid Stroke bake slot count.");
     }
@@ -2598,7 +1493,10 @@ export class RasterStrokeRenderer {
       label: `Stroke direct/coarse display source mode ${sourceMode}`,
       layout,
       entries: [
-        { binding: 0, resource: { buffer: this.displayParameterBuffers[mode] } },
+        {
+          binding: 0,
+          resource: { buffer: this.displayParameterBuffers[mode] },
+        },
         { binding: 1, resource: this.layerView },
         { binding: 2, resource: this.sourceViews[mode] },
         { binding: 3, resource: { buffer: this.lightGlazeUniformBuffer } },
@@ -2626,11 +1524,14 @@ export class RasterStrokeRenderer {
       WORKGROUP_SIZE,
       Math.trunc(Number(requestedExtent) || DEFAULT_SCRATCH_EXTENT),
     );
-    const extent = Math.floor(
-      Math.min(requested, this.maximumScratchExtent) / WORKGROUP_SIZE,
-    ) * WORKGROUP_SIZE;
+    const extent =
+      Math.floor(
+        Math.min(requested, this.maximumScratchExtent) / WORKGROUP_SIZE,
+      ) * WORKGROUP_SIZE;
     if (extent < WORKGROUP_SIZE) {
-      throw new Error("The GPU storage limit is insufficient for Stroke scratch.");
+      throw new Error(
+        "The GPU storage limit is insufficient for Stroke scratch.",
+      );
     }
     return extent;
   }
@@ -2651,7 +1552,9 @@ export class RasterStrokeRenderer {
       },
     ]);
     if (!lease) {
-      throw new Error("Stroke requires scratch space, but the pool did not return a lease.");
+      throw new Error(
+        "Stroke requires scratch space, but the pool did not return a lease.",
+      );
     }
     return lease;
   }
@@ -2678,8 +1581,8 @@ export class RasterStrokeRenderer {
   private syncScratchBindGroups(): void {
     const lease = this.requireScratchLease();
     if (
-      lease.generation === this.scratchPoolGeneration
-      && lease.layoutVersion === this.scratchPoolLayoutVersion
+      lease.generation === this.scratchPoolGeneration &&
+      lease.layoutVersion === this.scratchPoolLayoutVersion
     ) {
       return;
     }
@@ -2725,10 +1628,15 @@ export class RasterStrokeRenderer {
     if (!this.readbackEnabled) {
       throw new Error("Stroke readback is not enabled for this renderer.");
     }
-    if (!Number.isInteger(mipLevel) || mipLevel < 0 || mipLevel >= this.styledMipLevelCount) {
+    if (
+      !Number.isInteger(mipLevel) ||
+      mipLevel < 0 ||
+      mipLevel >= this.styledMipLevelCount
+    ) {
       throw new Error(`Invalid Stroke mip for readback: ${mipLevel}.`);
     }
-    const texture = mipLevel === 0 ? this.readbackStyledTexture : this.coarseStyledTexture;
+    const texture =
+      mipLevel === 0 ? this.readbackStyledTexture : this.coarseStyledTexture;
     if (!texture) {
       throw new Error("The golden Stroke mip 0 texture is unavailable.");
     }
@@ -2805,7 +1713,9 @@ export class RasterStrokeRenderer {
       throw new Error("Stroke readback is not enabled for this renderer.");
     }
     if (!this.strokeGeometryEnabled) {
-      throw new Error("Stroke readback rejected: geometry resources are not allocated.");
+      throw new Error(
+        "Stroke readback rejected: geometry resources are not allocated.",
+      );
     }
     const readbackBuffer = this.device.createBuffer({
       label: "Stroke golden change-state flag readback",
@@ -2816,7 +1726,13 @@ export class RasterStrokeRenderer {
       const encoder = this.device.createCommandEncoder({
         label: "Stroke golden change-state flag readback encoder",
       });
-      encoder.copyBufferToBuffer(this.changeStateBuffer, 0, readbackBuffer, 0, 4);
+      encoder.copyBufferToBuffer(
+        this.changeStateBuffer,
+        0,
+        readbackBuffer,
+        0,
+        4,
+      );
       this.device.queue.submit([encoder.finish()]);
       await readbackBuffer.mapAsync(GPUMapMode.READ);
       const value = new Uint32Array(readbackBuffer.getMappedRange())[0] ?? 0;
@@ -2827,289 +1743,13 @@ export class RasterStrokeRenderer {
     }
   }
 
-  private async createProgramResources(): Promise<RasterStrokeProgramResources> {
-    this.seedBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Stroke seed bind group layout",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "uniform", hasDynamicOffset: true, minBindingSize: PARAMETER_BYTES },
-        },
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float" } },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float" } },
-        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-      ],
-    });
-    this.jfaBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Stroke JFA bind group layout",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "uniform", hasDynamicOffset: true, minBindingSize: PARAMETER_BYTES },
-        },
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-      ],
-    });
-    this.resolveBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Stroke resolve bind group layout",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "uniform", hasDynamicOffset: true, minBindingSize: PARAMETER_BYTES },
-        },
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float" } },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float" } },
-        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-      ],
-    });
-    this.composeBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Stroke compose bind group layout",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "uniform", hasDynamicOffset: true, minBindingSize: PARAMETER_BYTES },
-        },
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float" } },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float" } },
-        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        {
-          binding: 6,
-          visibility: GPUShaderStage.COMPUTE,
-          storageTexture: { access: "write-only", format: this.layerFormat },
-        },
-        {
-          binding: 7,
-          visibility: GPUShaderStage.COMPUTE,
-          texture: { sampleType: "unfilterable-float" },
-        },
-        {
-          binding: 8,
-          visibility: GPUShaderStage.COMPUTE,
-          texture: { sampleType: "unfilterable-float" },
-        },
-        {
-          binding: 9,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "uniform" },
-        },
-        {
-          binding: 10,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "read-only-storage" },
-        },
-        {
-          binding: 11,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "uniform" },
-        },
-        {
-          binding: 12,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "read-only-storage" },
-        },
-        {
-          binding: 13,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "uniform" },
-        },
-      ],
-    });
-
-    this.thresholdMaskBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Stroke alpha-threshold mask bind group layout",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "uniform", hasDynamicOffset: true, minBindingSize: PARAMETER_BYTES },
-        },
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float" } },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float" } },
-        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-      ],
-    });
-    this.indirectGateBindGroupLayout = this.device.createBindGroupLayout({
-      label: "Stroke indirect dispatch gate bind group layout",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "uniform", hasDynamicOffset: true, minBindingSize: PARAMETER_BYTES },
-        },
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-      ],
-    });
-
-    const seedModule = this.device.createShaderModule({
-      label: "Stroke dual seed WGSL",
-      code: seedShader(),
-    });
-    const jfaModule = this.device.createShaderModule({
-      label: "Stroke packed dual JFA WGSL",
-      code: jfaShader(),
-    });
-    const resolveModule = this.device.createShaderModule({
-      label: "Stroke Q10.6 to packed f16 coverage WGSL",
-      code: resolveShader(),
-    });
-    const composeModule = this.device.createShaderModule({
-      label: "Stroke styled logical mip 1 compose WGSL",
-      code: coarseComposeShader(
-        this.layerFormat,
-        this.bevelBoundingFieldEnabled,
-        this.bevelBoundingFieldTestMutation,
-      ),
-    });
-    // Compiled for every renderer: the application uses it for inactive-layer
-    // bakes, while readbackEnabled only controls the golden-owned target texture.
-    const readbackComposeModule = this.device.createShaderModule({
-      label: "Style stack analytic logical mip 0 bake WGSL",
-      code: readbackComposeShader(
-        this.layerFormat,
-        this.bevelBoundingFieldEnabled,
-        this.bevelBoundingFieldTestMutation,
-      ),
-    });
-    const thresholdMaskModule = this.device.createShaderModule({
-      label: "Stroke alpha-threshold mask WGSL",
-      code: thresholdMaskShader(),
-    });
-    const indirectGateModule = this.device.createShaderModule({
-      label: "Stroke indirect dispatch gate WGSL",
-      code: indirectGateShader(),
-    });
-    await assertShaderModules([
-      { label: "seed", module: seedModule },
-      { label: "jfa", module: jfaModule },
-      { label: "resolve", module: resolveModule },
-      { label: "coarse-compose", module: composeModule },
-      { label: "analytic-mip0-bake", module: readbackComposeModule },
-      { label: "threshold-mask", module: thresholdMaskModule },
-      { label: "indirect-gate", module: indirectGateModule },
-    ]);
-
-    this.device.pushErrorScope("validation");
-    const composePipelineLayout = this.device.createPipelineLayout({
-      label: "Stroke styled compose pipeline layout",
-      bindGroupLayouts: [this.composeBindGroupLayout],
-    });
-    const pipelineResults = await Promise.allSettled([
-      createComputePipelineAsync(this.device, {
-        label: "Stroke dual seed pipeline",
-        layout: this.device.createPipelineLayout({
-          bindGroupLayouts: [this.seedBindGroupLayout],
-        }),
-        compute: { module: seedModule, entryPoint: "main" },
-      }),
-      createComputePipelineAsync(this.device, {
-        label: "Stroke packed dual JFA pipeline",
-        layout: this.device.createPipelineLayout({
-          bindGroupLayouts: [this.jfaBindGroupLayout],
-        }),
-        compute: { module: jfaModule, entryPoint: "main" },
-      }),
-      createComputePipelineAsync(this.device, {
-        label: "Stroke packed f16 coverage resolve pipeline",
-        layout: this.device.createPipelineLayout({
-          bindGroupLayouts: [this.resolveBindGroupLayout],
-        }),
-        compute: { module: resolveModule, entryPoint: "main" },
-      }),
-      createComputePipelineAsync(this.device, {
-        label: "Stroke styled logical mip 1 compose pipeline",
-        layout: composePipelineLayout,
-        compute: { module: composeModule, entryPoint: "main" },
-      }),
-      createComputePipelineAsync(this.device, {
-        label: "Style stack analytic logical mip 0 bake pipeline",
-        layout: composePipelineLayout,
-        compute: { module: readbackComposeModule, entryPoint: "main" },
-      }),
-      createComputePipelineAsync(this.device, {
-        label: "Authored matte analytic logical mip 0 bake pipeline",
-        layout: composePipelineLayout,
-        compute: { module: readbackComposeModule, entryPoint: "authoredMatteMain" },
-      }),
-      createComputePipelineAsync(this.device, {
-        label: "Stroke alpha-threshold mask pipeline",
-        layout: this.device.createPipelineLayout({
-          bindGroupLayouts: [this.thresholdMaskBindGroupLayout],
-        }),
-        compute: { module: thresholdMaskModule, entryPoint: "main" },
-      }),
-      createComputePipelineAsync(this.device, {
-        label: "Stroke indirect dispatch gate pipeline",
-        layout: this.device.createPipelineLayout({
-          bindGroupLayouts: [this.indirectGateBindGroupLayout],
-        }),
-        compute: { module: indirectGateModule, entryPoint: "main" },
-      }),
-    ]);
-    const validationError = await this.device.popErrorScope();
-    const pipelineCreationErrors = pipelineResults.flatMap((result) =>
-      result.status === "rejected" ? [result.reason] : []);
-    if (pipelineCreationErrors.length > 0 || validationError) {
-      throw new AggregateError(
-        [...pipelineCreationErrors, ...(validationError ? [validationError] : [])],
-        "Stroke pipeline creation failed validation.",
-      );
-    }
-    const pipelines = pipelineResults.map((result) => {
-      if (result.status === "rejected") throw result.reason;
-      return result.value;
-    });
-    [
-      this.seedPipeline,
-      this.jfaPipeline,
-      this.resolvePipeline,
-      this.composePipeline,
-      this.readbackComposePipeline,
-      this.authoredMatteBakePipeline,
-      this.thresholdMaskPipeline,
-      this.indirectGatePipeline,
-    ] = pipelines;
-
-    return {
-      seedBindGroupLayout: this.seedBindGroupLayout,
-      jfaBindGroupLayout: this.jfaBindGroupLayout,
-      resolveBindGroupLayout: this.resolveBindGroupLayout,
-      composeBindGroupLayout: this.composeBindGroupLayout,
-      thresholdMaskBindGroupLayout: this.thresholdMaskBindGroupLayout,
-      indirectGateBindGroupLayout: this.indirectGateBindGroupLayout,
-      seedPipeline: this.seedPipeline,
-      jfaPipeline: this.jfaPipeline,
-      resolvePipeline: this.resolvePipeline,
-      composePipeline: this.composePipeline,
-      readbackComposePipeline: this.readbackComposePipeline!,
-      authoredMatteBakePipeline: this.authoredMatteBakePipeline!,
-      thresholdMaskPipeline: this.thresholdMaskPipeline,
-      indirectGatePipeline: this.indirectGatePipeline,
-    };
-  }
-
   private async initialize(): Promise<void> {
-    const programs = await acquireStrokeProgramResources(
-      this.device,
-      this.programCacheKey,
-      () => this.createProgramResources(),
-    );
+    const programs = await acquireRasterStrokeProgramResources({
+      device: this.device,
+      layerFormat: this.layerFormat,
+      bevelBoundingFieldEnabled: this.bevelBoundingFieldEnabled,
+      bevelBoundingFieldTestMutation: this.bevelBoundingFieldTestMutation,
+    });
     this.seedBindGroupLayout = programs.seedBindGroupLayout;
     this.jfaBindGroupLayout = programs.jfaBindGroupLayout;
     this.resolveBindGroupLayout = programs.resolveBindGroupLayout;
@@ -3141,7 +1781,10 @@ export class RasterStrokeRenderer {
       this.rebuildSourceBindGroups(2);
     }
   }
-  setBevelResources(heightView: GPUTextureView | null, glossView: GPUTextureView | null): void {
+  setBevelResources(
+    heightView: GPUTextureView | null,
+    glossView: GPUTextureView | null,
+  ): void {
     this.bevelHeightView = heightView ?? this.dummyBevelView;
     this.bevelGlossView = glossView ?? this.dummyBevelView;
     if (this.composeBindGroupLayout) {
@@ -3191,7 +1834,9 @@ export class RasterStrokeRenderer {
   updateBevelFieldParameters(state: RasterBevelFieldState): void {
     if (!this.bevelBoundingFieldEnabled) {
       if (state.bounded) {
-        throw new Error("The full-document Stroke renderer does not accept a bbox Bevel field.");
+        throw new Error(
+          "The full-document Stroke renderer does not accept a bbox Bevel field.",
+        );
       }
       return;
     }
@@ -3201,9 +1846,15 @@ export class RasterStrokeRenderer {
     this.bevelFieldAllocationBounds = state.allocationBounds
       ? { ...state.allocationBounds }
       : null;
-    this.bevelFieldValidBounds = state.validBounds ? { ...state.validBounds } : null;
+    this.bevelFieldValidBounds = state.validBounds
+      ? { ...state.validBounds }
+      : null;
     this.writeBevelFieldUniforms();
-    this.device.queue.writeBuffer(this.bevelUniformBuffer, 0, this.bevelUniformUpload);
+    this.device.queue.writeBuffer(
+      this.bevelUniformBuffer,
+      0,
+      this.bevelUniformUpload,
+    );
   }
 
   updateBevelParameters(source: RasterBevelStyle, contentOpacity = 1): void {
@@ -3213,18 +1864,22 @@ export class RasterStrokeRenderer {
     const style = normalizeRasterBevelStyle(source);
     const derived = deriveRasterBevelHeightfield(style);
     const light = rasterBevelLightVector(style.angle, style.altitude);
-    const modeCode = style.mode === "inner"
-      ? 0
-      : style.mode === "outer"
-        ? 1
-        : style.mode === "emboss" ? 2 : 3;
+    const modeCode =
+      style.mode === "inner"
+        ? 0
+        : style.mode === "outer"
+          ? 1
+          : style.mode === "emboss"
+            ? 2
+            : 3;
     this.bevelUniformUploadU32.fill(0);
     this.bevelUniformUploadU32[0] = style.enabled ? 1 : 0;
     this.bevelUniformUploadU32[1] = modeCode;
     this.bevelUniformUploadU32[2] = style.contourAA ? 1 : 0;
-    this.bevelUniformUploadF32[4] = derived.amplitudeScale
-      * (style.depth / 100)
-      * (style.direction === "down" ? -1 : 1);
+    this.bevelUniformUploadF32[4] =
+      derived.amplitudeScale *
+      (style.depth / 100) *
+      (style.direction === "down" ? -1 : 1);
     this.bevelUniformUploadF32[5] = style.fill / 100;
     this.bevelUniformUploadF32[6] = Math.min(
       1,
@@ -3242,14 +1897,18 @@ export class RasterStrokeRenderer {
     this.bevelUniformUploadF32[18] = style.shadowColor[2];
     this.bevelUniformUploadF32[19] = style.shadowOpacity / 100;
     if (this.bevelBoundingFieldEnabled) {
-      this.bevelUniformUploadF32[7] = this.bevelBoundingFieldTestMutation === "zero-outside"
-        ? 0
-        : rasterBevelOutsideFieldHeight(style);
+      this.bevelUniformUploadF32[7] =
+        this.bevelBoundingFieldTestMutation === "zero-outside"
+          ? 0
+          : rasterBevelOutsideFieldHeight(style);
       this.writeBevelFieldUniforms();
     }
-    this.device.queue.writeBuffer(this.bevelUniformBuffer, 0, this.bevelUniformUpload);
+    this.device.queue.writeBuffer(
+      this.bevelUniformBuffer,
+      0,
+      this.bevelUniformUpload,
+    );
   }
-
 
   private rebuildScratchBindGroups(): void {
     const lease = this.requireScratchLease();
@@ -3321,49 +1980,43 @@ export class RasterStrokeRenderer {
     // source invalidates the tiny target-view cache as a unit.
     this.bakeBindGroups = new WeakMap();
     const scratchLease = this.requireScratchLease();
-    this.seedBindGroups.set(mode, this.device.createBindGroup({
-      label: `Stroke seed source mode ${mode}`,
-      layout: this.seedBindGroupLayout,
-      entries: [
-        ...this.commonSourceEntries(mode),
-        { binding: 5, resource: this.scratchBinding(scratchLease, 0) },
-      ],
-    }));
-    for (const scratchIndex of [0, 1] as const) {
-      this.resolveBindGroups.set(`${mode}:${scratchIndex}`, this.device.createBindGroup({
-        label: `Stroke resolve source ${mode}, scratch ${scratchIndex}`,
-        layout: this.resolveBindGroupLayout,
+    this.seedBindGroups.set(
+      mode,
+      this.device.createBindGroup({
+        label: `Stroke seed source mode ${mode}`,
+        layout: this.seedBindGroupLayout,
         entries: [
           ...this.commonSourceEntries(mode),
-          { binding: 5, resource: this.scratchBinding(scratchLease, scratchIndex) },
-          { binding: 6, resource: { buffer: this.coverageBuffer } },
+          { binding: 5, resource: this.scratchBinding(scratchLease, 0) },
         ],
-      }));
+      }),
+    );
+    for (const scratchIndex of [0, 1] as const) {
+      this.resolveBindGroups.set(
+        `${mode}:${scratchIndex}`,
+        this.device.createBindGroup({
+          label: `Stroke resolve source ${mode}, scratch ${scratchIndex}`,
+          layout: this.resolveBindGroupLayout,
+          entries: [
+            ...this.commonSourceEntries(mode),
+            {
+              binding: 5,
+              resource: this.scratchBinding(scratchLease, scratchIndex),
+            },
+            { binding: 6, resource: { buffer: this.coverageBuffer } },
+          ],
+        }),
+      );
     }
-    this.composeBindGroups.set(mode, this.device.createBindGroup({
-      label: `Style stack logical mip 1 compose source mode ${mode}`,
-      layout: this.composeBindGroupLayout,
-      entries: [
-        ...this.commonSourceEntries(mode),
-        { binding: 5, resource: { buffer: this.coverageBuffer } },
-        { binding: 6, resource: this.coarseStyledStorageView },
-        { binding: 7, resource: this.bevelHeightView },
-        { binding: 8, resource: this.bevelGlossView },
-        { binding: 9, resource: { buffer: this.bevelUniformBuffer } },
-        { binding: 10, resource: { buffer: this.outerShadowCoverageBuffer } },
-        { binding: 11, resource: { buffer: this.outerShadowUniformBuffer } },
-        { binding: 12, resource: { buffer: this.innerShadowCoverageBuffer } },
-        { binding: 13, resource: { buffer: this.innerShadowUniformBuffer } },
-      ],
-    }));
-    if (this.readbackStyledStorageView) {
-      this.readbackComposeBindGroups.set(mode, this.device.createBindGroup({
-        label: `Style stack golden logical mip 0 compose source mode ${mode}`,
+    this.composeBindGroups.set(
+      mode,
+      this.device.createBindGroup({
+        label: `Style stack logical mip 1 compose source mode ${mode}`,
         layout: this.composeBindGroupLayout,
         entries: [
           ...this.commonSourceEntries(mode),
           { binding: 5, resource: { buffer: this.coverageBuffer } },
-          { binding: 6, resource: this.readbackStyledStorageView },
+          { binding: 6, resource: this.coarseStyledStorageView },
           { binding: 7, resource: this.bevelHeightView },
           { binding: 8, resource: this.bevelGlossView },
           { binding: 9, resource: { buffer: this.bevelUniformBuffer } },
@@ -3372,18 +2025,54 @@ export class RasterStrokeRenderer {
           { binding: 12, resource: { buffer: this.innerShadowCoverageBuffer } },
           { binding: 13, resource: { buffer: this.innerShadowUniformBuffer } },
         ],
-      }));
+      }),
+    );
+    if (this.readbackStyledStorageView) {
+      this.readbackComposeBindGroups.set(
+        mode,
+        this.device.createBindGroup({
+          label: `Style stack golden logical mip 0 compose source mode ${mode}`,
+          layout: this.composeBindGroupLayout,
+          entries: [
+            ...this.commonSourceEntries(mode),
+            { binding: 5, resource: { buffer: this.coverageBuffer } },
+            { binding: 6, resource: this.readbackStyledStorageView },
+            { binding: 7, resource: this.bevelHeightView },
+            { binding: 8, resource: this.bevelGlossView },
+            { binding: 9, resource: { buffer: this.bevelUniformBuffer } },
+            {
+              binding: 10,
+              resource: { buffer: this.outerShadowCoverageBuffer },
+            },
+            {
+              binding: 11,
+              resource: { buffer: this.outerShadowUniformBuffer },
+            },
+            {
+              binding: 12,
+              resource: { buffer: this.innerShadowCoverageBuffer },
+            },
+            {
+              binding: 13,
+              resource: { buffer: this.innerShadowUniformBuffer },
+            },
+          ],
+        }),
+      );
     }
-    this.thresholdMaskBindGroups.set(mode, this.device.createBindGroup({
-      label: `Stroke alpha-threshold mask source mode ${mode}`,
-      layout: this.thresholdMaskBindGroupLayout,
-      entries: [
-        ...this.commonSourceEntries(mode),
-        { binding: 5, resource: { buffer: this.thresholdMaskBuffer } },
-        { binding: 6, resource: { buffer: this.changeStateBuffer } },
-        { binding: 7, resource: { buffer: this.coverageBuffer } },
-      ],
-    }));
+    this.thresholdMaskBindGroups.set(
+      mode,
+      this.device.createBindGroup({
+        label: `Stroke alpha-threshold mask source mode ${mode}`,
+        layout: this.thresholdMaskBindGroupLayout,
+        entries: [
+          ...this.commonSourceEntries(mode),
+          { binding: 5, resource: { buffer: this.thresholdMaskBuffer } },
+          { binding: 6, resource: { buffer: this.changeStateBuffer } },
+          { binding: 7, resource: { buffer: this.coverageBuffer } },
+        ],
+      }),
+    );
   }
 
   private bakeBindGroup(
@@ -3422,9 +2111,9 @@ export class RasterStrokeRenderer {
 
   private buildJobs(rect: RasterStrokeRect, width: number): BuildJob[] {
     const apron = Math.ceil(width + 2);
-    const maximumTargetExtent = Math.floor(
-      (this.scratchExtent - apron * 2) / COVERAGE_WORD_PIXELS,
-    ) * COVERAGE_WORD_PIXELS;
+    const maximumTargetExtent =
+      Math.floor((this.scratchExtent - apron * 2) / COVERAGE_WORD_PIXELS) *
+      COVERAGE_WORD_PIXELS;
     if (maximumTargetExtent <= 0) {
       throw new Error(
         `Stroke scratch ${this.scratchExtent}px is insufficient for width ${width}px.`,
@@ -3439,14 +2128,23 @@ export class RasterStrokeRenderer {
         const targetWidth = Math.min(maximumTargetExtent, right - x);
         const buildOriginX = Math.max(-1, x - apron);
         const buildOriginY = Math.max(-1, y - apron);
-        const buildRight = Math.min(this.documentWidth + 1, x + targetWidth + apron);
-        const buildBottom = Math.min(this.documentHeight + 1, y + targetHeight + apron);
+        const buildRight = Math.min(
+          this.documentWidth + 1,
+          x + targetWidth + apron,
+        );
+        const buildBottom = Math.min(
+          this.documentHeight + 1,
+          y + targetHeight + apron,
+        );
         const buildWidth = buildRight - buildOriginX;
         const buildHeight = buildBottom - buildOriginY;
-        if (buildWidth > this.scratchExtent || buildHeight > this.scratchExtent) {
+        if (
+          buildWidth > this.scratchExtent ||
+          buildHeight > this.scratchExtent
+        ) {
           throw new Error(
-            `Invalid Stroke scratch partition: ${buildWidth}×${buildHeight} `
-            + `exceeds ${this.scratchExtent}.`,
+            `Invalid Stroke scratch partition: ${buildWidth}×${buildHeight} ` +
+              `exceeds ${this.scratchExtent}.`,
           );
         }
         jobs.push({
@@ -3485,11 +2183,13 @@ export class RasterStrokeRenderer {
     this.displayParameterUploadF32[17] = style.color[1];
     this.displayParameterUploadF32[18] = style.color[2];
     this.displayParameterUploadF32[19] = style.color[3];
-    this.displayParameterUploadU32[15] = style.enabled && style.width > 0 ? 1 : 0;
+    this.displayParameterUploadU32[15] =
+      style.enabled && style.width > 0 ? 1 : 0;
     this.displayParameterUploadF32[20] = colorOverlayStyle.color[0];
     this.displayParameterUploadF32[21] = colorOverlayStyle.color[1];
     this.displayParameterUploadF32[22] = colorOverlayStyle.color[2];
-    this.displayParameterUploadF32[23] = encodedColorOverlayMode(colorOverlayStyle);
+    this.displayParameterUploadF32[23] =
+      encodedColorOverlayMode(colorOverlayStyle);
     this.updateBevelParameters(bevelStyle, contentOpacity);
     this.device.queue.writeBuffer(
       this.displayParameterBuffers[mode],
@@ -3525,7 +2225,8 @@ export class RasterStrokeRenderer {
     this.parameterUploadF32[word + 12] = style.width;
     this.parameterUploadU32[word + 13] = stylePositionCode(style.position);
     this.parameterUploadU32[word + 14] = this.scratchExtent;
-    this.parameterUploadU32[word + 15] = style.enabled && style.width > 0 ? 1 : 0;
+    this.parameterUploadU32[word + 15] =
+      style.enabled && style.width > 0 ? 1 : 0;
     this.parameterUploadF32[word + 16] = style.color[0];
     this.parameterUploadF32[word + 17] = style.color[1];
     this.parameterUploadF32[word + 18] = style.color[2];
@@ -3533,7 +2234,8 @@ export class RasterStrokeRenderer {
     this.parameterUploadF32[word + 20] = colorOverlayStyle.color[0];
     this.parameterUploadF32[word + 21] = colorOverlayStyle.color[1];
     this.parameterUploadF32[word + 22] = colorOverlayStyle.color[2];
-    this.parameterUploadF32[word + 23] = encodedColorOverlayMode(colorOverlayStyle);
+    this.parameterUploadF32[word + 23] =
+      encodedColorOverlayMode(colorOverlayStyle);
     return slot + 1;
   }
 
@@ -3563,7 +2265,11 @@ export class RasterStrokeRenderer {
     if (this.destroyed) {
       throw new Error("The Stroke renderer has already been destroyed.");
     }
-    if (options.style.enabled && options.style.width > 0 && !this.strokeGeometryEnabled) {
+    if (
+      options.style.enabled &&
+      options.style.width > 0 &&
+      !this.strokeGeometryEnabled
+    ) {
       throw new Error(
         "Stroke encode rejected: geometry resources are not allocated.",
       );
@@ -3590,8 +2296,8 @@ export class RasterStrokeRenderer {
       this.documentHeight,
     );
     const mode = sourceModeCode(options.sourceMode);
-    const colorOverlayStyle = options.colorOverlayStyle
-      ?? DEFAULT_RASTER_COLOR_OVERLAY_STYLE;
+    const colorOverlayStyle =
+      options.colorOverlayStyle ?? DEFAULT_RASTER_COLOR_OVERLAY_STYLE;
     this.updateDisplayParameters(
       options.sourceMode,
       options.style,
@@ -3600,17 +2306,23 @@ export class RasterStrokeRenderer {
       options.contentOpacity ?? 1,
     );
 
-    const jobs = rebuildRect ? this.buildJobs(rebuildRect, options.style.width) : [];
+    const jobs = rebuildRect
+      ? this.buildJobs(rebuildRect, options.style.width)
+      : [];
     const schedules = jobs.map((job) =>
-      jfaScheduleForExtent(Math.max(job.buildWidth, job.buildHeight), { plusOne: true }));
-    const useThresholdGate = Boolean(
-      jobs.length > 0
-      && requestedDetectionRect
-      && !options.resetThresholdMask,
+      jfaScheduleForExtent(Math.max(job.buildWidth, job.buildHeight), {
+        plusOne: true,
+      }),
     );
-    const thresholdRect = jobs.length > 0
-      ? useThresholdGate ? requestedDetectionRect : rebuildRect
-      : null;
+    const useThresholdGate = Boolean(
+      jobs.length > 0 && requestedDetectionRect && !options.resetThresholdMask,
+    );
+    const thresholdRect =
+      jobs.length > 0
+        ? useThresholdGate
+          ? requestedDetectionRect
+          : rebuildRect
+        : null;
     const conditionalComposeRect = useThresholdGate
       ? requestedConditionalComposeRect
       : null;
@@ -3630,8 +2342,9 @@ export class RasterStrokeRenderer {
       coarseHeight,
     );
     const readbackComposeRects = this.readbackEnabled
-      ? [directComposeRect, requestedConditionalComposeRect]
-        .filter((rect): rect is RasterStrokeRect => rect !== null)
+      ? [directComposeRect, requestedConditionalComposeRect].filter(
+          (rect): rect is RasterStrokeRect => rect !== null,
+        )
       : [];
 
     let indirectArgumentCount = 0;
@@ -3647,7 +2360,9 @@ export class RasterStrokeRenderer {
         const resolve = indirectArgumentCount;
         indirectArgumentCount = this.writeIndirectArgument(
           indirectArgumentCount,
-          Math.ceil(Math.ceil(job.targetWidth / COVERAGE_WORD_PIXELS) / WORKGROUP_SIZE),
+          Math.ceil(
+            Math.ceil(job.targetWidth / COVERAGE_WORD_PIXELS) / WORKGROUP_SIZE,
+          ),
           Math.ceil(job.targetHeight / WORKGROUP_SIZE),
         );
         jobIndirectArguments.push({ field, resolve });
@@ -3674,8 +2389,8 @@ export class RasterStrokeRenderer {
     parameterCount += useThresholdGate ? 1 : 0;
     if (parameterCount > PARAMETER_CAPACITY) {
       throw new Error(
-        `Stroke requires ${parameterCount} dispatches, exceeding the `
-        + `${PARAMETER_CAPACITY} limit.`,
+        `Stroke requires ${parameterCount} dispatches, exceeding the ` +
+          `${PARAMETER_CAPACITY} limit.`,
       );
     }
 
@@ -3723,49 +2438,84 @@ export class RasterStrokeRenderer {
     let thresholdSlot = -1;
     if (thresholdRect) {
       thresholdSlot = parameterSlot;
-      parameterSlot = this.writeParameters(parameterSlot, {
-        targetX: thresholdRect.x,
-        targetY: thresholdRect.y,
-        targetWidth: thresholdRect.width,
-        targetHeight: thresholdRect.height,
-      }, 0, mode, options.style, colorOverlayStyle);
+      parameterSlot = this.writeParameters(
+        parameterSlot,
+        {
+          targetX: thresholdRect.x,
+          targetY: thresholdRect.y,
+          targetWidth: thresholdRect.width,
+          targetHeight: thresholdRect.height,
+        },
+        0,
+        mode,
+        options.style,
+        colorOverlayStyle,
+      );
     }
     let gateSlot = -1;
     if (useThresholdGate) {
       gateSlot = parameterSlot;
-      parameterSlot = this.writeParameters(parameterSlot, {
-        targetWidth: indirectArgumentCount,
-        targetHeight: 1,
-      }, 0, mode, options.style, colorOverlayStyle);
+      parameterSlot = this.writeParameters(
+        parameterSlot,
+        {
+          targetWidth: indirectArgumentCount,
+          targetHeight: 1,
+        },
+        0,
+        mode,
+        options.style,
+        colorOverlayStyle,
+      );
     }
     const coarseDirectComposeSlots = coarseDirectComposeRects.map((rect) => {
       const slot = parameterSlot;
-      parameterSlot = this.writeParameters(parameterSlot, {
-        targetX: rect.x,
-        targetY: rect.y,
-        targetWidth: rect.width,
-        targetHeight: rect.height,
-      }, 0, mode, options.style, colorOverlayStyle);
+      parameterSlot = this.writeParameters(
+        parameterSlot,
+        {
+          targetX: rect.x,
+          targetY: rect.y,
+          targetWidth: rect.width,
+          targetHeight: rect.height,
+        },
+        0,
+        mode,
+        options.style,
+        colorOverlayStyle,
+      );
       return slot;
     });
     let coarseConditionalComposeSlot = -1;
     if (coarseConditionalComposeRect) {
       coarseConditionalComposeSlot = parameterSlot;
-      parameterSlot = this.writeParameters(parameterSlot, {
-        targetX: coarseConditionalComposeRect.x,
-        targetY: coarseConditionalComposeRect.y,
-        targetWidth: coarseConditionalComposeRect.width,
-        targetHeight: coarseConditionalComposeRect.height,
-      }, 0, mode, options.style, colorOverlayStyle);
+      parameterSlot = this.writeParameters(
+        parameterSlot,
+        {
+          targetX: coarseConditionalComposeRect.x,
+          targetY: coarseConditionalComposeRect.y,
+          targetWidth: coarseConditionalComposeRect.width,
+          targetHeight: coarseConditionalComposeRect.height,
+        },
+        0,
+        mode,
+        options.style,
+        colorOverlayStyle,
+      );
     }
     const readbackComposeSlots = readbackComposeRects.map((rect) => {
       const slot = parameterSlot;
-      parameterSlot = this.writeParameters(parameterSlot, {
-        targetX: rect.x,
-        targetY: rect.y,
-        targetWidth: rect.width,
-        targetHeight: rect.height,
-      }, 0, mode, options.style, colorOverlayStyle);
+      parameterSlot = this.writeParameters(
+        parameterSlot,
+        {
+          targetX: rect.x,
+          targetY: rect.y,
+          targetWidth: rect.width,
+          targetHeight: rect.height,
+        },
+        0,
+        mode,
+        options.style,
+        colorOverlayStyle,
+      );
       return slot;
     });
 
@@ -3789,9 +2539,9 @@ export class RasterStrokeRenderer {
     }
 
     const resetThresholdMask = Boolean(
-      options.resetThresholdMask
-      || options.clearStyled
-      || (jobs.length > 0 && !useThresholdGate),
+      options.resetThresholdMask ||
+      options.clearStyled ||
+      (jobs.length > 0 && !useThresholdGate),
     );
     if (options.clearStyled && this.strokeGeometryEnabled) {
       options.encoder.clearBuffer(this.coverageBuffer);
@@ -3824,7 +2574,8 @@ export class RasterStrokeRenderer {
     }
     if (useThresholdGate) {
       const gatePass = options.encoder.beginComputePass({
-        label: "Gate Stroke field dispatches from threshold or coverage overlap",
+        label:
+          "Gate Stroke field dispatches from threshold or coverage overlap",
       });
       gatePass.setPipeline(this.indirectGatePipeline);
       gatePass.setBindGroup(
@@ -3841,23 +2592,27 @@ export class RasterStrokeRenderer {
     if (options.clearStyled) {
       const clearCoarsePass = options.encoder.beginRenderPass({
         label: "Clear Stroke styled logical mip 1",
-        colorAttachments: [{
-          view: this.mipViews[0],
-          loadOp: "clear",
-          storeOp: "store",
-          clearValue: { r: 0, g: 0, b: 0, a: 0 },
-        }],
+        colorAttachments: [
+          {
+            view: this.mipViews[0],
+            loadOp: "clear",
+            storeOp: "store",
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          },
+        ],
       });
       clearCoarsePass.end();
       if (this.readbackStyledStorageView) {
         const clearReadbackPass = options.encoder.beginRenderPass({
           label: "Clear Stroke golden logical mip 0",
-          colorAttachments: [{
-            view: this.readbackStyledStorageView,
-            loadOp: "clear",
-            storeOp: "store",
-            clearValue: { r: 0, g: 0, b: 0, a: 0 },
-          }],
+          colorAttachments: [
+            {
+              view: this.readbackStyledStorageView,
+              loadOp: "clear",
+              storeOp: "store",
+              clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            },
+          ],
         });
         clearReadbackPass.end();
       }
@@ -3928,7 +2683,10 @@ export class RasterStrokeRenderer {
           );
         } else {
           fieldPass.dispatchWorkgroups(
-            Math.ceil(Math.ceil(job.targetWidth / COVERAGE_WORD_PIXELS) / WORKGROUP_SIZE),
+            Math.ceil(
+              Math.ceil(job.targetWidth / COVERAGE_WORD_PIXELS) /
+                WORKGROUP_SIZE,
+            ),
             Math.ceil(job.targetHeight / WORKGROUP_SIZE),
           );
         }
@@ -3936,9 +2694,10 @@ export class RasterStrokeRenderer {
       fieldPass.end();
     }
 
-    const composeDispatches = directComposeRects.length + (conditionalComposeRect ? 1 : 0);
-    const storedComposeDispatches = coarseDirectComposeRects.length
-      + (coarseConditionalComposeRect ? 1 : 0);
+    const composeDispatches =
+      directComposeRects.length + (conditionalComposeRect ? 1 : 0);
+    const storedComposeDispatches =
+      coarseDirectComposeRects.length + (coarseConditionalComposeRect ? 1 : 0);
     if (storedComposeDispatches > 0) {
       const composePass = options.encoder.beginComputePass({
         label: coarseConditionalComposeRect
@@ -3993,8 +2752,10 @@ export class RasterStrokeRenderer {
     }
 
     const indirectDispatches = useThresholdGate
-      ? jobs.reduce((total, _job, index) => total + schedules[index].length + 2, 0)
-        + (conditionalComposeRect ? 1 : 0)
+      ? jobs.reduce(
+          (total, _job, index) => total + schedules[index].length + 2,
+          0,
+        ) + (conditionalComposeRect ? 1 : 0)
       : 0;
     return {
       cleared: Boolean(options.clearStyled),

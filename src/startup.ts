@@ -25,6 +25,8 @@ import type {
   ProjectSessionSwitchRequest,
   ProjectSessionSwitchResult,
 } from "./project-shell-contract";
+import type { GpuDeviceSession } from "./gpu-device-session";
+import type { HomeEditorWarmupController } from "./home-editor-warmup-controller";
 import { getCanvasStartupOverlayController } from "./canvas-startup-overlay-controller";
 
 const HOME_ICONS: Readonly<Record<string, IconNode>> = {
@@ -611,6 +613,8 @@ async function boot(): Promise<void> {
   const storageReady = storage.initialize();
   void storageReady.catch(() => undefined);
   let homeController: ProjectHomeController | null = null;
+  let homeEditorWarmup: HomeEditorWarmupController | null = null;
+  let homeEditorWarmupCreation: Promise<HomeEditorWarmupController> | null = null;
   let editorLoaded = false;
   let suspendedEditorUrl: URL | null = null;
   let suspendedEditorTitle = "M1M4.COM — Editor";
@@ -654,6 +658,43 @@ async function boot(): Promise<void> {
     homeController = controller;
     await controller.initialize();
     return controller;
+  };
+
+  const scheduleInitialHomeEditorWarmup = (): void => {
+    if (editorLoaded || homeEditorWarmupCreation) return;
+    const enabled = initialUrl.searchParams.get("homeGpuWarmup") !== "off";
+    if (!enabled) return;
+    homeEditorWarmupCreation = import("./home-editor-warmup")
+      .then(({ createDefaultHomeEditorWarmup }) => {
+        const controller = createDefaultHomeEditorWarmup({
+          enabled: true,
+          browser: window,
+          document,
+        });
+        homeEditorWarmup = controller;
+        void controller.start();
+        return controller;
+      })
+      .catch((error) => {
+        // Home remains usable and the editor retains its established cold path.
+        console.error("Home editor preparation could not start:", error);
+        throw error;
+      });
+    void homeEditorWarmupCreation.catch(() => undefined);
+  };
+
+  const prepareHomeGpuSessionForEditor = (): Promise<GpuDeviceSession | null> | null => {
+    if (homeEditorWarmup) {
+      const session = homeEditorWarmup.prepareGpuSessionForEditor();
+      homeEditorWarmup.handOffToEditor();
+      return session;
+    }
+    if (!homeEditorWarmupCreation) return null;
+    return homeEditorWarmupCreation.then((controller) => {
+      const session = controller.prepareGpuSessionForEditor();
+      controller.handOffToEditor();
+      return session;
+    }).catch(() => null);
   };
 
   const showHome = async (pushHistory = true): Promise<void> => {
@@ -785,6 +826,7 @@ async function boot(): Promise<void> {
       storageReady,
       preloadedProjectId,
       preloadedProject,
+      prewarmedGpuSession: prepareHomeGpuSessionForEditor(),
       returnHome: vectorStressTestEnabled
         ? async () => {
             const homeUrl = new URL(window.location.href);
@@ -896,6 +938,7 @@ async function boot(): Promise<void> {
 
   showApplicationSurface("home");
   document.title = "M1M4.COM — Projects";
+  scheduleInitialHomeEditorWarmup();
   await ensureHomeController();
 }
 

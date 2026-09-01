@@ -2550,7 +2550,10 @@ assert.match(startupOverlaySource, /beginRuntimeOperation\(label: string\)/);
 assert.match(startupOverlaySource, /runRuntimeOperation<Result>\(/);
 const loadingStart = sceneEditorSource.indexOf("private async showLoading(");
 const loadingBody = sceneEditorSource.slice(loadingStart, loadingStart + 1_300);
-assert.match(loadingBody, /this\.options\.onLoadingChange\?\.\(true, message\)/);
+assert.match(
+  loadingBody,
+  /this\.options\.onLoadingChange\?\.\(true, message, options\)/,
+);
 assert.doesNotMatch(
   loadingBody,
   /nextAnimationFrame|requestAnimationFrame/,
@@ -2573,7 +2576,7 @@ const addUiStart = sceneEditorSource.indexOf("private async addRasterLayerTransa
 const addUiBody = sceneEditorSource.slice(addUiStart, addUiStart + 1_300);
 assert.match(
   addUiBody,
-  /await this\.showLoading\("Creating layer…"\)[\s\S]*?await this\.options\.engine\.addLayer\(\);[\s\S]*?await this\.options\.engine\.waitForIdle\(\);/,
+  /await this\.showLoading\([\s\S]*?"Creating layer…"[\s\S]*?layerCreationLoadingOptions[\s\S]*?await this\.options\.engine\.addLayer\(\);[\s\S]*?await this\.options\.engine\.waitForIdle\(\);/,
   "anche il nuovo livello deve restare coperto finché il frame è pronto",
 );
 assert.match(addUiBody, /finally \{[\s\S]*?this\.finish\(\{ loading: true \}\);/);

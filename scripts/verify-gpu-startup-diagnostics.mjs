@@ -20,6 +20,7 @@ const startup = read("src/startup.ts");
 const mainSource = read("src/main.ts");
 const projectSessionSource = read("src/project-session-controller.ts");
 const engineSource = read("src/brush-engine.ts");
+const gpuDeviceSessionSource = read("src/gpu-device-session.ts");
 const layerRuntimeSource = read("src/engine-layer-runtime.ts");
 const featurePolicySource = read("src/gpu-startup-feature-policy.ts");
 const productionBundleCheckSource = read("scripts/check-production-bundle.mjs");
@@ -897,7 +898,9 @@ assert.match(moduleSource, /lateDevice\.destroy\(\)/);
 assert.doesNotMatch(moduleSource, /import\("\.\.\/brush-engine"\)/);
 
 assert.doesNotMatch(engineSource, /requiredFeatures\.push\(textureFormatsTier2\)/);
-assert.match(engineSource, /const requiredFeatures: GPUFeatureName\[\] = \[\]/);
+assert.match(gpuDeviceSessionSource, /const requestedFeatures: GPUFeatureName\[\] = requestTimestampQuery/);
+assert.match(gpuDeviceSessionSource, /requestTimestampQuery[\s\S]*\? \["timestamp-query"\][\s\S]*: \[\]/);
+assert.match(engineSource, /requestGpuDeviceSessionFromAdapter\(adapter/);
 assert.match(engineSource, /this\.lightGlazeInPlaceCommitSupported = false/);
 assert.match(
   engineSource,

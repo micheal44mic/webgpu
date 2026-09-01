@@ -1151,7 +1151,7 @@ assert.match(controllerSource, /right: Math\.min\(bounds\.right, parentContent\.
 // local raster bounds instead of silently recentering a clipped imported image.
 assert.match(engineTypesSource, /sourcePivot\?: \{ x: number; y: number \};/);
 const runtimeSnapshotStart = rasterRuntimeSource.indexOf("function transformSnapshot(");
-const runtimeSnapshotEnd = rasterRuntimeSource.indexOf("async function createSharedResources(", runtimeSnapshotStart);
+const runtimeSnapshotEnd = rasterRuntimeSource.indexOf("async function requireSharedResources(", runtimeSnapshotStart);
 assert.ok(runtimeSnapshotStart >= 0 && runtimeSnapshotEnd > runtimeSnapshotStart);
 assert.match(
   rasterRuntimeSource.slice(runtimeSnapshotStart, runtimeSnapshotEnd),

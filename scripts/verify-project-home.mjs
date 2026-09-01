@@ -81,6 +81,14 @@ expect(startupOverlayMarkup, 'aria-live="polite"', "polite canvas startup live s
 expect(startupOverlayMarkup, 'aria-atomic="true"', "atomic canvas startup live status");
 
 expect(startup, 'await import("./main")', "dynamic editor boot");
+expect(startup, 'import("./home-editor-warmup")', "deferred Home editor warm-up module");
+expect(startup, 'get("homeGpuWarmup") !== "off"', "same-build Home warm-up control");
+expect(startup, "scheduleInitialHomeEditorWarmup();", "automatic first-Home warm-up");
+expect(
+  startup,
+  "prewarmedGpuSession: prepareHomeGpuSessionForEditor()",
+  "prepared GPU session bootstrap handoff",
+);
 expect(startup, "storageReady", "parallel project storage startup");
 expect(startup, "preloadedProject", "project read overlapped with WebGPU startup");
 expect(startup, 'window.history.pushState(null, "", url)', "warm Home/editor navigation");
@@ -139,6 +147,11 @@ expect(startup, "options.root.querySelectorAll", "root-scoped preset discovery")
 reject(startup, "private readonly home = element", "global Home field lookup");
 
 expect(main, "new ProjectSessionController({", "project session composition");
+expect(
+  main,
+  "prewarmedGpuSession: projectEditorBootstrap?.prewarmedGpuSession",
+  "editor adoption of the Home GPU session",
+);
 expect(
   main,
   "const canvasStartupOverlay = getCanvasStartupOverlayController();",

@@ -10,6 +10,11 @@ const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
 
 assert.match(main, /sceneEditorController = new SceneEditorController\(\{/);
 assert.match(main, /sceneEditorController\?\.dispose\(\)/);
+assert.match(
+  main,
+  /layerCreationLoadingOptions:[\s\S]*?completionPresentation: "immediate"/,
+  "the local layer-loading A\/B must reach the shared runtime overlay",
+);
 assert.doesNotMatch(
   main,
   /let layerSwitching|async function (?:changeLayer|changeVector|changeRasterImage|selectMixedSceneItem|selectLayer|addRasterLayer|performMobileLayer)/,
@@ -479,9 +484,10 @@ assert.deepEqual(loadingChanges.at(-1), { loading: false, message: "" });
     elements: lifecycleElements,
     getVectorController: () => null,
     isInteractionLocked: () => false,
+    layerCreationLoadingOptions: { completionPresentation: "immediate" },
     onBusyChange() {},
-    onLoadingChange: (loading, message) => {
-      lifecycleLoadingChanges.push({ loading, message });
+    onLoadingChange: (loading, message, options) => {
+      lifecycleLoadingChanges.push({ loading, message, options });
     },
     onHistoryState() {},
     requestLayersRefresh() {},
@@ -495,11 +501,20 @@ assert.deepEqual(loadingChanges.at(-1), { loading: false, message: "" });
   lifecycleController.addRasterLayer();
   assert.equal(lifecycleController.isBusy, true);
   assert.equal(queuedFrames.length, 0);
+  assert.deepEqual(lifecycleLoadingChanges[0], {
+    loading: true,
+    message: "Creating layer…",
+    options: { completionPresentation: "immediate" },
+  });
   lifecycleController.dispose();
   await settle();
   assert.equal(addCalls, 0);
   assert.equal(lifecycleController.isBusy, false);
-  assert.deepEqual(lifecycleLoadingChanges.at(-1), { loading: false, message: "" });
+  assert.deepEqual(lifecycleLoadingChanges.at(-1), {
+    loading: false,
+    message: "",
+    options: undefined,
+  });
 }
 
 // Curves preparation rasterizes every editable vector in stable order, then

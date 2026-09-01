@@ -260,6 +260,9 @@ assert.doesNotMatch(rendererSource, /mapAsync|copyBufferToBuffer|readBuffer/);
 const compositorSource = readFileSync(
   new URL("../src/stroke-renderer.ts", import.meta.url),
   "utf8",
+) + readFileSync(
+  new URL("../src/stroke-programs.ts", import.meta.url),
+  "utf8",
 );
 assert.match(compositorSource, /fn outerShadowPlane\(/);
 assert.match(compositorSource, /fn innerShadowNode\(/);
