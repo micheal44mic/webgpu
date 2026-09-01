@@ -172,9 +172,19 @@ assert.match(
   "the UI must forward one typed, ordered request to the controller",
 );
 assert.match(
-  sceneEditor + controller,
-  /mobileLayerMergeCompletionMatches\([\s\S]*?this\.setMergeStatus\(message, true\)/,
-  "a failed or unpublished merge must remain visible inside the mobile panel",
+  sceneEditor,
+  /mobileLayerMergeCompletionMatches\(/,
+  "merge publication must still be verified before success",
+);
+assert.match(
+  controller,
+  /"mixed-scene-merge-failed"[\s\S]*?this\.setMergeStatus\(null\)/,
+  "a failed or unpublished merge must not remain visible inside the panel",
+);
+assert.match(
+  main,
+  /recordDiagnostic: \(name, detail, error\)[\s\S]*?console\.error\(`Layer operation failed \(\$\{name\}\)\.`/,
+  "layer failures must be written to the console diagnostic path",
 );
 assert.match(
   controller,

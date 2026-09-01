@@ -589,7 +589,9 @@ export function getStats(engine: BrushEngine): EngineStats {
       gpuMemory.layerBaseMiB
       + gpuMemory.layerColdMiB
       + gpuMemory.layerHydrationMiB,
-    mixedScene: engine.createMixedSceneSnapshot(),
+    // Runtime observers only read the scene. Preserve immutable vector
+    // documents instead of copying every geometry buffer for every stats tick.
+    mixedScene: engine.createMixedSceneSnapshot(true),
     layerCount: engine.layerStack.count,
     documentBackground: { ...engine.documentBackground },
     activeLayerId: engine.layerStack.active.id,

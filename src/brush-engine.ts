@@ -11200,7 +11200,9 @@ export class BrushEngine {
       if (!scene && requestedSceneClippingParentKey !== null) {
         throw new Error("The mixed scene is required to create a clipping layer.");
       }
-      const mixedSceneState = scene?.captureState() ?? null;
+      // This transaction never mutates semantic vector documents. Sharing them
+      // keeps rollback preparation proportional to node count, not path bytes.
+      const mixedSceneState = scene?.captureState(true) ?? null;
       const previousExcludedNodeId = this.vectorTextPreviewExcludedNodeId;
       let layerInsertIndex: number;
       let sceneInsertIndex: number | null = null;
@@ -11275,7 +11277,7 @@ export class BrushEngine {
         // GPU resources, which every later switch would trip over.
         try {
           if (scene && mixedSceneState) {
-            scene.restoreState(mixedSceneState);
+            scene.restoreState(mixedSceneState, true);
             this.vectorTextPreviewExcludedNodeId = previousExcludedNodeId;
           }
           if (record) {
@@ -11350,12 +11352,8 @@ export class BrushEngine {
           addHistoryPublished = true;
           this.publishHistoryState();
         }
-        // prepareActiveLayerForSwitch freezes presentation. Clearing the live
-        // text texture before activation marks displayDirty while frozen, so
-        // the effect retarget's waitForIdle can never drain it. The new mixed
-        // partition already excludes no text; release the old live preview only
-        // after activation has rebuilt the static sides and unfrozen rendering.
-        this.clearVectorTextPresentation();
+        // Scene publication owns run-level invalidation. Keep immutable meshes
+        // and effect resources alive when only a raster partition was inserted.
         return result;
       } catch (error) {
         if (addHistoryPublished) {
@@ -11373,7 +11371,7 @@ export class BrushEngine {
         try {
           evictReconstructibleLayerResources(this, record);
           if (scene && mixedSceneState) {
-            scene.restoreState(mixedSceneState);
+            scene.restoreState(mixedSceneState, true);
             this.vectorTextPreviewExcludedNodeId = previousExcludedNodeId;
           }
           const candidateIndex = this.layerStack.indexOfId(record.id);

@@ -6740,23 +6740,6 @@ select {
     color: #e8654b;
   }
 
-  .mobile-layer-reorder-status {
-    flex: 0 0 auto;
-    margin: 0;
-    padding: 6px 12px 8px;
-    color: var(--mobile-icon-inactive);
-    font-size: 11px;
-    line-height: 1.35;
-  }
-
-  .mobile-layer-reorder-status:empty {
-    display: none;
-  }
-
-  .mobile-layer-reorder-status.is-blocked {
-    color: #f0a17d;
-  }
-
   .mobile-layer-context-menu button:focus-visible {
     outline: 1px solid #dd5c35;
     outline-offset: -3px;

@@ -1252,7 +1252,7 @@ export class LayerPanelController {
         error,
       );
       this.options.onLayerResult(message);
-      this.setMergeStatus(message, true);
+      this.setMergeStatus(null);
       this.announce(message);
     } finally {
       this.mergeRequestBusy = false;
@@ -1356,7 +1356,7 @@ export class LayerPanelController {
         error,
       );
       this.options.onLayerResult(message);
-      this.setMergeStatus(message, true);
+      this.setMergeStatus(null);
       this.announce(message);
     } finally {
       if (this.disposed) return;
@@ -1852,7 +1852,7 @@ export class LayerPanelController {
       };
     } catch (error) {
       this.options.onStatus("Layer reorder unavailable.", true);
-      console.warn("Mobile layer reorder unavailable.", error);
+      console.error("Layer reorder unavailable.", error);
       return null;
     }
   }

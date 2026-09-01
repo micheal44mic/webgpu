@@ -175,7 +175,16 @@ assert.match(
   sceneEditor,
   /async duplicateSelectedLayer\(\)[\s\S]*?this\.beginOrThrow\([\s\S]*?await this\.options\.engine\.duplicateSelectedLayer\(\)/,
 );
-assert.match(panel, /this\.setMergeStatus\(message, true\)/);
+assert.match(
+  panel,
+  /"mixed-scene-duplicate-failed"[\s\S]*?this\.setMergeStatus\(null\)/,
+  "duplicate failures must not remain visible in the layer panel",
+);
+assert.match(
+  main,
+  /recordDiagnostic: \(name, detail, error\)[\s\S]*?console\.error\(`Layer operation failed \(\$\{name\}\)\.`/,
+  "layer failures must be written to the console diagnostic path",
+);
 assert.match(panel, /\.mobile-layer-row\.is-active-layer \.mobile-layer-select/);
 assert.match(
   toolbar,

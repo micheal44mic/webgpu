@@ -3070,14 +3070,20 @@ assert.match(
   "la relazione eterogenea di Add deve essere inclusa nella stessa azione Undo",
 );
 assert.match(addMethodBody, /await allocateLayerGpuResources\(this,/);
-const addActivation = addMethodBody.indexOf(
-  "const result = await this.activateLayer(outgoingIndexAfterInsertion);",
+assert.match(
+  addMethodBody,
+  /const mixedSceneState = scene\?\.captureState\(true\) \?\? null/,
+  "addLayer rollback snapshots must share immutable vector documents",
 );
-const addLiveTextClear = addMethodBody.indexOf("this.clearVectorTextPresentation();");
-assert.ok(
-  addActivation >= 0 && addLiveTextClear > addActivation,
-  "addLayer deve liberare la preview testo soltanto dopo che activateLayer ha "
-    + "sbloccato la presentazione, altrimenti waitForIdle resta su displayDirty",
+assert.match(
+  addMethodBody,
+  /scene\.restoreState\(mixedSceneState, true\)/,
+  "addLayer rollback must preserve shared immutable vector documents",
+);
+assert.doesNotMatch(
+  addMethodBody,
+  /this\.clearVectorTextPresentation\(\)/,
+  "inserting a raster must not discard unchanged vector geometry and effect caches",
 );
 assert.match(addMethodBody, /State is inconsistent after layer creation\. Reload before continuing/,
   "un doppio fallimento di addLayer deve alzare il latch fatale");

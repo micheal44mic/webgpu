@@ -153,6 +153,11 @@ const reportsSource = readFileSync(
   new URL("../src/engine-reports.ts", import.meta.url),
   "utf8",
 );
+assert.match(
+  reportsSource,
+  /mixedScene: engine\.createMixedSceneSnapshot\(true\)/,
+  "runtime stats must not deep-copy immutable vector geometry",
+);
 assert.match(indexSource, /id="copyAppDiagnostics"/);
 assert.match(indexSource, /id="appDiagnosticsReport"/);
 assert.doesNotMatch(indexSource, /id="startupDiagnostic"/);

@@ -72,11 +72,10 @@ assert.equal(mobileLayerReorderAutoScrollVelocity(300, 100, 500), 0);
 assert.equal(mobileLayerReorderAutoScrollVelocity(500, 100, 500), 520);
 
 assert.match(html, /id="mobileLayerReorderStatus"[\s\S]*?aria-live="polite"/);
-assert.match(html, /id="mobileLayerReorderStatus"[\s\S]*?class="mobile-layer-reorder-status"/);
-assert.doesNotMatch(
+assert.match(
   html,
-  /id="mobileLayerReorderStatus"[\s\S]{0,120}?class="visually-hidden"/,
-  "layer interaction locks must be explained visibly inside the panel",
+  /id="mobileLayerReorderStatus"[\s\S]{0,120}?class="mobile-layer-reorder-status visually-hidden"/,
+  "layer announcements must remain accessible without occupying panel space",
 );
 assert.match(
   html,
@@ -90,7 +89,7 @@ assert.match(
 );
 assert.match(css, /\.mobile-layer-row\.is-reordering/);
 assert.match(css, /\.mobile-layer-row\.is-drop-before::before/);
-assert.match(css, /\.mobile-layer-reorder-status\.is-blocked/);
+assert.doesNotMatch(css, /\.mobile-layer-reorder-status(?:\s|:|\.)/);
 assert.match(
   css,
   /\.mobile-layer-context-menu\s*\{[\s\S]*?position:\s*absolute;[\s\S]*?background:\s*var\(--app-background\);/,

@@ -2857,10 +2857,8 @@ layerPanelController = new LayerPanelController({
     ).then(
       () => mobileToolSettingsSheet?.open("layer-options", trigger),
       (error) => {
-        const message = error instanceof Error ? error.message : String(error);
         appDiagnosticsController?.recordOperation("prepare-layer-options", null, error);
-        statusElement.textContent = `Layer Options preparation failed: ${message}`;
-        statusElement.className = "status app-status error";
+        console.error("Layer Options preparation failed.", error);
       },
     );
   },
@@ -2868,11 +2866,13 @@ layerPanelController = new LayerPanelController({
     layerSwitchResult.textContent = message;
   },
   onStatus: (message, failed) => {
+    if (failed) return;
     statusElement.textContent = message;
-    statusElement.className = `status app-status${failed ? " error" : ""}`;
+    statusElement.className = "status app-status";
   },
   recordDiagnostic: (name, detail, error) => {
     appDiagnosticsController?.recordOperation(name, detail, error);
+    console.error(`Layer operation failed (${name}).`, { detail, error });
   },
 });
 
