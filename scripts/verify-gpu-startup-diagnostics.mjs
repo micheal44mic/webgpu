@@ -1094,7 +1094,10 @@ assert.doesNotMatch(
   /scheduleDeferredStartupTask|ensureOptionalEditorResources|prewarmRaster|initializeMixedSceneController|prepareGpuResources/,
   "the diagnostic production startup must remain free of optional GPU warm-up",
 );
-assert.match(projectSessionSource, /await this\.save\(\{ captureThumbnail: false \}\)/);
+assert.match(
+  projectSessionSource,
+  /await this\.performSave\(\{ captureThumbnail: false \}, true\)/,
+);
 assert.match(projectSessionSource, /options\.captureThumbnail !== false/);
 assert.match(workerBuilder, /gpuStartupDiagnosticDefinition\(payload\.summary\.testId\)/);
 assert.match(workerBuilder, /validGpuStartupDiagnosticComparison\(comparison, definition\.comparison\)/);

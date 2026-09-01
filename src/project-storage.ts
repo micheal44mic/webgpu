@@ -1761,7 +1761,10 @@ export class ProjectStorage {
       : await this.loadFromIndexedDb(projectId);
     if (!project) return null;
     validateLoadedProject(project);
-    return cloneStructured(project);
+    // IndexedDB reads already produce an isolated structured clone; the memory
+    // backend clones in loadFromMemory. Returning that owned result avoids a
+    // second full traversal of raster chunks and immutable vector documents.
+    return project;
   }
 
   private loadFromMemory(projectId: string): ProjectLoadResultV1 | null {

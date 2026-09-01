@@ -384,7 +384,14 @@ controller = new ProjectSessionController({
   onDocumentSwitchCommit: async () => order.push("commit"),
   onDocumentSwitchFinish: async (result) => order.push(`finish:${result.status}`),
 });
+firstFrame.resolve();
 await controller.initialize();
+assert.ok(
+  order.indexOf(`restore:${summaryA.id}`) < order.indexOf("first-frame-wait")
+    && order.indexOf("first-frame-wait") < order.indexOf("first-frame-ready"),
+  "initial project readiness crosses the same restored-frame boundary as a switch",
+);
+firstFrame = deferred();
 order.length = 0;
 
 assert.equal(browser.__projectEditorSessionLifecycle, controller, "stable shell endpoint");

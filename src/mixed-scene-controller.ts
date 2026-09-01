@@ -298,6 +298,8 @@ const MEBIBYTE_BYTES = 1024 * 1024;
 const MINIMUM_SCALE = 0.05;
 const MAXIMUM_SCALE = 20;
 const FRAME_SAMPLE_LIMIT = 180;
+const SCENE_PRESENTATION_READY_TIMEOUT_MS = 180_000;
+const SCENE_PRESENTATION_STABLE_SAMPLES = 2;
 const SVG_STROKE_PATH_LODS_PER_PAINT = 3;
 const SVG_STROKE_PATH_CACHE_MAXIMUM_ENTRIES = 96;
 const SVG_STROKE_PATH_CACHE_MAXIMUM_BYTES = 32 * 1024 * 1024;
@@ -551,6 +553,125 @@ export class MixedSceneController {
     }
     this.bindControls();
     this.syncScene(initialSnapshot);
+  }
+
+  /**
+   * Resolves only when the current semantic scene has produced an exact,
+   * effect-complete presentation and every submitted GPU command is finished.
+   * Startup and document switching use this as their interaction boundary.
+   */
+  async prepareCurrentScenePresentation(
+    timeoutMs = SCENE_PRESENTATION_READY_TIMEOUT_MS,
+  ): Promise<MixedSceneDiagnostics> {
+    const generation = this.documentGeneration;
+    const deadline = this.browser.performance.now() + timeoutMs;
+    const remainingMs = (): number => Math.max(
+      0,
+      deadline - this.browser.performance.now(),
+    );
+    const waitWithinDeadline = async <Result>(
+      operation: Promise<Result>,
+      timeoutMessage: string,
+    ): Promise<Result> => {
+      const remaining = remainingMs();
+      if (remaining <= 0) throw new Error(timeoutMessage);
+      let timer = 0;
+      try {
+        return await Promise.race([
+          operation,
+          new Promise<never>((_resolve, reject) => {
+            timer = this.browser.setTimeout(() => reject(new Error(timeoutMessage)), remaining);
+          }),
+        ]);
+      } finally {
+        if (timer !== 0) this.browser.clearTimeout(timer);
+      }
+    };
+
+    const initialSnapshot = this.runtimeSceneSnapshot();
+    if (!initialSnapshot) {
+      throw new Error("The semantic scene is unavailable during project preparation.");
+    }
+    await waitWithinDeadline(
+      this.prepareFontGeometry(snapshotTextFontFamilies(initialSnapshot)),
+      "Timed out while loading the project fonts.",
+    );
+    if (generation !== this.documentGeneration) {
+      throw new Error("The project changed while its semantic scene was being prepared.");
+    }
+
+    const latestSnapshot = this.runtimeSceneSnapshot();
+    if (!latestSnapshot) {
+      throw new Error("The semantic scene disappeared during project preparation.");
+    }
+    this.syncScene(latestSnapshot);
+    const minimumRenderCount = this.renderCount + 1;
+    this.scheduleRender();
+
+    let stableSamples = 0;
+    while (remainingMs() > 0) {
+      await this.waitForPresentationCheckpoint(Math.min(50, remainingMs()));
+      if (generation !== this.documentGeneration) {
+        throw new Error("The project changed before its semantic scene became ready.");
+      }
+      const diagnostics = this.getDiagnostics();
+      if (diagnostics.effectWorkerFailedJobs > 0) {
+        throw new Error(
+          diagnostics.effectWorkerLastError ?? "One or more vector effects failed.",
+        );
+      }
+      const stable = diagnostics.renderCount >= minimumRenderCount
+        && diagnostics.zoomRenderMode === "precise"
+        && diagnostics.zoomFastPresentationMode === "precise"
+        && diagnostics.effectWorkerPendingJobs === 0
+        && diagnostics.atomicEffectPendingNodes === 0
+        && !diagnostics.zoomUnsafeExactRefreshInFlight
+        && !diagnostics.zoomUnsafeExactRefreshRequestPending;
+      stableSamples = stable ? stableSamples + 1 : 0;
+      if (stableSamples < SCENE_PRESENTATION_STABLE_SAMPLES) continue;
+
+      await waitWithinDeadline(
+        this.host.waitForIdle(),
+        "Timed out while composing the restored project.",
+      );
+      await waitWithinDeadline(
+        this.host.waitForVectorTextPresentationCompletion(),
+        "Timed out while presenting the restored vectors.",
+      );
+      const settled = this.getDiagnostics();
+      if (
+        settled.renderCount >= minimumRenderCount
+        && settled.zoomRenderMode === "precise"
+        && settled.zoomFastPresentationMode === "precise"
+        && settled.effectWorkerPendingJobs === 0
+        && settled.effectWorkerFailedJobs === 0
+        && settled.atomicEffectPendingNodes === 0
+        && !settled.zoomUnsafeExactRefreshInFlight
+        && !settled.zoomUnsafeExactRefreshRequestPending
+      ) {
+        return settled;
+      }
+      stableSamples = 0;
+      this.scheduleRender();
+    }
+    throw new Error("The semantic scene did not become ready within three minutes.");
+  }
+
+  private waitForPresentationCheckpoint(timeoutMs: number): Promise<void> {
+    return new Promise((resolve) => {
+      let settled = false;
+      let frame = 0;
+      let timer = 0;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (frame !== 0) this.browser.cancelAnimationFrame(frame);
+        if (timer !== 0) this.browser.clearTimeout(timer);
+        resolve();
+      };
+      frame = this.browser.requestAnimationFrame(finish);
+      timer = this.browser.setTimeout(finish, Math.max(0, timeoutMs));
+    });
   }
 
   /**

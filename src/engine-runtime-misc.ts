@@ -350,6 +350,7 @@ export async function finishStaticResourceCreation(
       label: "Raster image mixed-scene WGSL",
       code: rasterImageMixedSceneShader,
     });
+    const vectorTextGpuRendererPromise = initializeVectorTextGpuRenderer(engine);
     await Promise.all([
       assertShaderCompiled(
         engine.vectorTextDisplayShaderModule,
@@ -384,8 +385,8 @@ export async function finishStaticResourceCreation(
         engine.rasterImageMixedSceneShaderModule,
         "raster image mixed-scene compositor",
       ),
+      vectorTextGpuRendererPromise,
     ]);
-    await initializeVectorTextGpuRenderer(engine);
     engine.vectorTextDisplayBindGroupLayout = engine.device.createBindGroupLayout({
       label: "Dual viewport vector text mixed-layer display bind group layout",
       entries: [
@@ -584,7 +585,7 @@ export async function finishStaticResourceCreation(
       label: "Dual viewport vector text mixed-layer display pipeline layout",
       bindGroupLayouts: [engine.vectorTextDisplayBindGroupLayout],
     });
-    engine.vectorTextDisplayPipeline = await createRenderPipelineAsync(engine.device, {
+    const vectorTextDisplayPipelinePromise = createRenderPipelineAsync(engine.device, {
       label: "Dual viewport vector text mixed-layer display pipeline",
       layout: vectorTextPipelineLayout,
       vertex: {
@@ -614,7 +615,9 @@ export async function finishStaticResourceCreation(
       label: "Mixed scene raster segment pipeline layout",
       bindGroupLayouts: [engine.mixedSceneRasterSegmentBindGroupLayout],
     });
-    engine.mixedSceneRasterSegmentPipeline ??= await createRenderPipelineAsync(engine.device, {
+    const mixedSceneRasterSegmentPipelinePromise = engine.mixedSceneRasterSegmentPipeline
+      ? Promise.resolve(engine.mixedSceneRasterSegmentPipeline)
+      : createRenderPipelineAsync(engine.device, {
       label: "Mixed scene raster segment source-over pipeline",
       layout: mixedRasterPipelineLayout,
       vertex: { module: engine.mixedSceneRasterSegmentShaderModule, entryPoint: "vertexMain" },
@@ -625,7 +628,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedSceneRasterSegmentSourceAtopPipeline = await createRenderPipelineAsync(engine.device, {
+    const mixedSceneRasterSegmentSourceAtopPipelinePromise = createRenderPipelineAsync(engine.device, {
       label: "Mixed scene raster segment source-atop pipeline",
       layout: mixedRasterPipelineLayout,
       vertex: { module: engine.mixedSceneRasterSegmentShaderModule, entryPoint: "vertexMain" },
@@ -640,7 +643,9 @@ export async function finishStaticResourceCreation(
       label: "Mixed scene text segment pipeline layout",
       bindGroupLayouts: [engine.mixedSceneTextSegmentBindGroupLayout],
     });
-    engine.mixedSceneTextSegmentPipeline ??= await createRenderPipelineAsync(engine.device, {
+    const mixedSceneTextSegmentPipelinePromise = engine.mixedSceneTextSegmentPipeline
+      ? Promise.resolve(engine.mixedSceneTextSegmentPipeline)
+      : createRenderPipelineAsync(engine.device, {
       label: "Mixed scene text segment source-over pipeline",
       layout: mixedTextPipelineLayout,
       vertex: { module: engine.mixedSceneTextSegmentShaderModule, entryPoint: "vertexMain" },
@@ -651,7 +656,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedSceneTextSegmentSourceAtopPipeline = await createRenderPipelineAsync(engine.device, {
+    const mixedSceneTextSegmentSourceAtopPipelinePromise = createRenderPipelineAsync(engine.device, {
       label: "Mixed scene vector segment source-atop pipeline",
       layout: mixedTextPipelineLayout,
       vertex: { module: engine.mixedSceneTextSegmentShaderModule, entryPoint: "vertexMain" },
@@ -662,7 +667,9 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedSceneShapePreviewPipeline ??= await createRenderPipelineAsync(engine.device, {
+    const mixedSceneShapePreviewPipelinePromise = engine.mixedSceneShapePreviewPipeline
+      ? Promise.resolve(engine.mixedSceneShapePreviewPipeline)
+      : createRenderPipelineAsync(engine.device, {
       label: "Mixed scene live shape preview source-over pipeline",
       layout: engine.device.createPipelineLayout({
         label: "Mixed scene live shape preview pipeline layout",
@@ -679,7 +686,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.rasterImageMipmapPipeline = await createRenderPipelineAsync(engine.device, {
+    const rasterImageMipmapPipelinePromise = createRenderPipelineAsync(engine.device, {
       label: "Raster image premultiplied sRGB mipmap pipeline",
       layout: engine.device.createPipelineLayout({
         label: "Raster image mipmap pipeline layout",
@@ -696,7 +703,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.rasterImagePremultiplyPipeline = await createRenderPipelineAsync(engine.device, {
+    const rasterImagePremultiplyPipelinePromise = createRenderPipelineAsync(engine.device, {
       label: "Raster image straight-sRGB to linear-premultiplied pipeline",
       layout: engine.device.createPipelineLayout({
         label: "Raster image premultiply pipeline layout",
@@ -713,7 +720,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.rasterImageMixedScenePipeline = await createRenderPipelineAsync(engine.device, {
+    const rasterImageMixedScenePipelinePromise = createRenderPipelineAsync(engine.device, {
       label: "Raster image mixed-scene trilinear source-over pipeline",
       layout: engine.device.createPipelineLayout({
         label: "Raster image mixed-scene pipeline layout",
@@ -730,7 +737,9 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-strip", cullMode: "none" },
     });
-    engine.mixedSceneClearPipeline ??= await createRenderPipelineAsync(engine.device, {
+    const mixedSceneClearPipelinePromise = engine.mixedSceneClearPipeline
+      ? Promise.resolve(engine.mixedSceneClearPipeline)
+      : createRenderPipelineAsync(engine.device, {
       label: "Mixed scene partial transparent clear pipeline",
       layout: engine.device.createPipelineLayout({
         label: "Mixed scene partial transparent clear pipeline layout",
@@ -744,7 +753,9 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedScenePresentPipeline ??= await createRenderPipelineAsync(engine.device, {
+    const mixedScenePresentPipelinePromise = engine.mixedScenePresentPipeline
+      ? Promise.resolve(engine.mixedScenePresentPipeline)
+      : createRenderPipelineAsync(engine.device, {
       label: "Mixed scene checker presentation pipeline",
       layout: engine.device.createPipelineLayout({
         label: "Mixed scene checker presentation pipeline layout",
@@ -758,7 +769,9 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedSceneBackgroundPipeline ??= await createRenderPipelineAsync(engine.device, {
+    const mixedSceneBackgroundPipelinePromise = engine.mixedSceneBackgroundPipeline
+      ? Promise.resolve(engine.mixedSceneBackgroundPipeline)
+      : createRenderPipelineAsync(engine.device, {
       label: "Mixed scene document background pipeline",
       layout: engine.device.createPipelineLayout({
         label: "Mixed scene document background pipeline layout",
@@ -772,7 +785,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.mixedSceneClippingScratchCompositePipeline = await createRenderPipelineAsync(engine.device, {
+    const mixedSceneClippingScratchCompositePipelinePromise = createRenderPipelineAsync(engine.device, {
       label: "Mixed scene clipping scratch source-over pipeline",
       layout: engine.device.createPipelineLayout({
         label: "Mixed scene clipping scratch pipeline layout",
@@ -786,7 +799,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.layerBlendCompositorPipeline = await createRenderPipelineAsync(engine.device, {
+    const layerBlendCompositorPipelinePromise = createRenderPipelineAsync(engine.device, {
       label: "Ordered layer blend ping-pong pipeline",
       layout: engine.device.createPipelineLayout({
         label: "Ordered layer blend ping-pong pipeline layout",
@@ -803,7 +816,7 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    engine.layerBlendViewportDocumentMaskPipeline = await createRenderPipelineAsync(engine.device, {
+    const layerBlendViewportDocumentMaskPipelinePromise = createRenderPipelineAsync(engine.device, {
       label: "Ordered clipping document-mask accumulator",
       layout: engine.device.createPipelineLayout({
         label: "Ordered clipping document-mask pipeline layout",
@@ -820,32 +833,65 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    await ensureMixedSceneActiveBasePipelines(engine);
-  }
-  if (createCore) {
-    // The styled presenter is prepared only when an active layer actually uses
-    // raster effects. Keeping it out of the first frame avoids compiling a
-    // large, unreachable shader graph for an empty single-raster document.
-  }
-  if (createOptional) {
-    await ensureMixedSceneActiveRasterStrokePipelines(engine);
-  }
-
-  if (createCore) {
-    // Predictive-tail presentation is selected-brush work and is compiled by
-    // the brush readiness gate when non-neutral thickness is requested.
-  }
-  if (createOptional) {
-    await ensureMixedSceneActiveThicknessTailPipelines(engine);
-  }
-
-  if (createCore) {
-    // Glaze presentation is compiled when a glaze brush is selected. The two
-    // clear pipelines above remain core because their 16-bit allocation path
-    // is small and also validates both storage formats up front.
-  }
-  if (createOptional) {
-    await ensureMixedSceneActiveLightGlazePipelines(engine);
+    // These programs are independent and use asynchronous WebGPU compilation.
+    // Starting them as one batch removes the sum of their individual waits
+    // from semantic-document startup while preserving atomic publication.
+    const [
+      vectorTextDisplayPipeline,
+      mixedSceneRasterSegmentPipeline,
+      mixedSceneRasterSegmentSourceAtopPipeline,
+      mixedSceneTextSegmentPipeline,
+      mixedSceneTextSegmentSourceAtopPipeline,
+      mixedSceneShapePreviewPipeline,
+      rasterImageMipmapPipeline,
+      rasterImagePremultiplyPipeline,
+      rasterImageMixedScenePipeline,
+      mixedSceneClearPipeline,
+      mixedScenePresentPipeline,
+      mixedSceneBackgroundPipeline,
+      mixedSceneClippingScratchCompositePipeline,
+      layerBlendCompositorPipeline,
+      layerBlendViewportDocumentMaskPipeline,
+    ] = await Promise.all([
+      vectorTextDisplayPipelinePromise,
+      mixedSceneRasterSegmentPipelinePromise,
+      mixedSceneRasterSegmentSourceAtopPipelinePromise,
+      mixedSceneTextSegmentPipelinePromise,
+      mixedSceneTextSegmentSourceAtopPipelinePromise,
+      mixedSceneShapePreviewPipelinePromise,
+      rasterImageMipmapPipelinePromise,
+      rasterImagePremultiplyPipelinePromise,
+      rasterImageMixedScenePipelinePromise,
+      mixedSceneClearPipelinePromise,
+      mixedScenePresentPipelinePromise,
+      mixedSceneBackgroundPipelinePromise,
+      mixedSceneClippingScratchCompositePipelinePromise,
+      layerBlendCompositorPipelinePromise,
+      layerBlendViewportDocumentMaskPipelinePromise,
+      ensureMixedSceneActiveBasePipelines(engine),
+      ensureMixedSceneActiveRasterStrokePipelines(engine),
+      ensureMixedSceneActiveThicknessTailPipelines(engine),
+      ensureMixedSceneActiveLightGlazePipelines(engine),
+    ]);
+    if (engine.deviceLostError) throw engine.deviceLostError;
+    engine.vectorTextDisplayPipeline = vectorTextDisplayPipeline;
+    engine.mixedSceneRasterSegmentPipeline = mixedSceneRasterSegmentPipeline;
+    engine.mixedSceneRasterSegmentSourceAtopPipeline =
+      mixedSceneRasterSegmentSourceAtopPipeline;
+    engine.mixedSceneTextSegmentPipeline = mixedSceneTextSegmentPipeline;
+    engine.mixedSceneTextSegmentSourceAtopPipeline = mixedSceneTextSegmentSourceAtopPipeline;
+    engine.mixedSceneShapePreviewPipeline = mixedSceneShapePreviewPipeline;
+    engine.rasterImageMipmapPipeline = rasterImageMipmapPipeline;
+    engine.rasterImagePremultiplyPipeline = rasterImagePremultiplyPipeline;
+    engine.rasterImageMixedScenePipeline = rasterImageMixedScenePipeline;
+    engine.mixedSceneClearPipeline = mixedSceneClearPipeline;
+    engine.mixedScenePresentPipeline = mixedScenePresentPipeline;
+    engine.mixedSceneBackgroundPipeline = mixedSceneBackgroundPipeline;
+    engine.mixedSceneClippingScratchCompositePipeline =
+      mixedSceneClippingScratchCompositePipeline;
+    engine.layerBlendCompositorPipeline = layerBlendCompositorPipeline;
+    engine.layerBlendViewportDocumentMaskPipeline =
+      layerBlendViewportDocumentMaskPipeline;
   }
 }
 

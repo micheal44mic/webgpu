@@ -40,7 +40,7 @@ export interface ProjectSessionEnginePort {
   preflightDocumentSwitch?(target: ProjectSessionEngineSwitchTarget): Promise<void>;
   /** Crosses the destructive boundary and leaves a fresh document host. */
   resetDocumentForSwitch?(target: ProjectSessionEngineSwitchTarget): Promise<void>;
-  /** Resolves only after the first submitted target frame is GPU-complete. */
+  /** Resolves only after the first complete target presentation is GPU-complete. */
   waitForDocumentFirstFrame?(): Promise<void>;
 }
 
@@ -58,6 +58,10 @@ export interface ProjectSessionControllerOptions {
   readonly storageReady?: Promise<void>;
   readonly preloadedProjectId?: string | null;
   readonly preloadedProject?: Promise<ProjectLoadResultV1 | null> | null;
+  /** Starts document-specific presentation work beside the authoritative restore. */
+  readonly prepareProjectPresentation?: (
+    project: ProjectLoadResultV1,
+  ) => Promise<void> | void;
   /** Flushes preview transactions before project capture or navigation. */
   readonly settleTransientEdits?: (() => Promise<void>) | null;
   readonly runWithLoading?: <Result>(
@@ -122,8 +126,10 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
   private readonly homeButton: HTMLButtonElement;
   private readonly status: HTMLParagraphElement;
   private readonly storageReady: Promise<void> | null;
-  private readonly preloadedProjectId: string | null;
-  private readonly preloadedProject: Promise<ProjectLoadResultV1 | null> | null;
+  private preloadedProjectId: string | null;
+  private preloadedProject: Promise<ProjectLoadResultV1 | null> | null;
+  private readonly prepareProjectPresentation:
+    ProjectSessionControllerOptions["prepareProjectPresentation"];
   private readonly settleTransientEdits: (() => Promise<void>) | null;
   private readonly runWithLoading: ProjectSessionControllerOptions["runWithLoading"];
   private readonly onReturnHome: ((pushHistory: boolean) => Promise<void>) | null;
@@ -195,6 +201,7 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
     this.storageReady = options.storageReady ?? null;
     this.preloadedProjectId = options.preloadedProjectId ?? null;
     this.preloadedProject = options.preloadedProject ?? null;
+    this.prepareProjectPresentation = options.prepareProjectPresentation;
     this.settleTransientEdits = options.settleTransientEdits ?? null;
     this.runWithLoading = options.runWithLoading;
     this.onReturnHome = options.onReturnHome ?? null;
@@ -305,28 +312,49 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
       return;
     }
     await (this.storageReady ?? this.storage.initialize());
-    this.editorReady = true;
     if (this.currentProjectId && !this.newProjectRequested) {
       this.setStatus("Opening project…");
-      const saved = this.preloadedProject && this.preloadedProjectId === this.currentProjectId
-        ? await this.preloadedProject
-        : await this.storage.loadProject(this.currentProjectId);
+      const preloaded = this.preloadedProject && this.preloadedProjectId === this.currentProjectId
+        ? this.preloadedProject
+        : null;
+      let saved: ProjectLoadResultV1 | null;
+      try {
+        saved = preloaded
+          ? await preloaded
+          : await this.storage.loadProject(this.currentProjectId);
+      } finally {
+        // The engine adopts the immutable document payload during restore. Do
+        // not retain a second complete project through the resolved preload.
+        this.preloadedProject = null;
+        this.preloadedProjectId = null;
+      }
       if (!saved) throw new Error("This project is no longer available on this device.");
       this.updateIdentity(saved.summary.name);
+      const presentationPreparation = Promise.resolve().then(
+        () => this.prepareProjectPresentation?.(saved),
+      );
+      // Mark the overlapping preparation as observed while restore owns the
+      // critical path; its error is rethrown after the engine has settled.
+      void presentationPreparation.catch(() => undefined);
       await this.engine.restoreDocument(saved);
+      await presentationPreparation;
+      this.setStatus("Preparing project…");
+      await this.engine.waitForDocumentFirstFrame?.();
       this.currentHeadGenerationId = saved.summary.headGenerationId;
       this.dirty = false;
+      this.setStatus("Project ready.", "ok");
     } else if (this.newProjectRequested) {
       this.updateIdentity(this.requestedProjectName);
       this.engine.setInitialLayerName("Layer 1");
       // The URL token selects the editor route; durable storage generates the
       // canonical id when the first head is committed.
       this.currentProjectId = null;
-      await this.save({ captureThumbnail: false });
+      await this.performSave({ captureThumbnail: false }, true);
     } else {
       this.updateIdentity("Untitled Artwork");
       this.dirty = true;
     }
+    this.editorReady = true;
     this.noteHistoryState(this.engine.historyState());
     this.noteSceneSnapshot(this.engine.sceneSnapshot());
     this.trackingReady = true;
@@ -725,8 +753,13 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
     };
   }
 
-  private async performSave(options: Readonly<ProjectSaveOptions>): Promise<void> {
-    if (!this.editorReady) throw new Error("The editor is still starting.");
+  private async performSave(
+    options: Readonly<ProjectSaveOptions>,
+    allowWhileStarting = false,
+  ): Promise<void> {
+    if (!this.editorReady && !allowWhileStarting) {
+      throw new Error("The editor is still starting.");
+    }
     this.saveBusy = true;
     this.syncSaveControl();
     this.setStatus("Saving the complete project…");

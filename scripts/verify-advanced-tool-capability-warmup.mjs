@@ -43,7 +43,7 @@ const staticResourceCreation = section(
   "export async function ensureAdvancedCanvasPresentationPipelines(",
 );
 const optionalCreationBlocks = conditionalBlocks(staticResourceCreation, "createOptional");
-assert.equal(optionalCreationBlocks.length, 4, "Every optional resource branch must be inspected");
+assert.equal(optionalCreationBlocks.length, 1, "Optional resource creation must stay in one batch");
 for (const optionalBlock of optionalCreationBlocks) {
   assert.doesNotMatch(
     optionalBlock,
@@ -52,8 +52,13 @@ for (const optionalBlock of optionalCreationBlocks) {
   );
   assert.match(
     optionalBlock,
-    /await (?:createRenderPipelineAsync\(engine\.device,|ensureMixedSceneActive(?:Base|RasterStroke|ThicknessTail|LightGlaze)Pipelines\(engine\))/,
-    "Optional render pipelines must use an asynchronous capability gate",
+    /createRenderPipelineAsync\(engine\.device,/,
+    "Optional render pipelines must use asynchronous compilation",
+  );
+  assert.match(
+    optionalBlock,
+    /await Promise\.all\(/,
+    "Optional render pipelines must publish through an asynchronous readiness batch",
   );
 }
 assert.doesNotMatch(
@@ -66,6 +71,51 @@ assert.match(
   /await Promise\.all\(/,
   "Active-paint pipeline families should resolve atomically in parallel",
 );
+const optionalPipelineBatch = section(
+  staticResourceCreation,
+  "    // These programs are independent and use asynchronous WebGPU compilation.",
+  "    if (engine.deviceLostError)",
+);
+assert.match(
+  optionalPipelineBatch,
+  /\] = await Promise\.all\(\[/,
+  "Optional presentation pipelines and active-paint families must share one readiness batch",
+);
+for (const pipelinePromise of [
+  "vectorTextDisplayPipelinePromise",
+  "mixedSceneRasterSegmentPipelinePromise",
+  "mixedSceneRasterSegmentSourceAtopPipelinePromise",
+  "mixedSceneTextSegmentPipelinePromise",
+  "mixedSceneTextSegmentSourceAtopPipelinePromise",
+  "mixedSceneShapePreviewPipelinePromise",
+  "rasterImageMipmapPipelinePromise",
+  "rasterImagePremultiplyPipelinePromise",
+  "rasterImageMixedScenePipelinePromise",
+  "mixedSceneClearPipelinePromise",
+  "mixedScenePresentPipelinePromise",
+  "mixedSceneBackgroundPipelinePromise",
+  "mixedSceneClippingScratchCompositePipelinePromise",
+  "layerBlendCompositorPipelinePromise",
+  "layerBlendViewportDocumentMaskPipelinePromise",
+]) {
+  assert.match(
+    optionalPipelineBatch,
+    new RegExp(`\\n\\s*${pipelinePromise},`),
+    `${pipelinePromise} must participate in the shared optional pipeline batch`,
+  );
+}
+for (const activePipelineFamily of [
+  "ensureMixedSceneActiveBasePipelines",
+  "ensureMixedSceneActiveRasterStrokePipelines",
+  "ensureMixedSceneActiveThicknessTailPipelines",
+  "ensureMixedSceneActiveLightGlazePipelines",
+]) {
+  assert.match(
+    optionalPipelineBatch,
+    new RegExp(`${activePipelineFamily}\\(engine\\),`),
+    `${activePipelineFamily} must participate in the shared optional pipeline batch`,
+  );
+}
 assert.equal(
   [...staticResourceCreation.matchAll(/engine\.device\.createRenderPipeline\(/g)].length,
   2,

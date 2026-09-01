@@ -177,6 +177,76 @@ assert(
 );
 expect(main, "captureDocument: () => engine.captureProjectDocument()", "capture engine port");
 expect(main, "restoreDocument: (project) => engine.restoreProjectDocument(project)", "restore engine port");
+const projectSessionCompositionStart = main.indexOf("new ProjectSessionController({");
+const projectSessionCompositionEnd = main.indexOf(
+  "appDiagnosticsController = new AppDiagnosticsController({",
+  projectSessionCompositionStart,
+);
+assert(
+  projectSessionCompositionStart >= 0
+    && projectSessionCompositionEnd > projectSessionCompositionStart,
+  "project session composition boundary",
+);
+const projectSessionComposition = main.slice(
+  projectSessionCompositionStart,
+  projectSessionCompositionEnd,
+);
+expect(
+  projectSessionComposition,
+  "prepareProjectPresentation: async (project) => {",
+  "saved semantic-project presentation warm-up port",
+);
+expect(
+  projectSessionComposition,
+  'project.manifest.snapshot.mixedScene.items.some((item) => item.kind !== "raster")',
+  "semantic-project warm-up eligibility gate",
+);
+expect(
+  projectSessionComposition,
+  'await initializeMixedSceneController("semantic-scene");',
+  "semantic-project resource warm-up",
+);
+expect(
+  projectSessionComposition,
+  "waitForDocumentFirstFrame: async () => {\n      await prepareCurrentProjectPresentation();",
+  "restored-project presentation readiness port",
+);
+expect(
+  projectSessionComposition,
+  "projectEditorBootstrap = undefined;",
+  "module bootstrap preload release",
+);
+expect(
+  projectSessionComposition,
+  "window.__projectEditorBootstrap = undefined;",
+  "global bootstrap preload release",
+);
+const projectPresentationStart = main.indexOf(
+  "async function prepareCurrentProjectPresentation(): Promise<void>",
+);
+const projectPresentationEnd = main.indexOf(
+  "async function startConfiguredVectorDeviceStressTest(): Promise<void>",
+  projectPresentationStart,
+);
+assert(
+  projectPresentationStart >= 0 && projectPresentationEnd > projectPresentationStart,
+  "current-project presentation readiness boundary",
+);
+const projectPresentation = main.slice(projectPresentationStart, projectPresentationEnd);
+expect(
+  projectPresentation,
+  "await controller.prepareCurrentScenePresentation();",
+  "exact semantic-scene presentation barrier",
+);
+expect(projectPresentation, "engine.requestRender();", "final restored-project canvas frame");
+expect(projectPresentation, "await engine.waitForIdle();", "final restored-project GPU fence");
+assert(
+  projectPresentation.indexOf("await controller.prepareCurrentScenePresentation();")
+    < projectPresentation.indexOf("engine.requestRender();")
+    && projectPresentation.indexOf("engine.requestRender();")
+      < projectPresentation.indexOf("await engine.waitForIdle();"),
+  "semantic presentation before final canvas GPU fence",
+);
 expect(
   main,
   "await engine.resetForDocumentSwitch(target.documentWidth, target.documentHeight);",
@@ -238,8 +308,8 @@ expect(projectSession, "this.storage.saveProject({", "durable save");
 expect(projectSession, "await this.engine.restoreDocument(saved)", "complete project restore");
 expect(
   projectSession,
-  "await this.save({ captureThumbnail: false })",
-  "thumbnail-free initial project save",
+  "await this.performSave({ captureThumbnail: false }, true)",
+  "thumbnail-free internal initial project save",
 );
 expect(
   projectSession,

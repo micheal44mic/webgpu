@@ -171,7 +171,10 @@ assert.match(
 );
 assert.match(staticResourcesSource, /engine\.mixedScenePresentShaderModule \?\?=/);
 assert.match(staticResourcesSource, /engine\.mixedScenePresentBindGroupLayout \?\?=/);
-assert.match(staticResourcesSource, /engine\.mixedScenePresentPipeline \?\?=/);
+assert.match(
+  staticResourcesSource,
+  /const mixedScenePresentPipelinePromise = engine\.mixedScenePresentPipeline/,
+);
 assert.match(staticResourcesSource, /engine\.mixedSceneClearShaderModule \?\?=/);
 assert.match(staticResourcesSource, /engine\.mixedSceneBackgroundBindGroupLayout \?\?=/);
 assert.match(staticResourcesSource, /engine\.mixedSceneBackgroundBindGroup \?\?=/);

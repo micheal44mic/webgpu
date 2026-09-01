@@ -499,23 +499,24 @@ function layerRecordFromProject(layer: ProjectLayerV1): LayerRecord {
 async function compressedFromProject(
   engine: BrushEngine,
   layer: ProjectLayerV1,
-  storedChunks: ProjectLoadResultV1["chunks"],
+  storedChunksByIndex: ReadonlyMap<
+    number,
+    ProjectLoadResultV1["chunks"][number]
+  >,
 ): Promise<LayerCompressedColdStorageResources | null> {
   const pixels = layer.pixels;
   if (!pixels) return null;
-  const byIndex = new Map(
-    storedChunks
-      .filter((chunk) => chunk.layerId === layer.id)
-      .map((chunk) => [chunk.chunkIndex, chunk]),
-  );
   const chunks: LayerColdCompressedChunk[] = pixels.chunks.map((descriptor) => {
-    const stored = byIndex.get(descriptor.chunkIndex);
+    const stored = storedChunksByIndex.get(descriptor.chunkIndex);
     if (!stored) {
       throw new Error(`Saved chunk ${layer.id}:${descriptor.chunkIndex} is missing.`);
     }
     return {
       storage: stored.storage,
-      bytes: cloneBuffer(stored.bytes),
+      // IndexedDB already returns an isolated structured clone, and the
+      // decompressor never detaches or mutates it. Share that immutable payload
+      // with cold storage instead of copying every raster byte on the UI thread.
+      bytes: stored.bytes,
       rawBytes: stored.rawBytes,
       storedBytes: stored.storedBytes,
       sourceHash: stored.sourceHash,
@@ -908,13 +909,26 @@ export async function restoreProjectDocument(
 
   const records = snapshot.layers.map(layerRecordFromProject);
   const recordById = new Map(records.map((record) => [record.id, record]));
+  const storedChunksByLayer = new Map<
+    number,
+    Map<number, ProjectLoadResultV1["chunks"][number]>
+  >();
+  for (const chunk of project.chunks) {
+    const byIndex = storedChunksByLayer.get(chunk.layerId) ?? new Map();
+    byIndex.set(chunk.chunkIndex, chunk);
+    storedChunksByLayer.set(chunk.layerId, byIndex);
+  }
   const nextGpu = new Map<number, LayerGpuResources>();
   const restoredHistoryBaselines = new Map<number, RestoredProjectHistoryBaseline>();
   for (const layer of snapshot.layers) {
     const record = recordById.get(layer.id);
     if (!record) throw new Error(`The saved layer ${layer.id} is missing its record.`);
     const gpu = createColdLayerGpuResources();
-    gpu.compressed = await compressedFromProject(engine, layer, project.chunks);
+    gpu.compressed = await compressedFromProject(
+      engine,
+      layer,
+      storedChunksByLayer.get(layer.id) ?? new Map(),
+    );
     nextGpu.set(layer.id, gpu);
     // The immutable compressed payload is shared with inactive layer storage.
     // Keeping the same reference gives every restored layer a cursor-zero
@@ -973,7 +987,9 @@ export async function restoreProjectDocument(
     engine.layerStack.restoreState(stackState);
     engine.layerGpu.clear();
     for (const [layerId, gpu] of nextGpu) engine.layerGpu.set(layerId, gpu);
-    engine.mixedSceneStack?.restoreState(snapshot.mixedScene);
+    // Vector and image documents are immutable project payloads. Share them
+    // while cloning only mutable node properties, avoiding a deep SVG copy.
+    engine.mixedSceneStack?.restoreState(snapshot.mixedScene, true);
     engine.mixedSceneStack?.synchronizeRasterClippingRelations(records);
     engine.documentBackground = normalizeDocumentBackground(
       snapshot.background ?? { visible: false, color: "#ffffff" },

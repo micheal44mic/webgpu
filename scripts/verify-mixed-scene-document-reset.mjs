@@ -65,6 +65,14 @@ function deferred() {
   return { promise, resolve };
 }
 
+async function waitUntil(predicate) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error("Timed out waiting for the semantic presentation checkpoint.");
+}
+
 function classList(initial = []) {
   const values = new Set(initial);
   return {
@@ -488,5 +496,113 @@ await Promise.resolve();
 await Promise.resolve();
 assert.equal(staleFence.shell.zoomUnsafeExactRefreshCompletedCount, 0);
 assert.equal(staleFence.shell.unsafeExactRefreshInFlight, true);
+
+// Startup readiness must cross font preparation, two exact stable samples,
+// the final compositor idle point, and the explicit vector presentation fence.
+const fontReady = deferred();
+const compositorReady = deferred();
+const vectorFenceReady = deferred();
+const readinessCheckpoints = [];
+const readinessCalls = [];
+const readinessShell = Object.create(MixedSceneController.prototype);
+Object.assign(readinessShell, {
+  browser: {
+    performance,
+    setTimeout: (callback, delay) => setTimeout(callback, delay),
+    clearTimeout: (timer) => clearTimeout(timer),
+  },
+  host: {
+    waitForIdle: async () => {
+      readinessCalls.push("compositor-wait");
+      await compositorReady.promise;
+      readinessCalls.push("compositor-ready");
+    },
+    waitForVectorTextPresentationCompletion: async () => {
+      readinessCalls.push("vector-fence-wait");
+      await vectorFenceReady.promise;
+      readinessCalls.push("vector-fence-ready");
+    },
+  },
+  documentGeneration: 3,
+  renderCount: 0,
+  runtimeSceneSnapshot: () => ({
+    selectedKey: "svg:1",
+    activeRasterLayerId: 1,
+    items: [{ key: "svg:1", kind: "svg", svgNode: { id: 1 } }],
+  }),
+  prepareFontGeometry: async () => {
+    readinessCalls.push("font-wait");
+    await fontReady.promise;
+    readinessCalls.push("font-ready");
+  },
+  syncScene: () => readinessCalls.push("scene-sync"),
+  scheduleRender: () => readinessCalls.push("render-request"),
+  waitForPresentationCheckpoint: () => {
+    const checkpoint = deferred();
+    readinessCheckpoints.push(checkpoint);
+    return checkpoint.promise;
+  },
+  getDiagnostics: () => ({
+    renderCount: 1,
+    zoomRenderMode: "precise",
+    zoomFastPresentationMode: "precise",
+    effectWorkerPendingJobs: 0,
+    effectWorkerFailedJobs: 0,
+    effectWorkerLastError: null,
+    atomicEffectPendingNodes: 0,
+    zoomUnsafeExactRefreshInFlight: false,
+    zoomUnsafeExactRefreshRequestPending: false,
+  }),
+});
+let readinessSettled = false;
+const readiness = readinessShell.prepareCurrentScenePresentation().then((value) => {
+  readinessSettled = true;
+  return value;
+});
+await waitUntil(() => readinessCalls.includes("font-wait"));
+assert.equal(readinessSettled, false);
+assert.equal(readinessCheckpoints.length, 0, "render sampling cannot precede font readiness");
+fontReady.resolve();
+await waitUntil(() => readinessCheckpoints.length === 1);
+assert.deepEqual(readinessCalls.slice(0, 4), [
+  "font-wait",
+  "font-ready",
+  "scene-sync",
+  "render-request",
+]);
+readinessCheckpoints[0].resolve();
+await waitUntil(() => readinessCheckpoints.length === 2);
+assert.equal(readinessCalls.includes("compositor-wait"), false, "one stable sample is insufficient");
+readinessCheckpoints[1].resolve();
+await waitUntil(() => readinessCalls.includes("compositor-wait"));
+assert.equal(readinessSettled, false);
+compositorReady.resolve();
+await waitUntil(() => readinessCalls.includes("vector-fence-wait"));
+assert.equal(readinessSettled, false);
+vectorFenceReady.resolve();
+const readinessDiagnostics = await readiness;
+assert.equal(readinessSettled, true);
+assert.equal(readinessDiagnostics.renderCount, 1);
+assert.deepEqual(readinessCalls.slice(-4), [
+  "compositor-wait",
+  "compositor-ready",
+  "vector-fence-wait",
+  "vector-fence-ready",
+]);
+
+const changedDocumentShell = Object.create(MixedSceneController.prototype);
+const changedDocumentFont = deferred();
+Object.assign(changedDocumentShell, {
+  browser: readinessShell.browser,
+  host: readinessShell.host,
+  documentGeneration: 8,
+  renderCount: 0,
+  runtimeSceneSnapshot: readinessShell.runtimeSceneSnapshot,
+  prepareFontGeometry: () => changedDocumentFont.promise,
+});
+const changedDocumentReadiness = changedDocumentShell.prepareCurrentScenePresentation();
+changedDocumentShell.documentGeneration = 9;
+changedDocumentFont.resolve();
+await assert.rejects(changedDocumentReadiness, /project changed/i);
 
 console.log("Mixed-scene document reset verification passed.");

@@ -236,6 +236,127 @@ assert.equal(
 
 controller.dispose();
 
+const restoreGate = deferred();
+const preparationGate = deferred();
+const presentationGate = deferred();
+const readinessOrder = [];
+const readinessBrowser = new FakeWindow(
+  `https://example.test/?project=${initialSummary.id}&documentWidth=${WIDTH}&documentHeight=${HEIGHT}`,
+);
+const readinessSaveButton = new FakeButton();
+const readinessHomeButton = new FakeButton();
+const readinessStatus = { textContent: "", className: "" };
+const readinessController = new ProjectSessionController({
+  engine: {
+    ...engine,
+    restoreDocument: async () => {
+      readinessOrder.push("restore-start");
+      await restoreGate.promise;
+      readinessOrder.push("restore-ready");
+    },
+    waitForDocumentFirstFrame: async () => {
+      readinessOrder.push("presentation-start");
+      await presentationGate.promise;
+      readinessOrder.push("presentation-ready");
+    },
+  },
+  storage,
+  browser: readinessBrowser,
+  document: { title: "" },
+  searchParams: new URL(readinessBrowser.location.href).searchParams,
+  documentWidth: WIDTH,
+  documentHeight: HEIGHT,
+  saveButton: readinessSaveButton,
+  homeButton: readinessHomeButton,
+  status: readinessStatus,
+  preloadedProjectId: initialSummary.id,
+  preloadedProject: Promise.resolve(loadedProject),
+  prepareProjectPresentation: async () => {
+    readinessOrder.push("preparation-start");
+    await preparationGate.promise;
+    readinessOrder.push("preparation-ready");
+  },
+});
+const readinessInitialization = readinessController.initialize();
+await waitUntil(() => readinessOrder.includes("preparation-start"));
+assert.equal(readinessController.editorReady, false, "editor stays unavailable during restore");
+assert.equal(readinessHomeButton.disabled, true, "Home stays disabled during restore");
+assert.equal(readinessSaveButton.disabled, true, "Save stays disabled during restore");
+assert.equal(readinessStatus.textContent, "Opening project…");
+
+preparationGate.resolve();
+await waitUntil(() => readinessOrder.includes("preparation-ready"));
+assert.equal(
+  readinessOrder.includes("presentation-start"),
+  false,
+  "the final presentation gate cannot run against the pre-restore scene",
+);
+restoreGate.resolve();
+await waitUntil(() => readinessOrder.includes("presentation-start"));
+assert.equal(readinessController.editorReady, false, "editor stays unavailable during GPU presentation");
+assert.equal(readinessStatus.textContent, "Preparing project…");
+presentationGate.resolve();
+await readinessInitialization;
+assert.equal(readinessController.editorReady, true, "editor unlocks after the restored presentation");
+assert.equal(readinessHomeButton.disabled, false, "Home unlocks with the complete project");
+assert.equal(readinessStatus.textContent, "Project ready.");
+assert.match(readinessStatus.className, /\bok\b/);
+assert.equal(readinessController.preloadedProject, null, "resolved preload payload is released");
+assert.equal(readinessController.preloadedProjectId, null, "resolved preload identity is released");
+readinessController.dispose();
+
+const initialCommitGate = deferred();
+let initialCommitCaptures = 0;
+let initialCommitSaves = 0;
+const newProjectBrowser = new FakeWindow(
+  `https://example.test/?project=temporary&newProject=1&projectName=Fresh&documentWidth=${WIDTH}&documentHeight=${HEIGHT}`,
+);
+const newProjectSaveButton = new FakeButton();
+const newProjectHomeButton = new FakeButton();
+const newProjectController = new ProjectSessionController({
+  engine: {
+    ...engine,
+    captureDocument: async () => {
+      initialCommitCaptures += 1;
+      await initialCommitGate.promise;
+      return capturedDocument;
+    },
+  },
+  storage: {
+    ...storage,
+    saveProject: async () => {
+      initialCommitSaves += 1;
+      return { ...initialSummary, name: "Fresh" };
+    },
+  },
+  browser: newProjectBrowser,
+  document: { title: "" },
+  searchParams: new URL(newProjectBrowser.location.href).searchParams,
+  documentWidth: WIDTH,
+  documentHeight: HEIGHT,
+  saveButton: newProjectSaveButton,
+  homeButton: newProjectHomeButton,
+  status: { textContent: "", className: "" },
+});
+const newProjectInitialization = newProjectController.initialize();
+await waitUntil(() => initialCommitCaptures === 1);
+assert.equal(newProjectController.editorReady, false, "new project stays locked during initial commit");
+assert.equal(newProjectSaveButton.disabled, true);
+assert.equal(newProjectHomeButton.disabled, true);
+await assert.rejects(() => newProjectController.save(), /still starting/i);
+assert.equal(initialCommitCaptures, 1, "public Save cannot duplicate the startup capture");
+initialCommitGate.resolve();
+await newProjectInitialization;
+assert.equal(initialCommitSaves, 1, "startup performs one internal initial commit");
+assert.equal(newProjectController.editorReady, true);
+assert.equal(newProjectHomeButton.disabled, false);
+assert.equal(
+  new URL(newProjectBrowser.location.href).searchParams.get("project"),
+  initialSummary.id,
+  "the durable project id replaces the temporary route token",
+);
+newProjectController.dispose();
+
 let ephemeralStorageInitializations = 0;
 let ephemeralCaptures = 0;
 const ephemeralBrowser = new FakeWindow(

@@ -633,7 +633,7 @@ let gpuMemoryPanelController: GpuMemoryPanelController | null = null;
 let pixelSelectionController: PixelSelectionController | null = null;
 let runtimeStatsController: RuntimeStatsController | null = null;
 const editorExtensionBootstrap = window.__editorExtensionBootstrap;
-const projectEditorBootstrap: ProjectEditorBootstrap | undefined =
+let projectEditorBootstrap: ProjectEditorBootstrap | undefined =
   window.__projectEditorBootstrap;
 const editorExtensionEngineOptions = editorExtensionBootstrap?.engineOptions ?? {};
 let editorExtension: EditorExtension | null = null;
@@ -1059,7 +1059,7 @@ projectSessionController = new ProjectSessionController({
     captureThumbnailPixels: () => engine.captureProjectThumbnailPixels(),
     restoreDocument: (project) => engine.restoreProjectDocument(project),
     historyState: () => engine.getHistoryState(),
-    sceneSnapshot: () => engine.getMixedSceneSnapshot(),
+    sceneSnapshot: () => engine.getMixedSceneRuntimeSnapshot(),
     setInitialLayerName: (name) => {
       engine.layerStack.active.name = name;
     },
@@ -1077,14 +1077,19 @@ projectSessionController = new ProjectSessionController({
       await engine.resetForDocumentSwitch(target.documentWidth, target.documentHeight);
     },
     waitForDocumentFirstFrame: async () => {
-      engine.requestRender();
-      await engine.waitForIdle();
+      await prepareCurrentProjectPresentation();
     },
   },
   storage: projectEditorBootstrap?.storage ?? createProjectStorage(),
   storageReady: projectEditorBootstrap?.storageReady,
   preloadedProjectId: projectEditorBootstrap?.preloadedProjectId,
   preloadedProject: projectEditorBootstrap?.preloadedProject,
+  prepareProjectPresentation: async (project) => {
+    if (!project.manifest.snapshot.mixedScene.items.some((item) => item.kind !== "raster")) {
+      return;
+    }
+    await initializeMixedSceneController("semantic-scene");
+  },
   settleTransientEdits: settleTransientProjectEdits,
   runWithLoading: (label, operation) =>
     canvasStartupOverlay.runRuntimeOperation(label, operation),
@@ -1117,6 +1122,10 @@ projectSessionController = new ProjectSessionController({
   status: statusElement,
   persistenceMode: vectorStressTestEnabled ? "ephemeral" : "durable",
 });
+// The session controller consumed every bootstrap dependency. Releasing this
+// handoff prevents its resolved preload from retaining a second full project.
+projectEditorBootstrap = undefined;
+window.__projectEditorBootstrap = undefined;
 appDiagnosticsController = new AppDiagnosticsController({
   engine,
   browser: window,
@@ -1804,7 +1813,7 @@ pixelSelectionController = new PixelSelectionController({
 });
 
 function selectedMobileVectorItem(
-  snapshot = engineInitialized ? engine.getMixedSceneSnapshot() : null,
+  snapshot = engineInitialized ? engine.getMixedSceneRuntimeSnapshot() : null,
 ) {
   const selected = snapshot?.items.find((item) => item.key === snapshot.selectedKey);
   return selected?.kind === "text" || selected?.kind === "svg" ? selected : null;
@@ -1839,7 +1848,7 @@ function toolSettingsRequireMixedScene(kind: EditorToolSettingsKind): boolean {
 }
 
 function syncMobileToolsMenuState(
-  sceneSnapshot = engineInitialized ? engine.getMixedSceneSnapshot() : null,
+  sceneSnapshot = engineInitialized ? engine.getMixedSceneRuntimeSnapshot() : null,
 ): void {
   const selectedSceneItem = sceneSnapshot?.items.find(
     (item) => item.key === sceneSnapshot.selectedKey,
@@ -3519,6 +3528,24 @@ async function initializeMixedSceneController(
     : mixedSceneInitializationPromise!;
   const [controller] = await Promise.all([initialization, resourcePreparation]);
   return controller;
+}
+
+async function prepareCurrentProjectPresentation(): Promise<void> {
+  const snapshot = engine.getMixedSceneRuntimeSnapshot();
+  const containsSemanticItems = snapshot?.items.some((item) => item.kind !== "raster") === true;
+  if (containsSemanticItems) {
+    const controller = await initializeMixedSceneController("semantic-scene");
+    const latestSnapshot = engine.getMixedSceneRuntimeSnapshot();
+    if (latestSnapshot) controller.syncScene(latestSnapshot);
+    await controller.prepareCurrentScenePresentation();
+  }
+  // The semantic controller submits its textures before this final canvas
+  // frame. Raster-only projects take the same authoritative GPU boundary.
+  engine.requestRender();
+  await engine.waitForIdle();
+  if (containsSemanticItems) {
+    await engine.waitForVectorTextPresentationCompletion();
+  }
 }
 
 async function startConfiguredVectorDeviceStressTest(): Promise<void> {

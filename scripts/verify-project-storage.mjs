@@ -670,11 +670,21 @@ const semanticResourcesPosition = runtimeSource.indexOf(
   "await engine.ensureMixedSceneEditorResources()",
 );
 const semanticRestorePosition = runtimeSource.indexOf(
-  "engine.mixedSceneStack?.restoreState(snapshot.mixedScene)",
+  "engine.mixedSceneStack?.restoreState(snapshot.mixedScene, true)",
 );
 assert.ok(
   semanticResourcesPosition >= 0 && semanticResourcesPosition < semanticRestorePosition,
   "semantic GPU layouts must exist before a restored vector scene can schedule its first frame",
+);
+assert.match(
+  runtimeSource,
+  /bytes:\s*stored\.bytes/,
+  "restore must adopt the isolated immutable chunk buffers instead of copying them again",
+);
+assert.doesNotMatch(
+  runtimeSource,
+  /storedChunks\s*\.filter\(/,
+  "restore must index project chunks once instead of rescanning every chunk per layer",
 );
 assert.match(
   runtimeSource,
