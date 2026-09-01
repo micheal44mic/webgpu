@@ -14,7 +14,7 @@ import {
   type VectorSvgDocument,
 } from "../../vector-svg-import";
 import { VectorPathIdentityPool } from "../../vector-path-identity.ts";
-import complexCurvedStrokesSvg from "./fixtures/complex-curved-strokes.svg?raw";
+import complexCurvedStrokesSvg from "../../vector-stress/fixtures/complex-curved-strokes.svg?raw";
 
 export type VectorBaselineProfile =
   | "shared"

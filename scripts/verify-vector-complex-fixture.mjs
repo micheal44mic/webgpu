@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { VECTOR_TEXT_GPU_MAXIMUM_DRAWS } from "../src/engine-limits.ts";
 
 const fixtureUrl = new URL(
-  "../src/labs/vector/fixtures/complex-curved-strokes.svg",
+  "../src/vector-stress/fixtures/complex-curved-strokes.svg",
   import.meta.url,
 );
 const benchmarkUrl = new URL(
@@ -39,7 +39,7 @@ assert.doesNotMatch(
 );
 assert.match(
   benchmarkSource,
-  /import complexCurvedStrokesSvg from "\.\/fixtures\/complex-curved-strokes\.svg\?raw"/,
+  /import complexCurvedStrokesSvg from "\.\.\/\.\.\/vector-stress\/fixtures\/complex-curved-strokes\.svg\?raw"/,
 );
 assert.match(
   benchmarkSource,

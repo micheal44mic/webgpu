@@ -85,6 +85,8 @@ export interface ProjectSessionControllerOptions {
   readonly onDocumentSwitchFinish?: (
     result: ProjectSessionSwitchResult,
   ) => Promise<void> | void;
+  /** Keeps a diagnostic document in RAM and disables every durable save path. */
+  readonly persistenceMode?: "durable" | "ephemeral";
 }
 
 interface ProjectSaveOptions {
@@ -131,6 +133,7 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
     ProjectSessionControllerOptions["onDocumentSwitchPreReset"];
   private readonly onDocumentSwitchCommit: ProjectSessionControllerOptions["onDocumentSwitchCommit"];
   private readonly onDocumentSwitchFinish: ProjectSessionControllerOptions["onDocumentSwitchFinish"];
+  private readonly persistenceMode: "durable" | "ephemeral";
   private readonly newProjectRequested: boolean;
   private readonly requestedProjectName: string;
 
@@ -200,6 +203,7 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
     this.onDocumentSwitchPreReset = options.onDocumentSwitchPreReset;
     this.onDocumentSwitchCommit = options.onDocumentSwitchCommit;
     this.onDocumentSwitchFinish = options.onDocumentSwitchFinish;
+    this.persistenceMode = options.persistenceMode ?? "durable";
 
     this.currentProjectId = options.searchParams.get("project")?.trim() || null;
     this.newProjectRequested = this.currentProjectId !== null
@@ -210,10 +214,12 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
     this.currentProjectName = this.requestedProjectName;
     this.dirty = this.newProjectRequested;
 
-    this.saveButton.addEventListener("click", this.handleSaveButtonClick);
+    if (this.persistenceMode === "durable") {
+      this.saveButton.addEventListener("click", this.handleSaveButtonClick);
+      this.browser.addEventListener("keydown", this.handleWindowKeydown);
+      this.browser.addEventListener("beforeunload", this.handleWindowBeforeUnload);
+    }
     this.homeButton.addEventListener("click", this.handleHomeButtonClick);
-    this.browser.addEventListener("keydown", this.handleWindowKeydown);
-    this.browser.addEventListener("beforeunload", this.handleWindowBeforeUnload);
     this.browser.__projectEditorSessionLifecycle = this;
 
     this.syncSaveControl();
@@ -244,7 +250,8 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
 
   markDirty(reason = "document state"): void {
     if (
-      !this.trackingReady
+      this.persistenceMode === "ephemeral"
+      || !this.trackingReady
       || this.trackingSuspended
       || this.disposed
       || this.recoveryRequired
@@ -284,6 +291,19 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
 
   async initialize(): Promise<void> {
     if (this.disposed) throw new Error("The project session has been disposed.");
+    if (this.persistenceMode === "ephemeral") {
+      this.editorReady = true;
+      this.currentProjectId = null;
+      this.currentHeadGenerationId = null;
+      this.updateIdentity("Vector Device Stress Test");
+      this.dirty = false;
+      this.noteHistoryState(this.engine.historyState());
+      this.noteSceneSnapshot(this.engine.sceneSnapshot());
+      this.trackingReady = true;
+      this.homeButton.disabled = false;
+      this.syncSaveControl();
+      return;
+    }
     await (this.storageReady ?? this.storage.initialize());
     this.editorReady = true;
     if (this.currentProjectId && !this.newProjectRequested) {
@@ -358,6 +378,9 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
 
   async save(options: Readonly<ProjectSaveOptions> = {}): Promise<void> {
     if (this.disposed) throw new Error("The project session has been disposed.");
+    if (this.persistenceMode === "ephemeral") {
+      throw new Error("This temporary device test is not saved.");
+    }
     if (this.recoveryRequired) {
       throw new Error("The project session requires recovery before it can be saved.");
     }
@@ -789,7 +812,7 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
       );
       return;
     }
-    if (this.dirty) {
+    if (this.persistenceMode === "durable" && this.dirty) {
       try {
         await this.save();
       } catch {
@@ -869,14 +892,17 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
 
   private syncSaveControl(): void {
     const sessionUnavailable = this.disposed || this.recoveryRequired || this.switchInProgress;
-    this.saveButton.disabled = !this.editorReady || this.saveBusy || sessionUnavailable;
+    const ephemeral = this.persistenceMode === "ephemeral";
+    this.saveButton.disabled = ephemeral || !this.editorReady || this.saveBusy || sessionUnavailable;
     this.homeButton.disabled = !this.editorReady || sessionUnavailable;
     this.saveButton.classList.toggle("is-saving", this.saveBusy);
     this.saveButton.classList.toggle("is-dirty", this.dirty && !this.saveBusy);
     this.saveButton.setAttribute("aria-busy", String(this.saveBusy));
     this.saveButton.setAttribute(
       "aria-label",
-      this.recoveryRequired
+      ephemeral
+        ? "Temporary device test — saving disabled"
+        : this.recoveryRequired
         ? "Project recovery required"
         : this.switchInProgress
           ? "Switching project"
@@ -888,7 +914,9 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
             ? "Save project — unsaved changes"
             : "Project saved",
     );
-    this.saveButton.title = this.recoveryRequired
+    this.saveButton.title = ephemeral
+      ? "Temporary device test — nothing is saved"
+      : this.recoveryRequired
       ? "Reload the last saved project to recover."
       : this.switchInProgress
         ? "Switching project…"
@@ -936,10 +964,12 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
     if (this.disposed) return;
     this.disposed = true;
     this.trackingReady = false;
-    this.saveButton.removeEventListener("click", this.handleSaveButtonClick);
+    if (this.persistenceMode === "durable") {
+      this.saveButton.removeEventListener("click", this.handleSaveButtonClick);
+      this.browser.removeEventListener("keydown", this.handleWindowKeydown);
+      this.browser.removeEventListener("beforeunload", this.handleWindowBeforeUnload);
+    }
     this.homeButton.removeEventListener("click", this.handleHomeButtonClick);
-    this.browser.removeEventListener("keydown", this.handleWindowKeydown);
-    this.browser.removeEventListener("beforeunload", this.handleWindowBeforeUnload);
     if (this.browser.__projectEditorSessionLifecycle === this) {
       delete this.browser.__projectEditorSessionLifecycle;
     }

@@ -235,5 +235,54 @@ assert.equal(
 );
 
 controller.dispose();
+
+let ephemeralStorageInitializations = 0;
+let ephemeralCaptures = 0;
+const ephemeralBrowser = new FakeWindow(
+  `https://example.test/?vectorStressTest=1&documentWidth=${WIDTH}&documentHeight=${HEIGHT}`,
+);
+const ephemeralSaveButton = new FakeButton();
+const ephemeralHomeButton = new FakeButton();
+const ephemeralDocument = { title: "" };
+const ephemeralController = new ProjectSessionController({
+  engine: {
+    ...engine,
+    captureDocument: async () => {
+      ephemeralCaptures += 1;
+      return capturedDocument;
+    },
+  },
+  storage: {
+    ...storage,
+    initialize: async () => {
+      ephemeralStorageInitializations += 1;
+    },
+  },
+  browser: ephemeralBrowser,
+  document: ephemeralDocument,
+  searchParams: new URL(ephemeralBrowser.location.href).searchParams,
+  documentWidth: WIDTH,
+  documentHeight: HEIGHT,
+  saveButton: ephemeralSaveButton,
+  homeButton: ephemeralHomeButton,
+  status: { textContent: "", className: "" },
+  persistenceMode: "ephemeral",
+});
+await ephemeralController.initialize();
+assert.equal(ephemeralStorageInitializations, 0, "ephemeral initialization never opens storage");
+assert.equal(ephemeralSaveButton.disabled, true, "ephemeral save remains disabled");
+assert.match(ephemeralDocument.title, /Vector Device Stress Test/);
+ephemeralController.noteSceneSnapshot(opaqueSceneSnapshot);
+assert.equal(
+  ephemeralSaveButton.classList.contains("is-dirty"),
+  false,
+  "ephemeral scene changes never become persistable",
+);
+assert.equal(ephemeralBrowser.listeners.get("keydown")?.size ?? 0, 0);
+assert.equal(ephemeralBrowser.listeners.get("beforeunload")?.size ?? 0, 0);
+await assert.rejects(() => ephemeralController.save(), /temporary device test/i);
+assert.equal(ephemeralCaptures, 0, "ephemeral save cannot capture the document");
+ephemeralController.dispose();
+
 await vite.close();
 console.info("Project session controller verification passed.");

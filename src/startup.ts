@@ -575,9 +575,39 @@ class ProjectHomeController {
 }
 
 async function boot(): Promise<void> {
+  const initialUrl = new URL(window.location.href);
+  const vectorStressTestEnabled = initialUrl.searchParams.get("vectorStressTest") === "1";
+  if (vectorStressTestEnabled) {
+    // A device stress run is always a fresh, in-memory document. Strip any
+    // project identity copied from an editor URL before the editor module or
+    // project preload can observe it.
+    initialUrl.searchParams.delete("project");
+    initialUrl.searchParams.delete("newProject");
+    initialUrl.searchParams.delete("projectName");
+    initialUrl.searchParams.delete("projectSwitch");
+    const width = parsedEditorDimension(initialUrl.searchParams.get("documentWidth"));
+    const height = parsedEditorDimension(initialUrl.searchParams.get("documentHeight"));
+    if (width === null || height === null) {
+      initialUrl.searchParams.set("documentWidth", "2048");
+      initialUrl.searchParams.set("documentHeight", "2048");
+      initialUrl.searchParams.set("documentSize", "2048");
+    } else if (width === height) {
+      initialUrl.searchParams.set("documentSize", String(width));
+    } else {
+      initialUrl.searchParams.delete("documentSize");
+    }
+    if (window.location.href !== initialUrl.href) {
+      window.history.replaceState(null, "", initialUrl);
+    }
+  }
   const home = element<HTMLElement>(document, "projectHome");
   hydrateHomeIcons(home);
-  const storage = createProjectStorage();
+  const storage = createProjectStorage(vectorStressTestEnabled
+    ? {
+        forceMemory: true,
+        databaseName: `vector-device-stress-${Date.now().toString(36)}`,
+      }
+    : {});
   const storageReady = storage.initialize();
   void storageReady.catch(() => undefined);
   let homeController: ProjectHomeController | null = null;
@@ -755,7 +785,14 @@ async function boot(): Promise<void> {
       storageReady,
       preloadedProjectId,
       preloadedProject,
-      returnHome: (pushHistory = true) => showHome(pushHistory),
+      returnHome: vectorStressTestEnabled
+        ? async () => {
+            const homeUrl = new URL(window.location.href);
+            homeUrl.search = "";
+            homeUrl.hash = "";
+            window.location.assign(homeUrl);
+          }
+        : (pushHistory = true) => showHome(pushHistory),
     };
     window.__projectEditorBootstrap = bootstrap;
     const startupOverlay = getCanvasStartupOverlayController();

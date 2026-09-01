@@ -580,6 +580,7 @@ let historyState: HistoryState = {
 };
 
 const pageSearchParams = new URLSearchParams(window.location.search);
+const vectorStressTestEnabled = pageSearchParams.get("vectorStressTest") === "1";
 const touchPaintIntentHoldEnabled = pageSearchParams.get("touchPaintIntentHold") !== "0";
 
 const bevelBoundingFieldEnabled = pageSearchParams.get("bevelField") === "bbox";
@@ -1022,7 +1023,7 @@ const engine = new BrushEngine(canvas, {
     editorExtensionEngineOptions.documentPipelineCompilationScope,
   deferSelectedBrushPreparation: true,
   layerMemoryStressTestEnabled:
-    editorExtensionEngineOptions.layerMemoryStressTestEnabled ?? false,
+    editorExtensionEngineOptions.layerMemoryStressTestEnabled ?? vectorStressTestEnabled,
   layerCompressionTestEnabled:
     editorExtensionEngineOptions.layerCompressionTestEnabled ?? false,
   mixedSceneEnabled: resolveMixedSceneEnabled(editorExtensionEngineOptions, true),
@@ -1114,6 +1115,7 @@ projectSessionController = new ProjectSessionController({
   saveButton: saveProjectButton,
   homeButton: projectHomeButton,
   status: statusElement,
+  persistenceMode: vectorStressTestEnabled ? "ephemeral" : "durable",
 });
 appDiagnosticsController = new AppDiagnosticsController({
   engine,
@@ -3519,6 +3521,20 @@ async function initializeMixedSceneController(
   return controller;
 }
 
+async function startConfiguredVectorDeviceStressTest(): Promise<void> {
+  const controller = await initializeMixedSceneController("semantic-scene");
+  const { startVectorDeviceStressTest } = await import(
+    "./vector-stress/vector-device-stress-test"
+  );
+  await startVectorDeviceStressTest({
+    engine,
+    controller,
+    browser: window,
+    document,
+    canvas,
+  });
+}
+
 void engine.initialize()
   .then(async () => {
     engineInitialized = true;
@@ -3551,6 +3567,7 @@ void engine.initialize()
       runtimeStatsController?.start();
       await editorExtension?.afterEngineInitialized();
     });
+    if (vectorStressTestEnabled) await startConfiguredVectorDeviceStressTest();
   })
   .catch((error) => {
     canvasStartupOverlay.fail();

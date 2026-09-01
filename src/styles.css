@@ -8200,3 +8200,205 @@ select {
     flex: 1 1 auto;
   }
 }
+.vector-device-stress-panel {
+  position: fixed;
+  z-index: 140;
+  top: max(12px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
+  width: min(390px, calc(100vw - 24px));
+  color: #f7f8fb;
+  background: color-mix(in srgb, #10151d 94%, transparent);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 18px;
+  box-shadow: 0 18px 52px rgba(0, 0, 0, 0.38);
+  backdrop-filter: blur(18px);
+  overflow: hidden;
+  font: 500 12px/1.35 Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+.vector-device-stress-header {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px 9px 16px;
+}
+
+.vector-device-stress-header > div {
+  display: grid;
+  gap: 2px;
+}
+
+.vector-device-stress-header strong {
+  font-size: 17px;
+  letter-spacing: -0.02em;
+}
+
+.vector-device-stress-kicker {
+  color: #8fd7ff;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.vector-device-stress-collapse {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: inherit;
+  background: rgba(255, 255, 255, 0.07);
+  font-size: 20px;
+}
+
+.vector-device-stress-body {
+  display: grid;
+  gap: 11px;
+  padding: 0 16px 16px;
+}
+
+.vector-device-stress-panel.is-collapsed .vector-device-stress-body {
+  display: none;
+}
+
+.vector-device-stress-state {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.vector-device-stress-badge {
+  flex: 0 0 auto;
+  padding: 4px 7px;
+  border-radius: 999px;
+  color: #061218;
+  background: #8fd7ff;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+
+.vector-device-stress-panel[data-phase="ready"] .vector-device-stress-badge {
+  background: #7ee5a5;
+}
+
+.vector-device-stress-panel[data-phase="error"] .vector-device-stress-badge {
+  color: #fff;
+  background: #e65252;
+}
+
+.vector-device-stress-message {
+  min-width: 0;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.vector-device-stress-progress {
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.vector-device-stress-progress > span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform: scaleX(0);
+  transform-origin: left center;
+  background: linear-gradient(90deg, #48bfff, #7ee5a5);
+  transition: transform 120ms ease-out;
+}
+
+.vector-device-stress-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  margin: 0;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.09);
+  overflow: hidden;
+}
+
+.vector-device-stress-grid > div {
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  background: #151b24;
+}
+
+.vector-device-stress-grid dt {
+  color: rgba(255, 255, 255, 0.52);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.vector-device-stress-grid dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  font-weight: 750;
+}
+
+.vector-device-stress-note {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 10px;
+}
+
+.vector-device-stress-actions {
+  display: grid;
+  grid-template-columns: 1.35fr 1fr 0.85fr;
+  gap: 7px;
+}
+
+.vector-device-stress-actions button {
+  min-height: 42px;
+  padding: 7px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 11px;
+  color: #f8fbff;
+  background: rgba(255, 255, 255, 0.08);
+  font: inherit;
+  font-weight: 750;
+}
+
+.vector-device-stress-actions button:first-child {
+  color: #061218;
+  border-color: transparent;
+  background: #8fd7ff;
+}
+
+.vector-device-stress-actions button:disabled {
+  opacity: 0.42;
+}
+
+.vector-device-stress-copy-status {
+  min-height: 1.35em;
+  color: #7ee5a5;
+  font-size: 10px;
+}
+
+@media (max-width: 520px) {
+  .vector-device-stress-panel {
+    top: max(8px, env(safe-area-inset-top));
+    right: max(8px, env(safe-area-inset-right));
+    width: min(360px, calc(100vw - 16px));
+  }
+
+  .vector-device-stress-body {
+    max-height: min(72vh, 560px);
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+
+  .vector-device-stress-actions {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .vector-device-stress-actions button:first-child {
+    grid-column: 1 / -1;
+  }
+}
