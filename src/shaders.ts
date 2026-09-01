@@ -1501,11 +1501,23 @@ fn activeSourceFragmentMain(
   }
   let uv = clamp(layerPosition / layerSize, vec2<f32>(0.0), vec2<f32>(1.0));
   let lod = max(display.selectedMipLevel, 0.0);
-  let source = select(
-    textureSampleLevel(activeLayerBase, layerSampler, uv, 0.0),
-    textureSampleLevel(activeLayerPyramid, layerSampler, uv, max(0.0, lod - 1.0)),
-    lod >= 0.5,
-  );
+  var source: vec4<f32>;
+  if (lod < 0.5 && rasterPixelViewEnabled(1.0)) {
+    source = textureLoad(
+      activeLayerBase,
+      rasterPixelViewTexel(
+        uv,
+        vec2<i32>(textureDimensions(activeLayerBase, 0))
+      ),
+      0
+    );
+  } else {
+    source = select(
+      textureSampleLevel(activeLayerBase, layerSampler, uv, 0.0),
+      textureSampleLevel(activeLayerPyramid, layerSampler, uv, max(0.0, lod - 1.0)),
+      lod >= 0.5,
+    );
+  }
   return source * display.activeLayerAlpha;
 }
 
@@ -1524,7 +1536,19 @@ fn activeCutoutFragmentMain(
     return vec4<f32>(0.0);
   }
   let uv = clamp(layerPosition / layerSize, vec2<f32>(0.0), vec2<f32>(1.0));
-  let raw = textureSampleLevel(activeLayerBase, layerSampler, uv, 0.0);
+  var raw: vec4<f32>;
+  if (rasterPixelViewEnabled(1.0)) {
+    raw = textureLoad(
+      activeLayerBase,
+      rasterPixelViewTexel(
+        uv,
+        vec2<i32>(textureDimensions(activeLayerBase, 0))
+      ),
+      0
+    );
+  } else {
+    raw = textureSampleLevel(activeLayerBase, layerSampler, uv, 0.0);
+  }
   let opacity = select(
     display.activeLayerAlpha,
     display.clippingParentOpacity,

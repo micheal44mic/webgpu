@@ -7,10 +7,14 @@ import type {
 import type { VectorTextGpuDraw } from "./vector-text-types";
 
 export const LAYER_MERGE_STRATEGY =
-  "heterogeneous-contiguous-clipping-closed-transparent-backdrop-advanced-single-atomic-v2" as const;
+  "heterogeneous-contiguous-clipping-closed-transparent-backdrop-advanced-vector-post-composite-opacity-single-atomic-v3" as const;
 
 export interface MixedSceneMergeVectorDraws {
   readonly key: Extract<MixedSceneVectorKey, `text:${number}` | `svg:${number}`>;
+  /** Authored visibility used to preserve transparent semantic run boundaries. */
+  readonly visible: boolean;
+  /** Applied once after this node's unit-opacity draw program is composited. */
+  readonly opacity: number;
   readonly draws: readonly VectorTextGpuDraw[];
 }
 
@@ -37,6 +41,8 @@ export type LayerMergeRenderRun =
   | {
     readonly kind: "vector-run";
     readonly items: readonly Extract<MixedSceneItem, { kind: "text" | "svg" }>[];
+    /** Applied once after the complete run is resolved. */
+    readonly opacity: number;
   }
   | {
     readonly kind: "raster";
@@ -48,23 +54,32 @@ export type LayerMergeRenderRun =
   };
 
 /**
- * Match the live mixed-scene renderer: consecutive text/SVG nodes share one
- * multisampled pass and one resolve. Resolving every node separately changes
- * antialiasing where vector nodes overlap, even when their draw order is the
- * same, so merge must preserve these exact run boundaries.
+ * Match the live mixed-scene renderer: adjacent opaque text/SVG nodes share one
+ * multisampled pass and one resolve. A visible translucent node is isolated so
+ * its unit-opacity program can be composited once with the node opacity. Even
+ * an empty visible node remains a boundary, while hidden/transparent nodes do
+ * not interrupt an otherwise opaque run.
  */
 export function layerMergeRenderRuns(
   items: readonly MixedSceneItem[],
+  vectorDraws: readonly MixedSceneMergeVectorDraws[] = [],
 ): readonly LayerMergeRenderRun[] {
   const runs: LayerMergeRenderRun[] = [];
+  const vectorDrawsByKey = new Map(vectorDraws.map((entry) => [entry.key, entry]));
   let pendingVectors: Extract<MixedSceneItem, { kind: "text" | "svg" }>[] = [];
   const flushVectors = (): void => {
     if (pendingVectors.length === 0) return;
-    runs.push({ kind: "vector-run", items: pendingVectors });
+    runs.push({ kind: "vector-run", items: pendingVectors, opacity: 1 });
     pendingVectors = [];
   };
   for (const item of items) {
     if (item.kind === "text" || item.kind === "svg") {
+      const entry = vectorDrawsByKey.get(item.key);
+      if (entry?.visible && entry.opacity > 0 && entry.opacity < 1) {
+        flushVectors();
+        runs.push({ kind: "vector-run", items: [item], opacity: entry.opacity });
+        continue;
+      }
       pendingVectors.push(item);
       continue;
     }

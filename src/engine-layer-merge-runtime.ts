@@ -189,8 +189,9 @@ async function renderVectorRunInput(
   items: readonly Extract<MixedSceneItem, { kind: "text" | "svg" }>[],
   drawEntries: ReadonlyMap<
     MergeMixedSceneItemsRequest["vectorDraws"][number]["key"],
-    MergeMixedSceneItemsRequest["vectorDraws"][number]["draws"]
+    MergeMixedSceneItemsRequest["vectorDraws"][number]
   >,
+  opacity: number,
   view: VectorTextViewState,
 ): Promise<DirtyRect | null> {
   const scene = requireMixedSceneStack(engine);
@@ -207,12 +208,14 @@ async function renderVectorRunInput(
         return node.visible && node.opacity > 0;
       })();
     if (!visible) continue;
-    const itemDraws = drawEntries.get(item.key) ?? [];
-    if (itemDraws.length === 0) {
-      throw new Error(`Visible vector ${item.key} contains no rasterizable draws.`);
+    const entry = drawEntries.get(item.key);
+    if (!entry) throw new Error(`Missing vector draws for ${item.key}.`);
+    if (entry.opacity !== opacity) {
+      throw new Error(`Vector run opacity does not match ${item.key}.`);
     }
+    if (entry.draws.length === 0) continue;
     visibleKeys.push(item.key);
-    draws.push(...itemDraws);
+    draws.push(...entry.draws);
   }
   if (draws.length === 0) return null;
   const runBounds = vectorTextGpuRunBounds(draws, view);
@@ -248,7 +251,7 @@ async function renderVectorRunInput(
       1,
       vectorSurface.textureWidth,
       vectorSurface.textureHeight,
-      1,
+      opacity,
       rendered.bounds,
       "normal",
       "source-over",
@@ -343,7 +346,7 @@ async function renderMergeOutput(
 }> {
   const scene = requireMixedSceneStack(engine);
   const plan = planMixedSceneLayerMerge(engine.layerStack, scene, request.keys);
-  const drawEntries = new Map(request.vectorDraws.map((entry) => [entry.key, entry.draws]));
+  const drawEntries = new Map(request.vectorDraws.map((entry) => [entry.key, entry]));
   if (drawEntries.size !== request.vectorDraws.length) {
     throw new Error("Duplicate vector draws in the merge request.");
   }
@@ -355,6 +358,25 @@ async function renderMergeOutput(
   for (const key of drawEntries.keys()) {
     if (!plan.vectorKeys.includes(key)) {
       throw new Error(`Vector draws outside the selection: ${key}.`);
+    }
+  }
+  for (const item of plan.items) {
+    if (item.kind !== "text" && item.kind !== "svg") continue;
+    const entry = drawEntries.get(item.key);
+    if (!entry) continue;
+    const node = item.kind === "text"
+      ? scene.textById(item.textNodeId)
+      : scene.svgById(item.svgNodeId);
+    if (entry.visible !== node.visible) {
+      throw new Error(`Vector visibility changed while preparing merge input: ${item.key}.`);
+    }
+    if (
+      !Number.isFinite(entry.opacity)
+      || entry.opacity < 0
+      || entry.opacity > 1
+      || entry.opacity !== node.opacity
+    ) {
+      throw new Error(`Vector opacity changed while preparing merge input: ${item.key}.`);
     }
   }
 
@@ -389,7 +411,7 @@ async function renderMergeOutput(
       record.blendMode = "normal";
       const foldedRasterParents = new Set<number>();
       const view = fullDocumentView(engine);
-      for (const run of layerMergeRenderRuns(plan.items)) {
+      for (const run of layerMergeRenderRuns(plan.items, request.vectorDraws)) {
         if (run.kind === "raster") {
           const unit = engine.layerStack.clippingUnit(run.item.rasterLayerId);
           const parent = unit[0];
@@ -436,6 +458,7 @@ async function renderMergeOutput(
           surface,
           run.items,
           drawEntries,
+          run.opacity,
           view,
         );
         bounds = mergeDirtyRects(bounds, vectorBounds);

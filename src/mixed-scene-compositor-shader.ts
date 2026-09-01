@@ -1,7 +1,7 @@
 import { rasterPixelViewShaderHelpers } from "./raster-pixel-view.ts";
 
 export const MIXED_SCENE_COMPOSITOR_STRATEGY =
-  "ordered-raster-vector-gpu-runs-rgba16f-roi-source-over-raster-floor-mip-parity-v6" as const;
+  "ordered-raster-vector-gpu-runs-rgba16f-roi-source-over-post-opacity-raster-floor-mip-parity-v7" as const;
 
 export const MIXED_SCENE_LINEAR_FORMAT = "rgba16float" as const;
 
@@ -134,6 +134,7 @@ struct TextCaptureUniforms {
 struct TextCacheUniforms {
   primaryOrigin: vec2<f32>,
   fallbackOrigin: vec2<f32>,
+  opacityAndPadding: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> display: DisplayUniforms;
@@ -149,6 +150,7 @@ ${fullscreenVertexShader}
 
 @fragment
 fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
+  let opacity = clamp(cache.opacityAndPadding.x, 0.0, 1.0);
   let dimensions = vec2<i32>(textureDimensions(sourceTexture, 0));
   let pixel = vec2<i32>(fragmentPosition.xy) - vec2<i32>(cache.primaryOrigin);
   if (capture.fastMode < 0.5) {
@@ -156,7 +158,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     if (!inside) {
       return vec4<f32>(0.0);
     }
-    return textureLoad(sourceTexture, pixel, 0);
+    return textureLoad(sourceTexture, pixel, 0) * opacity;
   }
 
   // Every fast mode follows the current camera. Mode 1 is fully covered by
@@ -183,7 +185,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     );
   }
   if (capture.fastMode < 2.5) {
-    return sourceColor;
+    return sourceColor * opacity;
   }
 
   let fallbackDimensions = vec2<f32>(textureDimensions(fallbackTexture, 0));
@@ -199,7 +201,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   let insideFallback = all(fallbackPixel >= vec2<f32>(0.0))
     && all(fallbackPixel < fallbackDimensions);
   if (!insideFallback) {
-    return sourceColor;
+    return sourceColor * opacity;
   }
   let fallbackColor = textureSampleLevel(
     fallbackTexture,
@@ -208,7 +210,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     0.0
   );
   if (!insideSource) {
-    return fallbackColor;
+    return fallbackColor * opacity;
   }
 
   // Blend only within four source pixels of the sharp-cache edge. Both colors
@@ -221,7 +223,11 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
       capture.canvasSize.y - sourceCapturePixel.y
     )
   );
-  return mix(fallbackColor, sourceColor, smoothstep(0.0, 4.0, sourceEdgeDistance));
+  return mix(
+    fallbackColor,
+    sourceColor,
+    smoothstep(0.0, 4.0, sourceEdgeDistance)
+  ) * opacity;
 }
 `;
 

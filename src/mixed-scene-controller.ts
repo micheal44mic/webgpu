@@ -368,6 +368,12 @@ function snapshotContainsText(snapshot: MixedSceneSnapshot): boolean {
   return snapshot.items.some((item) => item.kind === "text");
 }
 
+function vectorNodeWithUnitOpacity<Node extends VectorDrawableNode>(
+  node: Readonly<Node>,
+): Readonly<Node> {
+  return node.opacity === 1 ? node : { ...node, opacity: 1 };
+}
+
 function snapshotTextFontFamilies(snapshot: MixedSceneSnapshot): readonly string[] {
   return [...new Set(snapshot.items.flatMap((item) =>
     item.kind === "text" ? [item.textNode.fontFamily] : []
@@ -2780,10 +2786,11 @@ export class MixedSceneController {
           if (item.kind === "text") {
             const node = item.textNode;
             if (node.visible && node.opacity > 0 && node.text.length > 0) {
+              const drawNode = vectorNodeWithUnitOpacity(node);
               allEffectsReady = this.appendGpuDrawsForNode(
                 draws,
-                node,
-                this.geometryForNode(node),
+                drawNode,
+                this.geometryForNode(drawNode),
                 view,
                 rasterSlots,
                 true,
@@ -2792,16 +2799,23 @@ export class MixedSceneController {
           } else {
             const node = item.svgNode;
             if (node.visible && node.opacity > 0) {
+              const drawNode = vectorNodeWithUnitOpacity(node);
               allEffectsReady = this.appendGpuDrawsForSvgNode(
                 draws,
-                node,
+                drawNode,
                 view,
                 rasterSlots,
                 true,
               ) && allEffectsReady;
             }
           }
-          vectorDraws.push({ key: item.key, draws });
+          const opacity = item.kind === "text"
+            ? item.textNode.opacity
+            : item.svgNode.opacity;
+          const visible = item.kind === "text"
+            ? item.textNode.visible
+            : item.svgNode.visible;
+          vectorDraws.push({ key: item.key, visible, opacity, draws });
         }
         if (allEffectsReady) {
           return await this.host.mergeMixedSceneItems({ keys: [...keys], vectorDraws });
@@ -4535,6 +4549,7 @@ export class MixedSceneController {
       const groups: {
         placement: VectorTextPlacement;
         nodes: Readonly<VectorDrawableNode>[];
+        opacity: number;
       }[] = [];
       let pendingNodes: Readonly<VectorDrawableNode>[] = [];
       const flushVectorRun = () => {
@@ -4544,6 +4559,7 @@ export class MixedSceneController {
         groups.push({
           placement: `text-run:${nodes.map(vectorNodeKey).join(",")}`,
           nodes,
+          opacity: 1,
         });
       };
       const appendVectorToRun = (node: Readonly<VectorDrawableNode>) => {
@@ -4556,6 +4572,15 @@ export class MixedSceneController {
           const key = vectorNodeKey(node);
           this.displayedDrawsByNodeKey.delete(key);
           this.displayedMetricsByNodeKey.delete(key);
+          return;
+        }
+        if (node.opacity < 1) {
+          flushVectorRun();
+          groups.push({
+            placement: `text-run:${vectorNodeKey(node)}`,
+            nodes: [node],
+            opacity: node.opacity,
+          });
           return;
         }
         pendingNodes.push(node);
@@ -4618,14 +4643,17 @@ export class MixedSceneController {
         const draws: VectorTextGpuDraw[] = [];
         for (const node of nodes) {
           const key = vectorNodeKey(node);
+          const drawNode = group.opacity < 1
+            ? vectorNodeWithUnitOpacity(node)
+            : node;
           const candidateDraws: VectorTextGpuDraw[] = [];
           let metrics: TextMetricsBox;
           let allEffectsReady: boolean;
-          if (isTextNode(node)) {
-            const geometry = this.geometryForNode(node);
+          if (isTextNode(drawNode)) {
+            const geometry = this.geometryForNode(drawNode);
             allEffectsReady = this.appendGpuDrawsForNode(
               candidateDraws,
-              node,
+              drawNode,
               geometry,
               view,
               liveEffectSlots,
@@ -4637,18 +4665,18 @@ export class MixedSceneController {
               bottom: geometry.outline.bottom,
               baseline: geometry.outline.baseline,
             };
-          } else if (isSvgNode(node)) {
+          } else if (isSvgNode(drawNode)) {
             allEffectsReady = this.appendGpuDrawsForSvgNode(
               candidateDraws,
-              node,
+              drawNode,
               view,
               liveEffectSlots,
             );
             metrics = {
-              left: node.document.bounds.left,
-              top: node.document.bounds.top,
-              right: node.document.bounds.right,
-              bottom: node.document.bounds.bottom,
+              left: drawNode.document.bounds.left,
+              top: drawNode.document.bounds.top,
+              right: drawNode.document.bounds.right,
+              bottom: drawNode.document.bounds.bottom,
               baseline: 0,
             };
           } else {
@@ -4682,7 +4710,11 @@ export class MixedSceneController {
             || draw.mode === "mesh-inner-shadow-blur"
           ) activeGpuResourceKeys.add(draw.blurKey);
         }
-        const stats = this.host.updateVectorTextGpuPresentation(group.placement, draws);
+        const stats = this.host.updateVectorTextGpuPresentation(
+          group.placement,
+          draws,
+          group.opacity,
+        );
         fallbackRuns.push({ placement: group.placement, draws });
         gpuMemoryMiB += stats.gpuMemoryMiB;
         blurGpuMemoryMiB = Math.max(blurGpuMemoryMiB, stats.blurGpuMemoryMiB);

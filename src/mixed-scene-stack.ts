@@ -1617,9 +1617,11 @@ export class MixedSceneStack {
   /**
    * Produces the exact bottom-up scene order while extracting the one raster
    * that remains hot and editable. Adjacent inactive rasters and adjacent
-   * vector nodes are grouped. Every visible semantic raster image is emitted
-   * as its own segment and therefore interrupts both kinds of run; hidden or
-   * fully transparent text, SVG and images do not split neighboring runs.
+   * fully opaque vector nodes are grouped. A translucent vector is isolated so
+   * its opacity can be applied once after its internal draws are composited.
+   * Every visible semantic raster image is emitted as its own segment and
+   * therefore interrupts both kinds of run; hidden or fully transparent text,
+   * SVG and images do not split neighboring runs.
    */
   compositionSegments(
     activeRasterLayerId: number,
@@ -1801,7 +1803,10 @@ export class MixedSceneStack {
           continue;
         }
         flushRasterRun();
+        const requiresPostCompositeOpacity = vector.opacity < 1;
+        if (requiresPostCompositeOpacity) flushTextRun();
         textRun.push(item);
+        if (requiresPostCompositeOpacity) flushTextRun();
       }
       insertShapePreviewAfter(item.key);
     }

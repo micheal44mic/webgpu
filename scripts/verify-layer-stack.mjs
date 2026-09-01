@@ -1175,7 +1175,7 @@ assert.match(
 );
 assert.match(
   compositionSegmentsBody,
-  /if \(!vector\.visible \|\| vector\.opacity <= 0\) \{\s*continue;\s*\}[\s\S]*?flushRasterRun\(\);\s*textRun\.push\(item\)/,
+  /if \(!vector\.visible \|\| vector\.opacity <= 0\) \{\s*continue;\s*\}\s*flushRasterRun\(\);\s*const requiresPostCompositeOpacity = vector\.opacity < 1;\s*if \(requiresPostCompositeOpacity\) flushTextRun\(\);\s*textRun\.push\(item\);\s*if \(requiresPostCompositeOpacity\) flushTextRun\(\);/,
   "testo e SVG invisibili o trasparenti devono essere ignorati prima di spezzare le run",
 );
 assert.match(

@@ -357,7 +357,7 @@ assert.equal((mergedSurfaceSource.match(/rasterPixelViewEnabled\(resolutionScale
   "entrambe le superfici raster unite devono usare nearest sopra soglia");
 assert.match(
   mixedSceneCompositorSource,
-  /ordered-raster-vector-gpu-runs-rgba16f-roi-source-over-raster-floor-mip-parity-v6/,
+  /ordered-raster-vector-gpu-runs-rgba16f-roi-source-over-post-opacity-raster-floor-mip-parity-v7/,
 );
 const mixedRasterSegment = mixedSceneCompositorSource.slice(
   mixedSceneCompositorSource.indexOf("export const mixedSceneRasterSegmentShader"),
@@ -401,6 +401,207 @@ const displayShaderEnd = shaderSource.indexOf(
 );
 assert.ok(displayShaderStart >= 0 && displayShaderEnd > displayShaderStart);
 const baseDisplayShader = shaderSource.slice(displayShaderStart, displayShaderEnd);
+const baseActiveSourceStart = baseDisplayShader.indexOf("fn activeSourceFragmentMain(");
+const baseActiveSourceEnd = baseDisplayShader.indexOf(
+  "fn activeCutoutFragmentMain(",
+  baseActiveSourceStart,
+);
+assert.ok(
+  baseActiveSourceStart >= 0 && baseActiveSourceEnd > baseActiveSourceStart,
+  "entry point source-only raster base mancante",
+);
+const baseActiveSourceShader = baseDisplayShader.slice(
+  baseActiveSourceStart,
+  baseActiveSourceEnd,
+);
+assert.match(
+  baseActiveSourceShader,
+  /if \(lod < 0\.5 && rasterPixelViewEnabled\(1\.0\)\) \{\s*source = textureLoad\(\s*activeLayerBase,\s*rasterPixelViewTexel\(\s*uv,\s*vec2<i32>\(textureDimensions\(activeLayerBase, 0\)\)\s*\),\s*0\s*\);\s*\} else \{/,
+  "la sorgente raster isolata deve caricare il texel base reale al LOD 0 nella vista pixel",
+);
+assert.doesNotMatch(
+  baseActiveSourceShader,
+  /composeActiveClippingGroupTexel|sampleActiveLayer\(/,
+  "la vista pixel source-only non deve incorporare il gruppo di clipping",
+);
+const baseActiveCutoutStart = baseDisplayShader.indexOf("fn activeCutoutFragmentMain(");
+assert.ok(baseActiveCutoutStart >= 0, "entry point raw-matte raster base mancante");
+const baseActiveCutoutShader = baseDisplayShader.slice(baseActiveCutoutStart);
+assert.match(
+  baseActiveCutoutShader,
+  /if \(rasterPixelViewEnabled\(1\.0\)\) \{\s*raw = textureLoad\(\s*activeLayerBase,\s*rasterPixelViewTexel\(\s*uv,\s*vec2<i32>\(textureDimensions\(activeLayerBase, 0\)\)\s*\),\s*0\s*\);\s*\} else \{/,
+  "la raw matte raster base deve caricare il texel reale nella vista pixel",
+);
+assert.match(
+  baseActiveCutoutShader,
+  /let opacity = select\([\s\S]*display\.clippingParentOpacity[\s\S]*return raw \* opacity;/,
+  "la raw matte deve conservare l'opacità autoriale del parent senza comporre il gruppo",
+);
+assert.doesNotMatch(
+  baseActiveCutoutShader,
+  /composeActiveClippingGroupTexel|sampleActiveLayer\(/,
+  "la raw matte pixel-perfect non deve incorporare il gruppo di clipping",
+);
+
+const thicknessDisplayShaderStart = shaderSource.indexOf(
+  "export const thicknessTailDisplayShader",
+);
+const thicknessDisplayShaderEnd = shaderSource.indexOf(
+  "export const lightGlazeDisplayShader",
+  thicknessDisplayShaderStart,
+);
+assert.ok(
+  thicknessDisplayShaderStart >= 0 && thicknessDisplayShaderEnd > thicknessDisplayShaderStart,
+  "shader display della coda dinamica mancante",
+);
+const thicknessDisplayShader = shaderSource.slice(
+  thicknessDisplayShaderStart,
+  thicknessDisplayShaderEnd,
+);
+const thicknessPermanentMipStart = thicknessDisplayShader.indexOf(
+  "fn samplePermanentLogicalMip(",
+);
+const thicknessPermanentMipEnd = thicknessDisplayShader.indexOf(
+  "fn samplePermanentLayer(",
+  thicknessPermanentMipStart,
+);
+const thicknessPermanentMipShader = thicknessDisplayShader.slice(
+  thicknessPermanentMipStart,
+  thicknessPermanentMipEnd,
+);
+assert.match(
+  thicknessPermanentMipShader,
+  /if \(logicalMip < 0\.5\) \{[\s\S]*if \(rasterPixelViewEnabled\(1\.0\)\) \{[\s\S]*textureLoad\(\s*activeLayerBase,\s*rasterPixelViewTexel\(/,
+  "la coda dinamica deve leggere il texel permanente reale al LOD 0",
+);
+const thicknessTailLayerStart = thicknessDisplayShader.indexOf("fn sampleTailLayer(");
+const thicknessTailLayerEnd = thicknessDisplayShader.indexOf(
+  "fn tailActiveTexel(",
+  thicknessTailLayerStart,
+);
+const thicknessTailLayerShader = thicknessDisplayShader.slice(
+  thicknessTailLayerStart,
+  thicknessTailLayerEnd,
+);
+assert.match(
+  thicknessTailLayerShader,
+  /if \(rasterPixelViewEnabled\(1\.0\)\) \{[\s\S]*textureLoad\(\s*tailTexture,\s*rasterPixelViewTexel\(/,
+  "la coda dinamica deve leggere il texel transiente reale nella vista pixel",
+);
+const thicknessActiveSourceStart = thicknessDisplayShader.indexOf(
+  "fn activeSourceFragmentMain(",
+);
+assert.ok(thicknessActiveSourceStart >= 0, "source-only della coda dinamica mancante");
+const thicknessActiveSourceShader = thicknessDisplayShader.slice(thicknessActiveSourceStart);
+assert.match(
+  thicknessActiveSourceShader,
+  /return sampleTailDisplayActive\(layerPosition, layerUv\) \* display\.activeLayerAlpha;/,
+  "la source-only della coda deve riusare il percorso active pixel-perfect",
+);
+assert.doesNotMatch(
+  thicknessActiveSourceShader,
+  /sampleTailDisplayClippingGroup|composeActiveClippingGroupTexel/,
+  "la source-only della coda non deve incorporare il gruppo di clipping",
+);
+
+const lightGlazeDisplayShaderStart = thicknessDisplayShaderEnd;
+const lightGlazeDisplayShaderEnd = shaderSource.indexOf(
+  "export const lightGlazeCompositeMipShader",
+  lightGlazeDisplayShaderStart,
+);
+assert.ok(
+  lightGlazeDisplayShaderEnd > lightGlazeDisplayShaderStart,
+  "shader display della velatura dinamica mancante",
+);
+const lightGlazeDisplayShader = shaderSource.slice(
+  lightGlazeDisplayShaderStart,
+  lightGlazeDisplayShaderEnd,
+);
+const lightGlazeNearestStart = lightGlazeDisplayShader.indexOf(
+  "fn sampleCompositedLayerNearest(",
+);
+const lightGlazeNearestEnd = lightGlazeDisplayShader.indexOf(
+  "fn sampleCompositedClippingGroupLinear(",
+  lightGlazeNearestStart,
+);
+const lightGlazeNearestShader = lightGlazeDisplayShader.slice(
+  lightGlazeNearestStart,
+  lightGlazeNearestEnd,
+);
+assert.match(
+  lightGlazeNearestShader,
+  /return compositedLayerTexel\(rasterPixelViewTexel\(uv, dimensions\)\);/,
+  "la velatura dinamica deve comporre il texel reale prima della presentazione",
+);
+const lightGlazeActiveSourceStart = lightGlazeDisplayShader.indexOf(
+  "fn activeSourceFragmentMain(",
+);
+assert.ok(lightGlazeActiveSourceStart >= 0, "source-only della velatura dinamica mancante");
+const lightGlazeActiveSourceShader = lightGlazeDisplayShader.slice(
+  lightGlazeActiveSourceStart,
+);
+assert.match(
+  lightGlazeActiveSourceShader,
+  /if \(lod < 0\.5\) \{[\s\S]*sampleCompositedLayerNearest\(uv\)[\s\S]*rasterPixelViewEnabled\(1\.0\)/,
+  "la source-only della velatura deve selezionare il composito nearest al LOD 0",
+);
+assert.doesNotMatch(
+  lightGlazeActiveSourceShader,
+  /sampleCompositedClippingGroupLinear|compositedClippingGroupTexel/,
+  "la source-only della velatura non deve incorporare il gruppo di clipping",
+);
+
+const rasterStrokeDisplayShaderStart = strokeRendererSource.indexOf(
+  "export function rasterStrokeDisplayShader(",
+);
+const rasterStrokeDisplayShaderEnd = strokeRendererSource.indexOf(
+  "function thresholdMaskShader(",
+  rasterStrokeDisplayShaderStart,
+);
+assert.ok(
+  rasterStrokeDisplayShaderStart >= 0
+    && rasterStrokeDisplayShaderEnd > rasterStrokeDisplayShaderStart,
+  "shader display raster con stile mancante",
+);
+const rasterStrokeDisplayShader = strokeRendererSource.slice(
+  rasterStrokeDisplayShaderStart,
+  rasterStrokeDisplayShaderEnd,
+);
+const rasterStrokeActiveSourceStart = rasterStrokeDisplayShader.indexOf(
+  "fn activeSourceFragmentMain(",
+);
+const rasterStrokeActiveSourceEnd = rasterStrokeDisplayShader.indexOf(
+  "fn activeCutoutFragmentMain(",
+  rasterStrokeActiveSourceStart,
+);
+const rasterStrokeActiveSourceShader = rasterStrokeDisplayShader.slice(
+  rasterStrokeActiveSourceStart,
+  rasterStrokeActiveSourceEnd,
+);
+assert.match(
+  rasterStrokeActiveSourceShader,
+  /if \(display\.selectedMipLevel < 0\.5\) \{[\s\S]*directStyledNearestSample\(layerPosition\)[\s\S]*rasterPixelViewEnabled\(1\.0\)/,
+  "la source-only raster con stile deve selezionare il campione nearest al LOD 0",
+);
+assert.doesNotMatch(
+  rasterStrokeActiveSourceShader,
+  /directStyledGroupSample|styledGroupTexel/,
+  "la source-only raster con stile non deve incorporare il gruppo di clipping",
+);
+const rasterStrokeCutoutShader = rasterStrokeDisplayShader.slice(
+  rasterStrokeActiveSourceEnd,
+);
+assert.match(
+  rasterStrokeCutoutShader,
+  /let authored = sourceTexel\(vec2<i32>\(floor\(layerPosition\)\)\);/,
+  "la raw matte raster con stile deve restare un textureLoad autoriale per texel",
+);
+assert.doesNotMatch(
+  rasterStrokeCutoutShader,
+  /textureSampleLevel|directStyledSample|composeStyledGroupSample/,
+  "la raw matte raster con stile non deve filtrare né incorporare effetti o clipping",
+);
+
 assert.match(
   baseDisplayShader,
   /if \(jointFilteringCandidate\) \{[\s\S]*belowPaint = sampleMergedBelow\(layerPosition\)[\s\S]*abovePaint = sampleMergedAbove\(layerPosition\)[\s\S]*stackAlphaGradient = fwidth/,

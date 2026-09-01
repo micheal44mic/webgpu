@@ -2442,13 +2442,12 @@ function writeVectorTextRunCacheUniforms(
     primaryBounds.y,
     fallbackBounds?.x ?? 0,
     fallbackBounds?.y ?? 0,
+    resources.opacity,
+    0,
+    0,
+    0,
   ] as const;
-  const previousValues = [
-    resources.cacheUniformUpload[0],
-    resources.cacheUniformUpload[1],
-    resources.cacheUniformUpload[2],
-    resources.cacheUniformUpload[3],
-  ] as const;
+  const previousValues = resources.cacheUniformUpload.slice();
   let changed = false;
   for (let index = 0; index < nextValues.length; index += 1) {
     const next = Math.fround(nextValues[index]);
@@ -2468,6 +2467,23 @@ function writeVectorTextRunCacheUniforms(
       resources.cacheUniformUpload.set(previousValues);
       throw error;
     }
+  }
+}
+
+function setVectorTextRunOpacity(
+  engine: BrushEngine,
+  resources: VectorTextRunTextureResources,
+  opacity: number,
+): void {
+  const normalized = Math.min(1, Math.max(0, Number.isFinite(opacity) ? opacity : 1));
+  if (Object.is(resources.opacity, normalized)) return;
+  const previous = resources.opacity;
+  resources.opacity = normalized;
+  try {
+    writeVectorTextRunCacheUniforms(engine, resources);
+  } catch (error) {
+    resources.opacity = previous;
+    throw error;
   }
 }
 
@@ -3131,6 +3147,7 @@ export function ensureVectorTextPresentationTexture(engine: BrushEngine,
   height: number,
   placement: VectorTextPlacement,
   requestedBounds?: Readonly<DirtyRect>,
+  opacity = 1,
 ): GPUTexture {
   if (
     engine.vectorTextTextureWidth !== width
@@ -3164,6 +3181,7 @@ export function ensureVectorTextPresentationTexture(engine: BrushEngine,
   if (placement.startsWith("text-run:")) {
     const key = placement as Extract<VectorTextPlacement, `text-run:${string}`>;
     const existingRun = engine.vectorTextRunTextures.get(key);
+    if (existingRun) setVectorTextRunOpacity(engine, existingRun, opacity);
     const bounds = requestedBounds ?? { x: 0, y: 0, width, height };
     const recommendedBounds = vectorTextGpuRunCacheAllocationBounds(
       bounds,
@@ -3193,7 +3211,7 @@ export function ensureVectorTextPresentationTexture(engine: BrushEngine,
           height,
         );
         // The texture is repainted below, so moving its screen-space origin is
-        // a 16-byte uniform update rather than a GPU reallocation.
+        // a small uniform update rather than a GPU reallocation.
         writeVectorTextRunCacheUniforms(engine, existingRun, repositionedBounds);
         existingRun.textureBounds = repositionedBounds;
         existingRun.initialized = false;
@@ -3267,7 +3285,9 @@ export function ensureVectorTextPresentationTexture(engine: BrushEngine,
         size: VECTOR_TEXT_RUN_CACHE_UNIFORM_BYTES,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       });
-      const cacheUniformUpload = new Float32Array(4);
+      const cacheUniformUpload = new Float32Array(
+        VECTOR_TEXT_RUN_CACHE_UNIFORM_BYTES / Float32Array.BYTES_PER_ELEMENT,
+      );
       cacheUniformUpload.fill(Number.NaN);
       const resources: VectorTextRunTextureResources = {
         texture,
@@ -3278,6 +3298,7 @@ export function ensureVectorTextPresentationTexture(engine: BrushEngine,
         fallbackBounds: null,
         cacheUniformBuffer,
         cacheUniformUpload,
+        opacity: Math.min(1, Math.max(0, Number.isFinite(opacity) ? opacity : 1)),
         bindGroup: null as unknown as GPUBindGroup,
         lastBounds: null,
         initialized: false,

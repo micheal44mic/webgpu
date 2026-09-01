@@ -125,6 +125,7 @@ export interface MixedSceneHost {
   updateVectorTextGpuPresentation(
     placement: VectorTextPlacement,
     draws: readonly VectorTextGpuDraw[],
+    opacity?: number,
   ): VectorTextGpuPresentationStats;
   rebuildVectorTextGpuFallbackPresentation(
     view: Readonly<VectorTextViewState>,

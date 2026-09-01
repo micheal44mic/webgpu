@@ -161,6 +161,7 @@ import {
   VectorTextEffectCompilerClient,
 } from "../src/vector-text-effect-client.ts";
 import {
+  VECTOR_TEXT_RUN_CACHE_UNIFORM_BYTES,
   pruneVectorTextGpuResourceCache,
   vectorTextGpuResourceKey,
 } from "../src/engine-vector-text-resources.ts";
@@ -200,6 +201,70 @@ assert.match(
 assert.doesNotMatch(
   liveRunGroupingSource,
   /pendingNodes\.push\(item\.(?:textNode|svgNode)\)/,
+);
+assert.match(
+  liveRunGroupingSource,
+  /if \(node\.opacity < 1\) \{\s*flushVectorRun\(\);[\s\S]*?placement: `text-run:\$\{vectorNodeKey\(node\)\}`,[\s\S]*?nodes: \[node\],[\s\S]*?opacity: node\.opacity,[\s\S]*?return;\s*\}\s*pendingNodes\.push\(node\)/,
+  "a translucent vector must own a compositor run carrying its layer opacity",
+);
+assert.match(
+  controllerSource,
+  /placement: `text-run:\$\{nodes\.map\(vectorNodeKey\)\.join\(","\)\}`,[\s\S]*?nodes,[\s\S]*?opacity: 1/,
+  "fully opaque adjacent vectors must retain the shared-run fast path",
+);
+const liveRunRenderStart = controllerSource.indexOf(
+  "      for (const group of groups) {",
+  liveRunGroupingEnd,
+);
+const liveRunRenderEnd = controllerSource.indexOf(
+  "    this.atomicEffectPendingNodes = atomicEffectPendingNodes;",
+  liveRunRenderStart,
+);
+assert.notEqual(liveRunRenderStart, -1);
+assert.notEqual(liveRunRenderEnd, -1);
+const liveRunRenderSource = controllerSource.slice(liveRunRenderStart, liveRunRenderEnd);
+assert.match(
+  controllerSource,
+  /function vectorNodeWithUnitOpacity<[\s\S]*?return node\.opacity === 1 \? node : \{ \.\.\.node, opacity: 1 \};/,
+  "the internal vector draw program must have an explicit unit-opacity form",
+);
+assert.match(
+  liveRunRenderSource,
+  /const drawNode = group\.opacity < 1\s*\? vectorNodeWithUnitOpacity\(node\)\s*:\s*node;/,
+);
+assert.match(
+  liveRunRenderSource,
+  /appendGpuDrawsForNode\(\s*candidateDraws,\s*drawNode,/,
+);
+assert.match(
+  liveRunRenderSource,
+  /appendGpuDrawsForSvgNode\(\s*candidateDraws,\s*drawNode,/,
+);
+assert.match(
+  liveRunRenderSource,
+  /updateVectorTextGpuPresentation\(\s*group\.placement,\s*draws,\s*group\.opacity,\s*\)/,
+  "node opacity must be applied once after all fills, outlines, and shadows composite",
+);
+const textRasterProgramStart = controllerSource.indexOf(
+  "  private async rasterizeSelectedText(",
+);
+const textRasterProgramEnd = controllerSource.indexOf(
+  "  private async rasterizeSelectedSvg(",
+  textRasterProgramStart,
+);
+const svgRasterProgramEnd = controllerSource.indexOf(
+  "  private defaultDistortPointsForNode(",
+  textRasterProgramEnd,
+);
+assert.match(
+  controllerSource.slice(textRasterProgramStart, textRasterProgramEnd),
+  /const rasterNode = cloneVectorTextNode\(current\);\s*rasterNode\.opacity = 1;[\s\S]*?appendGpuDrawsForNode\(\s*draws,\s*rasterNode,/,
+  "text rasterization must also composite the internal program at unit node opacity",
+);
+assert.match(
+  controllerSource.slice(textRasterProgramEnd, svgRasterProgramEnd),
+  /const rasterNode = cloneVectorSvgNode\(current\);\s*rasterNode\.opacity = 1;[\s\S]*?appendGpuDrawsForSvgNode\(\s*draws,\s*rasterNode,/,
+  "SVG rasterization must also composite the internal program at unit node opacity",
 );
 const interactionOverlaySource = read("src/scene-interaction-overlay.ts");
 const mobileToolSettingsSource = read("src/mobile-tool-settings-sheet.ts");
@@ -866,7 +931,7 @@ assert.equal(VECTOR_TEXT_GPU_BLUR_BYTES_PER_PIXEL, 2);
 assert.equal(MIXED_SCENE_LINEAR_FORMAT, "rgba16float");
 assert.equal(
   MIXED_SCENE_COMPOSITOR_STRATEGY,
-  "ordered-raster-vector-gpu-runs-rgba16f-roi-source-over-raster-floor-mip-parity-v6",
+  "ordered-raster-vector-gpu-runs-rgba16f-roi-source-over-post-opacity-raster-floor-mip-parity-v7",
 );
 assert.equal(
   VECTOR_TEXT_FONT_GEOMETRY_STRATEGY,
@@ -2276,6 +2341,30 @@ assert.doesNotMatch(
 );
 assert.match(mixedCompositorSource, /@group\(0\) @binding\(5\) var fallbackTexture/);
 assert.match(mixedCompositorSource, /@group\(0\) @binding\(6\) var<uniform> cache/);
+assert.equal(
+  VECTOR_TEXT_RUN_CACHE_UNIFORM_BYTES,
+  32,
+  "origini e opacita' post-composite devono rispettare l'allineamento uniforme WGSL",
+);
+assert.match(
+  mixedCompositorSource,
+  /struct TextCacheUniforms \{\s*primaryOrigin: vec2<f32>,\s*fallbackOrigin: vec2<f32>,\s*opacityAndPadding: vec4<f32>,\s*\};/,
+);
+assert.match(
+  engineSource,
+  /const nextValues = \[\s*primaryBounds\.x,\s*primaryBounds\.y,\s*fallbackBounds\?\.x \?\? 0,\s*fallbackBounds\?\.y \?\? 0,\s*resources\.opacity,\s*0,\s*0,\s*0,\s*\] as const;/,
+  "l'upload CPU deve avere lo stesso layout del blocco uniforme WGSL",
+);
+assert.match(
+  engineSource,
+  /if \(existingRun\) setVectorTextRunOpacity\(engine, existingRun, opacity\);/,
+  "cambiare opacita' senza cambiare run deve aggiornare l'uniforme esistente",
+);
+assert.equal(
+  (mixedCompositorSource.match(/\* opacity;/g) ?? []).length,
+  5,
+  "opacita' deve essere applicata a ogni uscita precisa, fast e fallback",
+);
 assert.match(mixedCompositorSource, /sourceCapturePixel - cache\.primaryOrigin/);
 assert.match(mixedCompositorSource, /fallbackCapturePixel - cache\.fallbackOrigin/);
 assert.match(
@@ -2283,7 +2372,10 @@ assert.match(
   /capture\.canvasSize\.x - sourceCapturePixel\.x/,
   "la dissolvenza fast deve restare ancorata al canvas, non al bordo ROI",
 );
-assert.match(mixedCompositorSource, /return mix\(fallbackColor, sourceColor, smoothstep/);
+assert.match(
+  mixedCompositorSource,
+  /return mix\(\s*fallbackColor,\s*sourceColor,\s*smoothstep/,
+);
 assert.match(engineSource, /captureVectorTextFallbackPresentation/);
 assert.match(engineSource, /rebuildVectorTextGpuFallbackPresentation/);
 assert.match(engineSource, /vectorTextFallbackPresentationComplete/);
@@ -2388,7 +2480,11 @@ assert.doesNotMatch(
 );
 assert.match(vectorZoomMigrationSource, /CREATE TABLE IF NOT EXISTS vector_zoom_runs/);
 assert.equal(
-  (mixedCompositorSource.match(/return textureLoad\(sourceTexture, pixel, 0\);/g) ?? []).length,
+  (
+    mixedCompositorSource.match(
+      /return textureLoad\(sourceTexture, pixel, 0\)(?: \* opacity)?;/g,
+    ) ?? []
+  ).length,
   1,
   "il campionamento screen-space diretto deve esistere soltanto nel modo preciso",
 );

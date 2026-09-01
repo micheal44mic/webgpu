@@ -11,8 +11,8 @@ import type {
   VectorTextViewState,
 } from "./vector-text-types";
 
-/** One vec2 origin for the primary cache and one for its fallback. */
-export const VECTOR_TEXT_RUN_CACHE_UNIFORM_BYTES = 16;
+/** Primary/fallback origins plus one post-composite opacity vec4. */
+export const VECTOR_TEXT_RUN_CACHE_UNIFORM_BYTES = 32;
 
 export interface VectorTextRunTextureResources {
   texture: GPUTexture;
@@ -26,6 +26,8 @@ export interface VectorTextRunTextureResources {
   /** Per-run primary/fallback origins consumed by the mixed-scene shader. */
   cacheUniformBuffer: GPUBuffer;
   cacheUniformUpload: Float32Array;
+  /** Applied once after every internal vector draw in this run is composited. */
+  opacity: number;
   bindGroup: GPUBindGroup;
 
   lastBounds: DirtyRect | null;

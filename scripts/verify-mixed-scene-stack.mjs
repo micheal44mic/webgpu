@@ -667,6 +667,75 @@ assert.equal(
     ["active-raster:1", "text-run:svg:1", "text-run:svg:2"],
   );
 
+  const translucentRuns = new MixedSceneStack([1]);
+  translucentRuns.addSvgAboveSelection(svgSeed("opaque-before.svg"));
+  const translucent = translucentRuns.addSvgAboveSelection(svgSeed("translucent.svg"));
+  translucentRuns.setSvgOpacity(translucent.id, 0.5);
+  translucentRuns.addSvgAboveSelection(svgSeed("opaque-after.svg"));
+  assert.deepEqual(
+    translucentRuns.compositionSegments(1).map((segment) => segment.key),
+    [
+      "active-raster:1",
+      "text-run:svg:1",
+      "text-run:svg:2",
+      "text-run:svg:3",
+    ],
+    "a translucent vector must own one run so opacity can be applied after its internal draws",
+  );
+
+  // Rasterizing a vector clipping base is a same-slot replacement: the
+  // vector child must stay attached to the replacement raster and both
+  // members must remain isolated for the ordered clipping compositor. Undo
+  // restores the exact vector-only relation and program inputs.
+  const rasterizedVectorBase = new MixedSceneStack([1]);
+  rasterizedVectorBase.addSvgAboveSelection(svgSeed("rasterized-base.svg"));
+  rasterizedVectorBase.addSvgAboveSelection(svgSeed("retained-vector-child.svg"));
+  assert.equal(rasterizedVectorBase.setClippingEnabled("svg:2", true), true);
+  const vectorBaseHistory = rasterizedVectorBase.captureVectorHistoryState("svg:1");
+  const vectorOnlyOrder = rasterizedVectorBase.items.map((item) => item.key);
+  const vectorOnlyProgram = rasterizedVectorBase
+    .compositionSegments(1)
+    .map((segment) => segment.key);
+
+  assert.equal(rasterizedVectorBase.replaceVectorWithRaster("svg:1", 99), 1);
+  assert.deepEqual(
+    rasterizedVectorBase.items.map((item) => item.key),
+    ["raster:1", "raster:99", "svg:2"],
+  );
+  assert.deepEqual(rasterizedVectorBase.clippingRelations(), [{
+    childKey: "svg:2",
+    parentKey: "raster:99",
+  }]);
+  assert.deepEqual(rasterizedVectorBase.clippingGroupKeys("svg:2"), [
+    "raster:99",
+    "svg:2",
+  ]);
+  assert.equal(rasterizedVectorBase.clippingGroupRequiresSegmentedComposition("raster:99"), true);
+  assert.deepEqual(
+    rasterizedVectorBase.compositionSegments(99).map((segment) => segment.key),
+    ["raster-run:1", "active-raster:99", "text-run:svg:2"],
+    "a rasterized vector base and its vector child must remain separate clipping sources",
+  );
+  assert.deepEqual(
+    rasterizedVectorBase.compositionSegments(1).map((segment) => segment.key),
+    ["active-raster:1", "raster-run:99@scene-clipping-source", "text-run:svg:2"],
+    "an inactive rasterized base must remain an isolated clipping source",
+  );
+
+  assert.equal(rasterizedVectorBase.replaceRasterWithVector(99, vectorBaseHistory), 1);
+  assert.deepEqual(
+    rasterizedVectorBase.items.map((item) => item.key),
+    vectorOnlyOrder,
+  );
+  assert.deepEqual(rasterizedVectorBase.clippingRelations(), [{
+    childKey: "svg:2",
+    parentKey: "svg:1",
+  }]);
+  assert.deepEqual(
+    rasterizedVectorBase.compositionSegments(1).map((segment) => segment.key),
+    vectorOnlyProgram,
+  );
+
   const rasterPair = new MixedSceneStack([1, 2]);
   assert.equal(rasterPair.setClippingEnabled("raster:2", true), true);
   assert.equal(rasterPair.hasHeterogeneousClipping, false);

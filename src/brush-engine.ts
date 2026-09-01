@@ -4477,6 +4477,7 @@ export class BrushEngine {
   updateVectorTextGpuPresentation(
     placement: VectorTextPlacement,
     draws: readonly VectorTextGpuDraw[],
+    opacity = 1,
   ): VectorTextGpuPresentationStats {
     if (!this.mixedSceneEnabled || !this.initialized) {
       throw new Error("The GPU vector text renderer is not enabled.");
@@ -4495,7 +4496,7 @@ export class BrushEngine {
     captureVectorTextPresentationView(this);
     const view = this.getVectorTextViewState();
     const bounds = vectorTextGpuRunBounds(draws, view);
-    ensureVectorTextPresentationTexture(this, width, height, placement, bounds);
+    ensureVectorTextPresentationTexture(this, width, height, placement, bounds, opacity);
     const key =
       placement as Extract<VectorTextPlacement, `text-run:${string}`>;
     const resources = this.vectorTextRunTextures.get(key);
