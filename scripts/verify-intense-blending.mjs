@@ -7,7 +7,7 @@ const engine = readEngineSource();
 const main = read("../src/main.ts");
 const humanLab = read("../src/labs/human-stroke-lab.ts");
 const shaders = read("../src/shaders.ts");
-const strokeRenderer = `${read("../src/stroke-renderer.ts")}\n${read("../src/stroke-programs.ts")}`;
+const strokeRenderer = read("../src/stroke-renderer.ts");
 const bevelRenderer = read("../src/bevel-renderer.ts");
 const shadowRenderer = read("../src/shadow-renderer.ts");
 const blendCore = read("../src/blend-core.ts");
@@ -212,7 +212,7 @@ for (const [label, source] of [
 const fixedFunctionComposite = section(
   shaders,
   "export const lightGlazeCompositeShader",
-  "export const PAINT_DISPLAY_MINIFICATION_STRATEGY",
+  "export const layerCompositeShader",
 );
 assert(
   !fixedFunctionComposite.includes("resolvedEncodedSrgbStroke")

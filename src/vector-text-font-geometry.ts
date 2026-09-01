@@ -1,8 +1,4 @@
 import { loadCachedAssetSource } from "./asset-source-cache.ts";
-import {
-  VECTOR_TEXT_FONT_MANIFEST,
-  type VectorTextFontManifestEntry,
-} from "./vector-text-font-manifest.ts";
 import type { Shadow3dPathData } from "./vector-shadow-3d.ts";
 import {
   buildVectorTextCurveGuide,
@@ -62,7 +58,12 @@ interface OpenTypeFont {
   ): number;
 }
 
-type VectorTextFontEntry = VectorTextFontManifestEntry;
+interface VectorTextFontEntry {
+  family: string;
+  label: string;
+  fileUrl: URL;
+  weight: string;
+}
 
 interface LoadedVectorTextFont {
   entry: VectorTextFontEntry;
@@ -125,7 +126,26 @@ export interface VectorTextOutlineGeometry {
 export const VECTOR_TEXT_FONT_GEOMETRY_STRATEGY =
   "local-opentype-outline-transform-v4-distort" as const;
 
-export { VECTOR_TEXT_FONT_MANIFEST } from "./vector-text-font-manifest.ts";
+export const VECTOR_TEXT_FONT_MANIFEST: readonly VectorTextFontEntry[] = [
+  {
+    family: "Anton",
+    label: "Anton / Condensed",
+    fileUrl: new URL("../assets/vector-text-fonts/Anton-Regular.ttf", import.meta.url),
+    weight: "400",
+  },
+  {
+    family: "Bebas Neue",
+    label: "Bebas Neue",
+    fileUrl: new URL("../assets/vector-text-fonts/BebasNeue-Regular.ttf", import.meta.url),
+    weight: "400",
+  },
+  {
+    family: "Poppins",
+    label: "Poppins",
+    fileUrl: new URL("../assets/vector-text-fonts/Poppins-Regular.ttf", import.meta.url),
+    weight: "400",
+  },
+] as const;
 
 interface RawTextGeometry {
   readonly normalizedText: string;

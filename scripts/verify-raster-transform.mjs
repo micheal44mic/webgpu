@@ -529,10 +529,6 @@ const runtimeSource = readFileSync(
   new URL("../src/engine-raster-transform-runtime.ts", import.meta.url),
   "utf8",
 );
-const programSource = readFileSync(
-  new URL("../src/raster-transform-programs.ts", import.meta.url),
-  "utf8",
-);
 const controllerSource = readFileSync(
   new URL("../src/mixed-scene-controller.ts", import.meta.url),
   "utf8",
@@ -601,17 +597,17 @@ assert.match(runtimeSource, /session\.terminal = true/);
 assert.match(runtimeSource, /if \(session\.terminal\)/);
 assert.match(runtimeSource, /retainSessionForRecovery = true/);
 assert.doesNotMatch(runtimeSource, /callbacks\.onStatus/);
-assert.match(programSource, /programCompilationQueue\(shared\.device\)\.run/);
-const programBundleSource = programSource.slice(
-  programSource.indexOf("async function createProgramBundle("),
-  programSource.indexOf("export async function ensureRasterTransformProgramBundle("),
+assert.match(runtimeSource, /programCompilationQueue\(shared\.device\)\.run/);
+const programBundleSource = runtimeSource.slice(
+  runtimeSource.indexOf("async function createProgramBundle("),
+  runtimeSource.indexOf("async function ensureProgramBundle("),
 );
 assert.doesNotMatch(
   programBundleSource,
   /runGpuAllocationTransaction|pushErrorScope|popErrorScope/,
   "long-running transform compilation must not hold device-global error scopes",
 );
-assert.match(programSource, /const \[deformPipeline, clearPipeline\] = await Promise\.all/);
+assert.match(runtimeSource, /const \[deformPipeline, clearPipeline\] = await Promise\.all/);
 assert.doesNotMatch(
   runtimeSource,
   /\.createRenderPipeline\(/,
@@ -619,7 +615,7 @@ assert.doesNotMatch(
 );
 assert.match(
   runtimeSource,
-  /await ensureRasterTransformProgramBundle\([\s\S]{0,160}requestedMode === "affine" \? "affine" : "deform"[\s\S]{0,160}updateRasterLayerTransform/,
+  /await ensureProgramBundle\([\s\S]{0,160}requestedMode === "affine" \? "affine" : "deform"[\s\S]{0,160}updateRasterLayerTransform/,
   "an open Transform session must await its cold mode bundle before publication",
 );
 assert.match(

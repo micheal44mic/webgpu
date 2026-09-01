@@ -2,7 +2,6 @@ import type {
   ProjectLoadResultV1,
   ProjectStorage,
 } from "./project-storage";
-import type { GpuDeviceSession } from "./gpu-device-session";
 
 export interface ExistingProjectSessionSwitchRequest {
   readonly kind: "existing";
@@ -86,8 +85,6 @@ export interface ProjectEditorBootstrap {
   readonly storageReady: Promise<void>;
   readonly preloadedProjectId: string | null;
   readonly preloadedProject: Promise<ProjectLoadResultV1 | null> | null;
-  /** Exact Home-created session; the editor may adopt it or fall back cold. */
-  readonly prewarmedGpuSession?: Promise<GpuDeviceSession | null> | null;
   readonly returnHome: (pushHistory: boolean) => Promise<void>;
 }
 

@@ -9,7 +9,6 @@ const root = process.cwd();
 const poolPath = path.join(root, "src", "effects-scratch-pool.ts");
 const bevelPath = path.join(root, "src", "bevel-renderer.ts");
 const strokePath = path.join(root, "src", "stroke-renderer.ts");
-const strokeProgramsPath = path.join(root, "src", "stroke-programs.ts");
 const shadowPath = path.join(root, "src", "shadow-renderer.ts");
 const lifecyclePath = path.join(root, "src", "effects-resource-lifecycle.ts");
 const historyMaintenancePath = path.join(root, "src", "history-maintenance-runtime.ts");
@@ -17,9 +16,7 @@ const historyServicePath = path.join(root, "src", "history-service.ts");
 const poolSource = fs.readFileSync(poolPath, "utf8");
 const engineSource = readEngineSource();
 const bevelSource = fs.readFileSync(bevelPath, "utf8");
-const strokeSource = `${fs.readFileSync(strokePath, "utf8")}\n${
-  fs.readFileSync(strokeProgramsPath, "utf8")
-}`;
+const strokeSource = fs.readFileSync(strokePath, "utf8");
 const shadowSource = fs.readFileSync(shadowPath, "utf8");
 const lifecycleSource = fs.readFileSync(lifecyclePath, "utf8");
 const historyMaintenanceSource = fs.readFileSync(historyMaintenancePath, "utf8");
@@ -400,7 +397,7 @@ assert.match(
 );
 assert.match(
   strokeSource,
-  /\{\s*binding: 1,\s*visibility: GPUShaderStage\.COMPUTE,\s*buffer: \{\s*type: "storage"\s*\},?\s*\},/,
+  /\{ binding: 1, visibility: GPUShaderStage\.COMPUTE, buffer: \{ type: "storage" \} \},/,
 );
 
 // A refused reallocation must leave the pool exactly as it was: if the

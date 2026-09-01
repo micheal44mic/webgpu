@@ -61,10 +61,6 @@ const tileCompositorSource = readFileSync(
   new URL("../src/layer-blend-tile-compositor.ts", import.meta.url),
   "utf8",
 );
-const tileProgramsSource = readFileSync(
-  new URL("../src/layer-blend-tile-programs.ts", import.meta.url),
-  "utf8",
-);
 const tileRuntimeSource = readFileSync(
   new URL("../src/engine-layer-blend-tile-runtime.ts", import.meta.url),
   "utf8",
@@ -547,10 +543,10 @@ assert.match(
   tileShaderSource,
   /if \(!inside\) \{\s*discard;\s*\}/s,
 );
-const tilePresentPipelineCall = tileProgramsSource.match(
+const tilePresentPipelineCall = tileCompositorSource.match(
   /pipeline\(\s*"Layer blend tile to linear presentation",([\s\S]*?)\n\s*\),/,
 )?.[1] ?? "";
-const pyramidPresentPipelineCall = tileProgramsSource.match(
+const pyramidPresentPipelineCall = tileCompositorSource.match(
   /pipeline\(\s*"Layer blend final pyramid to linear presentation",([\s\S]*?)\n\s*\),/,
 )?.[1] ?? "";
 assert.ok(tilePresentPipelineCall.length > 0, "tile present pipeline call not found");
@@ -606,7 +602,7 @@ assert.match(
 assert.match(tileRuntimeSource, /source\.clipping\?\.context === "clipping-child"/);
 assert.match(tileRuntimeSource, /encodeDocumentMaskContribution\(/);
 assert.match(
-  tileProgramsSource,
+  tileCompositorSource,
   /documentMaskContributionFragmentMain[\s\S]*?sourceOverBlend/,
   "tile document-mask contributions must accumulate with normalized source-over union",
 );

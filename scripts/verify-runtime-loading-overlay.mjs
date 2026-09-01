@@ -227,42 +227,6 @@ const fixture = () => {
 
 {
   const view = fixture();
-  const loading = view.controller.beginRuntimeOperation(
-    "Creating layer",
-    { completionPresentation: "immediate" },
-  );
-  view.browser.advance(120);
-  assert.equal(view.overlay.hidden, false, "slow layer creation still needs progress feedback");
-  assert.equal(view.application.inert, true, "the GPU fence must keep input blocked");
-  loading.complete();
-  assert.equal(
-    view.overlay.hidden,
-    true,
-    "an immediate runtime completion must not add the standard 420 ms terminal delay",
-  );
-  assert.equal(view.overlay.dataset.mode, "idle");
-  assert.equal(view.application.inert, false, "input is released only after completion");
-}
-
-{
-  const view = fixture();
-  const quick = view.controller.beginRuntimeOperation(
-    "Quick mutation",
-    { completionPresentation: "immediate" },
-  );
-  const standard = view.controller.beginRuntimeOperation("Long nested operation");
-  view.browser.advance(120);
-  quick.complete();
-  standard.complete();
-  assert.equal(
-    view.overlay.dataset.state,
-    "finishing",
-    "a standard nested operation must retain the shared completion presentation",
-  );
-}
-
-{
-  const view = fixture();
   let rejectOperation;
   const pending = new Promise((_, reject) => {
     rejectOperation = reject;

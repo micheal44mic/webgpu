@@ -579,15 +579,9 @@ let historyState: HistoryState = {
   openEdit: null,
 };
 
-let projectEditorBootstrap: ProjectEditorBootstrap | undefined =
-  window.__projectEditorBootstrap;
 const pageSearchParams = new URLSearchParams(window.location.search);
 const vectorStressTestEnabled = pageSearchParams.get("vectorStressTest") === "1";
 const touchPaintIntentHoldEnabled = pageSearchParams.get("touchPaintIntentHold") !== "0";
-// Local A/B probe. Production keeps the established completion presentation
-// unless a measured rollout deliberately promotes the shorter policy.
-const layerLoadingImmediateCompletionEnabled = import.meta.env.DEV
-  && pageSearchParams.get("layerLoadingFinish") === "immediate";
 
 const bevelBoundingFieldEnabled = pageSearchParams.get("bevelField") === "bbox";
 // Same-build A/B escape hatch: ROI is production-default, `vectorTextRoi=0`
@@ -639,6 +633,8 @@ let gpuMemoryPanelController: GpuMemoryPanelController | null = null;
 let pixelSelectionController: PixelSelectionController | null = null;
 let runtimeStatsController: RuntimeStatsController | null = null;
 const editorExtensionBootstrap = window.__editorExtensionBootstrap;
+let projectEditorBootstrap: ProjectEditorBootstrap | undefined =
+  window.__projectEditorBootstrap;
 const editorExtensionEngineOptions = editorExtensionBootstrap?.engineOptions ?? {};
 let editorExtension: EditorExtension | null = null;
 let projectSessionController: ProjectSessionController | null = null;
@@ -1018,7 +1014,6 @@ const engine = new BrushEngine(canvas, {
     }
   },
 }, tipPreviewCanvas, {
-  prewarmedGpuSession: projectEditorBootstrap?.prewarmedGpuSession,
   bevelBoundingFieldEnabled:
     editorExtensionEngineOptions.bevelBoundingFieldEnabled ?? bevelBoundingFieldEnabled,
   startupProgressPresentationYieldEnabled: canvasStartupProgressObserved,
@@ -1343,19 +1338,14 @@ sceneEditorController = new SceneEditorController({
   getVectorController: () => mixedSceneController,
   isInteractionLocked: interactionLocked,
   isAdjustmentRasterizationLocked: adjustmentRasterizationLocked,
-  layerCreationLoadingOptions: layerLoadingImmediateCompletionEnabled
-    ? { completionPresentation: "immediate" }
-    : undefined,
   onBusyChange: () => {
     updateHistoryControls();
     layerPanelController?.syncInteractionState();
   },
-  onLoadingChange: (loading, message, options) => {
+  onLoadingChange: (loading, message) => {
     if (loading) {
       sceneEditorLoadingOperation?.complete();
-      sceneEditorLoadingOperation = options
-        ? canvasStartupOverlay.beginRuntimeOperation(message, options)
-        : canvasStartupOverlay.beginRuntimeOperation(message);
+      sceneEditorLoadingOperation = canvasStartupOverlay.beginRuntimeOperation(message);
       return;
     }
     sceneEditorLoadingOperation?.complete();

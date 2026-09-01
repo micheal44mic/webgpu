@@ -4,10 +4,12 @@ import {
   createLayerColdStorageCandidate,
   destroyLayerColdStorage,
 } from "./engine-cold-storage";
+import { assertShaderCompiled, createRenderPipelineAsync } from "./engine-gpu-utils";
 import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits";
 import type { LayerFormat, RasterTransformSnapshot } from "./engine-types";
 import type { LayerColdStorageResources } from "./engine-layer-resources";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
+import { SerialAsyncQueue } from "./serial-async-queue";
 import { commitHistoryActionAtomically } from "./engine-history-runtime";
 import { publishMixedScene } from "./engine-vector-text-runtime";
 import type { DirtyRect } from "./engine-stroke-types";
@@ -30,6 +32,9 @@ import {
   type NormalizedRasterTransformAffine,
 } from "./raster-transform-math";
 import {
+  rasterTransformMipmapShader,
+  rasterSelectionTranslateShader,
+  rasterTransformShader,
   RASTER_SELECTION_TRANSLATE_SHADER_STRATEGY,
   RASTER_TRANSFORM_SHADER_STRATEGY,
 } from "./raster-transform-shader";
@@ -56,15 +61,10 @@ import {
   type RasterTransformMode,
   type RasterWarpGridSize,
 } from "./raster-deform-math";
-import { RASTER_DEFORM_SHADER_STRATEGY } from "./raster-deform-shader";
 import {
-  ensureRasterTransformProgramBundle,
-  prewarmRasterTransformProgramsForDevice,
-  rasterTransformProgramBundleReady,
-  requireRasterTransformProgramResources,
-  type RasterTransformProgramBundle,
-  type RasterTransformProgramResources,
-} from "./raster-transform-programs";
+  rasterDeformShader,
+  RASTER_DEFORM_SHADER_STRATEGY,
+} from "./raster-deform-shader";
 import {
   captureSelectionHistoryMask,
   renderPixelSelectionOverlay,
@@ -79,11 +79,6 @@ import {
   type RasterLayerSource,
 } from "./raster-layer-source";
 
-export {
-  prewarmRasterTransformProgramsForDevice,
-  type RasterTransformProgramWarmupTarget,
-} from "./raster-transform-programs";
-
 export const RASTER_LAYER_TRANSFORM_STRATEGY =
   "immutable-master-cumulative-matrix-native-cache-selection-pixel-checkpoint-v4" as const;
 export const RASTER_SOURCE_MATRIX_TRANSFORM_STRATEGY =
@@ -91,6 +86,36 @@ export const RASTER_SOURCE_MATRIX_TRANSFORM_STRATEGY =
 export const RASTER_LAYER_DEFORM_STRATEGY =
   "transactional-raster-warp-perspective-grid-v1" as const;
 const RASTER_TRANSFORM_TRANSPARENT_GUARD_PX = 2;
+
+interface RasterTransformSharedResources {
+  readonly device: GPUDevice;
+  readonly format: LayerFormat;
+  bindGroupLayout: GPUBindGroupLayout;
+  selectionMaskBindGroupLayout: GPUBindGroupLayout;
+  mipBindGroupLayout: GPUBindGroupLayout;
+  pipelineLayout: GPUPipelineLayout;
+  selectionPipelineLayout: GPUPipelineLayout;
+  mipPipelineLayout: GPUPipelineLayout;
+  sampler: GPUSampler;
+  pipeline: GPURenderPipeline | null;
+  selectionPipeline: GPURenderPipeline | null;
+  deformPipeline: GPURenderPipeline | null;
+  clearPipeline: GPURenderPipeline | null;
+  mipPipeline: GPURenderPipeline | null;
+  readonly programPromises: Map<RasterTransformProgramBundle, Promise<void>>;
+}
+
+type RasterTransformProgramBundle = "affine" | "deform" | "mip" | "selection";
+
+type CompiledRasterTransformProgramBundle =
+  | { readonly kind: "affine"; readonly pipeline: GPURenderPipeline }
+  | {
+    readonly kind: "deform";
+    readonly deformPipeline: GPURenderPipeline;
+    readonly clearPipeline: GPURenderPipeline;
+  }
+  | { readonly kind: "mip"; readonly pipeline: GPURenderPipeline }
+  | { readonly kind: "selection"; readonly pipeline: GPURenderPipeline };
 
 export interface ActiveRasterTransformSession {
   readonly layerId: number;
@@ -114,7 +139,7 @@ export interface ActiveRasterTransformSession {
   readonly selectionMaskBindGroup: GPUBindGroup | null;
   readonly uniformUpload: Float32Array;
   readonly deformVertexUpload: Float32Array;
-  readonly shared: RasterTransformProgramResources;
+  readonly shared: RasterTransformSharedResources;
   readonly memoryBytes: number;
   transform: NormalizedRasterTransformAffine;
   mode: RasterTransformMode;
@@ -139,6 +164,21 @@ export interface BeginRasterLayerTransformOptions {
   readonly forceWholeLayer?: boolean;
   /** The group owns scene selection, so the hot raster need not be selected. */
   readonly allowSelectionMismatch?: boolean;
+}
+
+const sharedResources = new WeakMap<
+  BrushEngine,
+  Map<LayerFormat, Promise<RasterTransformSharedResources>>
+>();
+const programCompilationQueues = new WeakMap<GPUDevice, SerialAsyncQueue>();
+
+function programCompilationQueue(device: GPUDevice): SerialAsyncQueue {
+  let queue = programCompilationQueues.get(device);
+  if (!queue) {
+    queue = new SerialAsyncQueue();
+    programCompilationQueues.set(device, queue);
+  }
+  return queue;
 }
 
 function copyRect(rect: DirtyRect | null): DirtyRect | null {
@@ -197,22 +237,331 @@ function transformSnapshot(session: ActiveRasterTransformSession): RasterTransfo
   };
 }
 
+async function createSharedResources(
+  engine: BrushEngine,
+): Promise<RasterTransformSharedResources> {
+  const format = engine.layerFormat;
+  const device = engine.device;
+  const bindGroupLayout = device.createBindGroupLayout({
+    label: "Native raster Transform bind group layout",
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+        buffer: { type: "uniform", minBindingSize: RASTER_TRANSFORM_UNIFORM_BYTES },
+      },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "float", viewDimension: "2d" },
+      },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.FRAGMENT,
+        sampler: { type: "filtering" },
+      },
+    ],
+  });
+  const mipBindGroupLayout = device.createBindGroupLayout({
+    label: "Native raster Transform mip bind group layout",
+    entries: [{
+      binding: 0,
+      visibility: GPUShaderStage.FRAGMENT,
+      texture: { sampleType: "float", viewDimension: "2d" },
+    }],
+  });
+  const selectionMaskBindGroupLayout = device.createBindGroupLayout({
+    label: "Native raster Transform selection mask bind group layout",
+    entries: [{
+      binding: 0,
+      visibility: GPUShaderStage.FRAGMENT,
+      buffer: { type: "read-only-storage" },
+    }],
+  });
+  const sampler = device.createSampler({
+    label: "Native raster Transform linear sampler",
+    addressModeU: "clamp-to-edge",
+    addressModeV: "clamp-to-edge",
+    minFilter: "linear",
+    magFilter: "linear",
+    mipmapFilter: "nearest",
+    maxAnisotropy: 1,
+  });
+  return {
+    device,
+    format,
+    bindGroupLayout,
+    selectionMaskBindGroupLayout,
+    mipBindGroupLayout,
+    pipelineLayout: device.createPipelineLayout({
+      label: "Native raster Transform pipeline layout",
+      bindGroupLayouts: [bindGroupLayout],
+    }),
+    selectionPipelineLayout: device.createPipelineLayout({
+      label: "Native raster selected-pixel translation pipeline layout",
+      bindGroupLayouts: [bindGroupLayout, selectionMaskBindGroupLayout],
+    }),
+    mipPipelineLayout: device.createPipelineLayout({
+      label: "Native raster Transform mip pipeline layout",
+      bindGroupLayouts: [mipBindGroupLayout],
+    }),
+    sampler,
+    pipeline: null,
+    selectionPipeline: null,
+    deformPipeline: null,
+    clearPipeline: null,
+    mipPipeline: null,
+    programPromises: new Map(),
+  };
+}
+
+function affinePipelineDescriptor(
+  shared: RasterTransformSharedResources,
+  module: GPUShaderModule,
+): GPURenderPipelineDescriptor {
+  return {
+    label: `Native raster Transform ${shared.format}`,
+    layout: shared.pipelineLayout,
+    vertex: { module, entryPoint: "vertexMain" },
+    fragment: {
+      module,
+      entryPoint: "fragmentMain",
+      targets: [{ format: shared.format }],
+    },
+    primitive: { topology: "triangle-list" },
+  };
+}
+
+function deformPipelineDescriptor(
+  shared: RasterTransformSharedResources,
+  module: GPUShaderModule,
+): GPURenderPipelineDescriptor {
+  return {
+    label: `Native raster Warp and Perspective ${shared.format}`,
+    layout: shared.pipelineLayout,
+    vertex: {
+      module,
+      entryPoint: "deformVertexMain",
+      buffers: [{
+        arrayStride: RASTER_DEFORM_VERTEX_FLOATS * Float32Array.BYTES_PER_ELEMENT,
+        attributes: [
+          { shaderLocation: 0, offset: 0, format: "float32x4" },
+          { shaderLocation: 1, offset: 16, format: "float32" },
+        ],
+      }],
+    },
+    fragment: {
+      module,
+      entryPoint: "deformFragmentMain",
+      targets: [{ format: shared.format }],
+    },
+    primitive: { topology: "triangle-list" },
+  };
+}
+
+function clearPipelineDescriptor(
+  shared: RasterTransformSharedResources,
+  module: GPUShaderModule,
+): GPURenderPipelineDescriptor {
+  return {
+    label: `Native raster Warp dirty clear ${shared.format}`,
+    layout: shared.pipelineLayout,
+    vertex: { module, entryPoint: "clearVertexMain" },
+    fragment: {
+      module,
+      entryPoint: "clearFragmentMain",
+      targets: [{ format: shared.format }],
+    },
+    primitive: { topology: "triangle-list" },
+  };
+}
+
+function mipPipelineDescriptor(
+  shared: RasterTransformSharedResources,
+  module: GPUShaderModule,
+): GPURenderPipelineDescriptor {
+  return {
+    label: `Native raster Transform exact mip ${shared.format}`,
+    layout: shared.mipPipelineLayout,
+    vertex: { module, entryPoint: "vertexMain" },
+    fragment: {
+      module,
+      entryPoint: "fragmentMain",
+      targets: [{ format: shared.format }],
+    },
+    primitive: { topology: "triangle-list" },
+  };
+}
+
+function selectionPipelineDescriptor(
+  shared: RasterTransformSharedResources,
+  module: GPUShaderModule,
+): GPURenderPipelineDescriptor {
+  return {
+    label: `Native raster selected-pixel translation ${shared.format}`,
+    layout: shared.selectionPipelineLayout,
+    vertex: { module, entryPoint: "vertexMain" },
+    fragment: {
+      module,
+      entryPoint: "fragmentMain",
+      targets: [{ format: shared.format }],
+    },
+    primitive: { topology: "triangle-list" },
+  };
+}
+
+function programBundleReady(
+  shared: RasterTransformSharedResources,
+  bundle: RasterTransformProgramBundle,
+): boolean {
+  if (bundle === "affine") return shared.pipeline !== null;
+  if (bundle === "deform") {
+    return shared.deformPipeline !== null && shared.clearPipeline !== null;
+  }
+  if (bundle === "mip") return shared.mipPipeline !== null;
+  return shared.selectionPipeline !== null;
+}
+
+async function createProgramBundle(
+  shared: RasterTransformSharedResources,
+  bundle: RasterTransformProgramBundle,
+): Promise<void> {
+  // Some drivers compile independent async pipelines effectively serially and
+  // become less responsive when several cold tools contend at once. Bound the
+  // compiler work per device while retaining concurrency inside one bundle.
+  // Pipeline creation rejects directly, so no device-global error scope is
+  // held across this long-running operation.
+  const compiled = await programCompilationQueue(shared.device).run(
+    async (): Promise<CompiledRasterTransformProgramBundle> => {
+        if (bundle === "affine") {
+          const module = shared.device.createShaderModule({
+            label: "Native raster Transform WGSL",
+            code: rasterTransformShader,
+          });
+          await assertShaderCompiled(module, "Native raster Transform");
+          return {
+            kind: "affine",
+            pipeline: await createRenderPipelineAsync(
+              shared.device,
+              affinePipelineDescriptor(shared, module),
+            ),
+          };
+        }
+        if (bundle === "deform") {
+          const module = shared.device.createShaderModule({
+            label: "Native raster Warp and Perspective WGSL",
+            code: rasterDeformShader,
+          });
+          await assertShaderCompiled(module, "Native raster Warp and Perspective");
+          const [deformPipeline, clearPipeline] = await Promise.all([
+            createRenderPipelineAsync(shared.device, deformPipelineDescriptor(shared, module)),
+            createRenderPipelineAsync(shared.device, clearPipelineDescriptor(shared, module)),
+          ]);
+          return { kind: "deform", deformPipeline, clearPipeline };
+        }
+        if (bundle === "mip") {
+          const module = shared.device.createShaderModule({
+            label: "Native raster Transform exact mip WGSL",
+            code: rasterTransformMipmapShader,
+          });
+          await assertShaderCompiled(module, "Native raster Transform mip");
+          return {
+            kind: "mip",
+            pipeline: await createRenderPipelineAsync(
+              shared.device,
+              mipPipelineDescriptor(shared, module),
+            ),
+          };
+        }
+        const module = shared.device.createShaderModule({
+          label: "Native raster selected-pixel translation WGSL",
+          code: rasterSelectionTranslateShader,
+        });
+        await assertShaderCompiled(module, "Native raster selected-pixel translation");
+        return {
+          kind: "selection",
+          pipeline: await createRenderPipelineAsync(
+            shared.device,
+            selectionPipelineDescriptor(shared, module),
+          ),
+        };
+    },
+  );
+  // Publish only after every pipeline in the requested bundle is valid. A
+  // rejected compilation therefore leaves the bundle absent and retryable.
+  if (compiled.kind === "affine") shared.pipeline = compiled.pipeline;
+  else if (compiled.kind === "deform") {
+    shared.deformPipeline = compiled.deformPipeline;
+    shared.clearPipeline = compiled.clearPipeline;
+  } else if (compiled.kind === "mip") shared.mipPipeline = compiled.pipeline;
+  else shared.selectionPipeline = compiled.pipeline;
+}
+
+async function ensureProgramBundle(
+  shared: RasterTransformSharedResources,
+  bundle: RasterTransformProgramBundle,
+): Promise<void> {
+  if (programBundleReady(shared, bundle)) return;
+  let promise = shared.programPromises.get(bundle);
+  if (!promise) {
+    promise = createProgramBundle(shared, bundle);
+    shared.programPromises.set(bundle, promise);
+  }
+  try {
+    await promise;
+  } catch (error) {
+    if (shared.programPromises.get(bundle) === promise) {
+      shared.programPromises.delete(bundle);
+    }
+    throw error;
+  }
+  if (!programBundleReady(shared, bundle)) {
+    shared.programPromises.delete(bundle);
+    throw new Error(`Raster Transform ${bundle} programs were not published.`);
+  }
+}
+
 function requireModeProgramBundle(
-  shared: RasterTransformProgramResources,
+  shared: RasterTransformSharedResources,
   bundle: "affine" | "deform",
 ): void {
-  if (rasterTransformProgramBundleReady(shared, bundle)) return;
+  if (programBundleReady(shared, bundle)) return;
   throw new Error(
     `Raster Transform ${bundle} programs must be prepared before changing mode.`,
   );
 }
 
 async function requireSharedResources(
-  device: GPUDevice,
-  format: LayerFormat,
-  bundles: readonly RasterTransformProgramBundle[],
-): Promise<RasterTransformProgramResources> {
-  return requireRasterTransformProgramResources(device, format, bundles);
+  engine: BrushEngine,
+  requestedMode: RasterTransformMode,
+  selectionScope: boolean,
+): Promise<RasterTransformSharedResources> {
+  const format = engine.layerFormat;
+  let byFormat = sharedResources.get(engine);
+  byFormat ??= new Map<LayerFormat, Promise<RasterTransformSharedResources>>();
+  let promise = byFormat.get(format);
+  if (!promise) {
+    promise = createSharedResources(engine);
+    byFormat.set(format, promise);
+    sharedResources.set(engine, byFormat);
+  }
+  let shared: RasterTransformSharedResources;
+  try {
+    shared = await promise;
+  } catch (error) {
+    byFormat.delete(format);
+    if (byFormat.size === 0) sharedResources.delete(engine);
+    throw error;
+  }
+  if (selectionScope) {
+    await ensureProgramBundle(shared, "selection");
+    return shared;
+  }
+  // Keep capability compilation sequential; only the two related deform
+  // pipelines compile concurrently.
+  await ensureProgramBundle(shared, requestedMode === "affine" ? "affine" : "deform");
+  await ensureProgramBundle(shared, "mip");
+  return shared;
 }
 
 /** Starts only the program bundle needed by the selected transform tool. */
@@ -222,11 +571,7 @@ export async function prewarmRasterTransformPrograms(
 ): Promise<void> {
   if (!engine.initialized || engine.deviceLostError) return;
   const selectionScope = engine.pixelSelectionState.selectedPixels > 0;
-  await prewarmRasterTransformProgramsForDevice(
-    engine.device,
-    engine.layerFormat,
-    [selectionScope ? "selection" : requestedMode === "affine" ? "affine" : "deform"],
-  );
+  await requireSharedResources(engine, requestedMode, selectionScope);
 }
 
 function destroySessionResources(session: ActiveRasterTransformSession): void {
@@ -426,7 +771,7 @@ export async function beginRasterLayerTransform(
   if (engine.activeRasterTransformSession) {
     const active = engine.activeRasterTransformSession;
     if (active.scope === "layer" && active.mode !== requestedMode) {
-      await ensureRasterTransformProgramBundle(
+      await ensureProgramBundle(
         active.shared,
         requestedMode === "affine" ? "affine" : "deform",
       );
@@ -540,13 +885,7 @@ export async function beginRasterLayerTransform(
       width: sourceScratchRect.width + RASTER_TRANSFORM_TRANSPARENT_GUARD_PX * 2,
       height: sourceScratchRect.height + RASTER_TRANSFORM_TRANSPARENT_GUARD_PX * 2,
     };
-    const shared = await requireSharedResources(
-      engine.device,
-      engine.layerFormat,
-      selectionScope
-        ? ["selection"]
-        : [requestedMode === "affine" ? "affine" : "deform", "mip"],
-    );
+    const shared = await requireSharedResources(engine, requestedMode, selectionScope);
     session = await runGpuAllocationTransaction(
       engine.device,
       `Allocate Raster Transform ${sourceScratchRect.width}×${sourceScratchRect.height}`,

@@ -91,10 +91,6 @@ export interface SceneEditorElements {
   readonly result: HTMLParagraphElement;
 }
 
-export interface SceneEditorLoadingOptions {
-  readonly completionPresentation?: "standard" | "immediate";
-}
-
 export interface SceneEditorControllerOptions {
   readonly engine: SceneEditorEnginePort;
   readonly browser: SceneEditorBrowser;
@@ -103,13 +99,7 @@ export interface SceneEditorControllerOptions {
   readonly isInteractionLocked: () => boolean;
   readonly isAdjustmentRasterizationLocked?: () => boolean;
   readonly onBusyChange: (busy: boolean) => void;
-  readonly onLoadingChange?: (
-    loading: boolean,
-    message: string,
-    options?: SceneEditorLoadingOptions,
-  ) => void;
-  /** Presentation policy for the fenced Add Layer and Add Mask transactions. */
-  readonly layerCreationLoadingOptions?: SceneEditorLoadingOptions;
+  readonly onLoadingChange?: (loading: boolean, message: string) => void;
   readonly onHistoryState: (state: HistoryState) => void;
   readonly requestLayersRefresh: () => void;
   readonly renderLayers: (stats: EngineStats) => void;
@@ -766,13 +756,10 @@ export class SceneEditorController {
     this.options.syncToolSettings();
   }
 
-  private async showLoading(
-    message: string,
-    options?: SceneEditorLoadingOptions,
-  ): Promise<boolean> {
+  private async showLoading(message: string): Promise<boolean> {
     if (this.disposed) return false;
     const { app } = this.options.elements;
-    this.options.onLoadingChange?.(true, message, options);
+    this.options.onLoadingChange?.(true, message);
     app.setAttribute("aria-busy", "true");
     await Promise.resolve();
     return !this.disposed;
@@ -1146,10 +1133,7 @@ export class SceneEditorController {
     if (!this.begin()) return;
     this.options.renderLayers(this.options.engine.getStats());
     try {
-      if (!(await this.showLoading(
-        "Creating mask…",
-        this.options.layerCreationLoadingOptions,
-      ))) return;
+      if (!(await this.showLoading("Creating mask…"))) return;
       const result = await this.options.engine.addClippingMaskLayer();
       this.options.syncActiveRasterControls();
       await this.options.engine.waitForIdle();
@@ -1172,10 +1156,7 @@ export class SceneEditorController {
   private async addRasterLayerTransaction(): Promise<void> {
     if (!this.begin()) return;
     try {
-      if (!(await this.showLoading(
-        "Creating layer…",
-        this.options.layerCreationLoadingOptions,
-      ))) return;
+      if (!(await this.showLoading("Creating layer…"))) return;
       const result = await this.options.engine.addLayer();
       this.options.syncActiveRasterControls();
       await this.options.engine.waitForIdle();

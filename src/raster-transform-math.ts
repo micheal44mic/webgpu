@@ -14,8 +14,6 @@ import {
   DOCUMENT_TILE_WIDTH as RASTER_TRANSFORM_TILE_WIDTH,
   DOCUMENT_WIDTH as RASTER_TRANSFORM_DOCUMENT_WIDTH,
 } from "./engine-limits.ts";
-import { RASTER_TRANSFORM_UNIFORM_BYTES } from "./raster-transform-program-abi.ts";
-export { RASTER_TRANSFORM_UNIFORM_BYTES } from "./raster-transform-program-abi.ts";
 
 export const RASTER_TRANSFORM_MATH_STRATEGY =
   "document-space-axis-scale-affine-sampling-per-source-tile-mask-v3" as const;
@@ -37,6 +35,11 @@ export const RASTER_TRANSFORM_TILE_GRID_SIZE = DOCUMENT_TILE_GRID_SIZE;
 export const RASTER_TRANSFORM_FILTER_PADDING_PX = 2;
 export const RASTER_TRANSFORM_MINIMUM_ABS_SCALE = 0.01;
 export const RASTER_TRANSFORM_MAXIMUM_ABS_SCALE = 64;
+// The first 64 bytes retain the original transform ABI. The final 16-byte slot
+// carries the active document extent so cached deform pipelines are reusable
+// across documents with different dimensions.
+export const RASTER_TRANSFORM_UNIFORM_BYTES = 80;
+
 export interface RasterTransformPoint {
   x: number;
   y: number;

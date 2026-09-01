@@ -1,13 +1,11 @@
 /**
  * Tipi pubblici del motore: quello che l'interfaccia utente, i benchmark e gli
- * strumenti DEV consumano davvero. Le dipendenze WebGPU restano type-only e
- * limitate agli handoff espliciti di risorse gia' create.
+ * strumenti DEV consumano davvero. Nessuna dipendenza da WebGPU o dal DOM.
  */
 import type { RasterBevelEncodeResult } from "./bevel-renderer";
 import { EFFECTS_WORKING_SET_STRATEGY } from "./effects-workbench";
 import type { EngineStats } from "./engine-stats";
 import type { DirtyRect } from "./engine-stroke-types";
-import type { GpuDeviceSession } from "./gpu-device-session";
 import {
   MIXED_SCENE_STACK_STRATEGY,
   type MixedSceneItem,
@@ -313,13 +311,6 @@ export interface EngineCallbacks {
 }
 
 export interface BrushEngineOptions {
-  /**
-   * Optional adapter/device request already completed by the application
-   * shell. The engine adopts its exact device identity and paired resource
-   * registry before creating any document resources. A rejected or already-
-   * lost session transparently falls back to normal cold startup.
-   */
-  prewarmedGpuSession?: GpuDeviceSession | Promise<GpuDeviceSession | null> | null;
   bevelBoundingFieldEnabled?: boolean;
   /**
    * Gives the browser a presentation turn after a startup phase is announced.

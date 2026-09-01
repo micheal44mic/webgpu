@@ -380,15 +380,10 @@ approx(transparentBase[1], 0.2);
 approx(transparentBase[2], 0);
 approx(transparentBase[3], 0.8);
 
-const rendererRuntimeSource = readFileSync(
+const rendererSource = readFileSync(
   new URL("../src/stroke-renderer.ts", import.meta.url),
   "utf8",
 );
-const strokeProgramsSource = readFileSync(
-  new URL("../src/stroke-programs.ts", import.meta.url),
-  "utf8",
-);
-const rendererSource = `${rendererRuntimeSource}\n${strokeProgramsSource}`;
 const engineSource = readEngineSource();
 const workbenchSource = readFileSync(
   new URL("../src/effects-workbench.ts", import.meta.url),
@@ -452,19 +447,9 @@ assert.doesNotMatch(
   "document-only allocations must not fragment the session program cache",
 );
 assert.match(
-  strokeProgramsSource,
-  /export function acquireRasterStrokeProgramResources\([\s\S]*?acquireStrokeProgramResources\([\s\S]*?createStrokeProgramResources\.call/,
+  rendererSource,
+  /const programs = await acquireStrokeProgramResources\([\s\S]*?\(\) => this\.createProgramResources\(\)/,
   "renderer instances must reuse session programs before rebuilding document bind groups",
-);
-assert.match(
-  strokeProgramsSource,
-  /export async function prewarmRasterStrokePrograms\([\s\S]*?acquireRasterStrokeProgramResources\(options\)/,
-  "Stroke must expose a program-only warm-up backed by the renderer cache",
-);
-assert.match(
-  rendererRuntimeSource,
-  /const programs = await acquireRasterStrokeProgramResources\(/,
-  "renderer initialization must adopt the exact program bundle warmed from Home",
 );
 assert.match(rendererSource, /const PARAMETER_BYTES = 96/);
 assert.ok(
@@ -496,8 +481,8 @@ assert.ok(
 );
 assert.match(rendererSource, /colorOverlayStyle\?: RasterColorOverlayStyle/);
 assert.match(rendererSource, /return style\.uniformAlpha \? -\(1 \+ opacity\) : opacity;/);
-assert.match(rendererSource, /this\.displayParameterUploadF32\[23\]\s*=\s*encodedColorOverlayMode\(colorOverlayStyle\)/);
-assert.match(rendererSource, /this\.parameterUploadF32\[word \+ 23\]\s*=\s*encodedColorOverlayMode\(colorOverlayStyle\)/);
+assert.match(rendererSource, /this\.displayParameterUploadF32\[23\] = encodedColorOverlayMode\(colorOverlayStyle\)/);
+assert.match(rendererSource, /this\.parameterUploadF32\[word \+ 23\] = encodedColorOverlayMode\(colorOverlayStyle\)/);
 assert.match(
   rendererSource,
   /fn authoredMatteMain[\s\S]*?textureStore\(styledTexture, storagePosition, sourceTexel\(position\)\)/,
@@ -566,14 +551,14 @@ assert.match(rendererSource, /runGpuAllocationTransaction\(/);
 assert.match(rendererSource, /private releaseStrokeGeometryResources\(\): boolean/);
 assert.match(rendererSource, /async setStrokeGeometryEnabled\(enabled: boolean\): Promise<boolean>/);
 assert.match(rendererSource, /return this\.strokeCoverageBuffer \?\? this\.coveragePlaceholderBuffer/);
-assert.match(rendererSource, /return\s*\(\s*this\.strokeThresholdMaskBuffer \?\? this\.thresholdMaskPlaceholderBuffer\s*\)/);
+assert.match(rendererSource, /return this\.strokeThresholdMaskBuffer \?\? this\.thresholdMaskPlaceholderBuffer/);
 assert.match(
   rendererSource,
-  /this\.strokeGeometryResourcesAllocated\s*\?\s*this\.fullCoverageMemoryBytes\s*:\s*0/,
+  /this\.strokeGeometryResourcesAllocated \? this\.fullCoverageMemoryBytes : 0/,
 );
 assert.match(
   rendererSource,
-  /this\.strokeGeometryResourcesAllocated\s*\?\s*this\.fullThresholdMaskMemoryBytes\s*:\s*0/,
+  /this\.strokeGeometryResourcesAllocated \? this\.fullThresholdMaskMemoryBytes : 0/,
 );
 assert.match(rendererSource, /this\.rebuildIndirectGateBindGroup\(\)/);
 assert.match(rendererSource, /Stroke encode rejected: geometry resources are not allocated/);

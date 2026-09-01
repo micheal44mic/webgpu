@@ -6,8 +6,6 @@ import {
   type RasterTransformPoint,
   type RasterTransformRect,
 } from "./raster-transform-math.ts";
-import { RASTER_DEFORM_VERTEX_FLOATS } from "./raster-transform-program-abi.ts";
-export { RASTER_DEFORM_VERTEX_FLOATS } from "./raster-transform-program-abi.ts";
 
 export const RASTER_WARP_GRID_SIZES = [3, 4, 5] as const;
 export type RasterWarpGridSize = (typeof RASTER_WARP_GRID_SIZES)[number];
@@ -33,6 +31,7 @@ export interface RasterWarpSurfaceParameter {
   readonly v: number;
 }
 
+export const RASTER_DEFORM_VERTEX_FLOATS = 5;
 /** Dense enough to keep the Catmull-Rom Warp surface visually continuous at high zoom. */
 export const RASTER_WARP_RENDER_SUBDIVISIONS = 16;
 /** Local-cell emphasis: the touched cell moves much more than distant cells. */

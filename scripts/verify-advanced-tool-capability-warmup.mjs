@@ -34,7 +34,6 @@ const main = source("src/main.ts");
 const engine = source("src/brush-engine.ts");
 const projectRuntime = source("src/engine-project-runtime.ts");
 const transformRuntime = source("src/engine-raster-transform-runtime.ts");
-const transformPrograms = source("src/raster-transform-programs.ts");
 const engineRuntimeMisc = source("src/engine-runtime-misc.ts");
 const activePaintResources = source("src/mixed-scene-active-paint-resources.ts");
 
@@ -332,7 +331,7 @@ assert.doesNotMatch(
 );
 
 const sharedTransformShell = section(
-  transformPrograms,
+  transformRuntime,
   "async function createSharedResources(",
   "function affinePipelineDescriptor(",
 );
@@ -343,9 +342,9 @@ assert.doesNotMatch(
 );
 
 const lazyProgramCreation = section(
-  transformPrograms,
+  transformRuntime,
   "async function createProgramBundle(",
-  "export async function ensureRasterTransformProgramBundle(",
+  "async function ensureProgramBundle(",
 );
 for (const bundle of ["affine", "deform", "mip"]) {
   assert.match(lazyProgramCreation, new RegExp(`bundle === "${bundle}"`));
@@ -364,9 +363,9 @@ assert.match(
 );
 
 const bundleCache = section(
-  transformPrograms,
-  "export async function ensureRasterTransformProgramBundle(",
-  "export async function requireRasterTransformProgramResources(",
+  transformRuntime,
+  "async function ensureProgramBundle(",
+  "function requireModeProgramBundle(",
 );
 assert.match(bundleCache, /shared\.programPromises\.get\(bundle\)/);
 assert.match(bundleCache, /shared\.programPromises\.set\(bundle, promise\)/);
@@ -382,38 +381,29 @@ assert.match(
 );
 
 const requiredTransformPrograms = section(
-  transformPrograms,
-  "export async function requireRasterTransformProgramResources(",
-  "export async function prewarmRasterTransformProgramsForDevice(",
-);
-assert.match(
-  transformPrograms,
-  /const sharedResources = new WeakMap<\s*GPUDevice,\s*Map<LayerFormat, Promise<RasterTransformProgramResources>>/,
-  "Transform programs must be shared by every layer using one device and format",
+  transformRuntime,
+  "async function requireSharedResources(",
+  "function destroySessionResources(",
 );
 assert.match(
   requiredTransformPrograms,
-  /for \(const bundle of new Set\(bundles\)\) \{\s*await ensureRasterTransformProgramBundle\(shared, bundle\);/,
-  "Program targets must dedupe before entering the per-device compiler queue",
+  /if \(selectionScope\) \{\s*await ensureProgramBundle\(shared, "selection"\);\s*return shared;/,
+  "Pixel-selection movement must request only its translation bundle",
 );
 assert.match(
-  transformPrograms,
-  /if \(target !== "selection"\) bundles\.add\("mip"\)/,
-  "Whole-layer Transform targets must also warm exact mip generation",
+  requiredTransformPrograms,
+  /requestedMode === "affine" \? "affine" : "deform"/,
+  "Whole-layer sessions must request only the chosen mode bundle",
+);
+assert.match(requiredTransformPrograms, /await ensureProgramBundle\(shared, "mip"\)/);
+assert.match(
+  requiredTransformPrograms,
+  /Keep capability compilation sequential/,
+  "Independent allocation transactions must remain sequential on old drivers",
 );
 assert.match(
-  transformRuntime,
-  /export async function prewarmRasterTransformPrograms\([\s\S]*?prewarmRasterTransformProgramsForDevice\([\s\S]*?selectionScope \? "selection"/,
-);
-assert.match(
-  transformRuntime,
-  /return requireRasterTransformProgramResources\(device, format, bundles\);/,
-  "Transform transactions must adopt the exact device/format program cache warmed from Home",
-);
-assert.doesNotMatch(
-  transformRuntime,
-  /createShaderModule|createRenderPipeline(?:Async)?/,
-  "The heavy Transform transaction module must not own shader compilation after extraction",
+  requiredTransformPrograms,
+  /export async function prewarmRasterTransformPrograms\([\s\S]*?await requireSharedResources\(engine, requestedMode, selectionScope\)/,
 );
 
 const modeTransition = section(

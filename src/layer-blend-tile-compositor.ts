@@ -5,6 +5,10 @@ import {
   DOCUMENT_WIDTH,
   LAYER_COMPOSITE_UNIFORM_BYTES,
 } from "./engine-limits";
+import {
+  assertShaderCompiled,
+  createRenderPipelineAsync,
+} from "./engine-gpu-utils";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import { documentBackgroundLinearPremultiplied } from "./document-background";
 import {
@@ -13,13 +17,12 @@ import {
 } from "./layer-blend-modes";
 import {
   LAYER_BLEND_TILE_EXTENT,
+  LAYER_BLEND_TILE_MIP_ONE_WGSL,
   LAYER_BLEND_TILE_MIP_UNIFORM_BYTES,
   LAYER_BLEND_TILE_PRESENT_UNIFORM_BYTES,
+  LAYER_BLEND_TILE_PRESENT_WGSL,
+  LAYER_BLEND_PYRAMID_PRESENT_WGSL,
 } from "./layer-blend-tile-shader";
-import {
-  prewarmLayerBlendTilePrograms,
-  type LayerBlendTilePrograms,
-} from "./layer-blend-tile-programs";
 import {
   LAYER_BLEND_FOLD_COMPOSITION_CONTEXT_CODES,
   LAYER_BLEND_FOLD_UNIFORM_BYTES,
@@ -71,6 +74,32 @@ const MIP_RECORD_CAPACITY = 128;
 const alignedStride = (size: number, alignment: number): number =>
   Math.ceil(size / Math.max(1, alignment)) * Math.max(1, alignment);
 
+const sourceOverBlend: GPUBlendState = {
+  color: {
+    operation: "add",
+    srcFactor: "one",
+    dstFactor: "one-minus-src-alpha",
+  },
+  alpha: {
+    operation: "add",
+    srcFactor: "one",
+    dstFactor: "one-minus-src-alpha",
+  },
+};
+
+const sourceAtopBlend: GPUBlendState = {
+  color: {
+    operation: "add",
+    srcFactor: "dst-alpha",
+    dstFactor: "one-minus-src-alpha",
+  },
+  alpha: {
+    operation: "add",
+    srcFactor: "zero",
+    dstFactor: "one",
+  },
+};
+
 /**
  * Bounded native-format scratch used by the faithful live layer compositor.
  * It owns no document pixels: authoritative layer/tile storage remains in the
@@ -119,7 +148,6 @@ export class LayerBlendTileCompositor {
   private readonly tilePresentPipeline: GPURenderPipeline;
   private readonly mipOnePipeline: GPURenderPipeline;
   private readonly pyramidPresentPipeline: GPURenderPipeline;
-  private readonly backgroundBindGroup: GPUBindGroup;
   private readonly pyramidPresentBindGroup: GPUBindGroup;
   private readonly normalFrameBindGroups = new Map<GPUTextureView, GPUBindGroup>();
   private readonly advancedFrameBindGroups = new Map<GPUTextureView, Map<
@@ -151,8 +179,19 @@ export class LayerBlendTileCompositor {
     presentUniformStride: number;
     mipUniformBuffer: GPUBuffer;
     mipUniformStride: number;
-    programs: LayerBlendTilePrograms;
-    backgroundBindGroup: GPUBindGroup;
+    normalLayout: GPUBindGroupLayout;
+    advancedLayout: GPUBindGroupLayout;
+    presentLayout: GPUBindGroupLayout;
+    mipLayout: GPUBindGroupLayout;
+    normalOverPipeline: GPURenderPipeline;
+    normalAtopPipeline: GPURenderPipeline;
+    advancedPipeline: GPURenderPipeline;
+    documentMaskContributionPipeline: GPURenderPipeline;
+    tileClearPipeline: GPURenderPipeline;
+    tileBackgroundPipeline: GPURenderPipeline;
+    tilePresentPipeline: GPURenderPipeline;
+    mipOnePipeline: GPURenderPipeline;
+    pyramidPresentPipeline: GPURenderPipeline;
     pyramidPresentBindGroup: GPUBindGroup;
   }) {
     this.engine = options.engine;
@@ -173,20 +212,19 @@ export class LayerBlendTileCompositor {
     this.presentUniformStride = options.presentUniformStride;
     this.mipUniformBuffer = options.mipUniformBuffer;
     this.mipUniformStride = options.mipUniformStride;
-    this.normalLayout = options.programs.normalLayout;
-    this.advancedLayout = options.programs.advancedLayout;
-    this.presentLayout = options.programs.presentLayout;
-    this.mipLayout = options.programs.mipLayout;
-    this.normalOverPipeline = options.programs.normalOverPipeline;
-    this.normalAtopPipeline = options.programs.normalAtopPipeline;
-    this.advancedPipeline = options.programs.advancedPipeline;
-    this.documentMaskContributionPipeline = options.programs.documentMaskContributionPipeline;
-    this.tileClearPipeline = options.programs.tileClearPipeline;
-    this.tileBackgroundPipeline = options.programs.tileBackgroundPipeline;
-    this.tilePresentPipeline = options.programs.tilePresentPipeline;
-    this.mipOnePipeline = options.programs.mipOnePipeline;
-    this.pyramidPresentPipeline = options.programs.pyramidPresentPipeline;
-    this.backgroundBindGroup = options.backgroundBindGroup;
+    this.normalLayout = options.normalLayout;
+    this.advancedLayout = options.advancedLayout;
+    this.presentLayout = options.presentLayout;
+    this.mipLayout = options.mipLayout;
+    this.normalOverPipeline = options.normalOverPipeline;
+    this.normalAtopPipeline = options.normalAtopPipeline;
+    this.advancedPipeline = options.advancedPipeline;
+    this.documentMaskContributionPipeline = options.documentMaskContributionPipeline;
+    this.tileClearPipeline = options.tileClearPipeline;
+    this.tileBackgroundPipeline = options.tileBackgroundPipeline;
+    this.tilePresentPipeline = options.tilePresentPipeline;
+    this.mipOnePipeline = options.mipOnePipeline;
+    this.pyramidPresentPipeline = options.pyramidPresentPipeline;
     this.pyramidPresentBindGroup = options.pyramidPresentBindGroup;
     this.foldUniformUpload = new ArrayBuffer(
       FOLD_RECORD_CAPACITY * this.foldUniformStride,
@@ -219,10 +257,6 @@ export class LayerBlendTileCompositor {
     const mipUniformStride = alignedStride(
       LAYER_BLEND_TILE_MIP_UNIFORM_BYTES,
       alignment,
-    );
-    const programs = await prewarmLayerBlendTilePrograms(
-      engine.device,
-      engine.layerFormat,
     );
 
     return runGpuAllocationTransaction(
@@ -331,16 +365,305 @@ export class LayerBlendTileCompositor {
           MIP_RECORD_CAPACITY * mipUniformStride,
         );
 
-        const backgroundBindGroup = engine.device.createBindGroup({
-          label: "Layer blend tile document background bind group",
-          layout: programs.backgroundLayout,
+        const normalLayout = engine.device.createBindGroupLayout({
+          label: "Layer blend tile Normal layout",
           entries: [
-            { binding: 0, resource: { buffer: engine.displayUniformBuffer } },
+            {
+              binding: 0,
+              visibility: GPUShaderStage.FRAGMENT,
+              texture: { sampleType: "float", viewDimension: "2d" },
+            },
+            {
+              binding: 1,
+              visibility: GPUShaderStage.FRAGMENT,
+              buffer: {
+                type: "uniform",
+                hasDynamicOffset: true,
+                minBindingSize: LAYER_COMPOSITE_UNIFORM_BYTES,
+              },
+            },
           ],
         });
+        const advancedLayout = engine.device.createBindGroupLayout({
+          label: "Layer blend tile advanced layout",
+          entries: [
+            {
+              binding: 0,
+              visibility: GPUShaderStage.FRAGMENT,
+              texture: { sampleType: "float", viewDimension: "2d" },
+            },
+            {
+              binding: 1,
+              visibility: GPUShaderStage.FRAGMENT,
+              texture: { sampleType: "float", viewDimension: "2d" },
+            },
+            {
+              binding: 2,
+              visibility: GPUShaderStage.FRAGMENT,
+              buffer: {
+                type: "uniform",
+                hasDynamicOffset: true,
+                minBindingSize: LAYER_BLEND_FOLD_UNIFORM_BYTES,
+              },
+            },
+            {
+              binding: 3,
+              visibility: GPUShaderStage.FRAGMENT,
+              texture: { sampleType: "float", viewDimension: "2d" },
+            },
+            {
+              binding: 4,
+              visibility: GPUShaderStage.FRAGMENT,
+              texture: { sampleType: "float", viewDimension: "2d" },
+            },
+            {
+              binding: 5,
+              visibility: GPUShaderStage.FRAGMENT,
+              texture: { sampleType: "float", viewDimension: "2d" },
+            },
+            {
+              binding: 6,
+              visibility: GPUShaderStage.FRAGMENT,
+              texture: { sampleType: "float", viewDimension: "2d" },
+            },
+          ],
+        });
+        const presentLayout = engine.device.createBindGroupLayout({
+          label: "Layer blend tile screen present layout",
+          entries: [
+            {
+              binding: 0,
+              visibility: GPUShaderStage.FRAGMENT,
+              buffer: { type: "uniform", minBindingSize: 96 },
+            },
+            {
+              binding: 1,
+              visibility: GPUShaderStage.FRAGMENT,
+              buffer: {
+                type: "uniform",
+                hasDynamicOffset: true,
+                minBindingSize: LAYER_BLEND_TILE_PRESENT_UNIFORM_BYTES,
+              },
+            },
+            {
+              binding: 2,
+              visibility: GPUShaderStage.FRAGMENT,
+              texture: { sampleType: "float", viewDimension: "2d" },
+            },
+          ],
+        });
+        const mipLayout = engine.device.createBindGroupLayout({
+          label: "Layer blend tile mip-1 layout",
+          entries: [
+            {
+              binding: 0,
+              visibility: GPUShaderStage.FRAGMENT,
+              texture: { sampleType: "float", viewDimension: "2d" },
+            },
+            {
+              binding: 1,
+              visibility: GPUShaderStage.FRAGMENT,
+              buffer: {
+                type: "uniform",
+                hasDynamicOffset: true,
+                minBindingSize: LAYER_BLEND_TILE_MIP_UNIFORM_BYTES,
+              },
+            },
+          ],
+        });
+
+        const presentShader = engine.device.createShaderModule({
+          label: "Layer blend tile screen present WGSL",
+          code: LAYER_BLEND_TILE_PRESENT_WGSL,
+        });
+        const mipShader = engine.device.createShaderModule({
+          label: "Layer blend tile mip-1 WGSL",
+          code: LAYER_BLEND_TILE_MIP_ONE_WGSL,
+        });
+        const pyramidShader = engine.device.createShaderModule({
+          label: "Layer blend final pyramid present WGSL",
+          code: LAYER_BLEND_PYRAMID_PRESENT_WGSL,
+        });
+        await Promise.all([
+          assertShaderCompiled(presentShader, "layer blend tile screen present"),
+          assertShaderCompiled(mipShader, "layer blend tile mip 1"),
+          assertShaderCompiled(pyramidShader, "layer blend final pyramid present"),
+        ]);
+
+        const pipeline = (
+          label: string,
+          layout: GPUBindGroupLayout,
+          module: GPUShaderModule,
+          fragmentEntryPoint: string,
+          format: GPUTextureFormat,
+          blend?: GPUBlendState,
+        ): Promise<GPURenderPipeline> => createRenderPipelineAsync(engine.device, {
+          label,
+          layout: engine.device.createPipelineLayout({
+            label: `${label} pipeline layout`,
+            bindGroupLayouts: [layout],
+          }),
+          vertex: { module, entryPoint: "vertexMain" },
+          fragment: {
+            module,
+            entryPoint: fragmentEntryPoint,
+            targets: [{ format, ...(blend ? { blend } : {}) }],
+          },
+          primitive: { topology: "triangle-list" },
+        });
+        const layerBlendFoldShaderModule = engine.layerBlendFoldShaderModule;
+        if (!layerBlendFoldShaderModule) {
+          throw new Error("The advanced-fold shader is not initialized.");
+        }
+        const mixedSceneClearShaderModule = engine.mixedSceneClearShaderModule;
+        if (!mixedSceneClearShaderModule) {
+          throw new Error("The mixed-scene partial-clear shader is not initialized.");
+        }
+        const mixedScenePresentShaderModule = engine.mixedScenePresentShaderModule;
+        const mixedSceneBackgroundBindGroupLayout = engine.mixedSceneBackgroundBindGroupLayout;
+        if (
+          !mixedScenePresentShaderModule
+          || !mixedSceneBackgroundBindGroupLayout
+          || !engine.mixedSceneBackgroundBindGroup
+        ) {
+          throw new Error("The document-background pipeline is not initialized.");
+        }
+
+        const pyramidLayout = engine.device.createBindGroupLayout({
+          label: "Layer blend final pyramid present layout",
+          entries: [
+            {
+              binding: 0,
+              visibility: GPUShaderStage.FRAGMENT,
+              buffer: { type: "uniform", minBindingSize: 96 },
+            },
+            {
+              binding: 1,
+              visibility: GPUShaderStage.FRAGMENT,
+              texture: { sampleType: "float", viewDimension: "2d" },
+            },
+            {
+              binding: 2,
+              visibility: GPUShaderStage.FRAGMENT,
+              sampler: { type: "filtering" },
+            },
+          ],
+        });
+        const [
+          normalOverPipeline,
+          normalAtopPipeline,
+          advancedPipeline,
+          documentMaskContributionPipeline,
+          tileClearPipeline,
+          tileBackgroundPipeline,
+          tilePresentPipeline,
+          mipOnePipeline,
+          pyramidPresentPipeline,
+        ] = await (async (): Promise<readonly GPURenderPipeline[]> => {
+          const pipelineResults = await Promise.allSettled([
+            pipeline(
+              "Layer blend tile Normal source-over",
+              normalLayout,
+              engine.layerCompositeShaderModule,
+              "fragmentMain",
+              engine.layerFormat,
+              sourceOverBlend,
+            ),
+            pipeline(
+              "Layer blend tile Normal source-atop",
+              normalLayout,
+              engine.layerCompositeShaderModule,
+              "fragmentMain",
+              engine.layerFormat,
+              sourceAtopBlend,
+            ),
+            pipeline(
+              "Layer blend tile advanced fold",
+              advancedLayout,
+              layerBlendFoldShaderModule,
+              "fragmentMain",
+              engine.layerFormat,
+            ),
+            pipeline(
+              "Layer blend tile document-mask contribution",
+              advancedLayout,
+              layerBlendFoldShaderModule,
+              "documentMaskContributionFragmentMain",
+              engine.layerFormat,
+              sourceOverBlend,
+            ),
+            createRenderPipelineAsync(engine.device, {
+              label: "Layer blend tile bounded transparent clear",
+              layout: engine.device.createPipelineLayout({
+                label: "Layer blend tile bounded transparent clear pipeline layout",
+                bindGroupLayouts: [],
+              }),
+              vertex: {
+                module: mixedSceneClearShaderModule,
+                entryPoint: "vertexMain",
+              },
+              fragment: {
+                module: mixedSceneClearShaderModule,
+                entryPoint: "fragmentMain",
+                targets: [{ format: engine.layerFormat }],
+              },
+              primitive: { topology: "triangle-list" },
+            }),
+            createRenderPipelineAsync(engine.device, {
+              label: "Layer blend tile bounded document background",
+              layout: engine.device.createPipelineLayout({
+                label: "Layer blend tile bounded document background pipeline layout",
+                bindGroupLayouts: [mixedSceneBackgroundBindGroupLayout],
+              }),
+              vertex: {
+                module: mixedScenePresentShaderModule,
+                entryPoint: "vertexMain",
+              },
+              fragment: {
+                module: mixedScenePresentShaderModule,
+                entryPoint: "backgroundFragmentMain",
+                targets: [{ format: engine.layerFormat }],
+              },
+              primitive: { topology: "triangle-list" },
+            }),
+            pipeline(
+              "Layer blend tile to linear presentation",
+              presentLayout,
+              presentShader,
+              "fragmentMain",
+              "rgba16float",
+            ),
+            pipeline(
+              "Layer blend tile exact mip 1",
+              mipLayout,
+              mipShader,
+              "fragmentMain",
+              engine.layerFormat,
+            ),
+            pipeline(
+              "Layer blend final pyramid to linear presentation",
+              pyramidLayout,
+              pyramidShader,
+              "fragmentMain",
+              "rgba16float",
+            ),
+          ]);
+          const pipelineErrors = pipelineResults.flatMap((result) =>
+            result.status === "rejected" ? [result.reason] : []);
+          if (pipelineErrors.length > 0) {
+            throw new AggregateError(
+              pipelineErrors,
+              "Layer blend pipeline creation failed.",
+            );
+          }
+          return pipelineResults.map((result) => {
+            if (result.status === "rejected") throw result.reason;
+            return result.value;
+          });
+        })();
         const pyramidPresentBindGroup = engine.device.createBindGroup({
           label: "Layer blend final pyramid present bind group",
-          layout: programs.pyramidLayout,
+          layout: pyramidLayout,
           entries: [
             { binding: 0, resource: { buffer: engine.displayUniformBuffer } },
             { binding: 1, resource: engine.activeLayerDisplayPyramid.samplingView },
@@ -366,8 +689,19 @@ export class LayerBlendTileCompositor {
           presentUniformStride,
           mipUniformBuffer,
           mipUniformStride,
-          programs,
-          backgroundBindGroup,
+          normalLayout,
+          advancedLayout,
+          presentLayout,
+          mipLayout,
+          normalOverPipeline,
+          normalAtopPipeline,
+          advancedPipeline,
+          documentMaskContributionPipeline,
+          tileClearPipeline,
+          tileBackgroundPipeline,
+          tilePresentPipeline,
+          mipOnePipeline,
+          pyramidPresentPipeline,
           pyramidPresentBindGroup,
         });
       },
@@ -671,7 +1005,7 @@ export class LayerBlendTileCompositor {
     });
     if (!clearsWholeTile) {
       pass.setPipeline(this.tileBackgroundPipeline);
-      pass.setBindGroup(0, this.backgroundBindGroup);
+      pass.setBindGroup(0, this.engine.mixedSceneBackgroundBindGroup!);
       pass.setScissorRect(0, 0, boundedWidth, boundedHeight);
       pass.draw(3, 1, 0, 0);
     }

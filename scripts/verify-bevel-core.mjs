@@ -337,9 +337,7 @@ assert.throws(
 const workbenchSource = readFileSync(new URL("../src/effects-workbench.ts", import.meta.url), "utf8");
 const benchmarkSource = readFileSync(new URL("../src/labs/benchmarks/effects-benchmark.ts", import.meta.url), "utf8");
 const rendererSource = readFileSync(new URL("../src/bevel-renderer.ts", import.meta.url), "utf8");
-const styleStackSource = `${
-  readFileSync(new URL("../src/stroke-renderer.ts", import.meta.url), "utf8")
-}\n${readFileSync(new URL("../src/stroke-programs.ts", import.meta.url), "utf8")}`;
+const styleStackSource = readFileSync(new URL("../src/stroke-renderer.ts", import.meta.url), "utf8");
 const bboxGoldenSource = readFileSync(
   new URL("../src/labs/goldens/bevel-bbox-golden.ts", import.meta.url),
   "utf8",
