@@ -1,4 +1,5 @@
 import { type LayerFormat } from "./engine-types";
+import { rgba8SpatialQuantizationShader } from "./rgba8-spatial-quantization";
 
 /**
  * Exact Uniformed/Intense commit without a render-target scratch tile.
@@ -16,7 +17,7 @@ struct LightGlazeUniforms {
   opacity: f32,
   formatCode: u32,
   accumulationMode: u32,
-  _pad1: u32,
+  ditherSeed: u32,
   tintLinear: vec4<f32>,
 };
 
@@ -30,6 +31,8 @@ var permanentTexture: texture_storage_2d<${format}, read_write>;
 @group(0) @binding(1) var strokeTexture: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> lightGlaze: LightGlazeUniforms;
 @group(0) @binding(3) var<uniform> commitRect: CommitRectUniforms;
+
+${rgba8SpatialQuantizationShader}
 
 fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
   let redGreen = unpack2x16float(pack2x16float(value.rg));
@@ -96,13 +99,30 @@ fn resolvedStrokePaint(accumulatedStroke: vec4<f32>) -> vec4<f32> {
     let coverage = storedLightCoverage(accumulatedStroke.r);
     return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
   }
+  if (lightGlaze.accumulationMode == 3u) {
+    let coverage = clamp(
+      1.0 - exp2(-max(accumulatedStroke.r, 0.0)),
+      0.0,
+      1.0
+    );
+    return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
+  }
   return accumulatedStroke * opacity;
 }
 
 fn compositeLightGlazeOverPermanent(
   permanentPaint: vec4<f32>,
-  strokePaint: vec4<f32>
+  strokePaint: vec4<f32>,
+  coordinate: vec2<u32>
 ) -> vec4<f32> {
+  if (lightGlaze.accumulationMode == 3u) {
+    let compositedEncoded = strokePaint + permanentPaint * (1.0 - strokePaint.a);
+    return quantizeRgba8SpatialAdjacent(
+      compositedEncoded,
+      coordinate,
+      lightGlaze.ditherSeed
+    );
+  }
   if (lightGlaze.accumulationMode == 2u) {
     let permanentAlpha = clamp(permanentPaint.a, 0.0, 1.0);
     var boundedPermanentRgb = vec3<f32>(0.0);
@@ -148,7 +168,11 @@ fn computeMain(@builtin(global_invocation_id) invocation: vec3<u32>) {
   textureStore(
     permanentTexture,
     sourcePosition,
-    compositeLightGlazeOverPermanent(permanentPaint, strokePaint)
+    compositeLightGlazeOverPermanent(
+      permanentPaint,
+      strokePaint,
+      vec2<u32>(sourcePosition)
+    )
   );
 }
 `;

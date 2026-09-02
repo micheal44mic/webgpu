@@ -43,7 +43,25 @@ export type BrushTool = "paint" | "erase" | "blend";
 
 export type LayerFormat = "rgba8unorm" | "rgba16float";
 
+/** Color-domain contract of the authoritative premultiplied document bytes. */
+export type DocumentStorageColorSpace =
+  | "linear-premultiplied"
+  | "encoded-srgb-premultiplied";
+
+export type PaintDabProfile =
+  | "default"
+  | "direct-deposit-pressure-size"
+  | "encoded-srgb-rgba8";
+
+export type DisplayCompositingColorSpace =
+  | "linear-light"
+  | "encoded-srgb"
+  | "stored-encoded-srgb";
+
 export type BrushShape = "circle" | "shape";
+
+/** Analytic radial falloff used by round tips; sampled Shape assets ignore it. */
+export type BrushTipFalloff = "standard" | "gaussian";
 
 export type CustomBrushShapeAssetId = `custom-shape:${string}`;
 
@@ -71,6 +89,8 @@ export type AdaptiveSpacingTriggerReason = "probe-timeout" | "slow-completion";
 export interface BrushSettings {
   tool: BrushTool;
   shape: BrushShape;
+  /** Optional for compatibility with brush definitions written before this field. */
+  tipFalloff?: BrushTipFalloff;
   /** Stable source identity; old settings without it normalize to legacy-shape. */
   shapeAssetId: BrushShapeAssetId;
   /**
@@ -312,6 +332,19 @@ export interface EngineCallbacks {
 
 export interface BrushEngineOptions {
   bevelBoundingFieldEnabled?: boolean;
+  /** Authoritative hot/cold raster pixel format. Defaults to RGBA16F. */
+  layerFormat?: LayerFormat;
+  /** WebGPU presentation texture format. Defaults to RGBA16F. */
+  presentationFormat?: LayerFormat;
+  /** Optional rendering contract for Paint dab accumulation and geometry. */
+  paintDabProfile?: PaintDabProfile;
+  /** Optional deterministic benchmark override; zero disables spacing escalation. */
+  adaptiveSpacingMaxExtraPercentPoints?: number;
+  /**
+   * Selects the color-domain contract shared by presentation, live/canonical
+   * composition, commit visibility, and display-mip generation.
+   */
+  displayCompositingColorSpace?: DisplayCompositingColorSpace;
   /**
    * Gives the browser a presentation turn after a startup phase is announced.
    * Leave disabled for observers that only record the timeline.

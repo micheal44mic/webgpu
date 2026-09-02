@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { quantizeUnorm8HighFrequencyAdjacent } from "../src/rgba8-high-frequency-quantization.ts";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const core = readFileSync(resolve(repositoryRoot, "src/liquify-core.ts"), "utf8");
@@ -22,6 +23,11 @@ const sheet = readFileSync(resolve(repositoryRoot, "src/mobile-liquify-sheet.ts"
 const html = readFileSync(resolve(repositoryRoot, "index.html"), "utf8");
 const styles = readFileSync(resolve(repositoryRoot, "src/styles.css"), "utf8");
 const sourceManifest = readFileSync(resolve(repositoryRoot, "scripts/engine-source.mjs"), "utf8");
+const quantizationSeedMatch = shader.match(
+  /export const LIQUIFY_RGBA8_QUANTIZATION_SEED = (0x[0-9a-f]+);/i,
+);
+assert.ok(quantizationSeedMatch, "Liquify must expose its RGBA8 quantization salt.");
+const LIQUIFY_RGBA8_QUANTIZATION_SEED = Number.parseInt(quantizationSeedMatch[1], 16);
 
 const requireText = (source, fragment, label = fragment) => {
   assert.ok(source.includes(fragment), `Liquify contract is missing ${label}`);
@@ -130,6 +136,28 @@ const publicShaderSymbols = [
 for (const symbol of publicShaderSymbols) requireText(shader, `export const ${symbol}`, symbol);
 requireText(shader, 'LIQUIFY_DISPLACEMENT_FORMAT = "rgba16float"', "portable displacement format");
 requireText(shader, "texture_storage_2d<rgba16float, write>", "write-only rgba16float storage");
+requireText(shader, "export function liquifyResolveShader", "native-format resolve generator");
+requireText(shader, "texture_storage_2d<${targetFormat}, write>", "native document target");
+requireText(shader, "rgba8HighFrequencyQuantizationShader", "RGBA8 adjacent-code finalization");
+requireText(shader, "quantizeRgba8HighFrequencyAdjacent", "stable RGBA8 quantizer");
+requireText(shader, "LIQUIFY_RGBA8_QUANTIZATION_SEED", "stable document-space quantization seed");
+requireText(
+  shader,
+  "uniforms.seed ^ ${LIQUIFY_RGBA8_QUANTIZATION_SEED}u",
+  "session-stable action seed salted for RGBA8 finalization",
+);
+requireText(shader, "storageColorSpace: DocumentStorageColorSpace", "explicit storage color space");
+requireText(shader, 'storageColorSpace === "encoded-srgb-premultiplied"', "encoded RGBA8 variant");
+requireText(shader, "liquifyEncodedPremultipliedToLinear", "encoded-to-linear conversion");
+requireText(shader, "liquifyLinearPremultipliedToEncoded", "linear-to-encoded conversion");
+requireText(shader, "encodedStraight = clamp(value.rgb / alpha", "straight encoded source recovery");
+requireText(shader, "linearStraight * alpha", "linear premultiplication before interpolation");
+requireText(shader, "let storedColor =", "encoded destination handoff");
+requireText(
+  shader,
+  "quantizeRgba8HighFrequencyAdjacent(\n      storedColor",
+  "quantize after encoding",
+);
 requireText(shader, "var displacementScratch", "dirty scratch update strategy");
 requireText(shader, "var immutableSource", "immutable resolve source");
 requireText(shader, "copy scratch [0, dispatchSize)", "dirty-only scratch copy contract");
@@ -229,6 +257,32 @@ assert.equal(
 );
 requireText(runtime, "session.nextSeed = 1", "deterministic Reset pattern sequence");
 requireText(runtime, "sourceScratchBounds", "cropped immutable source");
+requireText(runtime, "format: engine.layerFormat", "native-format immutable source");
+requireText(runtime, "sharedVariantKey", "format and color-space pipeline key");
+requireText(runtime, "`${layerFormat}:${storageColorSpace}`", "color-space-separated cache identity");
+requireText(runtime, "liquifyResolveShader(layerFormat, storageColorSpace)", "color-space shader variant");
+requireText(runtime, "engine.documentStorageColorSpace", "authoritative document color space");
+requireText(
+  runtime,
+  "quantizationSeed: engine.nextHistoryActionId >>> 0",
+  "stable per-action quantization seed",
+);
+requireText(
+  runtime,
+  "seed: session.quantizationSeed",
+  "preview and restore resolve seed",
+);
+requireText(
+  runtime,
+  'sampleType: layerFormat === "rgba8unorm" ? "float" : "unfilterable-float"',
+  "native source binding sample type",
+);
+assert.doesNotMatch(runtime, /Destructive Liquify requires an RGBA16F document/);
+requireText(
+  runtime,
+  "rgba8unorm-source-encoded-f32-resample-high-frequency-output",
+  "RGBA8 Liquify precision contract",
+);
 requireText(runtime, "displacementScratchTexture", "reused dirty scratch texture");
 requireText(runtime, "fieldWidth: DOCUMENT_WIDTH", "rectangular displacement field width");
 requireText(runtime, "fieldHeight: DOCUMENT_HEIGHT", "rectangular displacement field height");
@@ -354,6 +408,143 @@ for (const repairAmount of [0, 0.1, 0.5, 1, 2]) {
   const repair = clamp(1 - Math.exp(-repairAmount * 0.62), 0, 0.985);
   assert.ok(repair >= 0 && repair < 1, "Reconstruct repair must remain monotonic and non-overshooting");
 }
+
+const srgbToLinearChannel = (value) => value <= 0.04045
+  ? value / 12.92
+  : ((value + 0.055) / 1.055) ** 2.4;
+const linearToSrgbChannel = (value) => {
+  const bounded = clamp(value, 0, 1);
+  return bounded <= 0.0031308
+    ? bounded * 12.92
+    : 1.055 * bounded ** (1 / 2.4) - 0.055;
+};
+const encodedPremultiplied = (straight, alpha) => [
+  straight[0] * alpha,
+  straight[1] * alpha,
+  straight[2] * alpha,
+  alpha,
+];
+const decodeEncodedPremultiplied = (stored) => {
+  const alpha = clamp(stored[3], 0, 1);
+  if (alpha <= 1e-6) return [0, 0, 0, 0];
+  return [
+    srgbToLinearChannel(clamp(stored[0] / alpha, 0, 1)) * alpha,
+    srgbToLinearChannel(clamp(stored[1] / alpha, 0, 1)) * alpha,
+    srgbToLinearChannel(clamp(stored[2] / alpha, 0, 1)) * alpha,
+    alpha,
+  ];
+};
+const encodeLinearPremultiplied = (working) => {
+  const alpha = clamp(working[3], 0, 1);
+  if (alpha <= 1e-6) return [0, 0, 0, 0];
+  return [
+    linearToSrgbChannel(clamp(working[0] / alpha, 0, 1)) * alpha,
+    linearToSrgbChannel(clamp(working[1] / alpha, 0, 1)) * alpha,
+    linearToSrgbChannel(clamp(working[2] / alpha, 0, 1)) * alpha,
+    alpha,
+  ];
+};
+const mixPremultiplied = (left, right, amountValue) => left.map(
+  (value, channel) => value * (1 - amountValue) + right[channel] * amountValue,
+);
+
+const darkLeft = encodedPremultiplied([0.02, 0.05, 0.1], 0.2);
+const darkRight = encodedPremultiplied([0.35, 0.2, 0.08], 0.85);
+const darkAmount = 0.37;
+const correctDarkSample = encodeLinearPremultiplied(mixPremultiplied(
+  decodeEncodedPremultiplied(darkLeft),
+  decodeEncodedPremultiplied(darkRight),
+  darkAmount,
+));
+const encodedSpaceSample = mixPremultiplied(darkLeft, darkRight, darkAmount);
+assert.ok(
+  Math.abs(correctDarkSample[0] - encodedSpaceSample[0]) * 255 > 4,
+  "Dark RGBA8 gradients must be interpolated in linear premultiplied space.",
+);
+assert.ok(
+  Math.abs(correctDarkSample[3] - (0.2 * 0.63 + 0.85 * 0.37)) < 1e-12,
+  "Linear-light resampling must preserve bilinear alpha.",
+);
+assert.ok(
+  correctDarkSample.slice(0, 3).every((channel) => channel >= 0 && channel <= correctDarkSample[3]),
+  "Encoded output must remain valid premultiplied RGBA.",
+);
+
+const transparentEdge = encodeLinearPremultiplied(mixPremultiplied(
+  [0, 0, 0, 0],
+  decodeEncodedPremultiplied(encodedPremultiplied([0.3, 0.1, 0.02], 0.8)),
+  0.25,
+));
+assert.ok(Math.abs(transparentEdge[3] - 0.2) < 1e-12);
+for (const [actual, expected] of transparentEdge.slice(0, 3).map(
+  (channel, index) => [channel, [0.06, 0.02, 0.004][index]],
+)) {
+  assert.ok(
+    Math.abs(actual - expected) < 1e-12,
+    "Transparent-edge interpolation must keep straight color free from dark fringes.",
+  );
+}
+
+const darkRampStored = (index) => {
+  const fraction = index / 1024;
+  return encodeLinearPremultiplied(mixPremultiplied(
+    decodeEncodedPremultiplied(encodedPremultiplied([0.015, 0.03, 0.06], 0.08)),
+    decodeEncodedPremultiplied(encodedPremultiplied([0.22, 0.13, 0.04], 0.92)),
+    fraction,
+  ));
+};
+const firstActionFinalizationSeed = (41 ^ LIQUIFY_RGBA8_QUANTIZATION_SEED) >>> 0;
+const darkAlphaCodes = [];
+for (let index = 0; index <= 1024; index += 1) {
+  const stored = darkRampStored(index);
+  for (let channel = 0; channel < 4; channel += 1) {
+    assert.ok(Number.isFinite(stored[channel]) && stored[channel] >= 0 && stored[channel] <= 1);
+  }
+  assert.ok(stored[0] <= stored[3] && stored[1] <= stored[3] && stored[2] <= stored[3]);
+  const code = quantizeUnorm8HighFrequencyAdjacent(
+    stored[0],
+    400 + index,
+    73,
+    firstActionFinalizationSeed,
+  );
+  const scaled = stored[0] * 255;
+  assert.ok(
+    code === Math.floor(scaled) || code === Math.ceil(scaled),
+    "Liquify RGBA8 finalization must select only adjacent codes.",
+  );
+  darkAlphaCodes.push(code);
+}
+assert.ok(
+  new Set(darkAlphaCodes).size >= 45,
+  "The dark varying-alpha ramp must retain the available RGBA8 levels.",
+);
+assert.deepEqual(
+  darkAlphaCodes,
+  darkAlphaCodes.map((_, index) => {
+    const stored = darkRampStored(index);
+    return quantizeUnorm8HighFrequencyAdjacent(
+      stored[0],
+      400 + index,
+      73,
+      firstActionFinalizationSeed,
+    );
+  }),
+  "Liquify document-space quantization must be replay-stable.",
+);
+const secondActionFinalizationSeed = (42 ^ LIQUIFY_RGBA8_QUANTIZATION_SEED) >>> 0;
+const secondActionCodes = darkAlphaCodes.map((_, index) => {
+  const stored = darkRampStored(index);
+  return quantizeUnorm8HighFrequencyAdjacent(
+    stored[0],
+    400 + index,
+    73,
+    secondActionFinalizationSeed,
+  );
+});
+assert.ok(
+  secondActionCodes.some((code, index) => code !== darkAlphaCodes[index]),
+  "Independent Liquify actions must not repeat the same spatial quantization error.",
+);
 
 const countStraightPathDabs = (points, selectedSpacing) => {
   let lastDab = 0;

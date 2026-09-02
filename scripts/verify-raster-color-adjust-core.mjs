@@ -25,7 +25,11 @@ const {
   normalizeRasterColorAdjustSettings,
   rasterColorAdjustSettingsEqual,
 } = core;
-const { rasterColorAdjustDispatchSize, rasterColorAdjustShader } = shaders;
+const {
+  createRasterColorAdjustShader,
+  rasterColorAdjustDispatchSize,
+  rasterColorAdjustShader,
+} = shaders;
 
 function approx(actual, expected, tolerance = 1e-6) {
   assert.equal(Number.isFinite(actual), true);
@@ -112,11 +116,23 @@ assert.deepEqual(rasterColorAdjustDispatchSize(2048, 2048), { x: 256, y: 256 });
 assert.deepEqual(rasterColorAdjustDispatchSize(17, 9), { x: 3, y: 2 });
 assert.match(rasterColorAdjustShader, /texture_storage_2d<rgba16float, write>/);
 assert.match(rasterColorAdjustShader, /source\.rgb \/ alpha/);
-assert.match(rasterColorAdjustShader, /vec4<f32>\(adjustedLinear \* alpha, alpha\)/);
 assert.match(
   rasterColorAdjustShader,
-  /outputOrigin:\s*vec2<u32>[\s\S]*_originPadding:\s*vec2<u32>[\s\S]*adjustments:\s*vec4<f32>/,
+  /rasterAdjustmentStraightEncodedToStored\(adjustedEncoded, alpha\)/,
+);
+assert.match(
+  rasterColorAdjustShader,
+  /outputOrigin:\s*vec2<u32>[\s\S]*quantizationSeed:\s*u32[\s\S]*adjustments:\s*vec4<f32>/,
   "the uniform ABI must remain two 16-byte rows",
 );
 
-console.log("Raster Color Adjust core math and RGBA16F shader contract verified.");
+const rgba8Shader = createRasterColorAdjustShader({
+  layerFormat: "rgba8unorm",
+  colorSpace: "encoded-srgb-premultiplied",
+});
+assert.match(rgba8Shader, /texture_storage_2d<rgba8unorm, write>/);
+assert.match(rgba8Shader, /return straightStored;/);
+assert.match(rgba8Shader, /quantizeRgba8HighFrequencyAdjacent/);
+assert.match(rgba8Shader, /parameters\.quantizationSeed/);
+
+console.log("Raster Color Adjust core math and dual-storage shader contract verified.");

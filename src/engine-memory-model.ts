@@ -88,7 +88,7 @@ export function lightGlazeAdditionalMemoryMiB(
   format: LayerFormat,
   storageMode: LightGlazeStorageMode,
   extent?: DocumentExtent,
-  includeCommitTile = true,
+  includeCommitTile = storageMode === "rgba16float-stroke",
 ): number {
   if (storageMode === "none") {
     return 0;
@@ -96,7 +96,7 @@ export function lightGlazeAdditionalMemoryMiB(
   const { width, height } = resolvedExtent(extent);
   const accumulatorMiB =
     (width * height * lightGlazeAccumulatorBytesPerPixel(storageMode)) / MEBIBYTE_BYTES;
-  const commitTileMiB = storageMode === "rgba16float-stroke" && includeCommitTile
+  const commitTileMiB = includeCommitTile
     ? LIGHT_GLAZE_COMMIT_TILE_EXTENT * LIGHT_GLAZE_COMMIT_TILE_EXTENT
       * layerFormatBytesPerPixel(format) / MEBIBYTE_BYTES
     : 0;

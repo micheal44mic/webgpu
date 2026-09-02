@@ -12,6 +12,7 @@ import {
   normalizeDestructiveMotionBlurDistance,
   unionMotionBlurRects,
 } from "../src/motion-blur-core.ts";
+import { quantizeUnorm8HighFrequencyAdjacent } from "../src/rgba8-high-frequency-quantization.ts";
 
 assert.equal(
   DESTRUCTIVE_MOTION_BLUR_CORE_BUILD,
@@ -173,6 +174,78 @@ const isolatedMotion = motionAlphaReference(isolatedAlpha, 17, 17, 4, 0);
 assert(isolatedMotion[8 * 17 + 7] > 0, "la scia deve uscire dal contenuto sorgente");
 assert(isolatedMotion[8 * 17 + 9] > 0, "la scia centrata deve essere simmetrica");
 
+function srgbToLinear(value) {
+  return value <= 0.04045
+    ? value / 12.92
+    : ((value + 0.055) / 1.055) ** 2.4;
+}
+
+function linearToSrgb(value) {
+  const bounded = Math.max(0, Math.min(1, value));
+  return bounded <= 0.0031308
+    ? bounded * 12.92
+    : 1.055 * bounded ** (1 / 2.4) - 0.055;
+}
+
+function roundTripPackedUnorm16(value) {
+  return Math.round(Math.max(0, Math.min(1, value)) * 65535) / 65535;
+}
+
+// The packed working path must retain every persistent 8-bit gray code through
+// an encoded-sRGB -> linear -> packed UNORM16 -> encoded-sRGB round trip. A
+// final adjacent-code decision may choose only the two closest 8-bit values.
+for (let code = 0; code <= 255; code += 1) {
+  const encoded = code / 255;
+  const working = roundTripPackedUnorm16(srgbToLinear(encoded));
+  const output = linearToSrgb(working);
+  const quantized = quantizeUnorm8HighFrequencyAdjacent(
+    output,
+    307 + code,
+    811,
+    0x4d4f544e,
+    0,
+  );
+  const scaled = output * 255;
+  assert(
+    quantized === Math.floor(scaled) || quantized === Math.ceil(scaled),
+    "La finalizzazione Motion Blur RGBA8 deve scegliere solo codici adiacenti.",
+  );
+  assert(
+    Math.abs(quantized - code) <= 1,
+    "Il round trip lineare packed non deve saltare livelli persistenti RGBA8.",
+  );
+}
+
+const darkRamp = Array.from({ length: 1024 }, (_, index) => {
+  const encoded = (index / 1023) * (48 / 255);
+  const working = roundTripPackedUnorm16(srgbToLinear(encoded));
+  return quantizeUnorm8HighFrequencyAdjacent(
+    linearToSrgb(working),
+    1300 + index,
+    97,
+    0x4d4f544e,
+    0,
+  );
+});
+assert(
+  new Set(darkRamp).size >= 48,
+  "La rampa scura deve utilizzare praticamente tutti i livelli RGBA8 disponibili.",
+);
+assert.deepEqual(
+  darkRamp,
+  Array.from({ length: 1024 }, (_, index) => {
+    const encoded = (index / 1023) * (48 / 255);
+    return quantizeUnorm8HighFrequencyAdjacent(
+      linearToSrgb(roundTripPackedUnorm16(srgbToLinear(encoded))),
+      1300 + index,
+      97,
+      0x4d4f544e,
+      0,
+    );
+  }),
+  "La fase di quantizzazione deve essere stabile al replay.",
+);
+
 const runtime = readFileSync(
   new URL("../src/engine-motion-blur-runtime.ts", import.meta.url),
   "utf8",
@@ -193,7 +266,10 @@ const canvasInput = readFileSync(
 );
 
 assert.match(runtime, /format:\s*"rgba16float"/);
+assert.match(runtime, /format:\s*engine\.layerFormat/);
+assert.match(runtime, /format:\s*engine\.layerFormat === "rgba8unorm" \? "rg32uint" : "rgba16float"/);
 assert.match(runtime, /texture_2d<f32>/);
+assert.match(runtime, /texture_2d<u32>/);
 assert.match(runtime, /return \([\s\S]*\) \* 0\.5;/);
 assert.match(runtime, /sampleInputLinear/);
 assert.match(runtime, /immutable source/);
@@ -219,7 +295,39 @@ assert.doesNotMatch(
   /engine\.layerSize|\bLAYER_SIZE\b|word \+ 11\]\s*=\s*documentWidth/,
   "Motion Blur non deve duplicare la larghezza come altezza.",
 );
-assert.doesNotMatch(runtime, /rgba8|unorm8|pack4x8|unpack4x8/i);
+assert.doesNotMatch(runtime, /requires an RGBA16F document/);
+assert.match(runtime, /pack2x16unorm/);
+assert.match(runtime, /unpack2x16unorm/);
+assert.match(runtime, /motionEncodedPremultipliedToLinear/);
+assert.match(runtime, /motionLinearPremultipliedToEncoded/);
+assert.match(runtime, /quantizeRgba8HighFrequencyAdjacent/);
+assert.match(runtime, /documentPixel,\s*parameters\.quantizationAndReserved\.x/);
+assert.match(runtime, /quantizationSeed:\s*engine\.nextHistoryActionId >>> 0/);
+assert.match(runtime, /engine\.documentStorageColorSpace === "encoded-srgb-premultiplied"/);
+assert.match(runtime, /secondaryTexture/);
+assert.match(runtime, /MOTION_BLUR_RGBA8_SOURCE_WGSL/);
+assert.match(runtime, /MOTION_BLUR_RGBA8_WORKING_WGSL/);
+assert.match(runtime, /MOTION_BLUR_RGBA8_FINALIZE_WGSL/);
+assert.match(runtime, /GPUTextureUsage\.STORAGE_BINDING \| GPUTextureUsage\.TEXTURE_BINDING/);
+
+const rgba8Encode = runtime.slice(
+  runtime.indexOf('if (session.shared.outputFormat === "rgba8unorm")'),
+  runtime.indexOf('  } else {', runtime.indexOf('if (session.shared.outputFormat === "rgba8unorm")')),
+);
+assert.match(rgba8Encode, /beginComputePass/);
+assert.match(rgba8Encode, /rgba8SourcePipeline/);
+assert.match(rgba8Encode, /rgba8WorkingPipeline/);
+assert.match(rgba8Encode, /rgba8FinalizePipeline/);
+assert.match(
+  rgba8Encode,
+  /for \(let pass = 0; pass < kernel\.passCount; pass \+= 1\)[\s\S]*Motion Blur RGBA8 high-frequency finalization/,
+  "Tutti i pass packed devono precedere l'unica scrittura RGBA8 finale.",
+);
+assert.doesNotMatch(
+  rgba8Encode.slice(0, rgba8Encode.indexOf("Motion Blur RGBA8 high-frequency finalization")),
+  /engine\.layerView/,
+  "Il documento RGBA8 non deve essere una superficie ping-pong tra i pass.",
+);
 
 const restore = runtime.slice(
   runtime.indexOf("async function restoreOriginalPixels("),
@@ -234,8 +342,13 @@ assert.match(commit, /kind:\s*"raster-filter"/);
 assert.match(commit, /filter:\s*"motion-blur"/);
 assert.match(commit, /commitHistoryActionAtomically\(engine, action\)/);
 assert.match(commit, /createLayerColdStorageCandidate\([\s\S]{0,260}"history"/);
-assert.match(commit, /precision:\s*"rgba16float-f32-accumulation"/);
+assert.match(commit, /DESTRUCTIVE_MOTION_BLUR_RGBA8_PRECISION/);
+assert.match(commit, /"rgba16float-f32-accumulation"/);
 assert.match(history, /filter:\s*"motion-blur"/);
+assert.match(
+  history,
+  /rgba8unorm-linear-rgba16unorm-packed-logarithmic-f32-high-frequency-output/,
+);
 assert.match(history, /transparent-content-clamp-document-edge/);
 assert.match(engine, /activeRasterMotionBlurSession/);
 assert.match(engine, /beginRasterMotionBlur/);
@@ -251,4 +364,4 @@ assert.match(
 assert.match(main, /rasterAdjustmentsController\?\.isDestructivePreviewNavigationActive/);
 assert.match(canvasInput, /destructivePreviewTouchNavigationRequested/);
 
-console.log("Destructive 16-bit Motion Blur document-edge verification passed.");
+console.log("Destructive dual-storage Motion Blur verification passed.");

@@ -620,8 +620,30 @@ class EditorLabController implements EditorExtension {
           : "light-glaze";
         const fur = search.get("variant") === "fur";
         const texturized = search.get("grain") === "texturized";
+        const colorDynamicsOff = search.get("colorDynamics") === "off";
+        const captureOutput = search.get("captureOutput") === "1";
+        const requestedFlow = Number(search.get("flow"));
+        const flow = Number.isFinite(requestedFlow)
+          && requestedFlow >= 0.001
+          && requestedFlow <= 1
+          ? requestedFlow
+          : null;
+        const requestedOpacity = Number(search.get("opacity"));
+        const opacity = Number.isFinite(requestedOpacity)
+          && requestedOpacity >= 0
+          && requestedOpacity <= 1
+          ? requestedOpacity
+          : null;
         return this.#humanStroke.replay("canonical", {
           blendMode,
+          ...(flow === null ? {} : { flow }),
+          ...(opacity === null ? {} : { opacity }),
+          ...(colorDynamicsOff ? {
+            hueJitterDegrees: 0,
+            saturationJitter: 0,
+            lightnessJitter: 0,
+            darknessJitter: 0,
+          } : {}),
           ...(fur ? {
             shape: "shape" as const,
             shapeScatter: 1,
@@ -629,7 +651,7 @@ class EditorLabController implements EditorExtension {
             positionJitterLinear: 0,
           } : {}),
           ...(texturized ? { grainMode: "texturized" as const } : {}),
-        });
+        }, { captureOutputWitness: captureOutput });
       }
       case "human-shape-sequence":
         return this.#humanStroke.runShapeSequenceComparison();

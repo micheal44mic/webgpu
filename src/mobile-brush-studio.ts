@@ -49,6 +49,25 @@ type BrushStudioSourceKind = "shape" | "grain";
 type BrushStudioCanvasSource = HTMLCanvasElement | HTMLImageElement;
 type BrushStudioShapeImportMode = "append" | "replace";
 
+export type BrushStudioRenderingMode =
+  | "light-glaze"
+  | "uniformed-glaze"
+  | "intense-blending";
+
+const BRUSH_STUDIO_RENDERING_MODES: readonly BrushStudioRenderingMode[] = [
+  "light-glaze",
+  "uniformed-glaze",
+  "intense-blending",
+];
+
+const BRUSH_STUDIO_COLOR_DYNAMICS_CONTROL_IDS = [
+  "mobileBrushStudioJitterPerCopy",
+  "mobileBrushStudioHue",
+  "mobileBrushStudioSaturation",
+  "mobileBrushStudioLightness",
+  "mobileBrushStudioDarkness",
+] as const;
+
 interface ImportedBrushStudioAsset {
   readonly kind: BrushStudioAssetKind;
   readonly blob: Blob;
@@ -64,6 +83,10 @@ export interface MobileBrushStudioOptions {
   readonly appRoot: HTMLElement;
   readonly browser: MobileBrushStudioBrowser;
   getBrushPrecision(): BrushShapeMaskFormat;
+  readonly supportedRenderingModes?: readonly BrushStudioRenderingMode[];
+  readonly colorDynamicsSupported?: boolean;
+  readonly colorDynamicsRenderingModes?: readonly BrushStudioRenderingMode[];
+  readonly colorDynamicsPerCopyRenderingModes?: readonly BrushStudioRenderingMode[];
   readonly applySettings: (settings: BrushSettings) => void;
   readonly setBrushLibraryOpen: (open: boolean) => void;
   readonly onOpenChange: (open: boolean) => void;
@@ -345,6 +368,10 @@ export class MobileBrushStudioController {
   private readonly document: Document;
   private readonly appRoot: HTMLElement;
   private readonly eventAbortController: AbortController;
+  private readonly supportedRenderingModes: ReadonlySet<BrushStudioRenderingMode>;
+  private readonly colorDynamicsSupported: boolean;
+  private readonly colorDynamicsRenderingModes: ReadonlySet<BrushStudioRenderingMode>;
+  private readonly colorDynamicsPerCopyRenderingModes: ReadonlySet<BrushStudioRenderingMode>;
   private readonly settingsCache = new Map<string, BrushSettings>();
   private readonly importedAssets = new Map<string, ImportedBrushStudioAsset>();
   private readonly transientAssetIds = new Set<string>();
@@ -389,6 +416,16 @@ export class MobileBrushStudioController {
     this.document = options.root.ownerDocument;
     this.appRoot = options.appRoot;
     this.eventAbortController = new options.browser.AbortController();
+    this.supportedRenderingModes = new Set(
+      options.supportedRenderingModes ?? BRUSH_STUDIO_RENDERING_MODES,
+    );
+    this.colorDynamicsSupported = options.colorDynamicsSupported ?? true;
+    this.colorDynamicsRenderingModes = new Set(
+      options.colorDynamicsRenderingModes ?? BRUSH_STUDIO_RENDERING_MODES,
+    );
+    this.colorDynamicsPerCopyRenderingModes = new Set(
+      options.colorDynamicsPerCopyRenderingModes ?? BRUSH_STUDIO_RENDERING_MODES,
+    );
     this.handle = requiredDescendant<HTMLButtonElement>(this.sheet, "mobileBrushStudioHandle");
     this.cancelButton = requiredDescendant<HTMLButtonElement>(this.sheet, "mobileBrushStudioCancel");
     this.doneButton = requiredDescendant<HTMLButtonElement>(this.sheet, "mobileBrushStudioDone");
@@ -414,6 +451,7 @@ export class MobileBrushStudioController {
     this.grainModeButtons = Array.from(
       this.sheet.querySelectorAll<HTMLButtonElement>("[data-mobile-brush-grain-mode]"),
     );
+    this.syncCapabilityAvailability();
     this.bindControls();
     this.setTab("stroke", false);
     this.sheet.setAttribute("aria-hidden", "true");
@@ -719,16 +757,16 @@ export class MobileBrushStudioController {
       this.changeDraft((draft) => { draft.grainContrast = value / 100; });
     }, signedPercent);
     this.bindRange("mobileBrushStudioHue", "mobileBrushStudioHueOut", (value) => {
-      this.changeDraft((draft) => { draft.hueJitterDegrees = value; });
+      this.changeColorDynamics((draft) => { draft.hueJitterDegrees = value; });
     }, (value) => `${Math.round(value)}°`);
     this.bindRange("mobileBrushStudioSaturation", "mobileBrushStudioSaturationOut", (value) => {
-      this.changeDraft((draft) => { draft.saturationJitter = value / 100; });
+      this.changeColorDynamics((draft) => { draft.saturationJitter = value / 100; });
     }, percent);
     this.bindRange("mobileBrushStudioLightness", "mobileBrushStudioLightnessOut", (value) => {
-      this.changeDraft((draft) => { draft.lightnessJitter = value / 100; });
+      this.changeColorDynamics((draft) => { draft.lightnessJitter = value / 100; });
     }, percent);
     this.bindRange("mobileBrushStudioDarkness", "mobileBrushStudioDarknessOut", (value) => {
-      this.changeDraft((draft) => { draft.darknessJitter = value / 100; });
+      this.changeColorDynamics((draft) => { draft.darknessJitter = value / 100; });
     }, percent);
     this.bindRange("mobileBrushStudioStartThickness", "mobileBrushStudioStartThicknessOut", (value) => {
       this.changeDraft((draft) => { draft.startThickness = value / 100; });
@@ -744,15 +782,12 @@ export class MobileBrushStudioController {
       this.changeDraft((draft) => { draft.grainInvert = checked; }, true);
     });
     this.bindCheckbox("mobileBrushStudioJitterPerCopy", (checked) => {
-      this.changeDraft((draft) => { draft.jitterPerCopy = checked; });
+      this.changeColorDynamics((draft) => { draft.jitterPerCopy = checked; }, true);
     });
 
     for (const button of this.renderingButtons) {
       this.listen(button, "click", () => {
-        const mode = button.dataset.mobileBrushRendering;
-        if (mode !== "light-glaze" && mode !== "uniformed-glaze" && mode !== "intense-blending") return;
-        this.changeDraft((draft) => { draft.blendMode = mode; });
-        this.syncRadioButtons(this.renderingButtons, "mobileBrushRendering", mode);
+        this.changeRenderingMode(button.dataset.mobileBrushRendering);
       });
       this.listen(button, "keydown", (event) => {
         this.handleRadioButtonKeydown(event, button, this.renderingButtons);
@@ -962,6 +997,24 @@ export class MobileBrushStudioController {
     if (redrawSources) void this.drawSourcePreviews();
   }
 
+  private changeColorDynamics(
+    change: (draft: BrushSettings) => void,
+    requiresPerCopySupport = false,
+  ): void {
+    if (!this.colorDynamicsAvailableForCurrentRenderingMode()) return;
+    if (requiresPerCopySupport && !this.colorDynamicsPerCopyAvailableForCurrentRenderingMode()) {
+      return;
+    }
+    this.changeDraft(change);
+  }
+
+  private changeRenderingMode(mode: string | undefined): void {
+    if (!this.isRenderingModeSupported(mode)) return;
+    this.changeDraft((draft) => { draft.blendMode = mode; });
+    this.syncRadioButtons(this.renderingButtons, "mobileBrushRendering", mode);
+    this.syncCapabilityAvailability();
+  }
+
   private scheduleApply(): void {
     if (this.disposed) return;
     if (this.applyFrame === null) {
@@ -1027,6 +1080,7 @@ export class MobileBrushStudioController {
     );
     this.syncRadioButtons(this.grainModeButtons, "mobileBrushGrainMode", settings.grainMode);
     this.syncGrainAvailability(settings.grainMode);
+    this.syncCapabilityAvailability();
     this.renderShapeSequenceControls(settings);
   }
 
@@ -1071,6 +1125,7 @@ export class MobileBrushStudioController {
       && event.key !== "Home"
       && event.key !== "End"
     ) return;
+    if (current.disabled) return;
     const enabled = buttons.filter((button) => !button.disabled);
     if (enabled.length < 2) return;
     const currentIndex = Math.max(0, enabled.indexOf(current));
@@ -1085,6 +1140,63 @@ export class MobileBrushStudioController {
     const next = enabled[nextIndex];
     next.click();
     next.focus({ preventScroll: true });
+  }
+
+  private isRenderingModeSupported(
+    mode: string | undefined,
+  ): mode is BrushStudioRenderingMode {
+    return (
+      mode === "light-glaze"
+      || mode === "uniformed-glaze"
+      || mode === "intense-blending"
+    ) && this.supportedRenderingModes.has(mode);
+  }
+
+  private currentRenderingMode(): BrushStudioRenderingMode | null {
+    const draftMode = this.draftSettings?.blendMode;
+    const mode = draftMode === "uniformed-glaze" || draftMode === "intense-blending"
+      ? draftMode
+      : draftMode === undefined
+        ? this.renderingButtons.find(
+          (button) => button.getAttribute("aria-checked") === "true",
+        )?.dataset.mobileBrushRendering
+        : "light-glaze";
+    return this.isRenderingModeSupported(mode) ? mode : null;
+  }
+
+  private colorDynamicsAvailableForCurrentRenderingMode(): boolean {
+    const mode = this.currentRenderingMode();
+    return this.colorDynamicsSupported
+      && mode !== null
+      && this.colorDynamicsRenderingModes.has(mode);
+  }
+
+  private colorDynamicsPerCopyAvailableForCurrentRenderingMode(): boolean {
+    const mode = this.currentRenderingMode();
+    return mode !== null && this.colorDynamicsPerCopyRenderingModes.has(mode);
+  }
+
+  private syncCapabilityAvailability(): void {
+    let enabledSelectionFound = false;
+    for (const button of this.renderingButtons) {
+      const supported = this.isRenderingModeSupported(button.dataset.mobileBrushRendering);
+      button.disabled = !supported;
+      if (supported && button.getAttribute("aria-checked") === "true") {
+        enabledSelectionFound = true;
+      }
+      if (!supported) button.tabIndex = -1;
+    }
+    if (!enabledSelectionFound) {
+      const firstEnabled = this.renderingButtons.find((button) => !button.disabled);
+      if (firstEnabled) firstEnabled.tabIndex = 0;
+    }
+    const colorDynamicsAvailable = this.colorDynamicsAvailableForCurrentRenderingMode();
+    const colorDynamicsPerCopyAvailable = colorDynamicsAvailable
+      && this.colorDynamicsPerCopyAvailableForCurrentRenderingMode();
+    for (const id of BRUSH_STUDIO_COLOR_DYNAMICS_CONTROL_IDS) {
+      this.element<HTMLInputElement>(id).disabled = !colorDynamicsAvailable
+        || (id === "mobileBrushStudioJitterPerCopy" && !colorDynamicsPerCopyAvailable);
+    }
   }
 
   private syncGrainAvailability(mode: GrainMode): void {

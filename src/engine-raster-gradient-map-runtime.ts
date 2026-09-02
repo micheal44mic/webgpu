@@ -1,6 +1,7 @@
 /** Transactional destructive Gradient Map for the selected native raster. */
 
 import type { BrushEngine } from "./brush-engine";
+import type { DocumentStorageColorSpace, LayerFormat } from "./engine-types";
 import {
   createLayerColdStorageCandidate,
   destroyLayerColdStorage,
@@ -23,23 +24,29 @@ import {
   type RasterGradientMapSettingsInput,
 } from "./raster-gradient-map-core.ts";
 import {
+  createRasterGradientMapShader,
   rasterGradientMapDispatchSize,
-  rasterGradientMapShader,
 } from "./raster-gradient-map-shaders.ts";
+import {
+  rasterAdjustmentBytesPerPixel,
+  rasterAdjustmentStorageProfileKey,
+  type RasterAdjustmentStorageProfile,
+} from "./raster-adjustment-storage-shader";
 
 export const DESTRUCTIVE_RASTER_GRADIENT_MAP_RUNTIME_BUILD =
-  "destructive-raster-gradient-map-webgpu-v1-immutable-crop-latest-wins" as const;
+  "destructive-raster-gradient-map-webgpu-v2-dual-storage-adjacent-code" as const;
 export const DESTRUCTIVE_RASTER_GRADIENT_MAP_ALGORITHM =
   "luminance-gradient-map-v1" as const;
 export const DESTRUCTIVE_RASTER_GRADIENT_MAP_ALGORITHM_VERSION = 1 as const;
 export const DESTRUCTIVE_RASTER_GRADIENT_MAP_PRECISION =
   "rgba16float-source-and-output-f32-lut" as const;
+export const DESTRUCTIVE_RASTER_GRADIENT_MAP_RGBA8_PRECISION =
+  "rgba8unorm-encoded-srgb-source-and-output-f32-lut-high-frequency-output" as const;
 export const DESTRUCTIVE_RASTER_GRADIENT_MAP_COLOR_SPACE =
   "straight-encoded-rgb" as const;
 export const DESTRUCTIVE_RASTER_GRADIENT_MAP_ALPHA_MODE = "preserve" as const;
 export const DESTRUCTIVE_RASTER_GRADIENT_MAP_BOUNDS_MODE = "preserve" as const;
 
-const BYTES_PER_RGBA16F_PIXEL = 8;
 const RASTER_GRADIENT_MAP_PARAMETER_BYTE_SIZE = 32;
 const RASTER_GRADIENT_MAP_LUT_BYTE_SIZE =
   RASTER_GRADIENT_MAP_LUT_SIZE
@@ -68,6 +75,7 @@ export interface ActiveRasterGradientMapSession {
   readonly lutBuffer: GPUBuffer;
   readonly bindGroup: GPUBindGroup;
   readonly shared: RasterGradientMapSharedResources;
+  readonly quantizationSeed: number;
   readonly memoryBytes: number;
   settings: RasterGradientMapSettings;
   requestedSerial: number;
@@ -83,15 +91,19 @@ export type RasterGradientMapEngineHost = BrushEngine & {
   activeRasterGradientMapSession: ActiveRasterGradientMapSession | null;
 };
 
-const sharedByDevice = new WeakMap<GPUDevice, Promise<RasterGradientMapSharedResources>>();
+const sharedByDevice = new WeakMap<
+  GPUDevice,
+  Map<string, Promise<RasterGradientMapSharedResources>>
+>();
 
 async function createSharedResources(
   device: GPUDevice,
+  profile: RasterAdjustmentStorageProfile,
 ): Promise<RasterGradientMapSharedResources> {
   return runGpuAllocationTransaction(device, "Raster Gradient Map pipeline", async () => {
     const module = device.createShaderModule({
       label: "Raster Gradient Map WGSL",
-      code: rasterGradientMapShader,
+      code: createRasterGradientMapShader(profile),
     });
     await assertShaderCompiled(module, "Raster Gradient Map");
     const bindGroupLayout = device.createBindGroupLayout({
@@ -105,7 +117,7 @@ async function createSharedResources(
         {
           binding: 1,
           visibility: GPUShaderStage.COMPUTE,
-          storageTexture: { access: "write-only", format: "rgba16float" },
+          storageTexture: { access: "write-only", format: profile.layerFormat },
         },
         {
           binding: 2,
@@ -136,22 +148,33 @@ async function createSharedResources(
 
 async function requireSharedResources(
   device: GPUDevice,
+  profile: RasterAdjustmentStorageProfile,
 ): Promise<RasterGradientMapSharedResources> {
-  let promise = sharedByDevice.get(device);
+  let profiles = sharedByDevice.get(device);
+  if (!profiles) {
+    profiles = new Map();
+    sharedByDevice.set(device, profiles);
+  }
+  const key = rasterAdjustmentStorageProfileKey(profile);
+  let promise = profiles.get(key);
   if (!promise) {
-    promise = createSharedResources(device);
-    sharedByDevice.set(device, promise);
+    promise = createSharedResources(device, profile);
+    profiles.set(key, promise);
   }
   try {
     return await promise;
   } catch (error) {
-    sharedByDevice.delete(device);
+    profiles.delete(key);
     throw error;
   }
 }
 
-export async function prewarmRasterGradientMapRuntime(device: GPUDevice): Promise<void> {
-  await requireSharedResources(device);
+export async function prewarmRasterGradientMapRuntime(
+  device: GPUDevice,
+  layerFormat: LayerFormat = "rgba16float",
+  colorSpace: DocumentStorageColorSpace = "linear-premultiplied",
+): Promise<void> {
+  await requireSharedResources(device, { layerFormat, colorSpace });
 }
 
 function runtimeError(error: unknown): Error {
@@ -225,11 +248,13 @@ export function abandonRasterGradientMapSession(
 function packedParameters(
   bounds: DirtyRect,
   settings: Readonly<RasterGradientMapSettings>,
+  quantizationSeed: number,
 ): ArrayBuffer {
   const buffer = new ArrayBuffer(RASTER_GRADIENT_MAP_PARAMETER_BYTE_SIZE);
   const view = new DataView(buffer);
   view.setUint32(0, bounds.x, true);
   view.setUint32(4, bounds.y, true);
+  view.setUint32(8, quantizationSeed >>> 0, true);
   view.setUint32(16, settings.dither ? 1 : 0, true);
   return buffer;
 }
@@ -247,7 +272,7 @@ function encodeRequestedPreview(
   engine.device.queue.writeBuffer(
     session.parameterBuffer,
     0,
-    packedParameters(bounds, settings),
+    packedParameters(bounds, settings, session.quantizationSeed),
   );
   engine.device.queue.writeBuffer(
     session.lutBuffer,
@@ -385,6 +410,7 @@ async function allocateSession(
   settings: RasterGradientMapSettings,
   shared: RasterGradientMapSharedResources,
 ): Promise<ActiveRasterGradientMapSession> {
+  const quantizationSeed = engine.nextHistoryActionId >>> 0;
   return runGpuAllocationTransaction(
     engine.device,
     `Allocate raster Gradient Map layer ${recordId}`,
@@ -396,7 +422,7 @@ async function allocateSession(
           height: sourceBounds.height,
           depthOrArrayLayers: 1,
         },
-        format: "rgba16float",
+        format: engine.layerFormat,
         usage:
           GPUTextureUsage.COPY_SRC
           | GPUTextureUsage.COPY_DST
@@ -466,9 +492,11 @@ async function allocateSession(
         bindGroup,
         shared,
         memoryBytes:
-          sourceBounds.width * sourceBounds.height * BYTES_PER_RGBA16F_PIXEL
+          sourceBounds.width * sourceBounds.height
+            * rasterAdjustmentBytesPerPixel(engine.layerFormat)
           + RASTER_GRADIENT_MAP_PARAMETER_BYTE_SIZE
           + RASTER_GRADIENT_MAP_LUT_BYTE_SIZE,
+        quantizationSeed,
         settings,
         requestedSerial: 1,
         encodedSerial: 0,
@@ -520,10 +548,6 @@ export async function beginRasterGradientMap(
   if (!record.hasContent || !record.contentBounds) {
     throw new Error("The selected raster layer is empty.");
   }
-  if (engine.layerFormat !== "rgba16float") {
-    throw new Error("Destructive Gradient Map requires an RGBA16F document.");
-  }
-
   engine.cancelLayerColdCompressionIdle();
   engine.historyBusy = true;
   engine.publishHistoryState();
@@ -539,7 +563,10 @@ export async function beginRasterGradientMap(
       throw new Error("Gradient Map: the GPU does not support the required dispatch size.");
     }
     const settings = normalizeRasterGradientMapSettings(initial);
-    const shared = await requireSharedResources(engine.device);
+    const shared = await requireSharedResources(engine.device, {
+      layerFormat: engine.layerFormat,
+      colorSpace: engine.documentStorageColorSpace,
+    });
     session = await allocateSession(
       engine,
       record.id,
@@ -689,7 +716,9 @@ export async function commitRasterGradientMap(
       lutSize: RASTER_GRADIENT_MAP_LUT_SIZE,
       algorithm: DESTRUCTIVE_RASTER_GRADIENT_MAP_ALGORITHM,
       algorithmVersion: DESTRUCTIVE_RASTER_GRADIENT_MAP_ALGORITHM_VERSION,
-      precision: DESTRUCTIVE_RASTER_GRADIENT_MAP_PRECISION,
+      precision: engine.layerFormat === "rgba8unorm"
+        ? DESTRUCTIVE_RASTER_GRADIENT_MAP_RGBA8_PRECISION
+        : DESTRUCTIVE_RASTER_GRADIENT_MAP_PRECISION,
       colorSpace: DESTRUCTIVE_RASTER_GRADIENT_MAP_COLOR_SPACE,
       alphaMode: DESTRUCTIVE_RASTER_GRADIENT_MAP_ALPHA_MODE,
       boundsMode: DESTRUCTIVE_RASTER_GRADIENT_MAP_BOUNDS_MODE,

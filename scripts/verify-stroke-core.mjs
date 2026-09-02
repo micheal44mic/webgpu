@@ -40,6 +40,10 @@ import {
   compositeRasterColorOverlayPixel,
   normalizeRasterColorOverlayStyle,
 } from "../src/raster-color-overlay-core.ts";
+import {
+  rasterEffectColorForLinearCompositing,
+  rasterEffectSrgbChannelToLinear,
+} from "../src/raster-effect-color-space.ts";
 
 const approx = (actual, expected, epsilon = 1e-12) => {
   assert.ok(
@@ -47,6 +51,20 @@ const approx = (actual, expected, epsilon = 1e-12) => {
     `${actual} != ${expected}`,
   );
 };
+
+approx(rasterEffectSrgbChannelToLinear(0.5), 0.21404114048223255);
+assert.deepEqual(
+  rasterEffectColorForLinearCompositing([0.5, 0.25, 1], false),
+  [0.5, 0.25, 1],
+  "the legacy linear document profile keeps its existing effect-color contract",
+);
+const rgba8LinearEffectColor = rasterEffectColorForLinearCompositing(
+  [0.5, 0.25, 1],
+  true,
+);
+approx(rgba8LinearEffectColor[0], 0.21404114048223255);
+approx(rgba8LinearEffectColor[1], 0.05087608817155679);
+approx(rgba8LinearEffectColor[2], 1);
 
 // Style normalization is copied from raster-stroke-style-gpu.js.
 assert.deepEqual(normalizeRasterStrokeStyle(), {
@@ -485,9 +503,37 @@ assert.match(rendererSource, /this\.displayParameterUploadF32\[23\] = encodedCol
 assert.match(rendererSource, /this\.parameterUploadF32\[word \+ 23\] = encodedColorOverlayMode\(colorOverlayStyle\)/);
 assert.match(
   rendererSource,
-  /fn authoredMatteMain[\s\S]*?textureStore\(styledTexture, storagePosition, sourceTexel\(position\)\)/,
+  /fn authoredMatteMain[\s\S]*?documentStorageTexel\(sourceTexel\(position\), vec2<u32>\(position\)\)/,
   "the live cutout bake must use authored pixels before Fill and effects",
 );
+assert.match(rendererSource, /storedEncodedSrgb\?: boolean/);
+assert.match(rendererSource, /const STORED_ENCODED_SRGB: bool/);
+assert.match(
+  rendererSource,
+  /fn sourceTexel[\s\S]*?encodedSrgbPremultipliedToLinear\(stored\)/,
+  "encoded authoritative pixels must enter the style stack as linear premultiplied values",
+);
+assert.match(
+  rendererSource,
+  /fn styledTexel[\s\S]*?linearPremultipliedToEncodedSrgb\(linear\)/,
+  "the linear f32 style stack must encode once before writing RGBA8 derived storage",
+);
+assert.match(
+  rendererSource,
+  /fn styledTexel[\s\S]*?quantizeRgba8HighFrequencyAdjacent\([\s\S]*?vec2<u32>\(position\)/,
+  "RGBA8 style output must use stable adjacent-code quantization in document coordinates",
+);
+assert.match(
+  rendererSource,
+  /fn quantizeLayer\(value: vec4<f32>\)[\s\S]*?if \(STORED_ENCODED_SRGB\) \{\s*return value;/,
+  "the RGBA8 effect stack must keep intermediate compositing in f32",
+);
+assert.match(
+  rendererSource,
+  /rasterEffectColorForLinearCompositing\([\s\S]*?style\.color,[\s\S]*?this\.storedEncodedSrgb/,
+  "Stroke picker colors must enter the encoded-document style stack in linear light",
+);
+assert.match(strokeProgramKeySource, /stored-encoded:/);
 assert.match(rendererSource, /encodeAuthoredMatteBake\(/);
 assert.match(
   rendererSource,

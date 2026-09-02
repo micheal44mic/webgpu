@@ -135,6 +135,38 @@ for (const pipeline of [
 ]) {
   assert.ok(previewSource.includes(`this.engine.${pipeline}`), `pipeline runtime non riusata: ${pipeline}`);
 }
+assert.match(
+  previewSource,
+  /normalizePaintDabProfileSettings\(\s*this\.engine\.paintDabProfile,\s*\{ \.\.\.sourceSettings, tool: "paint" \},\s*\)/,
+  "la preview deve consumare lo stesso profilo Paint del documento",
+);
+assert.match(
+  previewSource,
+  /const accumulatorFormat:[\s\S]*?\? this\.engine\.layerFormat[\s\S]*?"light-glaze"[\s\S]*?\? "r16float"\s*: "rgba16float"/,
+  "Light deve usare coverage R16F mentre Uniformed e Intense conservano un gesto RGBA16F",
+);
+assert.match(
+  previewSource,
+  /usesEncodedSrgbRgba8PaintDabProfile\([\s\S]*?this\.engine\.layerFormat === "rgba8unorm"[\s\S]*?this\.engine\.displayCompositingColorSpace === "stored-encoded-srgb"/,
+  "i resolve encoded devono essere vincolati al profilo e allo storage reali",
+);
+for (const mode of [
+  "encoded-srgb-light-no-build-up",
+  "linear-stroke-over-encoded-srgb",
+  "encoded-srgb-stroke-over-encoded-srgb",
+]) {
+  assert.ok(previewSource.includes(`? "${mode}"`), `resolve preview encoded assente: ${mode}`);
+}
+assert.match(
+  previewSource,
+  /adaptivePreviewSrgb\(\s*previewHash32\(stamps\[0\]\.seed\),\s*settings,\s*\)[\s\S]*?if \(preciseDeposit \|\| encodedLight\)[\s\S]*?tintLinear = \[red, green, blue\]/,
+  "Light encoded deve applicare Color Dynamics una volta al gesto senza una seconda transfer",
+);
+assert.match(
+  previewSource,
+  /spatialEncodedResolve \? stamps\[0\]\?\.seed \?\? PREVIEW_SEED_SEQUENCE : 0/,
+  "ogni resolve RGBA8 encoded deve ricevere un seed spaziale stabile",
+);
 assert.match(previewShaderSource, /linearPremultipliedToEncodedSrgb/);
 assert.doesNotMatch(previewShaderSource, /grain|spacing|jitter|shapeScatter|stamp/i);
 assert.doesNotMatch(
@@ -182,6 +214,10 @@ assert.match(librarySource, /private readonly renderer: AuthoritativeBrushStroke
 assert.match(librarySource, /await this\.renderer\.render\(canvas, settings, \{/);
 assert.match(librarySource, /this\.renderer\.cacheIdentity/);
 assert.match(previewSource, /get cacheIdentity\(\): string[\s\S]*?this\.engine\.layerFormat/);
+assert.match(
+  previewSource,
+  /BRUSH_STROKE_PREVIEW_RENDERER_VERSION[\s\S]*?authoritative-paint-stamps-webgpu-v2/,
+);
 assert.match(previewSource, /this\.engine\.shapeLoadingPromise === null/);
 assert.match(previewSource, /this\.engine\.grainLoadingPromise === null/);
 assert.match(previewSource, /const shapeMaskFormat = shapeMaskFormatForSettings\(settings\)/);

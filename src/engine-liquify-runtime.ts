@@ -14,7 +14,11 @@ import {
   DOCUMENT_WIDTH,
 } from "./engine-limits";
 import type { DirtyRect } from "./engine-stroke-types";
-import type { LayerPoint } from "./engine-types";
+import type {
+  DocumentStorageColorSpace,
+  LayerFormat,
+  LayerPoint,
+} from "./engine-types";
 import { publishMixedScene } from "./engine-vector-text-runtime";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import type { MemoryReservation, MemoryRequest } from "./memory-governor-core";
@@ -42,7 +46,7 @@ import {
 } from "./liquify-core";
 import {
   LIQUIFY_DISPLACEMENT_FORMAT,
-  LIQUIFY_RESOLVE_SHADER,
+  liquifyResolveShader,
   LIQUIFY_SHADER_STRATEGY,
   LIQUIFY_UPDATE_SHADER,
   LIQUIFY_WORKGROUP_SIZE,
@@ -56,6 +60,7 @@ export const RASTER_LIQUIFY_INPUT_STRATEGY =
   "coalesced-pressure-mode-aware-resampling-stable-axis-hold-resampled-momentum" as const;
 
 const BYTES_PER_RGBA16F_PIXEL = 8;
+const BYTES_PER_RGBA8_PIXEL = 4;
 const MAX_DABS_PER_PREVIEW = 64;
 const MAX_GENERATED_DABS_PER_EVENT = 2_048;
 const MAX_MOMENTUM_DABS_PER_FRAME = 32;
@@ -133,6 +138,7 @@ export interface ActiveRasterLiquifySession {
   readonly resolveBindGroup: GPUBindGroup;
   readonly shared: LiquifySharedResources;
   readonly memoryBytes: number;
+  readonly quantizationSeed: number;
   readonly pendingDabs: LiquifyDab[];
   readonly usedModes: Set<LiquifyMode>;
   settings: LiquifySettings;
@@ -152,7 +158,17 @@ export interface ActiveRasterLiquifySession {
   terminal: boolean;
 }
 
-const sharedByDevice = new WeakMap<GPUDevice, Promise<LiquifySharedResources>>();
+const sharedByDevice = new WeakMap<
+  GPUDevice,
+  Map<string, Promise<LiquifySharedResources>>
+>();
+
+function sharedVariantKey(
+  layerFormat: LayerFormat,
+  storageColorSpace: DocumentStorageColorSpace,
+): string {
+  return `${layerFormat}:${storageColorSpace}`;
+}
 
 function errorFrom(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
@@ -257,15 +273,22 @@ function setAuthoritativeMetadata(
   invalidateActiveLayerBake(engine);
 }
 
-async function createSharedResources(device: GPUDevice): Promise<LiquifySharedResources> {
-  return runGpuAllocationTransaction(device, "Pipeline Native raster Liquify", async () => {
+async function createSharedResources(
+  device: GPUDevice,
+  layerFormat: LayerFormat,
+  storageColorSpace: DocumentStorageColorSpace,
+): Promise<LiquifySharedResources> {
+  return runGpuAllocationTransaction(
+    device,
+    `Pipeline Native raster Liquify ${layerFormat} ${storageColorSpace}`,
+    async () => {
     const updateModule = device.createShaderModule({
       label: "Native raster Liquify displacement update WGSL",
       code: LIQUIFY_UPDATE_SHADER,
     });
     const resolveModule = device.createShaderModule({
       label: "Native raster Liquify immutable source resolve WGSL",
-      code: LIQUIFY_RESOLVE_SHADER,
+      code: liquifyResolveShader(layerFormat, storageColorSpace),
     });
     await Promise.all([
       assertShaderCompiled(updateModule, "Native raster Liquify update"),
@@ -319,14 +342,17 @@ async function createSharedResources(device: GPUDevice): Promise<LiquifySharedRe
         {
           binding: 2,
           visibility: GPUShaderStage.COMPUTE,
-          texture: { sampleType: "unfilterable-float", viewDimension: "2d" },
+          texture: {
+            sampleType: layerFormat === "rgba8unorm" ? "float" : "unfilterable-float",
+            viewDimension: "2d",
+          },
         },
         {
           binding: 3,
           visibility: GPUShaderStage.COMPUTE,
           storageTexture: {
             access: "write-only",
-            format: "rgba16float",
+            format: layerFormat,
             viewDimension: "2d",
           },
         },
@@ -348,19 +374,30 @@ async function createSharedResources(device: GPUDevice): Promise<LiquifySharedRe
       updatePipeline,
       resolvePipeline,
     };
-  });
+    },
+  );
 }
 
-async function requireSharedResources(device: GPUDevice): Promise<LiquifySharedResources> {
-  let promise = sharedByDevice.get(device);
+async function requireSharedResources(
+  device: GPUDevice,
+  layerFormat: LayerFormat,
+  storageColorSpace: DocumentStorageColorSpace,
+): Promise<LiquifySharedResources> {
+  let byFormat = sharedByDevice.get(device);
+  if (!byFormat) {
+    byFormat = new Map();
+    sharedByDevice.set(device, byFormat);
+  }
+  const key = sharedVariantKey(layerFormat, storageColorSpace);
+  let promise = byFormat.get(key);
   if (!promise) {
-    promise = createSharedResources(device);
-    sharedByDevice.set(device, promise);
+    promise = createSharedResources(device, layerFormat, storageColorSpace);
+    byFormat.set(key, promise);
   }
   try {
     return await promise;
   } catch (error) {
-    sharedByDevice.delete(device);
+    if (byFormat.get(key) === promise) byFormat.delete(key);
     throw error;
   }
 }
@@ -521,6 +558,7 @@ function encodePreviewBatch(
   const resolveSlot = dabs.length;
   const dirty = resolveRect as DirtyRect;
   writeUniformSlot(session, resolveSlot, uniformInput(session, dirty, {
+    seed: session.quantizationSeed,
     strength: session.amount,
   }));
   const usedBytes = (resolveSlot + 1) * session.uniformStride;
@@ -877,7 +915,10 @@ async function restoreOriginalPixels(
   });
   clearDisplacementPass(encoder, session);
   if (dirty) {
-    writeUniformSlot(session, 0, uniformInput(session, dirty, { strength: 0 }));
+    writeUniformSlot(session, 0, uniformInput(session, dirty, {
+      seed: session.quantizationSeed,
+      strength: 0,
+    }));
     engine.device.queue.writeBuffer(
       session.uniformBuffer,
       0,
@@ -959,10 +1000,6 @@ export async function beginRasterLiquify(
   if (!record.hasContent || !record.contentBounds) {
     throw new Error("The selected raster layer is empty.");
   }
-  if (engine.layerFormat !== "rgba16float") {
-    throw new Error("Destructive Liquify requires an RGBA16F document.");
-  }
-
   engine.cancelLayerColdCompressionIdle();
   engine.historyBusy = true;
   engine.publishHistoryState();
@@ -980,7 +1017,11 @@ export async function beginRasterLiquify(
     );
     const sourceTileMask = record.storageTileMask.slice();
     const settings = normalizeLiquifySettings(initial);
-    const shared = await requireSharedResources(engine.device);
+    const shared = await requireSharedResources(
+      engine.device,
+      engine.layerFormat,
+      engine.documentStorageColorSpace,
+    );
     const uniformAlignment = Number(engine.device.limits.minUniformBufferOffsetAlignment) || 256;
     const uniformStride = Math.ceil(LIQUIFY_UNIFORM_BYTES / uniformAlignment)
       * uniformAlignment;
@@ -997,11 +1038,14 @@ export async function beginRasterLiquify(
     if (Number.isFinite(maximumDispatch) && scratchWorkgroups > maximumDispatch) {
       throw new Error("Liquify: the GPU does not support the required dispatch size.");
     }
-    const memoryBytes = (
-      sourceScratchBounds.width * sourceScratchBounds.height
-      + DOCUMENT_WIDTH * DOCUMENT_HEIGHT
-      + scratchExtent * scratchExtent
-    ) * BYTES_PER_RGBA16F_PIXEL + uniformStride * UNIFORM_SLOT_COUNT;
+    const sourceBytesPerPixel = engine.layerFormat === "rgba16float"
+      ? BYTES_PER_RGBA16F_PIXEL
+      : BYTES_PER_RGBA8_PIXEL;
+    const memoryBytes = sourceScratchBounds.width * sourceScratchBounds.height
+      * sourceBytesPerPixel
+      + (DOCUMENT_WIDTH * DOCUMENT_HEIGHT + scratchExtent * scratchExtent)
+        * BYTES_PER_RGBA16F_PIXEL
+      + uniformStride * UNIFORM_SLOT_COUNT;
     reservation = await reserveSessionMemory(engine, memoryBytes);
 
     const session = await runGpuAllocationTransaction(
@@ -1015,7 +1059,7 @@ export async function beginRasterLiquify(
             height: sourceScratchBounds.height,
             depthOrArrayLayers: 1,
           },
-          format: "rgba16float",
+          format: engine.layerFormat,
           usage:
             GPUTextureUsage.COPY_DST
             | GPUTextureUsage.COPY_SRC
@@ -1108,6 +1152,7 @@ export async function beginRasterLiquify(
           resolveBindGroup,
           shared,
           memoryBytes,
+          quantizationSeed: engine.nextHistoryActionId >>> 0,
           pendingDabs: [],
           usedModes: new Set<LiquifyMode>(),
           settings,
@@ -1482,7 +1527,9 @@ export async function commitRasterLiquify(engine: BrushEngine): Promise<boolean>
       modes,
       amountPercent: Math.round(session.amount * 100),
       strategy: LIQUIFY_SHADER_STRATEGY,
-      precision: "rgba16float-source-and-displacement-f32-math",
+      precision: engine.layerFormat === "rgba8unorm"
+        ? "rgba8unorm-source-encoded-f32-resample-high-frequency-output"
+        : "rgba16float-source-and-displacement-f32-math",
       displacementFormat: LIQUIFY_DISPLACEMENT_FORMAT,
       seed,
       baseBounds: { ...session.resultBounds },

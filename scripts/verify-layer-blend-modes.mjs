@@ -8,6 +8,7 @@ import {
   LAYER_BLEND_MODE_STRATEGY,
   LAYER_BLEND_MODE_WGSL,
   LEGACY_LAYER_BLEND_MODE_MIGRATIONS,
+  blendLayerPremultipliedEncodedSrgb,
   blendLayerPremultipliedLinear,
   blendLayerSrgb,
   dissolveLayerSourcePremultipliedLinear,
@@ -28,7 +29,7 @@ const EXPECTED_ORDER = [
 
 assert.equal(
   LAYER_BLEND_MODE_STRATEGY,
-  "srgb-blends-linear-premultiplied-w3c-alpha-document-anchored-dissolve-v2",
+  "srgb-blends-dual-premultiplied-storage-w3c-alpha-document-anchored-dissolve-v3",
 );
 assert.equal(DEFAULT_LAYER_BLEND_MODE, "normal");
 assert.deepEqual(LAYER_BLEND_MODE_ORDER, EXPECTED_ORDER);
@@ -219,6 +220,47 @@ const oracleComposite = (backdropInput, sourceInput, mode, documentPixel = [0, 0
   ];
 };
 
+const oracleCompositeEncoded = (
+  backdropInput,
+  sourceInput,
+  mode,
+  documentPixel = [0, 0],
+) => {
+  const backdrop = sanitizePremultiplied(backdropInput);
+  let source = sanitizePremultiplied(sourceInput);
+  if (mode === "dissolve") {
+    const alpha = source[3];
+    source = alpha > 0 && oracleDissolveRandom(documentPixel) < alpha
+      ? [source[0] / alpha, source[1] / alpha, source[2] / alpha, 1]
+      : [0, 0, 0, 0];
+  }
+  const backdropAlpha = backdrop[3];
+  const sourceAlpha = source[3];
+  const outputAlpha = sourceAlpha + backdropAlpha * (1 - sourceAlpha);
+  if (mode === "normal" || mode === "dissolve") {
+    return [
+      source[0] + backdrop[0] * (1 - sourceAlpha),
+      source[1] + backdrop[1] * (1 - sourceAlpha),
+      source[2] + backdrop[2] * (1 - sourceAlpha),
+      outputAlpha,
+    ];
+  }
+  const backdropStraight = backdropAlpha > 0
+    ? backdrop.slice(0, 3).map((channel) => channel / backdropAlpha)
+    : [0, 0, 0];
+  const sourceStraight = sourceAlpha > 0
+    ? source.slice(0, 3).map((channel) => channel / sourceAlpha)
+    : [0, 0, 0];
+  const blended = oracleBlend(backdropStraight, sourceStraight, mode);
+  return [
+    ...[0, 1, 2].map((channel) =>
+      backdrop[channel] * (1 - sourceAlpha)
+        + source[channel] * (1 - backdropAlpha)
+        + backdropAlpha * sourceAlpha * blended[channel]),
+    outputAlpha,
+  ];
+};
+
 const rgbFixtures = [
   [[0.12, 0.48, 0.91], [0.83, 0.27, 0.04]],
   [[0, 0.25, 1], [1, 0.5, 0]],
@@ -260,6 +302,15 @@ for (const mode of EXPECTED_ORDER) {
     const expectedAlpha = expected[3];
     close(actual[3], expectedAlpha, 2e-12, `${mode} alpha`);
     assert.ok(actual.slice(0, 3).every((channel) => channel >= 0 && channel <= actual[3] + 1e-12));
+
+    const actualEncoded = blendLayerPremultipliedEncodedSrgb(backdrop, source, mode);
+    const expectedEncoded = oracleCompositeEncoded(backdrop, source, mode);
+    closeArray(actualEncoded, expectedEncoded, 3e-12, `${mode} encoded composite`);
+    assert.ok(
+      actualEncoded.slice(0, 3).every(
+        (channel) => channel >= 0 && channel <= actualEncoded[3] + 1e-12,
+      ),
+    );
   }
 }
 
@@ -371,5 +422,9 @@ assert.match(LAYER_BLEND_MODE_WGSL, /fn layerBlendDissolveRandom\(documentPixel:
 assert.match(LAYER_BLEND_MODE_WGSL, /fn layerBlendDissolveSource\(/);
 assert.match(compositor, /mode == LAYER_BLEND_DISSOLVE/);
 assert.match(compositor, /layerBlendDissolveSource\([\s\S]*?documentPixel/);
+assert.match(
+  LAYER_BLEND_MODE_WGSL,
+  /fn layerBlendPremultipliedEncodedSrgbSourceOver\([\s\S]*?let blendedSrgb = layerBlendSrgb\([\s\S]*?blendedSrgb \* \(backdropAlpha \* sourceAlpha\)/,
+);
 
 console.log("Layer blend modes verification passed for 27 ordered modes.");

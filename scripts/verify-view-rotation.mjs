@@ -235,12 +235,12 @@ assert.equal((singleRasterDisplay.match(/@fragment\s*fn fragmentMain\(/g) ?? [])
 assert.match(
   singleRasterDisplay,
   /@binding\(1\) var rasterMipZero: texture_2d<f32>/,
-  "mip 0 deve restare una sorgente lineare RGBA16F campionabile",
+  "mip 0 deve restare una sorgente documentale campionabile come float",
 );
 assert.match(
   singleRasterDisplay,
   /@binding\(2\) var rasterMipPyramid: texture_2d<f32>/,
-  "la piramide deve restare una sorgente lineare RGBA16F campionabile",
+  "la piramide deve restare una sorgente documentale campionabile come float",
 );
 assert.match(
   singleRasterDisplay,
@@ -261,8 +261,18 @@ assert.match(singleRasterDisplay, /sampleSingleRaster\(uv\) \* display\.rasterAl
 assert.match(singleRasterDisplay, /checkerParity[\s\S]*display\.backgroundColor\.rgb/);
 assert.match(
   singleRasterDisplay,
-  /singleRasterSrgbToLinear\(backgroundSrgb\)[\s\S]*singleRasterLinearToSrgb\(compositedLinear\)/,
-  "sfondo e raster premoltiplicato devono essere composti in lineare e presentati in sRGB",
+  /let backgroundLinear = singleRasterSrgbToLinear\(backgroundSrgb\);\s*return singleRasterLinearToSrgb\(\s*paint\.rgb \+ backgroundLinear \* \(1\.0 - alpha\)\s*\);/,
+  "il contratto legacy deve comporre raster premoltiplicato e sfondo in lineare, poi presentare in sRGB",
+);
+assert.match(
+  singleRasterDisplay,
+  /if \(display\.compositingColorSpace > 1\.5\) \{\s*return paint\.rgb \+ backgroundSrgb \* \(1\.0 - alpha\);\s*\}/,
+  "il contratto stored-encoded deve comporre direttamente i valori sRGB premoltiplicati senza un altro transfer",
+);
+assert.match(
+  engineSource,
+  /displayUniformUpload\[30\] = this\.displayCompositingColorSpace === "stored-encoded-srgb"\s*\? 2\s*:\s*this\.displayCompositingColorSpace === "encoded-srgb" \? 1 : 0/,
+  "l'uniform deve selezionare esplicitamente il ramo diretto stored-encoded",
 );
 assert.match(
   singleRasterDisplay,
@@ -281,8 +291,8 @@ assert.match(
 );
 assert.match(
   engineSource,
-  /Single raster RGBA16F display pipeline/,
-  "la pipeline iniziale deve dichiarare esplicitamente il percorso raster RGBA16F minimo",
+  /Single raster display pipeline/,
+  "la pipeline iniziale deve dichiarare esplicitamente il percorso raster minimo",
 );
 assert.equal((displayShaders.match(/struct DisplayUniforms/g) ?? []).length, 6,
   "le quattro varianti display e i due compositori mip devono condividere l'ABI");
@@ -357,7 +367,7 @@ assert.equal((mergedSurfaceSource.match(/rasterPixelViewEnabled\(resolutionScale
   "entrambe le superfici raster unite devono usare nearest sopra soglia");
 assert.match(
   mixedSceneCompositorSource,
-  /ordered-raster-vector-gpu-runs-rgba16f-roi-source-over-post-opacity-raster-floor-mip-parity-v7/,
+  /ordered-raster-vector-gpu-runs-rgba16f-storage-aware-roi-source-over-post-opacity-raster-floor-mip-parity-v8/,
 );
 const mixedRasterSegment = mixedSceneCompositorSource.slice(
   mixedSceneCompositorSource.indexOf("export const mixedSceneRasterSegmentShader"),
@@ -369,6 +379,26 @@ const mixedTextSegment = mixedSceneCompositorSource.slice(
 );
 assert.match(mixedRasterSegment, /rasterPixelViewEnabled\(effectiveResolutionScale\)/,
   "le run raster del compositore misto devono mostrare texel reali");
+assert.match(
+  mixedSceneCompositorSource,
+  /documentSize: vec2<f32>,\s*compositingColorSpace: f32,\s*_padDisplay: f32/,
+  "il compositore misto deve leggere il contratto colore del documento",
+);
+assert.match(
+  mixedRasterSegment,
+  /rasterSegmentSourceForLinearWorkingTarget[\s\S]*?display\.compositingColorSpace < 1\.5[\s\S]*?srgbToLinearChannel/,
+  "le run RGBA8 sRGB devono essere decodificate una volta entrando nello scratch lineare",
+);
+assert.equal(
+  (mixedRasterSegment.match(/rasterSegmentSourceForLinearWorkingTarget\(/g) ?? []).length,
+  3,
+  "pixel-view e campionamento filtrato devono condividere la conversione storage-to-working",
+);
+assert.match(
+  mixedSceneCompositorSource,
+  /fn fragmentMain\([\s\S]*?display\.compositingColorSpace > 1\.5[\s\S]*?encodedPremultiplied = linearToSrgb\(straightLinear\) \* alpha[\s\S]*?encodedPremultiplied \+ backgroundSrgb \* \(1\.0 - alpha\)/,
+  "la presentazione ordered deve conservare il compositing encoded sui bordi trasparenti RGBA8",
+);
 assert.match(
   mixedRasterSegment,
   /let continuousLod = clamp\([\s\S]*?let lod = floor\(continuousLod \+ 0\.000001\)/,
@@ -423,6 +453,11 @@ assert.doesNotMatch(
   baseActiveSourceShader,
   /composeActiveClippingGroupTexel|sampleActiveLayer\(/,
   "la vista pixel source-only non deve incorporare il gruppo di clipping",
+);
+assert.match(
+  baseActiveSourceShader,
+  /let sourceOpacity = select\([\s\S]*?display\.activeLayerAlpha,[\s\S]*?1\.0,[\s\S]*?display\.clippingMode >= 0\.5 && display\.clippingMode < 1\.5/,
+  "il parent attivo deve entrare nel gruppo isolato prima dell'opacità del gruppo",
 );
 const baseActiveCutoutStart = baseDisplayShader.indexOf("fn activeCutoutFragmentMain(");
 assert.ok(baseActiveCutoutStart >= 0, "entry point raw-matte raster base mancante");
@@ -495,7 +530,7 @@ assert.ok(thicknessActiveSourceStart >= 0, "source-only della coda dinamica manc
 const thicknessActiveSourceShader = thicknessDisplayShader.slice(thicknessActiveSourceStart);
 assert.match(
   thicknessActiveSourceShader,
-  /return sampleTailDisplayActive\(layerPosition, layerUv\) \* display\.activeLayerAlpha;/,
+  /let sourceOpacity = select\([\s\S]*?display\.clippingMode >= 0\.5 && display\.clippingMode < 1\.5[\s\S]*?return thicknessPaintForLinearScene\(\s*sampleTailDisplayActive\(layerPosition, layerUv\) \* sourceOpacity\s*\);/,
   "la source-only della coda deve riusare il percorso active pixel-perfect",
 );
 assert.doesNotMatch(
@@ -550,6 +585,11 @@ assert.doesNotMatch(
   /sampleCompositedClippingGroupLinear|compositedClippingGroupTexel/,
   "la source-only della velatura non deve incorporare il gruppo di clipping",
 );
+assert.match(
+  lightGlazeActiveSourceShader,
+  /let sourceOpacity = select\([\s\S]*?display\.clippingMode >= 0\.5 && display\.clippingMode < 1\.5[\s\S]*?paint \* sourceOpacity/,
+  "la velatura del parent attivo deve differire l'opacità fino al gruppo completo",
+);
 
 const rasterStrokeDisplayShaderStart = strokeRendererSource.indexOf(
   "export function rasterStrokeDisplayShader(",
@@ -587,6 +627,11 @@ assert.doesNotMatch(
   rasterStrokeActiveSourceShader,
   /directStyledGroupSample|styledGroupTexel/,
   "la source-only raster con stile non deve incorporare il gruppo di clipping",
+);
+assert.match(
+  rasterStrokeActiveSourceShader,
+  /let sourceOpacity = select\([\s\S]*?display\.clippingMode >= 0\.5 && display\.clippingMode < 1\.5[\s\S]*?paint \* sourceOpacity/,
+  "il raster con stile del parent attivo deve differire l'opacità fino al gruppo completo",
 );
 const rasterStrokeCutoutShader = rasterStrokeDisplayShader.slice(
   rasterStrokeActiveSourceEnd,
@@ -672,8 +717,8 @@ assert.match(
 );
 assert.match(
   stackMipShader,
-  /let p00 = compositedDocumentTexel\(sourceOrigin\)[\s\S]*let p11 = compositedDocumentTexel\(sourceOrigin \+ vec2<i32>\(1, 1\)\)[\s\S]*return \(p00 \+ p10 \+ p01 \+ p11\) \* 0\.25/,
-  "mip 1 deve mediare quattro risultati finali premoltiplicati",
+  /let p00 = compositedDocumentTexel\(sourceOrigin\)[\s\S]*let p11 = compositedDocumentTexel\(sourceOrigin \+ vec2<i32>\(1, 1\)\)[\s\S]*return downsampleCompositedPaint\([\s\S]*p00,[\s\S]*p11,[\s\S]*vec2<u32>\(fragmentPosition\.xy\)/,
+  "mip 1 deve mediare e quantizzare in modo stabile quattro risultati finali premoltiplicati",
 );
 assert.match(baseDisplayShader, /fn finalStackFragmentMain\(/);
 assert.match(

@@ -29,6 +29,7 @@ import {
 } from "../src/raster-deform-math.ts";
 import {
   RASTER_DEFORM_SHADER_STRATEGY,
+  rasterDeformStoredEncodedShader,
   rasterDeformShader,
 } from "../src/raster-deform-shader.ts";
 
@@ -339,7 +340,7 @@ assert.deepEqual(
 
 assert.equal(
   RASTER_DEFORM_SHADER_STRATEGY,
-  "mesh-grid-perspective-correct-transparent-border-continuous-mip-v2",
+  "mesh-grid-linear-f32-rgba8-adjacent-output-continuous-mip-v3",
 );
 assert.match(rasterDeformShader, /projectiveWeight/);
 assert.match(rasterDeformShader, /output\.position = vec4<f32>\(ndc \* safeWeight/);
@@ -366,6 +367,27 @@ assert.doesNotMatch(
   /preserveDarkCoverage|encodedCoverage|displayAlpha/,
 );
 assert.match(rasterDeformShader, /clearFragmentMain/);
+assert.match(rasterDeformStoredEncodedShader, /projectiveWeight/);
+assert.match(rasterDeformStoredEncodedShader, /dpdx\(input\.sourceUv\)/);
+assert.match(rasterDeformStoredEncodedShader, /loadLinearSource/);
+assert.match(
+  rasterDeformStoredEncodedShader,
+  /rasterTransformEncodedPremultipliedToLinear\([\s\S]*?textureLoad/,
+  "RGBA8 Warp and Perspective must decode individual texels before filtering",
+);
+assert.doesNotMatch(
+  rasterDeformStoredEncodedShader,
+  /textureSampleLevel\s*\(/,
+  "RGBA8 Warp and Perspective must not filter encoded sRGB directly",
+);
+assert.match(rasterDeformStoredEncodedShader, /rasterTransformFinalizeRgba8\(/);
+assert.match(rasterDeformStoredEncodedShader, /quantizeRgba8HighFrequencyAdjacent\(/);
+assert.match(
+  rasterDeformStoredEncodedShader,
+  /vec2<u32>\(input\.position\.xy\)[\s\S]*?transform\.quantizationAndReserved\.x/,
+  "RGBA8 Warp and Perspective output must be document-anchored and replay-seeded",
+);
+assert.match(rasterDeformStoredEncodedShader, /clearFragmentMain/);
 
 const runtime = readFileSync(
   new URL("../src/engine-raster-transform-runtime.ts", import.meta.url),
@@ -376,6 +398,8 @@ const controller = readFileSync(
   "utf8",
 );
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+assert.match(runtime, /transactional-raster-warp-perspective-rgba8-linear-f32-grid-v2/);
+assert.match(runtime, /rasterDeformStoredEncodedShader/);
 assert.match(runtime, /session\.shared\.clearPipeline/);
 assert.match(runtime, /session\.shared\.deformPipeline/);
 assert.match(runtime, /pass\.setVertexBuffer\(0, session\.deformVertexBuffer\)/);

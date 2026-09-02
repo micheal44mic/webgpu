@@ -4,7 +4,12 @@
  */
 import type { DryBlendPlanner } from "./blend-core";
 import type { DryBlendRenderBatch } from "./blend-renderer";
-import type { BrushSettings, BrushTool, LayerPoint } from "./engine-types";
+import type {
+  BrushSettings,
+  BrushTool,
+  LayerPoint,
+  PaintDabProfile,
+} from "./engine-types";
 import type { ShapeOccupancySelection } from "./shape-occupancy";
 import type { CausalStrokeCurvePlanner } from "./stroke-curve-core";
 import type {
@@ -50,7 +55,11 @@ export interface ActiveStroke {
   thicknessTailHoldback: boolean;
   heldThicknessStamps: HeldThicknessStamp[];
   heldThicknessHead: number;
+  /** Generation semantics captured at pointer-down. */
+  paintDabProfile: PaintDabProfile;
   distanceSinceStamp: number;
+  /** Remaining path length used only by variable direct-deposit spacing. */
+  distanceToNextStamp: number;
   adaptiveSpacingInitialPercent: number;
   adaptiveSpacingPercent: number;
   historyActionId: number;

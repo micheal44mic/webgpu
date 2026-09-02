@@ -129,7 +129,7 @@ assert.match(
 );
 assert.match(
   controller + main,
-  /this\.options\.rasterizeLayer\(key\)[\s\S]*?rasterizeLayer: \(key\) => sceneEditorController!\.rasterizeLayer\(key\)/,
+  /this\.options\.rasterizeLayer\(key\)[\s\S]*?rasterizeLayer:\s*\(key\)\s*=>\s*sceneEditorController!\.rasterizeLayer\(key\)/,
   "Rasterize must route the stable selected key through SceneEditorController",
 );
 assert.match(

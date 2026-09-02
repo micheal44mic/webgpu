@@ -446,9 +446,7 @@ assert.throws(
   "source metadata cannot claim a byte size different from its Blob",
 );
 
-// V1 readers must continue accepting legacy RGBA8 projects. Restore migrates
-// their normalized linear-premultiplied channels to the permanent RGBA16F
-// document format; the original stored generation remains untouched.
+// V1 readers must continue accepting legacy linear-premultiplied RGBA8 projects.
 const legacy = projectRequest("Legacy RGBA8");
 const legacyTileBytes = legacy.tileBytes / 2;
 legacy.request.snapshot.document.layerFormat = "rgba8unorm";
@@ -461,6 +459,20 @@ legacy.request.chunks[0].rawBytes = legacyTileBytes;
 legacy.request.chunks[0].storedBytes = legacyTileBytes;
 legacy.request.chunks[0].bytes = new ArrayBuffer(legacyTileBytes);
 validateProjectSaveRequest(legacy.request);
+
+const encodedRgba8 = structuredClone(legacy.request);
+encodedRgba8.name = "Encoded-sRGB RGBA8";
+encodedRgba8.snapshot.document.colorSpace = "encoded-srgb-premultiplied";
+validateProjectSaveRequest(encodedRgba8);
+
+const invalidEncodedRgba16 = structuredClone(request);
+invalidEncodedRgba16.snapshot.document.colorSpace = "encoded-srgb-premultiplied";
+assert.throws(
+  () => validateProjectSaveRequest(invalidEncodedRgba16),
+  (error) => error instanceof ProjectStorageValidationError
+    && /requires RGBA8 authoritative document pixels/.test(error.message),
+  "encoded-sRGB premultiplied storage must be restricted to RGBA8 documents",
+);
 
 const legacyPixel = Uint8Array.of(0, 127, 255, 64);
 const migratedPixel = rgba8UnormToRgba16FloatBytes(legacyPixel);
@@ -526,6 +538,34 @@ const databaseName = `m1m4-project-storage-verify-${Date.now()}`;
 const storage = new ProjectStorage({ databaseName, forceMemory: true });
 await storage.initialize();
 assert.equal(storage.backend, "memory");
+
+const encodedSummary = await storage.saveProject(encodedRgba8);
+const loadedEncoded = await storage.loadProject(encodedSummary.id);
+assert.ok(loadedEncoded);
+validateLoadedProject(loadedEncoded);
+assert.deepEqual(
+  [
+    loadedEncoded.manifest.snapshot.document.layerFormat,
+    loadedEncoded.manifest.snapshot.document.colorSpace,
+  ],
+  ["rgba8unorm", "encoded-srgb-premultiplied"],
+  "encoded-sRGB RGBA8 storage must survive a validated round trip",
+);
+assert.equal(await storage.deleteProject(encodedSummary.id), true);
+
+const legacySummary = await storage.saveProject(legacy.request);
+const loadedLegacy = await storage.loadProject(legacySummary.id);
+assert.ok(loadedLegacy);
+validateLoadedProject(loadedLegacy);
+assert.deepEqual(
+  [
+    loadedLegacy.manifest.snapshot.document.layerFormat,
+    loadedLegacy.manifest.snapshot.document.colorSpace,
+  ],
+  ["rgba8unorm", "linear-premultiplied"],
+  "legacy linear RGBA8 storage must remain valid across a round trip",
+);
+assert.equal(await storage.deleteProject(legacySummary.id), true);
 
 const first = await storage.saveProject(request);
 assert.equal(first.name, "First Artwork");
@@ -766,6 +806,21 @@ assert.match(
 const restoreStart = runtimeSource.indexOf("export async function restoreProjectDocument(");
 assert.notEqual(restoreStart, -1);
 const restoreBody = runtimeSource.slice(restoreStart);
+assert.doesNotMatch(
+  restoreBody,
+  /RGBA8 sRGB project uses (?:advanced layer composition|layer clipping) that is not validated yet/,
+  "encoded RGBA8 projects must restore saved layer composition and clipping state",
+);
+assert.match(
+  restoreBody,
+  /records\.some\(rasterLayerHasUnvalidatedEffects\)/,
+  "encoded RGBA8 restore must gate only raster styles that still lack a validated renderer",
+);
+assert.doesNotMatch(
+  restoreBody,
+  /records\.some\(rasterLayerEffectsAreConfigured\)/,
+  "Fill\/content opacity must not be mistaken for an unsupported raster effect during restore",
+);
 assert.match(
   restoreBody,
   /const restoredScenePlan = new MixedSceneStack\(records\.map\([\s\S]*?restoredScenePlan\.restoreState\(snapshot\.mixedScene, true\)[\s\S]*?advancedLayerCompositionRequired = Boolean\(engine\.mixedSceneStack\)[\s\S]*?records\.some\(layerNeedsBackdropComposition\)[\s\S]*?rasterOnlyLayerBlendPresentationRequired = advancedLayerCompositionRequired[\s\S]*?restoredScenePlan\.visibleSemanticCount === 0[\s\S]*?!restoredScenePlan\.hasHeterogeneousClipping/,

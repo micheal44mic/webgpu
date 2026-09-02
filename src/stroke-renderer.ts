@@ -23,6 +23,12 @@ import {
   DEFAULT_RASTER_COLOR_OVERLAY_STYLE,
   type RasterColorOverlayStyle,
 } from "./raster-color-overlay-core";
+import {
+  rasterEffectColorForLinearCompositing,
+} from "./raster-effect-color-space";
+import {
+  rgba8HighFrequencyQuantizationShader,
+} from "./rgba8-high-frequency-quantization";
 
 export const RASTER_STROKE_RENDERER_BUILD =
   "style-stack-webgpu-v18-dimension-neutral-session-program-cache-selectable-preserved-or-uniform-alpha-color-overlay-before-inner-shadow-bevel-stroke-lazy-stroke-geometry-independent-outer-inner-shadows-three-surface-layer-composite-transient-bake-bbox-bevel-field-shared-effects-scratch-retargetable-layer-heightfield-v2-then-stroke-direct-lod0-coarse-mips-fwidth-display-nearest-raster-at-581pct-native-unorm-round-even";
@@ -36,6 +42,7 @@ export const RASTER_STROKE_MUTATION_GATE_STRATEGY =
   "threshold-change-or-existing-coverage-one-pixel-halo" as const;
 export const RASTER_STROKE_STYLED_STORAGE_STRATEGY =
   "direct-lod0-plus-derived-mips-1-through-12" as const;
+export const RASTER_EFFECT_RGBA8_QUANTIZATION_SEED = 0x45464658;
 
 export type RasterStrokeSourceMode = "permanent" | "light-glaze" | "thickness-tail";
 export type RasterBevelBoundingFieldTestMutation =
@@ -49,6 +56,8 @@ export interface RasterStrokeRendererOptions {
   documentWidth: number;
   documentHeight: number;
   layerFormat: "rgba8unorm" | "rgba16float";
+  /** Authoritative RGBA8 texels contain premultiplied encoded-sRGB channels. */
+  storedEncodedSrgb?: boolean;
   layerView: GPUTextureView;
   lightGlazeUniformBuffer: GPUBuffer;
   thicknessTailUniformBuffer: GPUBuffer;
@@ -267,6 +276,7 @@ function halfResolutionRect(
 
 function shaderSourceCommon(
   bindGroup = 0,
+  storedEncodedSrgb = false,
 ): string {
   return /* wgsl */ `
 struct StrokeParameters {
@@ -302,6 +312,10 @@ struct ThicknessTailUniforms {
 };
 
 const INVALID_SEED: u32 = ${INVALID_PACKED_SEED}u;
+const STORED_ENCODED_SRGB: bool = ${storedEncodedSrgb ? "true" : "false"};
+const RASTER_EFFECT_RGBA8_QUANTIZATION_SEED: u32 = ${RASTER_EFFECT_RGBA8_QUANTIZATION_SEED}u;
+
+${rgba8HighFrequencyQuantizationShader}
 
 @group(${bindGroup}) @binding(0) var<uniform> parameters: StrokeParameters;
 @group(${bindGroup}) @binding(1) var permanentTexture: texture_2d<f32>;
@@ -318,6 +332,9 @@ fn insideDocument(position: vec2<i32>) -> bool {
 }
 
 fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
+  if (STORED_ENCODED_SRGB) {
+    return value;
+  }
   let redGreen = unpack2x16float(pack2x16float(value.rg));
   let blueAlpha = unpack2x16float(pack2x16float(value.ba));
   return vec4<f32>(redGreen, blueAlpha);
@@ -382,6 +399,17 @@ fn resolvedLightGlaze(accumulatedStroke: vec4<f32>) -> vec4<f32> {
     let coverage = storedLightCoverage(accumulatedStroke.r);
     return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
   }
+  if (lightGlaze.accumulationMode == 3u) {
+    let coverage = clamp(1.0 - exp2(-max(accumulatedStroke.r, 0.0)), 0.0, 1.0);
+    return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
+  }
+  if (lightGlaze.accumulationMode == 4u) {
+    let coverage = storedLightCoverage(accumulatedStroke.r);
+    return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
+  }
+  if (lightGlaze.accumulationMode == 5u) {
+    return linearPremultipliedToEncodedSrgb(accumulatedStroke) * opacity;
+  }
   return accumulatedStroke * opacity;
 }
 
@@ -390,6 +418,14 @@ fn compositeLightGlazeOverPermanent(
   accumulatedStroke: vec4<f32>
 ) -> vec4<f32> {
   let strokePaint = resolvedLightGlaze(accumulatedStroke);
+  if (
+    lightGlaze.accumulationMode == 3u
+    || lightGlaze.accumulationMode == 4u
+    || lightGlaze.accumulationMode == 5u
+    || lightGlaze.accumulationMode == 6u
+  ) {
+    return strokePaint + permanentPaint * (1.0 - strokePaint.a);
+  }
   if (lightGlaze.accumulationMode == 2u) {
     if (strokePaint.a <= 0.0) {
       return permanentPaint;
@@ -421,7 +457,7 @@ fn compositeLightGlazeOverPermanent(
   return quantizeLayer(strokePaint + permanentPaint * (1.0 - strokePaint.a));
 }
 
-fn sourceTexel(position: vec2<i32>) -> vec4<f32> {
+fn storedSourceTexel(position: vec2<i32>) -> vec4<f32> {
   if (!insideDocument(position)) {
     return vec4<f32>(0.0);
   }
@@ -451,6 +487,28 @@ fn sourceTexel(position: vec2<i32>) -> vec4<f32> {
     }
   }
   return permanentPaint;
+}
+
+fn sourceTexel(position: vec2<i32>) -> vec4<f32> {
+  let stored = storedSourceTexel(position);
+  if (STORED_ENCODED_SRGB) {
+    return encodedSrgbPremultipliedToLinear(stored);
+  }
+  return stored;
+}
+
+fn documentStorageTexel(
+  linear: vec4<f32>,
+  documentCoordinate: vec2<u32>
+) -> vec4<f32> {
+  if (STORED_ENCODED_SRGB) {
+    return quantizeRgba8HighFrequencyAdjacent(
+      linearPremultipliedToEncodedSrgb(linear),
+      documentCoordinate,
+      RASTER_EFFECT_RGBA8_QUANTIZATION_SEED
+    );
+  }
+  return linear;
 }
 
 fn packSeed(position: vec2<u32>) -> u32 {
@@ -673,6 +731,7 @@ function strokeCompositionShaderSource(
   derivativeMode: "analytic" | "fragment" = "analytic",
   boundingFieldEnabled = false,
   boundingFieldTestMutation: RasterBevelBoundingFieldTestMutation = "none",
+  storedEncodedSrgb = false,
 ): string {
   const contourAA = derivativeMode === "fragment"
     ? /* wgsl */ `
@@ -1132,7 +1191,7 @@ fn colorOverlayNode(base: vec4<f32>, shape: vec4<f32>) -> vec4<f32> {
   );
 }
 
-fn styledTexel(position: vec2<i32>) -> vec4<f32> {
+fn styledLinearTexel(position: vec2<i32>) -> vec4<f32> {
   // Applying Color Overlay to the virtual base makes Inner Shadow, Bevel and
   // Stroke consume the recolored node without allocating another surface.
   // The default mode preserves alpha; the optional uniform mode replaces only
@@ -1185,6 +1244,17 @@ fn styledTexel(position: vec2<i32>) -> vec4<f32> {
   );
   return node;
 }
+
+fn styledTexel(position: vec2<i32>) -> vec4<f32> {
+  let linear = styledLinearTexel(position);
+  ${storedEncodedSrgb
+    ? `return quantizeRgba8HighFrequencyAdjacent(
+      linearPremultipliedToEncodedSrgb(linear),
+      vec2<u32>(position),
+      RASTER_EFFECT_RGBA8_QUANTIZATION_SEED
+    );`
+    : "return linear;"}
+}
 `;
 }
 
@@ -1192,11 +1262,12 @@ function readbackComposeShader(
   layerFormat: "rgba8unorm" | "rgba16float",
   bevelBoundingFieldEnabled = false,
   bevelBoundingFieldTestMutation: RasterBevelBoundingFieldTestMutation = "none",
+  storedEncodedSrgb = false,
 ): string {
-  return `${shaderSourceCommon()}
+  return `${shaderSourceCommon(0, storedEncodedSrgb)}
 ${strokeCompositionShaderSource(
   0, 5, 7, 8, 9, 10, 11, 12, 13, "analytic", bevelBoundingFieldEnabled,
-  bevelBoundingFieldTestMutation,
+  bevelBoundingFieldTestMutation, storedEncodedSrgb,
 )}
 @group(0) @binding(6) var styledTexture: texture_storage_2d<${layerFormat}, write>;
 
@@ -1217,7 +1288,11 @@ fn authoredMatteMain(@builtin(global_invocation_id) globalId: vec3<u32>) {
   }
   let position = vec2<i32>(parameters.targetOrigin + globalId.xy);
   let storagePosition = vec2<i32>(parameters.localTargetOrigin + globalId.xy);
-  textureStore(styledTexture, storagePosition, sourceTexel(position));
+  textureStore(
+    styledTexture,
+    storagePosition,
+    documentStorageTexel(sourceTexel(position), vec2<u32>(position))
+  );
 }
 `;
 }
@@ -1226,11 +1301,12 @@ function coarseComposeShader(
   layerFormat: "rgba8unorm" | "rgba16float",
   bevelBoundingFieldEnabled = false,
   bevelBoundingFieldTestMutation: RasterBevelBoundingFieldTestMutation = "none",
+  storedEncodedSrgb = false,
 ): string {
-  return `${shaderSourceCommon()}
+  return `${shaderSourceCommon(0, storedEncodedSrgb)}
 ${strokeCompositionShaderSource(
   0, 5, 7, 8, 9, 10, 11, 12, 13, "analytic", bevelBoundingFieldEnabled,
-  bevelBoundingFieldTestMutation,
+  bevelBoundingFieldTestMutation, storedEncodedSrgb,
 )}
 @group(0) @binding(6) var coarseStyledTexture: texture_storage_2d<${layerFormat}, write>;
 
@@ -1249,7 +1325,18 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   let p10 = quantizedStyledTexel(sourceOrigin + vec2<i32>(1, 0));
   let p01 = quantizedStyledTexel(sourceOrigin + vec2<i32>(0, 1));
   let p11 = quantizedStyledTexel(sourceOrigin + vec2<i32>(1, 1));
-  let gammaAverage = (
+  ${storedEncodedSrgb
+    ? `let encodedAverage = (p00 + p10 + p01 + p11) * 0.25;
+  textureStore(
+    coarseStyledTexture,
+    coarsePosition,
+    quantizeRgba8HighFrequencyAdjacent(
+      encodedAverage,
+      vec2<u32>(sourceOrigin),
+      RASTER_EFFECT_RGBA8_QUANTIZATION_SEED ^ 0x4d495031u
+    )
+  );`
+    : `let gammaAverage = (
     linearPremultipliedToEncodedSrgb(p00)
     + linearPremultipliedToEncodedSrgb(p10)
     + linearPremultipliedToEncodedSrgb(p01)
@@ -1259,7 +1346,7 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
     coarseStyledTexture,
     coarsePosition,
     encodedSrgbPremultipliedToLinear(gammaAverage)
-  );
+  );`}
 }
 `;
 }
@@ -1268,6 +1355,7 @@ export function rasterStrokeDisplayShader(
   _documentWidth: number,
   _documentHeight: number,
   bevelBoundingFieldEnabled = false,
+  storedEncodedSrgb = false,
 ): string {
   return /* wgsl */ `
 struct DisplayUniforms {
@@ -1289,6 +1377,9 @@ struct DisplayUniforms {
   clippingPrefixOrigin: vec2<f32>,
   clippingSuffixOrigin: vec2<f32>,
   backgroundColor: vec4<f32>,
+  documentSize: vec2<f32>,
+  compositingColorSpace: f32,
+  _padDisplay: f32,
 };
 
 struct VertexOutput {
@@ -1298,9 +1389,10 @@ struct VertexOutput {
 @group(0) @binding(0) var<uniform> display: DisplayUniforms;
 @group(0) @binding(1) var vectorTextBelowTexture: texture_2d<f32>;
 @group(0) @binding(2) var vectorTextAboveTexture: texture_2d<f32>;
-${shaderSourceCommon(1)}
+${shaderSourceCommon(1, storedEncodedSrgb)}
 ${strokeCompositionShaderSource(
   1, 5, 8, 9, 10, 11, 12, 13, 14, "fragment", bevelBoundingFieldEnabled,
+  "none", storedEncodedSrgb,
 )}
 @group(1) @binding(6) var coarseStyledTexture: texture_2d<f32>;
 @group(1) @binding(7) var layerSampler: sampler;
@@ -1312,6 +1404,22 @@ ${strokeCompositionShaderSource(
 
 fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
   return source + destination * (1.0 - source.a);
+}
+
+fn rasterStrokePaintForLinearScene(value: vec4<f32>) -> vec4<f32> {
+  if (display.compositingColorSpace < 1.5) { return value; }
+  return encodedSrgbPremultipliedToLinear(value);
+}
+
+fn compositeRasterStrokeOverBackgroundSrgb(
+  paint: vec4<f32>,
+  backgroundSrgb: vec3<f32>
+) -> vec3<f32> {
+  if (display.compositingColorSpace > 1.5) {
+    return paint.rgb + backgroundSrgb * (1.0 - paint.a);
+  }
+  let backgroundLinear = srgbToLinear(backgroundSrgb);
+  return linearToSrgb(paint.rgb + backgroundLinear * (1.0 - paint.a));
 }
 
 ${activeClippingGroupTexelShader}
@@ -1527,9 +1635,10 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     display.backgroundColor.rgb,
     display.backgroundColor.a > 0.5
   );
-  let backgroundLinear = srgbToLinear(backgroundSrgb);
-  let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
-  return vec4<f32>(linearToSrgb(compositedLinear), 1.0);
+  return vec4<f32>(
+    compositeRasterStrokeOverBackgroundSrgb(paint, backgroundSrgb),
+    1.0
+  );
 }
 
 @fragment
@@ -1584,9 +1693,9 @@ fn activeFragmentMain(
     return vec4<f32>(0.0);
   }
   if (display.clippingMode > 0.5) {
-    return paint;
+    return rasterStrokePaintForLinearScene(paint);
   }
-  return paint * display.activeLayerAlpha;
+  return rasterStrokePaintForLinearScene(paint * display.activeLayerAlpha);
 }
 
 @fragment
@@ -1621,7 +1730,12 @@ fn activeSourceFragmentMain(
   if (!insideLayer) {
     return vec4<f32>(0.0);
   }
-  return paint * display.activeLayerAlpha;
+  let sourceOpacity = select(
+    display.activeLayerAlpha,
+    1.0,
+    display.clippingMode >= 0.5 && display.clippingMode < 1.5,
+  );
+  return rasterStrokePaintForLinearScene(paint * sourceOpacity);
 }
 
 @fragment
@@ -1800,6 +1914,7 @@ const strokeProgramCache = new WeakMap<
 function strokeProgramCacheKey(options: RasterStrokeRendererOptions): string {
   return [
     options.layerFormat,
+    `stored-encoded:${options.storedEncodedSrgb === true ? 1 : 0}`,
     `bbox:${options.bevelBoundingFieldEnabled === true ? 1 : 0}`,
     `mutation:${options.bevelBoundingFieldTestMutation ?? "none"}`,
   ].join("|");
@@ -1856,6 +1971,7 @@ export class RasterStrokeRenderer {
   private readonly documentWidth: number;
   private readonly documentHeight: number;
   private readonly layerFormat: "rgba8unorm" | "rgba16float";
+  private readonly storedEncodedSrgb: boolean;
   private layerView: GPUTextureView;
   private readonly lightGlazeUniformBuffer: GPUBuffer;
   private readonly thicknessTailUniformBuffer: GPUBuffer;
@@ -1956,6 +2072,7 @@ export class RasterStrokeRenderer {
     this.documentWidth = options.documentWidth;
     this.documentHeight = options.documentHeight;
     this.layerFormat = options.layerFormat;
+    this.storedEncodedSrgb = options.storedEncodedSrgb === true;
     this.layerView = options.layerView;
     this.lightGlazeUniformBuffer = options.lightGlazeUniformBuffer;
     this.thicknessTailUniformBuffer = options.thicknessTailUniformBuffer;
@@ -2975,6 +3092,7 @@ export class RasterStrokeRenderer {
         this.layerFormat,
         this.bevelBoundingFieldEnabled,
         this.bevelBoundingFieldTestMutation,
+        this.storedEncodedSrgb,
       ),
     });
     // Compiled for every renderer: the application uses it for inactive-layer
@@ -2985,6 +3103,7 @@ export class RasterStrokeRenderer {
         this.layerFormat,
         this.bevelBoundingFieldEnabled,
         this.bevelBoundingFieldTestMutation,
+        this.storedEncodedSrgb,
       ),
     });
     const thresholdMaskModule = this.device.createShaderModule({
@@ -3233,13 +3352,21 @@ export class RasterStrokeRenderer {
     this.bevelUniformUploadF32[8] = light[0];
     this.bevelUniformUploadF32[9] = light[1];
     this.bevelUniformUploadF32[10] = light[2];
-    this.bevelUniformUploadF32[12] = style.highlightColor[0];
-    this.bevelUniformUploadF32[13] = style.highlightColor[1];
-    this.bevelUniformUploadF32[14] = style.highlightColor[2];
+    const highlightColor = rasterEffectColorForLinearCompositing(
+      style.highlightColor,
+      this.storedEncodedSrgb,
+    );
+    const shadowColor = rasterEffectColorForLinearCompositing(
+      style.shadowColor,
+      this.storedEncodedSrgb,
+    );
+    this.bevelUniformUploadF32[12] = highlightColor[0];
+    this.bevelUniformUploadF32[13] = highlightColor[1];
+    this.bevelUniformUploadF32[14] = highlightColor[2];
     this.bevelUniformUploadF32[15] = style.highlightOpacity / 100;
-    this.bevelUniformUploadF32[16] = style.shadowColor[0];
-    this.bevelUniformUploadF32[17] = style.shadowColor[1];
-    this.bevelUniformUploadF32[18] = style.shadowColor[2];
+    this.bevelUniformUploadF32[16] = shadowColor[0];
+    this.bevelUniformUploadF32[17] = shadowColor[1];
+    this.bevelUniformUploadF32[18] = shadowColor[2];
     this.bevelUniformUploadF32[19] = style.shadowOpacity / 100;
     if (this.bevelBoundingFieldEnabled) {
       this.bevelUniformUploadF32[7] = this.bevelBoundingFieldTestMutation === "zero-outside"
@@ -3481,9 +3608,13 @@ export class RasterStrokeRenderer {
     this.displayParameterUploadU32[11] = mode;
     this.displayParameterUploadF32[12] = style.width;
     this.displayParameterUploadU32[13] = stylePositionCode(style.position);
-    this.displayParameterUploadF32[16] = style.color[0];
-    this.displayParameterUploadF32[17] = style.color[1];
-    this.displayParameterUploadF32[18] = style.color[2];
+    const strokeColor = rasterEffectColorForLinearCompositing(
+      style.color,
+      this.storedEncodedSrgb,
+    );
+    this.displayParameterUploadF32[16] = strokeColor[0];
+    this.displayParameterUploadF32[17] = strokeColor[1];
+    this.displayParameterUploadF32[18] = strokeColor[2];
     this.displayParameterUploadF32[19] = style.color[3];
     this.displayParameterUploadU32[15] = style.enabled && style.width > 0 ? 1 : 0;
     this.displayParameterUploadF32[20] = colorOverlayStyle.color[0];
@@ -3526,9 +3657,13 @@ export class RasterStrokeRenderer {
     this.parameterUploadU32[word + 13] = stylePositionCode(style.position);
     this.parameterUploadU32[word + 14] = this.scratchExtent;
     this.parameterUploadU32[word + 15] = style.enabled && style.width > 0 ? 1 : 0;
-    this.parameterUploadF32[word + 16] = style.color[0];
-    this.parameterUploadF32[word + 17] = style.color[1];
-    this.parameterUploadF32[word + 18] = style.color[2];
+    const strokeColor = rasterEffectColorForLinearCompositing(
+      style.color,
+      this.storedEncodedSrgb,
+    );
+    this.parameterUploadF32[word + 16] = strokeColor[0];
+    this.parameterUploadF32[word + 17] = strokeColor[1];
+    this.parameterUploadF32[word + 18] = strokeColor[2];
     this.parameterUploadF32[word + 19] = style.color[3];
     this.parameterUploadF32[word + 20] = colorOverlayStyle.color[0];
     this.parameterUploadF32[word + 21] = colorOverlayStyle.color[1];

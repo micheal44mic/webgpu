@@ -1,5 +1,9 @@
 import type { RasterBevelStyle } from "./bevel-core";
-import type { BrushSettings, LayerFormat } from "./engine-types";
+import type {
+  BrushSettings,
+  DocumentStorageColorSpace,
+  LayerFormat,
+} from "./engine-types";
 import {
   migrateLegacyLayerBlendMode,
   type LayerBlendMode,
@@ -74,7 +78,7 @@ export interface ProjectDocumentDescriptorV1 {
   readonly height: number;
   readonly layerFormat: LayerFormat;
   readonly tileGridSize: typeof PROJECT_STORAGE_TILE_GRID_SIZE;
-  readonly colorSpace: "linear-premultiplied";
+  readonly colorSpace: DocumentStorageColorSpace;
 }
 
 export interface ProjectRectV1 {
@@ -751,8 +755,20 @@ function assertDocument(
   if (value.tileGridSize !== PROJECT_STORAGE_TILE_GRID_SIZE) {
     fail(`${path}.tileGridSize`, "is unsupported");
   }
-  if (value.colorSpace !== "linear-premultiplied") {
+  if (
+    value.colorSpace !== "linear-premultiplied"
+    && value.colorSpace !== "encoded-srgb-premultiplied"
+  ) {
     fail(`${path}.colorSpace`, "is unsupported");
+  }
+  if (
+    value.colorSpace === "encoded-srgb-premultiplied"
+    && value.layerFormat !== "rgba8unorm"
+  ) {
+    fail(
+      `${path}.colorSpace`,
+      "requires RGBA8 authoritative document pixels",
+    );
   }
 }
 

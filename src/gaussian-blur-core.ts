@@ -1,5 +1,5 @@
 export const DESTRUCTIVE_GAUSSIAN_BLUR_CORE_BUILD =
-  "destructive-gaussian-blur-core-v1-three-sigma-premultiplied-rgba16float";
+  "destructive-gaussian-blur-core-v2-three-sigma-format-neutral";
 
 export const DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_RADIUS = 5;
 export const DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS = 500;

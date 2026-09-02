@@ -13,6 +13,9 @@ import {
 } from "./shadow-core";
 import type { RasterStrokeSourceMode } from "./stroke-renderer";
 import type { EffectsScratchLease, EffectsScratchPool } from "./effects-scratch-pool";
+import {
+  rasterEffectColorForLinearCompositing,
+} from "./raster-effect-color-space";
 
 export const RASTER_SHADOW_RENDERER_BUILD =
   "raster-shadow-webgpu-v2-dimension-neutral-session-program-cache-independent-packed-f16-morphology-gaussian";
@@ -29,6 +32,8 @@ export interface RasterShadowRendererOptions {
   kind: RasterShadowKind;
   documentWidth: number;
   documentHeight: number;
+  /** Authoritative RGBA8 texels contain premultiplied encoded-sRGB channels. */
+  storedEncodedSrgb?: boolean;
   layerView: GPUTextureView;
   lightGlazeUniformBuffer: GPUBuffer;
   thicknessTailUniformBuffer: GPUBuffer;
@@ -142,7 +147,7 @@ function wordAlignedRect(
   };
 }
 
-function sourceShaderCommon(): string {
+function sourceShaderCommon(storedEncodedSrgb = false): string {
   return /* wgsl */ `
 struct ShadowParameters {
   buildOrigin: vec2<i32>,
@@ -176,6 +181,8 @@ struct ThicknessTailUniforms {
   _pad1: vec2<u32>,
 };
 
+const STORED_ENCODED_SRGB: bool = ${storedEncodedSrgb ? "true" : "false"};
+
 @group(0) @binding(0) var<uniform> parameters: ShadowParameters;
 @group(0) @binding(1) var permanentTexture: texture_2d<f32>;
 @group(0) @binding(2) var transientTexture: texture_2d<f32>;
@@ -193,6 +200,9 @@ fn insideDocument(position: vec2<i32>) -> bool {
 }
 
 fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
+  if (STORED_ENCODED_SRGB) {
+    return value;
+  }
   let redGreen = unpack2x16float(pack2x16float(value.rg));
   let blueAlpha = unpack2x16float(pack2x16float(value.ba));
   return vec4<f32>(redGreen, blueAlpha);
@@ -257,6 +267,17 @@ fn resolvedLightGlaze(accumulatedStroke: vec4<f32>) -> vec4<f32> {
     let coverage = storedLightCoverage(accumulatedStroke.r);
     return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
   }
+  if (lightGlaze.accumulationMode == 3u) {
+    let coverage = clamp(1.0 - exp2(-max(accumulatedStroke.r, 0.0)), 0.0, 1.0);
+    return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
+  }
+  if (lightGlaze.accumulationMode == 4u) {
+    let coverage = storedLightCoverage(accumulatedStroke.r);
+    return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
+  }
+  if (lightGlaze.accumulationMode == 5u) {
+    return linearPremultipliedToEncodedSrgb(accumulatedStroke) * opacity;
+  }
   return accumulatedStroke * opacity;
 }
 
@@ -265,6 +286,14 @@ fn compositeLightGlazeOverPermanent(
   accumulatedStroke: vec4<f32>
 ) -> vec4<f32> {
   let strokePaint = resolvedLightGlaze(accumulatedStroke);
+  if (
+    lightGlaze.accumulationMode == 3u
+    || lightGlaze.accumulationMode == 4u
+    || lightGlaze.accumulationMode == 5u
+    || lightGlaze.accumulationMode == 6u
+  ) {
+    return strokePaint + permanentPaint * (1.0 - strokePaint.a);
+  }
   if (lightGlaze.accumulationMode == 2u) {
     if (strokePaint.a <= 0.0) {
       return permanentPaint;
@@ -352,8 +381,8 @@ fn sampleFloat(offsetWords: u32, position: vec2<i32>, outside: f32) -> f32 {
 `;
 }
 
-function sourceAlphaShader(): string {
-  return `${sourceShaderCommon()}
+function sourceAlphaShader(storedEncodedSrgb = false): string {
+  return `${sourceShaderCommon(storedEncodedSrgb)}
 @compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   if (any(globalId.xy >= parameters.buildSize)) {
@@ -372,6 +401,7 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
 function filterShader(
   kind: RasterShadowKind,
   operation: "morphology" | "gaussian",
+  storedEncodedSrgb = false,
 ): string {
   const outside = operation === "morphology" && kind === "inner"
     ? "1.0"
@@ -406,7 +436,7 @@ function filterShader(
     }
     value = sum / weightSum;
   }`;
-  return `${sourceShaderCommon()}
+  return `${sourceShaderCommon(storedEncodedSrgb)}
 var<workgroup> filterCache: array<f32, ${FILTER_CACHE_LENGTH}>;
 
 fn outputPosition(groupId: vec3<u32>, lane: u32) -> vec2<u32> {
@@ -459,8 +489,8 @@ ${body}
 `;
 }
 
-function resolveShader(): string {
-  return `${sourceShaderCommon()}
+function resolveShader(storedEncodedSrgb = false): string {
+  return `${sourceShaderCommon(storedEncodedSrgb)}
 @compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   if (globalId.y >= parameters.targetSize.y) {
@@ -524,13 +554,15 @@ const shadowProgramCache = new WeakMap<
 
 function shadowProgramCacheKey(
   kind: RasterShadowKind,
+  storedEncodedSrgb: boolean,
 ): string {
-  return kind;
+  return `${kind}|stored-encoded:${storedEncodedSrgb ? 1 : 0}`;
 }
 
 async function createShadowProgramResources(
   device: GPUDevice,
   kind: RasterShadowKind,
+  storedEncodedSrgb: boolean,
 ): Promise<RasterShadowProgramResources> {
   const label = kind === "outer" ? "Outer Shadow" : "Inner Shadow";
   const bindGroupLayout = device.createBindGroupLayout({
@@ -570,28 +602,28 @@ async function createShadowProgramResources(
       label: "source",
       module: device.createShaderModule({
         label: `${label} source alpha WGSL`,
-        code: sourceAlphaShader(),
+        code: sourceAlphaShader(storedEncodedSrgb),
       }),
     },
     {
       label: "morphology",
       module: device.createShaderModule({
         label: `${label} morphology WGSL`,
-        code: filterShader(kind, "morphology"),
+        code: filterShader(kind, "morphology", storedEncodedSrgb),
       }),
     },
     {
       label: "gaussian",
       module: device.createShaderModule({
         label: `${label} gaussian WGSL`,
-        code: filterShader(kind, "gaussian"),
+        code: filterShader(kind, "gaussian", storedEncodedSrgb),
       }),
     },
     {
       label: "resolve",
       module: device.createShaderModule({
         label: `${label} resolve packed f16 WGSL`,
-        code: resolveShader(),
+        code: resolveShader(storedEncodedSrgb),
       }),
     },
   ] as const;
@@ -628,13 +660,14 @@ async function createShadowProgramResources(
 function acquireShadowProgramResources(
   device: GPUDevice,
   kind: RasterShadowKind,
+  storedEncodedSrgb: boolean,
 ): Promise<RasterShadowProgramResources> {
   let deviceCache = shadowProgramCache.get(device);
   if (!deviceCache) {
     deviceCache = new Map();
     shadowProgramCache.set(device, deviceCache);
   }
-  const key = shadowProgramCacheKey(kind);
+  const key = shadowProgramCacheKey(kind, storedEncodedSrgb);
   const cached = deviceCache.get(key);
   if (cached) {
     return cached;
@@ -642,6 +675,7 @@ function acquireShadowProgramResources(
   const pending = createShadowProgramResources(
     device,
     kind,
+    storedEncodedSrgb,
   );
   deviceCache.set(key, pending);
   void pending.then(undefined, () => {
@@ -678,6 +712,7 @@ export class RasterShadowRenderer {
   private readonly scratchPool: EffectsScratchPool;
   private readonly documentWidth: number;
   private readonly documentHeight: number;
+  private readonly storedEncodedSrgb: boolean;
   private layerView: GPUTextureView;
   private readonly lightGlazeUniformBuffer: GPUBuffer;
   private readonly thicknessTailUniformBuffer: GPUBuffer;
@@ -715,6 +750,7 @@ export class RasterShadowRenderer {
     this.effectId = this.kind === "outer" ? "outer-shadow" : "inner-shadow";
     this.documentWidth = options.documentWidth;
     this.documentHeight = options.documentHeight;
+    this.storedEncodedSrgb = options.storedEncodedSrgb === true;
     this.layerView = options.layerView;
     this.lightGlazeUniformBuffer = options.lightGlazeUniformBuffer;
     this.thicknessTailUniformBuffer = options.thicknessTailUniformBuffer;
@@ -786,6 +822,7 @@ export class RasterShadowRenderer {
     const programs = await acquireShadowProgramResources(
       this.device,
       this.kind,
+      this.storedEncodedSrgb,
     );
     this.bindGroupLayout = programs.bindGroupLayout;
     this.sourcePipeline = programs.sourcePipeline;
@@ -940,9 +977,13 @@ export class RasterShadowRenderer {
     this.compositionUploadU32[1] = style.blendMode === "multiply" ? 1 : 0;
     this.compositionUploadU32[2] = contourCode;
     this.compositionUploadU32[3] = style.contourAA ? 1 : 0;
-    this.compositionUploadF32[4] = style.color[0];
-    this.compositionUploadF32[5] = style.color[1];
-    this.compositionUploadF32[6] = style.color[2];
+    const effectColor = rasterEffectColorForLinearCompositing(
+      style.color,
+      this.storedEncodedSrgb,
+    );
+    this.compositionUploadF32[4] = effectColor[0];
+    this.compositionUploadF32[5] = effectColor[1];
+    this.compositionUploadF32[6] = effectColor[2];
     this.compositionUploadF32[7] = style.opacity / 100;
     this.compositionUploadF32[8] = offset[0];
     this.compositionUploadF32[9] = offset[1];

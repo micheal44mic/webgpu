@@ -1592,8 +1592,8 @@ assert.match(
   /operator === "source-atop"[\s\S]*?engine\.layerSourceAtopPipeline[\s\S]*?engine\.layerCompositePipeline/,
   "Normal deve scegliere le pipeline hardware source-atop/source-over preesistenti",
 );
-assert.match(foldViewBody, /engine\.layerBlendFoldPipeline/,
-  "i modi avanzati devono usare lo shader che campiona il backdrop");
+assert.match(foldViewBody, /layerBlendFoldPipelinesForFormat[\s\S]*?targetPipelines\.fold/,
+  "i modi avanzati devono usare lo shader backdrop compatibile con il target reale");
 assert.match(foldViewBody, /binding: 0, resource: backdropScratchView/,
   "il fold avanzato deve campionare il tile backdrop separato");
 assert.match(foldViewBody, /view: outputScratchView/,
@@ -1611,7 +1611,7 @@ assert.equal(
 );
 assert.match(
   foldViewBody,
-  /if \(accumulatesDocumentMask\)[\s\S]*?documentMaskSurface\.blendFoldBackdropScratchTexture/,
+  /if \(accumulatesDocumentMask\)[\s\S]*?documentMaskSurface!\.blendFoldBackdropScratchTexture/,
   "la union document-scoped deve leggere una mask immutabile separata dalla render attachment",
 );
 assert.match(mergedBody, /engine\.destroyLayerBake\(source\.transientBake\)/);

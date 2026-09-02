@@ -18,7 +18,7 @@ const main = readFileSync(
   "utf8",
 );
 
-assert.match(runtime, /destructive-raster-tone-curves-webgpu-v1-immutable-crop-latest-wins/);
+assert.match(runtime, /destructive-raster-tone-curves-webgpu-v2-dual-storage-adjacent-code/);
 assert.match(runtime, /type RasterToneCurvesEngineHost = BrushEngine &/);
 assert.match(runtime, /activeRasterToneCurvesSession: ActiveRasterToneCurvesSession \| null/);
 assert.match(runtime, /new WeakMap<[\s\S]{0,100}GPUDevice/);
@@ -33,7 +33,8 @@ assert.doesNotMatch(
   "WGSL conditionals must use block statements so pipeline prewarm cannot fail at runtime.",
 );
 
-assert.match(runtime, /format: "rgba16float"/);
+assert.match(runtime, /format: engine\.layerFormat/);
+assert.match(runtime, /format: profile\.layerFormat/);
 assert.match(
   runtime,
   /GPUTextureUsage\.COPY_SRC[\s\S]{0,100}GPUTextureUsage\.COPY_DST[\s\S]{0,100}GPUTextureUsage\.TEXTURE_BINDING/,
@@ -47,12 +48,13 @@ assert.match(
 assert.match(runtime, /\{ binding: 1, resource: authoritativeView \}/);
 assert.match(
   runtime,
-  /new Uint32Array\(\[sourceBounds\.x, sourceBounds\.y, 0, 0\]\)/,
+  /const quantizationSeed = engine\.nextHistoryActionId >>> 0/,
 );
 assert.doesNotMatch(runtime, /targetTexture|targetView/);
 assert.match(runtime, /size: RASTER_TONE_CURVE_LUT_BYTE_SIZE/);
 assert.match(runtime, /createPackedRasterToneCurveLut\(curves\)/);
-assert.doesNotMatch(runtime, /rgba8|unorm8|rgba32float/i);
+assert.match(runtime, /DESTRUCTIVE_RASTER_TONE_CURVES_RGBA8_PRECISION/);
+assert.match(runtime, /rasterAdjustmentBytesPerPixel\(engine\.layerFormat\)/);
 
 assert.equal(
   (runtime.match(/histogramPass\.dispatchWorkgroups\(/g) ?? []).length,
@@ -124,7 +126,7 @@ assert.match(begin, /selected\?\.kind !== "raster"/);
 assert.match(begin, /selected\.rasterLayerId !== record\.id/);
 assert.match(begin, /pixelSelectionState\.selectedPixels > 0/);
 assert.match(begin, /record\.contentBounds/);
-assert.match(begin, /engine\.layerFormat !== "rgba16float"/);
+assert.doesNotMatch(begin, /requires an RGBA16F document/);
 assert.match(begin, /record\.storageTileMask\.slice\(\)/);
 
 const commit = runtime.slice(runtime.indexOf("export async function commitRasterToneCurves("));
@@ -150,11 +152,11 @@ assert.match(runtime, /session\.lutBuffer\.destroy\(\)/);
 assert.match(runtime, /session\.parameterBuffer\.destroy\(\)/);
 assert.match(
   runtime,
-  /memoryBytes:[\s\S]{0,180}sourceBounds\.width \* sourceBounds\.height \* BYTES_PER_RGBA16F_PIXEL[\s\S]{0,180}RASTER_TONE_CURVES_PARAMETER_BYTE_SIZE/,
+  /memoryBytes:[\s\S]{0,220}rasterAdjustmentBytesPerPixel\(engine\.layerFormat\)[\s\S]{0,180}RASTER_TONE_CURVES_PARAMETER_BYTE_SIZE/,
 );
 assert.doesNotMatch(
   runtime,
-  /sourceBounds\.width \* sourceBounds\.height \* BYTES_PER_RGBA16F_PIXEL \* 2/,
+  /sourceBounds\.width \* sourceBounds\.height[\s\S]{0,80}rasterAdjustmentBytesPerPixel\(engine\.layerFormat\) \* 2/,
   "The transaction must retain one immutable crop, not a redundant output crop.",
 );
 assert.match(runtime, /latchDocumentStateInconsistent/);
@@ -170,12 +172,15 @@ const curvesPrewarm = engine.slice(
   engine.indexOf("async prewarmRasterToneCurvesResources(): Promise<void>"),
   engine.indexOf("One authoritative layer is exactly one document-sized mip-0 texture"),
 );
-assert.match(curvesPrewarm, /await prewarmRasterToneCurvesRuntime\(this\.device\)/);
+assert.match(
+  curvesPrewarm,
+  /await prewarmRasterToneCurvesRuntime\([\s\S]{0,180}this\.layerFormat[\s\S]{0,100}this\.documentStorageColorSpace/,
+);
 assert.match(curvesPrewarm, /this\.rasterToneCurvesPrewarmPromise = initialization/);
 assert.doesNotMatch(main, /deferred-raster-tone-curves|prewarmRasterToneCurvesResources\(\)/);
 assert.match(
   runtime,
-  /export async function beginRasterToneCurves[\s\S]{0,7000}const shared = await requireSharedResources\(engine\.device\)/,
+  /export async function beginRasterToneCurves[\s\S]{0,7000}const shared = await requireSharedResources\(engine\.device, \{[\s\S]{0,180}documentStorageColorSpace/,
   "opening Curves must compile its shared resources on demand",
 );
 

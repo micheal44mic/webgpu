@@ -9,9 +9,15 @@ import {
 } from "../src/raster-image-import.ts";
 import {
   RASTER_IMAGE_LAYER_IMPORT_STRATEGY,
+  RASTER_IMAGE_RGBA8_QUANTIZATION_SEED,
   rasterImageLayerBlitShader,
   rasterImageLayerRebuildShader,
+  rasterImageLayerUploadShader,
 } from "../src/raster-image-layer-import-shader.ts";
+import {
+  quantizeUnorm8HighFrequencyAdjacent,
+  rgba8HighFrequencyThresholdRank,
+} from "../src/rgba8-high-frequency-quantization.ts";
 import {
   planRasterImageMemory,
   rasterImageMipChainBytes,
@@ -147,8 +153,9 @@ assert.equal(
 );
 assert.equal(
   RASTER_IMAGE_LAYER_IMPORT_STRATEGY,
-  "decoded-rgba8-srgb-to-gamma-premultiplied-rgba16float-exact-npot-mips-immutable-master-continuous-lod-v5",
+  "decoded-rgba8-srgb-to-encoded-premultiplied-rgba16float-exact-npot-mips-f32-resample-dual-storage-output-v6",
 );
+assert.equal(RASTER_IMAGE_RGBA8_QUANTIZATION_SEED, 0x6d2b79f5);
 assert.equal(RASTER_IMAGE_DECODED_BYTES_PER_PIXEL, 4);
 assert.equal(RASTER_IMAGE_LINEAR_BYTES_PER_PIXEL, 8);
 assert.match(
@@ -416,15 +423,30 @@ assert.doesNotMatch(runtimeSource, /CanvasRenderingContext2D|getContext\("2d"\)|
 assert.doesNotMatch(runtimeSource, /addImageAboveSelection\(/);
 assert.match(shaderSource, /textureSampleLevel\(/);
 for (const [label, samplingShader] of [
-  ["preview", rasterImageLayerBlitShader],
+  ["initial import", rasterImageLayerBlitShader],
   ["rebuild", rasterImageLayerRebuildShader],
 ]) {
   assert.match(samplingShader, /let continuousLod = sourceLod/);
   assert.doesNotMatch(samplingShader, /let lod = floor\(continuousLod\)/);
   assert.match(
     samplingShader,
-    /textureSampleLevel\([\s\S]{0,160}continuousLod[\s\S]{0,80}return decodedSource\(sampled\)/,
-    `${label} must sample the same fractional mip footprint`,
+    /fn sampledSource\([\s\S]{0,800}textureSampleLevel\([\s\S]{0,160}continuousLod/,
+    `${label} must sample its fractional mip footprint in f32`,
+  );
+  assert.match(
+    samplingShader,
+    /fn fragmentLinearMain\([\s\S]{0,180}return decodedSource\(sampledSource\(input\)\)/,
+    `${label} must retain the legacy linear-premultiplied output`,
+  );
+  assert.match(
+    samplingShader,
+    new RegExp(
+      "fn fragmentEncodedSrgbMain\\([\\s\\S]{0,420}"
+      + "quantizeRgba8HighFrequencyAdjacent\\(\\s*sampledSource\\(input\\),\\s*"
+      + "vec2<u32>\\(input\\.position\\.xy\\),\\s*"
+      + `${RASTER_IMAGE_RGBA8_QUANTIZATION_SEED}u`,
+    ),
+    `${label} must quantize encoded-premultiplied output in document coordinates`,
   );
   assert.match(samplingShader, /return vec4<f32>\(straightLinear \* alpha, alpha\)/);
   assert.doesNotMatch(
@@ -435,6 +457,11 @@ for (const [label, samplingShader] of [
 }
 assert.match(shaderSource, /fragmentPremultiplyMain/);
 assert.match(shaderSource, /linearToSrgb\(straightLinear\.rgb\) \* straightLinear\.a/);
+assert.doesNotMatch(
+  rasterImageLayerUploadShader,
+  /quantizeRgba8HighFrequencyAdjacent/,
+  "the immutable encoded master and its exact-area mips must remain unquantized f32",
+);
 assert.match(shaderSource, /alpha <= 0\.000001/);
 assert.match(shaderSource, /texelOverlap/);
 assert.match(shaderSource, /for \(var y = 0; y < 3/);
@@ -455,7 +482,27 @@ assert.doesNotMatch(
 );
 assert.match(engineSource, /commitRasterImportHistory\(history/);
 assert.match(runtimeSource, /seed: null,[\s\S]{0,1800}commitHistory\(historySeed\);/);
-assert.match(runtimeSource, /Map<LayerFormat, Promise<NativeImportPipelines>>/);
+assert.match(
+  runtimeSource,
+  /Map<NativeImportPipelineProfile, Promise<NativeImportPipelines>>/,
+);
+assert.match(
+  runtimeSource,
+  /type NativeImportPipelineProfile = `\$\{LayerFormat\}:\$\{DocumentStorageColorSpace\}`/,
+);
+assert.match(
+  runtimeSource,
+  /engine\.documentStorageColorSpace\s*=== "encoded-srgb-premultiplied"/,
+);
+assert.match(
+  runtimeSource,
+  /storedEncodedSrgb\s*\? "fragmentEncodedSrgbMain"\s*: "fragmentLinearMain"/,
+);
+assert.equal(
+  (runtimeSource.match(/entryPoint: outputEntryPoint/g) ?? []).length,
+  2,
+  "initial import and immutable-source rebuild must select the same storage profile",
+);
 assert.match(runtimeSource, /Promise\.allSettled\(\[[\s\S]{0,500}createRenderPipelineAsync/);
 assert.match(
   runtimeSource,
@@ -546,6 +593,86 @@ assert.ok(
 assert.ok(
   Math.abs(linearToSrgbChannel(0.5) - 0.7353569831) < 1e-9,
   "the numerical oracle must distinguish an accidental linear-light box filter",
+);
+
+const quantizationRanks = new Set();
+for (let y = 0; y < 16; y += 1) {
+  for (let x = 0; x < 16; x += 1) {
+    quantizationRanks.add(rgba8HighFrequencyThresholdRank(
+      x,
+      y,
+      RASTER_IMAGE_RGBA8_QUANTIZATION_SEED,
+    ));
+  }
+}
+assert.equal(
+  quantizationRanks.size,
+  256,
+  "one import quantization cell must use every threshold exactly once",
+);
+
+const halfCodeOutputs = new Set();
+for (let y = 0; y < 16; y += 1) {
+  for (let x = 0; x < 16; x += 1) {
+    halfCodeOutputs.add(quantizeUnorm8HighFrequencyAdjacent(
+      100.5 / 255,
+      x,
+      y,
+      RASTER_IMAGE_RGBA8_QUANTIZATION_SEED,
+    ));
+  }
+}
+assert.deepEqual(
+  [...halfCodeOutputs].sort((a, b) => a - b),
+  [100, 101],
+  "RGBA8 image output may use only the two codes adjacent to an f32 sample",
+);
+
+const straightSrgb = [0.5, 0.25, 0.75];
+const sourceAlpha = 0.4;
+const encodedPremultiplied = [
+  straightSrgb[0] * sourceAlpha,
+  straightSrgb[1] * sourceAlpha,
+  straightSrgb[2] * sourceAlpha,
+  sourceAlpha,
+];
+const quantizeImportedSample = (x, y) => encodedPremultiplied.map((value) =>
+  quantizeUnorm8HighFrequencyAdjacent(
+    value,
+    x,
+    y,
+    RASTER_IMAGE_RGBA8_QUANTIZATION_SEED,
+  )
+);
+const firstQuantizedSample = quantizeImportedSample(371, 913);
+assert.deepEqual(
+  quantizeImportedSample(371, 913),
+  firstQuantizedSample,
+  "rebuild and Redo must reproduce the same document-coordinate quantization",
+);
+assert.ok(
+  firstQuantizedSample.slice(0, 3).every((channel) => channel <= firstQuantizedSample[3]),
+  "a shared threshold must preserve encoded premultiplication after quantization",
+);
+for (const [channelIndex, exactValue] of encodedPremultiplied.entries()) {
+  let codeSum = 0;
+  for (let y = 0; y < 16; y += 1) {
+    for (let x = 0; x < 16; x += 1) {
+      codeSum += quantizeImportedSample(x, y)[channelIndex];
+    }
+  }
+  const meanNormalized = codeSum / 256 / 255;
+  assert.ok(
+    Math.abs(meanNormalized - exactValue) <= 1 / (255 * 256),
+    `channel ${channelIndex} must conserve the f32 encoded-premultiplied mean`,
+  );
+}
+const legacyLinearPremultiplied = straightSrgb.map((channel) =>
+  srgbToLinearChannel(channel) * sourceAlpha
+);
+assert.ok(
+  Math.abs(legacyLinearPremultiplied[0] - encodedPremultiplied[0]) > 0.1,
+  "the legacy linear output oracle must remain distinct from encoded RGBA8 storage",
 );
 
 console.log("Native raster image import and shared Transform transaction verified.");

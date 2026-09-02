@@ -16,10 +16,14 @@ const server = await createServer({
 let core;
 let history;
 let cloneRuntime;
+let highFrequencyQuantization;
 try {
   core = await server.ssrLoadModule("/src/clone-gpu-core.ts");
   history = await server.ssrLoadModule("/src/engine-history-types.ts");
   cloneRuntime = await server.ssrLoadModule("/src/engine-clone-runtime.ts");
+  highFrequencyQuantization = await server.ssrLoadModule(
+    "/src/rgba8-high-frequency-quantization.ts",
+  );
 } finally {
   await server.close();
 }
@@ -39,7 +43,8 @@ const {
   growCloneAtlasLayerCapacity,
 } = core;
 const { resolvePaintHistoryStampCount } = history;
-const { cloneSettingsForCurrentBrush } = cloneRuntime;
+const { cloneFormatBytesPerPixel, cloneSettingsForCurrentBrush } = cloneRuntime;
+const { quantizeUnorm8HighFrequencyAdjacent } = highFrequencyQuantization;
 
 const layout = cloneSourceLayout(2048, 2048);
 assert.deepEqual(layout, {
@@ -152,6 +157,8 @@ assert.equal(CLONE_HISTORY_BUFFER_ALIGNMENT_BYTES, 256);
 assert.equal(growCloneAtlasLayerCapacity(4, 5), 8);
 assert.equal(growCloneAtlasLayerCapacity(128, 256), 256);
 assert.equal(CLONE_SOURCE_INITIAL_ATLAS_LAYERS, 4);
+assert.equal(cloneFormatBytesPerPixel("rgba8unorm"), 4);
+assert.equal(cloneFormatBytesPerPixel("rgba16float"), 8);
 
 const settings = cloneSettingsForCurrentBrush({
   tool: "blend",
@@ -276,7 +283,44 @@ assert.match(shaderSource, /rotationCos \* destinationDelta\.x - rotationSin \* 
 assert.match(shaderSource, /cloneSourcePageTable/);
 assert.match(shaderSource, /cloneSourceTexel\(base \+ vec2<i32>\(1, 1\)\)/,
   "manual bilinear sampling must cross virtual-page seams");
-assert.match(shaderSource, /sampleCloneSource\(documentPosition\) \* amount/);
+assert.match(shaderSource, /let sampled = sampleCloneSource\(documentPosition\)/);
+assert.match(shaderSource, /\$\{rgba8HighFrequencyQuantizationShader\}/);
+assert.match(shaderSource, /storageAndSeed: vec4<u32>/);
+assert.match(
+  shaderSource,
+  /quantizeRgba8HighFrequencyAdjacent\([\s\S]*?encodedContribution,[\s\S]*?destinationCoordinate,[\s\S]*?cloneSource\.storageAndSeed\.y/,
+  "encoded RGBA8 Clone output must use replay-stable document-space adjacent codes",
+);
+assert.match(
+  shaderSource,
+  /fn boundedEncodedPremultiplied[\s\S]*?min\([\s\S]*?vec3<f32>\(alpha\)/,
+  "encoded Clone samples must retain the RGB <= alpha premultiplication invariant",
+);
+assert.match(
+  runtimeSource,
+  /uniformU32\[12\] = engine\.layerFormat === "rgba8unorm"[\s\S]*?engine\.documentStorageColorSpace === "encoded-srgb-premultiplied"/,
+  "the encoded Clone shader path must be selected only by the authoritative document contract",
+);
+assert.match(runtimeSource, /uniformU32\[13\] = quantizationSeed >>> 0/);
+assert.match(
+  runtimeSource,
+  /`Clone action \$\{actionId\}`,[\s\S]{0,80}?actionId,/,
+  "a live Clone action must seed adjacent-code quantization from its history identity",
+);
+assert.match(
+  runtimeSource,
+  /`Clone replay action \$\{replayBatch\.actionId\}`,[\s\S]{0,100}?replayBatch\.actionId,/,
+  "Clone replay must reconstruct the same adjacent-code field",
+);
+assert.match(
+  previewRuntimeSource,
+  /if \(preview\.shapeControls\.y > 0\.5\)[\s\S]*?return boundedEncodedPremultiplied\(sampled\);[\s\S]*?return linearPremultipliedToEncodedSrgb\(sampled\);/,
+  "the RGBA8 first-sample preview must not apply the sRGB transfer twice",
+);
+assert.match(
+  previewRuntimeSource,
+  /upload\[13\] = engine\.layerFormat === "rgba8unorm"[\s\S]*?engine\.documentStorageColorSpace === "encoded-srgb-premultiplied"/,
+);
 assert.match(engineSource, /beginCloneStroke\([\s\S]*?beginStrokeAtLayer\(point, true, configuration\)/);
 assert.match(engineSource, /await ensureCloneSourceForStamps/);
 assert.match(engineSource, /prepareCloneTool\([\s\S]*?warmCloneSamplePreview[\s\S]*?prepareCloneSourceSnapshot/);
@@ -370,6 +414,64 @@ const maximumAtlasBytes = layout.tileWidth * layout.tileHeight * 8
   * CLONE_SOURCE_PAGE_TABLE_LENGTH;
 assert.equal(initialAtlasBytes / 1024 / 1024, 0.5);
 assert.equal(maximumAtlasBytes / 1024 / 1024, 32);
+const initialRgba8AtlasBytes = layout.tileWidth * layout.tileHeight * 4
+  * CLONE_SOURCE_INITIAL_ATLAS_LAYERS;
+const maximumRgba8AtlasBytes = layout.tileWidth * layout.tileHeight * 4
+  * CLONE_SOURCE_PAGE_TABLE_LENGTH;
+assert.equal(initialRgba8AtlasBytes / 1024 / 1024, 0.25);
+assert.equal(maximumRgba8AtlasBytes / 1024 / 1024, 16);
+
+const clampUnit = (value) => Math.max(0, Math.min(1, value));
+const linearToSrgbChannel = (value) => {
+  const bounded = clampUnit(value);
+  return bounded <= 0.0031308
+    ? bounded * 12.92
+    : 1.055 * bounded ** (1 / 2.4) - 0.055;
+};
+const darkEncodedCode = 16;
+const darkEncoded = darkEncodedCode / 255;
+assert.equal(
+  Math.round(darkEncoded * 255),
+  darkEncodedCode,
+  "the encoded preview branch must preserve a dark stored code",
+);
+assert.ok(
+  Math.round(linearToSrgbChannel(darkEncoded) * 255) >= 70,
+  "the former double transfer must remain a discriminating preview failure",
+);
+
+const sourcePremultiplied = [0.071, 0.193, 0.411, 0.537];
+const deposit = 0.137;
+const contribution = sourcePremultiplied.map((channel) => channel * deposit);
+const codeSums = [0, 0, 0, 0];
+for (let y = 0; y < 16; y += 1) {
+  for (let x = 0; x < 16; x += 1) {
+    const codes = contribution.map((channel) => (
+      quantizeUnorm8HighFrequencyAdjacent(channel, x, y, 93)
+    ));
+    for (let channel = 0; channel < 3; channel += 1) {
+      assert.ok(codes[channel] <= codes[3], "Clone quantization must preserve RGB <= alpha");
+    }
+    codes.forEach((code, channel) => { codeSums[channel] += code; });
+  }
+}
+codeSums.forEach((sum, channel) => {
+  const meanCode = sum / 256;
+  const idealCode = contribution[channel] * 255;
+  assert.ok(
+    Math.abs(meanCode - idealCode) <= 1 / 256 + 1e-12,
+    `Clone adjacent-code mean ${meanCode} must preserve ${idealCode}`,
+  );
+});
+for (const code of [0, 1, 7, 16, 64, 127, 254, 255]) {
+  for (const seed of [0, 1, 93, 0xffff]) {
+    assert.equal(
+      quantizeUnorm8HighFrequencyAdjacent(code / 255, 317, 911, seed),
+      code,
+      "Clone quantization must preserve every exact stored source code",
+    );
+  }
+}
 
 const benchmarkStartedAt = performance.now();
 let requestedPages = 0;
@@ -394,6 +496,7 @@ assert.ok(requestedPages > 0);
 assert.ok(benchmarkMs < 2_000, `virtual-page planning took ${benchmarkMs.toFixed(1)} ms`);
 
 console.log(
-  `Clone verified: rotated frozen raster source, fence-free live pages, immutable GPU replay, `
-    + `bounded 0.5–32 MiB atlas and page planning in ${benchmarkMs.toFixed(1)} ms.`,
+  `Clone verified: encoded RGBA8 preview/write parity, adjacent-code replay, rotated frozen `
+    + `raster source, fence-free live pages, immutable GPU replay, bounded 0.25–16 MiB `
+    + `RGBA8 atlas and page planning in ${benchmarkMs.toFixed(1)} ms.`,
 );

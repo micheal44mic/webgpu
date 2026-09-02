@@ -23,8 +23,8 @@ assert.match(
 );
 assert.match(
   html,
-  /<div\b[^>]*id="editorBrushPrecision"[^>]*role="radiogroup"[^>]*aria-label="Brush precision"[^>]*aria-describedby="editorBrushPrecisionHint"[^>]*>/,
-  "Brush precision must be exposed as a labelled radio group with explanatory text",
+  /<div\b[^>]*id="editorBrushPrecision"[^>]*role="radiogroup"[^>]*aria-label="Brush mask precision"[^>]*aria-describedby="editorBrushPrecisionHint"[^>]*>/,
+  "Brush mask precision must be exposed as a labelled radio group with explanatory text",
 );
 for (const [precision, checked, label] of [
   ["r8unorm", false, "8-bit"],
@@ -109,12 +109,17 @@ assert.ok(
 assert.match(
   mainSource,
   /function applyBrushSettings\(\s*settings: Readonly<BrushSettings>,\s*options: Readonly<\{ preserveCanvasTool\?: boolean \}> = \{\},\s*\): void \{[\s\S]*?brushSettingsController\.replace\(\{[\s\S]*?shapeMaskFormat:\s*editorSettingsController\?\.preferences\.brushPrecision\s*\?\?\s*DEFAULT_EDITOR_GUIDE_PREFERENCES\.brushPrecision,[\s\S]*?\}\);/,
-  "every applied brush must be forced through the global Brush precision preference",
+  "applied brushes must use the global mask-precision preference independently of document storage",
 );
 assert.match(
   mainSource,
   /new MobileBrushStudioController\(\{[\s\S]*?getBrushPrecision:\s*\(\)\s*=>\s*editorSettingsController\?\.preferences\.brushPrecision\s*\?\?\s*DEFAULT_EDITOR_GUIDE_PREFERENCES\.brushPrecision,[\s\S]*?applySettings:\s*applyBrushSettings,/,
-  "Brush Studio must read the global Brush precision instead of owning one",
+  "Brush Studio must use the global mask-precision preference",
+);
+assert.match(
+  mainSource,
+  /function applyGlobalBrushPrecision\([\s\S]*?brushSettingsController\.update\(\{ shapeMaskFormat: brushPrecision \}\);/,
+  "global mask-precision changes must reach the active brush",
 );
 assert.match(
   mainSource,

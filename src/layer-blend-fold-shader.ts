@@ -6,7 +6,7 @@ import { LAYER_BLEND_MODE_WGSL } from "./layer-blend-modes.ts";
  * rectangle back, so WebGPU never samples and attaches the same subresource.
  */
 export const LAYER_BLEND_FOLD_STRATEGY =
-  "cropped-document-1024-tile-ping-pong-tonal-gate-residual-cutout-w3c-over-clipping-atop-dissolve-v6" as const;
+  "cropped-document-1024-tile-ping-pong-dual-storage-tonal-gate-residual-cutout-w3c-over-clipping-atop-dissolve-v7" as const;
 
 export const LAYER_BLEND_FOLD_TILE_EXTENT = 1024 as const;
 
@@ -56,7 +56,8 @@ struct LayerBlendFoldUniforms {
   documentMaskScale: f32,
   _pad2: f32,
   documentMaskDimensions: vec2<u32>,
-  _pad3: vec2<u32>,
+  storageColorSpace: u32,
+  sceneDomain: u32,
 };
 
 @group(0) @binding(0) var backdropTexture: texture_2d<f32>;
@@ -72,6 +73,43 @@ const LAYER_BLEND_CONTEXT_CLIPPING_CHILD: u32 = 1u;
 const LAYER_BLEND_CONTEXT_CLIPPING_OUTER: u32 = 2u;
 const LAYER_CUTOUT_GROUP: u32 = 1u;
 const LAYER_CUTOUT_DOCUMENT: u32 = 2u;
+const LAYER_STORAGE_LINEAR_PREMULTIPLIED: u32 = 0u;
+const LAYER_STORAGE_ENCODED_SRGB_PREMULTIPLIED: u32 = 1u;
+
+fn layerBlendFoldDecodeBackdrop(input: vec4<f32>) -> vec4<f32> {
+  if (
+    layer.sceneDomain == 0u
+    || layer.storageColorSpace != LAYER_STORAGE_ENCODED_SRGB_PREMULTIPLIED
+  ) {
+    return input;
+  }
+  let alpha = clamp(input.a, 0.0, 1.0);
+  if (alpha <= 0.0) { return vec4<f32>(0.0); }
+  let straight = clamp(input.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  return vec4<f32>(layerBlendSrgbToLinear(straight) * alpha, alpha);
+}
+
+fn layerBlendFoldDecodeSource(input: vec4<f32>) -> vec4<f32> {
+  // Mode 2 receives a source that was authored directly in linear RGBA16F.
+  // The backdrop still belongs to the encoded-premultiplied working run.
+  if (layer.sceneDomain == 2u) {
+    return input;
+  }
+  return layerBlendFoldDecodeBackdrop(input);
+}
+
+fn layerBlendFoldEncodeWorking(input: vec4<f32>) -> vec4<f32> {
+  if (
+    layer.sceneDomain == 0u
+    || layer.storageColorSpace != LAYER_STORAGE_ENCODED_SRGB_PREMULTIPLIED
+  ) {
+    return input;
+  }
+  let alpha = clamp(input.a, 0.0, 1.0);
+  if (alpha <= 0.0) { return vec4<f32>(0.0); }
+  let straight = clamp(input.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  return vec4<f32>(layerBlendLinearToSrgb(straight) * alpha, alpha);
+}
 
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> @builtin(position) vec4<f32> {
@@ -126,7 +164,13 @@ fn sampleFoldTexture(
 fn layerTonalValue(input: vec4<f32>) -> f32 {
   let alpha = clamp(input.a, 0.0, 1.0);
   if (alpha <= 0.0) { return 0.0; }
-  let straightSrgb = layerBlendLinearToSrgb(clamp(input.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0)));
+  let straightStored = clamp(input.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  let straightSrgb = select(
+    layerBlendLinearToSrgb(straightStored),
+    straightStored,
+    layer.storageColorSpace == LAYER_STORAGE_ENCODED_SRGB_PREMULTIPLIED
+      && layer.sceneDomain == 0u,
+  );
   return dot(straightSrgb, vec3<f32>(0.2126, 0.7152, 0.0722));
 }
 
@@ -196,20 +240,28 @@ fn layerBlendFoldSourceAtop(
   if (sourceAlpha <= 0.0) {
     return vec4<f32>(backdropPremultiplied, backdropAlpha);
   }
-  var backdropLinear = vec3<f32>(0.0);
-  var sourceLinear = vec3<f32>(0.0);
-  if (backdropAlpha > 0.0) { backdropLinear = backdropPremultiplied / backdropAlpha; }
-  if (sourceAlpha > 0.0) { sourceLinear = sourcePremultiplied / sourceAlpha; }
-  let blendedLinear = layerBlendSrgbToLinear(layerBlendSrgb(
-    layerBlendLinearToSrgb(backdropLinear),
-    layerBlendLinearToSrgb(sourceLinear),
+  var backdropStored = vec3<f32>(0.0);
+  var sourceStored = vec3<f32>(0.0);
+  if (backdropAlpha > 0.0) { backdropStored = backdropPremultiplied / backdropAlpha; }
+  if (sourceAlpha > 0.0) { sourceStored = sourcePremultiplied / sourceAlpha; }
+  let encodedStorage = layer.storageColorSpace
+    == LAYER_STORAGE_ENCODED_SRGB_PREMULTIPLIED
+    && layer.sceneDomain == 0u;
+  let blendedSrgb = layerBlendSrgb(
+    select(layerBlendLinearToSrgb(backdropStored), backdropStored, encodedStorage),
+    select(layerBlendLinearToSrgb(sourceStored), sourceStored, encodedStorage),
     mode,
-  ));
+  );
+  let blendedStored = select(
+    layerBlendSrgbToLinear(blendedSrgb),
+    blendedSrgb,
+    encodedStorage,
+  );
   let outputAlpha = sourceAlpha * clippingAlpha
     + backdropAlpha * (1.0 - sourceAlpha);
   return vec4<f32>(
     clamp(
-      blendedLinear * (sourceAlpha * clippingAlpha)
+      blendedStored * (sourceAlpha * clippingAlpha)
         + backdropPremultiplied * (1.0 - sourceAlpha),
       vec3<f32>(0.0),
       vec3<f32>(outputAlpha),
@@ -219,13 +271,13 @@ fn layerBlendFoldSourceAtop(
 }
 
 fn layerBlendFoldClippingBase(documentPosition: vec2<f32>) -> vec4<f32> {
-  return sampleFoldTexture(
+  return layerBlendFoldDecodeBackdrop(sampleFoldTexture(
     clippingBaseTexture,
     documentPosition,
     layer.clippingBaseOrigin,
     layer.clippingBaseScale,
     textureDimensions(clippingBaseTexture, 0),
-  );
+  ));
 }
 
 fn layerBlendFoldDocumentMask(documentPosition: vec2<f32>) -> f32 {
@@ -260,16 +312,16 @@ fn documentMaskFragmentMain(
   ) {
     return vec4<f32>(previous);
   }
-  let backdrop = textureLoad(backdropTexture, pixel, 0);
+  let backdrop = layerBlendFoldDecodeBackdrop(textureLoad(backdropTexture, pixel, 0));
   let documentPosition = foldDocumentPosition(fragmentPosition.xy);
   let opacity = clamp(layer.opacity, 0.0, 1.0);
-  let unfilteredSource = sampleFoldTexture(
+  let unfilteredSource = layerBlendFoldDecodeSource(sampleFoldTexture(
     sourceTexture,
     documentPosition,
     layer.sourceOrigin,
     layer.sourceScale,
     layer.sourceDimensions,
-  ) * opacity;
+  )) * opacity;
   let tonalMask = layerTonalMask(unfilteredSource, backdrop);
   let source = unfilteredSource * tonalMask;
   let rawMatte = sampleFoldTexture(
@@ -300,16 +352,16 @@ fn documentMaskContributionFragmentMain(
     return vec4<f32>(0.0);
   }
   let pixel = vec2<i32>(fragmentPosition.xy);
-  let backdrop = textureLoad(backdropTexture, pixel, 0);
+  let backdrop = layerBlendFoldDecodeBackdrop(textureLoad(backdropTexture, pixel, 0));
   let documentPosition = foldDocumentPosition(fragmentPosition.xy);
   let opacity = clamp(layer.opacity, 0.0, 1.0);
-  let unfilteredSource = sampleFoldTexture(
+  let unfilteredSource = layerBlendFoldDecodeSource(sampleFoldTexture(
     sourceTexture,
     documentPosition,
     layer.sourceOrigin,
     layer.sourceScale,
     layer.sourceDimensions,
-  ) * opacity;
+  )) * opacity;
   let tonalMask = layerTonalMask(unfilteredSource, backdrop);
   let source = unfilteredSource * tonalMask;
   let rawMatte = sampleFoldTexture(
@@ -333,17 +385,17 @@ fn fragmentMain(
   @builtin(position) fragmentPosition: vec4<f32>,
 ) -> @location(0) vec4<f32> {
   let pixel = vec2<i32>(fragmentPosition.xy);
-  var backdrop = textureLoad(backdropTexture, pixel, 0);
+  var backdrop = layerBlendFoldDecodeBackdrop(textureLoad(backdropTexture, pixel, 0));
   let documentPosition = foldDocumentPosition(fragmentPosition.xy);
   let documentPixel = vec2<i32>(floor(documentPosition));
   let opacity = clamp(layer.opacity, 0.0, 1.0);
-  let unfilteredSource = sampleFoldTexture(
+  let unfilteredSource = layerBlendFoldDecodeSource(sampleFoldTexture(
     sourceTexture,
     documentPosition,
     layer.sourceOrigin,
     layer.sourceScale,
     layer.sourceDimensions,
-  ) * opacity;
+  )) * opacity;
   let tonalMask = layerTonalMask(unfilteredSource, backdrop);
   let source = unfilteredSource * tonalMask;
   let clippingBase = layerBlendFoldClippingBase(documentPosition);
@@ -352,7 +404,7 @@ fn fragmentMain(
     layer.cutoutMode == LAYER_CUTOUT_DOCUMENT
     || layer.compositionContext == LAYER_BLEND_CONTEXT_CLIPPING_OUTER
   ) {
-    deepFloor = textureLoad(deepFloorTexture, pixel, 0);
+    deepFloor = layerBlendFoldDecodeBackdrop(textureLoad(deepFloorTexture, pixel, 0));
   }
   if (layer.compositionContext == LAYER_BLEND_CONTEXT_CLIPPING_OUTER) {
     let documentCoverage = layerBlendFoldDocumentMask(documentPosition)
@@ -398,12 +450,24 @@ fn fragmentMain(
       documentPixel,
     );
   } else {
-    composited = layerBlendPremultipliedLinearSourceOver(
-      compositionBackdrop,
-      source,
-      layer.blendMode,
-      documentPixel,
-    );
+    if (
+      layer.storageColorSpace == LAYER_STORAGE_ENCODED_SRGB_PREMULTIPLIED
+      && layer.sceneDomain == 0u
+    ) {
+      composited = layerBlendPremultipliedEncodedSrgbSourceOver(
+        compositionBackdrop,
+        source,
+        layer.blendMode,
+        documentPixel,
+      );
+    } else {
+      composited = layerBlendPremultipliedLinearSourceOver(
+        compositionBackdrop,
+        source,
+        layer.blendMode,
+        documentPixel,
+      );
+    }
   }
   if (
     layer.cutoutMode != 0u
@@ -414,11 +478,11 @@ fn fragmentMain(
       knocked += deepFloor * residual;
     }
     let outputAlpha = clamp(knocked.a, 0.0, 1.0);
-    return vec4<f32>(
+    return layerBlendFoldEncodeWorking(vec4<f32>(
       clamp(knocked.rgb, vec3<f32>(0.0), vec3<f32>(outputAlpha)),
       outputAlpha,
-    );
+    ));
   }
-  return composited;
+  return layerBlendFoldEncodeWorking(composited);
 }
 `;

@@ -19,13 +19,14 @@ assert.doesNotMatch(
 );
 assert.match(runtime, /initial\.stops\.length < RASTER_GRADIENT_MAP_MIN_STOPS/);
 assert.match(runtime, /Choose a gradient with at least two color stops first/);
-assert.match(runtime, /format: "rgba16float"/);
+assert.match(runtime, /format: engine\.layerFormat/);
+assert.match(runtime, /format: profile\.layerFormat/);
 assert.match(runtime, /RASTER_GRADIENT_MAP_PARAMETER_BYTE_SIZE = 32/);
 assert.match(runtime, /RASTER_GRADIENT_MAP_LUT_SIZE[\s\S]*RASTER_GRADIENT_MAP_LUT_COMPONENTS/);
 assert.match(runtime, /type: "read-only-storage"/);
 assert.match(runtime, /generateRasterGradientMapLut\(settings\)/);
 assert.match(runtime, /setUint32\(16, settings\.dither \? 1 : 0, true\)/);
-assert.match(runtime, /sourceBounds\.width \* sourceBounds\.height \* BYTES_PER_RGBA16F_PIXEL/);
+assert.match(runtime, /rasterAdjustmentBytesPerPixel\(engine\.layerFormat\)/);
 
 assert.match(runtime, /requestAnimationFrame/);
 assert.match(runtime, /previewInFlight/);
@@ -37,7 +38,8 @@ assert.match(runtime, /rasterGradientMapSettingsEqual\(settings, session\.settin
 assert.match(runtime, /filter: "gradient-map"/);
 assert.match(runtime, /settings: copySettings\(session\.settings\)/);
 assert.match(runtime, /lutSize: RASTER_GRADIENT_MAP_LUT_SIZE/);
-assert.match(runtime, /precision: DESTRUCTIVE_RASTER_GRADIENT_MAP_PRECISION/);
+assert.match(runtime, /DESTRUCTIVE_RASTER_GRADIENT_MAP_RGBA8_PRECISION/);
+assert.match(runtime, /engine\.layerFormat === "rgba8unorm"/);
 assert.match(runtime, /createLayerColdStorageCandidate/);
 assert.match(runtime, /commitHistoryActionAtomically\(engine, action\)/);
 assert.match(
@@ -49,7 +51,8 @@ assert.match(
 assert.match(runtime, /selected\?\.kind !== "raster"/);
 assert.match(runtime, /selected\.rasterLayerId !== record\.id/);
 assert.match(runtime, /pixelSelectionState\.selectedPixels > 0/);
-assert.match(runtime, /layerFormat !== "rgba16float"/);
+assert.doesNotMatch(runtime, /requires an RGBA16F document/);
+assert.match(runtime, /const quantizationSeed = engine\.nextHistoryActionId >>> 0/);
 assert.match(runtime, /record\.storageTileMask\.slice\(\)/);
 assert.match(runtime, /copyTextureToTexture\(\s*\{ texture: session\.sourceTexture \}/);
 assert.match(runtime, /Gradient Map canceled: the original pixels were restored/);

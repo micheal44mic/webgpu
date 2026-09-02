@@ -29,10 +29,14 @@ import {
 import {
   RASTER_SELECTION_TRANSLATE_SHADER_STRATEGY,
   RASTER_TRANSFORM_SHADER_STRATEGY,
+  rasterSelectionTranslateStoredEncodedShader,
   rasterSelectionTranslateShader,
   rasterTransformMipmapShader,
+  rasterTransformStoredEncodedMipmapShader,
+  rasterTransformStoredEncodedShader,
   rasterTransformShader,
 } from "../src/raster-transform-shader.ts";
+import { quantizeUnorm8HighFrequencyAdjacent } from "../src/rgba8-high-frequency-quantization.ts";
 import {
   RASTER_LAYER_SOURCE_STRATEGY,
   cloneRasterLayerSource,
@@ -47,7 +51,7 @@ assert.equal(
 );
 assert.equal(
   RASTER_TRANSFORM_SHADER_STRATEGY,
-  "gamma-box-mips-transparent-border-inverse-affine-continuous-lod-v5",
+  "rgba8-linear-f32-manual-filter-adjacent-output-affine-lod-v7",
 );
 assert.equal(
   RASTER_SELECTION_TRANSLATE_SHADER_STRATEGY,
@@ -457,6 +461,20 @@ const rectangularDocumentUniforms = packRasterTransformUniforms({
   documentHeight: 1920,
 });
 assert.deepEqual([...rectangularDocumentUniforms.slice(16)], [1080, 1920, 0, 0]);
+const seededUniforms = packRasterTransformUniforms({
+  sourceScratchRect: { x: 0, y: 0, width: 100, height: 100 },
+  sourceContentBounds: { x: 0, y: 0, width: 100, height: 100 },
+  sourcePivot: { x: 50, y: 50 },
+  transform: identity,
+  quantizationSeed: 0xfedcba98,
+});
+const seededUniformWords = new Uint32Array(
+  seededUniforms.buffer,
+  seededUniforms.byteOffset,
+  seededUniforms.length,
+);
+assert.equal(seededUniformWords[18], 0xfedcba98);
+assert.equal(seededUniformWords[19], 0);
 assert.throws(
   () => packRasterTransformUniforms({
     sourceScratchRect: { x: 256, y: 512, width: 256, height: 256 },
@@ -465,6 +483,16 @@ assert.throws(
     transform: identity,
   }),
   /contained within the scratch area/,
+);
+assert.throws(
+  () => packRasterTransformUniforms({
+    sourceScratchRect: { x: 0, y: 0, width: 100, height: 100 },
+    sourceContentBounds: { x: 0, y: 0, width: 100, height: 100 },
+    sourcePivot: { x: 50, y: 50 },
+    transform: identity,
+    quantizationSeed: -1,
+  }),
+  /quantizationSeed/,
 );
 
 assert.match(rasterTransformShader, /textureSampleLevel\s*\(/);
@@ -487,6 +515,26 @@ assert.doesNotMatch(
   /preserveDarkCoverage|encodedCoverage|displayAlpha/,
 );
 assert.doesNotMatch(rasterTransformShader, /rgba8unorm|rgba16float/);
+assert.match(rasterTransformStoredEncodedShader, /loadLinearSource/);
+assert.match(
+  rasterTransformStoredEncodedShader,
+  /rasterTransformEncodedPremultipliedToLinear\([\s\S]*?textureLoad/,
+  "RGBA8 affine filtering must decode individual stored texels before interpolation",
+);
+assert.doesNotMatch(
+  rasterTransformStoredEncodedShader,
+  /textureSampleLevel\s*\(/,
+  "RGBA8 affine filtering must not interpolate encoded sRGB in hardware",
+);
+assert.match(rasterTransformStoredEncodedShader, /let top = mix\(/);
+assert.match(rasterTransformStoredEncodedShader, /let bottom = mix\(/);
+assert.match(rasterTransformStoredEncodedShader, /rasterTransformFinalizeRgba8\(/);
+assert.match(rasterTransformStoredEncodedShader, /quantizeRgba8HighFrequencyAdjacent\(/);
+assert.match(
+  rasterTransformStoredEncodedShader,
+  /vec2<u32>\(fragmentPosition\.xy\)[\s\S]*?transform\.quantizationAndReserved\.x/,
+  "RGBA8 affine output must be document-anchored and replay-seeded",
+);
 
 const mipThresholdLevels = [0.42, 0.2, 0.09];
 const continuousAlphaAtScale = (scale) => {
@@ -512,6 +560,18 @@ assert.match(rasterTransformMipmapShader, /linearPremultipliedToGamma/);
 assert.match(rasterTransformMipmapShader, /gammaPremultipliedToLinear/);
 assert.doesNotMatch(rasterTransformMipmapShader, /textureSample/);
 assert.doesNotMatch(rasterTransformMipmapShader, /rgba8unorm|rgba16float/);
+assert.match(
+  rasterTransformStoredEncodedMipmapShader,
+  /rasterTransformEncodedPremultipliedToLinear\(textureLoad\(/,
+  "RGBA8 mips must average decoded linear-light premultiplied samples",
+);
+assert.match(rasterTransformStoredEncodedMipmapShader, /accumulatedWeight/);
+assert.match(rasterTransformStoredEncodedMipmapShader, /sourceDocument/);
+assert.match(rasterTransformStoredEncodedMipmapShader, /quantizeRgba8HighFrequencyAdjacent\(/);
+assert.match(
+  rasterTransformStoredEncodedMipmapShader,
+  /@group\(0\) @binding\(1\) var<uniform> transform/,
+);
 
 assert.match(rasterSelectionTranslateShader, /var<storage, read> selectionMask/);
 assert.match(rasterSelectionTranslateShader, /textureLoad\(sourceTexture, local, 0\)/);
@@ -520,6 +580,57 @@ assert.match(rasterSelectionTranslateShader, /if \(selectedAt\(destination\)\) \
 assert.match(rasterSelectionTranslateShader, /if \(selectedAt\(source\)\) \{ moved = loadOriginal\(source\); \}/);
 assert.match(rasterSelectionTranslateShader, /return moved \+ base \* \(1\.0 - moved\.a\)/);
 assert.doesNotMatch(rasterSelectionTranslateShader, /textureSample/);
+assert.match(
+  rasterSelectionTranslateStoredEncodedShader,
+  /rasterTransformEncodedPremultipliedToLinear\([\s\S]*?textureLoad/,
+);
+assert.match(
+  rasterSelectionTranslateStoredEncodedShader,
+  /let composited = moved \+ base \* \(1\.0 - moved\.a\)/,
+);
+assert.match(rasterSelectionTranslateStoredEncodedShader, /rasterTransformFinalizeRgba8\(/);
+
+// A dark encoded ramp is decoded and interpolated in linear light. The final
+// spatial quantizer may choose only its two adjacent RGBA8 codes and preserves
+// their mean, which is the precision users perceive across a smooth region.
+const srgbToLinear = (value) => value <= 0.04045
+  ? value / 12.92
+  : ((value + 0.055) / 1.055) ** 2.4;
+const linearToSrgb = (value) => value <= 0.0031308
+  ? value * 12.92
+  : 1.055 * value ** (1 / 2.4) - 0.055;
+const darkLeft = 12 / 255;
+const darkRight = 13 / 255;
+const darkMix = linearToSrgb(
+  srgbToLinear(darkLeft) * 0.63 + srgbToLinear(darkRight) * 0.37,
+);
+const expectedLowerCode = Math.floor(darkMix * 255);
+const expectedUpperCode = Math.ceil(darkMix * 255);
+const darkCodes = [];
+for (let y = 0; y < 16; y += 1) {
+  for (let x = 0; x < 16; x += 1) {
+    darkCodes.push(quantizeUnorm8HighFrequencyAdjacent(darkMix, x, y, 0xfedcba98));
+  }
+}
+assert.ok(darkCodes.every((code) => code === expectedLowerCode || code === expectedUpperCode));
+assert.equal(new Set(darkCodes).size, 2, "a fractional dark ramp must use both adjacent codes");
+const darkCodeMean = darkCodes.reduce((sum, code) => sum + code, 0) / darkCodes.length;
+assert.ok(Math.abs(darkCodeMean - darkMix * 255) <= 1 / 256);
+
+const alpha = 0.37;
+const encodedPremultiplied = [
+  linearToSrgb(0.7) * alpha,
+  linearToSrgb(0.23) * alpha,
+  linearToSrgb(0.04) * alpha,
+  alpha,
+];
+for (let y = 0; y < 16; y += 1) {
+  for (let x = 0; x < 16; x += 1) {
+    const codes = encodedPremultiplied.map((value) =>
+      quantizeUnorm8HighFrequencyAdjacent(value, x, y, 71));
+    assert.ok(codes[0] <= codes[3] && codes[1] <= codes[3] && codes[2] <= codes[3]);
+  }
+}
 
 const mathSource = readFileSync(
   new URL("../src/raster-transform-math.ts", import.meta.url),
@@ -528,6 +639,37 @@ const mathSource = readFileSync(
 const runtimeSource = readFileSync(
   new URL("../src/engine-raster-transform-runtime.ts", import.meta.url),
   "utf8",
+);
+assert.match(
+  runtimeSource,
+  /engine\.documentStorageColorSpace === "encoded-srgb-premultiplied"/,
+  "Transform must specialize its mip builder for the document storage encoding",
+);
+assert.match(
+  runtimeSource,
+  /shared\.storedEncodedSrgb[\s\S]*?rasterTransformStoredEncodedMipmapShader[\s\S]*?: rasterTransformMipmapShader/,
+  "encoded-sRGB documents must compile the linear-light RGBA8 mip variant",
+);
+assert.match(
+  runtimeSource,
+  /shared\.storedEncodedSrgb[\s\S]*?rasterTransformStoredEncodedShader[\s\S]*?: rasterTransformShader/,
+  "encoded-sRGB documents must compile the RGBA8 affine finalizer",
+);
+assert.match(
+  runtimeSource,
+  /shared\.storedEncodedSrgb[\s\S]*?rasterDeformStoredEncodedShader[\s\S]*?: rasterDeformShader/,
+  "encoded-sRGB documents must compile the RGBA8 Warp and Perspective finalizer",
+);
+assert.match(
+  runtimeSource,
+  /shared\.storedEncodedSrgb[\s\S]*?rasterSelectionTranslateStoredEncodedShader[\s\S]*?: rasterSelectionTranslateShader/,
+);
+assert.match(runtimeSource, /quantizationSeed: engine\.nextHistoryActionId >>> 0/);
+assert.match(runtimeSource, /quantizationSeed: session\.quantizationSeed/);
+assert.match(
+  runtimeSource,
+  /layout: shared\.mipBindGroupLayout,[\s\S]{0,300}binding: 1, resource: \{ buffer: uniformBuffer \}/,
+  "each mip pass must receive document coordinates and the stable seed",
 );
 const controllerSource = readFileSync(
   new URL("../src/mixed-scene-controller.ts", import.meta.url),

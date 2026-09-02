@@ -29,6 +29,7 @@ export const verificationScripts = Object.freeze([
   "verify-controller-boundaries.mjs",
   "verify-document-size.mjs",
   "verify-document-interaction-controller.mjs",
+  "verify-direct-deposit-brush.mjs",
   "verify-editor-filters-controller.mjs",
   "verify-editor-tools-controller.mjs",
   "verify-editor-settings-controller.mjs",

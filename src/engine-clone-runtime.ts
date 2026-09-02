@@ -401,6 +401,7 @@ function createVirtualSource(
   transform: Readonly<CloneSourceTransform>,
   capacity: number,
   label: string,
+  quantizationSeed: number,
 ): CloneVirtualSource {
   const atlasTexture = createAtlasTexture(engine, layout, capacity, `${label} atlas`);
   const pageTableBuffer = engine.device.createBuffer({
@@ -427,6 +428,11 @@ function createVirtualSource(
   uniformU32[8] = layout.tileWidth;
   uniformU32[9] = layout.tileHeight;
   uniformU32[10] = layout.gridSize;
+  uniformU32[12] = engine.layerFormat === "rgba8unorm"
+    && engine.documentStorageColorSpace === "encoded-srgb-premultiplied"
+    ? 1
+    : 0;
+  uniformU32[13] = quantizationSeed >>> 0;
   engine.device.queue.writeBuffer(uniformBuffer, 0, uniformUpload);
   const pageTableUpload = new Uint32Array(CLONE_SOURCE_PAGE_TABLE_LENGTH);
   engine.device.queue.writeBuffer(pageTableBuffer, 0, pageTableUpload);
@@ -815,6 +821,7 @@ export function createActiveCloneStrokeSession(
     transform,
     CLONE_SOURCE_INITIAL_ATLAS_LAYERS,
     `Clone action ${actionId}`,
+    actionId,
   );
   return {
     ...source,
@@ -1257,6 +1264,7 @@ export function encodeCloneReplaySource(
     transform,
     capacity,
     `Clone replay action ${replayBatch.actionId}`,
+    replayBatch.actionId,
   );
   const replaySource: CloneReplaySource = {
     ...source,

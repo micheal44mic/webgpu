@@ -1,4 +1,5 @@
 import type { VectorTextViewState } from "./vector-text-types";
+import type { DocumentStorageColorSpace, LayerFormat } from "./engine-types";
 import { runGpuAllocationTransaction, type GpuAllocationTransaction } from "./gpu-allocation-transaction";
 import {
   SELECTION_LASSO_SPAN_BUFFER_BYTES,
@@ -25,10 +26,17 @@ import {
   type SelectionCombineMode,
   type SelectionDocumentMetrics,
 } from "./selection-core";
-import { selectionComputeShader, selectionOverlayShader } from "./selection-shaders";
+import {
+  createSelectionComputeShader,
+  selectionOverlayShader,
+  selectionSourceStorageProfileKey,
+  type SelectionSourceStorageProfile,
+} from "./selection-shaders";
 
 interface SelectionRendererOptions {
   readonly device: GPUDevice;
+  readonly layerFormat: LayerFormat;
+  readonly documentStorageColorSpace: DocumentStorageColorSpace;
   readonly sourceSamplingView: GPUTextureView;
   readonly overlayCanvas: HTMLCanvasElement;
 }
@@ -71,8 +79,15 @@ type SelectionOptionalComputeEntryPoint =
  */
 const selectionGpuPrograms = new WeakMap<
   GPUDevice,
-  Map<GPUTextureFormat, Promise<SelectionGpuProgram>>
+  Map<string, Promise<SelectionGpuProgram>>
 >();
+
+function selectionGpuProgramKey(
+  overlayFormat: GPUTextureFormat,
+  sourceProfile: SelectionSourceStorageProfile,
+): string {
+  return `${overlayFormat}:${selectionSourceStorageProfileKey(sourceProfile)}`;
+}
 
 async function assertShaderModules(
   modules: readonly { label: string; module: GPUShaderModule }[],
@@ -92,10 +107,11 @@ async function assertShaderModules(
 async function createSelectionGpuProgram(
   device: GPUDevice,
   overlayFormat: GPUTextureFormat,
+  sourceProfile: SelectionSourceStorageProfile,
 ): Promise<SelectionGpuProgram> {
   const computeModule = device.createShaderModule({
     label: "Pixel Selection · session compute",
-    code: selectionComputeShader,
+    code: createSelectionComputeShader(sourceProfile),
   });
   const overlayModule = device.createShaderModule({
     label: "Pixel Selection · session overlay",
@@ -192,20 +208,22 @@ function getSelectionOptionalComputePipeline(
 function getSelectionGpuProgram(
   device: GPUDevice,
   overlayFormat: GPUTextureFormat,
+  sourceProfile: SelectionSourceStorageProfile,
 ): Promise<SelectionGpuProgram> {
   let programsByFormat = selectionGpuPrograms.get(device);
   if (!programsByFormat) {
     programsByFormat = new Map();
     selectionGpuPrograms.set(device, programsByFormat);
   }
-  const cached = programsByFormat.get(overlayFormat);
+  const programKey = selectionGpuProgramKey(overlayFormat, sourceProfile);
+  const cached = programsByFormat.get(programKey);
   if (cached) return cached;
 
-  const pending = createSelectionGpuProgram(device, overlayFormat);
-  programsByFormat.set(overlayFormat, pending);
+  const pending = createSelectionGpuProgram(device, overlayFormat, sourceProfile);
+  programsByFormat.set(programKey, pending);
   void pending.catch(() => {
-    if (programsByFormat?.get(overlayFormat) === pending) {
-      programsByFormat.delete(overlayFormat);
+    if (programsByFormat?.get(programKey) === pending) {
+      programsByFormat.delete(programKey);
     }
   });
   return pending;
@@ -237,6 +255,7 @@ export class SelectionRenderer {
   readonly overlayContext: GPUCanvasContext;
   readonly overlayFormat: GPUTextureFormat;
   private sourceSamplingView: GPUTextureView;
+  private readonly sourceProfile: SelectionSourceStorageProfile;
   private frontMask: GPUBuffer;
   private backMask: GPUBuffer;
   private colorPreviewBaseMask: GPUBuffer;
@@ -258,6 +277,10 @@ export class SelectionRenderer {
     this.metrics = currentSelectionDocumentMetrics();
     this.overlayCanvas = options.overlayCanvas;
     this.sourceSamplingView = options.sourceSamplingView;
+    this.sourceProfile = {
+      layerFormat: options.layerFormat,
+      colorSpace: options.documentStorageColorSpace,
+    };
     const createBuffer = (
       label: string,
       size: number,
@@ -334,7 +357,11 @@ export class SelectionRenderer {
   }
 
   private async initialize(): Promise<void> {
-    const program = await getSelectionGpuProgram(this.device, this.overlayFormat);
+    const program = await getSelectionGpuProgram(
+      this.device,
+      this.overlayFormat,
+      this.sourceProfile,
+    );
     this.gpuProgram = program;
     this.computeBindGroupLayout = program.computeBindGroupLayout;
     this.overlayBindGroupLayout = program.overlayBindGroupLayout;

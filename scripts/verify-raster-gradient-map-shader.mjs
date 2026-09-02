@@ -19,7 +19,11 @@ try {
 }
 
 const { RASTER_GRADIENT_MAP_LUT_SIZE } = core;
-const { rasterGradientMapDispatchSize, rasterGradientMapShader } = shaders;
+const {
+  createRasterGradientMapShader,
+  rasterGradientMapDispatchSize,
+  rasterGradientMapShader,
+} = shaders;
 
 assert.deepEqual(rasterGradientMapDispatchSize(2048, 2048), { x: 256, y: 256 });
 assert.deepEqual(rasterGradientMapDispatchSize(17, 9), { x: 3, y: 2 });
@@ -34,16 +38,28 @@ assert.match(rasterGradientMapShader, /@binding\(3\) var<storage, read> gradient
 assert.match(rasterGradientMapShader, /source\.rgb \/ alpha/);
 assert.match(rasterGradientMapShader, /dot\(encoded, LUMINANCE_WEIGHTS\)/);
 assert.match(rasterGradientMapShader, /parameters\.options\.x != 0u/);
-assert.match(rasterGradientMapShader, /ditherOffset\(outputPixel\)/);
-assert.match(rasterGradientMapShader, /gradientLut\.colors\[leftIndex\]\.rgb/);
-assert.match(rasterGradientMapShader, /gradientLut\.colors\[rightIndex\]\.rgb/);
-assert.match(rasterGradientMapShader, /vec4<f32>\(mappedLinear \* alpha, alpha\)/);
 assert.match(
   rasterGradientMapShader,
-  /outputOrigin:\s*vec2<u32>[\s\S]*_originPadding:\s*vec2<u32>[\s\S]*options:\s*vec4<u32>/,
+  /ditherOffset\(outputPixel, parameters\.quantizationSeed\)/,
+);
+assert.match(rasterGradientMapShader, /gradientLut\.colors\[leftIndex\]\.rgb/);
+assert.match(rasterGradientMapShader, /gradientLut\.colors\[rightIndex\]\.rgb/);
+assert.match(rasterGradientMapShader, /rasterAdjustmentStraightEncodedToStored/);
+assert.match(
+  rasterGradientMapShader,
+  /outputOrigin:\s*vec2<u32>[\s\S]*quantizationSeed:\s*u32[\s\S]*options:\s*vec4<u32>/,
   "the uniform ABI must remain two 16-byte rows",
 );
 assert.doesNotMatch(rasterGradientMapShader, /textureSample|sampler/);
 assert.doesNotMatch(rasterGradientMapShader, /histogram|atomic/);
 
-console.log("Raster Gradient Map RGBA16F compute-shader and LUT ABI verified.");
+const rgba8Shader = createRasterGradientMapShader({
+  layerFormat: "rgba8unorm",
+  colorSpace: "encoded-srgb-premultiplied",
+});
+assert.match(rgba8Shader, /texture_storage_2d<rgba8unorm, write>/);
+assert.match(rgba8Shader, /return straightStored;/);
+assert.match(rgba8Shader, /quantizeRgba8HighFrequencyAdjacent/);
+assert.match(rgba8Shader, /parameters\.quantizationSeed/);
+
+console.log("Raster Gradient Map dual-storage compute-shader and LUT ABI verified.");

@@ -52,9 +52,10 @@ import {
 import { LAYER_STACK_MAXIMUM } from "./layer-stack";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import { analyzeRasterTextureOccupancy } from "./raster-occupancy-analysis";
+import { rgba8SpatialQuantizationShader } from "./rgba8-spatial-quantization";
 
 export const VECTOR_RASTERIZATION_STRATEGY =
-  "semantic-vector-slug-mesh-webgpu-linear-layer-format-msaa4-tile-paired-chunks-history-seed-v4" as const;
+  "semantic-vector-slug-mesh-webgpu-linear-msaa4-encoded-rgba8-finalize-tile-paired-chunks-history-seed-v5" as const;
 export function vectorRasterChunkDimensions(): { width: number; height: number } {
   return {
     width: LAYER_STORAGE_TILE_WIDTH * 2,
@@ -87,10 +88,79 @@ interface VectorRasterScratch {
   readonly resolvedView: GPUTextureView;
 }
 
+interface EncodedVectorRasterScratch {
+  readonly texture: GPUTexture;
+  readonly view: GPUTextureView;
+  readonly uniformBuffer: GPUBuffer;
+  readonly bindGroup: GPUBindGroup;
+  readonly pipeline: GPURenderPipeline;
+}
+
 const pipelinesByDevice = new WeakMap<
   GPUDevice,
   Map<LayerFormat, Promise<VectorRasterPipelines>>
 >();
+
+const encodedFinalizePipelinesByDevice = new WeakMap<GPUDevice, GPURenderPipeline>();
+
+const ENCODED_VECTOR_RASTER_FINALIZE_WGSL = /* wgsl */ `
+${rgba8SpatialQuantizationShader}
+
+struct FinalizeUniforms {
+  documentOrigin: vec2<u32>,
+  actionSeed: u32,
+  _pad0: u32,
+};
+
+@group(0) @binding(0) var linearTexture: texture_2d<f32>;
+@group(0) @binding(1) var<uniform> finalize: FinalizeUniforms;
+
+@vertex
+fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> @builtin(position) vec4<f32> {
+  var position = vec2<f32>(-1.0, -1.0);
+  if (vertexIndex == 1u) {
+    position = vec2<f32>(3.0, -1.0);
+  } else if (vertexIndex == 2u) {
+    position = vec2<f32>(-1.0, 3.0);
+  }
+  return vec4<f32>(position, 0.0, 1.0);
+}
+
+fn linearToSrgbChannel(value: f32) -> f32 {
+  let bounded = clamp(value, 0.0, 1.0);
+  if (bounded <= 0.0031308) {
+    return bounded * 12.92;
+  }
+  return 1.055 * pow(bounded, 1.0 / 2.4) - 0.055;
+}
+
+fn linearPremultipliedToEncoded(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.0) {
+    return vec4<f32>(0.0);
+  }
+  let straight = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  let encoded = vec3<f32>(
+    linearToSrgbChannel(straight.r),
+    linearToSrgbChannel(straight.g),
+    linearToSrgbChannel(straight.b)
+  );
+  return vec4<f32>(encoded * alpha, alpha);
+}
+
+@fragment
+fn fragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>,
+) -> @location(0) vec4<f32> {
+  let local = vec2<i32>(fragmentPosition.xy);
+  let documentCoordinate = finalize.documentOrigin + vec2<u32>(local);
+  return quantizeRgba8SpatialAdjacent(
+    linearPremultipliedToEncoded(textureLoad(linearTexture, local, 0)),
+    documentCoordinate,
+    finalize.actionSeed,
+  );
+}
+`;
 
 function synchronizeRasterClippingProjection(engine: BrushEngine): void {
   const scene = requireMixedSceneStack(engine);
@@ -311,7 +381,9 @@ async function createVectorRasterScratch(
             depthOrArrayLayers: 1,
           },
           format,
-          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT
+            | GPUTextureUsage.COPY_SRC
+            | GPUTextureUsage.TEXTURE_BINDING,
         });
         transaction.deferRollback(() => resolvedTexture.destroy());
         return {
@@ -328,6 +400,68 @@ async function createVectorRasterScratch(
       `The GPU does not support ${format} vector raster scratch. `
       + `No RGBA8 fallback is allowed. Details: ${message}`,
     );
+  }
+}
+
+function ensureEncodedVectorRasterFinalizePipeline(
+  engine: BrushEngine,
+): GPURenderPipeline {
+  const existing = encodedFinalizePipelinesByDevice.get(engine.device);
+  if (existing) return existing;
+  const module = engine.device.createShaderModule({
+    label: "Vector raster linear-to-encoded RGBA8 finalize WGSL",
+    code: ENCODED_VECTOR_RASTER_FINALIZE_WGSL,
+  });
+  const created = engine.device.createRenderPipeline({
+    label: "Vector raster linear-to-encoded RGBA8 finalize",
+    layout: "auto",
+    vertex: { module, entryPoint: "vertexMain" },
+    fragment: {
+      module,
+      entryPoint: "fragmentMain",
+      targets: [{ format: "rgba8unorm" }],
+    },
+    primitive: { topology: "triangle-list" },
+  });
+  encodedFinalizePipelinesByDevice.set(engine.device, created);
+  return created;
+}
+
+function createEncodedVectorRasterScratch(
+  engine: BrushEngine,
+  linearView: GPUTextureView,
+  width: number,
+  height: number,
+): EncodedVectorRasterScratch {
+  const pipeline = ensureEncodedVectorRasterFinalizePipeline(engine);
+  const texture = engine.device.createTexture({
+    label: `Vector raster encoded RGBA8 finalize ${width}x${height}`,
+    size: { width, height, depthOrArrayLayers: 1 },
+    format: "rgba8unorm",
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+  });
+  const uniformBuffer = engine.device.createBuffer({
+    label: "Vector raster encoded RGBA8 finalize uniforms",
+    size: 16,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  try {
+    const view = texture.createView({
+      label: "Vector raster encoded RGBA8 finalize view",
+    });
+    const bindGroup = engine.device.createBindGroup({
+      label: "Vector raster encoded RGBA8 finalize bindings",
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: linearView },
+        { binding: 1, resource: { buffer: uniformBuffer } },
+      ],
+    });
+    return { texture, view, uniformBuffer, bindGroup, pipeline };
+  } catch (error) {
+    uniformBuffer.destroy();
+    texture.destroy();
+    throw error;
   }
 }
 
@@ -511,16 +645,31 @@ export async function renderVectorDrawsToTexture(
     width: view.canvasWidth,
     height: view.canvasHeight,
   },
+  outputDomain: "document-storage" | "linear-premultiplied" = "document-storage",
 ): Promise<{ bounds: VectorRasterizeHistoryAction["baseBounds"]; chunkCount: number }> {
   requireVectorDraws(draws);
-  if (destination.format !== engine.layerFormat) {
+  const linearWorkingOutput = outputDomain === "linear-premultiplied";
+  if (!linearWorkingOutput && destination.format !== engine.layerFormat) {
     throw new Error(
       `Vector raster destination ${destination.format} is incompatible with document `
       + `${engine.layerFormat}.`,
     );
   }
+  if (linearWorkingOutput && destination.format !== "rgba16float") {
+    throw new Error("Linear vector raster output requires an RGBA16F destination.");
+  }
   const format = destination.format;
-  const pipelines = await ensureVectorRasterPipelines(engine, format);
+  const storedEncodedSrgb =
+    !linearWorkingOutput
+    && engine.documentStorageColorSpace === "encoded-srgb-premultiplied";
+  if (storedEncodedSrgb && format !== "rgba8unorm") {
+    throw new Error("Encoded-sRGB vector raster storage requires an RGBA8 destination.");
+  }
+  // Vector paints and effects are authored in linear light. For an encoded
+  // RGBA8 document, retain that precision through MSAA resolve and perform one
+  // document-anchored encoded quantization immediately before permanent copy.
+  const renderFormat: LayerFormat = storedEncodedSrgb ? "rgba16float" : format;
+  const pipelines = await ensureVectorRasterPipelines(engine, renderFormat);
   const uniformBuffer = engine.vectorTextGpuUniformBuffer;
   const uniformBindGroup = engine.vectorTextGpuUniformBindGroup;
   if (!uniformBuffer || !uniformBindGroup) {
@@ -541,7 +690,15 @@ export async function renderVectorDrawsToTexture(
   const lastChunkX = Math.ceil((bounds.x + bounds.width) / chunkWidth) * chunkWidth;
   const lastChunkY = Math.ceil((bounds.y + bounds.height) / chunkHeight) * chunkHeight;
   const { msaaTexture, resolvedTexture, msaaView, resolvedView } =
-    await createVectorRasterScratch(engine, format, chunkWidth, chunkHeight);
+    await createVectorRasterScratch(engine, renderFormat, chunkWidth, chunkHeight);
+  const encodedScratch = storedEncodedSrgb
+    ? createEncodedVectorRasterScratch(
+      engine,
+      resolvedView,
+      chunkWidth,
+      chunkHeight,
+    )
+    : null;
   let chunkCount = 0;
   try {
     for (let y = firstChunkY; y < lastChunkY; y += chunkHeight) {
@@ -569,10 +726,10 @@ export async function renderVectorDrawsToTexture(
           draws.length * VECTOR_TEXT_GPU_UNIFORM_STRIDE / 4,
         );
         const encoder = engine.device.createCommandEncoder({
-          label: `Vector raster ${format} chunk ${x},${y} ${width}x${height}`,
+          label: `Vector raster ${renderFormat} chunk ${x},${y} ${width}x${height}`,
         });
         const pass = encoder.beginRenderPass({
-          label: `Vector raster ${format} MSAA4 chunk ${x},${y}`,
+          label: `Vector raster ${renderFormat} MSAA4 chunk ${x},${y}`,
           colorAttachments: [{
             view: msaaView,
             resolveTarget: resolvedView,
@@ -645,6 +802,28 @@ export async function renderVectorDrawsToTexture(
           }
         }
         pass.end();
+        if (encodedScratch) {
+          engine.device.queue.writeBuffer(
+            encodedScratch.uniformBuffer,
+            0,
+            new Uint32Array([x, y, engine.nextHistoryActionId, 0]),
+          );
+          const finalizePass = encoder.beginRenderPass({
+            label: `Vector raster encoded RGBA8 finalize ${x},${y}`,
+            colorAttachments: [{
+              view: encodedScratch.view,
+              loadOp: "clear",
+              storeOp: "store",
+              clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            }],
+          });
+          finalizePass.setViewport(0, 0, width, height, 0, 1);
+          finalizePass.setScissorRect(0, 0, width, height);
+          finalizePass.setPipeline(encodedScratch.pipeline);
+          finalizePass.setBindGroup(0, encodedScratch.bindGroup);
+          finalizePass.draw(3, 1, 0, 0);
+          finalizePass.end();
+        }
         const copyLeft = Math.max(x, destinationDocumentBounds.x);
         const copyTop = Math.max(y, destinationDocumentBounds.y);
         const copyRight = Math.min(
@@ -658,7 +837,7 @@ export async function renderVectorDrawsToTexture(
         if (copyRight > copyLeft && copyBottom > copyTop) {
           encoder.copyTextureToTexture(
             {
-              texture: resolvedTexture,
+              texture: encodedScratch?.texture ?? resolvedTexture,
               origin: { x: copyLeft - x, y: copyTop - y, z: 0 },
             },
             {
@@ -681,10 +860,12 @@ export async function renderVectorDrawsToTexture(
       }
     }
     await engine.waitForGpuCapped(
-      `Vector rasterization ${format} MSAA4`,
+      `Vector rasterization ${renderFormat} MSAA4${storedEncodedSrgb ? " → encoded RGBA8" : ""}`,
       60_000,
     );
   } finally {
+    encodedScratch?.uniformBuffer.destroy();
+    encodedScratch?.texture.destroy();
     msaaTexture.destroy();
     resolvedTexture.destroy();
   }

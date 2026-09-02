@@ -17,6 +17,10 @@ import {
   rasterNoisePeriodPixels,
   rasterNoiseUniform01,
 } from "../src/noise-core.ts";
+import {
+  quantizeUnorm8HighFrequencyAdjacent,
+  rgba8HighFrequencyThresholdRank,
+} from "../src/rgba8-high-frequency-quantization.ts";
 
 assert.equal(
   DESTRUCTIVE_RASTER_NOISE_CORE_BUILD,
@@ -182,9 +186,9 @@ assert.match(
   runtime,
   /@compute @workgroup_size\(\$\{WORKGROUP_WIDTH\}, \$\{WORKGROUP_HEIGHT\}\)/,
 );
-assert.match(runtime, /texture_storage_2d<rgba16float, write>/);
+assert.match(runtime, /texture_storage_2d<\$\{layerFormat\}, write>/);
 assert.match(runtime, /parameterBuffer[\s\S]{0,160}size: PARAMETER_BYTES/);
-assert.match(runtime, /memoryBytes:[\s\S]{0,160}BYTES_PER_RGBA16F_PIXEL[\s\S]{0,80}PARAMETER_BYTES/);
+assert.match(runtime, /memoryBytes:[\s\S]{0,260}BYTES_PER_RGBA16F_PIXEL[\s\S]{0,160}BYTES_PER_RGBA8_PIXEL[\s\S]{0,120}PARAMETER_BYTES/);
 assert.match(runtime, /previewInFlight/);
 assert.match(runtime, /session\.previewFault/);
 assert.match(runtime, /globalThis\.crypto\.getRandomValues/);
@@ -200,8 +204,17 @@ assert.doesNotMatch(
   /engine\.layerSize|\bLAYER_SIZE\b|u32\[15\] = DOCUMENT_WIDTH/,
   "Noise deve firmare larghezza e altezza indipendenti nel proprio ABI.",
 );
-assert.doesNotMatch(runtime, /rgba32float|r32float|rgba8|unorm8|pack4x8|unpack4x8/i);
+assert.doesNotMatch(runtime, /rgba32float|r32float|pack4x8|unpack4x8/i);
 assert.doesNotMatch(runtime, /intermediateTexture|outputTexture/);
+assert.match(runtime, /rgba8HighFrequencyQuantizationShader/);
+assert.match(runtime, /noiseStorageToLinearPremultiplied/);
+assert.match(runtime, /noiseLinearPremultipliedToStorage/);
+assert.match(runtime, /format: engine\.layerFormat/);
+assert.doesNotMatch(runtime, /Destructive Noise requires an RGBA16F document/);
+assert.match(
+  runtime,
+  /DESTRUCTIVE_RASTER_NOISE_RGBA8_PRECISION[\s\S]{0,180}rgba8unorm-storage-linear-f32-procedural-high-frequency-output/,
+);
 
 const preview = runtime.slice(
   runtime.indexOf("function encodeRequestedPreview("),
@@ -221,7 +234,7 @@ assert.match(commit, /commitHistoryActionAtomically\(engine, action\)/);
 assert.match(commit, /createLayerColdStorageCandidate\([\s\S]{0,280}"history"/);
 assert.match(commit, /session\.settings\.amountPercent === 0/);
 assert.match(history, /filter: "noise"/);
-assert.match(history, /precision: "rgba16float-storage-f32-procedural"/);
+assert.match(history, /rgba16float-storage-f32-procedural/);
 assert.match(engine, /activeRasterNoiseSession/);
 assert.match(engine, /beginRasterNoise/);
 assert.match(engine, /GPUTextureUsage\.STORAGE_BINDING[\s\S]{0,120}GPUTextureUsage\.RENDER_ATTACHMENT/);
@@ -278,4 +291,25 @@ assert.match(styles, /\.mobile-noise-scroll[\s\S]{0,320}overflow-y: auto/);
 assert.match(styles, /\.mobile-noise-scroll[\s\S]{0,420}touch-action: pan-y/);
 assert.doesNotMatch(metadataEffects, /MobileRasterEffectKind[\s\S]{0,140}"noise"/);
 
-console.log("Destructive RGBA16F Noise verification passed.");
+const quantizationSeed = 0x12345678 ^ 0x9abcdef0;
+const ranks = new Set();
+const adjacentCodes = new Set();
+let codeSum = 0;
+for (let y = 0; y < 16; y += 1) {
+  for (let x = 0; x < 16; x += 1) {
+    ranks.add(rgba8HighFrequencyThresholdRank(x, y, quantizationSeed));
+    const code = quantizeUnorm8HighFrequencyAdjacent(
+      73.5 / 255,
+      x,
+      y,
+      quantizationSeed,
+    );
+    adjacentCodes.add(code);
+    codeSum += code;
+  }
+}
+assert.equal(ranks.size, 256);
+assert.deepEqual([...adjacentCodes].sort((a, b) => a - b), [73, 74]);
+assert.equal(codeSum / 256, 73.5);
+
+console.log("Destructive RGBA8/legacy Noise verification passed.");

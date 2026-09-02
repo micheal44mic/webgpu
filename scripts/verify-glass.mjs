@@ -19,6 +19,7 @@ import {
   rasterGlassSmoothness,
   unionRasterGlassRects,
 } from "../src/glass-core.ts";
+import { quantizeUnorm8HighFrequencyAdjacent } from "../src/rgba8-high-frequency-quantization.ts";
 
 assert.equal(
   DESTRUCTIVE_RASTER_GLASS_CORE_BUILD,
@@ -143,6 +144,106 @@ assert.deepEqual(
   { x: 0, y: 0 },
 );
 
+function srgbToLinearChannel(value) {
+  return value <= 0.04045
+    ? value / 12.92
+    : ((value + 0.055) / 1.055) ** 2.4;
+}
+
+function linearToSrgbChannel(value) {
+  const bounded = Math.max(0, Math.min(1, value));
+  return bounded <= 0.0031308
+    ? bounded * 12.92
+    : 1.055 * bounded ** (1 / 2.4) - 0.055;
+}
+
+function encodedPremultipliedToLinear(value) {
+  const alpha = Math.max(0, Math.min(1, value[3]));
+  if (alpha <= 1e-6) return [0, 0, 0, 0];
+  return [
+    srgbToLinearChannel(value[0] / alpha) * alpha,
+    srgbToLinearChannel(value[1] / alpha) * alpha,
+    srgbToLinearChannel(value[2] / alpha) * alpha,
+    alpha,
+  ];
+}
+
+function linearPremultipliedToEncoded(value) {
+  const alpha = Math.max(0, Math.min(1, value[3]));
+  if (alpha <= 1e-6) return [0, 0, 0, 0];
+  return [
+    linearToSrgbChannel(value[0] / alpha) * alpha,
+    linearToSrgbChannel(value[1] / alpha) * alpha,
+    linearToSrgbChannel(value[2] / alpha) * alpha,
+    alpha,
+  ];
+}
+
+function mixVector(left, right, amount) {
+  return left.map((value, index) => value + (right[index] - value) * amount);
+}
+
+function encodedLinearBilinear(left, right, amount) {
+  return linearPremultipliedToEncoded(mixVector(
+    encodedPremultipliedToLinear(left),
+    encodedPremultipliedToLinear(right),
+    amount,
+  ));
+}
+
+for (const alpha of [0.01, 0.2, 0.75, 1]) {
+  for (const straight of [0, 1 / 255, 7 / 255, 0.125, 0.5, 1]) {
+    const stored = [straight * alpha, straight * alpha, straight * alpha, alpha];
+    const roundTrip = linearPremultipliedToEncoded(
+      encodedPremultipliedToLinear(stored),
+    );
+    roundTrip.forEach((channel, index) => assert(
+      Math.abs(channel - stored[index]) < 1e-12,
+      "encoded premultiplication must survive the linear working conversion",
+    ));
+  }
+}
+
+const darkLeft = [1 / 255, 1 / 255, 1 / 255, 1];
+const darkRight = [33 / 255, 33 / 255, 33 / 255, 1];
+const darkLinearMidpoint = encodedLinearBilinear(darkLeft, darkRight, 0.5)[0];
+const darkEncodedMidpoint = (darkLeft[0] + darkRight[0]) * 0.5;
+assert(
+  darkLinearMidpoint > darkEncodedMidpoint + 3 / 255,
+  "dark RGBA8 interpolation must happen in linear light, not between encoded codes",
+);
+const darkContinuousCode = darkLinearMidpoint * 255;
+const darkLower = Math.floor(darkContinuousCode);
+const darkUpper = Math.min(255, darkLower + 1);
+let darkCodeTotal = 0;
+for (let y = 0; y < 16; y += 1) {
+  for (let x = 0; x < 16; x += 1) {
+    const code = quantizeUnorm8HighFrequencyAdjacent(
+      darkLinearMidpoint,
+      x + 64,
+      y + 96,
+      0x12345678,
+    );
+    assert(code === darkLower || code === darkUpper);
+    darkCodeTotal += code;
+  }
+}
+assert(
+  Math.abs(darkCodeTotal / 256 - darkContinuousCode) <= 1 / 256,
+  "adjacent-code output must retain the dark linear interpolation mean",
+);
+
+const opaqueBlack = [0, 0, 0, 1];
+const translucentWhite = [0.1, 0.1, 0.1, 0.1];
+const alphaAwareMidpoint = encodedLinearBilinear(opaqueBlack, translucentWhite, 0.5);
+const encodedSpaceMidpoint = mixVector(opaqueBlack, translucentWhite, 0.5);
+assert(Math.abs(alphaAwareMidpoint[3] - 0.55) < 1e-12);
+assert(
+  alphaAwareMidpoint[0] > encodedSpaceMidpoint[0] + 0.1,
+  "linear premultiplied interpolation must not create a dark alpha fringe",
+);
+assert(alphaAwareMidpoint.slice(0, 3).every((channel) => channel <= alphaAwareMidpoint[3]));
+
 // The analytic derivative is part of the CPU oracle and must track the same
 // surface value. Points avoid integer lattice boundaries for a stable check.
 const derivativeStep = 1e-5;
@@ -219,6 +320,10 @@ const historyMaintenance = readFileSync(
 const reports = readFileSync(new URL("../src/engine-reports.ts", import.meta.url), "utf8");
 
 assert.match(runtime, /const PARAMETER_BYTES = 64;/);
+assert.match(
+  runtime,
+  /destructive-raster-glass-webgpu-v2-storage-color-space-aware-linear-bilinear/,
+);
 assert.match(runtime, /const WORKGROUP_WIDTH = 8;/);
 assert.match(runtime, /const WORKGROUP_HEIGHT = 8;/);
 assert.match(runtime, /sourceOriginAndSize: vec4<i32>/);
@@ -226,14 +331,31 @@ assert.match(runtime, /dispatchOriginAndSize: vec4<i32>/);
 assert.match(runtime, /distortionSmoothnessScaleSign: vec4<f32>/);
 assert.match(runtime, /seedAndDocument: vec4<u32>/);
 assert.match(runtime, /@binding\(1\) var immutableSource: texture_2d<f32>/);
-assert.match(runtime, /texture_storage_2d<rgba16float, write>/);
+assert.match(runtime, /texture_storage_2d<\$\{layerFormat\}, write>/);
 assert.match(runtime, /fn sampleSourceBilinear/);
+assert.match(runtime, /glassEncodedPremultipliedToLinear/);
+assert.match(runtime, /glassLinearPremultipliedToEncoded/);
+assert.match(runtime, /glassSrgbToLinearChannel/);
+assert.match(runtime, /glassLinearToSrgbChannel/);
+assert.match(runtime, /return \$\{storedEncodedSrgb \? "glassEncodedPremultipliedToLinear\(stored\)" : "stored"\}/);
+assert.match(runtime, /let storedColor = \$\{storedEncodedSrgb/);
 assert.match(runtime, /documentPosition = vec2<f32>\(documentPixel\) \+ vec2<f32>\(0\.5\)/);
 assert.match(runtime, /return slope \/ \(1\.0 \+ length\(slope\)\)/);
 assert.match(runtime, /u32\[14\] = DOCUMENT_WIDTH/);
 assert.match(runtime, /u32\[15\] = DOCUMENT_HEIGHT/);
-assert.doesNotMatch(runtime, /rgba8|unorm8|rgba32float|pack4x8|unpack4x8/i);
+assert.doesNotMatch(runtime, /rgba32float|pack4x8|unpack4x8/i);
 assert.doesNotMatch(runtime, /intermediateTexture|displacementTexture|fieldTexture/);
+assert.match(runtime, /rgba8HighFrequencyQuantizationShader/);
+assert.match(runtime, /quantizeRgba8HighFrequencyAdjacent/);
+assert.match(runtime, /format: engine\.layerFormat/);
+assert.match(runtime, /type RasterGlassPipelineProfile = `\$\{LayerFormat\}:\$\{DocumentStorageColorSpace\}`/);
+assert.match(runtime, /glassShader\(layerFormat, documentStorageColorSpace\)/);
+assert.match(
+  runtime,
+  /createSharedResources\([\s\S]{0,180}engine\.documentStorageColorSpace/,
+);
+assert.match(runtime, /export async function warmRasterGlassPipelines/);
+assert.doesNotMatch(runtime, /Destructive Glass requires an RGBA16F document/);
 assert.match(runtime, /globalThis\.crypto\.getRandomValues/);
 assert.match(runtime, /export function abandonRasterGlassSession/);
 
@@ -265,7 +387,8 @@ const commit = runtime.slice(runtime.indexOf("export async function commitRaster
 assert.match(commit, /const action: RasterFilterHistoryAction/);
 assert.match(commit, /filter: "glass"/);
 assert.match(commit, /algorithm: DESTRUCTIVE_RASTER_GLASS_ALGORITHM/);
-assert.match(commit, /precision: DESTRUCTIVE_RASTER_GLASS_PRECISION/);
+assert.match(commit, /DESTRUCTIVE_RASTER_GLASS_RGBA8_PRECISION/);
+assert.match(commit, /precision: engine\.layerFormat === "rgba8unorm"/);
 assert.match(commit, /edgeMode: DESTRUCTIVE_RASTER_GLASS_EDGE_MODE/);
 assert.match(commit, /coordinateSpace: DESTRUCTIVE_RASTER_GLASS_COORDINATE_SPACE/);
 assert.match(commit, /commitHistoryActionAtomically\(engine, action\)/);
@@ -275,7 +398,8 @@ assert.doesNotMatch(commit, /as unknown as RasterFilterHistoryAction/);
 
 assert.match(history, /filter: "glass"/);
 assert.match(history, /algorithm: "analytic-gradient-refraction-v1"/);
-assert.match(history, /precision: "rgba16float-source-and-output-f32-field-and-bilinear"/);
+assert.match(history, /rgba16float-source-and-output-f32-field-and-bilinear/);
+assert.match(history, /rgba8unorm-source-encoded-f32-field-bilinear-high-frequency-output/);
 assert.match(history, /coordinateSpace: "document-pixel-centers"/);
 assert.match(engine, /activeRasterGlassSession/);
 assert.match(engine, /device\.lost[\s\S]{0,260}abandonRasterGlassSession\(this\)/);
@@ -339,4 +463,4 @@ assert.match(html, /id="mobileGlassDistortion"[\s\S]{0,180}min="0"[\s\S]{0,80}ma
 assert.match(html, /id="mobileGlassSmoothness"[\s\S]{0,180}min="0"[\s\S]{0,80}max="100"/);
 assert.match(html, /id="mobileGlassScale"[\s\S]{0,180}min="0"[\s\S]{0,80}max="100"/);
 
-console.log("Procedural RGBA16F Glass verification passed.");
+console.log("Procedural RGBA8/legacy Glass verification passed.");

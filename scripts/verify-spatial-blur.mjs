@@ -13,10 +13,14 @@ const moduleServer = await createServer({
 let gaussian;
 let spatial;
 let interaction;
+let quantization;
 try {
   gaussian = await moduleServer.ssrLoadModule("/src/gaussian-blur-core.ts");
   spatial = await moduleServer.ssrLoadModule("/src/spatial-blur-core.ts");
   interaction = await moduleServer.ssrLoadModule("/src/spatial-blur-interaction-core.ts");
+  quantization = await moduleServer.ssrLoadModule(
+    "/src/rgba8-high-frequency-quantization.ts",
+  );
 } finally {
   await moduleServer.close();
 }
@@ -49,6 +53,7 @@ const {
   spatialBlurPinFillPercent,
   spatialBlurPointerMoved,
 } = interaction;
+const { quantizeUnorm8HighFrequencyAdjacent } = quantization;
 
 assert.equal(SPATIAL_BLUR_DEFAULT_RADIUS, DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_RADIUS);
 assert.equal(SPATIAL_BLUR_MAX_RADIUS, DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS);
@@ -59,6 +64,70 @@ for (const radius of [0, 0.25, 5, 50, 500]) {
     destructiveGaussianBlurKernel(radius),
     `the point field must use the shared kernel at radius ${radius}`,
   );
+}
+
+function f32FlatConvolution(value, weights) {
+  const source = Math.fround(value);
+  let result = Math.fround(source * Math.fround(weights[0]));
+  for (let offset = 1; offset < weights.length; offset += 1) {
+    const term = Math.fround(source * Math.fround(weights[offset]));
+    result = Math.fround(result + term);
+    result = Math.fround(result + term);
+  }
+  return result;
+}
+
+function roundTripPackedUnorm16(value) {
+  return Math.round(Math.max(0, Math.min(1, value)) * 65_535) / 65_535;
+}
+
+function srgbToLinearChannel(value) {
+  return value <= 0.04045
+    ? value / 12.92
+    : ((value + 0.055) / 1.055) ** 2.4;
+}
+
+function linearToSrgbChannel(value) {
+  const bounded = Math.max(0, Math.min(1, value));
+  return bounded <= 0.0031308
+    ? bounded * 12.92
+    : 1.055 * bounded ** (1 / 2.4) - 0.055;
+}
+
+for (const radius of [0.25, 17.5, 100, SPATIAL_BLUR_MAX_RADIUS]) {
+  const weights = spatialBlurGaussianKernel(radius).weights;
+  for (const code of [0, 1, 2, 7, 16, 32, 64, 127, 191, 254, 255]) {
+    const sourceLinear = srgbToLinearChannel(code / 255);
+    const cachedSource = roundTripPackedUnorm16(sourceLinear);
+    const horizontal = roundTripPackedUnorm16(
+      f32FlatConvolution(cachedSource, weights),
+    );
+    const vertical = f32FlatConvolution(horizontal, weights);
+    const encoded = linearToSrgbChannel(vertical);
+    const continuousCode = encoded * 255;
+    const lower = Math.floor(continuousCode);
+    const upper = Math.min(255, lower + 1);
+    let outputTotal = 0;
+    for (let y = 0; y < 16; y += 1) {
+      for (let x = 0; x < 16; x += 1) {
+        const output = quantizeUnorm8HighFrequencyAdjacent(encoded, x, y, 73);
+        assert(
+          output === lower || output === upper,
+          `RGBA8 Point Blur must use adjacent output codes at radius ${radius}`,
+        );
+        outputTotal += output;
+      }
+    }
+    const outputMean = outputTotal / 256;
+    assert(
+      Math.abs(outputMean - continuousCode) <= 1 / 256,
+      `RGBA8 Point Blur local mean drifted at radius ${radius}`,
+    );
+    assert(
+      Math.abs(outputMean - code) <= 0.04,
+      `RGBA8 Point Blur flat color code ${code} drifted at radius ${radius}`,
+    );
+  }
 }
 
 assert.deepEqual(createInitialSpatialBlurPin(2048, 1024), {
@@ -141,10 +210,23 @@ const stylesSource = readFileSync(new URL("src/styles.css", root), "utf8");
 assert.match(runtimeSource, /spatialBlurGaussianKernel\(/);
 assert.match(runtimeSource, /table\[offset \* WEIGHT_RADIUS_COUNT \+ radiusIndex\]/);
 assert.match(runtimeSource, /texture_storage_2d<r32uint, write>/);
-assert.match(runtimeSource, /texture_storage_2d<rgba16float, write>/);
+assert.match(runtimeSource, /outputFormat === "rgba8unorm" \? "rg32uint" : "rgba16float"/);
+assert.match(runtimeSource, /pack2x16unorm/);
+assert.match(runtimeSource, /unpack2x16unorm/);
+assert.match(runtimeSource, /spatialBlurEncodedPremultipliedToLinear/);
+assert.match(runtimeSource, /spatialBlurLinearPremultipliedToEncoded/);
+assert.match(runtimeSource, /rgba8HighFrequencyQuantizationShader/);
+assert.match(runtimeSource, /quantizeRgba8HighFrequencyAdjacent\(/);
+assert.match(runtimeSource, /vec2<u32>\(documentPixel\)/);
+assert.match(runtimeSource, /quantizationSeed: engine\.nextHistoryActionId >>> 0/);
+assert.match(runtimeSource, /engine\.documentStorageColorSpace === "encoded-srgb-premultiplied"/);
+assert.match(runtimeSource, /format: engine\.layerFormat/);
+assert.doesNotMatch(runtimeSource, /Point Blur requires an RGBA16F document/);
 assert.match(runtimeSource, /parameters\.fieldAndDocument\.yz/);
 assert.match(runtimeSource, /f32\[word \+ 17\] = documentWidth/);
 assert.match(runtimeSource, /f32\[word \+ 18\] = documentHeight/);
+assert.match(runtimeSource, /u32\[word \+ 20\] = session\.quantizationSeed/);
+assert.match(runtimeSource, /u32\[word \+ 21\] = session\.storedEncodedSrgb \? 1 : 0/);
 assert.doesNotMatch(runtimeSource, /DOCUMENT_(?:WIDTH|HEIGHT)|DOCUMENT_EXTENT|engine-limits/);
 assert.match(runtimeSource, /atomicMax\(&groupSupport, supportRadius\(radiusIndex\)\)/);
 assert.match(runtimeSource, /if \(pins\.length > 1\)/,
@@ -157,6 +239,10 @@ assert.doesNotMatch(runtimeSource, /\bpyramid\b/i);
 assert.equal((runtimeSource.match(/commitHistoryActionAtomically\(engine, action\)/g) ?? []).length, 1);
 assert.match(historySource, /filter: "spatial-blur"/);
 assert.match(historySource, /kernelStrategy: "shared-gaussian-kernel-v1"/);
+assert.match(
+  historySource,
+  /filter: "spatial-blur"[\s\S]*?precision:[\s\S]*?rgba8unorm-linear-rgba16unorm-packed-two-pass-f32-high-frequency-output[\s\S]*?filter: "motion-blur"/,
+);
 assert.match(engineSource, /warmRasterSpatialBlurPipelines\(this\)/);
 assert.match(engineSource, /activeRasterSpatialBlurSession/);
 

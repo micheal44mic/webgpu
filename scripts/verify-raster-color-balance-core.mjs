@@ -27,7 +27,11 @@ const {
   rasterColorBalanceSettingsEqual,
   rasterColorBalanceToneWeights,
 } = core;
-const { rasterColorBalanceDispatchSize, rasterColorBalanceShader } = shaders;
+const {
+  createRasterColorBalanceShader,
+  rasterColorBalanceDispatchSize,
+  rasterColorBalanceShader,
+} = shaders;
 
 function approx(actual, expected, tolerance = 1e-6) {
   assert.equal(Number.isFinite(actual), true);
@@ -174,11 +178,20 @@ assert.match(
   /fn matchLuminance\(rgb: vec3<f32>, targetLuminance: f32\)/,
   "WGSL parameters must avoid reserved shader-language keywords",
 );
-assert.match(rasterColorBalanceShader, /vec4<f32>\(balancedLinear \* alpha, alpha\)/);
+assert.match(rasterColorBalanceShader, /rasterAdjustmentStraightEncodedToStored/);
 assert.match(
   rasterColorBalanceShader,
   /outputOrigin:\s*vec2<u32>[\s\S]*shadows:\s*vec4<f32>[\s\S]*midtones:\s*vec4<f32>[\s\S]*highlights:\s*vec4<f32>[\s\S]*options:\s*vec4<f32>/,
   "the uniform ABI must remain five 16-byte rows",
 );
 
-console.log("Raster Color Balance core math and RGBA16F shader contract verified.");
+const rgba8Shader = createRasterColorBalanceShader({
+  layerFormat: "rgba8unorm",
+  colorSpace: "encoded-srgb-premultiplied",
+});
+assert.match(rgba8Shader, /texture_storage_2d<rgba8unorm, write>/);
+assert.match(rgba8Shader, /return straightStored;/);
+assert.match(rgba8Shader, /quantizeRgba8HighFrequencyAdjacent/);
+assert.match(rgba8Shader, /parameters\.quantizationSeed/);
+
+console.log("Raster Color Balance core math and dual-storage shader contract verified.");

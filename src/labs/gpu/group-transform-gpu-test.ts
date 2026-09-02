@@ -226,20 +226,27 @@ function float16At(bytes: Uint8Array, byteOffset: number): number {
 }
 
 function cyanMarkerCentroid(pixels: Uint8Array, rect: Readonly<Rect>): Point {
+  const pixelCount = rect.width * rect.height;
+  const bytesPerPixel = pixels.byteLength / pixelCount;
   assert(
-    pixels.byteLength === rect.width * rect.height * 8,
-    "RGBA16F marker payload has an unexpected length.",
+    bytesPerPixel === 4 || bytesPerPixel === 8,
+    "Native raster marker payload has an unexpected length.",
+  );
+  const channelAt = (offset: number, channel: number): number => (
+    bytesPerPixel === 8
+      ? float16At(pixels, offset + channel * 2)
+      : pixels[offset + channel] / 255
   );
   let total = 0;
   let weightedX = 0;
   let weightedY = 0;
   for (let y = 0; y < rect.height; y += 1) {
     for (let x = 0; x < rect.width; x += 1) {
-      const offset = (y * rect.width + x) * 8;
-      const red = float16At(pixels, offset);
-      const green = float16At(pixels, offset + 2);
-      const blue = float16At(pixels, offset + 4);
-      const alpha = float16At(pixels, offset + 6);
+      const offset = (y * rect.width + x) * bytesPerPixel;
+      const red = channelAt(offset, 0);
+      const green = channelAt(offset, 1);
+      const blue = channelAt(offset, 2);
+      const alpha = channelAt(offset, 3);
       if (alpha <= 0.05 || red >= 0.12 || green <= 0.3 || blue <= 0.3) continue;
       const weight = alpha * Math.min(green, blue) * (1 - red);
       total += weight;
@@ -1002,7 +1009,16 @@ export async function runGroupTransformGpuTest(
     engine.documentWidth === DOCUMENT_SIZE && engine.documentHeight === DOCUMENT_SIZE,
     `Group Transform GPU test requires a ${DOCUMENT_SIZE}×${DOCUMENT_SIZE} document.`,
   );
-  assert(engine.layerFormat === "rgba16float", "Group Transform GPU test requires RGBA16F.");
+  assert(
+    (
+      engine.layerFormat === "rgba16float"
+      && engine.documentStorageColorSpace === "linear-premultiplied"
+    ) || (
+      engine.layerFormat === "rgba8unorm"
+      && engine.documentStorageColorSpace === "encoded-srgb-premultiplied"
+    ),
+    "Group Transform GPU test requires a supported native document pixel contract.",
+  );
   const initialScene = engine.getMixedSceneSnapshot();
   assert(
     initialScene?.items.length === 1
@@ -1066,7 +1082,7 @@ export async function runGroupTransformGpuTest(
       count: 1,
       flow: 1,
       opacity: 1,
-      blendMode: "normal",
+      blendMode: "intense-blending",
       shapeScatter: 0,
       hueJitterDegrees: 0,
       saturationJitter: 0,

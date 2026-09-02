@@ -2,11 +2,13 @@ import {
   DEFAULT_LAYER_BLEND_MODE,
   LAYER_BLEND_MODE_CODES,
   LAYER_BLEND_MODE_WGSL,
+  blendLayerPremultipliedEncodedSrgb,
   blendLayerPremultipliedLinear,
   dissolveLayerSourcePremultipliedLinear,
   normalizeLayerBlendMode,
   type LayerBlendDocumentPixel,
   type LayerBlendMode,
+  type EncodedSrgbPremultipliedRgba,
   type LinearPremultipliedRgba,
 } from "./layer-blend-modes.ts";
 import {
@@ -21,12 +23,14 @@ import {
  * Reusable two-input GPU compositor for viewport-sized raster surfaces.
  *
  * Both inputs and the render target contain linear-light premultiplied RGBA.
- * Non-Normal blend functions are evaluated by LAYER_BLEND_MODE_WGSL on
- * unassociated sRGB, while Porter-Duff coverage remains linear and
- * premultiplied. Source opacity must already be baked into the source texel.
+ * Linear documents evaluate directly in that working domain. Encoded-sRGB
+ * RGBA8 documents temporarily recover their native premultiplied storage
+ * domain for each raster fold, retaining high precision across the bounded
+ * mixed-scene scratch, then decode the result back into the linear working
+ * target. Quantization belongs only to a persistent or display boundary.
  */
 export const LAYER_BLEND_COMPOSITOR_STRATEGY =
-  "viewport-textureload-tonal-gate-residual-cutout-source-opacity-w3c-over-clipping-atop-document-anchored-dissolve-v6" as const;
+  "viewport-textureload-dual-storage-rgba16f-transient-tonal-gate-residual-cutout-source-opacity-w3c-over-clipping-atop-document-anchored-dissolve-v8" as const;
 
 export const LAYER_BLEND_COMPOSITOR_OPERATOR_CODES = {
   "source-over": 0,
@@ -70,6 +74,7 @@ export function writeLayerBlendCompositorUniforms(
   sourceOpacity = 1,
   context: LayerBlendCompositorContext = "direct",
   documentMaskOpacity = 1,
+  storedEncodedSrgb = false,
 ): Uint32Array {
   if (!Number.isSafeInteger(wordOffset) || wordOffset < 0) {
     throw new RangeError("layer blend compositor wordOffset must be a non-negative integer");
@@ -92,7 +97,7 @@ export function writeLayerBlendCompositorUniforms(
   tonalBlend.underlying.forEach((value, index) => { f32[8 + index] = value / 255; });
   target[wordOffset + 12] = LAYER_BLEND_COMPOSITOR_CONTEXT_CODES[context];
   f32[13] = clamp01(documentMaskOpacity);
-  target[wordOffset + 14] = 0;
+  target[wordOffset + 14] = storedEncodedSrgb ? 1 : 0;
   target[wordOffset + 15] = 0;
   return target;
 }
@@ -219,6 +224,34 @@ export function blendLayerPremultipliedLinearSourceAtop(
   ];
 }
 
+/** Encoded-sRGB storage oracle for the matte-preserving clipping operator. */
+export function blendLayerPremultipliedEncodedSrgbSourceAtop(
+  backdropInput: EncodedSrgbPremultipliedRgba,
+  sourceInput: EncodedSrgbPremultipliedRgba,
+  mode: LayerBlendMode = DEFAULT_LAYER_BLEND_MODE,
+  documentPixel: LayerBlendDocumentPixel = [0, 0],
+): EncodedSrgbPremultipliedRgba {
+  const backdrop = sanitizePremultiplied(backdropInput);
+  const sanitizedSource = sanitizePremultiplied(sourceInput);
+  const source = mode === "dissolve"
+    ? dissolveLayerSourcePremultipliedLinear(sanitizedSource, documentPixel)
+    : sanitizedSource;
+  const backdropAlpha = backdrop[3];
+  const sourceOnlyCoverage = 1 - backdropAlpha;
+  const sourceOver = blendLayerPremultipliedEncodedSrgb(
+    backdrop,
+    source,
+    mode === "dissolve" ? "normal" : mode,
+    documentPixel,
+  );
+  return [
+    Math.min(backdropAlpha, Math.max(0, sourceOver[0] - source[0] * sourceOnlyCoverage)),
+    Math.min(backdropAlpha, Math.max(0, sourceOver[1] - source[1] * sourceOnlyCoverage)),
+    Math.min(backdropAlpha, Math.max(0, sourceOver[2] - source[2] * sourceOnlyCoverage)),
+    backdropAlpha,
+  ];
+}
+
 /** Pure CPU oracle matching the shader's dynamic operator selection. */
 export function compositeLayerPremultipliedLinear(
   backdrop: LinearPremultipliedRgba,
@@ -281,6 +314,71 @@ export function compositeLayerPremultipliedLinear(
 }
 
 /**
+ * Encoded-sRGB storage oracle for Fill, Blend If, Knockout and all blend modes.
+ * Only the final RGBA8 render target quantization is intentionally omitted.
+ */
+export function compositeLayerPremultipliedEncodedSrgb(
+  backdrop: EncodedSrgbPremultipliedRgba,
+  source: EncodedSrgbPremultipliedRgba,
+  mode: LayerBlendMode = DEFAULT_LAYER_BLEND_MODE,
+  operator: LayerBlendCompositeOperator = "source-over",
+  documentPixel: LayerBlendDocumentPixel = [0, 0],
+  composition: {
+    readonly cutoutMode: LayerCutoutMode;
+    readonly tonalBlend: LayerTonalBlend;
+    readonly cutoutAlpha?: number;
+    readonly deepFloor?: EncodedSrgbPremultipliedRgba;
+  } | null = null,
+): EncodedSrgbPremultipliedRgba {
+  const mask = composition
+    ? layerTonalBlendMask(
+      source,
+      backdrop,
+      composition.tonalBlend,
+      "encoded-srgb-premultiplied",
+    )
+    : 1;
+  const gatedSource: EncodedSrgbPremultipliedRgba = [
+    source[0] * mask,
+    source[1] * mask,
+    source[2] * mask,
+    source[3] * mask,
+  ];
+  const composited = operator === "source-atop"
+    ? blendLayerPremultipliedEncodedSrgbSourceAtop(
+      backdrop,
+      gatedSource,
+      mode,
+      documentPixel,
+    )
+    : blendLayerPremultipliedEncodedSrgb(backdrop, gatedSource, mode, documentPixel);
+  if (!composition || composition.cutoutMode === "off") return composited;
+  const cutoutCoverage = clamp01((composition.cutoutAlpha ?? source[3]) * mask);
+  const extraHole = clamp01(cutoutCoverage - clamp01(gatedSource[3]));
+  const deepFloor = composition.cutoutMode === "document"
+    ? sanitizePremultiplied(composition.deepFloor ?? [0, 0, 0, 0])
+    : [0, 0, 0, 0] as EncodedSrgbPremultipliedRgba;
+  const outputAlpha = clamp01(
+    composited[3] - backdrop[3] * extraHole + deepFloor[3] * extraHole,
+  );
+  return [
+    Math.min(outputAlpha, Math.max(
+      0,
+      composited[0] - backdrop[0] * extraHole + deepFloor[0] * extraHole,
+    )),
+    Math.min(outputAlpha, Math.max(
+      0,
+      composited[1] - backdrop[1] * extraHole + deepFloor[1] * extraHole,
+    )),
+    Math.min(outputAlpha, Math.max(
+      0,
+      composited[2] - backdrop[2] * extraHole + deepFloor[2] * extraHole,
+    )),
+    outputAlpha,
+  ];
+}
+
+/**
  * Bindings:
  *   0 = backdrop texture (linear premultiplied RGBA)
  *   1 = source texture (linear premultiplied RGBA)
@@ -309,7 +407,8 @@ struct LayerBlendCompositorUniforms {
   underlyingRange: vec4<f32>,
   compositionContext: u32,
   documentMaskOpacity: f32,
-  _pad0: vec2<u32>,
+  storageColorSpace: u32,
+  _pad0: u32,
 };
 
 struct LayerBlendViewportUniforms {
@@ -334,6 +433,8 @@ const LAYER_BLEND_CONTEXT_CLIPPING_CHILD: u32 = 1u;
 const LAYER_BLEND_CONTEXT_CLIPPING_OUTER: u32 = 2u;
 const LAYER_CUTOUT_GROUP: u32 = 1u;
 const LAYER_CUTOUT_DOCUMENT: u32 = 2u;
+const LAYER_STORAGE_LINEAR_PREMULTIPLIED: u32 = 0u;
+const LAYER_STORAGE_ENCODED_SRGB_PREMULTIPLIED: u32 = 1u;
 
 fn layerBlendDocumentPixel(fragmentPosition: vec2<f32>) -> vec2<i32> {
   let displayOffset = (
@@ -413,6 +514,80 @@ fn layerBlendPremultipliedLinearSourceAtop(
     clamp(outputRgb, vec3<f32>(0.0), vec3<f32>(outputAlpha)),
     outputAlpha,
   );
+}
+
+fn layerBlendPremultipliedEncodedSrgbSourceAtop(
+  backdropInput: vec4<f32>,
+  sourceInput: vec4<f32>,
+  clippingAlphaInput: f32,
+  mode: u32,
+  documentPixel: vec2<i32>,
+) -> vec4<f32> {
+  let backdropAlpha = clamp(backdropInput.a, 0.0, 1.0);
+  let clippingAlpha = clamp(clippingAlphaInput, 0.0, 1.0);
+  var sourceAlpha = clamp(sourceInput.a, 0.0, 1.0);
+  let backdropPremultiplied = clamp(
+    backdropInput.rgb,
+    vec3<f32>(0.0),
+    vec3<f32>(backdropAlpha),
+  );
+  var sourcePremultiplied = clamp(
+    sourceInput.rgb,
+    vec3<f32>(0.0),
+    vec3<f32>(sourceAlpha),
+  );
+
+  if (mode == LAYER_BLEND_DISSOLVE) {
+    let dissolved = layerBlendDissolveSource(
+      sourcePremultiplied,
+      sourceAlpha,
+      documentPixel,
+    );
+    sourcePremultiplied = dissolved.rgb;
+    sourceAlpha = dissolved.a;
+  }
+
+  if (mode == LAYER_BLEND_NORMAL || mode == LAYER_BLEND_DISSOLVE) {
+    let outputAlpha = sourceAlpha * clippingAlpha
+      + backdropAlpha * (1.0 - sourceAlpha);
+    let sourceAtop = sourcePremultiplied * clippingAlpha
+      + backdropPremultiplied * (1.0 - sourceAlpha);
+    return vec4<f32>(
+      clamp(sourceAtop, vec3<f32>(0.0), vec3<f32>(outputAlpha)),
+      outputAlpha,
+    );
+  }
+
+  if (sourceAlpha <= 0.0) {
+    return vec4<f32>(backdropPremultiplied, backdropAlpha);
+  }
+  var backdropSrgb = vec3<f32>(0.0);
+  var sourceSrgb = vec3<f32>(0.0);
+  if (backdropAlpha > 0.0) { backdropSrgb = backdropPremultiplied / backdropAlpha; }
+  if (sourceAlpha > 0.0) { sourceSrgb = sourcePremultiplied / sourceAlpha; }
+  let blendedSrgb = layerBlendSrgb(backdropSrgb, sourceSrgb, mode);
+  let outputAlpha = sourceAlpha * clippingAlpha
+    + backdropAlpha * (1.0 - sourceAlpha);
+  let outputRgb = blendedSrgb * (sourceAlpha * clippingAlpha)
+    + backdropPremultiplied * (1.0 - sourceAlpha);
+  return vec4<f32>(
+    clamp(outputRgb, vec3<f32>(0.0), vec3<f32>(outputAlpha)),
+    outputAlpha,
+  );
+}
+
+fn layerBlendCompositorLinearToEncodedStorage(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let straightLinear = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  return vec4<f32>(layerBlendLinearToSrgb(straightLinear) * alpha, alpha);
+}
+
+fn layerBlendCompositorEncodedStorageToLinear(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let straightSrgb = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  return vec4<f32>(layerBlendSrgbToLinear(straightSrgb) * alpha, alpha);
 }
 
 fn layerBlendCompositorValidatedMode(mode: u32) -> u32 {
@@ -544,6 +719,100 @@ fn layerBlendCompositorFragmentMain(
       layerBlendDeepFloorTexture,
       pixel,
     );
+  }
+  if (
+    layerBlendCompositor.storageColorSpace
+      == LAYER_STORAGE_ENCODED_SRGB_PREMULTIPLIED
+  ) {
+    var encodedBackdrop = layerBlendCompositorLinearToEncodedStorage(backdrop);
+    let encodedSource = layerBlendCompositorLinearToEncodedStorage(source);
+    let encodedClippingBase = layerBlendCompositorLinearToEncodedStorage(clippingBase);
+    let encodedDeepFloor = layerBlendCompositorLinearToEncodedStorage(deepFloor);
+    if (layerBlendCompositor.compositionContext == LAYER_BLEND_CONTEXT_CLIPPING_OUTER) {
+      let documentMask = layerBlendCompositorLoadOrTransparent(
+        layerBlendDocumentMaskTexture,
+        pixel,
+      );
+      let documentCoverage = clamp(documentMask.a, 0.0, 1.0)
+        * clamp(encodedClippingBase.a, 0.0, 1.0)
+        * clamp(layerBlendCompositor.documentMaskOpacity, 0.0, 1.0);
+      encodedBackdrop = mix(
+        encodedBackdrop,
+        encodedDeepFloor,
+        clamp(documentCoverage, 0.0, 1.0),
+      );
+    }
+    var encodedCompositionBackdrop = encodedBackdrop;
+    var encodedResidual = 0.0;
+    if (layerBlendCompositor.cutoutMode != 0u) {
+      let rawMatte = layerBlendCompositorLoadOrTransparent(
+        layerBlendCutoutTexture,
+        pixel,
+      );
+      encodedResidual = layerBlendCompositorResidualCutout(
+        encodedSource,
+        rawMatte,
+        tonalMask,
+      );
+      if (layerBlendCompositor.compositionContext == LAYER_BLEND_CONTEXT_CLIPPING_CHILD) {
+        if (layerBlendCompositor.cutoutMode == LAYER_CUTOUT_GROUP) {
+          encodedCompositionBackdrop = mix(
+            encodedBackdrop,
+            encodedClippingBase,
+            encodedResidual,
+          );
+        } else if (layerBlendCompositor.cutoutMode == LAYER_CUTOUT_DOCUMENT) {
+          encodedCompositionBackdrop = encodedBackdrop * (1.0 - encodedResidual);
+        }
+      }
+    }
+    let encodedMode = layerBlendCompositorValidatedMode(
+      layerBlendCompositor.blendMode,
+    );
+    let encodedDocumentPixel = layerBlendDocumentPixel(fragmentPosition.xy);
+    var encodedComposited: vec4<f32>;
+    if (
+      layerBlendCompositor.compositeOperator
+        == LAYER_BLEND_COMPOSITOR_SOURCE_ATOP
+    ) {
+      encodedComposited = layerBlendPremultipliedEncodedSrgbSourceAtop(
+        encodedCompositionBackdrop,
+        encodedSource,
+        select(
+          clamp(encodedCompositionBackdrop.a, 0.0, 1.0),
+          clamp(encodedClippingBase.a, 0.0, 1.0),
+          layerBlendCompositor.compositionContext == LAYER_BLEND_CONTEXT_CLIPPING_CHILD,
+        ),
+        encodedMode,
+        encodedDocumentPixel,
+      );
+    } else {
+      encodedComposited = layerBlendPremultipliedEncodedSrgbSourceOver(
+        encodedCompositionBackdrop,
+        encodedSource,
+        encodedMode,
+        encodedDocumentPixel,
+      );
+    }
+    if (
+      layerBlendCompositor.cutoutMode != 0u
+      && layerBlendCompositor.compositionContext != LAYER_BLEND_CONTEXT_CLIPPING_CHILD
+    ) {
+      var encodedKnocked = encodedComposited - encodedBackdrop * encodedResidual;
+      if (layerBlendCompositor.cutoutMode == LAYER_CUTOUT_DOCUMENT) {
+        encodedKnocked += encodedDeepFloor * encodedResidual;
+      }
+      let encodedOutputAlpha = clamp(encodedKnocked.a, 0.0, 1.0);
+      encodedComposited = vec4<f32>(
+        clamp(
+          encodedKnocked.rgb,
+          vec3<f32>(0.0),
+          vec3<f32>(encodedOutputAlpha),
+        ),
+        encodedOutputAlpha,
+      );
+    }
+    return layerBlendCompositorEncodedStorageToLinear(encodedComposited);
   }
   if (layerBlendCompositor.compositionContext == LAYER_BLEND_CONTEXT_CLIPPING_OUTER) {
     let documentMask = layerBlendCompositorLoadOrTransparent(

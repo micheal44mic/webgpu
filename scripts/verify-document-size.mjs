@@ -41,6 +41,9 @@ const {
   LEGACY_DOCUMENT_EDGE,
   LIGHT_GLAZE_COMMIT_TILE_EXTENT,
   LIGHT_GLAZE_COMMIT_TILE_SLOT_COUNT,
+  LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BUFFER_BYTES,
+  LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BYTES,
+  LIGHT_GLAZE_COMMIT_TILE_UNIFORM_STRIDE_BYTES,
   PAINT_DISPLAY_MIP_LEVEL_COUNT,
   THICKNESS_TAIL_MAXIMUM_TEXTURE_DIMENSION,
 } = await import("../src/engine-limits.ts");
@@ -251,6 +254,20 @@ assert.equal(
   LIGHT_GLAZE_COMMIT_TILE_SLOT_COUNT,
   Math.ceil(LEGACY_DOCUMENT_EDGE / LIGHT_GLAZE_COMMIT_TILE_EXTENT) ** 2,
   at("Gli slot di commit Light Glaze devono coprire ogni documento della sessione"),
+);
+assert.equal(
+  LIGHT_GLAZE_COMMIT_TILE_UNIFORM_STRIDE_BYTES % 256,
+  0,
+  at("Lo stride dinamico del commit tile deve restare allineato a 256 byte"),
+);
+assert.ok(
+  LIGHT_GLAZE_COMMIT_TILE_UNIFORM_STRIDE_BYTES >= LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BYTES,
+  at("Ogni slot dinamico deve contenere l'intero rettangolo uniform"),
+);
+assert.equal(
+  LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BUFFER_BYTES,
+  LIGHT_GLAZE_COMMIT_TILE_UNIFORM_STRIDE_BYTES * LIGHT_GLAZE_COMMIT_TILE_SLOT_COUNT,
+  at("Il buffer uniform deve riservare uno slot per ogni tile 4K"),
 );
 
 // --- Griglia tile condivisa -------------------------------------------------
@@ -502,6 +519,26 @@ for (const [storageMode, accumulatorBytesPerPixel] of [
   }
 }
 assert.equal(lightGlazeAdditionalMemoryMiB("rgba8unorm", "none", { width: 4096, height: 4096 }), 0);
+
+// Il profilo ottico usa un accumulatore R16F ma finalizza attraverso lo stesso
+// tile esatto del percorso RGBA16F. Il quarto argomento descrive la risorsa
+// realmente allocata, così la telemetria non perde i 4 MiB del tile RGBA8.
+for (const [format, bytesPerPixel] of [["rgba8unorm", 4], ["rgba16float", 8]]) {
+  const extent = { width: 4096, height: 4096 };
+  const withoutTile = 4096 * 4096 * 2 / MEBIBYTE
+    + paintDisplayPyramidAdditionalMemoryMiB(format, extent);
+  const tileMiB = LIGHT_GLAZE_COMMIT_TILE_EXTENT ** 2 * bytesPerPixel / MEBIBYTE;
+  assert.equal(
+    lightGlazeAdditionalMemoryMiB(format, "r16float-coverage", extent, false),
+    withoutTile,
+    `Light ottico ${format}: il percorso senza tile non deve includere scratch inesistente`,
+  );
+  assert.equal(
+    lightGlazeAdditionalMemoryMiB(format, "r16float-coverage", extent, true),
+    withoutTile + tileMiB,
+    `Light ottico ${format}: il tile esatto deve essere contabilizzato dal formato del layer`,
+  );
+}
 
 // Ancore del profilo universale RGBA16F su telefono. Light conserva una matte
 // R16F (8 MiB) e Uniformed/Intense un accumulatore RGBA16F (32 MiB); entrambi

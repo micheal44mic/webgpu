@@ -20,7 +20,15 @@ import {
 } from "./engine-limits";
 import { assertShaderCompiled } from "./engine-gpu-utils";
 import { previewHash32 } from "./engine-math";
-import { RGBA16_FLOAT_BYTES_PER_PIXEL } from "./float16";
+import {
+  RGBA16_FLOAT_BYTES_PER_PIXEL,
+  RGBA8_UNORM_BYTES_PER_PIXEL,
+} from "./float16";
+import {
+  normalizePaintDabProfileSettings,
+  usesEncodedSrgbRgba8PaintDabProfile,
+  usesOpticalDepthPaintDabProfile,
+} from "./paint-dab-profile";
 import {
   packStampsIntoUpload,
   populateBrushUniformUpload,
@@ -61,7 +69,7 @@ import {
 import { brushStrokePreviewPresentShader } from "./brush-stroke-preview-shader";
 
 export const BRUSH_STROKE_PREVIEW_RENDERER_VERSION =
-  "authoritative-paint-stamps-webgpu-v1" as const;
+  "authoritative-paint-stamps-webgpu-v2" as const;
 
 const SAMPLE_COUNT = 32;
 const SAMPLE_INTERVAL_MS = 16;
@@ -144,9 +152,10 @@ function hashPreviewPixels(
   width: number,
   height: number,
   bytesPerRow: number,
+  bytesPerPixel: number,
 ): string {
   let hash = 0x811c9dc5;
-  const rowBytes = width * RGBA16_FLOAT_BYTES_PER_PIXEL;
+  const rowBytes = width * bytesPerPixel;
   for (let y = 0; y < height; y += 1) {
     const rowStart = y * bytesPerRow;
     for (let offset = 0; offset < rowBytes; offset += 1) {
@@ -384,6 +393,8 @@ export class AuthoritativeBrushStrokePreviewRenderer {
       BRUSH_STROKE_PREVIEW_RENDERER_VERSION,
       this.engine.layerFormat,
       this.engine.canvasFormat,
+      this.engine.paintDabProfile,
+      this.engine.displayCompositingColorSpace,
     ].join(":");
   }
 
@@ -425,11 +436,15 @@ export class AuthoritativeBrushStrokePreviewRenderer {
     await this.ensureInitialized();
     const width = Math.max(1, Math.round(canvas.width));
     const height = Math.max(1, Math.round(canvas.height));
+    const effectiveSourceSettings = normalizePaintDabProfileSettings(
+      this.engine.paintDabProfile,
+      { ...sourceSettings, tool: "paint" },
+    );
     const projected = generateProjectedPreviewStroke(
       width,
       height,
-      sourceSettings,
-      options.color ?? sourceSettings.color,
+      effectiveSourceSettings,
+      options.color ?? effectiveSourceSettings.color,
       options.seedSequence ?? PREVIEW_SEED_SEQUENCE,
     );
     if (this.canvasRevisions.get(canvas) !== revision) {
@@ -475,9 +490,12 @@ export class AuthoritativeBrushStrokePreviewRenderer {
 
       let readback: GPUBuffer | null = null;
       let readbackBytesPerRow = 0;
+      const readbackBytesPerPixel = this.engine.canvasFormat === "rgba8unorm"
+        ? RGBA8_UNORM_BYTES_PER_PIXEL
+        : RGBA16_FLOAT_BYTES_PER_PIXEL;
       if (options.computePixelHash) {
         readbackBytesPerRow = Math.ceil(
-          (width * RGBA16_FLOAT_BYTES_PER_PIXEL) / 256,
+          (width * readbackBytesPerPixel) / 256,
         ) * 256;
         readback = this.engine.device.createBuffer({
           label: "Authoritative brush preview diagnostic readback",
@@ -501,6 +519,7 @@ export class AuthoritativeBrushStrokePreviewRenderer {
             width,
             height,
             readbackBytesPerRow,
+            readbackBytesPerPixel,
           );
           readback.unmap();
         } finally {
@@ -598,7 +617,9 @@ export class AuthoritativeBrushStrokePreviewRenderer {
       vertex: { module: shader, entryPoint: "vertexMain" },
       fragment: {
         module: shader,
-        entryPoint: "fragmentMain",
+        entryPoint: this.engine.displayCompositingColorSpace === "stored-encoded-srgb"
+          ? "storedEncodedFragmentMain"
+          : "fragmentMain",
         targets: [{ format: this.engine.canvasFormat }],
       },
       primitive: { topology: "triangle-list" },
@@ -978,28 +999,58 @@ export class AuthoritativeBrushStrokePreviewRenderer {
     stamps: readonly Stamp[],
   ): void {
     const light = settings.blendMode === "light-glaze" || settings.blendMode === "m1-glaze";
+    const uniformed = settings.blendMode === "uniformed-glaze";
     const intense = settings.blendMode === "intense-blending";
+    const preciseDeposit = light
+      && usesOpticalDepthPaintDabProfile(this.engine.paintDabProfile);
+    const storedEncodedRgba8 = usesEncodedSrgbRgba8PaintDabProfile(
+      this.engine.paintDabProfile,
+    )
+      && this.engine.layerFormat === "rgba8unorm"
+      && this.engine.displayCompositingColorSpace === "stored-encoded-srgb";
+    const encodedLight = storedEncodedRgba8 && light;
+    const encodedUniformed = storedEncodedRgba8 && uniformed;
+    const encodedIntense = storedEncodedRgba8 && intense;
+    const spatialEncodedResolve = preciseDeposit
+      || encodedLight
+      || encodedUniformed
+      || encodedIntense;
     let tintLinear: readonly [number, number, number] | null = null;
     if (light && stamps.length > 0) {
       const [red, green, blue] = adaptivePreviewSrgb(
         previewHash32(stamps[0].seed),
         settings,
       );
-      tintLinear = [
-        srgbChannelToLinear(red),
-        srgbChannelToLinear(green),
-        srgbChannelToLinear(blue),
-      ];
+      if (preciseDeposit || encodedLight) {
+        // Encoded resolves keep Light's established one-tint-per-gesture
+        // color-dynamics semantics without applying another transfer.
+        tintLinear = [red, green, blue];
+      } else {
+        tintLinear = [
+          srgbChannelToLinear(red),
+          srgbChannelToLinear(green),
+          srgbChannelToLinear(blue),
+        ];
+      }
     }
     const glazeUpload = new ArrayBuffer(LIGHT_GLAZE_UNIFORM_BYTES);
     populateStrokeGlazeUniformUpload(
       glazeUpload,
       intense ? 1 : settings.opacity,
       this.engine.layerFormat,
-      light
-        ? "light-no-build-up"
-        : intense ? "encoded-srgb-source-over" : "source-over",
+      preciseDeposit
+        ? "optical-depth-encoded-srgb"
+        : encodedLight
+          ? "encoded-srgb-light-no-build-up"
+          : encodedUniformed
+            ? "linear-stroke-over-encoded-srgb"
+            : encodedIntense
+              ? "encoded-srgb-stroke-over-encoded-srgb"
+              : light
+                ? "light-no-build-up"
+                : intense ? "encoded-srgb-source-over" : "source-over",
       tintLinear,
+      spatialEncodedResolve ? stamps[0]?.seed ?? PREVIEW_SEED_SEQUENCE : 0,
     );
     this.engine.device.queue.writeBuffer(this.glazeUniformBuffer!, 0, glazeUpload);
     const bindGroup = this.engine.device.createBindGroup({

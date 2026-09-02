@@ -15,7 +15,9 @@ import {
   LAYER_BLEND_COMPOSITOR_UNIFORM_BYTE_STRIDE,
   LAYER_BLEND_COMPOSITOR_UNIFORM_U32_STRIDE,
   LAYER_BLEND_COMPOSITOR_WGSL,
+  blendLayerPremultipliedEncodedSrgbSourceAtop,
   blendLayerPremultipliedLinearSourceAtop,
+  compositeLayerPremultipliedEncodedSrgb,
   compositeLayerPremultipliedLinear,
   writeLayerBlendCompositorUniforms,
 } from "../src/layer-blend-compositor.ts";
@@ -27,6 +29,7 @@ import {
 } from "../src/layer-blend-fold-shader.ts";
 import {
   DEFAULT_DOCUMENT_BACKGROUND,
+  documentBackgroundEncodedSrgbPremultiplied,
   documentBackgroundLinearPremultiplied,
   normalizeDocumentBackground,
 } from "../src/document-background.ts";
@@ -35,6 +38,10 @@ import {
   LAYER_COLD_TILE_COMPOSITE_UNIFORM_BYTES,
   LAYER_COLD_TILE_COMPOSITE_WGSL,
 } from "../src/layer-cold-tile-composite-shader.ts";
+import {
+  DERIVED_RGBA8_SURFACE_QUANTIZATION_SEED,
+  RGBA8_SURFACE_FINALIZE_WGSL,
+} from "../src/rgba8-surface-finalizer.ts";
 const tileShaderSource = readFileSync(
   new URL("../src/layer-blend-tile-shader.ts", import.meta.url),
   "utf8",
@@ -57,6 +64,14 @@ assert.ok(Math.abs(middleGray[0] - 0.21586) < 0.0001);
 assert.equal(middleGray[0], middleGray[1]);
 assert.equal(middleGray[1], middleGray[2]);
 assert.equal(middleGray[3], 1);
+assert.deepEqual(
+  documentBackgroundEncodedSrgbPremultiplied({ visible: true, color: "#808080" }),
+  [128 / 255, 128 / 255, 128 / 255, 1],
+);
+assert.deepEqual(
+  documentBackgroundEncodedSrgbPremultiplied({ visible: false, color: "#808080" }),
+  [0, 0, 0, 0],
+);
 const tileCompositorSource = readFileSync(
   new URL("../src/layer-blend-tile-compositor.ts", import.meta.url),
   "utf8",
@@ -111,7 +126,11 @@ assert.doesNotMatch(LAYER_COLD_TILE_COMPOSITE_WGSL, /textureSample/);
 assert.match(LAYER_COLD_TILE_COMPOSITE_WGSL, /tileDimensions: vec2<u32>/);
 assert.match(LAYER_COLD_TILE_COMPOSITE_WGSL, /let tileSize = vec2<i32>\(fold\.tileDimensions\)/);
 assert.doesNotMatch(LAYER_COLD_TILE_COMPOSITE_WGSL, /const TILE_SIZE/);
-assert.match(layerRuntimeSource, /pass\.draw\(6, tileIndices\.length, 0, 0\)/);
+assert.match(
+  layerRuntimeSource,
+  /pass\.draw\(6, range\.instanceCount, 0, range\.firstInstance\)/,
+  "the direct cold path must draw only tile-array ranges intersecting the bounded target",
+);
 assert.match(
   layerRuntimeSource,
   /u32\[6\] = Math\.ceil\(engine\.documentWidth \/ DOCUMENT_TILE_GRID_SIZE\);[\s\S]*?u32\[7\] = Math\.ceil\(engine\.documentHeight \/ DOCUMENT_TILE_GRID_SIZE\);/,
@@ -125,10 +144,33 @@ assert.match(
   /chunk\.rawBytes <= LAYER_COLD_TILE_COMPOSITE_BATCH_TILES \* tileBytes/,
   "un chunk futuro troppo grande deve ricadere sul fallback senza superare lo scratch dichiarato",
 );
+assert.equal(DERIVED_RGBA8_SURFACE_QUANTIZATION_SEED, 0x51f15e0d);
+assert.match(RGBA8_SURFACE_FINALIZE_WGSL, /finalize\.outputOrigin \+ outputPixel/);
+assert.match(RGBA8_SURFACE_FINALIZE_WGSL, /quantizeRgba8SpatialAdjacent\(/);
+assert.match(
+  layerRuntimeSource,
+  /for \(let y = output\.bounds\.y; y < bottom; y \+= LAYER_BLEND_FOLD_TILE_EXTENT\)/,
+  "encoded RGBA8 aggregate working memory must be bounded by the fold tile extent",
+);
+assert.match(
+  layerRuntimeSource,
+  /allocateMergedSurface\([\s\S]*?engine,[\s\S]*?"rgba16float",[\s\S]*?tileBounds,[\s\S]*?false,/,
+  "multi-operand encoded RGBA8 aggregates must fold through a mip0-only RGBA16F tile",
+);
+assert.match(
+  layerRuntimeSource,
+  /await finalizeRgba8SurfaceTile\([\s\S]*?working,[\s\S]*?output,/,
+  "each high-precision working tile must cross one explicit RGBA8 finalization boundary",
+);
+assert.match(
+  layerRuntimeSource,
+  /units\.length !== 1 \|\| units\[0\]\.length !== 1[\s\S]*?record\.opacity !== 1 \|\| layerNeedsBackdropComposition\(record\)/,
+  "only a mathematically boundary-free singleton may retain the direct RGBA8 fold",
+);
 
 assert.equal(
   LAYER_BLEND_COMPOSITOR_STRATEGY,
-  "viewport-textureload-tonal-gate-residual-cutout-source-opacity-w3c-over-clipping-atop-document-anchored-dissolve-v6",
+  "viewport-textureload-dual-storage-rgba16f-transient-tonal-gate-residual-cutout-source-opacity-w3c-over-clipping-atop-document-anchored-dissolve-v8",
 );
 assert.equal(LAYER_BLEND_COMPOSITOR_UNIFORM_BYTE_SIZE, 64);
 assert.equal(LAYER_BLEND_COMPOSITOR_UNIFORM_BYTE_STRIDE, 64);
@@ -169,6 +211,20 @@ assert.equal(new Float32Array(uniforms.buffer)[16], 1);
 assert.equal(uniforms[17], 0);
 assert.equal(uniforms[18], 0);
 assert.equal(uniforms[19], 0xffffffff);
+const encodedUniforms = new Uint32Array(LAYER_BLEND_COMPOSITOR_UNIFORM_U32_STRIDE);
+writeLayerBlendCompositorUniforms(
+  encodedUniforms,
+  "normal",
+  "source-over",
+  0,
+  null,
+  1,
+  "direct",
+  1,
+  true,
+);
+assert.equal(encodedUniforms[14], 1);
+assert.equal(encodedUniforms[15], 0);
 assert.throws(
   () => writeLayerBlendCompositorUniforms(new Uint32Array(15)),
   /smaller than 64 bytes/,
@@ -253,6 +309,39 @@ assert.ok(
 assert.ok(
   storedRgba16[0] > darkLinear * 0.95,
   "RGBA16F repeated #333 deposits must converge without an R8 color stall.",
+);
+
+// The mixed-scene CPU oracle follows the same rule as the viewport shader:
+// encoded-sRGB equations stay high precision between operations. A 0.1%
+// deposit is below half an RGBA8 code, so an accidental boundary after every
+// operation would discard the complete sequence.
+const subtleEncodedSource = [0.00072, 0.00041, 0.00019, 0.001];
+let highPrecisionEncoded = [0, 0, 0, 0];
+let prematurelyQuantizedEncoded = [0, 0, 0, 0];
+for (let pass = 0; pass < 1024; pass += 1) {
+  highPrecisionEncoded = compositeLayerPremultipliedEncodedSrgb(
+    highPrecisionEncoded,
+    subtleEncodedSource,
+    "normal",
+  );
+  prematurelyQuantizedEncoded = compositeLayerPremultipliedEncodedSrgb(
+    prematurelyQuantizedEncoded,
+    subtleEncodedSource,
+    "normal",
+  ).map(quantizeUnorm8);
+}
+const accumulatedAlpha = 1 - (1 - subtleEncodedSource[3]) ** 1024;
+close(highPrecisionEncoded[3], accumulatedAlpha, 2e-14, "encoded transient alpha");
+close(
+  highPrecisionEncoded[0],
+  0.72 * accumulatedAlpha,
+  2e-14,
+  "encoded transient color",
+);
+assert.deepEqual(
+  prematurelyQuantizedEncoded,
+  [0, 0, 0, 0],
+  "an RGBA8 boundary per operation must reproduce the low-flow plateau",
 );
 
 // Independent encoded-sRGB Multiply oracle for the non-Normal atop equation.
@@ -353,6 +442,29 @@ for (const mode of LAYER_BLEND_MODE_ORDER) {
       2e-15,
       `${mode} source-atop routing`,
     );
+    const encodedAtop = blendLayerPremultipliedEncodedSrgbSourceAtop(
+      fixtureBackdrop,
+      fixtureSource,
+      mode,
+    );
+    close(encodedAtop[3], clamp(fixtureBackdrop[3]), 2e-15, `${mode} encoded alpha invariant`);
+    assert.ok(
+      encodedAtop.slice(0, 3).every(
+        (channel) => channel >= 0 && channel <= encodedAtop[3] + 1e-12,
+      ),
+      `${mode} encoded atop remains premultiplied`,
+    );
+    closeArray(
+      compositeLayerPremultipliedEncodedSrgb(
+        fixtureBackdrop,
+        fixtureSource,
+        mode,
+        "source-atop",
+      ),
+      encodedAtop,
+      2e-15,
+      `${mode} encoded source-atop routing`,
+    );
   }
 
   // With an opaque backdrop, source-atop and source-over are identical.
@@ -393,6 +505,21 @@ assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /textureLoad\(source, pixel, 0\)/);
 assert.doesNotMatch(LAYER_BLEND_COMPOSITOR_WGSL, /textureSample/);
 assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /layerBlendCompositor\.blendMode/);
 assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /layerBlendCompositor\.compositeOperator/);
+assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /storageColorSpace: u32/);
+assert.match(
+  LAYER_BLEND_COMPOSITOR_WGSL,
+  /storageColorSpace[\s\S]*?LAYER_STORAGE_ENCODED_SRGB_PREMULTIPLIED[\s\S]*?layerBlendPremultipliedEncodedSrgbSourceOver/,
+);
+assert.doesNotMatch(
+  LAYER_BLEND_COMPOSITOR_WGSL,
+  /layerBlendCompositorQuantizeEncodedStorage|round\([^\n]*255\.0/,
+  "transient encoded raster folds must not introduce an RGBA8 boundary",
+);
+assert.match(
+  LAYER_BLEND_COMPOSITOR_WGSL,
+  /return layerBlendCompositorEncodedStorageToLinear\(encodedComposited\);/,
+  "the high-precision encoded result must return to the linear viewport working domain",
+);
 assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /@binding\(4\) var layerBlendCutoutTexture/);
 assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /@binding\(5\) var layerBlendClippingBaseTexture/);
 assert.match(LAYER_BLEND_COMPOSITOR_WGSL, /@binding\(6\) var layerBlendDocumentMaskTexture/);
@@ -435,7 +562,7 @@ assert.match(atopShader, /layerBlendDissolveSource\([\s\S]*?documentPixel/);
 
 assert.equal(
   LAYER_BLEND_FOLD_STRATEGY,
-  "cropped-document-1024-tile-ping-pong-tonal-gate-residual-cutout-w3c-over-clipping-atop-dissolve-v6",
+  "cropped-document-1024-tile-ping-pong-dual-storage-tonal-gate-residual-cutout-w3c-over-clipping-atop-dissolve-v7",
 );
 assert.equal(LAYER_BLEND_FOLD_TILE_EXTENT, 1024);
 assert.equal(LAYER_BLEND_FOLD_UNIFORM_BYTES, 160);
@@ -488,9 +615,14 @@ assert.ok(
     < foldAtopShader.indexOf("layerBlendLinearToSrgb("),
   "Normal fold source-atop must bypass transfer conversion",
 );
-assert.match(foldAtopShader, /blendedLinear \* \(sourceAlpha \* clippingAlpha\)/);
+assert.match(foldAtopShader, /blendedStored \* \(sourceAlpha \* clippingAlpha\)/);
 assert.match(foldAtopShader, /backdropPremultiplied \* \(1\.0 - sourceAlpha\)/);
 assert.match(foldAtopShader, /mode == LAYER_BLEND_DISSOLVE/);
+assert.match(foldAtopShader, /layer\.storageColorSpace[\s\S]*?blendedSrgb/);
+assert.match(
+  LAYER_BLEND_FOLD_WGSL,
+  /layer\.storageColorSpace == LAYER_STORAGE_ENCODED_SRGB_PREMULTIPLIED[\s\S]*?layerBlendPremultipliedEncodedSrgbSourceOver/,
+);
 assert.match(
   clippingShaderSource,
   /fn clippingBlendSourceAtop\([\s\S]*?documentPixel: vec2<i32>/,
@@ -530,6 +662,16 @@ assert.match(
   /clippingAlphaInput: f32[\s\S]*?outputAlpha = sourceAlpha \* clippingAlpha/,
   "clipping children must use the immutable-base matte after a scoped hole",
 );
+assert.match(
+  engineVectorTextRuntimeSource,
+  /writeLayerBlendCompositorUniforms\([\s\S]*?engine\.documentStorageColorSpace === "encoded-srgb-premultiplied"/,
+  "ordered dynamic folds must select the document storage contract",
+);
+assert.match(
+  engineRuntimeMiscSource,
+  /writeLayerBlendCompositorUniforms\([\s\S]*?engine\.documentStorageColorSpace === "encoded-srgb-premultiplied"/,
+  "prepopulated compositor records must select the document storage contract",
+);
 
 // A completed document tile owns the final cache value. Partial updates must
 // replace those pixels and discard the corners of the rotated core's
@@ -537,7 +679,75 @@ assert.match(
 // regression that exposed checkerboard rectangles while painting.
 assert.match(
   tileShaderSource,
-  /LAYER_BLEND_TILE_STRATEGY\s*=\s*\n\s*"document-space-1024-tile-native-format-blend-before-filter-replace-cache-v2"/,
+  /LAYER_BLEND_TILE_STRATEGY\s*=\s*\n\s*"document-space-1024-tile-rgba16f-fold-single-rgba8-boundary-blend-before-filter-linear-present-replace-cache-v4"/,
+);
+assert.match(
+  tileCompositorSource,
+  /const scratchFormat = "rgba16float" as const;/,
+  "the bounded layer fold must always accumulate in RGBA16F",
+);
+for (const resource of [
+  "documentMaskTexture",
+  "clippingBaseTexture",
+  "deepFloorTexture",
+]) {
+  assert.match(
+    tileCompositorSource,
+    new RegExp(`const ${resource} = engine\\.device\\.createTexture\\(\\{[\\s\\S]*?format: scratchFormat`),
+    `${resource} must share the high-precision clipping working domain`,
+  );
+}
+assert.match(
+  tileCompositorSource,
+  /const textures = Array\.from\([\s\S]*?width: LAYER_BLEND_TILE_EXTENT,[\s\S]*?height: LAYER_BLEND_TILE_EXTENT,[\s\S]*?format: scratchFormat/,
+  "accumulation textures must remain bounded independently of document dimensions",
+);
+assert.match(
+  tileCompositorSource,
+  /const bakeTexture = engine\.device\.createTexture\([\s\S]*?format: engine\.layerFormat/,
+  "the style baker needs a native-format source distinct from RGBA16F accumulation",
+);
+assert.match(
+  tileRuntimeSource,
+  /renderer\.encodeBake\(\{[\s\S]*?targetView: compositor\.bakeView/,
+  "live styled content must write to the native bake source",
+);
+assert.match(
+  tileCompositorSource,
+  /"Layer blend tile advanced fold"[\s\S]*?scratchFormat/,
+  "advanced blend equations must target the RGBA16F accumulator",
+);
+assert.match(
+  tileCompositorSource,
+  /"Layer blend tile exact mip 1"[\s\S]*?engine\.layerFormat/,
+  "mip 1 is the single persistent native-format boundary",
+);
+assert.match(
+  layerRuntimeSource,
+  /allocateActiveLayerDisplayPyramid\([\s\S]*?format,[\s\S]*?rebuildActiveLayerPyramidBindings[\s\S]*?paintMipViews = \[engine\.layerView, \.\.\.engine\.activeLayerDisplayPyramid\.mipViews\]/,
+  "authoritative mip 0 and the resident pyramid must retain the document format",
+);
+assert.match(
+  tileShaderSource,
+  /rgba8HighFrequencyQuantizationShader[\s\S]*?quantizeToRgba8[\s\S]*?quantizeRgba8HighFrequencyAdjacent\([\s\S]*?fragmentPosition\.xy[\s\S]*?tile\.quantizationSeed/,
+  "the RGBA16F to RGBA8 mip boundary must use stable high-frequency adjacent-code quantization",
+);
+assert.match(
+  tileCompositorSource,
+  /mipUniformU32\[word \+ 4\] = this\.engine\.layerFormat === "rgba8unorm" \? 1 : 0;[\s\S]*?mipUniformU32\[word \+ 5\] = LAYER_BLEND_TILE_QUANTIZATION_SEED;/,
+  "RGBA8 mip dithering must use a fixed composition seed rather than camera state",
+);
+assert.match(
+  layerRuntimeSource,
+  /const blendSignature = items[\s\S]*?record\.blendMode[\s\S]*?@unit-modes=\$\{blendSignature\}/,
+  "cached raster runs must invalidate when an inactive clipping-child mode changes",
+);
+assert.match(tileShaderSource, /fn layerBlendTileSourceForLinearPresentation/);
+assert.match(tileShaderSource, /display\.compositingColorSpace < 1\.5/);
+assert.match(tileCompositorSource, /entryPoint: "storageBackgroundFragmentMain"/);
+assert.match(
+  tileCompositorSource,
+  /foldUniformU32\[word \+ 38\] = this\.engine\.documentStorageColorSpace[\s\S]*?encoded-srgb-premultiplied" \? 1 : 0/,
 );
 assert.match(
   tileShaderSource,
@@ -598,6 +808,16 @@ assert.match(
   tileRuntimeSource,
   /withClippingScope\(/,
   "tile clipping children must use the immutable base and accumulate document masks",
+);
+assert.doesNotMatch(
+  tileRuntimeSource,
+  /The active clipping child has no immutable base/,
+  "an empty clipping parent must remain a valid transparent sparse base",
+);
+assert.match(
+  tileRuntimeSource,
+  /if \(activeGroup\.base\)[\s\S]*?clear empty clipping-child immutable base[\s\S]*?view: compositor\.clippingBaseView/,
+  "an active clipping child over an empty parent must use a cleared transparent base",
 );
 assert.match(tileRuntimeSource, /source\.clipping\?\.context === "clipping-child"/);
 assert.match(tileRuntimeSource, /encodeDocumentMaskContribution\(/);

@@ -73,6 +73,10 @@ export interface EditorToolsMenuState {
   readonly rasterColorOverlayTargetSelected: boolean;
   readonly rasterDeformTargetSelected: boolean;
   readonly rasterEffectsEnabled: Readonly<Record<EditorRasterEffectKind, boolean>>;
+  /** Optional document-profile policy. Omission preserves the legacy menu behavior. */
+  readonly isCanvasToolSupported?: (tool: EditorCanvasTool) => boolean;
+  readonly semanticToolsSupported?: boolean;
+  readonly rasterEffectsSupported?: boolean;
 }
 
 export interface EditorToolsBrowser extends Window {
@@ -171,13 +175,23 @@ export class EditorToolsController {
   renderMenuState(state: Readonly<EditorToolsMenuState>): void {
     const { elements } = this.options;
     for (const button of elements.canvasButtons) {
+      const tool = button.dataset.mobileCanvasTool;
+      if (!isEditorCanvasTool(tool)) {
+        button.disabled = true;
+        button.setAttribute("aria-pressed", "false");
+        continue;
+      }
       button.setAttribute(
         "aria-pressed",
-        String(button.dataset.mobileCanvasTool === state.activeCanvasTool),
+        String(tool === state.activeCanvasTool),
       );
+      button.disabled = !state.engineReady
+        || state.canvasToolSelectionLocked
+        || state.isCanvasToolSupported?.(tool) === false;
     }
     for (const button of elements.vectorCommandButtons) {
       button.disabled = !state.engineReady
+        || state.semanticToolsSupported === false
         || (state.interactionLocked && !state.adjustmentSettlementAvailable)
         || (
           state.vectorEditorReady
@@ -203,7 +217,11 @@ export class EditorToolsController {
         || kind === "text-drop-shadow"
         || kind === "text-inner-shadow"
         || kind === "text-block-shadow";
+      const canvasTool = canvasToolEditor ? kind as EditorCanvasTool : null;
+      const semanticEditor = svgEditor || textEditor || vectorEffectEditor;
       button.disabled = !state.engineReady
+        || (canvasTool !== null && state.isCanvasToolSupported?.(canvasTool) === false)
+        || (semanticEditor && state.semanticToolsSupported === false)
         || (canvasToolEditor
           ? state.canvasToolSelectionLocked
           : state.toolSettingsSelectionLocked)
@@ -238,6 +256,7 @@ export class EditorToolsController {
         continue;
       }
       button.disabled = !state.engineReady
+        || state.rasterEffectsSupported === false
         || (state.interactionLocked && !state.adjustmentSettlementAvailable)
         || (kind === "color-overlay" && !state.rasterColorOverlayTargetSelected);
       button.setAttribute(

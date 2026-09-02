@@ -57,6 +57,9 @@ interface HumanStrokeOutputWitness {
   height: number;
   pixelHash: string;
   nonTransparentPixels: number;
+  meanCoveredAlpha: number;
+  maximumAlpha: number;
+  distinctAlphaCodes: number;
 }
 
 interface PlaybackMetrics {
@@ -434,15 +437,27 @@ function fingerprintOutputPixels(
 ): HumanStrokeOutputWitness {
   let hash = 0x811c9dc5;
   let nonTransparentPixels = 0;
+  let alphaSum = 0;
+  let maximumAlpha = 0;
+  const alphaCodes = new Set<number>();
   for (let index = 0; index < rgba.length; index += 1) {
     hash = Math.imul(hash ^ rgba[index], 0x01000193) >>> 0;
-    if ((index & 3) === 3 && rgba[index] !== 0) nonTransparentPixels += 1;
+    if ((index & 3) !== 3) continue;
+    const alpha = rgba[index];
+    alphaCodes.add(alpha);
+    maximumAlpha = Math.max(maximumAlpha, alpha);
+    if (alpha === 0) continue;
+    nonTransparentPixels += 1;
+    alphaSum += alpha;
   }
   return {
     width,
     height,
     pixelHash: hash.toString(16).padStart(8, "0"),
     nonTransparentPixels,
+    meanCoveredAlpha: nonTransparentPixels === 0 ? 0 : alphaSum / nonTransparentPixels,
+    maximumAlpha,
+    distinctAlphaCodes: alphaCodes.size,
   };
 }
 
@@ -1212,11 +1227,12 @@ export class HumanStrokeLab {
   async replay(
     label: string,
     settingsOverride: Partial<BrushSettings> = {},
+    options: Pick<ReplayOptions, "captureOutputWitness"> = {},
   ): Promise<HumanStrokeReplayReport> {
     return this.#withBusy(async () => {
       const fixture = await this.#requireFixture();
       const settings = { ...canonicalSettings(fixture.settings), ...settingsOverride };
-      return this.#runReplay(fixture, label, settings, {});
+      return this.#runReplay(fixture, label, settings, options);
     });
   }
 
@@ -1674,9 +1690,10 @@ export class HumanStrokeLab {
       await this.#prepareBlendBackground(settings);
       this.#engine.resetStrokeRandomSeed();
     }
+    const effectiveSettings = this.#engine.getSettings();
     const preReplayPreparationMs = performance.now() - preparationStartedAt;
 
-    const memoryBefore = this.#captureMemory(settings.blendMode);
+    const memoryBefore = this.#captureMemory(effectiveSettings.blendMode);
     const before = this.#engine.getStats();
     const replayStart = performance.now();
     const lastPoint = fixture.points.at(-1) as HumanStrokePoint;
@@ -1765,7 +1782,7 @@ export class HumanStrokeLab {
     const profile = this.#engine.finishStrokePerformanceProfile();
     if (!profile) throw new Error("Profilo del tratto non disponibile.");
     const after = this.#engine.getStats();
-    const memoryAfter = this.#captureMemory(settings.blendMode);
+    const memoryAfter = this.#captureMemory(effectiveSettings.blendMode);
     const outputWitness = options.captureOutputWitness
       ? await this.#engine.captureActiveLayerThumbnail().then((capture) => (
         fingerprintOutputPixels(capture.width, capture.height, capture.rgba)
@@ -1834,8 +1851,10 @@ export class HumanStrokeLab {
         pointCount: fixture.points.length,
         traceDurationMs: lastPoint.timeMs,
         ...summarizeMotion(fixture.points),
-        testTool: options.tool ?? settings.tool,
-        testBlendMode: settings.tool === "blend" ? "not-applicable" : settings.blendMode,
+        testTool: options.tool ?? effectiveSettings.tool,
+        testBlendMode: effectiveSettings.tool === "blend"
+          ? "not-applicable"
+          : effectiveSettings.blendMode,
         renderingSuiteRevision: options.suiteRevision ?? null,
         renderingSuiteCaseId: options.suiteCaseId ?? null,
         renderingSuiteCaseLabel: options.suiteCaseLabel ?? null,
@@ -1848,13 +1867,17 @@ export class HumanStrokeLab {
         renderingMemoryBeforeReplay: memoryBefore,
         renderingMemoryAfterReplay: memoryAfter,
         backgroundStrategy,
-        settings,
+        settings: effectiveSettings,
       },
       playback,
       performance: profile,
       environment: {
         ...this.#engine.getBenchmarkEnvironment(),
         ...this.#collectInputDiagnostics(),
+        presentationFormat: this.#engine.presentationFormat,
+        paintDabProfile: this.#engine.paintDabProfile,
+        displayCompositingColorSpace: this.#engine.displayCompositingColorSpace,
+        documentStorageColorSpace: this.#engine.documentStorageColorSpace,
         userAgent: navigator.userAgent,
         platform: navigator.platform,
         language: navigator.language,

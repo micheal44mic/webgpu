@@ -27,6 +27,8 @@ export interface MergedSurfaceResources {
   texture: GPUTexture;
   samplingView: GPUTextureView;
   mipViews: GPUTextureView[];
+  /** Render-attachment format; never infer it from the document profile. */
+  format: LayerFormat;
   mipDownsampleBindGroups: GPUBindGroup[];
   /**
    * Lazily allocated 1024² backdrop/output tiles and dynamic uniforms used

@@ -58,3 +58,12 @@ export function documentBackgroundLinearPremultiplied(
     1,
   ];
 }
+
+/** Returns the background in the encoded-sRGB premultiplied storage contract. */
+export function documentBackgroundEncodedSrgbPremultiplied(
+  state: DocumentBackgroundState,
+): readonly [number, number, number, number] {
+  if (!state.visible) return [0, 0, 0, 0];
+  const [red, green, blue] = documentBackgroundSrgb(state.color);
+  return [red, green, blue, 1];
+}

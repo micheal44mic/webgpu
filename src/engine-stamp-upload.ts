@@ -53,7 +53,11 @@ export function populateGrainUniformUpload(
 export type StrokeGlazeAccumulationMode =
   | "source-over"
   | "light-no-build-up"
-  | "encoded-srgb-source-over";
+  | "encoded-srgb-source-over"
+  | "optical-depth-encoded-srgb"
+  | "encoded-srgb-light-no-build-up"
+  | "linear-stroke-over-encoded-srgb"
+  | "encoded-srgb-stroke-over-encoded-srgb";
 
 export function populateStrokeGlazeUniformUpload(
   upload: ArrayBuffer,
@@ -61,6 +65,7 @@ export function populateStrokeGlazeUniformUpload(
   layerFormat: LayerFormat,
   accumulationMode: StrokeGlazeAccumulationMode,
   tintLinear: readonly [number, number, number] | null,
+  ditherSeed = 0,
 ): void {
   const floats = new Float32Array(upload);
   const unsigned = new Uint32Array(upload);
@@ -69,7 +74,16 @@ export function populateStrokeGlazeUniformUpload(
   unsigned[1] = layerFormat === "rgba16float" ? 1 : 0;
   unsigned[2] = accumulationMode === "light-no-build-up"
     ? 1
-    : accumulationMode === "encoded-srgb-source-over" ? 2 : 0;
+    : accumulationMode === "encoded-srgb-source-over"
+      ? 2
+      : accumulationMode === "optical-depth-encoded-srgb"
+        ? 3
+        : accumulationMode === "encoded-srgb-light-no-build-up"
+          ? 4
+          : accumulationMode === "linear-stroke-over-encoded-srgb"
+            ? 5
+            : accumulationMode === "encoded-srgb-stroke-over-encoded-srgb" ? 6 : 0;
+  unsigned[3] = ditherSeed >>> 0;
   floats[4] = tintLinear?.[0] ?? 0;
   floats[5] = tintLinear?.[1] ?? 0;
   floats[6] = tintLinear?.[2] ?? 0;
@@ -127,9 +141,10 @@ export function populateBrushUniformUpload(
   unsigned[20] = encodeStrokeSymmetryOptions(settings.count, symmetryMode);
   unsigned[21] = settings.jitterPerCopy ? 1 : 0;
   // Bit 0 retains the render-mode ABI. Bit 1 selects the explicit 8-bit A/B
-  // comparison while the authoritative textures and render targets stay 16F.
+  // comparison. Bit 2 selects the analytic Gaussian falloff for round tips.
   unsigned[22] = (settings.blendMode === "additive" ? 1 : 0)
-    | (settings.shapeMaskFormat === "r8unorm" ? 2 : 0);
+    | (settings.shapeMaskFormat === "r8unorm" ? 2 : 0)
+    | (settings.tipFalloff === "gaussian" ? 4 : 0);
   // Previously unused ABI lane: opt-in base rotation along the stamp direction.
   unsigned[23] = settings.shapeRotation === "follow-stroke" ? 1 : 0;
   floats[24] = documentWidth;

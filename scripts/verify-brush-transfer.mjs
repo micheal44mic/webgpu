@@ -41,6 +41,7 @@ assert.deepEqual([...decodedNative16Mask.pixels], [0, 257, 32768]);
 function persistedSettings(overrides = {}) {
   const settings = {
     shape: "circle",
+    tipFalloff: "standard",
     shapeAssetId: "legacy-shape",
     shapeAssetIds: ["legacy-shape"],
     shapeSequenceMode: "ordered",
@@ -186,6 +187,7 @@ legacyPlainParts.manifest.assets = {
   grain: legacyPlainParts.manifest.assets.grain,
 };
 delete legacyPlainParts.manifest.settings.blendBlur;
+delete legacyPlainParts.manifest.settings.tipFalloff;
 delete legacyPlainParts.manifest.settings.shapeMaskFormat;
 delete legacyPlainParts.manifest.settings.shapeAssetIds;
 delete legacyPlainParts.manifest.settings.shapeSequenceMode;

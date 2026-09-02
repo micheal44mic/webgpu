@@ -19,6 +19,8 @@ export type PaintStampSampleEmitter<Context> = (
   directionY: number,
 ) => void;
 
+export type PaintStampSpacingResolver = (point: Readonly<LayerPoint>) => number;
+
 const clampUnit = (value: number): number => Math.max(0, Math.min(1, value));
 
 /** The authoritative deterministic seed assigned to one base stamp. */
@@ -111,4 +113,77 @@ export function resamplePaintCurveSegment<Context>(
   }
 
   return stampLimitReached ? distanceSinceStamp % spacing : distanceSinceStamp;
+}
+
+/**
+ * Walks a curve with spacing chosen from the pressure at the last emitted dab.
+ *
+ * The state is the remaining distance to the next dab, rather than distance
+ * since the previous one. That makes the result independent from pointer-event
+ * segmentation when pressure changes between samples.
+ */
+export function resamplePaintCurveSegmentWithVariableSpacing<Context>(
+  curveSegment: Readonly<CausalStrokeCurveSegment>,
+  start: Readonly<LayerPoint>,
+  end: Readonly<LayerPoint>,
+  distanceToNextStamp: number,
+  maximumStamps: number,
+  emitContext: Context,
+  emit: PaintStampSampleEmitter<Context>,
+  spacingForPoint: PaintStampSpacingResolver,
+): number {
+  const deltaTimeMs = end.timeMs - start.timeMs;
+  let remaining = Math.max(0.1, distanceToNextStamp);
+  let generatedOnInputSegment = 0;
+  let curveStartX = start.x;
+  let curveStartY = start.y;
+  let parameterStart = 0;
+
+  for (
+    let subdivision = 1;
+    subdivision <= curveSegment.subdivisionCount;
+    subdivision += 1
+  ) {
+    const parameterEnd = subdivision / curveSegment.subdivisionCount;
+    const curveEndX = subdivision === curveSegment.subdivisionCount
+      ? end.x
+      : evaluateStrokeCurveX(curveSegment, parameterEnd);
+    const curveEndY = subdivision === curveSegment.subdivisionCount
+      ? end.y
+      : evaluateStrokeCurveY(curveSegment, parameterEnd);
+    const curveDeltaX = curveEndX - curveStartX;
+    const curveDeltaY = curveEndY - curveStartY;
+    const curveLength = Math.hypot(curveDeltaX, curveDeltaY);
+    let distanceAlongCurve = 0;
+
+    if (curveLength > 0.0001) {
+      const directionX = curveDeltaX / curveLength;
+      const directionY = curveDeltaY / curveLength;
+      while (curveLength - distanceAlongCurve >= remaining) {
+        distanceAlongCurve += remaining;
+        const localInterpolation = clampUnit(distanceAlongCurve / curveLength);
+        const curveParameter = parameterStart
+          + (parameterEnd - parameterStart) * localInterpolation;
+        const point: LayerPoint = {
+          x: curveStartX + curveDeltaX * localInterpolation,
+          y: curveStartY + curveDeltaY * localInterpolation,
+          pressure: start.pressure
+            + (end.pressure - start.pressure) * curveParameter,
+          timeMs: start.timeMs + deltaTimeMs * curveParameter,
+        };
+        if (generatedOnInputSegment < maximumStamps) {
+          emit(emitContext, point, directionX, directionY);
+          generatedOnInputSegment += 1;
+        }
+        remaining = Math.max(0.1, spacingForPoint(point));
+      }
+      remaining -= Math.max(0, curveLength - distanceAlongCurve);
+    }
+
+    curveStartX = curveEndX;
+    curveStartY = curveEndY;
+    parameterStart = parameterEnd;
+  }
+
+  return Math.max(Number.EPSILON, remaining);
 }

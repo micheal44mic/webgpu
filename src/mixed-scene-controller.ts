@@ -325,7 +325,7 @@ function requiredElement<ElementType extends HTMLElement>(
 }
 
 function vectorRasterFormatLabel(format: LayerFormat): string {
-  return format === "rgba16float" ? "linear RGBA16F" : "linear RGBA8";
+  return format === "rgba16float" ? "linear RGBA16F" : "RGBA8 sRGB";
 }
 
 function uint8ArraysEqual(left: Uint8Array, right: Uint8Array): boolean {
@@ -336,12 +336,19 @@ function uint8ArraysEqual(left: Uint8Array, right: Uint8Array): boolean {
   return true;
 }
 
-function countNonZeroRgba16fAlpha(pixels: Uint8Array): number {
-  if (pixels.byteLength % 8 !== 0) return 0;
+function countNonZeroRasterAlpha(pixels: Uint8Array, format: LayerFormat): number {
+  const bytesPerPixel = format === "rgba16float" ? 8 : 4;
+  if (pixels.byteLength % bytesPerPixel !== 0) return 0;
   let count = 0;
-  for (let offset = 6; offset < pixels.byteLength; offset += 8) {
-    const alphaBits = pixels[offset] | (pixels[offset + 1] << 8);
-    count += Number((alphaBits & 0x7fff) !== 0);
+  for (
+    let offset = bytesPerPixel - (format === "rgba16float" ? 2 : 1);
+    offset < pixels.byteLength;
+    offset += bytesPerPixel
+  ) {
+    const alpha = format === "rgba16float"
+      ? (pixels[offset] | (pixels[offset + 1] << 8)) & 0x7fff
+      : pixels[offset];
+    count += Number(alpha !== 0);
   }
   return count;
 }
@@ -1653,8 +1660,8 @@ export class MixedSceneController {
 
   /**
    * Destructive dev-only WebGPU regression for a fresh document. It exercises
-   * both semantic source kinds through their real mesh compiler, tiled RGBA16F
-   * History seed, Undo removal and Redo hydration. Call from the dev console as
+   * both semantic source kinds through their real mesh compiler, native-format
+   * tiled History seed, Undo removal and Redo hydration. Call from the dev console as
    * `await __mixedSceneController.runVectorRasterHistoryGpuTest()`.
    */
   async runVectorRasterHistoryGpuTest(): Promise<VectorRasterHistoryGpuTestReport> {
@@ -1711,13 +1718,13 @@ export class MixedSceneController {
       if (sourceKind === "text") {
         const seed = {
           ...this.defaultSeed(0, "#334455"),
-          text: "RGBA16F",
+          text: "Raster",
           fontSize: 280,
           x: this.host.documentWidth * 0.5,
           y: this.host.documentHeight * 0.5,
         };
         await this.prepareFontGeometry([seed.fontFamily]);
-        const node = await this.host.addVectorTextNode(seed, "RGBA16F text test");
+        const node = await this.host.addVectorTextNode(seed, "Vector raster text test");
         vectorKey = `text:${node.id}`;
       } else {
         const documentValue = parseVectorSvg(
@@ -1725,11 +1732,11 @@ export class MixedSceneController {
           + '<path fill="#4466aa" d="M32 64H480V448H32Z"/>'
           + '<circle fill="#dd8844" cx="256" cy="256" r="112"/>'
           + "</svg>",
-          "regression-rgba16f.svg",
+          "regression-vector-raster.svg",
         );
         const node = await this.host.addVectorSvgNode(
           this.defaultSvgSeed(documentValue),
-          "Test RGBA16F SVG",
+          "Vector raster SVG test",
         );
         vectorKey = `svg:${node.id}`;
       }
@@ -1798,7 +1805,7 @@ export class MixedSceneController {
         seedFormat: result.seedFormat,
         rawByteLength: rawBeforeUndo.byteLength,
         rawBytesPerPixel,
-        nonZeroAlphaPixels: countNonZeroRgba16fAlpha(rawBeforeUndo),
+        nonZeroAlphaPixels: countNonZeroRasterAlpha(rawBeforeUndo, result.format),
         undoReturned,
         undoRestoredVector,
         undoPreservedBackgroundBytes,
@@ -1812,10 +1819,9 @@ export class MixedSceneController {
     return {
       probes,
       passed: probes.every((probe) =>
-        probe.format === "rgba16float"
-        && probe.seedFormat === "rgba16float"
+        probe.format === probe.seedFormat
         && probe.rawByteLength > 0
-        && probe.rawBytesPerPixel === 8
+        && probe.rawBytesPerPixel === (probe.format === "rgba16float" ? 8 : 4)
         && probe.nonZeroAlphaPixels > 0
         && probe.undoReturned
         && probe.undoRestoredVector

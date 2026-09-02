@@ -18,10 +18,14 @@ import {
   accumulateDocumentCutoutCoverage,
   applyClippingChildResidualCutout,
   applyDocumentCutoutToBackdrop,
+  compositeLayerPremultipliedEncodedSrgb,
   compositeLayerPremultipliedLinear,
   layerResidualCutoutCoverage,
 } from "../src/layer-blend-compositor.ts";
-import { blendLayerPremultipliedLinear } from "../src/layer-blend-modes.ts";
+import {
+  blendLayerPremultipliedEncodedSrgb,
+  blendLayerPremultipliedLinear,
+} from "../src/layer-blend-modes.ts";
 
 assert.equal(normalizeLayerContentOpacity(-2), 0);
 assert.equal(normalizeLayerContentOpacity(0.375), 0.375);
@@ -68,12 +72,38 @@ assert.equal(layerTonalBlendMask(white, white, {
   underlying: [0, 0, 128, 254],
 }), 0);
 
+const encodedQuarterGray = [0.25, 0.25, 0.25, 1];
+const encodedQuarterRange = {
+  current: [0, 0, 80, 96],
+  underlying: [0, 0, 255, 255],
+};
+assert.equal(
+  layerTonalBlendMask(
+    encodedQuarterGray,
+    white,
+    encodedQuarterRange,
+    "encoded-srgb-premultiplied",
+  ),
+  1,
+  "encoded Blend If must read stored straight sRGB without a second transfer",
+);
+assert.equal(
+  layerTonalBlendMask(encodedQuarterGray, white, encodedQuarterRange),
+  0,
+  "the same numeric texel represents a different tone in linear storage",
+);
+
 const backdrop = [0.1, 0.2, 0.3, 0.8];
 const source = [0.3, 0.1, 0.05, 0.5];
 assert.deepEqual(
   compositeLayerPremultipliedLinear(backdrop, source),
   blendLayerPremultipliedLinear(backdrop, source),
   "identity controls must preserve the established compositor oracle",
+);
+assert.deepEqual(
+  compositeLayerPremultipliedEncodedSrgb(backdrop, source, "multiply"),
+  blendLayerPremultipliedEncodedSrgb(backdrop, source, "multiply"),
+  "encoded identity controls must route all blend modes through encoded storage math",
 );
 assert.deepEqual(
   compositeLayerPremultipliedLinear(
@@ -178,6 +208,24 @@ assert.ok(
     (channel, index) => Math.abs(channel - [0.35, 0.15, 0.2, 0.75][index]) < 1e-12,
   ),
   "partial Fill must remove only raw coverage left uncovered by visible source",
+);
+const encodedPartialFillKnockout = compositeLayerPremultipliedEncodedSrgb(
+  opaqueBackdrop,
+  [0.25, 0, 0, 0.25],
+  "normal",
+  "source-over",
+  [0, 0],
+  {
+    cutoutMode: "document",
+    tonalBlend: DEFAULT_LAYER_TONAL_BLEND,
+    cutoutAlpha: 0.5,
+  },
+);
+assert.ok(
+  encodedPartialFillKnockout.every(
+    (channel, index) => Math.abs(channel - [0.35, 0.15, 0.2, 0.75][index]) < 1e-12,
+  ),
+  "encoded Fill and Knockout must preserve the same premultiplied coverage algebra",
 );
 
 assert.equal(

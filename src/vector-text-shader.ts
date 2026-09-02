@@ -31,6 +31,9 @@ struct DisplayUniforms {
   clippingPrefixOrigin: vec2<f32>,
   clippingSuffixOrigin: vec2<f32>,
   backgroundColor: vec4<f32>,
+  documentSize: vec2<f32>,
+  compositingColorSpace: f32,
+  _padDisplay: f32,
 };
 
 struct VertexOutput {

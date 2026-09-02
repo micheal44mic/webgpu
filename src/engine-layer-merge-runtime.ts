@@ -30,6 +30,7 @@ import {
   materializeLayerCompositeSource,
   releaseLayerBlendFoldScratch,
   restoreEffectsWorkbenchToActiveLayer,
+  type LayerFoldSceneDomain,
 } from "./engine-layer-runtime";
 import {
   detachLayer,
@@ -44,7 +45,10 @@ import {
   publishMixedScene,
   requireMixedSceneStack,
 } from "./engine-vector-text-runtime";
-import { renderVectorDrawsToTexture } from "./engine-vector-raster-runtime";
+import {
+  renderVectorDrawsToTexture,
+  vectorRasterChunkDimensions,
+} from "./engine-vector-raster-runtime";
 import { mergeDirtyRects } from "./engine-geometry";
 import type { DirtyRect } from "./engine-stroke-types";
 import {
@@ -55,7 +59,10 @@ import {
 } from "./layer-storage-study";
 import {
   alignedMergedSurfaceBounds,
+  intersectMergedSurfaceRects,
+  mergedSurfacePhysicalRect,
   mergedSurfaceMemoryBytes,
+  unionMergedSurfaceRects,
 } from "./merged-surface-bounds";
 import type {
   MixedSceneItem,
@@ -63,11 +70,13 @@ import type {
 } from "./mixed-scene-stack";
 import {
   type MergeMixedSceneItemsRequest,
+  type LayerMergeRenderRun,
   layerMergeRenderRuns,
   planMixedSceneLayerMerge,
 } from "./layer-merge-core";
 import { vectorTextGpuRunBounds } from "./engine-geometry";
 import type { VectorTextViewState } from "./vector-text-types";
+import type { LayerFormat } from "./engine-types";
 import {
   borrowLayerMergeColdSeed,
   layerMergeColdSeedIsLiveAuthority,
@@ -78,6 +87,13 @@ import type { MemoryReservation, MemoryRequest } from "./memory-governor-core";
 import { cloneLayerTonalBlend } from "./layer-composition.ts";
 import { planLayerMergeCreateMemory } from "./layer-memory-admission-core";
 import { isHistoryColdSeedHandle } from "./history-cold-seed";
+import {
+  documentBackgroundEncodedSrgbPremultiplied,
+  documentBackgroundLinearPremultiplied,
+} from "./document-background";
+import { rgba8SpatialQuantizationShader } from "./rgba8-spatial-quantization";
+import { LAYER_BLEND_FOLD_TILE_EXTENT } from "./layer-blend-fold-shader";
+import { VECTOR_TEXT_GPU_SAMPLE_COUNT } from "./vector-text-gpu-shader";
 
 export interface LayerMergeResult {
   readonly layerId: number;
@@ -91,6 +107,278 @@ export interface LayerMergeResult {
 export interface PreparedLayerMerge {
   readonly action: LayerMergeHistoryAction;
   readonly result: LayerMergeResult;
+}
+
+interface MergeBackdropSeedResources {
+  readonly pipeline: GPURenderPipeline;
+  readonly uniformBuffer: GPUBuffer;
+  readonly bindGroup: GPUBindGroup;
+}
+
+const mergeBackdropSeedPipelines = new WeakMap<
+  GPUDevice,
+  Map<LayerFormat, GPURenderPipeline>
+>();
+
+const MERGE_BACKDROP_SEED_WGSL = /* wgsl */ `
+struct BackdropUniforms {
+  color: vec4<f32>,
+};
+
+@group(0) @binding(0) var<uniform> backdrop: BackdropUniforms;
+
+@vertex
+fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> @builtin(position) vec4<f32> {
+  var position = vec2<f32>(-1.0, -1.0);
+  if (vertexIndex == 1u) {
+    position = vec2<f32>(3.0, -1.0);
+  } else if (vertexIndex == 2u) {
+    position = vec2<f32>(-1.0, 3.0);
+  }
+  return vec4<f32>(position, 0.0, 1.0);
+}
+
+@fragment
+fn fragmentMain() -> @location(0) vec4<f32> {
+  return backdrop.color;
+}
+`;
+
+const mergeWorkingFinalizePipelines = new WeakMap<GPUDevice, GPURenderPipeline>();
+
+const MERGE_WORKING_FINALIZE_WGSL = /* wgsl */ `
+${rgba8SpatialQuantizationShader}
+
+struct FinalizeUniforms {
+  documentOrigin: vec2<u32>,
+  actionSeed: u32,
+  _pad0: u32,
+};
+
+@group(0) @binding(0) var workingTexture: texture_2d<f32>;
+@group(0) @binding(1) var<uniform> finalize: FinalizeUniforms;
+
+@vertex
+fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> @builtin(position) vec4<f32> {
+  var position = vec2<f32>(-1.0, -1.0);
+  if (vertexIndex == 1u) {
+    position = vec2<f32>(3.0, -1.0);
+  } else if (vertexIndex == 2u) {
+    position = vec2<f32>(-1.0, 3.0);
+  }
+  return vec4<f32>(position, 0.0, 1.0);
+}
+
+@fragment
+fn fragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>,
+) -> @location(0) vec4<f32> {
+  let documentCoordinate = vec2<u32>(fragmentPosition.xy);
+  let local = vec2<i32>(documentCoordinate) - vec2<i32>(finalize.documentOrigin);
+  let encodedPremultiplied = textureLoad(workingTexture, local, 0);
+  return quantizeRgba8SpatialAdjacent(
+    encodedPremultiplied,
+    documentCoordinate,
+    finalize.actionSeed,
+  );
+}
+`;
+
+function mergeWorkingFinalizePipeline(engine: BrushEngine): GPURenderPipeline {
+  const existing = mergeWorkingFinalizePipelines.get(engine.device);
+  if (existing) return existing;
+  const module = engine.device.createShaderModule({
+    label: "Layer merge cropped working finalizer WGSL",
+    code: MERGE_WORKING_FINALIZE_WGSL,
+  });
+  const pipeline = engine.device.createRenderPipeline({
+    label: "Layer merge cropped RGBA16F to encoded RGBA8 finalizer",
+    layout: "auto",
+    vertex: { module, entryPoint: "vertexMain" },
+    fragment: {
+      module,
+      entryPoint: "fragmentMain",
+      targets: [{ format: "rgba8unorm" }],
+    },
+    primitive: { topology: "triangle-list" },
+  });
+  mergeWorkingFinalizePipelines.set(engine.device, pipeline);
+  return pipeline;
+}
+
+async function finalizeMergeWorkingSurface(
+  engine: BrushEngine,
+  working: MergedSurfaceResources,
+  output: MergedSurfaceResources,
+  actionId: number,
+): Promise<void> {
+  if (
+    engine.layerFormat !== "rgba8unorm"
+    || engine.documentStorageColorSpace !== "encoded-srgb-premultiplied"
+  ) {
+    throw new Error("The cropped merge finalizer requires encoded RGBA8 document storage.");
+  }
+  const pipeline = mergeWorkingFinalizePipeline(engine);
+  const uniformBuffer = engine.device.createBuffer({
+    label: "Layer merge cropped working finalizer uniforms",
+    size: 16,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  engine.device.queue.writeBuffer(
+    uniformBuffer,
+    0,
+    new Uint32Array([
+      working.bounds.x,
+      working.bounds.y,
+      actionId >>> 0,
+      0,
+    ]),
+  );
+  try {
+    const bindGroup = engine.device.createBindGroup({
+      label: "Layer merge cropped working finalizer bindings",
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: working.samplingView },
+        { binding: 1, resource: { buffer: uniformBuffer } },
+      ],
+    });
+    const encoder = engine.device.createCommandEncoder({
+      label: "Finalize cropped layer merge into encoded RGBA8 storage",
+    });
+    const pass = encoder.beginRenderPass({
+      label: "Finalize cropped layer merge into encoded RGBA8 storage",
+      colorAttachments: [{
+        view: output.mipViews[0],
+        loadOp: "load",
+        storeOp: "store",
+      }],
+    });
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.setScissorRect(
+      working.bounds.x,
+      working.bounds.y,
+      working.bounds.width,
+      working.bounds.height,
+    );
+    pass.draw(3, 1, 0, 0);
+    pass.end();
+    engine.device.queue.submit([encoder.finish()]);
+    await engine.waitForGpuCapped("Finalize cropped RGBA16F layer merge", 60_000);
+  } finally {
+    uniformBuffer.destroy();
+  }
+}
+
+function mergeBackdropSeedPipeline(
+  engine: BrushEngine,
+  format: LayerFormat,
+): GPURenderPipeline {
+  let byFormat = mergeBackdropSeedPipelines.get(engine.device);
+  if (!byFormat) {
+    byFormat = new Map();
+    mergeBackdropSeedPipelines.set(engine.device, byFormat);
+  }
+  const existing = byFormat.get(format);
+  if (existing) return existing;
+  const module = engine.device.createShaderModule({
+    label: "Layer merge known-backdrop seed WGSL",
+    code: MERGE_BACKDROP_SEED_WGSL,
+  });
+  const pipeline = engine.device.createRenderPipeline({
+    label: `Layer merge known-backdrop seed ${format}`,
+    layout: "auto",
+    vertex: { module, entryPoint: "vertexMain" },
+    fragment: {
+      module,
+      entryPoint: "fragmentMain",
+      targets: [{
+        format,
+        // Seed only transparent residuals. Previously folded pixels already
+        // contain this same known backdrop and therefore remain unchanged.
+        blend: {
+          color: {
+            operation: "add",
+            srcFactor: "one-minus-dst-alpha",
+            dstFactor: "one",
+          },
+          alpha: {
+            operation: "add",
+            srcFactor: "one-minus-dst-alpha",
+            dstFactor: "one",
+          },
+        },
+      }],
+    },
+    primitive: { topology: "triangle-list" },
+  });
+  byFormat.set(format, pipeline);
+  return pipeline;
+}
+
+function createMergeBackdropSeedResources(
+  engine: BrushEngine,
+  format: LayerFormat,
+): MergeBackdropSeedResources {
+  const pipeline = mergeBackdropSeedPipeline(engine, format);
+  const uniformBuffer = engine.device.createBuffer({
+    label: "Layer merge known-backdrop seed uniforms",
+    size: 16,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  const color = engine.documentStorageColorSpace === "encoded-srgb-premultiplied"
+    ? documentBackgroundEncodedSrgbPremultiplied(engine.documentBackground)
+    : documentBackgroundLinearPremultiplied(engine.documentBackground);
+  engine.device.queue.writeBuffer(uniformBuffer, 0, new Float32Array(color));
+  try {
+    const bindGroup = engine.device.createBindGroup({
+      label: "Layer merge known-backdrop seed bindings",
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
+    });
+    return { pipeline, uniformBuffer, bindGroup };
+  } catch (error) {
+    uniformBuffer.destroy();
+    throw error;
+  }
+}
+
+function seedMergeSurfaceWithKnownBackdrop(
+  engine: BrushEngine,
+  surface: MergedSurfaceResources,
+  resources: MergeBackdropSeedResources | null,
+  documentRect: DirtyRect | null,
+  label: string,
+): void {
+  if (!resources || !documentRect) return;
+  const clipped = intersectMergedSurfaceRects(
+    documentRect,
+    surface.bounds,
+    engine.documentWidth,
+    engine.documentHeight,
+  );
+  if (!clipped) return;
+  const physical = mergedSurfacePhysicalRect(
+    clipped,
+    surface.bounds,
+    surface.resolutionScale,
+  );
+  const encoder = engine.device.createCommandEncoder({ label });
+  const pass = encoder.beginRenderPass({
+    label,
+    colorAttachments: [{
+      view: surface.mipViews[0],
+      loadOp: "load",
+      storeOp: "store",
+    }],
+  });
+  pass.setPipeline(resources.pipeline);
+  pass.setBindGroup(0, resources.bindGroup);
+  pass.setScissorRect(physical.x, physical.y, physical.width, physical.height);
+  pass.draw(3, 1, 0, 0);
+  pass.end();
+  engine.device.queue.submit([encoder.finish()]);
 }
 
 function fullDocumentView(engine: BrushEngine): VectorTextViewState {
@@ -119,6 +407,7 @@ function outputFoldSurface(
     texture: hot.texture,
     samplingView: hot.samplingView,
     mipViews: [hot.view],
+    format: hot.format,
     mipDownsampleBindGroups: [],
     blendFoldBackdropScratchTexture: null,
     blendFoldBackdropScratchView: null,
@@ -183,19 +472,18 @@ function cloneHistoryStateAtOffset(
   };
 }
 
-async function renderVectorRunInput(
+type MergeVectorItem = Extract<MixedSceneItem, { kind: "text" | "svg" }>;
+type MergeVectorDrawEntry = MergeMixedSceneItemsRequest["vectorDraws"][number];
+type MergeVectorRun = Extract<LayerMergeRenderRun, { kind: "vector-run" }>;
+
+function visibleVectorRunDraws(
   engine: BrushEngine,
-  surface: MergedSurfaceResources,
-  items: readonly Extract<MixedSceneItem, { kind: "text" | "svg" }>[],
-  drawEntries: ReadonlyMap<
-    MergeMixedSceneItemsRequest["vectorDraws"][number]["key"],
-    MergeMixedSceneItemsRequest["vectorDraws"][number]
-  >,
+  items: readonly MergeVectorItem[],
+  drawEntries: ReadonlyMap<MergeVectorDrawEntry["key"], MergeVectorDrawEntry>,
   opacity: number,
-  view: VectorTextViewState,
-): Promise<DirtyRect | null> {
+): { readonly draws: MergeVectorDrawEntry["draws"][number][]; readonly visibleKeys: string[] } {
   const scene = requireMixedSceneStack(engine);
-  const draws: MergeMixedSceneItemsRequest["vectorDraws"][number]["draws"][number][] = [];
+  const draws: MergeVectorDrawEntry["draws"][number][] = [];
   const visibleKeys: string[] = [];
   for (const item of items) {
     const visible = item.kind === "text"
@@ -217,50 +505,143 @@ async function renderVectorRunInput(
     visibleKeys.push(item.key);
     draws.push(...entry.draws);
   }
-  if (draws.length === 0) return null;
-  const runBounds = vectorTextGpuRunBounds(draws, view);
-  const allocationBounds = alignedMergedSurfaceBounds(
-    runBounds,
+  return { draws, visibleKeys };
+}
+
+async function renderVectorRunBlockInput(
+  engine: BrushEngine,
+  surface: MergedSurfaceResources,
+  runs: readonly MergeVectorRun[],
+  drawEntries: ReadonlyMap<MergeVectorDrawEntry["key"], MergeVectorDrawEntry>,
+  view: VectorTextViewState,
+  backdropSeed: MergeBackdropSeedResources | null,
+  sceneDomain: LayerFoldSceneDomain,
+): Promise<DirtyRect | null> {
+  const prepared = runs.flatMap((run) => {
+    const visible = visibleVectorRunDraws(
+      engine,
+      run.items,
+      drawEntries,
+      run.opacity,
+    );
+    return visible.draws.length === 0
+      ? []
+      : [{
+        ...visible,
+        opacity: run.opacity,
+        bounds: vectorTextGpuRunBounds(visible.draws, view),
+      }];
+  });
+  const blockBounds = unionMergedSurfaceRects(
+    prepared.map((run) => run.bounds),
+    engine.documentWidth,
+    engine.documentHeight,
+  );
+  if (!blockBounds) return null;
+  const blockAllocationBounds = alignedMergedSurfaceBounds(
+    blockBounds,
     engine.documentWidth,
     64,
     64,
     engine.documentHeight,
   );
-  const vectorSurface = allocateMergedSurface(
+  const linearBlockSurface = allocateMergedSurface(
     engine,
-    engine.layerFormat,
+    "rgba16float",
     "above",
-    1,
-    allocationBounds,
+    prepared.length,
+    blockAllocationBounds,
     1,
     false,
   );
+  clearOutputTexture(engine, linearBlockSurface);
+  let renderedBlockBounds: DirtyRect | null = null;
   try {
-    const rendered = await renderVectorDrawsToTexture(
+    for (const run of prepared) {
+      const allocationBounds = alignedMergedSurfaceBounds(
+        run.bounds,
+        engine.documentWidth,
+        64,
+        64,
+        engine.documentHeight,
+      );
+      const vectorSurface = allocateMergedSurface(
+        engine,
+        "rgba16float",
+        "above",
+        1,
+        allocationBounds,
+        1,
+        false,
+      );
+      try {
+        const rendered = await renderVectorDrawsToTexture(
+          engine,
+          run.draws,
+          view,
+          { texture: vectorSurface.texture, format: "rgba16float" },
+          vectorSurface.bounds,
+          "linear-premultiplied",
+        );
+        await foldViewIntoMergedSurface(
+          engine,
+          linearBlockSurface,
+          vectorSurface.samplingView,
+          vectorSurface.bounds,
+          1,
+          vectorSurface.textureWidth,
+          vectorSurface.textureHeight,
+          run.opacity,
+          rendered.bounds,
+          "normal",
+          "source-over",
+          false,
+          `Merge accumulate linear vector run ${run.visibleKeys.join(",")}`,
+          null,
+          vectorSurface.samplingView,
+          null,
+          null,
+          "defer-to-fold-fence",
+          "storage",
+        );
+        renderedBlockBounds = mergeDirtyRects(renderedBlockBounds, rendered.bounds);
+      } finally {
+        engine.destroyMergedSurface(vectorSurface);
+      }
+    }
+    if (!renderedBlockBounds) return null;
+    const visibleKeys = prepared.flatMap((run) => run.visibleKeys);
+    seedMergeSurfaceWithKnownBackdrop(
       engine,
-      draws,
-      view,
-      { texture: vectorSurface.texture, format: engine.layerFormat },
-      vectorSurface.bounds,
+      surface,
+      backdropSeed,
+      renderedBlockBounds,
+      `Merge seed known backdrop for vector block ${visibleKeys.join(",")}`,
     );
     await foldViewIntoMergedSurface(
       engine,
       surface,
-      vectorSurface.samplingView,
-      vectorSurface.bounds,
+      linearBlockSurface.samplingView,
+      linearBlockSurface.bounds,
       1,
-      vectorSurface.textureWidth,
-      vectorSurface.textureHeight,
-      opacity,
-      rendered.bounds,
+      linearBlockSurface.textureWidth,
+      linearBlockSurface.textureHeight,
+      1,
+      renderedBlockBounds,
       "normal",
       "source-over",
       false,
-      `Merge fold vector run ${visibleKeys.join(",")}`,
+      `Merge fold linear vector block ${visibleKeys.join(",")}`,
+      null,
+      linearBlockSurface.samplingView,
+      null,
+      null,
+      "defer-to-fold-fence",
+      sceneDomain === "storage" ? "storage" : "linear-source",
     );
-    return rendered.bounds;
+    return renderedBlockBounds;
   } finally {
-    engine.destroyMergedSurface(vectorSurface);
+    engine.destroyMergedSurface(linearBlockSurface);
   }
 }
 
@@ -268,6 +649,7 @@ async function renderSingleRasterUnitPreservingParent(
   engine: BrushEngine,
   surface: MergedSurfaceResources,
   rasterLayerId: number,
+  surfaceFormat: LayerFormat,
 ): Promise<DirtyRect | null> {
   const unit = engine.layerStack.clippingUnit(rasterLayerId);
   const parent = unit[0];
@@ -280,6 +662,7 @@ async function renderSingleRasterUnitPreservingParent(
       "structural-history",
       false,
       `Merge preserve clipping group ${parent.id}`,
+      surfaceFormat,
     );
     if (!group) return null;
     try {
@@ -298,7 +681,7 @@ async function renderSingleRasterUnitPreservingParent(
         false,
         `Merge preserve clipping group ${parent.id}`,
       );
-      return parent.contentBounds ? { ...parent.contentBounds } : { ...group.bounds };
+      return layerCompositeVisualBounds(engine, parent);
     } finally {
       engine.destroyMergedSurface(group);
     }
@@ -331,6 +714,48 @@ async function renderSingleRasterUnitPreservingParent(
     engine.destroyLayerBake(source.transientBake);
     destroyTransientLayerHydration(engine, source.transientHydration);
   }
+}
+
+function mergeWorkingContentBounds(
+  engine: BrushEngine,
+  plan: ReturnType<typeof planMixedSceneLayerMerge>,
+  request: MergeMixedSceneItemsRequest,
+  drawEntries: ReadonlyMap<MergeVectorDrawEntry["key"], MergeVectorDrawEntry>,
+  view: VectorTextViewState,
+): DirtyRect | null {
+  if (plan.preservesParentPresentation) {
+    const parent = engine.layerStack.clippingUnit(plan.rasterLayerIds[0])[0];
+    return parent.hasContent ? layerCompositeVisualBounds(engine, parent) : null;
+  }
+  const bounds: DirtyRect[] = [];
+  const foldedRasterParents = new Set<number>();
+  for (const run of layerMergeRenderRuns(plan.items, request.vectorDraws)) {
+    if (run.kind === "raster") {
+      const parent = engine.layerStack.clippingUnit(run.item.rasterLayerId)[0];
+      if (foldedRasterParents.has(parent.id)) continue;
+      foldedRasterParents.add(parent.id);
+      if (!parent.visible || parent.opacity <= 0 || !parent.hasContent) continue;
+      bounds.push(layerCompositeVisualBounds(engine, parent));
+      continue;
+    }
+    if (run.kind === "image") {
+      throw new Error("Image nodes are not supported by merge v1.");
+    }
+    const visible = visibleVectorRunDraws(
+      engine,
+      run.items,
+      drawEntries,
+      run.opacity,
+    );
+    if (visible.draws.length > 0) {
+      bounds.push(vectorTextGpuRunBounds(visible.draws, view));
+    }
+  }
+  return unionMergedSurfaceRects(
+    bounds,
+    engine.documentWidth,
+    engine.documentHeight,
+  );
 }
 
 async function renderMergeOutput(
@@ -389,10 +814,70 @@ async function renderMergeOutput(
     engine.layerFormat,
     `Output merge layer ${record.id}`,
   );
-  const surface = outputFoldSurface(engine, gpu);
-  clearOutputTexture(engine, surface);
+  const outputSurface = outputFoldSurface(engine, gpu);
+  clearOutputTexture(engine, outputSurface);
+  const view = fullDocumentView(engine);
+  const plannedContentBounds = mergeWorkingContentBounds(
+    engine,
+    plan,
+    request,
+    drawEntries,
+    view,
+  );
+  const usesCroppedWorkingSurface = engine.layerFormat === "rgba8unorm"
+    && engine.documentStorageColorSpace === "encoded-srgb-premultiplied"
+    && plannedContentBounds !== null;
+  let workingSurface: MergedSurfaceResources | null = null;
+  try {
+    if (usesCroppedWorkingSurface && plannedContentBounds) {
+      workingSurface = allocateMergedSurface(
+        engine,
+        "rgba16float",
+        "above",
+        plan.items.length,
+        alignedMergedSurfaceBounds(
+          plannedContentBounds,
+          engine.documentWidth,
+          64,
+          64,
+          engine.documentHeight,
+        ),
+        1,
+        false,
+      );
+      clearOutputTexture(engine, workingSurface);
+    }
+  } catch (error) {
+    destroyLayerGpuResources(engine, gpu);
+    throw error;
+  }
+  const surface = workingSurface ?? outputSurface;
+  const surfaceFormat: LayerFormat = workingSurface ? "rgba16float" : engine.layerFormat;
+  const outerAdvancedBlend = plan.rasterLayerIds.some((layerId) => {
+    const parent = engine.layerStack.clippingUnit(layerId)[0];
+    return parent.visible
+      && parent.opacity > 0
+      && parent.hasContent
+      && parent.blendMode !== "normal";
+  });
+  // A multi-item merge that starts at the document floor can resolve an
+  // advanced outer blend only against the current, known canvas backdrop.
+  // Seed it behind touched bounds; normal-only merges keep their transparency,
+  // and a single clipping unit keeps its outer blend as metadata.
+  const requiresSemanticBackdrop = plan.vectorKeys.length > 0
+    && engine.documentStorageColorSpace === "encoded-srgb-premultiplied";
+  const sceneDomain: LayerFoldSceneDomain = plan.vectorKeys.length > 0
+      && engine.documentStorageColorSpace === "encoded-srgb-premultiplied"
+    ? "linear-stored-source"
+    : "storage";
+  let backdropSeed: MergeBackdropSeedResources | null = null;
   let bounds: DirtyRect | null = null;
   try {
+    backdropSeed = plan.bakesParentBlendModesFromTransparentBackdrop
+      && (outerAdvancedBlend || requiresSemanticBackdrop)
+      && engine.documentBackground.visible
+      ? createMergeBackdropSeedResources(engine, surfaceFormat)
+      : null;
     if (plan.preservesParentPresentation) {
       const parent = engine.layerStack.clippingUnit(plan.rasterLayerIds[0])[0];
       record.visible = parent.visible;
@@ -404,20 +889,32 @@ async function renderMergeOutput(
         engine,
         surface,
         plan.rasterLayerIds[0],
+        surfaceFormat,
       );
     } else {
       record.visible = true;
       record.opacity = 1;
       record.blendMode = "normal";
       const foldedRasterParents = new Set<number>();
-      const view = fullDocumentView(engine);
-      for (const run of layerMergeRenderRuns(plan.items, request.vectorDraws)) {
+      const renderRuns = layerMergeRenderRuns(plan.items, request.vectorDraws);
+      let runIndex = 0;
+      while (runIndex < renderRuns.length) {
+        const run = renderRuns[runIndex];
         if (run.kind === "raster") {
+          runIndex += 1;
           const unit = engine.layerStack.clippingUnit(run.item.rasterLayerId);
           const parent = unit[0];
           if (foldedRasterParents.has(parent.id)) continue;
           foldedRasterParents.add(parent.id);
           if (!parent.visible || parent.opacity <= 0 || !parent.hasContent) continue;
+          const visualBounds = layerCompositeVisualBounds(engine, parent);
+          seedMergeSurfaceWithKnownBackdrop(
+            engine,
+            surface,
+            backdropSeed,
+            visualBounds,
+            `Merge seed known backdrop for raster ${parent.id}`,
+          );
           const folded = unit.length > 1
             ? await foldClippingGroupIntoMergedSurface(
               engine,
@@ -432,6 +929,7 @@ async function renderMergeOutput(
               parent,
               null,
               "defer-to-fold-fence",
+              sceneDomain,
             )
             : await foldRasterRecordIntoMergedSurface(
               engine,
@@ -446,26 +944,44 @@ async function renderMergeOutput(
               parent,
               false,
               "defer-to-fold-fence",
+              sceneDomain,
             );
-          if (folded) bounds = mergeDirtyRects(bounds, layerCompositeVisualBounds(engine, parent));
+          if (folded) bounds = mergeDirtyRects(bounds, visualBounds);
           continue;
         }
         if (run.kind === "image") {
           throw new Error("Image nodes are not supported by merge v1.");
         }
-        const vectorBounds = await renderVectorRunInput(
+        const vectorRuns: MergeVectorRun[] = [];
+        while (
+          runIndex < renderRuns.length
+          && renderRuns[runIndex].kind === "vector-run"
+        ) {
+          vectorRuns.push(renderRuns[runIndex] as MergeVectorRun);
+          runIndex += 1;
+        }
+        const vectorBounds = await renderVectorRunBlockInput(
           engine,
           surface,
-          run.items,
+          vectorRuns,
           drawEntries,
-          run.opacity,
           view,
+          backdropSeed,
+          sceneDomain,
         );
         bounds = mergeDirtyRects(bounds, vectorBounds);
       }
     }
     await engine.waitForGpuCapped(`Render merge layer ${record.id}`, 60_000);
     releaseLayerBlendFoldScratch(surface);
+    if (workingSurface && bounds) {
+      await finalizeMergeWorkingSurface(
+        engine,
+        workingSurface,
+        outputSurface,
+        actionId,
+      );
+    }
     record.contentBounds = bounds ? { ...bounds } : null;
     record.hasContent = bounds !== null;
     record.storageTileMask.fill(0);
@@ -492,6 +1008,9 @@ async function renderMergeOutput(
     releaseLayerBlendFoldScratch(surface);
     destroyLayerGpuResources(engine, gpu);
     throw error;
+  } finally {
+    backdropSeed?.uniformBuffer.destroy();
+    engine.destroyMergedSurface(workingSurface);
   }
 }
 
@@ -624,6 +1143,7 @@ function layerMergeColdBytesForRecord(engine: BrushEngine, layerId: number): num
 function layerMergeCreateRequest(
   engine: BrushEngine,
   plan: ReturnType<typeof planMixedSceneLayerMerge>,
+  mergeRequest: MergeMixedSceneItemsRequest,
 ): MemoryRequest {
   const full = layerMergeFullTextureBytes(engine);
   const inputSeedBytes = plan.rasterLayerIds.map((layerId) => {
@@ -640,25 +1160,83 @@ function layerMergeCreateRequest(
     // use the full bound here so its admission can never be optimistic.
     return full;
   });
-  const mergedFullBytes = mergedSurfaceMemoryBytes(
-    { width: engine.documentWidth, height: engine.documentHeight },
-    engine.layerFormat === "rgba16float" ? 8 : 4,
-  ).totalBytes;
+  let foldTransientBytes: number;
+  if (
+    engine.layerFormat === "rgba8unorm"
+    && engine.documentStorageColorSpace === "encoded-srgb-premultiplied"
+  ) {
+    const drawEntries = new Map(
+      mergeRequest.vectorDraws.map((entry) => [entry.key, entry]),
+    );
+    const contentBounds = mergeWorkingContentBounds(
+      engine,
+      plan,
+      mergeRequest,
+      drawEntries,
+      fullDocumentView(engine),
+    );
+    if (!contentBounds) {
+      foldTransientBytes = 0;
+    } else {
+      const allocation = alignedMergedSurfaceBounds(
+        contentBounds,
+        engine.documentWidth,
+        64,
+        64,
+        engine.documentHeight,
+      );
+      const workingBytes = allocation.width * allocation.height * 8;
+      const foldTileWidth = Math.min(LAYER_BLEND_FOLD_TILE_EXTENT, allocation.width);
+      const foldTileHeight = Math.min(LAYER_BLEND_FOLD_TILE_EXTENT, allocation.height);
+      const foldScratchBytes = foldTileWidth * foldTileHeight * 8 * 2;
+      const containsClipping = plan.rasterLayerIds.some(
+        (layerId) => engine.layerStack.clippingUnit(layerId).length > 1,
+      );
+      // A complete clipping unit may temporarily retain group, base,
+      // document-mask and raw-matte surfaces while the outer working run is
+      // alive. Four fold scratch pairs cover the outer run plus the
+      // simultaneously live group, base and document-mask destinations.
+      const clippingSurfaceBytes = containsClipping ? workingBytes * 4 : 0;
+      const rasterPhaseBytes = full * 2
+        + clippingSurfaceBytes
+        + foldScratchBytes * (containsClipping ? 4 : 1);
+      const hasVectorRuns = plan.vectorKeys.length > 0;
+      const vectorChunk = vectorRasterChunkDimensions();
+      const vectorRenderScratchBytes = hasVectorRuns
+        ? vectorChunk.width * vectorChunk.height * 8
+          * (VECTOR_TEXT_GPU_SAMPLE_COUNT + 1)
+        : 0;
+      const vectorPhaseBytes = hasVectorRuns
+        // A contiguous semantic block retains one linear accumulator while a
+        // cropped per-run source is rendered. The outer encoded working fold
+        // and the linear block fold each retain their own scratch pair.
+        ? workingBytes * 2 + vectorRenderScratchBytes + foldScratchBytes * 2
+        : 0;
+      foldTransientBytes = workingBytes + Math.max(rasterPhaseBytes, vectorPhaseBytes);
+    }
+  } else {
+    const mergedFullBytes = mergedSurfaceMemoryBytes(
+      { width: engine.documentWidth, height: engine.documentHeight },
+      engine.layerFormat === "rgba16float" ? 8 : 4,
+    ).totalBytes;
+    foldTransientBytes = full * 2 + mergedFullBytes;
+  }
   return planLayerMergeCreateMemory({
     fullLayerBytes: full,
     inputSeedBytes,
     outputSeedBytes: full,
     // One source may be rehydrated and baked while the output is folded. The
     // source is streamed, therefore this does not scale with selected layers.
-    foldTransientBytes: full * 2 + mergedFullBytes,
+    foldTransientBytes,
   });
 }
 
 async function reserveLayerMergeCreateMemory(
   engine: BrushEngine,
   plan: ReturnType<typeof planMixedSceneLayerMerge>,
+  mergeRequest: MergeMixedSceneItemsRequest,
 ): Promise<MemoryReservation> {
-  const request = layerMergeCreateRequest(engine, plan);
+  const request = layerMergeCreateRequest(engine, plan, mergeRequest);
   return engine.reservePlannedMemory(request);
 }
 
@@ -1161,7 +1739,11 @@ export async function prepareAndApplyLayerMerge(
     engine.persistActiveLayerState();
     workbenchMayNeedRestore = true;
     const memoryPlan = planMixedSceneLayerMerge(engine.layerStack, scene, request.keys);
-    memoryReservation = await reserveLayerMergeCreateMemory(engine, memoryPlan);
+    memoryReservation = await reserveLayerMergeCreateMemory(
+      engine,
+      memoryPlan,
+      request,
+    );
     rendered = await renderMergeOutput(engine, request, actionId);
     await restoreEffectsWorkbenchToActiveLayer(engine, "structural-history");
     workbenchMayNeedRestore = false;

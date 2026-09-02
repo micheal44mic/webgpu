@@ -353,6 +353,7 @@ const bevelProgramKeySource = rendererSource.slice(
   rendererSource.indexOf("async function createBevelProgramResources("),
 );
 assert.match(bevelProgramKeySource, /boundingFieldEnabled/);
+assert.match(bevelProgramKeySource, /storedEncodedSrgb/);
 assert.doesNotMatch(
   bevelProgramKeySource,
   /documentWidth|documentHeight/,
@@ -360,8 +361,14 @@ assert.doesNotMatch(
 );
 assert.match(
   rendererSource,
-  /const programs = await acquireBevelProgramResources\([\s\S]*?this\.boundingFieldEnabled/,
+  /const programs = await acquireBevelProgramResources\([\s\S]*?this\.boundingFieldEnabled,[\s\S]*?this\.storedEncodedSrgb/,
   "document instances must reuse cached Bevel programs",
+);
+assert.match(rendererSource, /storedEncodedSrgb\?: boolean/);
+assert.match(
+  rendererSource,
+  /fn quantizeLayer\(value: vec4<f32>\)[\s\S]*?if \(STORED_ENCODED_SRGB\) \{\s*return value;/,
+  "encoded RGBA8 Bevel source coverage must remain f32 until the heightfield boundary",
 );
 assert(rendererSource.includes("shared-effects-pool-roi-split-common-segment-arenas-grow-until-idle-shrink"));
 const engineSource = readEngineSource();

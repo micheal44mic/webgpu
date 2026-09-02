@@ -92,9 +92,11 @@ const baseMaxPipeline = section(
   "const selectionPipelineByBase",
 );
 assert.equal(
-  (baseMaxPipeline.match(/operation: "max"/g) ?? []).length,
+  (baseMaxPipeline.match(
+    /operation: preciseDepositProfile \? "add" : "max"/g,
+  ) ?? []).length,
   2,
-  "L'accumulatore Light base deve usare MAX per colore e alpha.",
+  "L'accumulatore Light deve usare ADD per il deposito ottico diretto e MAX negli altri profili.",
 );
 assert.doesNotMatch(
   baseMaxPipeline,
@@ -103,6 +105,12 @@ assert.doesNotMatch(
 );
 assert.match(baseMaxPipeline, /format: "r16float"/);
 assert.doesNotMatch(baseMaxPipeline, /format: "r8unorm"/);
+assert.match(
+  baseMaxPipeline,
+  /entryPoint: preciseDepositProfile\s*\? opticalDepthEntryPoint\(fragmentEntryPoint\)\s*: fragmentEntryPoint/,
+  "Il profilo diretto deve usare gli entry point in profondita' ottica.",
+);
+assert.match(baseMaxPipeline, /Direct deposit circle optical depth ADD r16float/);
 assert.match(baseMaxPipeline, /Light Glaze circle MAX per gesture r16float/);
 assert.match(baseMaxPipeline, /Light Glaze Texturized circle MAX per gesture r16float/);
 
@@ -117,6 +125,11 @@ assert.equal(
   "La variante Light con Selezione pixel deve conservare MAX per colore e alpha.",
 );
 assert.match(selectionMaxPipeline, /maximumBlend/);
+assert.match(
+  selectionMaxPipeline,
+  /blend: preciseDepositProfile[\s\S]*?operation: "add"[\s\S]*?: maximumBlend/,
+  "La variante con selezione deve conservare ADD ottico nel profilo diretto e MAX negli altri profili.",
+);
 assert.match(selectionMaxPipeline, /selectionPipelineByBase\.set\(variant\.base, selectedPipeline\)/);
 
 const submit = section(

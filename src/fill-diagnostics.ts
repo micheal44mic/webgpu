@@ -169,6 +169,17 @@ function targetChannel(
   return decodeFloat16(pixels[offset] | (pixels[offset + 1] << 8));
 }
 
+function expectedStoredFillChannel(
+  format: LayerFormat,
+  linearChannel: number,
+): number {
+  const bounded = Math.min(1, Math.max(0, linearChannel));
+  if (format !== "rgba8unorm") return bounded;
+  return bounded <= 0.0031308
+    ? bounded * 12.92
+    : 1.055 * bounded ** (1 / 2.4) - 0.055;
+}
+
 export function summarizeFillRenderedRow(
   pixels: Uint8Array,
   format: LayerFormat,
@@ -207,7 +218,7 @@ export function summarizeFillRenderedRow(
       matches = matches && [0, 1, 2].every((channel) =>
         Math.abs(
           targetChannel(pixels, format, x, channel)
-          - Math.min(1, Math.max(0, expectation.fillColor[channel])),
+          - expectedStoredFillChannel(format, expectation.fillColor[channel]),
         ) <= tolerance);
     } else if (expectation?.compositeMode === "preserve-coverage-recolor") {
       // Same-layer recolor now replaces only the maximum removable contribution

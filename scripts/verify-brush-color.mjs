@@ -99,7 +99,7 @@ assert.match(
 assert.match(brushShaderSource, /fn sourcePrecisionCoverage[\s\S]*?round\(continuous \* 255\.0\) \/ 255\.0/);
 assert.match(
   blendRendererSource,
-  /filtering \| \(settings\.shapeMaskFormat === "r8unorm" \? 4 : 0\)/,
+  /filtering\s*\|\s*\(settings\.shapeMaskFormat === "r8unorm" \? 4 : 0\)/,
   "Blend must carry the same precision comparison flag.",
 );
 assert.match(blendShaderSource, /fn sourcePrecisionCoverage[\s\S]*?DIAGNOSTIC_8_BIT_FLAG/);

@@ -8,8 +8,64 @@ import {
   SELECTION_TILE_GRID_SIZE,
 } from "./selection-core.ts";
 import { colorMatchShaderHelpers } from "./color-match-core.ts";
+import type {
+  DocumentStorageColorSpace,
+  LayerFormat,
+} from "./engine-types.ts";
 
-export const selectionComputeShader = /* wgsl */ `
+export interface SelectionSourceStorageProfile {
+  readonly layerFormat: LayerFormat;
+  readonly colorSpace: DocumentStorageColorSpace;
+}
+
+export function selectionSourceStorageProfileKey(
+  profile: SelectionSourceStorageProfile,
+): string {
+  return `${profile.layerFormat}:${profile.colorSpace}`;
+}
+
+function selectionStraightSrgbShader(
+  profile: SelectionSourceStorageProfile,
+): string {
+  if (profile.colorSpace === "encoded-srgb-premultiplied") {
+    return /* wgsl */ `
+fn straightSrgb(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let straightStored = clamp(
+    value.rgb / alpha,
+    vec3<f32>(0.0),
+    vec3<f32>(1.0),
+  );
+  return vec4<f32>(straightStored, alpha);
+}
+`;
+  }
+
+  return /* wgsl */ `
+fn linearToSrgb(channel: f32) -> f32 {
+  let value = clamp(channel, 0.0, 1.0);
+  return select(1.055 * pow(value, 1.0 / 2.4) - 0.055, 12.92 * value, value <= 0.0031308);
+}
+
+fn straightSrgb(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  var inverseAlpha = 0.0;
+  if (alpha > 0.000001) { inverseAlpha = 1.0 / alpha; }
+  return vec4<f32>(
+    linearToSrgb(value.r * inverseAlpha),
+    linearToSrgb(value.g * inverseAlpha),
+    linearToSrgb(value.b * inverseAlpha),
+    alpha,
+  );
+}
+`;
+}
+
+export function createSelectionComputeShader(
+  profile: SelectionSourceStorageProfile,
+): string {
+  return /* wgsl */ `
 struct SelectionUniforms {
   size: vec2<u32>,
   combineMode: u32,
@@ -48,22 +104,7 @@ fn tileExtent() -> vec2<u32> {
     / vec2<u32>(${SELECTION_TILE_GRID_SIZE}u);
 }
 
-fn linearToSrgb(channel: f32) -> f32 {
-  let value = clamp(channel, 0.0, 1.0);
-  return select(1.055 * pow(value, 1.0 / 2.4) - 0.055, 12.92 * value, value <= 0.0031308);
-}
-
-fn straightSrgb(value: vec4<f32>) -> vec4<f32> {
-  let alpha = clamp(value.a, 0.0, 1.0);
-  var inverseAlpha = 0.0;
-  if (alpha > 0.000001) { inverseAlpha = 1.0 / alpha; }
-  return vec4<f32>(
-    linearToSrgb(value.r * inverseAlpha),
-    linearToSrgb(value.g * inverseAlpha),
-    linearToSrgb(value.b * inverseAlpha),
-    alpha,
-  );
-}
+${selectionStraightSrgbShader(profile)}
 
 ${colorMatchShaderHelpers}
 
@@ -229,6 +270,13 @@ fn summarizeSelection(@builtin(global_invocation_id) global: vec3<u32>) {
   }
 }
 `;
+}
+
+/** Legacy linear RGBA16F shader kept for callers that have not selected a profile. */
+export const selectionComputeShader = createSelectionComputeShader({
+  layerFormat: "rgba16float",
+  colorSpace: "linear-premultiplied",
+});
 
 export const selectionOverlayShader = /* wgsl */ `
 struct OverlayUniforms {

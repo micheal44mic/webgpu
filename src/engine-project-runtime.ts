@@ -80,6 +80,18 @@ export interface CapturedProjectDocumentV1 {
 
 const DOCUMENT_RESET_WAIT_TIMEOUT_MS = 65_000;
 
+/**
+ * Fill/content opacity is part of the validated RGBA8 layer-composition path.
+ * Only the separate raster-style renderers remain gated during project restore.
+ */
+function rasterLayerHasUnvalidatedEffects(record: Readonly<LayerRecord>): boolean {
+  return record.strokeStyle.enabled
+    || record.bevelStyle.enabled
+    || record.outerShadowStyle.enabled
+    || record.innerShadowStyle.enabled
+    || record.colorOverlayStyle.enabled;
+}
+
 interface FreshProjectResetOptions {
   /** The cross-size owner already holds exactly one presentation freeze. */
   readonly parentPresentationTransactionActive?: boolean;
@@ -426,7 +438,7 @@ export async function captureProjectDocument(
           height: DOCUMENT_HEIGHT,
           layerFormat: engine.layerFormat,
           tileGridSize: PROJECT_STORAGE_TILE_GRID_SIZE,
-          colorSpace: "linear-premultiplied",
+          colorSpace: engine.documentStorageColorSpace,
         },
         layers,
         activeRasterLayerId: engine.layerStack.active.id,
@@ -879,21 +891,43 @@ export async function restoreProjectDocument(
       + `reopen it with the matching canvas size.`,
     );
   }
-  if (
-    snapshot.document.layerFormat !== engine.layerFormat
-    && snapshot.document.layerFormat !== "rgba8unorm"
-  ) {
+  const exactPixelContract = snapshot.document.layerFormat === engine.layerFormat
+    && snapshot.document.colorSpace === engine.documentStorageColorSpace;
+  const legacyLinearRgba8Migration = snapshot.document.layerFormat === "rgba8unorm"
+    && snapshot.document.colorSpace === "linear-premultiplied"
+    && engine.layerFormat === "rgba16float"
+    && engine.documentStorageColorSpace === "linear-premultiplied";
+  if (!exactPixelContract && !legacyLinearRgba8Migration) {
     throw new Error(
-      `Saved ${snapshot.document.layerFormat} pixels cannot be opened as ${engine.layerFormat}.`,
+      "The saved document pixel contract "
+      + `(${snapshot.document.layerFormat}, ${snapshot.document.colorSpace}) cannot be opened as `
+      + `(${engine.layerFormat}, ${engine.documentStorageColorSpace}).`,
     );
   }
   if (!engine.initialized) throw new Error("The editor is not ready yet.");
   const records = snapshot.layers.map(layerRecordFromProject);
-  const restoredScenePlan = new MixedSceneStack(records.map((record) => record.id));
-  restoredScenePlan.restoreState(snapshot.mixedScene, true);
   const containsSemanticItems = snapshot.mixedScene.items.some(
     (item) => item.kind !== "raster",
   );
+  if (engine.documentStorageColorSpace === "encoded-srgb-premultiplied") {
+    if (containsSemanticItems) {
+      throw new Error(
+        "This RGBA8 sRGB project contains semantic layers whose renderer is not validated yet.",
+      );
+    }
+    if (records.some(rasterLayerHasUnvalidatedEffects)) {
+      throw new Error(
+        "This RGBA8 sRGB project uses raster layer effects that are not validated yet.",
+      );
+    }
+    if (records.some((record) => record.rasterSource !== null)) {
+      throw new Error(
+        "This RGBA8 sRGB project contains an imported raster source that is not validated yet.",
+      );
+    }
+  }
+  const restoredScenePlan = new MixedSceneStack(records.map((record) => record.id));
+  restoredScenePlan.restoreState(snapshot.mixedScene, true);
   const advancedLayerCompositionRequired = Boolean(engine.mixedSceneStack)
     && records.some(layerNeedsBackdropComposition);
   const rasterOnlyLayerBlendPresentationRequired = advancedLayerCompositionRequired

@@ -236,6 +236,10 @@ assert(grainUniformLayout.offsets.coordinateMode === 20,
   `Offset coordinateMode ${grainUniformLayout.offsets.coordinateMode}, atteso 20.`);
 
 const engine = readEngineSource();
+const resourceSetup = fs.readFileSync(
+  new URL("../src/engine-resource-setup.ts", import.meta.url),
+  "utf8",
+);
 const builtinBrushAssets = fs.readFileSync(
   new URL("../src/brush-builtin-assets.ts", import.meta.url),
   "utf8",
@@ -250,7 +254,7 @@ assert(engine.includes('const GRAIN_TEXTURE_SIZE = 800;')
   "Dimensione/formato nativi del Grain non configurati.");
 assert(engine.includes('format: "r16uint"') && engine.includes("stagingTexture.destroy()"),
   "Lo staging R16Uint della grana deve essere nativo e transitorio.");
-assert(!engine.includes('format: "rgba8unorm"'),
+assert(!resourceSetup.includes('format: "rgba8unorm"'),
   "Il caricamento Shape/Grain non deve allocare staging o placeholder RGBA8.");
 assert(engine.includes("r16MipChainBytes(width, height)"),
   "La contabilita' della grana non segue il formato scalare.");

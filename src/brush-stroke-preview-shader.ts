@@ -56,4 +56,13 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   let pixel = clamp(vec2<i32>(fragmentPosition.xy), vec2<i32>(0), dimensions - vec2<i32>(1));
   return linearPremultipliedToEncodedSrgb(textureLoad(resolvedTexture, pixel, 0));
 }
+
+@fragment
+fn storedEncodedFragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  let dimensions = vec2<i32>(textureDimensions(resolvedTexture, 0));
+  let pixel = clamp(vec2<i32>(fragmentPosition.xy), vec2<i32>(0), dimensions - vec2<i32>(1));
+  return textureLoad(resolvedTexture, pixel, 0);
+}
 `;

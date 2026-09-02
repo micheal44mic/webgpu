@@ -33,7 +33,10 @@ import {
 } from "./raster-transform-math";
 import {
   rasterTransformMipmapShader,
+  rasterTransformStoredEncodedMipmapShader,
+  rasterSelectionTranslateStoredEncodedShader,
   rasterSelectionTranslateShader,
+  rasterTransformStoredEncodedShader,
   rasterTransformShader,
   RASTER_SELECTION_TRANSLATE_SHADER_STRATEGY,
   RASTER_TRANSFORM_SHADER_STRATEGY,
@@ -62,6 +65,7 @@ import {
   type RasterWarpGridSize,
 } from "./raster-deform-math";
 import {
+  rasterDeformStoredEncodedShader,
   rasterDeformShader,
   RASTER_DEFORM_SHADER_STRATEGY,
 } from "./raster-deform-shader";
@@ -84,12 +88,13 @@ export const RASTER_LAYER_TRANSFORM_STRATEGY =
 export const RASTER_SOURCE_MATRIX_TRANSFORM_STRATEGY =
   "immutable-master-gamma-mips-cumulative-matrix-derived-cache-v1" as const;
 export const RASTER_LAYER_DEFORM_STRATEGY =
-  "transactional-raster-warp-perspective-grid-v1" as const;
+  "transactional-raster-warp-perspective-rgba8-linear-f32-grid-v2" as const;
 const RASTER_TRANSFORM_TRANSPARENT_GUARD_PX = 2;
 
 interface RasterTransformSharedResources {
   readonly device: GPUDevice;
   readonly format: LayerFormat;
+  readonly storedEncodedSrgb: boolean;
   bindGroupLayout: GPUBindGroupLayout;
   selectionMaskBindGroupLayout: GPUBindGroupLayout;
   mipBindGroupLayout: GPUBindGroupLayout;
@@ -140,6 +145,8 @@ export interface ActiveRasterTransformSession {
   readonly uniformUpload: Float32Array;
   readonly deformVertexUpload: Float32Array;
   readonly shared: RasterTransformSharedResources;
+  /** Stable for every preview, commit and recovery render in this action. */
+  readonly quantizationSeed: number;
   readonly memoryBytes: number;
   transform: NormalizedRasterTransformAffine;
   mode: RasterTransformMode;
@@ -264,11 +271,18 @@ async function createSharedResources(
   });
   const mipBindGroupLayout = device.createBindGroupLayout({
     label: "Native raster Transform mip bind group layout",
-    entries: [{
-      binding: 0,
-      visibility: GPUShaderStage.FRAGMENT,
-      texture: { sampleType: "float", viewDimension: "2d" },
-    }],
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "float", viewDimension: "2d" },
+      },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.FRAGMENT,
+        buffer: { type: "uniform", minBindingSize: RASTER_TRANSFORM_UNIFORM_BYTES },
+      },
+    ],
   });
   const selectionMaskBindGroupLayout = device.createBindGroupLayout({
     label: "Native raster Transform selection mask bind group layout",
@@ -290,6 +304,8 @@ async function createSharedResources(
   return {
     device,
     format,
+    storedEncodedSrgb:
+      engine.documentStorageColorSpace === "encoded-srgb-premultiplied",
     bindGroupLayout,
     selectionMaskBindGroupLayout,
     mipBindGroupLayout,
@@ -436,7 +452,9 @@ async function createProgramBundle(
         if (bundle === "affine") {
           const module = shared.device.createShaderModule({
             label: "Native raster Transform WGSL",
-            code: rasterTransformShader,
+            code: shared.storedEncodedSrgb
+              ? rasterTransformStoredEncodedShader
+              : rasterTransformShader,
           });
           await assertShaderCompiled(module, "Native raster Transform");
           return {
@@ -450,7 +468,9 @@ async function createProgramBundle(
         if (bundle === "deform") {
           const module = shared.device.createShaderModule({
             label: "Native raster Warp and Perspective WGSL",
-            code: rasterDeformShader,
+            code: shared.storedEncodedSrgb
+              ? rasterDeformStoredEncodedShader
+              : rasterDeformShader,
           });
           await assertShaderCompiled(module, "Native raster Warp and Perspective");
           const [deformPipeline, clearPipeline] = await Promise.all([
@@ -462,7 +482,9 @@ async function createProgramBundle(
         if (bundle === "mip") {
           const module = shared.device.createShaderModule({
             label: "Native raster Transform exact mip WGSL",
-            code: rasterTransformMipmapShader,
+            code: shared.storedEncodedSrgb
+              ? rasterTransformStoredEncodedMipmapShader
+              : rasterTransformMipmapShader,
           });
           await assertShaderCompiled(module, "Native raster Transform mip");
           return {
@@ -475,7 +497,9 @@ async function createProgramBundle(
         }
         const module = shared.device.createShaderModule({
           label: "Native raster selected-pixel translation WGSL",
-          code: rasterSelectionTranslateShader,
+          code: shared.storedEncodedSrgb
+            ? rasterSelectionTranslateStoredEncodedShader
+            : rasterSelectionTranslateShader,
         });
         await assertShaderCompiled(module, "Native raster selected-pixel translation");
         return {
@@ -596,6 +620,7 @@ function writeSessionUniforms(
     transform,
     documentWidth: engine.documentWidth,
     documentHeight: engine.documentHeight,
+    quantizationSeed: session.quantizationSeed,
   }, session.uniformUpload);
   engine.device.queue.writeBuffer(session.uniformBuffer, 0, session.uniformUpload);
 }
@@ -976,6 +1001,7 @@ export async function beginRasterLayerTransform(
             RASTER_DEFORM_MAX_VERTICES * RASTER_DEFORM_VERTEX_FLOATS,
           ),
           shared,
+          quantizationSeed: engine.nextHistoryActionId >>> 0,
           memoryBytes: rasterTransformScratchMemoryBytes(
             sourceTextureRect.width,
             sourceTextureRect.height,
@@ -1048,7 +1074,10 @@ export async function beginRasterLayerTransform(
           });
           const mipBindGroup = engine.device.createBindGroup({
             layout: shared.mipBindGroupLayout,
-            entries: [{ binding: 0, resource: sourceView }],
+            entries: [
+              { binding: 0, resource: sourceView },
+              { binding: 1, resource: { buffer: uniformBuffer } },
+            ],
           });
           const pass = encoder.beginRenderPass({
             label: `Native raster Transform mip ${mipLevel}`,

@@ -9,7 +9,7 @@ import type { MemoryRequest } from "./memory-governor-core";
  * una parte inevitabile del percorso WebGPU e sono incluse esplicitamente.
  */
 export const LAYER_MEMORY_ADMISSION_STRATEGY =
-  "tile-aware-merge-create-duplicate-and-phase-aware-layer-switch-peak-reservations-v3" as const;
+  "tile-aware-merge-create-duplicate-and-persistent-auxiliary-layer-switch-peaks-v4" as const;
 
 function assertNonNegativeFinite(value: number, label: string): void {
   if (!Number.isFinite(value) || value < 0) {
@@ -68,6 +68,8 @@ export interface LayerSwitchMemoryInput {
   readonly adjacentPrefetchBytes: number;
   /** Una superficie merged full-document completa di mip. */
   readonly fullMergedSurfaceBytes: number;
+  /** Base e maschere mip-0 che restano vive nei segmenti raster ordinati. */
+  readonly persistentAuxiliaryBytes: number;
   /** Composite correnti distrutti prima che vengano create le nuove candidate. */
   readonly reclaimableCompositeBytes: number;
   /** Una sorgente cold reidratata e il suo bake analitico transitorio. */
@@ -96,6 +98,7 @@ export function planLayerSwitchMemory(
       + Math.max(
         0,
         input.fullMergedSurfaceBytes * 2
+          + input.persistentAuxiliaryBytes
           + input.foldTransientBytes
           - input.reclaimableCompositeBytes,
       ),

@@ -4,12 +4,18 @@
  *
  * The browser decoder exposes straight-alpha sRGB pixels. The retained source
  * pyramid stores encoded-sRGB premultiplied samples so every exact 2x reduction
- * preserves dark line weight. A rebuild decodes the selected source level into
- * the document's authoritative linear-premultiplied RGBA16F raster cache.
+ * preserves dark line weight. Resampling remains f32 in both document profiles:
+ * legacy linear documents decode the selected sample, while encoded RGBA8
+ * documents quantize the encoded-premultiplied result only at the final write.
  */
 
+import { rgba8HighFrequencyQuantizationShader } from "./rgba8-high-frequency-quantization.ts";
+
 export const RASTER_IMAGE_LAYER_IMPORT_STRATEGY =
-  "decoded-rgba8-srgb-to-gamma-premultiplied-rgba16float-exact-npot-mips-immutable-master-continuous-lod-v5" as const;
+  "decoded-rgba8-srgb-to-encoded-premultiplied-rgba16float-exact-npot-mips-f32-resample-dual-storage-output-v6" as const;
+
+/** Replay-stable phase for document-space adjacent-code output quantization. */
+export const RASTER_IMAGE_RGBA8_QUANTIZATION_SEED = 0x6d2b79f5;
 
 export const rasterImageLayerUploadShader = /* wgsl */ `
 struct VertexOutput {
@@ -116,6 +122,8 @@ struct VertexOutput {
 @group(0) @binding(0) var sourceTexture: texture_2d<f32>;
 @group(0) @binding(1) var sourceSampler: sampler;
 
+${rgba8HighFrequencyQuantizationShader}
+
 fn srgbToLinearChannel(value: f32) -> f32 {
   let clamped = clamp(value, 0.0, 1.0);
   if (clamped <= 0.04045) {
@@ -175,8 +183,7 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   return output;
 }
 
-@fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+fn sampledSource(input: VertexOutput) -> vec4<f32> {
   // The sampler blends adjacent exact-area source levels at the fractional
   // footprint, avoiding a visible density step at mip boundaries.
   let uvDx = dpdx(input.uv);
@@ -188,7 +195,23 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     input.uv,
     continuousLod
   );
-  return decodedSource(sampled);
+  return sampled;
+}
+
+@fragment
+fn fragmentLinearMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  return decodedSource(sampledSource(input));
+}
+
+@fragment
+fn fragmentEncodedSrgbMain(
+  input: VertexOutput
+) -> @location(0) vec4<f32> {
+  return quantizeRgba8HighFrequencyAdjacent(
+    sampledSource(input),
+    vec2<u32>(input.position.xy),
+    ${RASTER_IMAGE_RGBA8_QUANTIZATION_SEED}u
+  );
 }
 `;
 
@@ -209,6 +232,8 @@ struct VertexOutput {
 @group(0) @binding(0) var<uniform> sourceTransform: RasterSourceUniforms;
 @group(0) @binding(1) var sourceTexture: texture_2d<f32>;
 @group(0) @binding(2) var sourceSampler: sampler;
+
+${rgba8HighFrequencyQuantizationShader}
 
 fn srgbToLinearChannel(value: f32) -> f32 {
   let clamped = clamp(value, 0.0, 1.0);
@@ -283,15 +308,29 @@ fn decodedSource(sampled: vec4<f32>) -> vec4<f32> {
   return vec4<f32>(straightLinear * alpha, alpha);
 }
 
-@fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+fn sampledSource(input: VertexOutput) -> vec4<f32> {
   let continuousLod = sourceLod(dpdx(input.uv), dpdy(input.uv));
-  let sampled = textureSampleLevel(
+  return textureSampleLevel(
     sourceTexture,
     sourceSampler,
     input.uv,
     continuousLod
   );
-  return decodedSource(sampled);
+}
+
+@fragment
+fn fragmentLinearMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  return decodedSource(sampledSource(input));
+}
+
+@fragment
+fn fragmentEncodedSrgbMain(
+  input: VertexOutput
+) -> @location(0) vec4<f32> {
+  return quantizeRgba8HighFrequencyAdjacent(
+    sampledSource(input),
+    vec2<u32>(input.position.xy),
+    ${RASTER_IMAGE_RGBA8_QUANTIZATION_SEED}u
+  );
 }
 `;

@@ -28,6 +28,7 @@ export function brushLibraryPreviewFingerprint(
     BRUSH_LIBRARY_PREVIEW_RENDERER_VERSION,
     brushId,
     settings.shape,
+    settings.tipFalloff ?? "standard",
     shapeSequence.join(">"),
     settings.shapeSequenceMode,
     settings.shapeInvert ? "1" : "0",

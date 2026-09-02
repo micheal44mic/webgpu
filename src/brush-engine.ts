@@ -1,8 +1,22 @@
-import { brushColorHsl, srgbChannelToLinear } from "./brush-color.ts";
+import {
+  brushColorHsl,
+  parseBrushColorSrgb,
+  srgbChannelToLinear,
+} from "./brush-color.ts";
 import { clamp } from "./color";
 import {
+  directDepositSpacingDistance,
+} from "./direct-deposit-brush-core";
+import {
+  normalizePaintDabProfileSettings,
+  usesEncodedSrgbRgba8PaintDabProfile,
+  usesOpticalDepthPaintDabProfile,
+} from "./paint-dab-profile";
+import { normalizedGaussianTipCoverage } from "./gaussian-brush-tip";
+import {
   RGBA16_FLOAT_BYTES_PER_PIXEL,
-  rgba16FloatRowsToRgba8Unorm,
+  RGBA8_UNORM_BYTES_PER_PIXEL,
+  rgbaRowsToRgba8Unorm,
 } from "./float16";
 import {
   documentBackgroundSrgb,
@@ -271,6 +285,7 @@ import {
 } from "./noise-mip-smoothing-core";
 import {
   MIXED_MERGED_SURFACE_STORAGE_STRATEGY,
+  alignedMergedSurfaceBounds,
   mergedSurfaceMemoryBytes,
 } from "./merged-surface-bounds";
 import type {
@@ -630,7 +645,9 @@ import {
   type CustomBrushGrainAssetId,
   type CustomBrushShapeAssetId,
   type BrushTool,
+  type DocumentStorageColorSpace,
   type EffectsWorkbenchRetargetResult,
+  type DisplayCompositingColorSpace,
   type EngineCallbacks,
   type GrainFiltering,
   type HistoryReplayFaultPoint,
@@ -643,6 +660,7 @@ import {
   type LayerSwitchResult,
   type MixedSceneSnapshot,
   type PointerSample,
+  type PaintDabProfile,
   type ShapePreviewState,
 } from "./engine-types";
 import { resolveMixedSceneEnabled } from "./compat/mixed-scene-options";
@@ -683,7 +701,10 @@ import {
   evaluateStrokeCurveX,
   evaluateStrokeCurveY,
 } from "./stroke-curve-core";
-import { resamplePaintCurveSegment } from "./paint-stamp-generation-core";
+import {
+  resamplePaintCurveSegment,
+  resamplePaintCurveSegmentWithVariableSpacing,
+} from "./paint-stamp-generation-core";
 import {
   CausalFadedStrokeStabilizer,
   type StrokeStabilizationUpdate,
@@ -1227,7 +1248,7 @@ export class BrushEngine {
   deviceLostSignal: Promise<Error> = new Promise(() => undefined);
   renderFrameError: Error | null = null;
   private context!: GPUCanvasContext;
-  canvasFormat!: GPUTextureFormat;
+  canvasFormat!: LayerFormat;
   releaseGpuTimestampQuerySet: GPUQuerySet | null = null;
   releaseGpuTimestampResolveBuffer: GPUBuffer | null = null;
   releaseGpuTimestampReadbackBuffer: GPUBuffer | null = null;
@@ -1236,8 +1257,12 @@ export class BrushEngine {
   releaseGpuTimingPromise: Promise<ReleaseGpuPhaseTiming | null> | null = null;
   lastReleaseGpuTiming: ReleaseGpuPhaseTiming | null = null;
 
-  /** Authoritative document pixels are always initialized in linear RGBA16F. */
+  /** Authoritative document pixels default to linear RGBA16F. */
   layerFormat: LayerFormat = "rgba16float";
+  readonly presentationFormat: LayerFormat;
+  readonly paintDabProfile: PaintDabProfile;
+  readonly displayCompositingColorSpace: DisplayCompositingColorSpace;
+  readonly documentStorageColorSpace: DocumentStorageColorSpace;
   layerTexture!: GPUTexture;
   layerView!: GPUTextureView;
   layerSamplingView!: GPUTextureView;
@@ -2141,6 +2166,50 @@ export class BrushEngine {
   ) {
     this.canvas = canvas;
     this.callbacks = callbacks;
+    const layerFormat = options.layerFormat ?? "rgba16float";
+    const presentationFormat = options.presentationFormat ?? "rgba16float";
+    if (layerFormat !== "rgba8unorm" && layerFormat !== "rgba16float") {
+      throw new RangeError("Unsupported authoritative layer format.");
+    }
+    if (presentationFormat !== "rgba8unorm" && presentationFormat !== "rgba16float") {
+      throw new RangeError("Unsupported presentation format.");
+    }
+    const paintDabProfile = options.paintDabProfile ?? "default";
+    if (
+      paintDabProfile !== "default"
+      && paintDabProfile !== "direct-deposit-pressure-size"
+      && paintDabProfile !== "encoded-srgb-rgba8"
+    ) {
+      throw new RangeError("Unsupported Paint dab profile.");
+    }
+    const displayCompositingColorSpace =
+      options.displayCompositingColorSpace ?? "linear-light";
+    if (
+      displayCompositingColorSpace !== "linear-light"
+      && displayCompositingColorSpace !== "encoded-srgb"
+      && displayCompositingColorSpace !== "stored-encoded-srgb"
+    ) {
+      throw new RangeError("Unsupported display compositing color space.");
+    }
+    if (
+      displayCompositingColorSpace === "stored-encoded-srgb"
+      && layerFormat !== "rgba8unorm"
+    ) {
+      throw new RangeError(
+        "Encoded-sRGB document storage requires an RGBA8 authoritative layer.",
+      );
+    }
+    this.layerFormat = layerFormat;
+    this.presentationFormat = presentationFormat;
+    this.paintDabProfile = paintDabProfile;
+    this.settings = normalizePaintDabProfileSettings(
+      this.paintDabProfile,
+      this.settings,
+    );
+    this.displayCompositingColorSpace = displayCompositingColorSpace;
+    this.documentStorageColorSpace = displayCompositingColorSpace === "stored-encoded-srgb"
+      ? "encoded-srgb-premultiplied"
+      : "linear-premultiplied";
     this.bevelBoundingFieldEnabled = options.bevelBoundingFieldEnabled === true;
     this.startupProgressPresentationYieldEnabled =
       options.startupProgressPresentationYieldEnabled === true;
@@ -2201,8 +2270,19 @@ export class BrushEngine {
       ? new MixedSceneStack(this.layerStack.layers.map((record) => record.id))
       : null;
     this.adaptivePreviewCanvas = adaptivePreviewCanvas;
-    this.adaptiveSpacingMaxExtraPercentPoints =
-      adaptiveSpacingMaxExtraPercentPointsForPlatform();
+    const adaptiveSpacingMaximumOverride = options.adaptiveSpacingMaxExtraPercentPoints;
+    if (
+      adaptiveSpacingMaximumOverride !== undefined
+      && (
+        !Number.isFinite(adaptiveSpacingMaximumOverride)
+        || adaptiveSpacingMaximumOverride < 0
+        || adaptiveSpacingMaximumOverride > 20
+      )
+    ) {
+      throw new RangeError("Adaptive spacing maximum must be between 0 and 20 percent points.");
+    }
+    this.adaptiveSpacingMaxExtraPercentPoints = adaptiveSpacingMaximumOverride
+      ?? adaptiveSpacingMaxExtraPercentPointsForPlatform();
     this.adaptivePreviewVisibleCanvasRequestedDesynchronized =
       shouldDesynchronizeAdaptivePreviewVisibleCanvas();
     this.adaptivePreviewContext = adaptivePreviewCanvas?.getContext("2d", {
@@ -2495,7 +2575,13 @@ export class BrushEngine {
       return error;
     });
 
-    this.beginStartupPhase("canvas-rgba16float", "Configuring the 16-bit canvas");
+    const canvasStartupPhase = this.presentationFormat === "rgba16float"
+      ? "canvas-rgba16float"
+      : "canvas-rgba8unorm";
+    const canvasStartupLabel = this.presentationFormat === "rgba16float"
+      ? "Configuring the 16-bit canvas"
+      : "Configuring the 8-bit sRGB canvas";
+    this.beginStartupPhase(canvasStartupPhase, canvasStartupLabel);
     await this.yieldStartupProgress();
     try {
       const context = this.canvas.getContext("webgpu") as GPUCanvasContext | null;
@@ -2504,7 +2590,7 @@ export class BrushEngine {
       }
       this.context = context;
 
-      this.canvasFormat = "rgba16float";
+      this.canvasFormat = this.presentationFormat;
       this.context.configure({
         device: this.device,
         format: this.canvasFormat,
@@ -2512,11 +2598,12 @@ export class BrushEngine {
         alphaMode: "opaque",
         colorSpace: "srgb",
       });
-      this.completeStartupPhase("canvas-rgba16float", "Configuring the 16-bit canvas", {
+      this.completeStartupPhase(canvasStartupPhase, canvasStartupLabel, {
         format: this.canvasFormat,
+        colorSpace: "srgb",
       });
     } catch (error) {
-      this.failStartupPhase("canvas-rgba16float", "Configuring the 16-bit canvas", error);
+      this.failStartupPhase(canvasStartupPhase, canvasStartupLabel, error);
       throw error;
     }
 
@@ -2551,7 +2638,7 @@ export class BrushEngine {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(
         `The GPU does not support all resources required by the ${this.layerFormat} document. `
-        + `The engine does not fall back to RGBA8. Details: ${message}`,
+        + `No implicit format fallback is performed. Details: ${message}`,
       );
     }
 
@@ -2593,7 +2680,16 @@ export class BrushEngine {
     this.beginStartupPhase("first-frame-submit", "Submitting the first canvas frame");
     await this.yieldStartupProgress();
     this.requestRender();
-    this.callbacks.onStatus?.("WebGPU is ready. Draw on the canvas.", "ok");
+    this.callbacks.onStatus?.(
+      this.usesStoredEncodedRgba8Document()
+        && !usesOpticalDepthPaintDabProfile(this.paintDabProfile)
+        && !usesEncodedSrgbRgba8PaintDabProfile(this.paintDabProfile)
+        ? "RGBA8 sRGB document ready. Pixel tools are paused during renderer validation."
+        : this.usesStoredEncodedRgba8Document()
+          ? "RGBA8 sRGB document ready. GPU pixel tools, effects, and adjustments are available."
+        : "WebGPU is ready. Draw on the canvas.",
+      "ok",
+    );
     this.publishStats();
     this.publishHistoryState();
   }
@@ -2745,7 +2841,20 @@ export class BrushEngine {
       context.globalAlpha = alpha;
       context.beginPath();
       context.arc(center, center, radius, 0, Math.PI * 2);
-      if (this.settings.hardness >= 0.995) {
+      if (this.settings.tipFalloff === "gaussian") {
+        const gradient = context.createRadialGradient(center, center, 0, center, center, radius);
+        for (let step = 0; step <= 24; step += 1) {
+          const normalizedRadius = step / 24;
+          const coverage = normalizedGaussianTipCoverage(
+            normalizedRadius * normalizedRadius,
+          );
+          gradient.addColorStop(
+            normalizedRadius,
+            `rgb(242 240 233 / ${coverage.toFixed(6)})`,
+          );
+        }
+        context.fillStyle = gradient;
+      } else if (this.settings.hardness >= 0.995) {
         context.fillStyle = neutralTipColor;
       } else {
         const gradient = context.createRadialGradient(center, center, 0, center, center, radius);
@@ -2763,6 +2872,14 @@ export class BrushEngine {
   }
 
   setBrushSettings(next: Partial<BrushSettings>): void {
+    if (
+      this.usesStoredEncodedRgba8Document()
+      && !usesOpticalDepthPaintDabProfile(this.paintDabProfile)
+      && !usesEncodedSrgbRgba8PaintDabProfile(this.paintDabProfile)
+    ) {
+      this.publishStoredEncodedRgba8StrokeUnavailable();
+      return;
+    }
     if (this.initialized && (this.layerSwitchBusy || this.historyBusy)) {
       throw new Error(
         "Settings cannot change during a layer switch or history replay.",
@@ -2798,6 +2915,9 @@ export class BrushEngine {
       ...next,
       tool,
       shape: next.shape === "shape" || next.shape === "circle" ? next.shape : this.settings.shape,
+      tipFalloff: next.tipFalloff === "gaussian" || next.tipFalloff === "standard"
+        ? next.tipFalloff
+        : this.settings.tipFalloff ?? "standard",
       shapeAssetId: shapeAssetIds[0],
       shapeAssetIds,
       shapeSequenceMode: next.shapeSequenceMode === "random"
@@ -2878,6 +2998,10 @@ export class BrushEngine {
       positionJitterLateral: clamp(next.positionJitterLateral ?? this.settings.positionJitterLateral, 0, 1),
       positionJitterLinear: clamp(next.positionJitterLinear ?? this.settings.positionJitterLinear, 0, 1),
     };
+    this.settings = normalizePaintDabProfileSettings(
+      this.paintDabProfile,
+      this.settings,
+    );
     prepareAdaptivePreviewShapePalette(this, this.settings);
 
     if (this.initialized) {
@@ -4144,6 +4268,37 @@ export class BrushEngine {
     return this.mixedSceneStack?.selected.kind === "raster";
   }
 
+  private usesStoredEncodedRgba8Document(): boolean {
+    return this.layerFormat === "rgba8unorm"
+      && this.displayCompositingColorSpace === "stored-encoded-srgb";
+  }
+
+  /** Keeps uncertified encoded-document writers unreachable. */
+  private storedEncodedRgba8StrokeUnavailable(
+    settings: Readonly<BrushSettings>,
+    cloneStroke = false,
+  ): boolean {
+    if (!this.usesStoredEncodedRgba8Document()) return false;
+    const directDeposit = usesOpticalDepthPaintDabProfile(this.paintDabProfile);
+    const encodedRgba8 = usesEncodedSrgbRgba8PaintDabProfile(this.paintDabProfile);
+    if (!directDeposit && !encodedRgba8) return true;
+    if (cloneStroke) return false;
+    if (settings.tool === "blend") return false;
+    if (settings.tool === "erase") return false;
+    if (settings.tool !== "paint") return true;
+    if (directDeposit) return settings.blendMode !== "light-glaze";
+    return settings.blendMode !== "light-glaze"
+      && settings.blendMode !== "uniformed-glaze"
+      && settings.blendMode !== "intense-blending";
+  }
+
+  private publishStoredEncodedRgba8StrokeUnavailable(): void {
+    this.callbacks.onStatus?.(
+      "This stroke path is not enabled for the current 8-bit document mode.",
+      "error",
+    );
+  }
+
   setFillToolSelected(selected: boolean): Promise<boolean> {
     return setFillToolSelected(this, selected);
   }
@@ -4189,6 +4344,10 @@ export class BrushEngine {
       },
       canvasFormat: this.canvasFormat,
       layerFormat: this.layerFormat,
+      presentationFormat: this.presentationFormat,
+      paintDabProfile: this.paintDabProfile,
+      displayCompositingColorSpace: this.displayCompositingColorSpace,
+      documentStorageColorSpace: this.documentStorageColorSpace,
       uncapturedErrors: this.gpuUncapturedErrors.map((error) => ({ ...error })),
     };
   }
@@ -4949,6 +5108,7 @@ export class BrushEngine {
 
   /** True only for short-lived setup that can safely retain one Pencil contact. */
   isPaintReadinessPending(): boolean {
+    if (this.storedEncodedRgba8StrokeUnavailable(this.settings)) return false;
     return this.initialized
       && (this.layerSwitchBusy || !this.currentBrushResourcesReady());
   }
@@ -4963,6 +5123,10 @@ export class BrushEngine {
     const renderSettings = cloneConfiguration
       ? cloneSettingsForCurrentBrush(this.settings)
       : { ...this.settings };
+    if (this.storedEncodedRgba8StrokeUnavailable(renderSettings, cloneConfiguration !== null)) {
+      this.publishStoredEncodedRgba8StrokeUnavailable();
+      return false;
+    }
     // layerSwitchBusy is held across the switch's awaits, so a pointerdown
     // landing mid-switch cannot start a stroke on a half-swapped layer.
     const destructiveEdit = this.activeDestructiveRasterEditKind();
@@ -5222,6 +5386,7 @@ export class BrushEngine {
     blendPlanner?.reset(normalizedPoint);
     const curvePlanner = tool === "blend" ? null : this.paintCurvePlanner;
     curvePlanner?.reset();
+    const paintDabProfile = tool === "paint" ? this.paintDabProfile : "default";
     // Brush modes already own a per-gesture accumulator. Stabilization keeps
     // only its recent tail revisionable in that accumulator; the exact zero
     // setting deliberately stays on the pre-existing hot path below.
@@ -5257,7 +5422,11 @@ export class BrushEngine {
       ),
       heldThicknessStamps: [],
       heldThicknessHead: 0,
+      paintDabProfile,
       distanceSinceStamp: 0,
+      distanceToNextStamp: paintDabProfile === "direct-deposit-pressure-size"
+        ? directDepositSpacingDistance(renderSettings.size, normalizedPoint.pressure)
+        : 0,
       adaptiveSpacingInitialPercent: renderSettings.spacingPercent,
       adaptiveSpacingPercent: renderSettings.spacingPercent,
       historyActionId,
@@ -5367,6 +5536,9 @@ export class BrushEngine {
     stroke.heldThicknessStamps = [];
     stroke.heldThicknessHead = 0;
     stroke.distanceSinceStamp = 0;
+    stroke.distanceToNextStamp = stroke.paintDabProfile === "direct-deposit-pressure-size"
+      ? directDepositSpacingDistance(stroke.renderSettings.size, first.pressure)
+      : 0;
     stroke.adaptiveSpacingPercent = stroke.adaptiveSpacingInitialPercent;
     stroke.curvePlanner?.reset();
     // A locked geometric line must keep its endpoint under the pointer. The
@@ -6991,7 +7163,10 @@ export class BrushEngine {
       : Math.max(1, Math.min(height, Math.round(width / documentAspect)));
     const originX = Math.floor((width - captureWidth) * 0.5);
     const originY = Math.floor((height - captureHeight) * 0.5);
-    const sourceBytesPerRow = captureWidth * RGBA16_FLOAT_BYTES_PER_PIXEL;
+    const presentationBytesPerPixel = this.canvasFormat === "rgba16float"
+      ? RGBA16_FLOAT_BYTES_PER_PIXEL
+      : RGBA8_UNORM_BYTES_PER_PIXEL;
+    const sourceBytesPerRow = captureWidth * presentationBytesPerPixel;
     const bytesPerRow = Math.ceil(sourceBytesPerRow / 256) * 256;
     const buffer = this.device.createBuffer({
       label: `Project thumbnail ${captureWidth}×${captureHeight}`,
@@ -7021,11 +7196,12 @@ export class BrushEngine {
         if (timer !== 0) window.clearTimeout(timer);
       }
       const mapped = new Uint8Array(buffer.getMappedRange());
-      const converted = rgba16FloatRowsToRgba8Unorm(
+      const converted = rgbaRowsToRgba8Unorm(
         mapped,
         captureWidth,
         captureHeight,
         bytesPerRow,
+        this.canvasFormat,
       );
       const rgba = new Uint8ClampedArray(converted.buffer);
       buffer.unmap();
@@ -7105,6 +7281,7 @@ export class BrushEngine {
         sourceView,
         this.documentWidth,
         this.documentHeight,
+        this.documentStorageColorSpace,
       );
       return { layerId, ...pixels };
     } finally {
@@ -7334,7 +7511,10 @@ export class BrushEngine {
       throw new Error("The presentation probe rectangle is outside the canvas.");
     }
 
-    const sourceBytesPerRow = width * RGBA16_FLOAT_BYTES_PER_PIXEL;
+    const presentationBytesPerPixel = this.canvasFormat === "rgba16float"
+      ? RGBA16_FLOAT_BYTES_PER_PIXEL
+      : RGBA8_UNORM_BYTES_PER_PIXEL;
+    const sourceBytesPerRow = width * presentationBytesPerPixel;
     const bytesPerRow = Math.ceil(sourceBytesPerRow / 256) * 256;
     const buffer = this.device.createBuffer({
       label: `Layer presentation rect probe ${width}×${height}`,
@@ -7371,11 +7551,12 @@ export class BrushEngine {
         }
       }
       const mapped = new Uint8Array(buffer.getMappedRange());
-      const rgba = rgba16FloatRowsToRgba8Unorm(
+      const rgba = rgbaRowsToRgba8Unorm(
         mapped,
         width,
         height,
         bytesPerRow,
+        this.canvasFormat,
       );
       buffer.unmap();
       return rgba;
@@ -7436,7 +7617,7 @@ export class BrushEngine {
         }
       }
       const stored = new Uint8Array(buffer.getMappedRange());
-      const rgba = rgba16FloatRowsToRgba8Unorm(stored, 1, 1, 256);
+      const rgba = rgbaRowsToRgba8Unorm(stored, 1, 1, 256, this.canvasFormat);
       buffer.unmap();
       return rgba;
     } finally {
@@ -8661,8 +8842,9 @@ export class BrushEngine {
 
     const glaze = usesStrokeGlazeRenderer(settings);
     const accumulatorFormat: GPUTextureFormat = glaze
-      && lightGlazeStorageModeFor(settings.blendMode) === "r16float-coverage"
-      ? "r16float"
+      ? lightGlazeStorageModeFor(settings.blendMode) === "r16float-coverage"
+        ? "r16float"
+        : "rgba16float"
       : this.layerFormat;
     const accumulatorTexture = createTexture(
       "Selected brush warm-up accumulator",
@@ -8670,9 +8852,13 @@ export class BrushEngine {
       GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     );
     const accumulatorView = accumulatorTexture.createView();
+    const inPlaceCommitPipeline = this.lightGlazeInPlaceCommitPipeline;
+    const inPlaceCommitBindGroupLayout = this.lightGlazeInPlaceCommitBindGroupLayout;
     const inPlaceCommit = glaze
-      && this.lightGlazeInPlaceCommitPipeline
-      && this.lightGlazeInPlaceCommitBindGroupLayout;
+      && inPlaceCommitPipeline !== null
+      && inPlaceCommitBindGroupLayout !== null
+      && !usesOpticalDepthPaintDabProfile(this.paintDabProfile)
+      && !usesEncodedSrgbRgba8PaintDabProfile(this.paintDabProfile);
     const layerScratchTexture = glaze
       ? createTexture(
         "Selected brush warm-up release target",
@@ -8775,12 +8961,23 @@ export class BrushEngine {
         const lightUniformUpload = new ArrayBuffer(LIGHT_GLAZE_UNIFORM_BYTES);
         const lightNoBuildUp = settings.blendMode === "light-glaze"
           || settings.blendMode === "m1-glaze";
+        const preciseDeposit = lightNoBuildUp
+          && usesOpticalDepthPaintDabProfile(this.paintDabProfile);
+        const encodedRgba8 = usesEncodedSrgbRgba8PaintDabProfile(this.paintDabProfile);
         populateStrokeGlazeUniformUpload(
           lightUniformUpload,
           1,
           this.layerFormat,
-          lightNoBuildUp
-            ? "light-no-build-up"
+          preciseDeposit
+            ? "optical-depth-encoded-srgb"
+            : encodedRgba8 && lightNoBuildUp
+              ? "encoded-srgb-light-no-build-up"
+            : encodedRgba8 && settings.blendMode === "intense-blending"
+              ? "encoded-srgb-stroke-over-encoded-srgb"
+            : encodedRgba8
+              ? "linear-stroke-over-encoded-srgb"
+            : lightNoBuildUp
+              ? "light-no-build-up"
             : settings.blendMode === "intense-blending"
               ? "encoded-srgb-source-over"
               : "source-over",
@@ -8809,7 +9006,7 @@ export class BrushEngine {
           );
         }
 
-        if (lightNoBuildUp) {
+        if (lightNoBuildUp && !preciseDeposit && !encodedRgba8) {
           drawFullscreen(
             "Warm selected glaze release composite",
             layerScratchView,
@@ -8827,10 +9024,10 @@ export class BrushEngine {
             0,
             new Uint32Array([0, 0, scratchExtent, scratchExtent]),
           );
-          if (this.lightGlazeInPlaceCommitPipeline && this.lightGlazeInPlaceCommitBindGroupLayout) {
+          if (inPlaceCommit && inPlaceCommitPipeline && inPlaceCommitBindGroupLayout) {
             const bindGroup = this.device.createBindGroup({
               label: "Selected brush warm-up in-place commit bind group",
-              layout: this.lightGlazeInPlaceCommitBindGroupLayout,
+              layout: inPlaceCommitBindGroupLayout,
               entries: [
                 { binding: 0, resource: layerScratchView },
                 { binding: 1, resource: accumulatorView },
@@ -8841,7 +9038,7 @@ export class BrushEngine {
             const pass = encoder.beginComputePass({
               label: "Warm selected high-precision glaze release commit",
             });
-            pass.setPipeline(this.lightGlazeInPlaceCommitPipeline);
+            pass.setPipeline(inPlaceCommitPipeline);
             pass.setBindGroup(0, bindGroup);
             pass.dispatchWorkgroups(1, 1, 1);
             pass.end();
@@ -8966,14 +9163,22 @@ export class BrushEngine {
     if (!this.initialized) return false;
     if (this.documentPipelineCompilationScope === "first-frame-diagnostic") return false;
     const settings = this.settings;
+    if (this.storedEncodedRgba8StrokeUnavailable(settings)) return false;
     return this.brushDependenciesReady(settings)
       && this.completedBrushGpuWarmupKeys.has(this.brushGpuWarmupKey(settings));
   }
 
   /** Releases the one-shot startup deferral and warms the selected brush. */
   async prepareSelectedBrushForInteraction(): Promise<boolean> {
+    if (!this.initialized) {
+      this.selectedBrushPreparationRequested = true;
+      return true;
+    }
+    if (this.storedEncodedRgba8StrokeUnavailable(this.settings)) {
+      this.publishStoredEncodedRgba8StrokeUnavailable();
+      return false;
+    }
     this.selectedBrushPreparationRequested = true;
-    if (!this.initialized) return true;
     if (this.currentBrushResourcesReady()) {
       this.selectedBrushPreparationDeferred = false;
       this.selectedBrushPreparationRequested = false;
@@ -9015,6 +9220,11 @@ export class BrushEngine {
   async ensureCurrentBrushResources(): Promise<void> {
     if (!this.initialized) {
       throw new Error("The engine is not initialized yet.");
+    }
+    if (this.storedEncodedRgba8StrokeUnavailable(this.settings)) {
+      throw new Error(
+        "The selected stroke path is not enabled for the current 8-bit document mode.",
+      );
     }
     if (this.documentPipelineCompilationScope === "first-frame-diagnostic") {
       throw new Error("Editor interaction is disabled during first-frame diagnostics.");
@@ -9361,7 +9571,11 @@ export class BrushEngine {
       return;
     }
     const initialization = (async (): Promise<void> => {
-      await prewarmRasterToneCurvesRuntime(this.device);
+      await prewarmRasterToneCurvesRuntime(
+        this.device,
+        this.layerFormat,
+        this.documentStorageColorSpace,
+      );
       if (this.deviceLostError) throw this.deviceLostError;
       this.rasterToneCurvesPipelinesReady = true;
     })();
@@ -9383,7 +9597,11 @@ export class BrushEngine {
       return;
     }
     const initialization = (async (): Promise<void> => {
-      await prewarmRasterColorAdjustRuntime(this.device);
+      await prewarmRasterColorAdjustRuntime(
+        this.device,
+        this.layerFormat,
+        this.documentStorageColorSpace,
+      );
       if (this.deviceLostError) throw this.deviceLostError;
       this.rasterColorAdjustPipelinesReady = true;
     })();
@@ -9405,7 +9623,11 @@ export class BrushEngine {
       return;
     }
     const initialization = (async (): Promise<void> => {
-      await prewarmRasterColorBalanceRuntime(this.device);
+      await prewarmRasterColorBalanceRuntime(
+        this.device,
+        this.layerFormat,
+        this.documentStorageColorSpace,
+      );
       if (this.deviceLostError) throw this.deviceLostError;
       this.rasterColorBalancePipelinesReady = true;
     })();
@@ -9427,7 +9649,11 @@ export class BrushEngine {
       return;
     }
     const initialization = (async (): Promise<void> => {
-      await prewarmRasterGradientMapRuntime(this.device);
+      await prewarmRasterGradientMapRuntime(
+        this.device,
+        this.layerFormat,
+        this.documentStorageColorSpace,
+      );
       if (this.deviceLostError) throw this.deviceLostError;
       this.rasterGradientMapPipelinesReady = true;
     })();
@@ -11776,15 +12002,57 @@ export class BrushEngine {
   /** Maximum source-side working set alive during one sequential composite fold. */
   private layerSwitchFoldTransientBytes(targetIndex: number, fullLayerBytes: number): number {
     const bytesPerPixel = this.layerFormat === "rgba16float" ? 8 : 4;
+    const targetUnitIds = new Set(
+      this.layerStack.clippingUnit(this.layerStack.at(targetIndex).id)
+        .map((record) => record.id),
+    );
+    const aggregateRecords = this.layerStack.layers.filter((record, index) => {
+      const hasContent = index === this.layerStack.activeIndex
+        ? this.layerHasContent
+        : record.hasContent;
+      return !targetUnitIds.has(record.id)
+        && record.visible
+        && record.opacity > 0
+        && hasContent;
+    });
+    const aggregateUnitIds = new Set(
+      aggregateRecords.map((record) => this.layerStack.clippingUnit(record.id)[0].id),
+    );
+    const encodedRgba8AggregateWorking = this.layerFormat === "rgba8unorm"
+      && this.documentStorageColorSpace === "encoded-srgb-premultiplied"
+      && aggregateRecords.length > 0
+      && (
+        aggregateUnitIds.size > 1
+        || aggregateRecords.length > 1
+        || aggregateRecords.some((record) => (
+          record.opacity !== 1 || layerNeedsBackdropComposition(record)
+        ))
+      );
+    const foldTilePixels = Math.min(LAYER_BLEND_FOLD_TILE_EXTENT, this.documentWidth)
+      * Math.min(LAYER_BLEND_FOLD_TILE_EXTENT, this.documentHeight);
+    const highPrecisionTileBytes = encodedRgba8AggregateWorking
+      ? foldTilePixels * 8
+      : 0;
     const advancedScratchBytes = 2
-      * Math.min(LAYER_BLEND_FOLD_TILE_EXTENT, this.layerSize) ** 2
-      * bytesPerPixel;
+      * foldTilePixels
+      * (encodedRgba8AggregateWorking ? 8 : bytesPerPixel);
+    const hasClippingAggregate = encodedRgba8AggregateWorking
+      && aggregateRecords.some((record) => (
+        record.clippingParentId !== null
+        || this.layerStack.clippingUnit(record.id).length > 1
+      ));
+    // A document-cutout clipping fold can temporarily retain the outer tile,
+    // three clipping auxiliaries and their fold scratch. This intentionally
+    // over-reserves one sequential tile; it never scales with document area.
+    const boundedAggregateStructuralBytes = hasClippingAggregate
+      ? highPrecisionTileBytes * 12
+      : highPrecisionTileBytes;
     let maximum = 0;
     this.layerStack.layers.forEach((record, index) => {
       const outgoingActive = index === this.layerStack.activeIndex;
       const hasContent = outgoingActive ? this.layerHasContent : record.hasContent;
       if (
-        index === targetIndex
+        targetUnitIds.has(record.id)
         || !record.visible
         || record.opacity <= 0
         || !hasContent
@@ -11793,6 +12061,9 @@ export class BrushEngine {
       }
       const gpu = this.requireLayerGpu(record.id);
       if (gpu.bake && gpu.bakeValid) {
+        if (encodedRgba8AggregateWorking) {
+          maximum = Math.max(maximum, advancedScratchBytes);
+        }
         return;
       }
       const requirements = layerEffectRendererRequirements(
@@ -11822,6 +12093,7 @@ export class BrushEngine {
       if (
         this.layerColdTileCompositeEnabled
         && record.blendMode === "normal"
+        && !layerNeedsBackdropComposition(record)
         && !requirements.needsStrokeRenderer
         && !sourceWillBeHot
         && coldSourceWillExist
@@ -11838,13 +12110,77 @@ export class BrushEngine {
       }
       const hydrationBytes = sourceWillBeHot ? 0 : fullLayerBytes;
       const bakeBytes = requirements.needsStrokeRenderer ? fullLayerBytes : 0;
-      const blendScratchBytes = record.blendMode === "normal" ? 0 : advancedScratchBytes;
+      const blendScratchBytes = encodedRgba8AggregateWorking
+        ? advancedScratchBytes
+        : record.blendMode === "normal" ? 0 : advancedScratchBytes;
       maximum = Math.max(
         maximum,
         hydrationBytes + bakeBytes + blendScratchBytes,
       );
     });
-    return maximum;
+    return maximum + boundedAggregateStructuralBytes;
+  }
+
+  /**
+   * Counts the mip-0 base/mask pairs retained by ordered raster segments.
+   * Each clipping unit contributes at most once even when several children
+   * use the document cutout scope.
+   */
+  private layerSwitchPersistentAuxiliaryBytes(targetIndex: number): number {
+    if (
+      this.layerFormat !== "rgba8unorm"
+      || this.documentStorageColorSpace !== "encoded-srgb-premultiplied"
+      || !this.mixedSceneStack
+      || !this.usesOrderedScenePresentation()
+    ) {
+      return 0;
+    }
+    const targetUnitIds = new Set(
+      this.layerStack.clippingUnit(this.layerStack.at(targetIndex).id)
+        .map((record) => record.id),
+    );
+    const countedParentIds = new Set<number>();
+    let bytes = 0;
+    for (const child of this.layerStack.layers) {
+      if (
+        child.clippingParentId === null
+        || child.cutoutMode !== "document"
+        || !child.visible
+      ) {
+        continue;
+      }
+      const parent = this.layerStack.byId(child.clippingParentId);
+      if (
+        !parent
+        || countedParentIds.has(parent.id)
+        || targetUnitIds.has(parent.id)
+        || !parent.visible
+        || parent.opacity <= 0
+      ) {
+        continue;
+      }
+      const parentIndex = this.layerStack.indexOfId(parent.id);
+      const parentHasContent = parentIndex === this.layerStack.activeIndex
+        ? this.layerHasContent
+        : parent.hasContent;
+      if (!parentHasContent) {
+        continue;
+      }
+      countedParentIds.add(parent.id);
+      const boundedParent = parentIndex === this.layerStack.activeIndex
+        ? { ...parent, contentBounds: this.layerContentBounds }
+        : parent;
+      const bounds = alignedMergedSurfaceBounds(
+        layerCompositeVisualBounds(this, boundedParent),
+        this.documentWidth,
+        64,
+        64,
+        this.documentHeight,
+      );
+      // Both derived surfaces are persistent encoded RGBA8 mip-0 textures.
+      bytes += bounds.width * bounds.height * 2 * 4;
+    }
+    return bytes;
   }
 
   /**
@@ -11877,6 +12213,7 @@ export class BrushEngine {
         { width: this.documentWidth, height: this.documentHeight },
         bytesPerPixel,
       ).totalBytes,
+      persistentAuxiliaryBytes: this.layerSwitchPersistentAuxiliaryBytes(targetIndex),
       reclaimableCompositeBytes: [...this.liveMergedSurfaceTextures.values()].reduce(
         (total, surface) => total + surface.mip0MemoryBytes + surface.mipChainMemoryBytes,
         0,
@@ -12431,6 +12768,20 @@ export class BrushEngine {
   }
 
   async ensureLightGlazeResources(blendMode: BlendMode): Promise<void> {
+    const directDeposit = usesOpticalDepthPaintDabProfile(this.paintDabProfile);
+    const encodedRgba8 = usesEncodedSrgbRgba8PaintDabProfile(this.paintDabProfile);
+    const supportedEncodedMode = blendMode === "light-glaze"
+      || (encodedRgba8 && (
+        blendMode === "uniformed-glaze" || blendMode === "intense-blending"
+      ));
+    if (
+      this.usesStoredEncodedRgba8Document()
+      && (!(directDeposit || encodedRgba8) || !supportedEncodedMode)
+    ) {
+      throw new Error(
+        "This brush rendering mode is not enabled for the current 8-bit document mode.",
+      );
+    }
     const storageMode = lightGlazeStorageModeFor(blendMode);
     this.lightGlazeDesiredStorageMode = storageMode;
 
@@ -12483,7 +12834,7 @@ export class BrushEngine {
                 this.layerFormat,
                 storageMode,
                 undefined,
-                !this.lightGlazeInPlaceCommitPipeline,
+                Boolean(candidate.commitTileTexture),
               ),
             );
             transaction.deferRollback(() => destroyLightGlazeResourceSet(candidate));
@@ -12632,8 +12983,16 @@ export class BrushEngine {
 
   writeLightGlazeUniforms(
     opacity: number,
-    accumulationMode: "source-over" | "light-no-build-up" | "encoded-srgb-source-over",
+    accumulationMode:
+      | "source-over"
+      | "light-no-build-up"
+      | "encoded-srgb-source-over"
+      | "optical-depth-encoded-srgb"
+      | "encoded-srgb-light-no-build-up"
+      | "linear-stroke-over-encoded-srgb"
+      | "encoded-srgb-stroke-over-encoded-srgb",
     tintLinear: readonly [number, number, number] | null,
+    ditherSeed = 0,
   ): void {
     const upload = new ArrayBuffer(LIGHT_GLAZE_UNIFORM_BYTES);
     // Mode 1 is the public Light contract: Flow belongs to each candidate
@@ -12645,6 +13004,7 @@ export class BrushEngine {
       this.layerFormat,
       accumulationMode,
       tintLinear,
+      ditherSeed,
     );
     this.device.queue.writeBuffer(this.lightGlazeUniformBuffer, 0, upload);
   }
@@ -13295,7 +13655,9 @@ export class BrushEngine {
     this.displayUniformUpload[27] = this.documentBackground.visible ? 1 : 0;
     this.displayUniformUpload[28] = this.documentWidth;
     this.displayUniformUpload[29] = this.documentHeight;
-    this.displayUniformUpload[30] = 0;
+    this.displayUniformUpload[30] = this.displayCompositingColorSpace === "stored-encoded-srgb"
+      ? 2
+      : this.displayCompositingColorSpace === "encoded-srgb" ? 1 : 0;
     this.displayUniformUpload[31] = 0;
 
     this.device.queue.writeBuffer(this.displayUniformBuffer, 0, this.displayUniformUpload);
@@ -13438,19 +13800,31 @@ export class BrushEngine {
       }
     }
 
-    const distanceSinceStamp = resamplePaintCurveSegment(
-      curveSegment,
-      start,
-      normalizedPoint,
-      spacing,
-      stroke.distanceSinceStamp,
-      MAX_STAMPS_PER_BATCH,
-      this,
-      emitStamp,
-    );
+    if (stroke.paintDabProfile === "direct-deposit-pressure-size") {
+      stroke.distanceToNextStamp = resamplePaintCurveSegmentWithVariableSpacing(
+        curveSegment,
+        start,
+        normalizedPoint,
+        stroke.distanceToNextStamp,
+        MAX_STAMPS_PER_BATCH,
+        this,
+        emitStamp,
+        (point) => directDepositSpacingDistance(generationSettings.size, point.pressure),
+      );
+    } else {
+      stroke.distanceSinceStamp = resamplePaintCurveSegment(
+        curveSegment,
+        start,
+        normalizedPoint,
+        spacing,
+        stroke.distanceSinceStamp,
+        MAX_STAMPS_PER_BATCH,
+        this,
+        emitStamp,
+      );
+    }
 
     stroke.lastInput = normalizedPoint;
-    stroke.distanceSinceStamp = distanceSinceStamp;
     releaseHeldThicknessStamps(this, normalizedPoint.timeMs, false);
     recordStampGenerationTime(this, generationStart);
   }
@@ -13550,27 +13924,40 @@ export class BrushEngine {
       }
     }
 
-    const distanceSinceStamp = resamplePaintCurveSegment(
-      curveSegment,
-      start,
-      {
-        x: pointX,
-        y: pointY,
-        pressure: pointPressure,
-        timeMs: normalizedTimeMs,
-      },
-      spacing,
-      stroke.distanceSinceStamp,
-      MAX_STAMPS_PER_BATCH,
-      this,
-      emitStamp,
-    );
+    const endPoint = {
+      x: pointX,
+      y: pointY,
+      pressure: pointPressure,
+      timeMs: normalizedTimeMs,
+    };
+    if (stroke.paintDabProfile === "direct-deposit-pressure-size") {
+      stroke.distanceToNextStamp = resamplePaintCurveSegmentWithVariableSpacing(
+        curveSegment,
+        start,
+        endPoint,
+        stroke.distanceToNextStamp,
+        MAX_STAMPS_PER_BATCH,
+        this,
+        emitStamp,
+        (point) => directDepositSpacingDistance(generationSettings.size, point.pressure),
+      );
+    } else {
+      stroke.distanceSinceStamp = resamplePaintCurveSegment(
+        curveSegment,
+        start,
+        endPoint,
+        spacing,
+        stroke.distanceSinceStamp,
+        MAX_STAMPS_PER_BATCH,
+        this,
+        emitStamp,
+      );
+    }
 
     start.x = pointX;
     start.y = pointY;
     start.pressure = pointPressure;
     start.timeMs = normalizedTimeMs;
-    stroke.distanceSinceStamp = distanceSinceStamp;
   }
 
   private stabilizationPreviewStamp(index: number): Stamp {
@@ -15262,7 +15649,11 @@ export class BrushEngine {
 
   private increaseAdaptiveSpacing(reason: AdaptiveSpacingTriggerReason): void {
     const stroke = this.activeStroke;
-    if (!stroke || this.adaptivePreviewFrozen) {
+    if (
+      !stroke
+      || this.adaptivePreviewFrozen
+      || stroke.paintDabProfile === "direct-deposit-pressure-size"
+    ) {
       return;
     }
 
@@ -16043,7 +16434,15 @@ export class BrushEngine {
     blendMode: BlendMode,
     dirtyRect: DirtyRect,
   ): void {
-    if (blendMode !== "uniformed-glaze" && blendMode !== "intense-blending") {
+    const preciseDeposit = usesOpticalDepthPaintDabProfile(this.paintDabProfile)
+      && (blendMode === "light-glaze" || blendMode === "m1-glaze");
+    const encodedRgba8 = usesEncodedSrgbRgba8PaintDabProfile(this.paintDabProfile);
+    if (
+      !preciseDeposit
+      && !encodedRgba8
+      && blendMode !== "uniformed-glaze"
+      && blendMode !== "intense-blending"
+    ) {
       const compositePass = encoder.beginRenderPass({
         label: "Commit complete Light Glaze stroke once",
         colorAttachments: [{
@@ -16115,7 +16514,7 @@ export class BrushEngine {
         tileX += LIGHT_GLAZE_COMMIT_TILE_EXTENT
       ) {
         if (tileIndex >= LIGHT_GLAZE_COMMIT_TILE_SLOT_COUNT) {
-          throw new Error("The Intense Blending tile count exceeds the document limit.");
+          throw new Error("The exact glaze tile count exceeds the document limit.");
         }
         const tileWidth = Math.min(LIGHT_GLAZE_COMMIT_TILE_EXTENT, dirtyRight - tileX);
         const tileHeight = Math.min(LIGHT_GLAZE_COMMIT_TILE_EXTENT, dirtyBottom - tileY);
@@ -16211,9 +16610,16 @@ export class BrushEngine {
     const deferFinalCanonicalPresentation =
       DEFER_LIGHT_GLAZE_FINAL_CANONICAL_PRESENTATION
       && present
-      && session.commitRequested;
+      && session.commitRequested
+      // Encoded RGBA8 must publish the same canonical pixels at pointer-up
+      // that every later pan or zoom will sample. Keeping the unquantized live
+      // cache here would hide a color-path mismatch until the next view change.
+      && this.displayCompositingColorSpace !== "stored-encoded-srgb";
     const lightNoBuildUp = settings.blendMode === "light-glaze"
       || settings.blendMode === "m1-glaze";
+    const preciseDeposit = lightNoBuildUp
+      && usesOpticalDepthPaintDabProfile(this.paintDabProfile);
+    const encodedRgba8 = usesEncodedSrgbRgba8PaintDabProfile(this.paintDabProfile);
     const stabilizationUpdate = present
       && !replayBatch
       && this.activeStroke?.historyActionId === session.historyActionId
@@ -16274,6 +16680,9 @@ export class BrushEngine {
       ...settings,
       opacity: intenseBlending ? settings.opacity : 1,
       blendMode: "normal",
+      // The source PNG remains 8-bit. The filtered sample must stay
+      // continuous; re-quantizing it after bilinear sampling creates rings.
+      shapeMaskFormat: preciseDeposit ? "r16float" : settings.shapeMaskFormat,
     }, symmetryMode, symmetryTransform.angleRadians);
     if (grainActive) {
       this.writeGrainUniforms(settings);
@@ -16281,25 +16690,36 @@ export class BrushEngine {
     const firstSeed = replayBatch?.firstSeed
       ?? stamps[0]?.seed
       ?? (stabilizationFrame ? this.stabilizationPreviewStamps[0]?.seed : undefined);
-    if (lightNoBuildUp && session.tintLinear === null && firstSeed !== undefined) {
-      const [red, green, blue] = adaptivePreviewSrgb(
-        previewHash32(firstSeed),
-        settings,
-      );
-      session.tintLinear = [
-        srgbChannelToLinear(red),
-        srgbChannelToLinear(green),
-        srgbChannelToLinear(blue),
-      ];
+    if (preciseDeposit && session.tintLinear === null) {
+      const [red, green, blue] = parseBrushColorSrgb(settings.color);
+      session.tintLinear = [red, green, blue];
+    } else if (lightNoBuildUp && session.tintLinear === null && firstSeed !== undefined) {
+      const [red, green, blue] = adaptivePreviewSrgb(previewHash32(firstSeed), settings);
+      session.tintLinear = encodedRgba8
+        ? [red, green, blue]
+        : [
+          srgbChannelToLinear(red),
+          srgbChannelToLinear(green),
+          srgbChannelToLinear(blue),
+        ];
     }
     this.writeLightGlazeUniforms(
       intenseBlending ? 1 : settings.opacity,
-      lightNoBuildUp
-        ? "light-no-build-up"
+      preciseDeposit
+        ? "optical-depth-encoded-srgb"
+        : encodedRgba8 && lightNoBuildUp
+          ? "encoded-srgb-light-no-build-up"
+        : encodedRgba8 && intenseBlending
+          ? "encoded-srgb-stroke-over-encoded-srgb"
+        : encodedRgba8
+          ? "linear-stroke-over-encoded-srgb"
+        : lightNoBuildUp
+          ? "light-no-build-up"
         : intenseBlending
           ? "encoded-srgb-source-over"
           : "source-over",
       session.tintLinear,
+      session.historyActionId,
     );
 
     const encoder = this.device.createCommandEncoder({ label: "Light Glaze frame encoder" });
@@ -17334,6 +17754,17 @@ export class BrushEngine {
     // replace the persistent screen cache.
     present = present && !this.presentationBlocked();
     const stampCount = resolvePaintHistoryStampCount(stamps, replayBatch);
+    if (
+      (stampCount > 0 || replayBatch !== null)
+      && this.storedEncodedRgba8StrokeUnavailable(
+        settings,
+        replayBatch?.cloneSource != null,
+      )
+    ) {
+      throw new Error(
+        "This stroke path is not enabled for the current 8-bit document mode.",
+      );
+    }
     if (usesStrokeGlazeRenderer(settings)) {
       if (this.lightGlazeSession) {
         return this.submitLightGlazeImmediate(stamps, clearLayer, settings, present, replayBatch);

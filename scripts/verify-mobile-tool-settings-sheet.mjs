@@ -623,7 +623,7 @@ assert.match(
 );
 assert.match(
   main,
-  /setSelectedLayerOpacity: \(key, opacity\) => \{\s*return sceneEditorController\?\.setLayerOpacity\(key, opacity\);[\s\S]*?setSelectedLayerContentOpacity: \(key, contentOpacity\) => \{\s*return sceneEditorController\?\.setRasterContentOpacity\(key, contentOpacity\);/,
+  /setSelectedLayerOpacity: \(key, opacity\) => \{[\s\S]*?setLayerOpacity\(key, opacity\);[\s\S]*?setSelectedLayerContentOpacity: \(key, contentOpacity\) => \{[\s\S]*?setRasterContentOpacity\(key, contentOpacity\);/,
   "raw range input must reuse the captured layer key instead of rebuilding a full stats snapshot",
 );
 assert.match(
@@ -660,6 +660,21 @@ assert.match(
   controller,
   /this\.rasterLayerOptions\.hidden = !rasterOptionsAvailable/,
   "Fill, Knockout and tonal blending must remain hidden for non-raster layers",
+);
+assert.doesNotMatch(
+  main,
+  /(?:blendMode|contentOpacity|cutoutMode|tonalBlend): documentPixelWritesRestricted \? null/,
+  "validated RGBA8 documents must expose all raster Layer Options",
+);
+assert.doesNotMatch(
+  main,
+  /reportDocumentPixelWriterPaused\("(?:Layer blend modes|Layer fill opacity|Layer knockout|Tonal blend)"\)/,
+  "validated Layer Options must not silently reject edits in RGBA8 documents",
+);
+assert.match(
+  main,
+  /openLayerOptions: \(trigger\) => \{[\s\S]*?engine\.ensureLayerBlendEditorResources\(\)[\s\S]*?mobileToolSettingsSheet\?\.open\("layer-options", trigger\)/,
+  "opening Layer Options must prepare the compositor for every document profile",
 );
 assert.match(
   css,

@@ -10,6 +10,7 @@ import {
   paintMipDownsampleShader,
   paintStackCompositeMipShader,
   singleRasterRgba16FloatDisplayShader,
+  storedEncodedPaintMipDownsampleShader,
   texturizedGrainShader,
   thicknessTailDisplayShader,
 } from "./shaders";
@@ -48,6 +49,7 @@ import { type BrushSettings, type LayerPoint } from "./engine-types";
 import { nextPaintStampSeed } from "./paint-stamp-generation-core";
 import { usesStrokeGlazeRenderer } from "./engine-strategies";
 import { clamp } from "./color";
+import { directDepositBaseRadius } from "./direct-deposit-brush-core";
 import { startThicknessFactor } from "./thickness-dynamics";
 import { flushClosingLightGlazeSessionBeforeNewStroke } from "./engine-glaze-runtime";
 import { normalizeViewRotation } from "./engine-math";
@@ -157,7 +159,7 @@ export async function finishStaticResourceCreation(
     code: selectionTexturizedGrainShader,
   });
   engine.singleRasterDisplayShaderModule = engine.device.createShaderModule({
-    label: "Single raster RGBA16F display WGSL",
+    label: "Single raster display WGSL",
     code: singleRasterRgba16FloatDisplayShader,
   });
   engine.displayShaderModule = engine.device.createShaderModule({ label: "Display WGSL", code: displayShader });
@@ -167,6 +169,7 @@ export async function finishStaticResourceCreation(
       DOCUMENT_WIDTH,
       DOCUMENT_HEIGHT,
       engine.bevelBoundingFieldEnabled,
+      engine.documentStorageColorSpace === "encoded-srgb-premultiplied",
     ),
   });
   engine.thicknessTailDisplayShaderModule = engine.device.createShaderModule({
@@ -195,7 +198,9 @@ export async function finishStaticResourceCreation(
   });
   engine.paintMipDownsampleShaderModule = engine.device.createShaderModule({
     label: "Paint display mip downsample WGSL",
-    code: paintMipDownsampleShader,
+    code: engine.displayCompositingColorSpace === "stored-encoded-srgb"
+      ? storedEncodedPaintMipDownsampleShader
+      : paintMipDownsampleShader,
   });
   engine.paintStackCompositeMipShaderModule = engine.device.createShaderModule({
     label: "Final raster stack composited mip 1 WGSL",
@@ -221,7 +226,7 @@ export async function finishStaticResourceCreation(
       engine.selectionTexturizedGrainShaderModule,
       "Pixel Selection clipped texturized grain",
     ),
-    assertShaderCompiled(engine.singleRasterDisplayShaderModule, "single raster RGBA16F display"),
+    assertShaderCompiled(engine.singleRasterDisplayShaderModule, "single raster display"),
     assertShaderCompiled(engine.displayShaderModule, "display"),
     assertShaderCompiled(engine.rasterStrokeDisplayShaderModule, "Stroke display"),
     assertShaderCompiled(
@@ -296,7 +301,7 @@ export async function finishStaticResourceCreation(
 
   if (createCore) {
   engine.displayPipeline = engine.device.createRenderPipeline({
-    label: "Single raster RGBA16F display pipeline",
+    label: "Single raster display pipeline",
     layout: displayPipelineLayout,
     vertex: {
       module: engine.singleRasterDisplayShaderModule,
@@ -541,6 +546,11 @@ export async function finishStaticResourceCreation(
           operator,
           (operatorIndex * LAYER_BLEND_MODE_ORDER.length + LAYER_BLEND_MODE_CODES[mode])
             * blendUniformWordStride,
+          null,
+          1,
+          "direct",
+          1,
+          engine.documentStorageColorSpace === "encoded-srgb-premultiplied",
         );
       });
     });
@@ -1153,7 +1163,9 @@ export function emitStamp(engine: BrushEngine, point: LayerPoint, directionX: nu
   }
   const generationSettings = stroke.renderSettings;
   const pressure = clamp(point.pressure, 0.01, 1);
-  const baseRadius = Math.max(0.5, generationSettings.size * 0.5);
+  const baseRadius = stroke.paintDabProfile === "direct-deposit-pressure-size"
+    ? directDepositBaseRadius(generationSettings.size, pressure)
+    : Math.max(0.5, generationSettings.size * 0.5);
   const liveThicknessFactor = stroke.thicknessDynamicsNeutral
     ? 1
     : startThicknessFactor(

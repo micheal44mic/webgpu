@@ -6,6 +6,7 @@ import {
   SHAPE_MASK_FILTER_UV_OFFSET,
   SHAPE_MASK_FILTER_UV_SCALE,
 } from "./engine-limits.ts";
+import { rgba8HighFrequencyQuantizationShader } from "./rgba8-high-frequency-quantization.ts";
 
 // Compute-first WGSL for the dry Blend brush.
 //
@@ -32,7 +33,7 @@ struct BlendUniforms {
   grainAffineAndPhase: vec4<f32>, // grain contrast, movement, mip count, blur amount
   paintColor: vec4<f32>,
   depositRect: vec4<f32>,         // step write rect in group-local pixels X,Y,W,H
-  options: vec4<u32>,             // shape custom, grain mode, filtering + precision, has previous
+  options: vec4<u32>,             // quantization seed, grain mode, filtering + precision + storage, has previous
   slots: vec4<u32>,               // carrier read/write, scratch row stride, Shape layer
 };
 
@@ -62,6 +63,68 @@ fn fullscreenVertex(@builtin(vertex_index) vertexIndex: u32) -> @builtin(positio
     vec2<f32>(-1.0,  3.0)
   );
   return vec4<f32>(positions[vertexIndex], 0.0, 1.0);
+}
+`;
+
+const blendStoredEncodedSrgbFlagWgsl = /* wgsl */ `
+const STORED_ENCODED_SRGB_FLAG: u32 = 8u;
+
+fn usesStoredEncodedSrgb() -> bool {
+  return (blend.options.z & STORED_ENCODED_SRGB_FLAG) != 0u;
+}
+`;
+
+const blendSrgbTransferWgsl = /* wgsl */ `
+fn blendSrgbToLinearChannel(value: f32) -> f32 {
+  let bounded = clamp(value, 0.0, 1.0);
+  return select(
+    bounded / 12.92,
+    pow((bounded + 0.055) / 1.055, 2.4),
+    bounded > 0.04045
+  );
+}
+
+fn blendSrgbToLinear(value: vec3<f32>) -> vec3<f32> {
+  return vec3<f32>(
+    blendSrgbToLinearChannel(value.r),
+    blendSrgbToLinearChannel(value.g),
+    blendSrgbToLinearChannel(value.b)
+  );
+}
+
+fn blendLinearToSrgbChannel(value: f32) -> f32 {
+  let bounded = clamp(value, 0.0, 1.0);
+  return select(
+    bounded * 12.92,
+    1.055 * pow(bounded, 1.0 / 2.4) - 0.055,
+    bounded > 0.0031308
+  );
+}
+
+fn blendLinearToSrgb(value: vec3<f32>) -> vec3<f32> {
+  return vec3<f32>(
+    blendLinearToSrgbChannel(value.r),
+    blendLinearToSrgbChannel(value.g),
+    blendLinearToSrgbChannel(value.b)
+  );
+}
+
+fn blendEncodedSrgbPremultipliedToLinear(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.0000001) {
+    return vec4<f32>(0.0);
+  }
+  let straightSrgb = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  return vec4<f32>(blendSrgbToLinear(straightSrgb) * alpha, alpha);
+}
+
+fn blendLinearPremultipliedToEncodedSrgb(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.0000001) {
+    return vec4<f32>(0.0);
+  }
+  let straightLinear = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  return vec4<f32>(blendLinearToSrgb(straightLinear) * alpha, alpha);
 }
 `;
 
@@ -116,11 +179,11 @@ fn blendBlurWeight(index: u32) -> f32 {
 }
 
 fn packBlendBlurTexel(value: vec4<f32>) -> vec2<u32> {
-  return vec2<u32>(pack2x16float(value.xy), pack2x16float(value.zw));
+  return vec2<u32>(pack2x16unorm(value.xy), pack2x16unorm(value.zw));
 }
 
 fn unpackBlendBlurTexel(value: vec2<u32>) -> vec4<f32> {
-  return vec4<f32>(unpack2x16float(value.x), unpack2x16float(value.y));
+  return vec4<f32>(unpack2x16unorm(value.x), unpack2x16unorm(value.y));
 }
 `;
 
@@ -456,6 +519,8 @@ fn blurUpsampleMain(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 export const blendGatherShader = /* wgsl */ `
 ${blendUniformsWgsl}
+${blendStoredEncodedSrgbFlagWgsl}
+${blendSrgbTransferWgsl}
 
 @group(0) @binding(1) var canonicalLayer: texture_2d<f32>;
 @group(0) @binding(2) var<storage, read_write> stateBuffer: array<vec4<f32>>;
@@ -478,11 +543,17 @@ fn gatherMain(@builtin(global_invocation_id) gid: vec3<u32>) {
     return;
   }
 
-  // The target engine already stores authoritative premultiplied linear RGBA.
-  // The source WebGL renderer's sRGB conversions must not be repeated here.
   let value = textureLoad(canonicalLayer, documentPixel, 0);
   let alpha = clamp(value.a, 0.0, 1.0);
-  stateBuffer[index] = vec4<f32>(clamp(value.rgb, vec3<f32>(0.0), vec3<f32>(alpha)), alpha);
+  let bounded = vec4<f32>(
+    clamp(value.rgb, vec3<f32>(0.0), vec3<f32>(alpha)),
+    alpha
+  );
+  var working = bounded;
+  if (usesStoredEncodedSrgb()) {
+    working = blendEncodedSrgbPremultipliedToLinear(bounded);
+  }
+  stateBuffer[index] = working;
 }
 `;
 
@@ -926,6 +997,9 @@ fn depositMain(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 export const blendScatterShader = /* wgsl */ `
 ${blendUniformsWgsl}
+${blendStoredEncodedSrgbFlagWgsl}
+${blendSrgbTransferWgsl}
+${rgba8HighFrequencyQuantizationShader}
 
 @group(0) @binding(1) var<storage, read> stateBuffer: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read> coverageBuffer: array<f32>;
@@ -944,6 +1018,18 @@ fn scatterFragment(@builtin(position) fragmentPosition: vec4<f32>) -> @location(
 
   let value = stateBuffer[stateIndex(localPixel)];
   let alpha = clamp(value.a, 0.0, 1.0);
-  return vec4<f32>(clamp(value.rgb, vec3<f32>(0.0), vec3<f32>(alpha)), alpha);
+  let bounded = vec4<f32>(
+    clamp(value.rgb, vec3<f32>(0.0), vec3<f32>(alpha)),
+    alpha
+  );
+  if (!usesStoredEncodedSrgb()) {
+    return bounded;
+  }
+  let encoded = blendLinearPremultipliedToEncodedSrgb(bounded);
+  return quantizeRgba8HighFrequencyAdjacent(
+    encoded,
+    vec2<u32>(documentPixel),
+    blend.options.x
+  );
 }
 `;

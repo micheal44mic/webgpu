@@ -17,6 +17,10 @@ import {
   FILL_TILE_GRID_SIZE,
 } from "./fill-core.ts";
 import { colorMatchShaderHelpers } from "./color-match-core.ts";
+import { rgba8HighFrequencyQuantizationShader } from "./rgba8-high-frequency-quantization.ts";
+
+/** Stable document-space phase used by Fill commits and History replay. */
+export const FILL_RGBA8_QUANTIZATION_SEED = 0x46494c4c;
 
 // Alcuni backend Vulkan/GLSL usati da Chrome Android compilano in modo errato
 // lo shift dinamico `1u << 31u`: il bit alto sparisce e il risultato visibile è
@@ -75,7 +79,7 @@ struct FillUniforms {
   fillColor: vec4<f32>,
   sourceSeedColor: vec4<f32>,
   residualFringeRadius: u32,
-  _padding0: u32,
+  storageEncodedSrgb: u32,
   _padding1: u32,
   _padding2: u32,
 };
@@ -133,7 +137,25 @@ fn linearToSrgb(channel: f32) -> f32 {
   return select(1.055 * pow(value, 1.0 / 2.4) - 0.055, 12.92 * value, value <= 0.0031308);
 }
 
-fn straightSrgb(value: vec4<f32>) -> vec4<f32> {
+fn srgbToLinear(channel: f32) -> f32 {
+  let value = clamp(channel, 0.0, 1.0);
+  return select(value / 12.92, pow((value + 0.055) / 1.055, 2.4), value > 0.04045);
+}
+
+fn fillStorageToLinearPremultiplied(value: vec4<f32>) -> vec4<f32> {
+  if (uniforms.storageEncodedSrgb == 0u) { return value; }
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let straight = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  let linear = vec3<f32>(
+    srgbToLinear(straight.r),
+    srgbToLinear(straight.g),
+    srgbToLinear(straight.b)
+  );
+  return vec4<f32>(linear * alpha, alpha);
+}
+
+fn linearPremultipliedToStraightSrgb(value: vec4<f32>) -> vec4<f32> {
   let alpha = clamp(value.a, 0.0, 1.0);
   var inverseAlpha = 0.0;
   if (alpha > 0.000001) { inverseAlpha = 1.0 / alpha; }
@@ -142,6 +164,19 @@ fn straightSrgb(value: vec4<f32>) -> vec4<f32> {
     linearToSrgb(value.g * inverseAlpha),
     linearToSrgb(value.b * inverseAlpha),
     alpha,
+  );
+}
+
+fn fillStorageToStraightSrgb(value: vec4<f32>) -> vec4<f32> {
+  if (uniforms.storageEncodedSrgb == 0u) {
+    return linearPremultipliedToStraightSrgb(value);
+  }
+  let alpha = clamp(value.a, 0.0, 1.0);
+  var inverseAlpha = 0.0;
+  if (alpha > 0.000001) { inverseAlpha = 1.0 / alpha; }
+  return vec4<f32>(
+    clamp(value.rgb * inverseAlpha, vec3<f32>(0.0), vec3<f32>(1.0)),
+    alpha
   );
 }
 
@@ -161,8 +196,8 @@ fn matchesSeed(value: vec4<f32>) -> bool {
   }
   if (uniforms.sourceIsTarget != 0u && seedColor.a > COLOR_MATCH_EPSILON) {
     if (value.a <= COLOR_MATCH_EPSILON) { return false; }
-    let straightValue = straightSrgb(value);
-    let straightSeed = straightSrgb(seedColor);
+    let straightValue = fillStorageToStraightSrgb(value);
+    let straightSeed = linearPremultipliedToStraightSrgb(seedColor);
     return connectedStraightSrgbColorsMatch(
       vec4<f32>(straightValue.rgb, 1.0),
       vec4<f32>(straightSeed.rgb, 1.0),
@@ -170,8 +205,8 @@ fn matchesSeed(value: vec4<f32>) -> bool {
     );
   }
   return connectedStraightSrgbColorsMatch(
-    straightSrgb(value),
-    straightSrgb(seedColor),
+    fillStorageToStraightSrgb(value),
+    linearPremultipliedToStraightSrgb(seedColor),
     uniforms.tolerance,
   );
 }
@@ -250,7 +285,9 @@ fn classifyLocal(
 ) {
   let pixel = workgroup.xy * BLOCK_EXTENT + local.xy;
   if (localIndex == 0u) {
-    seedColor = textureLoad(sourceLayer, vec2<i32>(uniforms.seed), 0);
+    seedColor = fillStorageToLinearPremultiplied(
+      textureLoad(sourceLayer, vec2<i32>(uniforms.seed), 0)
+    );
   }
   workgroupBarrier();
 
@@ -501,7 +538,9 @@ fn residualSourceContains(pixel: vec2<u32>, sourceKind: u32) -> bool {
 }
 
 fn residualBaseContributionAt(pixel: vec2<u32>, base: vec3<f32>) -> f32 {
-  let value = textureLoad(sourceLayer, vec2<i32>(pixel), 0);
+  let value = fillStorageToLinearPremultiplied(
+    textureLoad(sourceLayer, vec2<i32>(pixel), 0)
+  );
   let alpha = clamp(value.a, 0.0, 1.0);
   let rgb = clamp(value.rgb, vec3<f32>(0.0), vec3<f32>(alpha));
   var contribution = alpha;
@@ -734,7 +773,7 @@ struct FillUniforms {
   fillColor: vec4<f32>,
   sourceSeedColor: vec4<f32>,
   residualFringeRadius: u32,
-  _padding0: u32,
+  storageEncodedSrgb: u32,
   _padding1: u32,
   _padding2: u32,
 };
@@ -743,6 +782,54 @@ struct FillUniforms {
 @group(0) @binding(1) var<storage, read> renderMask: array<u32>;
 @group(0) @binding(2) var<storage, read> activeBlocks: array<u32>;
 @group(0) @binding(3) var destinationSnapshot: texture_2d<f32>;
+
+${rgba8HighFrequencyQuantizationShader}
+
+fn fillSrgbToLinearChannel(value: f32) -> f32 {
+  let bounded = clamp(value, 0.0, 1.0);
+  if (bounded <= 0.04045) { return bounded / 12.92; }
+  return pow((bounded + 0.055) / 1.055, 2.4);
+}
+
+fn fillLinearToSrgbChannel(value: f32) -> f32 {
+  let bounded = clamp(value, 0.0, 1.0);
+  if (bounded <= 0.0031308) { return bounded * 12.92; }
+  return 1.055 * pow(bounded, 1.0 / 2.4) - 0.055;
+}
+
+fn fillStorageToLinearPremultiplied(value: vec4<f32>) -> vec4<f32> {
+  if (uniforms.storageEncodedSrgb == 0u) { return value; }
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= BASE_COLOR_EPSILON) { return vec4<f32>(0.0); }
+  let straight = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  let linear = vec3<f32>(
+    fillSrgbToLinearChannel(straight.r),
+    fillSrgbToLinearChannel(straight.g),
+    fillSrgbToLinearChannel(straight.b)
+  );
+  return vec4<f32>(linear * alpha, alpha);
+}
+
+fn fillLinearPremultipliedToStorage(
+  value: vec4<f32>,
+  documentCoordinate: vec2<u32>
+) -> vec4<f32> {
+  if (uniforms.storageEncodedSrgb == 0u) { return value; }
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= BASE_COLOR_EPSILON) { return vec4<f32>(0.0); }
+  let straight = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  let encoded = vec3<f32>(
+    fillLinearToSrgbChannel(straight.r),
+    fillLinearToSrgbChannel(straight.g),
+    fillLinearToSrgbChannel(straight.b)
+  );
+  let encodedPremultiplied = vec4<f32>(encoded * alpha, alpha);
+  return quantizeRgba8HighFrequencyAdjacent(
+    encodedPremultiplied,
+    documentCoordinate,
+    ${FILL_RGBA8_QUANTIZATION_SEED}u
+  );
+}
 
 fn blockGrid() -> vec2<u32> {
   return (uniforms.size + vec2<u32>(BLOCK_EXTENT - 1u))
@@ -816,16 +903,23 @@ fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
   if (!fillRenderMaskContains(renderMask[word], pixel.x)) { discard; }
 
   if (uniforms.compositeMode == COMPOSITE_SOLID_REPLACE) {
-    return vec4<f32>(uniforms.fillColor.rgb, 1.0);
+    return fillLinearPremultipliedToStorage(
+      vec4<f32>(uniforms.fillColor.rgb, 1.0),
+      pixel
+    );
   }
-  let destination = textureLoad(destinationSnapshot, vec2<i32>(pixel), 0);
+  let storedDestination = textureLoad(destinationSnapshot, vec2<i32>(pixel), 0);
+  let destination = fillStorageToLinearPremultiplied(storedDestination);
   let destinationAlpha = clamp(destination.a, 0.0, 1.0);
   if (uniforms.compositeMode == COMPOSITE_PRESERVE_COVERAGE_RECOLOR) {
     let sourceAlpha = clamp(uniforms.sourceSeedColor.a, 0.0, 1.0);
     if (sourceAlpha <= BASE_COLOR_EPSILON || destinationAlpha <= 0.0) {
-      return vec4<f32>(
-        clamp(destination.rgb, vec3<f32>(0.0), vec3<f32>(destinationAlpha)),
-        destinationAlpha,
+      return fillLinearPremultipliedToStorage(
+        vec4<f32>(
+          clamp(destination.rgb, vec3<f32>(0.0), vec3<f32>(destinationAlpha)),
+          destinationAlpha,
+        ),
+        pixel
       );
     }
     let base = clamp(
@@ -834,23 +928,29 @@ fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
       vec3<f32>(1.0),
     );
     let contribution = maximumBaseContribution(destination, base);
-    return vec4<f32>(
-      clamp(
-        destination.rgb + contribution * (clamp(uniforms.fillColor.rgb, vec3<f32>(0.0), vec3<f32>(1.0)) - base),
-        vec3<f32>(0.0),
-        vec3<f32>(destinationAlpha),
+    return fillLinearPremultipliedToStorage(
+      vec4<f32>(
+        clamp(
+          destination.rgb + contribution * (clamp(uniforms.fillColor.rgb, vec3<f32>(0.0), vec3<f32>(1.0)) - base),
+          vec3<f32>(0.0),
+          vec3<f32>(destinationAlpha),
+        ),
+        destinationAlpha,
       ),
-      destinationAlpha,
+      pixel
     );
   }
   if (uniforms.compositeMode == COMPOSITE_SOLID_UNDERLAY) {
-    return vec4<f32>(
-      destination.rgb + uniforms.fillColor.rgb * (1.0 - destinationAlpha),
-      1.0,
+    return fillLinearPremultipliedToStorage(
+      vec4<f32>(
+        destination.rgb + uniforms.fillColor.rgb * (1.0 - destinationAlpha),
+        1.0,
+      ),
+      pixel
     );
   }
   // All public modes are handled above. An invalid History payload must not
   // mutate selected pixels through an implicit fallback.
-  return destination;
+  return storedDestination;
 }
 `;

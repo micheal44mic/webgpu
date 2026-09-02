@@ -76,7 +76,10 @@ assert(
     && engine.includes(
       "(width * height * lightGlazeAccumulatorBytesPerPixel(storageMode)) / MEBIBYTE_BYTES",
     )
-    && engine.includes('const commitTileMiB = storageMode === "rgba16float-stroke"'),
+    && engine.includes(
+      'includeCommitTile = storageMode === "rgba16float-stroke"',
+    )
+    && engine.includes("const commitTileMiB = includeCommitTile"),
   "La contabilità non include accumulator R16F/RGBA16F full-document e scratch tile.",
 );
 assert(
@@ -106,8 +109,9 @@ const submit = section(
   "submitBlendImmediate",
   // Il routing di presentazione document-space dei blend di livello aggiunge
   // tre rami espliciti al submit live; il final-stack mip coerente aggiunge i
-  // gate live/commit, ma la finestra resta stretta sui due marcatori.
-  42_000,
+  // gate live/commit e il deposito diretto aggiunge il percorso ottico, ma la
+  // finestra resta stretta sui due marcatori.
+  43_000,
 );
 for (const requirement of [
   'const intenseBlending = settings.blendMode === "intense-blending";',
@@ -216,8 +220,10 @@ const fixedFunctionComposite = section(
 );
 assert(
   !fixedFunctionComposite.includes("resolvedEncodedSrgbStroke")
-    && fixedFunctionComposite.includes("return vec4<f32>(0.0);")
-    && fixedFunctionComposite.includes("must never use this fixed-function"),
+    && /lightGlaze\.accumulationMode == 2u\s*\|\|[\s\S]*?lightGlaze\.accumulationMode == 3u[\s\S]*?lightGlaze\.accumulationMode == 4u[\s\S]*?lightGlaze\.accumulationMode == 5u[\s\S]*?lightGlaze\.accumulationMode == 6u[\s\S]*?return vec4<f32>\(0\.0\);/
+      .test(fixedFunctionComposite)
+    && fixedFunctionComposite.includes("fixed-function destination")
+    && fixedFunctionComposite.includes("exact tile path"),
   "Il compositore fixed-function conserva un branch Intense matematicamente invalido.",
 );
 

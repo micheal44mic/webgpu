@@ -1,6 +1,7 @@
 /** Transactional destructive tone curves for the selected native raster. */
 
 import type { BrushEngine } from "./brush-engine";
+import type { DocumentStorageColorSpace, LayerFormat } from "./engine-types";
 import {
   createLayerColdStorageCandidate,
   destroyLayerColdStorage,
@@ -25,25 +26,31 @@ import {
   type RasterToneCurveSet,
 } from "./raster-tone-curves-core";
 import {
+  createRasterToneCurvesAdjustmentShader,
+  createRasterToneCurvesHistogramShader,
   rasterToneCurvesAdjustmentDispatchSize,
-  rasterToneCurvesAdjustmentShader,
   rasterToneCurvesHistogramDispatchSize,
-  rasterToneCurvesHistogramShader,
 } from "./raster-tone-curves-shaders";
+import {
+  rasterAdjustmentBytesPerPixel,
+  rasterAdjustmentStorageProfileKey,
+  type RasterAdjustmentStorageProfile,
+} from "./raster-adjustment-storage-shader";
 
 export const DESTRUCTIVE_RASTER_TONE_CURVES_RUNTIME_BUILD =
-  "destructive-raster-tone-curves-webgpu-v1-immutable-crop-latest-wins" as const;
+  "destructive-raster-tone-curves-webgpu-v2-dual-storage-adjacent-code" as const;
 export const DESTRUCTIVE_RASTER_TONE_CURVES_ALGORITHM =
   "shape-preserving-cubic-lut-v1" as const;
 export const DESTRUCTIVE_RASTER_TONE_CURVES_ALGORITHM_VERSION = 1 as const;
 export const DESTRUCTIVE_RASTER_TONE_CURVES_PRECISION =
   "rgba16float-source-and-output-f32-lut" as const;
+export const DESTRUCTIVE_RASTER_TONE_CURVES_RGBA8_PRECISION =
+  "rgba8unorm-encoded-srgb-source-and-output-f32-lut-high-frequency-output" as const;
 export const DESTRUCTIVE_RASTER_TONE_CURVES_COLOR_SPACE =
   "straight-encoded-rgb" as const;
 export const DESTRUCTIVE_RASTER_TONE_CURVES_ALPHA_MODE = "preserve" as const;
 export const DESTRUCTIVE_RASTER_TONE_CURVES_BOUNDS_MODE = "preserve" as const;
 
-const BYTES_PER_RGBA16F_PIXEL = 8;
 const RASTER_TONE_CURVES_PARAMETER_BYTE_SIZE = 16;
 
 interface RasterToneCurvesSharedResources {
@@ -72,6 +79,7 @@ export interface ActiveRasterToneCurvesSession {
   readonly parameterBuffer: GPUBuffer;
   readonly adjustmentBindGroup: GPUBindGroup;
   readonly shared: RasterToneCurvesSharedResources;
+  readonly quantizationSeed: number;
   readonly histogram: Uint32Array;
   readonly memoryBytes: number;
   curves: RasterToneCurveSet;
@@ -91,11 +99,12 @@ export type RasterToneCurvesEngineHost = BrushEngine & {
 
 const sharedByDevice = new WeakMap<
   GPUDevice,
-  Promise<RasterToneCurvesSharedResources>
+  Map<string, Promise<RasterToneCurvesSharedResources>>
 >();
 
 async function createSharedResources(
   device: GPUDevice,
+  profile: RasterAdjustmentStorageProfile,
 ): Promise<RasterToneCurvesSharedResources> {
   return runGpuAllocationTransaction(
     device,
@@ -103,11 +112,11 @@ async function createSharedResources(
     async () => {
       const adjustmentModule = device.createShaderModule({
         label: "Raster tone curves adjustment WGSL",
-        code: rasterToneCurvesAdjustmentShader,
+        code: createRasterToneCurvesAdjustmentShader(profile),
       });
       const histogramModule = device.createShaderModule({
         label: "Raster tone histogram WGSL",
-        code: rasterToneCurvesHistogramShader,
+        code: createRasterToneCurvesHistogramShader(profile),
       });
       await Promise.all([
         assertShaderCompiled(adjustmentModule, "Raster tone curves adjustment"),
@@ -125,7 +134,7 @@ async function createSharedResources(
           {
             binding: 1,
             visibility: GPUShaderStage.COMPUTE,
-            storageTexture: { access: "write-only", format: "rgba16float" },
+            storageTexture: { access: "write-only", format: profile.layerFormat },
           },
           {
             binding: 2,
@@ -189,16 +198,23 @@ async function createSharedResources(
 
 async function requireSharedResources(
   device: GPUDevice,
+  profile: RasterAdjustmentStorageProfile,
 ): Promise<RasterToneCurvesSharedResources> {
-  let promise = sharedByDevice.get(device);
+  let profiles = sharedByDevice.get(device);
+  if (!profiles) {
+    profiles = new Map();
+    sharedByDevice.set(device, profiles);
+  }
+  const key = rasterAdjustmentStorageProfileKey(profile);
+  let promise = profiles.get(key);
   if (!promise) {
-    promise = createSharedResources(device);
-    sharedByDevice.set(device, promise);
+    promise = createSharedResources(device, profile);
+    profiles.set(key, promise);
   }
   try {
     return await promise;
   } catch (error) {
-    sharedByDevice.delete(device);
+    profiles.delete(key);
     throw error;
   }
 }
@@ -206,8 +222,10 @@ async function requireSharedResources(
 /** Builds both resident pipelines without opening a document edit. */
 export async function prewarmRasterToneCurvesRuntime(
   device: GPUDevice,
+  layerFormat: LayerFormat = "rgba16float",
+  colorSpace: DocumentStorageColorSpace = "linear-premultiplied",
 ): Promise<void> {
-  await requireSharedResources(device);
+  await requireSharedResources(device, { layerFormat, colorSpace });
 }
 
 function previewError(error: unknown): Error {
@@ -486,6 +504,7 @@ async function allocateSession(
   curves: RasterToneCurveSet,
   shared: RasterToneCurvesSharedResources,
 ): Promise<ActiveRasterToneCurvesSession> {
+  const quantizationSeed = engine.nextHistoryActionId >>> 0;
   const allocated = await runGpuAllocationTransaction(
     engine.device,
     `Allocate raster tone curves layer ${recordId}`,
@@ -497,7 +516,7 @@ async function allocateSession(
           height: sourceBounds.height,
           depthOrArrayLayers: 1,
         },
-        format: "rgba16float",
+        format: engine.layerFormat,
         usage:
           GPUTextureUsage.COPY_SRC
           | GPUTextureUsage.COPY_DST
@@ -583,7 +602,12 @@ async function allocateSession(
       engine.device.queue.writeBuffer(
         parameterBuffer,
         0,
-        new Uint32Array([sourceBounds.x, sourceBounds.y, 0, 0]),
+        new Uint32Array([
+          sourceBounds.x,
+          sourceBounds.y,
+          quantizationSeed,
+          0,
+        ]),
       );
       const histogramDispatch = rasterToneCurvesHistogramDispatchSize(
         sourceBounds.width,
@@ -638,9 +662,11 @@ async function allocateSession(
         shared,
         histogram,
         memoryBytes:
-          sourceBounds.width * sourceBounds.height * BYTES_PER_RGBA16F_PIXEL
+          sourceBounds.width * sourceBounds.height
+            * rasterAdjustmentBytesPerPixel(engine.layerFormat)
           + RASTER_TONE_CURVE_LUT_BYTE_SIZE
           + RASTER_TONE_CURVES_PARAMETER_BYTE_SIZE,
+        quantizationSeed,
         curves,
         requestedSerial: 1,
         encodedSerial: 0,
@@ -689,10 +715,6 @@ export async function beginRasterToneCurves(
   if (!record.hasContent || !record.contentBounds) {
     throw new Error("The selected raster layer is empty.");
   }
-  if (engine.layerFormat !== "rgba16float") {
-    throw new Error("Destructive Tone Curves requires an RGBA16F document.");
-  }
-
   engine.cancelLayerColdCompressionIdle();
   engine.historyBusy = true;
   engine.publishHistoryState();
@@ -721,7 +743,10 @@ export async function beginRasterToneCurves(
     }
     const sourceTileMask = record.storageTileMask.slice();
     const curves = normalizeRasterToneCurveSet(initial);
-    const shared = await requireSharedResources(engine.device);
+    const shared = await requireSharedResources(engine.device, {
+      layerFormat: engine.layerFormat,
+      colorSpace: engine.documentStorageColorSpace,
+    });
     session = await allocateSession(
       engine,
       record.id,
@@ -873,7 +898,9 @@ export async function commitRasterToneCurves(
       filter: "curves",
       curves: copyCurves(session.curves),
       lutSize: RASTER_TONE_CURVE_LUT_SIZE,
-      precision: DESTRUCTIVE_RASTER_TONE_CURVES_PRECISION,
+      precision: engine.layerFormat === "rgba8unorm"
+        ? DESTRUCTIVE_RASTER_TONE_CURVES_RGBA8_PRECISION
+        : DESTRUCTIVE_RASTER_TONE_CURVES_PRECISION,
       colorSpace: DESTRUCTIVE_RASTER_TONE_CURVES_COLOR_SPACE,
       alphaMode: DESTRUCTIVE_RASTER_TONE_CURVES_ALPHA_MODE,
       boundsMode: DESTRUCTIVE_RASTER_TONE_CURVES_BOUNDS_MODE,

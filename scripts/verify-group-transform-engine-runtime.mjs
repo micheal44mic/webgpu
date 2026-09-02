@@ -105,6 +105,16 @@ assert.match(
   /for \(const memberCount of \[2, 3, 5\]\)/,
   "The sequential provenance matrix must cover two, three, and five raster members.",
 );
+assert.match(
+  gpuLab,
+  /engine\.layerFormat === "rgba16float"[\s\S]*?engine\.layerFormat === "rgba8unorm"[\s\S]*?engine\.documentStorageColorSpace === "encoded-srgb-premultiplied"/,
+  "The Group Transform GPU matrix must accept both linear high-precision and encoded RGBA8 documents.",
+);
+assert.match(
+  gpuLab,
+  /bytesPerPixel === 4 \|\| bytesPerPixel === 8/,
+  "The Group Transform marker oracle must inspect the native document format.",
+);
 for (const invariant of [
   "shrink did not preserve every immutable raster source",
   "upscale did not preserve every immutable raster source",

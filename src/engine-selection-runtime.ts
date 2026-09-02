@@ -359,6 +359,8 @@ export async function ensureSelectionRenderer(
   if (!engine.selectionRendererLoadingPromise) {
     engine.selectionRendererLoadingPromise = SelectionRenderer.create({
       device: engine.device,
+      layerFormat: engine.layerFormat,
+      documentStorageColorSpace: engine.documentStorageColorSpace,
       sourceSamplingView: engine.layerSamplingView,
       overlayCanvas: engine.selectionOverlayCanvas,
     }).then((renderer) => {

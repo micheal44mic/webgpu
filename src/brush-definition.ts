@@ -130,6 +130,7 @@ export function brushDefinitionSettingsFromRuntime(
 
 export const DEFAULT_BRUSH_DEFINITION_SETTINGS: Readonly<BrushDefinitionSettings> = Object.freeze({
   shape: "circle",
+  tipFalloff: "standard",
   shapeAssetId: "legacy-shape",
   shapeAssetIds: ["legacy-shape"] as const,
   shapeSequenceMode: "ordered",
@@ -230,6 +231,14 @@ export function normalizeBrushDefinitionSettings(
 
   return {
     shape: enumValue(record, "shape", ["circle", "shape"] as const, fallback.shape, strict),
+    tipFalloff: enumValue(
+      record,
+      "tipFalloff",
+      ["standard", "gaussian"] as const,
+      fallback.tipFalloff ?? "standard",
+      strict,
+      true,
+    ),
     shapeAssetId,
     shapeAssetIds,
     shapeSequenceMode: enumValue(

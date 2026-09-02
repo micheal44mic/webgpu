@@ -36,7 +36,11 @@ import {
   LAYER_SIZE,
 } from "../src/engine-limits.ts";
 import { colorMatchShaderHelpers } from "../src/color-match-core.ts";
-import { selectionComputeShader as resolvedSelectionComputeShader } from "../src/selection-shaders.ts";
+import {
+  createSelectionComputeShader,
+  selectionComputeShader as resolvedSelectionComputeShader,
+  selectionSourceStorageProfileKey,
+} from "../src/selection-shaders.ts";
 import { readEngineSource } from "./engine-source.mjs";
 
 assert.equal(
@@ -89,7 +93,29 @@ assert.throws(() => normalizeSelectionTolerance(Number.NaN));
 assert.throws(() => normalizeSelectionTolerance(Number.POSITIVE_INFINITY));
 assert.deepEqual(selectionHexToStraightSrgb("#000000"), [0, 0, 0, 1]);
 assert.deepEqual(selectionHexToStraightSrgb("ff8040"), [1, 128 / 255, 64 / 255, 1]);
+assert.deepEqual(selectionHexToStraightSrgb("#808080"), [128 / 255, 128 / 255, 128 / 255, 1]);
 assert.throws(() => selectionHexToStraightSrgb("#fff"));
+
+const encodedMidCode = 128 / 255;
+const incorrectlyReencodedMidCode = 1.055 * (encodedMidCode ** (1 / 2.4)) - 0.055;
+assert.equal(
+  selectionColorsMatch(
+    [encodedMidCode, encodedMidCode, encodedMidCode, 1],
+    selectionHexToStraightSrgb("#808080"),
+    0,
+  ),
+  true,
+  "Stored encoded #808080 must remain an exact zero-tolerance Color Range match.",
+);
+assert.equal(
+  selectionColorsMatch(
+    [incorrectlyReencodedMidCode, incorrectlyReencodedMidCode, incorrectlyReencodedMidCode, 1],
+    selectionHexToStraightSrgb("#808080"),
+    0,
+  ),
+  false,
+  "Applying the transfer function twice must not masquerade as an exact #808080 match.",
+);
 assert.equal(
   selectionColorsMatch([0, 0, 0, 1], [0, 1, 0, 1], 255),
   false,
@@ -235,6 +261,22 @@ assert(
 assert(shader.includes("${colorMatchShaderHelpers}"));
 assert(resolvedSelectionComputeShader.includes("fn globalStraightSrgbColorsMatch("));
 assert(!resolvedSelectionComputeShader.includes("${colorMatchShaderHelpers}"));
+const rgba8SelectionComputeShader = createSelectionComputeShader({
+  layerFormat: "rgba8unorm",
+  colorSpace: "encoded-srgb-premultiplied",
+});
+assert.equal(
+  selectionSourceStorageProfileKey({
+    layerFormat: "rgba8unorm",
+    colorSpace: "encoded-srgb-premultiplied",
+  }),
+  "rgba8unorm:encoded-srgb-premultiplied",
+);
+assert(rgba8SelectionComputeShader.includes("let straightStored = clamp("));
+assert(rgba8SelectionComputeShader.includes("return vec4<f32>(straightStored, alpha);"));
+assert(!rgba8SelectionComputeShader.includes("fn linearToSrgb("));
+assert(resolvedSelectionComputeShader.includes("fn linearToSrgb("));
+assert(resolvedSelectionComputeShader.includes("linearToSrgb(value.r * inverseAlpha)"));
 assert(shader.includes("let matches = globalStraightSrgbColorsMatch("));
 assert(!shader.includes("let delta = abs(source - uniforms.targetColor)"));
 assert(shader.includes("atomicOr(&selectionMask[wordIndex], candidate)"));
@@ -354,9 +396,17 @@ assert(runtime.includes("SELECTION_RENDERER_IDLE_RELEASE_MS = 1_500"));
 assert(runtime.includes("engine.selectionRenderer?.destroy()"));
 assert(runtime.includes("engine.device.queue.onSubmittedWorkDone()"));
 assert(renderer.includes("const selectionGpuPrograms = new WeakMap<"));
-assert(renderer.includes("Map<GPUTextureFormat, Promise<SelectionGpuProgram>>"));
-assert(renderer.includes("const cached = programsByFormat.get(overlayFormat)"));
-assert(renderer.includes("const program = await getSelectionGpuProgram(this.device, this.overlayFormat)"));
+assert(renderer.includes("Map<string, Promise<SelectionGpuProgram>>"));
+assert(renderer.includes("function selectionGpuProgramKey("));
+assert(renderer.includes("`${overlayFormat}:${selectionSourceStorageProfileKey(sourceProfile)}`"));
+assert(renderer.includes("const cached = programsByFormat.get(programKey)"));
+assert(renderer.includes("createSelectionComputeShader(sourceProfile)"));
+assert.match(
+  renderer,
+  /getSelectionGpuProgram\(\s*this\.device,\s*this\.overlayFormat,\s*this\.sourceProfile,\s*\)/,
+);
+assert(runtime.includes("layerFormat: engine.layerFormat"));
+assert(runtime.includes("documentStorageColorSpace: engine.documentStorageColorSpace"));
 assert.equal(
   renderer.match(/createShaderModule\(/g)?.length,
   2,

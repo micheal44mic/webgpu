@@ -1,5 +1,8 @@
 import { mergedSurfaceSamplingShader } from "./merged-surface-shader";
 import { activeClippingGroupTexelShader } from "./clipping-group-shader";
+import { rgba8SpatialQuantizationShader } from "./rgba8-spatial-quantization";
+import { rgba8HighFrequencyQuantizationShader } from "./rgba8-high-frequency-quantization";
+import { gaussianBrushTipShader } from "./gaussian-brush-tip";
 import {
   SHAPE_MASK_FILTER_CONTENT_SIZE,
   SHAPE_MASK_FILTER_GUARD_TEXELS,
@@ -14,6 +17,8 @@ const DIAGNOSTIC_8_BIT_FLAG: u32 = 2u;
 const TAU: f32 = 6.283185307179586;
 const SHAPE_OCCUPANCY_GRID_SIZE: u32 = 256u;
 const SHAPE_MASK_UV_HALF_EXTENT: f32 = ${SHAPE_MASK_FILTER_UV_HALF_EXTENT};
+
+${gaussianBrushTipShader}
 
 struct BrushUniforms {
   layerSize: vec2<f32>,
@@ -321,6 +326,15 @@ fn highPrecisionCoveragePaint(input: VertexOutput, coverage: f32) -> vec4<f32> {
   return vec4<f32>(alpha);
 }
 
+fn opticalDepthPaint(input: VertexOutput, coverage: f32) -> vec4<f32> {
+  let alpha = paintAlpha(input, coverage);
+  // Optical depth turns multiplicative transmittance into an additive scalar:
+  // sum(-log2(1-a)) resolves to the same source-over coverage as every dab,
+  // without rounding the color or alpha after each overlap.
+  let opticalDepth = -log2(max(1.0 - alpha, 0.000001));
+  return vec4<f32>(opticalDepth);
+}
+
 fn circleCoverage(input: VertexOutput) -> f32 {
   let radiusSquared = dot(input.localPosition, input.localPosition);
   let antialiasWidth = max(fwidth(radiusSquared), 0.00001);
@@ -329,11 +343,18 @@ fn circleCoverage(input: VertexOutput) -> f32 {
     discard;
   }
 
-  let hardness = clamp(brush.controls.y, 0.0, 1.0);
-  let innerEdge = min(hardness * hardness, 1.0 - antialiasWidth);
-  let coverage = sourcePrecisionCoverage(
-    1.0 - smoothstep(innerEdge, 1.0 + antialiasWidth, radiusSquared)
-  );
+  var coverage: f32;
+  if ((brush.options.z & GAUSSIAN_TIP_FLAG) != 0u) {
+    coverage = sourcePrecisionCoverage(
+      normalizedGaussianTipCoverage(radiusSquared)
+    );
+  } else {
+    let hardness = clamp(brush.controls.y, 0.0, 1.0);
+    let innerEdge = min(hardness * hardness, 1.0 - antialiasWidth);
+    coverage = sourcePrecisionCoverage(
+      1.0 - smoothstep(innerEdge, 1.0 + antialiasWidth, radiusSquared)
+    );
+  }
 
   if (coverage <= 0.0) {
     discard;
@@ -371,6 +392,11 @@ fn coverageFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 
 @fragment
+fn opticalDepthFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  return opticalDepthPaint(input, circleCoverage(input));
+}
+
+@fragment
 fn shapeFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   return premultipliedPaint(input, shapeCoverage(input));
 }
@@ -383,6 +409,11 @@ fn encodedSrgbShapeFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 @fragment
 fn shapeCoverageFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   return highPrecisionCoveragePaint(input, shapeCoverage(input));
+}
+
+@fragment
+fn shapeOpticalDepthFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  return opticalDepthPaint(input, shapeCoverage(input));
 }
 
 fn shapeOccupancyMayContribute(uv: vec2<f32>) -> bool {
@@ -441,6 +472,13 @@ fn encodedSrgbShapeOccupancyFragmentMain(
 fn shapeOccupancyCoverageFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   return highPrecisionCoveragePaint(input, occupiedShapeCoverage(input));
 }
+
+@fragment
+fn shapeOccupancyOpticalDepthFragmentMain(
+  input: VertexOutput
+) -> @location(0) vec4<f32> {
+  return opticalDepthPaint(input, occupiedShapeCoverage(input));
+}
 `;
 
 // Grain remains an opt-in fragment path. Grain Off keeps its smaller shader
@@ -450,6 +488,8 @@ export const texturizedGrainShader = /* wgsl */ `
 const SHAPE_OCCUPANCY_GRID_SIZE: u32 = 256u;
 const SHAPE_MASK_UV_HALF_EXTENT: f32 = ${SHAPE_MASK_FILTER_UV_HALF_EXTENT};
 const DIAGNOSTIC_8_BIT_FLAG: u32 = 2u;
+
+${gaussianBrushTipShader}
 
 struct BrushUniforms {
   layerSize: vec2<f32>,
@@ -619,6 +659,11 @@ fn highPrecisionCoveragePaint(input: FragmentInput, coverage: f32) -> vec4<f32> 
   return vec4<f32>(alpha);
 }
 
+fn opticalDepthPaint(input: FragmentInput, coverage: f32) -> vec4<f32> {
+  let alpha = paintAlpha(input, coverage);
+  return vec4<f32>(-log2(max(1.0 - alpha, 0.000001)));
+}
+
 fn circleGrainCoverage(input: FragmentInput) -> f32 {
   let grainUv = selectedGrainUv(input);
   let grainUvDx = dpdx(grainUv);
@@ -630,11 +675,18 @@ fn circleGrainCoverage(input: FragmentInput) -> f32 {
     discard;
   }
 
-  let hardness = clamp(brush.controls.y, 0.0, 1.0);
-  let innerEdge = min(hardness * hardness, 1.0 - antialiasWidth);
-  var coverage = sourcePrecisionCoverage(
-    1.0 - smoothstep(innerEdge, 1.0 + antialiasWidth, radiusSquared)
-  );
+  var coverage: f32;
+  if ((brush.options.z & GAUSSIAN_TIP_FLAG) != 0u) {
+    coverage = sourcePrecisionCoverage(
+      normalizedGaussianTipCoverage(radiusSquared)
+    );
+  } else {
+    let hardness = clamp(brush.controls.y, 0.0, 1.0);
+    let innerEdge = min(hardness * hardness, 1.0 - antialiasWidth);
+    coverage = sourcePrecisionCoverage(
+      1.0 - smoothstep(innerEdge, 1.0 + antialiasWidth, radiusSquared)
+    );
+  }
 
   if (coverage <= 0.0) {
     discard;
@@ -660,6 +712,11 @@ fn encodedSrgbFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
 @fragment
 fn coverageFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
   return highPrecisionCoveragePaint(input, circleGrainCoverage(input));
+}
+
+@fragment
+fn opticalDepthFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
+  return opticalDepthPaint(input, circleGrainCoverage(input));
 }
 
 fn shapeGrainCoverage(input: FragmentInput) -> f32 {
@@ -697,6 +754,11 @@ fn encodedSrgbShapeFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> 
 @fragment
 fn shapeCoverageFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
   return highPrecisionCoveragePaint(input, shapeGrainCoverage(input));
+}
+
+@fragment
+fn shapeOpticalDepthFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
+  return opticalDepthPaint(input, shapeGrainCoverage(input));
 }
 
 fn occupiedShapeGrainCoverage(input: FragmentInput) -> f32 {
@@ -749,6 +811,13 @@ fn encodedSrgbShapeOccupancyFragmentMain(
 @fragment
 fn shapeOccupancyCoverageFragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
   return highPrecisionCoveragePaint(input, occupiedShapeGrainCoverage(input));
+}
+
+@fragment
+fn shapeOccupancyOpticalDepthFragmentMain(
+  input: FragmentInput
+) -> @location(0) vec4<f32> {
+  return opticalDepthPaint(input, occupiedShapeGrainCoverage(input));
 }
 `;
 
@@ -884,7 +953,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
 }
 `;
 
-// Minimal presentation path for one authoritative RGBA16F raster surface.
+// Minimal presentation path for one authoritative raster surface.
 // Bindings intentionally retain the matching slots from the full display ABI
 // so this shader can reuse that bind group without compiling its composite
 // surface graph. The render pipeline continues to own the canvas target format.
@@ -908,6 +977,9 @@ struct SingleRasterDisplayUniforms {
   _reservedCompositionOrigin0: vec2<f32>,
   _reservedCompositionOrigin1: vec2<f32>,
   backgroundColor: vec4<f32>,
+  documentSize: vec2<f32>,
+  compositingColorSpace: f32,
+  _padDisplay: f32,
 };
 
 struct SingleRasterVertexOutput {
@@ -964,6 +1036,32 @@ fn singleRasterLinearToSrgb(value: vec3<f32>) -> vec3<f32> {
     singleRasterLinearToSrgbChannel(value.r),
     singleRasterLinearToSrgbChannel(value.g),
     singleRasterLinearToSrgbChannel(value.b)
+  );
+}
+
+fn singleRasterCompositePaintOverBackgroundSrgb(
+  paint: vec4<f32>,
+  backgroundSrgb: vec3<f32>
+) -> vec3<f32> {
+  let alpha = clamp(paint.a, 0.0, 1.0);
+  if (display.compositingColorSpace > 1.5) {
+    return paint.rgb + backgroundSrgb * (1.0 - alpha);
+  }
+  if (display.compositingColorSpace > 0.5) {
+    var encodedPremultiplied = vec3<f32>(0.0);
+    if (alpha > 0.0) {
+      let straightLinear = clamp(
+        paint.rgb / alpha,
+        vec3<f32>(0.0),
+        vec3<f32>(1.0)
+      );
+      encodedPremultiplied = singleRasterLinearToSrgb(straightLinear) * alpha;
+    }
+    return encodedPremultiplied + backgroundSrgb * (1.0 - alpha);
+  }
+  let backgroundLinear = singleRasterSrgbToLinear(backgroundSrgb);
+  return singleRasterLinearToSrgb(
+    paint.rgb + backgroundLinear * (1.0 - alpha)
   );
 }
 
@@ -1062,9 +1160,10 @@ fn fragmentMain(
     display.backgroundColor.rgb,
     display.backgroundColor.a > 0.5
   );
-  let backgroundLinear = singleRasterSrgbToLinear(backgroundSrgb);
-  let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
-  return vec4<f32>(singleRasterLinearToSrgb(compositedLinear), 1.0);
+  return vec4<f32>(
+    singleRasterCompositePaintOverBackgroundSrgb(paint, backgroundSrgb),
+    1.0
+  );
 }
 `;
 
@@ -1088,6 +1187,9 @@ struct DisplayUniforms {
   clippingPrefixOrigin: vec2<f32>,
   clippingSuffixOrigin: vec2<f32>,
   backgroundColor: vec4<f32>,
+  documentSize: vec2<f32>,
+  compositingColorSpace: f32,
+  _padDisplay: f32,
 };
 
 struct VertexOutput {
@@ -1134,8 +1236,38 @@ fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
   );
 }
 
+fn compositePaintOverBackgroundSrgb(
+  paint: vec4<f32>,
+  backgroundSrgb: vec3<f32>
+) -> vec3<f32> {
+  let alpha = clamp(paint.a, 0.0, 1.0);
+  if (display.compositingColorSpace > 1.5) {
+    // The paint is already premultiplied in encoded sRGB. Composite it
+    // directly over the encoded display background without another transfer.
+    return paint.rgb + backgroundSrgb * (1.0 - alpha);
+  }
+  if (display.compositingColorSpace > 0.5) {
+    var encodedPremultiplied = vec3<f32>(0.0);
+    if (alpha > 0.0) {
+      let straightLinear = clamp(paint.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+      encodedPremultiplied = linearToSrgb(straightLinear) * alpha;
+    }
+    return encodedPremultiplied + backgroundSrgb * (1.0 - alpha);
+  }
+  let backgroundLinear = srgbToLinear(backgroundSrgb);
+  return linearToSrgb(paint.rgb + backgroundLinear * (1.0 - alpha));
+}
+
 fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
   return source + destination * (1.0 - source.a);
+}
+
+fn activePaintForLinearScene(value: vec4<f32>) -> vec4<f32> {
+  if (display.compositingColorSpace < 1.5) { return value; }
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let straightSrgb = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  return vec4<f32>(srgbToLinear(straightSrgb) * alpha, alpha);
 }
 
 ${activeClippingGroupTexelShader}
@@ -1382,10 +1514,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     display.backgroundColor.rgb,
     display.backgroundColor.a > 0.5
   );
-  let backgroundLinear = srgbToLinear(backgroundSrgb);
-  let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
-
-  return vec4<f32>(linearToSrgb(compositedLinear), 1.0);
+  return vec4<f32>(compositePaintOverBackgroundSrgb(paint, backgroundSrgb), 1.0);
 }
 
 // Mip 1+ can store the already-composited raster stack. This entry point is
@@ -1451,9 +1580,7 @@ fn finalStackFragmentMain(
     display.backgroundColor.rgb,
     display.backgroundColor.a > 0.5
   );
-  let backgroundLinear = srgbToLinear(backgroundSrgb);
-  let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
-  return vec4<f32>(linearToSrgb(compositedLinear), 1.0);
+  return vec4<f32>(compositePaintOverBackgroundSrgb(paint, backgroundSrgb), 1.0);
 }
 
 @fragment
@@ -1478,11 +1605,11 @@ fn activeFragmentMain(
     vec2<f32>(1.0)
   );
   let sampled = sampleActiveLayer(uv);
-  return select(
+  return activePaintForLinearScene(select(
     sampled,
     sampled * display.activeLayerAlpha,
     display.clippingMode < 0.5
-  );
+  ));
 }
 
 @fragment
@@ -1518,7 +1645,12 @@ fn activeSourceFragmentMain(
       lod >= 0.5,
     );
   }
-  return source * display.activeLayerAlpha;
+  let sourceOpacity = select(
+    display.activeLayerAlpha,
+    1.0,
+    display.clippingMode >= 0.5 && display.clippingMode < 1.5,
+  );
+  return activePaintForLinearScene(source * sourceOpacity);
 }
 
 @fragment
@@ -1581,6 +1713,9 @@ struct DisplayUniforms {
   clippingPrefixOrigin: vec2<f32>,
   clippingSuffixOrigin: vec2<f32>,
   backgroundColor: vec4<f32>,
+  documentSize: vec2<f32>,
+  compositingColorSpace: f32,
+  _padDisplay: f32,
 };
 
 struct ThicknessTailUniforms {
@@ -1651,6 +1786,11 @@ fn gammaPremultipliedToLinear(value: vec4<f32>) -> vec4<f32> {
   if (alpha <= 0.000001) { return vec4<f32>(0.0); }
   let straight = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
   return vec4<f32>(srgbToLinear(straight) * alpha, alpha);
+}
+
+fn thicknessPaintForLinearScene(value: vec4<f32>) -> vec4<f32> {
+  if (display.compositingColorSpace < 1.5) { return value; }
+  return gammaPremultipliedToLinear(value);
 }
 
 fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
@@ -1896,6 +2036,9 @@ fn activeMipFragmentMain(
   let p10 = tailActiveTexel(sourceOrigin + vec2<i32>(1, 0));
   let p01 = tailActiveTexel(sourceOrigin + vec2<i32>(0, 1));
   let p11 = tailActiveTexel(sourceOrigin + vec2<i32>(1, 1));
+  if (display.compositingColorSpace > 1.5) {
+    return (p00 + p10 + p01 + p11) * 0.25;
+  }
   let gammaAverage = (
     linearPremultipliedToGamma(p00)
     + linearPremultipliedToGamma(p10)
@@ -1929,6 +2072,9 @@ fn finalStackMipFragmentMain(
   let p10 = tailFinalStackDocumentTexel(sourceOrigin + vec2<i32>(1, 0));
   let p01 = tailFinalStackDocumentTexel(sourceOrigin + vec2<i32>(0, 1));
   let p11 = tailFinalStackDocumentTexel(sourceOrigin + vec2<i32>(1, 1));
+  if (display.compositingColorSpace > 1.5) {
+    return (p00 + p10 + p01 + p11) * 0.25;
+  }
   let gammaAverage = (
     linearPremultipliedToGamma(p00)
     + linearPremultipliedToGamma(p10)
@@ -2022,9 +2168,11 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     display.backgroundColor.rgb,
     display.backgroundColor.a > 0.5
   );
+  if (display.compositingColorSpace > 1.5) {
+    return vec4<f32>(paint.rgb + backgroundSrgb * (1.0 - paint.a), 1.0);
+  }
   let backgroundLinear = srgbToLinear(backgroundSrgb);
   let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
-
   return vec4<f32>(linearToSrgb(compositedLinear), 1.0);
 }
 
@@ -2052,9 +2200,11 @@ fn activeFragmentMain(
   );
   let paint = sampleTailDisplayActive(layerPosition, layerUv);
   if (display.clippingMode > 0.5) {
-    return sampleTailDisplayClippingGroup(layerPosition, layerUv);
+    return thicknessPaintForLinearScene(
+      sampleTailDisplayClippingGroup(layerPosition, layerUv)
+    );
   }
-  return paint * display.activeLayerAlpha;
+  return thicknessPaintForLinearScene(paint * display.activeLayerAlpha);
 }
 
 @fragment
@@ -2076,7 +2226,14 @@ fn activeSourceFragmentMain(
     vec2<f32>(0.0),
     vec2<f32>(1.0)
   );
-  return sampleTailDisplayActive(layerPosition, layerUv) * display.activeLayerAlpha;
+  let sourceOpacity = select(
+    display.activeLayerAlpha,
+    1.0,
+    display.clippingMode >= 0.5 && display.clippingMode < 1.5,
+  );
+  return thicknessPaintForLinearScene(
+    sampleTailDisplayActive(layerPosition, layerUv) * sourceOpacity
+  );
 }
 `;
 
@@ -2104,13 +2261,16 @@ struct DisplayUniforms {
   clippingPrefixOrigin: vec2<f32>,
   clippingSuffixOrigin: vec2<f32>,
   backgroundColor: vec4<f32>,
+  documentSize: vec2<f32>,
+  compositingColorSpace: f32,
+  _padDisplay: f32,
 };
 
 struct LightGlazeUniforms {
   opacity: f32,
   formatCode: u32,
   accumulationMode: u32,
-  _pad1: u32,
+  ditherSeed: u32,
   tintLinear: vec4<f32>,
 };
 
@@ -2130,6 +2290,8 @@ struct VertexOutput {
 @group(0) @binding(9) var vectorTextAboveTexture: texture_2d<f32>;
 @group(0) @binding(10) var activeClippingPrefix: texture_2d<f32>;
 @group(0) @binding(11) var activeClippingSuffix: texture_2d<f32>;
+
+${rgba8SpatialQuantizationShader}
 
 fn srgbToLinearChannel(value: f32) -> f32 {
   if (value <= 0.04045) {
@@ -2160,6 +2322,28 @@ fn linearToSrgb(value: vec3<f32>) -> vec3<f32> {
     linearToSrgbChannel(value.g),
     linearToSrgbChannel(value.b)
   );
+}
+
+fn compositePaintOverBackgroundSrgb(
+  paint: vec4<f32>,
+  backgroundSrgb: vec3<f32>
+) -> vec3<f32> {
+  let alpha = clamp(paint.a, 0.0, 1.0);
+  if (display.compositingColorSpace > 1.5) {
+    // The paint is already premultiplied in encoded sRGB. Composite it
+    // directly over the encoded display background without another transfer.
+    return paint.rgb + backgroundSrgb * (1.0 - alpha);
+  }
+  if (display.compositingColorSpace > 0.5) {
+    var encodedPremultiplied = vec3<f32>(0.0);
+    if (alpha > 0.0) {
+      let straightLinear = clamp(paint.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+      encodedPremultiplied = linearToSrgb(straightLinear) * alpha;
+    }
+    return encodedPremultiplied + backgroundSrgb * (1.0 - alpha);
+  }
+  let backgroundLinear = srgbToLinear(backgroundSrgb);
+  return linearToSrgb(paint.rgb + backgroundLinear * (1.0 - alpha));
 }
 
 fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
@@ -2235,20 +2419,57 @@ fn encodedSrgbPremultipliedToLinear(value: vec4<f32>) -> vec4<f32> {
   return vec4<f32>(srgbToLinear(straightSrgb) * alpha, alpha);
 }
 
+fn lightGlazePaintForLinearScene(value: vec4<f32>) -> vec4<f32> {
+  if (display.compositingColorSpace < 1.5) { return value; }
+  return encodedSrgbPremultipliedToLinear(value);
+}
+
 fn resolvedStrokePaint(accumulatedStroke: vec4<f32>) -> vec4<f32> {
   let opacity = clamp(lightGlaze.opacity, 0.0, 1.0);
   if (lightGlaze.accumulationMode == 1u) {
     let coverage = storedLightCoverage(accumulatedStroke.r);
     return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
   }
+  if (lightGlaze.accumulationMode == 3u) {
+    let coverage = clamp(
+      1.0 - exp2(-max(accumulatedStroke.r, 0.0)),
+      0.0,
+      1.0
+    );
+    return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
+  }
+  if (lightGlaze.accumulationMode == 4u) {
+    let coverage = storedLightCoverage(accumulatedStroke.r);
+    return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
+  }
+  if (lightGlaze.accumulationMode == 5u) {
+    return linearPremultipliedToEncodedSrgb(accumulatedStroke) * opacity;
+  }
   return accumulatedStroke * opacity;
 }
 
 fn compositeLightGlazeOverPermanent(
   permanentPaint: vec4<f32>,
-  accumulatedStroke: vec4<f32>
+  accumulatedStroke: vec4<f32>,
+  documentCoordinate: vec2<u32>
 ) -> vec4<f32> {
   let strokePaint = resolvedStrokePaint(accumulatedStroke);
+  if (
+    lightGlaze.accumulationMode == 3u
+    || lightGlaze.accumulationMode == 4u
+    || lightGlaze.accumulationMode == 5u
+    || lightGlaze.accumulationMode == 6u
+  ) {
+    if (strokePaint.a <= 0.0) {
+      return permanentPaint;
+    }
+    let compositedEncoded = strokePaint + permanentPaint * (1.0 - strokePaint.a);
+    return quantizeRgba8SpatialAdjacent(
+      compositedEncoded,
+      documentCoordinate,
+      lightGlaze.ditherSeed
+    );
+  }
   if (lightGlaze.accumulationMode == 2u) {
     // Outside the physical stamp Intense must be an exact identity operation.
     // In particular, do not round-trip signed/HDR Noise through bounded sRGB.
@@ -2286,7 +2507,11 @@ fn compositeLightGlazeOverPermanent(
 fn compositedLayerTexel(position: vec2<i32>) -> vec4<f32> {
   let permanentPaint = textureLoad(layerTexture, position, 0);
   let accumulatedStroke = textureLoad(strokeTexture, position, 0);
-  return compositeLightGlazeOverPermanent(permanentPaint, accumulatedStroke);
+  return compositeLightGlazeOverPermanent(
+    permanentPaint,
+    accumulatedStroke,
+    vec2<u32>(position)
+  );
 }
 
 fn compositedClippingGroupTexel(position: vec2<i32>) -> vec4<f32> {
@@ -2546,10 +2771,7 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     display.backgroundColor.rgb,
     display.backgroundColor.a > 0.5
   );
-  let backgroundLinear = srgbToLinear(backgroundSrgb);
-  let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
-
-  return vec4<f32>(linearToSrgb(compositedLinear), 1.0);
+  return vec4<f32>(compositePaintOverBackgroundSrgb(paint, backgroundSrgb), 1.0);
 }
 
 // This entry point is selected only when the live pyramid represents the
@@ -2649,9 +2871,7 @@ fn finalStackFragmentMain(
     display.backgroundColor.rgb,
     display.backgroundColor.a > 0.5
   );
-  let backgroundLinear = srgbToLinear(backgroundSrgb);
-  let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
-  return vec4<f32>(linearToSrgb(compositedLinear), 1.0);
+  return vec4<f32>(compositePaintOverBackgroundSrgb(paint, backgroundSrgb), 1.0);
 }
 
 @fragment
@@ -2677,11 +2897,11 @@ fn activeFragmentMain(
     vec2<f32>(1.0)
   );
   let paint = sampleCompositedActiveLayer(uv, layerPosition);
-  return select(
+  return lightGlazePaintForLinearScene(select(
     paint,
     paint * display.activeLayerAlpha,
     display.clippingMode < 0.5
-  );
+  ));
 }
 
 @fragment
@@ -2715,7 +2935,12 @@ fn activeSourceFragmentMain(
       max(0.0, lod - 1.0),
     );
   }
-  return paint * display.activeLayerAlpha;
+  let sourceOpacity = select(
+    display.activeLayerAlpha,
+    1.0,
+    display.clippingMode >= 0.5 && display.clippingMode < 1.5,
+  );
+  return lightGlazePaintForLinearScene(paint * sourceOpacity);
 }
 `;
 
@@ -2743,13 +2968,16 @@ struct DisplayUniforms {
   clippingPrefixOrigin: vec2<f32>,
   clippingSuffixOrigin: vec2<f32>,
   backgroundColor: vec4<f32>,
+  documentSize: vec2<f32>,
+  compositingColorSpace: f32,
+  _padDisplay: f32,
 };
 
 struct LightGlazeUniforms {
   opacity: f32,
   formatCode: u32,
   accumulationMode: u32,
-  _pad1: u32,
+  ditherSeed: u32,
   tintLinear: vec4<f32>,
 };
 
@@ -2765,6 +2993,8 @@ struct VertexOutput {
 @group(0) @binding(5) var activeClippingSuffix: texture_2d<f32>;
 @group(0) @binding(6) var mergedBelowTexture: texture_2d<f32>;
 @group(0) @binding(7) var mergedAboveTexture: texture_2d<f32>;
+
+${rgba8SpatialQuantizationShader}
 
 ${activeClippingGroupTexelShader}
 
@@ -2861,14 +3091,46 @@ fn resolvedStrokePaint(accumulatedStroke: vec4<f32>) -> vec4<f32> {
     let coverage = storedLightCoverage(accumulatedStroke.r);
     return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
   }
+  if (lightGlaze.accumulationMode == 3u) {
+    let coverage = clamp(
+      1.0 - exp2(-max(accumulatedStroke.r, 0.0)),
+      0.0,
+      1.0
+    );
+    return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
+  }
+  if (lightGlaze.accumulationMode == 4u) {
+    let coverage = storedLightCoverage(accumulatedStroke.r);
+    return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
+  }
+  if (lightGlaze.accumulationMode == 5u) {
+    return linearPremultipliedToEncodedSrgb(accumulatedStroke) * opacity;
+  }
   return accumulatedStroke * opacity;
 }
 
 fn compositeLightGlazeOverPermanent(
   permanentPaint: vec4<f32>,
-  accumulatedStroke: vec4<f32>
+  accumulatedStroke: vec4<f32>,
+  documentCoordinate: vec2<u32>
 ) -> vec4<f32> {
   let strokePaint = resolvedStrokePaint(accumulatedStroke);
+  if (
+    lightGlaze.accumulationMode == 3u
+    || lightGlaze.accumulationMode == 4u
+    || lightGlaze.accumulationMode == 5u
+    || lightGlaze.accumulationMode == 6u
+  ) {
+    if (strokePaint.a <= 0.0) {
+      return permanentPaint;
+    }
+    let compositedEncoded = strokePaint + permanentPaint * (1.0 - strokePaint.a);
+    return quantizeRgba8SpatialAdjacent(
+      compositedEncoded,
+      documentCoordinate,
+      lightGlaze.ditherSeed
+    );
+  }
   if (lightGlaze.accumulationMode == 2u) {
     // Outside the physical stamp Intense must be an exact identity operation.
     // In particular, do not round-trip signed/HDR Noise through bounded sRGB.
@@ -2919,7 +3181,11 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 fn compositedSource(sourcePosition: vec2<i32>) -> vec4<f32> {
   let permanentPaint = textureLoad(permanentTexture, sourcePosition, 0);
   let accumulatedStroke = textureLoad(strokeTexture, sourcePosition, 0);
-  let activeTexel = compositeLightGlazeOverPermanent(permanentPaint, accumulatedStroke);
+  let activeTexel = compositeLightGlazeOverPermanent(
+    permanentPaint,
+    accumulatedStroke,
+    vec2<u32>(sourcePosition)
+  );
   if (display.clippingMode < 0.5) {
     return activeTexel;
   }
@@ -2930,7 +3196,11 @@ fn compositedFinalStackSource(sourcePosition: vec2<i32>) -> vec4<f32> {
   let permanentPaint = textureLoad(permanentTexture, sourcePosition, 0);
   let accumulatedStroke = textureLoad(strokeTexture, sourcePosition, 0);
   let activeGroup = composeActiveClippingGroupTexel(
-    compositeLightGlazeOverPermanent(permanentPaint, accumulatedStroke),
+    compositeLightGlazeOverPermanent(
+      permanentPaint,
+      accumulatedStroke,
+      vec2<u32>(sourcePosition)
+    ),
     sourcePosition
   );
   var paint = loadMergedBelow(sourcePosition);
@@ -2972,7 +3242,7 @@ struct LightGlazeUniforms {
   opacity: f32,
   formatCode: u32,
   accumulationMode: u32,
-  _pad1: u32,
+  ditherSeed: u32,
   tintLinear: vec4<f32>,
 };
 
@@ -2989,6 +3259,8 @@ struct VertexOutput {
 @group(0) @binding(1) var strokeTexture: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> lightGlaze: LightGlazeUniforms;
 @group(0) @binding(3) var<uniform> commitTile: CommitTileUniforms;
+
+${rgba8SpatialQuantizationShader}
 
 fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
   let redGreen = unpack2x16float(pack2x16float(value.rg));
@@ -3055,14 +3327,47 @@ fn resolvedStrokePaint(accumulatedStroke: vec4<f32>) -> vec4<f32> {
     let coverage = storedLightCoverage(accumulatedStroke.r);
     return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
   }
+  if (lightGlaze.accumulationMode == 3u) {
+    let coverage = clamp(
+      1.0 - exp2(-max(accumulatedStroke.r, 0.0)),
+      0.0,
+      1.0
+    );
+    return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
+  }
+  if (lightGlaze.accumulationMode == 4u) {
+    let coverage = storedLightCoverage(accumulatedStroke.r);
+    return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
+  }
+  if (lightGlaze.accumulationMode == 5u) {
+    return linearPremultipliedToEncodedSrgb(accumulatedStroke) * opacity;
+  }
   return accumulatedStroke * opacity;
 }
 
 fn compositeLightGlazeOverPermanent(
   permanentPaint: vec4<f32>,
-  accumulatedStroke: vec4<f32>
+  accumulatedStroke: vec4<f32>,
+  coordinate: vec2<u32>
 ) -> vec4<f32> {
   let strokePaint = resolvedStrokePaint(accumulatedStroke);
+  if (
+    lightGlaze.accumulationMode == 3u
+    || lightGlaze.accumulationMode == 4u
+    || lightGlaze.accumulationMode == 5u
+    || lightGlaze.accumulationMode == 6u
+  ) {
+    // Empty stroke pixels must preserve the permanent RGBA8 texel bit-for-bit.
+    if (strokePaint.a <= 0.0) {
+      return permanentPaint;
+    }
+    let compositedEncoded = strokePaint + permanentPaint * (1.0 - strokePaint.a);
+    return quantizeRgba8SpatialAdjacent(
+      compositedEncoded,
+      coordinate,
+      lightGlaze.ditherSeed
+    );
+  }
   if (lightGlaze.accumulationMode == 2u) {
     // Outside the physical stamp Intense must be an exact identity operation.
     // In particular, do not round-trip signed/HDR Noise through bounded sRGB.
@@ -3114,7 +3419,8 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   let sourcePosition = vec2<i32>(commitTile.sourceOrigin) + vec2<i32>(fragmentPosition.xy);
   return compositeLightGlazeOverPermanent(
     textureLoad(permanentTexture, sourcePosition, 0),
-    textureLoad(strokeTexture, sourcePosition, 0)
+    textureLoad(strokeTexture, sourcePosition, 0),
+    vec2<u32>(sourcePosition)
   );
 }
 `;
@@ -3127,7 +3433,7 @@ struct LightGlazeUniforms {
   opacity: f32,
   formatCode: u32,
   accumulationMode: u32,
-  _pad1: u32,
+  ditherSeed: u32,
   tintLinear: vec4<f32>,
 };
 
@@ -3163,10 +3469,15 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     let coverage = storedLightCoverage(source.r);
     return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
   }
-  // Mode 2 (Intense encoded-sRGB) must never use this fixed-function
-  // destination blend. Uniformed and Intense are resolved by the exact tile
-  // shader, which samples both the permanent layer and the stroke.
-  if (lightGlaze.accumulationMode == 2u) {
+  // Encoded compositing modes must not use this fixed-function destination
+  // blend. Their exact tile path samples both the permanent layer and stroke.
+  if (
+    lightGlaze.accumulationMode == 2u
+    || lightGlaze.accumulationMode == 3u
+    || lightGlaze.accumulationMode == 4u
+    || lightGlaze.accumulationMode == 5u
+    || lightGlaze.accumulationMode == 6u
+  ) {
     return vec4<f32>(0.0);
   }
   return source * opacity;
@@ -3326,12 +3637,75 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
 }
 `;
 
+// Storage that already contains encoded-sRGB premultiplied texels must remain
+// in that same domain throughout its display pyramid. A direct box average is
+// a convex combination, so it preserves both premultiplication and alpha
+// without applying another color transfer at any recursive mip level.
+export const storedEncodedPaintMipDownsampleShader = /* wgsl */ `
+${rgba8HighFrequencyQuantizationShader}
+
+struct VertexOutput {
+  @builtin(position) position: vec4<f32>,
+};
+
+@group(0) @binding(0) var sourceTexture: texture_2d<f32>;
+
+@vertex
+fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+  let positions = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>( 3.0, -1.0),
+    vec2<f32>(-1.0,  3.0)
+  );
+
+  var output: VertexOutput;
+  output.position = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
+  return output;
+}
+
+@fragment
+fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
+  let sourceOrigin = vec2<i32>(fragmentPosition.xy) * 2;
+  let dimensions = vec2<i32>(textureDimensions(sourceTexture));
+  let maximumCoordinate = dimensions - vec2<i32>(1);
+  let p00 = textureLoad(sourceTexture, min(sourceOrigin, maximumCoordinate), 0);
+  let p10 = textureLoad(
+    sourceTexture,
+    min(sourceOrigin + vec2<i32>(1, 0), maximumCoordinate),
+    0
+  );
+  let p01 = textureLoad(
+    sourceTexture,
+    min(sourceOrigin + vec2<i32>(0, 1), maximumCoordinate),
+    0
+  );
+  let p11 = textureLoad(
+    sourceTexture,
+    min(sourceOrigin + vec2<i32>(1, 1), maximumCoordinate),
+    0
+  );
+  let averaged = (p00 + p10 + p01 + p11) * 0.25;
+  let targetCoordinate = vec2<u32>(fragmentPosition.xy);
+  let sourceSize = vec2<u32>(dimensions);
+  let levelSeed = (sourceSize.x * 0x9e3779b9u)
+    ^ (sourceSize.y * 0x85ebca6bu)
+    ^ 0x4d495031u;
+  return quantizeRgba8HighFrequencyAdjacent(
+    averaged,
+    targetCoordinate,
+    levelSeed
+  );
+}
+`;
+
 // Builds logical mip 1 from the final raster stack, not from each layer in
 // isolation. Source-over is nonlinear: averaging the independently filtered
 // layers and composing them later creates dark/color fringes at coincident
 // antialiased edges. The following mip levels can use the ordinary exact 2x2
 // downsampler because mip 1 already contains final premultiplied pixels.
 export const paintStackCompositeMipShader = /* wgsl */ `
+${rgba8HighFrequencyQuantizationShader}
+
 struct DisplayUniforms {
   canvasSize: vec2<f32>,
   viewRotation: vec2<f32>,
@@ -3351,6 +3725,9 @@ struct DisplayUniforms {
   clippingPrefixOrigin: vec2<f32>,
   clippingSuffixOrigin: vec2<f32>,
   backgroundColor: vec4<f32>,
+  documentSize: vec2<f32>,
+  compositingColorSpace: f32,
+  _padDisplay: f32,
 };
 
 struct VertexOutput {
@@ -3397,6 +3774,31 @@ fn gammaPremultipliedToLinear(value: vec4<f32>) -> vec4<f32> {
     srgbToLinearChannel(straight.b)
   );
   return vec4<f32>(linear * alpha, alpha);
+}
+
+fn downsampleCompositedPaint(
+  p00: vec4<f32>,
+  p10: vec4<f32>,
+  p01: vec4<f32>,
+  p11: vec4<f32>,
+  targetCoordinate: vec2<u32>
+) -> vec4<f32> {
+  if (display.compositingColorSpace > 1.5) {
+    // These texels are already encoded and premultiplied. Keep the first
+    // composited mip in the same domain as every recursive level after it.
+    return quantizeRgba8HighFrequencyAdjacent(
+      (p00 + p10 + p01 + p11) * 0.25,
+      targetCoordinate,
+      0x4d495031u
+    );
+  }
+  let gammaAverage = (
+    linearPremultipliedToGamma(p00)
+    + linearPremultipliedToGamma(p10)
+    + linearPremultipliedToGamma(p01)
+    + linearPremultipliedToGamma(p11)
+  ) * 0.25;
+  return gammaPremultipliedToLinear(gammaAverage);
 }
 
 fn sourceOver(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
@@ -3466,13 +3868,13 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   let p10 = compositedDocumentTexel(sourceOrigin + vec2<i32>(1, 0));
   let p01 = compositedDocumentTexel(sourceOrigin + vec2<i32>(0, 1));
   let p11 = compositedDocumentTexel(sourceOrigin + vec2<i32>(1, 1));
-  let gammaAverage = (
-    linearPremultipliedToGamma(p00)
-    + linearPremultipliedToGamma(p10)
-    + linearPremultipliedToGamma(p01)
-    + linearPremultipliedToGamma(p11)
-  ) * 0.25;
-  return gammaPremultipliedToLinear(gammaAverage);
+  return downsampleCompositedPaint(
+    p00,
+    p10,
+    p01,
+    p11,
+    vec2<u32>(fragmentPosition.xy)
+  );
 }
 
 @fragment
@@ -3484,6 +3886,12 @@ fn activeGroupFragmentMain(
   let p10 = activeClippingGroupDocumentTexel(sourceOrigin + vec2<i32>(1, 0));
   let p01 = activeClippingGroupDocumentTexel(sourceOrigin + vec2<i32>(0, 1));
   let p11 = activeClippingGroupDocumentTexel(sourceOrigin + vec2<i32>(1, 1));
-  return (p00 + p10 + p01 + p11) * 0.25;
+  let averaged = (p00 + p10 + p01 + p11) * 0.25;
+  if (display.compositingColorSpace <= 1.5) { return averaged; }
+  return quantizeRgba8HighFrequencyAdjacent(
+    averaged,
+    vec2<u32>(fragmentPosition.xy),
+    0x434c5031u
+  );
 }
 `;

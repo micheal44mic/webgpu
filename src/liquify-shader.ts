@@ -1,3 +1,6 @@
+import type { DocumentStorageColorSpace, LayerFormat } from "./engine-types";
+import { rgba8HighFrequencyQuantizationShader } from "./rgba8-high-frequency-quantization";
+
 /**
  * GPU contract for Liquify.
  *
@@ -10,6 +13,7 @@ export const LIQUIFY_DISPLACEMENT_FORMAT = "rgba16float" as const;
 export const LIQUIFY_WORKGROUP_SIZE = 8 as const;
 export const LIQUIFY_SHADER_STRATEGY =
   "composed-inverse-warp-v2-stable-chaos-faceted-crystals-line-fold-edge" as const;
+export const LIQUIFY_RGBA8_QUANTIZATION_SEED = 0x2b7e1516;
 
 const SHARED_WGSL = /* wgsl */ `
 const PI: f32 = 3.14159265358979323846;
@@ -381,23 +385,70 @@ fn updateLiquify(@builtin(global_invocation_id) globalId: vec3<u32>) {
  *  0 the same uniform layout
  *  1 persistent displacement field
  *  2 immutable, premultiplied source snapshot (never the target)
- *  3 target rgba16float storage texture
+ *  3 target storage texture in the document's native format
  *
  * Manual bilinear sampling keeps cropped snapshots and transparent document
  * edges explicit. Since the source never changes, this resampling is not
  * cumulative even after hundreds of Liquify dabs.
  */
-export const LIQUIFY_RESOLVE_SHADER = /* wgsl */ `${SHARED_WGSL}
+export function liquifyResolveShader(
+  targetFormat: LayerFormat,
+  storageColorSpace: DocumentStorageColorSpace = "linear-premultiplied",
+): string {
+  const rgba8 = targetFormat === "rgba8unorm";
+  const storedEncodedSrgb = rgba8 && storageColorSpace === "encoded-srgb-premultiplied";
+  return /* wgsl */ `${SHARED_WGSL}
+${rgba8 ? rgba8HighFrequencyQuantizationShader : ""}
 @group(0) @binding(0) var<uniform> uniforms: LiquifyUniforms;
 @group(0) @binding(1) var displacementField: texture_2d<f32>;
 @group(0) @binding(2) var immutableSource: texture_2d<f32>;
-@group(0) @binding(3) var targetTexture: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(3) var targetTexture: texture_storage_2d<${targetFormat}, write>;
+
+${storedEncodedSrgb ? /* wgsl */ `
+fn liquifySrgbToLinearChannel(value: f32) -> f32 {
+  if (value <= 0.04045) { return value / 12.92; }
+  return pow((value + 0.055) / 1.055, 2.4);
+}
+
+fn liquifyLinearToSrgbChannel(value: f32) -> f32 {
+  let bounded = clamp(value, 0.0, 1.0);
+  if (bounded <= 0.0031308) { return bounded * 12.92; }
+  return 1.055 * pow(bounded, 1.0 / 2.4) - 0.055;
+}
+
+fn liquifyEncodedPremultipliedToLinear(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let encodedStraight = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  let linearStraight = vec3<f32>(
+    liquifySrgbToLinearChannel(encodedStraight.r),
+    liquifySrgbToLinearChannel(encodedStraight.g),
+    liquifySrgbToLinearChannel(encodedStraight.b)
+  );
+  return vec4<f32>(linearStraight * alpha, alpha);
+}
+
+fn liquifyLinearPremultipliedToEncoded(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let linearStraight = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  let encodedStraight = vec3<f32>(
+    liquifyLinearToSrgbChannel(linearStraight.r),
+    liquifyLinearToSrgbChannel(linearStraight.g),
+    liquifyLinearToSrgbChannel(linearStraight.b)
+  );
+  return vec4<f32>(encodedStraight * alpha, alpha);
+}
+` : ""}
 
 fn loadSource(sourcePixel: vec2<i32>) -> vec4<f32> {
   if (!insideU32(sourcePixel, uniforms.sourceSize)) {
     return vec4<f32>(0.0);
   }
-  return textureLoad(immutableSource, sourcePixel, 0);
+  let stored = textureLoad(immutableSource, sourcePixel, 0);
+  return ${storedEncodedSrgb
+    ? "liquifyEncodedPremultipliedToLinear(stored)"
+    : "stored"};
 }
 
 fn sampleSourceBilinear(documentPosition: vec2<f32>) -> vec4<f32> {
@@ -429,6 +480,25 @@ fn resolveLiquify(@builtin(global_invocation_id) globalId: vec3<u32>) {
   }
   let sourceDocumentPosition = vec2<f32>(documentPixel) + vec2<f32>(0.5) + displacement;
   let color = sampleSourceBilinear(sourceDocumentPosition);
-  textureStore(targetTexture, documentPixel, color);
+  ${rgba8 ? /* wgsl */ `
+  let storedColor = ${storedEncodedSrgb
+    ? "liquifyLinearPremultipliedToEncoded(color)"
+    : "color"};
+  textureStore(
+    targetTexture,
+    documentPixel,
+    quantizeRgba8HighFrequencyAdjacent(
+      storedColor,
+      vec2<u32>(documentPixel),
+      uniforms.seed ^ ${LIQUIFY_RGBA8_QUANTIZATION_SEED}u
+    )
+  );` : "textureStore(targetTexture, documentPixel, color);"}
 }
 `;
+}
+
+/** Legacy linear-document shader kept as the default exported diagnostic fixture. */
+export const LIQUIFY_RESOLVE_SHADER = liquifyResolveShader(
+  "rgba16float",
+  "linear-premultiplied",
+);

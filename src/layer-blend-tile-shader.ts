@@ -1,15 +1,20 @@
 import { rasterPixelViewShaderHelpers } from "./raster-pixel-view";
+import { rgba8HighFrequencyQuantizationShader } from "./rgba8-high-frequency-quantization";
 
 /**
  * Fixed working-set extent for the document-space layer-blend compositor.
- * Three native-format textures are enough for backdrop ping-pong plus the
- * active/clipping operand: 12 MiB in RGBA8 or 24 MiB in RGBA16F.
+ * Three RGBA16F textures are enough for backdrop ping-pong plus the completed
+ * active/clipping operand. The working set stays fixed at 24 MiB regardless of
+ * document dimensions; authoritative document textures remain RGBA8 when that
+ * is the selected document contract.
  */
 export const LAYER_BLEND_TILE_EXTENT = 1024 as const;
 export const LAYER_BLEND_TILE_PRESENT_UNIFORM_BYTES = 32 as const;
-export const LAYER_BLEND_TILE_MIP_UNIFORM_BYTES = 16 as const;
+export const LAYER_BLEND_TILE_MIP_UNIFORM_BYTES = 32 as const;
+/** Fixed composition seed: camera state must never change final mip codes. */
+export const LAYER_BLEND_TILE_QUANTIZATION_SEED = 0x51f15e0d as const;
 export const LAYER_BLEND_TILE_STRATEGY =
-  "document-space-1024-tile-native-format-blend-before-filter-replace-cache-v2" as const;
+  "document-space-1024-tile-rgba16f-fold-single-rgba8-boundary-blend-before-filter-linear-present-replace-cache-v4" as const;
 
 const fullscreenVertex = /* wgsl */ `
 struct VertexOutput {
@@ -48,6 +53,10 @@ struct DisplayUniforms {
   clippingSuffixScale: f32,
   clippingPrefixOrigin: vec2<f32>,
   clippingSuffixOrigin: vec2<f32>,
+  backgroundColor: vec4<f32>,
+  documentSize: vec2<f32>,
+  compositingColorSpace: f32,
+  _padDisplay: f32,
 };
 
 fn layerPositionAt(fragmentPosition: vec2<f32>) -> vec2<f32> {
@@ -57,6 +66,24 @@ fn layerPositionAt(fragmentPosition: vec2<f32>) -> vec2<f32> {
     -display.viewRotation.y * displayOffset.x + display.viewRotation.x * displayOffset.y
   );
   return display.viewCenter + layerOffset;
+}
+
+fn layerBlendTileSrgbToLinearChannel(value: f32) -> f32 {
+  if (value <= 0.04045) { return value / 12.92; }
+  return pow((value + 0.055) / 1.055, 2.4);
+}
+
+fn layerBlendTileSourceForLinearPresentation(value: vec4<f32>) -> vec4<f32> {
+  if (display.compositingColorSpace < 1.5) { return value; }
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let straightSrgb = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  let straightLinear = vec3<f32>(
+    layerBlendTileSrgbToLinearChannel(straightSrgb.r),
+    layerBlendTileSrgbToLinearChannel(straightSrgb.g),
+    layerBlendTileSrgbToLinearChannel(straightSrgb.b)
+  );
+  return vec4<f32>(straightLinear * alpha, alpha);
 }
 `;
 
@@ -103,7 +130,9 @@ fn fragmentMain(
 
   let localPosition = layerPosition - tile.textureOrigin;
   if (rasterPixelViewEnabled(1.0)) {
-    return loadTile(vec2<i32>(floor(localPosition)));
+    return layerBlendTileSourceForLinearPresentation(
+      loadTile(vec2<i32>(floor(localPosition)))
+    );
   }
   let texelPosition = localPosition - vec2<f32>(0.5);
   let lower = vec2<i32>(floor(texelPosition));
@@ -112,11 +141,11 @@ fn fragmentMain(
   let p10 = loadTile(lower + vec2<i32>(1, 0));
   let p01 = loadTile(lower + vec2<i32>(0, 1));
   let p11 = loadTile(lower + vec2<i32>(1, 1));
-  return mix(
+  return layerBlendTileSourceForLinearPresentation(mix(
     mix(p00, p10, interpolation.x),
     mix(p01, p11, interpolation.x),
     interpolation.y
-  );
+  ));
 }
 `;
 
@@ -125,12 +154,16 @@ export const LAYER_BLEND_TILE_MIP_ONE_WGSL = /* wgsl */ `
 struct TileMipUniforms {
   textureOrigin: vec2<u32>,
   documentSize: vec2<u32>,
+  quantizeToRgba8: u32,
+  quantizationSeed: u32,
+  _pad: vec2<u32>,
 };
 
 @group(0) @binding(0) var tileTexture: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> tile: TileMipUniforms;
 
 ${fullscreenVertex}
+${rgba8HighFrequencyQuantizationShader}
 
 fn loadTileDocumentPixel(documentPixel: vec2<u32>) -> vec4<f32> {
   let clampedDocument = min(documentPixel, tile.documentSize - vec2<u32>(1u));
@@ -144,12 +177,18 @@ fn fragmentMain(
   @builtin(position) fragmentPosition: vec4<f32>
 ) -> @location(0) vec4<f32> {
   let sourceOrigin = vec2<u32>(fragmentPosition.xy) * 2u;
-  return (
+  let averaged = (
     loadTileDocumentPixel(sourceOrigin)
     + loadTileDocumentPixel(sourceOrigin + vec2<u32>(1u, 0u))
     + loadTileDocumentPixel(sourceOrigin + vec2<u32>(0u, 1u))
     + loadTileDocumentPixel(sourceOrigin + vec2<u32>(1u, 1u))
   ) * 0.25;
+  if (tile.quantizeToRgba8 == 0u) { return averaged; }
+  return quantizeRgba8HighFrequencyAdjacent(
+    averaged,
+    vec2<u32>(fragmentPosition.xy),
+    tile.quantizationSeed
+  );
 }
 `;
 
@@ -180,6 +219,8 @@ fn fragmentMain(
   );
   let maximumLod = f32(max(1u, textureNumLevels(finalPyramid)) - 1u);
   let lod = clamp(display.selectedMipLevel - 1.0, 0.0, maximumLod);
-  return textureSampleLevel(finalPyramid, pyramidSampler, uv, lod);
+  return layerBlendTileSourceForLinearPresentation(
+    textureSampleLevel(finalPyramid, pyramidSampler, uv, lod)
+  );
 }
 `;

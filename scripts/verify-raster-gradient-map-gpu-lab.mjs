@@ -154,14 +154,15 @@ assert.match(lab, /svgMap\.historyAfter\.actionCount === svgMap\.historyBefore\.
 assert.match(lab, /historyAfterTextRasterize\.actionCount === historyBeforeTextRasterize\.actionCount \+ 1/);
 assert.match(lab, /textMap\.historyAfter\.actionCount === textMap\.historyBefore\.actionCount \+ 1/);
 
-assert.match(runtime, /storageTexture: \{ access: "write-only", format: "rgba16float" \}/);
+assert.match(runtime, /storageTexture: \{ access: "write-only", format: profile\.layerFormat \}/);
 assert.match(runtime, /requestedSerial: number/);
 assert.match(runtime, /encodedSerial: number/);
 assert.match(runtime, /filter: "gradient-map"/);
 assert.match(runtime, /commitHistoryActionAtomically\(engine, action\)/);
 assert.match(shader, /fn mapRasterGradient/);
-assert.match(shader, /texture_storage_2d<rgba16float, write>/);
-assert.match(shader, /vec4<f32>\(mappedLinear \* alpha, alpha\)/);
+assert.match(shader, /texture_storage_2d<\$\{profile\.layerFormat\}, write>/);
+assert.match(shader, /rasterAdjustmentStraightEncodedToStored/);
+assert.match(shader, /rasterAdjustmentFinalizeStored/);
 
 assert.match(
   registry,

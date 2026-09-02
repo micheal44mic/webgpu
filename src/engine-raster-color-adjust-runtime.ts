@@ -1,6 +1,7 @@
 /** Transactional destructive Color Adjust for the selected native raster. */
 
 import type { BrushEngine } from "./brush-engine";
+import type { DocumentStorageColorSpace, LayerFormat } from "./engine-types";
 import {
   createLayerColdStorageCandidate,
   destroyLayerColdStorage,
@@ -20,23 +21,29 @@ import {
   type RasterColorAdjustSettings,
 } from "./raster-color-adjust-core.ts";
 import {
+  createRasterColorAdjustShader,
   rasterColorAdjustDispatchSize,
-  rasterColorAdjustShader,
 } from "./raster-color-adjust-shaders.ts";
+import {
+  rasterAdjustmentBytesPerPixel,
+  rasterAdjustmentStorageProfileKey,
+  type RasterAdjustmentStorageProfile,
+} from "./raster-adjustment-storage-shader";
 
 export const DESTRUCTIVE_RASTER_COLOR_ADJUST_RUNTIME_BUILD =
-  "destructive-raster-color-adjust-webgpu-v1-immutable-crop-latest-wins" as const;
+  "destructive-raster-color-adjust-webgpu-v2-dual-storage-adjacent-code" as const;
 export const DESTRUCTIVE_RASTER_COLOR_ADJUST_ALGORITHM =
   "hsv-relative-adjust-v1" as const;
 export const DESTRUCTIVE_RASTER_COLOR_ADJUST_ALGORITHM_VERSION = 1 as const;
 export const DESTRUCTIVE_RASTER_COLOR_ADJUST_PRECISION =
   "rgba16float-source-and-output-f32-hsv" as const;
+export const DESTRUCTIVE_RASTER_COLOR_ADJUST_RGBA8_PRECISION =
+  "rgba8unorm-encoded-srgb-source-and-output-f32-hsv-high-frequency-output" as const;
 export const DESTRUCTIVE_RASTER_COLOR_ADJUST_COLOR_SPACE =
   "straight-encoded-rgb" as const;
 export const DESTRUCTIVE_RASTER_COLOR_ADJUST_ALPHA_MODE = "preserve" as const;
 export const DESTRUCTIVE_RASTER_COLOR_ADJUST_BOUNDS_MODE = "preserve" as const;
 
-const BYTES_PER_RGBA16F_PIXEL = 8;
 const RASTER_COLOR_ADJUST_PARAMETER_BYTE_SIZE = 32;
 
 interface RasterColorAdjustSharedResources {
@@ -60,6 +67,7 @@ export interface ActiveRasterColorAdjustSession {
   readonly parameterBuffer: GPUBuffer;
   readonly bindGroup: GPUBindGroup;
   readonly shared: RasterColorAdjustSharedResources;
+  readonly quantizationSeed: number;
   readonly memoryBytes: number;
   settings: RasterColorAdjustSettings;
   requestedSerial: number;
@@ -75,15 +83,19 @@ export type RasterColorAdjustEngineHost = BrushEngine & {
   activeRasterColorAdjustSession: ActiveRasterColorAdjustSession | null;
 };
 
-const sharedByDevice = new WeakMap<GPUDevice, Promise<RasterColorAdjustSharedResources>>();
+const sharedByDevice = new WeakMap<
+  GPUDevice,
+  Map<string, Promise<RasterColorAdjustSharedResources>>
+>();
 
 async function createSharedResources(
   device: GPUDevice,
+  profile: RasterAdjustmentStorageProfile,
 ): Promise<RasterColorAdjustSharedResources> {
   return runGpuAllocationTransaction(device, "Raster color adjust pipeline", async () => {
     const module = device.createShaderModule({
       label: "Raster color adjust WGSL",
-      code: rasterColorAdjustShader,
+      code: createRasterColorAdjustShader(profile),
     });
     await assertShaderCompiled(module, "Raster color adjust");
     const bindGroupLayout = device.createBindGroupLayout({
@@ -97,7 +109,7 @@ async function createSharedResources(
         {
           binding: 1,
           visibility: GPUShaderStage.COMPUTE,
-          storageTexture: { access: "write-only", format: "rgba16float" },
+          storageTexture: { access: "write-only", format: profile.layerFormat },
         },
         {
           binding: 2,
@@ -120,22 +132,33 @@ async function createSharedResources(
 
 async function requireSharedResources(
   device: GPUDevice,
+  profile: RasterAdjustmentStorageProfile,
 ): Promise<RasterColorAdjustSharedResources> {
-  let promise = sharedByDevice.get(device);
+  let profiles = sharedByDevice.get(device);
+  if (!profiles) {
+    profiles = new Map();
+    sharedByDevice.set(device, profiles);
+  }
+  const key = rasterAdjustmentStorageProfileKey(profile);
+  let promise = profiles.get(key);
   if (!promise) {
-    promise = createSharedResources(device);
-    sharedByDevice.set(device, promise);
+    promise = createSharedResources(device, profile);
+    profiles.set(key, promise);
   }
   try {
     return await promise;
   } catch (error) {
-    sharedByDevice.delete(device);
+    profiles.delete(key);
     throw error;
   }
 }
 
-export async function prewarmRasterColorAdjustRuntime(device: GPUDevice): Promise<void> {
-  await requireSharedResources(device);
+export async function prewarmRasterColorAdjustRuntime(
+  device: GPUDevice,
+  layerFormat: LayerFormat = "rgba16float",
+  colorSpace: DocumentStorageColorSpace = "linear-premultiplied",
+): Promise<void> {
+  await requireSharedResources(device, { layerFormat, colorSpace });
 }
 
 function runtimeError(error: unknown): Error {
@@ -208,11 +231,13 @@ export function abandonRasterColorAdjustSession(
 function packedParameters(
   bounds: DirtyRect,
   settings: Readonly<RasterColorAdjustSettings>,
+  quantizationSeed: number,
 ): ArrayBuffer {
   const buffer = new ArrayBuffer(RASTER_COLOR_ADJUST_PARAMETER_BYTE_SIZE);
   const view = new DataView(buffer);
   view.setUint32(0, bounds.x, true);
   view.setUint32(4, bounds.y, true);
+  view.setUint32(8, quantizationSeed >>> 0, true);
   view.setFloat32(16, settings.hueDegrees / 360, true);
   view.setFloat32(20, settings.saturationPercent / 100, true);
   view.setFloat32(24, settings.brightnessPercent / 100, true);
@@ -242,7 +267,7 @@ function encodeRequestedPreview(
     engine.device.queue.writeBuffer(
       session.parameterBuffer,
       0,
-      packedParameters(bounds, settings),
+      packedParameters(bounds, settings, session.quantizationSeed),
     );
     const dispatch = rasterColorAdjustDispatchSize(bounds.width, bounds.height);
     const pass = encoder.beginComputePass({ label: "Raster color adjust pass" });
@@ -373,6 +398,7 @@ async function allocateSession(
   settings: RasterColorAdjustSettings,
   shared: RasterColorAdjustSharedResources,
 ): Promise<ActiveRasterColorAdjustSession> {
+  const quantizationSeed = engine.nextHistoryActionId >>> 0;
   return runGpuAllocationTransaction(
     engine.device,
     `Allocate raster color adjust layer ${recordId}`,
@@ -384,7 +410,7 @@ async function allocateSession(
           height: sourceBounds.height,
           depthOrArrayLayers: 1,
         },
-        format: "rgba16float",
+        format: engine.layerFormat,
         usage:
           GPUTextureUsage.COPY_SRC
           | GPUTextureUsage.COPY_DST
@@ -439,8 +465,10 @@ async function allocateSession(
         bindGroup,
         shared,
         memoryBytes:
-          sourceBounds.width * sourceBounds.height * BYTES_PER_RGBA16F_PIXEL
+          sourceBounds.width * sourceBounds.height
+            * rasterAdjustmentBytesPerPixel(engine.layerFormat)
           + RASTER_COLOR_ADJUST_PARAMETER_BYTE_SIZE,
+        quantizationSeed,
         settings,
         requestedSerial: 1,
         encodedSerial: 0,
@@ -483,10 +511,6 @@ export async function beginRasterColorAdjust(
   if (!record.hasContent || !record.contentBounds) {
     throw new Error("The selected raster layer is empty.");
   }
-  if (engine.layerFormat !== "rgba16float") {
-    throw new Error("Destructive Color Adjust requires an RGBA16F document.");
-  }
-
   engine.cancelLayerColdCompressionIdle();
   engine.historyBusy = true;
   engine.publishHistoryState();
@@ -502,7 +526,10 @@ export async function beginRasterColorAdjust(
       throw new Error("Color Adjust: the GPU does not support the required dispatch size.");
     }
     const settings = normalizeRasterColorAdjustSettings(initial);
-    const shared = await requireSharedResources(engine.device);
+    const shared = await requireSharedResources(engine.device, {
+      layerFormat: engine.layerFormat,
+      colorSpace: engine.documentStorageColorSpace,
+    });
     session = await allocateSession(
       engine,
       record.id,
@@ -652,7 +679,9 @@ export async function commitRasterColorAdjust(
       settings: copySettings(session.settings),
       algorithm: DESTRUCTIVE_RASTER_COLOR_ADJUST_ALGORITHM,
       algorithmVersion: DESTRUCTIVE_RASTER_COLOR_ADJUST_ALGORITHM_VERSION,
-      precision: DESTRUCTIVE_RASTER_COLOR_ADJUST_PRECISION,
+      precision: engine.layerFormat === "rgba8unorm"
+        ? DESTRUCTIVE_RASTER_COLOR_ADJUST_RGBA8_PRECISION
+        : DESTRUCTIVE_RASTER_COLOR_ADJUST_PRECISION,
       colorSpace: DESTRUCTIVE_RASTER_COLOR_ADJUST_COLOR_SPACE,
       alphaMode: DESTRUCTIVE_RASTER_COLOR_ADJUST_ALPHA_MODE,
       boundsMode: DESTRUCTIVE_RASTER_COLOR_ADJUST_BOUNDS_MODE,

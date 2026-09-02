@@ -10,7 +10,10 @@ import {
   createRenderPipelineAsync,
 } from "./engine-gpu-utils";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
-import { documentBackgroundLinearPremultiplied } from "./document-background";
+import {
+  documentBackgroundEncodedSrgbPremultiplied,
+  documentBackgroundLinearPremultiplied,
+} from "./document-background";
 import {
   LAYER_BLEND_MODE_CODES,
   type LayerBlendMode,
@@ -21,6 +24,7 @@ import {
   LAYER_BLEND_TILE_MIP_UNIFORM_BYTES,
   LAYER_BLEND_TILE_PRESENT_UNIFORM_BYTES,
   LAYER_BLEND_TILE_PRESENT_WGSL,
+  LAYER_BLEND_TILE_QUANTIZATION_SEED,
   LAYER_BLEND_PYRAMID_PRESENT_WGSL,
 } from "./layer-blend-tile-shader";
 import {
@@ -101,16 +105,27 @@ const sourceAtopBlend: GPUBlendState = {
 };
 
 /**
- * Bounded native-format scratch used by the faithful live layer compositor.
+ * Bounded high-precision scratch used by the faithful live layer compositor.
  * It owns no document pixels: authoritative layer/tile storage remains in the
- * existing layer resources, and the scratch can be dropped when every mode is
- * Normal.
+ * existing document format, and the scratch can be dropped when every mode is
+ * Normal. Encoded-sRGB documents retain that encoded-premultiplied value space
+ * inside RGBA16F, avoiding an RGBA8 rounding boundary after every layer.
  */
 export class LayerBlendTileCompositor {
   readonly extent = LAYER_BLEND_TILE_EXTENT;
+  /** Format of the authoritative document resources consumed by this compositor. */
   readonly format: "rgba8unorm" | "rgba16float";
+  /**
+   * Bounded accumulation format. An RGBA8 document still folds every layer in
+   * this higher-precision working set and quantizes only at its final document
+   * or pyramid boundary.
+   */
+  readonly scratchFormat: "rgba16float";
   readonly textures: readonly [GPUTexture, GPUTexture, GPUTexture];
   readonly views: readonly [GPUTextureView, GPUTextureView, GPUTextureView];
+  /** Native-format transient source written by the raster style baker. */
+  readonly bakeTexture: GPUTexture;
+  readonly bakeView: GPUTextureView;
   readonly documentMaskTexture: GPUTexture;
   readonly documentMaskView: GPUTextureView;
   readonly clippingBaseTexture: GPUTexture;
@@ -163,8 +178,11 @@ export class LayerBlendTileCompositor {
 
   private constructor(options: {
     engine: BrushEngine;
+    scratchFormat: "rgba16float";
     textures: [GPUTexture, GPUTexture, GPUTexture];
     views: [GPUTextureView, GPUTextureView, GPUTextureView];
+    bakeTexture: GPUTexture;
+    bakeView: GPUTextureView;
     documentMaskTexture: GPUTexture;
     documentMaskView: GPUTextureView;
     clippingBaseTexture: GPUTexture;
@@ -196,8 +214,11 @@ export class LayerBlendTileCompositor {
   }) {
     this.engine = options.engine;
     this.format = options.engine.layerFormat;
+    this.scratchFormat = options.scratchFormat;
     this.textures = options.textures;
     this.views = options.views;
+    this.bakeTexture = options.bakeTexture;
+    this.bakeView = options.bakeView;
     this.documentMaskTexture = options.documentMaskTexture;
     this.documentMaskView = options.documentMaskView;
     this.clippingBaseTexture = options.clippingBaseTexture;
@@ -239,15 +260,20 @@ export class LayerBlendTileCompositor {
       MIP_RECORD_CAPACITY * this.mipUniformStride,
     );
     this.mipUniformU32 = new Uint32Array(this.mipUniformUpload);
-    const bytesPerPixel = this.format === "rgba16float" ? 8 : 4;
+    const documentBytesPerPixel = this.format === "rgba16float" ? 8 : 4;
+    const scratchBytesPerPixel = 8;
     this.stableMemoryBytes = this.extent * this.extent
-      * bytesPerPixel * (TILE_TEXTURE_COUNT + 4)
+      * (
+        scratchBytesPerPixel * (TILE_TEXTURE_COUNT + 3)
+        + documentBytesPerPixel * 2
+      )
       + FOLD_RECORD_CAPACITY * this.foldUniformStride
       + PRESENT_RECORD_CAPACITY * this.presentUniformStride
       + MIP_RECORD_CAPACITY * this.mipUniformStride;
   }
 
   static async create(engine: BrushEngine): Promise<LayerBlendTileCompositor> {
+    const scratchFormat = "rgba16float" as const;
     const alignment = engine.device.limits.minUniformBufferOffsetAlignment;
     const foldUniformStride = alignedStride(LAYER_BLEND_FOLD_UNIFORM_BYTES, alignment);
     const presentUniformStride = alignedStride(
@@ -271,7 +297,7 @@ export class LayerBlendTileCompositor {
               height: LAYER_BLEND_TILE_EXTENT,
               depthOrArrayLayers: 1,
             },
-            format: engine.layerFormat,
+            format: scratchFormat,
             usage:
               GPUTextureUsage.RENDER_ATTACHMENT
               | GPUTextureUsage.TEXTURE_BINDING
@@ -283,6 +309,20 @@ export class LayerBlendTileCompositor {
         const views = textures.map((texture, index) => texture.createView({
           label: `Layer blend document tile view ${index}`,
         })) as [GPUTextureView, GPUTextureView, GPUTextureView];
+        const bakeTexture = engine.device.createTexture({
+          label: `Layer blend native bake source ${LAYER_BLEND_TILE_EXTENT}²`,
+          size: {
+            width: LAYER_BLEND_TILE_EXTENT,
+            height: LAYER_BLEND_TILE_EXTENT,
+            depthOrArrayLayers: 1,
+          },
+          format: engine.layerFormat,
+          usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+        });
+        transaction.deferRollback(() => bakeTexture.destroy());
+        const bakeView = bakeTexture.createView({
+          label: "Layer blend native bake source view",
+        });
         const documentMaskTexture = engine.device.createTexture({
           label: `Layer blend clipping document mask ${LAYER_BLEND_TILE_EXTENT}²`,
           size: {
@@ -290,7 +330,7 @@ export class LayerBlendTileCompositor {
             height: LAYER_BLEND_TILE_EXTENT,
             depthOrArrayLayers: 1,
           },
-          format: engine.layerFormat,
+          format: scratchFormat,
           usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
         });
         transaction.deferRollback(() => documentMaskTexture.destroy());
@@ -304,7 +344,7 @@ export class LayerBlendTileCompositor {
             height: LAYER_BLEND_TILE_EXTENT,
             depthOrArrayLayers: 1,
           },
-          format: engine.layerFormat,
+          format: scratchFormat,
           usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
         });
         transaction.deferRollback(() => clippingBaseTexture.destroy());
@@ -332,7 +372,7 @@ export class LayerBlendTileCompositor {
             height: LAYER_BLEND_TILE_EXTENT,
             depthOrArrayLayers: 1,
           },
-          format: engine.layerFormat,
+          format: scratchFormat,
           usage:
             GPUTextureUsage.RENDER_ATTACHMENT
             | GPUTextureUsage.TEXTURE_BINDING
@@ -434,7 +474,7 @@ export class LayerBlendTileCompositor {
             {
               binding: 0,
               visibility: GPUShaderStage.FRAGMENT,
-              buffer: { type: "uniform", minBindingSize: 96 },
+              buffer: { type: "uniform", minBindingSize: 128 },
             },
             {
               binding: 1,
@@ -535,7 +575,7 @@ export class LayerBlendTileCompositor {
             {
               binding: 0,
               visibility: GPUShaderStage.FRAGMENT,
-              buffer: { type: "uniform", minBindingSize: 96 },
+              buffer: { type: "uniform", minBindingSize: 128 },
             },
             {
               binding: 1,
@@ -566,7 +606,7 @@ export class LayerBlendTileCompositor {
               normalLayout,
               engine.layerCompositeShaderModule,
               "fragmentMain",
-              engine.layerFormat,
+              scratchFormat,
               sourceOverBlend,
             ),
             pipeline(
@@ -574,7 +614,7 @@ export class LayerBlendTileCompositor {
               normalLayout,
               engine.layerCompositeShaderModule,
               "fragmentMain",
-              engine.layerFormat,
+              scratchFormat,
               sourceAtopBlend,
             ),
             pipeline(
@@ -582,14 +622,14 @@ export class LayerBlendTileCompositor {
               advancedLayout,
               layerBlendFoldShaderModule,
               "fragmentMain",
-              engine.layerFormat,
+              scratchFormat,
             ),
             pipeline(
               "Layer blend tile document-mask contribution",
               advancedLayout,
               layerBlendFoldShaderModule,
               "documentMaskContributionFragmentMain",
-              engine.layerFormat,
+              scratchFormat,
               sourceOverBlend,
             ),
             createRenderPipelineAsync(engine.device, {
@@ -605,7 +645,7 @@ export class LayerBlendTileCompositor {
               fragment: {
                 module: mixedSceneClearShaderModule,
                 entryPoint: "fragmentMain",
-                targets: [{ format: engine.layerFormat }],
+                targets: [{ format: scratchFormat }],
               },
               primitive: { topology: "triangle-list" },
             }),
@@ -621,8 +661,8 @@ export class LayerBlendTileCompositor {
               },
               fragment: {
                 module: mixedScenePresentShaderModule,
-                entryPoint: "backgroundFragmentMain",
-                targets: [{ format: engine.layerFormat }],
+                entryPoint: "storageBackgroundFragmentMain",
+                targets: [{ format: scratchFormat }],
               },
               primitive: { topology: "triangle-list" },
             }),
@@ -673,8 +713,11 @@ export class LayerBlendTileCompositor {
 
         return new LayerBlendTileCompositor({
           engine,
+          scratchFormat,
           textures,
           views,
+          bakeTexture,
+          bakeView,
           documentMaskTexture,
           documentMaskView,
           clippingBaseTexture,
@@ -988,7 +1031,9 @@ export class LayerBlendTileCompositor {
     if (boundedWidth <= 0 || boundedHeight <= 0) return;
     const clearsWholeTile = boundedWidth === this.extent
       && boundedHeight === this.extent;
-    const color = documentBackgroundLinearPremultiplied(this.engine.documentBackground);
+    const color = this.engine.documentStorageColorSpace === "encoded-srgb-premultiplied"
+      ? documentBackgroundEncodedSrgbPremultiplied(this.engine.documentBackground)
+      : documentBackgroundLinearPremultiplied(this.engine.documentBackground);
     const pass = encoder.beginRenderPass({
       label,
       colorAttachments: [{
@@ -1017,7 +1062,9 @@ export class LayerBlendTileCompositor {
     label: string,
   ): void {
     this.assertAlive();
-    const color = documentBackgroundLinearPremultiplied(this.engine.documentBackground);
+    const color = this.engine.documentStorageColorSpace === "encoded-srgb-premultiplied"
+      ? documentBackgroundEncodedSrgbPremultiplied(this.engine.documentBackground)
+      : documentBackgroundLinearPremultiplied(this.engine.documentBackground);
     const pass = encoder.beginRenderPass({
       label,
       colorAttachments: [{
@@ -1182,6 +1229,10 @@ export class LayerBlendTileCompositor {
     this.mipUniformU32[word + 1] = options.textureOrigin.y;
     this.mipUniformU32[word + 2] = DOCUMENT_WIDTH;
     this.mipUniformU32[word + 3] = DOCUMENT_HEIGHT;
+    this.mipUniformU32[word + 4] = this.engine.layerFormat === "rgba8unorm" ? 1 : 0;
+    this.mipUniformU32[word + 5] = LAYER_BLEND_TILE_QUANTIZATION_SEED;
+    this.mipUniformU32[word + 6] = 0;
+    this.mipUniformU32[word + 7] = 0;
     const bindGroup = this.mipBindGroup(options.sourceTile);
     const pass = options.encoder.beginRenderPass({
       label: "Layer blend tile exact mip 1",
@@ -1214,6 +1265,7 @@ export class LayerBlendTileCompositor {
     if (this.destroyed) return;
     this.destroyed = true;
     this.textures.forEach((texture) => texture.destroy());
+    this.bakeTexture.destroy();
     this.documentMaskTexture.destroy();
     this.clippingBaseTexture.destroy();
     this.authoredMatteTexture.destroy();
@@ -1284,7 +1336,8 @@ export class LayerBlendTileCompositor {
     this.foldUniformF32[word + 35] = 0;
     this.foldUniformU32[word + 36] = clipping?.documentMaskWidth ?? source.width;
     this.foldUniformU32[word + 37] = clipping?.documentMaskHeight ?? source.height;
-    this.foldUniformU32[word + 38] = 0;
+    this.foldUniformU32[word + 38] = this.engine.documentStorageColorSpace
+      === "encoded-srgb-premultiplied" ? 1 : 0;
     this.foldUniformU32[word + 39] = 0;
     return record;
   }

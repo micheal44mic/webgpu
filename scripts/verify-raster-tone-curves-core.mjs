@@ -23,11 +23,18 @@ import {
   rasterToneHistogramOffset,
 } from "../src/raster-tone-curves-core.ts";
 import {
+  createRasterToneCurvesAdjustmentShader,
+  createRasterToneCurvesHistogramShader,
   rasterToneCurvesAdjustmentDispatchSize,
   rasterToneCurvesAdjustmentShader,
   rasterToneCurvesHistogramDispatchSize,
   rasterToneCurvesHistogramShader,
 } from "../src/raster-tone-curves-shaders.ts";
+import {
+  rasterAdjustmentBytesPerPixel,
+  rasterAdjustmentStorageProfileKey,
+} from "../src/raster-adjustment-storage-shader.ts";
+import { quantizeUnorm8HighFrequencyAdjacent } from "../src/rgba8-high-frequency-quantization.ts";
 
 const close = (left, right, epsilon = 1e-6) => {
   assert.ok(
@@ -194,7 +201,10 @@ assert.equal(
   "Both transparent and adjusted pixels must use the authoritative texture origin.",
 );
 assert.match(rasterToneCurvesAdjustmentShader, /source\.rgb \/ alpha/);
-assert.match(rasterToneCurvesAdjustmentShader, /vec4<f32>\(result, alpha\)/);
+assert.match(
+  rasterToneCurvesAdjustmentShader,
+  /rasterAdjustmentStraightEncodedToStored\(compositeAdjusted, alpha\)/,
+);
 assert.match(rasterToneCurvesAdjustmentShader, /sampleCurveLut\(encoded\.r\)\.y/);
 assert.match(rasterToneCurvesAdjustmentShader, /sampleCurveLut\(componentAdjusted\.r\)\.x/);
 assert.doesNotMatch(rasterToneCurvesAdjustmentShader, /rgba8|unorm8|rgba32float/i);
@@ -202,8 +212,46 @@ assert.doesNotMatch(rasterToneCurvesAdjustmentShader, /rgba8|unorm8|rgba32float/
 assert.match(rasterToneCurvesHistogramShader, /array<atomic<u32>, 1024>/);
 assert.match(rasterToneCurvesHistogramShader, /var<workgroup> localHistogram/);
 assert.match(rasterToneCurvesHistogramShader, /workgroupBarrier\(\)/);
-assert.match(rasterToneCurvesHistogramShader, /if \(alpha > COLOR_EPSILON\)/);
+assert.match(
+  rasterToneCurvesHistogramShader,
+  /if \(alpha > RASTER_ADJUSTMENT_ALPHA_EPSILON\)/,
+);
 assert.match(rasterToneCurvesHistogramShader, /atomicAdd\(&globalHistogram\[index\], count\)/);
 assert.equal((rasterToneCurvesHistogramShader.match(/workgroupBarrier\(\)/g) ?? []).length, 2);
+
+const rgba8Profile = {
+  layerFormat: "rgba8unorm",
+  colorSpace: "encoded-srgb-premultiplied",
+};
+const rgba8AdjustmentShader = createRasterToneCurvesAdjustmentShader(rgba8Profile);
+const rgba8HistogramShader = createRasterToneCurvesHistogramShader(rgba8Profile);
+assert.match(rgba8AdjustmentShader, /texture_storage_2d<rgba8unorm, write>/);
+assert.match(rgba8AdjustmentShader, /return straightStored;/);
+assert.match(rgba8AdjustmentShader, /quantizeRgba8HighFrequencyAdjacent/);
+assert.match(rgba8AdjustmentShader, /parameters\.quantizationSeed/);
+assert.match(rgba8HistogramShader, /return straightStored;/);
+assert.doesNotMatch(
+  rgba8HistogramShader,
+  /return rasterAdjustmentLinearToEncoded\(straightStored\)/,
+);
+assert.equal(rasterAdjustmentBytesPerPixel("rgba8unorm"), 4);
+assert.equal(rasterAdjustmentBytesPerPixel("rgba16float"), 8);
+assert.equal(
+  rasterAdjustmentStorageProfileKey(rgba8Profile),
+  "rgba8unorm:encoded-srgb-premultiplied",
+);
+const quarterCode = (42 + 0.25) / 255;
+const quantizedCodes = [];
+for (let y = 0; y < 16; y += 1) {
+  for (let x = 0; x < 16; x += 1) {
+    quantizedCodes.push(quantizeUnorm8HighFrequencyAdjacent(quarterCode, x, y, 17));
+  }
+}
+assert.deepEqual([...new Set(quantizedCodes)].sort((a, b) => a - b), [42, 43]);
+assert.equal(
+  quantizedCodes.filter((code) => code === 43).length,
+  64,
+  "A quarter-code value must distribute exactly one quarter of the 16x16 cell upward.",
+);
 
 console.log("Raster tone curves core verification passed.");

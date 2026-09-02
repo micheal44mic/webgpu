@@ -1874,6 +1874,8 @@ export async function ensureRasterStrokeRenderer(engine: BrushEngine,
     documentWidth: DOCUMENT_WIDTH,
     documentHeight: DOCUMENT_HEIGHT,
     layerFormat: engine.layerFormat,
+    storedEncodedSrgb:
+      engine.documentStorageColorSpace === "encoded-srgb-premultiplied",
     layerView: engine.layerView,
     lightGlazeUniformBuffer: engine.lightGlazeUniformBuffer,
     thicknessTailUniformBuffer: engine.thicknessTailDisplayUniformBuffer,
@@ -2085,6 +2087,8 @@ export async function ensureRasterOuterShadowRenderer(engine: BrushEngine): Prom
     kind: "outer",
     documentWidth: DOCUMENT_WIDTH,
     documentHeight: DOCUMENT_HEIGHT,
+    storedEncodedSrgb:
+      engine.documentStorageColorSpace === "encoded-srgb-premultiplied",
     layerView: engine.layerView,
     lightGlazeUniformBuffer: engine.lightGlazeUniformBuffer,
     thicknessTailUniformBuffer: engine.thicknessTailDisplayUniformBuffer,
@@ -2122,6 +2126,8 @@ export async function ensureRasterInnerShadowRenderer(engine: BrushEngine): Prom
     kind: "inner",
     documentWidth: DOCUMENT_WIDTH,
     documentHeight: DOCUMENT_HEIGHT,
+    storedEncodedSrgb:
+      engine.documentStorageColorSpace === "encoded-srgb-premultiplied",
     layerView: engine.layerView,
     lightGlazeUniformBuffer: engine.lightGlazeUniformBuffer,
     thicknessTailUniformBuffer: engine.thicknessTailDisplayUniformBuffer,
@@ -2157,6 +2163,8 @@ export async function ensureRasterBevelRenderer(engine: BrushEngine): Promise<Ra
     device: engine.device,
     documentWidth: DOCUMENT_WIDTH,
     documentHeight: DOCUMENT_HEIGHT,
+    storedEncodedSrgb:
+      engine.documentStorageColorSpace === "encoded-srgb-premultiplied",
     layerView: engine.layerView,
     lightGlazeUniformBuffer: engine.lightGlazeUniformBuffer,
     thicknessTailUniformBuffer: engine.thicknessTailDisplayUniformBuffer,

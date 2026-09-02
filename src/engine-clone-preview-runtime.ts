@@ -83,7 +83,7 @@ fn linearToSrgbChannel(value: f32) -> f32 {
   return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
 }
 
-fn encodedPremultiplied(value: vec4<f32>) -> vec4<f32> {
+fn linearPremultipliedToEncodedSrgb(value: vec4<f32>) -> vec4<f32> {
   let alpha = clamp(value.a, 0.0, 1.0);
   if (alpha <= 0.0) {
     return vec4<f32>(0.0);
@@ -95,6 +95,14 @@ fn encodedPremultiplied(value: vec4<f32>) -> vec4<f32> {
     linearToSrgbChannel(straight.b)
   );
   return vec4<f32>(encoded * alpha, alpha);
+}
+
+fn boundedEncodedPremultiplied(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  return vec4<f32>(
+    min(clamp(value.rgb, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(alpha)),
+    alpha
+  );
 }
 
 @vertex
@@ -147,7 +155,12 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     s * localDocument.x + c * localDocument.y
   );
   let sampled = sampleSource(sourcePosition) * coverage * preview.rotationAndBrush.w;
-  return encodedPremultiplied(sampled);
+  if (preview.shapeControls.y > 0.5) {
+    // RGBA8 sources already contain encoded-sRGB premultiplied texels. Sending
+    // them through the transfer function again would brighten dark samples.
+    return boundedEncodedPremultiplied(sampled);
+  }
+  return linearPremultipliedToEncodedSrgb(sampled);
 }
 `;
 
@@ -317,6 +330,10 @@ export function renderCloneSamplePreview(
       nextPaintStampSeed(engine.seedSequence),
       shapeAssetSequenceLengthForSettings(engine.settings),
     );
+    upload[13] = engine.layerFormat === "rgba8unorm"
+      && engine.documentStorageColorSpace === "encoded-srgb-premultiplied"
+      ? 1
+      : 0;
     engine.device.queue.writeBuffer(resources.uniformBuffer, 0, upload);
     if (
       resources.bindGroup === null

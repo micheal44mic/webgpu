@@ -1,5 +1,5 @@
 export const VECTOR_TEXT_GPU_RENDER_STRATEGY =
-  "webgpu-indexed-vector-linear-rgba16float-msaa4-svg-gradients-v3" as const;
+  "webgpu-indexed-vector-linear-rgba16float-msaa4-svg-gradients-stable-subpixel-v4" as const;
 
 export const VECTOR_TEXT_GPU_TARGET_FORMAT: GPUTextureFormat = "rgba16float";
 export const VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL = 8;
@@ -42,6 +42,14 @@ struct VertexOutput {
 
 @group(0) @binding(0) var<uniform> text: TextUniforms;
 
+fn stableRasterCanvasPosition(position: vec2<f32>) -> vec2<f32> {
+  // Render-target crops and document chunks may translate the same geometry by
+  // whole pixels. Centering vertices in a fine subpixel bin before NDC
+  // conversion keeps MSAA edge coverage invariant across those target sizes.
+  let subpixelGrid = 64.0;
+  return (floor(position * subpixelGrid) + vec2<f32>(0.5)) / subpixelGrid;
+}
+
 @vertex
 fn vertexMain(input: VertexInput) -> VertexOutput {
   let canvasSize = text.canvasAndViewRotation.xy;
@@ -64,7 +72,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     viewRotation.x * layerDelta.x - viewRotation.y * layerDelta.y,
     viewRotation.y * layerDelta.x + viewRotation.x * layerDelta.y
   );
-  let targetPosition = canvasPosition - targetOrigin;
+  let targetPosition = stableRasterCanvasPosition(canvasPosition) - targetOrigin;
   let clip = vec2<f32>(
     targetPosition.x / targetSize.x * 2.0 - 1.0,
     1.0 - targetPosition.y / targetSize.y * 2.0
@@ -231,7 +239,8 @@ fn meshInnerShadowVertexMain(input: VertexInput) -> MeshInnerShadowVertexOutput 
     viewRotation.x * layerDelta.x - viewRotation.y * layerDelta.y,
     viewRotation.y * layerDelta.x + viewRotation.x * layerDelta.y
   );
-  let targetPosition = canvasPosition - text.targetOriginAndSize.xy;
+  let targetPosition = stableRasterCanvasPosition(canvasPosition)
+    - text.targetOriginAndSize.xy;
   let targetSize = text.targetOriginAndSize.zw;
   var output: MeshInnerShadowVertexOutput;
   output.position = vec4<f32>(

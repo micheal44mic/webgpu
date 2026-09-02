@@ -272,6 +272,7 @@ export async function ensureFillRenderer(engine: BrushEngine): Promise<FillRende
     engine.fillRendererLoadingPromise = FillRenderer.create({
       device: engine.device,
       layerFormat: engine.layerFormat,
+      documentStorageColorSpace: engine.documentStorageColorSpace,
       sourceSamplingView: source.view,
     }).then((renderer) => {
       renderer.setSourceSamplingView(resolveFillSource(engine).view);

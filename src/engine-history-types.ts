@@ -391,7 +391,9 @@ export type RasterFilterHistoryAction = RasterFilterHistoryActionCommon & (
     radius: number;
     sigma: number;
     supportRadius: number;
-    precision: "rgba16float-f32-accumulation";
+    precision:
+      | "rgba16float-f32-accumulation"
+      | "rgba8unorm-linear-rgba16unorm-packed-two-pass-f32-high-frequency-output";
     edgeMode:
       | "transparent-black"
       | "transparent-content-clamp-document-edge";
@@ -403,7 +405,9 @@ export type RasterFilterHistoryAction = RasterFilterHistoryActionCommon & (
     radiusQuantization: 4;
     fieldStrategy: "inverse-distance-quarter-pixel-radius";
     kernelStrategy: "shared-gaussian-kernel-v1";
-    precision: "rgba16float-f32-accumulation";
+    precision:
+      | "rgba16float-f32-accumulation"
+      | "rgba8unorm-linear-rgba16unorm-packed-two-pass-f32-high-frequency-output";
     edgeMode: "transparent-content-clamp-document-edge";
   }
   | {
@@ -414,7 +418,9 @@ export type RasterFilterHistoryAction = RasterFilterHistoryActionCommon & (
     passCount: number;
     supportX: number;
     supportY: number;
-    precision: "rgba16float-f32-accumulation";
+    precision:
+      | "rgba16float-f32-accumulation"
+      | "rgba8unorm-linear-rgba16unorm-packed-logarithmic-f32-high-frequency-output";
     edgeMode:
       | "transparent-black"
       | "transparent-content-clamp-document-edge";
@@ -432,7 +438,9 @@ export type RasterFilterHistoryAction = RasterFilterHistoryActionCommon & (
     randomSeedHigh: number;
     algorithm: "gradient-fbm-domain-warp-v1";
     algorithmVersion: 1;
-    precision: "rgba16float-storage-f32-procedural";
+    precision:
+      | "rgba16float-storage-f32-procedural"
+      | "rgba8unorm-storage-linear-f32-procedural-high-frequency-output";
     colorSpace: "linear-premultiplied";
     alphaMode: "preserve";
     boundsMode: "preserve";
@@ -449,7 +457,9 @@ export type RasterFilterHistoryAction = RasterFilterHistoryActionCommon & (
     surfaceScalePixels: number;
     algorithm: "analytic-gradient-refraction-v1";
     algorithmVersion: 1;
-    precision: "rgba16float-source-and-output-f32-field-and-bilinear";
+    precision:
+      | "rgba16float-source-and-output-f32-field-and-bilinear"
+      | "rgba8unorm-source-encoded-f32-field-bilinear-high-frequency-output";
     edgeMode: "transparent-content-clamp-document-edge";
     coordinateSpace: "document-pixel-centers";
   }
@@ -457,7 +467,9 @@ export type RasterFilterHistoryAction = RasterFilterHistoryActionCommon & (
     filter: "curves";
     curves: RasterToneCurveSet;
     lutSize: 256;
-    precision: "rgba16float-source-and-output-f32-lut";
+    precision:
+      | "rgba16float-source-and-output-f32-lut"
+      | "rgba8unorm-encoded-srgb-source-and-output-f32-lut-high-frequency-output";
     colorSpace: "straight-encoded-rgb";
     alphaMode: "preserve";
     boundsMode: "preserve";
@@ -467,7 +479,9 @@ export type RasterFilterHistoryAction = RasterFilterHistoryActionCommon & (
     settings: RasterColorAdjustSettings;
     algorithm: "hsv-relative-adjust-v1";
     algorithmVersion: 1;
-    precision: "rgba16float-source-and-output-f32-hsv";
+    precision:
+      | "rgba16float-source-and-output-f32-hsv"
+      | "rgba8unorm-encoded-srgb-source-and-output-f32-hsv-high-frequency-output";
     colorSpace: "straight-encoded-rgb";
     alphaMode: "preserve";
     boundsMode: "preserve";
@@ -477,7 +491,9 @@ export type RasterFilterHistoryAction = RasterFilterHistoryActionCommon & (
     settings: RasterColorBalanceSettings;
     algorithm: "tonal-channel-balance-v1";
     algorithmVersion: 1;
-    precision: "rgba16float-source-and-output-f32-tonal-balance";
+    precision:
+      | "rgba16float-source-and-output-f32-tonal-balance"
+      | "rgba8unorm-encoded-srgb-source-and-output-f32-tonal-balance-high-frequency-output";
     colorSpace: "straight-encoded-rgb";
     alphaMode: "preserve";
     boundsMode: "preserve";
@@ -488,7 +504,9 @@ export type RasterFilterHistoryAction = RasterFilterHistoryActionCommon & (
     lutSize: 1024;
     algorithm: "luminance-gradient-map-v1";
     algorithmVersion: 1;
-    precision: "rgba16float-source-and-output-f32-lut";
+    precision:
+      | "rgba16float-source-and-output-f32-lut"
+      | "rgba8unorm-encoded-srgb-source-and-output-f32-lut-high-frequency-output";
     colorSpace: "straight-encoded-rgb";
     alphaMode: "preserve";
     boundsMode: "preserve";
@@ -500,7 +518,9 @@ export type RasterFilterHistoryAction = RasterFilterHistoryActionCommon & (
     modes: readonly LiquifyMode[];
     amountPercent: number;
     strategy: string;
-    precision: "rgba16float-source-and-displacement-f32-math";
+    precision:
+      | "rgba16float-source-and-displacement-f32-math"
+      | "rgba8unorm-source-encoded-f32-resample-high-frequency-output";
     displacementFormat: "rgba16float";
   }
   | {

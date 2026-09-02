@@ -51,7 +51,7 @@ import {
 import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits";
 import { createRenderPipelineAsync } from "./engine-gpu-utils";
 import type { DirtyRect } from "./engine-stroke-types";
-import type { LayerFormat } from "./engine-types";
+import type { DocumentStorageColorSpace, LayerFormat } from "./engine-types";
 import type {
   RasterImportHistoryAction,
   RasterImportSourceMetadata,
@@ -145,10 +145,16 @@ interface TransientImageTextures {
   destroy(): void;
 }
 
+type NativeImportPipelineProfile = `${LayerFormat}:${DocumentStorageColorSpace}`;
+
 const pipelineCache = new WeakMap<
   GPUDevice,
-  Map<LayerFormat, Promise<NativeImportPipelines>>
+  Map<NativeImportPipelineProfile, Promise<NativeImportPipelines>>
 >();
+
+function nativeImportPipelineProfile(engine: BrushEngine): NativeImportPipelineProfile {
+  return `${engine.layerFormat}:${engine.documentStorageColorSpace}`;
+}
 
 function allocateRasterLayerAssetId(engine: BrushEngine): string {
   let assetId: string;
@@ -184,15 +190,26 @@ function requiredImportMipLevelCount(
 async function ensureNativeImportPipelines(
   engine: BrushEngine,
 ): Promise<NativeImportPipelines> {
-  let byFormat = pipelineCache.get(engine.device);
-  if (!byFormat) {
-    byFormat = new Map<LayerFormat, Promise<NativeImportPipelines>>();
-    pipelineCache.set(engine.device, byFormat);
+  let byProfile = pipelineCache.get(engine.device);
+  if (!byProfile) {
+    byProfile = new Map<NativeImportPipelineProfile, Promise<NativeImportPipelines>>();
+    pipelineCache.set(engine.device, byProfile);
   }
-  const cached = byFormat?.get(engine.layerFormat);
+  const profile = nativeImportPipelineProfile(engine);
+  const cached = byProfile.get(profile);
   if (cached) return cached;
 
   const format = engine.layerFormat;
+  const storedEncodedSrgb = engine.documentStorageColorSpace
+    === "encoded-srgb-premultiplied";
+  if (storedEncodedSrgb && format !== "rgba8unorm") {
+    throw new Error(
+      "Encoded-sRGB raster-image import requires an RGBA8 document target.",
+    );
+  }
+  const outputEntryPoint = storedEncodedSrgb
+    ? "fragmentEncodedSrgbMain"
+    : "fragmentLinearMain";
   const created = (async () => {
     // Keep device-wide error scopes around synchronous descriptor allocation
     // only. Holding them open during async compilation would let unrelated GPU
@@ -269,7 +286,7 @@ async function ensureNativeImportPipelines(
         bindGroupLayouts: [rebuildLayout],
       });
       const premultiplyDescriptor: GPURenderPipelineDescriptor = {
-        label: "Native raster import linear premultiply",
+        label: "Native raster import encoded-sRGB premultiply",
         layout: uploadPipelineLayout,
         vertex: { module: uploadModule, entryPoint: "vertexMain" },
         fragment: {
@@ -291,23 +308,23 @@ async function ensureNativeImportPipelines(
         primitive: { topology: "triangle-list" },
       };
       const blitDescriptor: GPURenderPipelineDescriptor = {
-        label: `Native raster import into ${format} layer`,
+        label: `Native raster import into ${profile} layer`,
         layout: blitPipelineLayout,
         vertex: { module: blitModule, entryPoint: "vertexMain" },
         fragment: {
           module: blitModule,
-          entryPoint: "fragmentMain",
+          entryPoint: outputEntryPoint,
           targets: [{ format }],
         },
         primitive: { topology: "triangle-strip", cullMode: "none" },
       };
       const rebuildDescriptor: GPURenderPipelineDescriptor = {
-        label: `Immutable raster master rebuild into ${format}`,
+        label: `Immutable raster master rebuild into ${profile}`,
         layout: rebuildPipelineLayout,
         vertex: { module: rebuildModule, entryPoint: "vertexMain" },
         fragment: {
           module: rebuildModule,
-          entryPoint: "fragmentMain",
+          entryPoint: outputEntryPoint,
           targets: [{ format }],
         },
         primitive: { topology: "triangle-strip", cullMode: "none" },
@@ -365,11 +382,11 @@ async function ensureNativeImportPipelines(
       sampler: prepared.sampler,
     };
   })();
-  byFormat.set(format, created);
+  byProfile.set(profile, created);
   try {
     return await created;
   } catch (error) {
-    if (byFormat.get(format) === created) byFormat.delete(format);
+    if (byProfile.get(profile) === created) byProfile.delete(profile);
     throw error;
   }
 }

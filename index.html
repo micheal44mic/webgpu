@@ -3096,8 +3096,8 @@
         <div class="editor-settings-content">
           <section class="editor-settings-section" aria-labelledby="editorBrushPrecisionHeading">
             <div class="editor-settings-section-heading">
-              <h3 id="editorBrushPrecisionHeading">Brush precision</h3>
-              <p>Set the signal precision used by every brush tool.</p>
+              <h3 id="editorBrushPrecisionHeading">Brush mask precision</h3>
+              <p>Choose the sampling precision for brush Shape and Grain sources.</p>
             </div>
 
             <fieldset class="editor-settings-precision">
@@ -3106,7 +3106,7 @@
                 id="editorBrushPrecision"
                 class="editor-settings-precision-options"
                 role="radiogroup"
-                aria-label="Brush precision"
+                aria-label="Brush mask precision"
                 aria-describedby="editorBrushPrecisionHint"
               >
                 <button
@@ -3125,7 +3125,7 @@
                 >16-bit</button>
               </div>
               <p id="editorBrushPrecisionHint" class="editor-settings-hint">
-                8-bit quantizes brush color, shape and grain; canvas and layer storage remain 16F in both modes.
+                The document and raster layers remain 8-bit sRGB. 16-bit masks preserve smoother Shape and Grain sampling while using a small amount of additional GPU memory.
               </p>
             </fieldset>
           </section>
@@ -4042,17 +4042,17 @@
             <p class="gpu-memory-note">Hot is the full-document texture, Cold includes only painted tiles, and Compressed is CPU RAM: it counts toward the process limit but not the GPU total. The mip pyramid follows the active layer.</p>
             <p class="gpu-memory-measured-heading">Diagnostic model · excluded from the total</p>
             <dl class="gpu-memory-list">
-              <div data-memory-row><dt>Layer · authoritative full-canvas RGBA16F</dt><dd id="gpuMemoryLayerBase">—</dd></div>
+              <div data-memory-row><dt>Layer · authoritative full-canvas</dt><dd id="gpuMemoryLayerBase">—</dd></div>
               <div data-memory-row><dt>Layer · inactive cold tiles</dt><dd id="gpuMemoryLayerCold">—</dd></div>
-              <div data-memory-row><dt>Active clipping group · cropped RGBA16F</dt><dd id="gpuMemoryActiveClippingMask">—</dd></div>
+              <div data-memory-row><dt>Active clipping group · cropped document surface</dt><dd id="gpuMemoryActiveClippingMask">—</dd></div>
               <div data-memory-row><dt>Layer · compressed · CPU RAM</dt><dd id="gpuMemoryLayerCompressed">—</dd></div>
               <div data-memory-row><dt>Counted total · GPU + cold CPU RAM</dt><dd id="gpuMemoryCountedWithCompressedCpu">—</dd></div>
               <div data-memory-row><dt>Layer · temporary hydration</dt><dd id="gpuMemoryLayerHydration">—</dd></div>
               <div class="gpu-memory-study" data-memory-study-row><dt id="gpuMemoryLayerStudyTilesLabel">Raw layers · actual hot + cold</dt><dd id="gpuMemoryLayerStudyTiles">—</dd></div>
               <div class="gpu-memory-study" data-memory-study-row><dt id="gpuMemoryLayerStudyBboxLabel">Comparison · bbox 256</dt><dd id="gpuMemoryLayerStudyBbox">—</dd></div>
-              <div data-memory-row><dt>Mip pyramids · RGBA16F</dt><dd id="gpuMemoryLayerMips">—</dd></div>
-              <div data-memory-row><dt>Layer bakes · temporary RGBA16F</dt><dd id="gpuMemoryLayerBakes">—</dd></div>
-              <div data-memory-row><dt>Merged layers · RGBA16F mip 0</dt><dd id="gpuMemoryLayerComposite">—</dd></div>
+              <div data-memory-row><dt>Mip pyramids · document format</dt><dd id="gpuMemoryLayerMips">—</dd></div>
+              <div data-memory-row><dt>Layer bakes · temporary document surfaces</dt><dd id="gpuMemoryLayerBakes">—</dd></div>
+              <div data-memory-row><dt>Merged layers · document format mip 0</dt><dd id="gpuMemoryLayerComposite">—</dd></div>
               <div data-memory-row><dt>Grain</dt><dd id="gpuMemoryGrain">—</dd></div>
               <div id="gpuMemoryVectorTextRow" data-memory-row hidden><dt>Vector cache · RGBA16F / R16F matte</dt><dd id="gpuMemoryVectorText">—</dd></div>
               <div id="gpuMemoryRasterImageRow" data-memory-row hidden><dt>Raster operations · images, Transform, and Blur</dt><dd id="gpuMemoryRasterImage">—</dd></div>
@@ -4061,7 +4061,7 @@
               <div data-memory-row><dt>Buffer Paint</dt><dd id="gpuMemoryPaintBuffers">—</dd></div>
               <div data-memory-row><dt>Screen cache</dt><dd id="gpuMemoryPresentation">—</dd></div>
               <div data-memory-row><dt>Layer thumbnail · GPU</dt><dd id="gpuMemoryLayerThumbnail">—</dd></div>
-              <div class="gpu-memory-group-start" data-memory-row><dt>Style stack · RGBA16F result mip 1+</dt><dd id="gpuMemoryStrokeStyled">—</dd></div>
+              <div class="gpu-memory-group-start" data-memory-row><dt>Style stack · document-format result mip 1+</dt><dd id="gpuMemoryStrokeStyled">—</dd></div>
               <div data-memory-row><dt>Stroke · continuous R16F coverage</dt><dd id="gpuMemoryStrokeCoverage">—</dd></div>
               <div data-memory-row><dt>Stroke · mask and control</dt><dd id="gpuMemoryStrokeControl">—</dd></div>
               <div data-memory-row><dt id="gpuMemoryEffectsScratchLabel">Effects · scratch pool</dt><dd id="gpuMemoryEffectsScratch">—</dd></div>

@@ -1,5 +1,6 @@
 /** Transactional destructive Gaussian Blur for the selected native raster layer. */
 import type { BrushEngine } from "./brush-engine";
+import type { LayerFormat } from "./engine-types";
 import {
   createLayerColdStorageCandidate,
   destroyLayerColdStorage,
@@ -22,11 +23,14 @@ import {
 } from "./gaussian-blur-core";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import { tileMaskCoveringRect } from "./raster-transform-math";
+import { rgba8HighFrequencyQuantizationShader } from "./rgba8-high-frequency-quantization";
 
 export const DESTRUCTIVE_GAUSSIAN_BLUR_RUNTIME_BUILD =
-  "destructive-gaussian-blur-webgpu-v4-uniform-document-edge-clamp-rgba16float-packed-cache";
+  "destructive-gaussian-blur-webgpu-v7-linear-packed-unorm16-finalize";
 export const DESTRUCTIVE_GAUSSIAN_BLUR_PRECISION =
   "rgba16float-storage-f32-weights-and-accumulation" as const;
+export const DESTRUCTIVE_GAUSSIAN_BLUR_RGBA8_PRECISION =
+  "rgba8unorm-storage-linear-rgba16unorm-packed-two-pass-f32-high-frequency-output" as const;
 export const DESTRUCTIVE_GAUSSIAN_BLUR_EDGE_MODE =
   "transparent-content-clamp-document-edge" as const;
 
@@ -36,16 +40,24 @@ const FILTER_CACHE_LENGTH =
 const FILTER_CACHE_BYTES = FILTER_CACHE_LENGTH * 8;
 const KERNEL_WEIGHT_COUNT = DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS + 1;
 const KERNEL_WEIGHT_VEC4_COUNT = Math.ceil(KERNEL_WEIGHT_COUNT / 4);
-const PARAMETER_WORDS = 16 + KERNEL_WEIGHT_VEC4_COUNT * 4;
+const PARAMETER_WORDS = 20 + KERNEL_WEIGHT_VEC4_COUNT * 4;
 const PARAMETER_BYTES = PARAMETER_WORDS * 4;
 const PARAMETER_CAPACITY = 64;
 const BYTES_PER_RGBA16F_PIXEL = 8;
+const BYTES_PER_PACKED_RGBA16_UNORM_PIXEL = 8;
+
+function bytesPerLayerPixel(format: LayerFormat): number {
+  return format === "rgba8unorm" ? 4 : BYTES_PER_RGBA16F_PIXEL;
+}
 
 interface GaussianBlurSharedResources {
   horizontalBindGroupLayout: GPUBindGroupLayout;
   verticalBindGroupLayout: GPUBindGroupLayout;
   horizontalPipeline: GPUComputePipeline;
   verticalPipeline: GPUComputePipeline;
+  finalizeBindGroupLayout: GPUBindGroupLayout | null;
+  finalizePipeline: GPUComputePipeline | null;
+  outputFormat: LayerFormat;
 }
 
 interface GaussianBlurJob {
@@ -86,7 +98,10 @@ export interface ActiveRasterGaussianBlurSession {
   readonly parameterUploadF32: Float32Array;
   readonly horizontalBindGroup: GPUBindGroup;
   readonly verticalBindGroup: GPUBindGroup;
+  readonly finalizeBindGroup: GPUBindGroup | null;
   readonly shared: GaussianBlurSharedResources;
+  readonly quantizationSeed: number;
+  readonly storedEncodedSrgb: boolean;
   readonly memoryBytes: number;
   radius: number;
   resultBounds: DirtyRect;
@@ -100,15 +115,20 @@ export interface ActiveRasterGaussianBlurSession {
   terminal: boolean;
 }
 
-const sharedByDevice = new WeakMap<GPUDevice, Promise<GaussianBlurSharedResources>>();
+const sharedByDevice = new WeakMap<
+  GPUDevice,
+  Map<LayerFormat, Promise<GaussianBlurSharedResources>>
+>();
 
-function commonShaderSource(): string {
+function commonShaderSource(documentFormat: LayerFormat): string {
+  const rgba8 = documentFormat === "rgba8unorm";
   return /* wgsl */ `
 struct GaussianParameters {
   sourceOriginAndSize: vec4<i32>,
   buildOriginAndSize: vec4<i32>,
   targetOriginAndSize: vec4<u32>,
   kernelAndIntermediate: vec4<u32>,
+  quantizationAndReserved: vec4<u32>,
   weights: array<vec4<f32>, ${KERNEL_WEIGHT_VEC4_COUNT}>,
 };
 
@@ -120,24 +140,78 @@ fn kernelWeight(index: u32) -> f32 {
   return parameters.weights[index / 4u][index % 4u];
 }
 
-// Input textures are already RGBA16F. Keeping the workgroup cache in the same
-// format preserves source precision, halves shared storage, and keeps weights
-// and accumulation in f32.
+// RGBA8 uses exact packed 16-bit UNORM cache values. Every stored 8-bit code n
+// maps to n * 257 and survives a flat-field convolution without a half-float
+// wobble. The document-independent RGBA16F path keeps its native float cache.
 fn packFilterTexel(value: vec4<f32>) -> vec2<u32> {
-  return vec2<u32>(pack2x16float(value.xy), pack2x16float(value.zw));
+  return vec2<u32>(
+    ${rgba8 ? "pack2x16unorm" : "pack2x16float"}(value.xy),
+    ${rgba8 ? "pack2x16unorm" : "pack2x16float"}(value.zw)
+  );
 }
 
 fn unpackFilterTexel(value: vec2<u32>) -> vec4<f32> {
-  return vec4<f32>(unpack2x16float(value.x), unpack2x16float(value.y));
+  return vec4<f32>(
+    ${rgba8 ? "unpack2x16unorm" : "unpack2x16float"}(value.x),
+    ${rgba8 ? "unpack2x16unorm" : "unpack2x16float"}(value.y)
+  );
 }
+
+${rgba8 ? /* wgsl */ `
+fn gaussianSrgbToLinearChannel(value: f32) -> f32 {
+  if (value <= 0.04045) { return value / 12.92; }
+  return pow((value + 0.055) / 1.055, 2.4);
+}
+
+fn gaussianLinearToSrgbChannel(value: f32) -> f32 {
+  let bounded = clamp(value, 0.0, 1.0);
+  if (bounded <= 0.0031308) { return bounded * 12.92; }
+  return 1.055 * pow(bounded, 1.0 / 2.4) - 0.055;
+}
+
+fn gaussianEncodedPremultipliedToLinear(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let straight = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  let linear = vec3<f32>(
+    gaussianSrgbToLinearChannel(straight.r),
+    gaussianSrgbToLinearChannel(straight.g),
+    gaussianSrgbToLinearChannel(straight.b)
+  );
+  return vec4<f32>(linear * alpha, alpha);
+}
+
+fn gaussianLinearPremultipliedToEncoded(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let straight = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  let encoded = vec3<f32>(
+    gaussianLinearToSrgbChannel(straight.r),
+    gaussianLinearToSrgbChannel(straight.g),
+    gaussianLinearToSrgbChannel(straight.b)
+  );
+  return vec4<f32>(encoded * alpha, alpha);
+}
+
+fn gaussianStorageToWorking(value: vec4<f32>) -> vec4<f32> {
+  if (parameters.quantizationAndReserved.y == 0u) { return value; }
+  return gaussianEncodedPremultipliedToLinear(value);
+}
+
+fn gaussianWorkingToStorage(value: vec4<f32>) -> vec4<f32> {
+  if (parameters.quantizationAndReserved.y == 0u) { return value; }
+  return gaussianLinearPremultipliedToEncoded(value);
+}
+` : ""}
 `;
 }
 
-function horizontalShader(): string {
-  return `${commonShaderSource()}
+function horizontalShader(documentFormat: LayerFormat): string {
+  const rgba8 = documentFormat === "rgba8unorm";
+  return `${commonShaderSource(documentFormat)}
 @group(0) @binding(1) var sourceTexture: texture_2d<f32>;
 @group(0) @binding(2) var intermediateOutput:
-  texture_storage_2d<rgba16float, write>;
+  texture_storage_2d<${rgba8 ? "rg32uint" : "rgba16float"}, write>;
 
 var<workgroup> filterCache: array<vec2<u32>, ${FILTER_CACHE_LENGTH}>;
 
@@ -161,7 +235,8 @@ fn sourceTexel(documentPosition: vec2<i32>) -> vec4<f32> {
   if (any(local < vec2<i32>(0)) || any(local >= size)) {
     return vec4<f32>(0.0);
   }
-  return textureLoad(sourceTexture, local, 0);
+  let stored = textureLoad(sourceTexture, local, 0);
+  return ${rgba8 ? "gaussianStorageToWorking(stored)" : "stored"};
 }
 
 @compute @workgroup_size(${FILTER_WORKGROUP_SIZE})
@@ -201,16 +276,24 @@ fn main(
     result += unpackFilterTexel(filterCache[center - offset]) * weight;
     result += unpackFilterTexel(filterCache[center + offset]) * weight;
   }
-  textureStore(intermediateOutput, vec2<i32>(i32(outputX), i32(groupId.y)), result);
+  ${rgba8 ? `
+  let packedResult = packFilterTexel(result);
+  textureStore(
+    intermediateOutput,
+    vec2<i32>(i32(outputX), i32(groupId.y)),
+    vec4<u32>(packedResult, 0u, 0u)
+  );` : `
+  textureStore(intermediateOutput, vec2<i32>(i32(outputX), i32(groupId.y)), result);`}
 }
 `;
 }
 
-function verticalShader(): string {
-  return `${commonShaderSource()}
-@group(0) @binding(1) var intermediateInput: texture_2d<f32>;
+function verticalShader(outputFormat: LayerFormat): string {
+  const rgba8 = outputFormat === "rgba8unorm";
+  return `${commonShaderSource(outputFormat)}
+@group(0) @binding(1) var intermediateInput: texture_2d<${rgba8 ? "u32" : "f32"}>;
 @group(0) @binding(2) var outputTexture:
-  texture_storage_2d<rgba16float, write>;
+  texture_storage_2d<${rgba8 ? "rg32uint" : outputFormat}, write>;
 
 var<workgroup> filterCache: array<vec2<u32>, ${FILTER_CACHE_LENGTH}>;
 
@@ -219,7 +302,9 @@ fn intermediateTexel(position: vec2<i32>) -> vec4<f32> {
   if (any(position < vec2<i32>(0)) || any(position >= size)) {
     return vec4<f32>(0.0);
   }
-  return textureLoad(intermediateInput, position, 0);
+  ${rgba8 ? `
+  return unpackFilterTexel(textureLoad(intermediateInput, position, 0).xy);` : `
+  return textureLoad(intermediateInput, position, 0);`}
 }
 
 @compute @workgroup_size(${FILTER_WORKGROUP_SIZE})
@@ -261,12 +346,45 @@ fn main(
     result += unpackFilterTexel(filterCache[center - offset]) * weight;
     result += unpackFilterTexel(filterCache[center + offset]) * weight;
   }
-  textureStore(outputTexture, vec2<i32>(i32(localX), i32(localY)), result);
+  let outputPosition = vec2<i32>(i32(localX), i32(localY));
+  ${rgba8 ? `
+  let packedResult = packFilterTexel(result);
+  textureStore(outputTexture, outputPosition, vec4<u32>(packedResult, 0u, 0u));` : `
+  textureStore(outputTexture, outputPosition, result);`}
 }
 `;
 }
 
-async function createSharedResources(device: GPUDevice): Promise<GaussianBlurSharedResources> {
+function finalizeRgba8Shader(): string {
+  return `${commonShaderSource("rgba8unorm")}
+${rgba8HighFrequencyQuantizationShader}
+@group(0) @binding(1) var workingTexture: texture_2d<u32>;
+@group(0) @binding(2) var destinationTexture:
+  texture_storage_2d<rgba8unorm, write>;
+
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
+  let targetSize = parameters.targetOriginAndSize.zw;
+  if (globalId.x >= targetSize.x || globalId.y >= targetSize.y) { return; }
+  let localPosition = vec2<i32>(globalId.xy);
+  let packed = textureLoad(workingTexture, localPosition, 0).xy;
+  let working = unpackFilterTexel(packed);
+  let encodedPremultiplied = gaussianWorkingToStorage(working);
+  let documentPosition = parameters.targetOriginAndSize.xy + globalId.xy;
+  let storedResult = quantizeRgba8HighFrequencyAdjacent(
+    encodedPremultiplied,
+    documentPosition,
+    parameters.quantizationAndReserved.x
+  );
+  textureStore(destinationTexture, vec2<i32>(documentPosition), storedResult);
+}
+`;
+}
+
+async function createSharedResources(
+  device: GPUDevice,
+  outputFormat: LayerFormat,
+): Promise<GaussianBlurSharedResources> {
   const availableWorkgroupStorage = Number(device.limits.maxComputeWorkgroupStorageSize);
   if (
     Number.isFinite(availableWorkgroupStorage)
@@ -279,20 +397,30 @@ async function createSharedResources(device: GPUDevice): Promise<GaussianBlurSha
   }
   return runGpuAllocationTransaction(
     device,
-    "Pipeline Native raster Gaussian Blur RGBA16F",
+    `Pipeline Native raster Gaussian Blur ${outputFormat}`,
     async () => {
       const horizontalModule = device.createShaderModule({
         label: "Native raster Gaussian Blur horizontal WGSL",
-        code: horizontalShader(),
+        code: horizontalShader(outputFormat),
       });
       const verticalModule = device.createShaderModule({
         label: "Native raster Gaussian Blur vertical WGSL",
-        code: verticalShader(),
+        code: verticalShader(outputFormat),
       });
-      await Promise.all([
+      const finalizeModule = outputFormat === "rgba8unorm"
+        ? device.createShaderModule({
+          label: "Native raster Gaussian Blur RGBA8 finalizer WGSL",
+          code: finalizeRgba8Shader(),
+        })
+        : null;
+      const compilationChecks = [
         assertShaderCompiled(horizontalModule, "Horizontal Gaussian Blur"),
         assertShaderCompiled(verticalModule, "Vertical Gaussian Blur"),
-      ]);
+      ];
+      if (finalizeModule) {
+        compilationChecks.push(assertShaderCompiled(finalizeModule, "Gaussian Blur RGBA8 finalizer"));
+      }
+      await Promise.all(compilationChecks);
       const horizontalBindGroupLayout = device.createBindGroupLayout({
         label: "Native raster Gaussian Blur horizontal layout",
         entries: [
@@ -308,12 +436,17 @@ async function createSharedResources(device: GPUDevice): Promise<GaussianBlurSha
           {
             binding: 1,
             visibility: GPUShaderStage.COMPUTE,
-            texture: { sampleType: "unfilterable-float" },
+            texture: {
+              sampleType: outputFormat === "rgba8unorm" ? "float" : "unfilterable-float",
+            },
           },
           {
             binding: 2,
             visibility: GPUShaderStage.COMPUTE,
-            storageTexture: { access: "write-only", format: "rgba16float" },
+            storageTexture: {
+              access: "write-only",
+              format: outputFormat === "rgba8unorm" ? "rg32uint" : "rgba16float",
+            },
           },
         ],
       });
@@ -332,15 +465,46 @@ async function createSharedResources(device: GPUDevice): Promise<GaussianBlurSha
           {
             binding: 1,
             visibility: GPUShaderStage.COMPUTE,
-            texture: { sampleType: "unfilterable-float" },
+            texture: {
+              sampleType: outputFormat === "rgba8unorm" ? "uint" : "unfilterable-float",
+            },
           },
           {
             binding: 2,
             visibility: GPUShaderStage.COMPUTE,
-            storageTexture: { access: "write-only", format: "rgba16float" },
+            storageTexture: {
+              access: "write-only",
+              format: outputFormat === "rgba8unorm" ? "rg32uint" : outputFormat,
+            },
           },
         ],
       });
+      const finalizeBindGroupLayout = outputFormat === "rgba8unorm"
+        ? device.createBindGroupLayout({
+          label: "Native raster Gaussian Blur RGBA8 finalizer layout",
+          entries: [
+            {
+              binding: 0,
+              visibility: GPUShaderStage.COMPUTE,
+              buffer: {
+                type: "uniform",
+                hasDynamicOffset: true,
+                minBindingSize: PARAMETER_BYTES,
+              },
+            },
+            {
+              binding: 1,
+              visibility: GPUShaderStage.COMPUTE,
+              texture: { sampleType: "uint" },
+            },
+            {
+              binding: 2,
+              visibility: GPUShaderStage.COMPUTE,
+              storageTexture: { access: "write-only", format: "rgba8unorm" },
+            },
+          ],
+        })
+        : null;
       const horizontalPipeline = device.createComputePipeline({
         label: "Native raster Gaussian Blur horizontal pipeline",
         layout: device.createPipelineLayout({ bindGroupLayouts: [horizontalBindGroupLayout] }),
@@ -351,26 +515,45 @@ async function createSharedResources(device: GPUDevice): Promise<GaussianBlurSha
         layout: device.createPipelineLayout({ bindGroupLayouts: [verticalBindGroupLayout] }),
         compute: { module: verticalModule, entryPoint: "main" },
       });
+      const finalizePipeline = finalizeModule && finalizeBindGroupLayout
+        ? device.createComputePipeline({
+          label: "Native raster Gaussian Blur RGBA8 finalizer pipeline",
+          layout: device.createPipelineLayout({ bindGroupLayouts: [finalizeBindGroupLayout] }),
+          compute: { module: finalizeModule, entryPoint: "main" },
+        })
+        : null;
       return {
         horizontalBindGroupLayout,
         verticalBindGroupLayout,
         horizontalPipeline,
         verticalPipeline,
+        finalizeBindGroupLayout,
+        finalizePipeline,
+        outputFormat,
       };
     },
   );
 }
 
-async function requireSharedResources(device: GPUDevice): Promise<GaussianBlurSharedResources> {
-  let promise = sharedByDevice.get(device);
+async function requireSharedResources(
+  device: GPUDevice,
+  outputFormat: LayerFormat,
+): Promise<GaussianBlurSharedResources> {
+  let variants = sharedByDevice.get(device);
+  if (!variants) {
+    variants = new Map();
+    sharedByDevice.set(device, variants);
+  }
+  let promise = variants.get(outputFormat);
   if (!promise) {
-    promise = createSharedResources(device);
-    sharedByDevice.set(device, promise);
+    promise = createSharedResources(device, outputFormat);
+    variants.set(outputFormat, promise);
   }
   try {
     return await promise;
   } catch (error) {
-    sharedByDevice.delete(device);
+    variants.delete(outputFormat);
+    if (variants.size === 0) sharedByDevice.delete(device);
     throw error;
   }
 }
@@ -461,9 +644,13 @@ function writeJobParameters(
   session.parameterUploadU32[word + 15] = (
     (documentHeight << 16) | documentWidth
   ) >>> 0;
-  session.parameterUploadF32.fill(0, word + 16, word + PARAMETER_WORDS);
+  session.parameterUploadU32[word + 16] = session.quantizationSeed;
+  session.parameterUploadU32[word + 17] = session.storedEncodedSrgb ? 1 : 0;
+  session.parameterUploadU32[word + 18] = 0;
+  session.parameterUploadU32[word + 19] = 0;
+  session.parameterUploadF32.fill(0, word + 20, word + PARAMETER_WORDS);
   for (let offset = 0; offset < kernel.weights.length; offset += 1) {
-    session.parameterUploadF32[word + 16 + offset] = kernel.weights[offset];
+    session.parameterUploadF32[word + 20 + offset] = kernel.weights[offset];
   }
   return byteOffset;
 }
@@ -571,18 +758,34 @@ function encodeRequestedPreview(
     );
     vertical.end();
 
-    encoder.copyTextureToTexture(
-      { texture: session.outputTexture },
-      {
-        texture: engine.layerTexture,
-        origin: { x: job.targetX, y: job.targetY, z: 0 },
-      },
-      {
-        width: job.targetWidth,
-        height: job.targetHeight,
-        depthOrArrayLayers: 1,
-      },
-    );
+    if (session.shared.outputFormat === "rgba8unorm") {
+      if (!session.shared.finalizePipeline || !session.finalizeBindGroup) {
+        throw new Error("Gaussian Blur: the RGBA8 finalizer is unavailable.");
+      }
+      const finalize = encoder.beginComputePass({
+        label: `Gaussian Blur RGBA8 final strip ${index + 1}/${jobs.length}`,
+      });
+      finalize.setPipeline(session.shared.finalizePipeline);
+      finalize.setBindGroup(0, session.finalizeBindGroup, [offsets[index]]);
+      finalize.dispatchWorkgroups(
+        Math.ceil(job.targetWidth / 8),
+        Math.ceil(job.targetHeight / 8),
+      );
+      finalize.end();
+    } else {
+      encoder.copyTextureToTexture(
+        { texture: session.outputTexture },
+        {
+          texture: engine.layerTexture,
+          origin: { x: job.targetX, y: job.targetY, z: 0 },
+        },
+        {
+          width: job.targetWidth,
+          height: job.targetHeight,
+          depthOrArrayLayers: 1,
+        },
+      );
+    }
   }
   engine.device.queue.submit([encoder.finish()]);
 
@@ -747,10 +950,6 @@ export async function beginRasterGaussianBlur(
   if (!record.hasContent || !record.contentBounds) {
     throw new Error("The selected raster layer is empty.");
   }
-  if (engine.layerFormat !== "rgba16float") {
-    throw new Error("Destructive Gaussian Blur requires an RGBA16F document.");
-  }
-
   engine.cancelLayerColdCompressionIdle();
   engine.historyBusy = true;
   engine.publishHistoryState();
@@ -775,7 +974,7 @@ export async function beginRasterGaussianBlur(
       engine.documentHeight,
     ) as DirtyRect;
     const sourceTileMask = record.storageTileMask.slice();
-    const shared = await requireSharedResources(engine.device);
+    const shared = await requireSharedResources(engine.device, engine.layerFormat);
     const uniformAlignment = Number(engine.device.limits.minUniformBufferOffsetAlignment) || 256;
     const parameterStride = Math.ceil(PARAMETER_BYTES / uniformAlignment) * uniformAlignment;
     const intermediateHeight = Math.min(
@@ -811,7 +1010,7 @@ export async function beginRasterGaussianBlur(
             height: scratchBounds.height,
             depthOrArrayLayers: 1,
           },
-          format: "rgba16float",
+          format: engine.layerFormat,
           usage:
             GPUTextureUsage.COPY_SRC
             | GPUTextureUsage.COPY_DST
@@ -828,7 +1027,7 @@ export async function beginRasterGaussianBlur(
             height: intermediateHeight,
             depthOrArrayLayers: 1,
           },
-          format: "rgba16float",
+          format: engine.layerFormat === "rgba8unorm" ? "rg32uint" : "rgba16float",
           usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
         });
         transaction.deferRollback(() => intermediateTexture.destroy());
@@ -842,8 +1041,10 @@ export async function beginRasterGaussianBlur(
             height: outputHeight,
             depthOrArrayLayers: 1,
           },
-          format: "rgba16float",
-          usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
+          format: engine.layerFormat === "rgba8unorm" ? "rg32uint" : "rgba16float",
+          usage: engine.layerFormat === "rgba8unorm"
+            ? GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING
+            : GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
         });
         transaction.deferRollback(() => outputTexture.destroy());
         const outputView = outputTexture.createView({
@@ -879,6 +1080,20 @@ export async function beginRasterGaussianBlur(
             { binding: 2, resource: outputView },
           ],
         });
+        const finalizeBindGroup = shared.finalizeBindGroupLayout
+          ? engine.device.createBindGroup({
+            label: "Native raster Gaussian Blur RGBA8 finalizer bind group",
+            layout: shared.finalizeBindGroupLayout,
+            entries: [
+              {
+                binding: 0,
+                resource: { buffer: parameterBuffer, offset: 0, size: PARAMETER_BYTES },
+              },
+              { binding: 1, resource: outputView },
+              { binding: 2, resource: hot.view },
+            ],
+          })
+          : null;
         const parameterUpload = new ArrayBuffer(parameterStride * PARAMETER_CAPACITY);
         const created: ActiveRasterGaussianBlurSession = {
           layerId: record.id,
@@ -899,11 +1114,22 @@ export async function beginRasterGaussianBlur(
           parameterUploadF32: new Float32Array(parameterUpload),
           horizontalBindGroup,
           verticalBindGroup,
+          finalizeBindGroup,
           shared,
+          quantizationSeed: engine.nextHistoryActionId >>> 0,
+          storedEncodedSrgb:
+            engine.documentStorageColorSpace === "encoded-srgb-premultiplied",
           memoryBytes:
-            (scratchBounds.width * scratchBounds.height
-              + scratchBounds.width * intermediateHeight
-              + scratchBounds.width * outputHeight) * BYTES_PER_RGBA16F_PIXEL
+            scratchBounds.width * scratchBounds.height
+              * bytesPerLayerPixel(engine.layerFormat)
+            + scratchBounds.width * intermediateHeight
+              * (engine.layerFormat === "rgba8unorm"
+                ? BYTES_PER_PACKED_RGBA16_UNORM_PIXEL
+                : BYTES_PER_RGBA16F_PIXEL)
+            + scratchBounds.width * outputHeight
+              * (engine.layerFormat === "rgba8unorm"
+                ? BYTES_PER_PACKED_RGBA16_UNORM_PIXEL
+                : BYTES_PER_RGBA16F_PIXEL)
             + parameterStride * PARAMETER_CAPACITY,
           radius,
           resultBounds: initialResultBounds,
@@ -1086,7 +1312,9 @@ export async function commitRasterGaussianBlur(engine: BrushEngine): Promise<boo
       radius: session.radius,
       sigma: kernel.sigma,
       supportRadius: kernel.radius,
-      precision: "rgba16float-f32-accumulation",
+      precision: engine.layerFormat === "rgba8unorm"
+        ? "rgba8unorm-linear-rgba16unorm-packed-two-pass-f32-high-frequency-output"
+        : "rgba16float-f32-accumulation",
       edgeMode: DESTRUCTIVE_GAUSSIAN_BLUR_EDGE_MODE,
       seed,
       baseBounds: { ...session.resultBounds },

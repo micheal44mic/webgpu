@@ -47,18 +47,24 @@ fn clippingBlendSourceAtop(
       matte,
     );
   }
-  var destinationLinear = vec3<f32>(0.0);
-  var sourceLinear = vec3<f32>(0.0);
-  if (matte > 0.0) { destinationLinear = destinationPremultiplied / matte; }
-  if (sourceAlpha > 0.0) { sourceLinear = sourcePremultiplied / sourceAlpha; }
-  let blendedLinear = layerBlendSrgbToLinear(layerBlendSrgb(
-    layerBlendLinearToSrgb(destinationLinear),
-    layerBlendLinearToSrgb(sourceLinear),
+  var destinationStored = vec3<f32>(0.0);
+  var sourceStored = vec3<f32>(0.0);
+  if (matte > 0.0) { destinationStored = destinationPremultiplied / matte; }
+  if (sourceAlpha > 0.0) { sourceStored = sourcePremultiplied / sourceAlpha; }
+  let encodedStorage = display.compositingColorSpace > 1.5;
+  let blendedSrgb = layerBlendSrgb(
+    select(layerBlendLinearToSrgb(destinationStored), destinationStored, encodedStorage),
+    select(layerBlendLinearToSrgb(sourceStored), sourceStored, encodedStorage),
     min(mode, LAYER_BLEND_LUMINOSITY),
-  ));
+  );
+  let blendedStored = select(
+    layerBlendSrgbToLinear(blendedSrgb),
+    blendedSrgb,
+    encodedStorage,
+  );
   return vec4<f32>(
     clamp(
-      blendedLinear * (sourceAlpha * matte)
+      blendedStored * (sourceAlpha * matte)
         + destinationPremultiplied * (1.0 - sourceAlpha),
       vec3<f32>(0.0),
       vec3<f32>(matte),

@@ -704,6 +704,8 @@ export function flushVectorTextGpuPresentations(engine: BrushEngine): void {
         run.view,
         mainDrawIndex,
         run.bounds,
+        run.bounds.width,
+        run.bounds.height,
       );
       mainDrawIndex += 1;
     }
@@ -885,6 +887,8 @@ export function flushVectorTextGpuPresentations(engine: BrushEngine): void {
         },
       ],
     });
+    pass.setViewport(0, 0, run.bounds.width, run.bounds.height, 0, 1);
+    pass.setScissorRect(0, 0, run.bounds.width, run.bounds.height);
 
     for (let index = 0; index < run.draws.length; index += 1) {
       const draw = run.draws[index];
@@ -1488,6 +1492,7 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
       sourceOpacity,
       context,
       documentMaskOpacity,
+      engine.documentStorageColorSpace === "encoded-srgb-premultiplied",
     );
     engine.device.queue.writeBuffer(uniformBuffer, offset, upload);
     return offset;
@@ -1950,7 +1955,10 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
           groupStartPass.draw(3, 1, 0, 0);
         }
       } else {
-        drawSegmentSource(groupStartPass, segment);
+        // The active parent must enter its isolated group unscaled. Its
+        // opacity belongs to the completed group and is applied once by the
+        // outer compositor after every clipped child has been folded.
+        drawActiveRasterSourceOnly(groupStartPass);
       }
       groupStartPass.end();
 
@@ -1974,7 +1982,7 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
         clippingBasePass.setBindGroup(0, baseSegment.bindGroup);
         clippingBasePass.draw(3, 1, 0, 0);
       } else {
-        drawSegmentSource(clippingBasePass, segment);
+        drawActiveRasterSourceOnly(clippingBasePass);
       }
       clippingBasePass.end();
 

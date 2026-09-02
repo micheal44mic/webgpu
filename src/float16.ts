@@ -107,6 +107,53 @@ export function rgba16FloatRowsToRgba8Unorm(
   return target;
 }
 
+/**
+ * Reads padded presentation rows through their real texture format. RGBA8 is
+ * already the final UNORM representation, so that branch removes row padding
+ * without applying a second color or numeric conversion.
+ */
+export function rgbaRowsToRgba8Unorm(
+  source: Uint8Array,
+  width: number,
+  height: number,
+  sourceBytesPerRow: number,
+  format: "rgba8unorm" | "rgba16float",
+): Uint8Array<ArrayBuffer> {
+  if (format === "rgba16float") {
+    return rgba16FloatRowsToRgba8Unorm(source, width, height, sourceBytesPerRow);
+  }
+  if (
+    !Number.isSafeInteger(width)
+    || !Number.isSafeInteger(height)
+    || width < 0
+    || height < 0
+  ) {
+    throw new Error("RGBA8 dimensions must be non-negative safe integers.");
+  }
+  const tightBytesPerRow = width * RGBA8_UNORM_BYTES_PER_PIXEL;
+  if (
+    !Number.isSafeInteger(sourceBytesPerRow)
+    || sourceBytesPerRow < tightBytesPerRow
+  ) {
+    throw new Error("RGBA8 row stride is smaller than one packed source row.");
+  }
+  const requiredBytes = height === 0
+    ? 0
+    : (height - 1) * sourceBytesPerRow + tightBytesPerRow;
+  if (source.byteLength < requiredBytes) {
+    throw new Error("RGBA8 source does not contain every requested row.");
+  }
+
+  const target = new Uint8Array(tightBytesPerRow * height);
+  for (let row = 0; row < height; row += 1) {
+    target.set(
+      source.subarray(row * sourceBytesPerRow, row * sourceBytesPerRow + tightBytesPerRow),
+      row * tightBytesPerRow,
+    );
+  }
+  return target;
+}
+
 const UNORM8_TO_FLOAT16 = Uint16Array.from(
   { length: 256 },
   (_, value) => encodeFloat16(value / 255),

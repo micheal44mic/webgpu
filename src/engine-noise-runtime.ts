@@ -10,8 +10,10 @@ import { invalidateActiveLayerBake } from "./engine-layer-runtime";
 import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits";
 import type { RasterFilterHistoryAction } from "./engine-history-types";
 import type { DirtyRect } from "./engine-stroke-types";
+import type { DocumentStorageColorSpace, LayerFormat } from "./engine-types";
 import { publishMixedScene } from "./engine-vector-text-runtime";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
+import { rgba8HighFrequencyQuantizationShader } from "./rgba8-high-frequency-quantization";
 import {
   DEFAULT_RASTER_NOISE_SETTINGS,
   DESTRUCTIVE_RASTER_NOISE_ALGORITHM,
@@ -36,6 +38,8 @@ export const DESTRUCTIVE_RASTER_NOISE_RUNTIME_BUILD =
   "destructive-raster-noise-webgpu-v1-immutable-source-single-pass";
 export const DESTRUCTIVE_RASTER_NOISE_PRECISION =
   "rgba16float-storage-f32-procedural" as const;
+export const DESTRUCTIVE_RASTER_NOISE_RGBA8_PRECISION =
+  "rgba8unorm-storage-linear-f32-procedural-high-frequency-output" as const;
 export const DESTRUCTIVE_RASTER_NOISE_COLOR_SPACE =
   "linear-premultiplied" as const;
 export const DESTRUCTIVE_RASTER_NOISE_ALPHA_MODE = "preserve" as const;
@@ -43,6 +47,7 @@ export const DESTRUCTIVE_RASTER_NOISE_BOUNDS_MODE = "preserve" as const;
 
 const PARAMETER_BYTES = 64;
 const BYTES_PER_RGBA16F_PIXEL = 8;
+const BYTES_PER_RGBA8_PIXEL = 4;
 const WORKGROUP_WIDTH = 8;
 const WORKGROUP_HEIGHT = 8;
 
@@ -87,11 +92,21 @@ export interface ActiveRasterNoiseSession {
   destroyed: boolean;
 }
 
-const sharedByDevice = new WeakMap<GPUDevice, Promise<RasterNoiseSharedResources>>();
+type RasterNoisePipelineProfile = `${LayerFormat}:${DocumentStorageColorSpace}`;
+
+const sharedByDevice = new WeakMap<
+  GPUDevice,
+  Map<RasterNoisePipelineProfile, Promise<RasterNoiseSharedResources>>
+>();
 const lastSeedByEngine = new WeakMap<BrushEngine, RasterNoiseSeed>();
 const injectedSeedsByEngine = new WeakMap<BrushEngine, RasterNoiseSeed[]>();
 
-function noiseShader(): string {
+function noiseShader(
+  layerFormat: LayerFormat,
+  documentStorageColorSpace: DocumentStorageColorSpace,
+): string {
+  const storedEncodedSrgb = layerFormat === "rgba8unorm"
+    && documentStorageColorSpace === "encoded-srgb-premultiplied";
   return /* wgsl */ `
 struct NoiseParameters {
   sourceOriginAndSize: vec4<i32>,
@@ -110,7 +125,39 @@ const WARP_SALT_Y = ${RASTER_NOISE_WARP_SALT_Y}u;
 @group(0) @binding(0) var<uniform> parameters: NoiseParameters;
 @group(0) @binding(1) var immutableSource: texture_2d<f32>;
 @group(0) @binding(2) var authoritativeOutput:
-  texture_storage_2d<rgba16float, write>;
+  texture_storage_2d<${layerFormat}, write>;
+
+${storedEncodedSrgb ? rgba8HighFrequencyQuantizationShader : ""}
+
+${storedEncodedSrgb ? /* wgsl */ `
+fn noiseSrgbToLinear(value: vec3<f32>) -> vec3<f32> {
+  let encoded = clamp(value, vec3<f32>(0.0), vec3<f32>(1.0));
+  let lower = encoded / 12.92;
+  let upper = pow((encoded + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
+  return select(upper, lower, encoded <= vec3<f32>(0.04045));
+}
+
+fn noiseLinearToSrgb(value: vec3<f32>) -> vec3<f32> {
+  let linear = clamp(value, vec3<f32>(0.0), vec3<f32>(1.0));
+  let lower = linear * 12.92;
+  let upper = 1.055 * pow(linear, vec3<f32>(1.0 / 2.4)) - vec3<f32>(0.055);
+  return select(upper, lower, linear <= vec3<f32>(0.0031308));
+}
+
+fn noiseStorageToLinearPremultiplied(source: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(source.a, 0.0, 1.0);
+  if (alpha <= 0.0000001) { return vec4<f32>(0.0); }
+  let straightEncoded = clamp(source.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  return vec4<f32>(noiseSrgbToLinear(straightEncoded) * alpha, alpha);
+}
+
+fn noiseLinearPremultipliedToStorage(source: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(source.a, 0.0, 1.0);
+  if (alpha <= 0.0000001) { return vec4<f32>(0.0); }
+  let straightLinear = clamp(source.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  return vec4<f32>(noiseLinearToSrgb(straightLinear) * alpha, alpha);
+}
+` : ""}
 
 fn pcgHash(input: u32) -> u32 {
   let state = input * 747796405u + 2891336453u;
@@ -263,11 +310,14 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   if (any(globalId.xy >= sourceSize)) { return; }
   let localPosition = vec2<i32>(globalId.xy);
   let documentPosition = parameters.sourceOriginAndSize.xy + localPosition;
-  let source = textureLoad(immutableSource, localPosition, 0);
+  let storedSource = textureLoad(immutableSource, localPosition, 0);
 
   // The source copy already restored pixels that the filter must preserve.
-  if (!(source.a > 0.0)) { return; }
-  if (any(source != source) || any(abs(source) > vec4<f32>(HALF_MAX))) { return; }
+  if (!(storedSource.a > 0.0)) { return; }
+  if (any(storedSource != storedSource) || any(abs(storedSource) > vec4<f32>(HALF_MAX))) { return; }
+  let source = ${storedEncodedSrgb
+    ? "noiseStorageToLinearPremultiplied(storedSource)"
+    : "storedSource"};
 
   let field = evaluateNoise(vec2<f32>(documentPosition) + vec2<f32>(0.5));
   let amount = parameters.amountScaleOctavesTurbulence.x;
@@ -280,26 +330,38 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
     resultRgb = source.a * (vec3<f32>(0.5) + amount * (field - vec3<f32>(0.5)));
   }
   if (any(resultRgb != resultRgb)) { return; }
+  let linearResult = vec4<f32>(
+    clamp(resultRgb, vec3<f32>(-HALF_MAX), vec3<f32>(HALF_MAX)),
+    source.a
+  );
+  ${storedEncodedSrgb ? /* wgsl */ `
+  let storedResult = noiseLinearPremultipliedToStorage(linearResult);
   textureStore(
     authoritativeOutput,
     documentPosition,
-    vec4<f32>(
-      clamp(resultRgb, vec3<f32>(-HALF_MAX), vec3<f32>(HALF_MAX)),
-      source.a
+    quantizeRgba8HighFrequencyAdjacent(
+      storedResult,
+      vec2<u32>(documentPosition),
+      parameters.modesAndSeedLow.w ^ parameters.seedVersionAndDocument.x
     )
-  );
+  );` : /* wgsl */ `
+  textureStore(authoritativeOutput, documentPosition, linearResult);`}
 }
 `;
 }
 
-async function createSharedResources(device: GPUDevice): Promise<RasterNoiseSharedResources> {
+async function createSharedResources(
+  device: GPUDevice,
+  layerFormat: LayerFormat,
+  documentStorageColorSpace: DocumentStorageColorSpace,
+): Promise<RasterNoiseSharedResources> {
   return runGpuAllocationTransaction(
     device,
-    "Pipeline Native raster Noise RGBA16F",
+    `Pipeline Native raster Noise ${layerFormat}`,
     async () => {
       const module = device.createShaderModule({
         label: "Native raster Noise procedural WGSL",
-        code: noiseShader(),
+        code: noiseShader(layerFormat, documentStorageColorSpace),
       });
       await assertShaderCompiled(module, "Procedural Noise");
       const bindGroupLayout = device.createBindGroupLayout({
@@ -318,7 +380,7 @@ async function createSharedResources(device: GPUDevice): Promise<RasterNoiseShar
           {
             binding: 2,
             visibility: GPUShaderStage.COMPUTE,
-            storageTexture: { access: "write-only", format: "rgba16float" },
+            storageTexture: { access: "write-only", format: layerFormat },
           },
         ],
       });
@@ -332,16 +394,27 @@ async function createSharedResources(device: GPUDevice): Promise<RasterNoiseShar
   );
 }
 
-async function requireSharedResources(device: GPUDevice): Promise<RasterNoiseSharedResources> {
-  let promise = sharedByDevice.get(device);
+async function requireSharedResources(engine: BrushEngine): Promise<RasterNoiseSharedResources> {
+  let byProfile = sharedByDevice.get(engine.device);
+  if (!byProfile) {
+    byProfile = new Map();
+    sharedByDevice.set(engine.device, byProfile);
+  }
+  const profile: RasterNoisePipelineProfile =
+    `${engine.layerFormat}:${engine.documentStorageColorSpace}`;
+  let promise = byProfile.get(profile);
   if (!promise) {
-    promise = createSharedResources(device);
-    sharedByDevice.set(device, promise);
+    promise = createSharedResources(
+      engine.device,
+      engine.layerFormat,
+      engine.documentStorageColorSpace,
+    );
+    byProfile.set(profile, promise);
   }
   try {
     return await promise;
   } catch (error) {
-    sharedByDevice.delete(device);
+    if (byProfile.get(profile) === promise) byProfile.delete(profile);
     throw error;
   }
 }
@@ -671,10 +744,6 @@ export async function beginRasterNoise(
   if (!record.hasContent || !record.contentBounds) {
     throw new Error("The selected raster layer is empty.");
   }
-  if (engine.layerFormat !== "rgba16float") {
-    throw new Error("Destructive Noise requires an RGBA16F document.");
-  }
-
   engine.cancelLayerColdCompressionIdle();
   engine.historyBusy = true;
   engine.publishHistoryState();
@@ -693,7 +762,7 @@ export async function beginRasterNoise(
     const sourceTileMask = record.storageTileMask.slice();
     const settings = normalizeRasterNoiseSettings(initial);
     const randomSeed = nextSeed(engine);
-    const shared = await requireSharedResources(engine.device);
+    const shared = await requireSharedResources(engine);
     session = await runGpuAllocationTransaction(
       engine.device,
       `Allocate Native raster Noise layer ${record.id}`,
@@ -705,7 +774,7 @@ export async function beginRasterNoise(
             height: sourceBounds.height,
             depthOrArrayLayers: 1,
           },
-          format: "rgba16float",
+          format: engine.layerFormat,
           usage:
             GPUTextureUsage.COPY_SRC
             | GPUTextureUsage.COPY_DST
@@ -752,7 +821,10 @@ export async function beginRasterNoise(
           randomSeedLow: randomSeed.low,
           randomSeedHigh: randomSeed.high,
           memoryBytes:
-            sourceBounds.width * sourceBounds.height * BYTES_PER_RGBA16F_PIXEL
+            sourceBounds.width * sourceBounds.height
+              * (engine.layerFormat === "rgba16float"
+                ? BYTES_PER_RGBA16F_PIXEL
+                : BYTES_PER_RGBA8_PIXEL)
             + PARAMETER_BYTES,
           settings,
           requestedSerial: 1,
@@ -932,7 +1004,9 @@ export async function commitRasterNoise(engine: BrushEngine): Promise<boolean> {
       randomSeedHigh: session.randomSeedHigh,
       algorithm: DESTRUCTIVE_RASTER_NOISE_ALGORITHM,
       algorithmVersion: DESTRUCTIVE_RASTER_NOISE_ALGORITHM_VERSION,
-      precision: DESTRUCTIVE_RASTER_NOISE_PRECISION,
+      precision: engine.layerFormat === "rgba8unorm"
+        ? DESTRUCTIVE_RASTER_NOISE_RGBA8_PRECISION
+        : DESTRUCTIVE_RASTER_NOISE_PRECISION,
       colorSpace: DESTRUCTIVE_RASTER_NOISE_COLOR_SPACE,
       alphaMode: DESTRUCTIVE_RASTER_NOISE_ALPHA_MODE,
       boundsMode: DESTRUCTIVE_RASTER_NOISE_BOUNDS_MODE,

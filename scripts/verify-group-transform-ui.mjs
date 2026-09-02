@@ -34,6 +34,12 @@ const panelCallback = section(
 );
 
 assert.match(
+  main,
+  /const canvasToolSupportedByDocumentProfile[\s\S]*?tool === "selection"[\s\S]*?tool === "transform"/,
+  "RGBA8 documents must keep Transform available for layer group selections",
+);
+
+assert.match(
   layerPanel,
   /onMultiSelectionChange\?:[\s\S]*?LayerPanelMultiSelectionSnapshot/,
   "The layer panel must expose its multiple selection to the editor shell.",

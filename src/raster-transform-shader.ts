@@ -1,9 +1,12 @@
+import { rasterTransformRgba8ColorShader } from "./raster-transform-rgba8-shader.ts";
+
 /**
- * Format-agnostic WGSL for transforming a premultiplied linear raster layer.
- * The render pipeline may target either `rgba8unorm` or `rgba16float`.
+ * Format-agnostic WGSL for transforming a premultiplied raster layer in its
+ * native document color encoding. The render pipeline may target either
+ * `rgba8unorm` or `rgba16float`.
  */
 export const RASTER_TRANSFORM_SHADER_STRATEGY =
-  "gamma-box-mips-transparent-border-inverse-affine-continuous-lod-v5" as const;
+  "rgba8-linear-f32-manual-filter-adjacent-output-affine-lod-v7" as const;
 
 /**
  * Bindings:
@@ -26,7 +29,7 @@ struct RasterTransformUniforms {
   inverseRow0: vec2<f32>,
   inverseRow1: vec2<f32>,
   documentExtent: vec2<f32>,
-  _documentPadding: vec2<f32>,
+  quantizationAndReserved: vec2<u32>,
 };
 
 struct VertexOutput {
@@ -115,10 +118,129 @@ fn fragmentMain(
   if (upperLevel == lowerLevel) { return lower; }
   let upper = sampleTransparentLevel(sourceUv, upperLevel);
   let lodBlend = fract(continuousLod);
-  // Both inputs remain linear-premultiplied RGBA. Interpolating all four
-  // channels together preserves alpha exactly; color must never rewrite
-  // coverage after sampling.
+  // Both inputs remain in the document's native premultiplied encoding.
+  // Interpolating all four channels together preserves alpha exactly; color
+  // must never rewrite coverage after sampling.
   return mix(lower, upper, lodBlend);
+}
+`;
+
+/**
+ * RGBA8 document variant. Source codes are decoded per texel before manual
+ * bilinear/trilinear filtering, then encoded and adjacent-code quantized once
+ * at the persistent document boundary.
+ */
+export const rasterTransformStoredEncodedShader = /* wgsl */ `
+struct RasterTransformUniforms {
+  sourceOrigin: vec2<f32>,
+  sourceExtent: vec2<f32>,
+  sourceContentMinimum: vec2<f32>,
+  sourceContentMaximum: vec2<f32>,
+  sourcePivot: vec2<f32>,
+  destinationPivot: vec2<f32>,
+  inverseRow0: vec2<f32>,
+  inverseRow1: vec2<f32>,
+  documentExtent: vec2<f32>,
+  quantizationAndReserved: vec2<u32>,
+};
+
+struct VertexOutput {
+  @builtin(position) position: vec4<f32>,
+};
+
+@group(0) @binding(0) var<uniform> transform: RasterTransformUniforms;
+@group(0) @binding(1) var sourceTexture: texture_2d<f32>;
+@group(0) @binding(2) var sourceSampler: sampler;
+
+${rasterTransformRgba8ColorShader}
+
+fn transparentBorderWeight(uv: vec2<f32>, mipLevel: u32) -> f32 {
+  let dimensions = vec2<f32>(textureDimensions(sourceTexture, mipLevel));
+  let texelPosition = uv * dimensions - vec2<f32>(0.5);
+  let axisWeight = clamp(
+    min(texelPosition + vec2<f32>(1.0), dimensions - texelPosition),
+    vec2<f32>(0.0),
+    vec2<f32>(1.0)
+  );
+  return axisWeight.x * axisWeight.y;
+}
+
+fn loadLinearSource(coordinate: vec2<i32>, mipLevel: u32) -> vec4<f32> {
+  let dimensions = vec2<i32>(textureDimensions(sourceTexture, mipLevel));
+  let bounded = clamp(coordinate, vec2<i32>(0), dimensions - vec2<i32>(1));
+  return rasterTransformEncodedPremultipliedToLinear(
+    textureLoad(sourceTexture, bounded, i32(mipLevel))
+  );
+}
+
+fn sampleTransparentLevel(uv: vec2<f32>, mipLevel: u32) -> vec4<f32> {
+  let dimensions = vec2<f32>(textureDimensions(sourceTexture, mipLevel));
+  let texelPosition = uv * dimensions - vec2<f32>(0.5);
+  let base = vec2<i32>(floor(texelPosition));
+  let fraction = fract(texelPosition);
+  let top = mix(
+    loadLinearSource(base, mipLevel),
+    loadLinearSource(base + vec2<i32>(1, 0), mipLevel),
+    fraction.x
+  );
+  let bottom = mix(
+    loadLinearSource(base + vec2<i32>(0, 1), mipLevel),
+    loadLinearSource(base + vec2<i32>(1, 1), mipLevel),
+    fraction.x
+  );
+  return mix(top, bottom, fraction.y) * transparentBorderWeight(uv, mipLevel);
+}
+
+@vertex
+fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+  let positions = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>( 3.0, -1.0),
+    vec2<f32>(-1.0,  3.0)
+  );
+  var output: VertexOutput;
+  output.position = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
+  return output;
+}
+
+@fragment
+fn fragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  let destinationDelta = fragmentPosition.xy - transform.destinationPivot;
+  let sourceDocument = transform.sourcePivot + vec2<f32>(
+    dot(transform.inverseRow0, destinationDelta),
+    dot(transform.inverseRow1, destinationDelta)
+  );
+  let sourceUv = (sourceDocument - transform.sourceOrigin) / transform.sourceExtent;
+  let sourceUvDx = vec2<f32>(
+    transform.inverseRow0.x / transform.sourceExtent.x,
+    transform.inverseRow1.x / transform.sourceExtent.y
+  );
+  let sourceUvDy = vec2<f32>(
+    transform.inverseRow0.y / transform.sourceExtent.x,
+    transform.inverseRow1.y / transform.sourceExtent.y
+  );
+  let baseDimensions = vec2<f32>(textureDimensions(sourceTexture, 0));
+  let footprint = max(
+    length(sourceUvDx * baseDimensions),
+    length(sourceUvDy * baseDimensions)
+  );
+  let maximumLevel = textureNumLevels(sourceTexture) - 1u;
+  let continuousLod = clamp(log2(max(footprint, 1.0)), 0.0, f32(maximumLevel));
+  let lowerLevel = u32(floor(continuousLod));
+  let upperLevel = min(lowerLevel + 1u, maximumLevel);
+  let lower = sampleTransparentLevel(sourceUv, lowerLevel);
+  var filtered = lower;
+  if (upperLevel != lowerLevel) {
+    let upper = sampleTransparentLevel(sourceUv, upperLevel);
+    filtered = mix(lower, upper, fract(continuousLod));
+  }
+  return rasterTransformFinalizeRgba8(
+    filtered,
+    vec2<u32>(fragmentPosition.xy),
+    transform.quantizationAndReserved.x
+  );
 }
 `;
 
@@ -139,7 +261,7 @@ struct RasterTransformUniforms {
   inverseRow0: vec2<f32>,
   inverseRow1: vec2<f32>,
   documentExtent: vec2<f32>,
-  _documentPadding: vec2<f32>,
+  quantizationAndReserved: vec2<u32>,
 };
 
 struct VertexOutput {
@@ -198,18 +320,85 @@ fn fragmentMain(
 }
 `;
 
-/**
- * Exact area reduction for the possibly-NPOT tile-bbox scratch. Reading and
- * writing use the layer's native linear-premultiplied representation, so the
- * same WGSL is valid for rgba8unorm and rgba16float render targets.
- */
-export const rasterTransformMipmapShader = /* wgsl */ `
+/** Linear-light selected-pixel composition with an encoded RGBA8 boundary. */
+export const rasterSelectionTranslateStoredEncodedShader = /* wgsl */ `
+struct RasterTransformUniforms {
+  sourceOrigin: vec2<f32>,
+  sourceExtent: vec2<f32>,
+  sourceContentMinimum: vec2<f32>,
+  sourceContentMaximum: vec2<f32>,
+  sourcePivot: vec2<f32>,
+  destinationPivot: vec2<f32>,
+  inverseRow0: vec2<f32>,
+  inverseRow1: vec2<f32>,
+  documentExtent: vec2<f32>,
+  quantizationAndReserved: vec2<u32>,
+};
+
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
 };
 
-@group(0) @binding(0) var sourceTexture: texture_2d<f32>;
+@group(0) @binding(0) var<uniform> transform: RasterTransformUniforms;
+@group(0) @binding(1) var sourceTexture: texture_2d<f32>;
+@group(0) @binding(2) var sourceSampler: sampler;
+@group(1) @binding(0) var<storage, read> selectionMask: array<u32>;
 
+${rasterTransformRgba8ColorShader}
+
+@vertex
+fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+  let positions = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>(3.0, -1.0),
+    vec2<f32>(-1.0, 3.0),
+  );
+  var output: VertexOutput;
+  output.position = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
+  return output;
+}
+
+fn selectedAt(pixel: vec2<i32>) -> bool {
+  let documentExtent = vec2<i32>(transform.documentExtent);
+  if (any(pixel < vec2<i32>(0)) || any(pixel >= documentExtent)) { return false; }
+  let unsignedPixel = vec2<u32>(pixel);
+  let wordsPerRow = (u32(documentExtent.x) + 31u) / 32u;
+  let word = unsignedPixel.y * wordsPerRow + unsignedPixel.x / 32u;
+  return (selectionMask[word] & (1u << (unsignedPixel.x & 31u))) != 0u;
+}
+
+fn loadOriginal(pixel: vec2<i32>) -> vec4<f32> {
+  let local = pixel - vec2<i32>(round(transform.sourceOrigin));
+  let dimensions = vec2<i32>(textureDimensions(sourceTexture, 0));
+  if (any(local < vec2<i32>(0)) || any(local >= dimensions)) {
+    return vec4<f32>(0.0);
+  }
+  return rasterTransformEncodedPremultipliedToLinear(
+    textureLoad(sourceTexture, local, 0)
+  );
+}
+
+@fragment
+fn fragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  let destination = vec2<i32>(fragmentPosition.xy);
+  let delta = vec2<i32>(round(transform.destinationPivot - transform.sourcePivot));
+  let source = destination - delta;
+  var base = loadOriginal(destination);
+  if (selectedAt(destination)) { base = vec4<f32>(0.0); }
+  var moved = vec4<f32>(0.0);
+  if (selectedAt(source)) { moved = loadOriginal(source); }
+  let composited = moved + base * (1.0 - moved.a);
+  return rasterTransformFinalizeRgba8(
+    composited,
+    vec2<u32>(destination),
+    transform.quantizationAndReserved.x
+  );
+}
+`;
+
+const rasterTransformLinearMipTransferShader = /* wgsl */ `
 fn srgbToLinearChannel(value: f32) -> f32 {
   if (value <= 0.04045) { return value / 12.92; }
   return pow((value + 0.055) / 1.055, 2.4);
@@ -244,6 +433,18 @@ fn gammaPremultipliedToLinear(value: vec4<f32>) -> vec4<f32> {
   );
   return vec4<f32>(linear * alpha, alpha);
 }
+`;
+
+/** Exact area reduction for a possibly-NPOT tile-bbox scratch. */
+function createRasterTransformMipmapShader(transferShader: string): string {
+  return /* wgsl */ `
+struct VertexOutput {
+  @builtin(position) position: vec4<f32>,
+};
+
+@group(0) @binding(0) var sourceTexture: texture_2d<f32>;
+
+${transferShader}
 
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
@@ -302,6 +503,115 @@ fn fragmentMain(
   }
   return gammaPremultipliedToLinear(
     accumulated / max(accumulatedWeight, 0.000001)
+  );
+}
+`;
+}
+
+/**
+ * Linear document storage is filtered in encoded sRGB and returned to linear
+ * storage, retaining the established visual downsampling contract.
+ */
+export const rasterTransformMipmapShader = createRasterTransformMipmapShader(
+  rasterTransformLinearMipTransferShader,
+);
+
+/**
+ * RGBA8 mip reduction decodes each stored source code before its f32 weighted
+ * average. Each transient mip is encoded back to the persistent representation
+ * with a document-anchored adjacent-code decision, avoiding low-frequency
+ * quantization bands while retaining a four-byte-per-pixel scratch chain.
+ */
+export const rasterTransformStoredEncodedMipmapShader = /* wgsl */ `
+struct RasterTransformUniforms {
+  sourceOrigin: vec2<f32>,
+  sourceExtent: vec2<f32>,
+  sourceContentMinimum: vec2<f32>,
+  sourceContentMaximum: vec2<f32>,
+  sourcePivot: vec2<f32>,
+  destinationPivot: vec2<f32>,
+  inverseRow0: vec2<f32>,
+  inverseRow1: vec2<f32>,
+  documentExtent: vec2<f32>,
+  quantizationAndReserved: vec2<u32>,
+};
+
+struct VertexOutput {
+  @builtin(position) position: vec4<f32>,
+};
+
+@group(0) @binding(0) var sourceTexture: texture_2d<f32>;
+@group(0) @binding(1) var<uniform> transform: RasterTransformUniforms;
+
+${rasterTransformRgba8ColorShader}
+
+@vertex
+fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+  let positions = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>( 3.0, -1.0),
+    vec2<f32>(-1.0,  3.0)
+  );
+  var output: VertexOutput;
+  output.position = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
+  return output;
+}
+
+fn texelOverlap(start: f32, end: f32, coordinate: i32) -> f32 {
+  let texelStart = f32(coordinate);
+  return max(0.0, min(end, texelStart + 1.0) - max(start, texelStart));
+}
+
+@fragment
+fn fragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  let sourceDimensions = vec2<i32>(textureDimensions(sourceTexture, 0));
+  let destinationDimensions = max(sourceDimensions / vec2<i32>(2), vec2<i32>(1));
+  let destinationCoordinate = vec2<i32>(fragmentPosition.xy);
+  let sourceScale = vec2<f32>(sourceDimensions) / vec2<f32>(destinationDimensions);
+  let sourceStart = vec2<f32>(destinationCoordinate) * sourceScale;
+  let sourceEnd = vec2<f32>(destinationCoordinate + vec2<i32>(1)) * sourceScale;
+  let firstSourceCoordinate = vec2<i32>(floor(sourceStart));
+
+  var accumulated = vec4<f32>(0.0);
+  var accumulatedWeight = 0.0;
+  for (var y = 0; y < 3; y = y + 1) {
+    let sourceY = firstSourceCoordinate.y + y;
+    if (sourceY >= 0 && sourceY < sourceDimensions.y) {
+      let weightY = texelOverlap(sourceStart.y, sourceEnd.y, sourceY);
+      for (var x = 0; x < 3; x = x + 1) {
+        let sourceX = firstSourceCoordinate.x + x;
+        if (sourceX >= 0 && sourceX < sourceDimensions.x) {
+          let weight = weightY * texelOverlap(sourceStart.x, sourceEnd.x, sourceX);
+          accumulated += rasterTransformEncodedPremultipliedToLinear(textureLoad(
+            sourceTexture,
+            vec2<i32>(sourceX, sourceY),
+            0
+          )) * weight;
+          accumulatedWeight += weight;
+        }
+      }
+    }
+  }
+  let linearResult = accumulated / max(accumulatedWeight, 0.000001);
+  let baseTexelsPerTarget = transform.sourceExtent
+    / vec2<f32>(destinationDimensions);
+  let sourceDocument = transform.sourceOrigin
+    + (vec2<f32>(destinationCoordinate) + vec2<f32>(0.5)) * baseTexelsPerTarget;
+  let maximumDocumentCoordinate = max(
+    vec2<i32>(transform.documentExtent) - vec2<i32>(1),
+    vec2<i32>(0)
+  );
+  let documentCoordinate = vec2<u32>(clamp(
+    vec2<i32>(floor(sourceDocument)),
+    vec2<i32>(0),
+    maximumDocumentCoordinate
+  ));
+  return rasterTransformFinalizeRgba8(
+    linearResult,
+    documentCoordinate,
+    transform.quantizationAndReserved.x
   );
 }
 `;

@@ -52,6 +52,8 @@ export interface CanvasToolControllerOptions {
   readonly selectionSettings: CanvasToolSelectionSettingsPort;
   readonly isEngineReady: () => boolean;
   readonly isInteractionLocked: () => boolean;
+  readonly isToolSupported?: (tool: CanvasInputTool) => boolean;
+  readonly onUnsupportedTool?: (tool: CanvasInputTool) => void;
   readonly isMultiSelectionActive: () => boolean;
   readonly canFinishMultiSelectionForToolChange: () => boolean;
   readonly finishMultiSelectionForToolChange: () => Promise<boolean>;
@@ -182,6 +184,10 @@ export class CanvasToolController {
 
   select(tool: CanvasInputTool, preserveToolSettings = false): boolean {
     if (this.disposed || this.documentResetInProgress) return false;
+    if (!this.toolSupported(tool)) {
+      this.options.onUnsupportedTool?.(tool);
+      return false;
+    }
     if (
       this.adjustmentExitPromise !== null
       || this.options.shouldPrepareActiveAdjustmentForToolChange()
@@ -283,6 +289,10 @@ export class CanvasToolController {
     preserveToolSettings = false,
   ): void {
     if (this.disposed || this.documentResetInProgress) return;
+    if (!this.toolSupported(tool)) {
+      this.options.onUnsupportedTool?.(tool);
+      return;
+    }
     this.configureUnchecked(tool, restoreSnapshot, preserveToolSettings, true);
   }
 
@@ -293,6 +303,10 @@ export class CanvasToolController {
     syncEngineSelection: boolean,
   ): void {
     if (this.disposed) return;
+    if (!this.toolSupported(tool)) {
+      this.options.onUnsupportedTool?.(tool);
+      return;
+    }
     const configurationAlreadyInProgress = this.configurationInProgress;
     this.configurationInProgress = true;
     try {
@@ -553,5 +567,9 @@ export class CanvasToolController {
     if (returnTool && this.activeCanvasTool === "transform") {
       this.select(returnTool, true);
     }
+  }
+
+  private toolSupported(tool: CanvasInputTool): boolean {
+    return this.options.isToolSupported?.(tool) ?? true;
   }
 }

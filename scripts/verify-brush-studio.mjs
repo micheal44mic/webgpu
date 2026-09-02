@@ -98,6 +98,16 @@ assert.match(
 );
 assert.match(
   studio,
+  /supportedRenderingModes\?: readonly BrushStudioRenderingMode\[\];[\s\S]*?colorDynamicsSupported\?: boolean;[\s\S]*?colorDynamicsRenderingModes\?: readonly BrushStudioRenderingMode\[\];[\s\S]*?colorDynamicsPerCopyRenderingModes\?: readonly BrushStudioRenderingMode\[\];/,
+  "Brush Studio capabilities must be explicit optional composition options",
+);
+assert.match(
+  studio,
+  /options\.supportedRenderingModes \?\? BRUSH_STUDIO_RENDERING_MODES[\s\S]*?options\.colorDynamicsSupported \?\? true[\s\S]*?options\.colorDynamicsRenderingModes \?\? BRUSH_STUDIO_RENDERING_MODES[\s\S]*?options\.colorDynamicsPerCopyRenderingModes \?\? BRUSH_STUDIO_RENDERING_MODES/,
+  "omitted Brush Studio capabilities must preserve the full legacy surface",
+);
+assert.match(
+  studio,
   /private withBrushPrecision\(settings: Readonly<BrushSettings>\): BrushSettings \{[\s\S]*?shapeMaskFormat: this\.options\.getBrushPrecision\(\),[\s\S]*?\}/,
   "Brush Studio must centralize the global precision override",
 );
@@ -191,7 +201,12 @@ assert.match(
 assert.match(
   main,
   /brushSettingsController\.replace\(\{[\s\S]*?\.\.\.settings,[\s\S]*?shapeMaskFormat: editorSettingsController\?\.preferences\.brushPrecision[\s\S]*?\?\? DEFAULT_EDITOR_GUIDE_PREFERENCES\.brushPrecision,[\s\S]*?\}\)/,
-  "the composition root must apply global Brush Precision over every brush definition",
+  "the composition root must apply the global brush-mask precision",
+);
+assert.match(
+  main,
+  /supportedRenderingModes: effectivePaintDabProfile === "encoded-srgb-rgba8"\s*\? \["light-glaze", "uniformed-glaze", "intense-blending"\][\s\S]*?colorDynamicsRenderingModes: effectivePaintDabProfile === "encoded-srgb-rgba8"\s*\? \["light-glaze", "uniformed-glaze", "intense-blending"\][\s\S]*?colorDynamicsPerCopyRenderingModes: effectivePaintDabProfile === "encoded-srgb-rgba8"\s*\? \["uniformed-glaze", "intense-blending"\]/,
+  "the encoded RGBA8 composition root must expose every certified mode while keeping per-copy color dynamics off Light",
 );
 assert.doesNotMatch(
   brushSettingsController,
@@ -290,7 +305,7 @@ assert.match(library, /rollbackImport[\s\S]*?forgetSettings\(brushId\)/);
 assert.match(library, /this\.elements\.list\.inert = busy/);
 assert.match(
   main,
-  /runStartupPhase\(\s*"restore-active-brush"[\s\S]*?if \(\s*mobileBrushStudio\s*&& \(editorExtensionBootstrap\?\.restorePersistedBrushOnStartup \?\? true\)\s*\) \{[\s\S]*?selectedBrushPreparationRequestSuppressed = true;[\s\S]*?await brushLibraryController\.restoreActiveBrush\(\{ prepareResources: false \}\);[\s\S]*?finally \{[\s\S]*?selectedBrushPreparationRequestSuppressed = false;[\s\S]*?\}[\s\S]*?runStartupPhase\(\s*"project-session"[\s\S]*?projectSessionController\.initialize\(\)/,
+  /runStartupPhase\(\s*"restore-active-brush"[\s\S]*?if \(\s*mobileBrushStudio\s*&& \(\s*!documentPixelWritesRestricted\s*\|\| effectivePaintDabProfile === "encoded-srgb-rgba8"\s*\)\s*&& \(editorExtensionBootstrap\?\.restorePersistedBrushOnStartup \?\? true\)\s*\) \{[\s\S]*?selectedBrushPreparationRequestSuppressed = true;[\s\S]*?await brushLibraryController\.restoreActiveBrush\(\{ prepareResources: false \}\);[\s\S]*?finally \{[\s\S]*?selectedBrushPreparationRequestSuppressed = false;[\s\S]*?\}[\s\S]*?runStartupPhase\(\s*"project-session"[\s\S]*?projectSessionController\.initialize\(\)/,
   "startup must restore the active brush definition without warming its GPU resources",
 );
 assert.doesNotMatch(main, /deferred-brush-restore/);
@@ -359,6 +374,31 @@ assert.match(
   studio,
   /private handleRadioButtonKeydown[\s\S]*?ArrowLeft[\s\S]*?ArrowRight[\s\S]*?next\.click\(\)/,
   "segmented radio groups must support standard arrow-key navigation",
+);
+assert.match(
+  studio,
+  /private handleRadioButtonKeydown[\s\S]*?if \(current\.disabled\) return;[\s\S]*?buttons\.filter\(\(button\) => !button\.disabled\)/,
+  "disabled rendering modes must not be reachable from keyboard navigation",
+);
+assert.match(
+  studio,
+  /private changeRenderingMode[\s\S]*?if \(!this\.isRenderingModeSupported\(mode\)\) return;[\s\S]*?draft\.blendMode = mode/,
+  "unsupported rendering-mode clicks must stop before mutating the draft",
+);
+assert.match(
+  studio,
+  /private changeColorDynamics[\s\S]*?colorDynamicsAvailableForCurrentRenderingMode\(\)[\s\S]*?requiresPerCopySupport[\s\S]*?colorDynamicsPerCopyAvailableForCurrentRenderingMode\(\)[\s\S]*?this\.changeDraft\(change\)/,
+  "unsupported Color Dynamics events must stop before mutating the draft",
+);
+assert.equal(
+  (studio.match(/this\.changeColorDynamics\(/g) ?? []).length,
+  5,
+  "all Color Dynamics controls, including Per Copy, must cross the capability gate",
+);
+assert.match(
+  studio,
+  /private syncCapabilityAvailability[\s\S]*?button\.disabled = !supported[\s\S]*?colorDynamicsPerCopyAvailable[\s\S]*?BRUSH_STUDIO_COLOR_DYNAMICS_CONTROL_IDS[\s\S]*?id === "mobileBrushStudioJitterPerCopy"/,
+  "unsupported Brush Studio controls must use the native disabled state",
 );
 assert.match(
   studio,
@@ -545,7 +585,7 @@ assert.match(
   /new MobileBrushStudioController\(\{[\s\S]*?previewRenderer: authoritativeBrushStrokePreviewRenderer,/,
   "Brush Studio must receive the same authoritative renderer instance",
 );
-assert.match(previewRenderer, /BRUSH_STROKE_PREVIEW_RENDERER_VERSION[\s\S]*authoritative-paint-stamps-webgpu-v1/);
+assert.match(previewRenderer, /BRUSH_STROKE_PREVIEW_RENDERER_VERSION[\s\S]*authoritative-paint-stamps-webgpu-v2/);
 assert.match(previewRenderer, /resamplePaintCurveSegment\(/);
 assert.match(previewRenderer, /packStampsIntoUpload\(/);
 assert.match(engine, /registerCustomShapeAsset\(/);
@@ -574,6 +614,125 @@ try {
   ));
 } finally {
   await moduleServer.close();
+}
+
+// Capability limits are enforced below the DOM's native disabled behavior so
+// direct/synthetic click, input and keyboard events cannot alter unsupported
+// settings. Omitted options remain permissive through the constructor defaults
+// guarded above.
+{
+  const makeRenderingButton = (mode, selected = false) => {
+    const attributes = new Map([["aria-checked", String(selected)]]);
+    return {
+      dataset: { mobileBrushRendering: mode },
+      disabled: false,
+      tabIndex: selected ? 0 : -1,
+      clickCount: 0,
+      focusCount: 0,
+      getAttribute: (name) => attributes.get(name) ?? null,
+      setAttribute: (name, value) => attributes.set(name, value),
+      click() { this.clickCount += 1; },
+      focus() { this.focusCount += 1; },
+    };
+  };
+  const light = makeRenderingButton("light-glaze");
+  const unavailable = makeRenderingButton("uniformed-glaze", true);
+  const intense = makeRenderingButton("intense-blending");
+  const renderingButtons = [light, unavailable, intense];
+  const colorControlIds = [
+    "mobileBrushStudioJitterPerCopy",
+    "mobileBrushStudioHue",
+    "mobileBrushStudioSaturation",
+    "mobileBrushStudioLightness",
+    "mobileBrushStudioDarkness",
+  ];
+  const colorControls = new Map(colorControlIds.map((id) => [id, { disabled: false }]));
+  let draftChangeCount = 0;
+  const controller = Object.assign(
+    Object.create(MobileBrushStudioController.prototype),
+    {
+      supportedRenderingModes: new Set(["light-glaze", "intense-blending"]),
+      colorDynamicsSupported: false,
+      colorDynamicsRenderingModes: new Set(["light-glaze", "intense-blending"]),
+      colorDynamicsPerCopyRenderingModes: new Set(["intense-blending"]),
+      renderingButtons,
+      draftSettings: {
+        ...defaultBrushSettings,
+        blendMode: "light-glaze",
+        hueJitterDegrees: 0,
+        jitterPerCopy: false,
+      },
+      element: (id) => colorControls.get(id),
+      changeDraft(change) {
+        draftChangeCount += 1;
+        change(this.draftSettings);
+      },
+    },
+  );
+
+  controller.syncCapabilityAvailability();
+  assert.equal(light.disabled, false);
+  assert.equal(unavailable.disabled, true);
+  assert.equal(unavailable.tabIndex, -1);
+  assert.equal(intense.disabled, false);
+  assert.equal(light.tabIndex, 0, "an enabled mode must remain keyboard reachable");
+  for (const id of colorControlIds) {
+    assert.equal(colorControls.get(id).disabled, true, `${id} must be disabled`);
+  }
+
+  controller.changeRenderingMode("uniformed-glaze");
+  controller.changeColorDynamics((draft) => { draft.hueJitterDegrees = 42; });
+  assert.equal(controller.draftSettings.blendMode, "light-glaze");
+  assert.equal(controller.draftSettings.hueJitterDegrees, 0);
+  assert.equal(draftChangeCount, 0);
+
+  let prevented = 0;
+  controller.handleRadioButtonKeydown({
+    key: "ArrowRight",
+    preventDefault: () => { prevented += 1; },
+  }, unavailable, renderingButtons);
+  assert.equal(prevented, 0);
+  assert.equal(light.clickCount + intense.clickCount, 0);
+  assert.equal(draftChangeCount, 0);
+
+  intense.click = () => {
+    intense.clickCount += 1;
+    controller.changeRenderingMode("intense-blending");
+  };
+  controller.handleRadioButtonKeydown({
+    key: "ArrowRight",
+    preventDefault: () => { prevented += 1; },
+  }, light, renderingButtons);
+  assert.equal(intense.clickCount, 1, "keyboard navigation must skip disabled modes");
+  assert.equal(intense.focusCount, 1);
+  assert.equal(controller.draftSettings.blendMode, "intense-blending");
+  assert.equal(draftChangeCount, 1);
+
+  controller.colorDynamicsSupported = true;
+  controller.syncCapabilityAvailability();
+  for (const id of colorControlIds) {
+    assert.equal(colorControls.get(id).disabled, false, `${id} must be enabled for Intense`);
+  }
+  controller.changeColorDynamics((draft) => { draft.hueJitterDegrees = 42; });
+  controller.changeColorDynamics((draft) => { draft.jitterPerCopy = true; }, true);
+  assert.equal(controller.draftSettings.hueJitterDegrees, 42);
+  assert.equal(controller.draftSettings.jitterPerCopy, true);
+  assert.equal(draftChangeCount, 3);
+
+  controller.changeRenderingMode("light-glaze");
+  assert.equal(colorControls.get("mobileBrushStudioJitterPerCopy").disabled, true);
+  for (const id of colorControlIds.slice(1)) {
+    assert.equal(colorControls.get(id).disabled, false, `${id} must support gesture tinting`);
+  }
+  controller.changeColorDynamics((draft) => { draft.hueJitterDegrees = 21; });
+  controller.changeColorDynamics((draft) => { draft.jitterPerCopy = false; }, true);
+  assert.equal(controller.draftSettings.hueJitterDegrees, 21);
+  assert.equal(
+    controller.draftSettings.jitterPerCopy,
+    true,
+    "Light must preserve but not mutate the authored per-copy option",
+  );
+  assert.equal(draftChangeCount, 5);
 }
 
 // Paint, Eraser and Blend are operations over one active Brush Studio tip.

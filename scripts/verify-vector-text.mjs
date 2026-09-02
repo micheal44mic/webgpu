@@ -919,7 +919,7 @@ assert.equal(
 );
 assert.equal(
   VECTOR_TEXT_GPU_RENDER_STRATEGY,
-  "webgpu-indexed-vector-linear-rgba16float-msaa4-svg-gradients-v3",
+  "webgpu-indexed-vector-linear-rgba16float-msaa4-svg-gradients-stable-subpixel-v4",
 );
 assert.equal(VECTOR_TEXT_GPU_UNIFORM_FLOATS, 60);
 assert.equal(VECTOR_TEXT_GPU_UNIFORM_BYTES, 240);
@@ -931,7 +931,7 @@ assert.equal(VECTOR_TEXT_GPU_BLUR_BYTES_PER_PIXEL, 2);
 assert.equal(MIXED_SCENE_LINEAR_FORMAT, "rgba16float");
 assert.equal(
   MIXED_SCENE_COMPOSITOR_STRATEGY,
-  "ordered-raster-vector-gpu-runs-rgba16f-roi-source-over-post-opacity-raster-floor-mip-parity-v7",
+  "ordered-raster-vector-gpu-runs-rgba16f-storage-aware-roi-source-over-post-opacity-raster-floor-mip-parity-v8",
 );
 assert.equal(
   VECTOR_TEXT_FONT_GEOMETRY_STRATEGY,
@@ -2021,6 +2021,31 @@ assert.match(
   drawUniformSource,
   /const shapeBounds = vectorTextGpuDrawUsesBlur\(draw\)\s*\? draw\.blurBounds\s*:/,
   "il compositing del blur deve conservare la ROI assoluta",
+);
+const flushPresentationsStart = engineSource.indexOf(
+  "export function flushVectorTextGpuPresentations(",
+);
+const flushPresentationsEnd = engineSource.indexOf(
+  "\nfunction mixedSceneSegmentContributesToDeepFloor(",
+  flushPresentationsStart,
+);
+assert.ok(
+  flushPresentationsStart >= 0 && flushPresentationsEnd > flushPresentationsStart,
+  "batch presentation GPU non trovato",
+);
+const flushPresentationsSource = engineSource.slice(
+  flushPresentationsStart,
+  flushPresentationsEnd,
+);
+assert.match(
+  flushPresentationsSource,
+  /writeVectorTextGpuDrawUniform\(engine,[\s\S]{0,180}run\.bounds,[\s\S]{0,80}run\.bounds\.width,[\s\S]{0,80}run\.bounds\.height/,
+  "ogni run deve proiettare le primitive nelle dimensioni della propria ROI",
+);
+assert.match(
+  flushPresentationsSource,
+  /pass\.setViewport\(0, 0, run\.bounds\.width, run\.bounds\.height, 0, 1\);\s*pass\.setScissorRect\(0, 0, run\.bounds\.width, run\.bounds\.height\);/,
+  "viewport e scissor della run devono coincidere con la targetSize scritta negli uniform",
 );
 assert.doesNotMatch(singleShadowSource, /Canvas|createElement|getContext|filter\s*=/);
 assert.match(gpuShaderSource, /sourceTexture: texture_2d<f32>/);
@@ -3127,12 +3152,19 @@ assert.match(controllerSource, /this\.svgBlurDraw/);
 assert.match(controllerSource, /kind === "outer"[\s\S]*mode: "mesh-blur"[\s\S]*mode: "mesh-inner-shadow-blur"/);
 assert.match(gpuShaderSource, /fn blurMaskVertexMain/);
 assert.match(gpuShaderSource, /fn meshInnerShadowFragmentMain/);
+assert.match(gpuShaderSource, /fn stableRasterCanvasPosition/);
+assert.equal(
+  (gpuShaderSource.match(/stableRasterCanvasPosition\(canvasPosition\)/g) ?? []).length,
+  2,
+  "mesh fill and mesh inner-shadow paths share the document-stable subpixel grid",
+);
 
-// Rasterizzazione vettoriale autorevole: SVG mesh e testo Slug usano target
-// RGBA16F lineare, MSAA 4x, blocchi derivati dai tile e seed tiled Undo/Redo.
+// Rasterizzazione vettoriale autorevole: SVG mesh e testo Slug mantengono i
+// calcoli/MSAA in RGBA16F lineare; i documenti encoded RGBA8 eseguono una sola
+// conversione finale con quantizzazione ancorata alle coordinate documento.
 assert.match(
   vectorRasterSource,
-  /semantic-vector-slug-mesh-webgpu-linear-layer-format-msaa4-tile-paired-chunks-history-seed-v4/,
+  /semantic-vector-slug-mesh-webgpu-linear-msaa4-encoded-rgba8-finalize-tile-paired-chunks-history-seed-v5/,
 );
 assert.match(vectorRasterSource, /VECTOR_RASTER_FORMAT = "rgba16float"/);
 assert.match(
@@ -3154,7 +3186,7 @@ assert.match(vectorRasterSource, /const format = destination\.format/);
 assert.match(vectorRasterSource, /destination\.format !== engine\.layerFormat/);
 assert.match(
   vectorRasterSource,
-  /createVectorRasterScratch\(engine, format, chunkWidth, chunkHeight\)/,
+  /createVectorRasterScratch\(engine, renderFormat, chunkWidth, chunkHeight\)/,
 );
 assert.match(vectorRasterSource, /format,\s*usage: GPUTextureUsage\.RENDER_ATTACHMENT/);
 assert.match(vectorRasterSource, /sampleCount: VECTOR_TEXT_GPU_SAMPLE_COUNT/);
@@ -3182,7 +3214,20 @@ assert.match(vectorRasterSource, /action\.seed\.format !== engine\.layerFormat/)
 assert.match(vectorRasterSource, /allocateLayerGpuResources\([\s\S]{0,100}action\.seed\.format/);
 assert.match(vectorRasterSource, /runGpuAllocationTransaction\(/);
 assert.match(vectorRasterSource, /No RGBA8 fallback is allowed/);
-assert.doesNotMatch(vectorRasterSource, /format:\s*"rgba8unorm"/);
+assert.match(
+  vectorRasterSource,
+  /documentStorageColorSpace === "encoded-srgb-premultiplied"/,
+);
+assert.match(vectorRasterSource, /const renderFormat: LayerFormat = storedEncodedSrgb \? "rgba16float" : format/);
+assert.match(vectorRasterSource, /rgba8SpatialQuantizationShader/);
+assert.match(
+  vectorRasterSource,
+  /usage: GPUTextureUsage\.RENDER_ATTACHMENT[\s\S]{0,120}GPUTextureUsage\.TEXTURE_BINDING/,
+  "the linear MSAA resolve must be sampleable by the encoded RGBA8 finalizer",
+);
+assert.match(vectorRasterSource, /linearPremultipliedToEncoded\(textureLoad\(linearTexture/);
+assert.match(vectorRasterSource, /quantizeRgba8SpatialAdjacent\(/);
+assert.match(vectorRasterSource, /encodedScratch\?\.texture \?\? resolvedTexture/);
 assert.doesNotMatch(
   vectorRasterSource,
   /CanvasRenderingContext2D|copyExternalImageToTexture|drawImage\(/,
@@ -3204,6 +3249,16 @@ assert.match(
 );
 assert.match(controllerSource, /await this\.host\.rasterizeVectorTextNode\(textId, draws\)/);
 assert.match(controllerSource, /vectorRasterFormatLabel\(result\.format\)/);
+assert.match(
+  controllerSource,
+  /function vectorRasterFormatLabel\(format: LayerFormat\): string \{[\s\S]*?format === "rgba16float" \? "linear RGBA16F" : "RGBA8 sRGB";/,
+  "RGBA8 rasterization status must describe the encoded-sRGB document format.",
+);
+assert.doesNotMatch(
+  controllerSource,
+  /"linear RGBA8"/,
+  "RGBA8 rasterization must not be reported as linear storage.",
+);
 assert.doesNotMatch(controllerSource, /rasterizzato in RGBA8/);
 assert.match(controllerSource, /slotNamespace = pinForRasterization \? "text-raster" : "text"/);
 assert.match(controllerSource, /!requireRequestedLod \|\| result\.matchesRequestedLod/);
@@ -3264,17 +3319,20 @@ assert.match(
 );
 
 // Harness WebGPU reale: su una pagina dev nuova crea entrambe le sorgenti,
-// legge i byte RGBA16F, attraversa Undo/Redo e richiede identità Uint8Array.
+// legge i byte nel formato documento, attraversa Undo/Redo e richiede identità Uint8Array.
 assert.match(controllerSource, /async runVectorRasterHistoryGpuTest\(\)/);
 assert.match(controllerSource, /await runProbe\("text"\), await runProbe\("svg"\)/);
-assert.match(controllerSource, /parseVectorSvg\([\s\S]{0,500}regression-rgba16f\.svg/);
+assert.match(controllerSource, /parseVectorSvg\([\s\S]{0,500}regression-vector-raster\.svg/);
 assert.match(controllerSource, /rawBeforeUndo = await this\.host\.readLayerPixels/);
 assert.match(controllerSource, /undoReturned = await this\.host\.undo\(\)/);
 assert.match(controllerSource, /redoReturned = await this\.host\.redo\(\)/);
 assert.match(controllerSource, /uint8ArraysEqual\(before, after\)/);
 assert.match(controllerSource, /uint8ArraysEqual\(rawBeforeUndo, rawAfterRedo\)/);
-assert.match(controllerSource, /probe\.seedFormat === "rgba16float"/);
-assert.match(controllerSource, /probe\.rawBytesPerPixel === 8/);
+assert.match(controllerSource, /probe\.format === probe\.seedFormat/);
+assert.match(
+  controllerSource,
+  /probe\.rawBytesPerPixel === \(probe\.format === "rgba16float" \? 8 : 4\)/,
+);
 assert.match(controllerSource, /probe\.nonZeroAlphaPixels > 0/);
 
 assert.match(htmlSource, /id="mobileSvgStyleRasterize"/);
@@ -3348,7 +3406,7 @@ assert.equal(packageJson.scripts["vector-text:verify"], "node scripts/verify-vec
 
 console.log(
   "Vector text verified: Distort/Arch/Circle/Wave, analytic slug, Clipper64/Worker, fused seamless outline, 0 no-op, "
-  + "canonical Block Shadow, sanitized semantic SVG with GPU palette/effects, GPU R16F Gaussian blur, byte-exact RGBA16F text/SVG rasterization, atomic node swaps, latest-only queue, and no bitmap fallback.",
+  + "canonical Block Shadow, sanitized semantic SVG with GPU palette/effects, GPU R16F Gaussian blur, byte-exact native-format text/SVG rasterization, atomic node swaps, latest-only queue, and no bitmap fallback.",
 );
 
 // --- Rollback: ownership candidata ritirata prima della reidratazione ----------

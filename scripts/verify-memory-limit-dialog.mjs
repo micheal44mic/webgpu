@@ -21,7 +21,10 @@ assert.match(
 );
 assert.match(engine, /await this\.reserveLayerDuplicateMemory\(source\)/);
 assert.match(engine, /await this\.reserveLayerSwitchMemory\(index\)/);
-assert.match(merge, /await reserveLayerMergeCreateMemory\(engine, memoryPlan\)/);
+assert.match(
+  merge,
+  /await reserveLayerMergeCreateMemory\(\s*engine,\s*memoryPlan,\s*request,\s*\)/,
+);
 assert.match(merge, /await reserveLayerMergeHistoryMemory\(/);
 assert.match(glass, /return engine\.reservePlannedMemory\(request\)/);
 assert.match(liquify, /return engine\.reservePlannedMemory\(request\)/);

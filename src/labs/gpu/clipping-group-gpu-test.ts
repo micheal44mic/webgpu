@@ -8,11 +8,14 @@ export interface ClippingGroupGpuTestReport {
   version: 1;
   passed: boolean;
   checks: {
+    emptyAdvancedBaseIsTransparent: boolean;
     relationIsContiguous: boolean;
     softAlphaIsContinuous: boolean;
     parentChangesVisibleBeforeLift: boolean;
     liveEqualsCommitted: boolean;
   };
+  emptyBasePresented: number[];
+  parentAlphaLevels: number[];
   softEdge: {
     x: number;
     parentAlpha: number;
@@ -45,7 +48,9 @@ const drawTap = async (
   y: number,
   timeMs: number,
 ): Promise<void> => {
-  engine.beginStrokeAtLayer({ x, y, pressure: 1, timeMs });
+  if (!engine.beginStrokeAtLayer({ x, y, pressure: 1, timeMs })) {
+    throw new Error("The clipping fixture stroke did not start.");
+  }
   engine.extendStrokeAtLayer([{ x: x + 1, y, pressure: 1, timeMs: timeMs + 16 }]);
   engine.endStroke(timeMs + 16);
   await engine.waitForIdle();
@@ -60,10 +65,52 @@ export async function runClippingGroupGpuTest(
   if (initial.layerCount !== 1 || initial.layers[0]?.hasContent) {
     throw new Error("La sonda clipping richiede una pagina nuova con un solo livello vuoto.");
   }
+  const storedEncodedSrgb = engine.layerFormat === "rgba8unorm"
+    && engine.documentStorageColorSpace === "encoded-srgb-premultiplied";
+  if (
+    !storedEncodedSrgb
+    && !(
+      engine.layerFormat === "rgba16float"
+      && engine.documentStorageColorSpace === "linear-premultiplied"
+    )
+  ) {
+    throw new Error("La sonda clipping richiede un contratto pixel nativo supportato.");
+  }
 
   await ensureLabCheckerboardBackdrop(engine);
 
   setLayerCompositeTestView(engine, 2048, 2048, 1);
+  const parentId = engine.getStats().layers[0].id;
+  await engine.setLayerBlendMode(0, "multiply");
+  await engine.setLayerContentOpacity(0, 0.42);
+  await engine.setLayerCutoutMode(0, "group");
+  await engine.setLayerTonalBlend(0, {
+    current: [0, 0, 255, 255],
+    underlying: [32, 64, 255, 255],
+  });
+  await engine.addClippingMaskLayer();
+  await engine.waitForIdle();
+  const emptyGrouped = engine.getStats().layers;
+  const emptyBasePresented = rgba(
+    await engine.readPresentationPixelAtLayer(2048, 2048),
+  );
+  const expectedEmptyBackground = Math.round(0.91 * 255);
+  const emptyAdvancedBaseIsTransparent = emptyGrouped.length === 2
+    && emptyGrouped[0].id === parentId
+    && emptyGrouped[1].clippingParentId === parentId
+    && emptyBasePresented.slice(0, 3).every(
+      (channel) => Math.abs(channel - expectedEmptyBackground) <= 2,
+    )
+    && emptyBasePresented[3] === 255;
+
+  await engine.setActiveLayer(0);
+  await engine.setLayerBlendMode(0, "normal");
+  await engine.setLayerContentOpacity(0, 1);
+  await engine.setLayerCutoutMode(0, "off");
+  await engine.setLayerTonalBlend(0, {
+    current: [0, 0, 255, 255],
+    underlying: [0, 0, 255, 255],
+  });
   engine.setBrushSettings({
     tool: "paint",
     shape: "circle",
@@ -76,10 +123,10 @@ export async function runClippingGroupGpuTest(
     startThickness: 1,
     endThickness: 1,
     count: 1,
-    flow: 1,
+    flow: 0.25,
     opacity: 1,
     hardness: 0,
-    blendMode: "normal",
+    blendMode: "intense-blending",
     hueJitterDegrees: 0,
     saturationJitter: 0,
     lightnessJitter: 0,
@@ -87,10 +134,10 @@ export async function runClippingGroupGpuTest(
     positionJitterLateral: 0,
     positionJitterLinear: 0,
   });
+  await engine.ensureCurrentBrushResources();
   await drawTap(engine, 2048, 2048, 1_000);
 
-  const parentId = engine.getStats().layers[0].id;
-  await engine.addClippingMaskLayer();
+  await engine.setActiveLayer(1);
   engine.setBrushSettings({
     color: "#000000",
     size: 1400,
@@ -98,8 +145,9 @@ export async function runClippingGroupGpuTest(
     flow: 1,
     opacity: 1,
     hardness: 1,
-    blendMode: "normal",
+    blendMode: "intense-blending",
   });
+  await engine.ensureCurrentBrushResources();
   await drawTap(engine, 2048, 1900, 2_000);
 
   const grouped = engine.getStats().layers;
@@ -107,12 +155,18 @@ export async function runClippingGroupGpuTest(
     && grouped[0].id === parentId
     && grouped[1].clippingParentId === parentId;
 
-  const stripX = 1700;
-  const stripWidth = 696;
+  // Cover the complete soft stamp plus transparent margins. The engine's
+  // authored size is a radius, so a narrow diameter-assuming strip can miss
+  // the low-alpha shoulder even when it is continuous.
+  const stripX = 1400;
+  const stripWidth = 1296;
   const parentStrip = await engine.readLayerPixels(
     { x: stripX, y: 2048, width: stripWidth, height: 1 },
     0,
   );
+  const parentAlphaLevels = Array.from(new Set(
+    Array.from({ length: stripWidth }, (_, column) => parentStrip[column * 4 + 3]),
+  )).sort((left, right) => left - right);
   let softEdge: ClippingGroupGpuTestReport["softEdge"] = null;
   for (let column = 0; column < stripWidth; column += 1) {
     const alphaByte = parentStrip[column * 4 + 3];
@@ -124,9 +178,9 @@ export async function runClippingGroupGpuTest(
     const checkerParity = (Math.floor(x / 96) + Math.floor(2048 / 96)) & 1;
     const backgroundSrgb = checkerParity === 0 ? 0.91 : 0.82;
     const parentAlpha = alphaByte / 255;
-    const expectedRgb = Math.round(
-      linearToSrgb(srgbToLinear(backgroundSrgb) * (1 - parentAlpha)) * 255,
-    );
+    const expectedRgb = Math.round((storedEncodedSrgb
+      ? backgroundSrgb * (1 - parentAlpha)
+      : linearToSrgb(srgbToLinear(backgroundSrgb) * (1 - parentAlpha))) * 255);
     softEdge = {
       x,
       parentAlpha: alphaByte,
@@ -177,6 +231,7 @@ export async function runClippingGroupGpuTest(
     (channel, index) => channel === committed[index],
   );
   const checks = {
+    emptyAdvancedBaseIsTransparent,
     relationIsContiguous,
     softAlphaIsContinuous,
     parentChangesVisibleBeforeLift,
@@ -186,6 +241,8 @@ export async function runClippingGroupGpuTest(
     version: 1,
     passed: Object.values(checks).every(Boolean),
     checks,
+    emptyBasePresented,
+    parentAlphaLevels,
     softEdge,
     live: { before, duringGesture, committed },
   };

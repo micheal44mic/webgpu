@@ -24,7 +24,10 @@ import { parseBrushColorSrgb, srgbChannelToLinear } from "./brush-color.ts";
 export { srgbChannelToLinear } from "./brush-color.ts";
 
 export const GPU_FILL_STRATEGY =
-  "webgpu-hierarchical-ccl-4-connected-transparent-underlay-base-residual-fringe3-recolor-reference-replace-live-preview-history1-render8-v12" as const;
+  "webgpu-hierarchical-ccl-4-connected-transparent-underlay-base-residual-fringe3-recolor-reference-replace-live-preview-history1-render8-rgba8-srgb-v13" as const;
+
+export const FILL_RGBA8_STORAGE_STRATEGY =
+  "encoded-srgb-premultiplied-storage-linear-f32-analysis-and-composite-high-frequency-adjacent-code-output" as const;
 
 export const FILL_RENDER_MASK_STRATEGY =
   "history-1bit-compute-expanded-row-stride-selected8-reused-label-buffer-v4" as const;

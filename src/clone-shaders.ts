@@ -1,11 +1,15 @@
 import { brushShader, texturizedGrainShader } from "./shaders";
 import { injectSelectionClip } from "./selection-clip-shaders";
+import { rgba8HighFrequencyQuantizationShader } from "./rgba8-high-frequency-quantization";
 
 const cloneSourceBindings = /* wgsl */ `
+${rgba8HighFrequencyQuantizationShader}
+
 struct CloneSourceUniforms {
   sourceAndDestination: vec4<f32>,
   rotationAndDocument: vec4<f32>,
   tileAndGrid: vec4<u32>,
+  storageAndSeed: vec4<u32>,
 };
 
 @group(0) @binding(8) var cloneSourceAtlas: texture_2d_array<f32>;
@@ -46,6 +50,14 @@ fn sampleCloneSource(documentPosition: vec2<f32>) -> vec4<f32> {
   return mix(top, bottom, amount.y);
 }
 
+fn boundedEncodedPremultiplied(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  return vec4<f32>(
+    min(clamp(value.rgb, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(alpha)),
+    alpha
+  );
+}
+
 fn clonePremultipliedPixel(fragmentPosition: vec4<f32>, coverage: f32) -> vec4<f32> {
   let destinationPosition = fragmentPosition.xy + brush.renderTargetOrigin;
   let destinationDelta = destinationPosition - cloneSource.sourceAndDestination.zw;
@@ -60,7 +72,24 @@ fn clonePremultipliedPixel(fragmentPosition: vec4<f32>, coverage: f32) -> vec4<f
     0.0,
     0.999999
   );
-  return sampleCloneSource(documentPosition) * amount;
+  let sampled = sampleCloneSource(documentPosition);
+  if (cloneSource.storageAndSeed.x == 0u) {
+    return sampled * amount;
+  }
+
+  // Encoded-sRGB document texels are already premultiplied. Keep sampling and
+  // source-over inputs in that storage domain, perform the arithmetic in f32,
+  // then choose only an adjacent RGBA8 code at a stable document coordinate.
+  let destinationCoordinate = vec2<u32>(max(
+    floor(destinationPosition),
+    vec2<f32>(0.0)
+  ));
+  let encodedContribution = boundedEncodedPremultiplied(sampled) * amount;
+  return quantizeRgba8HighFrequencyAdjacent(
+    encodedContribution,
+    destinationCoordinate,
+    cloneSource.storageAndSeed.y
+  );
 }
 `;
 

@@ -4,13 +4,27 @@ import {
   setLayerCompositeTestView,
 } from "../engine-lab-operations";
 import {
+  blendLayerPremultipliedEncodedSrgb,
   blendLayerPremultipliedLinear,
   LAYER_BLEND_MODE_ORDER,
   type LayerBlendMode,
   type LinearPremultipliedRgba,
 } from "../../layer-blend-modes";
+import {
+  DEFAULT_LAYER_TONAL_BLEND,
+  layerTonalBlendMask,
+  type LayerTonalBlend,
+} from "../../layer-composition";
 
 type RgbaBytes = readonly [number, number, number, number];
+type ProbeStorageContract = "linear-rgba16f" | "encoded-srgb-rgba8";
+
+let activeStorageContract: ProbeStorageContract = "linear-rgba16f";
+
+const usesEncodedStorage = (): boolean =>
+  activeStorageContract === "encoded-srgb-rgba8";
+
+const storageBytesPerTexel = (): 4 | 8 => usesEncodedStorage() ? 4 : 8;
 
 interface PixelComparison {
   actual: RgbaBytes;
@@ -37,11 +51,19 @@ export interface LayerBlendModeProbe {
 
 export interface LayerBlendGpuTestReport {
   version: 2;
+  pixelContract: {
+    layerFormat: "rgba8unorm" | "rgba16float";
+    colorSpace: "linear-premultiplied" | "encoded-srgb-premultiplied";
+  };
   passed: boolean;
   checks: {
+    pixelContractMatchesRuntime: boolean;
     runtimeShaderCompilationGatePassed: boolean;
     runtimeShaderValidationClean: boolean;
     allModesMatchCpuOracle: boolean;
+    contentOpacityMatchesCpuOracle: boolean;
+    tonalBlendMatchesCpuOracle: boolean;
+    knockoutMatchesCpuOracle: boolean;
     liveModeChangeVisible: boolean;
     inactiveAboveMatchesCpuOracle: boolean;
     modeHistoryAddsOneAction: boolean;
@@ -67,6 +89,11 @@ export interface LayerBlendGpuTestReport {
     modes: readonly LayerBlendModeProbe[];
     inactiveAbove: LayerBlendModeProbe;
   };
+  advancedOptions: {
+    contentOpacity: PixelComparison;
+    tonalBlend: PixelComparison;
+    knockout: PixelComparison;
+  };
   history: {
     before: ReturnType<BrushEngine["getHistoryState"]>;
     afterChange: ReturnType<BrushEngine["getHistoryState"]>;
@@ -90,6 +117,10 @@ export interface LayerBlendGpuTestReport {
     expectedFinalAlpha: number;
     actualFinalAlpha: null;
     alphaOracleSeparation: number;
+    parentOpacityDiagnostics: {
+      omitted: PixelComparison;
+      appliedBeforeChildren: PixelComparison;
+    };
     wrongSourceOver: PixelComparison;
     multiplyThenScreen: PixelComparison;
     activeFirstChild: PixelComparison;
@@ -109,7 +140,10 @@ export interface LayerBlendGpuTestReport {
   };
 }
 
-const ORDINARY_SAMPLE = { x: 1450, y: 1550 } as const;
+// The 3×3 dissolve-hash neighborhood is wholly below the 0.57 source alpha.
+// This keeps the single-pixel oracle stable across equivalent half-pixel
+// viewport mappings while the separate CPU test verifies exact hash values.
+const ORDINARY_SAMPLE = { x: 1429, y: 1514 } as const;
 const CLIPPING_CENTER = { x: 2700, y: 1550 } as const;
 const FILTER_ORDER_SEAM = { x: 2257, y: 3121 } as const;
 const FILTER_ORDER_WINDOW = {
@@ -196,12 +230,13 @@ function rgbaBytes(value: Uint8Array | readonly number[]): RgbaBytes {
   return [value[0], value[1], value[2], value[3]];
 }
 
-function linearRgba(value: Uint8Array | RgbaBytes): LinearPremultipliedRgba {
+function storedRgba(value: Uint8Array | RgbaBytes): LinearPremultipliedRgba {
   if (value instanceof Uint8Array) {
-    if (value.byteLength < 8) {
-      throw new Error(`Readback RGBA16F incompleto: ${value.byteLength} byte.`);
+    const requiredBytes = storageBytesPerTexel();
+    if (value.byteLength < requiredBytes) {
+      throw new Error(`Readback livello incompleto: ${value.byteLength} byte.`);
     }
-    return rgba16FloatTexel(value);
+    if (!usesEncodedStorage()) return rgba16FloatTexel(value);
   }
   return [value[0] / 255, value[1] / 255, value[2] / 255, value[3] / 255];
 }
@@ -219,10 +254,22 @@ function scalePremultiplied(
   ];
 }
 
-function quantizedLinear(value: LinearPremultipliedRgba): LinearPremultipliedRgba {
-  const stored = (channel: number): number =>
-    decodeFloat16(encodeFloat16(clamp01(channel)));
+function quantizedStored(value: LinearPremultipliedRgba): LinearPremultipliedRgba {
+  const stored = usesEncodedStorage()
+    ? (channel: number): number => quantizeUnorm(channel) / 255
+    : (channel: number): number => decodeFloat16(encodeFloat16(clamp01(channel)));
   return [stored(value[0]), stored(value[1]), stored(value[2]), stored(value[3])];
+}
+
+function blendStored(
+  backdrop: LinearPremultipliedRgba,
+  source: LinearPremultipliedRgba,
+  mode: LayerBlendMode,
+  documentPixel: readonly [number, number] = [0, 0],
+): LinearPremultipliedRgba {
+  return usesEncodedStorage()
+    ? blendLayerPremultipliedEncodedSrgb(backdrop, source, mode, documentPixel)
+    : blendLayerPremultipliedLinear(backdrop, source, mode, documentPixel);
 }
 
 function checkerSrgb(x: number, y: number): number {
@@ -240,8 +287,17 @@ function presentationBytes(
   x: number,
   y: number,
 ): RgbaBytes {
-  const background = srgbToLinear(checkerSrgb(x, y));
+  const backgroundSrgb = checkerSrgb(x, y);
   const inverseAlpha = 1 - paint[3];
+  if (usesEncodedStorage()) {
+    return [
+      quantizeUnorm(paint[0] + backgroundSrgb * inverseAlpha),
+      quantizeUnorm(paint[1] + backgroundSrgb * inverseAlpha),
+      quantizeUnorm(paint[2] + backgroundSrgb * inverseAlpha),
+      255,
+    ];
+  }
+  const background = srgbToLinear(backgroundSrgb);
   return [
     quantizeUnorm(linearToSrgb(paint[0] + background * inverseAlpha)),
     quantizeUnorm(linearToSrgb(paint[1] + background * inverseAlpha)),
@@ -255,8 +311,17 @@ function presentationBytesAtPosition(
   x: number,
   y: number,
 ): RgbaBytes {
-  const background = srgbToLinear(checkerSrgbAtPosition(x, y));
+  const backgroundSrgb = checkerSrgbAtPosition(x, y);
   const inverseAlpha = 1 - paint[3];
+  if (usesEncodedStorage()) {
+    return [
+      quantizeUnorm(paint[0] + backgroundSrgb * inverseAlpha),
+      quantizeUnorm(paint[1] + backgroundSrgb * inverseAlpha),
+      quantizeUnorm(paint[2] + backgroundSrgb * inverseAlpha),
+      255,
+    ];
+  }
+  const background = srgbToLinear(backgroundSrgb);
   return [
     quantizeUnorm(linearToSrgb(paint[0] + background * inverseAlpha)),
     quantizeUnorm(linearToSrgb(paint[1] + background * inverseAlpha)),
@@ -286,8 +351,14 @@ function windowTexel(
   ) {
     throw new Error(`Oracle filtro fuori finestra a ${x},${y}.`);
   }
-  const offset = (localY * window.width + localX) * 8;
-  return rgba16FloatTexel(window.pixels, offset);
+  const offset = (localY * window.width + localX) * storageBytesPerTexel();
+  if (!usesEncodedStorage()) return rgba16FloatTexel(window.pixels, offset);
+  return [
+    window.pixels[offset] / 255,
+    window.pixels[offset + 1] / 255,
+    window.pixels[offset + 2] / 255,
+    window.pixels[offset + 3] / 255,
+  ];
 }
 
 function mixLinear(
@@ -344,7 +415,7 @@ function blendedDocumentTexel(
   x: number,
   y: number,
 ): LinearPremultipliedRgba {
-  return quantizedLinear(blendLayerPremultipliedLinear(
+  return quantizedStored(blendStored(
     windowTexel(base, x, y),
     windowTexel(source, x, y),
     "multiply",
@@ -358,7 +429,7 @@ function mipOneTexel(
 ): LinearPremultipliedRgba {
   const documentX = x * 2;
   const documentY = y * 2;
-  return quantizedLinear(averageFour(
+  return quantizedStored(averageFour(
     sample(documentX, documentY),
     sample(documentX + 1, documentY),
     sample(documentX, documentY + 1),
@@ -440,7 +511,7 @@ function filterOrderOracle(
       mipY,
     );
   }
-  const filterThenBlend = blendLayerPremultipliedLinear(
+  const filterThenBlend = blendStored(
     filteredBase,
     filteredSource,
     "multiply",
@@ -558,7 +629,7 @@ function sourceAtopBlend(
   source: LinearPremultipliedRgba,
   mode: LayerBlendMode,
 ): LinearPremultipliedRgba {
-  const sourceOver = blendLayerPremultipliedLinear(backdrop, source, mode);
+  const sourceOver = blendStored(backdrop, source, mode);
   const sourceOutsideBackdrop = 1 - backdrop[3];
   return [
     clamp01(sourceOver[0] - source[0] * sourceOutsideBackdrop),
@@ -595,7 +666,17 @@ async function drawTap(
   hardness: number,
 ): Promise<void> {
   engine.setBrushSettings({ color, size, hardness });
-  engine.beginStrokeAtLayer({ x, y, pressure: 1, timeMs });
+  let started = false;
+  for (let attempt = 0; attempt < 20 && !started; attempt += 1) {
+    await engine.waitForIdle();
+    started = engine.beginStrokeAtLayer({ x, y, pressure: 1, timeMs });
+    if (!started) {
+      await new Promise((resolve) => window.setTimeout(resolve, 50));
+    }
+  }
+  if (!started) {
+    throw new Error("Il pennello della sonda fusioni non è diventato disponibile entro 1 s.");
+  }
   engine.extendStrokeAtLayer([{ x: x + 1, y, pressure: 1, timeMs: timeMs + 16 }]);
   engine.endStroke(timeMs + 16);
   await engine.waitForIdle();
@@ -606,12 +687,56 @@ function ordinaryOracle(
   sourceRaw: Uint8Array,
   mode: LayerBlendMode,
 ): LinearPremultipliedRgba {
-  return blendLayerPremultipliedLinear(
-    scalePremultiplied(linearRgba(baseRaw), 0.78),
-    scalePremultiplied(linearRgba(sourceRaw), 0.57),
+  return blendStored(
+    scalePremultiplied(storedRgba(baseRaw), 0.78),
+    scalePremultiplied(storedRgba(sourceRaw), 0.57),
     mode,
     [ORDINARY_SAMPLE.x, ORDINARY_SAMPLE.y],
   );
+}
+
+function advancedOptionsOracle(
+  baseRaw: Uint8Array,
+  sourceRaw: Uint8Array,
+  options: {
+    contentOpacity: number;
+    tonalBlend?: LayerTonalBlend;
+    knockout?: boolean;
+  },
+): LinearPremultipliedRgba {
+  const backdrop = scalePremultiplied(storedRgba(baseRaw), 0.78);
+  const authoredSource = storedRgba(sourceRaw);
+  const styledSource = quantizedStored(scalePremultiplied(
+    authoredSource,
+    options.contentOpacity,
+  ));
+  const unfilteredSource = scalePremultiplied(styledSource, 0.57);
+  const tonalBlend = options.tonalBlend ?? DEFAULT_LAYER_TONAL_BLEND;
+  const tonalMask = layerTonalBlendMask(
+    unfilteredSource,
+    backdrop,
+    tonalBlend,
+    usesEncodedStorage()
+      ? "encoded-srgb-premultiplied"
+      : "linear-premultiplied",
+  );
+  const source = scalePremultiplied(unfilteredSource, tonalMask);
+  const composited = blendStored(
+    backdrop,
+    source,
+    "normal",
+    [ORDINARY_SAMPLE.x, ORDINARY_SAMPLE.y],
+  );
+  if (!options.knockout) return quantizedStored(composited);
+  const authoredCoverage = authoredSource[3] * 0.57 * tonalMask;
+  const residual = clamp01(authoredCoverage - source[3]);
+  const outputAlpha = clamp01(composited[3] - backdrop[3] * residual);
+  return quantizedStored([
+    Math.min(outputAlpha, Math.max(0, composited[0] - backdrop[0] * residual)),
+    Math.min(outputAlpha, Math.max(0, composited[1] - backdrop[1] * residual)),
+    Math.min(outputAlpha, Math.max(0, composited[2] - backdrop[2] * residual)),
+    outputAlpha,
+  ]);
 }
 
 export async function runLayerBlendGpuTest(
@@ -619,17 +744,22 @@ export async function runLayerBlendGpuTest(
 ): Promise<LayerBlendGpuTestReport> {
   const initial = engine.getStats();
   const initialHistory = engine.getHistoryState();
+  const encodedStorage = initial.layerFormat === "rgba8unorm"
+    && engine.documentStorageColorSpace === "encoded-srgb-premultiplied";
+  const linearStorage = initial.layerFormat === "rgba16float"
+    && engine.documentStorageColorSpace === "linear-premultiplied";
   if (
-    initial.layerFormat !== "rgba16float"
+    (!encodedStorage && !linearStorage)
     || initial.layerCount !== 1
     || initial.layers[0]?.hasContent
     || initialHistory.actionCount !== 0
     || initialHistory.cursor !== 0
   ) {
     throw new Error(
-      "La sonda fusioni richiede una pagina dev nuova, RGBA16F, con un solo raster vuoto.",
+      "La sonda fusioni richiede una pagina dev nuova, RGBA16F lineare o RGBA8 sRGB, con un solo raster vuoto.",
     );
   }
+  activeStorageContract = encodedStorage ? "encoded-srgb-rgba8" : "linear-rgba16f";
 
   await ensureLabCheckerboardBackdrop(engine);
 
@@ -654,7 +784,7 @@ export async function runLayerBlendGpuTest(
     flow: 1,
     opacity: 1,
     hardness: 1,
-    blendMode: "normal",
+    blendMode: encodedStorage ? "intense-blending" : "normal",
     hueJitterDegrees: 0,
     saturationJitter: 0,
     lightnessJitter: 0,
@@ -706,7 +836,7 @@ export async function runLayerBlendGpuTest(
     ORDINARY_SAMPLE.y,
   );
   if (compare(normal, expectedNormal).maxDelta > 3) {
-    throw new Error("Baseline Normal della sonda fusioni non coincide con l'oracle lineare.");
+    throw new Error("Baseline Normal della sonda fusioni non coincide con l'oracle del documento.");
   }
 
   engine.device.pushErrorScope("validation");
@@ -755,6 +885,53 @@ export async function runLayerBlendGpuTest(
   if (!inactiveAbove) throw new Error("Sonda mergedAbove della fusione non completata.");
 
   await engine.setActiveLayer(1);
+  await engine.setLayerBlendMode(1, "normal");
+  await engine.setLayerContentOpacity(1, 0.37);
+  await engine.waitForIdle();
+  const contentOpacity = compare(
+    await readPresentation(engine, ORDINARY_SAMPLE.x, ORDINARY_SAMPLE.y),
+    presentationBytes(
+      advancedOptionsOracle(baseRaw, sourceRaw, { contentOpacity: 0.37 }),
+      ORDINARY_SAMPLE.x,
+      ORDINARY_SAMPLE.y,
+    ),
+  );
+
+  await engine.setLayerCutoutMode(1, "group");
+  await engine.waitForIdle();
+  const knockout = compare(
+    await readPresentation(engine, ORDINARY_SAMPLE.x, ORDINARY_SAMPLE.y),
+    presentationBytes(
+      advancedOptionsOracle(baseRaw, sourceRaw, {
+        contentOpacity: 0.37,
+        knockout: true,
+      }),
+      ORDINARY_SAMPLE.x,
+      ORDINARY_SAMPLE.y,
+    ),
+  );
+
+  const tonalBlend: LayerTonalBlend = {
+    current: [0, 255, 255, 255],
+    underlying: [0, 0, 255, 255],
+  };
+  await engine.setLayerCutoutMode(1, "off");
+  await engine.setLayerContentOpacity(1, 1);
+  await engine.setLayerTonalBlend(1, tonalBlend);
+  await engine.waitForIdle();
+  const tonalBlendComparison = compare(
+    await readPresentation(engine, ORDINARY_SAMPLE.x, ORDINARY_SAMPLE.y),
+    presentationBytes(
+      advancedOptionsOracle(baseRaw, sourceRaw, {
+        contentOpacity: 1,
+        tonalBlend,
+      }),
+      ORDINARY_SAMPLE.x,
+      ORDINARY_SAMPLE.y,
+    ),
+  );
+  await engine.setLayerTonalBlend(1, DEFAULT_LAYER_TONAL_BLEND);
+
   await engine.setLayerBlendMode(1, "multiply");
   const historyPresentationBefore = await readPresentation(
     engine,
@@ -820,7 +997,10 @@ export async function runLayerBlendGpuTest(
   let nonZeroParentSamples = 0;
   let clippingSampleDistance = Number.POSITIVE_INFINITY;
   for (let offset = 0; offset < scanWidth; offset += 1) {
-    const alpha = rgba16FloatTexel(parentStrip, offset * 8)[3];
+    const byteOffset = offset * storageBytesPerTexel();
+    const alpha = usesEncodedStorage()
+      ? parentStrip[byteOffset + 3] / 255
+      : rgba16FloatTexel(parentStrip, byteOffset)[3];
     minimumParentAlpha = Math.min(minimumParentAlpha, alpha);
     maximumParentAlpha = Math.max(maximumParentAlpha, alpha);
     if (alpha > 0) nonZeroParentSamples += 1;
@@ -883,23 +1063,32 @@ export async function runLayerBlendGpuTest(
     readLayerPixel(engine, secondChildIndex, clippingSampleX, CLIPPING_CENTER.y),
   ]);
 
-  const parentLinear = linearRgba(parentRaw);
-  const firstSource = scalePremultiplied(linearRgba(firstChildRaw), 0.61);
-  const secondSource = scalePremultiplied(linearRgba(secondChildRaw), 0.46);
-  const afterFirst = quantizedLinear(
-    sourceAtopBlend(parentLinear, firstSource, "multiply"),
+  const parentStored = storedRgba(parentRaw);
+  const firstSource = scalePremultiplied(storedRgba(firstChildRaw), 0.61);
+  const secondSource = scalePremultiplied(storedRgba(secondChildRaw), 0.46);
+  const afterFirst = quantizedStored(
+    sourceAtopBlend(parentStored, firstSource, "multiply"),
   );
-  const afterSecond = quantizedLinear(
+  const afterSecond = quantizedStored(
     sourceAtopBlend(afterFirst, secondSource, "screen"),
   );
   const expectedClippingGroup = scalePremultiplied(afterSecond, 0.83);
+  const parentWithEarlyOpacity = quantizedStored(
+    scalePremultiplied(parentStored, 0.83),
+  );
+  const afterFirstWithEarlyOpacity = quantizedStored(
+    sourceAtopBlend(parentWithEarlyOpacity, firstSource, "multiply"),
+  );
+  const afterSecondWithEarlyOpacity = quantizedStored(
+    sourceAtopBlend(afterFirstWithEarlyOpacity, secondSource, "screen"),
+  );
 
-  const wrongAfterFirst = quantizedLinear(blendLayerPremultipliedLinear(
-    parentLinear,
+  const wrongAfterFirst = quantizedStored(blendStored(
+    parentStored,
     firstSource,
     "multiply",
   ));
-  const wrongAfterSecond = quantizedLinear(blendLayerPremultipliedLinear(
+  const wrongAfterSecond = quantizedStored(blendStored(
     wrongAfterFirst,
     secondSource,
     "screen",
@@ -928,7 +1117,7 @@ export async function runLayerBlendGpuTest(
   await engine.setLayerVisibility(firstChildIndex, false);
   setLayerCompositeTestView(engine, clippingSampleX, CLIPPING_CENTER.y, 1);
   const expectedWithoutFirst = scalePremultiplied(
-    quantizedLinear(sourceAtopBlend(parentLinear, secondSource, "screen")),
+    quantizedStored(sourceAtopBlend(parentStored, secondSource, "screen")),
     0.83,
   );
   const hiddenActiveChild = compare(
@@ -1000,6 +1189,20 @@ export async function runLayerBlendGpuTest(
     clippingPresentationActual,
     expectedClippingPresentation,
   );
+  const parentOpacityDiagnostics = {
+    omitted: compare(
+      clippingPresentationActual,
+      presentationBytes(afterSecond, clippingSampleX, CLIPPING_CENTER.y),
+    ),
+    appliedBeforeChildren: compare(
+      clippingPresentationActual,
+      presentationBytes(
+        afterSecondWithEarlyOpacity,
+        clippingSampleX,
+        CLIPPING_CENTER.y,
+      ),
+    ),
+  };
   const clippingPresentation = { ...multiplyThenScreen };
   const wrongSourceOver = compare(
     clippingPresentationActual,
@@ -1011,7 +1214,7 @@ export async function runLayerBlendGpuTest(
   ).maxDelta;
 
   await engine.setLayerBlendMode(secondChildIndex, "overlay");
-  const afterOverlay = quantizedLinear(
+  const afterOverlay = quantizedStored(
     sourceAtopBlend(afterFirst, secondSource, "overlay"),
   );
   const expectedLiveOverlay = scalePremultiplied(afterOverlay, 0.83);
@@ -1025,7 +1228,7 @@ export async function runLayerBlendGpuTest(
     presentationBytes(expectedLiveOverlay, clippingSampleX, CLIPPING_CENTER.y),
   );
 
-  const expectedFinalAlpha = quantizeUnorm(parentLinear[3] * 0.83);
+  const expectedFinalAlpha = quantizeUnorm(parentStored[3] * 0.83);
   const actualFinalAlpha = null;
 
   await engine.addLayer("Ordine filtro base");
@@ -1138,12 +1341,24 @@ export async function runLayerBlendGpuTest(
   };
 
   const checks = {
+    pixelContractMatchesRuntime: encodedStorage
+      ? initial.layerFormat === "rgba8unorm"
+        && engine.documentStorageColorSpace === "encoded-srgb-premultiplied"
+      : initial.layerFormat === "rgba16float"
+        && engine.documentStorageColorSpace === "linear-premultiplied",
     runtimeShaderCompilationGatePassed,
     runtimeShaderValidationClean: validationError === null,
     allModesMatchCpuOracle: modeProbes.length === ORDINARY_MODES.length
       && modeProbes.every((probe) => probe.comparison.maxDelta <= 3),
-    liveModeChangeVisible: modeProbes.length > 0
-      && modeProbes[0].comparison.actual.some((channel, index) => channel !== normal[index]),
+    contentOpacityMatchesCpuOracle: contentOpacity.maxDelta <= 4,
+    tonalBlendMatchesCpuOracle: tonalBlendComparison.maxDelta <= 4,
+    knockoutMatchesCpuOracle: knockout.maxDelta <= 4,
+    liveModeChangeVisible: modeProbes.some(
+      (probe) => probe.mode !== "normal"
+        && probe.comparison.actual.some(
+          (channel, index) => channel !== normal[index],
+        ),
+    ),
     inactiveAboveMatchesCpuOracle: inactiveAbove.comparison.maxDelta <= 3,
     modeHistoryAddsOneAction:
       historyAfterChange.actionCount === historyBefore.actionCount + 1
@@ -1168,8 +1383,8 @@ export async function runLayerBlendGpuTest(
       multiplyThenScreen.maxDelta <= 4
       && clippingPresentation.maxDelta <= 4,
     clippingPreservesSoftBaseAlpha:
-      parentLinear[3] > 0
-      && parentLinear[3] < 1
+      parentStored[3] > 0
+      && parentStored[3] < 1
       && multiplyThenScreen.maxDelta <= 4
       && alphaOracleSeparation >= 8
       && wrongSourceOver.maxDelta >= multiplyThenScreen.maxDelta + 4,
@@ -1198,6 +1413,10 @@ export async function runLayerBlendGpuTest(
 
   return {
     version: 2,
+    pixelContract: {
+      layerFormat: initial.layerFormat,
+      colorSpace: engine.documentStorageColorSpace,
+    },
     passed: Object.values(checks).every(Boolean),
     checks,
     validationError: validationError ? validationError.message : null,
@@ -1206,6 +1425,11 @@ export async function runLayerBlendGpuTest(
       normal,
       modes: modeProbes,
       inactiveAbove,
+    },
+    advancedOptions: {
+      contentOpacity,
+      tonalBlend: tonalBlendComparison,
+      knockout,
     },
     history: {
       before: historyBefore,
@@ -1226,10 +1450,11 @@ export async function runLayerBlendGpuTest(
       sample: { x: clippingSampleX, y: CLIPPING_CENTER.y },
       parentId: clippingParentId,
       childIds: [firstChildId, secondChildId],
-      parentAlphaRaw: parentLinear[3],
+      parentAlphaRaw: parentStored[3],
       expectedFinalAlpha,
       actualFinalAlpha,
       alphaOracleSeparation,
+      parentOpacityDiagnostics,
       wrongSourceOver,
       multiplyThenScreen,
       activeFirstChild,

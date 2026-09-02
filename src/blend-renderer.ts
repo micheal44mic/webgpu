@@ -31,6 +31,7 @@ import {
   createComputePipelineAsync,
   createRenderPipelineAsync,
 } from "./engine-gpu-utils";
+import type { DocumentStorageColorSpace } from "./engine-types";
 
 const BLEND_UNIFORM_BYTES = 192;
 const BLEND_MAX_BATCHES_PER_SUBMIT = 256;
@@ -44,7 +45,7 @@ const BLEND_BLUR_WEIGHT_VEC4_COUNT = Math.ceil(
 const BLEND_BLUR_UNIFORM_BYTES = 16 + BLEND_BLUR_WEIGHT_VEC4_COUNT * 16;
 
 export const DRY_BLEND_RENDERER_BUILD =
-  "dry-blend-webgpu-v8-distinct-reduced-blur-storage";
+  "dry-blend-webgpu-v9-linear-f32-packed-unorm16-rgba8-srgb-boundaries";
 
 export interface DryBlendRenderSettings {
   size: number;
@@ -108,6 +109,7 @@ interface DryBlendRendererOptions {
   documentWidth: number;
   documentHeight: number;
   layerFormat: GPUTextureFormat;
+  documentStorageColorSpace: DocumentStorageColorSpace;
   layerView: GPUTextureView;
   layerSamplingView: GPUTextureView;
   shapeMaskView: GPUTextureView;
@@ -125,6 +127,7 @@ interface DryBlendRendererOptions {
 export interface DryBlendDocumentTarget {
   documentWidth: number;
   documentHeight: number;
+  documentStorageColorSpace: DocumentStorageColorSpace;
   layerView: GPUTextureView;
   layerSamplingView: GPUTextureView;
 }
@@ -177,6 +180,21 @@ interface BlendStepGroup {
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
+}
+
+function assertDryBlendStorageContract(
+  layerFormat: GPUTextureFormat,
+  colorSpace: DocumentStorageColorSpace,
+): void {
+  if (
+    colorSpace !== "linear-premultiplied"
+    && colorSpace !== "encoded-srgb-premultiplied"
+  ) {
+    throw new TypeError("Blend received an unsupported document storage color space.");
+  }
+  if (colorSpace === "encoded-srgb-premultiplied" && layerFormat !== "rgba8unorm") {
+    throw new Error("Blend encoded-sRGB storage requires an RGBA8 UNORM layer.");
+  }
 }
 
 function mergeRects(left: BlendRect | null, right: BlendRect): BlendRect {
@@ -260,6 +278,7 @@ export class DryBlendRenderer {
   private documentWidth: number;
   private documentHeight: number;
   private readonly layerFormat: GPUTextureFormat;
+  private documentStorageColorSpace: DocumentStorageColorSpace;
   private layerView: GPUTextureView;
   private layerSamplingView: GPUTextureView;
   private shapeMaskView: GPUTextureView;
@@ -315,10 +334,12 @@ export class DryBlendRenderer {
   private destroyed = false;
 
   private constructor(options: DryBlendRendererOptions) {
+    assertDryBlendStorageContract(options.layerFormat, options.documentStorageColorSpace);
     this.device = options.device;
     this.documentWidth = options.documentWidth;
     this.documentHeight = options.documentHeight;
     this.layerFormat = options.layerFormat;
+    this.documentStorageColorSpace = options.documentStorageColorSpace;
     this.layerView = options.layerView;
     this.layerSamplingView = options.layerSamplingView;
     this.shapeMaskView = options.shapeMaskView;
@@ -1412,11 +1433,15 @@ export class DryBlendRenderer {
         floats[37] = batch.writeRect.y - group.readRect.y;
         floats[38] = batch.writeRect.width;
         floats[39] = batch.writeRect.height;
-        unsigned[40] = settings.shape === "shape" ? 1 : 0;
+        // The shape branch is a pipeline constant, leaving options.x available
+        // for replay-stable document-space RGBA8 quantization.
+        unsigned[40] = (this.activeHistoryActionId ?? 0) >>> 0;
         unsigned[41] = grainMode;
         // Low two bits select filtering; bit 2 activates the explicit 8-bit
         // comparison without changing the resident R16F Shape/Grain fields.
-        unsigned[42] = filtering | (settings.shapeMaskFormat === "r8unorm" ? 4 : 0);
+        unsigned[42] = filtering
+          | (settings.shapeMaskFormat === "r8unorm" ? 4 : 0)
+          | (this.documentStorageColorSpace === "encoded-srgb-premultiplied" ? 8 : 0);
         unsigned[43] = this.carrierValid || index > 0 ? 1 : 0;
         unsigned[44] = carrierReadSlot;
         unsigned[45] = carrierWriteSlot;
@@ -1558,7 +1583,13 @@ export class DryBlendRenderer {
    */
   reconfigureDocumentTarget(target: DryBlendDocumentTarget): void {
     this.assertAlive();
-    const { documentWidth, documentHeight, layerView, layerSamplingView } = target;
+    const {
+      documentWidth,
+      documentHeight,
+      documentStorageColorSpace,
+      layerView,
+      layerSamplingView,
+    } = target;
     if (
       !Number.isSafeInteger(documentWidth)
       || !Number.isSafeInteger(documentHeight)
@@ -1567,6 +1598,7 @@ export class DryBlendRenderer {
     ) {
       throw new RangeError("Blend document dimensions must be positive safe integers.");
     }
+    assertDryBlendStorageContract(this.layerFormat, documentStorageColorSpace);
 
     // Validate first so a rejected target cannot partially detach the current
     // document. releaseScratch() also clears all bind groups that capture the
@@ -1574,6 +1606,7 @@ export class DryBlendRenderer {
     this.releaseScratch();
     this.documentWidth = documentWidth;
     this.documentHeight = documentHeight;
+    this.documentStorageColorSpace = documentStorageColorSpace;
     this.layerView = layerView;
     this.layerSamplingView = layerSamplingView;
     this.activeHistoryActionId = null;

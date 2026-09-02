@@ -32,6 +32,8 @@ export interface RasterBevelRendererOptions {
   scratchPool: EffectsScratchPool;
   documentWidth: number;
   documentHeight: number;
+  /** Authoritative RGBA8 texels contain premultiplied encoded-sRGB channels. */
+  storedEncodedSrgb?: boolean;
   layerView: GPUTextureView;
   lightGlazeUniformBuffer: GPUBuffer;
   thicknessTailUniformBuffer: GPUBuffer;
@@ -216,7 +218,7 @@ function workspaceLayout(extent: number, segments: boolean): WorkspaceLayout {
   };
 }
 
-function sourceShaderCommon(): string {
+function sourceShaderCommon(storedEncodedSrgb = false): string {
   return /* wgsl */ `
 struct BevelParameters {
   buildOrigin: vec2<i32>,
@@ -262,6 +264,7 @@ struct ThicknessTailUniforms {
 
 const EMPTY_SEGMENT = ${EMPTY_SEGMENT};
 const PROFILE_MAX_INDEX = ${RASTER_BEVEL_PROFILE_SIZE - 1}u;
+const STORED_ENCODED_SRGB: bool = ${storedEncodedSrgb ? "true" : "false"};
 
 @group(0) @binding(0) var<uniform> parameters: BevelParameters;
 @group(0) @binding(1) var permanentTexture: texture_2d<f32>;
@@ -284,6 +287,9 @@ fn insideDocument(position: vec2<i32>) -> bool {
 }
 
 fn quantizeLayer(value: vec4<f32>) -> vec4<f32> {
+  if (STORED_ENCODED_SRGB) {
+    return value;
+  }
   let redGreen = unpack2x16float(pack2x16float(value.rg));
   let blueAlpha = unpack2x16float(pack2x16float(value.ba));
   return vec4<f32>(redGreen, blueAlpha);
@@ -348,6 +354,17 @@ fn resolvedLightGlaze(accumulatedStroke: vec4<f32>) -> vec4<f32> {
     let coverage = storedLightCoverage(accumulatedStroke.r);
     return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
   }
+  if (lightGlaze.accumulationMode == 3u) {
+    let coverage = clamp(1.0 - exp2(-max(accumulatedStroke.r, 0.0)), 0.0, 1.0);
+    return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
+  }
+  if (lightGlaze.accumulationMode == 4u) {
+    let coverage = storedLightCoverage(accumulatedStroke.r);
+    return vec4<f32>(lightGlaze.tintLinear.rgb * coverage, coverage) * opacity;
+  }
+  if (lightGlaze.accumulationMode == 5u) {
+    return linearPremultipliedToEncodedSrgb(accumulatedStroke) * opacity;
+  }
   return accumulatedStroke * opacity;
 }
 
@@ -356,6 +373,14 @@ fn compositeLightGlazeOverPermanent(
   accumulatedStroke: vec4<f32>
 ) -> vec4<f32> {
   let strokePaint = resolvedLightGlaze(accumulatedStroke);
+  if (
+    lightGlaze.accumulationMode == 3u
+    || lightGlaze.accumulationMode == 4u
+    || lightGlaze.accumulationMode == 5u
+    || lightGlaze.accumulationMode == 6u
+  ) {
+    return strokePaint + permanentPaint * (1.0 - strokePaint.a);
+  }
   if (lightGlaze.accumulationMode == 2u) {
     if (strokePaint.a <= 0.0) {
       return permanentPaint;
@@ -471,8 +496,8 @@ fn profileValue(value: f32) -> f32 {
 `;
 }
 
-function coverageShader(): string {
-  return `${sourceShaderCommon()}
+function coverageShader(storedEncodedSrgb = false): string {
+  return `${sourceShaderCommon(storedEncodedSrgb)}
 @compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   if (globalId.y >= parameters.buildSize.y) {
@@ -495,8 +520,8 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
 `;
 }
 
-function segmentShader(): string {
-  return `${sourceShaderCommon()}
+function segmentShader(storedEncodedSrgb = false): string {
+  return `${sourceShaderCommon(storedEncodedSrgb)}
 fn differentSides(left: f32, right: f32) -> bool {
   return (left >= 0.5) != (right >= 0.5);
 }
@@ -558,8 +583,8 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
 `;
 }
 
-function jfaShader(): string {
-  return `${sourceShaderCommon()}
+function jfaShader(storedEncodedSrgb = false): string {
+  return `${sourceShaderCommon(storedEncodedSrgb)}
 fn segmentDistance(point: vec2<f32>, segment: vec4<f32>) -> f32 {
   let ab = segment.zw - segment.xy;
   let t = clamp(
@@ -621,8 +646,8 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
 `;
 }
 
-function distanceShader(): string {
-  return `${sourceShaderCommon()}
+function distanceShader(storedEncodedSrgb = false): string {
+  return `${sourceShaderCommon(storedEncodedSrgb)}
 fn segmentDistance(point: vec2<f32>, segment: vec4<f32>) -> f32 {
   let ab = segment.zw - segment.xy;
   let t = clamp(
@@ -654,8 +679,8 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
 `;
 }
 
-function gaussianShader(): string {
-  return `${sourceShaderCommon()}
+function gaussianShader(storedEncodedSrgb = false): string {
+  return `${sourceShaderCommon(storedEncodedSrgb)}
 fn sampleInput(position: vec2<i32>) -> f32 {
   let clamped = clamp(
     position,
@@ -731,8 +756,8 @@ fn main(
 `;
 }
 
-function heightShader(): string {
-  return `${sourceShaderCommon()}
+function heightShader(storedEncodedSrgb = false): string {
+  return `${sourceShaderCommon(storedEncodedSrgb)}
 @compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   if (any(globalId.xy >= parameters.buildSize)) {
@@ -772,11 +797,12 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
 
 function resolveHeightShader(
   boundingFieldEnabled = false,
+  storedEncodedSrgb = false,
 ): string {
   const fieldTranslation = boundingFieldEnabled
     ? "\n    - vec2<i32>(parameters._pad0)"
     : "";
-  return `${sourceShaderCommon()}
+  return `${sourceShaderCommon(storedEncodedSrgb)}
 fn sampleInput(position: vec2<i32>) -> f32 {
   let clamped = clamp(
     position,
@@ -853,8 +879,8 @@ fn main(
 `;
 }
 
-function alphaClassMaskShader(): string {
-  return `${sourceShaderCommon()}
+function alphaClassMaskShader(storedEncodedSrgb = false): string {
+  return `${sourceShaderCommon(storedEncodedSrgb)}
 const ALPHA_WORD_BITS = ${ALPHA_CLASS_WORD_BITS}u;
 
 @compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
@@ -978,13 +1004,18 @@ const bevelProgramCache = new WeakMap<
 
 function bevelProgramCacheKey(
   boundingFieldEnabled: boolean,
+  storedEncodedSrgb: boolean,
 ): string {
-  return `bbox:${boundingFieldEnabled ? 1 : 0}`;
+  return [
+    `bbox:${boundingFieldEnabled ? 1 : 0}`,
+    `stored-encoded:${storedEncodedSrgb ? 1 : 0}`,
+  ].join("|");
 }
 
 async function createBevelProgramResources(
   device: GPUDevice,
   boundingFieldEnabled: boolean,
+  storedEncodedSrgb: boolean,
 ): Promise<RasterBevelProgramResources> {
   const bindGroupLayout = device.createBindGroupLayout({
     label: "Bevel Heightfield V2 universal compute layout",
@@ -1036,35 +1067,35 @@ async function createBevelProgramResources(
   const modules = {
     coverage: device.createShaderModule({
       label: "Bevel continuous F32 coverage WGSL",
-      code: coverageShader(),
+      code: coverageShader(storedEncodedSrgb),
     }),
     segment: device.createShaderModule({
       label: "Bevel marching squares segments WGSL",
-      code: segmentShader(),
+      code: segmentShader(storedEncodedSrgb),
     }),
     jfa: device.createShaderModule({
       label: "Bevel subpixel segment JFA WGSL",
-      code: jfaShader(),
+      code: jfaShader(storedEncodedSrgb),
     }),
     distance: device.createShaderModule({
       label: "Bevel signed R32F distance WGSL",
-      code: distanceShader(),
+      code: distanceShader(storedEncodedSrgb),
     }),
     gaussian: device.createShaderModule({
       label: "Bevel separable Gaussian WGSL",
-      code: gaussianShader(),
+      code: gaussianShader(storedEncodedSrgb),
     }),
     height: device.createShaderModule({
       label: "Bevel Heightfield V2 profile WGSL",
-      code: heightShader(),
+      code: heightShader(storedEncodedSrgb),
     }),
     resolve: device.createShaderModule({
       label: "Bevel final R32F height resolve WGSL",
-      code: resolveHeightShader(boundingFieldEnabled),
+      code: resolveHeightShader(boundingFieldEnabled, storedEncodedSrgb),
     }),
     alphaClass: device.createShaderModule({
       label: "Bevel alpha class change gate WGSL",
-      code: alphaClassMaskShader(),
+      code: alphaClassMaskShader(storedEncodedSrgb),
     }),
     indirectGate: device.createShaderModule({
       label: "Bevel indirect dispatch gate WGSL",
@@ -1141,13 +1172,14 @@ async function createBevelProgramResources(
 function acquireBevelProgramResources(
   device: GPUDevice,
   boundingFieldEnabled: boolean,
+  storedEncodedSrgb: boolean,
 ): Promise<RasterBevelProgramResources> {
   let deviceCache = bevelProgramCache.get(device);
   if (!deviceCache) {
     deviceCache = new Map();
     bevelProgramCache.set(device, deviceCache);
   }
-  const key = bevelProgramCacheKey(boundingFieldEnabled);
+  const key = bevelProgramCacheKey(boundingFieldEnabled, storedEncodedSrgb);
   const cached = deviceCache.get(key);
   if (cached) {
     return cached;
@@ -1155,6 +1187,7 @@ function acquireBevelProgramResources(
   const pending = createBevelProgramResources(
     device,
     boundingFieldEnabled,
+    storedEncodedSrgb,
   );
   deviceCache.set(key, pending);
   void pending.then(undefined, () => {
@@ -1189,6 +1222,7 @@ export class RasterBevelRenderer {
   private scratchPoolLayoutVersion = -1;
   private readonly documentWidth: number;
   private readonly documentHeight: number;
+  private readonly storedEncodedSrgb: boolean;
   private layerView: GPUTextureView;
   private readonly lightGlazeUniformBuffer: GPUBuffer;
   private readonly thicknessTailUniformBuffer: GPUBuffer;
@@ -1245,6 +1279,7 @@ export class RasterBevelRenderer {
     this.scratchPool = options.scratchPool;
     this.documentWidth = options.documentWidth;
     this.documentHeight = options.documentHeight;
+    this.storedEncodedSrgb = options.storedEncodedSrgb === true;
     this.layerView = options.layerView;
     this.lightGlazeUniformBuffer = options.lightGlazeUniformBuffer;
     this.thicknessTailUniformBuffer = options.thicknessTailUniformBuffer;
@@ -1521,6 +1556,7 @@ export class RasterBevelRenderer {
     const programs = await acquireBevelProgramResources(
       this.device,
       this.boundingFieldEnabled,
+      this.storedEncodedSrgb,
     );
     this.bindGroupLayout = programs.bindGroupLayout;
     this.indirectGateBindGroupLayout = programs.indirectGateBindGroupLayout;

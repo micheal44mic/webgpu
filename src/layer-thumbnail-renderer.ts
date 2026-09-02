@@ -21,6 +21,10 @@ export interface LayerThumbnailPixels {
   readonly rgba: Uint8ClampedArray;
 }
 
+export type LayerThumbnailSourceColorSpace =
+  | "linear-premultiplied"
+  | "encoded-srgb-premultiplied";
+
 const layerThumbnailShader = /* wgsl */ `
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
@@ -57,10 +61,9 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   return output;
 }
 
-@fragment
-fn fragmentMain(
-  @builtin(position) fragmentPosition: vec4<f32>
-) -> @location(0) vec4<f32> {
+fn averagedPremultipliedSource(
+  fragmentPosition: vec4<f32>
+) -> vec4<f32> {
   let sourceSize = vec2<i32>(textureDimensions(sourceTexture));
   let longestSourceEdge = max(sourceSize.x, sourceSize.y);
   let destinationSize = max(
@@ -93,14 +96,37 @@ fn fragmentMain(
     }
   }
 
-  let sampleCount = f32(${LAYER_THUMBNAIL_SAMPLE_GRID ** 2});
-  let premultipliedLinear = accumulated / sampleCount;
+  return accumulated / f32(${LAYER_THUMBNAIL_SAMPLE_GRID ** 2});
+}
+
+@fragment
+fn linearFragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  let premultipliedLinear = averagedPremultipliedSource(fragmentPosition);
   let alpha = clamp(premultipliedLinear.a, 0.0, 1.0);
   var straightLinear = vec3<f32>(0.0);
   if (alpha > 0.000001) {
     straightLinear = clamp(premultipliedLinear.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
   }
   return vec4<f32>(linearToSrgb(straightLinear), alpha);
+}
+
+@fragment
+fn encodedFragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  let premultipliedEncoded = averagedPremultipliedSource(fragmentPosition);
+  let alpha = clamp(premultipliedEncoded.a, 0.0, 1.0);
+  var straightEncoded = vec3<f32>(0.0);
+  if (alpha > 0.000001) {
+    straightEncoded = clamp(
+      premultipliedEncoded.rgb / alpha,
+      vec3<f32>(0.0),
+      vec3<f32>(1.0),
+    );
+  }
+  return vec4<f32>(straightEncoded, alpha);
 }
 `;
 
@@ -128,18 +154,37 @@ export class LayerThumbnailRenderer {
         )).join("\n"),
       );
     }
-    const pipeline = await device.createRenderPipelineAsync({
-      label: "Layer thumbnail dimension-neutral area sampler",
-      layout: device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] }),
+    const layout = device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] });
+    const createPipeline = (
+      entryPoint: "linearFragmentMain" | "encodedFragmentMain",
+      label: string,
+    ) => device.createRenderPipelineAsync({
+      label,
+      layout,
       vertex: { module: shaderModule, entryPoint: "vertexMain" },
       fragment: {
         module: shaderModule,
-        entryPoint: "fragmentMain",
+        entryPoint,
         targets: [{ format: "rgba8unorm" }],
       },
       primitive: { topology: "triangle-list" },
     });
-    return new LayerThumbnailRenderer(device, bindGroupLayout, pipeline);
+    const [linearPipeline, encodedPipeline] = await Promise.all([
+      createPipeline(
+        "linearFragmentMain",
+        "Layer thumbnail linear source area sampler",
+      ),
+      createPipeline(
+        "encodedFragmentMain",
+        "Layer thumbnail encoded-sRGB source area sampler",
+      ),
+    ]);
+    return new LayerThumbnailRenderer(
+      device,
+      bindGroupLayout,
+      linearPipeline,
+      encodedPipeline,
+    );
   }
 
   private targetTexture: GPUTexture | null = null;
@@ -160,7 +205,8 @@ export class LayerThumbnailRenderer {
   private constructor(
     private readonly device: GPUDevice,
     private readonly bindGroupLayout: GPUBindGroupLayout,
-    private readonly pipeline: GPURenderPipeline,
+    private readonly linearPipeline: GPURenderPipeline,
+    private readonly encodedPipeline: GPURenderPipeline,
   ) {}
 
   private reconfigureDocument(documentWidth: number, documentHeight: number): void {
@@ -216,6 +262,7 @@ export class LayerThumbnailRenderer {
     sourceView: GPUTextureView,
     documentWidth: number,
     documentHeight: number,
+    sourceColorSpace: LayerThumbnailSourceColorSpace = "linear-premultiplied",
   ): Promise<LayerThumbnailPixels> {
     if (this.captureInFlight) {
       throw new Error("A layer thumbnail is already being captured.");
@@ -249,7 +296,11 @@ export class LayerThumbnailRenderer {
           clearValue: { r: 0, g: 0, b: 0, a: 0 },
         }],
       });
-      pass.setPipeline(this.pipeline);
+      pass.setPipeline(
+        sourceColorSpace === "encoded-srgb-premultiplied"
+          ? this.encodedPipeline
+          : this.linearPipeline,
+      );
       pass.setBindGroup(0, bindGroup);
       pass.draw(3, 1, 0, 0);
       pass.end();

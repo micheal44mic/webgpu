@@ -36,8 +36,8 @@ export const RASTER_TRANSFORM_FILTER_PADDING_PX = 2;
 export const RASTER_TRANSFORM_MINIMUM_ABS_SCALE = 0.01;
 export const RASTER_TRANSFORM_MAXIMUM_ABS_SCALE = 64;
 // The first 64 bytes retain the original transform ABI. The final 16-byte slot
-// carries the active document extent so cached deform pipelines are reusable
-// across documents with different dimensions.
+// carries the active document extent plus a replay-stable RGBA8 quantization
+// seed. Cached deform pipelines therefore remain reusable across documents.
 export const RASTER_TRANSFORM_UNIFORM_BYTES = 80;
 
 export interface RasterTransformPoint {
@@ -92,6 +92,8 @@ export interface RasterTransformUniformInput {
   transform: RasterTransformAffine;
   documentWidth?: number;
   documentHeight?: number;
+  /** Stable identity for document-anchored adjacent-code RGBA8 finalization. */
+  quantizationSeed?: number;
 }
 
 function requireFinite(value: number, label: string): number {
@@ -743,7 +745,16 @@ export function packRasterTransformUniforms(
     input.documentHeight ?? RASTER_TRANSFORM_DOCUMENT_HEIGHT,
     "documentHeight",
   );
-  target[18] = 0;
-  target[19] = 0;
+  const targetU32 = new Uint32Array(
+    target.buffer,
+    target.byteOffset,
+    target.byteLength / Uint32Array.BYTES_PER_ELEMENT,
+  );
+  const quantizationSeed = input.quantizationSeed ?? 0;
+  if (!Number.isSafeInteger(quantizationSeed) || quantizationSeed < 0) {
+    throw new Error("quantizationSeed must be a safe non-negative integer.");
+  }
+  targetU32[18] = quantizationSeed >>> 0;
+  targetU32[19] = 0;
   return target;
 }

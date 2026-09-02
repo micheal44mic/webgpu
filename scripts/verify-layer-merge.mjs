@@ -11,6 +11,7 @@ import {
   transferBorrowedLayerMergeColdSeedForDetach,
 } from "../src/layer-merge-seed-ownership.ts";
 import {
+  LAYER_MEMORY_ADMISSION_STRATEGY,
   planLayerDuplicateMemory,
   planLayerMergeCreateMemory,
   planLayerSwitchMemory,
@@ -19,6 +20,10 @@ import {
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const core = read("../src/layer-merge-core.ts");
 const runtime = read("../src/engine-layer-merge-runtime.ts");
+const layerRuntime = read("../src/engine-layer-runtime.ts");
+const foldShader = read("../src/layer-blend-fold-shader.ts");
+const layerResources = read("../src/engine-layer-resources.ts");
+const vectorRaster = read("../src/engine-vector-raster-runtime.ts");
 const history = read("../src/engine-history-types.ts");
 const historyRuntime = read("../src/engine-history-runtime.ts");
 const historyService = read("../src/history-service.ts");
@@ -39,6 +44,9 @@ assert.match(runtime, /applyLayerMergeHistory/);
 assert.match(runtime, /reserveLayerMergeCreateMemory/);
 assert.match(runtime, /memoryReservation = await reserveLayerMergeCreateMemory/);
 assert.match(runtime, /return engine\.reservePlannedMemory\(request\)/);
+assert.match(runtime, /const workingBytes = allocation\.width \* allocation\.height \* 8/);
+assert.match(runtime, /const foldScratchBytes = foldTileWidth \* foldTileHeight \* 8 \* 2/);
+assert.match(runtime, /VECTOR_TEXT_GPU_SAMPLE_COUNT \+ 1/);
 assert.doesNotMatch(runtime, /planMemoryAdmission|reserveMemoryWithAdmissionOverride/);
 assert.match(runtime, /baseTileMask: rendered\.record\.storageTileMask\.slice\(\)/);
 assert.match(runtime, /entry\.layerRecord\.storageTileMask\.set\(entry\.baseTileMask\)/);
@@ -66,6 +74,76 @@ assert.match(
   core,
   /bakesParentBlendModesFromTransparentBackdrop\s*=\s*!onlyOneCompleteRasterUnit\s*&& sceneIndex === 0/,
 );
+assert.match(runtime, /const outerAdvancedBlend = plan\.rasterLayerIds\.some/);
+assert.match(
+  runtime,
+  /const requiresSemanticBackdrop = plan\.vectorKeys\.length > 0[\s\S]*?encoded-srgb-premultiplied/,
+  "a bottom semantic merge in encoded storage must preserve linear canvas composition",
+);
+assert.match(
+  runtime,
+  /plan\.bakesParentBlendModesFromTransparentBackdrop[\s\S]*?outerAdvancedBlend \|\| requiresSemanticBackdrop[\s\S]*?engine\.documentBackground\.visible[\s\S]*?createMergeBackdropSeedResources/,
+  "a bottom-starting advanced merge must capture its known visible canvas backdrop",
+);
+assert.match(runtime, /documentBackgroundEncodedSrgbPremultiplied/);
+assert.match(runtime, /documentBackgroundLinearPremultiplied/);
+assert.match(runtime, /srcFactor: "one-minus-dst-alpha"/);
+assert.match(runtime, /seedMergeSurfaceWithKnownBackdrop/);
+assert.match(
+  runtime,
+  /&& engine\.documentBackground\.visible\s*\? createMergeBackdropSeedResources/,
+  "a hidden document background must leave the merge surface transparent",
+);
+assert.ok(
+  runtime.indexOf("seedMergeSurfaceWithKnownBackdrop(\n            engine")
+    < runtime.indexOf("const folded = unit.length > 1"),
+  "the known backdrop must be present before the advanced raster fold",
+);
+assert.match(layerRuntime, /u32\[39\] = sceneDomain === "linear-source"[\s\S]*?linear-stored-source/);
+assert.match(
+  layerRuntime,
+  /const usesLinearSceneFold = sceneDomain !== "storage"[\s\S]*?encoded-srgb-premultiplied[\s\S]*?!hasAdvancedComposition/,
+  "normal mixed raster/vector folds must use linear scene algebra without changing advanced raster semantics",
+);
+assert.match(foldShader, /sceneDomain: u32/);
+assert.match(foldShader, /fn layerBlendFoldDecodeBackdrop/);
+assert.match(foldShader, /fn layerBlendFoldDecodeSource/);
+assert.match(foldShader, /layer\.sceneDomain == 2u/);
+assert.match(foldShader, /fn layerBlendFoldEncodeWorking/);
+assert.match(
+  runtime,
+  /const sceneDomain: LayerFoldSceneDomain = plan\.vectorKeys\.length > 0[\s\S]*?"linear-stored-source"[\s\S]*?foldRasterRecordIntoMergedSurface[\s\S]*?sceneDomain/,
+  "a heterogeneous merge must opt its normal outer folds into linear scene composition",
+);
+assert.match(layerResources, /interface MergedSurfaceResources[\s\S]*?format: LayerFormat/);
+assert.match(
+  runtime,
+  /usesCroppedWorkingSurface[\s\S]*?allocateMergedSurface\([\s\S]*?"rgba16float"[\s\S]*?alignedMergedSurfaceBounds\([\s\S]*?plannedContentBounds/,
+  "encoded RGBA8 merges must allocate only a cropped high-precision working surface",
+);
+assert.match(runtime, /finalizeMergeWorkingSurface\([\s\S]*?outputSurface[\s\S]*?actionId/);
+assert.match(runtime, /quantizeRgba8SpatialAdjacent\([\s\S]*?documentCoordinate[\s\S]*?finalize\.actionSeed/);
+assert.doesNotMatch(
+  runtime.slice(
+    runtime.indexOf("const MERGE_WORKING_FINALIZE_WGSL"),
+    runtime.indexOf("function mergeWorkingFinalizePipeline"),
+  ),
+  /linearToSrgb|srgbToLinear/i,
+  "the merge working run is already encoded-premultiplied; finalization must quantize only",
+);
+assert.match(vectorRaster, /outputDomain: "document-storage" \| "linear-premultiplied"/);
+assert.match(runtime, /renderVectorDrawsToTexture\([\s\S]*?"linear-premultiplied"/);
+assert.match(runtime, /sceneDomain === "storage" \? "storage" : "linear-source"/);
+assert.match(
+  layerRuntime,
+  /layerColdTileCompositePipelinesForFormat\([\s\S]*?mergedSurfaceFormat\(engine, destination\)[\s\S]*?\)/,
+  "direct cold-tile folds must select a pipeline for the destination working format",
+);
+assert.match(
+  layerRuntime,
+  /coldTileDrawRangesForBounds\(tileIndices, destination\.bounds\)[\s\S]*?pass\.draw\(6, range\.instanceCount, 0, range\.firstInstance\)/,
+  "cropped working tiles must draw only intersecting authoritative cold-tile instances",
+);
 assert.match(historyRuntime, /await applyLayerMergeHistory\(engine, crossedAction, delta, true\)/);
 assert.match(
   historyService,
@@ -82,6 +160,31 @@ assert.match(controller, /this\.host\.mergeMixedSceneItems\(\{ keys: \[\.\.\.key
 assert.match(gpuLab, /function documentCenter\(engine: BrushEngine\)/);
 assert.match(gpuLab, /Math\.min\(760, environment\.canvasWidth - 8, engine\.documentWidth\)/);
 assert.doesNotMatch(gpuLab, /const center = \{ x: 2048, y: 2048 \}/);
+assert.match(gpuLab, /variant === "precision"/);
+assert.match(gpuLab, /const highPrecision = \[0, 0, 0, 0\]/);
+assert.match(gpuLab, /quantizeUnorm8SpatialAdjacent\(/);
+assert.match(
+  gpuLab,
+  /distinguishesPerPassQuantization: oracleSeparation >= 3[\s\S]*?perPassMaxDelta >= 2[\s\S]*?singleFinalizeMaxDelta < perPassMaxDelta/,
+);
+assert.match(gpuLab, /redoByteExact: redoReturned && redoByteDiff === 0/);
+assert.match(
+  gpuLab,
+  /\["out-of-memory", "internal", "validation"\][\s\S]*?runtimeOutOfMemoryClean/,
+  "the precision probe must cover asynchronous allocation and validation failures",
+);
+assert.match(
+  layerRuntime,
+  /tile \$\{x\},\$\{y\} transaction[\s\S]*?finalizeRgba8SurfaceTile/,
+  "each bounded high-precision tile must remain inside a GPU allocation transaction",
+);
+assert.match(engine, /private layerSwitchPersistentAuxiliaryBytes\(targetIndex: number\)/);
+assert.match(engine, /bounds\.width \* bounds\.height \* 2 \* 4/);
+assert.match(
+  engine,
+  /parentIndex === this\.layerStack\.activeIndex[\s\S]*?contentBounds: this\.layerContentBounds/,
+  "the outgoing active clipping parent must reserve from its live bounds before persistence",
+);
 
 // Vectors are drawn into a transient cropped surface. They must never take the
 // old per-node conversion path, which would publish N layers and N actions.
@@ -155,6 +258,26 @@ const mergeTextSeed = (text = "TEXT") => ({
   assert.throws(
     () => planMixedSceneLayerMerge(stack, scene, ["raster:1", "text:1"]),
     /clipping groups containing editable text or SVG/,
+  );
+}
+
+{
+  const stack = new LayerStack(mergeStyles);
+  stack.add("Middle");
+  stack.add("Top");
+  const scene = new MixedSceneStack([1, 2, 3]);
+  const floorPlan = planMixedSceneLayerMerge(
+    stack,
+    scene,
+    ["raster:1", "raster:2"],
+  );
+  assert.equal(floorPlan.sceneIndex, 0);
+  assert.equal(floorPlan.bakesParentBlendModesFromTransparentBackdrop, true);
+  stack.at(1).blendMode = "multiply";
+  assert.throws(
+    () => planMixedSceneLayerMerge(stack, scene, ["raster:2", "raster:3"]),
+    /external backdrop/,
+    "a subset above an unselected raster must not bake a guessed document floor",
   );
 }
 
@@ -406,6 +529,10 @@ for (const documentSize of [2048, 4096]) {
 // WebGPU has to allocate them even when a layer is sparse.
 const fullLayerBytes = 32 * 1024 * 1024;
 const fullMergedSurfaceBytes = Math.floor(fullLayerBytes * 4 / 3);
+assert.equal(
+  LAYER_MEMORY_ADMISSION_STRATEGY,
+  "tile-aware-merge-create-duplicate-and-persistent-auxiliary-layer-switch-peaks-v4",
+);
 const sparseSeeds = [128 * 1024, 512 * 1024, 0, 256 * 1024];
 const mergeCreate = planLayerMergeCreateMemory({
   fullLayerBytes,
@@ -434,6 +561,7 @@ const layerSwitch = planLayerSwitchMemory({
   incomingHotBytes: fullLayerBytes,
   adjacentPrefetchBytes: 256 * 1024,
   fullMergedSurfaceBytes,
+  persistentAuxiliaryBytes: 384 * 1024,
   reclaimableCompositeBytes: fullMergedSurfaceBytes,
   foldTransientBytes: fullLayerBytes * 2,
 });
@@ -445,6 +573,7 @@ assert.equal(
     + fullLayerBytes
     + 256 * 1024
     + fullMergedSurfaceBytes
+    + 384 * 1024
     + fullLayerBytes * 2,
 );
 const tileNativeLayerSwitch = planLayerSwitchMemory({
@@ -452,6 +581,7 @@ const tileNativeLayerSwitch = planLayerSwitchMemory({
   incomingHotBytes: fullLayerBytes,
   adjacentPrefetchBytes: 0,
   fullMergedSurfaceBytes,
+  persistentAuxiliaryBytes: 0,
   reclaimableCompositeBytes: fullMergedSurfaceBytes * 2,
   foldTransientBytes: 512 * 1024,
 });
@@ -520,9 +650,9 @@ for (let offset = 0; offset < selected.length; offset += 1) {
 restored.splice(restored.indexOf(output), 1);
 assert.deepEqual(restored, original);
 
-// Multiple advanced modes are backdrop-dependent only when something exists
-// below the selection. At scene index zero the backdrop is transparent, so the
-// complete ordered fold can be baked into a Normal/100% output exactly.
+// Multiple advanced modes need the same backdrop used by live presentation.
+// At scene index zero that backdrop is the known document background when it
+// is visible, so the bounded ordered fold can become a Normal/100% output.
 const withOpacity = (pixel, opacity) => [
   pixel[0] * opacity,
   pixel[1] * opacity,
@@ -530,10 +660,11 @@ const withOpacity = (pixel, opacity) => [
   pixel[3] * opacity,
 ];
 const transparent = [0, 0, 0, 0];
+const knownDocumentBackdrop = [1, 1, 1, 1];
 const bottomPixel = withOpacity([0.72, 0.14, 0.08, 0.8], 0.35);
 const topPixel = withOpacity([0.05, 0.36, 0.63, 0.9], 0.7);
 const foldedBottom = blendLayerPremultipliedLinear(
-  transparent,
+  knownDocumentBackdrop,
   bottomPixel,
   "multiply",
 );
@@ -555,7 +686,7 @@ assert.notDeepEqual(
 assert.deepEqual(
   blendLayerPremultipliedLinear(transparent, foldedSelection, "normal"),
   foldedSelection,
-  "l'output Normal/100% deve conservare il fold avanzato dal backdrop trasparente",
+  "l'output Normal/100% deve conservare il fold opaco dal backdrop noto",
 );
 const externalBackdrop = [0.18, 0.04, 0.31, 0.65];
 const originalWithExternalBackdrop = blendLayerPremultipliedLinear(
@@ -563,15 +694,15 @@ const originalWithExternalBackdrop = blendLayerPremultipliedLinear(
   topPixel,
   "screen",
 );
-const transparentBakeOverExternalBackdrop = blendLayerPremultipliedLinear(
+const knownBackdropBakeOverExternalBackdrop = blendLayerPremultipliedLinear(
   externalBackdrop,
   foldedSelection,
   "normal",
 );
 assert.notDeepEqual(
-  transparentBakeOverExternalBackdrop,
+  knownBackdropBakeOverExternalBackdrop,
   originalWithExternalBackdrop,
-  "un bake creato su trasparenza non è valido quando esiste un backdrop esterno",
+  "un bake creato sul fondo del documento non è valido sopra un backdrop esterno",
 );
 assert.match(
   core,

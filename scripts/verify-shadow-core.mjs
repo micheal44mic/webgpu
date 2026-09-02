@@ -226,6 +226,7 @@ const shadowProgramKeySource = rendererSource.slice(
   rendererSource.indexOf("async function createShadowProgramResources("),
 );
 assert.match(shadowProgramKeySource, /kind/);
+assert.match(shadowProgramKeySource, /storedEncodedSrgb/);
 assert.doesNotMatch(
   shadowProgramKeySource,
   /documentWidth|documentHeight/,
@@ -233,8 +234,19 @@ assert.doesNotMatch(
 );
 assert.match(
   rendererSource,
-  /const programs = await acquireShadowProgramResources\(\s*this\.device,\s*this\.kind,\s*\)/,
+  /const programs = await acquireShadowProgramResources\(\s*this\.device,\s*this\.kind,\s*this\.storedEncodedSrgb,\s*\)/,
   "outer and inner Shadow instances must reuse cached programs",
+);
+assert.match(rendererSource, /storedEncodedSrgb\?: boolean/);
+assert.match(
+  rendererSource,
+  /fn quantizeLayer\(value: vec4<f32>\)[\s\S]*?if \(STORED_ENCODED_SRGB\) \{\s*return value;/,
+  "encoded RGBA8 source coverage must remain f32 until the packed matte boundary",
+);
+assert.match(
+  rendererSource,
+  /const effectColor = rasterEffectColorForLinearCompositing\([\s\S]*?style\.color,[\s\S]*?this\.storedEncodedSrgb/,
+  "Shadow picker colors must be linearized before the f32 style compositor",
 );
 assert.match(
   rendererSource,

@@ -3,6 +3,7 @@ import { setLayerCompositeTestView } from "../engine-lab-operations";
 import type { DirtyRect } from "../../engine-stroke-types";
 import type { MixedSceneController } from "../../mixed-scene-controller";
 import { parseVectorSvg } from "../../vector-svg-import";
+import { quantizeUnorm8SpatialAdjacent } from "../../rgba8-spatial-quantization";
 
 export type LayerMergeGpuTestCase = "raster" | "clipping" | "mixed" | "memory" | "reject";
 
@@ -31,6 +32,12 @@ interface Float16ScaleDiff {
   readonly componentCount: number;
   readonly maxAbsoluteDelta: number;
   readonly meanAbsoluteDelta: number;
+}
+
+interface Unorm8ScaleDiff {
+  readonly componentCount: number;
+  readonly maxCodeDelta: number;
+  readonly meanCodeDelta: number;
 }
 
 export interface LayerMergeGpuTestReport {
@@ -110,6 +117,16 @@ function comparePixels(
   };
 }
 
+function rgba8At(
+  pixels: Uint8Array,
+  width: number,
+  x: number,
+  y: number,
+): readonly [number, number, number, number] {
+  const index = (y * width + x) * 4;
+  return [pixels[index], pixels[index + 1], pixels[index + 2], pixels[index + 3]];
+}
+
 function float16ToNumber(bits: number): number {
   const sign = (bits & 0x8000) === 0 ? 1 : -1;
   const exponent = (bits >>> 10) & 0x1f;
@@ -146,6 +163,29 @@ function compareFloat16Scale(
   };
 }
 
+function compareUnorm8Scale(
+  source: Uint8Array,
+  result: Uint8Array,
+  scale: number,
+): Unorm8ScaleDiff {
+  if (source.byteLength !== result.byteLength) {
+    throw new Error("Confronto RGBA8 del merge non valido.");
+  }
+  let maxCodeDelta = 0;
+  let totalCodeDelta = 0;
+  for (let index = 0; index < source.byteLength; index += 1) {
+    const expected = Math.round(source[index] * scale);
+    const delta = Math.abs(expected - result[index]);
+    maxCodeDelta = Math.max(maxCodeDelta, delta);
+    totalCodeDelta += delta;
+  }
+  return {
+    componentCount: source.byteLength,
+    maxCodeDelta,
+    meanCodeDelta: source.byteLength > 0 ? totalCodeDelta / source.byteLength : 0,
+  };
+}
+
 function captureRect(engine: BrushEngine, centerX: number, centerY: number): DirtyRect {
   const environment = engine.getBenchmarkEnvironment();
   const width = Math.max(
@@ -166,6 +206,19 @@ function captureRect(engine: BrushEngine, centerX: number, centerY: number): Dir
 
 function documentCenter(engine: BrushEngine): { readonly x: number; readonly y: number } {
   return { x: engine.documentWidth * 0.5, y: engine.documentHeight * 0.5 };
+}
+
+function setPixelAlignedMergeTestView(
+  engine: BrushEngine,
+  centerX: number,
+  centerY: number,
+): void {
+  // At 1:1, an odd viewport/document size difference puts semantic vector
+  // samples on half-document coordinates. Align the probe to document texel
+  // centers so its live and materialized rasters use the same sample grid.
+  const phaseX = Math.abs(engine.canvas.width - engine.documentWidth) % 2 * 0.5;
+  const phaseY = Math.abs(engine.canvas.height - engine.documentHeight) % 2 * 0.5;
+  setLayerCompositeTestView(engine, centerX + phaseX, centerY + phaseY, 1);
 }
 
 async function settlePresentation(
@@ -222,6 +275,8 @@ async function drawTap(
   hardness: number,
   timeMs: number,
 ): Promise<void> {
+  const storedEncodedSrgb =
+    engine.documentStorageColorSpace === "encoded-srgb-premultiplied";
   engine.setBrushSettings({
     tool: "paint",
     shape: "circle",
@@ -234,7 +289,7 @@ async function drawTap(
     count: 1,
     flow: 1,
     opacity: 1,
-    blendMode: "normal",
+    blendMode: storedEncodedSrgb ? "intense-blending" : "normal",
     shapeScatter: 0,
     hueJitterDegrees: 0,
     saturationJitter: 0,
@@ -243,7 +298,17 @@ async function drawTap(
     positionJitterLateral: 0,
     positionJitterLinear: 0,
   });
-  engine.beginStrokeAtLayer({ x, y, pressure: 1, timeMs });
+  let started = false;
+  for (let attempt = 0; attempt < 20 && !started; attempt += 1) {
+    await engine.waitForIdle();
+    started = engine.beginStrokeAtLayer({ x, y, pressure: 1, timeMs });
+    if (!started) {
+      await new Promise((resolve) => window.setTimeout(resolve, 50));
+    }
+  }
+  if (!started) {
+    throw new Error("Il pennello di prova non è diventato disponibile entro 1 s.");
+  }
   engine.extendStrokeAtLayer([{ x: x + 1, y, pressure: 1, timeMs: timeMs + 16 }]);
   engine.endStroke(timeMs + 16);
   await engine.waitForIdle();
@@ -252,32 +317,309 @@ async function drawTap(
 function requireFreshDocument(engine: BrushEngine): void {
   const stats = engine.getStats();
   const history = engine.getHistoryState();
+  const compatiblePixelProfile = (
+    stats.layerFormat === "rgba16float"
+    && engine.documentStorageColorSpace === "linear-premultiplied"
+  ) || (
+    stats.layerFormat === "rgba8unorm"
+    && engine.documentStorageColorSpace === "encoded-srgb-premultiplied"
+  );
   if (
-    stats.layerFormat !== "rgba16float"
+    !compatiblePixelProfile
     || stats.layers.length !== 1
     || stats.layers[0]?.hasContent
     || history.actionCount !== 0
     || history.cursor !== 0
   ) {
     throw new Error(
-      "La sonda merge richiede una pagina dev nuova con un solo raster RGBA16F vuoto.",
+      "La sonda merge richiede una pagina dev nuova con un solo raster vuoto e un profilo pixel coerente.",
     );
   }
+}
+
+async function runRasterPrecisionCaseUnchecked(
+  engine: BrushEngine,
+  controller: MixedSceneController,
+): Promise<LayerMergeGpuTestReport> {
+  if (
+    engine.layerFormat !== "rgba8unorm"
+    || engine.documentStorageColorSpace !== "encoded-srgb-premultiplied"
+  ) {
+    throw new Error("The merge precision probe requires encoded RGBA8 document storage.");
+  }
+  const colors = [
+    "#5da393", "#2188d0", "#c3d139", "#a834ba",
+    "#a4afc8", "#1fe90d", "#26dd2a", "#d23a41",
+    "#29b10f", "#e48f70", "#64bfc3", "#30ce21",
+  ] as const;
+  const opacities = [
+    0.051, 0.19, 0.197, 0.048,
+    0.198, 0.193, 0.068, 0.132,
+    0.072, 0.078, 0.059, 0.044,
+  ];
+  const search = new URLSearchParams(window.location.search);
+  const usesMultitileExtent = search.get("precisionExtent") === "multitile";
+  const usesMiddleActiveLayer = search.get("precisionActive") === "middle";
+  const zoomOut = search.get("precisionZoom") === "quarter" ? 0.25 : null;
+  const center = documentCenter(engine);
+  const tapSize = usesMultitileExtent
+    ? Math.min(2_300, Math.max(engine.documentWidth, engine.documentHeight))
+    : 360;
+  const pixelRect: DirtyRect = {
+    x: Math.floor(center.x),
+    y: Math.floor(center.y),
+    width: 1,
+    height: 1,
+  };
+  setPixelAlignedMergeTestView(engine, center.x, center.y);
+  const sources: Uint8Array[] = [];
+  for (let index = 0; index < colors.length; index += 1) {
+    if (index > 0) await engine.addLayer(`Precision input ${index + 1}`);
+    await drawTap(
+      engine,
+      center.x,
+      center.y,
+      colors[index],
+      tapSize,
+      1,
+      5_000 + index * 100,
+    );
+    await engine.setLayerOpacity(index, opacities[index]);
+    sources.push(await engine.readLayerPixels(pixelRect));
+  }
+  if (usesMiddleActiveLayer) {
+    await engine.setActiveLayer(Math.floor(colors.length / 2));
+  }
+  const keys = engine.getMixedSceneSnapshot()!.items.map((item) => item.key);
+  const presentationRect = captureRect(engine, center.x, center.y);
+  const before = await readStablePresentation(engine, presentationRect);
+  let zoomBefore: Uint8Array | null = null;
+  if (zoomOut !== null) {
+    setLayerCompositeTestView(engine, center.x, center.y, zoomOut);
+    await settlePresentation(engine, controller);
+    zoomBefore = await engine.readPresentationPixelAtLayer(
+      Math.floor(center.x),
+      Math.floor(center.y),
+    );
+  }
+  const historyBefore = engine.getHistoryState();
+  const actionSeed = engine.nextHistoryActionId;
+
+  const highPrecision = [0, 0, 0, 0];
+  const quantizedEachPass = [0, 0, 0, 0];
+  for (let index = 0; index < sources.length; index += 1) {
+    const opacity = opacities[index];
+    const sourceAlpha = sources[index][3] / 255 * opacity;
+    for (let channel = 0; channel < 4; channel += 1) {
+      const source = sources[index][channel] / 255 * opacity;
+      highPrecision[channel] = source + highPrecision[channel] * (1 - sourceAlpha);
+      const composited = source + quantizedEachPass[channel] * (1 - sourceAlpha);
+      quantizedEachPass[channel] = Math.round(composited * 255) / 255;
+    }
+  }
+  const expectedSingleFinalize = highPrecision.map((value) =>
+    quantizeUnorm8SpatialAdjacent(
+      value,
+      pixelRect.x,
+      pixelRect.y,
+      actionSeed,
+    )
+  );
+  const expectedPerPass = quantizedEachPass.map((value) => Math.round(value * 255));
+
+  const result = await controller.mergeSceneItems(keys);
+  let zoomAfter: Uint8Array | null = null;
+  if (zoomOut !== null) {
+    await settlePresentation(engine, controller);
+    zoomAfter = await engine.readPresentationPixelAtLayer(
+      Math.floor(center.x),
+      Math.floor(center.y),
+    );
+    setPixelAlignedMergeTestView(engine, center.x, center.y);
+    await settlePresentation(engine, controller);
+  }
+  const after = await engine.readPresentationLayerRect(presentationRect);
+  const actual = [...await engine.readLayerPixels(pixelRect)];
+  const singleFinalizeMaxDelta = Math.max(
+    ...actual.map((value, channel) => Math.abs(value - expectedSingleFinalize[channel])),
+  );
+  const perPassMaxDelta = Math.max(
+    ...actual.map((value, channel) => Math.abs(value - expectedPerPass[channel])),
+  );
+  const oracleSeparation = Math.max(
+    ...expectedSingleFinalize.map(
+      (value, channel) => Math.abs(value - expectedPerPass[channel]),
+    ),
+  );
+  const mergeDiff = comparePixels(before, after, presentationRect.width);
+  const undoReturned = await engine.undo();
+  await settlePresentation(engine);
+  const undoDiff = comparePixels(
+    before,
+    await engine.readPresentationLayerRect(presentationRect),
+    presentationRect.width,
+  );
+  const redoReturned = await engine.redo();
+  await settlePresentation(engine);
+  const redoRaw = await engine.readLayerPixels(pixelRect);
+  const redoByteDiff = comparePixels(new Uint8Array(actual), redoRaw).maxDelta;
+  const zoomDiff = zoomBefore && zoomAfter
+    ? comparePixels(zoomBefore, zoomAfter)
+    : null;
+  const checks = {
+    twelveTranslucentInputs: result.rasterInputCount === colors.length,
+    oneAtomicAction: engine.getHistoryState().actionCount === historyBefore.actionCount + 1,
+    exactPresentation: mergeDiff.maxDelta <= 4,
+    singleFinalizationMatches: singleFinalizeMaxDelta <= 1,
+    distinguishesPerPassQuantization: oracleSeparation >= 3
+      && perPassMaxDelta >= 2
+      && singleFinalizeMaxDelta < perPassMaxDelta,
+    undoExact: undoReturned && undoDiff.maxDelta <= 4,
+    redoByteExact: redoReturned && redoByteDiff === 0,
+    zoomPresentationExact: zoomDiff === null || zoomDiff.maxDelta <= 4,
+  };
+  return {
+    version: 1,
+    testCase: "raster",
+    passed: Object.values(checks).every(Boolean),
+    checks,
+    details: {
+      variant: "precision",
+      usesMultitileExtent,
+      usesMiddleActiveLayer,
+      tapSize,
+      zoomOut,
+      result,
+      actionSeed,
+      actual,
+      expectedSingleFinalize,
+      expectedPerPass,
+      singleFinalizeMaxDelta,
+      perPassMaxDelta,
+      oracleSeparation,
+      mergeDiff,
+      undoDiff,
+      redoByteDiff,
+      zoomDiff,
+    },
+  };
+}
+
+async function runRasterPrecisionCase(
+  engine: BrushEngine,
+  controller: MixedSceneController,
+): Promise<LayerMergeGpuTestReport> {
+  const filters = ["out-of-memory", "internal", "validation"] as const;
+  filters.forEach((filter) => engine.device.pushErrorScope(filter));
+  let report: LayerMergeGpuTestReport | null = null;
+  let operationError: unknown = null;
+  try {
+    report = await runRasterPrecisionCaseUnchecked(engine, controller);
+  } catch (error) {
+    operationError = error;
+  }
+  const validationError = await engine.device.popErrorScope();
+  const internalError = await engine.device.popErrorScope();
+  const outOfMemoryError = await engine.device.popErrorScope();
+  const scopedMessages = [
+    validationError ? `validation: ${validationError.message}` : null,
+    internalError ? `internal: ${internalError.message}` : null,
+    outOfMemoryError ? `out-of-memory: ${outOfMemoryError.message}` : null,
+  ].filter((message): message is string => message !== null);
+  if (operationError !== null) {
+    const message = operationError instanceof Error
+      ? operationError.message
+      : String(operationError);
+    throw new Error(
+      scopedMessages.length > 0 ? `${message}; WebGPU ${scopedMessages.join(" · ")}` : message,
+    );
+  }
+  if (!report) {
+    throw new Error("The precision case completed without a report.");
+  }
+  const runtimeGpuErrorsClean = scopedMessages.length === 0;
+  const checks = {
+    ...report.checks,
+    runtimeValidationClean: validationError === null,
+    runtimeInternalClean: internalError === null,
+    runtimeOutOfMemoryClean: outOfMemoryError === null,
+  };
+  return {
+    ...report,
+    passed: report.passed && runtimeGpuErrorsClean,
+    checks,
+    details: {
+      ...(report.details as Record<string, unknown>),
+      validationError: validationError?.message ?? null,
+      internalError: internalError?.message ?? null,
+      outOfMemoryError: outOfMemoryError?.message ?? null,
+    },
+  };
 }
 
 async function runRasterCase(
   engine: BrushEngine,
   controller: MixedSceneController,
 ): Promise<LayerMergeGpuTestReport> {
+  const search = new URLSearchParams(window.location.search);
+  const variant = search.get("layerMergeVariant")
+    ?? "advanced";
+  if (variant === "precision") {
+    return runRasterPrecisionCase(engine, controller);
+  }
+  const backgroundVisible = search.get("layerMergeBackground") !== "hidden";
+  if (!backgroundVisible) {
+    engine.setDocumentBackgroundVisibility(false);
+  }
+  const normalOnly = variant === "normal";
   const center = documentCenter(engine);
-  setLayerCompositeTestView(engine, center.x, center.y, 1);
+  setPixelAlignedMergeTestView(engine, center.x, center.y);
   await drawTap(engine, center.x, center.y, "#d95d39", 820, 0.45, 1_000);
+  await engine.setLayerContentOpacity(0, 0.63);
+  await engine.setRasterColorOverlayStyle({
+    enabled: true,
+    color: "#37a66f",
+    opacity: 58,
+  });
+  const rasterizeRect = captureRect(engine, center.x, center.y);
+  const rasterizeBefore = await readStablePresentation(engine, rasterizeRect);
+  const rasterizeHistoryBefore = engine.getHistoryState();
+  const rasterizeResult = await engine.rasterizeActiveRasterLayer();
+  const rasterizeAfter = await readStablePresentation(engine, rasterizeRect);
+  const rasterizeHistoryAfter = engine.getHistoryState();
+  const rasterizeDiff = comparePixels(
+    rasterizeBefore,
+    rasterizeAfter,
+    rasterizeRect.width,
+  );
+  const rasterizeEffectsAfter = {
+    contentOpacity: engine.layerStack.active.contentOpacity,
+    colorOverlayEnabled: engine.layerStack.active.colorOverlayStyle.enabled,
+  };
+  const rasterizeUndoReturned = await engine.undo();
+  const rasterizeAfterUndo = await readStablePresentation(engine, rasterizeRect);
+  const rasterizeUndoDiff = comparePixels(
+    rasterizeBefore,
+    rasterizeAfterUndo,
+    rasterizeRect.width,
+  );
+  const rasterizeEffectsBefore = {
+    contentOpacity: engine.layerStack.active.contentOpacity,
+    colorOverlayEnabled: engine.layerStack.active.colorOverlayStyle.enabled,
+  };
+  const rasterizeRedoReturned = await engine.redo();
+  const rasterizeAfterRedo = await readStablePresentation(engine, rasterizeRect);
+  const rasterizeRedoDiff = comparePixels(
+    rasterizeAfter,
+    rasterizeAfterRedo,
+    rasterizeRect.width,
+  );
   await engine.setLayerOpacity(0, 0.35);
-  await engine.setLayerBlendMode(0, "multiply");
+  await engine.setLayerBlendMode(0, normalOnly ? "normal" : "multiply");
   await engine.addLayer("Raster Screen");
   await drawTap(engine, center.x + 90, center.y - 40, "#3f88c5", 760, 0.8, 1_100);
   await engine.setLayerOpacity(1, 0.7);
-  await engine.setLayerBlendMode(1, "screen");
+  await engine.setLayerBlendMode(1, normalOnly ? "normal" : "screen");
   await engine.setLayerReference(1, true);
   const keys = engine.getMixedSceneSnapshot()!.items.map((item) => item.key);
   const rect = captureRect(engine, center.x, center.y);
@@ -286,7 +628,7 @@ async function runRasterCase(
   const result = await controller.mergeSceneItems(keys);
   const after = await engine.readPresentationLayerRect(rect);
   const mergedStats = engine.getStats();
-  const mergeDiff = comparePixels(before, after);
+  const mergeDiff = comparePixels(before, after, rect.width);
   const undoReturned = await engine.undo();
   await settlePresentation(engine);
   const afterUndo = await engine.readPresentationLayerRect(rect);
@@ -298,6 +640,21 @@ async function runRasterCase(
   const redoDiff = comparePixels(after, afterRedo);
   const output = mergedStats.layers[0];
   const checks = {
+    rasterizeOneAtomicAction:
+      rasterizeHistoryBefore.actionCount + 1
+        === rasterizeHistoryAfter.actionCount
+        && rasterizeHistoryBefore.cursor + 1 === rasterizeHistoryAfter.cursor,
+    rasterizeBakedEffects: rasterizeResult?.bakedEffects === true,
+    rasterizeExactPresentation: rasterizeDiff.maxDelta <= 4,
+    rasterizeNormalizedEffects:
+      rasterizeEffectsAfter.contentOpacity === 1
+        && !rasterizeEffectsAfter.colorOverlayEnabled,
+    rasterizeUndoExact:
+      rasterizeUndoReturned
+        && rasterizeUndoDiff.maxDelta <= 4
+        && Math.abs(rasterizeEffectsBefore.contentOpacity - 0.63) <= 1e-6
+        && rasterizeEffectsBefore.colorOverlayEnabled,
+    rasterizeRedoExact: rasterizeRedoReturned && rasterizeRedoDiff.maxDelta <= 4,
     oneAtomicAction: engine.getHistoryState().actionCount === historyBefore.actionCount + 1,
     twoRasterInputs: result.rasterInputCount === 2 && result.vectorInputCount === 0,
     exactPresentation: mergeDiff.maxDelta <= 4,
@@ -313,7 +670,22 @@ async function runRasterCase(
     testCase: "raster",
     passed: Object.values(checks).every(Boolean),
     checks,
-    details: { result, rect, mergeDiff, undoDiff, redoDiff },
+    details: {
+      rasterizeResult,
+      rasterizeRect,
+      rasterizeDiff,
+      rasterizeUndoDiff,
+      rasterizeRedoDiff,
+      variant,
+      backgroundVisible,
+      result,
+      rect,
+      centerBefore: rgba8At(before, rect.width, Math.floor(rect.width / 2), Math.floor(rect.height / 2)),
+      centerAfter: rgba8At(after, rect.width, Math.floor(rect.width / 2), Math.floor(rect.height / 2)),
+      mergeDiff,
+      undoDiff,
+      redoDiff,
+    },
   };
 }
 
@@ -325,7 +697,7 @@ async function runClippingCase(
     ?? "single";
   const multiUnit = variant === "multi";
   const center = documentCenter(engine);
-  setLayerCompositeTestView(engine, center.x, center.y, 1);
+  setPixelAlignedMergeTestView(engine, center.x, center.y);
   await drawTap(engine, center.x, center.y, "#4b8fd8", 650, 0, 2_000);
   await engine.setLayerOpacity(0, 0.83);
   await engine.setLayerBlendMode(0, "hue");
@@ -429,10 +801,19 @@ async function runMixedCase(
 ): Promise<LayerMergeGpuTestReport> {
   const variant = new URLSearchParams(window.location.search).get("layerMergeVariant")
     ?? "extreme";
-  const includeText = variant !== "svg";
-  const includeSvg = variant !== "text";
-  const includeEffects = variant === "extreme" || variant === "effects";
-  const includeRaster = variant === "extreme"
+  const includeText = variant !== "svg" && !variant.endsWith("-svg");
+  const includeSvg = variant !== "text" && !variant.endsWith("-text");
+  const includeEffects = variant.startsWith("extreme")
+    || variant === "effects"
+    || variant.startsWith("outline")
+    || variant.startsWith("shadow");
+  const includeOutline = includeEffects
+    && !variant.startsWith("extreme-shadow")
+    && !variant.startsWith("shadow");
+  const includeShadow = includeEffects
+    && !variant.startsWith("extreme-outline")
+    && !variant.startsWith("outline");
+  const includeRaster = variant.startsWith("extreme")
     || variant === "raster"
     || variant === "rasteronly"
     || variant === "rasternormal"
@@ -444,13 +825,17 @@ async function runMixedCase(
     || variant === "rasteropaque"
     || variant === "rastereffect";
   const center = documentCenter(engine);
-  setLayerCompositeTestView(engine, center.x, center.y, 1);
+  setPixelAlignedMergeTestView(engine, center.x, center.y);
   if (includeRaster) {
     await drawTap(engine, center.x - 130, center.y + 40, "#264653", 900, 0.4, 3_000);
-    await engine.setLayerOpacity(0, variant === "rasteropaque" ? 1 : 0.72);
+    await engine.setLayerOpacity(
+      0,
+      variant === "rasteropaque" || variant === "extreme-opaque" ? 1 : 0.72,
+    );
     await engine.setLayerBlendMode(
       0,
       variant === "rasternormal"
+        || variant === "extreme-normal"
         || variant === "rasterblendnormal"
         || variant === "rastereffect"
         ? "normal"
@@ -469,12 +854,13 @@ async function runMixedCase(
   await engine.setLayerReference(0, true);
 
   if (includeText) {
+    await controller.prepareTextCreationResources("Anton");
     const textNode = await engine.addVectorTextNode({
       text: "Merge Åg",
       fontFamily: "Anton",
       fontSize: 260,
       color: "#e76f51",
-      outlineWidth: includeEffects ? 18 : 0,
+      outlineWidth: includeOutline ? 18 : 0,
       outlineColor: "#fff3b0",
       outlineJoin: "round",
       blockShadowEnabled: false,
@@ -483,7 +869,7 @@ async function runMixedCase(
       blockShadowOffset: 0,
       blockShadowAngle: 0,
       blockShadowOutlineWidth: 0,
-      singleShadowEnabled: includeEffects,
+      singleShadowEnabled: includeShadow,
       singleShadowColor: "#000000",
       singleShadowOpacity: 0.45,
       singleShadowOffset: 24,
@@ -516,10 +902,10 @@ async function runMixedCase(
       y: center.y + 30,
       scale: 2.2,
       rotation: -0.22,
-      outlineWidth: includeEffects ? 12 : 0,
+      outlineWidth: includeOutline ? 12 : 0,
       outlineColor: "#f8f9fa",
       outlineJoin: "round",
-      singleShadowEnabled: includeEffects,
+      singleShadowEnabled: includeShadow,
       singleShadowColor: "#000000",
       singleShadowOpacity: 0.4,
       singleShadowOffset: 20,
@@ -541,12 +927,35 @@ async function runMixedCase(
     ? await engine.readLayerPixels(rect)
     : null;
   const before = await readStablePresentation(engine, rect, controller);
+  const liveVectorRunGeometry = [...engine.vectorTextRunTextures.entries()].map(
+    ([key, resources]) => ({
+      key,
+      textureBounds: { ...resources.textureBounds },
+      lastBounds: resources.lastBounds ? { ...resources.lastBounds } : null,
+    }),
+  );
+  const liveVectorScratch = {
+    width: engine.vectorTextGpuScratchWidth,
+    height: engine.vectorTextGpuScratchHeight,
+  };
   const historyBefore = engine.getHistoryState();
   const result = await controller.mergeSceneItems(keys);
   const rawAfter = rawBefore ? await engine.readLayerPixels(rect) : null;
   const after = await engine.readPresentationLayerRect(rect);
   const mergeDiff = comparePixels(before, after, rect.width);
   const merged = engine.getStats().layers[0];
+  const maximumSample = mergeDiff.maximumSample;
+  const maximumDocumentPixel = maximumSample
+    ? { x: rect.x + maximumSample.x, y: rect.y + maximumSample.y }
+    : null;
+  const mergedRawAtMaximum = maximumDocumentPixel
+    ? [...await engine.readLayerPixels({
+      x: maximumDocumentPixel.x,
+      y: maximumDocumentPixel.y,
+      width: 1,
+      height: 1,
+    })]
+    : null;
   const undoReturned = await engine.undo();
   await settlePresentation(engine, controller);
   const undoSnapshot = engine.getMixedSceneSnapshot();
@@ -579,12 +988,33 @@ async function runMixedCase(
       result,
       rect,
       mergeDiff,
+      maximumPresentationPixel: maximumSample
+        ? {
+          documentPixel: maximumDocumentPixel,
+          before: rgba8At(before, rect.width, maximumSample.x, maximumSample.y),
+          after: rgba8At(after, rect.width, maximumSample.x, maximumSample.y),
+          mergedRaw: mergedRawAtMaximum,
+        }
+        : null,
+      mergedContentBounds: engine.layerStack.active.contentBounds,
       undoDiff,
       redoDiff,
       rawOpacityDiff: rawBefore && rawAfter
-        ? compareFloat16Scale(rawBefore, rawAfter, variant === "rasteropaque" ? 1 : 0.72)
+        ? engine.layerFormat === "rgba8unorm"
+          ? compareUnorm8Scale(
+            rawBefore,
+            rawAfter,
+            variant === "rasteropaque" ? 1 : 0.72,
+          )
+          : compareFloat16Scale(
+            rawBefore,
+            rawAfter,
+            variant === "rasteropaque" ? 1 : 0.72,
+          )
         : null,
       presentationPathBefore,
+      liveVectorRunGeometry,
+      liveVectorScratch,
       keys,
     },
   };
@@ -683,7 +1113,7 @@ async function runRejectCase(
   controller: MixedSceneController,
 ): Promise<LayerMergeGpuTestReport> {
   const center = documentCenter(engine);
-  setLayerCompositeTestView(engine, center.x, center.y, 1);
+  setPixelAlignedMergeTestView(engine, center.x, center.y);
   await drawTap(engine, center.x, center.y, "#26734d", 980, 0.55, 4_000);
   await engine.setLayerOpacity(0, 0.88);
 
@@ -734,7 +1164,7 @@ async function runRejectCase(
     rect.width,
   );
   const checks = {
-    rejectedForExternalBackdrop: rejectionMessage.includes("backdrop esterno"),
+    rejectedForExternalBackdrop: rejectionMessage.includes("external backdrop"),
     presentationUntouched: presentationDiff.maxDelta === 0,
     structureUntouched: JSON.stringify(afterStructure) === JSON.stringify(beforeStructure),
     historyUntouched: afterHistory.actionCount === beforeHistory.actionCount

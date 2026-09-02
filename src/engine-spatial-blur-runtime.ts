@@ -9,6 +9,7 @@ import { commitHistoryActionAtomically } from "./engine-history-runtime";
 import type { RasterFilterHistoryAction } from "./engine-history-types";
 import { invalidateActiveLayerBake } from "./engine-layer-runtime";
 import type { DirtyRect } from "./engine-stroke-types";
+import type { LayerFormat } from "./engine-types";
 import { publishMixedScene } from "./engine-vector-text-runtime";
 import {
   DESTRUCTIVE_GAUSSIAN_BLUR_EDGE_MODE,
@@ -20,6 +21,7 @@ import {
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import type { MemoryRequest, MemoryReservation } from "./memory-governor-core";
 import { tileMaskCoveringRect } from "./raster-transform-math";
+import { rgba8HighFrequencyQuantizationShader } from "./rgba8-high-frequency-quantization";
 import {
   SPATIAL_BLUR_MAX_PIN_COUNT,
   SPATIAL_BLUR_RADIUS_QUANTIZATION,
@@ -35,9 +37,11 @@ import {
 } from "./spatial-blur-core";
 
 export const DESTRUCTIVE_SPATIAL_BLUR_RUNTIME_BUILD =
-  "destructive-spatial-blur-webgpu-v2-uniform-document-shared-gaussian-kernel-quarter-pixel-field-fast-path" as const;
+  "destructive-spatial-blur-webgpu-v3-dual-storage-linear-packed-unorm16-high-frequency-output" as const;
 export const DESTRUCTIVE_SPATIAL_BLUR_PRECISION =
   "rgba16float-f32-accumulation" as const;
+export const DESTRUCTIVE_SPATIAL_BLUR_RGBA8_PRECISION =
+  "rgba8unorm-linear-rgba16unorm-packed-two-pass-f32-high-frequency-output" as const;
 export const DESTRUCTIVE_SPATIAL_BLUR_FIELD_STRATEGY =
   "inverse-distance-quarter-pixel-radius" as const;
 export const DESTRUCTIVE_SPATIAL_BLUR_RADIUS_QUANTIZATION =
@@ -54,12 +58,18 @@ const WEIGHT_RADIUS_COUNT =
 const WEIGHT_ROW_LENGTH = DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS + 1;
 const WEIGHT_TABLE_FLOATS = WEIGHT_RADIUS_COUNT * WEIGHT_ROW_LENGTH;
 const WEIGHT_TABLE_BYTES = WEIGHT_TABLE_FLOATS * 4;
-const PARAMETER_HEADER_WORDS = 20;
+const PARAMETER_HEADER_WORDS = 24;
 const PARAMETER_WORDS = PARAMETER_HEADER_WORDS + SPATIAL_BLUR_MAX_PIN_COUNT * 4;
 const PARAMETER_BYTES = PARAMETER_WORDS * 4;
 const PARAMETER_CAPACITY = 64;
 const BYTES_PER_RGBA16F_PIXEL = 8;
+const BYTES_PER_RGBA8_PIXEL = 4;
+const BYTES_PER_PACKED_RGBA16_UNORM_PIXEL = 8;
 const BYTES_PER_R32U_PIXEL = 4;
+
+function bytesPerLayerPixel(format: LayerFormat): number {
+  return format === "rgba8unorm" ? BYTES_PER_RGBA8_PIXEL : BYTES_PER_RGBA16F_PIXEL;
+}
 
 interface SpatialBlurSharedResources {
   readonly fieldBindGroupLayout: GPUBindGroupLayout;
@@ -69,6 +79,7 @@ interface SpatialBlurSharedResources {
   readonly horizontalPipeline: GPUComputePipeline;
   readonly verticalPipeline: GPUComputePipeline;
   readonly weightBuffer: GPUBuffer;
+  readonly outputFormat: LayerFormat;
 }
 
 interface SpatialBlurJob {
@@ -112,6 +123,8 @@ export interface ActiveRasterSpatialBlurSession {
   readonly horizontalBindGroup: GPUBindGroup;
   readonly verticalBindGroup: GPUBindGroup;
   readonly shared: SpatialBlurSharedResources;
+  readonly quantizationSeed: number;
+  readonly storedEncodedSrgb: boolean;
   readonly memoryBytes: number;
   pins: readonly SpatialBlurPin[];
   resultBounds: DirtyRect;
@@ -130,7 +143,10 @@ export type RasterSpatialBlurEngineHost = BrushEngine & {
   activeRasterSpatialBlurSession: ActiveRasterSpatialBlurSession | null;
 };
 
-const sharedByDevice = new WeakMap<GPUDevice, Promise<SpatialBlurSharedResources>>();
+const sharedByDevice = new WeakMap<
+  GPUDevice,
+  Map<LayerFormat, Promise<SpatialBlurSharedResources>>
+>();
 
 function parameterShaderSource(): string {
   return /* wgsl */ `
@@ -140,6 +156,7 @@ struct SpatialBlurParameters {
   targetOriginAndSize: vec4<u32>,
   supportIntermediateAndPins: vec4<u32>,
   fieldAndDocument: vec4<f32>,
+  quantizationAndStorage: vec4<u32>,
   pins: array<vec4<f32>, ${SPATIAL_BLUR_MAX_PIN_COUNT}>,
 };
 
@@ -193,7 +210,8 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
 `;
 }
 
-function commonFilterShaderSource(): string {
+function commonFilterShaderSource(documentFormat: LayerFormat): string {
+  const rgba8 = documentFormat === "rgba8unorm";
   return `${parameterShaderSource()}
 struct GaussianWeightTable {
   values: array<f32>,
@@ -227,20 +245,74 @@ fn radiusIndexAt(fieldPosition: vec2<i32>) -> u32 {
 }
 
 fn packFilterTexel(value: vec4<f32>) -> vec2<u32> {
-  return vec2<u32>(pack2x16float(value.xy), pack2x16float(value.zw));
+  return vec2<u32>(
+    ${rgba8 ? "pack2x16unorm" : "pack2x16float"}(value.xy),
+    ${rgba8 ? "pack2x16unorm" : "pack2x16float"}(value.zw)
+  );
 }
 
 fn unpackFilterTexel(value: vec2<u32>) -> vec4<f32> {
-  return vec4<f32>(unpack2x16float(value.x), unpack2x16float(value.y));
+  return vec4<f32>(
+    ${rgba8 ? "unpack2x16unorm" : "unpack2x16float"}(value.x),
+    ${rgba8 ? "unpack2x16unorm" : "unpack2x16float"}(value.y)
+  );
 }
+
+${rgba8 ? /* wgsl */ `
+fn spatialBlurSrgbToLinearChannel(value: f32) -> f32 {
+  if (value <= 0.04045) { return value / 12.92; }
+  return pow((value + 0.055) / 1.055, 2.4);
+}
+
+fn spatialBlurLinearToSrgbChannel(value: f32) -> f32 {
+  let bounded = clamp(value, 0.0, 1.0);
+  if (bounded <= 0.0031308) { return bounded * 12.92; }
+  return 1.055 * pow(bounded, 1.0 / 2.4) - 0.055;
+}
+
+fn spatialBlurEncodedPremultipliedToLinear(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let straight = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  let linear = vec3<f32>(
+    spatialBlurSrgbToLinearChannel(straight.r),
+    spatialBlurSrgbToLinearChannel(straight.g),
+    spatialBlurSrgbToLinearChannel(straight.b)
+  );
+  return vec4<f32>(linear * alpha, alpha);
+}
+
+fn spatialBlurLinearPremultipliedToEncoded(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let straight = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  let encoded = vec3<f32>(
+    spatialBlurLinearToSrgbChannel(straight.r),
+    spatialBlurLinearToSrgbChannel(straight.g),
+    spatialBlurLinearToSrgbChannel(straight.b)
+  );
+  return vec4<f32>(encoded * alpha, alpha);
+}
+
+fn spatialBlurStorageToWorking(value: vec4<f32>) -> vec4<f32> {
+  if (parameters.quantizationAndStorage.y == 0u) { return value; }
+  return spatialBlurEncodedPremultipliedToLinear(value);
+}
+
+fn spatialBlurWorkingToStorage(value: vec4<f32>) -> vec4<f32> {
+  if (parameters.quantizationAndStorage.y == 0u) { return value; }
+  return spatialBlurLinearPremultipliedToEncoded(value);
+}
+` : ""}
 `;
 }
 
-function horizontalShader(): string {
-  return `${commonFilterShaderSource()}
+function horizontalShader(documentFormat: LayerFormat): string {
+  const rgba8 = documentFormat === "rgba8unorm";
+  return `${commonFilterShaderSource(documentFormat)}
 @group(0) @binding(1) var immutableSource: texture_2d<f32>;
 @group(0) @binding(2) var intermediateOutput:
-  texture_storage_2d<rgba16float, write>;
+  texture_storage_2d<${rgba8 ? "rg32uint" : "rgba16float"}, write>;
 
 var<workgroup> filterCache: array<vec2<u32>, ${FILTER_CACHE_LENGTH}>;
 var<workgroup> groupSupport: atomic<u32>;
@@ -258,7 +330,8 @@ fn sourceTexel(documentPosition: vec2<i32>) -> vec4<f32> {
   if (any(local < vec2<i32>(0)) || any(local >= size)) {
     return vec4<f32>(0.0);
   }
-  return textureLoad(immutableSource, local, 0);
+  let stored = textureLoad(immutableSource, local, 0);
+  return ${rgba8 ? "spatialBlurStorageToWorking(stored)" : "stored"};
 }
 
 @compute @workgroup_size(${FILTER_WORKGROUP_SIZE})
@@ -303,16 +376,25 @@ fn main(
     result += unpackFilterTexel(filterCache[center - offset]) * weight;
     result += unpackFilterTexel(filterCache[center + offset]) * weight;
   }
-  textureStore(intermediateOutput, vec2<i32>(i32(outputX), i32(groupId.y)), result);
+  ${rgba8 ? `
+  let packedResult = packFilterTexel(result);
+  textureStore(
+    intermediateOutput,
+    vec2<i32>(i32(outputX), i32(groupId.y)),
+    vec4<u32>(packedResult, 0u, 0u)
+  );` : `
+  textureStore(intermediateOutput, vec2<i32>(i32(outputX), i32(groupId.y)), result);`}
 }
 `;
 }
 
-function verticalShader(): string {
-  return `${commonFilterShaderSource()}
-@group(0) @binding(1) var intermediateInput: texture_2d<f32>;
+function verticalShader(documentFormat: LayerFormat): string {
+  const rgba8 = documentFormat === "rgba8unorm";
+  return `${commonFilterShaderSource(documentFormat)}
+${rgba8 ? rgba8HighFrequencyQuantizationShader : ""}
+@group(0) @binding(1) var intermediateInput: texture_2d<${rgba8 ? "u32" : "f32"}>;
 @group(0) @binding(2) var authoritativeOutput:
-  texture_storage_2d<rgba16float, write>;
+  texture_storage_2d<${documentFormat}, write>;
 
 var<workgroup> filterCache: array<vec2<u32>, ${FILTER_CACHE_LENGTH}>;
 var<workgroup> groupSupport: atomic<u32>;
@@ -322,7 +404,9 @@ fn intermediateTexel(position: vec2<i32>) -> vec4<f32> {
   if (any(position < vec2<i32>(0)) || any(position >= size)) {
     return vec4<f32>(0.0);
   }
-  return textureLoad(intermediateInput, position, 0);
+  ${rgba8 ? `
+  return unpackFilterTexel(textureLoad(intermediateInput, position, 0).xy);` : `
+  return textureLoad(intermediateInput, position, 0);`}
 }
 
 @compute @workgroup_size(${FILTER_WORKGROUP_SIZE})
@@ -374,7 +458,15 @@ fn main(
   }
   let documentPixel = vec2<i32>(parameters.targetOriginAndSize.xy)
     + vec2<i32>(i32(localX), i32(localY));
-  textureStore(authoritativeOutput, documentPixel, result);
+  ${rgba8 ? `
+  let encodedPremultiplied = spatialBlurWorkingToStorage(result);
+  let storedResult = quantizeRgba8HighFrequencyAdjacent(
+    encodedPremultiplied,
+    vec2<u32>(documentPixel),
+    parameters.quantizationAndStorage.x
+  );
+  textureStore(authoritativeOutput, documentPixel, storedResult);` : `
+  textureStore(authoritativeOutput, documentPixel, result);`}
 }
 `;
 }
@@ -392,7 +484,10 @@ function buildWeightTable(): Float32Array {
   return table;
 }
 
-async function createSharedResources(device: GPUDevice): Promise<SpatialBlurSharedResources> {
+async function createSharedResources(
+  device: GPUDevice,
+  outputFormat: LayerFormat,
+): Promise<SpatialBlurSharedResources> {
   const availableWorkgroupStorage = Number(device.limits.maxComputeWorkgroupStorageSize);
   if (Number.isFinite(availableWorkgroupStorage) && availableWorkgroupStorage < FILTER_CACHE_BYTES) {
     throw new Error(
@@ -407,18 +502,21 @@ async function createSharedResources(device: GPUDevice): Promise<SpatialBlurShar
       + `the GPU exposes ${availableStorageBinding}.`,
     );
   }
-  return runGpuAllocationTransaction(device, "Pipeline Point Blur RGBA16F", async (transaction) => {
+  return runGpuAllocationTransaction(
+    device,
+    `Pipeline Point Blur ${outputFormat}`,
+    async (transaction) => {
     const fieldModule = device.createShaderModule({
       label: "Point Blur radius field WGSL",
       code: fieldShader(),
     });
     const horizontalModule = device.createShaderModule({
       label: "Point Blur horizontal Gaussian WGSL",
-      code: horizontalShader(),
+      code: horizontalShader(outputFormat),
     });
     const verticalModule = device.createShaderModule({
       label: "Point Blur vertical Gaussian WGSL",
-      code: verticalShader(),
+      code: verticalShader(outputFormat),
     });
     await Promise.all([
       assertShaderCompiled(fieldModule, "Point Blur radius field"),
@@ -469,12 +567,17 @@ async function createSharedResources(device: GPUDevice): Promise<SpatialBlurShar
         {
           binding: 1,
           visibility: GPUShaderStage.COMPUTE,
-          texture: { sampleType: "unfilterable-float" },
+          texture: {
+            sampleType: outputFormat === "rgba8unorm" ? "float" : "unfilterable-float",
+          },
         },
         {
           binding: 2,
           visibility: GPUShaderStage.COMPUTE,
-          storageTexture: { access: "write-only", format: "rgba16float" },
+          storageTexture: {
+            access: "write-only",
+            format: outputFormat === "rgba8unorm" ? "rg32uint" : "rgba16float",
+          },
         },
       ),
     });
@@ -484,12 +587,14 @@ async function createSharedResources(device: GPUDevice): Promise<SpatialBlurShar
         {
           binding: 1,
           visibility: GPUShaderStage.COMPUTE,
-          texture: { sampleType: "unfilterable-float" },
+          texture: {
+            sampleType: outputFormat === "rgba8unorm" ? "uint" : "unfilterable-float",
+          },
         },
         {
           binding: 2,
           visibility: GPUShaderStage.COMPUTE,
-          storageTexture: { access: "write-only", format: "rgba16float" },
+          storageTexture: { access: "write-only", format: outputFormat },
         },
       ),
     });
@@ -520,27 +625,38 @@ async function createSharedResources(device: GPUDevice): Promise<SpatialBlurShar
         compute: { module: verticalModule, entryPoint: "main" },
       }),
       weightBuffer,
+      outputFormat,
     };
-  });
+    },
+  );
 }
 
-async function requireSharedResources(device: GPUDevice): Promise<SpatialBlurSharedResources> {
-  let promise = sharedByDevice.get(device);
+async function requireSharedResources(
+  device: GPUDevice,
+  outputFormat: LayerFormat,
+): Promise<SpatialBlurSharedResources> {
+  let variants = sharedByDevice.get(device);
+  if (!variants) {
+    variants = new Map();
+    sharedByDevice.set(device, variants);
+  }
+  let promise = variants.get(outputFormat);
   if (!promise) {
-    promise = createSharedResources(device);
-    sharedByDevice.set(device, promise);
+    promise = createSharedResources(device, outputFormat);
+    variants.set(outputFormat, promise);
   }
   try {
     return await promise;
   } catch (error) {
-    sharedByDevice.delete(device);
+    variants.delete(outputFormat);
+    if (variants.size === 0) sharedByDevice.delete(device);
     throw error;
   }
 }
 
 export async function warmRasterSpatialBlurPipelines(engine: BrushEngine): Promise<void> {
   if (!engine.initialized) return;
-  await requireSharedResources(engine.device);
+  await requireSharedResources(engine.device, engine.layerFormat);
 }
 
 function errorFrom(error: unknown): Error {
@@ -625,6 +741,10 @@ function writeJobParameters(
   f32[word + 17] = documentWidth;
   f32[word + 18] = documentHeight;
   f32[word + 19] = DESTRUCTIVE_SPATIAL_BLUR_RADIUS_QUANTIZATION;
+  u32[word + 20] = session.quantizationSeed;
+  u32[word + 21] = session.storedEncodedSrgb ? 1 : 0;
+  u32[word + 22] = 0;
+  u32[word + 23] = 0;
   for (let pinIndex = 0; pinIndex < SPATIAL_BLUR_MAX_PIN_COUNT; pinIndex += 1) {
     const base = word + PARAMETER_HEADER_WORDS + pinIndex * 4;
     const pin = pins[pinIndex];
@@ -910,10 +1030,6 @@ export async function beginRasterSpatialBlur(
   if (!record.hasContent || !record.contentBounds) {
     throw new Error("The selected raster layer is empty.");
   }
-  if (engine.layerFormat !== "rgba16float") {
-    throw new Error("Point Blur requires an RGBA16F document.");
-  }
-
   engine.cancelLayerColdCompressionIdle();
   engine.historyBusy = true;
   engine.publishHistoryState();
@@ -945,7 +1061,7 @@ export async function beginRasterSpatialBlur(
       engine.documentHeight,
     ) as DirtyRect;
     const sourceTileMask = record.storageTileMask.slice();
-    const shared = await requireSharedResources(engine.device);
+    const shared = await requireSharedResources(engine.device, engine.layerFormat);
     const uniformAlignment = Number(engine.device.limits.minUniformBufferOffsetAlignment) || 256;
     const parameterStride = Math.ceil(PARAMETER_BYTES / uniformAlignment) * uniformAlignment;
     const workspaceHeight = Math.min(
@@ -968,10 +1084,12 @@ export async function beginRasterSpatialBlur(
     ].some((value) => value > maximumDispatch)) {
       throw new Error("Point Blur: the GPU does not support the required dispatch size.");
     }
-    const memoryBytes = (
-      scratchBounds.width * scratchBounds.height
+    const memoryBytes = scratchBounds.width * scratchBounds.height
+      * bytesPerLayerPixel(engine.layerFormat)
       + scratchBounds.width * workspaceHeight
-    ) * BYTES_PER_RGBA16F_PIXEL
+      * (engine.layerFormat === "rgba8unorm"
+        ? BYTES_PER_PACKED_RGBA16_UNORM_PIXEL
+        : BYTES_PER_RGBA16F_PIXEL)
       + scratchBounds.width * workspaceHeight * BYTES_PER_R32U_PIXEL
       + parameterStride * PARAMETER_CAPACITY;
     reservation = await reserveSessionMemory(engine, memoryBytes);
@@ -986,7 +1104,7 @@ export async function beginRasterSpatialBlur(
             height: scratchBounds.height,
             depthOrArrayLayers: 1,
           },
-          format: "rgba16float",
+          format: engine.layerFormat,
           usage: GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING,
         });
         transaction.deferRollback(() => sourceTexture.destroy());
@@ -998,7 +1116,7 @@ export async function beginRasterSpatialBlur(
             height: workspaceHeight,
             depthOrArrayLayers: 1,
           },
-          format: "rgba16float",
+          format: engine.layerFormat === "rgba8unorm" ? "rg32uint" : "rgba16float",
           usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
         });
         transaction.deferRollback(() => intermediateTexture.destroy());
@@ -1076,6 +1194,9 @@ export async function beginRasterSpatialBlur(
           horizontalBindGroup,
           verticalBindGroup,
           shared,
+          quantizationSeed: engine.nextHistoryActionId >>> 0,
+          storedEncodedSrgb:
+            engine.documentStorageColorSpace === "encoded-srgb-premultiplied",
           memoryBytes,
           pins,
           resultBounds: initialResultBounds,
@@ -1264,7 +1385,9 @@ export async function commitRasterSpatialBlur(
       radiusQuantization: DESTRUCTIVE_SPATIAL_BLUR_RADIUS_QUANTIZATION,
       fieldStrategy: DESTRUCTIVE_SPATIAL_BLUR_FIELD_STRATEGY,
       kernelStrategy: "shared-gaussian-kernel-v1",
-      precision: DESTRUCTIVE_SPATIAL_BLUR_PRECISION,
+      precision: engine.layerFormat === "rgba8unorm"
+        ? DESTRUCTIVE_SPATIAL_BLUR_RGBA8_PRECISION
+        : DESTRUCTIVE_SPATIAL_BLUR_PRECISION,
       edgeMode: DESTRUCTIVE_GAUSSIAN_BLUR_EDGE_MODE,
       seed: historySeed,
       baseBounds: { ...session.resultBounds },

@@ -101,6 +101,7 @@ import type { EditorExtension, EditorExtensionHost } from "./editor-extension-co
 import {
   type BrushSettings,
   type HistoryState,
+  type PaintDabProfile,
 } from "./engine-types";
 import { DOCUMENT_HEIGHT, DOCUMENT_MAX_EDGE, DOCUMENT_WIDTH } from "./engine-limits";
 import { LayerThumbnailController } from "./layer-thumbnail-controller";
@@ -635,7 +636,60 @@ let runtimeStatsController: RuntimeStatsController | null = null;
 const editorExtensionBootstrap = window.__editorExtensionBootstrap;
 let projectEditorBootstrap: ProjectEditorBootstrap | undefined =
   window.__projectEditorBootstrap;
+const preloadedProjectForPixelProfile = !editorExtensionBootstrap
+  && projectEditorBootstrap?.preloadedProject
+  ? await projectEditorBootstrap.preloadedProject.catch(() => null)
+  : null;
+const preloadedDocumentForPixelProfile =
+  preloadedProjectForPixelProfile?.manifest.snapshot.document ?? null;
 const editorExtensionEngineOptions = editorExtensionBootstrap?.engineOptions ?? {};
+const preloadedLegacyLinearRgba8 = !editorExtensionBootstrap
+  && preloadedDocumentForPixelProfile?.layerFormat === "rgba8unorm"
+  && preloadedDocumentForPixelProfile.colorSpace === "linear-premultiplied";
+const preloadedLinearDocument = !editorExtensionBootstrap
+  && preloadedDocumentForPixelProfile?.colorSpace === "linear-premultiplied";
+const effectiveLayerFormat = editorExtensionBootstrap
+  ? editorExtensionEngineOptions.layerFormat
+  : preloadedLegacyLinearRgba8
+    ? "rgba16float"
+    : preloadedDocumentForPixelProfile?.layerFormat ?? "rgba8unorm";
+const effectivePresentationFormat = editorExtensionBootstrap
+  ? editorExtensionEngineOptions.presentationFormat
+  : "rgba8unorm";
+const effectiveDisplayCompositingColorSpace = editorExtensionBootstrap
+  ? editorExtensionEngineOptions.displayCompositingColorSpace
+  : preloadedLinearDocument
+    ? "linear-light"
+    : "stored-encoded-srgb";
+const effectivePaintDabProfile: PaintDabProfile | undefined = editorExtensionBootstrap
+  ? editorExtensionEngineOptions.paintDabProfile
+  : effectiveLayerFormat === "rgba8unorm"
+      && effectiveDisplayCompositingColorSpace === "stored-encoded-srgb"
+    ? "encoded-srgb-rgba8"
+    : undefined;
+const documentPixelWritesRestricted = !editorExtensionBootstrap
+  && effectiveLayerFormat === "rgba8unorm"
+  && effectiveDisplayCompositingColorSpace === "stored-encoded-srgb";
+const canvasToolSupportedByDocumentProfile = (tool: CanvasInputTool): boolean =>
+  !documentPixelWritesRestricted
+  || tool === "paint"
+  || tool === "erase"
+  || tool === "blend"
+  || tool === "clone"
+  || tool === "fill"
+  || tool === "pan"
+  || tool === "shapes"
+  || tool === "selection"
+  || tool === "transform"
+  || tool === "warp"
+  || tool === "perspective"
+  || tool === "liquify";
+
+function reportDocumentPixelWriterPaused(label = "This pixel tool"): void {
+  statusElement.textContent =
+    `${label} is paused while its RGBA8 sRGB renderer is being validated.`;
+  statusElement.className = "status app-status";
+}
 let editorExtension: EditorExtension | null = null;
 let projectSessionController: ProjectSessionController | null = null;
 let documentSwitchInProgress = false;
@@ -1014,6 +1068,12 @@ const engine = new BrushEngine(canvas, {
     }
   },
 }, tipPreviewCanvas, {
+  layerFormat: effectiveLayerFormat,
+  presentationFormat: effectivePresentationFormat,
+  paintDabProfile: effectivePaintDabProfile,
+  adaptiveSpacingMaxExtraPercentPoints:
+    editorExtensionEngineOptions.adaptiveSpacingMaxExtraPercentPoints,
+  displayCompositingColorSpace: effectiveDisplayCompositingColorSpace,
   bevelBoundingFieldEnabled:
     editorExtensionEngineOptions.bevelBoundingFieldEnabled ?? bevelBoundingFieldEnabled,
   startupProgressPresentationYieldEnabled: canvasStartupProgressObserved,
@@ -1070,6 +1130,19 @@ projectSessionController = new ProjectSessionController({
         || target.documentHeight > maximumTextureEdge
       ) {
         throw new Error("The selected canvas exceeds this GPU device's texture limit.");
+      }
+      const targetDocument = target.project?.manifest.snapshot.document;
+      const targetLayerFormat = targetDocument?.layerFormat ?? "rgba8unorm";
+      const targetColorSpace = targetDocument?.colorSpace
+        ?? "encoded-srgb-premultiplied";
+      if (
+        targetLayerFormat !== engine.layerFormat
+        || targetColorSpace !== engine.documentStorageColorSpace
+      ) {
+        throw new Error(
+          "This project uses a different document pixel profile. Reload the target "
+          + "from Home before opening it; the current project was not changed.",
+        );
       }
       await engine.waitForIdle();
     },
@@ -1199,13 +1272,13 @@ const historyControlsController = new HistoryControlsController({
     brushQuickControlsController?.setLocked(locked);
     cloneToolController?.notifyInteractionState();
     const toolSelectionLocked = canvasToolSelectionLocked();
-    for (const button of [
-      mobilePaintButton,
-      mobileEraserButton,
-      mobileBlendButton,
-      mobilePanButton,
-    ]) {
-      button.disabled = toolSelectionLocked;
+    for (const [button, tool] of [
+      [mobilePaintButton, "paint"],
+      [mobileEraserButton, "erase"],
+      [mobileBlendButton, "blend"],
+      [mobilePanButton, "pan"],
+    ] as const) {
+      button.disabled = toolSelectionLocked || !canvasToolSupportedByDocumentProfile(tool);
       button.classList.toggle("is-transiently-locked", toolSelectionLocked);
     }
     mobileToolSettingsSheet?.syncOpenState();
@@ -1726,6 +1799,8 @@ canvasToolController = new CanvasToolController({
   selectionSettings: canvasToolSettingsController,
   isEngineReady: () => engineInitialized,
   isInteractionLocked: canvasToolSelectionLocked,
+  isToolSupported: canvasToolSupportedByDocumentProfile,
+  onUnsupportedTool: () => reportDocumentPixelWriterPaused(),
   isMultiSelectionActive: () => layerPanelController?.isMultiSelect === true,
   canFinishMultiSelectionForToolChange: canFinishLayerMultiSelection,
   finishMultiSelectionForToolChange: finishLayerMultiSelectionForToolChange,
@@ -1897,6 +1972,9 @@ function syncMobileToolsMenuState(
       && selectedSceneItem.rasterHasContent
       && engine.getPixelSelectionState().selectedPixels === 0,
     rasterEffectsEnabled: effectsEnabled,
+    isCanvasToolSupported: canvasToolSupportedByDocumentProfile,
+    semanticToolsSupported: true,
+    rasterEffectsSupported: true,
   });
   rasterAdjustmentsController?.syncUi();
 }
@@ -1966,6 +2044,16 @@ mobileBrushStudio = new MobileBrushStudioController({
   browser: window,
   getBrushPrecision: () => editorSettingsController?.preferences.brushPrecision
     ?? DEFAULT_EDITOR_GUIDE_PREFERENCES.brushPrecision,
+  supportedRenderingModes: effectivePaintDabProfile === "encoded-srgb-rgba8"
+    ? ["light-glaze", "uniformed-glaze", "intense-blending"]
+    : undefined,
+  colorDynamicsSupported: true,
+  colorDynamicsRenderingModes: effectivePaintDabProfile === "encoded-srgb-rgba8"
+    ? ["light-glaze", "uniformed-glaze", "intense-blending"]
+    : undefined,
+  colorDynamicsPerCopyRenderingModes: effectivePaintDabProfile === "encoded-srgb-rgba8"
+    ? ["uniformed-glaze", "intense-blending"]
+    : undefined,
   runWithLoading: (label, operation) =>
     canvasStartupOverlay.runRuntimeOperation(label, operation),
   applySettings: applyBrushSettings,
@@ -2272,6 +2360,7 @@ rasterAdjustmentsController = new RasterAdjustmentsController({
   isInteractionLocked: interactionLocked,
   isSceneBusy: () => sceneEditorController?.isBusy === true,
   isMultiSelectionActive: () => layerPanelController?.isMultiSelect === true,
+  isAdjustmentSupported: () => true,
   getActiveCanvasTool: () => canvasToolController?.activeTool ?? "pan",
   getActiveBrushTool: () => canvasToolController?.activeBrush ?? "paint",
   configureCanvasTool: (tool, restoreSnapshot) => {
@@ -2662,6 +2751,20 @@ editorToolsController = new EditorToolsController({
   syncMenuState: syncMobileToolsMenuState,
   selectCanvasTool: selectCanvasToolWithMixedScene,
   openToolSettings: (kind, trigger) => {
+    const requestedCanvasTool = kind === "fill"
+      || kind === "selection"
+      || kind === "transform"
+      || kind === "warp"
+      || kind === "perspective"
+      ? kind
+      : null;
+    if (
+      (requestedCanvasTool !== null
+        && !canvasToolSupportedByDocumentProfile(requestedCanvasTool))
+    ) {
+      reportDocumentPixelWriterPaused();
+      return;
+    }
     const requestSequence = ++toolSettingsOpenRequestSequence;
     const requestedDocumentSwitchGeneration = documentSwitchGeneration;
     const requestIsCurrent = (): boolean => (
@@ -3571,6 +3674,10 @@ void engine.initialize()
     await engine.runStartupPhase("restore-active-brush", "Restoring the saved brush", async () => {
       if (
         mobileBrushStudio
+        && (
+          !documentPixelWritesRestricted
+          || effectivePaintDabProfile === "encoded-srgb-rgba8"
+        )
         && (editorExtensionBootstrap?.restorePersistedBrushOnStartup ?? true)
       ) {
         selectedBrushPreparationRequestSuppressed = true;

@@ -167,7 +167,8 @@ assert.match(
 
 assert.match(
   runtime,
-  /for \(const run of layerMergeRenderRuns\(plan\.items, request\.vectorDraws\)\)/,
+  /const renderRuns = layerMergeRenderRuns\(plan\.items, request\.vectorDraws\);[\s\S]*?const vectorRuns: MergeVectorRun\[\] = \[\][\s\S]*?renderVectorRunBlockInput\(/,
+  "contiguous semantic runs must be accumulated as one linear block",
 );
 assert.match(
   runtime,
@@ -186,17 +187,26 @@ assert.match(
 );
 
 const vectorRunRuntime = runtime.slice(
-  runtime.indexOf("async function renderVectorRunInput("),
+  runtime.indexOf("async function renderVectorRunBlockInput("),
   runtime.indexOf("async function renderSingleRasterUnitPreservingParent("),
 );
-assert.match(
-  vectorRunRuntime,
-  /vectorSurface\.samplingView,\s*vectorSurface\.bounds,\s*1,\s*vectorSurface\.textureWidth,\s*vectorSurface\.textureHeight,\s*opacity,\s*rendered\.bounds/,
-  "source scale must remain one and opacity must occupy the fold opacity slot",
+const visibleVectorRunRuntime = runtime.slice(
+  runtime.indexOf("function visibleVectorRunDraws("),
+  runtime.indexOf("async function renderVectorRunBlockInput("),
 );
 assert.match(
   vectorRunRuntime,
-  /if \(entry\.draws\.length === 0\) continue;[\s\S]*?if \(draws\.length === 0\) return null;/,
+  /vectorSurface\.samplingView,\s*vectorSurface\.bounds,\s*1,\s*vectorSurface\.textureWidth,\s*vectorSurface\.textureHeight,\s*run\.opacity,\s*rendered\.bounds/,
+  "each unit-opacity vector program must apply its authored opacity in the linear block",
+);
+assert.match(
+  vectorRunRuntime,
+  /linearBlockSurface\.samplingView,\s*linearBlockSurface\.bounds,\s*1,\s*linearBlockSurface\.textureWidth,\s*linearBlockSurface\.textureHeight,\s*1,\s*renderedBlockBounds/,
+  "the complete linear vector block must fold into encoded working storage once",
+);
+assert.match(
+  `${visibleVectorRunRuntime}\n${vectorRunRuntime}`,
+  /if \(entry\.draws\.length === 0\) continue;[\s\S]*?visible\.draws\.length === 0[\s\S]*?if \(!blockBounds\) return null;/,
   "an empty isolated run must remain a no-op boundary without allocating a target",
 );
 assert.match(
@@ -206,8 +216,8 @@ assert.match(
 );
 assert.match(
   vectorRunRuntime,
-  /allocateMergedSurface\(\s*engine,\s*engine\.layerFormat,[\s\S]*?finally \{\s*engine\.destroyMergedSurface\(vectorSurface\);/,
-  "isolated vector surfaces must use the authoritative format and be released sequentially",
+  /const linearBlockSurface = allocateMergedSurface\(\s*engine,\s*"rgba16float",[\s\S]*?const vectorSurface = allocateMergedSurface\(\s*engine,\s*"rgba16float",[\s\S]*?"linear-premultiplied"[\s\S]*?destroyMergedSurface\(vectorSurface\)[\s\S]*?destroyMergedSurface\(linearBlockSurface\)/,
+  "vector sources and their contiguous accumulator must stay cropped linear RGBA16F and be released",
 );
 assert.match(brushEngine, /layerFormat: LayerFormat = "rgba16float";/);
 

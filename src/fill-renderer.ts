@@ -27,7 +27,7 @@ import {
   type FillCompositeMode,
   type FillDocumentMetrics,
 } from "./fill-core";
-import type { LayerFormat } from "./engine-types";
+import type { DocumentStorageColorSpace, LayerFormat } from "./engine-types";
 import type { DirtyRect } from "./engine-stroke-types";
 import type { GpuHistorySlice } from "./gpu-history-storage";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
@@ -41,6 +41,7 @@ import {
 interface FillRendererOptions {
   readonly device: GPUDevice;
   readonly layerFormat: LayerFormat;
+  readonly documentStorageColorSpace: DocumentStorageColorSpace;
   readonly sourceSamplingView: GPUTextureView;
 }
 
@@ -408,6 +409,7 @@ export class FillRenderer {
   private selectionIntersectionBindGroupLayout!: GPUBindGroupLayout;
   private metrics: FillDocumentMetrics;
   private readonly layerFormat: LayerFormat;
+  private readonly storageEncodedSrgb: boolean;
   private configuredSourceSamplingView: GPUTextureView;
   private analysisProgram!: FillAnalysisGpuProgram;
   private classifyPipeline!: GPUComputePipeline;
@@ -452,6 +454,8 @@ export class FillRenderer {
       );
     }
     this.layerFormat = options.layerFormat;
+    this.storageEncodedSrgb = options.documentStorageColorSpace
+      === "encoded-srgb-premultiplied";
     this.configuredSourceSamplingView = options.sourceSamplingView;
   }
 
@@ -830,6 +834,7 @@ export class FillRenderer {
       : Math.min(1, Math.max(0, transparentSeedTolerancePercent / 100));
     unsigned[7] = this.liveSessionSourceIsTarget === true ? 1 : 0;
     floats.set(fillColor, 8);
+    unsigned[17] = this.storageEncodedSrgb ? 1 : 0;
     this.device.queue.writeBuffer(scratch.uniformBuffer, 0, upload);
 
     const initialMetadata = new Uint32Array(FILL_METADATA_WORDS);
@@ -1310,6 +1315,7 @@ export class FillRenderer {
     upload.set(fillColor, 8);
     upload.set(sourceSeedColorLinear, 12);
     unsigned[16] = residualFringeRadius;
+    unsigned[17] = this.storageEncodedSrgb ? 1 : 0;
     this.device.queue.writeBuffer(scratch.uniformBuffer, 0, upload);
     this.device.queue.writeBuffer(scratch.drawIndirect, 0, new Uint32Array([4, 0, 0, 0]));
     encoder.copyBufferToBuffer(
@@ -1408,6 +1414,7 @@ export class FillRenderer {
     floats.set(fillColor, 2);
     floats.set(sourceSeedColorLinear, 6);
     unsigned[10] = residualFringeRadius;
+    unsigned[11] = this.storageEncodedSrgb ? 1 : 0;
     this.device.queue.writeBuffer(scratch.uniformBuffer, 6 * 4, upload);
   }
 

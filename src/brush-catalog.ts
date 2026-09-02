@@ -35,6 +35,7 @@ export const PENCIL_BRUSH_PRESET: BuiltinBrushCatalogEntry = {
   categoryId: "pencil",
   definition: createBrushDefinition({
     shape: "shape",
+    tipFalloff: "standard",
     shapeAssetId: "pencil-shape",
     shapeAssetIds: ["pencil-shape"],
     shapeSequenceMode: "ordered",
@@ -89,6 +90,7 @@ export const SHAPE_SEQUENCE_BRUSH_PRESET: BuiltinBrushCatalogEntry = {
   categoryId: "painting",
   definition: createBrushDefinition({
     shape: "shape",
+    tipFalloff: "standard",
     shapeAssetId: "legacy-shape",
     shapeAssetIds: [
       "legacy-shape",

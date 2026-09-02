@@ -4,8 +4,10 @@ import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   RGBA16_FLOAT_BYTES_PER_PIXEL,
+  RGBA8_UNORM_BYTES_PER_PIXEL,
   encodeFloat16,
   rgba16FloatRowsToRgba8Unorm,
+  rgbaRowsToRgba8Unorm,
 } from "../src/float16.ts";
 
 const scriptsDirectory = dirname(fileURLToPath(import.meta.url));
@@ -28,15 +30,26 @@ const sources = new Map(sourceFiles.map((path) => [
   readFileSync(path, "utf8"),
 ]));
 
-// Every remaining literal 8-bit texture format is a deliberate input,
-// presentation surface, binary/source mask, or the disabled legacy cold codec.
-// Exact counts make this an allowlist: a new continuous R8/RGBA8 allocation
-// cannot hide merely by landing in a file that already contains an exception.
+// Every literal 8-bit texture format is classified at its storage boundary.
+// Exact counts make this an allowlist: a new R8/RGBA8 allocation cannot hide
+// merely by landing in a file that already contains an exception.
 const allowedLiteralFormats = new Map([
   // Il cold compresso non fissa piu' un formato: segue quello del documento,
   // quindi l'ultimo letterale RGBA8 di questo file e' sparito.
   // Anche il tipo del cold compresso segue ora LayerFormat: nessun letterale.
   ["src/engine-raster-image-runtime.ts", { "rgba8unorm-srgb": 1 }],
+  // Compute finalizer: blur math stays f32/packed UNORM16 and only the final
+  // document write targets the persistent encoded-sRGB RGBA8 texture.
+  ["src/engine-gaussian-blur-runtime.ts", { rgba8unorm: 1 }],
+  ["src/engine-motion-blur-runtime.ts", { rgba8unorm: 1 }],
+  // Confine finale del merge: il fold resta RGBA16F cropped e questo e' il
+  // solo target persistente encoded RGBA8, con quantizzazione document-space.
+  ["src/engine-layer-merge-runtime.ts", { rgba8unorm: 1 }],
+  // Finalizzazione vettoriale: il lavoro resta RGBA16F lineare e viene
+  // codificato una sola volta nel formato nativo del documento RGBA8.
+  ["src/engine-vector-raster-runtime.ts", { rgba8unorm: 2 }],
+  // Discriminante del converter di readback: non alloca una texture.
+  ["src/float16.ts", { rgba8unorm: 1 }],
   // Shape and Grain source staging is native scalar R16Uint; placeholders,
   // resident bases, and complete mip chains are R16F in both comparison modes.
   // Descriptor serializzato: registra il formato originale del seed History,
@@ -44,6 +57,11 @@ const allowedLiteralFormats = new Map([
   ["src/history-storage-core.ts", { rgba8unorm: 1 }],
   ["src/layer-blend-tile-compositor.ts", { rgba8unorm: 1 }],
   ["src/layer-thumbnail-renderer.ts", { rgba8unorm: 2 }],
+  // Sonde diagnostiche isolate che verificano direttamente il contratto RGBA8.
+  ["src/rgba8-accumulation-probe.ts", { rgba8unorm: 4 }],
+  // Confine persistente delle superfici derivate: una tile RGBA16F bounded
+  // viene quantizzata una sola volta nel documento RGBA8.
+  ["src/rgba8-surface-finalizer.ts", { rgba8unorm: 1 }],
 ]);
 const actualLiteralFormats = new Map();
 const literalFormatPattern = /format:\s*"(rgba8unorm(?:-srgb)?|r8unorm)"/g;
@@ -65,7 +83,11 @@ assert.deepEqual(
 // target a 8 bit: ora e' R16F dal primo livello all'ultimo, quindi l'eccezione
 // non serve piu'. Resta solo la miniatura, che e' un output di interfaccia.
 const allowedEightBitRenderTargets = new Map([
+  ["src/engine-layer-merge-runtime.ts", 1], // finalizzazione unica del merge cropped
+  ["src/engine-vector-raster-runtime.ts", 1], // handoff finale al documento RGBA8
   ["src/layer-thumbnail-renderer.ts", 1], // miniatura UI finale
+  ["src/rgba8-accumulation-probe.ts", 2], // target diagnostici isolati
+  ["src/rgba8-surface-finalizer.ts", 1], // confine persistente della tile RGBA16F
 ]);
 const actualEightBitRenderTargets = new Map();
 for (const [path, source] of sources) {
@@ -90,22 +112,50 @@ const requireSource = (path, pattern, message) => {
 requireSource(
   "src/brush-engine.ts",
   /layerFormat:\s*LayerFormat\s*=\s*"rgba16float"/,
-  "Il default reale del documento deve essere RGBA16F.",
+  "Il costruttore generico deve conservare il fallback RGBA16F legacy; il main sceglie esplicitamente RGBA8 sRGB.",
 );
 requireSource(
   "src/brush-engine.ts",
-  /this\.canvasFormat\s*=\s*"rgba16float";[\s\S]*?this\.context\.configure\(\{[\s\S]*?format:\s*this\.canvasFormat,[\s\S]*?alphaMode:\s*"opaque",[\s\S]*?colorSpace:\s*"srgb"/,
-  "Canvas e presentation cache devono condividere il target RGBA16F esplicito.",
+  /canvasFormat!:\s*LayerFormat;/,
+  "Il formato del canvas deve seguire lo stesso contratto esplicito dei layer.",
+);
+requireSource(
+  "src/brush-engine.ts",
+  /readonly presentationFormat:\s*LayerFormat;[\s\S]*?const presentationFormat\s*=\s*options\.presentationFormat\s*\?\?\s*"rgba16float";[\s\S]*?presentationFormat\s*!==\s*"rgba8unorm"\s*&&\s*presentationFormat\s*!==\s*"rgba16float"[\s\S]*?this\.presentationFormat\s*=\s*presentationFormat;/,
+  "La presentazione deve accettare esplicitamente entrambi i LayerFormat mantenendo il default legacy.",
+);
+requireSource(
+  "src/brush-engine.ts",
+  /this\.canvasFormat\s*=\s*this\.presentationFormat;[\s\S]*?this\.context\.configure\(\{[\s\S]*?format:\s*this\.canvasFormat,[\s\S]*?alphaMode:\s*"opaque",[\s\S]*?colorSpace:\s*"srgb"/,
+  "Canvas e presentation cache devono condividere il LayerFormat scelto e presentarlo in sRGB.",
 );
 assert.doesNotMatch(
   sources.get("src/brush-engine.ts"),
   /navigator\.gpu\.getPreferredCanvasFormat\(\)/,
-  "Il canvas principale non deve ricadere implicitamente in un formato 8-bit.",
+  "Il canvas principale non deve sostituire implicitamente il LayerFormat richiesto.",
 );
 assert.equal(
-  (sources.get("src/brush-engine.ts").match(/rgba16FloatRowsToRgba8Unorm\(/g) ?? []).length,
+  (sources.get("src/brush-engine.ts").match(/rgbaRowsToRgba8Unorm\(/g) ?? []).length,
   3,
-  "Miniatura, rectangle probe e pixel probe devono decodificare il readback RGBA16F.",
+  "Miniatura, rectangle probe e pixel probe devono usare il decoder del formato reale.",
+);
+assert.equal(
+  (
+    sources.get("src/brush-engine.ts").match(
+      /rgbaRowsToRgba8Unorm\([\s\S]{0,240}?this\.canvasFormat[\s,)]/g,
+    ) ?? []
+  ).length,
+  3,
+  "Ogni readback di presentazione deve comunicare al decoder il canvasFormat reale.",
+);
+assert.equal(
+  (
+    sources.get("src/brush-engine.ts").match(
+      /const presentationBytesPerPixel\s*=\s*this\.canvasFormat\s*===\s*"rgba16float"\s*\?\s*RGBA16_FLOAT_BYTES_PER_PIXEL\s*:\s*RGBA8_UNORM_BYTES_PER_PIXEL;/g,
+    ) ?? []
+  ).length,
+  2,
+  "I readback rettangolari devono dimensionare le righe per RGBA16F o RGBA8.",
 );
 assert.doesNotMatch(
   sources.get("src/brush-engine.ts"),
@@ -114,18 +164,13 @@ assert.doesNotMatch(
 );
 requireSource(
   "src/brush-stroke-preview-renderer.ts",
-  /width\s*\*\s*RGBA16_FLOAT_BYTES_PER_PIXEL/,
-  "Il readback diagnostico delle preview deve usare otto byte per texel RGBA16F.",
+  /const readbackBytesPerPixel\s*=\s*this\.engine\.canvasFormat\s*===\s*"rgba8unorm"\s*\?\s*RGBA8_UNORM_BYTES_PER_PIXEL\s*:\s*RGBA16_FLOAT_BYTES_PER_PIXEL;[\s\S]*?width\s*\*\s*readbackBytesPerPixel/,
+  "Il readback diagnostico delle preview deve dimensionarsi sul formato reale RGBA8/RGBA16F.",
 );
 requireSource(
   "src/brush-library-preview.ts",
   /BRUSH_LIBRARY_PREVIEW_WIDTH[\s\S]*?BRUSH_LIBRARY_PREVIEW_HEIGHT[\s\S]*?RGBA16_FLOAT_BYTES_PER_PIXEL/,
   "Il budget delle preview deve contabilizzare il backing RGBA16F.",
-);
-requireSource(
-  "src/engine-reports.ts",
-  /presentationCacheWidth[\s\S]*?presentationCacheHeight[\s\S]*?RGBA16_FLOAT_BYTES_PER_PIXEL/,
-  "La memoria della presentation cache deve contabilizzare RGBA16F.",
 );
 requireSource(
   "src/vector-text-gpu-shader.ts",
@@ -149,6 +194,7 @@ requireSource(
 );
 
 assert.equal(RGBA16_FLOAT_BYTES_PER_PIXEL, 8);
+assert.equal(RGBA8_UNORM_BYTES_PER_PIXEL, 4);
 const paddedBytesPerRow = 256;
 const float16Rows = new Uint8Array(paddedBytesPerRow * 2).fill(0xa5);
 const float16View = new DataView(float16Rows.buffer);
@@ -163,18 +209,46 @@ writePixel(0, 0, [0, 0.5, 1, 1]);
 writePixel(0, 1, [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]);
 writePixel(1, 0, [0.25, 0.75, 0.125, 0]);
 writePixel(1, 1, [1, 0, 0.5, 1]);
+const expectedRgba8 = [
+  0, 128, 255, 255,
+  0, 255, 0, 255,
+  64, 191, 32, 0,
+  255, 0, 128, 255,
+];
 assert.deepEqual(
   [...rgba16FloatRowsToRgba8Unorm(float16Rows, 2, 2, paddedBytesPerRow)],
-  [
-    0, 128, 255, 255,
-    0, 255, 0, 255,
-    64, 191, 32, 0,
-    255, 0, 128, 255,
-  ],
+  expectedRgba8,
   "Il confine RGBA8 deve decodificare half-float, ignorare il padding e saturare in modo deterministico.",
 );
 assert.throws(
   () => rgba16FloatRowsToRgba8Unorm(float16Rows, 2, 2, 8),
+  /row stride/,
+);
+assert.deepEqual(
+  [...rgbaRowsToRgba8Unorm(float16Rows, 2, 2, paddedBytesPerRow, "rgba16float")],
+  expectedRgba8,
+  "Il readback generico RGBA16F deve conservare la conversione legacy verificata.",
+);
+
+const rgba8Rows = new Uint8Array(paddedBytesPerRow * 2).fill(0xa5);
+const rgba8Pixels = Uint8Array.from([
+  0, 1, 127, 255,
+  255, 191, 64, 0,
+  17, 34, 51, 68,
+  222, 173, 128, 85,
+]);
+rgba8Rows.set(rgba8Pixels.subarray(0, 2 * RGBA8_UNORM_BYTES_PER_PIXEL), 0);
+rgba8Rows.set(
+  rgba8Pixels.subarray(2 * RGBA8_UNORM_BYTES_PER_PIXEL),
+  paddedBytesPerRow,
+);
+assert.deepEqual(
+  [...rgbaRowsToRgba8Unorm(rgba8Rows, 2, 2, paddedBytesPerRow, "rgba8unorm")],
+  [...rgba8Pixels],
+  "Il readback generico RGBA8 deve rimuovere soltanto il padding senza riconvertire i canali.",
+);
+assert.throws(
+  () => rgbaRowsToRgba8Unorm(rgba8Rows, 2, 2, 4, "rgba8unorm"),
   /row stride/,
 );
 

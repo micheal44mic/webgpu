@@ -1,4 +1,8 @@
 import type { BrushEngine } from "./brush-engine";
+import {
+  usesEncodedSrgbRgba8PaintDabProfile,
+  usesOpticalDepthPaintDabProfile,
+} from "./paint-dab-profile";
 import { usesStrokeGlazeRenderer, type LightGlazeStorageMode } from "./engine-strategies";
 import { type LightGlazeResourceSet, type LightGlazeSession } from "./engine-paint-resources";
 import {
@@ -131,10 +135,19 @@ export function createLightGlazeResourceSet(engine: BrushEngine,
         ],
       });
 
-      if (storageMode === "rgba16float-stroke") {
+      const requiresExactCommit = storageMode === "rgba16float-stroke"
+        || usesOpticalDepthPaintDabProfile(engine.paintDabProfile)
+        || usesEncodedSrgbRgba8PaintDabProfile(engine.paintDabProfile);
+      if (requiresExactCommit) {
         if (
           engine.lightGlazeInPlaceCommitPipeline
           && engine.lightGlazeInPlaceCommitBindGroupLayout
+          // The encoded optical-depth resolver is substantially faster as a
+          // render tile followed by a texture copy on current desktop GPUs.
+          // It remains exact because the same shader formula and document-
+          // space quantization coordinates are used by both implementations.
+          && !usesOpticalDepthPaintDabProfile(engine.paintDabProfile)
+          && !usesEncodedSrgbRgba8PaintDabProfile(engine.paintDabProfile)
         ) {
           inPlaceCommitBindGroup = engine.device.createBindGroup({
             label: "High precision glaze in-place commit bind group",
@@ -452,6 +465,7 @@ export function retargetLightGlazeBindGroups(engine: BrushEngine): void {
     : null;
   engine.lightGlazeInPlaceCommitBindGroup =
     engine.lightGlazeStorageMode === "rgba16float-stroke"
+    && !usesEncodedSrgbRgba8PaintDabProfile(engine.paintDabProfile)
     && engine.lightGlazeInPlaceCommitPipeline
     && engine.lightGlazeInPlaceCommitBindGroupLayout
       ? engine.device.createBindGroup({
@@ -622,6 +636,8 @@ export function applyLightGlazeResourceSet(engine: BrushEngine, resources: Light
 }
 
 export function lightGlazeResourcesMatch(engine: BrushEngine, storageMode: LightGlazeStorageMode): boolean {
+  const exactTileCommitRequired = usesOpticalDepthPaintDabProfile(engine.paintDabProfile)
+    || usesEncodedSrgbRgba8PaintDabProfile(engine.paintDabProfile);
   return Boolean(
     engine.lightGlazeTexture
     && engine.lightGlazeCompositeMipTexture
@@ -631,7 +647,7 @@ export function lightGlazeResourcesMatch(engine: BrushEngine, storageMode: Light
     && engine.lightGlazeDisplayBindGroup
     && engine.lightGlazeCompositeBindGroup
     && (
-      storageMode === "r16float-coverage"
+      (storageMode === "r16float-coverage" && !exactTileCommitRequired)
       || (
         engine.lightGlazeInPlaceCommitPipeline
         && engine.lightGlazeInPlaceCommitBindGroup

@@ -10,6 +10,7 @@ import type { RasterFilterHistoryAction } from "./engine-history-types";
 import { invalidateActiveLayerBake } from "./engine-layer-runtime";
 import { DOCUMENT_HEIGHT, DOCUMENT_WIDTH } from "./engine-limits";
 import type { DirtyRect } from "./engine-stroke-types";
+import type { DocumentStorageColorSpace, LayerFormat } from "./engine-types";
 import { publishMixedScene } from "./engine-vector-text-runtime";
 import {
   DEFAULT_RASTER_GLASS_SETTINGS,
@@ -30,11 +31,14 @@ import {
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import type { MemoryRequest, MemoryReservation } from "./memory-governor-core";
 import { tileMaskCoveringRect } from "./raster-transform-math";
+import { rgba8HighFrequencyQuantizationShader } from "./rgba8-high-frequency-quantization";
 
 export const DESTRUCTIVE_RASTER_GLASS_RUNTIME_BUILD =
-  "destructive-raster-glass-webgpu-v1-immutable-source-analytic-gradient" as const;
+  "destructive-raster-glass-webgpu-v2-storage-color-space-aware-linear-bilinear" as const;
 export const DESTRUCTIVE_RASTER_GLASS_PRECISION =
   "rgba16float-source-and-output-f32-field-and-bilinear" as const;
+export const DESTRUCTIVE_RASTER_GLASS_RGBA8_PRECISION =
+  "rgba8unorm-source-encoded-f32-field-bilinear-high-frequency-output" as const;
 export const DESTRUCTIVE_RASTER_GLASS_EDGE_MODE =
   "transparent-content-clamp-document-edge" as const;
 export const DESTRUCTIVE_RASTER_GLASS_COORDINATE_SPACE =
@@ -42,6 +46,7 @@ export const DESTRUCTIVE_RASTER_GLASS_COORDINATE_SPACE =
 
 const PARAMETER_BYTES = 64;
 const BYTES_PER_RGBA16F_PIXEL = 8;
+const BYTES_PER_RGBA8_PIXEL = 4;
 const WORKGROUP_WIDTH = 8;
 const WORKGROUP_HEIGHT = 8;
 const GLASS_SURFACE_SALT = 0x6a09e667;
@@ -101,9 +106,20 @@ export type RasterGlassEngineHost = BrushEngine & {
   activeRasterGlassSession: ActiveRasterGlassSession | null;
 };
 
-const sharedByDevice = new WeakMap<GPUDevice, Promise<RasterGlassSharedResources>>();
+type RasterGlassPipelineProfile = `${LayerFormat}:${DocumentStorageColorSpace}`;
 
-function glassShader(): string {
+const sharedByDevice = new WeakMap<
+  GPUDevice,
+  Map<RasterGlassPipelineProfile, Promise<RasterGlassSharedResources>>
+>();
+
+function glassShader(
+  layerFormat: LayerFormat,
+  documentStorageColorSpace: DocumentStorageColorSpace,
+): string {
+  const rgba8 = layerFormat === "rgba8unorm";
+  const storedEncodedSrgb = rgba8
+    && documentStorageColorSpace === "encoded-srgb-premultiplied";
   return /* wgsl */ `
 struct GlassParameters {
   sourceOriginAndSize: vec4<i32>,
@@ -124,7 +140,46 @@ const MAX_OCTAVES = ${DESTRUCTIVE_RASTER_GLASS_MAX_OCTAVES}u;
 @group(0) @binding(0) var<uniform> parameters: GlassParameters;
 @group(0) @binding(1) var immutableSource: texture_2d<f32>;
 @group(0) @binding(2) var authoritativeOutput:
-  texture_storage_2d<rgba16float, write>;
+  texture_storage_2d<${layerFormat}, write>;
+
+${rgba8 ? rgba8HighFrequencyQuantizationShader : ""}
+
+${storedEncodedSrgb ? /* wgsl */ `
+fn glassSrgbToLinearChannel(value: f32) -> f32 {
+  if (value <= 0.04045) { return value / 12.92; }
+  return pow((value + 0.055) / 1.055, 2.4);
+}
+
+fn glassLinearToSrgbChannel(value: f32) -> f32 {
+  let bounded = clamp(value, 0.0, 1.0);
+  if (bounded <= 0.0031308) { return bounded * 12.92; }
+  return 1.055 * pow(bounded, 1.0 / 2.4) - 0.055;
+}
+
+fn glassEncodedPremultipliedToLinear(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let straight = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  let linear = vec3<f32>(
+    glassSrgbToLinearChannel(straight.r),
+    glassSrgbToLinearChannel(straight.g),
+    glassSrgbToLinearChannel(straight.b)
+  );
+  return vec4<f32>(linear * alpha, alpha);
+}
+
+fn glassLinearPremultipliedToEncoded(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let straight = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  let encoded = vec3<f32>(
+    glassLinearToSrgbChannel(straight.r),
+    glassLinearToSrgbChannel(straight.g),
+    glassLinearToSrgbChannel(straight.b)
+  );
+  return vec4<f32>(encoded * alpha, alpha);
+}
+` : ""}
 
 fn pcgHash(input: u32) -> u32 {
   let state = input * 747796405u + 2891336453u;
@@ -239,7 +294,8 @@ fn loadSource(documentPixel: vec2<i32>) -> vec4<f32> {
   if (!insideSource(localPixel)) {
     return vec4<f32>(0.0);
   }
-  return textureLoad(immutableSource, localPixel, 0);
+  let stored = textureLoad(immutableSource, localPixel, 0);
+  return ${storedEncodedSrgb ? "glassEncodedPremultipliedToLinear(stored)" : "stored"};
 }
 
 fn sampleSourceBilinear(documentPosition: vec2<f32>) -> vec4<f32> {
@@ -273,21 +329,35 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   if (any(color != color) || any(abs(color) > vec4<f32>(HALF_MAX))) {
     color = loadSource(documentPixel);
   }
-  textureStore(authoritativeOutput, documentPixel, color);
+  ${rgba8 ? /* wgsl */ `
+  let storedColor = ${storedEncodedSrgb
+    ? "glassLinearPremultipliedToEncoded(color)"
+    : "color"};
+  textureStore(
+    authoritativeOutput,
+    documentPixel,
+    quantizeRgba8HighFrequencyAdjacent(
+      storedColor,
+      vec2<u32>(documentPixel),
+      parameters.seedAndDocument.x ^ parameters.seedAndDocument.y
+    )
+  );` : "textureStore(authoritativeOutput, documentPixel, color);"}
 }
 `;
 }
 
 async function createSharedResources(
   device: GPUDevice,
+  layerFormat: LayerFormat,
+  documentStorageColorSpace: DocumentStorageColorSpace,
 ): Promise<RasterGlassSharedResources> {
   return runGpuAllocationTransaction(
     device,
-    "Pipeline Native raster Glass RGBA16F",
+    `Pipeline Native raster Glass ${layerFormat} ${documentStorageColorSpace}`,
     async () => {
       const module = device.createShaderModule({
         label: "Native raster Glass procedural displacement WGSL",
-        code: glassShader(),
+        code: glassShader(layerFormat, documentStorageColorSpace),
       });
       await assertShaderCompiled(module, "Procedural Glass displacement");
       const bindGroupLayout = device.createBindGroupLayout({
@@ -301,12 +371,14 @@ async function createSharedResources(
           {
             binding: 1,
             visibility: GPUShaderStage.COMPUTE,
-            texture: { sampleType: "unfilterable-float" },
+            texture: {
+              sampleType: layerFormat === "rgba8unorm" ? "float" : "unfilterable-float",
+            },
           },
           {
             binding: 2,
             visibility: GPUShaderStage.COMPUTE,
-            storageTexture: { access: "write-only", format: "rgba16float" },
+            storageTexture: { access: "write-only", format: layerFormat },
           },
         ],
       });
@@ -321,19 +393,38 @@ async function createSharedResources(
 }
 
 async function requireSharedResources(
-  device: GPUDevice,
+  engine: RasterGlassEngineHost,
 ): Promise<RasterGlassSharedResources> {
-  let promise = sharedByDevice.get(device);
+  let byProfile = sharedByDevice.get(engine.device);
+  if (!byProfile) {
+    byProfile = new Map();
+    sharedByDevice.set(engine.device, byProfile);
+  }
+  const profile: RasterGlassPipelineProfile =
+    `${engine.layerFormat}:${engine.documentStorageColorSpace}`;
+  let promise = byProfile.get(profile);
   if (!promise) {
-    promise = createSharedResources(device);
-    sharedByDevice.set(device, promise);
+    promise = createSharedResources(
+      engine.device,
+      engine.layerFormat,
+      engine.documentStorageColorSpace,
+    );
+    byProfile.set(profile, promise);
   }
   try {
     return await promise;
   } catch (error) {
-    sharedByDevice.delete(device);
+    if (byProfile.get(profile) === promise) byProfile.delete(profile);
     throw error;
   }
+}
+
+/** Prepares the Glass shader variant for the active document profile. */
+export async function warmRasterGlassPipelines(
+  engine: RasterGlassEngineHost,
+): Promise<void> {
+  if (!engine.initialized) return;
+  await requireSharedResources(engine);
 }
 
 function errorFrom(error: unknown): Error {
@@ -700,10 +791,6 @@ export async function beginRasterGlass(
   if (!record.hasContent || !record.contentBounds) {
     throw new Error("The selected raster layer is empty.");
   }
-  if (engine.layerFormat !== "rgba16float") {
-    throw new Error("Destructive Glass requires an RGBA16F document.");
-  }
-
   engine.cancelLayerColdCompressionIdle();
   engine.historyBusy = true;
   engine.publishHistoryState();
@@ -742,9 +829,12 @@ export async function beginRasterGlass(
       throw new Error("Glass: the GPU does not support the required dispatch size.");
     }
     const sourceTileMask = record.storageTileMask.slice();
-    const shared = await requireSharedResources(engine.device);
+    const shared = await requireSharedResources(engine);
     const memoryBytes = scratchBounds.width * scratchBounds.height
-      * BYTES_PER_RGBA16F_PIXEL + PARAMETER_BYTES;
+      * (engine.layerFormat === "rgba16float"
+        ? BYTES_PER_RGBA16F_PIXEL
+        : BYTES_PER_RGBA8_PIXEL)
+      + PARAMETER_BYTES;
     reservation = await reserveSessionMemory(engine, memoryBytes);
 
     session = await runGpuAllocationTransaction(
@@ -758,7 +848,7 @@ export async function beginRasterGlass(
             height: scratchBounds.height,
             depthOrArrayLayers: 1,
           },
-          format: "rgba16float",
+          format: engine.layerFormat,
           usage:
             GPUTextureUsage.COPY_SRC
             | GPUTextureUsage.COPY_DST
@@ -1031,7 +1121,9 @@ export async function commitRasterGlass(
       surfaceScalePixels: rasterGlassScalePixels(settings.scalePercent),
       algorithm: DESTRUCTIVE_RASTER_GLASS_ALGORITHM,
       algorithmVersion: DESTRUCTIVE_RASTER_GLASS_ALGORITHM_VERSION,
-      precision: DESTRUCTIVE_RASTER_GLASS_PRECISION,
+      precision: engine.layerFormat === "rgba8unorm"
+        ? DESTRUCTIVE_RASTER_GLASS_RGBA8_PRECISION
+        : DESTRUCTIVE_RASTER_GLASS_PRECISION,
       edgeMode: DESTRUCTIVE_RASTER_GLASS_EDGE_MODE,
       coordinateSpace: DESTRUCTIVE_RASTER_GLASS_COORDINATE_SPACE,
       seed: historySeed,

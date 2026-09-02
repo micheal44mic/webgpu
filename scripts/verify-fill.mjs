@@ -13,6 +13,7 @@ import {
   FILL_META_SOURCE_SEED_COLOR_START,
   FILL_META_TILE_MASK_START,
   FILL_REFERENCE_LAYER_STRATEGY,
+  FILL_RGBA8_STORAGE_STRATEGY,
   FILL_RENDER_MASK_STRATEGY,
   FILL_RENDER_MASK_PIXELS_PER_WORD,
   FILL_RESIDUAL_FRINGE_MAX_RADIUS,
@@ -50,12 +51,21 @@ import {
   LAYER_SIZE,
 } from "../src/engine-limits.ts";
 import { colorMatchShaderHelpers } from "../src/color-match-core.ts";
-import { fillComputeShader as resolvedFillComputeShader } from "../src/fill-shaders.ts";
+import {
+  FILL_RGBA8_QUANTIZATION_SEED,
+  fillComputeShader as resolvedFillComputeShader,
+  fillRenderShader as resolvedFillRenderShader,
+} from "../src/fill-shaders.ts";
+import { quantizeUnorm8HighFrequencyAdjacent } from "../src/rgba8-high-frequency-quantization.ts";
 import { readEngineSource } from "./engine-source.mjs";
 
 assert.equal(
   GPU_FILL_STRATEGY,
-  "webgpu-hierarchical-ccl-4-connected-transparent-underlay-base-residual-fringe3-recolor-reference-replace-live-preview-history1-render8-v12",
+  "webgpu-hierarchical-ccl-4-connected-transparent-underlay-base-residual-fringe3-recolor-reference-replace-live-preview-history1-render8-rgba8-srgb-v13",
+);
+assert.equal(
+  FILL_RGBA8_STORAGE_STRATEGY,
+  "encoded-srgb-premultiplied-storage-linear-f32-analysis-and-composite-high-frequency-adjacent-code-output",
 );
 assert.equal(
   FILL_REFERENCE_LAYER_STRATEGY,
@@ -353,6 +363,17 @@ assert.equal(fillBitMasks[30], 0x40000000);
 assert.equal(fillBitMasks[31], 0x80000000);
 assert.equal(fillBitMasks.reduce((word, mask) => (word | mask) >>> 0, 0), 0xffffffff);
 
+const linearChannelToSrgb = (value) => {
+  const bounded = Math.min(1, Math.max(0, value));
+  return bounded <= 0.0031308
+    ? bounded * 12.92
+    : 1.055 * bounded ** (1 / 2.4) - 0.055;
+};
+const opaqueLinearRgbToStoredBytes = (color) => Uint8Array.from([
+  ...color.map((channel) => Math.round(linearChannelToSrgb(channel) * 255)),
+  255,
+]);
+
 // Workaround render: ogni word History viene divisa in quattro byte bassi.
 // Anche il pixel 31 diventa il bit 7 (0x80) e il fragment non vede mai bit 31.
 for (const source of [0x80000000, 0xffffffff, 0xa55a3cc3]) {
@@ -455,7 +476,7 @@ for (const source of [0x80000000, 0xffffffff, 0xa55a3cc3]) {
   assert.equal(invalidUnpremultipliedRecolor.selectedButDifferentPixels, 1);
 
   const solidReplace = summarizeFillRenderedRow(
-    Uint8Array.of(51, 102, 153, 255),
+    opaqueLinearRgbToStoredBytes([0.2, 0.4, 0.6]),
     "rgba8unorm",
     Uint32Array.of(1),
     0,
@@ -464,7 +485,7 @@ for (const source of [0x80000000, 0xffffffff, 0xa55a3cc3]) {
   );
   assert.equal(solidReplace.matchingFillPixels, 1);
   const wrongSolidReplaceHue = summarizeFillRenderedRow(
-    Uint8Array.of(51, 103, 180, 255),
+    Uint8Array.of(124, 170, 230, 255),
     "rgba8unorm",
     Uint32Array.of(1),
     0,
@@ -472,6 +493,85 @@ for (const source of [0x80000000, 0xffffffff, 0xa55a3cc3]) {
     { compositeMode: "solid-replace", fillColor: [0.2, 0.4, 0.6, 1] },
   );
   assert.equal(wrongSolidReplaceHue.selectedButDifferentPixels, 1);
+}
+
+// RGBA8 documents store encoded-sRGB premultiplied bytes. Fill decodes those
+// bytes to linear premultiplied f32 for matching/composition, then encodes and
+// adjacent-code quantizes exactly once at the authoritative write boundary.
+const f32 = Math.fround;
+const shaderSrgbToLinear = (value) => {
+  const bounded = f32(Math.min(1, Math.max(0, value)));
+  return bounded <= 0.04045
+    ? f32(bounded / 12.92)
+    : f32(f32((bounded + 0.055) / 1.055) ** 2.4);
+};
+const shaderLinearToSrgb = (value) => {
+  const bounded = f32(Math.min(1, Math.max(0, value)));
+  return bounded <= 0.0031308
+    ? f32(bounded * 12.92)
+    : f32(f32(1.055 * bounded ** (1 / 2.4)) - 0.055);
+};
+const decodeStoredRgba8 = (encoded) => {
+  const alpha = f32(Math.min(1, Math.max(0, encoded[3])));
+  if (alpha <= 1e-6) return [0, 0, 0, 0];
+  return [
+    f32(shaderSrgbToLinear(f32(encoded[0] / alpha)) * alpha),
+    f32(shaderSrgbToLinear(f32(encoded[1] / alpha)) * alpha),
+    f32(shaderSrgbToLinear(f32(encoded[2] / alpha)) * alpha),
+    alpha,
+  ];
+};
+const encodeStoredRgba8 = (linear, x, y) => {
+  const alpha = f32(Math.min(1, Math.max(0, linear[3])));
+  if (alpha <= 1e-6) return [0, 0, 0, 0];
+  const encoded = [
+    f32(shaderLinearToSrgb(f32(linear[0] / alpha)) * alpha),
+    f32(shaderLinearToSrgb(f32(linear[1] / alpha)) * alpha),
+    f32(shaderLinearToSrgb(f32(linear[2] / alpha)) * alpha),
+    alpha,
+  ];
+  return encoded.map((channel) => quantizeUnorm8HighFrequencyAdjacent(
+    channel,
+    x,
+    y,
+    FILL_RGBA8_QUANTIZATION_SEED,
+  ));
+};
+
+// Every valid premultiplied RGBA8 code survives a decode/encode no-op. This
+// prevents a Fill preview, replay, or same-color recolor from drifting pixels.
+for (let alphaCode = 1; alphaCode <= 255; alphaCode += 1) {
+  const alpha = f32(alphaCode / 255);
+  for (let colorCode = 0; colorCode <= alphaCode; colorCode += 1) {
+    const channel = f32(colorCode / 255);
+    const linear = decodeStoredRgba8([channel, channel, channel, alpha]);
+    const stored = encodeStoredRgba8(linear, colorCode, alphaCode);
+    assert.deepEqual(
+      stored,
+      [colorCode, colorCode, colorCode, alphaCode],
+      `RGBA8 Fill round trip drifted code ${colorCode}/${alphaCode}`,
+    );
+  }
+}
+
+// A sub-code linear result distributes only between its two adjacent codes;
+// the full 16x16 rank field conserves the requested average to < 1/256 code.
+{
+  const requestedCode = 73.37;
+  const codes = [];
+  for (let y = 0; y < 16; y += 1) {
+    for (let x = 0; x < 16; x += 1) {
+      codes.push(quantizeUnorm8HighFrequencyAdjacent(
+        requestedCode / 255,
+        x,
+        y,
+        FILL_RGBA8_QUANTIZATION_SEED,
+      ));
+    }
+  }
+  assert(codes.every((code) => code === 73 || code === 74));
+  const mean = codes.reduce((sum, code) => sum + code, 0) / codes.length;
+  assert(Math.abs(mean - requestedCode) < 1 / 256);
 }
 
 // Il confronto avviene dopo l'unpremultiply: lo stesso rosso straight con due
@@ -676,6 +776,21 @@ assert(colorMatchShaderHelpers.includes("fn connectedStraightSrgbColorsMatch("))
 assert(shader.includes("${colorMatchShaderHelpers}"));
 assert(resolvedFillComputeShader.includes("fn connectedStraightSrgbColorsMatch("));
 assert(!resolvedFillComputeShader.includes("${colorMatchShaderHelpers}"));
+assert(resolvedFillComputeShader.includes("storageEncodedSrgb: u32"));
+assert(resolvedFillComputeShader.includes("fn fillStorageToLinearPremultiplied("));
+assert.match(
+  resolvedFillComputeShader,
+  /seedColor = fillStorageToLinearPremultiplied\([\s\S]{0,120}textureLoad\(sourceLayer/,
+);
+assert.match(
+  resolvedFillComputeShader,
+  /matchesSeed\(textureLoad\([\s\S]{0,120}sourceLayer/,
+);
+assert(resolvedFillComputeShader.includes("fn fillStorageToStraightSrgb("));
+assert.match(
+  resolvedFillComputeShader,
+  /storageEncodedSrgb == 0u[\s\S]{0,120}linearPremultipliedToStraightSrgb/,
+);
 assert(shader.includes("return connectedStraightSrgbColorsMatch("));
 assert(shader.includes("uniforms.transparentSeedAlphaThreshold >= 0.0"));
 assert(shader.includes("seedColor.a == 0.0"));
@@ -710,11 +825,18 @@ assert(shader.includes(
   "@group(0) @binding(3) var destinationSnapshot: texture_2d<f32>",
 ));
 assert(shader.includes("textureLoad(destinationSnapshot, vec2<i32>(pixel), 0)"));
-assert(shader.includes("return vec4<f32>(uniforms.fillColor.rgb, 1.0)"));
+assert(resolvedFillRenderShader.includes("fn quantizeRgba8HighFrequencyAdjacent("));
+assert(resolvedFillRenderShader.includes("fn fillLinearPremultipliedToStorage("));
+assert(resolvedFillRenderShader.includes("fn fillStorageToLinearPremultiplied("));
+assert(resolvedFillRenderShader.includes(`${FILL_RGBA8_QUANTIZATION_SEED}u`));
+assert.match(
+  resolvedFillRenderShader,
+  /COMPOSITE_SOLID_REPLACE[\s\S]{0,180}fillLinearPremultipliedToStorage\(/,
+);
 assert(shader.includes("destination.rgb + uniforms.fillColor.rgb * (1.0 - destinationAlpha)"));
 assert(!shader.includes("if (destinationAlpha <= 0.0)"));
 assert(!shader.includes("uniforms.fillColor.a"));
-assert(shader.includes("return destination;"));
+assert(shader.includes("return storedDestination;"));
 assert(shader.includes("fn maximumBaseContribution("));
 assert(shader.includes("uniforms.sourceSeedColor.rgb / sourceAlpha"));
 assert(shader.includes("destination.rgb + contribution *"));
@@ -775,6 +897,18 @@ assert(renderer.includes("allHighBitPathsCorrect"));
 assert(renderer.includes("encoder.copyBufferToBuffer(\n      scratch.selectedMask"));
 assert(renderer.includes("historySlice.buffer"));
 assert(renderer.includes("private configuredSourceSamplingView: GPUTextureView"));
+assert(renderer.includes("private readonly storageEncodedSrgb: boolean"));
+assert.match(
+  renderer,
+  /this\.storageEncodedSrgb = options\.documentStorageColorSpace\s*=== "encoded-srgb-premultiplied"/,
+);
+assert.equal(
+  renderer.match(/this\.storageEncodedSrgb \? 1 : 0/g)?.length,
+  3,
+  "analysis, live preview and History replay must publish the RGBA8 storage profile",
+);
+assert(renderer.includes("unsigned[17] = this.storageEncodedSrgb ? 1 : 0"));
+assert(renderer.includes("unsigned[11] = this.storageEncodedSrgb ? 1 : 0"));
 assert(renderer.includes("setSourceSamplingView(view: GPUTextureView)"));
 assert(renderer.includes("if (view === this.configuredSourceSamplingView)"));
 assert(renderer.includes("? this.requireCompositeScratch(scratch).destinationSnapshotView"));

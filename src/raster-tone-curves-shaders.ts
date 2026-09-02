@@ -4,6 +4,8 @@ import {
   RASTER_TONE_CURVE_LUT_SIZE,
   RASTER_TONE_HISTOGRAM_VALUE_COUNT,
 } from "./raster-tone-curves-core.ts";
+import type { RasterAdjustmentStorageProfile } from "./raster-adjustment-storage-shader.ts";
+import { rasterAdjustmentStorageShader } from "./raster-adjustment-storage-shader.ts";
 
 export const RASTER_TONE_CURVES_ADJUST_WORKGROUP_WIDTH = 8;
 export const RASTER_TONE_CURVES_ADJUST_WORKGROUP_HEIGHT = 8;
@@ -53,48 +55,31 @@ export function rasterToneCurvesHistogramDispatchSize(
   );
 }
 
-const encodedRgbHelpers = /* wgsl */ `
-const COLOR_EPSILON: f32 = 0.0000001;
-
-fn linearRgbToEncodedRgb(value: vec3<f32>) -> vec3<f32> {
-  let linear = clamp(value, vec3<f32>(0.0), vec3<f32>(1.0));
-  let lower = linear * 12.92;
-  let upper = 1.055 * pow(linear, vec3<f32>(1.0 / 2.4)) - vec3<f32>(0.055);
-  return select(upper, lower, linear <= vec3<f32>(0.0031308));
-}
-
-fn encodedRgbToLinearRgb(value: vec3<f32>) -> vec3<f32> {
-  let encoded = clamp(value, vec3<f32>(0.0), vec3<f32>(1.0));
-  let lower = encoded / 12.92;
-  let upper = pow(
-    (encoded + vec3<f32>(0.055)) / 1.055,
-    vec3<f32>(2.4)
-  );
-  return select(upper, lower, encoded <= vec3<f32>(0.04045));
-}
-`;
-
 /**
- * The source is an immutable cropped rgba16float snapshot. The output is the
- * authoritative full-layer rgba16float storage texture; outputOrigin places
- * the cropped dispatch without allocating a second result texture. LUT entries
- * are packed as composite/red/green/blue. Source and output remain distinct, so
- * live previews never introduce a feedback hazard.
+ * The source is an immutable crop in the document's own storage format. The
+ * output is the authoritative full-layer texture; outputOrigin places the crop
+ * without allocating a second result texture. LUT entries are packed as
+ * composite/red/green/blue. Source and output remain distinct, so live previews
+ * never introduce a feedback hazard.
  */
-export const rasterToneCurvesAdjustmentShader = /* wgsl */ `
+export function createRasterToneCurvesAdjustmentShader(
+  profile: RasterAdjustmentStorageProfile,
+): string {
+  return /* wgsl */ `
 struct RasterToneCurvesParameters {
   outputOrigin: vec2<u32>,
-  _padding: vec2<u32>,
+  quantizationSeed: u32,
+  _padding: u32,
 }
 
 @group(0) @binding(0) var immutableSource: texture_2d<f32>;
 @group(0) @binding(1) var adjustedOutput:
-  texture_storage_2d<rgba16float, write>;
+  texture_storage_2d<${profile.layerFormat}, write>;
 @group(0) @binding(2) var<storage, read> curveLut:
   array<vec4<f32>, ${RASTER_TONE_CURVE_LUT_SIZE}>;
 @group(0) @binding(3) var<uniform> parameters: RasterToneCurvesParameters;
 
-${encodedRgbHelpers}
+${rasterAdjustmentStorageShader(profile)}
 
 fn sampleCurveLut(input: f32) -> vec4<f32> {
   let position = clamp(input, 0.0, 1.0)
@@ -115,17 +100,12 @@ fn adjustRasterTone(@builtin(global_invocation_id) gid: vec3<u32>) {
   let outputPixel = vec2<i32>(gid.xy + parameters.outputOrigin);
   let source = textureLoad(immutableSource, pixel, 0);
   let alpha = clamp(source.a, 0.0, 1.0);
-  if (alpha <= COLOR_EPSILON) {
+  if (alpha <= RASTER_ADJUSTMENT_ALPHA_EPSILON) {
     textureStore(adjustedOutput, outputPixel, vec4<f32>(0.0, 0.0, 0.0, alpha));
     return;
   }
 
-  let straightLinear = clamp(
-    source.rgb / alpha,
-    vec3<f32>(0.0),
-    vec3<f32>(1.0)
-  );
-  let encoded = linearRgbToEncodedRgb(straightLinear);
+  let encoded = rasterAdjustmentStoredToStraightEncoded(source);
   let componentAdjusted = vec3<f32>(
     sampleCurveLut(encoded.r).y,
     sampleCurveLut(encoded.g).z,
@@ -136,10 +116,15 @@ fn adjustRasterTone(@builtin(global_invocation_id) gid: vec3<u32>) {
     sampleCurveLut(componentAdjusted.g).x,
     sampleCurveLut(componentAdjusted.b).x
   );
-  let result = encodedRgbToLinearRgb(compositeAdjusted) * alpha;
-  textureStore(adjustedOutput, outputPixel, vec4<f32>(result, alpha));
+  let stored = rasterAdjustmentStraightEncodedToStored(compositeAdjusted, alpha);
+  textureStore(adjustedOutput, outputPixel, rasterAdjustmentFinalizeStored(
+      stored,
+      gid.xy + parameters.outputOrigin,
+      parameters.quantizationSeed
+    ));
 }
 `;
+}
 
 /**
  * One dispatch computes all four 256-bin views. Transparent pixels are
@@ -147,12 +132,15 @@ fn adjustRasterTone(@builtin(global_invocation_id) gid: vec3<u32>) {
  * while the remaining ranges hold each component separately. A workgroup
  * histogram reduces global atomic contention on large layers.
  */
-export const rasterToneCurvesHistogramShader = /* wgsl */ `
+export function createRasterToneCurvesHistogramShader(
+  profile: RasterAdjustmentStorageProfile,
+): string {
+  return /* wgsl */ `
 @group(0) @binding(0) var sourceTexture: texture_2d<f32>;
 @group(0) @binding(1) var<storage, read_write> globalHistogram:
   array<atomic<u32>, ${RASTER_TONE_HISTOGRAM_VALUE_COUNT}>;
 
-${encodedRgbHelpers}
+${rasterAdjustmentStorageShader(profile)}
 
 const BIN_COUNT = 256u;
 const LOCAL_VALUE_COUNT = ${RASTER_TONE_HISTOGRAM_VALUE_COUNT}u;
@@ -187,12 +175,8 @@ fn buildRasterToneHistogram(
   if (gid.x < size.x && gid.y < size.y) {
     let source = textureLoad(sourceTexture, vec2<i32>(gid.xy), 0);
     let alpha = clamp(source.a, 0.0, 1.0);
-    if (alpha > COLOR_EPSILON) {
-      let encoded = linearRgbToEncodedRgb(clamp(
-        source.rgb / alpha,
-        vec3<f32>(0.0),
-        vec3<f32>(1.0)
-      ));
+    if (alpha > RASTER_ADJUSTMENT_ALPHA_EPSILON) {
+      let encoded = rasterAdjustmentStoredToStraightEncoded(source);
       let redBin = histogramBin(encoded.r);
       let greenBin = histogramBin(encoded.g);
       let blueBin = histogramBin(encoded.b);
@@ -221,3 +205,15 @@ fn buildRasterToneHistogram(
   }
 }
 `;
+}
+
+const LEGACY_RASTER_ADJUSTMENT_PROFILE: RasterAdjustmentStorageProfile = {
+  layerFormat: "rgba16float",
+  colorSpace: "linear-premultiplied",
+};
+
+/** Legacy shader exports retained for tests and standalone consumers. */
+export const rasterToneCurvesAdjustmentShader =
+  createRasterToneCurvesAdjustmentShader(LEGACY_RASTER_ADJUSTMENT_PROFILE);
+export const rasterToneCurvesHistogramShader =
+  createRasterToneCurvesHistogramShader(LEGACY_RASTER_ADJUSTMENT_PROFILE);

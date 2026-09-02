@@ -1,18 +1,18 @@
 /**
  * Shared layer blend-mode contract, independent from the current renderers.
  *
- * Storage is linear-light RGBA with premultiplied RGB. Blend functions B(Cb,Cs)
- * run on unassociated sRGB, matching the conventional encoded-sRGB blend
- * interpretation, then return to linear before W3C source-over compositing.
- * Source alpha must already include layer opacity. Dissolve is the one
- * coverage mode: it converts that effective source alpha to deterministic
- * binary coverage using a hash of the document pixel, then performs Normal
- * source-over. Its color function is therefore Normal; the coverage step lives
- * in the premultiplied compositors below.
+ * A document can store premultiplied RGBA either in linear light or directly
+ * in encoded sRGB. Blend functions B(Cb,Cs) always run on unassociated sRGB.
+ * Linear storage therefore transfers the straight channels around B, while
+ * encoded storage uses them directly; Porter-Duff coverage stays in the
+ * document's storage domain. Source alpha must already include layer opacity.
+ * Dissolve is the one coverage mode: it converts that effective source alpha
+ * to deterministic binary coverage using a hash of the document pixel, then
+ * performs Normal source-over. The coverage decision is color-domain neutral.
  */
 
 export const LAYER_BLEND_MODE_STRATEGY =
-  "srgb-blends-linear-premultiplied-w3c-alpha-document-anchored-dissolve-v2" as const;
+  "srgb-blends-dual-premultiplied-storage-w3c-alpha-document-anchored-dissolve-v3" as const;
 
 export const DEFAULT_LAYER_BLEND_MODE = "normal" as const;
 
@@ -196,6 +196,9 @@ export type LinearPremultipliedRgba = readonly [
   alpha: number,
 ];
 
+/** Premultiplied RGBA whose straight RGB channels are encoded sRGB. */
+export type EncodedSrgbPremultipliedRgba = LinearPremultipliedRgba;
+
 export type LayerBlendDocumentPixel = readonly [x: number, y: number];
 
 type Rgb = readonly [red: number, green: number, blue: number];
@@ -221,10 +224,10 @@ export function layerBlendDissolveRandom(
 
 /**
  * Converts effective premultiplied source alpha to stochastic binary coverage.
- * A kept pixel retains the source's straight linear color and
+ * A kept pixel retains the source's straight color in its current domain and
  * becomes fully covered; a rejected pixel becomes transparent.
  */
-export function dissolveLayerSourcePremultipliedLinear(
+export function dissolveLayerSourcePremultiplied(
   source: LinearPremultipliedRgba,
   documentPixel: LayerBlendDocumentPixel = [0, 0],
 ): LinearPremultipliedRgba {
@@ -247,6 +250,14 @@ export function dissolveLayerSourcePremultipliedLinear(
     1,
   ];
 }
+
+/**
+ * Compatibility name retained for callers created before encoded-sRGB
+ * storage existed. Dissolve changes alpha coverage only, so the same algebra
+ * is valid for premultiplied RGB in either supported storage domain.
+ */
+export const dissolveLayerSourcePremultipliedLinear =
+  dissolveLayerSourcePremultiplied;
 
 export const linearToSrgbChannel = (value: number): number => {
   const channel = clamp01(value);
@@ -485,7 +496,7 @@ export function blendLayerPremultipliedLinear(
     Math.min(sourceAlpha, Math.max(0, source[2])),
   ];
   if (mode === "dissolve") {
-    const dissolved = dissolveLayerSourcePremultipliedLinear(
+    const dissolved = dissolveLayerSourcePremultiplied(
       [...sourcePremultiplied, sourceAlpha],
       documentPixel,
     );
@@ -526,6 +537,78 @@ export function blendLayerPremultipliedLinear(
       backdropPremultiplied[channel] * (1 - sourceAlpha)
         + sourcePremultiplied[channel] * (1 - backdropAlpha)
         + overlapAlpha * blendedLinear[channel],
+    ),
+  );
+  return [compositeChannel(0), compositeChannel(1), compositeChannel(2), outputAlpha];
+}
+
+/**
+ * Composites two premultiplied texels already stored in encoded-sRGB space.
+ *
+ * The blend functions are defined on straight encoded channels, so this path
+ * deliberately performs no transfer-function round trip. Intermediate math
+ * remains f32; only the render target quantizes the returned value to RGBA8.
+ */
+export function blendLayerPremultipliedEncodedSrgb(
+  backdrop: EncodedSrgbPremultipliedRgba,
+  source: EncodedSrgbPremultipliedRgba,
+  mode: LayerBlendMode = DEFAULT_LAYER_BLEND_MODE,
+  documentPixel: LayerBlendDocumentPixel = [0, 0],
+): EncodedSrgbPremultipliedRgba {
+  const backdropAlpha = clamp01(backdrop[3]);
+  let sourceAlpha = clamp01(source[3]);
+  const backdropPremultiplied: Rgb = [
+    Math.min(backdropAlpha, Math.max(0, backdrop[0])),
+    Math.min(backdropAlpha, Math.max(0, backdrop[1])),
+    Math.min(backdropAlpha, Math.max(0, backdrop[2])),
+  ];
+  let sourcePremultiplied: Rgb = [
+    Math.min(sourceAlpha, Math.max(0, source[0])),
+    Math.min(sourceAlpha, Math.max(0, source[1])),
+    Math.min(sourceAlpha, Math.max(0, source[2])),
+  ];
+  if (mode === "dissolve") {
+    const dissolved = dissolveLayerSourcePremultiplied(
+      [...sourcePremultiplied, sourceAlpha],
+      documentPixel,
+    );
+    sourceAlpha = dissolved[3];
+    sourcePremultiplied = [dissolved[0], dissolved[1], dissolved[2]];
+  }
+  const outputAlpha = sourceAlpha + backdropAlpha * (1 - sourceAlpha);
+  const sourceOverChannel = (channel: 0 | 1 | 2): number => Math.min(
+    outputAlpha,
+    sourcePremultiplied[channel] + backdropPremultiplied[channel] * (1 - sourceAlpha),
+  );
+  if (mode === "normal" || mode === "dissolve") {
+    return [sourceOverChannel(0), sourceOverChannel(1), sourceOverChannel(2), outputAlpha];
+  }
+  if (sourceAlpha <= 0) {
+    return [...backdropPremultiplied, backdropAlpha];
+  }
+  if (backdropAlpha <= 0) {
+    return [...sourcePremultiplied, sourceAlpha];
+  }
+
+  const backdropSrgb: Rgb = [
+    backdropPremultiplied[0] / backdropAlpha,
+    backdropPremultiplied[1] / backdropAlpha,
+    backdropPremultiplied[2] / backdropAlpha,
+  ];
+  const sourceSrgb: Rgb = [
+    sourcePremultiplied[0] / sourceAlpha,
+    sourcePremultiplied[1] / sourceAlpha,
+    sourcePremultiplied[2] / sourceAlpha,
+  ];
+  const blendedSrgb = blendLayerSrgb(backdropSrgb, sourceSrgb, mode);
+  const overlapAlpha = backdropAlpha * sourceAlpha;
+  const compositeChannel = (channel: 0 | 1 | 2): number => Math.min(
+    outputAlpha,
+    Math.max(
+      0,
+      backdropPremultiplied[channel] * (1 - sourceAlpha)
+        + sourcePremultiplied[channel] * (1 - backdropAlpha)
+        + overlapAlpha * blendedSrgb[channel],
     ),
   );
   return [compositeChannel(0), compositeChannel(1), compositeChannel(2), outputAlpha];
@@ -881,6 +964,60 @@ fn layerBlendPremultipliedLinearSourceOver(
   let outputRgb = backdropPremultiplied * (1.0 - sourceAlpha)
     + sourcePremultiplied * (1.0 - backdropAlpha)
     + blendedLinear * (backdropAlpha * sourceAlpha);
+  return vec4<f32>(
+    clamp(outputRgb, vec3<f32>(0.0), vec3<f32>(outputAlpha)),
+    outputAlpha,
+  );
+}
+
+fn layerBlendPremultipliedEncodedSrgbSourceOver(
+  backdropInput: vec4<f32>,
+  sourceInput: vec4<f32>,
+  mode: u32,
+  documentPixel: vec2<i32>,
+) -> vec4<f32> {
+  let backdropAlpha = clamp(backdropInput.a, 0.0, 1.0);
+  var sourceAlpha = clamp(sourceInput.a, 0.0, 1.0);
+  let backdropPremultiplied = clamp(
+    backdropInput.rgb,
+    vec3<f32>(0.0),
+    vec3<f32>(backdropAlpha),
+  );
+  var sourcePremultiplied = clamp(
+    sourceInput.rgb,
+    vec3<f32>(0.0),
+    vec3<f32>(sourceAlpha),
+  );
+  if (mode == LAYER_BLEND_DISSOLVE) {
+    let dissolved = layerBlendDissolveSource(
+      sourcePremultiplied,
+      sourceAlpha,
+      documentPixel,
+    );
+    sourcePremultiplied = dissolved.rgb;
+    sourceAlpha = dissolved.a;
+  }
+  let outputAlpha = sourceAlpha + backdropAlpha * (1.0 - sourceAlpha);
+  if (mode == LAYER_BLEND_NORMAL || mode == LAYER_BLEND_DISSOLVE) {
+    let sourceOver = sourcePremultiplied + backdropPremultiplied * (1.0 - sourceAlpha);
+    return vec4<f32>(
+      clamp(sourceOver, vec3<f32>(0.0), vec3<f32>(outputAlpha)),
+      outputAlpha,
+    );
+  }
+  if (sourceAlpha <= 0.0) {
+    return vec4<f32>(backdropPremultiplied, backdropAlpha);
+  }
+  if (backdropAlpha <= 0.0) {
+    return vec4<f32>(sourcePremultiplied, sourceAlpha);
+  }
+
+  let backdropSrgb = backdropPremultiplied / backdropAlpha;
+  let sourceSrgb = sourcePremultiplied / sourceAlpha;
+  let blendedSrgb = layerBlendSrgb(backdropSrgb, sourceSrgb, mode);
+  let outputRgb = backdropPremultiplied * (1.0 - sourceAlpha)
+    + sourcePremultiplied * (1.0 - backdropAlpha)
+    + blendedSrgb * (backdropAlpha * sourceAlpha);
   return vec4<f32>(
     clamp(outputRgb, vec3<f32>(0.0), vec3<f32>(outputAlpha)),
     outputAlpha,

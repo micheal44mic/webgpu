@@ -10,13 +10,14 @@ const main = read("src/main.ts");
 const actionMatrix = read("src/history-action-matrix.ts");
 const engineSource = read("scripts/engine-source.mjs");
 
-assert.match(runtime, /format: "rgba16float"/);
+assert.match(runtime, /format: engine\.layerFormat/);
+assert.match(runtime, /format: profile\.layerFormat/);
 assert.match(runtime, /RASTER_COLOR_BALANCE_PARAMETER_BYTE_SIZE = 80/);
 for (const offset of [16, 32, 48]) {
   assert.match(runtime, new RegExp(`writeTone\\(${offset}, settings\\.`));
 }
 assert.match(runtime, /setFloat32\(64, settings\.preserveLuminosity \? 1 : 0, true\)/);
-assert.match(runtime, /sourceBounds\.width \* sourceBounds\.height \* BYTES_PER_RGBA16F_PIXEL/);
+assert.match(runtime, /rasterAdjustmentBytesPerPixel\(engine\.layerFormat\)/);
 assert.match(runtime, /requestAnimationFrame/);
 assert.match(runtime, /previewInFlight/);
 assert.match(runtime, /requestedSerial/);
@@ -24,13 +25,15 @@ assert.match(runtime, /encodedSerial/);
 assert.match(runtime, /await flushPreview\(engine, session\)/);
 assert.match(runtime, /filter: "color-balance"/);
 assert.match(runtime, /settings: copySettings\(session\.settings\)/);
-assert.match(runtime, /precision: DESTRUCTIVE_RASTER_COLOR_BALANCE_PRECISION/);
+assert.match(runtime, /DESTRUCTIVE_RASTER_COLOR_BALANCE_RGBA8_PRECISION/);
+assert.match(runtime, /engine\.layerFormat === "rgba8unorm"/);
 assert.match(runtime, /createLayerColdStorageCandidate/);
 assert.match(runtime, /commitHistoryActionAtomically/);
 assert.match(runtime, /selected\?\.kind !== "raster"/);
 assert.match(runtime, /selected\.rasterLayerId !== record\.id/);
 assert.match(runtime, /pixelSelectionState\.selectedPixels > 0/);
-assert.match(runtime, /layerFormat !== "rgba16float"/);
+assert.doesNotMatch(runtime, /requires an RGBA16F document/);
+assert.match(runtime, /const quantizationSeed = engine\.nextHistoryActionId >>> 0/);
 assert.match(runtime, /isRasterColorBalanceIdentity\(session\.settings\)/);
 assert.doesNotMatch(runtime, /histogram|MAP_READ|copyBufferToBuffer|curveLut/i);
 
@@ -43,7 +46,7 @@ assert.match(engine, /prewarmRasterColorBalanceResources/);
 assert.doesNotMatch(main, /prewarmRasterColorBalanceResources\(\)/);
 assert.match(
   runtime,
-  /export async function beginRasterColorBalance[\s\S]{0,6000}const shared = await requireSharedResources\(engine\.device\)/,
+  /export async function beginRasterColorBalance[\s\S]{0,6000}const shared = await requireSharedResources\(engine\.device, \{[\s\S]{0,180}documentStorageColorSpace/,
   "opening Color Balance must compile its shared resources on demand",
 );
 assert.match(engineSource, /engine-raster-color-balance-runtime\.ts/);

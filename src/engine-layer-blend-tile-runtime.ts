@@ -604,7 +604,7 @@ export function encodeLayerBlendTilePresentation(
       if (activeNeedsStyledBake) {
         renderer.encodeBake({
           encoder,
-          targetView: compositor.views[TILE_INDEX_SOURCE],
+          targetView: compositor.bakeView,
           sourceMode: activeMode,
           style: engine.rasterStrokeStyle,
           bevelStyle: engine.rasterBevelStyle,
@@ -637,7 +637,7 @@ export function encodeLayerBlendTilePresentation(
     const activeSource: LayerBlendTileSource = activeNeedsBake
       ? {
         view: activeNeedsStyledBake
-          ? compositor.views[TILE_INDEX_SOURCE]
+          ? compositor.bakeView
           : engine.transparentLayerView,
         cutoutView: activeNeedsLiveMatte ? compositor.authoredMatteView : engine.layerView,
         cutoutOrigin: activeNeedsLiveMatte
@@ -822,10 +822,28 @@ export function encodeLayerBlendTilePresentation(
 
     // Build the clipping unit into operand tile 2 before it meets the external backdrop.
     if (activeGroup?.mode === "active-child") {
-      if (!activeGroup.base) {
-        throw new Error("The active clipping child has no immutable base.");
+      let clippingBase: LayerBlendTileSource;
+      if (activeGroup.base) {
+        clippingBase = sourceForSurface(activeGroup.base);
+      } else {
+        // An empty parent has no allocated prefix surface, but still defines a
+        // valid transparent clipping matte. Keep the active child invisible
+        // until the parent receives coverage instead of treating that sparse
+        // representation as a fatal compositor state.
+        compositor.clearClippingBase(
+          encoder,
+          `${label} · clear empty clipping-child immutable base`,
+          textureRect.width,
+          textureRect.height,
+        );
+        clippingBase = {
+          view: compositor.clippingBaseView,
+          origin: { x: textureRect.x, y: textureRect.y },
+          scale: 1,
+          width: textureRect.width,
+          height: textureRect.height,
+        };
       }
-      const clippingBase = sourceForSurface(activeGroup.base);
       compositor.clearDocumentMask(
         encoder,
         `${label} · clear clipping document mask`,

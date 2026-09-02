@@ -581,6 +581,41 @@ function createHarness() {
     true,
     "canvas settings tools must remain locked for ordinary busy interactions",
   );
+
+  harness.controller.renderMenuState({
+    activeCanvasTool: "paint",
+    engineReady: true,
+    interactionLocked: false,
+    adjustmentSettlementAvailable: false,
+    canvasToolSelectionLocked: false,
+    toolSettingsSelectionLocked: false,
+    vectorEditorReady: false,
+    vectorEditorLocked: false,
+    textSelected: false,
+    svgSelected: false,
+    textTransformActive: false,
+    vectorOutlineEnabled: false,
+    vectorDropShadowEnabled: false,
+    vectorInnerShadowEnabled: false,
+    vectorBlockShadowEnabled: false,
+    rasterColorOverlayTargetSelected: true,
+    rasterDeformTargetSelected: true,
+    rasterEffectsEnabled: {
+      "color-overlay": false,
+      stroke: false,
+      "outer-shadow": false,
+      "inner-shadow": false,
+      bevel: false,
+    },
+    isCanvasToolSupported: (tool) => tool === "pan" || tool === "selection",
+    semanticToolsSupported: false,
+    rasterEffectsSupported: false,
+  });
+  assert.equal(harness.paintButton.disabled, true);
+  assert.equal(harness.fillButton.disabled, true);
+  assert.equal(harness.textButton.disabled, true);
+  assert.equal(harness.importSvgButton.disabled, true);
+  assert.equal(harness.strokeButton.disabled, true);
   harness.controller.dispose();
 }
 

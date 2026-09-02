@@ -87,6 +87,21 @@ assert.match(controllerSource, /this\.options\.setLayerClipping\(properties\.key
 const panelCompositionStart = mainSource.indexOf("layerPanelController = new LayerPanelController({");
 const panelCompositionEnd = mainSource.indexOf("window.addEventListener(\"pagehide\"", panelCompositionStart);
 const panelComposition = mainSource.slice(panelCompositionStart, panelCompositionEnd);
+assert.doesNotMatch(
+  panelComposition,
+  /Layer merging is paused|Rasterization is paused|Layer clipping.*paused|documentPixelWritesRestricted/,
+  "validated RGBA8 layer operations must not be blocked by the editor shell",
+);
+assert.match(
+  panelComposition,
+  /mergeLayers: \(keys\) => sceneEditorController!\.mergeLayers\(keys\)/,
+  "layer merge must reach the scene controller for every validated document profile",
+);
+assert.match(
+  panelComposition,
+  /addClippingMaskLayer: \(\) => sceneEditorController\?\.addClippingMaskLayer\(\)/,
+  "adding a clipping layer must reach the scene controller for RGBA8 documents",
+);
 assert.match(
   panelComposition,
   /setDocumentBackgroundVisibility:[\s\S]*?projectSessionController\?\.markDirty\("document background visibility"\)/,

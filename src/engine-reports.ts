@@ -1,6 +1,5 @@
 import type { BrushEngine } from "./brush-engine";
 import { type LayerFormat } from "./engine-types";
-import { RGBA16_FLOAT_BYTES_PER_PIXEL } from "./float16";
 import { STROKE_CURVE_STRATEGY } from "./stroke-curve-core";
 import { STROKE_STABILIZATION_STRATEGY } from "./stroke-stabilization-core";
 import {
@@ -526,11 +525,12 @@ export function getBenchmarkEnvironment(engine: BrushEngine): {
     lightGlazeAdaptivePreviewStrategy: LIGHT_GLAZE_ADAPTIVE_PREVIEW_STRATEGY,
     lightGlazeStorageAllocated: engine.lightGlazeStorageAllocated,
     lightGlazeStorageMode: engine.lightGlazeStorageMode,
-    lightGlazeCommitStrategy: engine.lightGlazeStorageMode === "r16float-coverage"
-      ? "fixed-function-render-target"
-      : engine.lightGlazeInPlaceCommitPipeline && engine.lightGlazeInPlaceCommitBindGroup
+    lightGlazeCommitStrategy:
+      engine.lightGlazeInPlaceCommitPipeline && engine.lightGlazeInPlaceCommitBindGroup
         ? "compute-in-place-read-write-storage"
-        : "render-copy-scratch-tile",
+        : engine.lightGlazeCommitTileTexture
+          ? "render-copy-scratch-tile"
+          : "fixed-function-render-target",
     lightGlazeAdditionalMemoryMiB: engine.lightGlazeStorageAllocated
       ? lightGlazeAdditionalMemoryMiB(
         engine.layerFormat,
@@ -887,7 +887,7 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
   const presentationCacheMiB = engine.presentationCacheTexture
     ? engine.presentationCacheWidth
       * engine.presentationCacheHeight
-      * RGBA16_FLOAT_BYTES_PER_PIXEL
+      * (engine.canvasFormat === "rgba16float" ? 8 : 4)
       / MEBIBYTE_BYTES
     : 0;
   const layerThumbnailMiB =

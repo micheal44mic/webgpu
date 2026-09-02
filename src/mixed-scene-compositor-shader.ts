@@ -1,7 +1,7 @@
 import { rasterPixelViewShaderHelpers } from "./raster-pixel-view.ts";
 
 export const MIXED_SCENE_COMPOSITOR_STRATEGY =
-  "ordered-raster-vector-gpu-runs-rgba16f-roi-source-over-post-opacity-raster-floor-mip-parity-v7" as const;
+  "ordered-raster-vector-gpu-runs-rgba16f-storage-aware-roi-source-over-post-opacity-raster-floor-mip-parity-v8" as const;
 
 export const MIXED_SCENE_LINEAR_FORMAT = "rgba16float" as const;
 
@@ -44,7 +44,8 @@ struct DisplayUniforms {
   clippingSuffixOrigin: vec2<f32>,
   backgroundColor: vec4<f32>,
   documentSize: vec2<f32>,
-  _documentPadding: vec2<f32>,
+  compositingColorSpace: f32,
+  _padDisplay: f32,
 };
 
 fn layerPositionAt(fragmentPosition: vec2<f32>) -> vec2<f32> {
@@ -74,6 +75,24 @@ struct SegmentUniforms {
 
 ${rasterPixelViewShaderHelpers}
 ${fullscreenVertexShader}
+
+fn srgbToLinearChannel(value: f32) -> f32 {
+  if (value <= 0.04045) { return value / 12.92; }
+  return pow((value + 0.055) / 1.055, 2.4);
+}
+
+fn rasterSegmentSourceForLinearWorkingTarget(value: vec4<f32>) -> vec4<f32> {
+  if (display.compositingColorSpace < 1.5) { return value; }
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let straightSrgb = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  let straightLinear = vec3<f32>(
+    srgbToLinearChannel(straightSrgb.r),
+    srgbToLinearChannel(straightSrgb.g),
+    srgbToLinearChannel(straightSrgb.b)
+  );
+  return vec4<f32>(straightLinear * alpha, alpha);
+}
 
 @fragment
 fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
@@ -108,16 +127,18 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   // and make identical pixels change sharpness when layer activation changes.
   let lod = floor(continuousLod + 0.000001);
   if (rasterPixelViewEnabled(effectiveResolutionScale)) {
-    return textureLoad(
+    return rasterSegmentSourceForLinearWorkingTarget(textureLoad(
       sourceTexture,
       rasterPixelViewTexel(
         uv,
         vec2<i32>(textureDimensions(sourceTexture, 0))
       ),
       0
-    ) * segment.opacity;
+    )) * segment.opacity;
   }
-  return textureSampleLevel(sourceTexture, sourceSampler, uv, lod) * segment.opacity;
+  return rasterSegmentSourceForLinearWorkingTarget(
+    textureSampleLevel(sourceTexture, sourceSampler, uv, lod)
+  ) * segment.opacity;
 }
 `;
 
@@ -376,6 +397,18 @@ fn backgroundFragmentMain() -> @location(0) vec4<f32> {
   return vec4<f32>(srgbToLinear(display.backgroundColor.rgb) * alpha, alpha);
 }
 
+// Layer-flattening passes write back into the document's native storage
+// contract. Encoded RGBA8 therefore receives encoded premultiplied color,
+// while legacy linear documents retain their established representation.
+@fragment
+fn storageBackgroundFragmentMain() -> @location(0) vec4<f32> {
+  let alpha = select(0.0, 1.0, display.backgroundColor.a > 0.5);
+  if (display.compositingColorSpace > 1.5) {
+    return vec4<f32>(display.backgroundColor.rgb * alpha, alpha);
+  }
+  return vec4<f32>(srgbToLinear(display.backgroundColor.rgb) * alpha, alpha);
+}
+
 @fragment
 fn sourceFragmentMain(
   @builtin(position) fragmentPosition: vec4<f32>
@@ -412,6 +445,22 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     display.backgroundColor.rgb,
     display.backgroundColor.a > 0.5
   );
+  if (display.compositingColorSpace > 1.5) {
+    let alpha = clamp(paint.a, 0.0, 1.0);
+    var encodedPremultiplied = vec3<f32>(0.0);
+    if (alpha > 0.000001) {
+      let straightLinear = clamp(
+        paint.rgb / alpha,
+        vec3<f32>(0.0),
+        vec3<f32>(1.0)
+      );
+      encodedPremultiplied = linearToSrgb(straightLinear) * alpha;
+    }
+    return vec4<f32>(
+      encodedPremultiplied + backgroundSrgb * (1.0 - alpha),
+      1.0
+    );
+  }
   let backgroundLinear = srgbToLinear(backgroundSrgb);
   let compositedLinear = paint.rgb + backgroundLinear * (1.0 - paint.a);
   return vec4<f32>(linearToSrgb(compositedLinear), 1.0);

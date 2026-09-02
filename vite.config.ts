@@ -89,18 +89,29 @@ function labsHtmlShell(): Plugin {
     transformIndexHtml: {
       order: "pre",
       async handler(html, context) {
-        if (!context.path.endsWith("/labs.html")) {
+        const labEntry = context.path.endsWith("/labs.html")
+          ? {
+              startup: "/src/labs/startup.ts",
+              title: "WebGPU Brush Engine Labs",
+            }
+          : context.path.endsWith("/rgba8-brush-lab.html")
+            ? {
+                startup: "/src/labs/rgba8-brush-startup.ts",
+                title: "RGBA8 Direct Deposit Brush Lab",
+              }
+            : null;
+        if (!labEntry) {
           return html;
         }
         const editorHtml = await readFile(resolve(__dirname, "index.html"), "utf8");
         return editorHtml
           .replace(
             '<script type="module" src="/src/startup.ts"></script>',
-            '<script type="module" src="/src/labs/startup.ts"></script>',
+            `<script type="module" src="${labEntry.startup}"></script>`,
           )
           .replace(
             "<title>WebGPU Brush Engine</title>",
-            "<title>WebGPU Brush Engine Labs</title>",
+            `<title>${labEntry.title}</title>`,
           );
       },
     },
@@ -118,7 +129,10 @@ export default defineConfig(({ mode }) => ({
         outDir: "dist-labs",
         emptyOutDir: true,
         rollupOptions: {
-          input: resolve(__dirname, "labs.html"),
+          input: {
+            labs: resolve(__dirname, "labs.html"),
+            "rgba8-brush-lab": resolve(__dirname, "rgba8-brush-lab.html"),
+          },
         },
       }
     : mode === "gpu-diagnostics"

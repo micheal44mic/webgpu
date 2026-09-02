@@ -8,6 +8,7 @@ const stroke = readSource("../src/stroke-renderer.ts");
 const rasterTransform = readSource("../src/raster-transform-shader.ts");
 const rasterDeform = readSource("../src/raster-deform-shader.ts");
 const engine = readSource("../src/brush-engine.ts");
+const runtime = readSource("../src/engine-runtime-misc.ts");
 const resources = readSource("../src/engine-resource-setup.ts");
 const layerRuntime = readSource("../src/engine-layer-runtime.ts");
 const reports = readSource("../src/engine-reports.ts");
@@ -17,19 +18,53 @@ assert.match(
   /PAINT_DISPLAY_MINIFICATION_STRATEGY\s*=\s*\n?\s*"gamma-premultiplied-box-preserve-alpha-no-post-sample-coverage-rewrite-v2"/,
 );
 
+const singleRasterStart = shaders.indexOf(
+  "export const singleRasterRgba16FloatDisplayShader",
+);
 const displayStart = shaders.indexOf("export const displayShader");
 const tailStart = shaders.indexOf("export const thicknessTailDisplayShader");
 const glazeStart = shaders.indexOf("export const lightGlazeDisplayShader");
 const mipStart = shaders.indexOf("export const paintMipDownsampleShader");
 const nextShader = shaders.indexOf("export const", mipStart + 1);
+const storedEncodedMipStart = shaders.indexOf(
+  "export const storedEncodedPaintMipDownsampleShader",
+);
+const storedEncodedMipEnd = shaders.indexOf("export const", storedEncodedMipStart + 1);
+assert.ok(singleRasterStart >= 0 && displayStart > singleRasterStart);
 assert.ok(displayStart >= 0 && tailStart > displayStart && glazeStart > tailStart);
 assert.ok(mipStart >= 0 && nextShader > mipStart);
+assert.ok(storedEncodedMipStart >= 0 && storedEncodedMipEnd > storedEncodedMipStart);
 
+const singleRasterDisplay = shaders.slice(singleRasterStart, displayStart);
 const permanentDisplay = shaders.slice(displayStart, tailStart);
 const liveTailDisplay = shaders.slice(tailStart, glazeStart);
 const mipDownsample = shaders.slice(mipStart, nextShader);
+const storedEncodedMipDownsample = shaders.slice(storedEncodedMipStart, storedEncodedMipEnd);
+const stackMipStart = shaders.indexOf("export const paintStackCompositeMipShader");
+const nextStackShader = shaders.indexOf("export const", stackMipStart + 1);
+const stackMipEnd = nextStackShader >= 0 ? nextStackShader : shaders.length;
+assert.ok(stackMipStart >= 0 && stackMipEnd > stackMipStart);
+const stackMipDownsample = shaders.slice(stackMipStart, stackMipEnd);
 const forbiddenCoverageRewrite =
   /preserve(?:Minified|Merged|Styled)?DarkCoverage|encodedCoverage|displayAlpha/;
+
+assert.match(singleRasterDisplay, /documentSize:\s*vec2<f32>/);
+assert.match(singleRasterDisplay, /compositingColorSpace:\s*f32/);
+assert.match(
+  singleRasterDisplay,
+  /if \(display\.compositingColorSpace > 1\.5\) \{[\s\S]*?return paint\.rgb \+ backgroundSrgb \* \(1\.0 - alpha\);[\s\S]*?\}/,
+  "the single-raster presenter must not encode stored-sRGB paint a second time",
+);
+assert.match(
+  singleRasterDisplay,
+  /if \(display\.compositingColorSpace > 0\.5\) \{[\s\S]*?singleRasterLinearToSrgb\(straightLinear\) \* alpha/,
+  "the single-raster presenter must preserve encoded-premultiplied legacy composition",
+);
+assert.match(
+  singleRasterDisplay,
+  /let backgroundLinear = singleRasterSrgbToLinear\(backgroundSrgb\);[\s\S]*?paint\.rgb \+ backgroundLinear \* \(1\.0 - alpha\)/,
+  "the single-raster presenter must preserve linear-light legacy composition",
+);
 
 for (const [label, source] of [
   ["permanent display", permanentDisplay],
@@ -65,6 +100,47 @@ assert.match(mipDownsample, /linearPremultipliedToGamma/);
 assert.match(mipDownsample, /gammaPremultipliedToLinear/);
 assert.match(mipDownsample, /let gammaAverage =/);
 assert.doesNotMatch(mipDownsample, /encodedCoverage|displayAlpha/);
+assert.equal((storedEncodedMipDownsample.match(/textureLoad\(/g) ?? []).length, 4);
+assert.match(
+  storedEncodedMipDownsample,
+  /let averaged = \(p00 \+ p10 \+ p01 \+ p11\) \* 0\.25;/,
+);
+assert.match(storedEncodedMipDownsample, /quantizeRgba8HighFrequencyAdjacent\(/);
+assert.match(storedEncodedMipDownsample, /targetCoordinate/);
+assert.doesNotMatch(
+  storedEncodedMipDownsample,
+  /srgbToLinear|linearToSrgb|linearPremultipliedToGamma|gammaPremultipliedToLinear/,
+  "already-encoded premultiplied mips must not apply another color transfer",
+);
+assert.match(
+  runtime,
+  /displayCompositingColorSpace === "stored-encoded-srgb"[\s\S]*?storedEncodedPaintMipDownsampleShader[\s\S]*?: paintMipDownsampleShader/,
+  "stored encoded layers must select the direct encoded-domain mip shader",
+);
+const desiredMipPlanStart = engine.indexOf("private desiredPaintDisplayMipPlan()");
+const desiredMipPlanEnd = engine.indexOf("downsampleDirtyRect(", desiredMipPlanStart);
+const desiredMipPlan = engine.slice(desiredMipPlanStart, desiredMipPlanEnd);
+assert.match(desiredMipPlan, /return planPaintDisplayMips\(/);
+assert.doesNotMatch(
+  desiredMipPlan,
+  /stored-encoded-srgb|legacyMipLevel:\s*0/,
+  "stored encoded layers must use the normal zoom-dependent mip plan",
+);
+assert.match(stackMipDownsample, /compositingColorSpace:\s*f32/);
+assert.match(
+  stackMipDownsample,
+  /if \(display\.compositingColorSpace > 1\.5\) \{[\s\S]*?quantizeRgba8HighFrequencyAdjacent\([\s\S]*?\(p00 \+ p10 \+ p01 \+ p11\) \* 0\.25/,
+  "the first multi-layer mip must stay in the stored encoded domain",
+);
+assert.match(
+  stackMipDownsample,
+  /let gammaAverage =[\s\S]*?return gammaPremultipliedToLinear\(gammaAverage\);/,
+  "legacy compositing modes must retain their established mip filter",
+);
+assert.match(
+  stackMipDownsample,
+  /return downsampleCompositedPaint\([\s\S]*?vec2<u32>\(fragmentPosition\.xy\)/,
+);
 
 // The cropped live patch stays mip-0-only. Its minification is resolved in
 // the existing document-space active-layer pyramid, never on the ROI grid.

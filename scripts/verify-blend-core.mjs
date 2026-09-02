@@ -31,9 +31,12 @@ import {
   blendBlurUpsampleShader,
   blendBlurVerticalShader,
   blendDepositShader,
+  blendGatherShader,
   blendPickupShader,
+  blendScatterShader,
 } from "../src/blend-shaders.ts";
 import { destructiveGaussianBlurKernel } from "../src/gaussian-blur-core.ts";
+import { quantizeUnorm8HighFrequencyAdjacent } from "../src/rgba8-high-frequency-quantization.ts";
 
 const approx = (actual, expected, epsilon = 1e-6) => {
   assert.ok(Math.abs(actual - expected) <= epsilon, `${actual} != ${expected}`);
@@ -125,6 +128,115 @@ assert.match(blendPickupShader, /let sampleDocumentPosition = clamp\(/);
 assert.match(blendPickupShader, /var pigment = sum \/ max\(total, 0\.000001\)/);
 assert.match(blendPickupShader, /else \{\s*\/\/ A completely off-canvas step[\s\S]*?pigment = previous;/);
 
+assert.match(
+  blendGatherShader,
+  /blendEncodedSrgbPremultipliedToLinear\(bounded\)/,
+  "RGBA8 encoded-premultiplied pixels must be decoded before Blend transport",
+);
+assert.match(
+  blendGatherShader,
+  /let straightSrgb = clamp\(value\.rgb \/ alpha/,
+  "sRGB transfer must run on straight color, never premultiplied components",
+);
+assert.match(
+  blendScatterShader,
+  /blendLinearPremultipliedToEncodedSrgb\(bounded\)/,
+  "Blend must encode its linear f32 result at the persistent RGBA8 boundary",
+);
+assert.match(
+  blendScatterShader,
+  /quantizeRgba8HighFrequencyAdjacent\([\s\S]*?vec2<u32>\(documentPixel\)[\s\S]*?blend\.options\.x/,
+  "RGBA8 quantization must be adjacent-code, document-anchored and replay-stable",
+);
+assert.match(blendBlurHorizontalShader, /pack2x16unorm\(value\.xy\)/);
+assert.match(blendBlurHorizontalShader, /unpack2x16unorm\(value\.x\)/);
+assert.doesNotMatch(
+  blendBlurHorizontalShader,
+  /pack2x16float|unpack2x16float/,
+  "Blend blur scratch must retain uniform 16-bit precision across dark values",
+);
+
+const clamp01 = (value) => Math.max(0, Math.min(1, value));
+const srgbToLinear = (value) => {
+  const bounded = clamp01(value);
+  return bounded <= 0.04045
+    ? bounded / 12.92
+    : ((bounded + 0.055) / 1.055) ** 2.4;
+};
+const linearToSrgb = (value) => {
+  const bounded = clamp01(value);
+  return bounded <= 0.0031308
+    ? bounded * 12.92
+    : 1.055 * bounded ** (1 / 2.4) - 0.055;
+};
+const decodeEncodedPremultiplied = (rgba) => {
+  const alpha = clamp01(rgba[3]);
+  if (alpha <= 1e-7) return [0, 0, 0, 0];
+  return [
+    srgbToLinear(clamp01(rgba[0] / alpha)) * alpha,
+    srgbToLinear(clamp01(rgba[1] / alpha)) * alpha,
+    srgbToLinear(clamp01(rgba[2] / alpha)) * alpha,
+    alpha,
+  ];
+};
+const encodeLinearPremultiplied = (rgba) => {
+  const alpha = clamp01(rgba[3]);
+  if (alpha <= 1e-7) return [0, 0, 0, 0];
+  return [
+    linearToSrgb(clamp01(rgba[0] / alpha)) * alpha,
+    linearToSrgb(clamp01(rgba[1] / alpha)) * alpha,
+    linearToSrgb(clamp01(rgba[2] / alpha)) * alpha,
+    alpha,
+  ];
+};
+
+// A dark, translucent code exercises the exact failure mode of treating stored
+// encoded components as if they were linear premultiplied values.
+const storedEncoded = [19, 37, 61, 96].map((code) => code / 255);
+const workingLinear = decodeEncodedPremultiplied(storedEncoded);
+assert.ok(
+  Math.abs(workingLinear[0] - storedEncoded[0]) > 0.01,
+  "the dark encoded fixture must materially differ from a linear interpretation",
+);
+const encodedAgain = encodeLinearPremultiplied(workingLinear);
+encodedAgain.forEach((value, channel) => approx(value, storedEncoded[channel], 1e-7));
+
+for (let alphaCode = 1; alphaCode <= 255; alphaCode += 1) {
+  const alpha = alphaCode / 255;
+  for (let colorCode = 0; colorCode <= alphaCode; colorCode += 1) {
+    const encoded = colorCode / 255;
+    const decoded = decodeEncodedPremultiplied([encoded, encoded, encoded, alpha]);
+    const restored = encodeLinearPremultiplied(decoded);
+    approx(restored[0], encoded, 1e-7);
+    approx(restored[1], encoded, 1e-7);
+    approx(restored[2], encoded, 1e-7);
+    approx(restored[3], alpha, 1e-7);
+  }
+}
+
+const quantizationCoordinate = [173, 91];
+const quantizationSeed = 0x1234abcd;
+const continuousEncoded = encodeLinearPremultiplied([0.0037, 0.031, 0.143, 0.42]);
+const quantizedCodes = continuousEncoded.map((value) =>
+  quantizeUnorm8HighFrequencyAdjacent(
+    value,
+    quantizationCoordinate[0],
+    quantizationCoordinate[1],
+    quantizationSeed,
+  )
+);
+quantizedCodes.forEach((code, channel) => {
+  const scaled = clamp01(continuousEncoded[channel]) * 255;
+  assert.ok(
+    code === Math.floor(scaled) || code === Math.ceil(scaled),
+    "Blend finalization must select only adjacent RGBA8 codes",
+  );
+});
+assert.ok(
+  quantizedCodes.slice(0, 3).every((code) => code <= quantizedCodes[3]),
+  "shared-threshold quantization must preserve premultiplied RGB <= alpha",
+);
+
 const brushEngineSource = readEngineSource();
 assert.match(
   brushEngineSource,
@@ -193,6 +305,27 @@ const blendCoreSource = await readFile(
   new URL("../src/blend-core.ts", import.meta.url),
   "utf8",
 );
+
+assert.match(
+  blendRendererSource,
+  /documentStorageColorSpace: DocumentStorageColorSpace/,
+  "Blend must receive the authoritative document storage contract explicitly",
+);
+assert.match(
+  blendRendererSource,
+  /unsigned\[40\] = \(this\.activeHistoryActionId \?\? 0\) >>> 0/,
+  "the quantization phase must persist with the Blend history payload",
+);
+assert.match(
+  blendRendererSource,
+  /this\.documentStorageColorSpace === "encoded-srgb-premultiplied" \? 8 : 0/,
+  "the encoded RGBA8 storage flag must be written into every Blend batch",
+);
+assert.match(
+  blendRendererSource,
+  /this\.documentStorageColorSpace = documentStorageColorSpace/,
+  "a reused Blend renderer must adopt the incoming document color contract",
+);
 assert.match(blendRendererSource, /async prewarmSelectedVariant\(/);
 assert.match(
   blendRendererSource,
@@ -211,7 +344,7 @@ assert.doesNotMatch(
 );
 assert.match(blendDepositShader, /override blendCustomShape: bool = false/);
 assert.match(blendDepositShader, /override blendGrainEnabled: bool = false/);
-assert.match(blendBlurHorizontalShader, /pack2x16float/);
+assert.match(blendBlurHorizontalShader, /pack2x16unorm/);
 assert.match(blendBlurHorizontalShader, /documentClampedState/);
 assert.match(blendBlurVerticalShader, /mix\(original, result, clamp\(blend\.grainAffineAndPhase\.w/);
 assert.match(blendBlurDownsampleShader, /positiveModulo\(roiOrigin\(\)\.x, scale\)/);
@@ -708,6 +841,7 @@ const createFakeBlendRenderer = async (DryBlendRenderer) => {
     documentWidth: 64,
     documentHeight: 64,
     layerFormat: "rgba16float",
+    documentStorageColorSpace: "linear-premultiplied",
     layerView: view,
     layerSamplingView: view,
     shapeMaskView: view,
@@ -824,6 +958,7 @@ try {
   renderer.reconfigureDocumentTarget({
     documentWidth: 1080,
     documentHeight: 1920,
+    documentStorageColorSpace: "linear-premultiplied",
     layerView: nextLayerView,
     layerSamplingView: nextLayerSamplingView,
   });
@@ -841,12 +976,25 @@ try {
     programOnlyMemoryMiB,
     "changing Blend documents must leave only program-owned uniform buffers allocated",
   );
+  assert.equal(renderer.documentStorageColorSpace, "linear-premultiplied");
   renderer.prewarmScratch();
   assert.equal(device.pipelineDescriptors.length, compiledPipelineCount);
   assert.throws(
     () => renderer.reconfigureDocumentTarget({
+      documentWidth: 1080,
+      documentHeight: 1920,
+      documentStorageColorSpace: "encoded-srgb-premultiplied",
+      layerView: {},
+      layerSamplingView: {},
+    }),
+    /requires an RGBA8 UNORM layer/,
+    "encoded storage cannot be paired with a floating-point document target",
+  );
+  assert.throws(
+    () => renderer.reconfigureDocumentTarget({
       documentWidth: 0,
       documentHeight: 1920,
+      documentStorageColorSpace: "linear-premultiplied",
       layerView: {},
       layerSamplingView: {},
     }),

@@ -169,14 +169,27 @@ function transitionMask(value: number, range: LayerTonalRange): number {
   return low * high;
 }
 
-function premultipliedDisplayTone(input: LinearPremultipliedRgba): number {
+export type LayerTonalBlendStorage =
+  | "linear-premultiplied"
+  | "encoded-srgb-premultiplied";
+
+function premultipliedDisplayTone(
+  input: LinearPremultipliedRgba,
+  storage: LayerTonalBlendStorage,
+): number {
   const alpha = Math.min(1, Math.max(0, input[3]));
   if (alpha <= 0) {
     return 0;
   }
-  const red = linearToSrgbChannel(Math.min(1, Math.max(0, input[0] / alpha)));
-  const green = linearToSrgbChannel(Math.min(1, Math.max(0, input[1] / alpha)));
-  const blue = linearToSrgbChannel(Math.min(1, Math.max(0, input[2] / alpha)));
+  const displayChannel = (channel: number): number => {
+    const straight = Math.min(1, Math.max(0, channel / alpha));
+    return storage === "encoded-srgb-premultiplied"
+      ? straight
+      : linearToSrgbChannel(straight);
+  };
+  const red = displayChannel(input[0]);
+  const green = displayChannel(input[1]);
+  const blue = displayChannel(input[2]);
   return red * 0.2126 + green * 0.7152 + blue * 0.0722;
 }
 
@@ -184,7 +197,8 @@ export function layerTonalBlendMask(
   source: LinearPremultipliedRgba,
   backdrop: LinearPremultipliedRgba,
   value: LayerTonalBlend,
+  storage: LayerTonalBlendStorage = "linear-premultiplied",
 ): number {
-  return transitionMask(premultipliedDisplayTone(source), value.current)
-    * transitionMask(premultipliedDisplayTone(backdrop), value.underlying);
+  return transitionMask(premultipliedDisplayTone(source, storage), value.current)
+    * transitionMask(premultipliedDisplayTone(backdrop, storage), value.underlying);
 }
