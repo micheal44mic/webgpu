@@ -19,6 +19,7 @@ import type {
 
 export interface ProjectSessionEngineSwitchTarget {
   readonly kind: ProjectSessionSwitchRequest["kind"];
+  readonly routeProjectId: string | null;
   readonly project: ProjectLoadResultV1 | null;
   readonly name: string;
   readonly documentWidth: number;
@@ -37,7 +38,9 @@ export interface ProjectSessionEnginePort {
   sceneSnapshot(): unknown;
   setInitialLayerName(name: string): void;
   /** Validates/quiesces a same-runtime replacement without mutating the source document. */
-  preflightDocumentSwitch?(target: ProjectSessionEngineSwitchTarget): Promise<void>;
+  preflightDocumentSwitch?(
+    target: ProjectSessionEngineSwitchTarget,
+  ): Promise<void | "reload-target">;
   /** Crosses the destructive boundary and leaves a fresh document host. */
   resetDocumentForSwitch?(target: ProjectSessionEngineSwitchTarget): Promise<void>;
   /** Resolves only after the first complete target presentation is GPU-complete. */
@@ -101,6 +104,13 @@ interface ProjectSaveOptions {
 interface VerifiedProjectHead {
   readonly project: ProjectLoadResultV1;
   readonly url: string;
+}
+
+class TargetRuntimeReloadRequired extends Error {
+  constructor(readonly target: ProjectSessionEngineSwitchTarget) {
+    super("The selected project needs a fresh GPU document runtime.");
+    this.name = "TargetRuntimeReloadRequired";
+  }
 }
 
 function canvasBlob(
@@ -397,6 +407,7 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
     }
     return [
       "new",
+      request.routeProjectId?.trim() ?? "",
       request.documentWidth,
       request.documentHeight,
       normalizeProjectTitle(request.name),
@@ -502,9 +513,28 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
 
       stage = "preflight-engine";
       await this.reportSwitchStage(stage);
-      await this.engine.preflightDocumentSwitch!(target);
+      const preflightDisposition = await this.engine.preflightDocumentSwitch!(target);
       if (this.dirty) {
         throw new Error("The source project changed after its durable head was verified.");
+      }
+      if (preflightDisposition === "reload-target") {
+        if (target.kind === "existing") {
+          target = await this.loadSwitchTarget({
+            kind: "existing",
+            projectId: target.project!.summary.id,
+            preloadedProject: null,
+          });
+        }
+        if (this.dirty) {
+          throw new Error("The source project changed while the reload target was verified.");
+        }
+        throw new TargetRuntimeReloadRequired(target);
+      }
+      if (target.kind === "existing") {
+        await this.prepareProjectPresentation?.(target.project!);
+        if (this.dirty) {
+          throw new Error("The source project changed while target resources were prepared.");
+        }
       }
       await this.onDocumentSwitchPreReset!(target);
       if (this.dirty) {
@@ -579,8 +609,15 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const fallbackAction = destructive ? "reload-source" : "stay-current";
-      const fallback = this.createFallback(fallbackAction, sourceHead);
+      const targetReloadRequired = error instanceof TargetRuntimeReloadRequired;
+      const fallbackAction = targetReloadRequired
+        ? "reload-target"
+        : destructive
+          ? "reload-source"
+          : "stay-current";
+      const fallback = targetReloadRequired
+        ? this.createTargetReloadFallback(error.target)
+        : this.createFallback(fallbackAction, sourceHead);
       if (destructive) {
         this.recoveryRequired = true;
         this.trackingSuspended = true;
@@ -588,6 +625,9 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
           `Project switch stopped after the document reset: ${message}`,
           "error",
         );
+      } else if (targetReloadRequired) {
+        this.trackingSuspended = false;
+        this.setStatus("Reloading the project with its saved document profile…", "working");
       } else {
         this.trackingSuspended = false;
         this.setStatus(`Project switch stopped: ${message}`, "error");
@@ -639,6 +679,7 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
       validateDocumentDimensions(request.documentWidth, request.documentHeight);
       return {
         kind: "new",
+        routeProjectId: request.routeProjectId?.trim() || null,
         project: null,
         name: normalizeProjectTitle(request.name),
         documentWidth: request.documentWidth,
@@ -663,6 +704,7 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
     );
     return {
       kind: "existing",
+      routeProjectId: projectId,
       project,
       name: project.summary.name,
       documentWidth: project.summary.documentWidth,
@@ -704,6 +746,7 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
     const summary = verified.project.summary;
     return {
       kind: "existing",
+      routeProjectId: summary.id,
       project: verified.project,
       name: summary.name,
       documentWidth: summary.documentWidth,
@@ -750,6 +793,33 @@ export class ProjectSessionController implements ProjectEditorSessionLifecycle {
       action,
       projectId: source?.project.summary.id ?? null,
       url,
+    };
+  }
+
+  private createTargetReloadFallback(
+    target: ProjectSessionEngineSwitchTarget,
+  ): ProjectSessionSwitchFallback {
+    const url = new URL(this.browser.location.href);
+    url.search = "";
+    url.hash = "";
+    url.searchParams.set("documentWidth", String(target.documentWidth));
+    url.searchParams.set("documentHeight", String(target.documentHeight));
+    if (target.documentWidth === target.documentHeight) {
+      url.searchParams.set("documentSize", String(target.documentWidth));
+    }
+    if (target.kind === "existing") {
+      url.searchParams.set("project", target.project!.summary.id);
+    } else {
+      const routeProjectId = target.routeProjectId
+        ?? `project-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+      url.searchParams.set("project", routeProjectId);
+      url.searchParams.set("newProject", "1");
+      url.searchParams.set("projectName", target.name);
+    }
+    return {
+      action: "reload-target",
+      projectId: target.project?.summary.id ?? null,
+      url: url.href,
     };
   }
 

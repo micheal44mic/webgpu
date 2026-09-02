@@ -155,6 +155,7 @@ function projectSessionSwitchRequest(
     if (!dimensions) return null;
     return {
       kind: "new",
+      routeProjectId: url.searchParams.get("project")?.trim() || null,
       name: normalizeProjectTitle(url.searchParams.get("projectName") ?? "Untitled Artwork"),
       documentWidth: dimensions[0],
       documentHeight: dimensions[1],
@@ -756,6 +757,18 @@ async function boot(): Promise<void> {
           suspendedEditorUrl = new URL(window.location.href);
           suspendedEditorTitle = document.title;
           if (await flushQueuedHistoryTarget()) return;
+          return;
+        }
+
+        if (result.fallback.action === "reload-target") {
+          queuedHistoryTarget = null;
+          lifecycle.dispose();
+          const reloadUrl = result.fallback.url ?? url.href;
+          if ((switchRequest.historyMode ?? "push") === "replace") {
+            window.location.replace(reloadUrl);
+          } else {
+            window.location.assign(reloadUrl);
+          }
           return;
         }
 

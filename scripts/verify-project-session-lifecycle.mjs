@@ -267,6 +267,8 @@ let failNextPreReset = false;
 let dirtyNextPreReset = false;
 let rewriteTargetNextPreReset = false;
 let rewriteTargetAfterFirstFrame = false;
+let reloadTargetNextPreflight = false;
+let dirtyReloadTargetNextPreflight = false;
 let activeSwitchTarget = null;
 let failNextReturnHome = false;
 let controller;
@@ -318,6 +320,15 @@ const engine = {
   preflightDocumentSwitch: async (target) => {
     order.push(`preflight:${target.kind}`);
     activeSwitchTarget = target;
+    if (dirtyReloadTargetNextPreflight) {
+      dirtyReloadTargetNextPreflight = false;
+      controller.markDirty("late preflight edit");
+      return "reload-target";
+    }
+    if (reloadTargetNextPreflight) {
+      reloadTargetNextPreflight = false;
+      return "reload-target";
+    }
   },
   resetDocumentForSwitch: async (target) => {
     order.push(`reset:${target.kind}`);
@@ -534,6 +545,63 @@ assert.equal(
   String(WIDTH * 2),
   "the published route follows the new active width",
 );
+
+order.length = 0;
+reloadTargetNextPreflight = true;
+const reloadTarget = await controller.switchProject({
+  kind: "existing",
+  projectId: summaryA.id,
+  preloadedProject: backingStorage.loadProject(summaryA.id),
+});
+assert.equal(reloadTarget.status, "failed");
+assert.equal(reloadTarget.stage, "preflight-engine");
+assert.equal(reloadTarget.destructive, false);
+assert.equal(reloadTarget.fallback.action, "reload-target");
+assert.equal(reloadTarget.fallback.projectId, summaryA.id);
+assert.equal(order.includes("pre-reset:existing"), false, "target reload precedes UI invalidation");
+assert.equal(order.includes("reset:existing"), false, "target reload never mutates the source engine");
+const targetReloadUrl = new URL(reloadTarget.fallback.url);
+assert.equal(targetReloadUrl.searchParams.get("project"), summaryA.id);
+assert.equal(targetReloadUrl.searchParams.get("documentWidth"), String(WIDTH));
+assert.equal(targetReloadUrl.searchParams.get("documentHeight"), String(HEIGHT));
+assert.equal(targetReloadUrl.searchParams.has("projectSwitch"), false);
+assert.equal(
+  new URL(browser.location.href).searchParams.get("project"),
+  resized.targetProjectId,
+  "target reload leaves the verified source route unchanged until navigation",
+);
+
+order.length = 0;
+reloadTargetNextPreflight = true;
+const newTargetReload = await controller.switchProject({
+  kind: "new",
+  routeProjectId: "project-new-runtime-target",
+  name: "Fresh Profile Canvas",
+  documentWidth: WIDTH,
+  documentHeight: HEIGHT * 2,
+});
+assert.equal(newTargetReload.status, "failed");
+assert.equal(newTargetReload.fallback.action, "reload-target");
+assert.equal(newTargetReload.fallback.projectId, null);
+const newTargetReloadUrl = new URL(newTargetReload.fallback.url);
+assert.equal(newTargetReloadUrl.searchParams.get("project"), "project-new-runtime-target");
+assert.equal(newTargetReloadUrl.searchParams.get("newProject"), "1");
+assert.equal(newTargetReloadUrl.searchParams.get("projectName"), "Fresh Profile Canvas");
+assert.equal(newTargetReloadUrl.searchParams.get("documentWidth"), String(WIDTH));
+assert.equal(newTargetReloadUrl.searchParams.get("documentHeight"), String(HEIGHT * 2));
+assert.equal(order.includes("reset:new"), false, "new target reload preserves the source engine");
+
+order.length = 0;
+dirtyReloadTargetNextPreflight = true;
+const dirtyTargetReload = await controller.switchProject({
+  kind: "existing",
+  projectId: summaryA.id,
+  preloadedProject: backingStorage.loadProject(summaryA.id),
+});
+assert.equal(dirtyTargetReload.status, "failed");
+assert.equal(dirtyTargetReload.fallback.action, "stay-current");
+assert.match(dirtyTargetReload.message, /changed after its durable head was verified/);
+assert.equal(order.includes("reset:existing"), false, "a late edit cancels target reload navigation");
 
 order.length = 0;
 failNextPreReset = true;

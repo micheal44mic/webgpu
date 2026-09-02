@@ -13,6 +13,8 @@ export interface ExistingProjectSessionSwitchRequest {
 
 export interface NewProjectSessionSwitchRequest {
   readonly kind: "new";
+  /** Provisional route identity retained when the target needs a fresh runtime. */
+  readonly routeProjectId?: string | null;
   readonly name: string;
   readonly documentWidth: number;
   readonly documentHeight: number;
@@ -39,8 +41,11 @@ export type ProjectSessionSwitchStage =
   | "publish-target";
 
 export interface ProjectSessionSwitchFallback {
-  /** `reload-source` is required after the engine crossed its reset boundary. */
-  readonly action: "none" | "stay-current" | "reload-source";
+  /**
+   * `reload-target` changes GPU document contracts before reset; `reload-source`
+   * recovers the verified source after the engine crossed its reset boundary.
+   */
+  readonly action: "none" | "stay-current" | "reload-target" | "reload-source";
   readonly projectId: string | null;
   readonly url: string | null;
 }

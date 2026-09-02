@@ -1139,10 +1139,7 @@ projectSessionController = new ProjectSessionController({
         targetLayerFormat !== engine.layerFormat
         || targetColorSpace !== engine.documentStorageColorSpace
       ) {
-        throw new Error(
-          "This project uses a different document pixel profile. Reload the target "
-          + "from Home before opening it; the current project was not changed.",
-        );
+        return "reload-target";
       }
       await engine.waitForIdle();
     },
@@ -3216,6 +3213,9 @@ async function finishEditorDocumentSwitch(
         phaseElapsedMs: 0,
         detail: null,
       });
+      return;
+    }
+    if (result.status === "failed" && result.fallback.action === "reload-target") {
       return;
     }
     if (result.status === "failed" && !result.destructive) {

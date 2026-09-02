@@ -910,11 +910,6 @@ export async function restoreProjectDocument(
     (item) => item.kind !== "raster",
   );
   if (engine.documentStorageColorSpace === "encoded-srgb-premultiplied") {
-    if (containsSemanticItems) {
-      throw new Error(
-        "This RGBA8 sRGB project contains semantic layers whose renderer is not validated yet.",
-      );
-    }
     if (records.some(rasterLayerHasUnvalidatedEffects)) {
       throw new Error(
         "This RGBA8 sRGB project uses raster layer effects that are not validated yet.",

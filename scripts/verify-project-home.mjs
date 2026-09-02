@@ -96,8 +96,16 @@ expect(startup, "const suspended = explicitEditorDimensions(suspendedEditorUrl)"
 reject(startup, "sameSuspendedDimensions(url)", "same-size-only in-place switch gate");
 expect(startup, 'get("projectSwitch") !== "reload"', "document switch kill switch");
 expect(startup, "await lifecycle.switchProject(switchRequest)", "in-place project switch request");
+expect(startup, 'routeProjectId: url.searchParams.get("project")', "new-project reload identity");
 expect(startup, 'await lifecycle.returnHome("none")', "settled popstate return Home");
 expect(startup, "queuedHistoryTarget = target", "serialized history navigation");
+expect(startup, 'result.fallback.action === "reload-target"', "target runtime reload route");
+expect(
+  startup,
+  "window.location.assign(reloadUrl)",
+  "target runtime reload navigation",
+);
+expect(startup, "window.location.replace(reloadUrl)", "target popstate reload navigation");
 expect(startup, 'result.fallback.action === "reload-source"', "verified source recovery route");
 expect(
   startup,
@@ -406,6 +414,12 @@ expect(main, '"Preparing Clone"', "Clone preparation loading label");
 expect(main, '"Updating selection"', "selection loading label");
 expect(projectSession, '"Saving Project"', "project save loading label");
 expect(main, "documentSwitchGeneration += 1", "document switch continuation generation");
+expect(main, 'return "reload-target";', "cross-profile project runtime handoff");
+expect(
+  main,
+  'result.fallback.action === "reload-target"',
+  "target reload keeps the loading overlay visible until navigation",
+);
 expect(main, '|| (result.status === "failed" && !result.destructive)',
   "post-switch control unlock gate");
 expect(brushEngine, "this.notifyViewChange(false);", "presentation-only canvas resize view signal");

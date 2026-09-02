@@ -808,6 +808,11 @@ assert.notEqual(restoreStart, -1);
 const restoreBody = runtimeSource.slice(restoreStart);
 assert.doesNotMatch(
   restoreBody,
+  /RGBA8 sRGB project contains semantic layers whose renderer is not validated yet/,
+  "encoded RGBA8 projects must restore saved SVG and text layers",
+);
+assert.doesNotMatch(
+  restoreBody,
   /RGBA8 sRGB project uses (?:advanced layer composition|layer clipping) that is not validated yet/,
   "encoded RGBA8 projects must restore saved layer composition and clipping state",
 );
