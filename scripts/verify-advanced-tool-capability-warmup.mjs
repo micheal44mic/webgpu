@@ -197,6 +197,11 @@ assert.match(
 );
 assert.match(
   toolSettingsOpening,
+  /scope === "semantic-scene" && !engine\.optionalEditorResourcesReady[\s\S]*?"Preparing Vector Effects"[\s\S]*?revealImmediately: true, waitForPaint: true/,
+  "cold vector effects must paint feedback before compiling their GPU graph",
+);
+assert.match(
+  toolSettingsOpening,
   /requestSequence === toolSettingsOpenRequestSequence/,
   "a stale panel request must not reopen after a newer tap",
 );

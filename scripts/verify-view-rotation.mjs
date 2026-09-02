@@ -367,7 +367,7 @@ assert.equal((mergedSurfaceSource.match(/rasterPixelViewEnabled\(resolutionScale
   "entrambe le superfici raster unite devono usare nearest sopra soglia");
 assert.match(
   mixedSceneCompositorSource,
-  /ordered-raster-vector-gpu-runs-rgba16f-storage-aware-roi-source-over-post-opacity-raster-floor-mip-parity-v8/,
+  /ordered-raster-vector-gpu-runs-rgba16f-tagged-premultiplied-roi-mip-srgb-aware-source-over-v10/,
 );
 const mixedRasterSegment = mixedSceneCompositorSource.slice(
   mixedSceneCompositorSource.indexOf("export const mixedSceneRasterSegmentShader"),

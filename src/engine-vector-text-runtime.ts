@@ -99,6 +99,7 @@ import {
 import {
   vectorTextFastPresentationMode,
 } from "./vector-text-adaptive-zoom";
+import { rasterImageMipmapShader } from "./raster-image-shader";
 
 const rasterLayerNeedsBackdropComposition = (record: LayerRecord): boolean => (
   record.blendMode !== "normal"
@@ -505,9 +506,9 @@ function refineVectorTextGpuRunCoverage(
 }
 
 /**
- * Builds the device-static resources needed by direct indexed vector meshes.
- * Concurrent callers share one promise, and engine fields are published only
- * after both pipelines have compiled successfully.
+ * Builds the device-static resources needed by direct indexed vector meshes
+ * and their shared exact-area reduction pass. Concurrent callers share one
+ * promise, and engine fields are published only after every pipeline compiles.
  */
 export function initializeVectorMeshFillGpuRenderer(engine: BrushEngine): Promise<void> {
   const device = engine.device;
@@ -525,7 +526,21 @@ export function initializeVectorMeshFillGpuRenderer(engine: BrushEngine): Promis
       label: `Vector text geometry WGSL · ${VECTOR_TEXT_GPU_RENDER_STRATEGY}`,
       code: vectorTextGpuShader,
     });
-    await assertShaderCompiled(shaderModule, "vector text indexed geometry");
+    const hasCompleteReductionResources = Boolean(
+      engine.rasterImageMipmapShaderModule
+        && engine.rasterImageMipmapBindGroupLayout
+        && engine.rasterImageMipmapPipeline,
+    );
+    const reductionShaderModule = hasCompleteReductionResources
+      ? engine.rasterImageMipmapShaderModule!
+      : device.createShaderModule({
+        label: "Shared premultiplied exact-area reduction WGSL",
+        code: rasterImageMipmapShader,
+      });
+    await Promise.all([
+      assertShaderCompiled(shaderModule, "vector text indexed geometry"),
+      assertShaderCompiled(reductionShaderModule, "premultiplied exact-area reduction"),
+    ]);
 
     const uniformBindGroupLayout = device.createBindGroupLayout({
       label: "Vector text dynamic draw uniform bind group layout",
@@ -546,6 +561,14 @@ export function initializeVectorMeshFillGpuRenderer(engine: BrushEngine): Promis
       size: VECTOR_TEXT_GPU_MAXIMUM_DRAWS * VECTOR_TEXT_GPU_UNIFORM_STRIDE,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+    const reductionBindGroupLayout = hasCompleteReductionResources
+      ? engine.rasterImageMipmapBindGroupLayout!
+      : device.createBindGroupLayout({
+        label: "Shared premultiplied exact-area reduction bind group layout",
+        entries: [
+          { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        ],
+      });
     try {
       const uniformBindGroup = device.createBindGroup({
         label: "Vector text dynamic uniform bind group",
@@ -585,7 +608,13 @@ export function initializeVectorMeshFillGpuRenderer(engine: BrushEngine): Promis
         label: "Vector text cropped run transparent clear pipeline layout",
         bindGroupLayouts: [],
       });
-      const [fillPipeline, qualityFillPipeline, clearPipeline] = await Promise.all([
+      const reductionLayout = hasCompleteReductionResources
+        ? null
+        : device.createPipelineLayout({
+          label: "Shared premultiplied exact-area reduction pipeline layout",
+          bindGroupLayouts: [reductionBindGroupLayout],
+        });
+      const [fillPipeline, qualityFillPipeline, clearPipeline, reductionPipeline] = await Promise.all([
         createRenderPipelineAsync(device, {
           label: "Vector text indexed fill MSAA4 source-over pipeline",
           layout: textLayout,
@@ -633,6 +662,22 @@ export function initializeVectorMeshFillGpuRenderer(engine: BrushEngine): Promis
           },
           primitive: { topology: "triangle-list" },
         }),
+        hasCompleteReductionResources
+          ? Promise.resolve(engine.rasterImageMipmapPipeline!)
+          : createRenderPipelineAsync(device, {
+            label: "Shared premultiplied exact-area reduction pipeline",
+            layout: reductionLayout!,
+            vertex: {
+              module: reductionShaderModule,
+              entryPoint: "vertexMain",
+            },
+            fragment: {
+              module: reductionShaderModule,
+              entryPoint: "fragmentMain",
+              targets: [{ format: VECTOR_TEXT_GPU_TARGET_FORMAT }],
+            },
+            primitive: { topology: "triangle-list" },
+          }),
       ]);
       if (engine.device !== device) {
         throw new Error("The WebGPU device changed while vector mesh pipelines compiled.");
@@ -646,6 +691,9 @@ export function initializeVectorMeshFillGpuRenderer(engine: BrushEngine): Promis
       engine.vectorTextGpuFillPipeline = fillPipeline;
       engine.vectorTextGpuQualityFillPipeline = qualityFillPipeline;
       engine.vectorTextGpuClearPipeline = clearPipeline;
+      engine.rasterImageMipmapShaderModule = reductionShaderModule;
+      engine.rasterImageMipmapBindGroupLayout = reductionBindGroupLayout;
+      engine.rasterImageMipmapPipeline = reductionPipeline;
       if (previousUniformBuffer !== uniformBuffer) {
         previousUniformBuffer?.destroy();
       }

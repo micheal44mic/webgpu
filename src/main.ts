@@ -2787,6 +2787,12 @@ editorToolsController = new EditorToolsController({
               initialize,
               { revealImmediately: true, waitForPaint: true },
             );
+          } else if (scope === "semantic-scene" && !engine.optionalEditorResourcesReady) {
+            requestedController = await canvasStartupOverlay.runRuntimeOperation(
+              "Preparing Vector Effects",
+              initialize,
+              { revealImmediately: true, waitForPaint: true },
+            );
           } else {
             requestedController = await initialize();
           }

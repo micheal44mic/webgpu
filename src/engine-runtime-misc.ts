@@ -347,7 +347,7 @@ export async function finishStaticResourceCreation(
       label: "Ordered layer blend ping-pong WGSL",
       code: LAYER_BLEND_COMPOSITOR_WGSL,
     });
-    engine.rasterImageMipmapShaderModule = engine.device.createShaderModule({
+    engine.rasterImageMipmapShaderModule ??= engine.device.createShaderModule({
       label: "Raster image premultiplied sRGB mipmap WGSL",
       code: rasterImageMipmapShader,
     });
@@ -573,7 +573,7 @@ export async function finishStaticResourceCreation(
       0,
       blendUniformUpload,
     );
-    engine.rasterImageMipmapBindGroupLayout = engine.device.createBindGroupLayout({
+    engine.rasterImageMipmapBindGroupLayout ??= engine.device.createBindGroupLayout({
       label: "Raster image mipmap bind group layout",
       entries: [
         { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
@@ -691,9 +691,10 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    const mixedSceneTextEncodedCompositePipelinePromise = createRenderPipelineAsync(
-      engine.device,
-      {
+    const mixedSceneTextEncodedCompositePipelinePromise =
+      engine.mixedSceneTextEncodedCompositePipeline
+        ? Promise.resolve(engine.mixedSceneTextEncodedCompositePipeline)
+        : createRenderPipelineAsync(engine.device, {
         label: "Mixed scene encoded vector backdrop composite pipeline",
         layout: engine.device.createPipelineLayout({
           label: "Mixed scene encoded vector backdrop composite pipeline layout",
@@ -709,8 +710,7 @@ export async function finishStaticResourceCreation(
           targets: [{ format: MIXED_SCENE_LINEAR_FORMAT }],
         },
         primitive: { topology: "triangle-list" },
-      },
-    );
+      });
     const mixedSceneShapePreviewPipelinePromise = engine.mixedSceneShapePreviewPipeline
       ? Promise.resolve(engine.mixedSceneShapePreviewPipeline)
       : createRenderPipelineAsync(engine.device, {
@@ -730,23 +730,25 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
-    const rasterImageMipmapPipelinePromise = createRenderPipelineAsync(engine.device, {
-      label: "Raster image premultiplied sRGB mipmap pipeline",
-      layout: engine.device.createPipelineLayout({
-        label: "Raster image mipmap pipeline layout",
-        bindGroupLayouts: [engine.rasterImageMipmapBindGroupLayout],
-      }),
-      vertex: {
-        module: engine.rasterImageMipmapShaderModule,
-        entryPoint: "vertexMain",
-      },
-      fragment: {
-        module: engine.rasterImageMipmapShaderModule,
-        entryPoint: "fragmentMain",
-        targets: [{ format: "rgba16float" }],
-      },
-      primitive: { topology: "triangle-list" },
-    });
+    const rasterImageMipmapPipelinePromise = engine.rasterImageMipmapPipeline
+      ? Promise.resolve(engine.rasterImageMipmapPipeline)
+      : createRenderPipelineAsync(engine.device, {
+        label: "Raster image premultiplied sRGB mipmap pipeline",
+        layout: engine.device.createPipelineLayout({
+          label: "Raster image mipmap pipeline layout",
+          bindGroupLayouts: [engine.rasterImageMipmapBindGroupLayout],
+        }),
+        vertex: {
+          module: engine.rasterImageMipmapShaderModule,
+          entryPoint: "vertexMain",
+        },
+        fragment: {
+          module: engine.rasterImageMipmapShaderModule,
+          entryPoint: "fragmentMain",
+          targets: [{ format: "rgba16float" }],
+        },
+        primitive: { topology: "triangle-list" },
+      });
     const rasterImagePremultiplyPipelinePromise = createRenderPipelineAsync(engine.device, {
       label: "Raster image straight-sRGB to linear-premultiplied pipeline",
       layout: engine.device.createPipelineLayout({

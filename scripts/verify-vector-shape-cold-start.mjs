@@ -44,6 +44,7 @@ for (const required of [
   "Mixed scene active base layer source-over pipeline",
   "Mixed scene live shape preview source-over pipeline",
   "Mixed scene text segment source-over pipeline",
+  "Mixed scene encoded vector backdrop composite pipeline",
   "initializeVectorMeshFillGpuRenderer",
 ]) {
   assert.match(resourceSource, new RegExp(required));
@@ -56,7 +57,7 @@ assert.doesNotMatch(
 for (const deferredFamily of [
   "Gaussian",
   "InnerShadow",
-  "rasterImage",
+  "rasterImageMixedScene",
   "layerBlendCompositor",
   "mixedSceneActiveRasterStroke",
   "mixedSceneActiveThicknessTail",
@@ -89,7 +90,10 @@ const meshBody = vectorRuntimeSource.slice(meshStart, meshEnd);
 assert.match(meshBody, /createRenderPipelineAsync/);
 assert.doesNotMatch(meshBody, /\.createRenderPipeline\(/);
 assert.match(meshBody, /vectorTextGpuFillPipeline/);
+assert.match(meshBody, /vectorTextGpuQualityFillPipeline/);
 assert.match(meshBody, /vectorTextGpuClearPipeline/);
+assert.match(meshBody, /rasterImageMipmapBindGroupLayout/);
+assert.match(meshBody, /rasterImageMipmapPipeline/);
 assert.doesNotMatch(meshBody, /Slug|Gaussian|InnerShadow/);
 
 assert.match(
@@ -106,6 +110,26 @@ assert.match(
   staticResourceSource,
   /vectorTextGpuBlurFilterUniformBuffer \?\?=[\s\S]*?vectorTextGpuBlurSampler \?\?=/,
   "the full upgrade must preserve advanced vector allocations already published",
+);
+assert.match(
+  staticResourceSource,
+  /rasterImageMipmapShaderModule \?\?=/,
+  "the full upgrade must preserve the shared exact-area reduction shader",
+);
+assert.match(
+  staticResourceSource,
+  /rasterImageMipmapBindGroupLayout \?\?=/,
+  "the full upgrade must preserve the shared exact-area reduction layout",
+);
+assert.match(
+  staticResourceSource,
+  /rasterImageMipmapPipeline\s*\? Promise\.resolve\(engine\.rasterImageMipmapPipeline\)/,
+  "the full upgrade must reuse the shared exact-area reduction pipeline",
+);
+assert.match(
+  staticResourceSource,
+  /mixedSceneTextEncodedCompositePipeline\s*\? Promise\.resolve\(engine\.mixedSceneTextEncodedCompositePipeline\)/,
+  "the full upgrade must reuse the encoded vector compositor",
 );
 assert.match(
   engineSource,
@@ -247,12 +271,18 @@ function previewHarness({ nativeAsync = true, rejectLabelOnce = null } = {}) {
       mixedSceneTextSegmentShaderModule: null,
       mixedSceneTextSegmentBindGroupLayout: null,
       mixedSceneTextSegmentPipeline: null,
+      mixedSceneTextEncodedCompositeBindGroupLayout: null,
+      mixedSceneTextEncodedCompositePipeline: null,
       vectorTextGpuShaderModule: null,
       vectorTextGpuUniformBindGroupLayout: null,
       vectorTextGpuUniformBuffer: null,
       vectorTextGpuUniformBindGroup: null,
       vectorTextGpuFillPipeline: null,
+      vectorTextGpuQualityFillPipeline: null,
       vectorTextGpuClearPipeline: null,
+      rasterImageMipmapShaderModule: null,
+      rasterImageMipmapBindGroupLayout: null,
+      rasterImageMipmapPipeline: null,
     },
   };
 }
@@ -276,18 +306,43 @@ try {
     ensureMixedSceneVectorShapeResources(concurrent.engine),
     ensureMixedSceneVectorShapeResources(concurrent.engine),
   ]);
-  assert.equal(concurrent.calls.shaderModules, 6, "mesh fill adds exactly two shader modules");
-  assert.equal(concurrent.calls.bindGroupLayouts, 6, "mesh fill adds exactly two layouts");
+  assert.equal(
+    concurrent.calls.shaderModules,
+    7,
+    "vector shapes add text, mesh and shared reduction shaders",
+  );
+  assert.equal(
+    concurrent.calls.bindGroupLayouts,
+    8,
+    "vector shapes add text, encoded-composite, mesh and reduction layouts",
+  );
   assert.equal(concurrent.calls.bindGroups, 3, "mesh fill adds one dynamic uniform group");
   assert.equal(concurrent.calls.buffers, 2, "mesh fill adds one dynamic uniform buffer");
-  assert.equal(concurrent.calls.pipelines, 9, "mesh fill adds exactly three pipelines");
+  assert.equal(
+    concurrent.calls.pipelines,
+    12,
+    "vector shapes add both compositors, both fill modes, clear and reduction",
+  );
+  for (const readyField of [
+    "mixedSceneTextSegmentPipeline",
+    "mixedSceneTextEncodedCompositeBindGroupLayout",
+    "mixedSceneTextEncodedCompositePipeline",
+    "vectorTextGpuFillPipeline",
+    "vectorTextGpuQualityFillPipeline",
+    "vectorTextGpuClearPipeline",
+    "rasterImageMipmapShaderModule",
+    "rasterImageMipmapBindGroupLayout",
+    "rasterImageMipmapPipeline",
+  ]) {
+    assert.ok(concurrent.engine[readyField], `${readyField} must be ready after the cold gate`);
+  }
   assert.doesNotMatch(
     concurrent.calls.pipelineLabels.join("\n"),
     /Slug|Gaussian|blur|inner shadow|inner-shadow/i,
     "plain vector shapes must leave advanced vector effects cold",
   );
   await ensureMixedSceneVectorShapeResources(concurrent.engine);
-  assert.equal(concurrent.calls.pipelines, 9, "a warm vector-shape gate must not compile again");
+  assert.equal(concurrent.calls.pipelines, 12, "a warm vector-shape gate must not compile again");
 
   const retry = previewHarness({ rejectLabelOnce: "live shape preview" });
   await assert.rejects(
@@ -298,11 +353,27 @@ try {
   await ensureMixedSceneShapePreviewResources(retry.engine);
   assert.equal(retry.calls.buffers, 2, "a failed preview must be retryable from a clean buffer");
 
+  const reducerRetry = previewHarness({ rejectLabelOnce: "exact-area reduction pipeline" });
+  await assert.rejects(
+    ensureMixedSceneVectorShapeResources(reducerRetry.engine),
+    /Synthetic pipeline failure/,
+  );
+  assert.equal(
+    reducerRetry.engine.rasterImageMipmapPipeline,
+    null,
+    "a failed reduction compile must not publish a partial pipeline",
+  );
+  await ensureMixedSceneVectorShapeResources(reducerRetry.engine);
+  assert.ok(
+    reducerRetry.engine.rasterImageMipmapPipeline,
+    "a failed reduction compile must be retryable",
+  );
+
   const fallback = previewHarness({ nativeAsync: false });
   await ensureMixedSceneVectorShapeResources(fallback.engine);
   assert.equal(
     fallback.calls.pipelines,
-    9,
+    12,
     "older WebGPU implementations must compile the same minimal graph synchronously",
   );
 } finally {

@@ -43,8 +43,13 @@ function vectorShapeResourcesReady(engine: BrushEngine): boolean {
     && Boolean(
       engine.mixedSceneTextSegmentPipeline
         && engine.mixedSceneTextSegmentBindGroupLayout
+        && engine.mixedSceneTextEncodedCompositePipeline
+        && engine.mixedSceneTextEncodedCompositeBindGroupLayout
         && engine.vectorTextGpuFillPipeline
-        && engine.vectorTextGpuClearPipeline,
+        && engine.vectorTextGpuQualityFillPipeline
+        && engine.vectorTextGpuClearPipeline
+        && engine.rasterImageMipmapBindGroupLayout
+        && engine.rasterImageMipmapPipeline,
     );
 }
 
@@ -276,7 +281,25 @@ export async function ensureMixedSceneVectorShapeResources(
           { binding: 6, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
         ],
       });
-    const [textPipeline] = await Promise.all([
+    const encodedCompositeBindGroupLayout = engine.mixedSceneTextEncodedCompositeBindGroupLayout
+      ?? engine.device.createBindGroupLayout({
+        label: "Mixed scene encoded vector composite bind group layout",
+        entries: [
+          { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+          { binding: 1, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+          { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+          { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+          { binding: 4, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+          { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+          { binding: 6, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+          {
+            binding: 7,
+            visibility: GPUShaderStage.FRAGMENT,
+            texture: { sampleType: "unfilterable-float" },
+          },
+        ],
+      });
+    const [textPipeline, encodedCompositePipeline] = await Promise.all([
       engine.mixedSceneTextSegmentPipeline
         ? Promise.resolve(engine.mixedSceneTextSegmentPipeline)
         : createRenderPipelineAsync(engine.device, {
@@ -293,6 +316,22 @@ export async function ensureMixedSceneVectorShapeResources(
           },
           primitive: { topology: "triangle-list" },
         }),
+      engine.mixedSceneTextEncodedCompositePipeline
+        ? Promise.resolve(engine.mixedSceneTextEncodedCompositePipeline)
+        : createRenderPipelineAsync(engine.device, {
+          label: "Mixed scene encoded vector backdrop composite pipeline",
+          layout: engine.device.createPipelineLayout({
+            label: "Mixed scene encoded vector backdrop composite pipeline layout",
+            bindGroupLayouts: [encodedCompositeBindGroupLayout],
+          }),
+          vertex: { module: textShaderModule, entryPoint: "vertexMain" },
+          fragment: {
+            module: textShaderModule,
+            entryPoint: "encodedCompositeFragmentMain",
+            targets: [{ format: MIXED_SCENE_LINEAR_FORMAT }],
+          },
+          primitive: { topology: "triangle-list" },
+        }),
       initializeVectorMeshFillGpuRenderer(engine),
     ]);
 
@@ -300,6 +339,8 @@ export async function ensureMixedSceneVectorShapeResources(
     engine.mixedSceneTextSegmentShaderModule = textShaderModule;
     engine.mixedSceneTextSegmentBindGroupLayout = textBindGroupLayout;
     engine.mixedSceneTextSegmentPipeline = textPipeline;
+    engine.mixedSceneTextEncodedCompositeBindGroupLayout = encodedCompositeBindGroupLayout;
+    engine.mixedSceneTextEncodedCompositePipeline = encodedCompositePipeline;
   })();
   vectorShapeCreationPromises.set(engine, initialization);
   try {

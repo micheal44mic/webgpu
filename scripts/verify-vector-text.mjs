@@ -4076,7 +4076,7 @@ assert.match(
 );
 assert.match(
   mainSource,
-  /toolSettingsRequireMixedScene\(requestedKind\)[\s\S]{0,420}initializeMixedSceneController\(scope\)[\s\S]{0,520}mobileToolSettingsSheet\?\.open\(requestedKind, trigger\)/,
+  /toolSettingsRequireMixedScene\(requestedKind\)[\s\S]{0,1200}initializeMixedSceneController\(scope\)[\s\S]{0,1200}mobileToolSettingsSheet\?\.open\(requestedKind, trigger\)/,
   "Text must initialize the lightweight mixed-scene controller only after the user requests it",
 );
 assert.match(
