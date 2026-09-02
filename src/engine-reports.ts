@@ -143,10 +143,16 @@ import {
 import { LAYER_COLD_COMPRESSION_RUNTIME_BUILD } from "./layer-cold-compression-client";
 import { LAYER_BLEND_MODE_ORDER } from "./layer-blend-modes";
 import {
+  VECTOR_TEXT_GPU_QUALITY_SCALE,
+  VECTOR_TEXT_GPU_QUALITY_MAX_SCALE,
+  VECTOR_TEXT_GPU_QUALITY_TILE_SIZE,
   VECTOR_TEXT_GPU_SAMPLE_COUNT,
   VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL,
 } from "./vector-text-gpu-shader";
-import { VECTOR_TEXT_RUN_CACHE_UNIFORM_BYTES } from "./engine-vector-text-resources";
+import {
+  VECTOR_TEXT_RUN_CACHE_UNIFORM_BYTES,
+  vectorTextRunCacheMemoryBytes,
+} from "./engine-vector-text-resources";
 import { average, maximum, percentile } from "./engine-math";
 import {
   LAYER_STORAGE_GRID_SIZE,
@@ -903,13 +909,15 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     * VECTOR_TEXT_RUN_CACHE_UNIFORM_BYTES
     + vectorTextRunResources.reduce(
       (total, resources) => total
-        + resources.textureBounds.width
-        * resources.textureBounds.height
-        * VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL
+        + vectorTextRunCacheMemoryBytes(
+          resources.textureBounds.width,
+          resources.textureBounds.height,
+        )
         + (resources.fallbackBounds
-          ? resources.fallbackBounds.width
-            * resources.fallbackBounds.height
-            * VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL
+          ? vectorTextRunCacheMemoryBytes(
+            resources.fallbackBounds.width,
+            resources.fallbackBounds.height,
+          )
           : 0),
       0,
     );
@@ -922,6 +930,21 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
       * VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL * (VECTOR_TEXT_GPU_SAMPLE_COUNT + 1)
       / MEBIBYTE_BYTES
     : 0;
+  const vectorTextQualityDimension =
+    VECTOR_TEXT_GPU_QUALITY_TILE_SIZE * VECTOR_TEXT_GPU_QUALITY_SCALE;
+  const vectorTextQualityScratchMiB = engine.vectorTextGpuQualityTexture
+    ? Array.from(
+        { length: Math.log2(VECTOR_TEXT_GPU_QUALITY_MAX_SCALE) + 1 },
+        (_, level) => (vectorTextQualityDimension / 2 ** level) ** 2,
+      ).reduce((total, pixels) => total + pixels, 0)
+      * VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL / MEBIBYTE_BYTES
+    : 0;
+  const vectorTextEncodedCompositeScratchMiB =
+    engine.mixedSceneTextEncodedCompositeScratchTexture
+      ? engine.mixedSceneTextEncodedCompositeScratchWidth
+        * engine.mixedSceneTextEncodedCompositeScratchHeight
+        * VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL / MEBIBYTE_BYTES
+      : 0;
   const vectorTextGpuGeometryMiB = [...engine.vectorTextGpuMeshes.values()]
     .reduce((total, resources) => total + resources.memoryBytes, 0)
     / MEBIBYTE_BYTES;
@@ -955,6 +978,8 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     vectorTextViewportMiB
     + vectorTextBlurMiB
     + vectorTextGpuScratchMiB
+    + vectorTextQualityScratchMiB
+    + vectorTextEncodedCompositeScratchMiB
     + vectorTextGpuGeometryMiB
     + mixedSceneLinearMiB
     + layerBlendTileCompositorMiB
@@ -1144,6 +1169,8 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
     presentationCacheMiB,
     layerThumbnailMiB,
     vectorTextPresentationMiB,
+    vectorTextQualityScratchMiB,
+    vectorTextEncodedCompositeScratchMiB,
     rasterImageMiB,
     rasterStrokeStyledMiB,
     rasterStrokeCoverageMiB,

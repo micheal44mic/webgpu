@@ -1067,10 +1067,14 @@ export async function runVectorBaselineBenchmark(
     sceneMutationMs = performance.now() - sceneStartedAt;
 
     const settleStartedAt = performance.now();
+    // The node mutations can publish intermediate frames while deferred font
+    // and effect work is still settling. Cross the controller's authoritative
+    // scene boundary before taking setup timing or memory snapshots.
+    await controller.prepareCurrentScenePresentation();
     const setupStable = await waitForStableScene(
       engine,
       controller,
-      diagnosticsBefore.renderCount + 1,
+      controller.getDiagnostics().renderCount,
     );
     firstStableSceneMs = performance.now() - sceneStartedAt;
     const settleTailMs = performance.now() - settleStartedAt;

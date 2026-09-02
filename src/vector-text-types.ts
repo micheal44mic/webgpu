@@ -13,6 +13,9 @@ export type VectorTextPlacement =
   | "above-active"
   | `text-run:${string}`;
 
+/** Exact settled-vector raster policy. Gesture presentation remains mip based. */
+export type VectorRasterQualityMode = "baseline" | "coverage";
+
 export interface VectorTextViewState {
   canvasWidth: number;
   canvasHeight: number;

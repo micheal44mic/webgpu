@@ -38,7 +38,7 @@ fn innerShadowBlurVertexMain(
 
 fn innerShadowColor(coverage: f32) -> vec4<f32> {
   let alpha = clamp(coverage, 0.0, 1.0) * slug.color.a;
-  return vec4<f32>(slug.color.rgb * alpha, alpha);
+  return slugPresentationPremultipliedColor(slug.color.rgb, alpha);
 }
 
 @fragment

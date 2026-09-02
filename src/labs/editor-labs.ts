@@ -66,6 +66,7 @@ const LABS = [
   ["vector-baseline-unique", "Baseline vettori · revisioni uniche"],
   ["vector-baseline-curved-strokes", "Baseline vettori · curve e tratteggi"],
   ["vector-baseline-effects", "Baseline vettori · effetti condivisi"],
+  ["vector-small-scale-quality", "A/B vettori piccoli · copertura e costo"],
   ["human-record", "Registra · Custom 16 Intense"],
   ["human-replay", "Replay tratto umano canonico"],
   ["human-shape-sequence", "Confronto Shape ordinata/casuale · Count 1"],
@@ -607,6 +608,17 @@ class EditorLabController implements EditorExtension {
               : id === "vector-baseline-curved-strokes"
                 ? "curved-strokes"
                 : "effects-shared",
+        );
+      }
+      case "vector-small-scale-quality": {
+        const controller = await this.#host.ensureMixedSceneController();
+        const { runVectorSmallScaleQualityLab } = await import(
+          "./vector/vector-small-scale-quality-lab"
+        );
+        return runVectorSmallScaleQualityLab(
+          engine,
+          controller,
+          this.#host.canvas,
         );
       }
       case "human-record":

@@ -435,6 +435,20 @@ export async function finishStaticResourceCreation(
         { binding: 6, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
       ],
     });
+    engine.mixedSceneTextEncodedCompositeBindGroupLayout ??=
+      engine.device.createBindGroupLayout({
+        label: "Mixed scene encoded vector composite bind group layout",
+        entries: [
+          { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+          { binding: 1, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+          { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+          { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+          { binding: 4, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+          { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+          { binding: 6, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+          { binding: 7, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "unfilterable-float" } },
+        ],
+      });
     engine.mixedSceneShapePreviewBindGroupLayout ??= engine.device.createBindGroupLayout({
       label: "Mixed scene live shape preview bind group layout",
       entries: [
@@ -677,6 +691,26 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
+    const mixedSceneTextEncodedCompositePipelinePromise = createRenderPipelineAsync(
+      engine.device,
+      {
+        label: "Mixed scene encoded vector backdrop composite pipeline",
+        layout: engine.device.createPipelineLayout({
+          label: "Mixed scene encoded vector backdrop composite pipeline layout",
+          bindGroupLayouts: [engine.mixedSceneTextEncodedCompositeBindGroupLayout],
+        }),
+        vertex: {
+          module: engine.mixedSceneTextSegmentShaderModule,
+          entryPoint: "vertexMain",
+        },
+        fragment: {
+          module: engine.mixedSceneTextSegmentShaderModule,
+          entryPoint: "encodedCompositeFragmentMain",
+          targets: [{ format: MIXED_SCENE_LINEAR_FORMAT }],
+        },
+        primitive: { topology: "triangle-list" },
+      },
+    );
     const mixedSceneShapePreviewPipelinePromise = engine.mixedSceneShapePreviewPipeline
       ? Promise.resolve(engine.mixedSceneShapePreviewPipeline)
       : createRenderPipelineAsync(engine.device, {
@@ -852,6 +886,7 @@ export async function finishStaticResourceCreation(
       mixedSceneRasterSegmentSourceAtopPipeline,
       mixedSceneTextSegmentPipeline,
       mixedSceneTextSegmentSourceAtopPipeline,
+      mixedSceneTextEncodedCompositePipeline,
       mixedSceneShapePreviewPipeline,
       rasterImageMipmapPipeline,
       rasterImagePremultiplyPipeline,
@@ -868,6 +903,7 @@ export async function finishStaticResourceCreation(
       mixedSceneRasterSegmentSourceAtopPipelinePromise,
       mixedSceneTextSegmentPipelinePromise,
       mixedSceneTextSegmentSourceAtopPipelinePromise,
+      mixedSceneTextEncodedCompositePipelinePromise,
       mixedSceneShapePreviewPipelinePromise,
       rasterImageMipmapPipelinePromise,
       rasterImagePremultiplyPipelinePromise,
@@ -890,6 +926,7 @@ export async function finishStaticResourceCreation(
       mixedSceneRasterSegmentSourceAtopPipeline;
     engine.mixedSceneTextSegmentPipeline = mixedSceneTextSegmentPipeline;
     engine.mixedSceneTextSegmentSourceAtopPipeline = mixedSceneTextSegmentSourceAtopPipeline;
+    engine.mixedSceneTextEncodedCompositePipeline = mixedSceneTextEncodedCompositePipeline;
     engine.mixedSceneShapePreviewPipeline = mixedSceneShapePreviewPipeline;
     engine.rasterImageMipmapPipeline = rasterImageMipmapPipeline;
     engine.rasterImagePremultiplyPipeline = rasterImagePremultiplyPipeline;

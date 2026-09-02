@@ -35,6 +35,30 @@ struct SlugVertexOutput {
 @group(0) @binding(1) var curveTexture: texture_2d<f32>;
 @group(0) @binding(2) var bandTexture: texture_2d<u32>;
 
+fn slugLinearChannelToSrgb(value: f32) -> f32 {
+  let clamped = clamp(value, 0.0, 1.0);
+  if (clamped <= 0.0031308) {
+    return clamped * 12.92;
+  }
+  return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
+}
+
+fn slugPresentationPremultipliedColor(
+  straightLinear: vec3<f32>,
+  alphaInput: f32
+) -> vec4<f32> {
+  let alpha = clamp(alphaInput, 0.0, 1.0);
+  if (slug.viewCenterAndZoom.w > 0.5) {
+    let encoded = vec3<f32>(
+      slugLinearChannelToSrgb(straightLinear.r),
+      slugLinearChannelToSrgb(straightLinear.g),
+      slugLinearChannelToSrgb(straightLinear.b)
+    );
+    return vec4<f32>(encoded * alpha, alpha);
+  }
+  return vec4<f32>(straightLinear * alpha, alpha);
+}
+
 fn localToClip(localPosition: vec2<f32>) -> vec4<f32> {
   let canvasSize = slug.canvasAndViewRotation.xy;
   let viewRotation = slug.canvasAndViewRotation.zw;
@@ -345,6 +369,6 @@ fn fragmentMain(
 ) -> @location(0) vec4<f32> {
   let coverage = slugCoverage(input.localPosition);
   let alpha = coverage * slug.color.a;
-  return vec4<f32>(slug.color.rgb * alpha, alpha);
+  return slugPresentationPremultipliedColor(slug.color.rgb, alpha);
 }
 `;

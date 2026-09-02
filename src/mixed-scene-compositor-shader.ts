@@ -1,7 +1,7 @@
 import { rasterPixelViewShaderHelpers } from "./raster-pixel-view.ts";
 
 export const MIXED_SCENE_COMPOSITOR_STRATEGY =
-  "ordered-raster-vector-gpu-runs-rgba16f-storage-aware-roi-source-over-post-opacity-raster-floor-mip-parity-v8" as const;
+  "ordered-raster-vector-gpu-runs-rgba16f-tagged-premultiplied-roi-mip-srgb-aware-source-over-v10" as const;
 
 export const MIXED_SCENE_LINEAR_FORMAT = "rgba16float" as const;
 
@@ -165,13 +165,72 @@ struct TextCacheUniforms {
 @group(0) @binding(4) var<uniform> fallbackCapture: TextCaptureUniforms;
 @group(0) @binding(5) var fallbackTexture: texture_2d<f32>;
 @group(0) @binding(6) var<uniform> cache: TextCacheUniforms;
+@group(0) @binding(7) var vectorBackdropTexture: texture_2d<f32>;
 
 
 ${fullscreenVertexShader}
 
-@fragment
-fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
+fn vectorTextFastPresentationLod(
+  captureZoom: f32,
+  currentZoom: f32,
+  mipLevelCount: u32
+) -> f32 {
+  let minification = max(captureZoom / max(currentZoom, 0.000001), 1.0);
+  let requestedLod = floor(log2(minification));
+  let maximumLod = f32(max(mipLevelCount, 1u) - 1u);
+  return clamp(requestedLod, 0.0, maximumLod);
+}
+
+fn vectorSrgbToLinearChannel(value: f32) -> f32 {
+  if (value <= 0.04045) { return value / 12.92; }
+  return pow((value + 0.055) / 1.055, 2.4);
+}
+
+fn vectorLinearToSrgbChannel(value: f32) -> f32 {
+  let clamped = clamp(value, 0.0, 1.0);
+  if (clamped <= 0.0031308) { return clamped * 12.92; }
+  return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
+}
+
+fn vectorEncodedPremultipliedToLinear(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let straight = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  return vec4<f32>(vec3<f32>(
+    vectorSrgbToLinearChannel(straight.r),
+    vectorSrgbToLinearChannel(straight.g),
+    vectorSrgbToLinearChannel(straight.b)
+  ) * alpha, alpha);
+}
+
+fn vectorLinearPremultipliedToEncoded(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let straight = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  return vec4<f32>(vec3<f32>(
+    vectorLinearToSrgbChannel(straight.r),
+    vectorLinearToSrgbChannel(straight.g),
+    vectorLinearToSrgbChannel(straight.b)
+  ) * alpha, alpha);
+}
+
+fn vectorCacheSample(
+  stored: vec4<f32>,
+  storedEncoded: bool,
+  requestedEncoded: bool
+) -> vec4<f32> {
+  if (storedEncoded == requestedEncoded) { return stored; }
+  if (storedEncoded) { return vectorEncodedPremultipliedToLinear(stored); }
+  return vectorLinearPremultipliedToEncoded(stored);
+}
+
+fn vectorTextSegmentSource(
+  fragmentPosition: vec4<f32>,
+  requestedEncoded: bool
+) -> vec4<f32> {
   let opacity = clamp(cache.opacityAndPadding.x, 0.0, 1.0);
+  let primaryEncoded = cache.opacityAndPadding.y > 0.5;
+  let fallbackEncoded = cache.opacityAndPadding.z > 0.5;
   let dimensions = vec2<i32>(textureDimensions(sourceTexture, 0));
   let pixel = vec2<i32>(fragmentPosition.xy) - vec2<i32>(cache.primaryOrigin);
   if (capture.fastMode < 0.5) {
@@ -179,7 +238,11 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     if (!inside) {
       return vec4<f32>(0.0);
     }
-    return textureLoad(sourceTexture, pixel, 0) * opacity;
+    return vectorCacheSample(
+      textureLoad(sourceTexture, pixel, 0),
+      primaryEncoded,
+      requestedEncoded
+    ) * opacity;
   }
 
   // Every fast mode follows the current camera. Mode 1 is fully covered by
@@ -198,11 +261,20 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     && all(sourcePixel < sourceDimensions);
   var sourceColor = vec4<f32>(0.0);
   if (insideSource) {
-    sourceColor = textureSampleLevel(
-      sourceTexture,
-      sourceSampler,
-      sourcePixel / sourceDimensions,
-      0.0
+    let sourceLod = vectorTextFastPresentationLod(
+      capture.zoom,
+      display.zoom,
+      textureNumLevels(sourceTexture)
+    );
+    sourceColor = vectorCacheSample(
+      textureSampleLevel(
+        sourceTexture,
+        sourceSampler,
+        sourcePixel / sourceDimensions,
+        sourceLod
+      ),
+      primaryEncoded,
+      requestedEncoded
     );
   }
   if (capture.fastMode < 2.5) {
@@ -224,11 +296,20 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   if (!insideFallback) {
     return sourceColor * opacity;
   }
-  let fallbackColor = textureSampleLevel(
-    fallbackTexture,
-    sourceSampler,
-    fallbackPixel / fallbackDimensions,
-    0.0
+  let fallbackLod = vectorTextFastPresentationLod(
+    fallbackCapture.zoom,
+    display.zoom,
+    textureNumLevels(fallbackTexture)
+  );
+  let fallbackColor = vectorCacheSample(
+    textureSampleLevel(
+      fallbackTexture,
+      sourceSampler,
+      fallbackPixel / fallbackDimensions,
+      fallbackLod
+    ),
+    fallbackEncoded,
+    requestedEncoded
   );
   if (!insideSource) {
     return fallbackColor * opacity;
@@ -249,6 +330,26 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
     sourceColor,
     smoothstep(0.0, 4.0, sourceEdgeDistance)
   ) * opacity;
+}
+
+@fragment
+fn fragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  return vectorTextSegmentSource(fragmentPosition, false);
+}
+
+@fragment
+fn encodedCompositeFragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  let pixel = vec2<i32>(floor(fragmentPosition.xy));
+  let backdrop = textureLoad(vectorBackdropTexture, pixel, 0);
+  let encodedBackdrop = vectorLinearPremultipliedToEncoded(backdrop);
+  let encodedSource = vectorTextSegmentSource(fragmentPosition, true);
+  let encodedResult = encodedSource
+    + encodedBackdrop * (1.0 - clamp(encodedSource.a, 0.0, 1.0));
+  return vectorEncodedPremultipliedToLinear(encodedResult);
 }
 `;
 

@@ -1,9 +1,12 @@
 export const VECTOR_TEXT_GPU_RENDER_STRATEGY =
-  "webgpu-indexed-vector-linear-rgba16float-msaa4-svg-gradients-stable-subpixel-v4" as const;
+  "webgpu-indexed-vector-tagged-rgba16float-msaa4-adaptive-tiled-coverage-svg-gradients-v5" as const;
 
 export const VECTOR_TEXT_GPU_TARGET_FORMAT: GPUTextureFormat = "rgba16float";
 export const VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL = 8;
 export const VECTOR_TEXT_GPU_SAMPLE_COUNT = 4;
+export const VECTOR_TEXT_GPU_QUALITY_TILE_SIZE = 256;
+export const VECTOR_TEXT_GPU_QUALITY_SCALE = 4;
+export const VECTOR_TEXT_GPU_QUALITY_MAX_SCALE = 32;
 export const VECTOR_TEXT_GPU_UNIFORM_FLOATS = 60;
 export const VECTOR_TEXT_GPU_UNIFORM_BYTES = VECTOR_TEXT_GPU_UNIFORM_FLOATS * 4;
 export const VECTOR_TEXT_GPU_UNIFORM_STRIDE = 256;
@@ -88,6 +91,30 @@ fn srgbChannelToLinear(value: f32) -> f32 {
     return value / 12.92;
   }
   return pow((value + 0.055) / 1.055, 2.4);
+}
+
+fn linearChannelToSrgb(value: f32) -> f32 {
+  let clamped = clamp(value, 0.0, 1.0);
+  if (clamped <= 0.0031308) {
+    return clamped * 12.92;
+  }
+  return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
+}
+
+fn presentationPremultipliedColor(
+  straightLinear: vec3<f32>,
+  alphaInput: f32
+) -> vec4<f32> {
+  let alpha = clamp(alphaInput, 0.0, 1.0);
+  if (text.viewCenterAndZoom.w > 0.5) {
+    let encoded = vec3<f32>(
+      linearChannelToSrgb(straightLinear.r),
+      linearChannelToSrgb(straightLinear.g),
+      linearChannelToSrgb(straightLinear.b)
+    );
+    return vec4<f32>(encoded * alpha, alpha);
+  }
+  return vec4<f32>(straightLinear * alpha, alpha);
 }
 
 fn unpackGradientStop(packed: u32) -> vec4<f32> {
@@ -195,9 +222,9 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   if (text.gradientMeta.x != 0u) {
     let gradient = gradientColor(input.absoluteLocalPosition);
     let alpha = gradient.a * text.color.a;
-    return vec4<f32>(gradient.rgb * alpha, alpha);
+    return presentationPremultipliedColor(gradient.rgb, alpha);
   }
-  return vec4<f32>(text.color.rgb * text.color.a, text.color.a);
+  return presentationPremultipliedColor(text.color.rgb, text.color.a);
 }
 
 @vertex
@@ -273,7 +300,7 @@ fn meshInnerShadowFragmentMain(
     ).r;
   }
   let alpha = (1.0 - clamp(shiftedMask, 0.0, 1.0)) * text.color.a;
-  return vec4<f32>(text.color.rgb * alpha, alpha);
+  return presentationPremultipliedColor(text.color.rgb, alpha);
 }
 `;
 
@@ -365,6 +392,14 @@ struct VertexOutput {
 @group(0) @binding(1) var blurredMask: texture_2d<f32>;
 @group(0) @binding(2) var blurredSampler: sampler;
 
+fn compositeLinearChannelToSrgb(value: f32) -> f32 {
+  let clamped = clamp(value, 0.0, 1.0);
+  if (clamped <= 0.0031308) {
+    return clamped * 12.92;
+  }
+  return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
+}
+
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   let corners = array<vec2<f32>, 6>(
@@ -411,6 +446,15 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let mask = textureSample(blurredMask, blurredSampler, input.uv).r;
   let alpha = mask * composite.color.a;
-  return vec4<f32>(composite.color.rgb * alpha, alpha);
+  let straightLinear = clamp(composite.color.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+  if (composite.viewCenterAndZoom.w > 0.5) {
+    let encoded = vec3<f32>(
+      compositeLinearChannelToSrgb(straightLinear.r),
+      compositeLinearChannelToSrgb(straightLinear.g),
+      compositeLinearChannelToSrgb(straightLinear.b)
+    );
+    return vec4<f32>(encoded * alpha, alpha);
+  }
+  return vec4<f32>(straightLinear * alpha, alpha);
 }
 `;

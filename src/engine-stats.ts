@@ -147,6 +147,8 @@ export interface EngineGpuMemoryStats {
   presentationCacheMiB: number;
   layerThumbnailMiB: number;
   vectorTextPresentationMiB: number;
+  vectorTextQualityScratchMiB: number;
+  vectorTextEncodedCompositeScratchMiB: number;
   rasterImageMiB: number;
   rasterStrokeStyledMiB: number;
   rasterStrokeCoverageMiB: number;

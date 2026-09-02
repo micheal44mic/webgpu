@@ -13,14 +13,40 @@ import type {
 
 /** Primary/fallback origins plus one post-composite opacity vec4. */
 export const VECTOR_TEXT_RUN_CACHE_UNIFORM_BYTES = 32;
+const VECTOR_TEXT_RUN_CACHE_BYTES_PER_PIXEL = 8;
+
+/** Complete mip count for one non-empty 2D run-cache allocation. */
+export function vectorTextRunCacheMipLevelCount(width: number, height: number): number {
+  const maximumAxis = Math.max(1, Math.floor(width), Math.floor(height));
+  return Math.floor(Math.log2(maximumAxis)) + 1;
+}
+
+/** Descriptor bytes retained by one tagged-domain premultiplied RGBA16F mip chain. */
+export function vectorTextRunCacheMemoryBytes(width: number, height: number): number {
+  let mipWidth = Math.max(1, Math.floor(width));
+  let mipHeight = Math.max(1, Math.floor(height));
+  let pixels = 0;
+  while (true) {
+    pixels += mipWidth * mipHeight;
+    if (mipWidth === 1 && mipHeight === 1) break;
+    mipWidth = Math.max(1, Math.floor(mipWidth / 2));
+    mipHeight = Math.max(1, Math.floor(mipHeight / 2));
+  }
+  return pixels * VECTOR_TEXT_RUN_CACHE_BYTES_PER_PIXEL;
+}
 
 export interface VectorTextRunTextureResources {
   texture: GPUTexture;
+  /** Sampling view exposing the complete tagged-domain premultiplied mip chain. */
   view: GPUTextureView;
+  /** Render-attachment view restricted to the exact mip-zero presentation. */
+  mipZeroView: GPUTextureView;
+  mipLevelCount: number;
   /** Allocation rectangle in capture-viewport coordinates. */
   textureBounds: DirtyRect;
   fallbackTexture: GPUTexture | null;
   fallbackView: GPUTextureView | null;
+  fallbackMipLevelCount: number;
   /** Allocation rectangle in fallback-capture coordinates. */
   fallbackBounds: DirtyRect | null;
   /** Per-run primary/fallback origins consumed by the mixed-scene shader. */
@@ -28,6 +54,9 @@ export interface VectorTextRunTextureResources {
   cacheUniformUpload: Float32Array;
   /** Applied once after every internal vector draw in this run is composited. */
   opacity: number;
+  /** Color-domain tags are tracked per capture so an in-flight mode switch is safe. */
+  primaryEncodedSrgb: boolean;
+  fallbackEncodedSrgb: boolean;
   bindGroup: GPUBindGroup;
 
   lastBounds: DirtyRect | null;
@@ -150,6 +179,7 @@ export interface VectorTextGpuPendingRun {
   target: "primary" | "fallback";
   targetTexture: GPUTexture;
   targetView: GPUTextureView;
+  targetMipLevelCount: number;
   /** Allocation rectangle of targetTexture in run.view canvas coordinates. */
   targetBounds: DirtyRect;
   draws: readonly VectorTextGpuDraw[];

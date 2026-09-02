@@ -78,6 +78,9 @@ import {
   VECTOR_TEXT_GPU_BLUR_FORMAT,
   VECTOR_TEXT_GPU_BLUR_BYTES_PER_PIXEL,
   VECTOR_TEXT_GPU_RENDER_STRATEGY,
+  VECTOR_TEXT_GPU_QUALITY_MAX_SCALE,
+  VECTOR_TEXT_GPU_QUALITY_SCALE,
+  VECTOR_TEXT_GPU_QUALITY_TILE_SIZE,
   VECTOR_TEXT_GPU_SAMPLE_COUNT,
   VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL,
   VECTOR_TEXT_GPU_TARGET_FORMAT,
@@ -163,6 +166,8 @@ import {
 import {
   VECTOR_TEXT_RUN_CACHE_UNIFORM_BYTES,
   pruneVectorTextGpuResourceCache,
+  vectorTextRunCacheMemoryBytes,
+  vectorTextRunCacheMipLevelCount,
   vectorTextGpuResourceKey,
 } from "../src/engine-vector-text-resources.ts";
 
@@ -283,6 +288,10 @@ const fontGeometrySource = read("src/vector-text-font-geometry.ts");
 const transformSource = read("src/vector-text-transform.ts");
 const adaptiveSource = read("src/vector-text-adaptive-zoom.ts");
 const mixedCompositorSource = read("src/mixed-scene-compositor-shader.ts");
+const engineClassSource = read("src/brush-engine.ts");
+const engineRuntimeMiscSource = read("src/engine-runtime-misc.ts");
+const vectorTextRuntimeSource = read("src/engine-vector-text-runtime.ts");
+const vectorTextResourcesSource = read("src/engine-vector-text-resources.ts");
 const svgSource = read("src/vector-svg-import.ts");
 const svgGradientStrokeFixture = read("scripts/fixtures/svg-gradient-stroke.svg");
 const vectorRasterSource = read("src/engine-vector-raster-runtime.ts");
@@ -343,6 +352,680 @@ const edgeRoi = vectorTextGpuRunCacheAllocationBounds(
 assert.equal(edgeRoi.x, 0);
 assert.equal(edgeRoi.y, 0);
 assert.ok(vectorTextGpuRunCacheContains(edgeRoi, { x: 0, y: 0, width: 17, height: 13 }));
+
+// Run caches retain rgba16float mip chains so large camera reprojections are
+// filtered before they reach the display target. NPOT witnesses make the
+// accounting contract exact rather than an approximate 4/3 multiplier.
+assert.equal(vectorTextRunCacheMipLevelCount(1, 1), 1);
+assert.equal(vectorTextRunCacheMipLevelCount(2, 1), 2);
+assert.equal(vectorTextRunCacheMipLevelCount(3, 5), 3);
+assert.equal(vectorTextRunCacheMipLevelCount(512, 128), 10);
+assert.equal(
+  vectorTextRunCacheMemoryBytes(3, 5),
+  (3 * 5 + 1 * 2 + 1) * VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL,
+  "la memoria NPOT deve sommare ogni mip fisico rgba16float",
+);
+assert.equal(
+  vectorTextRunCacheMemoryBytes(2, 2),
+  (2 * 2 + 1) * VECTOR_TEXT_GPU_TARGET_BYTES_PER_PIXEL,
+);
+assert.match(
+  vectorTextResourcesSource,
+  /interface VectorTextRunTextureResources[\s\S]*?mipLevelCount: number;[\s\S]*?fallbackMipLevelCount: number;/,
+  "la pubblicazione primaria e fallback deve conservare i rispettivi conteggi mip",
+);
+assert.match(
+  vectorTextResourcesSource,
+  /interface VectorTextGpuPendingRun[\s\S]*?targetMipLevelCount: number;/,
+  "un redraw pendente deve dichiarare quanti mip rigenerare sul proprio target",
+);
+assert.match(
+  vectorTextResourcesSource,
+  /interface VectorTextRunTextureResources[\s\S]*?mipZeroView: GPUTextureView;/,
+  "il render attachment preciso deve restare separato dalla view che espone tutti i mip",
+);
+assert.match(
+  vectorTextResourcesSource,
+  /interface VectorTextRunTextureResources[\s\S]*?primaryEncodedSrgb: boolean;\s*fallbackEncodedSrgb: boolean;/,
+  "le catture primaria e fallback devono dichiarare separatamente il proprio dominio colore",
+);
+
+const vectorTextFlushStart = vectorTextRuntimeSource.indexOf(
+  "export function flushVectorTextGpuPresentations(",
+);
+const vectorTextFlushEnd = vectorTextRuntimeSource.indexOf(
+  "function mixedSceneSegmentContributesToDeepFloor(",
+  vectorTextFlushStart,
+);
+assert.ok(vectorTextFlushStart >= 0 && vectorTextFlushEnd > vectorTextFlushStart);
+const vectorTextFlushSource = vectorTextRuntimeSource.slice(
+  vectorTextFlushStart,
+  vectorTextFlushEnd,
+);
+assert.match(
+  vectorTextFlushSource,
+  /run\.resources\.primaryEncodedSrgb = vectorTextRunUsesEncodedSrgb\(engine\);\s*writeVectorTextRunCacheUniforms\(engine, run\.resources\);/,
+  "il redraw primario deve pubblicare insieme pixel e tag del dominio colore",
+);
+const completedRunPublicationStart = vectorTextFlushSource.indexOf(
+  "const completedRuns = engine.vectorTextGpuPendingRuns.slice();",
+);
+const completedRunPublicationEnd = vectorTextFlushSource.indexOf(
+  "engine.displayDirty = true;",
+  completedRunPublicationStart,
+);
+assert.ok(
+  completedRunPublicationStart >= 0
+    && completedRunPublicationEnd > completedRunPublicationStart,
+);
+const completedRunPublicationSource = vectorTextFlushSource.slice(
+  completedRunPublicationStart,
+  completedRunPublicationEnd,
+);
+const completedRunRefinement = completedRunPublicationSource.indexOf(
+  "refineVectorTextGpuRunCoverage(engine, run, qualityDrawPipelines);",
+);
+const completedRunSubmit = completedRunPublicationSource.indexOf(
+  "engine.device.queue.submit([encoder.finish()]);",
+);
+const completedRunSubmittedFlag = completedRunPublicationSource.indexOf(
+  "gpuWorkSubmitted = true;",
+);
+const completedRunInitialized = completedRunPublicationSource.indexOf(
+  "run.resources.initialized = true;",
+);
+const completedRunTag = completedRunPublicationSource.indexOf(
+  "run.resources.primaryEncodedSrgb = vectorTextRunUsesEncodedSrgb(engine);",
+);
+const completedRunRemoval = completedRunPublicationSource.indexOf(
+  "engine.vectorTextGpuPendingRuns.splice(0, completedRuns.length);",
+);
+assert.ok(
+  completedRunSubmit >= 0
+    && completedRunSubmittedFlag > completedRunSubmit
+    && completedRunRefinement > completedRunSubmittedFlag
+    && completedRunInitialized > completedRunRefinement
+    && completedRunTag > completedRunInitialized
+    && completedRunRemoval > completedRunTag,
+  "cache primaria, tag e rimozione pending devono essere pubblicati solo dopo tutte le tile",
+);
+assert.doesNotMatch(
+  completedRunPublicationSource.slice(0, completedRunRemoval),
+  /vectorTextGpuPendingRuns\.(?:length\s*=\s*0|splice\()/,
+  "un errore durante la refinement deve lasciare intatta la coda riprovabile",
+);
+assert.match(
+  completedRunPublicationSource,
+  /previousPrimaryStates\.set\(run\.resources, \{\s*lastBounds: run\.resources\.lastBounds,\s*initialized: run\.resources\.initialized,\s*encodedSrgb: run\.resources\.primaryEncodedSrgb,\s*\}\);/,
+  "la pubblicazione deve conservare l'intero stato primario visibile",
+);
+assert.match(
+  completedRunPublicationSource,
+  /let gpuWorkSubmitted = false;[\s\S]*?queue\.submit\(\[encoder\.finish\(\)\]\);\s*gpuWorkSubmitted = true;/,
+  "il rollback deve distinguere gli errori prima e dopo l'accettazione del lavoro GPU",
+);
+assert.match(
+  completedRunPublicationSource,
+  /catch \(error\) \{[\s\S]*?if \(gpuWorkSubmitted\) \{[\s\S]*?resources\.lastBounds = null;\s*resources\.initialized = false;\s*resources\.primaryEncodedSrgb = false;\s*\} else \{\s*resources\.lastBounds = previous\.lastBounds;\s*resources\.initialized = previous\.initialized;\s*resources\.primaryEncodedSrgb = previous\.encodedSrgb;\s*\}[\s\S]*?writeVectorTextRunCacheUniforms\(engine, resources\);[\s\S]*?cache\.needsBuild = needsBuild;[\s\S]*?throw error;/,
+  "dopo una submit la texture incerta deve essere invalidata; prima della submit lo stato puo' essere ripristinato",
+);
+assert.match(
+  completedRunPublicationSource,
+  /for \(const build of blurBuilds\) \{\s*build\.cache\.needsBuild = false;\s*\}/,
+  "anche una cache blur diventa valida soltanto dopo il completamento della refinement",
+);
+const targetCopyReference = vectorTextFlushSource.indexOf("texture: run.targetTexture");
+const targetCopyStart = vectorTextFlushSource.lastIndexOf(
+  "encoder.copyTextureToTexture(",
+  targetCopyReference,
+);
+const targetMipGeneration = vectorTextFlushSource.indexOf(
+  "encodeVectorTextRunCacheMipChain(",
+  targetCopyReference,
+);
+assert.ok(targetCopyReference >= 0 && targetCopyStart >= 0);
+assert.ok(
+  targetMipGeneration > targetCopyStart,
+  "ogni redraw deve rigenerare la mip chain dopo aver copiato il nuovo mip zero",
+);
+assert.match(
+  vectorTextFlushSource.slice(targetMipGeneration, targetMipGeneration + 500),
+  /run\.targetMipLevelCount/,
+  "il redraw deve limitare la generazione ai mip allocati dal target",
+);
+
+// Switching the diagnostic coverage policy is an atomic cache-domain change:
+// pending work is completed, the old fallback generation is removed, the new
+// policy becomes visible, and only then is the mixed scene republished.
+const qualitySetterStart = engineClassSource.indexOf(
+  "  setVectorRasterQualityMode(mode: VectorRasterQualityMode): void {",
+);
+const qualitySetterEnd = engineClassSource.indexOf(
+  "  getVectorTextFastPresentationMode()",
+  qualitySetterStart,
+);
+assert.ok(qualitySetterStart >= 0 && qualitySetterEnd > qualitySetterStart);
+const qualitySetterSource = engineClassSource.slice(qualitySetterStart, qualitySetterEnd);
+const qualitySetterFlush = qualitySetterSource.indexOf(
+  "flushVectorTextGpuPresentations(this);",
+);
+const qualitySetterClearFallback = qualitySetterSource.indexOf(
+  "clearVectorTextFallbackPresentation(this);",
+);
+const qualitySetterModeAssignment = qualitySetterSource.indexOf(
+  "this.vectorRasterQualityMode = mode;",
+);
+const qualitySetterPublish = qualitySetterSource.indexOf("publishMixedScene(this);");
+assert.ok(
+  qualitySetterFlush >= 0
+    && qualitySetterClearFallback > qualitySetterFlush
+    && qualitySetterModeAssignment > qualitySetterClearFallback
+    && qualitySetterPublish > qualitySetterModeAssignment,
+  "la transizione di qualita' deve rispettare flush, clear fallback, cambio dominio e publish",
+);
+
+assert.equal(VECTOR_TEXT_GPU_QUALITY_TILE_SIZE, 256);
+assert.equal(VECTOR_TEXT_GPU_QUALITY_SCALE, 4);
+assert.equal(VECTOR_TEXT_GPU_QUALITY_MAX_SCALE, 32);
+const coverageRefinementStart = vectorTextRuntimeSource.indexOf(
+  "function refineVectorTextGpuRunCoverage(",
+);
+const coverageRefinementEnd = vectorTextRuntimeSource.indexOf(
+  "export function initializeVectorMeshFillGpuRenderer(",
+  coverageRefinementStart,
+);
+assert.ok(
+  coverageRefinementStart >= 0 && coverageRefinementEnd > coverageRefinementStart,
+);
+const coverageRefinementSource = vectorTextRuntimeSource.slice(
+  coverageRefinementStart,
+  coverageRefinementEnd,
+);
+assert.match(
+  coverageRefinementSource,
+  /const qualityScale = largestRunAxis <= 128\s*\? VECTOR_TEXT_GPU_QUALITY_MAX_SCALE\s*:\s*largestRunAxis <= 256\s*\? VECTOR_TEXT_GPU_QUALITY_MAX_SCALE \/ 2\s*:\s*VECTOR_TEXT_GPU_QUALITY_SCALE;/,
+  "la copertura deve aumentare adattivamente per le run piccole senza ingrandire lo scratch",
+);
+assert.match(
+  coverageRefinementSource,
+  /const scratchDimension =\s*VECTOR_TEXT_GPU_QUALITY_TILE_SIZE \* VECTOR_TEXT_GPU_QUALITY_SCALE;/,
+);
+assert.match(coverageRefinementSource, /const tileSize = scratchDimension \/ qualityScale;/);
+assert.match(
+  coverageRefinementSource,
+  /for \(let level = 0; level < reductionCount; level \+= 1\)[\s\S]*?setPipeline\(downsamplePipeline\)[\s\S]*?downsampleBindGroups\[level\]/,
+  "ogni tile ad alta risoluzione deve essere ridotta con passaggi exact-area GPU",
+);
+assert.match(
+  coverageRefinementSource,
+  /texture: qualityTexture,\s*mipLevel: reductionCount,[\s\S]*?texture: run\.targetTexture/,
+  "il livello nativo della tile deve essere copiato nella cache della run",
+);
+assert.doesNotMatch(coverageRefinementSource, /getImageData|putImageData|mapAsync/);
+
+const qualityFillPipelineStart = vectorTextRuntimeSource.indexOf(
+  'label: "Vector text indexed fill 4x coverage source-over pipeline"',
+);
+const qualityFillPipelineEnd = vectorTextRuntimeSource.indexOf(
+  'label: "Vector text cropped run transparent clear pipeline"',
+  qualityFillPipelineStart,
+);
+assert.ok(
+  qualityFillPipelineStart >= 0 && qualityFillPipelineEnd > qualityFillPipelineStart,
+);
+const qualityFillPipelineSource = vectorTextRuntimeSource.slice(
+  qualityFillPipelineStart,
+  qualityFillPipelineEnd,
+);
+assert.match(qualityFillPipelineSource, /blend: vectorTextSourceOverBlend\(\)/);
+assert.doesNotMatch(
+  qualityFillPipelineSource,
+  /multisample:/,
+  "la tile sovracampionata deve usare una pipeline single-sample deterministica",
+);
+assert.match(
+  vectorTextFlushSource,
+  /if \(qualityDrawPipelines\)[\s\S]*?vectorTextGpuRunUsesCoverageTiles\(engine, run\)[\s\S]*?refineVectorTextGpuRunCoverage\(engine, run, qualityDrawPipelines\)/,
+  "il flush deve applicare la pipeline adattiva soltanto alle run idonee",
+);
+
+const fallbackPublicationStart = vectorTextRuntimeSource.indexOf(
+  "interface VectorTextFallbackPublicationCandidate {",
+);
+const fallbackPublicationEnd = vectorTextRuntimeSource.indexOf(
+  "export function rebuildVectorTextGpuFallbackPresentation(",
+  fallbackPublicationStart,
+);
+assert.ok(
+  fallbackPublicationStart >= 0 && fallbackPublicationEnd > fallbackPublicationStart,
+);
+const fallbackPublicationSource = vectorTextRuntimeSource.slice(
+  fallbackPublicationStart,
+  fallbackPublicationEnd,
+);
+assert.match(fallbackPublicationSource, /readonly encodedSrgb: boolean;/);
+assert.match(
+  fallbackPublicationSource,
+  /previousStates\.set\(resources, \{[\s\S]*?encodedSrgb: resources\.fallbackEncodedSrgb,/,
+  "la transazione fallback deve conservare il tag precedente nel journal di rollback",
+);
+assert.match(
+  fallbackPublicationSource,
+  /resources\.fallbackEncodedSrgb = candidate\.encodedSrgb;[\s\S]*?writeVectorTextRunCacheUniforms\(engine, resources\);/,
+  "la pubblicazione fallback deve aggiornare tag e uniforme nella stessa transazione",
+);
+assert.match(
+  fallbackPublicationSource,
+  /catch \(error\) \{[\s\S]*?resources\.fallbackEncodedSrgb = previous\.encodedSrgb;[\s\S]*?writeVectorTextRunCacheUniforms\(engine, resources\);/,
+  "un errore di pubblicazione deve ripristinare anche il dominio fallback",
+);
+assert.match(
+  vectorTextRuntimeSource,
+  /resources\.fallbackEncodedSrgb = false;[\s\S]{0,160}?writeVectorTextRunCacheUniforms\(engine, resources, resources\.textureBounds, null\);/,
+  "rimuovere una fallback deve azzerarne subito il tag pubblicato",
+);
+const simpleClippingDecisionStart = vectorTextRuntimeSource.indexOf(
+  "const heterogeneousClippingProgramIsSimple = (",
+);
+const simpleClippingDecisionEnd = vectorTextRuntimeSource.indexOf(
+  "const encodeSimpleHeterogeneousClippingProgram = (",
+  simpleClippingDecisionStart,
+);
+assert.ok(
+  simpleClippingDecisionStart >= 0
+    && simpleClippingDecisionEnd > simpleClippingDecisionStart,
+);
+const simpleClippingDecisionSource = vectorTextRuntimeSource.slice(
+  simpleClippingDecisionStart,
+  simpleClippingDecisionEnd,
+);
+assert.match(
+  simpleClippingDecisionSource,
+  /candidate\.kind === "text-run"[\s\S]*?documentStorageColorSpace[\s\S]*?=== "encoded-srgb-premultiplied"[\s\S]*?primaryEncodedSrgb[\s\S]*?fallbackEncodedSrgb/,
+  "una cache vettoriale encoded-sRGB deve essere riconosciuta prima del fast-path di clipping",
+);
+assert.match(
+  simpleClippingDecisionSource,
+  /return !requiresEncodedTextFold[\s\S]*?!resources\?\.documentCutoutMaskSurface/,
+  "il clipping con cache vettoriale encoded-sRGB deve usare il compositor storage-aware",
+);
+const mipEncoderStart = vectorTextRuntimeSource.indexOf(
+  "function encodeVectorTextRunCacheMipChain(",
+);
+const mipEncoderEnd = vectorTextRuntimeSource.indexOf(
+  "export function initializeVectorMeshFillGpuRenderer(",
+  mipEncoderStart,
+);
+assert.ok(mipEncoderStart >= 0 && mipEncoderEnd > mipEncoderStart);
+const mipEncoderWindow = vectorTextRuntimeSource.slice(mipEncoderStart, mipEncoderEnd);
+assert.match(mipEncoderWindow, /for \(let mipLevel = 1;/);
+assert.match(
+  mipEncoderWindow,
+  /encoder\.begin(?:Render|Compute)Pass\(/,
+  "i livelli ridotti devono essere generati nella command encoder GPU",
+);
+assert.match(
+  mipEncoderWindow,
+  /baseMipLevel: mipLevel - 1,\s*mipLevelCount: 1/,
+);
+assert.match(
+  mipEncoderWindow,
+  /baseMipLevel: mipLevel,\s*mipLevelCount: 1/,
+);
+assert.doesNotMatch(mipEncoderWindow, /getImageData|putImageData|mapAsync/);
+
+const fallbackRebuildStart = vectorTextRuntimeSource.indexOf(
+  "export function rebuildVectorTextGpuFallbackPresentation(",
+);
+const fallbackCaptureStart = vectorTextRuntimeSource.indexOf(
+  "export function captureVectorTextFallbackPresentation(",
+  fallbackRebuildStart,
+);
+const fallbackCaptureEnd = vectorTextRuntimeSource.indexOf(
+  "export async function probeVectorTextFallbackAlpha(",
+  fallbackCaptureStart,
+);
+assert.ok(
+  fallbackRebuildStart >= 0
+    && fallbackCaptureStart > fallbackRebuildStart
+    && fallbackCaptureEnd > fallbackCaptureStart,
+);
+const fallbackRebuildSource = vectorTextRuntimeSource.slice(
+  fallbackRebuildStart,
+  fallbackCaptureStart,
+);
+const fallbackCaptureSource = vectorTextRuntimeSource.slice(
+  fallbackCaptureStart,
+  fallbackCaptureEnd,
+);
+assert.match(
+  fallbackRebuildSource,
+  /encodedSrgb: vectorTextRunUsesEncodedSrgb\(engine\),/,
+  "una fallback ricostruita deve essere marcata con il dominio effettivamente renderizzato",
+);
+assert.match(
+  fallbackCaptureSource,
+  /encodedSrgb: resources\.primaryEncodedSrgb,/,
+  "una fallback copiata deve ereditare il dominio della cattura primaria",
+);
+assert.match(
+  fallbackRebuildSource,
+  /vectorTextRunCacheMipLevelCount\(\s*fallbackBounds\.width,\s*fallbackBounds\.height,?\s*\)/,
+);
+assert.match(
+  fallbackRebuildSource,
+  /label: `Vector text \$\{key\} automatic wide fallback ROI `[\s\S]{0,500}?mipLevelCount,/,
+  "la fallback ricostruita deve allocare l'intera mip chain",
+);
+assert.match(
+  fallbackRebuildSource,
+  /const mipZeroView = texture\.createView\([\s\S]{0,180}?baseMipLevel: 0,[\s\S]{0,80}?mipLevelCount: 1/,
+);
+assert.match(fallbackRebuildSource, /targetView: mipZeroView/);
+assert.match(fallbackRebuildSource, /targetMipLevelCount: mipLevelCount/);
+assert.match(
+  fallbackRebuildSource,
+  /vectorTextRunCacheMemoryBytes\(\s*candidate\.bounds!\.width,\s*candidate\.bounds!\.height,?\s*\)/,
+  "la telemetria della fallback ricostruita deve includere tutti i mip",
+);
+
+assert.match(
+  fallbackCaptureSource,
+  /vectorTextRunCacheMipLevelCount\(\s*fallbackBounds\.width,\s*fallbackBounds\.height,?\s*\)/,
+);
+assert.match(
+  fallbackCaptureSource,
+  /label: `Vector text \$\{key\} wide fallback ROI `[\s\S]{0,500}?mipLevelCount,/,
+  "la fallback copiata deve allocare l'intera mip chain",
+);
+const fallbackCopyIndex = fallbackCaptureSource.indexOf("encoder.copyTextureToTexture(");
+const fallbackMipIndex = fallbackCaptureSource.indexOf(
+  "encodeVectorTextRunCacheMipChain(",
+  fallbackCopyIndex,
+);
+assert.ok(
+  fallbackCopyIndex >= 0 && fallbackMipIndex > fallbackCopyIndex,
+  "la cattura fallback deve rigenerare i mip dopo la copia del mip zero",
+);
+assert.match(
+  fallbackCaptureSource,
+  /vectorTextRunCacheMemoryBytes\(\s*candidate\.bounds!?\.width,\s*candidate\.bounds!?\.height,?\s*\)/,
+  "la telemetria della fallback copiata deve includere tutti i mip",
+);
+
+const ensureRunTextureStart = vectorTextRuntimeSource.indexOf(
+  "export function ensureVectorTextPresentationTexture(",
+);
+const ensureRunTextureEnd = vectorTextRuntimeSource.indexOf(
+  "export async function mutateMixedScenePresentation<",
+  ensureRunTextureStart,
+);
+assert.ok(ensureRunTextureStart >= 0 && ensureRunTextureEnd > ensureRunTextureStart);
+const ensureRunTextureSource = vectorTextRuntimeSource.slice(
+  ensureRunTextureStart,
+  ensureRunTextureEnd,
+);
+assert.match(
+  ensureRunTextureSource,
+  /vectorTextRunCacheMipLevelCount\(\s*textureBounds\.width,\s*textureBounds\.height,?\s*\)/,
+);
+assert.match(
+  ensureRunTextureSource,
+  /label: `Vector text \$\{key\} ROI cache \$\{textureBounds\.width\}×\$\{textureBounds\.height\}`[\s\S]{0,500}?mipLevelCount,/,
+  "la cache ROI primaria deve allocare l'intera mip chain",
+);
+assert.match(
+  ensureRunTextureSource,
+  /baseMipLevel: 0,[\s\S]{0,100}?mipLevelCount: 1/,
+  "il redraw preciso deve indirizzare soltanto il mip zero",
+);
+assert.match(
+  engineSource,
+  /targetView: resources\.mipZeroView,\s*targetMipLevelCount: resources\.mipLevelCount/,
+  "la run primaria pendente deve usare la view mip-zero e dichiarare l'intera chain",
+);
+
+const textSegmentShaderStart = mixedCompositorSource.indexOf(
+  "export const mixedSceneTextSegmentShader",
+);
+const textSegmentShaderEnd = mixedCompositorSource.indexOf(
+  "export const mixedSceneShapePreviewShader",
+  textSegmentShaderStart,
+);
+assert.ok(textSegmentShaderStart >= 0 && textSegmentShaderEnd > textSegmentShaderStart);
+const textSegmentShaderSource = mixedCompositorSource.slice(
+  textSegmentShaderStart,
+  textSegmentShaderEnd,
+);
+const fastLodHelperStart = textSegmentShaderSource.indexOf(
+  "fn vectorTextFastPresentationLod(",
+);
+const fastLodHelperEnd = textSegmentShaderSource.indexOf(
+  "@fragment",
+  fastLodHelperStart,
+);
+assert.ok(fastLodHelperStart >= 0 && fastLodHelperEnd > fastLodHelperStart);
+const fastLodHelperSource = textSegmentShaderSource.slice(
+  fastLodHelperStart,
+  fastLodHelperEnd,
+);
+assert.match(
+  fastLodHelperSource,
+  /let minification = max\(captureZoom \/ max\(currentZoom, [^)]+\), 1\.0\);/,
+);
+assert.match(
+  fastLodHelperSource,
+  /let requestedLod = floor\(log2\(minification\)\);/,
+);
+assert.match(
+  fastLodHelperSource,
+  /let maximumLod = f32\(max\(mipLevelCount, 1u\) - 1u\);/,
+);
+assert.match(
+  fastLodHelperSource,
+  /return clamp\(requestedLod, 0\.0, maximumLod\);/,
+);
+
+const preciseBranchStart = textSegmentShaderSource.indexOf(
+  "if (capture.fastMode < 0.5)",
+);
+const preciseBranchEnd = textSegmentShaderSource.indexOf(
+  "// Every fast mode",
+  preciseBranchStart,
+);
+assert.ok(preciseBranchStart >= 0 && preciseBranchEnd > preciseBranchStart);
+const preciseBranchSource = textSegmentShaderSource.slice(
+  preciseBranchStart,
+  preciseBranchEnd,
+);
+assert.match(
+  preciseBranchSource,
+  /textureLoad\(sourceTexture, pixel, 0\)/,
+  "il percorso preciso screen-space deve continuare a leggere il mip zero 1:1",
+);
+assert.match(
+  preciseBranchSource,
+  /vectorCacheSample\([\s\S]*primaryEncoded,[\s\S]*requestedEncoded[\s\S]*\) \* opacity;/,
+  "il percorso preciso deve rispettare il dominio colore dichiarato dal cache",
+);
+assert.doesNotMatch(preciseBranchSource, /textureSampleLevel/);
+
+const primaryFastStart = textSegmentShaderSource.indexOf("let sourcePixel =");
+const primaryFastEnd = textSegmentShaderSource.indexOf(
+  "if (capture.fastMode < 2.5)",
+  primaryFastStart,
+);
+assert.ok(primaryFastStart >= 0 && primaryFastEnd > primaryFastStart);
+const primaryFastSource = textSegmentShaderSource.slice(primaryFastStart, primaryFastEnd);
+assert.match(
+  primaryFastSource,
+  /vectorTextFastPresentationLod\(\s*capture\.zoom,\s*display\.zoom,\s*textureNumLevels\(sourceTexture\),?\s*\)/,
+  "la riproiezione primaria deve scegliere un mip dalla scala relativa della camera",
+);
+assert.match(primaryFastSource, /textureSampleLevel\(/);
+assert.doesNotMatch(
+  primaryFastSource,
+  /sourcePixel\s*\/\s*sourceDimensions,\s*0\.0/,
+  "il fast path primario non deve forzare il mip zero",
+);
+
+const fallbackFastStart = textSegmentShaderSource.indexOf("let fallbackPixel =");
+const fallbackFastEnd = textSegmentShaderSource.indexOf(
+  "if (!insideSource)",
+  fallbackFastStart,
+);
+assert.ok(fallbackFastStart >= 0 && fallbackFastEnd > fallbackFastStart);
+const fallbackFastSource = textSegmentShaderSource.slice(
+  fallbackFastStart,
+  fallbackFastEnd,
+);
+assert.match(
+  fallbackFastSource,
+  /vectorTextFastPresentationLod\(\s*fallbackCapture\.zoom,\s*display\.zoom,\s*textureNumLevels\(fallbackTexture\),?\s*\)/,
+  "la riproiezione fallback deve scegliere il proprio mip dalla scala relativa",
+);
+assert.match(fallbackFastSource, /textureSampleLevel\(/);
+assert.doesNotMatch(
+  fallbackFastSource,
+  /fallbackPixel\s*\/\s*fallbackDimensions,\s*0\.0/,
+  "il fast path fallback non deve forzare il mip zero",
+);
+
+// Encoded-premultiplied vector color is composited numerically against the
+// current linear scene through an explicit backdrop texture. The shader owns
+// source-over, so the render target must not apply fixed-function blending too.
+assert.match(
+  textSegmentShaderSource,
+  /@group\(0\) @binding\(7\) var vectorBackdropTexture: texture_2d<f32>;/,
+);
+assert.match(
+  textSegmentShaderSource,
+  /fn encodedCompositeFragmentMain\([\s\S]*?textureLoad\(vectorBackdropTexture, pixel, 0\)[\s\S]*?vectorTextSegmentSource\(fragmentPosition, true\)[\s\S]*?encodedSource\s*\+ encodedBackdrop \* \(1\.0 - clamp\(encodedSource\.a, 0\.0, 1\.0\)\)[\s\S]*?vectorEncodedPremultipliedToLinear\(encodedResult\)/,
+  "il compositore encoded deve eseguire source-over una sola volta nel dominio dichiarato",
+);
+const encodedCompositeLayoutStart = engineRuntimeMiscSource.indexOf(
+  "engine.mixedSceneTextEncodedCompositeBindGroupLayout ??=",
+);
+const encodedCompositeLayoutEnd = engineRuntimeMiscSource.indexOf(
+  "engine.mixedSceneShapePreviewBindGroupLayout ??=",
+  encodedCompositeLayoutStart,
+);
+assert.ok(
+  encodedCompositeLayoutStart >= 0
+    && encodedCompositeLayoutEnd > encodedCompositeLayoutStart,
+);
+const encodedCompositeLayoutSource = engineRuntimeMiscSource.slice(
+  encodedCompositeLayoutStart,
+  encodedCompositeLayoutEnd,
+);
+assert.match(
+  encodedCompositeLayoutSource,
+  /binding: 7, visibility: GPUShaderStage\.FRAGMENT, texture: \{ sampleType: "unfilterable-float" \}/,
+  "il backdrop lineare deve essere letto direttamente, senza sampler implicito",
+);
+const encodedCompositePipelineStart = engineRuntimeMiscSource.indexOf(
+  "const mixedSceneTextEncodedCompositePipelinePromise =",
+);
+const encodedCompositePipelineEnd = engineRuntimeMiscSource.indexOf(
+  "const mixedSceneShapePreviewPipelinePromise =",
+  encodedCompositePipelineStart,
+);
+assert.ok(
+  encodedCompositePipelineStart >= 0
+    && encodedCompositePipelineEnd > encodedCompositePipelineStart,
+);
+const encodedCompositePipelineSource = engineRuntimeMiscSource.slice(
+  encodedCompositePipelineStart,
+  encodedCompositePipelineEnd,
+);
+assert.match(encodedCompositePipelineSource, /entryPoint: "encodedCompositeFragmentMain"/);
+assert.match(
+  encodedCompositePipelineSource,
+  /targets: \[\{ format: MIXED_SCENE_LINEAR_FORMAT \}\]/,
+);
+assert.doesNotMatch(
+  encodedCompositePipelineSource,
+  /targets:[\s\S]*?blend:/,
+  "il compositore con backdrop non deve duplicare source-over nel fixed blend",
+);
+
+const compactEncodedCompositeStart = vectorTextRuntimeSource.indexOf(
+  'const usesCompactEncodedVectorComposite = segment.kind === "text-run"',
+);
+const compactEncodedCompositeEnd = vectorTextRuntimeSource.indexOf(
+  "const needsBackdropComposition =",
+  compactEncodedCompositeStart,
+);
+assert.ok(
+  compactEncodedCompositeStart >= 0
+    && compactEncodedCompositeEnd > compactEncodedCompositeStart,
+);
+const compactEncodedCompositeSource = vectorTextRuntimeSource.slice(
+  compactEncodedCompositeStart,
+  compactEncodedCompositeEnd,
+);
+assert.match(
+  compactEncodedCompositeSource,
+  /const backdropTexture = currentIsCanonical\s*\? engine\.mixedSceneLinearTexture\s*:\s*engine\.mixedSceneBlendScratchTexture;/,
+  "il compositore encoded deve accettare sia il target canonico sia lo scratch ordinato",
+);
+assert.match(
+  compactEncodedCompositeSource,
+  /const backdropView = currentIsCanonical\s*\? engine\.mixedSceneLinearView\s*:\s*engine\.mixedSceneBlendScratchView;/,
+);
+assert.match(compactEncodedCompositeSource, /\{ binding: 7, resource: backdropView \}/);
+assert.match(
+  compactEncodedCompositeSource,
+  /texture: scratchTexture,[\s\S]*?texture: backdropTexture,/,
+  "il risultato esplicito deve tornare nello stesso ping-pong che forniva il backdrop",
+);
+
+const encodedScratchReleaseStart = vectorTextRuntimeSource.indexOf(
+  "function releaseMixedSceneTextEncodedCompositeScratch(",
+);
+const encodedScratchReleaseEnd = vectorTextRuntimeSource.indexOf(
+  "export function encodeMixedSceneSegmentedPresentation(",
+  encodedScratchReleaseStart,
+);
+assert.ok(
+  encodedScratchReleaseStart >= 0 && encodedScratchReleaseEnd > encodedScratchReleaseStart,
+);
+const encodedScratchReleaseSource = vectorTextRuntimeSource.slice(
+  encodedScratchReleaseStart,
+  encodedScratchReleaseEnd,
+);
+assert.match(
+  encodedScratchReleaseSource,
+  /mixedSceneTextEncodedCompositeScratchTexture\?\.destroy\(\);/,
+);
+assert.match(
+  encodedScratchReleaseSource,
+  /mixedSceneTextEncodedCompositeScratchTexture = null;[\s\S]*?mixedSceneTextEncodedCompositeScratchView = null;[\s\S]*?mixedSceneTextEncodedCompositeScratchWidth = 0;[\s\S]*?mixedSceneTextEncodedCompositeScratchHeight = 0;/,
+  "il rilascio del backdrop scratch deve azzerare texture, view e dimensioni",
+);
+const vectorScratchReleaseStart = vectorTextRuntimeSource.indexOf(
+  "export function releaseVectorTextGpuScratch(",
+);
+const vectorScratchReleaseEnd = vectorTextRuntimeSource.indexOf(
+  "export function mixedSceneItemIsVisible(",
+  vectorScratchReleaseStart,
+);
+assert.ok(vectorScratchReleaseStart >= 0 && vectorScratchReleaseEnd > vectorScratchReleaseStart);
+const vectorScratchReleaseSource = vectorTextRuntimeSource.slice(
+  vectorScratchReleaseStart,
+  vectorScratchReleaseEnd,
+);
+assert.match(vectorScratchReleaseSource, /vectorTextGpuQualityTexture\?\.destroy\(\);/);
+assert.match(
+  vectorScratchReleaseSource,
+  /vectorTextGpuQualityTexture = null;\s*engine\.vectorTextGpuQualityMipViews = \[\];\s*engine\.vectorTextGpuQualityDownsampleBindGroups = \[\];/,
+  "il rilascio vettoriale deve eliminare tutte le view e bind group della tile adattiva",
+);
+assert.match(
+  vectorScratchReleaseSource,
+  /releaseMixedSceneTextEncodedCompositeScratch\(engine\);/,
+  "il lifecycle vettoriale deve includere anche lo scratch del compositore encoded",
+);
 const rightBottomRequest = { x: 1903, y: 1061, width: 17, height: 19 };
 const rightBottomRoi = vectorTextGpuRunCacheAllocationBounds(
   rightBottomRequest,
@@ -919,7 +1602,7 @@ assert.equal(
 );
 assert.equal(
   VECTOR_TEXT_GPU_RENDER_STRATEGY,
-  "webgpu-indexed-vector-linear-rgba16float-msaa4-svg-gradients-stable-subpixel-v4",
+  "webgpu-indexed-vector-tagged-rgba16float-msaa4-adaptive-tiled-coverage-svg-gradients-v5",
 );
 assert.equal(VECTOR_TEXT_GPU_UNIFORM_FLOATS, 60);
 assert.equal(VECTOR_TEXT_GPU_UNIFORM_BYTES, 240);
@@ -931,7 +1614,7 @@ assert.equal(VECTOR_TEXT_GPU_BLUR_BYTES_PER_PIXEL, 2);
 assert.equal(MIXED_SCENE_LINEAR_FORMAT, "rgba16float");
 assert.equal(
   MIXED_SCENE_COMPOSITOR_STRATEGY,
-  "ordered-raster-vector-gpu-runs-rgba16f-storage-aware-roi-source-over-post-opacity-raster-floor-mip-parity-v8",
+  "ordered-raster-vector-gpu-runs-rgba16f-tagged-premultiplied-roi-mip-srgb-aware-source-over-v10",
 );
 assert.equal(
   VECTOR_TEXT_FONT_GEOMETRY_STRATEGY,
@@ -1909,7 +2592,11 @@ assert.match(slugSource, /const sourceCurves = contours\.flatMap/);
 assert.match(slugSource, /Math\.ceil\(\(minimum - boundsMinimum\)[\s\S]*- 1/);
 assert.match(slugShaderSource, /length\(vec2<f32>\([\s\S]*dpdx/);
 assert.match(slugShaderSource, /let alpha = coverage \* slug\.color\.a/);
-assert.match(slugShaderSource, /vec4<f32>\(slug\.color\.rgb \* alpha, alpha\)/);
+assert.match(
+  slugShaderSource,
+  /slugPresentationPremultipliedColor\(slug\.color\.rgb, alpha\)/,
+);
+assert.match(slugShaderSource, /slug\.viewCenterAndZoom\.w > 0\.5/);
 assert.match(slugShaderSource, /abs\(a\.y\) <= linearScale \/ 1048576\.0/);
 assert.equal(
   slugShaderSource.match(/sourceCoordinateScale: f32/g)?.length,
@@ -2377,7 +3064,7 @@ assert.match(
 );
 assert.match(
   engineSource,
-  /const nextValues = \[\s*primaryBounds\.x,\s*primaryBounds\.y,\s*fallbackBounds\?\.x \?\? 0,\s*fallbackBounds\?\.y \?\? 0,\s*resources\.opacity,\s*0,\s*0,\s*0,\s*\] as const;/,
+  /const nextValues = \[\s*primaryBounds\.x,\s*primaryBounds\.y,\s*fallbackBounds\?\.x \?\? 0,\s*fallbackBounds\?\.y \?\? 0,\s*resources\.opacity,\s*resources\.primaryEncodedSrgb \? 1 : 0,\s*resources\.fallbackEncodedSrgb \? 1 : 0,\s*0,\s*\] as const;/,
   "l'upload CPU deve avere lo stesso layout del blocco uniforme WGSL",
 );
 assert.match(
@@ -2507,7 +3194,7 @@ assert.match(vectorZoomMigrationSource, /CREATE TABLE IF NOT EXISTS vector_zoom_
 assert.equal(
   (
     mixedCompositorSource.match(
-      /return textureLoad\(sourceTexture, pixel, 0\)(?: \* opacity)?;/g,
+      /textureLoad\(sourceTexture, pixel, 0\)/g,
     ) ?? []
   ).length,
   1,

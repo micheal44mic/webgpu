@@ -223,3 +223,67 @@
   padding-top: 8px;
   border-top: 1px solid #334057;
 }
+
+.vector-small-scale-comparison {
+  position: fixed;
+  inset: 20px;
+  z-index: 1200;
+  overflow: auto;
+  padding: 18px;
+  border: 1px solid #4b5b73;
+  border-radius: 14px;
+  background: #101724f2;
+  color: #edf3ff;
+  box-shadow: 0 18px 60px #0009;
+}
+
+.vector-small-scale-comparison > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.vector-small-scale-comparison h2,
+.vector-small-scale-comparison h3,
+.vector-small-scale-comparison p,
+.vector-small-scale-comparison figure {
+  margin: 0;
+}
+
+.vector-small-scale-comparison > p {
+  margin-top: 8px;
+  color: #bdc9dc;
+}
+
+.vector-small-scale-comparison-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(560px, 1fr));
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.vector-small-scale-comparison-grid > section {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.vector-small-scale-comparison figure {
+  display: grid;
+  min-height: 76px;
+  place-items: start center;
+  gap: 7px;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid #354158;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #1d2533;
+}
+
+.vector-small-scale-comparison canvas {
+  display: block;
+  max-width: none;
+  image-rendering: auto;
+}

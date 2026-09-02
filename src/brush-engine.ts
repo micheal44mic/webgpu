@@ -292,6 +292,7 @@ import type {
   VectorTextGpuDraw,
   VectorTextGpuPresentationStats,
   VectorTextPlacement,
+  VectorRasterQualityMode,
   VectorTextViewState,
 } from "./vector-text-types";
 import {
@@ -683,6 +684,7 @@ import {
 import { shapeLayerForStamp } from "./brush-shape-sequence-core.ts";
 import {
   pruneVectorTextGpuResourceCache,
+  vectorTextRunCacheMemoryBytes,
   vectorTextGpuDrawUsesBlur,
   type MixedSceneActivePresentation,
   type VectorGeometryGpuDiagnostics,
@@ -1196,6 +1198,7 @@ export class BrushEngine {
   readonly mixedSceneEnabled: boolean;
   readonly vectorTextRoiCacheEnabled: boolean;
   readonly vectorGpuResourceSharingEnabled: boolean;
+  vectorRasterQualityMode: VectorRasterQualityMode = "coverage";
   readonly selectionOverlayCanvas: HTMLCanvasElement | null;
 
   private adapter!: GPUAdapter;
@@ -1516,6 +1519,10 @@ export class BrushEngine {
   mixedSceneLinearHeight = 0;
   mixedScenePresentBindGroup: GPUBindGroup | null = null;
   mixedSceneBackgroundBindGroup: GPUBindGroup | null = null;
+  mixedSceneTextEncodedCompositeScratchTexture: GPUTexture | null = null;
+  mixedSceneTextEncodedCompositeScratchView: GPUTextureView | null = null;
+  mixedSceneTextEncodedCompositeScratchWidth = 0;
+  mixedSceneTextEncodedCompositeScratchHeight = 0;
   mixedSceneBlendScratchTexture: GPUTexture | null = null;
   mixedSceneBlendScratchView: GPUTextureView | null = null;
   mixedSceneBlendOperandTexture: GPUTexture | null = null;
@@ -1563,6 +1570,9 @@ export class BrushEngine {
   vectorTextGpuMsaaView: GPUTextureView | null = null;
   vectorTextGpuResolvedTexture: GPUTexture | null = null;
   vectorTextGpuResolvedView: GPUTextureView | null = null;
+  vectorTextGpuQualityTexture: GPUTexture | null = null;
+  vectorTextGpuQualityMipViews: GPUTextureView[] = [];
+  vectorTextGpuQualityDownsampleBindGroups: GPUBindGroup[] = [];
   vectorTextGpuScratchWidth = 0;
   vectorTextGpuScratchHeight = 0;
   vectorTextGpuUniformBuffer: GPUBuffer | null = null;
@@ -1738,6 +1748,7 @@ export class BrushEngine {
   vectorTextDisplayBindGroupLayout: GPUBindGroupLayout | null = null;
   mixedSceneRasterSegmentBindGroupLayout: GPUBindGroupLayout | null = null;
   mixedSceneTextSegmentBindGroupLayout: GPUBindGroupLayout | null = null;
+  mixedSceneTextEncodedCompositeBindGroupLayout: GPUBindGroupLayout | null = null;
   mixedSceneShapePreviewBindGroupLayout: GPUBindGroupLayout | null = null;
   rasterImageMipmapBindGroupLayout: GPUBindGroupLayout | null = null;
   rasterImageMixedSceneBindGroupLayout: GPUBindGroupLayout | null = null;
@@ -1858,24 +1869,31 @@ export class BrushEngine {
   selectionPipelinesReady = false;
   selectionPipelineWarmup: (() => Promise<void>) | null = null;
   vectorTextGpuSlugPipeline: GPURenderPipeline | null = null;
+  vectorTextGpuQualitySlugPipeline: GPURenderPipeline | null = null;
   displayPipeline!: GPURenderPipeline;
   finalRasterStackDisplayPipeline!: GPURenderPipeline;
   vectorTextDisplayPipeline: GPURenderPipeline | null = null;
   vectorTextGpuFillPipeline: GPURenderPipeline | null = null;
+  vectorTextGpuQualityFillPipeline: GPURenderPipeline | null = null;
   vectorTextGpuBlurMaskPipeline: GPURenderPipeline | null = null;
   vectorTextGpuMeshBlurMaskPipeline: GPURenderPipeline | null = null;
   vectorTextGpuBlurHorizontalPipeline: GPURenderPipeline | null = null;
   vectorTextGpuBlurVerticalPipeline: GPURenderPipeline | null = null;
   vectorTextGpuBlurCompositePipeline: GPURenderPipeline | null = null;
+  vectorTextGpuQualityBlurCompositePipeline: GPURenderPipeline | null = null;
   vectorTextGpuInnerShadowDirectPipeline: GPURenderPipeline | null = null;
+  vectorTextGpuQualityInnerShadowDirectPipeline: GPURenderPipeline | null = null;
   vectorTextGpuInnerShadowBlurPipeline: GPURenderPipeline | null = null;
+  vectorTextGpuQualityInnerShadowBlurPipeline: GPURenderPipeline | null = null;
   vectorTextGpuMeshInnerShadowBlurPipeline: GPURenderPipeline | null = null;
+  vectorTextGpuQualityMeshInnerShadowBlurPipeline: GPURenderPipeline | null = null;
   vectorTextGpuClearPipeline: GPURenderPipeline | null = null;
   mixedSceneClearPipeline: GPURenderPipeline | null = null;
   mixedSceneRasterSegmentPipeline: GPURenderPipeline | null = null;
   mixedSceneRasterSegmentSourceAtopPipeline: GPURenderPipeline | null = null;
   mixedSceneTextSegmentPipeline: GPURenderPipeline | null = null;
   mixedSceneTextSegmentSourceAtopPipeline: GPURenderPipeline | null = null;
+  mixedSceneTextEncodedCompositePipeline: GPURenderPipeline | null = null;
   mixedSceneShapePreviewPipeline: GPURenderPipeline | null = null;
   mixedSceneShapePreviewUniformBuffer: GPUBuffer | null = null;
   mixedSceneShapePreviewBindGroup: GPUBindGroup | null = null;
@@ -4461,6 +4479,25 @@ export class BrushEngine {
     this.requestRender();
   }
 
+  /** Switches the exact vector coverage policy for diagnostics and A/B tests. */
+  setVectorRasterQualityMode(mode: VectorRasterQualityMode): void {
+    if (mode !== "baseline" && mode !== "coverage") {
+      throw new RangeError(`Unsupported vector raster quality mode: ${String(mode)}.`);
+    }
+    if (this.vectorRasterQualityMode === mode) return;
+    if (this.initialized && this.vectorTextGpuPendingRuns.length > 0) {
+      flushVectorTextGpuPresentations(this);
+    }
+    if (this.initialized) {
+      clearVectorTextFallbackPresentation(this);
+    }
+    this.vectorRasterQualityMode = mode;
+    this.displayDirty = true;
+    this.presentationCacheNeedsFullRebuild = true;
+    publishMixedScene(this);
+    this.requestRender();
+  }
+
   getVectorTextFastPresentationMode(): VectorTextFastPresentationMode {
     return this.vectorTextFastPresentationMode;
   }
@@ -4675,7 +4712,8 @@ export class BrushEngine {
       resources,
       target: "primary",
       targetTexture: resources.texture,
-      targetView: resources.view,
+      targetView: resources.mipZeroView,
+      targetMipLevelCount: resources.mipLevelCount,
       targetBounds: resources.textureBounds,
       draws,
       drawResources,
@@ -4695,7 +4733,10 @@ export class BrushEngine {
       height,
       gpuMemoryMiB:
         (
-          resources.textureBounds.width * resources.textureBounds.height * 8
+          vectorTextRunCacheMemoryBytes(
+            resources.textureBounds.width,
+            resources.textureBounds.height,
+          )
           + geometryBytes
         )
         / MEBIBYTE_BYTES,
