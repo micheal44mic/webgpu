@@ -37,11 +37,15 @@ interface QueuedEffect extends PendingEffect {
 
 export interface VectorTextEffectClientDiagnostics {
   readonly registeredPaths: number;
+  readonly registeredPathBytes: number;
   readonly pendingJobs: number;
   readonly readyJobs: number;
   readonly displayedSlots: number;
   readonly failedJobs: number;
   readonly lastError: string | null;
+  readonly backend: "wasm";
+  readonly lastComputeMs: number;
+  readonly wasmMemoryBytes: number;
 }
 
 export interface VectorTextEffectMeshResult {
@@ -53,6 +57,7 @@ export interface VectorTextEffectMeshResult {
 const MAXIMUM_READY_EFFECT_CACHE_ENTRIES = 48;
 const MAXIMUM_READY_EFFECT_LODS_PER_IDENTITY = 3;
 const MAXIMUM_REGISTERED_PATHS = 128;
+const MAXIMUM_REGISTERED_PATH_BYTES = 32 * 1024 * 1024;
 // Keep the worker busy while earlier responses cross back to the main thread.
 // A per-slot guard below keeps newer edits replaceable until the prior job ends.
 const MAXIMUM_IN_FLIGHT_EFFECT_JOBS = 4;
@@ -125,9 +130,13 @@ function requiresExactEffectLod(effect: VectorTextEffectDescription): boolean {
 
 export class VectorTextEffectCompilerClient {
   private worker: Worker | null = null;
-  private readonly registeredPaths = new Set<string>();
+  // Insertion order is the LRU order. Values include every transferred path
+  // array so the main thread and worker enforce the same bounded footprint.
+  private readonly registeredPaths = new Map<string, number>();
+  private registeredPathBytes = 0;
   private readonly pendingByRequest = new Map<number, PendingEffect>();
   private readonly pendingKeys = new Set<string>();
+  private readonly failedKeys = new Set<string>();
   private readonly queuedBySlot = new Map<string, QueuedEffect>();
   private readonly readyByKey = new Map<string, ReadyEffect>();
   private readonly displayedBySlot = new Map<string, DisplayedEffect>();
@@ -136,6 +145,9 @@ export class VectorTextEffectCompilerClient {
   private nextRequestId = 1;
   private failedJobs = 0;
   private lastError: string | null = null;
+  private lastComputeMs = 0;
+  private wasmMemoryBytes = 0;
+  private workerFailure: string | null = null;
   private resourceRevision = 0;
   private readonly resourceWaiters = new Set<() => void>();
   private readonly onResourceReady: () => void;
@@ -143,10 +155,20 @@ export class VectorTextEffectCompilerClient {
 
   constructor(onResourceReady: () => void) {
     this.onResourceReady = onResourceReady;
+    // Fetch and compile the required kernel while the mixed-scene runtime is
+    // otherwise idle, before the first effect submits geometry.
+    if (typeof Worker !== "undefined") {
+      this.ensureWorker();
+    }
   }
 
   private ensureWorker(): Worker {
     if (this.worker) return this.worker;
+    if (this.workerFailure) {
+      throw new Error(
+        `Required vector geometry worker is unavailable: ${this.workerFailure}`,
+      );
+    }
     const worker = new Worker(
       new URL("./vector-text-effect-worker.ts", import.meta.url),
       { type: "module", name: "vector-text-effect-compiler" },
@@ -157,9 +179,17 @@ export class VectorTextEffectCompilerClient {
       this.acceptWorkerResponse(event.data);
     };
     worker.onerror = (event): void => {
-      this.failedJobs += 1;
-      this.lastError = event.message || "Text geometry worker stopped.";
-      this.notifyResourceReady();
+      event.preventDefault();
+      this.handleWorkerFailure(
+        worker,
+        event.message || "Text geometry worker stopped.",
+      );
+    };
+    worker.onmessageerror = (): void => {
+      this.handleWorkerFailure(
+        worker,
+        "Text geometry worker returned an unreadable message.",
+      );
     };
     this.worker = worker;
     return worker;
@@ -176,9 +206,9 @@ export class VectorTextEffectCompilerClient {
     const identity = effectIdentity(geometryIdentity, effect);
     const key = cacheKey(identity, lod);
     this.desiredKeyBySlot.set(slotKey, key);
-    this.registerPath(geometryIdentity, path);
+    const current = this.displayedBySlot.get(slotKey);
     try {
-      const current = this.displayedBySlot.get(slotKey);
+      this.registerPath(geometryIdentity, path);
       const exactLod = requiresExactEffectLod(effect);
       const currentAlreadySuitable =
         current !== undefined
@@ -227,6 +257,15 @@ export class VectorTextEffectCompilerClient {
         matchesRequestedIdentity: current?.effectIdentity === identity,
         matchesRequestedLod: currentAlreadySuitable,
       };
+    } catch (error) {
+      this.failedJobs += 1;
+      this.lastError = error instanceof Error ? error.message : String(error);
+      this.failedKeys.add(key);
+      return {
+        mesh: current?.mesh ?? null,
+        matchesRequestedIdentity: current?.effectIdentity === identity,
+        matchesRequestedLod: false,
+      };
     } finally {
       this.pruneRegisteredPaths(new Set([geometryIdentity]));
     }
@@ -274,12 +313,15 @@ export class VectorTextEffectCompilerClient {
     if (this.worker) {
       this.worker.onmessage = null;
       this.worker.onerror = null;
+      this.worker.onmessageerror = null;
       this.worker.terminate();
       this.worker = null;
     }
     this.registeredPaths.clear();
+    this.registeredPathBytes = 0;
     this.pendingByRequest.clear();
     this.pendingKeys.clear();
+    this.failedKeys.clear();
     this.queuedBySlot.clear();
     this.readyByKey.clear();
     this.displayedBySlot.clear();
@@ -288,6 +330,9 @@ export class VectorTextEffectCompilerClient {
     this.nextRequestId = 1;
     this.failedJobs = 0;
     this.lastError = null;
+    this.lastComputeMs = 0;
+    this.wasmMemoryBytes = 0;
+    this.workerFailure = null;
     this.pathIdentities.clear();
     this.advanceResourceRevision(false);
   }
@@ -295,11 +340,15 @@ export class VectorTextEffectCompilerClient {
   diagnostics(): VectorTextEffectClientDiagnostics {
     return {
       registeredPaths: this.registeredPaths.size,
+      registeredPathBytes: this.registeredPathBytes,
       pendingJobs: this.pendingByRequest.size + this.queuedBySlot.size,
       readyJobs: this.readyByKey.size,
       displayedSlots: this.displayedBySlot.size,
       failedJobs: this.failedJobs,
       lastError: this.lastError,
+      backend: "wasm",
+      lastComputeMs: this.lastComputeMs,
+      wasmMemoryBytes: this.wasmMemoryBytes,
     };
   }
 
@@ -342,10 +391,25 @@ export class VectorTextEffectCompilerClient {
     geometryIdentity: string,
     path: Shadow3dPathData,
   ): void {
-    if (this.registeredPaths.has(geometryIdentity)) {
+    const existingBytes = this.registeredPaths.get(geometryIdentity);
+    if (existingBytes !== undefined) {
       this.registeredPaths.delete(geometryIdentity);
-      this.registeredPaths.add(geometryIdentity);
+      this.registeredPaths.set(geometryIdentity, existingBytes);
       return;
+    }
+    const pathBytes = path.verbs.byteLength
+      + path.coords.byteLength
+      + path.contourOffsets.byteLength;
+    if (pathBytes > MAXIMUM_REGISTERED_PATH_BYTES) {
+      throw new RangeError(
+        "Vector path exceeds the 32 MiB registered-geometry limit.",
+      );
+    }
+    this.pruneRegisteredPaths(new Set([geometryIdentity]), pathBytes);
+    if (this.registeredPathBytes + pathBytes > MAXIMUM_REGISTERED_PATH_BYTES) {
+      throw new Error(
+        "Vector path cannot be registered within the bounded geometry cache.",
+      );
     }
     const verbs = new Uint8Array(path.verbs);
     const coords = new Float64Array(path.coords);
@@ -365,13 +429,20 @@ export class VectorTextEffectCompilerClient {
       coords.buffer,
       contourOffsets.buffer,
     ]);
-    this.registeredPaths.add(geometryIdentity);
+    this.registeredPaths.set(geometryIdentity, pathBytes);
+    this.registeredPathBytes += pathBytes;
   }
 
   private pruneRegisteredPaths(
     additionalProtectedRevisions: ReadonlySet<string> = new Set(),
+    requiredBytes = 0,
   ): void {
-    if (this.registeredPaths.size <= MAXIMUM_REGISTERED_PATHS) {
+    if (
+      this.registeredPaths.size + (requiredBytes > 0 ? 1 : 0)
+        <= MAXIMUM_REGISTERED_PATHS
+      && this.registeredPathBytes + requiredBytes
+        <= MAXIMUM_REGISTERED_PATH_BYTES
+    ) {
       return;
     }
     const protectedRevisions = new Set([
@@ -380,8 +451,13 @@ export class VectorTextEffectCompilerClient {
       ...[...this.displayedBySlot.values()].map((value) => value.geometryIdentity),
       ...additionalProtectedRevisions,
     ]);
-    for (const revision of this.registeredPaths) {
-      if (this.registeredPaths.size <= MAXIMUM_REGISTERED_PATHS) {
+    for (const [revision, byteLength] of this.registeredPaths) {
+      if (
+        this.registeredPaths.size + (requiredBytes > 0 ? 1 : 0)
+          <= MAXIMUM_REGISTERED_PATHS
+        && this.registeredPathBytes + requiredBytes
+          <= MAXIMUM_REGISTERED_PATH_BYTES
+      ) {
         break;
       }
       if (protectedRevisions.has(revision)) {
@@ -393,7 +469,37 @@ export class VectorTextEffectCompilerClient {
       };
       this.worker?.postMessage(message);
       this.registeredPaths.delete(revision);
+      this.registeredPathBytes = Math.max(
+        0,
+        this.registeredPathBytes - byteLength,
+      );
     }
+  }
+
+  private handleWorkerFailure(worker: Worker, message: string): void {
+    if (this.worker !== worker) return;
+    worker.onmessage = null;
+    worker.onerror = null;
+    worker.onmessageerror = null;
+    worker.terminate();
+    this.worker = null;
+    const failedWork = this.pendingByRequest.size + this.queuedBySlot.size;
+    this.failedJobs += Math.max(1, failedWork);
+    this.lastError = message;
+    this.workerFailure = message;
+    for (const pending of this.pendingByRequest.values()) {
+      this.failedKeys.add(pending.cacheKey);
+    }
+    for (const queued of this.queuedBySlot.values()) {
+      this.failedKeys.add(queued.cacheKey);
+    }
+    this.pendingByRequest.clear();
+    this.pendingKeys.clear();
+    this.queuedBySlot.clear();
+    this.registeredPaths.clear();
+    this.registeredPathBytes = 0;
+    this.wasmMemoryBytes = 0;
+    this.notifyResourceReady();
   }
 
   private requestEffect(
@@ -409,7 +515,11 @@ export class VectorTextEffectCompilerClient {
       this.pendingKeys.delete(superseded.cacheKey);
       this.queuedBySlot.delete(slotKey);
     }
-    if (this.readyByKey.has(key) || this.pendingKeys.has(key)) {
+    if (
+      this.readyByKey.has(key)
+      || this.pendingKeys.has(key)
+      || this.failedKeys.has(key)
+    ) {
       return;
     }
     const queued: QueuedEffect = {
@@ -477,11 +587,14 @@ export class VectorTextEffectCompilerClient {
     if (response.type === "effect-failed") {
       this.failedJobs += 1;
       this.lastError = response.message;
+      this.failedKeys.add(response.cacheKey);
     } else if (
       [...this.desiredKeyBySlot.values()].some(
         (desiredKey) => desiredKey === response.cacheKey,
       )
     ) {
+      this.lastComputeMs = response.computeMs;
+      this.wasmMemoryBytes = response.memoryBytes;
       this.readyByKey.set(response.cacheKey, {
         ...pending,
         mesh: response.mesh,

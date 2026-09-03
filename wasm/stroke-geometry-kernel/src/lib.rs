@@ -7,12 +7,17 @@ use core::ptr;
 use core::slice;
 
 const ABI_VERSION: u32 = 1;
+const STAMP_PACK_ABI_VERSION: u32 = 2;
 const STATE_MAGIC: u32 = 0x5354_524b;
 const STABILIZATION_CAPACITY: usize = 1024;
 const INPUT_STRIDE: usize = 4;
 const DAB_STRIDE: usize = 6;
 const TAIL_STRIDE: usize = 10;
 const SUMMARY_LENGTH: usize = 16;
+const STAMP_PACK_DAB_STRIDE_BYTES: usize = 6 * size_of::<f64>();
+const PACKED_STAMP_STRIDE_BYTES: usize = 8 * size_of::<u32>();
+const STAMP_PACK_CONFIG_LENGTH: usize = 20;
+const STAMP_PACK_SUMMARY_LENGTH: usize = 12;
 
 const STATUS_OK: i32 = 0;
 const STATUS_INVALID_ARGUMENT: i32 = -1;
@@ -22,6 +27,12 @@ const STATUS_TAIL_CAPACITY: i32 = -4;
 
 const SPACING_FIXED: u32 = 0;
 const SPACING_DIRECT_PRESSURE: u32 = 1;
+
+const RADIUS_FIXED: u32 = 0;
+const RADIUS_DIRECT_PRESSURE: u32 = 1;
+const SHAPE_SEQUENCE_ORDERED: u32 = 0;
+const SHAPE_SEQUENCE_RANDOM: u32 = 1;
+const THICKNESS_TAPER_WINDOW_MS: f64 = 100.0;
 
 const MAXIMUM_TIME_CONSTANT_MS: f64 = 160.0;
 const MINIMUM_SEGMENT_LENGTH: f64 = 0.0001;
@@ -734,9 +745,476 @@ fn write_summary(
     output[15] = if finished { 1.0 } else { 0.0 };
 }
 
+#[derive(Clone, Copy)]
+struct StampPackConfig {
+    size: f64,
+    position_jitter_linear: f64,
+    position_jitter_lateral: f64,
+    shape_extent_factor: f64,
+    document_width: f64,
+    document_height: f64,
+    reflection_cosine_double_angle: f64,
+    reflection_sine_double_angle: f64,
+    seed_sequence: u32,
+    stamp_ordinal: u64,
+    radius_mode: u32,
+    shape_sequence_mode: u32,
+    shape_layer_count: u32,
+    symmetry_enabled: bool,
+    start_thickness: f64,
+    end_thickness: f64,
+    started_at_ms: f64,
+    end_reference_time_ms: f64,
+    apply_end_taper: bool,
+}
+
+#[inline(always)]
+fn finite_nonnegative_integer(value: f64, maximum: f64) -> Option<u32> {
+    if value.is_finite() && value >= 0.0 && value <= maximum && libm::floor(value) == value {
+        Some(value as u32)
+    } else {
+        None
+    }
+}
+
+#[inline(always)]
+fn finite_nonnegative_safe_integer(value: f64) -> Option<u64> {
+    const MAXIMUM_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+    if value.is_finite()
+        && value >= 0.0
+        && value <= MAXIMUM_SAFE_INTEGER
+        && libm::floor(value) == value
+    {
+        Some(value as u64)
+    } else {
+        None
+    }
+}
+
+fn read_stamp_pack_config(pointer: u32) -> Option<StampPackConfig> {
+    if pointer == 0 || !(pointer as usize).is_multiple_of(core::mem::align_of::<f64>()) {
+        return None;
+    }
+    // SAFETY: the adapter reserves STAMP_PACK_CONFIG_LENGTH f64 values here.
+    let values = unsafe { slice::from_raw_parts(pointer as *const f64, STAMP_PACK_CONFIG_LENGTH) };
+    let radius_mode = finite_nonnegative_integer(values[10], 1.0)?;
+    let shape_sequence_mode = finite_nonnegative_integer(values[11], 1.0)?;
+    let shape_layer_count = finite_nonnegative_integer(values[12], 4.0)?;
+    let symmetry_enabled = finite_nonnegative_integer(values[13], 1.0)? != 0;
+    let apply_end_taper = finite_nonnegative_integer(values[18], 1.0)? != 0;
+    let seed_sequence = finite_nonnegative_integer(values[8], f64::from(u32::MAX))?;
+    let stamp_ordinal = finite_nonnegative_safe_integer(values[9])?;
+    if !values[..8].iter().all(|value| value.is_finite())
+        || values[0] <= 0.0
+        || values[1] < 0.0
+        || values[2] < 0.0
+        || values[3] <= 0.0
+        || values[4] < 1.0
+        || values[5] < 1.0
+        || !values[14..18].iter().all(|value| value.is_finite())
+        || !(0.0..=2.0).contains(&values[14])
+        || !(0.0..=2.0).contains(&values[15])
+        || values[19] != 0.0
+        || shape_layer_count == 0
+        || (radius_mode != RADIUS_FIXED && radius_mode != RADIUS_DIRECT_PRESSURE)
+        || (shape_sequence_mode != SHAPE_SEQUENCE_ORDERED
+            && shape_sequence_mode != SHAPE_SEQUENCE_RANDOM)
+    {
+        return None;
+    }
+    Some(StampPackConfig {
+        size: values[0],
+        position_jitter_linear: values[1],
+        position_jitter_lateral: values[2],
+        shape_extent_factor: values[3],
+        document_width: values[4],
+        document_height: values[5],
+        reflection_cosine_double_angle: values[6],
+        reflection_sine_double_angle: values[7],
+        seed_sequence,
+        stamp_ordinal,
+        radius_mode,
+        shape_sequence_mode,
+        shape_layer_count,
+        symmetry_enabled,
+        start_thickness: values[14],
+        end_thickness: values[15],
+        started_at_ms: values[16],
+        end_reference_time_ms: values[17],
+        apply_end_taper,
+    })
+}
+
+#[inline(always)]
+fn thickness_ease_out(elapsed_ms: f64) -> f64 {
+    let progress = clamp(elapsed_ms / THICKNESS_TAPER_WINDOW_MS, 0.0, 1.0);
+    let remaining = 1.0 - progress;
+    1.0 - remaining * remaining
+}
+
+#[inline(always)]
+fn thickness_radius(base_radius: f64, time_ms: f64, config: &StampPackConfig) -> f64 {
+    if config.start_thickness == 1.0
+        && (!config.apply_end_taper || config.end_thickness == 1.0)
+    {
+        return base_radius;
+    }
+    let start_progress = thickness_ease_out((time_ms - config.started_at_ms).max(0.0));
+    let live_factor = config.start_thickness + (1.0 - config.start_thickness) * start_progress;
+    if !config.apply_end_taper {
+        return base_radius * live_factor;
+    }
+    let end_progress = thickness_ease_out(
+        (config.end_reference_time_ms - time_ms).max(0.0),
+    );
+    let final_factor = config.end_thickness
+        + (live_factor - config.end_thickness) * end_progress;
+    base_radius * final_factor
+}
+
+#[inline(always)]
+fn paint_stamp_seed(sequence: u32) -> u32 {
+    sequence.wrapping_mul(0x9e37_79b1) ^ 0xa511_e9b3
+}
+
+#[inline(always)]
+fn shape_layer_for_stamp(config: &StampPackConfig, ordinal: u64, seed: u32) -> u32 {
+    let count = config.shape_layer_count.clamp(1, 4);
+    if count == 1 || config.shape_sequence_mode != SHAPE_SEQUENCE_RANDOM {
+        return (ordinal % u64::from(count)) as u32;
+    }
+    let mut value = seed ^ 0x68bc_21eb;
+    value ^= value >> 16;
+    value = value.wrapping_mul(0x7feb_352d);
+    value ^= value >> 15;
+    value = value.wrapping_mul(0x846c_a68b);
+    value ^= value >> 16;
+    value % count
+}
+
+#[inline(always)]
+fn intersects_document(
+    x: f64,
+    y: f64,
+    reach_x: f64,
+    reach_y: f64,
+    width: f64,
+    height: f64,
+) -> bool {
+    x + reach_x >= 0.0 && y + reach_y >= 0.0 && x - reach_x < width && y - reach_y < height
+}
+
+#[inline(always)]
+fn stamp_or_reflection_intersects_document(
+    x: f64,
+    y: f64,
+    reach: f64,
+    config: &StampPackConfig,
+) -> bool {
+    if intersects_document(
+        x,
+        y,
+        reach,
+        reach,
+        config.document_width,
+        config.document_height,
+    ) {
+        return true;
+    }
+    if !config.symmetry_enabled {
+        return false;
+    }
+    let offset_x = x - config.document_width * 0.5;
+    let offset_y = y - config.document_height * 0.5;
+    let reflected_x = config.document_width * 0.5
+        + config.reflection_cosine_double_angle * offset_x
+        + config.reflection_sine_double_angle * offset_y;
+    let reflected_y = config.document_height * 0.5 + config.reflection_sine_double_angle * offset_x
+        - config.reflection_cosine_double_angle * offset_y;
+    let reflected_reach = (config.reflection_cosine_double_angle.abs()
+        + config.reflection_sine_double_angle.abs())
+        * reach;
+    intersects_document(
+        reflected_x,
+        reflected_y,
+        reflected_reach,
+        reflected_reach,
+        config.document_width,
+        config.document_height,
+    )
+}
+
+#[inline(always)]
+unsafe fn write_packed_stamp_f32(pointer: *mut u8, lane: usize, value: f32) {
+    // SAFETY: the adapter owns a writable 32-byte record at pointer.
+    unsafe { ptr::write_unaligned(pointer.add(lane * size_of::<f32>()) as *mut f32, value) };
+}
+
+#[inline(always)]
+unsafe fn write_packed_stamp_u32(pointer: *mut u8, lane: usize, value: u32) {
+    // SAFETY: the adapter owns a writable 32-byte record at pointer.
+    unsafe { ptr::write_unaligned(pointer.add(lane * size_of::<u32>()) as *mut u32, value) };
+}
+
+fn write_stamp_pack_summary(pointer: u32, values: [f64; STAMP_PACK_SUMMARY_LENGTH]) {
+    if pointer == 0 || !(pointer as usize).is_multiple_of(core::mem::align_of::<f64>()) {
+        return;
+    }
+    // SAFETY: the adapter reserves STAMP_PACK_SUMMARY_LENGTH f64 values here.
+    let output =
+        unsafe { slice::from_raw_parts_mut(pointer as *mut f64, STAMP_PACK_SUMMARY_LENGTH) };
+    output.copy_from_slice(&values);
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn stroke_geometry_abi_version() -> u32 {
     ABI_VERSION
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn stroke_stamp_pack_abi_version() -> u32 {
+    STAMP_PACK_ABI_VERSION
+}
+
+/// Converts interleaved f64 geometry dabs in place into the exact 32-byte GPU
+/// instance record. Because each output record is smaller than its input dab,
+/// a forward pass cannot overwrite an unread input record.
+///
+/// # Safety
+///
+/// `dab_ptr` must address `dab_count * 48` readable and writable bytes.
+/// `config_ptr` and `summary_ptr` must address 20 and 12 aligned f64 values and
+/// must not overlap the dab arena.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stroke_stamp_pack_dabs_in_place(
+    dab_ptr: u32,
+    dab_count: u32,
+    config_ptr: u32,
+    summary_ptr: u32,
+) -> i32 {
+    if dab_ptr == 0 || summary_ptr == 0 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    let Some(config) = read_stamp_pack_config(config_ptr) else {
+        return STATUS_INVALID_ARGUMENT;
+    };
+    const MAXIMUM_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+    if config
+        .stamp_ordinal
+        .checked_add(u64::from(dab_count))
+        .is_none_or(|next| next > MAXIMUM_SAFE_INTEGER)
+    {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    let byte_count = match (dab_count as usize).checked_mul(STAMP_PACK_DAB_STRIDE_BYTES) {
+        Some(value) => value,
+        None => return STATUS_INVALID_ARGUMENT,
+    };
+    let input_end = match (dab_ptr as usize).checked_add(byte_count) {
+        Some(value) => value,
+        None => return STATUS_INVALID_ARGUMENT,
+    };
+    let output_end =
+        match (summary_ptr as usize).checked_add(STAMP_PACK_SUMMARY_LENGTH * size_of::<f64>()) {
+            Some(value) => value,
+            None => return STATUS_INVALID_ARGUMENT,
+        };
+    let config_end =
+        match (config_ptr as usize).checked_add(STAMP_PACK_CONFIG_LENGTH * size_of::<f64>()) {
+            Some(value) => value,
+            None => return STATUS_INVALID_ARGUMENT,
+        };
+    let dab_start = dab_ptr as usize;
+    if (config_ptr as usize) < input_end && config_end > dab_start
+        || (summary_ptr as usize) < input_end && output_end > dab_start
+    {
+        return STATUS_INVALID_ARGUMENT;
+    }
+
+    let mut packed_count = 0_u32;
+    let mut culled_count = 0_u32;
+    let mut seed_sequence = config.seed_sequence;
+    let mut stamp_ordinal = config.stamp_ordinal;
+    let mut first_seed = -1.0;
+    let mut minimum_x = config.document_width;
+    let mut minimum_y = config.document_height;
+    let mut maximum_x = 0.0_f64;
+    let mut maximum_y = 0.0_f64;
+    let mut minimum_radius = f64::INFINITY;
+    let input = dab_ptr as *const u8;
+    let output = dab_ptr as *mut u8;
+
+    let mut index = 0_u32;
+    while index < dab_count {
+        let input_base = index as usize * STAMP_PACK_DAB_STRIDE_BYTES;
+        // SAFETY: the adapter provides dab_count complete 48-byte input records.
+        let x = unsafe { ptr::read_unaligned(input.add(input_base) as *const f64) };
+        let y =
+            unsafe { ptr::read_unaligned(input.add(input_base + size_of::<f64>()) as *const f64) };
+        let source_pressure = unsafe {
+            ptr::read_unaligned(input.add(input_base + 2 * size_of::<f64>()) as *const f64)
+        };
+        let time_ms = unsafe {
+            ptr::read_unaligned(input.add(input_base + 3 * size_of::<f64>()) as *const f64)
+        };
+        let direction_x = unsafe {
+            ptr::read_unaligned(input.add(input_base + 4 * size_of::<f64>()) as *const f64)
+        };
+        let direction_y = unsafe {
+            ptr::read_unaligned(input.add(input_base + 5 * size_of::<f64>()) as *const f64)
+        };
+        if !x.is_finite()
+            || !y.is_finite()
+            || !source_pressure.is_finite()
+            || !time_ms.is_finite()
+            || !direction_x.is_finite()
+            || !direction_y.is_finite()
+        {
+            write_stamp_pack_summary(
+                summary_ptr,
+                [
+                    f64::from(STATUS_INVALID_ARGUMENT),
+                    f64::from(index),
+                    f64::from(packed_count),
+                    first_seed,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    minimum_radius,
+                    f64::from(seed_sequence),
+                    stamp_ordinal as f64,
+                    f64::from(culled_count),
+                ],
+            );
+            return STATUS_INVALID_ARGUMENT;
+        }
+        let pressure = clamp(source_pressure, 0.01, 1.0);
+        let base_radius = if config.radius_mode == RADIUS_DIRECT_PRESSURE {
+            (config.size * pressure).max(1.0) * 0.5
+        } else {
+            (config.size * 0.5).max(0.5)
+        };
+        let radius = thickness_radius(base_radius, time_ms, &config);
+        let seed = paint_stamp_seed(seed_sequence);
+        seed_sequence = seed_sequence.wrapping_add(1);
+        let ordinal = stamp_ordinal;
+        stamp_ordinal += 1;
+        if radius <= 0.0 {
+            culled_count = culled_count.saturating_add(1);
+            index += 1;
+            continue;
+        }
+        let conservative_reach =
+            radius * (1.0 + 2.0 * (config.position_jitter_linear + config.position_jitter_lateral));
+        if !stamp_or_reflection_intersects_document(x, y, conservative_reach, &config) {
+            culled_count = culled_count.saturating_add(1);
+            index += 1;
+            continue;
+        }
+
+        let packed_x = x as f32;
+        let packed_y = y as f32;
+        let packed_radius = radius as f32;
+        let packed_pressure = pressure as f32;
+        let packed_direction_x = direction_x as f32;
+        let packed_direction_y = direction_y as f32;
+        let output_base = packed_count as usize * PACKED_STAMP_STRIDE_BYTES;
+        // SAFETY: packed_count never exceeds dab_count and output records are
+        // smaller than input records in the same caller-owned arena.
+        unsafe {
+            let record = output.add(output_base);
+            write_packed_stamp_f32(record, 0, packed_x);
+            write_packed_stamp_f32(record, 1, packed_y);
+            write_packed_stamp_f32(record, 2, packed_radius);
+            write_packed_stamp_f32(record, 3, packed_pressure);
+            write_packed_stamp_u32(record, 4, seed);
+            write_packed_stamp_u32(record, 5, shape_layer_for_stamp(&config, ordinal, seed));
+            write_packed_stamp_f32(record, 6, packed_direction_x);
+            write_packed_stamp_f32(record, 7, packed_direction_y);
+        }
+
+        if first_seed < 0.0 {
+            first_seed = f64::from(seed);
+        }
+        minimum_radius = minimum_radius.min(f64::from(packed_radius));
+        let direction_length =
+            libm::hypot(f64::from(packed_direction_x), f64::from(packed_direction_y));
+        let linear_reach = f64::from(packed_radius) * 2.0 * config.position_jitter_linear;
+        let lateral_reach = f64::from(packed_radius) * 2.0 * config.position_jitter_lateral;
+        let brush_reach = f64::from(packed_radius) * config.shape_extent_factor;
+        let (reach_x, reach_y) = if direction_length > 0.0002 {
+            let normalized_x = f64::from(packed_direction_x) / direction_length;
+            let normalized_y = f64::from(packed_direction_y) / direction_length;
+            (
+                brush_reach
+                    + normalized_x.abs() * linear_reach
+                    + normalized_y.abs() * lateral_reach
+                    + 2.0,
+                brush_reach
+                    + normalized_y.abs() * linear_reach
+                    + normalized_x.abs() * lateral_reach
+                    + 2.0,
+            )
+        } else {
+            let isotropic = brush_reach + linear_reach + lateral_reach + 2.0;
+            (isotropic, isotropic)
+        };
+        let packed_x_f64 = f64::from(packed_x);
+        let packed_y_f64 = f64::from(packed_y);
+        minimum_x = minimum_x.min(packed_x_f64 - reach_x);
+        minimum_y = minimum_y.min(packed_y_f64 - reach_y);
+        maximum_x = maximum_x.max(packed_x_f64 + reach_x);
+        maximum_y = maximum_y.max(packed_y_f64 + reach_y);
+        if config.symmetry_enabled {
+            let offset_x = packed_x_f64 - config.document_width * 0.5;
+            let offset_y = packed_y_f64 - config.document_height * 0.5;
+            let reflected_x = config.document_width * 0.5
+                + config.reflection_cosine_double_angle * offset_x
+                + config.reflection_sine_double_angle * offset_y;
+            let reflected_y = config.document_height * 0.5
+                + config.reflection_sine_double_angle * offset_x
+                - config.reflection_cosine_double_angle * offset_y;
+            let reflected_reach_x = config.reflection_cosine_double_angle.abs() * reach_x
+                + config.reflection_sine_double_angle.abs() * reach_y;
+            let reflected_reach_y = config.reflection_sine_double_angle.abs() * reach_x
+                + config.reflection_cosine_double_angle.abs() * reach_y;
+            minimum_x = minimum_x.min(reflected_x - reflected_reach_x);
+            minimum_y = minimum_y.min(reflected_y - reflected_reach_y);
+            maximum_x = maximum_x.max(reflected_x + reflected_reach_x);
+            maximum_y = maximum_y.max(reflected_y + reflected_reach_y);
+        }
+        packed_count = packed_count.saturating_add(1);
+        index += 1;
+    }
+
+    let (dirty_x, dirty_y, dirty_width, dirty_height) = if packed_count > 0 {
+        let x = clamp(libm::floor(minimum_x), 0.0, config.document_width - 1.0);
+        let y = clamp(libm::floor(minimum_y), 0.0, config.document_height - 1.0);
+        let right = clamp(libm::ceil(maximum_x), 1.0, config.document_width);
+        let bottom = clamp(libm::ceil(maximum_y), 1.0, config.document_height);
+        (x, y, (right - x).max(0.0), (bottom - y).max(0.0))
+    } else {
+        (0.0, 0.0, 0.0, 0.0)
+    };
+    write_stamp_pack_summary(
+        summary_ptr,
+        [
+            f64::from(STATUS_OK),
+            f64::from(dab_count),
+            f64::from(packed_count),
+            first_seed,
+            dirty_x,
+            dirty_y,
+            dirty_width,
+            dirty_height,
+            minimum_radius,
+            f64::from(seed_sequence),
+            stamp_ordinal as f64,
+            f64::from(culled_count),
+        ],
+    );
+    STATUS_OK
 }
 
 #[unsafe(no_mangle)]

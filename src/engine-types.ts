@@ -54,7 +54,11 @@ export type PaintDabProfile =
   | "encoded-srgb-rgba8";
 
 /** CPU implementation selected once when a gesture begins. */
-export type StrokeGeometryBackendPreference = "auto" | "javascript" | "wasm";
+export type StrokeGeometryBackendPreference =
+  | "auto"
+  | "javascript"
+  | "wasm"
+  | "wasm-packed-required";
 
 export type DisplayCompositingColorSpace =
   | "linear-light"

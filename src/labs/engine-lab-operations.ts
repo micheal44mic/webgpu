@@ -72,6 +72,7 @@ export async function runBenchmark(engine: BrushEngine, baseStampCount: number):
   const count = clamp(Math.round(baseStampCount), 1, Math.min(12_000, MAX_STAMPS_PER_BATCH));
   engine.invalidateAdaptivePreview();
   engine.pendingStamps.length = 0;
+  engine.pendingPackedStampBatches.length = 0;
   engine.pendingBlendBatches.length = 0;
   engine.activeStroke = null;
   engine.resetHistoryState();

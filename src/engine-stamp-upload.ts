@@ -163,12 +163,7 @@ export function packStampsIntoUpload(
   let maximumX = 0;
   let maximumY = 0;
   let minimumRadius = Number.POSITIVE_INFINITY;
-  const maximumShapeAngle = Math.PI * settings.shapeScatter;
-  const shapeExtentFactor = settings.shape === "shape"
-    ? settings.shapeRotation === "follow-stroke" || maximumShapeAngle >= Math.PI * 0.25
-      ? Math.SQRT2
-      : Math.cos(maximumShapeAngle) + Math.sin(maximumShapeAngle)
-    : 1;
+  const shapeExtentFactor = stampShapeExtentFactor(settings);
 
   for (let index = 0; index < stampCount; index += 1) {
     const stamp = stamps[index];
@@ -250,4 +245,13 @@ export function packStampsIntoUpload(
     dirtyRect: width > 0 && height > 0 ? { x, y, width, height } : null,
     minimumRadius,
   };
+}
+
+/** Conservative shape reach shared by CPU packing and the packed Wasm ABI. */
+export function stampShapeExtentFactor(settings: Readonly<BrushSettings>): number {
+  if (settings.shape !== "shape") return 1;
+  const maximumShapeAngle = Math.PI * settings.shapeScatter;
+  return settings.shapeRotation === "follow-stroke" || maximumShapeAngle >= Math.PI * 0.25
+    ? Math.SQRT2
+    : Math.cos(maximumShapeAngle) + Math.sin(maximumShapeAngle);
 }

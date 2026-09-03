@@ -30,9 +30,18 @@ The exported functions are `stroke_geometry_begin`,
 queries. The current state allocation is 57,600 bytes, queried at runtime
 rather than hard-coded by the adapter.
 
+The optional stamp-packing ABI is version 2. It converts dab records directly
+into the 32-byte interleaved GPU upload layout, including document culling,
+symmetry visibility, deterministic jitter and Shape sequencing. Start and end
+thickness are evaluated in `f64`; the adapter retains only the revisionable
+100 ms end-thickness tail and releases its stable prefix as packed chunks.
+Seed and ordinal counters are consumed before culling so the packed path keeps
+the same deterministic sequence as the object-based reference path.
+
 It deliberately does not handle pointer events, brush resources, color,
-history, GPU uploads or pixel rendering. The JavaScript adapter retains an
-exact fallback and selects one backend for the complete gesture.
+history, GPU submission or pixel rendering. The JavaScript adapter can select
+one geometry backend for a complete gesture; strict packed sessions report a
+module error instead of switching implementations.
 
 The synchronous streaming adapter is intended to be called once per input
 sample (or per coalesced batch):

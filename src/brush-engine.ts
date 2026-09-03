@@ -619,7 +619,9 @@ import type {
   DirtyRect,
   HeldThicknessStamp,
   PackedStampUpload,
+  PackedStampSubmission,
   PendingBlendBatch,
+  PendingPackedStampBatch,
   Stamp,
   StabilizationTailFrame,
   ThicknessTailFrame,
@@ -629,6 +631,7 @@ import {
   normalizeStrokeSymmetryMode,
   strokeSymmetryCopiesIntersectDocument,
   strokeSymmetryPhysicalCopyCount,
+  strokeSymmetryReflectionCoefficients,
   strokeSymmetryTransformForStampBatch,
   resolvedStrokeSymmetryAngleRadians,
   type StrokeSymmetryMode,
@@ -713,8 +716,13 @@ import {
   type StrokeStabilizationUpdate,
 } from "./stroke-stabilization-core";
 import {
+  loadRequiredPackedStrokeGeometryProcessor,
   loadStrokeGeometryProcessor,
+  wasmPackedStrokeGeometryReady,
   wasmStrokeGeometryReady,
+  type PackedStrokeGeometrySession,
+  type PackedStrokeGeometryStreamingResult,
+  type PackedStrokeStampResult,
   type StrokeGeometryActiveBackend,
   type StrokeGeometryProcessor,
   type StrokeGeometrySession,
@@ -750,6 +758,7 @@ import {
   populateBrushUniformUpload,
   populateGrainUniformUpload,
   populateStrokeGlazeUniformUpload,
+  stampShapeExtentFactor,
 } from "./engine-stamp-upload";
 import {
   finishStrokePerformanceProfile,
@@ -969,6 +978,8 @@ import {
   maybeReleaseIdleBlendScratch,
   maybeReleaseIdleGrainResources,
   maybeReleaseIdleShapeResources,
+  rebuildGrainBrushBindGroups,
+  rebuildShapeBrushBindGroups,
   releaseHeldThicknessStamps,
   releaseRasterBevelRenderer,
   releaseRasterInnerShadowRenderer,
@@ -1704,6 +1715,7 @@ export class BrushEngine {
   layerColdTileCompositeIndicesBuffer!: GPUBuffer;
   instanceBuffer!: GPUBuffer;
   thicknessTailInstanceBuffer!: GPUBuffer;
+  thicknessTailInstanceCapacity = MAX_STAMPS_PER_BATCH;
   shapeOccupancyUniformBuffers: GPUBuffer[] = [];
   sampler!: GPUSampler;
   shapeMaskTexture: GPUTexture | null = null;
@@ -1997,6 +2009,7 @@ export class BrushEngine {
   private selectedBrushInteractionPreparationPromise: Promise<boolean> | null = null;
   readonly customBrushAssets = new CustomBrushAssetRegistry();
   pendingStamps: Stamp[] = [];
+  pendingPackedStampBatches: PendingPackedStampBatch[] = [];
   pendingBlendBatches: PendingBlendBatch[] = [];
   blendSubmissionInFlight: Promise<void> | null = null;
   forceSynchronousBlendDrain = false;
@@ -2221,6 +2234,7 @@ export class BrushEngine {
       strokeGeometryBackendPreference !== "auto"
       && strokeGeometryBackendPreference !== "javascript"
       && strokeGeometryBackendPreference !== "wasm"
+      && strokeGeometryBackendPreference !== "wasm-packed-required"
     ) {
       throw new RangeError("Unsupported stroke geometry backend preference.");
     }
@@ -2737,31 +2751,39 @@ export class BrushEngine {
     this.publishHistoryState();
     if (this.strokeGeometryBackendPreference !== "javascript") {
       window.setTimeout(() => {
-        void this.prepareStrokeGeometryBackend();
+        void this.prepareStrokeGeometryBackend().catch(() => {
+          // The gesture gate reports a strict packed-backend failure in context.
+        });
       }, 0);
     }
   }
 
   /**
    * Warms the optional CPU geometry module without delaying the first canvas
-   * frame. A failed or still-cold module leaves the next gesture on JavaScript.
+   * frame. Optional mode can remain on JavaScript; strict packed mode surfaces
+   * initialization failure to the caller.
    */
   async prepareStrokeGeometryBackend(): Promise<StrokeGeometryActiveBackend> {
     if (this.strokeGeometryBackendPreference === "javascript") {
       return "javascript";
     }
     if (this.strokeGeometryProcessor) {
-      return wasmStrokeGeometryReady(this.strokeGeometryProcessor) ? "wasm" : "javascript";
+      return this.preparedStrokeGeometryBackend();
     }
     if (!this.strokeGeometryProcessorPromise) {
-      this.strokeGeometryProcessorPromise = loadStrokeGeometryProcessor()
+      const strictPacked = this.strokeGeometryBackendPreference === "wasm-packed-required";
+      const loadProcessor = strictPacked
+        ? loadRequiredPackedStrokeGeometryProcessor()
+        : loadStrokeGeometryProcessor();
+      this.strokeGeometryProcessorPromise = loadProcessor
         .then((processor) => {
           this.strokeGeometryProcessor = processor;
           this.strokeGeometryInitializationError = processor.initializationError ?? null;
-          return wasmStrokeGeometryReady(processor) ? "wasm" : "javascript";
+          return this.preparedStrokeGeometryBackend();
         })
         .catch((error: unknown) => {
           this.strokeGeometryInitializationError = error;
+          if (strictPacked) throw error;
           return "javascript" as const;
         });
     }
@@ -2769,7 +2791,83 @@ export class BrushEngine {
   }
 
   preparedStrokeGeometryBackend(): StrokeGeometryActiveBackend {
+    if (
+      wasmPackedStrokeGeometryReady(this.strokeGeometryProcessor)
+      && (
+        this.strokeGeometryBackendPreference === "wasm-packed-required"
+        || (
+          this.strokeGeometryBackendPreference === "auto"
+          && usesEncodedSrgbRgba8PaintDabProfile(this.paintDabProfile)
+        )
+      )
+    ) {
+      return "wasm-packed";
+    }
     return wasmStrokeGeometryReady(this.strokeGeometryProcessor) ? "wasm" : "javascript";
+  }
+
+  private packedStrokeSupported(
+    settings: Readonly<BrushSettings>,
+    deferredPreview: boolean,
+    cloneRequested: boolean,
+  ): boolean {
+    return settings.tool === "paint"
+      && (
+        settings.blendMode === "light-glaze"
+        || settings.blendMode === "uniformed-glaze"
+        || settings.blendMode === "intense-blending"
+      )
+      && !deferredPreview
+      && !cloneRequested;
+  }
+
+  private packedStrokeRequested(
+    settings: Readonly<BrushSettings>,
+    deferredPreview: boolean,
+    cloneRequested: boolean,
+  ): boolean {
+    const supported = this.packedStrokeSupported(settings, deferredPreview, cloneRequested);
+    if (!supported) return false;
+    if (this.strokeGeometryBackendPreference === "wasm-packed-required") return true;
+    return this.strokeGeometryBackendPreference === "auto"
+      && usesEncodedSrgbRgba8PaintDabProfile(this.paintDabProfile)
+      && supported;
+  }
+
+  /** Gate strict packed gestures before History, masks, or accumulators mutate. */
+  private packedStrokeReadyForGesture(
+    settings: Readonly<BrushSettings>,
+    deferredPreview: boolean,
+    cloneRequested: boolean,
+  ): boolean {
+    if (
+      this.strokeGeometryBackendPreference === "wasm-packed-required"
+      && !this.packedStrokeSupported(settings, deferredPreview, cloneRequested)
+    ) {
+      this.callbacks.onStatus?.(
+        "This strict packed-stroke test supports Paint with Light, Uniformed, or Intense deposition only.",
+        "error",
+      );
+      return false;
+    }
+    if (!this.packedStrokeRequested(settings, deferredPreview, cloneRequested)) return true;
+    if (wasmPackedStrokeGeometryReady(this.strokeGeometryProcessor)) return true;
+    if (this.strokeGeometryInitializationError) {
+      const message = this.strokeGeometryInitializationError instanceof Error
+        ? this.strokeGeometryInitializationError.message
+        : String(this.strokeGeometryInitializationError);
+      this.callbacks.onStatus?.(`Packed stroke module is unavailable: ${message}`, "error");
+      return false;
+    }
+    void this.prepareStrokeGeometryBackend().catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      this.callbacks.onStatus?.(`Packed stroke module is unavailable: ${message}`, "error");
+    });
+    this.callbacks.onStatus?.(
+      "The packed stroke module is being prepared. Try again in a moment…",
+      "working",
+    );
+    return false;
   }
 
   getSettings(): BrushSettings {
@@ -5374,6 +5472,13 @@ export class BrushEngine {
       );
       return false;
     }
+    if (!this.packedStrokeReadyForGesture(
+      renderSettings,
+      deferredPreview,
+      cloneConfiguration !== null,
+    )) {
+      return false;
+    }
     pauseLayerColdCompressionIdle(this);
     const normalizedPoint: LayerPoint = {
       ...point,
@@ -5423,11 +5528,81 @@ export class BrushEngine {
       && !deferredPreview
       && shapeAssetIdsForSettings(renderSettings).length === 1
       && this.pixelSelectionState.selectedPixels === 0;
+    let packedStrokeGeometrySession: PackedStrokeGeometrySession | null = null;
+    let initialPackedStrokeStamps: PackedStrokeStampResult | null = null;
+    let initialPackedStrokePreview: PackedStrokeStampResult | null = null;
+    let packedStrokeBeginMs = 0;
+    if (this.packedStrokeRequested(
+      renderSettings,
+      deferredPreview,
+      cloneConfiguration !== null,
+    )) {
+      const processor = this.strokeGeometryProcessor;
+      if (!wasmPackedStrokeGeometryReady(processor)) {
+        throw new Error("The packed stroke readiness gate became inconsistent.");
+      }
+      const beginStartedAt = performance.now();
+      try {
+        const fixedSpacing = Math.max(
+          0.1,
+          renderSettings.size * (renderSettings.spacingPercent / 100),
+        );
+        const [reflectionCosineDoubleAngle, reflectionSineDoubleAngle] =
+          strokeSymmetryReflectionCoefficients(symmetryMode, symmetryAngleRadians);
+        packedStrokeGeometrySession = processor.beginPacked(normalizedPoint, {
+          stabilization: renderSettings.stabilization,
+          spacingMode: this.paintDabProfile === "direct-deposit-pressure-size"
+            ? "direct-pressure"
+            : "fixed",
+          spacing: fixedSpacing,
+          size: renderSettings.size,
+          maximumBatchSize: STROKE_GEOMETRY_INPUT_BATCH_CAPACITY,
+          dabCapacity: MAX_STAMPS_PER_BATCH,
+          maximumStampsPerSegment: MAX_STAMPS_PER_BATCH,
+        }, {
+          size: renderSettings.size,
+          positionJitterLinear: renderSettings.positionJitterLinear,
+          positionJitterLateral: renderSettings.positionJitterLateral,
+          shapeExtentFactor: stampShapeExtentFactor(renderSettings),
+          documentWidth: DOCUMENT_WIDTH,
+          documentHeight: DOCUMENT_HEIGHT,
+          reflectionCosineDoubleAngle,
+          reflectionSineDoubleAngle,
+          seedSequence: this.seedSequence,
+          stampOrdinal: 0,
+          radiusMode: this.paintDabProfile === "direct-deposit-pressure-size"
+            ? "direct-pressure"
+            : "fixed",
+          shapeSequenceMode: renderSettings.shapeSequenceMode,
+          shapeLayerCount: shapeAssetSequenceLengthForSettings(renderSettings),
+          symmetryEnabled: symmetryMode !== "off",
+          startThickness: renderSettings.startThickness,
+          endThickness: renderSettings.endThickness,
+          startedAtMs: normalizedPoint.timeMs,
+          flattenPackedStamps: false,
+        });
+        initialPackedStrokeStamps = packedStrokeGeometrySession.initialPackedStamps;
+        initialPackedStrokePreview = packedStrokeGeometrySession.initialPreviewPackedStamps;
+      } catch (error) {
+        packedStrokeGeometrySession?.cancel();
+        this.strokeGeometryInitializationError = error;
+        this.strokeGeometryProcessor = null;
+        this.strokeGeometryProcessorPromise = null;
+        this.scheduleLayerColdCompression();
+        const message = error instanceof Error ? error.message : String(error);
+        this.callbacks.onStatus?.(`Packed stroke could not start: ${message}`, "error");
+        return false;
+      } finally {
+        packedStrokeBeginMs = performance.now() - beginStartedAt;
+      }
+    }
     const historyActionId = this.nextHistoryActionId;
     if (tool !== "blend") {
       try {
         capturePaintSelectionHistoryMask(this, historyActionId);
       } catch (error) {
+        packedStrokeGeometrySession?.cancel();
+        packedStrokeGeometrySession = null;
         this.scheduleLayerColdCompression();
         const message = error instanceof Error ? error.message : String(error);
         this.callbacks.onStatus?.(
@@ -5504,10 +5679,13 @@ export class BrushEngine {
       ? this.paintStabilizer
       : null;
     let strokeGeometrySession: StrokeGeometrySession | null = null;
-    let strokeGeometryBackend: StrokeGeometryActiveBackend = "javascript";
+    let strokeGeometryBackend: StrokeGeometryActiveBackend = packedStrokeGeometrySession
+      ? "wasm-packed"
+      : "javascript";
     let strokeGeometryBeginMs = 0;
     if (
-      javascriptStabilizer
+      !packedStrokeGeometrySession
+      && javascriptStabilizer
       && tool !== "blend"
       && thicknessDynamicsNeutral
       && !deferredPreview
@@ -5540,10 +5718,12 @@ export class BrushEngine {
       }
     }
     const curvePlanner = tool === "blend" ? null : this.paintCurvePlanner;
-    if (!strokeGeometrySession) {
+    if (!strokeGeometrySession && !packedStrokeGeometrySession) {
       curvePlanner?.reset();
     }
-    const stabilizer = strokeGeometrySession ? null : javascriptStabilizer;
+    const stabilizer = strokeGeometrySession || packedStrokeGeometrySession
+      ? null
+      : javascriptStabilizer;
     const stabilizationUpdate = stabilizer?.begin(
       normalizedPoint,
       stabilizationSettings.stabilization,
@@ -5577,12 +5757,14 @@ export class BrushEngine {
       lightGlazeSettings,
       blendSettings: tool === "blend" ? { ...renderSettings } : null,
       blendPlanner,
-      curvePlanner: strokeGeometrySession ? null : curvePlanner,
+      curvePlanner: strokeGeometrySession || packedStrokeGeometrySession ? null : curvePlanner,
       stabilizer,
       stabilizationUpdate,
       strokeGeometryBackend,
       strokeGeometrySession,
+      packedStrokeGeometrySession,
       strokeGeometryPreviewDabs: null,
+      strokeGeometryPreviewPackedStamps: initialPackedStrokePreview,
       strokeGeometryStats: null,
       // Separate mutable cursor for the authoritative stabilized prefix. It
       // must never alias `lastInput`, which always remains the latest raw
@@ -5591,15 +5773,20 @@ export class BrushEngine {
       deferredPreview,
     };
     this.activeCloneStrokeSession = cloneSession;
-    if ((stabilizer || strokeGeometrySession) && this.activeStrokeProfile) {
+    if ((stabilizer || strokeGeometrySession || packedStrokeGeometrySession)
+      && this.activeStrokeProfile) {
       this.activeStrokeProfile.strokeStabilizationInputSamples += 1;
       this.activeStrokeProfile.strokeStabilizationMaximumTailPoints = Math.max(
         this.activeStrokeProfile.strokeStabilizationMaximumTailPoints,
         stabilizationUpdate?.tailCount ?? 1,
       );
-      if (strokeGeometrySession) {
-        this.activeStrokeProfile.strokeGeometryBackend = "wasm";
-        this.activeStrokeProfile.strokeGeometryWasmBeginMs += strokeGeometryBeginMs;
+      if (strokeGeometrySession || packedStrokeGeometrySession) {
+        this.activeStrokeProfile.strokeGeometryBackend = packedStrokeGeometrySession
+          ? "wasm-packed"
+          : "wasm";
+        this.activeStrokeProfile.strokeGeometryWasmBeginMs += packedStrokeGeometrySession
+          ? packedStrokeBeginMs
+          : strokeGeometryBeginMs;
       }
     }
     if (deferredPreview) {
@@ -5622,7 +5809,18 @@ export class BrushEngine {
     if (usesBlendRenderer(renderSettings)) {
       this.blendRenderer?.beginStroke(historyActionId);
     }
-    if (tool !== "blend") {
+    if (packedStrokeGeometrySession && initialPackedStrokeStamps) {
+      try {
+        this.enqueuePackedStrokeStamps(this.activeStroke, initialPackedStrokeStamps);
+      } catch (error) {
+        this.recoverFromPackedStrokeGeometryFailure(this.activeStroke, error);
+        return false;
+      }
+      if ((initialPackedStrokePreview?.stampCount ?? 0) > 0) {
+        this.displayDirty = true;
+        this.requestRender();
+      }
+    } else if (tool !== "blend") {
       emitStamp(this, normalizedPoint, 1, 0);
     }
     return true;
@@ -5634,6 +5832,10 @@ export class BrushEngine {
 
   extendStrokeAtLayer(points: readonly LayerPoint[]): void {
     if (!this.activeStroke) {
+      return;
+    }
+    if (points.length > 0 && this.activeStroke.packedStrokeGeometrySession) {
+      this.appendPackedWasmStrokePoints(points, this.activeStroke);
       return;
     }
     if (points.length > 0 && this.activeStroke.strokeGeometrySession) {
@@ -6088,13 +6290,40 @@ export class BrushEngine {
       }
       return;
     }
+    const requestedLiftTime = endingStroke && Number.isFinite(timeMs)
+      ? timeMs as number
+      : endingStroke?.lastInput.timeMs ?? 0;
+    const liftTime = endingStroke
+      ? Math.max(endingStroke.lastInput.timeMs, requestedLiftTime)
+      : requestedLiftTime;
     const hadPredictiveThicknessTail = Boolean(
       endingStroke?.thicknessTailHoldback
       && !endingStroke.lightGlazeSettings
       && (this.settings.blendMode === "normal" || this.settings.blendMode === "additive"),
     );
     if (endingStroke) {
-      if (endingStroke.strokeGeometrySession) {
+      if (endingStroke.packedStrokeGeometrySession) {
+        const session = endingStroke.packedStrokeGeometrySession;
+        const finishStartedAt = performance.now();
+        let finalGeometry: PackedStrokeGeometryStreamingResult;
+        try {
+          this.synchronizeWasmStrokeGeometrySpacing(endingStroke, false);
+          finalGeometry = session.finish({ referenceTimeMs: liftTime });
+          this.applyWasmStrokeGeometryStats(endingStroke, finalGeometry.stats, true);
+          this.enqueuePackedStrokeStamps(endingStroke, finalGeometry);
+        } catch (error) {
+          this.recoverFromPackedStrokeGeometryFailure(endingStroke, error);
+          return;
+        } finally {
+          endingStroke.packedStrokeGeometrySession = null;
+          endingStroke.strokeGeometryPreviewPackedStamps = null;
+          this.recordWasmStrokeGeometryProcess(
+            performance.now() - finishStartedAt,
+            0,
+            "wasm-packed",
+          );
+        }
+      } else if (endingStroke.strokeGeometrySession) {
         const session = endingStroke.strokeGeometrySession;
         const finishStartedAt = performance.now();
         let finalGeometry: StrokeGeometryStreamingResult;
@@ -6135,10 +6364,6 @@ export class BrushEngine {
         endingStroke.stabilizer = null;
         endingStroke.stabilizationUpdate = null;
       }
-      const requestedLiftTime = Number.isFinite(timeMs)
-        ? timeMs as number
-        : endingStroke.lastInput.timeMs;
-      const liftTime = Math.max(endingStroke.lastInput.timeMs, requestedLiftTime);
       releaseHeldThicknessStamps(this, liftTime, true);
     }
     if (endingStroke?.deferredPreview) {
@@ -6259,6 +6484,11 @@ export class BrushEngine {
       }
       return !belongsToStroke;
     });
+    this.pendingPackedStampBatches = this.pendingPackedStampBatches.filter((batch) => {
+      if (batch.historyActionId !== stroke.historyActionId) return true;
+      removedStampCount += batch.stampCount;
+      return false;
+    });
     const pendingBlendCountBeforeCancel = this.pendingBlendBatches.length;
     this.pendingBlendBatches = this.pendingBlendBatches.filter(
       (pending) => pending.actionId !== stroke.historyActionId,
@@ -6278,6 +6508,9 @@ export class BrushEngine {
     stroke.strokeGeometrySession?.cancel();
     stroke.strokeGeometrySession = null;
     stroke.strokeGeometryPreviewDabs = null;
+    stroke.packedStrokeGeometrySession?.cancel();
+    stroke.packedStrokeGeometrySession = null;
+    stroke.strokeGeometryPreviewPackedStamps = null;
     this.activeStroke = null;
     if (this.lightGlazeSession?.historyActionId === stroke.historyActionId) {
       this.abandonLightGlazeSession();
@@ -6443,8 +6676,10 @@ export class BrushEngine {
       this.frameRequest = null;
     }
     this.pendingStamps.length = 0;
+    this.pendingPackedStampBatches.length = 0;
     this.pendingBlendBatches.length = 0;
     this.activeStroke?.strokeGeometrySession?.cancel();
+    this.activeStroke?.packedStrokeGeometrySession?.cancel();
     this.activeStroke = null;
     this.deferredStrokePreview = null;
     this.straightLineAdjustment = null;
@@ -6602,6 +6837,7 @@ export class BrushEngine {
   effectsScratchHasQueuedWork(): boolean {
     return this.frameRequest !== null
       || this.pendingStamps.length > 0
+      || this.pendingPackedStampBatches.length > 0
       || this.pendingBlendBatches.length > 0
       || this.clearRequested
       || this.displayDirty
@@ -7975,6 +8211,7 @@ export class BrushEngine {
     return [
       this.frameRequest === null ? 0 : 1,
       this.pendingStamps.length,
+      this.pendingPackedStampBatches.reduce((total, batch) => total + batch.stampCount, 0),
       this.pendingBlendBatches.length,
       Number(this.clearRequested),
       Number(this.displayDirty),
@@ -8002,6 +8239,7 @@ export class BrushEngine {
     if (
       !this.presentationBlocked()
       || this.pendingStamps.length > 0
+      || this.pendingPackedStampBatches.length > 0
       || this.pendingBlendBatches.length > 0
       || this.clearRequested
       || Boolean(this.lightGlazeSession?.commitRequested)
@@ -13880,6 +14118,10 @@ export class BrushEngine {
     if (!stroke) {
       return;
     }
+    if (stroke.packedStrokeGeometrySession) {
+      this.appendPackedWasmStrokePoints([point], stroke, generationStart, includePreviewTail);
+      return;
+    }
     if (stroke.strokeGeometrySession) {
       this.appendWasmStrokePoints([point], stroke, generationStart, includePreviewTail);
       return;
@@ -14018,6 +14260,76 @@ export class BrushEngine {
     }
   }
 
+  private enqueuePackedStrokeStamps(
+    stroke: ActiveStroke,
+    result: PackedStrokeStampResult,
+  ): void {
+    if (this.pendingStamps.length > 0) {
+      throw new Error("Packed and object stamp queues cannot coexist.");
+    }
+    const consumedDabCount = result.consumedDabCount;
+    if (!Number.isSafeInteger(consumedDabCount) || consumedDabCount < 0) {
+      throw new Error("The packed stroke consumed-dab count is invalid.");
+    }
+    const expectedNextSeedSequence = this.seedSequence + consumedDabCount;
+    const expectedNextStampOrdinal = expectedNextSeedSequence - stroke.seedSequenceBeforeStroke;
+    if (
+      !Number.isSafeInteger(expectedNextSeedSequence)
+      || result.nextSeedSequence !== expectedNextSeedSequence
+      || result.nextStampOrdinal !== expectedNextStampOrdinal
+      || (
+        result.packedStamps.byteLength !== 0
+        && result.packedStamps.byteLength !== result.stampCount * STAMP_STRIDE_BYTES
+      )
+    ) {
+      throw new Error("The packed stroke counters violate the streaming contract.");
+    }
+    const batches: PendingPackedStampBatch[] = [];
+    let enqueuedStampCount = 0;
+    for (const chunk of result.packedChunks) {
+      if (chunk.stampCount === 0) continue;
+      if (
+        chunk.stampCount > MAX_STAMPS_PER_BATCH
+        || chunk.packedStamps.byteLength !== chunk.stampCount * STAMP_STRIDE_BYTES
+        || chunk.firstSeed === null
+        || chunk.dirtyRect === null
+        || !Number.isFinite(chunk.minimumRadius)
+      ) {
+        throw new Error("The packed stroke chunk violates the GPU upload contract.");
+      }
+      batches.push({
+        packedStamps: chunk.packedStamps,
+        stampCount: chunk.stampCount,
+        firstSeed: chunk.firstSeed,
+        dirtyRect: { ...chunk.dirtyRect },
+        minimumRadius: chunk.minimumRadius,
+        historyActionId: stroke.historyActionId,
+        symmetryMode: stroke.symmetryMode,
+        symmetryAngleRadians: stroke.symmetryAngleRadians,
+      });
+      enqueuedStampCount += chunk.stampCount;
+    }
+    if (enqueuedStampCount !== result.stampCount) {
+      throw new Error("The packed stroke chunk count is inconsistent.");
+    }
+    this.pendingPackedStampBatches.push(...batches);
+    this.seedSequence = result.nextSeedSequence;
+    if (this.activeStrokeProfile) {
+      this.activeStrokeProfile.baseStamps += enqueuedStampCount;
+      this.activeStrokeProfile.thicknessDynamicsHeldBaseStamps += result.generatedHeldDabCount;
+      this.activeStrokeProfile.thicknessDynamicsReleasedDuringStroke += result.releasedHeldDabCount;
+      this.activeStrokeProfile.thicknessDynamicsReleasedAtLift += result.releasedHeldAtLiftDabCount;
+      this.activeStrokeProfile.thicknessDynamicsMaximumHeldBaseStamps = Math.max(
+        this.activeStrokeProfile.thicknessDynamicsMaximumHeldBaseStamps,
+        result.maximumHeldDabCount,
+      );
+    }
+    if (enqueuedStampCount > 0) {
+      this.displayDirty = true;
+      this.requestRender();
+    }
+  }
+
   private applyWasmStrokeGeometryStats(
     stroke: ActiveStroke,
     stats: StrokeGeometryStats,
@@ -14026,7 +14338,9 @@ export class BrushEngine {
     stroke.strokeGeometryStats = stats;
     const profile = this.activeStrokeProfile;
     if (!profile) return;
-    profile.strokeGeometryBackend = "wasm";
+    profile.strokeGeometryBackend = stroke.strokeGeometryBackend === "wasm-packed"
+      ? "wasm-packed"
+      : "wasm";
     profile.strokeStabilizationInputSamples = stats.latestSequence + 1;
     profile.strokeStabilizationMaturePoints = stats.maturePoints
       + (finished ? Math.max(0, stats.tailPoints - 1) : 0);
@@ -14041,10 +14355,14 @@ export class BrushEngine {
     profile.strokeCurveSharpCornerBypasses = stats.curveSharpCornerBypasses;
   }
 
-  private recordWasmStrokeGeometryProcess(durationMs: number, inputSamples: number): void {
+  private recordWasmStrokeGeometryProcess(
+    durationMs: number,
+    inputSamples: number,
+    backend: "wasm" | "wasm-packed" = "wasm",
+  ): void {
     const profile = this.activeStrokeProfile;
     if (!profile) return;
-    profile.strokeGeometryBackend = "wasm";
+    profile.strokeGeometryBackend = backend;
     profile.strokeGeometryWasmInputSamples += inputSamples;
     profile.strokeGeometryWasmProcessTotalMs += durationMs;
     profile.strokeGeometryWasmProcessCallMs.push(durationMs);
@@ -14106,23 +14424,134 @@ export class BrushEngine {
     );
   }
 
+  private recoverFromPackedStrokeGeometryFailure(stroke: ActiveStroke, error: unknown): void {
+    stroke.packedStrokeGeometrySession?.cancel();
+    stroke.packedStrokeGeometrySession = null;
+    stroke.strokeGeometryPreviewPackedStamps = null;
+    this.strokeGeometryInitializationError = error;
+    this.strokeGeometryProcessor = null;
+    this.strokeGeometryProcessorPromise = null;
+
+    let removedStampCount = 0;
+    this.pendingPackedStampBatches = this.pendingPackedStampBatches.filter((batch) => {
+      if (batch.historyActionId !== stroke.historyActionId) return true;
+      removedStampCount += batch.stampCount;
+      return false;
+    });
+    if (this.activeStrokeProfile) {
+      this.activeStrokeProfile.baseStamps = Math.max(
+        0,
+        this.activeStrokeProfile.baseStamps - removedStampCount,
+      );
+    }
+
+    if (this.activeStroke === stroke) {
+      if (!stroke.submitted && this.cancelStrokeBeforeRender()) {
+        // No GPU prefix exists; cancellation restores seed and selection state.
+      } else {
+        if (this.lightGlazeSession?.historyActionId === stroke.historyActionId) {
+          // Preserve and commit the already-submitted prefix as one coherent action.
+          this.lightGlazeSession.endRequested = true;
+        }
+        this.activeStroke = null;
+        this.invalidateAdaptivePreview();
+        this.displayDirty = true;
+        this.requestRender();
+        this.publishHistoryState();
+        this.scheduleLayerColdCompression();
+      }
+    }
+
+    const message = error instanceof Error ? error.message : String(error);
+    this.callbacks.onStatus?.(
+      `Packed stroke stopped safely; the strict backend remains disabled: ${message}`,
+      "error",
+    );
+  }
+
   private synchronizeWasmStrokeGeometrySpacing(
     stroke: ActiveStroke,
     includePreviewTail: boolean,
   ): void {
+    const packedSession = stroke.packedStrokeGeometrySession;
     const session = stroke.strokeGeometrySession;
-    if (!session || stroke.paintDabProfile === "direct-deposit-pressure-size") return;
+    if ((!session && !packedSession) || stroke.paintDabProfile === "direct-deposit-pressure-size") {
+      return;
+    }
     const spacing = Math.max(
       0.1,
       stroke.renderSettings.size * (stroke.adaptiveSpacingPercent / 100),
     );
     const updateStartedAt = performance.now();
-    const previewDabs = session.updateFixedSpacing(spacing, { includePreviewTail });
-    this.recordWasmStrokeGeometryProcess(performance.now() - updateStartedAt, 0);
+    const preview = packedSession
+      ? packedSession.updateFixedSpacing(spacing, { includePreviewTail })
+      : session!.updateFixedSpacing(spacing, { includePreviewTail });
+    this.recordWasmStrokeGeometryProcess(
+      performance.now() - updateStartedAt,
+      0,
+      packedSession ? "wasm-packed" : "wasm",
+    );
     if (!includePreviewTail) return;
-    stroke.strokeGeometryPreviewDabs = previewDabs;
+    if (packedSession) stroke.strokeGeometryPreviewPackedStamps = preview as PackedStrokeStampResult;
+    else stroke.strokeGeometryPreviewDabs = preview as Float64Array;
     this.displayDirty = true;
     this.requestRender();
+  }
+
+  private appendPackedWasmStrokePoints(
+    points: readonly LayerPoint[],
+    stroke: ActiveStroke,
+    generationStart = this.activeStrokeProfile ? performance.now() : 0,
+    includePreviewTail = true,
+  ): void {
+    const session = stroke.packedStrokeGeometrySession;
+    if (!session) {
+      throw new Error("The packed Wasm stroke session is unavailable.");
+    }
+    const normalizedPoints: LayerPoint[] = [];
+    let previousPoint = stroke.lastInput;
+    for (const point of points) {
+      const normalizedPoint: LayerPoint = {
+        ...point,
+        timeMs: Math.max(
+          previousPoint.timeMs,
+          Number.isFinite(point.timeMs) ? point.timeMs : previousPoint.timeMs,
+        ),
+      };
+      normalizedPoints.push(normalizedPoint);
+      previousPoint = normalizedPoint;
+    }
+    if (normalizedPoints.length === 0) return;
+    const spacing = Math.max(
+      0.1,
+      stroke.renderSettings.size * (stroke.adaptiveSpacingPercent / 100),
+    );
+    const processStartedAt = performance.now();
+    let result: PackedStrokeGeometryStreamingResult;
+    try {
+      result = session.processBatch(normalizedPoints, {
+        ...(stroke.paintDabProfile === "direct-deposit-pressure-size" ? {} : { spacing }),
+        includeTail: false,
+        includePreviewTail: includePreviewTail && stroke.lightGlazeSettings !== null,
+      });
+      stroke.lastInput = previousPoint;
+      if (includePreviewTail) {
+        stroke.strokeGeometryPreviewPackedStamps = result.previewPackedStamps;
+      }
+      this.applyWasmStrokeGeometryStats(stroke, result.stats, false);
+      this.enqueuePackedStrokeStamps(stroke, result);
+    } catch (error) {
+      this.recoverFromPackedStrokeGeometryFailure(stroke, error);
+      return;
+    }
+    this.recordWasmStrokeGeometryProcess(
+      performance.now() - processStartedAt,
+      normalizedPoints.length,
+      "wasm-packed",
+    );
+    this.displayDirty = true;
+    this.requestRender();
+    recordStampGenerationTime(this, generationStart);
   }
 
   private appendWasmStrokePoints(
@@ -14337,12 +14766,44 @@ export class BrushEngine {
     return stamp;
   }
 
+  private ensurePackedThicknessTailInstanceCapacity(stampCount: number): void {
+    if (stampCount <= this.thicknessTailInstanceCapacity) return;
+    const maximumBytes = Math.min(
+      Number(this.device.limits.maxBufferSize),
+      Number(this.device.limits.maxStorageBufferBindingSize),
+    );
+    const maximumStamps = Math.floor(maximumBytes / STAMP_STRIDE_BYTES);
+    if (stampCount > maximumStamps) {
+      throw new RangeError(
+        `The revisionable stroke tail requires ${stampCount.toLocaleString()} GPU records; `
+        + `this device supports ${maximumStamps.toLocaleString()}.`,
+      );
+    }
+    const capacity = Math.min(
+      maximumStamps,
+      Math.ceil(stampCount / MAX_STAMPS_PER_BATCH) * MAX_STAMPS_PER_BATCH,
+    );
+    const previous = this.thicknessTailInstanceBuffer;
+    this.thicknessTailInstanceBuffer = this.device.createBuffer({
+      label: `Predictive thickness tail instance storage (${capacity})`,
+      size: capacity * STAMP_STRIDE_BYTES,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+    });
+    this.thicknessTailInstanceCapacity = capacity;
+    rebuildShapeBrushBindGroups(this);
+    rebuildGrainBrushBindGroups(this);
+    void this.device.queue.onSubmittedWorkDone().then(() => previous.destroy());
+  }
+
   private prepareStabilizationTailFrame(
     update: Readonly<StrokeStabilizationUpdate> | null,
   ): StabilizationTailFrame | null {
     const stroke = this.activeStroke;
     const wasmPreviewDabs = stroke?.strokeGeometrySession
       ? stroke.strokeGeometryPreviewDabs
+      : null;
+    const packedPreview = stroke?.packedStrokeGeometrySession
+      ? stroke.strokeGeometryPreviewPackedStamps
       : null;
     const javascriptTailReady = Boolean(
       stroke?.stabilizer
@@ -14351,15 +14812,71 @@ export class BrushEngine {
       && update.tailCount >= 2,
     );
     const wasmTailReady = Boolean(wasmPreviewDabs && wasmPreviewDabs.length >= 6);
+    const packedTailReady = Boolean(
+      packedPreview
+      && packedPreview.stampCount > 0
+      && packedPreview.dirtyRect
+    );
     if (
       !stroke
       || !stroke.lightGlazeSettings
-      || (!javascriptTailReady && !wasmTailReady)
+      || (!javascriptTailReady && !wasmTailReady && !packedTailReady)
     ) {
       return null;
     }
 
     const settings = stroke.lightGlazeSettings;
+    if (packedTailReady && packedPreview?.dirtyRect) {
+      let packedChunkStampCount = 0;
+      for (const chunk of packedPreview.packedChunks) {
+        if (
+          chunk.stampCount <= 0
+          || chunk.stampCount > MAX_STAMPS_PER_BATCH
+          || chunk.packedStamps.byteLength !== chunk.stampCount * STAMP_STRIDE_BYTES
+        ) {
+          throw new Error("The revisionable packed tail contains an invalid GPU chunk.");
+        }
+        packedChunkStampCount += chunk.stampCount;
+      }
+      if (packedChunkStampCount !== packedPreview.stampCount) {
+        throw new Error("The revisionable packed tail chunk count is inconsistent.");
+      }
+      const dirtyRect = clipPaintDirtyRectToPixelSelection(
+        this,
+        { ...packedPreview.dirtyRect },
+        null,
+      );
+      if (!dirtyRect) return null;
+      const intenseBlending = settings.blendMode === "intense-blending";
+      this.writeThicknessTailBrushUniforms({
+        ...settings,
+        opacity: intenseBlending ? settings.opacity : 1,
+        blendMode: "normal",
+      }, DOCUMENT_WIDTH, DOCUMENT_HEIGHT, 0, 0, stroke.symmetryMode, stroke.symmetryAngleRadians);
+      this.ensurePackedThicknessTailInstanceCapacity(packedPreview.stampCount);
+      let destinationOffset = 0;
+      for (const chunk of packedPreview.packedChunks) {
+        this.device.queue.writeBuffer(
+          this.thicknessTailInstanceBuffer,
+          destinationOffset,
+          chunk.packedStamps,
+          0,
+          chunk.packedStamps.byteLength,
+        );
+        destinationOffset += chunk.packedStamps.byteLength;
+      }
+      return {
+        settings,
+        symmetryMode: stroke.symmetryMode,
+        symmetryAngleRadians: stroke.symmetryAngleRadians,
+        stampCount: packedPreview.stampCount,
+        dirtyRect,
+        shapeOccupancySelection: settings.shape === "shape"
+          ? this.selectShapeOccupancy(packedPreview.minimumRadius)
+          : null,
+        grainActive: isTexturizedGrainActive(settings),
+      };
+    }
     const referenceTimeMs = Math.max(stroke.lastInput.timeMs, performance.now());
     let stampCount = 0;
 
@@ -15150,6 +15667,7 @@ export class BrushEngine {
 
   private vectorTextFastPresentationHasAuthoritativeWork(): boolean {
     return this.pendingStamps.length > 0
+      || this.pendingPackedStampBatches.length > 0
       || this.pendingBlendBatches.length > 0
       || this.clearRequested
       || Boolean(this.lightGlazeSession?.commitRequested)
@@ -15321,10 +15839,34 @@ export class BrushEngine {
     const resizeCanvasMs = performance.now() - resizeStart;
 
     if (this.activeStroke?.thicknessTailHoldback) {
-      releaseHeldThicknessStamps(this, thicknessTailReferenceTimeMs(this), false);
+      const thicknessStroke = this.activeStroke;
+      if (thicknessStroke.packedStrokeGeometrySession) {
+        const refreshStartedAt = performance.now();
+        try {
+          const refresh = thicknessStroke.packedStrokeGeometrySession.refreshThickness(
+            thicknessTailReferenceTimeMs(this),
+          );
+          this.enqueuePackedStrokeStamps(thicknessStroke, refresh.releasedPackedStamps);
+          thicknessStroke.strokeGeometryPreviewPackedStamps = refresh.previewPackedStamps;
+        } catch (error) {
+          this.recoverFromPackedStrokeGeometryFailure(thicknessStroke, error);
+          return;
+        } finally {
+          this.recordWasmStrokeGeometryProcess(
+            performance.now() - refreshStartedAt,
+            0,
+            "wasm-packed",
+          );
+        }
+      } else {
+        releaseHeldThicknessStamps(this, thicknessTailReferenceTimeMs(this), false);
+      }
     }
 
     const batchExtractionStart = performance.now();
+    if (this.pendingStamps.length > 0 && this.pendingPackedStampBatches.length > 0) {
+      throw new Error("Packed and object stamp queues cannot coexist.");
+    }
     let availableBatchSize = this.pendingStamps.length;
     const lightGlazeSession = this.lightGlazeSession;
     if (lightGlazeSession) {
@@ -15339,12 +15881,54 @@ export class BrushEngine {
     }
     const batchSize = Math.min(availableBatchSize, MAX_STAMPS_PER_BATCH);
     const batch = batchSize > 0 ? this.pendingStamps.slice(0, batchSize) : [];
-    const batchSymmetry = strokeSymmetryTransformForStampBatch(batch);
+    let packedSubmission: PackedStampSubmission | null = null;
+    if (batch.length === 0 && this.pendingPackedStampBatches.length > 0) {
+      const first = this.pendingPackedStampBatches[0];
+      if (!lightGlazeSession || first.historyActionId === lightGlazeSession.historyActionId) {
+        const chunks: PendingPackedStampBatch[] = [];
+        let stampCount = 0;
+        let dirtyRect: DirtyRect | null = null;
+        let minimumRadius = Number.POSITIVE_INFINITY;
+        for (const candidate of this.pendingPackedStampBatches) {
+          if (
+            candidate.historyActionId !== first.historyActionId
+            || candidate.symmetryMode !== first.symmetryMode
+            || Math.abs(candidate.symmetryAngleRadians - first.symmetryAngleRadians) > 1e-7
+            || stampCount + candidate.stampCount > MAX_STAMPS_PER_BATCH
+          ) {
+            break;
+          }
+          chunks.push(candidate);
+          stampCount += candidate.stampCount;
+          dirtyRect = mergeDirtyRects(dirtyRect, candidate.dirtyRect);
+          minimumRadius = Math.min(minimumRadius, candidate.minimumRadius);
+        }
+        if (chunks.length > 0 && dirtyRect) {
+          packedSubmission = {
+            chunks,
+            stampCount,
+            firstSeed: first.firstSeed,
+            dirtyRect,
+            minimumRadius,
+            historyActionId: first.historyActionId,
+            symmetryMode: first.symmetryMode,
+            symmetryAngleRadians: first.symmetryAngleRadians,
+          };
+        }
+      }
+    }
+    const batchSymmetry = packedSubmission
+      ? {
+        mode: packedSubmission.symmetryMode,
+        angleRadians: packedSubmission.symmetryAngleRadians,
+      }
+      : strokeSymmetryTransformForStampBatch(batch);
     const batchSymmetryMode = batchSymmetry.mode;
     let blendBatch: PendingBlendBatch[] = [];
     if (
       !lightGlazeSession
       && batch.length === 0
+      && packedSubmission === null
       && this.pendingBlendBatches.length > 0
       && (this.blendSubmissionInFlight === null || this.forceSynchronousBlendDrain)
     ) {
@@ -15377,12 +15961,27 @@ export class BrushEngine {
           break;
         }
       }
+      const packedSearchStart = packedSubmission?.chunks.length ?? 0;
+      for (
+        let index = packedSearchStart;
+        index < this.pendingPackedStampBatches.length;
+        index += 1
+      ) {
+        if (
+          this.pendingPackedStampBatches[index].historyActionId
+          === lightGlazeSession.historyActionId
+        ) {
+          hasPendingStampForGesture = true;
+          break;
+        }
+      }
       lightGlazeSession.commitRequested = lightGlazeSession.endRequested
         && !hasPendingStampForGesture;
     }
     const batchExtractionMs = performance.now() - batchExtractionStart;
     const shouldSubmit = this.clearRequested
       || batch.length > 0
+      || packedSubmission !== null
       || blendBatch.length > 0
       || this.displayDirty
       || Boolean(lightGlazeSession?.commitRequested)
@@ -15394,7 +15993,7 @@ export class BrushEngine {
     }
 
     const clearLayer = this.clearRequested;
-    const batchActionId = batch[0]?.historyActionId;
+    const batchActionId = packedSubmission?.historyActionId ?? batch[0]?.historyActionId;
     const cloneRenderSettings = cloneSessionMatchesAction(
       this.activeCloneStrokeSession,
       batchActionId ?? this.activeStroke?.historyActionId,
@@ -15415,12 +16014,25 @@ export class BrushEngine {
         renderSettings,
         blendBatch[0].actionId,
       )
-      : this.submitImmediate(batch, clearLayer, renderSettings);
+      : this.submitImmediate(
+        batch,
+        clearLayer,
+        renderSettings,
+        true,
+        null,
+        null,
+        false,
+        null,
+        packedSubmission,
+      );
     if (timing.presentationCacheFullRebuilds > 0) {
       this.armViewPresentationRetry(viewPresentationRevision);
     }
     if (batch.length > 0) {
       this.pendingStamps.splice(0, batch.length);
+    }
+    if (packedSubmission) {
+      this.pendingPackedStampBatches.splice(0, packedSubmission.chunks.length);
     }
     if (blendBatch.length > 0) {
       this.pendingBlendBatches.splice(0, blendBatch.length);
@@ -15431,9 +16043,18 @@ export class BrushEngine {
     if (blendBatch.length > 0) {
       recordBlendHistoryBatch(this, blendBatch, timing, clearLayer);
       this.layerHasContent = true;
-    } else if (batch.length > 0) {
-      this.trackAdaptivePreviewExactSubmission(batch, renderSettings);
-      this.recordHistoryBatch(batch, renderSettings, timing, clearLayer);
+    } else if (batch.length > 0 || packedSubmission) {
+      if (batch.length > 0) {
+        this.trackAdaptivePreviewExactSubmission(batch, renderSettings);
+      }
+      this.recordHistoryBatch(
+        batch,
+        renderSettings,
+        timing,
+        clearLayer,
+        timing.historyGpuSlice,
+        packedSubmission,
+      );
       if (clearLayer) this.layerHasContent = timing.dirtyRect !== null;
       else if (timing.dirtyRect) this.layerHasContent = true;
     } else if (clearLayer) {
@@ -15442,13 +16063,15 @@ export class BrushEngine {
 
     this.clearRequested = false;
     this.displayDirty = false;
-    this.totalBaseStamps += batch.length + blendBatch.length;
-    if (batch.length > 0) {
+    const submittedPaintStampCount = packedSubmission?.stampCount ?? batch.length;
+    this.totalBaseStamps += submittedPaintStampCount + blendBatch.length;
+    if (submittedPaintStampCount > 0) {
       const physicalCopyCount = strokeSymmetryPhysicalCopyCount(
         renderSettings.count,
         batchSymmetryMode,
       );
-      this.avoidedLogicalDraws += batch.length * Math.max(0, physicalCopyCount - 1);
+      this.avoidedLogicalDraws += submittedPaintStampCount
+        * Math.max(0, physicalCopyCount - 1);
     }
     this.recordRenderedFrame(timestamp);
     if (this.startupPhaseStartedAtMs.has("first-frame-submit")) {
@@ -15474,6 +16097,7 @@ export class BrushEngine {
 
     if (
       this.pendingStamps.length > 0
+      || this.pendingPackedStampBatches.length > 0
       || this.pendingBlendBatches.length > 0
       || this.displayDirty
       || this.clearRequested
@@ -15486,7 +16110,7 @@ export class BrushEngine {
 
     this.recordStrokeFrameTiming(
       timestamp,
-      batch.length + blendBatch.length,
+      submittedPaintStampCount + blendBatch.length,
       blendBatch.length > 0
         ? 1
         : strokeSymmetryPhysicalCopyCount(renderSettings.count, batchSymmetryMode),
@@ -15515,16 +16139,23 @@ export class BrushEngine {
     timing: SubmitTiming,
     clearLayer: boolean,
     capturedSlice: GpuHistorySlice | null = timing.historyGpuSlice,
+    packedSubmission: PackedStampSubmission | null = null,
   ): void {
     const recordCpuStartedAt = this.activeStrokeProfile ? performance.now() : 0;
     try {
-      if (batch.length === 0 || batch[0].historyActionId === 0) {
+      const stampCount = packedSubmission?.stampCount ?? batch.length;
+      const actionId = packedSubmission?.historyActionId ?? batch[0]?.historyActionId ?? 0;
+      if (stampCount === 0 || actionId === 0) {
         return;
       }
-    const actionId = batch[0].historyActionId;
-    const symmetryTransform = strokeSymmetryTransformForStampBatch(batch);
+    const symmetryTransform = packedSubmission
+      ? {
+        mode: packedSubmission.symmetryMode,
+        angleRadians: packedSubmission.symmetryAngleRadians,
+      }
+      : strokeSymmetryTransformForStampBatch(batch);
     const symmetryMode = symmetryTransform.mode;
-    if (batch.at(-1)?.historyActionId !== actionId) {
+    if (!packedSubmission && batch.at(-1)?.historyActionId !== actionId) {
       if (capturedSlice) this.historyGpuStorage.release(capturedSlice);
       throw new Error("A historical Paint batch contains multiple strokes.");
     }
@@ -15546,7 +16177,7 @@ export class BrushEngine {
       if (capturedSlice) this.historyGpuStorage.release(capturedSlice);
       throw new Error("Clone history cannot contain a reflected Paint batch.");
     }
-    const expectedStampBytes = batch.length * STAMP_STRIDE_BYTES;
+    const expectedStampBytes = stampCount * STAMP_STRIDE_BYTES;
     const expectedBytes = cloneSource
       ? cloneSource.sourceByteOffset
         + cloneSource.tileStrideBytes * cloneSource.tileIndices.length
@@ -15574,8 +16205,8 @@ export class BrushEngine {
       settings,
       symmetryMode,
       symmetryAngleRadians: symmetryTransform.angleRadians,
-      stampCount: batch.length,
-      firstSeed: batch[0].seed,
+      stampCount,
+      firstSeed: packedSubmission?.firstSeed ?? batch[0].seed,
       gpuSlice: capturedSlice,
       clearLayer,
       dirtyRect: timing.dirtyRect,
@@ -15591,7 +16222,7 @@ export class BrushEngine {
     const releasePayloadOnCancel = () => this.historyGpuStorage.release(capturedSlice);
     if (actionAlreadyPublished) {
       this.history.appendBatch(historyBatch, {
-        storedBaseStamps: batch.length,
+        storedBaseStamps: stampCount,
         releasePayloadOnCancel,
       });
     } else {
@@ -15605,7 +16236,7 @@ export class BrushEngine {
         {
           reservedActionId: true,
           batches: [historyBatch],
-          storedBaseStamps: batch.length,
+          storedBaseStamps: stampCount,
           releasePayloadOnCancel,
         },
       );
@@ -15625,12 +16256,13 @@ export class BrushEngine {
       cloneSessionMatchesAction(cloneSession, actionId)
       && cloneSession.ending
       && !this.pendingStamps.some((stamp) => stamp.historyActionId === actionId)
+      && !this.pendingPackedStampBatches.some((batch) => batch.historyActionId === actionId)
     ) {
       destroyActiveCloneStrokeSession(this, cloneSession);
     }
 
       if (this.activeStrokeProfile) {
-        this.activeStrokeProfile.historyCapturedBaseStamps += batch.length;
+        this.activeStrokeProfile.historyCapturedBaseStamps += stampCount;
         this.activeStrokeProfile.historyCapturedBatches += 1;
       }
     } finally {
@@ -16752,21 +17384,26 @@ export class BrushEngine {
     stamps: readonly Stamp[],
     label: string,
     clonePlan: CloneHistoryCapturePlan | null = null,
+    packedSubmission: PackedStampSubmission | null = null,
   ): GpuHistorySlice | null {
-    if (stamps.length === 0 || stamps[0].historyActionId === 0) {
+    if (packedSubmission && (stamps.length > 0 || clonePlan)) {
+      throw new Error("Packed History capture cannot include object stamps or Clone data.");
+    }
+    const stampCount = packedSubmission?.stampCount ?? stamps.length;
+    const actionId = packedSubmission?.historyActionId ?? stamps[0]?.historyActionId ?? 0;
+    if (stampCount === 0 || actionId === 0) {
       return null;
     }
     const captureCpuStartedAt = this.activeStrokeProfile ? performance.now() : 0;
     try {
-      const actionId = stamps[0].historyActionId;
-      if (stamps.at(-1)?.historyActionId !== actionId) {
+      if (!packedSubmission && stamps.at(-1)?.historyActionId !== actionId) {
         throw new Error("A live Paint submission contains multiple strokes.");
       }
-      const stampBytes = stamps.length * STAMP_STRIDE_BYTES;
+      const stampBytes = stampCount * STAMP_STRIDE_BYTES;
       const byteLength = clonePlan?.logicalBytes ?? stampBytes;
       const slice = this.historyGpuStorage.allocate(
         byteLength,
-        `${label} · action ${actionId} · ${stamps.length} stamps`,
+        `${label} · action ${actionId} · ${stampCount} stamps`,
         clonePlan ? CLONE_HISTORY_BUFFER_ALIGNMENT_BYTES : undefined,
       );
       try {
@@ -16950,6 +17587,7 @@ export class BrushEngine {
     settings: BrushSettings,
     present: boolean,
     replayBatch: PaintHistoryRenderBatch | null,
+    packedSubmission: PackedStampSubmission | null = null,
   ): SubmitTiming {
     if (this.thicknessTailPresentedRect) {
       this.thicknessTailPresentedRect = null;
@@ -16958,7 +17596,14 @@ export class BrushEngine {
       this.presentationCacheNeedsFullRebuild = true;
     }
     const session = this.lightGlazeSession;
-    const stampCount = resolvePaintHistoryStampCount(stamps, replayBatch);
+    if (packedSubmission && (stamps.length > 0 || replayBatch)) {
+      throw new Error("A packed submission cannot be mixed with object or replay stamps.");
+    }
+    if (packedSubmission && !usesStrokeGlazeRenderer(settings)) {
+      throw new Error("Packed stamps require an active glaze deposition renderer.");
+    }
+    const stampCount = packedSubmission?.stampCount
+      ?? resolvePaintHistoryStampCount(stamps, replayBatch);
     const symmetryTransform = replayBatch
       ? {
         mode: normalizeStrokeSymmetryMode(replayBatch.symmetryMode),
@@ -16967,6 +17612,11 @@ export class BrushEngine {
           replayBatch.symmetryAngleRadians,
         ),
       }
+      : packedSubmission
+        ? {
+          mode: packedSubmission.symmetryMode,
+          angleRadians: packedSubmission.symmetryAngleRadians,
+        }
       : strokeSymmetryTransformForStampBatch(
         stamps,
         this.activeStroke?.symmetryMode ?? "off",
@@ -17010,7 +17660,11 @@ export class BrushEngine {
     const stabilizationStroke = present
       && !replayBatch
       && this.activeStroke?.historyActionId === session.historyActionId
-      && this.pendingStamps.length <= stampCount
+      && (
+        packedSubmission
+          ? this.pendingPackedStampBatches.length <= packedSubmission.chunks.length
+          : this.pendingStamps.length <= stampCount
+      )
       ? this.activeStroke
       : null;
     const stabilizationUpdate = stabilizationStroke?.stabilizer
@@ -17021,8 +17675,13 @@ export class BrushEngine {
       && stabilizationStroke.strokeGeometryPreviewDabs
       && stabilizationStroke.strokeGeometryPreviewDabs.length >= 6,
     );
+    const packedStabilizationTailReady = Boolean(
+      stabilizationStroke?.packedStrokeGeometrySession
+      && stabilizationStroke.strokeGeometryPreviewPackedStamps
+      && stabilizationStroke.strokeGeometryPreviewPackedStamps.stampCount > 0,
+    );
     let stabilizationFrame: StabilizationTailFrame | null = null;
-    if (stabilizationUpdate || wasmStabilizationTailReady) {
+    if (stabilizationUpdate || wasmStabilizationTailReady || packedStabilizationTailReady) {
       const generationProfile = this.activeStrokeProfile;
       const generationStartedAt = generationProfile ? performance.now() : null;
       stabilizationFrame = this.prepareStabilizationTailFrame(stabilizationUpdate);
@@ -17089,8 +17748,12 @@ export class BrushEngine {
       this.writeGrainUniforms(settings);
     }
     const firstSeed = replayBatch?.firstSeed
+      ?? packedSubmission?.firstSeed
       ?? stamps[0]?.seed
-      ?? (stabilizationFrame ? this.stabilizationPreviewStamps[0]?.seed : undefined);
+      ?? (stabilizationFrame
+        ? this.activeStroke?.strokeGeometryPreviewPackedStamps?.firstSeed
+          ?? this.stabilizationPreviewStamps[0]?.seed
+        : undefined);
     if (preciseDeposit && session.tintLinear === null) {
       const [red, green, blue] = parseBrushColorSrgb(settings.color);
       session.tintLinear = [red, green, blue];
@@ -17213,6 +17876,30 @@ export class BrushEngine {
           ? replayBatch.shapeOccupancySelection
           : null;
         this.encodePaintHistoryReplay(encoder, replayBatch);
+      } else if (packedSubmission) {
+        submittedDirtyRect = { ...packedSubmission.dirtyRect };
+        const uploadStart = performance.now();
+        let destinationOffset = 0;
+        for (const chunk of packedSubmission.chunks) {
+          this.device.queue.writeBuffer(
+            this.instanceBuffer,
+            destinationOffset,
+            chunk.packedStamps,
+            0,
+            chunk.packedStamps.byteLength,
+          );
+          destinationOffset += chunk.packedStamps.byteLength;
+        }
+        if (destinationOffset !== stampCount * STAMP_STRIDE_BYTES) {
+          throw new Error("The packed instance upload length is inconsistent.");
+        }
+        this.packedMinimumRadius = packedSubmission.minimumRadius;
+        if (settings.shape === "shape") {
+          submittedShapeOccupancySelection = this.selectShapeOccupancy(
+            packedSubmission.minimumRadius,
+          );
+        }
+        instanceUploadMs = performance.now() - uploadStart;
       } else {
         const packingStart = performance.now();
         submittedDirtyRect = packStamps(this, stamps, settings);
@@ -17886,6 +18573,8 @@ export class BrushEngine {
           encoder,
           stamps,
           "Paint glaze",
+          null,
+          packedSubmission,
         );
       }
       if (releaseGpuTimingCapture) {
@@ -18149,12 +18838,20 @@ export class BrushEngine {
     externalDirtyRect: DirtyRect | null = null,
     externalLayerCleared = false,
     externalEncoder: GPUCommandEncoder | null = null,
+    packedSubmission: PackedStampSubmission | null = null,
   ): SubmitTiming {
     // A compound document transaction owns the visible frame. GPU mutations
     // still run in FIFO order, but only the final authoritative composition may
     // replace the persistent screen cache.
     present = present && !this.presentationBlocked();
-    const stampCount = resolvePaintHistoryStampCount(stamps, replayBatch);
+    if (packedSubmission && (stamps.length > 0 || replayBatch)) {
+      throw new Error("A packed submission cannot be mixed with object or replay stamps.");
+    }
+    if (packedSubmission && !usesStrokeGlazeRenderer(settings)) {
+      throw new Error("Packed stamps require an active glaze deposition renderer.");
+    }
+    const stampCount = packedSubmission?.stampCount
+      ?? resolvePaintHistoryStampCount(stamps, replayBatch);
     if (
       (stampCount > 0 || replayBatch !== null)
       && this.storedEncodedRgba8StrokeUnavailable(
@@ -18168,7 +18865,14 @@ export class BrushEngine {
     }
     if (usesStrokeGlazeRenderer(settings)) {
       if (this.lightGlazeSession) {
-        return this.submitLightGlazeImmediate(stamps, clearLayer, settings, present, replayBatch);
+        return this.submitLightGlazeImmediate(
+          stamps,
+          clearLayer,
+          settings,
+          present,
+          replayBatch,
+          packedSubmission,
+        );
       }
       if (stampCount > 0) {
         const actionIds = replayBatch
@@ -18188,6 +18892,11 @@ export class BrushEngine {
           replayBatch.symmetryAngleRadians,
         ),
       }
+      : packedSubmission
+        ? {
+          mode: packedSubmission.symmetryMode,
+          angleRadians: packedSubmission.symmetryAngleRadians,
+        }
       : strokeSymmetryTransformForStampBatch(
         stamps,
         this.activeStroke?.symmetryMode ?? "off",
@@ -18280,6 +18989,30 @@ export class BrushEngine {
             ? replayBatch.shapeOccupancySelection
             : null;
           this.encodePaintHistoryReplay(encoder, replayBatch);
+        } else if (packedSubmission) {
+          dirtyRect = { ...packedSubmission.dirtyRect };
+          const uploadStart = performance.now();
+          let destinationOffset = 0;
+          for (const chunk of packedSubmission.chunks) {
+            this.device.queue.writeBuffer(
+              this.instanceBuffer,
+              destinationOffset,
+              chunk.packedStamps,
+              0,
+              chunk.packedStamps.byteLength,
+            );
+            destinationOffset += chunk.packedStamps.byteLength;
+          }
+          if (destinationOffset !== stampCount * STAMP_STRIDE_BYTES) {
+            throw new Error("The packed instance upload length is inconsistent.");
+          }
+          this.packedMinimumRadius = packedSubmission.minimumRadius;
+          if (settings.shape === "shape") {
+            shapeOccupancySelection = this.selectShapeOccupancy(
+              packedSubmission.minimumRadius,
+            );
+          }
+          instanceUploadMs = performance.now() - uploadStart;
         } else {
           const packingStart = performance.now();
           dirtyRect = packStamps(this, stamps, settings);
@@ -18717,6 +19450,7 @@ export class BrushEngine {
           stamps,
           liveCloneSession ? "Clone" : "Paint",
           clonePlan,
+          packedSubmission,
         );
       }
       this.device.queue.submit([encoder.finish()]);

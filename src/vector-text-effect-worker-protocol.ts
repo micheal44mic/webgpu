@@ -37,6 +37,9 @@ export interface VectorTextEffectReadyMessage {
   readonly type: "effect-ready";
   readonly requestId: number;
   readonly cacheKey: string;
+  readonly backend: "wasm";
+  readonly computeMs: number;
+  readonly memoryBytes: number;
   readonly mesh: VectorTextGpuMeshData | null;
 }
 
@@ -44,6 +47,7 @@ export interface VectorTextEffectFailedMessage {
   readonly type: "effect-failed";
   readonly requestId: number;
   readonly cacheKey: string;
+  readonly backend: "wasm";
   readonly message: string;
 }
 

@@ -668,7 +668,13 @@ export function flushClosingLightGlazeSessionBeforeNewStroke(engine: BrushEngine
   }
 
   let iterations = 0;
-  const maximumIterations = Math.ceil(engine.pendingStamps.length / MAX_STAMPS_PER_BATCH) + 2;
+  const packedStampCount = engine.pendingPackedStampBatches.reduce(
+    (total, batch) => total + batch.stampCount,
+    0,
+  );
+  const maximumIterations = Math.ceil(
+    (engine.pendingStamps.length + packedStampCount) / MAX_STAMPS_PER_BATCH,
+  ) + 2;
   while (engine.lightGlazeSession?.endRequested) {
     if (engine.frameRequest !== null) {
       cancelAnimationFrame(engine.frameRequest);
@@ -692,6 +698,7 @@ export function maybeReleaseIdleLightGlazeResources(engine: BrushEngine): void {
     || engine.activeStroke !== null
     || engine.historyBusy
     || engine.pendingStamps.length > 0
+    || engine.pendingPackedStampBatches.length > 0
     || engine.brushGpuWarmupPromise !== null
   ) {
     return;

@@ -8,8 +8,10 @@ const fixedBrushWorkload = search.get("fixedWork") === "1";
 const requestedStrokeBackend = search.get("strokeBackend");
 const strokeGeometryBackend = requestedStrokeBackend === "javascript"
   || requestedStrokeBackend === "wasm"
+  || requestedStrokeBackend === "wasm-packed-required"
   ? requestedStrokeBackend
   : search.get("lab") === "stroke-geometry-wasm"
+      || search.get("lab") === "stroke-packed-wasm"
     ? "javascript"
     : null;
 const projectHome = document.getElementById("projectHome");

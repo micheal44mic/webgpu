@@ -80,6 +80,7 @@ interface PlaybackMetrics {
 
 interface ReleaseEngineSnapshot {
   pendingStamps: number;
+  pendingPackedStamps: number;
   pendingBlendBatches: number;
   activeStroke: boolean;
   activeStrokeHistoryActionId: number | null;
@@ -353,6 +354,10 @@ function captureReleaseEngineSnapshot(engine: BrushEngine): ReleaseEngineSnapsho
   const history = engine.getHistoryState();
   return {
     pendingStamps: engine.pendingStamps.length,
+    pendingPackedStamps: engine.pendingPackedStampBatches.reduce(
+      (total, batch) => total + batch.stampCount,
+      0,
+    ),
     pendingBlendBatches: engine.pendingBlendBatches.length,
     activeStroke: engine.activeStroke !== null,
     activeStrokeHistoryActionId: engine.activeStroke?.historyActionId ?? null,

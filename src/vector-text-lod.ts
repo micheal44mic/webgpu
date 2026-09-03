@@ -1,6 +1,6 @@
 export const VECTOR_TEXT_MAXIMUM_VECTOR_ZOOM = 64;
 export const VECTOR_TEXT_GEOMETRY_COMPILER_VERSION =
-  "clipper64-nonzero-lod-worker-v10" as const;
+  "clipper64-nonzero-lod-wasm-worker-v11" as const;
 
 export interface VectorTextLod {
   readonly bucket: number;

@@ -471,8 +471,8 @@ assert.equal(
 );
 assert.equal(
   brushEngine.match(/clipPaintDirtyRectToPixelSelection\(/g)?.length,
-  4,
-  "Glaze, Paint ordinario e i percorsi iniziale/rebuild della preview Quick Line devono restringere dirty rect e scissor.",
+  5,
+  "Glaze, Paint ordinario, tail packed e i percorsi iniziale/rebuild della preview Quick Line devono restringere dirty rect e scissor.",
 );
 assert.doesNotMatch(
   brushEngine,

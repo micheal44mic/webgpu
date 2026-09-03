@@ -1319,7 +1319,11 @@ export function flushPendingWorkBeforeSettingsChange(engine: BrushEngine): void 
   flushClosingLightGlazeSessionBeforeNewStroke(engine);
   if (
     engine.lightGlazeSession
-    || (engine.pendingStamps.length === 0 && engine.pendingBlendBatches.length === 0)
+    || (
+      engine.pendingStamps.length === 0
+      && engine.pendingPackedStampBatches.length === 0
+      && engine.pendingBlendBatches.length === 0
+    )
   ) {
     return;
   }
@@ -1327,22 +1331,39 @@ export function flushPendingWorkBeforeSettingsChange(engine: BrushEngine): void 
   let iterations = 0;
   // Il drenaggio Blend è a budget di pixel: nel caso peggiore (ROI enormi)
   // un frame consuma un solo batch, quindi il tetto usa quel minimo garantito.
-  const maximumIterations = Math.ceil(engine.pendingStamps.length / MAX_STAMPS_PER_BATCH)
+  const packedStampCount = engine.pendingPackedStampBatches.reduce(
+    (total, batch) => total + batch.stampCount,
+    0,
+  );
+  const maximumIterations = Math.ceil(
+    (engine.pendingStamps.length + packedStampCount) / MAX_STAMPS_PER_BATCH,
+  )
     + engine.pendingBlendBatches.length
     + 2;
   const previousForcedDrain = engine.forceSynchronousBlendDrain;
   engine.forceSynchronousBlendDrain = true;
   try {
-    while (engine.pendingStamps.length > 0 || engine.pendingBlendBatches.length > 0) {
+    while (
+      engine.pendingStamps.length > 0
+      || engine.pendingPackedStampBatches.length > 0
+      || engine.pendingBlendBatches.length > 0
+    ) {
       if (engine.frameRequest !== null) {
         cancelAnimationFrame(engine.frameRequest);
         engine.frameRequest = null;
       }
-      const pendingBeforeRender = engine.pendingStamps.length + engine.pendingBlendBatches.length;
+      const pendingBeforeRender = engine.pendingStamps.length
+        + engine.pendingPackedStampBatches.reduce((total, batch) => total + batch.stampCount, 0)
+        + engine.pendingBlendBatches.length;
       engine.renderFrame(performance.now());
       iterations += 1;
       if (
-        engine.pendingStamps.length + engine.pendingBlendBatches.length >= pendingBeforeRender
+        engine.pendingStamps.length
+          + engine.pendingPackedStampBatches.reduce(
+            (total, batch) => total + batch.stampCount,
+            0,
+          )
+          + engine.pendingBlendBatches.length >= pendingBeforeRender
         || iterations > maximumIterations
       ) {
         throw new Error("Unable to finalize stamps before changing settings.");
@@ -1594,6 +1615,7 @@ export async function setRasterStrokeGeometryEnabled(engine: BrushEngine, enable
 export function hasPendingRenderWork(engine: BrushEngine): boolean {
   return engine.frameRequest !== null
     || engine.pendingStamps.length > 0
+    || engine.pendingPackedStampBatches.length > 0
     || engine.pendingBlendBatches.length > 0
     || engine.clearRequested
     || engine.displayDirty

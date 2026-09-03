@@ -1589,9 +1589,9 @@ assert.equal(
 );
 assert.equal(
   VECTOR_TEXT_GPU_GEOMETRY_STRATEGY,
-  "clipper64-nonzero-worker-native-round-bevel-exact-miter-aa-overlap-same-color-union-visible-block-separate-clipped-overlap2px-earcut-v10",
+  "clipper64-nonzero-wasm-worker-native-round-bevel-exact-miter-aa-overlap-same-color-union-visible-block-separate-clipped-overlap2px-earcut-v11",
 );
-assert.equal(VECTOR_TEXT_GEOMETRY_COMPILER_VERSION, "clipper64-nonzero-lod-worker-v10");
+assert.equal(VECTOR_TEXT_GEOMETRY_COMPILER_VERSION, "clipper64-nonzero-lod-wasm-worker-v11");
 assert.equal(
   VECTOR_TEXT_SLUG_GPU_RENDER_STRATEGY,
   "webgpu-slug-source-clipper-effect-mesh-msaa4-stable-lines-absolute-f32-scale-v5",
@@ -3586,11 +3586,15 @@ try {
   assert.equal(resetClient.resourceWaiters.size, 0);
   assert.deepEqual(resetClient.diagnostics(), {
     registeredPaths: 0,
+    registeredPathBytes: 0,
     pendingJobs: 0,
     readyJobs: 0,
     displayedSlots: 0,
     failedJobs: 0,
     lastError: null,
+    backend: "wasm",
+    lastComputeMs: 0,
+    wasmMemoryBytes: 0,
   });
 } finally {
   if (queueTestWorkerDescriptor) {

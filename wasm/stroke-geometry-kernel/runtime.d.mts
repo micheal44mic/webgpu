@@ -45,6 +45,93 @@ export interface StrokeGeometryStreamingResult extends StrokeGeometryResult {
   readonly previewDabs: Float64Array;
 }
 
+export interface StrokeStampPackOptions {
+  readonly size: number;
+  readonly positionJitterLinear?: number;
+  readonly positionJitterLateral?: number;
+  readonly shapeExtentFactor?: number;
+  readonly documentWidth: number;
+  readonly documentHeight: number;
+  readonly reflectionCosineDoubleAngle?: number;
+  readonly reflectionSineDoubleAngle?: number;
+  readonly seedSequence?: number;
+  readonly stampOrdinal?: number;
+  readonly radiusMode?: "fixed" | "direct-pressure";
+  readonly shapeSequenceMode?: "ordered" | "random";
+  readonly shapeLayerCount?: number;
+  readonly symmetryEnabled?: boolean;
+  readonly startThickness?: number;
+  readonly endThickness?: number;
+  readonly startedAtMs?: number;
+  /** Skip the aggregate copy when the caller uploads packedChunks directly. */
+  readonly flattenPackedStamps?: boolean;
+}
+
+export interface PackedStrokeStampResult {
+  readonly backend: "wasm-packed";
+  /** Exact x/y/radius/pressure/seed/shape-layer/direction GPU records. */
+  readonly packedStamps: Uint8Array;
+  readonly packedChunks: readonly Readonly<{
+    packedStamps: Uint8Array;
+    stampCount: number;
+    firstSeed: number | null;
+    dirtyRect: Readonly<{ x: number; y: number; width: number; height: number }> | null;
+    minimumRadius: number;
+    culledDabCount: number;
+  }>[];
+  readonly stampCount: number;
+  readonly firstSeed: number | null;
+  readonly dirtyRect: Readonly<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }> | null;
+  readonly minimumRadius: number;
+  readonly nextSeedSequence: number;
+  readonly nextStampOrdinal: number;
+  readonly culledDabCount: number;
+  /** Newly generated dabs whose seed and ordinal were consumed by this result. */
+  readonly consumedDabCount: number;
+  readonly generatedHeldDabCount: number;
+  readonly releasedHeldDabCount: number;
+  readonly releasedHeldAtLiftDabCount: number;
+  readonly remainingHeldDabCount: number;
+  readonly maximumHeldDabCount: number;
+  readonly packComputeMs: number;
+}
+
+export interface PackedStrokeGeometryStreamingResult extends PackedStrokeStampResult {
+  readonly tail: Float64Array;
+  readonly previewPackedStamps: PackedStrokeStampResult;
+  readonly stats: StrokeGeometryStats;
+}
+
+export interface PackedStrokeGeometrySession {
+  readonly backend: "wasm-packed";
+  readonly initialDab: Float64Array;
+  readonly initialPackedStamps: PackedStrokeStampResult;
+  readonly initialPreviewPackedStamps: PackedStrokeStampResult;
+  updateFixedSpacing(
+    spacing: number,
+    options?: { readonly includePreviewTail?: boolean },
+  ): PackedStrokeStampResult;
+  processBatch(
+    samples: readonly StrokeGeometrySample[],
+    options?: {
+      readonly includePreviewTail?: boolean;
+      readonly includeTail?: boolean;
+      readonly spacing?: number;
+    },
+  ): PackedStrokeGeometryStreamingResult;
+  refreshThickness(referenceTimeMs?: number): Readonly<{
+    releasedPackedStamps: PackedStrokeStampResult;
+    previewPackedStamps: PackedStrokeStampResult;
+  }>;
+  finish(options?: { readonly referenceTimeMs?: number }): PackedStrokeGeometryStreamingResult;
+  cancel(): void;
+}
+
 export interface StrokeGeometrySession {
   readonly backend: "js" | "wasm";
   readonly initialDab: Float64Array;
@@ -78,6 +165,11 @@ export interface StrokeGeometryProcessor {
     first: StrokeGeometrySample,
     options?: StrokeGeometryOptions & { readonly maximumBatchSize?: number },
   ) => StrokeGeometrySession;
+  readonly beginPacked?: (
+    first: StrokeGeometrySample,
+    options: StrokeGeometryOptions & { readonly maximumBatchSize?: number },
+    packedOptions: StrokeStampPackOptions,
+  ) => PackedStrokeGeometrySession;
   processStroke(
     samples: readonly StrokeGeometrySample[],
     options?: StrokeGeometryOptions,
@@ -103,3 +195,12 @@ export function createStrokeGeometryProcessor(options?: {
   readonly url?: URL | string;
   readonly fetchImplementation?: typeof fetch;
 }): Promise<StrokeGeometryProcessor>;
+
+export function createRequiredStrokeGeometryProcessor(options?: {
+  readonly moduleOrBytes?: WebAssembly.Module | BufferSource;
+  readonly url?: URL | string;
+  readonly fetchImplementation?: typeof fetch;
+}): Promise<StrokeGeometryProcessor & {
+  readonly backend: "wasm";
+  readonly beginPacked: NonNullable<StrokeGeometryProcessor["beginPacked"]>;
+}>;

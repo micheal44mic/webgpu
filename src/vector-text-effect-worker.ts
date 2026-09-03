@@ -1,15 +1,25 @@
-import {
-  compileVectorTextEffect,
-  VectorTextCanonicalFillCache,
-} from "./vector-text-effect-geometry";
+import { createVectorGeometryKernel } from "../wasm/vector-geometry-kernel/runtime.mjs";
+import { VECTOR_TEXT_GEOMETRY_COMPILER_VERSION } from "./vector-text-lod";
 import type {
   VectorTextEffectWorkerRequest,
   VectorTextEffectWorkerResponse,
   VectorTextWorkerPathData,
 } from "./vector-text-effect-worker-protocol";
 
-const paths = new Map<string, VectorTextWorkerPathData>();
-const canonicalFills = new VectorTextCanonicalFillCache();
+interface RegisteredWorkerPath {
+  readonly handle: number;
+  path: VectorTextWorkerPathData | null;
+  registration: Promise<void>;
+  error: unknown;
+}
+
+const paths = new Map<string, RegisteredWorkerPath>();
+let nextPathHandle = 1;
+let initializationError: unknown = null;
+const kernelPromise = createVectorGeometryKernel().catch((error: unknown) => {
+  initializationError = error;
+  return null;
+});
 
 function respond(
   message: VectorTextEffectWorkerResponse,
@@ -18,67 +28,108 @@ function respond(
   self.postMessage(message, { transfer });
 }
 
-self.onmessage = (
-  event: MessageEvent<VectorTextEffectWorkerRequest>,
-): void => {
-  const message = event.data;
+async function handleMessage(
+  message: VectorTextEffectWorkerRequest,
+): Promise<void> {
   if (message.type === "register-path") {
-    if (paths.has(message.revision)) {
-      canonicalFills.releasePath(message.revision);
+    const previous = paths.get(message.revision);
+    if (previous) {
+      paths.delete(message.revision);
+      void previous.registration.then(async () => {
+        const kernel = await kernelPromise;
+        kernel?.releasePath(previous.handle);
+      });
     }
-    paths.set(message.revision, message.path);
+    const entry: RegisteredWorkerPath = {
+      handle: nextPathHandle,
+      path: message.path,
+      registration: Promise.resolve(),
+      error: null,
+    };
+    nextPathHandle = nextPathHandle === 0xffff_ffff ? 1 : nextPathHandle + 1;
+    paths.set(message.revision, entry);
+    entry.registration = kernelPromise.then((kernel) => {
+      if (!kernel) {
+        throw initializationError ?? new Error("Required vector geometry Wasm is unavailable.");
+      }
+      if (paths.get(message.revision) !== entry) return;
+      const path = entry.path;
+      if (!path) {
+        throw new Error("Vector path data was released before registration.");
+      }
+      kernel.registerPath(entry.handle, path);
+      entry.path = null;
+    }).catch((error: unknown) => {
+      entry.path = null;
+      entry.error = error;
+    });
     return;
   }
   if (message.type === "release-path") {
+    const entry = paths.get(message.revision);
     paths.delete(message.revision);
-    canonicalFills.releasePath(message.revision);
+    if (entry) {
+      void entry.registration.then(async () => {
+        const kernel = await kernelPromise;
+        kernel?.releasePath(entry.handle);
+      });
+    }
     return;
   }
 
-  const path = paths.get(message.revision);
-  if (!path) {
+  const entry = paths.get(message.revision);
+  if (!entry) {
     respond({
       type: "effect-failed",
       requestId: message.requestId,
       cacheKey: message.cacheKey,
+      backend: "wasm",
       message: `Path ${message.revision} is not registered in the worker.`,
     });
     return;
   }
   try {
-    const isOutline = message.effect.kind === "source-outline"
-      || message.effect.kind === "block-outline";
-    const canonicalFill = !isOutline || message.effect.width > 0
-      ? canonicalFills.getOrCreate(
-          message.revision,
-          path,
-          message.lod,
-          isOutline ? message.effect.width : 0,
-        )
-      : undefined;
-    const mesh = compileVectorTextEffect(
-      path,
+    const kernel = await kernelPromise;
+    if (!kernel) {
+      const detail = initializationError instanceof Error
+        ? initializationError.message
+        : String(initializationError ?? "unknown initialization error");
+      throw new Error(`Required vector geometry Wasm is unavailable: ${detail}`);
+    }
+    await entry.registration;
+    if (entry.error) {
+      throw entry.error;
+    }
+    const result = kernel.compileRegistered(
+      entry.handle,
       message.lod,
       message.effect,
-      message.cacheKey,
-      canonicalFill,
+      `${VECTOR_TEXT_GEOMETRY_COMPILER_VERSION}:${message.cacheKey}`,
     );
     const transfer: Transferable[] = [];
-    if (mesh) {
-      transfer.push(mesh.vertices.buffer, mesh.indices.buffer);
+    if (result.mesh) {
+      transfer.push(result.mesh.vertices.buffer, result.mesh.indices.buffer);
     }
     respond({
       type: "effect-ready",
       requestId: message.requestId,
       cacheKey: message.cacheKey,
-      mesh,
+      backend: "wasm",
+      computeMs: result.computeMs,
+      memoryBytes: result.memoryBytes,
+      mesh: result.mesh,
     }, transfer);
   } catch (error) {
     respond({
       type: "effect-failed",
       requestId: message.requestId,
       cacheKey: message.cacheKey,
+      backend: "wasm",
       message: error instanceof Error ? error.message : String(error),
     });
   }
+}
+
+self.onmessage = (event: MessageEvent<VectorTextEffectWorkerRequest>): void => {
+  void handleMessage(event.data);
 };

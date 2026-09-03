@@ -17,6 +17,8 @@ import type {
   StrokeStabilizationUpdate,
 } from "./stroke-stabilization-core";
 import type {
+  PackedStrokeGeometrySession,
+  PackedStrokeStampResult,
   StrokeGeometryActiveBackend,
   StrokeGeometrySession,
   StrokeGeometryStats,
@@ -37,6 +39,30 @@ export interface Stamp {
   /** CPU metadata retained outside the fixed 32-byte GPU stamp record. */
   symmetryMode: StrokeSymmetryMode;
   symmetryAngleRadians: number;
+}
+
+/** One already-packed GPU upload owned by a single Paint history action. */
+export interface PendingPackedStampBatch {
+  readonly packedStamps: Uint8Array;
+  readonly stampCount: number;
+  readonly firstSeed: number;
+  readonly dirtyRect: DirtyRect;
+  readonly minimumRadius: number;
+  readonly historyActionId: number;
+  readonly symmetryMode: StrokeSymmetryMode;
+  readonly symmetryAngleRadians: number;
+}
+
+/** Consecutive packed chunks drained by one draw and one History capture. */
+export interface PackedStampSubmission {
+  readonly chunks: readonly PendingPackedStampBatch[];
+  readonly stampCount: number;
+  readonly firstSeed: number;
+  readonly dirtyRect: DirtyRect;
+  readonly minimumRadius: number;
+  readonly historyActionId: number;
+  readonly symmetryMode: StrokeSymmetryMode;
+  readonly symmetryAngleRadians: number;
 }
 
 export interface HeldThicknessStamp {
@@ -81,8 +107,12 @@ export interface ActiveStroke {
   strokeGeometryBackend: StrokeGeometryActiveBackend;
   /** Present only for a compatible, prewarmed stabilized gesture. */
   strokeGeometrySession: StrokeGeometrySession | null;
+  /** Strict packed session: authoritative dabs leave Wasm as GPU records. */
+  packedStrokeGeometrySession: PackedStrokeGeometrySession | null;
   /** Latest revisionable tail geometry emitted by the Wasm session. */
   strokeGeometryPreviewDabs: Float64Array | null;
+  /** Latest revisionable tail already encoded as fixed 32-byte GPU records. */
+  strokeGeometryPreviewPackedStamps: PackedStrokeStampResult | null;
   /** Cumulative counters returned by the active Wasm session. */
   strokeGeometryStats: StrokeGeometryStats | null;
   stabilizationCommittedInput: LayerPoint;

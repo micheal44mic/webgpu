@@ -60,6 +60,8 @@ const LABS = [
   ["layer-compression", "Studio compressione lossless"],
   ["shape-mask-wasm", "A/B CPU Shape · JavaScript/Wasm"],
   ["stroke-geometry-wasm", "A/B CPU geometria tratto · adapter batch 16"],
+  ["stroke-packed-wasm", "A/B deposito tratto · oggetti JS / buffer GPU Wasm"],
+  ["vector-effect-wasm", "A/B CPU effetti vettoriali · JavaScript/Wasm"],
   ["vector-zoom-stress", "Stress zoom vettoriale"],
   ["vector-zoom-during", "A/B zoom · refresh durante il gesto"],
   ["vector-zoom-release", "A/B zoom · refresh al rilascio"],
@@ -76,16 +78,23 @@ const LABS = [
   ["human-suite", "Suite tratto umano · 3 rendering"],
 ] as const;
 const DESTRUCTIVE_GPU_LAB_TIMEOUT_MS = 180_000;
-const HOSTED_REPLAY_ONLY = import.meta.env.PROD;
+const HOSTED_LAB_ALLOWLIST_ENABLED = import.meta.env.PROD;
 
 type LabId = (typeof LABS)[number][0];
+
+const HOSTED_LAB_IDS = new Set<LabId>([
+  "human-replay",
+  "human-shape-sequence",
+  "stroke-packed-wasm",
+  "vector-effect-wasm",
+]);
 
 function isLabId(value: string | null): value is LabId {
   return LABS.some(([id]) => id === value);
 }
 
 function hostedLabId(value: string | null): LabId {
-  return value === "human-shape-sequence" ? value : "human-replay";
+  return isLabId(value) && HOSTED_LAB_IDS.has(value) ? value : "human-replay";
 }
 
 function serialize(value: unknown): string {
@@ -175,11 +184,11 @@ class EditorLabController implements EditorExtension {
       () => host.refreshControls(),
     );
     for (const [id, label] of LABS) {
-      if (HOSTED_REPLAY_ONLY && id !== "human-replay" && id !== "human-shape-sequence") continue;
+      if (HOSTED_LAB_ALLOWLIST_ENABLED && !HOSTED_LAB_IDS.has(id)) continue;
       this.#select.add(new Option(label, id));
     }
     const requested = new URLSearchParams(window.location.search).get("lab");
-    if (HOSTED_REPLAY_ONLY) {
+    if (HOSTED_LAB_ALLOWLIST_ENABLED) {
       this.#select.value = hostedLabId(requested);
     } else if (isLabId(requested)) {
       this.#select.value = requested;
@@ -220,16 +229,21 @@ class EditorLabController implements EditorExtension {
 
   async afterEngineInitialized(): Promise<void> {
     const search = new URLSearchParams(window.location.search);
-    const requested = HOSTED_REPLAY_ONLY
+    const requested = HOSTED_LAB_ALLOWLIST_ENABLED
       ? hostedLabId(search.get("lab"))
       : search.get("lab");
     const requestedStrokeBackend = search.get("strokeBackend");
-    const preparedStrokeBackend = requestedStrokeBackend === "wasm"
+    const explicitlyPreparedStrokeBackend = requestedStrokeBackend === "wasm"
+      || requestedStrokeBackend === "wasm-packed-required";
+    const preparedStrokeBackend = explicitlyPreparedStrokeBackend
       ? await this.#host.engine.prepareStrokeGeometryBackend()
       : this.#host.engine.preparedStrokeGeometryBackend();
     this.#result.textContent = requestedStrokeBackend === "wasm"
       && preparedStrokeBackend !== "wasm"
       ? "Il modulo geometrico Wasm non è disponibile: il test userà JavaScript."
+      : requestedStrokeBackend === "wasm-packed-required"
+        && preparedStrokeBackend !== "wasm-packed"
+        ? "Il modulo packed Wasm richiesto non è disponibile; il test è stato bloccato."
       : requested === "human-record"
         ? `Preset pronto: ${HUMAN_RECORDING_PRESET_LABEL}.`
         : "Pronto. I test distruttivi richiedono una pagina nuova.";
@@ -348,6 +362,9 @@ class EditorLabController implements EditorExtension {
     if (this.#busy) return;
     const id = this.#select.value;
     if (!isLabId(id)) throw new Error(`Laboratorio sconosciuto: ${id}`);
+    if (HOSTED_LAB_ALLOWLIST_ENABLED && !HOSTED_LAB_IDS.has(id)) {
+      throw new Error(`Laboratorio non pubblicato: ${id}`);
+    }
     this.#busy = true;
     this.#report.hidden = true;
     this.#result.classList.remove("error");
@@ -600,6 +617,18 @@ class EditorLabController implements EditorExtension {
         );
         return runStrokeGeometryWasmBenchmark();
       }
+      case "stroke-packed-wasm": {
+        const { runStrokePackedWasmBenchmark } = await import(
+          "./cpu/stroke-packed-wasm-lab"
+        );
+        return runStrokePackedWasmBenchmark();
+      }
+      case "vector-effect-wasm": {
+        const { runVectorEffectWasmBenchmark } = await import(
+          "./cpu/vector-effect-wasm-lab"
+        );
+        return runVectorEffectWasmBenchmark();
+      }
       case "vector-zoom-stress":
       case "vector-zoom-during":
       case "vector-zoom-release":
@@ -685,12 +714,30 @@ class EditorLabController implements EditorExtension {
           && requestedSpacingPercent <= 99
           ? requestedSpacingPercent
           : null;
+        const requestedStartThicknessValue = search.get("startThickness");
+        const requestedStartThickness = Number(requestedStartThicknessValue);
+        const startThickness = requestedStartThicknessValue !== null
+          && Number.isFinite(requestedStartThickness)
+          && requestedStartThickness >= 0
+          && requestedStartThickness <= 2
+          ? requestedStartThickness
+          : null;
+        const requestedEndThicknessValue = search.get("endThickness");
+        const requestedEndThickness = Number(requestedEndThicknessValue);
+        const endThickness = requestedEndThicknessValue !== null
+          && Number.isFinite(requestedEndThickness)
+          && requestedEndThickness >= 0
+          && requestedEndThickness <= 2
+          ? requestedEndThickness
+          : null;
         return this.#humanStroke.replay("canonical", {
           blendMode,
           ...(flow === null ? {} : { flow }),
           ...(opacity === null ? {} : { opacity }),
           ...(stabilization === null ? {} : { stabilization }),
           ...(spacingPercent === null ? {} : { spacingPercent }),
+          ...(startThickness === null ? {} : { startThickness }),
+          ...(endThickness === null ? {} : { endThickness }),
           ...(colorDynamicsOff ? {
             hueJitterDegrees: 0,
             saturationJitter: 0,

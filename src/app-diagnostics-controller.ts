@@ -266,6 +266,10 @@ export class AppDiagnosticsController {
         viewPresentationRetryArmedRevision: engine.viewPresentationRetryArmedRevision,
         viewPresentationRetryRequestedRevision: engine.viewPresentationRetryRequestedRevision,
         pendingStamps: engine.pendingStamps.length,
+        pendingPackedStamps: engine.pendingPackedStampBatches.reduce(
+          (total, batch) => total + batch.stampCount,
+          0,
+        ),
         pendingBlendBatches: engine.pendingBlendBatches.length,
       },
       layerResidency: (() => {

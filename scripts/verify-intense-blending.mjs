@@ -109,9 +109,10 @@ const submit = section(
   "submitBlendImmediate",
   // Il routing di presentazione document-space dei blend di livello aggiunge
   // tre rami espliciti al submit live; il final-stack mip coerente aggiunge i
-  // gate live/commit e il deposito diretto aggiunge il percorso ottico, ma la
-  // finestra resta stretta sui due marcatori.
-  44_000,
+  // gate live/commit, il deposito diretto aggiunge il percorso ottico e il
+  // percorso packed aggiunge l'upload binario senza oggetti intermedi. La
+  // finestra resta comunque stretta sui due marcatori.
+  46_000,
 );
 for (const requirement of [
   'const intenseBlending = settings.blendMode === "intense-blending";',

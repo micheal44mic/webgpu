@@ -12,8 +12,12 @@ import {
 import { directDepositSpacingDistance } from "../../src/direct-deposit-brush-core.ts";
 
 const ABI_VERSION = 1;
+const STAMP_PACK_ABI_VERSION = 2;
 const INPUT_STRIDE = 4;
 const DAB_STRIDE = 6;
+const PACKED_STAMP_STRIDE_BYTES = 32;
+const STAMP_PACK_CONFIG_LENGTH = 20;
+const STAMP_PACK_SUMMARY_LENGTH = 12;
 const TAIL_STRIDE = 10;
 const SUMMARY_LENGTH = 16;
 const TAIL_CAPACITY = 1025;
@@ -21,6 +25,8 @@ const WASM_PAGE_BYTES = 64 * 1024;
 const MAXIMUM_SAMPLE_COUNT = 1_000_000;
 const MAXIMUM_DAB_CAPACITY = 4_000_000;
 const DEFAULT_MAXIMUM_STAMPS_PER_SEGMENT = 65_536;
+const MAXIMUM_PACKED_STAMPS_PER_CHUNK = 65_536;
+const THICKNESS_TAPER_WINDOW_MS = 100;
 
 const STATUS_MESSAGES = new Map([
   [-1, "invalid kernel argument"],
@@ -144,6 +150,219 @@ function concatenateChunks(chunks) {
     offset += chunk.length;
   }
   return output;
+}
+
+function concatenatePackedChunks(chunks) {
+  if (chunks.length === 0) return new Uint8Array(0);
+  if (chunks.length === 1) return chunks[0];
+  let length = 0;
+  for (const chunk of chunks) length += chunk.byteLength;
+  const output = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return output;
+}
+
+function counterOption(value, label) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`${label} must be a non-negative safe integer.`);
+  }
+  return value;
+}
+
+function normalizeStampPackOptions(options = {}) {
+  const finite = (value, label, minimum = 0) => {
+    if (!Number.isFinite(value) || value < minimum) {
+      throw new RangeError(`${label} must be finite and at least ${minimum}.`);
+    }
+    return Number(value);
+  };
+  const shapeLayerCount = options.shapeLayerCount ?? 1;
+  if (!Number.isSafeInteger(shapeLayerCount) || shapeLayerCount < 1 || shapeLayerCount > 4) {
+    throw new RangeError("Shape layer count must be an integer from 1 through 4.");
+  }
+  const radiusMode = options.radiusMode === "direct-pressure" ? 1 : 0;
+  if (options.radiusMode !== undefined
+    && options.radiusMode !== "fixed"
+    && options.radiusMode !== "direct-pressure") {
+    throw new TypeError("Stamp radius mode is invalid.");
+  }
+  const shapeSequenceMode = options.shapeSequenceMode === "random" ? 1 : 0;
+  if (options.shapeSequenceMode !== undefined
+    && options.shapeSequenceMode !== "ordered"
+    && options.shapeSequenceMode !== "random") {
+    throw new TypeError("Shape sequence mode is invalid.");
+  }
+  const symmetryEnabled = options.symmetryEnabled === true;
+  const reflectionCosineDoubleAngle = finite(
+    options.reflectionCosineDoubleAngle ?? 0,
+    "Reflection cosine",
+    -1,
+  );
+  const reflectionSineDoubleAngle = finite(
+    options.reflectionSineDoubleAngle ?? 0,
+    "Reflection sine",
+    -1,
+  );
+  if (Math.abs(reflectionCosineDoubleAngle) > 1 || Math.abs(reflectionSineDoubleAngle) > 1) {
+    throw new RangeError("Reflection coefficients must be between -1 and 1.");
+  }
+  return {
+    size: finite(options.size, "Brush size", Number.EPSILON),
+    positionJitterLinear: finite(
+      options.positionJitterLinear ?? 0,
+      "Linear position jitter",
+    ),
+    positionJitterLateral: finite(
+      options.positionJitterLateral ?? 0,
+      "Lateral position jitter",
+    ),
+    shapeExtentFactor: finite(
+      options.shapeExtentFactor ?? 1,
+      "Shape extent factor",
+      Number.EPSILON,
+    ),
+    documentWidth: finite(options.documentWidth, "Document width", 1),
+    documentHeight: finite(options.documentHeight, "Document height", 1),
+    reflectionCosineDoubleAngle,
+    reflectionSineDoubleAngle,
+    seedSequence: counterOption(options.seedSequence ?? 1, "Seed sequence"),
+    stampOrdinal: counterOption(options.stampOrdinal ?? 0, "Stamp ordinal"),
+    radiusMode,
+    shapeSequenceMode,
+    shapeLayerCount,
+    symmetryEnabled,
+    startThickness: Math.min(2, finite(options.startThickness ?? 1, "Start thickness")),
+    endThickness: Math.min(2, finite(options.endThickness ?? 1, "End thickness")),
+    startedAtMs: finite(options.startedAtMs ?? 0, "Stroke start time", -Number.MAX_VALUE),
+    flattenPackedStamps: options.flattenPackedStamps !== false,
+  };
+}
+
+function thicknessTailHoldbackEnabled(state) {
+  return Math.abs(state.endThickness - 1) > Number.EPSILON * 8;
+}
+
+function emptyPackedStampResult(
+  state,
+  remainingHeldDabCount = 0,
+  maximumHeldDabCount = remainingHeldDabCount,
+) {
+  return {
+    backend: "wasm-packed",
+    packedStamps: new Uint8Array(0),
+    packedChunks: [],
+    stampCount: 0,
+    firstSeed: null,
+    dirtyRect: null,
+    minimumRadius: Number.POSITIVE_INFINITY,
+    nextSeedSequence: state.seedSequence,
+    nextStampOrdinal: state.stampOrdinal,
+    culledDabCount: 0,
+    consumedDabCount: 0,
+    generatedHeldDabCount: 0,
+    releasedHeldDabCount: 0,
+    releasedHeldAtLiftDabCount: 0,
+    remainingHeldDabCount,
+    maximumHeldDabCount,
+    packComputeMs: 0,
+  };
+}
+
+function combinePackedStampResults(
+  results,
+  state,
+  flattenPackedStamps = state.flattenPackedStamps !== false,
+) {
+  if (results.length === 0) return emptyPackedStampResult(state);
+  const packedChunks = [];
+  let firstSeed = null;
+  let dirtyRect = null;
+  let minimumRadius = Number.POSITIVE_INFINITY;
+  let stampCount = 0;
+  let culledDabCount = 0;
+  let consumedDabCount = 0;
+  let generatedHeldDabCount = 0;
+  let releasedHeldDabCount = 0;
+  let releasedHeldAtLiftDabCount = 0;
+  let remainingHeldDabCount = 0;
+  let maximumHeldDabCount = 0;
+  let packComputeMs = 0;
+  let nextSeedSequence = state.seedSequence;
+  let nextStampOrdinal = state.stampOrdinal;
+  for (const result of results) {
+    const leaves = Array.isArray(result.packedChunks)
+      ? result.packedChunks
+      : result.stampCount > 0
+        ? [{
+          packedStamps: result.packedStamps,
+          stampCount: result.stampCount,
+          firstSeed: result.firstSeed,
+          dirtyRect: result.dirtyRect,
+          minimumRadius: result.minimumRadius,
+          culledDabCount: result.culledDabCount,
+        }]
+        : [];
+    for (const leaf of leaves) {
+      if (leaf.stampCount > MAXIMUM_PACKED_STAMPS_PER_CHUNK) {
+        throw new Error("Packed stamp chunk exceeds the GPU upload capacity.");
+      }
+      if (leaf.stampCount > 0) packedChunks.push(leaf);
+    }
+    if (firstSeed === null && result.firstSeed !== null) firstSeed = result.firstSeed;
+    minimumRadius = Math.min(minimumRadius, result.minimumRadius);
+    stampCount += result.stampCount;
+    culledDabCount += result.culledDabCount;
+    consumedDabCount += result.consumedDabCount ?? (result.stampCount + result.culledDabCount);
+    generatedHeldDabCount += result.generatedHeldDabCount ?? 0;
+    releasedHeldDabCount += result.releasedHeldDabCount ?? 0;
+    releasedHeldAtLiftDabCount += result.releasedHeldAtLiftDabCount ?? 0;
+    remainingHeldDabCount = result.remainingHeldDabCount ?? remainingHeldDabCount;
+    maximumHeldDabCount = Math.max(
+      maximumHeldDabCount,
+      result.maximumHeldDabCount ?? 0,
+    );
+    packComputeMs += result.packComputeMs;
+    nextSeedSequence = result.nextSeedSequence;
+    nextStampOrdinal = result.nextStampOrdinal;
+    const rect = result.dirtyRect;
+    if (rect) {
+      if (!dirtyRect) {
+        dirtyRect = { ...rect };
+      } else {
+        const right = Math.max(dirtyRect.x + dirtyRect.width, rect.x + rect.width);
+        const bottom = Math.max(dirtyRect.y + dirtyRect.height, rect.y + rect.height);
+        dirtyRect.x = Math.min(dirtyRect.x, rect.x);
+        dirtyRect.y = Math.min(dirtyRect.y, rect.y);
+        dirtyRect.width = right - dirtyRect.x;
+        dirtyRect.height = bottom - dirtyRect.y;
+      }
+    }
+  }
+  return {
+    backend: "wasm-packed",
+    packedStamps: flattenPackedStamps
+      ? concatenatePackedChunks(packedChunks.map((chunk) => chunk.packedStamps))
+      : new Uint8Array(0),
+    packedChunks,
+    stampCount,
+    firstSeed,
+    dirtyRect,
+    minimumRadius,
+    nextSeedSequence,
+    nextStampOrdinal,
+    culledDabCount,
+    consumedDabCount,
+    generatedHeldDabCount,
+    releasedHeldDabCount,
+    releasedHeldAtLiftDabCount,
+    remainingHeldDabCount,
+    maximumHeldDabCount,
+    packComputeMs,
+  };
 }
 
 function initialDab(sample) {
@@ -580,6 +799,8 @@ export async function instantiateStrokeGeometryKernel(moduleOrBytes) {
     "stroke_geometry_process_batch",
     "stroke_geometry_finish",
     "stroke_geometry_copy_state",
+    "stroke_stamp_pack_abi_version",
+    "stroke_stamp_pack_dabs_in_place",
   ]) {
     if (typeof exports[name] !== "function") {
       throw new Error(`Stroke geometry kernel entry point is missing: ${name}.`);
@@ -588,11 +809,14 @@ export async function instantiateStrokeGeometryKernel(moduleOrBytes) {
   if (exports.stroke_geometry_abi_version() !== ABI_VERSION) {
     throw new Error("Stroke geometry kernel ABI version is incompatible.");
   }
+  if (exports.stroke_stamp_pack_abi_version() !== STAMP_PACK_ABI_VERSION) {
+    throw new Error("Stroke stamp packing kernel ABI version is incompatible.");
+  }
   const stateBytes = exports.stroke_geometry_state_bytes();
   const heapBase = align(heapBaseValue(exports), 16);
   let activeSessionToken = null;
 
-  const begin = (firstSource, options = {}) => {
+  const beginInternal = (firstSource, options = {}, packedOptionsSource = null) => {
     const first = normalizeSamples([firstSource])[0];
     if (activeSessionToken !== null) {
       throw new Error("A stroke geometry streaming session is already active.");
@@ -606,6 +830,12 @@ export async function instantiateStrokeGeometryKernel(moduleOrBytes) {
       batchSize: 1,
       dabCapacity: options.dabCapacity ?? DEFAULT_MAXIMUM_STAMPS_PER_SEGMENT,
     });
+    const packState = packedOptionsSource === null
+      ? null
+      : normalizeStampPackOptions({
+        ...packedOptionsSource,
+        startedAtMs: packedOptionsSource.startedAtMs ?? first.timeMs,
+      });
     const inputCapacity = Math.min(MAXIMUM_SAMPLE_COUNT, requestedInputCapacity);
     const statePtr = heapBase;
     const previewStatePtr = align(statePtr + stateBytes, 16);
@@ -613,7 +843,12 @@ export async function instantiateStrokeGeometryKernel(moduleOrBytes) {
     const dabPtr = align(inputPtr + inputCapacity * INPUT_STRIDE * 8, 16);
     const tailPtr = align(dabPtr + request.dabCapacity * DAB_STRIDE * 8, 16);
     const summaryPtr = align(tailPtr + TAIL_CAPACITY * TAIL_STRIDE * 8, 16);
-    const end = summaryPtr + SUMMARY_LENGTH * 8;
+    const packConfigPtr = align(summaryPtr + SUMMARY_LENGTH * 8, 16);
+    const packSummaryPtr = align(
+      packConfigPtr + STAMP_PACK_CONFIG_LENGTH * 8,
+      16,
+    );
+    const end = packSummaryPtr + STAMP_PACK_SUMMARY_LENGTH * 8;
     const expandedFinishDabPtr = align(end, 16);
     const ensureMemoryThrough = (requiredEnd) => {
       const missingBytes = requiredEnd - exports.memory.buffer.byteLength;
@@ -642,9 +877,13 @@ export async function instantiateStrokeGeometryKernel(moduleOrBytes) {
     );
     assertStatus(beginStatus);
     const token = {};
-    activeSessionToken = token;
     let finished = false;
     let expandedDabCapacity = request.dabCapacity;
+    let latestReferenceTimeMs = first.timeMs;
+    const heldThicknessDabChunks = [];
+    let heldThicknessDabCount = 0;
+    let maximumHeldThicknessDabCount = 0;
+    const thicknessTailHoldback = Boolean(packState && thicknessTailHoldbackEnabled(packState));
 
     const assertActive = () => {
       if (finished || activeSessionToken !== token) {
@@ -673,7 +912,308 @@ export async function instantiateStrokeGeometryKernel(moduleOrBytes) {
       );
       return true;
     };
-    const finishFromSnapshot = (targetStatePtr, snapshotStatePtr) => {
+    const packDabArena = (
+      pointer,
+      dabCount,
+      stateSource,
+      mutateState,
+      thickness = {},
+    ) => {
+      const workingState = { ...stateSource };
+      const finalSeedSequence = workingState.seedSequence + dabCount;
+      const finalStampOrdinal = workingState.stampOrdinal + dabCount;
+      if (
+        !Number.isSafeInteger(finalSeedSequence)
+        || !Number.isSafeInteger(finalStampOrdinal)
+      ) {
+        throw new Error("Packed stroke counters exceed the safe integer range.");
+      }
+      const results = [];
+      let sourceOffset = 0;
+      while (sourceOffset < dabCount) {
+        const count = Math.min(
+          MAXIMUM_PACKED_STAMPS_PER_CHUNK,
+          dabCount - sourceOffset,
+        );
+        const nextSeedSequence = workingState.seedSequence + count;
+        const nextStampOrdinal = workingState.stampOrdinal + count;
+        if (
+          !Number.isSafeInteger(nextSeedSequence)
+          || !Number.isSafeInteger(nextStampOrdinal)
+        ) {
+          throw new Error("Packed stroke counters exceed the safe integer range.");
+        }
+        const sourcePointer = pointer + sourceOffset * DAB_STRIDE * 8;
+        const config = new Float64Array(
+          exports.memory.buffer,
+          packConfigPtr,
+          STAMP_PACK_CONFIG_LENGTH,
+        );
+        config.set([
+          workingState.size,
+          workingState.positionJitterLinear,
+          workingState.positionJitterLateral,
+          workingState.shapeExtentFactor,
+          workingState.documentWidth,
+          workingState.documentHeight,
+          workingState.reflectionCosineDoubleAngle,
+          workingState.reflectionSineDoubleAngle,
+          workingState.seedSequence >>> 0,
+          workingState.stampOrdinal,
+          workingState.radiusMode,
+          workingState.shapeSequenceMode,
+          workingState.shapeLayerCount,
+          workingState.symmetryEnabled ? 1 : 0,
+          workingState.startThickness,
+          workingState.endThickness,
+          workingState.startedAtMs,
+          thickness.referenceTimeMs ?? 0,
+          thickness.applyEndTaper === true ? 1 : 0,
+          0,
+        ]);
+        const startedAt = performance.now();
+        const status = exports.stroke_stamp_pack_dabs_in_place(
+          sourcePointer,
+          count,
+          packConfigPtr,
+          packSummaryPtr,
+        );
+        const summary = new Float64Array(
+          new Float64Array(
+            exports.memory.buffer,
+            packSummaryPtr,
+            STAMP_PACK_SUMMARY_LENGTH,
+          ),
+        );
+        assertStatus(status, summary);
+        if (summary[1] !== count || summary[2] < 0 || summary[2] > count) {
+          throw new Error("Stroke stamp packing kernel returned an invalid count.");
+        }
+        const stampCount = summary[2];
+        const packedStamps = new Uint8Array(
+          exports.memory.buffer,
+          sourcePointer,
+          stampCount * PACKED_STAMP_STRIDE_BYTES,
+        ).slice();
+        const dirtyRect = summary[6] > 0 && summary[7] > 0
+          ? {
+            x: summary[4],
+            y: summary[5],
+            width: summary[6],
+            height: summary[7],
+          }
+          : null;
+        const expectedNextSeedLow32 = nextSeedSequence >>> 0;
+        if (
+          (summary[9] >>> 0) !== expectedNextSeedLow32
+          || summary[10] !== nextStampOrdinal
+        ) {
+          throw new Error("Stroke stamp packing kernel returned invalid counters.");
+        }
+        workingState.seedSequence = nextSeedSequence;
+        workingState.stampOrdinal = nextStampOrdinal;
+        results.push({
+          backend: "wasm-packed",
+          packedStamps,
+          stampCount,
+          firstSeed: summary[3] < 0 ? null : summary[3] >>> 0,
+          dirtyRect,
+          minimumRadius: summary[8],
+          nextSeedSequence: workingState.seedSequence,
+          nextStampOrdinal: workingState.stampOrdinal,
+          culledDabCount: summary[11],
+          consumedDabCount: count,
+          packComputeMs: performance.now() - startedAt,
+        });
+        sourceOffset += count;
+      }
+      const combined = combinePackedStampResults(results, workingState);
+      if (mutateState) {
+        stateSource.seedSequence = workingState.seedSequence;
+        stateSource.stampOrdinal = workingState.stampOrdinal;
+      }
+      return combined;
+    };
+    const packedResultContract = (result, consumedDabCount, state = packState) => ({
+      ...result,
+      consumedDabCount,
+      nextSeedSequence: state.seedSequence,
+      nextStampOrdinal: state.stampOrdinal,
+    });
+    const advancePackedCounters = (state, count) => {
+      const nextSeedSequence = state.seedSequence + count;
+      const nextStampOrdinal = state.stampOrdinal + count;
+      if (!Number.isSafeInteger(nextSeedSequence) || !Number.isSafeInteger(nextStampOrdinal)) {
+        throw new Error("Packed stroke counters exceed the safe integer range.");
+      }
+      state.seedSequence = nextSeedSequence;
+      state.stampOrdinal = nextStampOrdinal;
+    };
+    const copiedDabs = (pointer, dabOffset, dabCount) => new Float64Array(
+      new Float64Array(
+        exports.memory.buffer,
+        pointer + dabOffset * DAB_STRIDE * 8,
+        dabCount * DAB_STRIDE,
+      ),
+    );
+    const matureDabCount = (dabs, referenceTimeMs) => {
+      const cutoff = referenceTimeMs - THICKNESS_TAPER_WINDOW_MS;
+      let count = 0;
+      while (count < dabs.length / DAB_STRIDE) {
+        if (dabs[count * DAB_STRIDE + 3] > cutoff) break;
+        count += 1;
+      }
+      return count;
+    };
+    const consumeGeneratedDabs = (pointer, dabCount, referenceTimeMs) => {
+      if (!packState || !thicknessTailHoldback) {
+        return packState
+          ? packDabArena(pointer, dabCount, packState, true)
+          : null;
+      }
+      const source = new Float64Array(
+        exports.memory.buffer,
+        pointer,
+        dabCount * DAB_STRIDE,
+      );
+      const matureCount = matureDabCount(source, referenceTimeMs);
+      const workingState = { ...packState };
+      const mature = matureCount > 0
+        ? packDabArena(pointer, matureCount, workingState, true)
+        : emptyPackedStampResult(workingState);
+      const heldCount = dabCount - matureCount;
+      if (heldCount > 0) {
+        heldThicknessDabChunks.push({
+          dabs: copiedDabs(pointer, matureCount, heldCount),
+          seedSequence: workingState.seedSequence,
+          stampOrdinal: workingState.stampOrdinal,
+        });
+        advancePackedCounters(workingState, heldCount);
+        heldThicknessDabCount += heldCount;
+        maximumHeldThicknessDabCount = Math.max(
+          maximumHeldThicknessDabCount,
+          heldThicknessDabCount,
+        );
+      }
+      packState.seedSequence = workingState.seedSequence;
+      packState.stampOrdinal = workingState.stampOrdinal;
+      return {
+        ...packedResultContract(mature, dabCount),
+        generatedHeldDabCount: heldCount,
+        remainingHeldDabCount: heldThicknessDabCount,
+        maximumHeldDabCount: maximumHeldThicknessDabCount,
+      };
+    };
+    const copyDabsIntoCurrentArena = (dabs) => {
+      const dabCount = dabs.length / DAB_STRIDE;
+      while (expandedDabCapacity < dabCount && growDabArena()) {
+        // Grow until the complete retained chunk fits in the shared scratch arena.
+      }
+      const output = currentDabArena();
+      if (dabCount > output.capacity) {
+        throw new RangeError("Retained thickness tail exceeds the dab arena capacity.");
+      }
+      new Float64Array(
+        exports.memory.buffer,
+        output.pointer,
+        dabs.length,
+      ).set(dabs);
+      return output.pointer;
+    };
+    const releaseHeldThicknessDabs = (referenceTimeMs, atLift) => {
+      if (!packState || !thicknessTailHoldback || heldThicknessDabChunks.length === 0) {
+        return packState
+          ? emptyPackedStampResult(
+            packState,
+            heldThicknessDabCount,
+            maximumHeldThicknessDabCount,
+          )
+          : null;
+      }
+      const results = [];
+      let releasedCandidateCount = 0;
+      let chunkIndex = 0;
+      while (chunkIndex < heldThicknessDabChunks.length) {
+        const chunk = heldThicknessDabChunks[chunkIndex];
+        const availableCount = chunk.dabs.length / DAB_STRIDE;
+        const releaseCount = atLift
+          ? availableCount
+          : matureDabCount(chunk.dabs, referenceTimeMs);
+        if (releaseCount === 0) break;
+        const releasedDabs = releaseCount === availableCount
+          ? chunk.dabs
+          : chunk.dabs.slice(0, releaseCount * DAB_STRIDE);
+        const pointer = copyDabsIntoCurrentArena(releasedDabs);
+        const sequenceState = {
+          ...packState,
+          seedSequence: chunk.seedSequence,
+          stampOrdinal: chunk.stampOrdinal,
+        };
+        results.push(packDabArena(
+          pointer,
+          releaseCount,
+          sequenceState,
+          false,
+          { applyEndTaper: atLift, referenceTimeMs },
+        ));
+        releasedCandidateCount += releaseCount;
+        heldThicknessDabCount -= releaseCount;
+        if (releaseCount === availableCount) {
+          heldThicknessDabChunks.splice(chunkIndex, 1);
+        } else {
+          chunk.dabs = chunk.dabs.slice(releaseCount * DAB_STRIDE);
+          chunk.seedSequence += releaseCount;
+          chunk.stampOrdinal += releaseCount;
+          break;
+        }
+      }
+      return {
+        ...packedResultContract(combinePackedStampResults(results, packState), 0),
+        releasedHeldDabCount: atLift ? 0 : releasedCandidateCount,
+        releasedHeldAtLiftDabCount: atLift ? releasedCandidateCount : 0,
+        remainingHeldDabCount: heldThicknessDabCount,
+        maximumHeldDabCount: maximumHeldThicknessDabCount,
+      };
+    };
+    const previewHeldThicknessDabs = (referenceTimeMs, provisionalDabs = null) => {
+      if (!packState || !thicknessTailHoldback) return emptyPackedStampResult(packState);
+      const results = [];
+      for (const chunk of heldThicknessDabChunks) {
+        const pointer = copyDabsIntoCurrentArena(chunk.dabs);
+        results.push(packDabArena(
+          pointer,
+          chunk.dabs.length / DAB_STRIDE,
+          {
+            ...packState,
+            seedSequence: chunk.seedSequence,
+            stampOrdinal: chunk.stampOrdinal,
+          },
+          false,
+          { applyEndTaper: true, referenceTimeMs },
+        ));
+      }
+      if (provisionalDabs && provisionalDabs.length > 0) {
+        const pointer = copyDabsIntoCurrentArena(provisionalDabs);
+        results.push(packDabArena(
+          pointer,
+          provisionalDabs.length / DAB_STRIDE,
+          packState,
+          false,
+          { applyEndTaper: true, referenceTimeMs },
+        ));
+      }
+      return {
+        ...packedResultContract(combinePackedStampResults(results, packState), 0),
+        remainingHeldDabCount: heldThicknessDabCount,
+        maximumHeldDabCount: maximumHeldThicknessDabCount,
+      };
+    };
+    const finishFromSnapshot = (
+      targetStatePtr,
+      snapshotStatePtr,
+      packedStateSource = null,
+      mutatePackedState = false,
+    ) => {
       while (true) {
         const output = currentDabArena();
         assertStatus(exports.stroke_geometry_copy_state(targetStatePtr, snapshotStatePtr));
@@ -692,22 +1232,47 @@ export async function instantiateStrokeGeometryKernel(moduleOrBytes) {
           continue;
         }
         assertStatus(status, summary);
+        const packed = packedStateSource
+          ? packDabArena(
+            output.pointer,
+            summary[2],
+            packedStateSource,
+            mutatePackedState,
+          )
+          : null;
         return {
-          dabs: new Float64Array(
-            new Float64Array(
-              exports.memory.buffer,
-              output.pointer,
-              summary[2] * DAB_STRIDE,
+          dabs: packed
+            ? new Float64Array(0)
+            : new Float64Array(
+              new Float64Array(
+                exports.memory.buffer,
+                output.pointer,
+                summary[2] * DAB_STRIDE,
+              ),
             ),
-          ),
+          packed,
           tail: copyCurrentTail(summary),
           stats: statsFromSummary(summary),
         };
       }
     };
-    const previewTail = () => {
-      if (request.stabilization === 0) return new Float64Array(0);
-      return finishFromSnapshot(previewStatePtr, statePtr).dabs;
+    const previewTail = (referenceTimeMs = latestReferenceTimeMs) => {
+      if (request.stabilization === 0) {
+        return packState && thicknessTailHoldback
+          ? previewHeldThicknessDabs(referenceTimeMs)
+          : packState ? emptyPackedStampResult(packState) : new Float64Array(0);
+      }
+      if (packState && thicknessTailHoldback) {
+        const preview = finishFromSnapshot(previewStatePtr, statePtr, null, false);
+        return previewHeldThicknessDabs(referenceTimeMs, preview.dabs);
+      }
+      const preview = finishFromSnapshot(
+        previewStatePtr,
+        statePtr,
+        packState,
+        false,
+      );
+      return packState ? preview.packed : preview.dabs;
     };
     const updateFixedSpacing = (spacing) => {
       if (request.spacingMode !== "fixed" || !Number.isFinite(spacing)) {
@@ -718,23 +1283,58 @@ export async function instantiateStrokeGeometryKernel(moduleOrBytes) {
       request.spacingValue = normalizedSpacing;
     };
 
+    let initialPacked = null;
+    let initialPackedPreview = null;
+    if (packState) {
+      new Float64Array(exports.memory.buffer, dabPtr, DAB_STRIDE).set(initialDab(first));
+      initialPacked = consumeGeneratedDabs(dabPtr, 1, latestReferenceTimeMs);
+      initialPackedPreview = previewTail(latestReferenceTimeMs);
+    }
+
+    // Acquire the single-session token only after every fallible setup step.
+    // A rejected initial packed record must not poison the processor instance.
+    activeSessionToken = token;
     return {
-      backend: "wasm",
-      initialDab: initialDab(first),
+      backend: packState ? "wasm-packed" : "wasm",
+      initialDab: packState ? new Float64Array(0) : initialDab(first),
+      initialPackedStamps: initialPacked,
+      initialPreviewPackedStamps: initialPackedPreview,
       updateFixedSpacing(spacing, updateOptions = {}) {
         assertActive();
-        updateFixedSpacing(spacing);
-        return updateOptions.includePreviewTail === false
-          ? new Float64Array(0)
-          : previewTail();
+        try {
+          updateFixedSpacing(spacing);
+          if (updateOptions.includePreviewTail === false) {
+            return packState
+              ? emptyPackedStampResult(
+                packState,
+                heldThicknessDabCount,
+                maximumHeldThicknessDabCount,
+              )
+              : new Float64Array(0);
+          }
+          return previewTail();
+        } catch (error) {
+          finished = true;
+          if (activeSessionToken === token) activeSessionToken = null;
+          throw error;
+        }
       },
       processBatch(samplesSource, processOptions = {}) {
         assertActive();
+        try {
         const samples = normalizeSamples(samplesSource);
+        latestReferenceTimeMs = Math.max(
+          latestReferenceTimeMs,
+          samples[samples.length - 1].timeMs,
+        );
         if (processOptions.spacing !== undefined) {
           updateFixedSpacing(processOptions.spacing);
         }
         const chunks = [];
+        const packedChunks = [];
+        if (packState && thicknessTailHoldback) {
+          packedChunks.push(releaseHeldThicknessDabs(latestReferenceTimeMs, false));
+        }
         const includeTail = processOptions.includeTail !== false;
         let tail = new Float64Array(0);
         let stats = null;
@@ -779,15 +1379,21 @@ export async function instantiateStrokeGeometryKernel(moduleOrBytes) {
               if (growDabArena()) continue;
             }
             assertStatus(status, summary);
-            appendChunk(
-              chunks,
-              new Float64Array(
-                exports.memory.buffer,
-                output.pointer,
-                summary[2] * DAB_STRIDE,
-              ),
-              summary[2],
-            );
+            if (packState) {
+              packedChunks.push(
+                consumeGeneratedDabs(output.pointer, summary[2], latestReferenceTimeMs),
+              );
+            } else {
+              appendChunk(
+                chunks,
+                new Float64Array(
+                  exports.memory.buffer,
+                  output.pointer,
+                  summary[2] * DAB_STRIDE,
+                ),
+                summary[2],
+              );
+            }
             if (includeTail && next + count >= samples.length) {
               tail = copyCurrentTail(summary);
             }
@@ -797,20 +1403,113 @@ export async function instantiateStrokeGeometryKernel(moduleOrBytes) {
           }
         }
         const includePreviewTail = processOptions.includePreviewTail !== false;
-        const previewDabs = includePreviewTail ? previewTail() : new Float64Array(0);
+        const preview = includePreviewTail
+          ? previewTail(latestReferenceTimeMs)
+          : packState
+            ? emptyPackedStampResult(
+              packState,
+              heldThicknessDabCount,
+              maximumHeldThicknessDabCount,
+            )
+            : new Float64Array(0);
+        if (packState) {
+          return {
+            ...combinePackedStampResults(packedChunks, packState),
+            tail,
+            previewPackedStamps: preview,
+            stats,
+          };
+        }
         return {
           backend: "wasm",
           dabs: concatenateChunks(chunks),
           tail,
-          previewDabs,
+          previewDabs: preview,
           stats,
         };
+        } catch (error) {
+          finished = true;
+          if (activeSessionToken === token) activeSessionToken = null;
+          throw error;
+        }
       },
-      finish() {
+      refreshThickness(referenceTimeMs = latestReferenceTimeMs) {
+        assertActive();
+        if (!packState || !thicknessTailHoldback) {
+          return {
+            releasedPackedStamps: packState ? emptyPackedStampResult(packState) : null,
+            previewPackedStamps: packState ? emptyPackedStampResult(packState) : null,
+          };
+        }
+        if (!Number.isFinite(referenceTimeMs)) {
+          throw new TypeError("Thickness reference time must be finite.");
+        }
+        latestReferenceTimeMs = Math.max(latestReferenceTimeMs, referenceTimeMs);
+        return {
+          releasedPackedStamps: releaseHeldThicknessDabs(latestReferenceTimeMs, false),
+          previewPackedStamps: previewTail(latestReferenceTimeMs),
+        };
+      },
+      finish(finishOptions = {}) {
         assertActive();
         try {
+          const requestedReferenceTimeMs = finishOptions.referenceTimeMs ?? latestReferenceTimeMs;
+          if (!Number.isFinite(requestedReferenceTimeMs)) {
+            throw new TypeError("Thickness lift time must be finite.");
+          }
+          latestReferenceTimeMs = Math.max(latestReferenceTimeMs, requestedReferenceTimeMs);
           assertStatus(exports.stroke_geometry_copy_state(previewStatePtr, statePtr));
-          const completed = finishFromSnapshot(statePtr, previewStatePtr);
+          if (packState && thicknessTailHoldback) {
+            const completed = finishFromSnapshot(
+              statePtr,
+              previewStatePtr,
+              null,
+              false,
+            );
+            let consumedDabCount = 0;
+            if (completed.dabs.length > 0) {
+              const dabCount = completed.dabs.length / DAB_STRIDE;
+              heldThicknessDabChunks.push({
+                dabs: completed.dabs,
+                seedSequence: packState.seedSequence,
+                stampOrdinal: packState.stampOrdinal,
+              });
+              advancePackedCounters(packState, dabCount);
+              heldThicknessDabCount += dabCount;
+              maximumHeldThicknessDabCount = Math.max(
+                maximumHeldThicknessDabCount,
+                heldThicknessDabCount,
+              );
+              consumedDabCount = dabCount;
+            }
+            const released = releaseHeldThicknessDabs(latestReferenceTimeMs, true);
+            return {
+              ...packedResultContract(released, consumedDabCount),
+              generatedHeldDabCount: consumedDabCount,
+              maximumHeldDabCount: maximumHeldThicknessDabCount,
+              tail: completed.tail,
+              previewPackedStamps: emptyPackedStampResult(
+                packState,
+                heldThicknessDabCount,
+                maximumHeldThicknessDabCount,
+              ),
+              stats: completed.stats,
+            };
+          }
+          const completed = finishFromSnapshot(
+            statePtr,
+            previewStatePtr,
+            packState,
+            Boolean(packState),
+          );
+          if (packState) {
+            return {
+              ...completed.packed,
+              tail: completed.tail,
+              previewPackedStamps: emptyPackedStampResult(packState),
+              stats: completed.stats,
+            };
+          }
           return {
             backend: "wasm",
             dabs: completed.dabs,
@@ -831,12 +1530,20 @@ export async function instantiateStrokeGeometryKernel(moduleOrBytes) {
     };
   };
 
+  const begin = (firstSource, options = {}) => (
+    beginInternal(firstSource, options, null)
+  );
+  const beginPacked = (firstSource, options = {}, packedOptions = {}) => (
+    beginInternal(firstSource, options, packedOptions)
+  );
+
   const processor = {
     backend: "wasm",
     memoryBytes() {
       return exports.memory.buffer.byteLength;
     },
     begin,
+    beginPacked,
     processStroke(samplesSource, options = {}) {
       const samples = normalizeSamples(samplesSource);
       const request = normalizeOptions(samples, options);
@@ -871,23 +1578,28 @@ export async function instantiateStrokeGeometryKernel(moduleOrBytes) {
   return processor;
 }
 
-/** Loads lazily and selects the exact JavaScript path on initialization failure. */
+/** Loads the required geometry+packing module and never substitutes JavaScript. */
+export async function createRequiredStrokeGeometryProcessor(options = {}) {
+  let moduleOrBytes = options.moduleOrBytes;
+  if (!moduleOrBytes) {
+    const url = options.url ?? new URL("./dist/stroke_geometry_kernel.wasm", import.meta.url);
+    const fetchImplementation = options.fetchImplementation ?? globalThis.fetch;
+    if (typeof fetchImplementation !== "function") {
+      throw new Error("fetch is unavailable for stroke geometry kernel loading.");
+    }
+    const response = await fetchImplementation(url);
+    if (!response.ok) {
+      throw new Error(`Stroke geometry kernel fetch failed (${response.status}).`);
+    }
+    moduleOrBytes = await response.arrayBuffer();
+  }
+  return instantiateStrokeGeometryKernel(moduleOrBytes);
+}
+
+/** Legacy optional loader retained only for explicit reference A/B tests. */
 export async function createStrokeGeometryProcessor(options = {}) {
   try {
-    let moduleOrBytes = options.moduleOrBytes;
-    if (!moduleOrBytes) {
-      const url = options.url ?? new URL("./dist/stroke_geometry_kernel.wasm", import.meta.url);
-      const fetchImplementation = options.fetchImplementation ?? globalThis.fetch;
-      if (typeof fetchImplementation !== "function") {
-        throw new Error("fetch is unavailable for stroke geometry kernel loading.");
-      }
-      const response = await fetchImplementation(url);
-      if (!response.ok) {
-        throw new Error(`Stroke geometry kernel fetch failed (${response.status}).`);
-      }
-      moduleOrBytes = await response.arrayBuffer();
-    }
-    return await instantiateStrokeGeometryKernel(moduleOrBytes);
+    return await createRequiredStrokeGeometryProcessor(options);
   } catch (initializationError) {
     return {
       backend: "js",

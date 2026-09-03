@@ -105,6 +105,7 @@ import {
   DOCUMENT_HEIGHT,
   DOCUMENT_MAX_EDGE,
   DOCUMENT_WIDTH,
+  MAX_STAMPS_PER_BATCH,
   MEBIBYTE_BYTES,
   PAINT_DISPLAY_MIP_LEVEL_COUNT,
   SHAPE_OCCUPANCY_GRID_SIZE,
@@ -889,7 +890,13 @@ export function getGpuMemoryStats(engine: BrushEngine): EngineGpuMemoryStats {
   const shapeTextureMiB = baseResourcesAllocated && engine.shapeResident
     ? engine.shapeTextureMemoryBytes / MEBIBYTE_BYTES
     : 0;
-  const paintBuffersMiB = baseResourcesAllocated ? staticPaintBufferMemoryMiB() : 0;
+  const dynamicThicknessTailInstanceMiB = Math.max(
+    0,
+    engine.thicknessTailInstanceCapacity - MAX_STAMPS_PER_BATCH,
+  ) * STAMP_STRIDE_BYTES / MEBIBYTE_BYTES;
+  const paintBuffersMiB = baseResourcesAllocated
+    ? staticPaintBufferMemoryMiB() + dynamicThicknessTailInstanceMiB
+    : 0;
   const presentationCacheMiB = engine.presentationCacheTexture
     ? engine.presentationCacheWidth
       * engine.presentationCacheHeight

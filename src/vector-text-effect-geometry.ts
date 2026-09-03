@@ -29,7 +29,7 @@ import {
 } from "./vector-text-lod.ts";
 
 export const VECTOR_TEXT_GPU_GEOMETRY_STRATEGY =
-  "clipper64-nonzero-worker-native-round-bevel-exact-miter-aa-overlap-same-color-union-visible-block-separate-clipped-overlap2px-earcut-v10" as const;
+  "clipper64-nonzero-wasm-worker-native-round-bevel-exact-miter-aa-overlap-same-color-union-visible-block-separate-clipped-overlap2px-earcut-v11" as const;
 export const VECTOR_TEXT_OUTLINE_INNER_OVERLAP_PIXELS = 1;
 export const VECTOR_TEXT_BLOCK_INNER_OVERLAP_PIXELS = 2;
 export const VECTOR_TEXT_CANONICAL_FILL_CACHE_MAXIMUM_ENTRIES = 32;

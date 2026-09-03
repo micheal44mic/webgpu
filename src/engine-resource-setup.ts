@@ -2237,6 +2237,7 @@ export function maybeReleaseIdleShapeResources(engine: BrushEngine): void {
     || engine.lightGlazeSession !== null
     || engine.historyBusy
     || engine.pendingStamps.length > 0
+    || engine.pendingPackedStampBatches.length > 0
     || engine.pendingBlendBatches.length > 0
     || engine.blendSubmissionInFlight !== null
     || engine.brushGpuWarmupPromise !== null
@@ -2259,6 +2260,7 @@ export function maybeReleaseIdleGrainResources(engine: BrushEngine): void {
     || engine.lightGlazeSession !== null
     || engine.historyBusy
     || engine.pendingStamps.length > 0
+    || engine.pendingPackedStampBatches.length > 0
     || engine.pendingBlendBatches.length > 0
     || engine.blendSubmissionInFlight !== null
     || engine.brushGpuWarmupPromise !== null

@@ -391,7 +391,7 @@ export interface StrokePerformanceProfile {
   dirtyRectStrategy: "directional-jitter-bounds";
   strokeCurveStrategy: typeof STROKE_CURVE_STRATEGY;
   strokeStabilizationStrategy: typeof STROKE_STABILIZATION_STRATEGY;
-  strokeGeometryBackend: "javascript" | "wasm";
+  strokeGeometryBackend: "javascript" | "wasm" | "wasm-packed";
   strokeGeometryWasmBeginMs: number;
   strokeGeometryWasmInputSamples: number;
   strokeGeometryWasmProcessCount: number;
@@ -696,7 +696,7 @@ export interface MutableStrokePerformanceProfile {
   brushBatches: number;
   largestBatchStamps: number;
   estimatedScissorPixels: number;
-  strokeGeometryBackend: "javascript" | "wasm";
+  strokeGeometryBackend: "javascript" | "wasm" | "wasm-packed";
   strokeGeometryWasmBeginMs: number;
   strokeGeometryWasmInputSamples: number;
   strokeGeometryWasmProcessTotalMs: number;

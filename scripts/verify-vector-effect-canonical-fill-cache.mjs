@@ -208,16 +208,16 @@ const workerSource = readFileSync(
   new URL("../src/vector-text-effect-worker.ts", import.meta.url),
   "utf8",
 );
-assert.match(workerSource, /const canonicalFills = new VectorTextCanonicalFillCache\(\)/);
+assert.match(workerSource, /createVectorGeometryKernel/);
 assert.match(
   workerSource,
-  /message\.type === "release-path"[\s\S]*canonicalFills\.releasePath\(message\.revision\)/,
+  /message\.type === "release-path"[\s\S]*kernel\?\.releasePath\(entry\.handle\)/,
 );
 assert.match(
   workerSource,
-  /canonicalFills\.getOrCreate\([\s\S]*message\.revision[\s\S]*message\.lod/,
+  /kernel\.registerPath\(entry\.handle, path\)[\s\S]*kernel\.compileRegistered/,
 );
 
 console.log(
-  "Vector effect canonical-fill cache verified: byte-exact reuse, full LOD/width identity, bounded LRU, release, and reset.",
+  "Vector effect caches verified: reference byte-exact reuse plus strict Wasm registration, release, and compiled-cache routing.",
 );
