@@ -51,6 +51,8 @@ const forbiddenFileFragments = [
   "mixed-memory-benchmark",
   "shadow-golden",
   "stroke-golden",
+  "vector-stroke-expansion-lab",
+  "vector-stroke-gpu-probe",
   "vector-zoom-labs",
 ];
 const forbiddenFiles = relativeFiles.filter((file) => {
@@ -72,6 +74,9 @@ const forbiddenContentMarkers = [
   "/api/vector-zoom-runs",
   "__vectorZoomCoverageReport",
   "__vectorZoomStressReport",
+  "adaptive-cubic-count-serial-prefix-scan-triangle-list-draw-indirect-v1",
+  "Vector stroke expansion lab mesh shader",
+  "Vector stroke probe adaptive-count shader",
   "gpu-diagnostics-application-4096-startup-v16",
   "gpu-diagnostics-application-4096-startup-v18",
   "gpu-diagnostics-application-4096-startup-v19",

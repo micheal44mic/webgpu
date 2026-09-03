@@ -10,6 +10,7 @@ import {
   type VectorSvgPaint,
   type VectorSvgStroke,
   type VectorSvgStrokeExpansionQuality,
+  type VectorSvgStrokeFlattenBudget,
   type VectorSvgStrokePoint,
 } from "./vector-svg-import.ts";
 
@@ -77,6 +78,8 @@ const DIRECT_STROKE_CACHE_MAXIMUM_ENTRIES = 48;
 const DIRECT_STROKE_CACHE_MAXIMUM_LODS_PER_PAINT = 3;
 const DIRECT_STROKE_CACHE_MAXIMUM_BYTES = 32 * 1024 * 1024;
 const DIRECT_STROKE_CACHE_MAXIMUM_FAILED_PAINTS = 96;
+const DIRECT_STROKE_MAXIMUM_SOURCE_VERBS = 2_048;
+const DIRECT_STROKE_MAXIMUM_FLATTENED_POINTS = 32_768;
 
 interface MutableMetrics {
   strokeCount: number;
@@ -118,8 +121,12 @@ interface DirectSegment {
 
 const TAU = Math.PI * 2;
 const GEOMETRY_EPSILON = 1e-12;
+const MINIMUM_TRANSFORM_SCALE_RATIO = 1e-6;
 const MAXIMUM_ARC_TRIANGLES = 65_536;
-const MAXIMUM_VERTEX_COUNT = 0xffff_ffff;
+const MAXIMUM_VERTEX_COUNT = 250_000;
+
+const directStrokeEligibilityByPaint = new WeakMap<VectorSvgPaint, boolean>();
+let directStrokeCacheScopeSequence = 0;
 
 function clockNow(): number {
   return typeof performance !== "undefined" ? performance.now() : Date.now();
@@ -127,6 +134,29 @@ function clockNow(): number {
 
 function finitePositive(value: number, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function transformIsWellConditioned(stroke: VectorSvgStroke): boolean {
+  if (!stroke.transform.every(Number.isFinite)) return false;
+  const maximumScale = matrixMaximumScale(stroke.transform);
+  const determinant = Math.abs(
+    stroke.transform[0] * stroke.transform[3]
+    - stroke.transform[1] * stroke.transform[2]
+  );
+  if (!(maximumScale > GEOMETRY_EPSILON) || !Number.isFinite(determinant)) {
+    return false;
+  }
+  const minimumScale = determinant / maximumScale;
+  return Number.isFinite(minimumScale)
+    && minimumScale / maximumScale >= MINIMUM_TRANSFORM_SCALE_RATIO;
+}
+
+function nextDirectStrokeCacheScope(): number {
+  if (directStrokeCacheScopeSequence >= Number.MAX_SAFE_INTEGER) {
+    throw new Error("The direct stroke cache scope sequence is exhausted.");
+  }
+  directStrokeCacheScopeSequence += 1;
+  return directStrokeCacheScopeSequence;
 }
 
 function squaredDistance(
@@ -211,25 +241,42 @@ function prepareSubpaths(
   metrics: MutableMetrics,
 ): PreparedSubpath[] {
   const prepared: PreparedSubpath[] = [];
+  const flattenBudget: VectorSvgStrokeFlattenBudget = {
+    remainingPoints: DIRECT_STROKE_MAXIMUM_FLATTENED_POINTS,
+  };
   for (const stroke of strokes) {
     if (!(stroke.width > 0) || !Number.isFinite(stroke.width)) continue;
     const transformScale = Math.max(
       Number.EPSILON,
       matrixMaximumScale(stroke.transform),
     );
-    const centerlineTolerance = finitePositive(
-      quality.centerlineTolerance,
-      VECTOR_SVG_STATIC_STROKE_TOLERANCE,
+    const transformedWidthTolerance = Math.max(
+      1e-5,
+      Math.min(
+        Math.abs(stroke.width * transformScale * 0.5) / 32,
+        0.25,
+      ),
+    );
+    const centerlineTolerance = Math.min(
+      transformedWidthTolerance,
+      finitePositive(
+        quality.centerlineTolerance,
+        VECTOR_SVG_STATIC_STROKE_TOLERANCE,
+      ),
     ) / transformScale;
-    const arcTolerance = finitePositive(
-      quality.roundArcSagittaTolerance,
-      VECTOR_SVG_STATIC_STROKE_TOLERANCE,
+    const arcTolerance = Math.min(
+      transformedWidthTolerance,
+      finitePositive(
+        quality.roundArcSagittaTolerance,
+        VECTOR_SVG_STATIC_STROKE_TOLERANCE,
+      ),
     ) / transformScale;
 
     const flattenStartedAt = clockNow();
     const flattened = flattenStrokeSubpaths(
       stroke.sourcePath,
       centerlineTolerance,
+      flattenBudget,
     );
     metrics.flattenMs += clockNow() - flattenStartedAt;
     metrics.flattenedSubpathCount += flattened.length;
@@ -287,7 +334,7 @@ class DirectMeshBuilder {
     }
     const index = this.absoluteVertices.length / 2;
     if (index >= MAXIMUM_VERTEX_COUNT) {
-      throw new Error("Direct stroke expansion exceeds the 32-bit vertex budget.");
+      throw new Error("Direct stroke expansion exceeds the production vertex budget.");
     }
     this.absoluteVertices.push(transformed.x, transformed.y);
     this.left = Math.min(this.left, transformed.x);
@@ -368,12 +415,28 @@ class DirectMeshBuilder {
     if (this.indices.length === 0 || this.absoluteVertices.length === 0) {
       return null;
     }
-    const originX = (this.left + this.right) * 0.5;
-    const originY = (this.top + this.bottom) * 0.5;
+    const originX = Math.fround(this.left * 0.5 + this.right * 0.5);
+    const originY = Math.fround(this.top * 0.5 + this.bottom * 0.5);
+    if (!Number.isFinite(originX) || !Number.isFinite(originY)) {
+      throw new Error("Direct stroke expansion exceeds floating-point range.");
+    }
     const vertices = new Float32Array(this.absoluteVertices.length);
+    let left = Infinity;
+    let top = Infinity;
+    let right = -Infinity;
+    let bottom = -Infinity;
     for (let index = 0; index < this.absoluteVertices.length; index += 2) {
-      vertices[index] = this.absoluteVertices[index] - originX;
-      vertices[index + 1] = this.absoluteVertices[index + 1] - originY;
+      const x = Math.fround(this.absoluteVertices[index] - originX);
+      const y = Math.fround(this.absoluteVertices[index + 1] - originY);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        throw new Error("Direct stroke expansion exceeds floating-point range.");
+      }
+      vertices[index] = x;
+      vertices[index + 1] = y;
+      left = Math.min(left, x);
+      top = Math.min(top, y);
+      right = Math.max(right, x);
+      bottom = Math.max(bottom, y);
     }
     const integerScale = Number.isFinite(metadata.integerScale)
       && (metadata.integerScale ?? 0) > 0
@@ -386,10 +449,10 @@ class DirectMeshBuilder {
       revision: `${DIRECT_VECTOR_SVG_STROKE_STRATEGY}:${revision}`,
       vertices,
       indices: new Uint32Array(this.indices),
-      left: this.left - originX,
-      top: this.top - originY,
-      right: this.right - originX,
-      bottom: this.bottom - originY,
+      left,
+      top,
+      right,
+      bottom,
       originX,
       originY,
       lodBucket,
@@ -738,6 +801,9 @@ export function compileDirectVectorSvgStrokeMesh(
 ): DirectVectorSvgStrokeCompileResult {
   const totalStartedAt = clockNow();
   const metrics = createMutableMetrics(strokes);
+  if (metrics.sourceVerbCount > DIRECT_STROKE_MAXIMUM_SOURCE_VERBS) {
+    throw new Error("Direct stroke expansion exceeds the source path budget.");
+  }
   const prepared = prepareSubpaths(strokes, quality, metrics);
   const builder = new DirectMeshBuilder();
   const emitStartedAt = clockNow();
@@ -776,47 +842,43 @@ export function vectorSvgPaintSupportsDirectStrokeMesh(
   paint: VectorSvgPaint,
   nodeOpacity: number,
 ): boolean {
+  if (nodeOpacity !== 1) return false;
+  const cached = directStrokeEligibilityByPaint.get(paint);
+  if (cached !== undefined) return cached;
   const strokes = paint.strokes;
-  return Boolean(strokes?.length)
+  const supported = Boolean(strokes?.length)
+    && strokes!.length <= DIRECT_STROKE_MAXIMUM_SOURCE_VERBS
     && paint.gradient === undefined
     && paint.opacity === 1
-    && nodeOpacity === 1
+    && strokes!.reduce(
+      (total, stroke) => total + stroke.sourcePath.verbs.length,
+      0,
+    ) <= DIRECT_STROKE_MAXIMUM_SOURCE_VERBS
     && strokes!.every((stroke) => (
       Number.isFinite(stroke.width)
       && stroke.width > 0
+      && Number.isFinite(stroke.miterLimit)
+      && stroke.miterLimit >= 1
       && stroke.linecap === "butt"
       && stroke.linejoin === "miter"
       && stroke.dashArray.length === 0
+      && stroke.sourcePath.coords.length
+        <= DIRECT_STROKE_MAXIMUM_SOURCE_VERBS * 6
+      && stroke.sourcePath.coords.every(Number.isFinite)
       && !stroke.sourcePath.verbs.includes(4)
-      && stroke.transform.every(Number.isFinite)
-      && Math.abs(
-        stroke.transform[0] * stroke.transform[3]
-        - stroke.transform[1] * stroke.transform[2]
-      ) > GEOMETRY_EPSILON
+      && transformIsWellConditioned(stroke)
     ));
+  directStrokeEligibilityByPaint.set(paint, supported);
+  return supported;
 }
 
 export function directVectorSvgStrokeQualityForLod(
-  strokes: readonly VectorSvgStroke[],
+  _strokes: readonly VectorSvgStroke[],
   lod: VectorTextLod,
 ): VectorSvgStrokeExpansionQuality {
-  const widthTolerance = strokes.reduce(
-    (minimum, stroke) => Math.min(
-      minimum,
-      Math.abs(stroke.width * 0.5) / 32,
-    ),
-    0.25,
-  );
-  const boundedWidthTolerance = Math.max(1e-5, widthTolerance);
   return {
-    centerlineTolerance: Math.min(
-      boundedWidthTolerance,
-      lod.polygonFlattenTolerance,
-    ),
-    roundArcSagittaTolerance: Math.min(
-      boundedWidthTolerance,
-      lod.roundArcSagittaTolerance,
-    ),
+    centerlineTolerance: Math.min(0.25, lod.polygonFlattenTolerance),
+    roundArcSagittaTolerance: Math.min(0.25, lod.roundArcSagittaTolerance),
   };
 }
 
@@ -831,6 +893,7 @@ export class VectorSvgDirectStrokeMeshCache {
   >();
   private readonly failedLodsBySemanticIdentity = new Map<string, Set<number>>();
   private logicalBytes = 0;
+  private readonly revisionScope = nextDirectStrokeCacheScope();
   private accessSequence = 0;
   private revisionSequence = 0;
   private cacheHits = 0;
@@ -868,6 +931,7 @@ export class VectorSvgDirectStrokeMeshCache {
     lod: VectorTextLod,
     semanticIdentity: string,
   ): VectorTextGpuMeshData | null {
+    if (!vectorSvgPaintSupportsDirectStrokeMesh(paint, 1)) return null;
     const strokes = paint.strokes;
     if (!strokes?.length) return null;
     const cached = this.cachedMesh(semanticIdentity, lod.bucket);
@@ -883,7 +947,7 @@ export class VectorSvgDirectStrokeMeshCache {
       const result = compileDirectVectorSvgStrokeMesh(
         strokes,
         directVectorSvgStrokeQualityForLod(strokes, lod),
-        `cache-entry-${this.nextRevision()}`,
+        `cache-${this.revisionScope}:entry-${this.nextRevision()}:lod-${lod.bucket}`,
         {
           lodBucket: lod.bucket,
           integerScale: lod.integerScale,

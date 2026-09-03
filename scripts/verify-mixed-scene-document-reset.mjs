@@ -26,6 +26,7 @@ assert.match(
   "The document boundary must fail closed while scene or transform work is unsettled.",
 );
 assert.match(resetSource, /geometryByNodeId\.clear\(\)/);
+assert.match(resetSource, /svgDirectStrokeMeshes\.clear\(\)/);
 assert.match(resetSource, /displayedDrawsByNodeKey\.clear\(\)/);
 assert.match(resetSource, /displayedMetricsByNodeKey\.clear\(\)/);
 assert.match(resetSource, /renderedTextRunKeys\.clear\(\)/);
@@ -133,6 +134,7 @@ function createHarness(options = {}) {
     guides: [],
     overlayClears: 0,
     editorChanges: 0,
+    directStrokeCacheClears: 0,
   };
   const canvasClasses = classList([
     "is-move",
@@ -255,6 +257,11 @@ function createHarness(options = {}) {
     metrics: { left: 40, top: 50, right: 60, bottom: 70, baseline: 55 },
     geometryByNodeId: new Map([[7, { owner: "outgoing" }]]),
     svgStrokePathsBySemantic: new Map([["outgoing", [{ logicalBytes: 64 }]]]),
+    svgDirectStrokeMeshes: {
+      clear() {
+        calls.directStrokeCacheClears += 1;
+      },
+    },
     svgStrokeFailedLodsBySemantic: new Map([["outgoing", new Set([2])]]),
     svgStrokePathCacheLogicalBytes: 64,
     svgStrokePathCacheAccessSequence: 3,
@@ -366,6 +373,7 @@ assert.deepEqual(harness.shell.metrics, {
 });
 assert.equal(harness.shell.geometryByNodeId.size, 0);
 assert.equal(harness.shell.svgStrokePathsBySemantic.size, 0);
+assert.equal(harness.calls.directStrokeCacheClears, 1);
 assert.equal(harness.shell.svgStrokeFailedLodsBySemantic.size, 0);
 assert.equal(harness.shell.svgStrokePathCacheLogicalBytes, 0);
 assert.equal(harness.shell.svgStrokePathCacheAccessSequence, 0);

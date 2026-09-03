@@ -3853,7 +3853,10 @@ export class MixedSceneController {
     pinForRasterization = false,
   ): VectorTextEffectMeshResult {
     const lod = this.effectLodForNode(node, view);
-    if (vectorSvgPaintSupportsDirectStrokeMesh(paint, node.opacity)) {
+    if (
+      effect.kind === "source-fill"
+      && vectorSvgPaintSupportsDirectStrokeMesh(paint, node.opacity)
+    ) {
       const directMesh = this.svgDirectStrokeMeshes.meshForPaint(
         paint,
         lod,

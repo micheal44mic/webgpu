@@ -138,6 +138,9 @@ export interface VectorSvgFlatStrokeSubpath {
   readonly closed: boolean;
   readonly zeroLengthTangent?: Point;
 }
+export interface VectorSvgStrokeFlattenBudget {
+  remainingPoints: number;
+}
 type FlatStrokeSubpath = VectorSvgFlatStrokeSubpath;
 
 const IDENTITY_MATRIX: Matrix = [1, 0, 0, 1, 0, 0];
@@ -472,6 +475,20 @@ function pointProjectsOntoChord(
   return projection >= -allowance && projection <= 1 + allowance;
 }
 
+function appendFlattenedStrokePoint(
+  output: Point[],
+  point: Point,
+  budget: VectorSvgStrokeFlattenBudget | undefined,
+): void {
+  if (budget) {
+    if (!Number.isSafeInteger(budget.remainingPoints) || budget.remainingPoints <= 0) {
+      throw new Error("Stroke flattening exceeds the point budget.");
+    }
+    budget.remainingPoints -= 1;
+  }
+  output.push(point);
+}
+
 function flattenQuadraticStroke(
   start: Point,
   control: Point,
@@ -479,6 +496,7 @@ function flattenQuadraticStroke(
   tolerance: number,
   output: Point[],
   depth = 0,
+  budget?: VectorSvgStrokeFlattenBudget,
 ): void {
   if (
     depth >= 20
@@ -487,14 +505,30 @@ function flattenQuadraticStroke(
       && pointProjectsOntoChord(control, start, end, tolerance)
     )
   ) {
-    output.push(end);
+    appendFlattenedStrokePoint(output, end, budget);
     return;
   }
   const startControl = { x: (start.x + control.x) * 0.5, y: (start.y + control.y) * 0.5 };
   const controlEnd = { x: (control.x + end.x) * 0.5, y: (control.y + end.y) * 0.5 };
   const middle = { x: (startControl.x + controlEnd.x) * 0.5, y: (startControl.y + controlEnd.y) * 0.5 };
-  flattenQuadraticStroke(start, startControl, middle, tolerance, output, depth + 1);
-  flattenQuadraticStroke(middle, controlEnd, end, tolerance, output, depth + 1);
+  flattenQuadraticStroke(
+    start,
+    startControl,
+    middle,
+    tolerance,
+    output,
+    depth + 1,
+    budget,
+  );
+  flattenQuadraticStroke(
+    middle,
+    controlEnd,
+    end,
+    tolerance,
+    output,
+    depth + 1,
+    budget,
+  );
 }
 
 function flattenCubicStroke(
@@ -505,6 +539,7 @@ function flattenCubicStroke(
   tolerance: number,
   output: Point[],
   depth = 0,
+  budget?: VectorSvgStrokeFlattenBudget,
 ): void {
   if (
     depth >= 20
@@ -517,7 +552,7 @@ function flattenCubicStroke(
       && pointProjectsOntoChord(second, start, end, tolerance)
     )
   ) {
-    output.push(end);
+    appendFlattenedStrokePoint(output, end, budget);
     return;
   }
   const a = { x: (start.x + first.x) * 0.5, y: (start.y + first.y) * 0.5 };
@@ -526,11 +561,33 @@ function flattenCubicStroke(
   const d = { x: (a.x + b.x) * 0.5, y: (a.y + b.y) * 0.5 };
   const e = { x: (b.x + c.x) * 0.5, y: (b.y + c.y) * 0.5 };
   const middle = { x: (d.x + e.x) * 0.5, y: (d.y + e.y) * 0.5 };
-  flattenCubicStroke(start, a, d, middle, tolerance, output, depth + 1);
-  flattenCubicStroke(middle, e, c, end, tolerance, output, depth + 1);
+  flattenCubicStroke(
+    start,
+    a,
+    d,
+    middle,
+    tolerance,
+    output,
+    depth + 1,
+    budget,
+  );
+  flattenCubicStroke(
+    middle,
+    e,
+    c,
+    end,
+    tolerance,
+    output,
+    depth + 1,
+    budget,
+  );
 }
 
-export function flattenStrokeSubpaths(path: Shadow3dPathData, tolerance: number): FlatStrokeSubpath[] {
+export function flattenStrokeSubpaths(
+  path: Shadow3dPathData,
+  tolerance: number,
+  budget?: VectorSvgStrokeFlattenBudget,
+): FlatStrokeSubpath[] {
   const output: FlatStrokeSubpath[] = [];
   let coordinateOffset = 0;
   let points: Point[] | null = null;
@@ -556,23 +613,24 @@ export function flattenStrokeSubpaths(path: Shadow3dPathData, tolerance: number)
       current = { x: path.coords[coordinateOffset], y: path.coords[coordinateOffset + 1] };
       coordinateOffset += 2;
       start = current;
-      points = [current];
+      points = [];
+      appendFlattenedStrokePoint(points, current, budget);
     } else if (verb === 1 && points && current) {
       current = { x: path.coords[coordinateOffset], y: path.coords[coordinateOffset + 1] };
       coordinateOffset += 2;
-      points.push(current);
+      appendFlattenedStrokePoint(points, current, budget);
     } else if (verb === 2 && points && current) {
       const control = { x: path.coords[coordinateOffset], y: path.coords[coordinateOffset + 1] };
       const end = { x: path.coords[coordinateOffset + 2], y: path.coords[coordinateOffset + 3] };
       coordinateOffset += 4;
-      flattenQuadraticStroke(current, control, end, tolerance, points);
+      flattenQuadraticStroke(current, control, end, tolerance, points, 0, budget);
       current = end;
     } else if (verb === 3 && points && current) {
       const first = { x: path.coords[coordinateOffset], y: path.coords[coordinateOffset + 1] };
       const second = { x: path.coords[coordinateOffset + 2], y: path.coords[coordinateOffset + 3] };
       const end = { x: path.coords[coordinateOffset + 4], y: path.coords[coordinateOffset + 5] };
       coordinateOffset += 6;
-      flattenCubicStroke(current, first, second, end, tolerance, points);
+      flattenCubicStroke(current, first, second, end, tolerance, points, 0, budget);
       current = end;
     } else if (verb === 4 && points && current && start) {
       finish(true);
