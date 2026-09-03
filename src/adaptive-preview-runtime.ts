@@ -91,9 +91,22 @@ export const ADAPTIVE_SPACING_MAX_EXTRA_PERCENT_POINTS = 1.5;
 
 export const ADAPTIVE_SPACING_ANDROID_MAX_EXTRA_PERCENT_POINTS = 4;
 
-export const ADAPTIVE_PREVIEW_FORCE = import.meta.env.DEV
-  && typeof window !== "undefined"
-  && new URLSearchParams(window.location.search).get("adaptivePreview") === "force";
+const adaptivePreviewQueryMode = typeof window === "undefined"
+  ? null
+  : new URLSearchParams(window.location.search).get("adaptivePreview");
+
+/**
+ * Labs-only proxy mode. It deliberately permits a short-lived visual tip for
+ * brush features that Canvas2D cannot reproduce exactly; authoritative pixels
+ * and history continue to come exclusively from WebGPU.
+ */
+export const ADAPTIVE_PREVIEW_APPROXIMATE_FORCE = import.meta.env.MODE === "labs"
+  && adaptivePreviewQueryMode === "force-approximate";
+
+export const ADAPTIVE_PREVIEW_FORCE = (
+  import.meta.env.DEV
+  && adaptivePreviewQueryMode === "force"
+) || ADAPTIVE_PREVIEW_APPROXIMATE_FORCE;
 
 export interface AdaptivePreviewContextAttributes {
   alpha: boolean | null;

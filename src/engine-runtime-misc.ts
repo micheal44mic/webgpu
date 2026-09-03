@@ -1514,6 +1514,7 @@ export function commitThicknessStamp(engine: BrushEngine, stamp: Stamp, stroke: 
   if (engine.activeStrokeProfile) {
     engine.activeStrokeProfile.baseStamps += 1;
   }
+  engine.trackAdaptivePreviewPendingStamp(stamp, generationSettings);
   engine.displayDirty = true;
   engine.requestRender();
 }

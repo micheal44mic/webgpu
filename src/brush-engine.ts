@@ -438,6 +438,7 @@ import {
 } from "./layer-cold-compression-client";
 import {
   ADAPTIVE_PREVIEW_ALPHA_SCALE,
+  ADAPTIVE_PREVIEW_APPROXIMATE_FORCE,
   ADAPTIVE_PREVIEW_COMMIT_BUDGET_RESERVE_MS,
   ADAPTIVE_PREVIEW_EXACT_LINEAR_SCALE,
   ADAPTIVE_PREVIEW_FORCE,
@@ -1699,6 +1700,7 @@ export class BrushEngine {
   adaptivePreviewActive = false;
   adaptivePreviewFrozen = false;
   adaptivePreviewForceStroke = false;
+  readonly adaptivePreviewApproximateForce = ADAPTIVE_PREVIEW_APPROXIMATE_FORCE;
   adaptivePreviewStartedAt = 0;
   adaptivePreviewRetirementTargetSerial = 0;
   adaptivePreviewFrameRequest: number | null = null;
@@ -5532,7 +5534,7 @@ export class BrushEngine {
     this.adaptivePreviewForceStroke = tool === "paint"
       && symmetryMode === "off"
       && ADAPTIVE_PREVIEW_FORCE
-      && !lightGlazeSettings
+      && (!lightGlazeSettings || this.adaptivePreviewApproximateForce)
       && !deferredPreview
       && shapeAssetIdsForSettings(renderSettings).length === 1
       && this.pixelSelectionState.selectedPixels === 0;
@@ -16873,6 +16875,33 @@ export class BrushEngine {
     });
   }
 
+  trackAdaptivePreviewPendingStamp(stamp: Stamp, settings: BrushSettings): void {
+    if (
+      !this.adaptivePreviewApproximateForce
+      || !this.adaptivePreviewForceStroke
+      || this.adaptivePreviewFrozen
+      || !this.activeStroke
+      || stamp.symmetryMode !== "off"
+      || shapeAssetIdsForSettings(settings).length !== 1
+      || this.pixelSelectionState.selectedPixels > 0
+    ) {
+      return;
+    }
+
+    if (!this.adaptivePreviewCandidates.some((candidate) => candidate.stamp === stamp)) {
+      this.adaptivePreviewCandidates.push({
+        serial: null,
+        stamp,
+        settings,
+        presented: false,
+      });
+    }
+    this.adaptivePreviewCandidates = this.adaptivePreviewCandidates
+      .slice(-ADAPTIVE_PREVIEW_MAX_TIP_BASE_STAMPS);
+    activateAdaptivePreview(this, "diagnostic-force");
+    if (this.adaptivePreviewActive) requestAdaptivePreviewDraw(this);
+  }
+
   private trackAdaptivePreviewExactSubmission(
     batch: readonly Stamp[],
     settings: BrushSettings,
@@ -16948,7 +16977,7 @@ export class BrushEngine {
       this.startAdaptivePreviewProbe(false);
       return;
     }
-    if (isTexturizedGrainActive(settings)) {
+    if (isTexturizedGrainActive(settings) && !this.adaptivePreviewApproximateForce) {
       if (profile) {
         profile.grainAdaptivePreviewSkips += 1;
       }
@@ -16969,7 +16998,7 @@ export class BrushEngine {
       this.startAdaptivePreviewProbe(false);
       return;
     }
-    if (settings.blendMode !== "normal") {
+    if (settings.blendMode !== "normal" && !this.adaptivePreviewApproximateForce) {
       if (profile) {
         profile.adaptivePreviewUnsupportedBlendSkips += 1;
       }
@@ -17048,14 +17077,14 @@ export class BrushEngine {
       finishIncompleteAdaptivePreviewFrame(this, startedAt, false, candidates, false);
       return;
     }
-    if (isTexturizedGrainActive(settings)) {
+    if (isTexturizedGrainActive(settings) && !this.adaptivePreviewApproximateForce) {
       if (this.activeStrokeProfile) {
         this.activeStrokeProfile.grainAdaptivePreviewSkips += 1;
       }
       finishIncompleteAdaptivePreviewFrame(this, startedAt, false, candidates, false);
       return;
     }
-    if (settings.blendMode !== "normal") {
+    if (settings.blendMode !== "normal" && !this.adaptivePreviewApproximateForce) {
       if (this.activeStrokeProfile) {
         this.activeStrokeProfile.adaptivePreviewUnsupportedBlendSkips += 1;
       }
