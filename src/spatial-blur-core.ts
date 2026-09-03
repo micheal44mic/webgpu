@@ -8,7 +8,7 @@ import {
 } from "./gaussian-blur-core";
 
 export const SPATIAL_BLUR_CORE_BUILD =
-  "spatial-blur-core-v2-exact-zero-radius-pins" as const;
+  "spatial-blur-core-v3-inverse-square-pin-field" as const;
 
 export const SPATIAL_BLUR_DEFAULT_RADIUS = DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_RADIUS;
 export const SPATIAL_BLUR_MAX_RADIUS = DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS;
@@ -42,7 +42,11 @@ function clamp(value: number, minimum: number, maximum: number): number {
 }
 
 export function normalizeSpatialBlurRadius(value: unknown): number {
-  const radius = normalizeDestructiveGaussianBlurRadius(value);
+  return normalizeDestructiveGaussianBlurRadius(value);
+}
+
+export function snapSpatialBlurPinRadius(value: unknown): number {
+  const radius = normalizeSpatialBlurRadius(value);
   return Math.round(radius / SPATIAL_BLUR_PIN_RADIUS_STEP)
     * SPATIAL_BLUR_PIN_RADIUS_STEP;
 }
@@ -55,7 +59,7 @@ export function createInitialSpatialBlurPin(
   return Object.freeze({
     x: Math.max(1, finite(documentWidth, 1)) * 0.5,
     y: Math.max(1, finite(documentHeight, 1)) * 0.5,
-    radius: normalizeSpatialBlurRadius(radius),
+    radius: snapSpatialBlurPinRadius(radius),
   });
 }
 
@@ -72,7 +76,7 @@ export function normalizeSpatialBlurPins(
     normalized.push(Object.freeze({
       x: clamp(finite(pin?.x, width * 0.5), 0, width),
       y: clamp(finite(pin?.y, height * 0.5), 0, height),
-      radius: normalizeSpatialBlurRadius(pin?.radius),
+      radius: snapSpatialBlurPinRadius(pin?.radius),
     }));
   }
   return Object.freeze(normalized);
@@ -92,27 +96,11 @@ export function spatialBlurMaximumRadius(
   pins: readonly Readonly<SpatialBlurPin>[],
 ): number {
   let maximum = 0;
-  for (const pin of pins) maximum = Math.max(maximum, normalizeSpatialBlurRadius(pin.radius));
+  for (const pin of pins) maximum = Math.max(maximum, snapSpatialBlurPinRadius(pin.radius));
   return maximum;
 }
 
-/**
- * A small document-relative floor keeps coincident pins stable and avoids a
- * singularity. The same expression is embedded in the GPU preview shader.
- */
-export function spatialBlurInfluenceFloorSquared(
-  documentWidth: number,
-  documentHeight: number,
-): number {
-  const shortestEdge = Math.max(1, Math.min(
-    finite(documentWidth, 1),
-    finite(documentHeight, 1),
-  ));
-  const floor = Math.max(8, shortestEdge * 0.045);
-  return floor * floor;
-}
-
-/** Inverse-distance interpolation shared by pin inheritance and GPU tests. */
+/** Inverse-square interpolation shared by pin inheritance and GPU tests. */
 export function spatialBlurRadiusAt(
   pins: readonly Readonly<SpatialBlurPin>[],
   x: number,
@@ -124,10 +112,6 @@ export function spatialBlurRadiusAt(
   if (normalized.length === 0) return 0;
   const sampleX = finite(x, 0);
   const sampleY = finite(y, 0);
-  const influenceFloorSquared = spatialBlurInfluenceFloorSquared(
-    documentWidth,
-    documentHeight,
-  );
   let weightedRadius = 0;
   let weightSum = 0;
   for (const pin of normalized) {
@@ -137,7 +121,7 @@ export function spatialBlurRadiusAt(
     // Pixel centers can be half a pixel away on both axes. Covering d² = 0.5
     // guarantees that every pin owns its nearest raster sample exactly.
     if (distanceSquared <= 0.5) return pin.radius;
-    const weight = 1 / (distanceSquared + influenceFloorSquared);
+    const weight = 1 / distanceSquared;
     weightedRadius += pin.radius * weight;
     weightSum += weight;
   }

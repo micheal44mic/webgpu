@@ -4,6 +4,7 @@ import {
   SPATIAL_BLUR_MAX_PIN_COUNT,
   SPATIAL_BLUR_MAX_RADIUS,
   normalizeSpatialBlurPins,
+  snapSpatialBlurPinRadius,
   spatialBlurRadiusAt,
   type SpatialBlurPin,
 } from "./spatial-blur-core";
@@ -493,12 +494,14 @@ export class SpatialBlurController {
     }
     const point = this.documentPoint(clientX, clientY);
     const radius = this.pins.length > 0
-      ? spatialBlurRadiusAt(
-        this.pins,
-        point.x,
-        point.y,
-        this.documentWidth,
-        this.documentHeight,
+      ? snapSpatialBlurPinRadius(
+        spatialBlurRadiusAt(
+          this.pins,
+          point.x,
+          point.y,
+          this.documentWidth,
+          this.documentHeight,
+        ),
       )
       : SPATIAL_BLUR_DEFAULT_RADIUS;
     const pin: UiSpatialBlurPin = { id: this.nextPinId++, ...point, radius };

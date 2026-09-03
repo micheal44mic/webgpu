@@ -38,6 +38,7 @@ const {
   createInitialSpatialBlurPin,
   normalizeSpatialBlurRadius,
   normalizeSpatialBlurPins,
+  snapSpatialBlurPinRadius,
   spatialBlurBounds,
   spatialBlurGaussianKernel,
   spatialBlurMaximumRadius,
@@ -59,8 +60,9 @@ const { quantizeUnorm8HighFrequencyAdjacent } = quantization;
 assert.equal(SPATIAL_BLUR_DEFAULT_RADIUS, DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_RADIUS);
 assert.equal(SPATIAL_BLUR_MAX_RADIUS, DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS);
 assert.equal(spatialBlurGaussianKernel, destructiveGaussianBlurKernel);
-assert.equal(normalizeSpatialBlurRadius(0.49), 0);
-assert.equal(normalizeSpatialBlurRadius(0.5), 1);
+assert.equal(normalizeSpatialBlurRadius(0.49), 0.49);
+assert.equal(snapSpatialBlurPinRadius(0.49), 0);
+assert.equal(snapSpatialBlurPinRadius(0.5), 1);
 for (const radius of [0, 0.25, 5, 50, 500]) {
   assert.deepEqual(
     spatialBlurGaussianKernel(radius),
@@ -168,6 +170,54 @@ assert.equal(
   0,
   "a zero-radius pin must own its nearest pixel center exactly",
 );
+const closeFocusPins = [
+  { x: 90, y: 100, radius: 0 },
+  { x: 110, y: 100, radius: 100 },
+];
+assert.ok(
+  spatialBlurRadiusAt(closeFocusPins, 91, 100, 200, 200) < 0.3,
+  "a nearby blurred pin must not overpower a zero-radius pin",
+);
+const focusedNeighborhoodRadius = spatialBlurRadiusAt(
+  zeroRadiusAnchorPins,
+  5.5,
+  100.5,
+  200,
+  200,
+);
+assert.equal(
+  Math.round(focusedNeighborhoodRadius * SPATIAL_BLUR_RADIUS_QUANTIZATION),
+  0,
+  "the scale-invariant field must produce an exact focused neighborhood",
+);
+const scaleInvariantPins = [
+  { x: 20, y: 50, radius: 0 },
+  { x: 180, y: 150, radius: 100 },
+];
+const scaleInvariantRadius = spatialBlurRadiusAt(
+  scaleInvariantPins,
+  60,
+  75,
+  200,
+  200,
+);
+for (const scale of [0.5, 2, 8]) {
+  assert.equal(
+    spatialBlurRadiusAt(
+      scaleInvariantPins.map((pin) => ({
+        ...pin,
+        x: pin.x * scale,
+        y: pin.y * scale,
+      })),
+      60 * scale,
+      75 * scale,
+      200 * scale,
+      200 * scale,
+    ),
+    scaleInvariantRadius,
+    `the interpolated field must preserve normalized proportions at ${scale}x canvas scale`,
+  );
+}
 assert.equal(spatialBlurRadiusAt([
   { x: 40, y: 40, radius: 12 },
   { x: 40, y: 40, radius: 90 },
@@ -241,6 +291,9 @@ assert.match(runtimeSource, /format: engine\.layerFormat/);
 assert.doesNotMatch(runtimeSource, /Point Blur requires an RGBA16F document/);
 assert.match(runtimeSource, /parameters\.fieldAndDocument\.yz/);
 assert.match(runtimeSource, /distanceSquared <= 0\.5/);
+assert.match(runtimeSource, /let weight = 1\.0 \/ distanceSquared/);
+assert.doesNotMatch(runtimeSource, /spatialBlurInfluenceFloorSquared/);
+assert.match(runtimeSource, /f32\[word \+ 16\] = 0/);
 assert.match(runtimeSource, /f32\[word \+ 17\] = documentWidth/);
 assert.match(runtimeSource, /f32\[word \+ 18\] = documentHeight/);
 assert.match(runtimeSource, /u32\[word \+ 20\] = session\.quantizationSeed/);
@@ -265,6 +318,7 @@ assert.doesNotMatch(runtimeSource, /\bmip(?:map|maps|level|levels)?\b/i);
 assert.doesNotMatch(runtimeSource, /\bpyramid\b/i);
 assert.equal((runtimeSource.match(/commitHistoryActionAtomically\(engine, action\)/g) ?? []).length, 1);
 assert.match(historySource, /filter: "spatial-blur"/);
+assert.match(historySource, /fieldStrategy: "inverse-square-quarter-pixel-radius"/);
 assert.match(historySource, /kernelStrategy: "shared-gaussian-kernel-v1"/);
 assert.match(
   historySource,
@@ -326,6 +380,6 @@ assert.equal(Number.isFinite(kernelChecksum), true);
 assert.ok(warmupMs < 5_000, `shared weight generation took ${warmupMs.toFixed(1)} ms`);
 
 console.log(
-  `Point Blur verified: shared Gaussian kernel, pin field, gestures, one-step history, `
+  `Point Blur verified: shared Gaussian kernel, inverse-square pin field, gestures, one-step history, `
     + `responsive UI and uniform-point fast path. Weight generation ${warmupMs.toFixed(1)} ms.`,
 );

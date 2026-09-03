@@ -427,7 +427,7 @@ export type RasterFilterHistoryAction = RasterFilterHistoryActionCommon & (
     pins: readonly SpatialBlurPin[];
     maximumRadius: number;
     radiusQuantization: 4;
-    fieldStrategy: "inverse-distance-quarter-pixel-radius";
+    fieldStrategy: "inverse-square-quarter-pixel-radius";
     kernelStrategy: "shared-gaussian-kernel-v1";
     precision:
       | "rgba16float-f32-accumulation"

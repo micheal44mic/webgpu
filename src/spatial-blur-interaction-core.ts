@@ -1,6 +1,7 @@
 import {
   SPATIAL_BLUR_MAX_RADIUS,
   normalizeSpatialBlurRadius,
+  snapSpatialBlurPinRadius,
   type SpatialBlurPin,
 } from "./spatial-blur-core";
 
@@ -28,7 +29,7 @@ export function spatialBlurAdjustedRadius(
   initialClientY: number,
   currentClientY: number,
 ): number {
-  return normalizeSpatialBlurRadius(
+  return snapSpatialBlurPinRadius(
     Number(initialRadius)
       + (Number(initialClientY) - Number(currentClientY)) * SPATIAL_BLUR_ADJUST_RATE,
   );

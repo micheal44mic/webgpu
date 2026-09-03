@@ -28,7 +28,6 @@ import {
   createInitialSpatialBlurPin,
   normalizeSpatialBlurPins,
   spatialBlurBounds,
-  spatialBlurInfluenceFloorSquared,
   spatialBlurGaussianKernel,
   spatialBlurMaximumRadius,
   spatialBlurPinsEqual,
@@ -37,13 +36,13 @@ import {
 } from "./spatial-blur-core";
 
 export const DESTRUCTIVE_SPATIAL_BLUR_RUNTIME_BUILD =
-  "destructive-spatial-blur-webgpu-v4-exact-zero-radius-output" as const;
+  "destructive-spatial-blur-webgpu-v5-inverse-square-pin-field" as const;
 export const DESTRUCTIVE_SPATIAL_BLUR_PRECISION =
   "rgba16float-f32-accumulation" as const;
 export const DESTRUCTIVE_SPATIAL_BLUR_RGBA8_PRECISION =
   "rgba8unorm-linear-rgba16unorm-packed-two-pass-f32-high-frequency-output" as const;
 export const DESTRUCTIVE_SPATIAL_BLUR_FIELD_STRATEGY =
-  "inverse-distance-quarter-pixel-radius" as const;
+  "inverse-square-quarter-pixel-radius" as const;
 export const DESTRUCTIVE_SPATIAL_BLUR_RADIUS_QUANTIZATION =
   SPATIAL_BLUR_RADIUS_QUANTIZATION;
 
@@ -183,7 +182,7 @@ fn radiusIndexAt(documentPosition: vec2<f32>) -> u32 {
       return u32(round(clamp(pin.z, 0.0, ${DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS}.0)
         * ${DESTRUCTIVE_SPATIAL_BLUR_RADIUS_QUANTIZATION}.0));
     }
-    let weight = 1.0 / (distanceSquared + parameters.fieldAndDocument.x);
+    let weight = 1.0 / distanceSquared;
     weightedRadius += pin.z * weight;
     weightSum += weight;
   }
@@ -741,7 +740,7 @@ function writeJobParameters(
   u32[word + 13] = job.targetWidth;
   u32[word + 14] = job.buildHeight;
   u32[word + 15] = pins.length;
-  f32[word + 16] = spatialBlurInfluenceFloorSquared(documentWidth, documentHeight);
+  f32[word + 16] = 0;
   f32[word + 17] = documentWidth;
   f32[word + 18] = documentHeight;
   f32[word + 19] = DESTRUCTIVE_SPATIAL_BLUR_RADIUS_QUANTIZATION;
