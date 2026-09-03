@@ -76,6 +76,214 @@
   white-space: pre-wrap;
 }
 
+.vector-stroke-lab-presentation {
+  --stroke-lab-surface: #101722;
+  --stroke-lab-raised: #172131;
+  --stroke-lab-border: #35445b;
+  --stroke-lab-muted: #aebbd0;
+  position: fixed;
+  z-index: 11000;
+  box-sizing: border-box;
+  width: auto;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  inset:
+    max(8px, env(safe-area-inset-top))
+    max(8px, env(safe-area-inset-right))
+    max(8px, env(safe-area-inset-bottom))
+    max(8px, env(safe-area-inset-left));
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: clamp(16px, 2.5vw, 28px);
+  border: 1px solid var(--stroke-lab-border);
+  border-radius: 18px;
+  background:
+    linear-gradient(90deg, #62d6ff, #a17cff, #ffad61) top / 100% 3px no-repeat,
+    color-mix(in srgb, var(--stroke-lab-surface) 98%, transparent);
+  box-shadow: 0 24px 80px #000c;
+  color: #f2f6fc;
+  font: 15px/1.45 system-ui, sans-serif;
+  color-scheme: dark;
+}
+
+.vector-stroke-lab-presentation::backdrop {
+  background: #02050bd9;
+}
+
+.vector-stroke-lab-presentation > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.vector-stroke-lab-presentation h2,
+.vector-stroke-lab-presentation h3,
+.vector-stroke-lab-presentation p,
+.vector-stroke-lab-presentation figure {
+  margin: 0;
+}
+
+.vector-stroke-lab-presentation h2 {
+  font-size: clamp(1.45rem, 3vw, 2.15rem);
+  line-height: 1.1;
+}
+
+.vector-stroke-lab-presentation h3 {
+  margin-top: 22px;
+  font-size: 1.05rem;
+}
+
+.vector-stroke-lab-presentation button {
+  min-height: 42px;
+  padding: 8px 13px;
+  border: 1px solid #586981;
+  border-radius: 10px;
+  background: #202d40;
+  color: inherit;
+  cursor: pointer;
+}
+
+.vector-stroke-lab-kicker {
+  margin-bottom: 5px !important;
+  color: #71ddff;
+  font: 700 0.76rem/1.2 ui-monospace, monospace;
+  letter-spacing: 0.08em;
+}
+
+.vector-stroke-lab-intro,
+.vector-stroke-lab-initialization,
+.vector-stroke-lab-widths {
+  max-width: 100ch;
+  margin-top: 10px !important;
+  color: var(--stroke-lab-muted);
+}
+
+.vector-stroke-lab-notice {
+  max-width: 110ch;
+  margin-top: 12px !important;
+  padding: 11px 13px;
+  border: 1px solid #4b5d76;
+  border-radius: 10px;
+  background: #172335;
+  color: #dce8f8;
+}
+
+.vector-stroke-lab-initialization {
+  font: 0.82rem/1.45 ui-monospace, monospace;
+}
+
+.vector-stroke-lab-cards {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.vector-stroke-lab-cards article {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--stroke-lab-border);
+  border-radius: 12px;
+  background: var(--stroke-lab-raised);
+}
+
+.vector-stroke-lab-cards span {
+  color: var(--stroke-lab-muted);
+  font-size: 0.82rem;
+}
+
+.vector-stroke-lab-cards strong {
+  color: #8de4ff;
+  font: 700 clamp(1.05rem, 2.4vw, 1.45rem)/1.2 ui-monospace, monospace;
+}
+
+.vector-stroke-lab-table-scroll {
+  margin-top: 9px;
+  overflow-x: auto;
+  border: 1px solid var(--stroke-lab-border);
+  border-radius: 12px;
+}
+
+.vector-stroke-lab-presentation table {
+  width: 100%;
+  min-width: 1040px;
+  border-collapse: collapse;
+  background: var(--stroke-lab-raised);
+  font-size: 0.84rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.vector-stroke-lab-presentation th,
+.vector-stroke-lab-presentation td {
+  padding: 9px 10px;
+  border-bottom: 1px solid #2d3a4f;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.vector-stroke-lab-presentation th:first-child,
+.vector-stroke-lab-presentation td:first-child {
+  position: sticky;
+  left: 0;
+  text-align: left;
+  background: var(--stroke-lab-raised);
+}
+
+.vector-stroke-lab-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 9px;
+}
+
+.vector-stroke-lab-preview-grid figure {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--stroke-lab-border);
+  border-radius: 12px;
+  background: var(--stroke-lab-raised);
+}
+
+.vector-stroke-lab-preview-grid figcaption {
+  margin-bottom: 7px;
+  color: var(--stroke-lab-muted);
+  font-size: 0.82rem;
+}
+
+.vector-stroke-lab-preview-grid canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+  background-color: #222936;
+  background-image:
+    linear-gradient(45deg, #303a49 25%, transparent 25%),
+    linear-gradient(-45deg, #303a49 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #303a49 75%),
+    linear-gradient(-45deg, transparent 75%, #303a49 75%);
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  background-size: 16px 16px;
+}
+
+@media (max-width: 820px) {
+  .vector-stroke-lab-presentation {
+    inset: 0;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .vector-stroke-lab-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .vector-stroke-lab-preview-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .direct-deposit-lab-panel {
   width: min(360px, calc(100vw - 24px));
 }

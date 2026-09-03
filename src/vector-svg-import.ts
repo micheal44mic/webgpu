@@ -88,7 +88,8 @@ export interface VectorSvgDocument {
   readonly logicalVectorBytes: number;
 }
 
-interface Point { readonly x: number; readonly y: number; }
+export interface VectorSvgStrokePoint { readonly x: number; readonly y: number; }
+type Point = VectorSvgStrokePoint;
 export type Matrix = readonly [number, number, number, number, number, number];
 interface StyleState {
   fill: string;
@@ -132,11 +133,12 @@ interface GradientRegistry {
   get(id: string): GradientDefinition | undefined;
 }
 
-interface FlatStrokeSubpath {
+export interface VectorSvgFlatStrokeSubpath {
   readonly points: readonly Point[];
   readonly closed: boolean;
   readonly zeroLengthTangent?: Point;
 }
+type FlatStrokeSubpath = VectorSvgFlatStrokeSubpath;
 
 const IDENTITY_MATRIX: Matrix = [1, 0, 0, 1, 0, 0];
 const KAPPA = 0.5522847498307936;
@@ -188,10 +190,10 @@ function boxMatrix(bounds: VectorTextBounds): Matrix {
     bounds.top,
   ];
 }
-function transformPoint(matrix: Matrix, x: number, y: number): Point {
+export function transformPoint(matrix: Matrix, x: number, y: number): Point {
   return { x: matrix[0] * x + matrix[2] * y + matrix[4], y: matrix[1] * x + matrix[3] * y + matrix[5] };
 }
-function matrixMaximumScale(matrix: Matrix): number {
+export function matrixMaximumScale(matrix: Matrix): number {
   const squaredTrace = matrix[0] ** 2
     + matrix[1] ** 2
     + matrix[2] ** 2
@@ -528,7 +530,7 @@ function flattenCubicStroke(
   flattenCubicStroke(middle, e, c, end, tolerance, output, depth + 1);
 }
 
-function flattenStrokeSubpaths(path: Shadow3dPathData, tolerance: number): FlatStrokeSubpath[] {
+export function flattenStrokeSubpaths(path: Shadow3dPathData, tolerance: number): FlatStrokeSubpath[] {
   const output: FlatStrokeSubpath[] = [];
   let coordinateOffset = 0;
   let points: Point[] | null = null;
@@ -593,7 +595,7 @@ function parseDashArray(source: string, percentageReference: number): number[] {
   return values.length % 2 === 0 ? values : [...values, ...values];
 }
 
-function dashedStrokeSubpaths(
+export function dashedStrokeSubpaths(
   subpath: FlatStrokeSubpath,
   dashArray: readonly number[],
   dashOffset: number,

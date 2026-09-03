@@ -63,6 +63,7 @@ const LABS = [
   ["stroke-geometry-wasm", "A/B CPU geometria tratto · adapter batch 16"],
   ["stroke-packed-wasm", "A/B deposito tratto · oggetti JS / buffer GPU Wasm"],
   ["vector-effect-wasm", "A/B CPU effetti vettoriali · JavaScript/Wasm"],
+  ["vector-stroke-expansion-ab", "A/B espansione stroke vettoriale · semplice/complessa"],
   ["vector-zoom-stress", "Stress zoom vettoriale"],
   ["vector-zoom-during", "A/B zoom · refresh durante il gesto"],
   ["vector-zoom-release", "A/B zoom · refresh al rilascio"],
@@ -89,6 +90,7 @@ const HOSTED_LAB_IDS = new Set<LabId>([
   "human-shape-sequence",
   "stroke-packed-wasm",
   "vector-effect-wasm",
+  "vector-stroke-expansion-ab",
 ]);
 
 function isLabId(value: string | null): value is LabId {
@@ -640,6 +642,12 @@ class EditorLabController implements EditorExtension {
           "./cpu/vector-effect-wasm-lab"
         );
         return runVectorEffectWasmBenchmark();
+      }
+      case "vector-stroke-expansion-ab": {
+        const { runVectorStrokeExpansionLab } = await import(
+          "./vector/vector-stroke-expansion-lab"
+        );
+        return runVectorStrokeExpansionLab(engine.device);
       }
       case "vector-zoom-stress":
       case "vector-zoom-during":
