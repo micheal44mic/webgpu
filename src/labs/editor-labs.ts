@@ -145,10 +145,12 @@ function showLatestTipResponsePanel(candidate: boolean): void {
   controls.setAttribute("aria-label", "Varianti risposta punta");
   const baselineLink = document.createElement("a");
   baselineLink.href = baselineUrl.href;
-  baselineLink.textContent = "Prova baseline";
+  baselineLink.textContent = "Baseline";
+  baselineLink.setAttribute("aria-label", "Prova baseline esatta");
   const candidateLink = document.createElement("a");
   candidateLink.href = candidateUrl.href;
-  candidateLink.textContent = "Prova punta immediata";
+  candidateLink.textContent = "Punta immediata";
+  candidateLink.setAttribute("aria-label", "Prova punta immediata");
   if (candidate) candidateLink.setAttribute("aria-current", "page");
   else baselineLink.setAttribute("aria-current", "page");
   controls.append(baselineLink, candidateLink);
@@ -188,6 +190,9 @@ class EditorLabController implements EditorExtension {
     const panel = document.createElement("aside");
     panel.className = "editor-labs-panel";
     panel.setAttribute("aria-label", "WebGPU Brush Engine Labs");
+    const search = new URLSearchParams(window.location.search);
+    panel.hidden = search.get("lab") === "latest-tip-response"
+      && search.get("autorun") === "1";
     panel.innerHTML = `
       <h1>Editor Labs</h1>
       <p>Entry separato: questi strumenti non entrano nel bundle dell'app.</p>
