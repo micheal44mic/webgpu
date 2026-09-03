@@ -171,6 +171,7 @@ function resetDocumentScopedTransientState(engine: BrushEngine): void {
   }
   engine.pendingStamps.length = 0;
   engine.pendingBlendBatches.length = 0;
+  engine.activeStroke?.strokeGeometrySession?.cancel();
   engine.activeStroke = null;
   engine.deferredStrokePreview = null;
   engine.straightLineAdjustment = null;

@@ -663,6 +663,7 @@ import {
   type PointerSample,
   type PaintDabProfile,
   type ShapePreviewState,
+  type StrokeGeometryBackendPreference,
 } from "./engine-types";
 import { resolveMixedSceneEnabled } from "./compat/mixed-scene-options";
 import {
@@ -711,6 +712,15 @@ import {
   CausalFadedStrokeStabilizer,
   type StrokeStabilizationUpdate,
 } from "./stroke-stabilization-core";
+import {
+  loadStrokeGeometryProcessor,
+  wasmStrokeGeometryReady,
+  type StrokeGeometryActiveBackend,
+  type StrokeGeometryProcessor,
+  type StrokeGeometrySession,
+  type StrokeGeometryStats,
+  type StrokeGeometryStreamingResult,
+} from "./stroke-geometry-backend";
 import {
   mergeDirtyRects,
   normalizeLayerRect,
@@ -938,6 +948,7 @@ import {
   shrinkEffectsScratchAfterIdle,
   type ClippingDocumentMaskCollector,
 } from "./engine-layer-runtime";
+import { projectClientSamplesToLayerPoints } from "./client-layer-projection-core";
 import {
   applyGrainTextureResources,
   applyShapeMaskResources,
@@ -1124,6 +1135,7 @@ interface StraightLineAdjustmentSession {
 // the stroke's accumulated bounding box. Keep the exact live pixels for the
 // release frame and rebuild the canonical cache lazily on the next mutation.
 const DEFER_LIGHT_GLAZE_FINAL_CANONICAL_PRESENTATION = true;
+const STROKE_GEOMETRY_INPUT_BATCH_CAPACITY = 256;
 
 const RELEASE_GPU_TIMESTAMP_BOUNDARY_COUNT = 7;
 const RELEASE_GPU_TIMESTAMP_QUERY_COUNT = RELEASE_GPU_TIMESTAMP_BOUNDARY_COUNT * 2;
@@ -1198,6 +1210,7 @@ export class BrushEngine {
   readonly mixedSceneEnabled: boolean;
   readonly vectorTextRoiCacheEnabled: boolean;
   readonly vectorGpuResourceSharingEnabled: boolean;
+  readonly strokeGeometryBackendPreference: StrokeGeometryBackendPreference;
   vectorRasterQualityMode: VectorRasterQualityMode = "coverage";
   readonly selectionOverlayCanvas: HTMLCanvasElement | null;
 
@@ -1209,6 +1222,9 @@ export class BrushEngine {
   private spatialBlurEditorResourcesPromise: Promise<void> | null = null;
   private pixelSelectionPaintResourcesPromise: Promise<void> | null = null;
   private blendRendererResourcesPromise: Promise<void> | null = null;
+  private strokeGeometryProcessor: StrokeGeometryProcessor | null = null;
+  private strokeGeometryProcessorPromise: Promise<StrokeGeometryActiveBackend> | null = null;
+  strokeGeometryInitializationError: unknown = null;
   optionalEditorResourcesReady = false;
   advancedCanvasPresentationPipelinesReady = false;
   advancedCanvasPresentationPipelinesPromise: Promise<void> | null = null;
@@ -2200,6 +2216,14 @@ export class BrushEngine {
     ) {
       throw new RangeError("Unsupported Paint dab profile.");
     }
+    const strokeGeometryBackendPreference = options.strokeGeometryBackend ?? "auto";
+    if (
+      strokeGeometryBackendPreference !== "auto"
+      && strokeGeometryBackendPreference !== "javascript"
+      && strokeGeometryBackendPreference !== "wasm"
+    ) {
+      throw new RangeError("Unsupported stroke geometry backend preference.");
+    }
     const displayCompositingColorSpace =
       options.displayCompositingColorSpace ?? "linear-light";
     if (
@@ -2220,6 +2244,7 @@ export class BrushEngine {
     this.layerFormat = layerFormat;
     this.presentationFormat = presentationFormat;
     this.paintDabProfile = paintDabProfile;
+    this.strokeGeometryBackendPreference = strokeGeometryBackendPreference;
     this.settings = normalizePaintDabProfileSettings(
       this.paintDabProfile,
       this.settings,
@@ -2710,6 +2735,41 @@ export class BrushEngine {
     );
     this.publishStats();
     this.publishHistoryState();
+    if (this.strokeGeometryBackendPreference !== "javascript") {
+      window.setTimeout(() => {
+        void this.prepareStrokeGeometryBackend();
+      }, 0);
+    }
+  }
+
+  /**
+   * Warms the optional CPU geometry module without delaying the first canvas
+   * frame. A failed or still-cold module leaves the next gesture on JavaScript.
+   */
+  async prepareStrokeGeometryBackend(): Promise<StrokeGeometryActiveBackend> {
+    if (this.strokeGeometryBackendPreference === "javascript") {
+      return "javascript";
+    }
+    if (this.strokeGeometryProcessor) {
+      return wasmStrokeGeometryReady(this.strokeGeometryProcessor) ? "wasm" : "javascript";
+    }
+    if (!this.strokeGeometryProcessorPromise) {
+      this.strokeGeometryProcessorPromise = loadStrokeGeometryProcessor()
+        .then((processor) => {
+          this.strokeGeometryProcessor = processor;
+          this.strokeGeometryInitializationError = processor.initializationError ?? null;
+          return wasmStrokeGeometryReady(processor) ? "wasm" : "javascript";
+        })
+        .catch((error: unknown) => {
+          this.strokeGeometryInitializationError = error;
+          return "javascript" as const;
+        });
+    }
+    return this.strokeGeometryProcessorPromise;
+  }
+
+  preparedStrokeGeometryBackend(): StrokeGeometryActiveBackend {
+    return wasmStrokeGeometryReady(this.strokeGeometryProcessor) ? "wasm" : "javascript";
   }
 
   getSettings(): BrushSettings {
@@ -5425,14 +5485,16 @@ export class BrushEngine {
       blendPlanner.configure(blendControls);
     }
     blendPlanner?.reset(normalizedPoint);
-    const curvePlanner = tool === "blend" ? null : this.paintCurvePlanner;
-    curvePlanner?.reset();
     const paintDabProfile = tool === "paint" ? this.paintDabProfile : "default";
+    const thicknessDynamicsNeutral = tool === "blend" || thicknessDynamicsIsNeutral(
+      thicknessSettings.startThickness,
+      thicknessSettings.endThickness,
+    );
     // Brush modes already own a per-gesture accumulator. Stabilization keeps
     // only its recent tail revisionable in that accumulator; the exact zero
     // setting deliberately stays on the pre-existing hot path below.
     const stabilizationSettings = renderSettings;
-    const stabilizer = (
+    const javascriptStabilizer = (
       tool === "blend"
       || tool === "erase"
       || cloneConfiguration !== null
@@ -5441,6 +5503,47 @@ export class BrushEngine {
       && stabilizationSettings.stabilization > 0
       ? this.paintStabilizer
       : null;
+    let strokeGeometrySession: StrokeGeometrySession | null = null;
+    let strokeGeometryBackend: StrokeGeometryActiveBackend = "javascript";
+    let strokeGeometryBeginMs = 0;
+    if (
+      javascriptStabilizer
+      && tool !== "blend"
+      && thicknessDynamicsNeutral
+      && !deferredPreview
+      && wasmStrokeGeometryReady(this.strokeGeometryProcessor)
+    ) {
+      const beginStartedAt = performance.now();
+      try {
+        const fixedSpacing = Math.max(
+          0.1,
+          renderSettings.size * (renderSettings.spacingPercent / 100),
+        );
+        strokeGeometrySession = this.strokeGeometryProcessor.begin(normalizedPoint, {
+          stabilization: stabilizationSettings.stabilization,
+          spacingMode: paintDabProfile === "direct-deposit-pressure-size"
+            ? "direct-pressure"
+            : "fixed",
+          spacing: fixedSpacing,
+          size: renderSettings.size,
+          maximumBatchSize: STROKE_GEOMETRY_INPUT_BATCH_CAPACITY,
+          dabCapacity: MAX_STAMPS_PER_BATCH,
+          maximumStampsPerSegment: MAX_STAMPS_PER_BATCH,
+        });
+        strokeGeometryBackend = "wasm";
+      } catch (error) {
+        strokeGeometrySession?.cancel();
+        strokeGeometrySession = null;
+        this.strokeGeometryInitializationError = error;
+      } finally {
+        strokeGeometryBeginMs = performance.now() - beginStartedAt;
+      }
+    }
+    const curvePlanner = tool === "blend" ? null : this.paintCurvePlanner;
+    if (!strokeGeometrySession) {
+      curvePlanner?.reset();
+    }
+    const stabilizer = strokeGeometrySession ? null : javascriptStabilizer;
     const stabilizationUpdate = stabilizer?.begin(
       normalizedPoint,
       stabilizationSettings.stabilization,
@@ -5454,10 +5557,7 @@ export class BrushEngine {
       lastInput: normalizedPoint,
       startedAtMs: normalizedPoint.timeMs,
       thicknessSettings,
-      thicknessDynamicsNeutral: tool === "blend" || thicknessDynamicsIsNeutral(
-        thicknessSettings.startThickness,
-        thicknessSettings.endThickness,
-      ),
+      thicknessDynamicsNeutral,
       thicknessTailHoldback: tool === "paint" && thicknessDynamicsNeedsTailHoldback(
         thicknessSettings.endThickness,
       ),
@@ -5477,9 +5577,13 @@ export class BrushEngine {
       lightGlazeSettings,
       blendSettings: tool === "blend" ? { ...renderSettings } : null,
       blendPlanner,
-      curvePlanner,
+      curvePlanner: strokeGeometrySession ? null : curvePlanner,
       stabilizer,
       stabilizationUpdate,
+      strokeGeometryBackend,
+      strokeGeometrySession,
+      strokeGeometryPreviewDabs: null,
+      strokeGeometryStats: null,
       // Separate mutable cursor for the authoritative stabilized prefix. It
       // must never alias `lastInput`, which always remains the latest raw
       // pointer sample.
@@ -5487,12 +5591,16 @@ export class BrushEngine {
       deferredPreview,
     };
     this.activeCloneStrokeSession = cloneSession;
-    if (stabilizer && this.activeStrokeProfile) {
+    if ((stabilizer || strokeGeometrySession) && this.activeStrokeProfile) {
       this.activeStrokeProfile.strokeStabilizationInputSamples += 1;
       this.activeStrokeProfile.strokeStabilizationMaximumTailPoints = Math.max(
         this.activeStrokeProfile.strokeStabilizationMaximumTailPoints,
-        stabilizationUpdate?.tailCount ?? 0,
+        stabilizationUpdate?.tailCount ?? 1,
       );
+      if (strokeGeometrySession) {
+        this.activeStrokeProfile.strokeGeometryBackend = "wasm";
+        this.activeStrokeProfile.strokeGeometryWasmBeginMs += strokeGeometryBeginMs;
+      }
     }
     if (deferredPreview) {
       this.deferredStrokePreview = {
@@ -5521,16 +5629,20 @@ export class BrushEngine {
   }
 
   extendStroke(samples: readonly PointerSample[]): void {
-    this.extendStrokeAtLayer(samples.map((sample) => this.toLayerPoint(sample)));
+    this.extendStrokeAtLayer(projectClientSamplesToLayerPoints(this, samples));
   }
 
   extendStrokeAtLayer(points: readonly LayerPoint[]): void {
     if (!this.activeStroke) {
       return;
     }
+    if (points.length > 0 && this.activeStroke.strokeGeometrySession) {
+      this.appendWasmStrokePoints(points, this.activeStroke);
+      return;
+    }
 
-    for (const point of points) {
-      this.appendPoint(point);
+    for (let index = 0; index < points.length; index += 1) {
+      this.appendPoint(points[index], index === points.length - 1);
     }
   }
 
@@ -5552,7 +5664,7 @@ export class BrushEngine {
       return false;
     }
 
-    const points = samples.map((sample) => this.toLayerPoint(sample));
+    const points = projectClientSamplesToLayerPoints(this, samples);
     const first = points[0];
     if (usesStrokeGlazeRenderer(preview.settings)) {
       this.pendingStamps = this.pendingStamps.filter(
@@ -5982,7 +6094,24 @@ export class BrushEngine {
       && (this.settings.blendMode === "normal" || this.settings.blendMode === "additive"),
     );
     if (endingStroke) {
-      if (endingStroke.stabilizer) {
+      if (endingStroke.strokeGeometrySession) {
+        const session = endingStroke.strokeGeometrySession;
+        const finishStartedAt = performance.now();
+        let finalGeometry: StrokeGeometryStreamingResult;
+        try {
+          this.synchronizeWasmStrokeGeometrySpacing(endingStroke, false);
+          finalGeometry = session.finish();
+        } catch (error) {
+          this.recoverFromStrokeGeometryFailure(endingStroke, error);
+          return;
+        } finally {
+          endingStroke.strokeGeometrySession = null;
+          endingStroke.strokeGeometryPreviewDabs = null;
+          this.recordWasmStrokeGeometryProcess(performance.now() - finishStartedAt, 0);
+        }
+        this.applyWasmStrokeGeometryStats(endingStroke, finalGeometry.stats, true);
+        this.emitWasmStrokeGeometryDabs(finalGeometry.dabs);
+      } else if (endingStroke.stabilizer) {
         const finalGeometry = endingStroke.stabilizer.finish();
         endingStroke.stabilizationUpdate = finalGeometry;
         if (this.activeStrokeProfile) {
@@ -6146,6 +6275,9 @@ export class BrushEngine {
       );
     }
 
+    stroke.strokeGeometrySession?.cancel();
+    stroke.strokeGeometrySession = null;
+    stroke.strokeGeometryPreviewDabs = null;
     this.activeStroke = null;
     if (this.lightGlazeSession?.historyActionId === stroke.historyActionId) {
       this.abandonLightGlazeSession();
@@ -6312,6 +6444,7 @@ export class BrushEngine {
     }
     this.pendingStamps.length = 0;
     this.pendingBlendBatches.length = 0;
+    this.activeStroke?.strokeGeometrySession?.cancel();
     this.activeStroke = null;
     this.deferredStrokePreview = null;
     this.straightLineAdjustment = null;
@@ -13741,10 +13874,14 @@ export class BrushEngine {
     return clientToCanvasPixels(this, clientX, clientY);
   }
 
-  private appendPoint(point: LayerPoint): void {
+  private appendPoint(point: LayerPoint, includePreviewTail = true): void {
     const generationStart = this.activeStrokeProfile ? performance.now() : 0;
     const stroke = this.activeStroke;
     if (!stroke) {
+      return;
+    }
+    if (stroke.strokeGeometrySession) {
+      this.appendWasmStrokePoints([point], stroke, generationStart, includePreviewTail);
       return;
     }
     if (stroke.tool === "blend") {
@@ -13867,6 +14004,184 @@ export class BrushEngine {
 
     stroke.lastInput = normalizedPoint;
     releaseHeldThicknessStamps(this, normalizedPoint.timeMs, false);
+    recordStampGenerationTime(this, generationStart);
+  }
+
+  private emitWasmStrokeGeometryDabs(dabs: Float64Array): void {
+    for (let offset = 0; offset + 5 < dabs.length; offset += 6) {
+      emitStamp(this, {
+        x: dabs[offset],
+        y: dabs[offset + 1],
+        pressure: dabs[offset + 2],
+        timeMs: dabs[offset + 3],
+      }, dabs[offset + 4], dabs[offset + 5]);
+    }
+  }
+
+  private applyWasmStrokeGeometryStats(
+    stroke: ActiveStroke,
+    stats: StrokeGeometryStats,
+    finished: boolean,
+  ): void {
+    stroke.strokeGeometryStats = stats;
+    const profile = this.activeStrokeProfile;
+    if (!profile) return;
+    profile.strokeGeometryBackend = "wasm";
+    profile.strokeStabilizationInputSamples = stats.latestSequence + 1;
+    profile.strokeStabilizationMaturePoints = stats.maturePoints
+      + (finished ? Math.max(0, stats.tailPoints - 1) : 0);
+    profile.strokeStabilizationForcedMaturePoints = stats.forcedMaturePoints;
+    profile.strokeStabilizationMaximumTailPoints = Math.max(
+      profile.strokeStabilizationMaximumTailPoints,
+      stats.maximumTailPoints,
+    );
+    profile.strokeCurveInputSegments = stats.curveInputSegments;
+    profile.strokeCurveFlattenedSegments = stats.curveFlattenedSegments;
+    profile.strokeCurveSmoothedSegments = stats.curveSmoothedSegments;
+    profile.strokeCurveSharpCornerBypasses = stats.curveSharpCornerBypasses;
+  }
+
+  private recordWasmStrokeGeometryProcess(durationMs: number, inputSamples: number): void {
+    const profile = this.activeStrokeProfile;
+    if (!profile) return;
+    profile.strokeGeometryBackend = "wasm";
+    profile.strokeGeometryWasmInputSamples += inputSamples;
+    profile.strokeGeometryWasmProcessTotalMs += durationMs;
+    profile.strokeGeometryWasmProcessCallMs.push(durationMs);
+  }
+
+  private recoverFromStrokeGeometryFailure(stroke: ActiveStroke, error: unknown): void {
+    stroke.strokeGeometrySession?.cancel();
+    stroke.strokeGeometrySession = null;
+    stroke.strokeGeometryPreviewDabs = null;
+    this.strokeGeometryInitializationError = error;
+    // A runtime fault is latched for this editor lifetime. Later gestures use
+    // the JavaScript path instead of repeatedly entering a damaged instance.
+    this.strokeGeometryProcessor = null;
+    this.strokeGeometryProcessorPromise = Promise.resolve("javascript");
+
+    if (this.activeStroke === stroke) {
+      if (!stroke.submitted && this.cancelStrokeBeforeRender()) {
+        // cancelStrokeBeforeRender restores the pre-gesture seed, selection
+        // snapshot and transient presentation when no GPU batch was committed.
+      } else {
+        let removedStampCount = 0;
+        this.pendingStamps = this.pendingStamps.filter((stamp) => {
+          if (stamp.historyActionId !== stroke.historyActionId) return true;
+          removedStampCount += 1;
+          return false;
+        });
+        if (this.activeStrokeProfile) {
+          this.activeStrokeProfile.baseStamps = Math.max(
+            0,
+            this.activeStrokeProfile.baseStamps - removedStampCount,
+          );
+        }
+        stroke.heldThicknessStamps.length = 0;
+        stroke.heldThicknessHead = 0;
+        if (this.deferredStrokePreview?.historyActionId === stroke.historyActionId) {
+          this.deferredStrokePreview = null;
+        }
+        if (this.lightGlazeSession?.historyActionId === stroke.historyActionId) {
+          this.abandonLightGlazeSession();
+        }
+        if (cloneSessionMatchesAction(this.activeCloneStrokeSession, stroke.historyActionId)) {
+          destroyActiveCloneStrokeSession(this, this.activeCloneStrokeSession);
+        }
+        this.activeStroke = null;
+        this.invalidateAdaptivePreview();
+        this.thicknessTailPresentedRect = null;
+        this.presentationCacheNeedsFullRebuild = true;
+        this.displayDirty = true;
+        this.requestRender();
+        this.publishHistoryState();
+        this.scheduleLayerColdCompression();
+      }
+    }
+
+    const message = error instanceof Error ? error.message : String(error);
+    this.callbacks.onStatus?.(
+      `Stroke stopped safely after a CPU geometry failure. Later strokes use JavaScript: ${message}`,
+      "error",
+    );
+  }
+
+  private synchronizeWasmStrokeGeometrySpacing(
+    stroke: ActiveStroke,
+    includePreviewTail: boolean,
+  ): void {
+    const session = stroke.strokeGeometrySession;
+    if (!session || stroke.paintDabProfile === "direct-deposit-pressure-size") return;
+    const spacing = Math.max(
+      0.1,
+      stroke.renderSettings.size * (stroke.adaptiveSpacingPercent / 100),
+    );
+    const updateStartedAt = performance.now();
+    const previewDabs = session.updateFixedSpacing(spacing, { includePreviewTail });
+    this.recordWasmStrokeGeometryProcess(performance.now() - updateStartedAt, 0);
+    if (!includePreviewTail) return;
+    stroke.strokeGeometryPreviewDabs = previewDabs;
+    this.displayDirty = true;
+    this.requestRender();
+  }
+
+  private appendWasmStrokePoints(
+    points: readonly LayerPoint[],
+    stroke: ActiveStroke,
+    generationStart = this.activeStrokeProfile ? performance.now() : 0,
+    includePreviewTail = true,
+  ): void {
+    const session = stroke.strokeGeometrySession;
+    if (!session) {
+      throw new Error("The Wasm stroke geometry session is unavailable.");
+    }
+    const normalizedPoints: LayerPoint[] = [];
+    let previousPoint = stroke.lastInput;
+    for (const point of points) {
+      const normalizedPoint: LayerPoint = {
+        ...point,
+        timeMs: Math.max(
+          previousPoint.timeMs,
+          Number.isFinite(point.timeMs) ? point.timeMs : previousPoint.timeMs,
+        ),
+      };
+      normalizedPoints.push(normalizedPoint);
+      previousPoint = normalizedPoint;
+    }
+    if (normalizedPoints.length === 0) return;
+    const spacing = Math.max(
+      0.1,
+      stroke.renderSettings.size * (stroke.adaptiveSpacingPercent / 100),
+    );
+    const processStartedAt = performance.now();
+    let result: StrokeGeometryStreamingResult;
+    try {
+      result = session.processBatch(normalizedPoints, {
+        ...(stroke.paintDabProfile === "direct-deposit-pressure-size"
+          ? {}
+          : { spacing }),
+        includeTail: false,
+        includePreviewTail: includePreviewTail && stroke.lightGlazeSettings !== null,
+      });
+    } catch (error) {
+      this.recoverFromStrokeGeometryFailure(stroke, error);
+      return;
+    }
+    const processDurationMs = performance.now() - processStartedAt;
+    this.recordWasmStrokeGeometryProcess(processDurationMs, normalizedPoints.length);
+    stroke.lastInput = previousPoint;
+    if (includePreviewTail) {
+      stroke.strokeGeometryPreviewDabs = result.previewDabs;
+    }
+    this.applyWasmStrokeGeometryStats(stroke, result.stats, false);
+
+    releaseHeldThicknessStamps(this, previousPoint.timeMs, false);
+    this.emitWasmStrokeGeometryDabs(result.dabs);
+    releaseHeldThicknessStamps(this, previousPoint.timeMs, false);
+
+    // The permanent prefix or the revisionable tail may have changed.
+    this.displayDirty = true;
+    this.requestRender();
     recordStampGenerationTime(this, generationStart);
   }
 
@@ -14023,15 +14338,23 @@ export class BrushEngine {
   }
 
   private prepareStabilizationTailFrame(
-    update: Readonly<StrokeStabilizationUpdate>,
+    update: Readonly<StrokeStabilizationUpdate> | null,
   ): StabilizationTailFrame | null {
     const stroke = this.activeStroke;
+    const wasmPreviewDabs = stroke?.strokeGeometrySession
+      ? stroke.strokeGeometryPreviewDabs
+      : null;
+    const javascriptTailReady = Boolean(
+      stroke?.stabilizer
+      && update
+      && !update.bypassed
+      && update.tailCount >= 2,
+    );
+    const wasmTailReady = Boolean(wasmPreviewDabs && wasmPreviewDabs.length >= 6);
     if (
       !stroke
-      || !stroke.stabilizer
       || !stroke.lightGlazeSettings
-      || update.bypassed
-      || update.tailCount < 2
+      || (!javascriptTailReady && !wasmTailReady)
     ) {
       return null;
     }
@@ -14076,22 +14399,8 @@ export class BrushEngine {
       stampCount += 1;
     }
 
-    const planner = this.stabilizationPreviewCurvePlanner;
-    if (!stroke.curvePlanner) {
-      throw new Error("The authoritative curve planner is missing during stabilization.");
-    }
-    planner.copyStateFrom(stroke.curvePlanner);
-    let distanceSinceStamp = stroke.distanceSinceStamp;
     let seedSequence = this.seedSequence;
     const shapeLayerCount = shapeAssetSequenceLengthForSettings(settings);
-    const spacing = Math.max(
-      0.1,
-      settings.size * (stroke.adaptiveSpacingPercent / 100),
-    );
-    let startX = update.tailX[0];
-    let startY = update.tailY[0];
-    let startPressure = update.tailPressure[0];
-    let startTimeMs = update.tailTimeMs[0];
 
     const appendPreviewStamp = (
       pointX: number,
@@ -14161,65 +14470,93 @@ export class BrushEngine {
       stampCount += 1;
     };
 
-    for (let tailIndex = 1; tailIndex < update.tailCount; tailIndex += 1) {
-      const endX = update.tailX[tailIndex];
-      const endY = update.tailY[tailIndex];
-      const endPressure = update.tailPressure[tailIndex];
-      const endTimeMs = update.tailTimeMs[tailIndex];
-      const deltaTimeMs = Math.max(0, endTimeMs - startTimeMs);
-      const curveSegment = planner.plan(startX, startY, endX, endY);
-      let curveStartX = startX;
-      let curveStartY = startY;
-      let parameterStart = 0;
-
-      for (
-        let subdivision = 1;
-        subdivision <= curveSegment.subdivisionCount;
-        subdivision += 1
-      ) {
-        const parameterEnd = subdivision / curveSegment.subdivisionCount;
-        const curveEndX = subdivision === curveSegment.subdivisionCount
-          ? endX
-          : evaluateStrokeCurveX(curveSegment, parameterEnd);
-        const curveEndY = subdivision === curveSegment.subdivisionCount
-          ? endY
-          : evaluateStrokeCurveY(curveSegment, parameterEnd);
-        const curveDeltaX = curveEndX - curveStartX;
-        const curveDeltaY = curveEndY - curveStartY;
-        const curveLength = Math.hypot(curveDeltaX, curveDeltaY);
-        let distanceAlongCurve = 0;
-
-        if (curveLength > 0.0001) {
-          const directionX = curveDeltaX / curveLength;
-          const directionY = curveDeltaY / curveLength;
-          while (
-            distanceSinceStamp + (curveLength - distanceAlongCurve) >= spacing
-          ) {
-            const distanceToNextStamp = spacing - distanceSinceStamp;
-            distanceAlongCurve += distanceToNextStamp;
-            const localInterpolation = clamp(distanceAlongCurve / curveLength, 0, 1);
-            const curveParameter = parameterStart
-              + (parameterEnd - parameterStart) * localInterpolation;
-            appendPreviewStamp(
-              curveStartX + curveDeltaX * localInterpolation,
-              curveStartY + curveDeltaY * localInterpolation,
-              startPressure + (endPressure - startPressure) * curveParameter,
-              startTimeMs + deltaTimeMs * curveParameter,
-              directionX,
-              directionY,
-            );
-            distanceSinceStamp = 0;
-          }
-          distanceSinceStamp += Math.max(0, curveLength - distanceAlongCurve);
-        }
-        curveStartX = curveEndX;
-        curveStartY = curveEndY;
-        parameterStart = parameterEnd;
+    if (wasmTailReady && wasmPreviewDabs) {
+      for (let offset = 0; offset + 5 < wasmPreviewDabs.length; offset += 6) {
+        appendPreviewStamp(
+          wasmPreviewDabs[offset],
+          wasmPreviewDabs[offset + 1],
+          wasmPreviewDabs[offset + 2],
+          wasmPreviewDabs[offset + 3],
+          wasmPreviewDabs[offset + 4],
+          wasmPreviewDabs[offset + 5],
+        );
       }
-      startX = endX;
-      startY = endY;
-      startPressure = endPressure;
-      startTimeMs = endTimeMs;
+    } else {
+      if (!update || !stroke.curvePlanner) {
+        throw new Error("The authoritative curve planner is missing during stabilization.");
+      }
+      const planner = this.stabilizationPreviewCurvePlanner;
+      planner.copyStateFrom(stroke.curvePlanner);
+      let distanceSinceStamp = stroke.distanceSinceStamp;
+      const spacing = Math.max(
+        0.1,
+        settings.size * (stroke.adaptiveSpacingPercent / 100),
+      );
+      let startX = update.tailX[0];
+      let startY = update.tailY[0];
+      let startPressure = update.tailPressure[0];
+      let startTimeMs = update.tailTimeMs[0];
+
+      for (let tailIndex = 1; tailIndex < update.tailCount; tailIndex += 1) {
+        const endX = update.tailX[tailIndex];
+        const endY = update.tailY[tailIndex];
+        const endPressure = update.tailPressure[tailIndex];
+        const endTimeMs = update.tailTimeMs[tailIndex];
+        const deltaTimeMs = Math.max(0, endTimeMs - startTimeMs);
+        const curveSegment = planner.plan(startX, startY, endX, endY);
+        let curveStartX = startX;
+        let curveStartY = startY;
+        let parameterStart = 0;
+
+        for (
+          let subdivision = 1;
+          subdivision <= curveSegment.subdivisionCount;
+          subdivision += 1
+        ) {
+          const parameterEnd = subdivision / curveSegment.subdivisionCount;
+          const curveEndX = subdivision === curveSegment.subdivisionCount
+            ? endX
+            : evaluateStrokeCurveX(curveSegment, parameterEnd);
+          const curveEndY = subdivision === curveSegment.subdivisionCount
+            ? endY
+            : evaluateStrokeCurveY(curveSegment, parameterEnd);
+          const curveDeltaX = curveEndX - curveStartX;
+          const curveDeltaY = curveEndY - curveStartY;
+          const curveLength = Math.hypot(curveDeltaX, curveDeltaY);
+          let distanceAlongCurve = 0;
+
+          if (curveLength > 0.0001) {
+            const directionX = curveDeltaX / curveLength;
+            const directionY = curveDeltaY / curveLength;
+            while (
+              distanceSinceStamp + (curveLength - distanceAlongCurve) >= spacing
+            ) {
+              const distanceToNextStamp = spacing - distanceSinceStamp;
+              distanceAlongCurve += distanceToNextStamp;
+              const localInterpolation = clamp(distanceAlongCurve / curveLength, 0, 1);
+              const curveParameter = parameterStart
+                + (parameterEnd - parameterStart) * localInterpolation;
+              appendPreviewStamp(
+                curveStartX + curveDeltaX * localInterpolation,
+                curveStartY + curveDeltaY * localInterpolation,
+                startPressure + (endPressure - startPressure) * curveParameter,
+                startTimeMs + deltaTimeMs * curveParameter,
+                directionX,
+                directionY,
+              );
+              distanceSinceStamp = 0;
+            }
+            distanceSinceStamp += Math.max(0, curveLength - distanceAlongCurve);
+          }
+          curveStartX = curveEndX;
+          curveStartY = curveEndY;
+          parameterStart = parameterEnd;
+        }
+        startX = endX;
+        startY = endY;
+        startPressure = endPressure;
+        startTimeMs = endTimeMs;
+      }
     }
 
     if (stampCount === 0) {
@@ -15709,6 +16046,15 @@ export class BrushEngine {
     }
 
     stroke.adaptiveSpacingPercent = nextSpacingPercent;
+    try {
+      this.synchronizeWasmStrokeGeometrySpacing(
+        stroke,
+        stroke.lightGlazeSettings !== null,
+      );
+    } catch (error) {
+      this.recoverFromStrokeGeometryFailure(stroke, error);
+      return;
+    }
     const profile = this.activeStrokeProfile;
     if (!profile) {
       return;
@@ -16661,17 +17007,31 @@ export class BrushEngine {
     const preciseDeposit = lightNoBuildUp
       && usesOpticalDepthPaintDabProfile(this.paintDabProfile);
     const encodedRgba8 = usesEncodedSrgbRgba8PaintDabProfile(this.paintDabProfile);
-    const stabilizationUpdate = present
+    const stabilizationStroke = present
       && !replayBatch
       && this.activeStroke?.historyActionId === session.historyActionId
-      && this.activeStroke.stabilizer
-      && this.activeStroke.stabilizationUpdate
       && this.pendingStamps.length <= stampCount
-      ? this.activeStroke.stabilizationUpdate
+      ? this.activeStroke
       : null;
-    const stabilizationFrame = stabilizationUpdate
-      ? this.prepareStabilizationTailFrame(stabilizationUpdate)
+    const stabilizationUpdate = stabilizationStroke?.stabilizer
+      ? stabilizationStroke.stabilizationUpdate
       : null;
+    const wasmStabilizationTailReady = Boolean(
+      stabilizationStroke?.strokeGeometrySession
+      && stabilizationStroke.strokeGeometryPreviewDabs
+      && stabilizationStroke.strokeGeometryPreviewDabs.length >= 6,
+    );
+    let stabilizationFrame: StabilizationTailFrame | null = null;
+    if (stabilizationUpdate || wasmStabilizationTailReady) {
+      const generationProfile = this.activeStrokeProfile;
+      const generationStartedAt = generationProfile ? performance.now() : null;
+      stabilizationFrame = this.prepareStabilizationTailFrame(stabilizationUpdate);
+      if (generationProfile && generationStartedAt !== null) {
+        const generationMs = performance.now() - generationStartedAt;
+        generationProfile.strokeStabilizationTailGenerationTotalMs += generationMs;
+        generationProfile.strokeStabilizationTailGenerationFrameMs.push(generationMs);
+      }
+    }
     const stabilizationRestoreTexture = present
       ? this.stabilizationSnapshotTexture
       : null;

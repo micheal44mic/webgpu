@@ -782,7 +782,7 @@ export class AuthoritativeBrushStrokePreviewRenderer {
       // side still needs an asynchronous decode/upload, own both sides so an
       // engine retarget cannot invalidate a borrowed view during that await.
       if (!activeShapeBorrowSafe || !activeGrainBorrowSafe) {
-        [ownedShape, ownedGrain] = await Promise.all([
+        const [shapeResult, grainResult] = await Promise.allSettled([
           shapeRequired
             ? createShapeMaskResources(
               this.engine,
@@ -795,6 +795,10 @@ export class AuthoritativeBrushStrokePreviewRenderer {
             ? createGrainTextureResources(this.engine, settings.grainAssetId)
             : Promise.resolve(null),
         ]);
+        if (shapeResult.status === "fulfilled") ownedShape = shapeResult.value;
+        if (grainResult.status === "fulfilled") ownedGrain = grainResult.value;
+        if (shapeResult.status === "rejected") throw shapeResult.reason;
+        if (grainResult.status === "rejected") throw grainResult.reason;
       }
 
       const shapeView = !shapeRequired

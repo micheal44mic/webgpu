@@ -2839,8 +2839,8 @@ assert.doesNotMatch(
 );
 assert.match(
   humanLabSource,
-  /HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 67/,
-  "il contratto persistito del benchmark deve conservare la revisione 67",
+  /HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 68/,
+  "il contratto persistito del benchmark deve conservare la revisione 68",
 );
 assert.match(engineSource, /layerBakeStrategy: typeof LAYER_BAKE_STRATEGY;/);
 assert.match(engineSource, /layerCompositeStrategy: typeof LAYER_COMPOSITE_STRATEGY;/);
@@ -3886,7 +3886,7 @@ assert.match(layerCompositeGpuTestSource, /fiveLayerSwitchBreakdownIsConsistent/
 assert.match(layerHistoryGpuTestSource, /measureExactLayerStorageStudy\(\)/);
 assert.match(layerHistoryGpuTestSource, /conservativeTilesContainEveryExactTile/);
 assert.match(layerHistoryGpuTestSource, /exactReadbackReleasedItsTemporaryBuffers/);
-assert.match(humanLabSource, /HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 67/);
+assert.match(humanLabSource, /HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 68/);
 assert.match(gpuMemoryPanelSource, /gpuMemoryLayerCold/);
 assert.match(gpuMemoryPanelSource, /gpuMemoryLayerCompressed/);
 assert.match(gpuMemoryPanelSource, /gpuMemoryLayerHydration/);

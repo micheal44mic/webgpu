@@ -53,6 +53,9 @@ export type PaintDabProfile =
   | "direct-deposit-pressure-size"
   | "encoded-srgb-rgba8";
 
+/** CPU implementation selected once when a gesture begins. */
+export type StrokeGeometryBackendPreference = "auto" | "javascript" | "wasm";
+
 export type DisplayCompositingColorSpace =
   | "linear-light"
   | "encoded-srgb"
@@ -338,6 +341,8 @@ export interface BrushEngineOptions {
   presentationFormat?: LayerFormat;
   /** Optional rendering contract for Paint dab accumulation and geometry. */
   paintDabProfile?: PaintDabProfile;
+  /** Development override for the CPU stroke-geometry implementation. */
+  strokeGeometryBackend?: StrokeGeometryBackendPreference;
   /** Optional deterministic benchmark override; zero disables spacing escalation. */
   adaptiveSpacingMaxExtraPercentPoints?: number;
   /**

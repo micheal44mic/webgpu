@@ -72,7 +72,11 @@ assert.match(
   "Eraser must capture the pixel-selection mask for deterministic history replay",
 );
 assert.match(engine, /const curvePlanner = tool === "blend" \? null : this\.paintCurvePlanner/);
-assert.match(engine, /thicknessDynamicsNeutral: tool === "blend" \|\| thicknessDynamicsIsNeutral/);
+assert.match(
+  engine,
+  /const thicknessDynamicsNeutral = tool === "blend" \|\| thicknessDynamicsIsNeutral/,
+);
+assert.match(engine, /\n\s+thicknessDynamicsNeutral,\n/);
 
 // Destination-out on premultiplied pixels scales every channel uniformly.
 const destination = [0.4, 0.2, 0.1, 0.5];

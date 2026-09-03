@@ -1240,6 +1240,16 @@ export function finishStrokePerformanceProfile(engine: BrushEngine): StrokePerfo
     dirtyRectStrategy: DIRTY_RECT_STRATEGY,
     strokeCurveStrategy: STROKE_CURVE_STRATEGY,
     strokeStabilizationStrategy: STROKE_STABILIZATION_STRATEGY,
+    strokeGeometryBackend: profile.strokeGeometryBackend,
+    strokeGeometryWasmBeginMs: profile.strokeGeometryWasmBeginMs,
+    strokeGeometryWasmInputSamples: profile.strokeGeometryWasmInputSamples,
+    strokeGeometryWasmProcessCount: profile.strokeGeometryWasmProcessCallMs.length,
+    strokeGeometryWasmProcessTotalMs: profile.strokeGeometryWasmProcessTotalMs,
+    strokeGeometryWasmProcessP95Ms: percentile(
+      profile.strokeGeometryWasmProcessCallMs,
+      0.95,
+    ),
+    strokeGeometryWasmProcessMaxMs: maximum(profile.strokeGeometryWasmProcessCallMs),
     strokeStabilizationAmount: profile.strokeStabilizationAmount,
     strokeStabilizationInputSamples: profile.strokeStabilizationInputSamples,
     strokeStabilizationMaturePoints: profile.strokeStabilizationMaturePoints,
@@ -1251,6 +1261,17 @@ export function finishStrokePerformanceProfile(engine: BrushEngine): StrokePerfo
     strokeStabilizationTailBaseStamps: profile.strokeStabilizationTailBaseStamps,
     strokeStabilizationTailPhysicalCopies:
       profile.strokeStabilizationTailPhysicalCopies,
+    strokeStabilizationTailGenerationCount:
+      profile.strokeStabilizationTailGenerationFrameMs.length,
+    strokeStabilizationTailGenerationTotalMs:
+      profile.strokeStabilizationTailGenerationTotalMs,
+    strokeStabilizationTailGenerationP95Ms: percentile(
+      profile.strokeStabilizationTailGenerationFrameMs,
+      0.95,
+    ),
+    strokeStabilizationTailGenerationMaxMs: maximum(
+      profile.strokeStabilizationTailGenerationFrameMs,
+    ),
     strokeStabilizationMaximumSnapshotPixels:
       profile.strokeStabilizationMaximumSnapshotPixels,
     strokeStabilizationAdditionalMemoryMiB:
@@ -1528,6 +1549,11 @@ export function startStrokePerformanceProfile(engine: BrushEngine): void {
     brushBatches: 0,
     largestBatchStamps: 0,
     estimatedScissorPixels: 0,
+    strokeGeometryBackend: "javascript",
+    strokeGeometryWasmBeginMs: 0,
+    strokeGeometryWasmInputSamples: 0,
+    strokeGeometryWasmProcessTotalMs: 0,
+    strokeGeometryWasmProcessCallMs: [],
     strokeStabilizationAmount: engine.settings.stabilization,
     strokeStabilizationInputSamples: 0,
     strokeStabilizationMaturePoints: 0,
@@ -1536,6 +1562,8 @@ export function startStrokePerformanceProfile(engine: BrushEngine): void {
     strokeStabilizationTailFrames: 0,
     strokeStabilizationTailBaseStamps: 0,
     strokeStabilizationTailPhysicalCopies: 0,
+    strokeStabilizationTailGenerationTotalMs: 0,
+    strokeStabilizationTailGenerationFrameMs: [],
     strokeStabilizationMaximumSnapshotPixels: 0,
     strokeStabilizationMaximumSnapshotBytes: 0,
     strokeCurveInputSegments: 0,

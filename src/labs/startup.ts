@@ -5,6 +5,13 @@ import type { EditorExtensionBootstrap } from "../editor-extension-contract";
 const search = new URLSearchParams(window.location.search);
 const encodedRgba8Profile = search.get("pixelProfile") === "encoded-rgba8";
 const fixedBrushWorkload = search.get("fixedWork") === "1";
+const requestedStrokeBackend = search.get("strokeBackend");
+const strokeGeometryBackend = requestedStrokeBackend === "javascript"
+  || requestedStrokeBackend === "wasm"
+  ? requestedStrokeBackend
+  : search.get("lab") === "stroke-geometry-wasm"
+    ? "javascript"
+    : null;
 const projectHome = document.getElementById("projectHome");
 const app = document.getElementById("app");
 if (!projectHome || !app) {
@@ -20,6 +27,7 @@ const bootstrap: EditorExtensionBootstrap = {
   restorePersistedBrushOnStartup: false,
   engineOptions: {
     ...(fixedBrushWorkload ? { adaptiveSpacingMaxExtraPercentPoints: 0 } : {}),
+    ...(strokeGeometryBackend ? { strokeGeometryBackend } : {}),
     ...(encodedRgba8Profile ? {
       layerFormat: "rgba8unorm" as const,
       presentationFormat: "rgba8unorm" as const,

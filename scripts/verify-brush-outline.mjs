@@ -17,6 +17,7 @@ const coreSource = read("src/brush-outline-core.ts");
 const controllerSource = read("src/brush-outline-controller.ts");
 const engineSource = read("src/brush-engine.ts");
 const resourcesSource = read("src/engine-resource-setup.ts");
+const preprocessingSource = read("src/shape-preprocessing-core.ts");
 const mainSource = read("src/main.ts");
 const htmlSource = read("index.html");
 const styleSource = read("src/styles.css");
@@ -569,34 +570,29 @@ const shapeResourcesEnd = resourcesSource.indexOf(
   shapeResourcesStart,
 );
 const shapeResourcesSource = resourcesSource.slice(shapeResourcesStart, shapeResourcesEnd);
-const polarityIndex = shapeResourcesSource.indexOf(
-  "if (authoredInvert !== shapeInvert)",
-);
-const polarityMutationIndex = shapeResourcesSource.indexOf(
-  "scalar16[index] = 65535 - scalar16[index]",
-  polarityIndex,
-);
-const boundaryIndex = shapeResourcesSource.indexOf(
-  "buildBrushMaskOutline(baseMask",
-  polarityMutationIndex,
-);
 const uploadIndex = shapeResourcesSource.indexOf(
   "const texture = await createR16FloatShapeTexture(",
-  boundaryIndex,
 );
 assert.ok(
   shapeResourcesStart >= 0
     && shapeResourcesEnd > shapeResourcesStart
-    && polarityIndex >= 0
-    && polarityMutationIndex > polarityIndex
-    && boundaryIndex > polarityMutationIndex
-    && uploadIndex > boundaryIndex,
+    && uploadIndex >= 0,
   "outline e texture WebGPU devono usare la stessa maschera post-polarita",
 );
 assert.match(
+  preprocessingSource,
+  /const scalar = scalarPreprocessor\.prepare\([\s\S]*?invert: input\.invert[\s\S]*?buildBrushMaskOutline\([\s\S]*?scalar\.baseMask/,
+  "the outline must derive from the same post-polarity scalar preparation",
+);
+assert.match(
+  preprocessingSource,
+  /scalar16: scalar\.scalar16/,
+  "the upload source must retain the scalar field used to derive the outline",
+);
+assert.match(
   shapeResourcesSource,
-  /const value = quantizeSource\(scalar16\[index\]\)/,
-  "l'outline deve derivare dal campo scalar16 dopo la polarita",
+  /scalar16: prepared\.scalar16/,
+  "the decoded stream must forward the Worker-prepared scalar field",
 );
 assert.match(
   shapeResourcesSource,

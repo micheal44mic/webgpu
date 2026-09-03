@@ -94,6 +94,7 @@ const moduleServer = await createServer({
 let CanvasInputController;
 let analyzeStrokeStraightness;
 let straightenPointerSamples;
+let projectClientSamplesToLayerPoints;
 try {
   ({ CanvasInputController } = await moduleServer.ssrLoadModule(
     "/src/canvas-input-controller.ts",
@@ -101,9 +102,89 @@ try {
   ({ analyzeStrokeStraightness, straightenPointerSamples } = await moduleServer.ssrLoadModule(
     "/src/stroke-straightening-core.ts",
   ));
+  ({ projectClientSamplesToLayerPoints } = await moduleServer.ssrLoadModule(
+    "/src/client-layer-projection-core.ts",
+  ));
 } finally {
   await moduleServer.close();
 }
+
+const projectionSamples = [
+  { clientX: 13.25, clientY: -7.5, pressure: 0, timeMs: 1 },
+  { clientX: 224.75, clientY: 170.125, pressure: 0.42, timeMs: 7.25 },
+  { clientX: 790.5, clientY: 423.625, pressure: 2, timeMs: Number.NaN },
+];
+let projectionRectReads = 0;
+let projectionClockReads = 0;
+const projectionContext = {
+  canvas: {
+    width: 2048,
+    height: 1024,
+    getBoundingClientRect() {
+      projectionRectReads += 1;
+      return {
+        left: 13.25,
+        top: -7.5,
+        width: 777.25,
+        height: 431.125,
+      };
+    },
+  },
+  viewCenterX: 923.75,
+  viewCenterY: 611.125,
+  viewRotationCos: Math.cos(0.37),
+  viewRotationSin: Math.sin(0.37),
+  zoom: 2.35,
+};
+const projectionFallbackTime = 93.75;
+const projectedBatch = projectClientSamplesToLayerPoints(
+  projectionContext,
+  projectionSamples,
+  () => {
+    projectionClockReads += 1;
+    return projectionFallbackTime;
+  },
+);
+const referenceProjection = projectionSamples.map((sample) => {
+  const rectangle = {
+    left: 13.25,
+    top: -7.5,
+    width: 777.25,
+    height: 431.125,
+  };
+  const screenX = (
+    (sample.clientX - rectangle.left) / Math.max(1, rectangle.width)
+  ) * projectionContext.canvas.width;
+  const screenY = (
+    (sample.clientY - rectangle.top) / Math.max(1, rectangle.height)
+  ) * projectionContext.canvas.height;
+  const scaledX = (screenX - projectionContext.canvas.width * 0.5) / projectionContext.zoom;
+  const scaledY = (screenY - projectionContext.canvas.height * 0.5) / projectionContext.zoom;
+  const offsetX = projectionContext.viewRotationCos * scaledX
+    + projectionContext.viewRotationSin * scaledY;
+  const offsetY = -projectionContext.viewRotationSin * scaledX
+    + projectionContext.viewRotationCos * scaledY;
+  return {
+    x: projectionContext.viewCenterX + offsetX,
+    y: projectionContext.viewCenterY + offsetY,
+    pressure: Math.min(1, Math.max(0.01, sample.pressure)),
+    timeMs: Number.isFinite(sample.timeMs) ? sample.timeMs : projectionFallbackTime,
+  };
+});
+assert.deepEqual(projectedBatch, referenceProjection,
+  "batch projection must remain numerically identical to the single-sample formula");
+assert.equal(projectionRectReads, 1,
+  "one coalesced input batch must read canvas geometry exactly once");
+assert.equal(projectionClockReads, 1,
+  "only samples without a finite timestamp may read the fallback clock");
+assert.deepEqual(projectClientSamplesToLayerPoints(projectionContext, []), []);
+assert.equal(projectionRectReads, 1,
+  "an empty batch must not trigger a canvas geometry read");
+assert.equal(
+  (engineSource.match(/projectClientSamplesToLayerPoints\(this, samples\)/g) ?? []).length,
+  2,
+  "live freehand and deferred geometry replacement must share batch projection",
+);
 
 class FakeClassList {
   values = new Set();

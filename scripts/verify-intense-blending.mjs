@@ -111,7 +111,7 @@ const submit = section(
   // tre rami espliciti al submit live; il final-stack mip coerente aggiunge i
   // gate live/commit e il deposito diretto aggiunge il percorso ottico, ma la
   // finestra resta stretta sui due marcatori.
-  43_000,
+  44_000,
 );
 for (const requirement of [
   'const intenseBlending = settings.blendMode === "intense-blending";',

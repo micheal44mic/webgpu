@@ -214,6 +214,10 @@ const strokePreviewRenderer = readFileSync(
   path.join(projectRoot, "src", "brush-stroke-preview-renderer.ts"),
   "utf8",
 );
+const shapePreprocessingSource = readFileSync(
+  path.join(projectRoot, "src", "shape-preprocessing-core.ts"),
+  "utf8",
+);
 const html = readFileSync(path.join(projectRoot, "index.html"), "utf8");
 
 assert(!engine.includes('"m1m4-pencil-v1"'),
@@ -239,9 +243,9 @@ const shapeLoaderStart = engine.indexOf("async function decodeShapeMaskResource(
 const shapeLoaderEnd = engine.indexOf("export function destroyShapeMaskResources", shapeLoaderStart);
 assert(shapeLoaderStart >= 0 && shapeLoaderEnd > shapeLoaderStart, "Loader Shape non trovato.");
 const shapeLoader = engine.slice(shapeLoaderStart, shapeLoaderEnd);
-assert(shapeLoader.indexOf("authoredInvert !== shapeInvert") >= 0
-  && shapeLoader.indexOf("authoredInvert !== shapeInvert")
-    < shapeLoader.indexOf("buildShapeOccupancyMaps"),
+assert(shapeLoader.includes("asset.decode.invertLuminance !== shapeInvert")
+  && shapePreprocessingSource.indexOf("invert: input.invert")
+    < shapePreprocessingSource.indexOf("const occupancy = buildShapeOccupancyMaps"),
   "Shape Invert deve essere risolto prima di mip, occupancy e preview.");
 assert(engine.includes("ensureReplayBrushAssets(batch.settings)")
   && engine.includes("shapeAssetIdsForSettings(settings)")

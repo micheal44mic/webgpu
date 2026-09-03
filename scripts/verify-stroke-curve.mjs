@@ -327,7 +327,7 @@ assert.equal((engineSource.match(/resamplePaintCurveSegment\(/g) ?? []).length, 
 assert.match(engineSource, /nextPaintStampSeed\(engine\.seedSequence\+\+\)/);
 assert.match(strokeTypesSource, /curvePlanner: CausalStrokeCurvePlanner \| null;/);
 assert.match(engineSource, /strokeCurveStrategy: STROKE_CURVE_STRATEGY/);
-assert.match(humanLabSource, /HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 67/);
+assert.match(humanLabSource, /HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 68/);
 
 const canonicalPath = new URL("../.tmp-canonical-human-stroke.json", import.meta.url);
 let canonicalSummary = null;

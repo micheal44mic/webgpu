@@ -386,21 +386,28 @@ assert.ok(
 );
 
 const resourceSource = read("src/engine-resource-setup.ts");
+const preprocessingSource = read("src/shape-preprocessing-core.ts");
 const shadersSource = read("src/shaders.ts");
 const blendShadersSource = read("src/blend-shaders.ts");
-const outlineIndex = resourceSource.indexOf("buildBrushMaskOutline(baseMask");
-const supportGuardIndex = resourceSource.indexOf("resampleShapeMaskSupportIntoTransparentGuard(");
-const occupancyIndex = resourceSource.indexOf("const occupancy = buildShapeOccupancyMaps(");
+const outlineIndex = preprocessingSource.indexOf("buildBrushMaskOutline(");
+const supportGuardIndex = preprocessingSource.indexOf(
+  "resampleShapeMaskSupportIntoTransparentGuard(",
+);
+const occupancyIndex = preprocessingSource.indexOf("const occupancy = buildShapeOccupancyMaps(");
 const r16UploadIndex = resourceSource.indexOf(
   "const texture = await createR16FloatShapeTexture(",
-  occupancyIndex,
 );
 assert.ok(outlineIndex >= 0 && supportGuardIndex > outlineIndex);
-assert.ok(occupancyIndex > supportGuardIndex && r16UploadIndex > occupancyIndex);
+assert.ok(occupancyIndex > supportGuardIndex && r16UploadIndex >= 0);
 assert.match(
-  resourceSource,
+  preprocessingSource,
   /coordinateFrame: "protected"/,
   "both comparisons use the same protected R16F sampling frame",
+);
+assert.match(
+  resourceSource,
+  /prepared = await shapePreprocessingClient\.prepare\([\s\S]*?const texture = await createR16FloatShapeTexture\(/,
+  "Shape CPU preprocessing must finish before the GPU upload begins",
 );
 assert.doesNotMatch(resourceSource, /format: "r8unorm"/);
 assert.match(resourceSource, /format: "r16uint"/);

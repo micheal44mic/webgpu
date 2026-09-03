@@ -16,6 +16,11 @@ import type {
   CausalFadedStrokeStabilizer,
   StrokeStabilizationUpdate,
 } from "./stroke-stabilization-core";
+import type {
+  StrokeGeometryActiveBackend,
+  StrokeGeometrySession,
+  StrokeGeometryStats,
+} from "./stroke-geometry-backend";
 import type { StrokeSymmetryMode } from "./stroke-symmetry-core";
 
 export interface Stamp {
@@ -72,6 +77,14 @@ export interface ActiveStroke {
   curvePlanner: CausalStrokeCurvePlanner | null;
   stabilizer: CausalFadedStrokeStabilizer | null;
   stabilizationUpdate: Readonly<StrokeStabilizationUpdate> | null;
+  /** CPU geometry implementation fixed for the complete gesture. */
+  strokeGeometryBackend: StrokeGeometryActiveBackend;
+  /** Present only for a compatible, prewarmed stabilized gesture. */
+  strokeGeometrySession: StrokeGeometrySession | null;
+  /** Latest revisionable tail geometry emitted by the Wasm session. */
+  strokeGeometryPreviewDabs: Float64Array | null;
+  /** Cumulative counters returned by the active Wasm session. */
+  strokeGeometryStats: StrokeGeometryStats | null;
   stabilizationCommittedInput: LayerPoint;
   /**
    * Once the Quick Line hold gesture has activated, its replacement geometry

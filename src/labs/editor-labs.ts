@@ -58,6 +58,8 @@ const LABS = [
   ["mixed-memory", "Benchmark memoria mista"],
   ["iphone-memory", "Ricerca limite iPhone"],
   ["layer-compression", "Studio compressione lossless"],
+  ["shape-mask-wasm", "A/B CPU Shape · JavaScript/Wasm"],
+  ["stroke-geometry-wasm", "A/B CPU geometria tratto · adapter batch 16"],
   ["vector-zoom-stress", "Stress zoom vettoriale"],
   ["vector-zoom-during", "A/B zoom · refresh durante il gesto"],
   ["vector-zoom-release", "A/B zoom · refresh al rilascio"],
@@ -221,9 +223,16 @@ class EditorLabController implements EditorExtension {
     const requested = HOSTED_REPLAY_ONLY
       ? hostedLabId(search.get("lab"))
       : search.get("lab");
-    this.#result.textContent = requested === "human-record"
-      ? `Preset pronto: ${HUMAN_RECORDING_PRESET_LABEL}.`
-      : "Pronto. I test distruttivi richiedono una pagina nuova.";
+    const requestedStrokeBackend = search.get("strokeBackend");
+    const preparedStrokeBackend = requestedStrokeBackend === "wasm"
+      ? await this.#host.engine.prepareStrokeGeometryBackend()
+      : this.#host.engine.preparedStrokeGeometryBackend();
+    this.#result.textContent = requestedStrokeBackend === "wasm"
+      && preparedStrokeBackend !== "wasm"
+      ? "Il modulo geometrico Wasm non è disponibile: il test userà JavaScript."
+      : requested === "human-record"
+        ? `Preset pronto: ${HUMAN_RECORDING_PRESET_LABEL}.`
+        : "Pronto. I test distruttivi richiedono una pagina nuova.";
     this.syncControls(false);
     if (isLabId(requested) && search.get("autorun") === "1") {
       if (requested === "human-record") {
@@ -579,6 +588,18 @@ class EditorLabController implements EditorExtension {
         const savedRunId = await saveLabReport("/api/layer-compression-runs", report);
         return { report, savedRunId };
       }
+      case "shape-mask-wasm": {
+        const { runShapeMaskWasmBenchmark } = await import(
+          "./cpu/shape-mask-wasm-lab"
+        );
+        return runShapeMaskWasmBenchmark();
+      }
+      case "stroke-geometry-wasm": {
+        const { runStrokeGeometryWasmBenchmark } = await import(
+          "./cpu/stroke-geometry-wasm-lab"
+        );
+        return runStrokeGeometryWasmBenchmark();
+      }
       case "vector-zoom-stress":
       case "vector-zoom-during":
       case "vector-zoom-release":
@@ -640,16 +661,36 @@ class EditorLabController implements EditorExtension {
           && requestedFlow <= 1
           ? requestedFlow
           : null;
-        const requestedOpacity = Number(search.get("opacity"));
-        const opacity = Number.isFinite(requestedOpacity)
+        const requestedOpacityValue = search.get("opacity");
+        const requestedOpacity = Number(requestedOpacityValue);
+        const opacity = requestedOpacityValue !== null
+          && Number.isFinite(requestedOpacity)
           && requestedOpacity >= 0
           && requestedOpacity <= 1
           ? requestedOpacity
+          : null;
+        const requestedStabilizationValue = search.get("stabilization");
+        const requestedStabilization = Number(requestedStabilizationValue);
+        const stabilization = requestedStabilizationValue !== null
+          && Number.isFinite(requestedStabilization)
+          && requestedStabilization >= 0
+          && requestedStabilization <= 1
+          ? requestedStabilization
+          : null;
+        const requestedSpacingPercentValue = search.get("spacingPercent");
+        const requestedSpacingPercent = Number(requestedSpacingPercentValue);
+        const spacingPercent = requestedSpacingPercentValue !== null
+          && Number.isFinite(requestedSpacingPercent)
+          && requestedSpacingPercent >= 0.25
+          && requestedSpacingPercent <= 99
+          ? requestedSpacingPercent
           : null;
         return this.#humanStroke.replay("canonical", {
           blendMode,
           ...(flow === null ? {} : { flow }),
           ...(opacity === null ? {} : { opacity }),
+          ...(stabilization === null ? {} : { stabilization }),
+          ...(spacingPercent === null ? {} : { spacingPercent }),
           ...(colorDynamicsOff ? {
             hueJitterDegrees: 0,
             saturationJitter: 0,

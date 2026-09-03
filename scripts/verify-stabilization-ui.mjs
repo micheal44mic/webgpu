@@ -16,6 +16,9 @@ const sitesBuildSource = read("./prepare-sites-build.mjs");
 const stabilizationCoreSource = read("../src/stroke-stabilization-core.ts");
 const brushSettingsControllerSource = read("../src/brush-settings-controller.ts");
 const brushStudioSource = read("../src/mobile-brush-studio.ts");
+const engineStatsSource = read("../src/engine-stats.ts");
+const engineReportsSource = read("../src/engine-reports.ts");
+const editorLabsSource = read("../src/labs/editor-labs.ts");
 
 // Settings ABI: normalized 0..1 and bit-for-bit legacy behavior at the default.
 assert.match(engineTypesSource, /stabilization: number;/);
@@ -53,6 +56,29 @@ assert.match(
 assert.match(humanLabSource, /size: 750,[\s\S]*?spacingPercent: 1,[\s\S]*?stabilization: 0,/);
 assert.match(sitesBuildSource, /payload\.settings\.stabilization === 0/);
 assert.match(sitesBuildSource, /blendIntensity: 1,\s*stabilization: 0,/);
+assert.match(humanLabSource, /HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 68/);
+assert.match(
+  editorLabsSource,
+  /search\.get\("stabilization"\)[\s\S]*?requestedStabilization >= 0[\s\S]*?requestedStabilization <= 1/,
+);
+assert.match(
+  editorLabsSource,
+  /search\.get\("spacingPercent"\)[\s\S]*?requestedSpacingPercent >= 0\.25[\s\S]*?requestedSpacingPercent <= 99/,
+);
+assert.match(
+  editorLabsSource,
+  /requestedOpacityValue = search\.get\("opacity"\)[\s\S]*?requestedOpacityValue !== null[\s\S]*?requestedOpacity >= 0[\s\S]*?requestedOpacity <= 1/,
+  "an omitted replay opacity must preserve the fixture value instead of becoming zero",
+);
+assert.match(
+  editorLabsSource,
+  /stabilization === null \? \{\} : \{ stabilization \}[\s\S]*?spacingPercent === null \? \{\} : \{ spacingPercent \}/,
+);
+assert.match(
+  mainSource,
+  /strokeGeometryBackend: editorExtensionEngineOptions\.strokeGeometryBackend/,
+  "the Labs backend override must reach the BrushEngine constructor",
+);
 
 // Runtime contract: Paint glaze, Eraser and Blend opt in, while 0% remains a
 // hard branch around the pre-existing point generators.
@@ -76,6 +102,32 @@ assert.match(stabilizationCoreSource, /update\.tailWeight\[0\] = 1;/);
 assert.match(
   engineSource,
   /const finalGeometry = endingStroke\.stabilizer\.finish\(\);[\s\S]*?for \(let index = 1; index < finalGeometry\.tailCount; index \+= 1\)/,
+);
+
+// A rare module/runtime failure must terminate the current gesture instead of
+// leaving an active stroke whose JavaScript planner was deliberately omitted.
+const geometryRecoveryStart = engineSource.indexOf(
+  "private recoverFromStrokeGeometryFailure(",
+);
+const geometryRecoveryEnd = engineSource.indexOf(
+  "\n  private synchronizeWasmStrokeGeometrySpacing(",
+  geometryRecoveryStart,
+);
+assert.ok(geometryRecoveryStart >= 0 && geometryRecoveryEnd > geometryRecoveryStart);
+const geometryRecoverySource = engineSource.slice(geometryRecoveryStart, geometryRecoveryEnd);
+assert.match(geometryRecoverySource, /stroke\.strokeGeometrySession\?\.cancel\(\);/);
+assert.match(geometryRecoverySource, /this\.strokeGeometryProcessor = null;/);
+assert.match(geometryRecoverySource, /this\.cancelStrokeBeforeRender\(\)/);
+assert.match(geometryRecoverySource, /this\.pendingStamps = this\.pendingStamps\.filter/);
+assert.match(geometryRecoverySource, /this\.activeStroke = null;/);
+assert.match(geometryRecoverySource, /this\.presentationCacheNeedsFullRebuild = true;/);
+assert.match(
+  engineSource,
+  /finalGeometry = session\.finish\(\);\s*\} catch \(error\) \{\s*this\.recoverFromStrokeGeometryFailure\(endingStroke, error\);\s*return;/,
+);
+assert.match(
+  engineSource,
+  /result = session\.processBatch\([\s\S]*?\} catch \(error\) \{\s*this\.recoverFromStrokeGeometryFailure\(stroke, error\);\s*return;/,
 );
 
 // Exact GPU revision order for non-invertible MAX/source-over deposits:
@@ -108,6 +160,27 @@ assert.match(
   /usage: GPUTextureUsage\.RENDER_ATTACHMENT[\s\S]*?GPUTextureUsage\.COPY_SRC[\s\S]*?GPUTextureUsage\.COPY_DST/,
 );
 assert.match(engineSource, /stabilizationTailMiB,/);
+assert.match(
+  engineSource,
+  /generationStartedAt = generationProfile \? performance\.now\(\) : null;[\s\S]*?prepareStabilizationTailFrame\(stabilizationUpdate\)[\s\S]*?strokeStabilizationTailGenerationTotalMs \+= generationMs[\s\S]*?strokeStabilizationTailGenerationFrameMs\.push\(generationMs\)/,
+);
+for (const field of [
+  "strokeStabilizationTailGenerationCount",
+  "strokeStabilizationTailGenerationTotalMs",
+  "strokeStabilizationTailGenerationP95Ms",
+  "strokeStabilizationTailGenerationMaxMs",
+]) {
+  assert.match(engineStatsSource, new RegExp(`${field}: number;`));
+  assert.match(engineReportsSource, new RegExp(`${field}:`));
+}
+assert.match(
+  engineReportsSource,
+  /strokeStabilizationTailGenerationP95Ms: percentile\([\s\S]*?strokeStabilizationTailGenerationFrameMs,[\s\S]*?0\.95/,
+);
+assert.match(
+  engineReportsSource,
+  /strokeStabilizationTailGenerationMaxMs: maximum\([\s\S]*?strokeStabilizationTailGenerationFrameMs/,
+);
 
 // Paint and Blend history retain the complete settings object and replay it,
 // so the chosen stabilization value stays attached to the gesture even though

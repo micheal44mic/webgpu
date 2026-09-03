@@ -99,8 +99,8 @@ assert.match(
 );
 assert.match(
   humanLabSource,
-  /HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 67/,
-  "the persisted lab telemetry contract must retain revision 67",
+  /HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 68/,
+  "the persisted lab telemetry contract must retain revision 68",
 );
 assert.match(canvasInputSource, /touchPaintIntentCanceledForNavigation/);
 assert.match(canvasInputSource, /touchPaintIntentMaximumBufferedSamples/);

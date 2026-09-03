@@ -27,7 +27,7 @@ export const CANONICAL_HUMAN_STROKE_FINGERPRINT = "18982412";
 export const CANONICAL_HUMAN_STROKE_POINT_COUNT = 1_583;
 export const HUMAN_RENDERING_SUITE_REVISION = 4 as const;
 export const HUMAN_SHAPE_SEQUENCE_SUITE_REVISION = 2 as const;
-export const HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 67 as const;
+export const HUMAN_STROKE_PERFORMANCE_TELEMETRY_REVISION = 68 as const;
 export const HUMAN_STROKE_TIMELINE_TELEMETRY_REVISION = 2 as const;
 
 export interface HumanStrokePoint extends LayerPoint {

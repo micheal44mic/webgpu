@@ -11,11 +11,9 @@ import {
   LIGHT_GLAZE_COMMIT_TILE_UNIFORM_BYTES,
   LIGHT_GLAZE_UNIFORM_BYTES,
   MAX_STAMPS_PER_BATCH,
-  SHAPE_MASK_FILTER_GUARD_TEXELS,
   SHAPE_MASK_SIZE,
   SHAPE_OCCUPANCY_MAP_BYTES,
   SHAPE_OCCUPANCY_MAP_COUNT,
-  SHAPE_OCCUPANCY_MAX_MIP,
   SHAPE_OCCUPANCY_WORDS_PER_MAP,
   STAMP_STRIDE_BYTES,
   THICKNESS_TAIL_TEXTURE_QUANTUM,
@@ -41,8 +39,7 @@ import {
   grainMipShader,
   shapeR16FloatBaseShader,
 } from "./shaders";
-import { assertShaderCompiled } from "./engine-gpu-utils";
-import { hashBytes } from "./engine-math";
+import { assertShaderCompiled, createRenderPipelineAsync } from "./engine-gpu-utils";
 import {
   SHAPE_CANVAS_DECODE_STRATEGY,
   SHAPE_DIRECT_DECODE_STRATEGY,
@@ -50,14 +47,7 @@ import {
   usesBlendRenderer,
   type ShapeMaskDecodeStrategy,
 } from "./engine-strategies";
-import { decodeGrayscalePng } from "./png-mask";
 import { decodeShapeMaskWithCanvas } from "./shape-mask-decode";
-import { buildShapeOccupancyMaps } from "./shape-occupancy";
-import {
-  downsampleShapeMask2x,
-  downsampleShapeMaskSupport2x,
-  resampleShapeMaskSupportIntoTransparentGuard,
-} from "./shape-mask-filtering";
 import { RasterStrokeRenderer } from "./stroke-renderer";
 import {
   RASTER_STROKE_COMPOSITOR_ONLY_SCRATCH_EXTENT,
@@ -73,7 +63,6 @@ import {
 import { THICKNESS_TAPER_WINDOW_MS, endThicknessRadius } from "./thickness-dynamics";
 import { RasterShadowRenderer } from "./shadow-renderer";
 import { RasterBevelRenderer } from "./bevel-renderer";
-import { buildBrushMaskOutline } from "./brush-outline-core";
 import { ensureMixedSceneLinearTexture } from "./engine-vector-text-runtime";
 import {
   cancelBevelFieldShrink,
@@ -87,6 +76,16 @@ import { LAYER_COLD_TILE_COMPOSITE_UNIFORM_BYTES } from "./layer-cold-tile-compo
 import { LAYER_BLEND_FOLD_UNIFORM_BYTES } from "./layer-blend-fold-shader";
 import { LAYER_STORAGE_TILE_COUNT } from "./layer-storage-study";
 import { planDeferredPreviewTextureExtent } from "./deferred-erase-preview-core";
+import { ShapePreprocessingClient } from "./shape-preprocessing-client";
+import type { ShapePreprocessingResult } from "./shape-preprocessing-core";
+import { GrainPreprocessingClient } from "./grain-preprocessing-client";
+import type { GrainPreprocessingResult } from "./grain-preprocessing-core";
+
+// Construction is cheap and does not start a Worker. The Worker and Wasm module
+// are created only when a non-circular Shape is first requested, then reclaimed
+// after the client's idle interval.
+const shapePreprocessingClient = new ShapePreprocessingClient();
+const grainPreprocessingClient = new GrainPreprocessingClient();
 
 export async function createStaticResources(engine: BrushEngine): Promise<void> {
   engine.brushUniformBuffer = engine.device.createBuffer({
@@ -697,290 +696,343 @@ export async function createStaticResources(engine: BrushEngine): Promise<void> 
   );
 }
 
+interface GrainR16FloatPipelineResources {
+  lumaBindGroupLayout: GPUBindGroupLayout;
+  lumaPipeline: GPURenderPipeline;
+  mipBindGroupLayout: GPUBindGroupLayout;
+  mipPipeline: GPURenderPipeline;
+  mipSampler: GPUSampler;
+}
+
+const grainR16FloatPipelineCache = new WeakMap<
+  GPUDevice,
+  Promise<GrainR16FloatPipelineResources>
+>();
+
+function grainR16FloatPipelineResources(
+  device: GPUDevice,
+): Promise<GrainR16FloatPipelineResources> {
+  const cached = grainR16FloatPipelineCache.get(device);
+  if (cached) return cached;
+
+  const created = (async (): Promise<GrainR16FloatPipelineResources> => {
+    const lumaShaderModule = device.createShaderModule({
+      label: "Grain scalar luma WGSL",
+      code: grainLumaShader,
+    });
+    const mipShaderModule = device.createShaderModule({
+      label: "Grain mip generation WGSL",
+      code: grainMipShader,
+    });
+    await Promise.all([
+      assertShaderCompiled(lumaShaderModule, "Grain scalar luma"),
+      assertShaderCompiled(mipShaderModule, "Grain mip generation"),
+    ]);
+
+    const lumaBindGroupLayout = device.createBindGroupLayout({
+      label: "Grain scalar luma bind group layout",
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "uint", viewDimension: "2d" },
+        },
+      ],
+    });
+    const mipBindGroupLayout = device.createBindGroupLayout({
+      label: "Grain mip generation bind group layout",
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "float", viewDimension: "2d" },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.FRAGMENT,
+          sampler: { type: "filtering" },
+        },
+      ],
+    });
+    const lumaPipelineLayout = device.createPipelineLayout({
+      label: "Grain scalar luma pipeline layout",
+      bindGroupLayouts: [lumaBindGroupLayout],
+    });
+    const mipPipelineLayout = device.createPipelineLayout({
+      label: "Grain mip generation pipeline layout",
+      bindGroupLayouts: [mipBindGroupLayout],
+    });
+    const mipSampler = device.createSampler({
+      label: "Grain mip generation linear sampler",
+      magFilter: "linear",
+      minFilter: "linear",
+      mipmapFilter: "nearest",
+      addressModeU: "clamp-to-edge",
+      addressModeV: "clamp-to-edge",
+    });
+    const [lumaPipeline, mipPipeline] = await Promise.all([
+      createRenderPipelineAsync(device, {
+        label: "Grain scalar luma pipeline",
+        layout: lumaPipelineLayout,
+        vertex: { module: lumaShaderModule, entryPoint: "vertexMain" },
+        fragment: {
+          module: lumaShaderModule,
+          entryPoint: "fragmentMain",
+          targets: [{ format: "r16float" }],
+        },
+        primitive: { topology: "triangle-list" },
+      }),
+      createRenderPipelineAsync(device, {
+        label: "Grain mip generation pipeline",
+        layout: mipPipelineLayout,
+        vertex: { module: mipShaderModule, entryPoint: "vertexMain" },
+        fragment: {
+          module: mipShaderModule,
+          entryPoint: "fragmentMain",
+          targets: [{ format: "r16float" }],
+        },
+        primitive: { topology: "triangle-list" },
+      }),
+    ]);
+    return {
+      lumaBindGroupLayout,
+      lumaPipeline,
+      mipBindGroupLayout,
+      mipPipeline,
+      mipSampler,
+    };
+  })();
+  grainR16FloatPipelineCache.set(device, created);
+  void created.catch(() => {
+    if (grainR16FloatPipelineCache.get(device) === created) {
+      grainR16FloatPipelineCache.delete(device);
+    }
+  });
+  return created;
+}
+
 export async function createGrainTextureResources(
   engine: BrushEngine,
   assetId: BrushGrainAssetId,
 ): Promise<GrainTextureResources> {
+  // Start the device-local programs before source acquisition. Asset loading,
+  // decode and preview preparation can then overlap native GPU compilation.
+  const pipelineResourcesPromise = grainR16FloatPipelineResources(
+    engine.device,
+  );
   const customAsset = engine.customBrushAssets.resolveGrain(assetId);
-  let width: number;
-  let height: number;
+  let prepared: GrainPreprocessingResult;
   let sourceLabel: string;
-  let sourceIdentity: number;
-  let scalar16: Uint16Array;
-  let decodeMs = 0;
 
   if (customAsset) {
-    width = customAsset.width;
-    height = customAsset.height;
     sourceLabel = customAsset.name;
-    scalar16 = customAsset.scalar16;
-    sourceIdentity = hashBytes(new Uint8Array(
-      scalar16.buffer,
-      scalar16.byteOffset,
-      scalar16.byteLength,
-    ));
+    prepared = await grainPreprocessingClient.prepare({
+      kind: "scalar",
+      scalar16: customAsset.scalar16,
+      width: customAsset.width,
+      height: customAsset.height,
+      invertLuminance: false,
+      sourceBitDepth: customAsset.sourceBitDepth,
+    });
   } else {
     const asset = grainAssetDescriptor(assetId);
     const source = await loadCachedAssetSource(asset.url);
-    const decodeStart = performance.now();
-    const decoded = await decodeGrayscalePng(source);
-    decodeMs = performance.now() - decodeStart;
-    if (decoded.width !== asset.width || decoded.height !== asset.height) {
-      throw new Error(
-        `${asset.sourceFile} must remain ${asset.width}×${asset.height}px; `
-        + `found ${decoded.width}×${decoded.height}px.`,
-      );
-    }
-    width = asset.width;
-    height = asset.height;
     sourceLabel = asset.sourceFile;
-    sourceIdentity = hashBytes(new Uint8Array(source));
-    scalar16 = decoded.pixels;
-    if (asset.decode.invertLuminance) {
-      scalar16 = scalar16.slice();
-      for (let index = 0; index < scalar16.length; index += 1) {
-        scalar16[index] = 65535 - scalar16[index];
-      }
-    }
+    prepared = await grainPreprocessingClient.prepare({
+      kind: "png",
+      pngBytes: source,
+      expectedWidth: asset.width,
+      expectedHeight: asset.height,
+      invertLuminance: asset.decode.invertLuminance,
+    });
   }
 
+  const { width, height, scalar16 } = prepared;
+  const sourceIdentity = prepared.identity;
+  const decodeMs = prepared.timings.decodeMs;
   const mipLevelCount = mipLevelCountForSize(width, height);
-  // Campo scalare a mezza precisione: lo shader di pittura consuma una sola
-  // luma e ignora l'alpha, quindi tre canali su quattro erano peso morto.
-  const texture = engine.device.createTexture({
-    label: `${sourceLabel} scalar R16F grain`,
-    size: {
-      width,
-      height,
-      depthOrArrayLayers: 1,
-    },
-    mipLevelCount,
-    format: "r16float",
-    usage:
-      GPUTextureUsage.TEXTURE_BINDING
-      | GPUTextureUsage.COPY_DST
-      | GPUTextureUsage.RENDER_ATTACHMENT,
-  });
+  let texture: GPUTexture | null = null;
+  let stagingTexture: GPUTexture | null = null;
+  try {
+    // Campo scalare a mezza precisione: lo shader di pittura consuma una sola
+    // luma e ignora l'alpha, quindi tre canali su quattro erano peso morto.
+    texture = engine.device.createTexture({
+      label: `${sourceLabel} scalar R16F grain`,
+      size: {
+        width,
+        height,
+        depthOrArrayLayers: 1,
+      },
+      mipLevelCount,
+      format: "r16float",
+      usage:
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.COPY_DST |
+        GPUTextureUsage.RENDER_ATTACHMENT,
+    });
 
-  // Native unsigned staging exists only for the normalization pass and is
-  // destroyed before the resident mip chain is completed.
-  const uploadStart = performance.now();
-  const stagingTexture = engine.device.createTexture({
-    label: `${sourceLabel} Grain scalar16 staging`,
-    size: { width, height, depthOrArrayLayers: 1 },
-    mipLevelCount: 1,
-    format: "r16uint",
-    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-  });
-  const bytesPerRow = Math.ceil((width * 2) / 256) * 256;
-  let upload = scalar16;
-  if (bytesPerRow !== width * 2) {
-    const samplesPerRow = bytesPerRow / 2;
-    upload = new Uint16Array(samplesPerRow * height);
-    for (let row = 0; row < height; row += 1) {
-      upload.set(scalar16.subarray(row * width, (row + 1) * width), row * samplesPerRow);
-    }
-  }
-  engine.device.queue.writeTexture(
-    { texture: stagingTexture },
-    upload,
-    { bytesPerRow, rowsPerImage: height },
-    { width, height, depthOrArrayLayers: 1 },
-  );
-  const uploadMs = performance.now() - uploadStart;
-
-  const previewSize = 128;
-  const previewSprite = document.createElement("canvas");
-  previewSprite.width = previewSize;
-  previewSprite.height = previewSize;
-  const previewContext = previewSprite.getContext("2d");
-  if (previewContext) {
-    previewContext.imageSmoothingEnabled = true;
-    previewContext.imageSmoothingQuality = "high";
-    const sourceCanvas = document.createElement("canvas");
-    sourceCanvas.width = width;
-    sourceCanvas.height = height;
-    const sourceContext = sourceCanvas.getContext("2d");
-    if (sourceContext) {
-      const image = sourceContext.createImageData(width, height);
-      for (let index = 0; index < scalar16.length; index += 1) {
-        const rgbaIndex = index * 4;
-        const value = Math.round(scalar16[index] / 257);
-        image.data[rgbaIndex] = value;
-        image.data[rgbaIndex + 1] = value;
-        image.data[rgbaIndex + 2] = value;
-        image.data[rgbaIndex + 3] = 255;
+    // Native unsigned staging exists only for the normalization pass and is
+    // destroyed before the resident mip chain is completed.
+    const uploadStart = performance.now();
+    stagingTexture = engine.device.createTexture({
+      label: `${sourceLabel} Grain scalar16 staging`,
+      size: { width, height, depthOrArrayLayers: 1 },
+      mipLevelCount: 1,
+      format: "r16uint",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    const bytesPerRow = Math.ceil((width * 2) / 256) * 256;
+    let upload = scalar16;
+    if (bytesPerRow !== width * 2) {
+      const samplesPerRow = bytesPerRow / 2;
+      upload = new Uint16Array(samplesPerRow * height);
+      for (let row = 0; row < height; row += 1) {
+        upload.set(
+          scalar16.subarray(row * width, (row + 1) * width),
+          row * samplesPerRow,
+        );
       }
-      sourceContext.putImageData(image, 0, 0);
-      previewContext.drawImage(sourceCanvas, 0, 0, previewSize, previewSize);
     }
-  }
+    engine.device.queue.writeTexture(
+      { texture: stagingTexture },
+      upload,
+      { bytesPerRow, rowsPerImage: height },
+      { width, height, depthOrArrayLayers: 1 },
+    );
+    const uploadMs = performance.now() - uploadStart;
 
-  // Conversione texel a texel della sorgente RGBA nel campo scalare. Gli stessi
-  // pesi di luma che il fragment shader di pittura applicava a ogni
-  // campionamento, applicati una volta sola qui.
-  const lumaShaderModule = engine.device.createShaderModule({
-    label: "Grain scalar luma WGSL",
-    code: grainLumaShader,
-  });
-  await assertShaderCompiled(lumaShaderModule, "Grain scalar luma");
-  const lumaBindGroupLayout = engine.device.createBindGroupLayout({
-    label: "Grain scalar luma bind group layout",
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "uint", viewDimension: "2d" },
-      },
-    ],
-  });
-  const lumaPipeline = engine.device.createRenderPipeline({
-    label: "Grain scalar luma pipeline",
-    layout: engine.device.createPipelineLayout({
-      label: "Grain scalar luma pipeline layout",
-      bindGroupLayouts: [lumaBindGroupLayout],
-    }),
-    vertex: { module: lumaShaderModule, entryPoint: "vertexMain" },
-    fragment: {
-      module: lumaShaderModule,
-      entryPoint: "fragmentMain",
-      targets: [{ format: "r16float" }],
-    },
-    primitive: { topology: "triangle-list" },
-  });
-  const lumaEncoder = engine.device.createCommandEncoder({
-    label: "Grain scalar luma encoder",
-  });
-  const lumaPass = lumaEncoder.beginRenderPass({
-    label: "Grain scalar luma mip 0",
-    colorAttachments: [
-      {
-        view: texture.createView({
-          label: "Grain scalar luma mip 0 target",
-          baseMipLevel: 0,
-          mipLevelCount: 1,
-        }),
-        loadOp: "clear",
-        storeOp: "store",
-        clearValue: { r: 0, g: 0, b: 0, a: 1 },
-      },
-    ],
-  });
-  lumaPass.setPipeline(lumaPipeline);
-  lumaPass.setBindGroup(
-    0,
-    engine.device.createBindGroup({
-      label: "Grain scalar luma bind group",
-      layout: lumaBindGroupLayout,
-      entries: [{ binding: 0, resource: stagingTexture.createView() }],
-    }),
-  );
-  lumaPass.draw(3, 1, 0, 0);
-  lumaPass.end();
-  engine.device.queue.submit([lumaEncoder.finish()]);
-  await engine.device.queue.onSubmittedWorkDone();
-  // Lo staging ha esaurito il suo scopo: fuori subito, prima che la catena mip
-  // aggiunga il proprio costo.
-  stagingTexture.destroy();
+    const previewSize = 128;
+    const previewSprite = document.createElement("canvas");
+    previewSprite.width = previewSize;
+    previewSprite.height = previewSize;
+    const previewContext = previewSprite.getContext("2d");
+    if (previewContext) {
+      previewContext.imageSmoothingEnabled = true;
+      previewContext.imageSmoothingQuality = "high";
+      const sourceCanvas = document.createElement("canvas");
+      sourceCanvas.width = width;
+      sourceCanvas.height = height;
+      const sourceContext = sourceCanvas.getContext("2d");
+      if (sourceContext) {
+        if (!(prepared.previewRgba.buffer instanceof ArrayBuffer)) {
+          throw new Error("Grain preview must use an owned ArrayBuffer.");
+        }
+        const rgba = new Uint8ClampedArray(
+          prepared.previewRgba.buffer,
+          prepared.previewRgba.byteOffset,
+          prepared.previewRgba.byteLength,
+        );
+        const image = new ImageData(rgba, width, height);
+        sourceContext.putImageData(image, 0, 0);
+        previewContext.drawImage(sourceCanvas, 0, 0, previewSize, previewSize);
+      }
+    }
 
-  const mipBuildStart = performance.now();
-  const mipShaderModule = engine.device.createShaderModule({
-    label: "Grain mip generation WGSL",
-    code: grainMipShader,
-  });
-  await assertShaderCompiled(mipShaderModule, "Grain mip generation");
-  const mipBindGroupLayout = engine.device.createBindGroupLayout({
-    label: "Grain mip generation bind group layout",
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float", viewDimension: "2d" },
-      },
-      {
-        binding: 1,
-        visibility: GPUShaderStage.FRAGMENT,
-        sampler: { type: "filtering" },
-      },
-    ],
-  });
-  const mipPipeline = engine.device.createRenderPipeline({
-    label: "Grain mip generation pipeline",
-    layout: engine.device.createPipelineLayout({
-      label: "Grain mip generation pipeline layout",
-      bindGroupLayouts: [mipBindGroupLayout],
-    }),
-    vertex: { module: mipShaderModule, entryPoint: "vertexMain" },
-    fragment: {
-      module: mipShaderModule,
-      entryPoint: "fragmentMain",
-      targets: [{ format: "r16float" }],
-    },
-    primitive: { topology: "triangle-list" },
-  });
-  const mipSampler = engine.device.createSampler({
-    label: "Grain mip generation linear sampler",
-    magFilter: "linear",
-    minFilter: "linear",
-    mipmapFilter: "nearest",
-    addressModeU: "clamp-to-edge",
-    addressModeV: "clamp-to-edge",
-  });
-  const encoder = engine.device.createCommandEncoder({
-    label: "Grain full mip chain encoder",
-  });
-  for (let mipLevel = 1; mipLevel < mipLevelCount; mipLevel += 1) {
-    const sourceView = texture.createView({
-      label: `Grain mip ${mipLevel - 1} source`,
-      baseMipLevel: mipLevel - 1,
-      mipLevelCount: 1,
+    const {
+      lumaBindGroupLayout,
+      lumaPipeline,
+      mipBindGroupLayout,
+      mipPipeline,
+      mipSampler,
+    } = await pipelineResourcesPromise;
+    const lumaEncoder = engine.device.createCommandEncoder({
+      label: "Grain scalar luma encoder",
     });
-    const targetView = texture.createView({
-      label: `Grain mip ${mipLevel} target`,
-      baseMipLevel: mipLevel,
-      mipLevelCount: 1,
-    });
-    const bindGroup = engine.device.createBindGroup({
-      label: `Grain mip ${mipLevel} bind group`,
-      layout: mipBindGroupLayout,
-      entries: [
-        { binding: 0, resource: sourceView },
-        { binding: 1, resource: mipSampler },
-      ],
-    });
-    const pass = encoder.beginRenderPass({
-      label: `Grain build mip ${mipLevel}`,
+    const lumaPass = lumaEncoder.beginRenderPass({
+      label: "Grain scalar luma mip 0",
       colorAttachments: [
         {
-          view: targetView,
+          view: texture.createView({
+            label: "Grain scalar luma mip 0 target",
+            baseMipLevel: 0,
+            mipLevelCount: 1,
+          }),
           loadOp: "clear",
           storeOp: "store",
-          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          clearValue: { r: 0, g: 0, b: 0, a: 1 },
         },
       ],
     });
-    pass.setPipeline(mipPipeline);
-    pass.setBindGroup(0, bindGroup);
-    pass.draw(3, 1, 0, 0);
-    pass.end();
-  }
-  engine.device.queue.submit([encoder.finish()]);
-  await engine.device.queue.onSubmittedWorkDone();
-  const mipBuildMs = performance.now() - mipBuildStart;
+    lumaPass.setPipeline(lumaPipeline);
+    lumaPass.setBindGroup(
+      0,
+      engine.device.createBindGroup({
+        label: "Grain scalar luma bind group",
+        layout: lumaBindGroupLayout,
+        entries: [{ binding: 0, resource: stagingTexture.createView() }],
+      }),
+    );
+    lumaPass.draw(3, 1, 0, 0);
+    lumaPass.end();
+    engine.device.queue.submit([lumaEncoder.finish()]);
+    await engine.device.queue.onSubmittedWorkDone();
+    // Lo staging ha esaurito il suo scopo: fuori subito, prima che la catena mip
+    // aggiunga il proprio costo.
+    stagingTexture.destroy();
+    stagingTexture = null;
 
-  return {
-    assetId,
-    texture,
-    identity: sourceIdentity,
-    width,
-    height,
-    mipLevelCount,
-    memoryBytes: r16MipChainBytes(width, height),
-    previewSprite,
-    decodeMs,
-    mipBuildMs,
-    uploadMs,
-  };
+    const mipBuildStart = performance.now();
+    const encoder = engine.device.createCommandEncoder({
+      label: "Grain full mip chain encoder",
+    });
+    for (let mipLevel = 1; mipLevel < mipLevelCount; mipLevel += 1) {
+      const sourceView = texture.createView({
+        label: `Grain mip ${mipLevel - 1} source`,
+        baseMipLevel: mipLevel - 1,
+        mipLevelCount: 1,
+      });
+      const targetView = texture.createView({
+        label: `Grain mip ${mipLevel} target`,
+        baseMipLevel: mipLevel,
+        mipLevelCount: 1,
+      });
+      const bindGroup = engine.device.createBindGroup({
+        label: `Grain mip ${mipLevel} bind group`,
+        layout: mipBindGroupLayout,
+        entries: [
+          { binding: 0, resource: sourceView },
+          { binding: 1, resource: mipSampler },
+        ],
+      });
+      const pass = encoder.beginRenderPass({
+        label: `Grain build mip ${mipLevel}`,
+        colorAttachments: [
+          {
+            view: targetView,
+            loadOp: "clear",
+            storeOp: "store",
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          },
+        ],
+      });
+      pass.setPipeline(mipPipeline);
+      pass.setBindGroup(0, bindGroup);
+      pass.draw(3, 1, 0, 0);
+      pass.end();
+    }
+    engine.device.queue.submit([encoder.finish()]);
+    await engine.device.queue.onSubmittedWorkDone();
+    const mipBuildMs = performance.now() - mipBuildStart;
+
+    return {
+      assetId,
+      texture,
+      identity: sourceIdentity,
+      width,
+      height,
+      mipLevelCount,
+      memoryBytes: r16MipChainBytes(width, height),
+      previewSprite,
+      decodeMs,
+      mipBuildMs,
+      uploadMs,
+    };
+  } catch (error) {
+    texture?.destroy();
+    throw error;
+  } finally {
+    stagingTexture?.destroy();
+  }
 }
 
 interface ShapeR16FloatPipelineResources {
@@ -1045,36 +1097,9 @@ function shapeR16FloatPipelineResources(
       label: "Shape R16F reconstruction pipeline layout",
       bindGroupLayouts: [baseBindGroupLayout],
     });
-    const basePipelines = Object.fromEntries(
-      (["r8unorm", "r16float"] as const).map((format) => [
-        format,
-        device.createRenderPipeline({
-          label: `Shape scalar16 to guarded R16F ${format} pipeline`,
-          layout: basePipelineLayout,
-          vertex: { module: baseModule, entryPoint: "vertexMain" },
-          fragment: {
-            module: baseModule,
-            entryPoint: format === "r8unorm" ? "fragmentMain8" : "fragmentMain16",
-            targets: [{ format: "r16float" }],
-          },
-          primitive: { topology: "triangle-list" },
-        }),
-      ]),
-    ) as Record<BrushShapeMaskFormat, GPURenderPipeline>;
     const mipPipelineLayout = device.createPipelineLayout({
       label: "Shape R16F mip pipeline layout",
       bindGroupLayouts: [mipBindGroupLayout],
-    });
-    const mipPipeline = device.createRenderPipeline({
-      label: "Shape R16F mip generation pipeline",
-      layout: mipPipelineLayout,
-      vertex: { module: mipModule, entryPoint: "vertexMain" },
-      fragment: {
-        module: mipModule,
-        entryPoint: "fragmentMain",
-        targets: [{ format: "r16float" }],
-      },
-      primitive: { topology: "triangle-list" },
     });
     const sampler = device.createSampler({
       label: "Shape R16F reconstruction linear sampler",
@@ -1084,6 +1109,45 @@ function shapeR16FloatPipelineResources(
       addressModeU: "clamp-to-edge",
       addressModeV: "clamp-to-edge",
     });
+    const [r8UnormPipeline, r16FloatPipeline, mipPipeline] = await Promise.all([
+      createRenderPipelineAsync(device, {
+        label: "Shape scalar16 to guarded R16F r8unorm pipeline",
+        layout: basePipelineLayout,
+        vertex: { module: baseModule, entryPoint: "vertexMain" },
+        fragment: {
+          module: baseModule,
+          entryPoint: "fragmentMain8",
+          targets: [{ format: "r16float" }],
+        },
+        primitive: { topology: "triangle-list" },
+      }),
+      createRenderPipelineAsync(device, {
+        label: "Shape scalar16 to guarded R16F r16float pipeline",
+        layout: basePipelineLayout,
+        vertex: { module: baseModule, entryPoint: "vertexMain" },
+        fragment: {
+          module: baseModule,
+          entryPoint: "fragmentMain16",
+          targets: [{ format: "r16float" }],
+        },
+        primitive: { topology: "triangle-list" },
+      }),
+      createRenderPipelineAsync(device, {
+        label: "Shape R16F mip generation pipeline",
+        layout: mipPipelineLayout,
+        vertex: { module: mipModule, entryPoint: "vertexMain" },
+        fragment: {
+          module: mipModule,
+          entryPoint: "fragmentMain",
+          targets: [{ format: "r16float" }],
+        },
+        primitive: { topology: "triangle-list" },
+      }),
+    ]);
+    const basePipelines: Record<BrushShapeMaskFormat, GPURenderPipeline> = {
+      r8unorm: r8UnormPipeline,
+      r16float: r16FloatPipeline,
+    };
     return {
       baseBindGroupLayout,
       basePipelines,
@@ -1121,14 +1185,35 @@ interface ShapeTextureSourceStream {
 
 async function createR16FloatShapeTexture(
   engine: BrushEngine,
-  sources: ShapeTextureSourceStream,
+  sourceStream: ShapeTextureSourceStream,
   sourceFormat: BrushShapeMaskFormat,
 ): Promise<GPUTexture> {
-  if (sources.length < 1) throw new Error("A Shape texture needs at least one layer.");
+  if (sourceStream.length < 1) throw new Error("A Shape texture needs at least one layer.");
   const mipLevelCount = Math.log2(SHAPE_MASK_SIZE) + 1;
   let texture: GPUTexture | null = null;
+  const batchIterator = sourceStream.batches[Symbol.asyncIterator]();
 
   try {
+    const pipelineResourcesPromise = shapeR16FloatPipelineResources(engine.device);
+    // Pull exactly one source while the device compiles its programs. Later
+    // sources remain serialized behind each upload, preserving the existing
+    // transient CPU and GPU memory bound for multi-Shape sequences.
+    const firstBatchPromise = batchIterator.next();
+    const readinessPromise = Promise.all([pipelineResourcesPromise, firstBatchPromise]);
+    const sources: ShapeTextureSourceStream = {
+      length: sourceStream.length,
+      decodedLayers: sourceStream.decodedLayers,
+      batches: (async function* (): AsyncGenerator<ShapeTextureSourceBatch> {
+        let batchResult = (await readinessPromise)[1];
+        while (!batchResult.done) {
+          let batch: ShapeTextureSourceBatch | null = batchResult.value;
+          batchResult = { done: true, value: undefined };
+          yield batch;
+          batch = null;
+          batchResult = await batchIterator.next();
+        }
+      })(),
+    };
     texture = engine.device.createTexture({
       label: `${sources.length}-layer guarded R16F Shape mask`,
       size: {
@@ -1142,13 +1227,15 @@ async function createR16FloatShapeTexture(
         GPUTextureUsage.TEXTURE_BINDING
         | GPUTextureUsage.RENDER_ATTACHMENT,
     });
-    const {
-      baseBindGroupLayout,
-      basePipelines,
-      mipBindGroupLayout,
-      mipPipeline,
-      sampler,
-    } = await shapeR16FloatPipelineResources(engine.device);
+    const [
+      {
+        baseBindGroupLayout,
+        basePipelines,
+        mipBindGroupLayout,
+        mipPipeline,
+        sampler,
+      },
+    ] = await readinessPromise;
 
     // Decode and upload one unique authored source at a time. A queue fence
     // bounds the transient allocation to one native staging texture even when
@@ -1263,6 +1350,11 @@ async function createR16FloatShapeTexture(
     }
     return texture;
   } catch (error) {
+    try {
+      await batchIterator.return?.();
+    } catch {
+      // Preserve the original load or GPU error.
+    }
     texture?.destroy();
     throw error;
   }
@@ -1296,163 +1388,79 @@ async function decodeShapeMaskResource(
   shapeInvert: boolean,
   shapeMaskFormat: BrushShapeMaskFormat,
 ): Promise<DecodedShapeMaskResource> {
-  let scalar16: Uint16Array;
-  let sourceWidth: number;
-  let sourceHeight: number;
+  let prepared: ShapePreprocessingResult;
   let decodeStrategy: ShapeMaskDecodeStrategy;
-  let authoredInvert = false;
   let sourceLabel: string;
   const customAsset = engine.customBrushAssets.resolveShape(assetId);
   if (customAsset) {
     sourceLabel = customAsset.name;
-    sourceWidth = customAsset.width;
-    sourceHeight = customAsset.height;
-    scalar16 = customAsset.scalar16;
+    if (customAsset.scalar16.length !== customAsset.width * customAsset.height) {
+      throw new Error(`${sourceLabel} scalar sample count does not match its dimensions.`);
+    }
+    prepared = await shapePreprocessingClient.prepare({
+      source: customAsset.scalar16,
+      sourceWidth: customAsset.width,
+      sourceHeight: customAsset.height,
+      invert: shapeInvert,
+      maskFormat: shapeMaskFormat,
+    });
     decodeStrategy = SHAPE_DIRECT_DECODE_STRATEGY;
   } else {
     const asset = shapeAssetDescriptor(assetId);
     sourceLabel = asset.sourceFile;
-    authoredInvert = asset.decode.invertLuminance;
     const source = await loadCachedAssetSource(asset.url);
     try {
-      const decoded = await decodeGrayscalePng(source);
-      if (decoded.width !== asset.width || decoded.height !== asset.height) {
-        throw new Error(
-          `${asset.sourceFile} must remain ${asset.width}×${asset.height}px; `
-          + `found ${decoded.width}×${decoded.height}px.`,
-        );
-      }
-      sourceWidth = decoded.width;
-      sourceHeight = decoded.height;
-      scalar16 = decoded.pixels;
+      prepared = await shapePreprocessingClient.prepare({
+        pngBytes: source,
+        expectedWidth: asset.width,
+        expectedHeight: asset.height,
+        invert: asset.decode.invertLuminance !== shapeInvert,
+        maskFormat: shapeMaskFormat,
+      });
       decodeStrategy = SHAPE_DIRECT_DECODE_STRATEGY;
     } catch {
       const legacyMask = await decodeShapeMaskWithCanvas(source, false);
-      sourceWidth = SHAPE_MASK_SIZE;
-      sourceHeight = SHAPE_MASK_SIZE;
-      scalar16 = new Uint16Array(legacyMask.length);
+      const scalar16 = new Uint16Array(legacyMask.length);
       for (let index = 0; index < legacyMask.length; index += 1) {
         scalar16[index] = legacyMask[index] * 257;
       }
+      prepared = await shapePreprocessingClient.prepare({
+        source: scalar16,
+        sourceWidth: SHAPE_MASK_SIZE,
+        sourceHeight: SHAPE_MASK_SIZE,
+        invert: asset.decode.invertLuminance !== shapeInvert,
+        maskFormat: shapeMaskFormat,
+      });
       decodeStrategy = SHAPE_CANVAS_DECODE_STRATEGY;
     }
   }
-
-  if (scalar16.length !== sourceWidth * sourceHeight) {
-    throw new Error(
-      `${sourceLabel} scalar sample count does not match its dimensions.`,
-    );
-  }
-  if (authoredInvert !== shapeInvert) {
-    scalar16 = scalar16.slice();
-    for (let index = 0; index < scalar16.length; index += 1) {
-      scalar16[index] = 65535 - scalar16[index];
-    }
-  }
-
-  const baseMask = new Uint8Array(SHAPE_MASK_SIZE * SHAPE_MASK_SIZE);
-  const baseSupportMask = new Uint8Array(baseMask.length);
-  const quantizeSource = (value: number): number => (
-    shapeMaskFormat === "r8unorm" ? Math.round(value / 257) * 257 : value
-  );
-  if (sourceWidth === SHAPE_MASK_SIZE && sourceHeight === SHAPE_MASK_SIZE) {
-    for (let index = 0; index < scalar16.length; index += 1) {
-      const value = quantizeSource(scalar16[index]);
-      baseMask[index] = Math.round(value / 257);
-      baseSupportMask[index] = value > 0 ? 255 : 0;
-    }
-  } else {
-    const sample = (x: number, y: number): number => scalar16[
-      Math.min(sourceHeight - 1, Math.max(0, y)) * sourceWidth
-      + Math.min(sourceWidth - 1, Math.max(0, x))
-    ];
-    for (let targetY = 0; targetY < SHAPE_MASK_SIZE; targetY += 1) {
-      const sourceY = (targetY + 0.5) * sourceHeight / SHAPE_MASK_SIZE - 0.5;
-      const y0 = Math.floor(sourceY);
-      const fy = sourceY - y0;
-      const targetRow = targetY * SHAPE_MASK_SIZE;
-      for (let targetX = 0; targetX < SHAPE_MASK_SIZE; targetX += 1) {
-        const sourceX = (targetX + 0.5) * sourceWidth / SHAPE_MASK_SIZE - 0.5;
-        const x0 = Math.floor(sourceX);
-        const fx = sourceX - x0;
-        const topLeft = quantizeSource(sample(x0, y0));
-        const topRight = quantizeSource(sample(x0 + 1, y0));
-        const bottomLeft = quantizeSource(sample(x0, y0 + 1));
-        const bottomRight = quantizeSource(sample(x0 + 1, y0 + 1));
-        const top = topLeft + (topRight - topLeft) * fx;
-        const bottom = bottomLeft + (bottomRight - bottomLeft) * fx;
-        const value = top + (bottom - top) * fy;
-        const index = targetRow + targetX;
-        baseMask[index] = Math.round(value / 257);
-        baseSupportMask[index] = Math.max(topLeft, topRight, bottomLeft, bottomRight) > 0
-          ? 255
-          : 0;
-      }
-    }
-  }
-  const outline = buildBrushMaskOutline(baseMask, SHAPE_MASK_SIZE, SHAPE_MASK_SIZE);
-
-  // Occupancy, the pointer outline and the small UI preview all describe the
-  // logical authored frame. They must not inherit the transparent filtering
-  // guard used only by the GPU sampler or the Shape would appear smaller in UI.
-  const previewMipMasks: Uint8Array[] = [baseMask];
-  let previewLevelMask: Uint8Array = baseMask;
-  let occupancyLevelMask = resampleShapeMaskSupportIntoTransparentGuard(
-    baseSupportMask,
-    SHAPE_MASK_SIZE,
-    SHAPE_MASK_FILTER_GUARD_TEXELS,
-  );
-  const occupancyMipMasks: Uint8Array[] = [occupancyLevelMask];
-  let logicalLevelSize = SHAPE_MASK_SIZE;
-  for (let mipLevel = 1; mipLevel <= SHAPE_OCCUPANCY_MAX_MIP; mipLevel += 1) {
-    previewLevelMask = downsampleShapeMask2x(previewLevelMask, logicalLevelSize);
-    occupancyLevelMask = downsampleShapeMaskSupport2x(occupancyLevelMask, logicalLevelSize);
-    logicalLevelSize /= 2;
-    previewMipMasks.push(previewLevelMask);
-    occupancyMipMasks.push(occupancyLevelMask);
-  }
-  const occupancy = buildShapeOccupancyMaps(
-    occupancyMipMasks,
-    { coordinateFrame: "protected" },
-  );
-  const previewMask = previewMipMasks[SHAPE_OCCUPANCY_MAX_MIP];
-  const previewSize = SHAPE_MASK_SIZE >> SHAPE_OCCUPANCY_MAX_MIP;
   const previewSprite = document.createElement("canvas");
-  previewSprite.width = previewSize;
-  previewSprite.height = previewSize;
+  previewSprite.width = prepared.previewSize;
+  previewSprite.height = prepared.previewSize;
   const previewContext = previewSprite.getContext("2d");
-  if (previewContext && previewMask) {
-    const image = previewContext.createImageData(previewSize, previewSize);
-    for (let index = 0; index < previewMask.length; index += 1) {
+  if (previewContext) {
+    const image = previewContext.createImageData(prepared.previewSize, prepared.previewSize);
+    for (let index = 0; index < prepared.previewMask.length; index += 1) {
       const rgbaIndex = index * 4;
       image.data[rgbaIndex] = 255;
       image.data[rgbaIndex + 1] = 255;
       image.data[rgbaIndex + 2] = 255;
-      image.data[rgbaIndex + 3] = previewMask[index];
+      image.data[rgbaIndex + 3] = prepared.previewMask[index];
     }
     previewContext.putImageData(image, 0, 0);
   }
-
-  const sourceIdentity = hashBytes(new Uint8Array(
-    scalar16.buffer,
-    scalar16.byteOffset,
-    scalar16.byteLength,
-  ));
-  const identity = shapeMaskFormat === "r16float"
-    ? Math.imul(sourceIdentity ^ 0x16f016f0, 0x01000193) >>> 0
-    : sourceIdentity;
   return {
     assetId,
-    scalar16,
-    sourceWidth,
-    sourceHeight,
+    scalar16: prepared.scalar16,
+    sourceWidth: prepared.sourceWidth,
+    sourceHeight: prepared.sourceHeight,
     sourceLabel,
     decodeStrategy,
-    identity,
-    occupancyWords: occupancy.words,
-    occupancyActiveCells: occupancy.activeCells,
-    occupancyCoverageRatios: occupancy.coverageRatios,
-    outline,
+    identity: prepared.identity,
+    occupancyWords: prepared.occupancyWords,
+    occupancyActiveCells: Array.from(prepared.occupancyActiveCells),
+    occupancyCoverageRatios: Array.from(prepared.occupancyCoverageRatios),
+    outline: prepared.outline,
     previewSprite,
   };
 }

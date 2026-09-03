@@ -1071,6 +1071,7 @@ const engine = new BrushEngine(canvas, {
   layerFormat: effectiveLayerFormat,
   presentationFormat: effectivePresentationFormat,
   paintDabProfile: effectivePaintDabProfile,
+  strokeGeometryBackend: editorExtensionEngineOptions.strokeGeometryBackend,
   adaptiveSpacingMaxExtraPercentPoints:
     editorExtensionEngineOptions.adaptiveSpacingMaxExtraPercentPoints,
   displayCompositingColorSpace: effectiveDisplayCompositingColorSpace,
