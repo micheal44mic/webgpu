@@ -13,6 +13,10 @@ const humanWorkload = readFileSync(
   new URL("../src/labs/gpu/dirty-region-human-workload.ts", import.meta.url),
   "utf8",
 );
+const bundledHumanFixture = JSON.parse(readFileSync(
+  new URL("../src/labs/gpu/dirty-region-human-fixture.json", import.meta.url),
+  "utf8",
+));
 const registry = readFileSync(
   new URL("../src/labs/editor-labs.ts", import.meta.url),
   "utf8",
@@ -84,6 +88,12 @@ assert.match(humanWorkload, /session\.processBatch\(\[points\[index\]\]/);
 assert.match(humanWorkload, /STAMP_STRIDE_BYTES/);
 assert.match(humanWorkload, /view\.getFloat32\(byteOffset \+ 8, true\)/);
 assert.match(humanWorkload, /recordedReferenceMatches/);
+assert.match(humanWorkload, /bundled-human-stroke/);
+assert.match(humanWorkload, /BUNDLED_HUMAN_STROKE_FIXTURE/);
+assert.match(humanWorkload, /if \(response\.ok\)/);
+assert.equal(bundledHumanFixture.version, 1);
+assert.equal(bundledHumanFixture.points.length, 187);
+assert.equal(bundledHumanFixture.points.at(-1).timeMs, 1495.5);
 assert.match(styles, /\.dirty-region-lab-presentation \{/);
 assert.match(styles, /\.dirty-region-lab-presentation::backdrop/);
 assert.match(styles, /\.dirty-region-lab-preview-grid/);

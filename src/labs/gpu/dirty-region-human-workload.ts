@@ -5,6 +5,7 @@ import { defaultBrushSettings, type BrushSettings } from "../../engine-types";
 import type { PackedStrokeStampResult } from "../../stroke-geometry-backend";
 import { fingerprintHumanStroke, type HumanStrokePoint } from "../human-stroke-lab";
 import type { DirtyRegionRect } from "./dirty-region-lab-model";
+import bundledHumanStrokeFixture from "./dirty-region-human-fixture.json";
 
 const HUMAN_STROKE_API_URL = "/api/human-stroke";
 const HUMAN_STROKE_TIMELINE_API_URL = "/api/stroke-timeline";
@@ -58,7 +59,7 @@ export interface HumanDirtyRegionFrame {
 }
 
 export interface HumanDirtyRegionWorkload {
-  readonly source: "saved-human-stroke";
+  readonly source: "saved-human-stroke" | "bundled-human-stroke";
   readonly capturedAt: string;
   readonly fingerprint: string;
   readonly capturePointCount: number;
@@ -78,6 +79,23 @@ export interface HumanDirtyRegionWorkload {
   readonly recordedReference: HumanDirtyRegionRecordedReference | null;
   readonly recordedReferenceMatches: boolean | null;
 }
+
+const BUNDLED_HUMAN_STROKE_FIXTURE = (
+  bundledHumanStrokeFixture as unknown as StoredHumanStrokeFixture
+);
+
+const BUNDLED_RECORDED_REFERENCE: HumanDirtyRegionRecordedReference = {
+  fingerprint: "4a954636",
+  pointCount: 187,
+  traceDurationMs: 1495.5,
+  baseStamps: 5770,
+  physicalCopies: 92320,
+  renderFrames: 187,
+  brushBatches: 187,
+  largestBatchStamps: 74,
+  lightGlazePyramidUpdatedPixels: 50345780,
+  presentationCacheUpdatedPixels: 7339631,
+};
 
 function finiteNumber(value: unknown, label: string): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -142,10 +160,11 @@ function parseRecordedReference(
 async function loadRecordedReference(): Promise<HumanDirtyRegionRecordedReference | null> {
   try {
     const response = await fetch(HUMAN_STROKE_TIMELINE_API_URL, { cache: "no-store" });
-    if (!response.ok) return null;
-    return parseRecordedReference(await response.json() as StoredHumanStrokeTimeline);
+    if (!response.ok) return BUNDLED_RECORDED_REFERENCE;
+    return parseRecordedReference(await response.json() as StoredHumanStrokeTimeline)
+      ?? BUNDLED_RECORDED_REFERENCE;
   } catch {
-    return null;
+    return BUNDLED_RECORDED_REFERENCE;
   }
 }
 
@@ -215,11 +234,17 @@ export async function loadHumanDirtyRegionWorkload(
   width: number,
   height: number,
 ): Promise<HumanDirtyRegionWorkload> {
-  const response = await fetch(HUMAN_STROKE_API_URL, { cache: "no-store" });
-  if (!response.ok) {
-    throw new Error(`Human stroke request failed (${response.status}).`);
+  let source: HumanDirtyRegionWorkload["source"] = "bundled-human-stroke";
+  let stored = BUNDLED_HUMAN_STROKE_FIXTURE;
+  try {
+    const response = await fetch(HUMAN_STROKE_API_URL, { cache: "no-store" });
+    if (response.ok) {
+      stored = await response.json() as StoredHumanStrokeFixture;
+      source = "saved-human-stroke";
+    }
+  } catch {
+    // The canonical trace is bundled so the device probe is self-contained.
   }
-  const stored = await response.json() as StoredHumanStrokeFixture;
   if (!stored.settings || !Array.isArray(stored.points) || stored.points.length < 2) {
     throw new Error("The saved human stroke fixture is incomplete.");
   }
@@ -322,7 +347,7 @@ export async function loadHumanDirtyRegionWorkload(
     : null;
 
   return {
-    source: "saved-human-stroke",
+    source,
     capturedAt: typeof stored.capturedAt === "string" ? stored.capturedAt : "unknown",
     fingerprint,
     capturePointCount: capturePoints.length,
