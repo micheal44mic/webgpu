@@ -100,6 +100,10 @@ import {
   type VectorSvgPaint,
 } from "./vector-svg-import.ts";
 import {
+  VectorSvgDirectStrokeMeshCache,
+  vectorSvgPaintSupportsDirectStrokeMesh,
+} from "./vector-svg-stroke-direct.ts";
+import {
   VECTOR_TEXT_TRANSFORM_STRATEGY,
   defaultVectorTextDistortPoints,
   mergeVectorTextPaths,
@@ -408,6 +412,7 @@ export class MixedSceneController {
     string,
     CachedSvgStrokePath[]
   >();
+  private readonly svgDirectStrokeMeshes = new VectorSvgDirectStrokeMeshCache();
   private readonly svgStrokeFailedLodsBySemantic = new Map<string, Set<number>>();
   private svgStrokeSemanticKeysByPaint = new WeakMap<VectorSvgPaint, string>();
   private svgSilhouetteSemanticKeysByDocument = new WeakMap<
@@ -772,6 +777,7 @@ export class MixedSceneController {
     this.metrics = emptyTextMetricsBox();
     this.geometryByNodeId.clear();
     this.svgStrokePathsBySemantic.clear();
+    this.svgDirectStrokeMeshes.clear();
     this.svgStrokeFailedLodsBySemantic.clear();
     this.svgStrokeSemanticKeysByPaint = new WeakMap();
     this.svgSilhouetteSemanticKeysByDocument = new WeakMap();
@@ -3846,11 +3852,25 @@ export class MixedSceneController {
     liveSlots: Set<string>,
     pinForRasterization = false,
   ): VectorTextEffectMeshResult {
+    const lod = this.effectLodForNode(node, view);
+    if (vectorSvgPaintSupportsDirectStrokeMesh(paint, node.opacity)) {
+      const directMesh = this.svgDirectStrokeMeshes.meshForPaint(
+        paint,
+        lod,
+        this.svgStrokeSemanticKey(paint),
+      );
+      if (directMesh) {
+        return {
+          mesh: directMesh,
+          matchesRequestedIdentity: true,
+          matchesRequestedLod: true,
+        };
+      }
+    }
     const slotNamespace = pinForRasterization ? "svg-raster" : "svg";
     const slotKey = `${slotNamespace}:${node.id}:${slotName}`;
     liveSlots.add(slotKey);
     if (pinForRasterization) this.effectCompiler.pinSlot(slotKey);
-    const lod = this.effectLodForNode(node, view);
     return this.effectCompiler.meshForSlot(
       slotKey,
       this.svgPaintPathForLod(paint, lod),

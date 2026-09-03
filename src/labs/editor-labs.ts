@@ -38,6 +38,7 @@ const LABS = [
   ["shadow-golden", "Golden ombre raster"],
   ["bevel-golden", "Golden bevel bounding-box"],
   ["paint-benchmark", "Benchmark Paint sintetico"],
+  ["dirty-region-performance-ab", "A/B regioni dirty · AABB / tile fuse"],
   ["effects-benchmark", "Benchmark banco effetti"],
   ["blur-quality-performance", "A/B blur · qualità e prestazioni"],
   ["layer-history", "GPU test cronologia livelli"],
@@ -86,6 +87,7 @@ type LabId = (typeof LABS)[number][0];
 
 const HOSTED_LAB_IDS = new Set<LabId>([
   "blur-quality-performance",
+  "dirty-region-performance-ab",
   "human-replay",
   "human-shape-sequence",
   "stroke-packed-wasm",
@@ -433,6 +435,20 @@ class EditorLabController implements EditorExtension {
       }
       case "paint-benchmark":
         return runBenchmark(engine, 2_000);
+      case "dirty-region-performance-ab": {
+        await engine.waitForIdle();
+        const { runDirtyRegionPerformanceLab } = await import(
+          "./gpu/dirty-region-performance-lab"
+        );
+        return runDirtyRegionPerformanceLab(engine.device, {
+          onProgress: (progress) => {
+            this.#host.setStatus(
+              `Regioni dirty ${progress.completed}/${progress.total}: ${progress.message}`,
+              "working",
+            );
+          },
+        });
+      }
       case "effects-benchmark":
         return benchmarkEffectsWorkingSet(engine, 5);
       case "blur-quality-performance": {

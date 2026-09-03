@@ -106,6 +106,7 @@
     "vector-text:verify": "node scripts/verify-vector-text.mjs",
     "vector-effect-cache:verify": "node scripts/verify-vector-effect-canonical-fill-cache.mjs",
     "vector-stroke-expansion-lab:verify": "node scripts/verify-vector-stroke-expansion-lab.mjs",
+    "dirty-region-performance-lab:verify": "node scripts/verify-dirty-region-performance-lab.mjs",
     "vector-shadow:verify": "node scripts/verify-vector-shadow-3d.mjs",
     "vector-shapes:verify": "node scripts/verify-vector-shapes.mjs",
     "vector-pixel-alignment:verify": "node scripts/verify-vector-pixel-alignment.mjs",

@@ -1,4 +1,5 @@
 import type { VectorTextGpuMeshData } from "./vector-text-effect-geometry.ts";
+import type { VectorTextLod } from "./vector-text-lod.ts";
 import {
   VECTOR_SVG_STATIC_STROKE_TOLERANCE,
   dashedStrokeSubpaths,
@@ -6,6 +7,7 @@ import {
   matrixMaximumScale,
   transformPoint,
   type VectorSvgFlatStrokeSubpath,
+  type VectorSvgPaint,
   type VectorSvgStroke,
   type VectorSvgStrokeExpansionQuality,
   type VectorSvgStrokePoint,
@@ -55,6 +57,26 @@ export interface DirectVectorSvgStrokeCompileResult {
   readonly mesh: VectorTextGpuMeshData | null;
   readonly metrics: DirectVectorSvgStrokeCompileMetrics;
 }
+
+export interface VectorSvgDirectStrokeMeshCacheDiagnostics {
+  readonly entries: number;
+  readonly logicalBytes: number;
+  readonly failedLods: number;
+  readonly cacheHits: number;
+  readonly cacheMisses: number;
+}
+
+interface CachedDirectStrokeMesh {
+  readonly lodBucket: number;
+  readonly mesh: VectorTextGpuMeshData;
+  readonly logicalBytes: number;
+  lastUsed: number;
+}
+
+const DIRECT_STROKE_CACHE_MAXIMUM_ENTRIES = 48;
+const DIRECT_STROKE_CACHE_MAXIMUM_LODS_PER_PAINT = 3;
+const DIRECT_STROKE_CACHE_MAXIMUM_BYTES = 32 * 1024 * 1024;
+const DIRECT_STROKE_CACHE_MAXIMUM_FAILED_PAINTS = 96;
 
 interface MutableMetrics {
   strokeCount: number;
@@ -744,4 +766,269 @@ export function compileDirectVectorSvgStrokeMesh(
     mesh,
     metrics: immutableMetrics(metrics, mesh, emitMs, totalMs),
   };
+}
+
+/**
+ * Direct triangles may overlap at joins and self-intersections. They are
+ * visually equivalent to a union only when the source is fully opaque.
+ */
+export function vectorSvgPaintSupportsDirectStrokeMesh(
+  paint: VectorSvgPaint,
+  nodeOpacity: number,
+): boolean {
+  const strokes = paint.strokes;
+  return Boolean(strokes?.length)
+    && paint.gradient === undefined
+    && paint.opacity === 1
+    && nodeOpacity === 1
+    && strokes!.every((stroke) => (
+      Number.isFinite(stroke.width)
+      && stroke.width > 0
+      && stroke.linecap === "butt"
+      && stroke.linejoin === "miter"
+      && stroke.dashArray.length === 0
+      && !stroke.sourcePath.verbs.includes(4)
+      && stroke.transform.every(Number.isFinite)
+      && Math.abs(
+        stroke.transform[0] * stroke.transform[3]
+        - stroke.transform[1] * stroke.transform[2]
+      ) > GEOMETRY_EPSILON
+    ));
+}
+
+export function directVectorSvgStrokeQualityForLod(
+  strokes: readonly VectorSvgStroke[],
+  lod: VectorTextLod,
+): VectorSvgStrokeExpansionQuality {
+  const widthTolerance = strokes.reduce(
+    (minimum, stroke) => Math.min(
+      minimum,
+      Math.abs(stroke.width * 0.5) / 32,
+    ),
+    0.25,
+  );
+  const boundedWidthTolerance = Math.max(1e-5, widthTolerance);
+  return {
+    centerlineTolerance: Math.min(
+      boundedWidthTolerance,
+      lod.polygonFlattenTolerance,
+    ),
+    roundArcSagittaTolerance: Math.min(
+      boundedWidthTolerance,
+      lod.roundArcSagittaTolerance,
+    ),
+  };
+}
+
+/**
+ * Bounded CPU mesh cache for the production source-fill fast path. A mesh
+ * built for a higher LOD can safely satisfy a lower-LOD request.
+ */
+export class VectorSvgDirectStrokeMeshCache {
+  private readonly entriesBySemanticIdentity = new Map<
+    string,
+    CachedDirectStrokeMesh[]
+  >();
+  private readonly failedLodsBySemanticIdentity = new Map<string, Set<number>>();
+  private logicalBytes = 0;
+  private accessSequence = 0;
+  private revisionSequence = 0;
+  private cacheHits = 0;
+  private cacheMisses = 0;
+
+  clear(): void {
+    this.entriesBySemanticIdentity.clear();
+    this.failedLodsBySemanticIdentity.clear();
+    this.logicalBytes = 0;
+    this.accessSequence = 0;
+    this.cacheHits = 0;
+    this.cacheMisses = 0;
+  }
+
+  diagnostics(): VectorSvgDirectStrokeMeshCacheDiagnostics {
+    let entries = 0;
+    for (const cached of this.entriesBySemanticIdentity.values()) {
+      entries += cached.length;
+    }
+    let failedLods = 0;
+    for (const failed of this.failedLodsBySemanticIdentity.values()) {
+      failedLods += failed.size;
+    }
+    return {
+      entries,
+      logicalBytes: this.logicalBytes,
+      failedLods,
+      cacheHits: this.cacheHits,
+      cacheMisses: this.cacheMisses,
+    };
+  }
+
+  meshForPaint(
+    paint: VectorSvgPaint,
+    lod: VectorTextLod,
+    semanticIdentity: string,
+  ): VectorTextGpuMeshData | null {
+    const strokes = paint.strokes;
+    if (!strokes?.length) return null;
+    const cached = this.cachedMesh(semanticIdentity, lod.bucket);
+    if (cached) {
+      this.cacheHits += 1;
+      return cached;
+    }
+    if (this.failedLodsBySemanticIdentity.get(semanticIdentity)?.has(lod.bucket)) {
+      return null;
+    }
+    this.cacheMisses += 1;
+    try {
+      const result = compileDirectVectorSvgStrokeMesh(
+        strokes,
+        directVectorSvgStrokeQualityForLod(strokes, lod),
+        `cache-entry-${this.nextRevision()}`,
+        {
+          lodBucket: lod.bucket,
+          integerScale: lod.integerScale,
+        },
+      );
+      const mesh = result.mesh;
+      if (
+        !mesh
+        || result.metrics.totalBytes > DIRECT_STROKE_CACHE_MAXIMUM_BYTES
+        || result.metrics.degenerateSegmentCount > 0
+        || result.metrics.reversalJoinCount > 0
+        || result.metrics.miterFallbackCount > 0
+      ) {
+        this.rememberFailure(semanticIdentity, lod.bucket);
+        return null;
+      }
+      this.rememberMesh(semanticIdentity, lod.bucket, mesh);
+      return mesh;
+    } catch {
+      this.rememberFailure(semanticIdentity, lod.bucket);
+      return null;
+    }
+  }
+
+  private nextAccess(): number {
+    this.accessSequence += 1;
+    return this.accessSequence;
+  }
+
+  private nextRevision(): number {
+    if (this.revisionSequence >= Number.MAX_SAFE_INTEGER) {
+      throw new Error("The direct stroke mesh revision sequence is exhausted.");
+    }
+    this.revisionSequence += 1;
+    return this.revisionSequence;
+  }
+
+  private cachedMesh(
+    semanticIdentity: string,
+    lodBucket: number,
+  ): VectorTextGpuMeshData | null {
+    const entries = this.entriesBySemanticIdentity.get(semanticIdentity);
+    if (!entries) return null;
+    let selected: CachedDirectStrokeMesh | null = null;
+    for (const entry of entries) {
+      if (entry.lodBucket === lodBucket) {
+        selected = entry;
+        break;
+      }
+      if (
+        entry.lodBucket > lodBucket
+        && (!selected || entry.lodBucket < selected.lodBucket)
+      ) {
+        selected = entry;
+      }
+    }
+    if (!selected) return null;
+    selected.lastUsed = this.nextAccess();
+    return selected.mesh;
+  }
+
+  private rememberMesh(
+    semanticIdentity: string,
+    lodBucket: number,
+    mesh: VectorTextGpuMeshData,
+  ): void {
+    const logicalBytes = mesh.vertices.byteLength + mesh.indices.byteLength;
+    const entries = this.entriesBySemanticIdentity.get(semanticIdentity) ?? [];
+    const existingIndex = entries.findIndex(
+      (entry) => entry.lodBucket === lodBucket,
+    );
+    if (existingIndex >= 0) {
+      this.logicalBytes -= entries[existingIndex].logicalBytes;
+      entries.splice(existingIndex, 1);
+    }
+    entries.push({
+      lodBucket,
+      mesh,
+      logicalBytes,
+      lastUsed: this.nextAccess(),
+    });
+    this.logicalBytes += logicalBytes;
+    while (entries.length > DIRECT_STROKE_CACHE_MAXIMUM_LODS_PER_PAINT) {
+      let oldestIndex = 0;
+      for (let index = 1; index < entries.length; index += 1) {
+        if (entries[index].lastUsed < entries[oldestIndex].lastUsed) {
+          oldestIndex = index;
+        }
+      }
+      const [removed] = entries.splice(oldestIndex, 1);
+      this.logicalBytes -= removed.logicalBytes;
+    }
+    this.entriesBySemanticIdentity.set(semanticIdentity, entries);
+    this.prune();
+  }
+
+  private entryCount(): number {
+    let count = 0;
+    for (const entries of this.entriesBySemanticIdentity.values()) {
+      count += entries.length;
+    }
+    return count;
+  }
+
+  private prune(): void {
+    while (
+      this.entryCount() > DIRECT_STROKE_CACHE_MAXIMUM_ENTRIES
+      || this.logicalBytes > DIRECT_STROKE_CACHE_MAXIMUM_BYTES
+    ) {
+      let oldestIdentity: string | null = null;
+      let oldestIndex = -1;
+      let oldestAccess = Number.POSITIVE_INFINITY;
+      for (const [identity, entries] of this.entriesBySemanticIdentity) {
+        for (let index = 0; index < entries.length; index += 1) {
+          if (entries[index].lastUsed < oldestAccess) {
+            oldestIdentity = identity;
+            oldestIndex = index;
+            oldestAccess = entries[index].lastUsed;
+          }
+        }
+      }
+      if (oldestIdentity === null || oldestIndex < 0) return;
+      const entries = this.entriesBySemanticIdentity.get(oldestIdentity);
+      if (!entries) return;
+      const [removed] = entries.splice(oldestIndex, 1);
+      this.logicalBytes -= removed.logicalBytes;
+      if (entries.length === 0) {
+        this.entriesBySemanticIdentity.delete(oldestIdentity);
+      }
+    }
+  }
+
+  private rememberFailure(semanticIdentity: string, lodBucket: number): void {
+    const failed = this.failedLodsBySemanticIdentity.get(semanticIdentity)
+      ?? new Set<number>();
+    failed.add(lodBucket);
+    this.failedLodsBySemanticIdentity.delete(semanticIdentity);
+    this.failedLodsBySemanticIdentity.set(semanticIdentity, failed);
+    while (
+      this.failedLodsBySemanticIdentity.size
+      > DIRECT_STROKE_CACHE_MAXIMUM_FAILED_PAINTS
+    ) {
+      const oldest = this.failedLodsBySemanticIdentity.keys().next().value;
+      if (typeof oldest !== "string") break;
+      this.failedLodsBySemanticIdentity.delete(oldest);
+    }
+  }
 }

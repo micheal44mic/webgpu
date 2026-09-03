@@ -32,6 +32,7 @@ export const verificationScripts = Object.freeze([
   "verify-clone.mjs",
   "verify-custom-document-dimensions.mjs",
   "verify-controller-boundaries.mjs",
+  "verify-dirty-region-performance-lab.mjs",
   "verify-document-size.mjs",
   "verify-document-interaction-controller.mjs",
   "verify-direct-deposit-brush.mjs",
