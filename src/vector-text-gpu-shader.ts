@@ -304,10 +304,10 @@ fn meshInnerShadowFragmentMain(
 }
 `;
 
-export const vectorTextGpuGaussianBlurShader = /* wgsl */ `
+export const vectorTextGpuTentBlurShader = /* wgsl */ `
 struct BlurUniforms {
   sizeAndRadius: vec4<u32>,
-  weights: array<vec4<f32>, 7>,
+  kernel: array<vec4<f32>, 7>,
 };
 
 struct VertexOutput {
@@ -316,6 +316,7 @@ struct VertexOutput {
 
 @group(0) @binding(0) var<uniform> blur: BlurUniforms;
 @group(0) @binding(1) var sourceTexture: texture_2d<f32>;
+@group(0) @binding(2) var linearSampler: sampler;
 
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
@@ -329,46 +330,75 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   return output;
 }
 
-fn kernelWeight(index: u32) -> f32 {
-  return blur.weights[index / 4u][index % 4u];
+fn filteredSample(position: vec2<f32>) -> vec4<f32> {
+  let activeSize = vec2<f32>(blur.sizeAndRadius.xy);
+  if (any(position <= vec2<f32>(-1.0)) || any(position >= activeSize)) {
+    return vec4<f32>(0.0);
+  }
+  let physicalSize = vec2<f32>(textureDimensions(sourceTexture));
+  let bounded = clamp(position, vec2<f32>(0.0), activeSize - vec2<f32>(1.0));
+  let edgeWeight = clamp(
+    position + vec2<f32>(1.0),
+    vec2<f32>(0.0),
+    vec2<f32>(1.0)
+  ) * clamp(
+    activeSize - position,
+    vec2<f32>(0.0),
+    vec2<f32>(1.0)
+  );
+  return textureSampleLevel(
+    sourceTexture,
+    linearSampler,
+    (bounded + vec2<f32>(0.5)) / physicalSize,
+    0.0
+  ) * edgeWeight.x * edgeWeight.y;
 }
 
 fn blurPixel(
   fragmentPosition: vec4<f32>,
-  direction: vec2<i32>
+  direction: vec2<f32>
 ) -> vec4<f32> {
-  let size = vec2<i32>(blur.sizeAndRadius.xy);
-  let center = vec2<i32>(fragmentPosition.xy);
-  let radius = i32(blur.sizeAndRadius.z);
-  var result = vec4<f32>(0.0);
-  for (var offset = -24; offset <= 24; offset += 1) {
-    if (abs(offset) > radius) {
-      continue;
-    }
-    let samplePosition = center + direction * offset;
-    if (
-      all(samplePosition >= vec2<i32>(0))
-      && all(samplePosition < size)
-    ) {
-      result += textureLoad(sourceTexture, samplePosition, 0)
-        * kernelWeight(u32(abs(offset)));
-    }
+  let centerPosition = floor(fragmentPosition.xy);
+  let center = filteredSample(centerPosition);
+  let count = blur.kernel[0].x;
+  if (count <= 0.0) {
+    return center;
   }
-  return result;
+  var sum = center * count;
+  var normalization = count;
+  for (var first = 1u; first < 24u; first += 2u) {
+    let firstOffset = f32(first);
+    if (firstOffset >= count) { break; }
+    let secondOffset = min(firstOffset + 1.0, count);
+    let firstWeight = count - firstOffset;
+    let secondWeight = count - secondOffset;
+    let pairWeight = firstWeight + secondWeight;
+    if (pairWeight <= 0.0) { continue; }
+    let offset = (
+      firstOffset * firstWeight + secondOffset * secondWeight
+    ) / pairWeight;
+    let delta = direction * offset;
+    sum += pairWeight * (
+      filteredSample(centerPosition - delta)
+      + filteredSample(centerPosition + delta)
+    );
+    normalization += pairWeight * 2.0;
+  }
+  return sum / max(normalization, 0.000001);
 }
 
 @fragment
 fn horizontalMain(
   @builtin(position) fragmentPosition: vec4<f32>
 ) -> @location(0) vec4<f32> {
-  return blurPixel(fragmentPosition, vec2<i32>(1, 0));
+  return blurPixel(fragmentPosition, vec2<f32>(1.0, 0.0));
 }
 
 @fragment
 fn verticalMain(
   @builtin(position) fragmentPosition: vec4<f32>
 ) -> @location(0) vec4<f32> {
-  return blurPixel(fragmentPosition, vec2<i32>(0, 1));
+  return blurPixel(fragmentPosition, vec2<f32>(0.0, 1.0));
 }
 `;
 

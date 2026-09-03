@@ -4291,9 +4291,9 @@ export class MixedSceneController {
       node.innerShadowBlur,
       bucketScale,
     );
-    // The cache contains only G(fill). It is deliberately shareable with an
-    // outer shadow using the same source, sigma and LOD; color and direction
-    // are applied later and never duplicate the R16F matte.
+    // The cache contains only the blurred fill mask. It is deliberately
+    // shareable with an outer shadow using the same source, blur plan and LOD;
+    // color and direction are applied later and never duplicate the R16F matte.
     const blurBounds = [
       plan.bounds[0],
       plan.bounds[1],

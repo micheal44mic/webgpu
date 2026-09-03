@@ -1,5 +1,5 @@
 export const VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY =
-  "webgpu-slug-r16float-mask-separable-gaussian-roi-cache-v3" as const;
+  "webgpu-r16float-mask-separable-adaptive-tent-roi-cache-v4" as const;
 
 export const VECTOR_TEXT_SINGLE_SHADOW_BLUR_MAXIMUM = 300;
 export const VECTOR_TEXT_SINGLE_SHADOW_MAX_PIXELS = 4 * 1024 * 1024;
@@ -40,9 +40,8 @@ export function vectorTextSingleShadowBlurSupport(value: number): number {
 }
 
 /**
- * Port del planner di paint-webgpu-m1/geom/vector-shadow-blur-renderer.js.
  * Il blur resta in coordinate locali, ma la mask viene rasterizzata soltanto
- * alla densità utile per la vista corrente. Sigma e kernel sono limitati e
+ * alla densità utile per la vista corrente. Raggio e kernel sono limitati e
  * l'area non può superare quattro megapixel.
  */
 export function planVectorTextSingleShadowBlur(

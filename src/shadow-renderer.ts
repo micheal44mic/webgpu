@@ -1,4 +1,9 @@
 import {
+  ADAPTIVE_TENT_BLUR_MAX_WORK_RADIUS,
+  planAdaptiveTentBlur,
+  type AdaptiveTentBlurPlan,
+} from "./adaptive-tent-blur-core.ts";
+import {
   RASTER_SHADOW_TILE_SIZE,
   normalizeRasterInnerShadowStyle,
   normalizeRasterOuterShadowStyle,
@@ -18,7 +23,7 @@ import {
 } from "./raster-effect-color-space";
 
 export const RASTER_SHADOW_RENDERER_BUILD =
-  "raster-shadow-webgpu-v2-dimension-neutral-session-program-cache-independent-packed-f16-morphology-gaussian";
+  "raster-shadow-webgpu-v3-packed-f16-morphology-adaptive-tent";
 export const RASTER_SHADOW_STORAGE_STRATEGY =
   "persistent-packed-f16-matte-per-enabled-shadow" as const;
 export const RASTER_SHADOW_WORKSPACE_STRATEGY =
@@ -53,6 +58,9 @@ export interface RasterShadowEncodeResult {
   passes: number;
   sourceDispatches: number;
   morphologyDispatches: number;
+  blurPrefilterDispatches: number;
+  tentDispatches: number;
+  /** Compatibility alias for the two separable blur dispatches. */
   gaussianDispatches: number;
   resolveDispatches: number;
   workPixels: number;
@@ -75,6 +83,12 @@ interface BuildJob {
   localTargetY: number;
 }
 
+interface BlurWorkPlan {
+  readonly width: number;
+  readonly height: number;
+  readonly plan: AdaptiveTentBlurPlan;
+}
+
 type SourceModeCode = 0 | 1 | 2;
 
 const WORKGROUP_SIZE = 8;
@@ -82,7 +96,9 @@ const FILTER_WORKGROUP_SIZE = 64;
 const MAX_FILTER_RADIUS = 250;
 const FILTER_CACHE_LENGTH =
   FILTER_WORKGROUP_SIZE + MAX_FILTER_RADIUS * 2;
-const PARAMETER_BYTES = 80;
+const TENT_FILTER_CACHE_LENGTH =
+  FILTER_WORKGROUP_SIZE + ADAPTIVE_TENT_BLUR_MAX_WORK_RADIUS * 2;
+const PARAMETER_BYTES = 96;
 const PARAMETER_STRIDE = 256;
 const PARAMETER_CAPACITY = 2048;
 const COMPOSITION_UNIFORM_BYTES = 64;
@@ -94,6 +110,16 @@ function clamp(value: number, minimum: number, maximum: number): number {
 
 function align(value: number, alignment: number): number {
   return Math.ceil(value / alignment) * alignment;
+}
+
+function shadowBlurPlan(kernel: RasterShadowKernel): AdaptiveTentBlurPlan {
+  return planAdaptiveTentBlur(kernel.blurRadius);
+}
+
+function shadowBuildInfluence(kernel: RasterShadowKernel): number {
+  const plan = shadowBlurPlan(kernel);
+  const samplingMargin = plan.count > 0 ? Math.max(1, Math.ceil(plan.downsample)) : 0;
+  return kernel.influenceRadius + samplingMargin;
 }
 
 function sourceModeCode(mode: RasterStrokeSourceMode): SourceModeCode {
@@ -162,7 +188,11 @@ struct ShadowParameters {
   inputOffsetWords: u32,
   outputOffsetWords: u32,
   direction: vec2<i32>,
-  _pad0: vec2<u32>,
+  workSize: vec2<u32>,
+  workScale: f32,
+  count: f32,
+  prefilterSampleAxis: u32,
+  _pad0: u32,
 };
 
 struct LightGlazeUniforms {
@@ -378,6 +408,39 @@ fn sampleFloat(offsetWords: u32, position: vec2<i32>, outside: f32) -> f32 {
   }
   return loadFloat(offsetWords, vec2<u32>(position));
 }
+
+fn sampleFloatWithin(
+  offsetWords: u32,
+  position: vec2<i32>,
+  size: vec2<u32>,
+  outside: f32
+) -> f32 {
+  if (any(position < vec2<i32>(0)) || any(position >= vec2<i32>(size))) {
+    return outside;
+  }
+  return loadFloat(offsetWords, vec2<u32>(position));
+}
+
+fn sampleFloatLinear(
+  offsetWords: u32,
+  position: vec2<f32>,
+  size: vec2<u32>,
+  outside: f32
+) -> f32 {
+  let lower = vec2<i32>(floor(position));
+  let fraction = fract(position);
+  let top = mix(
+    sampleFloatWithin(offsetWords, lower, size, outside),
+    sampleFloatWithin(offsetWords, lower + vec2<i32>(1, 0), size, outside),
+    fraction.x
+  );
+  let bottom = mix(
+    sampleFloatWithin(offsetWords, lower + vec2<i32>(0, 1), size, outside),
+    sampleFloatWithin(offsetWords, lower + vec2<i32>(1, 1), size, outside),
+    fraction.x
+  );
+  return mix(top, bottom, fraction.y);
+}
 `;
 }
 
@@ -398,17 +461,13 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
 `;
 }
 
-function filterShader(
+function morphologyShader(
   kind: RasterShadowKind,
-  operation: "morphology" | "gaussian",
   storedEncodedSrgb = false,
 ): string {
-  const outside = operation === "morphology" && kind === "inner"
-    ? "1.0"
-    : "0.0";
+  const outside = kind === "inner" ? "1.0" : "0.0";
   const reduction = kind === "inner" ? "min(value, sample)" : "max(value, sample)";
-  const body = operation === "morphology"
-    ? /* wgsl */ `
+  const body = /* wgsl */ `
   var value = filterCache[center];
   for (var index = 1u; index <= ${MAX_FILTER_RADIUS}u; index += 1u) {
     if (index > parameters.radius) {
@@ -418,23 +477,6 @@ function filterShader(
     value = ${reduction};
     sample = filterCache[center - index];
     value = ${reduction};
-  }`
-    : /* wgsl */ `
-  var value = filterCache[center];
-  if (parameters.sigma >= 0.3 && parameters.radius > 0u) {
-    let inverse = 0.5 / (parameters.sigma * parameters.sigma);
-    var sum = value;
-    var weightSum = 1.0;
-    for (var index = 1u; index <= ${MAX_FILTER_RADIUS}u; index += 1u) {
-      if (index > parameters.radius) {
-        break;
-      }
-      let weight = exp(-f32(index * index) * inverse);
-      sum += weight * filterCache[center + index];
-      sum += weight * filterCache[center - index];
-      weightSum += 2.0 * weight;
-    }
-    value = sum / weightSum;
   }`;
   return `${sourceShaderCommon(storedEncodedSrgb)}
 var<workgroup> filterCache: array<f32, ${FILTER_CACHE_LENGTH}>;
@@ -489,6 +531,150 @@ ${body}
 `;
 }
 
+function blurPrefilterShader(storedEncodedSrgb = false): string {
+  return `${sourceShaderCommon(storedEncodedSrgb)}
+@compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
+  if (any(globalId.xy >= parameters.workSize)) {
+    return;
+  }
+  let sourcePosition = (
+    vec2<f32>(globalId.xy) + vec2<f32>(0.5)
+  ) / parameters.workScale - vec2<f32>(0.5);
+  if (parameters.prefilterSampleAxis <= 1u) {
+    storeFloat(
+      parameters.outputOffsetWords,
+      globalId.xy,
+      sampleFloatLinear(
+        parameters.inputOffsetWords,
+        sourcePosition,
+        parameters.buildSize,
+        0.0
+      )
+    );
+    return;
+  }
+  let axisSamples = min(parameters.prefilterSampleAxis, 4u);
+  let filterWidth = max(0.0, 1.0 / parameters.workScale - 1.0);
+  var sum = 0.0;
+  var samples = 0u;
+  for (var y = 0u; y < 4u; y += 1u) {
+    if (y >= axisSamples) { break; }
+    let offsetY = ((f32(y) + 0.5) / f32(axisSamples) - 0.5) * filterWidth;
+    for (var x = 0u; x < 4u; x += 1u) {
+      if (x >= axisSamples) { break; }
+      let offsetX = ((f32(x) + 0.5) / f32(axisSamples) - 0.5) * filterWidth;
+      sum += sampleFloatLinear(
+        parameters.inputOffsetWords,
+        sourcePosition + vec2<f32>(offsetX, offsetY),
+        parameters.buildSize,
+        0.0
+      );
+      samples += 1u;
+    }
+  }
+  storeFloat(
+    parameters.outputOffsetWords,
+    globalId.xy,
+    sum / max(1.0, f32(samples))
+  );
+}
+`;
+}
+
+function tentFilterShader(storedEncodedSrgb = false): string {
+  return `${sourceShaderCommon(storedEncodedSrgb)}
+var<workgroup> filterCache: array<f32, ${TENT_FILTER_CACHE_LENGTH}>;
+
+fn outputPosition(groupId: vec3<u32>, lane: u32) -> vec2<u32> {
+  if (parameters.direction.x != 0) {
+    return vec2<u32>(
+      groupId.x * ${FILTER_WORKGROUP_SIZE}u + lane,
+      groupId.y
+    );
+  }
+  return vec2<u32>(
+    groupId.y,
+    groupId.x * ${FILTER_WORKGROUP_SIZE}u + lane
+  );
+}
+
+fn cacheSourcePosition(groupId: vec3<u32>, cacheIndex: u32) -> vec2<i32> {
+  let along = i32(groupId.x * ${FILTER_WORKGROUP_SIZE}u + cacheIndex)
+    - ${ADAPTIVE_TENT_BLUR_MAX_WORK_RADIUS};
+  if (parameters.direction.x != 0) {
+    return vec2<i32>(along, i32(groupId.y));
+  }
+  return vec2<i32>(i32(groupId.y), along);
+}
+
+fn filteredCacheSample(position: f32) -> f32 {
+  let lower = u32(floor(position));
+  return mix(filterCache[lower], filterCache[lower + 1u], fract(position));
+}
+
+@compute @workgroup_size(${FILTER_WORKGROUP_SIZE})
+fn main(
+  @builtin(local_invocation_id) localId: vec3<u32>,
+  @builtin(workgroup_id) groupId: vec3<u32>
+) {
+  for (
+    var cacheIndex = localId.x;
+    cacheIndex < ${TENT_FILTER_CACHE_LENGTH}u;
+    cacheIndex += ${FILTER_WORKGROUP_SIZE}u
+  ) {
+    filterCache[cacheIndex] = sampleFloatWithin(
+      parameters.inputOffsetWords,
+      cacheSourcePosition(groupId, cacheIndex),
+      parameters.workSize,
+      0.0
+    );
+  }
+  workgroupBarrier();
+  let output = outputPosition(groupId, localId.x);
+  if (any(output >= parameters.workSize)) {
+    return;
+  }
+  let centerIndex = ${ADAPTIVE_TENT_BLUR_MAX_WORK_RADIUS}u + localId.x;
+  let center = filterCache[centerIndex];
+  let count = parameters.count;
+  if (count <= 0.0) {
+    storeFloat(parameters.outputOffsetWords, output, center);
+    return;
+  }
+  var sum = center * count;
+  var normalization = count;
+  for (
+    var first = 1u;
+    first < ${ADAPTIVE_TENT_BLUR_MAX_WORK_RADIUS}u;
+    first += 2u
+  ) {
+    let firstOffset = f32(first);
+    if (firstOffset >= count) { break; }
+    let secondOffset = min(firstOffset + 1.0, count);
+    let firstWeight = count - firstOffset;
+    let secondWeight = count - secondOffset;
+    let pairWeight = firstWeight + secondWeight;
+    if (pairWeight <= 0.0) { continue; }
+    let offset = (
+      firstOffset * firstWeight + secondOffset * secondWeight
+    ) / pairWeight;
+    let centerPosition = f32(centerIndex);
+    sum += pairWeight * (
+      filteredCacheSample(centerPosition - offset)
+      + filteredCacheSample(centerPosition + offset)
+    );
+    normalization += pairWeight * 2.0;
+  }
+  storeFloat(
+    parameters.outputOffsetWords,
+    output,
+    clamp(sum / max(normalization, 0.000001), 0.0, 1.0)
+  );
+}
+`;
+}
+
 function resolveShader(storedEncodedSrgb = false): string {
   return `${sourceShaderCommon(storedEncodedSrgb)}
 @compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
@@ -509,7 +695,15 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
     }
     let local = parameters.localTargetOrigin
       + vec2<u32>(firstX + lane, globalId.y);
-    let value = clamp(loadFloat(parameters.inputOffsetWords, local), 0.0, 1.0);
+    let workCoordinate = (
+      vec2<f32>(local) + vec2<f32>(0.5)
+    ) * parameters.workScale - vec2<f32>(0.5);
+    let value = clamp(sampleFloatLinear(
+      parameters.inputOffsetWords,
+      workCoordinate,
+      parameters.workSize,
+      0.0
+    ), 0.0, 1.0);
     matte[lane] = value;
   }
   let coverageWordsPerRow = (u32(documentSize().x) + 1u) / 2u;
@@ -543,7 +737,8 @@ interface RasterShadowProgramResources {
   bindGroupLayout: GPUBindGroupLayout;
   sourcePipeline: GPUComputePipeline;
   morphologyPipeline: GPUComputePipeline;
-  gaussianPipeline: GPUComputePipeline;
+  blurPrefilterPipeline: GPUComputePipeline;
+  tentPipeline: GPUComputePipeline;
   resolvePipeline: GPUComputePipeline;
 }
 
@@ -609,14 +804,21 @@ async function createShadowProgramResources(
       label: "morphology",
       module: device.createShaderModule({
         label: `${label} morphology WGSL`,
-        code: filterShader(kind, "morphology", storedEncodedSrgb),
+        code: morphologyShader(kind, storedEncodedSrgb),
       }),
     },
     {
-      label: "gaussian",
+      label: "blur prefilter",
       module: device.createShaderModule({
-        label: `${label} gaussian WGSL`,
-        code: filterShader(kind, "gaussian", storedEncodedSrgb),
+        label: `${label} adaptive blur prefilter WGSL`,
+        code: blurPrefilterShader(storedEncodedSrgb),
+      }),
+    },
+    {
+      label: "tent",
+      module: device.createShaderModule({
+        label: `${label} separable tent WGSL`,
+        code: tentFilterShader(storedEncodedSrgb),
       }),
     },
     {
@@ -644,15 +846,20 @@ async function createShadowProgramResources(
       layout: pipelineLayout,
       compute: { module: modules[1].module, entryPoint: "main" },
     }),
-    gaussianPipeline: device.createComputePipeline({
-      label: `${label} gaussian pipeline`,
+    blurPrefilterPipeline: device.createComputePipeline({
+      label: `${label} adaptive blur prefilter pipeline`,
       layout: pipelineLayout,
       compute: { module: modules[2].module, entryPoint: "main" },
+    }),
+    tentPipeline: device.createComputePipeline({
+      label: `${label} separable tent pipeline`,
+      layout: pipelineLayout,
+      compute: { module: modules[3].module, entryPoint: "main" },
     }),
     resolvePipeline: device.createComputePipeline({
       label: `${label} resolve packed f16 pipeline`,
       layout: pipelineLayout,
-      compute: { module: modules[3].module, entryPoint: "main" },
+      compute: { module: modules[4].module, entryPoint: "main" },
     }),
   };
 }
@@ -732,7 +939,8 @@ export class RasterShadowRenderer {
   private bindGroups = new Map<SourceModeCode, GPUBindGroup>();
   private sourcePipeline!: GPUComputePipeline;
   private morphologyPipeline!: GPUComputePipeline;
-  private gaussianPipeline!: GPUComputePipeline;
+  private blurPrefilterPipeline!: GPUComputePipeline;
+  private tentPipeline!: GPUComputePipeline;
   private resolvePipeline!: GPUComputePipeline;
   private scratchPoolGeneration = -1;
   private scratchPoolLayoutVersion = -1;
@@ -827,14 +1035,16 @@ export class RasterShadowRenderer {
     this.bindGroupLayout = programs.bindGroupLayout;
     this.sourcePipeline = programs.sourcePipeline;
     this.morphologyPipeline = programs.morphologyPipeline;
-    this.gaussianPipeline = programs.gaussianPipeline;
+    this.blurPrefilterPipeline = programs.blurPrefilterPipeline;
+    this.tentPipeline = programs.tentPipeline;
     this.resolvePipeline = programs.resolvePipeline;
     this.updateStyle(this.normalizedStyle({}));
   }
 
   private updateWorkspace(kernel: RasterShadowKernel): EffectsScratchLease {
+    const buildInfluence = shadowBuildInfluence(kernel);
     const requestedExtent = align(
-      RASTER_SHADOW_TILE_SIZE + kernel.influenceRadius * 2,
+      RASTER_SHADOW_TILE_SIZE + buildInfluence * 2,
       WORKGROUP_SIZE,
     );
     const maximumExtent = Math.floor(Math.sqrt(
@@ -874,8 +1084,9 @@ export class RasterShadowRenderer {
 
   private requireScratchLease(kernel: RasterShadowKernel): EffectsScratchLease {
     let lease = this.scratchPool.lease(this.effectId);
+    const buildInfluence = shadowBuildInfluence(kernel);
     const requestedExtent = align(
-      RASTER_SHADOW_TILE_SIZE + kernel.influenceRadius * 2,
+      RASTER_SHADOW_TILE_SIZE + buildInfluence * 2,
       WORKGROUP_SIZE,
     );
     if (!lease || this._workspaceExtent < requestedExtent) {
@@ -1048,6 +1259,7 @@ export class RasterShadowRenderer {
     outputOffsetWords: number,
     directionX: number,
     directionY: number,
+    blurWork: BlurWorkPlan | null = null,
   ): number {
     if (index >= PARAMETER_CAPACITY) {
       throw new Error(`${this.label}: dispatch parameter capacity exceeded.`);
@@ -1072,6 +1284,13 @@ export class RasterShadowRenderer {
     this.parameterUploadU32[wordOffset + 15] = outputOffsetWords;
     this.parameterUploadI32[wordOffset + 16] = directionX;
     this.parameterUploadI32[wordOffset + 17] = directionY;
+    this.parameterUploadU32[wordOffset + 18] = blurWork?.width ?? job.buildWidth;
+    this.parameterUploadU32[wordOffset + 19] = blurWork?.height ?? job.buildHeight;
+    this.parameterUploadF32[wordOffset + 20] = blurWork?.plan.workScale ?? 1;
+    this.parameterUploadF32[wordOffset + 21] = blurWork?.plan.count ?? 0;
+    this.parameterUploadU32[wordOffset + 22] =
+      blurWork?.plan.prefilterSampleAxis ?? 1;
+    this.parameterUploadU32[wordOffset + 23] = 0;
     return byteOffset;
   }
 
@@ -1097,6 +1316,8 @@ export class RasterShadowRenderer {
         passes: 0,
         sourceDispatches: 0,
         morphologyDispatches: 0,
+        blurPrefilterDispatches: 0,
+        tentDispatches: 0,
         gaussianDispatches: 0,
         resolveDispatches: 0,
         workPixels: 0,
@@ -1116,7 +1337,8 @@ export class RasterShadowRenderer {
     }
     const offsetA = rangeA.offset / 4;
     const offsetB = rangeB.offset / 4;
-    const jobs = this.planJobs(rect, kernel.influenceRadius);
+    const blurPlan = shadowBlurPlan(kernel);
+    const jobs = this.planJobs(rect, shadowBuildInfluence(kernel));
     let parameterIndex = 0;
     const commands: {
       pipeline: GPUComputePipeline;
@@ -1125,9 +1347,15 @@ export class RasterShadowRenderer {
       y: number;
     }[] = [];
     let morphologyDispatches = 0;
-    let gaussianDispatches = 0;
+    let blurPrefilterDispatches = 0;
+    let tentDispatches = 0;
     let workPixels = 0;
     for (const job of jobs) {
+      const blurWork: BlurWorkPlan = {
+        width: Math.max(1, Math.ceil(job.buildWidth * blurPlan.workScale)),
+        height: Math.max(1, Math.ceil(job.buildHeight * blurPlan.workScale)),
+        plan: blurPlan,
+      };
       workPixels += job.buildWidth * job.buildHeight;
       commands.push({
         pipeline: this.sourcePipeline,
@@ -1181,39 +1409,65 @@ export class RasterShadowRenderer {
         morphologyDispatches += 2;
       }
       if (kernel.blurRadius > 0) {
+        const needsPrefilter = blurPlan.downsample > 1.000001;
+        if (needsPrefilter) {
+          commands.push({
+            pipeline: this.blurPrefilterPipeline,
+            offset: this.writeParameters(
+              parameterIndex++,
+              job,
+              sourceModeCode(options.sourceMode),
+              0,
+              0,
+              offsetA,
+              offsetB,
+              0,
+              0,
+              blurWork,
+            ),
+            x: Math.ceil(blurWork.width / WORKGROUP_SIZE),
+            y: Math.ceil(blurWork.height / WORKGROUP_SIZE),
+          });
+          blurPrefilterDispatches += 1;
+        }
+        const horizontalInput = needsPrefilter ? offsetB : offsetA;
+        const horizontalOutput = needsPrefilter ? offsetA : offsetB;
+        const verticalOutput = needsPrefilter ? offsetB : offsetA;
         commands.push({
-          pipeline: this.gaussianPipeline,
+          pipeline: this.tentPipeline,
           offset: this.writeParameters(
             parameterIndex++,
             job,
             sourceModeCode(options.sourceMode),
-            kernel.blurRadius,
-            kernel.sigma,
-            offsetA,
-            offsetB,
+            0,
+            0,
+            horizontalInput,
+            horizontalOutput,
             1,
             0,
+            blurWork,
           ),
-          x: Math.ceil(job.buildWidth / FILTER_WORKGROUP_SIZE),
-          y: job.buildHeight,
+          x: Math.ceil(blurWork.width / FILTER_WORKGROUP_SIZE),
+          y: blurWork.height,
         });
         commands.push({
-          pipeline: this.gaussianPipeline,
+          pipeline: this.tentPipeline,
           offset: this.writeParameters(
             parameterIndex++,
             job,
             sourceModeCode(options.sourceMode),
-            kernel.blurRadius,
-            kernel.sigma,
-            offsetB,
-            offsetA,
+            0,
+            0,
+            horizontalOutput,
+            verticalOutput,
             0,
             1,
+            blurWork,
           ),
-          x: Math.ceil(job.buildHeight / FILTER_WORKGROUP_SIZE),
-          y: job.buildWidth,
+          x: Math.ceil(blurWork.height / FILTER_WORKGROUP_SIZE),
+          y: blurWork.width,
         });
-        gaussianDispatches += 2;
+        tentDispatches += 2;
       }
       commands.push({
         pipeline: this.resolvePipeline,
@@ -1223,10 +1477,13 @@ export class RasterShadowRenderer {
           sourceModeCode(options.sourceMode),
           0,
           0,
-          offsetA,
+          kernel.blurRadius > 0 && blurPlan.downsample > 1.000001
+            ? offsetB
+            : offsetA,
           0,
           0,
           0,
+          kernel.blurRadius > 0 ? blurWork : null,
         ),
         x: Math.ceil(job.targetWidth / (WORKGROUP_SIZE * COVERAGE_WORD_PIXELS)),
         y: Math.ceil(job.targetHeight / WORKGROUP_SIZE),
@@ -1240,7 +1497,7 @@ export class RasterShadowRenderer {
       parameterIndex * PARAMETER_STRIDE,
     );
     const pass = options.encoder.beginComputePass({
-      label: `${this.label} tiled morphology/Gaussian matte`,
+      label: `${this.label} tiled morphology/adaptive tent matte`,
     });
     const bindGroup = this.bindGroups.get(sourceModeCode(options.sourceMode));
     if (!bindGroup) {
@@ -1259,7 +1516,9 @@ export class RasterShadowRenderer {
       passes: commands.length > 0 ? 1 : 0,
       sourceDispatches: jobs.length,
       morphologyDispatches,
-      gaussianDispatches,
+      blurPrefilterDispatches,
+      tentDispatches,
+      gaussianDispatches: tentDispatches,
       resolveDispatches: jobs.length,
       workPixels,
       resolvedPixels: rect.width * rect.height,

@@ -56,6 +56,7 @@ assert.doesNotMatch(
 );
 for (const deferredFamily of [
   "Gaussian",
+  "Tent",
   "InnerShadow",
   "rasterImageMixedScene",
   "layerBlendCompositor",
@@ -94,7 +95,7 @@ assert.match(meshBody, /vectorTextGpuQualityFillPipeline/);
 assert.match(meshBody, /vectorTextGpuClearPipeline/);
 assert.match(meshBody, /rasterImageMipmapBindGroupLayout/);
 assert.match(meshBody, /rasterImageMipmapPipeline/);
-assert.doesNotMatch(meshBody, /Slug|Gaussian|InnerShadow/);
+assert.doesNotMatch(meshBody, /Slug|Gaussian|Tent|InnerShadow/);
 
 assert.match(
   vectorRuntimeSource,
@@ -338,7 +339,7 @@ try {
   }
   assert.doesNotMatch(
     concurrent.calls.pipelineLabels.join("\n"),
-    /Slug|Gaussian|blur|inner shadow|inner-shadow/i,
+    /Slug|Gaussian|Tent|blur|inner shadow|inner-shadow/i,
     "plain vector shapes must leave advanced vector effects cold",
   );
   await ensureMixedSceneVectorShapeResources(concurrent.engine);

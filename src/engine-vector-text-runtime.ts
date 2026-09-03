@@ -14,7 +14,7 @@ import {
   VECTOR_TEXT_GPU_UNIFORM_BYTES,
   VECTOR_TEXT_GPU_UNIFORM_STRIDE,
   vectorTextGpuBlurCompositeShader,
-  vectorTextGpuGaussianBlurShader,
+  vectorTextGpuTentBlurShader,
   vectorTextGpuShader,
 } from "./vector-text-gpu-shader";
 import {
@@ -735,9 +735,9 @@ export function initializeVectorTextGpuRenderer(engine: BrushEngine): Promise<vo
       label: `Vector text Slug WGSL · ${VECTOR_TEXT_SLUG_GPU_RENDER_STRATEGY}`,
       code: vectorTextSlugGpuShader,
     });
-    const gaussianBlurShaderModule = device.createShaderModule({
-      label: "Vector text GPU separable Gaussian blur WGSL",
-      code: vectorTextGpuGaussianBlurShader,
+    const tentBlurShaderModule = device.createShaderModule({
+      label: "Vector effects GPU separable tent blur WGSL",
+      code: vectorTextGpuTentBlurShader,
     });
     const blurCompositeShaderModule = device.createShaderModule({
       label: "Vector text GPU blurred mask composite WGSL",
@@ -749,7 +749,7 @@ export function initializeVectorTextGpuRenderer(engine: BrushEngine): Promise<vo
     });
     await Promise.all([
       assertShaderCompiled(slugShaderModule, "vector text Slug analytic source fill"),
-      assertShaderCompiled(gaussianBlurShaderModule, "vector text separable Gaussian blur"),
+      assertShaderCompiled(tentBlurShaderModule, "vector effects separable tent blur"),
       assertShaderCompiled(blurCompositeShaderModule, "vector text blurred mask composite"),
       assertShaderCompiled(innerShadowShaderModule, "vector text inner shadow analytic clip"),
     ]);
@@ -770,6 +770,11 @@ export function initializeVectorTextGpuRenderer(engine: BrushEngine): Promise<vo
           binding: 1,
           visibility: GPUShaderStage.FRAGMENT,
           texture: { sampleType: "float" },
+        },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.FRAGMENT,
+          sampler: { type: "filtering" },
         },
       ],
     });
@@ -871,7 +876,7 @@ export function initializeVectorTextGpuRenderer(engine: BrushEngine): Promise<vo
         bindGroupLayouts: [slugBindGroupLayout],
       });
       const blurFilterLayout = device.createPipelineLayout({
-        label: "Vector text GPU Gaussian filter pipeline layout",
+        label: "Vector effects GPU tent filter pipeline layout",
         bindGroupLayouts: [blurFilterBindGroupLayout],
       });
       const blurCompositeLayout = device.createPipelineLayout({
@@ -952,22 +957,22 @@ export function initializeVectorTextGpuRenderer(engine: BrushEngine): Promise<vo
           primitive: { topology: "triangle-list", cullMode: "none" },
         }),
         createRenderPipelineAsync(device, {
-          label: "Vector text GPU Gaussian horizontal pipeline",
+          label: "Vector effects GPU tent horizontal pipeline",
           layout: blurFilterLayout,
-          vertex: { module: gaussianBlurShaderModule, entryPoint: "vertexMain" },
+          vertex: { module: tentBlurShaderModule, entryPoint: "vertexMain" },
           fragment: {
-            module: gaussianBlurShaderModule,
+            module: tentBlurShaderModule,
             entryPoint: "horizontalMain",
             targets: [{ format: VECTOR_TEXT_GPU_BLUR_FORMAT }],
           },
           primitive: { topology: "triangle-list" },
         }),
         createRenderPipelineAsync(device, {
-          label: "Vector text GPU Gaussian vertical pipeline",
+          label: "Vector effects GPU tent vertical pipeline",
           layout: blurFilterLayout,
-          vertex: { module: gaussianBlurShaderModule, entryPoint: "vertexMain" },
+          vertex: { module: tentBlurShaderModule, entryPoint: "vertexMain" },
           fragment: {
-            module: gaussianBlurShaderModule,
+            module: tentBlurShaderModule,
             entryPoint: "verticalMain",
             targets: [{ format: VECTOR_TEXT_GPU_BLUR_FORMAT }],
           },
@@ -1086,7 +1091,7 @@ export function initializeVectorTextGpuRenderer(engine: BrushEngine): Promise<vo
 
       const previousFilterUniformBuffer = engine.vectorTextGpuBlurFilterUniformBuffer;
       engine.vectorTextGpuSlugShaderModule = slugShaderModule;
-      engine.vectorTextGpuGaussianBlurShaderModule = gaussianBlurShaderModule;
+      engine.vectorTextGpuTentBlurShaderModule = tentBlurShaderModule;
       engine.vectorTextGpuBlurCompositeShaderModule = blurCompositeShaderModule;
       engine.vectorTextGpuInnerShadowShaderModule = innerShadowShaderModule;
       engine.vectorTextGpuBlurFilterBindGroupLayout = blurFilterBindGroupLayout;
@@ -4333,7 +4338,8 @@ export function ensureVectorTextGpuBlurScratch(engine: BrushEngine, width: numbe
   releaseVectorTextGpuBlurScratch(engine);
   const layout = engine.vectorTextGpuBlurFilterBindGroupLayout;
   const uniformBuffer = engine.vectorTextGpuBlurFilterUniformBuffer;
-  if (!layout || !uniformBuffer) {
+  const sampler = engine.vectorTextGpuBlurSampler;
+  if (!layout || !uniformBuffer || !sampler) {
     throw new Error("The GPU text-blur filter is not initialized.");
   }
   const textureDescriptor: GPUTextureDescriptor = {
@@ -4370,12 +4376,20 @@ export function ensureVectorTextGpuBlurScratch(engine: BrushEngine, width: numbe
     engine.vectorTextGpuBlurFilterBindGroupAToB = engine.device.createBindGroup({
       label: "Vector text GPU blur horizontal A to B",
       layout,
-      entries: [uniformEntry, { binding: 1, resource: viewA }],
+      entries: [
+        uniformEntry,
+        { binding: 1, resource: viewA },
+        { binding: 2, resource: sampler },
+      ],
     });
     engine.vectorTextGpuBlurFilterBindGroupBToA = engine.device.createBindGroup({
       label: "Vector text GPU blur vertical B to A",
       layout,
-      entries: [uniformEntry, { binding: 1, resource: viewB }],
+      entries: [
+        uniformEntry,
+        { binding: 1, resource: viewB },
+        { binding: 2, resource: sampler },
+      ],
     });
     engine.vectorTextGpuBlurScratchATexture = textureA;
     engine.vectorTextGpuBlurScratchAView = viewA;
@@ -5734,17 +5748,10 @@ export function writeVectorTextGpuBlurFilterUniform(engine: BrushEngine,
   unsigned[base] = draw.blurWidth;
   unsigned[base + 1] = draw.blurHeight;
   unsigned[base + 2] = draw.blurRadius;
-  const sigma = Math.max(0.01, draw.blurSigmaPixels);
-  const weights = new Float64Array(draw.blurRadius + 1);
-  let normalizer = 0;
-  for (let index = 0; index <= draw.blurRadius; index += 1) {
-    const weight = Math.exp(-0.5 * (index / sigma) ** 2);
-    weights[index] = weight;
-    normalizer += index === 0 ? weight : weight * 2;
-  }
-  for (let index = 0; index <= draw.blurRadius; index += 1) {
-    upload[base + 4 + index] = weights[index] / normalizer;
-  }
+  upload[base + 4] = Math.min(
+    draw.blurRadius,
+    Math.max(0, draw.blurSigmaPixels * 3),
+  );
 }
 
 export function captureVectorTextPresentationView(engine: BrushEngine): void {

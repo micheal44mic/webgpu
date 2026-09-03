@@ -1577,15 +1577,15 @@ assert.equal(
 );
 assert.equal(
   VECTOR_TEXT_SINGLE_SHADOW_STRATEGY,
-  "webgpu-slug-zero-blur-or-r16float-separable-gaussian-v3",
+  "webgpu-zero-blur-or-r16float-separable-adaptive-tent-v4",
 );
 assert.equal(
   VECTOR_TEXT_INNER_SHADOW_STRATEGY,
-  "webgpu-slug-analytic-fill-clip-zero-blur-or-r16float-separable-gaussian-v2",
+  "webgpu-analytic-fill-clip-zero-blur-or-r16float-adaptive-tent-v3",
 );
 assert.equal(
   VECTOR_TEXT_SINGLE_SHADOW_BLUR_STRATEGY,
-  "webgpu-slug-r16float-mask-separable-gaussian-roi-cache-v3",
+  "webgpu-r16float-mask-separable-adaptive-tent-roi-cache-v4",
 );
 assert.equal(
   VECTOR_TEXT_GPU_GEOMETRY_STRATEGY,
@@ -2633,7 +2633,7 @@ assert.ok(f32LineSecondDifference <= f32LineAbsoluteScale / 1048576);
 assert.doesNotMatch(slugSource, /perGlyph|glyphQuads|one quad per glyph/i);
 assert.match(curveSource, /throw new Error\([\s\S]*depth/i);
 
-// Blur singolo: mask Slug R16F, Gaussian separabile, ROI e kernel bounded.
+// Blur singolo: mask R16F, tent separabile, ROI e kernel bounded.
 assert.equal(VECTOR_TEXT_SINGLE_SHADOW_BLUR_MAXIMUM, 300);
 assert.equal(vectorTextSingleShadowBlurSupport(0), 0);
 assert.equal(vectorTextSingleShadowBlurSupport(6), 19);
@@ -2738,6 +2738,62 @@ assert.doesNotMatch(singleShadowSource, /Canvas|createElement|getContext|filter\
 assert.match(gpuShaderSource, /sourceTexture: texture_2d<f32>/);
 assert.match(gpuShaderSource, /horizontalMain/);
 assert.match(gpuShaderSource, /verticalMain/);
+assert.match(gpuShaderSource, /linearSampler: sampler/);
+assert.match(gpuShaderSource, /textureDimensions\(sourceTexture\)/);
+assert.match(gpuShaderSource, /firstOffset \* firstWeight \+ secondOffset \* secondWeight/);
+assert.match(gpuShaderSource, /for \(var first = 1u; first < 24u; first \+= 2u\)/);
+assert.match(gpuShaderSource, /edgeWeight\.x \* edgeWeight\.y/);
+const vectorTentShaderSource = gpuShaderSource.slice(
+  gpuShaderSource.indexOf("export const vectorTextGpuTentBlurShader"),
+  gpuShaderSource.indexOf("export const vectorTextGpuBlurCompositeShader"),
+);
+assert.doesNotMatch(vectorTentShaderSource, /textureLoad\(/);
+assert.doesNotMatch(vectorTentShaderSource, /exp\(/);
+const blurFilterLayoutStart = engineSource.indexOf(
+  "const blurFilterBindGroupLayout =",
+);
+const blurFilterLayoutEnd = engineSource.indexOf(
+  "const blurCompositeBindGroupLayout =",
+  blurFilterLayoutStart,
+);
+assert.ok(
+  blurFilterLayoutStart >= 0 && blurFilterLayoutEnd > blurFilterLayoutStart,
+  "layout del filtro tent GPU non trovato",
+);
+const blurFilterLayoutSource = engineSource.slice(
+  blurFilterLayoutStart,
+  blurFilterLayoutEnd,
+);
+assert.match(
+  blurFilterLayoutSource,
+  /binding: 2,[\s\S]{0,100}sampler: \{ type: "filtering" \}/,
+);
+const blurAToBStart = engineSource.indexOf(
+  "engine.vectorTextGpuBlurFilterBindGroupAToB =",
+);
+const blurBToAStart = engineSource.indexOf(
+  "engine.vectorTextGpuBlurFilterBindGroupBToA =",
+  blurAToBStart,
+);
+const blurScratchAssignmentStart = engineSource.indexOf(
+  "engine.vectorTextGpuBlurScratchATexture =",
+  blurBToAStart,
+);
+assert.ok(
+  blurAToBStart >= 0
+    && blurBToAStart > blurAToBStart
+    && blurScratchAssignmentStart > blurBToAStart,
+  "bind group del filtro tent GPU non trovati",
+);
+assert.match(
+  engineSource.slice(blurAToBStart, blurBToAStart),
+  /\{ binding: 2, resource: sampler \}/,
+);
+assert.match(
+  engineSource.slice(blurBToAStart, blurScratchAssignmentStart),
+  /\{ binding: 2, resource: sampler \}/,
+);
+assert.match(engineSource, /draw\.blurSigmaPixels \* 3/);
 assert.match(gpuShaderSource, /textureSample\(blurredMask, blurredSampler, input\.uv\)\.r/);
 assert.match(innerShadowShaderSource, /innerShadowDirectFragmentMain/);
 assert.match(innerShadowShaderSource, /innerShadowBlurFragmentMain/);
@@ -3648,8 +3704,8 @@ assert.doesNotMatch(engineSource, /Vector text outline stencil union/);
 assert.match(engineSource, /VECTOR_TEXT_GPU_SAMPLE_COUNT \+ 1/);
 assert.match(engineSource, /srcFactor: "one"[\s\S]*dstFactor: "one-minus-src-alpha"/);
 assert.match(engineSource, /Vector text analytic Slug mask for GPU blur/);
-assert.match(engineSource, /Vector text GPU Gaussian horizontal/);
-assert.match(engineSource, /Vector text GPU Gaussian vertical/);
+assert.match(engineSource, /Vector effects GPU tent horizontal/);
+assert.match(engineSource, /Vector effects GPU tent vertical/);
 assert.match(gpuResourcesSource, /resources\.curveTexture\.destroy\(\)[\s\S]*resources\.bandTexture\.destroy\(\)/);
 assert.match(gpuResourcesSource, /resources\.vertexBuffer\.destroy\(\)[\s\S]*resources\.indexBuffer\.destroy\(\)/);
 assert.match(engineSource, /resources\.texture\.destroy\(\)[\s\S]*vectorTextGpuBlurCaches\.delete/);
@@ -4097,7 +4153,7 @@ assert.equal(packageJson.scripts["vector-text:verify"], "node scripts/verify-vec
 
 console.log(
   "Vector text verified: Distort/Arch/Circle/Wave, analytic slug, Clipper64/Worker, fused seamless outline, 0 no-op, "
-  + "canonical Block Shadow, sanitized semantic SVG with GPU palette/effects, GPU R16F Gaussian blur, byte-exact native-format text/SVG rasterization, atomic node swaps, latest-only queue, and no bitmap fallback.",
+  + "canonical Block Shadow, sanitized semantic SVG with GPU palette/effects, GPU R16F adaptive tent blur, byte-exact native-format text/SVG rasterization, atomic node swaps, latest-only queue, and no bitmap fallback.",
 );
 
 // --- Rollback: ownership candidata ritirata prima della reidratazione ----------

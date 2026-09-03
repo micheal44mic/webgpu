@@ -25,7 +25,7 @@ import {
 
 assert.equal(
   RASTER_SHADOW_CORE_BUILD,
-  "raster-shadow-core-webgpu-v1-morphology-then-gaussian",
+  "raster-shadow-core-webgpu-v2-morphology-then-adaptive-tent",
 );
 assert.equal(DEFAULT_RASTER_OUTER_SHADOW_STYLE.enabled, false);
 assert.equal(DEFAULT_RASTER_INNER_SHADOW_STYLE.enabled, false);
@@ -215,7 +215,7 @@ const rendererSource = readFileSync(
   new URL("../src/shadow-renderer.ts", import.meta.url),
   "utf8",
 );
-assert.match(rendererSource, /raster-shadow-webgpu-v2-dimension-neutral-session-program-cache/);
+assert.match(rendererSource, /raster-shadow-webgpu-v3-packed-f16-morphology-adaptive-tent/);
 assert.match(
   rendererSource,
   /const shadowProgramCache = new WeakMap<\s*GPUDevice,\s*Map<string, Promise<RasterShadowProgramResources>>/,
@@ -264,7 +264,20 @@ const packedMatteWordIndex = (width, x, y) => y * Math.ceil(width / 2) + (x >> 1
 assert.equal(packedMatteWordIndex(5, 0, 1), 3);
 assert.equal(packedMatteWordIndex(5, 4, 1), 5);
 assert.doesNotMatch(rendererSource, /round\(value \* 255\.0\)/);
-assert.match(rendererSource, /morphology\/Gaussian matte/);
+assert.match(rendererSource, /morphology\/adaptive tent matte/);
+assert.match(rendererSource, /planAdaptiveTentBlur\(kernel\.blurRadius\)/);
+assert.match(rendererSource, /ADAPTIVE_TENT_BLUR_MAX_WORK_RADIUS/);
+assert.match(rendererSource, /parameters\.prefilterSampleAxis/);
+assert.match(rendererSource, /1\.0 \/ parameters\.workScale - 1\.0/);
+assert.match(rendererSource, /first < \$\{ADAPTIVE_TENT_BLUR_MAX_WORK_RADIUS\}u/);
+assert.match(rendererSource, /firstOffset \* firstWeight \+ secondOffset \* secondWeight/);
+assert.match(rendererSource, /sampleFloatLinear\([\s\S]*?parameters\.workSize/);
+const tentShaderSource = rendererSource.slice(
+  rendererSource.indexOf("function tentFilterShader("),
+  rendererSource.indexOf("function resolveShader("),
+);
+assert.doesNotMatch(tentShaderSource, /exp\(/);
+assert.doesNotMatch(tentShaderSource, /parameters\.sigma/);
 assert.match(rendererSource, /options\.encoder\.clearBuffer\(this\.coverageBuffer\)/);
 assert.match(rendererSource, /this\.scratchPool\.declareEffect\(this\.effectId/);
 assert.doesNotMatch(rendererSource, /mapAsync|copyBufferToBuffer|readBuffer/);

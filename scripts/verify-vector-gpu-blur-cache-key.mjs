@@ -9,7 +9,10 @@ import {
   planVectorTextSingleShadowBlur,
 } from "../src/vector-text-single-shadow.ts";
 
-assert.equal(VECTOR_GPU_BLUR_CACHE_KEY_VERSION, "vector-gpu-blur-content-v2");
+assert.equal(
+  VECTOR_GPU_BLUR_CACHE_KEY_VERSION,
+  "vector-gpu-blur-content-v3-adaptive-tent",
+);
 
 const key = (kind, revision, plan) => vectorGpuBlurCacheKey(
   { kind, revision },

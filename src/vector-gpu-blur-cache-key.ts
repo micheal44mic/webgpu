@@ -1,7 +1,7 @@
 import { vectorTextFloat64Key } from "./vector-text-lod.ts";
 
 export const VECTOR_GPU_BLUR_CACHE_KEY_VERSION =
-  "vector-gpu-blur-content-v2" as const;
+  "vector-gpu-blur-content-v3-adaptive-tent" as const;
 
 export interface VectorGpuBlurCacheKeySource {
   readonly kind: "mesh" | "slug";

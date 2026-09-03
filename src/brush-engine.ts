@@ -1835,7 +1835,7 @@ export class BrushEngine {
   vectorTextGpuSlugShaderModule: GPUShaderModule | null = null;
   vectorTextDisplayShaderModule: GPUShaderModule | null = null;
   vectorTextGpuShaderModule: GPUShaderModule | null = null;
-  vectorTextGpuGaussianBlurShaderModule: GPUShaderModule | null = null;
+  vectorTextGpuTentBlurShaderModule: GPUShaderModule | null = null;
   vectorTextGpuBlurCompositeShaderModule: GPUShaderModule | null = null;
   vectorTextGpuInnerShadowShaderModule: GPUShaderModule | null = null;
   mixedSceneRasterSegmentShaderModule: GPUShaderModule | null = null;
