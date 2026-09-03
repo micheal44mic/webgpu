@@ -37,7 +37,7 @@ import {
 } from "./spatial-blur-core";
 
 export const DESTRUCTIVE_SPATIAL_BLUR_RUNTIME_BUILD =
-  "destructive-spatial-blur-webgpu-v3-dual-storage-linear-packed-unorm16-high-frequency-output" as const;
+  "destructive-spatial-blur-webgpu-v4-exact-zero-radius-output" as const;
 export const DESTRUCTIVE_SPATIAL_BLUR_PRECISION =
   "rgba16float-f32-accumulation" as const;
 export const DESTRUCTIVE_SPATIAL_BLUR_RGBA8_PRECISION =
@@ -179,7 +179,7 @@ fn radiusIndexAt(documentPosition: vec2<f32>) -> u32 {
     let pin = parameters.pins[index];
     let delta = documentPosition - pin.xy;
     let distanceSquared = dot(delta, delta);
-    if (distanceSquared <= 0.25) {
+    if (distanceSquared <= 0.5) {
       return u32(round(clamp(pin.z, 0.0, ${DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS}.0)
         * ${DESTRUCTIVE_SPATIAL_BLUR_RADIUS_QUANTIZATION}.0));
     }
@@ -447,6 +447,10 @@ fn main(
   workgroupBarrier();
 
   if (localY >= targetHeight) { return; }
+  if (radiusIndex == 0u) {
+    // The destination already contains the immutable source copy.
+    return;
+  }
   let support = supportRadius(radiusIndex);
   let center = halo + localId.x;
   var result = unpackFilterTexel(filterCache[center]) * kernelWeight(radiusIndex, 0u);

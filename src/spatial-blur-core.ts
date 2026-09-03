@@ -8,7 +8,7 @@ import {
 } from "./gaussian-blur-core";
 
 export const SPATIAL_BLUR_CORE_BUILD =
-  "spatial-blur-core-v1-shared-gaussian-kernel-weighted-pins-rgba16float" as const;
+  "spatial-blur-core-v2-exact-zero-radius-pins" as const;
 
 export const SPATIAL_BLUR_DEFAULT_RADIUS = DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_RADIUS;
 export const SPATIAL_BLUR_MAX_RADIUS = DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS;
@@ -42,7 +42,9 @@ function clamp(value: number, minimum: number, maximum: number): number {
 }
 
 export function normalizeSpatialBlurRadius(value: unknown): number {
-  return normalizeDestructiveGaussianBlurRadius(value);
+  const radius = normalizeDestructiveGaussianBlurRadius(value);
+  return Math.round(radius / SPATIAL_BLUR_PIN_RADIUS_STEP)
+    * SPATIAL_BLUR_PIN_RADIUS_STEP;
 }
 
 export function createInitialSpatialBlurPin(
@@ -132,7 +134,9 @@ export function spatialBlurRadiusAt(
     const dx = sampleX - pin.x;
     const dy = sampleY - pin.y;
     const distanceSquared = dx * dx + dy * dy;
-    if (distanceSquared <= 0.25) return pin.radius;
+    // Pixel centers can be half a pixel away on both axes. Covering d² = 0.5
+    // guarantees that every pin owns its nearest raster sample exactly.
+    if (distanceSquared <= 0.5) return pin.radius;
     const weight = 1 / (distanceSquared + influenceFloorSquared);
     weightedRadius += pin.radius * weight;
     weightSum += weight;

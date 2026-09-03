@@ -36,6 +36,7 @@ const {
   SPATIAL_BLUR_MAX_RADIUS,
   SPATIAL_BLUR_RADIUS_QUANTIZATION,
   createInitialSpatialBlurPin,
+  normalizeSpatialBlurRadius,
   normalizeSpatialBlurPins,
   spatialBlurBounds,
   spatialBlurGaussianKernel,
@@ -58,6 +59,8 @@ const { quantizeUnorm8HighFrequencyAdjacent } = quantization;
 assert.equal(SPATIAL_BLUR_DEFAULT_RADIUS, DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_RADIUS);
 assert.equal(SPATIAL_BLUR_MAX_RADIUS, DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS);
 assert.equal(spatialBlurGaussianKernel, destructiveGaussianBlurKernel);
+assert.equal(normalizeSpatialBlurRadius(0.49), 0);
+assert.equal(normalizeSpatialBlurRadius(0.5), 1);
 for (const radius of [0, 0.25, 5, 50, 500]) {
   assert.deepEqual(
     spatialBlurGaussianKernel(radius),
@@ -148,14 +151,23 @@ assert.equal(Object.isFrozen(normalized[0]), true);
 assert.equal(spatialBlurMaximumRadius(normalized), 500);
 assert.equal(spatialBlurPinsEqual(normalized, normalized.map((pin) => ({ ...pin }))), true);
 
-const uniformPin = [{ x: 50, y: 60, radius: 37.25 }];
+const uniformPin = [{ x: 50, y: 60, radius: 37 }];
 for (const [x, y] of [[0, 0], [50, 60], [2048, 2048], [913, 117]]) {
-  assert.equal(spatialBlurRadiusAt(uniformPin, x, y, 2048, 2048), 37.25);
+  assert.equal(spatialBlurRadiusAt(uniformPin, x, y, 2048, 2048), 37);
 }
 assert.equal(spatialBlurRadiusAt([
   { x: 0, y: 100, radius: 0 },
   { x: 200, y: 100, radius: 100 },
 ], 100, 100, 200, 200), 50);
+const zeroRadiusAnchorPins = [
+  { x: 0, y: 100, radius: 0 },
+  { x: 200, y: 100, radius: 100 },
+];
+assert.equal(
+  spatialBlurRadiusAt(zeroRadiusAnchorPins, 0.5, 100.5, 200, 200),
+  0,
+  "a zero-radius pin must own its nearest pixel center exactly",
+);
 assert.equal(spatialBlurRadiusAt([
   { x: 40, y: 40, radius: 12 },
   { x: 40, y: 40, radius: 90 },
@@ -183,6 +195,11 @@ assert.equal(SPATIAL_BLUR_ADJUST_RATE, 2);
 assert.equal(spatialBlurAdjustedRadius(10, 100, 90), 30);
 assert.equal(spatialBlurAdjustedRadius(10, 100, 500), 0);
 assert.equal(spatialBlurAdjustedRadius(490, 100, 0), 500);
+assert.equal(
+  spatialBlurAdjustedRadius(1, 100, 100.255),
+  0,
+  "a radius displayed as zero must not retain a hidden fractional blur",
+);
 assert.equal(spatialBlurPinFillPercent(250), 50);
 assert.equal(spatialBlurPointerMoved(0, 0, 8, 0), false);
 assert.equal(spatialBlurPointerMoved(0, 0, 8.01, 0), true);
@@ -223,12 +240,22 @@ assert.match(runtimeSource, /engine\.documentStorageColorSpace === "encoded-srgb
 assert.match(runtimeSource, /format: engine\.layerFormat/);
 assert.doesNotMatch(runtimeSource, /Point Blur requires an RGBA16F document/);
 assert.match(runtimeSource, /parameters\.fieldAndDocument\.yz/);
+assert.match(runtimeSource, /distanceSquared <= 0\.5/);
 assert.match(runtimeSource, /f32\[word \+ 17\] = documentWidth/);
 assert.match(runtimeSource, /f32\[word \+ 18\] = documentHeight/);
 assert.match(runtimeSource, /u32\[word \+ 20\] = session\.quantizationSeed/);
 assert.match(runtimeSource, /u32\[word \+ 21\] = session\.storedEncodedSrgb \? 1 : 0/);
 assert.doesNotMatch(runtimeSource, /DOCUMENT_(?:WIDTH|HEIGHT)|DOCUMENT_EXTENT|engine-limits/);
 assert.match(runtimeSource, /atomicMax\(&groupSupport, supportRadius\(radiusIndex\)\)/);
+const verticalShaderSource = runtimeSource.slice(
+  runtimeSource.indexOf("function verticalShader"),
+  runtimeSource.indexOf("function buildWeightTable"),
+);
+assert.match(
+  verticalShaderSource,
+  /if \(radiusIndex == 0u\) \{[\s\S]*?return;[\s\S]*?textureStore\(authoritativeOutput/,
+  "the vertical pass must preserve the immutable source pixel at radius zero",
+);
 assert.match(runtimeSource, /if \(pins\.length > 1\)/,
   "one point must bypass the radius-field pass because its field is uniform");
 assert.match(runtimeSource, /requestedSerial/);
