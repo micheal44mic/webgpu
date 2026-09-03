@@ -38,7 +38,6 @@ const LABS = [
   ["shadow-golden", "Golden ombre raster"],
   ["bevel-golden", "Golden bevel bounding-box"],
   ["paint-benchmark", "Benchmark Paint sintetico"],
-  ["latest-tip-response", "A/B risposta punta · esatta / immediata"],
   ["dirty-region-performance-ab", "A/B regioni dirty · AABB / tile fuse"],
   ["effects-benchmark", "Benchmark banco effetti"],
   ["blur-quality-performance", "A/B blur · qualità e prestazioni"],
@@ -89,7 +88,6 @@ type LabId = (typeof LABS)[number][0];
 const HOSTED_LAB_IDS = new Set<LabId>([
   "blur-quality-performance",
   "dirty-region-performance-ab",
-  "latest-tip-response",
   "human-replay",
   "human-shape-sequence",
   "stroke-packed-wasm",
@@ -119,43 +117,6 @@ function reportSucceeded(value: unknown): boolean {
   const report = value as Record<string, unknown>;
   if (report.passed === false || report.saved === false) return false;
   return report.allRunsSaved !== false;
-}
-
-function showLatestTipResponsePanel(candidate: boolean): void {
-  document.querySelector("[data-latest-tip-response]")?.remove();
-  const baselineUrl = new URL(window.location.href);
-  baselineUrl.searchParams.set("lab", "latest-tip-response");
-  baselineUrl.searchParams.set("autorun", "1");
-  baselineUrl.searchParams.delete("adaptivePreview");
-  const candidateUrl = new URL(baselineUrl);
-  candidateUrl.searchParams.set("adaptivePreview", "force-approximate");
-
-  const panel = document.createElement("aside");
-  panel.className = "latest-tip-response-panel";
-  panel.dataset.latestTipResponse = "";
-  const heading = document.createElement("strong");
-  heading.textContent = candidate
-    ? "CANDIDATA · punta immediata"
-    : "BASELINE · solo risultato esatto";
-  const instruction = document.createElement("p");
-  instruction.textContent = candidate
-    ? "Disegna velocemente. Il proxy segue la punta e scompare quando arrivano i pixel esatti."
-    : "Disegna velocemente e osserva quanto l’ultimo segno rimane dietro al puntatore.";
-  const controls = document.createElement("nav");
-  controls.setAttribute("aria-label", "Varianti risposta punta");
-  const baselineLink = document.createElement("a");
-  baselineLink.href = baselineUrl.href;
-  baselineLink.textContent = "Baseline";
-  baselineLink.setAttribute("aria-label", "Prova baseline esatta");
-  const candidateLink = document.createElement("a");
-  candidateLink.href = candidateUrl.href;
-  candidateLink.textContent = "Punta immediata";
-  candidateLink.setAttribute("aria-label", "Prova punta immediata");
-  if (candidate) candidateLink.setAttribute("aria-current", "page");
-  else baselineLink.setAttribute("aria-current", "page");
-  controls.append(baselineLink, candidateLink);
-  panel.append(heading, instruction, controls);
-  document.body.append(panel);
 }
 
 async function saveLabReport(endpoint: string, report: unknown): Promise<number> {
@@ -190,9 +151,6 @@ class EditorLabController implements EditorExtension {
     const panel = document.createElement("aside");
     panel.className = "editor-labs-panel";
     panel.setAttribute("aria-label", "WebGPU Brush Engine Labs");
-    const search = new URLSearchParams(window.location.search);
-    panel.hidden = search.get("lab") === "latest-tip-response"
-      && search.get("autorun") === "1";
     panel.innerHTML = `
       <h1>Editor Labs</h1>
       <p>Entry separato: questi strumenti non entrano nel bundle dell'app.</p>
@@ -477,24 +435,6 @@ class EditorLabController implements EditorExtension {
       }
       case "paint-benchmark":
         return runBenchmark(engine, 2_000);
-      case "latest-tip-response": {
-        const candidate = new URLSearchParams(window.location.search)
-          .get("adaptivePreview") === "force-approximate";
-        this.#host.applyBrushSettings(humanRecordingPreset(engine.getSettings()));
-        await engine.ensureCurrentBrushResources();
-        showLatestTipResponsePanel(candidate);
-        return {
-          lab: "latest-tip-response",
-          version: 1,
-          passed: true,
-          productionClaim: false,
-          mode: candidate ? "immediate-tip-proxy" : "exact-only-baseline",
-          authoritativeOutput: "unchanged",
-          inputPath: "pointermove-coalesced",
-          strokeGeometryBackend: engine.preparedStrokeGeometryBackend(),
-          instructions: "Draw quickly on the canvas, then switch variant with the floating controls.",
-        };
-      }
       case "dirty-region-performance-ab": {
         await engine.waitForIdle();
         const { runDirtyRegionPerformanceLab } = await import(

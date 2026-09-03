@@ -170,7 +170,7 @@ export function activateAdaptivePreview(engine: BrushEngine,
   if (shapeAssetIdsForSettings(settings).length > 1) {
     return;
   }
-  if (settings.blendMode !== "normal" && !engine.adaptivePreviewApproximateForce) {
+  if (settings.blendMode !== "normal") {
     if (engine.activeStrokeProfile) {
       engine.activeStrokeProfile.adaptivePreviewUnsupportedBlendSkips += 1;
     }

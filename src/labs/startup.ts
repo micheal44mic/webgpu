@@ -12,7 +12,6 @@ const strokeGeometryBackend = requestedStrokeBackend === "javascript"
   ? requestedStrokeBackend
   : search.get("lab") === "stroke-geometry-wasm"
       || search.get("lab") === "stroke-packed-wasm"
-      || search.get("lab") === "latest-tip-response"
     ? "javascript"
     : null;
 const projectHome = document.getElementById("projectHome");
