@@ -288,6 +288,8 @@ const fontGeometrySource = read("src/vector-text-font-geometry.ts");
 const transformSource = read("src/vector-text-transform.ts");
 const adaptiveSource = read("src/vector-text-adaptive-zoom.ts");
 const mixedCompositorSource = read("src/mixed-scene-compositor-shader.ts");
+const displayShadersSource = read("src/shaders.ts");
+const mixedSceneShapeResourcesSource = read("src/mixed-scene-shape-resources.ts");
 const engineClassSource = read("src/brush-engine.ts");
 const engineRuntimeMiscSource = read("src/engine-runtime-misc.ts");
 const vectorTextRuntimeSource = read("src/engine-vector-text-runtime.ts");
@@ -947,6 +949,108 @@ assert.doesNotMatch(
   encodedCompositePipelineSource,
   /targets:[\s\S]*?blend:/,
   "il compositore con backdrop non deve duplicare source-over nel fixed blend",
+);
+
+const rasterSegmentShaderStart = mixedCompositorSource.indexOf(
+  "export const mixedSceneRasterSegmentShader",
+);
+assert.ok(rasterSegmentShaderStart >= 0 && textSegmentShaderStart > rasterSegmentShaderStart);
+const rasterSegmentShaderSource = mixedCompositorSource.slice(
+  rasterSegmentShaderStart,
+  textSegmentShaderStart,
+);
+assert.match(
+  rasterSegmentShaderSource,
+  /@group\(0\) @binding\(4\) var rasterBackdropTexture: texture_2d<f32>;/,
+);
+assert.match(
+  rasterSegmentShaderSource,
+  /fn encodedCompositeFragmentMain\([\s\S]*?rasterSegmentStoredSource\(fragmentPosition, false\)[\s\S]*?textureLoad\(rasterBackdropTexture, pixel, 0\)[\s\S]*?encodedSource\s*\+ encodedBackdrop \* \(1\.0 - sourceAlpha\)[\s\S]*?rasterEncodedPremultipliedToLinear\(encodedResult\)/,
+  "la run raster encoded deve comporre il backdrop nello stesso dominio dei pixel memorizzati",
+);
+assert.match(
+  rasterSegmentShaderSource,
+  /sourceAlpha >= 1\.0[\s\S]*?rasterEncodedPremultipliedToLinear\(encodedSource\)[\s\S]*?sourceAlpha <= 0\.0[\s\S]*?return linearBackdrop/,
+  "il compositore raster encoded deve evitare encode/decode sui pixel esattamente opachi o trasparenti",
+);
+assert.match(
+  rasterSegmentShaderSource,
+  /textureSampleLevel\(sourceTexture, sourceSampler, uv, lod\) \* segment\.opacity/,
+  "la composizione raster encoded deve includere l'opacità del livello nella sorgente premoltiplicata",
+);
+assert.match(
+  displayShadersSource,
+  /fn activeEncodedCompositeFragmentMain\([\s\S]*?activeStoredSource\(fragmentPosition\)[\s\S]*?textureLoad\(activeRasterBackdropTexture, pixel, 0\)[\s\S]*?encodedSource\s*\+ encodedBackdrop \* \(1\.0 - sourceAlpha\)[\s\S]*?activePaintForLinearScene\(encodedResult\)/,
+  "anche il raster attivo deve conservare source-over encoded nel caso base",
+);
+assert.match(
+  displayShadersSource,
+  /sourceAlpha >= 1\.0[\s\S]*?activePaintForLinearScene\(encodedSource\)[\s\S]*?sourceAlpha <= 0\.0[\s\S]*?return linearBackdrop/,
+  "il compositore active-raster deve evitare encode/decode sui pixel esattamente opachi o trasparenti",
+);
+assert.match(
+  displayShadersSource,
+  /sampled \* display\.activeLayerAlpha/,
+  "la composizione raster attiva deve includere l'opacità del livello nella sorgente premoltiplicata",
+);
+
+for (const [source, pipelineName] of [
+  [mixedSceneShapeResourcesSource, "mixedSceneRasterEncodedCompositePipeline"],
+  [mixedSceneShapeResourcesSource, "mixedSceneActiveEncodedCompositePipeline"],
+  [engineRuntimeMiscSource, "mixedSceneRasterEncodedCompositePipelinePromise"],
+  [engineRuntimeMiscSource, "mixedSceneActiveEncodedCompositePipelinePromise"],
+]) {
+  assert.match(
+    source,
+    new RegExp(pipelineName),
+    `${pipelineName} deve essere disponibile sia nel cold path sia nel percorso completo`,
+  );
+}
+
+const compactActiveCompositeStart = vectorTextRuntimeSource.indexOf(
+  'const usesCompactEncodedActiveComposite = segment.kind === "active-raster"',
+);
+const compactRasterCompositeStart = vectorTextRuntimeSource.indexOf(
+  'const usesCompactEncodedRasterComposite = segment.kind === "raster-run"',
+);
+const compactVectorCompositeStart = vectorTextRuntimeSource.indexOf(
+  'const usesCompactEncodedVectorComposite = segment.kind === "text-run"',
+);
+assert.ok(
+  compactActiveCompositeStart >= 0
+    && compactRasterCompositeStart > compactActiveCompositeStart
+    && compactVectorCompositeStart > compactRasterCompositeStart,
+  "i compositori compact active, raster-run e vector-run devono restare ordinati",
+);
+const compactActiveCompositeSource = vectorTextRuntimeSource.slice(
+  compactActiveCompositeStart,
+  compactRasterCompositeStart,
+);
+assert.match(compactActiveCompositeSource, /activePresentation\.kind === "base"/);
+assert.match(compactActiveCompositeSource, /blendMode === "normal"/);
+assert.match(compactActiveCompositeSource, /!rasterLayerNeedsBackdropComposition/);
+assert.match(compactActiveCompositeSource, /engine\.activeClippingGroup === null/);
+assert.match(compactActiveCompositeSource, /setBindGroup\(0, engine\.displayBindGroup\)/);
+assert.match(compactActiveCompositeSource, /setBindGroup\(1, backdropBindGroup\)/);
+const compactRasterCompositeSource = vectorTextRuntimeSource.slice(
+  compactRasterCompositeStart,
+  compactVectorCompositeStart,
+);
+assert.match(compactRasterCompositeSource, /blendMode === "normal"/);
+assert.match(compactRasterCompositeSource, /!rasterLayerNeedsBackdropComposition/);
+assert.match(compactRasterCompositeSource, /!rasterResources\?\.documentCutoutMaskSurface/);
+assert.match(compactRasterCompositeSource, /rasterEncodedCompositePipeline/);
+
+const linearToEncodedChannel = (value) => value <= 0.0031308
+  ? value * 12.92
+  : 1.055 * value ** (1 / 2.4) - 0.055;
+const encodedBlackOverWhite = 0 + 1 * (1 - 0.5);
+const linearBlackOverWhitePresented = linearToEncodedChannel(0 + 1 * (1 - 0.5));
+assert.ok(Math.abs(encodedBlackOverWhite - 0.5) < 1e-12);
+assert.ok(Math.abs(linearBlackOverWhitePresented - 0.7353569830524495) < 1e-12);
+assert.ok(
+  linearBlackOverWhitePresented - encodedBlackOverWhite > 0.23,
+  "il test deve rilevare il bordo nero schiarito dal source-over lineare",
 );
 
 const compactEncodedCompositeStart = vectorTextRuntimeSource.indexOf(
@@ -3461,7 +3565,7 @@ class VectorEffectQueueTestWorker {
     this.pendingBuilds.push({ message, pathIsRegistered });
   }
 
-  respondToNextBuild() {
+  respondToNextBuild(mesh = null) {
     const pending = this.pendingBuilds.shift();
     assert.ok(pending, "the bounded worker queue must expose its next build");
     assert.ok(this.onmessage, "the client must install the worker response handler");
@@ -3471,7 +3575,7 @@ class VectorEffectQueueTestWorker {
           type: "effect-ready",
           requestId: pending.message.requestId,
           cacheKey: pending.message.cacheKey,
-          mesh: null,
+          mesh,
         }
         : {
           type: "effect-failed",
@@ -3606,6 +3710,108 @@ try {
   assert.equal(latestClient.diagnostics().readyJobs, 1);
   latestClient.resetForDocument();
   assert.equal(latestWorker.terminated, true);
+
+  const reusableLodClient = new VectorTextEffectCompilerClient(() => {});
+  const mediumLod = vectorTextLodForSigma(4);
+  const highLod = vectorTextLodForSigma(8);
+  const mediumMesh = { revision: "medium-ready-mesh" };
+  const highMesh = { revision: "high-ready-mesh" };
+  reusableLodClient.meshForSlot(
+    "medium-source-slot",
+    sourceRectangle,
+    mediumLod,
+    { kind: "source-fill" },
+    true,
+  );
+  const reusableLodWorker = VectorEffectQueueTestWorker.instances.at(-1);
+  assert.ok(reusableLodWorker);
+  reusableLodWorker.respondToNextBuild(mediumMesh);
+  reusableLodClient.meshForSlot(
+    "high-source-slot",
+    sourceRectangle,
+    highLod,
+    { kind: "source-fill" },
+    true,
+  );
+  reusableLodWorker.respondToNextBuild(highMesh);
+  const reusableBuildCount = reusableLodWorker.messages.filter(
+    (message) => message.type === "build-effect",
+  ).length;
+  const reusedLod = reusableLodClient.meshForSlot(
+    "destination-slot",
+    sourceRectangle,
+    lod,
+    { kind: "source-fill" },
+    true,
+  );
+  assert.equal(
+    reusedLod.mesh,
+    mediumMesh,
+    "a new slot must reuse the closest ready mesh that exceeds its non-exact LOD",
+  );
+  assert.equal(reusedLod.matchesRequestedIdentity, true);
+  assert.equal(reusedLod.matchesRequestedLod, true);
+  assert.equal(
+    reusableLodWorker.messages.filter(
+      (message) => message.type === "build-effect",
+    ).length,
+    reusableBuildCount,
+    "ready higher-detail geometry must avoid a redundant lower-detail worker job",
+  );
+  assert.equal(reusableLodClient.diagnostics().pendingJobs, 0);
+  reusableLodClient.resetForDocument();
+  assert.equal(reusableLodWorker.terminated, true);
+
+  for (const effect of [
+    { kind: "block", vectorX: 5, vectorY: 3 },
+    {
+      kind: "block-outline",
+      vectorX: 5,
+      vectorY: 3,
+      width: 2,
+      join: "round",
+    },
+    {
+      kind: "source-outline",
+      width: 2,
+      join: "round",
+    },
+  ]) {
+    const exactLodClient = new VectorTextEffectCompilerClient(() => {});
+    exactLodClient.meshForSlot(
+      "exact-source-slot",
+      sourceRectangle,
+      highLod,
+      effect,
+      true,
+    );
+    const exactLodWorker = VectorEffectQueueTestWorker.instances.at(-1);
+    assert.ok(exactLodWorker);
+    exactLodWorker.respondToNextBuild({ revision: `${effect.kind}-high-mesh` });
+    const exactBuildCount = exactLodWorker.messages.filter(
+      (message) => message.type === "build-effect",
+    ).length;
+    const exactResult = exactLodClient.meshForSlot(
+      "exact-destination-slot",
+      sourceRectangle,
+      lod,
+      effect,
+      true,
+    );
+    assert.equal(exactResult.mesh, null);
+    assert.equal(exactResult.matchesRequestedLod, false);
+    assert.equal(
+      exactLodWorker.messages.filter(
+        (message) => message.type === "build-effect",
+      ).length,
+      exactBuildCount + 1,
+      `${effect.kind} must compile the exact requested LOD`,
+    );
+    assert.equal(exactLodWorker.pendingBuilds.at(-1).message.lod.bucket, lod.bucket);
+    exactLodWorker.respondToNextBuild();
+    exactLodClient.resetForDocument();
+    assert.equal(exactLodWorker.terminated, true);
+  }
 
   const resetClient = new VectorTextEffectCompilerClient(() => {});
   for (let index = 0; index < 2; index += 1) {
@@ -3907,11 +4113,11 @@ assert.equal(
 );
 
 // Rasterizzazione vettoriale autorevole: SVG mesh e testo Slug mantengono i
-// calcoli/MSAA in RGBA16F lineare; i documenti encoded RGBA8 eseguono una sola
-// conversione finale con quantizzazione ancorata alle coordinate documento.
+// calcoli/MSAA in RGBA16F e nello stesso dominio del live; i documenti encoded
+// RGBA8 eseguono solo la quantizzazione ancorata alle coordinate documento.
 assert.match(
   vectorRasterSource,
-  /semantic-vector-slug-mesh-webgpu-linear-msaa4-encoded-rgba8-finalize-tile-paired-chunks-history-seed-v5/,
+  /semantic-vector-slug-mesh-webgpu-msaa4-domain-parity-rgba8-quantize-tile-paired-batched-chunks-history-seed-v6/,
 );
 assert.match(vectorRasterSource, /VECTOR_RASTER_FORMAT = "rgba16float"/);
 assert.match(
@@ -3970,9 +4176,10 @@ assert.match(vectorRasterSource, /rgba8SpatialQuantizationShader/);
 assert.match(
   vectorRasterSource,
   /usage: GPUTextureUsage\.RENDER_ATTACHMENT[\s\S]{0,120}GPUTextureUsage\.TEXTURE_BINDING/,
-  "the linear MSAA resolve must be sampleable by the encoded RGBA8 finalizer",
+  "the high-precision MSAA resolve must be sampleable by the encoded RGBA8 finalizer",
 );
-assert.match(vectorRasterSource, /linearPremultipliedToEncoded\(textureLoad\(linearTexture/);
+assert.match(vectorRasterSource, /textureLoad\(encodedTexture, local, 0\)/);
+assert.doesNotMatch(vectorRasterSource, /linearPremultipliedToEncoded/);
 assert.match(vectorRasterSource, /quantizeRgba8SpatialAdjacent\(/);
 assert.match(vectorRasterSource, /encodedScratch\?\.texture \?\? resolvedTexture/);
 assert.doesNotMatch(

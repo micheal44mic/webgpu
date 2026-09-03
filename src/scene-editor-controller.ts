@@ -276,7 +276,6 @@ export class SceneEditorController {
       }
       const result = await vector.rasterizeSelectedSvgLayer();
       if (!result) throw new Error("SVG rasterization failed.");
-      await this.options.engine.waitForIdle();
       const outputKey = `raster:${result.layerId}` as SceneLayerKey;
       this.options.elements.result.textContent = `${liveTarget.name} rasterized.`;
       return {
@@ -323,7 +322,6 @@ export class SceneEditorController {
         ? await vector.rasterizeSelectedTextLayer()
         : await vector.rasterizeSelectedSvgLayer();
       if (!result) throw new Error("Vector rasterization failed.");
-      await this.options.engine.waitForIdle();
       const outputKey = `raster:${result.layerId}` as SceneLayerKey;
       this.options.elements.result.textContent = `${liveSelected.kind.toUpperCase()} layer rasterized.`;
       return {

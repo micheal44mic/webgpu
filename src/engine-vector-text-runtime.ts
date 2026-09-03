@@ -89,13 +89,21 @@ import { layerTonalBlendIsDefault } from "./layer-composition.ts";
 import type { LayerRecord } from "./layer-stack";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import {
+  mixedScenePreparedRasterTransformPreview,
   mixedSceneRasterTransformPreviewHasSegmentedClipping,
   mixedSceneRasterTransformPreviewUsesSegmentedClipping,
 } from "./engine-mixed-scene-raster-preview-runtime";
 import {
   MIXED_SCENE_RASTER_SEGMENT_UNIFORM_BYTES,
+  mixedSceneRasterPreviewTransformedBounds,
   mixedSceneRasterSegmentUniformValues,
 } from "./mixed-scene-raster-transform-preview";
+import {
+  activeRasterCompositeSamplingPadding,
+  intersectMixedSceneCompositeRects,
+  mixedSceneDocumentRectToPresentationRect,
+  paddedMixedSceneDocumentRect,
+} from "./mixed-scene-composite-roi";
 import {
   vectorTextFastPresentationMode,
 } from "./vector-text-adaptive-zoom";
@@ -1709,6 +1717,8 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
   const presentBindGroup = engine.mixedScenePresentBindGroup;
   const clearPipeline = engine.mixedSceneClearPipeline;
   const rasterPipeline = engine.mixedSceneRasterSegmentPipeline;
+  const rasterEncodedCompositePipeline = engine.mixedSceneRasterEncodedCompositePipeline;
+  const activeEncodedCompositePipeline = engine.mixedSceneActiveEncodedCompositePipeline;
   const rasterSourceAtopPipeline = engine.mixedSceneRasterSegmentSourceAtopPipeline;
   const textPipeline = engine.mixedSceneTextSegmentPipeline;
   const textSourceAtopPipeline = engine.mixedSceneTextSegmentSourceAtopPipeline;
@@ -1731,6 +1741,14 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
   );
   const requiresEncodedVectorComposite = vectorTextRunUsesEncodedSrgb(engine)
     && requiresTextPipeline;
+  const requiresEncodedRasterComposite = engine.documentStorageColorSpace
+      === "encoded-srgb-premultiplied"
+    && requiresRasterPipeline;
+  const requiresEncodedActiveComposite = engine.documentStorageColorSpace
+      === "encoded-srgb-premultiplied"
+    && engine.mixedSceneCompositionSegments.some(
+      (segment) => segment.kind === "active-raster",
+    );
   if (
     !engine.usesOrderedScenePresentation()
     || !linearView
@@ -1748,6 +1766,8 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
         !engine.mixedSceneTextEncodedCompositePipeline
         || !engine.mixedSceneTextEncodedCompositeBindGroupLayout
       )
+    || (requiresEncodedRasterComposite && !rasterEncodedCompositePipeline)
+    || (requiresEncodedActiveComposite && !activeEncodedCompositePipeline)
     || !engine.presentationCacheView
   ) {
     throw new Error("The segmented raster/text compositor is not ready.");
@@ -2020,6 +2040,34 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
       presentationDirtyRect.width,
       presentationDirtyRect.height,
     );
+  };
+  const compactCompositeRectForDocumentBounds = (
+    bounds: Readonly<DirtyRect> | null,
+    documentPadding = 0,
+  ): DirtyRect | null => {
+    if (!bounds) return null;
+    const padded = paddedMixedSceneDocumentRect(
+      bounds,
+      documentPadding,
+      engine.documentWidth,
+      engine.documentHeight,
+    );
+    if (!padded) return null;
+    const projected = mixedSceneDocumentRectToPresentationRect(
+      {
+        canvasWidth: engine.canvas.width,
+        canvasHeight: engine.canvas.height,
+        centerX: engine.viewCenterX,
+        centerY: engine.viewCenterY,
+        zoom: engine.zoom,
+        rotationCos: engine.viewRotationCos,
+        rotationSin: engine.viewRotationSin,
+      },
+      padded,
+    );
+    return projected
+      ? intersectMixedSceneCompositeRects(projected, presentationDirtyRect)
+      : null;
   };
   if (deepCutoutEnabled) {
     const deepFloorPass = encoder.beginRenderPass({
@@ -2876,6 +2924,190 @@ export function encodeMixedSceneSegmentedPresentation(engine: BrushEngine,
       outerBlendPass.draw(3, 1, 0, 0);
       outerBlendPass.end();
       currentIsCanonical = !currentIsCanonical;
+      captureDeepFloorAfter(segmentIndex);
+      continue;
+    }
+    const usesCompactEncodedActiveComposite = segment.kind === "active-raster"
+      && engine.documentStorageColorSpace === "encoded-srgb-premultiplied"
+      && activePresentation.kind === "base"
+      && blendMode === "normal"
+      && compositionRecord !== null
+      && !rasterLayerNeedsBackdropComposition(compositionRecord)
+      && engine.activeClippingGroup === null;
+    if (usesCompactEncodedActiveComposite) {
+      const activeCompositeRect = compactCompositeRectForDocumentBounds(
+        engine.layerContentBounds,
+        activeRasterCompositeSamplingPadding(
+          engine.zoom,
+          engine.paintDisplaySelectedMipLevel,
+          engine.activeLayerDisplayPyramid.mipViews.length,
+        ),
+      );
+      if (!activeCompositeRect) {
+        captureDeepFloorAfter(segmentIndex);
+        continue;
+      }
+      scenePass?.end();
+      scenePass = null;
+      ensureMixedSceneTextEncodedCompositeScratch(
+        engine,
+        engine.mixedSceneLinearWidth,
+        engine.mixedSceneLinearHeight,
+      );
+      const scratchView = engine.mixedSceneTextEncodedCompositeScratchView;
+      const scratchTexture = engine.mixedSceneTextEncodedCompositeScratchTexture;
+      const backdropTexture = currentIsCanonical
+        ? engine.mixedSceneLinearTexture
+        : engine.mixedSceneBlendScratchTexture;
+      const backdropView = currentIsCanonical
+        ? engine.mixedSceneLinearView
+        : engine.mixedSceneBlendScratchView;
+      if (
+        !scratchView
+        || !scratchTexture
+        || !activeEncodedCompositePipeline
+        || !backdropTexture
+        || !backdropView
+      ) {
+        throw new Error("The encoded active-raster backdrop compositor is unavailable.");
+      }
+      const backdropBindGroup = engine.device.createBindGroup({
+        label: `Encoded active-raster backdrop ${segment.item.key}`,
+        layout: activeEncodedCompositePipeline.getBindGroupLayout(1),
+        entries: [{ binding: 0, resource: backdropView }],
+      });
+      const compositePass = encoder.beginRenderPass({
+        label: `${label} · encoded active-raster backdrop ${segment.item.key}`,
+        colorAttachments: [{
+          view: scratchView,
+          loadOp: "load",
+          storeOp: "store",
+        }],
+      });
+      compositePass.setScissorRect(
+        activeCompositeRect.x,
+        activeCompositeRect.y,
+        activeCompositeRect.width,
+        activeCompositeRect.height,
+      );
+      compositePass.setPipeline(activeEncodedCompositePipeline);
+      compositePass.setBindGroup(0, engine.displayBindGroup);
+      compositePass.setBindGroup(1, backdropBindGroup);
+      compositePass.draw(3, 1, 0, 0);
+      compositePass.end();
+      encoder.copyTextureToTexture(
+        {
+          texture: scratchTexture,
+          origin: { x: activeCompositeRect.x, y: activeCompositeRect.y, z: 0 },
+        },
+        {
+          texture: backdropTexture,
+          origin: { x: activeCompositeRect.x, y: activeCompositeRect.y, z: 0 },
+        },
+        {
+          width: activeCompositeRect.width,
+          height: activeCompositeRect.height,
+          depthOrArrayLayers: 1,
+        },
+      );
+      scenePass = beginScenePass();
+      captureDeepFloorAfter(segmentIndex);
+      continue;
+    }
+    const usesCompactEncodedRasterComposite = segment.kind === "raster-run"
+      && engine.documentStorageColorSpace === "encoded-srgb-premultiplied"
+      && blendMode === "normal"
+      && compositionRecord !== null
+      && !rasterLayerNeedsBackdropComposition(compositionRecord)
+      && !rasterResources?.documentCutoutMaskSurface;
+    if (usesCompactEncodedRasterComposite) {
+      if (rasterResources) {
+        const previewTransform = rasterResources.rasterLayerId === null
+          ? null
+          : mixedScenePreparedRasterTransformPreview(
+            engine,
+            rasterResources.rasterLayerId,
+          );
+        const rasterCompositeRect = compactCompositeRectForDocumentBounds(
+          mixedSceneRasterPreviewTransformedBounds(
+            rasterResources.surface.bounds,
+            previewTransform,
+          ),
+        );
+        if (!rasterCompositeRect) {
+          captureDeepFloorAfter(segmentIndex);
+          continue;
+        }
+        scenePass?.end();
+        scenePass = null;
+        ensureMixedSceneTextEncodedCompositeScratch(
+          engine,
+          engine.mixedSceneLinearWidth,
+          engine.mixedSceneLinearHeight,
+        );
+        const scratchView = engine.mixedSceneTextEncodedCompositeScratchView;
+        const scratchTexture = engine.mixedSceneTextEncodedCompositeScratchTexture;
+        const backdropTexture = currentIsCanonical
+          ? engine.mixedSceneLinearTexture
+          : engine.mixedSceneBlendScratchTexture;
+        const backdropView = currentIsCanonical
+          ? engine.mixedSceneLinearView
+          : engine.mixedSceneBlendScratchView;
+        if (
+          !scratchView
+          || !scratchTexture
+          || !rasterEncodedCompositePipeline
+          || !backdropTexture
+          || !backdropView
+        ) {
+          throw new Error("The encoded raster backdrop compositor is unavailable.");
+        }
+        const bindGroup = engine.device.createBindGroup({
+          label: `Encoded raster backdrop ${segment.key}`,
+          layout: rasterEncodedCompositePipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: engine.displayUniformBuffer } },
+            { binding: 1, resource: { buffer: rasterResources.uniformBuffer } },
+            { binding: 2, resource: rasterResources.surface.samplingView },
+            { binding: 3, resource: engine.sampler },
+            { binding: 4, resource: backdropView },
+          ],
+        });
+        const compositePass = encoder.beginRenderPass({
+          label: `${label} · encoded raster backdrop ${segment.key}`,
+          colorAttachments: [{
+            view: scratchView,
+            loadOp: "load",
+            storeOp: "store",
+          }],
+        });
+        compositePass.setScissorRect(
+          rasterCompositeRect.x,
+          rasterCompositeRect.y,
+          rasterCompositeRect.width,
+          rasterCompositeRect.height,
+        );
+        compositePass.setPipeline(rasterEncodedCompositePipeline);
+        compositePass.setBindGroup(0, bindGroup);
+        compositePass.draw(3, 1, 0, 0);
+        compositePass.end();
+        encoder.copyTextureToTexture(
+          {
+            texture: scratchTexture,
+            origin: { x: rasterCompositeRect.x, y: rasterCompositeRect.y, z: 0 },
+          },
+          {
+            texture: backdropTexture,
+            origin: { x: rasterCompositeRect.x, y: rasterCompositeRect.y, z: 0 },
+          },
+          {
+            width: rasterCompositeRect.width,
+            height: rasterCompositeRect.height,
+            depthOrArrayLayers: 1,
+          },
+        );
+        scenePass = beginScenePass();
+      }
       captureDeepFloorAfter(segmentIndex);
       continue;
     }
@@ -4411,6 +4643,7 @@ export function writeVectorTextGpuDrawUniform(engine: BrushEngine,
   targetBounds: DirtyRect,
   targetWidth = engine.vectorTextGpuScratchWidth,
   targetHeight = engine.vectorTextGpuScratchHeight,
+  outputColorDomain: "document-storage" | "linear-premultiplied" = "document-storage",
 ): void {
   const base = drawIndex * VECTOR_TEXT_GPU_UNIFORM_STRIDE / 4;
   const upload = engine.vectorTextGpuUniformUpload;
@@ -4422,7 +4655,10 @@ export function writeVectorTextGpuDrawUniform(engine: BrushEngine,
   upload[base + 4] = view.centerX;
   upload[base + 5] = view.centerY;
   upload[base + 6] = view.zoom;
-  upload[base + 7] = vectorTextRunUsesEncodedSrgb(engine) ? 1 : 0;
+  upload[base + 7] = outputColorDomain === "document-storage"
+    && vectorTextRunUsesEncodedSrgb(engine)
+    ? 1
+    : 0;
   upload[base + 8] = draw.x;
   upload[base + 9] = draw.y;
   upload[base + 10] = Math.cos(draw.rotation);

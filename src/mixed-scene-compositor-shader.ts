@@ -72,6 +72,7 @@ struct SegmentUniforms {
 @group(0) @binding(1) var<uniform> segment: SegmentUniforms;
 @group(0) @binding(2) var sourceTexture: texture_2d<f32>;
 @group(0) @binding(3) var sourceSampler: sampler;
+@group(0) @binding(4) var rasterBackdropTexture: texture_2d<f32>;
 
 ${rasterPixelViewShaderHelpers}
 ${fullscreenVertexShader}
@@ -79,6 +80,36 @@ ${fullscreenVertexShader}
 fn srgbToLinearChannel(value: f32) -> f32 {
   if (value <= 0.04045) { return value / 12.92; }
   return pow((value + 0.055) / 1.055, 2.4);
+}
+
+fn linearToSrgbChannel(value: f32) -> f32 {
+  let clamped = clamp(value, 0.0, 1.0);
+  if (clamped <= 0.0031308) { return clamped * 12.92; }
+  return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
+}
+
+fn rasterEncodedPremultipliedToLinear(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let straightSrgb = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  let straightLinear = vec3<f32>(
+    srgbToLinearChannel(straightSrgb.r),
+    srgbToLinearChannel(straightSrgb.g),
+    srgbToLinearChannel(straightSrgb.b)
+  );
+  return vec4<f32>(straightLinear * alpha, alpha);
+}
+
+fn rasterLinearPremultipliedToEncoded(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let straightLinear = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  let straightSrgb = vec3<f32>(
+    linearToSrgbChannel(straightLinear.r),
+    linearToSrgbChannel(straightLinear.g),
+    linearToSrgbChannel(straightLinear.b)
+  );
+  return vec4<f32>(straightSrgb * alpha, alpha);
 }
 
 fn rasterSegmentSourceForLinearWorkingTarget(value: vec4<f32>) -> vec4<f32> {
@@ -94,8 +125,10 @@ fn rasterSegmentSourceForLinearWorkingTarget(value: vec4<f32>) -> vec4<f32> {
   return vec4<f32>(straightLinear * alpha, alpha);
 }
 
-@fragment
-fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
+fn rasterSegmentStoredSource(
+  fragmentPosition: vec4<f32>,
+  convertToLinearWorkingTarget: bool
+) -> vec4<f32> {
   let layerPosition = layerPositionAt(fragmentPosition.xy);
   let sourceLayerPosition = vec2<f32>(
     dot(segment.inverseRowX.xy, layerPosition) + segment.inverseRowX.z,
@@ -127,18 +160,49 @@ fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) 
   // and make identical pixels change sharpness when layer activation changes.
   let lod = floor(continuousLod + 0.000001);
   if (rasterPixelViewEnabled(effectiveResolutionScale)) {
-    return rasterSegmentSourceForLinearWorkingTarget(textureLoad(
+    let stored = textureLoad(
       sourceTexture,
       rasterPixelViewTexel(
         uv,
         vec2<i32>(textureDimensions(sourceTexture, 0))
       ),
       0
-    )) * segment.opacity;
+    ) * segment.opacity;
+    if (convertToLinearWorkingTarget) {
+      return rasterSegmentSourceForLinearWorkingTarget(stored);
+    }
+    return stored;
   }
-  return rasterSegmentSourceForLinearWorkingTarget(
-    textureSampleLevel(sourceTexture, sourceSampler, uv, lod)
-  ) * segment.opacity;
+  let stored = textureSampleLevel(sourceTexture, sourceSampler, uv, lod) * segment.opacity;
+  if (convertToLinearWorkingTarget) {
+    return rasterSegmentSourceForLinearWorkingTarget(stored);
+  }
+  return stored;
+}
+
+@fragment
+fn fragmentMain(@builtin(position) fragmentPosition: vec4<f32>) -> @location(0) vec4<f32> {
+  return rasterSegmentStoredSource(fragmentPosition, true);
+}
+
+@fragment
+fn encodedCompositeFragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  let pixel = vec2<i32>(floor(fragmentPosition.xy));
+  let encodedSource = rasterSegmentStoredSource(fragmentPosition, false);
+  let sourceAlpha = clamp(encodedSource.a, 0.0, 1.0);
+  if (sourceAlpha >= 1.0) {
+    return rasterEncodedPremultipliedToLinear(encodedSource);
+  }
+  let linearBackdrop = textureLoad(rasterBackdropTexture, pixel, 0);
+  if (sourceAlpha <= 0.0) {
+    return linearBackdrop;
+  }
+  let encodedBackdrop = rasterLinearPremultipliedToEncoded(linearBackdrop);
+  let encodedResult = encodedSource
+    + encodedBackdrop * (1.0 - sourceAlpha);
+  return rasterEncodedPremultipliedToLinear(encodedResult);
 }
 `;
 

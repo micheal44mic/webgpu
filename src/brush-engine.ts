@@ -881,7 +881,12 @@ import {
   selectPixelsByColor,
   setSelectionToolSelected,
 } from "./engine-selection-runtime";
-import { destroyVectorRasterHistorySeed, rasterizeVectorNodeToLayer, rollbackUnpublishedVectorRasterization } from "./engine-vector-raster-runtime";
+import {
+  destroyVectorRasterHistorySeed,
+  prepareVectorRasterizationResources,
+  rasterizeVectorNodeToLayer,
+  rollbackUnpublishedVectorRasterization,
+} from "./engine-vector-raster-runtime";
 import {
   applyLightGlazeResourceSet,
   createLightGlazeResourceSet,
@@ -1919,6 +1924,8 @@ export class BrushEngine {
   vectorTextGpuClearPipeline: GPURenderPipeline | null = null;
   mixedSceneClearPipeline: GPURenderPipeline | null = null;
   mixedSceneRasterSegmentPipeline: GPURenderPipeline | null = null;
+  mixedSceneRasterEncodedCompositePipeline: GPURenderPipeline | null = null;
+  mixedSceneActiveEncodedCompositePipeline: GPURenderPipeline | null = null;
   mixedSceneRasterSegmentSourceAtopPipeline: GPURenderPipeline | null = null;
   mixedSceneTextSegmentPipeline: GPURenderPipeline | null = null;
   mixedSceneTextSegmentSourceAtopPipeline: GPURenderPipeline | null = null;
@@ -11085,6 +11092,7 @@ export class BrushEngine {
     name?: string,
   ): Promise<Readonly<VectorTextNode>> {
     await this.ensureMixedSceneEditorResources();
+    void prepareVectorRasterizationResources(this).catch(() => undefined);
     const node = await mutateMixedScenePresentation(this, 
       (scene) => scene.addTextAboveSelection(seed, name),
       {
@@ -11113,6 +11121,7 @@ export class BrushEngine {
       return [];
     }
     await this.ensureMixedSceneEditorResources();
+    void prepareVectorRasterizationResources(this).catch(() => undefined);
     const nodes = await mutateMixedScenePresentation(this, (scene) =>
       entries.map((entry) => scene.addTextAboveSelection(entry.seed, entry.name))
     );
@@ -11228,6 +11237,7 @@ export class BrushEngine {
     } else {
       await this.ensureVectorShapeEditorResources();
     }
+    void prepareVectorRasterizationResources(this).catch(() => undefined);
     const node = await mutateMixedScenePresentation(this, 
       (scene) => scene.addSvgAboveSelection(seed, name),
       {

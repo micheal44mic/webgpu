@@ -2,6 +2,7 @@ import type { BrushEngine } from "./brush-engine";
 import { VECTOR_TEXT_GPU_MAXIMUM_DRAWS } from "./engine-limits";
 import {
   VECTOR_TEXT_GPU_SAMPLE_COUNT,
+  VECTOR_TEXT_GPU_TARGET_FORMAT,
   VECTOR_TEXT_GPU_UNIFORM_STRIDE,
 } from "./vector-text-gpu-shader";
 import type { VectorRasterizeHistoryAction } from "./engine-history-types";
@@ -51,17 +52,23 @@ import {
 } from "./engine-layer-runtime";
 import { LAYER_STACK_MAXIMUM } from "./layer-stack";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
-import { analyzeRasterTextureOccupancy } from "./raster-occupancy-analysis";
+import {
+  analyzeRasterTextureOccupancy,
+  prepareRasterOccupancyAnalysis,
+} from "./raster-occupancy-analysis";
 import { rgba8SpatialQuantizationShader } from "./rgba8-spatial-quantization";
+import { createRenderPipelineAsync } from "./engine-gpu-utils";
 
 export const VECTOR_RASTERIZATION_STRATEGY =
-  "semantic-vector-slug-mesh-webgpu-linear-msaa4-encoded-rgba8-finalize-tile-paired-chunks-history-seed-v5" as const;
+  "semantic-vector-slug-mesh-webgpu-msaa4-domain-parity-rgba8-quantize-tile-paired-batched-chunks-history-seed-v6" as const;
 export function vectorRasterChunkDimensions(): { width: number; height: number } {
   return {
     width: LAYER_STORAGE_TILE_WIDTH * 2,
     height: LAYER_STORAGE_TILE_HEIGHT * 2,
   };
 }
+export const VECTOR_RASTER_MAX_CHUNKS_PER_SUBMISSION = 8;
+const ENCODED_VECTOR_RASTER_FINALIZE_UNIFORM_BYTES = 16;
 /** Permanent authoritative default; runtime resources still follow engine.layerFormat. */
 export const VECTOR_RASTER_FORMAT = "rgba16float" as const;
 
@@ -96,12 +103,23 @@ interface EncodedVectorRasterScratch {
   readonly pipeline: GPURenderPipeline;
 }
 
+interface VectorRasterChunk {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+  readonly visibleDrawIndices: readonly number[];
+}
+
 const pipelinesByDevice = new WeakMap<
   GPUDevice,
   Map<LayerFormat, Promise<VectorRasterPipelines>>
 >();
 
-const encodedFinalizePipelinesByDevice = new WeakMap<GPUDevice, GPURenderPipeline>();
+const encodedFinalizePipelinesByDevice = new WeakMap<
+  GPUDevice,
+  Promise<GPURenderPipeline>
+>();
 
 const ENCODED_VECTOR_RASTER_FINALIZE_WGSL = /* wgsl */ `
 ${rgba8SpatialQuantizationShader}
@@ -112,7 +130,7 @@ struct FinalizeUniforms {
   _pad0: u32,
 };
 
-@group(0) @binding(0) var linearTexture: texture_2d<f32>;
+@group(0) @binding(0) var encodedTexture: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> finalize: FinalizeUniforms;
 
 @vertex
@@ -126,28 +144,6 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> @builtin(position) vec
   return vec4<f32>(position, 0.0, 1.0);
 }
 
-fn linearToSrgbChannel(value: f32) -> f32 {
-  let bounded = clamp(value, 0.0, 1.0);
-  if (bounded <= 0.0031308) {
-    return bounded * 12.92;
-  }
-  return 1.055 * pow(bounded, 1.0 / 2.4) - 0.055;
-}
-
-fn linearPremultipliedToEncoded(value: vec4<f32>) -> vec4<f32> {
-  let alpha = clamp(value.a, 0.0, 1.0);
-  if (alpha <= 0.0) {
-    return vec4<f32>(0.0);
-  }
-  let straight = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
-  let encoded = vec3<f32>(
-    linearToSrgbChannel(straight.r),
-    linearToSrgbChannel(straight.g),
-    linearToSrgbChannel(straight.b)
-  );
-  return vec4<f32>(encoded * alpha, alpha);
-}
-
 @fragment
 fn fragmentMain(
   @builtin(position) fragmentPosition: vec4<f32>,
@@ -155,7 +151,7 @@ fn fragmentMain(
   let local = vec2<i32>(fragmentPosition.xy);
   let documentCoordinate = finalize.documentOrigin + vec2<u32>(local);
   return quantizeRgba8SpatialAdjacent(
-    linearPremultipliedToEncoded(textureLoad(linearTexture, local, 0)),
+    textureLoad(encodedTexture, local, 0),
     documentCoordinate,
     finalize.actionSeed,
   );
@@ -190,6 +186,19 @@ async function ensureVectorRasterPipelines(
   engine: BrushEngine,
   format: LayerFormat,
 ): Promise<VectorRasterPipelines> {
+  if (format === VECTOR_TEXT_GPU_TARGET_FORMAT) {
+    const reused = {
+      meshFill: engine.vectorTextGpuFillPipeline,
+      slugFill: engine.vectorTextGpuSlugPipeline,
+      blurComposite: engine.vectorTextGpuBlurCompositePipeline,
+      slugInnerShadowDirect: engine.vectorTextGpuInnerShadowDirectPipeline,
+      slugInnerShadowBlur: engine.vectorTextGpuInnerShadowBlurPipeline,
+      meshInnerShadowBlur: engine.vectorTextGpuMeshInnerShadowBlurPipeline,
+    };
+    if (Object.values(reused).every((pipeline) => pipeline !== null)) {
+      return reused as VectorRasterPipelines;
+    }
+  }
   let devicePipelines = pipelinesByDevice.get(engine.device);
   if (!devicePipelines) {
     devicePipelines = new Map();
@@ -200,138 +209,147 @@ async function ensureVectorRasterPipelines(
   const pending = runGpuAllocationTransaction(
     engine.device,
     `Vector rasterization pipeline ${format}`,
-    () => {
-  const meshShader = engine.vectorTextGpuShaderModule;
-  const slugShader = engine.vectorTextGpuSlugShaderModule;
-  const blurShader = engine.vectorTextGpuBlurCompositeShaderModule;
-  const innerShader = engine.vectorTextGpuInnerShadowShaderModule;
-  const meshLayout = engine.vectorTextGpuUniformBindGroupLayout;
-  const slugLayout = engine.vectorTextGpuSlugBindGroupLayout;
-  const blurLayout = engine.vectorTextGpuBlurCompositeBindGroupLayout;
-  const innerLayout = engine.vectorTextGpuInnerShadowBindGroupLayout;
-  if (
-    !meshShader
-    || !slugShader
-    || !blurShader
-    || !innerShader
-    || !meshLayout
-    || !slugLayout
-    || !blurLayout
-    || !innerLayout
-  ) {
-    throw new Error("The GPU vector renderer is not ready to rasterize the node.");
-  }
-  const blend = sourceOverBlend();
-  const vertexBuffers: GPUVertexBufferLayout[] = [{
-    arrayStride: 8,
-    attributes: [{
-      shaderLocation: 0,
-      offset: 0,
-      format: "float32x2",
-    }],
-  }];
-  const meshFill = engine.device.createRenderPipeline({
-    label: `Vector raster ${format} linear mesh fill MSAA4`,
-    layout: engine.device.createPipelineLayout({
-      label: `Vector raster ${format} mesh layout`,
-      bindGroupLayouts: [meshLayout],
-    }),
-    vertex: { module: meshShader, entryPoint: "vertexMain", buffers: vertexBuffers },
-    fragment: {
-      module: meshShader,
-      entryPoint: "fragmentMain",
-      targets: [{ format, blend }],
-    },
-    primitive: { topology: "triangle-list" },
-    multisample: { count: VECTOR_TEXT_GPU_SAMPLE_COUNT },
-  });
-  const slugFill = engine.device.createRenderPipeline({
-    label: `Vector raster ${format} linear Slug fill MSAA4`,
-    layout: engine.device.createPipelineLayout({
-      label: `Vector raster ${format} Slug layout`,
-      bindGroupLayouts: [slugLayout],
-    }),
-    vertex: { module: slugShader, entryPoint: "vertexMain" },
-    fragment: {
-      module: slugShader,
-      entryPoint: "fragmentMain",
-      targets: [{ format, blend }],
-    },
-    primitive: { topology: "triangle-list", cullMode: "none" },
-    multisample: { count: VECTOR_TEXT_GPU_SAMPLE_COUNT },
-  });
-  const blurComposite = engine.device.createRenderPipeline({
-    label: `Vector raster ${format} linear blur composite MSAA4`,
-    layout: engine.device.createPipelineLayout({
-      label: `Vector raster ${format} blur layout`,
-      bindGroupLayouts: [blurLayout],
-    }),
-    vertex: { module: blurShader, entryPoint: "vertexMain" },
-    fragment: {
-      module: blurShader,
-      entryPoint: "fragmentMain",
-      targets: [{ format, blend }],
-    },
-    primitive: { topology: "triangle-list" },
-    multisample: { count: VECTOR_TEXT_GPU_SAMPLE_COUNT },
-  });
-  const slugInnerShadowDirect = engine.device.createRenderPipeline({
-    label: `Vector raster ${format} Slug inner shadow direct MSAA4`,
-    layout: engine.device.createPipelineLayout({
-      label: `Vector raster ${format} Slug inner-shadow direct layout`,
-      bindGroupLayouts: [slugLayout],
-    }),
-    vertex: { module: innerShader, entryPoint: "vertexMain" },
-    fragment: {
-      module: innerShader,
-      entryPoint: "innerShadowDirectFragmentMain",
-      targets: [{ format, blend }],
-    },
-    primitive: { topology: "triangle-list", cullMode: "none" },
-    multisample: { count: VECTOR_TEXT_GPU_SAMPLE_COUNT },
-  });
-  const slugInnerShadowBlur = engine.device.createRenderPipeline({
-    label: `Vector raster ${format} Slug inner shadow blur MSAA4`,
-    layout: engine.device.createPipelineLayout({
-      label: `Vector raster ${format} Slug inner-shadow blur layout`,
-      bindGroupLayouts: [slugLayout, innerLayout],
-    }),
-    vertex: { module: innerShader, entryPoint: "innerShadowBlurVertexMain" },
-    fragment: {
-      module: innerShader,
-      entryPoint: "innerShadowBlurFragmentMain",
-      targets: [{ format, blend }],
-    },
-    primitive: { topology: "triangle-list", cullMode: "none" },
-    multisample: { count: VECTOR_TEXT_GPU_SAMPLE_COUNT },
-  });
-  const meshInnerShadowBlur = engine.device.createRenderPipeline({
-    label: `Vector raster ${format} mesh inner shadow blur MSAA4`,
-    layout: engine.device.createPipelineLayout({
-      label: `Vector raster ${format} mesh inner-shadow layout`,
-      bindGroupLayouts: [meshLayout, innerLayout],
-    }),
-    vertex: {
-      module: meshShader,
-      entryPoint: "meshInnerShadowVertexMain",
-      buffers: vertexBuffers,
-    },
-    fragment: {
-      module: meshShader,
-      entryPoint: "meshInnerShadowFragmentMain",
-      targets: [{ format, blend }],
-    },
-    primitive: { topology: "triangle-list", cullMode: "none" },
-    multisample: { count: VECTOR_TEXT_GPU_SAMPLE_COUNT },
-  });
-  const created = {
-    meshFill,
-    slugFill,
-    blurComposite,
-    slugInnerShadowDirect,
-    slugInnerShadowBlur,
-    meshInnerShadowBlur,
-  };
+    async () => {
+      const meshShader = engine.vectorTextGpuShaderModule;
+      const slugShader = engine.vectorTextGpuSlugShaderModule;
+      const blurShader = engine.vectorTextGpuBlurCompositeShaderModule;
+      const innerShader = engine.vectorTextGpuInnerShadowShaderModule;
+      const meshLayout = engine.vectorTextGpuUniformBindGroupLayout;
+      const slugLayout = engine.vectorTextGpuSlugBindGroupLayout;
+      const blurLayout = engine.vectorTextGpuBlurCompositeBindGroupLayout;
+      const innerLayout = engine.vectorTextGpuInnerShadowBindGroupLayout;
+      if (
+        !meshShader
+        || !slugShader
+        || !blurShader
+        || !innerShader
+        || !meshLayout
+        || !slugLayout
+        || !blurLayout
+        || !innerLayout
+      ) {
+        throw new Error("The GPU vector renderer is not ready to rasterize the node.");
+      }
+      const blend = sourceOverBlend();
+      const vertexBuffers: GPUVertexBufferLayout[] = [{
+        arrayStride: 8,
+        attributes: [{
+          shaderLocation: 0,
+          offset: 0,
+          format: "float32x2",
+        }],
+      }];
+      const [
+        meshFill,
+        slugFill,
+        blurComposite,
+        slugInnerShadowDirect,
+        slugInnerShadowBlur,
+        meshInnerShadowBlur,
+      ] = await Promise.all([
+        createRenderPipelineAsync(engine.device, {
+          label: `Vector raster ${format} linear mesh fill MSAA4`,
+          layout: engine.device.createPipelineLayout({
+            label: `Vector raster ${format} mesh layout`,
+            bindGroupLayouts: [meshLayout],
+          }),
+          vertex: { module: meshShader, entryPoint: "vertexMain", buffers: vertexBuffers },
+          fragment: {
+            module: meshShader,
+            entryPoint: "fragmentMain",
+            targets: [{ format, blend }],
+          },
+          primitive: { topology: "triangle-list" },
+          multisample: { count: VECTOR_TEXT_GPU_SAMPLE_COUNT },
+        }),
+        createRenderPipelineAsync(engine.device, {
+          label: `Vector raster ${format} linear Slug fill MSAA4`,
+          layout: engine.device.createPipelineLayout({
+            label: `Vector raster ${format} Slug layout`,
+            bindGroupLayouts: [slugLayout],
+          }),
+          vertex: { module: slugShader, entryPoint: "vertexMain" },
+          fragment: {
+            module: slugShader,
+            entryPoint: "fragmentMain",
+            targets: [{ format, blend }],
+          },
+          primitive: { topology: "triangle-list", cullMode: "none" },
+          multisample: { count: VECTOR_TEXT_GPU_SAMPLE_COUNT },
+        }),
+        createRenderPipelineAsync(engine.device, {
+          label: `Vector raster ${format} linear blur composite MSAA4`,
+          layout: engine.device.createPipelineLayout({
+            label: `Vector raster ${format} blur layout`,
+            bindGroupLayouts: [blurLayout],
+          }),
+          vertex: { module: blurShader, entryPoint: "vertexMain" },
+          fragment: {
+            module: blurShader,
+            entryPoint: "fragmentMain",
+            targets: [{ format, blend }],
+          },
+          primitive: { topology: "triangle-list" },
+          multisample: { count: VECTOR_TEXT_GPU_SAMPLE_COUNT },
+        }),
+        createRenderPipelineAsync(engine.device, {
+          label: `Vector raster ${format} Slug inner shadow direct MSAA4`,
+          layout: engine.device.createPipelineLayout({
+            label: `Vector raster ${format} Slug inner-shadow direct layout`,
+            bindGroupLayouts: [slugLayout],
+          }),
+          vertex: { module: innerShader, entryPoint: "vertexMain" },
+          fragment: {
+            module: innerShader,
+            entryPoint: "innerShadowDirectFragmentMain",
+            targets: [{ format, blend }],
+          },
+          primitive: { topology: "triangle-list", cullMode: "none" },
+          multisample: { count: VECTOR_TEXT_GPU_SAMPLE_COUNT },
+        }),
+        createRenderPipelineAsync(engine.device, {
+          label: `Vector raster ${format} Slug inner shadow blur MSAA4`,
+          layout: engine.device.createPipelineLayout({
+            label: `Vector raster ${format} Slug inner-shadow blur layout`,
+            bindGroupLayouts: [slugLayout, innerLayout],
+          }),
+          vertex: { module: innerShader, entryPoint: "innerShadowBlurVertexMain" },
+          fragment: {
+            module: innerShader,
+            entryPoint: "innerShadowBlurFragmentMain",
+            targets: [{ format, blend }],
+          },
+          primitive: { topology: "triangle-list", cullMode: "none" },
+          multisample: { count: VECTOR_TEXT_GPU_SAMPLE_COUNT },
+        }),
+        createRenderPipelineAsync(engine.device, {
+          label: `Vector raster ${format} mesh inner shadow blur MSAA4`,
+          layout: engine.device.createPipelineLayout({
+            label: `Vector raster ${format} mesh inner-shadow layout`,
+            bindGroupLayouts: [meshLayout, innerLayout],
+          }),
+          vertex: {
+            module: meshShader,
+            entryPoint: "meshInnerShadowVertexMain",
+            buffers: vertexBuffers,
+          },
+          fragment: {
+            module: meshShader,
+            entryPoint: "meshInnerShadowFragmentMain",
+            targets: [{ format, blend }],
+          },
+          primitive: { topology: "triangle-list", cullMode: "none" },
+          multisample: { count: VECTOR_TEXT_GPU_SAMPLE_COUNT },
+        }),
+      ]);
+      const created = {
+        meshFill,
+        slugFill,
+        blurComposite,
+        slugInnerShadowDirect,
+        slugInnerShadowBlur,
+        meshInnerShadowBlur,
+      };
       return created;
     },
   );
@@ -403,17 +421,17 @@ async function createVectorRasterScratch(
   }
 }
 
-function ensureEncodedVectorRasterFinalizePipeline(
+async function ensureEncodedVectorRasterFinalizePipeline(
   engine: BrushEngine,
-): GPURenderPipeline {
+): Promise<GPURenderPipeline> {
   const existing = encodedFinalizePipelinesByDevice.get(engine.device);
   if (existing) return existing;
   const module = engine.device.createShaderModule({
-    label: "Vector raster linear-to-encoded RGBA8 finalize WGSL",
+    label: "Vector raster encoded RGBA8 quantization WGSL",
     code: ENCODED_VECTOR_RASTER_FINALIZE_WGSL,
   });
-  const created = engine.device.createRenderPipeline({
-    label: "Vector raster linear-to-encoded RGBA8 finalize",
+  const pending = createRenderPipelineAsync(engine.device, {
+    label: "Vector raster encoded RGBA8 quantization",
     layout: "auto",
     vertex: { module, entryPoint: "vertexMain" },
     fragment: {
@@ -423,17 +441,24 @@ function ensureEncodedVectorRasterFinalizePipeline(
     },
     primitive: { topology: "triangle-list" },
   });
-  encodedFinalizePipelinesByDevice.set(engine.device, created);
-  return created;
+  encodedFinalizePipelinesByDevice.set(engine.device, pending);
+  try {
+    return await pending;
+  } catch (error) {
+    if (encodedFinalizePipelinesByDevice.get(engine.device) === pending) {
+      encodedFinalizePipelinesByDevice.delete(engine.device);
+    }
+    throw error;
+  }
 }
 
 function createEncodedVectorRasterScratch(
   engine: BrushEngine,
+  pipeline: GPURenderPipeline,
   linearView: GPUTextureView,
   width: number,
   height: number,
 ): EncodedVectorRasterScratch {
-  const pipeline = ensureEncodedVectorRasterFinalizePipeline(engine);
   const texture = engine.device.createTexture({
     label: `Vector raster encoded RGBA8 finalize ${width}x${height}`,
     size: { width, height, depthOrArrayLayers: 1 },
@@ -442,7 +467,7 @@ function createEncodedVectorRasterScratch(
   });
   const uniformBuffer = engine.device.createBuffer({
     label: "Vector raster encoded RGBA8 finalize uniforms",
-    size: 16,
+    size: ENCODED_VECTOR_RASTER_FINALIZE_UNIFORM_BYTES,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
   try {
@@ -475,6 +500,17 @@ function requireVectorDraws(draws: readonly VectorTextGpuDraw[]): void {
     );
   }
 }
+
+function vectorRasterBoundsIntersect(
+  first: Readonly<VectorRasterizeHistoryAction["baseBounds"]>,
+  second: Readonly<VectorRasterizeHistoryAction["baseBounds"]>,
+): boolean {
+  return first.x < second.x + second.width
+    && first.x + first.width > second.x
+    && first.y < second.y + second.height
+    && first.y + first.height > second.y;
+}
+
 function encodeMissingBlurCaches(
   engine: BrushEngine,
   draws: readonly VectorTextGpuDraw[],
@@ -665,11 +701,17 @@ export async function renderVectorDrawsToTexture(
   if (storedEncodedSrgb && format !== "rgba8unorm") {
     throw new Error("Encoded-sRGB vector raster storage requires an RGBA8 destination.");
   }
-  // Vector paints and effects are authored in linear light. For an encoded
-  // RGBA8 document, retain that precision through MSAA resolve and perform one
-  // document-anchored encoded quantization immediately before permanent copy.
+  // RGBA16F keeps the live renderer's encoded-premultiplied draw values exact
+  // through blending and MSAA resolve. The final pass only quantizes those
+  // values into permanent RGBA8 storage, so overlapping translucent paints
+  // retain the same source-over result before and after rasterization.
   const renderFormat: LayerFormat = storedEncodedSrgb ? "rgba16float" : format;
-  const pipelines = await ensureVectorRasterPipelines(engine, renderFormat);
+  const [pipelines, encodedFinalizePipeline] = await Promise.all([
+    ensureVectorRasterPipelines(engine, renderFormat),
+    storedEncodedSrgb
+      ? ensureEncodedVectorRasterFinalizePipeline(engine)
+      : Promise.resolve(null),
+  ]);
   const uniformBuffer = engine.vectorTextGpuUniformBuffer;
   const uniformBindGroup = engine.vectorTextGpuUniformBindGroup;
   if (!uniformBuffer || !uniformBindGroup) {
@@ -684,50 +726,121 @@ export async function renderVectorDrawsToTexture(
   encodeMissingBlurCaches(engine, draws, drawResources, blurResources);
 
   const bounds = vectorTextGpuRunBounds(draws, view);
+  const drawBounds = draws.map((draw) => vectorTextGpuRunBounds([draw], view));
   const { width: chunkWidth, height: chunkHeight } = vectorRasterChunkDimensions();
   const firstChunkX = Math.floor(bounds.x / chunkWidth) * chunkWidth;
   const firstChunkY = Math.floor(bounds.y / chunkHeight) * chunkHeight;
   const lastChunkX = Math.ceil((bounds.x + bounds.width) / chunkWidth) * chunkWidth;
   const lastChunkY = Math.ceil((bounds.y + bounds.height) / chunkHeight) * chunkHeight;
+  const chunks: VectorRasterChunk[] = [];
+  for (let y = firstChunkY; y < lastChunkY; y += chunkHeight) {
+    for (let x = firstChunkX; x < lastChunkX; x += chunkWidth) {
+      const width = Math.min(chunkWidth, view.canvasWidth - x);
+      const height = Math.min(chunkHeight, view.canvasHeight - y);
+      if (width <= 0 || height <= 0) continue;
+      const chunk = { x, y, width, height };
+      const visibleDrawIndices: number[] = [];
+      draws.forEach((draw, index) => {
+        if (
+          draw.opacity > 0
+          && vectorRasterBoundsIntersect(drawBounds[index], chunk)
+        ) {
+          visibleDrawIndices.push(index);
+        }
+      });
+      if (visibleDrawIndices.length > 0) {
+        chunks.push({ ...chunk, visibleDrawIndices });
+      }
+    }
+  }
   const { msaaTexture, resolvedTexture, msaaView, resolvedView } =
     await createVectorRasterScratch(engine, renderFormat, chunkWidth, chunkHeight);
   const encodedScratch = storedEncodedSrgb
     ? createEncodedVectorRasterScratch(
       engine,
+      encodedFinalizePipeline!,
       resolvedView,
       chunkWidth,
       chunkHeight,
     )
     : null;
+  const maximumVisibleDraws = chunks.reduce(
+    (maximum, chunk) => Math.max(maximum, chunk.visibleDrawIndices.length),
+    0,
+  );
+  const batchedUploadSlotCount = chunks.length > 1
+    ? Math.min(VECTOR_RASTER_MAX_CHUNKS_PER_SUBMISSION, chunks.length)
+    : 0;
+  const drawUniformSlotBytes = maximumVisibleDraws * VECTOR_TEXT_GPU_UNIFORM_STRIDE;
+  const uploadSlotBytes = drawUniformSlotBytes
+    + (encodedScratch ? ENCODED_VECTOR_RASTER_FINALIZE_UNIFORM_BYTES : 0);
+  let batchedUploadBuffer: GPUBuffer | null = null;
+  const finalizeUniformUpload = encodedScratch ? new Uint32Array(4) : null;
   let chunkCount = 0;
+  let batchChunkCount = 0;
+  let batchIndex = 0;
+  let batchEncoder: GPUCommandEncoder | null = null;
+  const flushBatch = (): void => {
+    if (!batchEncoder) return;
+    engine.device.queue.submit([batchEncoder.finish()]);
+    batchEncoder = null;
+    batchChunkCount = 0;
+    batchIndex += 1;
+  };
   try {
-    for (let y = firstChunkY; y < lastChunkY; y += chunkHeight) {
-      for (let x = firstChunkX; x < lastChunkX; x += chunkWidth) {
-        const width = Math.min(chunkWidth, view.canvasWidth - x);
-        const height = Math.min(chunkHeight, view.canvasHeight - y);
-        if (width <= 0 || height <= 0) continue;
-        const chunk = { x, y, width, height };
-        draws.forEach((draw, index) => {
+    if (batchedUploadSlotCount > 0) {
+      batchedUploadBuffer = engine.device.createBuffer({
+        label: `Vector raster uniforms for ${batchedUploadSlotCount}-chunk submissions`,
+        size: batchedUploadSlotCount * uploadSlotBytes,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+      });
+    }
+    for (const chunk of chunks) {
+        const { x, y, width, height, visibleDrawIndices } = chunk;
+        visibleDrawIndices.forEach((index, uniformIndex) => {
           writeVectorTextGpuDrawUniform(
             engine,
-            draw,
+            draws[index],
             view,
-            index,
+            uniformIndex,
             chunk,
             width,
             height,
+            storedEncodedSrgb ? "document-storage" : "linear-premultiplied",
           );
         });
-        engine.device.queue.writeBuffer(
-          uniformBuffer,
-          0,
-          engine.vectorTextGpuUniformUpload,
-          0,
-          draws.length * VECTOR_TEXT_GPU_UNIFORM_STRIDE / 4,
-        );
-        const encoder = engine.device.createCommandEncoder({
-          label: `Vector raster ${renderFormat} chunk ${x},${y} ${width}x${height}`,
-        });
+        const drawUniformBytes = visibleDrawIndices.length * VECTOR_TEXT_GPU_UNIFORM_STRIDE;
+        if (!batchEncoder) {
+          batchEncoder = engine.device.createCommandEncoder({
+            label: `Vector raster ${renderFormat} chunk batch ${batchIndex + 1}`,
+          });
+        }
+        const encoder = batchEncoder;
+        const uploadSlotOffset = batchChunkCount * uploadSlotBytes;
+        if (batchedUploadBuffer) {
+          engine.device.queue.writeBuffer(
+            batchedUploadBuffer,
+            uploadSlotOffset,
+            engine.vectorTextGpuUniformUpload,
+            0,
+            drawUniformBytes / 4,
+          );
+          encoder.copyBufferToBuffer(
+            batchedUploadBuffer,
+            uploadSlotOffset,
+            uniformBuffer,
+            0,
+            drawUniformBytes,
+          );
+        } else {
+          engine.device.queue.writeBuffer(
+            uniformBuffer,
+            0,
+            engine.vectorTextGpuUniformUpload,
+            0,
+            drawUniformBytes / 4,
+          );
+        }
         const pass = encoder.beginRenderPass({
           label: `Vector raster ${renderFormat} MSAA4 chunk ${x},${y}`,
           colorAttachments: [{
@@ -740,12 +853,12 @@ export async function renderVectorDrawsToTexture(
         });
         pass.setViewport(0, 0, width, height, 0, 1);
         pass.setScissorRect(0, 0, width, height);
-        for (let index = 0; index < draws.length; index += 1) {
+        for (let uniformIndex = 0; uniformIndex < visibleDrawIndices.length; uniformIndex += 1) {
+          const index = visibleDrawIndices[uniformIndex];
           const draw = draws[index];
-          if (draw.opacity <= 0) continue;
           const resources = drawResources[index];
           const blur = blurResources[index];
-          const dynamicOffset = index * VECTOR_TEXT_GPU_UNIFORM_STRIDE;
+          const dynamicOffset = uniformIndex * VECTOR_TEXT_GPU_UNIFORM_STRIDE;
           if (draw.mode === "slug-blur" || draw.mode === "mesh-blur") {
             if (!blur) throw new Error("The vector shadow cache is missing.");
             pass.setPipeline(pipelines.blurComposite);
@@ -803,11 +916,31 @@ export async function renderVectorDrawsToTexture(
         }
         pass.end();
         if (encodedScratch) {
-          engine.device.queue.writeBuffer(
-            encodedScratch.uniformBuffer,
-            0,
-            new Uint32Array([x, y, engine.nextHistoryActionId, 0]),
-          );
+          finalizeUniformUpload![0] = x;
+          finalizeUniformUpload![1] = y;
+          finalizeUniformUpload![2] = engine.nextHistoryActionId;
+          finalizeUniformUpload![3] = 0;
+          if (batchedUploadBuffer) {
+            const finalizeUploadOffset = uploadSlotOffset + drawUniformSlotBytes;
+            engine.device.queue.writeBuffer(
+              batchedUploadBuffer,
+              finalizeUploadOffset,
+              finalizeUniformUpload!,
+            );
+            encoder.copyBufferToBuffer(
+              batchedUploadBuffer,
+              finalizeUploadOffset,
+              encodedScratch.uniformBuffer,
+              0,
+              ENCODED_VECTOR_RASTER_FINALIZE_UNIFORM_BYTES,
+            );
+          } else {
+            engine.device.queue.writeBuffer(
+              encodedScratch.uniformBuffer,
+              0,
+              finalizeUniformUpload!,
+            );
+          }
           const finalizePass = encoder.beginRenderPass({
             label: `Vector raster encoded RGBA8 finalize ${x},${y}`,
             colorAttachments: [{
@@ -855,15 +988,19 @@ export async function renderVectorDrawsToTexture(
             },
           );
         }
-        engine.device.queue.submit([encoder.finish()]);
         chunkCount += 1;
+        batchChunkCount += 1;
+        if (batchChunkCount >= VECTOR_RASTER_MAX_CHUNKS_PER_SUBMISSION) {
+          flushBatch();
+        }
       }
-    }
+    flushBatch();
     await engine.waitForGpuCapped(
       `Vector rasterization ${renderFormat} MSAA4${storedEncodedSrgb ? " → encoded RGBA8" : ""}`,
       60_000,
     );
   } finally {
+    batchedUploadBuffer?.destroy();
     encodedScratch?.uniformBuffer.destroy();
     encodedScratch?.texture.destroy();
     msaaTexture.destroy();
@@ -984,6 +1121,28 @@ async function freezeVectorRasterPresentationForRollback(engine: BrushEngine): P
   }
 }
 
+/**
+ * Starts the small program set that is unique to permanent vector output.
+ * Vector creation calls this without awaiting it, so a later conversion can
+ * reuse the in-flight work instead of paying compilation cost after the click.
+ */
+export async function prepareVectorRasterizationResources(
+  engine: BrushEngine,
+): Promise<void> {
+  const storedEncodedSrgb = engine.documentStorageColorSpace
+    === "encoded-srgb-premultiplied";
+  const rasterRenderFormat: LayerFormat = storedEncodedSrgb
+    ? "rgba16float"
+    : engine.layerFormat;
+  await Promise.all([
+    ensureVectorRasterPipelines(engine, rasterRenderFormat),
+    storedEncodedSrgb
+      ? ensureEncodedVectorRasterFinalizePipeline(engine)
+      : Promise.resolve(null),
+    prepareRasterOccupancyAnalysis(engine),
+  ]);
+}
+
 export async function rasterizeVectorNodeToLayer(
   engine: BrushEngine,
   sourceKind: VectorRasterizeHistoryAction["sourceKind"],
@@ -1020,7 +1179,10 @@ export async function rasterizeVectorNodeToLayer(
   engine.cancelLayerColdCompressionIdle();
   engine.layerSwitchBusy = true;
   try {
-    await engine.waitForIdle();
+    await Promise.all([
+      engine.waitForIdle(),
+      prepareVectorRasterizationResources(engine),
+    ]);
     const node = sourceKind === "text"
       ? scene.textById(sourceId)
       : scene.svgById(sourceId);

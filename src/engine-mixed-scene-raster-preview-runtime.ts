@@ -247,6 +247,14 @@ export function mixedSceneRasterTransformPreviewCompositionLayerIds(
   return stateFor(engine).compositionLayerIds;
 }
 
+/** The published transform whose values were last written to segment uniforms. */
+export function mixedScenePreparedRasterTransformPreview(
+  engine: BrushEngine,
+  layerId: number,
+): Readonly<NormalizedMixedSceneRasterTransformPreview> | null {
+  return stateFor(engine).prepared.get(layerId) ?? null;
+}
+
 export function mixedSceneRasterTransformPreviewUsesSegmentedClipping(
   engine: BrushEngine,
   key: MixedSceneItem["key"],

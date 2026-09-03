@@ -148,6 +148,8 @@ export const verificationScripts = Object.freeze([
   "verify-vector-shadow-3d.mjs",
   "verify-vector-shapes.mjs",
   "verify-vector-pixel-alignment.mjs",
+  "verify-vector-raster-color-domain.mjs",
+  "verify-vector-raster-pipeline-cache.mjs",
   "verify-vector-shape-cold-start.mjs",
   "verify-vector-stroke-expansion-lab.mjs",
   "verify-vector-svg-direct-stroke.mjs",

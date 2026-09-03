@@ -8,6 +8,7 @@ import {
   mixedSceneTextSegmentShader,
 } from "./mixed-scene-compositor-shader";
 import { ensureMixedScenePresentationResources } from "./mixed-scene-presentation-resources";
+import { MIXED_SCENE_RASTER_SEGMENT_UNIFORM_BYTES } from "./mixed-scene-raster-transform-preview";
 
 const shapePreviewCreationPromises = new WeakMap<BrushEngine, Promise<void>>();
 const vectorShapeCreationPromises = new WeakMap<BrushEngine, Promise<void>>();
@@ -31,6 +32,13 @@ function shapePreviewResourcesReady(engine: BrushEngine): boolean {
       && engine.mixedSceneClearPipeline
       && engine.mixedSceneBackgroundPipeline
       && engine.mixedSceneRasterSegmentPipeline
+      && (
+        engine.documentStorageColorSpace !== "encoded-srgb-premultiplied"
+        || (
+          engine.mixedSceneRasterEncodedCompositePipeline
+          && engine.mixedSceneActiveEncodedCompositePipeline
+        )
+      )
       && engine.mixedSceneActiveDisplayPipeline
       && engine.mixedSceneShapePreviewPipeline
       && engine.mixedSceneShapePreviewUniformBuffer
@@ -125,8 +133,45 @@ export async function ensureMixedSceneShapePreviewResources(
           { binding: 1, resource: { buffer: previewUniformBuffer } },
         ],
       });
+    const rasterEncodedCompositeBindGroupLayout =
+      engine.documentStorageColorSpace === "encoded-srgb-premultiplied"
+        && !engine.mixedSceneRasterEncodedCompositePipeline
+        ? engine.device.createBindGroupLayout({
+          label: "Mixed scene encoded raster composite bind group layout",
+          entries: [
+            { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+            {
+              binding: 1,
+              visibility: GPUShaderStage.FRAGMENT,
+              buffer: {
+                type: "uniform",
+                minBindingSize: MIXED_SCENE_RASTER_SEGMENT_UNIFORM_BYTES,
+              },
+            },
+            { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+            { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+            {
+              binding: 4,
+              visibility: GPUShaderStage.FRAGMENT,
+              texture: { sampleType: "unfilterable-float" },
+            },
+          ],
+        })
+        : null;
+    const activeEncodedBackdropBindGroupLayout =
+      engine.documentStorageColorSpace === "encoded-srgb-premultiplied"
+        && !engine.mixedSceneActiveEncodedCompositePipeline
+        ? engine.device.createBindGroupLayout({
+          label: "Mixed scene encoded active-raster backdrop bind group layout",
+          entries: [{
+            binding: 0,
+            visibility: GPUShaderStage.FRAGMENT,
+            texture: { sampleType: "unfilterable-float" },
+          }],
+        })
+        : null;
 
-    let compiledPipelines: readonly GPURenderPipeline[];
+    let compiledPipelines: readonly (GPURenderPipeline | null)[];
     try {
       compiledPipelines = await Promise.all([
       engine.mixedSceneClearPipeline
@@ -177,6 +222,45 @@ export async function ensureMixedSceneShapePreviewResources(
           },
           primitive: { topology: "triangle-list" },
         }),
+      engine.documentStorageColorSpace !== "encoded-srgb-premultiplied"
+        ? Promise.resolve(null)
+        : engine.mixedSceneRasterEncodedCompositePipeline
+          ? Promise.resolve(engine.mixedSceneRasterEncodedCompositePipeline)
+          : createRenderPipelineAsync(engine.device, {
+            label: "Mixed scene encoded raster backdrop composite pipeline",
+            layout: engine.device.createPipelineLayout({
+              label: "Mixed scene encoded raster backdrop composite pipeline layout",
+              bindGroupLayouts: [rasterEncodedCompositeBindGroupLayout!],
+            }),
+            vertex: { module: rasterShaderModule, entryPoint: "vertexMain" },
+            fragment: {
+              module: rasterShaderModule,
+              entryPoint: "encodedCompositeFragmentMain",
+              targets: [{ format: MIXED_SCENE_LINEAR_FORMAT }],
+            },
+            primitive: { topology: "triangle-list" },
+          }),
+      engine.documentStorageColorSpace !== "encoded-srgb-premultiplied"
+        ? Promise.resolve(null)
+        : engine.mixedSceneActiveEncodedCompositePipeline
+          ? Promise.resolve(engine.mixedSceneActiveEncodedCompositePipeline)
+          : createRenderPipelineAsync(engine.device, {
+            label: "Mixed scene encoded active-raster backdrop composite pipeline",
+            layout: engine.device.createPipelineLayout({
+              label: "Mixed scene encoded active-raster backdrop composite pipeline layout",
+              bindGroupLayouts: [
+                engine.displayBindGroupLayout,
+                activeEncodedBackdropBindGroupLayout!,
+              ],
+            }),
+            vertex: { module: engine.displayShaderModule, entryPoint: "vertexMain" },
+            fragment: {
+              module: engine.displayShaderModule,
+              entryPoint: "activeEncodedCompositeFragmentMain",
+              targets: [{ format: MIXED_SCENE_LINEAR_FORMAT }],
+            },
+            primitive: { topology: "triangle-list" },
+          }),
       engine.mixedSceneActiveDisplayPipeline
         ? Promise.resolve(engine.mixedSceneActiveDisplayPipeline)
         : createRenderPipelineAsync(engine.device, {
@@ -219,6 +303,8 @@ export async function ensureMixedSceneShapePreviewResources(
       clearPipeline,
       backgroundPipeline,
       rasterPipeline,
+      rasterEncodedCompositePipeline,
+      activeEncodedCompositePipeline,
       activePipeline,
       previewPipeline,
     ] = compiledPipelines;
@@ -230,6 +316,8 @@ export async function ensureMixedSceneShapePreviewResources(
     engine.mixedSceneClearPipeline = clearPipeline;
     engine.mixedSceneBackgroundPipeline = backgroundPipeline;
     engine.mixedSceneRasterSegmentPipeline = rasterPipeline;
+    engine.mixedSceneRasterEncodedCompositePipeline = rasterEncodedCompositePipeline;
+    engine.mixedSceneActiveEncodedCompositePipeline = activeEncodedCompositePipeline;
     engine.mixedSceneActiveDisplayPipeline = activePipeline;
     engine.mixedSceneShapePreviewPipeline = previewPipeline;
   })();

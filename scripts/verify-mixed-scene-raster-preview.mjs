@@ -6,9 +6,15 @@ import { MixedSceneStack } from "../src/mixed-scene-stack.ts";
 import {
   MIXED_SCENE_RASTER_SEGMENT_UNIFORM_BYTES,
   mixedSceneRasterPreviewInverseAffine,
+  mixedSceneRasterPreviewTransformedBounds,
   mixedSceneRasterSegmentUniformValues,
   normalizeMixedSceneRasterTransformPreview,
 } from "../src/mixed-scene-raster-transform-preview.ts";
+import {
+  activeRasterCompositeSamplingPadding,
+  intersectMixedSceneCompositeRects,
+  mixedSceneDocumentRectToPresentationRect,
+} from "../src/mixed-scene-composite-roi.ts";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
@@ -60,6 +66,65 @@ assert.throws(
   () => normalizeMixedSceneRasterTransformPreview({ ...transform, scaleY: 0 }),
   /invertible/,
 );
+
+const transformedBounds = mixedSceneRasterPreviewTransformedBounds(
+  { x: 10, y: 20, width: 30, height: 10 },
+  {
+    pivotX: 0,
+    pivotY: 0,
+    translationX: 5,
+    translationY: -3,
+    scaleX: 2,
+    scaleY: 1,
+    rotation: Math.PI / 2,
+  },
+);
+assert.ok(Math.abs(transformedBounds.x + 25) < 1e-9);
+assert.ok(Math.abs(transformedBounds.y - 17) < 1e-9);
+assert.ok(Math.abs(transformedBounds.width - 10) < 1e-9);
+assert.ok(Math.abs(transformedBounds.height - 60) < 1e-9);
+
+const projectedBounds = mixedSceneDocumentRectToPresentationRect(
+  {
+    canvasWidth: 200,
+    canvasHeight: 100,
+    centerX: 50,
+    centerY: 50,
+    zoom: 2,
+    rotationCos: 1,
+    rotationSin: 0,
+  },
+  { x: 40, y: 45, width: 20, height: 10 },
+);
+assert.deepEqual(projectedBounds, { x: 79, y: 39, width: 42, height: 22 });
+assert.deepEqual(
+  intersectMixedSceneCompositeRects(projectedBounds, {
+    x: 90,
+    y: 0,
+    width: 20,
+    height: 100,
+  }),
+  { x: 90, y: 39, width: 20, height: 22 },
+);
+assert.equal(activeRasterCompositeSamplingPadding(0.25, 0, 12), 8);
+assert.equal(activeRasterCompositeSamplingPadding(1, 0, 12), 2);
+
+const encodedActiveStart = vectorRuntimeSource.indexOf(
+  "const usesCompactEncodedActiveComposite",
+);
+const encodedRasterStart = vectorRuntimeSource.indexOf(
+  "const usesCompactEncodedRasterComposite",
+);
+const encodedVectorStart = vectorRuntimeSource.indexOf(
+  "const usesCompactEncodedVectorComposite",
+);
+const encodedActiveSource = vectorRuntimeSource.slice(encodedActiveStart, encodedRasterStart);
+const encodedRasterSource = vectorRuntimeSource.slice(encodedRasterStart, encodedVectorStart);
+assert.match(encodedActiveSource, /activeCompositeRect[\s\S]*?setScissorRect/);
+assert.match(encodedActiveSource, /width: activeCompositeRect\.width/);
+assert.match(encodedRasterSource, /mixedSceneRasterPreviewTransformedBounds/);
+assert.match(encodedRasterSource, /rasterCompositeRect[\s\S]*?setScissorRect/);
+assert.match(encodedRasterSource, /width: rasterCompositeRect\.width/);
 
 const stack = new MixedSceneStack([1, 2, 3]);
 stack.setClippingEnabled("raster:2", true);

@@ -663,6 +663,95 @@ export async function finishStaticResourceCreation(
       },
       primitive: { topology: "triangle-list" },
     });
+    const mixedSceneRasterEncodedCompositePipelinePromise =
+      engine.documentStorageColorSpace !== "encoded-srgb-premultiplied"
+        ? Promise.resolve(null)
+        : engine.mixedSceneRasterEncodedCompositePipeline
+          ? Promise.resolve(engine.mixedSceneRasterEncodedCompositePipeline)
+          : (() => {
+            const layout = engine.device.createBindGroupLayout({
+              label: "Mixed scene encoded raster composite bind group layout",
+              entries: [
+                {
+                  binding: 0,
+                  visibility: GPUShaderStage.FRAGMENT,
+                  buffer: { type: "uniform" },
+                },
+                {
+                  binding: 1,
+                  visibility: GPUShaderStage.FRAGMENT,
+                  buffer: {
+                    type: "uniform",
+                    minBindingSize: MIXED_SCENE_RASTER_SEGMENT_UNIFORM_BYTES,
+                  },
+                },
+                {
+                  binding: 2,
+                  visibility: GPUShaderStage.FRAGMENT,
+                  texture: { sampleType: "float" },
+                },
+                {
+                  binding: 3,
+                  visibility: GPUShaderStage.FRAGMENT,
+                  sampler: { type: "filtering" },
+                },
+                {
+                  binding: 4,
+                  visibility: GPUShaderStage.FRAGMENT,
+                  texture: { sampleType: "unfilterable-float" },
+                },
+              ],
+            });
+            return createRenderPipelineAsync(engine.device, {
+              label: "Mixed scene encoded raster backdrop composite pipeline",
+              layout: engine.device.createPipelineLayout({
+                label: "Mixed scene encoded raster backdrop composite pipeline layout",
+                bindGroupLayouts: [layout],
+              }),
+              vertex: {
+                module: engine.mixedSceneRasterSegmentShaderModule,
+                entryPoint: "vertexMain",
+              },
+              fragment: {
+                module: engine.mixedSceneRasterSegmentShaderModule,
+                entryPoint: "encodedCompositeFragmentMain",
+                targets: [{ format: MIXED_SCENE_LINEAR_FORMAT }],
+              },
+              primitive: { topology: "triangle-list" },
+            });
+          })();
+    const mixedSceneActiveEncodedCompositePipelinePromise =
+      engine.documentStorageColorSpace !== "encoded-srgb-premultiplied"
+        ? Promise.resolve(null)
+        : engine.mixedSceneActiveEncodedCompositePipeline
+          ? Promise.resolve(engine.mixedSceneActiveEncodedCompositePipeline)
+          : (() => {
+            const backdropLayout = engine.device.createBindGroupLayout({
+              label: "Mixed scene encoded active-raster backdrop bind group layout",
+              entries: [{
+                binding: 0,
+                visibility: GPUShaderStage.FRAGMENT,
+                texture: { sampleType: "unfilterable-float" },
+              }],
+            });
+            return createRenderPipelineAsync(engine.device, {
+              label: "Mixed scene encoded active-raster backdrop composite pipeline",
+              layout: engine.device.createPipelineLayout({
+                label: "Mixed scene encoded active-raster backdrop composite pipeline layout",
+                bindGroupLayouts: [engine.displayBindGroupLayout, backdropLayout],
+              }),
+              vertex: {
+                module: engine.displayShaderModule,
+                entryPoint: "vertexMain",
+              },
+              fragment: {
+                module: engine.displayShaderModule,
+                entryPoint: "activeEncodedCompositeFragmentMain",
+                targets: [{ format: MIXED_SCENE_LINEAR_FORMAT }],
+              },
+              primitive: { topology: "triangle-list" },
+            });
+          })();
     const mixedTextPipelineLayout = engine.device.createPipelineLayout({
       label: "Mixed scene text segment pipeline layout",
       bindGroupLayouts: [engine.mixedSceneTextSegmentBindGroupLayout],
@@ -886,6 +975,8 @@ export async function finishStaticResourceCreation(
       vectorTextDisplayPipeline,
       mixedSceneRasterSegmentPipeline,
       mixedSceneRasterSegmentSourceAtopPipeline,
+      mixedSceneRasterEncodedCompositePipeline,
+      mixedSceneActiveEncodedCompositePipeline,
       mixedSceneTextSegmentPipeline,
       mixedSceneTextSegmentSourceAtopPipeline,
       mixedSceneTextEncodedCompositePipeline,
@@ -903,6 +994,8 @@ export async function finishStaticResourceCreation(
       vectorTextDisplayPipelinePromise,
       mixedSceneRasterSegmentPipelinePromise,
       mixedSceneRasterSegmentSourceAtopPipelinePromise,
+      mixedSceneRasterEncodedCompositePipelinePromise,
+      mixedSceneActiveEncodedCompositePipelinePromise,
       mixedSceneTextSegmentPipelinePromise,
       mixedSceneTextSegmentSourceAtopPipelinePromise,
       mixedSceneTextEncodedCompositePipelinePromise,
@@ -926,6 +1019,10 @@ export async function finishStaticResourceCreation(
     engine.mixedSceneRasterSegmentPipeline = mixedSceneRasterSegmentPipeline;
     engine.mixedSceneRasterSegmentSourceAtopPipeline =
       mixedSceneRasterSegmentSourceAtopPipeline;
+    engine.mixedSceneRasterEncodedCompositePipeline =
+      mixedSceneRasterEncodedCompositePipeline;
+    engine.mixedSceneActiveEncodedCompositePipeline =
+      mixedSceneActiveEncodedCompositePipeline;
     engine.mixedSceneTextSegmentPipeline = mixedSceneTextSegmentPipeline;
     engine.mixedSceneTextSegmentSourceAtopPipeline = mixedSceneTextSegmentSourceAtopPipeline;
     engine.mixedSceneTextEncodedCompositePipeline = mixedSceneTextEncodedCompositePipeline;

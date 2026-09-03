@@ -12,6 +12,7 @@ import {
   countLayerStorageTiles,
   createLayerStorageTileMask,
 } from "./layer-storage-study";
+import { createComputePipelineAsync } from "./engine-gpu-utils";
 
 const OCCUPANCY_WORKGROUP_EDGE = 16;
 const OCCUPANCY_RESULT_WORD_COUNT = 16;
@@ -22,6 +23,16 @@ const RESULT_MIN_X = RESULT_OCCUPIED + 1;
 const RESULT_MIN_Y = RESULT_OCCUPIED + 2;
 const RESULT_MAX_X = RESULT_OCCUPIED + 3;
 const RESULT_MAX_Y = RESULT_OCCUPIED + 4;
+
+interface RasterOccupancyPipelineResources {
+  readonly bindGroupLayout: GPUBindGroupLayout;
+  readonly pipeline: GPUComputePipeline;
+}
+
+const rasterOccupancyPipelinesByDevice = new WeakMap<
+  GPUDevice,
+  Promise<RasterOccupancyPipelineResources>
+>();
 
 export const RASTER_OCCUPANCY_ANALYSIS_STRATEGY =
   "gpu-exact-nonzero-pixel-bounds-and-256-tile-mask-v1" as const;
@@ -108,6 +119,63 @@ fn main(
 }
 `;
 
+async function ensureRasterOccupancyPipeline(
+  device: GPUDevice,
+): Promise<RasterOccupancyPipelineResources> {
+  const existing = rasterOccupancyPipelinesByDevice.get(device);
+  if (existing) return existing;
+  const pending = (async () => {
+    const bindGroupLayout = device.createBindGroupLayout({
+      label: "Raster occupancy bind group layout",
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.COMPUTE,
+          texture: { sampleType: "unfilterable-float", viewDimension: "2d" },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: "storage" },
+        },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: "uniform" },
+        },
+      ],
+    });
+    const pipeline = await createComputePipelineAsync(device, {
+      label: "Raster occupancy pipeline",
+      layout: device.createPipelineLayout({
+        label: "Raster occupancy pipeline layout",
+        bindGroupLayouts: [bindGroupLayout],
+      }),
+      compute: {
+        module: device.createShaderModule({
+          label: "Raster occupancy shader",
+          code: rasterOccupancyAnalysisShader,
+        }),
+        entryPoint: "main",
+      },
+    });
+    return { bindGroupLayout, pipeline };
+  })();
+  rasterOccupancyPipelinesByDevice.set(device, pending);
+  try {
+    return await pending;
+  } catch (error) {
+    if (rasterOccupancyPipelinesByDevice.get(device) === pending) {
+      rasterOccupancyPipelinesByDevice.delete(device);
+    }
+    throw error;
+  }
+}
+
+export async function prepareRasterOccupancyAnalysis(engine: BrushEngine): Promise<void> {
+  await ensureRasterOccupancyPipeline(engine.device);
+}
+
 export interface RasterOccupancyAnalysis {
   readonly bounds: DirtyRect | null;
   readonly tileMask: Uint32Array;
@@ -162,6 +230,7 @@ export async function analyzeRasterTextureOccupancy(
   );
   const scanWidth = scanRight - scanLeft;
   const scanHeight = scanBottom - scanTop;
+  const { bindGroupLayout, pipeline } = await ensureRasterOccupancyPipeline(engine.device);
 
   const resultBuffer = engine.device.createBuffer({
     label: `${label} occupancy result`,
@@ -203,40 +272,6 @@ export async function analyzeRasterTextureOccupancy(
       ]),
     );
 
-    const bindGroupLayout = engine.device.createBindGroupLayout({
-      label: `${label} occupancy bind group layout`,
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.COMPUTE,
-          texture: { sampleType: "unfilterable-float", viewDimension: "2d" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "storage" },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "uniform" },
-        },
-      ],
-    });
-    const pipeline = engine.device.createComputePipeline({
-      label: `${label} occupancy pipeline`,
-      layout: engine.device.createPipelineLayout({
-        label: `${label} occupancy pipeline layout`,
-        bindGroupLayouts: [bindGroupLayout],
-      }),
-      compute: {
-        module: engine.device.createShaderModule({
-          label: `${label} occupancy shader`,
-          code: rasterOccupancyAnalysisShader,
-        }),
-        entryPoint: "main",
-      },
-    });
     const bindGroup = engine.device.createBindGroup({
       label: `${label} occupancy bind group`,
       layout: bindGroupLayout,

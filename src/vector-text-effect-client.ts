@@ -216,15 +216,23 @@ export class VectorTextEffectCompilerClient {
         && (exactLod
           ? current.lodBucket === lod.bucket
           : current.lodBucket >= lod.bucket);
+      const ready = this.readyEffectForRequest(
+        key,
+        identity,
+        lod.bucket,
+        exactLod,
+      );
       if (!currentAlreadySuitable) {
-        this.requestEffect(
-          slotKey,
-          key,
-          identity,
-          geometryIdentity,
-          lod,
-          effect,
-        );
+        if (!ready) {
+          this.requestEffect(
+            slotKey,
+            key,
+            identity,
+            geometryIdentity,
+            lod,
+            effect,
+          );
+        }
       }
       if (!allowAtomicSwap) {
         return {
@@ -234,7 +242,6 @@ export class VectorTextEffectCompilerClient {
         };
       }
 
-      const ready = this.readyByKey.get(key);
       if (
         ready
         && (
@@ -269,6 +276,33 @@ export class VectorTextEffectCompilerClient {
     } finally {
       this.pruneRegisteredPaths(new Set([geometryIdentity]));
     }
+  }
+
+  private readyEffectForRequest(
+    exactKey: string,
+    identity: string,
+    requestedLodBucket: number,
+    exactLod: boolean,
+  ): ReadyEffect | undefined {
+    const exact = this.readyByKey.get(exactKey);
+    if (exact || exactLod) return exact;
+
+    let closestSuitable: ReadyEffect | undefined;
+    for (const ready of this.readyByKey.values()) {
+      if (
+        ready.effectIdentity !== identity
+        || ready.lodBucket < requestedLodBucket
+      ) {
+        continue;
+      }
+      if (
+        !closestSuitable
+        || ready.lodBucket < closestSuitable.lodBucket
+      ) {
+        closestSuitable = ready;
+      }
+    }
+    return closestSuitable;
   }
 
   pinSlot(slotKey: string): void {

@@ -91,6 +91,53 @@ export function mixedSceneRasterPreviewInverseAffine(
   return [m00, m01, offsetX, m10, m11, offsetY];
 }
 
+/** Forward-projects a source rectangle through the same affine used by the presenter. */
+export function mixedSceneRasterPreviewTransformedBounds(
+  bounds: Readonly<{ x: number; y: number; width: number; height: number }>,
+  transform: Pick<
+    MixedSceneRasterTransformPreview,
+    | "pivotX"
+    | "pivotY"
+    | "translationX"
+    | "translationY"
+    | "scaleX"
+    | "scaleY"
+    | "rotation"
+  > | null,
+): { x: number; y: number; width: number; height: number } {
+  if (!transform) return { ...bounds };
+  const cosine = Math.cos(transform.rotation);
+  const sine = Math.sin(transform.rotation);
+  const translatedPivotX = transform.pivotX + transform.translationX;
+  const translatedPivotY = transform.pivotY + transform.translationY;
+  const project = (x: number, y: number): { x: number; y: number } => {
+    const deltaX = (x - transform.pivotX) * transform.scaleX;
+    const deltaY = (y - transform.pivotY) * transform.scaleY;
+    return {
+      x: translatedPivotX + cosine * deltaX - sine * deltaY,
+      y: translatedPivotY + sine * deltaX + cosine * deltaY,
+    };
+  };
+  const right = bounds.x + bounds.width;
+  const bottom = bounds.y + bounds.height;
+  const corners = [
+    project(bounds.x, bounds.y),
+    project(right, bounds.y),
+    project(bounds.x, bottom),
+    project(right, bottom),
+  ];
+  const left = Math.min(...corners.map((point) => point.x));
+  const top = Math.min(...corners.map((point) => point.y));
+  const transformedRight = Math.max(...corners.map((point) => point.x));
+  const transformedBottom = Math.max(...corners.map((point) => point.y));
+  return {
+    x: left,
+    y: top,
+    width: transformedRight - left,
+    height: transformedBottom - top,
+  };
+}
+
 export function mixedSceneRasterSegmentUniformValues(
   surface: Pick<MergedSurfaceResources, "bounds" | "resolutionScale">,
   opacity: number,

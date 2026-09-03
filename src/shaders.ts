@@ -1204,6 +1204,7 @@ struct VertexOutput {
 @group(0) @binding(5) var layerSampler: sampler;
 @group(0) @binding(6) var activeClippingPrefix: texture_2d<f32>;
 @group(0) @binding(7) var activeClippingSuffix: texture_2d<f32>;
+@group(1) @binding(0) var activeRasterBackdropTexture: texture_2d<f32>;
 
 fn srgbToLinearChannel(value: f32) -> f32 {
   if (value <= 0.04045) {
@@ -1268,6 +1269,13 @@ fn activePaintForLinearScene(value: vec4<f32>) -> vec4<f32> {
   if (alpha <= 0.000001) { return vec4<f32>(0.0); }
   let straightSrgb = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
   return vec4<f32>(srgbToLinear(straightSrgb) * alpha, alpha);
+}
+
+fn activeLinearPremultipliedToEncoded(value: vec4<f32>) -> vec4<f32> {
+  let alpha = clamp(value.a, 0.0, 1.0);
+  if (alpha <= 0.000001) { return vec4<f32>(0.0); }
+  let straightLinear = clamp(value.rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
+  return vec4<f32>(linearToSrgb(straightLinear) * alpha, alpha);
 }
 
 ${activeClippingGroupTexelShader}
@@ -1583,10 +1591,9 @@ fn finalStackFragmentMain(
   return vec4<f32>(compositePaintOverBackgroundSrgb(paint, backgroundSrgb), 1.0);
 }
 
-@fragment
-fn activeFragmentMain(
-  @builtin(position) fragmentPosition: vec4<f32>
-) -> @location(0) vec4<f32> {
+fn activeStoredSource(
+  fragmentPosition: vec4<f32>
+) -> vec4<f32> {
   let displayOffset = (fragmentPosition.xy - display.canvasSize * 0.5) / display.zoom;
   let layerOffset = vec2<f32>(
     display.viewRotation.x * displayOffset.x + display.viewRotation.y * displayOffset.y,
@@ -1605,11 +1612,38 @@ fn activeFragmentMain(
     vec2<f32>(1.0)
   );
   let sampled = sampleActiveLayer(uv);
-  return activePaintForLinearScene(select(
+  return select(
     sampled,
     sampled * display.activeLayerAlpha,
     display.clippingMode < 0.5
-  ));
+  );
+}
+
+@fragment
+fn activeFragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  return activePaintForLinearScene(activeStoredSource(fragmentPosition));
+}
+
+@fragment
+fn activeEncodedCompositeFragmentMain(
+  @builtin(position) fragmentPosition: vec4<f32>
+) -> @location(0) vec4<f32> {
+  let pixel = vec2<i32>(floor(fragmentPosition.xy));
+  let encodedSource = activeStoredSource(fragmentPosition);
+  let sourceAlpha = clamp(encodedSource.a, 0.0, 1.0);
+  if (sourceAlpha >= 1.0) {
+    return activePaintForLinearScene(encodedSource);
+  }
+  let linearBackdrop = textureLoad(activeRasterBackdropTexture, pixel, 0);
+  if (sourceAlpha <= 0.0) {
+    return linearBackdrop;
+  }
+  let encodedBackdrop = activeLinearPremultipliedToEncoded(linearBackdrop);
+  let encodedResult = encodedSource
+    + encodedBackdrop * (1.0 - sourceAlpha);
+  return activePaintForLinearScene(encodedResult);
 }
 
 @fragment
