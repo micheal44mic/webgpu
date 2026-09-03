@@ -4,6 +4,7 @@ export const verificationScripts = Object.freeze([
   "verify-asset-source-cache.mjs",
   "verify-bevel-core.mjs",
   "verify-blend-core.mjs",
+  "verify-blur-quality-performance-lab.mjs",
   "verify-brush-catalog.mjs",
   "verify-brush-color.mjs",
   "verify-brush-definition.mjs",

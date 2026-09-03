@@ -106,10 +106,11 @@ class Rgba8BrushLabController implements EditorExtension {
         <section class="direct-deposit-lab-blur" aria-label="Gaussian Blur RGBA8">
           <strong>Gaussian Blur · output RGBA8</strong>
           <p>
-            Due passaggi separabili in lineare premoltiplicato: calcolo f32 e
-            strisce temporanee RGBA16 UNORM impacchettate. Sorgente e risultato
-            restano RGBA8/sRGB; la quantizzazione ad alta frequenza avviene una
-            sola volta all’uscita.
+            Percorso predefinito adattivo: kernel tent separabile sui valori
+            premoltiplicati memorizzati, tap adiacenti combinati dal filtro
+            bilineare e massimo 64 texel di raggio per passaggio. I raggi grandi
+            usano una scala di lavoro continua; sorgente e risultato restano
+            RGBA8/sRGB e i temporanei sono RGBA16F.
           </p>
           <label>
             <span>Raggio <output data-blur-radius-value>24 px</output></span>
@@ -442,9 +443,12 @@ class Rgba8BrushLabController implements EditorExtension {
       const preview = this.#host.engine.updateRasterGaussianBlur(requestedRadius);
       this.#blurRadius.value = String(preview.radius);
       this.#blurRadiusValue.value = `${Math.round(preview.radius)} px`;
+      const kernelDescription = preview.sigma === null
+        ? `tent ${preview.workRadius.toFixed(2)} · ${preview.sampleCountPerPass} sample/asse`
+        : `σ ${preview.sigma.toFixed(2)}`;
       this.#blurStatus.textContent =
         `Anteprima attiva · raggio ${Math.round(preview.radius)} px · `
-        + `σ ${preview.sigma.toFixed(2)} · output RGBA8.`;
+        + `${kernelDescription} · output RGBA8.`;
       this.#blurStatus.classList.remove("error");
     } catch (error) {
       this.#blurStatus.textContent = error instanceof Error ? error.message : String(error);
@@ -467,11 +471,17 @@ class Rgba8BrushLabController implements EditorExtension {
       this.#blurSessionOpen = true;
       this.#blurRadius.value = String(preview.radius);
       this.#blurRadiusValue.value = `${Math.round(preview.radius)} px`;
+      const kernelDescription = preview.sigma === null
+        ? `tent ${preview.workRadius.toFixed(2)} · ${preview.sampleCountPerPass} sample/asse`
+        : `σ ${preview.sigma.toFixed(2)}`;
+      const storageDescription = preview.strategy === "optimized-tent"
+        ? `scala lavoro ${preview.workScale.toFixed(3)}× · riduzione ${preview.downsample.toFixed(2)}× · output RGBA8/sRGB.`
+        : "due strisce packed RGBA16 UNORM, unica uscita RGBA8/sRGB.";
       this.#blurStatus.textContent =
         `Anteprima attiva · raggio ${Math.round(preview.radius)} px · `
-        + `σ ${preview.sigma.toFixed(2)} · temporanei totali `
+        + `${kernelDescription} · temporanei totali `
         + `${formatMiB(preview.memoryBytes / (1024 * 1024))} MiB · `
-        + "due strisce packed RGBA16 UNORM, unica uscita RGBA8/sRGB.";
+        + storageDescription;
       this.#host.setStatus("Anteprima Gaussian Blur RGBA8 attiva.", "ok");
     } catch (error) {
       this.#blurSessionOpen =

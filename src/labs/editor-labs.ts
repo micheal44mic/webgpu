@@ -39,6 +39,7 @@ const LABS = [
   ["bevel-golden", "Golden bevel bounding-box"],
   ["paint-benchmark", "Benchmark Paint sintetico"],
   ["effects-benchmark", "Benchmark banco effetti"],
+  ["blur-quality-performance", "A/B blur · qualità e prestazioni"],
   ["layer-history", "GPU test cronologia livelli"],
   ["cold-tile", "GPU test cold tile"],
   ["clipping", "GPU test clipping group"],
@@ -83,6 +84,7 @@ const HOSTED_LAB_ALLOWLIST_ENABLED = import.meta.env.PROD;
 type LabId = (typeof LABS)[number][0];
 
 const HOSTED_LAB_IDS = new Set<LabId>([
+  "blur-quality-performance",
   "human-replay",
   "human-shape-sequence",
   "stroke-packed-wasm",
@@ -431,6 +433,16 @@ class EditorLabController implements EditorExtension {
         return runBenchmark(engine, 2_000);
       case "effects-benchmark":
         return benchmarkEffectsWorkingSet(engine, 5);
+      case "blur-quality-performance": {
+        const { runBlurQualityPerformanceLab } = await import(
+          "./blur/blur-quality-performance-lab"
+        );
+        return runBlurQualityPerformanceLab(engine, {
+          onProgress: (progress) => {
+            this.#host.setStatus(progress.message, "working");
+          },
+        });
+      }
       case "layer-history": {
         const { runLayerHistoryGpuTest } = await import("./gpu/layer-history-gpu-test");
         let timeoutId = 0;

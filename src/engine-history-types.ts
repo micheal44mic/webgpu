@@ -386,18 +386,42 @@ interface RasterFilterHistoryActionCommon extends RasterHistoryCheckpoint {
 }
 
 export type RasterFilterHistoryAction = RasterFilterHistoryActionCommon & (
-  | {
+  | ({
     filter: "gaussian-blur";
     radius: number;
-    sigma: number;
+    /** Document-space support used to expand the committed checkpoint. */
     supportRadius: number;
-    precision:
-      | "rgba16float-f32-accumulation"
-      | "rgba8unorm-linear-rgba16unorm-packed-two-pass-f32-high-frequency-output";
     edgeMode:
       | "transparent-black"
       | "transparent-content-clamp-document-edge";
-  }
+  } & (
+    | {
+      /** Missing on checkpoints written before strategies were recorded. */
+      strategy?: "baseline-gaussian";
+      sigma: number;
+      precision:
+        | "rgba16float-f32-accumulation"
+        | "rgba8unorm-linear-rgba16unorm-packed-two-pass-f32-high-frequency-output";
+      colorDomain?: "linear-premultiplied";
+    }
+    | {
+      strategy: "optimized-tent";
+      kernelStrategy: "separable-continuous-tent-v1";
+      workScale: number;
+      workRadius: number;
+      workSupportRadius: number;
+      downsample: number;
+      sampleCountPerPass: number;
+      prefilterSampleAxis: number;
+      prefilterWidth: number;
+      precision:
+        | "rgba16float-premultiplied-tent-f32-accumulation"
+        | "rgba8unorm-stored-premultiplied-rgba16float-tent-f32-high-frequency-output";
+      colorDomain:
+        | "stored-encoded-premultiplied"
+        | "linear-premultiplied";
+    }
+  ))
   | {
     filter: "spatial-blur";
     pins: readonly SpatialBlurPin[];

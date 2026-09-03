@@ -155,6 +155,7 @@ import {
   commitRasterGaussianBlur as commitRasterGaussianBlurRuntime,
   updateRasterGaussianBlur as updateRasterGaussianBlurRuntime,
   type ActiveRasterGaussianBlurSession,
+  type DestructiveGaussianBlurStrategy,
 } from "./engine-gaussian-blur-runtime";
 import {
   abandonRasterSpatialBlurSession,
@@ -11495,8 +11496,11 @@ export class BrushEngine {
     }
   }
 
-  beginRasterGaussianBlur(initialRadius?: number) {
-    return beginRasterGaussianBlurRuntime(this, initialRadius);
+  beginRasterGaussianBlur(
+    initialRadius?: number,
+    strategy?: DestructiveGaussianBlurStrategy,
+  ) {
+    return beginRasterGaussianBlurRuntime(this, initialRadius, strategy);
   }
 
   updateRasterGaussianBlur(radius: number) {

@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
+  DESTRUCTIVE_TENT_BLUR_MAX_WORK_RADIUS,
   DESTRUCTIVE_GAUSSIAN_BLUR_CORE_BUILD,
   DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_RADIUS,
   DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS,
   destructiveGaussianBlurBounds,
   destructiveGaussianBlurKernel,
   destructiveGaussianBlurSigma,
+  destructiveTentBlurNormalization,
+  destructiveTentBlurPlan,
+  destructiveTentBlurSamplePairs,
   normalizeDestructiveGaussianBlurRadius,
   unionGaussianBlurRects,
 } from "../src/gaussian-blur-core.ts";
@@ -20,6 +24,204 @@ assert.equal(
   "destructive-gaussian-blur-core-v2-three-sigma-format-neutral",
 );
 assert.equal(DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS, 500);
+assert.equal(DESTRUCTIVE_TENT_BLUR_MAX_WORK_RADIUS, 64);
+assert.deepEqual(destructiveTentBlurSamplePairs(-1), []);
+assert.deepEqual(destructiveTentBlurSamplePairs(Number.NaN), []);
+assert.deepEqual(
+  destructiveTentBlurSamplePairs(999),
+  destructiveTentBlurSamplePairs(DESTRUCTIVE_TENT_BLUR_MAX_WORK_RADIUS),
+);
+
+function closeTo(actual, expected, tolerance, message) {
+  assert(
+    Math.abs(actual - expected) <= tolerance,
+    `${message}: expected ${expected}, received ${actual}`,
+  );
+}
+
+for (const [radius, renderScale, expected] of [
+  [0, 1, { rawCount: 0, count: 0, workScale: 1, downsample: 1 }],
+  [4, 0.22, { rawCount: 0.88, count: 0.88, workScale: 0.22, downsample: 1 }],
+  [256, 0.22, { rawCount: 56.32, count: 56.32, workScale: 0.22, downsample: 1 }],
+  [512, 0.22, { rawCount: 110, count: 64, workScale: 0.128, downsample: 1.71875 }],
+  [64, 1, { rawCount: 64, count: 64, workScale: 1, downsample: 1 }],
+  [128, 1, { rawCount: 128, count: 64, workScale: 0.5, downsample: 2 }],
+  [500, 1, { rawCount: 500, count: 64, workScale: 0.128, downsample: 7.8125 }],
+]) {
+  const plan = destructiveTentBlurPlan(radius, renderScale);
+  // The public radius is still clamped at 500; the 512 case intentionally
+  // proves that the planner cannot bypass the product contract.
+  const normalizedRadius = Math.min(radius, DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS);
+  assert.equal(plan.radius, normalizedRadius);
+  closeTo(plan.renderScale, renderScale, 1e-12, "render scale");
+  closeTo(plan.rawCount, expected.rawCount, 1e-12, "raw tent count");
+  closeTo(plan.count, expected.count, 1e-12, "bounded tent count");
+  closeTo(plan.workScale, expected.workScale, 1e-12, "tent work scale");
+  closeTo(plan.downsample, expected.downsample, 1e-12, "tent downsample");
+  assert.equal(
+    plan.prefilterSampleAxis,
+    plan.downsample <= 1.000001
+      ? 1
+      : Math.min(4, Math.max(2, Math.ceil(plan.downsample))),
+  );
+  closeTo(
+    plan.prefilterWidth,
+    Math.max(0, plan.downsample - 1),
+    1e-12,
+    "continuous prefilter width",
+  );
+  assert(plan.count <= DESTRUCTIVE_TENT_BLUR_MAX_WORK_RADIUS);
+  assert.equal(plan.supportRadius, Math.ceil(plan.count));
+  assert.equal(
+    plan.sampleCountPerPass,
+    1 + destructiveTentBlurSamplePairs(plan.count).length * 2,
+  );
+  assert(plan.sampleCountPerPass <= 65, "the tent pass must remain capped at 65 fetches");
+}
+
+// The work scale changes continuously at the cap. This catches accidental
+// power-of-two LOD selection or integer quantization in the planner.
+for (const renderScale of [0.22, 0.5, 1]) {
+  const threshold = DESTRUCTIVE_TENT_BLUR_MAX_WORK_RADIUS / renderScale;
+  if (threshold > DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS) continue;
+  const epsilon = 1e-5;
+  const below = destructiveTentBlurPlan(threshold - epsilon, renderScale);
+  const at = destructiveTentBlurPlan(threshold, renderScale);
+  const above = destructiveTentBlurPlan(threshold + epsilon, renderScale);
+  assert(below.count < at.count);
+  assert.equal(at.count, DESTRUCTIVE_TENT_BLUR_MAX_WORK_RADIUS);
+  assert.equal(above.count, DESTRUCTIVE_TENT_BLUR_MAX_WORK_RADIUS);
+  closeTo(below.workScale, at.workScale, epsilon * renderScale, "scale below cap");
+  closeTo(above.workScale, at.workScale, epsilon * renderScale, "scale above cap");
+  assert(above.workScale < at.workScale);
+}
+
+function deterministicSamples(length, seed) {
+  const samples = new Float64Array(length);
+  let state = seed >>> 0;
+  for (let index = 0; index < samples.length; index += 1) {
+    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+    samples[index] = state / 0x1_0000_0000;
+  }
+  return samples;
+}
+
+function clampSample(samples, index) {
+  return samples[Math.max(0, Math.min(samples.length - 1, index))];
+}
+
+function linearSample(samples, coordinate) {
+  const lower = Math.floor(coordinate);
+  const fraction = coordinate - lower;
+  return clampSample(samples, lower) * (1 - fraction)
+    + clampSample(samples, lower + 1) * fraction;
+}
+
+function directTentSample(samples, center, count) {
+  if (count <= 0) return clampSample(samples, center);
+  let sum = clampSample(samples, center) * count;
+  let normalization = count;
+  for (let offset = 1; offset < count; offset += 1) {
+    const weight = count - offset;
+    sum += (clampSample(samples, center - offset) + clampSample(samples, center + offset))
+      * weight;
+    normalization += weight * 2;
+  }
+  return sum / normalization;
+}
+
+function pairedTentSample(samples, center, count) {
+  if (count <= 0) return clampSample(samples, center);
+  let sum = clampSample(samples, center) * count;
+  for (const pair of destructiveTentBlurSamplePairs(count)) {
+    sum += pair.weight * (
+      linearSample(samples, center - pair.offset)
+      + linearSample(samples, center + pair.offset)
+    );
+  }
+  return sum / destructiveTentBlurNormalization(count);
+}
+
+const tentFixture = deterministicSamples(257, 0x74656e74);
+for (const count of [0, 0.88, 1, 1.001, 1.76, 2, 3.52, 7.04, 28.16, 63.999, 64]) {
+  const pairs = destructiveTentBlurSamplePairs(count);
+  const normalization = destructiveTentBlurNormalization(count);
+  assert(Object.isFrozen(pairs));
+  assert(pairs.every(Object.isFrozen));
+  assert(Number.isFinite(normalization) && normalization > 0);
+  let reconstructedNormalization = count > 0 ? count : 1;
+  for (const pair of pairs) {
+    assert(pair.firstOffset >= 1 && pair.secondOffset >= pair.firstOffset);
+    assert(pair.secondOffset - pair.firstOffset <= 1);
+    assert(pair.firstWeight >= 0 && pair.secondWeight >= 0);
+    closeTo(
+      pair.weight,
+      pair.firstWeight + pair.secondWeight,
+      1e-12,
+      `pair weight at count ${count}`,
+    );
+    if (pair.weight > 0) {
+      closeTo(
+        pair.offset,
+        (
+          pair.firstOffset * pair.firstWeight
+          + pair.secondOffset * pair.secondWeight
+        ) / pair.weight,
+        1e-12,
+        `pair coordinate at count ${count}`,
+      );
+    }
+    reconstructedNormalization += pair.weight * 2;
+  }
+  closeTo(
+    normalization,
+    reconstructedNormalization,
+    1e-10,
+    `tent normalization at count ${count}`,
+  );
+  for (const center of [0, 1, 31, 64, 128, 224, 255, 256]) {
+    closeTo(
+      pairedTentSample(tentFixture, center, count),
+      directTentSample(tentFixture, center, count),
+      2e-12,
+      `bilinear pairing equivalence at count ${count}, center ${center}`,
+    );
+  }
+}
+
+const maximumTentPlan = destructiveTentBlurPlan(DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS);
+assert.equal(maximumTentPlan.count, 64);
+assert.equal(maximumTentPlan.sampleCountPerPass, 65);
+const thresholdBelowOutput = pairedTentSample(tentFixture, 128, 64 - 1e-5);
+const thresholdOutput = pairedTentSample(tentFixture, 128, 64);
+const thresholdAboveOutput = pairedTentSample(
+  tentFixture,
+  128,
+  destructiveTentBlurPlan(64 + 1e-5).count,
+);
+closeTo(
+  thresholdBelowOutput,
+  thresholdOutput,
+  1e-6,
+  "the tent output must approach the capped kernel continuously",
+);
+closeTo(
+  thresholdAboveOutput,
+  thresholdOutput,
+  1e-12,
+  "the capped kernel must remain stable above the threshold",
+);
+closeTo(
+  pairedTentSample(new Float64Array(257).fill(0.375), 128, maximumTentPlan.count),
+  0.375,
+  1e-12,
+  "a normalized tent kernel must preserve a flat field",
+);
+assert.deepEqual(
+  destructiveTentBlurSamplePairs(28.16),
+  destructiveTentBlurSamplePairs(28.16),
+  "sample-pair planning must be deterministic",
+);
 const maximumFilterCacheBytes = (64 + DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS * 2) * 8;
 const maximumParameterBytes = (
   20 + Math.ceil((DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS + 1) / 4) * 4
@@ -381,7 +583,11 @@ assert.match(runtime, /quantizeRgba8HighFrequencyAdjacent/);
 assert.match(runtime, /parameters\.quantizationAndReserved\.x/);
 assert.match(runtime, /parameters\.quantizationAndReserved\.y/);
 assert.match(runtime, /quantizationSeed:\s*engine\.nextHistoryActionId >>> 0/);
-assert.match(runtime, /format:\s*engine\.layerFormat === "rgba8unorm" \? "rg32uint"/);
+assert.match(
+  runtime,
+  /format:\s*optimized\s*\? "rgba16float"\s*:\s*engine\.layerFormat === "rgba8unorm" \? "rg32uint" : "rgba16float"/,
+  "optimized intermediates must remain RGBA16F while the baseline keeps packed RGBA16 UNORM",
+);
 assert.match(runtime, /gaussianEncodedPremultipliedToLinear/);
 assert.match(runtime, /gaussianLinearPremultipliedToEncoded/);
 assert.match(runtime, /finalizeRgba8Shader/);
@@ -398,6 +604,47 @@ assert.match(runtime, /let packedDocumentExtent = parameters\.kernelAndIntermedi
 assert.match(runtime, /packedDocumentExtent & 0xffffu/);
 assert.match(runtime, /packedDocumentExtent >> 16u/);
 assert.match(runtime, /\(documentHeight << 16\) \| documentWidth/);
+assert.match(
+  runtime,
+  /DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_STRATEGY\s*=\s*\n\s*"optimized-tent"/,
+);
+assert.match(
+  runtime,
+  /strategy: DestructiveGaussianBlurStrategy = DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_STRATEGY/,
+);
+assert.match(runtime, /function optimizedTentDownsampleShader\(\)/);
+assert.match(runtime, /function optimizedTentPassShader\(axis: "horizontal" \| "vertical"\)/);
+assert.match(runtime, /function optimizedTentRestoreShader\(outputFormat: LayerFormat\)/);
+assert.match(runtime, /textureSampleLevel\(/);
+assert.match(runtime, /sampler:\s*\{ type: "filtering" \}/);
+assert.match(runtime, /minFilter: "linear"/);
+assert.match(runtime, /magFilter: "linear"/);
+assert.match(
+  runtime,
+  /for \(var first = 1u; first < \$\{DESTRUCTIVE_TENT_BLUR_MAX_WORK_RADIUS\}u; first \+= 2u\)/,
+);
+assert.match(
+  runtime,
+  /firstOffset \* firstWeight \+ secondOffset \* secondWeight[\s\S]{0,80}\/ pairWeight/,
+);
+assert.match(runtime, /normalization \+= pairWeight \* 2\.0/);
+assert.match(runtime, /let filterWidth = max\(0\.0, downsample - 1\.0\)/);
+assert.match(runtime, /u32\(clamp\(ceil\(downsample\), 2\.0, 4\.0\)\)/);
+assert.match(runtime, /format: "rgba16float"/);
+assert.match(runtime, /encodeOptimizedTentJobs\(/);
+assert.match(runtime, /encodeBaselineGaussianJobs\(/);
+const requestedPreview = runtime.slice(
+  runtime.indexOf("function encodeRequestedPreview("),
+  runtime.indexOf("function schedulePreview("),
+);
+const productionPlanCall = /const tentPlan = destructiveTentBlurPlan\(([^)]*)\)/
+  .exec(requestedPreview);
+assert(productionPlanCall, "the production preview must use the shared tent planner");
+assert.equal(
+  productionPlanCall[1].trim(),
+  "radius",
+  "committed document pixels must use the planner's scale-one default, never camera zoom",
+);
 assert.match(
   runtime,
   /destructiveGaussianBlurBounds\([\s\S]{0,180}engine\.documentWidth,\s*engine\.documentHeight,/,
@@ -427,8 +674,18 @@ assert.match(commit, /commitHistoryActionAtomically\(engine, action\)/);
 assert.match(commit, /createLayerColdStorageCandidate\([\s\S]{0,260}"history"/);
 assert.match(commit, /rgba8unorm-linear-rgba16unorm-packed-two-pass-f32-high-frequency-output/);
 assert.match(commit, /rgba16float-f32-accumulation/);
+assert.match(commit, /strategy: "optimized-tent"/);
+assert.match(commit, /kernelStrategy: "separable-continuous-tent-v1"/);
+assert.match(commit, /workScale: tent\.workScale/);
+assert.match(commit, /sampleCountPerPass: tent\.sampleCountPerPass/);
+assert.match(commit, /prefilterSampleAxis: tent\.prefilterSampleAxis/);
+assert.match(commit, /strategy: "baseline-gaussian"/);
 assert.match(history, /interface RasterFilterHistoryAction/);
 assert.match(history, /rgba8unorm-linear-rgba16unorm-packed-two-pass-f32-high-frequency-output/);
+assert.match(history, /strategy: "optimized-tent"/);
+assert.match(history, /kernelStrategy: "separable-continuous-tent-v1"/);
+assert.match(history, /workSupportRadius: number/);
+assert.match(history, /prefilterSampleAxis: number/);
 assert.match(history, /transparent-content-clamp-document-edge/);
 assert.match(engine, /activeRasterGaussianBlurSession/);
 

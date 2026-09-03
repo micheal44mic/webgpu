@@ -15,26 +15,41 @@ import {
   DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_RADIUS,
   DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS,
   DESTRUCTIVE_GAUSSIAN_BLUR_STRIP_HEIGHT,
+  DESTRUCTIVE_TENT_BLUR_MAX_WORK_RADIUS,
   destructiveGaussianBlurBounds,
   destructiveGaussianBlurKernel,
+  destructiveTentBlurPlan,
   normalizeDestructiveGaussianBlurRadius,
   unionGaussianBlurRects,
+  type DestructiveGaussianBlurStrategy,
+  type DestructiveTentBlurPlan,
   type GaussianBlurKernel,
 } from "./gaussian-blur-core";
 import { runGpuAllocationTransaction } from "./gpu-allocation-transaction";
 import { tileMaskCoveringRect } from "./raster-transform-math";
 import { rgba8HighFrequencyQuantizationShader } from "./rgba8-high-frequency-quantization";
 
+export type { DestructiveGaussianBlurStrategy } from "./gaussian-blur-core";
+
 export const DESTRUCTIVE_GAUSSIAN_BLUR_RUNTIME_BUILD =
-  "destructive-gaussian-blur-webgpu-v7-linear-packed-unorm16-finalize";
+  "destructive-blur-webgpu-v8-baseline-gaussian-optimized-continuous-tent";
 export const DESTRUCTIVE_GAUSSIAN_BLUR_PRECISION =
   "rgba16float-storage-f32-weights-and-accumulation" as const;
 export const DESTRUCTIVE_GAUSSIAN_BLUR_RGBA8_PRECISION =
   "rgba8unorm-storage-linear-rgba16unorm-packed-two-pass-f32-high-frequency-output" as const;
 export const DESTRUCTIVE_GAUSSIAN_BLUR_EDGE_MODE =
   "transparent-content-clamp-document-edge" as const;
+export const DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_STRATEGY =
+  "optimized-tent" as const satisfies DestructiveGaussianBlurStrategy;
+export const DESTRUCTIVE_TENT_BLUR_RGBA8_COLOR_DOMAIN =
+  "stored-encoded-premultiplied" as const;
+export const DESTRUCTIVE_TENT_BLUR_LINEAR_COLOR_DOMAIN =
+  "linear-premultiplied" as const;
 
 const FILTER_WORKGROUP_SIZE = 64;
+const OPTIMIZED_FILTER_WORKGROUP_SIZE = 8;
+const OPTIMIZED_TARGET_STRIP_WIDTH = 1024;
+const OPTIMIZED_WORK_MARGIN = 1;
 const FILTER_CACHE_LENGTH =
   FILTER_WORKGROUP_SIZE + DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS * 2;
 const FILTER_CACHE_BYTES = FILTER_CACHE_LENGTH * 8;
@@ -51,12 +66,17 @@ function bytesPerLayerPixel(format: LayerFormat): number {
 }
 
 interface GaussianBlurSharedResources {
+  strategy: DestructiveGaussianBlurStrategy;
   horizontalBindGroupLayout: GPUBindGroupLayout;
   verticalBindGroupLayout: GPUBindGroupLayout;
   horizontalPipeline: GPUComputePipeline;
   verticalPipeline: GPUComputePipeline;
   finalizeBindGroupLayout: GPUBindGroupLayout | null;
   finalizePipeline: GPUComputePipeline | null;
+  downsampleBindGroupLayout: GPUBindGroupLayout | null;
+  downsamplePipeline: GPUComputePipeline | null;
+  restoreBindGroupLayout: GPUBindGroupLayout | null;
+  restorePipeline: GPUComputePipeline | null;
   outputFormat: LayerFormat;
 }
 
@@ -69,11 +89,34 @@ interface GaussianBlurJob {
   readonly targetHeight: number;
 }
 
+interface OptimizedTentBlurJob {
+  readonly targetX: number;
+  readonly targetY: number;
+  readonly targetWidth: number;
+  readonly targetHeight: number;
+  readonly workInputOriginX: number;
+  readonly workInputOriginY: number;
+  readonly workInputWidth: number;
+  readonly workInputHeight: number;
+  readonly workOutputWidth: number;
+  readonly workOutputHeight: number;
+}
+
 export interface RasterGaussianBlurSnapshot {
   readonly layerId: number;
+  readonly strategy: DestructiveGaussianBlurStrategy;
   readonly radius: number;
-  readonly sigma: number;
+  readonly sigma: number | null;
+  /** Support in document pixels used to expand the authoritative result. */
   readonly supportRadius: number;
+  readonly workScale: number;
+  readonly workRadius: number;
+  readonly workSupportRadius: number;
+  readonly downsample: number;
+  readonly sampleCountPerPass: number;
+  readonly colorDomain:
+    | typeof DESTRUCTIVE_TENT_BLUR_RGBA8_COLOR_DOMAIN
+    | typeof DESTRUCTIVE_TENT_BLUR_LINEAR_COLOR_DOMAIN;
   readonly sourceBounds: DirtyRect;
   readonly resultBounds: DirtyRect;
   readonly memoryBytes: number;
@@ -81,11 +124,14 @@ export interface RasterGaussianBlurSnapshot {
 
 export interface ActiveRasterGaussianBlurSession {
   readonly layerId: number;
+  readonly strategy: DestructiveGaussianBlurStrategy;
   readonly sourceBounds: DirtyRect;
   readonly sourceTileMask: Uint32Array;
   readonly scratchBounds: DirtyRect;
   readonly sourceTexture: GPUTexture;
   readonly sourceView: GPUTextureView;
+  readonly downsampleTexture: GPUTexture | null;
+  readonly downsampleView: GPUTextureView | null;
   readonly intermediateTexture: GPUTexture;
   readonly intermediateView: GPUTextureView;
   readonly outputTexture: GPUTexture;
@@ -96,9 +142,12 @@ export interface ActiveRasterGaussianBlurSession {
   readonly parameterUploadI32: Int32Array;
   readonly parameterUploadU32: Uint32Array;
   readonly parameterUploadF32: Float32Array;
+  readonly linearSampler: GPUSampler | null;
+  readonly downsampleBindGroup: GPUBindGroup | null;
   readonly horizontalBindGroup: GPUBindGroup;
   readonly verticalBindGroup: GPUBindGroup;
   readonly finalizeBindGroup: GPUBindGroup | null;
+  readonly restoreBindGroup: GPUBindGroup | null;
   readonly shared: GaussianBlurSharedResources;
   readonly quantizationSeed: number;
   readonly storedEncodedSrgb: boolean;
@@ -117,7 +166,7 @@ export interface ActiveRasterGaussianBlurSession {
 
 const sharedByDevice = new WeakMap<
   GPUDevice,
-  Map<LayerFormat, Promise<GaussianBlurSharedResources>>
+  Map<string, Promise<GaussianBlurSharedResources>>
 >();
 
 function commonShaderSource(documentFormat: LayerFormat): string {
@@ -381,10 +430,345 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
 `;
 }
 
+function optimizedTentDownsampleShader(): string {
+  return `${commonShaderSource("rgba16float")}
+@group(0) @binding(1) var sourceTexture: texture_2d<f32>;
+@group(0) @binding(2) var workingOutput:
+  texture_storage_2d<rgba16float, write>;
+@group(0) @binding(3) var linearSampler: sampler;
+
+fn documentExtent() -> vec2<i32> {
+  let packed = parameters.kernelAndIntermediate.w;
+  return vec2<i32>(i32(packed & 0xffffu), i32(packed >> 16u));
+}
+
+fn sourceTexel(documentPosition: vec2<i32>) -> vec4<f32> {
+  let extent = documentExtent();
+  let maximum = max(extent - vec2<i32>(1), vec2<i32>(0));
+  let bounded = clamp(documentPosition, vec2<i32>(0), maximum);
+  let local = bounded - parameters.sourceOriginAndSize.xy;
+  let size = parameters.sourceOriginAndSize.zw;
+  if (any(local < vec2<i32>(0)) || any(local >= size)) {
+    return vec4<f32>(0.0);
+  }
+  // Optimized filtering intentionally averages stored premultiplied values.
+  // Encoded RGBA8 remains encoded; a linear document remains linear.
+  return textureLoad(sourceTexture, local, 0);
+}
+
+fn sourceSample(documentCenter: vec2<f32>) -> vec4<f32> {
+  let extent = vec2<f32>(documentExtent());
+  let bounded = clamp(
+    documentCenter,
+    vec2<f32>(0.5),
+    max(extent - vec2<f32>(0.5), vec2<f32>(0.5))
+  );
+  let sourceOrigin = vec2<f32>(parameters.sourceOriginAndSize.xy);
+  let sourceSize = vec2<f32>(parameters.sourceOriginAndSize.zw);
+  let localCenter = bounded - sourceOrigin;
+  if (all(localCenter >= vec2<f32>(1.0))
+      && all(localCenter <= sourceSize - vec2<f32>(1.0))) {
+    return textureSampleLevel(
+      sourceTexture,
+      linearSampler,
+      localCenter / sourceSize,
+      0.0
+    );
+  }
+
+  // Sampling near an interior capture edge needs transparent border texels,
+  // while an actual document edge repeats its edge texel.
+  let coordinate = bounded - vec2<f32>(0.5);
+  let lower = vec2<i32>(floor(coordinate));
+  let fraction = fract(coordinate);
+  let top = mix(
+    sourceTexel(lower),
+    sourceTexel(lower + vec2<i32>(1, 0)),
+    fraction.x
+  );
+  let bottom = mix(
+    sourceTexel(lower + vec2<i32>(0, 1)),
+    sourceTexel(lower + vec2<i32>(1, 1)),
+    fraction.x
+  );
+  return mix(top, bottom, fraction.y);
+}
+
+@compute @workgroup_size(${OPTIMIZED_FILTER_WORKGROUP_SIZE}, ${OPTIMIZED_FILTER_WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
+  let workInputSize = vec2<u32>(parameters.buildOriginAndSize.zw);
+  if (any(globalId.xy >= workInputSize)) { return; }
+  let workScale = parameters.weights[0].x;
+  let downsample = parameters.weights[0].y;
+  let globalWork = parameters.buildOriginAndSize.xy + vec2<i32>(globalId.xy);
+  let documentCenter = (vec2<f32>(globalWork) + vec2<f32>(0.5)) / workScale;
+  if (downsample <= 1.000001) {
+    textureStore(workingOutput, vec2<i32>(globalId.xy), sourceTexel(globalWork));
+    return;
+  }
+
+  // A continuously widening, bounded box prefilter avoids hard LOD steps and
+  // suppresses high-frequency aliases before the tent passes.
+  let axisSamples = u32(clamp(ceil(downsample), 2.0, 4.0));
+  let filterWidth = max(0.0, downsample - 1.0);
+  var sum = vec4<f32>(0.0);
+  var samples = 0u;
+  for (var y = 0u; y < 4u; y += 1u) {
+    if (y >= axisSamples) { break; }
+    let offsetY = ((f32(y) + 0.5) / f32(axisSamples) - 0.5) * filterWidth;
+    for (var x = 0u; x < 4u; x += 1u) {
+      if (x >= axisSamples) { break; }
+      let offsetX = ((f32(x) + 0.5) / f32(axisSamples) - 0.5) * filterWidth;
+      sum += sourceSample(documentCenter + vec2<f32>(offsetX, offsetY));
+      samples += 1u;
+    }
+  }
+  textureStore(
+    workingOutput,
+    vec2<i32>(globalId.xy),
+    sum / max(1.0, f32(samples))
+  );
+}
+`;
+}
+
+function optimizedTentPassShader(axis: "horizontal" | "vertical"): string {
+  const horizontal = axis === "horizontal";
+  const axisDelta = horizontal
+    ? "vec2<f32>(offset, 0.0)"
+    : "vec2<f32>(0.0, offset)";
+  const centerCoordinate = horizontal
+    ? "vec2<f32>(f32(globalId.x + support), f32(globalId.y))"
+    : "vec2<f32>(f32(globalId.x), f32(globalId.y + support))";
+  const outputSize = horizontal
+    ? "vec2<u32>(parameters.kernelAndIntermediate.y, u32(parameters.buildOriginAndSize.w))"
+    : "parameters.kernelAndIntermediate.yz";
+  return `${commonShaderSource("rgba16float")}
+@group(0) @binding(1) var workingInput: texture_2d<f32>;
+@group(0) @binding(2) var workingOutput:
+  texture_storage_2d<rgba16float, write>;
+@group(0) @binding(3) var linearSampler: sampler;
+
+fn filteredSample(position: vec2<f32>) -> vec4<f32> {
+  let dimensions = vec2<f32>(textureDimensions(workingInput));
+  return textureSampleLevel(
+    workingInput,
+    linearSampler,
+    (position + vec2<f32>(0.5)) / dimensions,
+    0.0
+  );
+}
+
+@compute @workgroup_size(${OPTIMIZED_FILTER_WORKGROUP_SIZE}, ${OPTIMIZED_FILTER_WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
+  let outputSize = ${outputSize};
+  if (any(globalId.xy >= outputSize)) { return; }
+  let support = parameters.kernelAndIntermediate.x;
+  let count = parameters.weights[0].w;
+  let centerPosition = ${centerCoordinate};
+  let center = filteredSample(centerPosition);
+  if (count <= 0.0) {
+    textureStore(workingOutput, vec2<i32>(globalId.xy), center);
+    return;
+  }
+
+  var sum = center * count;
+  var normalization = count;
+  for (var first = 1u; first < ${DESTRUCTIVE_TENT_BLUR_MAX_WORK_RADIUS}u; first += 2u) {
+    let firstOffset = f32(first);
+    if (firstOffset >= count) { break; }
+    let secondOffset = min(firstOffset + 1.0, count);
+    let firstWeight = count - firstOffset;
+    let secondWeight = count - secondOffset;
+    let pairWeight = firstWeight + secondWeight;
+    if (pairWeight <= 0.0) { continue; }
+    let offset = (
+      firstOffset * firstWeight + secondOffset * secondWeight
+    ) / pairWeight;
+    sum += pairWeight * (
+      filteredSample(centerPosition - ${axisDelta})
+      + filteredSample(centerPosition + ${axisDelta})
+    );
+    normalization += pairWeight * 2.0;
+  }
+  textureStore(
+    workingOutput,
+    vec2<i32>(globalId.xy),
+    sum / max(normalization, 0.000001)
+  );
+}
+`;
+}
+
+function optimizedTentRestoreShader(outputFormat: LayerFormat): string {
+  const rgba8 = outputFormat === "rgba8unorm";
+  return `${commonShaderSource(outputFormat)}
+${rgba8 ? rgba8HighFrequencyQuantizationShader : ""}
+@group(0) @binding(1) var workingInput: texture_2d<f32>;
+@group(0) @binding(2) var destinationTexture:
+  texture_storage_2d<${outputFormat}, write>;
+@group(0) @binding(3) var linearSampler: sampler;
+
+@compute @workgroup_size(${OPTIMIZED_FILTER_WORKGROUP_SIZE}, ${OPTIMIZED_FILTER_WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
+  let targetSize = parameters.targetOriginAndSize.zw;
+  if (any(globalId.xy >= targetSize)) { return; }
+  let documentPosition = parameters.targetOriginAndSize.xy + globalId.xy;
+  let workScale = parameters.weights[0].x;
+  let support = i32(parameters.kernelAndIntermediate.x);
+  let workOutputOrigin = parameters.buildOriginAndSize.xy + vec2<i32>(support);
+  let globalWorkCoordinate = (
+    vec2<f32>(documentPosition) + vec2<f32>(0.5)
+  ) * workScale - vec2<f32>(0.5);
+  let localWorkCoordinate = globalWorkCoordinate - vec2<f32>(workOutputOrigin);
+  let dimensions = vec2<f32>(textureDimensions(workingInput));
+  let working = textureSampleLevel(
+    workingInput,
+    linearSampler,
+    (localWorkCoordinate + vec2<f32>(0.5)) / dimensions,
+    0.0
+  );
+  ${rgba8 ? `
+  let storedResult = quantizeRgba8HighFrequencyAdjacent(
+    clamp(working, vec4<f32>(0.0), vec4<f32>(1.0)),
+    documentPosition,
+    parameters.quantizationAndReserved.x
+  );
+  textureStore(destinationTexture, vec2<i32>(documentPosition), storedResult);` : `
+  textureStore(destinationTexture, vec2<i32>(documentPosition), working);`}
+}
+`;
+}
+
 async function createSharedResources(
   device: GPUDevice,
   outputFormat: LayerFormat,
+  strategy: DestructiveGaussianBlurStrategy,
 ): Promise<GaussianBlurSharedResources> {
+  if (strategy === "optimized-tent") {
+    return runGpuAllocationTransaction(
+      device,
+      `Pipeline optimized raster tent blur ${outputFormat}`,
+      async () => {
+        const downsampleModule = device.createShaderModule({
+          label: "Optimized raster tent blur downsample WGSL",
+          code: optimizedTentDownsampleShader(),
+        });
+        const horizontalModule = device.createShaderModule({
+          label: "Optimized raster tent blur horizontal WGSL",
+          code: optimizedTentPassShader("horizontal"),
+        });
+        const verticalModule = device.createShaderModule({
+          label: "Optimized raster tent blur vertical WGSL",
+          code: optimizedTentPassShader("vertical"),
+        });
+        const restoreModule = device.createShaderModule({
+          label: "Optimized raster tent blur restore WGSL",
+          code: optimizedTentRestoreShader(outputFormat),
+        });
+        await Promise.all([
+          assertShaderCompiled(downsampleModule, "Optimized tent blur downsample"),
+          assertShaderCompiled(horizontalModule, "Optimized tent blur horizontal"),
+          assertShaderCompiled(verticalModule, "Optimized tent blur vertical"),
+          assertShaderCompiled(restoreModule, "Optimized tent blur restore"),
+        ]);
+        const filterBindGroupLayout = device.createBindGroupLayout({
+          label: "Optimized raster tent blur filter layout",
+          entries: [
+            {
+              binding: 0,
+              visibility: GPUShaderStage.COMPUTE,
+              buffer: {
+                type: "uniform",
+                hasDynamicOffset: true,
+                minBindingSize: PARAMETER_BYTES,
+              },
+            },
+            {
+              binding: 1,
+              visibility: GPUShaderStage.COMPUTE,
+              texture: { sampleType: "float" },
+            },
+            {
+              binding: 2,
+              visibility: GPUShaderStage.COMPUTE,
+              storageTexture: { access: "write-only", format: "rgba16float" },
+            },
+            {
+              binding: 3,
+              visibility: GPUShaderStage.COMPUTE,
+              sampler: { type: "filtering" },
+            },
+          ],
+        });
+        const restoreBindGroupLayout = device.createBindGroupLayout({
+          label: "Optimized raster tent blur restore layout",
+          entries: [
+            {
+              binding: 0,
+              visibility: GPUShaderStage.COMPUTE,
+              buffer: {
+                type: "uniform",
+                hasDynamicOffset: true,
+                minBindingSize: PARAMETER_BYTES,
+              },
+            },
+            {
+              binding: 1,
+              visibility: GPUShaderStage.COMPUTE,
+              texture: { sampleType: "float" },
+            },
+            {
+              binding: 2,
+              visibility: GPUShaderStage.COMPUTE,
+              storageTexture: { access: "write-only", format: outputFormat },
+            },
+            {
+              binding: 3,
+              visibility: GPUShaderStage.COMPUTE,
+              sampler: { type: "filtering" },
+            },
+          ],
+        });
+        const filterPipelineLayout = device.createPipelineLayout({
+          bindGroupLayouts: [filterBindGroupLayout],
+        });
+        const restorePipelineLayout = device.createPipelineLayout({
+          bindGroupLayouts: [restoreBindGroupLayout],
+        });
+        return {
+          strategy,
+          horizontalBindGroupLayout: filterBindGroupLayout,
+          verticalBindGroupLayout: filterBindGroupLayout,
+          horizontalPipeline: device.createComputePipeline({
+            label: "Optimized raster tent blur horizontal pipeline",
+            layout: filterPipelineLayout,
+            compute: { module: horizontalModule, entryPoint: "main" },
+          }),
+          verticalPipeline: device.createComputePipeline({
+            label: "Optimized raster tent blur vertical pipeline",
+            layout: filterPipelineLayout,
+            compute: { module: verticalModule, entryPoint: "main" },
+          }),
+          finalizeBindGroupLayout: null,
+          finalizePipeline: null,
+          downsampleBindGroupLayout: filterBindGroupLayout,
+          downsamplePipeline: device.createComputePipeline({
+            label: "Optimized raster tent blur downsample pipeline",
+            layout: filterPipelineLayout,
+            compute: { module: downsampleModule, entryPoint: "main" },
+          }),
+          restoreBindGroupLayout,
+          restorePipeline: device.createComputePipeline({
+            label: "Optimized raster tent blur restore pipeline",
+            layout: restorePipelineLayout,
+            compute: { module: restoreModule, entryPoint: "main" },
+          }),
+          outputFormat,
+        };
+      },
+    );
+  }
   const availableWorkgroupStorage = Number(device.limits.maxComputeWorkgroupStorageSize);
   if (
     Number.isFinite(availableWorkgroupStorage)
@@ -523,12 +907,17 @@ async function createSharedResources(
         })
         : null;
       return {
+        strategy,
         horizontalBindGroupLayout,
         verticalBindGroupLayout,
         horizontalPipeline,
         verticalPipeline,
         finalizeBindGroupLayout,
         finalizePipeline,
+        downsampleBindGroupLayout: null,
+        downsamplePipeline: null,
+        restoreBindGroupLayout: null,
+        restorePipeline: null,
         outputFormat,
       };
     },
@@ -538,21 +927,23 @@ async function createSharedResources(
 async function requireSharedResources(
   device: GPUDevice,
   outputFormat: LayerFormat,
+  strategy: DestructiveGaussianBlurStrategy,
 ): Promise<GaussianBlurSharedResources> {
   let variants = sharedByDevice.get(device);
   if (!variants) {
     variants = new Map();
     sharedByDevice.set(device, variants);
   }
-  let promise = variants.get(outputFormat);
+  const key = `${outputFormat}:${strategy}`;
+  let promise = variants.get(key);
   if (!promise) {
-    promise = createSharedResources(device, outputFormat);
-    variants.set(outputFormat, promise);
+    promise = createSharedResources(device, outputFormat, strategy);
+    variants.set(key, promise);
   }
   try {
     return await promise;
   } catch (error) {
-    variants.delete(outputFormat);
+    variants.delete(key);
     if (variants.size === 0) sharedByDevice.delete(device);
     throw error;
   }
@@ -560,11 +951,24 @@ async function requireSharedResources(
 
 function snapshot(session: ActiveRasterGaussianBlurSession): RasterGaussianBlurSnapshot {
   const kernel = destructiveGaussianBlurKernel(session.radius);
+  const tent = destructiveTentBlurPlan(session.radius);
+  const optimized = session.strategy === "optimized-tent";
   return {
     layerId: session.layerId,
+    strategy: session.strategy,
     radius: session.radius,
-    sigma: kernel.sigma,
-    supportRadius: kernel.radius,
+    sigma: optimized ? null : kernel.sigma,
+    supportRadius: optimized ? Math.ceil(tent.radius) : kernel.radius,
+    workScale: optimized ? tent.workScale : 1,
+    workRadius: optimized ? tent.count : kernel.radius,
+    workSupportRadius: optimized ? tent.supportRadius : kernel.radius,
+    downsample: optimized ? tent.downsample : 1,
+    sampleCountPerPass: optimized
+      ? tent.sampleCountPerPass
+      : kernel.radius * 2 + 1,
+    colorDomain: optimized && session.storedEncodedSrgb
+      ? DESTRUCTIVE_TENT_BLUR_RGBA8_COLOR_DOMAIN
+      : DESTRUCTIVE_TENT_BLUR_LINEAR_COLOR_DOMAIN,
     sourceBounds: { ...session.sourceBounds },
     resultBounds: { ...session.resultBounds },
     memoryBytes: session.memoryBytes,
@@ -605,6 +1009,58 @@ function planJobs(rect: DirtyRect, radius: number): GaussianBlurJob[] {
       targetWidth: rect.width,
       targetHeight,
     });
+  }
+  return jobs;
+}
+
+function planOptimizedTentJobs(
+  rect: DirtyRect,
+  plan: DestructiveTentBlurPlan,
+): OptimizedTentBlurJob[] {
+  const jobs: OptimizedTentBlurJob[] = [];
+  const support = plan.supportRadius;
+  const bottom = rect.y + rect.height;
+  for (
+    let targetY = rect.y;
+    targetY < bottom;
+    targetY += DESTRUCTIVE_GAUSSIAN_BLUR_STRIP_HEIGHT
+  ) {
+    const targetHeight = Math.min(
+      DESTRUCTIVE_GAUSSIAN_BLUR_STRIP_HEIGHT,
+      bottom - targetY,
+    );
+    const workOutputOriginY = Math.floor(targetY * plan.workScale)
+      - OPTIMIZED_WORK_MARGIN;
+    const workOutputBottom = Math.ceil(
+      (targetY + targetHeight) * plan.workScale,
+    ) + OPTIMIZED_WORK_MARGIN;
+    const workOutputHeight = Math.max(1, workOutputBottom - workOutputOriginY);
+    const right = rect.x + rect.width;
+    for (
+      let targetX = rect.x;
+      targetX < right;
+      targetX += OPTIMIZED_TARGET_STRIP_WIDTH
+    ) {
+      const targetWidth = Math.min(OPTIMIZED_TARGET_STRIP_WIDTH, right - targetX);
+      const workOutputOriginX = Math.floor(targetX * plan.workScale)
+        - OPTIMIZED_WORK_MARGIN;
+      const workOutputRight = Math.ceil(
+        (targetX + targetWidth) * plan.workScale,
+      ) + OPTIMIZED_WORK_MARGIN;
+      const workOutputWidth = Math.max(1, workOutputRight - workOutputOriginX);
+      jobs.push({
+        targetX,
+        targetY,
+        targetWidth,
+        targetHeight,
+        workInputOriginX: workOutputOriginX - support,
+        workInputOriginY: workOutputOriginY - support,
+        workInputWidth: workOutputWidth + support * 2,
+        workInputHeight: workOutputHeight + support * 2,
+        workOutputWidth,
+        workOutputHeight,
+      });
+    }
   }
   return jobs;
 }
@@ -655,12 +1111,60 @@ function writeJobParameters(
   return byteOffset;
 }
 
+function writeOptimizedTentJobParameters(
+  session: ActiveRasterGaussianBlurSession,
+  index: number,
+  job: OptimizedTentBlurJob,
+  plan: DestructiveTentBlurPlan,
+  documentWidth: number,
+  documentHeight: number,
+): number {
+  if (index >= PARAMETER_CAPACITY) {
+    throw new Error("Optimized tent blur: strip capacity exceeded.");
+  }
+  if (documentWidth > 0xffff || documentHeight > 0xffff) {
+    throw new Error("Optimized tent blur: document dimensions exceed the uniform ABI.");
+  }
+  const byteOffset = index * session.parameterStride;
+  const word = byteOffset / 4;
+  const source = session.scratchBounds;
+  session.parameterUploadI32[word] = source.x;
+  session.parameterUploadI32[word + 1] = source.y;
+  session.parameterUploadI32[word + 2] = source.width;
+  session.parameterUploadI32[word + 3] = source.height;
+  session.parameterUploadI32[word + 4] = job.workInputOriginX;
+  session.parameterUploadI32[word + 5] = job.workInputOriginY;
+  session.parameterUploadI32[word + 6] = job.workInputWidth;
+  session.parameterUploadI32[word + 7] = job.workInputHeight;
+  session.parameterUploadU32[word + 8] = job.targetX;
+  session.parameterUploadU32[word + 9] = job.targetY;
+  session.parameterUploadU32[word + 10] = job.targetWidth;
+  session.parameterUploadU32[word + 11] = job.targetHeight;
+  session.parameterUploadU32[word + 12] = plan.supportRadius;
+  session.parameterUploadU32[word + 13] = job.workOutputWidth;
+  session.parameterUploadU32[word + 14] = job.workOutputHeight;
+  session.parameterUploadU32[word + 15] = (
+    (documentHeight << 16) | documentWidth
+  ) >>> 0;
+  session.parameterUploadU32[word + 16] = session.quantizationSeed;
+  session.parameterUploadU32[word + 17] = session.storedEncodedSrgb ? 1 : 0;
+  session.parameterUploadU32[word + 18] = 0;
+  session.parameterUploadU32[word + 19] = 0;
+  session.parameterUploadF32.fill(0, word + 20, word + PARAMETER_WORDS);
+  session.parameterUploadF32[word + 20] = plan.workScale;
+  session.parameterUploadF32[word + 21] = plan.downsample;
+  session.parameterUploadF32[word + 22] = 0;
+  session.parameterUploadF32[word + 23] = plan.count;
+  return byteOffset;
+}
+
 function destroySessionResources(session: ActiveRasterGaussianBlurSession): void {
   if (session.previewFrame !== null) {
     cancelAnimationFrame(session.previewFrame);
     session.previewFrame = null;
   }
   session.sourceTexture.destroy();
+  session.downsampleTexture?.destroy();
   session.intermediateTexture.destroy();
   session.outputTexture.destroy();
   session.parameterBuffer.destroy();
@@ -668,6 +1172,131 @@ function destroySessionResources(session: ActiveRasterGaussianBlurSession): void
 
 function previewError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function encodeBaselineGaussianJobs(
+  encoder: GPUCommandEncoder,
+  engine: BrushEngine,
+  session: ActiveRasterGaussianBlurSession,
+  jobs: readonly GaussianBlurJob[],
+  offsets: readonly number[],
+): void {
+  for (let index = 0; index < jobs.length; index += 1) {
+    const job = jobs[index];
+    const horizontal = encoder.beginComputePass({
+      label: `Baseline Gaussian blur horizontal strip ${index + 1}/${jobs.length}`,
+    });
+    horizontal.setPipeline(session.shared.horizontalPipeline);
+    horizontal.setBindGroup(0, session.horizontalBindGroup, [offsets[index]]);
+    horizontal.dispatchWorkgroups(
+      Math.ceil(job.targetWidth / FILTER_WORKGROUP_SIZE),
+      job.buildHeight,
+    );
+    horizontal.end();
+
+    const vertical = encoder.beginComputePass({
+      label: `Baseline Gaussian blur vertical strip ${index + 1}/${jobs.length}`,
+    });
+    vertical.setPipeline(session.shared.verticalPipeline);
+    vertical.setBindGroup(0, session.verticalBindGroup, [offsets[index]]);
+    vertical.dispatchWorkgroups(
+      Math.ceil(job.targetHeight / FILTER_WORKGROUP_SIZE),
+      job.targetWidth,
+    );
+    vertical.end();
+
+    if (session.shared.outputFormat === "rgba8unorm") {
+      if (!session.shared.finalizePipeline || !session.finalizeBindGroup) {
+        throw new Error("Gaussian Blur: the RGBA8 finalizer is unavailable.");
+      }
+      const finalize = encoder.beginComputePass({
+        label: `Baseline Gaussian blur RGBA8 final strip ${index + 1}/${jobs.length}`,
+      });
+      finalize.setPipeline(session.shared.finalizePipeline);
+      finalize.setBindGroup(0, session.finalizeBindGroup, [offsets[index]]);
+      finalize.dispatchWorkgroups(
+        Math.ceil(job.targetWidth / 8),
+        Math.ceil(job.targetHeight / 8),
+      );
+      finalize.end();
+    } else {
+      encoder.copyTextureToTexture(
+        { texture: session.outputTexture },
+        {
+          texture: engine.layerTexture,
+          origin: { x: job.targetX, y: job.targetY, z: 0 },
+        },
+        {
+          width: job.targetWidth,
+          height: job.targetHeight,
+          depthOrArrayLayers: 1,
+        },
+      );
+    }
+  }
+}
+
+function encodeOptimizedTentJobs(
+  encoder: GPUCommandEncoder,
+  session: ActiveRasterGaussianBlurSession,
+  jobs: readonly OptimizedTentBlurJob[],
+  offsets: readonly number[],
+): void {
+  if (
+    !session.shared.downsamplePipeline
+    || !session.shared.restorePipeline
+    || !session.downsampleBindGroup
+    || !session.restoreBindGroup
+  ) {
+    throw new Error("Optimized tent blur resources are unavailable.");
+  }
+  for (let index = 0; index < jobs.length; index += 1) {
+    const job = jobs[index];
+    const offset = offsets[index];
+    const downsample = encoder.beginComputePass({
+      label: `Optimized tent blur downsample strip ${index + 1}/${jobs.length}`,
+    });
+    downsample.setPipeline(session.shared.downsamplePipeline);
+    downsample.setBindGroup(0, session.downsampleBindGroup, [offset]);
+    downsample.dispatchWorkgroups(
+      Math.ceil(job.workInputWidth / OPTIMIZED_FILTER_WORKGROUP_SIZE),
+      Math.ceil(job.workInputHeight / OPTIMIZED_FILTER_WORKGROUP_SIZE),
+    );
+    downsample.end();
+
+    const horizontal = encoder.beginComputePass({
+      label: `Optimized tent blur horizontal strip ${index + 1}/${jobs.length}`,
+    });
+    horizontal.setPipeline(session.shared.horizontalPipeline);
+    horizontal.setBindGroup(0, session.horizontalBindGroup, [offset]);
+    horizontal.dispatchWorkgroups(
+      Math.ceil(job.workOutputWidth / OPTIMIZED_FILTER_WORKGROUP_SIZE),
+      Math.ceil(job.workInputHeight / OPTIMIZED_FILTER_WORKGROUP_SIZE),
+    );
+    horizontal.end();
+
+    const vertical = encoder.beginComputePass({
+      label: `Optimized tent blur vertical strip ${index + 1}/${jobs.length}`,
+    });
+    vertical.setPipeline(session.shared.verticalPipeline);
+    vertical.setBindGroup(0, session.verticalBindGroup, [offset]);
+    vertical.dispatchWorkgroups(
+      Math.ceil(job.workOutputWidth / OPTIMIZED_FILTER_WORKGROUP_SIZE),
+      Math.ceil(job.workOutputHeight / OPTIMIZED_FILTER_WORKGROUP_SIZE),
+    );
+    vertical.end();
+
+    const restore = encoder.beginComputePass({
+      label: `Optimized tent blur restore strip ${index + 1}/${jobs.length}`,
+    });
+    restore.setPipeline(session.shared.restorePipeline);
+    restore.setBindGroup(0, session.restoreBindGroup, [offset]);
+    restore.dispatchWorkgroups(
+      Math.ceil(job.targetWidth / OPTIMIZED_FILTER_WORKGROUP_SIZE),
+      Math.ceil(job.targetHeight / OPTIMIZED_FILTER_WORKGROUP_SIZE),
+    );
+    restore.end();
+  }
 }
 
 function encodeRequestedPreview(
@@ -680,6 +1309,9 @@ function encodeRequestedPreview(
   if (session.encodedSerial === serial) return;
 
   const kernel = destructiveGaussianBlurKernel(radius);
+  // The destructive result is authoritative document data, so this call must
+  // keep the default one-pixel render scale and remain independent of zoom.
+  const tentPlan = destructiveTentBlurPlan(radius);
   const resultBounds = destructiveGaussianBlurBounds(
     session.sourceBounds,
     radius,
@@ -693,18 +1325,31 @@ function encodeRequestedPreview(
     session.presentedBounds,
     resultBounds,
   ) as DirtyRect;
-  const jobs = planJobs(resultBounds, kernel.radius);
+  const jobs = session.strategy === "optimized-tent"
+    ? planOptimizedTentJobs(resultBounds, tentPlan)
+    : planJobs(resultBounds, kernel.radius);
   if (jobs.length > PARAMETER_CAPACITY) {
     throw new Error("Gaussian Blur: too many strips for the parameter buffer.");
   }
-  const offsets = jobs.map((job, index) => writeJobParameters(
-    session,
-    index,
-    job,
-    kernel,
-    engine.documentWidth,
-    engine.documentHeight,
-  ));
+  const offsets = session.strategy === "optimized-tent"
+    ? (jobs as readonly OptimizedTentBlurJob[]).map((job, index) => (
+      writeOptimizedTentJobParameters(
+        session,
+        index,
+        job,
+        tentPlan,
+        engine.documentWidth,
+        engine.documentHeight,
+      )
+    ))
+    : (jobs as readonly GaussianBlurJob[]).map((job, index) => writeJobParameters(
+      session,
+      index,
+      job,
+      kernel,
+      engine.documentWidth,
+      engine.documentHeight,
+    ));
   if (jobs.length > 0) {
     engine.device.queue.writeBuffer(
       session.parameterBuffer,
@@ -734,58 +1379,21 @@ function encodeRequestedPreview(
     { width: dirtyRect.width, height: dirtyRect.height, depthOrArrayLayers: 1 },
   );
 
-  for (let index = 0; index < jobs.length; index += 1) {
-    const job = jobs[index];
-    const horizontal = encoder.beginComputePass({
-      label: `Gaussian Blur horizontal strip ${index + 1}/${jobs.length}`,
-    });
-    horizontal.setPipeline(session.shared.horizontalPipeline);
-    horizontal.setBindGroup(0, session.horizontalBindGroup, [offsets[index]]);
-    horizontal.dispatchWorkgroups(
-      Math.ceil(job.targetWidth / FILTER_WORKGROUP_SIZE),
-      job.buildHeight,
+  if (session.strategy === "optimized-tent") {
+    encodeOptimizedTentJobs(
+      encoder,
+      session,
+      jobs as readonly OptimizedTentBlurJob[],
+      offsets,
     );
-    horizontal.end();
-
-    const vertical = encoder.beginComputePass({
-      label: `Gaussian Blur vertical strip ${index + 1}/${jobs.length}`,
-    });
-    vertical.setPipeline(session.shared.verticalPipeline);
-    vertical.setBindGroup(0, session.verticalBindGroup, [offsets[index]]);
-    vertical.dispatchWorkgroups(
-      Math.ceil(job.targetHeight / FILTER_WORKGROUP_SIZE),
-      job.targetWidth,
+  } else {
+    encodeBaselineGaussianJobs(
+      encoder,
+      engine,
+      session,
+      jobs as readonly GaussianBlurJob[],
+      offsets,
     );
-    vertical.end();
-
-    if (session.shared.outputFormat === "rgba8unorm") {
-      if (!session.shared.finalizePipeline || !session.finalizeBindGroup) {
-        throw new Error("Gaussian Blur: the RGBA8 finalizer is unavailable.");
-      }
-      const finalize = encoder.beginComputePass({
-        label: `Gaussian Blur RGBA8 final strip ${index + 1}/${jobs.length}`,
-      });
-      finalize.setPipeline(session.shared.finalizePipeline);
-      finalize.setBindGroup(0, session.finalizeBindGroup, [offsets[index]]);
-      finalize.dispatchWorkgroups(
-        Math.ceil(job.targetWidth / 8),
-        Math.ceil(job.targetHeight / 8),
-      );
-      finalize.end();
-    } else {
-      encoder.copyTextureToTexture(
-        { texture: session.outputTexture },
-        {
-          texture: engine.layerTexture,
-          origin: { x: job.targetX, y: job.targetY, z: 0 },
-        },
-        {
-          width: job.targetWidth,
-          height: job.targetHeight,
-          depthOrArrayLayers: 1,
-        },
-      );
-    }
   }
   engine.device.queue.submit([encoder.finish()]);
 
@@ -928,6 +1536,7 @@ async function restoreOriginalPixels(
 export async function beginRasterGaussianBlur(
   engine: BrushEngine,
   initialRadius = DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_RADIUS,
+  strategy: DestructiveGaussianBlurStrategy = DESTRUCTIVE_GAUSSIAN_BLUR_DEFAULT_STRATEGY,
 ): Promise<RasterGaussianBlurSnapshot | null> {
   if (!engine.initialized) throw new Error("The engine has not been initialized yet.");
   if (engine.activeRasterGaussianBlurSession) {
@@ -974,28 +1583,65 @@ export async function beginRasterGaussianBlur(
       engine.documentHeight,
     ) as DirtyRect;
     const sourceTileMask = record.storageTileMask.slice();
-    const shared = await requireSharedResources(engine.device, engine.layerFormat);
+    const optimized = strategy === "optimized-tent";
+    const shared = await requireSharedResources(
+      engine.device,
+      engine.layerFormat,
+      strategy,
+    );
     const uniformAlignment = Number(engine.device.limits.minUniformBufferOffsetAlignment) || 256;
     const parameterStride = Math.ceil(PARAMETER_BYTES / uniformAlignment) * uniformAlignment;
-    const intermediateHeight = Math.min(
-      DESTRUCTIVE_GAUSSIAN_BLUR_STRIP_HEIGHT,
-      engine.documentHeight,
-    ) + DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS * 2;
-    const outputHeight = Math.min(
+    const maximumStripHeight = Math.min(
       DESTRUCTIVE_GAUSSIAN_BLUR_STRIP_HEIGHT,
       engine.documentHeight,
     );
-    const maximumJobs = Math.ceil(scratchBounds.height / DESTRUCTIVE_GAUSSIAN_BLUR_STRIP_HEIGHT);
+    const workingWidth = optimized
+      ? Math.min(scratchBounds.width, OPTIMIZED_TARGET_STRIP_WIDTH)
+        + DESTRUCTIVE_TENT_BLUR_MAX_WORK_RADIUS * 2
+        + OPTIMIZED_WORK_MARGIN * 2
+      : scratchBounds.width;
+    const intermediateHeight = optimized
+      ? maximumStripHeight
+        + DESTRUCTIVE_TENT_BLUR_MAX_WORK_RADIUS * 2
+        + OPTIMIZED_WORK_MARGIN * 2
+      : maximumStripHeight + DESTRUCTIVE_GAUSSIAN_BLUR_MAX_RADIUS * 2;
+    const outputHeight = optimized
+      ? maximumStripHeight + OPTIMIZED_WORK_MARGIN * 2
+      : maximumStripHeight;
+    const maximumTextureDimension = Number(engine.device.limits.maxTextureDimension2D);
+    if (
+      Number.isFinite(maximumTextureDimension)
+      && (workingWidth > maximumTextureDimension
+        || intermediateHeight > maximumTextureDimension
+        || outputHeight > maximumTextureDimension)
+    ) {
+      throw new Error("Gaussian Blur: working textures exceed the GPU dimension limit.");
+    }
+    const maximumJobs = Math.ceil(
+      scratchBounds.height / DESTRUCTIVE_GAUSSIAN_BLUR_STRIP_HEIGHT,
+    ) * (optimized
+      ? Math.ceil(scratchBounds.width / OPTIMIZED_TARGET_STRIP_WIDTH)
+      : 1);
     if (maximumJobs > PARAMETER_CAPACITY) {
       throw new Error("Gaussian Blur: the document is too tall for the strip plan.");
     }
     const maximumDispatch = Number(engine.device.limits.maxComputeWorkgroupsPerDimension);
-    if (Number.isFinite(maximumDispatch) && [
-      Math.ceil(scratchBounds.width / FILTER_WORKGROUP_SIZE),
-      intermediateHeight,
-      Math.ceil(outputHeight / FILTER_WORKGROUP_SIZE),
-      scratchBounds.width,
-    ].some((value) => value > maximumDispatch)) {
+    const maximumDispatches = optimized
+      ? [
+        Math.ceil(workingWidth / OPTIMIZED_FILTER_WORKGROUP_SIZE),
+        Math.ceil(intermediateHeight / OPTIMIZED_FILTER_WORKGROUP_SIZE),
+        Math.ceil(scratchBounds.width / OPTIMIZED_FILTER_WORKGROUP_SIZE),
+        Math.ceil(maximumStripHeight / OPTIMIZED_FILTER_WORKGROUP_SIZE),
+      ]
+      : [
+        Math.ceil(scratchBounds.width / FILTER_WORKGROUP_SIZE),
+        intermediateHeight,
+        Math.ceil(outputHeight / FILTER_WORKGROUP_SIZE),
+        scratchBounds.width,
+      ];
+    if (Number.isFinite(maximumDispatch) && maximumDispatches.some(
+      (value) => value > maximumDispatch,
+    )) {
       throw new Error("Gaussian Blur: the GPU does not support the required dispatch size.");
     }
 
@@ -1020,14 +1666,34 @@ export async function beginRasterGaussianBlur(
         const sourceView = sourceTexture.createView({
           label: "Native raster Gaussian Blur immutable source view",
         });
+        const downsampleTexture = optimized
+          ? engine.device.createTexture({
+            label: `Optimized raster tent blur reduced source ${workingWidth}×${intermediateHeight}`,
+            size: {
+              width: workingWidth,
+              height: intermediateHeight,
+              depthOrArrayLayers: 1,
+            },
+            format: "rgba16float",
+            usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+          })
+          : null;
+        if (downsampleTexture) {
+          transaction.deferRollback(() => downsampleTexture.destroy());
+        }
+        const downsampleView = downsampleTexture?.createView({
+          label: "Optimized raster tent blur reduced source view",
+        }) ?? null;
         const intermediateTexture = engine.device.createTexture({
-          label: `Native raster Gaussian Blur horizontal strip ${scratchBounds.width}×${intermediateHeight}`,
+          label: `${optimized ? "Optimized tent" : "Baseline Gaussian"} blur horizontal strip ${workingWidth}×${intermediateHeight}`,
           size: {
-            width: scratchBounds.width,
+            width: workingWidth,
             height: intermediateHeight,
             depthOrArrayLayers: 1,
           },
-          format: engine.layerFormat === "rgba8unorm" ? "rg32uint" : "rgba16float",
+          format: optimized
+            ? "rgba16float"
+            : engine.layerFormat === "rgba8unorm" ? "rg32uint" : "rgba16float",
           usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
         });
         transaction.deferRollback(() => intermediateTexture.destroy());
@@ -1035,14 +1701,18 @@ export async function beginRasterGaussianBlur(
           label: "Native raster Gaussian Blur horizontal strip view",
         });
         const outputTexture = engine.device.createTexture({
-          label: `Native raster Gaussian Blur vertical strip ${scratchBounds.width}×${outputHeight}`,
+          label: `${optimized ? "Optimized tent" : "Baseline Gaussian"} blur vertical strip ${workingWidth}×${outputHeight}`,
           size: {
-            width: scratchBounds.width,
+            width: workingWidth,
             height: outputHeight,
             depthOrArrayLayers: 1,
           },
-          format: engine.layerFormat === "rgba8unorm" ? "rg32uint" : "rgba16float",
-          usage: engine.layerFormat === "rgba8unorm"
+          format: optimized
+            ? "rgba16float"
+            : engine.layerFormat === "rgba8unorm" ? "rg32uint" : "rgba16float",
+          usage: optimized
+            ? GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING
+            : engine.layerFormat === "rgba8unorm"
             ? GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING
             : GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
         });
@@ -1056,31 +1726,68 @@ export async function beginRasterGaussianBlur(
           usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         });
         transaction.deferRollback(() => parameterBuffer.destroy());
+        const linearSampler = optimized
+          ? engine.device.createSampler({
+            label: "Optimized raster tent blur linear sampler",
+            addressModeU: "clamp-to-edge",
+            addressModeV: "clamp-to-edge",
+            minFilter: "linear",
+            magFilter: "linear",
+            mipmapFilter: "nearest",
+          })
+          : null;
+        const parameterBinding = {
+          binding: 0,
+          resource: { buffer: parameterBuffer, offset: 0, size: PARAMETER_BYTES },
+        } as const;
+        const downsampleBindGroup = optimized
+          && shared.downsampleBindGroupLayout
+          && downsampleView
+          && linearSampler
+          ? engine.device.createBindGroup({
+            label: "Optimized raster tent blur downsample bind group",
+            layout: shared.downsampleBindGroupLayout,
+            entries: [
+              parameterBinding,
+              { binding: 1, resource: sourceView },
+              { binding: 2, resource: downsampleView },
+              { binding: 3, resource: linearSampler },
+            ],
+          })
+          : null;
         const horizontalBindGroup = engine.device.createBindGroup({
-          label: "Native raster Gaussian Blur horizontal bind group",
+          label: `${optimized ? "Optimized tent" : "Baseline Gaussian"} blur horizontal bind group`,
           layout: shared.horizontalBindGroupLayout,
-          entries: [
-            {
-              binding: 0,
-              resource: { buffer: parameterBuffer, offset: 0, size: PARAMETER_BYTES },
-            },
-            { binding: 1, resource: sourceView },
-            { binding: 2, resource: intermediateView },
-          ],
+          entries: optimized
+            ? [
+              parameterBinding,
+              { binding: 1, resource: downsampleView as GPUTextureView },
+              { binding: 2, resource: intermediateView },
+              { binding: 3, resource: linearSampler as GPUSampler },
+            ]
+            : [
+              parameterBinding,
+              { binding: 1, resource: sourceView },
+              { binding: 2, resource: intermediateView },
+            ],
         });
         const verticalBindGroup = engine.device.createBindGroup({
-          label: "Native raster Gaussian Blur vertical bind group",
+          label: `${optimized ? "Optimized tent" : "Baseline Gaussian"} blur vertical bind group`,
           layout: shared.verticalBindGroupLayout,
-          entries: [
-            {
-              binding: 0,
-              resource: { buffer: parameterBuffer, offset: 0, size: PARAMETER_BYTES },
-            },
-            { binding: 1, resource: intermediateView },
-            { binding: 2, resource: outputView },
-          ],
+          entries: optimized
+            ? [
+              parameterBinding,
+              { binding: 1, resource: intermediateView },
+              { binding: 2, resource: outputView },
+              { binding: 3, resource: linearSampler as GPUSampler },
+            ]
+            : [
+              parameterBinding,
+              { binding: 1, resource: intermediateView },
+              { binding: 2, resource: outputView },
+            ],
         });
-        const finalizeBindGroup = shared.finalizeBindGroupLayout
+        const finalizeBindGroup = !optimized && shared.finalizeBindGroupLayout
           ? engine.device.createBindGroup({
             label: "Native raster Gaussian Blur RGBA8 finalizer bind group",
             layout: shared.finalizeBindGroupLayout,
@@ -1094,14 +1801,31 @@ export async function beginRasterGaussianBlur(
             ],
           })
           : null;
+        const restoreBindGroup = optimized
+          && shared.restoreBindGroupLayout
+          && linearSampler
+          ? engine.device.createBindGroup({
+            label: "Optimized raster tent blur restore bind group",
+            layout: shared.restoreBindGroupLayout,
+            entries: [
+              parameterBinding,
+              { binding: 1, resource: outputView },
+              { binding: 2, resource: hot.view },
+              { binding: 3, resource: linearSampler },
+            ],
+          })
+          : null;
         const parameterUpload = new ArrayBuffer(parameterStride * PARAMETER_CAPACITY);
         const created: ActiveRasterGaussianBlurSession = {
           layerId: record.id,
+          strategy,
           sourceBounds,
           sourceTileMask,
           scratchBounds,
           sourceTexture,
           sourceView,
+          downsampleTexture,
+          downsampleView,
           intermediateTexture,
           intermediateView,
           outputTexture,
@@ -1112,9 +1836,12 @@ export async function beginRasterGaussianBlur(
           parameterUploadI32: new Int32Array(parameterUpload),
           parameterUploadU32: new Uint32Array(parameterUpload),
           parameterUploadF32: new Float32Array(parameterUpload),
+          linearSampler,
+          downsampleBindGroup,
           horizontalBindGroup,
           verticalBindGroup,
           finalizeBindGroup,
+          restoreBindGroup,
           shared,
           quantizationSeed: engine.nextHistoryActionId >>> 0,
           storedEncodedSrgb:
@@ -1122,14 +1849,18 @@ export async function beginRasterGaussianBlur(
           memoryBytes:
             scratchBounds.width * scratchBounds.height
               * bytesPerLayerPixel(engine.layerFormat)
-            + scratchBounds.width * intermediateHeight
-              * (engine.layerFormat === "rgba8unorm"
-                ? BYTES_PER_PACKED_RGBA16_UNORM_PIXEL
-                : BYTES_PER_RGBA16F_PIXEL)
-            + scratchBounds.width * outputHeight
-              * (engine.layerFormat === "rgba8unorm"
-                ? BYTES_PER_PACKED_RGBA16_UNORM_PIXEL
-                : BYTES_PER_RGBA16F_PIXEL)
+            + (optimized
+              ? workingWidth * intermediateHeight
+                  * BYTES_PER_RGBA16F_PIXEL * 2
+                + workingWidth * outputHeight * BYTES_PER_RGBA16F_PIXEL
+              : scratchBounds.width * intermediateHeight
+                  * (engine.layerFormat === "rgba8unorm"
+                    ? BYTES_PER_PACKED_RGBA16_UNORM_PIXEL
+                    : BYTES_PER_RGBA16F_PIXEL)
+                + scratchBounds.width * outputHeight
+                  * (engine.layerFormat === "rgba8unorm"
+                    ? BYTES_PER_PACKED_RGBA16_UNORM_PIXEL
+                    : BYTES_PER_RGBA16F_PIXEL))
             + parameterStride * PARAMETER_CAPACITY,
           radius,
           resultBounds: initialResultBounds,
@@ -1304,22 +2035,47 @@ export async function commitRasterGaussianBlur(engine: BrushEngine): Promise<boo
       "history",
     );
     const kernel = destructiveGaussianBlurKernel(session.radius);
-    const action: RasterFilterHistoryAction = {
+    const tent = destructiveTentBlurPlan(session.radius);
+    const checkpoint = {
       id: engine.nextHistoryActionId,
-      kind: "raster-filter",
+      kind: "raster-filter" as const,
       layerId: session.layerId,
-      filter: "gaussian-blur",
+      filter: "gaussian-blur" as const,
       radius: session.radius,
-      sigma: kernel.sigma,
       supportRadius: kernel.radius,
-      precision: engine.layerFormat === "rgba8unorm"
-        ? "rgba8unorm-linear-rgba16unorm-packed-two-pass-f32-high-frequency-output"
-        : "rgba16float-f32-accumulation",
       edgeMode: DESTRUCTIVE_GAUSSIAN_BLUR_EDGE_MODE,
       seed,
       baseBounds: { ...session.resultBounds },
       baseTileMask: session.resultTileMask.slice(),
     };
+    const action: RasterFilterHistoryAction = session.strategy === "optimized-tent"
+      ? {
+        ...checkpoint,
+        strategy: "optimized-tent",
+        kernelStrategy: "separable-continuous-tent-v1",
+        workScale: tent.workScale,
+        workRadius: tent.count,
+        workSupportRadius: tent.supportRadius,
+        downsample: tent.downsample,
+        sampleCountPerPass: tent.sampleCountPerPass,
+        prefilterSampleAxis: tent.prefilterSampleAxis,
+        prefilterWidth: tent.prefilterWidth,
+        precision: engine.layerFormat === "rgba8unorm"
+          ? "rgba8unorm-stored-premultiplied-rgba16float-tent-f32-high-frequency-output"
+          : "rgba16float-premultiplied-tent-f32-accumulation",
+        colorDomain: session.storedEncodedSrgb
+          ? DESTRUCTIVE_TENT_BLUR_RGBA8_COLOR_DOMAIN
+          : DESTRUCTIVE_TENT_BLUR_LINEAR_COLOR_DOMAIN,
+      }
+      : {
+        ...checkpoint,
+        strategy: "baseline-gaussian",
+        sigma: kernel.sigma,
+        precision: engine.layerFormat === "rgba8unorm"
+          ? "rgba8unorm-linear-rgba16unorm-packed-two-pass-f32-high-frequency-output"
+          : "rgba16float-f32-accumulation",
+        colorDomain: DESTRUCTIVE_TENT_BLUR_LINEAR_COLOR_DOMAIN,
+      };
     commitHistoryActionAtomically(engine, action);
     journalPublished = true;
     if (engine.activeStrokeProfile) {
