@@ -4,12 +4,17 @@ import { copyFile, cp, mkdir, readFile, readdir, stat } from "node:fs/promises";
 const labsDirectory = new URL("../dist-labs/", import.meta.url);
 const labsAssetsDirectory = new URL("assets/", labsDirectory);
 const labsHtmlFile = new URL("labs.html", labsDirectory);
+const rgba8PerformanceHtmlFile = new URL("rgba8-performance-lab.html", labsDirectory);
 const gpuDiagnosticsDirectory = new URL("../dist-gpu-diagnostics/", import.meta.url);
 const gpuDiagnosticsAssetsDirectory = new URL("assets/", gpuDiagnosticsDirectory);
 const gpuDiagnosticsHtmlFile = new URL("gpu-startup-diagnostics.html", gpuDiagnosticsDirectory);
 const siteClientDirectory = new URL("../dist/client/", import.meta.url);
 const siteAssetsDirectory = new URL("assets/", siteClientDirectory);
 const siteLabsHtmlFile = new URL("labs.html", siteClientDirectory);
+const siteRgba8PerformanceHtmlFile = new URL(
+  "rgba8-performance-lab.html",
+  siteClientDirectory,
+);
 
 async function copyAssetsCollisionSafe(sourceDirectory, destinationDirectory) {
   await mkdir(destinationDirectory, { recursive: true });
@@ -42,18 +47,25 @@ async function copyAssetsCollisionSafe(sourceDirectory, destinationDirectory) {
 }
 
 await stat(labsHtmlFile);
+await stat(rgba8PerformanceHtmlFile);
 await stat(labsAssetsDirectory);
 await stat(gpuDiagnosticsHtmlFile);
 await stat(gpuDiagnosticsAssetsDirectory);
 await stat(siteClientDirectory);
 
-await cp(labsAssetsDirectory, siteAssetsDirectory, { recursive: true, force: true });
+await copyAssetsCollisionSafe(labsAssetsDirectory, siteAssetsDirectory);
 await cp(labsHtmlFile, siteLabsHtmlFile, { force: true });
+await cp(rgba8PerformanceHtmlFile, siteRgba8PerformanceHtmlFile, { force: true });
 await copyAssetsCollisionSafe(gpuDiagnosticsAssetsDirectory, siteAssetsDirectory);
 
 const labsHtml = await readFile(siteLabsHtmlFile, "utf8");
 assert.match(labsHtml, /src="\.\/assets\/[^\"]+\.js"/);
 assert.match(labsHtml, /href="\.\/assets\/[^\"]+\.css"/);
+
+const rgba8PerformanceHtml = await readFile(siteRgba8PerformanceHtmlFile, "utf8");
+assert.match(rgba8PerformanceHtml, /RGBA8 Brush Performance Lab/);
+assert.match(rgba8PerformanceHtml, /src="\.\/assets\/[^\"]+\.js"/);
+assert.match(rgba8PerformanceHtml, /href="\.\/assets\/[^\"]+\.css"/);
 
 const gpuDiagnosticsHtml = await readFile(gpuDiagnosticsHtmlFile, "utf8");
 assert.match(gpuDiagnosticsHtml, /inline-bootstrap-started/);

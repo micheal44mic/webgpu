@@ -3141,25 +3141,73 @@ async function handleBenchmarkRuns(request, env) {
   await ensureBenchmarkRunsSchema(env.DB);
 
   if (request.method === "POST") {
+    const expectedBenchmarkId = "rgba8-renderer-matrix-2026-09-04-v2";
+    const requestOrigin = request.headers.get("Origin");
+    if (requestOrigin && requestOrigin !== new URL(request.url).origin) {
+      return jsonResponse({ error: "Origine del risultato non valida." }, 403);
+    }
+    if (request.headers.get("X-RGBA8-Lab-Version") !== expectedBenchmarkId) {
+      return jsonResponse({ error: "Versione del laboratorio non valida." }, 400);
+    }
     const contentLength = Number(request.headers.get("Content-Length") ?? "0");
-    if (contentLength > 100_000) {
+    if (contentLength > 1_048_576) {
       return jsonResponse({ error: "Il risultato del benchmark è troppo grande." }, 413);
     }
 
     const payload = await request.json();
+    const suites = ["quick", "full", "sustained"];
+    const modes = ["paced", "saturation"];
+    const resultCounts = {
+      quick: [11, 22],
+      full: [28, 56],
+      sustained: [2, 4],
+    };
+    const results = payload?.performance?.results;
+    const validTarget = (target) => Array.isArray(target)
+      && target.length === 2
+      && target[0] === 2048
+      && target[1] === 2048;
+    const validTimingSummary = (summary) => summary
+      && Number.isInteger(summary.count)
+      && summary.count >= 0
+      && [summary.p50, summary.p95, summary.p99, summary.maximum]
+        .every((value) => Number.isFinite(value) && value >= 0);
+    const validResult = (result) => result
+      && ["webgpu", "webgl2"].includes(result.renderer)
+      && result.mode === payload.playback.mode
+      && result.format === "rgba8"
+      && validTarget(result.workload?.target)
+      && Number.isInteger(result.measuredFrames)
+      && result.measuredFrames > 0
+      && validTimingSummary(result.cpuFrameMs)
+      && validTimingSummary(result.inputToGpuCompleteMs)
+      && ["passed", "failed", "unavailable"].includes(result.equivalence?.status)
+      && result.workload?.totals
+      && Object.values(result.workload.totals)
+        .every((value) => Number.isFinite(value) && value >= 0);
     if (
-      !payload ||
-      payload.version !== 1 ||
-      !payload.benchmark ||
-      !payload.playback ||
-      !payload.performance ||
-      !payload.environment
+      !payload
+      || payload.version !== 1
+      || payload.benchmark?.id !== expectedBenchmarkId
+      || payload.benchmark?.schemaVersion !== 2
+      || payload.benchmark?.status !== "completed"
+      || !suites.includes(payload.benchmark?.suite)
+      || !validTarget(payload.benchmark?.target)
+      || payload.benchmark?.floatingPointTextures !== false
+      || JSON.stringify(payload.benchmark?.textureFormats) !== '["rgba8"]'
+      || !modes.includes(payload.playback?.mode)
+      || !Array.isArray(results)
+      || !resultCounts[payload.benchmark.suite].includes(results.length)
+      || !results.every(validResult)
+      || typeof payload.environment?.userAgent !== "string"
+      || payload.environment.userAgent.length < 1
+      || payload.environment.userAgent.length > 2_048
     ) {
       return jsonResponse({ error: "Il risultato del benchmark non è valido." }, 400);
     }
 
     const payloadJson = JSON.stringify(payload);
-    if (payloadJson.length > 100_000) {
+    if (new TextEncoder().encode(payloadJson).byteLength > 1_048_576) {
       return jsonResponse({ error: "Il risultato del benchmark è troppo grande." }, 413);
     }
 
@@ -3171,23 +3219,7 @@ async function handleBenchmarkRuns(request, env) {
     return jsonResponse({ id: Number(insert.meta?.last_row_id ?? 0), createdAt }, 201);
   }
 
-  if (request.method === "GET") {
-    const url = new URL(request.url);
-    const requestedLimit = Number(url.searchParams.get("limit") ?? "1000");
-    const limit = Math.min(1000, Math.max(1, Number.isFinite(requestedLimit) ? Math.floor(requestedLimit) : 1000));
-    const result = await env.DB
-      .prepare("SELECT id, created_at, payload_json FROM benchmark_runs ORDER BY id ASC LIMIT ?1")
-      .bind(limit)
-      .all();
-    const runs = (result.results ?? []).map((record) => ({
-      id: Number(record.id),
-      createdAt: record.created_at,
-      ...JSON.parse(record.payload_json),
-    }));
-    return jsonResponse({ version: 1, exportedAt: new Date().toISOString(), runs });
-  }
-
-  return new Response(null, { status: 405, headers: { Allow: "GET, POST" } });
+  return new Response(null, { status: 405, headers: { Allow: "POST" } });
 }
 
 async function handleIphoneMemoryLimitRuns(request, env) {

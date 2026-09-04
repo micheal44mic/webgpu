@@ -132,6 +132,7 @@ export default defineConfig(({ mode }) => ({
           input: {
             labs: resolve(__dirname, "labs.html"),
             "rgba8-brush-lab": resolve(__dirname, "rgba8-brush-lab.html"),
+            "rgba8-performance-lab": resolve(__dirname, "rgba8-performance-lab.html"),
           },
         },
       }

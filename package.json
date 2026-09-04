@@ -12,6 +12,7 @@
     "build:bundle": "npm run wasm:stroke:check && npm run wasm:vector:check && npm run gpu-diagnostics:build && vite build && node scripts/check-production-bundle.mjs && node scripts/prepare-sites-build.mjs && node scripts/verify-gpu-startup-diagnostics.mjs --require-build && node scripts/check-sites-asset-cache-build.mjs",
     "labs:build": "npm run wasm:stroke:check && npm run wasm:vector:check && vite build --mode labs",
     "rgba8-lab:build": "npm run wasm:stroke:check && npm run wasm:vector:check && vite build --mode labs",
+    "rgba8-performance-lab:verify": "node scripts/verify-rgba8-performance-lab.mjs",
     "wasm:shape:build": "node scripts/build-shape-mask-wasm.mjs",
     "wasm:shape:verify": "node scripts/verify-shape-mask-wasm.mjs",
     "wasm:shape:benchmark": "node scripts/benchmark-shape-mask-wasm.mjs",
