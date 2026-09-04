@@ -108,7 +108,6 @@
     "vector-stroke-expansion-lab:verify": "node scripts/verify-vector-stroke-expansion-lab.mjs",
     "vector-svg-direct-stroke:verify": "node scripts/verify-vector-svg-direct-stroke.mjs",
     "dirty-region-performance-lab:verify": "node scripts/verify-dirty-region-performance-lab.mjs",
-    "prepared-copy-instance-lab:verify": "node scripts/verify-prepared-copy-instance-lab.mjs",
     "vector-shadow:verify": "node scripts/verify-vector-shadow-3d.mjs",
     "vector-shapes:verify": "node scripts/verify-vector-shapes.mjs",
     "vector-pixel-alignment:verify": "node scripts/verify-vector-pixel-alignment.mjs",

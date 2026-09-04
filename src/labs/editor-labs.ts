@@ -39,7 +39,6 @@ const LABS = [
   ["bevel-golden", "Golden bevel bounding-box"],
   ["paint-benchmark", "Benchmark Paint sintetico"],
   ["dirty-region-performance-ab", "A/B regioni dirty · AABB / tile fuse"],
-  ["prepared-copy-instance-ab", "A/B copie · calcolo shader / istanze preparate"],
   ["effects-benchmark", "Benchmark banco effetti"],
   ["blur-quality-performance", "A/B blur · qualità e prestazioni"],
   ["layer-history", "GPU test cronologia livelli"],
@@ -89,7 +88,6 @@ type LabId = (typeof LABS)[number][0];
 const HOSTED_LAB_IDS = new Set<LabId>([
   "blur-quality-performance",
   "dirty-region-performance-ab",
-  "prepared-copy-instance-ab",
   "human-replay",
   "human-shape-sequence",
   "stroke-packed-wasm",
@@ -446,21 +444,6 @@ class EditorLabController implements EditorExtension {
           onProgress: (progress) => {
             this.#host.setStatus(
               `Regioni dirty ${progress.completed}/${progress.total}: ${progress.message}`,
-              "working",
-            );
-          },
-        });
-      }
-      case "prepared-copy-instance-ab": {
-        await engine.waitForIdle();
-        const { runPreparedCopyInstanceLab } = await import(
-          "./gpu/prepared-copy-instance-lab"
-        );
-        return runPreparedCopyInstanceLab(engine, {
-          applySettings: (settings) => this.#host.applyBrushSettings(settings),
-          onProgress: (progress) => {
-            this.#host.setStatus(
-              `Istanze preparate ${progress.completed}/${progress.total}: ${progress.message}`,
               "working",
             );
           },

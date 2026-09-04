@@ -55,7 +55,6 @@ export interface HumanDirtyRegionFrame {
   readonly index: number;
   readonly inputTimeMs: number;
   readonly stampCount: number;
-  readonly packedStamps: Uint8Array;
   readonly footprints: readonly DirtyRegionRect[];
 }
 
@@ -231,22 +230,6 @@ function stampFootprints(
   return footprints;
 }
 
-function flattenPackedStamps(result: PackedStrokeStampResult): Uint8Array {
-  const packed = new Uint8Array(result.stampCount * STAMP_STRIDE_BYTES);
-  let byteOffset = 0;
-  for (const chunk of result.packedChunks) {
-    if (chunk.packedStamps.byteLength !== chunk.stampCount * STAMP_STRIDE_BYTES) {
-      throw new Error("Packed human stroke chunk has an invalid byte length.");
-    }
-    packed.set(chunk.packedStamps, byteOffset);
-    byteOffset += chunk.packedStamps.byteLength;
-  }
-  if (byteOffset !== packed.byteLength) {
-    throw new Error("Packed human stroke chunks do not match the stamp count.");
-  }
-  return packed;
-}
-
 export async function loadHumanDirtyRegionWorkload(
   width: number,
   height: number,
@@ -322,7 +305,6 @@ export async function loadHumanDirtyRegionWorkload(
       index: frames.length,
       inputTimeMs: point.timeMs,
       stampCount: result.stampCount,
-      packedStamps: flattenPackedStamps(result),
       footprints,
     });
     baseStampCount += result.stampCount;

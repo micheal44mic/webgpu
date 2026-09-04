@@ -89,7 +89,6 @@ export const verificationScripts = Object.freeze([
   "verify-noise-mip-smoothing.mjs",
   "verify-noise.mjs",
   "verify-pixel-selection-controller.mjs",
-  "verify-prepared-copy-instance-lab.mjs",
   "verify-project-home.mjs",
   "verify-project-session-controller.mjs",
   "verify-project-session-lifecycle.mjs",
