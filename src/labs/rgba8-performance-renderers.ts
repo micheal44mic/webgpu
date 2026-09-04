@@ -562,6 +562,7 @@ void main() {
 const GLSL_FRAGMENT = /* glsl */ `#version 300 es
 precision highp float;
 precision highp int;
+precision highp sampler2D;
 in vec2 localUv;
 in float pressureValue;
 in vec2 documentUv;

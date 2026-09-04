@@ -49,6 +49,7 @@ assert.match(renderers, /queue\.onSubmittedWorkDone\(\)/);
 assert.match(renderers, /gl\.fenceSync/);
 assert.match(renderers, /timestamp-query/);
 assert.match(renderers, /EXT_disjoint_timer_query_webgl2/);
+assert.match(renderers, /precision highp sampler2D;/);
 assert.match(renderers, /gl\.blendFunc\(gl\.ONE, gl\.ONE_MINUS_SRC_ALPHA\)/);
 
 assert.match(lab, /beginPreparedGeometrySession/);
