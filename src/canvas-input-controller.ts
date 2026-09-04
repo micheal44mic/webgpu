@@ -59,10 +59,12 @@ export type CanvasInputEnginePort = Pick<
   | "getHistoryState"
   | "panByClientDelta"
   | "prepareStraightLineAdjustment"
+  | "requestRender"
   | "resizeCanvas"
   | "rotateViewBy"
   | "selectConnectedAtClientPoint"
   | "selectPixelsByClientLasso"
+  | "setFrameInputFlush"
   | "toLayerPoint"
   | "updateStraightLineAdjustment"
   | "zoomBy"
@@ -150,6 +152,13 @@ export type CanvasInputShapePort = Pick<
 >;
 
 export interface CanvasInputDiagnostics {
+  readonly pointerInputStrategy: "raw-update-coalesced-frame-latch-with-move-fallback";
+  readonly pointerRawUpdateEvents: number;
+  readonly pointerRawUpdateSamples: number;
+  readonly pointerMoveReplaySamplesDropped: number;
+  readonly frameInputFlushes: number;
+  readonly frameInputLastFlushSamples: number;
+  readonly frameInputMaximumBufferedSamples: number;
   readonly touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet";
   readonly touchPaintIntentStrategy: typeof TOUCH_PAINT_INTENT_STRATEGY;
   readonly touchPaintIntentHoldEnabled: boolean;
@@ -310,6 +319,12 @@ export class CanvasInputController {
       paintPointerUpLastExtensionMs: 0,
       paintPointerUpLastUiCleanupMs: 0,
       paintPointerUpLastHistoryControlsMs: 0,
+      pointerRawUpdateEvents: 0,
+      pointerRawUpdateSamples: 0,
+      pointerMoveReplaySamplesDropped: 0,
+      frameInputFlushes: 0,
+      frameInputLastFlushSamples: 0,
+      frameInputMaximumBufferedSamples: 0,
     });
   }
 
@@ -354,9 +369,22 @@ function canvasInputDiagnostics(
     readonly paintPointerUpLastExtensionMs: number;
     readonly paintPointerUpLastUiCleanupMs: number;
     readonly paintPointerUpLastHistoryControlsMs: number;
+    readonly pointerRawUpdateEvents: number;
+    readonly pointerRawUpdateSamples: number;
+    readonly pointerMoveReplaySamplesDropped: number;
+    readonly frameInputFlushes: number;
+    readonly frameInputLastFlushSamples: number;
+    readonly frameInputMaximumBufferedSamples: number;
   },
 ): CanvasInputDiagnostics {
   return {
+    pointerInputStrategy: "raw-update-coalesced-frame-latch-with-move-fallback",
+    pointerRawUpdateEvents: counters.pointerRawUpdateEvents,
+    pointerRawUpdateSamples: counters.pointerRawUpdateSamples,
+    pointerMoveReplaySamplesDropped: counters.pointerMoveReplaySamplesDropped,
+    frameInputFlushes: counters.frameInputFlushes,
+    frameInputLastFlushSamples: counters.frameInputLastFlushSamples,
+    frameInputMaximumBufferedSamples: counters.frameInputMaximumBufferedSamples,
     touchNavigationStrategy: "two-finger-pan-pinch-rotate-zero-magnet",
     touchPaintIntentStrategy: TOUCH_PAINT_INTENT_STRATEGY,
     touchPaintIntentHoldEnabled,
@@ -420,6 +448,11 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
   let straightLineGesture: StraightLineGesture | null = null;
   let straightLineReplacementInFlight = false;
   let cloneFinalizationInFlight = false;
+  let rawPaintPointerId: number | null = null;
+  let framePaintPointerId: number | null = null;
+  const framePaintSourceEvents: PointerEvent[] = [];
+  const framePaintSamples: PointerSample[] = [];
+  const rawReplayFingerprintCounts = new Map<string, number>();
   const touchPaintIntentCounters = {
     starts: 0,
     releasedByMovement: 0,
@@ -438,6 +471,12 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     paintPointerUpLastExtensionMs: 0,
     paintPointerUpLastUiCleanupMs: 0,
     paintPointerUpLastHistoryControlsMs: 0,
+    pointerRawUpdateEvents: 0,
+    pointerRawUpdateSamples: 0,
+    pointerMoveReplaySamplesDropped: 0,
+    frameInputFlushes: 0,
+    frameInputLastFlushSamples: 0,
+    frameInputMaximumBufferedSamples: 0,
   };
 
   const publishHistoryState = (): void => {
@@ -465,6 +504,22 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     pressure: normalizedPressure(event),
     timeMs: event.timeStamp,
   });
+
+  const pointerEventSources = (event: PointerEvent): readonly PointerEvent[] => {
+    const coalesced = (
+      event as PointerEvent & { getCoalescedEvents?: () => PointerEvent[] }
+    ).getCoalescedEvents?.() ?? [];
+    return coalesced.length > 0 ? coalesced : [event];
+  };
+
+  const pointerEventFingerprint = (event: PointerEvent): string => [
+    event.pointerId,
+    event.pointerType,
+    event.timeStamp,
+    event.clientX,
+    event.clientY,
+    normalizedPressure(event),
+  ].join("|");
 
   const syncSelectionGestureCanvasSize = (): void => {
     if (selectionGestureCanvas.width !== canvas.width) {
@@ -1018,6 +1073,129 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     return true;
   };
 
+  const clearFramePaintInput = (): void => {
+    framePaintPointerId = null;
+    framePaintSourceEvents.length = 0;
+    framePaintSamples.length = 0;
+    rawPaintPointerId = null;
+    rawReplayFingerprintCounts.clear();
+  };
+
+  const processPaintInputBatch = (
+    pointerId: number,
+    sourceEvents: readonly PointerEvent[],
+    samples: readonly PointerSample[],
+  ): void => {
+    if (samples.length === 0) return;
+    options.getEditorExtension()?.capturePaintRecording?.(sourceEvents, samples);
+    if (deferredPenPaint?.pointerId === pointerId) {
+      appendDeferredPenSamples(deferredPenPaint, samples);
+      tryResumeDeferredPenPaint();
+      return;
+    }
+    const heldIntent = touchPaintIntentHold;
+    if (heldIntent?.pointerId === pointerId) {
+      heldIntent.bufferedSamples.push(...samples);
+      touchPaintIntentCounters.maximumBufferedSamples = Math.max(
+        touchPaintIntentCounters.maximumBufferedSamples,
+        heldIntent.bufferedSamples.length,
+      );
+      if (touchPaintIntentMovementReached(heldIntent.initialSample, samples)) {
+        releaseTouchPaintIntentHold("movement");
+      }
+      return;
+    }
+    if (captureStraightLineSamples(pointerId, samples)) return;
+    engine.extendStroke(samples);
+  };
+
+  const queueFramePaintInput = (
+    pointerId: number,
+    sourceEvents: readonly PointerEvent[],
+  ): void => {
+    if (sourceEvents.length === 0) return;
+    if (framePaintPointerId !== null && framePaintPointerId !== pointerId) {
+      clearFramePaintInput();
+    }
+    framePaintPointerId = pointerId;
+    framePaintSourceEvents.push(...sourceEvents);
+    framePaintSamples.push(...sourceEvents.map(toPointerSample));
+    touchPaintIntentCounters.frameInputMaximumBufferedSamples = Math.max(
+      touchPaintIntentCounters.frameInputMaximumBufferedSamples,
+      framePaintSamples.length,
+    );
+    engine.requestRender();
+  };
+
+  const flushFramePaintInput = (): void => {
+    if (framePaintSamples.length === 0) return;
+    const pointerId = framePaintPointerId;
+    if (
+      pointerId === null
+      || pointerId !== activePointerId
+      || pointerMode !== "paint"
+      || disposed
+    ) {
+      clearFramePaintInput();
+      return;
+    }
+    const sourceEvents = framePaintSourceEvents.splice(0);
+    const samples = framePaintSamples.splice(0);
+    framePaintPointerId = null;
+    touchPaintIntentCounters.frameInputFlushes += 1;
+    touchPaintIntentCounters.frameInputLastFlushSamples = samples.length;
+    processPaintInputBatch(pointerId, sourceEvents, samples);
+  };
+
+  const rememberRawReplaySamples = (sourceEvents: readonly PointerEvent[]): void => {
+    for (const source of sourceEvents) {
+      const fingerprint = pointerEventFingerprint(source);
+      rawReplayFingerprintCounts.set(
+        fingerprint,
+        (rawReplayFingerprintCounts.get(fingerprint) ?? 0) + 1,
+      );
+    }
+  };
+
+  const removeRawReplaySamples = (
+    sourceEvents: readonly PointerEvent[],
+  ): readonly PointerEvent[] => {
+    const unmatched: PointerEvent[] = [];
+    for (const source of sourceEvents) {
+      const fingerprint = pointerEventFingerprint(source);
+      const remaining = rawReplayFingerprintCounts.get(fingerprint) ?? 0;
+      if (remaining <= 0) {
+        unmatched.push(source);
+        continue;
+      }
+      touchPaintIntentCounters.pointerMoveReplaySamplesDropped += 1;
+      if (remaining === 1) rawReplayFingerprintCounts.delete(fingerprint);
+      else rawReplayFingerprintCounts.set(fingerprint, remaining - 1);
+    }
+    rawReplayFingerprintCounts.clear();
+    return unmatched;
+  };
+
+  const handlePointerRawUpdate = (event: PointerEvent): void => {
+    if (
+      event.pointerId !== activePointerId
+      || pointerMode !== "paint"
+      || disposed
+    ) return;
+    if (event.pointerType === "touch" && activeTouchContacts.has(event.pointerId)) {
+      activeTouchContacts.set(event.pointerId, {
+        clientX: event.clientX,
+        clientY: event.clientY,
+      });
+    }
+    const sourceEvents = pointerEventSources(event);
+    rawPaintPointerId = event.pointerId;
+    rememberRawReplaySamples(sourceEvents);
+    touchPaintIntentCounters.pointerRawUpdateEvents += 1;
+    touchPaintIntentCounters.pointerRawUpdateSamples += sourceEvents.length;
+    queueFramePaintInput(event.pointerId, sourceEvents);
+  };
+
   const currentTouchNavigationGesture = (): TouchNavigationGesture | null => {
     const contacts = [...activeTouchContacts.values()];
     if (contacts.length === 0) return null;
@@ -1048,6 +1226,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     if (pointerMode !== "touch-navigation") {
       const continuesExplicitPan = pointerMode === "pan";
       if (pointerMode === "paint") {
+        flushFramePaintInput();
         const canceledHeldIntent = cancelTouchPaintIntentHold("navigation");
         if (!canceledHeldIntent && !engine.cancelStrokeBeforeRender()) {
           engine.endStroke();
@@ -1111,6 +1290,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       return;
     }
     if (activePointerId !== null) return;
+    clearFramePaintInput();
 
     const activeTool = options.getActiveTool();
     const shouldRotate = event.pointerType === "mouse"
@@ -1446,10 +1626,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       return;
     }
     if (pointerMode === "selection-lasso") {
-      const coalesced = (
-        event as PointerEvent & { getCoalescedEvents?: () => PointerEvent[] }
-      ).getCoalescedEvents?.() ?? [];
-      for (const source of coalesced.length > 0 ? coalesced : [event]) {
+      for (const source of pointerEventSources(event)) {
         appendLassoClientPoint(source.clientX, source.clientY);
       }
       drawLassoGesture();
@@ -1476,10 +1653,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       return;
     }
 
-    const coalesced = (
-      event as PointerEvent & { getCoalescedEvents?: () => PointerEvent[] }
-    ).getCoalescedEvents?.() ?? [];
-    const sourceEvents = coalesced.length > 0 ? coalesced : [event];
+    const sourceEvents = pointerEventSources(event);
     if (pointerMode === "clone") {
       const controller = options.getCloneController?.() ?? null;
       const points = [];
@@ -1508,27 +1682,12 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       })));
       return;
     }
-    const samples = sourceEvents.map(toPointerSample);
-    options.getEditorExtension()?.capturePaintRecording?.(sourceEvents, samples);
-    if (deferredPenPaint?.pointerId === event.pointerId) {
-      appendDeferredPenSamples(deferredPenPaint, samples);
-      tryResumeDeferredPenPaint();
+    if (rawPaintPointerId === event.pointerId) {
+      const unmatched = removeRawReplaySamples(sourceEvents);
+      queueFramePaintInput(event.pointerId, unmatched);
       return;
     }
-    const heldIntent = touchPaintIntentHold;
-    if (heldIntent?.pointerId === event.pointerId) {
-      heldIntent.bufferedSamples.push(...samples);
-      touchPaintIntentCounters.maximumBufferedSamples = Math.max(
-        touchPaintIntentCounters.maximumBufferedSamples,
-        heldIntent.bufferedSamples.length,
-      );
-      if (touchPaintIntentMovementReached(heldIntent.initialSample, samples)) {
-        releaseTouchPaintIntentHold("movement");
-      }
-      return;
-    }
-    if (captureStraightLineSamples(event.pointerId, samples)) return;
-    engine.extendStroke(samples);
+    processPaintInputBatch(event.pointerId, sourceEvents, sourceEvents.map(toPointerSample));
   };
 
   const finishPointer = (event: PointerEvent): void => {
@@ -1560,6 +1719,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     if (event.pointerId !== activePointerId) return;
     const measurePaintPointerUp = event.type === "pointerup" && pointerMode === "paint";
     const paintPointerUpStartedAt = measurePaintPointerUp ? browser.performance.now() : 0;
+    if (pointerMode === "paint") flushFramePaintInput();
     let paintPointerUpEndStrokeMs = 0;
     let paintPointerUpExtensionMs = 0;
 
@@ -1572,6 +1732,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
         releasePointerCapture(event.pointerId);
         pointerMode = null;
         activePointerId = null;
+        clearFramePaintInput();
         if (completedPointerMode === "paint") options.invalidateActiveThumbnail();
         publishHistoryState();
         return;
@@ -1736,6 +1897,7 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
       canvas.classList.remove("panning", "rotating", "liquify-deforming");
       pointerMode = null;
       activePointerId = null;
+      clearFramePaintInput();
       if (completedPointerMode === "shape") {
         releasePointerCapture(event.pointerId);
         for (const pointerId of activeTouchContacts.keys()) releasePointerCapture(pointerId);
@@ -1899,7 +2061,13 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
     return Boolean(elementTarget?.closest("input, textarea, select, [contenteditable]"));
   };
 
+  engine.setFrameInputFlush(flushFramePaintInput);
   canvas.addEventListener("pointerdown", handlePointerDown, { signal: abortController.signal });
+  canvas.addEventListener("pointerrawupdate", (event) => {
+    handlePointerRawUpdate(event as PointerEvent);
+  }, {
+    signal: abortController.signal,
+  });
   canvas.addEventListener("pointermove", handlePointerMove, { signal: abortController.signal });
   canvas.addEventListener("pointerup", finishPointer, { signal: abortController.signal });
   canvas.addEventListener("pointercancel", finishPointer, { signal: abortController.signal });
@@ -1976,6 +2144,8 @@ function createCanvasInputRuntime(options: CanvasInputControllerOptions): Canvas
   const dispose = (): void => {
     if (disposed) return;
     disposed = true;
+    engine.setFrameInputFlush(null);
+    clearFramePaintInput();
     abortController.abort();
     resizeObserver.disconnect();
     const pendingStraightLine = straightLineGesture;

@@ -24,6 +24,11 @@ const styleSource = read("src/styles.css");
 const registrySource = read("src/gpu-resource-registry.ts");
 const packageJson = JSON.parse(read("package.json"));
 
+assert.match(controllerSource, /addEventListener\("pointerrawupdate"/,
+  "the visible brush outline must observe the same real high-frequency input stream");
+assert.doesNotMatch(controllerSource, /getPredictedEvents/,
+  "the brush outline must not use synthetic pointer prediction");
+
 const coordinates = (path) => Array.from(path, (value) => Number(value.toFixed(6)));
 const assertClose = (actual, expected, epsilon = 1e-9) => {
   assert.ok(Math.abs(actual - expected) <= epsilon, `${actual} != ${expected}`);

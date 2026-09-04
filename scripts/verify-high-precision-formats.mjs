@@ -57,6 +57,9 @@ const allowedLiteralFormats = new Map([
   ["src/history-storage-core.ts", { rgba8unorm: 1 }],
   ["src/layer-blend-tile-compositor.ts", { rgba8unorm: 1 }],
   ["src/layer-thumbnail-renderer.ts", { rgba8unorm: 2 }],
+  // Laboratorio comparativo isolato: target, copia e maschere restano tutti
+  // esplicitamente RGBA8 per mantenere equivalenti i due renderer.
+  ["src/labs/rgba8-performance-renderers.ts", { rgba8unorm: 4 }],
   // Sonde diagnostiche isolate che verificano direttamente il contratto RGBA8.
   ["src/rgba8-accumulation-probe.ts", { rgba8unorm: 4 }],
   // Confine persistente delle superfici derivate: una tile RGBA16F bounded
@@ -85,6 +88,7 @@ assert.deepEqual(
 const allowedEightBitRenderTargets = new Map([
   ["src/engine-layer-merge-runtime.ts", 1], // finalizzazione unica del merge cropped
   ["src/engine-vector-raster-runtime.ts", 1], // handoff finale al documento RGBA8
+  ["src/labs/rgba8-performance-renderers.ts", 1], // target comparativo isolato RGBA8
   ["src/layer-thumbnail-renderer.ts", 1], // miniatura UI finale
   ["src/rgba8-accumulation-probe.ts", 2], // target diagnostici isolati
   ["src/rgba8-surface-finalizer.ts", 1], // confine persistente della tile RGBA16F

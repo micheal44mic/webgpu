@@ -19,6 +19,20 @@ assert.doesNotMatch(
   "main.ts must remain a composition root, not a second canvas-input owner",
 );
 assert.match(controllerSource, /export type CanvasInputEnginePort = Pick</);
+assert.match(controllerSource, /canvas\.addEventListener\("pointerrawupdate", \(event\) => \{[\s\S]*?handlePointerRawUpdate\(event as PointerEvent\);/,
+  "high-frequency real input must use pointerrawupdate when the browser emits it");
+assert.doesNotMatch(controllerSource, /getPredictedEvents/,
+  "the input path must never synthesize predicted stroke samples");
+assert.match(controllerSource, /engine\.setFrameInputFlush\(flushFramePaintInput\)/,
+  "the controller must install one engine-owned frame input drain");
+assert.match(engineSource, /setFrameInputFlush\(flush: \(\(\) => void\) \| null\)/);
+const frameInputFlushIndex = engineSource.indexOf("this.frameInputFlush?.();");
+const frameBatchExtractionIndex = engineSource.indexOf(
+  "const batchExtractionStart = performance.now();",
+  frameInputFlushIndex,
+);
+assert.ok(frameInputFlushIndex >= 0 && frameInputFlushIndex < frameBatchExtractionIndex,
+  "real input must be drained before the render frame snapshots its stamp batch");
 assert.match(controllerSource, /\| "prepareStraightLineAdjustment"/);
 assert.match(controllerSource, /\| "commitStraightLineAdjustment"/);
 assert.match(controllerSource, /\| "cancelStraightLineAdjustment"/);
@@ -431,6 +445,8 @@ function createHarness({ holdEnabled = true } = {}) {
     recordingCapture: 0,
     recordingFinish: [],
     recordingCancel: 0,
+    frameRequests: 0,
+    frameInputFlushRegistrations: [],
   };
   let activeTool = "paint";
   let selectionMethod = "magic-wand";
@@ -450,6 +466,7 @@ function createHarness({ holdEnabled = true } = {}) {
   let cancelStrokeBeforeRender = false;
   let endStrokeError = null;
   let extension = null;
+  let frameInputFlush = null;
   const selectionPromises = [];
   const engine = {
     beginStroke(sample) {
@@ -518,6 +535,11 @@ function createHarness({ holdEnabled = true } = {}) {
     },
     getHistoryState: () => ({ ...historyState(), openEdit: openHistoryEdit }),
     resizeCanvas() { calls.resize += 1; },
+    requestRender() { calls.frameRequests += 1; },
+    setFrameInputFlush(flush) {
+      frameInputFlush = flush;
+      calls.frameInputFlushRegistrations.push(flush);
+    },
   };
   const vector = {
     beginViewGesture() { calls.vectorBegin += 1; },
@@ -622,6 +644,7 @@ function createHarness({ holdEnabled = true } = {}) {
     setCommitStraightLineAllowed(value) { commitStraightLineAllowed = value; },
     setCancelStrokeBeforeRender(value) { cancelStrokeBeforeRender = value; },
     setEndStrokeError(value) { endStrokeError = value; },
+    flushFrameInput() { frameInputFlush?.(); },
     enableRecording() {
       extension = {
         wantsPaintRecording: () => true,
@@ -1022,6 +1045,136 @@ async function flushMicrotasks() {
   assert.deepEqual(harness.calls.recordingFinish, [true]);
   assert.equal(await reportedError, expectedError);
   harness.controller.dispose();
+}
+
+// High-frequency real samples stay cheap in the raw event handler, join one
+// frame-latched batch, and are not replayed by the following pointermove.
+{
+  const harness = createHarness();
+  harness.enableRecording();
+  harness.canvas.dispatchEvent(makeEvent("pointerdown", {
+    pointerId: 71,
+    pointerType: "pen",
+    clientX: 5,
+    clientY: 7,
+    pressure: 0.4,
+    timeStamp: 11,
+  }));
+  const rawA = makeEvent("pointerrawupdate", {
+    pointerId: 71,
+    pointerType: "pen",
+    clientX: 8,
+    clientY: 10,
+    pressure: 0.5,
+    timeStamp: 12,
+  });
+  const rawB = makeEvent("pointerrawupdate", {
+    pointerId: 71,
+    pointerType: "pen",
+    clientX: 9,
+    clientY: 11,
+    pressure: 0.6,
+    timeStamp: 12,
+  });
+  harness.canvas.dispatchEvent(makeEvent("pointerrawupdate", {
+    pointerId: 71,
+    pointerType: "pen",
+    getCoalescedEvents: () => [rawA, rawB],
+  }));
+  harness.canvas.dispatchEvent(makeEvent("pointerrawupdate", {
+    pointerId: 999,
+    pointerType: "pen",
+    clientX: 500,
+    clientY: 500,
+    pressure: 1,
+    timeStamp: 12,
+  }));
+  assert.equal(harness.calls.extendStroke.length, 0,
+    "pointerrawupdate must only collect immutable real samples before the frame");
+
+  const replayA = makeEvent("pointermove", {
+    pointerId: 71,
+    pointerType: "pen",
+    clientX: 8,
+    clientY: 10,
+    pressure: 0.5,
+    timeStamp: 12,
+  });
+  const replayB = makeEvent("pointermove", {
+    pointerId: 71,
+    pointerType: "pen",
+    clientX: 9,
+    clientY: 11,
+    pressure: 0.6,
+    timeStamp: 12,
+  });
+  const moveOnlyC = makeEvent("pointermove", {
+    pointerId: 71,
+    pointerType: "pen",
+    clientX: 10,
+    clientY: 12,
+    pressure: 0.7,
+    timeStamp: 12,
+  });
+  harness.canvas.dispatchEvent(makeEvent("pointermove", {
+    pointerId: 71,
+    pointerType: "pen",
+    getCoalescedEvents: () => [replayA, replayB, moveOnlyC],
+  }));
+  assert.equal(harness.calls.extendStroke.length, 0,
+    "a move fallback arriving before the frame must preserve raw sample order");
+
+  harness.flushFrameInput();
+  assert.equal(harness.calls.extendStroke.length, 1);
+  assert.deepEqual(
+    harness.calls.extendStroke[0].map(({ clientX, clientY, pressure, timeMs }) => ({
+      clientX,
+      clientY,
+      pressure,
+      timeMs,
+    })),
+    [
+      { clientX: 8, clientY: 10, pressure: 0.5, timeMs: 12 },
+      { clientX: 9, clientY: 11, pressure: 0.6, timeMs: 12 },
+      { clientX: 10, clientY: 12, pressure: 0.7, timeMs: 12 },
+    ],
+    "raw and move-only samples must reach geometry exactly once and in source order",
+  );
+  assert.equal(harness.calls.recordingCapture, 1);
+  assert.deepEqual(harness.controller.diagnostics(), {
+    ...harness.controller.diagnostics(),
+    pointerRawUpdateEvents: 1,
+    pointerRawUpdateSamples: 2,
+    pointerMoveReplaySamplesDropped: 2,
+    frameInputFlushes: 1,
+    frameInputLastFlushSamples: 3,
+    frameInputMaximumBufferedSamples: 3,
+  });
+
+  harness.canvas.dispatchEvent(makeEvent("pointerrawupdate", {
+    pointerId: 71,
+    pointerType: "pen",
+    clientX: 14,
+    clientY: 16,
+    pressure: 0.8,
+    timeStamp: 13,
+  }));
+  harness.canvas.dispatchEvent(makeEvent("pointerup", {
+    pointerId: 71,
+    pointerType: "pen",
+    clientX: 14,
+    clientY: 16,
+    timeStamp: 14,
+  }));
+  assert.equal(harness.calls.extendStroke.length, 2,
+    "pointerup must drain already reported real input before ending the stroke");
+  assert.deepEqual(harness.calls.endStroke, [14]);
+  harness.flushFrameInput();
+  assert.equal(harness.calls.extendStroke.length, 2,
+    "the completed stroke must not retain a frame-latched sample");
+  harness.controller.dispose();
+  assert.equal(harness.calls.frameInputFlushRegistrations.at(-1), null,
+    "dispose must detach the engine-owned input drain");
 }
 
 // A rejected begin never claims the pointer and Transform never routes to Paint.

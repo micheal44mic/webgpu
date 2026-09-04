@@ -234,6 +234,9 @@ export class BrushOutlineController {
     options.overlay.hidden = true;
     const signal = this.abortController.signal;
     options.canvas.addEventListener("pointerenter", this.handlePointer, { signal });
+    options.canvas.addEventListener("pointerrawupdate", (event) => {
+      this.handlePointer(event as PointerEvent);
+    }, { signal });
     options.canvas.addEventListener("pointermove", this.handlePointer, { signal });
     options.canvas.addEventListener("pointerdown", this.handlePointerDown, { signal });
     options.canvas.addEventListener("pointerup", this.handlePointerUp, { signal });

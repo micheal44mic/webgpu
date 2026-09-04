@@ -2174,6 +2174,8 @@ export class BrushEngine {
   layerHasContent = false;
 
   frameRequest: number | null = null;
+  private frameInputFlush: (() => void) | null = null;
+  private frameInputFlushActive = false;
   private startupTimelineStartedAtMs: number | null = null;
   private readonly startupPhaseStartedAtMs = new Map<string, number>();
   clearRequested = true;
@@ -15782,6 +15784,9 @@ export class BrushEngine {
     if (this.frameRequest !== null) {
       return;
     }
+    if (this.frameInputFlushActive) {
+      return;
+    }
     if (
       this.blendSubmissionInFlight !== null
       && this.pendingBlendBatches.length > 0
@@ -15801,6 +15806,15 @@ export class BrushEngine {
       }
     }
     this.frameRequest = requestAnimationFrame((timestamp) => runRenderFrame(this, timestamp));
+  }
+
+  /**
+   * Installs the synchronous input drain that runs inside the already scheduled
+   * render frame. High-frequency device samples can therefore remain cheap in
+   * their event handler while still joining the newest GPU submission.
+   */
+  setFrameInputFlush(flush: (() => void) | null): void {
+    this.frameInputFlush = flush;
   }
 
   private armViewPresentationRetry(revision: number): void {
@@ -15851,6 +15865,15 @@ export class BrushEngine {
     const resizeStart = performance.now();
     this.resizeCanvas();
     const resizeCanvasMs = performance.now() - resizeStart;
+
+    if (!this.frameInputFlushActive) {
+      this.frameInputFlushActive = true;
+      try {
+        this.frameInputFlush?.();
+      } finally {
+        this.frameInputFlushActive = false;
+      }
+    }
 
     if (this.activeStroke?.thicknessTailHoldback) {
       const thicknessStroke = this.activeStroke;
